@@ -79,6 +79,10 @@ _UPDATE_CMD_RE = re.compile(
     r"^\s*UPDATE\s+(airc|bob|jeeves)(?:\s+v?(\d+\.\d+\.\d+(?:\.\d+)?))?\s*$",
     re.IGNORECASE,
 )
+# FR #5670: any line that starts with UPDATE (after optional id=) is the verb;
+# malformed args must not fall through to PowerShell.
+_UPDATE_VERB_RE = re.compile(r"(?is)^\s*UPDATE(?:\s|$)")
+UPDATE_USAGE = "airc|bob|jeeves [x.y.z]"
 # Fleet ear nick shape bob-{machine}. FR #3286: pattern alone is NOT auth - AuthPolicy
 # must still require operators (+ account when --require-account / --accounts).
 _BOB_FLEET_NICK_RE = re.compile(r"^bob-[a-z0-9][a-z0-9_-]*$", re.IGNORECASE)
@@ -175,6 +179,19 @@ def parse_update_command(text: str) -> tuple[str, str | None] | None:
     if product not in UPDATE_PRODUCTS:
         return None
     return product, m.group(2)
+
+
+def update_usage_job_id(text: str) -> str | None:
+    """FR #5670: job id when line is UPDATE-shaped but not allowlisted; else None.
+
+    Returns ``\"\"`` when there is no leading ``id=`` (caller still emits usage).
+    """
+    jid, rest = split_console_job_id(text)
+    if not _UPDATE_VERB_RE.match(rest or ""):
+        return None
+    if parse_update_command(text) is not None:
+        return None
+    return (jid or "").lower()
 
 
 _PRIORITY_PREPARE_RE = re.compile(
@@ -706,7 +723,19 @@ def schedule_fleet_update(
         # FR #5584: no-op Check (local == latest) is success; callers must not
         # treat DONE exit=1 as a failure when there is nothing to install.
         ok = True
-    elif status in {"skipped-pending", "blocked-loop-guard", "skipped-optout", "cooldown"}:
+    elif status in {
+        "skipped-pending",
+        "blocked-loop-guard",
+        "skipped-optout",
+        "cooldown",
+        "throttled",
+        # FR #5670: lookup/asset failures must DONE exit!=0 even if updater rc=0.
+        "asset-url-rejected",
+        "no-matching-asset",
+        "no-sha256-asset",
+        "release-lookup-failed",
+        "spawn-failed",
+    }:
         ok = False
     detail = ""
     for line in (p.stdout or "").splitlines()[::-1]:
@@ -3847,6 +3876,19 @@ class AircConsoleCore:
             )
 
         # FR #77: UPDATE schedules Update-BobiverseService Check (detached); never msiexec here.
+        # FR #5670: UPDATE-shaped but not allowlisted => usage exit=2 (never PowerShell).
+        update_usage_qid = update_usage_job_id(cmd)
+        if update_usage_qid is not None:
+            qid = (update_usage_qid or "").strip().lower() or "00000000"
+            meta = self._allow_meta(nick, account)
+            return HandleResult(
+                action="update",
+                nick=nick,
+                target=target,
+                text=text,
+                reply=format_known_verb_usage(qid, "UPDATE", UPDATE_USAGE),
+                **meta,
+            )
         parsed = parse_update_command(cmd)
         if parsed is not None:
             # FR #3287: shell=off is status-only; update=off refuses even when shell=operators.
