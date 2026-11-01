@@ -159,11 +159,13 @@ PRIVMSG {mid}_console :id=c25bd00e CRED persist target=PriorityWeb/example-dev v
 PRIVMSG {mid}_console :id=c25bd00e DCCLISTEN id=c25bd00e host=<ip> port=<n> token=<hex> tls=1
 PRIVMSG {mid}_console :id=c25bd00e CRED persist target=PriorityWeb/example-dev via=dcc
 
-# Persist over existing IRC TLS (993) --- no new ports, E2E sealed (FR #5812)
+# Persist over existing IRC TLS (993) --- no new ports, E2E sealed (FR #5812 / #5826)
 PRIVMSG {mid}_console :id=c25bd00e CRED persist target=PriorityWeb/example-dev via=irc
 # Reply: CRED-HELLO token= pub= exp= alg=x25519-chacha20poly1305 target=...
+# Read HELLO via Invoke-AircRemote CredHello.Token (Body stays token=***; FR #5826)
 # Operator encrypts JSON and sends sealed chunks (never plaintext password on IRC):
 PRIVMSG {mid}_console :id=c25bd00e CRED-SEAL token=<tok> seq=1/1 ct=<b64>
+# Ear blanks CRED-SEAL records in outbox.txt after drain (same-length spaces; FR #5826)
 # Reply: CRED persisted + DONE ... cred-persisted target=... account=... (never the password)
 # Failures: cred-rejected-auth, cred-expired, cred-replay, cred-target-not-allowlisted, cred-bad-payload, cred-write-failed:...
 
@@ -177,7 +179,7 @@ PRIVMSG {mid}_console :id=c25bd00e CRED-SEAL token=<tok> seq=1/1 ct=<b64>
 
 - Password never on IRC. Stage stash is in-memory, TTL ~180s, one-shot `take`. Persist uses CredWriteW LocalMachine under the Airc LocalSystem identity (`airc_credman.write_generic_credential`).
 - HTTPS URL must be `https://` under the fleet public base (`bob.ntsa.uk` / `BOB_PUBLIC_BASE`) or a prefix in `AIRC_CRED_HTTPS_PREFIXES`. Rejected URL -> `cred-url-rejected`. Fetch failures surface firewall-aware tokens (`firewall-or-unreachable`, `timeout`, `ssl-error`, `dns-failed`, `http-N`).
-- **via=irc (FR #5812):** console replies `CRED-HELLO` (ephemeral X25519 pub + one-time token + short expiry). Operator sends `CRED-SEAL` ciphertext chunks only (Ergo never sees plaintext). Token is single-use; wrong nick -> `cred-rejected-auth`; target must be a `credentialTarget` from `priority-instances.json`.
+- **via=irc (FR #5812 / #5826):** console replies `CRED-HELLO` (ephemeral X25519 pub + one-time token + short expiry). Read the public token from `Invoke-AircRemote` `CredHello.Token` (generic redaction still masks `token=` in `Body`/`StdOut`). Operator sends `CRED-SEAL` ciphertext chunks only (Ergo never sees plaintext). The bob ear blanks consumed `CRED-SEAL` lines in `outbox.txt` in place (same length; best-effort --- crash windows, concurrent writers, and optional raw `irc.log` / `-ReplyFile` may still hold a copy briefly). Token is single-use; a lost final ack needs a new HELLO, not token replay; wrong nick -> `cred-rejected-auth`; target must be a `credentialTarget` from `priority-instances.json`.
 - **Sender helper (FR #5825):** `Send-AircCred.ps1` / `airc_cred_send.py` wait for HELLO, seal via `seal_cred_payload`, send SEAL chunks, return one named result. Credential from local CredMan or SecureString/stdin --- never `--password` argv or a plaintext file.
 - **Pack staging (FR #5829):** `Pack-AircConsoleRelease.ps1` stages `scripts\airc_cred_irc.py`, `scripts\airc_cred_send.py`, and `scripts\Send-AircCred.ps1` into console MSI/hotpatch trees (operator client allow-list unchanged).
 - Without `via=dcc` / offer on stage or persist-dcc -> `DONE ... usage cred-requires-dcc`. Persist needs `target=`; persist+https needs `url=`; persist accepts `via=https|dcc|irc`.

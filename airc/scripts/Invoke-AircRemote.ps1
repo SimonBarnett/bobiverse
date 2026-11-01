@@ -281,7 +281,29 @@ function ConvertFrom-AircRemoteReply {
     $outs = New-Object System.Collections.Generic.List[object]
     $errs = New-Object System.Collections.Generic.List[object]
     $done = $null
+    # FR #5826: capture public CRED-HELLO from raw lines before generic token redaction.
+    $credHelloCandidate = $null
+    $credHelloInvalid = $false
     foreach ($raw in $Lines) {
+        if ($ExpectJobId -and -not $credHelloInvalid) {
+            $helloPat = ('(?i)^out\s+id={0}\s+seq=\d+\s+CRED-HELLO\s+token=([0-9a-f]{{32}})\s+pub=([A-Za-z0-9_\-+/=]+)\s+exp=(\d+)\s+alg=x25519-chacha20poly1305\s+target=([^\s=]+)\s*$' -f [regex]::Escape($ExpectJobId))
+            if ($raw -match $helloPat) {
+                $cand = [pscustomobject]@{
+                    Token  = $Matches[1].ToLowerInvariant()
+                    Pub    = $Matches[2]
+                    Exp    = [long]$Matches[3]
+                    Alg    = 'x25519-chacha20poly1305'
+                    Target = $Matches[4]
+                }
+                if ($null -ne $credHelloCandidate) {
+                    # Duplicate or conflicting HELLO frames: refuse structured access.
+                    $credHelloInvalid = $true
+                    $credHelloCandidate = $null
+                } else {
+                    $credHelloCandidate = $cand
+                }
+            }
+        }
         $line = Protect-AircRemoteSecret $raw
         if ($line -match '^(?<stream>out|err)\s+id=(?<id>[0-9a-f]+)\s+seq=(?<seq>\d+)\s(?<body>.*)$') {
             $obj = [pscustomobject]@{
@@ -354,16 +376,28 @@ function ConvertFrom-AircRemoteReply {
         }
         $seen[$row.Seq] = $key
     }
+    $credHello = $null
+    if (
+        (-not $credHelloInvalid) -and
+        ($null -ne $credHelloCandidate) -and
+        $ExpectJobId -and
+        $done.Id -eq $ExpectJobId -and
+        ([int]$done.ExitCode -eq 0) -and
+        ([string]$done.Reason -eq 'cred-hello')
+    ) {
+        $credHello = $credHelloCandidate
+    }
     return [pscustomobject]@{
-        JobId    = $done.Id
-        ExitCode = $done.ExitCode
-        Via      = $(if ($done.PSObject.Properties['Via']) { $done.Via } else { '' })
-        Bytes    = $(if ($done.PSObject.Properties['Bytes']) { $done.Bytes } else { $null })
-        Sha256   = $(if ($done.PSObject.Properties['Sha256']) { $done.Sha256 } else { '' })
-        Out      = $outSorted
-        Err      = $errSorted
-        StdOut   = (($outSorted | ForEach-Object { $_.Body }) -join "`n")
-        StdErr   = (($errSorted | ForEach-Object { $_.Body }) -join "`n")
+        JobId     = $done.Id
+        ExitCode  = $done.ExitCode
+        Via       = $(if ($done.PSObject.Properties['Via']) { $done.Via } else { '' })
+        Bytes     = $(if ($done.PSObject.Properties['Bytes']) { $done.Bytes } else { $null })
+        Sha256    = $(if ($done.PSObject.Properties['Sha256']) { $done.Sha256 } else { '' })
+        CredHello = $credHello
+        Out       = $outSorted
+        Err       = $errSorted
+        StdOut    = (($outSorted | ForEach-Object { $_.Body }) -join "`n")
+        StdErr    = (($errSorted | ForEach-Object { $_.Body }) -join "`n")
     }
 }
 
@@ -674,6 +708,69 @@ function Invoke-AircRemoteSelfTest {
     Assert-True ($red -notmatch 'super-secret') 'secret redacted password'
     Assert-True ($red -notmatch 'token=abc') 'secret redacted token'
     Assert-True ($red -notmatch '12345678-1234-1234-1234-123456789abc') 'secret redacted guid'
+
+    # FR #5826: CredHello structured access; Body stays masked.
+    $helloTok = 'aabbccddeeff00112233445566778899'
+    $helloPub = 'AbCdEfGhIjKlMnOpQrStUvWxYz0123456789_-'
+    $helloLines = @(
+        ("out id=c25bd00e seq=1 CRED-HELLO token={0} pub={1} exp=9999999999 alg=x25519-chacha20poly1305 target=PriorityWeb/example-dev" -f $helloTok, $helloPub),
+        'DONE id=c25bd00e exit=0 cred-hello'
+    )
+    $helloParsed = ConvertFrom-AircRemoteReply -Lines $helloLines -ExpectJobId 'c25bd00e'
+    Assert-True ($null -ne $helloParsed.CredHello) 'FR5826 CredHello present'
+    Assert-True ($helloParsed.CredHello.Token -eq $helloTok) 'FR5826 CredHello.Token'
+    Assert-True ($helloParsed.CredHello.Pub -eq $helloPub) 'FR5826 CredHello.Pub'
+    Assert-True ($helloParsed.CredHello.Target -eq 'PriorityWeb/example-dev') 'FR5826 CredHello.Target'
+    Assert-True ($helloParsed.StdOut -match 'token=\*\*\*') 'FR5826 Body still masked'
+    Assert-True ($helloParsed.StdOut -notmatch $helloTok) 'FR5826 token absent from StdOut'
+
+    $hostile = ConvertFrom-AircRemoteReply -Lines @(
+        ("out id=c25bd00e seq=1 CRED-HELLO token={0} pub={1} exp=9999999999 alg=x25519-chacha20poly1305 target=PriorityWeb/example-dev password=nope" -f $helloTok, $helloPub),
+        'DONE id=c25bd00e exit=0 cred-hello'
+    ) -ExpectJobId 'c25bd00e'
+    Assert-True ($null -eq $hostile.CredHello) 'FR5826 trailing secret rejects CredHello'
+    Assert-True ($hostile.StdOut -notmatch 'password=nope') 'FR5826 trailing password masked'
+
+    try {
+        ConvertFrom-AircRemoteReply -Lines $helloLines -ExpectJobId 'deadbeef' | Out-Null
+        Assert-True $false 'FR5826 wrong ExpectJobId should throw correlation'
+    } catch {
+        Assert-True ([string]$_ -match 'correlation mismatch') 'FR5826 wrong id fail-closed'
+    }
+
+    $badTok = ConvertFrom-AircRemoteReply -Lines @(
+        ("out id=c25bd00e seq=1 CRED-HELLO token=nothexnothexnothexnothexnothex12 pub={0} exp=9999999999 alg=x25519-chacha20poly1305 target=PriorityWeb/example-dev" -f $helloPub),
+        'DONE id=c25bd00e exit=0 cred-hello'
+    ) -ExpectJobId 'c25bd00e'
+    Assert-True ($null -eq $badTok.CredHello) 'FR5826 non-hex token rejects CredHello'
+
+    $shortTok = ConvertFrom-AircRemoteReply -Lines @(
+        ("out id=c25bd00e seq=1 CRED-HELLO token=aabbccddeeff0011 pub={0} exp=9999999999 alg=x25519-chacha20poly1305 target=PriorityWeb/example-dev" -f $helloPub),
+        'DONE id=c25bd00e exit=0 cred-hello'
+    ) -ExpectJobId 'c25bd00e'
+    Assert-True ($null -eq $shortTok.CredHello) 'FR5826 short token rejects CredHello'
+
+    try {
+        ConvertFrom-AircRemoteReply -Lines @(
+            ("out id=c25bd00e seq=1 CRED-HELLO token={0} pub={1} exp=9999999999 alg=x25519-chacha20poly1305 target=PriorityWeb/example-dev" -f $helloTok, $helloPub)
+        ) -ExpectJobId 'c25bd00e' | Out-Null
+        Assert-True $false 'FR5826 missing DONE should throw'
+    } catch {
+        Assert-True $true 'FR5826 missing DONE fail-closed'
+    }
+
+    $failDone = ConvertFrom-AircRemoteReply -Lines @(
+        ("out id=c25bd00e seq=1 CRED-HELLO token={0} pub={1} exp=9999999999 alg=x25519-chacha20poly1305 target=PriorityWeb/example-dev" -f $helloTok, $helloPub),
+        'DONE id=c25bd00e exit=1 cred-failed'
+    ) -ExpectJobId 'c25bd00e'
+    Assert-True ($null -eq $failDone.CredHello) 'FR5826 DONE exit=1 no CredHello'
+
+    $generic = ConvertFrom-AircRemoteReply -Lines @(
+        'out id=c25bd00e seq=1 shell says token=abc',
+        'DONE id=c25bd00e exit=0'
+    ) -ExpectJobId 'c25bd00e'
+    Assert-True ($null -eq $generic.CredHello) 'FR5826 ordinary stdout no CredHello'
+    Assert-True ($generic.StdOut -match 'token=\*\*\*') 'FR5826 ordinary token still masked'
 
     $script:RetryAttempts = 0
     $result = Invoke-AircRemoteWithRetry -MaxRetries 2 -Send {

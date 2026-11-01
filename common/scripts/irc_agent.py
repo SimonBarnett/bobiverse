@@ -337,6 +337,86 @@ def write_outbox_line(path: Path, text: str, *, channel: str | None = None) -> N
         fh.write(line + "\n")
 
 
+# FR #5826: CRED-SEAL body after optional leading id= (case-insensitive verb).
+_CRED_SEAL_BODY_RE = re.compile(
+    r"(?is)^(?:id=[0-9a-f]{8}\s+)?CRED-SEAL(?:\s|$)"
+)
+_CRED_SEAL_PREVIEW_RE = re.compile(
+    r"(?i)\b(token|ct)=\S+"
+)
+
+
+def scrub_cred_seal_preview(text: str) -> str:
+    """Mask CRED-SEAL token= and ct= before log truncation (FR #5826)."""
+    return _CRED_SEAL_PREVIEW_RE.sub(
+        lambda m: m.group(1) + "=***", text or ""
+    )
+
+
+def is_cred_seal_outbox_line(norm: str) -> bool:
+    """True when a normalised outbox line carries a CRED-SEAL command (FR #5826)."""
+    s = (norm or "").strip()
+    if not s:
+        return False
+    body = s
+    m = _PREWRAPPED_PRIVMSG.match(s)
+    if m:
+        body = m.group(2) or ""
+    return bool(_CRED_SEAL_BODY_RE.match(body.lstrip(" \t\ufeff")))
+
+
+def take_outbox_records(
+    path: Path, last: int, max_lines: int | None = None
+) -> tuple[list[tuple[str, int, int, bytes]], int]:
+    """Complete newline-terminated outbox records from byte offset `last`.
+
+    Returns (records, new_offset) where each nonempty record is
+    ``(normalised_text, abs_start, abs_end, raw_span_bytes)``. ``abs_end``
+    includes the LF. Blank records advance the offset but are omitted.
+    Incomplete trailing bytes stay unconsumed.
+
+    FR #226 / FR #68 / FR #5826: same BOM/CRLF/max_lines rules as
+    ``take_outbox_lines``; spans are the original file bytes so CRED-SEAL
+    scrubbing can blank in place without rewriting unrelated records.
+    """
+    try:
+        data = path.read_bytes()
+    except OSError:
+        return [], last
+    file_bom = 0
+    if data.startswith(_BOM_UTF8):
+        file_bom = len(_BOM_UTF8)
+    if last > len(data):
+        last = 0
+    if last < file_bom:
+        buf = data[file_bom:]
+        base = file_bom
+    else:
+        buf = data[last:]
+        base = last
+    records: list[tuple[str, int, int, bytes]] = []
+    consumed = 0
+    limit = None if max_lines is None else max(0, int(max_lines))
+    while True:
+        if limit is not None and len(records) >= limit:
+            break
+        nl = buf.find(b"\n", consumed)
+        if nl < 0:
+            break
+        span = buf[consumed : nl + 1]
+        raw = buf[consumed:nl].rstrip(b"\r")
+        if raw.startswith(_BOM_UTF8):
+            raw = raw[len(_BOM_UTF8) :]
+        text = raw.decode("utf-8", "replace")
+        kind, norm = normalize_outbox_line(text)
+        abs_start = base + consumed
+        abs_end = base + nl + 1
+        if kind != "empty" and norm:
+            records.append((norm, abs_start, abs_end, bytes(span)))
+        consumed = nl + 1
+    return records, base + consumed
+
+
 def take_outbox_lines(
     path: Path, last: int, max_lines: int | None = None
 ) -> tuple[list[str], int]:
@@ -351,48 +431,118 @@ def take_outbox_lines(
     FR #68: optional max_lines caps the returned non-empty lines so a backlog
     cannot starve chair +o / ChanServ work.
     """
-    try:
-        data = path.read_bytes()
-    except OSError:
-        return [], last
-    # File-level BOM only affects offset 0
-    data_for_read = data
-    file_bom = 0
-    if data.startswith(_BOM_UTF8):
-        file_bom = len(_BOM_UTF8)
-        if last == 0:
-            data_for_read = data[file_bom:]
-            # logical last still counts full file positions including BOM bytes
-    if last > len(data):
-        last = 0
-    # Slice from last on full data, but skip BOM if last is within BOM
-    if last < file_bom:
-        buf = data[file_bom:]
-        base = file_bom
-    else:
-        buf = data[last:]
-        base = last
-    lines: list[str] = []
-    consumed = 0
-    limit = None if max_lines is None else max(0, int(max_lines))
-    while True:
-        if limit is not None and len(lines) >= limit:
-            break
-        nl = buf.find(b"\n", consumed)
-        if nl < 0:
-            break
-        raw = buf[consumed:nl].rstrip(b"\r")
-        # drop per-line BOM bytes
-        if raw.startswith(_BOM_UTF8):
-            raw = raw[len(_BOM_UTF8) :]
-        # decode; replace errors; strip BOM char
-        text = raw.decode("utf-8", "replace")
-        kind, norm = normalize_outbox_line(text)
-        if kind != "empty" and norm:
-            lines.append(norm)
-        consumed = nl + 1
-    return lines, base + consumed
+    records, new_last = take_outbox_records(path, last, max_lines=max_lines)
+    return [r[0] for r in records], new_last
 
+
+def blank_cred_seal_spans(
+    path: Path,
+    spans: list[tuple[int, int, bytes]],
+    *,
+    batch_end: int | None = None,
+) -> tuple[int, int]:
+    """Blank CRED-SEAL record spans in place at the same length (FR #5826).
+
+    Compare-before-write: only overwrite when the on-disk bytes still match the
+    snapshot taken at read time. Preserve LF/CRLF terminators. Returns
+    ``(blanked_count, failure_count)``.
+    """
+    if not spans:
+        return 0, 0
+    blanked = 0
+    failures = 0
+    try:
+        with path.open("r+b") as fh:
+            for start, end, snapshot in spans:
+                if start < 0 or end <= start:
+                    continue
+                if batch_end is not None and end > batch_end:
+                    continue
+                length = end - start
+                if length != len(snapshot):
+                    failures += 1
+                    info(
+                        "WARN outbox CRED-SEAL scrub skipped (span length drift) "
+                        f"path={path.name}"
+                    )
+                    continue
+                try:
+                    fh.seek(start)
+                    current = fh.read(length)
+                except OSError as exc:
+                    failures += 1
+                    info(
+                        "WARN outbox CRED-SEAL scrub read failed "
+                        f"{type(exc).__name__} path={path.name}"
+                    )
+                    continue
+                if current != snapshot:
+                    failures += 1
+                    info(
+                        "WARN outbox CRED-SEAL scrub skipped (bytes changed) "
+                        f"path={path.name}"
+                    )
+                    continue
+                # Preserve CR?LF terminator bytes; blank the payload.
+                if snapshot.endswith(b"\r\n"):
+                    payload_len = length - 2
+                    term = b"\r\n"
+                elif snapshot.endswith(b"\n"):
+                    payload_len = length - 1
+                    term = b"\n"
+                else:
+                    payload_len = length
+                    term = b""
+                replacement = (b" " * payload_len) + term
+                if len(replacement) != length:
+                    failures += 1
+                    continue
+                try:
+                    fh.seek(start)
+                    fh.write(replacement)
+                except OSError as exc:
+                    failures += 1
+                    info(
+                        "WARN outbox CRED-SEAL scrub write failed "
+                        f"{type(exc).__name__} path={path.name}"
+                    )
+                    continue
+                blanked += 1
+    except OSError as exc:
+        info(
+            "WARN outbox CRED-SEAL scrub open failed "
+            f"{type(exc).__name__} path={path.name}"
+        )
+        return 0, max(1, failures + len(spans))
+    return blanked, failures
+
+
+def sweep_cred_seal_prefix(path: Path, upto: int) -> bool:
+    """Blank CRED-SEAL records in ``[0, upto)`` (legacy / failed scrub; FR #5826).
+
+    Returns True when the sweep completed with no write failures.
+    """
+    if upto <= 0 or not path.exists():
+        return True
+    try:
+        records, _ = take_outbox_records(path, 0, max_lines=None)
+    except OSError as exc:
+        info(
+            "WARN outbox CRED-SEAL sweep read failed "
+            f"{type(exc).__name__} path={path.name}"
+        )
+        return False
+    spans: list[tuple[int, int, bytes]] = []
+    for norm, start, end, raw in records:
+        if end > upto:
+            break
+        if is_cred_seal_outbox_line(norm):
+            # Only blank if payload still has non-space content (already scrubbed stay).
+            payload = raw.rstrip(b"\r\n")
+            if payload.strip(b" "):
+                spans.append((start, end, raw))
+    _blanked, failures = blank_cred_seal_spans(path, spans, batch_end=upto)
+    return failures == 0
 
 def outbox_pos_path(outbox: Path) -> Path:
     return Path(str(outbox) + ".pos")
@@ -742,6 +892,7 @@ class Client:
         self.lock = threading.Lock()
         self.sock: ssl.SSLSocket | None = None
         self._outbox_gen = 0
+        self._cred_seal_sweep_pending = True  # FR #5826 startup sweep
         self._linelen = 512
         self._privmsg_text_max: int | None = None  # None → derive from nick/target/linelen
         # FR #2728: chair !status uptime from process/agent construction, not first command.
@@ -4177,20 +4328,37 @@ class Client:
         if self.sock is None or not path.exists():
             return []
         last = load_outbox_pos(path)
-        lines, new_last = take_outbox_lines(path, last, max_lines=OUTBOX_LINES_PER_TICK)
+        # FR #5826: one-shot / pending sweep of already-consumed CRED-SEAL ciphertext.
+        if getattr(self, "_cred_seal_sweep_pending", True):
+            try:
+                ok = sweep_cred_seal_prefix(path, last)
+            except Exception as exc:  # noqa: BLE001
+                info(
+                    "WARN outbox CRED-SEAL sweep error "
+                    f"{type(exc).__name__} path={path.name}"
+                )
+                ok = False
+            self._cred_seal_sweep_pending = not ok
+        records, new_last = take_outbox_records(path, last, max_lines=OUTBOX_LINES_PER_TICK)
         sent: list[str] = []
         gate_fleet = bobreport.chair_mode_active(self.home)
         # FR #2384: bob ear (non-chair) refuses worker job-wire lines misplaced in home\outbox.txt
         refuse_job_wire = not getattr(self.args, "chair", False)
-        for line in lines:
+        seal_spans: list[tuple[int, int, bytes]] = []
+        for norm0, abs_start, abs_end, raw_span in records:
+            line = norm0
             try:
                 # FR #226: re-normalize (BOM / pre-wrapped) before classify
                 kind, norm = normalize_outbox_line(line)
                 if kind == "empty":
                     continue
                 line = norm
+                if is_cred_seal_outbox_line(line):
+                    seal_spans.append((abs_start, abs_end, raw_span))
                 if refuse_job_wire and is_misplaced_worker_job_wire(line):
-                    preview = line if len(line) <= 160 else (line[:157] + "...")
+                    preview = scrub_cred_seal_preview(line)
+                    if len(preview) > 160:
+                        preview = preview[:157] + "..."
                     info(f"WARN outbox refused misplaced worker job-wire (FR #2384): {preview}")
                     continue
                 if gate_fleet and bobreport.outbox_line_spam_for_fleet_channel(line, default_channel=self.chan):
@@ -4201,14 +4369,18 @@ class Client:
                     try:
                         wire = self.send_privmsg_lines(line)
                     except OSError as exc:
-                        preview = line if len(line) <= 160 else (line[:157] + "...")
+                        preview = scrub_cred_seal_preview(line)
+                        if len(preview) > 160:
+                            preview = preview[:157] + "..."
                         info(
                             f"ERROR outbox: send failed {type(exc).__name__}: {preview}"[:220]
                         )
                         continue
                     for w in wire:
                         head = w.split(" :", 1)[0]
-                        prev = w if len(w) <= 160 else (w[:157] + "...")
+                        prev = scrub_cred_seal_preview(w)
+                        if len(prev) > 160:
+                            prev = prev[:157] + "..."
                         info(f"INFO outbox: sent {head} ({len(w)} chars): {prev}")
                     sent.extend(wire)
                     # FR #4796: pace *_console Commands slower than shop chat.
@@ -4222,9 +4394,25 @@ class Client:
                     self.say(line)
                     sent.append(line)
             except Exception as exc:  # noqa: BLE001 -- FR #5157
-                preview = line if len(str(line)) <= 160 else (str(line)[:157] + "...")
+                preview = scrub_cred_seal_preview(str(line))
+                if len(preview) > 160:
+                    preview = preview[:157] + "..."
                 info(f"ERROR outbox: line failed {type(exc).__name__}: {preview}"[:220])
                 continue
+        # FR #5826: blank CRED-SEAL after send loop, before checkpoint (best-effort).
+        if seal_spans:
+            try:
+                _blanked, failures = blank_cred_seal_spans(
+                    path, seal_spans, batch_end=new_last
+                )
+                if failures:
+                    self._cred_seal_sweep_pending = True
+            except Exception as exc:  # noqa: BLE001
+                self._cred_seal_sweep_pending = True
+                info(
+                    "WARN outbox CRED-SEAL scrub error "
+                    f"{type(exc).__name__} path={path.name}"
+                )
         if new_last != last:
             save_outbox_pos(path, new_last)
         return sent

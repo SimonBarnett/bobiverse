@@ -46,6 +46,32 @@ def test_append_inbound_scrubs_secrets(tmp_path):
     assert "[redacted]" in text
 
 
+def test_scrub_masks_cred_seal_token_and_ct():
+    """FR #5826: self-echo CRED-SEAL must not keep ciphertext in the transcript."""
+    fake_tok = "aabbccddeeff00112233445566778899"
+    fake_ct = "ZZZZ" + ("Y" * 32)
+    raw = f"CRED-SEAL token={fake_tok} seq=1/1 ct={fake_ct}"
+    scrubbed = it.scrub_text(raw)
+    assert fake_tok not in scrubbed
+    assert fake_ct not in scrubbed
+    assert "[redacted]" in scrubbed
+
+
+def test_append_inbound_scrubs_cred_seal(tmp_path):
+    fake_tok = "aabbccddeeff00112233445566778899"
+    fake_ct = "ZZZZ" + ("Y" * 32)
+    path = it.append_inbound(
+        tmp_path,
+        "#flamingo",
+        "Bob-flamingo",
+        f"id=c25bd00e CRED-SEAL token={fake_tok} seq=1/1 ct={fake_ct}",
+    )
+    text = path.read_text(encoding="utf-8")
+    assert fake_tok not in text
+    assert fake_ct not in text
+    assert "[redacted]" in text
+
+
 def test_rotate_creates_backup(tmp_path):
     path = tmp_path / it.TRANSCRIPT_NAME
     path.write_text("x" * 100, encoding="utf-8")
