@@ -149,9 +149,11 @@ PRIVMSG marchhare_console :id=aabbccdd LEGION flamingo -Profile fleet
 - FR #5530: -WhatIf still probes MSI/PsExec when CredMan is missing; the DCC log includes msi, psexec, summary=dry-run, and a credman-missing failure row (live installs still fail closed before install_remote).
 - FR #5655 / #5712 / #5737: PsExec is never MSI-bundled (Sysinternals license). Install/UPDATE deploys the official zip with pinned SHA-256 to `%ProgramData%\bobiverse\tools\PsExec.exe`. WhatIf/`ensure_psexec` use that copy or redeploy from the local cache (no verb-time network); fail `psexec-undeployed` when undeployed; `psexec-download-failed:<ExcType>` on extract failure (FR #5743).
 
-## Identity for remote verbs (FR #5659 / #5711 / #5745)
+## Identity for remote verbs (FR #5659 / #5711 / #5745 / #5802)
 
 LEGION / EXTENSION / NETWORK pick **passed** (DCC `CRED id= via=dcc`) then **CredMan** then **SYSTEM**. See `bobiverse-airc-commands` CRED + LEGION / NETWORK sections. Never put passwords on IRC.
+
+**CRED persist (FR #5802):** lasting LocalSystem CredMan write for Priority (and similar) targets. Prefer `CRED persist target=... via=https url=https://bob.ntsa.uk/...` on boxes that only allow outbound 80/443/993; optional `via=dcc` when DCC works. Stage (`CRED ... via=dcc` without `persist`) stays memory-only.
 
 Default CredMan targets are `PriorityAirc/LegionAdmin`, `PriorityAirc/ExtensionAdmin`, and `PriorityAirc/NetworkAdmin`. Override in `config/airc.json`:
 
