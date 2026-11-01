@@ -3458,6 +3458,62 @@ class AircConsoleCore:
                 **meta,
             )
 
+        # FR #5659: CRED id= via=dcc --- stage username/password in memory (TLS DCC only).
+        cred_cmd = None
+        try:
+            import airc_passed_cred as _pcred
+            import airc_identity as _ident
+
+            cred_cmd = _pcred.parse_cred_command(cmd)
+        except Exception:
+            cred_cmd = None
+        if cred_cmd is not None:
+            qid = (cred_cmd.get("qid") or "").lower()
+            meta = {"qid": qid} if qid else {}
+            if _ident.irc_line_has_plaintext_secret(cmd):
+                return self._capability_deny(
+                    nick, target, text, "usage secrets-on-irc", qid
+                )
+            if (cred_cmd.get("via") or "") != "dcc":
+                return self._capability_deny(
+                    nick, target, text, "usage cred-requires-dcc", qid
+                )
+            offer = None
+            if self.shell_runner is not None and qid:
+                take = getattr(self.shell_runner, "take_dcclisten", None)
+                if callable(take):
+                    offer = take(qid)
+            if offer is None:
+                return self._capability_deny(
+                    nick, target, text, "usage cred-requires-dcc", qid
+                )
+            try:
+                import airc_dcc_bulk as _dcc
+
+                raw = _dcc.recv_offer_payload(offer)
+                pair = _pcred.parse_cred_json(raw)
+                store = getattr(self, "passed_cred_store", None) or _pcred.GLOBAL_PASSED_CREDS
+                store.put(qid, pair["username"], pair["password"])
+            except Exception as exc:  # noqa: BLE001
+                reason = type(exc).__name__
+                if qid:
+                    reply = f"err id={qid} seq=1 cred failed: {reason}\nDONE id={qid} exit=1 auth_failed"
+                else:
+                    reply = f"err seq=1 cred failed: {reason}\nDONE exit=1 auth_failed"
+                return HandleResult(
+                    True,
+                    reply,
+                    action="cred",
+                    **meta,
+                )
+            done = f"DONE id={qid} exit=0 cred-staged account={pair['username']}"
+            return HandleResult(
+                True,
+                f"out id={qid} seq=1 CRED staged identity=passed\n{done}",
+                action="cred",
+                **meta,
+            )
+
         # FR #5308: LEGION {target} --- isolated stub worker; same auth as UPDATE.
         leg = _legion.parse_legion_command(cmd)
         if leg is not None:
@@ -3487,11 +3543,16 @@ class AircConsoleCore:
                 )
             if leg.get("error"):
                 # FR #5527: include id= so ear/airc-replies can correlate denies.
+                reason = str(leg.get("error") or "")
+                if reason == "secrets-on-irc":
+                    return self._capability_deny(
+                        nick, target, text, "usage secrets-on-irc", qid
+                    )
                 return self._capability_deny(
                     nick,
                     target,
                     text,
-                    f"bad-target reason={leg['error']}",
+                    f"bad-target reason={reason}",
                     qid,
                 )
             offer = None
@@ -3516,10 +3577,25 @@ class AircConsoleCore:
                 plan = getattr(res, "plan", None)
                 if isinstance(plan, dict) and plan:
                     extra["plan"] = plan
+                if getattr(res, "identity", ""):
+                    extra["identity_source"] = res.identity
+                    extra["identity"] = res.identity
                 if getattr(res, "identity_label", ""):
-                    extra["identity"] = res.identity_label
+                    extra["identity_label"] = res.identity_label
+                    if "identity" not in extra:
+                        extra["identity"] = res.identity_label
                 if getattr(res, "computer_account", ""):
                     extra["computer_account"] = res.computer_account
+                acct = ""
+                if isinstance(getattr(res, "plan", None), dict):
+                    acct = str((res.plan or {}).get("account") or "")
+                # account may live on failures / identity_label paren
+                if not acct and getattr(res, "identity_label", ""):
+                    lab = str(res.identity_label)
+                    if "(" in lab and lab.endswith(")"):
+                        acct = lab[lab.find("(") + 1 : -1]
+                if acct:
+                    extra["account"] = acct
                 log = _legion.build_legion_log(
                     target=leg.get("target") or "",
                     whatif=bool(leg.get("whatif")),
@@ -3544,6 +3620,7 @@ class AircConsoleCore:
                     whatif=leg["whatif"],
                     job_id=qid,
                     on_done=_deliver_installer,
+                    cred_id=str(leg.get("cred_id") or ""),
                 )
             except TypeError:
                 try:
@@ -3673,6 +3750,10 @@ class AircConsoleCore:
         ext = _extension.parse_extension_command(cmd)
         if ext is not None:
             qid = str(ext.get("qid") or "").strip().lower()
+            if ext.get("error") == "secrets-on-irc":
+                return self._capability_deny(
+                    nick, target, text, "usage secrets-on-irc", qid
+                )
             if ext.get("usage"):
                 meta = self._allow_meta(nick, account)
                 return HandleResult(
@@ -3733,6 +3814,7 @@ class AircConsoleCore:
                     whatif=ext["whatif"],
                     job_id=qid,
                     on_done=_deliver_extension,
+                    cred_id=str(ext.get("cred_id") or ""),
                 )
             except TypeError:
                 try:

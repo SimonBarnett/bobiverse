@@ -9,12 +9,10 @@ from airc_auth_helpers import ops_auth
 
 
 def test_fr5594_default_path_no_credman_no_password_env(monkeypatch):
-    calls = {"credman": 0}
-    seen: list[dict] = []
+    """FR #5659 amends #5594: CredMan is tried then SYSTEM; missing CredMan falls through."""
+    import airc_identity as ident
 
-    def boom_credman():
-        calls["credman"] += 1
-        raise AssertionError("default path must not read CredMan")
+    seen: list[dict] = []
 
     def run_fn(spec: dict) -> dict:
         seen.append(spec)
@@ -22,17 +20,16 @@ def test_fr5594_default_path_no_credman_no_password_env(monkeypatch):
 
     monkeypatch.delenv("AIRC_LEGION_PASSWORD", raising=False)
     monkeypatch.delenv("AIRC_LEGION_USE_CREDMAN", raising=False)
-    monkeypatch.setattr(lg, "default_legion_credman", boom_credman)
-    monkeypatch.setattr(lg, "read_legion_credman", boom_credman)
+    monkeypatch.setattr(ident, "default_credman_reader", lambda t: {})
 
     body = lg.installer_legion_work("flamingo", whatif=True, run_fn=run_fn)
-    assert calls["credman"] == 0
     assert body["ok"] is True
     assert body["invoked_installer"] is True
-    assert body["identity"] == "SYSTEM"
+    assert body["identity"] == "system"
     assert body["computer_account"].endswith("$")
+    assert body.get("credman_missing") is True
     assert "password" not in body
-    assert seen[0].get("identity") == "SYSTEM"
+    assert seen[0].get("identity") == "system"
     assert "username" not in seen[0]
     assert "password" not in seen[0]
     assert not seen[0].get("password_via")
@@ -70,16 +67,22 @@ def test_fr5594_access_denied_maps_to_system_reason():
     assert body["target"] == "flamingo"
 
 
-def test_fr5594_explicit_empty_credman_still_fail_closed():
-    def boom_run(spec):
-        raise AssertionError("installer must not run")
+def test_fr5594_explicit_empty_credman_falls_to_system():
+    """FR #5659: missing CredMan falls through to SYSTEM (no fail-closed)."""
+    seen: list[dict] = []
+
+    def run_fn(spec):
+        seen.append(spec)
+        return {"ok": True, "status": "ok"}
 
     body = lg.installer_legion_work(
-        "walrus", whatif=False, run_fn=boom_run, credman=lambda: {}
+        "walrus", whatif=False, run_fn=run_fn, credman=lambda: {}
     )
-    assert body["ok"] is False
-    assert body["invoked_installer"] is False
-    assert body["error"] == "credman-missing"
+    assert body["ok"] is True
+    assert body["invoked_installer"] is True
+    assert body["identity"] == "system"
+    assert body.get("credman_missing") is True
+    assert seen and seen[0].get("identity") == "system"
 
 
 def test_fr5594_console_default_is_not_credman_missing():

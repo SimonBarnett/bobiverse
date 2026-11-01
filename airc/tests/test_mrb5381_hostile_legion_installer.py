@@ -56,4 +56,4 @@ def test_mrb5381_foreign_msi_and_credman_env_only():
 
     lg.installer_legion_work("box1", whatif=True, run_fn=capture, credman=credman)
     assert "password" not in seen[0]
-    assert seen[0].get("password_via") == "secure-env"
+    assert seen[0].get("password_via") == "credman"

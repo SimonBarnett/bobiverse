@@ -31,9 +31,9 @@ def test_mrb5474_run_legion_verb_does_not_call_credman_on_accept():
     assert "DONE" not in res.reply
 
 
-def test_mrb5474_wait_true_surfaces_credman_missing_from_worker():
+def test_mrb5474_wait_true_surfaces_worker_error_without_forced_126():
     def worker(target, whatif=False, **kw):
-        return {"ok": False, "error": "credman-missing"}
+        return {"ok": False, "error": "auth_failed", "identity": "passed"}
 
     res = lg.run_legion_verb(
         target="box1",
@@ -41,8 +41,8 @@ def test_mrb5474_wait_true_surfaces_credman_missing_from_worker():
         wait=True,
         job_id="aabbccdd",
     )
-    assert "126" in res.reply
-    assert "credman-missing" in res.reply
+    assert "LEGION accepted" in res.reply or "auth_failed" in (res.error or "")
+    assert "126" not in res.reply.split()
 
 
 def test_mrb5474_source_pins_fr5389_off_accept():

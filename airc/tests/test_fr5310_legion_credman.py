@@ -21,19 +21,24 @@ def test_fr5310_read_missing_fail_closed():
         assert "credman-missing" in str(exc)
 
 
-def test_fr5310_installer_missing_does_not_invoke():
-    def boom_run(spec):
-        raise AssertionError("installer must not run")
+def test_fr5310_installer_missing_falls_to_system():
+    """FR #5659: empty CredMan falls through to SYSTEM."""
+    seen: list[dict] = []
+
+    def run_fn(spec):
+        seen.append(spec)
+        return {"ok": True, "status": "ok"}
 
     body = lg.installer_legion_work(
         "walrus",
         whatif=False,
-        run_fn=boom_run,
+        run_fn=run_fn,
         credman=lambda: {},
     )
-    assert body["ok"] is False
-    assert body["invoked_installer"] is False
-    assert body["error"] == "credman-missing"
+    assert body["ok"] is True
+    assert body["invoked_installer"] is True
+    assert body["identity"] == "system"
+    assert body.get("credman_missing") is True
     assert "password" not in body
 
 
@@ -56,17 +61,26 @@ def test_fr5310_redacts_password_equals_and_secret():
     assert "password=" not in blob
     assert "password" not in body
     assert captured[0]["username"] == "wonderland\\legion"
-    assert captured[0]["password_via"] == "secure-env"
+    assert captured[0]["password_via"] == "credman"
     assert captured[0]["credman_target"] == "PriorityAirc/LegionAdmin"
 
 
-def test_fr5310_console_missing_exit_126():
+def test_fr5310_console_missing_falls_through_not_126():
     auth = ops_auth("op", channel="#tm")
 
     def runner(**kw):
         return lg.run_legion_verb(
             credman=lambda: {},
             wait=True,
+            worker=lambda target, whatif=False, **k: {
+                "ok": True,
+                "status": "ok",
+                "identity": "system",
+                "identity_label": "system (HOST$)",
+                "account": "HOST$",
+                "credman_missing": True,
+                "target": target,
+            },
             **kw,
         )
 
@@ -75,7 +89,6 @@ def test_fr5310_console_missing_exit_126():
     )
     hr = core.handle_raw(":op!u@h PRIVMSG tm_console :id=aabbccdd LEGION walrus")
     assert hr and hr.action == "legion"
-    assert "126" in (hr.reply or "")
-    assert "credman-missing" in (hr.reply or "")
+    assert "126" not in (hr.reply or "").split()
     assert "password=" not in (hr.reply or "").lower()
     assert "FAKE_" not in (hr.reply or "")
