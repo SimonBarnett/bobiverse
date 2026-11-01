@@ -174,3 +174,22 @@ def irc_line_has_inline_userpass(text: str) -> bool:
     """True when both user= and pass= appear on IRC (reject)."""
     t = text or ""
     return bool(_USER_IRC_RE.search(t) and _SECRET_IRC_RE.search(t))
+
+def done_identity_suffix(log: dict[str, Any]) -> str:
+    """FR #5659 / #5711: DONE carries identity=passed|credman|system and account (never secret).
+
+    Shared by LEGION and NETWORK so the wire format stays one formatter.
+    """
+    parts: list[str] = []
+    ident = str(log.get("identity_source") or log.get("identity") or "").strip()
+    if ident.lower() in ("passed", "credman", "system"):
+        parts.append(f"identity={ident.lower()}")
+    elif ident:
+        tok = ident.split()[0].strip("()").lower()
+        if tok in ("passed", "credman", "system"):
+            parts.append(f"identity={tok}")
+    acct = str(log.get("account") or "").strip()
+    if acct and "password" not in acct.lower():
+        parts.append(f"account={acct}")
+    return (" " + " ".join(parts)) if parts else ""
+

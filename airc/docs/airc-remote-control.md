@@ -147,6 +147,8 @@ PRIVMSG marchhare_console :id=aabbccdd LEGION walrus -WhatIf
 - FR #5530: -WhatIf still probes MSI/PsExec when CredMan is missing; the DCC log includes msi, psexec, summary=dry-run, and a credman-missing failure row (live installs still fail closed before install_remote).
 - FR #5655 / #5712: PsExec is never MSI-bundled. WhatIf uses read-only `plan_psexec`: `would-download` is ok (plan `psexec_url`/`psexec_dest`); fail closed for opt-out `psexec-missing` or `psexec-source-unreachable`. Live path still downloads via `ensure_psexec`.
 
-## Identity for remote verbs (FR #5659)
+## Identity for remote verbs (FR #5659 / #5711)
 
-LEGION / EXTENSION / NETWORK pick **passed** (DCC `CRED id= via=dcc`) then **CredMan** then **SYSTEM**. See `bobiverse-airc-commands` CRED + LEGION sections. Never put passwords on IRC.
+LEGION / EXTENSION / NETWORK pick **passed** (DCC `CRED id= via=dcc`) then **CredMan** then **SYSTEM**. See `bobiverse-airc-commands` CRED + LEGION / NETWORK sections. Never put passwords on IRC.
+
+NETWORK CredMan target is `PriorityAirc/NetworkAdmin`. Credentials bind ADSI/LDAP only (DNS resolution still uses the service token). Stage with `CRED id=<job> via=dcc` then `NETWORK` / `NETWORK ... cred=<job>`; DONE and the DCC JSON log carry `identity=` / `account=` (never the secret). Wrong passed or CredMan credentials yield `auth_failed` with no SYSTEM fallback.
