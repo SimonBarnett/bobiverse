@@ -3565,8 +3565,9 @@ class AircConsoleCore:
         except Exception:
             cred_cmd = None
         if cred_cmd is not None:
+            # FR #5684: HandleResult first field is action=; never positional True/reply.
             qid = (cred_cmd.get("qid") or "").lower()
-            meta = {"qid": qid} if qid else {}
+            allow = self._allow_meta(nick, account)
             if _ident.irc_line_has_plaintext_secret(cmd):
                 return self._capability_deny(
                     nick, target, text, "usage secrets-on-irc", qid
@@ -3587,7 +3588,8 @@ class AircConsoleCore:
             try:
                 import airc_dcc_bulk as _dcc
 
-                raw = _dcc.recv_offer_payload(offer)
+                # FR #5684: real API is receive_upload_from_offer -> (bytes, sha256).
+                raw, _digest = _dcc.receive_upload_from_offer(offer)
                 pair = _pcred.parse_cred_json(raw)
                 store = getattr(self, "passed_cred_store", None) or _pcred.GLOBAL_PASSED_CREDS
                 store.put(qid, pair["username"], pair["password"])
@@ -3598,17 +3600,21 @@ class AircConsoleCore:
                 else:
                     reply = f"err seq=1 cred failed: {reason}\nDONE exit=1 auth_failed"
                 return HandleResult(
-                    True,
-                    reply,
                     action="cred",
-                    **meta,
+                    nick=nick,
+                    target=target,
+                    text=text,
+                    reply=reply,
+                    **allow,
                 )
             done = f"DONE id={qid} exit=0 cred-staged account={pair['username']}"
             return HandleResult(
-                True,
-                f"out id={qid} seq=1 CRED staged identity=passed\n{done}",
                 action="cred",
-                **meta,
+                nick=nick,
+                target=target,
+                text=text,
+                reply=f"out id={qid} seq=1 CRED staged identity=passed\n{done}",
+                **allow,
             )
 
         # FR #5308: LEGION {target} --- isolated stub worker; same auth as UPDATE.
