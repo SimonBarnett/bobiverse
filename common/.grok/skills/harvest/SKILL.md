@@ -337,6 +337,7 @@ routes to bobiverse via the split rule.
 - Accept-only NETWORK/LEGION replies plus emit-last DONE so clients do not stop before out/CONT.
 - Unused DCCLISTEN must TTL-out so a later shell cannot reuse a stale host:port.
 - DCCLISTEN wiring pins must stub NETWORK inventory_work on domain hosts; waiting on packaged LDAP makes fr5300 flake under full suite
+- After FR #663 clears digest jobs when no worker_list is doing, always derive running/queued from the jobs list so empty jobs yields 0/0 (FR #5687); tip tests must not hardcode D:\Temp.
 
 ## Harvest digest (lessons audit 2026-10-06)
 
