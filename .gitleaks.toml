@@ -1,0 +1,12 @@
+# FR #5865 / FR #3304: allow deliberate FAKE_ test placeholders.
+title = "bobiverse gitleaks"
+
+[allowlist]
+description = "Fleet test placeholders (FAKE_ / split-string secrets)"
+paths = [
+  '''(?i).*/tests/.*''',
+  '''(?i).*[/\\]test_.*\.py$''',
+]
+regexes = [
+  '''FAKE_[A-Za-z0-9_]+''',
+]

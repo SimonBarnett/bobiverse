@@ -50,7 +50,7 @@ def test_mrb_hold_skipped_when_stage_off():
         wait_s=900,
     )
     assert hold is False
-    assert tag == ""
+    assert tag == "off"
 
 
 def test_mrb_hold_until_review_or_timeout():
@@ -67,9 +67,10 @@ def test_mrb_hold_until_review_or_timeout():
         has_review=False,
         wait_s=900,
         first_seen=100.0,
+        activity=True,
     )
     assert hold is True
-    assert tag == ""
+    assert tag == "pending"
 
     hold_r, tag_r = fuel_chain.mrb_coderabbit_offer(
         row,
@@ -78,6 +79,7 @@ def test_mrb_hold_until_review_or_timeout():
         has_review=True,
         wait_s=900,
         first_seen=100.0,
+        activity=True,
     )
     assert hold_r is False
     assert tag_r == "ready"
@@ -89,6 +91,7 @@ def test_mrb_hold_until_review_or_timeout():
         has_review=False,
         wait_s=900,
         first_seen=100.0,
+        activity=True,
     )
     assert hold_t is False
     assert tag_t == "timeout"
@@ -101,10 +104,12 @@ def test_format_assign_line_appends_coderabbit_timeout():
         "id": "#5390",
         "url": "https://github.com/SimonBarnett/bobiverse/pull/5390",
         "coderabbit": "timeout",
+        "review": "full",
     }
     line = gitclaim.format_assign_line("flamingo-1", row)
     assert line.startswith("flamingo-1: MRB SimonBarnett/bobiverse#5390 https://")
     assert "coderabbit=timeout" in line
+    assert "review=full" in line
 
 
 def test_shop_listen_keeps_done_url_with_cr_counters():
