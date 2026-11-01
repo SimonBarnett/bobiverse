@@ -3150,6 +3150,12 @@ class AircConsoleCore:
             if normalize_irc_channel(c)
         ]
 
+    def _resolved_priority_allowlist_path(self) -> str | None:
+        """Resolve the CRED allowlist using the same fallback as PRIORITY."""
+        override = self.priority_allowlist or self.priority_allowlist_path
+        path = _priority.resolve_walk_allowlist_path(self.install_root, override)
+        return str(path) if path is not None else None
+
     def register_commands(self) -> list[str]:
         """NickServ register / identify sequence (password from env/file at service layer)."""
         return [
@@ -3578,7 +3584,7 @@ class AircConsoleCore:
             qid = (seal_cmd.get("qid") or "").lower()
             try:
                 allowlisted = _circ.allowlisted_cred_targets(
-                    getattr(self, "priority_allowlist_path", None)
+                    self._resolved_priority_allowlist_path()
                 )
             except Exception:
                 allowlisted = set()
@@ -3670,9 +3676,9 @@ class AircConsoleCore:
                         import airc_cred_irc as _circ
 
                         # Fail closed: target must appear in priority-instances
-                        # credentialTarget values (FR #5812).
+                        # credentialTarget values (FR #5812 / #5839).
                         allowlisted = _circ.allowlisted_cred_targets(
-                            getattr(self, "priority_allowlist_path", None)
+                            self._resolved_priority_allowlist_path()
                         )
                         if cred_target not in allowlisted:
                             return HandleResult(
