@@ -516,11 +516,13 @@ def installer_legion_work(
             return credman() or {}
         return _ident.default_credman_reader(tgt)
 
+    # FR #5745: CredMan target from airc.json credman_targets (default LegionAdmin).
+    legion_target = _ident.credman_target_for("legion")
     resolved = _ident.resolve_remote_identity(
         verb="legion",
         passed=passed if isinstance(passed, dict) else None,
         passed_requested=False,
-        credman_target=_CREDMAN_TARGET,
+        credman_target=legion_target,
         credman_reader=_reader,
         system_fn=lambda: {
             "account": sys_ident["computer_account"],
@@ -528,6 +530,14 @@ def installer_legion_work(
             "password": "",
         },
     )
+    try:
+        from airc_console_service import info as _info
+
+        line = _ident.format_identity_fallback_log(verb="legion", resolved=resolved)
+        if line:
+            _info(line)
+    except Exception:
+        pass
     user = resolved.username if resolved.source != _ident.IDENTITY_SYSTEM else ""
     secret = resolved.password if resolved.source != _ident.IDENTITY_SYSTEM else ""
     use_secret = resolved.source in (_ident.IDENTITY_PASSED, _ident.IDENTITY_CREDMAN)
@@ -597,12 +607,17 @@ def installer_legion_work(
         "identity_label": resolved.label,
         "account": resolved.account,
     }
-    # FR #5659: missing CredMan is logged, not a hard failure (falls through to SYSTEM).
+    # FR #5659 / #5745: missing CredMan is logged, not a hard failure (falls through to SYSTEM).
     if resolved.credman_missing:
         body["credman_missing"] = True
         body["credman_fell_through"] = "system"
         if resolved.credman_error:
             body["credman_error"] = resolved.credman_error
+        reason = resolved.identity_reason()
+        if reason:
+            body["identity_reason"] = reason
+        if resolved.credman_target:
+            body["credman_target"] = resolved.credman_target
     if hint:
         body["hint"] = hint
     if (out or {}).get("msi"):

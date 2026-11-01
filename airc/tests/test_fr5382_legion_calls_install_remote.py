@@ -65,6 +65,15 @@ def test_fr5382_live_calls_install_remote_client_900_no_force(monkeypatch, tmp_p
     monkeypatch.setattr(
         "airc_network_installer.install.find_psexec", lambda _explicit="": r"C:\Tools\PsExec.exe"
     )
+    # FR #5743: live path uses ensure_psexec_result (not bare ensure_psexec).
+    monkeypatch.setattr(
+        "airc_network_installer.install.ensure_psexec_result",
+        lambda _explicit="", dest=None: {
+            "ok": True,
+            "path": r"C:\Tools\PsExec.exe",
+            "error": "",
+        },
+    )
     monkeypatch.setattr(
         "airc_network_installer.install.ensure_psexec",
         lambda _explicit="", dest=None: r"C:\Tools\PsExec.exe",
@@ -110,6 +119,14 @@ def test_fr5382_missing_psexec_fails_closed(monkeypatch, tmp_path):
     monkeypatch.setenv("AIRC_LEGION_NO_PSEXEC_DOWNLOAD", "1")
     monkeypatch.setattr(
         "airc_network_installer.install.find_psexec", lambda _explicit="": None
+    )
+    monkeypatch.setattr(
+        "airc_network_installer.install.ensure_psexec_result",
+        lambda _explicit="", dest=None: {
+            "ok": False,
+            "path": "",
+            "error": "psexec-undeployed",
+        },
     )
     monkeypatch.setattr(
         "airc_network_installer.install.ensure_psexec",

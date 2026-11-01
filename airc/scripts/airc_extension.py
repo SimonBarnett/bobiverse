@@ -800,28 +800,39 @@ def fill_holes_work(
             return {}
         return got
 
+    # FR #5745: CredMan target from airc.json credman_targets (default ExtensionAdmin).
+    ext_target = _ident.credman_target_for("extension")
     if writes and not whatif:
         resolved = _ident.resolve_remote_identity(
             verb="extension",
             passed=passed if isinstance(passed, dict) else None,
             passed_requested=False,
-            credman_target=CREDMAN_TARGET,
+            credman_target=ext_target,
             credman_reader=_ext_reader,
         )
     else:
-        # status / WhatIf: no CredMan probe (FR #5364 / #5659).
+        # status / WhatIf: no CredMan probe (FR #5364 / #5659) — empty target skips miss flag.
         resolved = _ident.resolve_remote_identity(
             verb="extension",
             passed=None,
-            credman_target=CREDMAN_TARGET,
+            credman_target="",
             credman_reader=lambda _t: {},
             system_fn=lambda: {"account": "SYSTEM", "username": "SYSTEM", "password": ""},
         )
-    identity_meta = {
-        "identity": resolved.source,
-        "identity_label": resolved.label,
-        "account": resolved.account,
-    }
+    identity_meta = dict(resolved.public_dict())
+    # FR #5745: surface CredMan-miss -> SYSTEM reason on live writes only.
+    if writes and not whatif and resolved.credman_missing:
+        identity_meta["credman_fell_through"] = "system"
+        try:
+            from airc_console_service import info as _info
+
+            line = _ident.format_identity_fallback_log(
+                verb="extension", resolved=resolved
+            )
+            if line:
+                _info(line)
+        except Exception:
+            pass
     if is_dc is None:
         dc_set = {str(x).lower() for x in (dc_enum or default_dc_hostnames)()}
         is_dc = lambda h: str(h).lower() in dc_set  # noqa: E731
@@ -1315,6 +1326,24 @@ def extension_log_from_payload(
     fallback = data.get("fallback") if data else None
     if fallback is None and data:
         fallback = {"attempted": True, "host_count": len(hosts or [])}
+    # FR #5745: top-level identity/account from worker payload must reach DCC JSON + DONE.
+    extra: dict[str, Any] = {}
+    if data:
+        for key in (
+            "identity",
+            "identity_source",
+            "identity_label",
+            "account",
+            "credman_target",
+            "credman_missing",
+            "credman_error",
+            "identity_reason",
+            "credman_fell_through",
+        ):
+            if key in data and data.get(key) not in (None, ""):
+                extra[key] = data.get(key)
+        if "identity" in extra and "identity_source" not in extra:
+            extra["identity_source"] = extra["identity"]
     return build_extension_log(
         action,
         whatif=whatif,
@@ -1322,12 +1351,20 @@ def extension_log_from_payload(
         failures=fails,
         gpo=gpo,
         fallback=fallback,
+        extra=extra or None,
         extension_id=extension_id or DEFAULT_EXTENSION_ID,
     )
 
 
 def extension_log_bytes(log: dict[str, Any]) -> bytes:
     return (json.dumps(log, separators=(",", ":"), sort_keys=True) + "\n").encode("utf-8")
+
+
+def _done_identity_suffix(log: dict[str, Any]) -> str:
+    """FR #5659 / #5745: DONE carries identity= + account= (never secret)."""
+    import airc_identity as _ident
+
+    return _ident.done_identity_suffix(log)
 
 
 def deliver_extension_log(
@@ -1349,13 +1386,14 @@ def deliver_extension_log(
     lines: list[str] = [f"out id={jid} seq=1 {summary}"]
     for i, fail in enumerate(log.get("failures") or [], start=2):
         lines.append(f"out id={jid} seq={i} failure {json.dumps(fail, separators=(',', ':'))}")
+    suf = _done_identity_suffix(log)
     if offer is not None:
         sender = send_fn or _dcc.send_offer_payload_bounded
         try:
             sender(raw, offer)
             done = _dcc.format_done_via_dcc(
                 jid, exit_code, nbytes=len(raw), sha256=digest, via="dcc"
-            )
+            ) + suf
             return {
                 "via": "dcc",
                 "sha256": digest,
@@ -1367,7 +1405,7 @@ def deliver_extension_log(
         except Exception as exc:
             lines.append(f"err id={jid} seq={len(lines)+1} dcc failed: {exc}; falling back to IRC")
             lines.append("CONT id=" + jid + " offset=1")
-            done = f"DONE id={jid} exit={exit_code} via=irc reason=dcc-fail"
+            done = f"DONE id={jid} exit={exit_code} via=irc reason=dcc-fail{suf}"
             lines.append(done)
             return {
                 "via": "irc",
@@ -1379,7 +1417,7 @@ def deliver_extension_log(
                 "payload": raw,
             }
     lines.append("CONT id=" + jid + " offset=1")
-    done = f"DONE id={jid} exit={exit_code} via=irc"
+    done = f"DONE id={jid} exit={exit_code} via=irc{suf}"
     lines.append(done)
     return {
         "via": "irc",

@@ -147,8 +147,16 @@ PRIVMSG marchhare_console :id=aabbccdd LEGION walrus -WhatIf
 - FR #5530: -WhatIf still probes MSI/PsExec when CredMan is missing; the DCC log includes msi, psexec, summary=dry-run, and a credman-missing failure row (live installs still fail closed before install_remote).
 - FR #5655 / #5712 / #5737: PsExec is never MSI-bundled (Sysinternals license). Install/UPDATE deploys the official zip with pinned SHA-256 to `%ProgramData%\bobiverse\tools\PsExec.exe`. WhatIf/`ensure_psexec` use that copy or redeploy from the local cache (no verb-time network); fail `psexec-undeployed` when undeployed; `psexec-download-failed:<ExcType>` on extract failure (FR #5743).
 
-## Identity for remote verbs (FR #5659 / #5711)
+## Identity for remote verbs (FR #5659 / #5711 / #5745)
 
 LEGION / EXTENSION / NETWORK pick **passed** (DCC `CRED id= via=dcc`) then **CredMan** then **SYSTEM**. See `bobiverse-airc-commands` CRED + LEGION / NETWORK sections. Never put passwords on IRC.
 
-NETWORK CredMan target is `PriorityAirc/NetworkAdmin`. Credentials bind ADSI/LDAP only (DNS resolution still uses the service token). Stage with `CRED id=<job> via=dcc` then `NETWORK` / `NETWORK ... cred=<job>`; DONE and the DCC JSON log carry `identity=` / `account=` (never the secret). Wrong passed or CredMan credentials yield `auth_failed` with no SYSTEM fallback.
+Default CredMan targets are `PriorityAirc/LegionAdmin`, `PriorityAirc/ExtensionAdmin`, and `PriorityAirc/NetworkAdmin`. Override in `config/airc.json`:
+
+```json
+{ "credman_targets": { "legion": "PriorityAirc/LegionAdmin", "extension": "PriorityAirc/ExtensionAdmin", "network": "PriorityAirc/NetworkAdmin" } }
+```
+
+DONE and the DCC JSON log for all three verbs carry `identity=` / `account=` (FR #5745 closes the EXTENSION DONE gap). When CredMan is missing or unreadable, JSON includes `identity_reason` (`credman-missing:<target>` or `credman-read-error:<code>`) and airc-console.log gets one `identity-fallback` line (never the secret). Wrong passed or CredMan credentials yield `auth_failed` with no SYSTEM fallback.
+
+NETWORK credentials bind ADSI/LDAP only (DNS resolution still uses the service token). Stage with `CRED id=<job> via=dcc` then `NETWORK` / `NETWORK ... cred=<job>`.
