@@ -181,3 +181,4 @@ Generalised from 32 harvested lessons that never reached this book (audit for FR
 - FR #5154: if user Temp still dominates the CRITICAL report, SeatDisk third-pass uses KeepTempHoursLow on known leftover dir names (pip-build/pytest) --- never vscode/Outlook trees and never a hand-delete of C:\ai\* (FR #2727).
 - Write reload to run/tray-cmd.txt so elevated bob-tray.exe KillEngineTree+StartEngine; never taskkill the High-integrity engine from a Medium shell
 - HOTPATCH overlays commit and hotpatched= only; never overwrite VERSION built= from BUILD.json.
+- When an open covering PR already implements the FR but lacks Closes, edit the PR body to add Closes owner/repo#N, verify closingIssuesReferences, DONE with that URL; never open a second implement PR
