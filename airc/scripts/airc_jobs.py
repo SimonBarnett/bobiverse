@@ -538,10 +538,14 @@ class JobStore:
         jid = kv.get("id") or ""
         if not jid:
             raise JobProtocolError("bad_frame", "PUTEND requires id=")
+        if not (kv.get("seqs") or "").strip():
+            raise JobProtocolError("put-seqs-required", "PUTEND requires seqs=N (0 for empty files)", jid)
         try:
-            seqs = int(kv.get("seqs") or "0")
+            seqs = int(kv["seqs"])
         except ValueError as exc:
             raise JobProtocolError("bad_frame", "seqs not int", jid) from exc
+        if seqs < 0 or seqs > MAX_PUT_BYTES:
+            raise JobProtocolError("bad_frame", f"seqs out of range 0..{MAX_PUT_BYTES}", jid)
         sha = (kv.get("sha256") or "").lower()
         with self._lock:
             rec = self._meta.get(jid)
@@ -553,9 +557,14 @@ class JobStore:
                 raise JobProtocolError("owner", "PUTEND owner mismatch", jid)
             bag = self._chunks.get(jid) or {}
             if sorted(bag.keys()) != list(range(1, seqs + 1)):
+                missing = [i for i in range(1, seqs + 1) if i not in bag]
+                unexpected = sum(i > seqs for i in bag)
                 raise JobProtocolError(
                     "order",
-                    f"chunk set incomplete/out-of-order have={sorted(bag.keys())} want=1..{seqs}",
+                    "chunk set incomplete/out-of-order "
+                    f"missing={','.join(map(str, missing[:32])) or '-'} "
+                    f"missing_more={max(0, len(missing) - 32)} "
+                    f"unexpected={unexpected}",
                     jid,
                 )
             blob = b"".join(bag[i] for i in range(1, seqs + 1))

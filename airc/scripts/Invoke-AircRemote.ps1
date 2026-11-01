@@ -15,6 +15,7 @@
   Prefer -Action Cmd for directory listings. Budget -TimeoutSec above
   shell_seconds + reply_lines*0.35 + margin (default 60 can miss a busy-box DONE).
   FR #4796: multi-line -Outbox bursts use -OutboxPaceMs (default 800, ear FLOOD_S);
+  FR #5838: PUT frames enforce a minimum 1300ms gap, including DCC fallback.
   after a large reply (>= -BurstReplyThreshold lines) sleep -PostBurstCoolMs before return
   so sequential Commands do not stack under Ergo fakelag. Console token-bucket is FR #4790.
   FR #5008: New-AircDccListenOffer / Test-AircDccDoneSha256 build DCCLISTEN (tls=/relay=)
@@ -403,9 +404,13 @@ function Write-AircOutbox {
             New-Item -ItemType Directory -Path $dir -Force | Out-Null
         }
         Add-Content -LiteralPath $Outbox -Value $line -Encoding utf8
-        # FR #4796: pace multi-line bursts (PUT chunks) so the ear does not see an instant dump.
-        if ($PaceMs -gt 0 -and $i -lt $n) {
-            Start-Sleep -Milliseconds $PaceMs
+        # FR #5838: PUT control and data frames must clear the relay's ~1.2s gap.
+        $gapMs = $PaceMs
+        if ($line -match '^PRIVMSG \S+ :(PUT|CHUNK|PUTEND|DCCLISTEN)\b') {
+            $gapMs = [Math]::Max(1300, $gapMs)
+        }
+        if ($gapMs -gt 0 -and $i -lt $n) {
+            Start-Sleep -Milliseconds $gapMs
         }
     }
 }
@@ -758,10 +763,6 @@ function Invoke-AircRemoteSelfTest {
         Remove-Item -LiteralPath $replyHome -Recurse -Force -ErrorAction SilentlyContinue
     }
 
-    if ($script:SelfTestFailed -gt 0) {
-        Write-Host ("SELFTEST FAILED count={0}" -f $script:SelfTestFailed)
-        exit 1
-    }
     # FR #4796: paced outbox write helper
     $paceTmp = Join-Path $env:TEMP ('airc-fr4796-' + [guid]::NewGuid().ToString('N'))
     New-Item -ItemType Directory -Path $paceTmp -Force | Out-Null
@@ -771,10 +772,32 @@ function Invoke-AircRemoteSelfTest {
         $paceLines = @(Get-Content -LiteralPath $paceOut)
         Assert-True ($paceLines.Count -eq 2) 'FR #4796 Write-AircOutbox PaceMs=0 writes both lines'
         Write-Host 'INFO FR #4796 outbox pace selftest ok'
+        & {
+            $gaps = New-Object 'System.Collections.Generic.List[int]'
+            function Start-Sleep { param([int]$Milliseconds) [void]$gaps.Add($Milliseconds) }
+            $frames = @(
+                'PRIVMSG t_console :DCCLISTEN id=aabbccdd',
+                'PRIVMSG t_console :PUT id=aabbccdd',
+                'PRIVMSG t_console :CHUNK id=aabbccdd seq=1 data=YQ==',
+                'PRIVMSG t_console :PUTEND id=aabbccdd seqs=1'
+            )
+            Write-AircOutbox -Outbox $paceOut -Lines $frames -PaceMs 0
+            Assert-True (($gaps -join ',') -eq '1300,1300,1300') 'FR #5838 PUT minimum pacing, including DCC fallback'
+            $gaps.Clear()
+            Write-AircOutbox -Outbox $paceOut -Lines $frames -PaceMs 2000
+            Assert-True (($gaps -join ',') -eq '2000,2000,2000') 'FR #5838 slower caller pacing preserved'
+            $gaps.Clear()
+            Write-AircOutbox -Outbox $paceOut -Lines $frames -PaceMs 0 -WhatIf
+            Assert-True ($gaps.Count -eq 0) 'FR #5838 WhatIf does not sleep'
+        }
     } finally {
         Remove-Item -LiteralPath $paceTmp -Recurse -Force -ErrorAction SilentlyContinue
     }
 
+    if ($script:SelfTestFailed -gt 0) {
+        Write-Host ("SELFTEST FAILED count={0}" -f $script:SelfTestFailed)
+        exit 1
+    }
     Write-Host 'SELFTEST PASSED'
     exit 0
 }
