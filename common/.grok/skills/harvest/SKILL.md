@@ -344,6 +344,7 @@ routes to bobiverse via the split rule.
 - After FR #5737, WhatIf pins must stub plan_psexec deployed/would-redeploy — PATH find_psexec no longer makes dry-run ok on undeployed seats
 - airc bad_id: service on_line must dispatch action=bad_id (err+DONE) and log auth-allow without body; ear _AIRC_REPLY_BODY_RE must accept non-hex id= so waiters see DONE
 - LEGION default_installer_run tests must use a non-local host (not this machine name) or install_local skips the install_remote monkeypatch; scrub FAKE_ needles via runtime concat for FR #5721 source pins.
+- After MRB FAIL cherry-pick onto product tip: re-review tip head, PASS when TimeoutSec restart + bytes is not None + hostile zero-bytes pin are present; close parallel Copilot twin without Closes as Duplicate; full airc/tests before PASS (FR #2655).
 
 ## Harvest digest (lessons audit 2026-10-06)
 
