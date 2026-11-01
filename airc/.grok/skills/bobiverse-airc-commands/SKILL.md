@@ -135,7 +135,7 @@ PRIVMSG {mid}_console :id=c25bd00e NETWORK diag -WhatIf
 
 See `docs/airc-remote-control.md` and `docs/feature-request-airc-network-diagnostic-2026-10-31.md`.
 
-## CRED staged + persist (FR #5659 / #5802)
+## CRED staged + persist (FR #5659 / #5802 / #5811)
 
 Two paths:
 
@@ -160,7 +160,7 @@ PRIVMSG {mid}_console :id=c25bd00e CRED persist target=PriorityWeb/example-dev v
 ```
 
 - Password never on IRC. Stage stash is in-memory, TTL ~180s, one-shot `take`. Persist uses CredWriteW LocalMachine under the Airc LocalSystem identity (`airc_credman.write_generic_credential`).
-- HTTPS URL must be `https://` under the fleet public base (`bob.ntsa.uk` / `BOB_PUBLIC_BASE`) or a prefix in `AIRC_CRED_HTTPS_PREFIXES`. Rejected URL -> `cred-url-rejected`. Fetch failures surface firewall-aware tokens (`firewall-or-unreachable`, `timeout`, `ssl-error`, `dns-failed`, `http-N`).
+- HTTPS URL must be `https://` under the fleet public base (`bob.ntsa.uk` / `BOB_PUBLIC_BASE`) or a prefix in `AIRC_CRED_HTTPS_PREFIXES`. Rejected URL -> `cred-url-rejected`. Fetch failures surface firewall-aware tokens (`firewall-or-unreachable`, `timeout`, `ssl-error`, `dns-failed`, `http-N`). **FR #5811:** every persist outcome reaches IRC (`action=cred` on_line dispatch) with `cred failed: <reason>` / `DONE exit=1 <reason>`; fail-intake uses shared `airc-cred-fail|...` (never silent; never secrets). Also `non-json-body`.
 - Without `via=dcc` / offer on stage or persist-dcc -> `DONE ... usage cred-requires-dcc`. Persist needs `target=`; persist+https needs `url=`.
 
 ## LEGION remote install (FR #5312 / #5758)

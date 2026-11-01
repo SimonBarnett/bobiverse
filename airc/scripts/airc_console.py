@@ -3582,7 +3582,26 @@ class AircConsoleCore:
             cred_url = str(cred_cmd.get("url") or "").strip()
 
             def _cred_fail(reason: str, *, exit_code: int = 1) -> HandleResult:
+                # FR #5811: named reason on IRC + shared fail-intake (FR #5775); never silent.
                 safe = re.sub(r"\s+", "-", str(reason or "cred-failed"))[:80]
+                try:
+                    import airc_fail_intake as _fail
+
+                    _fail.report_verb_failure(
+                        "cred",
+                        safe,
+                        args={
+                            "persist": bool(persist),
+                            "via": via or "-",
+                            "target": (cred_target or "")[:64],
+                            "has_url": bool(cred_url),
+                            "qid": qid or "-",
+                        },
+                        machine=getattr(self, "machine", None),
+                        wait_s=0.5,
+                    )
+                except Exception:
+                    pass
                 if qid:
                     reply = (
                         f"err id={qid} seq=1 cred failed: {safe}\n"
