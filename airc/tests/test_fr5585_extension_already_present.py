@@ -123,14 +123,8 @@ def test_fr5585_pins():
 def test_fr5585_credman_apply_as_propagates_false(monkeypatch):
     """CredMan path must not treat void/None as wrote=True (FR #5585)."""
     monkeypatch.setattr(ex, "default_apply_force_install", lambda *_a, **_k: False)
-    monkeypatch.setattr(
-        "shutil.which", lambda name: "C:\\Windows\\System32\\net.exe" if name == "net" else None
-    )
-
-    class P:
-        returncode = 0
-
-    monkeypatch.setattr("subprocess.run", lambda *_a, **_k: P())
+    monkeypatch.setattr(ex, "wnet_add_ipc", lambda *_a, **_k: r"\\h\IPC$")
+    monkeypatch.setattr(ex, "wnet_cancel", lambda *_a, **_k: None)
     assert (
         ex.default_apply_force_install_as(
             "h", "chrome", ex.force_install_value(), "u", "FAKE_pw"

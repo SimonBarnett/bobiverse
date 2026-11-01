@@ -9,6 +9,7 @@ Auth matches UPDATE. Never secrets on IRC.
 """
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import os
@@ -513,6 +514,76 @@ def is_access_denied(exc: BaseException) -> bool:
     return "access is denied" in msg or "access denied" in msg
 
 
+def is_ipc_auth_failed(exc: BaseException) -> bool:
+    """True for IPC$/CredMan logon failures (FR #5708).
+
+    Win32: 5 access-denied, 86 bad password, 1326 logon failure, 1385 logon type.
+    """
+    if is_access_denied(exc):
+        return True
+    win = int(getattr(exc, "winerror", 0) or 0)
+    err = int(getattr(exc, "errno", 0) or 0)
+    return (win or err) in (86, 1326, 1385)
+
+
+def wnet_add_ipc(host: str, username: str, password: str) -> str:
+    """Connect ``\\\\host\\IPC$`` via WNetAddConnection2W (FR #5709).
+
+    Password stays in process memory only — never on ``net use`` argv / 4688.
+    Raises ``OSError`` with ``winerror`` set to the WNet status (never a blanket 5).
+    Returns the remote UNC used (for cancel).
+    """
+    import ctypes
+    from ctypes import wintypes
+
+    class NETRESOURCEW(ctypes.Structure):
+        _fields_ = [
+            ("dwScope", wintypes.DWORD),
+            ("dwType", wintypes.DWORD),
+            ("dwDisplayType", wintypes.DWORD),
+            ("dwUsage", wintypes.DWORD),
+            ("lpLocalName", wintypes.LPWSTR),
+            ("lpRemoteName", wintypes.LPWSTR),
+            ("lpComment", wintypes.LPWSTR),
+            ("lpProvider", wintypes.LPWSTR),
+        ]
+
+    remote = r"\\{0}\IPC$".format(host)
+    mpr = ctypes.WinDLL("mpr", use_last_error=True)
+    add = mpr.WNetAddConnection2W
+    add.argtypes = [
+        ctypes.POINTER(NETRESOURCEW),
+        wintypes.LPCWSTR,
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+    ]
+    add.restype = wintypes.DWORD
+
+    nr = NETRESOURCEW()
+    nr.dwType = 0  # RESOURCETYPE_ANY
+    nr.lpRemoteName = remote
+    user_w = username if username else None
+    pass_w = password if password else None
+    rc = int(add(ctypes.byref(nr), pass_w, user_w, 0) or 0)
+    if rc != 0:
+        raise ctypes.WinError(rc)
+    return remote
+
+
+def wnet_cancel(remote: str) -> None:
+    """Drop a WNet connection. Never raises secrets; ignore cancel failures."""
+    import ctypes
+    from ctypes import wintypes
+
+    if not remote:
+        return
+    mpr = ctypes.WinDLL("mpr", use_last_error=True)
+    cancel = mpr.WNetCancelConnection2W
+    cancel.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.BOOL]
+    cancel.restype = wintypes.DWORD
+    cancel(remote, 0, True)
+
+
 def classify_extension_host_error(
     exc: BaseException | None,
     *,
@@ -583,30 +654,17 @@ def default_apply_force_install_as(
     """Retry registry write after IPC$ with CredMan user. Never log the secret.
 
     FR #5585: return the wrote bool from default_apply_force_install.
+    FR #5709: WNetAddConnection2W so the password is never on process argv / 4688.
+    FR #5708: surface the real WNet winerror (53/67 host path, 1326/5 auth) —
+    never remap every failure to OSError(5) ``credman-ipc-failed``.
     """
-    import shutil
-    import subprocess
-
-    net = shutil.which("net")
-    if not net:
-        raise OSError(5, "net-missing")
-    ipc = r"\\{0}\IPC$".format(host)
+    remote = r"\\{0}\IPC$".format(host)
     try:
-        p = subprocess.run(
-            [net, "use", ipc, password, "/user:" + username],
-            capture_output=True,
-            text=True,
-            timeout=20,
-        )
-        if p.returncode != 0:
-            raise OSError(5, "credman-ipc-failed")
+        remote = wnet_add_ipc(host, username, password)
         return bool(default_apply_force_install(host, product, value))
     finally:
-        subprocess.run(
-            [net, "use", ipc, "/delete", "/y"],
-            capture_output=True,
-            timeout=10,
-        )
+        with contextlib.suppress(Exception):
+            wnet_cancel(remote)
 
 
 def default_apply_force_install(host: str, product: str, value: str) -> bool:
@@ -883,7 +941,9 @@ def fill_holes_work(
                 chrome_w = _apply_wrote(apply, name, "chrome", value)
                 edge_w = _apply_wrote(apply, name, "edge", value)
         except Exception as exc:
-            if use_as and is_access_denied(exc):
+            # FR #5708: only true IPC/registry auth failures are auth_failed;
+            # path-not-found (53/67) and other reach errors keep classified detail.
+            if use_as and is_ipc_auth_failed(exc):
                 hosts_out.append(
                     {
                         "host": name,
@@ -891,6 +951,7 @@ def fill_holes_work(
                         "error": "auth_failed",
                         "identity": resolved.source,
                         "account": resolved.account,
+                        "detail": str(exc)[:300],
                     }
                 )
                 continue
@@ -921,8 +982,8 @@ def fill_holes_work(
                 edge_w = _apply_wrote(apply_as, name, "edge", value, cuser, cpw)
             except Exception as exc2:
                 # FR #5659: CredMan access-denied is auth_failed (no silent fallback).
-                # FR #5661: other reach errors keep classified codes + detail.
-                if is_access_denied(exc2):
+                # FR #5661 / #5708: other reach errors keep classified codes + detail.
+                if is_ipc_auth_failed(exc2):
                     hosts_out.append(
                         {
                             "host": name,
