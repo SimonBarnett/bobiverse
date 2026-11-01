@@ -997,6 +997,16 @@ function Invoke-Apply {
         Start-Sleep -Seconds 10
         if ((Get-Service -Name $ServiceName).Status -ne 'Running') { throw "service $ServiceName not running after install" }
 
+        # FR #5765: release MSI identity supersedes a prior source hotpatch marker.
+        if ($Product -eq 'airc') {
+            $hotpatch = Join-Path $InstallRoot 'HOTPATCH.json'
+            if (Test-Path -LiteralPath $hotpatch) {
+                Remove-Item -LiteralPath $hotpatch -Force -ErrorAction Stop
+                if (Test-Path -LiteralPath $hotpatch) { throw 'HOTPATCH.json remains after successful update cleanup' }
+                Write-UpdLog 'FR#5765 stale HOTPATCH.json removed after successful UPDATE'
+            }
+        }
+
         # FR #1018: MSI upgrade left BobCallback on old code (digest PermissionError / seats stuck doing).
         # FR #3190: do NOT restart BobAutoFocus --- that ops task spammed per-item !focus every 2 min and is retired.
         if ($Product -eq 'jeeves') {
