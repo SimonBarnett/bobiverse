@@ -29,7 +29,7 @@ description: >
 | `home\outbox.txt` lines `PRIVMSG <target> :<text>` | Sent verbatim (UTF-8, NO BOM, newline-terminated; only complete lines are consumed, offset in `outbox.txt.pos`). Identical send interface on every machine (FR #2174). This is how you "type as the ear" |
 | `PRIVMSG <machine>_console :<cmd>` | Remote shell on that box through Airc (`bob-*` ears are allowlisted). **FR #5539:** the ear never splits an over-long console PRIVMSG (overflow fragments would run as a second command). The whole line is dropped; use a shorter command or DCC PUT |
 | Incoming channel/PM PRIVMSG | FR #2174: always appended (scrubbed) to `home\inbound-transcript.log` as `UTC channel nick text` — listen without `BOB_IRC_DEBUG` |
-| Incoming `*_console` Query `out`/`err`/`DONE` PMs | FR #1546: ear appends them to `<bob home>\airc-replies.jsonl` so `Invoke-AircRemote -ReplyFile` can poll until DONE (skips digest for those lines) |
+| Incoming `*_console` Query `out`/`err`/`DONE` / `UPDATE <status>` PMs | FR #1546 / #5763: ear appends them to `<bob home>\airc-replies.jsonl` so `Invoke-AircRemote -ReplyFile` can poll until DONE (any UPDATE status token: accepted, current, release-lookup-failed, …; skips digest for those lines) |
 | FR #4796 driver pacing for `*_console` outbox | `Invoke-AircRemote -OutboxPaceMs` / `-PostBurstCoolMs`; ear `CONSOLE_OUTBOX_FLOOD_S` (env `BOB_CONSOLE_OUTBOX_FLOOD_S`); console token-bucket is FR #4790 |
 | Raw shop-op outbox `MODE +/-o|v|h <nick>` / `KICK` / `NAMES` (own shop only) | Ear sends raw IRC via `shop_ops` (FR #4069: `+h` half-op allowed with `+o`/`+v`) |
 | `FILE v1 ...` | File transfer handshake via `filexfer.py` (accept/refuse over the outbox) |
