@@ -75,6 +75,8 @@ _PING_CMD_RE = re.compile(r"^\s*ping(?:\s+(\S+))?\s*$", re.IGNORECASE)
 # FR #77: UPDATE airc|bob|jeeves [version] - fleet MSI via detached updater only.
 # FR #5532: optional leading job id= (same framing as PRIORITY/LEGION/VERSION).
 _LEADING_JOB_ID_RE = re.compile(r"(?is)^id=([0-9a-f]{8})\s+")
+# FR #5678: any leading id= token (valid or not) so malformed ids fail closed.
+_LEADING_ID_ANY_RE = re.compile(r"(?is)^id=(\S*)")
 _UPDATE_CMD_RE = re.compile(
     r"^\s*UPDATE\s+(airc|bob|jeeves)(?:\s+v?(\d+\.\d+\.\d+(?:\.\d+)?))?\s*$",
     re.IGNORECASE,
@@ -167,6 +169,46 @@ def split_console_job_id(text: str) -> tuple[str | None, str]:
     if not m:
         return None, raw
     return m.group(1).lower(), raw[m.end() :]
+
+
+
+def leading_job_id_state(text: str) -> tuple[str, str | None, str]:
+    """FR #5678: classify optional leading ``id=`` frame.
+
+    Returns ``(ok|bad|none, token_or_jid, rest)``.
+    ``ok`` = exactly 8 hex + whitespace; ``bad`` = leading ``id=`` that is not
+    that form (too long, non-hex, empty, missing trailing space before verb).
+    """
+    raw = (text or "").strip()
+    m_ok = _LEADING_JOB_ID_RE.match(raw)
+    if m_ok:
+        return "ok", m_ok.group(1).lower(), raw[m_ok.end() :]
+    m_any = _LEADING_ID_ANY_RE.match(raw)
+    if m_any is not None:
+        return "bad", m_any.group(1) or "", raw[m_any.end() :].lstrip()
+    return "none", None, raw
+
+
+def format_bad_id_reply(token: str) -> str:
+    """FR #5678: ``err code=bad_id`` + ``DONE exit=2``; never PowerShell."""
+    tok = (token or "").strip()
+    # Echo the caller token when the DONE line fits IRC_SAFE_PAYLOAD so Wait
+    # can still correlate a handmade/long id; otherwise placeholder.
+    done = f"DONE id={tok} exit=2" if tok else "DONE id=00000000 exit=2"
+    if (
+        tok
+        and len(done) <= IRC_SAFE_PAYLOAD
+        and "\n" not in tok
+        and all(32 <= ord(c) < 127 for c in tok)
+    ):
+        qid = tok
+    else:
+        qid = "00000000"
+        done = f"DONE id={qid} exit=2"
+    err = f"err id={qid} seq=1 code=bad_id need-8-hex"
+    if len(err) > IRC_SAFE_PAYLOAD:
+        err = err[:IRC_SAFE_PAYLOAD]
+    return f"{err}\n{done}"
 
 
 def parse_update_command(text: str) -> tuple[str, str | None] | None:
@@ -3344,6 +3386,19 @@ class AircConsoleCore:
         # FR #5101: Heard: unwrap of mention-ACK must not re-run out/err/DONE/UPDATE accepted.
         if is_console_self_reply(cmd):
             return HandleResult(action="ignore_reply", nick=nick, target=target, text=text)
+        # FR #5678: leading id= that is not exactly 8 hex must not fall through to shell
+        # (or be reassigned a fresh id). Reject before verb/shell routing.
+        id_state, id_tok, _id_rest = leading_job_id_state(cmd)
+        if id_state == "bad":
+            meta = self._allow_meta(nick, account)
+            return HandleResult(
+                action="bad_id",
+                nick=nick,
+                target=target,
+                text=text,
+                reply=format_bad_id_reply(id_tok or ""),
+                **meta,
+            )
         if cmd.lower() in {".quit", "!quit", "exit"}:
             self.sessions.close_nick(nick)
             return HandleResult(action="close", nick=nick, target=target, text=text, reply="console closed")
