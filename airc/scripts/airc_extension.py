@@ -312,20 +312,88 @@ def stub_extension_work(
     }
 
 
+def forcelist_value_has_extension(value: str, extension_id: str) -> bool:
+    """FR #5660: present only when the forcelist entry id (before ';') equals extension_id."""
+    ext = (extension_id or "").strip().lower()
+    if not ext:
+        return False
+    first = str(value or "").split(";", 1)[0].strip().lower()
+    return first == ext
+
+
 def next_forcelist_name(
     existing_names: list[str],
     existing_values: list[str],
     extension_id: str,
 ) -> str | None:
-    """FR #5538: next unused 1,2,3... or None if the extension id is already present."""
+    """FR #5538: next unused 1,2,3... or None if the extension id is already present.
+
+    FR #5660: match the id before ';' (not a substring anywhere in the value).
+    """
     ext = (extension_id or "").strip()
-    if ext and any(ext in str(v) for v in existing_values):
+    if ext and any(forcelist_value_has_extension(v, ext) for v in existing_values):
         return None
     used = {str(n) for n in existing_names}
     n = 1
     while str(n) in used:
         n += 1
     return str(n)
+
+
+def registry_values_look_like_windows(values: dict[str, Any]) -> bool:
+    """FR #5660: Samba winreg often fakes only SystemRoot + CurrentVersion=6.1.
+
+    Real Windows exposes ProductName and/or CurrentBuild(Number).
+    """
+    product = str(values.get("ProductName") or "").strip()
+    if product:
+        return True
+    build = str(
+        values.get("CurrentBuild") or values.get("CurrentBuildNumber") or ""
+    ).strip()
+    return bool(build)
+
+
+def default_is_windows_host(host: str) -> bool:
+    """FR #5660: True unless remote registry is reachable and looks like Samba.
+
+    Unreachable hosts return True so fill-holes can still probe / report
+    unreachable-registry via the existing forcelist path (unit tests use
+    fake hostnames). Samba winreg that answers CurrentVersion without
+    ProductName/CurrentBuild returns False -> ``skipped: not_windows``.
+    """
+    import winreg
+
+    name = (host or "").strip()
+    if not name:
+        return True
+    try:
+        rem = winreg.ConnectRegistry(name, winreg.HKEY_LOCAL_MACHINE)
+    except OSError:
+        return True
+    try:
+        try:
+            key = winreg.OpenKey(
+                rem, r"SOFTWARE\Microsoft\Windows NT\CurrentVersion"
+            )
+        except OSError:
+            # Connected but no CurrentVersion — treat as non-Windows.
+            return False
+        try:
+            found: dict[str, Any] = {}
+            idx = 0
+            while idx < 64:
+                try:
+                    n, v, _typ = winreg.EnumValue(key, idx)
+                except OSError:
+                    break
+                found[str(n)] = v
+                idx += 1
+            return registry_values_look_like_windows(found)
+        finally:
+            winreg.CloseKey(key)
+    finally:
+        winreg.CloseKey(rem)
 
 
 def default_dc_hostnames() -> list[str]:
@@ -646,6 +714,7 @@ def fill_holes_work(
     is_dc: Callable[[str], bool] | None = None,
     dc_enum: Callable[[], list[str]] | None = None,
     read_forcelist: Callable[[str, str], tuple[list[str], list[str]]] | None = None,
+    is_windows_host: Callable[[str], bool] | None = None,
     tcp_probe: Callable[..., bool] | None = None,
     **_kw: Any,
 ) -> dict[str, Any]:
@@ -654,6 +723,7 @@ def fill_holes_work(
     FR #5364: on access-denied, retry with CredMan PriorityAirc/ExtensionAdmin.
     FR #5538: status is read-only; skip DCs; append a free forcelist name.
     FR #5585: would_write / chrome/edge true only when a forcelist slot is free.
+    FR #5660: skip non-Windows (Samba winreg) as ``not_windows`` --- never present.
     FR #5661: ICMP alone is not unreachable; classify smb_blocked /
     remote_registry_stopped / access_denied / host_down with detail text.
     FR #5659: privileged writes use passed -> CredMan -> SYSTEM identity.
@@ -667,6 +737,14 @@ def fill_holes_work(
     # FR #5659: passed -> CredMan -> SYSTEM for privileged writes only.
     import airc_identity as _ident
     import airc_passed_cred as _pcred
+    # Default: live Windows/Samba classify. Tests may inject is_windows_host.
+    # When only read_forcelist is injected (no is_windows_host), assume Windows
+    # so unit hosts are not classified against the real network.
+    if is_windows_host is None:
+        if read_forcelist is None:
+            is_windows_host = default_is_windows_host
+        else:
+            is_windows_host = lambda _h: True  # noqa: E731
     # FR #5661: SMB/ICMP probes for classified fallback errors.
     probe_tcp = tcp_probe or tcp_port_open
 
@@ -759,6 +837,20 @@ def fill_holes_work(
             continue
         # FR #5661: ICMP informs classification; do not short-circuit as unreachable.
         icmp_ok = bool(ping(name))
+        try:
+            windows = bool(is_windows_host(name))
+        except Exception:
+            windows = False
+        if not windows:
+            hosts_out.append(
+                {
+                    "host": name,
+                    "ok": True,
+                    "skipped": "not_windows",
+                    "would_write": False,
+                }
+            )
+            continue
         if not writes or whatif:
             try:
                 plan = probe_host_forcelist(
@@ -905,6 +997,7 @@ def fill_holes_work(
         "extension_id": extension_id,
         "hosts": hosts_out,
     }
+
 
 
 def run_extension_verb(

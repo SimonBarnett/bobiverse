@@ -113,6 +113,7 @@ PRIVMSG marchhare_console :id=aabbccdd EXTENSION install -WhatIf
 
 - Default ForceInstall id: `cgmpadejahkaggjpffnhaoiafbnicgpa` plus `https://clients2.google.com/service/update2/crx` for Chrome and Edge.
 - GPO happy path: `Priority-web-extension` at domain root (FR-B). Fill-holes: LDAP AD computers + remote registry (FR-C). Isolated worker (FR-A).
+- **FR #5660:** fill-holes skips non-Windows hosts (Samba winreg that only fakes `SystemRoot`/`CurrentVersion`) as `skipped: not_windows` — never `state: present`. Presence requires the forcelist value id before `;` to equal the extension id.
 - Log: DCCLISTEN same job id (`DONE ... via=dcc` + sha256) or IRC CONT. CAST IRON: no passwords on IRC or in the DCC body.
 
 ## NETWORK (FR #5301) - docs contract
