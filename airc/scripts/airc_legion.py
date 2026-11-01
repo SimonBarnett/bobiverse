@@ -297,7 +297,7 @@ def default_installer_run(spec: dict[str, Any], *, secret: str = "") -> dict[str
     force = bool(spec.get("force"))
     timeout_s = float(spec.get("timeout_s") or LEGION_TIMEOUT_S)
     if dry:
-        # FR #5712: WhatIf plans PsExec like ensure_psexec (no download / no writes).
+        # FR #5737: WhatIf plans airc-owned PsExec (hash / local cache; no network).
         pse_plan = plan_psexec(str(spec.get("psexec") or ""))
         raw_msi = (spec.get("msi") or "").strip()
         if raw_msi:
@@ -315,64 +315,43 @@ def default_installer_run(spec: dict[str, Any], *, secret: str = "") -> dict[str
             "msi": msi_note,
         }
         state = str(pse_plan.get("state") or "")
-        if state in ("found", "cached"):
+        if state in ("found", "deployed", "cached"):
             return {
                 **base,
                 "ok": True,
                 "status": "dry-run",
                 "psexec": str(pse_plan.get("path") or ""),
             }
-        if state == "would-download":
+        if state == "would-redeploy":
             return {
                 **base,
                 "ok": True,
                 "status": "dry-run",
-                "psexec": "would-download",
+                "psexec": "would-redeploy",
                 "psexec_download": {
-                    "url": str(pse_plan.get("url") or ""),
+                    "cache": str(pse_plan.get("cache") or ""),
                     "dest": str(pse_plan.get("dest") or ""),
                 },
             }
-        if state == "unreachable":
-            need = (
-                "Sysinternals PsExec source unreachable: "
-                f"{pse_plan.get('reason') or 'unreachable'} "
-                f"url={pse_plan.get('url') or ''}"
-            )
-            return {
-                **base,
-                "ok": False,
-                "status": "failed",
-                "psexec": "psexec-source-unreachable",
-                "error": "psexec-source-unreachable",
-                "need": need,
-                "psexec_download": {
-                    "url": str(pse_plan.get("url") or ""),
-                    "dest": str(pse_plan.get("dest") or ""),
-                },
-                "failures": [
-                    {
-                        "host": host,
-                        "error": "psexec-source-unreachable",
-                        "need": need,
-                    }
-                ],
-            }
-        # missing (opt-out) or unknown
+        # Legacy FR #5712 would-download / unreachable kept as fail-closed undeployed.
         need = (
-            "psexec on PATH or allow Sysinternals download to "
-            "%ProgramData%\\bobiverse\\tools\\PsExec.exe "
-            "(AIRC_LEGION_NO_PSEXEC_DOWNLOAD=1 disables download; "
-            "MSI never bundles PsExec)"
+            "airc-owned PsExec missing at %ProgramData%\\bobiverse\\tools\\PsExec.exe "
+            "(install/UPDATE deploys pinned Sysinternals zip; MSI never bundles PsExec; "
+            "LEGION does not download at verb time — FR #5737)"
+        )
+        err = (
+            "psexec-undeployed"
+            if state in ("undeployed", "would-download", "unreachable", "")
+            else "psexec-missing"
         )
         return {
             **base,
             "ok": False,
             "status": "failed",
-            "psexec": "psexec-missing",
-            "error": "psexec-missing",
+            "psexec": err,
+            "error": err,
             "need": need,
-            "failures": [{"host": host, "error": "psexec-missing", "need": need}],
+            "failures": [{"host": host, "error": err, "need": need}],
         }
 
     try:
@@ -396,26 +375,26 @@ def default_installer_run(spec: dict[str, Any], *, secret: str = "") -> dict[str
     user = str(spec.get("username") or "")
     log_dir = Path(str(spec.get("log_dir") or "airc-install-logs"))
     log_dir.mkdir(parents=True, exist_ok=True)
-    # FR #5655: download-on-demand when PATH has no PsExec (licence forbids MSI bundle).
+    # FR #5737: airc-owned PsExec (hash-ok / local-cache redeploy); no verb-time download.
     from airc_network_installer.install import ensure_psexec
 
     psexec = ensure_psexec(str(spec.get("psexec") or ""))
     if not psexec:
         need = (
-            "psexec on PATH or allow Sysinternals download to "
-            "%ProgramData%\\bobiverse\\tools\\PsExec.exe "
-            "(AIRC_LEGION_NO_PSEXEC_DOWNLOAD=1 opts out; MSI never bundles PsExec)"
+            "airc-owned PsExec missing at %ProgramData%\\bobiverse\\tools\\PsExec.exe "
+            "(install/UPDATE deploys pinned Sysinternals zip; MSI never bundles PsExec; "
+            "LEGION does not download at verb time — FR #5737)"
         )
         return {
             "ok": False,
             "status": "failed",
             "host": host,
-            "error": "psexec-missing",
+            "error": "psexec-undeployed",
             "need": need,
-            "psexec": "psexec-missing",
+            "psexec": "psexec-undeployed",
             "msi": str(msi_path),
             "log_dir": str(log_dir),
-            "failures": [{"host": host, "error": "psexec-missing", "need": need}],
+            "failures": [{"host": host, "error": "psexec-undeployed", "need": need}],
         }
 
     candidate = _candidate_version_from_msi_name(msi_path)
@@ -624,7 +603,11 @@ def installer_legion_work(
     if (out or {}).get("need"):
         body["need"] = (out or {}).get("need")
     # FR #5655 / #5712: surface psexec provision failures even when runner only set error=.
-    _pse_fail_errs = ("psexec-missing", "psexec-source-unreachable")
+    _pse_fail_errs = (
+        "psexec-missing",
+        "psexec-source-unreachable",
+        "psexec-undeployed",
+    )
     if str(err or "") in _pse_fail_errs and not any(
         str(f.get("error") or "") in _pse_fail_errs for f in fails
     ):

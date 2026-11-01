@@ -1056,6 +1056,26 @@ function Invoke-Apply {
         Save-State $st
         Write-UpdLog "apply-ok now=$($newVer.ToString()) tag=$tag"
         $script:ApplySucceeded = $true
+        # FR #5737: keep airc-owned PsExec in step with the release (install-time deploy).
+        if ($Product -eq 'airc') {
+            try {
+                $deployPs = Join-Path $InstallRoot 'scripts\Deploy-AircPsExec.ps1'
+                if (-not (Test-Path -LiteralPath $deployPs)) {
+                    $deployPs = Join-Path (Split-Path -Parent $PSCommandPath) 'Deploy-AircPsExec.ps1'
+                }
+                if (-not (Test-Path -LiteralPath $deployPs)) {
+                    $deployPs = Join-Path $InstallRoot 'Deploy-AircPsExec.ps1'
+                }
+                if (Test-Path -LiteralPath $deployPs) {
+                    & $deployPs
+                    Write-UpdLog ("FR#5737 Deploy-AircPsExec exit={0}" -f $LASTEXITCODE)
+                } else {
+                    Write-UpdLog 'FR#5737 Deploy-AircPsExec missing'
+                }
+            } catch {
+                Write-UpdLog ("FR#5737 Deploy-AircPsExec-warn {0}" -f $_.Exception.Message)
+            }
+        }
         Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue
         Remove-OldBackups
     } catch {

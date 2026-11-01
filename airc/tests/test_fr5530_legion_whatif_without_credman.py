@@ -164,6 +164,7 @@ def test_fr5530_whatif_verb_not_exit_126(tmp_path):
 
 
 def test_fr5530_dry_run_probes_psexec_not_install_remote(monkeypatch, tmp_path):
+    # FR #5737: stub plan_psexec deployed (PATH find_psexec no longer drives WhatIf).
     called = {"n": 0}
 
     def boom(**_kw):
@@ -172,8 +173,12 @@ def test_fr5530_dry_run_probes_psexec_not_install_remote(monkeypatch, tmp_path):
 
     monkeypatch.setattr("airc_network_installer.install.install_remote", boom)
     monkeypatch.setattr(
-        "airc_network_installer.install.find_psexec",
-        lambda _explicit="": r"C:\Tools\PsExec.exe",
+        "airc_network_installer.install.plan_psexec",
+        lambda explicit="", dest=None, probe=None: {
+            "state": "deployed",
+            "path": r"C:\ProgramData\bobiverse\tools\PsExec.exe",
+            "dest": r"C:\ProgramData\bobiverse\tools\PsExec.exe",
+        },
     )
     msi = tmp_path / "airc-1.0.0.msi"
     msi.write_bytes(b"MZ")
