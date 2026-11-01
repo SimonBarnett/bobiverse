@@ -972,6 +972,14 @@ function Invoke-Apply {
             }
         }
         if (-not $newVer -or $newVer -ne $target) { throw "installed VERSION is '$newVer', expected $($target.ToString())" }
+        # FR #5765: a verified Airc MSI replaces any hotpatch overlay from the previous install.
+        if ($Product -eq 'airc') {
+            $hotpatchPath = Join-Path $InstallRoot 'HOTPATCH.json'
+            if (Test-Path -LiteralPath $hotpatchPath) {
+                Remove-Item -LiteralPath $hotpatchPath -Force -ErrorAction Stop
+                Write-UpdLog 'FR#5765 hotpatch-marker-cleared after successful UPDATE'
+            }
+        }
         if (-not (Get-Service -Name $ServiceName -ErrorAction SilentlyContinue)) { throw "service $ServiceName missing after install" }
         # The MSI custom action runs as SYSTEM without the old service's environment, so it can re-derive the
         # fleet identity (machine id / home) from COMPUTERNAME. Put the identity the service had back.
