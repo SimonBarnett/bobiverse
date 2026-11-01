@@ -127,7 +127,11 @@ def test_fr1545_apply_local_asset_still_works(tmp_path):
         "-DelaySeconds",
         "0",
     ]
-    p = subprocess.run(args, capture_output=True, text=True, timeout=60)
+    # FR #5650 / #5642: Apply VerifyOnly must not inherit fleet allow-intake env.
+    e = os.environ.copy()
+    e["BOB_CRASH_REPORT"] = "local-only"
+    e["BOBIVERSE_CRASH_REPORT"] = "local-only"
+    p = subprocess.run(args, capture_output=True, text=True, env=e, timeout=60)
     log = (state / "update.log").read_text(encoding="utf-8") if (state / "update.log").is_file() else ""
     assert p.returncode == 0, (p.stdout, p.stderr, log)
     assert "sha256-verified" in log or "download-ok" in log or "verify-only" in log
