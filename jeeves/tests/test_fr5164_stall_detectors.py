@@ -1,10 +1,12 @@
 """FR #5164: stall detectors + filer (dedupe, cap, spool)."""
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from pathlib import Path
 
 import stall_detectors as sd
 import stall_filer as sf
+import gitclaim
 
 
 def _mrb(url: str, author: str, giveups=()):
@@ -223,6 +225,32 @@ def test_resync_ack_bored_healthy_and_fire():
         }
     )
     assert late and late[0]["id"] == sd.BORED_LATENCY_ID
+
+
+def test_bored_latency_ignores_live_offer_but_not_expired_or_lost_done_offer():
+    now = 100_000.0
+    nick = "flamingo-1"
+    row = {
+        "offered_to": nick,
+        "offered_ts": datetime.fromtimestamp(now - 30, timezone.utc).isoformat(),
+    }
+    snap = {
+        "now": now,
+        "idle": {nick},
+        "last_bored": {nick: now - 383},
+        "unaccepted": [row],
+    }
+
+    assert sd.detect_bored_latency(snap) == []
+
+    row["offered_ts"] = datetime.fromtimestamp(
+        now - gitclaim.offer_timeout_s(row) - 1, timezone.utc
+    ).isoformat()
+    assert sd.detect_bored_latency(snap)
+
+    row["offered_ts"] = datetime.fromtimestamp(now - 30, timezone.utc).isoformat()
+    row["prior_holder"] = nick
+    assert sd.detect_bored_latency(snap)
 
 
 def test_filer_dedupe_comment_not_second_issue(tmp_path: Path):

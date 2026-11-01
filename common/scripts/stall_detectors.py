@@ -276,6 +276,22 @@ def _accepted_nicks(snap: dict[str, Any]) -> set[str]:
     return out
 
 
+def _has_live_offer(snap: dict[str, Any], nick: str, now: float) -> bool:
+    me = (gitclaim.canonical_worker_nick(nick) or nick or "").strip().lower()
+    for row in snap.get("unaccepted") or []:
+        if not isinstance(row, dict):
+            continue
+        offered_to = str(row.get("offered_to") or "").strip()
+        offered_nick = (
+            gitclaim.canonical_worker_nick(offered_to) or offered_to
+        ).strip().lower()
+        if offered_nick != me or gitclaim._is_lost_done_reoffer_to(row, nick):
+            continue
+        if gitclaim._offer_age_s(row, now) < gitclaim.offer_timeout_s(row):
+            return True
+    return False
+
+
 def detect_bored_latency(snap: dict[str, Any]) -> list[dict[str, Any]]:
     now = float(snap.get("now") or 0)
     idle = {gitclaim.canonical_worker_nick(n) or n for n in (snap.get("idle") or [])}
@@ -286,7 +302,7 @@ def detect_bored_latency(snap: dict[str, Any]) -> list[dict[str, Any]]:
     for nick in idle:
         if not nick:
             continue
-        if nick in busy or nick.lower() in busy:
+        if nick in busy or nick.lower() in busy or _has_live_offer(snap, nick, now):
             continue
         ts = last_bored.get(nick)
         if ts is None:
