@@ -17,9 +17,10 @@ def test_mrb5386_target_and_fail_closed_before_install():
     body = lg.installer_legion_work(
         "box1", whatif=False, run_fn=run_fn, credman=lambda: {}
     )
-    assert ran["n"] == 0
-    assert body["error"] == "credman-missing"
-    assert body["invoked_installer"] is False
+    assert ran["n"] == 1
+    assert body.get("credman_missing") is True
+    assert body.get("identity") == "system"
+    assert body["invoked_installer"] is True
 
 
 def test_mrb5386_secret_not_on_wire():
@@ -42,7 +43,6 @@ def test_mrb5386_secret_not_on_wire():
         ),
     )
     hr = core.handle_raw(":op!u@h PRIVMSG tm_console :LEGION box1")
-    assert hr.reply == "DONE id=00000000 exit=126 credman-missing" or (
-        "126" in (hr.reply or "") and "credman-missing" in (hr.reply or "")
-    )
+    # FR #5659: missing CredMan falls through; no exit=126 fail-closed.
+    assert "126" not in (hr.reply or "").split()
     assert "password=" not in (hr.reply or "").lower()

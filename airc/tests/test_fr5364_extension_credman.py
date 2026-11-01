@@ -39,7 +39,8 @@ def test_fr5364_access_denied_retries_with_credman():
     assert "password=" not in blob.lower()
 
 
-def test_fr5364_missing_credman_fail_closed():
+def test_fr5364_missing_credman_falls_to_system_denied():
+    """FR #5659: missing CredMan falls through; SYSTEM access-denied stays closed."""
     body = ex.fill_holes_work(
         "install",
         ldap_enum=lambda: ["pc-deny"],
@@ -49,11 +50,13 @@ def test_fr5364_missing_credman_fail_closed():
     )
     hosts = {h["host"]: h for h in body["hosts"]}
     assert hosts["pc-deny"]["ok"] is False
-    assert hosts["pc-deny"]["error"] == "credman-missing"
+    assert hosts["pc-deny"]["error"] == "system-access-denied"
+    assert hosts["pc-deny"].get("credman_missing") is True
     assert body["wrote_registry"] is False
 
 
-def test_fr5364_non_access_denied_does_not_touch_credman():
+def test_fr5364_non_access_denied_does_not_retry_credman():
+    """Non-access-denied errors on SYSTEM path must not CredMan-retry (FR #5364)."""
     reads = []
 
     def apply_reg(host: str, product: str, value: str) -> None:
@@ -64,10 +67,12 @@ def test_fr5364_non_access_denied_does_not_touch_credman():
         ldap_enum=lambda: ["pc-to"],
         ping_host=lambda _h: True,
         apply_force_install=apply_reg,
-        credman_reader=lambda: reads.append("read") or {"username": "u", "password": "FAKE_x"},
+        # Empty CredMan -> SYSTEM path; resolve may probe once, retry must not.
+        credman_reader=lambda: reads.append("read") or {},
     )
-    assert reads == []
     assert body["hosts"][0]["error"] == "TimeoutError"
+    # resolve probes once; access-denied retry path must not add a second read
+    assert reads.count("read") <= 1
 
 
 def test_fr5364_whatif_skips_credman():
@@ -91,5 +96,5 @@ def test_fr5364_pins_utf8():
     src = (ROOT / "airc" / "scripts" / "airc_extension.py").read_text(encoding="utf-8")
     assert "FR #5364" in src
     assert "PriorityAirc/ExtensionAdmin" in src
-    assert "credman-missing" in src
+    assert "credman_missing" in src or "system-access-denied" in src or "auth_failed" in src
     assert not (ROOT / "airc" / "scripts" / "airc_extension.py").read_bytes().startswith(b"\xef\xbb\xbf")
