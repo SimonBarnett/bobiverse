@@ -91,7 +91,7 @@ PRIVMSG {mid}_console :id=c25bd00e PRIORITY formStart example-dev CUST
 ```
 
 - **Allowlist:** `config\priority-instances.json` (schema: `airc/config/priority-instances.example.json`). Unknown instance -> refuse.
-- **CredMan:** password lives in the Windows credential named credentialTarget (example PriorityWeb/example-dev). Populate remotely with CRED persist ... via=https (FR #5802) when DCC is blocked. Never put a Priority password on IRC, in skills, or in intake.
+- **CredMan:** password lives in the Windows credential named credentialTarget (example PriorityWeb/example-dev). Populate remotely with CRED persist ... via=https (FR #5802) or via=irc (FR #5812) when DCC is blocked. Never put a Priority password on IRC, in skills, or in intake.
 - **Form walk (FR #5285 / #5803):** ormStart/subform/getRows accept instance=/orm= key=value **or** positional <instance> <form> (same bare id as PRIORITY status <id>). Named keys win when both are present. Unknown instance -> unknown-instance.
 - **Form walk replies (FR #5524):** PRIORITY formStart/subform/getRows must return HandleResult.reply only (newline-separated out+DONE). Do not also JobProtocol._emit after FR #5518 on_line already sends action=priority --- that double-fires every walk line.
 - **Prepare gates (S4):** TYPE=P uses EXEC `REPPREPDIRECT2`. Success only when SDK `ok=true` **and** `EXECPREPLOCK.UPD=N` **and** `.prp` mtime advanced. Reasons include `still_unprepared`, `prp_unchanged`, `no_cred`, `name_missing`. Never SQL-fake UPD; never form-prep for TYPE=P.
@@ -135,12 +135,13 @@ PRIVMSG {mid}_console :id=c25bd00e NETWORK diag -WhatIf
 
 See `docs/airc-remote-control.md` and `docs/feature-request-airc-network-diagnostic-2026-10-31.md`.
 
-## CRED staged + persist (FR #5659 / #5802)
+## CRED staged + persist (FR #5659 / #5802 / #5812)
 
-Two paths:
+Three paths:
 
 1. **Stage (memory, FR #5659):** one-shot identity for LEGION/EXTENSION/NETWORK via TLS DCC.
-2. **Persist (CredMan, FR #5802):** write a lasting LocalSystem CredMan entry (e.g. Priority `credentialTarget`) over **HTTPS on 443** when DCC is firewalled, or via DCC when available.
+2. **Persist HTTPS/DCC (CredMan, FR #5802):** write a lasting LocalSystem CredMan entry (e.g. Priority `credentialTarget`) over **HTTPS on 443** when DCC is firewalled, or via DCC when available.
+3. **Persist IRC (CredMan, FR #5812):** same CredMan write over the **existing TLS IRC hop (993)** with E2E seal (X25519 + ChaCha20-Poly1305). Use when the box only allows 80/443/993 and no one-time HTTPS drop is hosted.
 
 ```text
 # Stage (DCC) then use once
@@ -157,11 +158,20 @@ PRIVMSG {mid}_console :id=c25bd00e CRED persist target=PriorityWeb/example-dev v
 # Persist via DCC when outbound DCC works
 PRIVMSG {mid}_console :id=c25bd00e DCCLISTEN id=c25bd00e host=<ip> port=<n> token=<hex> tls=1
 PRIVMSG {mid}_console :id=c25bd00e CRED persist target=PriorityWeb/example-dev via=dcc
+
+# Persist over existing IRC TLS (993) --- no new ports, E2E sealed (FR #5812)
+PRIVMSG {mid}_console :id=c25bd00e CRED persist target=PriorityWeb/example-dev via=irc
+# Reply: CRED-HELLO token= pub= exp= alg=x25519-chacha20poly1305 target=...
+# Operator encrypts JSON and sends sealed chunks (never plaintext password on IRC):
+PRIVMSG {mid}_console :id=c25bd00e CRED-SEAL token=<tok> seq=1/1 ct=<b64>
+# Reply: CRED persisted + DONE ... cred-persisted target=... account=... (never the password)
+# Failures: cred-rejected-auth, cred-expired, cred-replay, cred-target-not-allowlisted, cred-bad-payload, cred-write-failed:...
 ```
 
 - Password never on IRC. Stage stash is in-memory, TTL ~180s, one-shot `take`. Persist uses CredWriteW LocalMachine under the Airc LocalSystem identity (`airc_credman.write_generic_credential`).
 - HTTPS URL must be `https://` under the fleet public base (`bob.ntsa.uk` / `BOB_PUBLIC_BASE`) or a prefix in `AIRC_CRED_HTTPS_PREFIXES`. Rejected URL -> `cred-url-rejected`. Fetch failures surface firewall-aware tokens (`firewall-or-unreachable`, `timeout`, `ssl-error`, `dns-failed`, `http-N`).
-- Without `via=dcc` / offer on stage or persist-dcc -> `DONE ... usage cred-requires-dcc`. Persist needs `target=`; persist+https needs `url=`.
+- **via=irc (FR #5812):** console replies `CRED-HELLO` (ephemeral X25519 pub + one-time token + short expiry). Operator sends `CRED-SEAL` ciphertext chunks only (Ergo never sees plaintext). Token is single-use; wrong nick -> `cred-rejected-auth`; target must be a `credentialTarget` from `priority-instances.json`.
+- Without `via=dcc` / offer on stage or persist-dcc -> `DONE ... usage cred-requires-dcc`. Persist needs `target=`; persist+https needs `url=`; persist accepts `via=https|dcc|irc`.
 
 ## LEGION remote install (FR #5312 / #5758)
 
@@ -174,7 +184,7 @@ PRIVMSG {mid}_console :id=c25bd00e LEGION 10.0.0.8 -WhatIf
 PRIVMSG {mid}_console :id=c25bd00e LEGION flamingo -Profile fleet
 ```
 
-- **Profile preserve (FR #5758 / #5781 / #5782):** read remote `config\airc-install.json` via CredMan WNet `IPC$` (same as install); keep unless `-Profile` set; report `profile_before`/`profile_after` / downgrade warn; unread share without `-Profile` → `error=profile_unreadable` (never silent client); success DONE carries `installed_version` + `service`. **FR #5782:** when status is `skipped` / already-current, DONE/JSON report the host profile (`profile_before`, or `profile=unchanged` if unread/missing) and clear `profile_warn` — never imply `profile=client` for an unchanged fleet host.
+- **Profile preserve (FR #5758 / #5781 / #5782):** read remote `config\airc-install.json` via CredMan WNet `IPC$` (same as install); keep unless `-Profile` set; report `profile_before`/`profile_after` / downgrade warn; unread share without `-Profile` → `error=profile_unreadable` (never silent client); success DONE carries `installed_version` + `service`. **FR #5782:** when status is `skipped` / already-current, DONE/JSON report the host profile (`profile_before`, or `profile=unchanged` if unread/missing) and clear `profile_warn` --- never imply `profile=client` for an unchanged fleet host.
 - **Auth:** same as UPDATE (`+o`/`+h`; `update=off` / `shell=off` refuse with `DONE id=<qid> exit=126 update-disabled|shell-disabled` when the command carried `id=` - FR #5552). Empty/list/OU/invalid targets: `DONE id=<id> exit=126 bad-target reason=empty|list|ou|invalid` (id= omitted only when the operator sent no id; FR #5527). FR #5528: `bad_host!` is invalid, not list.
 - **Identity (FR #5659 / #5711 / #5745 / amends #5594):** order is **passed** (DCC `CRED id= via=dcc` then `LEGION|EXTENSION|NETWORK … cred=<id>`) -> **CredMan** (`PriorityAirc/LegionAdmin` / `ExtensionAdmin` / `NetworkAdmin`, overridable via `airc.json` `credman_targets`) -> **SYSTEM** `DOMAIN\HOST$`. Log/DONE for LEGION, EXTENSION, and NETWORK carry `identity=passed|credman|system` and account name, never the secret. Wrong passed/CredMan auth -> `auth_failed` (no silent fallback). Missing CredMan falls through to SYSTEM with `identity_reason=credman-missing:<target>` (or `credman-read-error:<code>`) plus an `identity-fallback` console log line. Plain IRC password/pass tokens is rejected (`usage secrets-on-irc`). NETWORK uses CredMan only for the ADSI bind (DNS stays on the service token).
 - **Remote failures (FR #5744):** classify `host_down` (WinError 53/67 + SMB 445 preflight), `auth_failed` (5/1326), `session_conflict` (1219) with `detail` + `step` (never credentials).
