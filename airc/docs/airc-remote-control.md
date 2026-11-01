@@ -157,7 +157,7 @@ Configure per-verb targets in `config/airc.json` (or the install-root `airc.json
 `credman_targets: {"legion": "PriorityAirc/LegionAdmin", "extension": "PriorityAirc/ExtensionAdmin", "network": "PriorityAirc/NetworkAdmin"}`.
 These are the defaults; omitted, empty or invalid overrides retain the corresponding
 default. Restart Airc after changing configuration. The EXTENSION target also applies
-to the GPO credential retry.
+to the GPO credential retry (FR #5364 / #5645).
 
 All three verbs include `identity=passed|credman|system` and `account=` in DONE on
 DCC success, DCC-to-IRC fallback and IRC-only delivery, and preserve identity/account
