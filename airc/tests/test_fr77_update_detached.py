@@ -78,9 +78,11 @@ def test_update_denied_for_unauthorized_nick():
 
 def test_update_rejects_non_allowlisted_product_token():
     core = _core()
-    # parse gate: unknown product never reaches scheduler
+    # FR #5670: unknown product is usage exit=2 (never PowerShell fall-through).
     r = core.handle_raw(":bob-marchhare!u@h PRIVMSG marchhare_console :UPDATE notepad")
-    assert r and r.action == "pipe"  # falls through to shell (not a fleet UPDATE)
+    assert r and r.action == "update"
+    assert "code=usage" in (r.reply or "")
+    assert "exit=2" in (r.reply or "")
 
 
 def test_update_duplicate_pending_suppressed():
