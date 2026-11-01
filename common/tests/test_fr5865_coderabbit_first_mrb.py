@@ -168,6 +168,17 @@ def test_sensitive_paths_force_full_review():
     assert fuel_chain.review_mode_for("timeout", ["bob/scripts/x.py"]) == "full"
 
 
+def test_sensitive_paths_preserve_dotgithub_workflows():
+    paths = [
+        ".github/workflows/ci.yml",
+        "./.github/workflows/release.yml",
+        r".github\workflows\pack.yml",
+    ]
+    assert fuel_chain.sensitive_paths_require_full(paths) is True
+    assert fuel_chain.review_mode_for("ready", paths) == "full"
+    assert fuel_chain.sensitive_paths_require_full(["github/workflows/x.yml"]) is False
+
+
 def test_merge_gate_refuses_pending(monkeypatch):
     monkeypatch.setenv("BOB_FUEL_CODERABBIT", "1")
     ok, reason = mrb_merge_gate.evaluate_coderabbit_gate(
