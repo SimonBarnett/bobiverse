@@ -83,12 +83,32 @@ def test_fr5300_dcc_fail_falls_back_to_irc():
 
 
 def test_fr5300_console_wires_dcclisten_same_job_id():
-    sent: list[bytes] = []
+    """DCCLISTEN same job id is taken and passed to network_log_send.
+
+    FR #5575: do not wait on packaged inventory_work (real LDAP/AD). A host
+    with a live domain can exceed any fixed wait and never call send. Stub a
+    fast worker (same pattern as FR #5379) so this pin stays deterministic.
+    """
+    sent: list[tuple[bytes, object]] = []
     done = threading.Event()
 
     def send(payload: bytes, offer, **_k):
-        sent.append(payload)
+        sent.append((payload, offer))
         done.set()
+
+    def work(**_kw):
+        return {
+            "ok": True,
+            "hosts": [
+                {
+                    "hostname": "pc1",
+                    "ips": ["10.0.0.1"],
+                    "ou": "OU=PCs,DC=ex",
+                    "dn": "CN=pc1,OU=PCs,DC=ex",
+                }
+            ],
+            "log": [{"host": "pc2", "error": "OSError", "step": "resolve"}],
+        }
 
     auth = ops_auth("op", channel="#tm")
     core = ac.AircConsoleCore(
@@ -96,6 +116,9 @@ def test_fr5300_console_wires_dcclisten_same_job_id():
         auth=auth,
         nick="tm_console",
         shell_runner=ac.ShellJobRunner(on_reply=lambda *_a, **_k: None),
+        network_runner=lambda **kw: nw.run_network_verb(
+            worker=work, wait=False, **kw
+        ),
     )
     core.shell_runner.note_dcclisten(
         "DCCLISTEN id=aabbccdd host=127.0.0.1 port=9 token=" + ("ab" * 16) + " tls=0"
@@ -104,10 +127,15 @@ def test_fr5300_console_wires_dcclisten_same_job_id():
     hr = core.handle_raw(":op!u@h PRIVMSG tm_console :id=aabbccdd NETWORK diag")
     assert hr is not None and hr.action == "network"
     assert "NETWORK accepted" in (hr.reply or "")
-    # FR #5575: isolated NETWORK worker can exceed 1s under airc/tests load.
-    assert done.wait(5.0), "network_log_send never ran"
+    assert done.wait(2.0), "network_log_send never ran"
     assert sent
-    body = json.loads(sent[0].decode("utf-8"))
+    payload, offer = sent[0]
+    assert offer is not None
+    assert getattr(offer, "job_id", None) == "aabbccdd"
+    # Same-job take consumed the offer.
+    assert core.shell_runner.take_dcclisten("aabbccdd") is None
+    body = json.loads(payload.decode("utf-8"))
     assert "hosts" in body and "failures" in body
+    assert body["hosts"][0]["hostname"] == "pc1"
     assert "password=" not in (hr.reply or "").lower()
-    assert "password=" not in sent[0].decode("utf-8").lower()
+    assert "password=" not in payload.decode("utf-8").lower()
