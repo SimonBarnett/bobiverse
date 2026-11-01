@@ -63,8 +63,10 @@ CONSOLE_OUTBOX_FLOOD_S = float(os.environ.get("BOB_CONSOLE_OUTBOX_FLOOD_S", "1.5
 # FR #1546: Query replies from {machine}_console (out/err/DONE) → home/airc-replies.jsonl
 _AIRC_CONSOLE_NICK_RE = re.compile(r".+_console$", re.IGNORECASE)
 # FR #1546 / #5002: accept id-less DONE exit= (auth refusals) as well as DONE id=...
+# FR #5679: accept id-less err seq= (synthetic too_long when outbox had no hex id).
 _AIRC_REPLY_BODY_RE = re.compile(
     r"^(?:(?:out|err)\s+id=[0-9a-f]+\s+seq=\d+\s|"
+    r"err\s+seq=\d+\s|"
     r"DONE\s+(?:id=[0-9a-f]+\s+)?exit=-?\d+\b|"
     r"UPDATE\s+accepted\b)",
     re.IGNORECASE,
@@ -130,6 +132,8 @@ def append_airc_reply_jsonl(
 
 # FR #5588: over-long *_console outbox body embeds id=<hex> for correlation.
 _CONSOLE_OUTBOX_ID_RE = re.compile(r"(?i)\bid=([0-9a-f]+)\b")
+# FR #5679: raw id= token (may be non-hex) for visible reject when hex corr missing.
+_CONSOLE_OUTBOX_RAW_ID_RE = re.compile(r"(?i)\bid=(\S+)")
 
 
 def note_overlong_console_privmsg_reject(
@@ -140,24 +144,38 @@ def note_overlong_console_privmsg_reject(
     text: str,
     budget: int,
 ) -> None:
-    """FR #5588: synthetic err+DONE when an over-long *_console PRIVMSG is dropped.
+    """FR #5588 / #5679: synthetic err+DONE when an over-long *_console PRIVMSG is dropped.
 
     Wire still sends nothing (FR #5539). Callers waiting on airc-replies.jsonl /
     inbound-transcript get a visible completion instead of hanging forever.
-    No-op when home is missing or the body has no id=<hex>.
+    No-op only when home is missing or the target is not a *_console nick.
+
+    Hex ``id=`` keeps ``err id=<qid>`` / ``DONE id=<qid>``. Missing or non-hex
+    ``id=`` still emits ``err seq=1 code=too_long`` (+ raw token when present)
+    and ``DONE exit=1`` so the drop is never silent (FR #5679).
     """
     if home is None:
         return
-    m = _CONSOLE_OUTBOX_ID_RE.search(text or "")
-    if not m:
-        return
-    qid = m.group(1).lower()
     console = (console_nick or "").strip()
     if not console or not _AIRC_CONSOLE_NICK_RE.match(console):
         return
     nbytes = len((text or "").encode("utf-8"))
-    err_body = f"err id={qid} seq=1 code=too_long bytes={nbytes} budget={budget}"
-    done_body = f"DONE id={qid} exit=1"
+    m = _CONSOLE_OUTBOX_ID_RE.search(text or "")
+    if m:
+        qid = m.group(1).lower()
+        err_body = f"err id={qid} seq=1 code=too_long bytes={nbytes} budget={budget}"
+        done_body = f"DONE id={qid} exit=1"
+    else:
+        raw = _CONSOLE_OUTBOX_RAW_ID_RE.search(text or "")
+        raw_tok = (raw.group(1) if raw else "").strip()
+        if raw_tok:
+            err_body = (
+                f"err seq=1 code=too_long id={raw_tok} "
+                f"bytes={nbytes} budget={budget}"
+            )
+        else:
+            err_body = f"err seq=1 code=too_long bytes={nbytes} budget={budget}"
+        done_body = "DONE exit=1"
     home_p = Path(home)
     ear = (ear_nick or "").strip() or "ear"
     for body in (err_body, done_body):

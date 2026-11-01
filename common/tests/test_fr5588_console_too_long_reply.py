@@ -57,6 +57,7 @@ def test_fr5588_expand_with_home_notes_reject(tmp_path: Path):
 
 
 def test_fr5588_reject_without_id_still_drops_wire_only(tmp_path: Path):
+    # FR #5679: wire still empty, but synthetic err+DONE is visible (no silent drop).
     home = tmp_path / "home"
     home.mkdir()
     body = "cmd: " + ("z" * 200)
@@ -68,7 +69,13 @@ def test_fr5588_reject_without_id_still_drops_wire_only(tmp_path: Path):
         ear_nick="Bob-marchhare",
     )
     assert out == []
-    assert not (home / "airc-replies.jsonl").exists()
+    rows = [
+        json.loads(x)
+        for x in (home / "airc-replies.jsonl").read_text(encoding="utf-8").splitlines()
+        if x.strip()
+    ]
+    assert rows[0]["body"].startswith("err seq=1 code=too_long")
+    assert rows[1]["body"] == "DONE exit=1"
 
 
 def test_fr5588_short_console_does_not_write_synthetic(tmp_path: Path):
