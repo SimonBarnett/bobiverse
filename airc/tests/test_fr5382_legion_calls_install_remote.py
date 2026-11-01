@@ -8,7 +8,7 @@ from airc_network_installer.core import HostResult
 
 
 def test_fr5382_dry_run_still_skips_install_remote(monkeypatch, tmp_path):
-    # FR #5655: WhatIf probes find_psexec (PATH-only); stub present so this
+    # FR #5737: WhatIf uses plan_psexec (airc-owned deploy); stub deployed so this
     # case still asserts dry-run skip of install_remote (ok=True).
     called = {"n": 0}
 
@@ -17,8 +17,12 @@ def test_fr5382_dry_run_still_skips_install_remote(monkeypatch, tmp_path):
         raise AssertionError("install_remote must not run on dry_run")
 
     monkeypatch.setattr(
-        "airc_network_installer.install.find_psexec",
-        lambda _explicit="": r"C:\Tools\PsExec.exe",
+        "airc_network_installer.install.plan_psexec",
+        lambda explicit="", dest=None, probe=None: {
+            "state": "deployed",
+            "path": r"C:\ProgramData\bobiverse\tools\PsExec.exe",
+            "dest": r"C:\ProgramData\bobiverse\tools\PsExec.exe",
+        },
     )
     monkeypatch.setattr(
         "airc_network_installer.install.install_remote", boom

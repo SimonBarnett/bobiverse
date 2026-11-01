@@ -185,7 +185,14 @@ def test_fr5737_install_and_update_hooks():
     assert "FR #5737" in upd
     assert "Deploy-AircPsExec" in upd
     assert DEPLOY_PS.is_file()
-    assert "accepteula" in DEPLOY_PS.read_text(encoding="utf-8").lower() or True
+    deploy_txt = DEPLOY_PS.read_text(encoding="utf-8")
+    assert "icacls" in deploy_txt
+    assert "SYSTEM" in deploy_txt and "Administrators" in deploy_txt
+    # -accepteula is on the LEGION run argv (install.py), not the deploy script.
+    install_py = (ROOT / "airc/scripts/airc_network_installer/install.py").read_text(
+        encoding="utf-8"
+    )
+    assert "-accepteula" in install_py
 
 
 def test_fr5737_skills_document():
