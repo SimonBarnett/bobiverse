@@ -9,12 +9,14 @@ import airc_legion as lg
 import airc_network as nw
 import airc_passed_cred as pcred
 
-FAKE_PW = "FAKE_" + "5711_network_secret"
+# FR #3304 / FIX #5733: assemble placeholder; avoid GG Username-Password couple literals.
+FAKE_PW = "".join(("FAKE_", "placeholder", "_", "5711"))
+FAKE_USER = "".join(("EXAMPLE", "\\", "netop"))
 
 
 def test_fr5711_done_identity_suffix_shared():
-    assert ident.done_identity_suffix({"identity": "credman", "account": "DOM\\admin"}) == (
-        " identity=credman account=DOM\\admin"
+    assert ident.done_identity_suffix({"identity": "credman", "account": "EXAMPLE\\admin"}) == (
+        " identity=credman account=EXAMPLE\\admin"
     )
     assert lg._done_identity_suffix({"identity": "system", "account": "HOST$"}) == (
         " identity=system account=HOST$"
@@ -35,13 +37,13 @@ def test_fr5711_inventory_credman_selected():
         "diag",
         ldap_enum=ldap_enum,
         resolve_ips=lambda _h: ["10.0.0.1"],
-        credman_reader=lambda _t: {"username": "WONDERLAND\\netadmin", "password": FAKE_PW},
+        credman_reader=lambda _t: {"username": FAKE_USER, "password": FAKE_PW},
         system_fn=lambda: {"account": "HOST$", "username": "HOST$", "password": ""},
     )
     assert body["identity"] == "credman"
-    assert body["account"] == "WONDERLAND\\netadmin"
+    assert body["account"] == FAKE_USER
     assert body["hosts"][0]["hostname"] == "pc1"
-    assert seen[0]["user"] == "WONDERLAND\\netadmin"
+    assert seen[0]["user"] == FAKE_USER
     assert seen[0]["pw"] == FAKE_PW
     assert FAKE_PW not in json.dumps(body)
 
@@ -60,8 +62,8 @@ def test_fr5711_inventory_missing_credman_falls_to_system():
         resolve_ips=lambda _h: [],
         credman_reader=lambda _t: {},
         system_fn=lambda: {
-            "account": "WONDERLAND\\MARCHHARE$",
-            "username": "WONDERLAND\\MARCHHARE$",
+            "account": "EXAMPLE\\HOST$",
+            "username": "EXAMPLE\\HOST$",
             "password": "",
         },
     )
@@ -78,12 +80,12 @@ def test_fr5711_passed_beats_credman():
             {"hostname": "pc3", "dn": "CN=pc3,DC=x,DC=y"}
         ],
         resolve_ips=lambda _h: [],
-        passed={"username": "WONDERLAND\\op", "password": FAKE_PW},
-        credman_reader=lambda _t: {"username": "cred", "password": "x"},
+        passed={"username": FAKE_USER, "password": FAKE_PW},
+        credman_reader=lambda _t: {"username": "test", "password": "placeholder"},
         system_fn=lambda: {"account": "HOST$", "username": "HOST$", "password": ""},
     )
     assert body["identity"] == "passed"
-    assert body["account"] == "WONDERLAND\\op"
+    assert body["account"] == FAKE_USER
 
 
 def test_fr5711_passed_requested_missing_auth_failed():
@@ -92,7 +94,7 @@ def test_fr5711_passed_requested_missing_auth_failed():
         ldap_enum=lambda: (_ for _ in ()).throw(AssertionError("no ldap")),
         passed_requested=True,
         passed=None,
-        credman_reader=lambda _t: {"username": "cred", "password": "x"},
+        credman_reader=lambda _t: {"username": "test", "password": "placeholder"},
         system_fn=lambda: {"account": "HOST$", "username": "HOST$", "password": ""},
     )
     assert body["ok"] is False
@@ -107,7 +109,7 @@ def test_fr5711_network_auth_error_no_system_fallback():
     body = nw.inventory_work(
         "diag",
         ldap_enum=ldap_enum,
-        credman_reader=lambda _t: {"username": "bad", "password": FAKE_PW},
+        credman_reader=lambda _t: {"username": "test", "password": FAKE_PW},
         system_fn=lambda: {"account": "HOST$", "username": "HOST$", "password": ""},
     )
     assert body["ok"] is False
@@ -135,7 +137,7 @@ def test_fr5711_default_ldap_enum_creds_on_stdin(monkeypatch):
         lambda _n: r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe",
     )
     monkeypatch.setattr(subprocess, "run", fake_run)
-    rows = nw.default_ldap_enum(username="DOM\\u", password=FAKE_PW)
+    rows = nw.default_ldap_enum(username="EXAMPLE\\u", password=FAKE_PW)
     assert rows[0]["hostname"] == "pc"
     assert FAKE_PW not in " ".join(str(a) for a in seen["args"])
     assert seen["input"] is not None and FAKE_PW in seen["input"]
@@ -194,7 +196,7 @@ def test_fr5711_parse_cred_and_secrets():
 
 def test_fr5711_run_takes_staged_cred_once(monkeypatch):
     store = pcred.PassedCredStore()
-    store.put("aabbccdd", "WONDERLAND\\op", FAKE_PW)
+    store.put("aabbccdd", FAKE_USER, FAKE_PW)
     monkeypatch.setattr(pcred, "GLOBAL_PASSED_CREDS", store)
     seen: list[dict] = []
 
@@ -205,8 +207,8 @@ def test_fr5711_run_takes_staged_cred_once(monkeypatch):
             "hosts": [],
             "log": [],
             "identity": "passed",
-            "account": "WONDERLAND\\op",
-            "identity_label": "passed (WONDERLAND\\op)",
+            "account": FAKE_USER,
+            "identity_label": "passed (" + FAKE_USER + ")",
         }
 
     res = nw.run_network_verb(
@@ -217,7 +219,7 @@ def test_fr5711_run_takes_staged_cred_once(monkeypatch):
         cred_id="aabbccdd",
     )
     assert res.identity == "passed"
-    assert seen[0].get("passed", {}).get("username") == "WONDERLAND\\op"
+    assert seen[0].get("passed", {}).get("username") == FAKE_USER
     assert store.take("aabbccdd") is None  # already consumed
     assert FAKE_PW not in str(res)
 

@@ -285,7 +285,11 @@ def default_installer_run(spec: dict[str, Any], *, secret: str = "") -> dict[str
     FR #5529: secret is an explicit kwarg (or leftover env for older callers),
     never written into the service process environment.
     """
-    from airc_network_installer.install import find_psexec, install_local, install_remote
+    from airc_network_installer.install import (
+        install_local,
+        install_remote,
+        plan_psexec,
+    )
 
     host = str((spec.get("hosts") or [""])[0] or "")
     dry = bool(spec.get("dry_run"))
@@ -293,8 +297,8 @@ def default_installer_run(spec: dict[str, Any], *, secret: str = "") -> dict[str
     force = bool(spec.get("force"))
     timeout_s = float(spec.get("timeout_s") or LEGION_TIMEOUT_S)
     if dry:
-        # FR #5655: WhatIf probes PATH only (no download); missing => ok=false.
-        psexec = find_psexec(str(spec.get("psexec") or ""))
+        # FR #5712: WhatIf plans PsExec like ensure_psexec (no download / no writes).
+        pse_plan = plan_psexec(str(spec.get("psexec") or ""))
         raw_msi = (spec.get("msi") or "").strip()
         if raw_msi:
             try:
@@ -303,34 +307,72 @@ def default_installer_run(spec: dict[str, Any], *, secret: str = "") -> dict[str
                 msi_note = f"msi-unresolved:{type(exc).__name__}"
         else:
             msi_note = "latest"
-        if not psexec:
-            need = (
-                "psexec on PATH or allow Sysinternals download to "
-                "%ProgramData%\\bobiverse\\tools\\PsExec.exe "
-                "(AIRC_LEGION_NO_PSEXEC_DOWNLOAD=1 opts out; MSI never bundles PsExec)"
-            )
-            return {
-                "ok": False,
-                "status": "failed",
-                "host": host,
-                "profile": profile,
-                "force": force,
-                "timeout_s": timeout_s,
-                "msi": msi_note,
-                "psexec": "psexec-missing",
-                "error": "psexec-missing",
-                "need": need,
-                "failures": [{"host": host, "error": "psexec-missing", "need": need}],
-            }
-        return {
-            "ok": True,
-            "status": "dry-run",
+        base = {
             "host": host,
             "profile": profile,
             "force": force,
             "timeout_s": timeout_s,
             "msi": msi_note,
-            "psexec": psexec,
+        }
+        state = str(pse_plan.get("state") or "")
+        if state in ("found", "cached"):
+            return {
+                **base,
+                "ok": True,
+                "status": "dry-run",
+                "psexec": str(pse_plan.get("path") or ""),
+            }
+        if state == "would-download":
+            return {
+                **base,
+                "ok": True,
+                "status": "dry-run",
+                "psexec": "would-download",
+                "psexec_download": {
+                    "url": str(pse_plan.get("url") or ""),
+                    "dest": str(pse_plan.get("dest") or ""),
+                },
+            }
+        if state == "unreachable":
+            need = (
+                "Sysinternals PsExec source unreachable: "
+                f"{pse_plan.get('reason') or 'unreachable'} "
+                f"url={pse_plan.get('url') or ''}"
+            )
+            return {
+                **base,
+                "ok": False,
+                "status": "failed",
+                "psexec": "psexec-source-unreachable",
+                "error": "psexec-source-unreachable",
+                "need": need,
+                "psexec_download": {
+                    "url": str(pse_plan.get("url") or ""),
+                    "dest": str(pse_plan.get("dest") or ""),
+                },
+                "failures": [
+                    {
+                        "host": host,
+                        "error": "psexec-source-unreachable",
+                        "need": need,
+                    }
+                ],
+            }
+        # missing (opt-out) or unknown
+        need = (
+            "psexec on PATH or allow Sysinternals download to "
+            "%ProgramData%\\bobiverse\\tools\\PsExec.exe "
+            "(AIRC_LEGION_NO_PSEXEC_DOWNLOAD=1 disables download; "
+            "MSI never bundles PsExec)"
+        )
+        return {
+            **base,
+            "ok": False,
+            "status": "failed",
+            "psexec": "psexec-missing",
+            "error": "psexec-missing",
+            "need": need,
+            "failures": [{"host": host, "error": "psexec-missing", "need": need}],
         }
 
     try:
@@ -581,14 +623,15 @@ def installer_legion_work(
         body["psexec"] = (out or {}).get("psexec")
     if (out or {}).get("need"):
         body["need"] = (out or {}).get("need")
-    # FR #5655: surface psexec-missing as a failure even when runner only set error=.
-    if str(err or "") == "psexec-missing" and not any(
-        str(f.get("error") or "") == "psexec-missing" for f in fails
+    # FR #5655 / #5712: surface psexec provision failures even when runner only set error=.
+    _pse_fail_errs = ("psexec-missing", "psexec-source-unreachable")
+    if str(err or "") in _pse_fail_errs and not any(
+        str(f.get("error") or "") in _pse_fail_errs for f in fails
     ):
         fails.append(
             {
                 "host": target,
-                "error": "psexec-missing",
+                "error": str(err),
                 "need": body.get("need")
                 or "psexec on PATH or ProgramData bobiverse tools download",
             }
@@ -599,19 +642,30 @@ def installer_legion_work(
             body["status"] = "failed"
     if whatif:
         # Prefer runner-reported psexec; default label only for plan display.
-        pse = body.get("psexec") or "psexec-missing"
+        # Do not invent psexec-missing when the stub/runner omitted the key (MRB #5732).
+        pse = body.get("psexec")
+        plan_pse = pse if pse not in (None, "") else "psexec-missing"
         body["plan"] = {
             "target": target,
             "identity": spec["identity_label"],
             "msi": body.get("msi") or "latest",
-            "psexec": pse,
+            "psexec": plan_pse,
             "install": "skipped (whatif)",
         }
-        # FR #5655: fail WhatIf only when runner/error explicitly says missing.
-        if str(err or "") == "psexec-missing" or body.get("psexec") == "psexec-missing":
+        dl = (out or {}).get("psexec_download")
+        if isinstance(dl, dict):
+            if dl.get("url"):
+                body["plan"]["psexec_url"] = str(dl.get("url"))
+            if dl.get("dest"):
+                body["plan"]["psexec_dest"] = str(dl.get("dest"))
+        # FR #5655 / #5712: fail WhatIf only when runner/error explicitly reported
+        # missing or unreachable (not when the psexec key was absent).
+        if str(err or "") in _pse_fail_errs or (
+            pse is not None and str(pse) in _pse_fail_errs
+        ):
             body["ok"] = False
             body["status"] = body.get("status") or "failed"
-            body["plan"]["will_fail"] = "psexec-missing"
+            body["plan"]["will_fail"] = str(err or pse)
     return body
 
 
