@@ -444,6 +444,7 @@ function Set-Failure {
 function Write-CheckFailIntake {
     # FR #5354: pass release tag when known so idempotency keys are not tag=-.
     # FR #5634: pass Detail (e.g. kind=rate-limited) so intake is not detail= empty.
+    # FR #5637: Invoke-Check no-matching-asset / asset-url-rejected also pass -Detail.
     param([string]$Result, [string]$Tag = '', [string]$Detail = '')
     try {
         $common = Join-Path $PSScriptRoot 'Bobiverse-Common.ps1'
@@ -1179,9 +1180,14 @@ function Invoke-Check {
     $tagVer = $null
     if ($rel.tag_name -match '^v?(\d+\.\d+\.\d+(?:\.\d+)?)$') { $tagVer = ConvertTo-Ver $Matches[1] }
     if (-not $msi -or -not $tagVer) {
+        # FR #5637: forward asset/tag context into intake Detail (parity with release-lookup-failed).
         $assetNames = (@($rel.assets) | ForEach-Object { [string]$_.name }) -join ','
         Write-UpdLog "check result=no-matching-asset tag=$($rel.tag_name) assets=$assetNames"
-        Write-CheckFailIntake -Result 'no-matching-asset' -Tag ([string]$rel.tag_name)
+        $miss = @()
+        if (-not $msi) { $miss += 'msi' }
+        if (-not $tagVer) { $miss += 'tagVer' }
+        $detail = ('tag={0}; missing={1}; assets={2}' -f [string]$rel.tag_name, ($miss -join '+'), $assetNames)
+        Write-CheckFailIntake -Result 'no-matching-asset' -Tag ([string]$rel.tag_name) -Detail $detail
         return
     }
     $remote = ConvertTo-Ver ([string]$msi.name)
@@ -1196,8 +1202,10 @@ function Invoke-Check {
     $msiUrl = Resolve-AssetDownloadUrl -Asset $msi -Tag ([string]$rel.tag_name)
     $shaUrl = Resolve-AssetDownloadUrl -Asset $sha -Tag ([string]$rel.tag_name)
     if (-not (Test-AssetUrl -Url $msiUrl) -or -not (Test-AssetUrl -Url $shaUrl)) {
-        Write-UpdLog 'check result=asset-url-rejected'
-        Write-CheckFailIntake -Result 'asset-url-rejected' -Tag ([string]$rel.tag_name)
+        # FR #5637: forward rejected URL(s) into intake Detail for triage.
+        Write-UpdLog ("check result=asset-url-rejected tag={0} msiUrl={1} shaUrl={2}" -f [string]$rel.tag_name, $msiUrl, $shaUrl)
+        $detail = ('tag={0}; msiUrl={1}; shaUrl={2}' -f [string]$rel.tag_name, $msiUrl, $shaUrl)
+        Write-CheckFailIntake -Result 'asset-url-rejected' -Tag ([string]$rel.tag_name) -Detail $detail
         return
     }
 
