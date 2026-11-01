@@ -434,7 +434,9 @@ function Set-Failure {
             . $common
         }
         if (Get-Command Send-BobiverseUpdateFailureIntake -ErrorAction SilentlyContinue) {
-            $null = Send-BobiverseUpdateFailureIntake -Product $Product -Tag $Tag -Result $Result -Detail $Detail -InstallRoot $InstallRoot
+            # FR #5641: never file live intake from -DryRun / ReleaseJson test hooks (pytest flood).
+            $intakeDry = [bool]$DryRun -or [bool]$ReleaseJson -or [bool]$ReleaseListJson
+            $null = Send-BobiverseUpdateFailureIntake -Product $Product -Tag $Tag -Result $Result -Detail $Detail -InstallRoot $InstallRoot -DryRun:$intakeDry
         }
     } catch {
         Write-UpdLog "FR #5279 update-fail-intake-warn $($_.Exception.GetType().Name)"
@@ -445,6 +447,7 @@ function Write-CheckFailIntake {
     # FR #5354: pass release tag when known so idempotency keys are not tag=-.
     # FR #5634: pass Detail (e.g. kind=rate-limited) so intake is not detail= empty.
     # FR #5637: Invoke-Check no-matching-asset / asset-url-rejected also pass -Detail.
+    # FR #5641: forward -DryRun (and ReleaseJson/ReleaseListJson test hooks) so pytest does not flood twins.
     param([string]$Result, [string]$Tag = '', [string]$Detail = '')
     try {
         $common = Join-Path $PSScriptRoot 'Bobiverse-Common.ps1'
@@ -452,7 +455,8 @@ function Write-CheckFailIntake {
             . $common
         }
         if (Get-Command Send-BobiverseUpdateFailureIntake -ErrorAction SilentlyContinue) {
-            $null = Send-BobiverseUpdateFailureIntake -Product $Product -Tag $Tag -Result $Result -Detail $Detail -InstallRoot $InstallRoot
+            $intakeDry = [bool]$DryRun -or [bool]$ReleaseJson -or [bool]$ReleaseListJson
+            $null = Send-BobiverseUpdateFailureIntake -Product $Product -Tag $Tag -Result $Result -Detail $Detail -InstallRoot $InstallRoot -DryRun:$intakeDry
         }
     } catch { }
 }
@@ -1269,7 +1273,9 @@ function Invoke-Check {
         Write-UpdLog "check result=spawn-failed $($_.Exception.GetType().Name) - starting installed version"
         try {
             if (Get-Command Send-BobiverseUpdateFailureIntake -ErrorAction SilentlyContinue) {
-                $null = Send-BobiverseUpdateFailureIntake -Product $Product -Tag $tag -Result 'spawn-failed' -InstallRoot $InstallRoot
+                # FR #5641: honor DryRun / ReleaseJson test hooks.
+                $intakeDry = [bool]$DryRun -or [bool]$ReleaseJson -or [bool]$ReleaseListJson
+                $null = Send-BobiverseUpdateFailureIntake -Product $Product -Tag $tag -Result 'spawn-failed' -InstallRoot $InstallRoot -DryRun:$intakeDry
             }
         } catch { }
     }
