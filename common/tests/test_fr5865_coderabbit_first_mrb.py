@@ -168,6 +168,19 @@ def test_sensitive_paths_force_full_review():
     assert fuel_chain.review_mode_for("timeout", ["bob/scripts/x.py"]) == "full"
 
 
+def test_sensitive_paths_preserve_dotgithub_workflows():
+    """Hostile: path normalize must keep the leading dot on .github/workflows/**."""
+    wf = [
+        ".github/workflows/ci.yml",
+        "./.github/workflows/release.yml",
+        r".github\workflows\pack.yml",
+    ]
+    assert fuel_chain.sensitive_paths_require_full(wf) is True
+    assert fuel_chain.review_mode_for("ready", wf) == "full"
+    # Stripped-dot lookalike must not match the .github/workflows/** glob.
+    assert fuel_chain.sensitive_paths_require_full(["github/workflows/x.yml"]) is False
+
+
 def test_merge_gate_refuses_pending(monkeypatch):
     monkeypatch.setenv("BOB_FUEL_CODERABBIT", "1")
     ok, reason = mrb_merge_gate.evaluate_coderabbit_gate(

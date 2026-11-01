@@ -91,7 +91,12 @@ def is_coderabbit_check_name(name: str) -> bool:
 def sensitive_paths_require_full(paths: Iterable[str] | None) -> bool:
     """True when any changed path matches the FR #5865 always-full list."""
     for raw in paths or []:
-        path = str(raw or "").replace("\\", "/").lstrip("./")
+        # Strip only ./ prefixes and leading /; never lstrip("./")
+        # (char-class form drops the leading dot from .github/workflows/**).
+        path = str(raw or "").replace("\\", "/")
+        while path.startswith("./"):
+            path = path[2:]
+        path = path.lstrip("/")
         if not path:
             continue
         for pat in _SENSITIVE_GLOBS:
