@@ -55,3 +55,57 @@ def test_fr5645_skills_document_gpo_identity():
     assert '5645' in blob
     assert 'gpo_access_denied' in blob or 'ExtensionAdmin' in blob
     assert 'Access denied' in blob or 'computer account' in blob.lower() or 'LocalSystem' in blob
+
+
+def test_mrb5648_gpo_log_keeps_need_and_credman():
+    """MRB #5648: DCC gpo block must keep need=/credman_* from script JSON."""
+    import airc_extension as ex
+
+    block = ex._format_gpo_log_block(
+        {
+            "ok": False,
+            "gpo": "fail",
+            "reason": "gpo_access_denied",
+            "wrote_gpo": False,
+            "error": "Access is denied.",
+            "dc": "WALRUS.wonderland.local",
+            "gpo_via": "invoke_command_dc",
+            "need": "credman:PriorityAirc/ExtensionAdmin",
+            "credman_tried": True,
+            "credman_present": False,
+        }
+    )
+    assert block["reason"] == "gpo_access_denied"
+    assert "ExtensionAdmin" in (block.get("need") or "")
+    assert block.get("credman_tried") is True
+    assert block.get("credman_present") is False
+    assert "Access is denied" in (block.get("error") or "")
+    assert block.get("dc") == "WALRUS.wonderland.local"
+
+
+def test_mrb5648_extension_log_from_payload_surfaces_need():
+    import airc_extension as ex
+
+    log = ex.extension_log_from_payload(
+        "install",
+        whatif=False,
+        payload={
+            "ok": False,
+            "gpo": "fail",
+            "gpo_detail": {
+                "ok": False,
+                "gpo": "fail",
+                "reason": "gpo_access_denied",
+                "error": "Access is denied.",
+                "dc": "WALRUS.wonderland.local",
+                "gpo_via": "invoke_command_dc",
+                "need": "credman:PriorityAirc/ExtensionAdmin",
+                "credman_tried": True,
+                "credman_present": False,
+                "wrote_gpo": False,
+            },
+            "hosts": [],
+        },
+    )
+    assert log["gpo"].get("need", "").startswith("credman:")
+    assert any(f.get("step") == "gpo" for f in log["failures"])
