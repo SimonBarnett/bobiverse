@@ -46,6 +46,7 @@ def test_fr5311_dcc_when_offer_sha_matches():
     )
     assert out["via"] == "dcc"
     assert "via=dcc" in out["done"]
+    assert "exit=1" in out["done"]  # FR #5655
     assert captured
     assert dcc.sha256_hex(captured[0]) in out["done"]
     body = json.loads(captured[0].decode("utf-8"))
@@ -59,6 +60,7 @@ def test_fr5311_no_offer_uses_cont():
     assert out["via"] == "irc"
     assert "CONT" in "\n".join(out["lines"])
     assert "via=dcc" not in out["done"]
+    assert "exit=1" in out["done"]  # FR #5655
 
 
 def test_fr5311_dcc_fail_falls_back():
@@ -71,6 +73,7 @@ def test_fr5311_dcc_fail_falls_back():
     )
     assert out["via"] == "irc"
     assert "dcc-fail" in out["done"] or "dcc failed" in "\n".join(out["lines"]).lower()
+    assert "exit=1" in out["done"]  # FR #5655
 
 
 def test_fr5311_console_wires_dcclisten():

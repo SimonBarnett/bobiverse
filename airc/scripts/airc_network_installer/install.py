@@ -52,6 +52,39 @@ def offer_download_psexec(dest: Path) -> Path:
     raise RuntimeError("PsExec.exe not found inside PSTools.zip")
 
 
+def ensure_psexec(explicit: str = "", *, dest: Optional[Path] = None) -> Optional[str]:
+    """FR #5655: find PsExec on PATH or download Sysinternals copy once.
+
+    MSI must not bundle PsExec (Sysinternals licence). LEGION / network installer
+    may download to ProgramData\\bobiverse\\tools\\PsExec.exe (or AIRC_PSEXEC_PATH /
+    dest). Opt out: AIRC_LEGION_NO_PSEXEC_DOWNLOAD=1.
+    """
+    found = find_psexec(explicit)
+    if found:
+        return found
+    if (os.environ.get("AIRC_LEGION_NO_PSEXEC_DOWNLOAD") or "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    ):
+        return None
+    explicit_dest = (os.environ.get("AIRC_PSEXEC_PATH") or "").strip()
+    if explicit_dest:
+        target = Path(explicit_dest)
+    elif dest is not None:
+        target = Path(dest)
+    else:
+        pd = os.environ.get("ProgramData") or r"C:\ProgramData"
+        target = Path(pd) / "bobiverse" / "tools" / "PsExec.exe"
+    if target.is_file():
+        return str(target.resolve())
+    try:
+        return str(offer_download_psexec(target).resolve())
+    except Exception:
+        return None
+
+
 def read_local_version(install_root: Optional[Path] = None) -> str:
     roots = []
     if install_root:
