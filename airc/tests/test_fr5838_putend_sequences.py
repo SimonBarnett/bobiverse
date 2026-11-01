@@ -109,3 +109,29 @@ def test_async_putend_emits_error_once(upload):
     assert len(replies) == 1
     assert "code=put-seqs-required" in replies[0][1]
     assert dest.read_bytes() == b"old file"
+
+
+def test_mrb5842_declared_zero_rejects_nonempty_assembly(tmp_path):
+    """Hostile: bytes=0 must not place a non-empty upload (MRB #5842 / CodeRabbit)."""
+    store = jobs.JobStore(tmp_path)
+    proto = jobs.JobProtocol(store)
+    dest = store.drop_root / "zero.bin"
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_bytes(b"old")
+    data = b"abcdef"
+    proto.handle(
+        "operator",
+        "PUT",
+        {
+            "id": "aabbccdd",
+            "path": "zero.bin",
+            "bytes": "0",
+            "sha256": hashlib.sha256(data).hexdigest(),
+        },
+    )
+    send_chunk(proto, 1, data)
+    lines = proto.handle("operator", "PUTEND", {"id": "aabbccdd", "seqs": "1"})
+    assert len(lines) == 1
+    assert "code=size" in lines[0]
+    assert dest.read_bytes() == b"old"
+
