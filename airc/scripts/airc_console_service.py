@@ -151,11 +151,14 @@ def configure_log_file(path: str | os.PathLike | None) -> None:
 
 
 def info(msg: str) -> None:
-    """ISO-UTC timestamped stdout line; always flush (FR #1546).
+    """ISO-UTC timestamped log line; always flush (FR #1546).
 
     Never raise UnicodeEncodeError on cp1252 consoles (FR #4397; mirror bob-ear #4396).
     FR #5079: also tee to ``--log-file`` when set; ignore BrokenPipeError on stdout
     so a parent ``Start-Process -RedirectStandardOutput`` exit cannot kill the host.
+
+    FR #5778: when ``AIRC_ISOLATED_JOB=1`` (isolated NETWORK/EXTENSION/LEGION child),
+    write to stderr so stdout stays pure JSON for the parent IPC parser.
     """
     from datetime import datetime, timezone
 
@@ -167,8 +170,14 @@ def info(msg: str) -> None:
             _log_fp.flush()
         except Exception:
             pass
+    # FR #5778: isolated child IPC uses stdout for one JSON object only.
+    stream = (
+        sys.stderr
+        if (os.environ.get("AIRC_ISOLATED_JOB") or "").strip() in {"1", "true", "yes"}
+        else sys.stdout
+    )
     try:
-        print(line, flush=True)
+        print(line, flush=True, file=stream)
     except BrokenPipeError:
         # Parent redirected stdout and exited (FR #5079). Keep running; log-file holds lines.
         pass
@@ -182,10 +191,10 @@ def info(msg: str) -> None:
         else:
             raise
     except UnicodeEncodeError:
-        enc = getattr(sys.stdout, "encoding", None) or "ascii"
+        enc = getattr(stream, "encoding", None) or "ascii"
         safe = str(line).encode(enc, errors="replace").decode(enc, errors="replace")
         try:
-            print(safe, flush=True)
+            print(safe, flush=True, file=stream)
         except (BrokenPipeError, OSError):
             pass
 
