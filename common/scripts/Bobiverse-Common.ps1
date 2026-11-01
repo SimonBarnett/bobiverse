@@ -1030,6 +1030,7 @@ function Get-BobiverseUpdateFailureIdempotencyKey {
     if (-not $mid) { $mid = [string]$env:BOB_MACHINE_ID }
     if (-not $mid) { $mid = [string]$env:COMPUTERNAME }
     $mid = ($mid.ToLowerInvariant() -replace '[^a-z0-9-]', '-')
+    if (-not $mid) { $mid = 'unknown' }
     $prod = ($(if ($Product) { $Product } else { 'unknown' })).ToLowerInvariant() -replace '[^a-z0-9-]', '-'
     $res = ($(if ($Result) { $Result } else { 'unknown' })).ToLowerInvariant() -replace '[^a-z0-9-]', '-'
     return ('airc-update-fail|{0}|{1}|-|{2}' -f $mid, $prod, $res)

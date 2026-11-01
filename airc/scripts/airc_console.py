@@ -539,9 +539,10 @@ def report_update_failure_intake(
     result: str,
     tag: str = "",
     detail: str = "",
+    install_root: str = "",
     dry_run: bool = False,
 ) -> dict:
-    """FR #5279: file one intake issue per machine+product+tag+result (best-effort)."""
+    """FR #5279 / #5766: file one intake issue per machine+product+result."""
     mid = (os.environ.get("BOB_MACHINE_ID") or os.environ.get("COMPUTERNAME") or "unknown").strip()
     mid = re.sub(r"[^a-z0-9-]", "-", mid.lower()) or "unknown"
     prod = re.sub(r"[^a-z0-9-]", "-", (product or "unknown").lower())
@@ -603,6 +604,8 @@ def report_update_failure_intake(
         "-IdempotencyKey",
         key,
     ]
+    if install_root:
+        args += ["-InstallRoot", str(install_root)]
     try:
         subprocess.run(args, capture_output=True, text=True, timeout=30, check=False)
     except Exception:
@@ -684,7 +687,7 @@ def schedule_fleet_update(
     product = (product or "").strip().lower()
     if product not in UPDATE_PRODUCTS:
         r = UpdateScheduleResult(False, "rejected-product", product=product, version=version)
-        _maybe_intake_update_failure(r)
+        _maybe_intake_update_failure(r, install_root=install_root or "")
         return r
     install_root = resolve_fleet_update_install_root(install_root)
     script = _find_update_bobiverse_script(install_root, updater_script)
@@ -696,7 +699,7 @@ def schedule_fleet_update(
             product=product,
             version=version,
         )
-        _maybe_intake_update_failure(r)
+        _maybe_intake_update_failure(r, install_root=install_root)
         return r
     if not service_name:
         service_name = {"bob": "ircBob", "jeeves": "ircJeeves"}.get(product, "Airc")
@@ -738,7 +741,7 @@ def schedule_fleet_update(
             product=product,
             version=version,
         )
-        _maybe_intake_update_failure(r)
+        _maybe_intake_update_failure(r, install_root=install_root)
         return r
     out = ((p.stdout or "") + "\n" + (p.stderr or "")).lower()
     # Prefer updater log phrases when present in stdout (Write-Host).
@@ -795,11 +798,13 @@ def schedule_fleet_update(
     if not detail and p.returncode != 0:
         detail = f"exit={p.returncode}"
     r = UpdateScheduleResult(ok, status, detail=detail, product=product, version=version)
-    _maybe_intake_update_failure(r)
+    _maybe_intake_update_failure(r, install_root=install_root)
     return r
 
 
-def _maybe_intake_update_failure(result: UpdateScheduleResult) -> None:
+def _maybe_intake_update_failure(
+    result: UpdateScheduleResult, *, install_root: str = ""
+) -> None:
     if result.ok or result.status not in _UPDATE_INTAKE_STATUSES:
         return
     try:
@@ -808,6 +813,7 @@ def _maybe_intake_update_failure(result: UpdateScheduleResult) -> None:
             result=result.status,
             tag=result.version or "",
             detail=result.detail or "",
+            install_root=install_root,
         )
     except Exception:
         pass

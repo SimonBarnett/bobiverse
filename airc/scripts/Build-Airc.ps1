@@ -39,9 +39,12 @@ $gpoPs1 = Get-BobiverseRepoPath -Root $RepoRoot -Rel 'scripts\Invoke-AircExtensi
 if (-not (Test-Path -LiteralPath $gpoPs1)) { throw "missing $gpoPs1" }
 $intakePs1 = Get-BobiverseRepoPath -Root $RepoRoot -Rel 'common\scripts\Report-BobiverseIntakeIssue.ps1'
 if (-not (Test-Path -LiteralPath $intakePs1)) { throw "missing $intakePs1" }
+$commonPs1 = Get-BobiverseRepoPath -Root $RepoRoot -Rel 'common\scripts\Bobiverse-Common.ps1'
+if (-not (Test-Path -LiteralPath $commonPs1)) { throw "missing $commonPs1" }
 $addDataArgs = @(
     '--add-data', ($gpoPs1 + ';.'),
-    '--add-data', ($intakePs1 + ';.')
+    '--add-data', ($intakePs1 + ';.'),
+    '--add-data', ($commonPs1 + ';.')
 )
 
 if (-not $Python) {
