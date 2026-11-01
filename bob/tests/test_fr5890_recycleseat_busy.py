@@ -21,6 +21,9 @@ def setup(tmp_path, monkeypatch):
     install = tmp_path / "install"
     home = tmp_path / "home"
     home.mkdir()
+    (home / "registered-machines.json").write_text(
+        json.dumps({"machines": ["flamingo", "marchhare"]})
+    )
     adir = sw.queue_dir(install)
     adir.mkdir(parents=True)
     for name in (sw.ALIVE_FILE, sw.ENGINE_ALIVE_FILE):
@@ -49,8 +52,11 @@ def ask(setup, **kw):
 
 
 @pytest.mark.parametrize("source", ["workers", "worker_list"])
-def test_working_seat_nacks_without_queueing(setup, source):
+@pytest.mark.parametrize("roster_present", [True, False])
+def test_working_seat_nacks_without_queueing(setup, source, roster_present):
     install, home = setup
+    if not roster_present:
+        (home / "registered-machines.json").unlink()
     ent = {"workers": {}, "worker_list": []}
     if source == "workers":
         ent["workers"]["72904"] = {"working_on": "MRB SimonBarnett/bobiverse#5890"}
@@ -67,9 +73,20 @@ def test_working_seat_nacks_without_queueing(setup, source):
     assert bobreport.digest_path(home).read_bytes() == before
 
 
+def test_unreadable_work_evidence_fails_closed(setup):
+    install, home = setup
+    bobreport.digest_path(home).write_text("not json")
+    d = ask(setup)
+    assert not d.ok and d.reason == "state_unavailable"
+    assert SEAT in d.line
+    assert not list(rs.queue_dir(install).glob("req-*.json"))
+
+
 def test_busy_check_uses_shared_digest_home(setup, tmp_path, monkeypatch):
     _, home = setup
     shared = tmp_path / "digest"
+    shared.mkdir()
+    (shared / "registered-machines.json").write_text(json.dumps({"machines": ["flamingo"]}))
     monkeypatch.setenv("BOB_DIGEST_HOME", str(shared))
     bobreport.save_digest(shared, {"machines": {"flamingo": {
         "workers": {"72904": {"working_on": "FR SimonBarnett/bobiverse#5890"}}
@@ -115,12 +132,41 @@ def test_idle_target_acks_and_queues_despite_another_working_seat(setup):
 
 def test_queue_failure_does_not_stamp_cooldown(setup, monkeypatch):
     original = rs.write_request
+
     def fail(*args, **kwargs):
         raise OSError("test queue failure")
+
     monkeypatch.setattr(rs, "write_request", fail)
     assert ask(setup).reason == "queue_error"
     monkeypatch.setattr(rs, "write_request", original)
     assert ask(setup).ok
+
+
+@pytest.mark.parametrize("fail_on", ["ack", "req"])
+def test_failed_atomic_publish_queues_nothing_and_allows_retry(setup, monkeypatch, fail_on):
+    install, _ = setup
+    original = rs.os.replace
+
+    def fail(src, dst):
+        if dst.name.startswith(f"{fail_on}-"):
+            raise OSError("test publish failure")
+        return original(src, dst)
+
+    monkeypatch.setattr(rs.os, "replace", fail)
+    assert ask(setup).reason == "queue_error"
+    assert not list(rs.queue_dir(install).glob("req-*.json"))
+    assert not list(rs.queue_dir(install).glob("ack-*.json"))
+    monkeypatch.setattr(rs.os, "replace", original)
+    assert ask(setup).ok
+
+
+def test_corrupt_ack_stamp_fails_closed(setup):
+    install, _ = setup
+    qdir = rs.queue_dir(install)
+    qdir.mkdir(parents=True)
+    (qdir / f"ack-{SEAT}.json").write_text("not json")
+    assert ask(setup).reason == "queue_error"
+    assert not list(qdir.glob("req-*.json"))
 
 
 def test_dry_run_does_not_stamp_cooldown(setup):
