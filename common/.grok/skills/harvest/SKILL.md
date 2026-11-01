@@ -345,6 +345,7 @@ routes to bobiverse via the split rule.
 - airc bad_id: service on_line must dispatch action=bad_id (err+DONE) and log auth-allow without body; ear _AIRC_REPLY_BODY_RE must accept non-hex id= so waiters see DONE
 - LEGION default_installer_run tests must use a non-local host (not this machine name) or install_local skips the install_remote monkeypatch; scrub FAKE_ needles via runtime concat for FR #5721 source pins.
 - LEGION CredMan/SYSTEM-fallback unit pins must monkeypatch read_remote_airc_profile_result; otherwise host SMB profile_unreadable exits before run_fn and flakes on MarchHare-class boxes.
+- FR #5889: recycleseat storms stop with seat-keyed pending (awaiting_ack/recent_ack/busy) plus author_only_deadlock flag; digest busy fixtures need worker_list state=doing+work= because save_digest normalises busy to idle
 
 ## Harvest digest (lessons audit 2026-10-06)
 
