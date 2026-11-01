@@ -153,7 +153,7 @@ PRIVMSG marchhare_console :id=aabbccdd LEGION flamingo -Profile fleet
 
 LEGION / EXTENSION / NETWORK pick **passed** (DCC `CRED id= via=dcc`) then **CredMan** then **SYSTEM**. See `bobiverse-airc-commands` CRED + LEGION / NETWORK sections. Never put passwords on IRC.
 
-**CRED persist (FR #5802):** lasting LocalSystem CredMan write for Priority (and similar) targets. Prefer `CRED persist target=... via=https url=https://bob.ntsa.uk/...` when a one-time HTTPS drop is hosted; use `via=irc` (FR #5812) on boxes that only allow outbound 80/443/993 with no drop host (E2E `CRED-HELLO` / `CRED-SEAL` over the existing TLS IRC hop; drive seal+send with `Send-AircCred.ps1` / `airc_cred_send.py`, FR #5825); optional `via=dcc` when DCC works. Stage (`CRED ... via=dcc` without `persist`) stays memory-only.
+**CRED persist (FR #5802):** lasting LocalSystem CredMan write for Priority (and similar) targets. Prefer `CRED persist target=... via=https url=https://bob.ntsa.uk/...` when a one-time HTTPS drop is hosted; use `via=irc` (FR #5812) on boxes that only allow outbound 80/443/993 with no drop host (E2E `CRED-HELLO` / `CRED-SEAL` over the existing TLS IRC hop; drive seal+send with `Send-AircCred.ps1` / `airc_cred_send.py`, FR #5825; MSI/hotpatch trees stage those scripts plus `airc_cred_irc.py` via `Pack-AircConsoleRelease.ps1`, FR #5829); optional `via=dcc` when DCC works. Stage (`CRED ... via=dcc` without `persist`) stays memory-only.
 
 Default CredMan targets are `PriorityAirc/LegionAdmin`, `PriorityAirc/ExtensionAdmin`, and `PriorityAirc/NetworkAdmin`. Override in `config/airc.json`:
 

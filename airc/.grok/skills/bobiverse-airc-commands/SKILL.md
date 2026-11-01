@@ -135,8 +135,7 @@ PRIVMSG {mid}_console :id=c25bd00e NETWORK diag -WhatIf
 
 See `docs/airc-remote-control.md` and `docs/feature-request-airc-network-diagnostic-2026-10-31.md`.
 
-## CRED staged + persist (FR #5659 / #5802 / #5812)
-## CRED staged + persist (FR #5659 / #5802 / #5811)
+## CRED staged + persist (FR #5659 / #5802 / #5811 / #5812)
 
 Three paths:
 
@@ -180,6 +179,7 @@ PRIVMSG {mid}_console :id=c25bd00e CRED-SEAL token=<tok> seq=1/1 ct=<b64>
 - HTTPS URL must be `https://` under the fleet public base (`bob.ntsa.uk` / `BOB_PUBLIC_BASE`) or a prefix in `AIRC_CRED_HTTPS_PREFIXES`. Rejected URL -> `cred-url-rejected`. Fetch failures surface firewall-aware tokens (`firewall-or-unreachable`, `timeout`, `ssl-error`, `dns-failed`, `http-N`).
 - **via=irc (FR #5812):** console replies `CRED-HELLO` (ephemeral X25519 pub + one-time token + short expiry). Operator sends `CRED-SEAL` ciphertext chunks only (Ergo never sees plaintext). Token is single-use; wrong nick -> `cred-rejected-auth`; target must be a `credentialTarget` from `priority-instances.json`.
 - **Sender helper (FR #5825):** `Send-AircCred.ps1` / `airc_cred_send.py` wait for HELLO, seal via `seal_cred_payload`, send SEAL chunks, return one named result. Credential from local CredMan or SecureString/stdin --- never `--password` argv or a plaintext file.
+- **Pack staging (FR #5829):** `Pack-AircConsoleRelease.ps1` stages `scripts\airc_cred_irc.py`, `scripts\airc_cred_send.py`, and `scripts\Send-AircCred.ps1` into console MSI/hotpatch trees (operator client allow-list unchanged).
 - Without `via=dcc` / offer on stage or persist-dcc -> `DONE ... usage cred-requires-dcc`. Persist needs `target=`; persist+https needs `url=`; persist accepts `via=https|dcc|irc`.
 - HTTPS URL must be `https://` under the fleet public base (`bob.ntsa.uk` / `BOB_PUBLIC_BASE`) or a prefix in `AIRC_CRED_HTTPS_PREFIXES`. Rejected URL -> `cred-url-rejected`. Fetch failures surface firewall-aware tokens (`firewall-or-unreachable`, `timeout`, `ssl-error`, `dns-failed`, `http-N`). **FR #5811:** every persist outcome reaches IRC (`action=cred` on_line dispatch) with `cred failed: <reason>` / `DONE exit=1 <reason>`; fail-intake uses shared `airc-cred-fail|...` (never silent; never secrets). Also `non-json-body`.
 - Without `via=dcc` / offer on stage or persist-dcc -> `DONE ... usage cred-requires-dcc`. Persist needs `target=`; persist+https needs `url=`.
