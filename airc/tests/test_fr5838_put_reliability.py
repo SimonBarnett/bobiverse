@@ -133,23 +133,31 @@ def test_remote_helper_put_completion_errors_and_pacing(tmp_path):
     $jsonl = Join-Path $env:TEST_TMP 'replies.jsonl'
     $ack = "ok id=$id putend bytes=3 sha256=aaaa via=dcc"
     Add-Content $jsonl (@{ body = $ack } | ConvertTo-Json -Compress)
-    $lines = @(Wait-AircRemoteReplies -RepliesJsonl $jsonl -ExpectJobId $id -TimeoutSec 1)
-    $parsed = ConvertFrom-AircRemoteReply -Lines $lines -ExpectJobId $id
+    $lines = @(Wait-AircRemoteReplies -RepliesJsonl $jsonl -ExpectJobId $id -TimeoutSec 1 -Put)
+    $parsed = ConvertFrom-AircRemoteReply -Lines $lines -ExpectJobId $id -Put
     Assert-Test ($parsed.ExitCode -eq 0 -and $parsed.Bytes -eq 3 -and $parsed.Via -eq 'dcc')
     foreach ($errorBody in @("err id=$id code=put-seqs-required msg=seqs=N", "err id=$id code=order msg=missing=2 missing_more=0")) {
         Set-Content $jsonl (@{ body = 'err id=deadbeef code=order msg=missing=1' } | ConvertTo-Json -Compress)
         Add-Content $jsonl (@{ body = $errorBody } | ConvertTo-Json -Compress)
         try {
-            Wait-AircRemoteReplies -RepliesJsonl $jsonl -ExpectJobId $id -TimeoutSec 1 | Out-Null
+            Wait-AircRemoteReplies -RepliesJsonl $jsonl -ExpectJobId $id -TimeoutSec 1 -Put | Out-Null
             throw 'expected protocol error'
         } catch { Assert-Test ([string]$_ -match [regex]::Escape($errorBody)) }
         try {
-            ConvertFrom-AircRemoteReply -Lines @($errorBody) -ExpectJobId $id | Out-Null
+            ConvertFrom-AircRemoteReply -Lines @($errorBody) -ExpectJobId $id -Put | Out-Null
             throw 'expected protocol error'
         } catch { Assert-Test ([string]$_ -match [regex]::Escape($errorBody)) }
     }
     $parsed = ConvertFrom-AircRemoteReply -Lines @('err id=deadbeef code=order', "DONE id=$id exit=0") -ExpectJobId $id
     Assert-Test ($parsed.ExitCode -eq 0)
+    Set-Content $jsonl (@{ body = $ack } | ConvertTo-Json -Compress)
+    Add-Content $jsonl (@{ body = "out id=$id seq=1 run output" } | ConvertTo-Json -Compress)
+    Add-Content $jsonl (@{ body = "DONE id=$id exit=7" } | ConvertTo-Json -Compress)
+    $lines = @(Wait-AircRemoteReplies -RepliesJsonl $jsonl -ExpectJobId $id -TimeoutSec 1)
+    $parsed = ConvertFrom-AircRemoteReply -Lines $lines -ExpectJobId $id
+    Assert-Test ($parsed.ExitCode -eq 7 -and $parsed.StdOut -eq 'run output')
+    $parsed = ConvertFrom-AircRemoteReply -Lines @($ack, "DONE id=$id exit=7") -ExpectJobId $id
+    Assert-Test ($parsed.ExitCode -eq 7)
     $script:Delays = @()
     function Start-Sleep { param([int]$Milliseconds) $script:Delays += $Milliseconds }
     $outbox = Join-Path $env:TEST_TMP 'outbox.txt'

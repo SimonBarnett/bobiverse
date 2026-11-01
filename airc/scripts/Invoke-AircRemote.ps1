@@ -278,7 +278,11 @@ function Test-AircDccDoneSha256 {
 }
 
 function ConvertFrom-AircRemoteReply {
-    param([Parameter(Mandatory)][string[]]$Lines, [string]$ExpectJobId = '')
+    param(
+        [Parameter(Mandatory)][string[]]$Lines,
+        [string]$ExpectJobId = '',
+        [switch]$Put
+    )
     $outs = New-Object System.Collections.Generic.List[object]
     $errs = New-Object System.Collections.Generic.List[object]
     $done = $null
@@ -295,13 +299,13 @@ function ConvertFrom-AircRemoteReply {
             if ($obj.Stream -eq 'out') { [void]$outs.Add($obj) } else { [void]$errs.Add($obj) }
             continue
         }
-        if ($line -match '^err\s+id=(?<id>[0-9a-f]+)\s+code=\S+') {
+        if ($Put -and $line -match '^err\s+id=(?<id>[0-9a-f]+)\s+code=\S+') {
             if (-not $ExpectJobId -or $Matches.id -eq $ExpectJobId) {
                 throw ("airc protocol error: {0}" -f $line)
             }
             continue
         }
-        if ($line -match '^ok\s+id=(?<id>[0-9a-f]+)\s+putend\b(?<rest>.*)$') {
+        if ($Put -and $line -match '^ok\s+id=(?<id>[0-9a-f]+)\s+putend\b(?<rest>.*)$') {
             if ($ExpectJobId -and $Matches.id -ne $ExpectJobId) { continue }
             $line = 'DONE id={0} exit=0{1}' -f $Matches.id, $Matches.rest
         }
@@ -500,7 +504,8 @@ function Wait-AircRemoteReplies {
         [Parameter(Mandatory)][string]$RepliesJsonl,
         [Parameter(Mandatory)][string]$ExpectJobId,
         [int]$TimeoutSec = 60,
-        [int64]$StartOffset = 0
+        [int64]$StartOffset = 0,
+        [switch]$Put
     )
     if ($TimeoutSec -lt 1) { throw 'TimeoutSec must be >= 1 when waiting for replies' }
     $deadline = [datetime]::UtcNow.AddSeconds($TimeoutSec)
@@ -520,13 +525,13 @@ function Wait-AircRemoteReplies {
             if ($refuseIdlessRe.IsMatch($b)) {
                 throw ("airc refusal fail-fast: {0}" -f $b)
             }
-            if ($errorRe.IsMatch($b)) {
+            if ($Put -and $errorRe.IsMatch($b)) {
                 throw ("airc protocol error: {0}" -f (Protect-AircRemoteSecret $b))
             }
-            if ($lineRe.IsMatch($b) -or $doneRe.IsMatch($b) -or $putendRe.IsMatch($b)) {
+            if ($lineRe.IsMatch($b) -or $doneRe.IsMatch($b) -or ($Put -and $putendRe.IsMatch($b))) {
                 [void]$collected.Add($b)
             }
-            if ($doneRe.IsMatch($b) -or $putendRe.IsMatch($b)) {
+            if ($doneRe.IsMatch($b) -or ($Put -and $putendRe.IsMatch($b))) {
                 return $collected.ToArray()
             }
         }
@@ -895,7 +900,7 @@ while ($true) {
         exit 2
     }
     try {
-        $rawLines = @(Wait-AircRemoteReplies -RepliesJsonl $repliesJsonl -ExpectJobId $corr -TimeoutSec $remaining -StartOffset $startOffset)
+        $rawLines = @(Wait-AircRemoteReplies -RepliesJsonl $repliesJsonl -ExpectJobId $corr -TimeoutSec $remaining -StartOffset $startOffset -Put:($Action -eq 'Put'))
     } catch {
         Write-Host ("ERROR {0}" -f (Protect-AircRemoteSecret ([string]$_)))
         exit 2
@@ -907,7 +912,7 @@ while ($true) {
         }
         [System.IO.File]::WriteAllLines($ReplyFile, $rawLines, (New-Object System.Text.UTF8Encoding $false))
     }
-    $parsed = ConvertFrom-AircRemoteReply -Lines $rawLines -ExpectJobId $corr
+    $parsed = ConvertFrom-AircRemoteReply -Lines $rawLines -ExpectJobId $corr -Put:($Action -eq 'Put')
 
     $canBusyRetry = ($Action -in $busyRetryActions) -and (-not $pinnedJobId) -and ($attempt -le $MaxRetries) `
         -and (Test-AircRemoteBusyReply -Parsed $parsed) -and ([datetime]::UtcNow -lt $deadline)
