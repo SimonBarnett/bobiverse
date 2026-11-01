@@ -947,6 +947,20 @@ class ChairJobs:
                 ts = gitclaim.last_worker_activity(self.home, nick)
             if ts is not None:
                 last_activity[nick] = float(ts)
+        last_bored = gitclaim.merge_last_bored(self.home, self.digest_home)
+        # FR #5701: recycle silent idle seats (remote ear via !recycleseat IRC).
+        bored_healed = []
+        with contextlib.suppress(Exception):
+            bored_healed = gitclaim.heal_bored_latency(
+                self.digest_home,
+                idle=idle,
+                last_bored=last_bored,
+                last_activity=last_activity,
+                accepted=list(doc.get("accepted") or []),
+                now=self.clock(),
+            )
+        if bored_healed:
+            self.log("INFO stall-heal " + "; ".join(bored_healed))
         snap = {
             "now": self.clock(),
             "live": live,
@@ -956,7 +970,7 @@ class ChairJobs:
             "ledger": gitclaim.ledger_load(self.digest_home),
             "resync_fail_streak": self.resync_fail_streak,
             "last_resync_status": status,
-            "last_bored": gitclaim.merge_last_bored(self.home, self.digest_home),
+            "last_bored": last_bored,
             "last_activity": last_activity,
             "deadlock_healed": bool(healed),
         }

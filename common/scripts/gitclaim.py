@@ -8662,6 +8662,9 @@ def row_skip_pin_ledger_heal_reason(row: dict) -> str | None:
 # FR #5163: MRB reviewer deadlock (cross give-up / author-only among idle seats).
 MRB_REVIEWER_DEADLOCK_COOLDOWN_S = 180.0
 MRB_REVIEWER_DEADLOCK_STATE = "mrb-reviewer-deadlock.json"
+# FR #5701: recycle a seat that is idle past bored-latency without !bored.
+BORED_LATENCY_HEAL_COOLDOWN_S = 900.0
+BORED_LATENCY_HEAL_STATE = "bored-latency-heal.json"
 
 
 def mrb_reviewer_deadlock_state_path(home: Path) -> Path:
@@ -8978,6 +8981,127 @@ def heal_mrb_reviewer_deadlock(
             _stamp(info)
     except (TimeoutError, OSError, ValueError, json.JSONDecodeError):
         return lines
+    return lines
+
+
+def bored_latency_heal_state_path(home: Path) -> Path:
+    return _root(home) / BORED_LATENCY_HEAL_STATE
+
+
+def _load_bored_latency_heal_state(home: Path) -> dict:
+    path = bored_latency_heal_state_path(home)
+    if not path.is_file():
+        return {"nicks": {}}
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, ValueError):
+        return {"nicks": {}}
+    if not isinstance(raw, dict):
+        return {"nicks": {}}
+    nicks = raw.get("nicks")
+    if not isinstance(nicks, dict):
+        nicks = {}
+    return {"nicks": nicks}
+
+
+def _save_bored_latency_heal_state(home: Path, state: dict) -> None:
+    path = bored_latency_heal_state_path(home)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    clean = {"nicks": {}}
+    for key, val in (state.get("nicks") or {}).items():
+        nick = (canonical_worker_nick(str(key)) or str(key or "")).strip()
+        if not nick:
+            continue
+        try:
+            clean["nicks"][nick] = float(val)
+        except (TypeError, ValueError):
+            continue
+    path.write_text(json.dumps(clean, indent=2) + "\n", encoding="utf-8")
+
+
+def heal_bored_latency(
+    home: Path,
+    *,
+    idle: set[str] | None = None,
+    last_bored: dict | None = None,
+    last_activity: dict | None = None,
+    accepted: list | None = None,
+    now: float | None = None,
+    install_root=None,
+    cooldown_s: float | None = None,
+) -> list[str]:
+    """FR #5701: recycle idle seats past bored-latency with no recent !bored/activity.
+
+    Chair-local recycleseat JSON never reaches a remote tray (FR #5220). PRIVMSG
+    ``!recycleseat <nick> <machine>`` on ``#bobiverse`` and the seat shop so that
+    machine's ear queues the recycle. Rate-limited per nick.
+    """
+    import time as _time
+
+    import stall_detectors as _sd
+
+    now_f = _time.time() if now is None else float(now)
+    cool = (
+        float(cooldown_s)
+        if cooldown_s is not None
+        else float(BORED_LATENCY_HEAL_COOLDOWN_S)
+    )
+    seats_idle = set(idle) if idle is not None else free_seat_nicks(home)
+    snap = {
+        "now": now_f,
+        "idle": seats_idle,
+        "last_bored": dict(last_bored or {}),
+        "last_activity": dict(last_activity or {}),
+        "accepted": list(accepted or []),
+    }
+    findings = _sd.detect_bored_latency(snap)
+    if not findings:
+        return []
+
+    state = _load_bored_latency_heal_state(home)
+    nick_ts = state.get("nicks") if isinstance(state.get("nicks"), dict) else {}
+    lines: list[str] = []
+    root = resolve_recycleseat_install_root(home, install_root)
+
+    for item in findings:
+        nick = str((item.get("evidence") or {}).get("nick") or item.get("key") or "").strip()
+        if not nick:
+            continue
+        canon = (canonical_worker_nick(nick) or nick).strip()
+        last = float(nick_ts.get(canon) or nick_ts.get(canon.lower()) or 0)
+        if last and (now_f - last) < cool:
+            continue
+        try:
+            import recycleseat as _rs
+
+            rid = _rs.write_request(
+                _rs.queue_dir(root),
+                canon,
+                "jeeves",
+                "bored-latency",
+                now=now_f,
+            )
+            parsed = bobreport.parse_seat_nick(canon)
+            mid = (parsed[0] if parsed else "") or ""
+            if mid:
+                cmd = f"!recycleseat {canon} {mid}"
+                shop = worker_shop_channel(canon) or f"#{mid}"
+                with contextlib.suppress(Exception):
+                    bobreport.enqueue_chair_fleet_privmsg(home, cmd, channel="#bobiverse")
+                with contextlib.suppress(Exception):
+                    bobreport.enqueue_chair_fleet_privmsg(home, cmd, channel=shop)
+            nick_ts[canon] = now_f
+            lag = (item.get("evidence") or {}).get("lag_s")
+            lines.append(
+                f"bored-latency recycleseat={canon} id={rid} lag_s={lag}"
+            )
+        except Exception as exc:  # noqa: BLE001
+            lines.append(
+                f"bored-latency recycle_failed:{canon}:{type(exc).__name__}"
+            )
+
+    if lines:
+        _save_bored_latency_heal_state(home, {"nicks": nick_ts})
     return lines
 
 
