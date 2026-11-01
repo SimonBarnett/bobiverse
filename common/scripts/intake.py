@@ -1061,7 +1061,7 @@ _HARVEST_GENERIC_TOKENS = frozenset(
         "when",
         "into",
         # FR #5606: programming / English verbs that appear in every product
-        # PR body ("returns the parent…", "Duplicates closed: none") must not
+        # PR body ("returns the parent...", "Duplicates closed: none") must not
         # twin-match an unrelated CredMan / apply lesson when the open-twin
         # filter is lagging or the full PR body is used as a fake bullet.
         "return",
