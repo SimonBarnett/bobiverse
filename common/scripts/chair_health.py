@@ -962,6 +962,7 @@ class ChairJobs:
         if bored_healed:
             self.log("INFO stall-heal " + "; ".join(bored_healed))
         snap = {
+            "home": self.digest_home,
             "now": self.clock(),
             "live": live,
             "idle": idle,

@@ -42,6 +42,9 @@ JOBS_NAME = "copilot-jobs.json"
 TASK_TIMEOUT_S = 4 * 3600.0
 CACHE_S = 300.0
 COPILOT_COOLDOWN_S = 7 * 86400.0
+MRB_FAST_GIVEUP_S = 120.0
+MRB_FAST_GIVEUP_LIMIT = 3
+MRB_BACKOFF_S = 1800.0
 FUEL_COOLDOWN_S = {
     "copilot": COPILOT_COOLDOWN_S,
     "cursor": COPILOT_COOLDOWN_S,
@@ -538,13 +541,17 @@ def build_task_body(row: dict) -> dict:
     return {"prompt": "\n".join(prompt_lines)}
 
 
-def should_dispatch(row: dict, *, allowance: bool, now: float | None = None) -> bool:
+def should_dispatch(
+    row: dict, *, allowance: bool, now: float | None = None, home: Path | None = None,
+) -> bool:
     if not allowance:
         return False
     # FR #5267: a give-up release is never offered back to Copilot.
     if gitclaim.nick_in_giveup_seats(row, COPILOT_NICK):
         return False
     task = str(row.get("task") or "").upper()
+    if task == "MRB" and home is not None and not mrb_dispatch_enabled(home, now=now):
+        return False
     if task not in ("FR", "FIX", "MRB"):
         return False
     if gitclaim.row_needs_human(row):
@@ -662,7 +669,9 @@ def dispatch_row(
         return {"status": "exhausted"}
     if not is_high_priority(home, row):
         return {"status": "skip"}
-    if not should_dispatch(row, allowance=True, now=now):
+    if not should_dispatch(row, allowance=True, now=now, home=home):
+        return {"status": "skip"}
+    if gitclaim.ledger_blocks(gitclaim.ledger_load(home), row, COPILOT_NICK):
         return {"status": "skip"}
     body = build_task_body(row)
     path = tasks_api_path(str(row.get("repo") or ""))
@@ -760,6 +769,57 @@ def dispatch_enabled(home: Path) -> bool:
             if _explicitly_off(raw):
                 return False
     return True
+
+
+def mrb_dispatch_enabled(home: Path, *, now: float | None = None) -> bool:
+    """MRB-only switch and fast-GIVEUP circuit breaker, independent of fuel."""
+    doc = load_allowance(home)
+    if _explicitly_off(doc.get("mrb")):
+        return False
+    until = _num(doc.get("mrb_backoff_until")) or 0.0
+    return (time.time() if now is None else float(now)) >= until
+
+
+def mrb_reviewer_available(
+    home: Path, row: dict, *, now: float | None = None, ledger: dict | None = None,
+) -> bool:
+    """Use the actual dispatch gates, not an unlimited fuel tile, for reviews."""
+    return (
+        str(row.get("task") or "").upper() == "MRB"
+        and dispatch_enabled(home)
+        and has_allowance(home, now=now)
+        and is_high_priority(home, row)
+        and should_dispatch(row, allowance=True, now=now, home=home)
+        and not gitclaim.ledger_blocks(
+            gitclaim.ledger_load(home) if ledger is None else ledger, row, COPILOT_NICK,
+        )
+    )
+
+
+def _record_mrb_result(home: Path, job: dict, *, now: float, giveup: bool) -> None:
+    if str(job.get("task") or "").upper() != "MRB":
+        return
+    doc = load_allowance(home)
+    until = _num(doc.get("mrb_backoff_until")) or 0.0
+    count = int(_num(doc.get("mrb_fast_giveups")) or 0)
+    if until and now >= until:
+        count = 0
+    started = _num(job.get("started"))
+    fast = started is not None and 0 <= now - started <= MRB_FAST_GIVEUP_S
+    count = count + 1 if giveup and fast else 0
+    doc["mrb_fast_giveups"] = count
+    if not giveup or (until and now >= until):
+        doc.pop("mrb_backoff_until", None)
+    elif count >= MRB_FAST_GIVEUP_LIMIT:
+        if now >= until:
+            until = now + MRB_BACKOFF_S
+            bobreport.enqueue_chair_fleet_privmsg(
+                home, f"copilot MRB paused until {_utc_iso(until)}: "
+                f"{count} fast GIVEUPs; no_eligible_reviewer checks remain active",
+            )
+        doc["mrb_backoff_until"] = until
+    Path(home).mkdir(parents=True, exist_ok=True)
+    _allow_path(home).write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8")
 
 
 def _is_copilot_row(row: dict) -> bool:
@@ -1080,6 +1140,10 @@ def settle_stuck_accepted_unlocked(
             kept.append(row)
             continue
         job = _matching_job(home, row)
+        # The MRB's open PR is input, not proof the cloud review has finished.
+        if task == "MRB" and job is not None:
+            kept.append(row)
+            continue
         pr_url = _live_copilot_pr_url(doc, row, job)
         if pr_url and task == "FR":
             # The open PR (webhook MRB) tracks the work. Do not re-offer the issue.
@@ -1251,6 +1315,7 @@ def handle_timeout_or_fail(
         )
         if status != "ok":
             return {"status": "error"}
+        _record_mrb_result(home, job, now=now, giveup=True)
         gitclaim.ledger_note_event(home, COPILOT_NICK, "GIVEUP", task, repo, ident, job=moved)
         with contextlib.suppress(Exception):
             gitclaim.ledger_giveup(home, COPILOT_NICK, repo, task, ident)
@@ -1329,6 +1394,9 @@ def handle_issue_comment(home: Path, payload: dict) -> dict | None:
             result=verdict,
             url=pr_url,
         )
+        if st == "ok":
+            _record_mrb_result(home, {"task": "MRB"}, now=time.time(), giveup=False)
+            _forget_job(home, repo, "MRB", ident)
         line = announce_complete(
             repo=repo, task="MRB", ident=ident, result=verdict, pr_url=pr_url
         )
@@ -1513,7 +1581,7 @@ def tick(
             if gitclaim.ledger_blocks(ledger, row, COPILOT_NICK):
                 continue
             if is_high_priority(home, row) and should_dispatch(
-                row, allowance=True, now=now_f
+                row, allowance=True, now=now_f, home=home
             ):
                 r = dispatch_row(
                     home, row, post=post, now=now_f, announce=announce

@@ -5,6 +5,8 @@ import copilot_dispatch as cd
 import focus_ignore
 import gitclaim
 import recycleseat
+import registered_machines
+import stall_detectors
 import stuck_job_sweep as sweep
 
 
@@ -15,6 +17,7 @@ NOW = 1_800_000_000.0
 
 def _setup(home, monkeypatch):
     monkeypatch.setenv("BOB_DIGEST_HOME", str(home))
+    registered_machines.save_registered(home, {"flamingo", "marchhare"})
     monkeypatch.setattr(cd, "is_high_priority", lambda *_: True)
     focus_ignore.handle_focus_cmd(home, f"high {REPO}")
     cd.set_allowance(home, remaining=100)
@@ -156,3 +159,59 @@ def test_row_and_ledger_giveup_block_cloud_reviewer(tmp_path, monkeypatch):
     assert not cd.mrb_reviewer_available(
         tmp_path, {**rows[1], "giveup_seats": "copilot"}, now=NOW,
     )
+
+
+def test_tick_keeps_review_input_pr_and_counts_real_fast_failures(tmp_path, monkeypatch):
+    rows = _setup(tmp_path, monkeypatch)
+    for n, row in enumerate(rows[:3]):
+        start = NOW + n * 60
+        cd.dispatch_row(tmp_path, row, now=start, post=lambda *_: {"id": f"task-{n}"})
+        before = cd.tick(
+            tmp_path, now=start + 20, get=lambda *_: {"state": "running"},
+        )
+        assert before["released"] == 0
+        assert gitclaim.load_accepted(tmp_path)[0]["id"] == row["id"]
+        out = cd.tick(
+            tmp_path, now=start + 40, get=lambda *_: {"state": "failed"},
+        )
+        assert out["timed_out"] == 1
+    assert not cd.mrb_dispatch_enabled(tmp_path, now=NOW + 180)
+
+
+def test_stall_path_respects_cloud_eligibility(tmp_path, monkeypatch):
+    rows = _setup(tmp_path, monkeypatch)
+    snap = {"home": tmp_path, "now": NOW, "live": {AUTHOR},
+            "idle": {AUTHOR}, "unaccepted": rows}
+    assert stall_detectors.detect_self_review_deadlock(snap) == []
+    _fail_three(tmp_path, rows)
+    snap.update(now=NOW + 180, unaccepted=gitclaim.load_unaccepted(tmp_path))
+    findings = stall_detectors.detect_self_review_deadlock(snap)
+    assert len(findings) == 1
+    assert findings[0]["id"] == "self-review-deadlock"
+
+
+def test_expired_backoff_can_rearm_and_quota_refresh_preserves_it(tmp_path, monkeypatch):
+    rows = _setup(tmp_path, monkeypatch)
+    _fail_three(tmp_path, rows)
+    start = NOW + 160 + cd.MRB_BACKOFF_S
+    for n in range(3):
+        job = {"task": "MRB", "started": start + n * 60}
+        cd._record_mrb_result(tmp_path, job, now=job["started"] + 40, giveup=True)
+        assert cd.load_allowance(tmp_path)["mrb_fast_giveups"] == n + 1
+    now = start + 180
+    assert not cd.mrb_dispatch_enabled(tmp_path, now=now)
+    cd.refresh_allowance(
+        tmp_path, now=now,
+        fetch_user=lambda: {"quota_snapshots": {"premium_interactions": {"unlimited": True}}},
+    )
+    assert cd.has_allowance(tmp_path, now=now)
+    assert not cd.mrb_dispatch_enabled(tmp_path, now=now)
+
+
+def test_non_fast_mrb_breaks_streak_but_fr_does_not(tmp_path, monkeypatch):
+    _setup(tmp_path, monkeypatch)
+    cd._record_mrb_result(tmp_path, {"task": "MRB", "started": NOW}, now=NOW + 40, giveup=True)
+    cd._record_mrb_result(tmp_path, {"task": "FR", "started": NOW}, now=NOW + 50, giveup=True)
+    assert cd.load_allowance(tmp_path)["mrb_fast_giveups"] == 1
+    cd._record_mrb_result(tmp_path, {"task": "MRB", "started": NOW}, now=NOW + 121, giveup=True)
+    assert cd.load_allowance(tmp_path)["mrb_fast_giveups"] == 0
