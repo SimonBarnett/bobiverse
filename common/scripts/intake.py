@@ -462,6 +462,27 @@ def lesson_sentence_already_in_book(existing_md: str, lessons: list[str]) -> boo
     return False
 
 
+
+def unescape_harvest_lesson_text(text: str) -> str:
+    """Undo JSON/markdown over-escapes in harvest lesson bullets (FR #5874).
+
+    Intake lesson tips must not land literal backslash-quotes from JSON
+    escaping (e.g. mangled lstrip path quotes). Prefer ASCII --- over
+    Unicode em-dash in new harvest bullets (FR #3935).
+    """
+    s = str(text or "")
+    # Collapse repeated JSON-style quote escapes (agent / ConvertTo-Json mangling).
+    esc_dq = chr(92) + chr(34)
+    while esc_dq in s:
+        s = s.replace(esc_dq, chr(34))
+    esc_sq = chr(92) + chr(39)
+    while esc_sq in s:
+        s = s.replace(esc_sq, chr(39))
+    # FR #3935: ASCII dash runs in new harvest bullets.
+    s = s.replace("\u2014", "---").replace("\u2013", "-")
+    return s
+
+
 def extract_harvest_lessons(body: str) -> list[str]:
     """Return real Lessons: bullets; drop placeholders / noop tokens (FR #2705 / #4986)."""
     text = str(body or "")
@@ -471,7 +492,7 @@ def extract_harvest_lessons(body: str) -> list[str]:
     out: list[str] = []
     seen: set[str] = set()
     for bm in _LESSON_BULLET_RE.finditer(m.group("body")):
-        line = (bm.group("text") or "").strip()
+        line = unescape_harvest_lesson_text((bm.group("text") or "").strip())
         if is_noop_harvest_lesson(line):
             continue
         if line in seen:
@@ -1313,7 +1334,8 @@ def mrb_process_routing_already_covered(filer: Any, repo: str) -> bool:
 
 def apply_lessons_to_skill_md(existing: str, lessons: list[str]) -> str:
     """Append lessons under ``## Harvested lessons (intake)`` (FR #2705)."""
-    fresh = filter_new_lessons(existing, lessons)
+    cleaned = [unescape_harvest_lesson_text(x) for x in (lessons or [])]
+    fresh = filter_new_lessons(existing, cleaned)
     base = str(existing or "").rstrip() + "\n"
     bullets = "\n".join(f"- {x}" for x in fresh if str(x).strip())
     if not bullets:
@@ -1391,7 +1413,9 @@ def neutralize_harvest_closes(text: str) -> str:
 
 
 def build_lesson_pr_body(*, book: str, path: str, lessons: list[str], original_body: str) -> str:
-    safe_lessons = [neutralize_harvest_closes(x) for x in lessons]
+    safe_lessons = [
+        neutralize_harvest_closes(unescape_harvest_lesson_text(x)) for x in lessons
+    ]
     lines = [
         LESSON_PR_MRB_INSTRUCTION,
         "",
