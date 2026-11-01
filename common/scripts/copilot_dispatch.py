@@ -39,6 +39,7 @@ REQUIRED_HOOK_EVENTS = (
 )
 ALLOWANCE_NAME = "copilot-allowance.json"
 JOBS_NAME = "copilot-jobs.json"
+MRB_BACKOFF_NAME = "copilot-mrb-backoff.json"
 TASK_TIMEOUT_S = 4 * 3600.0
 CACHE_S = 300.0
 COPILOT_COOLDOWN_S = 7 * 86400.0
@@ -776,8 +777,16 @@ def mrb_dispatch_enabled(home: Path, *, now: float | None = None) -> bool:
     doc = load_allowance(home)
     if _explicitly_off(doc.get("mrb")):
         return False
-    until = _num(doc.get("mrb_backoff_until")) or 0.0
+    until = _num(load_mrb_backoff(home).get("mrb_backoff_until")) or 0.0
     return (time.time() if now is None else float(now)) >= until
+
+
+def load_mrb_backoff(home: Path) -> dict:
+    try:
+        doc = json.loads((Path(home) / MRB_BACKOFF_NAME).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return doc if isinstance(doc, dict) else {}
 
 
 def mrb_reviewer_available(
@@ -799,27 +808,32 @@ def mrb_reviewer_available(
 def _record_mrb_result(home: Path, job: dict, *, now: float, giveup: bool) -> None:
     if str(job.get("task") or "").upper() != "MRB":
         return
-    doc = load_allowance(home)
-    until = _num(doc.get("mrb_backoff_until")) or 0.0
-    count = int(_num(doc.get("mrb_fast_giveups")) or 0)
-    if until and now >= until:
-        count = 0
-    started = _num(job.get("started"))
-    fast = started is not None and 0 <= now - started <= MRB_FAST_GIVEUP_S
-    count = count + 1 if giveup and fast else 0
-    doc["mrb_fast_giveups"] = count
-    if not giveup or (until and now >= until):
-        doc.pop("mrb_backoff_until", None)
-    elif count >= MRB_FAST_GIVEUP_LIMIT:
-        if now >= until:
-            until = now + MRB_BACKOFF_S
-            bobreport.enqueue_chair_fleet_privmsg(
-                home, f"copilot MRB paused until {_utc_iso(until)}: "
-                f"{count} fast GIVEUPs; no_eligible_reviewer checks remain active",
-            )
-        doc["mrb_backoff_until"] = until
-    Path(home).mkdir(parents=True, exist_ok=True)
-    _allow_path(home).write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8")
+    line = ""
+    # Webhook verdicts and chair failures must not overwrite each other or quota.
+    with gitclaim._lock(home):
+        doc = load_mrb_backoff(home)
+        until = _num(doc.get("mrb_backoff_until")) or 0.0
+        count = int(_num(doc.get("mrb_fast_giveups")) or 0)
+        if until and now >= until:
+            count = 0
+        started = _num(job.get("started"))
+        fast = started is not None and 0 <= now - started <= MRB_FAST_GIVEUP_S
+        count = count + 1 if giveup and fast else 0
+        doc["mrb_fast_giveups"] = count
+        if not giveup or (until and now >= until):
+            doc.pop("mrb_backoff_until", None)
+        elif count >= MRB_FAST_GIVEUP_LIMIT:
+            if now >= until:
+                until = now + MRB_BACKOFF_S
+                line = (f"copilot MRB paused until {_utc_iso(until)}: "
+                        f"{count} fast GIVEUPs; no_eligible_reviewer checks remain active")
+            doc["mrb_backoff_until"] = until
+        path = Path(home) / MRB_BACKOFF_NAME
+        tmp = path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8")
+        os.replace(tmp, path)
+    if line:
+        bobreport.enqueue_chair_fleet_privmsg(home, line)
 
 
 def _is_copilot_row(row: dict) -> bool:
