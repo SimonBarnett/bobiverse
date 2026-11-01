@@ -2377,6 +2377,7 @@ def run_shell_request(
         )
         deadline = time.monotonic() + timeout_s
         reason = ""
+        stopped = False
         try:
             while proc.poll() is None:
                 if cancel.is_set():
@@ -2389,7 +2390,19 @@ def run_shell_request(
         finally:
             if proc.poll() is None:
                 _stop_shell_process(proc)
-        exit_code = 130 if reason == "cancelled" else 124 if reason else int(proc.returncode or 0)
+                stopped = True
+        # FR #5676: deadline can fire in the same tick the direct child exits
+        # (inherited capture / slow host). Prefer the real returncode over a
+        # spurious 124 when we never had to stop the process.
+        if reason == "cancelled":
+            exit_code = 130
+        elif reason and stopped:
+            exit_code = 124
+        elif reason:
+            exit_code = int(proc.returncode or 0)
+            reason = ""
+        else:
+            exit_code = int(proc.returncode or 0)
         out_h.flush()
         err_h.flush()
         out, out_clip = _clip_bytes(_read_shell_capture(out_path))
