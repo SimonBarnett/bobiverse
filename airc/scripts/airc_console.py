@@ -541,65 +541,33 @@ def report_update_failure_intake(
     detail: str = "",
     dry_run: bool = False,
 ) -> dict:
-    """FR #5279: file one intake issue per machine+product+tag+result (best-effort)."""
-    mid = (os.environ.get("BOB_MACHINE_ID") or os.environ.get("COMPUTERNAME") or "unknown").strip()
-    mid = re.sub(r"[^a-z0-9-]", "-", mid.lower()) or "unknown"
-    prod = re.sub(r"[^a-z0-9-]", "-", (product or "unknown").lower())
-    tg = re.sub(r"[^A-Za-z0-9._-]", "-", tag) if tag else "-"
-    res = re.sub(r"[^a-z0-9-]", "-", (result or "unknown").lower())
-    key = f"airc-update-fail|{mid}|{prod}|{tg}|{res}"
-    title = _redact_update_intake_text(f"airc UPDATE fail {res} product={prod}")
-    safe_detail = _redact_update_intake_text((detail or "")[:400])
-    body = _redact_update_intake_text(
-        "FR #5279 UPDATE / Apply failure (deterministic intake).\n"
-        f"product={prod}\ntag={tg}\nresult={res}\nidempotency_key={key}\n"
-        f"detail={safe_detail}"
-    )
-    payload = {
-        "ok": True,
-        "idempotency_key": key,
-        "kind": "issue",
-        "repo": "SimonBarnett/bobiverse",
-        "title": title,
-        "body": body,
-        "product": prod,
-        "result": res,
-        "dry_run": dry_run,
-    }
-    if dry_run:
-        return payload
-    script = Path(__file__).resolve().parent / "Report-BobiverseIntakeIssue.ps1"
-    if not script.is_file():
-        alt = Path(__file__).resolve().parents[1] / "scripts" / "Report-BobiverseIntakeIssue.ps1"
-        script = alt if alt.is_file() else script
-    if not script.is_file():
-        payload["ok"] = False
-        payload["skipped"] = "report-script-missing"
-        return payload
-    ps = os.environ.get("SystemRoot", r"C:\Windows") + r"\System32\WindowsPowerShell\v1.0\powershell.exe"
-    args = [
-        ps if Path(ps).is_file() else "powershell.exe",
-        "-NoProfile",
-        "-ExecutionPolicy",
-        "Bypass",
-        "-File",
-        str(script),
-        "-Title",
-        title,
-        "-Body",
-        body,
-        "-Repo",
-        "SimonBarnett/bobiverse",
-        "-Kind",
-        "issue",
-        "-IdempotencyKey",
-        key,
-    ]
+    """FR #5279 / #5766 / #5775: native shared fail-intake (packaged-safe).
+
+    Dedupe key: ``airc-update-fail|<machine>|update|<version>|<result>``
+    (version slot prefers tag, else installed airc version).
+    """
     try:
-        subprocess.run(args, capture_output=True, text=True, timeout=30, check=False)
-    except Exception:
-        payload["ok"] = False
-    return payload
+        import airc_fail_intake as _fail
+
+        out = _fail.report_update_status_failure(
+            product=product,
+            result=result,
+            tag=tag,
+            detail=detail,
+            dry_run=dry_run,
+        )
+        # Preserve legacy callers that read idempotency_key.
+        if isinstance(out, dict) and "idempotency_key" not in out and out.get("dedupe_key"):
+            out["idempotency_key"] = out["dedupe_key"]
+        return out
+    except Exception as exc:  # noqa: BLE001 - never break UPDATE path
+        return {
+            "ok": False,
+            "error": type(exc).__name__,
+            "product": product,
+            "result": result,
+            "dry_run": dry_run,
+        }
 
 
 def _is_frozen_airc_runtime() -> bool:
@@ -3160,6 +3128,13 @@ class AircConsoleCore:
         self.extension_runner = extension_runner or _extension.run_extension_verb
         self.network_runner = network_runner or _network.run_network_verb
         self.legion_runner = legion_runner or _legion.run_legion_verb
+        # FR #5812 / MRB #5815: per-core IRC CRED persist sessions (HELLO/SEAL).
+        try:
+            import airc_cred_irc as _circ
+
+            self.irc_cred_sessions = _circ.IrcCredSessionStore()
+        except Exception:
+            self.irc_cred_sessions = None
         # Default operators preserves pre-#3287 unit tests / hotpatched fleets without airc.json.
         self.capabilities = capabilities or ConsoleCapabilities()
         # FR #3401 / #3639: *who* may command is always live channel +o/+h (AuthPolicy).
@@ -3174,6 +3149,12 @@ class AircConsoleCore:
             for c in (presence_channels or [])
             if normalize_irc_channel(c)
         ]
+
+    def _resolved_priority_allowlist_path(self) -> str | None:
+        """Resolve the CRED allowlist using the same fallback as PRIORITY."""
+        override = self.priority_allowlist or self.priority_allowlist_path
+        path = _priority.resolve_walk_allowlist_path(self.install_root, override)
+        return str(path) if path is not None else None
 
     def register_commands(self) -> list[str]:
         """NickServ register / identify sequence (password from env/file at service layer)."""
@@ -3315,6 +3296,42 @@ class AircConsoleCore:
             discard(job_id, reason=reason)
 
     def handle_raw(self, line: str) -> HandleResult | None:
+        """FR #5775: catch any unhandled verb fault -> intake + DONE exit=1."""
+        try:
+            return self._handle_raw_unguarded(line)
+        except Exception as exc:  # noqa: BLE001 - CAST IRON catch-all
+            try:
+                import airc_fail_intake as _fail
+
+                _fail.report_verb_failure(
+                    'handle',
+                    exc,
+                    args={'line_len': len(line or '')},
+                    wait_s=1.0,
+                )
+                reply = _fail.failure_reply('00000000', 'handle', exc)
+            except Exception:
+                reply = (
+                    'err id=00000000 seq=1 code=verb-fault\n'
+                    'DONE id=00000000 exit=1'
+                )
+            nick = 'unknown'
+            try:
+                _tags, rest = parse_message_tags((line or '').rstrip('\r\n'))
+                m = _PRIVMSG_RE.match(rest)
+                if m:
+                    nick = m.group(1)
+            except Exception:
+                pass
+            return HandleResult(
+                action='shell',
+                nick=nick,
+                target=getattr(self, 'nick', None) or 'console',
+                text=line or '',
+                reply=reply,
+            )
+
+    def _handle_raw_unguarded(self, line: str) -> HandleResult | None:
         tags, rest = parse_message_tags(line.rstrip("\r\n"))
         m = _PRIVMSG_RE.match(rest)
         if not m:
@@ -3555,7 +3572,41 @@ class AircConsoleCore:
                 **meta,
             )
 
-        # FR #5659: CRED id= via=dcc --- stage username/password in memory (TLS DCC only).
+        # FR #5812: CRED-SEAL chunks (follow-up to CRED persist via=irc HELLO).
+        try:
+            import airc_cred_irc as _circ
+
+            seal_cmd = _circ.parse_cred_seal_command(cmd)
+        except Exception:
+            seal_cmd = None
+        if seal_cmd is not None:
+            allow = self._allow_meta(nick, account)
+            qid = (seal_cmd.get("qid") or "").lower()
+            try:
+                allowlisted = _circ.allowlisted_cred_targets(
+                    self._resolved_priority_allowlist_path()
+                )
+            except Exception:
+                allowlisted = set()
+            store = getattr(self, "irc_cred_sessions", None)
+            result = _circ.ingest_seal_chunk(
+                nick=nick,
+                token=str(seal_cmd.get("token") or ""),
+                seq=str(seal_cmd.get("seq") or ""),
+                ct_b64=str(seal_cmd.get("ct") or ""),
+                store=store,
+                allowlisted=allowlisted,
+            )
+            return HandleResult(
+                action="cred",
+                nick=nick,
+                target=target,
+                text=text,
+                reply=_circ.format_cred_irc_result(qid, result),
+                **allow,
+            )
+
+        # FR #5659 / #5802 / #5812: CRED via=dcc|https|irc (stage or CredMan write).
         cred_cmd = None
         try:
             import airc_passed_cred as _pcred
@@ -3572,7 +3623,173 @@ class AircConsoleCore:
                 return self._capability_deny(
                     nick, target, text, "usage secrets-on-irc", qid
                 )
-            if (cred_cmd.get("via") or "") != "dcc":
+            via = str(cred_cmd.get("via") or "").lower()
+            persist = bool(cred_cmd.get("persist"))
+            cred_target = str(cred_cmd.get("target") or "").strip()
+            cred_url = str(cred_cmd.get("url") or "").strip()
+
+            def _cred_fail(reason: str, *, exit_code: int = 1) -> HandleResult:
+                # FR #5811: named reason on IRC + shared fail-intake (FR #5775); never silent.
+                safe = re.sub(r"\s+", "-", str(reason or "cred-failed"))[:80]
+                try:
+                    import airc_fail_intake as _fail
+
+                    _fail.report_verb_failure(
+                        "cred",
+                        safe,
+                        args={
+                            "persist": bool(persist),
+                            "via": via or "-",
+                            "target": (cred_target or "")[:64],
+                            "has_url": bool(cred_url),
+                            "qid": qid or "-",
+                        },
+                        machine=getattr(self, "machine", None),
+                        wait_s=0.5,
+                    )
+                except Exception:
+                    pass
+                if qid:
+                    reply = (
+                        f"err id={qid} seq=1 cred failed: {safe}\n"
+                        f"DONE id={qid} exit={exit_code} {safe}"
+                    )
+                else:
+                    reply = f"err seq=1 cred failed: {safe}\nDONE exit={exit_code} {safe}"
+                return HandleResult(
+                    action="cred",
+                    nick=nick,
+                    target=target,
+                    text=text,
+                    reply=reply,
+                    **allow,
+                )
+
+            # FR #5802 / #5812: persist to LocalSystem CredMan (https / dcc / irc).
+            if persist:
+                if not cred_target:
+                    return self._capability_deny(
+                        nick, target, text, "usage cred-persist-needs-target", qid
+                    )
+                if via == "irc":
+                    try:
+                        import airc_cred_irc as _circ
+
+                        # Fail closed: target must appear in priority-instances
+                        # credentialTarget values (FR #5812 / #5839).
+                        allowlisted = _circ.allowlisted_cred_targets(
+                            self._resolved_priority_allowlist_path()
+                        )
+                        if cred_target not in allowlisted:
+                            return HandleResult(
+                                action="cred",
+                                nick=nick,
+                                target=target,
+                                text=text,
+                                reply=_circ.format_cred_irc_result(
+                                    qid,
+                                    {
+                                        "ok": False,
+                                        "code": "cred-target-not-allowlisted",
+                                    },
+                                ),
+                                **allow,
+                            )
+                        store = getattr(self, "irc_cred_sessions", None)
+                        hello = _circ.start_irc_persist_session(
+                            target=cred_target,
+                            nick=nick,
+                            qid=qid,
+                            store=store,
+                        )
+                    except Exception as exc:  # noqa: BLE001
+                        reason = str(exc) if str(exc) else type(exc).__name__
+                        return _cred_fail(reason)
+                    return HandleResult(
+                        action="cred",
+                        nick=nick,
+                        target=target,
+                        text=text,
+                        reply=_circ.format_cred_hello_reply(qid, hello),
+                        **allow,
+                    )
+                if via == "https":
+                    if not cred_url:
+                        return self._capability_deny(
+                            nick, target, text, "usage cred-persist-needs-url", qid
+                        )
+                    try:
+                        pair = _pcred.fetch_cred_json_https(cred_url)
+                        written = _pcred.persist_credman(
+                            cred_target, pair["username"], pair["password"]
+                        )
+                    except Exception as exc:  # noqa: BLE001
+                        reason = str(exc) if str(exc) else type(exc).__name__
+                        return _cred_fail(reason)
+                    account = pair["username"]
+                    # Drop secret from local scope ASAP (best-effort).
+                    pair["password"] = ""
+                    done = (
+                        f"DONE id={qid} exit=0 cred-persisted target={written} "
+                        f"account={account}"
+                        if qid
+                        else f"DONE exit=0 cred-persisted target={written} account={account}"
+                    )
+                    out = (
+                        f"out id={qid} seq=1 CRED persisted target={written}\n{done}"
+                        if qid
+                        else f"out seq=1 CRED persisted target={written}\n{done}"
+                    )
+                    return HandleResult(
+                        action="cred",
+                        nick=nick,
+                        target=target,
+                        text=text,
+                        reply=out,
+                        **allow,
+                    )
+                if via != "dcc":
+                    return self._capability_deny(
+                        nick, target, text, "usage cred-persist-via-https-dcc-or-irc", qid
+                    )
+                # persist + via=dcc: receive body then CredWrite (when DCC is available).
+                offer = None
+                if self.shell_runner is not None and qid:
+                    take = getattr(self.shell_runner, "take_dcclisten", None)
+                    if callable(take):
+                        offer = take(qid)
+                if offer is None:
+                    return self._capability_deny(
+                        nick, target, text, "usage cred-requires-dcc", qid
+                    )
+                try:
+                    import airc_dcc_bulk as _dcc
+
+                    raw, _digest = _dcc.receive_upload_from_offer(offer)
+                    pair = _pcred.parse_cred_json(raw)
+                    written = _pcred.persist_credman(
+                        cred_target, pair["username"], pair["password"]
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    reason = str(exc) if str(exc) else type(exc).__name__
+                    return _cred_fail(reason)
+                account = pair["username"]
+                pair["password"] = ""
+                done = (
+                    f"DONE id={qid} exit=0 cred-persisted target={written} "
+                    f"account={account}"
+                )
+                return HandleResult(
+                    action="cred",
+                    nick=nick,
+                    target=target,
+                    text=text,
+                    reply=f"out id={qid} seq=1 CRED persisted target={written}\n{done}",
+                    **allow,
+                )
+
+            # FR #5659: in-memory stage (TLS DCC only).
+            if via != "dcc":
                 return self._capability_deny(
                     nick, target, text, "usage cred-requires-dcc", qid
                 )
@@ -4226,6 +4443,33 @@ class AircConsoleCore:
         return HandleResult(
             action="pipe", nick=nick, target=target, text=text, **meta
         )
+
+
+
+# FR #5775: central handle_raw catch covers these IRC verbs / entries.
+try:
+    import airc_fail_intake as _fail_intake
+
+    for _verb in (
+        'update',
+        'version',
+        'status',
+        'legion',
+        'extension',
+        'network',
+        'priority',
+        'shell',
+        'cred',
+        'job',
+        'put',
+        'get',
+        'dcclisten',
+        'help',
+        'handle',
+    ):
+        _fail_intake.mark_wrapped(_verb)
+except Exception:
+    pass
 
 
 def home_dir(explicit: str | None = None) -> Path:

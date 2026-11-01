@@ -8,7 +8,12 @@ import airc_legion as lg
 from airc_auth_helpers import ops_auth
 
 
-def test_fr5309_whatif_dry_run_no_remote_install():
+def test_fr5309_whatif_dry_run_no_remote_install(monkeypatch):
+    monkeypatch.setattr(
+        lg,
+        "read_remote_airc_profile_result",
+        lambda host, **_k: {"profile": "", "ok": True, "found": False, "detail": "not-found"},
+    )
     seen: list[dict] = []
 
     def run_fn(spec: dict) -> dict:
@@ -37,7 +42,12 @@ def test_fr5309_whatif_dry_run_no_remote_install():
     assert "password" not in seen[0]
 
 
-def test_fr5309_live_spec_latest_release_not_foreign_url():
+def test_fr5309_live_spec_latest_release_not_foreign_url(monkeypatch):
+    monkeypatch.setattr(
+        lg,
+        "read_remote_airc_profile_result",
+        lambda host, **_k: {"profile": "", "ok": True, "found": False, "detail": "not-found"},
+    )
     def run_fn(spec: dict) -> dict:
         return {"ok": True, "status": "success", "msi": spec.get("msi")}
 
@@ -62,7 +72,12 @@ def test_fr5309_live_spec_latest_release_not_foreign_url():
     assert bad.get("invoked_installer") is False
 
 
-def test_fr5309_credman_not_on_irc_or_argv():
+def test_fr5309_credman_not_on_irc_or_argv(monkeypatch):
+    monkeypatch.setattr(
+        lg,
+        "read_remote_airc_profile_result",
+        lambda host, **_k: {"profile": "", "ok": True, "found": False, "detail": "not-found"},
+    )
     captured: list[dict] = []
 
     def run_fn(spec: dict) -> dict:

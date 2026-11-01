@@ -566,7 +566,21 @@ def parse_priority_walk_command(text: str) -> tuple[str, dict[str, str]] | None:
     if not m:
         return None
     op = m.group(1)
-    kv = {mm.group(1).lower(): mm.group(2) for mm in _KV_RE.finditer(m.group(2) or "")}
+    rest = (m.group(2) or "").strip()
+    kv = {mm.group(1).lower(): mm.group(2) for mm in _KV_RE.finditer(rest)}
+    # FR #5803: accept positional ``PRIORITY formStart <instance> <form>``
+    # (same bare instance id as ``PRIORITY status <id>``), not only key=value.
+    positionals: list[str] = []
+    for tok in rest.split():
+        if re.match(r"^\w+=", tok):
+            continue
+        positionals.append(tok)
+    if "instance" not in kv and positionals:
+        kv["instance"] = positionals[0]
+    if "form" not in kv and len(positionals) > 1:
+        kv["form"] = positionals[1]
+    if "path" not in kv and len(positionals) > 2:
+        kv["path"] = positionals[2]
     if leading_id and "id" not in kv:
         kv["id"] = leading_id
     return op, kv
@@ -628,7 +642,9 @@ def default_fixture_path() -> Path:
 def load_allowlist_rows(path: Path | None) -> list[dict[str, Any]]:
     if path is None or not path.is_file():
         return []
-    data = json.loads(path.read_text(encoding="utf-8"))
+    # utf-8-sig: tolerate a BOM so CredMan/PRIORITY allowlists saved from
+    # Notepad still parse (FR #5862 / CodeRabbit on #5862; FR #3935).
+    data = json.loads(path.read_text(encoding="utf-8-sig"))
     inst = data.get("instances")
     if not isinstance(inst, list):
         return []
@@ -659,14 +675,24 @@ def walk_fixture(op: str, forms: dict[str, Any], kv: dict[str, str]) -> dict[str
     form = (kv.get("form") or "").strip()
     rec = forms.get(form)
     if not isinstance(rec, dict):
-        raise KeyError(form)
+        # FR #5837 / MRB #5841: named miss; bound echo keeps #5616 reply budget.
+        return {
+            "ok": False,
+            "error": "form-not-found",
+            "form": bound_echo_token(form),
+        }
     wire = OP_WIRE[op.lower()]
     out: dict[str, Any] = {"ok": True, "op": wire, "form": form, "instance": kv.get("instance", "")}
     if wire == "subform":
         path = (kv.get("path") or "").strip()
         subs = rec.get("subforms") or {}
         if path not in subs:
-            raise KeyError(path)
+            return {
+                "ok": False,
+                "error": "subform-not-found",
+                "form": bound_echo_token(form),
+                "path": bound_echo_token(path),
+            }
         out["path"] = path
         out["subform"] = subs[path]
     elif wire == "getRows":
@@ -727,22 +753,33 @@ def run_priority_walk(
         lines = (out, f"DONE id={jid} exit={exit_code}")
         return PriorityWalkResult(False, exit_code, jid, lines, payload)
     fix = Path(fixture_path) if fixture_path else default_fixture_path()
+    failure: BaseException | str = ""
     try:
         forms = load_fixture(fix)
         payload = walk_fixture(op, forms, kv)
     except (OSError, ValueError, KeyError, json.JSONDecodeError) as exc:
+        failure = exc
         payload = {
             "ok": False,
             "error": "fixture-miss",
-            "detail": type(exc).__name__,
             "action": "walk",
         }
-        out, exit_code = format_bounded_priority_out(jid, payload, 2)
-        lines = (out, f"DONE id={jid} exit={exit_code}")
-        return PriorityWalkResult(False, exit_code, jid, lines, payload)
     if "action" not in payload:
         payload = {**payload, "action": "walk"}
-    out, exit_code = format_bounded_priority_out(jid, payload, 0)
+    if not payload.get("ok"):
+        try:
+            import airc_fail_intake as _fail
+
+            # wait_s>0: async thread + join cap (wait_s=0 is sync; FR #5775 / MRB #5855).
+            _fail.report_verb_failure(
+                "priority",
+                failure or payload["error"],
+                args={"op": op, "instance": inst_id, "form": form, "path": kv.get("path", "")},
+                wait_s=1.0,
+            )
+        except Exception:
+            pass
+    out, exit_code = format_bounded_priority_out(jid, payload, 0 if payload.get("ok") else 2)
     lines = (out, f"DONE id={jid} exit={exit_code}")
     ok = exit_code == 0 and bool(payload.get("ok"))
     return PriorityWalkResult(ok, exit_code, jid, lines, payload)

@@ -15,6 +15,8 @@
   Prefer -Action Cmd for directory listings. Budget -TimeoutSec above
   shell_seconds + reply_lines*0.35 + margin (default 60 can miss a busy-box DONE).
   FR #4796: multi-line -Outbox bursts use -OutboxPaceMs (default 800, ear FLOOD_S);
+  FR #5838: PUT frames enforce a minimum 1300ms gap, including DCC fallback;
+  for -Action Put the reply TimeoutSec budget restarts after the paced send.
   after a large reply (>= -BurstReplyThreshold lines) sleep -PostBurstCoolMs before return
   so sequential Commands do not stack under Ergo fakelag. Console token-bucket is FR #4790.
   FR #5008: New-AircDccListenOffer / Test-AircDccDoneSha256 build DCCLISTEN (tls=/relay=)
@@ -281,7 +283,29 @@ function ConvertFrom-AircRemoteReply {
     $outs = New-Object System.Collections.Generic.List[object]
     $errs = New-Object System.Collections.Generic.List[object]
     $done = $null
+    # FR #5826: capture public CRED-HELLO from raw lines before generic token redaction.
+    $credHelloCandidate = $null
+    $credHelloInvalid = $false
     foreach ($raw in $Lines) {
+        if ($ExpectJobId -and -not $credHelloInvalid) {
+            $helloPat = ('(?i)^out\s+id={0}\s+seq=\d+\s+CRED-HELLO\s+token=([0-9a-f]{{32}})\s+pub=([A-Za-z0-9_\-+/=]+)\s+exp=(\d+)\s+alg=x25519-chacha20poly1305\s+target=([^\s=]+)\s*$' -f [regex]::Escape($ExpectJobId))
+            if ($raw -match $helloPat) {
+                $cand = [pscustomobject]@{
+                    Token  = $Matches[1].ToLowerInvariant()
+                    Pub    = $Matches[2]
+                    Exp    = [long]$Matches[3]
+                    Alg    = 'x25519-chacha20poly1305'
+                    Target = $Matches[4]
+                }
+                if ($null -ne $credHelloCandidate) {
+                    # Duplicate or conflicting HELLO frames: refuse structured access.
+                    $credHelloInvalid = $true
+                    $credHelloCandidate = $null
+                } else {
+                    $credHelloCandidate = $cand
+                }
+            }
+        }
         $line = Protect-AircRemoteSecret $raw
         if ($line -match '^(?<stream>out|err)\s+id=(?<id>[0-9a-f]+)\s+seq=(?<seq>\d+)\s(?<body>.*)$') {
             $obj = [pscustomobject]@{
@@ -354,16 +378,28 @@ function ConvertFrom-AircRemoteReply {
         }
         $seen[$row.Seq] = $key
     }
+    $credHello = $null
+    if (
+        (-not $credHelloInvalid) -and
+        ($null -ne $credHelloCandidate) -and
+        $ExpectJobId -and
+        $done.Id -eq $ExpectJobId -and
+        ([int]$done.ExitCode -eq 0) -and
+        ([string]$done.Reason -eq 'cred-hello')
+    ) {
+        $credHello = $credHelloCandidate
+    }
     return [pscustomobject]@{
-        JobId    = $done.Id
-        ExitCode = $done.ExitCode
-        Via      = $(if ($done.PSObject.Properties['Via']) { $done.Via } else { '' })
-        Bytes    = $(if ($done.PSObject.Properties['Bytes']) { $done.Bytes } else { $null })
-        Sha256   = $(if ($done.PSObject.Properties['Sha256']) { $done.Sha256 } else { '' })
-        Out      = $outSorted
-        Err      = $errSorted
-        StdOut   = (($outSorted | ForEach-Object { $_.Body }) -join "`n")
-        StdErr   = (($errSorted | ForEach-Object { $_.Body }) -join "`n")
+        JobId     = $done.Id
+        ExitCode  = $done.ExitCode
+        Via       = $(if ($done.PSObject.Properties['Via']) { $done.Via } else { '' })
+        Bytes     = $(if ($done.PSObject.Properties['Bytes']) { $done.Bytes } else { $null })
+        Sha256    = $(if ($done.PSObject.Properties['Sha256']) { $done.Sha256 } else { '' })
+        CredHello = $credHello
+        Out       = $outSorted
+        Err       = $errSorted
+        StdOut    = (($outSorted | ForEach-Object { $_.Body }) -join "`n")
+        StdErr    = (($errSorted | ForEach-Object { $_.Body }) -join "`n")
     }
 }
 
@@ -403,9 +439,13 @@ function Write-AircOutbox {
             New-Item -ItemType Directory -Path $dir -Force | Out-Null
         }
         Add-Content -LiteralPath $Outbox -Value $line -Encoding utf8
-        # FR #4796: pace multi-line bursts (PUT chunks) so the ear does not see an instant dump.
-        if ($PaceMs -gt 0 -and $i -lt $n) {
-            Start-Sleep -Milliseconds $PaceMs
+        # FR #5838: PUT control and data frames must clear the relay's ~1.2s gap.
+        $gapMs = $PaceMs
+        if ($line -match '^PRIVMSG \S+ :(PUT|CHUNK|PUTEND|DCCLISTEN)\b') {
+            $gapMs = [Math]::Max(1300, $gapMs)
+        }
+        if ($gapMs -gt 0 -and $i -lt $n) {
+            Start-Sleep -Milliseconds $gapMs
         }
     }
 }
@@ -675,6 +715,69 @@ function Invoke-AircRemoteSelfTest {
     Assert-True ($red -notmatch 'token=abc') 'secret redacted token'
     Assert-True ($red -notmatch '12345678-1234-1234-1234-123456789abc') 'secret redacted guid'
 
+    # FR #5826: CredHello structured access; Body stays masked.
+    $helloTok = 'aabbccddeeff00112233445566778899'
+    $helloPub = 'AbCdEfGhIjKlMnOpQrStUvWxYz0123456789_-'
+    $helloLines = @(
+        ("out id=c25bd00e seq=1 CRED-HELLO token={0} pub={1} exp=9999999999 alg=x25519-chacha20poly1305 target=PriorityWeb/example-dev" -f $helloTok, $helloPub),
+        'DONE id=c25bd00e exit=0 cred-hello'
+    )
+    $helloParsed = ConvertFrom-AircRemoteReply -Lines $helloLines -ExpectJobId 'c25bd00e'
+    Assert-True ($null -ne $helloParsed.CredHello) 'FR5826 CredHello present'
+    Assert-True ($helloParsed.CredHello.Token -eq $helloTok) 'FR5826 CredHello.Token'
+    Assert-True ($helloParsed.CredHello.Pub -eq $helloPub) 'FR5826 CredHello.Pub'
+    Assert-True ($helloParsed.CredHello.Target -eq 'PriorityWeb/example-dev') 'FR5826 CredHello.Target'
+    Assert-True ($helloParsed.StdOut -match 'token=\*\*\*') 'FR5826 Body still masked'
+    Assert-True ($helloParsed.StdOut -notmatch $helloTok) 'FR5826 token absent from StdOut'
+
+    $hostile = ConvertFrom-AircRemoteReply -Lines @(
+        ("out id=c25bd00e seq=1 CRED-HELLO token={0} pub={1} exp=9999999999 alg=x25519-chacha20poly1305 target=PriorityWeb/example-dev password=nope" -f $helloTok, $helloPub),
+        'DONE id=c25bd00e exit=0 cred-hello'
+    ) -ExpectJobId 'c25bd00e'
+    Assert-True ($null -eq $hostile.CredHello) 'FR5826 trailing secret rejects CredHello'
+    Assert-True ($hostile.StdOut -notmatch 'password=nope') 'FR5826 trailing password masked'
+
+    try {
+        ConvertFrom-AircRemoteReply -Lines $helloLines -ExpectJobId 'deadbeef' | Out-Null
+        Assert-True $false 'FR5826 wrong ExpectJobId should throw correlation'
+    } catch {
+        Assert-True ([string]$_ -match 'correlation mismatch') 'FR5826 wrong id fail-closed'
+    }
+
+    $badTok = ConvertFrom-AircRemoteReply -Lines @(
+        ("out id=c25bd00e seq=1 CRED-HELLO token=nothexnothexnothexnothexnothex12 pub={0} exp=9999999999 alg=x25519-chacha20poly1305 target=PriorityWeb/example-dev" -f $helloPub),
+        'DONE id=c25bd00e exit=0 cred-hello'
+    ) -ExpectJobId 'c25bd00e'
+    Assert-True ($null -eq $badTok.CredHello) 'FR5826 non-hex token rejects CredHello'
+
+    $shortTok = ConvertFrom-AircRemoteReply -Lines @(
+        ("out id=c25bd00e seq=1 CRED-HELLO token=aabbccddeeff0011 pub={0} exp=9999999999 alg=x25519-chacha20poly1305 target=PriorityWeb/example-dev" -f $helloPub),
+        'DONE id=c25bd00e exit=0 cred-hello'
+    ) -ExpectJobId 'c25bd00e'
+    Assert-True ($null -eq $shortTok.CredHello) 'FR5826 short token rejects CredHello'
+
+    try {
+        ConvertFrom-AircRemoteReply -Lines @(
+            ("out id=c25bd00e seq=1 CRED-HELLO token={0} pub={1} exp=9999999999 alg=x25519-chacha20poly1305 target=PriorityWeb/example-dev" -f $helloTok, $helloPub)
+        ) -ExpectJobId 'c25bd00e' | Out-Null
+        Assert-True $false 'FR5826 missing DONE should throw'
+    } catch {
+        Assert-True $true 'FR5826 missing DONE fail-closed'
+    }
+
+    $failDone = ConvertFrom-AircRemoteReply -Lines @(
+        ("out id=c25bd00e seq=1 CRED-HELLO token={0} pub={1} exp=9999999999 alg=x25519-chacha20poly1305 target=PriorityWeb/example-dev" -f $helloTok, $helloPub),
+        'DONE id=c25bd00e exit=1 cred-failed'
+    ) -ExpectJobId 'c25bd00e'
+    Assert-True ($null -eq $failDone.CredHello) 'FR5826 DONE exit=1 no CredHello'
+
+    $generic = ConvertFrom-AircRemoteReply -Lines @(
+        'out id=c25bd00e seq=1 shell says token=abc',
+        'DONE id=c25bd00e exit=0'
+    ) -ExpectJobId 'c25bd00e'
+    Assert-True ($null -eq $generic.CredHello) 'FR5826 ordinary stdout no CredHello'
+    Assert-True ($generic.StdOut -match 'token=\*\*\*') 'FR5826 ordinary token still masked'
+
     $script:RetryAttempts = 0
     $result = Invoke-AircRemoteWithRetry -MaxRetries 2 -Send {
         $script:RetryAttempts++
@@ -758,10 +861,6 @@ function Invoke-AircRemoteSelfTest {
         Remove-Item -LiteralPath $replyHome -Recurse -Force -ErrorAction SilentlyContinue
     }
 
-    if ($script:SelfTestFailed -gt 0) {
-        Write-Host ("SELFTEST FAILED count={0}" -f $script:SelfTestFailed)
-        exit 1
-    }
     # FR #4796: paced outbox write helper
     $paceTmp = Join-Path $env:TEMP ('airc-fr4796-' + [guid]::NewGuid().ToString('N'))
     New-Item -ItemType Directory -Path $paceTmp -Force | Out-Null
@@ -771,10 +870,32 @@ function Invoke-AircRemoteSelfTest {
         $paceLines = @(Get-Content -LiteralPath $paceOut)
         Assert-True ($paceLines.Count -eq 2) 'FR #4796 Write-AircOutbox PaceMs=0 writes both lines'
         Write-Host 'INFO FR #4796 outbox pace selftest ok'
+        & {
+            $gaps = New-Object 'System.Collections.Generic.List[int]'
+            function Start-Sleep { param([int]$Milliseconds) [void]$gaps.Add($Milliseconds) }
+            $frames = @(
+                'PRIVMSG t_console :DCCLISTEN id=aabbccdd',
+                'PRIVMSG t_console :PUT id=aabbccdd',
+                'PRIVMSG t_console :CHUNK id=aabbccdd seq=1 data=YQ==',
+                'PRIVMSG t_console :PUTEND id=aabbccdd seqs=1'
+            )
+            Write-AircOutbox -Outbox $paceOut -Lines $frames -PaceMs 0
+            Assert-True (($gaps -join ',') -eq '1300,1300,1300') 'FR #5838 PUT minimum pacing, including DCC fallback'
+            $gaps.Clear()
+            Write-AircOutbox -Outbox $paceOut -Lines $frames -PaceMs 2000
+            Assert-True (($gaps -join ',') -eq '2000,2000,2000') 'FR #5838 slower caller pacing preserved'
+            $gaps.Clear()
+            Write-AircOutbox -Outbox $paceOut -Lines $frames -PaceMs 0 -WhatIf
+            Assert-True ($gaps.Count -eq 0) 'FR #5838 WhatIf does not sleep'
+        }
     } finally {
         Remove-Item -LiteralPath $paceTmp -Recurse -Force -ErrorAction SilentlyContinue
     }
 
+    if ($script:SelfTestFailed -gt 0) {
+        Write-Host ("SELFTEST FAILED count={0}" -f $script:SelfTestFailed)
+        exit 1
+    }
     Write-Host 'SELFTEST PASSED'
     exit 0
 }
@@ -869,6 +990,13 @@ while ($true) {
     }
 
     if (-not $wantWait) { break }
+
+    # FR #5838 / MRB #5842: PUT pacing (min 1300ms/frame) can exhaust TimeoutSec during
+    # Write-AircOutbox. Restart the reply deadline after the send so TimeoutSec is the
+    # post-upload wait budget (default 60s), not send+wait combined.
+    if ($Action -eq 'Put') {
+        $deadline = [datetime]::UtcNow.AddSeconds([Math]::Max(1, $TimeoutSec))
+    }
 
     $remaining = [int][Math]::Ceiling(($deadline - [datetime]::UtcNow).TotalSeconds)
     if ($remaining -lt 1) {

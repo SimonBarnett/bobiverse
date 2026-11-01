@@ -1049,6 +1049,76 @@ def is_offerable_intake_skill_lesson_pr(
 
 
 
+# FR #5847: Copilot Coding Agent FR implement PRs (often draft) must enter the MRB
+# queue and supersede the FR so stuck-sweep does not release accepted_holder_gone.
+COPILOT_FR_HEAD_RE = re.compile(r"(?i)^copilot/fr-(\d+)(?:-|$)")
+
+
+def is_copilot_agent_login(login: str = "") -> bool:
+    """True for Copilot Coding Agent / app logins (FR #5847)."""
+    s = str(login or "").strip().lower()
+    if not s:
+        return False
+    if "copilot-swe-agent" in s:
+        return True
+    return s in ("copilot", "app/copilot-swe-agent", "copilot-swe-agent[bot]")
+
+
+def copilot_fr_head_issue(head_ref: str = "") -> str:
+    """Issue id from head ``copilot/fr-<N>-*``, else empty (FR #5847)."""
+    m = COPILOT_FR_HEAD_RE.match(str(head_ref or "").strip())
+    if not m:
+        return ""
+    return f"#{int(m.group(1))}"
+
+
+def is_copilot_fr_implement_pr(
+    *,
+    title: str = "",
+    body: str = "",
+    labels: tuple[str, ...] | list[str] = (),
+    head_ref: str = "",
+    user_login: str = "",
+    repo: str = "",
+) -> bool:
+    """Draft-offerable Copilot FR implement PR (FR #5847).
+
+    Matches head ``copilot/fr-<N>-*``, or Copilot agent author with
+    Closes/Fixes/Resolves naming an issue. Not docs pins.
+    """
+    del labels  # call-site parity with other PR classifiers
+    if is_docs_mrb_pin_pr(title=title, head_ref=head_ref, labels=()):
+        return False
+    if copilot_fr_head_issue(head_ref):
+        return True
+    if is_copilot_agent_login(user_login) and extract_closes_issue_ids(
+        title, body, repo=repo
+    ):
+        return True
+    return False
+
+
+def copilot_fr_pr_covers_issue(
+    *,
+    issue_id: str,
+    title: str = "",
+    body: str = "",
+    head_ref: str = "",
+    user_login: str = "",
+    repo: str = "",
+) -> bool:
+    """True when a Copilot PR covers this FR issue id (FR #5847)."""
+    want = _norm_row_id(issue_id)
+    if not want:
+        return False
+    head_iss = copilot_fr_head_issue(head_ref)
+    if head_iss and head_iss == want:
+        return True
+    if not is_copilot_agent_login(user_login) and not head_iss:
+        return False
+    return want in extract_closes_issue_ids(title, body, repo=repo)
+
+
 def issue_skip_fr_reason(
     *,
     title: str = "",
@@ -2283,8 +2353,20 @@ def claim_from_payload(event: str, payload: dict, *, line: str = "") -> GitClaim
         # FR #5506: draft via-intake+skill lesson PRs are offerable (not receipts).
         # MRB #2651: also edited/synchronize — _apply_claim_to_doc appends unaccepted for those.
         if action in ("opened", "ready_for_review", "edited", "synchronize") and pr.get("draft") is True:
-            if not is_offerable_intake_skill_lesson_pr(
-                title=title, body=body, labels=labels
+            _head_early = pr.get("head") if isinstance(pr.get("head"), dict) else {}
+            _user = pr.get("user") if isinstance(pr.get("user"), dict) else {}
+            if not (
+                is_offerable_intake_skill_lesson_pr(
+                    title=title, body=body, labels=labels
+                )
+                or is_copilot_fr_implement_pr(
+                    title=title,
+                    body=body,
+                    labels=labels,
+                    head_ref=str(_head_early.get("ref") or ""),
+                    user_login=str(_user.get("login") or ""),
+                    repo=repo,
+                )
             ):
                 return None
         # FR #2650 / MRB #2651: intake harvest receipt PRs never become MRB via webhook
@@ -2308,6 +2390,27 @@ def claim_from_payload(event: str, payload: dict, *, line: str = "") -> GitClaim
         # implementer is not stamped as author and the FR row is not superseded.
         lesson = is_harvest_lesson_pr(title=title, labels=labels)
         refs = () if lesson else extract_closes_issue_ids(title, body, src, repo=repo)
+        _head_ref = str(_head.get("ref") or "")
+        _u = pr.get("user") if isinstance(pr.get("user"), dict) else {}
+        _ulogin = str(_u.get("login") or "")
+        # FR #5847: head copilot/fr-<N>-* links the FR even when body omits Closes.
+        if not lesson:
+            head_iss = copilot_fr_head_issue(_head_ref)
+            if head_iss and head_iss not in refs:
+                refs = tuple(list(refs) + [head_iss])
+        if lesson:
+            opener = lesson_pr_opener_seat(body)
+        elif is_copilot_fr_implement_pr(
+            title=title,
+            body=body,
+            labels=labels,
+            head_ref=_head_ref,
+            user_login=_ulogin,
+            repo=repo,
+        ):
+            opener = "copilot"
+        else:
+            opener = ""
         task = "MRB" if action in ("opened", "ready_for_review") else "MRB"
         return GitClaim(
             repo=repo,
@@ -2321,7 +2424,7 @@ def claim_from_payload(event: str, payload: dict, *, line: str = "") -> GitClaim
             body=body,
             labels=labels,
             harvest_lesson=lesson,
-            opened_by=lesson_pr_opener_seat(body) if lesson else "",
+            opened_by=opener,
         )
 
     if ev == "pull_request" and action == "closed":
@@ -8759,6 +8862,20 @@ def _mrb_idle_block_reason(
     return ""
 
 
+def mrb_has_eligible_reviewer(
+    home: Path, row: dict, live: set[str], *, ledger: dict | None = None,
+    now: float | None = None,
+) -> bool:
+    """A busy third-party seat can eventually review; Copilot must pass dispatch."""
+    import copilot_dispatch
+
+    led = ledger if ledger is not None else ledger_load(home)
+    humans = {n for n in live if str(n).strip().lower() != "copilot"}
+    return any(
+        not _mrb_idle_block_reason(row, nick, humans, led) for nick in humans
+    ) or copilot_dispatch.mrb_reviewer_available(home, row, ledger=led, now=now)
+
+
 def detect_mrb_reviewer_deadlock(
     home: Path,
     *,
@@ -8766,6 +8883,7 @@ def detect_mrb_reviewer_deadlock(
     live: set[str] | None = None,
     rows: list | None = None,
     ledger: dict | None = None,
+    now: float | None = None,
 ) -> dict | None:
     """Return deadlock info when every idle seat is ineligible for every waiting MRB.
 
@@ -8778,6 +8896,9 @@ def detect_mrb_reviewer_deadlock(
         for n in seats_idle
         if (canonical_worker_nick(n) or n or "").strip()
     }
+    # Virtual seats cannot be recycled or have GIVEUP cleared as cross-seat heal.
+    seats_idle = {n for n in seats_idle if n.lower() != "copilot"}
+    seats_live = {n for n in seats_live if n.lower() != "copilot"}
     if not seats_idle:
         return None
     if rows is None:
@@ -8797,6 +8918,13 @@ def detect_mrb_reviewer_deadlock(
     if not mrb_rows:
         return None
     led = ledger if ledger is not None else ledger_load(home)
+    import copilot_dispatch
+
+    if any(
+        copilot_dispatch.mrb_reviewer_available(home, row, ledger=led, now=now)
+        for row in mrb_rows
+    ):
+        return None
     for nick in seats_idle:
         for row in mrb_rows:
             if not _mrb_idle_block_reason(row, nick, seats_live, led):
@@ -8904,6 +9032,7 @@ def heal_mrb_reviewer_deadlock(
             live=seats_live,
             rows=doc_rows,
             ledger=ledger,
+            now=now_f,
         )
 
     lines: list[str] = []
@@ -10754,6 +10883,7 @@ def resync_from_github(
     main_sha_cache: dict[str, str] = {}  # FR #4857: default-branch SHA for main-side FIX
     # FR #2899: open pulls skipped from desired (draft/receipt) — do not "survive" keep.
     skipped_open_pulls: set[tuple[str, str]] = set()
+    skipped_open_pull_meta: dict[tuple[str, str], dict] = {}
     # FR #2389: only *merged* closers remove an issue from desired. Open Closes-PRs
     # stay as MRB rows when offerable; the open issue stays desired so fr_done can
     # clear. FR #4589: open Closes (including ci-wait / draft / receipt skips) still
@@ -10960,11 +11090,39 @@ def resync_from_github(
             # FR #5506: draft via-intake+skill lessons backfill as MRB (#4444/#4967).
             if pr.get("draft") is True:
                 pr_labels = _label_names(pr.get("labels"))
-                if not is_offerable_intake_skill_lesson_pr(
-                    title=title, body=body, labels=pr_labels
+                _resync_head_draft = pr.get("head") if isinstance(pr.get("head"), dict) else {}
+                _resync_user = pr.get("user") if isinstance(pr.get("user"), dict) else {}
+                if not (
+                    is_offerable_intake_skill_lesson_pr(
+                        title=title, body=body, labels=pr_labels
+                    )
+                    or is_copilot_fr_implement_pr(
+                        title=title,
+                        body=body,
+                        labels=pr_labels,
+                        head_ref=str(_resync_head_draft.get("ref") or ""),
+                        user_login=str(_resync_user.get("login") or ""),
+                        repo=repo,
+                    )
                 ):
                     skipped_draft += 1
                     skipped_open_pulls.add((repo, f"#{num}"))
+                    # FR #5847: keep rich catalog fields for stuck-sweep Copilot match.
+                    skipped_open_pull_meta.setdefault(
+                        (repo, f"#{num}"),
+                        {
+                            "repo": repo,
+                            "id": f"#{num}",
+                            "kind": "pr",
+                            "task": "MRB",
+                            "draft": True,
+                            "title": title[:160],
+                            "body": (body or "")[:2000],
+                            "head_ref": str(_resync_head_draft.get("ref") or ""),
+                            "user_login": str(_resync_user.get("login") or ""),
+                            "rule": "draft",
+                        },
+                    )
                     print(
                         f"resync skip draft PR {repo}#{num}",
                         flush=True,
@@ -11851,13 +12009,18 @@ def resync_from_github(
                         "title": (c.line or "")[:160],
                     })
                 for repo, num in sorted(skipped_open_pulls):
-                    cat.append({
-                        "repo": repo,
-                        "id": num if str(num).startswith("#") else f"#{num}",
-                        "kind": "pr",
-                        "task": "MRB",
-                        "rule": "skipped_resync",
-                    })
+                    key = (repo, num if str(num).startswith("#") else f"#{num}")
+                    meta = skipped_open_pull_meta.get(key)
+                    if isinstance(meta, dict):
+                        cat.append(dict(meta))
+                    else:
+                        cat.append({
+                            "repo": repo,
+                            "id": num if str(num).startswith("#") else f"#{num}",
+                            "kind": "pr",
+                            "task": "MRB",
+                            "rule": "skipped_resync",
+                        })
                 _sjs5510.write_open_catalog(home, cat)
             # FR #3205: refresh ordered offer candidates off the IRC thread (resync path).
             with contextlib.suppress(Exception):

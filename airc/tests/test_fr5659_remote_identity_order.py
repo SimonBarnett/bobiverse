@@ -77,6 +77,11 @@ def test_fr5659_legion_parse_cred_ref():
 
 def test_fr5659_legion_passed_identity(monkeypatch):
     monkeypatch.setattr(
+        lg,
+        "read_remote_airc_profile_result",
+        lambda host, **_k: {"profile": "", "ok": True, "found": False, "detail": "not-found"},
+    )
+    monkeypatch.setattr(
         ident,
         "default_credman_reader",
         lambda t: {"username": "should-not", "password": "x"},
@@ -103,6 +108,11 @@ def test_fr5659_legion_passed_identity(monkeypatch):
 
 
 def test_fr5659_legion_wrong_passed_auth_failed_no_fallback(monkeypatch):
+    monkeypatch.setattr(
+        lg,
+        "read_remote_airc_profile_result",
+        lambda host, **_k: {"profile": "", "ok": True, "found": False, "detail": "not-found"},
+    )
     monkeypatch.setattr(
         ident,
         "default_credman_reader",
@@ -141,6 +151,11 @@ def test_fr5659_legion_missing_credman_falls_to_system(monkeypatch):
 
 
 def test_fr5659_legion_credman_source(monkeypatch):
+    monkeypatch.setattr(
+        lg,
+        "read_remote_airc_profile_result",
+        lambda host, **_k: {"profile": "", "ok": True, "found": False, "detail": "not-found"},
+    )
     monkeypatch.setattr(
         ident,
         "default_credman_reader",

@@ -8,7 +8,8 @@ def test_mrb5387_legion_section_contiguous():
     # FR #5758 extends the heading with / #5758; keep the FR #5312 anchor.
     assert "## LEGION remote install (FR #5312" in t
     i = t.index("## LEGION remote install (FR #5312")
-    chunk = t[i : i + 1400]
+    # FR #5781 lengthened the profile bullet; keep CredMan/update phrases in window.
+    chunk = t[i : i + 1800]
     assert "LEGION" in chunk and "DCCLISTEN" in chunk
     assert "PriorityAirc/LegionAdmin" in chunk
     assert "update=off" in chunk or "update-disabled" in chunk

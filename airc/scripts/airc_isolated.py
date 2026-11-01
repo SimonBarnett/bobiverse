@@ -16,6 +16,11 @@ import threading
 from pathlib import Path
 from typing import Any, Callable
 
+try:
+    import airc_fail_intake as _fail_intake
+except Exception:  # pragma: no cover
+    _fail_intake = None
+
 _SECRET_KEY_RE = re.compile(r"(?i)pass|secret|token|pwd|cred")
 _PACKAGED_MODULES = frozenset({"airc_legion", "airc_network", "airc_extension"})
 
@@ -104,6 +109,30 @@ def _worker_died(detail: str) -> dict[str, Any]:
     }
 
 
+
+
+def _parent_report_worker_died(module: str, func: str, detail: str) -> None:
+    """FR #5775: parent reports when isolated child dies without a verb report.
+
+    FR #5783: no-op under PYTEST_CURRENT_TEST / crash_report policy deny so
+    test_fr5665 fake runners do not flood live intake twins.
+    """
+    if _fail_intake is None:
+        return
+    try:
+        if hasattr(_fail_intake, "intake_allowed") and not _fail_intake.intake_allowed():
+            return
+        verb = func or module or 'isolated'
+        _fail_intake.report_verb_failure(
+            verb,
+            'worker_died',
+            args={'module': module, 'func': func, 'detail': (detail or '')[:200]},
+            wait_s=1.0,
+        )
+    except Exception:
+        pass
+
+
 def call_isolated_module(
     module: str,
     func: str,
@@ -134,19 +163,25 @@ def call_isolated_module(
             env=_child_env(),
         )
     except subprocess.TimeoutExpired as exc:
+        _parent_report_worker_died(module, func, f"timeout:{type(exc).__name__}")
         return _worker_died(f"timeout:{type(exc).__name__}")
     except Exception as exc:  # noqa: BLE001
+        _parent_report_worker_died(module, func, f"spawn:{type(exc).__name__}")
         return _worker_died(f"spawn:{type(exc).__name__}")
     stdout = (p.stdout or "").strip()
     stderr = (p.stderr or "").strip()
     if p.returncode != 0:
         err_lines = (stderr or stdout).splitlines()
         reason = err_lines[-1] if err_lines else f"exit-{p.returncode}"
-        return _worker_died(reason[:80])
+        detail = reason[:80]
+        _parent_report_worker_died(module, func, detail)
+        return _worker_died(detail)
     if not stdout:
+        _parent_report_worker_died(module, func, "empty-stdout")
         return _worker_died("empty-stdout")
     data = extract_isolated_json_payload(stdout)
     if data is None:
+        _parent_report_worker_died(module, func, "bad-json")
         return _worker_died("bad-json")
     return data
 
@@ -205,6 +240,16 @@ def isolated_job_main(argv: list[str] | None = None) -> int:
         fn = getattr(mod, func)
         data = fn(**kwargs)
     except Exception as exc:  # noqa: BLE001
+        if _fail_intake is not None:
+            try:
+                _fail_intake.report_verb_failure(
+                    func or module or 'isolated',
+                    exc,
+                    args={'module': module, 'func': func},
+                    wait_s=0,
+                )
+            except Exception:
+                pass
         print(json.dumps({"ok": False, "error": type(exc).__name__}))
         return 1
     if not isinstance(data, dict):

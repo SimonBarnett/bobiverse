@@ -748,6 +748,68 @@ function Get-AppParam {
     return ''
 }
 
+function Restore-AircUpdateState {
+    param([string]$BackupDir, [AllowEmptyString()][string]$AppParameters, [string]$What)
+    if ($Product -ne 'airc') { return }
+
+    $svc = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
+    if ($svc -and $svc.Status -ne 'Stopped') {
+        try { Stop-Service -Name $ServiceName -ErrorAction Stop } catch {
+            Write-UpdLog "$What setting=service-AppParameters carry-over-failed reason=stop-failed"
+            throw 'Airc service could not be stopped to restore its saved settings'
+        }
+        if (-not (Wait-ServiceState -Name $ServiceName -Status 'Stopped' -Seconds 90)) {
+            Write-UpdLog "$What setting=service-AppParameters carry-over-failed reason=stop-timeout"
+            throw 'Airc service did not stop to restore its saved settings'
+        }
+    }
+
+    $backupConfig = Join-Path $BackupDir 'tree\config'
+    $installConfig = Join-Path $InstallRoot 'config'
+    foreach ($name in @('airc.json', 'airc-install.json')) {
+        $source = Join-Path $backupConfig $name
+        $destination = Join-Path $installConfig $name
+        try {
+            if (Test-Path -LiteralPath $source) {
+                New-Item -ItemType Directory -Force -Path $installConfig | Out-Null
+                Copy-Item -LiteralPath $source -Destination $destination -Force
+                if ((Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash -ne
+                    (Get-FileHash -LiteralPath $destination -Algorithm SHA256).Hash) {
+                    throw 'restored file did not match snapshot'
+                }
+                Write-UpdLog "$What setting=config\$name carry-over=restored"
+            } else {
+                Write-UpdLog "$What setting=config\$name carry-over=no-prior-file"
+            }
+        } catch {
+            Write-UpdLog "$What setting=config\$name carry-over-failed reason=$($_.Exception.GetType().Name)"
+            throw "Airc config setting config\$name could not be restored"
+        }
+    }
+
+    if ($null -ne $AppParameters) {
+        $nssmExe = Join-Path $InstallRoot 'third_party\nssm\win64\nssm.exe'
+        if (-not (Test-Path -LiteralPath $nssmExe)) { $nssmExe = Join-Path $InstallRoot 'scripts\nssm.exe' }
+        if (-not (Test-Path -LiteralPath $nssmExe)) {
+            Write-UpdLog "$What setting=service-AppParameters carry-over-failed reason=nssm-missing"
+            throw 'Airc service arguments could not be restored because NSSM is missing'
+        }
+        $nssmSetArgs = @('set', $ServiceName, 'AppParameters', $AppParameters)
+        try {
+            $null = & $nssmExe @nssmSetArgs 2>&1
+            $setExitCode = [int]$LASTEXITCODE
+            if ($setExitCode -ne 0) { throw "nssm exit=$setExitCode" }
+            if ((Get-ServiceAppParameters) -cne $AppParameters) {
+                throw 'NSSM did not retain the saved service arguments'
+            }
+            Write-UpdLog "$What setting=service-AppParameters carry-over=restored"
+        } catch {
+            Write-UpdLog "$What setting=service-AppParameters carry-over-failed reason=$($_.Exception.GetType().Name)"
+            throw 'Airc service arguments could not be restored'
+        }
+    }
+}
+
 function Invoke-ServiceReregister {
     # Re-run the product's own installer script from the installed tree (no copy, no start, Ergo untouched),
     # carrying over the identity the service was registered with. Used by rollback and by the post-install
@@ -800,6 +862,7 @@ function Invoke-Rollback {
         if (-not (Get-Service -Name $ServiceName -ErrorAction SilentlyContinue)) {
             Invoke-ServiceReregister -AppParameters $AppParameters -LogName 'rollback-install.log' -What 'rollback'
         }
+        Restore-AircUpdateState -BackupDir $BackupDir -AppParameters $AppParameters -What 'rollback'
         if (Get-Service -Name $ServiceName -ErrorAction SilentlyContinue) {
             try { Start-Service -Name $ServiceName -ErrorAction Stop } catch { Write-UpdLog "rollback-warn start failed $($_.Exception.GetType().Name)" }
         }
@@ -992,10 +1055,21 @@ function Invoke-Apply {
                 }
             }
         }
+        Restore-AircUpdateState -BackupDir $backup -AppParameters $appParams -What 'post-install'
         Update-SkillsInProfiles
         if ((Get-Service -Name $ServiceName).Status -ne 'Running') { Start-Service -Name $ServiceName -ErrorAction Stop }
         Start-Sleep -Seconds 10
         if ((Get-Service -Name $ServiceName).Status -ne 'Running') { throw "service $ServiceName not running after install" }
+
+        # FR #5765: release MSI identity supersedes a prior source hotpatch marker.
+        if ($Product -eq 'airc') {
+            $hotpatch = Join-Path $InstallRoot 'HOTPATCH.json'
+            if (Test-Path -LiteralPath $hotpatch) {
+                Remove-Item -LiteralPath $hotpatch -Force -ErrorAction Stop
+                if (Test-Path -LiteralPath $hotpatch) { throw 'HOTPATCH.json remains after successful update cleanup' }
+                Write-UpdLog 'FR#5765 stale HOTPATCH.json removed after successful UPDATE'
+            }
+        }
 
         # FR #1018: MSI upgrade left BobCallback on old code (digest PermissionError / seats stuck doing).
         # FR #3190: do NOT restart BobAutoFocus --- that ops task spammed per-item !focus every 2 min and is retired.

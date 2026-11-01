@@ -54,3 +54,32 @@ or give-up), Jeeves heals deterministically:
 Hooked from `offer_focus_top` (same `!bored` can then stamp an offer) and
 `queue_flow` monitor.
 
+### FR #5848 — Copilot MRB backoff and no eligible reviewer
+
+Copilot is a virtual reviewer only when its actual dispatch gates pass
+(enabled, fuel available, high-priority focus, no author/GIVEUP/ledger block,
+and no MRB backoff). Unlimited fuel alone does not make it eligible.
+Its GIVEUP exclusions are never cleared by the cross-give-up heal, and the
+virtual seat is never selected for `recycleseat`.
+
+Three consecutive Copilot MRB GIVEUPs within 120 seconds of each task's start
+pause **MRB dispatch only** for 30 minutes. State survives chair restarts in
+`copilot-mrb-backoff.json` (`mrb_fast_giveups`, epoch `mrb_backoff_until`),
+written under the queue lock with atomic replacement, separate from quota.
+A completed MRB PASS/FAIL verdict resets the breaker; cooldown expiry allows
+new reviews but never retries rows Copilot already gave up. Set top-level
+`"mrb": false` in `copilot-allowance.json` to disable cloud reviews without disabling FR/FIX
+dispatch. Quota refresh does not clear this independent MRB pause.
+
+An unaccepted, otherwise offerable MRB with no eligible live reviewer is
+reported on the next stuck sweep with `rule=no_eligible_reviewer` in the
+digest `stuck` list and `!stuck`; it does not wait for the generic 30-minute
+starvation threshold. A busy non-author reviewer still counts as eligible.
+Existing human/machine/PR holds and the no-seats/no-fuel pause remain protected.
+The FR #5163 author-only recycle and stall scan also consult cloud eligibility.
+An active tracked cloud review stays accepted: the PR being reviewed is its
+input, not evidence of completed work.
+
+After deployment, check one sweep with a sole live author seat: its abandoned
+MRBs should show `no_eligible_reviewer`, and the fleet log should show one
+Copilot MRB pause rather than repeated fast-GIVEUP hand-offs during cooldown.
