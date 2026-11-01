@@ -68,6 +68,8 @@ _AIRC_CONSOLE_NICK_RE = re.compile(r".+_console$", re.IGNORECASE)
 # FR #5763: any UPDATE status token (accepted / current / release-lookup-failed / …).
 _AIRC_REPLY_BODY_RE = re.compile(
     r"^(?:(?:out|err)\s+id=\S+\s+seq=\d+\s|"
+    r"err\s+id=[0-9a-f]{8}\s+code=\S+|"
+    r"ok\s+id=[0-9a-f]{8}\s+putend\b|"
     r"err\s+seq=\d+\s|"
     r"DONE\s+(?:id=\S+\s+)?exit=-?\d+\b|"
     r"UPDATE\s+\w[\w-]*\b)",

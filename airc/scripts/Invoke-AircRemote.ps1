@@ -15,6 +15,7 @@
   Prefer -Action Cmd for directory listings. Budget -TimeoutSec above
   shell_seconds + reply_lines*0.35 + margin (default 60 can miss a busy-box DONE).
   FR #4796: multi-line -Outbox bursts use -OutboxPaceMs (default 800, ear FLOOD_S);
+  FR #5838: PUT bursts enforce a 1200ms minimum, even with -OutboxPaceMs 0.
   after a large reply (>= -BurstReplyThreshold lines) sleep -PostBurstCoolMs before return
   so sequential Commands do not stack under Ergo fakelag. Console token-bucket is FR #4790.
   FR #5008: New-AircDccListenOffer / Test-AircDccDoneSha256 build DCCLISTEN (tls=/relay=)
@@ -294,6 +295,16 @@ function ConvertFrom-AircRemoteReply {
             if ($obj.Stream -eq 'out') { [void]$outs.Add($obj) } else { [void]$errs.Add($obj) }
             continue
         }
+        if ($line -match '^err\s+id=(?<id>[0-9a-f]+)\s+code=\S+') {
+            if (-not $ExpectJobId -or $Matches.id -eq $ExpectJobId) {
+                throw ("airc protocol error: {0}" -f $line)
+            }
+            continue
+        }
+        if ($line -match '^ok\s+id=(?<id>[0-9a-f]+)\s+putend\b(?<rest>.*)$') {
+            if ($ExpectJobId -and $Matches.id -ne $ExpectJobId) { continue }
+            $line = 'DONE id={0} exit=0{1}' -f $Matches.id, $Matches.rest
+        }
         # FR #5003 + #5002: DONE id= with trailing via/bytes/sha256/reason; id-less exit=126 fail-fast.
         # Capture id/exit before the foreach -match loop (StrictMode: $Matches is overwritten).
         if ($line -match '^DONE\s+id=([0-9a-f]+)\s+exit=(-?\d+)(.*)$') {
@@ -391,6 +402,9 @@ function Write-AircOutbox {
     )
     $i = 0
     $n = @($Lines).Count
+    if (@($Lines | Where-Object { $_ -match '^PRIVMSG\s+\S+\s+:(?:id=[0-9a-f]{8}\s+)?(?:PUT|CHUNK|PUTEND)\b' }).Count -gt 0) {
+        $PaceMs = [Math]::Max(1200, $PaceMs)
+    }
     foreach ($line in $Lines) {
         $i++
         $redacted = Protect-AircRemoteSecret $line
@@ -479,7 +493,7 @@ function Read-AircRepliesJsonlBodies {
 
 function Wait-AircRemoteReplies {
     <#
-      Poll airc-replies.jsonl until DONE id=<ExpectJobId> or timeout (FR #1546).
+      Poll airc-replies.jsonl until DONE or PUTEND acknowledgement, or protocol error.
       Exit path: returns body lines; throws on timeout (caller exits non-zero).
     #>
     param(
@@ -497,6 +511,8 @@ function Wait-AircRemoteReplies {
     $doneRe = [regex]::new(('(?i)^DONE\s+id={0}\s+exit=-?\d+\b' -f [regex]::Escape($id)))
     $refuseIdlessRe = [regex]::new('(?i)^DONE\s+exit=126\b')
     $lineRe = [regex]::new(('(?i)^(?:out|err)\s+id={0}\s+seq=\d+\s' -f [regex]::Escape($id)))
+    $errorRe = [regex]::new(('(?i)^err\s+id={0}\s+code=\S+' -f [regex]::Escape($id)))
+    $putendRe = [regex]::new(('(?i)^ok\s+id={0}\s+putend\b' -f [regex]::Escape($id)))
     while ([datetime]::UtcNow -lt $deadline) {
         $chunk = Read-AircRepliesJsonlBodies -Path $RepliesJsonl -StartOffset $pos
         $pos = $chunk.Offset
@@ -504,10 +520,13 @@ function Wait-AircRemoteReplies {
             if ($refuseIdlessRe.IsMatch($b)) {
                 throw ("airc refusal fail-fast: {0}" -f $b)
             }
-            if ($lineRe.IsMatch($b) -or $doneRe.IsMatch($b)) {
+            if ($errorRe.IsMatch($b)) {
+                throw ("airc protocol error: {0}" -f (Protect-AircRemoteSecret $b))
+            }
+            if ($lineRe.IsMatch($b) -or $doneRe.IsMatch($b) -or $putendRe.IsMatch($b)) {
                 [void]$collected.Add($b)
             }
-            if ($doneRe.IsMatch($b)) {
+            if ($doneRe.IsMatch($b) -or $putendRe.IsMatch($b)) {
                 return $collected.ToArray()
             }
         }
