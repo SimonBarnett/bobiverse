@@ -4,7 +4,23 @@ from __future__ import annotations
 import airc_legion as lg
 
 
-def test_mrb5732_whatif_stub_without_psexec_stays_ok():
+def _stub_readable_profile(monkeypatch) -> None:
+    """FR #5781: unread share refuses without -Profile; WhatIf stubs need a readable mock."""
+    monkeypatch.setattr(
+        lg,
+        "read_remote_airc_profile_result",
+        lambda host, **_k: {
+            "profile": "fleet",
+            "ok": True,
+            "found": True,
+            "detail": "",
+        },
+    )
+
+
+def test_mrb5732_whatif_stub_without_psexec_stays_ok(monkeypatch):
+    _stub_readable_profile(monkeypatch)
+
     def run_fn(spec: dict) -> dict:
         assert spec.get("dry_run") is True
         return {"ok": True, "status": "dry-run", "msi": "latest"}
@@ -21,7 +37,9 @@ def test_mrb5732_whatif_stub_without_psexec_stays_ok():
     assert "will_fail" not in (body.get("plan") or {})
 
 
-def test_mrb5732_whatif_explicit_missing_still_fails():
+def test_mrb5732_whatif_explicit_missing_still_fails(monkeypatch):
+    _stub_readable_profile(monkeypatch)
+
     def run_fn(spec: dict) -> dict:
         return {
             "ok": False,
