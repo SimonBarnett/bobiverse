@@ -240,8 +240,11 @@ def test_docs_and_skill_document_update_verb():
 
 
 @win
-def test_fake_release_target_version_allowlist_and_hash(tmp_path):
+def test_fake_release_target_version_allowlist_and_hash(tmp_path, monkeypatch):
     """TargetVersion path: allowlisted asset OK; foreign URL rejected; sha mismatch aborts."""
+    # FR #5876: Apply uses local fixtures without the Check call's ReleaseJson / DryRun.
+    monkeypatch.setenv("BOB_CRASH_REPORT", "local-only")
+    monkeypatch.setenv("BOBIVERSE_CRASH_REPORT", "local-only")
     root = tmp_path / "airc"
     root.mkdir()
     (root / "VERSION").write_text("0.1.16\n")
