@@ -514,74 +514,15 @@ def is_access_denied(exc: BaseException) -> bool:
     return "access is denied" in msg or "access denied" in msg
 
 
-def is_ipc_auth_failed(exc: BaseException) -> bool:
-    """True for IPC$/CredMan logon failures (FR #5708).
+# FR #5726: shared WNet helpers (also used by network installer, FR #5721).
+from airc_wnet import is_wnet_auth_failed, wnet_add_ipc, wnet_cancel  # noqa: E402
 
-    Win32: 5 access-denied, 86 bad password, 1326 logon failure, 1385 logon type.
-    """
+
+def is_ipc_auth_failed(exc: BaseException) -> bool:
+    """True for IPC$/CredMan logon failures (FR #5708 / #5726)."""
     if is_access_denied(exc):
         return True
-    win = int(getattr(exc, "winerror", 0) or 0)
-    err = int(getattr(exc, "errno", 0) or 0)
-    return (win or err) in (86, 1326, 1385)
-
-
-def wnet_add_ipc(host: str, username: str, password: str) -> str:
-    """Connect ``\\\\host\\IPC$`` via WNetAddConnection2W (FR #5709).
-
-    Password stays in process memory only — never on ``net use`` argv / 4688.
-    Raises ``OSError`` with ``winerror`` set to the WNet status (never a blanket 5).
-    Returns the remote UNC used (for cancel).
-    """
-    import ctypes
-    from ctypes import wintypes
-
-    class NETRESOURCEW(ctypes.Structure):
-        _fields_ = [
-            ("dwScope", wintypes.DWORD),
-            ("dwType", wintypes.DWORD),
-            ("dwDisplayType", wintypes.DWORD),
-            ("dwUsage", wintypes.DWORD),
-            ("lpLocalName", wintypes.LPWSTR),
-            ("lpRemoteName", wintypes.LPWSTR),
-            ("lpComment", wintypes.LPWSTR),
-            ("lpProvider", wintypes.LPWSTR),
-        ]
-
-    remote = r"\\{0}\IPC$".format(host)
-    mpr = ctypes.WinDLL("mpr", use_last_error=True)
-    add = mpr.WNetAddConnection2W
-    add.argtypes = [
-        ctypes.POINTER(NETRESOURCEW),
-        wintypes.LPCWSTR,
-        wintypes.LPCWSTR,
-        wintypes.DWORD,
-    ]
-    add.restype = wintypes.DWORD
-
-    nr = NETRESOURCEW()
-    nr.dwType = 0  # RESOURCETYPE_ANY
-    nr.lpRemoteName = remote
-    user_w = username if username else None
-    pass_w = password if password else None
-    rc = int(add(ctypes.byref(nr), pass_w, user_w, 0) or 0)
-    if rc != 0:
-        raise ctypes.WinError(rc)
-    return remote
-
-
-def wnet_cancel(remote: str) -> None:
-    """Drop a WNet connection. Never raises secrets; ignore cancel failures."""
-    import ctypes
-    from ctypes import wintypes
-
-    if not remote:
-        return
-    mpr = ctypes.WinDLL("mpr", use_last_error=True)
-    cancel = mpr.WNetCancelConnection2W
-    cancel.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.BOOL]
-    cancel.restype = wintypes.DWORD
-    cancel(remote, 0, True)
+    return is_wnet_auth_failed(exc)
 
 
 def classify_extension_host_error(
@@ -654,7 +595,8 @@ def default_apply_force_install_as(
     """Retry registry write after IPC$ with CredMan user. Never log the secret.
 
     FR #5585: return the wrote bool from default_apply_force_install.
-    FR #5709: WNetAddConnection2W so the password is never on process argv / 4688.
+    FR #5709 / #5726: ``airc_wnet.wnet_add_ipc`` (WNetAddConnection2W) so the
+    password is never on process argv / 4688 — shared with network installer.
     FR #5708: surface the real WNet winerror (53/67 host path, 1326/5 auth) —
     never remap every failure to OSError(5) ``credman-ipc-failed``.
     """
