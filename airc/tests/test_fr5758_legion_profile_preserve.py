@@ -53,8 +53,13 @@ def test_fr5758_resolve_defaults_client_when_no_remote():
 def test_fr5758_installer_preserves_fleet_without_flag(monkeypatch):
     monkeypatch.setattr(
         lg,
-        "read_remote_airc_profile",
-        lambda host, **_k: "fleet",
+        "read_remote_airc_profile_result",
+        lambda host, **_k: {
+            "profile": "fleet",
+            "ok": True,
+            "found": True,
+            "detail": "",
+        },
     )
     monkeypatch.setattr(
         lg,
@@ -81,7 +86,16 @@ def test_fr5758_installer_preserves_fleet_without_flag(monkeypatch):
 
 
 def test_fr5758_installer_explicit_client_on_fleet_warns(monkeypatch):
-    monkeypatch.setattr(lg, "read_remote_airc_profile", lambda host, **_k: "fleet")
+    monkeypatch.setattr(
+        lg,
+        "read_remote_airc_profile_result",
+        lambda host, **_k: {
+            "profile": "fleet",
+            "ok": True,
+            "found": True,
+            "detail": "",
+        },
+    )
     monkeypatch.setattr(
         lg,
         "read_remote_post_install",

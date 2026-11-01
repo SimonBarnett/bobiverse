@@ -14,7 +14,12 @@ def test_mrb5381_no_force_no_peer_exe():
     assert lg.LEGION_TIMEOUT_S == 900
 
 
-def test_mrb5381_whatif_does_not_call_install_remote():
+def test_mrb5381_whatif_does_not_call_install_remote(monkeypatch):
+    monkeypatch.setattr(
+        lg,
+        "read_remote_airc_profile_result",
+        lambda host, **_k: {"profile": "", "ok": True, "found": False, "detail": "not-found"},
+    )
     called = {"remote": 0}
 
     def run_fn(spec: dict) -> dict:
@@ -35,7 +40,12 @@ def test_mrb5381_whatif_does_not_call_install_remote():
     assert "password" not in body
 
 
-def test_mrb5381_foreign_msi_and_credman_env_only():
+def test_mrb5381_foreign_msi_and_credman_env_only(monkeypatch):
+    monkeypatch.setattr(
+        lg,
+        "read_remote_airc_profile_result",
+        lambda host, **_k: {"profile": "", "ok": True, "found": False, "detail": "not-found"},
+    )
     def run_fn(spec: dict) -> dict:
         return {"ok": True, "status": "ok"}
 

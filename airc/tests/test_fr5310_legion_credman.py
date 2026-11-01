@@ -42,7 +42,12 @@ def test_fr5310_installer_missing_falls_to_system():
     assert "password" not in body
 
 
-def test_fr5310_redacts_password_equals_and_secret():
+def test_fr5310_redacts_password_equals_and_secret(monkeypatch):
+    monkeypatch.setattr(
+        lg,
+        "read_remote_airc_profile_result",
+        lambda host, **_k: {"profile": "", "ok": True, "found": False, "detail": "not-found"},
+    )
     captured: list[dict] = []
 
     def run_fn(spec: dict) -> dict:
