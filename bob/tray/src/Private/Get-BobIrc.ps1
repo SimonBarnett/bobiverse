@@ -2354,7 +2354,10 @@ function Write-BobIrcStatus {
     $primary = $null
     if (@($running).Count -gt 0) { $primary = $running[0] }
     $liveN = 0
+    # FR #5688: only bob-worker fleet seats count toward digest running/jobs/repo.
+    # User-hosted grok (e.g. PriorityAgent.exe parent) must not publish cwd as repo.
     foreach ($g in @(Get-BobLiveGrokAgents)) {
+        if (-not [bool]$g.fleetSeat) { continue }
         $liveN++
         $repo = 'grok.exe'
         if ($g.cwd) {
