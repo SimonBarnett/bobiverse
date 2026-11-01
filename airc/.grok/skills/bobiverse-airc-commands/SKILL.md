@@ -167,11 +167,19 @@ PRIVMSG {mid}_console :id=c25bd00e CRED persist target=PriorityWeb/example-dev v
 PRIVMSG {mid}_console :id=c25bd00e CRED-SEAL token=<tok> seq=1/1 ct=<b64>
 # Reply: CRED persisted + DONE ... cred-persisted target=... account=... (never the password)
 # Failures: cred-rejected-auth, cred-expired, cred-replay, cred-target-not-allowlisted, cred-bad-payload, cred-write-failed:...
+
+# Supported sender (FR #5825) --- never put the password on argv or in a plaintext file
+# CredMan source on the driving box:
+.\scripts\Send-AircCred.ps1 -MachineId hrs-priority-de -Target PriorityWeb/example-dev -CredManSource PriorityWeb/local-copy -Outbox <bob-home>\outbox.txt -ReplyFile <bob-home>\airc-replies.jsonl
+# Or: python airc_cred_send.py --machine ... --target ... --credman-source ... --outbox ...
+# Prompt / SecureString: -Username Tabula -Prompt  (reads SecureString; pipes via stdin to Python)
+# Exit 0 only on cred-persisted; stdout is ok/err code=... (never the secret)
 ```
 
 - Password never on IRC. Stage stash is in-memory, TTL ~180s, one-shot `take`. Persist uses CredWriteW LocalMachine under the Airc LocalSystem identity (`airc_credman.write_generic_credential`).
 - HTTPS URL must be `https://` under the fleet public base (`bob.ntsa.uk` / `BOB_PUBLIC_BASE`) or a prefix in `AIRC_CRED_HTTPS_PREFIXES`. Rejected URL -> `cred-url-rejected`. Fetch failures surface firewall-aware tokens (`firewall-or-unreachable`, `timeout`, `ssl-error`, `dns-failed`, `http-N`).
 - **via=irc (FR #5812):** console replies `CRED-HELLO` (ephemeral X25519 pub + one-time token + short expiry). Operator sends `CRED-SEAL` ciphertext chunks only (Ergo never sees plaintext). Token is single-use; wrong nick -> `cred-rejected-auth`; target must be a `credentialTarget` from `priority-instances.json`.
+- **Sender helper (FR #5825):** `Send-AircCred.ps1` / `airc_cred_send.py` wait for HELLO, seal via `seal_cred_payload`, send SEAL chunks, return one named result. Credential from local CredMan or SecureString/stdin --- never `--password` argv or a plaintext file.
 - Without `via=dcc` / offer on stage or persist-dcc -> `DONE ... usage cred-requires-dcc`. Persist needs `target=`; persist+https needs `url=`; persist accepts `via=https|dcc|irc`.
 - HTTPS URL must be `https://` under the fleet public base (`bob.ntsa.uk` / `BOB_PUBLIC_BASE`) or a prefix in `AIRC_CRED_HTTPS_PREFIXES`. Rejected URL -> `cred-url-rejected`. Fetch failures surface firewall-aware tokens (`firewall-or-unreachable`, `timeout`, `ssl-error`, `dns-failed`, `http-N`). **FR #5811:** every persist outcome reaches IRC (`action=cred` on_line dispatch) with `cred failed: <reason>` / `DONE exit=1 <reason>`; fail-intake uses shared `airc-cred-fail|...` (never silent; never secrets). Also `non-json-body`.
 - Without `via=dcc` / offer on stage or persist-dcc -> `DONE ... usage cred-requires-dcc`. Persist needs `target=`; persist+https needs `url=`.
