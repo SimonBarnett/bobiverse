@@ -555,6 +555,15 @@ class PriorityWalkResult:
     payload: dict[str, Any]
 
 
+class PrioritySubformNotFound(KeyError):
+    """FR #5843: unknown fixture subform path (distinct from unknown form / fixture-miss)."""
+
+    def __init__(self, path: str, *, form: str = "") -> None:
+        self.path = str(path or "")
+        self.form = str(form or "")
+        super().__init__(self.path)
+
+
 def parse_priority_walk_command(text: str) -> tuple[str, dict[str, str]] | None:
     raw = (text or "").strip()
     leading_id = ""
@@ -680,7 +689,8 @@ def walk_fixture(op: str, forms: dict[str, Any], kv: dict[str, str]) -> dict[str
         path = (kv.get("path") or "").strip()
         subs = rec.get("subforms") or {}
         if path not in subs:
-            raise KeyError(path)
+            # FR #5843: named subform-not-found (not bare KeyError -> fixture-miss).
+            raise PrioritySubformNotFound(path, form=form)
         out["path"] = path
         out["subform"] = subs[path]
     elif wire == "getRows":
@@ -744,6 +754,18 @@ def run_priority_walk(
     try:
         forms = load_fixture(fix)
         payload = walk_fixture(op, forms, kv)
+    except PrioritySubformNotFound as exc:
+        # FR #5843: named reason + bounded path echo; no exception class in detail.
+        payload = {
+            "ok": False,
+            "error": "subform-not-found",
+            "path": bound_echo_token(exc.path),
+            "form": bound_echo_token(exc.form or form),
+            "action": "walk",
+        }
+        out, exit_code = format_bounded_priority_out(jid, payload, 2)
+        lines = (out, f"DONE id={jid} exit={exit_code}")
+        return PriorityWalkResult(False, exit_code, jid, lines, payload)
     except (OSError, ValueError, KeyError, json.JSONDecodeError) as exc:
         payload = {
             "ok": False,
