@@ -1,4 +1,4 @@
-﻿"""v0.1.17: service-start self-update (Update-BobiverseService.ps1) for ircBob / ircJeeves / Airc.
+"""v0.1.17: service-start self-update (Update-BobiverseService.ps1) for ircBob / ircJeeves / Airc.
 
 Behavioural tests run the real PowerShell updater against fake release JSON in a temp tree (Windows only);
 static tests pin the safety properties (detached apply, no seat kill, no Ergo, no secrets, always exit 0).
@@ -51,6 +51,9 @@ def env(tmp_path):
             args += ["-ReleaseJson", str(rj)]
         args += list(extra)
         e = {k: v for k, v in os.environ.items() if k not in ("BOB_AUTOUPDATE", "BOBIVERSE_NO_UPDATE")}
+        # FR #5642: temp InstallRoot defaults allow intake; force local-only unless caller overrides.
+        e["BOB_CRASH_REPORT"] = "local-only"
+        e["BOBIVERSE_CRASH_REPORT"] = "local-only"
         e.update(envvars or {})
         p = subprocess.run(args, capture_output=True, text=True, env=e, timeout=120)
         log = (state / "update.log").read_text() if (state / "update.log").exists() else ""
