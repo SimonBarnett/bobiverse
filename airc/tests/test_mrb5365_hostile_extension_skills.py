@@ -6,11 +6,12 @@ CMD = ROOT / "airc/.grok/skills/bobiverse-airc-commands/SKILL.md"
 EXT_ID = "cgmpadejahkaggjpffnhaoiafbnicgpa"
 
 def test_mrb5365_commands_extension_section_contiguous():
+    # FR #5667: fill-holes prose (#5660/#5661) pushed CredMan no-password past 1800.
     t = CMD.read_text(encoding="utf-8")
     assert not CMD.read_bytes().startswith(b"\xef\xbb\xbf")
     assert "## EXTENSION Priority web (FR #5294)" in t
     i = t.index("## EXTENSION Priority web (FR #5294)")
-    chunk = t[i : i + 1800]
+    chunk = t[i : i + 2200]
     assert EXT_ID in chunk
     assert "DCCLISTEN" in chunk
     assert "Priority-web-extension" in chunk
