@@ -229,55 +229,121 @@ def read_remote_version(host: str) -> str:
     return ""
 
 
-def read_remote_airc_profile(
+def read_remote_airc_profile_result(
     host: str,
     *,
     username: str = "",
     password: str = "",
-) -> str:
-    """FR #5758: best-effort remote profile from config\\airc-install.json (or airc.json).
+) -> dict[str, Any]:
+    """FR #5758 / #5781: remote profile via the same WNet session install uses.
 
-    Optional username/password authenticate via WNet to the admin share; never on argv.
-    Returns '' when unreadable or profile missing/invalid.
+    Authenticate to ``\\\\host\\IPC$`` (not ``c$`` alone) when username is set —
+    matching ``install_remote`` — then read ``\\\\host\\c$\\…\\airc-install.json``.
+    Returns ``{profile, ok, found, detail}``:
+    - ok+found+profile: readable install.json with a valid profile
+    - ok+not found: WNet/path reachable but no install.json (new host)
+    - not ok: WNet or share access failed (SYSTEM/CredMan must not silently default)
     """
     from .core import ALLOWED_PROFILES
 
-    unc = rf"\\{host}\c$"
+    mid = (host or "").strip()
+    empty = {"profile": "", "ok": False, "found": False, "detail": "empty-host"}
+    if not mid:
+        return empty
+    ipc = rf"\\{mid}\IPC$"
     used_wnet = False
     if username:
         try:
-            _net_use(unc, username, password or "")
+            _net_use(ipc, username, password or "")
             used_wnet = True
-        except Exception:
-            used_wnet = False
+        except Exception as exc:  # noqa: BLE001
+            return {
+                "profile": "",
+                "ok": False,
+                "found": False,
+                "detail": sanitize_legion_detail(
+                    f"wnet-ipc:{type(exc).__name__}:{exc}"
+                ),
+            }
+    access_errors = 0
     try:
+        import json as _json
+
         for rel in (
             r"ai\airc\config\airc-install.json",
             r"Program Files\Bobiverse\airc\config\airc-install.json",
             r"ai\airc\config\airc.json",
             r"Program Files\Bobiverse\airc\config\airc.json",
         ):
-            p = Path(rf"\\{host}\c$\{rel}")
+            p = Path(rf"\\{mid}\c$\{rel}")
             try:
                 if not p.is_file():
                     continue
-                import json as _json
-
                 data = _json.loads(p.read_text(encoding="utf-8"))
                 if not isinstance(data, dict):
                     continue
                 prof = str(data.get("profile") or "").strip().lower()
                 if prof in ALLOWED_PROFILES:
-                    return prof
-            except (OSError, ValueError, TypeError):
+                    return {
+                        "profile": prof,
+                        "ok": True,
+                        "found": True,
+                        "detail": "",
+                    }
+                # File present but profile missing/invalid — treat as found empty.
+                return {
+                    "profile": "",
+                    "ok": True,
+                    "found": True,
+                    "detail": "profile-missing-or-invalid",
+                }
+            except OSError:
+                access_errors += 1
                 continue
-        return ""
+            except (ValueError, TypeError):
+                continue
+        if access_errors and not used_wnet and not username:
+            # Unauthenticated SYSTEM probe could not open any candidate path.
+            return {
+                "profile": "",
+                "ok": False,
+                "found": False,
+                "detail": "share-access-denied-or-missing",
+            }
+        if access_errors and used_wnet:
+            return {
+                "profile": "",
+                "ok": False,
+                "found": False,
+                "detail": "share-access-denied-after-wnet",
+            }
+        return {
+            "profile": "",
+            "ok": True,
+            "found": False,
+            "detail": "not-found",
+        }
     finally:
         if used_wnet:
             try:
-                _net_use_delete(unc)
+                _net_use_delete(ipc)
             except Exception:
                 pass
+
+
+def read_remote_airc_profile(
+    host: str,
+    *,
+    username: str = "",
+    password: str = "",
+) -> str:
+    """FR #5758: profile string only (compat). Prefer ``read_remote_airc_profile_result``."""
+    return str(
+        read_remote_airc_profile_result(
+            host, username=username, password=password
+        ).get("profile")
+        or ""
+    )
 
 
 def _net_use(unc: str, username: str, password: str) -> None:

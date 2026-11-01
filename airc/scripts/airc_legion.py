@@ -201,16 +201,33 @@ def resolve_legion_profile(
     }
 
 
+def read_remote_airc_profile_result(
+    host: str,
+    *,
+    username: str = "",
+    password: str = "",
+) -> dict[str, Any]:
+    """FR #5758 / #5781: structured remote profile read (IPC$ WNet like install)."""
+    from airc_network_installer.install import (
+        read_remote_airc_profile_result as _read,
+    )
+
+    return _read(host, username=username, password=password)
+
+
 def read_remote_airc_profile(
     host: str,
     *,
     username: str = "",
     password: str = "",
 ) -> str:
-    """FR #5758: best-effort remote profile from airc-install.json / airc.json."""
-    from airc_network_installer.install import read_remote_airc_profile as _read
-
-    return _read(host, username=username, password=password)
+    """FR #5758: best-effort remote profile string (compat wrapper)."""
+    return str(
+        read_remote_airc_profile_result(
+            host, username=username, password=password
+        ).get("profile")
+        or ""
+    )
 
 
 def read_remote_post_install(
@@ -683,17 +700,72 @@ def installer_legion_work(
     user = resolved.username if resolved.source != _ident.IDENTITY_SYSTEM else ""
     secret = resolved.password if resolved.source != _ident.IDENTITY_SYSTEM else ""
     use_secret = resolved.source in (_ident.IDENTITY_PASSED, _ident.IDENTITY_CREDMAN)
-    # FR #5758: preserve remote profile unless -Profile overrides.
-    profile_before = ""
+    # FR #5758 / #5781: preserve remote profile unless -Profile overrides.
+    # Read via the same IPC$ WNet session install uses; never silently pick client
+    # when the share is unreadable under SYSTEM/CredMan.
+    profile_read: dict[str, Any] = {
+        "profile": "",
+        "ok": False,
+        "found": False,
+        "detail": "",
+    }
     try:
-        profile_before = read_remote_airc_profile(
+        profile_read = read_remote_airc_profile_result(
             target, username=user or "", password=secret or ""
         )
-    except Exception:
-        profile_before = ""
+    except Exception as exc:  # noqa: BLE001
+        profile_read = {
+            "profile": "",
+            "ok": False,
+            "found": False,
+            "detail": type(exc).__name__,
+        }
+    profile_before = str(profile_read.get("profile") or "")
+    explicit = str(explicit_profile or "").strip().lower()
+    if (
+        not explicit
+        and not profile_before
+        and not bool(profile_read.get("ok"))
+    ):
+        return {
+            "ok": False,
+            "target": target,
+            "whatif": bool(whatif),
+            "invoked_installer": False,
+            "force": False,
+            "timeout_s": LEGION_TIMEOUT_S,
+            "profile": "",
+            "profile_before": "",
+            "profile_after": "",
+            "profile_warn": "profile_unreadable",
+            "error": "profile_unreadable",
+            "detail": str(profile_read.get("detail") or "share-unreadable")[:200],
+            "failures": [
+                {
+                    "host": target,
+                    "error": "profile_unreadable",
+                    "detail": str(profile_read.get("detail") or "")[:200],
+                }
+            ],
+            "identity": resolved.source,
+            "computer_account": sys_ident["computer_account"],
+            "identity_label": resolved.label,
+            "account": resolved.account,
+        }
     rp = resolve_legion_profile(
         explicit=explicit_profile, profile_before=profile_before
     )
+    if (
+        not explicit
+        and not profile_before
+        and bool(profile_read.get("ok"))
+        and not bool(profile_read.get("found"))
+    ):
+        rp["profile_warn"] = "profile-missing:default-client"
+    if explicit and not profile_before and not bool(profile_read.get("ok")):
+        rp["profile_warn"] = (
+            f"profile_unreadable:using-explicit:{explicit}"
+        )
     chosen_profile = rp["profile"]
     spec: dict[str, Any] = {
         "hosts": [target],

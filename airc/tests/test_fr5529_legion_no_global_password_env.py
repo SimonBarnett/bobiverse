@@ -6,7 +6,12 @@ import os
 import airc_legion as lg
 
 
-def test_fr5529_installer_does_not_set_process_env():
+def test_fr5529_installer_does_not_set_process_env(monkeypatch):
+    monkeypatch.setattr(
+        lg,
+        "read_remote_airc_profile_result",
+        lambda host, **_k: {"profile": "", "ok": True, "found": False, "detail": "not-found"},
+    )
     secret = "FAKE_" + "no_global_env"
     seen: list[str | None] = []
 

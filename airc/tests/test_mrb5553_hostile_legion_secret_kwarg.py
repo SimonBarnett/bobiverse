@@ -7,7 +7,12 @@ import airc_legion as lg
 from repo_layout import ROOT
 
 
-def test_mrb5553_modern_runner_receives_secret_kwarg():
+def test_mrb5553_modern_runner_receives_secret_kwarg(monkeypatch):
+    monkeypatch.setattr(
+        lg,
+        "read_remote_airc_profile_result",
+        lambda host, **_k: {"profile": "", "ok": True, "found": False, "detail": "not-found"},
+    )
     secret = "FAKE_" + "secret_kwarg_only"
     seen: dict = {}
 
