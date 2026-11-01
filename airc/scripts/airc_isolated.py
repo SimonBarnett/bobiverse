@@ -46,6 +46,8 @@ def isolated_argv() -> list[str]:
 def _child_env() -> dict[str, str]:
     env = dict(os.environ)
     env.pop("AIRC_LEGION_PASSWORD", None)
+    # FR #5778: keep child logs off stdout, which carries the JSON response.
+    env["AIRC_ISOLATED_JOB"] = "1"
     return env
 
 
@@ -58,6 +60,29 @@ def _scrub_kwargs(kwargs: dict[str, Any]) -> dict[str, Any]:
             continue
         out[k] = v
     return out
+
+
+def extract_isolated_json_payload(stdout: str) -> dict[str, Any] | None:
+    """Return the last JSON object emitted by a child, ignoring preceding logs."""
+    text = (stdout or "").strip()
+    if not text:
+        return None
+    try:
+        data = json.loads(text)
+        return data if isinstance(data, dict) else None
+    except json.JSONDecodeError:
+        pass
+    for line in reversed(text.splitlines()):
+        chunk = line.strip()
+        if not chunk.startswith("{"):
+            continue
+        try:
+            data = json.loads(chunk)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(data, dict):
+            return data
+    return None
 
 
 def is_worker_fault(payload: Any) -> bool:
@@ -114,6 +139,7 @@ def call_isolated_module(
 
     FR #5665: non-zero exit, empty stdout, timeout, or bad JSON =>
     ``error=worker_died`` (fail closed). Never invent an empty success payload.
+    FR #5778: tolerate leading log lines by extracting the last JSON object.
     """
     spec = {
         "module": module,
@@ -147,14 +173,16 @@ def call_isolated_module(
     if not stdout:
         _parent_report_worker_died(module, func, 'empty-stdout')
         return _worker_died('empty-stdout')
-    try:
-        data = json.loads(stdout)
-    except json.JSONDecodeError:
-        _parent_report_worker_died(module, func, 'bad-json')
-        return _worker_died('bad-json')
-    if not isinstance(data, dict):
-        _parent_report_worker_died(module, func, 'bad-payload')
-        return _worker_died('bad-payload')
+    data = extract_isolated_json_payload(stdout)
+    if data is None:
+        try:
+            json.loads(stdout)
+        except json.JSONDecodeError:
+            reason = 'bad-json'
+        else:
+            reason = 'bad-payload'
+        _parent_report_worker_died(module, func, reason)
+        return _worker_died(reason)
     return data
 
 
@@ -229,4 +257,5 @@ def isolated_job_main(argv: list[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
+    os.environ["AIRC_ISOLATED_JOB"] = "1"
     raise SystemExit(isolated_job_main())
