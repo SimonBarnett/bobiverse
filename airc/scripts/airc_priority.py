@@ -680,7 +680,12 @@ def walk_fixture(op: str, forms: dict[str, Any], kv: dict[str, str]) -> dict[str
         path = (kv.get("path") or "").strip()
         subs = rec.get("subforms") or {}
         if path not in subs:
-            raise KeyError(path)
+            return {
+                "ok": False,
+                "error": "subform-not-found",
+                "form": bound_echo_token(form),
+                "path": bound_echo_token(path),
+            }
         out["path"] = path
         out["subform"] = subs[path]
     elif wire == "getRows":
@@ -756,7 +761,19 @@ def run_priority_walk(
         return PriorityWalkResult(False, exit_code, jid, lines, payload)
     if "action" not in payload:
         payload = {**payload, "action": "walk"}
-    out, exit_code = format_bounded_priority_out(jid, payload, 0)
+    if payload.get("error") == "subform-not-found":
+        try:
+            import airc_fail_intake as _fail
+
+            _fail.report_verb_failure(
+                "priority",
+                "subform-not-found",
+                args={"op": op},
+                wait_s=1.0,
+            )
+        except Exception:
+            pass
+    out, exit_code = format_bounded_priority_out(jid, payload, 0 if payload.get("ok") else 2)
     lines = (out, f"DONE id={jid} exit={exit_code}")
     ok = exit_code == 0 and bool(payload.get("ok"))
     return PriorityWalkResult(ok, exit_code, jid, lines, payload)
