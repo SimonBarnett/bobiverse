@@ -443,14 +443,15 @@ function Set-Failure {
 
 function Write-CheckFailIntake {
     # FR #5354: pass release tag when known so idempotency keys are not tag=-.
-    param([string]$Result, [string]$Tag = '')
+    # FR #5634: pass Detail (e.g. kind=rate-limited) so intake is not detail= empty.
+    param([string]$Result, [string]$Tag = '', [string]$Detail = '')
     try {
         $common = Join-Path $PSScriptRoot 'Bobiverse-Common.ps1'
         if ((Test-Path -LiteralPath $common) -and -not (Get-Command Send-BobiverseUpdateFailureIntake -ErrorAction SilentlyContinue)) {
             . $common
         }
         if (Get-Command Send-BobiverseUpdateFailureIntake -ErrorAction SilentlyContinue) {
-            $null = Send-BobiverseUpdateFailureIntake -Product $Product -Tag $Tag -Result $Result -InstallRoot $InstallRoot
+            $null = Send-BobiverseUpdateFailureIntake -Product $Product -Tag $Tag -Result $Result -Detail $Detail -InstallRoot $InstallRoot
         }
     } catch { }
 }
@@ -1162,9 +1163,13 @@ function Invoke-Check {
     try { $rel = Get-LatestRelease } catch {
         $code = $null
         try { $code = [int]$_.Exception.Response.StatusCode } catch { }
-        $kind = if ($code -eq 403 -or $code -eq 429) { 'rate-limited' } elseif ($code) { "http-$code" } else { 'offline-or-error' }
+        $exMsg = ([string]$_.Exception.Message).Trim()
+        # FR #5634: classify no-matching-release throws separately from true offline.
+        $kind = if ($code -eq 403 -or $code -eq 429) { 'rate-limited' } elseif ($code) { "http-$code" } elseif ($exMsg -match 'no-matching-release') { 'no-matching-release' } else { 'offline-or-error' }
         Write-UpdLog "check result=release-lookup-failed kind=$kind local=$($local.ToString()) - starting installed version"
-        Write-CheckFailIntake -Result 'release-lookup-failed'
+        $detail = ('kind={0}' -f $kind)
+        if ($exMsg) { $detail = ('{0}; {1}' -f $detail, $exMsg) }
+        Write-CheckFailIntake -Result 'release-lookup-failed' -Detail $detail
         return
     }
     if (-not $rel -or -not $rel.assets) { Write-UpdLog 'check result=no-release-data - starting installed version'; return }
