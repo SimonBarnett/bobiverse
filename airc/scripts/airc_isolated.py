@@ -81,10 +81,16 @@ def _worker_died(detail: str) -> dict[str, Any]:
 
 
 def _parent_report_worker_died(module: str, func: str, detail: str) -> None:
-    """FR #5775: parent reports when isolated child dies without a verb report."""
+    """FR #5775: parent reports when isolated child dies without a verb report.
+
+    FR #5783: no-op under PYTEST_CURRENT_TEST / crash_report policy deny so
+    test_fr5665 fake runners do not flood live intake twins.
+    """
     if _fail_intake is None:
         return
     try:
+        if hasattr(_fail_intake, "intake_allowed") and not _fail_intake.intake_allowed():
+            return
         verb = func or module or 'isolated'
         _fail_intake.report_verb_failure(
             verb,

@@ -32,7 +32,7 @@ def test_fr5775_report_redacts_secrets_and_posts(monkeypatch):
         posts.append({"title": title, "body": body, "sig": sig, "repo": repo, "exe": exe})
         return {"ok": True, "number": 1}
 
-    monkeypatch.setattr(fi, "_native_post", fake_post)
+    # filer_post bypasses FR #5783 pytest skip so intentional proofs still post.
     out = fi.report_verb_failure(
         "network",
         RuntimeError("boom password=FAKE_SECRET_VALUE user=DOMAIN\\admin"),
@@ -40,6 +40,7 @@ def test_fr5775_report_redacts_secrets_and_posts(monkeypatch):
         version="1.0.7",
         machine="marchhare",
         wait_s=0,
+        filer_post=fake_post,
     )
     assert out.get("ok") is True
     assert posts, "must post via native intake (packaged-safe)"
@@ -57,6 +58,8 @@ def test_fr5775_spool_when_intake_down(tmp_path, monkeypatch):
     def boom(*_a, **_k):
         raise OSError("intake-unreachable")
 
+    # Force intake_allowed so FR #5783 pytest skip does not hide the spool path.
+    monkeypatch.setattr(fi, "intake_allowed", lambda **_k: True)
     monkeypatch.setattr(fi, "_native_post", boom)
     out = fi.report_verb_failure(
         "extension",
@@ -134,6 +137,7 @@ def test_fr5775_update_intake_uses_shared_key(monkeypatch):
         posts.append({"sig": sig, "title": title, "body": body})
         return {"ok": True}
 
+    monkeypatch.setattr(fi, "intake_allowed", lambda **_k: True)
     monkeypatch.setattr(fi, "_native_post", fake_post)
     # Prefer shared helper over missing PS1 beside frozen module.
     out = fi.report_update_status_failure(
@@ -154,7 +158,11 @@ def test_fr5775_update_intake_uses_shared_key(monkeypatch):
 def test_fr5775_packaged_path_skips_missing_ps1(monkeypatch, tmp_path):
     """Packaged airc.exe: no Report-*.ps1 in _MEIPASS; native post must still fire."""
     posts: list[dict] = []
-    monkeypatch.setattr(fi, "_native_post", lambda *a, **k: posts.append(k) or {"ok": True})
+
+    def fake_post(*a, **k):
+        posts.append(k)
+        return {"ok": True}
+
     monkeypatch.setattr(fi, "_meipass_dir", lambda: tmp_path)
     out = fi.report_verb_failure(
         "update",
@@ -162,6 +170,7 @@ def test_fr5775_packaged_path_skips_missing_ps1(monkeypatch, tmp_path):
         version="1.0.7",
         machine="marchhare",
         wait_s=0,
+        filer_post=fake_post,
     )
     assert out.get("ok") is True
     assert posts

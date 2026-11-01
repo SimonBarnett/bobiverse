@@ -21,6 +21,12 @@ param(
 )
 $ErrorActionPreference = 'Continue'
 
+# FR #5783: never file live intake from pytest (same spirit as CheckFailIntake DryRun / FR #5641).
+if ($env:PYTEST_CURRENT_TEST) {
+    Write-Output (@{ ok = $false; skipped = 'pytest'; verb = $Verb } | ConvertTo-Json -Compress)
+    return
+}
+
 function Get-AircFailSafeToken([string]$Tok, [string]$Default = '-') {
     $t = ([string]$Tok).Trim().ToLowerInvariant()
     $t = [regex]::Replace($t, '[^a-z0-9._-]+', '-')

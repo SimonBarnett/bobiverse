@@ -134,6 +134,24 @@ def _native_post(title: str, body: str, *, repo: str, sig: str, exe: str) -> dic
     return crash_report._post_intake(title, body, repo=repo, sig=sig, exe=exe)
 
 
+def intake_allowed(*, env: dict[str, str] | None = None) -> bool:
+    """FR #5783: no live fail-intake under pytest or when crash_report denies send.
+
+    Same spirit as Update CheckFailIntake DryRun (FR #5641): unit tests must not
+    flood twin issues when isolated worker_died paths exercise report_verb_failure.
+    Injected ``filer_post`` bypasses this gate for intentional unit proofs.
+    """
+    e = env if env is not None else os.environ
+    if str(e.get("PYTEST_CURRENT_TEST") or "").strip():
+        return False
+    try:
+        import crash_report
+
+        return bool(crash_report.load_crash_report_policy(env=dict(e)).send)
+    except Exception:
+        return True
+
+
 def _write_fail_spool(payload: dict[str, Any]) -> Path:
     """Spool a fail-intake row; prefer crash_report helper, else local spool_dir."""
     try:
@@ -177,6 +195,17 @@ def report_verb_failure(
         detail = str(exc)
         tb = traceback_text or ""
     key = dedupe_key(verb=v, machine=mid, version=ver, exc_class=exc_class)
+    # FR #5783: skip live post/spool under pytest / policy-deny unless filer_post injected.
+    if filer_post is None and not intake_allowed():
+        out.update(
+            {
+                "ok": False,
+                "skipped": "pytest-or-policy",
+                "dedupe_key": key,
+                "verb": v,
+            }
+        )
+        return out
 
     def _work() -> None:
         try:
@@ -273,6 +302,10 @@ def report_update_status_failure(
         "dry_run": dry_run,
     }
     if dry_run:
+        return payload
+    # FR #5783: pytest / crash_report local-only must not post UPDATE fail intake.
+    if not intake_allowed():
+        payload.update({"ok": False, "skipped": "pytest-or-policy", "dry_run": True})
         return payload
     try:
         _native_post(title, body, repo="SimonBarnett/bobiverse", sig=key, exe="airc")
