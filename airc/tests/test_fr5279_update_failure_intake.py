@@ -18,9 +18,13 @@ SKILL = ROOT / "airc/.grok/skills/bobiverse-airc-troubleshooting/SKILL.md"
 
 
 def test_fr5279_source_pins_set_failure_and_schedule():
+    build = (ROOT / "airc/scripts/Build-Airc.ps1").read_text(encoding="utf-8")
     upd = UPDATER.read_text(encoding="utf-8")
     common = COMMON.read_text(encoding="utf-8")
     con = CONSOLE.read_text(encoding="utf-8")
+    assert "Report-BobiverseIntakeIssue.ps1" in build
+    assert "Bobiverse-Common.ps1" in build
+    assert "FR #5766" in build
     assert "Send-BobiverseUpdateFailureIntake" in common
     assert "Send-BobiverseUpdateFailureIntake" in upd
     assert "FR #5279" in upd and "FR #5279" in common
@@ -30,6 +34,7 @@ def test_fr5279_source_pins_set_failure_and_schedule():
     docs = DOCS.read_text(encoding="utf-8")
     skill = SKILL.read_text(encoding="utf-8")
     assert "5279" in docs and "5279" in skill
+    assert "machine}|{product}|-|{result}" in docs
 
 
 def test_fr5279_failure_classes_documented():
@@ -56,10 +61,11 @@ def test_fr5279_helper_dryrun_idempotent_and_redacts():
         $env:BOB_MACHINE_ID = 'testhost'
         $pw = 'FAKE_' + 'pw99'
         $detail = 'password' + '=' + $pw + ' token=x'
-        $a = Send-BobiverseUpdateFailureIntake -Product airc -Tag 'v1.0.0' -Result 'download-failed' -Detail $detail -DryRun
-        $b = Send-BobiverseUpdateFailureIntake -Product airc -Tag 'v1.0.0' -Result 'download-failed' -Detail $detail -DryRun
+        $a = Send-BobiverseUpdateFailureIntake -Product airc -Tag '9.9.9' -Result 'download-failed' -Detail $detail -DryRun
+        $b = Send-BobiverseUpdateFailureIntake -Product airc -Tag 'v9.9.9' -Result 'download-failed' -Detail $detail -DryRun
         if (-not $a.idempotency_key) {{ throw 'missing key' }}
         if ($a.idempotency_key -ne $b.idempotency_key) {{ throw 'key drift' }}
+        if ($a.idempotency_key -ne 'airc-update-fail|testhost|airc|-|download-failed') {{ throw 'wrong shared key' }}
         if ($a.idempotency_key -notmatch 'testhost') {{ throw 'machine missing' }}
         if ($a.idempotency_key -notmatch 'download-failed') {{ throw 'result missing' }}
         if ($a.body -match 'FAKEpw99') {{ throw 'secret leaked' }}
@@ -88,6 +94,36 @@ def test_fr5279_helper_dryrun_idempotent_and_redacts():
     )
     assert p.returncode == 0, p.stdout + p.stderr
     assert "key=" in p.stdout
+
+
+def test_fr5766_python_keys_ignore_layer_specific_release_tag(monkeypatch, tmp_path):
+    import airc_console as ac
+
+    monkeypatch.setenv("BOB_MACHINE_ID", "testhost")
+    bundled = tmp_path / "Report-BobiverseIntakeIssue.ps1"
+    bundled.write_text("# reporter fixture", encoding="utf-8")
+    monkeypatch.setattr(ac.sys, "_MEIPASS", str(tmp_path), raising=False)
+    calls: list[list[str]] = []
+    monkeypatch.setattr(
+        ac.subprocess,
+        "run",
+        lambda args, **kwargs: calls.append(args),
+    )
+
+    first = ac.report_update_failure_intake(
+        product="airc",
+        result="spawn-failed",
+        tag="9.9.9",
+        install_root=str(tmp_path / "airc"),
+    )
+    second = ac.report_update_failure_intake(
+        product="airc", result="spawn-failed", tag="v9.9.9"
+    )
+
+    assert first["idempotency_key"] == "airc-update-fail|testhost|airc|-|spawn-failed"
+    assert first["idempotency_key"] == second["idempotency_key"]
+    assert calls and str(bundled) in calls[0]
+    assert "-InstallRoot" in calls[0] and str(tmp_path / "airc") in calls[0]
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows")
