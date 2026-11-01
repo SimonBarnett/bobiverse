@@ -729,7 +729,8 @@ def installer_legion_work(
         and not profile_before
         and not bool(profile_read.get("ok"))
     ):
-        return {
+        # FR #5882: keep #5659 CredMan-missing metadata on the profile gate exit.
+        early = {
             "ok": False,
             "target": target,
             "whatif": bool(whatif),
@@ -754,6 +755,17 @@ def installer_legion_work(
             "identity_label": resolved.label,
             "account": resolved.account,
         }
+        if resolved.credman_missing:
+            early["credman_missing"] = True
+            early["credman_fell_through"] = "system"
+            if resolved.credman_error:
+                early["credman_error"] = resolved.credman_error
+            reason = resolved.identity_reason()
+            if reason:
+                early["identity_reason"] = reason
+            if resolved.credman_target:
+                early["credman_target"] = resolved.credman_target
+        return early
     rp = resolve_legion_profile(
         explicit=explicit_profile, profile_before=profile_before
     )

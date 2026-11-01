@@ -21,8 +21,19 @@ def test_fr5310_read_missing_fail_closed():
         assert "credman-missing" in str(exc)
 
 
-def test_fr5310_installer_missing_falls_to_system():
+def test_fr5310_installer_missing_falls_to_system(monkeypatch):
     """FR #5659: empty CredMan falls through to SYSTEM."""
+    # FR #5882: stub remote profile so the pin is host-SMB independent.
+    monkeypatch.setattr(
+        lg,
+        "read_remote_airc_profile_result",
+        lambda host, **_k: {
+            "profile": "",
+            "ok": True,
+            "found": False,
+            "detail": "not-found",
+        },
+    )
     seen: list[dict] = []
 
     def run_fn(spec):
