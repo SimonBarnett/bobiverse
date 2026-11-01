@@ -366,6 +366,13 @@ class AircConsoleService:
             cfg = _read_airc_json_dict(install_root)
         except Exception:
             cfg = {}
+        # FR #5745: airc.json credman_targets {legion,extension,network} overrides defaults.
+        try:
+            import airc_identity as _ident5745
+
+            _ident5745.configure_credman_targets(cfg if isinstance(cfg, dict) else None)
+        except Exception:
+            pass
         for line in legacy_operator_input_log_lines(args, cfg):
             info(line)
         self.auth_mode = "irc_ops"

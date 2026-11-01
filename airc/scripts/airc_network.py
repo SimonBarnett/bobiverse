@@ -342,7 +342,17 @@ def inventory_work(
         credman_reader=_reader,
         system_fn=system_fn,
     )
+    try:
+        from airc_console_service import info as _info
+
+        line = _ident.format_identity_fallback_log(verb="network", resolved=resolved)
+        if line:
+            _info(line)
+    except Exception:
+        pass
     pub = resolved.public_dict()
+    if resolved.credman_missing:
+        pub["credman_fell_through"] = "system"
     # computer_account is the SYSTEM account for the box (even when using CredMan).
     sys = (system_fn or _ident.system_computer_account)() or {}
     computer_account = str(sys.get("account") or sys.get("username") or "").strip()
