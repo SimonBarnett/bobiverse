@@ -181,8 +181,14 @@ def call_isolated_module(
         return _worker_died("empty-stdout")
     data = extract_isolated_json_payload(stdout)
     if data is None:
-        _parent_report_worker_died(module, func, "bad-json")
-        return _worker_died("bad-json")
+        try:
+            json.loads(stdout)
+        except json.JSONDecodeError:
+            reason = "bad-json"
+        else:
+            reason = "bad-payload"
+        _parent_report_worker_died(module, func, reason)
+        return _worker_died(reason)
     return data
 
 
