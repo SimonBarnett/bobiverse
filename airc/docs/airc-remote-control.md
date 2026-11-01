@@ -149,3 +149,12 @@ PRIVMSG marchhare_console :id=aabbccdd LEGION walrus -WhatIf
 ## Identity for remote verbs (FR #5659)
 
 LEGION / EXTENSION / NETWORK pick **passed** (DCC `CRED id= via=dcc`) then **CredMan** then **SYSTEM**. See `bobiverse-airc-commands` CRED + LEGION sections. Never put passwords on IRC.
+
+NETWORK (FR #5711) accepts `cred=<8hex>` and consumes the staged credential once.
+Without a staged identity it reads `PriorityAirc/NetworkAdmin` from the service's
+CredMan store, falling through to the SYSTEM/computer account only when absent.
+The selected credentials bind both LDAP RootDSE and the computer search;
+missing staged credentials or rejected explicit authentication fail closed.
+`-WhatIf` still reads inventory using that identity. Inventory JSON, the short
+NETWORK log and DONE (DCC, IRC and DCC-fallback) report `identity=passed|credman|system`
+and `account=`; passwords are never included in output or subprocess arguments.

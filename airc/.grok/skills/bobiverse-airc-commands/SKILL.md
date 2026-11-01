@@ -128,6 +128,7 @@ PRIVMSG {mid}_console :id=c25bd00e NETWORK diag -WhatIf
 - **Isolation:** worker thread/child; fault must not stop service Airc; console still handles STATUS.
 - **Payload:** short IRC `NETWORK accepted` + `DONE id= exit=`; full inventory + log via DCCLISTEN same job `id=` (`DONE ... via=dcc`) or IRC CONT. **FR #5519:** no-offer / DCC-fail registers a resume buffer so `CONT id=<job>` returns the log body (not `no resume buffer`). CAST IRON: no secrets on IRC or in the DCC body.
 - **WhatIf:** read-only plan (no writes).
+- **Identity (FR #5711):** NETWORK binds LDAP using staged TLS DCC `CRED` (`NETWORK cred=<id>`) first, then CredMan `PriorityAirc/NetworkAdmin`, then SYSTEM/computer account. Missing staged credentials or rejected explicit authentication fail closed; no silent SYSTEM retry. `-WhatIf` still reads inventory and resolves identity. Inventory, IRC log and every transport's DONE report `identity=passed|credman|system` and `account=`, never passwords.
 
 See `docs/airc-remote-control.md` and `docs/feature-request-airc-network-diagnostic-2026-10-31.md`.
 

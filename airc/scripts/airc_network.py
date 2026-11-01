@@ -15,7 +15,7 @@ from typing import Any, Callable
 _NETWORK_CMD_RE = re.compile(
     r"(?is)^(?:id=([0-9a-f]{8})\s+)?NETWORK(?:\s+(.*))?$"
 )
-NETWORK_USAGE = "[diag] [-WhatIf]"
+NETWORK_USAGE = "[diag] [-WhatIf] [cred=<8hex>]"
 
 
 @dataclass
@@ -25,6 +25,7 @@ class NetworkVerbResult:
     job_id: str = ""
     hosts: list[dict[str, Any]] = field(default_factory=list)
     failures: list[dict[str, Any]] = field(default_factory=list)
+    identity: dict[str, Any] = field(default_factory=dict)
 
     def reply_text(self) -> str:
         return self.reply
@@ -35,7 +36,14 @@ def parse_network_command(text: str) -> dict[str, Any] | None:
     if not m:
         return None
     qid = (m.group(1) or "").lower()
-    tokens = [(t or "").strip() for t in (m.group(2) or "").split() if t.strip()]
+    import airc_identity as _ident
+    import airc_passed_cred as _pcred
+
+    rest = m.group(2) or ""
+    if _ident.irc_line_has_plaintext_secret(rest):
+        return {"qid": qid, "usage": True, "unknown_flag": "secrets-on-irc"}
+    cred_id, rest = _pcred.extract_cred_ref(rest)
+    tokens = [(t or "").strip() for t in rest.split() if t.strip()]
     whatif = False
     extra = False
     unknown = ""
@@ -58,6 +66,7 @@ def parse_network_command(text: str) -> dict[str, Any] | None:
         "qid": qid,
         "action": "diag",
         "whatif": whatif,
+        "cred_id": cred_id,
     }
 
 
@@ -99,7 +108,7 @@ def ou_from_dn(dn: str | None) -> str:
     return "unknown"
 
 
-def default_ldap_enum() -> list[Any]:
+def default_ldap_enum(*, identity: Any = None) -> list[Any]:
     """AD computers via LDAP/ADSI (hostname + distinguishedName).
 
     FR #5521: NETWORK diag must not stub ``[]`` on a domain-joined console.
@@ -111,14 +120,31 @@ def default_ldap_enum() -> list[Any]:
     import subprocess
 
     if os.name != "nt":
+        if identity is not None and identity.source != "system":
+            raise RuntimeError("ldap_failed")
         return []
     ps = shutil.which("powershell.exe") or shutil.which("powershell")
     if not ps:
+        if identity is not None and identity.source != "system":
+            raise RuntimeError("ldap_failed")
         return []
     # Pair lines N=<name> / D=<distinguishedName> (ADSI Properties keys are lower).
+    bind = "$s=[adsisearcher]'(objectCategory=computer)';"
+    explicit = identity is not None and identity.source != "system"
+    if explicit:
+        bind = (
+            "$c=[Console]::In.ReadToEnd()|ConvertFrom-Json;"
+            "$root=[System.DirectoryServices.DirectoryEntry]::new("
+            "'LDAP://RootDSE',[string]$c.username,[string]$c.password);"
+            "$dn=[string]$root.Properties['defaultNamingContext'][0];"
+            "$base=[System.DirectoryServices.DirectoryEntry]::new("
+            "('LDAP://'+$dn),[string]$c.username,[string]$c.password);"
+            "$s=[System.DirectoryServices.DirectorySearcher]::new($base);"
+            "$s.Filter='(objectCategory=computer)';"
+        )
     script = (
         "$ErrorActionPreference='Stop';"
-        "$s=[adsisearcher]'(objectCategory=computer)';"
+        + bind +
         "$s.PageSize=500;"
         "[void]$s.PropertiesToLoad.Add('name');"
         "[void]$s.PropertiesToLoad.Add('distinguishedName');"
@@ -136,10 +162,18 @@ def default_ldap_enum() -> list[Any]:
             capture_output=True,
             text=True,
             timeout=60,
+            **({"input": json.dumps({
+                "username": identity.username, "password": identity.password,
+            })} if explicit else {}),
         )
     except Exception:
+        if explicit:
+            raise RuntimeError("ldap_failed") from None
         return []
     if p.returncode != 0:
+        if explicit:
+            # Never echo PowerShell errors: credentials may be present in diagnostics.
+            raise RuntimeError("auth_failed") from None
         return []
     rows: list[dict[str, str]] = []
     cur_name = ""
@@ -180,13 +214,39 @@ def inventory_work(
     ldap_enum: Callable[[], list[Any]] | None = None,
     resolve_ips: Callable[[str], list[str]] | None = None,
     extra_hosts: list[str] | None = None,
+    passed_cred: dict[str, str] | None = None,
+    passed_requested: bool = False,
+    credman_reader: Callable[..., Any] | None = None,
     **_kw: Any,
 ) -> dict[str, Any]:
     """FR #5299: hostname + ips[] + ou. Never uses extra_hosts."""
     _ = extra_hosts
-    enum = ldap_enum or default_ldap_enum
+    import airc_identity as _ident
+
+    if passed_requested and not (
+        passed_cred and passed_cred.get("username") and passed_cred.get("password")
+    ):
+        return {
+            "ok": False, "hosts": [], "identity": "passed", "account": "",
+            "failures": [{"step": "identity", "error": "auth_failed"}],
+        }
+    identity = _ident.resolve_remote_identity(
+        verb="network", passed=passed_cred, credman_reader=credman_reader,
+    )
+    public = identity.public_dict()
     resolve = resolve_ips or default_resolve_ips
-    rows = list(enum() or [])
+    try:
+        rows = list(
+            (ldap_enum() if ldap_enum else default_ldap_enum(identity=identity)) or []
+        )
+    except Exception as exc:
+        return {
+            **public, "ok": False, "hosts": [], "ldap": False,
+            "failures": [{
+                "step": "ldap",
+                "error": "auth_failed" if str(exc) == "auth_failed" else "ldap_failed",
+            }],
+        }
     hosts: list[dict[str, Any]] = []
     log: list[dict[str, Any]] = []
     for raw in rows:
@@ -213,6 +273,7 @@ def inventory_work(
         hosts.append(rec)
     ldap_ok = bool(rows)
     return {
+        **public,
         "ok": True,
         "action": action,
         "whatif": bool(whatif),
@@ -238,6 +299,15 @@ def run_network_verb(
     extra = " whatif=1" if whatif else ""
     # FR #5583: accept only; DONE is last after out/CONT from deliver_*.
     accepted = f"NETWORK accepted id={qid} action={action}{extra}"
+    work_kw = dict(_kw)
+    cred_id = str(work_kw.pop("cred_id", "") or "")
+    if cred_id:
+        import airc_passed_cred as _pcred
+
+        work_kw["passed_cred"] = _pcred.GLOBAL_PASSED_CREDS.take(cred_id)
+        work_kw["passed_requested"] = True
+    if "passed_cred" in work_kw:
+        work_kw["passed_requested"] = True
 
     def _finish(data: dict[str, Any]) -> NetworkVerbResult:
         hosts = list(data.get("hosts") or [])
@@ -248,6 +318,11 @@ def run_network_verb(
             job_id=qid,
             hosts=hosts,
             failures=failures,
+            identity={
+                k: data[k] for k in (
+                    "identity", "account", "identity_label", "credman_missing",
+                ) if k in data
+            },
         )
         if on_done is not None:
             on_done(res)
@@ -255,7 +330,7 @@ def run_network_verb(
 
     def _safe() -> NetworkVerbResult:
         try:
-            data = work(action=action, whatif=whatif, **_kw)
+            data = work(action=action, whatif=whatif, **work_kw)
             if not isinstance(data, dict):
                 data = {"ok": True, "hosts": [], "log": []}
         except Exception as exc:
@@ -270,7 +345,8 @@ def run_network_verb(
         return _safe()
     import airc_isolated as _iso
 
-    if _iso.is_packaged_work(work):
+    # Staged secrets stay in memory, never in isolated-worker request files.
+    if _iso.is_packaged_work(work) and not work_kw.get("passed_requested"):
 
         def _from_child(data: Any) -> None:
             # FR #5665: worker_died / isolated-fault must populate failures[]
@@ -393,11 +469,17 @@ def deliver_network_payload(
     digest = hashlib.sha256(raw).hexdigest()
     nfail = int(payload.get("failure_count") or 0)
     nhost = int(payload.get("host_count") or 0)
+    source = str(payload.get("identity") or "")
+    suffix = ""
+    if source in ("passed", "credman", "system"):
+        account = str(payload.get("account") or "")
+        account = re.sub(r"[\s\x00-\x1f\x7f]", "_", account)
+        suffix = f" identity={source} account={account}"
     # FR #5665: non-zero DONE when failures[] (parity EXTENSION #5644 / LEGION #5655).
     exit_code = 0 if nfail == 0 else 1
     summary = (
         f"NETWORK log hosts={nhost} failures={nfail} "
-        f"action={payload.get('action')} bytes={len(raw)}"
+        f"action={payload.get('action')} bytes={len(raw)}{suffix}"
     )
     lines: list[str] = [f"out id={jid} seq=1 {summary}"]
     for i, fail in enumerate(payload.get("failures") or [], start=2):
@@ -410,7 +492,7 @@ def deliver_network_payload(
             sender(raw, offer)
             done = _dcc.format_done_via_dcc(
                 jid, exit_code, nbytes=len(raw), sha256=digest, via="dcc"
-            )
+            ) + suffix
             return {
                 "via": "dcc",
                 "sha256": digest,
@@ -424,7 +506,7 @@ def deliver_network_payload(
                 f"err id={jid} seq={len(lines)+1} dcc failed: {exc}; falling back to IRC"
             )
             lines.append("CONT id=" + jid + " offset=1")
-            done = f"DONE id={jid} exit={exit_code} via=irc reason=dcc-fail"
+            done = f"DONE id={jid} exit={exit_code} via=irc reason=dcc-fail{suffix}"
             lines.append(done)
             return {
                 "via": "irc",
@@ -436,7 +518,7 @@ def deliver_network_payload(
                 "payload": raw,
             }
     lines.append("CONT id=" + jid + " offset=1")
-    done = f"DONE id={jid} exit={exit_code} via=irc"
+    done = f"DONE id={jid} exit={exit_code} via=irc{suffix}"
     lines.append(done)
     return {
         "via": "irc",

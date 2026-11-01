@@ -3798,6 +3798,7 @@ class AircConsoleCore:
                     whatif=net["whatif"],
                     hosts=list(res.hosts or []),
                     failures=list(res.failures or []),
+                    extra=res.identity,
                 )
                 delivered = _network.deliver_network_payload(
                     job_id=qid or res.job_id,
@@ -3816,16 +3817,24 @@ class AircConsoleCore:
                     whatif=net["whatif"],
                     job_id=qid,
                     on_done=_deliver_inventory,
+                    **({"cred_id": net["cred_id"]} if net.get("cred_id") else {}),
                 )
             except TypeError:
-                try:
-                    result = self.network_runner(
-                        action=net["action"],
-                        whatif=net["whatif"],
-                        job_id=qid,
+                if net.get("cred_id"):
+                    result = _network.NetworkVerbResult(
+                        False, "NETWORK err auth_failed", job_id=qid,
+                        failures=[{"step": "identity", "error": "auth_failed"}],
+                        identity={"identity": "passed", "account": ""},
                     )
-                except TypeError:
-                    result = self.network_runner(action=net["action"])
+                else:
+                    try:
+                        result = self.network_runner(
+                            action=net["action"],
+                            whatif=net["whatif"],
+                            job_id=qid,
+                        )
+                    except TypeError:
+                        result = self.network_runner(action=net["action"])
             except Exception:
                 result = _network.NetworkVerbResult(
                     False, "NETWORK err isolated-fault", job_id=qid
