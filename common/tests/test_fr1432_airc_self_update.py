@@ -47,7 +47,9 @@ def test_fr1432_arp_display_name_exact_product():
 
 def test_fr1432_airc_asset_pattern_matches_release_msi_name():
     # Same matcher Check uses for product-version.msi assets.
-    assert r"{0}-(\d+\.\d+\.\d+)\.msi$" in UPD
+    # FR #5354 / #5412 / #5767: optional 4th version segment (N.N.N or N.N.N.N).
+    assert r"{0}-(\d+\.\d+\.\d+(?:\.\d+)?)\.msi$" in UPD
+    assert r"{0}-(\d+\.\d+\.\d+)\.msi$" not in UPD
     assert "airc" in UPD.lower()
 
 
