@@ -14,6 +14,7 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from pathlib import Path
 
 import bobstat
@@ -220,6 +221,7 @@ _MERGE_PEER_FIELDS = (
     "jobs",
     "repo",
     "sha",
+    "started_at",
     "model",
     "fuel",
     "lastSeen",
@@ -233,12 +235,19 @@ _MERGE_PEER_FIELDS = (
     "overage_gbp",
     # #60: overspend amount + state and the Sand (grok-chat) weekly reset, per machine.
     "overage_usd",
+    "overage_fetched_at",
+    "usd_gbp_rate",
     "overspend_state",
     "on_demand_used_cents",
     "on_demand_limit_cents",
     "on_demand_remaining_pct",
     "sand_period_end",
 )
+_PEER_CLEAR_FIELDS = frozenset({
+    "repo", "sha", "started_at", "working_on", "jobs",
+    "overage_gbp", "overage_usd", "overage_fetched_at", "usd_gbp_rate",
+    "on_demand_used_cents", "on_demand_limit_cents", "on_demand_remaining_pct",
+})
 _TRAY_MACHINE_EXPORT_KEYS = (
     "id",
     "nick",
@@ -260,6 +269,7 @@ _TRAY_MACHINE_EXPORT_KEYS = (
     "model",
     "repo",
     "sha",
+    "started_at",
     "cursor_label",
     "cursor_period_end",
     "cursor_pools",
@@ -267,6 +277,8 @@ _TRAY_MACHINE_EXPORT_KEYS = (
     "cur",
     "overage_gbp",
     "overage_usd",
+    "overage_fetched_at",
+    "usd_gbp_rate",
     "overspend_state",
     "on_demand_used_cents",
     "on_demand_limit_cents",
@@ -980,7 +992,7 @@ def _coerce_machine(mid: str, raw: object) -> dict:
     if raw.get("uptime_since"):
         base["uptime_since"] = str(raw["uptime_since"])
     for key in _MERGE_PEER_FIELDS:
-        if key in raw and raw[key] is not None:
+        if key in raw and (raw[key] is not None or key in _PEER_CLEAR_FIELDS):
             base[key] = raw[key]
     if "running" in base:
         try:
@@ -1830,11 +1842,17 @@ def _apply_merge_payload(doc: dict, mid: str, payload: dict) -> list[str]:
         if text:
             ent["working_on"] = text
         else:
+            ent["working_on"] = ""
             _roll_working_on(ent)
     for key in _MERGE_PEER_FIELDS:
-        if key not in payload or payload[key] is None:
+        if key not in payload:
             continue
         val = payload[key]
+        if val in (None, "") and key in _PEER_CLEAR_FIELDS:
+            ent[key] = [] if key == "jobs" else None
+            continue
+        if val is None:
+            continue
         if key == "jobs" and not isinstance(val, list):
             continue
         if key == "pcent" and isinstance(val, dict):
@@ -2901,8 +2919,11 @@ def _mask_expired_pools(base: dict, now: datetime | None = None) -> None:
             masked_rows.append(row)
         base["cursor_pools"] = masked_rows
     cpe, _ = _cursor_pool_period(base, "cursor-models")
-    if base.get("overage_gbp") not in (None, "") and _period_expired(cpe, now):
-        base["overage_gbp"] = None
+    if _period_expired(cpe, now):
+        for key in ("overage_gbp", "overage_usd", "usd_gbp_rate",
+                    "on_demand_used_cents", "on_demand_limit_cents", "on_demand_remaining_pct"):
+            if key in base:
+                base[key] = None
 
 
 def export_machine_for_tray(
@@ -2915,10 +2936,12 @@ def export_machine_for_tray(
         for key in _peer_fill_keys():
             if key not in peer or peer[key] is None or peer[key] == "":
                 continue
+            if key in _PEER_CLEAR_FIELDS and key in ent:
+                continue
             if key not in base or base.get(key) in (None, "", [], {}):
                 base[key] = peer[key]
     for key in _peer_fill_keys():
-        if key in ent and ent[key] is not None and ent[key] != "":
+        if key in ent and (key in _PEER_CLEAR_FIELDS or ent[key] not in (None, "")):
             base[key] = ent[key]
     try:
         base["running"] = int(base.get("running") or 0)
@@ -3248,6 +3271,37 @@ def _digest_stuck(home: Path) -> list:
         return []
 
 
+def _normalize_shared_overage_gbp(machines: dict[str, dict]) -> None:
+    """Use the newest measured FX rate for all known USD figures, without HTTP on GET."""
+    candidates = []
+    for mid, ent in machines.items():
+        fetched = _parse_iso_ts(ent.get("overage_fetched_at"))
+        if fetched is None:
+            continue
+        try:
+            rate = Decimal(str(ent.get("usd_gbp_rate")))
+        except InvalidOperation:
+            continue
+        if rate.is_finite() and rate > 0:
+            candidates.append((fetched.replace(tzinfo=fetched.tzinfo or timezone.utc), mid, rate))
+    if not candidates:
+        return
+    rate = max(candidates)[2]
+    for ent in machines.values():
+        # Explicit unknown/expired GBP must remain cleared, even when USD is known.
+        if ent.get("overage_gbp") in (None, "") or ent.get("overage_usd") in (None, ""):
+            continue
+        try:
+            usd = Decimal(str(ent["overage_usd"]))
+            if not usd.is_finite() or usd < 0:
+                continue
+            gbp = (usd * rate).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        except InvalidOperation:
+            continue
+        ent["overage_gbp"] = float(gbp)
+        ent["usd_gbp_rate"] = float(rate)
+
+
 def build_digest_object(home: Path, briefer_nick: str, now: datetime | None = None) -> dict:
     """GET /bob/v1/report payload: ChanServ roster shops only + chair_channels."""
     doc = load_digest(home)
@@ -3267,6 +3321,7 @@ def build_digest_object(home: Path, briefer_nick: str, now: datetime | None = No
         exported[mid] = export_machine_for_tray(
             home, mid, cleaned.get(mid) or _empty_machine(mid), now
         )
+    _normalize_shared_overage_gbp(exported)
     chair = (os.environ.get(CHAIR_NICK_ENV) or "").strip() or str(
         doc.get("chairNick") or doc.get("chair_nick") or ""
     ).strip()
@@ -3425,15 +3480,20 @@ def _delta_norm(key: str, val: object) -> object:
     return val
 
 
-def _peer_delta_value(peer: dict, chair: dict, key: str) -> object | None:
+_NO_PEER_DELTA = object()
+
+
+def _peer_delta_value(peer: dict, chair: dict, key: str) -> object:
+    if key not in peer:
+        return _NO_PEER_DELTA
     pv = peer.get(key)
     cv = chair.get(key)
     if _delta_norm(key, pv) == _delta_norm(key, cv):
-        return None
+        return _NO_PEER_DELTA
     if pv in (None, ""):
-        return None
+        return None if key in _PEER_CLEAR_FIELDS else _NO_PEER_DELTA
     if looks_like_secret(str(pv)):
-        return None
+        return _NO_PEER_DELTA
     return pv
 
 
@@ -3453,12 +3513,12 @@ def merge_payload_local_peer_ahead_of_chair(
         if key in _PEER_DELTA_SKIP:
             continue
         val = _peer_delta_value(peer, chair_machine, key)
-        if val is not None:
+        if val is not _NO_PEER_DELTA:
             payload[key] = val
             changed = True
     for key in ("online", "status", "working_on"):
         val = _peer_delta_value(peer, chair_machine, key)
-        if val is not None:
+        if val is not _NO_PEER_DELTA:
             payload[key] = val
             changed = True
     if not changed:
@@ -3497,10 +3557,10 @@ def ingest_fleet_digest_pull(home: Path, pull: dict) -> None:
             continue
         peer_doc: dict = {"id": mid}
         for key in _MERGE_PEER_FIELDS:
-            if key in ent and ent[key] not in (None, ""):
+            if key in ent and (key in _PEER_CLEAR_FIELDS or ent[key] not in (None, "")):
                 peer_doc[key] = ent[key]
         for key in ("online", "status", "working_on", "nick"):
-            if key in ent and ent[key] not in (None, ""):
+            if key in ent and (key in _PEER_CLEAR_FIELDS or ent[key] not in (None, "")):
                 peer_doc[key] = ent[key]
         if len(peer_doc) > 1:
             peer_doc["ok"] = True

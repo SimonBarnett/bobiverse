@@ -2085,6 +2085,7 @@ function Get-BobDigestWebhookFingerprint {
         [string]$Doc.kind
         [string]$Doc.repo
         [string]$Doc.sha
+        [string]$Doc.started_at
         [string]$Doc.fuel
         [string]$Doc.working_on
         [string]$Doc.online
@@ -2093,8 +2094,12 @@ function Get-BobDigestWebhookFingerprint {
         [string]$Doc.remaining_pct
         [string]$Doc.overage_gbp
         [string]$Doc.overage_usd
+        [string]$Doc.overage_fetched_at
+        [string]$Doc.usd_gbp_rate
         [string]$Doc.overspend_state
+        [string]$Doc.on_demand_used_cents
         [string]$Doc.on_demand_limit_cents
+        [string]$Doc.on_demand_remaining_pct
         $(if ($Doc.pcent) { ($Doc.pcent | ConvertTo-Json -Compress -Depth 5) } else { '' })
         $poolsSig
         $jobsJson
@@ -2136,15 +2141,20 @@ function Build-BobDigestWebhookMergePayload {
     if ($Doc.period_end) { $payload.period_end = [string]$Doc.period_end }
     if ($Doc.model) { $payload.model = [string]$Doc.model }
     if ($Doc.kind) { $payload.kind = [string]$Doc.kind }
-    if ($Doc.repo) { $payload.repo = [string]$Doc.repo }
-    if ($Doc.sha) { $payload.sha = [string]$Doc.sha }
+    # FR #5690: present-but-empty fields clear the chair; absent fields are partial updates.
+    foreach ($key in @('repo', 'sha', 'started_at', 'working_on', 'overage_fetched_at')) {
+        $present = if ($Doc -is [System.Collections.IDictionary]) { $Doc.Contains($key) } else { $null -ne $Doc.PSObject.Properties[$key] }
+        if ($present) {
+            $payload[$key] = if ($null -eq $Doc.$key -or [string]$Doc.$key -eq '') { $null } else { [string]$Doc.$key }
+        }
+    }
     if ($Doc.fuel) { $payload.fuel = $Doc.fuel }
     # FR #356 (agentic_build): seat start reports pool|session-key|unknown (never the key)
     if ($Doc.fuel_mode) { $payload.fuel_mode = [string]$Doc.fuel_mode }
-    if ($Doc.working_on) { $payload.working_on = [string]$Doc.working_on }
     if ($null -ne $Doc.running) { $payload.running = [int]$Doc.running }
     if ($null -ne $Doc.queued) { $payload.queued = [int]$Doc.queued }
-    if ($Doc.jobs -and @($Doc.jobs).Count -gt 0) { $payload.jobs = @($Doc.jobs) }
+    $jobsPresent = if ($Doc -is [System.Collections.IDictionary]) { $Doc.Contains('jobs') } else { $null -ne $Doc.PSObject.Properties['jobs'] }
+    if ($jobsPresent) { $payload.jobs = @($Doc.jobs | Where-Object { $null -ne $_ }) }
     if ($Doc.pcent) { $payload.pcent = $Doc.pcent }
     # #456: each Bob reports per-pool remaining + period_end (grok-chat weekly vs high/auto billing).
     if ($Doc.cursor_pools) {
@@ -2154,17 +2164,20 @@ function Build-BobDigestWebhookMergePayload {
         if ($poolRows.Count -gt 0) { $payload.cursor_pools = @($poolRows) }
     }
     # CAST IRON (Simon 2026-09-27): month overspend GBP on every usage heartbeat.
-    if ($null -ne $Doc.overage_gbp -and [string]$Doc.overage_gbp -ne '') {
-        try { $payload.overage_gbp = [double]$Doc.overage_gbp } catch { }
+    foreach ($key in @('overage_gbp', 'overage_usd', 'usd_gbp_rate')) {
+        $present = if ($Doc -is [System.Collections.IDictionary]) { $Doc.Contains($key) } else { $null -ne $Doc.PSObject.Properties[$key] }
+        if (-not $present) { continue }
+        if ($null -eq $Doc.$key -or [string]$Doc.$key -eq '') { $payload[$key] = $null }
+        else { try { $payload[$key] = [double]$Doc.$key } catch { } }
     }
     # #60: overspend amount + state (none|over|at-limit|unknown) so the digest/tray can show it per machine.
-    if ($null -ne $Doc.overage_usd -and [string]$Doc.overage_usd -ne '') {
-        try { $payload.overage_usd = [double]$Doc.overage_usd } catch { }
-    }
     if ($Doc.overspend_state) { $payload.overspend_state = [string]$Doc.overspend_state }
     foreach ($odk in @('on_demand_used_cents', 'on_demand_limit_cents', 'on_demand_remaining_pct')) {
+        $present = if ($Doc -is [System.Collections.IDictionary]) { $Doc.Contains($odk) } else { $null -ne $Doc.PSObject.Properties[$odk] }
+        if (-not $present) { continue }
         $odv = $Doc.$odk
-        if ($null -ne $odv -and [string]$odv -ne '') { try { $payload[$odk] = [int]$odv } catch { } }
+        if ($null -eq $odv -or [string]$odv -eq '') { $payload[$odk] = $null }
+        else { try { $payload[$odk] = [int]$odv } catch { } }
     }
     return [pscustomobject]$payload
 }
@@ -2459,6 +2472,8 @@ function Write-BobIrcStatus {
         cursor_remaining_pct   = $cursorRemainingPct
         overage_gbp            = $overageGbp
         overage_usd            = $(if ($cw) { $cw.overage_usd } else { $null })
+        overage_fetched_at     = $(if ($cw) { $cw.fetched_at } else { $null })
+        usd_gbp_rate           = $(if ($cw) { $cw.usd_gbp_rate } else { $null })
         overspend_state        = $(if ($cw) { $cw.overspend_state } else { $null })
         on_demand_used_cents   = $(if ($cw) { $cw.on_demand_used_cents } else { $null })
         on_demand_limit_cents  = $(if ($cw) { $cw.on_demand_limit_cents } else { $null })

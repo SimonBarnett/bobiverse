@@ -367,7 +367,7 @@ function ConvertTo-BobCursorUsageDoc {
     if ($null -ne $j.on_demand_used_pct -and [string]$j.on_demand_used_pct -ne '') {
         try { $odUsedPct = [int]$j.on_demand_used_pct } catch { }
     }
-    if ($null -eq $remain -and $null -eq $used -and $null -eq $overGbp -and $null -eq $overUsd -and $null -eq $odRemain) { return $null }
+    if (-not $j.ok -and $null -eq $remain -and $null -eq $used -and $null -eq $overGbp -and $null -eq $overUsd -and $null -eq $odRemain) { return $null }
     if ($null -ne $remain) {
         if ($remain -lt 0) { $remain = 0 }
         if ($remain -gt 100) { $remain = 100 }
@@ -404,6 +404,7 @@ function ConvertTo-BobCursorUsageDoc {
         cursor_spending_groups = @($spendGroups)
         overage_gbp   = $overGbp
         overage_usd   = $overUsd
+        usd_gbp_rate  = $(if ($null -ne $j.usd_gbp_rate -and [string]$j.usd_gbp_rate -ne '') { [double]$j.usd_gbp_rate } else { $null })
         on_demand_used_cents = $cents
         on_demand_limit_cents = $odLimit
         on_demand_remaining_pct = $odRemain
