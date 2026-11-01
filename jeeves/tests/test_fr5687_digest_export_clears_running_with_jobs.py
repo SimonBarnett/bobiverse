@@ -20,24 +20,21 @@ def _roster(home: Path) -> None:
     bobreport._SEAT_ROSTER_CACHE["key"] = None
 
 
-def test_fr5687_export_empty_worker_list_clears_jobs_and_running(monkeypatch):
-    # Prefer an explicit D: home: pytest's default tmp_path can hit WinError 5
-    # under D:\Temp\pytest-of-* on this seat.
-    import tempfile
-
-    home = Path(tempfile.mkdtemp(prefix="fr5687-", dir="D:\\Temp"))
-    monkeypatch.setenv("BOB_DIGEST_HOME", str(home))
-    _roster(home)
+def test_fr5687_export_empty_worker_list_clears_jobs_and_running(tmp_path, monkeypatch):
+    monkeypatch.setenv("BOB_DIGEST_HOME", str(tmp_path))
+    _roster(tmp_path)
     ent = {
         "online": True,
         "running": 1,
         "queued": 0,
         "jobs": [{"repo": "SimonBarnett/hrsmith", "state": "running"}],
+        "repo": "SimonBarnett/hrsmith",
+        "sha": "abc123",
         "worker_list": [],
         "working_on": "stale",
     }
     out = bobreport.export_machine_for_tray(
-        home,
+        tmp_path,
         "marchhare",
         ent,
         now=datetime(2026, 11, 1, 12, tzinfo=timezone.utc),
@@ -46,12 +43,16 @@ def test_fr5687_export_empty_worker_list_clears_jobs_and_running(monkeypatch):
     assert out.get("running") == 0
     assert out.get("queued") == 0
     assert out.get("working_on") == ""
+    assert out.get("repo") is None
+    assert out.get("sha") is None
 
 
 def test_fr5687_refresh_syncs_running_queued_from_jobs():
     ent = {
         "running": 9,
         "queued": 9,
+        "repo": "SimonBarnett/a",
+        "sha": "abc123",
         "jobs": [
             {"repo": "SimonBarnett/a", "state": "running"},
             {"repo": "SimonBarnett/b", "state": "queued"},
@@ -69,6 +70,8 @@ def test_fr5687_refresh_syncs_running_queued_from_jobs():
     assert len(ent.get("jobs") or []) == 2
     assert ent["running"] == 1
     assert ent["queued"] == 1
+    assert ent["repo"] == "SimonBarnett/a"
+    assert ent["sha"] == "abc123"
 
 
 def test_fr5687_sync_helper_empty_jobs_zeros_counts():

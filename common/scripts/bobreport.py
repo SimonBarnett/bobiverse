@@ -904,6 +904,8 @@ def _refresh_machine_activity_from_worker_list(ent: dict) -> None:
         jobs = ent.get("jobs")
         if isinstance(jobs, list) and jobs:
             ent["jobs"] = []
+        ent["repo"] = None
+        ent["sha"] = None
     # FR #5687: keep running/queued aligned with (possibly cleared) jobs.
     _sync_running_queued_from_jobs(ent)
 
