@@ -479,7 +479,7 @@ def unescape_harvest_lesson_text(text: str) -> str:
     while esc_sq in s:
         s = s.replace(esc_sq, chr(39))
     # FR #3935: ASCII dash runs in new harvest bullets.
-    s = s.replace("—", "---").replace("–", "-")
+    s = s.replace("\u2014", "---").replace("\u2013", "-")
     return s
 
 
