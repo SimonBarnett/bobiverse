@@ -816,8 +816,8 @@ def _scrub(obj: Any) -> Any:
 def _format_gpo_log_block(gpo: dict[str, Any]) -> dict[str, Any]:
     """FR #5522 / #5586: honor attempted=False when the GPO step did not run.
 
-    FR #5644: keep script triage fields (error/dc/gpo_via/exit_code) so operators
-    see Access-denied-to-DC instead of only reason=gpo_remote_failed.
+    FR #5644 / MRB #5648: keep script triage fields so gpo_access_denied need=
+    guidance and Access-denied error/dc/gpo_via reach the EXTENSION DCC log.
     """
     attempted = True if "attempted" not in gpo else bool(gpo.get("attempted"))
     out = {
@@ -830,7 +830,15 @@ def _format_gpo_log_block(gpo: dict[str, Any]) -> dict[str, Any]:
         "reason": gpo.get("reason"),
         "wrote_gpo": bool(gpo.get("wrote_gpo")),
     }
-    for key in ("error", "dc", "gpo_via", "exit_code"):
+    for key in (
+        "error",
+        "dc",
+        "gpo_via",
+        "exit_code",
+        "need",
+        "credman_tried",
+        "credman_present",
+    ):
         if gpo.get(key) is not None and gpo.get(key) != "":
             out[key] = gpo.get(key)
     return out
@@ -937,7 +945,7 @@ def extension_log_from_payload(
                         "error": h.get("error"),
                     }
                 )
-    # FR #5644: GPO step failure must appear in failures[] (not only reason= on gpo{}).
+    # FR #5644 / MRB #5648: GPO step failure must appear in failures[].
     if data and fails is not None and isinstance(gpo, dict):
         gpo_attempted = True if "attempted" not in gpo else bool(gpo.get("attempted"))
         if gpo_attempted and not bool(gpo.get("ok")):
@@ -946,7 +954,7 @@ def extension_log_from_payload(
                     "step": "gpo",
                     "error": gpo.get("error") or gpo.get("reason") or "gpo_failed",
                 }
-                for key in ("dc", "gpo_via"):
+                for key in ("dc", "gpo_via", "need"):
                     if gpo.get(key) is not None and gpo.get(key) != "":
                         entry[key] = gpo.get(key)
                 fails.append(entry)
@@ -981,7 +989,7 @@ def deliver_extension_log(
     raw = extension_log_bytes(log)
     digest = hashlib.sha256(raw).hexdigest()
     nfail = int(log.get("failure_count") or 0)
-    # FR #5644: non-zero DONE when the operation log has failures (GPO and/or hosts).
+    # FR #5644 / MRB #5648: non-zero DONE when failure_count > 0.
     exit_code = 0 if nfail == 0 else 1
     summary = f"EXTENSION log failures={nfail} action={log.get('action')} bytes={len(raw)}"
     lines: list[str] = [f"out id={jid} seq=1 {summary}"]
