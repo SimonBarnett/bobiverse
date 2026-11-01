@@ -256,7 +256,19 @@ def fetch_cred_json_https(
         raise ValueError(classify_https_fetch_error(exc)) from exc
     if len(raw) > 64 * 1024:
         raise ValueError("cred-payload-too-large")
-    return parse_cred_json(raw)
+    try:
+        return parse_cred_json(raw)
+    except json.JSONDecodeError as exc:
+        # JSONDecodeError subclasses ValueError --- map before generic ValueError.
+        raise ValueError("non-json-body") from exc
+    except ValueError as exc:
+        # Preserve named parse reasons (cred-incomplete / cred-json-object).
+        msg = str(exc) or "cred-json-invalid"
+        if msg.startswith("cred-"):
+            raise
+        raise ValueError("cred-json-invalid") from exc
+    except Exception as exc:  # noqa: BLE001 - UnicodeDecodeError etc.
+        raise ValueError("non-json-body") from exc
 
 
 def persist_credman(

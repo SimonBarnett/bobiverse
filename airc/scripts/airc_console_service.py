@@ -173,7 +173,7 @@ def info(msg: str) -> None:
         # Parent redirected stdout and exited (FR #5079). Keep running; log-file holds lines.
         pass
     except OSError as exc:
-        # WinError 232 / EINVAL on closed pipe — same class as BrokenPipeError.
+        # WinError 232 / EINVAL on closed pipe --- same class as BrokenPipeError.
         if getattr(exc, "winerror", None) in (109, 232) or getattr(exc, "errno", None) in (
             getattr(errno, "EPIPE", 32),
             getattr(errno, "EINVAL", 22),
@@ -276,7 +276,7 @@ class AircConsoleService:
         self._nickserv_ok_path = self.home / "console.nickserv-ok"
         # FR #3900 / 1.0.0: Install-AircConsole writes console.password-minted when it
         # mints a GUID. That file must count as minted (skip SASL) even though the
-        # password file already existed when this process started — otherwise FR #3863
+        # password file already existed when this process started --- otherwise FR #3863
         # treats the install mint as reuse, SASL 904s against the old NickServ GUID,
         # and the reserved nick 433-loops (walrus 1.0.0 release-blocker).
         self._nickserv_mint_marker = self.home / "console.password-minted"
@@ -762,7 +762,7 @@ class AircConsoleService:
                     tmp.unlink()
             except OSError:
                 pass
-        # FR #3900 / 1.0.0: account now matches console.password — drop install mint marker.
+        # FR #3900 / 1.0.0: account now matches console.password --- drop install mint marker.
         try:
             marker = getattr(self, "_nickserv_mint_marker", None) or (
                 Path(self.home) / "console.password-minted"
@@ -905,7 +905,7 @@ class AircConsoleService:
             loaded = chair_oper.load_credentials(path)
             if loaded:
                 return loaded
-            # Plain ergo-oper*.txt style (not DPAPI) — parse without logging body.
+            # Plain ergo-oper*.txt style (not DPAPI) --- parse without logging body.
             try:
                 parsed = chair_oper.parse_oper_file(
                     path.read_text(encoding="utf-8-sig", errors="replace")
@@ -1143,7 +1143,7 @@ class AircConsoleService:
             except Exception as e:
                 info(f"INFO FR #5002 names-request-err {e}")
             # FR #5066: watchdog PART/JOIN calls join_shop via _lost_control_channel
-            # (self-PART). Do not reset escalation stage on that rejoin — only arm a
+            # (self-PART). Do not reset escalation stage on that rejoin --- only arm a
             # fresh deadline. Reset stage on 366 / synced or when not yet escalating.
             self._names_watch_deadline = time.monotonic() + max(1.0, NAMES_SYNC_WATCH_S)
             prev_stage = int(getattr(self, "_names_watch_stage", 0) or 0)
@@ -1290,7 +1290,7 @@ class AircConsoleService:
                     self.send("CAP END")
                     self._force_reconnect = True
                     return
-                # FR #4388: no alternate GUID — one-shot OPER + NickServ PASSWD reclaim.
+                # FR #4388: no alternate GUID --- one-shot OPER + NickServ PASSWD reclaim.
                 if cmd == "904" and self._try_reclaim_console_password_via_oper():
                     self.send("CAP END")
                     return
@@ -1600,7 +1600,7 @@ class AircConsoleService:
             # FR #5518: NETWORK / EXTENSION / LEGION accepted must reach IRC.
             # FR #5583: DONE is last (emit out/CONT then DONE); do not put DONE
             # on the accept line or Invoke-AircRemote stops before the log.
-            # FR #5526: pending async PRIORITY connect returns reply="" — skip blank PRIVMSG.
+            # FR #5526: pending async PRIORITY connect returns reply="" --- skip blank PRIVMSG.
             # FR #5742: bad_id reply is built in handle() but was dropped here.
             # FR #5811 / MRB #5815: CRED HandleResult.reply was built but on_line never
             # sent it --- via=https and via=irc looked silent on firewalled boxes.
