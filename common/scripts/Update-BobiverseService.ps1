@@ -777,10 +777,10 @@ function Restore-AircUpdateState {
                     (Get-FileHash -LiteralPath $destination -Algorithm SHA256).Hash) {
                     throw 'restored file did not match snapshot'
                 }
-            } elseif (Test-Path -LiteralPath $destination) {
-                Remove-Item -LiteralPath $destination -Force
+                Write-UpdLog "$What setting=config\$name carry-over=restored"
+            } else {
+                Write-UpdLog "$What setting=config\$name carry-over=no-prior-file"
             }
-            Write-UpdLog "$What setting=config\$name carry-over=restored"
         } catch {
             Write-UpdLog "$What setting=config\$name carry-over-failed reason=$($_.Exception.GetType().Name)"
             throw "Airc config setting config\$name could not be restored"
