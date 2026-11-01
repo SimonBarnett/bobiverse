@@ -256,6 +256,7 @@ def default_installer_run(spec: dict[str, Any], *, secret: str = "") -> dict[str
     force = bool(spec.get("force"))
     timeout_s = float(spec.get("timeout_s") or LEGION_TIMEOUT_S)
     if dry:
+        # FR #5655: WhatIf probes PATH only (no download); missing => ok=false.
         psexec = find_psexec(str(spec.get("psexec") or ""))
         raw_msi = (spec.get("msi") or "").strip()
         if raw_msi:
@@ -265,6 +266,25 @@ def default_installer_run(spec: dict[str, Any], *, secret: str = "") -> dict[str
                 msi_note = f"msi-unresolved:{type(exc).__name__}"
         else:
             msi_note = "latest"
+        if not psexec:
+            need = (
+                "psexec on PATH or allow Sysinternals download to "
+                "%ProgramData%\\bobiverse\\tools\\PsExec.exe "
+                "(AIRC_LEGION_NO_PSEXEC_DOWNLOAD=1 opts out; MSI never bundles PsExec)"
+            )
+            return {
+                "ok": False,
+                "status": "failed",
+                "host": host,
+                "profile": profile,
+                "force": force,
+                "timeout_s": timeout_s,
+                "msi": msi_note,
+                "psexec": "psexec-missing",
+                "error": "psexec-missing",
+                "need": need,
+                "failures": [{"host": host, "error": "psexec-missing", "need": need}],
+            }
         return {
             "ok": True,
             "status": "dry-run",
@@ -273,7 +293,7 @@ def default_installer_run(spec: dict[str, Any], *, secret: str = "") -> dict[str
             "force": force,
             "timeout_s": timeout_s,
             "msi": msi_note,
-            "psexec": psexec or "psexec-missing",
+            "psexec": psexec,
         }
 
     try:
@@ -297,15 +317,26 @@ def default_installer_run(spec: dict[str, Any], *, secret: str = "") -> dict[str
     user = str(spec.get("username") or "")
     log_dir = Path(str(spec.get("log_dir") or "airc-install-logs"))
     log_dir.mkdir(parents=True, exist_ok=True)
-    psexec = find_psexec(str(spec.get("psexec") or ""))
+    # FR #5655: download-on-demand when PATH has no PsExec (licence forbids MSI bundle).
+    from airc_network_installer.install import ensure_psexec
+
+    psexec = ensure_psexec(str(spec.get("psexec") or ""))
     if not psexec:
+        need = (
+            "psexec on PATH or allow Sysinternals download to "
+            "%ProgramData%\\bobiverse\\tools\\PsExec.exe "
+            "(AIRC_LEGION_NO_PSEXEC_DOWNLOAD=1 opts out; MSI never bundles PsExec)"
+        )
         return {
             "ok": False,
             "status": "failed",
             "host": host,
             "error": "psexec-missing",
+            "need": need,
+            "psexec": "psexec-missing",
             "msi": str(msi_path),
             "log_dir": str(log_dir),
+            "failures": [{"host": host, "error": "psexec-missing", "need": need}],
         }
 
     candidate = _candidate_version_from_msi_name(msi_path)
@@ -472,14 +503,39 @@ def installer_legion_work(
         body["msi"] = (out or {}).get("msi")
     if (out or {}).get("psexec"):
         body["psexec"] = (out or {}).get("psexec")
+    if (out or {}).get("need"):
+        body["need"] = (out or {}).get("need")
+    # FR #5655: surface psexec-missing as a failure even when runner only set error=.
+    if str(err or "") == "psexec-missing" and not any(
+        str(f.get("error") or "") == "psexec-missing" for f in fails
+    ):
+        fails.append(
+            {
+                "host": target,
+                "error": "psexec-missing",
+                "need": body.get("need")
+                or "psexec on PATH or ProgramData bobiverse tools download",
+            }
+        )
+        body["failures"] = fails
+        body["ok"] = False
+        if not body.get("status"):
+            body["status"] = "failed"
     if whatif:
+        # Prefer runner-reported psexec; default label only for plan display.
+        pse = body.get("psexec") or "psexec-missing"
         body["plan"] = {
             "target": target,
             "identity": spec["identity_label"],
             "msi": body.get("msi") or "latest",
-            "psexec": body.get("psexec") or "psexec-missing",
+            "psexec": pse,
             "install": "skipped (whatif)",
         }
+        # FR #5655: fail WhatIf only when runner/error explicitly says missing.
+        if str(err or "") == "psexec-missing" or body.get("psexec") == "psexec-missing":
+            body["ok"] = False
+            body["status"] = body.get("status") or "failed"
+            body["plan"]["will_fail"] = "psexec-missing"
     return body
 
 
@@ -664,6 +720,9 @@ def deliver_legion_log(
     raw = legion_log_bytes(log)
     digest = hashlib.sha256(raw).hexdigest()
     nfail = int(log.get("failure_count") or 0)
+    # FR #5655: non-zero DONE when failures[] or summary=failed (parity with EXTENSION FR #5644).
+    summary_s = str(log.get("summary") or "").strip().lower()
+    exit_code = 0 if nfail == 0 and summary_s not in ("failed", "fail") else 1
     summary = (
         f"LEGION log target={log.get('target')} failures={nfail} "
         f"bytes={len(raw)}"
@@ -678,7 +737,7 @@ def deliver_legion_log(
         try:
             sender(raw, offer)
             done = _dcc.format_done_via_dcc(
-                jid, 0, nbytes=len(raw), sha256=digest, via="dcc"
+                jid, exit_code, nbytes=len(raw), sha256=digest, via="dcc"
             )
             return {
                 "via": "dcc",
@@ -693,7 +752,7 @@ def deliver_legion_log(
                 f"err id={jid} seq={len(lines)+1} dcc failed: {exc}; falling back to IRC"
             )
             lines.append("CONT id=" + jid + " offset=1")
-            done = f"DONE id={jid} exit=0 via=irc reason=dcc-fail"
+            done = f"DONE id={jid} exit={exit_code} via=irc reason=dcc-fail"
             lines.append(done)
             return {
                 "via": "irc",
@@ -705,7 +764,7 @@ def deliver_legion_log(
                 "payload": raw,
             }
     lines.append("CONT id=" + jid + " offset=1")
-    done = f"DONE id={jid} exit=0 via=irc"
+    done = f"DONE id={jid} exit={exit_code} via=irc"
     lines.append(done)
     return {
         "via": "irc",
