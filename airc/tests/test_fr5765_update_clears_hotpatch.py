@@ -16,7 +16,7 @@ def test_fr5765_hotpatch_cleanup_is_airc_only_and_after_success_checks():
     assert "$Product -eq 'airc'" in apply[cleanup : cleanup + 600]
     assert "Join-Path $InstallRoot 'HOTPATCH.json'" in apply[cleanup : cleanup + 600]
     assert "Remove-Item -LiteralPath $hotpatch -Force -ErrorAction Stop" in apply[cleanup : cleanup + 600]
-    assert apply.index('service not running after install') < cleanup
+    assert apply.index('not running after install') < cleanup
     assert cleanup < apply.index("} catch {", cleanup)
     assert "Invoke-Rollback -BackupDir $backup" in apply
 
