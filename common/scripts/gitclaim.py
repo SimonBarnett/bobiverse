@@ -128,6 +128,12 @@ SAFE_TO_CLOSE_RE = re.compile(r"(?i)\bsafe\s+to\s+close\b")
 HARVEST_TITLE_RE = re.compile(r"(?i)^(harvest|skill)\b")
 # FR #2650: intake harvest receipt PRs (GhCliFiler draft) must never become MRB.
 _INTAKE_HARVEST_FOOTER_RE = re.compile(r"(?i)Invoke-BobiverseHarvest|Session summary:")
+# FR #5685: Report-*IntakeIssue / GhCliFiler footers without a Lesson body are stubs.
+_VIA_INTAKE_ID_FOOTER_RE = re.compile(r"(?i)_via-intake\b")
+_INTAKE_SKILL_LESSON_BODY_RE = re.compile(
+    r"(?im)^(?:##\s*)?Lesson\b|MRB \(light triage\)"
+)
+_QUEUE_ME_STUB_RE = re.compile(r"(?im)^\s*queue\s+me\b")
 _HARVEST_RECEIPT_STATUS_RE = re.compile(
     r"(?i)\b(?:GIVEUP|SKIP|self-MRB|twin|DONE|PASS|FAIL)\b|\bduplicate of\b"
 )
@@ -988,6 +994,10 @@ def is_intake_harvest_receipt_pr(
 
     FR #2705: ``harvest-lesson`` / ``lesson(<book>):`` skill-book PRs are offerable MRB
     work — never treated as receipts.
+
+    FR #5685: ``via-intake``+``skill`` tips with a ``_via-intake`` / queue-me stub body and
+    no ``Lesson`` / light-triage brief are receipts (e.g. docs/intake-harvest only),
+    even when the title is not ``harvest:`` / ``skill``.
     """
     title_s = (title or "").strip()
     body_s = body or ""
@@ -1004,6 +1014,10 @@ def is_intake_harvest_receipt_pr(
         return True
     if harvestish and _HARVEST_RECEIPT_STATUS_RE.search(title_s):
         return True
+    # FR #5685: status stub (queue me / bare via-intake footer) without a Lesson body.
+    if via_intake_skill and not _INTAKE_SKILL_LESSON_BODY_RE.search(body_s):
+        if _VIA_INTAKE_ID_FOOTER_RE.search(body_s) or _QUEUE_ME_STUB_RE.search(body_s):
+            return True
     return False
 
 
@@ -1013,10 +1027,14 @@ def is_offerable_intake_skill_lesson_pr(
     body: str = "",
     labels: tuple[str, ...] | list[str] = (),
 ) -> bool:
-    """FR #5506: real via-intake+skill lesson (not a GhCliFiler receipt).
+    """FR #5506 / #5685: real via-intake+skill lesson (not a GhCliFiler receipt).
 
     Drafts with a lesson body / light-triage brief are shop MRB work. Receipt
     titles or ``Invoke-BobiverseHarvest`` / ``Session summary:`` footers stay skipped.
+
+    FR #5685: a non-harvest title alone is not enough — require ``Lesson`` /
+    ``MRB (light triage)`` in the body so queue-me / docs/intake-harvest stubs
+    (agentic_fomprep#144) are never offered as MRB.
     """
     labs = {str(x).strip().lower() for x in (labels or []) if str(x).strip()}
     if "via-intake" not in labs or "skill" not in labs:
@@ -1027,9 +1045,7 @@ def is_offerable_intake_skill_lesson_pr(
     if _HARVEST_RECEIPT_STATUS_RE.search(title_s):
         return False
     body_s = body or ""
-    if re.search(r"(?im)^(?:##\s*)?Lesson\b|MRB \(light triage\)", body_s):
-        return True
-    return bool(title_s) and not HARVEST_TITLE_RE.match(title_s)
+    return bool(_INTAKE_SKILL_LESSON_BODY_RE.search(body_s))
 
 
 

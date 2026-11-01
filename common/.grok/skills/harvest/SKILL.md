@@ -338,6 +338,7 @@ routes to bobiverse via the split rule.
 - Unused DCCLISTEN must TTL-out so a later shell cannot reuse a stale host:port.
 - DCCLISTEN wiring pins must stub NETWORK inventory_work on domain hosts; waiting on packaged LDAP makes fr5300 flake under full suite
 - After FR #663 clears digest jobs when no worker_list is doing, always derive running/queued from the jobs list so empty jobs yields 0/0 (FR #5687); tip tests must not hardcode D:\Temp.
+- is_offerable_intake_skill_lesson_pr must require Lesson/light-triage body; via-intake+skill with _via-intake footer or queue me and no Lesson is a receipt (fomprep#144)
 
 ## Harvest digest (lessons audit 2026-10-06)
 
