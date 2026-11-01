@@ -51,10 +51,17 @@ def parse_extension_command(text: str) -> dict[str, Any] | None:
     m = _EXTENSION_CMD_RE.match((text or "").strip())
     if not m:
         return None
+    import airc_identity as _ident
+    import airc_passed_cred as _pcred
+
     qid = (m.group(1) or "").lower()
-    parts = [(p or "").strip() for p in (m.group("rest") or "").split() if p.strip()]
+    if _ident.irc_line_has_plaintext_secret(text or ""):
+        return {"qid": qid, "usage": True, "error": "secrets-on-irc"}
+    rest = (m.group("rest") or "").strip()
+    cred_id, rest = _pcred.extract_cred_ref(rest)
+    parts = [(p or "").strip() for p in rest.split() if p.strip()]
     if not parts or parts[0].lower() not in {"install", "status"}:
-        return {"qid": qid, "usage": True}
+        return {"qid": qid, "usage": True, "cred_id": cred_id}
     action = parts[0].lower()
     whatif = False
     unknown = ""
@@ -68,13 +75,14 @@ def parse_extension_command(text: str) -> dict[str, Any] | None:
             break
         extra = True
     if unknown:
-        return {"qid": qid, "usage": True, "unknown_flag": unknown}
+        return {"qid": qid, "usage": True, "unknown_flag": unknown, "cred_id": cred_id}
     if extra:
-        return {"qid": qid, "usage": True}
+        return {"qid": qid, "usage": True, "cred_id": cred_id}
     return {
         "qid": qid,
         "action": action,
         "whatif": whatif,
+        "cred_id": cred_id,
     }
 
 
@@ -718,6 +726,7 @@ def fill_holes_work(
     FR #5660: skip non-Windows (Samba winreg) as ``not_windows`` --- never present.
     FR #5661: ICMP alone is not unreachable; classify smb_blocked /
     remote_registry_stopped / access_denied / host_down with detail text.
+    FR #5659: privileged writes use passed -> CredMan -> SYSTEM identity.
     """
     _ = extra_hosts
     enum = ldap_enum or default_ldap_enum
@@ -725,6 +734,9 @@ def fill_holes_work(
     apply = apply_force_install or default_apply_force_install
     apply_as = apply_force_install_as or default_apply_force_install_as
     read_creds = credman_reader or default_extension_credman
+    # FR #5659: passed -> CredMan -> SYSTEM for privileged writes only.
+    import airc_identity as _ident
+    import airc_passed_cred as _pcred
     # Default: live Windows/Samba classify. Tests may inject is_windows_host.
     # When only read_forcelist is injected (no is_windows_host), assume Windows
     # so unit hosts are not classified against the real network.
@@ -733,6 +745,7 @@ def fill_holes_work(
             is_windows_host = default_is_windows_host
         else:
             is_windows_host = lambda _h: True  # noqa: E731
+    # FR #5661: SMB/ICMP probes for classified fallback errors.
     probe_tcp = tcp_probe or tcp_port_open
 
     def _smb_ok(h: str) -> bool:
@@ -753,6 +766,62 @@ def fill_holes_work(
         return {"host": h, "ok": False, **diag}
 
     writes = (action or "").strip().lower() in {"install", "forceinstall", "apply"}
+    cred_id = str(_kw.get("cred_id") or "").strip().lower()
+    passed = _kw.get("passed_cred")
+    if passed is None and cred_id:
+        passed = _pcred.GLOBAL_PASSED_CREDS.take(cred_id)
+    passed_requested = bool(cred_id) or bool(_kw.get("passed_requested"))
+    if passed_requested and not (
+        isinstance(passed, dict)
+        and str(passed.get("username") or "").strip()
+        and str(passed.get("password") or "")
+    ):
+        return {
+            "ok": False,
+            "action": action,
+            "whatif": bool(whatif),
+            "error": "auth_failed",
+            "identity": "passed",
+            "identity_label": "passed (missing)",
+            "hosts": [],
+            "failures": [{"error": "auth_failed", "reason": "cred-missing"}],
+        }
+
+    def _ext_reader(tgt: str) -> dict[str, str]:
+        try:
+            got = (
+                read_creds()
+                if credman_reader is not None
+                else _ident.default_credman_reader(tgt)
+            ) or {}
+        except Exception as exc:  # noqa: BLE001
+            return {"__error__": type(exc).__name__}
+        if not isinstance(got, dict):
+            return {}
+        return got
+
+    if writes and not whatif:
+        resolved = _ident.resolve_remote_identity(
+            verb="extension",
+            passed=passed if isinstance(passed, dict) else None,
+            passed_requested=False,
+            credman_target=CREDMAN_TARGET,
+            credman_reader=_ext_reader,
+        )
+    else:
+        # status / WhatIf: no CredMan probe (FR #5364 / #5659).
+        resolved = _ident.resolve_remote_identity(
+            verb="extension",
+            passed=None,
+            credman_target=CREDMAN_TARGET,
+            credman_reader=lambda _t: {},
+            system_fn=lambda: {"account": "SYSTEM", "username": "SYSTEM", "password": ""},
+        )
+    identity_meta = {
+        "identity": resolved.source,
+        "identity_label": resolved.label,
+        "account": resolved.account,
+    }
     if is_dc is None:
         dc_set = {str(x).lower() for x in (dc_enum or default_dc_hostnames)()}
         is_dc = lambda h: str(h).lower() in dc_set  # noqa: E731
@@ -802,35 +871,64 @@ def fill_holes_work(
                 row["state"] = "present"
             hosts_out.append(row)
             continue
+        # FR #5659: use resolved passed/credman identity first when available.
+        use_as = resolved.source in (_ident.IDENTITY_PASSED, _ident.IDENTITY_CREDMAN)
+        user = resolved.username if use_as else ""
+        pw = resolved.password if use_as else ""
         try:
-            chrome_w = _apply_wrote(apply, name, "chrome", value)
-            edge_w = _apply_wrote(apply, name, "edge", value)
+            if use_as and user and pw:
+                chrome_w = _apply_wrote(apply_as, name, "chrome", value, user, pw)
+                edge_w = _apply_wrote(apply_as, name, "edge", value, user, pw)
+            else:
+                chrome_w = _apply_wrote(apply, name, "chrome", value)
+                edge_w = _apply_wrote(apply, name, "edge", value)
         except Exception as exc:
+            if use_as and is_access_denied(exc):
+                hosts_out.append(
+                    {
+                        "host": name,
+                        "ok": False,
+                        "error": "auth_failed",
+                        "identity": resolved.source,
+                        "account": resolved.account,
+                    }
+                )
+                continue
             if not is_access_denied(exc):
                 hosts_out.append(_fail_row(name, exc, icmp_ok))
                 continue
+            # SYSTEM path access-denied: try CredMan once if not already used.
             creds = {}
             try:
                 creds = read_creds() or {}
             except Exception:
                 creds = {}
-            user = str(creds.get("username") or "").strip()
-            pw = str(creds.get("password") or "")
-            if not user or not pw:
+            cuser = str(creds.get("username") or "").strip()
+            cpw = str(creds.get("password") or "")
+            if not cuser or not cpw:
                 hosts_out.append(
-                    {"host": name, "ok": False, "error": "credman-missing"}
+                    {
+                        "host": name,
+                        "ok": False,
+                        "error": "system-access-denied",
+                        "credman_missing": True,
+                        **identity_meta,
+                    }
                 )
                 continue
             try:
-                chrome_w = _apply_wrote(apply_as, name, "chrome", value, user, pw)
-                edge_w = _apply_wrote(apply_as, name, "edge", value, user, pw)
+                chrome_w = _apply_wrote(apply_as, name, "chrome", value, cuser, cpw)
+                edge_w = _apply_wrote(apply_as, name, "edge", value, cuser, cpw)
             except Exception as exc2:
+                # FR #5659: CredMan access-denied is auth_failed (no silent fallback).
+                # FR #5661: other reach errors keep classified codes + detail.
                 if is_access_denied(exc2):
                     hosts_out.append(
                         {
                             "host": name,
                             "ok": False,
-                            "error": "access_denied",
+                            "error": "auth_failed",
+                            "identity": "credman",
                             "detail": str(exc2)[:300],
                         }
                     )
@@ -846,6 +944,26 @@ def fill_holes_work(
                     "chrome": chrome_w,
                     "edge": edge_w,
                     "auth": "credman",
+                    "identity": "credman",
+                    **(
+                        {"skipped": "already", "state": "present"}
+                        if not (chrome_w or edge_w)
+                        else {}
+                    ),
+                }
+            )
+            continue
+        if use_as:
+            if chrome_w or edge_w:
+                wrote = True
+            hosts_out.append(
+                {
+                    "host": name,
+                    "ok": True,
+                    "chrome": chrome_w,
+                    "edge": edge_w,
+                    "auth": resolved.source,
+                    "identity": resolved.source,
                     **(
                         {"skipped": "already", "state": "present"}
                         if not (chrome_w or edge_w)
@@ -870,6 +988,7 @@ def fill_holes_work(
             }
         )
     return {
+        **identity_meta,
         "ok": True,
         "action": action,
         "whatif": bool(whatif),

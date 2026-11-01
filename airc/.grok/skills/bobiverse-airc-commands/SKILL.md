@@ -106,7 +106,7 @@ PRIVMSG {mid}_console :id=c25bd00e EXTENSION status
 
 - **Auth:** same as UPDATE (`+o`/`+h`; `update=off` / `shell=off` / `extension=off` refuse with `DONE id=<qid> exit=126 …` when the command carried `id=` - FR #5552).
 - **GPO happy path:** worker uses GroupPolicy on GPO `Priority-web-extension` linked at domain root (`ExtensionInstallForcelist` for Chrome and Edge). `-WhatIf` is read-only (no GPO/registry/gpupdate writes). **FR #5538:** `EXTENSION status` is read-only fill-holes (no HKLM writes); install appends a free forcelist value name and never writes DCs. **FR #5645:** when RSAT GroupPolicy is missing, DC hop is `Invoke-Command`; LocalSystem computer account Access Denied is `reason=gpo_access_denied` with `need=credman:PriorityAirc/ExtensionAdmin` (retry uses that CredMan target; never on IRC).
-- **Fill-holes:** after GPO (or when DC is missing), LDAP AD computers only; remote registry ForceInstall on AD hosts. **FR #5661:** ICMP alone is not `unreachable`; classify `remote_registry_stopped`, `smb_blocked`, `access_denied`, `host_down` (with `detail` text); `unreachable` only when nothing answers. **FR #5660:** non-Windows (Samba winreg without ProductName/CurrentBuild) -> `skipped: not_windows`, never `present`; forcelist presence matches the id before `;`. Machine account first; optional CredMan target `PriorityAirc/ExtensionAdmin` on access-denied (never put that password on IRC).
+- **Fill-holes:** after GPO (or when DC is missing), LDAP AD computers only; remote registry ForceInstall on AD hosts. **FR #5661:** ICMP alone is not `unreachable`; classify `remote_registry_stopped`, `smb_blocked`, `access_denied`, `host_down` (with `detail` text); `unreachable` only when nothing answers. **FR #5660:** non-Windows (Samba winreg without ProductName/CurrentBuild) -> `skipped: not_windows`, never `present`; forcelist presence matches the id before `;`. Machine account first; optional CredMan target `PriorityAirc/ExtensionAdmin` on access-denied (never put that password on IRC). **FR #5659:** same identity order (passed DCC CRED / CredMan `PriorityAirc/ExtensionAdmin` / SYSTEM).
 - **Log:** same job `id=` as `DCCLISTEN` -> `DONE ... sha256= via=dcc`. No offer or DCC fail -> IRC CONT + failure lines. No secrets in the log.
 - **Isolation:** in-service child (`airc_isolated` + `extension_gpo_then_fill_holes`, FR #5522); worker fault must not stop service Airc. **FR #5665:** if the isolated child dies before a result, log `worker_died` and `DONE exit=1` (never empty success).
 
@@ -130,9 +130,22 @@ PRIVMSG {mid}_console :id=c25bd00e NETWORK diag -WhatIf
 
 See `docs/airc-remote-control.md` and `docs/feature-request-airc-network-diagnostic-2026-10-31.md`.
 
+## CRED staged identity (FR #5659)
+
+Stage a username/password for one LEGION/EXTENSION/NETWORK run over **TLS DCC only**:
+
+```text
+PRIVMSG {mid}_console :id=c25bd00e DCCLISTEN id=c25bd00e host=<ip> port=<n> token=<hex> tls=1
+PRIVMSG {mid}_console :id=c25bd00e CRED id=c25bd00e via=dcc
+# DCC body JSON: {"username":"DOMAIN\\user","password":"…"}
+PRIVMSG {mid}_console :id=c25bd00e LEGION flamingo cred=c25bd00e
+```
+
+Password never on IRC. Stash is in-memory, TTL ~180s, one-shot `take`. Without `via=dcc` / offer -> `DONE … usage cred-requires-dcc`.
+
 ## LEGION remote install (FR #5312)
 
-Authorized **UPDATE-class** verb. Isolated worker imports in-service `airc_network_installer` (FR #3991) for **one** hostname or IPv4. Profile client, latest Release MSI, timeout 900s, no `--force`. Default identity SYSTEM (FR #5594). Optional CredMan `PriorityAirc/LegionAdmin` (`AIRC_LEGION_USE_CREDMAN=1`) still fail-closes live with `credman-missing`; WhatIf still plans (FR #5530).
+Authorized **UPDATE-class** verb. Isolated worker imports in-service `airc_network_installer` (FR #3991) for **one** hostname or IPv4. Profile client, latest Release MSI, timeout 900s, no `--force`. Identity order (FR #5659 / amends #5594): passed DCC CRED -> CredMan `PriorityAirc/LegionAdmin` -> SYSTEM. Missing CredMan falls through to SYSTEM; wrong passed/CredMan auth is `auth_failed`. WhatIf still plans (FR #5530).
 
 ```text
 PRIVMSG {mid}_console :id=c25bd00e DCCLISTEN id=c25bd00e host=<ip> port=<n> token=<hex> tls=1
@@ -141,8 +154,8 @@ PRIVMSG {mid}_console :id=c25bd00e LEGION 10.0.0.8 -WhatIf
 ```
 
 - **Auth:** same as UPDATE (`+o`/`+h`; `update=off` / `shell=off` refuse with `DONE id=<qid> exit=126 update-disabled|shell-disabled` when the command carried `id=` - FR #5552). Empty/list/OU/invalid targets: `DONE id=<id> exit=126 bad-target reason=empty|list|ou|invalid` (id= omitted only when the operator sent no id; FR #5527). FR #5528: `bad_host!` is invalid, not list.
-- **Identity (FR #5594):** Airc LocalSystem / computer account (`DOMAIN\\HOST$`). Target must grant that account local Administrators. Access denied -> `system-access-denied` plus a hint. CredMan `PriorityAirc/LegionAdmin` is off-by-default (`AIRC_LEGION_USE_CREDMAN=1` only; never on IRC, never in argv). Explicit CredMan fallback still fail-closes live LEGION with `credman-missing` when the target is empty.
-- **WhatIf:** installer dry-run plan (no remote install). Log reports `identity=SYSTEM (HOST$)` (FR #5530 / #5594). When an explicit CredMan fallback is requested and missing, WhatIf still plans and records `credman-missing` in `failures[]`. **FR #5655:** PsExec is never MSI-bundled (Sysinternals licence); LEGION finds PATH or downloads once to `%ProgramData%\bobiverse\tools\PsExec.exe` (`AIRC_LEGION_NO_PSEXEC_DOWNLOAD=1` opts out). WhatIf with `psexec-missing` is `ok=false` / `will_fail=psexec-missing`. Real run with failures uses `DONE exit=1`.
+- **Identity (FR #5659 / amends #5594):** order is **passed** (DCC `CRED id= via=dcc` then `LEGION … cred=<id>`) -> **CredMan** `PriorityAirc/LegionAdmin` (configurable later via airc.json) -> **SYSTEM** `DOMAIN\\HOST$`. Log/DONE carry `identity=passed|credman|system` and account name, never the secret. Wrong passed/CredMan auth -> `auth_failed` (no silent fallback). Missing CredMan falls through to SYSTEM with `credman-missing` logged. Plain IRC password/pass tokens is rejected (`usage secrets-on-irc`).
+- **WhatIf:** installer dry-run plan (no remote install). Log reports `identity=system (HOST$)` (FR #5530 / #5659). Missing CredMan is logged (`credman_missing`) and falls through to SYSTEM. **FR #5655:** PsExec is never MSI-bundled (Sysinternals licence); LEGION finds PATH or downloads once to `%ProgramData%\bobiverse\tools\PsExec.exe` (`AIRC_LEGION_NO_PSEXEC_DOWNLOAD=1` opts out). WhatIf with `psexec-missing` is `ok=false` / `will_fail=psexec-missing`. Real run with failures uses `DONE exit=1`.
 - **Log:** same job `id=` as `DCCLISTEN` -> `DONE ... via=dcc`. No offer or DCC fail -> IRC CONT. CAST IRON: no secrets on IRC or in the DCC body.
 - **Isolation:** installer is not on the IRC receive thread; worker fault must not stop Airc.
 

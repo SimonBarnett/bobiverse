@@ -2,8 +2,9 @@
 
 FR-A: verb + stub. FR-B: import ``airc_network_installer`` for one host,
 profile client, latest Release MSI, no --force. Auth matches UPDATE.
-FR #5594: default identity is LocalSystem / computer account. CredMan
-``PriorityAirc/LegionAdmin`` is an explicit off-by-default fallback.
+FR #5594: SYSTEM / computer account is the last resort.
+FR #5659: identity order passed (DCC CRED) -> CredMan PriorityAirc/LegionAdmin
+-> SYSTEM. Wrong passed/CredMan auth fails closed (no silent fallback).
 """
 from __future__ import annotations
 
@@ -72,9 +73,21 @@ def parse_legion_command(text: str) -> dict[str, Any] | None:
     m = _LEGION_CMD_RE.match((text or "").strip())
     if not m:
         return None
+    # FR #5659: reject plaintext password= on IRC (use DCC CRED).
+    import airc_identity as _ident
+    import airc_passed_cred as _pcred
+
+    if _ident.irc_line_has_plaintext_secret(text or ""):
+        return {
+            "qid": (m.group(1) or "").lower(),
+            "error": "secrets-on-irc",
+            "target": "",
+            "whatif": False,
+        }
     rest = (m.group("rest") or "").strip()
     whatif = bool(re.search(r"(?i)(?:^|\s)-WhatIf(?:\s|$)", rest))
     rest = re.sub(r"(?i)(?:^|\s)-WhatIf(?:\s|$)", " ", rest).strip()
+    cred_id, rest = _pcred.extract_cred_ref(rest)
     parts = [p for p in rest.split() if p]
     qid = (m.group(1) or "").lower()
     flags = [p for p in parts if p.startswith("-")]
@@ -86,16 +99,40 @@ def parse_legion_command(text: str) -> dict[str, Any] | None:
             "unknown_flag": flags[0],
             "target": " ".join(hosts),
             "whatif": whatif,
+            "cred_id": cred_id,
         }
     if not hosts:
-        return {"qid": qid, "error": "empty", "target": "", "whatif": whatif}
+        return {
+            "qid": qid,
+            "error": "empty",
+            "target": "",
+            "whatif": whatif,
+            "cred_id": cred_id,
+        }
     if len(hosts) > 1:
-        return {"qid": qid, "error": "list", "target": " ".join(hosts), "whatif": whatif}
+        return {
+            "qid": qid,
+            "error": "list",
+            "target": " ".join(hosts),
+            "whatif": whatif,
+            "cred_id": cred_id,
+        }
     err = _classify_target(hosts[0])
     if err:
-        return {"qid": qid, "error": err, "target": hosts[0], "whatif": whatif}
-    return {"qid": qid, "error": None, "target": hosts[0], "whatif": whatif}
-
+        return {
+            "qid": qid,
+            "error": err,
+            "target": hosts[0],
+            "whatif": whatif,
+            "cred_id": cred_id,
+        }
+    return {
+        "qid": qid,
+        "error": None,
+        "target": hosts[0],
+        "whatif": whatif,
+        "cred_id": cred_id,
+    }
 
 _ALLOWED_MSI_PREFIX = "https://github.com/SimonBarnett/bobiverse/releases"
 CREDMAN_TARGET = "PriorityAirc/LegionAdmin"
@@ -417,28 +454,53 @@ def installer_legion_work(
             "profile": "client",
             "error": "foreign-msi-url",
         }
-    use_credman = credman is not None or _credman_fallback_requested()
+    # FR #5659: passed (DCC CRED) -> CredMan -> SYSTEM.
+    import airc_identity as _ident
+    import airc_passed_cred as _pcred
+
     sys_ident = legion_system_identity()
-    user = ""
-    secret = ""
-    credman_missing = False
-    if use_credman:
-        ident = (credman or default_legion_credman)() or {}
-        user = str(ident.get("username") or "").strip()
-        secret = str(ident.get("password") or "")
-        credman_missing = not user or not secret
-        if credman_missing and not whatif:
-            return {
-                "ok": False,
-                "target": target,
-                "whatif": bool(whatif),
-                "invoked_installer": False,
-                "force": False,
-                "timeout_s": LEGION_TIMEOUT_S,
-                "profile": "client",
-                "error": "credman-missing",
-                "identity": "CREDMAN",
-            }
+    cred_id = str(_kw.get("cred_id") or "").strip().lower()
+    passed = _kw.get("passed_cred")
+    if passed is None and cred_id:
+        passed = _pcred.GLOBAL_PASSED_CREDS.take(cred_id)
+    passed_requested = bool(cred_id) or bool(_kw.get("passed_requested"))
+    if passed_requested and not (
+        passed and str(passed.get("username") or "").strip() and str(passed.get("password") or "")
+    ):
+        return {
+            "ok": False,
+            "target": target,
+            "whatif": bool(whatif),
+            "invoked_installer": False,
+            "force": False,
+            "timeout_s": LEGION_TIMEOUT_S,
+            "profile": "client",
+            "error": "auth_failed",
+            "identity": "passed",
+            "identity_label": "passed (missing)",
+            "failures": [{"host": target, "error": "auth_failed", "reason": "cred-missing"}],
+        }
+
+    def _reader(tgt: str) -> dict[str, str]:
+        if credman is not None:
+            return credman() or {}
+        return _ident.default_credman_reader(tgt)
+
+    resolved = _ident.resolve_remote_identity(
+        verb="legion",
+        passed=passed if isinstance(passed, dict) else None,
+        passed_requested=False,
+        credman_target=_CREDMAN_TARGET,
+        credman_reader=_reader,
+        system_fn=lambda: {
+            "account": sys_ident["computer_account"],
+            "username": sys_ident["computer_account"],
+            "password": "",
+        },
+    )
+    user = resolved.username if resolved.source != _ident.IDENTITY_SYSTEM else ""
+    secret = resolved.password if resolved.source != _ident.IDENTITY_SYSTEM else ""
+    use_secret = resolved.source in (_ident.IDENTITY_PASSED, _ident.IDENTITY_CREDMAN)
     spec: dict[str, Any] = {
         "hosts": [target],
         "profile": "client",
@@ -448,39 +510,46 @@ def installer_legion_work(
         "whatif": bool(whatif),
         "msi": (msi or "").strip(),
         "log_dir": log_dir or "airc-install-logs",
-        "identity": "CREDMAN" if use_credman else "SYSTEM",
+        "identity": resolved.source,
         "computer_account": sys_ident["computer_account"],
-        "identity_label": (
-            f"CREDMAN ({user})" if use_credman else sys_ident["identity_label"]
-        ),
+        "identity_label": resolved.label,
+        "account": resolved.account,
     }
-    if use_credman and user:
-        spec["credman_target"] = _CREDMAN_TARGET
+    if resolved.credman_target:
+        spec["credman_target"] = resolved.credman_target
+    if use_secret and user:
         spec["username"] = user
-        spec["password_via"] = "secure-env"
-    elif use_credman:
-        spec["credman_target"] = _CREDMAN_TARGET
+        spec["password_via"] = "passed" if resolved.source == _ident.IDENTITY_PASSED else "credman"
     # FR #5529: pass secret only as a runner kwarg, never os.environ.
     runner = run_fn or default_installer_run
     try:
-        out = runner(spec, secret=secret) if use_credman else runner(spec)
+        out = runner(spec, secret=secret) if use_secret else runner(spec)
     except TypeError:
         out = runner(spec)
     status = str((out or {}).get("status") or "")
     fails = list((out or {}).get("failures") or [])
     err = (out or {}).get("error")
-    if credman_missing:
-        fails.append({"host": target, "error": "credman-missing"})
-        err = None if whatif else "credman-missing"
     detail = str((out or {}).get("detail") or "")
     blob = " ".join(str(x) for x in (err, detail, status, fails))
     hint = ""
-    if (not use_credman) and (not bool((out or {}).get("ok", True))) and _access_denied_reason(blob):
-        err = "system-access-denied"
-        hint = _system_access_hint(sys_ident["computer_account"])
-        fails.append({"host": target, "error": "system-access-denied", "hint": hint})
+    if (not bool((out or {}).get("ok", True))) and _access_denied_reason(blob):
+        if resolved.source in (_ident.IDENTITY_PASSED, _ident.IDENTITY_CREDMAN):
+            # FR #5659: wrong non-SYSTEM identity fails closed (no silent fallback).
+            err = "auth_failed"
+            fails.append(
+                {
+                    "host": target,
+                    "error": "auth_failed",
+                    "identity": resolved.source,
+                    "account": resolved.account,
+                }
+            )
+        else:
+            err = "system-access-denied"
+            hint = _system_access_hint(sys_ident["computer_account"])
+            fails.append({"host": target, "error": "system-access-denied", "hint": hint})
     body: dict[str, Any] = {
-        "ok": bool((out or {}).get("ok", True)),
+        "ok": bool((out or {}).get("ok", True)) and err not in ("auth_failed", "system-access-denied"),
         "target": target,
         "whatif": bool(whatif),
         "dry_run": bool(whatif),
@@ -489,14 +558,21 @@ def installer_legion_work(
         "timeout_s": LEGION_TIMEOUT_S,
         "profile": "client",
         "hosts": [target],
-        "status": status,
+        "status": status if err not in ("auth_failed",) else "failed",
         "log_dir": spec["log_dir"],
         "error": err,
         "failures": fails,
-        "identity": spec["identity"],
-        "computer_account": spec["computer_account"],
-        "identity_label": spec["identity_label"],
+        "identity": resolved.source,
+        "computer_account": sys_ident["computer_account"],
+        "identity_label": resolved.label,
+        "account": resolved.account,
     }
+    # FR #5659: missing CredMan is logged, not a hard failure (falls through to SYSTEM).
+    if resolved.credman_missing:
+        body["credman_missing"] = True
+        body["credman_fell_through"] = "system"
+        if resolved.credman_error:
+            body["credman_error"] = resolved.credman_error
     if hint:
         body["hint"] = hint
     if (out or {}).get("msi"):
@@ -559,6 +635,26 @@ def run_legion_verb(
     work_kw: dict[str, Any] = {}
     if "credman" in _kw:
         work_kw["credman"] = _kw["credman"]
+    # FR #5659: take DCC-staged cred in parent (isolated child has no shared stash).
+    cred_id = str(_kw.get("cred_id") or "").strip().lower()
+    if cred_id:
+        work_kw["cred_id"] = cred_id
+        if "passed_cred" not in _kw:
+            try:
+                import airc_passed_cred as _pcred
+
+                taken = _pcred.GLOBAL_PASSED_CREDS.take(cred_id)
+                if taken:
+                    work_kw["passed_cred"] = taken
+                work_kw["passed_requested"] = True
+            except Exception:
+                work_kw["passed_requested"] = True
+    if "passed_cred" in _kw:
+        work_kw["passed_cred"] = _kw["passed_cred"]
+        work_kw["passed_requested"] = True
+    if _kw.get("passed_requested"):
+        work_kw["passed_requested"] = True
+    force_thread = bool(work_kw.get("passed_cred") or work_kw.get("passed_requested"))
 
     def _finish(data: dict[str, Any], *, reply: str | None = None) -> LegionVerbResult:
         err = str(data.get("error") or "")
@@ -608,11 +704,6 @@ def run_legion_verb(
     def _safe() -> LegionVerbResult:
         try:
             data = _call_work()
-            if str(data.get("error") or "") == "credman-missing" and not whatif:
-                return _finish(
-                    data,
-                    reply=f"DONE id={qid} exit=126 credman-missing",
-                )
             return _finish(data)
         except Exception as exc:
             return _finish(
@@ -634,8 +725,7 @@ def run_legion_verb(
         def _from_child(data: Any) -> None:
             payload = data if isinstance(data, dict) else {}
             # FR #5665: normalize isolated death to worker_died + failures[].
-            import airc_isolated as _iso
-
+            # FR #5659: missing CredMan falls through (no exit=126 here).
             if _iso.is_worker_fault(payload) or (
                 isinstance(payload, dict)
                 and payload.get("ok") is False
@@ -659,25 +749,23 @@ def run_legion_verb(
                         }
                     ],
                 }
-            if str(payload.get("error") or "") == "credman-missing" and not whatif:
-                _finish(
-                    payload,
-                    reply=f"DONE id={qid} exit=126 credman-missing",
-                )
-            else:
-                _finish(payload)
+            _finish(payload)
 
-        _iso.start_isolated(
-            wait=False,
-            run=_call_work,
-            packaged=(
-                "airc_legion",
-                "installer_legion_work",
-                {"target": target, "whatif": bool(whatif)},
-            ),
-            name="airc-legion-worker",
-            on_done=_from_child,
-        )
+        if force_thread:
+            # Passed secrets must not cross packaged IPC; stay in-process.
+            threading.Thread(target=_safe, name="airc-legion-worker", daemon=True).start()
+        else:
+            _iso.start_isolated(
+                wait=False,
+                run=_call_work,
+                packaged=(
+                    "airc_legion",
+                    "installer_legion_work",
+                    {"target": target, "whatif": bool(whatif)},
+                ),
+                name="airc-legion-worker",
+                on_done=_from_child,
+            )
     else:
         threading.Thread(target=_safe, name="airc-legion-worker", daemon=True).start()
     return LegionVerbResult(True, accepted, job_id=qid)
@@ -733,6 +821,24 @@ def legion_log_bytes(log: dict[str, Any]) -> bytes:
     )
 
 
+def _done_identity_suffix(log: dict[str, Any]) -> str:
+    """FR #5659: DONE carries identity=passed|credman|system and account (never secret)."""
+    parts: list[str] = []
+    ident = str(log.get("identity_source") or log.get("identity") or "").strip()
+    # Prefer short source tokens; identity_label may be "system (HOST$)".
+    if ident.lower() in ("passed", "credman", "system"):
+        parts.append(f"identity={ident.lower()}")
+    elif ident:
+        # label form: take leading token
+        tok = ident.split()[0].strip("()").lower()
+        if tok in ("passed", "credman", "system"):
+            parts.append(f"identity={tok}")
+    acct = str(log.get("account") or "").strip()
+    if acct and "password" not in acct.lower():
+        parts.append(f"account={acct}")
+    return (" " + " ".join(parts)) if parts else ""
+
+
 def deliver_legion_log(
     *,
     job_id: str,
@@ -764,7 +870,7 @@ def deliver_legion_log(
             sender(raw, offer)
             done = _dcc.format_done_via_dcc(
                 jid, exit_code, nbytes=len(raw), sha256=digest, via="dcc"
-            )
+            ) + _done_identity_suffix(log)
             return {
                 "via": "dcc",
                 "sha256": digest,
@@ -778,7 +884,7 @@ def deliver_legion_log(
                 f"err id={jid} seq={len(lines)+1} dcc failed: {exc}; falling back to IRC"
             )
             lines.append("CONT id=" + jid + " offset=1")
-            done = f"DONE id={jid} exit={exit_code} via=irc reason=dcc-fail"
+            done = f"DONE id={jid} exit={exit_code} via=irc reason=dcc-fail{_done_identity_suffix(log)}"
             lines.append(done)
             return {
                 "via": "irc",
@@ -790,7 +896,7 @@ def deliver_legion_log(
                 "payload": raw,
             }
     lines.append("CONT id=" + jid + " offset=1")
-    done = f"DONE id={jid} exit={exit_code} via=irc"
+    done = f"DONE id={jid} exit={exit_code} via=irc{_done_identity_suffix(log)}"
     lines.append(done)
     return {
         "via": "irc",

@@ -23,12 +23,24 @@ def test_fr5389_slow_credman_does_not_block_accept():
     assert "126" not in res.reply
 
 
-def test_fr5389_wait_still_fail_closed_126():
+def test_fr5389_wait_falls_through_without_126():
     res = lg.run_legion_verb(
-        target="box1", credman=lambda: {}, wait=True, job_id="aabbccdd"
+        target="box1",
+        credman=lambda: {},
+        wait=True,
+        job_id="aabbccdd",
+        worker=lambda target, whatif=False, **k: {
+            "ok": True,
+            "status": "ok",
+            "identity": "system",
+            "identity_label": "system (HOST$)",
+            "account": "HOST$",
+            "credman_missing": True,
+            "target": target,
+        },
     )
-    assert "126" in res.reply
-    assert "credman-missing" in res.reply
+    assert "126" not in res.reply.split()
+    assert "LEGION accepted" in res.reply or res.ok
 
 
 def test_fr5389_console_accept_is_fast():

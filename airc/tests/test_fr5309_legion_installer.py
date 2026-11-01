@@ -80,7 +80,7 @@ def test_fr5309_credman_not_on_irc_or_argv():
     assert "password" not in body
     assert captured[0].get("username") == "wonderland\\legion"
     assert "password" not in captured[0]
-    assert captured[0].get("password_via") == "secure-env"
+    assert captured[0].get("password_via") == "credman"
 
 
 def test_fr5309_does_not_shell_peer_exe():
