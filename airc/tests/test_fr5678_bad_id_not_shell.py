@@ -122,3 +122,32 @@ def test_fr5678_format_bad_id_reply_shape():
     lines = text.splitlines()
     assert lines[0].startswith("err id=")
     assert lines[-1] == "DONE id=zz5588-nonhex exit=2"
+
+
+def test_mrb5682_bare_8hex_id_without_trailing_space_is_bad_id():
+    """Hostile MRB #5682: id=<8hex> with no whitespace before verb/end is bad_id."""
+    calls: list = []
+
+    class _NoShell:
+        def start(self, nick, command):
+            calls.append(("shell", command))
+            return nick
+
+    core = _core(shell_runner=_NoShell())
+    hr = core.handle_raw(
+        ":bob-marchhare!u@h PRIVMSG marchhare_console :id=aabbccdd"
+    )
+    assert hr and hr.action == "bad_id"
+    assert "code=bad_id" in (hr.reply or "")
+    assert "DONE id=aabbccdd exit=2" in (hr.reply or "")
+    assert calls == []
+    st, tok, rest = ac.leading_job_id_state("id=aabbccdd")
+    assert st == "bad" and tok == "aabbccdd" and rest == ""
+
+
+def test_mrb5682_uppercase_8hex_with_space_still_ok():
+    """Hostile MRB #5682: (?i) 8-hex frame accepts AABBCCDD + space."""
+    st, tok, rest = ac.leading_job_id_state("id=AABBCCDD PRIORITY status")
+    assert st == "ok"
+    assert tok == "aabbccdd"
+    assert rest.upper().startswith("PRIORITY")
