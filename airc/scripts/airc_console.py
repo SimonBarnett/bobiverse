@@ -541,65 +541,33 @@ def report_update_failure_intake(
     detail: str = "",
     dry_run: bool = False,
 ) -> dict:
-    """FR #5279: file one intake issue per machine+product+tag+result (best-effort)."""
-    mid = (os.environ.get("BOB_MACHINE_ID") or os.environ.get("COMPUTERNAME") or "unknown").strip()
-    mid = re.sub(r"[^a-z0-9-]", "-", mid.lower()) or "unknown"
-    prod = re.sub(r"[^a-z0-9-]", "-", (product or "unknown").lower())
-    tg = re.sub(r"[^A-Za-z0-9._-]", "-", tag) if tag else "-"
-    res = re.sub(r"[^a-z0-9-]", "-", (result or "unknown").lower())
-    key = f"airc-update-fail|{mid}|{prod}|{tg}|{res}"
-    title = _redact_update_intake_text(f"airc UPDATE fail {res} product={prod}")
-    safe_detail = _redact_update_intake_text((detail or "")[:400])
-    body = _redact_update_intake_text(
-        "FR #5279 UPDATE / Apply failure (deterministic intake).\n"
-        f"product={prod}\ntag={tg}\nresult={res}\nidempotency_key={key}\n"
-        f"detail={safe_detail}"
-    )
-    payload = {
-        "ok": True,
-        "idempotency_key": key,
-        "kind": "issue",
-        "repo": "SimonBarnett/bobiverse",
-        "title": title,
-        "body": body,
-        "product": prod,
-        "result": res,
-        "dry_run": dry_run,
-    }
-    if dry_run:
-        return payload
-    script = Path(__file__).resolve().parent / "Report-BobiverseIntakeIssue.ps1"
-    if not script.is_file():
-        alt = Path(__file__).resolve().parents[1] / "scripts" / "Report-BobiverseIntakeIssue.ps1"
-        script = alt if alt.is_file() else script
-    if not script.is_file():
-        payload["ok"] = False
-        payload["skipped"] = "report-script-missing"
-        return payload
-    ps = os.environ.get("SystemRoot", r"C:\Windows") + r"\System32\WindowsPowerShell\v1.0\powershell.exe"
-    args = [
-        ps if Path(ps).is_file() else "powershell.exe",
-        "-NoProfile",
-        "-ExecutionPolicy",
-        "Bypass",
-        "-File",
-        str(script),
-        "-Title",
-        title,
-        "-Body",
-        body,
-        "-Repo",
-        "SimonBarnett/bobiverse",
-        "-Kind",
-        "issue",
-        "-IdempotencyKey",
-        key,
-    ]
+    """FR #5279 / #5766 / #5775: native shared fail-intake (packaged-safe).
+
+    Dedupe key: ``airc-update-fail|<machine>|update|<version>|<result>``
+    (version slot prefers tag, else installed airc version).
+    """
     try:
-        subprocess.run(args, capture_output=True, text=True, timeout=30, check=False)
-    except Exception:
-        payload["ok"] = False
-    return payload
+        import airc_fail_intake as _fail
+
+        out = _fail.report_update_status_failure(
+            product=product,
+            result=result,
+            tag=tag,
+            detail=detail,
+            dry_run=dry_run,
+        )
+        # Preserve legacy callers that read idempotency_key.
+        if isinstance(out, dict) and "idempotency_key" not in out and out.get("dedupe_key"):
+            out["idempotency_key"] = out["dedupe_key"]
+        return out
+    except Exception as exc:  # noqa: BLE001 - never break UPDATE path
+        return {
+            "ok": False,
+            "error": type(exc).__name__,
+            "product": product,
+            "result": result,
+            "dry_run": dry_run,
+        }
 
 
 def _is_frozen_airc_runtime() -> bool:
@@ -3315,6 +3283,42 @@ class AircConsoleCore:
             discard(job_id, reason=reason)
 
     def handle_raw(self, line: str) -> HandleResult | None:
+        """FR #5775: catch any unhandled verb fault -> intake + DONE exit=1."""
+        try:
+            return self._handle_raw_unguarded(line)
+        except Exception as exc:  # noqa: BLE001 - CAST IRON catch-all
+            try:
+                import airc_fail_intake as _fail
+
+                _fail.report_verb_failure(
+                    'handle',
+                    exc,
+                    args={'line_len': len(line or '')},
+                    wait_s=1.0,
+                )
+                reply = _fail.failure_reply('00000000', 'handle', exc)
+            except Exception:
+                reply = (
+                    'err id=00000000 seq=1 code=verb-fault\n'
+                    'DONE id=00000000 exit=1'
+                )
+            nick = 'unknown'
+            try:
+                _tags, rest = parse_message_tags((line or '').rstrip('\r\n'))
+                m = _PRIVMSG_RE.match(rest)
+                if m:
+                    nick = m.group(1)
+            except Exception:
+                pass
+            return HandleResult(
+                action='shell',
+                nick=nick,
+                target=getattr(self, 'nick', None) or 'console',
+                text=line or '',
+                reply=reply,
+            )
+
+    def _handle_raw_unguarded(self, line: str) -> HandleResult | None:
         tags, rest = parse_message_tags(line.rstrip("\r\n"))
         m = _PRIVMSG_RE.match(rest)
         if not m:
@@ -4226,6 +4230,33 @@ class AircConsoleCore:
         return HandleResult(
             action="pipe", nick=nick, target=target, text=text, **meta
         )
+
+
+
+# FR #5775: central handle_raw catch covers these IRC verbs / entries.
+try:
+    import airc_fail_intake as _fail_intake
+
+    for _verb in (
+        'update',
+        'version',
+        'status',
+        'legion',
+        'extension',
+        'network',
+        'priority',
+        'shell',
+        'cred',
+        'job',
+        'put',
+        'get',
+        'dcclisten',
+        'help',
+        'handle',
+    ):
+        _fail_intake.mark_wrapped(_verb)
+except Exception:
+    pass
 
 
 def home_dir(explicit: str | None = None) -> Path:

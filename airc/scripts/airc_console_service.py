@@ -1309,6 +1309,18 @@ class AircConsoleService:
             return
 
     def on_line(self, line: str) -> None:
+        """FR #5775: catch any on_line fault -> intake; never kill the service."""
+        try:
+            self._on_line_unguarded(line)
+        except Exception as exc:  # noqa: BLE001
+            try:
+                import airc_fail_intake as _fail
+                _fail.report_verb_failure('on_line', exc, wait_s=1.0)
+            except Exception:
+                pass
+            info(f'INFO on_line-err {exc}')
+
+    def _on_line_unguarded(self, line: str) -> None:
         self._last_recv = time.monotonic()
         tags, rest = parse_message_tags(line)
         if rest.startswith("PING "):
@@ -1784,6 +1796,11 @@ class AircConsoleService:
                         self._force_reconnect = True
                         break
                     except Exception as e:
+                        try:
+                            import airc_fail_intake as _fail
+                            _fail.report_verb_failure('on_line', e, wait_s=1.0)
+                        except Exception:
+                            pass
                         info(f"INFO on_line-err {e}")
             if self._force_reconnect:
                 break
@@ -2152,6 +2169,15 @@ def kick_frozen_service_start_hooks(
                 info(f"WARN self-update: {exc}")
     return policy
 
+# FR #5775: service entry wraps
+try:
+    import airc_fail_intake as _fail_intake
+    for _v in ('on_line', 'main', 'service_run'):
+        _fail_intake.mark_wrapped(_v)
+except Exception:
+    pass
+
+
 def main(argv: list[str] | None = None) -> int:
     raw = list(sys.argv[1:] if argv is None else argv)
     if "--isolated-job" in raw:
@@ -2193,4 +2219,14 @@ def main(argv: list[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    try:
+        raise SystemExit(main())
+    except SystemExit:
+        raise
+    except Exception as _exc:  # noqa: BLE001 - FR #5775 service main fail-intake
+        try:
+            import airc_fail_intake as _fail
+            _fail.report_verb_failure("main", _exc, wait_s=0)
+        except Exception:
+            pass
+        raise

@@ -1017,7 +1017,9 @@ function Send-BobiverseAircInstallFailureIntake {
 
 function Get-BobiverseUpdateFailureIdempotencyKey {
     <#
-      FR #5279: machine + product + tag + result. Stable across retries.
+      FR #5279 / #5766 / #5775: shared key with airc_fail_intake.py
+      airc-update-fail|<machine>|update|<version>|<result>
+      Version slot prefers Tag (target release), else '-'.
     #>
     param(
         [string]$Machine = '',
@@ -1029,10 +1031,13 @@ function Get-BobiverseUpdateFailureIdempotencyKey {
     if (-not $mid) { $mid = [string]$env:BOB_MACHINE_ID }
     if (-not $mid) { $mid = [string]$env:COMPUTERNAME }
     $mid = ($mid.ToLowerInvariant() -replace '[^a-z0-9-]', '-')
-    $prod = ($(if ($Product) { $Product } else { 'unknown' })).ToLowerInvariant() -replace '[^a-z0-9-]', '-'
-    $tg = ($(if ($Tag) { $Tag } else { '-' })) -replace '[^A-Za-z0-9._-]', '-'
+    if (-not $mid) { $mid = 'unknown' }
+    $ver = ($(if ($Tag) { $Tag } else { '-' })) -replace '[^A-Za-z0-9._-]', '-'
+    if (-not $ver) { $ver = '-' }
     $res = ($(if ($Result) { $Result } else { 'unknown' })).ToLowerInvariant() -replace '[^a-z0-9-]', '-'
-    return ('airc-update-fail|{0}|{1}|{2}|{3}' -f $mid, $prod, $tg, $res)
+    if (-not $res) { $res = 'unknown' }
+    return ('airc-update-fail|{0}|update|{1}|{2}' -f $mid, $ver, $res)
+
 }
 
 
