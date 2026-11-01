@@ -65,11 +65,12 @@ _AIRC_CONSOLE_NICK_RE = re.compile(r".+_console$", re.IGNORECASE)
 # FR #1546 / #5002: accept id-less DONE exit= (auth refusals) as well as DONE id=...
 # FR #5679: accept id-less err seq= (synthetic too_long when outbox had no hex id).
 # FR #5742: accept non-hex id= on err/DONE so FR #5678 bad_id echoes reach airc-replies.jsonl.
+# FR #5763: any UPDATE status token (accepted / current / release-lookup-failed / …).
 _AIRC_REPLY_BODY_RE = re.compile(
     r"^(?:(?:out|err)\s+id=\S+\s+seq=\d+\s|"
     r"err\s+seq=\d+\s|"
     r"DONE\s+(?:id=\S+\s+)?exit=-?\d+\b|"
-    r"UPDATE\s+accepted\b)",
+    r"UPDATE\s+\w[\w-]*\b)",
     re.IGNORECASE,
 )
 
