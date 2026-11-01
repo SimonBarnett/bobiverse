@@ -311,10 +311,12 @@ def _scrub_consumed_cred_seal_lines(path: Path, start: int, end: int) -> int:
     """Blank consumed CRED-SEAL payloads in place while preserving outbox offsets."""
     try:
         with Path(path).open("r+b") as fh:
-            data = fh.read()
-            begin = 0 if start > len(data) else max(0, int(start))
-            stop = min(len(data), max(begin, int(end)))
-            consumed = data[begin:stop]
+            fh.seek(0, 2)
+            size = fh.tell()
+            begin = 0 if int(start) > size else max(0, int(start))
+            stop = min(size, max(begin, int(end)))
+            fh.seek(begin)
+            consumed = fh.read(stop - begin)
             cursor = begin
             replacements: list[tuple[int, bytes]] = []
             for raw in consumed.splitlines(keepends=True):
