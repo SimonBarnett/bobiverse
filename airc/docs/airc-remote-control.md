@@ -39,7 +39,7 @@ PRIVMSG marchhare_console :id=aabbccdd cmd: echo %COMSPEC%
 | `PRIORITY connect|status [instance-id]` | Allowlisted Priority Web connect/status via CredMan; `out id=` JSON + `DONE id= exit=`; never password on IRC (FR #5284 / #5275). See [airc-priority-client.md](./airc-priority-client.md) |
 | PRIORITY formStart|subform|getRows | FR #5285 read-path form walk via in-service fixture worker (JSON + DONE id= exit=). Allowlisted instance only; no passwords on IRC; no agent .mjs. |
 | NETWORK / NETWORK diag [-WhatIf] | Isolated diagnostic worker (FR #5298 / docs FR #5301). UPDATE-class auth. Inventory hostname, ips[], ou (parent-container DN; FR #5587). Full data+log via DCCLISTEN same job id or IRC CONT. Unknown action/flag is `err … code=usage` + `DONE exit=2` (never PowerShell; FR #5614). |
-| `LEGION {host|ip}` [-WhatIf] | Isolated in-service installer (FR #5308 / #5309 / docs FR #5312 / FR #5594). UPDATE-class auth. Default identity: Airc LocalSystem / computer account (`DOMAIN\\HOST$`). CredMan `PriorityAirc/LegionAdmin` is off-by-default (`AIRC_LEGION_USE_CREDMAN=1`). Log via DCCLISTEN same job id or IRC CONT (FR #5311). |
+| `LEGION {host|ip}` [-WhatIf] [-Profile fleet|client|workstation] | Isolated in-service installer (FR #5308 / #5309 / docs FR #5312 / FR #5594 / FR #5758). UPDATE-class auth. Preserves remote profile unless `-Profile` set; DONE/JSON report profile_before/after + installed_version + service. Default identity: Airc LocalSystem / computer account (`DOMAIN\\HOST$`). CredMan `PriorityAirc/LegionAdmin` is off-by-default (`AIRC_LEGION_USE_CREDMAN=1`). Log via DCCLISTEN same job id or IRC CONT (FR #5311). |
 | EXTENSION install|status [-WhatIf] | Isolated worker: DC + GPO Priority-web-extension ForceInstall Chrome+Edge then LDAP fill-holes (FR #5290/#5291/#5292). Fill-holes: machine account first, then CredMan `PriorityAirc/ExtensionAdmin` on access-denied (FR #5364; fail closed `credman-missing`; never on IRC). DCC/CONT log (FR #5293). Default id cgmpadejahkaggjpffnhaoiafbnicgpa. No DC -> GPO fail closed |
 
 ## UPDATE (FR #77 / FR #5280) - shipped
@@ -139,9 +139,11 @@ Authorized PRIVMSG only (UPDATE-class: ops/half-ops; `update=off` refuses). Isol
 PRIVMSG marchhare_console :id=aabbccdd DCCLISTEN id=aabbccdd host=127.0.0.1 port=7700 token=<hex> tls=1
 PRIVMSG marchhare_console :id=aabbccdd LEGION walrus
 PRIVMSG marchhare_console :id=aabbccdd LEGION walrus -WhatIf
+PRIVMSG marchhare_console :id=aabbccdd LEGION flamingo -Profile fleet
 ```
 
 - Default identity is the Airc service LocalSystem. The remote host sees the source computer account (for example `WONDERLAND\\MARCHHARE$`) via Kerberos. That account must be in the target local Administrators group (GPO restricted groups or a Bob Fleet installers AD group). Access denied -> `reason=system-access-denied` plus that hint.
+- **FR #5758:** preserve remote `airc-install.json` profile (or accept `-Profile fleet|client|workstation`); report `profile_before`/`profile_after` and warn on downgrade; after success include `installed_version` + `service` on JSON and DONE.
 - CredMan `PriorityAirc/LegionAdmin` is retired as the default. Optional fallback only when `AIRC_LEGION_USE_CREDMAN=1` (workgroup targets). CAST IRON: no secrets on IRC or in the DCC body.
 - Same job `id=` on DCCLISTEN and LEGION. WhatIf is dry-run (no remote install) and reports `identity=SYSTEM (HOST$)`.
 - FR #5530: -WhatIf still probes MSI/PsExec when CredMan is missing; the DCC log includes msi, psexec, summary=dry-run, and a credman-missing failure row (live installs still fail closed before install_remote).

@@ -3420,7 +3420,7 @@ class AircConsoleCore:
                     "PRIORITY connect|status [instance-id] (CredMan + allowlist, FR #5284); PRIORITY formStart|subform|getRows (FR #5285 fixture walk); "
                     "EXTENSION install|status [-WhatIf] isolated worker (FR #5290); "
                     "NETWORK|NETWORK diag isolated worker (FR #5298); "
-                    "LEGION {host|ip} [-WhatIf] isolated worker (FR #5308); "
+                    "LEGION {host|ip} [-WhatIf] [-Profile fleet|client|workstation] isolated worker (FR #5308/#5758); "
                     f"capabilities shell={self.capabilities.shell_mode} "
                     f"jobs={self.capabilities.jobs} update={self.capabilities.update} "
                     f"extension={self.capabilities.extension}; "
@@ -3639,8 +3639,23 @@ class AircConsoleCore:
                     reply=format_known_verb_usage(
                         qid,
                         "LEGION",
-                        "{host|ip} [-WhatIf]",
+                        "{host|ip} [-WhatIf] [-Profile fleet|client|workstation]",
                         str(leg.get("unknown_flag") or ""),
+                    ),
+                    **meta,
+                )
+            if leg.get("error") == "bad-profile":
+                meta = self._allow_meta(nick, account)
+                return HandleResult(
+                    action="legion",
+                    nick=nick,
+                    target=target,
+                    text=text,
+                    reply=format_known_verb_usage(
+                        qid,
+                        "LEGION",
+                        "{host|ip} [-WhatIf] [-Profile fleet|client|workstation]",
+                        f"-Profile={leg.get('profile') or ''}",
                     ),
                     **meta,
                 )
@@ -3689,9 +3704,10 @@ class AircConsoleCore:
                         extra["identity"] = res.identity_label
                 if getattr(res, "computer_account", ""):
                     extra["computer_account"] = res.computer_account
-                acct = ""
+                acct = str(getattr(res, "account", "") or "")
                 if isinstance(getattr(res, "plan", None), dict):
-                    acct = str((res.plan or {}).get("account") or "")
+                    if not acct:
+                        acct = str((res.plan or {}).get("account") or "")
                 # account may live on failures / identity_label paren
                 if not acct and getattr(res, "identity_label", ""):
                     lab = str(res.identity_label)
@@ -3699,6 +3715,18 @@ class AircConsoleCore:
                         acct = lab[lab.find("(") + 1 : -1]
                 if acct:
                     extra["account"] = acct
+                # FR #5758: profile preserve + post-install verify on JSON/DONE.
+                for key in (
+                    "profile",
+                    "profile_before",
+                    "profile_after",
+                    "profile_warn",
+                    "installed_version",
+                    "service",
+                ):
+                    val = str(getattr(res, key, "") or "").strip()
+                    if val:
+                        extra[key] = val
                 log = _legion.build_legion_log(
                     target=leg.get("target") or "",
                     whatif=bool(leg.get("whatif")),
@@ -3724,6 +3752,7 @@ class AircConsoleCore:
                     job_id=qid,
                     on_done=_deliver_installer,
                     cred_id=str(leg.get("cred_id") or ""),
+                    profile=leg.get("profile"),
                 )
             except TypeError:
                 try:
@@ -3731,9 +3760,17 @@ class AircConsoleCore:
                         target=leg["target"],
                         whatif=leg["whatif"],
                         job_id=qid,
+                        profile=leg.get("profile"),
                     )
                 except TypeError:
-                    result = self.legion_runner(target=leg["target"])
+                    try:
+                        result = self.legion_runner(
+                            target=leg["target"],
+                            whatif=leg["whatif"],
+                            job_id=qid,
+                        )
+                    except TypeError:
+                        result = self.legion_runner(target=leg["target"])
             except Exception:
                 result = _legion.LegionVerbResult(
                     False, "LEGION err isolated-fault", job_id=qid

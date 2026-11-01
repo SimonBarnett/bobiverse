@@ -144,16 +144,18 @@ PRIVMSG {mid}_console :id=c25bd00e LEGION flamingo cred=c25bd00e
 
 Password never on IRC. Stash is in-memory, TTL ~180s, one-shot `take`. Without `via=dcc` / offer -> `DONE … usage cred-requires-dcc`.
 
-## LEGION remote install (FR #5312)
+## LEGION remote install (FR #5312 / #5758)
 
-Authorized **UPDATE-class** verb. Isolated worker imports in-service `airc_network_installer` (FR #3991) for **one** hostname or IPv4. Profile client, latest Release MSI, timeout 900s, no `--force`. Identity order (FR #5659 / amends #5594): passed DCC CRED -> CredMan `PriorityAirc/LegionAdmin` -> SYSTEM. Missing CredMan falls through to SYSTEM; wrong passed/CredMan auth is `auth_failed`. WhatIf still plans (FR #5530).
+Authorized **UPDATE-class** verb. Isolated worker imports in-service `airc_network_installer` (FR #3991) for **one** hostname or IPv4. Latest Release MSI, timeout 900s, no `--force`. **FR #5758:** preserves the remote `config\airc-install.json` profile (fleet/workstation/client) unless `-Profile fleet|client|workstation` overrides; reports `profile_before`/`profile_after` and warns on downgrade; DONE/JSON carry `profile=` + `installed_version=` + `service=` after a successful install. Identity order (FR #5659 / amends #5594): passed DCC CRED -> CredMan `PriorityAirc/LegionAdmin` -> SYSTEM. Missing CredMan falls through to SYSTEM; wrong passed/CredMan auth is `auth_failed`. WhatIf still plans (FR #5530).
 
 ```text
 PRIVMSG {mid}_console :id=c25bd00e DCCLISTEN id=c25bd00e host=<ip> port=<n> token=<hex> tls=1
 PRIVMSG {mid}_console :id=c25bd00e LEGION walrus
 PRIVMSG {mid}_console :id=c25bd00e LEGION 10.0.0.8 -WhatIf
+PRIVMSG {mid}_console :id=c25bd00e LEGION flamingo -Profile fleet
 ```
 
+- **Profile preserve (FR #5758):** read remote `config\airc-install.json` `profile`; keep it unless `-Profile fleet|client|workstation` is set; report `profile_before`/`profile_after` and `profile_warn` on downgrade; after success include `installed_version` + `service` on JSON and DONE.
 - **Auth:** same as UPDATE (`+o`/`+h`; `update=off` / `shell=off` refuse with `DONE id=<qid> exit=126 update-disabled|shell-disabled` when the command carried `id=` - FR #5552). Empty/list/OU/invalid targets: `DONE id=<id> exit=126 bad-target reason=empty|list|ou|invalid` (id= omitted only when the operator sent no id; FR #5527). FR #5528: `bad_host!` is invalid, not list.
 - **Identity (FR #5659 / #5711 / #5745 / amends #5594):** order is **passed** (DCC `CRED id= via=dcc` then `LEGION|EXTENSION|NETWORK … cred=<id>`) -> **CredMan** (`PriorityAirc/LegionAdmin` / `ExtensionAdmin` / `NetworkAdmin`, overridable via `airc.json` `credman_targets`) -> **SYSTEM** `DOMAIN\HOST$`. Log/DONE for LEGION, EXTENSION, and NETWORK carry `identity=passed|credman|system` and account name, never the secret. Wrong passed/CredMan auth -> `auth_failed` (no silent fallback). Missing CredMan falls through to SYSTEM with `identity_reason=credman-missing:<target>` (or `credman-read-error:<code>`) plus an `identity-fallback` console log line. Plain IRC password/pass tokens is rejected (`usage secrets-on-irc`). NETWORK uses CredMan only for the ADSI bind (DNS stays on the service token).
 - **Remote failures (FR #5744):** classify `host_down` (WinError 53/67 + SMB 445 preflight), `auth_failed` (5/1326), `session_conflict` (1219) with `detail` + `step` (never credentials).

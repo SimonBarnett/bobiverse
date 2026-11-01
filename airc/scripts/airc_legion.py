@@ -1,10 +1,12 @@
 """Airc LEGION verb + isolated worker (FR #5308 / #5309 / FR #5594).
 
 FR-A: verb + stub. FR-B: import ``airc_network_installer`` for one host,
-profile client, latest Release MSI, no --force. Auth matches UPDATE.
+latest Release MSI, no --force. Auth matches UPDATE.
 FR #5594: SYSTEM / computer account is the last resort.
 FR #5659: identity order passed (DCC CRED) -> CredMan PriorityAirc/LegionAdmin
 -> SYSTEM. Wrong passed/CredMan auth fails closed (no silent fallback).
+FR #5758: preserve remote profile (or ``-Profile``); report profile_before/after
++ installed_version + service on DONE/JSON; warn on profile downgrade.
 """
 from __future__ import annotations
 
@@ -20,6 +22,7 @@ from typing import Any, Callable
 
 # In-service module (FR #3991). LEGION must not shell a peer installer exe.
 import airc_network_installer as _netinst  # noqa: F401
+from airc_network_installer.core import ALLOWED_PROFILES, DEFAULT_PROFILE
 
 LEGION_TIMEOUT_S = 900
 
@@ -30,6 +33,10 @@ _HOST_RE = re.compile(r"(?i)^[a-z0-9](?:[a-z0-9\-]{0,61}[a-z0-9])?(?:\.[a-z0-9\-
 _IPV4_RE = re.compile(
     r"^(?:25[0-5]|2[0-4]\d|1?\d?\d)(?:\.(?:25[0-5]|2[0-4]\d|1?\d?\d)){3}$"
 )
+_PROFILE_FLAG_RE = re.compile(
+    r"(?i)(?:^|\s)-Profile(?:=|\s+)(?P<prof>\S+)"
+)
+_PROFILE_RANK = {"client": 0, "workstation": 1, "fleet": 2}
 
 
 @dataclass
@@ -47,6 +54,14 @@ class LegionVerbResult:
     identity: str = ""
     computer_account: str = ""
     identity_label: str = ""
+    account: str = ""
+    # FR #5758: profile preserve + post-install verify.
+    profile: str = ""
+    profile_before: str = ""
+    profile_after: str = ""
+    profile_warn: str = ""
+    installed_version: str = ""
+    service: str = ""
 
     def reply_text(self) -> str:
         return self.reply
@@ -83,10 +98,26 @@ def parse_legion_command(text: str) -> dict[str, Any] | None:
             "error": "secrets-on-irc",
             "target": "",
             "whatif": False,
+            "profile": None,
         }
     rest = (m.group("rest") or "").strip()
     whatif = bool(re.search(r"(?i)(?:^|\s)-WhatIf(?:\s|$)", rest))
     rest = re.sub(r"(?i)(?:^|\s)-WhatIf(?:\s|$)", " ", rest).strip()
+    # FR #5758: optional -Profile fleet|client|workstation (before unknown-flag scan).
+    profile: str | None = None
+    pm = _PROFILE_FLAG_RE.search(rest)
+    if pm:
+        profile = str(pm.group("prof") or "").strip().lower()
+        rest = _PROFILE_FLAG_RE.sub(" ", rest).strip()
+        if profile not in ALLOWED_PROFILES:
+            return {
+                "qid": (m.group(1) or "").lower(),
+                "error": "bad-profile",
+                "target": "",
+                "whatif": whatif,
+                "profile": profile,
+                "cred_id": "",
+            }
     cred_id, rest = _pcred.extract_cred_ref(rest)
     parts = [p for p in rest.split() if p]
     qid = (m.group(1) or "").lower()
@@ -100,6 +131,7 @@ def parse_legion_command(text: str) -> dict[str, Any] | None:
             "target": " ".join(hosts),
             "whatif": whatif,
             "cred_id": cred_id,
+            "profile": profile,
         }
     if not hosts:
         return {
@@ -108,6 +140,7 @@ def parse_legion_command(text: str) -> dict[str, Any] | None:
             "target": "",
             "whatif": whatif,
             "cred_id": cred_id,
+            "profile": profile,
         }
     if len(hosts) > 1:
         return {
@@ -116,6 +149,7 @@ def parse_legion_command(text: str) -> dict[str, Any] | None:
             "target": " ".join(hosts),
             "whatif": whatif,
             "cred_id": cred_id,
+            "profile": profile,
         }
     err = _classify_target(hosts[0])
     if err:
@@ -125,6 +159,7 @@ def parse_legion_command(text: str) -> dict[str, Any] | None:
             "target": hosts[0],
             "whatif": whatif,
             "cred_id": cred_id,
+            "profile": profile,
         }
     return {
         "qid": qid,
@@ -132,6 +167,77 @@ def parse_legion_command(text: str) -> dict[str, Any] | None:
         "target": hosts[0],
         "whatif": whatif,
         "cred_id": cred_id,
+        "profile": profile,
+    }
+
+
+def resolve_legion_profile(
+    *,
+    explicit: str | None,
+    profile_before: str | None,
+) -> dict[str, Any]:
+    """FR #5758: choose install profile; warn when downgrading fleet/workstation."""
+    before = str(profile_before or "").strip().lower()
+    if before and before not in ALLOWED_PROFILES:
+        before = ""
+    exp = str(explicit or "").strip().lower()
+    if exp and exp not in ALLOWED_PROFILES:
+        exp = ""
+    if exp:
+        after = exp
+    elif before:
+        after = before
+    else:
+        after = DEFAULT_PROFILE
+    warn = ""
+    if before and after:
+        if _PROFILE_RANK.get(after, 0) < _PROFILE_RANK.get(before, 0):
+            warn = f"downgrade:{before}->{after}"
+    return {
+        "profile": after,
+        "profile_before": before,
+        "profile_after": after,
+        "profile_warn": warn,
+    }
+
+
+def read_remote_airc_profile(
+    host: str,
+    *,
+    username: str = "",
+    password: str = "",
+) -> str:
+    """FR #5758: best-effort remote profile from airc-install.json / airc.json."""
+    from airc_network_installer.install import read_remote_airc_profile as _read
+
+    return _read(host, username=username, password=password)
+
+
+def read_remote_post_install(
+    host: str,
+    *,
+    username: str = "",
+    password: str = "",
+) -> dict[str, str]:
+    """FR #5758: remote VERSION + Airc service state after install."""
+    from airc_network_installer.install import (
+        read_remote_version,
+        remote_service_running,
+    )
+
+    ver = ""
+    try:
+        ver = str(read_remote_version(host) or "").strip()
+    except Exception:
+        ver = ""
+    running = False
+    try:
+        running = bool(remote_service_running(host))
+    except Exception:
+        running = False
+    return {
+        "installed_version": ver,
+        "service": "Running" if running else "not-running",
     }
 
 _ALLOWED_MSI_PREFIX = "https://github.com/SimonBarnett/bobiverse/releases"
@@ -498,10 +604,13 @@ def installer_legion_work(
     credman: Callable[[], dict[str, str]] | None = None,
     msi: str | None = None,
     log_dir: str | None = None,
+    profile: str | None = None,
     **_kw: Any,
 ) -> dict[str, Any]:
-    """FR #5309: one host, client profile, latest Release MSI, no --force."""
+    """FR #5309 / #5758: one host; preserve remote profile or honor -Profile; no --force."""
+    explicit_profile = profile if profile is not None else _kw.get("profile")
     if not _msi_allowed(msi):
+        rp = resolve_legion_profile(explicit=explicit_profile, profile_before="")
         return {
             "ok": False,
             "target": target,
@@ -509,7 +618,9 @@ def installer_legion_work(
             "invoked_installer": False,
             "force": False,
             "timeout_s": LEGION_TIMEOUT_S,
-            "profile": "client",
+            "profile": rp["profile"],
+            "profile_before": rp["profile_before"],
+            "profile_after": rp["profile_after"],
             "error": "foreign-msi-url",
         }
     # FR #5659: passed (DCC CRED) -> CredMan -> SYSTEM.
@@ -525,6 +636,7 @@ def installer_legion_work(
     if passed_requested and not (
         passed and str(passed.get("username") or "").strip() and str(passed.get("password") or "")
     ):
+        rp = resolve_legion_profile(explicit=explicit_profile, profile_before="")
         return {
             "ok": False,
             "target": target,
@@ -532,7 +644,9 @@ def installer_legion_work(
             "invoked_installer": False,
             "force": False,
             "timeout_s": LEGION_TIMEOUT_S,
-            "profile": "client",
+            "profile": rp["profile"],
+            "profile_before": rp["profile_before"],
+            "profile_after": rp["profile_after"],
             "error": "auth_failed",
             "identity": "passed",
             "identity_label": "passed (missing)",
@@ -569,9 +683,21 @@ def installer_legion_work(
     user = resolved.username if resolved.source != _ident.IDENTITY_SYSTEM else ""
     secret = resolved.password if resolved.source != _ident.IDENTITY_SYSTEM else ""
     use_secret = resolved.source in (_ident.IDENTITY_PASSED, _ident.IDENTITY_CREDMAN)
+    # FR #5758: preserve remote profile unless -Profile overrides.
+    profile_before = ""
+    try:
+        profile_before = read_remote_airc_profile(
+            target, username=user or "", password=secret or ""
+        )
+    except Exception:
+        profile_before = ""
+    rp = resolve_legion_profile(
+        explicit=explicit_profile, profile_before=profile_before
+    )
+    chosen_profile = rp["profile"]
     spec: dict[str, Any] = {
         "hosts": [target],
-        "profile": "client",
+        "profile": chosen_profile,
         "force": False,
         "timeout_s": LEGION_TIMEOUT_S,
         "dry_run": bool(whatif),
@@ -624,7 +750,9 @@ def installer_legion_work(
         "invoked_installer": True,
         "force": False,
         "timeout_s": LEGION_TIMEOUT_S,
-        "profile": "client",
+        "profile": chosen_profile,
+        "profile_before": rp["profile_before"],
+        "profile_after": rp["profile_after"],
         "hosts": [target],
         "status": status if err not in ("auth_failed",) else "failed",
         "log_dir": spec["log_dir"],
@@ -635,6 +763,9 @@ def installer_legion_work(
         "identity_label": resolved.label,
         "account": resolved.account,
     }
+    if rp.get("profile_warn"):
+        body["profile_warn"] = rp["profile_warn"]
+
     # FR #5659 / #5745: missing CredMan is logged, not a hard failure (falls through to SYSTEM).
     if resolved.credman_missing:
         body["credman_missing"] = True
@@ -688,7 +819,12 @@ def installer_legion_work(
             "msi": body.get("msi") or "latest",
             "psexec": plan_pse,
             "install": "skipped (whatif)",
+            "profile": chosen_profile,
+            "profile_before": rp["profile_before"],
+            "profile_after": rp["profile_after"],
         }
+        if rp.get("profile_warn"):
+            body["plan"]["profile_warn"] = rp["profile_warn"]
         dl = (out or {}).get("psexec_download")
         if isinstance(dl, dict):
             if dl.get("url"):
@@ -703,6 +839,18 @@ def installer_legion_work(
             body["ok"] = False
             body["status"] = body.get("status") or "failed"
             body["plan"]["will_fail"] = str(err or pse)
+    # FR #5758: post-install VERSION + service on success (skip WhatIf).
+    if body.get("ok") and not whatif:
+        try:
+            post = read_remote_post_install(
+                target, username=user or "", password=secret or ""
+            )
+            if post.get("installed_version"):
+                body["installed_version"] = post["installed_version"]
+            if post.get("service"):
+                body["service"] = post["service"]
+        except Exception:
+            pass
     return body
 
 
@@ -726,6 +874,9 @@ def run_legion_verb(
     work_kw: dict[str, Any] = {}
     if "credman" in _kw:
         work_kw["credman"] = _kw["credman"]
+    # FR #5758: optional -Profile fleet|client|workstation.
+    if "profile" in _kw and _kw.get("profile") is not None:
+        work_kw["profile"] = _kw.get("profile")
     # FR #5659: take DCC-staged cred in parent (isolated child has no shared stash).
     cred_id = str(_kw.get("cred_id") or "").strip().lower()
     if cred_id:
@@ -780,6 +931,13 @@ def run_legion_verb(
             identity=str(data.get("identity") or ""),
             computer_account=str(data.get("computer_account") or ""),
             identity_label=ident_label,
+            account=str(data.get("account") or ""),
+            profile=str(data.get("profile") or ""),
+            profile_before=str(data.get("profile_before") or ""),
+            profile_after=str(data.get("profile_after") or ""),
+            profile_warn=str(data.get("profile_warn") or ""),
+            installed_version=str(data.get("installed_version") or ""),
+            service=str(data.get("service") or ""),
         )
         if on_done is not None:
             on_done(res)
@@ -846,13 +1004,16 @@ def run_legion_verb(
             # Passed secrets must not cross packaged IPC; stay in-process.
             threading.Thread(target=_safe, name="airc-legion-worker", daemon=True).start()
         else:
+            pkg_kw: dict[str, Any] = {"target": target, "whatif": bool(whatif)}
+            if work_kw.get("profile") is not None:
+                pkg_kw["profile"] = work_kw.get("profile")
             _iso.start_isolated(
                 wait=False,
                 run=_call_work,
                 packaged=(
                     "airc_legion",
                     "installer_legion_work",
-                    {"target": target, "whatif": bool(whatif)},
+                    pkg_kw,
                 ),
                 name="airc-legion-worker",
                 on_done=_from_child,
@@ -887,14 +1048,14 @@ def build_legion_log(
     failures: list[dict] | None = None,
     extra: dict | None = None,
 ) -> dict[str, Any]:
-    """FR #5311: installer log + failures[]; secrets stripped."""
+    """FR #5311 / #5758: installer log + failures[]; secrets stripped."""
     log: dict[str, Any] = {
         "target": target,
         "whatif": bool(whatif),
         "summary": summary,
         "failures": list(failures or []),
         "timeout_s": LEGION_TIMEOUT_S,
-        "profile": "client",
+        "profile": DEFAULT_PROFILE,
         "force": False,
     }
     if extra:
@@ -917,6 +1078,24 @@ def _done_identity_suffix(log: dict[str, Any]) -> str:
     import airc_identity as _ident
 
     return _ident.done_identity_suffix(log)
+
+
+def _done_profile_verify_suffix(log: dict[str, Any]) -> str:
+    """FR #5758: DONE carries profile= + installed_version= + service= (+ optional warn)."""
+    parts: list[str] = []
+    for key in ("profile", "installed_version", "service"):
+        val = str(log.get(key) or "").strip()
+        if val:
+            parts.append(f"{key}={val}")
+    warn = str(log.get("profile_warn") or "").strip()
+    if warn:
+        parts.append(f"profile_warn={warn}")
+    return (" " + " ".join(parts)) if parts else ""
+
+
+def _done_suffix(log: dict[str, Any]) -> str:
+    """FR #5659 / #5758: identity + profile/verify tokens on DONE."""
+    return _done_identity_suffix(log) + _done_profile_verify_suffix(log)
 
 
 def deliver_legion_log(
@@ -950,7 +1129,7 @@ def deliver_legion_log(
             sender(raw, offer)
             done = _dcc.format_done_via_dcc(
                 jid, exit_code, nbytes=len(raw), sha256=digest, via="dcc"
-            ) + _done_identity_suffix(log)
+            ) + _done_suffix(log)
             return {
                 "via": "dcc",
                 "sha256": digest,
@@ -964,7 +1143,7 @@ def deliver_legion_log(
                 f"err id={jid} seq={len(lines)+1} dcc failed: {exc}; falling back to IRC"
             )
             lines.append("CONT id=" + jid + " offset=1")
-            done = f"DONE id={jid} exit={exit_code} via=irc reason=dcc-fail{_done_identity_suffix(log)}"
+            done = f"DONE id={jid} exit={exit_code} via=irc reason=dcc-fail{_done_suffix(log)}"
             lines.append(done)
             return {
                 "via": "irc",
@@ -976,7 +1155,7 @@ def deliver_legion_log(
                 "payload": raw,
             }
     lines.append("CONT id=" + jid + " offset=1")
-    done = f"DONE id={jid} exit={exit_code} via=irc{_done_identity_suffix(log)}"
+    done = f"DONE id={jid} exit={exit_code} via=irc{_done_suffix(log)}"
     lines.append(done)
     return {
         "via": "irc",
