@@ -3559,7 +3559,41 @@ class AircConsoleCore:
                 **meta,
             )
 
-        # FR #5659 / #5802: CRED via=dcc (stage) or persist via=https|dcc (CredMan write).
+        # FR #5812: CRED-SEAL chunks (follow-up to CRED persist via=irc HELLO).
+        try:
+            import airc_cred_irc as _circ
+
+            seal_cmd = _circ.parse_cred_seal_command(cmd)
+        except Exception:
+            seal_cmd = None
+        if seal_cmd is not None:
+            allow = self._allow_meta(nick, account)
+            qid = (seal_cmd.get("qid") or "").lower()
+            try:
+                allowlisted = _circ.allowlisted_cred_targets(
+                    getattr(self, "priority_allowlist_path", None)
+                )
+            except Exception:
+                allowlisted = set()
+            store = getattr(self, "irc_cred_sessions", None)
+            result = _circ.ingest_seal_chunk(
+                nick=nick,
+                token=str(seal_cmd.get("token") or ""),
+                seq=str(seal_cmd.get("seq") or ""),
+                ct_b64=str(seal_cmd.get("ct") or ""),
+                store=store,
+                allowlisted=allowlisted,
+            )
+            return HandleResult(
+                action="cred",
+                nick=nick,
+                target=target,
+                text=text,
+                reply=_circ.format_cred_irc_result(qid, result),
+                **allow,
+            )
+
+        # FR #5659 / #5802 / #5812: CRED via=dcc|https|irc (stage or CredMan write).
         cred_cmd = None
         try:
             import airc_passed_cred as _pcred
@@ -3618,11 +3652,53 @@ class AircConsoleCore:
                     **allow,
                 )
 
-            # FR #5802: persist to LocalSystem CredMan over HTTPS (443) or DCC body.
+            # FR #5802 / #5812: persist to LocalSystem CredMan (https / dcc / irc).
             if persist:
                 if not cred_target:
                     return self._capability_deny(
                         nick, target, text, "usage cred-persist-needs-target", qid
+                    )
+                if via == "irc":
+                    try:
+                        import airc_cred_irc as _circ
+
+                        # Fail closed: target must appear in priority-instances
+                        # credentialTarget values (FR #5812).
+                        allowlisted = _circ.allowlisted_cred_targets(
+                            getattr(self, "priority_allowlist_path", None)
+                        )
+                        if cred_target not in allowlisted:
+                            return HandleResult(
+                                action="cred",
+                                nick=nick,
+                                target=target,
+                                text=text,
+                                reply=_circ.format_cred_irc_result(
+                                    qid,
+                                    {
+                                        "ok": False,
+                                        "code": "cred-target-not-allowlisted",
+                                    },
+                                ),
+                                **allow,
+                            )
+                        store = getattr(self, "irc_cred_sessions", None)
+                        hello = _circ.start_irc_persist_session(
+                            target=cred_target,
+                            nick=nick,
+                            qid=qid,
+                            store=store,
+                        )
+                    except Exception as exc:  # noqa: BLE001
+                        reason = str(exc) if str(exc) else type(exc).__name__
+                        return _cred_fail(reason)
+                    return HandleResult(
+                        action="cred",
+                        nick=nick,
+                        target=target,
+                        text=text,
+                        reply=_circ.format_cred_hello_reply(qid, hello),
+                        **allow,
                     )
                 if via == "https":
                     if not cred_url:
@@ -3661,7 +3737,7 @@ class AircConsoleCore:
                     )
                 if via != "dcc":
                     return self._capability_deny(
-                        nick, target, text, "usage cred-persist-via-https-or-dcc", qid
+                        nick, target, text, "usage cred-persist-via-https-dcc-or-irc", qid
                     )
                 # persist + via=dcc: receive body then CredWrite (when DCC is available).
                 offer = None

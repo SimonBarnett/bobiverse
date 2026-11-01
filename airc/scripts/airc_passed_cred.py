@@ -7,6 +7,9 @@ Operator flows:
 
   CRED id=<job> persist target=PriorityWeb/x via=https url=https://bob.ntsa.uk/...
   # HTTPS pull JSON {username,password} on 443, CredWrite under LocalSystem
+
+  CRED id=<job> persist target=PriorityWeb/x via=irc
+  # FR #5812: CRED-HELLO then CRED-SEAL chunks over the existing TLS IRC hop
 """
 from __future__ import annotations
 
@@ -123,6 +126,8 @@ def parse_cred_command(text: str) -> dict[str, Any] | None:
         via = "dcc"
     if rest.lower().find("via=https") >= 0:
         via = "https"
+    if rest.lower().find("via=irc") >= 0:
+        via = "irc"
     return {
         "qid": qid,
         "via": via,
