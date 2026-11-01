@@ -1589,6 +1589,7 @@ class AircConsoleService:
             "close",
             "update",
             "priority",
+            "cred",
             "network",
             "extension",
             "legion",
@@ -1596,7 +1597,7 @@ class AircConsoleService:
         } and hr.nick and hr.reply:
             # FR #77: UPDATE reply is sent before the detached helper stops Airc.
             # FR #5284: PRIORITY may emit out id= + DONE id= on separate lines.
-            # FR #5518: NETWORK / EXTENSION / LEGION accepted must reach IRC.
+            # FR #5518 / #5815: NETWORK-family and CRED replies must reach IRC.
             # FR #5583: DONE is last (emit out/CONT then DONE); do not put DONE
             # on the accept line or Invoke-AircRemote stops before the log.
             # FR #5526: pending async PRIORITY connect returns reply="" — skip blank PRIVMSG.
@@ -1605,7 +1606,15 @@ class AircConsoleService:
                 line = part.strip()
                 if line:
                     self.send_privmsg(hr.nick, line)
-            if hr.action in {"update", "priority", "network", "extension", "legion", "bad_id"}:
+            if hr.action in {
+                "update",
+                "priority",
+                "cred",
+                "network",
+                "extension",
+                "legion",
+                "bad_id",
+            }:
                 # FR #4067: auth-allow before update-reply (issue covers UPDATE).
                 # FR #5742: auth-allow action=bad_id without echoing the body.
                 if not getattr(hr, "allow_account", None) and getattr(self, "account_map", None):
