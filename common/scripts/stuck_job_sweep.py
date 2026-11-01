@@ -186,6 +186,8 @@ def classify_queue_row(
     idle: set[str],
     activity: dict[str, float] | None = None,
     open_items: list[dict] | None = None,
+    home: Path | None = None,
+    ledger: dict | None = None,
 ) -> dict:
     """Classify one queue row into unaccepted|accepted|held (+ stuck flags)."""
     import gitclaim
@@ -271,6 +273,16 @@ def classify_queue_row(
         base["state"] = "held"
         base["rule"] = f"hold:{hold}"
         return base
+    if task == "MRB" and home is not None:
+        if not gitclaim.mrb_row_offerable(row):
+            base["state"] = "held"
+            base["rule"] = "mrb_not_offerable"
+            return base
+        if not gitclaim.mrb_has_eligible_reviewer(home, row, live, ledger=ledger, now=now):
+            base["stuck"] = True
+            base["rule"] = "no_eligible_reviewer"
+            base["stuck_reason"] = "no_eligible_reviewer"
+            return base
     if gitclaim.row_on_cooldown(row, now, nick="", live=live):
         base["state"] = "held"
         base["rule"] = "cooldown_until"
@@ -858,6 +870,7 @@ def run_stuck_sweep(
 
     doc = gitclaim.load_queue(home)
     catalog = list(open_items) if open_items is not None else load_open_catalog(home)
+    ledger = gitclaim.ledger_load(home)
     classified: list[dict] = []
     for row in doc.get("accepted") or []:
         if isinstance(row, dict):
@@ -870,6 +883,8 @@ def run_stuck_sweep(
                     idle=idle_set,
                     activity=act_map,
                     open_items=catalog,
+                    home=home,
+                    ledger=ledger,
                 )
             )
     for row in doc.get("unaccepted") or []:
@@ -883,6 +898,8 @@ def run_stuck_sweep(
                     idle=idle_set,
                     activity=act_map,
                     open_items=catalog,
+                    home=home,
+                    ledger=ledger,
                 )
             )
 
@@ -1005,6 +1022,8 @@ def run_stuck_sweep(
                 f"stuck-sweep stuck={n_stuck} held={n_held} "
                 f"released={actions['released']} enqueued={actions['enqueued']} "
                 f"cleared_doing={actions.get('cleared_doing', 0)}"
+                + (f" no_eligible_reviewer={sum(s.get('rule') == 'no_eligible_reviewer' for s in stuck)}"
+                   if any(s.get("rule") == "no_eligible_reviewer" for s in stuck) else "")
             )
         elif announce and not stuck and not held and prev:
             announce("stuck-sweep clear")
