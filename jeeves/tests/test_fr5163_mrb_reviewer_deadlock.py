@@ -90,7 +90,7 @@ def test_fr5163_cross_giveup_heal_then_offer(tmp_path, monkeypatch):
 
 
 def test_fr5163_author_only_queues_recycleseat(tmp_path, monkeypatch):
-    """Every idle seat authored every waiting MRB → recycle one seat (deduped)."""
+    """FR #5889: author-only flags MRBs; does not queue !recycleseat."""
     a, b = _two_idle(tmp_path, monkeypatch)
     both = f"{a},{b}"
     doc = {
@@ -119,21 +119,18 @@ def test_fr5163_author_only_queues_recycleseat(tmp_path, monkeypatch):
         tmp_path, install_root=install, now=1_000_000.0
     )
     assert lines, "expected heal lines"
-    assert any("recycleseat" in x.lower() or "recycle" in x.lower() for x in lines)
+    assert any("author_only" in x and "flag" in x.lower() for x in lines), lines
+    assert not any("recycleseat=" in x for x in lines), lines
     qdir = recycleseat.queue_dir(install)
-    reqs = list(qdir.glob("req-*.json"))
-    assert len(reqs) == 1
-    body = json.loads(reqs[0].read_text(encoding="utf-8"))
-    assert body["nick"] in (a, b)
-    assert body["by"] == "jeeves"
-    assert body["kind"] == "mrb-reviewer-deadlock"
+    assert list(qdir.glob("req-*.json")) == []
+    saved = json.loads(gitclaim.queue_path(tmp_path).read_text(encoding="utf-8"))
+    assert all(r.get("author_only_deadlock") for r in saved["unaccepted"])
 
-    # Rate-limit / dedupe: second heal within cooldown does not queue another req
+    # Signature cooldown: second heal within window is a no-op
     lines2 = gitclaim.heal_mrb_reviewer_deadlock(
         tmp_path, install_root=install, now=1_000_030.0
     )
-    assert lines2 == [] or all("cooldown" in x.lower() or "skip" in x.lower() for x in lines2)
-    assert len(list(qdir.glob("req-*.json"))) == 1
+    assert lines2 == []
 
 
 def test_fr5163_no_heal_when_one_seat_eligible(tmp_path, monkeypatch):

@@ -45,6 +45,8 @@ def test_fr5756_bored_latency_shop_only_never_bobiverse(tmp_path, monkeypatch):
 
 
 def test_fr5756_mrb_deadlock_shop_only_never_bobiverse(tmp_path, monkeypatch):
+    # FR #5889: author-only flags (no !recycleseat). Shop-only send stays covered by
+    # bored-latency / enqueue_recycleseat_shop_only tests.
     nick = "flamingo-48304"
     monkeypatch.setenv("BOB_DIGEST_HOME", str(tmp_path))
     registered_machines.save_registered(tmp_path, {"flamingo"})
@@ -72,9 +74,10 @@ def test_fr5756_mrb_deadlock_shop_only_never_bobiverse(tmp_path, monkeypatch):
     lines = gitclaim.heal_mrb_reviewer_deadlock(
         tmp_path, install_root=install, now=1_700_000.0
     )
-    assert any("recycleseat=flamingo-48304" in x for x in lines), lines
+    assert any("author_only" in x and "flag" in x.lower() for x in lines), lines
+    assert not any("recycleseat=" in x for x in lines), lines
     text = _outbox_text(tmp_path)
-    assert "PRIVMSG #flamingo :!recycleseat flamingo-48304 flamingo" in text, text
+    assert "!recycleseat" not in text
     assert "PRIVMSG #bobiverse :" not in text
 
 

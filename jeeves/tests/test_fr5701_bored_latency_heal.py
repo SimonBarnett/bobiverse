@@ -73,7 +73,8 @@ def test_heal_bored_latency_cooldown_skips_second_fire(tmp_path, monkeypatch):
         now=now + 60,
         install_root=install,
     )
-    assert second == []
+    # FR #5889: soft skips may log recycle_skipped:*; must not re-send.
+    assert not any("recycleseat=" in x for x in second), second
 
 
 def test_heal_skips_accepted_and_fresh_bored(tmp_path, monkeypatch):

@@ -3423,7 +3423,8 @@ def _worker_list_busy_work(ent: dict, nick: str) -> str:
         if str(row.get("nick") or "").strip().lower() != n:
             continue
         state = str(row.get("state") or "").strip().lower()
-        work = str(row.get("work") or "").strip()
+        # Digest rows use ``work``; tolerate ``working_on`` aliases (FR #5889).
+        work = str(row.get("work") or row.get("working_on") or "").strip()
         # FR #4454: state=offered is Jeeves's own pending offer, not seat work.
         if state == "offered":
             continue
@@ -3474,7 +3475,10 @@ def worker_working_on(home: Path, nick: str) -> str:
             )
         return ""
     if list_busy:
-        return list_busy if list_busy not in ("doing", "offered", "busy", "accepted") else map_wo
+        # Prefer real work text; state-only busy still counts (FR #5889 skip).
+        if list_busy not in ("doing", "offered", "busy", "accepted"):
+            return list_busy
+        return map_wo or list_busy
     return map_wo
 
 
@@ -8770,21 +8774,35 @@ MRB_REVIEWER_DEADLOCK_STATE = "mrb-reviewer-deadlock.json"
 BORED_LATENCY_HEAL_COOLDOWN_S = 900.0
 BORED_LATENCY_HEAL_STATE = "bored-latency-heal.json"
 RECYCLESEAT_IRC_COOLDOWN_S = BORED_LATENCY_HEAL_COOLDOWN_S
+# FR #5889: outstanding !recycleseat per seat (ACK/NACK/timeout) + seat-keyed gate.
+RECYCLESEAT_ACK_WAIT_S = 180.0
+RECYCLESEAT_PENDING_STATE = "recycleseat-pending.json"
 
 
 def mrb_reviewer_deadlock_state_path(home: Path) -> Path:
     return _root(home) / MRB_REVIEWER_DEADLOCK_STATE
 
 
-def _recycleseat_irc_cooldown_ok(home: Path, nick: str, now: float) -> bool:
-    """FR #5756: shared per-nick cooldown across bored-latency and MRB deadlock heals."""
+def _recycleseat_irc_cooldown_ok(
+    home: Path,
+    nick: str,
+    now: float,
+    *,
+    cooldown_s: float | None = None,
+) -> bool:
+    """FR #5756 / #5889: shared per-nick cooldown across bored-latency heals."""
     canon = (canonical_worker_nick(nick) or nick or "").strip()
     if not canon:
         return False
+    cool = (
+        float(cooldown_s)
+        if cooldown_s is not None
+        else float(RECYCLESEAT_IRC_COOLDOWN_S)
+    )
     state = _load_bored_latency_heal_state(home)
     nick_ts = state.get("nicks") if isinstance(state.get("nicks"), dict) else {}
     last = float(nick_ts.get(canon) or nick_ts.get(canon.lower()) or 0)
-    if last and (now - last) < float(RECYCLESEAT_IRC_COOLDOWN_S):
+    if last and (now - last) < cool:
         return False
     return True
 
@@ -8817,6 +8835,143 @@ def enqueue_recycleseat_shop_only(
     shop = worker_shop_channel(seat_nick) or f"#{mid}"
     bobreport.enqueue_chair_fleet_privmsg(home, cmd, channel=shop)
     return None
+
+
+def recycleseat_pending_state_path(home: Path) -> Path:
+    return _root(home) / RECYCLESEAT_PENDING_STATE
+
+
+def _load_recycleseat_pending(home: Path) -> dict:
+    path = recycleseat_pending_state_path(home)
+    if not path.is_file():
+        return {"seats": {}}
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8-sig"))
+    except Exception:
+        return {"seats": {}}
+    if not isinstance(raw, dict):
+        return {"seats": {}}
+    seats = raw.get("seats")
+    if not isinstance(seats, dict):
+        seats = {}
+    return {"seats": seats}
+
+
+def _save_recycleseat_pending(home: Path, state: dict) -> None:
+    path = recycleseat_pending_state_path(home)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        clean = {"seats": {}}
+        for key, val in (state.get("seats") or {}).items():
+            nick = (canonical_worker_nick(str(key)) or str(key or "")).strip()
+            if not nick or not isinstance(val, dict):
+                continue
+            clean["seats"][nick] = {
+                "sent_ts": float(val.get("sent_ts") or 0),
+                "rid": str(val.get("rid") or ""),
+                "awaiting": bool(val.get("awaiting")),
+                "ack_ts": float(val["ack_ts"]) if val.get("ack_ts") not in (None, "") else None,
+                "nack_ts": float(val["nack_ts"]) if val.get("nack_ts") not in (None, "") else None,
+            }
+        tmp = path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(clean, indent=0) + "\n", encoding="utf-8")
+        os.replace(tmp, path)
+    except OSError:
+        pass
+
+
+def note_recycleseat_ack(home: Path, nick: str, *, now: float | None = None) -> None:
+    """FR #5889: ear ACK recycleseat clears awaiting for this seat."""
+    import time as _time
+
+    now_f = _time.time() if now is None else float(now)
+    canon = (canonical_worker_nick(nick) or nick or "").strip()
+    if not canon:
+        return
+    state = _load_recycleseat_pending(home)
+    seats = state.setdefault("seats", {})
+    ent = dict(seats.get(canon) or {})
+    ent["awaiting"] = False
+    ent["ack_ts"] = now_f
+    seats[canon] = ent
+    _save_recycleseat_pending(home, state)
+
+
+def note_recycleseat_nack(home: Path, nick: str, *, now: float | None = None) -> None:
+    """FR #5889: ear NACK recycleseat clears awaiting for this seat."""
+    import time as _time
+
+    now_f = _time.time() if now is None else float(now)
+    canon = (canonical_worker_nick(nick) or nick or "").strip()
+    if not canon:
+        return
+    state = _load_recycleseat_pending(home)
+    seats = state.setdefault("seats", {})
+    ent = dict(seats.get(canon) or {})
+    ent["awaiting"] = False
+    ent["nack_ts"] = now_f
+    seats[canon] = ent
+    _save_recycleseat_pending(home, state)
+
+
+def _mark_recycleseat_sent(
+    home: Path, nick: str, *, now: float, rid: str = ""
+) -> None:
+    canon = (canonical_worker_nick(nick) or nick or "").strip()
+    if not canon:
+        return
+    state = _load_recycleseat_pending(home)
+    seats = state.setdefault("seats", {})
+    seats[canon] = {
+        "sent_ts": float(now),
+        "rid": str(rid or ""),
+        "awaiting": True,
+        "ack_ts": None,
+        "nack_ts": None,
+    }
+    _save_recycleseat_pending(home, state)
+    _stamp_recycleseat_irc_cooldown(home, canon, now)
+
+
+def recycleseat_send_blocked_reason(
+    home: Path,
+    nick: str,
+    *,
+    now: float,
+    cooldown_s: float | None = None,
+) -> str:
+    """FR #5889: why !recycleseat must not fire for this seat ('' = ok to send)."""
+    canon = (canonical_worker_nick(nick) or nick or "").strip()
+    if not canon:
+        return "recycle_skipped:no_nick"
+    # Busy / working_on seats are never recycled (even if caller passed them as idle).
+    try:
+        if worker_working_on(home, canon):
+            return "recycle_skipped:busy"
+    except Exception:
+        pass
+    cool = (
+        float(cooldown_s)
+        if cooldown_s is not None
+        else float(RECYCLESEAT_IRC_COOLDOWN_S)
+    )
+    pending = _load_recycleseat_pending(home).get("seats") or {}
+    ent = pending.get(canon) or pending.get(canon.lower()) or {}
+    if isinstance(ent, dict) and ent.get("awaiting"):
+        sent = float(ent.get("sent_ts") or 0)
+        if sent and (now - sent) < float(RECYCLESEAT_ACK_WAIT_S):
+            return "recycle_skipped:awaiting_ack"
+    # Recently ACKed: seat-keyed cooldown from ack_ts (signature changes do not reset).
+    ack_ts = ent.get("ack_ts") if isinstance(ent, dict) else None
+    if ack_ts not in (None, ""):
+        try:
+            if (now - float(ack_ts)) < cool:
+                return "recycle_skipped:recent_ack"
+        except (TypeError, ValueError):
+            pass
+    if not _recycleseat_irc_cooldown_ok(home, canon, now, cooldown_s=cool):
+        return "recycle_skipped:cooldown"
+    return ""
 
 
 def resolve_recycleseat_install_root(home: Path, explicit=None) -> Path:
@@ -9009,7 +9164,7 @@ def heal_mrb_reviewer_deadlock(
     """FR #5163: resolve idle-seat MRB reviewer deadlock.
 
     1. Cross give-up: clear give-ups for idle non-author seats so an offer can proceed.
-    2. Author-only: queue one tray ``recycleseat`` request (deduped + rate-limited).
+    2. Author-only: flag MRBs (FR #5889); never !recycleseat.
 
     Returns human-readable heal lines (empty when no action).
     """
@@ -9068,43 +9223,38 @@ def heal_mrb_reviewer_deadlock(
                     ledger_clear_giveup(home, repo, ident, nick=nick, task="MRB")
         return n
 
-    def _queue_recycle(info: dict) -> None:
+    def _flag_author_only(doc: dict, info: dict) -> int:
+        """FR #5889: author-only deadlock flags MRBs; never !recycleseat."""
         nonlocal lines
-        root = resolve_recycleseat_install_root(home, install_root)
-        try:
-            import recycleseat as _rs
-
-            pick = sorted(info["idle"], key=lambda n: n.lower())[0]
-            # FR #5756: shared cooldown with bored-latency heal (no #bobiverse flood).
-            if not _recycleseat_irc_cooldown_ok(home, pick, now_f):
-                lines.append(
-                    f"mrb-reviewer-deadlock author_only recycle_cooldown={pick}"
-                )
-                return
-            rid = _rs.write_request(
-                _rs.queue_dir(root),
-                pick,
-                "jeeves",
-                "mrb-reviewer-deadlock",
-                now=now_f,
+        n = 0
+        want = {
+            (
+                _repo_key(str(r.get("repo") or "")),
+                _norm_row_id(r.get("id")),
             )
-            # FR #5220 / #5756: PRIVMSG !recycleseat on the seat shop only (never #bobiverse).
-            skip = None
-            with contextlib.suppress(Exception):
-                skip = enqueue_recycleseat_shop_only(home, pick)
-            if skip:
-                lines.append(
-                    f"mrb-reviewer-deadlock author_only {skip} seat={pick} id={rid}"
-                )
-                return
-            _stamp_recycleseat_irc_cooldown(home, pick, now_f)
+            for r in (info.get("rows") or [])
+            if isinstance(r, dict)
+        }
+        for r in doc.get("unaccepted") or []:
+            if not isinstance(r, dict):
+                continue
+            key = (_repo_key(str(r.get("repo") or "")), _norm_row_id(r.get("id")))
+            if key not in want:
+                continue
+            r["author_only_deadlock"] = True
+            r["author_only_deadlock_ts"] = now_f
+            n += 1
+        if n:
             lines.append(
-                f"mrb-reviewer-deadlock author_only recycleseat={pick} id={rid}"
+                f"mrb-reviewer-deadlock author_only flagged={n} "
+                f"(no recycle; needs non-author seat)"
             )
-        except Exception as exc:  # noqa: BLE001
+        else:
             lines.append(
-                f"mrb-reviewer-deadlock author_only recycle_failed:{type(exc).__name__}"
+                "mrb-reviewer-deadlock author_only flagged=0 "
+                "(no recycle; needs non-author seat)"
             )
+        return n
 
     def _stamp(info: dict) -> None:
         _save_mrb_deadlock_state(
@@ -9134,7 +9284,7 @@ def heal_mrb_reviewer_deadlock(
                         f"mrb-reviewer-deadlock cross_giveup cleared={cleared_n}"
                     )
             else:
-                _queue_recycle(info)
+                _flag_author_only(locked_doc, info)
             _stamp(info)
             return lines
 
@@ -9156,7 +9306,8 @@ def heal_mrb_reviewer_deadlock(
                         f"mrb-reviewer-deadlock cross_giveup cleared={cleared_n}"
                     )
             else:
-                _queue_recycle(info)
+                if _flag_author_only(doc, info):
+                    _write_queue(queue_path(home), doc)
             _stamp(info)
     except (TimeoutError, OSError, ValueError, json.JSONDecodeError):
         return lines
@@ -9247,8 +9398,12 @@ def heal_bored_latency(
         if not nick:
             continue
         canon = (canonical_worker_nick(nick) or nick).strip()
-        last = float(nick_ts.get(canon) or nick_ts.get(canon.lower()) or 0)
-        if last and (now_f - last) < cool:
+        # FR #5889: seat-keyed pending / ACK wait / busy / recent-ack / cooldown.
+        blocked = recycleseat_send_blocked_reason(
+            home, canon, now=now_f, cooldown_s=cool
+        )
+        if blocked:
+            lines.append(f"bored-latency {blocked} seat={canon}")
             continue
         try:
             import recycleseat as _rs
@@ -9266,8 +9421,10 @@ def heal_bored_latency(
             if skip:
                 lines.append(f"bored-latency {skip} seat={canon} id={rid}")
                 nick_ts[canon] = now_f
+                _mark_recycleseat_sent(home, canon, now=now_f, rid=rid)
                 continue
             nick_ts[canon] = now_f
+            _mark_recycleseat_sent(home, canon, now=now_f, rid=rid)
             lag = (item.get("evidence") or {}).get("lag_s")
             lines.append(
                 f"bored-latency recycleseat={canon} id={rid} lag_s={lag}"
