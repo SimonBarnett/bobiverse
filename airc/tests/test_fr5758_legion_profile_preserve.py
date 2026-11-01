@@ -1,7 +1,10 @@
 """FR #5758: LEGION preserves fleet profile / -Profile; post-install version+service."""
 from __future__ import annotations
 
+import json
 from pathlib import Path
+
+import pytest
 
 import airc_legion as lg
 import airc_network_installer.install as inst
@@ -116,6 +119,53 @@ def test_fr5758_installer_explicit_client_on_fleet_warns(monkeypatch):
     assert body["profile"] == "client"
     assert body["profile_before"] == "fleet"
     assert body.get("profile_warn")
+
+
+@pytest.mark.parametrize("remote_profile", ["fleet", "workstation", "client", ""])
+@pytest.mark.parametrize("explicit_profile", [None, "client", "fleet"])
+def test_fr5782_skipped_reply_reports_unchanged_profile(
+    monkeypatch, remote_profile, explicit_profile
+):
+    """FR #5782: skipped install must not imply profile=client when host is fleet."""
+    found = bool(remote_profile)
+    monkeypatch.setattr(
+        lg,
+        "read_remote_airc_profile_result",
+        lambda host, **_k: {
+            "profile": remote_profile,
+            "ok": True,
+            "found": found,
+            "detail": "" if found else "not-found",
+        },
+    )
+
+    def fake_run(spec, secret=""):
+        return {"ok": True, "status": "skipped", "action": "skip"}
+
+    body = lg.installer_legion_work(
+        "example-host",
+        whatif=False,
+        run_fn=fake_run,
+        credman=lambda: {"username": "u", "password": "FAKE_secret"},
+        profile=explicit_profile,
+    )
+    expected = remote_profile or "unchanged"
+    assert body["ok"] is True
+    assert body["status"] == "skipped"
+    assert body["profile"] == expected
+    assert body["profile_before"] == body["profile_after"] == expected
+    assert not body.get("profile_warn")
+
+    log = lg.build_legion_log(
+        target="example-host", summary=body["status"], extra=body
+    )
+    reply = lg.deliver_legion_log(job_id="4e600006", log=log, offer=None)
+    payload = json.loads(reply["payload"])
+    assert payload["summary"] == "skipped"
+    assert payload["profile"] == expected
+    assert payload["profile_before"] == payload["profile_after"] == expected
+    assert f"profile={expected}" in reply["done"]
+    assert "profile_warn=" not in reply["done"]
 
 
 def test_fr5758_deliver_done_carries_profile_and_verify():
