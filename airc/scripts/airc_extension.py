@@ -513,6 +513,31 @@ def is_access_denied(exc: BaseException) -> bool:
     return "access is denied" in msg or "access denied" in msg
 
 
+def _net_use_error_code(stdout: str, stderr: str) -> int | None:
+    """Extract a Windows system error number without retaining localized output."""
+    for text in (stderr, stdout):
+        for pattern in (r"\bNET HELPMSG\s+(\d+)\b", r"\bSystem error\s+(\d+)\b"):
+            match = re.search(pattern, text, flags=re.IGNORECASE)
+            if match:
+                return int(match.group(1))
+    for text in (stderr, stdout):
+        for line in text.splitlines():
+            if line.strip():
+                match = re.search(r"(?<!\d)(\d{1,5})(?!\d)", line)
+                if match:
+                    return int(match.group(1))
+                break
+    return None
+
+
+def _exception_windows_code(exc: BaseException) -> int:
+    return int(getattr(exc, "winerror", 0) or getattr(exc, "errno", 0) or 0)
+
+
+def _is_credman_auth_failure(exc: BaseException) -> bool:
+    return is_access_denied(exc) or _exception_windows_code(exc) == 1326
+
+
 def classify_extension_host_error(
     exc: BaseException | None,
     *,
@@ -589,24 +614,47 @@ def default_apply_force_install_as(
 
     net = shutil.which("net")
     if not net:
-        raise OSError(5, "net-missing")
+        raise OSError("net-missing")
     ipc = r"\\{0}\IPC$".format(host)
     try:
-        p = subprocess.run(
-            [net, "use", ipc, password, "/user:" + username],
-            capture_output=True,
-            text=True,
-            timeout=20,
-        )
+        try:
+            p = subprocess.run(
+                [net, "use", ipc, password, "/user:" + username],
+                capture_output=True,
+                text=True,
+                timeout=20,
+            )
+        except subprocess.TimeoutExpired:
+            raise TimeoutError("net use IPC$ timed out") from None
         if p.returncode != 0:
-            raise OSError(5, "credman-ipc-failed")
+            code = _net_use_error_code(
+                str(getattr(p, "stdout", "") or ""),
+                str(getattr(p, "stderr", "") or ""),
+            )
+            if code is None:
+                raise OSError(
+                    f"credman-ipc-failed: exit {p.returncode}; system error unknown"
+                )
+            labels = {
+                5: "access denied",
+                53: "network path not found",
+                67: "network name not found",
+                1219: "conflicting session",
+                1326: "logon failure",
+            }
+            label = labels.get(code)
+            suffix = f" ({label})" if label else ""
+            raise OSError(code, f"credman-ipc-failed: system error {code}{suffix}")
         return bool(default_apply_force_install(host, product, value))
     finally:
-        subprocess.run(
-            [net, "use", ipc, "/delete", "/y"],
-            capture_output=True,
-            timeout=10,
-        )
+        try:
+            subprocess.run(
+                [net, "use", ipc, "/delete", "/y"],
+                capture_output=True,
+                timeout=10,
+            )
+        except Exception:
+            pass
 
 
 def default_apply_force_install(host: str, product: str, value: str) -> bool:
@@ -765,6 +813,27 @@ def fill_holes_work(
         )
         return {"host": h, "ok": False, **diag}
 
+    def _identity_fail_row(
+        h: str, exc: BaseException, identity: str, account: str
+    ) -> dict[str, Any]:
+        detail = str(exc)[:300]
+        code = _exception_windows_code(exc)
+        if _is_credman_auth_failure(exc):
+            error = "auth_failed"
+        elif code == 1219:
+            error = "session_conflict"
+        else:
+            row = _fail_row(h, exc, icmp_ok)
+            return {**row, "identity": identity, "account": account}
+        return {
+            "host": h,
+            "ok": False,
+            "error": error,
+            "identity": identity,
+            "account": account,
+            "detail": detail or f"system error {code}",
+        }
+
     writes = (action or "").strip().lower() in {"install", "forceinstall", "apply"}
     cred_id = str(_kw.get("cred_id") or "").strip().lower()
     passed = _kw.get("passed_cred")
@@ -883,15 +952,9 @@ def fill_holes_work(
                 chrome_w = _apply_wrote(apply, name, "chrome", value)
                 edge_w = _apply_wrote(apply, name, "edge", value)
         except Exception as exc:
-            if use_as and is_access_denied(exc):
+            if use_as:
                 hosts_out.append(
-                    {
-                        "host": name,
-                        "ok": False,
-                        "error": "auth_failed",
-                        "identity": resolved.source,
-                        "account": resolved.account,
-                    }
+                    _identity_fail_row(name, exc, resolved.source, resolved.account)
                 )
                 continue
             if not is_access_denied(exc):
@@ -920,20 +983,9 @@ def fill_holes_work(
                 chrome_w = _apply_wrote(apply_as, name, "chrome", value, cuser, cpw)
                 edge_w = _apply_wrote(apply_as, name, "edge", value, cuser, cpw)
             except Exception as exc2:
-                # FR #5659: CredMan access-denied is auth_failed (no silent fallback).
-                # FR #5661: other reach errors keep classified codes + detail.
-                if is_access_denied(exc2):
-                    hosts_out.append(
-                        {
-                            "host": name,
-                            "ok": False,
-                            "error": "auth_failed",
-                            "identity": "credman",
-                            "detail": str(exc2)[:300],
-                        }
-                    )
-                else:
-                    hosts_out.append(_fail_row(name, exc2, icmp_ok))
+                hosts_out.append(
+                    _identity_fail_row(name, exc2, "credman", cuser)
+                )
                 continue
             if chrome_w or edge_w:
                 wrote = True
