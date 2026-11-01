@@ -663,6 +663,8 @@ def _secret_in_kv(kv: dict[str, str]) -> bool:
 
 def load_fixture(path: Path) -> dict[str, Any]:
     data = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(data, dict):
+        raise ValueError("fixture root must be an object")
     forms = data.get("forms")
     if not isinstance(forms, dict):
         raise ValueError("fixture missing forms")
@@ -671,16 +673,29 @@ def load_fixture(path: Path) -> dict[str, Any]:
 
 def walk_fixture(op: str, forms: dict[str, Any], kv: dict[str, str]) -> dict[str, Any]:
     form = (kv.get("form") or "").strip()
-    rec = forms.get(form)
+    if form not in forms:
+        return {
+            "ok": False,
+            "error": "form-not-found",
+            "form": bound_echo_token(form),
+        }
+    rec = forms[form]
     if not isinstance(rec, dict):
-        raise KeyError(form)
+        raise ValueError("fixture form must be an object")
     wire = OP_WIRE[op.lower()]
     out: dict[str, Any] = {"ok": True, "op": wire, "form": form, "instance": kv.get("instance", "")}
     if wire == "subform":
         path = (kv.get("path") or "").strip()
         subs = rec.get("subforms") or {}
+        if not isinstance(subs, dict):
+            raise ValueError("fixture subforms must be an object")
         if path not in subs:
-            raise KeyError(path)
+            return {
+                "ok": False,
+                "error": "subform-not-found",
+                "form": bound_echo_token(form),
+                "path": bound_echo_token(path),
+            }
         out["path"] = path
         out["subform"] = subs[path]
     elif wire == "getRows":
@@ -741,22 +756,39 @@ def run_priority_walk(
         lines = (out, f"DONE id={jid} exit={exit_code}")
         return PriorityWalkResult(False, exit_code, jid, lines, payload)
     fix = Path(fixture_path) if fixture_path else default_fixture_path()
+    failure: BaseException | str = ""
     try:
         forms = load_fixture(fix)
         payload = walk_fixture(op, forms, kv)
     except (OSError, ValueError, KeyError, json.JSONDecodeError) as exc:
+        failure = exc
         payload = {
             "ok": False,
             "error": "fixture-miss",
-            "detail": type(exc).__name__,
             "action": "walk",
         }
-        out, exit_code = format_bounded_priority_out(jid, payload, 2)
-        lines = (out, f"DONE id={jid} exit={exit_code}")
-        return PriorityWalkResult(False, exit_code, jid, lines, payload)
     if "action" not in payload:
         payload = {**payload, "action": "walk"}
-    out, exit_code = format_bounded_priority_out(jid, payload, 0)
+    if not payload.get("ok"):
+        try:
+            import airc_fail_intake as _fail
+
+            _fail.report_verb_failure(
+                "priority",
+                failure or payload["error"],
+                args={
+                    "op": op,
+                    "instance": inst_id,
+                    "form": form,
+                    "path": kv.get("path", ""),
+                },
+                wait_s=1.0,
+            )
+        except Exception:
+            pass
+    out, exit_code = format_bounded_priority_out(
+        jid, payload, 0 if payload.get("ok") else 2
+    )
     lines = (out, f"DONE id={jid} exit={exit_code}")
     ok = exit_code == 0 and bool(payload.get("ok"))
     return PriorityWalkResult(ok, exit_code, jid, lines, payload)
