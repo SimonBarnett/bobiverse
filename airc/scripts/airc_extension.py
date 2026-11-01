@@ -999,7 +999,6 @@ def deliver_extension_log(
         sender = send_fn or _dcc.send_offer_payload
         try:
             sender(raw, offer)
-            exit_code = 0 if int(log.get("failure_count") or 0) == 0 else 1
             done = _dcc.format_done_via_dcc(
                 jid, exit_code, nbytes=len(raw), sha256=digest, via="dcc"
             )
