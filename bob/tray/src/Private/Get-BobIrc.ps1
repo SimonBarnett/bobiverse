@@ -2336,8 +2336,8 @@ function Write-BobIrcStatus {
     if (-not $cfg) { return }
     $home = Get-BobIrcHome
     $bridge = Get-BridgeRoot
-    $running = Filter-BobFleetLaneJobsLive -Jobs (Get-BobPeerLaneJobs -BridgeRoot $bridge -MachineId $id -Lane running -StampRepo)
-    $inbox = Filter-BobFleetLaneJobsLive -Jobs (Get-BobPeerLaneJobs -BridgeRoot $bridge -MachineId $id -Lane inbox -StampRepo)
+    $running = @(Filter-BobFleetLaneJobsLive -Jobs (Get-BobPeerLaneJobs -BridgeRoot $bridge -MachineId $id -Lane running -StampRepo))
+    $inbox = @(Filter-BobFleetLaneJobsLive -Jobs (Get-BobPeerLaneJobs -BridgeRoot $bridge -MachineId $id -Lane inbox -StampRepo))
     $jobs = @()
     foreach ($j in @($running)) {
         $repo = Get-BobJobRepoStamp $j
@@ -2354,7 +2354,14 @@ function Write-BobIrcStatus {
     $primary = $null
     if (@($running).Count -gt 0) { $primary = $running[0] }
     $liveN = 0
-    foreach ($g in @(Get-BobLiveGrokAgents)) {
+    $fleetSessions = @{}
+    foreach ($j in @($running) + @($inbox)) {
+        if ($j.sessionId) { $fleetSessions[[string]$j.sessionId] = $true }
+        if ($j.id) { $fleetSessions[[string]$j.id] = $true }
+    }
+    foreach ($g in @(Get-BobLiveGrokAgents -FleetOnly)) {
+        if ($g.id -and $fleetSessions.ContainsKey([string]$g.id)) { continue }
+        if ($g.sessionId -and $fleetSessions.ContainsKey([string]$g.sessionId)) { continue }
         $liveN++
         $repo = 'grok.exe'
         if ($g.cwd) {

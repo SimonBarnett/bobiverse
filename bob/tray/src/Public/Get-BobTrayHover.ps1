@@ -975,7 +975,9 @@ function Get-BobTrayTitle {
 }
 
 function Get-BobLiveGrokAgents {
+    param([switch]$FleetOnly)
     # grok.exe on this box, including sessions Bob did not start. Not Grok Bot.exe.
+    # Digest callers require a live Bob worker ancestor (including hashed run copies); cwd is not ownership.
     if ($env:BOB_SKIP_LIVE_GROK -eq '1') { return @() }
     $byPid = @{}
     $sessPath = Join-Path $env:USERPROFILE '.grok\active_sessions.json'
@@ -990,8 +992,13 @@ function Get-BobLiveGrokAgents {
     }
     $out = @()
     $procs = @()
+    $processByPid = @{}
     try {
-        $procs = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
+        $allProcs = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue)
+        if ($FleetOnly) {
+            foreach ($p in $allProcs) { $processByPid[[int]$p.ProcessId] = $p }
+        }
+        $procs = @($allProcs | Where-Object {
                 $_.Name -eq 'grok.exe' -or ($_.ExecutablePath -and $_.ExecutablePath -match '[\\/]grok\.exe$')
             })
     }
@@ -1000,11 +1007,27 @@ function Get-BobLiveGrokAgents {
         $cmd = [string]$p.CommandLine
         if ($cmd -match '--type=') { continue }
         if ([string]$p.Name -match 'Grok Bot') { continue }
-        $pid = [int]$p.ProcessId
+        if ($FleetOnly) {
+            $ancestor = $p
+            $visited = @{}
+            $owned = $false
+            while ($ancestor.ParentProcessId) {
+                $parentId = [int]$ancestor.ParentProcessId
+                if ($visited.ContainsKey($parentId) -or -not $processByPid.ContainsKey($parentId)) { break }
+                $visited[$parentId] = $true
+                $parent = $processByPid[$parentId]
+                # A reused parent PID must not establish ownership of an older child.
+                if ($parent.CreationDate -and $ancestor.CreationDate -and $parent.CreationDate -gt $ancestor.CreationDate) { break }
+                if ([string]$parent.Name -match '^bob-worker(?:-[0-9a-f]{12})?\.exe$') { $owned = $true; break }
+                $ancestor = $parent
+            }
+            if (-not $owned) { continue }
+        }
+        $agentPid = [int]$p.ProcessId
         $meta = $null
-        if ($byPid.ContainsKey($pid)) { $meta = $byPid[$pid] }
+        if ($byPid.ContainsKey($agentPid)) { $meta = $byPid[$agentPid] }
         $cwd = $null
-        $sid = ('grok-' + $pid)
+        $sid = ('grok-' + $agentPid)
         $opened = $null
         if ($meta) {
             if ($meta.cwd) { $cwd = [string]$meta.cwd }
@@ -1017,7 +1040,7 @@ function Get-BobLiveGrokAgents {
         $out += ,[pscustomobject]@{
             id        = $sid
             sessionId = $sid
-            pid       = $pid
+            pid       = $agentPid
             cwd       = $cwd
             claimedAt = $opened
             machine   = $null
@@ -2910,4 +2933,3 @@ function Get-BobTrayTipPlacement {
         moved  = $true
     }
 }
-
