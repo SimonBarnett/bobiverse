@@ -48,14 +48,21 @@ def test_inherited_capture_handle_does_not_hold_timeout(monkeypatch):
     _python_shell(monkeypatch)
     # A descendant holds stdout open after the direct child exits. No pipe EOF
     # is needed, and no broad process-name kill is involved.
+    # FR #5671: Windows teardown can exceed the old 1.5s budget (~1.78s on
+    # MarchHare). Keep max_wall_s under grandchild_sleep_s so a hang on the
+    # sleeper still fails.
+    timeout_s = 0.2
+    grandchild_sleep_s = 3.0
+    max_wall_s = 2.5
     script = (
         "import subprocess, sys; "
-        "subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(2)']); "
+        f"subprocess.Popen([sys.executable, '-c', 'import time; time.sleep({grandchild_sleep_s})']); "
         "print('partial', flush=True)"
     )
     start = time.monotonic()
-    result = ac.run_shell_request(ac.ShellRequest("ps", script), timeout_s=0.2)
-    assert time.monotonic() - start < 1.5
+    result = ac.run_shell_request(ac.ShellRequest("ps", script), timeout_s=timeout_s)
+    elapsed = time.monotonic() - start
+    assert elapsed < max_wall_s, (elapsed, max_wall_s, grandchild_sleep_s)
     assert result.exit_code == 0
     assert "partial" in result.stdout
 
