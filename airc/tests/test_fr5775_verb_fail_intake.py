@@ -53,7 +53,7 @@ def test_fr5775_report_redacts_secrets_and_posts(monkeypatch):
 
 def test_fr5775_spool_when_intake_down(tmp_path, monkeypatch):
     spool = tmp_path / "spool"
-    monkeypatch.setattr(fi, "spool_dir", lambda: spool)
+    monkeypatch.setenv("BOB_CRASH_SPOOL", str(spool))
 
     def boom(*_a, **_k):
         raise OSError("intake-unreachable")

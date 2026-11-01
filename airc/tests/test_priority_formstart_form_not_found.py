@@ -40,9 +40,9 @@ def _payload(result: ap.PriorityWalkResult) -> dict:
     return json.loads(out.split("seq=1 ", 1)[1])
 
 
-def test_unknown_form_returns_named_failure_and_bounded_echo(tmp_path: Path):
+def test_unknown_form_returns_named_failure_with_form_name(tmp_path: Path):
     result = ap.run_priority_walk(
-        text=f"id={QID} PRIORITY formStart instance=fixture form={'X' * 300}",
+        text=f"id={QID} PRIORITY formStart instance=fixture form=CUSTOMERS",
         allowlist_path=_allowlist(tmp_path),
         fixture_path=FIX,
     )
@@ -51,10 +51,22 @@ def test_unknown_form_returns_named_failure_and_bounded_echo(tmp_path: Path):
     assert result.ok is False
     assert result.exit_code == 2
     assert payload["error"] == "form-not-found"
-    assert payload["form"].endswith("...")
+    assert payload["form"] == "CUSTOMERS"
     assert "detail" not in payload
     assert "KeyError" not in result.lines[0]
     assert result.lines[-1] == f"DONE id={QID} exit=2"
+    assert len(result.lines[0].encode("utf-8")) <= ap.PRIORITY_REPLY_MAX_BYTES
+
+
+def test_unknown_form_echo_is_bounded(tmp_path: Path):
+    result = ap.run_priority_walk(
+        text=f"id={QID} PRIORITY formStart instance=fixture form={'X' * 300}",
+        allowlist_path=_allowlist(tmp_path),
+        fixture_path=FIX,
+    )
+    payload = _payload(result)
+    assert payload["error"] == "form-not-found"
+    assert payload["form"].endswith("...")
     assert len(result.lines[0].encode("utf-8")) <= ap.PRIORITY_REPLY_MAX_BYTES
 
 
@@ -105,7 +117,7 @@ def test_console_reports_unknown_form_once_via_fail_intake(tmp_path: Path, monke
 
 def test_fail_intake_spool_preserves_redacted_args(tmp_path: Path, monkeypatch):
     spool = tmp_path / "spool"
-    monkeypatch.setattr(fail, "spool_dir", lambda: spool)
+    monkeypatch.setenv("BOB_CRASH_SPOOL", str(spool))
     monkeypatch.setattr(fail, "intake_allowed", lambda **_kwargs: True)
 
     def offline(*_args, **_kwargs):

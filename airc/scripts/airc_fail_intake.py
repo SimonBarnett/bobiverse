@@ -208,9 +208,10 @@ def report_verb_failure(
         return out
 
     def _work() -> None:
+        title = _redact(f"airc {v} fail {exc_class} machine={mid}")[:200]
+        body = _redact(detail)[:800]
         try:
             safe_args = _redact(repr({k: args[k] for k in (args or {}) if "pass" not in str(k).lower() and "secret" not in str(k).lower() and "token" not in str(k).lower()}))
-            title = _redact(f"airc {v} fail {exc_class} machine={mid}")[:200]
             body = _redact(
                 "FR #5775 airc verb failure (deterministic intake).\n"
                 f"verb={v}\nmachine={mid}\nversion={ver}\n"
