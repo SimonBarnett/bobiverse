@@ -1593,6 +1593,7 @@ class AircConsoleService:
             "extension",
             "legion",
             "bad_id",  # FR #5742: FR #5678 reject must reach IRC (err+DONE)
+            "cred",  # FR #5811 / MRB #5815: CRED HELLO/SEAL/persist must never go silent
         } and hr.nick and hr.reply:
             # FR #77: UPDATE reply is sent before the detached helper stops Airc.
             # FR #5284: PRIORITY may emit out id= + DONE id= on separate lines.
@@ -1601,11 +1602,21 @@ class AircConsoleService:
             # on the accept line or Invoke-AircRemote stops before the log.
             # FR #5526: pending async PRIORITY connect returns reply="" — skip blank PRIVMSG.
             # FR #5742: bad_id reply is built in handle() but was dropped here.
+            # FR #5811 / MRB #5815: CRED HandleResult.reply was built but on_line never
+            # sent it --- via=https and via=irc looked silent on firewalled boxes.
             for part in str(hr.reply).splitlines():
                 line = part.strip()
                 if line:
                     self.send_privmsg(hr.nick, line)
-            if hr.action in {"update", "priority", "network", "extension", "legion", "bad_id"}:
+            if hr.action in {
+                "update",
+                "priority",
+                "network",
+                "extension",
+                "legion",
+                "bad_id",
+                "cred",
+            }:
                 # FR #4067: auth-allow before update-reply (issue covers UPDATE).
                 # FR #5742: auth-allow action=bad_id without echoing the body.
                 if not getattr(hr, "allow_account", None) and getattr(self, "account_map", None):

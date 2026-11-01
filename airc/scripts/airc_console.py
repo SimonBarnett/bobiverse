@@ -3128,6 +3128,13 @@ class AircConsoleCore:
         self.extension_runner = extension_runner or _extension.run_extension_verb
         self.network_runner = network_runner or _network.run_network_verb
         self.legion_runner = legion_runner or _legion.run_legion_verb
+        # FR #5812 / MRB #5815: per-core IRC CRED persist sessions (HELLO/SEAL).
+        try:
+            import airc_cred_irc as _circ
+
+            self.irc_cred_sessions = _circ.IrcCredSessionStore()
+        except Exception:
+            self.irc_cred_sessions = None
         # Default operators preserves pre-#3287 unit tests / hotpatched fleets without airc.json.
         self.capabilities = capabilities or ConsoleCapabilities()
         # FR #3401 / #3639: *who* may command is always live channel +o/+h (AuthPolicy).
