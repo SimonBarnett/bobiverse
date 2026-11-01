@@ -341,6 +341,7 @@ routes to bobiverse via the split rule.
 - is_offerable_intake_skill_lesson_pr must require Lesson/light-triage body; via-intake+skill with _via-intake footer or queue me and no Lesson is a receipt (fomprep#144)
 - Tray cursor_pools: prefer LocalCursorDoc.period_end over cursor-pools.json group period_end; never persist or re-read an expired group period_end (FR #5689) or digest _mask_expired_pools nulls remaining forever
 - airc IPC$ auth: use shared airc_wnet (WNetAddConnection2W) for network installer _net_use and EXTENSION so CredMan passwords never land on net use argv / 4688 (FR #5721 / #5709)
+- NETWORK identity: resolve_remote_identity (passed then CredMan NetworkAdmin then SYSTEM); never force cred_id=qid unless explicit cred= or staged peek; ADSI secrets via PowerShell stdin only; WhatIf still resolves identity; auth_failed does not fall through to SYSTEM
 
 ## Harvest digest (lessons audit 2026-10-06)
 
