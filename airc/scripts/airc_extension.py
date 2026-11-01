@@ -814,9 +814,13 @@ def _scrub(obj: Any) -> Any:
 
 
 def _format_gpo_log_block(gpo: dict[str, Any]) -> dict[str, Any]:
-    """FR #5522 / #5586: honor attempted=False when the GPO step did not run."""
+    """FR #5522 / #5586: honor attempted=False when the GPO step did not run.
+
+    FR #5644: keep script triage fields (error/dc/gpo_via/exit_code) so operators
+    see Access-denied-to-DC instead of only reason=gpo_remote_failed.
+    """
     attempted = True if "attempted" not in gpo else bool(gpo.get("attempted"))
-    return {
+    out = {
         "attempted": attempted,
         "name": (gpo.get("gpo_name") or gpo.get("name") or DEFAULT_GPO_NAME),
         "ok": bool(gpo.get("ok")) if attempted else False,
@@ -826,6 +830,10 @@ def _format_gpo_log_block(gpo: dict[str, Any]) -> dict[str, Any]:
         "reason": gpo.get("reason"),
         "wrote_gpo": bool(gpo.get("wrote_gpo")),
     }
+    for key in ("error", "dc", "gpo_via", "exit_code"):
+        if gpo.get(key) is not None and gpo.get(key) != "":
+            out[key] = gpo.get(key)
+    return out
 
 
 def build_extension_log(
@@ -929,6 +937,19 @@ def extension_log_from_payload(
                         "error": h.get("error"),
                     }
                 )
+    # FR #5644: GPO step failure must appear in failures[] (not only reason= on gpo{}).
+    if data and fails is not None and isinstance(gpo, dict):
+        gpo_attempted = True if "attempted" not in gpo else bool(gpo.get("attempted"))
+        if gpo_attempted and not bool(gpo.get("ok")):
+            if not any(isinstance(f, dict) and f.get("step") == "gpo" for f in fails):
+                entry: dict[str, Any] = {
+                    "step": "gpo",
+                    "error": gpo.get("error") or gpo.get("reason") or "gpo_failed",
+                }
+                for key in ("dc", "gpo_via"):
+                    if gpo.get(key) is not None and gpo.get(key) != "":
+                        entry[key] = gpo.get(key)
+                fails.append(entry)
     fallback = data.get("fallback") if data else None
     if fallback is None and data:
         fallback = {"attempted": True, "host_count": len(hosts or [])}
@@ -960,6 +981,8 @@ def deliver_extension_log(
     raw = extension_log_bytes(log)
     digest = hashlib.sha256(raw).hexdigest()
     nfail = int(log.get("failure_count") or 0)
+    # FR #5644: non-zero DONE when the operation log has failures (GPO and/or hosts).
+    exit_code = 0 if nfail == 0 else 1
     summary = f"EXTENSION log failures={nfail} action={log.get('action')} bytes={len(raw)}"
     lines: list[str] = [f"out id={jid} seq=1 {summary}"]
     for i, fail in enumerate(log.get("failures") or [], start=2):
@@ -968,7 +991,9 @@ def deliver_extension_log(
         sender = send_fn or _dcc.send_offer_payload
         try:
             sender(raw, offer)
-            done = _dcc.format_done_via_dcc(jid, 0, nbytes=len(raw), sha256=digest, via="dcc")
+            done = _dcc.format_done_via_dcc(
+                jid, exit_code, nbytes=len(raw), sha256=digest, via="dcc"
+            )
             return {
                 "via": "dcc",
                 "sha256": digest,
@@ -980,7 +1005,7 @@ def deliver_extension_log(
         except Exception as exc:
             lines.append(f"err id={jid} seq={len(lines)+1} dcc failed: {exc}; falling back to IRC")
             lines.append("CONT id=" + jid + " offset=1")
-            done = f"DONE id={jid} exit=0 via=irc reason=dcc-fail"
+            done = f"DONE id={jid} exit={exit_code} via=irc reason=dcc-fail"
             lines.append(done)
             return {
                 "via": "irc",
@@ -992,7 +1017,7 @@ def deliver_extension_log(
                 "payload": raw,
             }
     lines.append("CONT id=" + jid + " offset=1")
-    done = f"DONE id={jid} exit=0 via=irc"
+    done = f"DONE id={jid} exit={exit_code} via=irc"
     lines.append(done)
     return {
         "via": "irc",
