@@ -782,6 +782,43 @@ function Invoke-ServiceReregister {
     Write-UpdLog "$What-service-reregistered exit=$LASTEXITCODE (log: $LogName)"
 }
 
+function Restore-AircUpdateState {
+    param([string]$BackupDir, [string]$AppParameters)
+    if ($Product -ne 'airc' -or -not $BackupDir) { return }
+
+    $backupConfig = Join-Path $BackupDir 'tree\config'
+    $installConfig = Join-Path $InstallRoot 'config'
+    foreach ($name in @('airc.json', 'airc-install.json')) {
+        $source = Join-Path $backupConfig $name
+        if (-not (Test-Path -LiteralPath $source)) { continue }
+        New-Item -ItemType Directory -Force -Path $installConfig | Out-Null
+        try {
+            Copy-Item -LiteralPath $source -Destination (Join-Path $installConfig $name) -Force -ErrorAction Stop
+        } catch {
+            Write-UpdLog "airc-config-restore-failed name=$name error=$($_.Exception.GetType().Name)"
+            throw "Unable to restore Airc config $name"
+        }
+        Write-UpdLog "airc-config-restored $name"
+    }
+
+    if (-not $AppParameters) { return }
+    $parametersKey = "HKLM:\SYSTEM\CurrentControlSet\Services\$ServiceName\Parameters"
+    if (-not (Test-Path -LiteralPath $parametersKey)) {
+        Write-UpdLog 'service-arguments-restore-failed reason=parameters-key-missing'
+        throw 'Airc service Parameters key missing while restoring update state'
+    }
+    try {
+        Set-ItemProperty -LiteralPath $parametersKey -Name AppParameters -Value $AppParameters -ErrorAction Stop
+        if ((Get-ServiceAppParameters) -cne $AppParameters) {
+            throw 'AppParameters verification mismatch'
+        }
+    } catch {
+        Write-UpdLog "service-arguments-restore-failed error=$($_.Exception.GetType().Name)"
+        throw 'Unable to restore Airc service arguments'
+    }
+    Write-UpdLog 'service-arguments-restored'
+}
+
 function Invoke-Rollback {
     param([string]$BackupDir, [string]$AppParameters, [string]$Why)
     Write-UpdLog "rollback-start reason=$Why"
@@ -800,6 +837,7 @@ function Invoke-Rollback {
         if (-not (Get-Service -Name $ServiceName -ErrorAction SilentlyContinue)) {
             Invoke-ServiceReregister -AppParameters $AppParameters -LogName 'rollback-install.log' -What 'rollback'
         }
+        Restore-AircUpdateState -BackupDir $BackupDir -AppParameters $AppParameters
         if (Get-Service -Name $ServiceName -ErrorAction SilentlyContinue) {
             try { Start-Service -Name $ServiceName -ErrorAction Stop } catch { Write-UpdLog "rollback-warn start failed $($_.Exception.GetType().Name)" }
         }
@@ -992,6 +1030,7 @@ function Invoke-Apply {
                 }
             }
         }
+        Restore-AircUpdateState -BackupDir $backup -AppParameters $appParams
         Update-SkillsInProfiles
         if ((Get-Service -Name $ServiceName).Status -ne 'Running') { Start-Service -Name $ServiceName -ErrorAction Stop }
         Start-Sleep -Seconds 10

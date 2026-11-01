@@ -571,6 +571,29 @@ def test_updater_restores_service_identity_after_msi():
     assert "'-SkipErgo'" in t                                     # re-registering jeeves never re-runs Install-BobIrcd
 
 
+def test_fr5764_airc_update_restores_service_args_and_capability_config():
+    t = _t("Update-BobiverseService.ps1")
+    restore = t[t.index("function Restore-AircUpdateState"):t.index("function Invoke-Rollback")]
+    assert "$Product -ne 'airc'" in restore
+    assert "'airc.json', 'airc-install.json'" in restore
+    assert "Join-Path $BackupDir 'tree\\config'" in restore
+    assert "Set-ItemProperty" in restore and "-Name AppParameters -Value $AppParameters" in restore
+    assert "Write-UpdLog 'service-arguments-restored'" in restore
+    assert "service-arguments-restore-failed" in restore and "airc-config-restore-failed" in restore
+    assert "Write-UpdLog $AppParameters" not in restore
+
+    rollback = t[t.index("function Invoke-Rollback"):t.index("function Invoke-Apply")]
+    assert rollback.index("Invoke-ServiceReregister") < rollback.index("Restore-AircUpdateState")
+    assert rollback.index("Restore-AircUpdateState") < rollback.index("Start-Service")
+
+    apply_ = t[t.index("function Invoke-Apply"):]
+    assert apply_.index("$appParams = Get-ServiceAppParameters") < apply_.index("Backup-Install")
+    assert apply_.index("identity-reconcile") < apply_.index("Restore-AircUpdateState")
+    assert apply_.index("Restore-AircUpdateState") < apply_.index("Update-SkillsInProfiles")
+    restore_at = apply_.index("Restore-AircUpdateState")
+    assert apply_.index("Start-Service", restore_at) > restore_at
+
+
 def test_msi_installs_are_serialised_machine_wide():
     t = _t("Update-BobiverseService.ps1")
     assert "Global\\bobiverse-update-msi" in t
