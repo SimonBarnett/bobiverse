@@ -24,14 +24,20 @@ def test_mrb5360_no_lgpo_and_both_policy_trees():
 def test_mrb5360_unreachable_is_failure_not_invented():
     import airc_extension as ex
 
+    def boom_apply(*_a):
+        raise OSError(53, "The network path was not found")
+
     body = ex.fill_holes_work(
         "install",
         ldap_enum=lambda: ["only-ad"],
         ping_host=lambda _h: False,
-        apply_force_install=lambda *_a: (_ for _ in ()).throw(RuntimeError("no")),
+        apply_force_install=boom_apply,
+        tcp_probe=lambda *_a, **_k: False,
         extra_hosts=["ghost"],
     )
     assert [h["host"] for h in body["hosts"]] == ["only-ad"]
-    assert body["hosts"][0]["error"] == "unreachable"
+    # FR #5661: classified cause (not invented hosts); unreachable only for silence.
+    assert body["hosts"][0]["ok"] is False
+    assert body["hosts"][0]["error"] in {"smb_blocked", "host_down", "unreachable"}
     assert body["wrote_gpo"] is False
     assert body["wrote_registry"] is False
