@@ -41,6 +41,8 @@ def isolated_argv() -> list[str]:
 def _child_env() -> dict[str, str]:
     env = dict(os.environ)
     env.pop("AIRC_LEGION_PASSWORD", None)
+    # FR #5778: tell console info() to use stderr so stdout stays JSON-only.
+    env["AIRC_ISOLATED_JOB"] = "1"
     return env
 
 
@@ -53,6 +55,35 @@ def _scrub_kwargs(kwargs: dict[str, Any]) -> dict[str, Any]:
             continue
         out[k] = v
     return out
+
+
+def extract_isolated_json_payload(stdout: str) -> dict[str, Any] | None:
+    """FR #5778: take the last JSON object line from child stdout.
+
+    Isolated workers must print one JSON object on stdout. Older builds (and
+    accidental ``info()`` calls) may prepend timestamped log lines; prefer the
+    last line that parses as a dict so a real result is not remapped to
+    ``worker_died``.
+    """
+    text = (stdout or "").strip()
+    if not text:
+        return None
+    try:
+        data = json.loads(text)
+        return data if isinstance(data, dict) else None
+    except json.JSONDecodeError:
+        pass
+    for line in reversed(text.splitlines()):
+        chunk = line.strip()
+        if not chunk.startswith("{"):
+            continue
+        try:
+            data = json.loads(chunk)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(data, dict):
+            return data
+    return None
 
 
 def is_worker_fault(payload: Any) -> bool:
@@ -85,6 +116,7 @@ def call_isolated_module(
 
     FR #5665: non-zero exit, empty stdout, timeout, or bad JSON =>
     ``error=worker_died`` (fail closed). Never invent an empty success payload.
+    FR #5778: tolerate leading log lines on stdout by extracting the JSON object.
     """
     spec = {
         "module": module,
@@ -113,12 +145,9 @@ def call_isolated_module(
         return _worker_died(reason[:80])
     if not stdout:
         return _worker_died("empty-stdout")
-    try:
-        data = json.loads(stdout)
-    except json.JSONDecodeError:
+    data = extract_isolated_json_payload(stdout)
+    if data is None:
         return _worker_died("bad-json")
-    if not isinstance(data, dict):
-        return _worker_died("bad-payload")
     return data
 
 
@@ -156,6 +185,8 @@ def start_isolated(
 
 def isolated_job_main(argv: list[str] | None = None) -> int:
     """Child entry: read spec on stdin, call packaged func, print JSON."""
+    # FR #5778: even when launched without parent _child_env, keep stdout JSON-only.
+    os.environ.setdefault("AIRC_ISOLATED_JOB", "1")
     raw = sys.stdin.read()
     try:
         spec = json.loads(raw or "{}")
