@@ -17,6 +17,9 @@ from .core import (
     planned_action,
 )
 
+# FR #5721 / #5709: WNet so CredMan password never lands on net use argv.
+from airc_wnet import wnet_add, wnet_cancel
+
 RemoteRunner = Callable[..., subprocess.CompletedProcess]
 
 
@@ -145,21 +148,13 @@ def read_remote_version(host: str) -> str:
 
 
 def _net_use(unc: str, username: str, password: str) -> None:
-    # Password via stdin to avoid argv leak when possible; net.exe still needs /user.
-    cmd = ["net", "use", unc]
-    if username:
-        cmd.extend([f"/user:{username}", password])
-    subprocess.run(cmd, capture_output=True, text=True, check=False, timeout=60)
+    """Authenticate to ``unc`` via WNet (FR #5721). Password never on argv / 4688."""
+    wnet_add(unc, username or "", password or "")
 
 
 def _net_use_delete(unc: str) -> None:
-    subprocess.run(
-        ["net", "use", unc, "/delete", "/y"],
-        capture_output=True,
-        text=True,
-        check=False,
-        timeout=30,
-    )
+    """Drop the WNet connection for ``unc`` (FR #5721)."""
+    wnet_cancel(unc or "")
 
 
 def install_local(
