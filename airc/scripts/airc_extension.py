@@ -950,11 +950,26 @@ def run_extension_verb(
     if _iso.is_packaged_work(work):
 
         def _from_child(data: Any) -> None:
-            payload = data if isinstance(data, dict) else {
-                "ok": False,
-                "gpo": "fail",
-                "reason": "isolated-fault",
-            }
+            # FR #5665: normalize death / isolated-fault before log build.
+            if not isinstance(data, dict):
+                payload = {
+                    "ok": False,
+                    "error": "worker_died",
+                    "detail": "bad-payload",
+                }
+            else:
+                payload = dict(data)
+                import airc_isolated as _iso2
+
+                if _iso2.is_worker_fault(payload):
+                    detail = str(
+                        payload.get("detail") or payload.get("error") or "no-result"
+                    )[:300]
+                    payload = {
+                        "ok": False,
+                        "error": "worker_died",
+                        "detail": detail,
+                    }
             _finish(payload)
 
         # FR #5522: child must run the same packaged worker (GPO then fill-holes
@@ -1080,8 +1095,37 @@ def extension_log_from_payload(
     payload: dict[str, Any] | None = None,
     extension_id: str = DEFAULT_EXTENSION_ID,
 ) -> dict[str, Any]:
-    """FR #5520: build DCC log from worker payload (gpo_detail + hosts), not accept defaults."""
+    """FR #5520: build DCC log from worker payload (gpo_detail + hosts), not accept defaults.
+
+    FR #5665: isolated worker_died / isolated-fault must not become
+    gpo_step_skipped + empty hosts (fail-open empty success).
+    """
     data = payload if isinstance(payload, dict) else {}
+    err = str(data.get("error") or "").strip()
+    err_l = err.lower()
+    if err_l == "worker_died" or err_l.startswith("isolated-fault"):
+        detail = str(data.get("detail") or err)[:300]
+        return build_extension_log(
+            action,
+            whatif=whatif,
+            hosts=[],
+            failures=[
+                {
+                    "step": "worker",
+                    "error": "worker_died",
+                    "detail": detail or "no-result",
+                }
+            ],
+            gpo={
+                "ok": False,
+                "attempted": False,
+                "reason": "worker_died",
+                "gpo_name": DEFAULT_GPO_NAME,
+                "wrote_gpo": False,
+            },
+            fallback={"attempted": False},
+            extension_id=extension_id or DEFAULT_EXTENSION_ID,
+        )
     detail = data.get("gpo_detail")
     if isinstance(detail, dict):
         gpo = dict(detail)
