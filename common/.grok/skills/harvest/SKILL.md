@@ -337,6 +337,7 @@ routes to bobiverse via the split rule.
 - Accept-only NETWORK/LEGION replies plus emit-last DONE so clients do not stop before out/CONT.
 - Unused DCCLISTEN must TTL-out so a later shell cannot reuse a stale host:port.
 - DCCLISTEN wiring pins must stub NETWORK inventory_work on domain hosts; waiting on packaged LDAP makes fr5300 flake under full suite
+- pytest Windows: root conftest ensure_writable_pytest_basetemp redirects basetemp to %LOCALAPPDATA%\Temp\pytest-basetemp-<user> when %TEMP%\pytest-of-<user> Access-denied or probe-hangs (FR #5692); manual --basetemp still wins
 
 ## Harvest digest (lessons audit 2026-10-06)
 
