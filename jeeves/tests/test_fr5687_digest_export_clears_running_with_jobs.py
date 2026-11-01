@@ -20,18 +20,16 @@ def _roster(home: Path) -> None:
     bobreport._SEAT_ROSTER_CACHE["key"] = None
 
 
-def test_fr5687_export_empty_worker_list_clears_jobs_and_running(monkeypatch):
-    # Prefer an explicit D: home: pytest's default tmp_path can hit WinError 5
-    # under D:\Temp\pytest-of-* on this seat.
-    import tempfile
-
-    home = Path(tempfile.mkdtemp(prefix="fr5687-", dir="D:\\Temp"))
+def test_fr5687_export_empty_worker_list_clears_jobs_and_running(tmp_path, monkeypatch):
+    home = tmp_path
     monkeypatch.setenv("BOB_DIGEST_HOME", str(home))
     _roster(home)
     ent = {
         "online": True,
         "running": 1,
         "queued": 0,
+        "repo": "SimonBarnett/hrsmith",
+        "sha": "abc123",
         "jobs": [{"repo": "SimonBarnett/hrsmith", "state": "running"}],
         "worker_list": [],
         "working_on": "stale",
@@ -46,6 +44,8 @@ def test_fr5687_export_empty_worker_list_clears_jobs_and_running(monkeypatch):
     assert out.get("running") == 0
     assert out.get("queued") == 0
     assert out.get("working_on") == ""
+    assert out.get("repo") == ""
+    assert out.get("sha") == ""
 
 
 def test_fr5687_refresh_syncs_running_queued_from_jobs():
