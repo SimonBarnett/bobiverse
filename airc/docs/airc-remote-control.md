@@ -4,7 +4,8 @@ See **[feature-request-airc-remote-control-2026-10-01.md](./feature-request-airc
 
 ## Today (v0.1.x)
 
-Authenticated PRIVMSG to `{machine}_console` runs PowerShell (or `cmd:` / `psb64:`) and returns Query lines `out`/`err`/`DONE id=??? exit=???`. The bob ear appends those to `<bob home>\airc-replies.jsonl` (FR #1546). `Invoke-AircRemote.ps1 -Outbox ??? -ReplyFile ???` prefixes `id=<corr>` and waits for matching DONE (non-zero exit on timeout).
+Authenticated PRIVMSG to `{machine}_console` runs PowerShell (or `cmd:` / `psb64:`) and returns Query lines `out`/`err`/`DONE id=??? exit=???`. The bob ear appends those to `<bob home>\airc-replies.jsonl` (FR #1546). `Invoke-AircRemote.ps1 -Outbox ??? -ReplyFile ???` prefixes `id=<corr>` and waits for matching DONE (non-zero exit on timeout). **FR #5826:** `ConvertFrom-AircRemoteReply` exposes a structured `CredHello` (`Token`/`Pub`/`Exp`/`Alg`/`Target`) for a validated `CRED-HELLO` + `DONE ... exit=0 cred-hello` frame; `Body`/`StdOut` still redact `token=***`. After the ear drains a `CRED-SEAL` outbox record it blanks that record in place (same byte length) before checkpointing `.pos` --- best-effort retention (crash between scrub and checkpoint, downtime before drain, incomplete tails, concurrent writers, and optional raw `irc.log` or `-ReplyFile` may still hold ciphertext briefly). A lost final acknowledgement needs a new HELLO, not token replay.
+
 
 **FR #4796 (driver pacing):** multi-line outbox bursts (`-Action Put` chunks) sleep `-OutboxPaceMs` (default 800, matches bob ear `FLOOD_S`) between lines. After a large reply (`>= -BurstReplyThreshold` out/err lines), `Invoke-AircRemote` sleeps `-PostBurstCoolMs` (default 2000) before returning so sequential Commands do not stack under Ergo fakelag. The bob ear also uses `CONSOLE_OUTBOX_FLOOD_S` (default 1.5s, env `BOB_CONSOLE_OUTBOX_FLOOD_S`) when draining `PRIVMSG *_console` from `home\outbox.txt`. Console reply token-bucket / truncate is FR #4790.
 
@@ -153,7 +154,7 @@ PRIVMSG marchhare_console :id=aabbccdd LEGION flamingo -Profile fleet
 
 LEGION / EXTENSION / NETWORK pick **passed** (DCC `CRED id= via=dcc`) then **CredMan** then **SYSTEM**. See `bobiverse-airc-commands` CRED + LEGION / NETWORK sections. Never put passwords on IRC.
 
-**CRED persist (FR #5802):** lasting LocalSystem CredMan write for Priority (and similar) targets. Prefer `CRED persist target=... via=https url=https://bob.ntsa.uk/...` when a one-time HTTPS drop is hosted; use `via=irc` (FR #5812) on boxes that only allow outbound 80/443/993 with no drop host (E2E `CRED-HELLO` / `CRED-SEAL` over the existing TLS IRC hop; drive seal+send with `Send-AircCred.ps1` / `airc_cred_send.py`, FR #5825); optional `via=dcc` when DCC works. Stage (`CRED ... via=dcc` without `persist`) stays memory-only.
+**CRED persist (FR #5802):** lasting LocalSystem CredMan write for Priority (and similar) targets. Prefer `CRED persist target=... via=https url=https://bob.ntsa.uk/...` when a one-time HTTPS drop is hosted; use `via=irc` (FR #5812 / #5826) on boxes that only allow outbound 80/443/993 with no drop host (E2E `CRED-HELLO` / `CRED-SEAL` over the existing TLS IRC hop; drive seal+send with `Send-AircCred.ps1` / `airc_cred_send.py`, FR #5825; read HELLO via `CredHello.Token`, ear blanks drained `CRED-SEAL` outbox lines in place); optional `via=dcc` when DCC works. Stage (`CRED ... via=dcc` without `persist`) stays memory-only.
 
 Default CredMan targets are `PriorityAirc/LegionAdmin`, `PriorityAirc/ExtensionAdmin`, and `PriorityAirc/NetworkAdmin`. Override in `config/airc.json`:
 

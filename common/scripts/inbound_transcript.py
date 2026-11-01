@@ -17,9 +17,11 @@ MAX_BYTES = 2 * 1024 * 1024  # 2 MiB
 BACKUP_COUNT = 3
 
 # Same shape as intake / jira webhook redactors — never log credentials.
+# FR #5826: also mask CRED-SEAL token=/ct= so self-echo never retains ciphertext.
 _SECRETISH = re.compile(
     r"(?i)(password\s*=\s*\S+|api[_-]?key\s*=\s*\S+|ghp_[A-Za-z0-9]{20,}|"
-    r"sk-[A-Za-z0-9]{10,}|xox[baprs]-[A-Za-z0-9-]+|bearer\s+\S{8,})"
+    r"sk-[A-Za-z0-9]{10,}|xox[baprs]-[A-Za-z0-9-]+|bearer\s+\S{8,}|"
+    r"\b(?:token|ct)=\S+)"
 )
 
 _lock = threading.Lock()

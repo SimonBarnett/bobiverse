@@ -51,7 +51,39 @@ try {
         try { $len = ([IO.FileInfo]$outbox).Length } catch { }
         if ($len -gt 0) {
             $bak = Join-Path $BobHome ('outbox.bak-depart-ear-{0}.txt' -f [datetime]::UtcNow.ToString('yyyyMMdd-HHmmss'))
-            try { [IO.File]::Copy($outbox, $bak, $true) } catch { }
+            # FR #5826: blank CRED-SEAL records in the departure backup (same length).
+            try {
+                $bytes = [IO.File]::ReadAllBytes($outbox)
+                $text = [Text.Encoding]::UTF8.GetString($bytes)
+                $nl = if ($text -match "`r`n") { "`r`n" } else { "`n" }
+                $parts = [regex]::Split($text, '((?:\r\n|\n|\r))')
+                $sb = New-Object System.Text.StringBuilder
+                for ($i = 0; $i -lt $parts.Count; $i++) {
+                    $chunk = $parts[$i]
+                    if ($chunk -match '^(?:\r\n|\n|\r)$' -or $chunk -eq '') {
+                        [void]$sb.Append($chunk)
+                        continue
+                    }
+                    $term = ''
+                    if (($i + 1) -lt $parts.Count -and $parts[$i + 1] -match '^(?:\r\n|\n|\r)$') {
+                        $term = $parts[$i + 1]
+                        $i++
+                    }
+                    $isSeal = $false
+                    if ($chunk -match '(?i)(?:^|\s)CRED-SEAL(?:\s|$)') {
+                        $isSeal = $true
+                    }
+                    if ($isSeal) {
+                        [void]$sb.Append((' ' * $chunk.Length))
+                    } else {
+                        [void]$sb.Append($chunk)
+                    }
+                    if ($term) { [void]$sb.Append($term) }
+                }
+                [IO.File]::WriteAllText($bak, $sb.ToString(), [Text.UTF8Encoding]::new($false))
+            } catch {
+                try { [IO.File]::Copy($outbox, $bak, $true) } catch { }
+            }
         }
     }
     [IO.File]::WriteAllText($outbox, $line + "`n", [Text.UTF8Encoding]::new($false))
