@@ -64,6 +64,27 @@ def test_fr5679_nonhex_id_still_writes_synthetic(tmp_path: Path):
     assert "id=zz5588" not in rows[1]["body"]
 
 
+def test_mrb5680_expand_nonhex_id_writes_visible_reject(tmp_path: Path):
+    """Hostile MRB #5680: expand_irc_outbound_line path for non-hex id= (issue repro)."""
+    home = tmp_path / "home"
+    home.mkdir()
+    body = "id=zz5588-nonhex Write-Output '" + ("x" * 560) + "'"
+    out = agent.expand_irc_outbound_line(
+        f"PRIVMSG marchhare_console :{body}",
+        nick="Bob-marchhare",
+        text_max=400,
+        home=home,
+        ear_nick="Bob-marchhare",
+    )
+    assert out == []
+    rows = _rows(home)
+    assert len(rows) == 2
+    assert "id=zz5588-nonhex" in rows[0]["body"]
+    assert rows[0]["body"].startswith("err seq=1 code=too_long")
+    assert rows[1]["body"] == "DONE exit=1"
+    assert "DONE id=" not in rows[1]["body"]
+
+
 def test_fr5679_is_airc_console_reply_accepts_idless_err_seq():
     assert agent.is_airc_console_reply(
         "marchhare_console", "err seq=1 code=too_long bytes=592 budget=400"
