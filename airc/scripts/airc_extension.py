@@ -13,6 +13,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import threading
@@ -513,6 +514,105 @@ def is_access_denied(exc: BaseException) -> bool:
     return "access is denied" in msg or "access denied" in msg
 
 
+# FR #5708: net use system errors (never treat 53/67 as access-denied).
+_NET_USE_HOST_DOWN = frozenset({53, 67})
+_NET_USE_AUTH = frozenset({5, 86, 1326, 1909})
+_NET_USE_CONFLICT = frozenset({1219})
+_NET_SYSTEM_ERROR_RE = re.compile(r"(?i)system\s+error\s+(\d+)")
+
+
+def parse_net_use_system_error(text: str) -> int | None:
+    """Parse ``System error N has occurred`` from net.exe stdout/stderr."""
+    m = _NET_SYSTEM_ERROR_RE.search(text or "")
+    if not m:
+        return None
+    try:
+        return int(m.group(1))
+    except (TypeError, ValueError):
+        return None
+
+
+def _net_use_detail(code: int | None, text: str) -> str:
+    """Safe detail for operators: code + net text, never a password argv."""
+    blob = re.sub(r"(?im)^.*(?:password|/user:).*$", "", text or "")
+    blob = " ".join(blob.split())
+    if code is not None:
+        prefix = f"net-use system-error {code}"
+        return (prefix + (f": {blob}" if blob else ""))[:300]
+    return (blob or "net-use-failed")[:300]
+
+
+def raise_net_use_ipc_error(proc: Any) -> None:
+    """Raise OSError with the real net.exe system error (FR #5708).
+
+    Never raises blanket OSError(5, \"credman-ipc-failed\") for host_down codes.
+    """
+    out = str(getattr(proc, "stdout", "") or "")
+    err = str(getattr(proc, "stderr", "") or "")
+    text = (out + "\n" + err).strip()
+    code = parse_net_use_system_error(text)
+    if code is None:
+        try:
+            rc = int(getattr(proc, "returncode", 0) or 0)
+        except (TypeError, ValueError):
+            rc = 0
+        code = rc if rc > 0 else None
+    detail = _net_use_detail(code, text)
+    win = int(code) if code is not None else 5
+    raise OSError(win, detail)
+
+
+def is_net_use_auth_failure(exc: BaseException) -> bool:
+    """True for net-use / IPC logon failures that should surface as auth_failed."""
+    if is_access_denied(exc):
+        return True
+    win = int(getattr(exc, "winerror", 0) or 0)
+    err_no = int(getattr(exc, "errno", 0) or 0)
+    code = win or err_no
+    if code in _NET_USE_AUTH:
+        return True
+    msg = str(exc).lower()
+    return (
+        "logon failure" in msg
+        or "unknown user name" in msg
+        or "bad password" in msg
+        or "user name or password is incorrect" in msg
+    )
+
+
+def classify_credman_ipc_error(exc: BaseException) -> dict[str, Any]:
+    """FR #5708: map CredMan ``net use`` / IPC failures to operator codes + detail.
+
+    53/67 -> host_down; 5/1326/... -> auth_failed; 1219 -> conflicting_session.
+    """
+    win = int(getattr(exc, "winerror", 0) or 0)
+    err_no = int(getattr(exc, "errno", 0) or 0)
+    code = win or err_no
+    detail = (str(exc) if exc is not None else "")[:300]
+    if code in _NET_USE_HOST_DOWN or (
+        "network path was not found" in detail.lower()
+        or "network name cannot be found" in detail.lower()
+    ):
+        return {
+            "error": "host_down",
+            "detail": detail or _net_use_detail(code or 53, ""),
+        }
+    if code in _NET_USE_CONFLICT or "multiple connections" in detail.lower():
+        return {
+            "error": "conflicting_session",
+            "detail": detail or _net_use_detail(1219, ""),
+        }
+    if is_net_use_auth_failure(exc):
+        return {
+            "error": "auth_failed",
+            "detail": detail or _net_use_detail(code or 5, ""),
+        }
+    return {
+        "error": "unreachable",
+        "detail": detail or "credman-ipc-failed",
+    }
+
+
 def classify_extension_host_error(
     exc: BaseException | None,
     *,
@@ -583,10 +683,9 @@ def default_apply_force_install_as(
     """Retry registry write after IPC$ with CredMan user. Never log the secret.
 
     FR #5585: return the wrote bool from default_apply_force_install.
+    FR #5708: classify ``net use`` failures (53/67 host_down, 1326/5 auth, 1219 conflict);
+    never map every non-zero return to OSError(5, \"credman-ipc-failed\").
     """
-    import shutil
-    import subprocess
-
     net = shutil.which("net")
     if not net:
         raise OSError(5, "net-missing")
@@ -599,7 +698,7 @@ def default_apply_force_install_as(
             timeout=20,
         )
         if p.returncode != 0:
-            raise OSError(5, "credman-ipc-failed")
+            raise_net_use_ipc_error(p)
         return bool(default_apply_force_install(host, product, value))
     finally:
         subprocess.run(
@@ -883,14 +982,17 @@ def fill_holes_work(
                 chrome_w = _apply_wrote(apply, name, "chrome", value)
                 edge_w = _apply_wrote(apply, name, "edge", value)
         except Exception as exc:
-            if use_as and is_access_denied(exc):
+            # FR #5708: CredMan/passed IPC failures keep classified codes + detail
+            # (net use 53/67 -> host_down, never blanket auth_failed).
+            if use_as:
+                diag = classify_credman_ipc_error(exc)
                 hosts_out.append(
                     {
                         "host": name,
                         "ok": False,
-                        "error": "auth_failed",
                         "identity": resolved.source,
                         "account": resolved.account,
+                        **diag,
                     }
                 )
                 continue
@@ -920,20 +1022,17 @@ def fill_holes_work(
                 chrome_w = _apply_wrote(apply_as, name, "chrome", value, cuser, cpw)
                 edge_w = _apply_wrote(apply_as, name, "edge", value, cuser, cpw)
             except Exception as exc2:
-                # FR #5659: CredMan access-denied is auth_failed (no silent fallback).
+                # FR #5659 / #5708: CredMan IPC classified (auth_failed keeps detail).
                 # FR #5661: other reach errors keep classified codes + detail.
-                if is_access_denied(exc2):
-                    hosts_out.append(
-                        {
-                            "host": name,
-                            "ok": False,
-                            "error": "auth_failed",
-                            "identity": "credman",
-                            "detail": str(exc2)[:300],
-                        }
-                    )
-                else:
-                    hosts_out.append(_fail_row(name, exc2, icmp_ok))
+                diag = classify_credman_ipc_error(exc2)
+                hosts_out.append(
+                    {
+                        "host": name,
+                        "ok": False,
+                        "identity": "credman",
+                        **diag,
+                    }
+                )
                 continue
             if chrome_w or edge_w:
                 wrote = True
