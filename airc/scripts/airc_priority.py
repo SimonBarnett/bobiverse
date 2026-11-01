@@ -673,14 +673,24 @@ def walk_fixture(op: str, forms: dict[str, Any], kv: dict[str, str]) -> dict[str
     form = (kv.get("form") or "").strip()
     rec = forms.get(form)
     if not isinstance(rec, dict):
-        return {"ok": False, "error": "form-not-found", "form": form}
+        # FR #5837 / MRB #5841: named miss; bound echo keeps #5616 reply budget.
+        return {
+            "ok": False,
+            "error": "form-not-found",
+            "form": bound_echo_token(form),
+        }
     wire = OP_WIRE[op.lower()]
     out: dict[str, Any] = {"ok": True, "op": wire, "form": form, "instance": kv.get("instance", "")}
     if wire == "subform":
         path = (kv.get("path") or "").strip()
         subs = rec.get("subforms") or {}
         if path not in subs:
-            return {"ok": False, "error": "subform-not-found", "form": form, "path": path}
+            return {
+                "ok": False,
+                "error": "subform-not-found",
+                "form": bound_echo_token(form),
+                "path": bound_echo_token(path),
+            }
         out["path"] = path
         out["subform"] = subs[path]
     elif wire == "getRows":
@@ -762,7 +772,7 @@ def run_priority_walk(
                 "priority",
                 failure or payload["error"],
                 args={"op": op, "instance": inst_id, "form": form, "path": kv.get("path", "")},
-                wait_s=1.0,
+                wait_s=0,
             )
         except Exception:
             pass

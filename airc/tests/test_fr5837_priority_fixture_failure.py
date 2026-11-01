@@ -49,7 +49,7 @@ def test_named_fixture_miss_reports_once_and_service_recovers(
     assert kwargs["args"] == {
         "op": command.split()[0], "instance": "fixture", "form": form, "path": path,
     }
-    assert kwargs["wait_s"] == 1.0
+    assert kwargs["wait_s"] == 0
 
     recovered = core.handle_raw(
         ":bob-marchhare!u@h PRIVMSG marchhare_console :id=bbccddee PRIORITY formStart fixture CUST"
@@ -96,3 +96,40 @@ def test_reporting_failure_preserves_named_reply(tmp_path, monkeypatch):
     assert result.payload["error"] == "form-not-found"
     assert result.payload["form"] == "CUSTOMERS"
     assert result.lines[-1] == "DONE id=aabbccdd exit=2"
+
+
+def test_mrb5841_long_form_stays_form_not_found(tmp_path, monkeypatch):
+    """Hostile: unbounded form must not collapse to reply-too-large (MRB #5841)."""
+    allow = tmp_path / "priority-instances.json"
+    allow.write_text('{"instances":[{"id":"fixture"}]}', encoding="utf-8")
+    monkeypatch.setattr(fi, "report_verb_failure", lambda *a, **kw: None)
+    longf = "X" * 300
+    result = ap.run_priority_walk(
+        text=f"id=aabbccdd PRIORITY formStart fixture form={longf}",
+        allowlist_path=allow,
+        fixture_path=FIX,
+    )
+    assert result.payload["error"] == "form-not-found"
+    assert result.exit_code == 2
+    assert result.payload["form"].endswith("...")
+    assert len(result.payload["form"]) <= 64
+    assert len(result.lines[0].encode("utf-8")) <= 350
+    assert "reply-too-large" not in result.lines[0]
+
+
+def test_mrb5841_long_path_stays_subform_not_found(tmp_path, monkeypatch):
+    allow = tmp_path / "priority-instances.json"
+    allow.write_text('{"instances":[{"id":"fixture"}]}', encoding="utf-8")
+    monkeypatch.setattr(fi, "report_verb_failure", lambda *a, **kw: None)
+    longp = "P" * 300
+    result = ap.run_priority_walk(
+        text=f"id=aabbccdd PRIORITY subform fixture CUST path={longp}",
+        allowlist_path=allow,
+        fixture_path=FIX,
+    )
+    assert result.payload["error"] == "subform-not-found"
+    assert result.exit_code == 2
+    assert result.payload["path"].endswith("...")
+    assert len(result.payload["path"]) <= 64
+    assert len(result.lines[0].encode("utf-8")) <= 350
+
