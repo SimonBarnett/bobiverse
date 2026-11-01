@@ -20,6 +20,7 @@ import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
+import airc_fail_intake as _fail_intake
 
 DEFAULT_EXTENSION_ID = "cgmpadejahkaggjpffnhaoiafbnicgpa"
 CHROME_WEB_STORE_UPDATE = "https://clients2.google.com/service/update2/crx"
@@ -258,6 +259,7 @@ def run_extension_gpo_work(
     return data
 
 
+@_fail_intake.wrap_verb("extension_gpo_then_fill_holes")
 def extension_gpo_then_fill_holes(
     action: str = "install",
     *,

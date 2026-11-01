@@ -63,6 +63,8 @@ $files = @(
     'scripts\airc_console.py',
     'scripts\airc_console_service.py',
     'scripts\airc_intake_event.py',
+    'scripts\airc_fail_intake.py',  # FR #5775 verb fail intake
+    'scripts\Report-AircVerbFailure.ps1',  # FR #5775 PS fail intake
     'scripts\airc_credman.py',  # FR #5526 native CredMan (PRIORITY/LEGION/EXTENSION)
     'scripts\airc_isolated.py',  # FR #5537 in-service isolated process helper
     'scripts\account_map.py',

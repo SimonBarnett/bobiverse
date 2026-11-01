@@ -11,6 +11,7 @@ import re
 import threading
 from dataclasses import dataclass, field
 from typing import Any, Callable
+import airc_fail_intake as _fail_intake
 
 _NETWORK_CMD_RE = re.compile(
     r"(?is)^(?:id=([0-9a-f]{8})\s+)?NETWORK(?:\s+(.*))?$"
@@ -276,6 +277,7 @@ def default_resolve_ips(host: str) -> list[str]:
     return ips
 
 
+@_fail_intake.wrap_verb("inventory_work")
 def inventory_work(
     action: str = "diag",
     *,

@@ -19,6 +19,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from socket import gethostname as socket_hostname
 from typing import Any, Callable
+import airc_fail_intake as _fail_intake
 
 # In-service module (FR #3991). LEGION must not shell a peer installer exe.
 import airc_network_installer as _netinst  # noqa: F401
@@ -596,6 +597,7 @@ def default_installer_run(spec: dict[str, Any], *, secret: str = "") -> dict[str
     return body
 
 
+@_fail_intake.wrap_verb("installer_legion_work")
 def installer_legion_work(
     target: str,
     *,
