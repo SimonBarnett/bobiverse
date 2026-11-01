@@ -67,6 +67,97 @@ def test_inherited_capture_handle_does_not_hold_timeout(monkeypatch):
     assert "partial" in result.stdout
 
 
+def test_fr5676_deadline_after_child_exit_prefers_returncode(monkeypatch):
+    """FR #5676: deadline can fire in the same tick the child exits; use rc, not 124."""
+    _python_shell(monkeypatch)
+    state = {"polls": 0, "stopped": False}
+    clock = {"t": 0.0}
+    monkeypatch.setattr(ac.time, "monotonic", lambda: clock["t"])
+
+    class FakeProc:
+        pid = 4242
+        returncode = None
+
+        def poll(self):
+            state["polls"] += 1
+            if state["polls"] == 1:
+                # Enter the wait loop, then jump past deadline before the check.
+                clock["t"] = 1.0
+                return None
+            self.returncode = 0
+            return 0
+
+        def kill(self):
+            state["stopped"] = True
+
+        def wait(self, timeout=None):
+            return 0
+
+    def fake_popen(*_a, **kw):
+        out = kw["stdout"]
+        out.write(b"partial\n")
+        out.flush()
+        return FakeProc()
+
+    monkeypatch.setattr(ac.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(ac, "_stop_shell_process", lambda proc: state.__setitem__("stopped", True))
+    result = ac.run_shell_request(ac.ShellRequest("ps", "print(1)"), timeout_s=0.2)
+    assert result.exit_code == 0, (result.exit_code, result.stderr)
+    assert "partial" in result.stdout
+    assert "timeout" not in (result.stderr or "")
+    assert state["stopped"] is False
+
+
+def test_fr5676_true_timeout_still_reports_124(monkeypatch):
+    """FR #5676: when the child is still running past deadline, keep exit 124."""
+    _python_shell(monkeypatch)
+    state = {"stopped": False}
+    clock = {"t": 0.0}
+    monkeypatch.setattr(ac.time, "monotonic", lambda: clock["t"])
+
+    class FakeProc:
+        pid = 4243
+        returncode = None
+
+        def poll(self):
+            if clock["t"] >= 1.0 and state["stopped"]:
+                self.returncode = 1
+                return 1
+            return None
+
+        def kill(self):
+            state["stopped"] = True
+
+        def wait(self, timeout=None):
+            return 1
+
+    def fake_popen(*_a, **kw):
+        return FakeProc()
+
+    def fake_stop(proc):
+        state["stopped"] = True
+        proc.returncode = 1
+
+    monkeypatch.setattr(ac.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(ac, "_stop_shell_process", fake_stop)
+
+    class FakeCancel:
+        def is_set(self):
+            return False
+
+        def wait(self, timeout=None):
+            clock["t"] = 1.0
+            return False
+
+    result = ac.run_shell_request(
+        ac.ShellRequest("ps", "import time; time.sleep(99)", cancel_event=FakeCancel()),
+        timeout_s=0.2,
+    )
+    assert result.exit_code == 124
+    assert "timeout" in (result.stderr or "")
+    assert state["stopped"] is True
+
+
 def test_multibyte_output_stays_within_irc_byte_budget():
     outcome = ac.ShellOutcome("aaaa1111", 0, "\u03b1\u4e16\U0001f600" * 200, "")
     lines = ac.format_shell_replies(outcome)
