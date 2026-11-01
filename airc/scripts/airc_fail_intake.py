@@ -237,8 +237,8 @@ def report_verb_failure(
             try:
                 path = _write_fail_spool(
                     {
-                        "title": f"airc {v} fail {exc_class}",
-                        "body": _redact(detail)[:800],
+                        "title": title,
+                        "body": body,
                         "repo": "SimonBarnett/bobiverse",
                         "sig": key,
                         "exe": "airc",

@@ -3453,6 +3453,28 @@ class AircConsoleCore:
                 allowlist_path=allow,
                 fixture_path=fix,
             )
+            if (result.payload or {}).get("error") == "form-not-found":
+                try:
+                    import airc_fail_intake as _fail
+
+                    kv = (walk[1] or {}) if isinstance(walk, tuple) else {}
+                    _fail.report_verb_failure(
+                        "priority",
+                        "form-not-found",
+                        args={
+                            "action": "walk",
+                            "op": str((walk[0] if isinstance(walk, tuple) else "") or "-")[:32],
+                            "form": str((result.payload or {}).get("form") or "")[:64],
+                            "instance": _priority.bound_echo_token(
+                                str(kv.get("instance") or "")
+                            ),
+                            "qid": str(result.job_id or kv.get("id") or "-")[:16],
+                        },
+                        machine=getattr(self, "machine", None),
+                        wait_s=0.5,
+                    )
+                except Exception:
+                    pass
             # FR #5524: do not JobProtocol._emit here. on_line sends HandleResult.reply
             # for action=priority (FR #5518). Emitting plus reply doubled every walk line.
             self._clear_unused_dcclisten((walk[1] or {}).get("id") or "", reason="priority")

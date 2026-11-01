@@ -64,6 +64,7 @@ def test_fr5775_spool_when_intake_down(tmp_path, monkeypatch):
     out = fi.report_verb_failure(
         "extension",
         ValueError("gpo failed"),
+        args={"form": "CUSTOMERS"},
         version="1.0.7",
         machine="ionos",
         wait_s=0,
@@ -74,6 +75,7 @@ def test_fr5775_spool_when_intake_down(tmp_path, monkeypatch):
     assert files, "must spool when intake unreachable"
     row = json.loads(files[0].read_text(encoding="utf-8"))
     assert "airc-extension-fail|" in str(row.get("sig") or "")
+    assert "CUSTOMERS" in str(row.get("body") or "")
 
 
 def test_fr5775_wrap_returns_failure_and_reports(monkeypatch):

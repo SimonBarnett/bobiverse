@@ -555,6 +555,14 @@ class PriorityWalkResult:
     payload: dict[str, Any]
 
 
+class PriorityFormNotFound(KeyError):
+    """Unknown fixture form, distinct from malformed fixture data."""
+
+    def __init__(self, form: str) -> None:
+        self.form = str(form or "")
+        super().__init__(self.form)
+
+
 def parse_priority_walk_command(text: str) -> tuple[str, dict[str, str]] | None:
     raw = (text or "").strip()
     leading_id = ""
@@ -671,7 +679,9 @@ def load_fixture(path: Path) -> dict[str, Any]:
 
 def walk_fixture(op: str, forms: dict[str, Any], kv: dict[str, str]) -> dict[str, Any]:
     form = (kv.get("form") or "").strip()
-    rec = forms.get(form)
+    if form not in forms:
+        raise PriorityFormNotFound(form)
+    rec = forms[form]
     if not isinstance(rec, dict):
         raise KeyError(form)
     wire = OP_WIRE[op.lower()]
@@ -744,6 +754,16 @@ def run_priority_walk(
     try:
         forms = load_fixture(fix)
         payload = walk_fixture(op, forms, kv)
+    except PriorityFormNotFound as exc:
+        payload = {
+            "ok": False,
+            "error": "form-not-found",
+            "form": bound_echo_token(exc.form),
+            "action": "walk",
+        }
+        out, exit_code = format_bounded_priority_out(jid, payload, 2)
+        lines = (out, f"DONE id={jid} exit={exit_code}")
+        return PriorityWalkResult(False, exit_code, jid, lines, payload)
     except (OSError, ValueError, KeyError, json.JSONDecodeError) as exc:
         payload = {
             "ok": False,
