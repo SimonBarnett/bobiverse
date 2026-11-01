@@ -35,7 +35,7 @@ description: >
 >    - `false`, or `--auto` errors: do **not** run a plain `gh pr merge` and do not wait. Comment `merge-on-green pending` (with the head SHA). Jeeves `mrb_merge_on_green` merges when checks are green on that SHA, or re-queues on CI red / SHA change. Then DONE.
 > 7. **Issue closure:** with a pending (auto-)merge the originating issue stays open until merge; DONE after verifying it is linked via `closingIssuesReferences` (`Closes owner/repo#N`). Do not close it by hand before the merge.
 > 8. **FAIL:** existing flow - exactly ONE separate fix PR, leave the originating issue open, board, DONE FAIL. The no-poll rule still applies (hand the fix PR off the same way). **FR #4718:** if DONE FAIL lands with no linked mrb-N-fix / fix(mrb-N) open, Jeeves queues one FIX for that head (resync does the same); the seat that FAILed is not offered that MRB again; `!assign ... FIX` accepts the PR even when CI is green. **FR #5142:** a FIX seat that finds a companion `fix(mrb-N)` / `mrb-N-fix` PR must fast-forward the assigned original tip (`git push origin HEAD:<assigned-head-ref>`) so that one PR carries the fix, then close the companion as duplicate of the tip push. Do not leave two open PRs for the same FAIL.
-> 9. DONE wire: `DONE MRB owner/repo#N PASS|FAIL <assigned-pr-url>` as its own short command. Optional FR #5317 counters may follow the URL: `cr_findings=<n> confirmed=<n> fp=<n>` (shop_listen keeps the URL). Do not put other text after the URL.
+> 9. DONE wire: `DONE MRB owner/repo#N PASS|FAIL <assigned-pr-url>` as its own short command. Optional FR #5317/#5865 counters may follow the URL: `cr_mode=... review=... tokens=<n> cr_findings=<n> fixed=<n> rejected=<n> na=<n>` (shop_listen keeps the URL; legacy confirmed/fp still parse). Do not put other text after the URL.
 > 10. **CI wait (FR #4466):** github-resync must not re-queue an open PR whose auto-merge is on and whose head SHA still matches the PASS sha in the merge-on-green ledger. A head SHA change, or auto-merge turned off, puts the MRB back. Rows already queued for that waiting PR are pruned on the next resync. FR #4661: when the merge-on-green ledger missed the PASS SHA (DONE/resync race), done[] MRB PASS plus auto-merge on the tip still counts as ci-wait; never re-offer that MRB to the seat that already DONE PASS on it, and duplicate-after-done clears the hold and drops the phantom unaccepted row.
 
 
@@ -73,16 +73,22 @@ flowchart TD
 
 > **FR #3948 applies to steps 6-10:** no CI polling, never fold just because the PR is behind (FR #4649), PASS with head SHA, then auto-merge (or `merge-on-green pending`) and DONE at once - see the FR #3948 section above.
 
-## FR #5317 - CodeRabbit verify-first (token-saving)
+## FR #5317 / #5865 - CodeRabbit-first MRB (token-saving)
 
-When the assign line or PR has a CodeRabbit walkthrough / inline comments on the current head:
+Mode comes **only** from the Jeeves assign-line stamp (`coderabbit=` + `review=`). Seats never read `BOB_FUEL_CODERABBIT` themselves. The chair switch is off by default; removing `.coderabbit.yaml` or the GitHub app also turns the mode off (`coderabbit=absent`, no wait).
 
-1. Read the walkthrough and unresolved inline findings first.
-2. Mark each finding **confirmed** (fix or require a fix), **false positive** (reply `@coderabbitai` with one line so it learns), or **out of scope**.
-3. Then do only the fleet checks CodeRabbit cannot: vision and drift against the product VISION.md, tests-first evidence, and docs review. Do not redo a line-by-line review.
-4. On DONE, append `cr_findings=<n> confirmed=<n> fp=<n>` after the PR URL.
+Stamps: `coderabbit=ready|failed|timeout|off|absent` and `review=light|full`. Sensitive paths (cred/secret/password/crash_report/redact, Install-/Update-*.ps1, installer, *.wxs, `common/scripts/intake.py`, `.github/workflows/**`) are always `review=full` even when ready.
 
-CodeRabbit / Copilot / extra fleet stages are **off by default** on the chair (`BOB_FUEL_CODERABBIT`, `BOB_FUEL_COPILOT`, `BOB_FUEL_FLEET`). Missing review never blocks merge; Jeeves may offer `coderabbit=timeout` after the wait window.
+**When `coderabbit=ready` and `review=light`:**
+1. Read CodeRabbit walkthrough and every unresolved inline finding on the head SHA.
+2. Triage each finding: **fix** (push or FAIL+FIX), **reject** (reply `@coderabbitai` with one-line reason), or **n/a** (out of scope).
+3. Reply on or resolve every thread on the head. Leave none unanswered.
+4. Run tests (tests-first), vision/drift, and docs review.
+5. Do **not** full line-by-line re-read of the diff.
+
+**Full line-by-line review (exactly as today):** stamp `off`, `absent`, `timeout`, or `failed`, or `review=full` (including sensitive paths).
+
+DONE appends: `cr_mode=<ready|failed|timeout|off|absent> review=<light|full> tokens=<n> cr_findings=<n> fixed=<n> rejected=<n> na=<n>` (legacy `confirmed`/`fp` still parse). CodeRabbit is never a required check.
 
 1. **ACK.** 2. Check out the PR in a **job worktree** (**FR #4988:** `Get-BobiverseJobWorktreePath -Repo owner/name -Job mrb-N` → default `<data drive>\ai\worktrees\<repo>\mrb-N`; override `BOB_JOB_WORKTREE_BASE` or `BOB_BRIDGE_HOME\worktrees`; never a drive root; `%TEMP%\…` only as a last resort). `git -C <product-clone> fetch` + `worktree add` of the PR head. **CAST IRON (FR #4925):** never run `gh pr checkout <n> --repo <other>` from the bob install root (`C:\ai\bob`, `bob\worker`, or any cwd whose `git remote` is `SimonBarnett/bobiverse` while `--repo` names a different product). That switches the install sparse work tree off `main` onto an `intake/...` branch. Optional guard: `Assert-BobiverseForeignPrCheckout.ps1 -Repo owner/name` (exit 2 = refuse). Read the intent, the FR and every changed file. Before `git worktree add`, if `Get-PSDrive C` FreeGB is under 2, run `..\scripts\Clear-BobiverseJobWorktrees.ps1 -RepoRoot <ai root>\bob` (FR #877; Clear also reclaims under the FR #4988 base and keeps dirty/unpushed trees). **Immediately after** `worktree add`, write `.bobiverse-seat` (`{"nick":"<seat>","pid":$PID}`) at the tree root (FR #3641) so soft-cap / sibling Clear cannot wipe a mid-MRB tree. **CAST IRON (FR #2727 / FR #3641):** never hand-delete / `Remove-Item` paths Clear did not select; if FreeGB stays under 2 after Clear, file an intake disk issue and put the MRB tree on a roomy drive (or GIVEUP) — do not invent a `C:\ai\*` delete list. After DONE, prune again with `-KeepPath` omitted so the MRB tree can go. 3. **Vision first**: read `VISION.md`/brief/README/AGENTS and quote 1-2 lines the PR is judged against. For **bob** ear/worker/tray changes prefer **`bob/VISION.md`** (FR #1615 / harvest #1632); for **airc** console changes prefer **`airc/VISION.md`** (FR #4158); for **jeeves** chair/gitclaim changes prefer **`jeeves/VISION.md`** (FR #5090); the fleet umbrella stays `common/docs/vision.md` --- do not treat the umbrella as the bob, airc, or jeeves product vision.
 No vision found: record "no vision source found", review against README + FR, and file ONE FR asking for a `VISION.md`. If the PR shows the vision itself should change, do not edit it - file an FR tagged `vision` for the owner.

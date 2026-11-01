@@ -3723,9 +3723,15 @@ def _coerce_row(row: dict) -> dict | None:
         out["closed_by"] = str(row.get("closed_by"))
     if row.get("cancel_reason"):
         out["cancel_reason"] = str(row.get("cancel_reason"))[:200]
-    # FR #5317: CodeRabbit wait stamps must survive queue reload (else timeout never fires).
+    # FR #5317 / #5865: CodeRabbit wait stamps must survive queue reload.
     if row.get("coderabbit"):
         out["coderabbit"] = str(row.get("coderabbit"))
+    if row.get("review"):
+        out["review"] = str(row.get("review"))
+    if row.get("coderabbit_head_sha"):
+        out["coderabbit_head_sha"] = str(row.get("coderabbit_head_sha"))
+    if row.get("changed_files") is not None:
+        out["changed_files"] = row.get("changed_files")
     try:
         raw_cr = row.get("coderabbit_wait_since")
         if raw_cr is not None and str(raw_cr).strip() != "":
@@ -8402,6 +8408,8 @@ def offer_top(
                     if fuel_chain.apply_mrb_coderabbit_gate(
                         row, now_f, lookup=cr_check
                     ):
+                        # Persist wait/pending stamps even while the offer is held.
+                        purged = True
                         i += 1
                         continue
                 except Exception:
