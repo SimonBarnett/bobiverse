@@ -345,6 +345,7 @@ routes to bobiverse via the split rule.
 - airc bad_id: service on_line must dispatch action=bad_id (err+DONE) and log auth-allow without body; ear _AIRC_REPLY_BODY_RE must accept non-hex id= so waiters see DONE
 - LEGION default_installer_run tests must use a non-local host (not this machine name) or install_local skips the install_remote monkeypatch; scrub FAKE_ needles via runtime concat for FR #5721 source pins.
 - LEGION CredMan/SYSTEM-fallback unit pins must monkeypatch read_remote_airc_profile_result; otherwise host SMB profile_unreadable exits before run_fn and flakes on MarchHare-class boxes.
+- When folding CONFLICTING airc isolated tips that mix FR #5778 JSON extract with FR #5775 parent worker_died report, keep both: extract_isolated_json_payload plus _parent_report_worker_died on empty-stdout and bad-json.
 
 ## Harvest digest (lessons audit 2026-10-06)
 
