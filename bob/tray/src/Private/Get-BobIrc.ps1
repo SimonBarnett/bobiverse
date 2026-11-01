@@ -2096,6 +2096,7 @@ function Get-BobDigestWebhookFingerprint {
         [string]$Doc.overage_usd
         [string]$Doc.overage_fetched_at
         [string]$Doc.usd_gbp_rate
+        [string]$Doc.usd_gbp_rate_fetched_at
         [string]$Doc.overspend_state
         [string]$Doc.on_demand_used_cents
         [string]$Doc.on_demand_limit_cents
@@ -2142,7 +2143,7 @@ function Build-BobDigestWebhookMergePayload {
     if ($Doc.model) { $payload.model = [string]$Doc.model }
     if ($Doc.kind) { $payload.kind = [string]$Doc.kind }
     # FR #5690: present-but-empty fields clear the chair; absent fields are partial updates.
-    foreach ($key in @('repo', 'sha', 'started_at', 'working_on', 'overage_fetched_at')) {
+    foreach ($key in @('repo', 'sha', 'started_at', 'working_on', 'overage_fetched_at', 'usd_gbp_rate_fetched_at')) {
         $present = if ($Doc -is [System.Collections.IDictionary]) { $Doc.Contains($key) } else { $null -ne $Doc.PSObject.Properties[$key] }
         if ($present) {
             $payload[$key] = if ($null -eq $Doc.$key -or [string]$Doc.$key -eq '') { $null } else { [string]$Doc.$key }
@@ -2474,6 +2475,7 @@ function Write-BobIrcStatus {
         overage_usd            = $(if ($cw) { $cw.overage_usd } else { $null })
         overage_fetched_at     = $(if ($cw) { $cw.fetched_at } else { $null })
         usd_gbp_rate           = $(if ($cw) { $cw.usd_gbp_rate } else { $null })
+        usd_gbp_rate_fetched_at = $(if ($cw -and $null -ne $cw.usd_gbp_rate) { $cw.fetched_at } else { $null })
         overspend_state        = $(if ($cw) { $cw.overspend_state } else { $null })
         on_demand_used_cents   = $(if ($cw) { $cw.on_demand_used_cents } else { $null })
         on_demand_limit_cents  = $(if ($cw) { $cw.on_demand_limit_cents } else { $null })

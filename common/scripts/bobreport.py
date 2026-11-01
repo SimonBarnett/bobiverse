@@ -237,6 +237,7 @@ _MERGE_PEER_FIELDS = (
     "overage_usd",
     "overage_fetched_at",
     "usd_gbp_rate",
+    "usd_gbp_rate_fetched_at",
     "overspend_state",
     "on_demand_used_cents",
     "on_demand_limit_cents",
@@ -245,7 +246,7 @@ _MERGE_PEER_FIELDS = (
 )
 _PEER_CLEAR_FIELDS = frozenset({
     "repo", "sha", "started_at", "working_on", "jobs",
-    "overage_gbp", "overage_usd", "overage_fetched_at", "usd_gbp_rate",
+    "overage_gbp", "overage_usd", "overage_fetched_at", "usd_gbp_rate", "usd_gbp_rate_fetched_at",
     "on_demand_used_cents", "on_demand_limit_cents", "on_demand_remaining_pct",
 })
 _TRAY_MACHINE_EXPORT_KEYS = (
@@ -279,6 +280,7 @@ _TRAY_MACHINE_EXPORT_KEYS = (
     "overage_usd",
     "overage_fetched_at",
     "usd_gbp_rate",
+    "usd_gbp_rate_fetched_at",
     "overspend_state",
     "on_demand_used_cents",
     "on_demand_limit_cents",
@@ -1867,6 +1869,10 @@ def _apply_merge_payload(doc: dict, mid: str, payload: dict) -> list[str]:
             ent[key] = val
             continue
         ent[key] = val
+    if "usd_gbp_rate" in payload and "usd_gbp_rate_fetched_at" not in payload:
+        ent["usd_gbp_rate_fetched_at"] = (
+            payload.get("overage_fetched_at") if payload["usd_gbp_rate"] not in (None, "") else None
+        )
     if "running" in ent:
         try:
             ent["running"] = int(ent["running"])
@@ -2920,7 +2926,7 @@ def _mask_expired_pools(base: dict, now: datetime | None = None) -> None:
         base["cursor_pools"] = masked_rows
     cpe, _ = _cursor_pool_period(base, "cursor-models")
     if _period_expired(cpe, now):
-        for key in ("overage_gbp", "overage_usd", "usd_gbp_rate",
+        for key in ("overage_gbp", "overage_usd", "usd_gbp_rate", "usd_gbp_rate_fetched_at",
                     "on_demand_used_cents", "on_demand_limit_cents", "on_demand_remaining_pct"):
             if key in base:
                 base[key] = None
@@ -3275,7 +3281,7 @@ def _normalize_shared_overage_gbp(machines: dict[str, dict]) -> None:
     """Use the newest measured FX rate for all known USD figures, without HTTP on GET."""
     candidates = []
     for mid, ent in machines.items():
-        fetched = _parse_iso_ts(ent.get("overage_fetched_at"))
+        fetched = _parse_iso_ts(ent.get("usd_gbp_rate_fetched_at", ent.get("overage_fetched_at")))
         if fetched is None:
             continue
         try:
@@ -3286,7 +3292,7 @@ def _normalize_shared_overage_gbp(machines: dict[str, dict]) -> None:
             candidates.append((fetched.replace(tzinfo=fetched.tzinfo or timezone.utc), mid, rate))
     if not candidates:
         return
-    rate = max(candidates)[2]
+    fetched, _, rate = max(candidates)
     for ent in machines.values():
         # Explicit unknown/expired GBP must remain cleared, even when USD is known.
         if ent.get("overage_gbp") in (None, "") or ent.get("overage_usd") in (None, ""):
@@ -3300,6 +3306,7 @@ def _normalize_shared_overage_gbp(machines: dict[str, dict]) -> None:
             continue
         ent["overage_gbp"] = float(gbp)
         ent["usd_gbp_rate"] = float(rate)
+        ent["usd_gbp_rate_fetched_at"] = fetched.isoformat()
 
 
 def build_digest_object(home: Path, briefer_nick: str, now: datetime | None = None) -> dict:

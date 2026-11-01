@@ -25,6 +25,7 @@ FIELDS = {
     "on_demand_remaining_pct": 0,
     "overage_fetched_at": "2026-11-01T11:42:30Z",
     "usd_gbp_rate": 0.754,
+    "usd_gbp_rate_fetched_at": "2026-11-01T11:42:30Z",
 }
 
 
@@ -115,7 +116,7 @@ def test_same_usd_uses_newest_shared_fx_without_changing_amount_fetch_time(home)
 def test_invalid_fx_cannot_replace_known_conversion(rate):
     rows = {
         "marchhare": dict(FIELDS),
-        "flamingo": {**FIELDS, "usd_gbp_rate": rate, "overage_fetched_at": "2026-11-01T11:43:30Z"},
+        "flamingo": {**FIELDS, "usd_gbp_rate": rate, "usd_gbp_rate_fetched_at": "2026-11-01T11:43:30Z"},
     }
     bobreport._normalize_shared_overage_gbp(rows)
     assert rows["flamingo"]["usd_gbp_rate"] == FIELDS["usd_gbp_rate"]
@@ -129,6 +130,26 @@ def test_expired_billing_masks_all_on_demand_figures():
                 "on_demand_limit_cents", "on_demand_remaining_pct"):
         assert row[key] is None
     assert row["overage_fetched_at"] == FIELDS["overage_fetched_at"]
+
+
+def test_peer_pull_does_not_promote_shared_rate_to_newer_amount_timestamp(home):
+    merge(home, **{**FIELDS, "overage_fetched_at": "2026-11-01T12:00:00Z",
+                   "usd_gbp_rate_fetched_at": "2026-11-01T12:00:00Z"})
+    assert bobreport.apply_callback(home, {
+        "op": "merge", "machine": "flamingo", "overage_usd": 200.11,
+        "overage_gbp": 159.52, "usd_gbp_rate": None,
+        "overage_fetched_at": "2026-11-01T13:00:00Z",
+    }).ok
+    pulled = bobreport.build_digest_object(home, "Jeeves")
+    assert pulled["machines"]["flamingo"]["usd_gbp_rate_fetched_at"].startswith("2026-11-01T12:00:00")
+    bobreport.ingest_fleet_digest_pull(home, pulled)
+    peer = bobstat.read_peer(home, "flamingo")
+    assert peer["overage_fetched_at"] == "2026-11-01T13:00:00Z"
+    # A delayed actual FX measurement must beat the inherited noon conversion.
+    merge(home, usd_gbp_rate=0.746948, overage_fetched_at="2026-11-01T12:30:00Z")
+    rows = bobreport.build_digest_object(home, "Jeeves")["machines"]
+    assert rows["marchhare"]["usd_gbp_rate"] == rows["flamingo"]["usd_gbp_rate"] == 0.746948
+    assert rows["marchhare"]["overage_gbp"] == rows["flamingo"]["overage_gbp"] == 149.47
 
 
 def test_usage_metadata_is_wired_into_peer_and_webhook_fingerprint():
