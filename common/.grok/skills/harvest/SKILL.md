@@ -336,6 +336,7 @@ routes to bobiverse via the split rule.
 - Copilot-high is HIGH_PRIORITY_REPOS plus is_high_priority_repo; item-focus rank 1 is shop order only and must not imply Copilot dispatch.
 - Accept-only NETWORK/LEGION replies plus emit-last DONE so clients do not stop before out/CONT.
 - Unused DCCLISTEN must TTL-out so a later shell cannot reuse a stale host:port.
+- DCCLISTEN wiring pins must stub NETWORK inventory_work on domain hosts; waiting on packaged LDAP makes fr5300 flake under full suite
 
 ## Harvest digest (lessons audit 2026-10-06)
 
