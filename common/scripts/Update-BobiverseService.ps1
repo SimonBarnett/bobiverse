@@ -434,8 +434,8 @@ function Set-Failure {
             . $common
         }
         if (Get-Command Send-BobiverseUpdateFailureIntake -ErrorAction SilentlyContinue) {
-            # FR #5641: never file live intake from -DryRun / ReleaseJson test hooks (pytest flood).
-            $intakeDry = [bool]$DryRun -or [bool]$ReleaseJson -or [bool]$ReleaseListJson
+            # FR #5641 / FR #5876: never file live intake from dry-run or local fixture hooks.
+            $intakeDry = [bool]$DryRun -or [bool]$ReleaseJson -or [bool]$ReleaseListJson -or [bool]$AllowLocalAssets
             $null = Send-BobiverseUpdateFailureIntake -Product $Product -Tag $Tag -Result $Result -Detail $Detail -InstallRoot $InstallRoot -DryRun:$intakeDry
         }
     } catch {
@@ -455,7 +455,7 @@ function Write-CheckFailIntake {
             . $common
         }
         if (Get-Command Send-BobiverseUpdateFailureIntake -ErrorAction SilentlyContinue) {
-            $intakeDry = [bool]$DryRun -or [bool]$ReleaseJson -or [bool]$ReleaseListJson
+            $intakeDry = [bool]$DryRun -or [bool]$ReleaseJson -or [bool]$ReleaseListJson -or [bool]$AllowLocalAssets
             $null = Send-BobiverseUpdateFailureIntake -Product $Product -Tag $Tag -Result $Result -Detail $Detail -InstallRoot $InstallRoot -DryRun:$intakeDry
         }
     } catch { }
@@ -1368,7 +1368,7 @@ function Invoke-Check {
         try {
             if (Get-Command Send-BobiverseUpdateFailureIntake -ErrorAction SilentlyContinue) {
                 # FR #5641: honor DryRun / ReleaseJson test hooks.
-                $intakeDry = [bool]$DryRun -or [bool]$ReleaseJson -or [bool]$ReleaseListJson
+                $intakeDry = [bool]$DryRun -or [bool]$ReleaseJson -or [bool]$ReleaseListJson -or [bool]$AllowLocalAssets
                 $null = Send-BobiverseUpdateFailureIntake -Product $Product -Tag $tag -Result 'spawn-failed' -InstallRoot $InstallRoot -DryRun:$intakeDry
             }
         } catch { }
