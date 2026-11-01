@@ -2408,6 +2408,7 @@ class Client:
                 machine_of_nick=bobreport.machine_from_nick,
                 member_lookup=lambda ch, n: self._nick_modes_in_channel(n, ch),
                 chair_nicks=chair,
+                debug=lambda message: debug_log(self.debug, message),
             )
         except Exception as e:
             info(f"WARN recycleseat decide failed: {type(e).__name__}: {e}")

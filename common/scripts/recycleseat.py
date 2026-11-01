@@ -14,6 +14,7 @@ Tray/engine alive stamps are shared with ``run\\startworker`` (same interactive 
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 import time
@@ -24,9 +25,11 @@ from typing import Callable, Iterable
 
 import startworker as sw
 import unregister_cmd
+import bobreport
 
 CMD = "!recycleseat"
 REQUEST_TTL_S = 60.0
+ACK_COOLDOWN_S = 900.0
 QUEUE_SUBDIR = ("run", "recycleseat")
 DISABLE_FILE = "recycleseat.disabled"
 _NICK_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,39}$")
@@ -121,9 +124,62 @@ def write_request(qdir, seat_nick: str, by: str, kind: str, now: float | None = 
         "expires": int(now + REQUEST_TTL_S),
     }
     tmp = d / f".req-{rid}.tmp"
-    tmp.write_text(json.dumps(body), encoding="utf-8")
-    os.replace(tmp, d / f"req-{rid}.json")
+    ack = d / f"ack-{seat_nick.lower()}.json"
+    ack_tmp = d / f".ack-{rid}.tmp"
+    try:
+        tmp.write_text(json.dumps(body), encoding="utf-8")
+        ack_tmp.write_text(json.dumps({"ts": now}), encoding="utf-8")
+        os.replace(ack_tmp, ack)
+        try:
+            os.replace(tmp, d / f"req-{rid}.json")
+        except OSError:
+            ack.unlink(missing_ok=True)
+            raise
+    finally:
+        tmp.unlink(missing_ok=True)
+        ack_tmp.unlink(missing_ok=True)
     return rid
+
+
+def seat_is_working(home, seat_nick: str) -> bool:
+    """Read seat-specific work without healing or clearing any digest evidence."""
+    if home is None:
+        return False
+    legacy = bobreport.parse_worker_nick(seat_nick.lower())
+    mid, _, pid = seat_nick.lower().rpartition("-")
+    if legacy:
+        mid, pid = legacy
+    if not mid or not pid.isdigit():
+        return False
+    mid = bobreport.fold_machine_id(mid)
+    # load_digest filters by the ChanServ roster; a missing roster must not hide work.
+    path = bobreport.digest_path(bobreport.fleet_digest_home(Path(home)))
+    try:
+        doc = json.loads(path.read_text(encoding="utf-8-sig"))
+    except FileNotFoundError:
+        return False
+    ent = (doc.get("machines") or {}).get(mid) or {}
+    row = (ent.get("workers") or {}).get(str(int(pid))) or {}
+    if str(row.get("working_on") or "").strip():
+        return True
+    for worker in ent.get("worker_list") or []:
+        if str(worker.get("nick") or "").strip().lower() != seat_nick.lower():
+            continue
+        if (str(worker.get("work") or "").strip()
+                or str(worker.get("state") or "").lower() in ("doing", "busy", "accepted")):
+            return True
+    return False
+
+
+def ack_cooldown_left(qdir, seat_nick: str, now: float) -> float:
+    path = Path(qdir) / f"ack-{seat_nick.lower()}.json"
+    try:
+        last = float(json.loads(path.read_text(encoding="utf-8"))["ts"])
+    except FileNotFoundError:
+        return 0.0
+    if not math.isfinite(last):
+        raise ValueError("invalid ACK timestamp")
+    return max(0.0, ACK_COOLDOWN_S - (now - last))
 
 
 @dataclass
@@ -153,6 +209,7 @@ def decide(
     owners: set | None = None,
     now: float | None = None,
     write: bool = True,
+    debug: Callable[[str], None] | None = None,
 ) -> Decision | None:
     """None when body is not !recycleseat; else ACK/NACK (request queued on ok)."""
     parsed = parse(body)
@@ -169,6 +226,8 @@ def decide(
     chan = (channel or "").strip().lower().lstrip("#")
     # FR #5756: non-target ears stay silent BEFORE authorize (no public NACK flood).
     if machine is not None and local and machine != local:
+        if debug is not None:
+            debug(f"recycleseat ignore seat={seat_nick} machine={machine} local={local}: other machine")
         return None
     ok, kind, why = authorize(
         nick,
@@ -214,6 +273,38 @@ def decide(
         return nack(
             "disabled",
             "remote seat recycle is disabled on this machine",
+            kind=kind,
+            seat_nick=seat_nick,
+        )
+    try:
+        working = seat_is_working(home, seat_nick)
+    except (OSError, ValueError, TypeError, AttributeError):
+        return nack(
+            "state_unavailable",
+            f"cannot verify current working_on for {seat_nick}",
+            kind=kind,
+            seat_nick=seat_nick,
+        )
+    if working:
+        return nack(
+            "busy",
+            f"busy {seat_nick}: current working_on",
+            kind=kind,
+            seat_nick=seat_nick,
+        )
+    try:
+        left = ack_cooldown_left(qdir, seat_nick, now)
+    except (OSError, ValueError, TypeError, KeyError):
+        return nack(
+            "queue_error",
+            f"could not read recycle ACK cooldown for {seat_nick}",
+            kind=kind,
+            seat_nick=seat_nick,
+        )
+    if left > 0:
+        return nack(
+            "busy",
+            f"busy {seat_nick}: recycle ACK cooldown {math.ceil(left)}s",
             kind=kind,
             seat_nick=seat_nick,
         )

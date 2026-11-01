@@ -89,6 +89,7 @@ Workaround until this tip is deployed: `Restart-Service ircBob`.
 - Quiet MSI: `Start-BobTrayInteractive.ps1` registers ONLOGON `/IT` task `BobiverseTray` (no session-0 TipForm).
 - `!recycle` / `!recycle {machine}`: announce -> restart tray + `ircBob`.
 - **FR #5059** `!recycleseat <nick> [machine]`: authorised ops (+o/+h like `!register`), bob-* ear, Jeeves or owner queue a stop+verify+start for a named worker seat. The elevated tray consumes `run\recycleseat\req-*.json`; if stop fails or the PID is still alive, no new seat is started and the failure is reported to intake.
+  **FR #5890:** the ear replies `NACK recycleseat: busy <nick>` with a reason when that seat has current digest work or was ACKed for recycle within the last 900 seconds. Per-seat `run\recycleseat\ack-<nick>.json` timestamps survive tray consumption and ear restarts; other seats are unaffected. Unreadable work evidence or ACK timestamps also NACK rather than queueing a destructive recycle. Commands naming another machine remain silent and are logged only in the ear's debug log. No flamingo ear hotpatch until Jeeves-side FR #5889 is merged and Simon authorises it.
 
 ## Standalone UAT / connect progress (FR #2351)
 
