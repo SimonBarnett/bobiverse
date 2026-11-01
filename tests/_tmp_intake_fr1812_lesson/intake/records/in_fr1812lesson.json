@@ -1,0 +1,14 @@
+{
+  "intake_id": "in_fr1812lesson",
+  "kind": "harvest",
+  "repo": "SimonBarnett/bobiverse",
+  "title": "harvest: FR #1657 conflict-marker; PR opened",
+  "idempotency_key": "hv-fr1812-lesson1",
+  "dedupe_key": "",
+  "quarantine": false,
+  "ts": "2026-11-01T12:02:49Z",
+  "state": "linked_existing_pr",
+  "url": "https://github.com/SimonBarnett/bobiverse/pull/1794",
+  "queued": false,
+  "number": 1794
+}

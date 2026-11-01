@@ -1800,24 +1800,20 @@ function Get-BobCursorPoolsForTray {
         }
         else {
             $pe = $periodEnd
-            if (-not $LocalOnly) {
+            # FR #5689: billing end owns non-Sand rows; cached group dates only fill a missing end.
+            if (-not $pe) {
                 if ($ce -and $ce.groups) {
                     $ge = $ce.groups.$gid
                     if (-not $ge -and $gid -eq 'auto') { $ge = $ce.groups.'low-cost-models' }
                     if ($ge -and $ge.period_end) { $pe = [string]$ge.period_end }
                 }
-                if ($null -eq $pe -or $pe -eq '') {
+                if (-not $pe -and -not $LocalOnly) {
                     foreach ($seatEnt in @($cache.by_seat.GetEnumerator())) {
                         if (-not $seatEnt.Value.groups) { continue }
                         $ge = $seatEnt.Value.groups.$gid
                         if ($ge -and $ge.period_end) { $pe = [string]$ge.period_end; break }
                     }
                 }
-            }
-            elseif ($ce -and $ce.groups) {
-                $ge = $ce.groups.$gid
-                if (-not $ge -and $gid -eq 'auto') { $ge = $ce.groups.'low-cost-models' }
-                if ($ge -and $ge.period_end) { $pe = [string]$ge.period_end }
             }
         }
         # Digest may fill still-null period_end (reset countdown) without clobbering local %.
@@ -2910,4 +2906,3 @@ function Get-BobTrayTipPlacement {
         moved  = $true
     }
 }
-

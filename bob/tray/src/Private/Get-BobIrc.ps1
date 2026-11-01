@@ -271,6 +271,16 @@ function Get-BobCursorPoolsCachePath {
     try { return (Join-Path (Get-BridgeRoot) 'cursor-pools.json') } catch { return $null }
 }
 
+function Test-BobCursorPoolPeriodEndCurrent {
+    param([string]$PeriodEnd)
+    if (-not $PeriodEnd) { return $false }
+    try {
+        $end = [datetime]::Parse($PeriodEnd, [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::RoundtripKind).ToUniversalTime()
+        return ($end -gt [datetime]::UtcNow)
+    }
+    catch { return $false }
+}
+
 function Read-BobCursorPoolsCache {
     $p = Get-BobCursorPoolsCachePath
     if (-not $p -or -not (Test-Path $p)) {
@@ -281,6 +291,20 @@ function Read-BobCursorPoolsCache {
         $by = @{}
         if ($j.by_seat) {
             foreach ($prop in $j.by_seat.PSObject.Properties) {
+                $entry = $prop.Value
+                if ($entry.period_end -and -not (Test-BobCursorPoolPeriodEndCurrent $entry.period_end)) {
+                    $entry.PSObject.Properties.Remove('period_end')
+                    $entry.PSObject.Properties.Remove('remaining_pct')
+                }
+                if ($entry.groups) {
+                    foreach ($gp in $entry.groups.PSObject.Properties) {
+                        if ($gp.Value.period_end -and -not (Test-BobCursorPoolPeriodEndCurrent $gp.Value.period_end)) {
+                            $gp.Value.PSObject.Properties.Remove('period_end')
+                            # An undated expired percentage would bypass the digest's expiry mask.
+                            $gp.Value.PSObject.Properties.Remove('remaining_pct')
+                        }
+                    }
+                }
                 $by[$prop.Name] = $prop.Value
             }
         }
@@ -340,10 +364,11 @@ function Save-BobCursorPoolGroupForSeat {
     }
     $grow = [pscustomobject]@{}
     if ($groups.ContainsKey($gid)) { $grow = $groups[$gid] }
-    if ($null -ne $RemainingPct -and [string]$RemainingPct -ne '') {
+    $current = Test-BobCursorPoolPeriodEndCurrent $PeriodEnd
+    if ((-not $PeriodEnd -or $current) -and $null -ne $RemainingPct -and [string]$RemainingPct -ne '') {
         $grow | Add-Member -NotePropertyName remaining_pct -NotePropertyValue ([int]$RemainingPct) -Force
     }
-    if ($PeriodEnd) {
+    if ($current) {
         $grow | Add-Member -NotePropertyName period_end -NotePropertyValue ([string]$PeriodEnd) -Force
     }
     $grow | Add-Member -NotePropertyName updated_at -NotePropertyValue ([DateTime]::UtcNow.ToString('o')) -Force
@@ -369,10 +394,11 @@ function Save-BobCursorPoolForSeat {
     $entry = $null
     if ($cache.by_seat.ContainsKey($sid)) { $entry = $cache.by_seat[$sid] }
     if (-not $entry) { $entry = [pscustomobject]@{} }
-    if ($null -ne $RemainingPct -and [string]$RemainingPct -ne '') {
+    $current = Test-BobCursorPoolPeriodEndCurrent $PeriodEnd
+    if ((-not $PeriodEnd -or $current) -and $null -ne $RemainingPct -and [string]$RemainingPct -ne '') {
         $entry | Add-Member -NotePropertyName remaining_pct -NotePropertyValue ([int]$RemainingPct) -Force
     }
-    if ($Label) {
+    if ($Label -and (-not $PeriodEnd -or $current)) {
         $parsed = Parse-BobCursorPoolLabel $Label
         if ($parsed) {
             if ($null -ne $parsed.remaining_pct) {
@@ -384,7 +410,7 @@ function Save-BobCursorPoolForSeat {
             }
         }
     }
-    if ($PeriodEnd) {
+    if ($current) {
         $entry | Add-Member -NotePropertyName period_end -NotePropertyValue ([string]$PeriodEnd) -Force
     }
     $entry | Add-Member -NotePropertyName updated_at -NotePropertyValue ([DateTime]::UtcNow.ToString('o')) -Force
