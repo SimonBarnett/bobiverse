@@ -185,6 +185,7 @@ def classify_queue_row(
     live: set[str],
     idle: set[str],
     activity: dict[str, float] | None = None,
+    open_items: list[dict] | None = None,
 ) -> dict:
     """Classify one queue row into unaccepted|accepted|held (+ stuck flags)."""
     import gitclaim
@@ -226,6 +227,22 @@ def classify_queue_row(
         # Require SILENT_ACCEPTED_S age even for holder-gone so a chair restart
         # before seats reappear in live does not void a fresh ACK (health tests /
         # IRC flap). Still meets "within 40 min" acceptance.
+        # FR #5847: Copilot-held FR with a matching Copilot PR is covered, not stuck.
+        if (
+            holder == "copilot"
+            and str(row.get("task") or "").upper() == "FR"
+            and find_copilot_pr_covering_fr(
+                list(open_items or []),
+                repo=str(row.get("repo") or ""),
+                issue_id=_norm_id(row.get("id")),
+            )
+            is not None
+        ):
+            base["state"] = "held"
+            base["rule"] = "copilot_pr"
+            base["stuck"] = False
+            base["stuck_reason"] = ""
+            return base
         if age >= SILENT_ACCEPTED_S and not holder_live:
             base["stuck"] = True
             base["stuck_reason"] = "accepted_holder_gone"
@@ -299,10 +316,30 @@ def classify_open_item(item: dict) -> dict:
     }
     if kind in ("pr", "pull", "mrb"):
         out["task"] = "MRB"
-        if draft and not gitclaim.is_offerable_intake_skill_lesson_pr(
-            title=title, body=body, labels=labels_t
+        head_ref = str(item.get("head_ref") or item.get("headRefName") or "")
+        user_login = str(
+            item.get("user_login")
+            or item.get("author")
+            or item.get("user")
+            or ""
+        )
+        if isinstance(item.get("user"), dict):
+            user_login = str(item["user"].get("login") or user_login)
+        copilot_fr = gitclaim.is_copilot_fr_implement_pr(
+            title=title,
+            body=body,
+            labels=labels_t,
+            head_ref=head_ref,
+            user_login=user_login,
+            repo=repo,
+        )
+        if draft and not (
+            gitclaim.is_offerable_intake_skill_lesson_pr(
+                title=title, body=body, labels=labels_t
+            )
+            or copilot_fr
         ):
-            # Draft non-lesson: held as draft (report only).
+            # Draft non-lesson / non-Copilot-FR: held as draft (report only).
             if gitclaim.is_intake_harvest_receipt_pr(
                 title=title, body=body, labels=labels_t
             ):
@@ -507,6 +544,188 @@ def clear_verdicted_doing_tiles(
     return cleared
 
 
+
+def find_copilot_pr_covering_fr(
+    open_items: list[dict],
+    *,
+    repo: str,
+    issue_id: str,
+) -> dict | None:
+    """First open catalog/PR item that covers this Copilot-held FR (FR #5847)."""
+    import gitclaim
+
+    want_repo = gitclaim._repo_key(repo)
+    for item in open_items or []:
+        if not isinstance(item, dict):
+            continue
+        kind = str(item.get("kind") or item.get("task") or "").strip().lower()
+        if kind not in ("pr", "pull", "mrb"):
+            continue
+        irepo = str(item.get("repo") or "")
+        if gitclaim._repo_key(irepo) != want_repo:
+            continue
+        title = str(item.get("title") or "")
+        body = str(item.get("body") or "")
+        head_ref = str(item.get("head_ref") or item.get("headRefName") or "")
+        user_login = str(
+            item.get("user_login") or item.get("author") or item.get("user") or ""
+        )
+        if isinstance(item.get("user"), dict):
+            user_login = str(item["user"].get("login") or user_login)
+        if gitclaim.copilot_fr_pr_covers_issue(
+            issue_id=issue_id,
+            title=title,
+            body=body,
+            head_ref=head_ref,
+            user_login=user_login,
+            repo=irepo,
+        ):
+            return item
+    return None
+
+
+def settle_copilot_fr_with_open_prs(
+    home: Path,
+    open_items: list[dict],
+    *,
+    log: Callable[[str], None] | None = None,
+) -> dict:
+    """FR #5847: Copilot-held FR + matching Copilot PR → done + enqueue MRB.
+
+    Returns ``{settled: N, enqueued: N}``. Never releases the FR back to unaccepted.
+    """
+    import gitclaim
+    import copilot_dispatch as cd
+
+    settled = 0
+    enqueued = 0
+    try:
+        with gitclaim._lock(home):
+            doc = gitclaim._load_queue_unlocked(home)
+            kept: list[dict] = []
+            for row in list(doc.get("accepted") or []):
+                if not isinstance(row, dict):
+                    continue
+                if str(row.get("nick") or "").strip().lower() != "copilot":
+                    kept.append(row)
+                    continue
+                if str(row.get("task") or "").upper() != "FR":
+                    kept.append(row)
+                    continue
+                repo = str(row.get("repo") or "")
+                ident = _norm_id(row.get("id"))
+                # Prefer an already-queued sibling MRB URL (settle_stuck path).
+                job = cd._matching_job(home, row)
+                pr_url = cd._live_copilot_pr_url(doc, row, job)
+                match = None
+                if not pr_url:
+                    match = find_copilot_pr_covering_fr(
+                        open_items, repo=repo, issue_id=ident
+                    )
+                    if match is not None:
+                        pr_num = _norm_id(match.get("id") or match.get("number"))
+                        pr_url = cd._pull_url(repo, pr_num) or cd._pull_url(
+                            repo, str(match.get("url") or "")
+                        )
+                if not pr_url:
+                    kept.append(row)
+                    continue
+                # Mark FR done superseded by Copilot PR.
+                doc.setdefault("done", [])
+                fin = cd._to_done(row, result="COPILOT_PR", url=pr_url)
+                fin["pr"] = pr_url
+                cd._append_done(doc, fin)
+                cd._idle_holder(home, row)
+                cd._forget_job(home, repo, "FR", ident)
+                settled += 1
+                if log:
+                    log(
+                        f"stuck-sweep copilot-fr-done {repo}{ident} pr={pr_url}"
+                    )
+                # Ensure MRB row exists for the PR (draft OK).
+                pr_ident = ""
+                if "/pull/" in pr_url:
+                    pr_ident = _norm_id(pr_url.rsplit("/pull/", 1)[-1].split("/")[0])
+                elif match is not None:
+                    pr_ident = _norm_id(match.get("id") or match.get("number"))
+                if pr_ident:
+                    already = False
+                    for bucket in ("unaccepted", "accepted", "done"):
+                        for other in doc.get(bucket) or []:
+                            if (
+                                isinstance(other, dict)
+                                and gitclaim._same(other, repo, "MRB", pr_ident)
+                            ):
+                                already = True
+                                break
+                        if already:
+                            break
+                    if not already:
+                        title = ""
+                        body = ""
+                        head_ref = ""
+                        user_login = "app/copilot-swe-agent"
+                        if match is not None:
+                            title = str(match.get("title") or "")[:160]
+                            body = str(match.get("body") or "")
+                            head_ref = str(
+                                match.get("head_ref") or match.get("headRefName") or ""
+                            )
+                            user_login = str(
+                                match.get("user_login")
+                                or match.get("author")
+                                or user_login
+                            )
+                        refs = gitclaim.extract_closes_issue_ids(
+                            title, body, repo=repo
+                        )
+                        if ident not in refs:
+                            refs = tuple(list(refs) + [ident])
+                        claim = gitclaim.GitClaim(
+                            repo=repo,
+                            task="MRB",
+                            id=pr_ident,
+                            event="stuck_sweep",
+                            action="enqueue",
+                            line=f"MRB {repo}{pr_ident} {title}".strip(),
+                            refs=refs,
+                            opened_by="copilot",
+                        )
+                        # Append directly under lock (enqueue_unaccepted would re-lock).
+                        row_mrb = {
+                            "repo": repo,
+                            "task": "MRB",
+                            "id": pr_ident,
+                            "title": title,
+                            "line": claim.line,
+                            "url": pr_url,
+                            "refs": list(refs),
+                            "author_seat": "copilot",
+                            "opened_by": "copilot",
+                            "draft": True,
+                            "head_ref": head_ref,
+                            "user_login": user_login,
+                            "note": "stuck-sweep:copilot-fr-pr",
+                            "ts": _utc_now(),
+                        }
+                        doc.setdefault("unaccepted", []).append(row_mrb)
+                        enqueued += 1
+                        if log:
+                            log(
+                                f"stuck-sweep enqueue MRB {repo}{pr_ident} "
+                                f"from copilot FR {ident}"
+                            )
+            doc["accepted"] = kept
+            if settled:
+                gitclaim._write_queue(gitclaim.queue_path(home), doc)
+    except (TimeoutError, OSError, ValueError, json.JSONDecodeError):
+        return {"settled": 0, "enqueued": 0}
+    if settled:
+        with contextlib_suppress():
+            gitclaim.rebuild_offer_precompute(home)
+    return {"settled": settled, "enqueued": enqueued}
+
+
 def release_silent_accepted(
     home: Path,
     *,
@@ -514,6 +733,7 @@ def release_silent_accepted(
     live: set[str],
     activity: dict[str, float] | None = None,
     log: Callable[[str], None] | None = None,
+    open_items: list[dict] | None = None,
 ) -> list[dict]:
     """Release stuck accepted rows (holder gone / silent). Returns released retry rows."""
     import gitclaim
@@ -533,6 +753,7 @@ def release_silent_accepted(
                     live=live,
                     idle=set(),
                     activity=activity,
+                    open_items=open_items,
                 )
                 if not info.get("stuck"):
                     kept.append(row)
@@ -636,6 +857,7 @@ def run_stuck_sweep(
                 act_map[str(nick).lower()] = float(ts)
 
     doc = gitclaim.load_queue(home)
+    catalog = list(open_items) if open_items is not None else load_open_catalog(home)
     classified: list[dict] = []
     for row in doc.get("accepted") or []:
         if isinstance(row, dict):
@@ -647,6 +869,7 @@ def run_stuck_sweep(
                     live=live_set,
                     idle=idle_set,
                     activity=act_map,
+                    open_items=catalog,
                 )
             )
     for row in doc.get("unaccepted") or []:
@@ -659,11 +882,11 @@ def run_stuck_sweep(
                     live=live_set,
                     idle=idle_set,
                     activity=act_map,
+                    open_items=catalog,
                 )
             )
 
     idx = _queue_index(doc)
-    catalog = list(open_items) if open_items is not None else load_open_catalog(home)
     untracked_infos: list[dict] = []
     for item in catalog:
         if not isinstance(item, dict):
@@ -680,19 +903,27 @@ def run_stuck_sweep(
         if info.get("stuck_reason") == "untracked_offerable":
             untracked_infos.append(info)
 
-    actions = {"released": 0, "enqueued": 0, "cleared_doing": 0}
+    actions = {"released": 0, "enqueued": 0, "cleared_doing": 0, "copilot_settled": 0}
     cleared_doing: list[dict] = []
     if act:
+        # FR #5847: settle Copilot-held FRs that already have a Copilot PR before
+        # accepted_holder_gone release can re-dispatch them.
+        copilot_stats = settle_copilot_fr_with_open_prs(
+            home, catalog, log=log
+        )
+        actions["copilot_settled"] = int(copilot_stats.get("settled") or 0)
+        actions["enqueued"] = int(copilot_stats.get("enqueued") or 0)
         released = release_silent_accepted(
             home,
             now=now_f,
             live=live_set,
             activity=act_map,
             log=log,
+            open_items=catalog,
         )
         actions["released"] = len(released)
         enq = enqueue_untracked(home, untracked_infos, log=log)
-        actions["enqueued"] = len(enq)
+        actions["enqueued"] = int(actions["enqueued"]) + len(enq)
         # FR #5581: clear stale digest doing tiles for already-verdicted MRBs.
         # Bookkeeping always (same class as holder-gone release under pause).
         cleared_doing = clear_verdicted_doing_tiles(home, now=now_f, log=log)

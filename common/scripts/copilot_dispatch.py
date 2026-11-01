@@ -1507,11 +1507,33 @@ def tick(
         for j in _load_jobs(home).get("jobs") or []
     }
     if has_allowance(home, now=now_f):
+        catalog = []
+        with contextlib.suppress(Exception):
+            import stuck_job_sweep as _sjs5847
+
+            catalog = list(_sjs5847.load_open_catalog(home) or [])
+        qdoc = gitclaim.load_queue(home)
         for row in gitclaim.ordered_unaccepted(home):
             if (row.get("repo"), row.get("task"), row.get("id")) in active:
                 continue
             if gitclaim.ledger_blocks(ledger, row, COPILOT_NICK):
                 continue
+            # FR #5847: never start a second Copilot task when a Copilot PR
+            # already covers this FR (or DONE COPILOT_PR stamped).
+            if str(row.get("task") or "").upper() == "FR":
+                repo_r = str(row.get("repo") or "")
+                ident_r = gitclaim._norm_row_id(row.get("id"))
+                if _done_blocks_requeue(qdoc, repo_r, "FR", ident_r):
+                    continue
+                with contextlib.suppress(Exception):
+                    import stuck_job_sweep as _sjs5847b
+
+                    if _sjs5847b.find_copilot_pr_covering_fr(
+                        catalog, repo=repo_r, issue_id=ident_r
+                    ) is not None:
+                        continue
+                if _live_copilot_pr_url(qdoc, row, _matching_job(home, row)):
+                    continue
             if is_high_priority(home, row) and should_dispatch(
                 row, allowance=True, now=now_f
             ):
