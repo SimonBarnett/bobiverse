@@ -304,20 +304,88 @@ def stub_extension_work(
     }
 
 
+def forcelist_value_has_extension(value: str, extension_id: str) -> bool:
+    """FR #5660: present only when the forcelist entry id (before ';') equals extension_id."""
+    ext = (extension_id or "").strip().lower()
+    if not ext:
+        return False
+    first = str(value or "").split(";", 1)[0].strip().lower()
+    return first == ext
+
+
 def next_forcelist_name(
     existing_names: list[str],
     existing_values: list[str],
     extension_id: str,
 ) -> str | None:
-    """FR #5538: next unused 1,2,3... or None if the extension id is already present."""
+    """FR #5538: next unused 1,2,3... or None if the extension id is already present.
+
+    FR #5660: match the id before ';' (not a substring anywhere in the value).
+    """
     ext = (extension_id or "").strip()
-    if ext and any(ext in str(v) for v in existing_values):
+    if ext and any(forcelist_value_has_extension(v, ext) for v in existing_values):
         return None
     used = {str(n) for n in existing_names}
     n = 1
     while str(n) in used:
         n += 1
     return str(n)
+
+
+def registry_values_look_like_windows(values: dict[str, Any]) -> bool:
+    """FR #5660: Samba winreg often fakes only SystemRoot + CurrentVersion=6.1.
+
+    Real Windows exposes ProductName and/or CurrentBuild(Number).
+    """
+    product = str(values.get("ProductName") or "").strip()
+    if product:
+        return True
+    build = str(
+        values.get("CurrentBuild") or values.get("CurrentBuildNumber") or ""
+    ).strip()
+    return bool(build)
+
+
+def default_is_windows_host(host: str) -> bool:
+    """FR #5660: True unless remote registry is reachable and looks like Samba.
+
+    Unreachable hosts return True so fill-holes can still probe / report
+    unreachable-registry via the existing forcelist path (unit tests use
+    fake hostnames). Samba winreg that answers CurrentVersion without
+    ProductName/CurrentBuild returns False -> ``skipped: not_windows``.
+    """
+    import winreg
+
+    name = (host or "").strip()
+    if not name:
+        return True
+    try:
+        rem = winreg.ConnectRegistry(name, winreg.HKEY_LOCAL_MACHINE)
+    except OSError:
+        return True
+    try:
+        try:
+            key = winreg.OpenKey(
+                rem, r"SOFTWARE\Microsoft\Windows NT\CurrentVersion"
+            )
+        except OSError:
+            # Connected but no CurrentVersion — treat as non-Windows.
+            return False
+        try:
+            found: dict[str, Any] = {}
+            idx = 0
+            while idx < 64:
+                try:
+                    n, v, _typ = winreg.EnumValue(key, idx)
+                except OSError:
+                    break
+                found[str(n)] = v
+                idx += 1
+            return registry_values_look_like_windows(found)
+        finally:
+            winreg.CloseKey(key)
+    finally:
+        winreg.CloseKey(rem)
 
 
 def default_dc_hostnames() -> list[str]:
@@ -575,6 +643,7 @@ def fill_holes_work(
     is_dc: Callable[[str], bool] | None = None,
     dc_enum: Callable[[], list[str]] | None = None,
     read_forcelist: Callable[[str, str], tuple[list[str], list[str]]] | None = None,
+    is_windows_host: Callable[[str], bool] | None = None,
     **_kw: Any,
 ) -> dict[str, Any]:
     """FR #5292: LDAP enum + per-host Chrome/Edge ForceInstall. Never uses extra_hosts.
@@ -582,6 +651,7 @@ def fill_holes_work(
     FR #5364: on access-denied, retry with CredMan PriorityAirc/ExtensionAdmin.
     FR #5538: status is read-only; skip DCs; append a free forcelist name.
     FR #5585: would_write / chrome/edge true only when a forcelist slot is free.
+    FR #5660: skip non-Windows (Samba winreg) as ``not_windows`` — never present.
     """
     _ = extra_hosts
     enum = ldap_enum or default_ldap_enum
@@ -589,6 +659,14 @@ def fill_holes_work(
     apply = apply_force_install or default_apply_force_install
     apply_as = apply_force_install_as or default_apply_force_install_as
     read_creds = credman_reader or default_extension_credman
+    # Default: live Windows/Samba classify. Tests may inject is_windows_host.
+    # When only read_forcelist is injected (no is_windows_host), assume Windows
+    # so unit hosts are not classified against the real network.
+    if is_windows_host is None:
+        if read_forcelist is None:
+            is_windows_host = default_is_windows_host
+        else:
+            is_windows_host = lambda _h: True  # noqa: E731
     writes = (action or "").strip().lower() in {"install", "forceinstall", "apply"}
     if is_dc is None:
         dc_set = {str(x).lower() for x in (dc_enum or default_dc_hostnames)()}
@@ -605,6 +683,20 @@ def fill_holes_work(
             continue
         if not ping(name):
             hosts_out.append({"host": name, "ok": False, "error": "unreachable"})
+            continue
+        try:
+            windows = bool(is_windows_host(name))
+        except Exception:
+            windows = False
+        if not windows:
+            hosts_out.append(
+                {
+                    "host": name,
+                    "ok": True,
+                    "skipped": "not_windows",
+                    "would_write": False,
+                }
+            )
             continue
         plan = probe_host_forcelist(
             name, extension_id, reader=read_forcelist
