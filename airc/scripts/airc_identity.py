@@ -21,6 +21,30 @@ DEFAULT_TARGETS = {
     "network": "PriorityAirc/NetworkAdmin",
 }
 
+# FR #5745: optional airc.json credman_targets overrides (verb -> CredMan target).
+_CONFIGURED_TARGETS: dict[str, str] = {}
+
+
+def configure_credman_targets(cfg: dict[str, Any] | None) -> None:
+    """Load ``credman_targets`` from airc.json (or clear when cfg is None/empty)."""
+    global _CONFIGURED_TARGETS
+    out: dict[str, str] = {}
+    raw = (cfg or {}).get("credman_targets") if isinstance(cfg, dict) else None
+    if isinstance(raw, dict):
+        for verb in ("legion", "extension", "network"):
+            val = str(raw.get(verb) or "").strip()
+            if val:
+                out[verb] = val
+    _CONFIGURED_TARGETS = out
+
+
+def credman_target_for(verb: str, *, override: str | None = None) -> str:
+    """FR #5659 / #5745: per-verb CredMan target (override -> airc.json -> default)."""
+    if override is not None and str(override).strip():
+        return str(override).strip()
+    key = (verb or "").strip().lower()
+    return (_CONFIGURED_TARGETS.get(key) or DEFAULT_TARGETS.get(key) or "").strip()
+
 
 @dataclass
 class ResolvedIdentity:
@@ -32,6 +56,16 @@ class ResolvedIdentity:
     credman_target: str = ""
     credman_missing: bool = False
     credman_error: str = ""
+
+    def identity_reason(self) -> str:
+        """FR #5745: why SYSTEM was chosen after CredMan miss/error (empty otherwise)."""
+        if not self.credman_missing:
+            return ""
+        if self.credman_error:
+            return f"credman-read-error:{self.credman_error}"
+        if self.credman_target:
+            return f"credman-missing:{self.credman_target}"
+        return "credman-missing"
 
     def public_dict(self) -> dict[str, Any]:
         """Safe for IRC / DCC logs (no secret)."""
@@ -46,7 +80,23 @@ class ResolvedIdentity:
             out["credman_missing"] = True
         if self.credman_error:
             out["credman_error"] = self.credman_error
+        reason = self.identity_reason()
+        if reason and self.source == IDENTITY_SYSTEM:
+            out["identity_reason"] = reason
         return out
+
+
+def format_identity_fallback_log(*, verb: str, resolved: ResolvedIdentity) -> str | None:
+    """FR #5745: one-line console log when CredMan miss falls through to SYSTEM."""
+    if resolved.source != IDENTITY_SYSTEM or not resolved.credman_missing:
+        return None
+    reason = resolved.identity_reason() or "credman-missing"
+    acct = (resolved.account or "").strip() or "-"
+    tgt = (resolved.credman_target or "").strip() or "-"
+    return (
+        f"identity-fallback verb={(verb or '-').lower()} reason={reason} "
+        f"identity=system account={acct} target={tgt}"
+    )
 
 
 def system_computer_account(
@@ -99,7 +149,7 @@ def resolve_remote_identity(
     If ``passed_requested`` and passed is missing/empty -> auth_failed caller side.
     If ``passed`` is provided, it wins (caller must not fall back on auth failure).
     """
-    target = (credman_target or DEFAULT_TARGETS.get((verb or "").lower(), "")).strip()
+    target = credman_target_for(verb, override=credman_target)
     if passed is not None:
         user = str(passed.get("username") or "").strip()
         pw = str(passed.get("password") or "")
