@@ -928,6 +928,10 @@ def _refresh_machine_activity_from_worker_list(ent: dict) -> None:
         jobs = ent.get("jobs")
         if isinstance(jobs, list) and jobs:
             ent["jobs"] = []
+        # FR #5698 / #5704 / #5724: idle export must not keep sticky repo/sha
+        # (peer false-publish left marchhare repo=hrsmith after jobs=[]).
+        for key in ("repo", "sha", "started_at"):
+            ent[key] = ""
     # FR #5687: keep running/queued aligned with (possibly cleared) jobs.
     _sync_running_queued_from_jobs(ent)
 
