@@ -1,11 +1,11 @@
-﻿#Requires -Version 5.1
+#Requires -Version 5.1
 <#
 .SYNOPSIS
   Build installable release MSI for airc console (FR #253 / issue #305).
 .NOTES
   Stages the tree (scripts, bundled NSSM, config/ergo.password), then builds a
   single per-machine .msi via WiX 3 (heat/candle/light). Zip is an internal
-  stage only — published artifact is the MSI.
+  stage only --- published artifact is the MSI.
 #>
 [CmdletBinding()]
 param(
@@ -66,6 +66,9 @@ $files = @(
     'scripts\airc_fail_intake.py',  # FR #5775 verb fail intake
     'scripts\Report-AircVerbFailure.ps1',  # FR #5775 PS fail intake
     'scripts\airc_credman.py',  # FR #5526 native CredMan (PRIORITY/LEGION/EXTENSION)
+    'scripts\airc_cred_irc.py',  # FR #5812 CRED persist via=irc (HELLO/SEAL)
+    'scripts\airc_cred_send.py',  # FR #5825 / #5829 console-side via=irc sender
+    'scripts\Send-AircCred.ps1',  # FR #5825 / #5829 CredMan/SecureString driver
     'scripts\airc_isolated.py',  # FR #5537 in-service isolated process helper
     'scripts\account_map.py',
     'scripts\Start-AircConsole.ps1',
@@ -99,7 +102,7 @@ $readmeNssm = Join-Path $stage 'third_party\nssm\README.txt'
 if (-not (Test-Path -LiteralPath $readmeNssm)) {
     Set-Content -LiteralPath $readmeNssm -Encoding ascii -Value @(
         'NSSM (Non-Sucking Service Manager) 2.24 win64',
-        'https://nssm.cc/release/nssm-2.24.zip — public domain',
+        'https://nssm.cc/release/nssm-2.24.zip --- public domain',
         'Bundled so Install-AircConsole.ps1 works without C:\ai\ergo\nssm.exe (issue #266).'
     )
 }
