@@ -273,11 +273,46 @@ def run_network_verb(
     if _iso.is_packaged_work(work):
 
         def _from_child(data: Any) -> None:
-            payload = data if isinstance(data, dict) else {
-                "ok": False,
-                "hosts": [],
-                "log": [{"error": "isolated-fault", "step": "worker"}],
-            }
+            # FR #5665: worker_died / isolated-fault must populate failures[]
+            # (top-level error alone used to deliver empty success exit=0).
+            if not isinstance(data, dict):
+                payload = {
+                    "ok": False,
+                    "hosts": [],
+                    "failures": [
+                        {"step": "worker", "error": "worker_died", "detail": "bad-payload"}
+                    ],
+                    "log": [
+                        {"step": "worker", "error": "worker_died", "detail": "bad-payload"}
+                    ],
+                }
+            else:
+                payload = dict(data)
+                import airc_isolated as _iso
+
+                if _iso.is_worker_fault(payload) or (
+                    payload.get("ok") is False
+                    and payload.get("error")
+                    and not payload.get("failures")
+                    and not payload.get("log")
+                    and not payload.get("hosts")
+                ):
+                    detail = str(
+                        payload.get("detail") or payload.get("error") or "no-result"
+                    )[:300]
+                    fault = {
+                        "step": "worker",
+                        "error": "worker_died",
+                        "detail": detail,
+                    }
+                    payload = {
+                        "ok": False,
+                        "hosts": list(payload.get("hosts") or []),
+                        "failures": [fault],
+                        "log": [fault],
+                        "error": "worker_died",
+                        "detail": detail,
+                    }
             _finish(payload)
 
         _iso.start_isolated(
@@ -358,6 +393,8 @@ def deliver_network_payload(
     digest = hashlib.sha256(raw).hexdigest()
     nfail = int(payload.get("failure_count") or 0)
     nhost = int(payload.get("host_count") or 0)
+    # FR #5665: non-zero DONE when failures[] (parity EXTENSION #5644 / LEGION #5655).
+    exit_code = 0 if nfail == 0 else 1
     summary = (
         f"NETWORK log hosts={nhost} failures={nfail} "
         f"action={payload.get('action')} bytes={len(raw)}"
@@ -372,7 +409,7 @@ def deliver_network_payload(
         try:
             sender(raw, offer)
             done = _dcc.format_done_via_dcc(
-                jid, 0, nbytes=len(raw), sha256=digest, via="dcc"
+                jid, exit_code, nbytes=len(raw), sha256=digest, via="dcc"
             )
             return {
                 "via": "dcc",
@@ -387,7 +424,7 @@ def deliver_network_payload(
                 f"err id={jid} seq={len(lines)+1} dcc failed: {exc}; falling back to IRC"
             )
             lines.append("CONT id=" + jid + " offset=1")
-            done = f"DONE id={jid} exit=0 via=irc reason=dcc-fail"
+            done = f"DONE id={jid} exit={exit_code} via=irc reason=dcc-fail"
             lines.append(done)
             return {
                 "via": "irc",
@@ -399,7 +436,7 @@ def deliver_network_payload(
                 "payload": raw,
             }
     lines.append("CONT id=" + jid + " offset=1")
-    done = f"DONE id={jid} exit=0 via=irc"
+    done = f"DONE id={jid} exit={exit_code} via=irc"
     lines.append(done)
     return {
         "via": "irc",

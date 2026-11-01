@@ -2,6 +2,8 @@
 
 Spawns the same Python / frozen airc.exe with ``--isolated-job`` (stdin JSON,
 stdout JSON). Not a peer product binary. Secrets never on argv.
+
+FR #5665: child kill / empty / bad JSON returns ``error=worker_died`` (fail closed).
 """
 from __future__ import annotations
 
@@ -53,6 +55,24 @@ def _scrub_kwargs(kwargs: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
+def is_worker_fault(payload: Any) -> bool:
+    """FR #5665: True when child died / returned no usable verb result."""
+    if not isinstance(payload, dict):
+        return True
+    err = str(payload.get("error") or "").strip().lower()
+    if err == "worker_died" or err.startswith("isolated-fault:"):
+        return True
+    return False
+
+
+def _worker_died(detail: str) -> dict[str, Any]:
+    return {
+        "ok": False,
+        "error": "worker_died",
+        "detail": (detail or "no-result")[:200],
+    }
+
+
 def call_isolated_module(
     module: str,
     func: str,
@@ -61,30 +81,45 @@ def call_isolated_module(
     timeout_s: float = 900,
     runner: Callable[..., subprocess.CompletedProcess[str]] | None = None,
 ) -> dict[str, Any]:
-    """Run ``module.func(**kwargs)`` in a child process. Returns a JSON object."""
+    """Run ``module.func(**kwargs)`` in a child process. Returns a JSON object.
+
+    FR #5665: non-zero exit, empty stdout, timeout, or bad JSON =>
+    ``error=worker_died`` (fail closed). Never invent an empty success payload.
+    """
     spec = {
         "module": module,
         "func": func,
         "kwargs": _scrub_kwargs(kwargs or {}),
     }
     run = runner or subprocess.run
-    p = run(
-        isolated_argv(),
-        input=json.dumps(spec, separators=(",", ":")),
-        capture_output=True,
-        text=True,
-        timeout=timeout_s,
-        env=_child_env(),
-    )
-    if p.returncode != 0:
-        err = (p.stderr or p.stdout or "").strip().splitlines()
-        reason = err[-1] if err else f"exit-{p.returncode}"
-        return {"ok": False, "error": f"isolated-fault:{reason[:80]}"}
     try:
-        data = json.loads(p.stdout or "{}")
+        p = run(
+            isolated_argv(),
+            input=json.dumps(spec, separators=(",", ":")),
+            capture_output=True,
+            text=True,
+            timeout=timeout_s,
+            env=_child_env(),
+        )
+    except subprocess.TimeoutExpired as exc:
+        return _worker_died(f"timeout:{type(exc).__name__}")
+    except Exception as exc:  # noqa: BLE001
+        return _worker_died(f"spawn:{type(exc).__name__}")
+    stdout = (p.stdout or "").strip()
+    stderr = (p.stderr or "").strip()
+    if p.returncode != 0:
+        err_lines = (stderr or stdout).splitlines()
+        reason = err_lines[-1] if err_lines else f"exit-{p.returncode}"
+        return _worker_died(reason[:80])
+    if not stdout:
+        return _worker_died("empty-stdout")
+    try:
+        data = json.loads(stdout)
     except json.JSONDecodeError:
-        return {"ok": False, "error": "isolated-fault:bad-json"}
-    return data if isinstance(data, dict) else {"ok": False, "error": "isolated-fault:bad-payload"}
+        return _worker_died("bad-json")
+    if not isinstance(data, dict):
+        return _worker_died("bad-payload")
+    return data
 
 
 def start_isolated(

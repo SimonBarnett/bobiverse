@@ -724,6 +724,31 @@ def run_legion_verb(
 
         def _from_child(data: Any) -> None:
             payload = data if isinstance(data, dict) else {}
+            # FR #5665: normalize isolated death to worker_died + failures[].
+            # FR #5659: missing CredMan falls through (no exit=126 here).
+            if _iso.is_worker_fault(payload) or (
+                isinstance(payload, dict)
+                and payload.get("ok") is False
+                and str(payload.get("error") or "").lower()
+                in {"worker_died", "isolated-fault"}
+            ):
+                detail = str(
+                    payload.get("detail") or payload.get("error") or "no-result"
+                )[:300]
+                payload = {
+                    "ok": False,
+                    "target": target,
+                    "error": "worker_died",
+                    "detail": detail,
+                    "status": "failed",
+                    "failures": [
+                        {
+                            "host": target,
+                            "error": "worker_died",
+                            "detail": detail,
+                        }
+                    ],
+                }
             _finish(payload)
 
         if force_thread:
