@@ -285,6 +285,8 @@ def extension_gpo_then_fill_holes(
         out["policy_names"] = list(gpo.get("policy_names") or [])
         out["gpo_reason"] = gpo.get("reason")
     out["ok"] = bool(isinstance(gpo, dict) and gpo.get("ok")) or bool(out.get("ok"))
+    # FR #5757: GPO success + RemoteRegistry-down on a domain host => skipped:gpo.
+    out = soften_gpo_covered_registry_failures(out)
     return out
 
 
@@ -531,10 +533,15 @@ def classify_extension_host_error(
     icmp_ok: bool | None = None,
     smb_ok: bool | None = None,
 ) -> dict[str, Any]:
-    """FR #5661: map fallback reach failures to operator-facing codes + detail.
+    """FR #5661 / #5757: map fallback reach failures to operator-facing codes + detail.
 
     Codes: access_denied, remote_registry_stopped, smb_blocked, host_down,
     unreachable (only when nothing answers / unclassified silence).
+
+    FR #5757: when SMB/IPC is up (``smb_ok is True``) and ConnectRegistry raises
+    WinError 53/67 (network path/name not found), classify as
+    ``remote_registry_stopped`` — RemoteRegistry stopped/disabled — never
+    ``smb_blocked`` (firewall already open).
     """
     detail = (str(exc) if exc is not None else "")[:300]
     if exc is not None and is_access_denied(exc):
@@ -550,6 +557,16 @@ def classify_extension_host_error(
         or ("remote procedure call" in msg and "fail" in msg)
         or ("rpc" in msg and "timeout" in msg)
     )
+    path_hints = code in (53, 67) or (
+        "network path was not found" in msg
+        or "network name cannot be found" in msg
+    )
+    # FR #5757: IPC/SMB reachable + path-not-found from ConnectRegistry => RemoteRegistry down.
+    if smb_ok is True and (rpc_hints or path_hints):
+        return {
+            "error": "remote_registry_stopped",
+            "detail": detail or ("rpc-unavailable" if rpc_hints else "remote-registry-disabled"),
+        }
     if rpc_hints:
         return {
             "error": "remote_registry_stopped",
@@ -573,6 +590,45 @@ def classify_extension_host_error(
     if exc is None and icmp_ok is False:
         return {"error": "host_down", "detail": "icmp-failed"}
     return {"error": "unreachable", "detail": detail or "no-response"}
+
+
+def soften_gpo_covered_registry_failures(payload: dict[str, Any]) -> dict[str, Any]:
+    """FR #5757: when GPO succeeded, RemoteRegistry-unreachable hosts are skipped:gpo.
+
+    Domain GPO already covers ForceInstall; a stopped RemoteRegistry service must
+    not turn a successful GPO write into DONE exit=1.
+    """
+    out = dict(payload or {})
+    gpo_ok = str(out.get("gpo") or "").lower() in {"ok", "present"} or bool(
+        out.get("wrote_gpo")
+    )
+    if not gpo_ok:
+        return out
+    hosts = list(out.get("hosts") or [])
+    changed = False
+    new_hosts: list[dict[str, Any]] = []
+    for h in hosts:
+        row = dict(h or {})
+        if (
+            not row.get("ok")
+            and str(row.get("error") or "") == "remote_registry_stopped"
+        ):
+            warn = str(row.get("error") or "remote_registry_stopped")
+            detail = str(row.get("detail") or "")
+            row["ok"] = True
+            row["skipped"] = "gpo"
+            row["gpo_covers"] = True
+            row["warning"] = warn
+            if detail:
+                row["detail"] = detail
+            # Drop error= so log builders that key on error do not hard-fail (FR #5757).
+            row.pop("error", None)
+            changed = True
+        new_hosts.append(row)
+    if changed:
+        out["hosts"] = new_hosts
+        out["ok"] = True
+    return out
 
 
 def default_extension_credman() -> dict[str, str]:
@@ -1300,7 +1356,8 @@ def extension_log_from_payload(
     fails = list(data.get("failures") or []) if data else None
     if data and fails is not None and not fails:
         for h in hosts or []:
-            if isinstance(h, dict) and h.get("error"):
+            # FR #5757: only hard-failed hosts (ok=False); skipped:gpo keeps warning only.
+            if isinstance(h, dict) and h.get("error") and not h.get("ok"):
                 entry = {
                     "step": "fallback",
                     "host": h.get("host") or h.get("hostname"),
