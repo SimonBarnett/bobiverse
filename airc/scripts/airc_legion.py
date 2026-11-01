@@ -674,7 +674,7 @@ def deliver_legion_log(
             f"out id={jid} seq={i} failure {json.dumps(fail, separators=(',', ':'))}"
         )
     if offer is not None:
-        sender = send_fn or _dcc.send_offer_payload
+        sender = send_fn or _dcc.send_offer_payload_bounded
         try:
             sender(raw, offer)
             done = _dcc.format_done_via_dcc(

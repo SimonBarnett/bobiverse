@@ -391,12 +391,18 @@ def reverse_dcc_send(
     FR #5008: pass ``tls=True`` to wrap the stream (default False keeps WP1 tests).
     FR #5612: waits for ``ACK <sha256>`` before returning; missing/wrong ack raises
     ``ConnectionError("dcc failed: no ack")`` so IRC can fall back.
+    FR #5654: ``raw.settimeout`` before TLS wrap (create_connection may clear the
+    connect timeout on some platforms); socket/handshake/send timeouts become
+    ``ConnectionError("dcc failed: send timeout")`` so IRC fallback stays bounded
+    and separate from the shell run timeout.
     """
     if len(payload) > DCC_BULK_SIZE_CAP:
         raise ValueError("payload over DCC_BULK_SIZE_CAP")
     raw = socket.create_connection((host, int(port)), timeout=timeout_s)
     sock: socket.socket = raw
     try:
+        # FR #5654: pin timeout before wrap_socket — handshake must not block forever.
+        raw.settimeout(timeout_s)
         if tls:
             sni = (
                 "localhost"
@@ -406,6 +412,8 @@ def reverse_dcc_send(
             sock = load_tls_client_context().wrap_socket(raw, server_hostname=sni)
         sock.settimeout(timeout_s)
         _write_framed_bulk(sock, payload, token)
+    except (TimeoutError, socket.timeout) as exc:
+        raise ConnectionError("dcc failed: send timeout") from exc
     finally:
         try:
             sock.close()
@@ -722,6 +730,7 @@ def reverse_dcc_recv(
     raw = socket.create_connection((host, int(port)), timeout=timeout_s)
     sock: socket.socket = raw
     try:
+        raw.settimeout(timeout_s)  # FR #5654: before TLS wrap
         if tls:
             sni = (
                 "localhost"
@@ -868,3 +877,35 @@ def send_offer_payload(
         timeout_s=timeout_s,
         tls=bool(offer.tls),
     )
+
+
+def send_offer_payload_bounded(
+    payload: bytes,
+    offer: DccListenOffer,
+    *,
+    timeout_s: float = DCC_HANDSHAKE_TIMEOUT_S,
+) -> None:
+    """FR #5654: run ``send_offer_payload`` with a hard wall-clock bound.
+
+    Socket timeouts alone are not enough on every Windows/TLS path: a peer that
+    accepts and never reads can leave ``sendall`` / handshake stuck past
+    ``SO_SNDTIMEO``. The shell runner joins this helper so DONE / IRC fallback
+    cannot wait on the shell run timeout (exit=124).
+    """
+    box: dict = {}
+
+    def _run() -> None:
+        try:
+            send_offer_payload(payload, offer, timeout_s=timeout_s)
+            box["ok"] = True
+        except BaseException as exc:  # noqa: BLE001 — deliver to joiner
+            box["exc"] = exc
+
+    t = threading.Thread(target=_run, name="airc-dcc-send", daemon=True)
+    t.start()
+    # +1s slack for thread scheduling; still far below SHELL_TIMEOUT_S.
+    t.join(timeout=float(timeout_s) + 1.0)
+    if t.is_alive():
+        raise ConnectionError("dcc failed: send timeout")
+    if "exc" in box:
+        raise box["exc"]

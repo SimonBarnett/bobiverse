@@ -440,7 +440,8 @@ class AircConsoleService:
         def _verb_log_send(payload, offer, **_k):
             import airc_dcc_bulk as _dcc
 
-            return _dcc.send_offer_payload(payload, offer)
+            # FR #5654: same wall-clock bound as shell bulk DCC.
+            return _dcc.send_offer_payload_bounded(payload, offer)
 
         def _verb_log_emit(delivered):
             nick = getattr(self.core, "verb_log_nick", None)

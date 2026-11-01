@@ -2853,7 +2853,9 @@ class ShellJobRunner:
 
                 try:
                     # FR #5008: honor tls= / relay= on the caller's DCCLISTEN offer.
-                    _dcc.send_offer_payload(page.bulk_payload, peer)
+                    # FR #5654: wall-clock bound so a never-reading peer cannot
+                    # stall DONE into the shell run timeout (exit=124).
+                    _dcc.send_offer_payload_bounded(page.bulk_payload, peer)
                 except Exception as exc:
                     # Fall back to IRC CONT path when reverse DCC fails (FR #5003).
                     # FR #5065: notice uses the next seq *after* the IRC page.
