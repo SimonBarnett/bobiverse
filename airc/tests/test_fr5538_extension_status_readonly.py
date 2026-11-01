@@ -10,6 +10,7 @@ def test_fr5538_status_does_not_write():
         "status",
         ldap_enum=lambda: ["pc1", "dc1"],
         ping_host=lambda _h: True,
+        read_forcelist=lambda _h, _p: ([], []),
         apply_force_install=lambda *a: writes.append(a),
         is_dc=lambda h: h == "dc1",
         whatif=False,

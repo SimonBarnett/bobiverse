@@ -23,6 +23,7 @@ def test_mrb5568_writes_gate_and_forcelist_helpers():
         "status",
         ldap_enum=lambda: ["pc1"],
         ping_host=lambda _h: True,
+        read_forcelist=lambda _h, _p: ([], []),
         apply_force_install=lambda *a: writes.append(a),
         whatif=False,
     )
