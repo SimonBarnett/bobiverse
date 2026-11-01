@@ -95,7 +95,7 @@ def test_read_drops_expired_dates_and_their_stale_remaining(run_ps):
     )
     seat = read["by_seat"]["test-seat"]
     assert not seat.get("period_end")
-    for gid, remaining in [("auto", 57), ("grok-chat", 0)]:
+    for gid in ["auto", "grok-chat"]:
         assert not seat["groups"][gid].get("period_end")
         assert seat["groups"][gid].get("remaining_pct") is None
     assert seat["groups"]["high-cost-models"]["period_end"] == FRESH
