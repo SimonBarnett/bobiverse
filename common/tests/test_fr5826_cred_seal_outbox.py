@@ -38,6 +38,7 @@ def test_consumed_cred_seal_is_scrubbed_without_offset_or_log_leak(
     logs: list[str] = []
 
     def send_privmsg(line: str) -> list[str]:
+        assert TOKEN not in outbox.read_text(encoding="utf-8")
         if send_error and line == CRED_LINE:
             raise OSError("transient")
         sent.append(line)

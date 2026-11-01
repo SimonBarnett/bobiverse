@@ -4230,6 +4230,12 @@ class Client:
             return []
         last = load_outbox_pos(path)
         lines, new_last = take_outbox_lines(path, last, max_lines=OUTBOX_LINES_PER_TICK)
+        cred_seal_count = sum(_is_cred_seal_outbox_line(line) for line in lines)
+        if cred_seal_count:
+            scrubbed = _scrub_consumed_cred_seal_lines(path, last, new_last)
+            if scrubbed != cred_seal_count:
+                info("WARN outbox: consumed CRED-SEAL payload could not be scrubbed")
+                return []
         sent: list[str] = []
         gate_fleet = bobreport.chair_mode_active(self.home)
         # FR #2384: bob ear (non-chair) refuses worker job-wire lines misplaced in home\outbox.txt
@@ -4278,9 +4284,6 @@ class Client:
                 info(f"ERROR outbox: line failed {type(exc).__name__}: {preview}"[:220])
                 continue
         if new_last != last:
-            scrubbed = _scrub_consumed_cred_seal_lines(path, last, new_last)
-            if scrubbed < 0:
-                info("WARN outbox: consumed CRED-SEAL payload could not be scrubbed")
             save_outbox_pos(path, new_last)
         return sent
 
