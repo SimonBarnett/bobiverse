@@ -319,6 +319,10 @@ def test_fake_release_target_version_allowlist_and_hash(tmp_path):
         ),
         encoding="utf-8",
     )
+    e = os.environ.copy()
+    # FR #5876: synthetic Apply failures must never file live UPDATE intake.
+    e["BOB_CRASH_REPORT"] = "local-only"
+    e["BOBIVERSE_CRASH_REPORT"] = "local-only"
     p = subprocess.run(
         [
             PS,
@@ -343,12 +347,16 @@ def test_fake_release_target_version_allowlist_and_hash(tmp_path):
         ],
         capture_output=True,
         text=True,
+        env=e,
         timeout=120,
     )
     log = (state / "update.log").read_text(encoding="utf-8")
     assert p.returncode == 0
     assert "sha256-mismatch" in log and "service untouched" in log
     assert "msiexec" not in log
+    result = json.loads((state / "state.json").read_text(encoding="utf-8-sig"))
+    assert result["lastResult"] == "sha256-mismatch"
+    assert result["failures"]["v0.1.17"] == 1
 
 
 @win

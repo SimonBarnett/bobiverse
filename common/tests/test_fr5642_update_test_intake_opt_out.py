@@ -34,3 +34,13 @@ def test_fr5642_other_updater_env_fixtures_set_local_only():
         t = path.read_text(encoding="utf-8")
         assert 'e["BOB_CRASH_REPORT"] = "local-only"' in t, path.name
         assert "FR #5642" in t or "local-only" in t, path.name
+
+
+def test_fr5876_airc_detached_apply_sets_local_only():
+    t = (ROOT / "airc/tests/test_fr77_update_detached.py").read_text(encoding="utf-8")
+    chunk = t[t.index("    # sha mismatch on Apply") : t.index("def test_loop_guard_and_pending_for_airc_product")]
+    assert 'e["BOB_CRASH_REPORT"] = "local-only"' in chunk
+    assert 'e["BOBIVERSE_CRASH_REPORT"] = "local-only"' in chunk
+    assert "env=e" in chunk
+    assert chunk.index('e["BOB_CRASH_REPORT"]') < chunk.index("p = subprocess.run(")
+    assert 'assert result["lastResult"] == "sha256-mismatch"' in chunk
