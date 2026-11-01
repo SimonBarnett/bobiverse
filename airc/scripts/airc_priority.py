@@ -768,11 +768,12 @@ def run_priority_walk(
         try:
             import airc_fail_intake as _fail
 
+            # wait_s>0: async thread + join cap (wait_s=0 is sync; FR #5775 / MRB #5855).
             _fail.report_verb_failure(
                 "priority",
                 failure or payload["error"],
                 args={"op": op, "instance": inst_id, "form": form, "path": kv.get("path", "")},
-                wait_s=0,
+                wait_s=1.0,
             )
         except Exception:
             pass

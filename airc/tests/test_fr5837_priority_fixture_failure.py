@@ -49,7 +49,7 @@ def test_named_fixture_miss_reports_once_and_service_recovers(
     assert kwargs["args"] == {
         "op": command.split()[0], "instance": "fixture", "form": form, "path": path,
     }
-    assert kwargs["wait_s"] == 0
+    assert kwargs["wait_s"] == 1.0
 
     recovered = core.handle_raw(
         ":bob-marchhare!u@h PRIVMSG marchhare_console :id=bbccddee PRIORITY formStart fixture CUST"
