@@ -344,6 +344,7 @@ routes to bobiverse via the split rule.
 - After FR #5737, WhatIf pins must stub plan_psexec deployed/would-redeploy — PATH find_psexec no longer makes dry-run ok on undeployed seats
 - airc bad_id: service on_line must dispatch action=bad_id (err+DONE) and log auth-allow without body; ear _AIRC_REPLY_BODY_RE must accept non-hex id= so waiters see DONE
 - LEGION default_installer_run tests must use a non-local host (not this machine name) or install_local skips the install_remote monkeypatch; scrub FAKE_ needles via runtime concat for FR #5721 source pins.
+- FR #5865: MRB CodeRabbit mode comes only from assign-line coderabbit=/review= stamps; BOB_FUEL_CODERABBIT off by default; removing .coderabbit.yaml or the app is absent (no 12m stall); merge-on-green never blocks on the CodeRabbit check once the gate cleared.
 
 ## Harvest digest (lessons audit 2026-10-06)
 
