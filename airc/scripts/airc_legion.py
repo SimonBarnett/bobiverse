@@ -822,21 +822,10 @@ def legion_log_bytes(log: dict[str, Any]) -> bytes:
 
 
 def _done_identity_suffix(log: dict[str, Any]) -> str:
-    """FR #5659: DONE carries identity=passed|credman|system and account (never secret)."""
-    parts: list[str] = []
-    ident = str(log.get("identity_source") or log.get("identity") or "").strip()
-    # Prefer short source tokens; identity_label may be "system (HOST$)".
-    if ident.lower() in ("passed", "credman", "system"):
-        parts.append(f"identity={ident.lower()}")
-    elif ident:
-        # label form: take leading token
-        tok = ident.split()[0].strip("()").lower()
-        if tok in ("passed", "credman", "system"):
-            parts.append(f"identity={tok}")
-    acct = str(log.get("account") or "").strip()
-    if acct and "password" not in acct.lower():
-        parts.append(f"account={acct}")
-    return (" " + " ".join(parts)) if parts else ""
+    """FR #5659 / #5711: delegate to shared airc_identity.done_identity_suffix."""
+    import airc_identity as _ident
+
+    return _ident.done_identity_suffix(log)
 
 
 def deliver_legion_log(

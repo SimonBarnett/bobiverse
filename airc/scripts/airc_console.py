@@ -3755,10 +3755,14 @@ class AircConsoleCore:
                 **meta,
             )
 
-        # FR #5298: NETWORK / NETWORK diag - isolated stub worker; same auth as UPDATE.
+        # FR #5298 / #5711: NETWORK / NETWORK diag - isolated worker; same auth as UPDATE.
         net = _network.parse_network_command(cmd)
         if net is not None:
             qid = str(net.get("qid") or "").strip().lower()
+            if net.get("error") == "secrets-on-irc":
+                return self._capability_deny(
+                    nick, target, text, "usage secrets-on-irc", qid
+                )
             if net.get("usage"):
                 meta = self._allow_meta(nick, account)
                 return HandleResult(
@@ -3793,11 +3797,13 @@ class AircConsoleCore:
 
             def _deliver_inventory(res: _network.NetworkVerbResult) -> None:
                 nonlocal delivered
+                extra = res.identity_public() if hasattr(res, "identity_public") else {}
                 payload = _network.build_network_payload(
                     net["action"],
                     whatif=net["whatif"],
                     hosts=list(res.hosts or []),
                     failures=list(res.failures or []),
+                    extra=extra or None,
                 )
                 delivered = _network.deliver_network_payload(
                     job_id=qid or res.job_id,
@@ -3810,29 +3816,54 @@ class AircConsoleCore:
                 if callable(emit):
                     emit(delivered)
 
+            # FR #5711: explicit NETWORK ... cred=<id>, or job id when CRED was staged.
+            cred_id = str(net.get("cred_id") or "").strip().lower()
+            if not cred_id and qid:
+                try:
+                    import airc_passed_cred as _pcred
+
+                    store = (
+                        getattr(self, "passed_cred_store", None)
+                        or _pcred.GLOBAL_PASSED_CREDS
+                    )
+                    if store.peek(qid):
+                        cred_id = qid
+                except Exception:
+                    pass
+            runner_kw = {
+                "action": net["action"],
+                "whatif": net["whatif"],
+                "job_id": qid,
+                "on_done": _deliver_inventory,
+            }
+            if cred_id:
+                runner_kw["cred_id"] = cred_id
             try:
-                result = self.network_runner(
-                    action=net["action"],
-                    whatif=net["whatif"],
-                    job_id=qid,
-                    on_done=_deliver_inventory,
-                )
+                result = self.network_runner(**runner_kw)
             except TypeError:
                 try:
                     result = self.network_runner(
                         action=net["action"],
                         whatif=net["whatif"],
                         job_id=qid,
+                        on_done=_deliver_inventory,
                     )
                 except TypeError:
-                    result = self.network_runner(action=net["action"])
+                    try:
+                        result = self.network_runner(
+                            action=net["action"],
+                            whatif=net["whatif"],
+                            job_id=qid,
+                        )
+                    except TypeError:
+                        result = self.network_runner(action=net["action"])
             except Exception:
                 result = _network.NetworkVerbResult(
                     False, "NETWORK err isolated-fault", job_id=qid
                 )
             if not isinstance(result, _network.NetworkVerbResult):
                 result = _network.NetworkVerbResult(False, "NETWORK err bad-runner")
-            if delivered is None and (result.hosts or result.failures):
+            if delivered is None and (result.hosts or result.failures or result.identity):
                 _deliver_inventory(result)
             meta = self._allow_meta(nick, account)
             reply = result.reply_text()
