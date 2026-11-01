@@ -375,26 +375,35 @@ def default_installer_run(spec: dict[str, Any], *, secret: str = "") -> dict[str
     user = str(spec.get("username") or "")
     log_dir = Path(str(spec.get("log_dir") or "airc-install-logs"))
     log_dir.mkdir(parents=True, exist_ok=True)
-    # FR #5737: airc-owned PsExec (hash-ok / local-cache redeploy); no verb-time download.
-    from airc_network_installer.install import ensure_psexec
+    # FR #5737 / #5743: airc-owned PsExec (hash-ok / local-cache redeploy).
+    # Surface extract failures as psexec-download-failed:<ExcType> (never silent).
+    from airc_network_installer.install import ensure_psexec_result
 
-    psexec = ensure_psexec(str(spec.get("psexec") or ""))
+    pse_hit = ensure_psexec_result(str(spec.get("psexec") or ""))
+    psexec = str(pse_hit.get("path") or "") if pse_hit.get("ok") else ""
     if not psexec:
+        err = str(pse_hit.get("error") or "psexec-undeployed")
         need = (
             "airc-owned PsExec missing at %ProgramData%\\bobiverse\\tools\\PsExec.exe "
             "(install/UPDATE deploys pinned Sysinternals zip; MSI never bundles PsExec; "
-            "LEGION does not download at verb time — FR #5737)"
+            "LEGION does not download at verb time — FR #5737 / #5743)"
         )
+        if err.startswith("psexec-download-failed:"):
+            need = (
+                "PsExec extract/redeploy failed after cache present "
+                f"({err}); check %ProgramData%\\bobiverse\\tools and re-run "
+                "Deploy-AircPsExec / airc install-or-update (FR #5743)"
+            )
         return {
             "ok": False,
             "status": "failed",
             "host": host,
-            "error": "psexec-undeployed",
+            "error": err,
             "need": need,
-            "psexec": "psexec-undeployed",
+            "psexec": err,
             "msi": str(msi_path),
             "log_dir": str(log_dir),
-            "failures": [{"host": host, "error": "psexec-undeployed", "need": need}],
+            "failures": [{"host": host, "error": err, "need": need}],
         }
 
     candidate = _candidate_version_from_msi_name(msi_path)
@@ -630,14 +639,16 @@ def installer_legion_work(
         body["psexec"] = (out or {}).get("psexec")
     if (out or {}).get("need"):
         body["need"] = (out or {}).get("need")
-    # FR #5655 / #5712: surface psexec provision failures even when runner only set error=.
-    _pse_fail_errs = (
-        "psexec-missing",
-        "psexec-source-unreachable",
-        "psexec-undeployed",
-    )
-    if str(err or "") in _pse_fail_errs and not any(
-        str(f.get("error") or "") in _pse_fail_errs for f in fails
+    # FR #5655 / #5712 / #5743: surface psexec provision failures even when runner only set error=.
+    def _is_pse_fail(val: str) -> bool:
+        return val in (
+            "psexec-missing",
+            "psexec-source-unreachable",
+            "psexec-undeployed",
+        ) or val.startswith("psexec-download-failed:")
+
+    if _is_pse_fail(str(err or "")) and not any(
+        _is_pse_fail(str(f.get("error") or "")) for f in fails
     ):
         fails.append(
             {
@@ -669,10 +680,10 @@ def installer_legion_work(
                 body["plan"]["psexec_url"] = str(dl.get("url"))
             if dl.get("dest"):
                 body["plan"]["psexec_dest"] = str(dl.get("dest"))
-        # FR #5655 / #5712: fail WhatIf only when runner/error explicitly reported
-        # missing or unreachable (not when the psexec key was absent).
-        if str(err or "") in _pse_fail_errs or (
-            pse is not None and str(pse) in _pse_fail_errs
+        # FR #5655 / #5712 / #5743: fail WhatIf only when runner/error explicitly
+        # reported missing/unreachable/download-failed (not when psexec key absent).
+        if _is_pse_fail(str(err or "")) or (
+            pse is not None and _is_pse_fail(str(pse))
         ):
             body["ok"] = False
             body["status"] = body.get("status") or "failed"

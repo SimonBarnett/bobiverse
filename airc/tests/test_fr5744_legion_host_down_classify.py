@@ -110,8 +110,12 @@ def test_fr5744_legion_exception_classifies_file_not_found(monkeypatch, tmp_path
 
     # Non-local host: local hostname would take install_local and skip the patch.
     monkeypatch.setattr(
-        "airc_network_installer.install.ensure_psexec",
-        lambda explicit="", dest=None: r"C:\Tools\PsExec.exe",
+        "airc_network_installer.install.ensure_psexec_result",
+        lambda explicit="", dest=None: {
+            "ok": True,
+            "path": r"C:\Tools\PsExec.exe",
+            "error": "",
+        },
     )
     monkeypatch.setattr("airc_network_installer.install.install_remote", boom)
     monkeypatch.setattr(lg, "_resolve_legion_msi_path", lambda spec: msi)
@@ -154,8 +158,12 @@ def test_fr5744_legion_uses_hostresult_error_fields(monkeypatch, tmp_path):
         )
 
     monkeypatch.setattr(
-        "airc_network_installer.install.ensure_psexec",
-        lambda explicit="", dest=None: r"C:\Tools\PsExec.exe",
+        "airc_network_installer.install.ensure_psexec_result",
+        lambda explicit="", dest=None: {
+            "ok": True,
+            "path": r"C:\Tools\PsExec.exe",
+            "error": "",
+        },
     )
     monkeypatch.setattr("airc_network_installer.install.install_remote", fake_remote)
     monkeypatch.setattr(lg, "_resolve_legion_msi_path", lambda spec: msi)
