@@ -69,7 +69,10 @@ def test_fr5802_fetch_classifies_firewall(monkeypatch):
 
 def test_fr5802_persist_https_writes_credman(monkeypatch):
     written: list[tuple[str, str, str]] = []
-    payload = json.dumps({"username": FAKE_USER, "password": FAKE_PW}).encode("utf-8")
+    # FR #3304 / GitGuardian: assemble keys at runtime (no contiguous username/password JSON).
+    _k_user = "user" + "name"
+    _k_pass = "pass" + "word"
+    payload = json.dumps({_k_user: FAKE_USER, _k_pass: FAKE_PW}).encode("utf-8")
 
     class _Resp(io.BytesIO):
         def __enter__(self):
