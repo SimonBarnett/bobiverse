@@ -642,7 +642,9 @@ def default_fixture_path() -> Path:
 def load_allowlist_rows(path: Path | None) -> list[dict[str, Any]]:
     if path is None or not path.is_file():
         return []
-    data = json.loads(path.read_text(encoding="utf-8"))
+    # utf-8-sig: tolerate a BOM so CredMan/PRIORITY allowlists saved from
+    # Notepad still parse (FR #5862 / CodeRabbit on #5862; FR #3935).
+    data = json.loads(path.read_text(encoding="utf-8-sig"))
     inst = data.get("instances")
     if not isinstance(inst, list):
         return []
