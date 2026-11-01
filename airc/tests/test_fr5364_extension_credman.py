@@ -64,10 +64,13 @@ def test_fr5364_non_access_denied_does_not_touch_credman():
         ldap_enum=lambda: ["pc-to"],
         ping_host=lambda _h: True,
         apply_force_install=apply_reg,
+        tcp_probe=lambda *_a, **_k: True,
         credman_reader=lambda: reads.append("read") or {"username": "u", "password": "FAKE_x"},
     )
     assert reads == []
-    assert body["hosts"][0]["error"] == "TimeoutError"
+    # FR #5661: classified cause (not raw exception type name).
+    assert body["hosts"][0]["error"] == "remote_registry_stopped"
+    assert body["hosts"][0]["error"] != "TimeoutError"
 
 
 def test_fr5364_whatif_skips_credman():
@@ -76,6 +79,7 @@ def test_fr5364_whatif_skips_credman():
         "install",
         ldap_enum=lambda: ["pc1"],
         ping_host=lambda _h: True,
+        read_forcelist=lambda _h, _p: ([], []),
         apply_force_install=lambda *_a: None,
         credman_reader=lambda: reads.append(1) or {},
         whatif=True,
