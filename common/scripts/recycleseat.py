@@ -1,8 +1,10 @@
-"""FR #5059: elevated tray recycle of a named worker seat.
+"""FR #5059 / #5756: elevated tray recycle of a named worker seat.
 
-``!recycleseat <nick> [machine]`` — ear authorises (+o/+h like !register, or bob-* ear)
-and queues; tray (elevated interactive session) stops the seat tree, verifies gone,
-then starts a fresh agent. If stop fails, no new seat is started.
+``!recycleseat <nick> [machine]`` — ear authorises (+o/+h like !register, bob-* ear,
+or fleet chair nick Jeeves even without NickServ account) and queues; tray (elevated
+interactive session) stops the seat tree, verifies gone, then starts a fresh agent.
+If stop fails, no new seat is started. Chair heals PRIVMSG the seat shop only
+(never ``#bobiverse``); non-target ears stay silent before authorize.
 
 Queue (mirrors startworker):
   <install>\\run\\recycleseat\\req-<id>.json  {id, nick, by, kind, ts, expires}
@@ -71,24 +73,25 @@ def authorize(
     """-> (ok, kind, reason).
 
     FR #5059: same live IRC op check as !register (+o/+h), plus verified bob-* ear.
-    Owner/chair with +o/+h pass via op. Unverified nicks never pass.
+    FR #5756: live +o/+h and fleet chair nick (Jeeves) authorize even without a
+    NickServ account — otherwise chair !recycleseat is always unverified.
     """
     n = str(nick or "").strip()
     low = n.lower()
     acct = str(account or "").strip().lower()
-    if not acct:
-        return False, "", "unverified"
-    # Live channel op/halfop (FR #4008 / !register).
+    # Live channel op/halfop (FR #4008 / !register) — before account gate (FR #5756).
     if unregister_cmd.nick_has_op_or_halfop(
         nick=n, channel=channel or "#bobiverse", members=members, member_lookup=member_lookup
     ):
         return True, "op", ""
+    # Fleet chair nick (Jeeves) may lack services account on Ergo (FR #5756).
+    if low in {c.lower() for c in chair_nicks}:
+        return True, "chair", ""
+    if not acct:
+        return False, "", "unverified"
     same = acct in (low, low.rstrip("_"))
     if same and low.startswith("bob-") and machine_of_nick(n):
         return True, "ear", ""
-    # Chair may lack +o in a shop briefly; still allow verified Jeeves (fleet ops).
-    if same and low in {c.lower() for c in chair_nicks}:
-        return True, "chair", ""
     # Verified owner account (Simon) — fleet operator even if MODE lag.
     if acct in (owners if owners is not None else sw.owner_accounts()):
         return True, "owner", ""
@@ -162,6 +165,11 @@ def decide(
     if parsed == "usage":
         return nack("usage", usage())
     seat_nick, machine = parsed
+    local = (local_machine or "").strip().lower()
+    chan = (channel or "").strip().lower().lstrip("#")
+    # FR #5756: non-target ears stay silent BEFORE authorize (no public NACK flood).
+    if machine is not None and local and machine != local:
+        return None
     ok, kind, why = authorize(
         nick,
         account,
@@ -180,8 +188,6 @@ def decide(
             else "denied (+o/+h, bob-* ear, Jeeves or owner only)",
             seat_nick=seat_nick,
         )
-    local = (local_machine or "").strip().lower()
-    chan = (channel or "").strip().lower().lstrip("#")
     if not local:
         return nack("no_machine", "this ear has no machine id", kind=kind, seat_nick=seat_nick)
     if machine is None:

@@ -8663,12 +8663,57 @@ def row_skip_pin_ledger_heal_reason(row: dict) -> str | None:
 MRB_REVIEWER_DEADLOCK_COOLDOWN_S = 180.0
 MRB_REVIEWER_DEADLOCK_STATE = "mrb-reviewer-deadlock.json"
 # FR #5701: recycle a seat that is idle past bored-latency without !bored.
+# FR #5756: same 900s per-nick cooldown shared with MRB deadlock !recycleseat IRC.
 BORED_LATENCY_HEAL_COOLDOWN_S = 900.0
 BORED_LATENCY_HEAL_STATE = "bored-latency-heal.json"
+RECYCLESEAT_IRC_COOLDOWN_S = BORED_LATENCY_HEAL_COOLDOWN_S
 
 
 def mrb_reviewer_deadlock_state_path(home: Path) -> Path:
     return _root(home) / MRB_REVIEWER_DEADLOCK_STATE
+
+
+def _recycleseat_irc_cooldown_ok(home: Path, nick: str, now: float) -> bool:
+    """FR #5756: shared per-nick cooldown across bored-latency and MRB deadlock heals."""
+    canon = (canonical_worker_nick(nick) or nick or "").strip()
+    if not canon:
+        return False
+    state = _load_bored_latency_heal_state(home)
+    nick_ts = state.get("nicks") if isinstance(state.get("nicks"), dict) else {}
+    last = float(nick_ts.get(canon) or nick_ts.get(canon.lower()) or 0)
+    if last and (now - last) < float(RECYCLESEAT_IRC_COOLDOWN_S):
+        return False
+    return True
+
+
+def _stamp_recycleseat_irc_cooldown(home: Path, nick: str, now: float) -> None:
+    canon = (canonical_worker_nick(nick) or nick or "").strip()
+    if not canon:
+        return
+    state = _load_bored_latency_heal_state(home)
+    nick_ts = state.get("nicks") if isinstance(state.get("nicks"), dict) else {}
+    nick_ts[canon] = float(now)
+    _save_bored_latency_heal_state(home, {"nicks": nick_ts})
+
+
+def enqueue_recycleseat_shop_only(
+    home: Path,
+    seat_nick: str,
+    *,
+    machine: str | None = None,
+) -> str | None:
+    """FR #5756: PRIVMSG !recycleseat only on the seat shop — never #bobiverse.
+
+    Returns None on success, or a skip reason token (``recycle_skipped:no_machine``).
+    """
+    parsed = bobreport.parse_seat_nick(seat_nick)
+    mid = (machine or (parsed[0] if parsed else "") or "").strip().lstrip("#").lower()
+    if not mid:
+        return "recycle_skipped:no_machine"
+    cmd = f"!recycleseat {seat_nick} {mid}"
+    shop = worker_shop_channel(seat_nick) or f"#{mid}"
+    bobreport.enqueue_chair_fleet_privmsg(home, cmd, channel=shop)
+    return None
 
 
 def resolve_recycleseat_install_root(home: Path, explicit=None) -> Path:
@@ -8901,6 +8946,12 @@ def heal_mrb_reviewer_deadlock(
             import recycleseat as _rs
 
             pick = sorted(info["idle"], key=lambda n: n.lower())[0]
+            # FR #5756: shared cooldown with bored-latency heal (no #bobiverse flood).
+            if not _recycleseat_irc_cooldown_ok(home, pick, now_f):
+                lines.append(
+                    f"mrb-reviewer-deadlock author_only recycle_cooldown={pick}"
+                )
+                return
             rid = _rs.write_request(
                 _rs.queue_dir(root),
                 pick,
@@ -8908,17 +8959,16 @@ def heal_mrb_reviewer_deadlock(
                 "mrb-reviewer-deadlock",
                 now=now_f,
             )
-            # FR #5220: chair-local recycleseat JSON never reaches a remote tray.
-            # PRIVMSG !recycleseat so that machine's ear queues the recycle.
-            parsed = bobreport.parse_seat_nick(pick)
-            mid = (parsed[0] if parsed else "") or ""
-            if mid:
-                cmd = f"!recycleseat {pick} {mid}"
-                shop = worker_shop_channel(pick) or f"#{mid}"
-                with contextlib.suppress(Exception):
-                    bobreport.enqueue_chair_fleet_privmsg(home, cmd, channel="#bobiverse")
-                with contextlib.suppress(Exception):
-                    bobreport.enqueue_chair_fleet_privmsg(home, cmd, channel=shop)
+            # FR #5220 / #5756: PRIVMSG !recycleseat on the seat shop only (never #bobiverse).
+            skip = None
+            with contextlib.suppress(Exception):
+                skip = enqueue_recycleseat_shop_only(home, pick)
+            if skip:
+                lines.append(
+                    f"mrb-reviewer-deadlock author_only {skip} seat={pick} id={rid}"
+                )
+                return
+            _stamp_recycleseat_irc_cooldown(home, pick, now_f)
             lines.append(
                 f"mrb-reviewer-deadlock author_only recycleseat={pick} id={rid}"
             )
@@ -9030,11 +9080,11 @@ def heal_bored_latency(
     install_root=None,
     cooldown_s: float | None = None,
 ) -> list[str]:
-    """FR #5701: recycle idle seats past bored-latency with no recent !bored/activity.
+    """FR #5701 / #5756: recycle idle seats past bored-latency with no recent !bored.
 
     Chair-local recycleseat JSON never reaches a remote tray (FR #5220). PRIVMSG
-    ``!recycleseat <nick> <machine>`` on ``#bobiverse`` and the seat shop so that
-    machine's ear queues the recycle. Rate-limited per nick.
+    ``!recycleseat <nick> <machine>`` on the seat shop only (never ``#bobiverse``).
+    Rate-limited per nick (shared with MRB deadlock heal).
     """
     import time as _time
 
@@ -9044,7 +9094,7 @@ def heal_bored_latency(
     cool = (
         float(cooldown_s)
         if cooldown_s is not None
-        else float(BORED_LATENCY_HEAL_COOLDOWN_S)
+        else float(RECYCLESEAT_IRC_COOLDOWN_S)
     )
     seats_idle = set(idle) if idle is not None else free_seat_nicks(home)
     snap = {
@@ -9081,15 +9131,13 @@ def heal_bored_latency(
                 "bored-latency",
                 now=now_f,
             )
-            parsed = bobreport.parse_seat_nick(canon)
-            mid = (parsed[0] if parsed else "") or ""
-            if mid:
-                cmd = f"!recycleseat {canon} {mid}"
-                shop = worker_shop_channel(canon) or f"#{mid}"
-                with contextlib.suppress(Exception):
-                    bobreport.enqueue_chair_fleet_privmsg(home, cmd, channel="#bobiverse")
-                with contextlib.suppress(Exception):
-                    bobreport.enqueue_chair_fleet_privmsg(home, cmd, channel=shop)
+            skip = None
+            with contextlib.suppress(Exception):
+                skip = enqueue_recycleseat_shop_only(home, canon)
+            if skip:
+                lines.append(f"bored-latency {skip} seat={canon} id={rid}")
+                nick_ts[canon] = now_f
+                continue
             nick_ts[canon] = now_f
             lag = (item.get("evidence") or {}).get("lag_s")
             lines.append(

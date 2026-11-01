@@ -40,7 +40,9 @@ def test_heal_bored_latency_enqueues_recycleseat_irc(tmp_path, monkeypatch):
         outbox = Path(bobreport.fleet_digest_home(tmp_path)) / "chair-outbox.txt"
     text = outbox.read_text(encoding="utf-8") if outbox.is_file() else ""
     assert "!recycleseat flamingo-64124 flamingo" in text, text
-    assert "PRIVMSG #bobiverse :" in text or "PRIVMSG #flamingo :" in text
+    # FR #5756: shop only (never #bobiverse).
+    assert "PRIVMSG #flamingo :" in text
+    assert "PRIVMSG #bobiverse :" not in text
 
 
 def test_heal_bored_latency_cooldown_skips_second_fire(tmp_path, monkeypatch):

@@ -96,11 +96,12 @@ def test_fr5059_syntax(body, want):
     [
         ("Simon", "simon", {"o"}, True, "op"),
         ("Simon", "simon", {"h"}, True, "op"),
-        ("Simon", None, {"o"}, False, ""),  # unverified
+        ("Simon", None, {"o"}, True, "op"),  # FR #5756: live +o without NickServ account
         ("mallory", "mallory", set(), False, ""),
         ("Bob-marchhare", "bob-marchhare", set(), True, "ear"),
         ("Bob-marchhare", "mallory", set(), False, ""),
         ("Jeeves", "jeeves", set(), True, "chair"),
+        ("Jeeves", None, set(), True, "chair"),  # FR #5756: chair nick without account
         ("whoever", "simon", set(), True, "owner"),  # verified owner without MODE
     ],
 )
@@ -136,7 +137,8 @@ def test_fr5059_other_machine_silent(root):
 
 
 def test_fr5059_denied_and_unverified_queue_nothing(root):
-    d = ask(root, account=None, member_lookup=lambda ch, n: {"o"})
+    # FR #5756: +o without account is allowed; unverified is no-account + no op + not chair.
+    d = ask(root, account=None, member_lookup=lambda ch, n: set())
     assert not d.ok and d.reason == "unverified"
     d = ask(
         root,
