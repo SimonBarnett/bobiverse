@@ -566,7 +566,21 @@ def parse_priority_walk_command(text: str) -> tuple[str, dict[str, str]] | None:
     if not m:
         return None
     op = m.group(1)
-    kv = {mm.group(1).lower(): mm.group(2) for mm in _KV_RE.finditer(m.group(2) or "")}
+    rest = (m.group(2) or "").strip()
+    kv = {mm.group(1).lower(): mm.group(2) for mm in _KV_RE.finditer(rest)}
+    # FR #5803: accept positional ``PRIORITY formStart <instance> <form>``
+    # (same bare instance id as ``PRIORITY status <id>``), not only key=value.
+    positionals: list[str] = []
+    for tok in rest.split():
+        if re.match(r"^\w+=", tok):
+            continue
+        positionals.append(tok)
+    if "instance" not in kv and positionals:
+        kv["instance"] = positionals[0]
+    if "form" not in kv and len(positionals) > 1:
+        kv["form"] = positionals[1]
+    if "path" not in kv and len(positionals) > 2:
+        kv["path"] = positionals[2]
     if leading_id and "id" not in kv:
         kv["id"] = leading_id
     return op, kv

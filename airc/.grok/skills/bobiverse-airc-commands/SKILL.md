@@ -84,11 +84,15 @@ Use the **built-in** Airc Priority Client. Do not copy NAS one-off clients or dr
 
 ```text
 PRIVMSG {mid}_console :id=c25bd00e PRIORITY connect instance=example-dev
+PRIVMSG {mid}_console :id=c25bd00e PRIORITY status example-dev
 PRIVMSG {mid}_console :id=c25bd00e PRIORITY prepare FOO instance=example-dev
+PRIVMSG {mid}_console :id=c25bd00e PRIORITY formStart instance=example-dev form=CUST
+PRIVMSG {mid}_console :id=c25bd00e PRIORITY formStart example-dev CUST
 ```
 
 - **Allowlist:** `config\priority-instances.json` (schema: `airc/config/priority-instances.example.json`). Unknown instance -> refuse.
-- **CredMan:** password lives in the Windows credential named `credentialTarget` (example `PriorityWeb/example-dev`). Populate remotely with `CRED persist ... via=https` (FR #5802) when DCC is blocked. Never put a Priority password on IRC, in skills, or in intake.
+- **CredMan:** password lives in the Windows credential named credentialTarget (example PriorityWeb/example-dev). Populate remotely with CRED persist ... via=https (FR #5802) when DCC is blocked. Never put a Priority password on IRC, in skills, or in intake.
+- **Form walk (FR #5285 / #5803):** ormStart/subform/getRows accept instance=/orm= key=value **or** positional <instance> <form> (same bare id as PRIORITY status <id>). Named keys win when both are present. Unknown instance -> unknown-instance.
 - **Form walk replies (FR #5524):** PRIORITY formStart/subform/getRows must return HandleResult.reply only (newline-separated out+DONE). Do not also JobProtocol._emit after FR #5518 on_line already sends action=priority --- that double-fires every walk line.
 - **Prepare gates (S4):** TYPE=P uses EXEC `REPPREPDIRECT2`. Success only when SDK `ok=true` **and** `EXECPREPLOCK.UPD=N` **and** `.prp` mtime advanced. Reasons include `still_unprepared`, `prp_unchanged`, `no_cred`, `name_missing`. Never SQL-fake UPD; never form-prep for TYPE=P.
 
