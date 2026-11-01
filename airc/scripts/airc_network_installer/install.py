@@ -7,7 +7,7 @@ import shutil
 import subprocess
 import time
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Any, Callable, Optional
 
 from .core import (
     SERVICE_NAME,
@@ -22,6 +22,10 @@ from airc_wnet import wnet_add, wnet_cancel
 
 RemoteRunner = Callable[..., subprocess.CompletedProcess]
 
+# FR #5655 / #5712: Sysinternals PsExec zip (MSI must not bundle PsExec).
+PSEXEC_ZIP_URL = "https://download.sysinternals.com/files/PSTools.zip"
+PSEXEC_PROBE_TIMEOUT_S = 8.0
+
 
 def find_psexec(explicit: str = "") -> Optional[str]:
     if explicit:
@@ -32,6 +36,26 @@ def find_psexec(explicit: str = "") -> Optional[str]:
     return found
 
 
+def _psexec_download_opted_out() -> bool:
+    return (os.environ.get("AIRC_LEGION_NO_PSEXEC_DOWNLOAD") or "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
+
+
+def _psexec_dest(*, dest: Optional[Path] = None) -> Path:
+    """AIRC_PSEXEC_PATH -> dest arg -> %ProgramData%\\bobiverse\\tools\\PsExec.exe."""
+    explicit_dest = (os.environ.get("AIRC_PSEXEC_PATH") or "").strip()
+    if explicit_dest:
+        return Path(explicit_dest)
+    if dest is not None:
+        return Path(dest)
+    pd = os.environ.get("ProgramData") or r"C:\ProgramData"
+    return Path(pd) / "bobiverse" / "tools" / "PsExec.exe"
+
+
 def offer_download_psexec(dest: Path) -> Path:
     """
     Download PsExec from the official Microsoft Sysinternals URL.
@@ -39,10 +63,9 @@ def offer_download_psexec(dest: Path) -> Path:
     """
     import urllib.request
 
-    url = "https://download.sysinternals.com/files/PSTools.zip"
     dest.parent.mkdir(parents=True, exist_ok=True)
     zip_path = dest.parent / "PSTools.zip"
-    urllib.request.urlretrieve(url, zip_path)
+    urllib.request.urlretrieve(PSEXEC_ZIP_URL, zip_path)
     import zipfile
 
     with zipfile.ZipFile(zip_path, "r") as zf:
@@ -65,21 +88,9 @@ def ensure_psexec(explicit: str = "", *, dest: Optional[Path] = None) -> Optiona
     found = find_psexec(explicit)
     if found:
         return found
-    if (os.environ.get("AIRC_LEGION_NO_PSEXEC_DOWNLOAD") or "").strip().lower() in (
-        "1",
-        "true",
-        "yes",
-        "on",
-    ):
+    if _psexec_download_opted_out():
         return None
-    explicit_dest = (os.environ.get("AIRC_PSEXEC_PATH") or "").strip()
-    if explicit_dest:
-        target = Path(explicit_dest)
-    elif dest is not None:
-        target = Path(dest)
-    else:
-        pd = os.environ.get("ProgramData") or r"C:\ProgramData"
-        target = Path(pd) / "bobiverse" / "tools" / "PsExec.exe"
+    target = _psexec_dest(dest=dest)
     if target.is_file():
         return str(target.resolve())
     try:
@@ -87,6 +98,101 @@ def ensure_psexec(explicit: str = "", *, dest: Optional[Path] = None) -> Optiona
     except Exception:
         return None
 
+
+def probe_psexec_source(
+    url: str = PSEXEC_ZIP_URL,
+    *,
+    timeout: float = PSEXEC_PROBE_TIMEOUT_S,
+) -> dict[str, Any]:
+    """FR #5712: bounded HEAD (GET on 405/501) — no writes, no body download."""
+    import urllib.error
+    import urllib.request
+
+    target = (url or PSEXEC_ZIP_URL).strip() or PSEXEC_ZIP_URL
+    ua = "bobiverse-airc-legion/1.0 (+https://github.com/SimonBarnett/bobiverse)"
+
+    def _one(method: str) -> dict[str, Any]:
+        req = urllib.request.Request(
+            target,
+            method=method,
+            headers={"User-Agent": ua},
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=float(timeout)) as resp:
+                code = int(getattr(resp, "status", None) or resp.getcode() or 0)
+                if method == "GET":
+                    # Close without reading body.
+                    pass
+                if code >= 400:
+                    return {"ok": False, "reason": f"http-{code}"}
+                return {"ok": True, "reason": f"http-{code or 200}"}
+        except urllib.error.HTTPError as exc:
+            code = int(exc.code or 0)
+            if method == "HEAD" and code in (405, 501):
+                return {"ok": False, "reason": f"http-{code}", "retry_get": True}
+            return {"ok": False, "reason": f"http-{code}"}
+        except Exception as exc:  # noqa: BLE001
+            msg = f"{type(exc).__name__}:{exc}"[:160]
+            return {"ok": False, "reason": msg}
+
+    first = _one("HEAD")
+    if first.get("ok"):
+        return {"reachable": True, "reason": str(first.get("reason") or "ok"), "url": target}
+    if first.get("retry_get"):
+        second = _one("GET")
+        if second.get("ok"):
+            return {
+                "reachable": True,
+                "reason": str(second.get("reason") or "ok"),
+                "url": target,
+            }
+        return {
+            "reachable": False,
+            "reason": str(second.get("reason") or first.get("reason") or "unreachable"),
+            "url": target,
+        }
+    return {
+        "reachable": False,
+        "reason": str(first.get("reason") or "unreachable"),
+        "url": target,
+    }
+
+
+def plan_psexec(
+    explicit: str = "",
+    *,
+    dest: Optional[Path] = None,
+    probe: Callable[..., dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """FR #5712: read-only prediction of ``ensure_psexec`` (no download / no writes).
+
+    States: found | cached | would-download | missing | unreachable.
+    """
+    found = find_psexec(explicit)
+    if found:
+        return {"state": "found", "path": found}
+    if _psexec_download_opted_out():
+        return {"state": "missing", "reason": "download-opted-out"}
+    target = _psexec_dest(dest=dest)
+    if target.is_file():
+        return {"state": "cached", "path": str(target.resolve())}
+    probe_fn = probe or probe_psexec_source
+    hit = probe_fn(PSEXEC_ZIP_URL) or {}
+    url = str(hit.get("url") or PSEXEC_ZIP_URL)
+    dest_s = str(target)
+    if hit.get("reachable"):
+        return {
+            "state": "would-download",
+            "url": url,
+            "dest": dest_s,
+            "reason": str(hit.get("reason") or "ok"),
+        }
+    return {
+        "state": "unreachable",
+        "url": url,
+        "dest": dest_s,
+        "reason": str(hit.get("reason") or "unreachable"),
+    }
 
 def read_local_version(install_root: Optional[Path] = None) -> str:
     roots = []
