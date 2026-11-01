@@ -2204,12 +2204,14 @@ function Build-BobDigestWebhookMergePayload {
     if ($Doc.period_end) { $payload.period_end = [string]$Doc.period_end }
     if ($Doc.model) { $payload.model = [string]$Doc.model }
     if ($Doc.kind) { $payload.kind = [string]$Doc.kind }
-    if ($Doc.repo) { $payload.repo = [string]$Doc.repo }
-    if ($Doc.sha) { $payload.sha = [string]$Doc.sha }
+    # FR #5690: always publish clearable string fields (explicit null) so chair can drop sticky values.
+    if ($Doc.repo) { $payload.repo = [string]$Doc.repo } else { $payload.repo = $null }
+    if ($Doc.sha) { $payload.sha = [string]$Doc.sha } else { $payload.sha = $null }
+    if ($Doc.started_at) { $payload.started_at = [string]$Doc.started_at } else { $payload.started_at = $null }
     if ($Doc.fuel) { $payload.fuel = $Doc.fuel }
     # FR #356 (agentic_build): seat start reports pool|session-key|unknown (never the key)
     if ($Doc.fuel_mode) { $payload.fuel_mode = [string]$Doc.fuel_mode }
-    if ($Doc.working_on) { $payload.working_on = [string]$Doc.working_on }
+    if ($Doc.working_on) { $payload.working_on = [string]$Doc.working_on } else { $payload.working_on = $null }
     if ($null -ne $Doc.running) { $payload.running = [int]$Doc.running }
     if ($null -ne $Doc.queued) { $payload.queued = [int]$Doc.queued }
     if ($Doc.jobs -and @($Doc.jobs).Count -gt 0) { $payload.jobs = @($Doc.jobs) }
@@ -2221,18 +2223,35 @@ function Build-BobDigestWebhookMergePayload {
         $poolRows = @(ConvertTo-BobDigestCursorPoolRows -Pools @($Doc.cursor_pools) -MachineId $docMid)
         if ($poolRows.Count -gt 0) { $payload.cursor_pools = @($poolRows) }
     }
-    # CAST IRON (Simon 2026-09-27): month overspend GBP on every usage heartbeat.
+    # FR #5690: always publish overspend fields (null clears sticky chair values; like weekly_known/#976).
     if ($null -ne $Doc.overage_gbp -and [string]$Doc.overage_gbp -ne '') {
-        try { $payload.overage_gbp = [double]$Doc.overage_gbp } catch { }
+        try { $payload.overage_gbp = [double]$Doc.overage_gbp } catch { $payload.overage_gbp = $null }
+    } else {
+        $payload.overage_gbp = $null
     }
-    # #60: overspend amount + state (none|over|at-limit|unknown) so the digest/tray can show it per machine.
     if ($null -ne $Doc.overage_usd -and [string]$Doc.overage_usd -ne '') {
-        try { $payload.overage_usd = [double]$Doc.overage_usd } catch { }
+        try { $payload.overage_usd = [double]$Doc.overage_usd } catch { $payload.overage_usd = $null }
+    } else {
+        $payload.overage_usd = $null
     }
-    if ($Doc.overspend_state) { $payload.overspend_state = [string]$Doc.overspend_state }
+    if ($Doc.overspend_state) { $payload.overspend_state = [string]$Doc.overspend_state } else { $payload.overspend_state = $null }
     foreach ($odk in @('on_demand_used_cents', 'on_demand_limit_cents', 'on_demand_remaining_pct')) {
         $odv = $Doc.$odk
-        if ($null -ne $odv -and [string]$odv -ne '') { try { $payload[$odk] = [int]$odv } catch { } }
+        if ($null -ne $odv -and [string]$odv -ne '') {
+            try { $payload[$odk] = [int]$odv } catch { $payload[$odk] = $null }
+        } else {
+            $payload[$odk] = $null
+        }
+    }
+    if ($null -ne $Doc.usd_gbp_rate -and [string]$Doc.usd_gbp_rate -ne '') {
+        try { $payload.usd_gbp_rate = [double]$Doc.usd_gbp_rate } catch { $payload.usd_gbp_rate = $null }
+    } else {
+        $payload.usd_gbp_rate = $null
+    }
+    if ($Doc.overage_fetched_at) {
+        $payload.overage_fetched_at = [string]$Doc.overage_fetched_at
+    } else {
+        $payload.overage_fetched_at = $null
     }
     return [pscustomobject]$payload
 }
@@ -2534,6 +2553,8 @@ function Write-BobIrcStatus {
         on_demand_used_cents   = $(if ($cw) { $cw.on_demand_used_cents } else { $null })
         on_demand_limit_cents  = $(if ($cw) { $cw.on_demand_limit_cents } else { $null })
         on_demand_remaining_pct = $(if ($cw) { $cw.on_demand_remaining_pct } else { $null })
+        usd_gbp_rate           = $(if ($cw -and $null -ne $cw.usd_gbp_rate -and [string]$cw.usd_gbp_rate -ne '') { $cw.usd_gbp_rate } else { $null })
+        overage_fetched_at     = $(if ($cw -and $cw.ts) { [string]$cw.ts } elseif ($null -ne $overageGbp -or ($cw -and $null -ne $cw.overage_usd)) { $seen } else { $null })
         pcent                  = $pcent
         running                = @($running).Count + $liveN
         queued                 = @($inbox).Count

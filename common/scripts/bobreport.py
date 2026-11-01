@@ -220,6 +220,7 @@ _MERGE_PEER_FIELDS = (
     "jobs",
     "repo",
     "sha",
+    "started_at",
     "model",
     "fuel",
     "lastSeen",
@@ -238,7 +239,27 @@ _MERGE_PEER_FIELDS = (
     "on_demand_limit_cents",
     "on_demand_remaining_pct",
     "sand_period_end",
+    # FR #5690: FX age + rate so tray can show freshness; server can unify GBP.
+    "overage_fetched_at",
+    "usd_gbp_rate",
 )
+# FR #5690: when a merge payload carries these as null (or lists them in cleared[]),
+# pop the sticky chair value. Omit-null used to leave stale overage/repo forever.
+_CLEARABLE_MERGE_FIELDS = frozenset({
+    "repo",
+    "sha",
+    "started_at",
+    "working_on",
+    "overage_gbp",
+    "overage_usd",
+    "overspend_state",
+    "on_demand_used_cents",
+    "on_demand_limit_cents",
+    "on_demand_remaining_pct",
+    "overage_fetched_at",
+    "usd_gbp_rate",
+})
+_PEER_CLEAR = object()  # sentinel: peer wants an explicit null clear in the merge delta
 _TRAY_MACHINE_EXPORT_KEYS = (
     "id",
     "nick",
@@ -272,6 +293,9 @@ _TRAY_MACHINE_EXPORT_KEYS = (
     "on_demand_limit_cents",
     "on_demand_remaining_pct",
     "sand_period_end",
+    "started_at",
+    "overage_fetched_at",
+    "usd_gbp_rate",
     "console_nicks",
 )
 WORKER_NICK_RE = re.compile(r"^w-([a-z0-9]+)-(\d+)_?$", re.I)
@@ -1765,6 +1789,84 @@ def _store_machine_pool_rows(ent: dict, raw_rows: object) -> None:
         ent["pcent"] = pcent
 
 
+def _clearable_empty(val: object) -> bool:
+    """True when a clearable merge value means 'unknown / gone' (null or blank string)."""
+    return val is None or val == ""
+
+
+def _usd_gbp_rate_from_env_or_payload(payload: dict) -> float | None:
+    """Prefer env BOB_CURSOR_USD_GBP_RATE (chair-wide), else payload usd_gbp_rate."""
+    rate_env = (os.environ.get("BOB_CURSOR_USD_GBP_RATE") or "").strip()
+    if rate_env:
+        try:
+            rate = float(rate_env)
+            if rate > 0:
+                return rate
+        except (TypeError, ValueError):
+            pass
+    raw = payload.get("usd_gbp_rate")
+    if raw is None or raw == "":
+        return None
+    try:
+        rate = float(raw)
+    except (TypeError, ValueError):
+        return None
+    return rate if rate > 0 else None
+
+
+def _unify_overage_gbp_from_usd(ent: dict, payload: dict) -> None:
+    """FR #5690: one shared USD->GBP conversion so peers do not disagree on FX.
+
+    When overage_usd is present, recompute overage_gbp from a single rate and stamp
+    usd_gbp_rate + overage_fetched_at on the machine row.
+    """
+    usd_raw = ent.get("overage_usd")
+    if usd_raw in (None, ""):
+        return
+    try:
+        usd = float(usd_raw)
+    except (TypeError, ValueError):
+        return
+    rate = _usd_gbp_rate_from_env_or_payload(payload)
+    if rate is None and ent.get("usd_gbp_rate") not in (None, ""):
+        try:
+            rate = float(ent.get("usd_gbp_rate"))
+        except (TypeError, ValueError):
+            rate = None
+    if rate is None or rate <= 0:
+        return
+    ent["overage_gbp"] = round(usd * rate, 2)
+    ent["usd_gbp_rate"] = rate
+    fetched = payload.get("overage_fetched_at")
+    if fetched not in (None, ""):
+        ent["overage_fetched_at"] = str(fetched)
+    elif ent.get("overage_fetched_at") in (None, ""):
+        ent["overage_fetched_at"] = _utc_now_iso()
+
+
+def _apply_cleared_merge_fields(ent: dict, payload: dict) -> None:
+    """FR #5690: honor cleared[] and explicit nulls for sticky clearable fields."""
+    cleared = payload.get("cleared")
+    keys: list[str] = []
+    if isinstance(cleared, list):
+        for item in cleared:
+            k = str(item or "").strip()
+            if k:
+                keys.append(k)
+    for key in _CLEARABLE_MERGE_FIELDS:
+        if key in payload and _clearable_empty(payload.get(key)):
+            keys.append(key)
+    for key in keys:
+        if key not in _CLEARABLE_MERGE_FIELDS and key != "working_on":
+            continue
+        if key == "working_on":
+            # Machine-level blank: roll from workers rather than inventing activity.
+            ent["working_on"] = ""
+            _roll_working_on(ent)
+            continue
+        ent.pop(key, None)
+
+
 def _apply_merge_payload(doc: dict, mid: str, payload: dict) -> list[str]:
     """Mutate digest doc for one machine merge; return new English actions."""
     actions: list[str] = []
@@ -1856,10 +1958,17 @@ def _apply_merge_payload(doc: dict, mid: str, payload: dict) -> list[str]:
             ent["working_on"] = text
         else:
             _roll_working_on(ent)
+    # FR #5690: apply clears before writes so sticky overage/repo cannot linger.
+    _apply_cleared_merge_fields(ent, payload)
     for key in _MERGE_PEER_FIELDS:
-        if key not in payload or payload[key] is None:
+        if key not in payload:
             continue
         val = payload[key]
+        # Explicit null / blank for clearable keys already popped above.
+        if _clearable_empty(val) and key in _CLEARABLE_MERGE_FIELDS:
+            continue
+        if val is None:
+            continue
         if key == "jobs" and not isinstance(val, list):
             continue
         if key == "pcent" and isinstance(val, dict):
@@ -1874,6 +1983,9 @@ def _apply_merge_payload(doc: dict, mid: str, payload: dict) -> list[str]:
             ent[key] = val
             continue
         ent[key] = val
+    # FR #5690: unify GBP from USD with one rate after field writes.
+    if "overage_usd" in payload and not _clearable_empty(payload.get("overage_usd")):
+        _unify_overage_gbp_from_usd(ent, payload)
     if "running" in ent:
         try:
             ent["running"] = int(ent["running"])
@@ -3456,10 +3568,24 @@ def _peer_delta_value(peer: dict, chair: dict, key: str) -> object | None:
     if _delta_norm(key, pv) == _delta_norm(key, cv):
         return None
     if pv in (None, ""):
+        # FR #5690: peer cleared a sticky field the chair still holds -> send explicit null.
+        if key in _CLEARABLE_MERGE_FIELDS and cv not in (None, ""):
+            return _PEER_CLEAR
         return None
     if looks_like_secret(str(pv)):
         return None
     return pv
+
+
+def _peer_delta_put(payload: dict, key: str, val: object) -> bool:
+    """Apply a peer delta value; _PEER_CLEAR becomes JSON null. Returns True if payload changed."""
+    if val is _PEER_CLEAR:
+        payload[key] = None
+        return True
+    if val is not None:
+        payload[key] = val
+        return True
+    return False
 
 
 def merge_payload_local_peer_ahead_of_chair(
@@ -3478,13 +3604,11 @@ def merge_payload_local_peer_ahead_of_chair(
         if key in _PEER_DELTA_SKIP:
             continue
         val = _peer_delta_value(peer, chair_machine, key)
-        if val is not None:
-            payload[key] = val
+        if _peer_delta_put(payload, key, val):
             changed = True
     for key in ("online", "status", "working_on"):
         val = _peer_delta_value(peer, chair_machine, key)
-        if val is not None:
-            payload[key] = val
+        if _peer_delta_put(payload, key, val):
             changed = True
     if not changed:
         return None
