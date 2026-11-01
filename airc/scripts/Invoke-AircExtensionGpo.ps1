@@ -21,6 +21,7 @@ param(
   [string]$ExtensionId = 'cgmpadejahkaggjpffnhaoiafbnicgpa',
   [string]$UpdateUrl = 'https://clients2.google.com/service/update2/crx',
   [string]$GpoName = 'Priority-web-extension',
+  [string]$CredmanTarget = 'PriorityAirc/ExtensionAdmin',
   [switch]$WhatIf
 )
 
@@ -231,7 +232,7 @@ try {
       $err1 = [string]$_.Exception.Message
       if (-not (Test-AccessDeniedMessage $err1)) { throw }
       # FR #5645: machine/computer account denied - retry with ExtensionAdmin CredMan.
-      $cred = Get-ExtensionAdminCredential
+      $cred = Get-ExtensionAdminCredential -Target $CredmanTarget
       $credmanTried = $true
       $credmanPresent = [bool]$cred
       if (-not $cred) {

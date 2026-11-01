@@ -147,8 +147,23 @@ PRIVMSG marchhare_console :id=aabbccdd LEGION walrus -WhatIf
 - FR #5530: -WhatIf still probes MSI/PsExec when CredMan is missing; the DCC log includes msi, psexec, summary=dry-run, and a credman-missing failure row (live installs still fail closed before install_remote).
 - FR #5655 / #5712 / #5737: PsExec is never MSI-bundled (Sysinternals license). Install/UPDATE deploys the official zip with pinned SHA-256 to `%ProgramData%\bobiverse\tools\PsExec.exe`. WhatIf/`ensure_psexec` use that copy or redeploy from the local cache (no verb-time network); fail `psexec-undeployed` when undeployed.
 
-## Identity for remote verbs (FR #5659 / #5711)
+## Identity for remote verbs (FR #5659 / #5711 / #5745)
 
 LEGION / EXTENSION / NETWORK pick **passed** (DCC `CRED id= via=dcc`) then **CredMan** then **SYSTEM**. See `bobiverse-airc-commands` CRED + LEGION / NETWORK sections. Never put passwords on IRC.
 
 NETWORK CredMan target is `PriorityAirc/NetworkAdmin`. Credentials bind ADSI/LDAP only (DNS resolution still uses the service token). Stage with `CRED id=<job> via=dcc` then `NETWORK` / `NETWORK ... cred=<job>`; DONE and the DCC JSON log carry `identity=` / `account=` (never the secret). Wrong passed or CredMan credentials yield `auth_failed` with no SYSTEM fallback.
+
+Configure per-verb targets in `config/airc.json` (or the install-root `airc.json`) with
+`credman_targets: {"legion": "PriorityAirc/LegionAdmin", "extension": "PriorityAirc/ExtensionAdmin", "network": "PriorityAirc/NetworkAdmin"}`.
+These are the defaults; omitted, empty or invalid overrides retain the corresponding
+default. Restart Airc after changing configuration. The EXTENSION target also applies
+to the GPO credential retry.
+
+All three verbs include `identity=passed|credman|system` and `account=` in DONE on
+DCC success, DCC-to-IRC fallback and IRC-only delivery, and preserve identity/account
+in the top-level JSON. Actual CredMan-to-SYSTEM fallback adds `identity_reason`:
+`credman-missing:<target>` or `credman-read-error:<code>`. The service also writes
+one `identity-fallback` line with the verb, job id, target and reason to
+`airc-console.log`; it never writes the credential or raw exception text.
+EXTENSION status/WhatIf does not probe CredMan for registry writes and does not
+claim a missing-entry fallback.

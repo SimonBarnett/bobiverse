@@ -433,6 +433,8 @@ class AircConsoleService:
             channel_commands=self.channel_commands,
             presence_channels=self.presence_channels,
             extension_runner=_airc_extension.service_extension_runner,
+            credman_targets=cfg.get("credman_targets"),
+            identity_fallback_log=info,
         )
         self.core.channel = self.channel
         self.core.presence_channels = list(self.presence_channels)

@@ -22,6 +22,25 @@ DEFAULT_TARGETS = {
 }
 
 
+def configured_credman_targets(value: Any) -> dict[str, str]:
+    targets = dict(DEFAULT_TARGETS)
+    if isinstance(value, dict):
+        for verb in targets:
+            target = value.get(verb)
+            if isinstance(target, str) and target.strip() and not any(
+                ord(c) < 32 or ord(c) == 127 for c in target
+            ):
+                targets[verb] = target.strip()
+    return targets
+
+
+def _credman_error_code(value: Any) -> str:
+    code = str(value or "")
+    if re.fullmatch(r"(?:winerror-\d+|\d+|unsupported-platform)", code):
+        return code
+    return "read-failed"
+
+
 @dataclass
 class ResolvedIdentity:
     source: str  # passed|credman|system
@@ -32,6 +51,7 @@ class ResolvedIdentity:
     credman_target: str = ""
     credman_missing: bool = False
     credman_error: str = ""
+    identity_reason: str = ""
 
     def public_dict(self) -> dict[str, Any]:
         """Safe for IRC / DCC logs (no secret)."""
@@ -46,6 +66,8 @@ class ResolvedIdentity:
             out["credman_missing"] = True
         if self.credman_error:
             out["credman_error"] = self.credman_error
+        if self.identity_reason:
+            out["identity_reason"] = self.identity_reason
         return out
 
 
@@ -81,8 +103,7 @@ def default_credman_reader(target: str) -> dict[str, str]:
             return {}
         return {"username": user, "password": pw}
     except Exception as exc:  # noqa: BLE001
-        reason = getattr(exc, "reason", None) or type(exc).__name__
-        return {"__error__": str(reason)}
+        return {"__error__": _credman_error_code(getattr(exc, "reason", None))}
 
 
 def resolve_remote_identity(
@@ -126,10 +147,13 @@ def resolve_remote_identity(
     credman_missing = False
     credman_error = ""
     if target:
-        got = reader(target) or {}
+        try:
+            got = reader(target) or {}
+        except Exception as exc:
+            got = {"__error__": _credman_error_code(getattr(exc, "reason", None))}
         if got.get("__error__"):
             credman_missing = True
-            credman_error = str(got.get("__error__") or "credman-error")
+            credman_error = _credman_error_code(got.get("__error__"))
         else:
             user = str(got.get("username") or "").strip()
             pw = str(got.get("password") or "")
@@ -156,6 +180,10 @@ def resolve_remote_identity(
         credman_target=target,
         credman_missing=credman_missing,
         credman_error=credman_error,
+        identity_reason=(
+            f"credman-read-error:{credman_error}" if credman_error
+            else f"credman-missing:{target}" if credman_missing else ""
+        ),
     )
 
 
@@ -178,7 +206,7 @@ def irc_line_has_inline_userpass(text: str) -> bool:
 def done_identity_suffix(log: dict[str, Any]) -> str:
     """FR #5659 / #5711: DONE carries identity=passed|credman|system and account (never secret).
 
-    Shared by LEGION and NETWORK so the wire format stays one formatter.
+    Shared by LEGION, EXTENSION and NETWORK so the wire format stays one formatter.
     """
     parts: list[str] = []
     ident = str(log.get("identity_source") or log.get("identity") or "").strip()
@@ -192,4 +220,3 @@ def done_identity_suffix(log: dict[str, Any]) -> str:
     if acct and "password" not in acct.lower():
         parts.append(f"account={acct}")
     return (" " + " ".join(parts)) if parts else ""
-

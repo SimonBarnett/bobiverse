@@ -150,6 +150,7 @@ def run_extension_gpo_work(
     extension_id: str = DEFAULT_EXTENSION_ID,
     update_url: str = DEFAULT_UPDATE_URL,
     gpo_name: str = DEFAULT_GPO_NAME,
+    credman_target: str = CREDMAN_TARGET,
     runner: Callable[..., dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """FR #5291: DC discovery + GPO ForceInstall for Chrome and Edge."""
@@ -205,6 +206,8 @@ def run_extension_gpo_work(
         str(script),
         "-Action",
         action,
+        "-CredmanTarget",
+        credman_target,
         "-ExtensionId",
         eid,
         "-UpdateUrl",
@@ -266,7 +269,9 @@ def extension_gpo_then_fill_holes(
     **kw: Any,
 ) -> dict[str, Any]:
     """Vision order: GPO first, then always FR-C fill-holes."""
-    gpo_kw = {k: kw[k] for k in ("update_url", "gpo_name", "runner") if k in kw}
+    gpo_kw = {
+        k: kw[k] for k in ("update_url", "gpo_name", "runner", "credman_target") if k in kw
+    }
     hole_kw = {k: v for k, v in kw.items() if k not in {"update_url", "gpo_name", "runner"}}
     gpo = run_extension_gpo_work(
         action, whatif=whatif, extension_id=extension_id, **gpo_kw
@@ -805,7 +810,7 @@ def fill_holes_work(
             verb="extension",
             passed=passed if isinstance(passed, dict) else None,
             passed_requested=False,
-            credman_target=CREDMAN_TARGET,
+            credman_target=_kw.get("credman_target") or CREDMAN_TARGET,
             credman_reader=_ext_reader,
         )
     else:
@@ -813,7 +818,7 @@ def fill_holes_work(
         resolved = _ident.resolve_remote_identity(
             verb="extension",
             passed=None,
-            credman_target=CREDMAN_TARGET,
+            credman_target=_kw.get("credman_target") or CREDMAN_TARGET,
             credman_reader=lambda _t: {},
             system_fn=lambda: {"account": "SYSTEM", "username": "SYSTEM", "password": ""},
         )
@@ -822,6 +827,8 @@ def fill_holes_work(
         "identity_label": resolved.label,
         "account": resolved.account,
     }
+    if writes and not whatif:
+        identity_meta.update(resolved.public_dict())
     if is_dc is None:
         dc_set = {str(x).lower() for x in (dc_enum or default_dc_hostnames)()}
         is_dc = lambda h: str(h).lower() in dc_set  # noqa: E731
@@ -903,7 +910,7 @@ def fill_holes_work(
             # SYSTEM path access-denied: try CredMan once if not already used.
             creds = {}
             try:
-                creds = read_creds() or {}
+                creds = _ext_reader(_kw.get("credman_target") or CREDMAN_TARGET) or {}
             except Exception:
                 creds = {}
             cuser = str(creds.get("username") or "").strip()
@@ -1108,6 +1115,7 @@ def run_extension_verb(
                     "action": action,
                     "whatif": bool(whatif),
                     "extension_id": DEFAULT_EXTENSION_ID,
+                    "credman_target": _kw.get("credman_target") or CREDMAN_TARGET,
                 },
             ),
             name="airc-extension-worker",
@@ -1315,7 +1323,7 @@ def extension_log_from_payload(
     fallback = data.get("fallback") if data else None
     if fallback is None and data:
         fallback = {"attempted": True, "host_count": len(hosts or [])}
-    return build_extension_log(
+    log = build_extension_log(
         action,
         whatif=whatif,
         hosts=hosts,
@@ -1324,6 +1332,13 @@ def extension_log_from_payload(
         fallback=fallback,
         extension_id=extension_id or DEFAULT_EXTENSION_ID,
     )
+    for key in (
+        "identity", "identity_label", "account", "credman_target", "identity_reason",
+        "credman_missing", "credman_error",
+    ):
+        if key in data:
+            log[key] = data[key]
+    return log
 
 
 def extension_log_bytes(log: dict[str, Any]) -> bytes:
@@ -1338,8 +1353,10 @@ def deliver_extension_log(
     send_fn: Callable[..., Any] | None = None,
 ) -> dict[str, Any]:
     import airc_dcc_bulk as _dcc
+    import airc_identity as _ident
 
     jid = (job_id or "").strip().lower() or "00000000"
+    identity_suffix = _ident.done_identity_suffix(log)
     raw = extension_log_bytes(log)
     digest = hashlib.sha256(raw).hexdigest()
     nfail = int(log.get("failure_count") or 0)
@@ -1355,7 +1372,7 @@ def deliver_extension_log(
             sender(raw, offer)
             done = _dcc.format_done_via_dcc(
                 jid, exit_code, nbytes=len(raw), sha256=digest, via="dcc"
-            )
+            ) + identity_suffix
             return {
                 "via": "dcc",
                 "sha256": digest,
@@ -1367,7 +1384,7 @@ def deliver_extension_log(
         except Exception as exc:
             lines.append(f"err id={jid} seq={len(lines)+1} dcc failed: {exc}; falling back to IRC")
             lines.append("CONT id=" + jid + " offset=1")
-            done = f"DONE id={jid} exit={exit_code} via=irc reason=dcc-fail"
+            done = f"DONE id={jid} exit={exit_code} via=irc reason=dcc-fail" + identity_suffix
             lines.append(done)
             return {
                 "via": "irc",
@@ -1379,7 +1396,7 @@ def deliver_extension_log(
                 "payload": raw,
             }
     lines.append("CONT id=" + jid + " offset=1")
-    done = f"DONE id={jid} exit={exit_code} via=irc"
+    done = f"DONE id={jid} exit={exit_code} via=irc" + identity_suffix
     lines.append(done)
     return {
         "via": "irc",

@@ -33,6 +33,7 @@ class NetworkVerbResult:
     credman_missing: bool = False
     credman_error: str = ""
     credman_target: str = ""
+    identity_reason: str = ""
 
     def reply_text(self) -> str:
         return self.reply
@@ -53,6 +54,8 @@ class NetworkVerbResult:
             out["credman_missing"] = True
         if self.credman_error:
             out["credman_error"] = self.credman_error
+        if self.identity_reason:
+            out["identity_reason"] = self.identity_reason
         return out
 
 
@@ -339,6 +342,7 @@ def inventory_work(
         verb="network",
         passed=passed if isinstance(passed, dict) else None,
         passed_requested=False,
+        credman_target=_kw.get("credman_target"),
         credman_reader=_reader,
         system_fn=system_fn,
     )
@@ -451,6 +455,7 @@ def _identity_fields_from_data(data: dict[str, Any]) -> dict[str, Any]:
         "credman_missing": bool(data.get("credman_missing")),
         "credman_error": str(data.get("credman_error") or ""),
         "credman_target": str(data.get("credman_target") or ""),
+        "identity_reason": str(data.get("identity_reason") or ""),
     }
 
 
@@ -472,7 +477,7 @@ def run_network_verb(
 
     # FR #5711: take DCC-staged cred in parent (isolated child has no shared stash).
     work_kw: dict[str, Any] = {}
-    for k in ("credman_reader", "system_fn", "ldap_enum", "resolve_ips"):
+    for k in ("credman_reader", "system_fn", "ldap_enum", "resolve_ips", "credman_target"):
         if k in _kw:
             work_kw[k] = _kw[k]
     cred_id = str(_kw.get("cred_id") or "").strip().lower()
@@ -590,7 +595,10 @@ def run_network_verb(
                 packaged=(
                     "airc_network",
                     "inventory_work",
-                    {"action": action, "whatif": bool(whatif)},
+                    {
+                        "action": action, "whatif": bool(whatif),
+                        "credman_target": work_kw.get("credman_target"),
+                    },
                 ),
                 name="airc-network-worker",
                 on_done=_from_child,

@@ -47,6 +47,9 @@ class LegionVerbResult:
     identity: str = ""
     computer_account: str = ""
     identity_label: str = ""
+    account: str = ""
+    credman_target: str = ""
+    identity_reason: str = ""
 
     def reply_text(self) -> str:
         return self.reply
@@ -511,7 +514,7 @@ def installer_legion_work(
         verb="legion",
         passed=passed if isinstance(passed, dict) else None,
         passed_requested=False,
-        credman_target=_CREDMAN_TARGET,
+        credman_target=_kw.get("credman_target") or _CREDMAN_TARGET,
         credman_reader=_reader,
         system_fn=lambda: {
             "account": sys_ident["computer_account"],
@@ -588,6 +591,7 @@ def installer_legion_work(
         "identity_label": resolved.label,
         "account": resolved.account,
     }
+    body.update(resolved.public_dict())
     # FR #5659: missing CredMan is logged, not a hard failure (falls through to SYSTEM).
     if resolved.credman_missing:
         body["credman_missing"] = True
@@ -672,6 +676,8 @@ def run_legion_verb(
     work_kw: dict[str, Any] = {}
     if "credman" in _kw:
         work_kw["credman"] = _kw["credman"]
+    if "credman_target" in _kw:
+        work_kw["credman_target"] = _kw["credman_target"]
     # FR #5659: take DCC-staged cred in parent (isolated child has no shared stash).
     cred_id = str(_kw.get("cred_id") or "").strip().lower()
     if cred_id:
@@ -726,6 +732,9 @@ def run_legion_verb(
             identity=str(data.get("identity") or ""),
             computer_account=str(data.get("computer_account") or ""),
             identity_label=ident_label,
+            account=str(data.get("account") or ""),
+            credman_target=str(data.get("credman_target") or ""),
+            identity_reason=str(data.get("identity_reason") or ""),
         )
         if on_done is not None:
             on_done(res)
@@ -798,7 +807,10 @@ def run_legion_verb(
                 packaged=(
                     "airc_legion",
                     "installer_legion_work",
-                    {"target": target, "whatif": bool(whatif)},
+                    {
+                        "target": target, "whatif": bool(whatif),
+                        "credman_target": work_kw.get("credman_target") or _CREDMAN_TARGET,
+                    },
                 ),
                 name="airc-legion-worker",
                 on_done=_from_child,

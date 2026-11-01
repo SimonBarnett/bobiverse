@@ -3137,6 +3137,8 @@ class AircConsoleCore:
         extension_runner: Callable[..., _extension.ExtensionVerbResult] | None = None,
         network_runner: Callable[..., _network.NetworkVerbResult] | None = None,
         legion_runner: Callable[..., _legion.LegionVerbResult] | None = None,
+        credman_targets: dict[str, str] | None = None,
+        identity_fallback_log: Callable[[str], None] | None = None,
     ) -> None:
         self.machine = machine_id(machine)
         self.channel = shop_channel(self.machine)
@@ -3147,6 +3149,13 @@ class AircConsoleCore:
         self.channel_traffic: list[str] = []
         self.update_scheduler = update_scheduler or schedule_fleet_update
         self.install_root = install_root
+        import airc_identity as _ident
+
+        cfg = _read_airc_json_dict(install_root) if credman_targets is None else {}
+        self.credman_targets = _ident.configured_credman_targets(
+            cfg.get("credman_targets") if credman_targets is None else credman_targets
+        )
+        self.identity_fallback_log = identity_fallback_log
         self.job_protocol = job_protocol
         # FR #5284: PRIORITY connect/status (injectable for SelfTest mocks).
         self.priority_runner = priority_runner or _priority.run_priority_verb
@@ -3174,6 +3183,14 @@ class AircConsoleCore:
             for c in (presence_channels or [])
             if normalize_irc_channel(c)
         ]
+
+    def _log_identity_fallback(self, verb: str, job_id: str, data: dict) -> None:
+        reason = data.get("identity_reason")
+        if reason and self.identity_fallback_log:
+            self.identity_fallback_log(
+                f"INFO identity-fallback action={verb} id={job_id} identity=system "
+                f"identity_reason={reason} target={data.get('credman_target') or ''}"
+            )
 
     def register_commands(self) -> list[str]:
         """NickServ register / identify sequence (password from env/file at service layer)."""
@@ -3689,8 +3706,12 @@ class AircConsoleCore:
                         extra["identity"] = res.identity_label
                 if getattr(res, "computer_account", ""):
                     extra["computer_account"] = res.computer_account
-                acct = ""
-                if isinstance(getattr(res, "plan", None), dict):
+                for key in ("credman_target", "identity_reason"):
+                    if getattr(res, key, ""):
+                        extra[key] = getattr(res, key)
+                self._log_identity_fallback("legion", qid or res.job_id, extra)
+                acct = getattr(res, "account", "")
+                if not acct and isinstance(getattr(res, "plan", None), dict):
                     acct = str((res.plan or {}).get("account") or "")
                 # account may live on failures / identity_label paren
                 if not acct and getattr(res, "identity_label", ""):
@@ -3724,6 +3745,7 @@ class AircConsoleCore:
                     job_id=qid,
                     on_done=_deliver_installer,
                     cred_id=str(leg.get("cred_id") or ""),
+                    credman_target=self.credman_targets["legion"],
                 )
             except TypeError:
                 try:
@@ -3798,6 +3820,7 @@ class AircConsoleCore:
             def _deliver_inventory(res: _network.NetworkVerbResult) -> None:
                 nonlocal delivered
                 extra = res.identity_public() if hasattr(res, "identity_public") else {}
+                self._log_identity_fallback("network", qid or res.job_id, extra)
                 payload = _network.build_network_payload(
                     net["action"],
                     whatif=net["whatif"],
@@ -3835,6 +3858,7 @@ class AircConsoleCore:
                 "whatif": net["whatif"],
                 "job_id": qid,
                 "on_done": _deliver_inventory,
+                "credman_target": self.credman_targets["network"],
             }
             if cred_id:
                 runner_kw["cred_id"] = cred_id
@@ -3931,6 +3955,7 @@ class AircConsoleCore:
                     whatif=ext["whatif"],
                     payload=getattr(res, "payload", None),
                 )
+                self._log_identity_fallback("extension", qid or res.job_id, log)
                 delivered = _extension.deliver_extension_log(
                     job_id=qid or res.job_id,
                     log=log,
@@ -3949,6 +3974,7 @@ class AircConsoleCore:
                     job_id=qid,
                     on_done=_deliver_extension,
                     cred_id=str(ext.get("cred_id") or ""),
+                    credman_target=self.credman_targets["extension"],
                 )
             except TypeError:
                 try:

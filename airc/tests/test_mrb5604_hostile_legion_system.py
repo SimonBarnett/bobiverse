@@ -94,5 +94,6 @@ def test_mrb5604_source_has_identity_order_and_system_denied():
     assert "resolve_remote_identity" in src
     assert "system-access-denied" in src
     assert "auth_failed" in src
-    # packaged isolated kwargs must not force CredMan on the default accept path
-    assert '{"target": target, "whatif": bool(whatif)}' in src
+    # Packaged kwargs carry only the configured target, never resolved credentials.
+    assert '"target": target, "whatif": bool(whatif)' in src
+    assert '"credman_target": work_kw.get("credman_target") or _CREDMAN_TARGET' in src
