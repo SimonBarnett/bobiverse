@@ -98,7 +98,8 @@ def test_fr5837_long_form_name_bounded(tmp_path: Path):
     assert r.exit_code == 2
 
 
-def test_fr5837_missing_subform_still_fixture_miss(tmp_path: Path):
+def test_fr5837_missing_subform_unchanged_or_named(tmp_path: Path):
+    """Subform path miss: fixture-miss until FR #5843; then subform-not-found."""
     allow = _allowlist(tmp_path)
     r = ap.run_priority_walk(
         text=(
@@ -108,8 +109,13 @@ def test_fr5837_missing_subform_still_fixture_miss(tmp_path: Path):
         allowlist_path=allow,
         fixture_path=FIX,
     )
-    assert r.payload.get("error") == "fixture-miss"
-    assert r.payload.get("detail") == "KeyError"
+    err = r.payload.get("error")
+    assert err in ("fixture-miss", "subform-not-found")
+    if err == "fixture-miss":
+        assert r.payload.get("detail") == "KeyError"
+    else:
+        assert r.payload.get("path") == "no-such-subform"
+        assert "detail" not in r.payload
     assert r.exit_code == 2
 
 
