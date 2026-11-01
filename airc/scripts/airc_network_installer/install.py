@@ -229,6 +229,57 @@ def read_remote_version(host: str) -> str:
     return ""
 
 
+def read_remote_airc_profile(
+    host: str,
+    *,
+    username: str = "",
+    password: str = "",
+) -> str:
+    """FR #5758: best-effort remote profile from config\\airc-install.json (or airc.json).
+
+    Optional username/password authenticate via WNet to the admin share; never on argv.
+    Returns '' when unreadable or profile missing/invalid.
+    """
+    from .core import ALLOWED_PROFILES
+
+    unc = rf"\\{host}\c$"
+    used_wnet = False
+    if username:
+        try:
+            _net_use(unc, username, password or "")
+            used_wnet = True
+        except Exception:
+            used_wnet = False
+    try:
+        for rel in (
+            r"ai\airc\config\airc-install.json",
+            r"Program Files\Bobiverse\airc\config\airc-install.json",
+            r"ai\airc\config\airc.json",
+            r"Program Files\Bobiverse\airc\config\airc.json",
+        ):
+            p = Path(rf"\\{host}\c$\{rel}")
+            try:
+                if not p.is_file():
+                    continue
+                import json as _json
+
+                data = _json.loads(p.read_text(encoding="utf-8"))
+                if not isinstance(data, dict):
+                    continue
+                prof = str(data.get("profile") or "").strip().lower()
+                if prof in ALLOWED_PROFILES:
+                    return prof
+            except (OSError, ValueError, TypeError):
+                continue
+        return ""
+    finally:
+        if used_wnet:
+            try:
+                _net_use_delete(unc)
+            except Exception:
+                pass
+
+
 def _net_use(unc: str, username: str, password: str) -> None:
     """Authenticate to ``unc`` via WNet (FR #5721). Password never on argv / 4688."""
     wnet_add(unc, username or "", password or "")
