@@ -14,12 +14,15 @@ SKILL_T = ROOT / "airc/.grok/skills/bobiverse-airc-troubleshooting/SKILL.md"
 
 def test_fr5655_ensure_psexec_exists():
     t = INSTALL.read_text(encoding="utf-8")
-    assert "def ensure_psexec" in t
-    assert "FR #5655" in t
-    assert "offer_download_psexec" in t
-    assert "AIRC_LEGION_NO_PSEXEC_DOWNLOAD" in t
-    assert "ProgramData" in t
+    assert "ensure_psexec" in t
+    assert "psexec_deploy" in t or "FR #5655" in t or "FR #5737" in t
+    assert "offer_download_psexec" in t or "deploy_psexec" in t or "psexec_deploy" in t
     assert not INSTALL.read_bytes().startswith(b"\xef\xbb\xbf")
+    deploy = (ROOT / "airc/scripts/airc_network_installer/psexec_deploy.py").read_text(encoding="utf-8")
+    assert "def ensure_psexec" in deploy
+    assert "FR #5737" in deploy
+    assert "AIRC_LEGION_NO_PSEXEC_DOWNLOAD" in deploy or "AIRC_NO_PSEXEC_DEPLOY" in deploy
+    assert "ProgramData" in deploy
 
 
 def test_fr5655_default_installer_uses_ensure_psexec():
@@ -78,5 +81,5 @@ def test_fr5655_deliver_exit_zero_when_clean():
 def test_fr5655_skills_document():
     blob = SKILL_CMD.read_text(encoding="utf-8") + "\n" + SKILL_T.read_text(encoding="utf-8")
     assert "5655" in blob
-    assert "psexec-missing" in blob
+    assert "psexec-missing" in blob or "psexec-undeployed" in blob
     assert "ProgramData" in blob or "ensure_psexec" in blob or "Sysinternals" in blob

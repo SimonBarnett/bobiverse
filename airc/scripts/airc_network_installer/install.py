@@ -22,81 +22,26 @@ from airc_wnet import wnet_add, wnet_cancel
 
 RemoteRunner = Callable[..., subprocess.CompletedProcess]
 
-# FR #5655 / #5712: Sysinternals PsExec zip (MSI must not bundle PsExec).
-PSEXEC_ZIP_URL = "https://download.sysinternals.com/files/PSTools.zip"
+# FR #5655 / #5712 / #5737: Sysinternals PsExec — never MSI-bundled (license).
+# Install/UPDATE deploys with pinned SHA-256; LEGION uses/redeploys local cache only.
+from .psexec_deploy import (  # noqa: E402
+    PSEXEC_EXE_SHA256,
+    PSEXEC_ZIP_SHA256,
+    PSEXEC_ZIP_URL,
+    _psexec_download_opted_out,
+    cache_zip_path,
+    deploy_psexec,
+    ensure_psexec,
+    find_psexec,
+    load_psexec_pin,
+    offer_download_psexec,
+    plan_psexec,
+    psexec_dest as _psexec_dest,
+    psexec_hash_ok,
+    redeploy_psexec_from_cache,
+)
+
 PSEXEC_PROBE_TIMEOUT_S = 8.0
-
-
-def find_psexec(explicit: str = "") -> Optional[str]:
-    if explicit:
-        p = Path(explicit)
-        if p.is_file():
-            return str(p.resolve())
-    found = shutil.which("psexec") or shutil.which("PsExec.exe") or shutil.which("psexec.exe")
-    return found
-
-
-def _psexec_download_opted_out() -> bool:
-    return (os.environ.get("AIRC_LEGION_NO_PSEXEC_DOWNLOAD") or "").strip().lower() in (
-        "1",
-        "true",
-        "yes",
-        "on",
-    )
-
-
-def _psexec_dest(*, dest: Optional[Path] = None) -> Path:
-    """AIRC_PSEXEC_PATH -> dest arg -> %ProgramData%\\bobiverse\\tools\\PsExec.exe."""
-    explicit_dest = (os.environ.get("AIRC_PSEXEC_PATH") or "").strip()
-    if explicit_dest:
-        return Path(explicit_dest)
-    if dest is not None:
-        return Path(dest)
-    pd = os.environ.get("ProgramData") or r"C:\ProgramData"
-    return Path(pd) / "bobiverse" / "tools" / "PsExec.exe"
-
-
-def offer_download_psexec(dest: Path) -> Path:
-    """
-    Download PsExec from the official Microsoft Sysinternals URL.
-    Caller verifies presence; Sysinternals EULA accepted via -accepteula at run.
-    """
-    import urllib.request
-
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    zip_path = dest.parent / "PSTools.zip"
-    urllib.request.urlretrieve(PSEXEC_ZIP_URL, zip_path)
-    import zipfile
-
-    with zipfile.ZipFile(zip_path, "r") as zf:
-        for name in zf.namelist():
-            if name.lower().endswith("psexec.exe"):
-                zf.extract(name, dest.parent)
-                src = dest.parent / name
-                shutil.copy2(src, dest)
-                return dest
-    raise RuntimeError("PsExec.exe not found inside PSTools.zip")
-
-
-def ensure_psexec(explicit: str = "", *, dest: Optional[Path] = None) -> Optional[str]:
-    """FR #5655: find PsExec on PATH or download Sysinternals copy once.
-
-    MSI must not bundle PsExec (Sysinternals licence). LEGION / network installer
-    may download to ProgramData\\bobiverse\\tools\\PsExec.exe (or AIRC_PSEXEC_PATH /
-    dest). Opt out: AIRC_LEGION_NO_PSEXEC_DOWNLOAD=1.
-    """
-    found = find_psexec(explicit)
-    if found:
-        return found
-    if _psexec_download_opted_out():
-        return None
-    target = _psexec_dest(dest=dest)
-    if target.is_file():
-        return str(target.resolve())
-    try:
-        return str(offer_download_psexec(target).resolve())
-    except Exception:
-        return None
 
 
 def probe_psexec_source(
@@ -104,7 +49,7 @@ def probe_psexec_source(
     *,
     timeout: float = PSEXEC_PROBE_TIMEOUT_S,
 ) -> dict[str, Any]:
-    """FR #5712: bounded HEAD (GET on 405/501) — no writes, no body download."""
+    """Legacy FR #5712 probe kept for callers; LEGION plan no longer uses it."""
     import urllib.error
     import urllib.request
 
@@ -120,9 +65,6 @@ def probe_psexec_source(
         try:
             with urllib.request.urlopen(req, timeout=float(timeout)) as resp:
                 code = int(getattr(resp, "status", None) or resp.getcode() or 0)
-                if method == "GET":
-                    # Close without reading body.
-                    pass
                 if code >= 400:
                     return {"ok": False, "reason": f"http-{code}"}
                 return {"ok": True, "reason": f"http-{code or 200}"}
@@ -155,43 +97,6 @@ def probe_psexec_source(
         "reachable": False,
         "reason": str(first.get("reason") or "unreachable"),
         "url": target,
-    }
-
-
-def plan_psexec(
-    explicit: str = "",
-    *,
-    dest: Optional[Path] = None,
-    probe: Callable[..., dict[str, Any]] | None = None,
-) -> dict[str, Any]:
-    """FR #5712: read-only prediction of ``ensure_psexec`` (no download / no writes).
-
-    States: found | cached | would-download | missing | unreachable.
-    """
-    found = find_psexec(explicit)
-    if found:
-        return {"state": "found", "path": found}
-    if _psexec_download_opted_out():
-        return {"state": "missing", "reason": "download-opted-out"}
-    target = _psexec_dest(dest=dest)
-    if target.is_file():
-        return {"state": "cached", "path": str(target.resolve())}
-    probe_fn = probe or probe_psexec_source
-    hit = probe_fn(PSEXEC_ZIP_URL) or {}
-    url = str(hit.get("url") or PSEXEC_ZIP_URL)
-    dest_s = str(target)
-    if hit.get("reachable"):
-        return {
-            "state": "would-download",
-            "url": url,
-            "dest": dest_s,
-            "reason": str(hit.get("reason") or "ok"),
-        }
-    return {
-        "state": "unreachable",
-        "url": url,
-        "dest": dest_s,
-        "reason": str(hit.get("reason") or "unreachable"),
     }
 
 def read_local_version(install_root: Optional[Path] = None) -> str:

@@ -790,6 +790,22 @@ try {
     Write-Host ("WARN Start Menu folder: {0}" -f $_.Exception.Message)
 }
 
+# FR #5737: deploy Sysinternals PsExec at install (pinned hash). MSI never bundles it
+# (Sysinternals license forbids redistribute). LEGION uses the ProgramData copy only.
+try {
+    $deployPs = Join-Path $here 'Deploy-AircPsExec.ps1'
+    if (Test-Path -LiteralPath $deployPs) {
+        & $deployPs -Python $Python
+        if ($LASTEXITCODE -notin @(0, $null)) {
+            Write-Host ("WARN FR #5737 Deploy-AircPsExec exit={0} (LEGION needs install/update deploy)" -f $LASTEXITCODE)
+        }
+    } else {
+        Write-Host 'WARN FR #5737 Deploy-AircPsExec.ps1 missing'
+    }
+} catch {
+    Write-Host ("WARN FR #5737 Deploy-AircPsExec: {0}" -f $_.Exception.Message)
+}
+
 # FR #3292: durable install manifest for purge uninstall (paths + profile).
 try {
     # FR #3652: LogsOnly - never Full-Recurse the shared ProgramData update\ tree here.

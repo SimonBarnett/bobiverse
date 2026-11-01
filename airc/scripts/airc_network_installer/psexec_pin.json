@@ -1,0 +1,7 @@
+{
+  "zip_url": "https://download.sysinternals.com/files/PSTools.zip",
+  "zip_sha256": "c26c6ba44997e650a733df257c8feb83898d3faef2d2e391869d107e40863553",
+  "psexec_sha256": "078163d5c16f64caa5a14784323fd51451b8c831c73396b967b4e35e6879937b",
+  "note": "Sysinternals license forbids redistributing PsExec in the MSI (no publish/transfer). airc downloads the official zip at install/UPDATE with these pins, caches it under ProgramData, and LEGION only uses/redeploys that local cache (no network at verb time). FR #5737.",
+  "pinned_at": "2026-11-01"
+}
