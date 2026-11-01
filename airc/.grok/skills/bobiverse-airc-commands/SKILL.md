@@ -88,7 +88,7 @@ PRIVMSG {mid}_console :id=c25bd00e PRIORITY prepare FOO instance=example-dev
 ```
 
 - **Allowlist:** `config\priority-instances.json` (schema: `airc/config/priority-instances.example.json`). Unknown instance -> refuse.
-- **CredMan:** password lives in the Windows credential named `credentialTarget` (example `PriorityWeb/example-dev`). Never put a Priority password on IRC, in skills, or in intake.
+- **CredMan:** password lives in the Windows credential named `credentialTarget` (example `PriorityWeb/example-dev`). Populate remotely with `CRED persist ... via=https` (FR #5802) when DCC is blocked. Never put a Priority password on IRC, in skills, or in intake.
 - **Form walk replies (FR #5524):** PRIORITY formStart/subform/getRows must return HandleResult.reply only (newline-separated out+DONE). Do not also JobProtocol._emit after FR #5518 on_line already sends action=priority --- that double-fires every walk line.
 - **Prepare gates (S4):** TYPE=P uses EXEC `REPPREPDIRECT2`. Success only when SDK `ok=true` **and** `EXECPREPLOCK.UPD=N` **and** `.prp` mtime advanced. Reasons include `still_unprepared`, `prp_unchanged`, `no_cred`, `name_missing`. Never SQL-fake UPD; never form-prep for TYPE=P.
 
@@ -131,18 +131,33 @@ PRIVMSG {mid}_console :id=c25bd00e NETWORK diag -WhatIf
 
 See `docs/airc-remote-control.md` and `docs/feature-request-airc-network-diagnostic-2026-10-31.md`.
 
-## CRED staged identity (FR #5659)
+## CRED staged + persist (FR #5659 / #5802)
 
-Stage a username/password for one LEGION/EXTENSION/NETWORK run over **TLS DCC only**:
+Two paths:
+
+1. **Stage (memory, FR #5659):** one-shot identity for LEGION/EXTENSION/NETWORK via TLS DCC.
+2. **Persist (CredMan, FR #5802):** write a lasting LocalSystem CredMan entry (e.g. Priority `credentialTarget`) over **HTTPS on 443** when DCC is firewalled, or via DCC when available.
 
 ```text
+# Stage (DCC) then use once
 PRIVMSG {mid}_console :id=c25bd00e DCCLISTEN id=c25bd00e host=<ip> port=<n> token=<hex> tls=1
 PRIVMSG {mid}_console :id=c25bd00e CRED id=c25bd00e via=dcc
-# DCC body JSON: {"username":"DOMAIN\\user","password":"…"}
+# DCC body JSON: {"username":"DOMAIN\\user","password":"..."}
 PRIVMSG {mid}_console :id=c25bd00e LEGION flamingo cred=c25bd00e
+
+# Persist Priority CredMan over HTTPS (443) --- firewalled customer boxes
+# Operator stages one-shot JSON at an allowlisted URL under https://bob.ntsa.uk/ (or AIRC_CRED_HTTPS_PREFIXES)
+PRIVMSG {mid}_console :id=c25bd00e CRED persist target=PriorityWeb/example-dev via=https url=https://bob.ntsa.uk/bob/v1/cred-once/<token>
+# Reply: out ... CRED persisted target=PriorityWeb/example-dev + DONE ... cred-persisted target=... account=... (never the password)
+
+# Persist via DCC when outbound DCC works
+PRIVMSG {mid}_console :id=c25bd00e DCCLISTEN id=c25bd00e host=<ip> port=<n> token=<hex> tls=1
+PRIVMSG {mid}_console :id=c25bd00e CRED persist target=PriorityWeb/example-dev via=dcc
 ```
 
-Password never on IRC. Stash is in-memory, TTL ~180s, one-shot `take`. Without `via=dcc` / offer -> `DONE … usage cred-requires-dcc`.
+- Password never on IRC. Stage stash is in-memory, TTL ~180s, one-shot `take`. Persist uses CredWriteW LocalMachine under the Airc LocalSystem identity (`airc_credman.write_generic_credential`).
+- HTTPS URL must be `https://` under the fleet public base (`bob.ntsa.uk` / `BOB_PUBLIC_BASE`) or a prefix in `AIRC_CRED_HTTPS_PREFIXES`. Rejected URL -> `cred-url-rejected`. Fetch failures surface firewall-aware tokens (`firewall-or-unreachable`, `timeout`, `ssl-error`, `dns-failed`, `http-N`).
+- Without `via=dcc` / offer on stage or persist-dcc -> `DONE ... usage cred-requires-dcc`. Persist needs `target=`; persist+https needs `url=`.
 
 ## LEGION remote install (FR #5312 / #5758)
 

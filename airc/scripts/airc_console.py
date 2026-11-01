@@ -3559,7 +3559,7 @@ class AircConsoleCore:
                 **meta,
             )
 
-        # FR #5659: CRED id= via=dcc --- stage username/password in memory (TLS DCC only).
+        # FR #5659 / #5802: CRED via=dcc (stage) or persist via=https|dcc (CredMan write).
         cred_cmd = None
         try:
             import airc_passed_cred as _pcred
@@ -3576,7 +3576,112 @@ class AircConsoleCore:
                 return self._capability_deny(
                     nick, target, text, "usage secrets-on-irc", qid
                 )
-            if (cred_cmd.get("via") or "") != "dcc":
+            via = str(cred_cmd.get("via") or "").lower()
+            persist = bool(cred_cmd.get("persist"))
+            cred_target = str(cred_cmd.get("target") or "").strip()
+            cred_url = str(cred_cmd.get("url") or "").strip()
+
+            def _cred_fail(reason: str, *, exit_code: int = 1) -> HandleResult:
+                safe = re.sub(r"\s+", "-", str(reason or "cred-failed"))[:80]
+                if qid:
+                    reply = (
+                        f"err id={qid} seq=1 cred failed: {safe}\n"
+                        f"DONE id={qid} exit={exit_code} {safe}"
+                    )
+                else:
+                    reply = f"err seq=1 cred failed: {safe}\nDONE exit={exit_code} {safe}"
+                return HandleResult(
+                    action="cred",
+                    nick=nick,
+                    target=target,
+                    text=text,
+                    reply=reply,
+                    **allow,
+                )
+
+            # FR #5802: persist to LocalSystem CredMan over HTTPS (443) or DCC body.
+            if persist:
+                if not cred_target:
+                    return self._capability_deny(
+                        nick, target, text, "usage cred-persist-needs-target", qid
+                    )
+                if via == "https":
+                    if not cred_url:
+                        return self._capability_deny(
+                            nick, target, text, "usage cred-persist-needs-url", qid
+                        )
+                    try:
+                        pair = _pcred.fetch_cred_json_https(cred_url)
+                        written = _pcred.persist_credman(
+                            cred_target, pair["username"], pair["password"]
+                        )
+                    except Exception as exc:  # noqa: BLE001
+                        reason = str(exc) if str(exc) else type(exc).__name__
+                        return _cred_fail(reason)
+                    account = pair["username"]
+                    # Drop secret from local scope ASAP (best-effort).
+                    pair["password"] = ""
+                    done = (
+                        f"DONE id={qid} exit=0 cred-persisted target={written} "
+                        f"account={account}"
+                        if qid
+                        else f"DONE exit=0 cred-persisted target={written} account={account}"
+                    )
+                    out = (
+                        f"out id={qid} seq=1 CRED persisted target={written}\n{done}"
+                        if qid
+                        else f"out seq=1 CRED persisted target={written}\n{done}"
+                    )
+                    return HandleResult(
+                        action="cred",
+                        nick=nick,
+                        target=target,
+                        text=text,
+                        reply=out,
+                        **allow,
+                    )
+                if via != "dcc":
+                    return self._capability_deny(
+                        nick, target, text, "usage cred-persist-via-https-or-dcc", qid
+                    )
+                # persist + via=dcc: receive body then CredWrite (when DCC is available).
+                offer = None
+                if self.shell_runner is not None and qid:
+                    take = getattr(self.shell_runner, "take_dcclisten", None)
+                    if callable(take):
+                        offer = take(qid)
+                if offer is None:
+                    return self._capability_deny(
+                        nick, target, text, "usage cred-requires-dcc", qid
+                    )
+                try:
+                    import airc_dcc_bulk as _dcc
+
+                    raw, _digest = _dcc.receive_upload_from_offer(offer)
+                    pair = _pcred.parse_cred_json(raw)
+                    written = _pcred.persist_credman(
+                        cred_target, pair["username"], pair["password"]
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    reason = str(exc) if str(exc) else type(exc).__name__
+                    return _cred_fail(reason)
+                account = pair["username"]
+                pair["password"] = ""
+                done = (
+                    f"DONE id={qid} exit=0 cred-persisted target={written} "
+                    f"account={account}"
+                )
+                return HandleResult(
+                    action="cred",
+                    nick=nick,
+                    target=target,
+                    text=text,
+                    reply=f"out id={qid} seq=1 CRED persisted target={written}\n{done}",
+                    **allow,
+                )
+
+            # FR #5659: in-memory stage (TLS DCC only).
+            if via != "dcc":
                 return self._capability_deny(
                     nick, target, text, "usage cred-requires-dcc", qid
                 )
