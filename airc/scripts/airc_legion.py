@@ -642,12 +642,14 @@ def installer_legion_work(
             body["status"] = "failed"
     if whatif:
         # Prefer runner-reported psexec; default label only for plan display.
-        pse = body.get("psexec") or "psexec-missing"
+        # Do not invent psexec-missing when the stub/runner omitted the key (MRB #5732).
+        pse = body.get("psexec")
+        plan_pse = pse if pse not in (None, "") else "psexec-missing"
         body["plan"] = {
             "target": target,
             "identity": spec["identity_label"],
             "msi": body.get("msi") or "latest",
-            "psexec": pse,
+            "psexec": plan_pse,
             "install": "skipped (whatif)",
         }
         dl = (out or {}).get("psexec_download")
@@ -656,8 +658,11 @@ def installer_legion_work(
                 body["plan"]["psexec_url"] = str(dl.get("url"))
             if dl.get("dest"):
                 body["plan"]["psexec_dest"] = str(dl.get("dest"))
-        # FR #5655 / #5712: fail WhatIf on missing or unreachable source (not would-download).
-        if str(err or "") in _pse_fail_errs or str(pse) in _pse_fail_errs:
+        # FR #5655 / #5712: fail WhatIf only when runner/error explicitly reported
+        # missing or unreachable (not when the psexec key was absent).
+        if str(err or "") in _pse_fail_errs or (
+            pse is not None and str(pse) in _pse_fail_errs
+        ):
             body["ok"] = False
             body["status"] = body.get("status") or "failed"
             body["plan"]["will_fail"] = str(err or pse)
