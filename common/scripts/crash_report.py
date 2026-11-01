@@ -325,6 +325,93 @@ def wrap_cleanup_dead_symlinks(fn):
     return _safe
 
 
+def pytest_temp_root_is_usable(
+    root: Path | str,
+    *,
+    timeout_s: float = 2.0,
+    probe_fn: Callable[[Path], None] | None = None,
+) -> bool:
+    """FR #5692: True when ``root`` can host pytest ``tmp_path`` (mkdir + child write).
+
+    A locked ``D:\\Temp\\pytest-of-<user>`` can raise WinError 5 on scandir or hang
+    indefinitely; bound the probe so configure can redirect basetemp.
+    """
+    path = Path(root)
+    box: dict[str, Any] = {"ok": False}
+
+    def _default_probe(target: Path) -> None:
+        target.mkdir(parents=True, exist_ok=True)
+        probe = target / f".fr5692-probe-{os.getpid()}"
+        probe.mkdir(exist_ok=True)
+        marker = probe / "t"
+        marker.write_text("ok", encoding="ascii")
+        marker.unlink()
+        probe.rmdir()
+
+    worker = probe_fn or _default_probe
+
+    def _run() -> None:
+        try:
+            worker(path)
+            box["ok"] = True
+        except OSError:
+            box["ok"] = False
+
+    t = threading.Thread(target=_run, daemon=True)
+    t.start()
+    t.join(timeout=max(0.05, float(timeout_s)))
+    if t.is_alive():
+        return False
+    return bool(box.get("ok"))
+
+
+def default_pytest_of_root() -> Path:
+    """Same layout pytest TempPathFactory uses when basetemp is unset."""
+    import getpass
+    import tempfile
+
+    user = getpass.getuser() or "unknown"
+    temproot = Path(os.environ.get("PYTEST_DEBUG_TEMPROOT") or tempfile.gettempdir())
+    return temproot / f"pytest-of-{user}"
+
+
+def ensure_writable_pytest_basetemp(config: Any, *, timeout_s: float = 2.0) -> str | None:
+    """FR #5692: when default ``pytest-of-*`` is unusable, set ``config.option.basetemp``.
+
+    Returns the path set, or None when the default root is fine / already overridden.
+    Prefer ``%LOCALAPPDATA%\\Temp\\pytest-basetemp-<user>\\pytest-<pid>`` over a
+    locked ``D:\\Temp\\pytest-of-<user>``.
+    """
+    opt = getattr(config, "option", None)
+    if opt is None:
+        return None
+    existing = getattr(opt, "basetemp", None)
+    if existing:
+        return None
+    default_root = default_pytest_of_root()
+    if pytest_temp_root_is_usable(default_root, timeout_s=timeout_s):
+        return None
+    import getpass
+
+    user = getpass.getuser() or "unknown"
+    local = (os.environ.get("LOCALAPPDATA") or "").strip()
+    parent = Path(local) / "Temp" if local else Path(tempfile_gettempdir()) / "pytest-basetemp"
+    parent = parent / f"pytest-basetemp-{user}"
+    parent.mkdir(parents=True, exist_ok=True)
+    session = parent / f"pytest-{os.getpid()}"
+    session.mkdir(parents=True, exist_ok=True)
+    opt.basetemp = str(session)
+    # Child xdist / nested pytest: keep TEMP away from the locked tree.
+    os.environ.setdefault("PYTEST_DEBUG_TEMPROOT", str(parent))
+    return str(session)
+
+
+def tempfile_gettempdir() -> str:
+    import tempfile
+
+    return tempfile.gettempdir()
+
+
 def should_skip_report(exe: str, exc_value: BaseException | None, *, body: str = "", title: str = "") -> bool:
     """FR #2431 / #2535 / #2541: skip probe markers, pytest mount noise, and shutdown signals.
 
