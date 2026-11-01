@@ -420,6 +420,19 @@ def default_ping_host(host: str) -> bool:
         return False
 
 
+def tcp_port_open(host: str, port: int = 445, timeout_s: float = 1.5) -> bool:
+    """True when TCP connect to host:port succeeds (SMB probe uses 445)."""
+    import socket
+
+    if not (host or "").strip():
+        return False
+    try:
+        with socket.create_connection((host.strip(), int(port)), timeout=float(timeout_s)):
+            return True
+    except OSError:
+        return False
+
+
 def is_access_denied(exc: BaseException) -> bool:
     """True for remote-registry access-denied (FR #5364)."""
     if isinstance(exc, PermissionError):
@@ -430,6 +443,56 @@ def is_access_denied(exc: BaseException) -> bool:
         return True
     msg = str(exc).lower()
     return "access is denied" in msg or "access denied" in msg
+
+
+def classify_extension_host_error(
+    exc: BaseException | None,
+    *,
+    icmp_ok: bool | None = None,
+    smb_ok: bool | None = None,
+) -> dict[str, Any]:
+    """FR #5661: map fallback reach failures to operator-facing codes + detail.
+
+    Codes: access_denied, remote_registry_stopped, smb_blocked, host_down,
+    unreachable (only when nothing answers / unclassified silence).
+    """
+    detail = (str(exc) if exc is not None else "")[:300]
+    if exc is not None and is_access_denied(exc):
+        return {"error": "access_denied", "detail": detail or "access-denied"}
+    msg = detail.lower()
+    win = int(getattr(exc, "winerror", 0) or 0) if exc is not None else 0
+    err_no = int(getattr(exc, "errno", 0) or 0) if exc is not None else 0
+    code = win or err_no
+    rpc_hints = code in (1722, 1723, 1726, 1727, 1753, 1747) or (
+        "rpc server is unavailable" in msg
+        or "rpc server unavailable" in msg
+        or "endpoint mapper" in msg
+        or ("remote procedure call" in msg and "fail" in msg)
+        or ("rpc" in msg and "timeout" in msg)
+    )
+    if rpc_hints:
+        return {
+            "error": "remote_registry_stopped",
+            "detail": detail or "rpc-unavailable",
+        }
+    smb_hints = code in (51, 53, 64, 65, 67, 1231, 121) or (
+        "network path was not found" in msg
+        or "network name cannot be found" in msg
+        or "no network provider" in msg
+        or "semaphore timeout" in msg
+        or "timed out" in msg
+    )
+    if smb_ok is False and icmp_ok is False and not rpc_hints:
+        return {"error": "host_down", "detail": detail or "no-icmp-no-smb"}
+    if smb_ok is False or smb_hints:
+        return {"error": "smb_blocked", "detail": detail or "smb-445-failed"}
+    if icmp_ok is False and smb_ok is False:
+        return {"error": "host_down", "detail": detail or "no-icmp-no-smb"}
+    if exc is None and icmp_ok is False and smb_ok is None:
+        return {"error": "unreachable", "detail": "icmp-failed"}
+    if exc is None and icmp_ok is False:
+        return {"error": "host_down", "detail": "icmp-failed"}
+    return {"error": "unreachable", "detail": detail or "no-response"}
 
 
 def default_extension_credman() -> dict[str, str]:
@@ -544,14 +607,14 @@ def probe_host_forcelist(
     extension_id: str,
     *,
     reader: Callable[[str, str], tuple[list[str], list[str]]] | None = None,
-) -> dict[str, Any] | None:
-    """Return would_write/present per browser, or None if the registry is unreadable."""
+) -> dict[str, Any]:
+    """Return would_write/present per browser. Raises when the registry is unreadable.
+
+    FR #5661: callers classify the raised error (do not swallow as None).
+    """
     read = reader or default_read_forcelist
-    try:
-        cn, cv = read(host, "chrome")
-        en, ev = read(host, "edge")
-    except Exception:
-        return None
+    cn, cv = read(host, "chrome")
+    en, ev = read(host, "edge")
     chrome_need = next_forcelist_name(cn, cv, extension_id) is not None
     edge_need = next_forcelist_name(en, ev, extension_id) is not None
     return {
@@ -583,6 +646,7 @@ def fill_holes_work(
     is_dc: Callable[[str], bool] | None = None,
     dc_enum: Callable[[], list[str]] | None = None,
     read_forcelist: Callable[[str, str], tuple[list[str], list[str]]] | None = None,
+    tcp_probe: Callable[..., bool] | None = None,
     **_kw: Any,
 ) -> dict[str, Any]:
     """FR #5292: LDAP enum + per-host Chrome/Edge ForceInstall. Never uses extra_hosts.
@@ -590,6 +654,9 @@ def fill_holes_work(
     FR #5364: on access-denied, retry with CredMan PriorityAirc/ExtensionAdmin.
     FR #5538: status is read-only; skip DCs; append a free forcelist name.
     FR #5585: would_write / chrome/edge true only when a forcelist slot is free.
+    FR #5661: ICMP alone is not unreachable; classify smb_blocked /
+    remote_registry_stopped / access_denied / host_down with detail text.
+    FR #5659: privileged writes use passed -> CredMan -> SYSTEM identity.
     """
     _ = extra_hosts
     enum = ldap_enum or default_ldap_enum
@@ -600,6 +667,25 @@ def fill_holes_work(
     # FR #5659: passed -> CredMan -> SYSTEM for privileged writes only.
     import airc_identity as _ident
     import airc_passed_cred as _pcred
+    # FR #5661: SMB/ICMP probes for classified fallback errors.
+    probe_tcp = tcp_probe or tcp_port_open
+
+    def _smb_ok(h: str) -> bool:
+        try:
+            return bool(probe_tcp(h, 445))
+        except TypeError:
+            try:
+                return bool(probe_tcp(h))
+            except Exception:
+                return False
+        except Exception:
+            return False
+
+    def _fail_row(h: str, exc: BaseException | None, icmp: bool | None) -> dict[str, Any]:
+        diag = classify_extension_host_error(
+            exc, icmp_ok=icmp, smb_ok=_smb_ok(h)
+        )
+        return {"host": h, "ok": False, **diag}
 
     writes = (action or "").strip().lower() in {"install", "forceinstall", "apply"}
     cred_id = str(_kw.get("cred_id") or "").strip().lower()
@@ -671,24 +757,26 @@ def fill_holes_work(
         if is_dc(name):
             hosts_out.append({"host": name, "ok": True, "skipped": "dc"})
             continue
-        if not ping(name):
-            hosts_out.append({"host": name, "ok": False, "error": "unreachable"})
-            continue
-        plan = probe_host_forcelist(
-            name, extension_id, reader=read_forcelist
-        )
+        # FR #5661: ICMP informs classification; do not short-circuit as unreachable.
+        icmp_ok = bool(ping(name))
         if not writes or whatif:
-            would = True if plan is None else bool(plan["would_write"])
+            try:
+                plan = probe_host_forcelist(
+                    name, extension_id, reader=read_forcelist
+                )
+            except Exception as exc:
+                hosts_out.append(_fail_row(name, exc, icmp_ok))
+                continue
+            would = bool(plan["would_write"])
             row: dict[str, Any] = {"host": name, "ok": True, "would_write": would}
             if not writes:
                 row["skipped"] = "status" if would else "already"
             elif not would:
                 row["skipped"] = "already"
-            if plan is not None:
-                row["chrome"] = bool(plan["chrome_present"])
-                row["edge"] = bool(plan["edge_present"])
-                if not would:
-                    row["state"] = "present"
+            row["chrome"] = bool(plan["chrome_present"])
+            row["edge"] = bool(plan["edge_present"])
+            if not would:
+                row["state"] = "present"
             hosts_out.append(row)
             continue
         # FR #5659: use resolved passed/credman identity first when available.
@@ -715,9 +803,7 @@ def fill_holes_work(
                 )
                 continue
             if not is_access_denied(exc):
-                hosts_out.append(
-                    {"host": name, "ok": False, "error": type(exc).__name__}
-                )
+                hosts_out.append(_fail_row(name, exc, icmp_ok))
                 continue
             # SYSTEM path access-denied: try CredMan once if not already used.
             creds = {}
@@ -742,10 +828,20 @@ def fill_holes_work(
                 chrome_w = _apply_wrote(apply_as, name, "chrome", value, cuser, cpw)
                 edge_w = _apply_wrote(apply_as, name, "edge", value, cuser, cpw)
             except Exception as exc2:
-                err2 = "auth_failed" if is_access_denied(exc2) else type(exc2).__name__
-                hosts_out.append(
-                    {"host": name, "ok": False, "error": err2, "identity": "credman"}
-                )
+                # FR #5659: CredMan access-denied is auth_failed (no silent fallback).
+                # FR #5661: other reach errors keep classified codes + detail.
+                if is_access_denied(exc2):
+                    hosts_out.append(
+                        {
+                            "host": name,
+                            "ok": False,
+                            "error": "auth_failed",
+                            "identity": "credman",
+                            "detail": str(exc2)[:300],
+                        }
+                    )
+                else:
+                    hosts_out.append(_fail_row(name, exc2, icmp_ok))
                 continue
             if chrome_w or edge_w:
                 wrote = True
@@ -1054,13 +1150,15 @@ def extension_log_from_payload(
     if data and fails is not None and not fails:
         for h in hosts or []:
             if isinstance(h, dict) and h.get("error"):
-                fails.append(
-                    {
-                        "step": "fallback",
-                        "host": h.get("host") or h.get("hostname"),
-                        "error": h.get("error"),
-                    }
-                )
+                entry = {
+                    "step": "fallback",
+                    "host": h.get("host") or h.get("hostname"),
+                    "error": h.get("error"),
+                }
+                # FR #5661: surface underlying OS/RPC text for operators.
+                if h.get("detail"):
+                    entry["detail"] = h.get("detail")
+                fails.append(entry)
     # FR #5644 / MRB #5648: GPO step failure must appear in failures[].
     if data and fails is not None and isinstance(gpo, dict):
         gpo_attempted = True if "attempted" not in gpo else bool(gpo.get("attempted"))

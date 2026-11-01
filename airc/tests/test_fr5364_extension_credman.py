@@ -67,11 +67,14 @@ def test_fr5364_non_access_denied_does_not_retry_credman():
         ldap_enum=lambda: ["pc-to"],
         ping_host=lambda _h: True,
         apply_force_install=apply_reg,
-        # Empty CredMan -> SYSTEM path; resolve may probe once, retry must not.
+        tcp_probe=lambda *_a, **_k: True,
+        # Empty CredMan -> SYSTEM path; FR #5659 resolve may probe once, retry must not.
         credman_reader=lambda: reads.append("read") or {},
     )
-    assert body["hosts"][0]["error"] == "TimeoutError"
-    # resolve probes once; access-denied retry path must not add a second read
+    # FR #5661: classified cause (not raw exception type name).
+    assert body["hosts"][0]["error"] == "remote_registry_stopped"
+    assert body["hosts"][0]["error"] != "TimeoutError"
+    # FR #5659: resolve probes CredMan once; non-access-denied must not retry.
     assert reads.count("read") <= 1
 
 
@@ -81,6 +84,7 @@ def test_fr5364_whatif_skips_credman():
         "install",
         ldap_enum=lambda: ["pc1"],
         ping_host=lambda _h: True,
+        read_forcelist=lambda _h, _p: ([], []),
         apply_force_install=lambda *_a: None,
         credman_reader=lambda: reads.append(1) or {},
         whatif=True,

@@ -24,6 +24,9 @@ def test_fr5292_reachable_ad_hosts_get_chrome_and_edge_keys():
         return host == "pc-ok"
 
     def apply_reg(host: str, product: str, value: str) -> None:
+        # FR #5661: ICMP fail no longer skips apply; dead host must raise.
+        if host == "pc-dead":
+            raise OSError(53, "The network path was not found")
         applied.append((host, product, value))
 
     body = ex.fill_holes_work(
@@ -31,6 +34,7 @@ def test_fr5292_reachable_ad_hosts_get_chrome_and_edge_keys():
         ldap_enum=ldap,
         ping_host=ping,
         apply_force_install=apply_reg,
+        tcp_probe=lambda h, _p=445: h == "pc-ok",
         whatif=False,
     )
     assert body["wrote_gpo"] is False
@@ -38,7 +42,8 @@ def test_fr5292_reachable_ad_hosts_get_chrome_and_edge_keys():
     hosts = {h["host"]: h for h in body["hosts"]}
     assert hosts["pc-ok"]["ok"] is True
     assert hosts["pc-dead"]["ok"] is False
-    assert hosts["pc-dead"]["error"] == "unreachable"
+    assert hosts["pc-dead"]["error"] in {"smb_blocked", "host_down"}
+    assert hosts["pc-dead"]["error"] != "unreachable"
     products = {(h, p) for h, p, _ in applied}
     assert ("pc-ok", "chrome") in products
     assert ("pc-ok", "edge") in products
@@ -77,11 +82,13 @@ def test_fr5292_whatif_does_not_write():
         "install",
         ldap_enum=lambda: ["pc1"],
         ping_host=lambda _h: True,
+        read_forcelist=lambda _h, _p: ([], []),
         apply_force_install=lambda *a: writes.append(a),
         whatif=True,
     )
     assert writes == []
     assert body["wrote_registry"] is False
+    assert body["hosts"][0]["ok"] is True
     assert body["hosts"][0]["would_write"] is True
 
 
