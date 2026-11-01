@@ -17,6 +17,7 @@ from test_fr5163_mrb_reviewer_deadlock import _mrb_row
 
 
 def test_author_only_flamingo_enqueues_recycleseat_irc(tmp_path, monkeypatch):
+    # FR #5889 supersedes author-only !recycleseat: flag MRBs, do not recycle authors.
     nick = "flamingo-48304"
     monkeypatch.setenv("BOB_DIGEST_HOME", str(tmp_path))
     registered_machines.save_registered(tmp_path, {"flamingo"})
@@ -44,14 +45,13 @@ def test_author_only_flamingo_enqueues_recycleseat_irc(tmp_path, monkeypatch):
     lines = gitclaim.heal_mrb_reviewer_deadlock(
         tmp_path, install_root=install, now=1_700_000.0
     )
-    assert any("recycleseat=flamingo-48304" in x for x in lines), lines
+    assert any("author_only" in x and "flag" in x.lower() for x in lines), lines
+    assert not any("recycleseat=" in x for x in lines), lines
     outbox = tmp_path / "chair-outbox.txt"
     if not outbox.is_file():
         outbox = Path(bobreport.fleet_digest_home(tmp_path)) / "chair-outbox.txt"
     text = outbox.read_text(encoding="utf-8") if outbox.is_file() else ""
-    assert "!recycleseat flamingo-48304 flamingo" in text, text
-    # FR #5756: shop only (never #bobiverse).
-    assert "PRIVMSG #flamingo :" in text
+    assert "!recycleseat" not in text
     assert "PRIVMSG #bobiverse :" not in text
 
 
