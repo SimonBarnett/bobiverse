@@ -575,7 +575,8 @@ class JobStore:
                 rec.error = "checksum mismatch"
                 self._save(rec)
                 raise JobProtocolError("checksum", "sha256 mismatch", jid)
-            if rec.bytes and len(blob) != rec.bytes:
+            # FR #5838 / MRB #5842: declared bytes=0 must still reject a non-empty assembly.
+            if rec.bytes is not None and len(blob) != int(rec.bytes):
                 raise JobProtocolError("size", "assembled size != declared bytes", jid)
             dest = Path(rec.path)
             # FR #5611: do not hold the store lock across blocking disk I/O.

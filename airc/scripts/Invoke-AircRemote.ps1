@@ -15,7 +15,8 @@
   Prefer -Action Cmd for directory listings. Budget -TimeoutSec above
   shell_seconds + reply_lines*0.35 + margin (default 60 can miss a busy-box DONE).
   FR #4796: multi-line -Outbox bursts use -OutboxPaceMs (default 800, ear FLOOD_S);
-  FR #5838: PUT frames enforce a minimum 1300ms gap, including DCC fallback.
+  FR #5838: PUT frames enforce a minimum 1300ms gap, including DCC fallback;
+  for -Action Put the reply TimeoutSec budget restarts after the paced send.
   after a large reply (>= -BurstReplyThreshold lines) sleep -PostBurstCoolMs before return
   so sequential Commands do not stack under Ergo fakelag. Console token-bucket is FR #4790.
   FR #5008: New-AircDccListenOffer / Test-AircDccDoneSha256 build DCCLISTEN (tls=/relay=)
@@ -892,6 +893,13 @@ while ($true) {
     }
 
     if (-not $wantWait) { break }
+
+    # FR #5838 / MRB #5842: PUT pacing (min 1300ms/frame) can exhaust TimeoutSec during
+    # Write-AircOutbox. Restart the reply deadline after the send so TimeoutSec is the
+    # post-upload wait budget (default 60s), not send+wait combined.
+    if ($Action -eq 'Put') {
+        $deadline = [datetime]::UtcNow.AddSeconds([Math]::Max(1, $TimeoutSec))
+    }
 
     $remaining = [int][Math]::Ceiling(($deadline - [datetime]::UtcNow).TotalSeconds)
     if ($remaining -lt 1) {
