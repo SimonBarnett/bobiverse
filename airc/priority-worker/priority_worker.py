@@ -254,52 +254,97 @@ def build_default_prepare_hooks(
     def cred_present(target: str) -> bool:
         return cred_present_via_fetcher(target, fetcher=cred_fetcher)
 
-    def _read_lock(ename: str, instance: dict) -> dict | None:
+    def _read_lock(
+        ename: str,
+        instance: dict,
+        *,
+        exec_type: str = "P",
+        exec_id: Any = None,
+    ) -> dict | None:
         if lock_reader is None:
             return None
-        return lock_reader(ename=ename, instance=instance, exec_type="P")
+        # FR #5946: pass exec_id when the reader accepts it; older injectables
+        # (ename/instance/exec_type only) stay compatible.
+        try:
+            return lock_reader(
+                ename=ename,
+                instance=instance,
+                exec_type=exec_type or "P",
+                exec_id=exec_id,
+            )
+        except TypeError:
+            return lock_reader(
+                ename=ename,
+                instance=instance,
+                exec_type=exec_type or "P",
+            )
 
-    def read_upd(*, ename: str, instance: dict, **_k: Any) -> str:
-        lock = _read_lock(ename, instance)
+    def read_upd(*, ename: str, instance: dict, **kw: Any) -> str:
+        et = str(kw.get("exec_type") or state.get("exec_type") or "P").strip().upper() or "P"
+        eid = kw.get("exec_id") if kw.get("exec_id") is not None else state.get("exec_id")
+        lock = _read_lock(ename, instance, exec_type=et, exec_id=eid)
         if not lock:
             state["lock_missing"] = True
             return ""
         state["exec_id"] = lock.get("exec_id")
+        state["exec_type"] = str(lock.get("exec_type") or et).strip().upper()
         state["upd"] = str(lock.get("upd") or "").strip().upper()
         return state["upd"]
 
-    def _mtime_for(ename: str, instance: dict) -> float:
-        exec_id = state.get("exec_id")
+    def _mtime_for(
+        ename: str,
+        instance: dict,
+        *,
+        exec_type: str = "P",
+        exec_id: Any = None,
+    ) -> float:
+        if exec_id is not None:
+            state["exec_id"] = exec_id
+        if exec_type:
+            state["exec_type"] = exec_type
+        eid = state.get("exec_id")
         prep = str(instance.get("prepDir") or instance.get("prep_dir") or "").strip()
-        if exec_id is None or not prep:
-            lock = _read_lock(ename, instance)
+        if eid is None or not prep:
+            lock = _read_lock(
+                ename,
+                instance,
+                exec_type=str(state.get("exec_type") or exec_type or "P"),
+                exec_id=eid,
+            )
             if lock:
                 state["exec_id"] = lock.get("exec_id")
-                exec_id = state["exec_id"]
+                eid = state["exec_id"]
                 if "upd" not in state:
                     state["upd"] = str(lock.get("upd") or "").strip().upper()
             prep = str(instance.get("prepDir") or instance.get("prep_dir") or "").strip()
-        if exec_id is None or not prep:
+        if eid is None or not prep:
             return 0.0
         if prp_stat is not None:
-            mt = prp_stat(ename=ename, instance=instance, exec_id=exec_id, prep_dir=prep)
+            mt = prp_stat(ename=ename, instance=instance, exec_id=eid, prep_dir=prep)
             return float(mt or 0.0)
-        mt = _stat_mtime(_prp_path(prep, exec_id))
+        mt = _stat_mtime(_prp_path(prep, eid))
         return float(mt or 0.0)
 
     def prp_before(**kw: Any) -> float:
-        v = _mtime_for(kw.get("ename") or "", kw.get("instance") or {})
+        v = _mtime_for(
+            kw.get("ename") or "",
+            kw.get("instance") or {},
+            exec_type=str(kw.get("exec_type") or "P"),
+            exec_id=kw.get("exec_id"),
+        )
         state["prp_before"] = v
         return v
 
     def prp_after(**kw: Any) -> float:
         ename = kw.get("ename") or ""
         instance = kw.get("instance") or {}
-        lock = _read_lock(ename, instance)
+        et = str(kw.get("exec_type") or state.get("exec_type") or "P").strip().upper() or "P"
+        eid = kw.get("exec_id") if kw.get("exec_id") is not None else state.get("exec_id")
+        lock = _read_lock(ename, instance, exec_type=et, exec_id=eid)
         if lock:
             state["exec_id"] = lock.get("exec_id")
             state["upd_after"] = str(lock.get("upd") or "").strip().upper()
-        return _mtime_for(ename, instance)
+        return _mtime_for(ename, instance, exec_type=et, exec_id=state.get("exec_id"))
 
     def sdk(**kw: Any) -> dict:
         if sdk_exec is None:
@@ -324,6 +369,18 @@ def build_default_prepare_hooks(
     return out
 
 
+def _norm_exec_type(raw: str | None) -> str:
+    t = str(raw or "").strip().upper()
+    if t in ("F", "FORM", "FORMS"):
+        return "F"
+    if t in ("R", "REPORT", "REPORTS"):
+        return "R"
+    if t in ("P", "PROCEDURE", "PROCEDURES", "PROC"):
+        return "P"
+    # Fail closed: never coerce unknown tokens via first letter (PIZZA -> P).
+    return ""
+
+
 def run_priority_prepare(
     ename: str,
     *,
@@ -336,23 +393,41 @@ def run_priority_prepare(
     prp_mtime_after: Callable[..., float] | None = None,
     resolve_ename_types: Callable[..., list[dict]] | None = None,
     proc_type: str = "P",
+    exec_type: str | None = None,
 ) -> dict[str, Any]:
-    """TYPE=P named prep: EXEC REPPREPDIRECT2; success only if ok + UPD=N + .prp advanced.
+    """Named Priority prepare with UPD=N + .prp advanced gates.
 
-    Never SQL-fakes UPD. Never uses the form-prep path for TYPE=P.
-    ``prp_mtime_before`` may be a float or a callable (live walk).
+    FR #5286 / #5933: untyped call is **procedure-only** (TYPE=P via
+    REPPREPDIRECT2); missing/ambiguous/non-P refuse before SDK.
 
-    FR #5933: when ``resolve_ename_types`` is provided, refuse before SDK when
-    ENAME is missing, not TYPE=P, or ambiguous (multiple TYPEs / multiple P).
+    FR #5946: typed ``exec_type`` F|R|P prepares exactly that T$EXEC row:
+    form → FORMPREPDRCT2; report/procedure → REPPREPDIRECT2. Never fall back
+    to another type with the same ENAME.
     """
     name = (ename or "").strip()
+    raw_exec = str(exec_type).strip() if exec_type is not None else ""
+    wanted = _norm_exec_type(raw_exec) if raw_exec else ""
+    typed = wanted in ("F", "R", "P")
+    if raw_exec and not typed:
+        base_early: dict[str, Any] = {
+            "ok": False,
+            "ename": name,
+            "exec": "REPPREPDIRECT2",
+            "sql_faked": False,
+            "prp_advanced": False,
+            "reason": "bad_exec_type",
+        }
+        return base_early
+    default_path = "FORMPREPDRCT2" if wanted == "F" else "REPPREPDIRECT2"
     base: dict[str, Any] = {
         "ok": False,
         "ename": name,
-        "exec": "REPPREPDIRECT2",
+        "exec": default_path,
         "sql_faked": False,
         "prp_advanced": False,
     }
+    if typed:
+        base["exec_type"] = wanted
     if not name:
         base["reason"] = "name_missing"
         return base
@@ -365,8 +440,10 @@ def run_priority_prepare(
     if not target or not has_cred(target):
         base["reason"] = "no_cred"
         return base
-    # FR #5933: resolve T$EXEC types before prep/.prp so form/report names refuse
-    # without needing a local prep folder (FR #5943 derivation machines vary).
+
+    chosen: dict | None = None
+    # FR #5933 / #5946: resolve T$EXEC types before prep/.prp so form/report
+    # refusals do not need a local prep folder (FR #5943 derivation machines vary).
     if resolve_ename_types is not None:
         try:
             rows = list(resolve_ename_types(ename=name, instance=inst) or [])
@@ -386,24 +463,56 @@ def run_priority_prepare(
         )
         if types:
             base["exec_types"] = ",".join(types)
-        p_rows = [
-            r
-            for r in rows
-            if str(r.get("exec_type") or "").strip().upper() == "P"
-        ]
         if not rows:
             base["reason"] = "ename_not_found"
             return base
-        # Ambiguous first: form+report (F,R) or multiple P / mixed types.
-        if len(types) > 1 or len(p_rows) > 1:
-            base["reason"] = "ename_ambiguous"
-            return base
-        if len(p_rows) == 0:
-            base["reason"] = "not_type_p"
-            return base
-    # FR #5932 / #5943: resolve prep folder (optional prepDir override, else derive).
-    # Missing/unresolvable prep made _mtime_for return 0.0 before and after -> false
-    # prp_unchanged. Non-existent override also fails closed (MRB #5934).
+        if typed:
+            typed_rows = [
+                r
+                for r in rows
+                if str(r.get("exec_type") or "").strip().upper() == wanted
+            ]
+            if not typed_rows:
+                base["reason"] = "wrong_type"
+                return base
+            if len(typed_rows) > 1:
+                base["reason"] = "ename_ambiguous"
+                return base
+            chosen = typed_rows[0]
+        else:
+            # Untyped: procedure-only (FR #5933).
+            p_rows = [
+                r
+                for r in rows
+                if str(r.get("exec_type") or "").strip().upper() == "P"
+            ]
+            if len(types) > 1 or len(p_rows) > 1:
+                base["reason"] = "ename_ambiguous"
+                return base
+            if len(p_rows) == 0:
+                base["reason"] = "not_type_p"
+                return base
+            chosen = p_rows[0]
+            wanted = "P"
+            base["exec_type"] = "P"
+
+    if chosen is not None:
+        exec_id = chosen.get("exec_id") or chosen.get("t$exec") or chosen.get("T$EXEC")
+        try:
+            exec_id_i = int(exec_id)
+        except (TypeError, ValueError):
+            exec_id_i = 0
+        if exec_id_i:
+            base["exec_id"] = exec_id_i
+            base["prep_file"] = "d{0}.prp".format(exec_id_i)
+        et = str(chosen.get("exec_type") or wanted or "P").strip().upper()
+        wanted = et if et in ("F", "R", "P") else (wanted or "P")
+        base["exec_type"] = wanted
+
+    if not wanted:
+        wanted = "P"
+        base["exec_type"] = "P"
+
     resolved = resolve_prep_dir(inst)
     prep = str(resolved.get("path") or "").strip()
     base["prep_dir_tried"] = list(resolved.get("tried") or [])
@@ -421,27 +530,53 @@ def run_priority_prepare(
     inst["prepDir"] = prep
     base["prep_dir"] = prep
     base["prep_dir_source"] = str(resolved.get("source") or "")
-    # CAST IRON: TYPE=P is EXEC REPPREPDIRECT2 only (never formStart / form-prep).
-    path = "REPPREPDIRECT2"
+
+    # Form -> FORMPREPDRCT2; report/procedure -> REPPREPDIRECT2 (never swap).
+    path = "FORMPREPDRCT2" if wanted == "F" else "REPPREPDIRECT2"
+    base["exec"] = path
+    form_prep = wanted == "F"
     # Capture .prp mtime BEFORE SDK so advance is meaningful.
+    mtime_kw = {
+        "ename": name,
+        "instance": inst,
+        "exec_type": wanted,
+        "exec_id": base.get("exec_id"),
+        "prep_file": base.get("prep_file"),
+    }
     if callable(prp_mtime_before):
-        before = float(prp_mtime_before(ename=name, instance=inst))
+        before = float(prp_mtime_before(**mtime_kw))
     elif prp_mtime_before is None:
         before = 0.0
     else:
         before = float(prp_mtime_before)
     sdk_fn = sdk_exec or (lambda **_k: {"ok": False, "path": path})
-    sdk = sdk_fn(path=path, ename=name, form_prep=False, instance=inst, proc_type=proc_type)
+    sdk = sdk_fn(
+        path=path,
+        ename=name,
+        form_prep=form_prep,
+        instance=inst,
+        proc_type=wanted or proc_type,
+        exec_type=wanted,
+        exec_id=base.get("exec_id"),
+    )
     if not isinstance(sdk, dict) or not sdk.get("ok"):
         base["reason"] = "sdk_not_ok"
         if isinstance(sdk, dict) and sdk.get("reason"):
             base["sdk_reason"] = sdk.get("reason")
         return base
     upd_fn = read_upd or (lambda **_k: "")
-    upd = str(upd_fn(ename=name, instance=inst) or "").strip().upper()
+    upd = str(
+        upd_fn(
+            ename=name,
+            instance=inst,
+            exec_type=wanted,
+            exec_id=base.get("exec_id"),
+        )
+        or ""
+    ).strip().upper()
     base["upd"] = upd
     after_fn = prp_mtime_after or (lambda **_k: before)
-    after = float(after_fn(ename=name, instance=inst))
+    after = float(after_fn(**mtime_kw))
     base["prp_mtime_before"] = before
     base["prp_mtime_after"] = after
     advanced = after > before

@@ -241,22 +241,60 @@ _PRIORITY_PREPARE_RE = re.compile(
 )
 
 
+_PREPARE_KIND_TO_TYPE = {
+    "form": "F",
+    "forms": "F",
+    "report": "R",
+    "reports": "R",
+    "procedure": "P",
+    "procedures": "P",
+    "proc": "P",
+}
+_PREPARE_TYPE_ALIASES = {
+    "f": "F",
+    "form": "F",
+    "r": "R",
+    "report": "R",
+    "p": "P",
+    "procedure": "P",
+    "proc": "P",
+}
+
+
 def parse_priority_prepare_command(text: str) -> dict[str, str] | None:
-    """FR #5286: ``PRIORITY prepare <ENAME>`` or ``name=`` / ``instance=``."""
+    """FR #5286 / #5946: ``PRIORITY prepare [form|report|procedure] <ENAME>``.
+
+    Untyped ``PRIORITY prepare <ENAME>`` stays procedure-only at run time.
+    Optional ``type=F|R|P`` / ``kind=form|report|procedure`` also set exec_type.
+    """
     m = _PRIORITY_PREPARE_RE.match((text or "").strip())
     if not m:
         return None
     rest = (m.group(2) or "").strip()
     kv = {k.lower(): v for k, v in re.findall(r"(\w+)=([^\s]+)", rest)}
+    exec_type = ""
+    raw_type = (kv.get("type") or kv.get("kind") or kv.get("exec_type") or "").strip()
+    unknown_explicit_type = False
+    if raw_type:
+        # Fail closed: never first-letter coerce. Preserve unknown tokens so
+        # run_priority_prepare returns bad_exec_type (never untyped fallback).
+        exec_type = _PREPARE_TYPE_ALIASES.get(raw_type.lower(), "")
+        if exec_type not in ("F", "R", "P"):
+            unknown_explicit_type = True
+            exec_type = raw_type
     name = kv.get("name") or kv.get("ename") or ""
-    if not name:
-        # Prefer a positional token even when key=value tokens appear first
-        # (e.g. ``PRIORITY prepare instance=dev FOO``).
-        for tok in rest.split():
-            if "=" not in tok:
-                name = tok
-                break
+    positionals = [tok for tok in rest.split() if "=" not in tok]
+    if positionals:
+        head = positionals[0].lower()
+        if head in _PREPARE_KIND_TO_TYPE:
+            if not unknown_explicit_type and not exec_type:
+                exec_type = _PREPARE_KIND_TO_TYPE[head]
+            positionals = positionals[1:]
+        if not name and positionals:
+            name = positionals[0]
     out = {"name": name, "instance": kv.get("instance") or ""}
+    if exec_type:
+        out["exec_type"] = exec_type
     if m.group(1):
         out["qid"] = m.group(1).lower()
     return out
@@ -450,20 +488,37 @@ def _priority_sdk_repprep(
     node_runner=None,
     **_k,
 ) -> dict:
-    """Run node mjs REPPREPDIRECT2 walk. Password via env only; never logged."""
-    if form_prep or path.upper() != "REPPREPDIRECT2":
+    """Run node mjs prepare walk. Password via env only; never logged.
+
+    FR #5946: TYPE=F uses EFORM + FORMPREPDRCT2 (``run-formprep-via-eform.mjs``);
+    TYPE=R/P uses EXEC + REPPREPDIRECT2 (``run-repprep-via-exec.mjs``).
+    """
+    proc_name = str(path or "").strip().upper() or "REPPREPDIRECT2"
+    want_form = bool(form_prep) or proc_name == "FORMPREPDRCT2"
+    if want_form:
+        proc_name = "FORMPREPDRCT2"
+    elif proc_name != "REPPREPDIRECT2":
         return {"ok": False, "path": path, "reason": "refused_non_repprep"}
     root = Path(os.environ.get("AIRC_INSTALL_ROOT") or r"C:\ai\airc")
     pw = _priority.resolve_priority_worker_dir(root)
-    mjs_candidates = [
-        (pw / "sdk" / "run-repprep-via-exec.mjs") if pw else Path(),
-        (pw / "run-repprep-via-exec.mjs") if pw else Path(),
-        root / "airc" / "priority-worker" / "sdk" / "run-repprep-via-exec.mjs",
-        root / "airc" / "priority-worker" / "run-repprep-via-exec.mjs",
-        root / "priority-worker" / "sdk" / "run-repprep-via-exec.mjs",
-        root / "priority-worker" / "run-repprep-via-exec.mjs",
-        Path(os.environ.get("AIRC_PRIORITY_REPPREP_MJS") or ""),
-    ]
+    if want_form:
+        mjs_candidates = [
+            (pw / "sdk" / "run-formprep-via-eform.mjs") if pw else Path(),
+            (pw / "run-formprep-via-eform.mjs") if pw else Path(),
+            root / "airc" / "priority-worker" / "sdk" / "run-formprep-via-eform.mjs",
+            root / "priority-worker" / "sdk" / "run-formprep-via-eform.mjs",
+            Path(os.environ.get("AIRC_PRIORITY_FORMPREP_MJS") or ""),
+        ]
+    else:
+        mjs_candidates = [
+            (pw / "sdk" / "run-repprep-via-exec.mjs") if pw else Path(),
+            (pw / "run-repprep-via-exec.mjs") if pw else Path(),
+            root / "airc" / "priority-worker" / "sdk" / "run-repprep-via-exec.mjs",
+            root / "airc" / "priority-worker" / "run-repprep-via-exec.mjs",
+            root / "priority-worker" / "sdk" / "run-repprep-via-exec.mjs",
+            root / "priority-worker" / "run-repprep-via-exec.mjs",
+            Path(os.environ.get("AIRC_PRIORITY_REPPREP_MJS") or ""),
+        ]
     mjs = next((c for c in mjs_candidates if c and c.is_file()), None)
     node = (
         os.environ.get("AIRC_PRIORITY_NODE")
@@ -505,7 +560,7 @@ def _priority_sdk_repprep(
                 "--user",
                 str(instance.get("user") or ""),
                 "--proc",
-                "REPPREPDIRECT2",
+                proc_name,
             ],
             capture_output=True,
             text=True,
@@ -3543,7 +3598,7 @@ class AircConsoleCore:
                     "psb64:<base64> EncodedCommand; "
                     "replies out/err id= seq= then DONE id= exit= (batch capture + FLOOD_S); "
                     "STATUS|VERSION|PUT|CHUNK|PUTEND|RUN|GET|GETCHUNK|JOB|CANCEL; "
-                    "PRIORITY prepare <ENAME> [instance=] (FR #5286 REPPREPDIRECT2); "
+                    "PRIORITY prepare [form|report|procedure] <ENAME> [instance=] (FR #5286/#5946); "
                     "UPDATE airc|bob|jeeves [ver] schedules detached MSI update "
                     "(ops-gated remote; not auto self-update - FR #3764); "
                     "PRIORITY connect|status [instance-id] (CredMan + allowlist, FR #5284); PRIORITY formStart|subform|getRows (FR #5285 fixture walk); "
@@ -4425,7 +4480,7 @@ class AircConsoleCore:
                 **meta,
             )
 
-        # FR #5286: PRIORITY prepare (TYPE=P EXEC REPPREPDIRECT2 + UPD/.prp gates).
+        # FR #5286 / #5946: PRIORITY prepare [form|report|procedure] + UPD/.prp gates.
         prep = parse_priority_prepare_command(cmd)
         if prep is not None:
             denied = self._priority_optional_denied(
@@ -4446,6 +4501,7 @@ class AircConsoleCore:
                     prep.get("name") or "",
                     instance_id=prep.get("instance") or "",
                     instances=insts,
+                    exec_type=(prep.get("exec_type") or None),
                     **hooks,
                 )
             else:

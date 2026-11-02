@@ -6,16 +6,18 @@ FR #5283 / FR #5905 / FR #5960. This folder is the **service-owned** Priority We
 - Invoke only from the Airc Priority module (`AIRC_PRIORITY_OWNED=1` or `--from-airc`)
 - No `PriorityClient.exe` and no agent `drop\` one-off clients
 
-## Node SDK (FR #5905 / #5913)
+## Node SDK (FR #5905 / #5913 / #5946)
 
 Pack stages:
 
-- `sdk/run-repprep-via-exec.mjs` --- REPPREPDIRECT2 walk used by `PRIORITY prepare`
+- `sdk/run-repprep-via-exec.mjs` --- REPPREPDIRECT2 walk used by `PRIORITY prepare` (report/procedure)
+- `sdk/run-formprep-via-eform.mjs` --- FORMPREPDRCT2 walk used by `PRIORITY prepare form` (FR #5946)
 - `node_modules/priority-web-sdk` (+ transitive deps) via **always** `npm ci --omit=dev`
   at pack time (FR #5913: never skip when a stale `node_modules` is already present)
 
-Resolver order (see `airc_console._priority_sdk_repprep`): `priority-worker/sdk/run-repprep-via-exec.mjs`,
-then `priority-worker/run-repprep-via-exec.mjs`, then `AIRC_PRIORITY_REPPREP_MJS`. No `drop\` path.
+Resolver order (see `airc_console._priority_sdk_repprep`): typed form uses
+`sdk/run-formprep-via-eform.mjs` (then `AIRC_PRIORITY_FORMPREP_MJS`); report/procedure use
+`sdk/run-repprep-via-exec.mjs` (then `AIRC_PRIORITY_REPPREP_MJS`). No `drop\` path.
 
 ### Node runtime
 

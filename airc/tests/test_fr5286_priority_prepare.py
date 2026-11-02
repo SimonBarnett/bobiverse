@@ -236,9 +236,14 @@ def test_fr5286_default_hooks_wire_cred_upd_prp():
         # FAKE_ placeholder - never a real secret (FR #3304).
         return "FAKE_" + "PREPARE_SECRET"
 
-    def lock_reader(*, ename, instance, exec_type="P"):
+    def lock_reader(*, ename, instance, exec_type="P", exec_id=None, **_kw):
         seen["lock"] += 1
-        return {"name": ename, "exec_id": 42, "exec_type": exec_type, "upd": "N"}
+        return {
+            "name": ename,
+            "exec_id": exec_id if exec_id is not None else 42,
+            "exec_type": exec_type,
+            "upd": "N",
+        }
 
     def sdk_exec(**kw):
         seen["sdk"] += 1
