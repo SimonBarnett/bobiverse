@@ -117,6 +117,7 @@ function fieldValue(editFields, wantName) {
 async function walkProc(priority, args) {
   const errors = [];
   let ended = false;
+  let nameSubmitted = false;
   const progress = () => {};
   let step = await priority.procStart(args.proc, 'P', progress, args.company);
   // Bound steps so a stuck procedure cannot hang the console forever.
@@ -135,8 +136,9 @@ async function walkProc(priority, args) {
       const data = { EditFields: [] };
       // FR #5916: single preferred name field (exact / ENAME / Entity Name); no broad NAME/EXEC/ENTITY sweep.
       const nameField = fieldValue(edits, 'ENAME') || fieldValue(edits, 'NAME') || null;
-      // FR #5927: never submit empty EditFields when a name was requested but no field bound.
-      if (args.name && !nameField) {
+      // FR #5927 / MRB #5929: fail only before the name is bound. Later inputFields
+      // steps without ENAME/NAME must not cancel a walk that already submitted the name.
+      if (args.name && !nameField && !nameSubmitted) {
         errors.push('name_field_missing');
         try {
           if (typeof proc.cancel === 'function') {
@@ -148,9 +150,10 @@ async function walkProc(priority, args) {
         ended = false;
         return { ok: false, ended, errors };
       }
-      if (nameField && args.name) {
+      if (nameField && args.name && !nameSubmitted) {
         const fieldNum = nameField.field != null ? nameField.field : 1;
         data.EditFields.push({ field: fieldNum, op: 0, value: String(args.name) });
+        nameSubmitted = true;
       }
       step = await proc.inputFields(1, data);
       continue;

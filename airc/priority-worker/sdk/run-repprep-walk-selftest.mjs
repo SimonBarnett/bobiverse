@@ -197,6 +197,57 @@ async function testWalkNameFieldMissing() {
   assert(!calls.some((c) => c.kind === 'inputFields'), 'must not call inputFields with empty EditFields');
 }
 
+
+/** MRB #5929: after name bind, a later inputFields without NAME must continue. */
+async function testWalkLaterInputWithoutNameAfterSubmit() {
+  const calls = [];
+  let phase = 0;
+  const proc = {
+    async inputFields(ok, data) {
+      calls.push({ kind: 'inputFields', ok, data, phase });
+      phase += 1;
+      if (phase === 1) {
+        return {
+          type: 'inputFields',
+          proc,
+          input: {
+            EditField: [{ field: 9, title: 'STATUS' }],
+          },
+        };
+      }
+      return { type: 'end', proc: null };
+    },
+    async cancel() {
+      calls.push({ kind: 'cancel' });
+      return { type: 'end', proc: null };
+    },
+  };
+  const priority = {
+    async procStart() {
+      return {
+        type: 'inputFields',
+        proc,
+        input: {
+          EditField: [
+            { field: 1, title: 'Company Name' },
+            { field: 2, title: 'Entity Name' },
+          ],
+        },
+      };
+    },
+  };
+  const result = await walkProc(priority, {
+    name: 'CUSTOMERS',
+    company: 'c',
+    proc: 'REPPREPDIRECT2',
+  });
+  assert(result.ok === true && result.ended === true, 'later nameless inputFields must not fail walk');
+  assert(!calls.some((c) => c.kind === 'cancel'), 'must not cancel after name submitted');
+  assert(calls.filter((c) => c.kind === 'inputFields').length === 2, 'two inputFields steps');
+  assert(calls[0].data.EditFields.some((e) => e.field === 2 && e.value === 'CUSTOMERS'), 'name submitted first');
+  assert((calls[1].data.EditFields || []).length === 0, 'second step empty edits ok');
+}
+
 async function main() {
   testFieldValueNoSilentFallback();
   testCompanyNameBeforeEntityName();
@@ -204,6 +255,7 @@ async function main() {
   await testWalkErrorMessage();
   await testWalkInfoMessageWithErrorWord();
   await testWalkNameFieldMissing();
+  await testWalkLaterInputWithoutNameAfterSubmit();
   process.stdout.write(JSON.stringify({ ok: true, selftest: 'walk' }) + '\n');
 }
 
