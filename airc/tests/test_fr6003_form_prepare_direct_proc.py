@@ -1,4 +1,4 @@
-"""FR #6003: typed prepare form uses direct procStart path, not EFORM/API."""
+"""FR #6003: typed prepare form uses WINRUN direct prepare, not web SDK/API."""
 from __future__ import annotations
 
 import sys
@@ -22,6 +22,7 @@ INST = {
     "sqlServer": ".\\PRI",
     "systemDb": "system",
     "prepDir": "E:\\priority\\system\\prep",
+    "priorityRoot": "E:\\priority",
 }
 
 
@@ -38,31 +39,32 @@ def _hooks(**over):
     return h
 
 
-def test_fr6003_form_prepare_uses_repprep_mjs_not_eform(tmp_path, monkeypatch):
-    """Default form prepare must call run-repprep-via-exec.mjs with FORMPREPDRCT2."""
-    root = tmp_path / "airc-install"
-    pw_dir = root / "airc" / "priority-worker" / "sdk"
-    pw_dir.mkdir(parents=True)
-    (pw_dir / "run-repprep-via-exec.mjs").write_text("// stub repprep\n", encoding="utf-8")
-    (pw_dir / "run-formprep-via-eform.mjs").write_text("// stub eform\n", encoding="utf-8")
-    monkeypatch.setenv("AIRC_INSTALL_ROOT", str(root))
+def test_fr6003_form_prepare_uses_winrun_not_sdk(tmp_path, monkeypatch):
+    """Default form prepare must call WINRUN, never node/priority-web-sdk mjs."""
+    root = tmp_path / "priority"
+    bin_dir = root / "bin"
+    bin_dir.mkdir(parents=True)
+    winrun = bin_dir / "WINRUN.EXE"
+    winrun.write_text("stub", encoding="utf-8")
+    prep = tmp_path / "prep"
+    prep.mkdir()
     monkeypatch.delenv("AIRC_PRIORITY_FORM_VIA_EFORM", raising=False)
-    monkeypatch.setattr(
-        ac._priority,
-        "resolve_priority_worker_dir",
-        lambda _r: root / "airc" / "priority-worker",
-    )
+    monkeypatch.delenv("AIRC_PRIORITY_FORM_VIA_EXEC", raising=False)
+    monkeypatch.delenv("AIRC_PRIORITY_WINRUN", raising=False)
     seen = {}
 
     def fake_run(argv, **kw):
         seen["argv"] = list(argv)
+        seen["kw"] = kw
+
         class P:
             returncode = 0
-            stdout = '{"ok":true,"ended":true,"errors":[]}\n'
+            stdout = ""
             stderr = ""
+
         return P()
 
-    out = ac._priority_sdk_repprep(
+    out = ac._priority_prepare_exec(
         ename="CUSTOMERS",
         path="FORMPREPDRCT2",
         form_prep=True,
@@ -71,17 +73,68 @@ def test_fr6003_form_prepare_uses_repprep_mjs_not_eform(tmp_path, monkeypatch):
             "company": "live1",
             "url": "https://example.invalid",
             "user": "tabula",
+            "prepDir": str(prep),
+            "priorityRoot": str(root),
         },
         cred_fetcher=lambda _t: "secret-placeholder-priority-pw",
-        node_runner=fake_run,
+        process_runner=fake_run,
     )
     assert out.get("ok") is True
+    assert out.get("runner") == "winrun"
     argv = seen["argv"]
     joined = " ".join(str(a).replace("\\", "/") for a in argv)
-    assert "run-repprep-via-exec.mjs" in joined
+    assert "WINRUN" in joined.upper()
+    assert "WINACTIV" in argv
+    assert "-P" in argv
+    assert "FORMPREP" in argv
+    assert "run-repprep-via-exec.mjs" not in joined
     assert "run-formprep-via-eform.mjs" not in joined
-    assert "--proc" in argv
-    assert argv[argv.index("--proc") + 1] == "FORMPREPDRCT2"
+    assert "node" not in argv[0].lower()
+    assert "priority-web-sdk" not in joined
+    # Password is on argv for WINRUN but must not appear in returned payload.
+    blob = str(out)
+    assert "secret-placeholder-priority-pw" not in blob
+
+
+def test_fr6003_form_prepare_dispatch_never_loads_sdk_module(tmp_path, monkeypatch):
+    """Acceptance: no priority-web-sdk import/login on default form prepare path."""
+    root = tmp_path / "priority"
+    (root / "bin").mkdir(parents=True)
+    (root / "bin" / "WINRUN.EXE").write_text("stub", encoding="utf-8")
+    prep = tmp_path / "prep"
+    prep.mkdir()
+    monkeypatch.delenv("AIRC_PRIORITY_FORM_VIA_EFORM", raising=False)
+    monkeypatch.delenv("AIRC_PRIORITY_FORM_VIA_EXEC", raising=False)
+
+    def boom_sdk(**kw):
+        raise AssertionError("web SDK runner must not be called for default form prepare")
+
+    monkeypatch.setattr(ac, "_priority_sdk_repprep", boom_sdk)
+
+    def fake_run(argv, **kw):
+        class P:
+            returncode = 0
+            stdout = ""
+            stderr = ""
+
+        return P()
+
+    out = ac._priority_prepare_exec(
+        ename="CUSTOMERS",
+        path="FORMPREPDRCT2",
+        form_prep=True,
+        instance={
+            "credentialTarget": "PriorityWeb/x",
+            "company": "live1",
+            "user": "tabula",
+            "prepDir": str(prep),
+            "priorityRoot": str(root),
+        },
+        cred_fetcher=lambda _t: "secret-placeholder-priority-pw",
+        process_runner=fake_run,
+    )
+    assert out.get("ok") is True
+    assert out.get("runner") == "winrun"
 
 
 def test_fr6003_form_via_eform_opt_in_only(tmp_path, monkeypatch):
@@ -93,6 +146,7 @@ def test_fr6003_form_via_eform_opt_in_only(tmp_path, monkeypatch):
     (pw_dir / "run-formprep-via-eform.mjs").write_text("// stub eform\n", encoding="utf-8")
     monkeypatch.setenv("AIRC_INSTALL_ROOT", str(root))
     monkeypatch.setenv("AIRC_PRIORITY_FORM_VIA_EFORM", "1")
+    monkeypatch.delenv("AIRC_PRIORITY_FORM_VIA_EXEC", raising=False)
     monkeypatch.setattr(
         ac._priority,
         "resolve_priority_worker_dir",
@@ -102,13 +156,15 @@ def test_fr6003_form_via_eform_opt_in_only(tmp_path, monkeypatch):
 
     def fake_run(argv, **kw):
         seen["argv"] = list(argv)
+
         class P:
             returncode = 0
             stdout = '{"ok":true,"ended":true,"errors":[]}\n'
             stderr = ""
+
         return P()
 
-    out = ac._priority_sdk_repprep(
+    out = ac._priority_prepare_exec(
         ename="CUSTOMERS",
         path="FORMPREPDRCT2",
         form_prep=True,
@@ -127,6 +183,52 @@ def test_fr6003_form_via_eform_opt_in_only(tmp_path, monkeypatch):
     assert "run-repprep-via-exec.mjs" not in joined
 
 
+def test_fr6003_form_via_exec_opt_in_only(tmp_path, monkeypatch):
+    """procStart/EXEC SDK path is opt-in via AIRC_PRIORITY_FORM_VIA_EXEC=1."""
+    root = tmp_path / "airc-install"
+    pw_dir = root / "airc" / "priority-worker" / "sdk"
+    pw_dir.mkdir(parents=True)
+    (pw_dir / "run-repprep-via-exec.mjs").write_text("// stub repprep\n", encoding="utf-8")
+    (pw_dir / "run-formprep-via-eform.mjs").write_text("// stub eform\n", encoding="utf-8")
+    monkeypatch.setenv("AIRC_INSTALL_ROOT", str(root))
+    monkeypatch.delenv("AIRC_PRIORITY_FORM_VIA_EFORM", raising=False)
+    monkeypatch.setenv("AIRC_PRIORITY_FORM_VIA_EXEC", "1")
+    monkeypatch.setattr(
+        ac._priority,
+        "resolve_priority_worker_dir",
+        lambda _r: root / "airc" / "priority-worker",
+    )
+    seen = {}
+
+    def fake_run(argv, **kw):
+        seen["argv"] = list(argv)
+
+        class P:
+            returncode = 0
+            stdout = '{"ok":true,"ended":true,"errors":[]}\n'
+            stderr = ""
+
+        return P()
+
+    out = ac._priority_prepare_exec(
+        ename="CUSTOMERS",
+        path="FORMPREPDRCT2",
+        form_prep=True,
+        instance={
+            "credentialTarget": "PriorityWeb/x",
+            "company": "live1",
+            "url": "https://example.invalid",
+            "user": "tabula",
+        },
+        cred_fetcher=lambda _t: "secret-placeholder-priority-pw",
+        node_runner=fake_run,
+    )
+    assert out.get("ok") is True
+    joined = " ".join(str(a).replace("\\", "/") for a in seen["argv"])
+    assert "run-repprep-via-exec.mjs" in joined
+    assert seen["argv"][seen["argv"].index("--proc") + 1] == "FORMPREPDRCT2"
+
+
 def test_fr6003_typed_form_still_selects_f_row_and_formprep_proc(tmp_path):
     """Typed F checks stay; worker still names FORMPREPDRCT2 for the form row."""
     prep = tmp_path / "prep"
@@ -137,7 +239,7 @@ def test_fr6003_typed_form_still_selects_f_row_and_formprep_proc(tmp_path):
 
     def sdk(**kw):
         seen.update(kw)
-        return {"ok": True, "path": kw.get("path")}
+        return {"ok": True, "path": kw.get("path"), "runner": "winrun"}
 
     def types(**kw):
         return [
@@ -158,3 +260,12 @@ def test_fr6003_typed_form_still_selects_f_row_and_formprep_proc(tmp_path):
     assert r["exec"] == "FORMPREPDRCT2"
     assert seen.get("path") == "FORMPREPDRCT2"
     assert seen.get("exec_type") == "F"
+    assert seen.get("form_prep") is True
+
+
+def test_fr6003_hooks_wire_prepare_exec_dispatcher():
+    """Console prepare hooks must dispatch through _priority_prepare_exec."""
+    src = (ROOT / "airc" / "scripts" / "airc_console.py").read_text(encoding="utf-8")
+    assert "sdk_exec=lambda **kw: _priority_prepare_exec(" in src
+    assert "_priority_winrun_formprep" in src
+    assert "AIRC_PRIORITY_FORM_VIA_EXEC" in src
