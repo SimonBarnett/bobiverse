@@ -428,23 +428,23 @@ function Stage-Product([string]$Name) {
             if (-not (Test-Path -LiteralPath $mjsSrc)) {
                 throw 'airc pack requires airc/priority-worker/sdk/run-repprep-via-exec.mjs (FR #5905)'
             }
+            # FR #5913: always npm ci so a stale/partial node_modules cannot ship
+            # a priority-web-sdk that drifts from package-lock.json.
             $nm = Join-Path $pwSrc 'node_modules\priority-web-sdk'
+            $npmCmd = Get-Command npm -ErrorAction SilentlyContinue
+            if (-not $npmCmd) {
+                throw 'airc pack: npm not on PATH (required for priority-worker npm ci; FR #5905/#5913)'
+            }
+            Write-Host 'INFO airc priority-worker: npm ci --omit=dev (FR #5905/#5913)'
+            Push-Location -LiteralPath $pwSrc
+            try {
+                & npm ci --omit=dev --no-fund --no-audit
+                if ($LASTEXITCODE -ne 0) { throw "npm ci failed exit=$LASTEXITCODE (FR #5905/#5913)" }
+            } finally {
+                Pop-Location
+            }
             if (-not (Test-Path -LiteralPath $nm)) {
-                $npmCmd = Get-Command npm -ErrorAction SilentlyContinue
-                if (-not $npmCmd) {
-                    throw 'airc pack: priority-worker node_modules missing and npm not on PATH (FR #5905)'
-                }
-                Write-Host 'INFO airc priority-worker: npm ci --omit=dev (FR #5905)'
-                Push-Location -LiteralPath $pwSrc
-                try {
-                    & npm ci --omit=dev --no-fund --no-audit
-                    if ($LASTEXITCODE -ne 0) { throw "npm ci failed exit=$LASTEXITCODE (FR #5905)" }
-                } finally {
-                    Pop-Location
-                }
-                if (-not (Test-Path -LiteralPath $nm)) {
-                    throw 'airc pack: npm ci did not produce node_modules/priority-web-sdk (FR #5905)'
-                }
+                throw 'airc pack: npm ci did not produce node_modules/priority-web-sdk (FR #5905/#5913)'
             }
             $pwDest = Join-Path $aircExeDir 'priority-worker'
             New-Item -ItemType Directory -Force -Path $pwDest | Out-Null

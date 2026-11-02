@@ -115,6 +115,24 @@ def test_fr5905_pack_script_requires_mjs_and_npm_ci():
     assert "node_modules\\priority-web-sdk" in pack or "node_modules/priority-web-sdk" in pack
 
 
+def test_fr5913_pack_always_runs_npm_ci():
+    """FR #5913: do not skip npm ci when node_modules/priority-web-sdk already exists."""
+    pack = PACK.read_text(encoding="utf-8")
+    assert "FR #5913" in pack
+    # Contiguous always-ci marker from the pack block.
+    assert "always npm ci so a stale/partial node_modules cannot ship" in pack
+    assert "npm not on PATH (required for priority-worker npm ci" in pack
+    # Old skip-if-present path is gone (npm was only invoked inside that guard).
+    assert "node_modules missing and npm not on PATH" not in pack
+    # npm ci is unconditional: Get-Command npm is not nested under Test-Path $nm.
+    block_start = pack.index("# FR #5283 / #5905")
+    block = pack[block_start : block_start + 1800]
+    npm_ci_at = block.index("npm ci --omit=dev")
+    # Any Test-Path of $nm before npm ci would be the old skip guard.
+    before = block[:npm_ci_at]
+    assert "Test-Path -LiteralPath $nm" not in before
+
+
 def test_fr5905_mjs_cli_emits_json_when_name_missing():
     """Wrapper emits JSON for missing --name without printing secrets."""
     import shutil

@@ -6,13 +6,13 @@ FR #5283 / FR #5905. This folder is the **service-owned** Priority Web SDK worke
 - Invoke only from the Airc Priority module (`AIRC_PRIORITY_OWNED=1` or `--from-airc`)
 - No `PriorityClient.exe` and no agent `drop\` one-off clients
 
-## Node SDK (FR #5905)
+## Node SDK (FR #5905 / #5913)
 
 Pack stages:
 
 - `sdk/run-repprep-via-exec.mjs` --- REPPREPDIRECT2 walk used by `PRIORITY prepare`
-- `node_modules/priority-web-sdk` (+ transitive deps) via `npm ci --omit=dev` at pack time
-  when `node_modules` is absent
+- `node_modules/priority-web-sdk` (+ transitive deps) via **always** `npm ci --omit=dev`
+  at pack time (FR #5913: never skip when a stale `node_modules` is already present)
 
 Resolver order (see `airc_console._priority_sdk_repprep`): `priority-worker/sdk/run-repprep-via-exec.mjs`,
 then `priority-worker/run-repprep-via-exec.mjs`, then `AIRC_PRIORITY_REPPREP_MJS`. No `drop\` path.
