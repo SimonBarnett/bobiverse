@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import re
 import ssl
+import uuid
+from datetime import datetime, timedelta, timezone
 from typing import Any, Callable
 from urllib.error import HTTPError, URLError
 from urllib.parse import urljoin
@@ -20,9 +22,17 @@ SOAP_NS = "http://schemas.xmlsoap.org/soap/envelope/"
 WSSE_NS = (
     "http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-secext-1.0.xsd"
 )
+WSU_NS = (
+    "http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-utility-1.0.xsd"
+)
+PASSWORD_TEXT_TYPE = (
+    "http://docs.oasis-open.org/wss/2004/01/"
+    "oasis-200401-wss-username-token-profile-1.0#PasswordText"
+)
 TEMPURI = "http://tempuri.org/"
 SOAP_ACTION_TMPL = "http://tempuri.org/IWCFService/{op}"
 DEFAULT_WCF_PATH = "/wcf/wcf/Service.svc"
+TIMESTAMP_TTL_S = 300
 
 OPS = ("GetVersion", "GeneralCompanies", "ProcStart", "ProcContinue", "ProcEnd")
 
@@ -30,6 +40,7 @@ PRIORITY_NOT_INSTALLED = "priority_not_installed"
 PRIORITY_NOT_CONFIGURED = "priority_not_configured"
 WCF_AUTH_FAILED = "wcf_auth_failed"
 SOAP_FAULT = "soap_fault"
+WCF_SECURITY_REJECTED = "wcf_security_rejected"
 WCF_UNREACHABLE = "wcf_unreachable"
 WCF_BAD_OP = "wcf_bad_op"
 
@@ -61,31 +72,52 @@ def _xml_escape(text: str) -> str:
     )
 
 
+def _wsu_time(dt: datetime) -> str:
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    else:
+        dt = dt.astimezone(timezone.utc)
+    return dt.strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+
+
 def build_envelope(
     op: str,
     *,
     user: str,
     password: str,
     body_fields: dict[str, Any] | None = None,
+    now: datetime | None = None,
+    ttl_s: int = TIMESTAMP_TTL_S,
+    token_id: str | None = None,
 ) -> str:
-    """SOAP 1.1 envelope with UsernameToken. Caller must not log the result."""
+    """SOAP 1.1 envelope with UsernameToken + wsu:Timestamp (FR #6041).
+
+    TransportWithMessageCredential requires Created/Expires; caller must not
+    log the result (password is in the token).
+    """
     name = str(op or "").strip()
     fields = body_fields or {}
     inner = "".join(
         f"<{k}>{_xml_escape(v)}</{k}>" for k, v in fields.items() if v is not None
     )
+    created = now if now is not None else datetime.now(timezone.utc)
+    expires = created + timedelta(seconds=int(ttl_s or TIMESTAMP_TTL_S))
+    tid = str(token_id or f"uuid-{uuid.uuid4()}-1")
     return (
         '<?xml version="1.0" encoding="utf-8"?>'
-        f'<s:Envelope xmlns:s="{SOAP_NS}">'
+        f'<s:Envelope xmlns:s="{SOAP_NS}" xmlns:u="{WSU_NS}">'
         "<s:Header>"
-        f'<wsse:Security xmlns:wsse="{WSSE_NS}">'
-        "<wsse:UsernameToken>"
-        f"<wsse:Username>{_xml_escape(user)}</wsse:Username>"
-        f'<wsse:Password Type="http://docs.oasis-open.org/wss/2004/01/'
-        f'oasis-200401-wss-username-token-profile-1.0#PasswordText">'
-        f"{_xml_escape(password)}</wsse:Password>"
-        "</wsse:UsernameToken>"
-        "</wsse:Security>"
+        f'<o:Security s:mustUnderstand="1" xmlns:o="{WSSE_NS}">'
+        '<u:Timestamp u:Id="_0">'
+        f"<u:Created>{_wsu_time(created)}</u:Created>"
+        f"<u:Expires>{_wsu_time(expires)}</u:Expires>"
+        "</u:Timestamp>"
+        f'<o:UsernameToken u:Id="{_xml_escape(tid)}">'
+        f"<o:Username>{_xml_escape(user)}</o:Username>"
+        f'<o:Password Type="{PASSWORD_TEXT_TYPE}">'
+        f"{_xml_escape(password)}</o:Password>"
+        "</o:UsernameToken>"
+        "</o:Security>"
         "</s:Header>"
         "<s:Body>"
         f'<{name} xmlns="{TEMPURI}">{inner}</{name}>'
@@ -118,9 +150,15 @@ def parse_soap_response(xml_text: str) -> dict[str, Any]:
     if fault is not None:
         code = "".join(fault.findtext(".//{*}faultcode") or fault.findtext(".//{*}Code") or "")
         msg = "".join(fault.findtext(".//{*}faultstring") or fault.findtext(".//{*}Reason") or "")
+        blob = f"{code} {msg}"
+        err = (
+            WCF_SECURITY_REJECTED
+            if "invalidsecurity" in blob.lower()
+            else SOAP_FAULT
+        )
         return {
             "ok": False,
-            "error": SOAP_FAULT,
+            "error": err,
             "fault_code": redact(code),
             "fault_string": redact(msg)[:160],
         }
