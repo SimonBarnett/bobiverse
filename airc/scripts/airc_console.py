@@ -797,12 +797,15 @@ def _priority_winrun_formprep(
 
     FR #6003: default ``PRIORITY prepare form`` must not import or login through
     the web SDK (tabula cannot take an API Licence). Mirrors agentic_fomprep
-    ``Invoke-CliFormPrep`` plus the named ENAME (FR #6017):
-    ``WINRUN user pass prepDir company WINACTIV -P FORMPREP <ENAME>``.
-    Unscoped ``FORMPREP`` can prepare every pending form; refuse if ENAME is
+    `Invoke-CliFormPrep` plus the named ENAME (FR #6017):
+    `WINRUN user pass prepDir company WINACTIV -P FORMPREP <ENAME>`.
+    Unscoped `FORMPREP` can prepare every pending form; refuse if ENAME is
     missing rather than preparing siblings. Success remains UPD=N + .prp
-    advanced in ``run_priority_prepare`` (process exit alone is not success).
-    Password only on the child argv; never logged.
+    advanced in `run_priority_prepare` (process exit alone is not success).
+    Priority documents no non-argv password (FR #6019): default refuses
+    `winrun_password_argv` so the secret is never on a spawned command line.
+    Live boxes that accept process-list / 4688 risk set
+    `AIRC_PRIORITY_WINRUN_PASSWORD_ARGV=1`.
     """
     proc_path = str(path or "").strip().upper() or "FORMPREPDRCT2"
     form = str(ename or "").strip()
@@ -829,6 +832,14 @@ def _priority_winrun_formprep(
         return {"ok": False, "path": proc_path, "reason": "no_cred", "runner": "winrun"}
     if not user:
         return {"ok": False, "path": proc_path, "reason": "user_missing", "runner": "winrun"}
+    if not _env_flag_true("AIRC_PRIORITY_WINRUN_PASSWORD_ARGV"):
+        secret = None  # noqa: F841
+        return {
+            "ok": False,
+            "path": proc_path,
+            "reason": "winrun_password_argv",
+            "runner": "winrun",
+        }
     timeout = float(
         timeout_s
         if timeout_s is not None
