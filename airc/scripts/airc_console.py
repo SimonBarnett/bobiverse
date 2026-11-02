@@ -539,6 +539,58 @@ def _priority_sqlcmd_run(
     )
 
 
+def _first_sql_ident(stdout: str) -> str:
+    """First identifier-shaped cell from a sqlcmd pipe table."""
+    for line in (stdout or "").splitlines():
+        s = line.strip()
+        if not s or "rows affected" in s.lower() or all(c in "-| " for c in s):
+            continue
+        cell = s.split("|", 1)[0].strip().strip("[]")
+        if cell.upper() in ("TNAME", "ENAME"):
+            continue
+        if _FORM_IDENT_RE.match(cell):
+            return cell
+    return ""
+
+
+def _lookup_form_table_name(
+    *,
+    server: str,
+    sys_db: str,
+    exec_id: int | None,
+    form_name: str,
+    sql_runner=None,
+) -> str:
+    """FR #6018: physical table from Priority dictionary (EXEC.TNAME / COLUMNS.TNAME)."""
+    if exec_id is not None:
+        queries = (
+            (
+                "SET NOCOUNT ON; "
+                f"SELECT TOP 1 TNAME FROM dbo.EXEC WHERE EXEC={int(exec_id)} "
+                "AND TNAME IS NOT NULL AND LTRIM(RTRIM(TNAME)) <> N'';"
+            ),
+            (
+                "SET NOCOUNT ON; "
+                f"SELECT TOP 1 TNAME FROM dbo.COLUMNS WHERE EXEC={int(exec_id)} "
+                "AND TNAME IS NOT NULL AND LTRIM(RTRIM(TNAME)) <> N'' "
+                "ORDER BY POS;"
+            ),
+        )
+        for q in queries:
+            try:
+                proc = _priority_sqlcmd_run(
+                    server=server, db=sys_db, query=q, runner=sql_runner
+                )
+            except Exception:  # noqa: BLE001
+                continue
+            if int(getattr(proc, "returncode", 0) or 0) != 0:
+                continue
+            name = _first_sql_ident(getattr(proc, "stdout", "") or "")
+            if name:
+                return name
+    return form_name
+
+
 def _priority_sql_formwalk(
     *,
     op: str,
@@ -585,6 +637,7 @@ def _priority_sql_formwalk(
     if int(getattr(proc, "returncode", 0) or 0) != 0:
         return {"ok": False, "error": "sql_read_failed", "form": form_name, "op": wire}
     found = False
+    exec_id: int | None = None
     for line in (proc.stdout or "").splitlines():
         s = line.strip()
         if not s or "rows affected" in s.lower() or all(c in "-| " for c in s):
@@ -592,14 +645,28 @@ def _priority_sql_formwalk(
         parts = [x.strip() for x in s.split("|")]
         if parts and parts[0].upper() == form_name.upper():
             found = True
+            if len(parts) > 1:
+                try:
+                    exec_id = int(parts[1])
+                except ValueError:
+                    exec_id = None
             break
     if not found:
         return {"ok": False, "error": "form-not-found", "form": form_name, "op": wire}
+    table = _lookup_form_table_name(
+        server=server,
+        sys_db=sys_db,
+        exec_id=exec_id,
+        form_name=form_name,
+        sql_runner=sql_runner,
+    )
+    if not table or not _FORM_IDENT_RE.match(table):
+        table = form_name
     off = max(0, int(offset or 0))
     lim = max(1, min(20, int(limit or 5) or 5))
     data_q = (
         "SET NOCOUNT ON; "
-        f"SELECT * FROM dbo.[{form_name}] "
+        f"SELECT * FROM dbo.[{table}] "
         f"ORDER BY (SELECT NULL) OFFSET {off} ROWS FETCH NEXT {lim} ROWS ONLY;"
     )
     try:
@@ -615,6 +682,7 @@ def _priority_sql_formwalk(
         "ok": True,
         "op": wire if wire.lower() == "getrows" else "formStart",
         "form": form_name,
+        "table": table,
         "columns": cols[:40],
         "rows": rows,
         "count": len(rows),

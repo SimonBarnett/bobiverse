@@ -40,6 +40,9 @@ def test_fr5991_sql_formwalk_returns_rows_without_node_or_formstart():
         if "T$EXEC" in q or "T$EXEC" in " ".join(argv):
             P.stdout = "CUSTOMERS|13|F|\n"
             return P()
+        if "FROM DBO.EXEC" in q.upper() or "COLUMNS" in q.upper():
+            P.stdout = "CUSTOMERS\n"
+            return P()
         P.stdout = (
             "CUSTNAME|CUSTDES\n"
             "--------|--------\n"
