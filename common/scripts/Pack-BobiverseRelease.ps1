@@ -416,18 +416,44 @@ function Stage-Product([string]$Name) {
             Copy-Item -LiteralPath $aexe -Destination (Join-Path $aircExeDir 'airc.exe') -Force
             Write-Host 'INFO airc staged airc\airc.exe'
         }
-        # FR #5283: service-owned Priority Web SDK worker (not PriorityClient.exe).
+        # FR #5283 / #5905: service-owned Priority Web SDK worker (not PriorityClient.exe).
+        # Pack must include run-repprep-via-exec.mjs + node_modules/priority-web-sdk so
+        # _priority_sdk_repprep finds them without AIRC_PRIORITY_REPPREP_MJS or drop\.
         $pwSrc = Get-BobiverseRepoPath -Root $RepoRoot -Rel 'priority-worker'
         if (-not (Test-Path -LiteralPath $pwSrc)) {
             $pwSrc = Join-Path $RepoRoot 'airc\priority-worker'
         }
         if (Test-Path -LiteralPath $pwSrc) {
+            $mjsSrc = Join-Path $pwSrc 'sdk\run-repprep-via-exec.mjs'
+            if (-not (Test-Path -LiteralPath $mjsSrc)) {
+                throw 'airc pack requires airc/priority-worker/sdk/run-repprep-via-exec.mjs (FR #5905)'
+            }
+            # FR #5913: always npm ci so a stale/partial node_modules cannot ship
+            # a priority-web-sdk that drifts from package-lock.json.
+            $nm = Join-Path $pwSrc 'node_modules\priority-web-sdk'
+            $npmCmd = Get-Command npm -ErrorAction SilentlyContinue
+            if (-not $npmCmd) {
+                throw 'airc pack: npm not on PATH (required for priority-worker npm ci; FR #5905/#5913)'
+            }
+            Write-Host 'INFO airc priority-worker: npm ci --omit=dev (FR #5905/#5913)'
+            Push-Location -LiteralPath $pwSrc
+            try {
+                & npm ci --omit=dev --no-fund --no-audit
+                if ($LASTEXITCODE -ne 0) { throw "npm ci failed exit=$LASTEXITCODE (FR #5905/#5913)" }
+            } finally {
+                Pop-Location
+            }
+            if (-not (Test-Path -LiteralPath $nm)) {
+                throw 'airc pack: npm ci did not produce node_modules/priority-web-sdk (FR #5905/#5913)'
+            }
             $pwDest = Join-Path $aircExeDir 'priority-worker'
             New-Item -ItemType Directory -Force -Path $pwDest | Out-Null
-            Get-ChildItem -LiteralPath $pwSrc -Force | Where-Object { $_.Name -ne '__pycache__' } | ForEach-Object {
+            Get-ChildItem -LiteralPath $pwSrc -Force | Where-Object {
+                $_.Name -ne '__pycache__'
+            } | ForEach-Object {
                 Copy-Item -LiteralPath $_.FullName -Destination $pwDest -Recurse -Force
             }
-            Write-Host 'INFO airc staged airc\priority-worker (FR #5283)'
+            Write-Host 'INFO airc staged airc\priority-worker (FR #5283/#5905)'
         } else {
             throw 'airc pack requires airc/priority-worker (FR #5283)'
         }

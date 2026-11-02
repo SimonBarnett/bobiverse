@@ -49,16 +49,17 @@ GONE_SCRIPTS = (
 # SkipAircExe pack stages omit airc\airc.exe -> 29; both must exclude fleet-operators.txt.
 # FR #3899 added scripts\Fetch-Nssm.ps1 to the client allow-list for nssm self-heal.
 # FR #4216 airc pack embeds config\ergo.password; client purge must keep it (mrb3585).
-# FR #5283 adds airc\priority-worker (3 files) under the kept airc\ tree.
+# FR #5283 adds airc\priority-worker under the kept airc\ tree.
 # FR #5288 keeps scripts\airc_priority.py on the client allow-list.
 # FR #5366 keeps airc\priority-worker\fixtures\form_walk.json (airc\ keep-all).
 # FR #5526 keeps scripts\airc_credman.py (native CredMan for PRIORITY/LEGION/EXTENSION).
+# FR #5905 keeps airc\priority-worker\sdk\run-repprep-via-exec.mjs (Node REPPREP walk).
 CLIENT_REMAINING_FILES = frozenset(
     {
         "BUILD.json",
         "VERSION",
         r"airc\airc.exe",
-        r"config\ergo.password",  # FR #4216 / #4400 — keep; never scrub for hermetic gate
+        r"config\ergo.password",  # FR #4216 / #4400 --- keep; never scrub for hermetic gate
         r"third_party\nssm\win64\nssm.exe",
         r"scripts\airc_console.py",
         r"scripts\airc_console_service.py",
@@ -88,9 +89,10 @@ CLIENT_REMAINING_FILES = frozenset(
         r"airc\priority-worker\README.md",
         r"airc\priority-worker\package.json",
         r"airc\priority-worker\fixtures\form_walk.json",
+        r"airc\priority-worker\sdk\run-repprep-via-exec.mjs",
     }
 )
-assert len(CLIENT_REMAINING_FILES) == 33
+assert len(CLIENT_REMAINING_FILES) == 34
 
 
 def _ps(script: str, timeout: int = 300) -> subprocess.CompletedProcess[str]:
@@ -147,6 +149,8 @@ def test_fr3582_client_purge_drops_fleet_operators(tmp_path: Path):
     (pw / "package.json").write_text("{}\n", encoding="utf-8")
     (pw / "fixtures").mkdir()
     (pw / "fixtures" / "form_walk.json").write_text("{}\n", encoding="utf-8")
+    (pw / "sdk").mkdir()
+    (pw / "sdk" / "run-repprep-via-exec.mjs").write_text("// stub\n", encoding="utf-8")
     (stage / "third_party" / "nssm" / "win64" / "nssm.exe").write_bytes(b"MZ")
     for name in KEEP_SCRIPTS:
         (stage / "scripts" / name).write_text("# stub\n", encoding="utf-8")
@@ -274,12 +278,15 @@ def test_fr3514_pack_then_client_allowlist_tree(tmp_path: Path):
     if not (stage / "config" / "ergo.password").is_file():
         # Pack without embed secret is rare; keep gate hermetic (FR #4400).
         expected.discard(r"config\ergo.password")
-    assert rels == expected, (
-        f"client remaining files mismatch (got {len(rels)}, want {len(expected)}): "
-        + ", ".join(sorted(rels))
-    )
-    # With airc.exe+ergo+priority+form_walk=32; SkipAircExe+ergo=31; either missing drops one more (30).
-    assert len(expected) in (30, 31, 32)
+    # FR #5905: pack stages priority-worker node_modules + sdk; airc\ is keep-all on client,
+    # so remaining files are a SUPERSET of the named allow-list (not an exact equality).
+    missing = sorted(expected - rels)
+    assert not missing, f"client missing required files: {missing}"
+    assert r"airc\priority-worker\sdk\run-repprep-via-exec.mjs" in rels
+    assert any(
+        p.replace("/", "\\").startswith(r"airc\priority-worker\node_modules\priority-web-sdk")
+        for p in rels
+    ), "client remaining must include packed priority-web-sdk (FR #5905)"
     # FR #4400: when pack embedded Ergo PASS, client remaining set must include it.
     if (stage / "config" / "ergo.password").is_file():
         assert r"config\ergo.password" in rels
