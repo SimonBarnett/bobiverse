@@ -57,6 +57,7 @@ class FakeChair:
     _privs_skip_whois = irc_agent.Client._privs_skip_whois
     _on_channel_names = irc_agent.Client._on_channel_names
     _chair_wire = irc_agent.Client._chair_wire
+    _clear_channel_console_presence = irc_agent.Client._clear_channel_console_presence
     _maybe_git_claim = irc_agent.Client._maybe_git_claim
     _maybe_shop_listen = irc_agent.Client._maybe_shop_listen
     def _refresh_ledger(self): pass          # no GitHub lookups in unit tests
