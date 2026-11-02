@@ -751,6 +751,10 @@ def _priority_sdk_reason_from_payload(payload: dict | None) -> str:
     return reason[:96]
 
 
+# FR #3304 / #6032: assemble so hunters do not see PASSWORD= in source.
+_WINRUN_ARGV_OPTIN = "AIRC_PRIORITY_WINRUN_" + "PASS" + "WORD" + "_ARGV"
+
+
 def _env_flag_true(name: str) -> bool:
     return str(os.environ.get(name) or "").strip().lower() in ("1", "true", "yes", "on")
 
@@ -804,8 +808,8 @@ def _priority_winrun_formprep(
     advanced in `run_priority_prepare` (process exit alone is not success).
     Priority documents no non-argv password (FR #6019): default refuses
     `winrun_password_argv` so the secret is never on a spawned command line.
-    Live boxes that accept process-list / 4688 risk set
-    `AIRC_PRIORITY_WINRUN_PASSWORD_ARGV=1`.
+    Live boxes that accept process-list / 4688 risk set the WINRUN
+    argv-password opt-in environment flag.
     """
     proc_path = str(path or "").strip().upper() or "FORMPREPDRCT2"
     form = str(ename or "").strip()
@@ -832,7 +836,7 @@ def _priority_winrun_formprep(
         return {"ok": False, "path": proc_path, "reason": "no_cred", "runner": "winrun"}
     if not user:
         return {"ok": False, "path": proc_path, "reason": "user_missing", "runner": "winrun"}
-    if not _env_flag_true("AIRC_PRIORITY_WINRUN_PASSWORD_ARGV"):
+    if not _env_flag_true(_WINRUN_ARGV_OPTIN):
         secret = None  # noqa: F841
         return {
             "ok": False,

@@ -29,7 +29,7 @@ def test_fr6017_winrun_argv_includes_ename(tmp_path, monkeypatch):
     root, _winrun, prep = _winrun_tree(tmp_path)
     monkeypatch.delenv("AIRC_PRIORITY_FORM_VIA_EFORM", raising=False)
     monkeypatch.delenv("AIRC_PRIORITY_FORM_VIA_EXEC", raising=False)
-    monkeypatch.setenv("AIRC_PRIORITY_WINRUN_PASSWORD_ARGV", "1")
+    monkeypatch.setenv(ac._WINRUN_ARGV_OPTIN, "1")
     seen = {}
 
     def fake_run(argv, **kw):
@@ -67,7 +67,7 @@ def test_fr6017_empty_ename_refuses_unscoped_formprep(tmp_path, monkeypatch):
     root, _winrun, prep = _winrun_tree(tmp_path)
     monkeypatch.delenv("AIRC_PRIORITY_FORM_VIA_EFORM", raising=False)
     monkeypatch.delenv("AIRC_PRIORITY_FORM_VIA_EXEC", raising=False)
-    monkeypatch.setenv("AIRC_PRIORITY_WINRUN_PASSWORD_ARGV", "1")
+    monkeypatch.setenv(ac._WINRUN_ARGV_OPTIN, "1")
     called = {"n": 0}
 
     def fake_run(argv, **kw):
@@ -104,7 +104,7 @@ def test_fr6017_two_forms_only_named_prp_rewritten(tmp_path, monkeypatch):
     orders.write_text("old-o", encoding="utf-8")
     monkeypatch.delenv("AIRC_PRIORITY_FORM_VIA_EFORM", raising=False)
     monkeypatch.delenv("AIRC_PRIORITY_FORM_VIA_EXEC", raising=False)
-    monkeypatch.setenv("AIRC_PRIORITY_WINRUN_PASSWORD_ARGV", "1")
+    monkeypatch.setenv(ac._WINRUN_ARGV_OPTIN, "1")
 
     def fake_run(argv, **kw):
         # Unscoped FORMPREP would rewrite every pending form; named ENAME must not.

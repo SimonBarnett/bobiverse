@@ -135,7 +135,7 @@ def test_fr5946_resolver_finds_formprep_mjs(tmp_path, monkeypatch):
     prep.mkdir()
     monkeypatch.delenv("AIRC_PRIORITY_FORM_VIA_EFORM", raising=False)
     monkeypatch.delenv("AIRC_PRIORITY_FORM_VIA_EXEC", raising=False)
-    monkeypatch.setenv("AIRC_PRIORITY_WINRUN_PASSWORD_ARGV", "1")
+    monkeypatch.setenv(ac._WINRUN_ARGV_OPTIN, "1")
     seen = {}
 
     def fake_run(argv, **kw):
