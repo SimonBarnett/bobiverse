@@ -26,6 +26,7 @@ def test_fr5905_layout_ships_mjs_and_package_dep():
     assert "PRIORITY_SDK_PASSWORD" in text
     assert "priority-web-sdk" in text
     assert "--name" in text
+    assert "name_field_missing" in text  # FR #5927
     pkg = json.loads(PKG.read_text(encoding="utf-8"))
     deps = pkg.get("dependencies") or {}
     assert "priority-web-sdk" in deps

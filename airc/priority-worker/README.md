@@ -22,6 +22,9 @@ then `priority-worker/run-repprep-via-exec.mjs`, then `AIRC_PRIORITY_REPPREP_MJS
 - Default: `node` on PATH, or `AIRC_PRIORITY_NODE` / `NODE_EXE` absolute path.
 - When node is missing: prepare returns `ok=false reason=node_missing` (not a hang).
 - Password: `PRIORITY_SDK_PASSWORD` env into the child only; never argv / IRC / logs.
+- Walk (FR #5916 / #5927): bind one preferred name field (ENAME / Entity Name / NAME);
+  if `--name` is set and no field binds, fail with `name_field_missing` (do not submit empty EditFields).
+  Message steps prefer `messagetype` over `/error/i` on the text.
 
 ### Local npm
 
