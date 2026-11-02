@@ -211,13 +211,14 @@ def build_default_prepare_hooks(
 
 def _norm_exec_type(raw: str | None) -> str:
     t = str(raw or "").strip().upper()
-    if t in ("FORM", "FORMS"):
+    if t in ("F", "FORM", "FORMS"):
         return "F"
-    if t in ("REPORT", "REPORTS"):
+    if t in ("R", "REPORT", "REPORTS"):
         return "R"
-    if t in ("PROCEDURE", "PROCEDURES", "PROC"):
+    if t in ("P", "PROCEDURE", "PROCEDURES", "PROC"):
         return "P"
-    return t[:1] if t else ""
+    # Fail closed: never coerce unknown tokens via first letter (PIZZA -> P).
+    return ""
 
 
 def run_priority_prepare(
@@ -244,8 +245,19 @@ def run_priority_prepare(
     to another type with the same ENAME.
     """
     name = (ename or "").strip()
-    wanted = _norm_exec_type(exec_type) if exec_type else ""
+    raw_exec = str(exec_type).strip() if exec_type is not None else ""
+    wanted = _norm_exec_type(raw_exec) if raw_exec else ""
     typed = wanted in ("F", "R", "P")
+    if raw_exec and not typed:
+        base_early: dict[str, Any] = {
+            "ok": False,
+            "ename": name,
+            "exec": "REPPREPDIRECT2",
+            "sql_faked": False,
+            "prp_advanced": False,
+            "reason": "bad_exec_type",
+        }
+        return base_early
     default_path = "FORMPREPDRCT2" if wanted == "F" else "REPPREPDIRECT2"
     base: dict[str, Any] = {
         "ok": False,

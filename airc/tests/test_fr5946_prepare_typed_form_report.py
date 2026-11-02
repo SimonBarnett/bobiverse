@@ -1,4 +1,4 @@
-﻿"""FR #5946: PRIORITY prepare form|report|procedure <ENAME> (typed exact T$EXEC)."""
+"""FR #5946: PRIORITY prepare form|report|procedure <ENAME> (typed exact T$EXEC)."""
 from __future__ import annotations
 
 import sys
@@ -205,3 +205,37 @@ def test_fr5946_untyped_prepare_still_procedure_only(tmp_path):
     assert r["ok"] is False
     assert r["reason"] in {"ename_ambiguous", "not_type_p"}
     assert "F" in r.get("exec_types", "") and "R" in r.get("exec_types", "")
+
+
+def test_fr5946_unknown_exec_type_fails_closed(tmp_path):
+    """Unknown type tokens must not coerce via first letter (PIZZA -> P)."""
+    prep = tmp_path / "prep"
+    prep.mkdir()
+    inst = dict(INST)
+    inst["prepDir"] = str(prep)
+    sdk_calls = {"n": 0}
+
+    def sdk(**kw):
+        sdk_calls["n"] += 1
+        return {"ok": True, "path": "REPPREPDIRECT2"}
+
+    def types(**kw):
+        return [{"name": "WWWSHOWCUST", "exec_id": 1, "exec_type": "P", "upd": "Y"}]
+
+    r = pw.run_priority_prepare(
+        "WWWSHOWCUST",
+        instance_id="hrs-dev-live1",
+        instances=[inst],
+        exec_type="PIZZA",
+        resolve_ename_types=types,
+        **_hooks(sdk_exec=sdk),
+    )
+    assert r["ok"] is False
+    assert r["reason"] == "bad_exec_type"
+    assert sdk_calls["n"] == 0
+
+    bad = ac.parse_priority_prepare_command(
+        "PRIORITY prepare name=WWWSHOWCUST type=PIZZA instance=hrs-dev-live1"
+    )
+    assert bad is not None
+    assert not (bad.get("exec_type") or "")
