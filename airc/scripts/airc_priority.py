@@ -692,6 +692,8 @@ _WALK_EXPECTED_ERRORS = frozenset(
         "no_cred",
         "node_missing",
         "sdk_mjs_missing",
+        # FR #5991: SDK hang/timeout is named noise (Priority busy), not a crash intake.
+        "sdk-timeout",
         # sdk-fault / unexpected exceptions still intake (genuine crash path).
     }
 )
@@ -1040,15 +1042,22 @@ def run_priority_walk(
         try:
             import airc_fail_intake as _fail
 
+            intake_args = {
+                "op": op,
+                "instance": inst_id,
+                "form": form,
+                "path": kv.get("path", ""),
+            }
+            # FR #5991: surface SDK message for triage (never secrets).
+            msg = ""
+            if isinstance(payload, dict):
+                msg = str(payload.get("message") or payload.get("sdk_reason") or "").strip()
+            if msg:
+                intake_args["sdk_message"] = msg[:240]
             _fail.report_verb_failure(
                 "priority",
                 failure or err or "walk-failed",
-                args={
-                    "op": op,
-                    "instance": inst_id,
-                    "form": form,
-                    "path": kv.get("path", ""),
-                },
+                args=intake_args,
                 wait_s=1.0,
             )
         except Exception:
