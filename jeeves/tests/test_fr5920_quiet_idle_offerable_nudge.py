@@ -104,6 +104,24 @@ def test_no_finding_when_fresh_bored_or_no_offerable(tmp_path, monkeypatch):
     assert empty == []
 
 
+def test_no_finding_without_first_bored_stamp(tmp_path, monkeypatch):
+    """Seats with activity but no !bored stamp stay excluded (FR #5920)."""
+    home = _home(tmp_path, monkeypatch)
+    gitclaim._write_queue(
+        gitclaim.queue_path(home),
+        {"v": 1, "unaccepted": [_offerable_fr_row()], "accepted": [], "done": []},
+    )
+    found = sweep.classify_quiet_idle_offerable(
+        home,
+        idle={NICK},
+        last_bored={},
+        last_activity={NICK: NOW - 500},
+        accepted=[],
+        now=NOW,
+    )
+    assert found == []
+
+
 def test_recent_activity_skips_quiet_idle(tmp_path, monkeypatch):
     """FR #5203 parity: recent shop activity resets the quiet clock."""
     home = _home(tmp_path, monkeypatch)
@@ -129,6 +147,7 @@ def test_run_stuck_sweep_flags_and_shop_nudges(tmp_path, monkeypatch):
         {"v": 1, "unaccepted": [_offerable_fr_row()], "accepted": [], "done": []},
     )
     gitclaim.record_last_bored(home, NICK, now=NOW - 200)
+    # Hostile: omit last_bored so run_stuck_sweep loads merge_last_bored (MRB #5921).
     report = sweep.run_stuck_sweep(
         home,
         now=NOW,
@@ -137,7 +156,6 @@ def test_run_stuck_sweep_flags_and_shop_nudges(tmp_path, monkeypatch):
         activity={},
         act=True,
         open_items=[],
-        last_bored={NICK: NOW - 200},
     )
     quiet = [
         s
@@ -159,6 +177,5 @@ def test_run_stuck_sweep_flags_and_shop_nudges(tmp_path, monkeypatch):
         activity={},
         act=True,
         open_items=[],
-        last_bored={NICK: NOW - 200},
     )
     assert int(report2.get("actions", {}).get("nudged") or 0) == 0

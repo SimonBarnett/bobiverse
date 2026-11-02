@@ -205,13 +205,18 @@ def _load_quiet_idle_nudge_state(home: Path) -> dict:
     return {"nicks": nicks}
 
 
-def _save_quiet_idle_nudge_state(home: Path, state: dict) -> None:
+def _save_quiet_idle_nudge_state(home: Path, state: dict) -> bool:
+    """Atomically persist nudge cooldown state. Returns False on write failure."""
     path = _quiet_idle_nudge_path(home)
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(state, indent=2) + "\n", encoding="utf-8")
+        payload = json.dumps(state, indent=2) + "\n"
+        tmp = path.with_suffix(path.suffix + ".tmp")
+        tmp.write_text(payload, encoding="utf-8")
+        tmp.replace(path)
+        return True
     except OSError:
-        pass
+        return False
 
 
 def _accepted_busy_nicks(accepted: list | None) -> set[str]:
@@ -264,16 +269,18 @@ def classify_quiet_idle_offerable(
     for nick in sorted(seats):
         if nick in busy or nick.lower() in busy:
             continue
-        ts = bored.get(nick)
-        if ts is None:
-            ts = bored.get(nick.lower())
+        # PR claim / FR #5920: skip until first !bored stamp exists.
+        bored_ts = bored.get(nick)
+        if bored_ts is None:
+            bored_ts = bored.get(nick.lower())
+        if bored_ts is None:
+            continue
+        ts = float(bored_ts)
         act = activity.get(nick)
         if act is None:
             act = activity.get(nick.lower())
         if act is not None:
-            ts = float(act) if ts is None else max(float(ts), float(act))
-        if ts is None:
-            continue
+            ts = max(ts, float(act))
         lag = now_f - float(ts)
         if lag < limit:
             continue
@@ -351,11 +358,13 @@ def nudge_quiet_idle_offerable(
         if not ok:
             continue
         nick_ts[canon] = now_f
+        if not _save_quiet_idle_nudge_state(home, {"nicks": nick_ts}):
+            # Do not claim cooldown persisted; allow retry next sweep.
+            nick_ts.pop(canon, None)
+            continue
         lines.append(f"idle_quiet_offerable nudge={canon} lag_s={lag} offerable={offerable}")
         if log:
             log(f"stuck-sweep {lines[-1]}")
-    if lines:
-        _save_quiet_idle_nudge_state(home, {"nicks": nick_ts})
     return lines
 
 

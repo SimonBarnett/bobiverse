@@ -6132,7 +6132,8 @@ def summarize_empty_offer(home: Path, nick: str = "") -> dict:
         out["ledger"] = ledger_n
         out["sticky_offered"] = sticky_n
     except Exception:
-        out["offerable"] = out["unaccepted"]
+        # Fail closed for quiet-idle nudge / empty-offer honesty (MRB #5921).
+        out["offerable"] = 0
     return out
 
 
