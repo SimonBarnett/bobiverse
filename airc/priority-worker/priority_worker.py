@@ -426,8 +426,8 @@ def run_priority_prepare(
 
     FR #5946 / #6003: typed ``exec_type`` F|R|P prepares exactly that T$EXEC
     row: form → FORMPREPDRCT2; report/procedure → REPPREPDIRECT2. Never fall
-    back to another type with the same ENAME. Form uses the same EXEC/procStart
-    runner as report/procedure by default (no EFORM/API Licence).
+    back to another type with the same ENAME. Default form prepare uses WINRUN
+    (no priority-web-sdk); EFORM/EXEC SDK paths are opt-in only.
     """
     name = (ename or "").strip()
     raw_exec = str(exec_type).strip() if exec_type is not None else ""

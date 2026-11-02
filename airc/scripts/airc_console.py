@@ -528,6 +528,182 @@ def _priority_sdk_reason_from_payload(payload: dict | None) -> str:
     return reason[:96]
 
 
+def _env_flag_true(name: str) -> bool:
+    return str(os.environ.get(name) or "").strip().lower() in ("1", "true", "yes", "on")
+
+
+def _resolve_winrun_exe(instance: dict | None = None) -> Path | None:
+    """Resolve Priority WINRUN.EXE for direct (non-SDK) form prepare (FR #6003)."""
+    inst = instance or {}
+    candidates: list[Path] = []
+    env = str(os.environ.get("AIRC_PRIORITY_WINRUN") or "").strip()
+    if env:
+        candidates.append(Path(env))
+    for key in ("winrunPath", "winrun", "WinrunPath"):
+        raw = str(inst.get(key) or "").strip()
+        if raw:
+            candidates.append(Path(raw))
+    root = str(inst.get("priorityRoot") or inst.get("priority_root") or "").strip()
+    if root:
+        base = Path(root)
+        candidates.extend(
+            [
+                base / "bin" / "WINRUN.EXE",
+                base / "bin" / "WINRUN.exe",
+                base / "bin" / "winrun.exe",
+            ]
+        )
+    for c in candidates:
+        if c and c.is_file():
+            return c
+    return None
+
+
+def _priority_winrun_formprep(
+    *,
+    ename: str,
+    instance: dict,
+    path: str = "FORMPREPDRCT2",
+    cred_fetcher=None,
+    process_runner=None,
+    winrun_path: str | Path | None = None,
+    timeout_s: float | None = None,
+    **_k,
+) -> dict:
+    """Named form prepare via Priority WINRUN (no priority-web-sdk).
+
+    FR #6003: default ``PRIORITY prepare form`` must not import or login through
+    the web SDK (tabula cannot take an API Licence). Mirrors agentic_fomprep
+    ``Invoke-CliFormPrep``: ``WINRUN user pass prepDir company WINACTIV -P FORMPREP``.
+    Success remains UPD=N + .prp advanced in ``run_priority_prepare`` (process
+    exit alone is not success). Password only on the child argv; never logged.
+    """
+    proc_path = str(path or "").strip().upper() or "FORMPREPDRCT2"
+    inst = dict(instance or {})
+    prep = str(inst.get("prepDir") or inst.get("prep_dir") or "").strip()
+    company = str(inst.get("company") or "").strip()
+    user = str(inst.get("user") or "").strip()
+    target = str(inst.get("credentialTarget") or inst.get("credential_target") or "").strip()
+    if not prep:
+        return {"ok": False, "path": proc_path, "reason": "prep_dir_missing", "runner": "winrun"}
+    if not company:
+        return {"ok": False, "path": proc_path, "reason": "company_missing", "runner": "winrun"}
+    exe = Path(winrun_path) if winrun_path else _resolve_winrun_exe(inst)
+    if exe is None or not exe.is_file():
+        return {"ok": False, "path": proc_path, "reason": "winrun_missing", "runner": "winrun"}
+    fetch = cred_fetcher or _priority.fetch_credman_password
+    try:
+        secret = fetch(target) if target else ""
+    except Exception:  # noqa: BLE001
+        return {"ok": False, "path": proc_path, "reason": "no_cred", "runner": "winrun"}
+    if not secret:
+        return {"ok": False, "path": proc_path, "reason": "no_cred", "runner": "winrun"}
+    if not user:
+        return {"ok": False, "path": proc_path, "reason": "user_missing", "runner": "winrun"}
+    timeout = float(
+        timeout_s
+        if timeout_s is not None
+        else (os.environ.get("AIRC_PRIORITY_WINRUN_TIMEOUT_S") or 120)
+    )
+    # Same shape as agentic_fomprep Invoke-CliFormPrep (password never logged).
+    argv = [
+        str(exe),
+        user,
+        str(secret),
+        prep,
+        company,
+        "WINACTIV",
+        "-P",
+        "FORMPREP",
+    ]
+    run = process_runner or subprocess.run
+    try:
+        proc = run(
+            argv,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            env={k: v for k, v in os.environ.items() if k != "PRIORITY_SDK_PASSWORD"},
+        )
+    except FileNotFoundError:
+        return {"ok": False, "path": proc_path, "reason": "winrun_missing", "runner": "winrun"}
+    except subprocess.TimeoutExpired:
+        return {"ok": False, "path": proc_path, "reason": "winrun_timeout", "runner": "winrun"}
+    except Exception as e:  # noqa: BLE001
+        return {
+            "ok": False,
+            "path": proc_path,
+            "reason": f"winrun_failed:{type(e).__name__}",
+            "runner": "winrun",
+        }
+    finally:
+        secret = None  # noqa: F841
+        argv = None  # noqa: F841
+    # Exit code is not the prepare gate (SQL + .prp decide). Signal the runner ran.
+    return {
+        "ok": True,
+        "path": proc_path,
+        "runner": "winrun",
+        "winrun_exit": getattr(proc, "returncode", None),
+        "ename": ename,
+    }
+
+
+def _priority_prepare_exec(
+    *,
+    ename: str,
+    instance: dict,
+    path: str = "REPPREPDIRECT2",
+    form_prep: bool = False,
+    cred_fetcher=None,
+    node_runner=None,
+    process_runner=None,
+    **kw,
+) -> dict:
+    """Dispatch prepare runners. Default form = WINRUN (FR #6003); no web SDK."""
+    proc_name = str(path or "").strip().upper() or "REPPREPDIRECT2"
+    want_form = bool(form_prep) or proc_name == "FORMPREPDRCT2"
+    if want_form:
+        if _env_flag_true("AIRC_PRIORITY_FORM_VIA_EFORM"):
+            return _priority_sdk_repprep(
+                ename=ename,
+                instance=instance,
+                path="FORMPREPDRCT2",
+                form_prep=True,
+                cred_fetcher=cred_fetcher,
+                node_runner=node_runner,
+                **kw,
+            )
+        if _env_flag_true("AIRC_PRIORITY_FORM_VIA_EXEC"):
+            # Opt-in only: #6004 procStart path (still loads priority-web-sdk).
+            return _priority_sdk_repprep(
+                ename=ename,
+                instance=instance,
+                path="FORMPREPDRCT2",
+                form_prep=True,
+                cred_fetcher=cred_fetcher,
+                node_runner=node_runner,
+                **kw,
+            )
+        return _priority_winrun_formprep(
+            ename=ename,
+            instance=instance,
+            path="FORMPREPDRCT2",
+            cred_fetcher=cred_fetcher,
+            process_runner=process_runner or node_runner,
+            **kw,
+        )
+    return _priority_sdk_repprep(
+        ename=ename,
+        instance=instance,
+        path=path,
+        form_prep=False,
+        cred_fetcher=cred_fetcher,
+        node_runner=node_runner,
+        **kw,
+    )
+
+
 def _priority_sdk_repprep(
     *,
     ename: str,
@@ -540,10 +716,11 @@ def _priority_sdk_repprep(
 ) -> dict:
     """Run node mjs prepare walk. Password via env only; never logged.
 
-    FR #5946 / #6003: TYPE=F runs FORMPREPDRCT2 and TYPE=R/P runs REPPREPDIRECT2
-    via the shared EXEC ``run-repprep-via-exec.mjs`` (procStart). Default form
-    prepare never uses EFORM/formStart (API Licence). Opt-in only:
-    ``AIRC_PRIORITY_FORM_VIA_EFORM=1`` selects ``run-formprep-via-eform.mjs``.
+    FR #5946 / #6003: report/procedure use ``run-repprep-via-exec.mjs``.
+    Form prepare defaults to WINRUN (see ``_priority_prepare_exec``). This
+    helper still serves form only when explicitly opted in:
+    ``AIRC_PRIORITY_FORM_VIA_EFORM=1`` (EFORM/formStart) or
+    ``AIRC_PRIORITY_FORM_VIA_EXEC=1`` (procStart FORMPREPDRCT2).
     """
     proc_name = str(path or "").strip().upper() or "REPPREPDIRECT2"
     want_form = bool(form_prep) or proc_name == "FORMPREPDRCT2"
@@ -553,9 +730,7 @@ def _priority_sdk_repprep(
         return {"ok": False, "path": path, "reason": "refused_non_repprep"}
     root = Path(os.environ.get("AIRC_INSTALL_ROOT") or r"C:\ai\airc")
     pw = _priority.resolve_priority_worker_dir(root)
-    via_eform = want_form and str(
-        os.environ.get("AIRC_PRIORITY_FORM_VIA_EFORM") or ""
-    ).strip().lower() in ("1", "true", "yes", "on")
+    via_eform = want_form and _env_flag_true("AIRC_PRIORITY_FORM_VIA_EFORM")
     if via_eform:
         mjs_candidates = [
             (pw / "sdk" / "run-formprep-via-eform.mjs") if pw else Path(),
@@ -819,7 +994,7 @@ def build_console_prepare_hooks(install_root: str | Path | None = None) -> dict:
         cred_fetcher=_priority.fetch_credman_password,
         lock_reader=_priority_sqlcmd_lock,
         types_reader=_priority_sqlcmd_ename_rows,
-        sdk_exec=lambda **kw: _priority_sdk_repprep(
+        sdk_exec=lambda **kw: _priority_prepare_exec(
             cred_fetcher=_priority.fetch_credman_password, **kw
         ),
     )
