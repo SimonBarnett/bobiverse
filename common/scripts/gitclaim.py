@@ -8084,7 +8084,8 @@ def offer_focus_top(
                     import fuel_chain
 
                     def _cr_lookup(repo: str, num: str, _row=cand):
-                        return fuel_chain.lookup_coderabbit_reviewed(
+                        # FR #5865: state dict so silence->absent and failed stamp.
+                        return fuel_chain.lookup_coderabbit_state(
                             repo, num, str(_row.get("head_sha") or "")
                         )
 
@@ -8400,7 +8401,8 @@ def offer_top(
                     import fuel_chain
 
                     def _cr_lookup(repo: str, num: str, _row=row):
-                        return fuel_chain.lookup_coderabbit_reviewed(
+                        # FR #5865: state dict so silence->absent and failed stamp.
+                        return fuel_chain.lookup_coderabbit_state(
                             repo, num, str(_row.get("head_sha") or "")
                         )
 

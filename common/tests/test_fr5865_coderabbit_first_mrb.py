@@ -170,13 +170,13 @@ def test_sensitive_paths_force_full_review():
 
 def test_sensitive_paths_preserve_dotgithub_workflows():
     """Hostile: path normalize must keep the leading dot on .github/workflows/**."""
-    wf = [
+    for path in (
         ".github/workflows/ci.yml",
         "./.github/workflows/release.yml",
         r".github\workflows\pack.yml",
-    ]
-    assert fuel_chain.sensitive_paths_require_full(wf) is True
-    assert fuel_chain.review_mode_for("ready", wf) == "full"
+    ):
+        assert fuel_chain.sensitive_paths_require_full([path]) is True
+        assert fuel_chain.review_mode_for("ready", [path]) == "full"
     # Stripped-dot lookalike must not match the .github/workflows/** glob.
     assert fuel_chain.sensitive_paths_require_full(["github/workflows/x.yml"]) is False
 
@@ -193,6 +193,71 @@ def test_merge_gate_refuses_pending(monkeypatch):
     monkeypatch.delenv("BOB_FUEL_CODERABBIT", raising=False)
     ok3, _ = mrb_merge_gate.evaluate_coderabbit_gate({"coderabbit": "pending"})
     assert ok3 is True
+
+
+def test_merge_gate_empty_stamp_fail_open_when_stage_on(monkeypatch):
+    """Hostile: unset stamp must not refuse every CLI merge (never load-bearing)."""
+    monkeypatch.setenv("BOB_FUEL_CODERABBIT", "1")
+    ok, reason = mrb_merge_gate.evaluate_coderabbit_gate(None)
+    assert ok is True
+    assert reason == ""
+    ok2, _ = mrb_merge_gate.evaluate_coderabbit_gate({})
+    assert ok2 is True
+
+
+def test_resolve_coderabbit_row_maps_live_state(monkeypatch):
+    monkeypatch.setenv("BOB_FUEL_CODERABBIT", "1")
+
+    def _ready(repo, num, head=""):
+        return {"ready": True, "failed": False, "activity": True}
+
+    def _silent(repo, num, head=""):
+        return {"ready": False, "failed": False, "activity": False}
+
+    def _failed(repo, num, head=""):
+        return {"ready": False, "failed": True, "activity": True}
+
+    def _pending(repo, num, head=""):
+        return {"ready": False, "failed": False, "activity": True}
+
+    assert mrb_merge_gate.resolve_coderabbit_row_for_pr(
+        "o/r", "1", head_sha="abc", lookup_state=_ready
+    ) == {"coderabbit": "ready"}
+    assert mrb_merge_gate.resolve_coderabbit_row_for_pr(
+        "o/r", "1", head_sha="abc", lookup_state=_silent
+    ) == {"coderabbit": "absent"}
+    assert mrb_merge_gate.resolve_coderabbit_row_for_pr(
+        "o/r", "1", head_sha="abc", lookup_state=_failed
+    ) == {"coderabbit": "failed"}
+    assert mrb_merge_gate.resolve_coderabbit_row_for_pr(
+        "o/r", "1", head_sha="abc", lookup_state=_pending
+    ) == {"coderabbit": "pending"}
+
+
+def test_apply_gate_bool_lookup_keeps_activity_true_path(monkeypatch):
+    """Document bool-only lookup limits; real offer path must pass a state dict."""
+    monkeypatch.setenv("BOB_FUEL_CODERABBIT", "1")
+    monkeypatch.setattr(fuel_chain, "repo_has_coderabbit_yaml", lambda *a, **k: True)
+    row = {
+        "task": "MRB",
+        "repo": "o/r",
+        "id": "#9",
+        "head_sha": "abc",
+        "coderabbit_wait_since": 1_000.0,
+        "coderabbit_head_sha": "abc",
+    }
+    # Bool False with activity forced True stays pending (not absent).
+    hold = fuel_chain.apply_mrb_coderabbit_gate(row, 1_000.0 + 121.0, lookup=lambda *a: False)
+    assert hold is True
+    assert row.get("coderabbit") == "pending"
+    # State-dict silence stamps absent.
+    hold2 = fuel_chain.apply_mrb_coderabbit_gate(
+        row,
+        1_000.0 + 121.0,
+        lookup=lambda *a: {"ready": False, "failed": False, "activity": False},
+    )
+    assert hold2 is False
+    assert row.get("coderabbit") == "absent"
 
 
 def test_rollup_ignores_coderabbit_when_nonblocking():
