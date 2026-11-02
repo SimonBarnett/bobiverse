@@ -17,6 +17,10 @@ never merge or close):
   verdict (done[] or merge-on-green park), with no ``updated`` for
   ``VERDICTED_DOING_S`` (15 min) → ``clear_seat_doing`` (bookkeeping; still
   runs under no-seats/no-fuel pause; pause only suppresses stuck alerts)
+* FR #5920: idle seat with no ``!bored`` / ask for ``QUIET_IDLE_OFFERABLE_S``
+  (120s) while ungated offerable work exists → digest rule
+  ``idle_quiet_offerable`` + shop nudge (distinct from ``unaccepted_starved``;
+  recycleseat heal stays on bored-latency at 240s)
 
 Report: ``stuck-report.json`` + digest ``stuck`` section + ``!stuck`` + one
 #bobiverse line when the stuck set fingerprint changes.
@@ -36,10 +40,14 @@ FIRST_STUCK_SWEEP_DELAY_S = 20.0
 UNACCEPTED_STARVE_S = 1800.0
 # FR #5581: digest "doing" tile whose PR already has an MRB verdict, idle >15 min.
 VERDICTED_DOING_S = 900.0
+# FR #5920: quiet idle + offerable work (digest flag + shop nudge).
+QUIET_IDLE_OFFERABLE_S = 120.0
+QUIET_IDLE_NUDGE_COOLDOWN_S = 600.0
 
 REPORT_NAME = "stuck-report.json"
 CATALOG_NAME = "open-catalog.json"
 ANNOUNCE_FP_NAME = "stuck-announce.fp"
+QUIET_IDLE_NUDGE_STATE = "quiet-idle-nudge.json"
 
 
 def _utc_now() -> str:
@@ -175,6 +183,189 @@ def _protected_hold_row(row: dict) -> str | None:
     if holder and gitclaim.nick_is_row_author(row, holder):
         return "self_mrb"
     return None
+
+
+def _quiet_idle_nudge_path(home: Path) -> Path:
+    return Path(home) / QUIET_IDLE_NUDGE_STATE
+
+
+def _load_quiet_idle_nudge_state(home: Path) -> dict:
+    path = _quiet_idle_nudge_path(home)
+    if not path.is_file():
+        return {"nicks": {}}
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8-sig"))
+    except Exception:
+        return {"nicks": {}}
+    if not isinstance(raw, dict):
+        return {"nicks": {}}
+    nicks = raw.get("nicks")
+    if not isinstance(nicks, dict):
+        nicks = {}
+    return {"nicks": nicks}
+
+
+def _save_quiet_idle_nudge_state(home: Path, state: dict) -> bool:
+    """Atomically persist nudge cooldown state. Returns False on write failure."""
+    path = _quiet_idle_nudge_path(home)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        payload = json.dumps(state, indent=2) + "\n"
+        tmp = path.with_suffix(path.suffix + ".tmp")
+        tmp.write_text(payload, encoding="utf-8")
+        tmp.replace(path)
+        return True
+    except OSError:
+        return False
+
+
+def _accepted_busy_nicks(accepted: list | None) -> set[str]:
+    import gitclaim
+
+    out: set[str] = set()
+    for row in accepted or []:
+        if not isinstance(row, dict):
+            continue
+        for k in ("accepted_by", "offered_to", "nick"):
+            raw = str(row.get(k) or "").strip()
+            if not raw:
+                continue
+            nick = gitclaim.canonical_worker_nick(raw) or raw
+            if nick:
+                out.add(nick)
+                out.add(nick.lower())
+    return out
+
+
+def classify_quiet_idle_offerable(
+    home: Path,
+    *,
+    idle: set[str] | None = None,
+    last_bored: dict | None = None,
+    last_activity: dict | None = None,
+    accepted: list | None = None,
+    now: float | None = None,
+    threshold_s: float | None = None,
+) -> list[dict]:
+    """FR #5920: idle seats quiet past threshold while ungated offerable work sits.
+
+    Returns digest-shaped stuck rows with ``stuck_reason=idle_quiet_offerable``
+    (never ``unaccepted_starved``). Uses max(last_bored, last_activity) so a
+    recent ACK/DONE does not look quiet (FR #5203 parity).
+    """
+    import gitclaim
+
+    home = Path(home)
+    now_f = time.time() if now is None else float(now)
+    limit = float(QUIET_IDLE_OFFERABLE_S if threshold_s is None else threshold_s)
+    seats = {gitclaim.canonical_worker_nick(n) or n for n in (idle or set())}
+    seats = {n for n in seats if n}
+    if not seats:
+        return []
+    bored = dict(last_bored or {})
+    activity = dict(last_activity or {})
+    busy = _accepted_busy_nicks(accepted)
+    out: list[dict] = []
+    for nick in sorted(seats):
+        if nick in busy or nick.lower() in busy:
+            continue
+        # PR claim / FR #5920: skip until first !bored stamp exists.
+        bored_ts = bored.get(nick)
+        if bored_ts is None:
+            bored_ts = bored.get(nick.lower())
+        if bored_ts is None:
+            continue
+        ts = float(bored_ts)
+        act = activity.get(nick)
+        if act is None:
+            act = activity.get(nick.lower())
+        if act is not None:
+            ts = max(ts, float(act))
+        lag = now_f - float(ts)
+        if lag < limit:
+            continue
+        try:
+            offerable = int(gitclaim.summarize_empty_offer(home, nick).get("offerable") or 0)
+        except Exception:
+            offerable = 0
+        if offerable <= 0:
+            continue
+        out.append(
+            {
+                "repo": "",
+                "number": "",
+                "task": "SEAT",
+                "title": f"idle quiet {nick} offerable={offerable}",
+                "age_s": int(lag),
+                "holder": nick,
+                "rule": "idle_quiet_offerable",
+                "state": "idle",
+                "stuck": True,
+                "stuck_reason": "idle_quiet_offerable",
+                "offerable": offerable,
+            }
+        )
+    return out
+
+
+def nudge_quiet_idle_offerable(
+    home: Path,
+    findings: list[dict],
+    *,
+    now: float | None = None,
+    cooldown_s: float | None = None,
+    log: Callable[[str], None] | None = None,
+) -> list[str]:
+    """Shop-nudge quiet idle seats (rate-limited). Returns log lines for nudged nicks."""
+    import bobreport
+    import gitclaim
+
+    home = Path(home)
+    now_f = time.time() if now is None else float(now)
+    cool = float(QUIET_IDLE_NUDGE_COOLDOWN_S if cooldown_s is None else cooldown_s)
+    state = _load_quiet_idle_nudge_state(home)
+    nick_ts = state.get("nicks") if isinstance(state.get("nicks"), dict) else {}
+    lines: list[str] = []
+    for item in findings or []:
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("stuck_reason") or "") != "idle_quiet_offerable":
+            continue
+        nick = str(item.get("holder") or "").strip()
+        if not nick:
+            continue
+        canon = (gitclaim.canonical_worker_nick(nick) or nick).strip()
+        prev = float(nick_ts.get(canon) or nick_ts.get(canon.lower()) or 0)
+        if prev and (now_f - prev) < cool:
+            continue
+        shop = gitclaim.worker_shop_channel(canon) or ""
+        if not shop:
+            parsed = bobreport.parse_seat_nick(canon)
+            if parsed:
+                shop = f"#{parsed[0]}"
+        if not shop:
+            continue
+        lag = int(item.get("age_s") or 0)
+        offerable = int(item.get("offerable") or 0)
+        text = (
+            f"nudge: {canon} quiet {lag}s with {offerable} offerable - ask !bored"
+        )
+        ok = False
+        try:
+            ok = bool(bobreport.enqueue_chair_fleet_privmsg(home, text, channel=shop))
+        except Exception:
+            ok = False
+        if not ok:
+            continue
+        nick_ts[canon] = now_f
+        if not _save_quiet_idle_nudge_state(home, {"nicks": nick_ts}):
+            # Do not claim cooldown persisted; allow retry next sweep.
+            nick_ts.pop(canon, None)
+            continue
+        lines.append(f"idle_quiet_offerable nudge={canon} lag_s={lag} offerable={offerable}")
+        if log:
+            log(f"stuck-sweep {lines[-1]}")
+    return lines
 
 
 def classify_queue_row(
@@ -882,6 +1073,7 @@ def run_stuck_sweep(
     live: set[str] | None = None,
     idle: set[str] | None = None,
     activity: dict[str, float] | None = None,
+    last_bored: dict | None = None,
     open_items: list[dict] | None = None,
     act: bool = True,
     log: Callable[[str], None] | None = None,
@@ -905,6 +1097,10 @@ def run_stuck_sweep(
             ts = gitclaim.last_worker_activity(home, nick)
             if ts is not None:
                 act_map[str(nick).lower()] = float(ts)
+    bored_map = dict(last_bored) if last_bored is not None else {}
+    if last_bored is None:
+        with contextlib_suppress():
+            bored_map = dict(gitclaim.merge_last_bored(home) or {})
 
     doc = gitclaim.load_queue(home)
     catalog = list(open_items) if open_items is not None else load_open_catalog(home)
@@ -958,7 +1154,24 @@ def run_stuck_sweep(
         if info.get("stuck_reason") == "untracked_offerable":
             untracked_infos.append(info)
 
-    actions = {"released": 0, "enqueued": 0, "cleared_doing": 0, "copilot_settled": 0}
+    # FR #5920: quiet idle seats while offerable work sits (digest flag).
+    quiet_findings = classify_quiet_idle_offerable(
+        home,
+        idle=idle_set,
+        last_bored=bored_map,
+        last_activity=act_map,
+        accepted=list(doc.get("accepted") or []),
+        now=now_f,
+    )
+    classified.extend(quiet_findings)
+
+    actions = {
+        "released": 0,
+        "enqueued": 0,
+        "cleared_doing": 0,
+        "copilot_settled": 0,
+        "nudged": 0,
+    }
     cleared_doing: list[dict] = []
     if act:
         # FR #5847: settle Copilot-held FRs that already have a Copilot PR before
@@ -985,6 +1198,11 @@ def run_stuck_sweep(
         actions["cleared_doing"] = len(cleared_doing)
         for info in cleared_doing:
             classified.append(info)
+        # FR #5920: shop-nudge quiet idle seats (rate-limited).
+        nudged = nudge_quiet_idle_offerable(
+            home, quiet_findings, now=now_f, log=log
+        )
+        actions["nudged"] = len(nudged)
         # Refresh classification after acts (best-effort).
         if released or enq:
             doc2 = gitclaim.load_queue(home)
@@ -1034,6 +1252,7 @@ def run_stuck_sweep(
     fp = "|".join(
         sorted(
             f"{s.get('repo')}{s.get('number')}:{s.get('stuck_reason') or s.get('rule')}"
+            f":{s.get('holder') or ''}"
             for s in stuck + held
         )
     )
@@ -1071,7 +1290,8 @@ def run_stuck_sweep(
             f"stuck-sweep classified={len(classified)} stuck={len(stuck)} "
             f"held={len(held)} released={actions['released']} "
             f"enqueued={actions['enqueued']} "
-            f"cleared_doing={actions.get('cleared_doing', 0)}"
+            f"cleared_doing={actions.get('cleared_doing', 0)} "
+            f"nudged={actions.get('nudged', 0)}"
         )
     return report
 
