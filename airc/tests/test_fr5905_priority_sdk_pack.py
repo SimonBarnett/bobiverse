@@ -127,30 +127,25 @@ def test_fr5905_pack_script_requires_mjs_and_npm_ci():
 
 
 def test_fr5946_resolver_finds_formprep_mjs(tmp_path, monkeypatch):
-    """FR #6003: default form prepare uses repprep mjs; eform only when opted in."""
-    root = tmp_path / "airc-install"
-    pw = root / "airc" / "priority-worker" / "sdk"
-    pw.mkdir(parents=True)
-    (pw / "run-repprep-via-exec.mjs").write_text("// stub\n", encoding="utf-8")
-    (pw / "run-formprep-via-eform.mjs").write_text("// stub\n", encoding="utf-8")
-    monkeypatch.setenv("AIRC_INSTALL_ROOT", str(root))
+    """FR #6003: default form prepare uses WINRUN; EXEC/EFORM only when opted in."""
+    root = tmp_path / "priority"
+    (root / "bin").mkdir(parents=True)
+    (root / "bin" / "WINRUN.EXE").write_text("stub\n", encoding="utf-8")
+    prep = tmp_path / "prep"
+    prep.mkdir()
     monkeypatch.delenv("AIRC_PRIORITY_FORM_VIA_EFORM", raising=False)
-    monkeypatch.setattr(
-        ac._priority,
-        "resolve_priority_worker_dir",
-        lambda _r: root / "airc" / "priority-worker",
-    )
+    monkeypatch.delenv("AIRC_PRIORITY_FORM_VIA_EXEC", raising=False)
     seen = {}
 
     def fake_run(argv, **kw):
         seen["argv"] = list(argv)
         class P:
             returncode = 0
-            stdout = '{"ok":true,"ended":true,"errors":[]}\n'
+            stdout = ""
             stderr = ""
         return P()
 
-    out = ac._priority_sdk_repprep(
+    out = ac._priority_prepare_exec(
         ename="ORDERS",
         path="FORMPREPDRCT2",
         form_prep=True,
@@ -159,15 +154,18 @@ def test_fr5946_resolver_finds_formprep_mjs(tmp_path, monkeypatch):
             "company": "c",
             "url": "https://example.invalid",
             "user": "u",
+            "prepDir": str(prep),
+            "priorityRoot": str(root),
         },
         cred_fetcher=lambda _t: "secret-placeholder-priority-pw",
-        node_runner=fake_run,
+        process_runner=fake_run,
     )
     assert out.get("ok") is True
-    assert seen["argv"][1].replace("\\", "/").endswith(
-        "priority-worker/sdk/run-repprep-via-exec.mjs"
-    )
-    assert seen["argv"][seen["argv"].index("--proc") + 1] == "FORMPREPDRCT2"
+    assert out.get("runner") == "winrun"
+    joined = " ".join(str(a).replace("\\", "/") for a in seen["argv"])
+    assert "WINRUN" in joined.upper()
+    assert "FORMPREP" in seen["argv"]
+    assert "run-repprep-via-exec.mjs" not in joined
 
 
 def test_fr5913_pack_always_runs_npm_ci():
