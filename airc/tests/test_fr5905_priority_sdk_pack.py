@@ -127,12 +127,14 @@ def test_fr5905_pack_script_requires_mjs_and_npm_ci():
 
 
 def test_fr5946_resolver_finds_formprep_mjs(tmp_path, monkeypatch):
-    """Typed form prepare must resolve packed sdk/run-formprep-via-eform.mjs."""
+    """FR #6003: default form prepare uses repprep mjs; eform only when opted in."""
     root = tmp_path / "airc-install"
     pw = root / "airc" / "priority-worker" / "sdk"
     pw.mkdir(parents=True)
+    (pw / "run-repprep-via-exec.mjs").write_text("// stub\n", encoding="utf-8")
     (pw / "run-formprep-via-eform.mjs").write_text("// stub\n", encoding="utf-8")
     monkeypatch.setenv("AIRC_INSTALL_ROOT", str(root))
+    monkeypatch.delenv("AIRC_PRIORITY_FORM_VIA_EFORM", raising=False)
     monkeypatch.setattr(
         ac._priority,
         "resolve_priority_worker_dir",
@@ -163,8 +165,9 @@ def test_fr5946_resolver_finds_formprep_mjs(tmp_path, monkeypatch):
     )
     assert out.get("ok") is True
     assert seen["argv"][1].replace("\\", "/").endswith(
-        "priority-worker/sdk/run-formprep-via-eform.mjs"
+        "priority-worker/sdk/run-repprep-via-exec.mjs"
     )
+    assert seen["argv"][seen["argv"].index("--proc") + 1] == "FORMPREPDRCT2"
 
 
 def test_fr5913_pack_always_runs_npm_ci():

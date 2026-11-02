@@ -1,5 +1,7 @@
 /**
- * FR #5946: service-owned EFORM → FORMPREPDRCT2 walk for Airc PRIORITY prepare form.
+ * FR #5946 / #6003: optional EFORM → FORMPREPDRCT2 walk for Airc PRIORITY prepare form.
+ * Default prepare form uses run-repprep-via-exec.mjs (procStart). This runner is
+ * opt-in only: AIRC_PRIORITY_FORM_VIA_EFORM=1 (needs API-licensed user).
  * Password: env PRIORITY_SDK_PASSWORD. Never log it.
  * Last stdout line: JSON {ok, ended, errors} or {ok:false, stage, message, type}.
  *

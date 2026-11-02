@@ -10,15 +10,16 @@ FR #5283 / FR #5905 / FR #5948 / FR #5960. This folder is the **service-owned** 
 
 Pack stages:
 
-- `sdk/run-repprep-via-exec.mjs` --- REPPREPDIRECT2 walk used by `PRIORITY prepare` (report/procedure)
-- `sdk/run-formprep-via-eform.mjs` --- FORMPREPDRCT2 walk used by `PRIORITY prepare form` (FR #5946)
+- `sdk/run-repprep-via-exec.mjs` --- shared EXEC procStart walk for `PRIORITY prepare` form/report/procedure (FORMPREPDRCT2 or REPPREPDIRECT2; FR #6003 default for forms)
+- `sdk/run-formprep-via-eform.mjs` --- optional EFORM/formStart FORMPREPDRCT2 walk; opt-in only via `AIRC_PRIORITY_FORM_VIA_EFORM=1` (FR #5946 / #6003)
 - `sdk/run-formwalk-readonly.mjs` --- read-only formStart / startSubForm / getRows for `PRIORITY formStart` / `subform` / `getRows` (FR #5948)
 - `node_modules/priority-web-sdk` (+ transitive deps) via **always** `npm ci --omit=dev`
   at pack time (FR #5913: never skip when a stale `node_modules` is already present)
 
-Resolver order (see `airc_console._priority_sdk_repprep`): typed form uses
-`sdk/run-formprep-via-eform.mjs` (then `AIRC_PRIORITY_FORMPREP_MJS`); report/procedure use
-`sdk/run-repprep-via-exec.mjs` (then `AIRC_PRIORITY_REPPREP_MJS`). No `drop\` path.
+Resolver order (see `airc_console._priority_sdk_repprep`): default form/report/procedure use
+`sdk/run-repprep-via-exec.mjs` (then `AIRC_PRIORITY_REPPREP_MJS`) with `--proc FORMPREPDRCT2` or
+`REPPREPDIRECT2`. EFORM runner only when `AIRC_PRIORITY_FORM_VIA_EFORM=1` (then
+`AIRC_PRIORITY_FORMPREP_MJS`). No `drop\` path.
 
 Form-walk resolver (see `airc_console._priority_sdk_formwalk`): `priority-worker/sdk/run-formwalk-readonly.mjs`,
 then `priority-worker/run-formwalk-readonly.mjs`, then `AIRC_PRIORITY_FORMWALK_MJS`. Default production path is live SDK;

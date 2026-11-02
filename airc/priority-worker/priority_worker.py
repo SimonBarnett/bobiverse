@@ -400,9 +400,10 @@ def run_priority_prepare(
     FR #5286 / #5933: untyped call is **procedure-only** (TYPE=P via
     REPPREPDIRECT2); missing/ambiguous/non-P refuse before SDK.
 
-    FR #5946: typed ``exec_type`` F|R|P prepares exactly that T$EXEC row:
-    form → FORMPREPDRCT2; report/procedure → REPPREPDIRECT2. Never fall back
-    to another type with the same ENAME.
+    FR #5946 / #6003: typed ``exec_type`` F|R|P prepares exactly that T$EXEC
+    row: form → FORMPREPDRCT2; report/procedure → REPPREPDIRECT2. Never fall
+    back to another type with the same ENAME. Form uses the same EXEC/procStart
+    runner as report/procedure by default (no EFORM/API Licence).
     """
     name = (ename or "").strip()
     raw_exec = str(exec_type).strip() if exec_type is not None else ""

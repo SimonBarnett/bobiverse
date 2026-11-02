@@ -42,11 +42,13 @@ def test_fr5994_sdk_reason_strips_secret_shaped_text():
 
 
 def test_fr5994_priority_sdk_repprep_passes_reason_on_form_fail(tmp_path, monkeypatch):
+    """Opt-in eform path still surfaces formStart API Licence as sdk_reason."""
     root = tmp_path / "airc-install"
     pw_dir = root / "airc" / "priority-worker" / "sdk"
     pw_dir.mkdir(parents=True)
     (pw_dir / "run-formprep-via-eform.mjs").write_text("// stub\n", encoding="utf-8")
     monkeypatch.setenv("AIRC_INSTALL_ROOT", str(root))
+    monkeypatch.setenv("AIRC_PRIORITY_FORM_VIA_EFORM", "1")
     monkeypatch.setattr(
         ac._priority,
         "resolve_priority_worker_dir",
