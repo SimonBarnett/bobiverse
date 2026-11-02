@@ -156,3 +156,62 @@ def test_fr5900_idle_seats_monitor_uses_mrb_enrichment(tmp_path, monkeypatch):
     assert not mon._row_offerable_to_nick(
         gitclaim, doc, ledger, live, row, AUTHOR, NOW
     )
+
+
+def test_fr5900_starve_uses_enriched_fix_authors(tmp_path, monkeypatch):
+    """Hostile: starve eligibility must enrich FIX seats onto the MRB row."""
+    home = _home(tmp_path, monkeypatch)
+    # MRB has no author stamp; FIX DONE by AUTHOR for the same pull.
+    mrb = {
+        "repo": REPO,
+        "task": "MRB",
+        "id": "#5866",
+        "seq": 1,
+        "url": f"https://github.com/{REPO}/pull/5866",
+        "giveup_seats": "copilot",
+        "giveup_ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(NOW - 3600)),
+        "ts": time.strftime(
+            "%Y-%m-%dT%H:%M:%SZ",
+            time.gmtime(NOW - float(max(sweep.UNACCEPTED_STARVE_S, 4000) + 10)),
+        ),
+        "event": "pull_request",
+        "line": "MRB",
+        "title": "fr-5865",
+    }
+    fix_done = {
+        "repo": REPO,
+        "task": "FIX",
+        "id": "#5866",
+        "url": f"https://github.com/{REPO}/pull/5866",
+        "done_by": AUTHOR,
+        "nick": AUTHOR,
+        "result": "DONE",
+    }
+    gitclaim._write_queue(
+        gitclaim.queue_path(home),
+        {"v": 1, "unaccepted": [mrb], "accepted": [], "done": [fix_done]},
+    )
+    live = {AUTHOR, SIBLING}
+    # Author-only idle: after enrich, AUTHOR is blocked => not unaccepted_starved.
+    classified = sweep.classify_queue_row(
+        mrb,
+        bucket="unaccepted",
+        now=NOW,
+        live=live,
+        idle={AUTHOR},
+        home=home,
+        ledger={},
+    )
+    assert classified.get("stuck_reason") != "unaccepted_starved"
+    # Sibling idle => true starve (offer gap).
+    classified2 = sweep.classify_queue_row(
+        mrb,
+        bucket="unaccepted",
+        now=NOW,
+        live=live,
+        idle={AUTHOR, SIBLING},
+        home=home,
+        ledger={},
+    )
+    assert classified2.get("stuck") is True
+    assert classified2.get("stuck_reason") == "unaccepted_starved"
