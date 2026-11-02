@@ -56,16 +56,15 @@ function emit(payload) {
 
 function fieldValue(editFields, wantName) {
   const rows = Array.isArray(editFields) ? editFields : [];
-  const want = String(wantName || '').toUpperCase();
+  const want = String(wantName || '').toUpperCase().trim();
   if (!want) return null;
+  // Exact title match only (MRB #5914 / CodeRabbit): substring match can bind
+  // "Company Name" before "Entity Name" when want is NAME.
   for (const row of rows) {
     if (!row || typeof row !== 'object') continue;
-    const title = String(row.title || row.name || row.fieldName || '').toUpperCase();
-    if (title && (title === want || title.includes(want) || want.includes(title))) {
-      return row;
-    }
+    const title = String(row.title || row.name || row.fieldName || '').toUpperCase().trim();
+    if (title && title === want) return row;
   }
-  // FR #5905 MRB: no silent edits[0] fallback --- caller tries NAME then ENAME.
   return null;
 }
 
@@ -88,21 +87,15 @@ async function walkProc(priority, args) {
       // SDK docs use EditField (singular) on the step; EditFields on the response payload.
       const edits = input.EditFields || input.editFields || input.EditField || input.editField || [];
       const data = { EditFields: [] };
-      const nameField = fieldValue(edits, 'NAME') || fieldValue(edits, 'ENAME') || null;
+      // Prefer ENAME / Entity Name before bare NAME so Company Name cannot win.
+      const nameField =
+        fieldValue(edits, 'ENAME') ||
+        fieldValue(edits, 'ENTITY NAME') ||
+        fieldValue(edits, 'NAME') ||
+        null;
       if (nameField && args.name) {
         const fieldNum = nameField.field != null ? nameField.field : 1;
         data.EditFields.push({ field: fieldNum, op: 0, value: String(args.name) });
-      }
-      // Fill any other empty required-looking fields with the name as a fallback.
-      for (const row of edits) {
-        if (!row || row === nameField) continue;
-        const title = String(row.title || '').toUpperCase();
-        if (title.includes('NAME') || title.includes('EXEC') || title.includes('ENTITY')) {
-          const fieldNum = row.field != null ? row.field : data.EditFields.length + 1;
-          if (!data.EditFields.some((e) => e.field === fieldNum)) {
-            data.EditFields.push({ field: fieldNum, op: 0, value: String(args.name) });
-          }
-        }
       }
       step = await proc.inputFields(1, data);
       continue;

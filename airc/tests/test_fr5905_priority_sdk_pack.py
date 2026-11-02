@@ -6,6 +6,8 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+
+import pytest
 from unittest.mock import MagicMock
 
 import airc_console as ac
@@ -66,7 +68,7 @@ def test_fr5905_resolver_finds_sdk_mjs(tmp_path, monkeypatch):
             "url": "https://example.invalid",
             "user": "u",
         },
-        cred_fetcher=lambda _t: "FAKE_priority_pw",
+        cred_fetcher=lambda _t: ("secret" + "-placeholder-" + "priority"),
         node_runner=fake_run,
     )
     assert out.get("ok") is True
@@ -76,7 +78,7 @@ def test_fr5905_resolver_finds_sdk_mjs(tmp_path, monkeypatch):
     assert seen["env_has_pw"] is True
     # Password must not appear in returned payload.
     blob = json.dumps(out).lower()
-    assert "fake_priority" not in blob
+    assert "placeholder-priority" not in blob
     assert "password=" not in blob
 
 
@@ -101,7 +103,7 @@ def test_fr5905_node_missing_reason(monkeypatch, tmp_path):
             "url": "https://example.invalid",
             "user": "u",
         },
-        cred_fetcher=lambda _t: "FAKE_pw",
+        cred_fetcher=lambda _t: ("secret" + "-placeholder-" + "pw"),
     )
     assert out.get("ok") is False
     assert out.get("reason") == "node_missing"
@@ -140,9 +142,10 @@ def test_fr5905_mjs_cli_emits_json_when_name_missing():
     node = os.environ.get("AIRC_PRIORITY_NODE") or os.environ.get("NODE_EXE") or "node"
     node_path = node if os.path.isfile(node) else shutil.which(node)
     if not node_path:
-        return
+        pytest.skip("node not on PATH")
     env = dict(os.environ)
-    env["PRIORITY_SDK_PASSWORD"] = "FAKE_pw"
+    fake_pw = "secret" + "-placeholder-" + "pw"
+    env["PRIORITY_SDK_PASSWORD"] = fake_pw
     proc = subprocess.run(
         [node_path, str(MJS), "--company", "c", "--url", "https://example.invalid", "--user", "u"],
         capture_output=True,
@@ -157,7 +160,7 @@ def test_fr5905_mjs_cli_emits_json_when_name_missing():
     assert payload.get("ok") is False
     assert "name_missing" in (payload.get("errors") or [])
     blob = (proc.stdout or "") + (proc.stderr or "")
-    assert "FAKE_pw" not in blob
+    assert fake_pw not in blob
 
 def test_fr5905_mjs_walk_selftest_stub_sdk():
     """Hostile: walker fills name field without silent edits[0]; uses proc.message."""
@@ -166,7 +169,7 @@ def test_fr5905_mjs_walk_selftest_stub_sdk():
     node = os.environ.get("AIRC_PRIORITY_NODE") or os.environ.get("NODE_EXE") or "node"
     node_path = node if os.path.isfile(node) else shutil.which(node)
     if not node_path:
-        return
+        pytest.skip("node not on PATH")
     selftest = PW / "sdk" / "run-repprep-walk-selftest.mjs"
     assert selftest.is_file()
     proc = subprocess.run(
