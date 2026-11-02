@@ -14,6 +14,7 @@ from repo_layout import ROOT
 
 PW = ROOT / "airc" / "priority-worker"
 MJS = PW / "sdk" / "run-repprep-via-exec.mjs"
+FORM_MJS = PW / "sdk" / "run-formprep-via-eform.mjs"
 PACK = ROOT / "common" / "scripts" / "Pack-BobiverseRelease.ps1"
 PKG = PW / "package.json"
 
@@ -27,11 +28,18 @@ def test_fr5905_layout_ships_mjs_and_package_dep():
     assert "priority-web-sdk" in text
     assert "--name" in text
     assert "name_field_missing" in text  # FR #5927
+    assert FORM_MJS.is_file(), "sdk/run-formprep-via-eform.mjs must ship (FR #5946)"
+    form_raw = FORM_MJS.read_bytes()
+    assert not form_raw.startswith(b"\xef\xbb\xbf")
+    form_text = FORM_MJS.read_text(encoding="utf-8")
+    assert "PRIORITY_SDK_PASSWORD" in form_text
+    assert "FORMPREPDRCT2" in form_text
     pkg = json.loads(PKG.read_text(encoding="utf-8"))
     deps = pkg.get("dependencies") or {}
     assert "priority-web-sdk" in deps
     readme = (PW / "README.md").read_text(encoding="utf-8")
     assert "FR #5905" in readme or "5905" in readme
+    assert "run-formprep-via-eform.mjs" in readme
     assert "node" in readme.lower()
     assert "drop" in readme.lower()
 
@@ -113,8 +121,50 @@ def test_fr5905_pack_script_requires_mjs_and_npm_ci():
     pack = PACK.read_text(encoding="utf-8")
     assert "FR #5905" in pack
     assert "run-repprep-via-exec.mjs" in pack
+    assert "run-formprep-via-eform.mjs" in pack  # FR #5946
     assert "npm ci" in pack
     assert "node_modules\\priority-web-sdk" in pack or "node_modules/priority-web-sdk" in pack
+
+
+def test_fr5946_resolver_finds_formprep_mjs(tmp_path, monkeypatch):
+    """Typed form prepare must resolve packed sdk/run-formprep-via-eform.mjs."""
+    root = tmp_path / "airc-install"
+    pw = root / "airc" / "priority-worker" / "sdk"
+    pw.mkdir(parents=True)
+    (pw / "run-formprep-via-eform.mjs").write_text("// stub\n", encoding="utf-8")
+    monkeypatch.setenv("AIRC_INSTALL_ROOT", str(root))
+    monkeypatch.setattr(
+        ac._priority,
+        "resolve_priority_worker_dir",
+        lambda _r: root / "airc" / "priority-worker",
+    )
+    seen = {}
+
+    def fake_run(argv, **kw):
+        seen["argv"] = list(argv)
+        class P:
+            returncode = 0
+            stdout = '{"ok":true,"ended":true,"errors":[]}\n'
+            stderr = ""
+        return P()
+
+    out = ac._priority_sdk_repprep(
+        ename="ORDERS",
+        path="FORMPREPDRCT2",
+        form_prep=True,
+        instance={
+            "credentialTarget": "PriorityWeb/x",
+            "company": "c",
+            "url": "https://example.invalid",
+            "user": "u",
+        },
+        cred_fetcher=lambda _t: "secret-placeholder-priority-pw",
+        node_runner=fake_run,
+    )
+    assert out.get("ok") is True
+    assert seen["argv"][1].replace("\\", "/").endswith(
+        "priority-worker/sdk/run-formprep-via-eform.mjs"
+    )
 
 
 def test_fr5913_pack_always_runs_npm_ci():

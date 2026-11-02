@@ -17,6 +17,7 @@ def test_fr5283_layout_no_peer_exe():
     assert (ROOT / "airc/priority-worker/README.md").is_file()
     assert (ROOT / "airc/priority-worker/package.json").is_file()
     assert (ROOT / "airc/priority-worker/sdk/run-repprep-via-exec.mjs").is_file()
+    assert (ROOT / "airc/priority-worker/sdk/run-formprep-via-eform.mjs").is_file()
     assert not list(ROOT.rglob("PriorityClient.exe"))
     raw = WORKER.read_bytes()
     assert not raw.startswith(b"\xef\xbb\xbf")

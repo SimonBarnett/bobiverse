@@ -29,7 +29,7 @@ Root object:
 }
 ```
 
-Required per instance: id, url (must be https://), company, user, credentialTarget (Windows CredMan generic target). Optional: sqlServer, systemDb. **`prepDir` is required for `PRIORITY prepare`** (absolute path to the Priority `.prp` folder, e.g. `E:\\priority\\system\\prep`). Without it, prepare returns `reason=prep_dir_missing` instead of a false `prp_unchanged` (FR #5932).
+Required per instance: id, url (must be https://), company, user, credentialTarget (Windows CredMan generic target). Optional: sqlServer, systemDb. **`prepDir` is required for `PRIORITY prepare`** (absolute path to the Priority `.prp` folder, e.g. `E:\\priority\\system\\prep`). Without it, prepare returns `reason=prep_dir_missing` instead of a false `prp_unchanged` (FR #5932). FR #5946: `PRIORITY prepare form|report|procedure <ENAME>` selects the exact T$EXEC type (form uses `FORMPREPDRCT2`; report/procedure use `REPPREPDIRECT2`); untyped `prepare <ENAME>` remains procedure-only.
 
 Loader rules (airc/scripts/airc_priority.py):
 
