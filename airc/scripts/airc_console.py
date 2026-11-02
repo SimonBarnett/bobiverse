@@ -674,6 +674,15 @@ def _priority_sdk_formwalk(
         )
     except FileNotFoundError:
         return {"ok": False, "error": "node_missing", "form": form, "op": op}
+    except subprocess.TimeoutExpired:
+        # FR #5991: Priority formStart hang -> named sdk-timeout (no crash intake).
+        return {
+            "ok": False,
+            "error": "sdk-timeout",
+            "form": form,
+            "op": op,
+            "message": "formwalk timed out",
+        }
     except Exception as e:  # noqa: BLE001
         return {
             "ok": False,
@@ -681,6 +690,7 @@ def _priority_sdk_formwalk(
             "form": form,
             "op": op,
             "sdk_reason": type(e).__name__,
+            "message": str(e)[:200],
         }
     finally:
         env.pop("PRIORITY_SDK_PASSWORD", None)
@@ -711,6 +721,10 @@ def _priority_sdk_formwalk(
         payload["error"] = "no-access"
     elif err in {"subform-not-found", "subformnotfound"}:
         payload["error"] = "subform-not-found"
+    elif err in {"sdk-timeout", "timeout", "timed-out"}:
+        payload["error"] = "sdk-timeout"
+    elif err in {"password-refused", "password_refused", "no-cred", "no_cred"}:
+        payload["error"] = "password-refused" if "password" in err else "no_cred"
     if "op" not in payload:
         payload["op"] = op
     if "form" not in payload:

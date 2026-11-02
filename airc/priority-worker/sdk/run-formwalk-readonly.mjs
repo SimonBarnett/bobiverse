@@ -87,6 +87,13 @@ function classifyError(err) {
     msg.includes('not found') ||
     msg.includes('formnotfound') ||
     msg.includes('unprepared') ||
+    msg.includes('does not exist') ||
+    msg.includes('cannot open') ||
+    msg.includes('failed to open') ||
+    msg.includes('failed to start form') ||
+    msg.includes('unknown form') ||
+    msg.includes('no such form') ||
+    msg.includes('invalid form') ||
     msg.includes('o11')
   ) {
     return 'form-not-found';
@@ -101,6 +108,13 @@ function classifyError(err) {
     msg.includes('403')
   ) {
     return 'no-access';
+  }
+  if (
+    msg.includes('password') ||
+    msg.includes('credential') ||
+    msg.includes('need --name')
+  ) {
+    return 'password-refused';
   }
   return 'sdk-fault';
 }
@@ -140,7 +154,8 @@ async function main() {
   const op = String(args.op || 'formStart').trim();
   const formName = String(args.name || '').trim();
   if (!formName || !password) {
-    emit({ ok: false, error: 'sdk-fault', message: 'need --name and PRIORITY_SDK_PASSWORD', op });
+    // FR #5991: missing name/password is expected (no intake), never sdk-fault.
+    emit({ ok: false, error: 'password-refused', message: 'need --name and PRIORITY_SDK_PASSWORD', op, form: formName });
     process.exit(2);
   }
 
