@@ -401,6 +401,27 @@ PRIORITY_USAGE_SUBVERBS = "connect|status|prepare|formStart|subform|getRows"
 PRIORITY_REPLY_MAX_BYTES = 350
 PRIORITY_ECHO_MAX_ESCAPED_BYTES = 64
 
+# FR #5993: drop detail first so a real ok:true prepare never becomes reply-too-large.
+_PRIORITY_REPLY_DROP_KEYS = (
+    "prep_dir_tried",
+    "prep_dir_derived_from",
+    "detail",
+    "errors",
+    "sdk",
+    "sdk_errors",
+    "sdk_message",
+    "prp_mtime_before",
+    "prp_mtime_after",
+    "sql_faked",
+    "exec_types",
+    "prep_dir",
+)
+
+# Minimum success fields the caller must still see after shrink (FR #5993).
+_PRIORITY_REPLY_CORE_OK_KEYS = frozenset(
+    {"ok", "reason", "exec_id", "prep_file", "prep_dir_source", "action"}
+)
+
 
 def bound_echo_token(
     token: str,
@@ -424,6 +445,63 @@ def bound_echo_token(
     return best
 
 
+def _framed_priority_out(job_id: str, body: dict[str, Any]) -> str:
+    line_json = json.dumps(body, separators=(",", ":"), sort_keys=True)
+    return f"out id={job_id} seq=1 {line_json}"
+
+
+def _is_prepare_success_payload(body: dict[str, Any]) -> bool:
+    """True when this is a successful prepare outcome (FR #5993 keep-ok)."""
+    if body.get("ok") is not True:
+        return False
+    action = str(body.get("action") or body.get("op") or "").strip().lower()
+    if action == "prepare":
+        return True
+    # Prepare worker may omit action until console stamps it; detect by fields.
+    return "prep_file" in body or "prep_dir_source" in body or "prep_dir" in body
+
+
+def _shrink_priority_payload_steps(body: dict[str, Any]) -> list[dict[str, Any]]:
+    """Progressive shrink candidates from least to most aggressive (FR #5993)."""
+    steps: list[dict[str, Any]] = []
+    cur = dict(body)
+    sdk = cur.get("sdk")
+    if isinstance(sdk, dict) and ("errors" in sdk or "message" in sdk):
+        sdk2 = {k: v for k, v in sdk.items() if k not in ("errors", "message")}
+        cur = dict(cur)
+        cur["sdk"] = sdk2
+        steps.append(cur)
+    # Truncate long prep_dir before dropping it entirely (keeps a hint when space).
+    if isinstance(cur.get("prep_dir"), str) and len(cur["prep_dir"]) > 48:
+        cur = dict(cur)
+        cur["prep_dir"] = "..." + cur["prep_dir"][-45:]
+        steps.append(cur)
+    for key in _PRIORITY_REPLY_DROP_KEYS:
+        if key in cur:
+            cur = dict(cur)
+            cur.pop(key, None)
+            steps.append(cur)
+    # Last resort for prepare success: core keys only.
+    if _is_prepare_success_payload(cur):
+        core = {
+            k: cur[k]
+            for k in (
+                "ok",
+                "reason",
+                "exec_id",
+                "prep_file",
+                "prep_dir_source",
+                "action",
+            )
+            if k in cur
+        }
+        if "action" not in core:
+            core["action"] = "prepare"
+        if core != cur:
+            steps.append(core)
+    return steps
+
+
 def format_bounded_priority_out(
     job_id: str,
     payload: dict[str, Any],
@@ -431,7 +509,12 @@ def format_bounded_priority_out(
     *,
     max_bytes: int = PRIORITY_REPLY_MAX_BYTES,
 ) -> tuple[str, int]:
-    """Return (framed out line, effective exit). Oversized -> compact reply-too-large."""
+    """Return (framed out line, effective exit).
+
+    Oversized replies drop optional detail first (FR #5993). A successful
+    prepare ``ok:true`` never becomes ``reply-too-large`` / exit=1. Other
+    unshrinkable replies still fall back to compact reply-too-large (FR #5616).
+    """
     jid = (job_id or "").strip().lower() or "00000000"
     body = dict(payload or {})
     line_json = json.dumps(body, separators=(",", ":"), sort_keys=True)
@@ -448,12 +531,46 @@ def format_bounded_priority_out(
     nbytes = len(out.encode("utf-8"))
     if nbytes <= max_bytes:
         return out, int(exit_code)
+
+    original_nbytes = nbytes
+    for candidate in _shrink_priority_payload_steps(body):
+        cand_out = _framed_priority_out(jid, candidate)
+        if len(cand_out.encode("utf-8")) <= max_bytes:
+            return cand_out, int(exit_code)
+
+    # Prepare success must never flip to reply-too-large (FR #5993).
+    if _is_prepare_success_payload(body):
+        core = {
+            k: body[k]
+            for k in (
+                "ok",
+                "reason",
+                "exec_id",
+                "prep_file",
+                "prep_dir_source",
+                "action",
+            )
+            if k in body
+        }
+        core["ok"] = True
+        if "action" not in core:
+            core["action"] = "prepare"
+        core_out = _framed_priority_out(jid, core)
+        if len(core_out.encode("utf-8")) <= max_bytes:
+            return core_out, int(exit_code)
+        floor = {
+            "ok": True,
+            "action": "prepare",
+            "reason": str(body.get("reason") or "prepared")[:40],
+        }
+        return _framed_priority_out(jid, floor), int(exit_code)
+
     action = str(body.get("action") or body.get("op") or "priority")
     fallback = {
         "ok": False,
         "action": action,
         "error": "reply-too-large",
-        "bytes": nbytes,
+        "bytes": original_nbytes,
     }
     fb_json = json.dumps(fallback, separators=(",", ":"), sort_keys=True)
     return f"out id={jid} seq=1 {fb_json}", 1
