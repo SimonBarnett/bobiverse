@@ -10991,11 +10991,11 @@ def list_pr_needs_mergeability_enrichment(pr: dict | None) -> bool:
     """
     if not isinstance(pr, dict):
         return False
-    return not (
-        "mergeable" in pr
-        or "mergeable_state" in pr
-        or "mergeStateStatus" in pr
-    )
+    if "mergeable_state" in pr or "mergeStateStatus" in pr:
+        return False
+    # FR #6044: a lone ``mergeable`` key (often REST false/null) is not enough;
+    # still fetch mergeable_state so dirty pins are not skipped as clean.
+    return True
 
 
 def enrich_pr_mergeability(
@@ -11383,19 +11383,43 @@ def resync_from_github(
                 continue
             # FR #5500: docs/mrb-* pins never become MRB (resync stored empty title
             # so offer-time lesson_of_lesson could not see first-level pins).
+            # FR #6044: still fall through when DIRTY/CONFLICTING so #4679 FIX
+            # can fold an orphan pin whose original already merged.
             _resync_head = pr.get("head") if isinstance(pr.get("head"), dict) else {}
             if is_docs_mrb_pin_pr(
                 title=title,
                 head_ref=str(_resync_head.get("ref") or ""),
                 labels=pr_labels,
             ):
-                skipped_draft += 1
-                skipped_open_pulls.add((repo, f"#{num}"))
+                if list_pr_needs_mergeability_enrichment(pr):
+                    enrich_pr_mergeability(
+                        pr, repo=repo, num=num, fetch_json=getter
+                    )
+                try:
+                    import mrb_merge_on_green as _mog_pin
+
+                    pin_dirty = _mog_pin.merge_attempt_conflict_reason(
+                        mergeable=pr.get("mergeable"),
+                        merge_state=str(
+                            pr.get("mergeable_state")
+                            or pr.get("mergeStateStatus")
+                            or ""
+                        ),
+                    )
+                except Exception:  # noqa: BLE001
+                    pin_dirty = ""
+                if not pin_dirty:
+                    skipped_draft += 1
+                    skipped_open_pulls.add((repo, f"#{num}"))
+                    print(
+                        f"resync skip docs/mrb pin PR {repo}#{num}",
+                        flush=True,
+                    )
+                    continue
                 print(
-                    f"resync skip docs/mrb pin PR {repo}#{num}",
+                    f"resync dirty docs/mrb pin PR {repo}#{num} -> FIX",
                     flush=True,
                 )
-                continue
             # FR #4466 / #4594 / #4596: open PR with auto-merge on the PASSed SHA.
             # Still queued/in_progress -> skip ci-wait (not a new MRB).
             # Already concluded FAILURE -> offer FIX (per-PR when main is green;

@@ -101,6 +101,6 @@ def test_list_pr_with_mergeable_keys_skips_detail_fetch(tmp_path: Path):
 def test_list_pr_needs_mergeability_enrichment_helper():
     bare = {"number": 1, "title": "x"}
     assert gitclaim.list_pr_needs_mergeability_enrichment(bare) is True
-    assert gitclaim.list_pr_needs_mergeability_enrichment({"mergeable": False}) is False
+    assert gitclaim.list_pr_needs_mergeability_enrichment({"mergeable": False}) is True
     assert gitclaim.list_pr_needs_mergeability_enrichment({"mergeable_state": "dirty"}) is False
     assert gitclaim.list_pr_needs_mergeability_enrichment({"mergeStateStatus": "DIRTY"}) is False
