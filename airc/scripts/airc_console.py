@@ -4243,7 +4243,7 @@ class AircConsoleCore:
                     "PRIORITY prepare [form|report|procedure] <ENAME> [instance=] (FR #5286/#5946); "
                     "UPDATE airc|bob|jeeves [ver] schedules detached MSI update "
                     "(ops-gated remote; not auto self-update - FR #3764); "
-                    "PRIORITY connect|status [instance-id] (CredMan + allowlist, FR #5284); PRIORITY formStart|subform|getRows (FR #5285/#5948 SDK read walk; fixture=selftest); "
+                    "PRIORITY connect|status [instance-id] (CredMan + allowlist, FR #5284); PRIORITY formStart|subform|getRows (FR #5285/#5948 SDK read walk; fixture=selftest); PRIORITY wcf GetVersion|GeneralCompanies|ProcStart|ProcContinue|ProcEnd (FR #6035 SOAP, no SDK); "
                     "EXTENSION install|status [-WhatIf] isolated worker (FR #5290); "
                     "NETWORK|NETWORK diag isolated worker (FR #5298); "
                     "LEGION {host|ip} [-WhatIf] [-Profile fleet|client|workstation] isolated worker (FR #5308/#5758); "
@@ -4258,6 +4258,50 @@ class AircConsoleCore:
 
         # FR #5285 / #5948: PRIORITY form walk --- SDK read-only by default;
         # fixture only when SelfTest/unit sets priority_fixture.
+        import priority_wcf as _wcf
+
+        wcf_cmd = _wcf.parse_priority_wcf_command(cmd)
+        if wcf_cmd is not None:
+            denied = self._priority_optional_denied(
+                nick=nick,
+                target=target,
+                text=text,
+                action_name="wcf",
+                job_id=wcf_cmd.get("job_id"),
+            )
+            if denied is not None:
+                return denied
+            allow = _priority.resolve_walk_allowlist_path(
+                self.install_root, self.priority_allowlist or self.priority_allowlist_path
+            )
+            al = None
+            if allow is not None:
+                try:
+                    al = _priority.load_priority_allowlist(allow)
+                except _priority.PriorityConfigError:
+                    al = None
+            body = _wcf.run_priority_wcf(
+                cmd,
+                allowlist=al,
+                install_root=self.install_root,
+                cred_fetcher=_priority.fetch_credman_password,
+                mode="relay",
+            )
+            jid = (wcf_cmd.get("job_id") or "").strip().lower() or uuid.uuid4().hex[:8]
+            out_line, exit_code = _priority.format_bounded_priority_out(
+                jid, body, 0 if body.get("ok") else 1
+            )
+            self._clear_unused_dcclisten(jid, reason="priority")
+            meta = self._allow_meta(nick, account)
+            return HandleResult(
+                action="priority",
+                nick=nick,
+                target=target,
+                text=text,
+                reply=f"{out_line}\nDONE id={jid} exit={exit_code}",
+                **meta,
+            )
+
         walk = _priority.parse_priority_walk_command(cmd)
         if walk is not None:
             denied = self._priority_optional_denied(
