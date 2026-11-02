@@ -178,7 +178,9 @@ def test_tick_keeps_review_input_pr_and_counts_real_fast_failures(tmp_path, monk
         out = cd.tick(
             tmp_path, now=start + 40, get=lambda *_: {"state": "failed"},
         )
-        assert out["timed_out"] == 1
+        # FR #5965 split: real cloud failures bump failed, not timed_out.
+        assert out["failed"] == 1
+        assert out["timed_out"] == 0
     assert not cd.mrb_dispatch_enabled(tmp_path, now=NOW + 180)
 
 

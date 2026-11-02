@@ -443,7 +443,8 @@ def classify_queue_row(
                 import copilot_dispatch as _cd5965
 
                 job = _cd5965._matching_job(home, row)
-                if _cd5965._job_is_live(job, float(now)):
+                # Keep until the dispatcher settles (past TASK_TIMEOUT_S too).
+                if _cd5965._job_is_live(job, float(now), honor_timeout=False):
                     base["state"] = "held"
                     base["rule"] = "copilot_live_task"
                     base["stuck"] = False

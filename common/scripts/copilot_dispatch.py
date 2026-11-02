@@ -433,7 +433,12 @@ def is_exhausted(resp: dict | None) -> bool:
 
 
 def session_quota_error(task_info: dict | None) -> str | None:
-    """Return a quota/limit error message from task or session payloads, else None."""
+    """Return a quota/limit error from task/session error fields, else None.
+
+    Only ``error`` / ``failure`` / ``last_error`` count. Do not scan free-form
+    ``message`` / ``output`` text: a completed MRB board that mentions quota
+    must not trip exhaustion (MRB #5967 fix).
+    """
     if not isinstance(task_info, dict):
         return None
     artifacts = [task_info] + [
@@ -452,9 +457,6 @@ def session_quota_error(task_info: dict | None) -> str | None:
                 else:
                     text = str(err)
                 return text or "coding-agent quota exceeded"
-        blob = _error_text(info)
-        if is_exhausted({"message": blob}):
-            return str(info.get("message") or info.get("error") or "coding-agent quota exceeded")
     return None
 
 
@@ -1061,10 +1063,8 @@ def _matching_job(home: Path, row: dict) -> dict | None:
     return None
 
 
-def _job_is_live(job: dict | None, now: float) -> bool:
-    if not isinstance(job, dict):
-        return False
-    if str(job.get("state") or "").strip().lower() in (
+_TERMINAL_JOB_STATES = frozenset(
+    {
         "completed",
         "complete",
         "failed",
@@ -1072,7 +1072,19 @@ def _job_is_live(job: dict | None, now: float) -> bool:
         "cancelled",
         "canceled",
         "error",
-    ):
+    }
+)
+
+
+def _job_is_live(job: dict | None, now: float, *, honor_timeout: bool = True) -> bool:
+    """True when a tracked Copilot job should still hold the accepted row.
+
+    ``honor_timeout=False`` (stuck sweep): keep any non-terminal tracked row
+    until the dispatcher settles it, even past ``TASK_TIMEOUT_S`` (MRB #5967).
+    """
+    if not isinstance(job, dict):
+        return False
+    if str(job.get("state") or "").strip().lower() in _TERMINAL_JOB_STATES:
         return False
     try:
         started = float(job.get("started") or 0)
@@ -1080,6 +1092,8 @@ def _job_is_live(job: dict | None, now: float) -> bool:
         started = 0.0
     if not started:
         return False
+    if not honor_timeout:
+        return True
     return (float(now) - started) < TASK_TIMEOUT_S
 
 
@@ -1489,26 +1503,7 @@ def handle_timeout_or_fail(
                 state = str(info.get("state") or info.get("status") or "").lower()
                 if state in ("failed", "cancelled", "canceled", "error"):
                     reason = state
-                quota_msg = session_quota_error(info)
-                if not quota_msg and is_exhausted({"message": _error_text(info)}):
-                    quota_msg = "coding-agent quota exceeded"
-                if quota_msg:
-                    pause_lines: list[str] = []
-
-                    def _pause_announce(line: str) -> None:
-                        pause_lines.append(line)
-                        bobreport.enqueue_chair_fleet_privmsg(home, line)
-
-                    mark_tokens_exhausted(home, now=now, announce=_pause_announce)
-                    pause = "copilot paused: coding-agent quota exceeded"
-                    if pause not in pause_lines:
-                        bobreport.enqueue_chair_fleet_privmsg(home, pause)
-                    _soft_release_copilot_row(
-                        home, repo=repo, task=task, ident=ident
-                    )
-                    _forget_job(home, repo, task, ident)
-                    return {"status": "quota", "reason": quota_msg}
-                # Completed cloud task: settle MRB verdict or soft-requeue now.
+                # Completed cloud task first: never treat board/output text as quota.
                 if state in ("completed", "complete", "success"):
                     verdict = extract_mrb_verdict_from_task(info)
                     pr_url = _job_pr_url(job, repo) or str(
@@ -1546,10 +1541,15 @@ def handle_timeout_or_fail(
                             result=verdict,
                             url=pr_url,
                         )
-                        if st == "ok":
-                            _record_mrb_result(
-                                home, {"task": "MRB"}, now=now, giveup=False
-                            )
+                        if st != "ok":
+                            return {
+                                "status": st or "error",
+                                "verdict": verdict,
+                                "reason": "complete_not_ok",
+                            }
+                        _record_mrb_result(
+                            home, {"task": "MRB"}, now=now, giveup=False
+                        )
                         _forget_job(home, repo, task, ident)
                         line = announce_complete(
                             repo=repo,
@@ -1580,6 +1580,23 @@ def handle_timeout_or_fail(
                         bobreport.enqueue_chair_fleet_privmsg(home, line)
                         return {"status": "requeue", "reason": "no_verdict"}
                     # Non-MRB completed: fall through to existing-work / giveup paths.
+                quota_msg = session_quota_error(info)
+                if quota_msg:
+                    pause_lines: list[str] = []
+
+                    def _pause_announce(line: str) -> None:
+                        pause_lines.append(line)
+                        bobreport.enqueue_chair_fleet_privmsg(home, line)
+
+                    mark_tokens_exhausted(home, now=now, announce=_pause_announce)
+                    pause = "copilot paused: coding-agent quota exceeded"
+                    if pause not in pause_lines:
+                        bobreport.enqueue_chair_fleet_privmsg(home, pause)
+                    _soft_release_copilot_row(
+                        home, repo=repo, task=task, ident=ident
+                    )
+                    _forget_job(home, repo, task, ident)
+                    return {"status": "quota", "reason": quota_msg}
             started = float(job.get("started") or 0)
             if reason == "timeout" and now - started < TASK_TIMEOUT_S:
                 return {"status": "pending"}
