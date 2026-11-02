@@ -478,6 +478,56 @@ def _priority_sqlcmd_lock(
     return None
 
 
+def _trim_priority_sdk_message(msg: str, *, max_len: int = 72) -> str:
+    """Secret-safe short message for IRC sdk_reason (FR #5994).
+
+    Prefer the distinctive tail (e.g. ``API Licence``) over a generic lead-in.
+    """
+    s = str(msg or "")
+    s = re.sub(
+        r"(?i)(password|passwd|secret|pwd|token)\s*[:=]\s*\S+",
+        r"\1=***",
+        s,
+    )
+    s = " ".join(s.split())
+    if len(s) <= max_len:
+        return s
+    return "..." + s[-(max_len - 3) :]
+
+
+def _priority_sdk_reason_from_payload(payload: dict | None) -> str:
+    """Build short ``stage:type message`` from runner JSON (FR #5994)."""
+    if not isinstance(payload, dict):
+        return ""
+    stage = str(payload.get("stage") or "").strip()
+    typ = str(payload.get("type") or "").strip()
+    msg = payload.get("message")
+    if msg is None:
+        errs = payload.get("errors")
+        if isinstance(errs, list) and errs:
+            e0 = errs[0]
+            if isinstance(e0, dict):
+                msg = e0.get("text") or e0.get("message") or ""
+                if not typ:
+                    typ = str(e0.get("type") or e0.get("severity") or "").strip()
+            else:
+                msg = str(e0)
+        elif isinstance(errs, str):
+            msg = errs
+    msg_s = _trim_priority_sdk_message(msg or "")
+    parts: list[str] = []
+    if stage and typ:
+        parts.append(f"{stage}:{typ}")
+    elif stage:
+        parts.append(stage)
+    elif typ:
+        parts.append(typ)
+    if msg_s:
+        parts.append(msg_s)
+    reason = " ".join(parts).strip()
+    return reason[:96]
+
+
 def _priority_sdk_repprep(
     *,
     ename: str,
@@ -585,6 +635,17 @@ def _priority_sdk_repprep(
             except json.JSONDecodeError:
                 continue
     if not isinstance(payload, dict):
+        # FR #5994: also try stderr JSON (args errors historically used console.error).
+        err_raw = (proc.stderr or "").strip().splitlines()
+        for line in reversed(err_raw):
+            line = line.strip()
+            if line.startswith("{") and line.endswith("}"):
+                try:
+                    payload = json.loads(line)
+                    break
+                except json.JSONDecodeError:
+                    continue
+    if not isinstance(payload, dict):
         return {
             "ok": False,
             "path": path,
@@ -592,7 +653,19 @@ def _priority_sdk_repprep(
             "node_exit": proc.returncode,
         }
     ok = bool(payload.get("ok"))
-    return {"ok": ok, "path": path, "sdk": {"ended": payload.get("ended"), "errors": payload.get("errors")}}
+    out: dict = {
+        "ok": ok,
+        "path": path,
+        "sdk": {"ended": payload.get("ended"), "errors": payload.get("errors")},
+    }
+    # FR #5994: surface stage/message as short reason for prepare sdk_not_ok.
+    if not ok:
+        sdk_reason = _priority_sdk_reason_from_payload(payload)
+        if sdk_reason:
+            out["reason"] = sdk_reason
+        elif payload.get("stage"):
+            out["reason"] = str(payload.get("stage"))
+    return out
 
 
 def _priority_sdk_formwalk(

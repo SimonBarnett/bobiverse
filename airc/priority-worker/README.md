@@ -35,6 +35,9 @@ fixture (`fixtures/form_walk.json`) only when console `priority_fixture` / env `
 - Form walk (FR #5948): read-only only (no activateStart / FORMPREP). Expected errors
   (`form-not-found`, `no-access`, `subform-not-found`, …) reply on IRC and do not intake;
   genuine crashes (`sdk-fault` / uncaught) still intake.
+- FR #5994: prepare SDK failures return a short `sdk_reason` (`stage:type message`) on the
+  IRC reply. Formprep dumps go under `AIRC_HOME|AIRC_INSTALL_ROOT|OS tmp`/tmp/airc-formprep/sdk-run
+  (never fixed `C:\Priority\tmp`). `--url` / `--user` / `--company` are required (no customer defaults).
 
 ### Local npm
 
