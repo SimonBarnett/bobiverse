@@ -135,4 +135,4 @@ def test_fr5526_packaging_pins():
         encoding="utf-8"
     )
     assert r"scripts\airc_credman.py" in allow
-    assert "len(CLIENT_REMAINING_FILES) == 34" in allow  # FR #5905
+    assert "len(CLIENT_REMAINING_FILES) == 35" in allow  # FR #5948 formwalk mjs
