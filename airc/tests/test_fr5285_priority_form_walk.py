@@ -78,7 +78,9 @@ def test_fr5285_fixture_formstart_subform_getrows_no_mjs(tmp_path):
     assert r3 and "DONE id=ccddeeff exit=0" in (r3.reply or "")
     b3 = json.loads([ln for ln in r3.reply.splitlines() if ln.startswith("out ")][0].split(" ", 3)[-1])
     assert b3["op"] == "getRows"
-    assert isinstance(b3["rows"], list) and b3["rows"]
+    # FR #6018: IRC is a columns/count summary; full rows are not on the wire.
+    assert "rows" not in b3
+    assert int(b3.get("count") or 0) >= 1
 
 
 def test_fr5285_unknown_instance_and_password_refused(tmp_path):
