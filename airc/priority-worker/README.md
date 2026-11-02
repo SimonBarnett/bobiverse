@@ -17,7 +17,7 @@ Pack stages:
   at pack time (FR #5913: never skip when a stale `node_modules` is already present)
 
 Resolver order (see `airc_console._priority_prepare_exec`): default **form** uses WINRUN
-(`priorityRoot/bin/WINRUN.EXE`, override `AIRC_PRIORITY_WINRUN` / `winrunPath`). Default
+(derived `priorityRoot/bin.NN` then `bin`, or tabula.ini / `PRIORITY_ROOT`; override `AIRC_PRIORITY_WINRUN` / `winrunPath`, FR #6016). Default
 report/procedure use `sdk/run-repprep-via-exec.mjs`. EFORM only when `AIRC_PRIORITY_FORM_VIA_EFORM=1` (then
 `AIRC_PRIORITY_FORMPREP_MJS`). No `drop\` path.
 

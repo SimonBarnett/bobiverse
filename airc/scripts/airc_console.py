@@ -687,8 +687,144 @@ def _env_flag_true(name: str) -> bool:
     return str(os.environ.get(name) or "").strip().lower() in ("1", "true", "yes", "on")
 
 
+_WINRUN_NAMES = ("WINRUN.EXE", "WINRUN.exe", "winrun.exe")
+_BIN_NN_RE = re.compile(r"(?i)^bin(?:\.(\d+))?$")
+
+
+def _winrun_in_dir(folder: Path) -> Path | None:
+    try:
+        if not folder.is_dir():
+            return None
+    except OSError:
+        return None
+    for name in _WINRUN_NAMES:
+        cand = folder / name
+        try:
+            if cand.is_file():
+                return cand
+        except OSError:
+            continue
+    return None
+
+
+def _bin_folders_under(root: Path) -> list[Path]:
+    """Priority ``bin`` and versioned ``bin.NN``; highest NN first (in-use)."""
+    found: list[tuple[int, Path]] = []
+    try:
+        if not root.is_dir():
+            return []
+        for child in root.iterdir():
+            try:
+                if not child.is_dir():
+                    continue
+            except OSError:
+                continue
+            m = _BIN_NN_RE.match(child.name)
+            if not m:
+                continue
+            ver = int(m.group(1)) if m.group(1) is not None else -1
+            found.append((ver, child))
+    except OSError:
+        return []
+    found.sort(key=lambda item: item[0], reverse=True)
+    return [p for _v, p in found]
+
+
+def _read_tabula_priority_directory(
+    *,
+    windir: str | Path | None = None,
+    read_text: Callable[[Path], str] | None = None,
+) -> str | None:
+    """FR #5943 / #6016: ``Priority Directory`` in tabula.ini (prep folder)."""
+    bases: list[Path] = []
+    if windir is not None:
+        bases.append(Path(windir))
+    for key in ("WINDIR", "SystemRoot"):
+        raw = (os.environ.get(key) or "").strip()
+        if raw:
+            bases.append(Path(raw))
+    bases.append(Path(r"C:\Windows"))
+    seen: set[str] = set()
+    reader = read_text or (lambda p: p.read_text(encoding="utf-8", errors="replace"))
+    pat = re.compile(r"(?im)^\s*Priority\s+Directory\s*=\s*(.+?)\s*$")
+    for base in bases:
+        key = str(base).lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        ini = base / "tabula.ini"
+        try:
+            if not ini.is_file():
+                continue
+            text = reader(ini)
+        except OSError:
+            continue
+        m = pat.search(text or "")
+        if not m:
+            continue
+        cand = m.group(1).strip().strip('"').strip("'")
+        if cand:
+            return cand
+    return None
+
+
+def _install_root_from_tabula_prep(prep: str | Path) -> Path | None:
+    """Map tabula ``Priority Directory`` (usually ``…\\system\\prep``) to install root."""
+    p = Path(prep)
+    try:
+        if p.name.lower() == "prep" and p.parent.name.lower() == "system":
+            return p.parent.parent
+    except OSError:
+        return None
+    try:
+        for anc in (p, *p.parents):
+            if _bin_folders_under(anc):
+                return anc
+    except OSError:
+        return None
+    return None
+
+
+def _priority_install_roots(instance: dict) -> list[Path]:
+    roots: list[Path] = []
+    seen: set[str] = set()
+
+    def add(raw: str | Path | None) -> None:
+        text = str(raw or "").strip()
+        if not text:
+            return
+        key = text.lower()
+        if key in seen:
+            return
+        seen.add(key)
+        roots.append(Path(text))
+
+    inst = instance or {}
+    for key in (
+        "priorityRoot",
+        "priority_root",
+        "installRoot",
+        "install_dir",
+        "installDir",
+    ):
+        add(inst.get(key))
+    tabula = _read_tabula_priority_directory()
+    if tabula:
+        add(_install_root_from_tabula_prep(tabula))
+        add(tabula)
+    for env_key in ("PRIORITY_ROOT", "PRIORITY_HOME"):
+        add(os.environ.get(env_key))
+    return roots
+
+
 def _resolve_winrun_exe(instance: dict | None = None) -> Path | None:
-    """Resolve Priority WINRUN.EXE for direct (non-SDK) form prepare (FR #6003)."""
+    """Resolve Priority WINRUN.EXE (FR #6003 / #6016).
+
+    Optional overrides: ``AIRC_PRIORITY_WINRUN``, instance ``winrunPath``.
+    Otherwise derive per install: ``bin.NN`` (highest version in use) then
+    ``bin``, from ``priorityRoot`` / tabula.ini Priority Directory / env.
+    Never hardcode a host path.
+    """
     inst = instance or {}
     candidates: list[Path] = []
     env = str(os.environ.get("AIRC_PRIORITY_WINRUN") or "").strip()
@@ -698,19 +834,17 @@ def _resolve_winrun_exe(instance: dict | None = None) -> Path | None:
         raw = str(inst.get(key) or "").strip()
         if raw:
             candidates.append(Path(raw))
-    root = str(inst.get("priorityRoot") or inst.get("priority_root") or "").strip()
-    if root:
-        base = Path(root)
-        candidates.extend(
-            [
-                base / "bin" / "WINRUN.EXE",
-                base / "bin" / "WINRUN.exe",
-                base / "bin" / "winrun.exe",
-            ]
-        )
     for c in candidates:
         if c and c.is_file():
             return c
+    for root in _priority_install_roots(inst):
+        hit = _winrun_in_dir(root)
+        if hit is not None:
+            return hit
+        for folder in _bin_folders_under(root):
+            hit = _winrun_in_dir(folder)
+            if hit is not None:
+                return hit
     return None
 
 
