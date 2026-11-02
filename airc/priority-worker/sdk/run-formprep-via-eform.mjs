@@ -1,9 +1,13 @@
 /**
  * FR #5946: service-owned EFORM → FORMPREPDRCT2 walk for Airc PRIORITY prepare form.
  * Password: env PRIORITY_SDK_PASSWORD. Never log it.
- * Last stdout line: JSON {ok, ended, errors}.
+ * Last stdout line: JSON {ok, ended, errors} or {ok:false, stage, message, type}.
+ *
+ * FR #5994: no customer-specific --url/--user/--company defaults; dump under
+ * AIRC_HOME / AIRC_INSTALL_ROOT / OS tmp (never fixed C:\\Priority\\tmp).
  */
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 
 function arg(name, fallback = '') {
@@ -12,18 +16,38 @@ function arg(name, fallback = '') {
   return fallback;
 }
 
+function defaultOutDir() {
+  const base =
+    process.env.AIRC_HOME ||
+    process.env.AIRC_INSTALL_ROOT ||
+    process.env.TEMP ||
+    process.env.TMPDIR ||
+    os.tmpdir();
+  return path.join(base, 'tmp', 'airc-formprep', 'sdk-run');
+}
+
+function emitFail(stage, message, type) {
+  const body = { ok: false, stage, message: String(message || '') };
+  if (type) body.type = String(type);
+  // stdout so airc_console._priority_sdk_repprep can parse sdk_reason (FR #5994).
+  console.log(JSON.stringify(body));
+}
+
 const formName = arg('--name');
 const procName = arg('--proc', 'FORMPREPDRCT2');
-const company = arg('--company', 'base');
-const url = arg('--url', 'https://prioritydev.clarksonevans.co.uk');
+const company = arg('--company');
+const url = arg('--url');
 const tabulaini = arg('--tabulaini', 'tabula.ini');
-const username = arg('--user', 'Si');
-const outDir = arg('--out', path.join('C:\\Priority\\tmp\\agent-formprep', 'sdk-run'));
+const username = arg('--user');
+const outDir = arg('--out', defaultOutDir());
 const password = process.env.PRIORITY_SDK_PASSWORD || '';
 const language = Number(arg('--language', '2')) || 2;
 
-if (!formName || !password) {
-  console.error(JSON.stringify({ ok: false, stage: 'args', message: 'need --name and PRIORITY_SDK_PASSWORD' }));
+if (!formName || !password || !url || !username || !company) {
+  emitFail(
+    'args',
+    'need --name --url --user --company and PRIORITY_SDK_PASSWORD'
+  );
   process.exit(2);
 }
 fs.mkdirSync(outDir, { recursive: true });
@@ -152,7 +176,7 @@ try {
   });
 } catch (e) {
   dump('login-error.json', { message: e.message, type: e.type });
-  console.log(JSON.stringify({ ok: false, stage: 'login', message: e.message }));
+  emitFail('login', e.message, e.type);
   process.exit(2);
 }
 
@@ -171,7 +195,7 @@ try {
   );
 } catch (e) {
   dump('formstart-error.json', { message: e.message, type: e.type });
-  console.log(JSON.stringify({ ok: false, stage: 'formStart', message: e.message }));
+  emitFail('formStart', e.message, e.type);
   process.exit(2);
 }
 
@@ -185,14 +209,14 @@ try {
   const pack = rows && rows.EFORM ? rows.EFORM : {};
   const idxs = Object.keys(pack).filter((k) => k !== 'undefined');
   if (idxs.length < 1) {
-    console.log(JSON.stringify({ ok: false, stage: 'search', message: 'form not found in EFORM: ' + formName }));
+    emitFail('search', 'form not found in EFORM: ' + formName);
     process.exit(2);
   }
   const idx = Number(idxs[0]);
   await eform.setActiveRow(idx);
 } catch (e) {
   dump('search-error.json', { message: e.message, type: e.type });
-  console.log(JSON.stringify({ ok: false, stage: 'search', message: e.message }));
+  emitFail('search', e.message, e.type);
   process.exit(2);
 }
 

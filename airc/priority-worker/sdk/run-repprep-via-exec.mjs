@@ -205,18 +205,37 @@ async function walkProc(priority, args) {
 async function main() {
   const args = parseArgs(process.argv);
   const password = process.env.PRIORITY_SDK_PASSWORD || '';
+  // FR #5994: require --url/--user/--company (no customer defaults); stage=args.
   if (!args.name) {
-    emit({ ok: false, ended: false, errors: ['name_missing'] });
+    emit({
+      ok: false,
+      ended: false,
+      stage: 'args',
+      message: 'need --name',
+      errors: ['name_missing'],
+    });
     process.exitCode = 2;
     return;
   }
   if (!args.url || !args.user || !password) {
-    emit({ ok: false, ended: false, errors: ['login_config_missing'] });
+    emit({
+      ok: false,
+      ended: false,
+      stage: 'args',
+      message: 'need --url --user and PRIORITY_SDK_PASSWORD',
+      errors: ['login_config_missing'],
+    });
     process.exitCode = 2;
     return;
   }
   if (!args.company) {
-    emit({ ok: false, ended: false, errors: ['company_missing'] });
+    emit({
+      ok: false,
+      ended: false,
+      stage: 'args',
+      message: 'need --company',
+      errors: ['company_missing'],
+    });
     process.exitCode = 2;
     return;
   }
@@ -261,13 +280,37 @@ async function main() {
 
   try {
     await priority.login(conf);
+  } catch (e) {
+    // FR #5994: stage + type + message for prepare sdk_reason.
+    emit({
+      ok: false,
+      ended: false,
+      stage: 'login',
+      type: e && e.type ? String(e.type) : undefined,
+      message: String((e && e.message) || e || 'login_failed').slice(0, 200),
+      errors: [String((e && e.message) || e || 'login_failed').slice(0, 200)],
+    });
+    process.exitCode = 1;
+    delete process.env.PRIORITY_SDK_PASSWORD;
+    return;
+  }
+  try {
     const result = await walkProc(priority, args);
+    if (!result.ok && !result.stage) {
+      result.stage = 'proc';
+      if (!result.message && Array.isArray(result.errors) && result.errors[0]) {
+        result.message = String(result.errors[0]).slice(0, 200);
+      }
+    }
     emit(result);
     process.exitCode = result.ok ? 0 : 1;
   } catch (e) {
     emit({
       ok: false,
       ended: false,
+      stage: 'proc',
+      type: e && e.type ? String(e.type) : undefined,
+      message: String((e && e.message) || e || 'sdk_walk_failed').slice(0, 200),
       errors: [String((e && e.message) || e || 'sdk_walk_failed').slice(0, 200)],
     });
     process.exitCode = 1;
