@@ -540,8 +540,10 @@ def _priority_sdk_repprep(
 ) -> dict:
     """Run node mjs prepare walk. Password via env only; never logged.
 
-    FR #5946: TYPE=F uses EFORM + FORMPREPDRCT2 (``run-formprep-via-eform.mjs``);
-    TYPE=R/P uses EXEC + REPPREPDIRECT2 (``run-repprep-via-exec.mjs``).
+    FR #5946 / #6003: TYPE=F runs FORMPREPDRCT2 and TYPE=R/P runs REPPREPDIRECT2
+    via the shared EXEC ``run-repprep-via-exec.mjs`` (procStart). Default form
+    prepare never uses EFORM/formStart (API Licence). Opt-in only:
+    ``AIRC_PRIORITY_FORM_VIA_EFORM=1`` selects ``run-formprep-via-eform.mjs``.
     """
     proc_name = str(path or "").strip().upper() or "REPPREPDIRECT2"
     want_form = bool(form_prep) or proc_name == "FORMPREPDRCT2"
@@ -551,7 +553,10 @@ def _priority_sdk_repprep(
         return {"ok": False, "path": path, "reason": "refused_non_repprep"}
     root = Path(os.environ.get("AIRC_INSTALL_ROOT") or r"C:\ai\airc")
     pw = _priority.resolve_priority_worker_dir(root)
-    if want_form:
+    via_eform = want_form and str(
+        os.environ.get("AIRC_PRIORITY_FORM_VIA_EFORM") or ""
+    ).strip().lower() in ("1", "true", "yes", "on")
+    if via_eform:
         mjs_candidates = [
             (pw / "sdk" / "run-formprep-via-eform.mjs") if pw else Path(),
             (pw / "run-formprep-via-eform.mjs") if pw else Path(),
