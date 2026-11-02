@@ -2,10 +2,13 @@
 # CodeRabbit config for bobiverse (Bob Fleet monorepo: bob / jeeves / airc / common).
 # Trial goal: offload review, test-writing and issue-planning work from fleet worker seats
 # (Grok/Cursor/Aider tokens) onto CodeRabbit. MRB workers verify CodeRabbit's findings.
-# CodeRabbit never approves or blocks, and never auto-merges. Simon does every merge.
+# CodeRabbit never approves, blocks or merges. Merges are done by fleet MRB seats
+# (auto-merge or Jeeves merge-on-green) after an MRB PASS board, or by Simon.
 # Anything that writes code (tests, docstrings, fixes, conflict resolution) runs ONLY
 # when someone asks for it with an @coderabbitai command or checkbox, and it lands as a
 # commit on the PR branch or as a separate stacked PR. It never pushes to main.
+# New and edited files are UTF-8 without BOM (FR #3935, #4967). Never suggest adding a
+# BOM or removing a no-BOM / ASCII assert.
 language: en-GB
 tone_instructions: >-
   Be terse and concrete. Lead with the defect and its impact, cite file and line.
@@ -43,12 +46,15 @@ reviews:
 
   auto_review:
     enabled: true
-    drafts: true                  # early feedback on worker drafts saves MRB rework
+    drafts: false                 # FR #5865: workers mark ready only when tip is final
     auto_incremental_review: true # re-review each push (incremental, only new commits)
     auto_pause_after_reviewed_commits: 10
     base_branches: []             # default branch (main) only
     ignore_title_keywords:
       - "[skip review]"
+      - "lesson("
+      - "lesson(harvest)"
+      - "intake/"
 
   # On-request only (command or walkthrough checkbox). Output is a stacked PR or a commit on
   # the PR branch. Nothing runs automatically and nothing targets main directly.
@@ -133,6 +139,9 @@ reviews:
       instructions: |
         Fleet-wide priorities, in order. Only raise issues that would cause a real defect,
         outage, leak or wrong documentation; skip style and naming nits.
+        Encoding: new and edited files are UTF-8 without BOM (FR #3935, #4967). Never suggest
+        adding a BOM or removing a no-BOM / ASCII assert. Reading with utf-8-sig to tolerate
+        legacy BOMs is fine.
         1. Secrets: ergo.password, console.password, connect.password, IRC/NickServ passwords,
            GitHub tokens and webhook secrets must never be committed, logged, echoed to IRC,
            written to intake/digest payloads, passed in child-process argv, or included in
@@ -170,12 +179,18 @@ reviews:
         subprocess calls that leak secrets in argv or ignore return codes, file writes that
         are not atomic for state files shared between processes, and determinism
         (no wall-clock or random dependence in logic that tests assert on).
-        Read UTF-8 files with encoding="utf-8-sig" where a BOM may be present.
+        Encoding: UTF-8 without BOM for new/edited sources (FR #3935, #4967). Never suggest
+        adding a BOM or removing a no-BOM assert. Read with encoding="utf-8-sig" where a
+        legacy BOM may be present.
     - path: "**/tests/**"
       instructions: |
         Tests must exercise the behaviour claimed in the PR, not just mock it away. Flag tests
         that would pass if the fix were reverted, tests that hit the network or real IRC, and
         tests that depend on the host OS without a skip marker.
+        Do not raise or repeat secret-scanner (GitGuardian) findings for test literals that
+        start with FAKE_ or are built by splitting strings (FR #3304). These are deliberate
+        placeholders. Encoding: UTF-8 without BOM; never suggest adding a BOM or removing a
+        no-BOM / ASCII assert.
     - path: "**/*.{cmd,bat}"
       instructions: |
         Batch files used by installers: check quoting of paths with spaces, errorlevel

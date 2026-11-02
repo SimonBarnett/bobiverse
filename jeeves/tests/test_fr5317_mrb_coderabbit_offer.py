@@ -106,4 +106,7 @@ def test_offer_unchanged_when_coderabbit_off(tmp_path, monkeypatch):
         home, "n-1", "#n", now=50.0, pr_exists=lambda r, n: True
     )
     assert st == "ok" and job is not None
-    assert "coderabbit=" not in gitclaim.format_assign_line("n-1", job)
+    line = gitclaim.format_assign_line("n-1", job)
+    # FR #5865: off still stamps so seats know the mode.
+    assert "coderabbit=off" in line
+    assert "review=full" in line

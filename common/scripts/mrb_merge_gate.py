@@ -153,7 +153,93 @@ def find_mrb_pass_board(comments: list[dict] | None) -> str | None:
     return None
 
 
-def evaluate_merge_gate(comments: list[dict] | None) -> tuple[bool, str]:
+def evaluate_coderabbit_gate(row: dict | None) -> tuple[bool, str]:
+    """FR #5865: refuse merge while CodeRabbit stamp is still pending (switch on).
+
+    Empty/unset stamp is fail-open (never load-bearing for unstamped rows / CLI
+    without a queue row). Explicit ``pending`` still refuses. Live CLI resolve
+    lives in ``resolve_coderabbit_row_for_pr`` / ``assert_mrb_merge_allowed``.
+    """
+    try:
+        import fuel_chain
+    except Exception:
+        return True, ""
+    if not fuel_chain.stage_enabled("coderabbit"):
+        return True, ""
+    stamp = str((row or {}).get("coderabbit") or "").strip().lower()
+    if stamp == "pending":
+        return False, "coderabbit pending on head (pending)"
+    if not stamp:
+        # Unset: never load-bearing (old rows / CLI without a stamp).
+        return True, ""
+    if fuel_chain.gate_cleared(stamp):
+        return True, ""
+    return False, f"coderabbit not cleared ({stamp})"
+
+
+def resolve_coderabbit_row_for_pr(
+    repo: str,
+    num: str,
+    *,
+    token: str | None = None,
+    head_sha: str | None = None,
+    lookup_state: Any = None,
+) -> dict[str, str]:
+    """Map live CodeRabbit state to a stamp row for ``evaluate_coderabbit_gate``.
+
+    Used by ``assert_mrb_merge_allowed`` so the CLI is not permanently refused
+    when the stage is on and no queue row was passed. Silence (no activity) maps
+    to ``absent``; activity without ready/failed maps to ``pending``.
+    """
+    try:
+        import fuel_chain
+    except Exception:
+        return {"coderabbit": "off"}
+    if not fuel_chain.stage_enabled("coderabbit"):
+        return {"coderabbit": "off"}
+    head = str(head_sha or "").strip()
+    if not head:
+        try:
+            tok = (token if token is not None else _gh_token()).strip()
+            if tok:
+                num_s = str(num).lstrip("#")
+                req = urllib.request.Request(
+                    f"https://api.github.com/repos/{repo}/pulls/{num_s}",
+                    headers={
+                        "Authorization": f"Bearer {tok}",
+                        "Accept": "application/vnd.github+json",
+                        "User-Agent": "bobiverse-mrb-merge-gate",
+                    },
+                )
+                with urllib.request.urlopen(req, timeout=30) as resp:
+                    data = json.loads(resp.read().decode("utf-8"))
+                if isinstance(data, dict):
+                    head_obj = data.get("head") if isinstance(data.get("head"), dict) else {}
+                    head = str(head_obj.get("sha") or "").strip()
+        except Exception:
+            head = ""
+    lookup = lookup_state or fuel_chain.lookup_coderabbit_state
+    try:
+        state = lookup(repo, str(num).lstrip("#"), head)
+    except Exception:
+        return {"coderabbit": "absent"}
+    if not isinstance(state, dict):
+        # Bool-only checkers cannot see silence/failed; never invent pending.
+        return {"coderabbit": "ready" if state else "absent"}
+    if state.get("failed"):
+        return {"coderabbit": "failed"}
+    if state.get("ready"):
+        return {"coderabbit": "ready"}
+    if not state.get("activity"):
+        return {"coderabbit": "absent"}
+    return {"coderabbit": "pending"}
+
+
+def evaluate_merge_gate(
+    comments: list[dict] | None,
+    *,
+    coderabbit_row: dict | None = None,
+) -> tuple[bool, str]:
     """Pure gate: (ok, reason). reason empty when ok."""
     hold = find_active_owner_hold(comments)
     if hold:
@@ -161,6 +247,9 @@ def evaluate_merge_gate(comments: list[dict] | None) -> tuple[bool, str]:
     board = find_mrb_pass_board(comments)
     if not board:
         return False, "no MRB PASS board comment posted yet"
+    ok_cr, reason_cr = evaluate_coderabbit_gate(coderabbit_row)
+    if not ok_cr:
+        return False, reason_cr
     return True, ""
 
 
@@ -349,9 +438,14 @@ def fetch_issue_comments(
 
 
 def assert_mrb_merge_allowed(repo: str, num: str, *, token: str | None = None) -> None:
-    """Raise RuntimeError when merge must be refused."""
+    """Raise RuntimeError when merge must be refused.
+
+    FR #5865: when CodeRabbit stage is on, resolve a live stamp so the CLI is
+    not permanently refused by an empty ``coderabbit_row`` (never load-bearing).
+    """
     comments = fetch_issue_comments(repo, num, token=token)
-    ok, reason = evaluate_merge_gate(comments)
+    cr_row = resolve_coderabbit_row_for_pr(repo, num, token=token)
+    ok, reason = evaluate_merge_gate(comments, coderabbit_row=cr_row)
     if not ok:
         raise RuntimeError(f"FR #3928 merge refused for {repo}#{num}: {reason}")
 

@@ -44,15 +44,29 @@ _VERB_RE = re.compile(
 
 
 _CR_COUNTER_RE = re.compile(
-    r"(?i)\b(cr_findings|confirmed|fp)=(\d+)\b"
+    r"(?i)\b(cr_findings|confirmed|fp|fixed|rejected|na|tokens)=(\d+)\b"
+)
+_CR_META_RE = re.compile(
+    r"(?i)\b(cr_mode|review)=([A-Za-z0-9_-]+)\b"
 )
 
 
 def mrb_cr_counters(rest: str) -> dict[str, int]:
-    """FR #5317: optional ``cr_findings=N confirmed=N fp=N`` after the DONE URL."""
+    """FR #5317 / #5865: numeric CR counters after the DONE URL."""
     out: dict[str, int] = {}
     for key, raw in _CR_COUNTER_RE.findall(rest or ""):
         out[str(key).lower()] = int(raw)
+    return out
+
+
+def mrb_cr_meta(rest: str) -> dict[str, object]:
+    """FR #5865: ``cr_mode`` / ``review`` / ``tokens`` after the DONE URL."""
+    out: dict[str, object] = {}
+    for key, raw in _CR_META_RE.findall(rest or ""):
+        out[str(key).lower()] = str(raw).strip().lower()
+    counters = mrb_cr_counters(rest)
+    if "tokens" in counters:
+        out["tokens"] = int(counters["tokens"])
     return out
 
 
@@ -844,7 +858,21 @@ def handle_shop_worker_line(
             )
         except Exception:  # noqa: BLE001
             pass
-        
+        # FR #5865: persist cr_mode/review/tokens for digest light-vs-full comparison.
+        if str(parsed.task or "").upper() == "MRB":
+            try:
+                import coderabbit_report
+
+                coderabbit_report.record_done(
+                    home,
+                    repo=parsed.repo,
+                    ident=parsed.id,
+                    seat=nick,
+                    rest=parsed.rest or "",
+                )
+            except Exception:  # noqa: BLE001
+                pass
+
         # FR #3948: DONE MRB PASS -> merge-on-green ledger (seat never polls CI).
         # FR #5581: CONFLICTING at DONE queues FIX immediately (enqueue_from_done).
         if str(parsed.task or "").upper() == "MRB" and str(parsed.result or "").upper() == "PASS":

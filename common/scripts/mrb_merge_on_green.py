@@ -264,7 +264,11 @@ def cancelled_workflow_run_id(runs: dict | list | None) -> str:
     return ""
 
 
-def rollup_check_runs(runs: dict | list | None) -> str:
+def rollup_check_runs(
+    runs: dict | list | None,
+    *,
+    ignore_coderabbit: bool = False,
+) -> str:
     """Roll check-runs into success | failure | cancelled | pending | none.
 
     FR #4630: when every fail-like conclusion is cancelled/canceled, return
@@ -273,6 +277,9 @@ def rollup_check_runs(runs: dict | list | None) -> str:
     ``failure:test-and-synth`` so enqueue can skip while main is also red.
     FR #4833: when the only hard failure is ``lock`` / ``assert-lock``, annotate
     ``failure:lock`` so enqueue parks needs-human instead of FIX-CI.
+    FR #5865: when ``ignore_coderabbit`` is True (gate cleared / off / absent),
+    CodeRabbit checks are non-blocking so a pending/neutral CR does not leave
+    the PR UNSTABLE for merge-on-green.
     """
     if isinstance(runs, dict):
         items = runs.get("check_runs")
@@ -288,13 +295,22 @@ def rollup_check_runs(runs: dict | list | None) -> str:
     for item in items:
         if not isinstance(item, dict):
             continue
+        name = str(item.get("name") or "").strip()
+        if ignore_coderabbit:
+            try:
+                import fuel_chain
+
+                if fuel_chain.is_coderabbit_check_name(name):
+                    continue
+            except Exception:
+                if "coderabbit" in name.lower():
+                    continue
         statuses.append(str(item.get("status") or "").lower())
         conclusion = str(item.get("conclusion") or "").lower()
         if conclusion in _CANCEL_CONCLUSIONS:
             saw_cancel = True
             continue
         if conclusion in _FAIL_CONCLUSIONS:
-            name = str(item.get("name") or "").strip()
             hard.append(name or conclusion)
     if not statuses:
         return "none"
@@ -312,10 +328,19 @@ def rollup_check_runs(runs: dict | list | None) -> str:
     return "success"
 
 
-def checks_from_status_and_runs(status: dict | None, runs: dict | list | None) -> str:
-    """Classic status when it has entries; otherwise the check-run rollup."""
+def checks_from_status_and_runs(
+    status: dict | None,
+    runs: dict | list | None,
+    *,
+    ignore_coderabbit: bool = True,
+) -> str:
+    """Classic status when it has entries; otherwise the check-run rollup.
+
+    FR #5865: CodeRabbit is never a required check. Default ignore so a
+    pending/neutral CodeRabbit rollup does not block merge-on-green.
+    """
     if combined_status_is_empty(status):
-        return rollup_check_runs(runs)
+        return rollup_check_runs(runs, ignore_coderabbit=ignore_coderabbit)
     return str((status or {}).get("state") or "none").strip().lower()
 
 
@@ -2393,7 +2418,8 @@ def fetch_pr_state(repo: str, pr: str, *, token: str | None = None) -> dict[str,
                         f"https://api.github.com/repos/{repo_c}/commits/{sha}/check-runs",
                         token=tok,
                     )
-                    checks = rollup_check_runs(runs)
+                    # FR #5865: CodeRabbit never blocks merge-on-green.
+                    checks = rollup_check_runs(runs, ignore_coderabbit=True)
                 except RuntimeError:
                     checks = "pending"
             else:
