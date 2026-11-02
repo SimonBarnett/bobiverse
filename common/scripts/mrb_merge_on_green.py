@@ -2078,6 +2078,12 @@ def merge_attempt_conflict_reason(
         return "conflicting"
     if str(merge_state or "").strip().upper() in ("DIRTY", "CONFLICTING"):
         return "conflicting"
+    # REST: mergeable is a boolean. False + unknown/empty state is a conflict
+    # (FR #6044); clean/behind/unstable/blocked stay non-conflict.
+    mfalse = mergeable is False or str(mergeable).strip().lower() == "false"
+    st = str(merge_state or "").strip().upper()
+    if mfalse and st in ("", "UNKNOWN"):
+        return "conflicting"
     return None
 
 
