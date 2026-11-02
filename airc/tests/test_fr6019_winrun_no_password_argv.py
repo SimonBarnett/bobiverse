@@ -34,7 +34,7 @@ def test_fr6019_default_winrun_argv_has_no_password(tmp_path, monkeypatch):
     """Acceptance: spawned argv never contains the CredMan password."""
     monkeypatch.delenv("AIRC_PRIORITY_FORM_VIA_EFORM", raising=False)
     monkeypatch.delenv("AIRC_PRIORITY_FORM_VIA_EXEC", raising=False)
-    monkeypatch.delenv("AIRC_PRIORITY_WINRUN_PASSWORD_ARGV", raising=False)
+    monkeypatch.delenv(ac._WINRUN_ARGV_OPTIN, raising=False)
     seen = {"n": 0, "argv": []}
 
     def fake_run(argv, **kw):
@@ -68,7 +68,7 @@ def test_fr6019_opt_in_still_keeps_password_out_of_payload(tmp_path, monkeypatch
     """Opt-in argv password is documented risk; reply payload stays secret-free."""
     monkeypatch.delenv("AIRC_PRIORITY_FORM_VIA_EFORM", raising=False)
     monkeypatch.delenv("AIRC_PRIORITY_FORM_VIA_EXEC", raising=False)
-    monkeypatch.setenv("AIRC_PRIORITY_WINRUN_PASSWORD_ARGV", "1")
+    monkeypatch.setenv(ac._WINRUN_ARGV_OPTIN, "1")
     seen = {}
 
     def fake_run(argv, **kw):

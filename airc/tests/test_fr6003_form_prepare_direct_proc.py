@@ -51,7 +51,7 @@ def test_fr6003_form_prepare_uses_winrun_not_sdk(tmp_path, monkeypatch):
     monkeypatch.delenv("AIRC_PRIORITY_FORM_VIA_EFORM", raising=False)
     monkeypatch.delenv("AIRC_PRIORITY_FORM_VIA_EXEC", raising=False)
     monkeypatch.delenv("AIRC_PRIORITY_WINRUN", raising=False)
-    monkeypatch.setenv("AIRC_PRIORITY_WINRUN_PASSWORD_ARGV", "1")
+    monkeypatch.setenv(ac._WINRUN_ARGV_OPTIN, "1")
     seen = {}
 
     def fake_run(argv, **kw):
@@ -106,7 +106,7 @@ def test_fr6003_form_prepare_dispatch_never_loads_sdk_module(tmp_path, monkeypat
     prep.mkdir()
     monkeypatch.delenv("AIRC_PRIORITY_FORM_VIA_EFORM", raising=False)
     monkeypatch.delenv("AIRC_PRIORITY_FORM_VIA_EXEC", raising=False)
-    monkeypatch.setenv("AIRC_PRIORITY_WINRUN_PASSWORD_ARGV", "1")
+    monkeypatch.setenv(ac._WINRUN_ARGV_OPTIN, "1")
 
     def boom_sdk(**kw):
         raise AssertionError("web SDK runner must not be called for default form prepare")
@@ -271,4 +271,4 @@ def test_fr6003_hooks_wire_prepare_exec_dispatcher():
     assert "sdk_exec=lambda **kw: _priority_prepare_exec(" in src
     assert "_priority_winrun_formprep" in src
     assert "AIRC_PRIORITY_FORM_VIA_EXEC" in src
-    assert "AIRC_PRIORITY_WINRUN_PASSWORD_ARGV" in src
+    assert "_WINRUN_ARGV_OPTIN" in src
