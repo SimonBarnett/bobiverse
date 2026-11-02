@@ -523,7 +523,10 @@ def _write_walk_rows_file(job_id: str, payload: dict[str, Any]) -> str:
         "offset": payload.get("offset"),
         "limit": payload.get("limit"),
     }
-    dest.write_text(json.dumps(blob, separators=(",", ":")), encoding="utf-8")
+    try:
+        dest.write_text(json.dumps(blob, separators=(",", ":")), encoding="utf-8")
+    except OSError:
+        return ""
     return str(dest)
 
 

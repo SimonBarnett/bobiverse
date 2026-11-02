@@ -106,6 +106,9 @@ def test_fr6018_form_table_from_dictionary_not_form_name():
     blob = "\n".join(seen_q).upper()
     assert "DBO.[ORDERS]" in blob
     assert "DBO.[CUSTORDERS]" not in blob
+    # EXEC is reserved T-SQL; live sqlcmd needs delimited identifiers.
+    assert "FROM DBO.[EXEC]" in blob
+    assert "WHERE [EXEC]=" in blob
 
 
 def test_fr6018_run_walk_irc_ok_and_rows_on_job_file(tmp_path, monkeypatch):

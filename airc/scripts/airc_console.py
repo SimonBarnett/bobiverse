@@ -566,12 +566,12 @@ def _lookup_form_table_name(
         queries = (
             (
                 "SET NOCOUNT ON; "
-                f"SELECT TOP 1 TNAME FROM dbo.EXEC WHERE EXEC={int(exec_id)} "
+                f"SELECT TOP 1 TNAME FROM dbo.[EXEC] WHERE [EXEC]={int(exec_id)} "
                 "AND TNAME IS NOT NULL AND LTRIM(RTRIM(TNAME)) <> N'';"
             ),
             (
                 "SET NOCOUNT ON; "
-                f"SELECT TOP 1 TNAME FROM dbo.COLUMNS WHERE EXEC={int(exec_id)} "
+                f"SELECT TOP 1 TNAME FROM dbo.COLUMNS WHERE [EXEC]={int(exec_id)} "
                 "AND TNAME IS NOT NULL AND LTRIM(RTRIM(TNAME)) <> N'' "
                 "ORDER BY POS;"
             ),
