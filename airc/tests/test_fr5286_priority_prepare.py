@@ -353,10 +353,7 @@ def test_fr5286_console_prepare_uses_hooks_not_bare_no_cred(monkeypatch, tmp_pat
         pytest.skip("temp path too long for IRC reply budget (FR #5616)")
     monkeypatch.setattr(ac, "build_console_prepare_hooks", fake_hooks2)
     # FR #5960: live allowlist opts Priority in (example.json alone is not enough).
-    prep = tmp_path / "prep"
-    prep.mkdir(exist_ok=True)
-    inst = dict(INST)
-    inst["prepDir"] = str(prep)
+    # Keep short_prep (FR #5943 / #5616): do not overwrite with long tmp_path prepDir.
     cfg = tmp_path / "config"
     cfg.mkdir(parents=True, exist_ok=True)
     (cfg / "priority-instances.json").write_text(
