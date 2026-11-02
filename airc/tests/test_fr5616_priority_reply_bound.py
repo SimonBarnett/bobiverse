@@ -112,7 +112,7 @@ def test_fr5616_in_budget_connect_byte_identical(tmp_path: Path):
     assert "password" not in text.lower()
 
 
-def test_fr5616_prepare_oversized_uses_shared_helper(tmp_path: Path):
+def test_fr5616_prepare_oversized_uses_shared_helper(tmp_path: Path, monkeypatch):
     """Prepare path must not character-slice JSON mid-document."""
     from airc_auth_helpers import ops_auth
     from unittest.mock import MagicMock
@@ -130,6 +130,24 @@ def test_fr5616_prepare_oversized_uses_shared_helper(tmp_path: Path):
 
     class _PW:
         run_priority_prepare = staticmethod(fake_run)
+
+    # FR #5960: empty install_root allowlist short-circuits to priority_not_installed
+    # before the worker runs; opt Priority in so the oversized body is exercised.
+    inst = {
+        "id": "dev1",
+        "url": "https://example.invalid/priority",
+        "company": "live1",
+        "user": "u1",
+        "credentialTarget": "PriorityWeb/dev1",
+    }
+    cfg = tmp_path / "config"
+    cfg.mkdir(parents=True, exist_ok=True)
+    (cfg / "priority-instances.json").write_text(
+        json.dumps({"instances": [inst]}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(ac, "load_priority_instances", lambda root=None: [inst])
+    monkeypatch.setattr(ap, "priority_runtime_available", lambda *a, **k: True)
 
     auth = ops_auth("bob-marchhare", channel="#marchhare")
     core = ac.AircConsoleCore(
