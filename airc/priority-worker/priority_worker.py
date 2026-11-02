@@ -191,7 +191,8 @@ def run_priority_prepare(
     # FR #5932: prepDir is required for prepare .prp gates. Missing prepDir made
     # _mtime_for return 0.0 before and after, so success looked like prp_unchanged.
     prep = str(inst.get("prepDir") or inst.get("prep_dir") or "").strip()
-    if not prep:
+    # MRB #5934 / CodeRabbit: non-existent prepDir must also fail closed (not prp_unchanged).
+    if not prep or not Path(prep).is_dir():
         base["reason"] = "prep_dir_missing"
         base["prp_mtime_before"] = 0.0
         base["prp_mtime_after"] = 0.0
