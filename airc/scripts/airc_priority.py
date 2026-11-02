@@ -21,6 +21,9 @@ from typing import Any, Callable, Mapping
 DEFAULT_ALLOWLIST_NAME = "priority-instances.json"
 EXAMPLE_ALLOWLIST_NAME = "priority-instances.example.json"
 
+# FR #5960: Priority is optional. Live verbs need a live allowlist; example.json is docs-only.
+PRIORITY_NOT_INSTALLED = "priority_not_installed"
+
 _PRIORITY_CMD_RE = re.compile(
     r"(?is)^(?:id=([0-9a-f]{8})\s+)?PRIORITY\s+(connect|status)(?:\s+(\S+))?\s*$"
 )
@@ -87,6 +90,69 @@ def resolve_allowlist_path(install_root: str | Path | None = None) -> Path:
         if ex.is_file():
             return ex
     raise PriorityConfigError("priority-instances allowlist missing")
+
+
+def resolve_live_allowlist_path(
+    install_root: str | Path | None = None,
+    override: str | Path | None = None,
+) -> Path | None:
+    """FR #5960: live priority-instances.json / env / override only (never example)."""
+    if override is not None:
+        p = Path(override)
+        return p if p.is_file() else None
+    if (os.environ.get("AIRC_PRIORITY_FORCE_ABSENT") or "").strip() == "1":
+        return None
+    env = (os.environ.get("AIRC_PRIORITY_ALLOWLIST") or "").strip()
+    if env:
+        p = Path(env)
+        if p.is_file() and p.name.lower() != EXAMPLE_ALLOWLIST_NAME.lower():
+            return p
+    roots: list[Path] = []
+    if install_root:
+        roots.append(Path(install_root))
+    for root in roots:
+        cfg = root / "config" / DEFAULT_ALLOWLIST_NAME
+        if cfg.is_file():
+            return cfg
+    return None
+
+
+def priority_runtime_available(
+    install_root: str | Path | None = None,
+    *,
+    allowlist_path: str | Path | None = None,
+) -> bool:
+    """True when a live Priority allowlist is configured (Priority support opted in)."""
+    if (os.environ.get("AIRC_PRIORITY_FORCE_ABSENT") or "").strip() == "1":
+        return False
+    return resolve_live_allowlist_path(install_root, allowlist_path) is not None
+
+
+def priority_absent_reason(
+    install_root: str | Path | None = None,
+    *,
+    allowlist_path: str | Path | None = None,
+) -> str | None:
+    if priority_runtime_available(install_root, allowlist_path=allowlist_path):
+        return None
+    return PRIORITY_NOT_INSTALLED
+
+
+def priority_not_installed_result(
+    job_id: str | None = None,
+    *,
+    action: str = "status",
+) -> "PriorityVerbResult":
+    import uuid
+
+    jid = (job_id or uuid.uuid4().hex[:8]).lower()
+    return PriorityVerbResult(
+        False,
+        1,
+        jid,
+        {"ok": False, "action": action, "reason": PRIORITY_NOT_INSTALLED},
+        error=PRIORITY_NOT_INSTALLED,
+    )
 
 
 def _reject_password_keys(obj: Any, path: str = "$") -> None:
@@ -452,14 +518,21 @@ def run_priority_verb(
     import uuid
 
     jid = (job_id or uuid.uuid4().hex[:8]).lower()
+    # FR #5960: no live allowlist -> clean refusal (never fall back to example.json).
+    if allowlist is None:
+        live = resolve_live_allowlist_path(install_root, allowlist_path)
+        if live is None:
+            return priority_not_installed_result(jid, action=subcmd)
+        allowlist_path = live
     try:
         if allowlist is not None:
             al = allowlist
-        elif allowlist_path is not None:
-            al = load_priority_allowlist(allowlist_path)
         else:
-            al = load_priority_allowlist(resolve_allowlist_path(install_root))
+            al = load_priority_allowlist(allowlist_path)
     except PriorityConfigError as e:
+        err = str(e).lower()
+        if "missing" in err or "empty" in err:
+            return priority_not_installed_result(jid, action=subcmd)
         return PriorityVerbResult(
             False, 1, jid, {"ok": False, "action": subcmd}, error=str(e)
         )
@@ -558,7 +631,6 @@ _WALK_EXPECTED_ERRORS = frozenset(
         "no_cred",
         "node_missing",
         "sdk_mjs_missing",
-        "sdk_not_ok",
         # sdk-fault / unexpected exceptions still intake (genuine crash path).
     }
 )
@@ -751,13 +823,11 @@ def walk_fixture(op: str, forms: dict[str, Any], kv: dict[str, str]) -> dict[str
 
 
 def resolve_walk_allowlist_path(install_root: str | None, override: str | None) -> Path | None:
-    """FR #5535: same live-then-example resolution as PRIORITY status/connect."""
+    """FR #5535 / #5960: override or live allowlist only (example.json is docs-only)."""
     if override:
-        return Path(override)
-    try:
-        return resolve_allowlist_path(install_root)
-    except PriorityConfigError:
-        return None
+        p = Path(override)
+        return p if p.is_file() else None
+    return resolve_live_allowlist_path(install_root)
 
 
 def _want_fixture_walk(
@@ -814,6 +884,17 @@ def run_priority_walk(
         lines = (out, f"DONE id={jid} exit={exit_code}")
         return PriorityWalkResult(False, exit_code, jid, lines, payload)
     inst_id = (kv.get("instance") or "").strip()
+    # FR #5960: no live allowlist -> expected refusal (not unknown-instance / intake).
+    if allowlist_path is None or not Path(allowlist_path).is_file():
+        payload = {
+            "ok": False,
+            "reason": PRIORITY_NOT_INSTALLED,
+            "error": PRIORITY_NOT_INSTALLED,
+            "action": "walk",
+        }
+        out, exit_code = format_bounded_priority_out(jid, payload, 1)
+        lines = (out, f"DONE id={jid} exit={exit_code}")
+        return PriorityWalkResult(False, exit_code, jid, lines, payload)
     allow = load_allowlist_rows(allowlist_path)
     inst_row = resolve_instance_row(allow, inst_id)
     if inst_row is None:

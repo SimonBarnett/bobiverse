@@ -200,8 +200,15 @@ async function main() {
       let pack = {};
       try {
         pack = (await sub.getRows(1)) || {};
-      } catch {
-        pack = {};
+      } catch (e) {
+        emit({
+          ok: false,
+          error: classifyError(e),
+          op: 'subform',
+          form: formName,
+          path: subPath,
+        });
+        process.exit(2);
       }
       const page = rowsFromPack(pack, subPath, args.offset, args.limit);
       emit({
@@ -235,8 +242,14 @@ async function main() {
   let pack = {};
   try {
     pack = (await form.getRows(1)) || {};
-  } catch {
-    pack = {};
+  } catch (e) {
+    emit({
+      ok: false,
+      error: classifyError(e),
+      op: op === 'getRows' ? 'getRows' : 'formStart',
+      form: formName,
+    });
+    process.exit(2);
   }
   const page = rowsFromPack(pack, formName, args.offset, args.limit);
   const subforms = [];
