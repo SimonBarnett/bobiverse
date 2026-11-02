@@ -539,6 +539,58 @@ def _priority_sqlcmd_run(
     )
 
 
+def _first_sql_ident(stdout: str) -> str:
+    """First identifier-shaped cell from a sqlcmd pipe table."""
+    for line in (stdout or "").splitlines():
+        s = line.strip()
+        if not s or "rows affected" in s.lower() or all(c in "-| " for c in s):
+            continue
+        cell = s.split("|", 1)[0].strip().strip("[]")
+        if cell.upper() in ("TNAME", "ENAME"):
+            continue
+        if _FORM_IDENT_RE.match(cell):
+            return cell
+    return ""
+
+
+def _lookup_form_table_name(
+    *,
+    server: str,
+    sys_db: str,
+    exec_id: int | None,
+    form_name: str,
+    sql_runner=None,
+) -> str:
+    """FR #6018: physical table from Priority dictionary (EXEC.TNAME / COLUMNS.TNAME)."""
+    if exec_id is not None:
+        queries = (
+            (
+                "SET NOCOUNT ON; "
+                f"SELECT TOP 1 TNAME FROM dbo.[EXEC] WHERE [EXEC]={int(exec_id)} "
+                "AND TNAME IS NOT NULL AND LTRIM(RTRIM(TNAME)) <> N'';"
+            ),
+            (
+                "SET NOCOUNT ON; "
+                f"SELECT TOP 1 TNAME FROM dbo.COLUMNS WHERE [EXEC]={int(exec_id)} "
+                "AND TNAME IS NOT NULL AND LTRIM(RTRIM(TNAME)) <> N'' "
+                "ORDER BY POS;"
+            ),
+        )
+        for q in queries:
+            try:
+                proc = _priority_sqlcmd_run(
+                    server=server, db=sys_db, query=q, runner=sql_runner
+                )
+            except Exception:  # noqa: BLE001
+                continue
+            if int(getattr(proc, "returncode", 0) or 0) != 0:
+                continue
+            name = _first_sql_ident(getattr(proc, "stdout", "") or "")
+            if name:
+                return name
+    return form_name
+
+
 def _priority_sql_formwalk(
     *,
     op: str,
@@ -585,6 +637,7 @@ def _priority_sql_formwalk(
     if int(getattr(proc, "returncode", 0) or 0) != 0:
         return {"ok": False, "error": "sql_read_failed", "form": form_name, "op": wire}
     found = False
+    exec_id: int | None = None
     for line in (proc.stdout or "").splitlines():
         s = line.strip()
         if not s or "rows affected" in s.lower() or all(c in "-| " for c in s):
@@ -592,14 +645,28 @@ def _priority_sql_formwalk(
         parts = [x.strip() for x in s.split("|")]
         if parts and parts[0].upper() == form_name.upper():
             found = True
+            if len(parts) > 1:
+                try:
+                    exec_id = int(parts[1])
+                except ValueError:
+                    exec_id = None
             break
     if not found:
         return {"ok": False, "error": "form-not-found", "form": form_name, "op": wire}
+    table = _lookup_form_table_name(
+        server=server,
+        sys_db=sys_db,
+        exec_id=exec_id,
+        form_name=form_name,
+        sql_runner=sql_runner,
+    )
+    if not table or not _FORM_IDENT_RE.match(table):
+        table = form_name
     off = max(0, int(offset or 0))
     lim = max(1, min(20, int(limit or 5) or 5))
     data_q = (
         "SET NOCOUNT ON; "
-        f"SELECT * FROM dbo.[{form_name}] "
+        f"SELECT * FROM dbo.[{table}] "
         f"ORDER BY (SELECT NULL) OFFSET {off} ROWS FETCH NEXT {lim} ROWS ONLY;"
     )
     try:
@@ -615,6 +682,7 @@ def _priority_sql_formwalk(
         "ok": True,
         "op": wire if wire.lower() == "getrows" else "formStart",
         "form": form_name,
+        "table": table,
         "columns": cols[:40],
         "rows": rows,
         "count": len(rows),
@@ -729,11 +797,20 @@ def _priority_winrun_formprep(
 
     FR #6003: default ``PRIORITY prepare form`` must not import or login through
     the web SDK (tabula cannot take an API Licence). Mirrors agentic_fomprep
-    ``Invoke-CliFormPrep``: ``WINRUN user pass prepDir company WINACTIV -P FORMPREP``.
-    Success remains UPD=N + .prp advanced in ``run_priority_prepare`` (process
-    exit alone is not success). Password only on the child argv; never logged.
+    `Invoke-CliFormPrep` plus the named ENAME (FR #6017):
+    `WINRUN user pass prepDir company WINACTIV -P FORMPREP <ENAME>`.
+    Unscoped `FORMPREP` can prepare every pending form; refuse if ENAME is
+    missing rather than preparing siblings. Success remains UPD=N + .prp
+    advanced in `run_priority_prepare` (process exit alone is not success).
+    Priority documents no non-argv password (FR #6019): default refuses
+    `winrun_password_argv` so the secret is never on a spawned command line.
+    Live boxes that accept process-list / 4688 risk set
+    `AIRC_PRIORITY_WINRUN_PASSWORD_ARGV=1`.
     """
     proc_path = str(path or "").strip().upper() or "FORMPREPDRCT2"
+    form = str(ename or "").strip()
+    if not form:
+        return {"ok": False, "path": proc_path, "reason": "ename_missing", "runner": "winrun"}
     inst = dict(instance or {})
     prep = str(inst.get("prepDir") or inst.get("prep_dir") or "").strip()
     company = str(inst.get("company") or "").strip()
@@ -755,6 +832,14 @@ def _priority_winrun_formprep(
         return {"ok": False, "path": proc_path, "reason": "no_cred", "runner": "winrun"}
     if not user:
         return {"ok": False, "path": proc_path, "reason": "user_missing", "runner": "winrun"}
+    if not _env_flag_true("AIRC_PRIORITY_WINRUN_PASSWORD_ARGV"):
+        secret = None  # noqa: F841
+        return {
+            "ok": False,
+            "path": proc_path,
+            "reason": "winrun_password_argv",
+            "runner": "winrun",
+        }
     timeout = float(
         timeout_s
         if timeout_s is not None
@@ -770,6 +855,7 @@ def _priority_winrun_formprep(
         "WINACTIV",
         "-P",
         "FORMPREP",
+        form,
     ]
     run = process_runner or subprocess.run
     try:

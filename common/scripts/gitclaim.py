@@ -1191,6 +1191,8 @@ def row_skip_fr_reason(row: dict) -> str | None:
         labels = [labels]
     repo = str(row.get("repo") or "").strip().lower()
     ident = _norm_row_id(row.get("id"))
+    if repo and ident and (repo, ident) in _NEEDS_HUMAN_ISSUE_PINS:
+        return "needs_human_hold"
     if repo and ident and (repo, ident) in _SKIP_FR_ISSUE_PINS:
         return "hard_pin_umbrella"
     # Queue rows often store the issue title in ``line`` (offer/list); fall back so
@@ -1644,6 +1646,13 @@ _REQUIRE_MACHINE_ISSUE_UNPINS: set[tuple[str, str]] = {
 # Hard-pin by (repo, #N) so resync/offer always prune.
 # FR #2562 / #2677: reverse #2521 — re-pin #11 (MRB FAIL verdict board). Remediation
 # belongs on child FRs (#9/#10), never on the verdict board itself.
+# FR #6027: living WCF/tabula live proof (#6026) has no fleet host and no WSDL yet.
+# Hard-hold so !bored cannot offer it to flamingo (or any shop) until a human
+# captures the Priority WCF contract and unpins. Not an umbrella SKIP_FR.
+_NEEDS_HUMAN_ISSUE_PINS: set[tuple[str, str]] = {
+    ("simonbarnett/bobiverse", "#6026"),
+}
+
 _SKIP_FR_ISSUE_PINS: set[tuple[str, str]] = {
     ("simonbarnett/agentic_fomprep", "#3"),
     ("simonbarnett/agentic_fomprep", "#7"),
@@ -10076,6 +10085,8 @@ def claim_from_github_issue(repo: str, issue: dict) -> GitClaim | None:
         return None
     if (str(repo).lower(), _norm_row_id(f"#{num}")) in _SKIP_FR_ISSUE_PINS:
         return None
+    if (str(repo).lower(), _norm_row_id(f"#{num}")) in _NEEDS_HUMAN_ISSUE_PINS:
+        return None
     return GitClaim(
         repo=canonical_queue_repo(repo),
         task="FR",
@@ -11794,6 +11805,8 @@ def resync_from_github(
                 continue
             if (str(repo).lower(), _norm_row_id(ident)) in _SKIP_FR_ISSUE_PINS:
                 continue  # FR #2480 hard-pin umbrella
+            if (str(repo).lower(), _norm_row_id(ident)) in _NEEDS_HUMAN_ISSUE_PINS:
+                continue  # FR #6027 WCF live hold
             desired.append(
                 GitClaim(
                     repo=repo,

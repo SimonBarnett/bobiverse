@@ -205,6 +205,8 @@ def test_fr5616_walk_oversized_bounded(tmp_path: Path):
     out, done = wr.lines[0], wr.lines[-1]
     assert len(out.encode("utf-8")) <= ap.PRIORITY_REPLY_MAX_BYTES
     body = json.loads(out.split("seq=1 ", 1)[1])
-    assert body.get("ok") is False
-    assert body.get("error") == "reply-too-large"
-    assert done == "DONE id=aabb0002 exit=1"
+    # FR #6018: successful walk stays ok:true; title/rows drop so it fits.
+    assert body.get("ok") is True
+    assert body.get("error") != "reply-too-large"
+    assert body.get("form") == "BIG"
+    assert done == "DONE id=aabb0002 exit=0"
