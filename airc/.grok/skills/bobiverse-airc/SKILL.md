@@ -88,6 +88,9 @@ Self-update on start uses **`Update-BobiverseService.ps1`** (detached Apply - ne
 **Upgrade AppParameters (FR #1552 / harvest #1583):** MSI upgrade/reinstall must read the **live** NSSM/service `AppParameters` first, then `airc-install.json` fallback, **before** any profile default. Never invent a new `ConsoleHome` when an identity already exists (keeps NickServ GUID / shop nick). Merged PR #1570 + docs #1575.
 **Uninstall (FR #1566):** MSI `/x` runs `Uninstall-Airc.cmd` before RemoveFiles (`REMOVE="ALL" AND NOT UPGRADINGPRODUCTCODE`) to stop/remove service `Airc`; ConsoleHome secrets stay. Manual: `scripts\Uninstall-Airc.cmd`.
 
+## Harvested lessons (intake)
+- When FR #5960 refuses Priority verbs if no allowlist, remember constructor injection of priority_runner and skip that short-circuit so tests/SelfTest still call the hook; production default runner stays optional-absent.
+
 ## Do not
 
 - Run `Airc` and `AircConsole` together; invent an Ergo PASS; stamp UAT; put secrets on IRC; call retired `Check-BobiverseUpdate.ps1` for fleet ops.
