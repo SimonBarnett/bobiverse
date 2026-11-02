@@ -266,3 +266,106 @@ def test_fr5965_tick_splits_timeout_failed_quota(tmp_path, monkeypatch):
     assert int(out.get("quota") or 0) == 1
     assert int(out.get("timed_out") or 0) == 0
     assert int(out.get("failed") or 0) == 0
+
+
+def test_fr5965_completed_message_quota_text_not_exhaust(tmp_path, monkeypatch):
+    """Completed session message mentioning quota must not mark fuel exhausted."""
+    home = tmp_path / "digest"
+    home.mkdir(parents=True, exist_ok=True)
+    (home / cd.ALLOWANCE_NAME).write_text(
+        json.dumps(
+            {
+                "enabled": True,
+                "remaining": 5,
+                "state": "ok",
+                "unlimited": True,
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    _accept_copilot(home)
+    job = _track_job(home, task_id="t-msg")
+    announced: list[str] = []
+    monkeypatch.setattr(
+        bobreport,
+        "enqueue_chair_fleet_privmsg",
+        lambda *args: announced.append(str(args[-1] if args else "")),
+    )
+
+    def get(path: str):
+        if "/tasks/" in path:
+            return {
+                "state": "completed",
+                "message": "Note: monthly quota discussion in board",
+                "sessions": [
+                    {
+                        "message": "quota exceeded last month; this review PASS",
+                        "output": "## MRB board\n**Verdict:** PASS\n",
+                    }
+                ],
+            }
+        raise AssertionError(path)
+
+    out = cd.handle_timeout_or_fail(
+        home, job, now=NOW + 90, reason="timeout", get=get
+    )
+    assert out["status"] == "complete"
+    assert out.get("verdict") == "PASS"
+    assert cd.has_allowance(home, now=NOW + 90)
+    assert any("DONE MRB" in a and "PASS" in a for a in announced)
+    assert not any("copilot paused" in a for a in announced)
+
+
+def test_fr5965_stuck_sweep_keeps_tracked_past_task_timeout(tmp_path: Path):
+    """Tracked Copilot job past TASK_TIMEOUT_S stays held until dispatcher settles."""
+    home = tmp_path / "digest"
+    accepted_ts = NOW - (sweep.SILENT_ACCEPTED_S + 60)
+    started = NOW - (cd.TASK_TIMEOUT_S + 120)
+    _accept_copilot(home, task="FR", ident="#5764", started=accepted_ts)
+    _track_job(home, task="FR", ident="#5764", started=started, task_id="late-1")
+    report = sweep.run_stuck_sweep(
+        home,
+        now=NOW,
+        live={"flamingo-1"},
+        idle={"flamingo-1"},
+        activity={},
+        open_items=[],
+        act=True,
+    )
+    assert report["actions"]["released"] == 0
+    doc = gitclaim.load_queue(home)
+    assert any(
+        str(r.get("nick") or "").lower() == "copilot" and str(r.get("id")).endswith("5764")
+        for r in doc.get("accepted") or []
+    )
+
+
+def test_fr5965_complete_not_ok_skips_announce(tmp_path, monkeypatch):
+    home = tmp_path / "digest"
+    _accept_copilot(home)
+    job = _track_job(home, task_id="t-stale")
+    announced: list[str] = []
+    monkeypatch.setattr(
+        bobreport,
+        "enqueue_chair_fleet_privmsg",
+        lambda *args: announced.append(str(args[-1] if args else "")),
+    )
+
+    def get(path: str):
+        if "/tasks/" in path:
+            return {
+                "state": "completed",
+                "sessions": [{"output": "## MRB board\n**Verdict:** PASS\n"}],
+            }
+        raise AssertionError(path)
+
+    def fake_complete(*_a, **_k):
+        return ("already_done", None)
+
+    monkeypatch.setattr(shop_listen, "complete_job_by_ref", fake_complete)
+    out = cd.handle_timeout_or_fail(
+        home, job, now=NOW + 90, reason="timeout", get=get
+    )
+    assert out["status"] == "already_done"
+    assert announced == []
