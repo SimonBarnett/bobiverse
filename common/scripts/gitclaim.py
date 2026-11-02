@@ -6019,6 +6019,10 @@ def summarize_empty_offer(home: Path, nick: str = "") -> dict:
         "self_uat": 0,
         "ledger": 0,
         "sticky_offered": 0,
+        # FR #5939: which stamp blocked the seat (aggregate across rows).
+        "stamp_implementer": 0,
+        "stamp_fix": 0,
+        "stamp_giveup": 0,
     }
     try:
         path = queue_path(home)
@@ -6055,6 +6059,9 @@ def summarize_empty_offer(home: Path, nick: str = "") -> dict:
         self_uat = 0
         ledger_n = 0
         sticky_n = 0
+        stamp_implementer = 0
+        stamp_fix = 0
+        stamp_giveup = 0
         for r in rows:
             repo = str(r.get("repo") or "")
             if strict and focused:
@@ -6100,6 +6107,11 @@ def summarize_empty_offer(home: Path, nick: str = "") -> dict:
                         self_uat += 1
                     else:
                         self_mrb += 1
+                        kind = classify_mrb_author_stamp(cand, me)
+                        if kind == "implementer":
+                            stamp_implementer += 1
+                        elif kind == "fix":
+                            stamp_fix += 1
                     continue
                 why = ledger_blocks(ledger, cand, me, live)
                 if why:
@@ -6108,7 +6120,11 @@ def summarize_empty_offer(home: Path, nick: str = "") -> dict:
                     else:
                         ledger_n += 1
                     continue
-                if row_gave_up_by(cand, me, live=live) or row_needs_human(cand, me):
+                if row_gave_up_by(cand, me, live=live):
+                    stamp_giveup += 1
+                    ledger_n += 1
+                    continue
+                if row_needs_human(cand, me):
                     ledger_n += 1
                     continue
                 skips = {
@@ -6131,6 +6147,9 @@ def summarize_empty_offer(home: Path, nick: str = "") -> dict:
         out["self_uat"] = self_uat
         out["ledger"] = ledger_n
         out["sticky_offered"] = sticky_n
+        out["stamp_implementer"] = stamp_implementer
+        out["stamp_fix"] = stamp_fix
+        out["stamp_giveup"] = stamp_giveup
     except Exception:
         out["offerable"] = out["unaccepted"]
     return out
@@ -6583,15 +6602,28 @@ def format_empty_offer_detail(nick: str, stats: dict | None = None) -> str:
         ledger = int(stats.get("ledger") or 0)
         sticky = int(stats.get("sticky_offered") or 0)
         blocked_other = int(stats.get("blocked_other") or 0)
+        stamp_implementer = int(stats.get("stamp_implementer") or 0)
+        stamp_fix = int(stats.get("stamp_fix") or 0)
+        stamp_giveup = int(stats.get("stamp_giveup") or 0)
     except (TypeError, ValueError):
         return f"{nick}: nothing queued"
     if unaccepted <= 0:
         return f"{nick}: nothing queued"
     extra = []
     if self_mrb:
-        extra.append(f"self_mrb={self_mrb}")
+        stamp_bits = []
+        if stamp_implementer:
+            stamp_bits.append(f"implementer={stamp_implementer}")
+        if stamp_fix:
+            stamp_bits.append(f"fix={stamp_fix}")
+        if stamp_bits:
+            extra.append(f"self_mrb={self_mrb} ({', '.join(stamp_bits)})")
+        else:
+            extra.append(f"self_mrb={self_mrb}")
     if self_uat:
         extra.append(f"self_uat={self_uat}")
+    if stamp_giveup:
+        extra.append(f"giveup={stamp_giveup}")
     if ledger:
         extra.append(f"ledger={ledger}")
     if sticky:
@@ -6890,15 +6922,44 @@ def stamp_fix_seats_on_mrb_rows(doc: dict, repo: str, pr_id: str, seat: str) -> 
     return n
 
 
+def classify_mrb_author_stamp(row: dict, nick: str) -> str:
+    """FR #5939: which author stamp blocks ``nick`` on this MRB ("" / implementer / fix).
+
+    ``implementer`` = single-value implementer/author stamps.
+    ``fix`` = ``mrb_fix_author_seat`` or multi ``author_seats`` (FIX enrich only after scrub).
+    """
+    if _canon_task(row) != "MRB":
+        return ""
+    me = (canonical_worker_nick(nick) or nick or "").strip().lower()
+    if not me:
+        return ""
+    for k in ("implementer_seat", "mrb_author_seat", "author_seat", "author_nick", "author"):
+        raw = _canon_seat_nick(str(row.get(k) or ""))
+        if raw and raw.lower() == me:
+            return "implementer"
+    fix_raw = _canon_seat_nick(str(row.get("mrb_fix_author_seat") or ""))
+    if fix_raw and fix_raw.lower() == me:
+        return "fix"
+    for seat in row_author_seats(row):
+        if seat.lower() == me:
+            # Multi author_seats / leftover when single stamps missed -> FIX enrich path.
+            return "fix"
+    return ""
+
+
 def enrich_mrb_author_fields(doc: dict, row: dict) -> dict:
-    """FR #4604 / #5923: merge FIX push seats into MRB ``author_seats`` at offer time.
+    """FR #4604 / #5923 / #5939: merge FIX seats; drop stale author_seats at offer time.
 
     Survives missing stamps on synchronize-enqueued MRB rows by reading queue truth.
     Cite-only FR DONE results are ignored (FR #5923).
+    FR #5939: orphan ``author_seats`` entries (false self-mrb give-ups, pre-#5925
+    cite-only) are dropped; verified roles are single-value stamps + FIX from doc.
     """
     if _canon_task(row) != "MRB":
         return row
     out = dict(row)
+    # Drop stale multi author_seats; rebuild from FIX queue truth only.
+    out.pop("author_seats", None)
     for seat in fix_ci_seats_from_doc(doc, str(out.get("repo") or ""), str(out.get("id") or "")):
         append_author_seat(out, seat)
     return out
