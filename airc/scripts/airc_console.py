@@ -729,11 +729,17 @@ def _priority_winrun_formprep(
 
     FR #6003: default ``PRIORITY prepare form`` must not import or login through
     the web SDK (tabula cannot take an API Licence). Mirrors agentic_fomprep
-    ``Invoke-CliFormPrep``: ``WINRUN user pass prepDir company WINACTIV -P FORMPREP``.
-    Success remains UPD=N + .prp advanced in ``run_priority_prepare`` (process
-    exit alone is not success). Password only on the child argv; never logged.
+    ``Invoke-CliFormPrep`` plus the named ENAME (FR #6017):
+    ``WINRUN user pass prepDir company WINACTIV -P FORMPREP <ENAME>``.
+    Unscoped ``FORMPREP`` can prepare every pending form; refuse if ENAME is
+    missing rather than preparing siblings. Success remains UPD=N + .prp
+    advanced in ``run_priority_prepare`` (process exit alone is not success).
+    Password only on the child argv; never logged.
     """
     proc_path = str(path or "").strip().upper() or "FORMPREPDRCT2"
+    form = str(ename or "").strip()
+    if not form:
+        return {"ok": False, "path": proc_path, "reason": "ename_missing", "runner": "winrun"}
     inst = dict(instance or {})
     prep = str(inst.get("prepDir") or inst.get("prep_dir") or "").strip()
     company = str(inst.get("company") or "").strip()
@@ -770,6 +776,7 @@ def _priority_winrun_formprep(
         "WINACTIV",
         "-P",
         "FORMPREP",
+        form,
     ]
     run = process_runner or subprocess.run
     try:
