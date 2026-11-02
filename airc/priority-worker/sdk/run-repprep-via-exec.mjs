@@ -57,6 +57,7 @@ function emit(payload) {
 function fieldValue(editFields, wantName) {
   const rows = Array.isArray(editFields) ? editFields : [];
   const want = String(wantName || '').toUpperCase();
+  if (!want) return null;
   for (const row of rows) {
     if (!row || typeof row !== 'object') continue;
     const title = String(row.title || row.name || row.fieldName || '').toUpperCase();
@@ -64,7 +65,8 @@ function fieldValue(editFields, wantName) {
       return row;
     }
   }
-  return rows[0] || null;
+  // FR #5905 MRB: no silent edits[0] fallback --- caller tries NAME then ENAME.
+  return null;
 }
 
 async function walkProc(priority, args) {
@@ -83,9 +85,10 @@ async function walkProc(priority, args) {
     }
     if (type === 'inputFields') {
       const input = step.input || {};
-      const edits = input.EditFields || input.editFields || [];
+      // SDK docs use EditField (singular) on the step; EditFields on the response payload.
+      const edits = input.EditFields || input.editFields || input.EditField || input.editField || [];
       const data = { EditFields: [] };
-      const nameField = fieldValue(edits, 'NAME') || fieldValue(edits, 'ENAME') || edits[0];
+      const nameField = fieldValue(edits, 'NAME') || fieldValue(edits, 'ENAME') || null;
       if (nameField && args.name) {
         const fieldNum = nameField.field != null ? nameField.field : 1;
         data.EditFields.push({ field: fieldNum, op: 0, value: String(args.name) });
@@ -109,19 +112,30 @@ async function walkProc(priority, args) {
       continue;
     }
     if (type === 'message') {
-      const msg = step.input || {};
-      const text = String(msg.message || msg.Message || msg.text || '');
-      const severity = String(msg.severity || msg.Severity || '').toLowerCase();
-      if (severity === 'e' || severity === 'error' || /error/i.test(text)) {
+      // Priority Web SDK: step.message + step.messagetype; respond via proc.message(ok).
+      const text = String(step.message || step.Message || (step.input && (step.input.message || step.input.Message || step.input.text)) || '');
+      const severity = String(step.messagetype || step.messageType || step.severity || (step.input && (step.input.severity || step.input.Severity)) || '').toLowerCase();
+      const isError = severity === 'e' || severity === 'error' || /error/i.test(text);
+      if (isError) {
         errors.push(text || 'procedure_error');
         try {
-          step = await proc.cancel();
+          if (typeof proc.message === 'function') {
+            step = await proc.message(0);
+          } else {
+            step = await proc.cancel();
+          }
         } catch {
           break;
         }
         continue;
       }
-      step = await proc.continueProc();
+      if (typeof proc.message === 'function') {
+        step = await proc.message(1);
+      } else if (typeof proc.continueProc === 'function') {
+        step = await proc.continueProc();
+      } else {
+        break;
+      }
       continue;
     }
     if (typeof proc.continueProc === 'function') {
@@ -207,4 +221,9 @@ async function main() {
   }
 }
 
-main();
+const isCli = process.argv[1] && path.resolve(process.argv[1]) === path.resolve(fileURLToPath(import.meta.url));
+if (isCli) {
+  main();
+}
+
+export { fieldValue, walkProc, parseArgs };
