@@ -1432,6 +1432,19 @@ class Client:
         except Exception as exc:  # never kill the reader over the worker list
             info(f"WARN workers reconcile error {type(exc).__name__}")
 
+    def _clear_channel_console_presence(self, channel: str) -> None:
+        """FR #5961: drop airc_console_presence rows when the chair leaves a channel.
+
+        Best-effort and idempotent. Never touches shop machines.*.console_nicks
+        (those stay on WorkerTracker.reconcile / on_leave).
+        """
+        if not getattr(self.args, "chair", False):
+            return
+        try:
+            bobreport.set_channel_console_presence(self._digest_home(), channel, [])
+        except Exception as exc:  # noqa: BLE001 - never kill the reader / ChanServ sync
+            info(f"WARN clear channel console presence {type(exc).__name__}: {exc}"[:200])
+
     def _chair_wire(self, cmd: str, parts: list, trailing: str, prefix: str, tags: dict) -> None:
         """Chair: feed membership/mode/account events to the privilege engine and the worker list."""
         if not getattr(self.args, "chair", False):
@@ -1439,11 +1452,20 @@ class Client:
         try:
             self._privs().on_line(cmd, parts, trailing, prefix, tags)
             who = chan_privs.clean_nick(prefix.split("!", 1)[0]) if prefix else ""
+            # FR #5961: own PART clears that channel's console presence before the early return.
+            if who and who.lower() in self._mine_nicks() and cmd == "PART":
+                chan = parts[1].lstrip(":") if len(parts) > 1 else trailing
+                self._clear_channel_console_presence(chan)
+                return
             if not who or (who.lower() in self._mine_nicks() and cmd != "KICK"):
-                return        # own PART/QUIT/NICK; but a KICK *by* Jeeves still removes the kicked worker
+                return        # own QUIT/NICK; but a KICK *by* Jeeves still removes the kicked worker
             if cmd in ("PART", "KICK"):
                 chan = parts[1].lstrip(":") if len(parts) > 1 else trailing
                 gone = (parts[2].lstrip(":") if cmd == "KICK" and len(parts) > 2 else who)
+                # FR #5961: KICK of the chair clears presence; chair is not a worker/console.
+                if cmd == "KICK" and chan_privs.clean_nick(gone).lower() in self._mine_nicks():
+                    self._clear_channel_console_presence(chan)
+                    return
                 self._workers().on_leave(gone, chan)
                 with contextlib.suppress(Exception):
                     gitclaim.clear_idle_after_empty(self.home, gone)  # FR #2803
@@ -1752,6 +1774,8 @@ class Client:
             if cl in desired_l or cl in keep_l:
                 continue
             self.channels = [c for c in self.channels if c.lower() != cl]
+            # FR #5961: clear presence even when PART send fails (no echo race).
+            self._clear_channel_console_presence(ch)
             try:
                 self.send(f"PART {ch} :no longer registered")
             except OSError:
