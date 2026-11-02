@@ -140,3 +140,27 @@ def test_fr5905_mjs_cli_emits_json_when_name_missing():
     assert "name_missing" in (payload.get("errors") or [])
     blob = (proc.stdout or "") + (proc.stderr or "")
     assert "FAKE_pw" not in blob
+
+def test_fr5905_mjs_walk_selftest_stub_sdk():
+    """Hostile: walker fills name field without silent edits[0]; uses proc.message."""
+    import shutil
+
+    node = os.environ.get("AIRC_PRIORITY_NODE") or os.environ.get("NODE_EXE") or "node"
+    node_path = node if os.path.isfile(node) else shutil.which(node)
+    if not node_path:
+        return
+    selftest = PW / "sdk" / "run-repprep-walk-selftest.mjs"
+    assert selftest.is_file()
+    proc = subprocess.run(
+        [node_path, str(selftest)],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        cwd=str(PW),
+    )
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    lines = [ln.strip() for ln in (proc.stdout or "").splitlines() if ln.strip()]
+    payload = json.loads(lines[-1])
+    assert payload.get("ok") is True
+    assert payload.get("selftest") == "walk"
+
