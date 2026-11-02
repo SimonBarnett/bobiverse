@@ -1,6 +1,6 @@
 # Airc Priority Client (allowlist + PRIORITY connect/status)
 
-**Priority is optional (FR #5960).** Airc installs, starts, and runs CMD/UPDATE/CRED/LEGION/EXTENSION/NETWORK/DCC with no Priority product, no live `priority-instances.json`, and no Priority SDK. PRIORITY verbs then return `reason=priority_not_installed` (no crash, no FR #5775 intake). Live `config/priority-instances.json` (or `AIRC_PRIORITY_ALLOWLIST`) opts Priority support in; the shipped `priority-instances.example.json` is docs/tests only.
+**Priority is optional (FR #5960).** Airc installs, starts, and runs CMD/UPDATE/CRED/LEGION/EXTENSION/NETWORK/DCC with no Priority product, no live `priority-instances.json`, and no Priority SDK. PRIORITY verbs then return `reason=priority_not_installed` (no crash, no FR #5775 intake). Live `config/priority-instances.json` with at least one instance (or `AIRC_PRIORITY_ALLOWLIST`) opts Priority support in; empty `instances: []` is treated as absent (`priority_allowlist_empty`). Schema field errors (e.g. missing `credentialTarget`) stay distinct from `priority_not_installed`. The shipped `priority-instances.example.json` is docs/tests only.
 
 Parent vision: [feature-request-airc-priority-client-2026-10-31.md](./feature-request-airc-priority-client-2026-10-31.md) (Success **S1** / **S2** / **S6**).
 
@@ -35,9 +35,10 @@ Required per instance: id, url (must be https://), company, user, credentialTarg
 
 Loader rules (airc/scripts/airc_priority.py):
 
-- Prefer live priority-instances.json; else example for docs/tests; override with env AIRC_PRIORITY_ALLOWLIST. PRIORITY form walk uses the same resolver (FR #5535).
+- Live Priority only: `config/priority-instances.json`, `AIRC_PRIORITY_ALLOWLIST`, or an explicit override (FR #5960). The shipped `priority-instances.example.json` is documentation/tests only and never enables live PRIORITY verbs. Form walk uses the same live resolver (FR #5535).
 - Fail closed when missing, empty instances, unknown id, non-https URL, or duplicate id.
 - Reject any JSON key whose name contains pass or is secret / token / pwd (CredMan only).
+
 
 ## PRIORITY verbs (FR-C)
 

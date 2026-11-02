@@ -1,4 +1,4 @@
-﻿"""Chair-side worker list maintenance (v0.1.18): Jeeves -> /bob/v1/report ``worker-*`` ops.
+"""Chair-side worker list maintenance (v0.1.18): Jeeves -> /bob/v1/report ``worker-*`` ops.
 
 Deterministic and token-less. Jeeves (the chair) hears the machine channel ``#<machine>`` and keeps
 ``machines.<id>.workers = [{nick, state: doing|idle, work, updated}]`` current:
@@ -133,10 +133,13 @@ class WorkerTracker:
         return self.post(payload_for("worker-work", mid, nick, "idle"))
 
     def on_leave(self, nick: str, channel: str) -> int | None:
-        """PART / KICK from a machine channel."""
+        """PART / KICK from a machine channel (and any chair channel for *_console)."""
         mid = machine_for_channel(self.home, channel)
-        if mid and str(nick or "").lower().endswith("_console"):
-            bobreport.remove_machine_console_nick(self.home, mid, nick)
+        if str(nick or "").lower().endswith("_console"):
+            # FR #5947: clear customer-channel presence even when channel is not a shop.
+            bobreport.remove_channel_console_nick(self.home, nick, channel)
+            if mid:
+                bobreport.remove_machine_console_nick(self.home, mid, nick)
         if not mid or nick.lower() not in {n.lower() for n in self.listed(mid)}:
             return None
         return self.post(payload_for("worker-remove", mid, nick))
@@ -147,6 +150,8 @@ class WorkerTracker:
             for mid in self._machines_with(nick)
         ]
         if str(nick or "").lower().endswith("_console"):
+            # FR #5947: drop presence on every channel for this console nick.
+            bobreport.remove_channel_console_nick(self.home, nick, None)
             doc = bobreport.load_digest(self.home)
             for mid, ent in (doc.get("machines") or {}).items():
                 nicks = bobreport.coerce_console_nicks((ent or {}).get("console_nicks"))
@@ -162,6 +167,11 @@ class WorkerTracker:
     def reconcile(self, channel: str, present: set[str]) -> list[str]:
         """NAMES reconcile: drop every listed worker that is not in the channel. Returns removed nicks."""
         mid = machine_for_channel(self.home, channel)
+        consoles = bobreport.console_nicks_from_present(present)
+        # FR #5947: record *_console nicks from every chair channel (shops + customer).
+        bobreport.set_channel_console_presence(
+            self.home, channel, consoles, machine=mid
+        )
         if not mid:
             return []
         here = {n.lower() for n in present}
@@ -171,7 +181,5 @@ class WorkerTracker:
         if gone:
             self.log(f"INFO workers reconcile {channel}: removed {','.join(gone)} (not in channel)")
         # FR #5204: persist live *_console nicks for the public digest roster.
-        bobreport.set_machine_console_nicks(
-            self.home, mid, bobreport.console_nicks_from_present(present)
-        )
+        bobreport.set_machine_console_nicks(self.home, mid, consoles)
         return gone

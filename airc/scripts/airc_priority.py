@@ -23,6 +23,7 @@ EXAMPLE_ALLOWLIST_NAME = "priority-instances.example.json"
 
 # FR #5960: Priority is optional. Live verbs need a live allowlist; example.json is docs-only.
 PRIORITY_NOT_INSTALLED = "priority_not_installed"
+PRIORITY_ALLOWLIST_EMPTY = "priority_allowlist_empty"
 
 _PRIORITY_CMD_RE = re.compile(
     r"(?is)^(?:id=([0-9a-f]{8})\s+)?PRIORITY\s+(connect|status)(?:\s+(\S+))?\s*$"
@@ -92,11 +93,19 @@ def resolve_allowlist_path(install_root: str | Path | None = None) -> Path:
     raise PriorityConfigError("priority-instances allowlist missing")
 
 
+def _product_airc_root() -> Path:
+    """Packaged/repo airc root (`airc/scripts` -> `airc`). Overridable in tests."""
+    return Path(__file__).resolve().parents[1]
+
+
 def resolve_live_allowlist_path(
     install_root: str | Path | None = None,
     override: str | Path | None = None,
 ) -> Path | None:
-    """FR #5960: live priority-instances.json / env / override only (never example)."""
+    """FR #5960 / #5968: live priority-instances.json / env / override only (never example).
+
+    When `install_root` is None, also search the product airc root for a live json.
+    """
     if override is not None:
         p = Path(override)
         return p if p.is_file() else None
@@ -110,6 +119,8 @@ def resolve_live_allowlist_path(
     roots: list[Path] = []
     if install_root:
         roots.append(Path(install_root))
+    else:
+        roots.append(_product_airc_root())
     for root in roots:
         cfg = root / "config" / DEFAULT_ALLOWLIST_NAME
         if cfg.is_file():
@@ -117,15 +128,42 @@ def resolve_live_allowlist_path(
     return None
 
 
+def _live_allowlist_has_instances(path: Path) -> bool:
+    """FR #5968: empty `instances: []` is not Priority opted-in."""
+    try:
+        return bool(load_priority_allowlist(path))
+    except PriorityConfigError as e:
+        if _is_allowlist_absent_error(e):
+            return False
+        # Schema/field errors mean a live file is present but broken --- still "available"
+        # so verbs can surface the distinct schema reason.
+        return True
+
+
+def _is_allowlist_absent_error(exc: BaseException) -> bool:
+    """True only for missing file / empty instances - not schema field 'missing X'."""
+    err = str(exc).lower()
+    if "allowlist instances empty" in err:
+        return True
+    if "allowlist missing" in err:
+        return True
+    if "priority-instances allowlist missing" in err:
+        return True
+    return False
+
+
 def priority_runtime_available(
     install_root: str | Path | None = None,
     *,
     allowlist_path: str | Path | None = None,
 ) -> bool:
-    """True when a live Priority allowlist is configured (Priority support opted in)."""
+    """True when a live Priority allowlist with at least one instance is configured."""
     if (os.environ.get("AIRC_PRIORITY_FORCE_ABSENT") or "").strip() == "1":
         return False
-    return resolve_live_allowlist_path(install_root, allowlist_path) is not None
+    live = resolve_live_allowlist_path(install_root, allowlist_path)
+    if live is None:
+        return False
+    return _live_allowlist_has_instances(live)
 
 
 def priority_absent_reason(
@@ -530,9 +568,20 @@ def run_priority_verb(
         else:
             al = load_priority_allowlist(allowlist_path)
     except PriorityConfigError as e:
-        err = str(e).lower()
-        if "missing" in err or "empty" in err:
-            return priority_not_installed_result(jid, action=subcmd)
+        # FR #5968: only true absent/empty map to not_installed; schema "missing key" stays distinct.
+        if _is_allowlist_absent_error(e):
+            reason = (
+                PRIORITY_ALLOWLIST_EMPTY
+                if "empty" in str(e).lower()
+                else PRIORITY_NOT_INSTALLED
+            )
+            return PriorityVerbResult(
+                False,
+                1,
+                jid,
+                {"ok": False, "action": subcmd, "reason": reason},
+                error=reason,
+            )
         return PriorityVerbResult(
             False, 1, jid, {"ok": False, "action": subcmd}, error=str(e)
         )
