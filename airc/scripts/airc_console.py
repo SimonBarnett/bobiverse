@@ -595,6 +595,129 @@ def _priority_sdk_repprep(
     return {"ok": ok, "path": path, "sdk": {"ended": payload.get("ended"), "errors": payload.get("errors")}}
 
 
+def _priority_sdk_formwalk(
+    *,
+    op: str,
+    form: str,
+    path: str = "",
+    offset: int = 0,
+    limit: int = 5,
+    instance: dict | None = None,
+    cred_fetcher=None,
+    node_runner=None,
+    **_k,
+) -> dict:
+    """FR #5948: read-only form walk via packed ``run-formwalk-readonly.mjs``."""
+    inst = instance if isinstance(instance, dict) else {}
+    root = Path(os.environ.get("AIRC_INSTALL_ROOT") or r"C:\ai\airc")
+    pw = _priority.resolve_priority_worker_dir(root)
+    mjs_candidates = [
+        (pw / "sdk" / "run-formwalk-readonly.mjs") if pw else Path(),
+        (pw / "run-formwalk-readonly.mjs") if pw else Path(),
+        root / "airc" / "priority-worker" / "sdk" / "run-formwalk-readonly.mjs",
+        root / "priority-worker" / "sdk" / "run-formwalk-readonly.mjs",
+        Path(os.environ.get("AIRC_PRIORITY_FORMWALK_MJS") or ""),
+    ]
+    mjs = next((c for c in mjs_candidates if c and c.is_file()), None)
+    node = (
+        os.environ.get("AIRC_PRIORITY_NODE")
+        or os.environ.get("NODE_EXE")
+        or "node"
+    )
+    target = str(inst.get("credentialTarget") or "").strip()
+    fetch = cred_fetcher or _priority.fetch_credman_password
+    try:
+        secret = fetch(target) if target else ""
+    except Exception:  # noqa: BLE001
+        return {"ok": False, "error": "no_cred", "form": form, "op": op}
+    if not secret:
+        return {"ok": False, "error": "no_cred", "form": form, "op": op}
+    if mjs is None:
+        return {"ok": False, "error": "sdk_mjs_missing", "form": form, "op": op}
+    node_s = str(node or "").strip() or "node"
+    if os.path.isfile(node_s):
+        node_path = node_s
+    else:
+        node_path = shutil.which(node_s)
+    if not node_path:
+        return {"ok": False, "error": "node_missing", "form": form, "op": op}
+    env = os.environ.copy()
+    env["PRIORITY_SDK_PASSWORD"] = secret
+    run = node_runner or subprocess.run
+    argv = [
+        node_path,
+        str(mjs),
+        "--op",
+        str(op or "formStart"),
+        "--name",
+        str(form or ""),
+        "--company",
+        str(inst.get("company") or ""),
+        "--url",
+        str(inst.get("url") or ""),
+        "--user",
+        str(inst.get("user") or ""),
+        "--offset",
+        str(int(offset or 0)),
+        "--limit",
+        str(int(limit or 5)),
+    ]
+    if path:
+        argv.extend(["--path", str(path)])
+    try:
+        proc = run(
+            argv,
+            capture_output=True,
+            text=True,
+            timeout=120,
+            env=env,
+        )
+    except FileNotFoundError:
+        return {"ok": False, "error": "node_missing", "form": form, "op": op}
+    except Exception as e:  # noqa: BLE001
+        return {
+            "ok": False,
+            "error": "sdk-fault",
+            "form": form,
+            "op": op,
+            "sdk_reason": type(e).__name__,
+        }
+    finally:
+        env.pop("PRIORITY_SDK_PASSWORD", None)
+        secret = None  # noqa: F841
+    raw = (proc.stdout or "").strip().splitlines()
+    payload = None
+    for line in reversed(raw):
+        line = line.strip()
+        if line.startswith("{") and line.endswith("}"):
+            try:
+                payload = json.loads(line)
+                break
+            except json.JSONDecodeError:
+                continue
+    if not isinstance(payload, dict):
+        return {
+            "ok": False,
+            "error": "sdk_not_ok",
+            "form": form,
+            "op": op,
+            "node_exit": getattr(proc, "returncode", None),
+        }
+    # Normalize SDK error aliases onto IRC-stable tokens.
+    err = str(payload.get("error") or "").strip().lower().replace("_", "-")
+    if err in {"form-not-found", "not-found", "formnotfound"}:
+        payload["error"] = "form-not-found"
+    elif err in {"no-access", "access-denied", "forbidden", "api-licence"}:
+        payload["error"] = "no-access"
+    elif err in {"subform-not-found", "subformnotfound"}:
+        payload["error"] = "subform-not-found"
+    if "op" not in payload:
+        payload["op"] = op
+    if "form" not in payload:
+        payload["form"] = form
+    return payload
+
+
 def build_console_prepare_hooks(install_root: str | Path | None = None) -> dict:
     """Wire CredMan + sqlcmd UPD + .prp + node REPPREPDIRECT2 for PRIORITY prepare."""
     pw = _load_priority_worker()
@@ -3601,7 +3724,7 @@ class AircConsoleCore:
                     "PRIORITY prepare [form|report|procedure] <ENAME> [instance=] (FR #5286/#5946); "
                     "UPDATE airc|bob|jeeves [ver] schedules detached MSI update "
                     "(ops-gated remote; not auto self-update - FR #3764); "
-                    "PRIORITY connect|status [instance-id] (CredMan + allowlist, FR #5284); PRIORITY formStart|subform|getRows (FR #5285 fixture walk); "
+                    "PRIORITY connect|status [instance-id] (CredMan + allowlist, FR #5284); PRIORITY formStart|subform|getRows (FR #5285/#5948 SDK read walk; fixture=selftest); "
                     "EXTENSION install|status [-WhatIf] isolated worker (FR #5290); "
                     "NETWORK|NETWORK diag isolated worker (FR #5298); "
                     "LEGION {host|ip} [-WhatIf] [-Profile fleet|client|workstation] isolated worker (FR #5308/#5758); "
@@ -3614,7 +3737,8 @@ class AircConsoleCore:
 
         caps = self.capabilities
 
-        # FR #5285: PRIORITY form walk (read path) via in-service fixture worker.
+        # FR #5285 / #5948: PRIORITY form walk --- SDK read-only by default;
+        # fixture only when SelfTest/unit sets priority_fixture.
         walk = _priority.parse_priority_walk_command(cmd)
         if walk is not None:
             denied = self._priority_optional_denied(
@@ -3634,6 +3758,16 @@ class AircConsoleCore:
                 text=cmd,
                 allowlist_path=allow,
                 fixture_path=fix,
+                use_fixture=True if fix is not None else None,
+                sdk_walk=(
+                    None
+                    if fix is not None
+                    else (
+                        lambda **kw: _priority_sdk_formwalk(
+                            cred_fetcher=_priority.fetch_credman_password, **kw
+                        )
+                    )
+                ),
             )
             # FR #5524: do not JobProtocol._emit here. on_line sends HandleResult.reply
             # for action=priority (FR #5518). Emitting plus reply doubled every walk line.

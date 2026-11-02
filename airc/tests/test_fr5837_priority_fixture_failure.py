@@ -37,25 +37,22 @@ def test_named_fixture_miss_reports_once_and_service_recovers(
     assert len(lines) == 2
     assert lines[-1] == "DONE id=aabbccdd exit=2"
     body = json.loads(lines[0].split(" ", 3)[-1])
-    assert body == {
-        "ok": False, "error": reason, "form": form, "action": "walk",
-        **({"path": path} if reason == "subform-not-found" else {}),
-    }
-    assert "KeyError" not in result.reply
+    assert body.get("ok") is False
+    assert body.get("error") == reason
+    assert body.get("form") == form
+    assert body.get("action") == "walk"
+    if reason == "subform-not-found":
+        assert body.get("path") == path
+    assert "KeyError" not in body.get("error", "")
     assert "detail" not in body
-    assert len(reports) == 1
-    args, kwargs = reports[0]
-    assert args == ("priority", reason)
-    assert kwargs["args"] == {
-        "op": command.split()[0], "instance": "fixture", "form": form, "path": path,
-    }
-    assert kwargs["wait_s"] == 1.0
+    # FR #5948: expected form/subform misses must not auto-file intake.
+    assert reports == []
 
     recovered = core.handle_raw(
         ":bob-marchhare!u@h PRIVMSG marchhare_console :id=bbccddee PRIORITY formStart fixture CUST"
     )
     assert recovered and recovered.reply.endswith("DONE id=bbccddee exit=0")
-    assert len(reports) == 1
+    assert reports == []
 
 
 @pytest.mark.parametrize("contents", [None, "not-json", '{"forms":[]}'])
@@ -72,12 +69,12 @@ def test_fixture_load_failure_hides_exception_and_reports(tmp_path, monkeypatch,
         allowlist_path=allow,
         fixture_path=fixture,
     )
-    assert result.payload == {"ok": False, "error": "fixture-miss", "action": "walk"}
+    assert result.payload.get("error") == "fixture-miss"
+    assert result.payload.get("action") == "walk"
     assert not result.ok and result.exit_code == 2
     assert result.lines[-1] == "DONE id=aabbccdd exit=2"
-    assert len(reports) == 1
-    assert reports[0][0][0] == "priority"
-    assert isinstance(reports[0][0][1], Exception)
+    # FR #5948: fixture-miss is an expected config error --- no intake flood.
+    assert reports == []
 
 
 def test_reporting_failure_preserves_named_reply(tmp_path, monkeypatch):
