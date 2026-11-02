@@ -135,3 +135,20 @@ def test_own_shop_part_does_not_touch_console_nicks(tmp_path, monkeypatch):
     wire(c, ":Jeeves!u@h PART #flamingo :bye")
     after = list(_obj(tmp_path)["machines"][mid]["console_nicks"])
     assert after == before == ["flamingo_console"]
+
+
+def test_late_names_after_chanserv_part_does_not_restore_presence(tmp_path, monkeypatch):
+    """MRB #5973: pending NAMES after ChanServ PART must not revive presence."""
+    monkeypatch.setattr(irc_agent, "FLOOD_S", 0.0)
+    _seed(tmp_path)
+    a = _FakeAgent(tmp_path)
+    a.channels = ["#bobiverse", "#flamingo", "#cust", "#other"]
+    a._apply_chanserv_channels(["#bobiverse", "#flamingo", "#other"])
+    assert "#cust" not in [c.lower() for c in a.channels]
+    assert "#cust" not in _presence_channels(_obj(tmp_path))
+    # Late NAMES for the removed channel (as if 353/366 still in flight).
+    a._on_channel_names("#cust", {"cust_console", "someone"})
+    obj = _obj(tmp_path)
+    assert "#cust" not in _presence_channels(obj)
+    assert "cust_console" not in obj["airc_consoles"]
+    assert "#other" in _presence_channels(obj)

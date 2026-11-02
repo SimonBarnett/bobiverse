@@ -129,6 +129,7 @@ class _FakeAgent:
     _on_chanserv_notice = irc_agent.Client._on_chanserv_notice
     _apply_chanserv_channels = irc_agent.Client._apply_chanserv_channels
     _clear_channel_console_presence = irc_agent.Client._clear_channel_console_presence
+    _on_channel_names = irc_agent.Client._on_channel_names
 
 
 def test_chair_sends_list_then_mirrors_and_joins_parts(tmp_path, monkeypatch):

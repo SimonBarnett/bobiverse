@@ -1427,6 +1427,12 @@ class Client:
         return wk
 
     def _on_channel_names(self, chan: str, present: set) -> None:
+        # FR #5961 / MRB #5973: ignore late NAMES after ChanServ removed the channel
+        # from self.channels (otherwise reconcile restores airc_console_presence).
+        if getattr(self.args, "chair", False):
+            have = {str(c).lower() for c in (self.channels or [])}
+            if str(chan or "").lower() not in have:
+                return
         try:
             self._workers().reconcile(chan, present)
         except Exception as exc:  # never kill the reader over the worker list
