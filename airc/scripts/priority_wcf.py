@@ -210,6 +210,7 @@ class PriorityWcfClient:
         secret, cred_err = self._secret()
         if cred_err:
             return {"ok": False, "error": cred_err, "via": "wcf"}
+        to_redact = secret
         envelope = build_envelope(name, user=user, password=secret, body_fields=fields)
         headers = {
             "Content-Type": "text/xml; charset=utf-8",
@@ -220,10 +221,8 @@ class PriorityWcfClient:
                 url, envelope.encode("utf-8"), headers, timeout_s=30.0
             )
         except ConnectionError:
-            secret = ""
             return {"ok": False, "error": WCF_UNREACHABLE, "via": self.mode}
         except Exception:  # noqa: BLE001
-            secret = ""
             return {"ok": False, "error": WCF_UNREACHABLE, "via": self.mode}
         finally:
             envelope = ""
@@ -234,10 +233,10 @@ class PriorityWcfClient:
         parsed["op"] = name
         parsed["via"] = self.mode
         parsed["endpoint_ok"] = True
-        if self._passed:
+        if to_redact:
             for k, v in list(parsed.items()):
-                if isinstance(v, str) and self._passed in v:
-                    parsed[k] = redact(v, self._passed)
+                if isinstance(v, str) and to_redact in v:
+                    parsed[k] = redact(v, to_redact)
         return parsed
 
     def get_version(self) -> dict[str, Any]:
@@ -338,6 +337,11 @@ def run_priority_wcf(
     parsed = parse_priority_wcf_command(text)
     if parsed is None:
         return {"ok": False, "error": WCF_BAD_OP, "via": "wcf"}
+    parsed["fields"] = {
+        k: v
+        for k, v in (parsed.get("fields") or {}).items()
+        if k not in {"password", "passwd", "pwd", "secret"}
+    }
     if allowlist_present is False:
         return {
             "ok": False,
@@ -346,7 +350,15 @@ def run_priority_wcf(
             "via": "wcf",
         }
     inst_row: dict[str, Any] = {}
-    if allowlist is not None and parsed["instance"]:
+    if allowlist is not None:
+        # Allowlist present: never take url/user from the IRC line (SSRF).
+        if not parsed["instance"]:
+            return {
+                "ok": False,
+                "error": "unknown-instance",
+                "action": "wcf",
+                "via": "wcf",
+            }
         inst = allowlist.get(parsed["instance"])
         if inst is None:
             return {
@@ -365,8 +377,8 @@ def run_priority_wcf(
     elif parsed["instance"] and install_root is not None:
         # Caller should pass allowlist; missing map is not-configured.
         inst_row = {}
-    if not inst_row.get("url") and not inst_row.get("wcfUrl"):
-        # Direct-test path: fields may carry url (never on IRC live).
+    if allowlist is None and not inst_row.get("url") and not inst_row.get("wcfUrl"):
+        # Direct-test path only: fields may carry url (never when allowlist is on).
         inst_row = {
             "url": parsed["fields"].get("url") or "",
             "user": parsed["fields"].get("user") or "",
