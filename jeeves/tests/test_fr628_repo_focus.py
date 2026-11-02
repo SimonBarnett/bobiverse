@@ -73,12 +73,34 @@ def test_repo_focus_admits_new_rows_in_strict_without_item_focus(_home):
     assert _ids(_home) == [("MRB", "#4"), ("UAT", "#0"), ("FR", "#1")]
 
 
-def test_repo_focus_orders_repos_by_priority_then_entry_time(_home):
-    _queue(_home, [_row("o/c", "MRB", 1, 1), _row("o/a", "FR", 2, 2), _row("o/b", "FR", 3, 3), _row("o/b", "UAT", 0, 4, repo_uat=True)])
-    fi.handle_focus_cmd(_home, "2 o/b")
-    fi.handle_focus_cmd(_home, "1 o/a")
-    fi.handle_focus_cmd(_home, "2 o/c")
-    assert _ids(_home) == [("FR", "#2"), ("UAT", "#0"), ("FR", "#3"), ("MRB", "#1")]
+def test_repo_focus_orders_repos_by_priority_then_kind(_home):
+    """FR #628 + FR #3205: repo priority first, then MRB < UAT < FR, then number.
+
+    Priority 1 (high) sticks only on allowlisted repos (a-search / bobiverse);
+    ``!focus 1 o/fake`` demotes to medium — use real high-priority names here
+    (FR #5941 stale pin used o/a and saw MRB-first after demotion).
+    """
+    _queue(
+        _home,
+        [
+            _row("other/tool", "MRB", 1, 1),
+            _row("SimonBarnett/a-search", "FR", 2, 2),
+            _row("SimonBarnett/bobiverse", "FR", 3, 3),
+            _row("SimonBarnett/bobiverse", "UAT", 0, 4, repo_uat=True),
+        ],
+    )
+    fi.handle_focus_cmd(_home, "2 SimonBarnett/bobiverse")
+    fi.handle_focus_cmd(_home, "1 SimonBarnett/a-search")
+    fi.handle_focus_cmd(_home, "2 other/tool")
+    assert _ids(_home) == [("FR", "#2"), ("MRB", "#1"), ("UAT", "#0"), ("FR", "#3")]
+
+
+def test_focus_high_demotes_on_non_allowlisted_repo(_home):
+    """FR #5941: !focus 1 on a non-allowlisted repo stores medium (5), not high."""
+    lines = fi.handle_focus_cmd(_home, "1 o/a")
+    doc = fi.load_focus(_home)
+    assert doc["repos"]["o/a"]["priority"] == 5
+    assert "medium" in " ".join(lines).lower() or doc["repos"]["o/a"]["label"] == "medium"
 
 
 def test_item_rank_beats_repo_order(_home):
