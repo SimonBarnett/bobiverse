@@ -27,6 +27,7 @@ Report: ``stuck-report.json`` + digest ``stuck`` section + ``!stuck`` + one
 """
 from __future__ import annotations
 
+import contextlib
 import json
 import time
 from datetime import datetime, timezone
@@ -436,6 +437,18 @@ def classify_queue_row(
             base["stuck"] = False
             base["stuck_reason"] = ""
             return base
+        # FR #5965: Copilot-held row with a live tracked task is not holder_gone.
+        if holder == "copilot" and home is not None:
+            with contextlib.suppress(Exception):
+                import copilot_dispatch as _cd5965
+
+                job = _cd5965._matching_job(home, row)
+                if _cd5965._job_is_live(job, float(now)):
+                    base["state"] = "held"
+                    base["rule"] = "copilot_live_task"
+                    base["stuck"] = False
+                    base["stuck_reason"] = ""
+                    return base
         if age >= SILENT_ACCEPTED_S and not holder_live:
             base["stuck"] = True
             base["stuck_reason"] = "accepted_holder_gone"
@@ -995,6 +1008,7 @@ def release_silent_accepted(
                     idle=set(),
                     activity=activity,
                     open_items=open_items,
+                    home=home,
                 )
                 if not info.get("stuck"):
                     kept.append(row)
