@@ -11023,7 +11023,12 @@ def enrich_pr_mergeability(
         return False
     wrote = False
     if "mergeable" in detail:
-        pr["mergeable"] = detail.get("mergeable")
+        val = detail.get("mergeable")
+        # FR #6044 / MRB #6045: do not overwrite mergeable=False with REST null
+        # (GitHub still computing). A later mergeable_state=unknown would then
+        # look clean and skip the dirty-FIX path.
+        if val is not None or "mergeable" not in pr:
+            pr["mergeable"] = val
         wrote = True
     if "mergeable_state" in detail:
         pr["mergeable_state"] = detail.get("mergeable_state")
