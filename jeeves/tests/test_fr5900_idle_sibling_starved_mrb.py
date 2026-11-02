@@ -136,7 +136,12 @@ def test_fr5900_unaccepted_starved_requires_eligible_idle(tmp_path, monkeypatch)
 
 
 def test_fr5900_idle_seats_monitor_uses_mrb_enrichment(tmp_path, monkeypatch):
-    """Monitor must use enrich_review_author_fields (not UAT enrich) for MRB rows."""
+    """Monitor must use enrich_review_author_fields (not UAT enrich) for MRB rows.
+
+    Hostile pin (MRB #5908 / CodeRabbit): MRB with no author stamp but a related
+    FIX DONE by AUTHOR. UAT-only enrich leaves the MRB unchanged and would still
+    offer AUTHOR; review enrich must block AUTHOR and keep SIBLING offerable.
+    """
     import sys
     from pathlib import Path
 
@@ -145,16 +150,39 @@ def test_fr5900_idle_seats_monitor_uses_mrb_enrichment(tmp_path, monkeypatch):
     import idle_seats as mon  # noqa: E402
 
     home = _home(tmp_path, monkeypatch)
-    row = _mrb_row()
-    doc = {"v": 1, "unaccepted": [row], "accepted": [], "done": []}
+    mrb = {
+        "repo": REPO,
+        "task": "MRB",
+        "id": "#5866",
+        "seq": 1,
+        "url": f"https://github.com/{REPO}/pull/5866",
+        "giveup_seats": "copilot",
+        "giveup_ts": time.strftime(
+            "%Y-%m-%dT%H:%M:%SZ", time.gmtime(NOW - 3600)
+        ),
+        "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(NOW - 4000)),
+        "event": "pull_request",
+        "line": "MRB",
+        "title": "fr-5865",
+    }
+    fix_done = {
+        "repo": REPO,
+        "task": "FIX",
+        "id": "#5866",
+        "url": f"https://github.com/{REPO}/pull/5866",
+        "done_by": AUTHOR,
+        "nick": AUTHOR,
+        "result": "DONE",
+    }
+    doc = {"v": 1, "unaccepted": [mrb], "accepted": [], "done": [fix_done]}
     gitclaim._write_queue(gitclaim.queue_path(home), doc)
     live = gitclaim.live_seat_nicks(home)
     ledger = gitclaim.ledger_load(home)
     assert mon._row_offerable_to_nick(
-        gitclaim, doc, ledger, live, row, SIBLING, NOW
+        gitclaim, doc, ledger, live, mrb, SIBLING, NOW
     )
     assert not mon._row_offerable_to_nick(
-        gitclaim, doc, ledger, live, row, AUTHOR, NOW
+        gitclaim, doc, ledger, live, mrb, AUTHOR, NOW
     )
 
 
