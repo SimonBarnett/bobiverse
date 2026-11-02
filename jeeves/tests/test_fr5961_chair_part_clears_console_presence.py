@@ -71,11 +71,17 @@ def test_own_mixed_case_part_clears_presence(tmp_path, monkeypatch):
     c.channels = ["#bobiverse", "#flamingo", "#Cust"]
     monkeypatch.setattr(irc_agent, "info", lambda m: c.logs.append(m))
     wire(c, ":jeeves!u@h PART #Cust :bye")
+    assert "#cust" not in [x.lower() for x in c.channels]
     obj = _obj(tmp_path)
     assert "#cust" not in _presence_channels(obj)
     assert "cust_console" not in obj["airc_consoles"]
     assert "#other" in _presence_channels(obj)
     assert obj["machines"][mid]["console_nicks"] == ["flamingo_console"]
+    # Late NAMES after own PART must not restore (channel dropped from self.channels).
+    c._on_channel_names("#Cust", {"cust_console", "someone"})
+    obj2 = _obj(tmp_path)
+    assert "#cust" not in _presence_channels(obj2)
+    assert "cust_console" not in obj2["airc_consoles"]
 
 
 def test_kick_of_chair_clears_presence_shop_unchanged(tmp_path, monkeypatch):
@@ -85,11 +91,14 @@ def test_kick_of_chair_clears_presence_shop_unchanged(tmp_path, monkeypatch):
     c.channels = ["#bobiverse", "#flamingo", "#cust"]
     monkeypatch.setattr(irc_agent, "info", lambda m: c.logs.append(m))
     wire(c, ":Op!u@h KICK #cust Jeeves :x")
+    assert "#cust" not in [x.lower() for x in c.channels]
     obj = _obj(tmp_path)
     assert "#cust" not in _presence_channels(obj)
     assert "cust_console" not in obj["airc_consoles"]
     assert obj["machines"][mid]["console_nicks"] == ["flamingo_console"]
     assert "#other" in _presence_channels(obj)
+    c._on_channel_names("#cust", {"cust_console"})
+    assert "#cust" not in _presence_channels(_obj(tmp_path))
 
 
 def test_kick_by_chair_of_console_does_not_wipe_channel(tmp_path, monkeypatch):
@@ -143,6 +152,11 @@ def test_late_names_after_chanserv_part_does_not_restore_presence(tmp_path, monk
     _seed(tmp_path)
     a = _FakeAgent(tmp_path)
     a.channels = ["#bobiverse", "#flamingo", "#cust", "#other"]
+    # Positive control: NAMES while still joined writes presence via WorkerTracker.reconcile.
+    bobreport.set_channel_console_presence(tmp_path, "#cust", [], machine="cust")
+    a._on_channel_names("#cust", {"cust_console", "someone"})
+    assert "#cust" in _presence_channels(_obj(tmp_path))
+    assert "cust_console" in _obj(tmp_path)["airc_consoles"]
     a._apply_chanserv_channels(["#bobiverse", "#flamingo", "#other"])
     assert "#cust" not in [c.lower() for c in a.channels]
     assert "#cust" not in _presence_channels(_obj(tmp_path))

@@ -1459,8 +1459,12 @@ class Client:
             self._privs().on_line(cmd, parts, trailing, prefix, tags)
             who = chan_privs.clean_nick(prefix.split("!", 1)[0]) if prefix else ""
             # FR #5961: own PART clears that channel's console presence before the early return.
+            # Also drop from self.channels so a late 353/366 cannot restore presence via reconcile
+            # (MRB #5973 / CodeRabbit: ChanServ path already removed the channel; own PART/KICK did not).
             if who and who.lower() in self._mine_nicks() and cmd == "PART":
                 chan = parts[1].lstrip(":") if len(parts) > 1 else trailing
+                cl = str(chan or "").lower()
+                self.channels = [c for c in (self.channels or []) if str(c).lower() != cl]
                 self._clear_channel_console_presence(chan)
                 return
             if not who or (who.lower() in self._mine_nicks() and cmd != "KICK"):
@@ -1470,6 +1474,8 @@ class Client:
                 gone = (parts[2].lstrip(":") if cmd == "KICK" and len(parts) > 2 else who)
                 # FR #5961: KICK of the chair clears presence; chair is not a worker/console.
                 if cmd == "KICK" and chan_privs.clean_nick(gone).lower() in self._mine_nicks():
+                    cl = str(chan or "").lower()
+                    self.channels = [c for c in (self.channels or []) if str(c).lower() != cl]
                     self._clear_channel_console_presence(chan)
                     return
                 self._workers().on_leave(gone, chan)
