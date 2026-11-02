@@ -37,9 +37,9 @@ Workers still only inject lines **FROM Jeeves** addressed to that seat (`bob_wor
 
 Do **not** mint a fresh GUID for an already-registered NickServ account.
 
-## Public airc console roster (FR #5204)
+## Public airc console roster (FR #5204 / FR #5947)
 
-`GET https://bob.ntsa.uk/bob/v1/report` includes `airc_consoles` (and per-machine `console_nicks`): live shop `*_console` nicks from chair NAMES. No NickServ. Priority Agent airc picker can verify presence without IRC credentials.
+`GET https://bob.ntsa.uk/bob/v1/report` includes `airc_consoles` (flat nick list) plus `airc_console_details` (`[{nick, machine, channel}]`) and per-machine `console_nicks`. Chair NAMES on **every** channel Jeeves sits in (registered shops and customer channels) record live `*_console` nicks; PART/QUIT clears them. No NickServ, no secrets. Priority Agent airc picker can verify presence without IRC credentials.
 
 ## Outbox (send) — identical on every machine
 
