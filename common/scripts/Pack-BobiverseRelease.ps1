@@ -416,9 +416,9 @@ function Stage-Product([string]$Name) {
             Copy-Item -LiteralPath $aexe -Destination (Join-Path $aircExeDir 'airc.exe') -Force
             Write-Host 'INFO airc staged airc\airc.exe'
         }
-        # FR #5283 / #5905: service-owned Priority Web SDK worker (not PriorityClient.exe).
-        # Pack must include run-repprep-via-exec.mjs + node_modules/priority-web-sdk so
-        # _priority_sdk_repprep finds them without AIRC_PRIORITY_REPPREP_MJS or drop\.
+        # FR #5283 / #5905 / #5946: service-owned Priority Web SDK worker (not PriorityClient.exe).
+        # Pack must include run-repprep + run-formprep + run-formwalk mjs + node_modules/priority-web-sdk so
+        # prepare/walk find them without AIRC_PRIORITY_*_MJS or drop\.
         $pwSrc = Get-BobiverseRepoPath -Root $RepoRoot -Rel 'priority-worker'
         if (-not (Test-Path -LiteralPath $pwSrc)) {
             $pwSrc = Join-Path $RepoRoot 'airc\priority-worker'
@@ -431,6 +431,10 @@ function Stage-Product([string]$Name) {
             $walkMjsSrc = Join-Path $pwSrc 'sdk\run-formwalk-readonly.mjs'
             if (-not (Test-Path -LiteralPath $walkMjsSrc)) {
                 throw 'airc pack requires airc/priority-worker/sdk/run-formwalk-readonly.mjs (FR #5948)'
+            }
+            $formMjsSrc = Join-Path $pwSrc 'sdk\run-formprep-via-eform.mjs'
+            if (-not (Test-Path -LiteralPath $formMjsSrc)) {
+                throw 'airc pack requires airc/priority-worker/sdk/run-formprep-via-eform.mjs (FR #5946)'
             }
             # FR #5913: always npm ci so a stale/partial node_modules cannot ship
             # a priority-web-sdk that drifts from package-lock.json.

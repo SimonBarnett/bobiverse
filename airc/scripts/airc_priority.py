@@ -52,6 +52,7 @@ class PriorityInstance:
     sql_server: str | None = None
     system_db: str | None = None
     prep_dir: str | None = None
+    priority_root: str | None = None
 
     def public_dict(self) -> dict[str, Any]:
         """Identity fields safe for IRC / logs (no credential target secrets)."""
@@ -66,6 +67,8 @@ class PriorityInstance:
             out["sqlServer"] = self.sql_server
         if self.system_db:
             out["systemDb"] = self.system_db
+        if self.priority_root:
+            out["priorityRoot"] = self.priority_root
         if self.prep_dir:
             out["prepDir"] = self.prep_dir
         return out
@@ -247,6 +250,15 @@ def load_priority_allowlist(path: str | Path | None = None) -> dict[str, Priorit
             sql_server=(str(row["sqlServer"]).strip() if row.get("sqlServer") else None),
             system_db=(str(row["systemDb"]).strip() if row.get("systemDb") else None),
             prep_dir=(str(row["prepDir"]).strip() if row.get("prepDir") else None),
+            priority_root=(
+                str(row["priorityRoot"]).strip()
+                if row.get("priorityRoot")
+                else (
+                    str(row["priority_root"]).strip()
+                    if row.get("priority_root")
+                    else None
+                )
+            ),
         )
     return out
 

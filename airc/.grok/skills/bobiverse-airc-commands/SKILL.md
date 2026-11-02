@@ -62,15 +62,17 @@ PRIVMSG {mid}_console :id=c25bd00e VERSION
 - **Failure intake (FR #5279):** each Apply/Check failure class (`download-failed`, `msiexec-exit`, `msiexec-timeout`, `stop-failed`, `backup-failed`, `spawn-failed`, `updater-missing`, `asset-url-rejected`, ...) files one `kind:issue` on `SimonBarnett/bobiverse`. `idempotency_key` = `airc-update-fail|{machine}|{product}|{tag}|{result}` so retries do not twin-flood. Title/body are redacted.
 - **VERSION (FR #5281):** same auth as STATUS. Reply is `out id= seq=1 VERSION machine=... airc_ver=... [commit=...] [built=...] [hotpatched=...] [hotpatch=1]` then `DONE id= exit=0` (FR #5534 / #5589). `built=` stays BUILD.json; HOTPATCH adds `hotpatched=`. Allowed when `shell=off` / `jobs=off`.
 
-## PRIORITY prepare (FR #5286)
+## PRIORITY prepare (FR #5286 / #5946)
 
-Named procedure prep for TYPE=P only. Never form-prep. Never SQL-fake `UPD`.
+Typed prepare selects exact T$EXEC type: `prepare form|report|procedure <ENAME>` (or `type=F|R|P`). Form uses EFORM `FORMPREPDRCT2`; report/procedure use EXEC `REPPREPDIRECT2`. Never fall back to another type with the same ENAME. Untyped `prepare <ENAME>` stays procedure-only (FR #5933). Never SQL-fake `UPD`. Never form-prep for TYPE=P/R.
 
 ```text
-PRIVMSG {mid}_console :id=c25bd00e PRIORITY prepare FOO instance=example-dev
+PRIVMSG {mid}_console :id=c25bd00e PRIORITY prepare procedure FOO instance=example-dev
+PRIVMSG {mid}_console :id=c25bd00e PRIORITY prepare form ORDERS instance=example-dev
+PRIVMSG {mid}_console :id=c25bd00e PRIORITY prepare report CUSTOMERS instance=example-dev
 ```
 
-Walk: EXEC `REPPREPDIRECT2`. Success (`reason=prepared`) only when SDK `ok=true` **and** `EXECPREPLOCK.UPD=N` **and** the `.prp` mtime advanced. Instance allowlist must set `prepDir` (absolute `.prp` folder); missing `prepDir` returns `prep_dir_missing` (FR #5932) --- never a false `prp_unchanged`. FR #5933: resolve T$EXEC types before SDK; refuse form/report-only or ambiguous ENAME (`not_type_p`, `ename_ambiguous`, `ename_not_found`). SQL type lookup failures return `sql_read_failed` (never treat partial sqlcmd output as a procedure). Other reasons: `still_unprepared`, `prp_unchanged`, `no_cred`, `name_missing`, `sdk_not_ok`, `sdk_mjs_missing`, `node_missing` (FR #5905: pack ships sdk/run-repprep-via-exec.mjs + priority-web-sdk; no drop\ path). CredMan target from the instance allowlist (FR #5275); result JSON has SQL + `.prp` evidence and never a password.
+Success (`reason=prepared`) only when SDK `ok=true` **and** `EXECPREPLOCK.UPD=N` **and** the typed `.prp` mtime advanced. Reply names `exec_type`, `exec_id`, `prep_file` (e.g. `d22.prp`) and `prp_advanced`. Optional allowlist `prepDir` overrides derived prep folder (FR #5943); reply reports `prep_dir` + `prep_dir_source`. Unresolvable returns `prep_dir_missing` with `prep_dir_tried` (FR #5932) --- never a false `prp_unchanged`. FR #5933/#5946: resolve T$EXEC types before SDK; untyped refuse form/report-only or ambiguous ENAME (`not_type_p`, `ename_ambiguous`, `ename_not_found`); typed wrong type returns `wrong_type` with `exec_types`. SQL type lookup failures return `sql_read_failed`. Other reasons: `still_unprepared`, `prp_unchanged`, `no_cred`, `name_missing`, `sdk_not_ok`, `sdk_mjs_missing`, `node_missing` (FR #5905: pack ships sdk/run-repprep-via-exec.mjs + sdk/run-formprep-via-eform.mjs + priority-web-sdk; no drop\ path). CredMan target from the instance allowlist (FR #5275); result JSON has SQL + `.prp` evidence and never a password.
 
 See `docs/airc-remote-control.md` and `bobiverse-airc-troubleshooting`.
 
@@ -85,7 +87,9 @@ Use the **built-in** Airc Priority Client. Do not copy NAS one-off clients or dr
 ```text
 PRIVMSG {mid}_console :id=c25bd00e PRIORITY connect instance=example-dev
 PRIVMSG {mid}_console :id=c25bd00e PRIORITY status example-dev
-PRIVMSG {mid}_console :id=c25bd00e PRIORITY prepare FOO instance=example-dev
+PRIVMSG {mid}_console :id=c25bd00e PRIORITY prepare procedure FOO instance=example-dev
+PRIVMSG {mid}_console :id=c25bd00e PRIORITY prepare form ORDERS instance=example-dev
+PRIVMSG {mid}_console :id=c25bd00e PRIORITY prepare report CUSTOMERS instance=example-dev
 PRIVMSG {mid}_console :id=c25bd00e PRIORITY formStart instance=example-dev form=CUST
 PRIVMSG {mid}_console :id=c25bd00e PRIORITY formStart example-dev CUST
 ```
@@ -94,7 +98,7 @@ PRIVMSG {mid}_console :id=c25bd00e PRIORITY formStart example-dev CUST
 - **CredMan:** password lives in the Windows credential named credentialTarget (example PriorityWeb/example-dev). Populate remotely with CRED persist ... via=https (FR #5802) or via=irc (FR #5812) when DCC is blocked. Never put a Priority password on IRC, in skills, or in intake.
 - **Form walk (FR #5285 / #5803 / #5948):** formStart/subform/getRows accept instance=/form= key=value **or** positional <instance> <form> (same bare id as PRIORITY status <id>). Named keys win when both are present. Unknown instance -> unknown-instance. Live default is read-only Priority SDK (`priority-worker/sdk/run-formwalk-readonly.mjs`, CredMan password via env); fixture JSON only when SelfTest sets `priority_fixture` or `fixture=1` / `AIRC_PRIORITY_WALK_FIXTURE=1`. Cap rows with offset/limit (default 5, max 20). Expected `form-not-found` / `subform-not-found` / `no-access` return named errors and never auto-file intake; only genuine crashes intake (FR #5775).
 - **Form walk replies (FR #5524):** PRIORITY formStart/subform/getRows must return HandleResult.reply only (newline-separated out+DONE). Do not also JobProtocol._emit after FR #5518 on_line already sends action=priority --- that double-fires every walk line.
-- **Prepare gates (S4):** TYPE=P uses EXEC `REPPREPDIRECT2`. Success only when SDK `ok=true` **and** `EXECPREPLOCK.UPD=N` **and** `.prp` mtime advanced. Allowlist `prepDir` is required; missing returns `prep_dir_missing` (FR #5932). FR #5933: resolve T$EXEC types before SDK; refuse form/report-only or ambiguous ENAME (`not_type_p`, `ename_ambiguous`, `ename_not_found`); sqlcmd type-lookup failure is `sql_read_failed`. Reasons include `still_unprepared`, `prp_unchanged`, `prep_dir_missing`, `no_cred`, `name_missing`, `sql_read_failed`, `sdk_mjs_missing`, `node_missing`. Never SQL-fake UPD; never form-prep for TYPE=P.
+- **Prepare gates (S4 / FR #5946):** typed `prepare form|report|procedure` selects exact T$EXEC; form -> `FORMPREPDRCT2`, report/procedure -> `REPPREPDIRECT2`. Untyped stays procedure-only. Success only when SDK `ok=true` **and** `EXECPREPLOCK.UPD=N` **and** typed `.prp` mtime advanced. Optional allowlist `prepDir` overrides derived `<priorityRoot>\system\prep` / tabula.ini / env (FR #5943); unresolvable returns `prep_dir_missing` with `prep_dir_tried` (FR #5932). Resolve T$EXEC types before SDK; untyped refuse form/report-only or ambiguous ENAME (`not_type_p`, `ename_ambiguous`, `ename_not_found`); typed wrong type is `wrong_type`. sqlcmd type-lookup failure is `sql_read_failed`. Reasons include `still_unprepared`, `prp_unchanged`, `prep_dir_missing`, `no_cred`, `name_missing`, `sql_read_failed`, `sdk_mjs_missing`, `node_missing`. Never SQL-fake UPD; never form-prep for TYPE=P/R.
 
 See `docs/airc-remote-control.md`, `docs/feature-request-airc-priority-client-2026-10-31.md`, and `bobiverse-airc-troubleshooting`.
 

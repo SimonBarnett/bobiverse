@@ -55,6 +55,7 @@ GONE_SCRIPTS = (
 # FR #5526 keeps scripts\airc_credman.py (native CredMan for PRIORITY/LEGION/EXTENSION).
 # FR #5905 keeps airc\priority-worker\sdk\run-repprep-via-exec.mjs (Node REPPREP walk).
 # FR #5948 keeps airc\priority-worker\sdk\run-formwalk-readonly.mjs (Node form walk).
+# FR #5946 keeps airc\priority-worker\sdk\run-formprep-via-eform.mjs (Node FORMPREP walk).
 CLIENT_REMAINING_FILES = frozenset(
     {
         "BUILD.json",
@@ -92,9 +93,10 @@ CLIENT_REMAINING_FILES = frozenset(
         r"airc\priority-worker\fixtures\form_walk.json",
         r"airc\priority-worker\sdk\run-repprep-via-exec.mjs",
         r"airc\priority-worker\sdk\run-formwalk-readonly.mjs",
+        r"airc\priority-worker\sdk\run-formprep-via-eform.mjs",
     }
 )
-assert len(CLIENT_REMAINING_FILES) == 35
+assert len(CLIENT_REMAINING_FILES) == 36
 
 
 def _ps(script: str, timeout: int = 300) -> subprocess.CompletedProcess[str]:
@@ -154,6 +156,7 @@ def test_fr3582_client_purge_drops_fleet_operators(tmp_path: Path):
     (pw / "sdk").mkdir()
     (pw / "sdk" / "run-repprep-via-exec.mjs").write_text("// stub\n", encoding="utf-8")
     (pw / "sdk" / "run-formwalk-readonly.mjs").write_text("// stub\n", encoding="utf-8")
+    (pw / "sdk" / "run-formprep-via-eform.mjs").write_text("// stub\n", encoding="utf-8")
     (stage / "third_party" / "nssm" / "win64" / "nssm.exe").write_bytes(b"MZ")
     for name in KEEP_SCRIPTS:
         (stage / "scripts" / name).write_text("# stub\n", encoding="utf-8")
@@ -286,6 +289,8 @@ def test_fr3514_pack_then_client_allowlist_tree(tmp_path: Path):
     missing = sorted(expected - rels)
     assert not missing, f"client missing required files: {missing}"
     assert r"airc\priority-worker\sdk\run-repprep-via-exec.mjs" in rels
+    assert r"airc\priority-worker\sdk\run-formprep-via-eform.mjs" in rels
+    assert r"airc\priority-worker\sdk\run-formwalk-readonly.mjs" in rels
     assert any(
         p.replace("/", "\\").startswith(r"airc\priority-worker\node_modules\priority-web-sdk")
         for p in rels
