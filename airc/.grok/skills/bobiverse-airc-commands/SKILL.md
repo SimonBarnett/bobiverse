@@ -70,7 +70,7 @@ Named procedure prep for TYPE=P only. Never form-prep. Never SQL-fake `UPD`.
 PRIVMSG {mid}_console :id=c25bd00e PRIORITY prepare FOO instance=example-dev
 ```
 
-Walk: EXEC `REPPREPDIRECT2`. Success (`reason=prepared`) only when SDK `ok=true` **and** `EXECPREPLOCK.UPD=N` **and** the `.prp` mtime advanced. Other reasons: `still_unprepared`, `prp_unchanged`, `no_cred`, `name_missing`, `sdk_not_ok`. CredMan target from the instance allowlist (FR #5275); result JSON has SQL + `.prp` evidence and never a password.
+Walk: EXEC `REPPREPDIRECT2`. Success (`reason=prepared`) only when SDK `ok=true` **and** `EXECPREPLOCK.UPD=N` **and** the `.prp` mtime advanced. Other reasons: `still_unprepared`, `prp_unchanged`, `no_cred`, `name_missing`, `sdk_not_ok`, `sdk_mjs_missing`, `node_missing` (FR #5905: pack ships sdk/run-repprep-via-exec.mjs + priority-web-sdk; no drop\ path). CredMan target from the instance allowlist (FR #5275); result JSON has SQL + `.prp` evidence and never a password.
 
 See `docs/airc-remote-control.md` and `bobiverse-airc-troubleshooting`.
 
@@ -94,7 +94,7 @@ PRIVMSG {mid}_console :id=c25bd00e PRIORITY formStart example-dev CUST
 - **CredMan:** password lives in the Windows credential named credentialTarget (example PriorityWeb/example-dev). Populate remotely with CRED persist ... via=https (FR #5802) or via=irc (FR #5812) when DCC is blocked. Never put a Priority password on IRC, in skills, or in intake.
 - **Form walk (FR #5285 / #5803):** ormStart/subform/getRows accept instance=/orm= key=value **or** positional <instance> <form> (same bare id as PRIORITY status <id>). Named keys win when both are present. Unknown instance -> unknown-instance.
 - **Form walk replies (FR #5524):** PRIORITY formStart/subform/getRows must return HandleResult.reply only (newline-separated out+DONE). Do not also JobProtocol._emit after FR #5518 on_line already sends action=priority --- that double-fires every walk line.
-- **Prepare gates (S4):** TYPE=P uses EXEC `REPPREPDIRECT2`. Success only when SDK `ok=true` **and** `EXECPREPLOCK.UPD=N` **and** `.prp` mtime advanced. Reasons include `still_unprepared`, `prp_unchanged`, `no_cred`, `name_missing`. Never SQL-fake UPD; never form-prep for TYPE=P.
+- **Prepare gates (S4):** TYPE=P uses EXEC `REPPREPDIRECT2`. Success only when SDK `ok=true` **and** `EXECPREPLOCK.UPD=N` **and** `.prp` mtime advanced. Reasons include `still_unprepared`, `prp_unchanged`, `no_cred`, `name_missing`, `sdk_mjs_missing`, `node_missing`. Never SQL-fake UPD; never form-prep for TYPE=P.
 
 See `docs/airc-remote-control.md`, `docs/feature-request-airc-priority-client-2026-10-31.md`, and `bobiverse-airc-troubleshooting`.
 
