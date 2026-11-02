@@ -31,7 +31,7 @@ Root object:
 }
 ```
 
-Required per instance: id, url (must be https://), company, user, credentialTarget (Windows CredMan generic target). Optional: sqlServer, systemDb. **`prepDir` is required for `PRIORITY prepare`** (absolute path to the Priority `.prp` folder, e.g. `E:\\priority\\system\\prep`). Without it, prepare returns `reason=prep_dir_missing` instead of a false `prp_unchanged` (FR #5932).
+Required per instance: id, url (must be https://), company, user, credentialTarget (Windows CredMan generic target). Optional: sqlServer, systemDb, priorityRoot (Priority install root), prepDir. **`prepDir` is an optional override** for `PRIORITY prepare` (absolute `.prp` folder, e.g. `E:\priority\system\prep`). When unset, prepare derives `<priorityRoot>\system\prep`, then `tabula.ini` Priority Directory, then `PRIORITY_PREP_DIR` / `PRIORITY_ROOT` (FR #5943). Reply includes `prep_dir` + `prep_dir_source` (`override`|`derived`). If derivation fails (and no valid override), `reason=prep_dir_missing` with `prep_dir_tried` --- never a false `prp_unchanged` (FR #5932 / #5937).
 
 Loader rules (airc/scripts/airc_priority.py):
 
