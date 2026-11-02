@@ -1,4 +1,4 @@
-"""FR #4658: pusher-seat self-MRB GIVEUPs must not stamp needs_human."""
+"""FR #4658 / #5939: pusher self-MRB GIVEUPs skip needs_human; no-role stays giveup_seats-only."""
 from __future__ import annotations
 
 import time
@@ -79,9 +79,13 @@ def test_two_pusher_self_mrb_giveups_leave_fresh_seat_offerable(tmp_path, monkey
     final = [r for r in gitclaim.load_unaccepted(home) if r.get("id") == "#2389"][0]
     assert int(final.get("giveup_count") or 0) == 0
     assert not final.get("needs_human")
+    # FR #5939: bare self-mrb from no-role pushers -> giveup_seats only (not author_seats).
+    giveups = str(final.get("giveup_seats") or "").lower()
+    assert PUSHER_A.lower() in giveups
+    assert PUSHER_B.lower() in giveups
     authors = " ".join(gitclaim.row_author_seats(final)).lower()
-    assert PUSHER_A.lower() in authors
-    assert PUSHER_B.lower() in authors
+    assert PUSHER_A.lower() not in authors
+    assert PUSHER_B.lower() not in authors
     assert gitclaim.row_needs_human(final, FRESH) is False
     st_a, _why = gitclaim.offer_focus_top(
         home, PUSHER_A, "#flamingo", now=time.time() + 10_000

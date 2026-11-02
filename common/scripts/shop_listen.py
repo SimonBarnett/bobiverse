@@ -718,7 +718,13 @@ def return_job_to_unaccepted(
             if seats:
                 job["giveup_seats"] = ",".join(seats)
             if self_mrb_giveup and gave_up_by:
-                gitclaim.append_author_seat(job, gave_up_by)
+                # FR #5939: bare "self-mrb" reason must not promote a no-role seat into
+                # author_seats. Only seats that already have a verified role (implementer
+                # / author stamp, or FIX via enrich) keep/receive the author stamp.
+                # Otherwise the seat goes into giveup_seats only (exact-seat exclusion).
+                role_row = gitclaim.enrich_mrb_author_fields(doc, job)
+                if gitclaim.nick_is_row_author(role_row, gave_up_by):
+                    gitclaim.append_author_seat(job, gave_up_by)
             # FR #180 / #1363: stamp cooldown_until after job-caused GIVEUP/NACK.
             # FR #4881: skip for out-of-fuel (no giveup_seats => global cooldown).
             if not out_of_fuel_giveup:
