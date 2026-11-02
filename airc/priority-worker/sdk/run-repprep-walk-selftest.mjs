@@ -132,11 +132,78 @@ async function testWalkErrorMessage() {
   assert(calls.some((c) => c.kind === 'message' && c.ok === 0), 'message(0) on error');
 }
 
+/** FR #5927: informational messagetype must not be treated as error just because text says "No errors". */
+async function testWalkInfoMessageWithErrorWord() {
+  const calls = [];
+  const proc = {
+    async message(ok) {
+      calls.push({ kind: 'message', ok });
+      return { type: 'end', proc: null };
+    },
+  };
+  const priority = {
+    async procStart() {
+      return {
+        type: 'message',
+        message: 'No errors',
+        messagetype: 'information',
+        proc,
+      };
+    },
+  };
+  const result = await walkProc(priority, {
+    name: 'CUSTOMERS',
+    company: 'c',
+    proc: 'REPPREPDIRECT2',
+  });
+  assert(result.ok === true, 'information + "No errors" text must stay ok');
+  assert(calls.some((c) => c.kind === 'message' && c.ok === 1), 'message(1) for information');
+}
+
+/** FR #5927: when args.name is set but no ENAME/NAME field binds, fail (do not submit empty EditFields). */
+async function testWalkNameFieldMissing() {
+  const calls = [];
+  const proc = {
+    async inputFields(ok, data) {
+      calls.push({ kind: 'inputFields', ok, data });
+      return { type: 'end', proc: null };
+    },
+    async cancel() {
+      calls.push({ kind: 'cancel' });
+      return { type: 'end', proc: null };
+    },
+  };
+  const priority = {
+    async procStart() {
+      return {
+        type: 'inputFields',
+        proc,
+        input: {
+          EditField: [
+            { field: 1, title: 'STATUS' },
+            { field: 2, title: 'OTHER' },
+          ],
+        },
+      };
+    },
+  };
+  const result = await walkProc(priority, {
+    name: 'CUSTOMERS',
+    company: 'c',
+    proc: 'REPPREPDIRECT2',
+  });
+  assert(result.ok === false, 'name field miss => not ok');
+  assert((result.errors || []).includes('name_field_missing'), 'name_field_missing error');
+  assert(!calls.some((c) => c.kind === 'inputFields'), 'must not call inputFields with empty EditFields');
+}
+
 async function main() {
   testFieldValueNoSilentFallback();
   testCompanyNameBeforeEntityName();
   await testWalkInputAndMessage();
   await testWalkErrorMessage();
+  await testWalkInfoMessageWithErrorWord();
+  await testWalkNameFieldMissing();
   process.stdout.write(JSON.stringify({ ok: true, selftest: 'walk' }) + '\n');
 }
 

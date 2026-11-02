@@ -135,6 +135,19 @@ async function walkProc(priority, args) {
       const data = { EditFields: [] };
       // FR #5916: single preferred name field (exact / ENAME / Entity Name); no broad NAME/EXEC/ENTITY sweep.
       const nameField = fieldValue(edits, 'ENAME') || fieldValue(edits, 'NAME') || null;
+      // FR #5927: never submit empty EditFields when a name was requested but no field bound.
+      if (args.name && !nameField) {
+        errors.push('name_field_missing');
+        try {
+          if (typeof proc.cancel === 'function') {
+            await proc.cancel();
+          }
+        } catch {
+          /* ignore cancel failures on hard stop */
+        }
+        ended = false;
+        return { ok: false, ended, errors };
+      }
       if (nameField && args.name) {
         const fieldNum = nameField.field != null ? nameField.field : 1;
         data.EditFields.push({ field: fieldNum, op: 0, value: String(args.name) });
@@ -150,7 +163,11 @@ async function walkProc(priority, args) {
       // Priority Web SDK: step.message + step.messagetype; respond via proc.message(ok).
       const text = String(step.message || step.Message || (step.input && (step.input.message || step.input.Message || step.input.text)) || '');
       const severity = String(step.messagetype || step.messageType || step.severity || (step.input && (step.input.severity || step.input.Severity)) || '').toLowerCase();
-      const isError = severity === 'e' || severity === 'error' || /error/i.test(text);
+      // Prefer messagetype/severity; only fall back to text /error/i when severity is absent (FR #5927).
+      const isError =
+        severity === 'e' ||
+        severity === 'error' ||
+        ((!severity || severity === '') && /error/i.test(text));
       if (isError) {
         errors.push(text || 'procedure_error');
         try {
