@@ -77,6 +77,7 @@ def build_default_prepare_hooks(
     *,
     cred_fetcher: Callable[[str], str] | None = None,
     lock_reader: Callable[..., dict | None] | None = None,
+    types_reader: Callable[..., list[dict]] | None = None,
     sdk_exec: Callable[..., dict] | None = None,
     prp_stat: Callable[..., float | None] | None = None,
 ) -> dict[str, Any]:
@@ -84,6 +85,9 @@ def build_default_prepare_hooks(
 
     Callables are injectable for tests. Production console wires CredMan + sqlcmd
     + node mjs (see ``airc_console``). Never SQL-fakes UPD; never logs passwords.
+
+    FR #5933: ``types_reader`` lists every T$EXEC row for ENAME (all TYPEs) so
+    prepare can refuse non-procedure / ambiguous names before REPPREPDIRECT2.
     """
     state: dict[str, Any] = {}
 
@@ -142,13 +146,22 @@ def build_default_prepare_hooks(
             return {"ok": False, "path": "REPPREPDIRECT2", "reason": "sdk_hooks_missing"}
         return sdk_exec(**kw)
 
-    return {
+    def resolve_ename_types(*, ename: str, instance: dict, **_k: Any) -> list[dict]:
+        if types_reader is None:
+            return []
+        rows = types_reader(ename=ename, instance=instance)
+        return [r for r in (rows or []) if isinstance(r, dict)]
+
+    out: dict[str, Any] = {
         "cred_present": cred_present,
         "sdk_exec": sdk,
         "read_upd": read_upd,
         "prp_mtime_before": prp_before,
         "prp_mtime_after": prp_after,
     }
+    if types_reader is not None:
+        out["resolve_ename_types"] = resolve_ename_types
+    return out
 
 
 def run_priority_prepare(
@@ -161,12 +174,16 @@ def run_priority_prepare(
     read_upd: Callable[..., str] | None = None,
     prp_mtime_before: float | Callable[..., float] | None = None,
     prp_mtime_after: Callable[..., float] | None = None,
+    resolve_ename_types: Callable[..., list[dict]] | None = None,
     proc_type: str = "P",
 ) -> dict[str, Any]:
     """TYPE=P named prep: EXEC REPPREPDIRECT2; success only if ok + UPD=N + .prp advanced.
 
     Never SQL-fakes UPD. Never uses the form-prep path for TYPE=P.
     ``prp_mtime_before`` may be a float or a callable (live walk).
+
+    FR #5933: when ``resolve_ename_types`` is provided, refuse before SDK when
+    ENAME is missing, not TYPE=P, or ambiguous (multiple TYPEs / multiple P).
     """
     name = (ename or "").strip()
     base: dict[str, Any] = {
@@ -188,6 +205,38 @@ def run_priority_prepare(
     if not target or not has_cred(target):
         base["reason"] = "no_cred"
         return base
+    # FR #5933: resolve T$EXEC types before SDK so form/report names cannot
+    # silently prepare a same-named report while TYPE=P lock looks empty.
+    if resolve_ename_types is not None:
+        try:
+            rows = list(resolve_ename_types(ename=name, instance=inst) or [])
+        except Exception:  # noqa: BLE001
+            rows = []
+        rows = [r for r in rows if isinstance(r, dict)]
+        types = sorted(
+            {
+                str(r.get("exec_type") or "").strip().upper()
+                for r in rows
+                if str(r.get("exec_type") or "").strip()
+            }
+        )
+        if types:
+            base["exec_types"] = ",".join(types)
+        p_rows = [
+            r
+            for r in rows
+            if str(r.get("exec_type") or "").strip().upper() == "P"
+        ]
+        if not rows:
+            base["reason"] = "ename_not_found"
+            return base
+        # Ambiguous first: form+report (F,R) or multiple P / mixed types.
+        if len(types) > 1 or len(p_rows) > 1:
+            base["reason"] = "ename_ambiguous"
+            return base
+        if len(p_rows) == 0:
+            base["reason"] = "not_type_p"
+            return base
     # CAST IRON: TYPE=P is EXEC REPPREPDIRECT2 only (never formStart / form-prep).
     path = "REPPREPDIRECT2"
     # Capture .prp mtime BEFORE SDK so advance is meaningful.

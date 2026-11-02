@@ -324,6 +324,58 @@ def load_priority_instances(install_root: str | Path | None = None) -> list[dict
     return []
 
 
+def _priority_sqlcmd_ename_rows(
+    *,
+    ename: str,
+    instance: dict,
+    runner=None,
+) -> list[dict]:
+    """FR #5933: every T$EXEC row for ENAME (all TYPEs). Never UPDATEs."""
+    server = str(instance.get("sqlServer") or instance.get("sql_server") or "").strip()
+    db = str(instance.get("systemDb") or instance.get("system_db") or "system").strip()
+    if not server or not ename:
+        return []
+    safe = ename.replace(chr(39), chr(39) + chr(39))
+    q = (
+        "SET NOCOUNT ON; "
+        "SELECT E.ENAME, E.[T$EXEC], E.[TYPE], ISNULL(L.UPD, N'') "
+        "FROM dbo.T$EXEC E "
+        "LEFT JOIN dbo.EXECPREPLOCK L ON L.[T$EXEC]=E.[T$EXEC] "
+        f"WHERE E.ENAME=N'{safe}';"
+    )
+    run = runner or subprocess.run
+    try:
+        proc = run(
+            ["sqlcmd", "-S", server, "-E", "-d", db, "-Q", q, "-W", "-h", "-1", "-s", "|"],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+    except Exception:  # noqa: BLE001
+        return []
+    out: list[dict] = []
+    for line in (proc.stdout or "").splitlines():
+        s = line.strip()
+        if not s or "rows affected" in s.lower():
+            continue
+        parts = [x.strip() for x in s.split("|")]
+        if len(parts) < 3:
+            continue
+        try:
+            exec_id = int(parts[1])
+        except ValueError:
+            continue
+        out.append(
+            {
+                "name": parts[0],
+                "exec_id": exec_id,
+                "exec_type": parts[2],
+                "upd": parts[3] if len(parts) > 3 else "",
+            }
+        )
+    return out
+
+
 def _priority_sqlcmd_lock(
     *,
     ename: str,
@@ -483,6 +535,7 @@ def build_console_prepare_hooks(install_root: str | Path | None = None) -> dict:
     return pw.build_default_prepare_hooks(
         cred_fetcher=_priority.fetch_credman_password,
         lock_reader=_priority_sqlcmd_lock,
+        types_reader=_priority_sqlcmd_ename_rows,
         sdk_exec=lambda **kw: _priority_sdk_repprep(
             cred_fetcher=_priority.fetch_credman_password, **kw
         ),
