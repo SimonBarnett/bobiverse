@@ -146,7 +146,9 @@ def _row_offerable_to_nick(gc, doc, ledger, live: set[str], row: dict, nick: str
         return False
     if not gc.mrb_row_offerable(row, pr_exists=None):
         return False
-    cand_eff = gc.enrich_uat_author_fields(doc, row)
+    # FR #5900: MRB must use enrich_review_author_fields (exact-seat). UAT enrich
+    # on an MRB row can mis-apply sibling stamps and hide eligible same-machine seats.
+    cand_eff = gc.enrich_review_author_fields(doc, row)
     if gc.review_blocked_for_author(cand_eff, me, live):
         return False
     gc._stamp_require_machine(cand_eff)

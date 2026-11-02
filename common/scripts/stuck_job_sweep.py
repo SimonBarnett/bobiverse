@@ -287,16 +287,54 @@ def classify_queue_row(
         base["state"] = "held"
         base["rule"] = "cooldown_until"
         return base
-    # Offerable but starved while a seat is idle/bored.
+    # Offerable but starved while an *eligible* seat is idle/bored (FR #5900).
+    # An idle author-only shop must not look like unaccepted_starved --- that is
+    # no_eligible_reviewer (already returned above) or a quiet author seat.
     age = _row_age_s(row, now)
     offered_to = str(row.get("offered_to") or "").strip()
-    if (
-        not offered_to
-        and age >= UNACCEPTED_STARVE_S
-        and idle
-    ):
-        base["stuck"] = True
-        base["stuck_reason"] = "unaccepted_starved"
+    if not offered_to and age >= UNACCEPTED_STARVE_S and idle:
+        led = ledger if ledger is not None else (gitclaim.ledger_load(home) if home else {})
+        live_for_block = set(live or set()) | set(idle or set())
+        free_idle = {str(x).strip() for x in (idle or set()) if str(x).strip()}
+        # Match offer path: enrich FIX->MRB / related-MRB->UAT author stamps
+        # before eligibility so starve does not disagree with !bored offer.
+        doc: dict = {}
+        if home is not None:
+            try:
+                doc = gitclaim.load_queue(home) or {}
+            except Exception:
+                doc = {}
+        if not isinstance(doc, dict):
+            doc = {}
+        row_eff = (
+            gitclaim.enrich_review_author_fields(doc, row)
+            if task in {"MRB", "UAT"}
+            else row
+        )
+        eligible_idle = False
+        for nick in idle:
+            n = (gitclaim.canonical_worker_nick(str(nick)) or str(nick) or "").strip()
+            if not n:
+                continue
+            if task == "MRB":
+                if gitclaim._mrb_idle_block_reason(row_eff, n, live_for_block, led):
+                    continue
+            else:
+                if gitclaim.review_blocked_for_author(
+                    row_eff, n, live_for_block, ledger=led, free=free_idle
+                ):
+                    continue
+                if gitclaim.row_gave_up_by(row_eff, n, live=live_for_block):
+                    continue
+                if gitclaim.row_blocked_for_machine(row_eff, n):
+                    continue
+                if led and gitclaim.ledger_blocks(led, row_eff, n, live_for_block):
+                    continue
+            eligible_idle = True
+            break
+        if eligible_idle:
+            base["stuck"] = True
+            base["stuck_reason"] = "unaccepted_starved"
     return base
 
 
