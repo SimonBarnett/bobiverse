@@ -345,6 +345,7 @@ routes to bobiverse via the split rule.
 - airc bad_id: service on_line must dispatch action=bad_id (err+DONE) and log auth-allow without body; ear _AIRC_REPLY_BODY_RE must accept non-hex id= so waiters see DONE
 - LEGION default_installer_run tests must use a non-local host (not this machine name) or install_local skips the install_remote monkeypatch; scrub FAKE_ needles via runtime concat for FR #5721 source pins.
 - LEGION CredMan/SYSTEM-fallback unit pins must monkeypatch read_remote_airc_profile_result; otherwise host SMB profile_unreadable exits before run_fn and flakes on MarchHare-class boxes.
+- PRIORITY prepare form|report|procedure picks exact T$EXEC; form uses FORMPREPDRCT2 (run-formprep-via-eform.mjs), report/procedure REPPREPDIRECT2; untyped stays P-only; resolve types before prep_dir_missing; real prepDir fixtures for suites without E:\priority
 
 ## Harvest digest (lessons audit 2026-10-06)
 
