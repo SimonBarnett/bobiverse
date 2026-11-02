@@ -2,5 +2,11 @@
   "name": "airc-priority-web-sdk-worker",
   "private": true,
   "description": "Service-owned Priority Web SDK layout under airc (FR #5283). Not a product exe.",
-  "main": "priority_worker.py"
+  "main": "priority_worker.py",
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "priority-web-sdk": "3.0.39"
+  }
 }

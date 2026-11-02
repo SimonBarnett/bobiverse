@@ -424,8 +424,26 @@ function Stage-Product([string]$Name) {
         if (Test-Path -LiteralPath $pwSrc) {
             $pwDest = Join-Path $aircExeDir 'priority-worker'
             New-Item -ItemType Directory -Force -Path $pwDest | Out-Null
-            Get-ChildItem -LiteralPath $pwSrc -Force | Where-Object { $_.Name -ne '__pycache__' } | ForEach-Object {
+            Get-ChildItem -LiteralPath $pwSrc -Force | Where-Object { $_.Name -notin @('__pycache__', 'node_modules') } | ForEach-Object {
                 Copy-Item -LiteralPath $_.FullName -Destination $pwDest -Recurse -Force
+            }
+            # FR #5905: hydrate the staged kit before WiX harvest (also used by overlays).
+            foreach ($required in @('run-repprep-via-exec.mjs', 'package.json', 'package-lock.json')) {
+                if (-not (Test-Path -LiteralPath (Join-Path $pwDest $required) -PathType Leaf)) {
+                    throw "airc Priority SDK payload missing $required"
+                }
+            }
+            $npm = (Get-Command npm.cmd -ErrorAction SilentlyContinue).Source
+            if (-not $npm) { $npm = (Get-Command npm -ErrorAction Stop).Source }
+            Push-Location $pwDest
+            try {
+                & $npm ci --omit=dev --ignore-scripts --no-audit --no-fund
+                if ($LASTEXITCODE -ne 0) { throw "airc Priority SDK npm ci failed (exit $LASTEXITCODE)" }
+            } finally {
+                Pop-Location
+            }
+            if (-not (Test-Path -LiteralPath (Join-Path $pwDest 'node_modules\priority-web-sdk\index.js') -PathType Leaf)) {
+                throw 'airc Priority SDK vendor payload missing after npm ci'
             }
             Write-Host 'INFO airc staged airc\priority-worker (FR #5283)'
         } else {

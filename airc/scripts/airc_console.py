@@ -383,12 +383,13 @@ def _priority_sdk_repprep(
     form_prep: bool = False,
     cred_fetcher=None,
     node_runner=None,
+    install_root: str | Path | None = None,
     **_k,
 ) -> dict:
     """Run node mjs REPPREPDIRECT2 walk. Password via env only; never logged."""
     if form_prep or path.upper() != "REPPREPDIRECT2":
         return {"ok": False, "path": path, "reason": "refused_non_repprep"}
-    root = Path(os.environ.get("AIRC_INSTALL_ROOT") or r"C:\ai\airc")
+    root = Path(install_root or os.environ.get("AIRC_INSTALL_ROOT") or r"C:\ai\airc")
     pw = _priority.resolve_priority_worker_dir(root)
     mjs_candidates = [
         (pw / "sdk" / "run-repprep-via-exec.mjs") if pw else Path(),
@@ -439,6 +440,8 @@ def _priority_sdk_repprep(
             timeout=300,
             env=env,
         )
+    except FileNotFoundError:
+        return {"ok": False, "path": path, "reason": "node_missing"}
     except Exception as e:  # noqa: BLE001
         return {"ok": False, "path": path, "reason": f"sdk_exec_failed:{type(e).__name__}"}
     finally:
@@ -474,7 +477,7 @@ def build_console_prepare_hooks(install_root: str | Path | None = None) -> dict:
         cred_fetcher=_priority.fetch_credman_password,
         lock_reader=_priority_sqlcmd_lock,
         sdk_exec=lambda **kw: _priority_sdk_repprep(
-            cred_fetcher=_priority.fetch_credman_password, **kw
+            cred_fetcher=_priority.fetch_credman_password, install_root=install_root, **kw
         ),
     )
 

@@ -12,4 +12,5 @@ config/ircd.yaml
 **/connect.password
 __pycache__/
 *.pyc
+node_modules/
 .wixpdb
