@@ -1007,6 +1007,64 @@ def console_nicks_from_present(present: object) -> list[str]:
     return coerce_console_nicks(present)
 
 
+def normalize_irc_channel(channel: str) -> str:
+    ch = str(channel or "").strip()
+    if not ch:
+        return ""
+    if not ch.startswith("#"):
+        ch = "#" + ch
+    return ch.lower()
+
+
+def machine_hint_for_console(nick: str, channel: str, shop_mid: str | None = None) -> str:
+    """FR #5947: shop mid when known; else nick stem before _console; else channel id."""
+    if shop_mid:
+        return fold_machine_id(normalize_machine_id(shop_mid) or shop_mid)
+    low = str(nick or "").strip().lower()
+    if low.endswith("_console") and len(low) > len("_console"):
+        stem = low[: -len("_console")]
+        return fold_machine_id(normalize_machine_id(stem) or stem)
+    ch = normalize_irc_channel(channel)
+    if ch.startswith("#") and len(ch) > 1:
+        mid = normalize_machine_id(ch[1:]) or ch[1:]
+        return fold_machine_id(mid) if mid else ""
+    return ""
+
+
+def coerce_airc_console_presence(raw: object) -> list[dict]:
+    """FR #5947: [{nick, channel, machine}] credential-free presence rows."""
+    if not isinstance(raw, (list, tuple)):
+        return []
+    out: list[dict] = []
+    seen: set[tuple[str, str]] = set()
+    for item in raw:
+        if isinstance(item, str):
+            nick = item.strip()
+            channel = ""
+            machine = machine_hint_for_console(nick, "")
+        elif isinstance(item, dict):
+            nick = str(item.get("nick") or "").strip()
+            channel = normalize_irc_channel(str(item.get("channel") or ""))
+            machine = str(item.get("machine") or "").strip()
+            if not machine:
+                machine = machine_hint_for_console(nick, channel)
+            else:
+                machine = fold_machine_id(normalize_machine_id(machine) or machine)
+        else:
+            continue
+        low = nick.lower()
+        if not nick or not low.endswith("_console"):
+            continue
+        key = (low, channel.lower())
+        if key in seen:
+            continue
+        seen.add(key)
+        row = {"nick": nick, "channel": channel, "machine": machine}
+        out.append(row)
+    out.sort(key=lambda r: (str(r.get("nick") or "").lower(), str(r.get("channel") or "").lower()))
+    return out
+
+
 def _coerce_machine(mid: str, raw: object) -> dict:
     base = _empty_machine(mid)
     if not isinstance(raw, dict):
@@ -1541,6 +1599,62 @@ def remove_machine_console_nick(home: Path, mid: str, nick: str) -> list[str]:
     kept = [n for n in coerce_console_nicks(ent.get("console_nicks")) if n.lower() != gone]
     if kept != coerce_console_nicks(ent.get("console_nicks")):
         ent["console_nicks"] = kept
+        save_digest(home, doc)
+    return kept
+
+
+@_digest_locked
+def set_channel_console_presence(
+    home: Path,
+    channel: str,
+    nicks: object,
+    *,
+    machine: str | None = None,
+) -> list[dict]:
+    """FR #5947: replace *_console presence rows for one IRC channel (any chair channel)."""
+    ch = normalize_irc_channel(channel)
+    if not ch:
+        return coerce_airc_console_presence(load_digest(home).get("airc_console_presence"))
+    cleaned = coerce_console_nicks(nicks)
+    doc = load_digest(home)
+    rows = [
+        r
+        for r in coerce_airc_console_presence(doc.get("airc_console_presence"))
+        if str(r.get("channel") or "").lower() != ch
+    ]
+    for nick in cleaned:
+        rows.append(
+            {
+                "nick": nick,
+                "channel": ch,
+                "machine": machine_hint_for_console(nick, ch, machine),
+            }
+        )
+    rows = coerce_airc_console_presence(rows)
+    prev = coerce_airc_console_presence(doc.get("airc_console_presence"))
+    if rows != prev:
+        doc["airc_console_presence"] = rows
+        save_digest(home, doc)
+    return rows
+
+
+@_digest_locked
+def remove_channel_console_nick(home: Path, nick: str, channel: str | None = None) -> list[dict]:
+    """Drop one console from a channel (PART/KICK), or from every channel when channel is None (QUIT)."""
+    gone = str(nick or "").strip().lower()
+    ch = normalize_irc_channel(channel) if channel else ""
+    doc = load_digest(home)
+    prev = coerce_airc_console_presence(doc.get("airc_console_presence"))
+    kept = []
+    for r in prev:
+        if str(r.get("nick") or "").lower() != gone:
+            kept.append(r)
+            continue
+        if ch and str(r.get("channel") or "").lower() != ch:
+            kept.append(r)
+    kept = coerce_airc_console_presence(kept)
+    if kept != prev:
+        doc["airc_console_presence"] = kept
         save_digest(home, doc)
     return kept
 
@@ -3425,8 +3539,9 @@ def build_digest_object(home: Path, briefer_nick: str, now: datetime | None = No
         "queue": _public_queue(home),
         "copilot": _digest_copilot_pool(home),
         "intake_outbox": _intake_outbox_public(home),
-        # FR #5204: live airc *_console nicks from shop NAMES (no NickServ).
-        "airc_consoles": _airc_consoles_from_machines(exported),
+        # FR #5204 / #5947: live airc *_console nicks (shops + any chair channel).
+        "airc_consoles": _airc_consoles_export(doc, exported),
+        "airc_console_details": _airc_console_details_export(doc, exported),
         # FR #5510: stuck-job sweep report (silent accepts / untracked / held rules).
         "stuck": _digest_stuck(home),
     }
@@ -3438,6 +3553,41 @@ def _airc_consoles_from_machines(machines: dict) -> list[str]:
         if isinstance(ent, dict):
             found.extend(coerce_console_nicks(ent.get("console_nicks")))
     return coerce_console_nicks(found)
+
+
+def _airc_consoles_from_presence(doc: dict) -> list[str]:
+    return coerce_console_nicks(
+        [r.get("nick") for r in coerce_airc_console_presence((doc or {}).get("airc_console_presence"))]
+    )
+
+
+def _airc_consoles_export(doc: dict, machines: dict) -> list[str]:
+    found = _airc_consoles_from_machines(machines) + _airc_consoles_from_presence(doc)
+    return coerce_console_nicks(found)
+
+
+def _airc_console_details_export(doc: dict, machines: dict) -> list[dict]:
+    """FR #5947: [{nick, machine, channel}] for picker / ops; no secrets."""
+    rows = list(coerce_airc_console_presence((doc or {}).get("airc_console_presence")))
+    seen = {(str(r.get("nick") or "").lower(), str(r.get("channel") or "").lower()) for r in rows}
+    for mid, ent in (machines or {}).items():
+        if not isinstance(ent, dict):
+            continue
+        shop = str(ent.get("shop") or shop_channel(mid) or "").strip()
+        ch = normalize_irc_channel(shop) if shop else normalize_irc_channel("#" + str(mid))
+        for nick in coerce_console_nicks(ent.get("console_nicks")):
+            key = (nick.lower(), ch.lower())
+            if key in seen:
+                continue
+            seen.add(key)
+            rows.append(
+                {
+                    "nick": nick,
+                    "channel": ch,
+                    "machine": fold_machine_id(normalize_machine_id(mid) or mid),
+                }
+            )
+    return coerce_airc_console_presence(rows)
 
 
 def _chunk_json(raw: str) -> list[str]:
