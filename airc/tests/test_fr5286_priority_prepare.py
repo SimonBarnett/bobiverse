@@ -321,10 +321,36 @@ def test_fr5286_console_prepare_uses_hooks_not_bare_no_cred(monkeypatch, tmp_pat
 
     # Short prep path: IRC out line is capped ~350 UTF-8 bytes (FR #5616); a long
     # pytest tmp_path in prep_dir would trip reply-too-large after FR #5943 fields.
-    short_prep = Path(r"D:\Temp\p5943")
+    # Prefer a short directory under the process temp root (portable; no D: assume).
+    import tempfile
+
+    short_prep = Path(tempfile.gettempdir()) / "p5943"
     short_prep.mkdir(parents=True, exist_ok=True)
     inst = dict(INST)
     inst["prepDir"] = str(short_prep)
+    probe = (
+        'out id=c25bd00e seq=1 '
+        + json.dumps(
+            {
+                "ok": True,
+                "reason": "prepared",
+                "ename": "FOO",
+                "instance": "example-dev",
+                "prep_dir": str(short_prep),
+                "prep_dir_source": "override",
+                "prep_dir_tried": ["override"],
+                "prp_mtime_before": 10.0,
+                "prp_mtime_after": 11.0,
+                "prp_advanced": True,
+                "upd": "N",
+            },
+            separators=(",", ":"),
+        )
+    )
+    if len(probe.encode("utf-8")) > 340:
+        import pytest
+
+        pytest.skip("temp path too long for IRC reply budget (FR #5616)")
     monkeypatch.setattr(ac, "build_console_prepare_hooks", fake_hooks2)
     monkeypatch.setattr(
         ac,
