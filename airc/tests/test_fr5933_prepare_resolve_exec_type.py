@@ -130,6 +130,7 @@ def test_fr5933_sqlcmd_ename_rows_parses_multi_type(monkeypatch):
     def fake_run(*a, **k):
         # Query must not force TYPE=P. argv: sqlcmd -S ... -Q <query> ...
         argv = list(a[0]) if a else []
+        assert "-b" in argv  # MRB #5936: fail on SQL error
         q = ""
         if "-Q" in argv:
             q = str(argv[argv.index("-Q") + 1])
@@ -145,6 +146,45 @@ def test_fr5933_sqlcmd_ename_rows_parses_multi_type(monkeypatch):
     assert len(rows) == 2
     types = sorted(r["exec_type"] for r in rows)
     assert types == ["F", "R"]
+
+
+def test_mrb5936_sqlcmd_nonzero_exit_is_sql_read_failed_not_procedure():
+    """Failed sqlcmd with a partial P row must not run the SDK (CodeRabbit major)."""
+    sdk_calls = {"n": 0}
+
+    class _Proc:
+        def __init__(self):
+            # Partial stdout that would look like a single procedure if trusted.
+            self.stdout = "FOO|1|P|Y\n"
+            self.stderr = "Sqlcmd: Error: ..."
+            self.returncode = 1
+
+    def fake_run(*a, **k):
+        argv = list(a[0]) if a else []
+        assert "-b" in argv
+        return _Proc()
+
+    def types_reader(*, ename, instance):
+        return ac._priority_sqlcmd_ename_rows(
+            ename=ename, instance=instance, runner=fake_run
+        )
+
+    def sdk(**kw):
+        sdk_calls["n"] += 1
+        return {"ok": True, "path": "REPPREPDIRECT2"}
+
+    r = pw.run_priority_prepare(
+        "FOO",
+        instance_id="example-dev",
+        instances=[INST],
+        **_ok_hooks(
+            sdk_exec=sdk,
+            resolve_ename_types=lambda **kw: types_reader(**kw),
+        ),
+    )
+    assert r["ok"] is False
+    assert r["reason"] == "sql_read_failed"
+    assert sdk_calls["n"] == 0
 
 
 def test_fr5933_default_hooks_resolve_before_sdk():

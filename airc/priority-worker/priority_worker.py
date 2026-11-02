@@ -205,12 +205,24 @@ def run_priority_prepare(
     if not target or not has_cred(target):
         base["reason"] = "no_cred"
         return base
+    # FR #5932: prepDir is required for prepare .prp gates. Missing prepDir made
+    # _mtime_for return 0.0 before and after, so success looked like prp_unchanged.
+    prep = str(inst.get("prepDir") or inst.get("prep_dir") or "").strip()
+    if not prep:
+        base["reason"] = "prep_dir_missing"
+        base["prp_mtime_before"] = 0.0
+        base["prp_mtime_after"] = 0.0
+        return base
     # FR #5933: resolve T$EXEC types before SDK so form/report names cannot
     # silently prepare a same-named report while TYPE=P lock looks empty.
     if resolve_ename_types is not None:
         try:
             rows = list(resolve_ename_types(ename=name, instance=inst) or [])
-        except Exception:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001
+            reason = getattr(exc, "prepare_reason", None) or ""
+            if reason == "sql_read_failed" or str(exc) == "sql_read_failed":
+                base["reason"] = "sql_read_failed"
+                return base
             rows = []
         rows = [r for r in rows if isinstance(r, dict)]
         types = sorted(

@@ -324,13 +324,24 @@ def load_priority_instances(install_root: str | Path | None = None) -> list[dict
     return []
 
 
+class _PrioritySqlReadFailed(Exception):
+    """sqlcmd type/lock lookup failed; prepare must not treat stdout as rows."""
+
+    prepare_reason = "sql_read_failed"
+
+
 def _priority_sqlcmd_ename_rows(
     *,
     ename: str,
     instance: dict,
     runner=None,
 ) -> list[dict]:
-    """FR #5933: every T$EXEC row for ENAME (all TYPEs). Never UPDATEs."""
+    """FR #5933: every T$EXEC row for ENAME (all TYPEs). Never UPDATEs.
+
+    MRB #5936: require sqlcmd ``-b`` and a zero exit code before parsing. A
+    failed command must not yield a partial ``P`` row that prepare would treat
+    as an unambiguous procedure (``sql_read_failed``).
+    """
     server = str(instance.get("sqlServer") or instance.get("sql_server") or "").strip()
     db = str(instance.get("systemDb") or instance.get("system_db") or "system").strip()
     if not server or not ename:
@@ -346,13 +357,30 @@ def _priority_sqlcmd_ename_rows(
     run = runner or subprocess.run
     try:
         proc = run(
-            ["sqlcmd", "-S", server, "-E", "-d", db, "-Q", q, "-W", "-h", "-1", "-s", "|"],
+            [
+                "sqlcmd",
+                "-S",
+                server,
+                "-E",
+                "-d",
+                db,
+                "-b",
+                "-Q",
+                q,
+                "-W",
+                "-h",
+                "-1",
+                "-s",
+                "|",
+            ],
             capture_output=True,
             text=True,
             timeout=60,
         )
     except Exception:  # noqa: BLE001
-        return []
+        raise _PrioritySqlReadFailed("sql_read_failed") from None
+    if int(getattr(proc, "returncode", 0) or 0) != 0:
+        raise _PrioritySqlReadFailed("sql_read_failed")
     out: list[dict] = []
     for line in (proc.stdout or "").splitlines():
         s = line.strip()
