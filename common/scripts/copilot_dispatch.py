@@ -361,36 +361,126 @@ def refresh_allowance(
 
 
 def pool_for_digest(home: Path) -> dict:
+    """FR #5965: surface coding-agent exhausted/failed state over unlimited tile."""
     doc = load_allowance(home)
+    state = str(doc.get("state") or "unknown")
+    exhausted = bool(
+        doc.get("exhausted")
+        or doc.get("tasks_exhausted")
+        or state in ("exhausted", "quota_exhausted", "failed")
+    )
+    if exhausted and state in ("", "unknown", "ok"):
+        state = "exhausted"
     return {
         "plan": doc.get("plan") or "",
         "used": doc.get("used"),
         "remaining": doc.get("remaining"),
-        "unlimited": bool(doc.get("unlimited")),
+        "unlimited": bool(doc.get("unlimited")) and not exhausted,
         "percent_remaining": doc.get("percent_remaining"),
         "reset_at": doc.get("reset_at") or "",
         "source": doc.get("source") or "copilot_internal/user",
         "fetched_at": doc.get("fetched_at") or "",
-        "state": doc.get("state") or "unknown",
+        "state": state,
         "resume_at": doc.get("exhausted_until_utc") or "",
         "resume_source": doc.get("exhausted_until_source") or "",
     }
 
 
+def _error_text(blob: object) -> str:
+    """Flatten API/session error payloads into a lower-case searchable string."""
+    if blob is None:
+        return ""
+    if isinstance(blob, str):
+        return blob.lower()
+    if isinstance(blob, dict):
+        parts = [
+            blob.get("message"),
+            blob.get("error"),
+            blob.get("code"),
+            blob.get("type"),
+        ]
+        nested = blob.get("error")
+        if isinstance(nested, dict):
+            parts.extend([nested.get("message"), nested.get("code"), nested.get("type")])
+        usage = blob.get("usage")
+        if isinstance(usage, dict):
+            parts.append(usage.get("type"))
+        return " ".join(str(p) for p in parts if p).lower()
+    return str(blob).lower()
+
+
 def is_exhausted(resp: dict | None) -> bool:
+    """FR #5965: also match coding-agent 'exceeded your monthly quota' session errors."""
     if not isinstance(resp, dict):
         return False
     status = int(resp.get("status") or resp.get("status_code") or 0)
-    msg = str(resp.get("message") or resp.get("error") or "").lower()
+    msg = _error_text(resp)
     if status in (402, 403, 429) and any(
-        k in msg for k in ("quota", "allowance", "rate", "exhaust", "copilot")
+        k in msg for k in ("quota", "allowance", "rate", "exhaust", "copilot", "credit")
     ):
         return True
     if "allowance exhausted" in msg or "quota exceeded" in msg:
         return True
+    if "exceeded your monthly quota" in msg or "monthly quota" in msg:
+        return True
+    if "ai_credits" in msg and ("exceed" in msg or "quota" in msg or "limit" in msg):
+        return True
     if "out of tokens" in msg or "no tokens" in msg or "token quota" in msg:
         return True
+    if any(k in msg for k in ("credit limit", "credits exhausted", "usage limit")):
+        return True
     return False
+
+
+def session_quota_error(task_info: dict | None) -> str | None:
+    """Return a quota/limit error from task/session error fields, else None.
+
+    Only ``error`` / ``failure`` / ``last_error`` count. Do not scan free-form
+    ``message`` / ``output`` text: a completed MRB board that mentions quota
+    must not trip exhaustion (MRB #5967 fix).
+    """
+    if not isinstance(task_info, dict):
+        return None
+    artifacts = [task_info] + [
+        s for s in (task_info.get("sessions") or []) if isinstance(s, dict)
+    ]
+    for info in artifacts:
+        for key in ("error", "failure", "last_error"):
+            err = info.get(key)
+            if err is None:
+                continue
+            payload = err if isinstance(err, dict) else {"message": err}
+            if is_exhausted(payload) or is_exhausted({"message": _error_text(payload)}):
+                text = ""
+                if isinstance(err, dict):
+                    text = str(err.get("message") or err.get("code") or "")
+                else:
+                    text = str(err)
+                return text or "coding-agent quota exceeded"
+    return None
+
+
+def extract_mrb_verdict_from_task(task_info: dict | None) -> str | None:
+    """Parse MRB PASS/FAIL from completed task / session output text."""
+    if not isinstance(task_info, dict):
+        return None
+    chunks: list[str] = []
+    for key in ("output", "result", "summary", "message", "body"):
+        val = task_info.get(key)
+        if isinstance(val, str) and val.strip():
+            chunks.append(val)
+    for sess in task_info.get("sessions") or []:
+        if not isinstance(sess, dict):
+            continue
+        for key in ("output", "result", "summary", "message", "body", "text"):
+            val = sess.get(key)
+            if isinstance(val, str) and val.strip():
+                chunks.append(val)
+    for chunk in chunks:
+        verdict = parse_mrb_verdict(chunk)
+        if verdict:
+            return verdict
+    return None
 
 
 def _utc_iso(epoch: float) -> str:
@@ -630,13 +720,101 @@ def announce_complete(
     pr_url: str = "",
     reason: str = "",
 ) -> str:
+    """FR #5965: emit MRB PASS/FAIL only for a real parsed verdict, never infra fails."""
     ident_s = ident if str(ident).startswith("#") else f"#{ident}"
-    res = (result or reason or "done").strip()
-    if str(task).upper() == "MRB" and res.upper() in ("PASS", "FAIL"):
-        return f"{COPILOT_NICK}: DONE MRB {repo}{ident_s} {res.upper()} {pr_url}".rstrip()
+    verdict = str(result or "").strip().upper()
+    if str(task).upper() == "MRB" and verdict in ("PASS", "FAIL") and not reason:
+        return f"{COPILOT_NICK}: DONE MRB {repo}{ident_s} {verdict} {pr_url}".rstrip()
+    if str(task).upper() == "MRB" and verdict in ("PASS", "FAIL") and str(reason).strip().upper() in (
+        "",
+        "PASS",
+        "FAIL",
+    ):
+        return f"{COPILOT_NICK}: DONE MRB {repo}{ident_s} {verdict} {pr_url}".rstrip()
     if reason:
-        return f"DONE {task} {repo}{ident_s} copilot {reason} {pr_url}".rstrip()
-    return f"DONE {task} {repo}{ident_s} {pr_url}".rstrip()
+        return f"{COPILOT_NICK}: DONE {task} {repo}{ident_s} copilot {reason} {pr_url}".rstrip()
+    res = (result or "done").strip()
+    return f"{COPILOT_NICK}: DONE {task} {repo}{ident_s} {res} {pr_url}".rstrip()
+
+
+def _soft_release_copilot_row(
+    home: Path, *, repo: str, task: str, ident: str
+) -> dict | None:
+    """Return one Copilot-accepted row to unaccepted with no give-up stamp (FR #5965)."""
+    moved = None
+    try:
+        with gitclaim._lock(home):
+            doc = gitclaim._load_queue_unlocked(home)
+            acc = list(doc.get("accepted") or [])
+            keep = []
+            un = doc.setdefault("unaccepted", [])
+            for r in acc:
+                if (
+                    str(r.get("nick") or "").strip().lower() == COPILOT_NICK
+                    and gitclaim._repo_key(r.get("repo")) == gitclaim._repo_key(repo)
+                    and str(r.get("task") or "").upper() == str(task or "").upper()
+                    and gitclaim._norm_row_id(r.get("id")) == gitclaim._norm_row_id(ident)
+                ):
+                    moved = dict(r)
+                    moved.pop("nick", None)
+                    moved.pop("accepted_ts", None)
+                    if not any(
+                        gitclaim._repo_key(u.get("repo")) == gitclaim._repo_key(moved.get("repo"))
+                        and gitclaim._norm_row_id(u.get("id"))
+                        == gitclaim._norm_row_id(moved.get("id"))
+                        and str(u.get("task") or "").upper()
+                        == str(moved.get("task") or "").upper()
+                        for u in un
+                    ):
+                        un.append(moved)
+                else:
+                    keep.append(r)
+            doc["accepted"] = keep
+            gitclaim._write_queue(gitclaim.queue_path(home), doc)
+    except (TimeoutError, OSError, ValueError):
+        return moved
+    return moved
+
+
+def fetch_mrb_verdict_from_pr_comments(
+    get: Callable[[str], Any],
+    *,
+    repo: str,
+    pr_num: str,
+    task_id: str = "",
+    head_sha: str = "",
+) -> str | None:
+    """FR #5965: find MRB verdict in PR comments; task id / head SHA beat login filters."""
+    num = str(pr_num or "").lstrip("#")
+    if not repo or not num.isdigit():
+        return None
+    tid = str(task_id or "").strip().lower()
+    sha = str(head_sha or "").strip().lower()
+    try:
+        comments = get(f"repos/{repo}/issues/{num}/comments?per_page=100")
+    except Exception:  # noqa: BLE001
+        return None
+    if not isinstance(comments, list):
+        return None
+    for comment in comments:
+        if not isinstance(comment, dict):
+            continue
+        body = str(comment.get("body") or "")
+        verdict = parse_mrb_verdict(body)
+        if not verdict:
+            continue
+        login = str(((comment.get("user") or {}) if isinstance(comment.get("user"), dict) else {}).get("login") or "").lower()
+        blob = body.lower()
+        if "copilot" in login:
+            return verdict
+        if tid and tid in blob:
+            return verdict
+        if sha and len(sha) >= 7 and sha[:7] in blob:
+            return verdict
+        # Board that cites the head SHA in ## MRB board prose.
+        if sha and sha in blob:
+            return verdict
+    return None
 
 
 def _load_jobs(home: Path) -> dict:
@@ -885,10 +1063,8 @@ def _matching_job(home: Path, row: dict) -> dict | None:
     return None
 
 
-def _job_is_live(job: dict | None, now: float) -> bool:
-    if not isinstance(job, dict):
-        return False
-    if str(job.get("state") or "").strip().lower() in (
+_TERMINAL_JOB_STATES = frozenset(
+    {
         "completed",
         "complete",
         "failed",
@@ -896,7 +1072,19 @@ def _job_is_live(job: dict | None, now: float) -> bool:
         "cancelled",
         "canceled",
         "error",
-    ):
+    }
+)
+
+
+def _job_is_live(job: dict | None, now: float, *, honor_timeout: bool = True) -> bool:
+    """True when a tracked Copilot job should still hold the accepted row.
+
+    ``honor_timeout=False`` (stuck sweep): keep any non-terminal tracked row
+    until the dispatcher settles it, even past ``TASK_TIMEOUT_S`` (MRB #5967).
+    """
+    if not isinstance(job, dict):
+        return False
+    if str(job.get("state") or "").strip().lower() in _TERMINAL_JOB_STATES:
         return False
     try:
         started = float(job.get("started") or 0)
@@ -904,6 +1092,8 @@ def _job_is_live(job: dict | None, now: float) -> bool:
         started = 0.0
     if not started:
         return False
+    if not honor_timeout:
+        return True
     return (float(now) - started) < TASK_TIMEOUT_S
 
 
@@ -1288,7 +1478,12 @@ def handle_timeout_or_fail(
     home: Path, job: dict, *, now: float, reason: str = "timeout",
     get: Callable[[str], Any] | None = None,
 ) -> dict:
-    """Keep cloud work tracked, otherwise use the same GIVEUP path as IRC seats."""
+    """Keep cloud work tracked, otherwise use the same GIVEUP path as IRC seats.
+
+    FR #5965: coding-agent quota errors exhaust fuel and soft-requeue (no fake
+    MRB FAIL / breaker). Completed MRB tasks parse a verdict or return to seats
+    immediately instead of waiting out TASK_TIMEOUT_S.
+    """
     repo = str(job.get("repo") or "")
     task = str(job.get("task") or "FR").upper()
     ident = str(job.get("id") or "")
@@ -1297,8 +1492,9 @@ def handle_timeout_or_fail(
         if (r.get("repo"), str(r.get("task") or "").upper(), r.get("id"), r.get("nick"))
         == (repo, task, ident, COPILOT_NICK)
     ), None)
+    info: dict = {}
+    state = ""
     if accepted is not None:
-        info = {}
         try:
             if get is not None:
                 info = get(f"{tasks_api_path(repo)}/{job['task_id']}")
@@ -1307,6 +1503,100 @@ def handle_timeout_or_fail(
                 state = str(info.get("state") or info.get("status") or "").lower()
                 if state in ("failed", "cancelled", "canceled", "error"):
                     reason = state
+                # Completed cloud task first: never treat board/output text as quota.
+                if state in ("completed", "complete", "success"):
+                    verdict = extract_mrb_verdict_from_task(info)
+                    pr_url = _job_pr_url(job, repo) or str(
+                        accepted.get("url") or ""
+                    )
+                    if not verdict and task == "MRB" and get is not None:
+                        pr_num = ""
+                        parsed = gitclaim.parse_github_pull_url(pr_url)
+                        if parsed:
+                            pr_num = parsed[1]
+                        else:
+                            pr_num = str(ident).lstrip("#")
+                        head_sha = ""
+                        with contextlib.suppress(Exception):
+                            pr_blob = get(f"repos/{repo}/pulls/{pr_num.lstrip('#')}")
+                            if isinstance(pr_blob, dict):
+                                head_sha = str(
+                                    ((pr_blob.get("head") or {}) if isinstance(pr_blob.get("head"), dict) else {}).get("sha")
+                                    or ""
+                                )
+                        verdict = fetch_mrb_verdict_from_pr_comments(
+                            get,
+                            repo=repo,
+                            pr_num=pr_num,
+                            task_id=str(job.get("task_id") or ""),
+                            head_sha=head_sha,
+                        )
+                    if task == "MRB" and verdict:
+                        st, _done_job = shop_listen.complete_job_by_ref(
+                            home,
+                            nick=COPILOT_NICK,
+                            repo=repo,
+                            task="MRB",
+                            ident=ident,
+                            result=verdict,
+                            url=pr_url,
+                        )
+                        if st != "ok":
+                            return {
+                                "status": st or "error",
+                                "verdict": verdict,
+                                "reason": "complete_not_ok",
+                            }
+                        _record_mrb_result(
+                            home, {"task": "MRB"}, now=now, giveup=False
+                        )
+                        _forget_job(home, repo, task, ident)
+                        line = announce_complete(
+                            repo=repo,
+                            task=task,
+                            ident=ident,
+                            result=verdict,
+                            pr_url=pr_url,
+                        )
+                        bobreport.enqueue_chair_fleet_privmsg(home, line)
+                        return {
+                            "status": "complete",
+                            "verdict": verdict,
+                            "line": line,
+                        }
+                    if task == "MRB" and not verdict:
+                        _soft_release_copilot_row(
+                            home, repo=repo, task=task, ident=ident
+                        )
+                        _forget_job(home, repo, task, ident)
+                        line = announce_complete(
+                            repo=repo,
+                            task=task,
+                            ident=ident,
+                            result="",
+                            reason="no_verdict",
+                            pr_url=pr_url,
+                        )
+                        bobreport.enqueue_chair_fleet_privmsg(home, line)
+                        return {"status": "requeue", "reason": "no_verdict"}
+                    # Non-MRB completed: fall through to existing-work / giveup paths.
+                quota_msg = session_quota_error(info)
+                if quota_msg:
+                    pause_lines: list[str] = []
+
+                    def _pause_announce(line: str) -> None:
+                        pause_lines.append(line)
+                        bobreport.enqueue_chair_fleet_privmsg(home, line)
+
+                    mark_tokens_exhausted(home, now=now, announce=_pause_announce)
+                    pause = "copilot paused: coding-agent quota exceeded"
+                    if pause not in pause_lines:
+                        bobreport.enqueue_chair_fleet_privmsg(home, pause)
+                    _soft_release_copilot_row(
+                        home, repo=repo, task=task, ident=ident
+                    )
+                    _forget_job(home, repo, task, ident)
+                    return {"status": "quota", "reason": quota_msg}
             started = float(job.get("started") or 0)
             if reason == "timeout" and now - started < TASK_TIMEOUT_S:
                 return {"status": "pending"}
@@ -1368,20 +1658,23 @@ def handle_timeout_or_fail(
         return {"status": "stale"}
     with contextlib.suppress(Exception):
         gitclaim.ledger_giveup(home, COPILOT_NICK, repo, task, ident)
+    # FR #5965: never format infra timeout/fail as DONE MRB PASS|FAIL.
     line = announce_complete(
-        repo=repo, task=task, ident=ident, result="fail", reason=reason
+        repo=repo, task=task, ident=ident, result="", reason=reason or "timeout"
     )
     bobreport.enqueue_chair_fleet_privmsg(home, line)
-    return {"status": "giveup", "reason": reason}
+    status_out = "timeout" if (reason or "") == "timeout" else "failed"
+    return {"status": "giveup", "reason": reason, "outcome": status_out}
 
 
 
 def handle_issue_comment(home: Path, payload: dict) -> dict | None:
+    """FR #5965: accept MRB verdict comments that cite task id / head SHA without
+    requiring 'copilot' in the commenter login.
+    """
     comment = payload.get("comment") if isinstance(payload.get("comment"), dict) else {}
     user = comment.get("user") if isinstance(comment.get("user"), dict) else {}
     login = str(user.get("login") or "").lower()
-    if "copilot" not in login:
-        return None
     body = str(comment.get("body") or "")
     verdict = parse_mrb_verdict(body)
     issue = payload.get("issue") if isinstance(payload.get("issue"), dict) else {}
@@ -1398,25 +1691,38 @@ def handle_issue_comment(home: Path, payload: dict) -> dict | None:
     pr_url = str(issue.get("html_url") or "")
     if "/issues/" in pr_url and issue.get("pull_request"):
         pr_url = pr_url.replace("/issues/", "/pull/")
-    if verdict:
-        st, job = shop_listen.complete_job_by_ref(
-            home,
-            nick=COPILOT_NICK,
-            repo=repo,
-            task="MRB",
-            ident=ident,
-            result=verdict,
-            url=pr_url,
-        )
-        if st == "ok":
-            _record_mrb_result(home, {"task": "MRB"}, now=time.time(), giveup=False)
-            _forget_job(home, repo, "MRB", ident)
-        line = announce_complete(
-            repo=repo, task="MRB", ident=ident, result=verdict, pr_url=pr_url
-        )
-        bobreport.enqueue_chair_fleet_privmsg(home, line)
-        return {"status": st, "verdict": verdict, "line": line}
-    return None
+    if not verdict:
+        return None
+    job = _matching_job(
+        home, {"repo": repo, "task": "MRB", "id": ident}
+    )
+    task_id = str((job or {}).get("task_id") or "").strip().lower()
+    head_sha = str((job or {}).get("head_sha") or (job or {}).get("sha") or "").strip().lower()
+    blob = body.lower()
+    allowed = "copilot" in login
+    if not allowed and task_id and task_id in blob:
+        allowed = True
+    if not allowed and head_sha and len(head_sha) >= 7 and head_sha[:7] in blob:
+        allowed = True
+    if not allowed:
+        return None
+    st, _done_job = shop_listen.complete_job_by_ref(
+        home,
+        nick=COPILOT_NICK,
+        repo=repo,
+        task="MRB",
+        ident=ident,
+        result=verdict,
+        url=pr_url,
+    )
+    if st == "ok":
+        _record_mrb_result(home, {"task": "MRB"}, now=time.time(), giveup=False)
+        _forget_job(home, repo, "MRB", ident)
+    line = announce_complete(
+        repo=repo, task="MRB", ident=ident, result=verdict, pr_url=pr_url
+    )
+    bobreport.enqueue_chair_fleet_privmsg(home, line)
+    return {"status": st, "verdict": verdict, "line": line}
 
 
 def stamp_webhook_activity(home: Path, event: str, payload: dict) -> None:
@@ -1567,6 +1873,9 @@ def tick(
     out: dict[str, Any] = {
         "dispatched": 0,
         "timed_out": 0,
+        "failed": 0,
+        "quota": 0,
+        "completed": 0,
         "dropped": int(settled.get("dropped") or 0),
         "released": int(settled.get("released") or 0),
     }
@@ -1581,8 +1890,19 @@ def tick(
     jobs = _load_jobs(home)
     for job in list(jobs.get("jobs") or []):
         r = handle_timeout_or_fail(home, job, now=now_f, reason="timeout", get=get)
-        if r.get("status") == "giveup":
-            out["timed_out"] += 1
+        st = str(r.get("status") or "")
+        if st == "quota":
+            out["quota"] += 1
+        elif st == "complete":
+            out["completed"] += 1
+        elif st == "giveup":
+            outcome = str(r.get("outcome") or r.get("reason") or "")
+            if outcome == "timeout" or str(r.get("reason") or "") == "timeout":
+                out["timed_out"] += 1
+            else:
+                out["failed"] += 1
+        elif st == "requeue":
+            out["failed"] += 0  # soft requeue; not a timeout/fail counter bump
     ledger = gitclaim.ledger_load(home)
     active = {
         (j.get("repo"), j.get("task"), j.get("id"))
