@@ -66,6 +66,15 @@ function emit(payload) {
   process.stdout.write(`${JSON.stringify(payload)}\n`);
 }
 
+/** FR #5999: secret-safe bounded message for intake sdk_message (slice 200). */
+function boundedMessage(err, maxLen = 200) {
+  let s = String((err && (err.message || err)) || '');
+  s = s.replace(/(password|passwd|secret|pwd|token)\s*[:=]\s*\S+/gi, '$1=***');
+  s = s.replace(/\s+/g, ' ').trim();
+  if (s.length > maxLen) s = s.slice(0, maxLen);
+  return s;
+}
+
 function loadSdk() {
   const candidates = [
     path.join(__dirname, '..', 'node_modules', 'priority-web-sdk'),
@@ -176,9 +185,11 @@ async function main() {
   try {
     await priority.login(args.user, password, args.company);
   } catch (e) {
+    // FR #5999: include bounded message so Python intake sdk_message is not empty.
     emit({
       ok: false,
       error: classifyError(e) === 'sdk-fault' ? 'no-access' : classifyError(e),
+      message: boundedMessage(e),
       op,
       form: formName,
     });
@@ -190,7 +201,14 @@ async function main() {
     // Read-only: formStart only. Never activateStart / setValue / prepare.
     form = await priority.formStart(formName, () => {}, null, { company: args.company }, 1);
   } catch (e) {
-    emit({ ok: false, error: classifyError(e), op, form: formName });
+    // FR #5999: unclassified throws must carry message for sdk-fault triage.
+    emit({
+      ok: false,
+      error: classifyError(e),
+      message: boundedMessage(e),
+      op,
+      form: formName,
+    });
     process.exit(2);
   }
 
@@ -219,6 +237,7 @@ async function main() {
         emit({
           ok: false,
           error: classifyError(e),
+          message: boundedMessage(e),
           op: 'subform',
           form: formName,
           path: subPath,
@@ -245,6 +264,7 @@ async function main() {
       emit({
         ok: false,
         error: err === 'form-not-found' ? 'subform-not-found' : err,
+        message: boundedMessage(e),
         op: 'subform',
         form: formName,
         path: subPath,
@@ -261,6 +281,7 @@ async function main() {
     emit({
       ok: false,
       error: classifyError(e),
+      message: boundedMessage(e),
       op: op === 'getRows' ? 'getRows' : 'formStart',
       form: formName,
     });
@@ -298,6 +319,10 @@ async function main() {
 }
 
 main().catch((e) => {
-  emit({ ok: false, error: classifyError(e), message: String((e && e.message) || e) });
+  emit({
+    ok: false,
+    error: classifyError(e),
+    message: boundedMessage(e),
+  });
   process.exit(2);
 });
