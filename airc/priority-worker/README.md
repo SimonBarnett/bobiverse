@@ -1,6 +1,6 @@
 # Airc Priority worker (in-service)
 
-FR #5283 / FR #5905. This folder is the **service-owned** Priority Web SDK worker layout.
+FR #5283 / FR #5905 / FR #5960. This folder is the **service-owned** Priority Web SDK worker layout. Priority is optional: hosts without a live allowlist never load this worker at startup; PRIORITY verbs refuse with `priority_not_installed`.
 
 - Path: `<ai root>\airc\airc\priority-worker\` after pack (next to `airc.exe`)
 - Invoke only from the Airc Priority module (`AIRC_PRIORITY_OWNED=1` or `--from-airc`)

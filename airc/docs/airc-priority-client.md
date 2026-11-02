@@ -1,5 +1,7 @@
 # Airc Priority Client (allowlist + PRIORITY connect/status)
 
+**Priority is optional (FR #5960).** Airc installs, starts, and runs CMD/UPDATE/CRED/LEGION/EXTENSION/NETWORK/DCC with no Priority product, no live `priority-instances.json`, and no Priority SDK. PRIORITY verbs then return `reason=priority_not_installed` (no crash, no FR #5775 intake). Live `config/priority-instances.json` with at least one instance (or `AIRC_PRIORITY_ALLOWLIST`) opts Priority support in; empty `instances: []` is treated as absent (`priority_allowlist_empty`). Schema field errors (e.g. missing `credentialTarget`) stay distinct from `priority_not_installed`. The shipped `priority-instances.example.json` is docs/tests only.
+
 Parent vision: [feature-request-airc-priority-client-2026-10-31.md](./feature-request-airc-priority-client-2026-10-31.md) (Success **S1** / **S2** / **S6**).
 
 Issues: FR-A schema [#5275](https://github.com/SimonBarnett/bobiverse/issues/5275); FR-C verbs [#5284](https://github.com/SimonBarnett/bobiverse/issues/5284). FR-B live Web SDK packaging remains [#5283](https://github.com/SimonBarnett/bobiverse/issues/5283) (SelfTest uses a mock connector until then).
@@ -29,13 +31,15 @@ Root object:
 }
 ```
 
-Required per instance: id, url (must be https://), company, user, credentialTarget (Windows CredMan generic target). Optional: sqlServer, systemDb. **`prepDir` is required for `PRIORITY prepare`** (absolute path to the Priority `.prp` folder, e.g. `E:\\priority\\system\\prep`). Without it, prepare returns `reason=prep_dir_missing` instead of a false `prp_unchanged` (FR #5932). FR #5946: `PRIORITY prepare form|report|procedure <ENAME>` selects the exact T$EXEC type (form uses `FORMPREPDRCT2`; report/procedure use `REPPREPDIRECT2`); untyped `prepare <ENAME>` remains procedure-only.
+Required per instance: id, url (must be https://), company, user, credentialTarget (Windows CredMan generic target). Optional: sqlServer, systemDb, priorityRoot (Priority install root), prepDir. **`prepDir` is an optional override** for `PRIORITY prepare` (absolute `.prp` folder, e.g. `E:\priority\system\prep`). When unset, prepare derives `<priorityRoot>\system\prep`, then `tabula.ini` Priority Directory, then `PRIORITY_PREP_DIR` / `PRIORITY_ROOT` (FR #5943). Reply includes `prep_dir` + `prep_dir_source` (`override`|`derived`). If derivation fails (and no valid override), `reason=prep_dir_missing` with `prep_dir_tried` --- never a false `prp_unchanged` (FR #5932 / #5937).
+ FR #5946: `PRIORITY prepare form|report|procedure <ENAME>` selects the exact T$EXEC type (form uses `FORMPREPDRCT2`; report/procedure use `REPPREPDIRECT2`); untyped `prepare <ENAME>` remains procedure-only.
 
 Loader rules (airc/scripts/airc_priority.py):
 
-- Prefer live priority-instances.json; else example for docs/tests; override with env AIRC_PRIORITY_ALLOWLIST. PRIORITY form walk uses the same resolver (FR #5535).
+- Live Priority only: `config/priority-instances.json`, `AIRC_PRIORITY_ALLOWLIST`, or an explicit override (FR #5960). The shipped `priority-instances.example.json` is documentation/tests only and never enables live PRIORITY verbs. Form walk uses the same live resolver (FR #5535).
 - Fail closed when missing, empty instances, unknown id, non-https URL, or duplicate id.
 - Reject any JSON key whose name contains pass or is secret / token / pwd (CredMan only).
+
 
 ## PRIORITY verbs (FR-C)
 

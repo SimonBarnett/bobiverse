@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import json
 import sys
-
+from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
@@ -324,11 +324,51 @@ def test_fr5286_console_prepare_uses_hooks_not_bare_no_cred(monkeypatch, tmp_pat
             prp_stat=prp_stat,
         )
 
+    # Short prep path: IRC out line is capped ~350 UTF-8 bytes (FR #5616); a long
+    # pytest tmp_path in prep_dir would trip reply-too-large after FR #5943 fields.
+    # Prefer a short directory under the process temp root (portable; no D: assume).
+    import tempfile
+
+    short_prep = Path(tempfile.gettempdir()) / "p5943"
+    short_prep.mkdir(parents=True, exist_ok=True)
+    inst = dict(INST)
+    inst["prepDir"] = str(short_prep)
+    probe = (
+        'out id=c25bd00e seq=1 '
+        + json.dumps(
+            {
+                "ok": True,
+                "reason": "prepared",
+                "ename": "FOO",
+                "instance": "example-dev",
+                "prep_dir": str(short_prep),
+                "prep_dir_source": "override",
+                "prep_dir_tried": ["override"],
+                "prp_mtime_before": 10.0,
+                "prp_mtime_after": 11.0,
+                "prp_advanced": True,
+                "upd": "N",
+            },
+            separators=(",", ":"),
+        )
+    )
+    if len(probe.encode("utf-8")) > 340:
+        import pytest
+
+        pytest.skip("temp path too long for IRC reply budget (FR #5616)")
     monkeypatch.setattr(ac, "build_console_prepare_hooks", fake_hooks2)
+    # FR #5960: live allowlist opts Priority in (example.json alone is not enough).
+    # Keep short_prep (FR #5943 / #5616): do not overwrite with long tmp_path prepDir.
+    cfg = tmp_path / "config"
+    cfg.mkdir(parents=True, exist_ok=True)
+    (cfg / "priority-instances.json").write_text(
+        json.dumps({"instances": [inst]}),
+        encoding="utf-8",
+    )
     monkeypatch.setattr(
         ac,
         "load_priority_instances",
-        lambda root=None: [INST],
+        lambda root=None: [inst],
     )
     core = ac.AircConsoleCore(
         machine="tm",
@@ -337,6 +377,7 @@ def test_fr5286_console_prepare_uses_hooks_not_bare_no_cred(monkeypatch, tmp_pat
         nick="tm_console",
         job_protocol=MagicMock(),
         install_root=str(tmp_path),
+        priority_allowlist_path=str(cfg / "priority-instances.json"),
     )
     hr = core.handle_raw(
         ":op!u@h PRIVMSG tm_console :id=c25bd00e PRIORITY prepare FOO instance=example-dev"

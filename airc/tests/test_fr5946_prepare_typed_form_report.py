@@ -238,4 +238,40 @@ def test_fr5946_unknown_exec_type_fails_closed(tmp_path):
         "PRIORITY prepare name=WWWSHOWCUST type=PIZZA instance=hrs-dev-live1"
     )
     assert bad is not None
-    assert not (bad.get("exec_type") or "")
+    # Preserve unknown explicit type so console path cannot fall back to untyped P.
+    assert bad.get("exec_type") == "PIZZA"
+    r2 = pw.run_priority_prepare(
+        bad["name"],
+        instance_id=bad.get("instance") or "hrs-dev-live1",
+        instances=[inst],
+        exec_type=bad.get("exec_type"),
+        resolve_ename_types=types,
+        **_hooks(sdk_exec=sdk),
+    )
+    assert r2["ok"] is False
+    assert r2["reason"] == "bad_exec_type"
+    assert sdk_calls["n"] == 0
+
+
+def test_fr5946_typed_prepare_without_priority_refuses_clean(tmp_path, monkeypatch):
+    """FR #5960 / #5946: typed prepare on host with no Priority -> priority_not_installed."""
+    import airc_fail_intake as fail
+    from airc_auth_helpers import ops_auth
+
+    calls = []
+    monkeypatch.setattr(fail, "report_verb_failure", lambda *a, **k: calls.append(1) or None)
+    auth = ops_auth("bob-walrus", channel="#walrus")
+    root = tmp_path / "airc-install"
+    (root / "config").mkdir(parents=True)
+    core = ac.AircConsoleCore(
+        machine="walrus",
+        auth=auth,
+        nick="walrus_console",
+        install_root=str(root),
+    )
+    r = core.handle_raw(
+        ":bob-walrus!u@h PRIVMSG walrus_console :PRIORITY prepare form ORDERS"
+    )
+    assert r is not None
+    assert "priority_not_installed" in (r.reply or "")
+    assert calls == []

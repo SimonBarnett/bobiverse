@@ -274,17 +274,20 @@ def parse_priority_prepare_command(text: str) -> dict[str, str] | None:
     kv = {k.lower(): v for k, v in re.findall(r"(\w+)=([^\s]+)", rest)}
     exec_type = ""
     raw_type = (kv.get("type") or kv.get("kind") or kv.get("exec_type") or "").strip()
+    unknown_explicit_type = False
     if raw_type:
-        # Fail closed: unknown type= tokens stay empty (never first-letter coerce).
+        # Fail closed: never first-letter coerce. Preserve unknown tokens so
+        # run_priority_prepare returns bad_exec_type (never untyped fallback).
         exec_type = _PREPARE_TYPE_ALIASES.get(raw_type.lower(), "")
         if exec_type not in ("F", "R", "P"):
-            exec_type = ""
+            unknown_explicit_type = True
+            exec_type = raw_type
     name = kv.get("name") or kv.get("ename") or ""
     positionals = [tok for tok in rest.split() if "=" not in tok]
     if positionals:
         head = positionals[0].lower()
         if head in _PREPARE_KIND_TO_TYPE:
-            if not exec_type:
+            if not unknown_explicit_type and not exec_type:
                 exec_type = _PREPARE_KIND_TO_TYPE[head]
             positionals = positionals[1:]
         if not name and positionals:
@@ -333,30 +336,15 @@ def _load_priority_worker():
 
 
 def load_priority_instances(install_root: str | Path | None = None) -> list[dict]:
-    """Prefer airc_priority allowlist (same as connect/status); fall back to raw JSON."""
+    """Live allowlist only (FR #5960: never treat example.json as installed Priority)."""
+    live = _priority.resolve_live_allowlist_path(install_root)
+    if live is None:
+        return []
     try:
-        al = _priority.load_priority_allowlist(
-            _priority.resolve_allowlist_path(install_root)
-        )
+        al = _priority.load_priority_allowlist(live)
         return [inst.public_dict() for inst in al.values()]
-    except Exception:  # noqa: BLE001 - missing allowlist falls through
-        pass
-    root = Path(install_root or os.environ.get("AIRC_INSTALL_ROOT") or r"C:\ai\airc")
-    for rel in (
-        Path("config") / "priority-instances.json",
-        Path("config") / "priority-instances.example.json",
-    ):
-        pth = root / rel
-        if not pth.is_file():
-            pth = root.parent / "airc" / rel if root.name != "airc" else pth
-        if pth.is_file():
-            try:
-                data = json.loads(pth.read_text(encoding="utf-8"))
-            except (OSError, json.JSONDecodeError):
-                return []
-            rows = data.get("instances") if isinstance(data, dict) else data
-            return [r for r in (rows or []) if isinstance(r, dict)]
-    return []
+    except Exception:  # noqa: BLE001 - missing/bad live allowlist -> empty
+        return []
 
 
 class _PrioritySqlReadFailed(Exception):
@@ -3438,6 +3426,42 @@ class AircConsoleCore:
         if callable(discard):
             discard(job_id, reason=reason)
 
+    def _priority_optional_denied(
+        self,
+        *,
+        nick: str,
+        target: str,
+        text: str,
+        action_name: str = "status",
+        job_id: str | None = None,
+    ) -> HandleResult | None:
+        """FR #5960: Priority absent -> structured refusal; never raise into intake."""
+        if _priority.priority_runtime_available(
+            self.install_root,
+            allowlist_path=self.priority_allowlist_path or self.priority_allowlist,
+        ):
+            return None
+        import uuid
+
+        jid = (job_id or "").strip().lower() or uuid.uuid4().hex[:8]
+        body = {
+            "ok": False,
+            "action": action_name,
+            "reason": _priority.PRIORITY_NOT_INSTALLED,
+        }
+        out_line, exit_code = _priority.format_bounded_priority_out(jid, body, 1)
+        reply = f"{out_line}\nDONE id={jid} exit={exit_code}"
+        self._clear_unused_dcclisten(jid, reason="priority")
+        meta = self._allow_meta(nick, None)
+        return HandleResult(
+            action="priority",
+            nick=nick,
+            target=target,
+            text=text,
+            reply=reply,
+            **meta,
+        )
+
     def handle_raw(self, line: str) -> HandleResult | None:
         """FR #5775: catch any unhandled verb fault -> intake + DONE exit=1."""
         try:
@@ -3593,6 +3617,15 @@ class AircConsoleCore:
         # FR #5285: PRIORITY form walk (read path) via in-service fixture worker.
         walk = _priority.parse_priority_walk_command(cmd)
         if walk is not None:
+            denied = self._priority_optional_denied(
+                nick=nick,
+                target=target,
+                text=text,
+                action_name="walk",
+                job_id=(walk[1] or {}).get("id"),
+            )
+            if denied is not None:
+                return denied
             allow = _priority.resolve_walk_allowlist_path(
                 self.install_root, self.priority_allowlist or self.priority_allowlist_path
             )
@@ -3619,6 +3652,16 @@ class AircConsoleCore:
         # FR #5526: when priority_reply_send is bound, connect runs off the receive loop.
         pri = _priority.parse_priority_command(cmd)
         if pri is not None:
+            job_id, subcmd, instance_id = pri
+            denied = self._priority_optional_denied(
+                nick=nick,
+                target=target,
+                text=text,
+                action_name=subcmd or "status",
+                job_id=job_id,
+            )
+            if denied is not None:
+                return denied
             if caps.shell_mode == "off":
                 return HandleResult(
                     action="capability_deny",
@@ -3627,7 +3670,6 @@ class AircConsoleCore:
                     text=text,
                     reply="DONE exit=126 shell-disabled",
                 )
-            job_id, subcmd, instance_id = pri
             qid = (job_id or "").strip().lower() or uuid.uuid4().hex[:8]
             send_hook = getattr(self, "priority_reply_send", None)
             use_async = (
@@ -4441,6 +4483,15 @@ class AircConsoleCore:
         # FR #5286 / #5946: PRIORITY prepare [form|report|procedure] + UPD/.prp gates.
         prep = parse_priority_prepare_command(cmd)
         if prep is not None:
+            denied = self._priority_optional_denied(
+                nick=nick,
+                target=target,
+                text=text,
+                action_name="prepare",
+                job_id=prep.get("qid"),
+            )
+            if denied is not None:
+                return denied
             pw = _load_priority_worker()
             run = getattr(pw, "run_priority_prepare", None) if pw else None
             insts = load_priority_instances(self.install_root)
