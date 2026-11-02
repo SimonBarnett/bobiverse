@@ -352,6 +352,17 @@ def test_fr5286_console_prepare_uses_hooks_not_bare_no_cred(monkeypatch, tmp_pat
 
         pytest.skip("temp path too long for IRC reply budget (FR #5616)")
     monkeypatch.setattr(ac, "build_console_prepare_hooks", fake_hooks2)
+    # FR #5960: live allowlist opts Priority in (example.json alone is not enough).
+    prep = tmp_path / "prep"
+    prep.mkdir(exist_ok=True)
+    inst = dict(INST)
+    inst["prepDir"] = str(prep)
+    cfg = tmp_path / "config"
+    cfg.mkdir(parents=True, exist_ok=True)
+    (cfg / "priority-instances.json").write_text(
+        json.dumps({"instances": [inst]}),
+        encoding="utf-8",
+    )
     monkeypatch.setattr(
         ac,
         "load_priority_instances",
@@ -364,6 +375,7 @@ def test_fr5286_console_prepare_uses_hooks_not_bare_no_cred(monkeypatch, tmp_pat
         nick="tm_console",
         job_protocol=MagicMock(),
         install_root=str(tmp_path),
+        priority_allowlist_path=str(cfg / "priority-instances.json"),
     )
     hr = core.handle_raw(
         ":op!u@h PRIVMSG tm_console :id=c25bd00e PRIORITY prepare FOO instance=example-dev"
