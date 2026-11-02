@@ -133,6 +133,7 @@ def test_fr5285_fixture_is_json_not_mjs():
     assert worker.is_file()
     text = worker.read_text(encoding="utf-8")
     assert "formStart" in text
-    assert "No agent .mjs" in text or "no agent" in text.lower()
+    # FR #5948: live walk uses service-owned run-formwalk-readonly.mjs; fixture is opt-in.
+    assert "run-formwalk-readonly" in text or "sdk_walk" in text or "5948" in text
     assert not worker.read_bytes().startswith(b"\xef\xbb\xbf")
     assert "\u2014" not in text

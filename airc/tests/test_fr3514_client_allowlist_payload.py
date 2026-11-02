@@ -54,6 +54,7 @@ GONE_SCRIPTS = (
 # FR #5366 keeps airc\priority-worker\fixtures\form_walk.json (airc\ keep-all).
 # FR #5526 keeps scripts\airc_credman.py (native CredMan for PRIORITY/LEGION/EXTENSION).
 # FR #5905 keeps airc\priority-worker\sdk\run-repprep-via-exec.mjs (Node REPPREP walk).
+# FR #5948 keeps airc\priority-worker\sdk\run-formwalk-readonly.mjs (Node form walk).
 CLIENT_REMAINING_FILES = frozenset(
     {
         "BUILD.json",
@@ -90,9 +91,10 @@ CLIENT_REMAINING_FILES = frozenset(
         r"airc\priority-worker\package.json",
         r"airc\priority-worker\fixtures\form_walk.json",
         r"airc\priority-worker\sdk\run-repprep-via-exec.mjs",
+        r"airc\priority-worker\sdk\run-formwalk-readonly.mjs",
     }
 )
-assert len(CLIENT_REMAINING_FILES) == 34
+assert len(CLIENT_REMAINING_FILES) == 35
 
 
 def _ps(script: str, timeout: int = 300) -> subprocess.CompletedProcess[str]:
@@ -151,6 +153,7 @@ def test_fr3582_client_purge_drops_fleet_operators(tmp_path: Path):
     (pw / "fixtures" / "form_walk.json").write_text("{}\n", encoding="utf-8")
     (pw / "sdk").mkdir()
     (pw / "sdk" / "run-repprep-via-exec.mjs").write_text("// stub\n", encoding="utf-8")
+    (pw / "sdk" / "run-formwalk-readonly.mjs").write_text("// stub\n", encoding="utf-8")
     (stage / "third_party" / "nssm" / "win64" / "nssm.exe").write_bytes(b"MZ")
     for name in KEEP_SCRIPTS:
         (stage / "scripts" / name).write_text("# stub\n", encoding="utf-8")

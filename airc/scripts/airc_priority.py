@@ -1,7 +1,8 @@
-"""Airc Priority Client - allowlist + PRIORITY connect/status (FR #5275 / #5284) + form walk (FR #5285).
+"""Airc Priority Client - allowlist + PRIORITY connect/status/prepare/form walk.
 
 CAST IRON: never put Priority passwords on IRC, in logs, intake, or git.
-Form walk uses an in-service fixture worker (no agent .mjs).
+FR #5285 / #5948: formStart|subform|getRows are read-only Priority SDK walks
+(``run-formwalk-readonly.mjs``); fixture JSON is SelfTest/unit opt-in only.
 CredMan only (``credentialTarget``). Instance URLs come from the allowlist only.
 """
 from __future__ import annotations
@@ -534,7 +535,7 @@ def run_priority_verb(
 
     return _connect_work(inst, jid, cred_fetcher=cred_fetcher, connector=connector)
 
-# --- FR #5285 form walk (fixture read path) ---
+# --- FR #5285 / #5948 form walk (SDK read path; fixture opt-in for SelfTest) ---
 
 WALK_OPS = frozenset({"formstart", "subform", "getrows"})
 OP_WIRE = {"formstart": "formStart", "subform": "subform", "getrows": "getRows"}
@@ -544,6 +545,25 @@ _WALK_VERB_RE = re.compile(
     r"(?is)^PRIORITY\s+(formStart|subform|getRows)(?:\s+(.*))?$",
 )
 _SECRET_KEYS = frozenset({"password", "passwd", "secret", "token", "pwd"})
+# FR #5948: expected walk errors stay on IRC; never auto-file intake (FR #5775 crashes only).
+_WALK_EXPECTED_ERRORS = frozenset(
+    {
+        "form-not-found",
+        "subform-not-found",
+        "no-access",
+        "unknown-instance",
+        "missing-form",
+        "password-refused",
+        "fixture-miss",
+        "no_cred",
+        "node_missing",
+        "sdk_mjs_missing",
+        "sdk_not_ok",
+        # sdk-fault / unexpected exceptions still intake (genuine crash path).
+    }
+)
+WALK_DEFAULT_LIMIT = 5
+WALK_MAX_LIMIT = 20
 
 
 @dataclass(frozen=True)
@@ -671,6 +691,19 @@ def load_fixture(path: Path) -> dict[str, Any]:
     return forms
 
 
+def _walk_page_bounds(kv: dict[str, str]) -> tuple[int, int]:
+    try:
+        offset = max(0, int(str(kv.get("offset") or "0").strip() or "0"))
+    except ValueError:
+        offset = 0
+    try:
+        limit = int(str(kv.get("limit") or str(WALK_DEFAULT_LIMIT)).strip() or str(WALK_DEFAULT_LIMIT))
+    except ValueError:
+        limit = WALK_DEFAULT_LIMIT
+    limit = max(1, min(WALK_MAX_LIMIT, limit))
+    return offset, limit
+
+
 def walk_fixture(op: str, forms: dict[str, Any], kv: dict[str, str]) -> dict[str, Any]:
     form = (kv.get("form") or "").strip()
     rec = forms.get(form)
@@ -696,12 +729,24 @@ def walk_fixture(op: str, forms: dict[str, Any], kv: dict[str, str]) -> dict[str
         out["path"] = path
         out["subform"] = subs[path]
     elif wire == "getRows":
-        rows = rec.get("rows") or []
-        out["rows"] = list(rows)
-        out["count"] = len(rows)
+        rows = list(rec.get("rows") or [])
+        offset, limit = _walk_page_bounds(kv)
+        page = rows[offset : offset + limit]
+        out["rows"] = page
+        out["count"] = len(page)
+        out["offset"] = offset
+        out["limit"] = limit
+        out["has_more"] = (offset + limit) < len(rows)
     else:
         out["title"] = rec.get("title") or form
         out["subforms"] = list((rec.get("subforms") or {}).keys())
+        rows = list(rec.get("rows") or [])
+        offset, limit = _walk_page_bounds(kv)
+        out["rows"] = rows[offset : offset + limit]
+        out["count"] = len(out["rows"])
+        out["offset"] = offset
+        out["limit"] = limit
+        out["has_more"] = (offset + limit) < len(rows)
     return out
 
 
@@ -715,13 +760,42 @@ def resolve_walk_allowlist_path(install_root: str | None, override: str | None) 
         return None
 
 
+def _want_fixture_walk(
+    *,
+    use_fixture: bool | None,
+    fixture_path: Path | None,
+    kv: dict[str, str],
+) -> bool:
+    """FR #5948: fixture only when explicitly requested (SelfTest / unit flag)."""
+    if use_fixture is True:
+        return True
+    if use_fixture is False:
+        return False
+    flag = (kv.get("fixture") or kv.get("selftest") or kv.get("mode") or "").strip().lower()
+    if flag in ("1", "true", "yes", "fixture", "selftest"):
+        return True
+    env = (os.environ.get("AIRC_PRIORITY_WALK_FIXTURE") or "").strip().lower()
+    if env in ("1", "true", "yes"):
+        return True
+    # Explicit console SelfTest path still passes fixture_path; treat as opt-in.
+    return fixture_path is not None
+
+
 def run_priority_walk(
     *,
     text: str,
     allowlist_path: Path | None,
     fixture_path: Path | None = None,
+    use_fixture: bool | None = None,
+    sdk_walk: Callable[..., dict[str, Any]] | None = None,
     job_id_fallback: str = "",
 ) -> PriorityWalkResult:
+    """FR #5285 / #5948: formStart|subform|getRows.
+
+    Live default is read-only Priority SDK (``sdk_walk`` / packed
+    ``run-formwalk-readonly.mjs``). Fixture JSON is SelfTest/unit only.
+    Expected errors never auto-file intake; only genuine crashes do.
+    """
     parsed = parse_priority_walk_command(text)
     if parsed is None:
         jid = job_id_fallback or "-"
@@ -741,7 +815,8 @@ def run_priority_walk(
         return PriorityWalkResult(False, exit_code, jid, lines, payload)
     inst_id = (kv.get("instance") or "").strip()
     allow = load_allowlist_rows(allowlist_path)
-    if resolve_instance_row(allow, inst_id) is None:
+    inst_row = resolve_instance_row(allow, inst_id)
+    if inst_row is None:
         payload = {"ok": False, "error": "unknown-instance", "action": "walk"}
         out, exit_code = format_bounded_priority_out(jid, payload, 2)
         lines = (out, f"DONE id={jid} exit={exit_code}")
@@ -752,34 +827,94 @@ def run_priority_walk(
         out, exit_code = format_bounded_priority_out(jid, payload, 2)
         lines = (out, f"DONE id={jid} exit={exit_code}")
         return PriorityWalkResult(False, exit_code, jid, lines, payload)
-    fix = Path(fixture_path) if fixture_path else default_fixture_path()
+
     failure: BaseException | str = ""
+    fixture_mode = _want_fixture_walk(
+        use_fixture=use_fixture, fixture_path=fixture_path, kv=kv
+    )
     try:
-        forms = load_fixture(fix)
-        payload = walk_fixture(op, forms, kv)
+        if fixture_mode:
+            fix = Path(fixture_path) if fixture_path else default_fixture_path()
+            forms = load_fixture(fix)
+            payload = walk_fixture(op, forms, kv)
+        else:
+            offset, limit = _walk_page_bounds(kv)
+            walk_fn = sdk_walk
+            if walk_fn is None:
+                payload = {
+                    "ok": False,
+                    "error": "sdk_not_ok",
+                    "action": "walk",
+                    "sdk_reason": "sdk_walk_missing",
+                }
+            else:
+                raw = walk_fn(
+                    op=OP_WIRE[op.lower()],
+                    form=form,
+                    path=(kv.get("path") or "").strip(),
+                    offset=offset,
+                    limit=limit,
+                    instance=inst_row,
+                    kv=kv,
+                )
+                if not isinstance(raw, dict):
+                    payload = {"ok": False, "error": "sdk_not_ok", "action": "walk"}
+                else:
+                    payload = dict(raw)
+                    if "form" in payload and isinstance(payload["form"], str):
+                        payload["form"] = bound_echo_token(payload["form"]) or payload["form"]
+                    if "path" in payload and isinstance(payload["path"], str):
+                        payload["path"] = bound_echo_token(payload["path"]) or payload["path"]
     except (OSError, ValueError, KeyError, json.JSONDecodeError) as exc:
         failure = exc
         payload = {
             "ok": False,
-            "error": "fixture-miss",
+            "error": "fixture-miss" if fixture_mode else "sdk-fault",
             "action": "walk",
         }
+    except Exception as exc:  # noqa: BLE001 --- isolate SDK/worker faults
+        failure = exc
+        payload = {
+            "ok": False,
+            "error": "sdk-fault",
+            "action": "walk",
+        }
+
     if "action" not in payload:
         payload = {**payload, "action": "walk"}
+    if "instance" not in payload:
+        payload["instance"] = inst_id
+
+    err = str(payload.get("error") or "").strip()
+    # FR #5948: named expected errors (incl. fixture-miss) never intake, even when
+    # the local failure object is an Exception used only for diagnostics.
+    should_intake = False
     if not payload.get("ok"):
+        if err and err not in _WALK_EXPECTED_ERRORS:
+            should_intake = True
+        elif (not err) and failure and isinstance(failure, BaseException):
+            should_intake = True
+    if should_intake:
         try:
             import airc_fail_intake as _fail
 
-            # wait_s>0: async thread + join cap (wait_s=0 is sync; FR #5775 / MRB #5855).
             _fail.report_verb_failure(
                 "priority",
-                failure or payload["error"],
-                args={"op": op, "instance": inst_id, "form": form, "path": kv.get("path", "")},
+                failure or err or "walk-failed",
+                args={
+                    "op": op,
+                    "instance": inst_id,
+                    "form": form,
+                    "path": kv.get("path", ""),
+                },
                 wait_s=1.0,
             )
         except Exception:
             pass
-    out, exit_code = format_bounded_priority_out(jid, payload, 0 if payload.get("ok") else 2)
+
+    out, exit_code = format_bounded_priority_out(
+        jid, payload, 0 if payload.get("ok") else 2
+    )
     lines = (out, f"DONE id={jid} exit={exit_code}")
     ok = exit_code == 0 and bool(payload.get("ok"))
     return PriorityWalkResult(ok, exit_code, jid, lines, payload)

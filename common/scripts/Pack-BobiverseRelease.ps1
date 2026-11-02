@@ -428,6 +428,10 @@ function Stage-Product([string]$Name) {
             if (-not (Test-Path -LiteralPath $mjsSrc)) {
                 throw 'airc pack requires airc/priority-worker/sdk/run-repprep-via-exec.mjs (FR #5905)'
             }
+            $walkMjsSrc = Join-Path $pwSrc 'sdk\run-formwalk-readonly.mjs'
+            if (-not (Test-Path -LiteralPath $walkMjsSrc)) {
+                throw 'airc pack requires airc/priority-worker/sdk/run-formwalk-readonly.mjs (FR #5948)'
+            }
             # FR #5913: always npm ci so a stale/partial node_modules cannot ship
             # a priority-web-sdk that drifts from package-lock.json.
             $nm = Join-Path $pwSrc 'node_modules\priority-web-sdk'
