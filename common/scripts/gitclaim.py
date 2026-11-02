@@ -6799,9 +6799,13 @@ def row_author_seats(row: dict) -> list[str]:
 
 
 def fix_ci_seats_from_doc(doc: dict, repo: str, pr_id: str) -> list[str]:
-    """Seats that accepted or DONE a FIX (or FR citing the same pull) for ``repo#pr`` (FR #4604).
+    """Seats that accepted or DONE a FIX for ``repo#pr`` (FR #4604 / FR #5923).
 
     Used so a FIX seat that pushed CI fixes cannot be offered the re-queued MRB.
+
+    FR #5923: do not treat a DONE/accepted FR that only cites ``/pull/N``
+    (result/url) as authorship. Cite-only FR seats stay eligible to MRB; only
+    real commit authors / implementer stamps and FIX seats are blocked.
     """
     want = _norm_row_id(pr_id)
     if not want or not repo:
@@ -6815,7 +6819,7 @@ def fix_ci_seats_from_doc(doc: dict, repo: str, pr_id: str) -> list[str]:
             if not isinstance(row, dict):
                 continue
             task = str(row.get("task") or "").upper()
-            if task not in ("FIX", "FR"):
+            if task != "FIX":
                 continue
             url = str(row.get("url") or row.get("result") or "")
             same_id = (
@@ -6829,9 +6833,7 @@ def fix_ci_seats_from_doc(doc: dict, repo: str, pr_id: str) -> list[str]:
                     same_pull = True
                 elif repo.lower() in url.lower():
                     same_pull = True
-            if task == "FIX" and not (same_id or same_pull):
-                continue
-            if task == "FR" and not same_pull:
+            if not (same_id or same_pull):
                 continue
             seat = str(
                 row.get("nick") or row.get("done_by") or row.get("author_seat") or ""
@@ -6889,9 +6891,10 @@ def stamp_fix_seats_on_mrb_rows(doc: dict, repo: str, pr_id: str, seat: str) -> 
 
 
 def enrich_mrb_author_fields(doc: dict, row: dict) -> dict:
-    """FR #4604: merge FIX/FR push seats into MRB ``author_seats`` at offer time.
+    """FR #4604 / #5923: merge FIX push seats into MRB ``author_seats`` at offer time.
 
     Survives missing stamps on synchronize-enqueued MRB rows by reading queue truth.
+    Cite-only FR DONE results are ignored (FR #5923).
     """
     if _canon_task(row) != "MRB":
         return row
