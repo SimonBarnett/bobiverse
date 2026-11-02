@@ -275,7 +275,8 @@ def parse_priority_prepare_command(text: str) -> dict[str, str] | None:
     exec_type = ""
     raw_type = (kv.get("type") or kv.get("kind") or kv.get("exec_type") or "").strip()
     if raw_type:
-        exec_type = _PREPARE_TYPE_ALIASES.get(raw_type.lower(), raw_type.upper()[:1])
+        # Fail closed: unknown type= tokens stay empty (never first-letter coerce).
+        exec_type = _PREPARE_TYPE_ALIASES.get(raw_type.lower(), "")
         if exec_type not in ("F", "R", "P"):
             exec_type = ""
     name = kv.get("name") or kv.get("ename") or ""
