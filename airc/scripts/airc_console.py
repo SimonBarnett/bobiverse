@@ -3793,6 +3793,9 @@ class AircConsoleCore:
         self.install_root = install_root
         self.job_protocol = job_protocol
         # FR #5284: PRIORITY connect/status (injectable for SelfTest mocks).
+        # FR #6012: remember injection so FR #5960 optional-absent does not
+        # swallow a test/selftest runner before connect|status.
+        self._priority_runner_injected = priority_runner is not None
         self.priority_runner = priority_runner or _priority.run_priority_verb
         self.priority_allowlist_path = priority_allowlist_path or priority_allowlist
         self.priority_allowlist = priority_allowlist or priority_allowlist_path
@@ -3981,6 +3984,10 @@ class AircConsoleCore:
         job_id: str | None = None,
     ) -> HandleResult | None:
         """FR #5960: Priority absent -> structured refusal; never raise into intake."""
+        # FR #6012: an injected priority_runner (tests / SelfTest) is the
+        # Priority implementation for this core; do not short-circuit it.
+        if getattr(self, "_priority_runner_injected", False):
+            return None
         if _priority.priority_runtime_available(
             self.install_root,
             allowlist_path=self.priority_allowlist_path or self.priority_allowlist,
