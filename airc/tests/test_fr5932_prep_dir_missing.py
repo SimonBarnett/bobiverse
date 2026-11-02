@@ -87,3 +87,23 @@ def test_fr5932_docs_and_skill_name_prep_dir_missing():
     ).read_text(encoding="utf-8")
     assert "prep_dir_missing" in skill
     assert "5932" in skill
+
+def test_fr5932_nonexistent_prep_dir_is_prep_dir_missing(tmp_path):
+    """Hostile (MRB #5934): non-empty missing path must not reach SDK / prp_unchanged."""
+    inst = dict(INST_NO_PREP)
+    inst["prepDir"] = str(tmp_path / "no-such-prep")
+    sdk_calls = {"n": 0}
+
+    def sdk(**kw):
+        sdk_calls["n"] += 1
+        return {"ok": True, "path": "REPPREPDIRECT2"}
+
+    r = pw.run_priority_prepare(
+        "WWWSHOWCUST",
+        instance_id="hrs-dev-live1",
+        instances=[inst],
+        **_ok_hooks(sdk_exec=sdk),
+    )
+    assert r["reason"] == "prep_dir_missing"
+    assert sdk_calls["n"] == 0
+
