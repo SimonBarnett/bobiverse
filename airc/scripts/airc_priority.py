@@ -811,6 +811,8 @@ _WALK_EXPECTED_ERRORS = frozenset(
         "sdk_mjs_missing",
         # FR #5991: SDK hang/timeout is named noise (Priority busy), not a crash intake.
         "sdk-timeout",
+        "sql_missing",
+        "sql_read_failed",
         # sdk-fault / unexpected exceptions still intake (genuine crash path).
     }
 )

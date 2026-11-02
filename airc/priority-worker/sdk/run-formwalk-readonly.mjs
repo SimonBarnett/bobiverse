@@ -168,22 +168,27 @@ async function main() {
     process.exit(2);
   }
 
-  let Priority;
+  let sdkMod;
   try {
-    Priority = loadSdk();
+    sdkMod = loadSdk();
   } catch (e) {
     emit({ ok: false, error: 'sdk_mjs_missing', message: String(e.message || e), op, form: formName });
     process.exit(2);
   }
 
-  const priority = new Priority.Priority({
-    url: args.url,
-    tabulaini: 'tabula.ini',
-    language: 2,
-  });
+  // Opt-in SDK path only (AIRC_PRIORITY_FORM_VIA_SDK=1). Same login shape as
+  // run-repprep-via-exec.mjs — never `new Priority.Priority` (no such export).
+  const priority = sdkMod.default || sdkMod;
 
   try {
-    await priority.login(args.user, password, args.company);
+    await priority.login({
+      url: args.url,
+      tabulaini: 'tabula.ini',
+      language: 2,
+      company: args.company,
+      username: args.user,
+      password,
+    });
   } catch (e) {
     // FR #5999: include bounded message so Python intake sdk_message is not empty.
     emit({
