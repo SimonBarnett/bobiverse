@@ -12,7 +12,7 @@ Pack stages:
 
 - `sdk/run-repprep-via-exec.mjs` --- shared EXEC procStart walk for `PRIORITY prepare` form/report/procedure (FORMPREPDRCT2 or REPPREPDIRECT2; FR #6003 default for forms)
 - `sdk/run-formprep-via-eform.mjs` --- optional EFORM/formStart FORMPREPDRCT2 walk; opt-in only via `AIRC_PRIORITY_FORM_VIA_EFORM=1` (FR #5946 / #6003)
-- `sdk/run-formwalk-readonly.mjs` --- read-only formStart / startSubForm / getRows for `PRIORITY formStart` / `subform` / `getRows` (FR #5948)
+- `sdk/run-formwalk-readonly.mjs` --- opt-in SDK walk (`AIRC_PRIORITY_FORM_VIA_SDK=1`); default live walk is sqlcmd (FR #5991)
 - `node_modules/priority-web-sdk` (+ transitive deps) via **always** `npm ci --omit=dev`
   at pack time (FR #5913: never skip when a stale `node_modules` is already present)
 
@@ -21,9 +21,10 @@ Resolver order (see `airc_console._priority_sdk_repprep`): default form/report/p
 `REPPREPDIRECT2`. EFORM runner only when `AIRC_PRIORITY_FORM_VIA_EFORM=1` (then
 `AIRC_PRIORITY_FORMPREP_MJS`). No `drop\` path.
 
-Form-walk resolver (see `airc_console._priority_sdk_formwalk`): `priority-worker/sdk/run-formwalk-readonly.mjs`,
-then `priority-worker/run-formwalk-readonly.mjs`, then `AIRC_PRIORITY_FORMWALK_MJS`. Default production path is live SDK;
-fixture (`fixtures/form_walk.json`) only when console `priority_fixture` / env `AIRC_PRIORITY_WALK_FIXTURE` / kv `fixture|selftest` is set.
+Form-walk default (FR #5991): `airc_console._priority_sql_formwalk` via sqlcmd (`-E`) against
+`sqlServer` + company DB table named like the form. No `priority-web-sdk` / `formStart`.
+SDK mjs only when `AIRC_PRIORITY_FORM_VIA_SDK=1` (`_priority_sdk_formwalk`).
+Fixture (`fixtures/form_walk.json`) only when console `priority_fixture` / env `AIRC_PRIORITY_WALK_FIXTURE` / kv `fixture|selftest` is set.
 
 ### Node runtime
 

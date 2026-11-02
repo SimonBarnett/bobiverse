@@ -478,6 +478,161 @@ def _priority_sqlcmd_lock(
     return None
 
 
+_FORM_IDENT_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]*$")
+
+
+def _parse_sqlcmd_pipe_table(stdout: str) -> tuple[list[str], list[dict[str, str]]]:
+    """Parse sqlcmd ``-s |`` header + dash + rows. Never treats secrets specially."""
+    lines = []
+    for raw in (stdout or "").splitlines():
+        s = raw.strip()
+        if not s or "rows affected" in s.lower():
+            continue
+        lines.append(s)
+    if not lines:
+        return [], []
+    headers = [h.strip() for h in lines[0].split("|")]
+    start = 1
+    if len(lines) > 1 and set(lines[1].replace("|", "").replace("-", "").strip()) <= set():
+        start = 2
+    elif len(lines) > 1 and all(c in "-| " for c in lines[1]):
+        start = 2
+    rows: list[dict[str, str]] = []
+    for line in lines[start:]:
+        parts = [p.strip() for p in line.split("|")]
+        rec = {}
+        for i, h in enumerate(headers):
+            if not h:
+                continue
+            rec[h] = parts[i] if i < len(parts) else ""
+        if rec:
+            rows.append(rec)
+    return headers, rows
+
+
+def _priority_sqlcmd_run(
+    *,
+    server: str,
+    db: str,
+    query: str,
+    runner=None,
+) -> Any:
+    run = runner or subprocess.run
+    return run(
+        [
+            "sqlcmd",
+            "-S",
+            server,
+            "-E",
+            "-d",
+            db,
+            "-b",
+            "-Q",
+            query,
+            "-W",
+            "-s",
+            "|",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+
+
+def _priority_sql_formwalk(
+    *,
+    op: str,
+    form: str,
+    path: str = "",
+    offset: int = 0,
+    limit: int = 5,
+    instance: dict | None = None,
+    sql_runner=None,
+    **_k,
+) -> dict:
+    """FR #5991: read-only form walk via sqlcmd (no priority-web-sdk / formStart)."""
+    inst = instance if isinstance(instance, dict) else {}
+    form_name = str(form or "").strip()
+    wire = str(op or "formStart").strip() or "formStart"
+    server = str(inst.get("sqlServer") or inst.get("sql_server") or "").strip()
+    sys_db = str(inst.get("systemDb") or inst.get("system_db") or "system").strip()
+    company_db = str(inst.get("company") or sys_db).strip()
+    if not server:
+        return {"ok": False, "error": "sql_missing", "form": form_name, "op": wire}
+    if not form_name or not _FORM_IDENT_RE.match(form_name):
+        return {"ok": False, "error": "form-not-found", "form": form_name, "op": wire}
+    if str(wire).lower() == "subform":
+        return {
+            "ok": False,
+            "error": "subform-not-found",
+            "form": form_name,
+            "path": str(path or ""),
+            "op": "subform",
+        }
+    safe = form_name.replace(chr(39), chr(39) + chr(39))
+    exist_q = (
+        "SET NOCOUNT ON; "
+        "SELECT E.ENAME, E.[T$EXEC], E.[TYPE], N'' "
+        "FROM dbo.T$EXEC E "
+        f"WHERE E.ENAME=N'{safe}' AND E.[TYPE]=N'F';"
+    )
+    try:
+        proc = _priority_sqlcmd_run(
+            server=server, db=sys_db, query=exist_q, runner=sql_runner
+        )
+    except Exception:  # noqa: BLE001
+        return {"ok": False, "error": "sql_read_failed", "form": form_name, "op": wire}
+    if int(getattr(proc, "returncode", 0) or 0) != 0:
+        return {"ok": False, "error": "sql_read_failed", "form": form_name, "op": wire}
+    found = False
+    for line in (proc.stdout or "").splitlines():
+        s = line.strip()
+        if not s or "rows affected" in s.lower() or all(c in "-| " for c in s):
+            continue
+        parts = [x.strip() for x in s.split("|")]
+        if parts and parts[0].upper() == form_name.upper():
+            found = True
+            break
+    if not found:
+        return {"ok": False, "error": "form-not-found", "form": form_name, "op": wire}
+    off = max(0, int(offset or 0))
+    lim = max(1, min(20, int(limit or 5) or 5))
+    data_q = (
+        "SET NOCOUNT ON; "
+        f"SELECT * FROM dbo.[{form_name}] "
+        f"ORDER BY (SELECT NULL) OFFSET {off} ROWS FETCH NEXT {lim} ROWS ONLY;"
+    )
+    try:
+        proc2 = _priority_sqlcmd_run(
+            server=server, db=company_db, query=data_q, runner=sql_runner
+        )
+    except Exception:  # noqa: BLE001
+        return {"ok": False, "error": "sql_read_failed", "form": form_name, "op": wire}
+    if int(getattr(proc2, "returncode", 0) or 0) != 0:
+        return {"ok": False, "error": "sql_read_failed", "form": form_name, "op": wire}
+    cols, rows = _parse_sqlcmd_pipe_table(proc2.stdout or "")
+    return {
+        "ok": True,
+        "op": wire if wire.lower() == "getrows" else "formStart",
+        "form": form_name,
+        "columns": cols[:40],
+        "rows": rows,
+        "count": len(rows),
+        "offset": off,
+        "limit": lim,
+        "readonly": True,
+        "via": "sql",
+    }
+
+
+def _default_priority_formwalk(**kw: Any) -> dict:
+    """FR #5991: SQL walk by default; SDK mjs only if AIRC_PRIORITY_FORM_VIA_SDK=1."""
+    flag = str(os.environ.get("AIRC_PRIORITY_FORM_VIA_SDK") or "").strip().lower()
+    if flag in ("1", "true", "yes", "on"):
+        return _priority_sdk_formwalk(**kw)
+    return _priority_sql_formwalk(**kw)
+
+
 def _trim_priority_sdk_message(msg: str, *, max_len: int = 72) -> str:
     """Secret-safe short message for IRC sdk_reason (FR #5994).
 
@@ -3855,7 +4010,7 @@ class AircConsoleCore:
                     None
                     if fix is not None
                     else (
-                        lambda **kw: _priority_sdk_formwalk(
+                        lambda **kw: _default_priority_formwalk(
                             cred_fetcher=_priority.fetch_credman_password, **kw
                         )
                     )
