@@ -141,7 +141,7 @@ def _live_allowlist_has_instances(path: Path) -> bool:
 
 
 def _is_allowlist_absent_error(exc: BaseException) -> bool:
-    """True only for missing file / empty instances --- not schema field 'missing X'."""
+    """True only for missing file / empty instances - not schema field 'missing X'."""
     err = str(exc).lower()
     if "allowlist instances empty" in err:
         return True
