@@ -1,0 +1,210 @@
+#!/usr/bin/env node
+/**
+ * FR #5905: service-owned REPPREPDIRECT2 walk for Airc PRIORITY prepare.
+ *
+ * Invoked by airc_console._priority_sdk_repprep:
+ *   node run-repprep-via-exec.mjs --name ENAME --company C --url U --user U --proc REPPREPDIRECT2
+ *
+ * Password: PRIORITY_SDK_PASSWORD env only (never argv, never logged).
+ * Last stdout line must be one JSON object: {ok, ended, errors}.
+ *
+ * Resolves priority-web-sdk from ../node_modules (packed next to this file).
+ */
+'use strict';
+
+import { createRequire } from 'node:module';
+import { fileURLToPath } from 'node:url';
+import path from 'node:path';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const require = createRequire(import.meta.url);
+
+function parseArgs(argv) {
+  const out = {
+    name: '',
+    company: '',
+    url: '',
+    user: '',
+    proc: 'REPPREPDIRECT2',
+  };
+  for (let i = 2; i < argv.length; i += 1) {
+    const a = argv[i];
+    const next = argv[i + 1];
+    if (a === '--name' && next != null) {
+      out.name = String(next);
+      i += 1;
+    } else if (a === '--company' && next != null) {
+      out.company = String(next);
+      i += 1;
+    } else if (a === '--url' && next != null) {
+      out.url = String(next);
+      i += 1;
+    } else if (a === '--user' && next != null) {
+      out.user = String(next);
+      i += 1;
+    } else if (a === '--proc' && next != null) {
+      out.proc = String(next);
+      i += 1;
+    }
+  }
+  return out;
+}
+
+function emit(payload) {
+  process.stdout.write(`${JSON.stringify(payload)}\n`);
+}
+
+function fieldValue(editFields, wantName) {
+  const rows = Array.isArray(editFields) ? editFields : [];
+  const want = String(wantName || '').toUpperCase();
+  for (const row of rows) {
+    if (!row || typeof row !== 'object') continue;
+    const title = String(row.title || row.name || row.fieldName || '').toUpperCase();
+    if (title && (title === want || title.includes(want) || want.includes(title))) {
+      return row;
+    }
+  }
+  return rows[0] || null;
+}
+
+async function walkProc(priority, args) {
+  const errors = [];
+  let ended = false;
+  const progress = () => {};
+  let step = await priority.procStart(args.proc, 'P', progress, args.company);
+  // Bound steps so a stuck procedure cannot hang the console forever.
+  for (let i = 0; i < 40; i += 1) {
+    if (!step || typeof step !== 'object') break;
+    const type = String(step.type || '');
+    const proc = step.proc;
+    if (type === 'end' || type === 'End' || !proc) {
+      ended = true;
+      break;
+    }
+    if (type === 'inputFields') {
+      const input = step.input || {};
+      const edits = input.EditFields || input.editFields || [];
+      const data = { EditFields: [] };
+      const nameField = fieldValue(edits, 'NAME') || fieldValue(edits, 'ENAME') || edits[0];
+      if (nameField && args.name) {
+        const fieldNum = nameField.field != null ? nameField.field : 1;
+        data.EditFields.push({ field: fieldNum, op: 0, value: String(args.name) });
+      }
+      // Fill any other empty required-looking fields with the name as a fallback.
+      for (const row of edits) {
+        if (!row || row === nameField) continue;
+        const title = String(row.title || '').toUpperCase();
+        if (title.includes('NAME') || title.includes('EXEC') || title.includes('ENTITY')) {
+          const fieldNum = row.field != null ? row.field : data.EditFields.length + 1;
+          if (!data.EditFields.some((e) => e.field === fieldNum)) {
+            data.EditFields.push({ field: fieldNum, op: 0, value: String(args.name) });
+          }
+        }
+      }
+      step = await proc.inputFields(1, data);
+      continue;
+    }
+    if (type === 'inputOptions') {
+      step = await proc.inputOptions(1, 1);
+      continue;
+    }
+    if (type === 'message') {
+      const msg = step.input || {};
+      const text = String(msg.message || msg.Message || msg.text || '');
+      const severity = String(msg.severity || msg.Severity || '').toLowerCase();
+      if (severity === 'e' || severity === 'error' || /error/i.test(text)) {
+        errors.push(text || 'procedure_error');
+        try {
+          step = await proc.cancel();
+        } catch {
+          break;
+        }
+        continue;
+      }
+      step = await proc.continueProc();
+      continue;
+    }
+    if (typeof proc.continueProc === 'function') {
+      step = await proc.continueProc();
+      continue;
+    }
+    break;
+  }
+  return { ok: errors.length === 0 && ended, ended, errors };
+}
+
+async function main() {
+  const args = parseArgs(process.argv);
+  const password = process.env.PRIORITY_SDK_PASSWORD || '';
+  if (!args.name) {
+    emit({ ok: false, ended: false, errors: ['name_missing'] });
+    process.exitCode = 2;
+    return;
+  }
+  if (!args.url || !args.user || !password) {
+    emit({ ok: false, ended: false, errors: ['login_config_missing'] });
+    process.exitCode = 2;
+    return;
+  }
+  if (!args.company) {
+    emit({ ok: false, ended: false, errors: ['company_missing'] });
+    process.exitCode = 2;
+    return;
+  }
+
+  let priority;
+  try {
+    // Prefer sibling ../node_modules (pack layout), then cwd resolution.
+    const candidates = [
+      path.join(__dirname, '..', 'node_modules', 'priority-web-sdk'),
+      path.join(__dirname, 'node_modules', 'priority-web-sdk'),
+      'priority-web-sdk',
+    ];
+    let lastErr;
+    for (const c of candidates) {
+      try {
+        priority = require(c);
+        lastErr = null;
+        break;
+      } catch (e) {
+        lastErr = e;
+      }
+    }
+    if (!priority) throw lastErr || new Error('priority-web-sdk missing');
+  } catch (e) {
+    emit({
+      ok: false,
+      ended: false,
+      errors: [`sdk_require_failed:${e && e.name ? e.name : 'Error'}`],
+    });
+    process.exitCode = 3;
+    return;
+  }
+
+  const conf = {
+    username: args.user,
+    password,
+    url: args.url,
+    tabulaini: 'tabula.ini',
+    language: 3,
+    company: args.company,
+  };
+
+  try {
+    await priority.login(conf);
+    const result = await walkProc(priority, args);
+    emit(result);
+    process.exitCode = result.ok ? 0 : 1;
+  } catch (e) {
+    emit({
+      ok: false,
+      ended: false,
+      errors: [String((e && e.message) || e || 'sdk_walk_failed').slice(0, 200)],
+    });
+    process.exitCode = 1;
+  } finally {
+    delete process.env.PRIORITY_SDK_PASSWORD;
+  }
+}
+
+main();

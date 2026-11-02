@@ -415,13 +415,21 @@ def _priority_sdk_repprep(
         return {"ok": False, "path": path, "reason": "no_cred"}
     if mjs is None:
         return {"ok": False, "path": path, "reason": "sdk_mjs_missing"}
+    # FR #5905: explicit node-missing before spawn (clearer than WinError 2).
+    node_s = str(node or "").strip() or "node"
+    if os.path.isfile(node_s):
+        node_path = node_s
+    else:
+        node_path = shutil.which(node_s)
+    if not node_path:
+        return {"ok": False, "path": path, "reason": "node_missing"}
     env = os.environ.copy()
     env["PRIORITY_SDK_PASSWORD"] = secret
     run = node_runner or subprocess.run
     try:
         proc = run(
             [
-                node,
+                node_path,
                 str(mjs),
                 "--name",
                 ename,
@@ -439,6 +447,8 @@ def _priority_sdk_repprep(
             timeout=300,
             env=env,
         )
+    except FileNotFoundError:
+        return {"ok": False, "path": path, "reason": "node_missing"}
     except Exception as e:  # noqa: BLE001
         return {"ok": False, "path": path, "reason": f"sdk_exec_failed:{type(e).__name__}"}
     finally:
