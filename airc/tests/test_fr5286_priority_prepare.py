@@ -3,8 +3,10 @@ from __future__ import annotations
 
 import json
 import sys
-
+from pathlib import Path
 from unittest.mock import MagicMock
+
+import pytest
 
 import airc_console as ac
 from airc_auth_helpers import ops_auth
@@ -27,6 +29,14 @@ INST = {
     "systemDb": "system",
     "prepDir": "E:\\priority\\system\\prep",
 }
+
+
+@pytest.fixture(autouse=True)
+def _real_prep_dir(tmp_path, monkeypatch):
+    """FR #5937/#5943: override prepDir must exist as a directory (no fake E:\\ path)."""
+    prep = tmp_path / "priority" / "system" / "prep"
+    prep.mkdir(parents=True)
+    monkeypatch.setitem(INST, "prepDir", str(prep))
 
 
 def _ok_hooks(**over):
@@ -309,11 +319,17 @@ def test_fr5286_console_prepare_uses_hooks_not_bare_no_cred(monkeypatch, tmp_pat
             prp_stat=prp_stat,
         )
 
+    # Short prep path: IRC out line is capped ~350 UTF-8 bytes (FR #5616); a long
+    # pytest tmp_path in prep_dir would trip reply-too-large after FR #5943 fields.
+    short_prep = Path(r"D:\Temp\p5943")
+    short_prep.mkdir(parents=True, exist_ok=True)
+    inst = dict(INST)
+    inst["prepDir"] = str(short_prep)
     monkeypatch.setattr(ac, "build_console_prepare_hooks", fake_hooks2)
     monkeypatch.setattr(
         ac,
         "load_priority_instances",
-        lambda root=None: [INST],
+        lambda root=None: [inst],
     )
     core = ac.AircConsoleCore(
         machine="tm",

@@ -56,6 +56,166 @@ def _stat_mtime(path: Path) -> float | None:
         return None
 
 
+def _path_is_dir(path: str | Path) -> bool:
+    try:
+        return Path(path).is_dir()
+    except OSError:
+        return False
+
+
+def _prep_under_root(root: str | Path) -> Path:
+    return Path(root) / "system" / "prep"
+
+
+def _read_tabula_ini_prep_dir(
+    *,
+    windir: str | Path | None = None,
+    read_text: Callable[[Path], str] | None = None,
+) -> str | None:
+    """FR #5943: ``Priority Directory`` in tabula.ini is the prep folder itself."""
+    import re
+
+    bases: list[Path] = []
+    if windir is not None:
+        bases.append(Path(windir))
+    for key in ("WINDIR", "SystemRoot"):
+        raw = (os.environ.get(key) or "").strip()
+        if raw:
+            bases.append(Path(raw))
+    bases.append(Path(r"C:\Windows"))
+    seen: set[str] = set()
+    reader = read_text or (lambda p: p.read_text(encoding="utf-8", errors="replace"))
+    pat = re.compile(r"(?im)^\s*Priority\s+Directory\s*=\s*(.+?)\s*$")
+    for base in bases:
+        key = str(base).lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        ini = base / "tabula.ini"
+        try:
+            if not ini.is_file():
+                continue
+            text = reader(ini)
+        except OSError:
+            continue
+        m = pat.search(text or "")
+        if not m:
+            continue
+        cand = m.group(1).strip().strip('"').strip("'")
+        if cand:
+            return cand
+    return None
+
+
+def resolve_prep_dir(
+    instance: dict,
+    *,
+    path_is_dir: Callable[[str | Path], bool] | None = None,
+    tabula_reader: Callable[..., str | None] | None = None,
+) -> dict[str, Any]:
+    """FR #5943: resolve Priority ``system\\prep`` per instance.
+
+    ``prepDir`` / ``prep_dir`` is an optional override. When unset, derive from
+    ``priorityRoot`` / install fields, ``tabula.ini`` Priority Directory, or
+    ``PRIORITY_PREP_DIR`` / ``PRIORITY_ROOT`` env.
+
+    Returns ``{path, source, tried, derived_from}`` where ``source`` is
+    ``override`` | ``derived`` | ``""`` and ``tried`` lists probe names.
+    """
+    is_dir = path_is_dir or _path_is_dir
+    tried: list[str] = []
+    inst = instance if isinstance(instance, dict) else {}
+
+    override = str(inst.get("prepDir") or inst.get("prep_dir") or "").strip()
+    tried.append("override")
+    if override:
+        if is_dir(override):
+            return {
+                "path": str(Path(override)),
+                "source": "override",
+                "tried": tried,
+                "derived_from": "",
+            }
+        # Explicit bad override: do not fall through to derivation (misconfig).
+        return {
+            "path": "",
+            "source": "",
+            "tried": tried,
+            "derived_from": "",
+            "override_invalid": True,
+        }
+
+    for key in (
+        "priorityRoot",
+        "priority_root",
+        "installRoot",
+        "install_dir",
+        "installDir",
+    ):
+        root = str(inst.get(key) or "").strip()
+        if not root:
+            continue
+        tried.append("priority_root")
+        cand = _prep_under_root(root)
+        if is_dir(cand):
+            return {
+                "path": str(cand),
+                "source": "derived",
+                "tried": tried,
+                "derived_from": "priority_root",
+            }
+        break
+    else:
+        tried.append("priority_root")
+
+    tried.append("tabula_ini")
+    reader = tabula_reader or _read_tabula_ini_prep_dir
+    try:
+        tabula_prep = reader()
+    except TypeError:
+        tabula_prep = reader(windir=os.environ.get("WINDIR"))
+    except Exception:  # noqa: BLE001
+        tabula_prep = None
+    if tabula_prep and is_dir(tabula_prep):
+        return {
+            "path": str(Path(tabula_prep)),
+            "source": "derived",
+            "tried": tried,
+            "derived_from": "tabula_ini",
+        }
+
+    tried.append("env_priority_prep")
+    env_prep = (os.environ.get("PRIORITY_PREP_DIR") or "").strip()
+    if env_prep and is_dir(env_prep):
+        return {
+            "path": str(Path(env_prep)),
+            "source": "derived",
+            "tried": tried,
+            "derived_from": "env_priority_prep",
+        }
+
+    tried.append("env_priority_root")
+    for env_key in ("PRIORITY_ROOT", "PRIORITY_HOME"):
+        root = (os.environ.get(env_key) or "").strip()
+        if not root:
+            continue
+        cand = _prep_under_root(root)
+        if is_dir(cand):
+            return {
+                "path": str(cand),
+                "source": "derived",
+                "tried": tried,
+                "derived_from": "env_priority_root",
+            }
+
+    return {
+        "path": "",
+        "source": "",
+        "tried": tried,
+        "derived_from": "",
+    }
+
+
 def cred_present_via_fetcher(
     target: str,
     *,
@@ -205,17 +365,8 @@ def run_priority_prepare(
     if not target or not has_cred(target):
         base["reason"] = "no_cred"
         return base
-    # FR #5932: prepDir is required for prepare .prp gates. Missing prepDir made
-    # _mtime_for return 0.0 before and after, so success looked like prp_unchanged.
-    prep = str(inst.get("prepDir") or inst.get("prep_dir") or "").strip()
-    # MRB #5934 / CodeRabbit: non-existent prepDir must also fail closed (not prp_unchanged).
-    if not prep or not Path(prep).is_dir():
-        base["reason"] = "prep_dir_missing"
-        base["prp_mtime_before"] = 0.0
-        base["prp_mtime_after"] = 0.0
-        return base
-    # FR #5933: resolve T$EXEC types before SDK so form/report names cannot
-    # silently prepare a same-named report while TYPE=P lock looks empty.
+    # FR #5933: resolve T$EXEC types before prep/.prp so form/report names refuse
+    # without needing a local prep folder (FR #5943 derivation machines vary).
     if resolve_ename_types is not None:
         try:
             rows = list(resolve_ename_types(ename=name, instance=inst) or [])
@@ -250,6 +401,26 @@ def run_priority_prepare(
         if len(p_rows) == 0:
             base["reason"] = "not_type_p"
             return base
+    # FR #5932 / #5943: resolve prep folder (optional prepDir override, else derive).
+    # Missing/unresolvable prep made _mtime_for return 0.0 before and after -> false
+    # prp_unchanged. Non-existent override also fails closed (MRB #5934).
+    resolved = resolve_prep_dir(inst)
+    prep = str(resolved.get("path") or "").strip()
+    base["prep_dir_tried"] = list(resolved.get("tried") or [])
+    if resolved.get("derived_from"):
+        base["prep_dir_derived_from"] = resolved.get("derived_from")
+    if not prep:
+        base["reason"] = "prep_dir_missing"
+        base["prep_dir"] = ""
+        base["prep_dir_source"] = ""
+        base["prp_mtime_before"] = 0.0
+        base["prp_mtime_after"] = 0.0
+        return base
+    # Stamp resolved path onto a copy so .prp hooks / mtime see the same folder.
+    inst = dict(inst)
+    inst["prepDir"] = prep
+    base["prep_dir"] = prep
+    base["prep_dir_source"] = str(resolved.get("source") or "")
     # CAST IRON: TYPE=P is EXEC REPPREPDIRECT2 only (never formStart / form-prep).
     path = "REPPREPDIRECT2"
     # Capture .prp mtime BEFORE SDK so advance is meaningful.

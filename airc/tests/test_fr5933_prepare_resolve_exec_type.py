@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import sys
 
+import pytest
+
 from repo_layout import ROOT
 
 _WP = ROOT / "airc" / "priority-worker"
@@ -28,6 +30,14 @@ INST = {
     "systemDb": "system",
     "prepDir": "E:\\priority\\system\\prep",
 }
+
+
+@pytest.fixture(autouse=True)
+def _real_prep_dir(tmp_path, monkeypatch):
+    """FR #5937/#5943: prepDir override must be a real directory."""
+    prep = tmp_path / "priority" / "system" / "prep"
+    prep.mkdir(parents=True)
+    monkeypatch.setitem(INST, "prepDir", str(prep))
 
 
 def _ok_hooks(**over):

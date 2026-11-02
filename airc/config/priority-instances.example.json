@@ -8,6 +8,7 @@
       "credentialTarget": "PriorityWeb/example-dev",
       "sqlServer": ".\\PRI",
       "systemDb": "system",
+      "priorityRoot": "E:\\priority",
       "prepDir": "E:\\priority\\system\\prep"
     }
   ]
