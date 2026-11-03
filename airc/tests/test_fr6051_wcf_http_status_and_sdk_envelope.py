@@ -66,12 +66,12 @@ def test_fr6051_golden_getversion_and_generalcompanies():
     url0, env0, hdr0 = seen[0]
     url1, env1, hdr1 = seen[1]
     assert hdr0["Content-Type"] == "text/xml; charset=utf-8"
-    assert hdr0["SOAPAction"] == '"http://tempuri.org/IWCFService/GetVersion"'
-    assert hdr1["SOAPAction"] == '"http://tempuri.org/IWCFService/GeneralCompanies"'
-    assert '<GetVersion xmlns="http://tempuri.org/"/>' in env0 or '<GetVersion xmlns="http://tempuri.org/"></GetVersion>' in env0
-    assert "<GeneralCompanies" in env1
+    assert hdr0["SOAPAction"] == '"http://tempuri.org/IWCFService/GetFileVersion"'
+    assert hdr1["SOAPAction"] == '"http://tempuri.org/IWCFService/GeneralCompaniesMob"'
+    assert '<GetFileVersion xmlns="http://tempuri.org/"/>' in env0 or '<GetFileVersion xmlns="http://tempuri.org/"></GetFileVersion>' in env0
+    assert "<GeneralCompaniesMob" in env1
     assert wcf.WSA_NS in env0 and wcf.WSA_NS in env1
-    assert "http://tempuri.org/IWCFService/GetVersion" in env0
+    assert "http://tempuri.org/IWCFService/GetFileVersion" in env0
     assert url0.endswith("/wcf/wcf/Service.svc")
     assert env0.find("<a:Action") < env0.find("<o:Security")
     assert secret not in str({"raw": "x"})

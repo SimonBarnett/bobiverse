@@ -58,7 +58,36 @@ _IRC_OVERRIDE_KEYS = frozenset(
     }
 )
 
-OPS = ("GetVersion", "GeneralCompanies", "ProcStart", "ProcContinue", "ProcEnd")
+# Wire names match priority-web-sdk (FR #6054). Legacy names are aliases.
+_OP_TO_WIRE = {
+    "GetVersion": "GetFileVersion",
+    "GetFileVersion": "GetFileVersion",
+    "GeneralCompanies": "GeneralCompaniesMob",
+    "GeneralCompaniesMob": "GeneralCompaniesMob",
+    "ProcStart": "ProcStartMob",
+    "ProcStartMob": "ProcStartMob",
+    "ProcContinue": "ProcContinueMob",
+    "ProcContinueMob": "ProcContinueMob",
+    "ProcEnd": "ProcEndMob",
+    "ProcEndMob": "ProcEndMob",
+}
+OPS = tuple(dict.fromkeys(_OP_TO_WIRE.values()))
+
+
+def resolve_wcf_op(op: str) -> str | None:
+    """Map IRC/legacy names to SDK WCF operations; None if unknown."""
+    raw = str(op or "").strip()
+    if raw in _OP_TO_WIRE:
+        return _OP_TO_WIRE[raw]
+    key = raw.lower()
+    for alias, wire in _OP_TO_WIRE.items():
+        if alias.lower() == key:
+            return wire
+    extra = {
+        "version": "GetFileVersion",
+        "companies": "GeneralCompaniesMob",
+    }
+    return extra.get(key)
 
 PRIORITY_NOT_INSTALLED = "priority_not_installed"
 PRIORITY_NOT_CONFIGURED = "priority_not_configured"
@@ -341,9 +370,10 @@ class PriorityWcfClient:
     ) -> dict[str, Any]:
         if self._allowlist_present is False:
             return {"ok": False, "error": PRIORITY_NOT_INSTALLED, "via": "wcf"}
-        name = str(op or "").strip()
-        if name not in OPS:
-            return {"ok": False, "error": WCF_BAD_OP, "op": name, "via": "wcf"}
+        requested = str(op or "").strip()
+        name = resolve_wcf_op(requested)
+        if not name:
+            return {"ok": False, "error": WCF_BAD_OP, "op": requested, "via": "wcf"}
         url = wcf_endpoint(self.instance)
         if not url:
             return {"ok": False, "error": PRIORITY_NOT_CONFIGURED, "via": "wcf"}
@@ -493,16 +523,21 @@ _WCF_VERB_RE = re.compile(
 )
 _KV_RE = re.compile(r"(\w+)=([^\s]+)")
 _OP_ALIAS = {
-    "getversion": "GetVersion",
-    "version": "GetVersion",
-    "generalcompanies": "GeneralCompanies",
-    "companies": "GeneralCompanies",
-    "procstart": "ProcStart",
-    "proccontinue": "ProcContinue",
-    "procend": "ProcEnd",
+    "getversion": "GetFileVersion",
+    "version": "GetFileVersion",
+    "getfileversion": "GetFileVersion",
+    "generalcompanies": "GeneralCompaniesMob",
+    "companies": "GeneralCompaniesMob",
+    "generalcompaniesmob": "GeneralCompaniesMob",
+    "procstart": "ProcStartMob",
+    "procstartmob": "ProcStartMob",
+    "proccontinue": "ProcContinueMob",
+    "proccontinuemob": "ProcContinueMob",
+    "procend": "ProcEndMob",
+    "procendmob": "ProcEndMob",
 }
-for _n in OPS:
-    _OP_ALIAS[_n.lower()] = _n
+for _n in list(_OP_TO_WIRE.keys()) + list(OPS):
+    _OP_ALIAS[_n.lower()] = _OP_TO_WIRE.get(_n, _n)
 
 
 def parse_priority_wcf_command(text: str) -> dict[str, Any] | None:

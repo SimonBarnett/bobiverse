@@ -87,7 +87,7 @@ def test_fr6035_direct_and_relay_vs_fake_http():
         assert "21.1" in out["body"]
     url, headers, data = captured[0]
     assert url.endswith("/wcf/wcf/Service.svc")
-    assert headers["SOAPAction"] == '"http://tempuri.org/IWCFService/GetVersion"'
+    assert headers["SOAPAction"] == '"http://tempuri.org/IWCFService/GetFileVersion"'
     assert secret.encode("utf-8") in data
     assert "UsernameToken" in data.decode("utf-8")
 
@@ -97,7 +97,7 @@ def test_fr6035_proc_ops_and_fault_and_auth():
 
     def start_post(url, data, headers, timeout_s=30.0):
         assert "FORMPREP" in data.decode("utf-8")
-        assert headers["SOAPAction"] == '"http://tempuri.org/IWCFService/ProcStart"'
+        assert headers["SOAPAction"] == '"http://tempuri.org/IWCFService/ProcStartMob"'
         return 200, _ok_body("ProcStart", "SESS1")
 
     c = wcf.PriorityWcfClient(
@@ -217,7 +217,7 @@ def test_fr6035_live_http_server_both_modes():
         srv.shutdown()
         srv.server_close()
     assert hits
-    assert "GetVersion" in (hits[0][1] or "")
+    assert "GetFileVersion" in (hits[0][1] or "")
 
 
 def test_fr6035_priority_wcf_verb_parse_and_run():
@@ -225,7 +225,7 @@ def test_fr6035_priority_wcf_verb_parse_and_run():
     p = wcf.parse_priority_wcf_command(
         "id=aabb6035 PRIORITY wcf GetVersion example-dev"
     )
-    assert p["op"] == "GetVersion"
+    assert p["op"] == "GetFileVersion"
     assert p["instance"] == "example-dev"
     assert ap.parse_priority_usage("PRIORITY wcf GetVersion x") is None
 
