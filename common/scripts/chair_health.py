@@ -82,6 +82,40 @@ CHECKS = (
 )
 
 
+def healed_bored_nicks(lines: list[str] | None) -> set[str]:
+    """Nicks that got ``!recycleseat`` this scan (``bored-latency recycleseat=nick``)."""
+    out: set[str] = set()
+    for line in lines or []:
+        text = str(line or "")
+        marker = "recycleseat="
+        if marker not in text:
+            continue
+        nick = text.split(marker, 1)[1].split()[0].strip().lower()
+        if nick:
+            out.add(nick)
+    return out
+
+
+def drop_healed_bored_findings(
+    findings: list[dict],
+    heal_lines: list[str] | None,
+) -> list[dict]:
+    """FR #6103: heal already recycled the seat — do not file it as an FR."""
+    healed = healed_bored_nicks(heal_lines)
+    if not healed:
+        return list(findings or [])
+    kept = []
+    for item in findings or []:
+        if str(item.get("id") or "") != "bored-latency":
+            kept.append(item)
+            continue
+        key = str(item.get("key") or "").strip().lower()
+        if key in healed:
+            continue
+        kept.append(item)
+    return kept
+
+
 def targets() -> dict[str, str]:
     public = (
         os.environ.get("JEEVES_PROBE_PUBLIC")
@@ -976,6 +1010,7 @@ class ChairJobs:
             "deadlock_healed": bool(healed),
         }
         findings = stall_detectors.detect_all(snap)
+        findings = drop_healed_bored_findings(findings, bored_healed)
         if not findings:
             return
         # FR #5181: park all-gave-up rows so the next scan skips them
