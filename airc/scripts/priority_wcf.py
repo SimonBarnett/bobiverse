@@ -234,6 +234,7 @@ def redact(text: str, secret: str = "", extra: str = "") -> str:
 
 
 def redact_all(text: str, *secrets: str) -> str:
+    """Apply every secret to the already-redacted text (FR #6049)."""
     s = str(text or "")
     for piece in secrets:
         if piece:
