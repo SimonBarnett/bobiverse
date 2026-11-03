@@ -346,6 +346,7 @@ routes to bobiverse via the split rule.
 - LEGION default_installer_run tests must use a non-local host (not this machine name) or install_local skips the install_remote monkeypatch; scrub FAKE_ needles via runtime concat for FR #5721 source pins.
 - LEGION CredMan/SYSTEM-fallback unit pins must monkeypatch read_remote_airc_profile_result; otherwise host SMB profile_unreadable exits before run_fn and flakes on MarchHare-class boxes.
 - stall:bored-latency audit FR: close completed citing FR #5701/#5706 heal + FR #5203/#5219 busy-skip when on main; DONE covering PR URL; reopen only with heal-log !recycleseat fail while idle
+- WCF result redact must apply secrets cumulatively on already-redacted text; last-wins on the original field leaks the password when an appkey is also set.
 
 ## Harvest digest (lessons audit 2026-10-06)
 
