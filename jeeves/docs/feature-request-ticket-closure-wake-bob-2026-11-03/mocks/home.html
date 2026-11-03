@@ -1,0 +1,21 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Ticket closure wake — primary</title>
+  <style>
+    body { font-family: system-ui, sans-serif; margin: 2rem; max-width: 40rem; }
+    code { background: #f4f4f4; padding: 0.1rem 0.3rem; }
+    .ok { color: #0a0; }
+  </style>
+</head>
+<body>
+  <h1>Ticket closure → wake Bob</h1>
+  <p>No TipForm UI. Primary surface is monitor JSON + Grok Bot message.</p>
+  <ul>
+    <li class="ok">Detect: <code>Test-JeevesMonitorTicketClosure</code> exit 1, <code>closed[]</code> non-empty</li>
+    <li class="ok">Wake: <code>GrokBotApi.py send --agent Bob</code> with brief</li>
+    <li>Example brief: <code>SimonBarnett/bobiverse#1234 pr merged — continue waiting work</code></li>
+  </ul>
+</body>
+</html>

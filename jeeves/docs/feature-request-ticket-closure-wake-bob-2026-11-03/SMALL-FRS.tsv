@@ -1,0 +1,8 @@
+id	goal	deliverables	testable	phase	require_machine_hint
+FR-A	Deterministic ticket-closure check	jeeves/tools/monitor/ticket_closure.py + Test-JeevesMonitorTicketClosure.ps1; exit 0/1/2; JSON closed[]	Fixture synthetic close → EXIT 1; none → EXIT 0	1	detection may be ionos
+FR-B	De-dupe cursor	Persist closure keys in monitor-ticket-closure.json under digest/ops home	Same close twice → one wake/finding	1	
+FR-C	Wire runner + monitor-start	Invoke-JeevesMonitorCheck ValidateSet; AGENTS; bobiverse-jeeves-monitor; monitor-start; existence locks	Wrapper listed; dry-run ok	1	
+FR-D	Wake adapter to Grok Bot Bob	Script wrapping GrokBotApi.py send --agent Bob; redacted logs; hand-off spike from detect host	Mock send once with #N in brief; fail → finding no secrets	1	Bob desktop host
+FR-E	Message brief contract	Template: repo, number, issue|pr, closed|merged, optional title, continue cue	Unit/snapshot required fields	1	
+FR-F	Docs park	jeeves/docs note + FR vision mirror; Refs not Closes on docs PR	Docs PR merges; implementation FRs stay open	1	
+FR-G	Wait registry (optional)	Bob registers waiting_on owner/repo#N; filter wakes	Empty=Phase-1 all focus closes; non-empty=filter	2	
