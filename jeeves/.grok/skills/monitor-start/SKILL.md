@@ -46,6 +46,7 @@ You are the **MONITORING** agent - not the chair, not a worker. Never `!assign` 
 | Skill promote backlog | `skill_promote_backlog` | open skill/harvest receipts with zero `harvest/*` promote PR (FR #1729 / post-#1682) |
 | Intake allowlist | `intake_allowlist` | live POST /bob/v1/intake 403 repo_not_allowed vs DEFAULT_ALLOW_REPOS (FR #3117; Sync/compose ionos) |
 | Github resync focus | `github_resync_focus` | focus.repos set but queue/discover starve (FR #3146; resync-repos.txt / !resync) |
+| Ticket closure | `ticket_closure` | newly closed issues/PRs on focused repos (FR #6063; report only) |
 
 Exit codes: **0** ok, **1** finding, **2** error. One JSON line on stdout.
 
