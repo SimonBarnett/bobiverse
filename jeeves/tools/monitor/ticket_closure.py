@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
-"""FR #6063 / #6064: report newly closed issues/PRs on watched/focused repos.
+"""FR #6063 / #6064 / #6069: newly closed tickets on watched/focused repos.
 
 Phase-1 events: issue closed, PR merged, PR closed (unmerged).
+Phase-2: optional waiting_on registry narrows reports.
 Reads a fixture when JEEVES_TICKET_CLOSURE_FIXTURE is set (tests / offline).
 Never writes queue.json and never assigns work.
 """
@@ -24,6 +25,7 @@ from _common import (
 
 STATE_NAME = "monitor-ticket-closure.json"
 _LEGACY_STATE_NAME = "ticket_closure_state.json"
+WAITING_NAME = "ticket-closure-waiting.json"
 
 
 def _load_json(path: Path) -> Any:
@@ -112,6 +114,45 @@ def _load_events(fixture: Path | None, repos: set[str]) -> list[dict[str, Any]]:
     return out
 
 
+def _canon_ticket(text: str) -> str:
+    return str(text or "").strip().lower().lstrip("#")
+
+
+def _event_ticket_id(row: dict[str, Any]) -> str:
+    return _canon_ticket(f"{row.get('repo')}#{row.get('number')}")
+
+
+def _load_waiting(chair: Path, digest: Path) -> set[str]:
+    """Phase-2 registry. Empty / missing → Phase-1 (all focused closes)."""
+    env = (os.environ.get("JEEVES_TICKET_CLOSURE_WAITING") or "").strip()
+    paths = []
+    if env:
+        paths.append(Path(env))
+    ops = ops_home(chair, digest)
+    paths.extend(
+        [
+            ops / WAITING_NAME,
+            digest / WAITING_NAME,
+            chair / WAITING_NAME,
+        ]
+    )
+    for path in paths:
+        data = _load_json(path)
+        raw = None
+        if isinstance(data, dict):
+            raw = data.get("waiting_on")
+            if raw is None:
+                raw = data.get("waitingOn")
+        elif isinstance(data, list):
+            raw = data
+        if not isinstance(raw, list) or not raw:
+            continue
+        ids = {_canon_ticket(x) for x in raw if str(x).strip()}
+        if ids:
+            return ids
+    return set()
+
+
 def check(args):
     chair, digest = resolve_homes(args)
     focus_path = resolve_focus_path(chair, digest)
@@ -119,6 +160,9 @@ def check(args):
     fx = (os.environ.get("JEEVES_TICKET_CLOSURE_FIXTURE") or "").strip()
     fixture = Path(fx) if fx else None
     events = _load_events(fixture, repos)
+    waiting = _load_waiting(chair, digest)
+    if waiting:
+        events = [ev for ev in events if _event_ticket_id(ev) in waiting]
     ops = ops_home(chair, digest)
     state_path = ops / STATE_NAME
     state = _load_json(state_path)
@@ -155,6 +199,7 @@ def check(args):
             "closed": closed,
             "closed_count": len(closed),
             "repos": sorted(repos),
+            "waiting_on": sorted(waiting),
             "findings": findings,
             "remediation": remediation,
         },
