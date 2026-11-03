@@ -210,6 +210,15 @@ def redact(text: str, secret: str = "", extra: str = "") -> str:
     return _PASS_RE.sub(r"\1=***", s)
 
 
+def redact_all(text: str, *secrets: str) -> str:
+    """Apply every secret to the already-redacted text (FR #6049)."""
+    s = str(text or "")
+    for piece in secrets:
+        if piece:
+            s = redact(s, piece)
+    return s
+
+
 def parse_soap_response(xml_text: str) -> dict[str, Any]:
     raw = str(xml_text or "")
     try:
@@ -391,11 +400,8 @@ class PriorityWcfClient:
         extras = [x for x in (to_redact, app_key) if x]
         if extras:
             for k, v in list(parsed.items()):
-                if not isinstance(v, str):
-                    continue
-                for piece in extras:
-                    if piece in v:
-                        parsed[k] = redact(v, piece, extra=app_key)
+                if isinstance(v, str):
+                    parsed[k] = redact_all(v, *extras)
         app_key = ""
         return parsed
 
