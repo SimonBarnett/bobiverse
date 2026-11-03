@@ -1191,6 +1191,8 @@ def row_skip_fr_reason(row: dict) -> str | None:
         labels = [labels]
     repo = str(row.get("repo") or "").strip().lower()
     ident = _norm_row_id(row.get("id"))
+    if repo and ident and (repo, ident) in _NEEDS_HUMAN_ISSUE_PINS:
+        return "needs_human_hold"
     if repo and ident and (repo, ident) in _SKIP_FR_ISSUE_PINS:
         return "hard_pin_umbrella"
     # Queue rows often store the issue title in ``line`` (offer/list); fall back so
@@ -1644,6 +1646,13 @@ _REQUIRE_MACHINE_ISSUE_UNPINS: set[tuple[str, str]] = {
 # Hard-pin by (repo, #N) so resync/offer always prune.
 # FR #2562 / #2677: reverse #2521 — re-pin #11 (MRB FAIL verdict board). Remediation
 # belongs on child FRs (#9/#10), never on the verdict board itself.
+# FR #6027: living WCF/tabula live proof (#6026) has no fleet host and no WSDL yet.
+# Hard-hold so !bored cannot offer it to flamingo (or any shop) until a human
+# captures the Priority WCF contract and unpins. Not an umbrella SKIP_FR.
+_NEEDS_HUMAN_ISSUE_PINS: set[tuple[str, str]] = {
+    ("simonbarnett/bobiverse", "#6026"),
+}
+
 _SKIP_FR_ISSUE_PINS: set[tuple[str, str]] = {
     ("simonbarnett/agentic_fomprep", "#3"),
     ("simonbarnett/agentic_fomprep", "#7"),
@@ -10076,6 +10085,8 @@ def claim_from_github_issue(repo: str, issue: dict) -> GitClaim | None:
         return None
     if (str(repo).lower(), _norm_row_id(f"#{num}")) in _SKIP_FR_ISSUE_PINS:
         return None
+    if (str(repo).lower(), _norm_row_id(f"#{num}")) in _NEEDS_HUMAN_ISSUE_PINS:
+        return None
     return GitClaim(
         repo=canonical_queue_repo(repo),
         task="FR",
@@ -10980,11 +10991,11 @@ def list_pr_needs_mergeability_enrichment(pr: dict | None) -> bool:
     """
     if not isinstance(pr, dict):
         return False
-    return not (
-        "mergeable" in pr
-        or "mergeable_state" in pr
-        or "mergeStateStatus" in pr
-    )
+    if "mergeable_state" in pr or "mergeStateStatus" in pr:
+        return False
+    # FR #6044: a lone ``mergeable`` key (often REST false/null) is not enough;
+    # still fetch mergeable_state so dirty pins are not skipped as clean.
+    return True
 
 
 def enrich_pr_mergeability(
@@ -11012,7 +11023,12 @@ def enrich_pr_mergeability(
         return False
     wrote = False
     if "mergeable" in detail:
-        pr["mergeable"] = detail.get("mergeable")
+        val = detail.get("mergeable")
+        # FR #6044 / MRB #6045: do not overwrite mergeable=False with REST null
+        # (GitHub still computing). A later mergeable_state=unknown would then
+        # look clean and skip the dirty-FIX path.
+        if val is not None or "mergeable" not in pr:
+            pr["mergeable"] = val
         wrote = True
     if "mergeable_state" in detail:
         pr["mergeable_state"] = detail.get("mergeable_state")
@@ -11372,19 +11388,43 @@ def resync_from_github(
                 continue
             # FR #5500: docs/mrb-* pins never become MRB (resync stored empty title
             # so offer-time lesson_of_lesson could not see first-level pins).
+            # FR #6044: still fall through when DIRTY/CONFLICTING so #4679 FIX
+            # can fold an orphan pin whose original already merged.
             _resync_head = pr.get("head") if isinstance(pr.get("head"), dict) else {}
             if is_docs_mrb_pin_pr(
                 title=title,
                 head_ref=str(_resync_head.get("ref") or ""),
                 labels=pr_labels,
             ):
-                skipped_draft += 1
-                skipped_open_pulls.add((repo, f"#{num}"))
+                if list_pr_needs_mergeability_enrichment(pr):
+                    enrich_pr_mergeability(
+                        pr, repo=repo, num=num, fetch_json=getter
+                    )
+                try:
+                    import mrb_merge_on_green as _mog_pin
+
+                    pin_dirty = _mog_pin.merge_attempt_conflict_reason(
+                        mergeable=pr.get("mergeable"),
+                        merge_state=str(
+                            pr.get("mergeable_state")
+                            or pr.get("mergeStateStatus")
+                            or ""
+                        ),
+                    )
+                except Exception:  # noqa: BLE001
+                    pin_dirty = ""
+                if not pin_dirty:
+                    skipped_draft += 1
+                    skipped_open_pulls.add((repo, f"#{num}"))
+                    print(
+                        f"resync skip docs/mrb pin PR {repo}#{num}",
+                        flush=True,
+                    )
+                    continue
                 print(
-                    f"resync skip docs/mrb pin PR {repo}#{num}",
+                    f"resync dirty docs/mrb pin PR {repo}#{num} -> FIX",
                     flush=True,
                 )
-                continue
             # FR #4466 / #4594 / #4596: open PR with auto-merge on the PASSed SHA.
             # Still queued/in_progress -> skip ci-wait (not a new MRB).
             # Already concluded FAILURE -> offer FIX (per-PR when main is green;
@@ -11794,6 +11834,8 @@ def resync_from_github(
                 continue
             if (str(repo).lower(), _norm_row_id(ident)) in _SKIP_FR_ISSUE_PINS:
                 continue  # FR #2480 hard-pin umbrella
+            if (str(repo).lower(), _norm_row_id(ident)) in _NEEDS_HUMAN_ISSUE_PINS:
+                continue  # FR #6027 WCF live hold
             desired.append(
                 GitClaim(
                     repo=repo,

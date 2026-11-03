@@ -40,20 +40,43 @@ def _instance(instances: list[dict] | None, instance_id: str) -> dict | None:
     return rows[0]
 
 
-def _prp_path(prep_dir: str, exec_id: int | str) -> Path:
-    base = Path(prep_dir)
-    primary = base / ("d{0}.prp".format(exec_id))
-    if primary.is_file():
-        return primary
-    alt = base / ("d{0}.p".format(exec_id))
-    return alt if alt.is_file() else primary
-
-
 def _stat_mtime(path: Path) -> float | None:
     try:
         return path.stat().st_mtime if path.is_file() else None
     except OSError:
         return None
+
+
+def _prep_artifact_candidates(prep_dir: str, exec_id: int | str) -> list[Path]:
+    base = Path(prep_dir)
+    eid = str(exec_id)
+    return [base / ("d{0}.prp".format(eid)), base / ("d{0}.p".format(eid))]
+
+
+def _prep_artifact_info(prep_dir: str, exec_id: int | str) -> tuple[Path, float | None]:
+    """Newest existing prep artifact (``.prp`` or ``.p``) and its mtime.
+
+    FR #6008: TYPE=R ``REPPREPDIRECT2`` rewrites ``d{id}.p`` while a stale
+    ``d{id}.prp`` may still exist. Prefer the newest of the two so a real
+    rewrite counts as advanced; ``prep_file`` names that artifact.
+    """
+    default = Path(prep_dir) / ("d{0}.prp".format(exec_id))
+    best_path = default
+    best_mtime: float | None = None
+    for path in _prep_artifact_candidates(prep_dir, exec_id):
+        mt = _stat_mtime(path)
+        if mt is None:
+            continue
+        if best_mtime is None or mt > best_mtime:
+            best_mtime = mt
+            best_path = path
+    return best_path, best_mtime
+
+
+def _prp_path(prep_dir: str, exec_id: int | str) -> Path:
+    """Path used for the prep-artifact mtime gate (newest of ``.prp`` / ``.p``)."""
+    path, _mt = _prep_artifact_info(prep_dir, exec_id)
+    return path
 
 
 def _path_is_dir(path: str | Path) -> bool:
@@ -322,7 +345,8 @@ def build_default_prepare_hooks(
         if prp_stat is not None:
             mt = prp_stat(ename=ename, instance=instance, exec_id=eid, prep_dir=prep)
             return float(mt or 0.0)
-        mt = _stat_mtime(_prp_path(prep, eid))
+        art, mt = _prep_artifact_info(prep, eid)
+        state["prep_file"] = art.name
         return float(mt or 0.0)
 
     def prp_before(**kw: Any) -> float:
@@ -531,6 +555,10 @@ def run_priority_prepare(
     inst["prepDir"] = prep
     base["prep_dir"] = prep
     base["prep_dir_source"] = str(resolved.get("source") or "")
+    # FR #6008: name the artifact we will gate on (newest of .prp / .p).
+    if base.get("exec_id") is not None:
+        art, _mt = _prep_artifact_info(prep, base["exec_id"])
+        base["prep_file"] = art.name
 
     # Form -> FORMPREPDRCT2; report/procedure -> REPPREPDIRECT2 (never swap).
     path = "FORMPREPDRCT2" if wanted == "F" else "REPPREPDIRECT2"
@@ -582,6 +610,9 @@ def run_priority_prepare(
     base["prp_mtime_after"] = after
     advanced = after > before
     base["prp_advanced"] = advanced
+    if base.get("exec_id") is not None and prep:
+        art, _mt = _prep_artifact_info(prep, base["exec_id"])
+        base["prep_file"] = art.name
     if upd != "N":
         base["reason"] = "still_unprepared"
         return base

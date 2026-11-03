@@ -32,7 +32,7 @@ _PRIORITY_ANY_RE = re.compile(
     r"(?is)^(?:id=([0-9a-f]{8})\s+)?PRIORITY(?:\s+(\S+).*)?$"
 )
 _PRIORITY_KNOWN_SUB = frozenset(
-    {"connect", "status", "prepare", "formstart", "subform", "getrows"}
+    {"connect", "status", "prepare", "formstart", "subform", "getrows", "wcf"}
 )
 
 _REQUIRED_INSTANCE_KEYS = ("id", "url", "company", "user", "credentialTarget")
@@ -395,7 +395,7 @@ def parse_priority_usage(text: str) -> str | None:
     return (m.group(1) or "").lower()
 
 
-PRIORITY_USAGE_SUBVERBS = "connect|status|prepare|formStart|subform|getRows"
+PRIORITY_USAGE_SUBVERBS = "connect|status|prepare|formStart|subform|getRows|wcf"
 
 # FR #5616: must match airc_console.IRC_SAFE_PAYLOAD (no reverse import; cycle risk).
 PRIORITY_REPLY_MAX_BYTES = 350
@@ -420,6 +420,21 @@ _PRIORITY_REPLY_DROP_KEYS = (
 # Minimum success fields the caller must still see after shrink (FR #5993).
 _PRIORITY_REPLY_CORE_OK_KEYS = frozenset(
     {"ok", "reason", "exec_id", "prep_file", "prep_dir_source", "action"}
+)
+
+# FR #6018: walk IRC summary keeps these; full rows go to jobs/<id>/walk.json.
+_PRIORITY_REPLY_WALK_DROP = ("rows", "subforms", "title", "detail")
+_PRIORITY_REPLY_WALK_CORE = (
+    "ok",
+    "action",
+    "op",
+    "form",
+    "table",
+    "count",
+    "columns",
+    "rows_ref",
+    "via",
+    "instance",
 )
 
 
@@ -448,6 +463,71 @@ def bound_echo_token(
 def _framed_priority_out(job_id: str, body: dict[str, Any]) -> str:
     line_json = json.dumps(body, separators=(",", ":"), sort_keys=True)
     return f"out id={job_id} seq=1 {line_json}"
+
+
+def _is_walk_success_payload(body: dict[str, Any]) -> bool:
+    """True when this is a successful form walk (FR #6018 keep-ok)."""
+    if body.get("ok") is not True:
+        return False
+    action = str(body.get("action") or body.get("op") or "").strip().lower()
+    if action in ("walk", "formstart", "getrows"):
+        return True
+    return "columns" in body or "rows" in body
+
+
+def _walk_summary_payload(body: dict[str, Any]) -> dict[str, Any]:
+    """Key/columns + count for the 350-byte IRC budget (FR #6018)."""
+    cols = body.get("columns")
+    if isinstance(cols, list):
+        names = [str(c) for c in cols[:12]]
+    else:
+        names = []
+    summary: dict[str, Any] = {}
+    for k in _PRIORITY_REPLY_WALK_CORE:
+        if k == "columns":
+            if names:
+                summary["columns"] = names
+            continue
+        if k in body:
+            summary[k] = body[k]
+    if "action" not in summary:
+        summary["action"] = "walk"
+    summary["ok"] = True
+    if "count" not in summary:
+        rows = body.get("rows")
+        if isinstance(rows, list):
+            summary["count"] = len(rows)
+    return summary
+
+
+def _write_walk_rows_file(job_id: str, payload: dict[str, Any]) -> str:
+    """Park full walk rows under ConsoleHome/jobs/<id>/walk.json (FR #6018)."""
+    jid = (job_id or "").strip().lower()
+    if not jid:
+        return ""
+    home = (
+        os.environ.get("AIRC_HOME")
+        or os.environ.get("AIRC_CONSOLE_HOME")
+        or ""
+    ).strip()
+    if not home:
+        return ""
+    dest = Path(home) / "jobs" / jid / "walk.json"
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    blob = {
+        "form": payload.get("form"),
+        "table": payload.get("table"),
+        "columns": payload.get("columns"),
+        "rows": payload.get("rows"),
+        "count": payload.get("count"),
+        "offset": payload.get("offset"),
+        "limit": payload.get("limit"),
+    }
+    try:
+        dest.write_text(json.dumps(blob, separators=(",", ":")), encoding="utf-8")
+    except OSError:
+        return ""
+    return str(dest)
 
 
 def _is_prepare_success_payload(body: dict[str, Any]) -> bool:
@@ -481,6 +561,20 @@ def _shrink_priority_payload_steps(body: dict[str, Any]) -> list[dict[str, Any]]
             cur = dict(cur)
             cur.pop(key, None)
             steps.append(cur)
+    if _is_walk_success_payload(cur):
+        for key in _PRIORITY_REPLY_WALK_DROP:
+            if key in cur:
+                cur = dict(cur)
+                cur.pop(key, None)
+                steps.append(cur)
+        cols = cur.get("columns")
+        if isinstance(cols, list) and len(cols) > 12:
+            cur = dict(cur)
+            cur["columns"] = [str(c) for c in cols[:12]]
+            steps.append(cur)
+        summary = _walk_summary_payload(cur)
+        if summary != cur:
+            steps.append(summary)
     # Last resort for prepare success: core keys only.
     if _is_prepare_success_payload(cur):
         core = {
@@ -511,12 +605,17 @@ def format_bounded_priority_out(
 ) -> tuple[str, int]:
     """Return (framed out line, effective exit).
 
-    Oversized replies drop optional detail first (FR #5993). A successful
-    prepare ``ok:true`` never becomes ``reply-too-large`` / exit=1. Other
-    unshrinkable replies still fall back to compact reply-too-large (FR #5616).
+    Oversized replies drop optional detail first (FR #5993 / #6018). A
+    successful prepare or form walk ``ok:true`` never becomes
+    ``reply-too-large`` / exit=1. Other unshrinkable replies still fall back
+    to compact reply-too-large (FR #5616).
     """
     jid = (job_id or "").strip().lower() or "00000000"
     body = dict(payload or {})
+    if _is_walk_success_payload(body) and (
+        "rows" in body or "subforms" in body or "title" in body
+    ):
+        body = _walk_summary_payload(body)
     line_json = json.dumps(body, separators=(",", ":"), sort_keys=True)
     low = line_json.lower()
     # Key-shaped only: error codes like password-refused must stay visible.
@@ -537,6 +636,22 @@ def format_bounded_priority_out(
         cand_out = _framed_priority_out(jid, candidate)
         if len(cand_out.encode("utf-8")) <= max_bytes:
             return cand_out, int(exit_code)
+
+    # Walk success: IRC summary only (FR #6018).
+    if _is_walk_success_payload(body):
+        summary = _walk_summary_payload(body)
+        sum_out = _framed_priority_out(jid, summary)
+        if len(sum_out.encode("utf-8")) <= max_bytes:
+            return sum_out, int(exit_code)
+        floor = {
+            "ok": True,
+            "action": "walk",
+            "form": str(body.get("form") or "")[:32],
+            "count": int(body.get("count") or 0),
+        }
+        if body.get("rows_ref"):
+            floor["rows_ref"] = body["rows_ref"]
+        return _framed_priority_out(jid, floor), int(exit_code)
 
     # Prepare success must never flip to reply-too-large (FR #5993).
     if _is_prepare_success_payload(body):
@@ -1147,6 +1262,10 @@ def run_priority_walk(
         payload = {**payload, "action": "walk"}
     if "instance" not in payload:
         payload["instance"] = inst_id
+    if payload.get("ok") and payload.get("rows"):
+        ref = _write_walk_rows_file(jid, payload)
+        if ref:
+            payload = {**payload, "rows_ref": ref}
 
     err = str(payload.get("error") or "").strip()
     # FR #5948: named expected errors (incl. fixture-miss) never intake, even when

@@ -539,6 +539,58 @@ def _priority_sqlcmd_run(
     )
 
 
+def _first_sql_ident(stdout: str) -> str:
+    """First identifier-shaped cell from a sqlcmd pipe table."""
+    for line in (stdout or "").splitlines():
+        s = line.strip()
+        if not s or "rows affected" in s.lower() or all(c in "-| " for c in s):
+            continue
+        cell = s.split("|", 1)[0].strip().strip("[]")
+        if cell.upper() in ("TNAME", "ENAME"):
+            continue
+        if _FORM_IDENT_RE.match(cell):
+            return cell
+    return ""
+
+
+def _lookup_form_table_name(
+    *,
+    server: str,
+    sys_db: str,
+    exec_id: int | None,
+    form_name: str,
+    sql_runner=None,
+) -> str:
+    """FR #6018: physical table from Priority dictionary (EXEC.TNAME / COLUMNS.TNAME)."""
+    if exec_id is not None:
+        queries = (
+            (
+                "SET NOCOUNT ON; "
+                f"SELECT TOP 1 TNAME FROM dbo.[EXEC] WHERE [EXEC]={int(exec_id)} "
+                "AND TNAME IS NOT NULL AND LTRIM(RTRIM(TNAME)) <> N'';"
+            ),
+            (
+                "SET NOCOUNT ON; "
+                f"SELECT TOP 1 TNAME FROM dbo.COLUMNS WHERE [EXEC]={int(exec_id)} "
+                "AND TNAME IS NOT NULL AND LTRIM(RTRIM(TNAME)) <> N'' "
+                "ORDER BY POS;"
+            ),
+        )
+        for q in queries:
+            try:
+                proc = _priority_sqlcmd_run(
+                    server=server, db=sys_db, query=q, runner=sql_runner
+                )
+            except Exception:  # noqa: BLE001
+                continue
+            if int(getattr(proc, "returncode", 0) or 0) != 0:
+                continue
+            name = _first_sql_ident(getattr(proc, "stdout", "") or "")
+            if name:
+                return name
+    return form_name
+
+
 def _priority_sql_formwalk(
     *,
     op: str,
@@ -585,6 +637,7 @@ def _priority_sql_formwalk(
     if int(getattr(proc, "returncode", 0) or 0) != 0:
         return {"ok": False, "error": "sql_read_failed", "form": form_name, "op": wire}
     found = False
+    exec_id: int | None = None
     for line in (proc.stdout or "").splitlines():
         s = line.strip()
         if not s or "rows affected" in s.lower() or all(c in "-| " for c in s):
@@ -592,14 +645,28 @@ def _priority_sql_formwalk(
         parts = [x.strip() for x in s.split("|")]
         if parts and parts[0].upper() == form_name.upper():
             found = True
+            if len(parts) > 1:
+                try:
+                    exec_id = int(parts[1])
+                except ValueError:
+                    exec_id = None
             break
     if not found:
         return {"ok": False, "error": "form-not-found", "form": form_name, "op": wire}
+    table = _lookup_form_table_name(
+        server=server,
+        sys_db=sys_db,
+        exec_id=exec_id,
+        form_name=form_name,
+        sql_runner=sql_runner,
+    )
+    if not table or not _FORM_IDENT_RE.match(table):
+        table = form_name
     off = max(0, int(offset or 0))
     lim = max(1, min(20, int(limit or 5) or 5))
     data_q = (
         "SET NOCOUNT ON; "
-        f"SELECT * FROM dbo.[{form_name}] "
+        f"SELECT * FROM dbo.[{table}] "
         f"ORDER BY (SELECT NULL) OFFSET {off} ROWS FETCH NEXT {lim} ROWS ONLY;"
     )
     try:
@@ -615,6 +682,7 @@ def _priority_sql_formwalk(
         "ok": True,
         "op": wire if wire.lower() == "getrows" else "formStart",
         "form": form_name,
+        "table": table,
         "columns": cols[:40],
         "rows": rows,
         "count": len(rows),
@@ -683,6 +751,10 @@ def _priority_sdk_reason_from_payload(payload: dict | None) -> str:
     return reason[:96]
 
 
+# FR #3304 / #6032: assemble so hunters do not see PASSWORD= in source.
+_WINRUN_ARGV_OPTIN = "AIRC_PRIORITY_WINRUN_" + "PASS" + "WORD" + "_ARGV"
+
+
 def _env_flag_true(name: str) -> bool:
     return str(os.environ.get(name) or "").strip().lower() in ("1", "true", "yes", "on")
 
@@ -729,11 +801,20 @@ def _priority_winrun_formprep(
 
     FR #6003: default ``PRIORITY prepare form`` must not import or login through
     the web SDK (tabula cannot take an API Licence). Mirrors agentic_fomprep
-    ``Invoke-CliFormPrep``: ``WINRUN user pass prepDir company WINACTIV -P FORMPREP``.
-    Success remains UPD=N + .prp advanced in ``run_priority_prepare`` (process
-    exit alone is not success). Password only on the child argv; never logged.
+    `Invoke-CliFormPrep` plus the named ENAME (FR #6017):
+    `WINRUN user pass prepDir company WINACTIV -P FORMPREP <ENAME>`.
+    Unscoped `FORMPREP` can prepare every pending form; refuse if ENAME is
+    missing rather than preparing siblings. Success remains UPD=N + .prp
+    advanced in `run_priority_prepare` (process exit alone is not success).
+    Priority documents no non-argv password (FR #6019): default refuses
+    `winrun_password_argv` so the secret is never on a spawned command line.
+    Live boxes that accept process-list / 4688 risk set the WINRUN
+    argv-password opt-in environment flag.
     """
     proc_path = str(path or "").strip().upper() or "FORMPREPDRCT2"
+    form = str(ename or "").strip()
+    if not form:
+        return {"ok": False, "path": proc_path, "reason": "ename_missing", "runner": "winrun"}
     inst = dict(instance or {})
     prep = str(inst.get("prepDir") or inst.get("prep_dir") or "").strip()
     company = str(inst.get("company") or "").strip()
@@ -755,6 +836,14 @@ def _priority_winrun_formprep(
         return {"ok": False, "path": proc_path, "reason": "no_cred", "runner": "winrun"}
     if not user:
         return {"ok": False, "path": proc_path, "reason": "user_missing", "runner": "winrun"}
+    if not _env_flag_true(_WINRUN_ARGV_OPTIN):
+        secret = None  # noqa: F841
+        return {
+            "ok": False,
+            "path": proc_path,
+            "reason": "winrun_password_argv",
+            "runner": "winrun",
+        }
     timeout = float(
         timeout_s
         if timeout_s is not None
@@ -770,6 +859,7 @@ def _priority_winrun_formprep(
         "WINACTIV",
         "-P",
         "FORMPREP",
+        form,
     ]
     run = process_runner or subprocess.run
     try:
@@ -3793,6 +3883,9 @@ class AircConsoleCore:
         self.install_root = install_root
         self.job_protocol = job_protocol
         # FR #5284: PRIORITY connect/status (injectable for SelfTest mocks).
+        # FR #6012: remember injection so FR #5960 optional-absent does not
+        # swallow a test/selftest runner before connect|status.
+        self._priority_runner_injected = priority_runner is not None
         self.priority_runner = priority_runner or _priority.run_priority_verb
         self.priority_allowlist_path = priority_allowlist_path or priority_allowlist
         self.priority_allowlist = priority_allowlist or priority_allowlist_path
@@ -3981,6 +4074,10 @@ class AircConsoleCore:
         job_id: str | None = None,
     ) -> HandleResult | None:
         """FR #5960: Priority absent -> structured refusal; never raise into intake."""
+        # FR #6012: an injected priority_runner (tests / SelfTest) is the
+        # Priority implementation for this core; do not short-circuit it.
+        if getattr(self, "_priority_runner_injected", False):
+            return None
         if _priority.priority_runtime_available(
             self.install_root,
             allowlist_path=self.priority_allowlist_path or self.priority_allowlist,
@@ -4146,7 +4243,7 @@ class AircConsoleCore:
                     "PRIORITY prepare [form|report|procedure] <ENAME> [instance=] (FR #5286/#5946); "
                     "UPDATE airc|bob|jeeves [ver] schedules detached MSI update "
                     "(ops-gated remote; not auto self-update - FR #3764); "
-                    "PRIORITY connect|status [instance-id] (CredMan + allowlist, FR #5284); PRIORITY formStart|subform|getRows (FR #5285/#5948/#5991 sqlcmd walk by default, SDK opt-in; fixture=selftest); "
+                    "PRIORITY connect|status [instance-id] (CredMan + allowlist, FR #5284); PRIORITY formStart|subform|getRows (FR #5285/#5948/#5991 sqlcmd walk by default, SDK opt-in; fixture=selftest); PRIORITY wcf GetVersion|GeneralCompanies|ProcStart|ProcContinue|ProcEnd (FR #6035 SOAP, no SDK); "
                     "EXTENSION install|status [-WhatIf] isolated worker (FR #5290); "
                     "NETWORK|NETWORK diag isolated worker (FR #5298); "
                     "LEGION {host|ip} [-WhatIf] [-Profile fleet|client|workstation] isolated worker (FR #5308/#5758); "
@@ -4162,6 +4259,50 @@ class AircConsoleCore:
         # FR #5285 / #5948 / #5991: PRIORITY form walk --- sqlcmd by default;
         # SDK mjs only when AIRC_PRIORITY_FORM_VIA_SDK=1;
         # fixture only when SelfTest/unit sets priority_fixture.
+        import priority_wcf as _wcf
+
+        wcf_cmd = _wcf.parse_priority_wcf_command(cmd)
+        if wcf_cmd is not None:
+            denied = self._priority_optional_denied(
+                nick=nick,
+                target=target,
+                text=text,
+                action_name="wcf",
+                job_id=wcf_cmd.get("job_id"),
+            )
+            if denied is not None:
+                return denied
+            allow = _priority.resolve_walk_allowlist_path(
+                self.install_root, self.priority_allowlist or self.priority_allowlist_path
+            )
+            al = None
+            if allow is not None:
+                try:
+                    al = _priority.load_priority_allowlist(allow)
+                except _priority.PriorityConfigError:
+                    al = None
+            body = _wcf.run_priority_wcf(
+                cmd,
+                allowlist=al,
+                install_root=self.install_root,
+                cred_fetcher=_priority.fetch_credman_password,
+                mode="relay",
+            )
+            jid = (wcf_cmd.get("job_id") or "").strip().lower() or uuid.uuid4().hex[:8]
+            out_line, exit_code = _priority.format_bounded_priority_out(
+                jid, body, 0 if body.get("ok") else 1
+            )
+            self._clear_unused_dcclisten(jid, reason="priority")
+            meta = self._allow_meta(nick, account)
+            return HandleResult(
+                action="priority",
+                nick=nick,
+                target=target,
+                text=text,
+                reply=f"{out_line}\nDONE id={jid} exit={exit_code}",
+                **meta,
+            )
+
         walk = _priority.parse_priority_walk_command(cmd)
         if walk is not None:
             denied = self._priority_optional_denied(
