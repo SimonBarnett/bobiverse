@@ -347,6 +347,7 @@ routes to bobiverse via the split rule.
 - LEGION CredMan/SYSTEM-fallback unit pins must monkeypatch read_remote_airc_profile_result; otherwise host SMB profile_unreadable exits before run_fn and flakes on MarchHare-class boxes.
 - stall:bored-latency audit FR: close completed citing FR #5701/#5706 heal + FR #5203/#5219 busy-skip when on main; DONE covering PR URL; reopen only with heal-log !recycleseat fail while idle
 - FR #4851: shop CANCEL FR N (closed by ...) is a hard stop --- NACK the assigned FR, do not open a PR, then harvest.
+- Wake-GrokBotBob must reject a missing owner/repo#N before send; do not merge the adapter-only tip when the one-fix PR already contains it.
 - PRIORITY wcf prepare form may omit id= (runtime mints hex); generic ProcStart of FORMPREP* is use_prepare_verb with no SOAP.
 
 ## Harvest digest (lessons audit 2026-10-06)
