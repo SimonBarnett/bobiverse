@@ -4288,7 +4288,7 @@ class AircConsoleCore:
                 cred_fetcher=_priority.fetch_credman_password,
                 mode="relay",
             )
-            jid = (wcf_cmd.get("job_id") or "").strip().lower() or uuid.uuid4().hex[:8]
+            jid = _wcf.wcf_job_id(wcf_cmd.get("job_id") or "", body)
             out_line, exit_code = _priority.format_bounded_priority_out(
                 jid, body, 0 if body.get("ok") else 1
             )
