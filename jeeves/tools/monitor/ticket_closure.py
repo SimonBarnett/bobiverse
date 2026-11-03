@@ -182,7 +182,8 @@ def _load_map(state: Any, key: str) -> dict[str, Any]:
     return {}
 
 
-def _write_skip(ops: Path, key: str, ev: dict[str, Any], reason: str) -> None:
+def _write_skip(ops: Path, key: str, ev: dict[str, Any], reason: str) -> bool:
+    """Persist an operator-visible skip. False if the file was not written (FR #6081)."""
     path = ops / WAKE_SKIP_NAME
     data = _load_json(path)
     blob = data if isinstance(data, dict) else {}
@@ -194,8 +195,9 @@ def _write_skip(ops: Path, key: str, ev: dict[str, Any], reason: str) -> None:
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(blob, separators=(",", ":"), sort_keys=True), encoding="utf-8")
+        return True
     except OSError:
-        pass
+        return False
 
 
 def check(args):
@@ -243,7 +245,8 @@ def check(args):
                 woke_n += 1
                 continue
             reason = str(result.get("error") or "wake_failed")
-            _write_skip(ops, key, item, reason)
+            if not _write_skip(ops, key, item, reason):
+                continue
             seen[key] = item
             pending.pop(key, None)
             skip_n += 1

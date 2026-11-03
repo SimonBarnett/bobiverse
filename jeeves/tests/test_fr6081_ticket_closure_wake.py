@@ -84,6 +84,21 @@ def test_fr6081_unreachable_persists_skip_then_seen(tmp_path: Path, monkeypatch)
     assert payload2.get("closed") == []
 
 
+def test_fr6081_skip_write_fail_keeps_pending(tmp_path: Path, monkeypatch):
+    chair, digest = _homes(tmp_path)
+    fx = _fx(tmp_path / "events.json", [_row()])
+    monkeypatch.setenv("JEEVES_TICKET_CLOSURE_FIXTURE", str(fx))
+    monkeypatch.setenv("JEEVES_TICKET_CLOSURE_WAKE", "1")
+    monkeypatch.setattr(tc, "_WAKE_SEND", lambda **k: (_ for _ in ()).throw(ConnectionError("down")))
+    monkeypatch.setattr(tc, "_write_skip", lambda *_a, **_k: False)
+    payload, code = tc.check(_args(chair, digest))
+    assert code == 1
+    assert payload.get("wake_skips") == 0
+    body = json.loads((digest / STATE).read_text(encoding="utf-8"))
+    assert body.get("seen") in ({}, None)
+    assert any("del-81" in k for k in (body.get("pending") or {}))
+
+
 def test_fr6081_no_wake_leaves_pending_not_seen(tmp_path: Path, monkeypatch):
     chair, digest = _homes(tmp_path)
     fx = _fx(tmp_path / "events.json", [_row()])
