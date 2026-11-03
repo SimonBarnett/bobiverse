@@ -102,6 +102,18 @@ def detect_self_review_deadlock(snap: dict[str, Any]) -> list[dict[str, Any]]:
         waiting.append(row)
     if not waiting:
         return []
+    # FR #6106 / #4917: harvest-lesson / docs-mrb tips wait for another seat.
+    # Author-only idle is not a self-review deadlock FR.
+    if all(
+        gitclaim.is_lesson_or_pin_pr(
+            title=str(row.get("title") or row.get("line") or ""),
+            labels=row.get("labels") or (),
+            head_ref=str(row.get("head") or row.get("head_ref") or ""),
+        )
+        or bool(row.get("harvest_lesson"))
+        for row in waiting
+    ):
+        return []
     ledger = snap.get("ledger") or {}
     for row in waiting:
         if snap.get("home") and gitclaim.mrb_has_eligible_reviewer(
