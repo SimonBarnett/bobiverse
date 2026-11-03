@@ -14,6 +14,7 @@ import os
 import re
 import socket
 import ssl
+import tempfile
 import uuid
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
@@ -84,9 +85,21 @@ _OP_TO_WIRE = {
     "ProcWarningOKMob": "ProcWarningOKMob",
     "ProcClientContinue": "ProcClientContinueMob",
     "ProcClientContinueMob": "ProcClientContinueMob",
-    # GetRows / filter / active-row / end are JS API names. SOAP from
-    # priority-web-sdk@3.0.39 index.js: FormQueryDlgExecuteMob (4619/4383),
-    # FormJumpLineMob (4223), FormExitFormMob (3228), FormActivateMob (3185).
+    "ProcNewReport": "ProcNewReportMob",
+    "ProcNewReportMob": "ProcNewReportMob",
+    "ProcAskPrintOK": "ProcAskPrintOKMob",
+    "ProcAskPrintOKMob": "ProcAskPrintOKMob",
+    "ProcCheckExecution": "ProcCheckExecutionMob",
+    "ProcCheckExecutionMob": "ProcCheckExecutionMob",
+    "ProcCreateSpreadsheet": "ProcCreateSpreadsheetMob",
+    "ProcCreateSpreadsheetMob": "ProcCreateSpreadsheetMob",
+    # JS API names. SOAP builders in priority-web-sdk@3.0.39 index.js
+    # (parameter expressions, not the later call sites):
+    # FormQueryDlgExecuteMob $FormQueryDlgExecuteMobAsync 3309-3317
+    # FormJumpLineMob        $FormJumpLineMobAsync        3264-3272
+    # FormExitFormMob        $FormExitFormMobAsync        3222-3230
+    # FormActivateMob        $FormActivateMobAsync        3183-3188
+    # FormStartMob           $FormStartMobAsync           3399-3407
     "FormGetRows": "FormQueryDlgExecuteMob",
     "FormGetRowsMob": "FormQueryDlgExecuteMob",
     "GetRows": "FormQueryDlgExecuteMob",
@@ -716,40 +729,173 @@ def parse_priority_wcf_command(text: str) -> dict[str, Any] | None:
 
 PREPARE_STEP_MAX = 40
 _PREPARE_FORM_EXEC = "FORMPREPDRCT2"
+_PREPARE_EXEC_TYPE = "P"
 _ENAME_RE = re.compile(r"^[A-Z0-9_]{1,20}$")
+# Prepare programs referenced by airc (WINRUN FORMPREP, EFORM FORMPREPDRCT2,
+# report/procedure REPPREPDIRECT2, plus the shorter names those calls use).
 _UNSCOPED_PREPARE_ENAMES = frozenset(
-    {"FORMPREP", "FORMPREPDRCT2", "REPPREP", "PROCPREP"}
-)
-_GENERIC_START_OPS = frozenset(
     {
-        "ProcStartMob",
-        "ProcStartActivateMob",
-        "ProcStart",
-        "ProcStartActivate",
+        "FORMPREP",
+        "FORMPREPDRCT",
+        "FORMPREPDRCT2",
+        "REPPREP",
+        "REPPREPDIRECT2",
+        "PROCPREP",
     }
 )
-# SOAP names prepare may emit (must exist in priority-web-sdk/index.js).
+# Generic verb: read ops, plus proc session ops. Form* mutation stays off
+# this verb (prepare form is the scoped path). ProcStart* still runs for a
+# non-prepare ename; prepare names are refused first.
+_GENERIC_ALLOWED_OPS = frozenset(
+    {
+        "GetFileVersion",
+        "GeneralCompaniesMob",
+        "ProcStartMob",
+        "ProcStartActivateMob",
+        "ProcContinueMob",
+        "ProcEndMob",
+        "ProcChooseFieldsOKMob",
+        "ProcEditFieldsOKMob",
+        "ProcWarningOKMob",
+        "ProcClientContinueMob",
+        "ProcNewReportMob",
+        "ProcAskPrintOKMob",
+        "ProcKillProcessMob",
+        "ProcCheckExecutionMob",
+    }
+)
+WCF_READONLY = "wcf_readonly"
+# Parameter-builder lines in the vendored priority-web-sdk@3.0.39 index.js.
+SDK_BUILDER_LINES = {
+    "FormActivateMob": 3183,
+    "FormExitFormMob": 3222,
+    "FormJumpLineMob": 3264,
+    "FormQueryDlgExecuteMob": 3309,
+    "FormStartMob": 3399,
+    "ProcAskPrintOKMob": 3552,
+    "ProcCheckExecutionMob": 3561,
+    "ProcChooseFieldsOKMob": 3570,
+    "ProcClientContinueMob": 3579,
+    "ProcContinueMob": 3588,
+    "ProcCreateSpreadsheetMob": 3597,
+    "ProcEditFieldsOKMob": 3606,
+    "ProcEndMob": 3615,
+    "ProcKillProcessMob": 3633,
+    "ProcNewReportMob": 3642,
+    "ProcStartActivateMob": 3696,
+    "ProcWarningOKMob": 3732,
+    "ToStringData": 8099,
+    "FormQuery": 4248,
+    "FixFilter": 7907,
+    "ParseRows": 4990,
+    "ParseActivate": 5138,
+    "ParsePosition": 4962,
+    "ProcStep": 9503,
+}
 PREPARE_SDK_OPS = frozenset(
     {
-        "FormStartMob",  # index.js FormStartMob SOAPAction
-        "FormQueryDlgExecuteMob",  # GetRows / SetSearchFilter
-        "FormJumpLineMob",  # SetActiveRow
-        "FormActivateMob",  # statexml + before
-        "FormExitFormMob",  # EndCurrentForm
+        "FormStartMob",
+        "FormQueryDlgExecuteMob",
+        "FormJumpLineMob",
+        "FormActivateMob",
+        "FormExitFormMob",
         "ProcStartActivateMob",
         "ProcContinueMob",
         "ProcChooseFieldsOKMob",
         "ProcEditFieldsOKMob",
         "ProcWarningOKMob",
         "ProcClientContinueMob",
+        "ProcNewReportMob",
+        "ProcAskPrintOKMob",
+        "ProcCheckExecutionMob",
+        "ProcCreateSpreadsheetMob",
         "ProcKillProcessMob",
         "ProcEndMob",
     }
 )
 
 
-def _step_from_result(out: dict[str, Any]) -> dict[str, Any]:
-    blob = out.get("decoded") or out.get("body") or out.get("result") or ""
+def _gwt_escape(text: str) -> str:
+    """GWT JSONString.escapeValue for the characters prepare puts in statexml."""
+    out = []
+    for ch in str(text):
+        o = ord(ch)
+        if ch == '"':
+            out.append('\\"')
+        elif ch == "\\":
+            out.append("\\\\")
+        elif ch == "\b":
+            out.append("\\b")
+        elif ch == "\f":
+            out.append("\\f")
+        elif ch == "\n":
+            out.append("\\n")
+        elif ch == "\r":
+            out.append("\\r")
+        elif ch == "\t":
+            out.append("\\t")
+        elif o < 32:
+            out.append("\\u%04X" % o)
+        else:
+            out.append(ch)
+    return '"' + "".join(out) + '"'
+
+
+def _gwt_json(value: Any) -> str:
+    """$toString_0 / JSONArray.toString$: object pairs joined by ', ', arrays by ','."""
+    if value is None:
+        return "null"
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, int) and not isinstance(value, bool):
+        return str(value)
+    if isinstance(value, str):
+        return _gwt_escape(value)
+    if isinstance(value, list):
+        return "[" + ",".join(_gwt_json(item) for item in value) + "]"
+    if isinstance(value, dict):
+        parts = [
+            _gwt_escape(str(key)) + ":" + _gwt_json(item) for key, item in value.items()
+        ]
+        return "{" + ", ".join(parts) + "}"
+    return _gwt_escape(str(value))
+
+
+def _b64_text(text: str) -> str:
+    return base64.b64encode(text.encode("utf-8")).decode("ascii")
+
+
+def sdk_statexml(session: str, field: Any = 0, line: Any = 0, value: str = "") -> str:
+    """$ToStringData (index.js 8099) / $InitDummyFormState (4450): base64 of the memento.
+
+    curtab and key are the zero long the memento always stores (8087, None_4 intValue 0).
+    active is 1 outside query mode ($CreateMemento_0 7807).
+    """
+    sid = str(session or "")
+    if not sid:
+        return ""
+    doc = _gwt_json(
+        {
+            "Operations": [{"session": sid}],
+            "Operation": [
+                {
+                    "field": str(field if field is not None else 0),
+                    "line": str(line if line is not None else 0),
+                    "curtab": "0",
+                    "value": str(value or ""),
+                    "active": "1",
+                    "key": "0",
+                }
+            ],
+        }
+    )
+    return _b64_text(doc)
+
+
+def _load_blob(out: dict[str, Any]) -> dict[str, Any]:
+    blob = out.get("decoded")
+    if blob is None or blob == "":
+        blob = out.get("body") or out.get("result") or ""
     if isinstance(blob, dict):
         return blob
     try:
@@ -759,97 +905,424 @@ def _step_from_result(out: dict[str, Any]) -> dict[str, Any]:
     return loaded if isinstance(loaded, dict) else {}
 
 
+def _form0(blob: dict[str, Any]) -> dict[str, Any] | None:
+    forms = blob.get("Form") if isinstance(blob, dict) else None
+    if isinstance(forms, list) and forms and isinstance(forms[0], dict):
+        return forms[0]
+    return None
+
+
+def _procedure0(blob: dict[str, Any]) -> dict[str, Any] | None:
+    procs = blob.get("Procedure") if isinstance(blob, dict) else None
+    if isinstance(procs, list) and procs and isinstance(procs[0], dict):
+        return procs[0]
+    return None
+
+
+def _as_int(value: Any, default: int = 0) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+class _FormMeta:
+    """Column ids and window height learned from Form[0].NewTable (ParseJO 4863)."""
+
+    def __init__(self) -> None:
+        self.by_name: dict[str, int] = {}
+        self.cols: dict[int, dict[int, str]] = {}
+        self.field_id: dict[int, dict[str, int]] = {}
+        self.height: dict[int, int] = {}
+
+    def absorb(self, form: dict[str, Any] | None) -> None:
+        if not form:
+            return
+        for table in form.get("NewTable") or []:
+            if not isinstance(table, dict):
+                continue
+            tid = _as_int(table.get("table"), -1)
+            if tid < 0:
+                continue
+            name = str(table.get("name") or "")
+            if name:
+                self.by_name[name] = tid
+            cols = self.cols.setdefault(tid, {})
+            ids = self.field_id.setdefault(tid, {})
+            height = self.height.get(tid, 0)
+            for col in table.get("NewColumn") or []:
+                if not isinstance(col, dict):
+                    continue
+                zoom = str(col.get("zoomname") or "")
+                fid = _as_int(col.get("field"), -1)
+                if zoom and fid > 0:
+                    cols[fid] = zoom
+                    ids[zoom] = fid
+                height = max(height, _as_int(col.get("height"), 0))
+            self.height[tid] = height
+
+    def table_id(self, name: str, form: dict[str, Any] | None = None) -> int | None:
+        if name in self.by_name:
+            return self.by_name[name]
+        if form:
+            pos = _position(form)
+            if pos and pos.get("table") is not None:
+                return _as_int(pos.get("table"), 0)
+        return None
+
+    def ename_field(self, tid: int | None) -> int | None:
+        if tid is None:
+            return None
+        fid = self.field_id.get(tid, {}).get("ENAME")
+        if fid and fid > 0:
+            return fid
+        return None
+
+
+def _position(form: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not form:
+        return None
+    pos = form.get("Position")
+    if isinstance(pos, list) and pos and isinstance(pos[0], dict):
+        return pos[0]
+    return None
+
+
+def _state_from_form(form: dict[str, Any] | None, previous: str, meta: _FormMeta, tid: int | None) -> str:
+    """Build the next statexml from Form[0].Position[0].session (ParseJO 4962)."""
+    pos = _position(form)
+    if not pos:
+        return previous
+    session = str(pos.get("session") or "").strip()
+    if not session:
+        return previous
+    field = pos.get("field")
+    line = pos.get("line")
+    value = ""
+    if form is not None and tid is not None:
+        want_line = _as_int(line, -1)
+        want_field = _as_int(field, -1)
+        for _line, cols in _rt_groups(form, tid):
+            if _line == want_line and want_field in cols:
+                value = cols[want_field]
+                break
+    built = sdk_statexml(session, field if field is not None else 0, line if line is not None else 0, value)
+    return built or previous
+
+
+def _rt_groups(form: dict[str, Any], tid: int | None) -> list[tuple[int, dict[int, str]]]:
+    """Form[0].RT[].FV → (line, {field id: value}). FV is tab-separated (ParseJO 4990)."""
+    grouped: dict[int, dict[int, str]] = {}
+    for rt in form.get("RT") or []:
+        if not isinstance(rt, dict):
+            continue
+        parts = str(rt.get("FV") or "").split("\t")
+        if not parts or not parts[0]:
+            continue
+        tab = abs(_as_int(parts[0], 0))
+        if tid is not None and tab != tid:
+            continue
+        col = abs(_as_int(parts[1], 0)) if len(parts) > 1 else 0
+        line = abs(_as_int(parts[2], 0)) if len(parts) > 2 else 0
+        value = parts[5] if len(parts) > 5 else ""
+        grouped.setdefault(line, {})[col] = value
+    return sorted(grouped.items(), key=lambda item: item[0])
+
+
+def _live_rows(form: dict[str, Any] | None, tid: int | None, meta: _FormMeta) -> list[dict[str, Any]]:
+    """One dict per FV line. _index is the row setActiveRow / FormJumpLineMob sends."""
+    if not form or tid is None:
+        return []
+    pos = _position(form)
+    origin = _as_int(pos.get("line"), 1) if pos else 1
+    offset = origin - 1
+    names = meta.cols.get(tid, {})
+    rows: list[dict[str, Any]] = []
+    for line, cols in _rt_groups(form, tid):
+        row: dict[str, Any] = {"_line": line, "_index": line + offset}
+        for fid, value in cols.items():
+            name = names.get(fid)
+            if name:
+                row[name] = value
+        rows.append(row)
+    return rows
+
+
 def _activate_link(blob: dict[str, Any]) -> dict[str, str] | None:
-    acts = blob.get("Activate")
-    if isinstance(acts, list) and acts and isinstance(acts[0], dict):
-        row = acts[0]
-        table = str(row.get("table") or "").strip()
-        link = str(row.get("link") or "").strip()
-        linkid = str(row.get("linkid") or row.get("linkId") or "").strip()
-        if table and link and linkid:
-            return {"table": table, "link": link, "linkid": linkid}
-    table = str(blob.get("table") or "").strip()
-    link = str(blob.get("link") or "").strip()
-    linkid = str(blob.get("linkid") or "").strip()
+    """Form[0].Activate[0].{table,link,linkid} (ParseJO 5138)."""
+    form = _form0(blob)
+    if not form:
+        return None
+    acts = form.get("Activate")
+    if not (isinstance(acts, list) and acts and isinstance(acts[0], dict)):
+        return None
+    row = acts[0]
+    table = str(row.get("table") or "").strip()
+    link = str(row.get("link") or "").strip()
+    linkid = str(row.get("linkid") or row.get("linkId") or "").strip()
     if table and link and linkid:
         return {"table": table, "link": link, "linkid": linkid}
     return None
 
 
-def _iter_row_dicts(blob: dict[str, Any]) -> list[dict[str, Any]]:
-    rows = blob.get("rows")
-    if isinstance(rows, list):
-        return [r for r in rows if isinstance(r, dict)]
-    pack = blob.get("RowsData")
-    if isinstance(pack, dict):
-        found: list[dict[str, Any]] = []
-        for table in pack.values():
-            if not isinstance(table, dict):
-                continue
-            for row in table.values():
-                if isinstance(row, dict):
-                    found.append(row)
-        if found:
-            return found
-    for key in ("EFORM", "FORMPREPERRS"):
-        table = blob.get(key)
-        if isinstance(table, dict):
-            return [r for r in table.values() if isinstance(r, dict)]
-    return []
+def _query_top(meta: _FormMeta, tid: int | None) -> str:
+    """Parent $FormQuery top = fromRow + rowcount - 2 (4248), fromRow 1."""
+    height = meta.height.get(tid or -1, 0)
+    return str(1 + height - 2)
 
 
-def _row_count(blob: dict[str, Any]) -> int:
-    return len(_iter_row_dicts(blob))
+def _filter_xml(field_id: int, form_name: str) -> str:
+    """FixFilter (7907) then JsonToString = JSON.stringify (2946), then b64."""
+    filt = {
+        "or": 0,
+        "QueryValues": [
+            {
+                "field": field_id,
+                "fromval": form_name,
+                "toval": "",
+                "op": "=",
+                "sort": 0,
+                "isdesc": 0,
+            }
+        ],
+    }
+    return _b64_text(json.dumps(filt, separators=(",", ":")))
 
 
-def _row_enames(blob: dict[str, Any]) -> list[str]:
-    names: list[str] = []
-    for row in _iter_row_dicts(blob):
-        val = row.get("ENAME") or row.get("ename")
-        if val is not None:
-            names.append(str(val).strip().upper())
-    return names
+def _form_start_fields(form_name: str, *, auto_retrieve: bool) -> dict[str, str]:
+    """$FormStartMobAsync body (3399). scrwidth -1, debug/sendtitles false, empty link fields."""
+    return {
+        "form": form_name,
+        "scrwidth": "-1",
+        "link": "",
+        "linkid": "",
+        "zoomcolumn": "0",
+        "zoomname": "",
+        "debug": "false",
+        "sendtitles": "false",
+        "zoomvalue": "",
+        "autoRetrieveFirstRows": "true" if auto_retrieve else "false",
+    }
 
 
-def _take_statexml(*sources: Any) -> str:
-    for src in sources:
-        if isinstance(src, dict):
-            val = src.get("statexml") or src.get("StateXml") or src.get("state")
-            if val:
-                return str(val)
-        elif isinstance(src, str) and src.strip().startswith("{"):
-            try:
-                loaded = json.loads(src)
-            except json.JSONDecodeError:
-                continue
-            if isinstance(loaded, dict):
-                val = loaded.get("statexml") or loaded.get("StateXml")
-                if val:
-                    return str(val)
-    return ""
+def _query_fields(statexml: str, *, xml: str | None, top: str) -> dict[str, str]:
+    """$FormQueryDlgExecuteMobAsync (3309): statexml, add, xml, ic=true, queryname, top."""
+    fields: dict[str, str] = {}
+    if statexml:
+        fields["statexml"] = statexml
+    fields["add"] = "false"
+    if xml:
+        fields["xml"] = xml
+    fields["ic"] = "true"
+    fields["queryname"] = ""
+    fields["top"] = top
+    return fields
+
+
+def _with_state(statexml: str, extra: dict[str, str] | None = None) -> dict[str, str] | None:
+    fields: dict[str, str] = {}
+    if statexml:
+        fields["statexml"] = statexml
+    if extra:
+        fields.update(extra)
+    return fields or None
+
+
+def _session_fields(session: str, extra: dict[str, str] | None = None) -> dict[str, str] | None:
+    fields: dict[str, str] = {}
+    if session:
+        fields["session"] = session
+    if extra:
+        fields.update(extra)
+    return fields or None
+
+
+def _is_proc_start_op(op: str) -> bool:
+    raw = str(op or "").strip()
+    wire = resolve_wcf_op(raw) or raw
+    return wire.lower().startswith("procstart") or raw.lower().startswith("procstart")
 
 
 def use_prepare_verb(op: str, fields: dict[str, Any] | None) -> bool:
-    """True when a generic start would fire unscoped FORMPREP (FR #6079)."""
-    name = resolve_wcf_op(op) or str(op or "").strip()
-    if name not in _GENERIC_START_OPS and str(op or "").strip() not in _GENERIC_START_OPS:
+    """True when a generic Proc* start would run a prepare program (FR #6079)."""
+    if not _is_proc_start_op(op):
         return False
-    ename = str((fields or {}).get("ename") or (fields or {}).get("ENAME") or "")
-    return ename.strip().upper() in _UNSCOPED_PREPARE_ENAMES
+    bag = fields or {}
+    for key in ("ename", "name"):
+        val = str(bag.get(key) or bag.get(key.upper()) or "").strip().upper()
+        if val in _UNSCOPED_PREPARE_ENAMES:
+            return True
+    return False
+
+
+def generic_op_allowed(op: str) -> bool:
+    """Read ops and proc-session ops. Form mutation is not a generic verb."""
+    raw = str(op or "").strip()
+    wire = resolve_wcf_op(raw) or raw
+    return wire in _GENERIC_ALLOWED_OPS
+
+
+def _prepare_log_home() -> Path:
+    home = (os.environ.get("AIRC_HOME") or os.environ.get("AIRC_CONSOLE_HOME") or "").strip()
+    if home:
+        return Path(home)
+    return Path(tempfile.gettempdir()) / "airc-wcf-prepare"
 
 
 def _write_prepare_log(job_id: str, payload: dict[str, Any], extras: list[str]) -> None:
     jid = (job_id or "").strip().lower()
-    home = (os.environ.get("AIRC_HOME") or os.environ.get("AIRC_CONSOLE_HOME") or "").strip()
-    if not jid or not home:
+    if not jid:
         return
-    dest = Path(home) / "jobs" / jid / "wcf-prepare.json"
+    dest = _prepare_log_home() / "jobs" / jid / "wcf-prepare.json"
     try:
         dest.parent.mkdir(parents=True, exist_ok=True)
         text = json.dumps(payload, separators=(",", ":"))
         dest.write_text(redact_all(text, *extras), encoding="utf-8")
     except OSError:
         return
+
+
+def wcf_job_id(parsed_job_id: str, body: dict[str, Any] | None) -> str:
+    """Id the IRC DONE line shows. Prepare's log id wins when the verb minted one."""
+    bag = body or {}
+    for cand in (bag.get("job_id"), parsed_job_id):
+        jid = str(cand or "").strip().lower()
+        if jid:
+            return jid
+    return uuid.uuid4().hex[:8]
+
+
+def _proc_message_text(proc: dict[str, Any]) -> str:
+    messages = proc.get("Message") or []
+    if isinstance(messages, list):
+        for msg in messages:
+            if not isinstance(msg, dict):
+                continue
+            linked = msg.get("HyperLinkedText")
+            if isinstance(linked, list) and linked and isinstance(linked[0], dict):
+                text = str(linked[0].get("text") or "").strip()
+                if text:
+                    return text
+            text = str(msg.get("message") or "").strip()
+            if text:
+                return text
+    return str(proc.get("message") or "")
+
+
+def _has_warning(proc: dict[str, Any]) -> bool:
+    messages = proc.get("Message") or []
+    if isinstance(messages, list):
+        for msg in messages:
+            if isinstance(msg, dict) and str(msg.get("messagetype") or "").lower() == "warning":
+                return True
+    return str(proc.get("step") or "") == "warning"
+
+
+def _param_block(proc: dict[str, Any]) -> dict[str, Any]:
+    params = proc.get("Parameters")
+    if isinstance(params, list) and params and isinstance(params[0], dict):
+        return params[0]
+    return {}
+
+
+def _first_format(holder: dict[str, Any]) -> int:
+    formats = holder.get("Formats")
+    selected = 0
+    first = 0
+    if isinstance(formats, list):
+        for item in formats:
+            if not isinstance(item, dict):
+                continue
+            fmt = _as_int(item.get("format"), 0)
+            if first == 0 and fmt:
+                first = fmt
+            if item.get("selected") in (1, "1", True):
+                selected = fmt
+    return selected or first
+
+
+def _print_format(proc: dict[str, Any]) -> int:
+    ask = proc.get("AskPrint")
+    if isinstance(ask, list) and ask and isinstance(ask[0], dict):
+        found = _first_format(ask[0])
+        if found:
+            return found
+    return _first_format(proc)
+
+
+def _classify_proc(proc: dict[str, Any]) -> tuple[str, str]:
+    """Wire Procedure[0].step ($ProcStep 9503) → callback type, action."""
+    if _has_warning(proc):
+        return "message", "warning_ok"
+    step = str(proc.get("step") or "")
+    if step == "":
+        return "end", "end"
+    if step == "newsaved":
+        return "reportOptions", "report"
+    if step == "input":
+        par = _param_block(proc)
+        if par.get("EditField"):
+            return "inputFields", "edit"
+        if par.get("ChooseField"):
+            return "inputOptions", "choose"
+        return "inputHelp", "continue"
+    if step == "displayurl":
+        return "displayUrl", "continue"
+    if step == "askprint":
+        return "documentOptions", "print"
+    if step == "CLIENT":
+        return "client", "client"
+    if step == "excel":
+        return "excel", "excel"
+    if step == "BACKGROUND":
+        return "background", "continue"
+    if step == "waitprocess":
+        return "wait", "continue"
+    if step == "waitexecution":
+        return "wait", "check"
+    return "unknown", "kill"
+
+
+def _edit_xml(proc: dict[str, Any], form_name: str) -> str:
+    par = _param_block(proc)
+    filled = []
+    for field in par.get("EditField") or []:
+        if not isinstance(field, dict):
+            continue
+        title = str(field.get("title") or "")
+        val = (
+            form_name
+            if re.search(r"form|ename|exec|name", title, re.I)
+            else str(field.get("value") or "")
+        )
+        filled.append({"field": _as_int(field.get("field"), 0), "op": 0, "value": val})
+    return _b64_text(_gwt_json({"EditFields": filled}))
+
+
+def _choose_field(proc: dict[str, Any]) -> str:
+    par = _param_block(proc)
+    opts = par.get("ChooseField") or []
+    chosen = None
+    if isinstance(opts, list) and opts:
+        chosen = next(
+            (o for o in opts if isinstance(o, dict) and o.get("selected") in (1, "1", True)),
+            opts[0],
+        )
+    if isinstance(chosen, dict):
+        return str(_as_int(chosen.get("field"), 0))
+    return "0"
+
+
+def _client_data_b64() -> str:
+    """ClientContinue('') → b64(JSON.stringify("")) (9788, JsonToString 2946)."""
+    return _b64_text(json.dumps(""))
+
+
+def _excel_url(proc: dict[str, Any]) -> str:
+    urls = proc.get("URL")
+    if isinstance(urls, list) and urls and isinstance(urls[0], dict):
+        return str(urls[0].get("url") or "")
+    return ""
 
 
 def run_wcf_form_prepare(
@@ -877,242 +1350,272 @@ def run_wcf_form_prepare(
             app_key = ""
         if app_key:
             secrets.append(app_key)
-    if not form:
-        return {
-            "ok": False,
-            "error": "ename_missing",
-            "action": "wcf",
-            "op": "prepare",
-            "via": client.mode,
-        }
-    if not _ENAME_RE.match(form):
-        return {
-            "ok": False,
-            "error": "ename_invalid",
-            "action": "wcf",
-            "op": "prepare",
-            "via": client.mode,
-        }
     if not str(job_id or "").strip():
         job_id = uuid.uuid4().hex[:8]
     session = ""
+    statexml = ""
     steps: list[dict[str, Any]] = []
     messages: list[str] = []
+    log_steps: list[dict[str, Any]] = []
     last_type = ""
     last_message = ""
-    err_n = 0
+    err_n: int | None = 0
     error = ""
     ended = False
     form_open = False
-    log_steps: list[dict[str, Any]] = []
+    row_ename = ""
+    row_enames: list[str] = []
+    activation: dict[str, str] | None = None
+    meta = _FormMeta()
 
     def _cleanup() -> None:
-        if session:
-            client.call("ProcEndMob", fields={"session": session})
-        else:
-            client.call("ProcEndMob")
+        client.call("ProcEndMob", fields=_session_fields(session))
         if form_open:
-            client.call(
-                "FormExitFormMob",
-                fields={"statexml": statexml} if statexml else None,
-            )
+            client.call("FormExitFormMob", fields=_with_state(statexml))
 
-    statexml = ""
-    try:
-        opened = client.call("FormStartMob", fields={"form": "EFORM"})
-        if opened.get("ok") is not True:
-            error = str(opened.get("error") or "form_start_failed")
-            raise RuntimeError(error)
-        form_open = True
-        opened_step = _step_from_result(opened)
-        statexml = _take_statexml(opened_step, opened, opened.get("decoded")) or statexml
-        filt_xml = base64.b64encode(
-            json.dumps({"ENAME": form}).encode("utf-8")
-        ).decode("ascii")
-        found = client.call(
-            "FormQueryDlgExecuteMob",
-            fields={
-                "statexml": statexml,
-                "add": "false",
-                "xml": filt_xml,
-                "top": "0",
-            },
-        )
-        if found.get("ok") is not True:
-            error = str(found.get("error") or "search_failed")
-            raise RuntimeError(error)
-        found_step = _step_from_result(found)
-        statexml = _take_statexml(found_step, found) or statexml
-        names = _row_enames(found_step)
-        n_rows = _row_count(found_step)
-        if n_rows != 1:
-            error = "ename_not_unique"
-            raise RuntimeError(error)
-        if names and names[0] != form:
-            error = "ename_mismatch"
-            raise RuntimeError(error)
-        if not names:
-            error = "ename_mismatch"
-            raise RuntimeError(error)
-        sel = client.call(
-            "FormJumpLineMob",
-            fields={"statexml": statexml, "line": "1"},
-        )
-        if sel.get("ok") is not True:
-            error = str(sel.get("error") or "set_row_failed")
-            raise RuntimeError(error)
-        sel_step = _step_from_result(sel)
-        statexml = _take_statexml(sel_step, sel) or statexml
-        act = client.call(
-            "FormActivateMob",
-            fields={"statexml": statexml, "before": "true"},
-        )
-        if act.get("ok") is not True:
-            error = str(act.get("error") or "activate_failed")
-            raise RuntimeError(error)
-        act_step = _step_from_result(act)
-        statexml = _take_statexml(act_step, act) or statexml
-        link = _activate_link(act_step)
-        if not link:
-            error = "activate_no_link"
-            raise RuntimeError(error)
-        start = client.call(
-            "ProcStartActivateMob",
-            fields={
-                "type": "P",
-                "ename": _PREPARE_FORM_EXEC,
-                "table": link["table"],
-                "link": link["link"],
-                "linkid": link["linkid"],
-                "avoidmessages": "1",
-            },
-        )
-        if start.get("ok") is not True:
-            error = str(start.get("error") or "activate_failed")
-            raise RuntimeError(error)
-        step = _step_from_result(start)
-        session = str(step.get("session") or start.get("session") or "").strip()
-        n = 0
-        while step and n < PREPARE_STEP_MAX:
-            n += 1
-            if n >= PREPARE_STEP_MAX and str(step.get("type") or "").strip() != "end":
-                error = "step_limit"
-                client.call(
-                    "ProcKillProcessMob",
-                    fields={"session": session} if session else None,
-                )
-                break
-            typ = str(step.get("type") or "").strip()
-            last_type = typ
-            last_message = str(step.get("message") or "")[:80]
-            log_steps.append(dict(step))
-            steps.append({"type": typ, "message": last_message})
-            if last_message:
-                messages.append(last_message[:40])
-            if typ == "end":
-                ended = True
-                break
-            if typ == "message":
-                nxt = client.call("ProcContinueMob", fields={"session": session})
-            elif typ == "inputHelp":
-                nxt = client.call("ProcContinueMob", fields={"session": session})
-            elif typ == "inputOptions":
-                opts = ((step.get("input") or {}).get("Options")) or []
-                sel_f = ""
-                if isinstance(opts, list) and opts:
-                    chosen = next(
-                        (o for o in opts if isinstance(o, dict) and o.get("selected")),
-                        opts[0],
-                    )
-                    if isinstance(chosen, dict):
-                        sel_f = str(chosen.get("field") or "")
-                nxt = client.call(
-                    "ProcChooseFieldsOKMob",
-                    fields={"session": session, "field": sel_f},
-                )
-            elif typ == "inputFields":
-                fields = ((step.get("input") or {}).get("EditField")) or []
-                filled = []
-                if isinstance(fields, list):
-                    for f in fields:
-                        if not isinstance(f, dict):
-                            continue
-                        title = str(f.get("title") or "")
-                        val = (
-                            form
-                            if re.search(r"form|ename|exec|name", title, re.I)
-                            else str(f.get("value") or "")
-                        )
-                        filled.append({"field": f.get("field"), "op": 0, "value": val})
-                xml = base64.b64encode(
-                    json.dumps({"EditFields": filled}).encode("utf-8")
-                ).decode("ascii")
-                nxt = client.call(
-                    "ProcEditFieldsOKMob",
-                    fields={"session": session, "save": "false", "xml": xml},
-                )
-            elif typ in {"warning", "messageWarning"}:
-                nxt = client.call(
-                    "ProcWarningOKMob",
-                    fields={"session": session, "warnings": "1"},
-                )
-            elif typ in {"reportOptions", "documentOptions", "displayUrl"}:
-                nxt = client.call("ProcContinueMob", fields={"session": session})
-            elif typ == "client":
-                nxt = client.call(
-                    "ProcClientContinueMob",
-                    fields={"session": session, "data": ""},
-                )
-            else:
-                error = "unknown_step"
-                client.call(
-                    "ProcKillProcessMob",
-                    fields={"session": session} if session else None,
-                )
-                break
-            if nxt.get("ok") is not True:
-                error = str(nxt.get("error") or "step_failed")
-                break
-            step = _step_from_result(nxt)
-            session = str(step.get("session") or session)
+    def _fail(code: str) -> None:
+        nonlocal error
+        error = code
+        raise RuntimeError(code)
 
-        err_form = client.call("FormStartMob", fields={"form": "FORMPREPERRS"})
-        if err_form.get("ok") is not True:
-            error = error or "errs_unknown"
-        else:
-            err_state = _take_statexml(_step_from_result(err_form), err_form)
-            err_xml = base64.b64encode(
-                json.dumps({"ENAME": form}).encode("utf-8")
-            ).decode("ascii")
-            err_r = client.call(
+    def _kill() -> None:
+        client.call("ProcKillProcessMob", fields=_session_fields(session))
+
+    if not form:
+        error = "ename_missing"
+    elif not _ENAME_RE.match(form):
+        error = "ename_invalid"
+    else:
+        try:
+            opened = client.call("FormStartMob", fields=_form_start_fields("EFORM", auto_retrieve=False))
+            if opened.get("ok") is not True:
+                _fail(str(opened.get("error") or "form_start_failed"))
+            form_open = True
+            opened_blob = _load_blob(opened)
+            opened_form = _form0(opened_blob)
+            meta.absorb(opened_form)
+            eform_tid = meta.table_id("EFORM", opened_form)
+            statexml = _state_from_form(opened_form, statexml, meta, eform_tid)
+            field_id = meta.ename_field(eform_tid)
+            if field_id is None:
+                _fail("ename_column_missing")
+            found = client.call(
                 "FormQueryDlgExecuteMob",
+                fields=_query_fields(
+                    statexml,
+                    xml=_filter_xml(field_id, form),
+                    top=_query_top(meta, eform_tid),
+                ),
+            )
+            if found.get("ok") is not True:
+                _fail(str(found.get("error") or "search_failed"))
+            found_blob = _load_blob(found)
+            found_form = _form0(found_blob)
+            if found_form is None:
+                _fail("search_failed")
+            meta.absorb(found_form)
+            eform_tid = meta.table_id("EFORM", found_form) or eform_tid
+            statexml = _state_from_form(found_form, statexml, meta, eform_tid)
+            rows = _live_rows(found_form, eform_tid, meta)
+            row_enames = [str(r.get("ENAME") or "").strip() for r in rows]
+            if len(rows) != 1:
+                _fail("ename_not_unique")
+            row_ename = row_enames[0]
+            if row_ename != form:
+                _fail("ename_mismatch")
+            jump_line = str(_as_int(rows[0].get("_index"), 1))
+            sel = client.call(
+                "FormJumpLineMob",
+                fields=_with_state(statexml, {"line": jump_line}),
+            )
+            if sel.get("ok") is not True:
+                _fail(str(sel.get("error") or "set_row_failed"))
+            sel_form = _form0(_load_blob(sel))
+            meta.absorb(sel_form)
+            statexml = _state_from_form(sel_form, statexml, meta, eform_tid)
+            act = client.call(
+                "FormActivateMob",
+                fields=_with_state(statexml, {"before": "true"}),
+            )
+            if act.get("ok") is not True:
+                _fail(str(act.get("error") or "activate_failed"))
+            act_blob = _load_blob(act)
+            act_form = _form0(act_blob)
+            statexml = _state_from_form(act_form, statexml, meta, eform_tid)
+            link = _activate_link(act_blob)
+            if not link:
+                _fail("activate_no_link")
+            activation = dict(link)
+            start = client.call(
+                "ProcStartActivateMob",
                 fields={
-                    "statexml": err_state,
-                    "add": "false",
-                    "xml": err_xml,
-                    "top": "0",
+                    "type": _PREPARE_EXEC_TYPE,
+                    "ename": _PREPARE_FORM_EXEC,
+                    "table": link["table"],
+                    "link": link["link"],
+                    "linkid": link["linkid"],
+                    "avoidmessages": "false",
                 },
             )
-            client.call(
-                "FormExitFormMob",
-                fields={"statexml": err_state} if err_state else None,
+            if start.get("ok") is not True:
+                _fail(str(start.get("error") or "activate_failed"))
+            proc = _procedure0(_load_blob(start))
+            if proc is None:
+                error = "unknown_step"
+                _kill()
+                proc = None
+            n = 0
+            while proc is not None:
+                n += 1
+                session = str(proc.get("session") or session or "").strip()
+                kind, action = _classify_proc(proc)
+                text = _proc_message_text(proc)
+                last_type = kind
+                last_message = text[:80]
+                log_steps.append(
+                    {
+                        "step": str(proc.get("step") or ""),
+                        "type": kind,
+                        "session": session,
+                        "message": last_message,
+                    }
+                )
+                steps.append({"type": kind, "message": last_message})
+                if last_message:
+                    messages.append(last_message[:40])
+                if action == "end":
+                    ended = True
+                    break
+                if n >= PREPARE_STEP_MAX:
+                    error = "step_limit"
+                    _kill()
+                    break
+                if action == "warning_ok":
+                    nxt = client.call(
+                        "ProcWarningOKMob",
+                        fields=_session_fields(session, {"warnings": "0"}),
+                    )
+                elif action == "choose":
+                    nxt = client.call(
+                        "ProcChooseFieldsOKMob",
+                        fields=_session_fields(session, {"field": _choose_field(proc)}),
+                    )
+                elif action == "edit":
+                    nxt = client.call(
+                        "ProcEditFieldsOKMob",
+                        fields=_session_fields(
+                            session, {"save": "false", "xml": _edit_xml(proc, form)}
+                        ),
+                    )
+                elif action == "report":
+                    nxt = client.call(
+                        "ProcNewReportMob",
+                        fields={
+                            "type": _PREPARE_EXEC_TYPE,
+                            "ename": _PREPARE_FORM_EXEC,
+                            "debug": "false",
+                            "mode": "H",
+                            "format": str(_first_format(proc)),
+                            "zoomvalue": "",
+                        },
+                    )
+                elif action == "print":
+                    nxt = client.call(
+                        "ProcAskPrintOKMob",
+                        fields=_session_fields(
+                            session,
+                            {
+                                "mode": "2",
+                                "format": str(_print_format(proc)),
+                                "sendattach": "false",
+                                "copies": "1",
+                                "pdf": "true",
+                                "sign": "false",
+                                "quick": "false",
+                            },
+                        ),
+                    )
+                elif action == "client":
+                    nxt = client.call(
+                        "ProcClientContinueMob",
+                        fields=_session_fields(session, {"data": _client_data_b64()}),
+                    )
+                elif action == "excel":
+                    nxt = client.call(
+                        "ProcCreateSpreadsheetMob",
+                        fields={
+                            "type": _PREPARE_EXEC_TYPE,
+                            "ename": _PREPARE_FORM_EXEC,
+                            "template": "-1",
+                            "sourcedatafile": _b64_text(_excel_url(proc)),
+                        },
+                    )
+                elif action == "check":
+                    nxt = client.call("ProcCheckExecutionMob", fields=_session_fields(session))
+                elif action == "continue":
+                    nxt = client.call("ProcContinueMob", fields=_session_fields(session))
+                else:
+                    error = "unknown_step"
+                    _kill()
+                    break
+                if nxt.get("ok") is not True:
+                    error = str(nxt.get("error") or "step_failed")
+                    break
+                nxt_proc = _procedure0(_load_blob(nxt))
+                if nxt_proc is None:
+                    error = "unknown_step"
+                    _kill()
+                    break
+                proc = nxt_proc
+
+            err_form = client.call(
+                "FormStartMob",
+                fields=_form_start_fields("FORMPREPERRS", auto_retrieve=True),
             )
-            if err_r.get("ok") is not True:
-                error = error or "errs_unknown"
+            if err_form.get("ok") is not True:
+                if not error:
+                    error = "errs_unknown"
+                    err_n = None
             else:
-                err_n = _row_count(_step_from_result(err_r))
-    except Exception:  # noqa: BLE001
-        if not error:
-            error = "prepare_failed"
-    finally:
-        _cleanup()
+                err_blob = _load_blob(err_form)
+                err_doc = _form0(err_blob)
+                meta.absorb(err_doc)
+                err_tid = meta.table_id("FORMPREPERRS", err_doc)
+                err_state = _state_from_form(err_doc, "", meta, err_tid)
+                err_r = client.call(
+                    "FormQueryDlgExecuteMob",
+                    fields=_query_fields(err_state, xml=None, top=_query_top(meta, err_tid)),
+                )
+                err_reply = _load_blob(err_r) if err_r.get("ok") is True else {}
+                err_reply_form = _form0(err_reply)
+                if err_reply_form is not None:
+                    meta.absorb(err_reply_form)
+                    err_tid = meta.table_id("FORMPREPERRS", err_reply_form) or err_tid
+                    err_state = _state_from_form(err_reply_form, err_state, meta, err_tid)
+                client.call("FormExitFormMob", fields=_with_state(err_state))
+                if err_r.get("ok") is not True or err_reply_form is None:
+                    if not error:
+                        error = "errs_unknown"
+                        err_n = None
+                else:
+                    err_n = len(_live_rows(err_reply_form, err_tid, meta))
+        except Exception as exc:  # noqa: BLE001
+            # Tests raise AssertionError for an unexpected SOAP op. Do not
+            # turn that into prepare_failed or the failure disappears.
+            if isinstance(exc, AssertionError):
+                raise
+            if not error:
+                error = "prepare_failed"
+        finally:
+            _cleanup()
 
     ok = (not error) and ended
-    out = {
+    out: dict[str, Any] = {
         "ok": ok,
         "action": "wcf",
         "op": "prepare",
         "ename": form,
+        "job_id": job_id,
         "steps": len(steps),
         "last_type": last_type,
         "last_message": last_message,
@@ -1123,18 +1626,24 @@ def run_wcf_form_prepare(
     if error:
         out["error"] = error
         if error == "errs_unknown":
-            out.pop("errs", None)
             out["errs"] = None
     _write_prepare_log(
         job_id,
-        {"steps": log_steps or steps, "ok": ok, "ename": form},
+        {
+            "steps": log_steps or steps,
+            "ok": ok,
+            "ename": form,
+            "row_ename": row_ename,
+            "row_enames": row_enames,
+            "activation": activation,
+            "error": error,
+        },
         secrets,
     )
     for k, v in list(out.items()):
         if isinstance(v, str):
             out[k] = redact_all(v, *secrets)
     return out
-
 
 def run_priority_wcf(
     text: str,
@@ -1237,6 +1746,15 @@ def run_priority_wcf(
         return {
             "ok": False,
             "error": "use_prepare_verb",
+            "action": "wcf",
+            "op": parsed.get("op"),
+            "via": "wcf",
+            "job_id": str(parsed.get("job_id") or ""),
+        }
+    if not generic_op_allowed(str(parsed.get("op") or "")):
+        return {
+            "ok": False,
+            "error": WCF_READONLY,
             "action": "wcf",
             "op": parsed.get("op"),
             "via": "wcf",
