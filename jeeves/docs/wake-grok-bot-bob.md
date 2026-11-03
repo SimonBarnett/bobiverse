@@ -7,10 +7,10 @@ On new ticket closures the detect host (often **ionos**, `ticket_closure` monito
 | Hop | Host | What |
 |-----|------|------|
 | 1. Detect | ionos (or any chair/monitor box) | `ticket_closure` finding with `closed[]` (`owner/repo#N`) |
-| 2. Hand-off | ionos → wake host | **Operator / later FR:** copy one `closed[]` id. This slice does **not** call wake from `ticket_closure.check`. Do **not** `!assign` |
+| 2. Hand-off | ionos → wake host | Detect host leaves `pending` in `monitor-ticket-closure.json` (not `seen`). Wake host sets `JEEVES_TICKET_CLOSURE_WAKE=1` so `ticket_closure.check` calls `wake_bob` / Wake-GrokBotBob. Do **not** `!assign` |
 | 3. Wake | Bob Grok Bot desktop | `Wake-GrokBotBob.ps1 -Repo owner/repo -Number N` → `GrokBotApi.py send --agent Bob --text …` (`SendGrokBotUserMessage`) |
 
-`ticket_closure.check` marks a closure seen when it emits `closed[]`. A failed later wake is **not** retried by this adapter. Unreachable Bob is `bob_unreachable` (exit 1); missing `owner/repo#N` is `invalid_ticket` (exit 2). Operator retry is the recorded skip until a follow-up wires wake **before** or **with** the seen write.
+`ticket_closure.check` puts new closes in `pending` and only moves them to `seen` after a successful wake or a persisted skip (`ticket-closure-wake-skips.json`). Detect hosts omit `JEEVES_TICKET_CLOSURE_WAKE` so they never call Grok Bot. Unreachable Bob is `bob_unreachable` (skip persisted, then seen). Missing `owner/repo#N` is `invalid_ticket`.
 
 **Wake host machine id:** `BOB_GROK_BOT_WAKE_MACHINE` (stamp `require_machine=<that id>` on wake FIX/FR work). Not `needs-ionos` unless the work is detection-only.
 
