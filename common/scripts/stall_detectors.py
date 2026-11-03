@@ -99,19 +99,22 @@ def detect_self_review_deadlock(snap: dict[str, Any]) -> list[dict[str, Any]]:
             continue
         if not gitclaim.mrb_row_offerable(row):
             continue
-        waiting.append(row)
-    if not waiting:
-        return []
-    # FR #6106 / #4917: harvest-lesson / docs-mrb tips wait for another seat.
-    # Author-only idle is not a self-review deadlock FR.
-    if all(
-        gitclaim.is_lesson_or_pin_pr(
+        # FR #6106 / #6112 / #4917: harvest-lesson / docs-mrb wait for another
+        # seat. Drop them so a mixed product+tip queue cannot file.
+        if bool(row.get("harvest_lesson")) or gitclaim.is_lesson_or_pin_pr(
             title=str(row.get("title") or row.get("line") or ""),
             labels=row.get("labels") or (),
             head_ref=str(row.get("head") or row.get("head_ref") or ""),
-        )
-        or bool(row.get("harvest_lesson"))
-        for row in waiting
+        ):
+            continue
+        waiting.append(row)
+    if not waiting:
+        return []
+    # FR #6112: author-only idle is not a deadlock (need another machine,
+    # not an FR). Cross-author giveup pairs still file.
+    idle_l = {n.lower() for n in idle}
+    if waiting and all(
+        idle_l <= {a.lower() for a in _author_nicks(row)} for row in waiting
     ):
         return []
     ledger = snap.get("ledger") or {}
