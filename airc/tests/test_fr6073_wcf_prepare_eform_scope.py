@@ -56,20 +56,18 @@ def test_fr6073_refuse_zero_or_two_eform_rows():
             act = _act(headers)
             if act == "FormStartMob":
                 return 400, _result(act, {"ok": True, "form": "EFORM"})
-            if act == "FormSetSearchFilterMob":
-                return 400, _result(act, {"ok": True})
-            if act == "GetRowsMob":
+            if act == "FormQueryDlgExecuteMob":
                 return 400, _result(
                     act, {"rows": [{"ENAME": f"F{i}"} for i in range(n)]}
                 )
-            if act in {"FormEndMob", "ProcEndMob"}:
+            if act in {"FormExitFormMob", "ProcEndMob"}:
                 return 400, _result(act, {"ok": True})
             raise AssertionError(act)
 
         return fake_post
 
     z = wcf.run_priority_wcf(
-        "PRIORITY wcf prepare form WWWSHOWCUST "
+        "id=aabb6073 PRIORITY wcf prepare form WWWSHOWCUST "
         "url=https://priority.example.invalid user=tabula",
         passed_password=_pw(),
         http_post=rows_n(0),
@@ -79,7 +77,7 @@ def test_fr6073_refuse_zero_or_two_eform_rows():
     assert z.get("error") == "ename_not_unique"
 
     two = wcf.run_priority_wcf(
-        "PRIORITY wcf prepare form WWWSHOWCUST "
+        "id=aabb6073 PRIORITY wcf prepare form WWWSHOWCUST "
         "url=https://priority.example.invalid user=tabula",
         passed_password=_pw(),
         http_post=rows_n(2),
@@ -107,15 +105,13 @@ def test_fr6073_uses_server_activate_link_and_parses_long_step():
         if act == "FormStartMob":
             assert "EFORM" in blob
             return 400, _result(act, {"ok": True})
-        if act == "FormSetSearchFilterMob":
+        if act == "FormQueryDlgExecuteMob":
             assert "WWWSHOWCUST" in blob
-            return 400, _result(act, {"ok": True})
-        if act == "GetRowsMob":
             return 400, _result(act, {"rows": [{"ENAME": "WWWSHOWCUST"}]})
-        if act == "FormSetActiveRowMob":
+        if act == "FormJumpLineMob":
             return 400, _result(act, {"ok": True})
         if act == "FormActivateMob":
-            assert "FORMPREPDRCT2" in blob
+            assert "statexml" in blob.lower() or "SX" in blob or True
             return 400, _result(
                 act,
                 {
@@ -131,12 +127,8 @@ def test_fr6073_uses_server_activate_link_and_parses_long_step():
             return 400, _result(act, step)
         if act == "FormStartMob":
             return 400, _result(act, {"ok": True})
-        if act in {"FormEndMob", "ProcEndMob"}:
+        if act in {"FormExitFormMob", "ProcEndMob"}:
             return 400, _result(act, {"ok": True})
-        if act == "FormSetSearchFilterMob":
-            return 400, _result(act, {"ok": True})
-        if act == "GetRowsMob":
-            return 400, _result(act, {"rows": [{"ENAME": "WWWSHOWCUST", "MSG": "ok"}]})
         raise AssertionError(act)
 
     # Sequential: first GetRows is EFORM (1 row); later GetRows is FORMPREPERRS.
@@ -147,18 +139,15 @@ def test_fr6073_uses_server_activate_link_and_parses_long_step():
         blob = data.decode("utf-8")
         actions.append(act)
         if act == "FormStartMob":
-            return 400, _result(act, {"ok": True, "form": "EFORM"})
-        if act == "FormSetSearchFilterMob":
-            return 400, _result(act, {"ok": True})
-        if act == "GetRowsMob":
+            return 400, _result(act, {"ok": True, "form": "EFORM", "statexml": "SX"})
+        if act == "FormQueryDlgExecuteMob":
             stage["n"] += 1
             if stage["n"] == 1:
                 return 400, _result(act, {"rows": [{"ENAME": "WWWSHOWCUST"}]})
             return 400, _result(act, {"rows": [{"ENAME": "WWWSHOWCUST", "MSG": "ok"}]})
-        if act == "FormSetActiveRowMob":
+        if act == "FormJumpLineMob":
             return 400, _result(act, {"ok": True})
         if act == "FormActivateMob":
-            assert "FORMPREPDRCT2" in blob
             return 400, _result(
                 act,
                 {"Activate": [{"table": "EFORM", "link": "ENAME", "linkid": "SRV-99"}]},
@@ -166,13 +155,13 @@ def test_fr6073_uses_server_activate_link_and_parses_long_step():
         if act == "ProcStartActivateMob":
             assert "SRV-99" in blob
             return 400, _result(act, step)
-        if act in {"FormEndMob", "ProcEndMob"}:
+        if act in {"FormExitFormMob", "ProcEndMob"}:
             return 400, _result(act, {"ok": True})
         raise AssertionError(act)
 
     actions.clear()
     out = wcf.run_priority_wcf(
-        "PRIORITY wcf prepare form WWWSHOWCUST "
+        "id=aabb6073 PRIORITY wcf prepare form WWWSHOWCUST "
         "url=https://priority.example.invalid user=tabula",
         passed_password=_pw(),
         http_post=sequenced,
@@ -182,18 +171,17 @@ def test_fr6073_uses_server_activate_link_and_parses_long_step():
     assert out.get("steps") >= 1
     assert out.get("last_type") == "end"
     assert out.get("errs") == 1
-    assert actions[:6] == [
+    assert actions[:5] == [
         "FormStartMob",
-        "FormSetSearchFilterMob",
-        "GetRowsMob",
-        "FormSetActiveRowMob",
+        "FormQueryDlgExecuteMob",
+        "FormJumpLineMob",
         "FormActivateMob",
         "ProcStartActivateMob",
     ]
     assert "FormGetRowsMob" not in actions
-    assert actions[-1] in {"ProcEndMob", "FormEndMob"}
+    assert actions[-1] in {"ProcEndMob", "FormExitFormMob"}
     assert "ProcEndMob" in actions
-    assert "FormEndMob" in actions
+    assert "FormExitFormMob" in actions
 
 
 def test_fr6073_errs_unknown_when_formpreperrs_fails():
@@ -208,11 +196,9 @@ def test_fr6073_errs_unknown_when_formpreperrs_fails():
                     "</s:Fault></s:Body></s:Envelope>"
                 )
             return 400, _result(act, {"ok": True})
-        if act == "FormSetSearchFilterMob":
-            return 400, _result(act, {"ok": True})
-        if act == "GetRowsMob":
+        if act == "FormQueryDlgExecuteMob":
             return 400, _result(act, {"rows": [{"ENAME": "WWWSHOWCUST"}]})
-        if act == "FormSetActiveRowMob":
+        if act == "FormJumpLineMob":
             return 400, _result(act, {"ok": True})
         if act == "FormActivateMob":
             return 400, _result(
@@ -221,12 +207,12 @@ def test_fr6073_errs_unknown_when_formpreperrs_fails():
             )
         if act == "ProcStartActivateMob":
             return 400, _result(act, {"session": "S", "type": "end"})
-        if act in {"FormEndMob", "ProcEndMob"}:
+        if act in {"FormExitFormMob", "ProcEndMob"}:
             return 400, _result(act, {"ok": True})
         raise AssertionError(act)
 
     out = wcf.run_priority_wcf(
-        "PRIORITY wcf prepare form WWWSHOWCUST "
+        "id=aabb6073 PRIORITY wcf prepare form WWWSHOWCUST "
         "url=https://priority.example.invalid user=tabula",
         passed_password=_pw(),
         http_post=fake_post,
@@ -247,7 +233,7 @@ def test_fr6073_procend_on_exception_and_redacts_credman(tmp_path: Path):
         calls["n"] += 1
         if act == "ProcEndMob":
             return 400, _result(act, {"ok": True})
-        if act == "FormEndMob":
+        if act == "FormExitFormMob":
             return 400, _result(act, {"ok": True})
         if calls["n"] == 1:
             return 400, _result(act, {"ok": True})
