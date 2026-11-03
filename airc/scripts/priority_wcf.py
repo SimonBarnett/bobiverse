@@ -31,7 +31,10 @@ PASSWORD_TEXT_TYPE = (
     "oasis-200401-wss-username-token-profile-1.0#PasswordText"
 )
 TEMPURI = "http://tempuri.org/"
+WSA_NS = "http://www.w3.org/2005/08/addressing"
 SOAP_ACTION_TMPL = "http://tempuri.org/IWCFService/{op}"
+WCF_HTTP_ERROR = "wcf_http_error"
+RAW_BODY_MAX = 800
 DEFAULT_WCF_PATH = "/wcf/wcf/Service.svc"
 TIMESTAMP_TTL_S = 300
 DEFAULT_TABULA_INI = "tabula.ini"
@@ -141,6 +144,8 @@ def build_envelope(
     language: int = 3,
     other_info: str | None = None,
     emit_priority_ns: bool | None = None,
+    endpoint: str | None = None,
+    message_id: str | None = None,
 ) -> str:
     """SOAP 1.1 envelope with PriorityNS + UsernameToken + wsu:Timestamp.
 
@@ -173,11 +178,29 @@ def build_envelope(
             f'<SilverLight xmlns="{PRIORITY_NS}">2</SilverLight>'
             f'<OtherInfo xmlns="{PRIORITY_NS}">{info}</OtherInfo>'
         )
+    wsa = ""
+    dest = str(endpoint or "").strip()
+    if dest:
+        mid = str(message_id or f"urn:uuid:{uuid.uuid4()}")
+        act = SOAP_ACTION_TMPL.format(op=name)
+        wsa = (
+            f'<a:Action s:mustUnderstand="1" xmlns:a="{WSA_NS}">{_xml_escape(act)}</a:Action>'
+            f'<a:To s:mustUnderstand="1" xmlns:a="{WSA_NS}">{_xml_escape(dest)}</a:To>'
+            f'<a:MessageID xmlns:a="{WSA_NS}">{_xml_escape(mid)}</a:MessageID>'
+            f'<a:ReplyTo xmlns:a="{WSA_NS}">'
+            f'<a:Address>http://www.w3.org/2005/08/addressing/anonymous</a:Address>'
+            "</a:ReplyTo>"
+        )
+    body_el = (
+        f'<{name} xmlns="{TEMPURI}"/>'
+        if not inner
+        else f'<{name} xmlns="{TEMPURI}">{inner}</{name}>'
+    )
     return (
         '<?xml version="1.0" encoding="utf-8"?>'
         f'<s:Envelope xmlns:s="{SOAP_NS}" xmlns:u="{WSU_NS}">'
         "<s:Header>"
-        f"{pns}"
+        f"{pns}{wsa}"
         f'<o:Security s:mustUnderstand="1" xmlns:o="{WSSE_NS}">'
         '<u:Timestamp u:Id="_0">'
         f"<u:Created>{_wsu_time(created)}</u:Created>"
@@ -191,7 +214,7 @@ def build_envelope(
         "</o:Security>"
         "</s:Header>"
         "<s:Body>"
-        f'<{name} xmlns="{TEMPURI}">{inner}</{name}>'
+        f"{body_el}"
         "</s:Body>"
         "</s:Envelope>"
     )
@@ -208,6 +231,14 @@ def redact(text: str, secret: str = "", extra: str = "") -> str:
     if extra:
         s = s.replace(str(extra), "***")
     return _PASS_RE.sub(r"\1=***", s)
+
+
+def redact_all(text: str, *secrets: str) -> str:
+    s = str(text or "")
+    for piece in secrets:
+        if piece:
+            s = redact(s, piece)
+    return s
 
 
 def parse_soap_response(xml_text: str) -> dict[str, Any]:
@@ -366,6 +397,7 @@ class PriorityWcfClient:
             company=company,
             language=lang,
             other_info=info,
+            endpoint=url,
         )
         headers = {
             "Content-Type": "text/xml; charset=utf-8",
@@ -382,20 +414,34 @@ class PriorityWcfClient:
         finally:
             envelope = ""
             secret = ""
+        extras = [x for x in (to_redact, app_key) if x]
+        raw = redact_all((body or "")[:RAW_BODY_MAX], *extras)
         if status in (401, 403):
-            return {"ok": False, "error": WCF_AUTH_FAILED, "via": self.mode}
+            return {
+                "ok": False,
+                "error": WCF_AUTH_FAILED,
+                "via": self.mode,
+                "http_status": status,
+                "raw": raw,
+            }
         parsed = parse_soap_response(body)
+        is_real_fault = parsed.get("error") in (
+            SOAP_FAULT,
+            WCF_SECURITY_REJECTED,
+        ) and parsed.get("detail") != "bad_xml"
         parsed["op"] = name
         parsed["via"] = self.mode
         parsed["endpoint_ok"] = True
-        extras = [x for x in (to_redact, app_key) if x]
+        parsed["http_status"] = status
+        parsed["raw"] = raw
+        if not (200 <= int(status) <= 299):
+            parsed["ok"] = False
+            if not is_real_fault:
+                parsed["error"] = WCF_HTTP_ERROR
         if extras:
             for k, v in list(parsed.items()):
-                if not isinstance(v, str):
-                    continue
-                for piece in extras:
-                    if piece in v:
-                        parsed[k] = redact(v, piece, extra=app_key)
+                if isinstance(v, str):
+                    parsed[k] = redact_all(v, *extras)
         app_key = ""
         return parsed
 
