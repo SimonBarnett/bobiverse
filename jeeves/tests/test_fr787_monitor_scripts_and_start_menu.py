@@ -35,6 +35,7 @@ CHECKS = (
     "skill_promote_backlog",
     "intake_allowlist",
     "github_resync_focus",
+    "ticket_closure",
 )
 PS_WRAPPERS = (
     "Test-JeevesMonitorHealth.ps1",
@@ -51,6 +52,7 @@ PS_WRAPPERS = (
     "Test-JeevesMonitorSkillPromoteBacklog.ps1",
     "Test-JeevesMonitorIntakeAllowlist.ps1",
     "Test-JeevesMonitorGithubResyncFocus.ps1",
+    "Test-JeevesMonitorTicketClosure.ps1",
     "Invoke-JeevesMonitorCheck.ps1",
     "Start-JeevesMonitor.ps1",
 )
