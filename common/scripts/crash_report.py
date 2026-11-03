@@ -770,6 +770,17 @@ def flush_spool(
                 continue
             title = str(payload.get("title") or "crash: spool")
             body = str(payload.get("body") or "")
+            # FR #6087: pytest fixture spool (test_fr5775 ValueError gpo failed).
+            if (
+                title.strip().lower() == "airc extension fail valueerror"
+                and body.strip().lower() == "gpo failed"
+            ):
+                try:
+                    path.unlink(missing_ok=True)
+                except OSError:
+                    pass
+                dropped += 1
+                continue
             sig = str(payload.get("sig") or path.stem)
             exe = str(payload.get("exe") or "unknown")
             r = str(payload.get("repo") or repo)
