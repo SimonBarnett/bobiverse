@@ -70,10 +70,9 @@ def test_fr6051_golden_getversion_and_generalcompanies():
     assert hdr1["SOAPAction"] == '"http://tempuri.org/IWCFService/GeneralCompaniesMob"'
     assert '<GetFileVersion xmlns="http://tempuri.org/"/>' in env0 or '<GetFileVersion xmlns="http://tempuri.org/"></GetFileVersion>' in env0
     assert "<GeneralCompaniesMob" in env1
-    assert wcf.WSA_NS in env0 and wcf.WSA_NS in env1
-    assert "http://tempuri.org/IWCFService/GetFileVersion" in env0
+    assert "http://www.w3.org/2005/08/addressing" not in env0
     assert url0.endswith("/wcf/wcf/Service.svc")
-    assert env0.find("<a:Action") < env0.find("<o:Security")
+    assert hdr0["SOAPAction"] == '"http://tempuri.org/IWCFService/GetFileVersion"'
     assert secret not in str({"raw": "x"})
 
     env = wcf.build_envelope(
@@ -87,6 +86,5 @@ def test_fr6051_golden_getversion_and_generalcompanies():
         endpoint="https://priority.example.invalid/wcf/wcf/Service.svc",
         message_id="urn:uuid:11111111-1111-1111-1111-111111111111",
     )
-    assert '<a:To s:mustUnderstand="1"' in env
-    assert "https://priority.example.invalid/wcf/wcf/Service.svc" in env
+    assert "http://www.w3.org/2005/08/addressing" not in env
     assert '<GetVersion xmlns="http://tempuri.org/"/>' in env or '<GetVersion xmlns="http://tempuri.org/"></GetVersion>' in env

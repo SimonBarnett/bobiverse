@@ -452,6 +452,16 @@ _PRIORITY_REPLY_CORE_OK_KEYS = frozenset(
 
 # FR #6018: walk IRC summary keeps these; full rows go to jobs/<id>/walk.json.
 _PRIORITY_REPLY_WALK_DROP = ("rows", "subforms", "title", "detail")
+_PRIORITY_REPLY_WCF_CORE = frozenset(
+    {"ok", "error", "http_status", "fault_code", "action"}
+)
+
+
+def _is_wcf_payload(body: dict[str, Any]) -> bool:
+    action = str(body.get("action") or body.get("via") or "").strip().lower()
+    return action == "wcf" or "http_status" in body
+
+
 _PRIORITY_REPLY_WALK_CORE = (
     "ok",
     "action",
@@ -573,6 +583,25 @@ def _shrink_priority_payload_steps(body: dict[str, Any]) -> list[dict[str, Any]]
     """Progressive shrink candidates from least to most aggressive (FR #5993)."""
     steps: list[dict[str, Any]] = []
     cur = dict(body)
+    if _is_wcf_payload(cur):
+        if "raw" in cur:
+            cur = dict(cur)
+            cur.pop("raw", None)
+            steps.append(cur)
+        fs = cur.get("fault_string")
+        if isinstance(fs, str) and len(fs) > 80:
+            cur = dict(cur)
+            cur["fault_string"] = fs[:77] + "..."
+            steps.append(cur)
+        if "fault_string" in cur:
+            cur = dict(cur)
+            cur.pop("fault_string", None)
+            steps.append(cur)
+        core = {k: cur[k] for k in _PRIORITY_REPLY_WCF_CORE if k in cur}
+        if "action" not in core:
+            core["action"] = "wcf"
+        if core != cur:
+            steps.append(core)
     sdk = cur.get("sdk")
     if isinstance(sdk, dict) and ("errors" in sdk or "message" in sdk):
         sdk2 = {k: v for k, v in sdk.items() if k not in ("errors", "message")}
@@ -707,6 +736,16 @@ def format_bounded_priority_out(
             "reason": str(body.get("reason") or "prepared")[:40],
         }
         return _framed_priority_out(jid, floor), int(exit_code)
+
+    # FR #6056: keep WCF outcome visible; drop raw / fault_string before too-large.
+    if _is_wcf_payload(body):
+        core = {k: body[k] for k in _PRIORITY_REPLY_WCF_CORE if k in body}
+        core["ok"] = bool(body.get("ok"))
+        if "action" not in core:
+            core["action"] = "wcf"
+        core_out = _framed_priority_out(jid, core)
+        if len(core_out.encode("utf-8")) <= max_bytes:
+            return core_out, int(exit_code)
 
     action = str(body.get("action") or body.get("op") or "priority")
     fallback = {
