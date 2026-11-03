@@ -744,8 +744,10 @@ _UNSCOPED_PREPARE_ENAMES = frozenset(
     }
 )
 # Generic verb: read ops, plus proc session ops. Form* mutation stays off
-# this verb (prepare form is the scoped path). ProcStart* still runs for a
-# non-prepare ename; prepare names are refused first.
+# this verb (prepare form is the scoped path). ProcNewReportMob is not here:
+# its body is type/ename/mode/format and it starts a run of that program
+# ($ProcNewReportMobAsync 3642, $ReportOptions 9677). A non-prepare ProcStart
+# still runs; any ename/name of a prepare program is refused first.
 _GENERIC_ALLOWED_OPS = frozenset(
     {
         "GetFileVersion",
@@ -758,7 +760,6 @@ _GENERIC_ALLOWED_OPS = frozenset(
         "ProcEditFieldsOKMob",
         "ProcWarningOKMob",
         "ProcClientContinueMob",
-        "ProcNewReportMob",
         "ProcAskPrintOKMob",
         "ProcKillProcessMob",
         "ProcCheckExecutionMob",
@@ -1137,16 +1138,13 @@ def _session_fields(session: str, extra: dict[str, str] | None = None) -> dict[s
     return fields or None
 
 
-def _is_proc_start_op(op: str) -> bool:
-    raw = str(op or "").strip()
-    wire = resolve_wcf_op(raw) or raw
-    return wire.lower().startswith("procstart") or raw.lower().startswith("procstart")
+def use_prepare_verb(_op: str, fields: dict[str, Any] | None) -> bool:
+    """True when a generic op's ename or name is a prepare program (FR #6079).
 
-
-def use_prepare_verb(op: str, fields: dict[str, Any] | None) -> bool:
-    """True when a generic Proc* start would run a prepare program (FR #6079)."""
-    if not _is_proc_start_op(op):
-        return False
+    Not limited to ProcStart*. ProcNewReportMob ($ReportOptions 9677) starts a
+    run of the named program, and any other op can carry the same fields.
+    The body is what names the program.
+    """
     bag = fields or {}
     for key in ("ename", "name"):
         val = str(bag.get(key) or bag.get(key.upper()) or "").strip().upper()
@@ -1169,17 +1167,65 @@ def _prepare_log_home() -> Path:
     return Path(tempfile.gettempdir()) / "airc-wcf-prepare"
 
 
-def _write_prepare_log(job_id: str, payload: dict[str, Any], extras: list[str]) -> None:
+def _write_prepare_log(job_id: str, payload: dict[str, Any], extras: list[str]) -> bool:
+    """Write jobs/<id>/wcf-prepare.json. False when the id is blank or the write fails."""
     jid = (job_id or "").strip().lower()
     if not jid:
-        return
+        return False
     dest = _prepare_log_home() / "jobs" / jid / "wcf-prepare.json"
     try:
         dest.parent.mkdir(parents=True, exist_ok=True)
         text = json.dumps(payload, separators=(",", ":"))
         dest.write_text(redact_all(text, *extras), encoding="utf-8")
     except OSError:
-        return
+        return False
+    return True
+
+
+def _mark_log(out: dict[str, Any], wrote: bool) -> dict[str, Any]:
+    """Surface a missed job log. Keep a more specific error when one is already set."""
+    if wrote:
+        return out
+    out["log_write_failed"] = True
+    if not out.get("error"):
+        out["ok"] = False
+        out["error"] = "log_write_failed"
+    return out
+
+
+def _refused_wcf(
+    parsed: dict[str, Any],
+    error: str,
+    *,
+    secrets: list[str] | None = None,
+) -> dict[str, Any]:
+    """Early refusal that still leaves the job log (unknown instance, not installed)."""
+    jid = str(parsed.get("job_id") or "").strip().lower() or uuid.uuid4().hex[:8]
+    op = parsed.get("op")
+    out: dict[str, Any] = {
+        "ok": False,
+        "error": error,
+        "action": "wcf",
+        "via": "wcf",
+        "job_id": jid,
+    }
+    if op:
+        out["op"] = op
+    wrote = _write_prepare_log(
+        jid,
+        {
+            "steps": [],
+            "ok": False,
+            "ename": str(parsed.get("ename") or ""),
+            "op": op or "",
+            "row_ename": "",
+            "row_enames": [],
+            "activation": None,
+            "error": error,
+        },
+        secrets or [],
+    )
+    return _mark_log(out, wrote)
 
 
 def wcf_job_id(parsed_job_id: str, body: dict[str, Any] | None) -> str:
@@ -1360,6 +1406,7 @@ def run_wcf_form_prepare(
     last_type = ""
     last_message = ""
     err_n: int | None = 0
+    err_rows_out: list[dict[str, Any]] | None = None
     error = ""
     ended = False
     form_open = False
@@ -1582,23 +1629,45 @@ def run_wcf_form_prepare(
                 meta.absorb(err_doc)
                 err_tid = meta.table_id("FORMPREPERRS", err_doc)
                 err_state = _state_from_form(err_doc, "", meta, err_tid)
-                err_r = client.call(
-                    "FormQueryDlgExecuteMob",
-                    fields=_query_fields(err_state, xml=None, top=_query_top(meta, err_tid)),
-                )
-                err_reply = _load_blob(err_r) if err_r.get("ok") is True else {}
-                err_reply_form = _form0(err_reply)
-                if err_reply_form is not None:
-                    meta.absorb(err_reply_form)
-                    err_tid = meta.table_id("FORMPREPERRS", err_reply_form) or err_tid
-                    err_state = _state_from_form(err_reply_form, err_state, meta, err_tid)
-                client.call("FormExitFormMob", fields=_with_state(err_state))
-                if err_r.get("ok") is not True or err_reply_form is None:
+                err_field = meta.ename_field(err_tid)
+                if err_field is None:
+                    client.call("FormExitFormMob", fields=_with_state(err_state))
                     if not error:
                         error = "errs_unknown"
                         err_n = None
                 else:
-                    err_n = len(_live_rows(err_reply_form, err_tid, meta))
+                    err_r = client.call(
+                        "FormQueryDlgExecuteMob",
+                        fields=_query_fields(
+                            err_state,
+                            xml=_filter_xml(err_field, form),
+                            top=_query_top(meta, err_tid),
+                        ),
+                    )
+                    err_reply = _load_blob(err_r) if err_r.get("ok") is True else {}
+                    err_reply_form = _form0(err_reply)
+                    if err_reply_form is not None:
+                        meta.absorb(err_reply_form)
+                        err_tid = meta.table_id("FORMPREPERRS", err_reply_form) or err_tid
+                        err_state = _state_from_form(err_reply_form, err_state, meta, err_tid)
+                    client.call("FormExitFormMob", fields=_with_state(err_state))
+                    if err_r.get("ok") is not True or err_reply_form is None:
+                        if not error:
+                            error = "errs_unknown"
+                            err_n = None
+                    else:
+                        matched = [
+                            row
+                            for row in _live_rows(err_reply_form, err_tid, meta)
+                            if str(row.get("ENAME") or "").strip() == form
+                        ]
+                        err_rows_out = [
+                            {k: v for k, v in row.items() if not str(k).startswith("_")}
+                            for row in matched
+                        ]
+                        err_n = len(err_rows_out)
+                        if err_n > 0 and not error:
+                            error = "prepare_errors"
         except Exception as exc:  # noqa: BLE001
             # Tests raise AssertionError for an unexpected SOAP op. Do not
             # turn that into prepare_failed or the failure disappears.
@@ -1623,23 +1692,34 @@ def run_wcf_form_prepare(
         "messages": messages[:4],
         "via": client.mode,
     }
+    if err_rows_out is not None:
+        out["rows"] = [
+            {
+                k: redact_all(v, *secrets) if isinstance(v, str) else v
+                for k, v in row.items()
+            }
+            for row in err_rows_out
+        ]
     if error:
         out["error"] = error
         if error == "errs_unknown":
             out["errs"] = None
-    _write_prepare_log(
+    wrote = _write_prepare_log(
         job_id,
         {
             "steps": log_steps or steps,
-            "ok": ok,
+            "ok": out["ok"],
             "ename": form,
             "row_ename": row_ename,
             "row_enames": row_enames,
             "activation": activation,
             "error": error,
+            "errs": err_n,
+            "rows": err_rows_out or [],
         },
         secrets,
     )
+    _mark_log(out, wrote)
     for k, v in list(out.items()):
         if isinstance(v, str):
             out[k] = redact_all(v, *secrets)
@@ -1666,31 +1746,17 @@ def run_priority_wcf(
         for k, v in (parsed.get("fields") or {}).items()
         if k not in {"password", "passwd", "pwd", "secret"}
     }
+    secrets = [str(passed_password)] if passed_password else []
     if allowlist_present is False:
-        return {
-            "ok": False,
-            "error": PRIORITY_NOT_INSTALLED,
-            "action": "wcf",
-            "via": "wcf",
-        }
+        return _refused_wcf(parsed, PRIORITY_NOT_INSTALLED, secrets=secrets)
     inst_row: dict[str, Any] = {}
     if allowlist is not None:
         # Allowlist present: never take url/user from the IRC line (SSRF).
         if not parsed["instance"]:
-            return {
-                "ok": False,
-                "error": "unknown-instance",
-                "action": "wcf",
-                "via": "wcf",
-            }
+            return _refused_wcf(parsed, "unknown-instance", secrets=secrets)
         inst = allowlist.get(parsed["instance"])
         if inst is None:
-            return {
-                "ok": False,
-                "error": "unknown-instance",
-                "action": "wcf",
-                "via": "wcf",
-            }
+            return _refused_wcf(parsed, "unknown-instance", secrets=secrets)
         pub = inst.public_dict() if hasattr(inst, "public_dict") else dict(inst)
         inst_row = {
             "url": pub.get("url"),
@@ -1735,22 +1801,14 @@ def run_priority_wcf(
         allowlist_present=allowlist_present,
     )
     if parsed.get("kind") == "prepare_form":
-        extra = [str(passed_password)] if passed_password else []
         return run_wcf_form_prepare(
             client,
             ename=str(parsed.get("ename") or ""),
             job_id=str(parsed.get("job_id") or ""),
-            extras=extra,
+            extras=secrets,
         )
     if use_prepare_verb(str(parsed.get("op") or ""), parsed.get("fields")):
-        return {
-            "ok": False,
-            "error": "use_prepare_verb",
-            "action": "wcf",
-            "op": parsed.get("op"),
-            "via": "wcf",
-            "job_id": str(parsed.get("job_id") or ""),
-        }
+        return _refused_wcf(parsed, "use_prepare_verb", secrets=secrets)
     if not generic_op_allowed(str(parsed.get("op") or "")):
         return {
             "ok": False,

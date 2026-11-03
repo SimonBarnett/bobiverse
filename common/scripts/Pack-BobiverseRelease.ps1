@@ -456,10 +456,22 @@ function Stage-Product([string]$Name) {
             }
             $pwDest = Join-Path $aircExeDir 'priority-worker'
             New-Item -ItemType Directory -Force -Path $pwDest | Out-Null
+            # FR #6079: sdk/priority-web-sdk/index.js is the test fixture for op names.
+            # The runtime package is node_modules/priority-web-sdk from npm ci above.
             Get-ChildItem -LiteralPath $pwSrc -Force | Where-Object {
                 $_.Name -ne '__pycache__'
             } | ForEach-Object {
-                Copy-Item -LiteralPath $_.FullName -Destination $pwDest -Recurse -Force
+                if ($_.Name -eq 'sdk') {
+                    $sdkDest = Join-Path $pwDest 'sdk'
+                    New-Item -ItemType Directory -Force -Path $sdkDest | Out-Null
+                    Get-ChildItem -LiteralPath $_.FullName -Force | Where-Object {
+                        $_.Name -ne 'priority-web-sdk'
+                    } | ForEach-Object {
+                        Copy-Item -LiteralPath $_.FullName -Destination $sdkDest -Recurse -Force
+                    }
+                } else {
+                    Copy-Item -LiteralPath $_.FullName -Destination $pwDest -Recurse -Force
+                }
             }
             Write-Host 'INFO airc staged airc\priority-worker (FR #5283/#5905)'
         } else {

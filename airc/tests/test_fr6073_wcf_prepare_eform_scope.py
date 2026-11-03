@@ -105,6 +105,7 @@ def test_fr6073_uses_server_activate_link_and_parses_long_step():
                 return 400, fx._result(
                     act, fx._eform_rows([(1, {"ENAME": "WWWSHOWCUST"})], "S1")
                 )
+            assert wcf._filter_xml(fx.ERR_COLS[0]["field"], "WWWSHOWCUST") in blob
             return 400, fx._result(
                 act,
                 fx._form_doc(
@@ -170,11 +171,13 @@ def test_fr6073_uses_server_activate_link_and_parses_long_step():
         http_post=sequenced,
         mode="direct",
     )
-    assert out["ok"] is True, out
+    assert out["ok"] is False, out
+    assert out.get("error") == "prepare_errors"
     assert out.get("steps") >= 1
     assert out.get("last_type") == "end"
     assert out.get("last_message") == long_msg[:80]
     assert out.get("errs") == 1
+    assert out.get("rows") == [{"ENAME": "WWWSHOWCUST", "MESSAGE": "ok"}]
     assert actions[:5] == [
         "FormStartMob",
         "FormQueryDlgExecuteMob",
