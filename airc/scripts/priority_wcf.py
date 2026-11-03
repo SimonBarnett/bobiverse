@@ -921,13 +921,8 @@ def _as_int(value: Any, default: int = 0) -> int:
 
 
 def _column_label(col: dict[str, Any]) -> str:
-    """SDK uses zoomname (ParseJO 4882). sendtitles=false may leave it blank."""
-    for key in ("zoomname", "name", "title", "text"):
-        raw = str(col.get(key) or "").strip()
-        if raw and _ENAME_RE.match(raw.upper()):
-            return raw.upper() if key != "zoomname" else raw
-    zoom = str(col.get("zoomname") or "").strip()
-    return zoom
+    """SDK ParseJO 4882: column key is NewColumn.zoomname only."""
+    return str(col.get("zoomname") or "").strip()
 
 
 def _form0(blob: dict[str, Any]) -> dict[str, Any] | None:
@@ -978,7 +973,7 @@ class _FormMeta:
             if name:
                 self.by_name[name] = tid
             self._take_columns(tid, table.get("NewColumn"))
-        extra_c = form.get("C") or form.get("columns")
+        extra_c = form.get("C")
         fallback_tid = _as_int((_position(form) or {}).get("table"), -1)
         if extra_c and fallback_tid >= 0:
             self._take_columns(fallback_tid, extra_c)
@@ -1145,7 +1140,7 @@ def _form_reply_shape(blob: dict[str, Any], form: dict[str, Any] | None) -> dict
                         "name": _column_label(col),
                     }
                 )
-        for col in form.get("C") or form.get("columns") or []:
+        for col in form.get("C") or []:
             if isinstance(col, dict):
                 columns.append(
                     {
@@ -1155,7 +1150,15 @@ def _form_reply_shape(blob: dict[str, Any], form: dict[str, Any] | None) -> dict
                 )
     row_n = 0
     if form:
-        row_n = len({_as_int(str(rt.get("FV") or "").split("\t")[2], 0) for rt in (form.get("RT") or []) if isinstance(rt, dict)})
+        lines = set()
+        for rt in form.get("RT") or []:
+            if not isinstance(rt, dict):
+                continue
+            parts = str(rt.get("FV") or "").split("\t")
+            if len(parts) < 3:
+                continue
+            lines.add(_as_int(parts[2], 0))
+        row_n = len(lines)
     encoded = json.dumps(blob, separators=(",", ":")) if blob else ""
     return {
         "keys": sorted(str(k) for k in (blob or {}).keys()),
@@ -1473,7 +1476,8 @@ def run_wcf_form_prepare(
     row_ename = ""
     row_enames: list[str] = []
     activation: dict[str, str] | None = None
-    form_start_shape: dict[str, Any] | None = None
+    form_start_shapes: list[dict[str, Any]] = []
+    query_shape: dict[str, Any] | None = None
     meta = _FormMeta()
 
     def _cleanup() -> None:
@@ -1488,7 +1492,8 @@ def run_wcf_form_prepare(
         raise RuntimeError(code)
 
     def _kill() -> None:
-        client.call("ProcKillProcessMob", fields=_session_fields(session))
+        if session:
+            client.call("ProcKillProcessMob", fields=_session_fields(session))
 
     if not form:
         error = "ename_missing"
@@ -1497,31 +1502,16 @@ def run_wcf_form_prepare(
     else:
         try:
             opened = client.call("FormStartMob", fields=_form_start_fields("EFORM", auto_retrieve=False))
+            opened_blob = _load_blob(opened)
+            opened_form = _form0(opened_blob)
+            form_start_shapes.append(_form_reply_shape(opened_blob, opened_form))
             if opened.get("ok") is not True:
                 _fail(str(opened.get("error") or "form_start_failed"))
             form_open = True
-            opened_blob = _load_blob(opened)
-            opened_form = _form0(opened_blob)
             meta.absorb(opened_form)
             eform_tid = meta.table_id("EFORM", opened_form)
             statexml = _state_from_form(opened_form, statexml, meta, eform_tid)
             field_id = meta.ename_field(eform_tid)
-            if field_id is None:
-                client.call("FormExitFormMob", fields=_with_state(statexml))
-                form_open = False
-                opened = client.call(
-                    "FormStartMob",
-                    fields=_form_start_fields("EFORM", auto_retrieve=False, sendtitles=True),
-                )
-                if opened.get("ok") is True:
-                    form_open = True
-                    opened_blob = _load_blob(opened)
-                    opened_form = _form0(opened_blob)
-                    meta.absorb(opened_form)
-                    eform_tid = meta.table_id("EFORM", opened_form)
-                    statexml = _state_from_form(opened_form, statexml, meta, eform_tid)
-                    field_id = meta.ename_field(eform_tid)
-            form_start_shape = _form_reply_shape(opened_blob, opened_form)
             if field_id is None:
                 _fail("ename_column_missing")
             found = client.call(
@@ -1536,6 +1526,7 @@ def run_wcf_form_prepare(
                 _fail(str(found.get("error") or "search_failed"))
             found_blob = _load_blob(found)
             found_form = _form0(found_blob)
+            query_shape = _form_reply_shape(found_blob, found_form)
             if found_form is None:
                 _fail("search_failed")
             meta.absorb(found_form)
@@ -1794,7 +1785,8 @@ def run_wcf_form_prepare(
             "error": error,
             "errs": err_n,
             "rows": err_rows_out or [],
-            **({"form_start_shape": form_start_shape} if form_start_shape else {}),
+            **({"form_start_shapes": form_start_shapes} if form_start_shapes else {}),
+            **({"query_shape": query_shape} if query_shape else {}),
         },
         secrets,
     )

@@ -81,8 +81,7 @@ def test_fr5994_priority_sdk_repprep_passes_reason_on_form_fail(tmp_path, monkey
         node_runner=fake_run,
     )
     assert out.get("ok") is False
-    assert "formStart:apiError" in str(out.get("reason") or "")
-    assert "API Licence" in str(out.get("reason") or "")
+    assert out.get("reason") == "use_winrun_formprep"
     blob = json.dumps(out).lower()
     assert "fake_priority_password" not in blob
 

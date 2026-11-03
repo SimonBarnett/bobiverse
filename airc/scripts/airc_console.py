@@ -909,27 +909,8 @@ def _priority_prepare_exec(
     proc_name = str(path or "").strip().upper() or "REPPREPDIRECT2"
     want_form = bool(form_prep) or proc_name == "FORMPREPDRCT2"
     if want_form:
-        if _env_flag_true("AIRC_PRIORITY_FORM_VIA_EFORM"):
-            return _priority_sdk_repprep(
-                ename=ename,
-                instance=instance,
-                path="FORMPREPDRCT2",
-                form_prep=True,
-                cred_fetcher=cred_fetcher,
-                node_runner=node_runner,
-                **kw,
-            )
-        if _env_flag_true("AIRC_PRIORITY_FORM_VIA_EXEC"):
-            # Opt-in only: #6004 procStart path (still loads priority-web-sdk).
-            return _priority_sdk_repprep(
-                ename=ename,
-                instance=instance,
-                path="FORMPREPDRCT2",
-                form_prep=True,
-                cred_fetcher=cred_fetcher,
-                node_runner=node_runner,
-                **kw,
-            )
+        # FR #6108: no EFORM/EXEC SDK opt-in. Those paths ran FORMPREPDRCT2
+        # without an exactly-one equal-ENAME EFORM row. Form prepare is WINRUN.
         return _priority_winrun_formprep(
             ename=ename,
             instance=instance,
@@ -962,30 +943,17 @@ def _priority_sdk_repprep(
     """Run node mjs prepare walk. Password via env only; never logged.
 
     FR #5946 / #6003: report/procedure use ``run-repprep-via-exec.mjs``.
-    Form prepare defaults to WINRUN (see ``_priority_prepare_exec``). This
-    helper still serves form only when explicitly opted in:
-    ``AIRC_PRIORITY_FORM_VIA_EFORM=1`` (EFORM/formStart) or
-    ``AIRC_PRIORITY_FORM_VIA_EXEC=1`` (procStart FORMPREPDRCT2).
+    Form prepare is WINRUN only (FR #6108). This helper is reports/procedures.
     """
     proc_name = str(path or "").strip().upper() or "REPPREPDIRECT2"
     want_form = bool(form_prep) or proc_name == "FORMPREPDRCT2"
     if want_form:
-        proc_name = "FORMPREPDRCT2"
+        return {"ok": False, "path": path, "reason": "use_winrun_formprep"}
     elif proc_name != "REPPREPDIRECT2":
         return {"ok": False, "path": path, "reason": "refused_non_repprep"}
     root = Path(os.environ.get("AIRC_INSTALL_ROOT") or r"C:\ai\airc")
     pw = _priority.resolve_priority_worker_dir(root)
-    via_eform = want_form and _env_flag_true("AIRC_PRIORITY_FORM_VIA_EFORM")
-    if via_eform:
-        mjs_candidates = [
-            (pw / "sdk" / "run-formprep-via-eform.mjs") if pw else Path(),
-            (pw / "run-formprep-via-eform.mjs") if pw else Path(),
-            root / "airc" / "priority-worker" / "sdk" / "run-formprep-via-eform.mjs",
-            root / "priority-worker" / "sdk" / "run-formprep-via-eform.mjs",
-            Path(os.environ.get("AIRC_PRIORITY_FORMPREP_MJS") or ""),
-        ]
-    else:
-        mjs_candidates = [
+    mjs_candidates = [
             (pw / "sdk" / "run-repprep-via-exec.mjs") if pw else Path(),
             (pw / "run-repprep-via-exec.mjs") if pw else Path(),
             root / "airc" / "priority-worker" / "sdk" / "run-repprep-via-exec.mjs",
