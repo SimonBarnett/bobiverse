@@ -460,6 +460,10 @@ _PRIORITY_REPLY_WCF_CORE = frozenset(
         "http_status",
         "fault_code",
         "action",
+        "op",
+        "via",
+        "endpoint_ok",
+        "truncated",
         "version",
         "companies",
         "count",
@@ -616,6 +620,7 @@ def _shrink_priority_payload_steps(body: dict[str, Any]) -> list[dict[str, Any]]
         if isinstance(cos, list) and len(cos) > 12:
             cur = dict(cur)
             cur["companies"] = [str(x) for x in cos[:12]]
+            cur["truncated"] = True
             steps.append(cur)
         core = {k: cur[k] for k in _PRIORITY_REPLY_WCF_CORE if k in cur}
         if "action" not in core:

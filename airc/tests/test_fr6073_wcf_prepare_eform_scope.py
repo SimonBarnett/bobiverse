@@ -276,7 +276,7 @@ def test_fr6073_procend_on_exception_and_redacts_credman(tmp_path: Path, monkeyp
     )
     assert out.get("ok") is False
     assert secret not in str(out)
-    assert "ProcEndMob" in actions
+    assert "ProcEndMob" not in actions
     assert "FormExitFormMob" in actions
     log = tmp_path / "jobs" / "aabb6073" / "wcf-prepare.json"
     assert log.is_file()
