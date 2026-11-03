@@ -48,6 +48,14 @@ def _focus_repos(focus_path: Path) -> set[str]:
     return set()
 
 
+def _resolve_repo(repo: str, repos: set[str]) -> str:
+    """Map a unique focused short name to owner/repo; leave others unchanged."""
+    if "/" in repo:
+        return repo
+    matches = sorted(r for r in repos if r.rsplit("/", 1)[-1] == repo)
+    return matches[0] if len(matches) == 1 else repo
+
+
 def _event_key(row: dict[str, Any]) -> str:
     repo = str(row.get("repo") or "").strip()
     num = str(row.get("number") or "").strip()
@@ -109,6 +117,7 @@ def _load_events(fixture: Path | None, repos: set[str]) -> list[dict[str, Any]]:
             r.rsplit("/", 1)[-1] for r in repos
         }:
             continue
+        norm["repo"] = _resolve_repo(norm["repo"], repos)
         out.append(norm)
     return out
 
