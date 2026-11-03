@@ -50,3 +50,8 @@ npm ci --omit=dev
 ```
 
 `package-lock.json` is committed; `node_modules/` is produced at pack (or locally for live tests).
+
+## Hotpatch overlay (FR #6109)
+
+Pack-box verify: `airc/scripts/Invoke-AircHotpatchVerify.ps1` (never `$t`/`$T` --- they are one variable).
+Overlay: `airc/scripts/Invoke-AircPriorityHSwap.ps1` copies the pack then **prunes** target files not in the pack (removed `sdk\priority-web-sdk` must not remain).
