@@ -72,7 +72,7 @@ def test_fr6064_same_close_twice_then_distinct_close(tmp_path: Path):
     assert state.is_file()
     assert not (chair / "ticket_closure_state.json").exists()
     body = json.loads(state.read_text(encoding="utf-8"))
-    keys = list((body.get("seen") or {}).keys())
+    keys = list((body.get("seen") or {}).keys()) + list((body.get("pending") or {}).keys())
     assert any("77" in k and ("del-77a" in k or "2026-11-03T14:00:00Z" in k) for k in keys)
 
     c2, p2 = _run(chair, digest, env)

@@ -23,10 +23,14 @@ from _common import (
     run_check,
 )
 from wake_brief import WakeBriefError, build_wake_brief
+from wake_grok_bot_bob import wake_bob
 
 STATE_NAME = "monitor-ticket-closure.json"
 _LEGACY_STATE_NAME = "ticket_closure_state.json"
 WAITING_NAME = "ticket-closure-waiting.json"
+WAKE_SKIP_NAME = "ticket-closure-wake-skips.json"
+# Tests inject a send callable; production uses GrokBotApi via wake_bob.
+_WAKE_SEND = None
 
 
 def _load_json(path: Path) -> Any:
@@ -163,6 +167,39 @@ def _load_waiting(chair: Path, digest: Path) -> set[str]:
     return set()
 
 
+def _wake_enabled() -> bool:
+    return str(os.environ.get("JEEVES_TICKET_CLOSURE_WAKE") or "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
+def _load_map(state: Any, key: str) -> dict[str, Any]:
+    if isinstance(state, dict) and isinstance(state.get(key), dict):
+        return {str(k): v for k, v in state[key].items()}
+    return {}
+
+
+def _write_skip(ops: Path, key: str, ev: dict[str, Any], reason: str) -> bool:
+    """Persist an operator-visible skip. False if the file was not written (FR #6081)."""
+    path = ops / WAKE_SKIP_NAME
+    data = _load_json(path)
+    blob = data if isinstance(data, dict) else {}
+    blob[key] = {
+        "reason": str(reason or "wake_failed")[:80],
+        "repo": ev.get("repo"),
+        "number": ev.get("number"),
+    }
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(blob, separators=(",", ":"), sort_keys=True), encoding="utf-8")
+        return True
+    except OSError:
+        return False
+
+
 def check(args):
     chair, digest = resolve_homes(args)
     focus_path = resolve_focus_path(chair, digest)
@@ -180,24 +217,47 @@ def check(args):
         state = _load_json(ops / _LEGACY_STATE_NAME) or _load_json(
             chair / _LEGACY_STATE_NAME
         )
-    seen = {}
-    if isinstance(state, dict) and isinstance(state.get("seen"), dict):
-        seen = {str(k): v for k, v in state["seen"].items()}
+    seen = _load_map(state, "seen")
+    pending = _load_map(state, "pending")
     closed = []
+    handled = set(seen) | set(pending)
     for ev in events:
         key = _event_key(ev)
-        if key not in seen:
-            row = dict(ev)
-            try:
-                row["brief"] = build_wake_brief(row)
-            except WakeBriefError:
+        if key in handled:
+            continue
+        row = dict(ev)
+        try:
+            row["brief"] = build_wake_brief(row)
+        except WakeBriefError:
+            continue
+        closed.append(row)
+        pending[key] = row
+        handled.add(key)
+    woke_n = 0
+    skip_n = 0
+    if _wake_enabled():
+        for key, ev in list(pending.items()):
+            item = ev if isinstance(ev, dict) else {}
+            result = wake_bob(item, send=_WAKE_SEND)
+            if result.get("woke"):
+                seen[key] = item
+                pending.pop(key, None)
+                woke_n += 1
                 continue
-            closed.append(row)
-            seen[key] = row
+            reason = str(result.get("error") or "wake_failed")
+            if not _write_skip(ops, key, item, reason):
+                continue
+            seen[key] = item
+            pending.pop(key, None)
+            skip_n += 1
     try:
         state_path.parent.mkdir(parents=True, exist_ok=True)
         state_path.write_text(
-            json.dumps({"seen": seen}, separators=(",", ":"), sort_keys=True),
+            json.dumps(
+                {"seen": seen, "pending": pending},
+                separators=(",", ":"),
+                sort_keys=True,
+            ),
             encoding="utf-8",
         )
     except OSError:
@@ -215,6 +275,9 @@ def check(args):
             "closed_count": len(closed),
             "repos": sorted(repos),
             "waiting_on": sorted(waiting),
+            "woke": woke_n,
+            "wake_skips": skip_n,
+            "pending_count": len(pending),
             "findings": findings,
             "remediation": remediation,
         },
