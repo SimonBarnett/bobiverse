@@ -53,6 +53,11 @@ class PriorityInstance:
     system_db: str | None = None
     prep_dir: str | None = None
     priority_root: str | None = None
+    tabula_ini: str | None = None
+    language: int | None = None
+    auth_audience: str | None = None
+    wcf_app_id: str | None = None
+    wcf_app_key_target: str | None = None
 
     def public_dict(self) -> dict[str, Any]:
         """Identity fields safe for IRC / logs (no credential target secrets)."""
@@ -71,6 +76,16 @@ class PriorityInstance:
             out["priorityRoot"] = self.priority_root
         if self.prep_dir:
             out["prepDir"] = self.prep_dir
+        if self.tabula_ini:
+            out["tabulaIni"] = self.tabula_ini
+        if self.language is not None:
+            out["language"] = self.language
+        if self.auth_audience:
+            out["authAudience"] = self.auth_audience
+        if self.wcf_app_id:
+            out["wcfAppId"] = self.wcf_app_id
+        if self.wcf_app_key_target:
+            out["wcfAppKeyTarget"] = self.wcf_app_key_target
         return out
 
 
@@ -258,6 +273,19 @@ def load_priority_allowlist(path: str | Path | None = None) -> dict[str, Priorit
                     if row.get("priority_root")
                     else None
                 )
+            ),
+            tabula_ini=(str(row["tabulaIni"]).strip() if row.get("tabulaIni") else None),
+            language=(
+                int(row["language"])
+                if str(row.get("language") or "").strip().isdigit()
+                else None
+            ),
+            auth_audience=(
+                str(row["authAudience"]).strip() if row.get("authAudience") else None
+            ),
+            wcf_app_id=(str(row["wcfAppId"]).strip() if row.get("wcfAppId") else None),
+            wcf_app_key_target=(
+                str(row["wcfAppKeyTarget"]).strip() if row.get("wcfAppKeyTarget") else None
             ),
         )
     return out
