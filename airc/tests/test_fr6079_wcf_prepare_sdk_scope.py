@@ -77,12 +77,31 @@ def test_fr6079_generic_procstart_formprep_refused_no_soap():
         assert seen == []
 
 
-def test_fr6079_job_id_required_before_soap():
+def test_fr6079_mints_job_id_before_soap(tmp_path, monkeypatch):
+    monkeypatch.setenv("AIRC_HOME", str(tmp_path))
     seen = []
 
     def fake_post(url, data, headers, timeout_s=30.0):
         seen.append(_act(headers))
-        return 400, ""
+        act = _act(headers)
+        if act == "FormStartMob":
+            return 400, _result(act, {"statexml": "SX"})
+        if act == "FormQueryDlgExecuteMob":
+            return 400, _result(
+                act, {"RowsData": {"EFORM": {"1": {"ENAME": "WWWSHOWCUST"}}}}
+            )
+        if act == "FormJumpLineMob":
+            return 400, _result(act, {"statexml": "SX"})
+        if act == "FormActivateMob":
+            return 400, _result(
+                act,
+                {"Activate": [{"table": "EFORM", "link": "ENAME", "linkid": "L"}]},
+            )
+        if act == "ProcStartActivateMob":
+            return 400, _result(act, {"session": "S", "type": "end"})
+        if act in {"FormExitFormMob", "ProcEndMob"}:
+            return 400, _result(act, {"ok": True})
+        raise AssertionError(act)
 
     out = wcf.run_priority_wcf(
         "PRIORITY wcf prepare form WWWSHOWCUST "
@@ -91,9 +110,10 @@ def test_fr6079_job_id_required_before_soap():
         http_post=fake_post,
         mode="direct",
     )
-    assert out.get("ok") is False
-    assert out.get("error") == "job_id_required"
-    assert seen == []
+    assert out.get("ok") is True
+    assert seen[0] == "FormStartMob"
+    logs = list((tmp_path / "jobs").rglob("wcf-prepare.json"))
+    assert len(logs) == 1
 
 
 def test_fr6079_ename_mismatch_one_wrong_row():

@@ -894,13 +894,7 @@ def run_wcf_form_prepare(
             "via": client.mode,
         }
     if not str(job_id or "").strip():
-        return {
-            "ok": False,
-            "error": "job_id_required",
-            "action": "wcf",
-            "op": "prepare",
-            "via": client.mode,
-        }
+        job_id = uuid.uuid4().hex[:8]
     session = ""
     steps: list[dict[str, Any]] = []
     messages: list[str] = []
