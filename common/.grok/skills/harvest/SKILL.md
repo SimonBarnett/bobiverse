@@ -352,7 +352,9 @@ routes to bobiverse via the split rule.
 - Under pytest, airc fail-intake must not write crash_report.spool_dir; flush_spool must drop the gpo-failed extension fixture.
 - ticket_closure may mark seen only after a successful wake or a confirmed skip-file write; OSError on the skip file leaves pending.
 - PRIORITY wcf generic ops refuse FORMPREP/REPPREP/PROCPREP in ename or name with use_prepare_verb and no SOAP; ProcNewReport is not a generic allowlisted op.
+- Digest freshness is ISO ts/lastSeen, not digest.json mtime. GET /bob/v1/report must set stale; a hung own-live digest.lock is broken only when content is past BOB_DIGEST_STALE_S.
 - EFORM NewColumn zoomname can be empty when sendtitles is false; map ENAME from title/name/Form.C, retry FormStartMob with sendtitles=true, and do not ProcEndMob until a procedure session exists.
+
 
 ## Harvest digest (lessons audit 2026-10-06)
 
