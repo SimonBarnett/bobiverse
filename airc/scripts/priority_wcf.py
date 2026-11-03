@@ -84,20 +84,28 @@ _OP_TO_WIRE = {
     "ProcWarningOKMob": "ProcWarningOKMob",
     "ProcClientContinue": "ProcClientContinueMob",
     "ProcClientContinueMob": "ProcClientContinueMob",
-    "FormGetRows": "GetRowsMob",
-    "FormGetRowsMob": "GetRowsMob",
-    "GetRows": "GetRowsMob",
-    "GetRowsMob": "GetRowsMob",
+    # GetRows / filter / active-row / end are JS API names. SOAP from
+    # priority-web-sdk@3.0.39 index.js: FormQueryDlgExecuteMob (4619/4383),
+    # FormJumpLineMob (4223), FormExitFormMob (3228), FormActivateMob (3185).
+    "FormGetRows": "FormQueryDlgExecuteMob",
+    "FormGetRowsMob": "FormQueryDlgExecuteMob",
+    "GetRows": "FormQueryDlgExecuteMob",
+    "GetRowsMob": "FormQueryDlgExecuteMob",
+    "FormQueryDlgExecute": "FormQueryDlgExecuteMob",
+    "FormQueryDlgExecuteMob": "FormQueryDlgExecuteMob",
     "FormStart": "FormStartMob",
     "FormStartMob": "FormStartMob",
-    "FormSetSearchFilter": "FormSetSearchFilterMob",
-    "FormSetSearchFilterMob": "FormSetSearchFilterMob",
-    "FormSetActiveRow": "FormSetActiveRowMob",
-    "FormSetActiveRowMob": "FormSetActiveRowMob",
+    "FormSetSearchFilter": "FormQueryDlgExecuteMob",
+    "FormSetActiveRow": "FormJumpLineMob",
+    "FormSetActiveRowMob": "FormJumpLineMob",
+    "FormJumpLine": "FormJumpLineMob",
+    "FormJumpLineMob": "FormJumpLineMob",
     "FormActivate": "FormActivateMob",
     "FormActivateMob": "FormActivateMob",
-    "FormEnd": "FormEndMob",
-    "FormEndMob": "FormEndMob",
+    "FormEnd": "FormExitFormMob",
+    "FormEndMob": "FormExitFormMob",
+    "FormExitForm": "FormExitFormMob",
+    "FormExitFormMob": "FormExitFormMob",
     "ProcKillProcess": "ProcKillProcessMob",
     "ProcKillProcessMob": "ProcKillProcessMob",
 }
@@ -709,6 +717,35 @@ def parse_priority_wcf_command(text: str) -> dict[str, Any] | None:
 PREPARE_STEP_MAX = 40
 _PREPARE_FORM_EXEC = "FORMPREPDRCT2"
 _ENAME_RE = re.compile(r"^[A-Z0-9_]{1,20}$")
+_UNSCOPED_PREPARE_ENAMES = frozenset(
+    {"FORMPREP", "FORMPREPDRCT2", "REPPREP", "PROCPREP"}
+)
+_GENERIC_START_OPS = frozenset(
+    {
+        "ProcStartMob",
+        "ProcStartActivateMob",
+        "ProcStart",
+        "ProcStartActivate",
+    }
+)
+# SOAP names prepare may emit (must exist in priority-web-sdk/index.js).
+PREPARE_SDK_OPS = frozenset(
+    {
+        "FormStartMob",  # index.js FormStartMob SOAPAction
+        "FormQueryDlgExecuteMob",  # GetRows / SetSearchFilter
+        "FormJumpLineMob",  # SetActiveRow
+        "FormActivateMob",  # statexml + before
+        "FormExitFormMob",  # EndCurrentForm
+        "ProcStartActivateMob",
+        "ProcContinueMob",
+        "ProcChooseFieldsOKMob",
+        "ProcEditFieldsOKMob",
+        "ProcWarningOKMob",
+        "ProcClientContinueMob",
+        "ProcKillProcessMob",
+        "ProcEndMob",
+    }
+)
 
 
 def _step_from_result(out: dict[str, Any]) -> dict[str, Any]:
@@ -739,14 +776,66 @@ def _activate_link(blob: dict[str, Any]) -> dict[str, str] | None:
     return None
 
 
-def _row_count(blob: dict[str, Any]) -> int:
+def _iter_row_dicts(blob: dict[str, Any]) -> list[dict[str, Any]]:
     rows = blob.get("rows")
     if isinstance(rows, list):
-        return len(rows)
-    pack = blob.get("EFORM") or blob.get("FORMPREPERRS")
+        return [r for r in rows if isinstance(r, dict)]
+    pack = blob.get("RowsData")
     if isinstance(pack, dict):
-        return len([k for k in pack if k != "undefined"])
-    return 0
+        found: list[dict[str, Any]] = []
+        for table in pack.values():
+            if not isinstance(table, dict):
+                continue
+            for row in table.values():
+                if isinstance(row, dict):
+                    found.append(row)
+        if found:
+            return found
+    for key in ("EFORM", "FORMPREPERRS"):
+        table = blob.get(key)
+        if isinstance(table, dict):
+            return [r for r in table.values() if isinstance(r, dict)]
+    return []
+
+
+def _row_count(blob: dict[str, Any]) -> int:
+    return len(_iter_row_dicts(blob))
+
+
+def _row_enames(blob: dict[str, Any]) -> list[str]:
+    names: list[str] = []
+    for row in _iter_row_dicts(blob):
+        val = row.get("ENAME") or row.get("ename")
+        if val is not None:
+            names.append(str(val).strip().upper())
+    return names
+
+
+def _take_statexml(*sources: Any) -> str:
+    for src in sources:
+        if isinstance(src, dict):
+            val = src.get("statexml") or src.get("StateXml") or src.get("state")
+            if val:
+                return str(val)
+        elif isinstance(src, str) and src.strip().startswith("{"):
+            try:
+                loaded = json.loads(src)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(loaded, dict):
+                val = loaded.get("statexml") or loaded.get("StateXml")
+                if val:
+                    return str(val)
+    return ""
+
+
+def use_prepare_verb(op: str, fields: dict[str, Any] | None) -> bool:
+    """True when a generic start would fire unscoped FORMPREP (FR #6079)."""
+    name = resolve_wcf_op(op) or str(op or "").strip()
+    if name not in _GENERIC_START_OPS and str(op or "").strip() not in _GENERIC_START_OPS:
+        return False
+    ename = str((fields or {}).get("ename") or (fields or {}).get("ENAME") or "")
+    return ename.strip().upper() in _UNSCOPED_PREPARE_ENAMES
 
 
 def _write_prepare_log(job_id: str, payload: dict[str, Any], extras: list[str]) -> None:
@@ -770,7 +859,7 @@ def run_wcf_form_prepare(
     job_id: str = "",
     extras: list[str] | None = None,
 ) -> dict[str, Any]:
-    """Scoped FORMPREP via EFORM + FormActivateMob (FR #6060 / #6073)."""
+    """Scoped FORMPREP via EFORM + SDK SOAP (FR #6060 / #6073 / #6079)."""
     form = str(ename or "").strip().upper()
     secrets = [x for x in (extras or []) if x]
     pw, _cerr = client._secret()
@@ -804,6 +893,14 @@ def run_wcf_form_prepare(
             "op": "prepare",
             "via": client.mode,
         }
+    if not str(job_id or "").strip():
+        return {
+            "ok": False,
+            "error": "job_id_required",
+            "action": "wcf",
+            "op": "prepare",
+            "via": client.mode,
+        }
     session = ""
     steps: list[dict[str, Any]] = []
     messages: list[str] = []
@@ -821,46 +918,67 @@ def run_wcf_form_prepare(
         else:
             client.call("ProcEndMob")
         if form_open:
-            client.call("FormEndMob", fields={"form": "EFORM"})
+            client.call(
+                "FormExitFormMob",
+                fields={"statexml": statexml} if statexml else None,
+            )
 
+    statexml = ""
     try:
         opened = client.call("FormStartMob", fields={"form": "EFORM"})
         if opened.get("ok") is not True:
             error = str(opened.get("error") or "form_start_failed")
             raise RuntimeError(error)
         form_open = True
-        filt = client.call(
-            "FormSetSearchFilterMob",
+        opened_step = _step_from_result(opened)
+        statexml = _take_statexml(opened_step, opened, opened.get("decoded")) or statexml
+        filt_xml = base64.b64encode(
+            json.dumps({"ENAME": form}).encode("utf-8")
+        ).decode("ascii")
+        found = client.call(
+            "FormQueryDlgExecuteMob",
             fields={
-                "form": "EFORM",
-                "field": "ENAME",
-                "op": "=",
-                "fromval": form,
+                "statexml": statexml,
+                "add": "false",
+                "xml": filt_xml,
+                "top": "0",
             },
         )
-        if filt.get("ok") is not True:
-            error = str(filt.get("error") or "filter_failed")
-            raise RuntimeError(error)
-        found = client.call("GetRowsMob", fields={"form": "EFORM", "from": "1"})
         if found.get("ok") is not True:
             error = str(found.get("error") or "search_failed")
             raise RuntimeError(error)
-        n_rows = _row_count(_step_from_result(found))
+        found_step = _step_from_result(found)
+        statexml = _take_statexml(found_step, found) or statexml
+        names = _row_enames(found_step)
+        n_rows = _row_count(found_step)
         if n_rows != 1:
             error = "ename_not_unique"
             raise RuntimeError(error)
-        sel = client.call("FormSetActiveRowMob", fields={"form": "EFORM", "row": "1"})
+        if names and names[0] != form:
+            error = "ename_mismatch"
+            raise RuntimeError(error)
+        if not names:
+            error = "ename_mismatch"
+            raise RuntimeError(error)
+        sel = client.call(
+            "FormJumpLineMob",
+            fields={"statexml": statexml, "line": "1"},
+        )
         if sel.get("ok") is not True:
             error = str(sel.get("error") or "set_row_failed")
             raise RuntimeError(error)
+        sel_step = _step_from_result(sel)
+        statexml = _take_statexml(sel_step, sel) or statexml
         act = client.call(
             "FormActivateMob",
-            fields={"form": "EFORM", "ename": _PREPARE_FORM_EXEC, "type": "P"},
+            fields={"statexml": statexml, "before": "true"},
         )
         if act.get("ok") is not True:
             error = str(act.get("error") or "activate_failed")
             raise RuntimeError(error)
-        link = _activate_link(_step_from_result(act))
+        act_step = _step_from_result(act)
+        statexml = _take_statexml(act_step, act) or statexml
+        link = _activate_link(act_step)
         if not link:
             error = "activate_no_link"
             raise RuntimeError(error)
@@ -883,6 +1001,13 @@ def run_wcf_form_prepare(
         n = 0
         while step and n < PREPARE_STEP_MAX:
             n += 1
+            if n >= PREPARE_STEP_MAX and str(step.get("type") or "").strip() != "end":
+                error = "step_limit"
+                client.call(
+                    "ProcKillProcessMob",
+                    fields={"session": session} if session else None,
+                )
+                break
             typ = str(step.get("type") or "").strip()
             last_type = typ
             last_message = str(step.get("message") or "")[:80]
@@ -961,18 +1086,24 @@ def run_wcf_form_prepare(
         if err_form.get("ok") is not True:
             error = error or "errs_unknown"
         else:
-            err_f = client.call(
-                "FormSetSearchFilterMob",
+            err_state = _take_statexml(_step_from_result(err_form), err_form)
+            err_xml = base64.b64encode(
+                json.dumps({"ENAME": form}).encode("utf-8")
+            ).decode("ascii")
+            err_r = client.call(
+                "FormQueryDlgExecuteMob",
                 fields={
-                    "form": "FORMPREPERRS",
-                    "field": "ENAME",
-                    "op": "=",
-                    "fromval": form,
+                    "statexml": err_state,
+                    "add": "false",
+                    "xml": err_xml,
+                    "top": "0",
                 },
             )
-            err_r = client.call("GetRowsMob", fields={"form": "FORMPREPERRS", "from": "1"})
-            client.call("FormEndMob", fields={"form": "FORMPREPERRS"})
-            if err_f.get("ok") is not True or err_r.get("ok") is not True:
+            client.call(
+                "FormExitFormMob",
+                fields={"statexml": err_state} if err_state else None,
+            )
+            if err_r.get("ok") is not True:
                 error = error or "errs_unknown"
             else:
                 err_n = _row_count(_step_from_result(err_r))
@@ -1108,6 +1239,14 @@ def run_priority_wcf(
             job_id=str(parsed.get("job_id") or ""),
             extras=extra,
         )
+    if use_prepare_verb(str(parsed.get("op") or ""), parsed.get("fields")):
+        return {
+            "ok": False,
+            "error": "use_prepare_verb",
+            "action": "wcf",
+            "op": parsed.get("op"),
+            "via": "wcf",
+        }
     out = client.call(parsed["op"], fields=parsed["fields"] or None)
     out["action"] = "wcf"
     out["op"] = parsed["op"]
