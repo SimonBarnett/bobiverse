@@ -195,7 +195,14 @@ def test_fr6079_generic_procstart_formprep_refused_no_soap():
         return 400, ""
 
     lines = []
-    for op in ("ProcStart", "ProcStartActivate", "ProcStartMob", "ProcStartActivateMob"):
+    for op in (
+        "ProcStart",
+        "ProcStartActivate",
+        "ProcStartMob",
+        "ProcStartActivateMob",
+        "ProcNewReport",
+        "ProcNewReportMob",
+    ):
         for key in ("ename", "name"):
             for prog in (
                 "FORMPREP",
@@ -220,6 +227,43 @@ def test_fr6079_generic_procstart_formprep_refused_no_soap():
         assert out.get("ok") is False, line
         assert out.get("error") == "use_prepare_verb", line
         assert seen == [], line
+
+
+def test_fr6079_allowlisted_ops_cannot_carry_a_prepare_name():
+    """Every generic allowlisted op refuses a prepare ename/name with no SOAP."""
+    assert "ProcNewReportMob" not in wcf._GENERIC_ALLOWED_OPS
+    assert not any(op.startswith("ProcNewReport") for op in wcf._GENERIC_ALLOWED_OPS)
+    seen = []
+
+    def fake_post(url, data, headers, timeout_s=30.0):
+        seen.append(_act(headers))
+        return 400, ""
+
+    programs = (
+        "FORMPREP",
+        "FORMPREPDRCT",
+        "FORMPREPDRCT2",
+        "REPPREP",
+        "REPPREPDIRECT2",
+        "PROCPREP",
+    )
+    for op in sorted(wcf._GENERIC_ALLOWED_OPS):
+        for key in ("ename", "name"):
+            for prog in programs:
+                seen.clear()
+                line = (
+                    f"PRIORITY wcf {op} type=P {key}={prog} "
+                    "url=https://priority.example.invalid user=tabula"
+                )
+                out = wcf.run_priority_wcf(
+                    line,
+                    passed_password=_pw(),
+                    http_post=fake_post,
+                    mode="direct",
+                )
+                assert out.get("ok") is False, line
+                assert out.get("error") == "use_prepare_verb", line
+                assert seen == [], line
 
 
 def test_fr6079_non_prepare_procstart_still_calls_and_form_ops_are_readonly():
@@ -249,6 +293,17 @@ def test_fr6079_non_prepare_procstart_still_calls_and_form_ops_are_readonly():
     )
     assert blocked.get("ok") is False
     assert blocked.get("error") == wcf.WCF_READONLY
+    assert seen == []
+
+    report = wcf.run_priority_wcf(
+        "PRIORITY wcf ProcNewReport type=P ename=WWWSHOW mode=H format=0 "
+        "url=https://priority.example.invalid user=tabula",
+        passed_password=_pw(),
+        http_post=fake_post,
+        mode="direct",
+    )
+    assert report.get("ok") is False
+    assert report.get("error") == wcf.WCF_READONLY
     assert seen == []
 
 
@@ -303,7 +358,27 @@ def _happy_post(actions: list[str], blobs: list[str]):
                     act,
                     _eform_rows([(3, {"ENAME": "WWWSHOWCUST", "TITLE": "Customers"})], "S1"),
                 )
+            err_filt = _b64(
+                json.dumps(
+                    {
+                        "or": 0,
+                        "QueryValues": [
+                            {
+                                "field": ERR_COLS[0]["field"],
+                                "fromval": "WWWSHOWCUST",
+                                "toval": "",
+                                "op": "=",
+                                "sort": 0,
+                                "isdesc": 0,
+                            }
+                        ],
+                    },
+                    separators=(",", ":"),
+                )
+            )
+            assert err_filt in blob
             assert filt not in blob
+            assert "<top>9</top>" in blob
             assert wcf.sdk_statexml("E0", 0, 1, "") in blob
             return 400, _result(
                 act,
@@ -312,7 +387,10 @@ def _happy_post(actions: list[str], blobs: list[str]):
                     ERR_TABLE,
                     "E1",
                     ERR_COLS,
-                    [(1, {"ENAME": "WWWSHOWCUST", "MESSAGE": "ok"})],
+                    [
+                        (1, {"ENAME": "WWWSHOWCUST", "MESSAGE": "ok"}),
+                        (2, {"ENAME": "OTHERFORM", "MESSAGE": "old"}),
+                    ],
                     include_table=False,
                     position_field=2,
                 ),
@@ -363,9 +441,11 @@ def test_fr6079_prepare_uses_sdk_ops_and_statexml(tmp_path, monkeypatch):
         http_post=_happy_post(actions, blobs),
         mode="direct",
     )
-    assert out.get("ok") is True
+    assert out.get("ok") is False
+    assert out.get("error") == "prepare_errors"
     assert out.get("ename") == "WWWSHOWCUST"
     assert out.get("errs") == 1
+    assert out.get("rows") == [{"ENAME": "WWWSHOWCUST", "MESSAGE": "ok"}]
     assert out.get("last_type") == "end"
     jid = out.get("job_id") or ""
     assert re.fullmatch(r"[0-9a-f]{8}", jid)
@@ -527,6 +607,93 @@ def test_fr6079_log_fallback_and_validation(monkeypatch):
     body = json.loads(log.read_text(encoding="utf-8"))
     assert body["error"] == "ename_invalid"
     assert _pw() not in log.read_text(encoding="utf-8")
+
+
+class _EmptyAllow:
+    def get(self, ident):
+        return None
+
+
+def test_fr6079_unknown_instance_writes_job_log(tmp_path, monkeypatch):
+    monkeypatch.setenv("AIRC_HOME", str(tmp_path))
+    monkeypatch.delenv("AIRC_CONSOLE_HOME", raising=False)
+    seen = []
+    out = wcf.run_priority_wcf(
+        "id=aabb6079 PRIORITY wcf GetVersion missing-box",
+        allowlist=_EmptyAllow(),
+        passed_password=_pw(),
+        http_post=lambda *a, **k: seen.append("soap") or (200, ""),
+        mode="relay",
+    )
+    assert out.get("ok") is False
+    assert out.get("error") == "unknown-instance"
+    assert out.get("job_id") == "aabb6079"
+    assert seen == []
+    log = tmp_path / "jobs" / "aabb6079" / "wcf-prepare.json"
+    assert log.is_file()
+    body = json.loads(log.read_text(encoding="utf-8"))
+    assert body["error"] == "unknown-instance"
+    assert _pw() not in log.read_text(encoding="utf-8")
+
+
+def test_fr6079_priority_not_installed_writes_job_log(tmp_path, monkeypatch):
+    monkeypatch.setenv("AIRC_HOME", str(tmp_path))
+    monkeypatch.delenv("AIRC_CONSOLE_HOME", raising=False)
+    seen = []
+    out = wcf.run_priority_wcf(
+        "id=bb6079aa PRIORITY wcf GetVersion "
+        "url=https://priority.example.invalid user=tabula",
+        allowlist_present=False,
+        passed_password=_pw(),
+        http_post=lambda *a, **k: seen.append("soap") or (200, ""),
+        mode="direct",
+    )
+    assert out.get("ok") is False
+    assert out.get("error") == "priority_not_installed"
+    assert out.get("job_id") == "bb6079aa"
+    assert seen == []
+    log = tmp_path / "jobs" / "bb6079aa" / "wcf-prepare.json"
+    assert log.is_file()
+    logged = log.read_text(encoding="utf-8")
+    assert json.loads(logged)["error"] == "priority_not_installed"
+    assert _pw() not in logged
+
+
+def test_fr6079_log_oserror_sets_log_write_failed(tmp_path, monkeypatch):
+    monkeypatch.setenv("AIRC_HOME", str(tmp_path))
+    monkeypatch.delenv("AIRC_CONSOLE_HOME", raising=False)
+    real = Path.write_text
+
+    def boom(self, *args, **kwargs):
+        if self.name == "wcf-prepare.json":
+            raise OSError("disk full")
+        return real(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "write_text", boom)
+    out = wcf.run_priority_wcf(
+        "id=cc6079bb PRIORITY wcf prepare form NOT-A-NAME "
+        "url=https://priority.example.invalid user=tabula",
+        passed_password=_pw(),
+        http_post=lambda *a, **k: (_ for _ in ()).throw(AssertionError("soap")),
+        mode="direct",
+    )
+    assert out.get("ok") is False
+    assert out.get("error") == "ename_invalid"
+    assert out.get("log_write_failed") is True
+    assert out.get("job_id") == "cc6079bb"
+    assert not (tmp_path / "jobs" / "cc6079bb" / "wcf-prepare.json").is_file()
+
+
+def test_fr6079_pack_omits_vendored_sdk_index():
+    pack = (
+        Path(__file__).resolve().parents[2]
+        / "common"
+        / "scripts"
+        / "Pack-BobiverseRelease.ps1"
+    ).read_text(encoding="utf-8-sig")
+    assert "$_.Name -ne 'priority-web-sdk'" in pack
+    assert "sdk/priority-web-sdk/index.js is the test fixture" in pack
+    assert "node_modules\\priority-web-sdk" in pack or "node_modules/priority-web-sdk" in pack
 
 
 def test_fr6079_console_done_id_is_prepare_log_id(monkeypatch):
