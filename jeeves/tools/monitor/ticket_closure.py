@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""FR #6063: report newly closed issues/PRs on watched/focused repos.
+"""FR #6063 / #6064: report newly closed issues/PRs on watched/focused repos.
 
 Phase-1 events: issue closed, PR merged, PR closed (unmerged).
 Reads a fixture when JEEVES_TICKET_CLOSURE_FIXTURE is set (tests / offline).
@@ -16,12 +16,14 @@ from typing import Any
 from _common import (
     EXIT_FINDING,
     EXIT_OK,
+    ops_home,
     resolve_focus_path,
     resolve_homes,
     run_check,
 )
 
-STATE_NAME = "ticket_closure_state.json"
+STATE_NAME = "monitor-ticket-closure.json"
+_LEGACY_STATE_NAME = "ticket_closure_state.json"
 
 
 def _load_json(path: Path) -> Any:
@@ -46,11 +48,11 @@ def _focus_repos(focus_path: Path) -> set[str]:
 
 
 def _event_key(row: dict[str, Any]) -> str:
-    kind = str(row.get("kind") or "").strip().lower()
     repo = str(row.get("repo") or "").strip()
     num = str(row.get("number") or "").strip()
     ev = str(row.get("event") or "").strip().lower()
-    return f"{kind}:{repo}#{num}:{ev}"
+    ident = str(row.get("delivery_id") or row.get("closed_at") or "").strip()
+    return f"{repo}#{num}:{ev}:{ident}"
 
 
 def _normalize(row: dict[str, Any]) -> dict[str, Any] | None:
@@ -75,6 +77,12 @@ def _normalize(row: dict[str, Any]) -> dict[str, Any] | None:
         "repo": repo,
         "number": number,
     }
+    closed_at = str(row.get("closed_at") or "").strip()
+    delivery = str(row.get("delivery_id") or row.get("deliveryId") or "").strip()
+    if closed_at:
+        out["closed_at"] = closed_at
+    if delivery:
+        out["delivery_id"] = delivery
     if kind == "pr":
         out["merged"] = ev == "merged"
     return out
@@ -111,8 +119,13 @@ def check(args):
     fx = (os.environ.get("JEEVES_TICKET_CLOSURE_FIXTURE") or "").strip()
     fixture = Path(fx) if fx else None
     events = _load_events(fixture, repos)
-    state_path = chair / STATE_NAME
+    ops = ops_home(chair, digest)
+    state_path = ops / STATE_NAME
     state = _load_json(state_path)
+    if state is None:
+        state = _load_json(ops / _LEGACY_STATE_NAME) or _load_json(
+            chair / _LEGACY_STATE_NAME
+        )
     seen = {}
     if isinstance(state, dict) and isinstance(state.get("seen"), dict):
         seen = {str(k): v for k, v in state["seen"].items()}
