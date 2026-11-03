@@ -12,8 +12,10 @@ Never raises into the caller; reporting is best-effort with a short join timeout
 from __future__ import annotations
 
 import functools
+import json
 import os
 import re
+import tempfile
 import threading
 import time
 import traceback
@@ -153,18 +155,38 @@ def intake_allowed(*, env: dict[str, str] | None = None) -> bool:
 
 
 def _write_fail_spool(payload: dict[str, Any]) -> Path:
-    """Spool a fail-intake row; prefer crash_report helper, else local spool_dir."""
+    """Spool a fail-intake row; prefer crash_report helper, else local spool_dir.
+
+    FR #6087: under pytest never write the live crash_report spool (service
+    ``flush_spool`` later posted ``airc extension fail ValueError`` / ``gpo failed``).
+    """
+    row = dict(payload)
+    if str(os.environ.get("PYTEST_CURRENT_TEST") or "").strip():
+        row["local_only"] = True
+        row["pytest"] = True
+        d = spool_dir()
+        cr_d = None
+        try:
+            import crash_report as cr
+
+            cr_d = cr.spool_dir()
+        except Exception:
+            cr_d = None
+        if cr_d is not None and d.resolve() == Path(cr_d).resolve():
+            d = Path(tempfile.gettempdir()) / "airc-fail-intake-pytest"
+        d.mkdir(parents=True, exist_ok=True)
+        path = d / f"airc-fail-{int(time.time())}-{os.getpid()}.json"
+        path.write_text(json.dumps(row, separators=(",", ":")), encoding="utf-8")
+        return path
     try:
         import crash_report as cr
 
-        return Path(cr._write_spool(payload))
+        return Path(cr._write_spool(row))
     except Exception:
-        import json
-
         d = spool_dir()
         d.mkdir(parents=True, exist_ok=True)
         path = d / f"airc-fail-{int(time.time())}-{os.getpid()}.json"
-        path.write_text(json.dumps(payload, separators=(",", ":")), encoding="utf-8")
+        path.write_text(json.dumps(row, separators=(",", ":")), encoding="utf-8")
         return path
 
 
