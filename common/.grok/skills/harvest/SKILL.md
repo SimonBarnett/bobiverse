@@ -349,6 +349,7 @@ routes to bobiverse via the split rule.
 - FR #4851: shop CANCEL FR N (closed by ...) is a hard stop --- NACK the assigned FR, do not open a PR, then harvest.
 - Wake-GrokBotBob must reject a missing owner/repo#N before send; do not merge the adapter-only tip when the one-fix PR already contains it.
 - PRIORITY wcf prepare form may omit id= (runtime mints hex); generic ProcStart of FORMPREP* is use_prepare_verb with no SOAP.
+- Under pytest, airc fail-intake must not write crash_report.spool_dir; flush_spool must drop the gpo-failed extension fixture.
 
 ## Harvest digest (lessons audit 2026-10-06)
 
