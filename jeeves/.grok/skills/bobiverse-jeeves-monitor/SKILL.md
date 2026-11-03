@@ -44,7 +44,7 @@ Run deterministic checks before reasoning. Exit **0** ok / **1** finding / **2**
 
 **Github resync focus (FR #3146):** `github_resync_focus` flags non-empty `focus.repos` with empty unaccepted / discover miss (silent `github_resync ok repos=0`). Product: `chair_health.discover_repos` unions focus. Ops: `resync-repos.txt` + `!resync`.
 
-**Ticket closure (FR #6063 / #6069):** `ticket_closure` reports newly closed issues / merged PRs / unmerged closed PRs on focused repos (`closed[]`). Optional Phase-2 wait registry: `ticket-closure-waiting.json` (`waiting_on: [owner/repo#N]`) under ops/digest/chair; empty keeps Phase-1. Fixture via `JEEVES_TICKET_CLOSURE_FIXTURE`. Never writes queue.json, never `!assign`.
+**Ticket closure (FR #6063 / #6064 / #6069):** `ticket_closure` reports newly closed issues / merged PRs / unmerged closed PRs on focused repos (`closed[]`). De-dupe cursor is `monitor-ticket-closure.json` under ops home; keys are `owner/repo#N` plus `delivery_id` / `closed_at` (one wake per close). Optional Phase-2 wait registry: `ticket-closure-waiting.json` (`waiting_on: [owner/repo#N]`) under ops/digest/chair or `JEEVES_TICKET_CLOSURE_WAITING`; empty keeps Phase-1. Fixture via `JEEVES_TICKET_CLOSURE_FIXTURE`. Never writes queue.json, never `!assign`.
 
 ## Auto-start (FR #954)
 
