@@ -207,19 +207,8 @@ def build_envelope(
             f'<SilverLight xmlns="{PRIORITY_NS}">2</SilverLight>'
             f'<OtherInfo xmlns="{PRIORITY_NS}">{info}</OtherInfo>'
         )
-    wsa = ""
-    dest = str(endpoint or "").strip()
-    if dest:
-        mid = str(message_id or f"urn:uuid:{uuid.uuid4()}")
-        act = SOAP_ACTION_TMPL.format(op=name)
-        wsa = (
-            f'<a:Action s:mustUnderstand="1" xmlns:a="{WSA_NS}">{_xml_escape(act)}</a:Action>'
-            f'<a:To s:mustUnderstand="1" xmlns:a="{WSA_NS}">{_xml_escape(dest)}</a:To>'
-            f'<a:MessageID xmlns:a="{WSA_NS}">{_xml_escape(mid)}</a:MessageID>'
-            f'<a:ReplyTo xmlns:a="{WSA_NS}">'
-            f'<a:Address>http://www.w3.org/2005/08/addressing/anonymous</a:Address>'
-            "</a:ReplyTo>"
-        )
+    # FR #6056: no WS-Addressing. basicHttpBinding + web-sdk use SOAPAction HTTP only.
+    _ = (endpoint, message_id)
     body_el = (
         f'<{name} xmlns="{TEMPURI}"/>'
         if not inner
@@ -229,7 +218,7 @@ def build_envelope(
         '<?xml version="1.0" encoding="utf-8"?>'
         f'<s:Envelope xmlns:s="{SOAP_NS}" xmlns:u="{WSU_NS}">'
         "<s:Header>"
-        f"{pns}{wsa}"
+        f"{pns}"
         f'<o:Security s:mustUnderstand="1" xmlns:o="{WSSE_NS}">'
         '<u:Timestamp u:Id="_0">'
         f"<u:Created>{_wsu_time(created)}</u:Created>"
