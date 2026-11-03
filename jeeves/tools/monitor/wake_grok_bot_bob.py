@@ -30,9 +30,19 @@ def redact_wake_log(text: str) -> str:
     return s
 
 
-def brief_text(item: dict[str, Any]) -> str:
+def ticket_id(item: dict[str, Any]) -> tuple[str, str]:
     repo = str(item.get("repo") or "").strip()
     num = str(item.get("number") or "").strip()
+    return repo, num
+
+
+def complete_ticket(item: dict[str, Any]) -> bool:
+    repo, num = ticket_id(item)
+    return bool(repo) and bool(num) and num.isdigit()
+
+
+def brief_text(item: dict[str, Any]) -> str:
+    repo, num = ticket_id(item)
     ev = str(item.get("event") or "closed").strip()
     kind = str(item.get("kind") or "ticket").strip()
     return f"ticket {ev}: {repo}#{num} ({kind}). Continue waiting work. Not a chair assign."
@@ -73,6 +83,14 @@ def wake_bob(
     *,
     send: Callable[..., Any] | None = None,
 ) -> dict[str, Any]:
+    if not complete_ticket(item):
+        return {
+            "ok": False,
+            "woke": False,
+            "error": "invalid_ticket",
+            "detail": "need owner/repo and issue/PR number",
+            "brief": brief_text(item),
+        }
     text = brief_text(item)
     sender = send or _default_send
     try:
@@ -102,6 +120,19 @@ def main(argv: list[str] | None = None) -> int:
         "event": args.event,
         "kind": args.kind,
     }
+    if not complete_ticket(item):
+        return emit(
+            {
+                "check": "wake_grok_bot_bob",
+                "ok": False,
+                "woke": False,
+                "error": "invalid_ticket",
+                "detail": "need owner/repo and issue/PR number",
+                "brief": brief_text(item),
+                REQUIRE_MACHINE_KEY: (os.environ.get(WAKE_MACHINE_ENV) or "UNKNOWN").strip(),
+            },
+            EXIT_ERROR,
+        )
     if args.dry_run:
         return emit(
             {

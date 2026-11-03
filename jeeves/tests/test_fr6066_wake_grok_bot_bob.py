@@ -45,6 +45,22 @@ def test_fr6066_unreachable_is_finding():
     assert out.get("error") == "bob_unreachable"
 
 
+def test_fr6066_mrb_rejects_incomplete_ticket_without_send():
+    calls = []
+
+    def fake_send(*, agent, text):
+        calls.append((agent, text))
+        return {"ok": True}
+
+    out = wake.wake_bob({"repo": "", "number": "", "event": "closed", "kind": "issue"}, send=fake_send)
+    assert out["ok"] is False
+    assert out.get("error") == "invalid_ticket"
+    assert calls == []
+    code = wake.main(["--repo", "", "--number", ""])
+    assert code == 2
+    assert calls == []
+
+
 def test_fr6066_logs_redact_token_and_sandbox():
     secret = "tok_" + "EN" + "XYZ99"
     sandbox = "https://grok.com/sandbox/" + "sess99"
