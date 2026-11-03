@@ -363,6 +363,51 @@ def _dnames_from(obj: Any) -> list[str]:
     return names
 
 
+def _first_form(loaded: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not isinstance(loaded, dict):
+        return None
+    forms = loaded.get("Form")
+    if isinstance(forms, list) and forms and isinstance(forms[0], dict):
+        return forms[0]
+    if isinstance(forms, dict):
+        return forms
+    return None
+
+
+def _first_procedure(loaded: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not isinstance(loaded, dict):
+        return None
+    procs = loaded.get("Procedure")
+    if isinstance(procs, list) and procs and isinstance(procs[0], dict):
+        return procs[0]
+    if isinstance(procs, dict):
+        return procs
+    return None
+
+
+def apply_level_error(parsed: dict[str, Any], loaded: dict[str, Any] | None) -> None:
+    """FR #6113: Form/Procedure Error is not a successful Result."""
+    form = _first_form(loaded)
+    if form:
+        err = form.get("Error") or form.get("error")
+        fatal = form.get("fatalerror") or form.get("fatalError")
+        if err or fatal:
+            parsed["ok"] = False
+            parsed["error"] = "form_error"
+            parsed["form_error"] = redact(str(err or "fatalerror"))[:200]
+            parsed["fatalerror"] = bool(fatal)
+            return
+    proc = _first_procedure(loaded)
+    if proc:
+        err = proc.get("Error") or proc.get("error")
+        fatal = proc.get("fatalerror") or proc.get("fatalError")
+        if err or fatal:
+            parsed["ok"] = False
+            parsed["error"] = "proc_error"
+            parsed["form_error"] = redact(str(err or "fatalerror"))[:200]
+            parsed["fatalerror"] = bool(fatal)
+
+
 def decorate_mob_result(parsed: dict[str, Any], result_text: str) -> None:
     """Decode Mob <Op>Result (often base64 JSON) into compact fields."""
     decoded = _maybe_b64_decode(result_text)
@@ -382,6 +427,8 @@ def decorate_mob_result(parsed: dict[str, Any], result_text: str) -> None:
         parsed["companies"] = names
         parsed["count"] = len(names)
         parsed.pop("body", None)
+    if isinstance(loaded, dict):
+        apply_level_error(parsed, loaded)
 
 
 def parse_soap_response(xml_text: str) -> dict[str, Any]:
@@ -594,7 +641,7 @@ class PriorityWcfClient:
                 parsed.pop("error", None)
             else:
                 parsed["ok"] = False
-                if not is_real_fault:
+                if not is_real_fault and not parsed.get("error"):
                     parsed["error"] = WCF_HTTP_ERROR
         if has_result and parsed.get("ok") is True:
             parsed.pop("raw", None)
@@ -1474,6 +1521,7 @@ def run_wcf_form_prepare(
     row_enames: list[str] = []
     activation: dict[str, str] | None = None
     form_start_shape: dict[str, Any] | None = None
+    form_error_text = ""
     meta = _FormMeta()
 
     def _cleanup() -> None:
@@ -1497,11 +1545,23 @@ def run_wcf_form_prepare(
     else:
         try:
             opened = client.call("FormStartMob", fields=_form_start_fields("EFORM", auto_retrieve=False))
+            opened_blob = _load_blob(opened)
+            opened_form = _form0(opened_blob)
+            form_start_shape = _form_reply_shape(opened_blob, opened_form)
+            if opened.get("error") == "form_error" or (
+                opened_form
+                and (opened_form.get("Error") or opened_form.get("fatalerror"))
+            ):
+                form_error_text = str(
+                    opened.get("form_error")
+                    or opened_form.get("Error")
+                    or "fatalerror"
+                )
+                last_message = form_error_text
+                _fail("form_error")
             if opened.get("ok") is not True:
                 _fail(str(opened.get("error") or "form_start_failed"))
             form_open = True
-            opened_blob = _load_blob(opened)
-            opened_form = _form0(opened_blob)
             meta.absorb(opened_form)
             eform_tid = meta.table_id("EFORM", opened_form)
             statexml = _state_from_form(opened_form, statexml, meta, eform_tid)
@@ -1782,6 +1842,8 @@ def run_wcf_form_prepare(
         out["error"] = error
         if error == "errs_unknown":
             out["errs"] = None
+        if form_error_text:
+            out["form_error"] = form_error_text
     wrote = _write_prepare_log(
         job_id,
         {
@@ -1792,6 +1854,7 @@ def run_wcf_form_prepare(
             "row_enames": row_enames,
             "activation": activation,
             "error": error,
+            "form_error": form_error_text,
             "errs": err_n,
             "rows": err_rows_out or [],
             **({"form_start_shape": form_start_shape} if form_start_shape else {}),
