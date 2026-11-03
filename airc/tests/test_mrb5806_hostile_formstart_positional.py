@@ -77,6 +77,6 @@ def test_mrb5806_skill_keeps_both_cred_persist_and_formstart_pins():
     assert "Form walk (FR #5285" in blob
     assert "#5803" in blob
     assert "#5948" in blob
-    assert "Form walk (FR #5285 / #5803 / #5948)" in blob
+    assert "Form walk (FR #5285 / #5803" in blob
     assert "PRIORITY formStart example-dev CUST" in blob
     assert "PRIORITY formStart instance=example-dev form=CUST" in blob

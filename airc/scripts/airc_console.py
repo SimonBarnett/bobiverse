@@ -4243,7 +4243,7 @@ class AircConsoleCore:
                     "PRIORITY prepare [form|report|procedure] <ENAME> [instance=] (FR #5286/#5946); "
                     "UPDATE airc|bob|jeeves [ver] schedules detached MSI update "
                     "(ops-gated remote; not auto self-update - FR #3764); "
-                    "PRIORITY connect|status [instance-id] (CredMan + allowlist, FR #5284); PRIORITY formStart|subform|getRows (FR #5285/#5948 SDK read walk; fixture=selftest); PRIORITY wcf GetVersion|GeneralCompanies|ProcStart|ProcContinue|ProcEnd (FR #6035 SOAP, no SDK); "
+                    "PRIORITY connect|status [instance-id] (CredMan + allowlist, FR #5284); PRIORITY formStart|subform|getRows (FR #5285/#5948/#5991 sqlcmd walk by default, SDK opt-in; fixture=selftest); PRIORITY wcf GetVersion|GeneralCompanies|ProcStart|ProcContinue|ProcEnd (FR #6035 SOAP, no SDK); "
                     "EXTENSION install|status [-WhatIf] isolated worker (FR #5290); "
                     "NETWORK|NETWORK diag isolated worker (FR #5298); "
                     "LEGION {host|ip} [-WhatIf] [-Profile fleet|client|workstation] isolated worker (FR #5308/#5758); "
@@ -4256,7 +4256,8 @@ class AircConsoleCore:
 
         caps = self.capabilities
 
-        # FR #5285 / #5948: PRIORITY form walk --- SDK read-only by default;
+        # FR #5285 / #5948 / #5991: PRIORITY form walk --- sqlcmd by default;
+        # SDK mjs only when AIRC_PRIORITY_FORM_VIA_SDK=1;
         # fixture only when SelfTest/unit sets priority_fixture.
         import priority_wcf as _wcf
 
