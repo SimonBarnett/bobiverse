@@ -355,7 +355,7 @@ routes to bobiverse via the split rule.
 - Digest freshness is ISO ts/lastSeen, not digest.json mtime. GET /bob/v1/report must set stale; a hung own-live digest.lock is broken only when content is past BOB_DIGEST_STALE_S.
 - EFORM NewColumn zoomname can be empty when sendtitles is false; map ENAME from title/name/Form.C, retry FormStartMob with sendtitles=true, and do not ProcEndMob until a procedure session exists.
 - After heal_bored_latency queues !recycleseat, drop those bored-latency findings before stall_filer. Detector may still fire for the scan log; filing them as FRs just re-queues the receipt.
-
+- A Mob Result with Form.Error/fatalerror is not success even with HTTP 400 and a Result element; fail form_error and do not retry sendtitles.
 
 ## Harvest digest (lessons audit 2026-10-06)
 
