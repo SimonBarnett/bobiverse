@@ -9,6 +9,7 @@ Never log, argv, IRC, or dump the password.
 from __future__ import annotations
 
 import re
+import socket
 import ssl
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -33,6 +34,26 @@ TEMPURI = "http://tempuri.org/"
 SOAP_ACTION_TMPL = "http://tempuri.org/IWCFService/{op}"
 DEFAULT_WCF_PATH = "/wcf/wcf/Service.svc"
 TIMESTAMP_TTL_S = 300
+DEFAULT_TABULA_INI = "tabula.ini"
+PRIORITY_NS = "PriorityNS"
+_IRC_OVERRIDE_KEYS = frozenset(
+    {
+        "url",
+        "user",
+        "company",
+        "tabulaini",
+        "tabula_ini",
+        "language",
+        "authaudience",
+        "auth_audience",
+        "hostname",
+        "appid",
+        "appkey",
+        "wcfappid",
+        "credentialtarget",
+        "wcfurl",
+    }
+)
 
 OPS = ("GetVersion", "GeneralCompanies", "ProcStart", "ProcContinue", "ProcEnd")
 
@@ -72,6 +93,31 @@ def _xml_escape(text: str) -> str:
     )
 
 
+def format_wcf_username(
+    user: str,
+    tabulaini: str | None = None,
+    auth_audience: str | None = None,
+) -> str:
+    """Priority validator username: ``user\\ttabulaini[\\tauthAudience]``."""
+    name = str(user or "").strip()
+    ini = str(tabulaini or "").strip() or DEFAULT_TABULA_INI
+    aud = str(auth_audience or "").strip()
+    if aud:
+        return f"{name}\t{ini}\t{aud}"
+    return f"{name}\t{ini}"
+
+
+def other_info_blob(*, app_id: str = "", app_key: str = "") -> str:
+    parts = ["app_airc,"]
+    aid = str(app_id or "").strip()
+    akey = str(app_key or "").strip()
+    if aid:
+        parts.append(f"appid_{aid},")
+    if akey:
+        parts.append(f"appkey_{akey},")
+    return "".join(parts)
+
+
 def _wsu_time(dt: datetime) -> str:
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)
@@ -89,11 +135,16 @@ def build_envelope(
     now: datetime | None = None,
     ttl_s: int = TIMESTAMP_TTL_S,
     token_id: str | None = None,
+    hostname: str | None = None,
+    company: str | None = None,
+    utc_offset: str | None = None,
+    language: int = 3,
+    other_info: str | None = None,
+    emit_priority_ns: bool | None = None,
 ) -> str:
-    """SOAP 1.1 envelope with UsernameToken + wsu:Timestamp (FR #6041).
+    """SOAP 1.1 envelope with PriorityNS + UsernameToken + wsu:Timestamp.
 
-    TransportWithMessageCredential requires Created/Expires; caller must not
-    log the result (password is in the token).
+    Caller must not log the result (password / appkey may be in the header).
     """
     name = str(op or "").strip()
     fields = body_fields or {}
@@ -103,10 +154,30 @@ def build_envelope(
     created = now if now is not None else datetime.now(timezone.utc)
     expires = created + timedelta(seconds=int(ttl_s or TIMESTAMP_TTL_S))
     tid = str(token_id or f"uuid-{uuid.uuid4()}-1")
+    ns = emit_priority_ns
+    if ns is None:
+        ns = bool(hostname or company or other_info)
+    pns = ""
+    if ns:
+        host = _xml_escape(hostname or "")
+        env = _xml_escape(company or "")
+        off = _xml_escape(utc_offset if utc_offset is not None else "0")
+        info = _xml_escape(other_info if other_info is not None else "app_airc,")
+        lang = int(language if language is not None else 3)
+        pns = (
+            f'<Language xmlns="{PRIORITY_NS}">{lang}</Language>'
+            f'<Hostname xmlns="{PRIORITY_NS}">{host}</Hostname>'
+            f'<WinUser xmlns="{PRIORITY_NS}"></WinUser>'
+            f'<UtcOffset xmlns="{PRIORITY_NS}">{off}</UtcOffset>'
+            f'<Environment xmlns="{PRIORITY_NS}">{env}</Environment>'
+            f'<SilverLight xmlns="{PRIORITY_NS}">2</SilverLight>'
+            f'<OtherInfo xmlns="{PRIORITY_NS}">{info}</OtherInfo>'
+        )
     return (
         '<?xml version="1.0" encoding="utf-8"?>'
         f'<s:Envelope xmlns:s="{SOAP_NS}" xmlns:u="{WSU_NS}">'
         "<s:Header>"
+        f"{pns}"
         f'<o:Security s:mustUnderstand="1" xmlns:o="{WSSE_NS}">'
         '<u:Timestamp u:Id="_0">'
         f"<u:Created>{_wsu_time(created)}</u:Created>"
@@ -130,10 +201,12 @@ def soap_action(op: str) -> str:
     return SOAP_ACTION_TMPL.format(op=str(op).strip())
 
 
-def redact(text: str, secret: str = "") -> str:
+def redact(text: str, secret: str = "", extra: str = "") -> str:
     s = str(text or "")
     if secret:
         s = s.replace(secret, "***")
+    if extra:
+        s = s.replace(str(extra), "***")
     return _PASS_RE.sub(r"\1=***", s)
 
 
@@ -249,7 +322,51 @@ class PriorityWcfClient:
         if cred_err:
             return {"ok": False, "error": cred_err, "via": "wcf"}
         to_redact = secret
-        envelope = build_envelope(name, user=user, password=secret, body_fields=fields)
+        app_key = ""
+        key_target = str(
+            self.instance.get("wcfAppKeyTarget")
+            or self.instance.get("wcf_app_key_target")
+            or ""
+        ).strip()
+        if key_target and self._fetch is not None:
+            try:
+                app_key = self._fetch(key_target) or ""
+            except Exception:  # noqa: BLE001
+                app_key = ""
+        token_user = format_wcf_username(
+            user,
+            tabulaini=str(
+                self.instance.get("tabulaIni")
+                or self.instance.get("tabula_ini")
+                or DEFAULT_TABULA_INI
+            ),
+            auth_audience=str(
+                self.instance.get("authAudience")
+                or self.instance.get("auth_audience")
+                or ""
+            ),
+        )
+        host = str(self.instance.get("hostname") or "").strip() or socket.gethostname()
+        company = str(self.instance.get("company") or "").strip()
+        lang_raw = self.instance.get("language")
+        try:
+            lang = int(lang_raw) if lang_raw not in (None, "") else 3
+        except (TypeError, ValueError):
+            lang = 3
+        info = other_info_blob(
+            app_id=str(self.instance.get("wcfAppId") or self.instance.get("wcf_app_id") or ""),
+            app_key=app_key,
+        )
+        envelope = build_envelope(
+            name,
+            user=token_user,
+            password=secret,
+            body_fields=fields,
+            hostname=host,
+            company=company,
+            language=lang,
+            other_info=info,
+        )
         headers = {
             "Content-Type": "text/xml; charset=utf-8",
             "SOAPAction": f'"{soap_action(name)}"',
@@ -271,10 +388,15 @@ class PriorityWcfClient:
         parsed["op"] = name
         parsed["via"] = self.mode
         parsed["endpoint_ok"] = True
-        if to_redact:
+        extras = [x for x in (to_redact, app_key) if x]
+        if extras:
             for k, v in list(parsed.items()):
-                if isinstance(v, str) and to_redact in v:
-                    parsed[k] = redact(v, to_redact)
+                if not isinstance(v, str):
+                    continue
+                for piece in extras:
+                    if piece in v:
+                        parsed[k] = redact(v, piece, extra=app_key)
+        app_key = ""
         return parsed
 
     def get_version(self) -> dict[str, Any]:
@@ -409,8 +531,15 @@ def run_priority_wcf(
         inst_row = {
             "url": pub.get("url"),
             "user": pub.get("user"),
+            "company": pub.get("company"),
+            "tabulaIni": pub.get("tabulaIni") or DEFAULT_TABULA_INI,
+            "authAudience": pub.get("authAudience"),
+            "language": pub.get("language"),
+            "hostname": pub.get("hostname"),
             "credentialTarget": pub.get("credentialTarget"),
             "wcfUrl": pub.get("wcfUrl") if isinstance(pub, dict) else None,
+            "wcfAppId": pub.get("wcfAppId"),
+            "wcfAppKeyTarget": pub.get("wcfAppKeyTarget"),
         }
     elif parsed["instance"] and install_root is not None:
         # Caller should pass allowlist; missing map is not-configured.
@@ -420,14 +549,19 @@ def run_priority_wcf(
         inst_row = {
             "url": parsed["fields"].get("url") or "",
             "user": parsed["fields"].get("user") or "",
+            "company": parsed["fields"].get("company") or "",
+            "tabulaIni": parsed["fields"].get("tabulaini") or DEFAULT_TABULA_INI,
             "credentialTarget": parsed["fields"].get("credentialtarget") or "",
             "wcfUrl": parsed["fields"].get("wcfurl") or "",
         }
         parsed["fields"] = {
             k: v
             for k, v in parsed["fields"].items()
-            if k not in {"url", "user", "credentialtarget", "wcfurl"}
+            if k not in _IRC_OVERRIDE_KEYS
         }
+    parsed["fields"] = {
+        k: v for k, v in parsed["fields"].items() if k not in _IRC_OVERRIDE_KEYS
+    }
     client = PriorityWcfClient(
         inst_row,
         mode=mode,

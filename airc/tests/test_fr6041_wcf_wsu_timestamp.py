@@ -41,6 +41,8 @@ def test_fr6041_envelope_matches_dotnet_wsu_timestamp():
         password=secret,
         now=now,
         token_id="uuid-test-1",
+        ttl_s=300,
+        emit_priority_ns=False,
     )
     created = "2026-11-02T22:34:00.000Z"
     expires = "2026-11-02T22:39:00.000Z"
