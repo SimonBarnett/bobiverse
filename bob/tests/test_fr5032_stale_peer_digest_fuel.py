@@ -53,6 +53,8 @@ def test_fr5032_expand_weekly_rows_carry_lastseen_and_out_of_tokens():
     assert "fuel_stale" in h
     assert "fuelStaleAfter" in h
     assert "digest-lastSeen-stale" in h
+    assert "FR #6100" in h
+    assert "reportDigest.stale" in h
 
 
 def test_fr5032_no_grok_accounts_heading():

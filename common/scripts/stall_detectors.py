@@ -16,10 +16,12 @@ STICKY_PIN_ID = "sticky-auto-pin"
 RESYNC_FAIL_ID = "resync-fail"
 ACK_STALE_ID = "ack-stale"
 BORED_LATENCY_ID = "bored-latency"
+STALE_DIGEST_ID = "stale-digest"
 
 RESYNC_FAIL_N = 3
 ACK_STALE_S = 45 * 60
 BORED_LATENCY_S = 240.0
+STALE_DIGEST_S = 900.0
 
 
 def fingerprint(detector_id: str, key: str) -> str:
@@ -317,6 +319,48 @@ def detect_bored_latency(snap: dict[str, Any]) -> list[dict[str, Any]]:
     return out
 
 
+def _iso_age_s(raw: object, now: float) -> float | None:
+    s = str(raw or "").strip()
+    if not s:
+        return None
+    try:
+        from datetime import datetime, timezone
+
+        if s.endswith("Z"):
+            s = s[:-1] + "+00:00"
+        dt = datetime.fromisoformat(s)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return max(0.0, now - dt.timestamp())
+    except ValueError:
+        return None
+
+
+def detect_stale_digest(snap: dict[str, Any]) -> list[dict[str, Any]]:
+    """FR #6100: public digest ts (or all lastSeen) older than the threshold."""
+    now = float(snap.get("now") or 0)
+    if now <= 0:
+        now = __import__("time").time()
+    limit = float(snap.get("digest_stale_s") or STALE_DIGEST_S)
+    age = _iso_age_s(snap.get("digest_ts"), now)
+    if age is None:
+        last_seen = snap.get("digest_last_seen") or []
+        ages = [_iso_age_s(x, now) for x in last_seen]
+        ages = [a for a in ages if a is not None]
+        if ages:
+            age = min(ages)
+    if age is None or age <= limit:
+        return []
+    return [
+        {
+            "id": STALE_DIGEST_ID,
+            "key": "report",
+            "title": "stall:stale-digest:report",
+            "evidence": {"age_s": int(age), "ts": snap.get("digest_ts")},
+        }
+    ]
+
+
 DETECTORS = (
     detect_self_review_deadlock,
     detect_all_gave_up,
@@ -324,6 +368,7 @@ DETECTORS = (
     detect_resync_fail,
     detect_ack_stale,
     detect_bored_latency,
+    detect_stale_digest,
 )
 
 
