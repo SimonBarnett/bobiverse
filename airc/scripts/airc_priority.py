@@ -453,7 +453,21 @@ _PRIORITY_REPLY_CORE_OK_KEYS = frozenset(
 # FR #6018: walk IRC summary keeps these; full rows go to jobs/<id>/walk.json.
 _PRIORITY_REPLY_WALK_DROP = ("rows", "subforms", "title", "detail")
 _PRIORITY_REPLY_WCF_CORE = frozenset(
-    {"ok", "error", "http_status", "fault_code", "action", "version", "companies", "count"}
+    {
+        "ok",
+        "error",
+        "http_status",
+        "fault_code",
+        "action",
+        "version",
+        "companies",
+        "count",
+        "ename",
+        "steps",
+        "last_type",
+        "last_message",
+        "errs",
+    }
 )
 
 

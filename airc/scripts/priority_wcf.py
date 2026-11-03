@@ -10,10 +10,12 @@ from __future__ import annotations
 
 import base64
 import json
+import os
 import re
 import socket
 import ssl
 import uuid
+from pathlib import Path
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable
 from urllib.error import HTTPError, URLError
@@ -72,6 +74,18 @@ _OP_TO_WIRE = {
     "ProcContinueMob": "ProcContinueMob",
     "ProcEnd": "ProcEndMob",
     "ProcEndMob": "ProcEndMob",
+    "ProcStartActivate": "ProcStartActivateMob",
+    "ProcStartActivateMob": "ProcStartActivateMob",
+    "ProcEditFieldsOK": "ProcEditFieldsOKMob",
+    "ProcEditFieldsOKMob": "ProcEditFieldsOKMob",
+    "ProcChooseFieldsOK": "ProcChooseFieldsOKMob",
+    "ProcChooseFieldsOKMob": "ProcChooseFieldsOKMob",
+    "ProcWarningOK": "ProcWarningOKMob",
+    "ProcWarningOKMob": "ProcWarningOKMob",
+    "ProcClientContinue": "ProcClientContinueMob",
+    "ProcClientContinueMob": "ProcClientContinueMob",
+    "FormGetRows": "FormGetRowsMob",
+    "FormGetRowsMob": "FormGetRowsMob",
 }
 OPS = tuple(dict.fromkeys(_OP_TO_WIRE.values()))
 
@@ -634,7 +648,7 @@ for _n in list(_OP_TO_WIRE.keys()) + list(OPS):
 
 
 def parse_priority_wcf_command(text: str) -> dict[str, Any] | None:
-    """``PRIORITY wcf <op> [instance-id] [k=v…]`` or None."""
+    """``PRIORITY wcf <op> [instance-id] [k=v…]`` or ``wcf prepare form``."""
     raw = str(text or "").strip()
     m = _WCF_VERB_RE.match(raw)
     if not m:
@@ -643,6 +657,26 @@ def parse_priority_wcf_command(text: str) -> dict[str, Any] | None:
     rest = (m.group(3) or "").strip()
     kv = {mm.group(1).lower(): mm.group(2) for mm in _KV_RE.finditer(rest)}
     tokens = [t for t in rest.split() if "=" not in t]
+    if op_raw.lower() == "prepare":
+        if tokens and tokens[0].lower() == "form":
+            tokens = tokens[1:]
+        ename = str(kv.get("ename") or kv.get("name") or "").strip().upper()
+        if not ename and tokens:
+            ename = tokens[0].strip().upper()
+            tokens = tokens[1:]
+        instance = kv.get("instance") or kv.get("id") or (tokens[0] if tokens else "")
+        return {
+            "job_id": (m.group(1) or "").lower(),
+            "op": "prepare",
+            "kind": "prepare_form",
+            "ename": ename,
+            "instance": instance,
+            "fields": {
+                k: v
+                for k, v in kv.items()
+                if k not in {"instance", "id", "ename", "name"}
+            },
+        }
     instance = kv.get("instance") or kv.get("id") or (tokens[0] if tokens else "")
     return {
         "job_id": (m.group(1) or "").lower(),
@@ -654,6 +688,182 @@ def parse_priority_wcf_command(text: str) -> dict[str, Any] | None:
             if k not in {"instance", "id"}
         },
     }
+
+
+PREPARE_STEP_MAX = 40
+_PREPARE_FORM_EXEC = "FORMPREPDRCT2"
+
+
+def _step_from_result(out: dict[str, Any]) -> dict[str, Any]:
+    blob = out.get("body") or out.get("result") or ""
+    if isinstance(blob, dict):
+        return blob
+    try:
+        loaded = json.loads(str(blob))
+    except json.JSONDecodeError:
+        return {}
+    return loaded if isinstance(loaded, dict) else {}
+
+
+def _write_prepare_log(job_id: str, payload: dict[str, Any], extras: list[str]) -> None:
+    jid = (job_id or "").strip().lower()
+    home = (os.environ.get("AIRC_HOME") or os.environ.get("AIRC_CONSOLE_HOME") or "").strip()
+    if not jid or not home:
+        return
+    dest = Path(home) / "jobs" / jid / "wcf-prepare.json"
+    try:
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        text = json.dumps(payload, separators=(",", ":"))
+        dest.write_text(redact_all(text, *extras), encoding="utf-8")
+    except OSError:
+        return
+
+
+def run_wcf_form_prepare(
+    client: PriorityWcfClient,
+    *,
+    ename: str,
+    job_id: str = "",
+    extras: list[str] | None = None,
+) -> dict[str, Any]:
+    """Scoped FORMPREP via ProcStartActivateMob + step loop (FR #6060)."""
+    form = str(ename or "").strip().upper()
+    secrets = [x for x in (extras or []) if x]
+    if not form:
+        return {
+            "ok": False,
+            "error": "ename_missing",
+            "action": "wcf",
+            "op": "prepare",
+            "via": client.mode,
+        }
+    session = ""
+    steps: list[dict[str, Any]] = []
+    messages: list[str] = []
+    last_type = ""
+    last_message = ""
+    err_n = 0
+    error = ""
+    ended = False
+
+    def _end() -> None:
+        client.call("ProcEndMob", fields={"session": session} if session else None)
+
+    start = client.call(
+        "ProcStartActivateMob",
+        fields={
+            "type": "P",
+            "ename": _PREPARE_FORM_EXEC,
+            "table": "EFORM",
+            "link": "ENAME",
+            "linkid": form,
+            "avoidmessages": "1",
+        },
+    )
+    if start.get("ok") is not True:
+        _end()
+        return {
+            "ok": False,
+            "error": start.get("error") or "activate_failed",
+            "ename": form,
+            "action": "wcf",
+            "op": "prepare",
+            "http_status": start.get("http_status"),
+            "via": client.mode,
+        }
+    step = _step_from_result(start)
+    session = str(step.get("session") or start.get("session") or "").strip()
+    n = 0
+    while step and n < PREPARE_STEP_MAX:
+        n += 1
+        typ = str(step.get("type") or "").strip()
+        last_type = typ
+        last_message = str(step.get("message") or "")[:80]
+        steps.append({"type": typ, "message": last_message})
+        if last_message:
+            messages.append(last_message[:40])
+        if typ == "end":
+            ended = True
+            break
+        if typ == "message":
+            nxt = client.call("ProcContinueMob", fields={"session": session})
+        elif typ == "inputHelp":
+            nxt = client.call("ProcContinueMob", fields={"session": session})
+        elif typ == "inputOptions":
+            opts = ((step.get("input") or {}).get("Options")) or []
+            sel = ""
+            if isinstance(opts, list) and opts:
+                chosen = next((o for o in opts if isinstance(o, dict) and o.get("selected")), opts[0])
+                if isinstance(chosen, dict):
+                    sel = str(chosen.get("field") or "")
+            nxt = client.call(
+                "ProcChooseFieldsOKMob",
+                fields={"session": session, "field": sel},
+            )
+        elif typ == "inputFields":
+            fields = ((step.get("input") or {}).get("EditField")) or []
+            filled = []
+            if isinstance(fields, list):
+                for f in fields:
+                    if not isinstance(f, dict):
+                        continue
+                    title = str(f.get("title") or "")
+                    val = form if re.search(r"form|ename|exec|name", title, re.I) else str(f.get("value") or "")
+                    filled.append({"field": f.get("field"), "value": val})
+            nxt = client.call(
+                "ProcEditFieldsOKMob",
+                fields={"session": session, "save": "1", "xml": json.dumps({"EditFields": filled})},
+            )
+        elif typ in {"warning", "messageWarning"}:
+            nxt = client.call(
+                "ProcWarningOKMob",
+                fields={"session": session, "warnings": "1"},
+            )
+        elif typ in {"reportOptions", "documentOptions", "displayUrl"}:
+            nxt = client.call("ProcContinueMob", fields={"session": session})
+        elif typ == "client":
+            nxt = client.call(
+                "ProcClientContinueMob",
+                fields={"session": session, "data": ""},
+            )
+        else:
+            error = "unknown_step"
+            break
+        if nxt.get("ok") is not True:
+            error = str(nxt.get("error") or "step_failed")
+            break
+        step = _step_from_result(nxt)
+        session = str(step.get("session") or session)
+
+    scrape = client.call(
+        "FormGetRowsMob",
+        fields={"form": "FORMPREPERRS", "filter": f"ENAME={form}"},
+    )
+    if scrape.get("ok") is True:
+        blob = _step_from_result(scrape)
+        rows = blob.get("rows") if isinstance(blob, dict) else None
+        if isinstance(rows, list):
+            err_n = len(rows)
+        elif scrape.get("count"):
+            err_n = int(scrape.get("count") or 0)
+    _end()
+    ok = (not error) and ended
+    out = {
+        "ok": ok,
+        "action": "wcf",
+        "op": "prepare",
+        "ename": form,
+        "steps": len(steps),
+        "last_type": last_type,
+        "last_message": last_message,
+        "errs": err_n,
+        "messages": messages[:4],
+        "via": client.mode,
+    }
+    if error:
+        out["error"] = error
+    _write_prepare_log(job_id, {"steps": steps, "ok": ok, "ename": form}, secrets)
+    return out
 
 
 def run_priority_wcf(
@@ -745,6 +955,14 @@ def run_priority_wcf(
         http_post=http_post,
         allowlist_present=allowlist_present,
     )
+    if parsed.get("kind") == "prepare_form":
+        extra = [str(passed_password)] if passed_password else []
+        return run_wcf_form_prepare(
+            client,
+            ename=str(parsed.get("ename") or ""),
+            job_id=str(parsed.get("job_id") or ""),
+            extras=extra,
+        )
     out = client.call(parsed["op"], fields=parsed["fields"] or None)
     out["action"] = "wcf"
     out["op"] = parsed["op"]
