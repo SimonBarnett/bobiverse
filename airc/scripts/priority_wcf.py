@@ -84,8 +84,22 @@ _OP_TO_WIRE = {
     "ProcWarningOKMob": "ProcWarningOKMob",
     "ProcClientContinue": "ProcClientContinueMob",
     "ProcClientContinueMob": "ProcClientContinueMob",
-    "FormGetRows": "FormGetRowsMob",
-    "FormGetRowsMob": "FormGetRowsMob",
+    "FormGetRows": "GetRowsMob",
+    "FormGetRowsMob": "GetRowsMob",
+    "GetRows": "GetRowsMob",
+    "GetRowsMob": "GetRowsMob",
+    "FormStart": "FormStartMob",
+    "FormStartMob": "FormStartMob",
+    "FormSetSearchFilter": "FormSetSearchFilterMob",
+    "FormSetSearchFilterMob": "FormSetSearchFilterMob",
+    "FormSetActiveRow": "FormSetActiveRowMob",
+    "FormSetActiveRowMob": "FormSetActiveRowMob",
+    "FormActivate": "FormActivateMob",
+    "FormActivateMob": "FormActivateMob",
+    "FormEnd": "FormEndMob",
+    "FormEndMob": "FormEndMob",
+    "ProcKillProcess": "ProcKillProcessMob",
+    "ProcKillProcessMob": "ProcKillProcessMob",
 }
 OPS = tuple(dict.fromkeys(_OP_TO_WIRE.values()))
 
@@ -574,6 +588,8 @@ class PriorityWcfClient:
         decoded = parsed.pop("_decoded", None)
         parsed.pop("has_result", None)
         parsed.pop("result_el", None)
+        if decoded:
+            parsed["decoded"] = decoded
         if want_full and decoded:
             parsed["result"] = str(decoded)[:800]
         if extras:
@@ -692,10 +708,11 @@ def parse_priority_wcf_command(text: str) -> dict[str, Any] | None:
 
 PREPARE_STEP_MAX = 40
 _PREPARE_FORM_EXEC = "FORMPREPDRCT2"
+_ENAME_RE = re.compile(r"^[A-Z0-9_]{1,20}$")
 
 
 def _step_from_result(out: dict[str, Any]) -> dict[str, Any]:
-    blob = out.get("body") or out.get("result") or ""
+    blob = out.get("decoded") or out.get("body") or out.get("result") or ""
     if isinstance(blob, dict):
         return blob
     try:
@@ -703,6 +720,33 @@ def _step_from_result(out: dict[str, Any]) -> dict[str, Any]:
     except json.JSONDecodeError:
         return {}
     return loaded if isinstance(loaded, dict) else {}
+
+
+def _activate_link(blob: dict[str, Any]) -> dict[str, str] | None:
+    acts = blob.get("Activate")
+    if isinstance(acts, list) and acts and isinstance(acts[0], dict):
+        row = acts[0]
+        table = str(row.get("table") or "").strip()
+        link = str(row.get("link") or "").strip()
+        linkid = str(row.get("linkid") or row.get("linkId") or "").strip()
+        if table and link and linkid:
+            return {"table": table, "link": link, "linkid": linkid}
+    table = str(blob.get("table") or "").strip()
+    link = str(blob.get("link") or "").strip()
+    linkid = str(blob.get("linkid") or "").strip()
+    if table and link and linkid:
+        return {"table": table, "link": link, "linkid": linkid}
+    return None
+
+
+def _row_count(blob: dict[str, Any]) -> int:
+    rows = blob.get("rows")
+    if isinstance(rows, list):
+        return len(rows)
+    pack = blob.get("EFORM") or blob.get("FORMPREPERRS")
+    if isinstance(pack, dict):
+        return len([k for k in pack if k != "undefined"])
+    return 0
 
 
 def _write_prepare_log(job_id: str, payload: dict[str, Any], extras: list[str]) -> None:
@@ -726,13 +770,36 @@ def run_wcf_form_prepare(
     job_id: str = "",
     extras: list[str] | None = None,
 ) -> dict[str, Any]:
-    """Scoped FORMPREP via ProcStartActivateMob + step loop (FR #6060)."""
+    """Scoped FORMPREP via EFORM + FormActivateMob (FR #6060 / #6073)."""
     form = str(ename or "").strip().upper()
     secrets = [x for x in (extras or []) if x]
+    pw, _cerr = client._secret()
+    if pw:
+        secrets.append(pw)
+    key_target = str(
+        client.instance.get("wcfAppKeyTarget")
+        or client.instance.get("wcf_app_key_target")
+        or ""
+    ).strip()
+    if key_target and client._fetch is not None:
+        try:
+            app_key = client._fetch(key_target) or ""
+        except Exception:  # noqa: BLE001
+            app_key = ""
+        if app_key:
+            secrets.append(app_key)
     if not form:
         return {
             "ok": False,
             "error": "ename_missing",
+            "action": "wcf",
+            "op": "prepare",
+            "via": client.mode,
+        }
+    if not _ENAME_RE.match(form):
+        return {
+            "ok": False,
+            "error": "ename_invalid",
             "action": "wcf",
             "op": "prepare",
             "via": client.mode,
@@ -745,108 +812,176 @@ def run_wcf_form_prepare(
     err_n = 0
     error = ""
     ended = False
+    form_open = False
+    log_steps: list[dict[str, Any]] = []
 
-    def _end() -> None:
-        client.call("ProcEndMob", fields={"session": session} if session else None)
-
-    start = client.call(
-        "ProcStartActivateMob",
-        fields={
-            "type": "P",
-            "ename": _PREPARE_FORM_EXEC,
-            "table": "EFORM",
-            "link": "ENAME",
-            "linkid": form,
-            "avoidmessages": "1",
-        },
-    )
-    if start.get("ok") is not True:
-        _end()
-        return {
-            "ok": False,
-            "error": start.get("error") or "activate_failed",
-            "ename": form,
-            "action": "wcf",
-            "op": "prepare",
-            "http_status": start.get("http_status"),
-            "via": client.mode,
-        }
-    step = _step_from_result(start)
-    session = str(step.get("session") or start.get("session") or "").strip()
-    n = 0
-    while step and n < PREPARE_STEP_MAX:
-        n += 1
-        typ = str(step.get("type") or "").strip()
-        last_type = typ
-        last_message = str(step.get("message") or "")[:80]
-        steps.append({"type": typ, "message": last_message})
-        if last_message:
-            messages.append(last_message[:40])
-        if typ == "end":
-            ended = True
-            break
-        if typ == "message":
-            nxt = client.call("ProcContinueMob", fields={"session": session})
-        elif typ == "inputHelp":
-            nxt = client.call("ProcContinueMob", fields={"session": session})
-        elif typ == "inputOptions":
-            opts = ((step.get("input") or {}).get("Options")) or []
-            sel = ""
-            if isinstance(opts, list) and opts:
-                chosen = next((o for o in opts if isinstance(o, dict) and o.get("selected")), opts[0])
-                if isinstance(chosen, dict):
-                    sel = str(chosen.get("field") or "")
-            nxt = client.call(
-                "ProcChooseFieldsOKMob",
-                fields={"session": session, "field": sel},
-            )
-        elif typ == "inputFields":
-            fields = ((step.get("input") or {}).get("EditField")) or []
-            filled = []
-            if isinstance(fields, list):
-                for f in fields:
-                    if not isinstance(f, dict):
-                        continue
-                    title = str(f.get("title") or "")
-                    val = form if re.search(r"form|ename|exec|name", title, re.I) else str(f.get("value") or "")
-                    filled.append({"field": f.get("field"), "value": val})
-            nxt = client.call(
-                "ProcEditFieldsOKMob",
-                fields={"session": session, "save": "1", "xml": json.dumps({"EditFields": filled})},
-            )
-        elif typ in {"warning", "messageWarning"}:
-            nxt = client.call(
-                "ProcWarningOKMob",
-                fields={"session": session, "warnings": "1"},
-            )
-        elif typ in {"reportOptions", "documentOptions", "displayUrl"}:
-            nxt = client.call("ProcContinueMob", fields={"session": session})
-        elif typ == "client":
-            nxt = client.call(
-                "ProcClientContinueMob",
-                fields={"session": session, "data": ""},
-            )
+    def _cleanup() -> None:
+        if session:
+            client.call("ProcEndMob", fields={"session": session})
         else:
-            error = "unknown_step"
-            break
-        if nxt.get("ok") is not True:
-            error = str(nxt.get("error") or "step_failed")
-            break
-        step = _step_from_result(nxt)
-        session = str(step.get("session") or session)
+            client.call("ProcEndMob")
+        if form_open:
+            client.call("FormEndMob", fields={"form": "EFORM"})
 
-    scrape = client.call(
-        "FormGetRowsMob",
-        fields={"form": "FORMPREPERRS", "filter": f"ENAME={form}"},
-    )
-    if scrape.get("ok") is True:
-        blob = _step_from_result(scrape)
-        rows = blob.get("rows") if isinstance(blob, dict) else None
-        if isinstance(rows, list):
-            err_n = len(rows)
-        elif scrape.get("count"):
-            err_n = int(scrape.get("count") or 0)
-    _end()
+    try:
+        opened = client.call("FormStartMob", fields={"form": "EFORM"})
+        if opened.get("ok") is not True:
+            error = str(opened.get("error") or "form_start_failed")
+            raise RuntimeError(error)
+        form_open = True
+        filt = client.call(
+            "FormSetSearchFilterMob",
+            fields={
+                "form": "EFORM",
+                "field": "ENAME",
+                "op": "=",
+                "fromval": form,
+            },
+        )
+        if filt.get("ok") is not True:
+            error = str(filt.get("error") or "filter_failed")
+            raise RuntimeError(error)
+        found = client.call("GetRowsMob", fields={"form": "EFORM", "from": "1"})
+        if found.get("ok") is not True:
+            error = str(found.get("error") or "search_failed")
+            raise RuntimeError(error)
+        n_rows = _row_count(_step_from_result(found))
+        if n_rows != 1:
+            error = "ename_not_unique"
+            raise RuntimeError(error)
+        sel = client.call("FormSetActiveRowMob", fields={"form": "EFORM", "row": "1"})
+        if sel.get("ok") is not True:
+            error = str(sel.get("error") or "set_row_failed")
+            raise RuntimeError(error)
+        act = client.call(
+            "FormActivateMob",
+            fields={"form": "EFORM", "ename": _PREPARE_FORM_EXEC, "type": "P"},
+        )
+        if act.get("ok") is not True:
+            error = str(act.get("error") or "activate_failed")
+            raise RuntimeError(error)
+        link = _activate_link(_step_from_result(act))
+        if not link:
+            error = "activate_no_link"
+            raise RuntimeError(error)
+        start = client.call(
+            "ProcStartActivateMob",
+            fields={
+                "type": "P",
+                "ename": _PREPARE_FORM_EXEC,
+                "table": link["table"],
+                "link": link["link"],
+                "linkid": link["linkid"],
+                "avoidmessages": "1",
+            },
+        )
+        if start.get("ok") is not True:
+            error = str(start.get("error") or "activate_failed")
+            raise RuntimeError(error)
+        step = _step_from_result(start)
+        session = str(step.get("session") or start.get("session") or "").strip()
+        n = 0
+        while step and n < PREPARE_STEP_MAX:
+            n += 1
+            typ = str(step.get("type") or "").strip()
+            last_type = typ
+            last_message = str(step.get("message") or "")[:80]
+            log_steps.append(dict(step))
+            steps.append({"type": typ, "message": last_message})
+            if last_message:
+                messages.append(last_message[:40])
+            if typ == "end":
+                ended = True
+                break
+            if typ == "message":
+                nxt = client.call("ProcContinueMob", fields={"session": session})
+            elif typ == "inputHelp":
+                nxt = client.call("ProcContinueMob", fields={"session": session})
+            elif typ == "inputOptions":
+                opts = ((step.get("input") or {}).get("Options")) or []
+                sel_f = ""
+                if isinstance(opts, list) and opts:
+                    chosen = next(
+                        (o for o in opts if isinstance(o, dict) and o.get("selected")),
+                        opts[0],
+                    )
+                    if isinstance(chosen, dict):
+                        sel_f = str(chosen.get("field") or "")
+                nxt = client.call(
+                    "ProcChooseFieldsOKMob",
+                    fields={"session": session, "field": sel_f},
+                )
+            elif typ == "inputFields":
+                fields = ((step.get("input") or {}).get("EditField")) or []
+                filled = []
+                if isinstance(fields, list):
+                    for f in fields:
+                        if not isinstance(f, dict):
+                            continue
+                        title = str(f.get("title") or "")
+                        val = (
+                            form
+                            if re.search(r"form|ename|exec|name", title, re.I)
+                            else str(f.get("value") or "")
+                        )
+                        filled.append({"field": f.get("field"), "op": 0, "value": val})
+                xml = base64.b64encode(
+                    json.dumps({"EditFields": filled}).encode("utf-8")
+                ).decode("ascii")
+                nxt = client.call(
+                    "ProcEditFieldsOKMob",
+                    fields={"session": session, "save": "false", "xml": xml},
+                )
+            elif typ in {"warning", "messageWarning"}:
+                nxt = client.call(
+                    "ProcWarningOKMob",
+                    fields={"session": session, "warnings": "1"},
+                )
+            elif typ in {"reportOptions", "documentOptions", "displayUrl"}:
+                nxt = client.call("ProcContinueMob", fields={"session": session})
+            elif typ == "client":
+                nxt = client.call(
+                    "ProcClientContinueMob",
+                    fields={"session": session, "data": ""},
+                )
+            else:
+                error = "unknown_step"
+                client.call(
+                    "ProcKillProcessMob",
+                    fields={"session": session} if session else None,
+                )
+                break
+            if nxt.get("ok") is not True:
+                error = str(nxt.get("error") or "step_failed")
+                break
+            step = _step_from_result(nxt)
+            session = str(step.get("session") or session)
+
+        err_form = client.call("FormStartMob", fields={"form": "FORMPREPERRS"})
+        if err_form.get("ok") is not True:
+            error = error or "errs_unknown"
+        else:
+            err_f = client.call(
+                "FormSetSearchFilterMob",
+                fields={
+                    "form": "FORMPREPERRS",
+                    "field": "ENAME",
+                    "op": "=",
+                    "fromval": form,
+                },
+            )
+            err_r = client.call("GetRowsMob", fields={"form": "FORMPREPERRS", "from": "1"})
+            client.call("FormEndMob", fields={"form": "FORMPREPERRS"})
+            if err_f.get("ok") is not True or err_r.get("ok") is not True:
+                error = error or "errs_unknown"
+            else:
+                err_n = _row_count(_step_from_result(err_r))
+    except Exception:  # noqa: BLE001
+        if not error:
+            error = "prepare_failed"
+    finally:
+        _cleanup()
+
     ok = (not error) and ended
     out = {
         "ok": ok,
@@ -862,7 +997,17 @@ def run_wcf_form_prepare(
     }
     if error:
         out["error"] = error
-    _write_prepare_log(job_id, {"steps": steps, "ok": ok, "ename": form}, secrets)
+        if error == "errs_unknown":
+            out.pop("errs", None)
+            out["errs"] = None
+    _write_prepare_log(
+        job_id,
+        {"steps": log_steps or steps, "ok": ok, "ename": form},
+        secrets,
+    )
+    for k, v in list(out.items()):
+        if isinstance(v, str):
+            out[k] = redact_all(v, *secrets)
     return out
 
 

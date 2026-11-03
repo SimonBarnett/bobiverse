@@ -438,6 +438,7 @@ _PRIORITY_REPLY_DROP_KEYS = (
     "sdk",
     "sdk_errors",
     "sdk_message",
+    "decoded",
     "prp_mtime_before",
     "prp_mtime_after",
     "sql_faked",
