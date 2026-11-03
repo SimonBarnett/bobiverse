@@ -20,6 +20,7 @@ from _common import (
     resolve_homes,
     run_check,
 )
+from wake_brief import WakeBriefError, build_wake_brief
 
 STATE_NAME = "ticket_closure_state.json"
 
@@ -120,8 +121,13 @@ def check(args):
     for ev in events:
         key = _event_key(ev)
         if key not in seen:
-            closed.append(ev)
-            seen[key] = ev
+            row = dict(ev)
+            try:
+                row["brief"] = build_wake_brief(row)
+            except WakeBriefError:
+                continue
+            closed.append(row)
+            seen[key] = row
     try:
         state_path.parent.mkdir(parents=True, exist_ok=True)
         state_path.write_text(
