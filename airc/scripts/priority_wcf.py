@@ -906,13 +906,6 @@ def _load_blob(out: dict[str, Any]) -> dict[str, Any]:
     return loaded if isinstance(loaded, dict) else {}
 
 
-def _form0(blob: dict[str, Any]) -> dict[str, Any] | None:
-    forms = blob.get("Form") if isinstance(blob, dict) else None
-    if isinstance(forms, list) and forms and isinstance(forms[0], dict):
-        return forms[0]
-    return None
-
-
 def _procedure0(blob: dict[str, Any]) -> dict[str, Any] | None:
     procs = blob.get("Procedure") if isinstance(blob, dict) else None
     if isinstance(procs, list) and procs and isinstance(procs[0], dict):
@@ -927,6 +920,25 @@ def _as_int(value: Any, default: int = 0) -> int:
         return default
 
 
+def _column_label(col: dict[str, Any]) -> str:
+    """SDK uses zoomname (ParseJO 4882). sendtitles=false may leave it blank."""
+    for key in ("zoomname", "name", "title", "text"):
+        raw = str(col.get(key) or "").strip()
+        if raw and _ENAME_RE.match(raw.upper()):
+            return raw.upper() if key != "zoomname" else raw
+    zoom = str(col.get("zoomname") or "").strip()
+    return zoom
+
+
+def _form0(blob: dict[str, Any]) -> dict[str, Any] | None:
+    forms = blob.get("Form") if isinstance(blob, dict) else None
+    if isinstance(forms, list) and forms and isinstance(forms[0], dict):
+        return forms[0]
+    if isinstance(forms, dict):
+        return forms
+    return None
+
+
 class _FormMeta:
     """Column ids and window height learned from Form[0].NewTable (ParseJO 4863)."""
 
@@ -935,6 +947,23 @@ class _FormMeta:
         self.cols: dict[int, dict[int, str]] = {}
         self.field_id: dict[int, dict[str, int]] = {}
         self.height: dict[int, int] = {}
+
+    def _take_columns(self, tid: int, columns: Any) -> None:
+        if not isinstance(columns, list):
+            return
+        cols = self.cols.setdefault(tid, {})
+        ids = self.field_id.setdefault(tid, {})
+        height = self.height.get(tid, 0)
+        for col in columns:
+            if not isinstance(col, dict):
+                continue
+            label = _column_label(col)
+            fid = _as_int(col.get("field") or col.get("id") or col.get("i"), -1)
+            if label and fid > 0:
+                cols[fid] = label
+                ids[label] = fid
+            height = max(height, _as_int(col.get("height"), 0))
+        self.height[tid] = height
 
     def absorb(self, form: dict[str, Any] | None) -> None:
         if not form:
@@ -948,19 +977,11 @@ class _FormMeta:
             name = str(table.get("name") or "")
             if name:
                 self.by_name[name] = tid
-            cols = self.cols.setdefault(tid, {})
-            ids = self.field_id.setdefault(tid, {})
-            height = self.height.get(tid, 0)
-            for col in table.get("NewColumn") or []:
-                if not isinstance(col, dict):
-                    continue
-                zoom = str(col.get("zoomname") or "")
-                fid = _as_int(col.get("field"), -1)
-                if zoom and fid > 0:
-                    cols[fid] = zoom
-                    ids[zoom] = fid
-                height = max(height, _as_int(col.get("height"), 0))
-            self.height[tid] = height
+            self._take_columns(tid, table.get("NewColumn"))
+        extra_c = form.get("C") or form.get("columns")
+        fallback_tid = _as_int((_position(form) or {}).get("table"), -1)
+        if extra_c and fallback_tid >= 0:
+            self._take_columns(fallback_tid, extra_c)
 
     def table_id(self, name: str, form: dict[str, Any] | None = None) -> int | None:
         if name in self.by_name:
@@ -1090,8 +1111,10 @@ def _filter_xml(field_id: int, form_name: str) -> str:
     return _b64_text(json.dumps(filt, separators=(",", ":")))
 
 
-def _form_start_fields(form_name: str, *, auto_retrieve: bool) -> dict[str, str]:
-    """$FormStartMobAsync body (3399). scrwidth -1, debug/sendtitles false, empty link fields."""
+def _form_start_fields(
+    form_name: str, *, auto_retrieve: bool, sendtitles: bool = False
+) -> dict[str, str]:
+    """$FormStartMobAsync body (3399). scrwidth -1, debug false, empty link fields."""
     return {
         "form": form_name,
         "scrwidth": "-1",
@@ -1100,9 +1123,46 @@ def _form_start_fields(form_name: str, *, auto_retrieve: bool) -> dict[str, str]
         "zoomcolumn": "0",
         "zoomname": "",
         "debug": "false",
-        "sendtitles": "false",
+        "sendtitles": "true" if sendtitles else "false",
         "zoomvalue": "",
         "autoRetrieveFirstRows": "true" if auto_retrieve else "false",
+    }
+
+
+def _form_reply_shape(blob: dict[str, Any], form: dict[str, Any] | None) -> dict[str, Any]:
+    """Redacted FormStartMob shape: keys, column names/ids, row count, length."""
+    columns: list[dict[str, Any]] = []
+    if form:
+        for table in form.get("NewTable") or []:
+            if not isinstance(table, dict):
+                continue
+            for col in table.get("NewColumn") or []:
+                if not isinstance(col, dict):
+                    continue
+                columns.append(
+                    {
+                        "id": _as_int(col.get("field") or col.get("id"), 0),
+                        "name": _column_label(col),
+                    }
+                )
+        for col in form.get("C") or form.get("columns") or []:
+            if isinstance(col, dict):
+                columns.append(
+                    {
+                        "id": _as_int(col.get("field") or col.get("id"), 0),
+                        "name": _column_label(col),
+                    }
+                )
+    row_n = 0
+    if form:
+        row_n = len({_as_int(str(rt.get("FV") or "").split("\t")[2], 0) for rt in (form.get("RT") or []) if isinstance(rt, dict)})
+    encoded = json.dumps(blob, separators=(",", ":")) if blob else ""
+    return {
+        "keys": sorted(str(k) for k in (blob or {}).keys()),
+        "form_keys": sorted(str(k) for k in (form or {}).keys()),
+        "columns": columns,
+        "row_count": row_n,
+        "decoded_len": len(encoded),
     }
 
 
@@ -1405,7 +1465,7 @@ def run_wcf_form_prepare(
     log_steps: list[dict[str, Any]] = []
     last_type = ""
     last_message = ""
-    err_n: int | None = 0
+    err_n: int | None = None
     err_rows_out: list[dict[str, Any]] | None = None
     error = ""
     ended = False
@@ -1413,10 +1473,12 @@ def run_wcf_form_prepare(
     row_ename = ""
     row_enames: list[str] = []
     activation: dict[str, str] | None = None
+    form_start_shape: dict[str, Any] | None = None
     meta = _FormMeta()
 
     def _cleanup() -> None:
-        client.call("ProcEndMob", fields=_session_fields(session))
+        if session:
+            client.call("ProcEndMob", fields=_session_fields(session))
         if form_open:
             client.call("FormExitFormMob", fields=_with_state(statexml))
 
@@ -1444,6 +1506,22 @@ def run_wcf_form_prepare(
             eform_tid = meta.table_id("EFORM", opened_form)
             statexml = _state_from_form(opened_form, statexml, meta, eform_tid)
             field_id = meta.ename_field(eform_tid)
+            if field_id is None:
+                client.call("FormExitFormMob", fields=_with_state(statexml))
+                form_open = False
+                opened = client.call(
+                    "FormStartMob",
+                    fields=_form_start_fields("EFORM", auto_retrieve=False, sendtitles=True),
+                )
+                if opened.get("ok") is True:
+                    form_open = True
+                    opened_blob = _load_blob(opened)
+                    opened_form = _form0(opened_blob)
+                    meta.absorb(opened_form)
+                    eform_tid = meta.table_id("EFORM", opened_form)
+                    statexml = _state_from_form(opened_form, statexml, meta, eform_tid)
+                    field_id = meta.ename_field(eform_tid)
+            form_start_shape = _form_reply_shape(opened_blob, opened_form)
             if field_id is None:
                 _fail("ename_column_missing")
             found = client.call(
@@ -1716,6 +1794,7 @@ def run_wcf_form_prepare(
             "error": error,
             "errs": err_n,
             "rows": err_rows_out or [],
+            **({"form_start_shape": form_start_shape} if form_start_shape else {}),
         },
         secrets,
     )

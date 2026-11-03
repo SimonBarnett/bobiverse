@@ -948,6 +948,19 @@ class ChairJobs:
             if ts is not None:
                 last_activity[nick] = float(ts)
         last_bored = gitclaim.merge_last_bored(self.home, self.digest_home)
+        digest_ts = ""
+        digest_last_seen = []
+        with contextlib.suppress(Exception):
+            import bobreport
+
+            ddoc = bobreport.load_digest(self.digest_home)
+            digest_ts = str((ddoc or {}).get("ts") or "")
+            machines = (ddoc or {}).get("machines") if isinstance((ddoc or {}).get("machines"), dict) else {}
+            digest_last_seen = [
+                str(ent.get("lastSeen") or "")
+                for ent in machines.values()
+                if isinstance(ent, dict) and ent.get("lastSeen")
+            ]
         # FR #5701: recycle silent idle seats (remote ear via !recycleseat IRC).
         bored_healed = []
         with contextlib.suppress(Exception):
@@ -974,6 +987,8 @@ class ChairJobs:
             "last_bored": last_bored,
             "last_activity": last_activity,
             "deadlock_healed": bool(healed),
+            "digest_ts": digest_ts,
+            "digest_last_seen": digest_last_seen,
         }
         findings = stall_detectors.detect_all(snap)
         if not findings:

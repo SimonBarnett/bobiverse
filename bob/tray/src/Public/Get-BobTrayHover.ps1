@@ -2559,6 +2559,8 @@ function Get-BobTrayHover {
         if ($weeklyBy.ContainsKey($mid)) { $wPct = $weeklyBy[$mid] }
         $fuelStale = $false
         if ($fuelStaleBy.ContainsKey($mid) -and $fuelStaleBy[$mid]) { $fuelStale = $true }
+        # FR #6100: whole digest ts frozen — treat every tile as stale, not live fuel.
+        try { if ($reportDigest -and $reportDigest.stale) { $fuelStale = $true } } catch { }
         $seatInfo = Get-BobSeatForMachine -MachineId $mid
         $tileEnd = $null
         if ($periodEndBy.ContainsKey($mid)) { $tileEnd = [string]$periodEndBy[$mid] }

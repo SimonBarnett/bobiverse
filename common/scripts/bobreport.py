@@ -1363,8 +1363,17 @@ def break_stale_digest_lock(home: Path, max_age_s: float | None = None) -> dict 
         # Never unlink a lock still held by *this* live process — health-watchdog
         # GET timeouts used to break our own 30s+ holder (mtime not refreshed) and
         # cascade ConnectionAbortedError + foreign-stale fights with the chair.
+        # FR #6100: exception when digest *content* ts is also stale (hung writer).
         if own_live:
             reason = None
+            content_limit = digest_stale_s()
+            if age >= content_limit:
+                try:
+                    doc = json.loads(digest_path(Path(home)).read_text(encoding="utf-8-sig"))
+                except (OSError, json.JSONDecodeError):
+                    doc = None
+                if digest_is_stale(doc if isinstance(doc, dict) else None):
+                    reason = "hung-own-content-stale"
         else:
             reason = "stale"
     elif pid is not None and not _pid_alive(pid):
@@ -3300,6 +3309,56 @@ def _merge_pcent_lesser(existing: object, incoming: dict, *, replace: bool = Fal
 
 
 POOL_STALE_AFTER_S = 6 * 3600.0     # #80: a machine not heard from for this long no longer speaks for the pool
+DEFAULT_DIGEST_STALE_S = 900.0      # FR #6100: public digest ts / lastSeen older than this is stale
+
+
+def digest_stale_s() -> float:
+    raw = (os.environ.get("BOB_DIGEST_STALE_S") or "").strip()
+    if not raw:
+        return DEFAULT_DIGEST_STALE_S
+    try:
+        return max(30.0, float(raw))
+    except ValueError:
+        return DEFAULT_DIGEST_STALE_S
+
+
+def digest_clock_ts(doc: dict | None) -> datetime | None:
+    """Newest usable clock in the digest: top-level ts, else max machine lastSeen."""
+    if not isinstance(doc, dict):
+        return None
+    top = _parse_iso_ts(doc.get("ts") or doc.get("updated"))
+    seen: list[datetime] = []
+    machines = doc.get("machines") if isinstance(doc.get("machines"), dict) else {}
+    for ent in machines.values():
+        if not isinstance(ent, dict):
+            continue
+        parsed = _parse_iso_ts(ent.get("lastSeen") or ent.get("updated"))
+        if parsed is not None:
+            seen.append(parsed)
+    if top is not None:
+        return top
+    if seen:
+        return max(seen)
+    return None
+
+
+def digest_age_s(doc: dict | None, now: datetime | None = None) -> float | None:
+    clock = digest_clock_ts(doc)
+    if clock is None:
+        return None
+    if clock.tzinfo is None:
+        clock = clock.replace(tzinfo=timezone.utc)
+    ref = now or datetime.now(timezone.utc)
+    if ref.tzinfo is None:
+        ref = ref.replace(tzinfo=timezone.utc)
+    return max(0.0, (ref - clock).total_seconds())
+
+
+def digest_is_stale(doc: dict | None, now: datetime | None = None) -> bool:
+    age = digest_age_s(doc, now)
+    if age is None:
+        return False
+    return age > digest_stale_s()
 
 
 def _machine_counts_for_pools(mid: object, ent: dict, now: datetime | None = None) -> bool:
@@ -3527,9 +3586,14 @@ def build_digest_object(home: Path, briefer_nick: str, now: datetime | None = No
     ).strip()
     briefer = (briefer_nick or str(doc.get("briefer") or "")).strip()
     channels = chair_channels(home)
+    age_s = digest_age_s(doc, now)
+    stale = digest_is_stale(doc, now)
     return {
         "v": int(doc.get("v") or 1),
         "ts": str(doc.get("ts") or _utc_now_iso()),
+        "stale": stale,
+        "stale_age_s": None if age_s is None else int(age_s),
+        "airc_consoles_stale": stale,
         "briefer": briefer,
         "chairNick": chair or briefer,
         "machines": exported,
