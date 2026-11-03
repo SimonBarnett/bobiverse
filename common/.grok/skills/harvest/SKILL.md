@@ -353,6 +353,7 @@ routes to bobiverse via the split rule.
 - ticket_closure may mark seen only after a successful wake or a confirmed skip-file write; OSError on the skip file leaves pending.
 - PRIORITY wcf generic ops refuse FORMPREP/REPPREP/PROCPREP in ename or name with use_prepare_verb and no SOAP; ProcNewReport is not a generic allowlisted op.
 - EFORM NewColumn zoomname can be empty when sendtitles is false; map ENAME from title/name/Form.C, retry FormStartMob with sendtitles=true, and do not ProcEndMob until a procedure session exists.
+- After heal_bored_latency queues !recycleseat, drop those bored-latency findings before stall_filer. Detector may still fire for the scan log; filing them as FRs just re-queues the receipt.
 
 ## Harvest digest (lessons audit 2026-10-06)
 
