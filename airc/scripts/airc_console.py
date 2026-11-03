@@ -4243,7 +4243,7 @@ class AircConsoleCore:
                     "PRIORITY prepare [form|report|procedure] <ENAME> [instance=] (FR #5286/#5946); "
                     "UPDATE airc|bob|jeeves [ver] schedules detached MSI update "
                     "(ops-gated remote; not auto self-update - FR #3764); "
-                    "PRIORITY connect|status [instance-id] (CredMan + allowlist, FR #5284); PRIORITY formStart|subform|getRows (FR #5285/#5948/#5991 sqlcmd walk by default, SDK opt-in; fixture=selftest); PRIORITY wcf GetVersion|GeneralCompanies|ProcStart|ProcContinue|ProcEnd (aliases; wire GetFileVersion/*Mob FR #6054); "
+                    "PRIORITY connect|status [instance-id] (CredMan + allowlist, FR #5284); PRIORITY formStart|subform|getRows (FR #5285/#5948/#5991 sqlcmd walk by default, SDK opt-in; fixture=selftest); PRIORITY wcf GetVersion|GeneralCompanies|ProcStart|ProcContinue|ProcEnd (aliases; wire GetFileVersion/*Mob; 400+Result=ok FR #6058); "
                     "EXTENSION install|status [-WhatIf] isolated worker (FR #5290); "
                     "NETWORK|NETWORK diag isolated worker (FR #5298); "
                     "LEGION {host|ip} [-WhatIf] [-Profile fleet|client|workstation] isolated worker (FR #5308/#5758); "

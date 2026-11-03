@@ -453,7 +453,7 @@ _PRIORITY_REPLY_CORE_OK_KEYS = frozenset(
 # FR #6018: walk IRC summary keeps these; full rows go to jobs/<id>/walk.json.
 _PRIORITY_REPLY_WALK_DROP = ("rows", "subforms", "title", "detail")
 _PRIORITY_REPLY_WCF_CORE = frozenset(
-    {"ok", "error", "http_status", "fault_code", "action"}
+    {"ok", "error", "http_status", "fault_code", "action", "version", "companies", "count"}
 )
 
 
@@ -596,6 +596,11 @@ def _shrink_priority_payload_steps(body: dict[str, Any]) -> list[dict[str, Any]]
         if "fault_string" in cur:
             cur = dict(cur)
             cur.pop("fault_string", None)
+            steps.append(cur)
+        cos = cur.get("companies")
+        if isinstance(cos, list) and len(cos) > 12:
+            cur = dict(cur)
+            cur["companies"] = [str(x) for x in cos[:12]]
             steps.append(cur)
         core = {k: cur[k] for k in _PRIORITY_REPLY_WCF_CORE if k in cur}
         if "action" not in core:
