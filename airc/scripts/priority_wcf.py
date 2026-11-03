@@ -8,6 +8,8 @@ Never log, argv, IRC, or dump the password.
 """
 from __future__ import annotations
 
+import base64
+import json
 import re
 import socket
 import ssl
@@ -260,6 +262,79 @@ def redact_all(text: str, *secrets: str) -> str:
     return s
 
 
+def _xml_local(tag: str) -> str:
+    return str(tag or "").rsplit("}", 1)[-1]
+
+
+def _find_op_result(root: ET.Element) -> tuple[str, str]:
+    """Return (Result text, Result element local name) if present."""
+    for el in root.iter():
+        name = _xml_local(el.tag)
+        if name.endswith("Result") and name != "Result":
+            return ("".join(el.itertext()).strip(), name)
+    return "", ""
+
+
+def _maybe_b64_decode(text: str) -> str:
+    raw = str(text or "").strip()
+    if not raw:
+        return ""
+    try:
+        pad = (-len(raw)) % 4
+        data = base64.b64decode(raw + ("=" * pad), validate=False)
+    except Exception:  # noqa: BLE001
+        return raw
+    if not data:
+        return raw
+    try:
+        decoded = data.decode("utf-8")
+    except UnicodeDecodeError:
+        return raw
+    # Treat as base64 only when it clearly changed and looks textual.
+    if decoded == raw:
+        return raw
+    if all(32 <= ord(ch) <= 126 or ch in "\r\n\t" for ch in decoded[:80]):
+        return decoded
+    return raw
+
+
+def _dnames_from(obj: Any) -> list[str]:
+    names: list[str] = []
+    if isinstance(obj, list):
+        for item in obj:
+            names.extend(_dnames_from(item))
+        return names
+    if isinstance(obj, dict):
+        dn = obj.get("DNAME") or obj.get("dname")
+        if dn:
+            names.append(str(dn))
+        else:
+            for val in obj.values():
+                names.extend(_dnames_from(val))
+    return names
+
+
+def decorate_mob_result(parsed: dict[str, Any], result_text: str) -> None:
+    """Decode Mob <Op>Result (often base64 JSON) into compact fields."""
+    decoded = _maybe_b64_decode(result_text)
+    if not decoded:
+        return
+    parsed["body"] = decoded[:400]
+    parsed["_decoded"] = decoded
+    parsed["has_result"] = True
+    try:
+        loaded = json.loads(decoded)
+    except json.JSONDecodeError:
+        if decoded.count(".") >= 2 and " " not in decoded.strip():
+            parsed["version"] = decoded.strip()
+        return
+    names = _dnames_from(loaded)
+    if names:
+        parsed["companies"] = names
+        parsed["count"] = len(names)
+        parsed.pop("body", None)
+
+
 def parse_soap_response(xml_text: str) -> dict[str, Any]:
     raw = str(xml_text or "")
     try:
@@ -285,11 +360,17 @@ def parse_soap_response(xml_text: str) -> dict[str, Any]:
             "fault_code": redact(code),
             "fault_string": redact(msg)[:160],
         }
+    result_text, result_name = _find_op_result(root)
     body = root.find(f".//{{{SOAP_NS}}}Body")
     text = ""
     if body is not None:
         text = "".join(body.itertext()).strip()
-    return {"ok": True, "body": text[:4000], "via": "wcf"}
+    out: dict[str, Any] = {"ok": True, "body": text[:4000], "via": "wcf"}
+    if result_text:
+        decorate_mob_result(out, result_text)
+        if result_name:
+            out["result_el"] = result_name
+    return out
 
 
 def _http_post(
@@ -453,11 +534,34 @@ class PriorityWcfClient:
         parsed["via"] = self.mode
         parsed["endpoint_ok"] = True
         parsed["http_status"] = status
-        parsed["raw"] = raw
+        # FR #6058: HR Smith returns HTTP 400 with a valid <Op>Result.
+        has_result = bool(
+            parsed.get("has_result")
+            or parsed.get("version")
+            or parsed.get("companies")
+        )
         if not (200 <= int(status) <= 299):
-            parsed["ok"] = False
-            if not is_real_fault:
-                parsed["error"] = WCF_HTTP_ERROR
+            if has_result and parsed.get("ok") is True:
+                parsed.pop("error", None)
+            else:
+                parsed["ok"] = False
+                if not is_real_fault:
+                    parsed["error"] = WCF_HTTP_ERROR
+        if has_result and parsed.get("ok") is True:
+            parsed.pop("raw", None)
+        else:
+            parsed["raw"] = raw
+        want_full = str((fields or {}).get("full") or "").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "full",
+        }
+        decoded = parsed.pop("_decoded", None)
+        parsed.pop("has_result", None)
+        parsed.pop("result_el", None)
+        if want_full and decoded:
+            parsed["result"] = str(decoded)[:800]
         if extras:
             for k, v in list(parsed.items()):
                 if isinstance(v, str):
