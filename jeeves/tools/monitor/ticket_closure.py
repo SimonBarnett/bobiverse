@@ -22,6 +22,7 @@ from _common import (
     resolve_homes,
     run_check,
 )
+from wake_brief import WakeBriefError, build_wake_brief
 
 STATE_NAME = "monitor-ticket-closure.json"
 _LEGACY_STATE_NAME = "ticket_closure_state.json"
@@ -47,6 +48,14 @@ def _focus_repos(focus_path: Path) -> set[str]:
     if isinstance(repos, list):
         return {str(r).strip() for r in repos if str(r).strip()}
     return set()
+
+
+def _resolve_repo(repo: str, repos: set[str]) -> str:
+    """Map a unique focused short name to owner/repo; leave others unchanged."""
+    if "/" in repo:
+        return repo
+    matches = sorted(r for r in repos if r.rsplit("/", 1)[-1] == repo)
+    return matches[0] if len(matches) == 1 else repo
 
 
 def _event_key(row: dict[str, Any]) -> str:
@@ -110,6 +119,7 @@ def _load_events(fixture: Path | None, repos: set[str]) -> list[dict[str, Any]]:
             r.rsplit("/", 1)[-1] for r in repos
         }:
             continue
+        norm["repo"] = _resolve_repo(norm["repo"], repos)
         out.append(norm)
     return out
 
@@ -177,8 +187,13 @@ def check(args):
     for ev in events:
         key = _event_key(ev)
         if key not in seen:
-            closed.append(ev)
-            seen[key] = ev
+            row = dict(ev)
+            try:
+                row["brief"] = build_wake_brief(row)
+            except WakeBriefError:
+                continue
+            closed.append(row)
+            seen[key] = row
     try:
         state_path.parent.mkdir(parents=True, exist_ok=True)
         state_path.write_text(

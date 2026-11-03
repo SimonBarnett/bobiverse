@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from _common import EXIT_ERROR, EXIT_FINDING, EXIT_OK, emit
+from wake_brief import WakeBriefError, build_wake_brief
 
 # Wake work is pinned to Bob's Grok Bot desktop, not ionos (detection-only).
 REQUIRE_MACHINE_KEY = "require_machine"
@@ -37,15 +38,15 @@ def ticket_id(item: dict[str, Any]) -> tuple[str, str]:
 
 
 def complete_ticket(item: dict[str, Any]) -> bool:
-    repo, num = ticket_id(item)
-    return bool(repo) and bool(num) and num.isdigit()
+    try:
+        build_wake_brief(item)
+        return True
+    except WakeBriefError:
+        return False
 
 
 def brief_text(item: dict[str, Any]) -> str:
-    repo, num = ticket_id(item)
-    ev = str(item.get("event") or "closed").strip()
-    kind = str(item.get("kind") or "ticket").strip()
-    return f"ticket {ev}: {repo}#{num} ({kind}). Continue waiting work. Not a chair assign."
+    return build_wake_brief(item)
 
 
 def grokbot_api_path() -> Path | None:
@@ -83,15 +84,16 @@ def wake_bob(
     *,
     send: Callable[..., Any] | None = None,
 ) -> dict[str, Any]:
-    if not complete_ticket(item):
+    try:
+        text = brief_text(item)
+    except WakeBriefError:
         return {
             "ok": False,
             "woke": False,
             "error": "invalid_ticket",
             "detail": "need owner/repo and issue/PR number",
-            "brief": brief_text(item),
+            "brief": "",
         }
-    text = brief_text(item)
     sender = send or _default_send
     try:
         sender(agent="Bob", text=text)
@@ -128,7 +130,7 @@ def main(argv: list[str] | None = None) -> int:
                 "woke": False,
                 "error": "invalid_ticket",
                 "detail": "need owner/repo and issue/PR number",
-                "brief": brief_text(item),
+                "brief": "",
                 REQUIRE_MACHINE_KEY: (os.environ.get(WAKE_MACHINE_ENV) or "UNKNOWN").strip(),
             },
             EXIT_ERROR,
