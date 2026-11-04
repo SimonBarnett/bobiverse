@@ -1,6 +1,10 @@
 """Tests for OpenCode worker seat wiring (issue #6120)."""
 from __future__ import annotations
 
+import json
+import os
+import shutil
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -82,7 +86,9 @@ def test_build_launch_opencode_creates_wrapper(tmp_path: Path):
     script_key = next(k for k in spec.files if k.endswith("launch-opencode.ps1"))
     script = spec.files[script_key]
     assert "opencode.exe" in script or OP in script
-    assert "run -m $model" in script
+    assert "'run', '-m', $model" in script
+    assert "--continue" in script
+    assert "Write-Output $outStr" in script
     assert "Do work." in spec.files[prompt_key]
 
 
@@ -118,28 +124,60 @@ def test_read_fuel_parses_opencode_section(tmp_path: Path):
 OPENCODE_FUEL_PS1 = Path(bw.__file__).resolve().parent.parent / "tray" / "tools" / "Get-BobOpencodeFuel.ps1"
 
 
-def test_opencode_fuel_ps1_uses_models_plain_text_stats():
+def test_opencode_fuel_ps1_uses_models_plain_text_stats_for_each_window():
     text = OPENCODE_FUEL_PS1.read_text(encoding="utf-8-sig")
-    assert "stats --models" in text
+    assert text.count("stats --models --days") == 3
     assert "stats --json" not in text
     assert "--output json" not in text
 
 
-def test_opencode_fuel_ps1_pipes_text_via_stdin():
+def test_opencode_fuel_ps1_pipes_windowed_payload_via_stdin():
     text = OPENCODE_FUEL_PS1.read_text(encoding="utf-8-sig")
-    assert "$statsRaw | & $py -c $script" in text
+    assert "ConvertTo-Json -Compress" in text
+    assert "$payload | & $py -c $script" in text
     assert "sys.stdin.read()" in text
     assert "sys.argv[1]" not in text
 
 
-def test_opencode_fuel_ps1_pythonpath_points_to_repo_common_scripts():
+def test_opencode_fuel_ps1_pythonpath_resolves_common_scripts_in_work_tree():
     text = OPENCODE_FUEL_PS1.read_text(encoding="utf-8-sig")
-    assert "Split-Path -Parent (Split-Path -Parent (Split-Path -Parent $PSScriptRoot))" in text
     assert "common\\scripts" in text
+    assert "Test-Path -LiteralPath $common -PathType Container" in text
+    assert "$env:PYTHONPATH = \"$common;$env:PYTHONPATH\"" in text
 
 
-def test_opencode_fuel_ps1_uses_opencode_fuel_translation():
+def test_opencode_fuel_ps1_uses_windowed_fuel_translation():
     text = OPENCODE_FUEL_PS1.read_text(encoding="utf-8-sig")
     assert "opencode_fuel" in text
     assert "parse_opencode_stats_text_or_json" in text
-    assert "fuel_from_stats" in text
+    assert "fuel_from_windowed_stats" in text
+
+
+def test_opencode_fuel_ps1_resolves_installed_layout(tmp_path: Path):
+    r"""The helper must find common\scripts when run from <ai root>\bob\tools."""
+    installed = tmp_path / "bob"
+    tools = installed / "tools"
+    common_scripts = installed / "common" / "scripts"
+    tools.mkdir(parents=True)
+    common_scripts.mkdir(parents=True)
+
+    script_dst = tools / "Get-BobOpencodeFuel.ps1"
+    script_dst.write_text(OPENCODE_FUEL_PS1.read_text(encoding="utf-8-sig"), encoding="utf-8-sig")
+
+    fuel_py_src = Path(bw.__file__).resolve().parent.parent.parent / "common" / "scripts" / "opencode_fuel.py"
+    shutil.copy(fuel_py_src, common_scripts / "opencode_fuel.py")
+
+    fixture = '{"costs": {"glm-5.3": 7.5}, "free_models": ["beam-free"]}'
+    env = os.environ.copy()
+    env["BOB_OPENCODE_FUEL_FIXTURE"] = fixture
+    result = subprocess.run(
+        ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(script_dst)],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=60,
+    )
+    assert result.returncode == 0, result.stderr
+    parsed = json.loads(result.stdout.strip().splitlines()[-1])
+    assert parsed["go"] == 50
+    assert parsed["free"] == 100

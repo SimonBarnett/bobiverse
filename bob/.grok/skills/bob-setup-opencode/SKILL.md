@@ -69,14 +69,16 @@ smoke.
    captions, or chat. Alternatively, run `opencode auth login` on the seat to
    create the file before restricting its ACL.
 5. CopyFromBox to an allowed local-exec path, then move to
-   `%USERPROFILE%\.local\share\opencode\auth.json`. Restrict ACL and verify it
-   succeeded:
+   `%USERPROFILE%\.local\share\opencode\auth.json`. Reset inherited or stale
+   explicit ACEs, then restrict ACL to the seat user and verify it succeeded:
 
 ```powershell
 $authDir = Join-Path $env:USERPROFILE '.local\share\opencode'
 New-Item -ItemType Directory -Force -Path $authDir | Out-Null
 # Move the box-landed file into place; do NOT Read it into agent context.
 $authFile = Join-Path $authDir 'auth.json'
+icacls $authFile /reset
+if ($LASTEXITCODE -ne 0) { throw "failed to reset auth.json ACL" }
 icacls $authFile /inheritance:r /grant:r "$($env:USERNAME):(R)"
 if ($LASTEXITCODE -ne 0) { throw "failed to restrict auth.json ACL" }
 ```
@@ -84,6 +86,17 @@ if ($LASTEXITCODE -ne 0) { throw "failed to restrict auth.json ACL" }
 Delete the box secret file after a successful seat install.
 
 ## Smoke (headless)
+
+Re-apply the ACL on the existing `auth.json` before the smoke test so every
+install path restricts access:
+
+```powershell
+$authFile = Join-Path $env:USERPROFILE '.local\share\opencode\auth.json'
+icacls $authFile /reset
+if ($LASTEXITCODE -ne 0) { throw "failed to reset auth.json ACL" }
+icacls $authFile /inheritance:r /grant:r "$($env:USERNAME):(R)"
+if ($LASTEXITCODE -ne 0) { throw "failed to restrict auth.json ACL" }
+```
 
 ```powershell
 # Free model (no account)

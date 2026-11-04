@@ -34,6 +34,14 @@ OPENCODE_GO_CAPS: dict[str, float] = {
     "qwen3.8-flash": 60.0,
 }
 
+# Rolling cap fractions of the monthly allowance.  A model is capped when any
+# window is exhausted, so remaining % is driven by the most-utilised window.
+CAP_WINDOWS: dict[str, float] = {
+    "5h": 0.20,
+    "week": 0.50,
+    "month": 1.00,
+}
+
 # Free models available without an account (issue #6120).
 OPENCODE_FREE_MODELS: tuple[str, ...] = (
     "beam-free",
@@ -96,6 +104,48 @@ def _go_models_remaining(stats: dict) -> dict[str, int]:
     out: dict[str, int] = {}
     for model in OPENCODE_GO_FALLBACK_ORDER:
         rem = model_remaining_pct(model, stats)
+        if rem is not None:
+            out[model] = rem
+    return out
+
+
+def _cost_for_model_windowed(windowed: dict, model: str) -> dict[str, Optional[float]]:
+    """Return per-window cost for ``model``; missing windows report None."""
+    out: dict[str, Optional[float]] = {}
+    for window in CAP_WINDOWS:
+        stats = windowed.get(window)
+        out[window] = _cost_for_model(stats, model) if isinstance(stats, dict) else None
+    return out
+
+
+def model_remaining_pct_for_windows(model: str, windowed: dict) -> Optional[int]:
+    """Estimated remaining % for a Go model across rolling cap windows."""
+    cap = OPENCODE_GO_CAPS.get(model)
+    if cap is None or cap <= 0:
+        return None
+    costs = _cost_for_model_windowed(windowed, model)
+    has_any = any(v is not None for v in costs.values())
+    if not has_any:
+        return None
+    max_util = 0.0
+    for window, fraction in CAP_WINDOWS.items():
+        cost = costs.get(window)
+        if cost is None:
+            cost = 0.0
+        limit = cap * fraction
+        if limit <= 0:
+            continue
+        util = cost / limit
+        if util > max_util:
+            max_util = util
+    return _clamp_pct(100.0 - (100.0 * max_util))
+
+
+def _go_models_remaining_for_windows(windowed: dict) -> dict[str, int]:
+    """Map of Go model -> remaining % using rolling cap windows."""
+    out: dict[str, int] = {}
+    for model in OPENCODE_GO_FALLBACK_ORDER:
+        rem = model_remaining_pct_for_windows(model, windowed)
         if rem is not None:
             out[model] = rem
     return out
@@ -297,7 +347,9 @@ def parse_opencode_stats_json(doc: dict | None) -> dict:
             model_id = str(model_id).strip()
             cost = _cost_from_entry(entry) if isinstance(entry, dict) else None
             if cost is not None and model_id:
-                costs[model_id] = cost
+                # Strip a provider prefix if present, matching the array branch.
+                slug = model_id.split("/")[-1]
+                costs[slug] = cost
     elif isinstance(models, (list, tuple)):
         for entry in models:
             model_id = _model_id_from_entry(entry)
@@ -351,6 +403,29 @@ def fuel_from_stats(stats: dict | None) -> dict:
         go_remaining = max(go_by_model.values())
     free_remaining: Optional[int] = None
     if _free_models_available(stats):
+        free_remaining = 100
+    return {
+        FUEL_ID_FREE: free_remaining,
+        FUEL_ID_GO: go_remaining,
+        "models": go_by_model,
+    }
+
+
+def fuel_from_windowed_stats(windowed: dict[str, dict] | None) -> dict:
+    """Build digest fuel numbers from rolling cap windows.
+
+    ``windowed`` maps window names (``5h``, ``week``, ``month``) to stats docs
+    produced by ``opencode stats --days <N>``.  Per-model remaining % is driven
+    by the most-utilised window, because Go caps are rolling and a model is
+    exhausted when any window limit is hit.
+    """
+    windowed = windowed if isinstance(windowed, dict) else {}
+    go_by_model = _go_models_remaining_for_windows(windowed)
+    go_remaining: Optional[int] = None
+    if go_by_model:
+        go_remaining = max(go_by_model.values())
+    free_remaining: Optional[int] = None
+    if any(_free_models_available(windowed.get(w) or {}) for w in CAP_WINDOWS):
         free_remaining = 100
     return {
         FUEL_ID_FREE: free_remaining,

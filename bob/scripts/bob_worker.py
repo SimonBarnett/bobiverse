@@ -1107,9 +1107,11 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             f"$prompt = [IO.File]::ReadAllText('{esc(pfile)}')",
             "$fuelLog = Join-Path $env:LOCALAPPDATA 'Bobiverse\\worker\\logs\\opencode-out-of-fuel.log'",
             "New-Item -ItemType Directory -Force -Path (Split-Path -Parent $fuelLog) | Out-Null",
-            "function Invoke-Opencode($line) {",
-            "    $output = & $exe run -m $model $line *>&1",
+            "function Invoke-Opencode($line, [switch]$ContinueSession) {",
+            "    $argList = if ($ContinueSession) { @('run', '--continue', '-m', $model, $line) } else { @('run', '-m', $model, $line) }",
+            "    $output = & $exe @argList *>&1",
             "    $outStr = [string]($output | Out-String)",
+            "    Write-Output $outStr",
             "    if ($LASTEXITCODE -ne 0 -or $outStr -match '402|429|Payment Required|usage balance exhausted|Too Many Requests') {",
             "        $matchLines = $outStr -split '\\r?\\n' | Where-Object { $_ -match '402|429|Payment Required|usage balance exhausted|Too Many Requests' }",
             "        $msg = ($matchLines | Select-Object -First 3) -join ' '",
@@ -1119,7 +1121,7 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             "    }",
             "}",
             "try { Invoke-Opencode $prompt } catch { [Console]::Error.WriteLine('opencode initial run failed: ' + $_) }",
-            "while ($true) { $line = [Console]::ReadLine(); if ($null -eq $line -or $line -eq 'exit') { break }; try { Invoke-Opencode $line } catch { [Console]::Error.WriteLine('opencode run failed: ' + $_) } }",
+            "while ($true) { $line = [Console]::ReadLine(); if ($null -eq $line -or $line -eq 'exit') { break }; try { Invoke-Opencode $line -ContinueSession } catch { [Console]::Error.WriteLine('opencode run failed: ' + $_) } }",
             "exit 0",
         ])
         argv = ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", lfile]

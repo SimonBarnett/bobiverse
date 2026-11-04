@@ -210,9 +210,22 @@ def test_parse_opencode_stats_text_extracts_total_and_model_costs():
 
 
 def test_parse_opencode_stats_text_ignores_unknown_models():
-    parsed = of.parse_opencode_stats_text(REAL_STATS_SAMPLE)
-    # No known free models appear in the captured sample, so none are returned.
+    sample = """┌────────────────────────────────────────────────────────┐
+│                      MODEL USAGE                       │
+├────────────────────────────────────────────────────────┤
+│ opencode-go/some-unknown-model                         │
+│  Messages                                            1 │
+│  Cost                                            $9.99 │
+├────────────────────────────────────────────────────────┤
+│ opencode-go/glm-5.3                                    │
+│  Messages                                           10 │
+│  Cost                                            $7.50 │
+└────────────────────────────────────────────────────────┘
+"""
+    parsed = of.parse_opencode_stats_text(sample)
     assert "some-unknown-model" not in parsed["costs"]
+    assert "glm-5.3" in parsed["costs"]
+    assert parsed["costs"]["glm-5.3"] == 7.5
 
 
 def test_parse_opencode_stats_text_strips_ansi_escape_sequences():
@@ -278,4 +291,56 @@ def test_parse_opencode_stats_text_or_json_returns_empty_for_garbage():
     assert of.parse_opencode_stats_text_or_json("garbage") == {
         "costs": {},
         "free_models": [],
+    }
+
+
+def test_parse_opencode_stats_json_strips_provider_prefix_from_dict_keys():
+    doc = {
+        "modelUsage": {
+            "opencode-go/glm-5.3": {"cost": 7.5, "messages": 5},
+            "opencode-go/kimi-k3": {"cost": 1.0},
+        },
+    }
+    parsed = of.parse_opencode_stats_json(doc)
+    assert parsed["costs"]["glm-5.3"] == 7.5
+    assert parsed["costs"]["kimi-k3"] == 1.0
+
+
+def test_fuel_from_windowed_stats_uses_most_utilised_window():
+    # Monthly looks healthy, but the 5-hour window is exhausted.
+    windowed = {
+        "5h": {"costs": {"glm-5.3": 4.0}},
+        "week": {"costs": {"glm-5.3": 5.0}},
+        "month": {"costs": {"glm-5.3": 7.5}},
+    }
+    fuel = of.fuel_from_windowed_stats(windowed)
+    # 5h cap = 15 * 0.20 = 3.0; cost 4.0 => 0% remaining.
+    assert fuel["models"]["glm-5.3"] == 0
+    assert fuel["opencode-go"] == 0
+
+
+def test_fuel_from_windowed_stats_treats_missing_window_as_zero():
+    windowed = {
+        "month": {"costs": {"glm-5.3": 7.5}},
+    }
+    fuel = of.fuel_from_windowed_stats(windowed)
+    # Monthly: 7.5/15 = 50% used => 50% remaining.
+    assert fuel["models"]["glm-5.3"] == 50
+    assert fuel["opencode-go"] == 50
+
+
+def test_fuel_from_windowed_stats_free_when_any_window_has_free_models():
+    windowed = {
+        "5h": {"free_models": []},
+        "week": {"free_models": ["beam-free"]},
+        "month": {"free_models": []},
+    }
+    assert of.fuel_from_windowed_stats(windowed)["opencode-free"] == 100
+
+
+def test_fuel_from_windowed_stats_unknown_without_data():
+    assert of.fuel_from_windowed_stats({}) == {
+        "opencode-free": None,
+        "opencode-go": None,
+        "models": {},
     }
