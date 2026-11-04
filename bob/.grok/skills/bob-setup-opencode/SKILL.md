@@ -116,9 +116,11 @@ has positive per-model fuel; it will not fall back to another capped model.
 1. Fuel ids `opencode-free` and `opencode-go` on the digest webhook. Remaining %
    is estimated from local `opencode stats` cost vs the per-model monthly caps
    (e.g. glm-5.3 $15, kimi-k2.7-code $60); `n/a` when unknown, like other pools.
-2. Worker loop: join `#{machine}`, `!bored` **after the agent is ready** and after
-   DONE / NACK / GIVEUP / 2m idle, ACK/DONE to Jeeves. The program posts `!bored`;
-   the model must never post it.
+2. Worker loop: join `#{machine}`; post `!bored` after `turn_ended` or the
+    harvest-hold fallback (not immediately after a terminal frame). Idle
+    announcements start after 120 seconds and repeat every 180 seconds. Terminal
+    frames are `DONE`, `NACK` and `GIVEUP`. ACK/DONE goes to Jeeves. The program
+    posts `!bored`; the model must never post it.
 3. Out-of-fuel: the worker refuses offers when the current model's cap is hit.
    It then picks the first Go model in fallback order with positive remaining fuel
    (using per-model readings from the digest), then the free model, else goes idle.

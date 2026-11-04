@@ -119,19 +119,24 @@ def _cost_for_model_windowed(windowed: dict, model: str) -> dict[str, Optional[f
 
 
 def model_remaining_pct_for_windows(model: str, windowed: dict) -> Optional[int]:
-    """Estimated remaining % for a Go model across rolling cap windows."""
+    """Estimated remaining % for a Go model across rolling cap windows.
+
+    A missing or failed window reading makes the model allowance unknown, so
+    the seat never selects a model from incomplete cap data.
+    """
     cap = OPENCODE_GO_CAPS.get(model)
     if cap is None or cap <= 0:
         return None
     costs = _cost_for_model_windowed(windowed, model)
-    has_any = any(v is not None for v in costs.values())
-    if not has_any:
+    # All three rolling windows are required; a failed stats call must not be
+    # treated as zero usage.
+    if any(v is None for v in costs.values()):
         return None
     max_util = 0.0
     for window, fraction in CAP_WINDOWS.items():
         cost = costs.get(window)
         if cost is None:
-            cost = 0.0
+            continue
         limit = cap * fraction
         if limit <= 0:
             continue
@@ -363,14 +368,22 @@ def parse_opencode_stats_json(doc: dict | None) -> dict:
     if isinstance(doc.get("free_models"), (list, tuple)):
         free_models = [str(m).strip() for m in doc["free_models"] if str(m).strip()]
     elif isinstance(models, (dict, list, tuple)):
-        # Heuristic: any model that belongs to the free provider is treated as available.
-        entries = models.values() if isinstance(models, dict) else models
-        for entry in entries:
-            model_id = (
-                str(entry).strip()
-                if isinstance(entry, str)
-                else _model_id_from_entry(entry)
-            )
+        # Discover available free models from the model catalogue (``opencode models``
+        # style) as well as from recorded usage. For dictionary inputs the key is the
+        # model id; for arrays we parse the entry as before.
+        if isinstance(models, dict):
+            entries: list = []
+            for model_id, entry in models.items():
+                entries.append((str(model_id).strip(), entry))
+        else:
+            entries = [(None, entry) for entry in models]
+        for model_id, entry in entries:
+            if model_id is None:
+                model_id = (
+                    str(entry).strip()
+                    if isinstance(entry, str)
+                    else _model_id_from_entry(entry)
+                )
             if not model_id:
                 continue
             provider = model_id.split("/")[0] if "/" in model_id else ""

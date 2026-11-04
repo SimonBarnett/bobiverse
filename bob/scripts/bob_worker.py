@@ -1107,8 +1107,8 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             f"$prompt = [IO.File]::ReadAllText('{esc(pfile)}')",
             "$fuelLog = Join-Path $env:LOCALAPPDATA 'Bobiverse\\worker\\logs\\opencode-out-of-fuel.log'",
             "New-Item -ItemType Directory -Force -Path (Split-Path -Parent $fuelLog) | Out-Null",
-            "function Invoke-Opencode($line, [switch]$ContinueSession) {",
-            "    $argList = if ($ContinueSession) { @('run', '--continue', '-m', $model, $line) } else { @('run', '-m', $model, $line) }",
+            "function Invoke-Opencode($line) {",
+            "    $argList = @('run', '-m', $model, $line)",
             "    $output = & $exe @argList *>&1",
             "    $outStr = [string]($output | Out-String)",
             "    Write-Output $outStr",
@@ -1121,7 +1121,7 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             "    }",
             "}",
             "try { Invoke-Opencode $prompt } catch { [Console]::Error.WriteLine('opencode initial run failed: ' + $_) }",
-            "while ($true) { $line = [Console]::ReadLine(); if ($null -eq $line -or $line -eq 'exit') { break }; try { Invoke-Opencode $line -ContinueSession } catch { [Console]::Error.WriteLine('opencode run failed: ' + $_) } }",
+            "while ($true) { $line = [Console]::ReadLine(); if ($null -eq $line -or $line -eq 'exit') { break }; if ([string]::IsNullOrWhiteSpace($line)) { continue }; try { Invoke-Opencode $line } catch { [Console]::Error.WriteLine('opencode run failed: ' + $_) } }",
             "exit 0",
         ])
         argv = ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", lfile]

@@ -196,6 +196,31 @@ def test_parse_opencode_stats_json_extracts_free_models_from_provider():
     assert "iceman-contributor-free" in parsed["free_models"]
 
 
+def test_parse_opencode_stats_json_extracts_free_models_from_dict_keys():
+    doc = {
+        "modelUsage": {
+            "opencode-free/beam-free": {"cost": 0},
+            "opencode-go/glm-5.3": {"cost": 1.0},
+        }
+    }
+    parsed = of.parse_opencode_stats_json(doc)
+    assert "beam-free" in parsed["free_models"]
+    assert "glm-5.3" in parsed["costs"]
+
+
+def test_parse_opencode_stats_json_discovers_free_models_without_usage():
+    # ``opencode models`` style catalogue: free model present but no recorded cost.
+    doc = {
+        "models": {
+            "opencode-free/beam-free": {},
+            "opencode-go/glm-5.3": {"cost": 1.0},
+        }
+    }
+    parsed = of.parse_opencode_stats_json(doc)
+    assert "beam-free" in parsed["free_models"]
+    assert "glm-5.3" in parsed["costs"]
+
+
 def test_parse_opencode_stats_json_unknown_shape_returns_empty():
     assert of.parse_opencode_stats_json({"unexpected": []}) == {"costs": {}, "free_models": []}
     assert of.parse_opencode_stats_json(None) == {"costs": {}, "free_models": []}
@@ -319,14 +344,14 @@ def test_fuel_from_windowed_stats_uses_most_utilised_window():
     assert fuel["opencode-go"] == 0
 
 
-def test_fuel_from_windowed_stats_treats_missing_window_as_zero():
+def test_fuel_from_windowed_stats_missing_window_means_unknown():
     windowed = {
         "month": {"costs": {"glm-5.3": 7.5}},
     }
     fuel = of.fuel_from_windowed_stats(windowed)
-    # Monthly: 7.5/15 = 50% used => 50% remaining.
-    assert fuel["models"]["glm-5.3"] == 50
-    assert fuel["opencode-go"] == 50
+    # A failed/missing window keeps the model allowance unknown.
+    assert fuel["models"].get("glm-5.3") is None
+    assert fuel["opencode-go"] is None
 
 
 def test_fuel_from_windowed_stats_free_when_any_window_has_free_models():

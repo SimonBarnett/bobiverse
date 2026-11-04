@@ -39,10 +39,41 @@ try {
             # Plain-text model table is the only machine-readable source available.
             # OpenCode caps are rolling: 20% per 5h, 50% per week, 100% per month.
             $days5h = [math]::Round(5 / 24, 6)
-            $statsByWindow = @{
-                '5h'    = [string](& $exe stats --models --days $days5h 2>$null | Out-String)
-                'week'  = [string](& $exe stats --models --days 7 2>$null | Out-String)
-                'month' = [string](& $exe stats --models --days 30 2>$null | Out-String)
+            $statsByWindow = @{}
+            $jobs = @(
+                @{ window = '5h';    args = "stats --models --days $days5h" },
+                @{ window = 'week';  args = 'stats --models --days 7' },
+                @{ window = 'month'; args = 'stats --models --days 30' }
+            )
+            foreach ($job in $jobs) {
+                $output = $null
+                $proc = $null
+                try {
+                    $psi = New-Object System.Diagnostics.ProcessStartInfo
+                    $psi.FileName = $exe
+                    $psi.Arguments = $job.args
+                    $psi.RedirectStandardOutput = $true
+                    $psi.RedirectStandardError = $true
+                    $psi.UseShellExecute = $false
+                    $psi.CreateNoWindow = $true
+                    $proc = [System.Diagnostics.Process]::Start($psi)
+                    if ($proc.WaitForExit(25000)) {
+                        $output = [string]($proc.StandardOutput.ReadToEnd())
+                    } else {
+                        # Timed out: kill the whole OpenCode process tree and leave this
+                        # window unknown so the helper still produces JSON.
+                        try { & taskkill /T /F /PID $proc.Id 2>$null | Out-Null } catch { }
+                        $output = $null
+                    }
+                } catch {
+                    $output = $null
+                } finally {
+                    if ($proc -and -not $proc.HasExited) {
+                        try { & taskkill /T /F /PID $proc.Id 2>$null | Out-Null } catch { }
+                    }
+                    if ($proc) { try { $proc.Dispose() } catch { } }
+                }
+                $statsByWindow[$job.window] = if ($output) { $output } else { $null }
             }
         }
     }
@@ -71,8 +102,14 @@ try {
 import json, sys, opencode_fuel
 raw = sys.stdin.read()
 windowed = json.loads(raw)
-stats = {k: opencode_fuel.parse_opencode_stats_text_or_json(v) for k, v in windowed.items()}
-print(json.dumps(opencode_fuel.fuel_from_windowed_stats(stats)))
+# Fixtures supplied as a single monthly/all-time window use the plain aggregator
+# for backward compatibility; live multi-window data uses rolling-cap logic.
+if set(windowed.keys()) == {'month'}:
+    stats = opencode_fuel.parse_opencode_stats_text_or_json(windowed['month'])
+    print(json.dumps(opencode_fuel.fuel_from_stats(stats)))
+else:
+    stats = {k: opencode_fuel.parse_opencode_stats_text_or_json(v) for k, v in windowed.items()}
+    print(json.dumps(opencode_fuel.fuel_from_windowed_stats(stats)))
 '@
         # Pass stats text via stdin: Windows PowerShell 5.1 can strip embedded quotes when
         # they are passed as a native argument, which breaks parsing.

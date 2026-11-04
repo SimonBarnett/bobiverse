@@ -87,9 +87,12 @@ def test_build_launch_opencode_creates_wrapper(tmp_path: Path):
     script = spec.files[script_key]
     assert "opencode.exe" in script or OP in script
     assert "'run', '-m', $model" in script
-    assert "--continue" in script
+    assert "--continue" not in script
     assert "Write-Output $outStr" in script
     assert "Do work." in spec.files[prompt_key]
+    # Every OpenCode launch must pass the fresh-session guard (no --continue/--session).
+    ps1_files = {k: v for k, v in spec.files.items() if k.endswith(".ps1")}
+    bw.assert_fresh(spec.argv, ps1_files)
 
 
 def test_should_start_fuel_watcher_includes_opencode():
@@ -155,6 +158,8 @@ def test_opencode_fuel_ps1_uses_windowed_fuel_translation():
 
 def test_opencode_fuel_ps1_resolves_installed_layout(tmp_path: Path):
     r"""The helper must find common\scripts when run from <ai root>\bob\tools."""
+    if shutil.which("powershell.exe") is None:
+        pytest.skip("powershell.exe not available")
     installed = tmp_path / "bob"
     tools = installed / "tools"
     common_scripts = installed / "common" / "scripts"
