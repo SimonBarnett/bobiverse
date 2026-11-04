@@ -49,6 +49,7 @@ TipForm tray
 
 bob-worker.exe (one window)
   ├─ IRC seat nick {machine}-{pid} → JOIN #{machine} only
+  ├─ agent selection: Grok → Cursor → OpenCode → key dialog (FR #3997 / #6120)
   ├─ relay: paste/WriteConsoleInput FROM lines (submit gap + Enter×2 + submit-verify Enter-only retry never re-paste inside verify loop FR #2696; post-FAILED re-paste once then NACK inject failed FR #4115; Cursor re-paste once then GIVEUP submit-verify failed FR #4510; Cursor turn_open|probe stop + pre-GIVEUP grace FR #4732; job-matched ACK stop FR #2791)
   ├─ outbox.txt ← agent ACK/DONE/NACK/GIVEUP / PRIVMSG #{machine}
   └─ program posts !bored; never the model

@@ -1,6 +1,6 @@
 ﻿<#
 .SYNOPSIS
-  Print the agent-fuel readings bob-worker.exe uses to pick grok -> cursor -> dialog (FR #3997). JSON on stdout, nothing else.
+  Print the agent-fuel readings bob-worker.exe uses to pick grok -> cursor -> opencode -> dialog (FR #3997 / #6120). JSON on stdout, nothing else.
 .DESCRIPTION
   LOCAL readings only (CAST IRON, same sources as the tray): Cursor pools via Get-BobCursorAgentWeeklyRemaining
   (tools\Get-CursorAgentUsage.py or BOB_CURSOR_AGENT_FIXTURE; high-cost-models + auto/low-cost), then

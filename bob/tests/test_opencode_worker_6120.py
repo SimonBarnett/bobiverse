@@ -63,6 +63,17 @@ def test_opencode_default_model():
     assert bw.opencode_default_model(bw.Fuel()) is None
 
 
+def test_opencode_default_model_skips_exhausted_glm53():
+    """Per-model fuel must be respected: glm-5.3 at 0 should not be chosen."""
+    fuel = bw.Fuel(
+        opencode_go=50,
+        opencode_models={"glm-5.3": 0, "kimi-k3": 50},
+    )
+    selected = bw.opencode_default_model(fuel)
+    assert selected != "opencode-go/glm-5.3"
+    assert selected == "opencode-go/kimi-k3"
+
+
 def test_build_launch_opencode_creates_wrapper(tmp_path: Path):
     spec = bw.build_launch("opencode", "agent", r"C:\ai\bob\worker", "Do work.", OP, tmp_path)
     assert spec.argv[0] == "powershell.exe"
@@ -102,3 +113,33 @@ def test_read_fuel_parses_opencode_section(tmp_path: Path):
     assert f.opencode_free == 100
     assert f.opencode_go == 50
     assert f.opencode_models == {"glm-5.3": 50}
+
+
+OPENCODE_FUEL_PS1 = Path(bw.__file__).resolve().parent.parent / "tray" / "tools" / "Get-BobOpencodeFuel.ps1"
+
+
+def test_opencode_fuel_ps1_uses_models_plain_text_stats():
+    text = OPENCODE_FUEL_PS1.read_text(encoding="utf-8-sig")
+    assert "stats --models" in text
+    assert "stats --json" not in text
+    assert "--output json" not in text
+
+
+def test_opencode_fuel_ps1_pipes_text_via_stdin():
+    text = OPENCODE_FUEL_PS1.read_text(encoding="utf-8-sig")
+    assert "$statsRaw | & $py -c $script" in text
+    assert "sys.stdin.read()" in text
+    assert "sys.argv[1]" not in text
+
+
+def test_opencode_fuel_ps1_pythonpath_points_to_repo_common_scripts():
+    text = OPENCODE_FUEL_PS1.read_text(encoding="utf-8-sig")
+    assert "Split-Path -Parent (Split-Path -Parent (Split-Path -Parent $PSScriptRoot))" in text
+    assert "common\\scripts" in text
+
+
+def test_opencode_fuel_ps1_uses_opencode_fuel_translation():
+    text = OPENCODE_FUEL_PS1.read_text(encoding="utf-8-sig")
+    assert "opencode_fuel" in text
+    assert "parse_opencode_stats_text_or_json" in text
+    assert "fuel_from_stats" in text

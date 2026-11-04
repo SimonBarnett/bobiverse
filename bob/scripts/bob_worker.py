@@ -8,8 +8,8 @@ Modes
   --mode maintenance Jeeves maintenance after --heal still failing (FR #2412): cwd --work-root, diagnose/fix, file intake
 
 Rules (CAST IRON, Simon t762u-t765u)
-  * Agent choice is ALWAYS automatic by token availability (FR #3997): Grok (local weekly > 0 or unknown read)
-    -> Cursor (high or low pool > 0) -> dialog asking for a Grok session key (kept in memory only, handed to the child env, never written/printed).
+  * Agent choice is ALWAYS automatic by token availability (FR #3997 / #6120): Grok (local weekly > 0 or unknown read)
+    -> Cursor (high or low pool > 0) -> OpenCode (free or Go fuel > 0) -> dialog asking for a Grok session key (kept in memory only, handed to the child env, never written/printed).
   * EVERY launch is a NEW agent: new session id, new console window, new run dir. Never --resume/--continue/-r, never
     reuse or attach to an existing window/process (assert_fresh() enforces it; a restart after a hang is a NEW agent too).
     ONE exception (FR #2522): --mode maintenance SHOULD resume its own last maintenance session (recorded by this exe)
@@ -322,9 +322,23 @@ def opencode_has_tokens(f: Fuel) -> bool:
 
 
 def opencode_default_model(f: Fuel) -> Optional[str]:
-    """Pick a sensible OpenCode model from fuel readings (issue #6120)."""
+    """Pick a sensible OpenCode model from fuel readings (issue #6120).
+
+    Per-model caps are respected: choose the first model in the OpenCode Go
+    fallback order that has positive remaining fuel. When per-model readings
+    are unavailable, fall back to the historical default.
+    """
     if f.opencode_go is not None and f.opencode_go > 0:
-        return "opencode-go/glm-5.3"
+        models = f.opencode_models or {}
+        if not models:
+            return "opencode-go/glm-5.3"
+        order = opencode_fuel.OPENCODE_GO_FALLBACK_ORDER if opencode_fuel else ("glm-5.3",)
+        for m in order:
+            try:
+                if int(models.get(m) or 0) > 0:
+                    return f"opencode-go/{m}"
+            except (TypeError, ValueError):
+                continue
     if f.opencode_free is not None and f.opencode_free > 0:
         return "opencode-free/beam-free"
     return None
@@ -1091,8 +1105,21 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             "$model = if ($env:BOB_OPENCODE_MODEL) { $env:BOB_OPENCODE_MODEL } else { 'opencode-go/glm-5.3' }",
             f"$exe = '{esc(exe)}'",
             f"$prompt = [IO.File]::ReadAllText('{esc(pfile)}')",
-            "try { & $exe run -m $model $prompt } catch { }",
-            "while ($true) { $line = [Console]::ReadLine(); if ($line -eq 'exit') { break }; try { & $exe run -m $model $line } catch { } }",
+            "$fuelLog = Join-Path $env:LOCALAPPDATA 'Bobiverse\\worker\\logs\\opencode-out-of-fuel.log'",
+            "New-Item -ItemType Directory -Force -Path (Split-Path -Parent $fuelLog) | Out-Null",
+            "function Invoke-Opencode($line) {",
+            "    $output = & $exe run -m $model $line *>&1",
+            "    $outStr = [string]($output | Out-String)",
+            "    if ($LASTEXITCODE -ne 0 -or $outStr -match '402|429|Payment Required|usage balance exhausted|Too Many Requests') {",
+            "        $matchLines = $outStr -split '\\r?\\n' | Where-Object { $_ -match '402|429|Payment Required|usage balance exhausted|Too Many Requests' }",
+            "        $msg = ($matchLines | Select-Object -First 3) -join ' '",
+            "        if (-not $msg) { $msg = ($outStr -replace '\\s+', ' ').Trim(); if ($msg.Length -gt 300) { $msg = $msg.Substring(0, 300) } }",
+            "        $entry = @{ pid = $PID; ts = (Get-Date -Format o); text = $msg } | ConvertTo-Json -Compress",
+            "        Add-Content -Path $fuelLog -Value $entry -ErrorAction SilentlyContinue",
+            "    }",
+            "}",
+            "try { Invoke-Opencode $prompt } catch { [Console]::Error.WriteLine('opencode initial run failed: ' + $_) }",
+            "while ($true) { $line = [Console]::ReadLine(); if ($null -eq $line -or $line -eq 'exit') { break }; try { Invoke-Opencode $line } catch { [Console]::Error.WriteLine('opencode run failed: ' + $_) } }",
             "exit 0",
         ])
         argv = ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", lfile]
@@ -2888,11 +2915,13 @@ def default_unified_log_path() -> Path:
 
 
 def default_out_of_fuel_log_path(kind: str, *, env: Optional[dict] = None) -> Optional[Path]:
-    """Log path to tail for mid-job out-of-fuel (FR #3012 grok / FR #3019 cursor).
+    r"""Log path to tail for mid-job out-of-fuel (FR #3012 grok / FR #3019 cursor / FR #6120 opencode).
 
     Override with ``BOB_WORKER_OUT_OF_FUEL_LOG``. Grok defaults to ``unified.jsonl``.
     Cursor has no durable fleet enqueue log yet — returns the override only (watcher waits
     until the path appears; mid-job fuel-reading poll still covers Cursor).
+    OpenCode writes wrapper-caught 402/429/quota failures to a shared log under
+    ``%LOCALAPPDATA%\Bobiverse\worker\logs`` so the fuel watcher can tail them.
     """
     env = os.environ if env is None else env
     override = (env.get("BOB_WORKER_OUT_OF_FUEL_LOG") or "").strip()
@@ -2903,6 +2932,9 @@ def default_out_of_fuel_log_path(kind: str, *, env: Optional[dict] = None) -> Op
         return default_unified_log_path()
     if k == "cursor":
         return None
+    if k == "opencode":
+        base = Path(env.get("LOCALAPPDATA") or str(Path.home() / "AppData" / "Local"))
+        return base / "Bobiverse" / "worker" / "logs" / "opencode-out-of-fuel.log"
     return None
 
 

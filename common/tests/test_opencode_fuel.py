@@ -4,6 +4,83 @@ from __future__ import annotations
 import opencode_fuel as of
 
 
+# Captured sample of real ``opencode stats --models`` output, including
+# box-drawing characters and an ANSI cursor-up escape sequence.
+REAL_STATS_SAMPLE = """ÔöîÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÉ
+Ôöé                       OVERVIEW                         Ôöé
+Ôö£ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöñ
+ÔöéSessions                                             18 Ôöé
+ÔöéMessages                                            361 Ôöé
+ÔöéDays                                                  1 Ôöé
+ÔööÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÿ
+
+ÔöîÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÉ
+Ôöé                    COST & TOKENS                       Ôöé
+Ôö£ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöñ
+ÔöéTotal Cost                                        $9.33 Ôöé
+ÔöéAvg Cost/Day                                      $9.33 Ôöé
+ÔöéAvg Tokens/Session                                 2.2M Ôöé
+ÔöéMedian Tokens/Session                              7.8K Ôöé
+ÔöéInput                                            798.1K Ôöé
+ÔöéOutput                                            57.1K Ôöé
+ÔöéCache Read                                        39.4M Ôöé
+ÔöéCache Write                                           0 Ôöé
+ÔööÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÿ
+
+ÔöîÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÉ
+Ôöé                      MODEL USAGE                       Ôöé
+Ôö£ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöñ
+Ôöé opencode-go/kimi-k2.7-code                             Ôöé
+Ôöé  Messages                                          258 Ôöé
+Ôöé  Input Tokens                                   447.8K Ôöé
+Ôöé  Output Tokens                                   94.5K Ôöé
+Ôöé  Cache Read                                      34.5M Ôöé
+Ôöé  Cache Write                                         0 Ôöé
+Ôöé  Cost                                          $7.3553 Ôöé
+Ôö£ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöñ
+Ôöé opencode-go/glm-5.3                                    Ôöé
+Ôöé  Messages                                           81 Ôöé
+Ôöé  Input Tokens                                   331.6K Ôöé
+Ôöé  Output Tokens                                   50.1K Ôöé
+Ôöé  Cache Read                                       4.9M Ôöé
+Ôöé  Cache Write                                         0 Ôöé
+Ôöé  Cost                                          $1.9668 Ôöé
+Ôö£ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöñ
+Ôöé opencode-go/longcat-2.0                                Ôöé
+Ôöé  Messages                                            3 Ôöé
+Ôöé  Input Tokens                                     9.3K Ôöé
+Ôöé  Output Tokens                                      17 Ôöé
+Ôöé  Cache Read                                          0 Ôöé
+Ôöé  Cache Write                                         0 Ôöé
+Ôöé  Cost                                          $0.0028 Ôöé
+Ôö£ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöñ
+Ôöé opencode-go/glm-5.3-flash                              Ôöé
+Ôöé  Messages                                            1 Ôöé
+Ôöé  Input Tokens                                     9.4K Ôöé
+Ôöé  Output Tokens                                      36 Ôöé
+Ôöé  Cache Read                                          0 Ôöé
+Ôöé  Cache Write                                         0 Ôöé
+Ôöé  Cost                                          $0.0014 Ôöé
+Ôö£ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöñ
+[1AÔööÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÿ
+
+ÔöîÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÉ
+Ôöé                      TOOL USAGE                        Ôöé
+Ôö£ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöñ
+Ôöé read               ÔûêÔûêÔûêÔûêÔûêÔûêÔûêÔûêÔûêÔûêÔûêÔûêÔûêÔûêÔûêÔûêÔûêÔûêÔûêÔûê 109 (26.0%)    Ôöé
+Ôöé bash               ÔûêÔûêÔûêÔûêÔûêÔûêÔûêÔûêÔûêÔûêÔûêÔûêÔûêÔûêÔûêÔûêÔûê     94 (22.4%)    Ôöé
+Ôöé grep               ÔûêÔûêÔûêÔûêÔûêÔûêÔûêÔûêÔûêÔûêÔûêÔûêÔûêÔûêÔûê       83 (19.8%)    Ôöé
+Ôöé edit               ÔûêÔûêÔûêÔûêÔûêÔûêÔûêÔûêÔûêÔûêÔûêÔûêÔûêÔûê        79 (18.9%)    Ôöé
+Ôöé glob               ÔûêÔûêÔûêÔûê                  27 ( 6.4%)    Ôöé
+Ôöé todowrite          ÔûêÔûê                    16 ( 3.8%)    Ôöé
+Ôöé write              Ôûê                      7 ( 1.7%)    Ôöé
+Ôöé websearch          Ôûê                      3 ( 0.7%)    Ôöé
+Ôöé webfetch           Ôûê                      1 ( 0.2%)    Ôöé
+ÔööÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÿ
+
+"""
+
+
 def test_fuel_from_stats_unknown_is_empty():
     assert of.fuel_from_stats({}) == {
         "opencode-free": None,
@@ -72,3 +149,133 @@ def test_is_exhausted():
     assert of.is_exhausted(None) is True
     assert of.is_exhausted({"costs": {"glm-5.3": 15.0}}) is True
     assert of.is_exhausted({"costs": {"glm-5.3": 1.0}}) is False
+
+
+def test_parse_opencode_stats_json_passes_through_fixture_shape():
+    doc = {"costs": {"glm-5.3": 7.5}, "free_models": ["beam-free"]}
+    assert of.parse_opencode_stats_json(doc) == doc
+
+
+def test_parse_opencode_stats_json_extracts_costs_from_models_array():
+    doc = {
+        "schemaVersion": 1,
+        "totals": {"cost": 7.5},
+        "models": [
+            {"id": "opencode-go/glm-5.3", "cost": 7.5, "messages": 10},
+            {"name": "opencode-go/kimi-k3", "cost": 1.0},
+        ],
+    }
+    parsed = of.parse_opencode_stats_json(doc)
+    assert parsed["costs"]["glm-5.3"] == 7.5
+    assert parsed["costs"]["kimi-k3"] == 1.0
+
+
+def test_parse_opencode_stats_json_extracts_costs_from_model_usage_dict():
+    doc = {
+        "totals": {"cost": 8.5},
+        "modelUsage": {
+            "glm-5.3": {"cost": 8.5, "messages": 5},
+            "kimi-k3": {"cost": 0.5},
+        },
+    }
+    parsed = of.parse_opencode_stats_json(doc)
+    assert parsed["costs"]["glm-5.3"] == 8.5
+    assert parsed["costs"]["kimi-k3"] == 0.5
+
+
+def test_parse_opencode_stats_json_extracts_free_models_from_provider():
+    doc = {
+        "models": [
+            {"id": "opencode-free/beam-free"},
+            {"id": "opencode-free/iceman-contributor-free"},
+            {"id": "opencode-go/glm-5.3", "cost": 1.0},
+        ]
+    }
+    parsed = of.parse_opencode_stats_json(doc)
+    assert "beam-free" in parsed["free_models"]
+    assert "iceman-contributor-free" in parsed["free_models"]
+
+
+def test_parse_opencode_stats_json_unknown_shape_returns_empty():
+    assert of.parse_opencode_stats_json({"unexpected": []}) == {"costs": {}, "free_models": []}
+    assert of.parse_opencode_stats_json(None) == {"costs": {}, "free_models": []}
+
+
+def test_parse_opencode_stats_text_extracts_total_and_model_costs():
+    parsed = of.parse_opencode_stats_text(REAL_STATS_SAMPLE)
+    assert parsed["total_cost"] > 0
+    assert "kimi-k2.7-code" in parsed["costs"]
+    assert parsed["costs"]["kimi-k2.7-code"] > 0
+    assert parsed["costs"]["glm-5.3"] > 0
+
+
+def test_parse_opencode_stats_text_ignores_unknown_models():
+    parsed = of.parse_opencode_stats_text(REAL_STATS_SAMPLE)
+    # No known free models appear in the captured sample, so none are returned.
+    assert "some-unknown-model" not in parsed["costs"]
+
+
+def test_parse_opencode_stats_text_strips_ansi_escape_sequences():
+    parsed = of.parse_opencode_stats_text(REAL_STATS_SAMPLE)
+    assert parsed["total_cost"] is not None
+    assert parsed["costs"]
+
+
+def test_parse_opencode_stats_text_returns_none_on_failure():
+    assert of.parse_opencode_stats_text("") == {
+        "costs": {},
+        "free_models": [],
+        "total_cost": None,
+    }
+    assert of.parse_opencode_stats_text("not a stats table")["total_cost"] is None
+
+
+def test_parse_opencode_stats_text_detects_free_models():
+    sample = """┌────────────────────────────────────────────────────────┐
+│                      MODEL USAGE                       │
+├────────────────────────────────────────────────────────┤
+│ opencode-free/beam-free                                │
+│  Messages                                            5 │
+│  Cost                                            $0.10 │
+├────────────────────────────────────────────────────────┤
+│ opencode-go/glm-5.3                                    │
+│  Messages                                           10 │
+│  Cost                                            $7.50 │
+└────────────────────────────────────────────────────────┘
+"""
+    parsed = of.parse_opencode_stats_text(sample)
+    assert "beam-free" in parsed["free_models"]
+    assert "glm-5.3" in parsed["costs"]
+    assert parsed["costs"]["glm-5.3"] == 7.5
+
+
+def test_parse_opencode_stats_text_or_json_accepts_json_fixture():
+    doc = '{"costs": {"glm-5.3": 3.0}, "free_models": ["beam-free"]}'
+    parsed = of.parse_opencode_stats_text_or_json(doc)
+    assert parsed["costs"]["glm-5.3"] == 3.0
+    assert "beam-free" in parsed["free_models"]
+
+
+def test_parse_opencode_stats_text_or_json_accepts_plain_text():
+    sample = """┌────────────────────────────────────────────────────────┐
+│                      MODEL USAGE                       │
+├────────────────────────────────────────────────────────┤
+│ opencode-free/beam-free                                │
+│  Messages                                            5 │
+│  Cost                                            $0.10 │
+├────────────────────────────────────────────────────────┤
+│ opencode-go/glm-5.3                                    │
+│  Messages                                           10 │
+│  Cost                                            $7.50 │
+└────────────────────────────────────────────────────────┘
+"""
+    parsed = of.parse_opencode_stats_text_or_json(sample)
+    assert "beam-free" in parsed["free_models"]
+    assert parsed["costs"]["glm-5.3"] == 7.5
+
+
+def test_parse_opencode_stats_text_or_json_returns_empty_for_garbage():
+    assert of.parse_opencode_stats_text_or_json("garbage") == {
+        "costs": {},
+        "free_models": [],
+    }

@@ -62,19 +62,23 @@ smoke.
 2. Use `request_user_form` for typed steps; captcha / passkey / device approval →
    `request_box_help`. Host fills; Bob never sees values.
 3. Create/copy the provider key for `opencode-go`.
-4. Write **only** the raw `auth.json` body (or the key) to box
+4. Build or copy the **complete** `auth.json` body for provider `opencode-go`
+   (a bare key is not a valid auth document). Write **only** that JSON body to box
    `/workspace/secrets/opencode-auth-<machine>.json`, mode `600`. Report **path +
    byte length only** — never the key, never the token in Task reports, screenshots
-   captions, or chat.
+   captions, or chat. Alternatively, run `opencode auth login` on the seat to
+   create the file before restricting its ACL.
 5. CopyFromBox to an allowed local-exec path, then move to
-   `%USERPROFILE%\.local\share\opencode\auth.json`. Restrict ACL:
+   `%USERPROFILE%\.local\share\opencode\auth.json`. Restrict ACL and verify it
+   succeeded:
 
 ```powershell
 $authDir = Join-Path $env:USERPROFILE '.local\share\opencode'
 New-Item -ItemType Directory -Force -Path $authDir | Out-Null
 # Move the box-landed file into place; do NOT Read it into agent context.
 $authFile = Join-Path $authDir 'auth.json'
-icacls $authFile /inheritance:r /grant:r "$env:USERNAME:(R)" | Out-Null
+icacls $authFile /inheritance:r /grant:r "$($env:USERNAME):(R)"
+if ($LASTEXITCODE -ne 0) { throw "failed to restrict auth.json ACL" }
 ```
 
 Delete the box secret file after a successful seat install.
@@ -91,19 +95,20 @@ opencode run -m opencode-go/glm-5.3 "Reply with pong only"
 
 Verified MarchHare: `glm-5.3`, `glm-5.3-flash`, `kimi-k2.7-code`, `longcat-2.0`
 all reply `pong`. `opencode models opencode-go` lists ~30 models. There is no
-`kimi-k2.6` in the Go catalog.
+`kimi-k2.6` in the Go catalog. The worker picks the first fallback model that
+has positive per-model fuel; it will not fall back to another capped model.
 
 ## Fleet wire-up
 
 1. Fuel ids `opencode-free` and `opencode-go` on the digest webhook. Remaining %
    is estimated from local `opencode stats` cost vs the per-model monthly caps
    (e.g. glm-5.3 $15, kimi-k2.7-code $60); `n/a` when unknown, like other pools.
-2. On start / busy: report to `https://bob.ntsa.uk/bob/v1/report` with
-   **agent=`opencode`** and **model=`<provider>/<slug>`** (e.g. `opencode-go/glm-5.3`).
-3. Worker loop: join `#{machine}`, `!bored` on join and after DONE / 2m idle,
-   ACK/DONE to Jeeves, activity/busy/idle on the webhook.
-4. Out-of-fuel: refuse offers when the current model's cap is hit; fall back to
-   another Go model or the free model, else go idle.
+2. Worker loop: join `#{machine}`, `!bored` **after the agent is ready** and after
+   DONE / NACK / GIVEUP / 2m idle, ACK/DONE to Jeeves. The program posts `!bored`;
+   the model must never post it.
+3. Out-of-fuel: the worker refuses offers when the current model's cap is hit.
+   It then picks the first Go model in fallback order with positive remaining fuel
+   (using per-model readings from the digest), then the free model, else goes idle.
 
 ## Model / plan notes
 
