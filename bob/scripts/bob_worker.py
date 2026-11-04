@@ -324,14 +324,13 @@ def opencode_has_tokens(f: Fuel) -> bool:
 def opencode_default_model(f: Fuel) -> Optional[str]:
     """Pick a sensible OpenCode model from fuel readings (issue #6120).
 
-    Per-model caps are respected: choose the first model in the OpenCode Go
-    fallback order that has positive remaining fuel. When per-model readings
-    are unavailable, fall back to the historical default.
+    Per-model caps are respected: when per-model readings exist, only choose a
+    Go model that has positive remaining fuel. When no per-model readings exist,
+    prefer the free model if it has fuel, otherwise fall back to the historical
+    Go default only when the aggregate Go pool reports fuel.
     """
-    if f.opencode_go is not None and f.opencode_go > 0:
-        models = f.opencode_models or {}
-        if not models:
-            return "opencode-go/glm-5.3"
+    models = f.opencode_models or {}
+    if models:
         order = opencode_fuel.OPENCODE_GO_FALLBACK_ORDER if opencode_fuel else ("glm-5.3",)
         for m in order:
             try:
@@ -339,8 +338,16 @@ def opencode_default_model(f: Fuel) -> Optional[str]:
                     return f"opencode-go/{m}"
             except (TypeError, ValueError):
                 continue
+        # Per-model readings exist but no Go model has fuel; free tier is next.
+        if f.opencode_free is not None and f.opencode_free > 0:
+            return "opencode-free/beam-free"
+        return None
+
+    # No per-model readings: prefer free if available, else aggregate Go default.
     if f.opencode_free is not None and f.opencode_free > 0:
         return "opencode-free/beam-free"
+    if f.opencode_go is not None and f.opencode_go > 0:
+        return "opencode-go/glm-5.3"
     return None
 
 

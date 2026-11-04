@@ -40,40 +40,53 @@ try {
             # OpenCode caps are rolling: 20% per 5h, 50% per week, 100% per month.
             $days5h = [math]::Round(5 / 24, 6)
             $statsByWindow = @{}
-            $jobs = @(
-                @{ window = '5h';    args = "stats --models --days $days5h" },
-                @{ window = 'week';  args = 'stats --models --days 7' },
-                @{ window = 'month'; args = 'stats --models --days 30' }
-            )
-            foreach ($job in $jobs) {
-                $output = $null
+
+            function Invoke-OpencodeTimed($arguments) {
+                $stdout = $null
                 $proc = $null
                 try {
                     $psi = New-Object System.Diagnostics.ProcessStartInfo
                     $psi.FileName = $exe
-                    $psi.Arguments = $job.args
+                    $psi.Arguments = $arguments
                     $psi.RedirectStandardOutput = $true
                     $psi.RedirectStandardError = $true
                     $psi.UseShellExecute = $false
                     $psi.CreateNoWindow = $true
                     $proc = [System.Diagnostics.Process]::Start($psi)
+                    # Start draining stdout/stderr before waiting so a full pipe
+                    # cannot deadlock the child before the 25 s timeout expires.
+                    $stdoutTask = $proc.StandardOutput.ReadToEndAsync()
+                    $stderrTask = $proc.StandardError.ReadToEndAsync()
                     if ($proc.WaitForExit(25000)) {
-                        $output = [string]($proc.StandardOutput.ReadToEnd())
+                        $stdout = [string]($stdoutTask.Result)
+                        [void]($stderrTask.Result)
                     } else {
                         # Timed out: kill the whole OpenCode process tree and leave this
                         # window unknown so the helper still produces JSON.
                         try { & taskkill /T /F /PID $proc.Id 2>$null | Out-Null } catch { }
-                        $output = $null
+                        $stdout = $null
                     }
                 } catch {
-                    $output = $null
+                    $stdout = $null
                 } finally {
                     if ($proc -and -not $proc.HasExited) {
                         try { & taskkill /T /F /PID $proc.Id 2>$null | Out-Null } catch { }
                     }
                     if ($proc) { try { $proc.Dispose() } catch { } }
                 }
-                $statsByWindow[$job.window] = if ($output) { $output } else { $null }
+                return $stdout
+            }
+
+            # Discover free-model availability from the catalogue (not recorded usage).
+            $modelsOutput = Invoke-OpencodeTimed 'models'
+
+            $jobs = @(
+                @{ window = '5h';    args = "stats --models --days $days5h" },
+                @{ window = 'week';  args = 'stats --models --days 7' },
+                @{ window = 'month'; args = 'stats --models --days 30' }
+            )
+            foreach ($job in $jobs) {
+                $statsByWindow[$job.window] = Invoke-OpencodeTimed $job.args
             }
         }
     }
@@ -102,18 +115,26 @@ try {
 import json, sys, opencode_fuel
 raw = sys.stdin.read()
 windowed = json.loads(raw)
+models_text = windowed.pop('models', None)
+available_free = opencode_fuel.parse_opencode_models_text(models_text)
 # Fixtures supplied as a single monthly/all-time window use the plain aggregator
 # for backward compatibility; live multi-window data uses rolling-cap logic.
-if set(windowed.keys()) == {'month'}:
+stats_keys = set(windowed.keys())
+if stats_keys == {'month'}:
     stats = opencode_fuel.parse_opencode_stats_text_or_json(windowed['month'])
+    stats['free_models'] = list(dict.fromkeys(stats.get('free_models', []) + available_free))
     print(json.dumps(opencode_fuel.fuel_from_stats(stats)))
 else:
-    stats = {k: opencode_fuel.parse_opencode_stats_text_or_json(v) for k, v in windowed.items()}
-    print(json.dumps(opencode_fuel.fuel_from_windowed_stats(stats)))
+    parsed = {}
+    for k, v in windowed.items():
+        s = opencode_fuel.parse_opencode_stats_text_or_json(v)
+        s['free_models'] = list(dict.fromkeys(s.get('free_models', []) + available_free))
+        parsed[k] = s
+    print(json.dumps(opencode_fuel.fuel_from_windowed_stats(parsed)))
 '@
         # Pass stats text via stdin: Windows PowerShell 5.1 can strip embedded quotes when
         # they are passed as a native argument, which breaks parsing.
-        $payload = $statsByWindow | ConvertTo-Json -Compress -Depth 3
+        $payload = (@{ models = $modelsOutput } + $statsByWindow) | ConvertTo-Json -Compress -Depth 3
         $result = $payload | & $py -c $script
         if ($result) {
             $parsed = $result | ConvertFrom-Json -ErrorAction Stop

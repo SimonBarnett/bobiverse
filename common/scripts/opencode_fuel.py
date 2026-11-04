@@ -110,11 +110,27 @@ def _go_models_remaining(stats: dict) -> dict[str, int]:
 
 
 def _cost_for_model_windowed(windowed: dict, model: str) -> dict[str, Optional[float]]:
-    """Return per-window cost for ``model``; missing windows report None."""
+    """Return per-window cost for ``model``.
+
+    A successfully parsed window with no row for the model reports ``0.0``,
+    but only when the model has been seen in at least one window.  A model
+    that never appears in any window remains unknown, and a failed/timed-out
+    or unparseable window reports ``None`` so the aggregate remains unknown.
+    """
+    seen = any(
+        isinstance(w, dict) and model in (w.get("costs") or {})
+        for w in windowed.values()
+    )
     out: dict[str, Optional[float]] = {}
     for window in CAP_WINDOWS:
         stats = windowed.get(window)
-        out[window] = _cost_for_model(stats, model) if isinstance(stats, dict) else None
+        if not isinstance(stats, dict) or not stats.get("parse_success"):
+            out[window] = None
+        elif not seen:
+            out[window] = None
+        else:
+            cost = _cost_for_model(stats, model)
+            out[window] = 0.0 if cost is None else cost
     return out
 
 
@@ -207,17 +223,55 @@ def _parse_money(value: str) -> Optional[float]:
         return None
 
 
+def _looks_like_models_list(text: str) -> bool:
+    """True when text looks like plain ``opencode models`` output.
+
+    Each non-empty line should be a ``provider/model`` id and there must be no
+    stats table markers.
+    """
+    if not text or not isinstance(text, str):
+        return False
+    text = _strip_ansi(text)
+    if any(marker in text for marker in ("┌", "└", "─", "MODEL USAGE", "COST & TOKENS", "Total Cost")):
+        return False
+    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+    if not lines:
+        return False
+    model_line_re = re.compile(r"^[\w.\-]+/[\w.\-]+$")
+    return all(model_line_re.match(ln) for ln in lines)
+
+
+def parse_opencode_models_text(text: str | None) -> list[str]:
+    """Translate plain ``opencode models`` output to a list of known free slugs.
+
+    Returns recognised free model slugs (e.g. ``beam-free``) found in the
+    catalogue output, which is one ``provider/model`` id per line.
+    """
+    if not text or not isinstance(text, str):
+        return []
+    slugs: list[str] = []
+    for line in _strip_ansi(text).splitlines():
+        line = line.strip()
+        if not line or "/" not in line:
+            continue
+        provider = line.split("/")[0]
+        slug = line.split("/")[-1]
+        if provider == PROVIDER_FREE and slug in OPENCODE_FREE_MODELS:
+            slugs.append(slug)
+    return slugs
+
+
 def parse_opencode_stats_text(text: str | None) -> dict:
     """Translate plain ``opencode stats`` table output to the fuel helper shape.
 
     Reads the ``Total Cost`` row and per-model ``Cost`` rows from the box-drawing
     table emitted by ``opencode stats --models``.  Returns
-    ``{"costs": {"model": usd, ...}, "free_models": [...], "total_cost": usd_or_none}``.
-    When parsing fails the function returns empty containers and ``None`` totals
-    rather than guessing.
+    ``{"costs": {"model": usd, ...}, "free_models": [...], "total_cost": usd_or_none,
+    "parse_success": bool}``.  When parsing fails the function returns empty
+    containers, ``None`` totals and ``parse_success=False`` rather than guessing.
     """
     if not text or not isinstance(text, str):
-        return {"costs": {}, "free_models": [], "total_cost": None}
+        return {"costs": {}, "free_models": [], "total_cost": None, "parse_success": False}
 
     text = _strip_ansi(text)
     lines = text.splitlines()
@@ -228,6 +282,7 @@ def parse_opencode_stats_text(text: str | None) -> dict:
 
     in_cost_tokens = False
     in_model_usage = False
+    saw_table_marker = False
 
     # Regex for model/provider names appearing anywhere in a line.
     model_re = re.compile(r"(opencode-(?:go|free)/[\w.\-]+)")
@@ -240,14 +295,17 @@ def parse_opencode_stats_text(text: str | None) -> dict:
         if "COST & TOKENS" in upper:
             in_cost_tokens = True
             in_model_usage = False
+            saw_table_marker = True
             continue
         if "MODEL USAGE" in upper:
             in_cost_tokens = False
             in_model_usage = True
+            saw_table_marker = True
             continue
         if "TOOL USAGE" in upper or "SESSIONS" in upper:
             in_cost_tokens = False
             in_model_usage = False
+            saw_table_marker = True
             continue
 
         if in_cost_tokens:
@@ -280,6 +338,7 @@ def parse_opencode_stats_text(text: str | None) -> dict:
         model_match = model_re.search(line)
         if model_match:
             current_model = model_match.group(1)
+            saw_table_marker = True
             continue
 
         cost_match = cost_re.search(line)
@@ -294,18 +353,19 @@ def parse_opencode_stats_text(text: str | None) -> dict:
                     free_models.append(slug)
             current_model = None
 
-    return {"costs": costs, "free_models": free_models, "total_cost": total_cost}
+    parse_success = saw_table_marker or bool(costs) or bool(free_models) or total_cost is not None
+    return {"costs": costs, "free_models": free_models, "total_cost": total_cost, "parse_success": parse_success}
 
 
 def parse_opencode_stats_text_or_json(raw: str | None) -> dict:
-    """Accept either legacy JSON fixture input or plain CLI table output.
+    """Accept legacy JSON fixture, plain ``opencode stats`` table, or ``opencode models`` list.
 
     Keeps the ``BOB_OPENCODE_FUEL_FIXTURE`` environment path working for JSON
-    fixtures while allowing the live ``opencode stats --models`` text to be
-    passed straight through stdin.
+    fixtures while allowing the live ``opencode stats --models`` text and the
+    ``opencode models`` catalogue to be passed straight through stdin.
     """
     if not raw or not isinstance(raw, str):
-        return {"costs": {}, "free_models": []}
+        return {"costs": {}, "free_models": [], "parse_success": False}
 
     trimmed = raw.strip()
     if trimmed.startswith("{"):
@@ -316,10 +376,14 @@ def parse_opencode_stats_text_or_json(raw: str | None) -> dict:
         except json.JSONDecodeError:
             pass
 
+    if _looks_like_models_list(trimmed):
+        return {"costs": {}, "free_models": parse_opencode_models_text(trimmed), "parse_success": True}
+
     parsed = parse_opencode_stats_text(raw)
     return {
         "costs": parsed["costs"],
         "free_models": parsed["free_models"],
+        "parse_success": parsed["parse_success"],
     }
 
 
@@ -328,8 +392,9 @@ def parse_opencode_stats_json(doc: dict | None) -> dict:
 
     The live CLI only emits plain-text tables (``opencode stats --models``), but
     environment fixtures may still supply JSON.  Returns
-    ``{"costs": {"model": usd, ...}, "free_models": [...]}``.  Unknown shapes
-    return empty containers rather than raising.
+    ``{"costs": {"model": usd, ...}, "free_models": [...], "parse_success": bool}``.
+    Unknown shapes return empty containers and ``parse_success=False`` rather than
+    raising.
     """
     doc = doc if isinstance(doc, dict) else {}
 
@@ -338,6 +403,7 @@ def parse_opencode_stats_json(doc: dict | None) -> dict:
         return {
             "costs": dict(doc.get("costs") or {}),
             "free_models": list(doc.get("free_models") or []),
+            "parse_success": True,
         }
 
     costs: dict[str, float] = {}
@@ -391,7 +457,8 @@ def parse_opencode_stats_json(doc: dict | None) -> dict:
             if provider == PROVIDER_FREE and slug in OPENCODE_FREE_MODELS:
                 free_models.append(slug)
 
-    return {"costs": costs, "free_models": free_models}
+    parse_success = bool(costs or free_models or models is not None)
+    return {"costs": costs, "free_models": free_models, "parse_success": parse_success}
 
 
 def fuel_from_stats(stats: dict | None) -> dict:

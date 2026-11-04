@@ -153,7 +153,10 @@ def test_is_exhausted():
 
 def test_parse_opencode_stats_json_passes_through_fixture_shape():
     doc = {"costs": {"glm-5.3": 7.5}, "free_models": ["beam-free"]}
-    assert of.parse_opencode_stats_json(doc) == doc
+    parsed = of.parse_opencode_stats_json(doc)
+    assert parsed["costs"] == doc["costs"]
+    assert parsed["free_models"] == doc["free_models"]
+    assert parsed["parse_success"] is True
 
 
 def test_parse_opencode_stats_json_extracts_costs_from_models_array():
@@ -222,8 +225,16 @@ def test_parse_opencode_stats_json_discovers_free_models_without_usage():
 
 
 def test_parse_opencode_stats_json_unknown_shape_returns_empty():
-    assert of.parse_opencode_stats_json({"unexpected": []}) == {"costs": {}, "free_models": []}
-    assert of.parse_opencode_stats_json(None) == {"costs": {}, "free_models": []}
+    assert of.parse_opencode_stats_json({"unexpected": []}) == {
+        "costs": {},
+        "free_models": [],
+        "parse_success": False,
+    }
+    assert of.parse_opencode_stats_json(None) == {
+        "costs": {},
+        "free_models": [],
+        "parse_success": False,
+    }
 
 
 def test_parse_opencode_stats_text_extracts_total_and_model_costs():
@@ -264,8 +275,11 @@ def test_parse_opencode_stats_text_returns_none_on_failure():
         "costs": {},
         "free_models": [],
         "total_cost": None,
+        "parse_success": False,
     }
-    assert of.parse_opencode_stats_text("not a stats table")["total_cost"] is None
+    garbage = of.parse_opencode_stats_text("not a stats table")
+    assert garbage["total_cost"] is None
+    assert garbage["parse_success"] is False
 
 
 def test_parse_opencode_stats_text_detects_free_models():
@@ -316,6 +330,7 @@ def test_parse_opencode_stats_text_or_json_returns_empty_for_garbage():
     assert of.parse_opencode_stats_text_or_json("garbage") == {
         "costs": {},
         "free_models": [],
+        "parse_success": False,
     }
 
 
@@ -334,9 +349,9 @@ def test_parse_opencode_stats_json_strips_provider_prefix_from_dict_keys():
 def test_fuel_from_windowed_stats_uses_most_utilised_window():
     # Monthly looks healthy, but the 5-hour window is exhausted.
     windowed = {
-        "5h": {"costs": {"glm-5.3": 4.0}},
-        "week": {"costs": {"glm-5.3": 5.0}},
-        "month": {"costs": {"glm-5.3": 7.5}},
+        "5h": {"costs": {"glm-5.3": 4.0}, "parse_success": True},
+        "week": {"costs": {"glm-5.3": 5.0}, "parse_success": True},
+        "month": {"costs": {"glm-5.3": 7.5}, "parse_success": True},
     }
     fuel = of.fuel_from_windowed_stats(windowed)
     # 5h cap = 15 * 0.20 = 3.0; cost 4.0 => 0% remaining.
@@ -346,7 +361,7 @@ def test_fuel_from_windowed_stats_uses_most_utilised_window():
 
 def test_fuel_from_windowed_stats_missing_window_means_unknown():
     windowed = {
-        "month": {"costs": {"glm-5.3": 7.5}},
+        "month": {"costs": {"glm-5.3": 7.5}, "parse_success": True},
     }
     fuel = of.fuel_from_windowed_stats(windowed)
     # A failed/missing window keeps the model allowance unknown.
@@ -369,3 +384,47 @@ def test_fuel_from_windowed_stats_unknown_without_data():
         "opencode-go": None,
         "models": {},
     }
+
+
+def test_fuel_from_windowed_stats_missing_model_in_successful_window_counts_as_zero():
+    # The monthly window succeeded and contains usage for glm-5.3. The 5-hour
+    # and weekly windows succeeded but contain no row for glm-5.3, so that model
+    # cost is zero in those windows (not unknown).
+    windowed = {
+        "5h": {"costs": {}, "parse_success": True},
+        "week": {"costs": {}, "parse_success": True},
+        "month": {"costs": {"glm-5.3": 7.5}, "parse_success": True},
+    }
+    fuel = of.fuel_from_windowed_stats(windowed)
+    # Most-utilised window is month: 7.5 / 15 => 50% remaining.
+    assert fuel["models"]["glm-5.3"] == 50
+    assert fuel["opencode-go"] == 50
+
+
+def test_fuel_from_windowed_stats_failed_window_keeps_model_unknown():
+    # The 5-hour stats call failed/timed out, so its cost is unknown rather
+    # than zero; the model allowance must stay unknown.
+    windowed = {
+        "5h": {"costs": {}, "parse_success": False},
+        "week": {"costs": {"glm-5.3": 5.0}, "parse_success": True},
+        "month": {"costs": {"glm-5.3": 7.5}, "parse_success": True},
+    }
+    fuel = of.fuel_from_windowed_stats(windowed)
+    assert fuel["models"].get("glm-5.3") is None
+    assert fuel["opencode-go"] is None
+
+
+def test_parse_opencode_models_text_extracts_free_models():
+    text = "opencode-free/beam-free\nopencode-free/iceman-contributor-free\nopencode-go/glm-5.3\n"
+    assert of.parse_opencode_models_text(text) == [
+        "beam-free",
+        "iceman-contributor-free",
+    ]
+
+
+def test_parse_opencode_stats_text_or_json_accepts_models_list():
+    text = "opencode-free/beam-free\nopencode-go/glm-5.3\n"
+    parsed = of.parse_opencode_stats_text_or_json(text)
+    assert parsed["free_models"] == ["beam-free"]
+    assert parsed["costs"] == {}
+    assert parsed["parse_success"] is True

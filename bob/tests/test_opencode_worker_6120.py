@@ -78,6 +78,32 @@ def test_opencode_default_model_skips_exhausted_glm53():
     assert selected == "opencode-go/kimi-k3"
 
 
+def test_opencode_default_model_prefers_free_when_no_per_model_readings():
+    """Without per-model readings, free fuel should be chosen over the blind Go default."""
+    fuel = bw.Fuel(opencode_free=100, opencode_go=50, opencode_models={})
+    assert bw.opencode_default_model(fuel) == "opencode-free/beam-free"
+
+
+def test_opencode_default_model_per_model_exhausted_falls_back_to_free():
+    """When per-model readings exist but every Go model is exhausted, pick free."""
+    fuel = bw.Fuel(
+        opencode_free=100,
+        opencode_go=50,
+        opencode_models={"glm-5.3": 0, "kimi-k3": 0},
+    )
+    assert bw.opencode_default_model(fuel) == "opencode-free/beam-free"
+
+
+def test_opencode_default_model_per_model_exhausted_no_free_returns_none():
+    """When per-model readings exist but every Go model is exhausted and free is unavailable, return None."""
+    fuel = bw.Fuel(
+        opencode_free=0,
+        opencode_go=50,
+        opencode_models={"glm-5.3": 0, "kimi-k3": 0},
+    )
+    assert bw.opencode_default_model(fuel) is None
+
+
 def test_build_launch_opencode_creates_wrapper(tmp_path: Path):
     spec = bw.build_launch("opencode", "agent", r"C:\ai\bob\worker", "Do work.", OP, tmp_path)
     assert spec.argv[0] == "powershell.exe"
@@ -132,6 +158,7 @@ def test_opencode_fuel_ps1_uses_models_plain_text_stats_for_each_window():
     assert text.count("stats --models --days") == 3
     assert "stats --json" not in text
     assert "--output json" not in text
+    assert "Invoke-OpencodeTimed 'models'" in text
 
 
 def test_opencode_fuel_ps1_pipes_windowed_payload_via_stdin():
