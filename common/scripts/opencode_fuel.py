@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import json
 import re
+import time
+from pathlib import Path
 from typing import Optional
 
 # Fuel ids published to the digest webhook.
@@ -18,8 +20,11 @@ FUEL_ID_FREE = "opencode-free"
 FUEL_ID_GO = "opencode-go"
 
 # Provider prefix used by the opencode CLI ``-m`` flag.
+# ``opencode`` and ``opencode-go`` are the documented providers for free models;
+# ``opencode-free`` is kept for backward compatibility with older fixtures/catalogues.
 PROVIDER_FREE = "opencode-free"
 PROVIDER_GO = "opencode-go"
+PROVIDER_FREE_PREFIXES = ("opencode", "opencode-go", "opencode-free")
 
 # Known Go-plan per-model monthly USD allowances (issue #6120 / MarchHare install notes).
 # Models not in this map are treated as cap-unknown and excluded from aggregate fuel.
@@ -36,8 +41,10 @@ OPENCODE_GO_CAPS: dict[str, float] = {
 
 # Rolling cap fractions of the monthly allowance.  A model is capped when any
 # window is exhausted, so remaining % is driven by the most-utilised window.
+# Only the 7-day and 30-day windows are read from ``opencode stats``; the 5-hour
+# rolling cap is enforced at run time by the OpenCode wrapper (see
+# ``record_opencode_pause``).
 CAP_WINDOWS: dict[str, float] = {
-    "5h": 0.20,
     "week": 0.50,
     "month": 1.00,
 }
@@ -60,6 +67,20 @@ OPENCODE_GO_FALLBACK_ORDER: tuple[str, ...] = (
     "deepseek-v4.1-flash",
     "qwen3.8-flash",
 )
+
+# Phrases that indicate an ``opencode run`` hit a rate / rolling / payment limit.
+RATE_LIMIT_PHRASES: tuple[str, ...] = (
+    "429",
+    "402",
+    "too many requests",
+    "rate limit",
+    "rolling limit",
+    "usage balance exhausted",
+    "payment required",
+)
+
+# Default pause when the provider gives no reset time (seconds).
+DEFAULT_PAUSE_S = 3600
 
 
 def _clamp_pct(n: Optional[float]) -> Optional[int]:
@@ -144,7 +165,7 @@ def model_remaining_pct_for_windows(model: str, windowed: dict) -> Optional[int]
     if cap is None or cap <= 0:
         return None
     costs = _cost_for_model_windowed(windowed, model)
-    # All three rolling windows are required; a failed stats call must not be
+    # All rolling windows are required; a failed stats call must not be
     # treated as zero usage.
     if any(v is None for v in costs.values()):
         return None
@@ -172,13 +193,23 @@ def _go_models_remaining_for_windows(windowed: dict) -> dict[str, int]:
     return out
 
 
+def _is_free_model(slug: str) -> bool:
+    """True when a model slug is one of the known free models or ends in ``-free``."""
+    slug = (slug or "").strip()
+    if not slug:
+        return False
+    if slug in OPENCODE_FREE_MODELS:
+        return True
+    return slug.endswith("-free")
+
+
 def _free_models_available(stats: dict) -> bool:
     """True when the stats doc reports at least one free model as available."""
     free = stats.get("free_models") if isinstance(stats.get("free_models"), (list, tuple)) else None
     if free is None:
         # No data: free tier availability is unknown, not assumed.
         return False
-    return any(str(m).strip() in OPENCODE_FREE_MODELS for m in free)
+    return any(_is_free_model(str(m).strip()) for m in free)
 
 
 def _model_id_from_entry(entry: dict) -> Optional[str]:
@@ -223,11 +254,27 @@ def _parse_money(value: str) -> Optional[float]:
         return None
 
 
+def _is_table_row(line: str) -> bool:
+    """True when a line starts with a box-drawing table border or cell marker.
+
+    Also accepts the legacy mojibake glyphs produced by some terminal
+    encodings (seen in captured fixture output), so that real ``opencode
+    stats`` samples are still parsed as table rows.
+    """
+    if not isinstance(line, str):
+        return False
+    stripped = line.lstrip()
+    return stripped.startswith(
+        ("│", "┌", "└", "├", "─", "Ôöé", "Ôöî", "Ôöö", "Ôö£", "ÔöÇ")
+    )
+
+
 def _looks_like_models_list(text: str) -> bool:
     """True when text looks like plain ``opencode models`` output.
 
-    Each non-empty line should be a ``provider/model`` id and there must be no
-    stats table markers.
+    Each non-empty line should be a ``provider/model`` id, there must be no
+    stats table markers, and at least one line must begin with a documented
+    OpenCode provider prefix.
     """
     if not text or not isinstance(text, str):
         return False
@@ -238,27 +285,69 @@ def _looks_like_models_list(text: str) -> bool:
     if not lines:
         return False
     model_line_re = re.compile(r"^[\w.\-]+/[\w.\-]+$")
-    return all(model_line_re.match(ln) for ln in lines)
+    return (
+        all(model_line_re.match(ln) for ln in lines)
+        and any(ln.startswith(("opencode/", "opencode-go/", "opencode-free/")) for ln in lines)
+    )
+
+
+def _parse_model_line(line: str) -> tuple[str, str]:
+    """Split a ``provider/model`` line into provider and slug."""
+    line = line.strip()
+    if "/" not in line:
+        return ("", line)
+    provider, _, slug = line.partition("/")
+    return (provider.strip(), slug.strip())
 
 
 def parse_opencode_models_text(text: str | None) -> list[str]:
     """Translate plain ``opencode models`` output to a list of known free slugs.
 
     Returns recognised free model slugs (e.g. ``beam-free``) found in the
-    catalogue output, which is one ``provider/model`` id per line.
+    catalogue output, which is one ``provider/model`` id per line.  Free models
+    are identified by provider (``opencode`` / ``opencode-go`` / legacy
+    ``opencode-free``) and a slug ending in ``-free`` or listed in
+    ``OPENCODE_FREE_MODELS``.
     """
     if not text or not isinstance(text, str):
         return []
     slugs: list[str] = []
+    seen: set[str] = set()
     for line in _strip_ansi(text).splitlines():
         line = line.strip()
         if not line or "/" not in line:
             continue
-        provider = line.split("/")[0]
-        slug = line.split("/")[-1]
-        if provider == PROVIDER_FREE and slug in OPENCODE_FREE_MODELS:
+        provider, slug = _parse_model_line(line)
+        if provider not in PROVIDER_FREE_PREFIXES:
+            continue
+        if not _is_free_model(slug):
+            continue
+        if slug not in seen:
+            seen.add(slug)
             slugs.append(slug)
     return slugs
+
+
+def parse_opencode_model_ids(text: str | None) -> list[str]:
+    """Return full ``provider/slug`` ids for free models in catalogue output."""
+    if not text or not isinstance(text, str):
+        return []
+    ids: list[str] = []
+    seen: set[str] = set()
+    for line in _strip_ansi(text).splitlines():
+        line = line.strip()
+        if not line or "/" not in line:
+            continue
+        provider, slug = _parse_model_line(line)
+        if provider not in PROVIDER_FREE_PREFIXES:
+            continue
+        if not _is_free_model(slug):
+            continue
+        full_id = f"{provider}/{slug}"
+        if full_id not in seen:
+            seen.add(full_id)
+            ids.append(full_id)
+    return ids
 
 
 def parse_opencode_stats_text(text: str | None) -> dict:
@@ -269,6 +358,10 @@ def parse_opencode_stats_text(text: str | None) -> dict:
     ``{"costs": {"model": usd, ...}, "free_models": [...], "total_cost": usd_or_none,
     "parse_success": bool}``.  When parsing fails the function returns empty
     containers, ``None`` totals and ``parse_success=False`` rather than guessing.
+
+    Section markers such as ``MODEL USAGE`` only count when they appear on table
+    rows, so error text containing those words cannot make a failed window look
+    successful.
     """
     if not text or not isinstance(text, str):
         return {"costs": {}, "free_models": [], "total_cost": None, "parse_success": False}
@@ -285,24 +378,24 @@ def parse_opencode_stats_text(text: str | None) -> dict:
     saw_table_marker = False
 
     # Regex for model/provider names appearing anywhere in a line.
-    model_re = re.compile(r"(opencode-(?:go|free)/[\w.\-]+)")
+    model_re = re.compile(r"(opencode-(?:go|free)/[\w.\-]+|opencode/[\w.\-]+)")
     cost_re = re.compile(r"Cost\s+\$?([\d,]+\.\d+)", re.IGNORECASE)
     total_re = re.compile(r"Total Cost\s+\$?([\d,]+\.\d+)", re.IGNORECASE)
 
     # First pass: locate sections and total cost.
     for line in lines:
         upper = line.upper()
-        if "COST & TOKENS" in upper:
+        if _is_table_row(line) and "COST & TOKENS" in upper:
             in_cost_tokens = True
             in_model_usage = False
             saw_table_marker = True
             continue
-        if "MODEL USAGE" in upper:
+        if _is_table_row(line) and "MODEL USAGE" in upper:
             in_cost_tokens = False
             in_model_usage = True
             saw_table_marker = True
             continue
-        if "TOOL USAGE" in upper or "SESSIONS" in upper:
+        if _is_table_row(line) and ("TOOL USAGE" in upper or "SESSIONS" in upper):
             in_cost_tokens = False
             in_model_usage = False
             saw_table_marker = True
@@ -319,11 +412,11 @@ def parse_opencode_stats_text(text: str | None) -> dict:
         upper = line.upper()
 
         # Section boundaries.
-        if "MODEL USAGE" in upper:
+        if _is_table_row(line) and "MODEL USAGE" in upper:
             in_model_usage = True
             current_model = None
             continue
-        if "TOOL USAGE" in upper or "COST & TOKENS" in upper or "OVERVIEW" in upper:
+        if _is_table_row(line) and ("TOOL USAGE" in upper or "COST & TOKENS" in upper or "OVERVIEW" in upper):
             in_model_usage = False
             current_model = None
             continue
@@ -349,7 +442,7 @@ def parse_opencode_stats_text(text: str | None) -> dict:
                 provider = current_model.split("/")[0] if "/" in current_model else ""
                 if provider == PROVIDER_GO and slug in OPENCODE_GO_CAPS:
                     costs[slug] = cost
-                elif provider == PROVIDER_FREE and slug in OPENCODE_FREE_MODELS:
+                elif provider in PROVIDER_FREE_PREFIXES and _is_free_model(slug):
                     free_models.append(slug)
             current_model = None
 
@@ -393,8 +486,8 @@ def parse_opencode_stats_json(doc: dict | None) -> dict:
     The live CLI only emits plain-text tables (``opencode stats --models``), but
     environment fixtures may still supply JSON.  Returns
     ``{"costs": {"model": usd, ...}, "free_models": [...], "parse_success": bool}``.
-    Unknown shapes return empty containers and ``parse_success=False`` rather than
-    raising.
+    Unknown shapes return empty containers and ``parse_success=False`` rather
+    than raising.
     """
     doc = doc if isinstance(doc, dict) else {}
 
@@ -454,7 +547,7 @@ def parse_opencode_stats_json(doc: dict | None) -> dict:
                 continue
             provider = model_id.split("/")[0] if "/" in model_id else ""
             slug = model_id.split("/")[-1]
-            if provider == PROVIDER_FREE and slug in OPENCODE_FREE_MODELS:
+            if provider in PROVIDER_FREE_PREFIXES and _is_free_model(slug):
                 free_models.append(slug)
 
     parse_success = bool(costs or free_models or models is not None)
@@ -468,11 +561,15 @@ def fuel_from_stats(stats: dict | None) -> dict:
     ``opencode-go``) plus a per-model breakdown under ``models``.  ``None`` means
     unknown (handled like other digest pools), ``0`` means exhausted.
 
+    ``free_model_ids`` holds full ``provider/slug`` ids discovered from the
+    ``opencode models`` catalogue so the worker can launch a real free model.
+
     ``stats`` shape (kept minimal and CLI-output-agnostic):
 
         {
           "costs": {"glm-5.3": 7.50, "kimi-k2.7-code": 12.00, ...},
-          "free_models": ["beam-free", "iceman-contributor-free"]
+          "free_models": ["beam-free", "iceman-contributor-free"],
+          "free_model_ids": ["opencode/beam-free", ...]
         }
     """
     stats = stats if isinstance(stats, dict) else {}
@@ -484,20 +581,25 @@ def fuel_from_stats(stats: dict | None) -> dict:
     free_remaining: Optional[int] = None
     if _free_models_available(stats):
         free_remaining = 100
+    free_model_ids = stats.get("free_model_ids")
+    if not isinstance(free_model_ids, (list, tuple)):
+        free_model_ids = []
     return {
         FUEL_ID_FREE: free_remaining,
         FUEL_ID_GO: go_remaining,
         "models": go_by_model,
+        "free_model_ids": list(free_model_ids),
     }
 
 
 def fuel_from_windowed_stats(windowed: dict[str, dict] | None) -> dict:
     """Build digest fuel numbers from rolling cap windows.
 
-    ``windowed`` maps window names (``5h``, ``week``, ``month``) to stats docs
-    produced by ``opencode stats --days <N>``.  Per-model remaining % is driven
-    by the most-utilised window, because Go caps are rolling and a model is
-    exhausted when any window limit is hit.
+    ``windowed`` maps window names (``week``, ``month``) to stats docs produced
+    by ``opencode stats --days <N>``.  Per-model remaining % is driven by the
+    most-utilised window, because Go caps are rolling and a model is exhausted
+    when any window limit is hit.  The 5-hour cap is enforced at run time by the
+    wrapper and is not part of the windowed stats reading.
     """
     windowed = windowed if isinstance(windowed, dict) else {}
     go_by_model = _go_models_remaining_for_windows(windowed)
@@ -507,10 +609,17 @@ def fuel_from_windowed_stats(windowed: dict[str, dict] | None) -> dict:
     free_remaining: Optional[int] = None
     if any(_free_models_available(windowed.get(w) or {}) for w in CAP_WINDOWS):
         free_remaining = 100
+    free_model_ids: list[str] = []
+    for w in CAP_WINDOWS:
+        wstats = windowed.get(w) or {}
+        ids = wstats.get("free_model_ids")
+        if isinstance(ids, (list, tuple)):
+            free_model_ids.extend(str(i) for i in ids)
     return {
         FUEL_ID_FREE: free_remaining,
         FUEL_ID_GO: go_remaining,
         "models": go_by_model,
+        "free_model_ids": list(dict.fromkeys(free_model_ids)),
     }
 
 
@@ -524,8 +633,10 @@ def select_model(preferred: Optional[str], stats: dict) -> Optional[str]:
     # Strip provider prefix if present.
     if preferred.startswith(f"{PROVIDER_GO}/"):
         preferred = preferred[len(f"{PROVIDER_GO}/") :]
-    if preferred.startswith(f"{PROVIDER_FREE}/"):
-        preferred = preferred[len(f"{PROVIDER_FREE}/") :]
+    for prefix in PROVIDER_FREE_PREFIXES:
+        if preferred.startswith(f"{prefix}/"):
+            preferred = preferred[len(f"{prefix}/") :]
+            break
 
     if preferred and preferred in OPENCODE_GO_CAPS:
         rem = model_remaining_pct(preferred, stats)
@@ -571,3 +682,174 @@ def is_exhausted(stats: dict | None) -> bool:
     if go is not None and go > 0:
         return False
     return True
+
+
+# ----------------------------------------------------------------------------------
+# Runtime rate-limit / rolling-cap pause logic for the OpenCode wrapper.
+# These helpers are pure (no I/O except the injected file-system helpers) and are
+# exercised from the PowerShell wrapper generated by bob_worker.py as well as from
+# unit tests.
+# ----------------------------------------------------------------------------------
+
+def _parse_iso_ts(raw: str) -> Optional[float]:
+    """Parse an ISO-8601 timestamp to a Unix timestamp, or None."""
+    s = (raw or "").strip()
+    if not s:
+        return None
+    try:
+        if s.endswith("Z"):
+            s = s[:-1] + "+00:00"
+        from datetime import datetime
+
+        return datetime.fromisoformat(s).timestamp()
+    except Exception:
+        return None
+
+
+def looks_like_rate_limit(text: str | None) -> bool:
+    """True when ``opencode run`` output text indicates a rate/rolling/payment limit."""
+    if not text or not isinstance(text, str):
+        return False
+    t = text.lower()
+    return any(phrase in t for phrase in RATE_LIMIT_PHRASES)
+
+
+def parse_reset_time(text: str | None, now: Optional[float] = None) -> Optional[float]:
+    """Return the Unix timestamp when the rolling window resets, or None.
+
+    Handles ``Retry-After`` (seconds), relative times (``resets in 5 minutes``),
+    and absolute ISO-8601 timestamps (``reset-time: 2026-11-05T12:00:00Z``).
+    """
+    if not text or not isinstance(text, str):
+        return None
+    now = now if now is not None else time.time()
+
+    # Retry-After seconds (HTTP header or inline).
+    m = re.search(r"retry[\s\-]?after[:\s]*(\d+)", text, re.IGNORECASE)
+    if m:
+        try:
+            return now + int(m.group(1))
+        except (TypeError, ValueError):
+            pass
+
+    # Relative time, e.g. "resets in 5 minutes" / "try again in 1 hour".
+    m = re.search(
+        r"(?:resets?(?:\s+in|\s+after)?|try again in)[:\s]*(\d+(?:\.\d+)?)\s*(s|sec|seconds?|m|min|minutes?|h|hr|hours?)",
+        text,
+        re.IGNORECASE,
+    )
+    if m:
+        try:
+            value = float(m.group(1))
+        except (TypeError, ValueError):
+            value = None
+        if value is not None:
+            unit = m.group(2).lower()
+            if unit.startswith("s"):
+                delta = value
+            elif unit.startswith("m"):
+                delta = value * 60.0
+            else:
+                delta = value * 3600.0
+            return now + delta
+
+    # Absolute ISO timestamp.
+    m = re.search(
+        r"reset[\s\-]?time[:\s]*(\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2})?)",
+        text,
+        re.IGNORECASE,
+    )
+    if m:
+        ts = _parse_iso_ts(m.group(1))
+        if ts is not None:
+            return ts
+
+    return None
+
+
+def _pause_path(state_dir: str | Path) -> Path:
+    return Path(state_dir) / "opencode-pauses.json"
+
+
+def load_opencode_pauses(state_dir: str | Path, now: Optional[float] = None) -> dict[str, float]:
+    """Load non-expired pauses as ``{model_id: reset_timestamp}``.
+
+    Expired entries are dropped silently.  Malformed files return an empty map.
+    """
+    now = now if now is not None else time.time()
+    path = _pause_path(state_dir)
+    if not path.is_file():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    out: dict[str, float] = {}
+    for model_id, reset_ts in data.items():
+        try:
+            reset_ts = float(reset_ts)
+        except (TypeError, ValueError):
+            continue
+        if reset_ts > now:
+            out[str(model_id)] = reset_ts
+    return out
+
+
+def save_opencode_pauses(state_dir: str | Path, pauses: dict[str, float]) -> None:
+    """Persist the pause map, pruning any expired entries first."""
+    path = _pause_path(state_dir)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(dict(pauses), indent=2, sort_keys=True), encoding="utf-8")
+    except Exception:
+        pass
+
+
+def record_opencode_pause(
+    state_dir: str | Path,
+    model_id: str,
+    output_text: str | None,
+    *,
+    now: Optional[float] = None,
+    default_pause_s: float = DEFAULT_PAUSE_S,
+) -> Optional[float]:
+    """Record (or extend) a pause for ``model_id`` after a rate/rolling limit hit.
+
+    Uses the reset time parsed from ``output_text`` if present; otherwise falls
+    back to ``default_pause_s``.  Returns the reset timestamp, or None when the
+    pause could not be persisted.
+    """
+    now = now if now is not None else time.time()
+    if not model_id:
+        return None
+    reset_ts = parse_reset_time(output_text, now=now)
+    if reset_ts is None:
+        reset_ts = now + float(default_pause_s)
+
+    pauses = load_opencode_pauses(state_dir, now=now)
+    existing = pauses.get(model_id)
+    if existing is None or reset_ts > existing:
+        pauses[model_id] = reset_ts
+    save_opencode_pauses(state_dir, pauses)
+    return reset_ts
+
+
+def is_opencode_model_paused(
+    model_id: str | None, state_dir: str | Path, now: Optional[float] = None
+) -> bool:
+    """True when ``model_id`` is currently paused."""
+    now = now if now is not None else time.time()
+    if not model_id:
+        return False
+    pauses = load_opencode_pauses(state_dir, now=now)
+    target = str(model_id).lower()
+    return any(str(k).lower() == target for k in pauses)
+
+
+def opencode_pauses_state_dir(env: Optional[dict] = None) -> Path:
+    """Default directory for the worker's OpenCode pause JSON file."""
+    env = env if env is not None else {}
+    base = env.get("BOB_OPENCODE_PAUSE_STATE_DIR") or env.get("LOCALAPPDATA") or str(Path.home() / "AppData" / "Local")
+    return Path(base) / "Bobiverse" / "worker" / "state"

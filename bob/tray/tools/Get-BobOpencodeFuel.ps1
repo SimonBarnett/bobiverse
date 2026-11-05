@@ -4,8 +4,9 @@
 .DESCRIPTION
   Computes opencode-free / opencode-go remaining percentages from the ``opencode stats --models``
   plain-text table, translating it into the shape expected by the shared Python helper.
-  Usage is queried separately for the rolling 5-hour, weekly and monthly cap windows so
-  the most-restrictive window drives the fuel reading.
+  Usage is queried separately for the weekly and monthly cap windows so the most-
+  restrictive window drives the fuel reading.  The 5-hour rolling cap is enforced at
+  run time by the OpenCode wrapper and is not read from stats.
   When opencode is not installed, an environment fixture can supply the stats text or legacy
   JSON.  Never prints a key or credential. Exit code is always 0.
 #>
@@ -16,7 +17,7 @@ $ErrorActionPreference = 'SilentlyContinue'
 $WarningPreference = 'SilentlyContinue'
 $ProgressPreference = 'SilentlyContinue'
 
-$out = [ordered]@{ free = $null; go = $null; models = [ordered]@{} }
+$out = [ordered]@{ free = $null; go = $null; models = [ordered]@{}; free_model_ids = @() }
 try {
     $fixture = $env:BOB_OPENCODE_FUEL_FIXTURE
     $statsByWindow = $null
@@ -37,8 +38,8 @@ try {
         }
         if ($exe) {
             # Plain-text model table is the only machine-readable source available.
-            # OpenCode caps are rolling: 20% per 5h, 50% per week, 100% per month.
-            $days5h = [math]::Round(5 / 24, 6)
+            # OpenCode caps are rolling: 50% per week, 100% per month.  The 5-hour
+            # cap is handled at run time by the OpenCode wrapper.
             $statsByWindow = @{}
 
             function Invoke-OpencodeTimed($arguments) {
@@ -81,7 +82,6 @@ try {
             $modelsOutput = Invoke-OpencodeTimed 'models'
 
             $jobs = @(
-                @{ window = '5h';    args = "stats --models --days $days5h" },
                 @{ window = 'week';  args = 'stats --models --days 7' },
                 @{ window = 'month'; args = 'stats --models --days 30' }
             )
@@ -117,18 +117,21 @@ raw = sys.stdin.read()
 windowed = json.loads(raw)
 models_text = windowed.pop('models', None)
 available_free = opencode_fuel.parse_opencode_models_text(models_text)
+free_model_ids = opencode_fuel.parse_opencode_model_ids(models_text)
 # Fixtures supplied as a single monthly/all-time window use the plain aggregator
 # for backward compatibility; live multi-window data uses rolling-cap logic.
 stats_keys = set(windowed.keys())
 if stats_keys == {'month'}:
     stats = opencode_fuel.parse_opencode_stats_text_or_json(windowed['month'])
     stats['free_models'] = list(dict.fromkeys(stats.get('free_models', []) + available_free))
+    stats['free_model_ids'] = list(dict.fromkeys(stats.get('free_model_ids', []) + free_model_ids))
     print(json.dumps(opencode_fuel.fuel_from_stats(stats)))
 else:
     parsed = {}
     for k, v in windowed.items():
         s = opencode_fuel.parse_opencode_stats_text_or_json(v)
         s['free_models'] = list(dict.fromkeys(s.get('free_models', []) + available_free))
+        s['free_model_ids'] = list(dict.fromkeys(s.get('free_model_ids', []) + free_model_ids))
         parsed[k] = s
     print(json.dumps(opencode_fuel.fuel_from_windowed_stats(parsed)))
 '@
@@ -144,6 +147,9 @@ else:
                 $parsed.models | Get-Member -MemberType NoteProperty | ForEach-Object {
                     $out.models[$_.Name] = [int]$parsed.models.($_.Name)
                 }
+            }
+            if ($parsed.free_model_ids) {
+                $out.free_model_ids = @($parsed.free_model_ids)
             }
         }
     }

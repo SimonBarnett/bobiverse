@@ -63,7 +63,9 @@ def test_select_agent_opencode_only():
 
 def test_opencode_default_model():
     assert bw.opencode_default_model(bw.Fuel(opencode_go=50)) == "opencode-go/glm-5.3"
-    assert bw.opencode_default_model(bw.Fuel(opencode_go=0, opencode_free=100)) == "opencode-free/beam-free"
+    assert bw.opencode_default_model(
+        bw.Fuel(opencode_go=0, opencode_free=100, opencode_free_model_ids=("opencode/beam-free",))
+    ) == "opencode/beam-free"
     assert bw.opencode_default_model(bw.Fuel()) is None
 
 
@@ -80,8 +82,13 @@ def test_opencode_default_model_skips_exhausted_glm53():
 
 def test_opencode_default_model_prefers_free_when_no_per_model_readings():
     """Without per-model readings, free fuel should be chosen over the blind Go default."""
-    fuel = bw.Fuel(opencode_free=100, opencode_go=50, opencode_models={})
-    assert bw.opencode_default_model(fuel) == "opencode-free/beam-free"
+    fuel = bw.Fuel(
+        opencode_free=100,
+        opencode_go=50,
+        opencode_models={},
+        opencode_free_model_ids=("opencode/beam-free",),
+    )
+    assert bw.opencode_default_model(fuel) == "opencode/beam-free"
 
 
 def test_opencode_default_model_per_model_exhausted_falls_back_to_free():
@@ -90,8 +97,9 @@ def test_opencode_default_model_per_model_exhausted_falls_back_to_free():
         opencode_free=100,
         opencode_go=50,
         opencode_models={"glm-5.3": 0, "kimi-k3": 0},
+        opencode_free_model_ids=("opencode/beam-free",),
     )
-    assert bw.opencode_default_model(fuel) == "opencode-free/beam-free"
+    assert bw.opencode_default_model(fuel) == "opencode/beam-free"
 
 
 def test_opencode_default_model_per_model_exhausted_no_free_returns_none():
@@ -102,6 +110,38 @@ def test_opencode_default_model_per_model_exhausted_no_free_returns_none():
         opencode_models={"glm-5.3": 0, "kimi-k3": 0},
     )
     assert bw.opencode_default_model(fuel) is None
+
+
+def test_opencode_default_model_skips_paused_models(tmp_path):
+    """Paused models must be skipped in favour of the next usable model."""
+    state_dir = tmp_path / "state"
+    now = 1_000_000.0
+    bw.opencode_fuel.record_opencode_pause(
+        state_dir, "opencode-go/glm-5.3", "Retry-After: 3600", now=now
+    )
+    fuel = bw.Fuel(
+        opencode_go=50,
+        opencode_models={"glm-5.3": 50, "kimi-k3": 50},
+    )
+    selected = bw.opencode_default_model(fuel, state_dir=state_dir, now=now)
+    assert selected != "opencode-go/glm-5.3"
+    assert selected == "opencode-go/kimi-k3"
+
+
+def test_opencode_default_model_falls_back_to_free_when_go_paused(tmp_path):
+    state_dir = tmp_path / "state"
+    now = 1_000_000.0
+    bw.opencode_fuel.record_opencode_pause(
+        state_dir, "opencode-go/glm-5.3", "rate limit", now=now
+    )
+    fuel = bw.Fuel(
+        opencode_free=100,
+        opencode_go=50,
+        opencode_models={"glm-5.3": 50},
+        opencode_free_model_ids=("opencode/beam-free",),
+    )
+    selected = bw.opencode_default_model(fuel, state_dir=state_dir, now=now)
+    assert selected == "opencode/beam-free"
 
 
 def test_build_launch_opencode_creates_wrapper(tmp_path: Path):
@@ -115,6 +155,11 @@ def test_build_launch_opencode_creates_wrapper(tmp_path: Path):
     assert "'run', '-m', $model" in script
     assert "--continue" not in script
     assert "Write-Output $outStr" in script
+    assert "$proc.WaitForExit($watchdogMs)" in script
+    assert "taskkill /T /F /PID $proc.Id" in script
+    assert "opencode-out-of-fuel.log" in script
+    assert "opencode_fuel.record_opencode_pause" in script
+    assert "$pauseStateDir" in script
     assert "Do work." in spec.files[prompt_key]
     # Every OpenCode launch must pass the fresh-session guard (no --continue/--session).
     ps1_files = {k: v for k, v in spec.files.items() if k.endswith(".ps1")}
@@ -131,7 +176,8 @@ def test_read_fuel_parses_opencode_section(tmp_path: Path):
     payload = (
         '{"ok":true,"cursor":{"high":5,"low":0},'
         '"grok":{"remaining_pct":null,"state":"unknown"},'
-        '"opencode":{"free":100,"go":50,"models":{"glm-5.3":50}}}'
+        '"opencode":{"free":100,"go":50,"models":{"glm-5.3":50},'
+        '"free_model_ids":["opencode/beam-free"]}}'
     )
     (tmp_path / "tools" / "Get-BobAgentFuel.ps1").write_text(
         f"[Console]::Out.WriteLine('{payload}')\nexit 0",
@@ -148,6 +194,7 @@ def test_read_fuel_parses_opencode_section(tmp_path: Path):
     assert f.opencode_free == 100
     assert f.opencode_go == 50
     assert f.opencode_models == {"glm-5.3": 50}
+    assert f.opencode_free_model_ids == ("opencode/beam-free",)
 
 
 OPENCODE_FUEL_PS1 = Path(bw.__file__).resolve().parent.parent / "tray" / "tools" / "Get-BobOpencodeFuel.ps1"
@@ -155,10 +202,12 @@ OPENCODE_FUEL_PS1 = Path(bw.__file__).resolve().parent.parent / "tray" / "tools"
 
 def test_opencode_fuel_ps1_uses_models_plain_text_stats_for_each_window():
     text = OPENCODE_FUEL_PS1.read_text(encoding="utf-8-sig")
-    assert text.count("stats --models --days") == 3
+    assert text.count("stats --models --days") == 2
     assert "stats --json" not in text
     assert "--output json" not in text
     assert "Invoke-OpencodeTimed 'models'" in text
+    assert "5 / 24" not in text
+    assert "0.208333" not in text
 
 
 def test_opencode_fuel_ps1_pipes_windowed_payload_via_stdin():

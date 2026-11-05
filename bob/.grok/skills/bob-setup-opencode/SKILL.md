@@ -99,8 +99,9 @@ if ($LASTEXITCODE -ne 0) { throw "failed to restrict auth.json ACL" }
 ```
 
 ```powershell
-# Free model (no account)
-opencode run -m opencode-free/beam-free "Reply with pong only"
+# Free model (no account) — the worker discovers the live free model id from
+# `opencode models` output under the opencode/ or opencode-go/ provider.
+opencode run -m opencode/beam-free "Reply with pong only"
 
 # Go model (subscription)
 opencode run -m opencode-go/glm-5.3 "Reply with pong only"
@@ -116,6 +117,7 @@ has positive per-model fuel; it will not fall back to another capped model.
 1. Fuel ids `opencode-free` and `opencode-go` on the digest webhook. Remaining %
    is estimated from local `opencode stats` cost vs the per-model monthly caps
    (e.g. glm-5.3 $15, kimi-k2.7-code $60); `n/a` when unknown, like other pools.
+   Only the 7-day and 30-day windows are read from `opencode stats`.
 2. Worker loop: join `#{machine}`; post `!bored` after `turn_ended` or the
     harvest-hold fallback (not immediately after a terminal frame). Idle
     announcements start after 120 seconds and repeat every 180 seconds. Jeeves
@@ -123,18 +125,30 @@ has positive per-model fuel; it will not fall back to another capped model.
     `NACK` and `GIVEUP`. The program posts `!bored`; the model must never post it.
 3. Out-of-fuel: the worker refuses offers when the current model's cap is hit.
    It then picks the first Go model in fallback order with positive remaining fuel
-   (using per-model readings from the digest), then the free model, else goes idle.
+   (using per-model readings from the digest), then the first free model discovered
+   from live `opencode models` output, else goes idle. Paused models (see below)
+   are skipped.
+4. Rolling 5-hour cap is enforced at run time by the OpenCode wrapper. If an
+   `opencode run` hits HTTP 429 / rate or rolling-limit text, or produces no output
+   before the watchdog timeout, the wrapper kills the run's process tree, logs to
+   `opencode-out-of-fuel.log`, and records a pause for that model until the window
+   resets (using a `Retry-After` / reset time from the output if present, otherwise
+   a conservative 1-hour default). Pauses are persisted in
+   `%LOCALAPPDATA%\Bobiverse\worker\state\opencode-pauses.json` and expire
+   automatically.
+
 
 ## Model / plan notes
 
 | Plan | Models | Typical flag |
 |------|--------|--------------|
-| Free (no account) | `beam-free`, `iceman-contributor-free` | `opencode run -m opencode-free/beam-free ...` |
+| Free (no account) | `beam-free`, `iceman-contributor-free` (discovered from `opencode models` under `opencode/` or `opencode-go/`) | `opencode run -m opencode/<model> ...` |
 | Go ($10/mo) | `glm-5.3`, `glm-5.3-flash`, `glm-5.2`, `kimi-k3`, `kimi-k2.7-code`, `longcat-2.0`, `deepseek-v4.1-flash`, `qwen3.8-flash` | `opencode run -m opencode-go/<model> ...` |
 
-Go limits are per-model dollar allowances with rolling caps: 20% per 5h, 50% per
-week, 100% per month. `opencode stats` shows local cost only; there is no public
-remaining-quota API.
+Go limits are per-model dollar allowances with rolling caps: 50% per week and
+100% per month are read from `opencode stats`; the 5-hour rolling cap is enforced
+at run time by the wrapper. `opencode stats` shows local cost only; there is no
+public remaining-quota API.
 
 ## Troubleshoot
 
@@ -142,7 +156,7 @@ remaining-quota API.
 |---------|-----|
 | `opencode : The term 'opencode' is not recognized` | WinGet install incomplete or Links folder not on PATH; use full path or add `%LOCALAPPDATA%\Microsoft\WinGet\Links` to User PATH |
 | Auth errors / 401 | Re-run `opencode auth login`; verify `auth.json` provider id is `opencode-go` |
-| Model 429 / cap hit | Seat falls back to another Go model or free model; digest fuel reflects 0% for that model |
+| Model 429 / cap hit | Wrapper kills the hung run, records a pause for that model in `opencode-pauses.json`, and the seat falls back to the next Go model or free model on its next start |
 | npm route fails on old Node | Use winget route only |
 
 ## Do not

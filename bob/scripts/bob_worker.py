@@ -258,6 +258,7 @@ class Fuel:
     opencode_free: Optional[int] = None
     opencode_go: Optional[int] = None
     opencode_models: dict = field(default_factory=dict)
+    opencode_free_model_ids: tuple = field(default_factory=tuple)
 
 
 def parse_fuel(text: str) -> Fuel:
@@ -286,6 +287,11 @@ def parse_fuel(text: str) -> Fuel:
     op_free = _i(op.get("free")) if isinstance(op, dict) else None
     op_go = _i(op.get("go")) if isinstance(op, dict) else None
     op_models = op.get("models") if isinstance(op, dict) and isinstance(op.get("models"), dict) else {}
+    op_free_ids = op.get("free_model_ids") if isinstance(op, dict) else None
+    if isinstance(op_free_ids, (list, tuple)):
+        op_free_ids = tuple(str(i) for i in op_free_ids)
+    else:
+        op_free_ids = ()
     return Fuel(
         _i(cur.get("high")),
         _i(cur.get("low")),
@@ -294,6 +300,7 @@ def parse_fuel(text: str) -> Fuel:
         op_free,
         op_go,
         dict(op_models),
+        op_free_ids,
     )
 
 
@@ -321,33 +328,68 @@ def opencode_has_tokens(f: Fuel) -> bool:
     return any(v is not None and v > 0 for v in (f.opencode_free, f.opencode_go))
 
 
-def opencode_default_model(f: Fuel) -> Optional[str]:
+def opencode_pauses_state_dir(env: Optional[dict] = None) -> Path:
+    """Default directory for the worker's OpenCode pause JSON file."""
+    env = os.environ if env is None else env
+    base = env.get("BOB_OPENCODE_PAUSE_STATE_DIR") or env.get("LOCALAPPDATA") or str(Path.home() / "AppData" / "Local")
+    return Path(base) / "Bobiverse" / "worker" / "state"
+
+
+def opencode_default_model(
+    f: Fuel,
+    state_dir: Optional[Path] = None,
+    *,
+    now: Optional[float] = None,
+) -> Optional[str]:
     """Pick a sensible OpenCode model from fuel readings (issue #6120).
 
     Per-model caps are respected: when per-model readings exist, only choose a
-    Go model that has positive remaining fuel. When no per-model readings exist,
-    prefer the free model if it has fuel, otherwise fall back to the historical
-    Go default only when the aggregate Go pool reports fuel.
+    Go model that has positive remaining fuel. Paused models are skipped so a
+    rolling 5-hour cap hit does not immediately re-trigger on the next run.
+    When no Go model is usable, fall back to a free model discovered from live
+    ``opencode models`` output, then to a legacy free default, else return None.
     """
+    if state_dir is None:
+        state_dir = opencode_pauses_state_dir()
+
+    def _paused(model_id: str) -> bool:
+        if not opencode_fuel:
+            return False
+        return opencode_fuel.is_opencode_model_paused(model_id, state_dir, now=now)
+
     models = f.opencode_models or {}
     if models:
         order = opencode_fuel.OPENCODE_GO_FALLBACK_ORDER if opencode_fuel else ("glm-5.3",)
         for m in order:
             try:
                 if int(models.get(m) or 0) > 0:
-                    return f"opencode-go/{m}"
+                    candidate = f"opencode-go/{m}"
+                    if _paused(candidate):
+                        continue
+                    return candidate
             except (TypeError, ValueError):
                 continue
         # Per-model readings exist but no Go model has fuel; free tier is next.
         if f.opencode_free is not None and f.opencode_free > 0:
-            return "opencode-free/beam-free"
+            for free_id in f.opencode_free_model_ids:
+                if _paused(str(free_id)):
+                    continue
+                return str(free_id)
+            if not _paused("opencode/beam-free"):
+                return "opencode/beam-free"
         return None
 
     # No per-model readings: prefer free if available, else aggregate Go default.
     if f.opencode_free is not None and f.opencode_free > 0:
-        return "opencode-free/beam-free"
+        for free_id in f.opencode_free_model_ids:
+            if _paused(str(free_id)):
+                continue
+            return str(free_id)
+        if not _paused("opencode/beam-free"):
+            return "opencode/beam-free"
     if f.opencode_go is not None and f.opencode_go > 0:
-        return "opencode-go/glm-5.3"
+        if not _paused("opencode-go/glm-5.3"):
+            return "opencode-go/glm-5.3"
     return None
 
 
@@ -1103,33 +1145,78 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
         # FR #6120: OpenCode is a headless CLI one-shot per prompt.  The wrapper runs the
         # initial prompt from a file, then loops on injected console lines so the worker
         # can drive it like a persistent seat.  The model comes from $env:BOB_OPENCODE_MODEL.
+        #
+        # Runtime 5h rolling-cap guard: each ``opencode run`` is watched.  If it hits a
+        # 429 / rate-limit / rolling-limit message, produces no output before the watchdog,
+        # or exits with a payment/balance error, the wrapper kills the process tree, logs
+        # to opencode-out-of-fuel.log, and records a pause for that model until the window
+        # resets (parsed from output if present, else a conservative 1-hour default).
         pfile = str(Path(run_dir) / "prompt.txt")
         lfile = str(Path(run_dir) / "launch-opencode.ps1")
         esc = lambda s: str(s).replace("'", "''")  # noqa: E731
         files[pfile] = prompt
+        common_scripts = str(Path(cwd).parent / "common" / "scripts")
         files[lfile] = "\n".join([
-            "$ErrorActionPreference = 'Stop'",
-            "$model = if ($env:BOB_OPENCODE_MODEL) { $env:BOB_OPENCODE_MODEL } else { 'opencode-go/glm-5.3' }",
+            r"$ErrorActionPreference = 'Stop'",
+            r"$model = if ($env:BOB_OPENCODE_MODEL) { $env:BOB_OPENCODE_MODEL } else { 'opencode-go/glm-5.3' }",
             f"$exe = '{esc(exe)}'",
             f"$prompt = [IO.File]::ReadAllText('{esc(pfile)}')",
-            "$fuelLog = Join-Path $env:LOCALAPPDATA 'Bobiverse\\worker\\logs\\opencode-out-of-fuel.log'",
-            "New-Item -ItemType Directory -Force -Path (Split-Path -Parent $fuelLog) | Out-Null",
-            "function Invoke-Opencode($line) {",
-            "    $argList = @('run', '-m', $model, $line)",
-            "    $output = & $exe @argList *>&1",
-            "    $outStr = [string]($output | Out-String)",
-            "    Write-Output $outStr",
-            "    if ($LASTEXITCODE -ne 0 -or $outStr -match '402|429|Payment Required|usage balance exhausted|Too Many Requests') {",
-            "        $matchLines = $outStr -split '\\r?\\n' | Where-Object { $_ -match '402|429|Payment Required|usage balance exhausted|Too Many Requests' }",
-            "        $msg = ($matchLines | Select-Object -First 3) -join ' '",
-            "        if (-not $msg) { $msg = ($outStr -replace '\\s+', ' ').Trim(); if ($msg.Length -gt 300) { $msg = $msg.Substring(0, 300) } }",
-            "        $entry = @{ pid = $PID; ts = (Get-Date -Format o); text = $msg } | ConvertTo-Json -Compress",
-            "        Add-Content -Path $fuelLog -Value $entry -ErrorAction SilentlyContinue",
-            "    }",
-            "}",
-            "try { Invoke-Opencode $prompt } catch { [Console]::Error.WriteLine('opencode initial run failed: ' + $_) }",
-            "while ($true) { $line = [Console]::ReadLine(); if ($null -eq $line -or $line -eq 'exit') { break }; if ([string]::IsNullOrWhiteSpace($line)) { continue }; try { Invoke-Opencode $line } catch { [Console]::Error.WriteLine('opencode run failed: ' + $_) } }",
-            "exit 0",
+            r"$fuelLog = Join-Path $env:LOCALAPPDATA 'Bobiverse\worker\logs\opencode-out-of-fuel.log'",
+            r"$pauseStateDir = Join-Path $env:LOCALAPPDATA 'Bobiverse\worker\state'",
+            r"$commonScripts = '" + esc(common_scripts) + r"'",
+            r"New-Item -ItemType Directory -Force -Path (Split-Path -Parent $fuelLog) | Out-Null",
+            r"New-Item -ItemType Directory -Force -Path $pauseStateDir | Out-Null",
+            r"function Invoke-Opencode($line) {",
+            r"    $argList = @('run', '-m', $model, $line)",
+            r"    $argStr = ($argList | ForEach-Object { if ($_ -match '\s') { '"' + $_ + '"' } else { $_ } }) -join ' '",
+            r"    $psi = New-Object System.Diagnostics.ProcessStartInfo",
+            r"    $psi.FileName = $exe",
+            r"    $psi.Arguments = $argStr",
+            r"    $psi.RedirectStandardOutput = $true",
+            r"    $psi.RedirectStandardError = $true",
+            r"    $psi.UseShellExecute = $false",
+            r"    $psi.CreateNoWindow = $true",
+            r"    $proc = $null",
+            r"    $stdout = ''",
+            r"    $stderr = ''",
+            r"    try {",
+            r"        $proc = [System.Diagnostics.Process]::Start($psi)",
+            r"        $stdoutTask = $proc.StandardOutput.ReadToEndAsync()",
+            r"        $stderrTask = $proc.StandardError.ReadToEndAsync()",
+            r"        $watchdogMs = 120000",
+            r"        $timedOut = -not $proc.WaitForExit($watchdogMs)",
+            r"        $stdout = [string]($stdoutTask.Result)",
+            r"        $stderr = [string]($stderrTask.Result)",
+            r"        $exitCode = if ($proc.HasExited) { $proc.ExitCode } else { -1 }",
+            r"    } catch {",
+            r"        $stdout = ''",
+            r"        $stderr = $_",
+            r"        $exitCode = -1",
+            r"    }",
+            r"    $outStr = $stdout + [Environment]::NewLine + $stderr",
+            r"    Write-Output $outStr",
+            r"    $limitPattern = '402|429|Payment Required|usage balance exhausted|Too Many Requests|rate limit|rolling limit'",
+            r"    $hitLimit = ($timedOut -or $exitCode -ne 0 -or $outStr -match $limitPattern)",
+            r"    if ($hitLimit) {",
+            r"        if ($proc -and -not $proc.HasExited) { try { & taskkill /T /F /PID $proc.Id 2>$null | Out-Null } catch { } }",
+            r"        if ($timedOut) { $msg = 'watchdog timeout (no output)' } else {",
+            r"            $matchLines = $outStr -split '\r?\n' | Where-Object { $_ -match $limitPattern }",
+            r"            $msg = ($matchLines | Select-Object -First 3) -join ' '",
+            r"            if (-not $msg) { $msg = ($outStr -replace '\s+', ' ').Trim(); if ($msg.Length -gt 300) { $msg = $msg.Substring(0, 300) } }",
+            r"        }",
+            r"        $entry = @{ pid = $PID; ts = (Get-Date -Format o); model = $model; text = $msg } | ConvertTo-Json -Compress",
+            r"        Add-Content -Path $fuelLog -Value $entry -ErrorAction SilentlyContinue",
+            r"        $py = (Get-Command python.exe -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source)",
+            r"        if (-not $py) { $py = 'python.exe' }",
+            r"        $env:PYTHONPATH = \"$commonScripts;$env:PYTHONPATH\"",
+            r"        $pyScript = \"import opencode_fuel, sys`n`nopencode_fuel.record_opencode_pause(sys.argv[1], sys.argv[2], sys.argv[3])\"",
+            r"        $pyScript | & $py - $pauseStateDir $model $outStr | Out-Null",
+            r"    }",
+            r"    if ($proc) { try { $proc.Dispose() } catch { } }",
+            r"}",
+            r"try { Invoke-Opencode $prompt } catch { [Console]::Error.WriteLine('opencode initial run failed: ' + $_) }",
+            r"while ($true) { $line = [Console]::ReadLine(); if ($null -eq $line -or $line -eq 'exit') { break }; if (-not [string]::IsNullOrWhiteSpace($line)) { try { Invoke-Opencode $line } catch { [Console]::Error.WriteLine('opencode run failed: ' + $_) } } }",
+            r"exit 0",
         ])
         argv = ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", lfile]
     else:

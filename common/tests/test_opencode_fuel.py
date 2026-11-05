@@ -86,6 +86,7 @@ def test_fuel_from_stats_unknown_is_empty():
         "opencode-free": None,
         "opencode-go": None,
         "models": {},
+        "free_model_ids": [],
     }
 
 
@@ -347,14 +348,13 @@ def test_parse_opencode_stats_json_strips_provider_prefix_from_dict_keys():
 
 
 def test_fuel_from_windowed_stats_uses_most_utilised_window():
-    # Monthly looks healthy, but the 5-hour window is exhausted.
+    # Monthly looks healthy, but the weekly window is exhausted.
     windowed = {
-        "5h": {"costs": {"glm-5.3": 4.0}, "parse_success": True},
-        "week": {"costs": {"glm-5.3": 5.0}, "parse_success": True},
+        "week": {"costs": {"glm-5.3": 8.0}, "parse_success": True},
         "month": {"costs": {"glm-5.3": 7.5}, "parse_success": True},
     }
     fuel = of.fuel_from_windowed_stats(windowed)
-    # 5h cap = 15 * 0.20 = 3.0; cost 4.0 => 0% remaining.
+    # week cap = 15 * 0.50 = 7.5; cost 8.0 => 0% remaining.
     assert fuel["models"]["glm-5.3"] == 0
     assert fuel["opencode-go"] == 0
 
@@ -371,7 +371,6 @@ def test_fuel_from_windowed_stats_missing_window_means_unknown():
 
 def test_fuel_from_windowed_stats_free_when_any_window_has_free_models():
     windowed = {
-        "5h": {"free_models": []},
         "week": {"free_models": ["beam-free"]},
         "month": {"free_models": []},
     }
@@ -383,15 +382,15 @@ def test_fuel_from_windowed_stats_unknown_without_data():
         "opencode-free": None,
         "opencode-go": None,
         "models": {},
+        "free_model_ids": [],
     }
 
 
 def test_fuel_from_windowed_stats_missing_model_in_successful_window_counts_as_zero():
-    # The monthly window succeeded and contains usage for glm-5.3. The 5-hour
-    # and weekly windows succeeded but contain no row for glm-5.3, so that model
-    # cost is zero in those windows (not unknown).
+    # The monthly window succeeded and contains usage for glm-5.3. The weekly
+    # window succeeded but contains no row for glm-5.3, so that model cost is
+    # zero in that window (not unknown).
     windowed = {
-        "5h": {"costs": {}, "parse_success": True},
         "week": {"costs": {}, "parse_success": True},
         "month": {"costs": {"glm-5.3": 7.5}, "parse_success": True},
     }
@@ -402,11 +401,10 @@ def test_fuel_from_windowed_stats_missing_model_in_successful_window_counts_as_z
 
 
 def test_fuel_from_windowed_stats_failed_window_keeps_model_unknown():
-    # The 5-hour stats call failed/timed out, so its cost is unknown rather
+    # The weekly stats call failed/timed out, so its cost is unknown rather
     # than zero; the model allowance must stay unknown.
     windowed = {
-        "5h": {"costs": {}, "parse_success": False},
-        "week": {"costs": {"glm-5.3": 5.0}, "parse_success": True},
+        "week": {"costs": {}, "parse_success": False},
         "month": {"costs": {"glm-5.3": 7.5}, "parse_success": True},
     }
     fuel = of.fuel_from_windowed_stats(windowed)
@@ -414,17 +412,131 @@ def test_fuel_from_windowed_stats_failed_window_keeps_model_unknown():
     assert fuel["opencode-go"] is None
 
 
+def test_fuel_from_windowed_stats_model_absent_from_every_window_stays_unknown():
+    # A model that never appears in any successful window remains unknown;
+    # a missing row alone must not be treated as zero usage.
+    windowed = {
+        "week": {"costs": {"kimi-k2.7-code": 5.0}, "parse_success": True},
+        "month": {"costs": {"kimi-k2.7-code": 12.0}, "parse_success": True},
+    }
+    fuel = of.fuel_from_windowed_stats(windowed)
+    assert "glm-5.3" not in fuel["models"]
+    assert fuel["models"].get("glm-5.3") is None
+
+
+def test_parse_opencode_stats_text_sessions_error_not_successful():
+    # Error text containing "sessions" must not make a window parse as successful.
+    sample = "Error: could not list sessions for provider opencode-go"
+    parsed = of.parse_opencode_stats_text(sample)
+    assert parsed["parse_success"] is False
+    assert parsed["costs"] == {}
+    assert parsed["free_models"] == []
+
+
 def test_parse_opencode_models_text_extracts_free_models():
-    text = "opencode-free/beam-free\nopencode-free/iceman-contributor-free\nopencode-go/glm-5.3\n"
+    text = (
+        "opencode/beam-free\n"
+        "opencode/iceman-contributor-free\n"
+        "opencode-free/legacy-free\n"
+        "opencode-go/glm-5.3\n"
+    )
     assert of.parse_opencode_models_text(text) == [
         "beam-free",
         "iceman-contributor-free",
+        "legacy-free",
     ]
 
 
+def test_parse_opencode_model_ids_returns_full_ids():
+    text = "opencode/beam-free\nopencode-go/glm-5.3\n"
+    assert of.parse_opencode_model_ids(text) == ["opencode/beam-free"]
+
+
 def test_parse_opencode_stats_text_or_json_accepts_models_list():
-    text = "opencode-free/beam-free\nopencode-go/glm-5.3\n"
+    text = "opencode/beam-free\nopencode-go/glm-5.3\n"
     parsed = of.parse_opencode_stats_text_or_json(text)
     assert parsed["free_models"] == ["beam-free"]
     assert parsed["costs"] == {}
     assert parsed["parse_success"] is True
+
+
+# --- runtime rate-limit / rolling-cap pause logic ---------------------------------
+
+
+def test_looks_like_rate_limit_detects_phrases():
+    assert of.looks_like_rate_limit("HTTP 429 Too Many Requests") is True
+    assert of.looks_like_rate_limit("usage balance exhausted") is True
+    assert of.looks_like_rate_limit("rolling limit reached") is True
+    assert of.looks_like_rate_limit("Payment Required") is True
+    assert of.looks_like_rate_limit("all good here") is False
+
+
+def test_parse_reset_time_retry_after_seconds():
+    now = 1_000_000.0
+    assert of.parse_reset_time("Retry-After: 300", now=now) == now + 300
+    assert of.parse_reset_time("retry-after 120", now=now) == now + 120
+
+
+def test_parse_reset_time_relative_units():
+    now = 1_000_000.0
+    assert of.parse_reset_time("resets in 30 minutes", now=now) == now + 30 * 60
+    assert of.parse_reset_time("try again in 2 hours", now=now) == now + 2 * 3600
+    assert of.parse_reset_time("resets after 45 seconds", now=now) == now + 45
+
+
+def test_parse_reset_time_iso_timestamp():
+    now = 1_000_000.0
+    ts = "2026-11-05T12:00:00Z"
+    parsed = of.parse_reset_time(f"reset-time: {ts}", now=now)
+    assert parsed is not None
+    assert parsed > now
+
+
+def test_load_save_opencode_pauses(tmp_path):
+    state_dir = tmp_path / "state"
+    now = 1_000_000.0
+    of.save_opencode_pauses(state_dir, {"opencode-go/glm-5.3": now + 100})
+    loaded = of.load_opencode_pauses(state_dir, now=now)
+    assert loaded == {"opencode-go/glm-5.3": now + 100}
+
+    # Expired pauses are dropped.
+    of.save_opencode_pauses(state_dir, {"opencode-go/glm-5.3": now - 1})
+    assert of.load_opencode_pauses(state_dir, now=now) == {}
+
+
+def test_record_opencode_pause_persists_default(tmp_path):
+    state_dir = tmp_path / "state"
+    now = 1_000_000.0
+    reset = of.record_opencode_pause(
+        state_dir, "opencode-go/glm-5.3", "rate limited", now=now
+    )
+    assert reset == now + of.DEFAULT_PAUSE_S
+    assert of.is_opencode_model_paused("opencode-go/glm-5.3", state_dir, now=now) is True
+
+
+def test_record_opencode_pause_uses_parsed_reset_time(tmp_path):
+    state_dir = tmp_path / "state"
+    now = 1_000_000.0
+    reset = of.record_opencode_pause(
+        state_dir, "opencode-go/glm-5.3", "Retry-After: 600", now=now
+    )
+    assert reset == now + 600
+
+
+def test_record_opencode_pause_extends_existing_pause(tmp_path):
+    state_dir = tmp_path / "state"
+    now = 1_000_000.0
+    of.record_opencode_pause(state_dir, "opencode-go/glm-5.3", "Retry-After: 300", now=now)
+    later = now + 100
+    reset = of.record_opencode_pause(
+        state_dir, "opencode-go/glm-5.3", "Retry-After: 600", now=later
+    )
+    assert reset == later + 600
+
+
+def test_is_opencode_model_paused_case_insensitive(tmp_path):
+    state_dir = tmp_path / "state"
+    now = 1_000_000.0
+    of.record_opencode_pause(state_dir, "Opencode-Go/GLM-5.3", "rate limit", now=now)
+    assert of.is_opencode_model_paused("opencode-go/glm-5.3", state_dir, now=now) is True
+    assert of.is_opencode_model_paused("opencode-go/glm-5.3", state_dir, now=now + of.DEFAULT_PAUSE_S + 1) is False
