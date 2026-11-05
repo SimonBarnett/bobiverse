@@ -580,7 +580,11 @@ def test_is_opencode_model_paused_case_insensitive(tmp_path):
 
 
 def test_record_opencode_pause_concurrent_saves_do_not_lose_pauses(tmp_path):
-    """Concurrent RMW from separate processes must not drop any pause."""
+    """Concurrent RMW from separate processes must not drop any pause.
+
+    Children are synchronised so they hit the read-modify-write together; without
+    process-lock serialisation this test will lose updates.
+    """
     state_dir = tmp_path / "state"
     now = 1_000_000.0
     models = [f"opencode-go/model-{i}" for i in range(8)]
@@ -588,13 +592,17 @@ def test_record_opencode_pause_concurrent_saves_do_not_lose_pauses(tmp_path):
     env = os.environ.copy()
     env["PYTHONPATH"] = common_scripts + os.pathsep + env.get("PYTHONPATH", "")
 
+    start_at = time.time() + 1.5
     code_template = (
-        "import opencode_fuel as of; "
+        "import time, opencode_fuel as of; "
+        "time.sleep(max(0, {start_at} - time.time())); "
         "of.record_opencode_pause({state_dir!r}, {model!r}, 'rate limit', now={now})"
     )
     procs = []
     for model in models:
-        code = code_template.format(state_dir=str(state_dir), model=model, now=now)
+        code = code_template.format(
+            state_dir=str(state_dir), model=model, now=now, start_at=start_at
+        )
         procs.append(subprocess.Popen([sys.executable, "-c", code], env=env))
     for p in procs:
         assert p.wait(timeout=30) == 0
@@ -639,3 +647,74 @@ def test_cli_record_pause_reads_stdin_and_persists_pause(tmp_path):
     )
     assert result.returncode == 0, result.stderr
     assert of.is_opencode_model_paused("opencode-go/glm-5.3", state_dir) is True
+
+
+def test_cli_record_pause_reads_utf8_stdin_with_replacement(tmp_path):
+    """Piped UTF-8 bytes containing U+201D must not fail on a non-UTF-8 locale."""
+    state_dir = tmp_path / "state"
+    helper = Path(of.__file__).resolve()
+    env = os.environ.copy()
+    env["PYTHONPATH"] = str(helper.parent) + os.pathsep + env.get("PYTHONPATH", "")
+    # U+201D RIGHT DOUBLE QUOTATION MARK encoded as UTF-8 (bytes E2 80 9D).
+    payload = 'model replied \u201d rate limit\u201d'.encode("utf-8")
+    result = subprocess.run(
+        [sys.executable, str(helper), "record-pause", "--dir", str(state_dir), "--model", "opencode-go/glm-5.3"],
+        input=payload,
+        capture_output=True,
+        env=env,
+    )
+    assert result.returncode == 0, result.stderr.decode("utf-8", errors="replace")
+    assert of.is_opencode_model_paused("opencode-go/glm-5.3", state_dir) is True
+
+
+def test_acquire_process_lock_treats_permission_error_as_contention(tmp_path, monkeypatch):
+    """Windows returns PermissionError when the lock file is held; we must retry."""
+    lock_path = tmp_path / "lock"
+    real_open = os.open
+    calls = []
+
+    def fake_open(path, flags):
+        calls.append(path)
+        if len(calls) == 1:
+            raise PermissionError(13, "permission denied")
+        return real_open(path, flags)
+
+    monkeypatch.setattr(os, "open", fake_open)
+    fd = of._acquire_process_lock(lock_path, timeout=0.25)
+    assert fd is not None
+    os.close(fd)
+
+
+def test_acquire_process_lock_other_oserror_returns_none(tmp_path, monkeypatch):
+    """Unexpected os.open failures must return None, not escape."""
+
+    def fake_open(path, flags):
+        raise OSError(22, "invalid argument")
+
+    monkeypatch.setattr(os, "open", fake_open)
+    assert of._acquire_process_lock(tmp_path / "lock", timeout=0.1) is None
+
+
+def test_acquire_process_lock_write_failure_cleans_up(tmp_path, monkeypatch):
+    """If writing the lock contents fails, the lock file must be removed."""
+
+    def bad_write(fd, data):
+        raise OSError(5, "write error")
+
+    monkeypatch.setattr(os, "write", bad_write)
+    lock_path = tmp_path / "lock"
+    assert of._acquire_process_lock(lock_path, timeout=0.1) is None
+    assert not lock_path.exists()
+
+
+def test_save_opencode_pauses_runs_while_lock_held(tmp_path, monkeypatch):
+    """The lock file must exist while save_opencode_pauses mutates the pause file."""
+    state_dir = tmp_path / "state"
+    original_save = of.save_opencode_pauses
+
+    def checked_save(state_dir_arg, pauses):
+        assert of._lock_path(state_dir_arg).is_file(), "save_opencode_pauses should run under lock"
+        return original_save(state_dir_arg, pauses)
+
+    monkeypatch.setattr(of, "save_opencode_pauses", checked_save)
+    assert of.record_opencode_pause(state_dir, "opencode-go/glm-5.3", "rate limit") is not None

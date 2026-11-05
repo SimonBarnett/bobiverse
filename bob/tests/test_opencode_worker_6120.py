@@ -163,7 +163,9 @@ def test_build_launch_opencode_creates_wrapper(tmp_path: Path):
     assert "--dir $pauseStateDir" in script
     assert "--model $model" in script
     # The full OpenCode output must be piped to the helper's stdin, never argv.
-    assert "$outStr | & $py $pyHelper record-pause --dir $pauseStateDir --model $model | Out-Null" in script
+    assert "$outStr | & $py $pyHelper record-pause --dir $pauseStateDir --model $model 2>&1" in script
+    assert "$recordExit = $LASTEXITCODE" in script
+    assert "record-pause helper failed" in script
     assert "Do work." in spec.files[prompt_key]
     # Every OpenCode launch must pass the fresh-session guard (no --continue/--session).
     ps1_files = {k: v for k, v in spec.files.items() if k.endswith(".ps1")}
@@ -405,3 +407,67 @@ def test_opencode_fuel_ps1_resolves_installed_layout(tmp_path: Path):
     parsed = json.loads(result.stdout.strip().splitlines()[-1])
     assert parsed["go"] == 50
     assert parsed["free"] == 100
+
+
+def test_resolve_opencode_fuel_helper_path_repo_layout(tmp_path: Path):
+    """In a repo/worktree layout the helper lives at repo-root/common/scripts."""
+    repo = tmp_path / "repo"
+    source = repo / "bob" / "scripts" / "bob_worker.py"
+    source.parent.mkdir(parents=True)
+    source.write_text("# worker", encoding="utf-8")
+    helper = repo / "common" / "scripts" / "opencode_fuel.py"
+    helper.parent.mkdir(parents=True)
+    helper.write_text("# helper", encoding="utf-8")
+
+    resolved = bw._resolve_opencode_fuel_helper_path(source_file=str(source))
+    assert resolved == helper.resolve()
+    assert resolved.is_absolute()
+
+
+def test_resolve_opencode_fuel_helper_path_installed_layout(tmp_path: Path):
+    r"""In the installed Bob layout the helper is under <ai root>\bob\common\scripts."""
+    install = tmp_path / "bob"
+    source = install / "bob" / "scripts" / "bob_worker.py"
+    source.parent.mkdir(parents=True)
+    source.write_text("# worker", encoding="utf-8")
+    helper = install / "common" / "scripts" / "opencode_fuel.py"
+    helper.parent.mkdir(parents=True)
+    helper.write_text("# helper", encoding="utf-8")
+
+    resolved = bw._resolve_opencode_fuel_helper_path(source_file=str(source))
+    assert resolved == helper.resolve()
+
+
+def test_resolve_opencode_fuel_helper_path_fallback_to_cwd(tmp_path: Path):
+    """If the source-based candidates are missing, fall back to cwd.parent/common/scripts."""
+    source = tmp_path / "bob" / "scripts" / "bob_worker.py"
+    source.parent.mkdir(parents=True)
+    source.write_text("# worker", encoding="utf-8")
+    cwd = tmp_path / "jeeves"
+    cwd.mkdir()
+    helper = tmp_path / "common" / "scripts" / "opencode_fuel.py"
+    helper.parent.mkdir(parents=True)
+    helper.write_text("# helper", encoding="utf-8")
+
+    resolved = bw._resolve_opencode_fuel_helper_path(cwd=str(cwd), source_file=str(source))
+    assert resolved == helper.resolve()
+
+
+def test_build_launch_opencode_wrapper_embeds_absolute_helper_path(tmp_path: Path):
+    """The wrapper must embed an absolute helper path resolved at generation time."""
+    spec = bw.build_launch("opencode", "agent", r"C:\ai\bob\worker", "Do work.", OP, tmp_path)
+    script = next(v for k, v in spec.files.items() if k.endswith("launch-opencode.ps1"))
+    helper_path = bw._resolve_opencode_fuel_helper_path(cwd=r"C:\ai\bob\worker")
+    assert f"$pyHelper = '{str(helper_path).replace(chr(39), chr(39)*2)}'" in script
+    assert helper_path.is_absolute()
+    assert helper_path.name == "opencode_fuel.py"
+
+
+def test_build_launch_opencode_wrapper_checks_record_pause_exit_code(tmp_path: Path):
+    """A failing record-pause helper must be logged so the pause is not silently dropped."""
+    spec = bw.build_launch("opencode", "agent", r"C:\ai\bob\worker", "Do work.", OP, tmp_path)
+    script = next(v for k, v in spec.files.items() if k.endswith("launch-opencode.ps1"))
+    assert "$recordExit = $LASTEXITCODE" in script
+    assert "if ($recordExit -ne 0)" in script
+    assert "record-pause helper failed" in script
+    assert "Add-Content -Path $fuelLog" in script

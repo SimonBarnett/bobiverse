@@ -79,6 +79,34 @@ def _common_scripts_dir() -> Path:
     return here.parent.parent / "common" / "scripts"
 
 
+def _resolve_opencode_fuel_helper_path(
+    cwd: str | Path | None = None,
+    source_file: str | Path | None = None,
+    install_root: str | Path | None = None,
+) -> Path:
+    """Locate ``opencode_fuel.py`` for embedding in the PowerShell wrapper.
+
+    Resolution is independent of the seat's working directory.  The helper is
+    found from the Bob install root / worktree layout (``common/scripts`` next to
+    ``bob/scripts``), with fallbacks to the configured install root and the
+    legacy cwd-based path.
+    """
+    source = Path(source_file).resolve() if source_file else Path(__file__).resolve()
+    here = source.parent
+    candidates = [
+        (here.parent.parent / "common" / "scripts" / "opencode_fuel.py"),
+        (here.parent / "common" / "scripts" / "opencode_fuel.py"),
+    ]
+    if install_root is not None:
+        candidates.append(Path(install_root) / "common" / "scripts" / "opencode_fuel.py")
+    if cwd is not None:
+        candidates.append(Path(cwd).parent / "common" / "scripts" / "opencode_fuel.py")
+    for cand in candidates:
+        if cand.is_file():
+            return cand.resolve()
+    return candidates[0].resolve()
+
+
 def log_install_root_guard(install_root: str | Path, log: Callable[[str], None] = print, *, run=subprocess.run) -> Optional[str]:
     """FR #4843: at seat start, surface when the live install checkout is off main."""
     try:
@@ -1155,7 +1183,7 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
         lfile = str(Path(run_dir) / "launch-opencode.ps1")
         esc = lambda s: str(s).replace("'", "''")  # noqa: E731
         files[pfile] = prompt
-        common_scripts = str(Path(cwd).parent / "common" / "scripts")
+        helper_path = _resolve_opencode_fuel_helper_path(cwd=cwd)
         files[lfile] = "\n".join([
             r"$ErrorActionPreference = 'Stop'",
             r"$model = if ($env:BOB_OPENCODE_MODEL) { $env:BOB_OPENCODE_MODEL } else { 'opencode-go/glm-5.3' }",
@@ -1163,7 +1191,7 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             f"$prompt = [IO.File]::ReadAllText('{esc(pfile)}')",
             r"$fuelLog = Join-Path $env:LOCALAPPDATA 'Bobiverse\worker\logs\opencode-out-of-fuel.log'",
             r"$pauseStateDir = Join-Path $env:LOCALAPPDATA 'Bobiverse\worker\state'",
-            r"$commonScripts = '" + esc(common_scripts) + r"'",
+            f"$pyHelper = '{esc(str(helper_path))}'",
             r"New-Item -ItemType Directory -Force -Path (Split-Path -Parent $fuelLog) | Out-Null",
             r"New-Item -ItemType Directory -Force -Path $pauseStateDir | Out-Null",
             r"function Invoke-Opencode($line) {",
@@ -1211,8 +1239,12 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             r"        Add-Content -Path $fuelLog -Value $entry -ErrorAction SilentlyContinue",
             r"        $py = (Get-Command python.exe -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source)",
             r"        if (-not $py) { $py = 'python.exe' }",
-            r'        $pyHelper = Join-Path $commonScripts opencode_fuel.py',
-            r'        $outStr | & $py $pyHelper record-pause --dir $pauseStateDir --model $model | Out-Null',
+            r"        $recordOutput = $outStr | & $py $pyHelper record-pause --dir $pauseStateDir --model $model 2>&1",
+            r"        $recordExit = $LASTEXITCODE",
+            r"        if ($recordExit -ne 0) {",
+            r"            $failEntry = @{ pid = $PID; ts = (Get-Date -Format o); model = $model; text = \"record-pause helper failed (exit $recordExit): $recordOutput\" } | ConvertTo-Json -Compress",
+            r"            Add-Content -Path $fuelLog -Value $failEntry -ErrorAction SilentlyContinue",
+            r"        }",
             r"    }",
             r"    if ($proc) { try { $proc.Dispose() } catch { } }",
             r"}",

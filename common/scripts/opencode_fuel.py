@@ -808,9 +808,17 @@ def _acquire_process_lock(
     while True:
         try:
             fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-            os.write(fd, f"{pid}:{time.time():.6f}\n".encode("utf-8"))
+            try:
+                os.write(fd, f"{pid}:{time.time():.6f}\n".encode("utf-8"))
+            except OSError:
+                os.close(fd)
+                try:
+                    lock_path.unlink()
+                except OSError:
+                    pass
+                return None
             return fd
-        except FileExistsError:
+        except (FileExistsError, PermissionError):
             try:
                 if lock_path.is_file():
                     mtime = lock_path.stat().st_mtime
@@ -824,6 +832,8 @@ def _acquire_process_lock(
             if time.time() - start > timeout:
                 return None
             time.sleep(min(0.5, 0.05 + (time.time() - start) / 20.0))
+        except OSError:
+            return None
 
 
 def _release_process_lock(fd: Optional[int], lock_path: Path) -> None:
@@ -968,7 +978,7 @@ def _cli(argv: list[str] | None = None) -> int:
     record.add_argument("--model", required=True, help="Model id that hit the limit")
     args = parser.parse_args(argv)
     if args.command == "record-pause":
-        output_text = sys.stdin.read()
+        output_text = sys.stdin.buffer.read().decode("utf-8", errors="replace")
         reset_ts = record_opencode_pause(args.dir, args.model, output_text)
         return 0 if reset_ts is not None else 1
     parser.print_help()
