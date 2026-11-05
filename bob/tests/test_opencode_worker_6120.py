@@ -159,8 +159,11 @@ def test_build_launch_opencode_creates_wrapper(tmp_path: Path):
     assert "$proc.WaitForExit($watchdogMs)" in script
     assert "taskkill /T /F /PID $proc.Id" in script
     assert "opencode-out-of-fuel.log" in script
-    assert "opencode_fuel.record_opencode_pause" in script
-    assert "$pauseStateDir" in script
+    assert "record-pause" in script
+    assert "--dir $pauseStateDir" in script
+    assert "--model $model" in script
+    # The full OpenCode output must be piped to the helper's stdin, never argv.
+    assert "$outStr | & $py $pyHelper record-pause --dir $pauseStateDir --model $model | Out-Null" in script
     assert "Do work." in spec.files[prompt_key]
     # Every OpenCode launch must pass the fresh-session guard (no --continue/--session).
     ps1_files = {k: v for k, v in spec.files.items() if k.endswith(".ps1")}
@@ -221,6 +224,7 @@ def test_opencode_watchdog_kills_hanging_process_without_blocking(tmp_path: Path
 
     env = os.environ.copy()
     env["BOB_OPENCODE_WATCHDOG_MS"] = "500"
+    env["LOCALAPPDATA"] = str(tmp_path)
 
     start = time.time()
     result = subprocess.run(
@@ -237,6 +241,10 @@ def test_opencode_watchdog_kills_hanging_process_without_blocking(tmp_path: Path
     assert elapsed < 8, f"watchdog blocked for {elapsed:.1f}s"
     # Wrapper should exit cleanly after stdin sends 'exit'.
     assert result.returncode == 0
+    # The watchdog must record its timeout. A failed start or early exit writes no record.
+    fuel_log = tmp_path / "Bobiverse" / "worker" / "logs" / "opencode-out-of-fuel.log"
+    assert fuel_log.is_file(), "watchdog did not write a fuel log"
+    assert "watchdog timeout" in fuel_log.read_text(encoding="utf-8")
 
 
 def test_should_start_fuel_watcher_includes_opencode():

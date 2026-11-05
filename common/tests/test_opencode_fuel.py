@@ -1,6 +1,12 @@
 """Tests for OpenCode fuel estimation and model fallback (issue #6120)."""
 from __future__ import annotations
 
+import os
+import subprocess
+import sys
+import time
+from pathlib import Path
+
 import opencode_fuel as of
 
 
@@ -571,3 +577,65 @@ def test_is_opencode_model_paused_case_insensitive(tmp_path):
     of.record_opencode_pause(state_dir, "Opencode-Go/GLM-5.3", "rate limit", now=now)
     assert of.is_opencode_model_paused("opencode-go/glm-5.3", state_dir, now=now) is True
     assert of.is_opencode_model_paused("opencode-go/glm-5.3", state_dir, now=now + of.DEFAULT_PAUSE_S + 1) is False
+
+
+def test_record_opencode_pause_concurrent_saves_do_not_lose_pauses(tmp_path):
+    """Concurrent RMW from separate processes must not drop any pause."""
+    state_dir = tmp_path / "state"
+    now = 1_000_000.0
+    models = [f"opencode-go/model-{i}" for i in range(8)]
+    common_scripts = str(Path(of.__file__).resolve().parent)
+    env = os.environ.copy()
+    env["PYTHONPATH"] = common_scripts + os.pathsep + env.get("PYTHONPATH", "")
+
+    code_template = (
+        "import opencode_fuel as of; "
+        "of.record_opencode_pause({state_dir!r}, {model!r}, 'rate limit', now={now})"
+    )
+    procs = []
+    for model in models:
+        code = code_template.format(state_dir=str(state_dir), model=model, now=now)
+        procs.append(subprocess.Popen([sys.executable, "-c", code], env=env))
+    for p in procs:
+        assert p.wait(timeout=30) == 0
+
+    loaded = of.load_opencode_pauses(state_dir, now=now)
+    for model in models:
+        assert model in loaded, f"{model} missing after concurrent saves: {loaded}"
+
+
+def test_record_opencode_pause_lock_timeout_returns_none(tmp_path):
+    """A held lock must cause record_opencode_pause to fail cleanly."""
+    state_dir = tmp_path / "state"
+    now = 1_000_000.0
+    lock_path = of._lock_path(state_dir)
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+    try:
+        result = of.record_opencode_pause(
+            state_dir, "opencode-go/glm-5.3", "rate limit", now=now, lock_timeout_s=0.25
+        )
+        assert result is None
+    finally:
+        os.close(fd)
+        try:
+            lock_path.unlink()
+        except OSError:
+            pass
+
+
+def test_cli_record_pause_reads_stdin_and_persists_pause(tmp_path):
+    """The record-pause CLI reads output text from stdin, not argv."""
+    state_dir = tmp_path / "state"
+    helper = Path(of.__file__).resolve()
+    env = os.environ.copy()
+    env["PYTHONPATH"] = str(helper.parent) + os.pathsep + env.get("PYTHONPATH", "")
+    result = subprocess.run(
+        [sys.executable, str(helper), "record-pause", "--dir", str(state_dir), "--model", "opencode-go/glm-5.3"],
+        input="Retry-After: 600",
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+    assert result.returncode == 0, result.stderr
+    assert of.is_opencode_model_paused("opencode-go/glm-5.3", state_dir) is True

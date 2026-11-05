@@ -12,7 +12,10 @@ from __future__ import annotations
 import json
 import os
 import re
+import sys
+import tempfile
 import time
+import uuid
 from pathlib import Path
 from typing import Optional
 
@@ -780,6 +783,62 @@ def _pause_path(state_dir: str | Path) -> Path:
     return Path(state_dir) / "opencode-pauses.json"
 
 
+def _lock_path(state_dir: str | Path) -> Path:
+    return _pause_path(state_dir).with_suffix(".json.lock")
+
+
+def _acquire_process_lock(
+    lock_path: Path,
+    timeout: float = 10.0,
+    stale_after_s: float = 30.0,
+) -> Optional[int]:
+    """Acquire an advisory lock file using ``os.open(O_CREAT | O_EXCL)``.
+
+    The lock file is kept open for the lifetime of the lock; on Windows this
+    prevents other processes from deleting it. Returns the file descriptor, or
+    ``None`` if the lock could not be acquired within ``timeout`` seconds.
+    """
+    start = time.time()
+    pid = os.getpid()
+    lock_path = Path(lock_path)
+    try:
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        return None
+    while True:
+        try:
+            fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            os.write(fd, f"{pid}:{time.time():.6f}\n".encode("utf-8"))
+            return fd
+        except FileExistsError:
+            try:
+                if lock_path.is_file():
+                    mtime = lock_path.stat().st_mtime
+                    if time.time() - mtime > stale_after_s:
+                        try:
+                            lock_path.unlink()
+                        except OSError:
+                            pass
+            except OSError:
+                pass
+            if time.time() - start > timeout:
+                return None
+            time.sleep(min(0.5, 0.05 + (time.time() - start) / 20.0))
+
+
+def _release_process_lock(fd: Optional[int], lock_path: Path) -> None:
+    """Release a lock acquired with ``_acquire_process_lock``."""
+    if fd is not None:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+    try:
+        lock_path.unlink()
+    except OSError:
+        pass
+
+
 def load_opencode_pauses(state_dir: str | Path, now: Optional[float] = None) -> dict[str, float]:
     """Load non-expired pauses as ``{model_id: reset_timestamp}``.
 
@@ -807,18 +866,33 @@ def load_opencode_pauses(state_dir: str | Path, now: Optional[float] = None) -> 
 
 
 def save_opencode_pauses(state_dir: str | Path, pauses: dict[str, float]) -> bool:
-    """Persist the pause map atomically, pruning any expired entries first.
+    """Persist the pause map atomically.
 
-    Writes to a temporary file in the same directory and replaces the state
-    file with ``os.replace`` so concurrent readers never see a partial file.
-    Returns True when the state file was written successfully.
+    Writes to a unique temporary file in the same directory and replaces the
+    state file with ``os.replace`` so concurrent readers never see a partial
+    file. Expired entries are pruned on load, not on save, so callers that pass
+    an explicit ``now`` do not have their data discarded. Returns True when the
+    state file was written successfully.
     """
     path = _pause_path(state_dir)
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_suffix(".tmp")
-        tmp.write_text(json.dumps(dict(pauses), indent=2, sort_keys=True), encoding="utf-8")
-        os.replace(tmp, path)
+        tmp_fd, tmp_path_str = tempfile.mkstemp(
+            dir=str(path.parent),
+            prefix=f"{path.name}.",
+            suffix=".tmp",
+        )
+        try:
+            with os.fdopen(tmp_fd, "w", encoding="utf-8") as f:
+                json.dump(dict(pauses), f, indent=2, sort_keys=True)
+                f.write("\n")
+            os.replace(tmp_path_str, path)
+        except Exception:
+            try:
+                os.unlink(tmp_path_str)
+            except OSError:
+                pass
+            raise
         return True
     except Exception:
         return False
@@ -831,12 +905,15 @@ def record_opencode_pause(
     *,
     now: Optional[float] = None,
     default_pause_s: float = DEFAULT_PAUSE_S,
+    lock_timeout_s: float = 10.0,
 ) -> Optional[float]:
     """Record (or extend) a pause for ``model_id`` after a rate/rolling limit hit.
 
     Uses the reset time parsed from ``output_text`` if present; otherwise falls
-    back to ``default_pause_s``.  Returns the reset timestamp, or None when the
-    pause could not be persisted.
+    back to ``default_pause_s``.  The full load-modify-write is serialised with
+    a process-scoped lock so concurrent seats sharing ``state_dir`` cannot
+    overwrite one another's updates. Returns the reset timestamp, or ``None``
+    when the pause could not be persisted (including lock timeout).
     """
     now = now if now is not None else time.time()
     if not model_id:
@@ -845,13 +922,20 @@ def record_opencode_pause(
     if reset_ts is None:
         reset_ts = now + float(default_pause_s)
 
-    pauses = load_opencode_pauses(state_dir, now=now)
-    existing = pauses.get(model_id)
-    if existing is None or reset_ts > existing:
-        pauses[model_id] = reset_ts
-    if save_opencode_pauses(state_dir, pauses):
-        return reset_ts
-    return None
+    lock_path = _lock_path(state_dir)
+    fd = _acquire_process_lock(lock_path, timeout=lock_timeout_s)
+    if fd is None:
+        return None
+    try:
+        pauses = load_opencode_pauses(state_dir, now=now)
+        existing = pauses.get(model_id)
+        if existing is None or reset_ts > existing:
+            pauses[model_id] = reset_ts
+        if save_opencode_pauses(state_dir, pauses):
+            return reset_ts
+        return None
+    finally:
+        _release_process_lock(fd, lock_path)
 
 
 def is_opencode_model_paused(
@@ -871,3 +955,25 @@ def opencode_pauses_state_dir(env: Optional[dict] = None) -> Path:
     env = env if env is not None else {}
     base = env.get("BOB_OPENCODE_PAUSE_STATE_DIR") or env.get("LOCALAPPDATA") or str(Path.home() / "AppData" / "Local")
     return Path(base) / "Bobiverse" / "worker" / "state"
+
+
+def _cli(argv: list[str] | None = None) -> int:
+    """Command-line entry point used by the worker wrapper."""
+    import argparse
+
+    parser = argparse.ArgumentParser(prog="opencode_fuel")
+    subs = parser.add_subparsers(dest="command")
+    record = subs.add_parser("record-pause", help="Record a model pause from output on stdin")
+    record.add_argument("--dir", required=True, help="Pause-state directory")
+    record.add_argument("--model", required=True, help="Model id that hit the limit")
+    args = parser.parse_args(argv)
+    if args.command == "record-pause":
+        output_text = sys.stdin.read()
+        reset_ts = record_opencode_pause(args.dir, args.model, output_text)
+        return 0 if reset_ts is not None else 1
+    parser.print_help()
+    return 2
+
+
+if __name__ == "__main__":
+    sys.exit(_cli())
