@@ -15,7 +15,7 @@ $ErrorActionPreference = 'SilentlyContinue'
 $WarningPreference = 'SilentlyContinue'
 $ProgressPreference = 'SilentlyContinue'
 if (-not $InstallRoot) { $InstallRoot = Split-Path -Parent $PSScriptRoot }
-$out = [ordered]@{ ok = $false; cursor = [ordered]@{ high = $null; low = $null; any = $null }; grok = [ordered]@{ remaining_pct = $null; state = 'unknown'; reason = '' }; opencode = [ordered]@{ free = $null; go = $null; models = [ordered]@{} } }
+$out = [ordered]@{ ok = $false; cursor = [ordered]@{ high = $null; low = $null; any = $null }; grok = [ordered]@{ remaining_pct = $null; state = 'unknown'; reason = '' }; opencode = [ordered]@{ free = $null; go = $null; models = [ordered]@{}; free_model_ids = @() } }
 try {
     $psd1 = Join-Path $InstallRoot 'src\BobBridge.psd1'
     if (-not (Test-Path -LiteralPath $psd1)) { throw 'no BobBridge' }
@@ -66,6 +66,9 @@ try {
                     $op.models | Get-Member -MemberType NoteProperty | ForEach-Object {
                         $out.opencode.models[$_.Name] = [int]$op.models.($_.Name)
                     }
+                }
+                if ($op.free_model_ids) {
+                    $out.opencode.free_model_ids = @($op.free_model_ids)
                 }
             }
         }

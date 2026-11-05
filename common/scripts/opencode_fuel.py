@@ -10,6 +10,7 @@ All functions are pure / testable and never touch credentials.
 from __future__ import annotations
 
 import json
+import os
 import re
 import time
 from pathlib import Path
@@ -69,9 +70,10 @@ OPENCODE_GO_FALLBACK_ORDER: tuple[str, ...] = (
 )
 
 # Phrases that indicate an ``opencode run`` hit a rate / rolling / payment limit.
+# Bare numeric codes (402/429) are intentionally excluded; they require HTTP/status
+# context (see ``looks_like_rate_limit``) to avoid false positives from issue
+# numbers, commit hashes and timings in normal output.
 RATE_LIMIT_PHRASES: tuple[str, ...] = (
-    "429",
-    "402",
     "too many requests",
     "rate limit",
     "rolling limit",
@@ -707,11 +709,18 @@ def _parse_iso_ts(raw: str) -> Optional[float]:
 
 
 def looks_like_rate_limit(text: str | None) -> bool:
-    """True when ``opencode run`` output text indicates a rate/rolling/payment limit."""
+    """True when ``opencode run`` output text indicates a rate/rolling/payment limit.
+
+    Bare ``402``/``429`` digits are not enough; they must appear with HTTP/status
+    context (e.g. ``HTTP 429``, ``status 429``) to avoid false pauses from issue
+    numbers, commit hashes and timings in normal output.
+    """
     if not text or not isinstance(text, str):
         return False
     t = text.lower()
-    return any(phrase in t for phrase in RATE_LIMIT_PHRASES)
+    if any(phrase in t for phrase in RATE_LIMIT_PHRASES):
+        return True
+    return bool(re.search(r"\b(http|status( code)?)\D{0,3}(402|429)\b", t, re.IGNORECASE))
 
 
 def parse_reset_time(text: str | None, now: Optional[float] = None) -> Optional[float]:
@@ -797,14 +806,22 @@ def load_opencode_pauses(state_dir: str | Path, now: Optional[float] = None) -> 
     return out
 
 
-def save_opencode_pauses(state_dir: str | Path, pauses: dict[str, float]) -> None:
-    """Persist the pause map, pruning any expired entries first."""
+def save_opencode_pauses(state_dir: str | Path, pauses: dict[str, float]) -> bool:
+    """Persist the pause map atomically, pruning any expired entries first.
+
+    Writes to a temporary file in the same directory and replaces the state
+    file with ``os.replace`` so concurrent readers never see a partial file.
+    Returns True when the state file was written successfully.
+    """
     path = _pause_path(state_dir)
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(dict(pauses), indent=2, sort_keys=True), encoding="utf-8")
+        tmp = path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(dict(pauses), indent=2, sort_keys=True), encoding="utf-8")
+        os.replace(tmp, path)
+        return True
     except Exception:
-        pass
+        return False
 
 
 def record_opencode_pause(
@@ -832,8 +849,9 @@ def record_opencode_pause(
     existing = pauses.get(model_id)
     if existing is None or reset_ts > existing:
         pauses[model_id] = reset_ts
-    save_opencode_pauses(state_dir, pauses)
-    return reset_ts
+    if save_opencode_pauses(state_dir, pauses):
+        return reset_ts
+    return None
 
 
 def is_opencode_model_paused(

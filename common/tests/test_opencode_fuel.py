@@ -471,6 +471,19 @@ def test_looks_like_rate_limit_detects_phrases():
     assert of.looks_like_rate_limit("all good here") is False
 
 
+def test_looks_like_rate_limit_ignores_bare_codes_in_normal_output():
+    assert of.looks_like_rate_limit("Fixed issue #4290 and PR #6429") is False
+    assert of.looks_like_rate_limit("Commit abc429def completed in 402ms") is False
+    assert of.looks_like_rate_limit("The answer is 429.") is False
+
+
+def test_looks_like_rate_limit_detects_codes_with_http_status_context():
+    assert of.looks_like_rate_limit("HTTP 429 Too Many Requests") is True
+    assert of.looks_like_rate_limit("status 429 rate limited") is True
+    assert of.looks_like_rate_limit("status code 402 Payment Required") is True
+    assert of.looks_like_rate_limit("received HTTP 402") is True
+
+
 def test_parse_reset_time_retry_after_seconds():
     now = 1_000_000.0
     assert of.parse_reset_time("Retry-After: 300", now=now) == now + 300
@@ -532,6 +545,24 @@ def test_record_opencode_pause_extends_existing_pause(tmp_path):
         state_dir, "opencode-go/glm-5.3", "Retry-After: 600", now=later
     )
     assert reset == later + 600
+
+
+def test_save_opencode_pauses_returns_success_flag(tmp_path):
+    assert of.save_opencode_pauses(tmp_path / "state", {"opencode-go/glm-5.3": 1_000_100.0}) is True
+    # If the state dir path is blocked by a file, the save fails cleanly.
+    blocked = tmp_path / "blocked"
+    blocked.write_text("not a directory", encoding="utf-8")
+    assert of.save_opencode_pauses(blocked / "state", {"opencode-go/glm-5.3": 1_000_100.0}) is False
+
+
+def test_record_opencode_pause_returns_none_when_save_fails(tmp_path):
+    blocked = tmp_path / "blocked"
+    blocked.write_text("not a directory", encoding="utf-8")
+    now = 1_000_000.0
+    assert (
+        of.record_opencode_pause(blocked / "state", "opencode-go/glm-5.3", "rate limit", now=now)
+        is None
+    )
 
 
 def test_is_opencode_model_paused_case_insensitive(tmp_path):

@@ -142,7 +142,7 @@ has positive per-model fuel; it will not fall back to another capped model.
 
 | Plan | Models | Typical flag |
 |------|--------|--------------|
-| Free (no account) | `beam-free`, `iceman-contributor-free` (discovered from `opencode models` under `opencode/` or `opencode-go/`) | `opencode run -m opencode/<model> ...` |
+| Free (no account) | `beam-free`, `iceman-contributor-free` (discovered from `opencode models`) | `opencode run -m <provider>/<model> ...` using the exact ID returned by `opencode models` |
 | Go ($10/mo) | `glm-5.3`, `glm-5.3-flash`, `glm-5.2`, `kimi-k3`, `kimi-k2.7-code`, `longcat-2.0`, `deepseek-v4.1-flash`, `qwen3.8-flash` | `opencode run -m opencode-go/<model> ...` |
 
 Go limits are per-model dollar allowances with rolling caps: 50% per week and

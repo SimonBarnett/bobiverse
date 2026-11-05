@@ -5,6 +5,7 @@ import json
 import os
 import shutil
 import subprocess
+import time
 from pathlib import Path
 
 import pytest
@@ -166,6 +167,78 @@ def test_build_launch_opencode_creates_wrapper(tmp_path: Path):
     bw.assert_fresh(spec.argv, ps1_files)
 
 
+def test_build_launch_opencode_wrapper_parses_as_powershell(tmp_path: Path):
+    """Generated wrapper must be valid PowerShell with whitespace/quote-heavy prompts."""
+    if shutil.which("powershell.exe") is None:
+        pytest.skip("powershell.exe not available")
+    prompt = 'Say "hello" and \'world\' with spaces'
+    spec = bw.build_launch("opencode", "agent", r"C:\ai\bob\worker", prompt, OP, tmp_path)
+    script_key = next(k for k in spec.files if k.endswith("launch-opencode.ps1"))
+    script_path = tmp_path / "launch-opencode.ps1"
+    script_path.write_text(spec.files[script_key], encoding="utf-8")
+
+    parse_cmd = (
+        "[scriptblock]::Create((Get-Content -Raw -Path "
+        f"'{script_path}'" ")) | Out-Null; 'PARSED_OK'"
+    )
+    result = subprocess.run(
+        ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", parse_cmd],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "PARSED_OK" in result.stdout
+
+
+def test_opencode_watchdog_kills_hanging_process_without_blocking(tmp_path: Path):
+    """A timed-out opencode run must not block the seat on pipe reads."""
+    if shutil.which("powershell.exe") is None:
+        pytest.skip("powershell.exe not available")
+
+    # Fake opencode.exe: ignores args and sleeps long enough to be killed.
+    fake_opencode = tmp_path / "fake-opencode.ps1"
+    fake_opencode.write_text(
+        "Start-Sleep -Seconds 60; exit 0",
+        encoding="utf-8",
+    )
+
+    # A batch wrapper lets the PowerShell wrapper invoke it like an .exe.
+    fake_exe = tmp_path / "opencode.cmd"
+    fake_exe.write_text(
+        f"@powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"{fake_opencode}\" %*",
+        encoding="utf-8",
+    )
+
+    spec = bw.build_launch(
+        "opencode", "agent", r"C:\ai\bob\worker", "short watchdog please", str(fake_exe), tmp_path
+    )
+    script_key = next(k for k in spec.files if k.endswith("launch-opencode.ps1"))
+    script_path = Path(script_key)
+    script_path.parent.mkdir(parents=True, exist_ok=True)
+    for path, text in spec.files.items():
+        Path(path).write_text(text, encoding="utf-8")
+
+    env = os.environ.copy()
+    env["BOB_OPENCODE_WATCHDOG_MS"] = "500"
+
+    start = time.time()
+    result = subprocess.run(
+        ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(script_path)],
+        input="exit\n",
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=10,
+    )
+    elapsed = time.time() - start
+
+    # Must finish quickly: the 500ms watchdog plus bounded drain should dominate.
+    assert elapsed < 8, f"watchdog blocked for {elapsed:.1f}s"
+    # Wrapper should exit cleanly after stdin sends 'exit'.
+    assert result.returncode == 0
+
+
 def test_should_start_fuel_watcher_includes_opencode():
     assert bw.should_start_fuel_watcher("opencode") is True
     assert bw.should_start_fuel_watcher("plan") is False
@@ -195,6 +268,68 @@ def test_read_fuel_parses_opencode_section(tmp_path: Path):
     assert f.opencode_go == 50
     assert f.opencode_models == {"glm-5.3": 50}
     assert f.opencode_free_model_ids == ("opencode/beam-free",)
+
+
+def test_agent_fuel_ps1_forwards_free_model_ids_from_opencode_fuel(tmp_path: Path):
+    """Get-BobAgentFuel.ps1 must pass free_model_ids from Get-BobOpencodeFuel.ps1 into the payload."""
+    if shutil.which("powershell.exe") is None:
+        pytest.skip("powershell.exe not available")
+
+    tools = tmp_path / "tools"
+    src = tmp_path / "src"
+    tools.mkdir()
+    src.mkdir()
+
+    agent_ps1 = Path(bw.__file__).resolve().parent.parent / "tray" / "tools" / "Get-BobAgentFuel.ps1"
+    shutil.copy(agent_ps1, tools / "Get-BobAgentFuel.ps1")
+
+    # Fake Get-BobOpencodeFuel.ps1 emits the free_model_ids the real helper would discover.
+    (tools / "Get-BobOpencodeFuel.ps1").write_text(
+        (
+            "[Console]::Out.WriteLine("
+            "'{\"free\":100,\"go\":null,\"models\":{},"
+            "\"free_model_ids\":[\"opencode/beam-free\",\"opencode/iceman-contributor-free\"]}')\n"
+            "exit 0"
+        ),
+        encoding="utf-8",
+    )
+
+    # Minimal BobBridge module so Import-Module succeeds and the Cursor/Grok readers no-op.
+    (src / "BobBridge.psm1").write_text(
+        "function Get-BobCursorAgentWeeklyRemaining { }\n"
+        "function Get-BobCursorGroupRemainFromLocalDoc { }\n"
+        "function Get-BobWeeklyRemaining { }\n"
+        "function Get-BobGrokAuthSnapshot { }\n"
+        "function Get-BobGrokAvailability { }\n",
+        encoding="utf-8",
+    )
+    (src / "BobBridge.psd1").write_text(
+        "@{ RootModule = 'BobBridge.psm1'; ModuleVersion = '1.0.0'; FunctionsToExport = '*' }",
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        [
+            "powershell.exe",
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(tools / "Get-BobAgentFuel.ps1"),
+            "-InstallRoot",
+            str(tmp_path),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
+
+    doc = json.loads(result.stdout.strip().splitlines()[-1])
+    assert doc["opencode"]["free_model_ids"] == [
+        "opencode/beam-free",
+        "opencode/iceman-contributor-free",
+    ]
 
 
 OPENCODE_FUEL_PS1 = Path(bw.__file__).resolve().parent.parent / "tray" / "tools" / "Get-BobOpencodeFuel.ps1"
