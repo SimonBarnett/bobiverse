@@ -363,6 +363,58 @@ def _dnames_from(obj: Any) -> list[str]:
     return names
 
 
+def _first_form(loaded: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not isinstance(loaded, dict):
+        return None
+    forms = loaded.get("Form")
+    if isinstance(forms, list) and forms and isinstance(forms[0], dict):
+        return forms[0]
+    if isinstance(forms, dict):
+        return forms
+    return None
+
+
+def _first_procedure(loaded: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not isinstance(loaded, dict):
+        return None
+    procs = loaded.get("Procedure")
+    if isinstance(procs, list) and procs and isinstance(procs[0], dict):
+        return procs[0]
+    if isinstance(procs, dict):
+        return procs
+    return None
+
+
+def _is_fatal_flag(value: Any) -> bool:
+    """Match SDK fatalerror semantics: only 1 or 2 (and bool True) are fatal."""
+    if value is True:
+        return True
+    return value in (1, 2, "1", "2")
+
+
+def apply_level_error(parsed: dict[str, Any], loaded: dict[str, Any] | None) -> None:
+    """FR #6113: Form/Procedure Error is not a successful Result."""
+    form = _first_form(loaded)
+    if form:
+        err = form.get("Error") or form.get("error")
+        fatal = form.get("fatalerror") if form.get("fatalerror") is not None else form.get("fatalError")
+        if err or _is_fatal_flag(fatal):
+            parsed["ok"] = False
+            parsed["error"] = "form_error"
+            parsed["form_error"] = redact(str(err or "fatalerror"))[:200]
+            parsed["fatalerror"] = _is_fatal_flag(fatal)
+            return
+    proc = _first_procedure(loaded)
+    if proc:
+        err = proc.get("Error") or proc.get("error")
+        fatal = proc.get("fatalerror") if proc.get("fatalerror") is not None else proc.get("fatalError")
+        if err or _is_fatal_flag(fatal):
+            parsed["ok"] = False
+            parsed["error"] = "proc_error"
+            parsed["form_error"] = redact(str(err or "fatalerror"))[:200]
+            parsed["fatalerror"] = _is_fatal_flag(fatal)
+
+
 def decorate_mob_result(parsed: dict[str, Any], result_text: str) -> None:
     """Decode Mob <Op>Result (often base64 JSON) into compact fields."""
     decoded = _maybe_b64_decode(result_text)
@@ -382,6 +434,8 @@ def decorate_mob_result(parsed: dict[str, Any], result_text: str) -> None:
         parsed["companies"] = names
         parsed["count"] = len(names)
         parsed.pop("body", None)
+    if isinstance(loaded, dict):
+        apply_level_error(parsed, loaded)
 
 
 def parse_soap_response(xml_text: str) -> dict[str, Any]:
@@ -594,7 +648,8 @@ class PriorityWcfClient:
                 parsed.pop("error", None)
             else:
                 parsed["ok"] = False
-                if not is_real_fault:
+                # FR #6113: keep form_error/proc_error from apply_level_error
+                if not is_real_fault and not parsed.get("error"):
                     parsed["error"] = WCF_HTTP_ERROR
         if has_result and parsed.get("ok") is True:
             parsed.pop("raw", None)
@@ -1478,6 +1533,8 @@ def run_wcf_form_prepare(
     activation: dict[str, str] | None = None
     form_start_shapes: list[dict[str, Any]] = []
     query_shape: dict[str, Any] | None = None
+    form_error_text = ""
+    form_fatal = False
     meta = _FormMeta()
 
     def _cleanup() -> None:
@@ -1505,6 +1562,29 @@ def run_wcf_form_prepare(
             opened_blob = _load_blob(opened)
             opened_form = _form0(opened_blob)
             form_start_shapes.append(_form_reply_shape(opened_blob, opened_form))
+            if opened.get("error") == "form_error" or (
+                opened_form
+                and (
+                    opened_form.get("Error")
+                    or _is_fatal_flag(
+                        opened_form.get("fatalerror")
+                        if opened_form.get("fatalerror") is not None
+                        else opened_form.get("fatalError")
+                    )
+                )
+            ):
+                form_error_text = str(
+                    opened.get("form_error")
+                    or (opened_form.get("Error") if opened_form else None)
+                    or "fatalerror"
+                )
+                form_fatal = bool(opened.get("fatalerror")) or _is_fatal_flag(
+                    opened_form.get("fatalerror")
+                    if opened_form.get("fatalerror") is not None
+                    else opened_form.get("fatalError")
+                )
+                last_message = form_error_text
+                _fail("form_error")
             if opened.get("ok") is not True:
                 _fail(str(opened.get("error") or "form_start_failed"))
             form_open = True
@@ -1773,6 +1853,9 @@ def run_wcf_form_prepare(
         out["error"] = error
         if error == "errs_unknown":
             out["errs"] = None
+    if form_error_text:
+        out["form_error"] = form_error_text
+        out["fatalerror"] = form_fatal
     wrote = _write_prepare_log(
         job_id,
         {
@@ -1783,6 +1866,8 @@ def run_wcf_form_prepare(
             "row_enames": row_enames,
             "activation": activation,
             "error": error,
+            "form_error": form_error_text,
+            "fatalerror": form_fatal,
             "errs": err_n,
             "rows": err_rows_out or [],
             **({"form_start_shapes": form_start_shapes} if form_start_shapes else {}),
