@@ -283,6 +283,12 @@ class Fuel:
     cursor_low: Optional[int] = None
     grok_pct: Optional[int] = None
     grok_state: str = "unknown"
+    # FR #6119: Cursor on-demand spend limit (digest on_demand_*); at-limit is out-of-fuel
+    # even when high/low pool remain % still looks non-zero (flamingo high=100 class).
+    on_demand_used_cents: Optional[int] = None
+    on_demand_limit_cents: Optional[int] = None
+    on_demand_remaining_pct: Optional[int] = None
+    overspend_state: str = "unknown"
     opencode_free: Optional[int] = None
     opencode_go: Optional[int] = None
     opencode_models: dict = field(default_factory=dict)
@@ -311,6 +317,19 @@ def parse_fuel(text: str) -> Fuel:
 
     cur = doc.get("cursor") or {}
     grok = doc.get("grok") or {}
+    # Prefer cursor.* on_demand; accept top-level keys for fixtures / older helpers (FR #6119).
+    od_used = _i(cur.get("on_demand_used_cents"))
+    if od_used is None:
+        od_used = _i(doc.get("on_demand_used_cents"))
+    od_limit = _i(cur.get("on_demand_limit_cents"))
+    if od_limit is None:
+        od_limit = _i(doc.get("on_demand_limit_cents"))
+    od_remain = _i(cur.get("on_demand_remaining_pct"))
+    if od_remain is None:
+        od_remain = _i(doc.get("on_demand_remaining_pct"))
+    od_state = str(
+        cur.get("overspend_state") or doc.get("overspend_state") or "unknown"
+    ).strip().lower() or "unknown"
     op = doc.get("opencode") or {}
     op_free = _i(op.get("free")) if isinstance(op, dict) else None
     op_go = _i(op.get("go")) if isinstance(op, dict) else None
@@ -325,6 +344,10 @@ def parse_fuel(text: str) -> Fuel:
         _i(cur.get("low")),
         _i(grok.get("remaining_pct")),
         str(grok.get("state") or "unknown").lower(),
+        od_used,
+        od_limit,
+        od_remain,
+        od_state,
         op_free,
         op_go,
         dict(op_models),
@@ -344,7 +367,28 @@ def read_fuel(install_root: Path, run: Callable = subprocess.run, timeout: float
         return Fuel()
 
 
+def cursor_on_demand_at_limit(f: Fuel) -> bool:
+    """True when Cursor on-demand spend has hit its limit (FR #6119).
+
+    Authoritative when included pool remain % still looks healthy (e.g. high=100)
+    but the seat cannot charge on-demand. Prefer overspend_state=at-limit or
+    used_cents >= limit_cents. Do not trust remaining_pct alone: Get-CursorAgentUsage
+    rounds remain to an int, so remain_pct can be 0 while cents are still left.
+    """
+    st = (f.overspend_state or "").strip().lower()
+    if st == "at-limit":
+        return True
+    used = f.on_demand_used_cents
+    limit = f.on_demand_limit_cents
+    if used is not None and limit is not None and int(limit) > 0 and int(used) >= int(limit):
+        return True
+    return False
+
+
 def cursor_has_tokens(f: Fuel) -> bool:
+    # FR #6119: at-limit on-demand means the seat cannot run Cursor work.
+    if cursor_on_demand_at_limit(f):
+        return False
     return any(v is not None and v > 0 for v in (f.cursor_high, f.cursor_low))
 
 
@@ -463,7 +507,17 @@ def fuel_reading_known(f: Fuel, kind: str) -> bool:
         return st != "unknown"
     # Cursor: relay ACKs on receipt (#4115), so _inject_line uses this probe, not stop_fn.
     if k == "cursor":
-        return f.cursor_high is not None or f.cursor_low is not None
+        if f.cursor_high is not None or f.cursor_low is not None:
+            return True
+        # FR #6119: on-demand fields alone are a known reading (limit hit with null pools).
+        if (
+            f.on_demand_used_cents is not None
+            or f.on_demand_limit_cents is not None
+            or f.on_demand_remaining_pct is not None
+            or (f.overspend_state or "").strip().lower() not in ("", "unknown")
+        ):
+            return True
+        return False
     if k == "opencode":
         return f.opencode_free is not None or f.opencode_go is not None
     return False
@@ -476,6 +530,9 @@ def fuel_explicitly_exhausted(f: Fuel, kind: str) -> bool:
     still uses ``grok_has_tokens`` / ``cursor_has_tokens`` (unknown = not available).
     """
     k = (kind or "").strip().lower()
+    # FR #6119: on-demand at-limit before known gate (limit alone is enough evidence).
+    if k == "cursor" and cursor_on_demand_at_limit(f):
+        return True
     if not fuel_reading_known(f, k):
         return False
     if k == "grok":
@@ -484,6 +541,10 @@ def fuel_explicitly_exhausted(f: Fuel, kind: str) -> bool:
         st = (f.grok_state or "").strip().lower()
         return st in ("exhausted", "empty", "none", "unavailable")
     if k == "cursor":
+        # On-demand fields alone can make the reading "known" without pool high/low.
+        # Incomplete pool data must not mid-job GIVEUP unless on-demand is at-limit.
+        if f.cursor_high is None and f.cursor_low is None:
+            return False
         return not cursor_has_tokens(f)
     if k == "opencode":
         return not opencode_has_tokens(f)
@@ -496,6 +557,8 @@ def format_fuel_reading(f: Fuel, kind: str = "") -> str:
     return (
         f"kind={k or '-'} pct={f.grok_pct!s} state={f.grok_state!s} "
         f"cursor_high={f.cursor_high!s} cursor_low={f.cursor_low!s} "
+        f"on_demand_used={f.on_demand_used_cents!s} on_demand_limit={f.on_demand_limit_cents!s} "
+        f"on_demand_remain_pct={f.on_demand_remaining_pct!s} overspend={f.overspend_state!s} "
         f"opencode_free={f.opencode_free!s} opencode_go={f.opencode_go!s} "
         f"known={fuel_reading_known(f, k)} exhausted={fuel_explicitly_exhausted(f, k)}"
     )
@@ -5217,6 +5280,12 @@ class BoredEmitter:
             float(done_miss_grace_s) if done_miss_grace_s is not None
             else _env_float("BOB_WORKER_DONE_MISS_GRACE_S", 20.0, 5.0, 600.0)
         )
+        # FR #6119: repeated short done-miss releases => out-of-fuel hold (stop !bored churn).
+        self.fast_done_miss_s = _env_float("BOB_WORKER_FAST_DONE_MISS_S", 60.0, 5.0, 600.0)
+        self.fast_done_miss_need = max(
+            1, int(_env_float("BOB_WORKER_FAST_DONE_MISS_NEED", 2.0, 1.0, 10.0))
+        )
+        self._fast_done_miss_streak = 0
         # FR #5505: ACKed-on-receipt but never injected — inject (or give up) after this delay.
         self.held_assign_watchdog_s = (
             float(held_assign_watchdog_s) if held_assign_watchdog_s is not None
@@ -5491,6 +5560,12 @@ class BoredEmitter:
             return self._ack_held(self.clock())
 
     @property
+    def fast_done_miss_streak(self) -> int:
+        """FR #6119: consecutive short done-miss releases (test/observability)."""
+        with self._cv:
+            return int(self._fast_done_miss_streak)
+
+    @property
     def out_of_fuel(self) -> bool:
         """FR #3012: True while the seat is held quiet after a 402 / usage-exhausted hit."""
         with self._cv:
@@ -5698,12 +5773,16 @@ class BoredEmitter:
     ) -> None:
         """FR #2802: grok turn_ended — release harvest hold when at/after DONE, or idle reason=turn."""
         clear_hard_fuel = False
+        convert_fast_miss = False
+        convert_fast_key = None  # type: Optional[str]
         try:
             with self._cv:
                 now = float(self.clock() if at is None else at)
                 self._turn_open = False
                 # FR #4858: successful turn clears hard 402 hold without min hold.
-                if self._out_of_fuel:
+                # Soft holds (FR #6119 fast-done-miss / mid-job on-demand) stay until a
+                # fuel reading clears them — a later turn_ended must not re-arm !bored.
+                if self._out_of_fuel and bool(self._out_of_fuel_hard_402):
                     clear_hard_fuel = True
                 # FR #2875 / inject-pending: still busy on a fresh assign — do not arm done-miss.
                 if self._inject_pending and self._inject_at is not None and now - self._inject_at < self.assign_grace_s:
@@ -5714,23 +5793,47 @@ class BoredEmitter:
                 if self._ack_open and self._ack_at is not None:
                     key = self._ack_job_key or "job"
                     if self._done_miss_reminded:
-                        self._ack_open = False
-                        self._ack_job_key = None
-                        self._done_miss_armed_at = None
-                        self._done_miss_key = None
-                        self._done_miss_reminded = False
-                        self._done_miss_release_pending = True
-                        # FR #4784: keep key for GIVEUP before !bored (Jeeves accepted-row free).
-                        self._release_giveup_key = key
-                        self._idle_since = now
-                        # FR #2996: match normal turn-end release — keep _release_gen == _turn_gen
-                        # so post-done-miss nak/idle are not gated forever (stale gen + wait(0) spin).
-                        self._release_gen = self._turn_gen
-                        self._arm_skip = True
-                        self._hold_release_at = now
-                        self.log(
-                            f"done-miss: still no DONE for {key} after reminder - releasing seat"
-                        )
+                        ack_age = now - float(self._ack_at)
+                        if ack_age < float(self.fast_done_miss_s):
+                            self._fast_done_miss_streak = int(self._fast_done_miss_streak) + 1
+                            self.log(
+                                f"done-miss: fast release streak="
+                                f"{self._fast_done_miss_streak}/{self.fast_done_miss_need} "
+                                f"age={ack_age:.1f}s key={key}"
+                            )
+                        else:
+                            self._fast_done_miss_streak = 0
+                        # FR #6119: repeated short done-miss => out-of-fuel (stop !bored churn).
+                        if self._fast_done_miss_streak >= int(self.fast_done_miss_need):
+                            convert_fast_miss = True
+                            convert_fast_key = key
+                            self._done_miss_armed_at = None
+                            self._done_miss_key = None
+                            self._done_miss_reminded = False
+                            self._done_miss_release_pending = False
+                            self.log(
+                                f"out-of-fuel: fast-done-miss streak="
+                                f"{self._fast_done_miss_streak} key={key}"
+                            )
+                            # keep ACK open so note_out_of_fuel can GIVEUP it after the lock
+                        else:
+                            self._ack_open = False
+                            self._ack_job_key = None
+                            self._done_miss_armed_at = None
+                            self._done_miss_key = None
+                            self._done_miss_reminded = False
+                            self._done_miss_release_pending = True
+                            # FR #4784: keep key for GIVEUP before !bored (Jeeves accepted-row free).
+                            self._release_giveup_key = key
+                            self._idle_since = now
+                            # FR #2996: match normal turn-end release — keep _release_gen == _turn_gen
+                            # so post-done-miss nak/idle are not gated forever (stale gen + wait(0) spin).
+                            self._release_gen = self._turn_gen
+                            self._arm_skip = True
+                            self._hold_release_at = now
+                            self.log(
+                                f"done-miss: still no DONE for {key} after reminder - releasing seat"
+                            )
                     else:
                         self._done_miss_armed_at = now
                         self._done_miss_key = key
@@ -5788,6 +5891,13 @@ class BoredEmitter:
         finally:
             if clear_hard_fuel:
                 self.clear_out_of_fuel(reason="successful turn")
+            # FR #6119: must run in finally — a return inside try skips code after try/finally.
+            if convert_fast_miss:
+                evidence = (
+                    f"fast-done-miss streak={self._fast_done_miss_streak}"
+                    + (f" key={convert_fast_key}" if convert_fast_key else "")
+                )
+                self.note_out_of_fuel(evidence)
     def on_outbox(self, payload: str) -> None:
         now = self.clock()
         p = (payload or "").strip()
@@ -5847,6 +5957,7 @@ class BoredEmitter:
                     self._ack_open = False
                     self._ack_job_key = None
                     self._clear_done_miss()
+                    self._fast_done_miss_streak = 0  # FR #6119: real DONE breaks fast-miss streak
                     # FR #4259: repeat DONE after turn_ended must not re-arm harvest.
                     # Already fired !bored for this payload, or same DONE with turn closed
                     # and harvest already cleared (turn_ended release path) → ignore.
