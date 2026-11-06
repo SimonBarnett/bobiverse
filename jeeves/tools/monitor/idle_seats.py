@@ -113,7 +113,7 @@ def collect_idle_shop_seats(machines: object) -> list[dict]:
     return out
 
 
-def _row_offerable_to_nick(gc, doc, ledger, live: set[str], row: dict, nick: str, now: float) -> bool:
+def _row_offerable_to_nick(gc, doc, ledger, live: set[str], row: dict, nick: str, now: float, home=None) -> bool:
     """Read-only mirror of offer_focus_top eligibility (no offered_to / lock mutation)."""
     me = (gc.canonical_worker_nick(nick) or nick or "").strip()
     if not me:
@@ -154,6 +154,10 @@ def _row_offerable_to_nick(gc, doc, ledger, live: set[str], row: dict, nick: str
     gc._stamp_require_machine(cand_eff)
     if gc.row_blocked_for_machine(cand_eff, me):
         return False
+    # FR #6134: OpenCode seats skip MRB/UAT (mirror offer_focus_top).
+    if home is not None and hasattr(gc, "row_blocked_for_opencode_seat"):
+        if gc.row_blocked_for_opencode_seat(cand_eff, me, home):
+            return False
     return True
 
 
@@ -195,7 +199,7 @@ def count_offerable_for_live_seats(
         rows = list(unaccepted)
     n = 0
     for row in rows:
-        if any(_row_offerable_to_nick(gc, doc, ledger, live, row, nick, now_f) for nick in idle_nicks):
+        if any(_row_offerable_to_nick(gc, doc, ledger, live, row, nick, now_f, home) for nick in idle_nicks):
             n += 1
     return n
 
