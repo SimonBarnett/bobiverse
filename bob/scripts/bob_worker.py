@@ -320,7 +320,8 @@ def cursor_on_demand_at_limit(f: Fuel) -> bool:
 
     Authoritative when included pool remain % still looks healthy (e.g. high=100)
     but the seat cannot charge on-demand. Prefer overspend_state=at-limit or
-    used_cents >= limit_cents; remaining_pct<=0 alone counts only with a known limit.
+    used_cents >= limit_cents. Do not trust remaining_pct alone: Get-CursorAgentUsage
+    rounds remain to an int, so remain_pct can be 0 while cents are still left.
     """
     st = (f.overspend_state or "").strip().lower()
     if st == "at-limit":
@@ -328,13 +329,6 @@ def cursor_on_demand_at_limit(f: Fuel) -> bool:
     used = f.on_demand_used_cents
     limit = f.on_demand_limit_cents
     if used is not None and limit is not None and int(limit) > 0 and int(used) >= int(limit):
-        return True
-    if (
-        f.on_demand_remaining_pct is not None
-        and int(f.on_demand_remaining_pct) <= 0
-        and limit is not None
-        and int(limit) > 0
-    ):
         return True
     return False
 
@@ -406,6 +400,10 @@ def fuel_explicitly_exhausted(f: Fuel, kind: str) -> bool:
         st = (f.grok_state or "").strip().lower()
         return st in ("exhausted", "empty", "none", "unavailable")
     if k == "cursor":
+        # On-demand fields alone can make the reading "known" without pool high/low.
+        # Incomplete pool data must not mid-job GIVEUP unless on-demand is at-limit.
+        if f.cursor_high is None and f.cursor_low is None:
+            return False
         return not cursor_has_tokens(f)
     return False
 
@@ -5506,7 +5504,9 @@ class BoredEmitter:
                 now = float(self.clock() if at is None else at)
                 self._turn_open = False
                 # FR #4858: successful turn clears hard 402 hold without min hold.
-                if self._out_of_fuel:
+                # Soft holds (FR #6119 fast-done-miss / mid-job on-demand) stay until a
+                # fuel reading clears them — a later turn_ended must not re-arm !bored.
+                if self._out_of_fuel and bool(self._out_of_fuel_hard_402):
                     clear_hard_fuel = True
                 # FR #2875 / inject-pending: still busy on a fresh assign — do not arm done-miss.
                 if self._inject_pending and self._inject_at is not None and now - self._inject_at < self.assign_grace_s:
