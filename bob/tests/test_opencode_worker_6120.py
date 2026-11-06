@@ -163,9 +163,11 @@ def test_build_launch_opencode_creates_wrapper(tmp_path: Path):
     assert "--dir $pauseStateDir" in script
     assert "--model $model" in script
     # The full OpenCode output must be piped to the helper's stdin, never argv.
-    assert "$outStr | & $py $pyHelper record-pause --dir $pauseStateDir --model $model 2>&1" in script
+    assert "$outStr | & $py $pyHelper record-pause --dir $pauseStateDir --model $model 2>&1 | Out-String" in script
+    assert "$ErrorActionPreference = 'Continue'" in script
     assert "$recordExit = $LASTEXITCODE" in script
     assert "record-pause helper failed" in script
+    assert "BOB_OPENCODE_MODEL is required" in script
     assert "Do work." in spec.files[prompt_key]
     # Every OpenCode launch must pass the fresh-session guard (no --continue/--session).
     ps1_files = {k: v for k, v in spec.files.items() if k.endswith(".ps1")}
@@ -227,6 +229,7 @@ def test_opencode_watchdog_kills_hanging_process_without_blocking(tmp_path: Path
     env = os.environ.copy()
     env["BOB_OPENCODE_WATCHDOG_MS"] = "500"
     env["LOCALAPPDATA"] = str(tmp_path)
+    env["BOB_OPENCODE_MODEL"] = "opencode/beam-free"
 
     start = time.time()
     result = subprocess.run(
@@ -471,3 +474,24 @@ def test_build_launch_opencode_wrapper_checks_record_pause_exit_code(tmp_path: P
     assert "if ($recordExit -ne 0)" in script
     assert "record-pause helper failed" in script
     assert "Add-Content -Path $fuelLog" in script
+
+
+def test_opencode_has_tokens_ignores_aggregate_when_per_model_exhausted():
+    """Aggregate go>0 must not keep OpenCode selectable when every Go model is 0 and free is 0."""
+    fuel = bw.Fuel(
+        opencode_free=0,
+        opencode_go=50,
+        opencode_models={"glm-5.3": 0, "kimi-k3": 0},
+    )
+    assert bw.opencode_has_tokens(fuel) is False
+    assert bw.opencode_default_model(fuel) is None
+    assert bw.select_agent(fuel, None, None, OP).kind == "none"
+
+
+def test_build_launch_opencode_wrapper_requires_model_env(tmp_path: Path):
+    """Wrapper must require BOB_OPENCODE_MODEL; never hard-code exhausted glm-5.3."""
+    spec = bw.build_launch("opencode", "agent", r"C:\ai\bob\worker", "Do work.", OP, tmp_path)
+    script = next(v for k, v in spec.files.items() if k.endswith("launch-opencode.ps1"))
+    assert "BOB_OPENCODE_MODEL is required" in script
+    assert "else { 'opencode-go/glm-5.3' }" not in script
+

@@ -352,8 +352,22 @@ def opencode_has_tokens(f: Fuel) -> bool:
     """True when OpenCode fuel readings show at least one usable pool.
 
     Unknown readings are treated as unavailable for seat selection, unlike Grok.
+    When per-model Go readings exist, aggregate `opencode_go` alone is not enough:
+    every listed Go model must be exhausted and free must be unavailable before we
+    treat the seat as out of OpenCode fuel (FR #6120 - do not launch capped glm-5.3).
     """
-    return any(v is not None and v > 0 for v in (f.opencode_free, f.opencode_go))
+    if f.opencode_free is not None and f.opencode_free > 0:
+        return True
+    models = f.opencode_models or {}
+    if models:
+        for v in models.values():
+            try:
+                if int(v or 0) > 0:
+                    return True
+            except (TypeError, ValueError):
+                continue
+        return False
+    return f.opencode_go is not None and f.opencode_go > 0
 
 
 def opencode_pauses_state_dir(env: Optional[dict] = None) -> Path:
@@ -1186,7 +1200,8 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
         helper_path = _resolve_opencode_fuel_helper_path(cwd=cwd)
         files[lfile] = "\n".join([
             r"$ErrorActionPreference = 'Stop'",
-            r"$model = if ($env:BOB_OPENCODE_MODEL) { $env:BOB_OPENCODE_MODEL } else { 'opencode-go/glm-5.3' }",
+            r"if (-not $env:BOB_OPENCODE_MODEL) { throw 'BOB_OPENCODE_MODEL is required (no exhausted glm-5.3 fallback)' }",
+            r"$model = $env:BOB_OPENCODE_MODEL",
             f"$exe = '{esc(exe)}'",
             f"$prompt = [IO.File]::ReadAllText('{esc(pfile)}')",
             r"$fuelLog = Join-Path $env:LOCALAPPDATA 'Bobiverse\worker\logs\opencode-out-of-fuel.log'",
@@ -1239,10 +1254,15 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             r"        Add-Content -Path $fuelLog -Value $entry -ErrorAction SilentlyContinue",
             r"        $py = (Get-Command python.exe -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source)",
             r"        if (-not $py) { $py = 'python.exe' }",
-            r"        $recordOutput = $outStr | & $py $pyHelper record-pause --dir $pauseStateDir --model $model 2>&1",
-            r"        $recordExit = $LASTEXITCODE",
+            r"        $prevEap = $ErrorActionPreference",
+            r"        $ErrorActionPreference = 'Continue'",
+            r"        try {",
+            r"            $recordOutput = $outStr | & $py $pyHelper record-pause --dir $pauseStateDir --model $model 2>&1 | Out-String",
+            r"            $recordExit = $LASTEXITCODE",
+            r"        } finally { $ErrorActionPreference = $prevEap }",
             r"        if ($recordExit -ne 0) {",
-            r"            $failEntry = @{ pid = $PID; ts = (Get-Date -Format o); model = $model; text = \"record-pause helper failed (exit $recordExit): $recordOutput\" } | ConvertTo-Json -Compress",
+            r"            $failText = ('record-pause helper failed (exit ' + $recordExit + '): ' + $recordOutput)",
+            r"            $failEntry = @{ pid = $PID; ts = (Get-Date -Format o); model = $model; text = $failText } | ConvertTo-Json -Compress",
             r"            Add-Content -Path $fuelLog -Value $failEntry -ErrorAction SilentlyContinue",
             r"        }",
             r"    }",
@@ -7949,7 +7969,11 @@ def run_plan(args, log: Log) -> int:
         exe = cursor_cmd
     elif kind == "opencode":
         exe = opencode_cmd
-        os.environ["BOB_OPENCODE_MODEL"] = opencode_default_model(fuel) or "opencode-go/glm-5.3"
+        oc_model = opencode_default_model(fuel)
+        if not oc_model:
+            log("opencode: no usable model (capped/paused) - not starting")
+            return EXIT_NO_AGENT
+        os.environ["BOB_OPENCODE_MODEL"] = oc_model
     else:
         exe = grok_exe
     run_dir = _new_run_dir("plan", "plan")
@@ -8024,7 +8048,11 @@ def run_monitor(args, log: Log) -> int:
         exe = cursor_cmd
     elif kind == "opencode":
         exe = opencode_cmd
-        os.environ["BOB_OPENCODE_MODEL"] = opencode_default_model(fuel) or "opencode-go/glm-5.3"
+        oc_model = opencode_default_model(fuel)
+        if not oc_model:
+            log("opencode: no usable model (capped/paused) - not starting")
+            return EXIT_NO_AGENT
+        os.environ["BOB_OPENCODE_MODEL"] = oc_model
     else:
         exe = grok_exe
     run_dir = _new_run_dir("monitor", "monitor")
@@ -8125,7 +8153,11 @@ def run_maintenance(args, log: Log, *, spawn: Optional[Callable] = None, poll_s:
         exe = cursor_cmd
     elif kind == "opencode":
         exe = opencode_cmd
-        os.environ["BOB_OPENCODE_MODEL"] = opencode_default_model(fuel) or "opencode-go/glm-5.3"
+        oc_model = opencode_default_model(fuel)
+        if not oc_model:
+            log("opencode: no usable model (capped/paused) - not starting")
+            return EXIT_NO_AGENT
+        os.environ["BOB_OPENCODE_MODEL"] = oc_model
     else:
         exe = grok_exe
     rd = Path(run_dir) if run_dir else _new_run_dir("maintenance", "maintenance")
@@ -8213,7 +8245,11 @@ def run_agent(args, log: Log) -> int:
         exe = cursor_cmd
     elif kind == "opencode":
         exe = opencode_cmd
-        os.environ["BOB_OPENCODE_MODEL"] = opencode_default_model(fuel) or "opencode-go/glm-5.3"
+        oc_model = opencode_default_model(fuel)
+        if not oc_model:
+            log("opencode: no usable model (capped/paused) - not starting")
+            return EXIT_NO_AGENT
+        os.environ["BOB_OPENCODE_MODEL"] = oc_model
     else:
         exe = grok_exe
     pid = os.getpid()
