@@ -75,3 +75,25 @@ def test_fr6109_verify_cleanup_uses_temp_not_text(tmp_path):
     assert proc.returncode == 0, proc.stdout + proc.stderr
     assert probe.is_file(), "cleanup must not Remove-Item the probe file text"
     assert "verify-ok" in (proc.stdout or "")
+
+def test_fr6109_hswap_refuses_nested_roots(tmp_path):
+    pack = tmp_path / "dest" / "pack"
+    dest = tmp_path / "dest"
+    (pack / "owned.txt").parent.mkdir(parents=True)
+    (pack / "owned.txt").write_text("pack\n", encoding="utf-8")
+    dest.mkdir(parents=True, exist_ok=True)
+    cmd = [
+        "powershell",
+        "-NoProfile",
+        "-File",
+        str(HSWAP),
+        "-PackRoot",
+        str(pack),
+        "-TargetRoot",
+        str(dest),
+    ]
+    proc = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60)
+    out = (proc.stdout or "") + (proc.stderr or "")
+    assert proc.returncode != 0, out
+    assert "must not nest" in out
+

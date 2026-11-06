@@ -54,4 +54,4 @@ npm ci --omit=dev
 ## Hotpatch overlay (FR #6109)
 
 Pack-box verify: `airc/scripts/Invoke-AircHotpatchVerify.ps1` (never `$t`/`$T` --- they are one variable).
-Overlay: `airc/scripts/Invoke-AircPriorityHSwap.ps1` copies the pack then **prunes** target files not in the pack (removed `sdk\priority-web-sdk` must not remain).
+Overlay: `airc/scripts/Invoke-AircPriorityHSwap.ps1` copies the pack then **prunes** target files not in the pack (removed `sdk\priority-web-sdk` must not remain). PackRoot and TargetRoot must be distinct and must not nest (refuse before copy).
