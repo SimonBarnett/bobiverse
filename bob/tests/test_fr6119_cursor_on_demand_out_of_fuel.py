@@ -183,3 +183,49 @@ def test_f_skill_fr6119_contiguous():
     t = raw.decode("utf-8")
     assert "FR #6119" in t
     assert "on-demand" in t.lower() or "on_demand" in t.lower()
+
+
+def test_hostile_remaining_pct_zero_with_cents_left_is_not_at_limit():
+    """Rounded remain_pct=0 must not override used < limit (CodeRabbit / Get-CursorAgentUsage round)."""
+    f = bw.Fuel(
+        cursor_high=100,
+        cursor_low=0,
+        on_demand_used_cents=19950,
+        on_demand_limit_cents=20000,
+        on_demand_remaining_pct=0,
+    )
+    assert bw.cursor_on_demand_at_limit(f) is False
+    assert bw.fuel_explicitly_exhausted(f, "cursor") is False
+    assert bw.cursor_has_tokens(f) is True
+
+
+def test_hostile_incomplete_on_demand_fields_not_mid_job_exhausted():
+    """Limit-only / pool-null readings are known for selection but must not mid-job GIVEUP."""
+    limit_only = bw.Fuel(on_demand_limit_cents=20000)
+    assert bw.fuel_reading_known(limit_only, "cursor") is True
+    assert bw.cursor_on_demand_at_limit(limit_only) is False
+    assert bw.fuel_explicitly_exhausted(limit_only, "cursor") is False
+
+    under = bw.Fuel(
+        cursor_high=None,
+        cursor_low=None,
+        on_demand_used_cents=100,
+        on_demand_limit_cents=20000,
+        overspend_state="ok",
+    )
+    assert bw.fuel_reading_known(under, "cursor") is True
+    assert bw.fuel_explicitly_exhausted(under, "cursor") is False
+
+
+def test_hostile_soft_out_of_fuel_hold_not_cleared_by_turn_ended():
+    """FR #4858 clears hard-402 only; fast-done-miss soft hold must survive turn_ended."""
+    clock = FakeClock(0.0)
+    e, sent, logs = _emitter(clock, idle_s=120.0)
+    e.note_out_of_fuel("fast-done-miss streak=2 key=MRB o/r#1")
+    assert e.out_of_fuel is True
+    assert bool(getattr(e, "_out_of_fuel_hard_402", False)) is False
+    e.turn_ended()
+    clock.advance(0.1)
+    assert e.out_of_fuel is True
+    e.stop()
+
