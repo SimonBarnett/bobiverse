@@ -648,7 +648,8 @@ class PriorityWcfClient:
                 parsed.pop("error", None)
             else:
                 parsed["ok"] = False
-                if not is_real_fault:
+                # FR #6113: keep form_error/proc_error from apply_level_error
+                if not is_real_fault and not parsed.get("error"):
                     parsed["error"] = WCF_HTTP_ERROR
         if has_result and parsed.get("ok") is True:
             parsed.pop("raw", None)
