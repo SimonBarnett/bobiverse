@@ -24,7 +24,7 @@ The Bob ear is this box's presence on IRC (`#bobiverse` + `#wonderland` + `#<mac
 - `.grok/skills/bobiverse-bob/SKILL.md` - architecture, paths, config, tray, install/hotpatch
 - `.grok/skills/bobiverse-bob-commands/SKILL.md` - what the ear handles; typing as the ear via outbox.txt
 - `.grok/skills/bobiverse-bob-troubleshooting/SKILL.md` - restart loops (--host), SASL, outbox BOM, tray
-- `.grok/skills/bobiverse-bob-worker/SKILL.md` - the tray **Agent** item / `bob-worker.exe`: how a worker seat starts (cursor > grok > key prompt), ONE window, `!bored`, IRC relay, IRC-loss exit, hang restarts, logs
+- `.grok/skills/bobiverse-bob-worker/SKILL.md` - the tray **Agent** item / `bob-worker.exe`: how a worker seat starts (Grok > Cursor > OpenCode > key prompt), ONE window, `!bored`, IRC relay, IRC-loss exit, hang restarts, logs
 - `.grok/skills/bobiverse-bob-job-irc/SKILL.md` (+ `-fr`, `-mrb`, `-uat`) - exact ACK / DONE / NACK / GIVEUP lines and the FR / MRB / UAT job processes (with diagrams) a worker follows. MRB seats follow assign-line `coderabbit=`/`review=` stamps (FR #5317/#5865): light triage only when `coderabbit=ready` and `review=light`; full review otherwise (including sensitive paths); then vision/tests/docs.
 - `.grok/skills/bobiverse-bob-plan/SKILL.md` - the tray **Plan** item: `bob-worker.exe --mode plan` in `<ai root>\bob\plan` (visionary / plan skills)
 - `.grok/skills/bobiverse-fleet-ops/SKILL.md` - shared health checks, hotpatch, rollback, privilege rules, tests
@@ -37,7 +37,7 @@ Docs in `docs\`:
 
 - The tray has two plain items, **Agent** and **Plan** (no submenus). Each click runs `bob-worker.exe` (`<ai root>\bob\worker`) which starts a **NEW** agent
   every time - it NEVER resumes, continues or attaches to an existing agent session, window or process (no `--resume`/`--continue`).
-- The agent is chosen automatically by token availability: local Grok weekly tokens > 0 (or unknown read) -> `agent.exe`; else Cursor pool > 0 -> `agent.cmd`; else a hidden-input prompt in the same window asks for a Grok session key (FR #3997).
+- The agent is chosen automatically by token availability: local Grok weekly tokens > 0 (or unknown read) -> `agent.exe`; else Cursor pool > 0 -> `agent.cmd`; else OpenCode free/Go fuel > 0 -> `opencode.exe`; else a hidden-input prompt in the same window asks for a Grok session key (FR #3997 / #6120).
 - Agent CWD is `<ai root>\bob\worker`; Plan CWD is `<ai root>\bob\plan`. Both folders have their own AGENTS.md + skills with the CAST IRON harvest rule on top.
 - Full start / troubleshooting guide: `bobiverse-bob-worker` and `bobiverse-bob-plan`.
 

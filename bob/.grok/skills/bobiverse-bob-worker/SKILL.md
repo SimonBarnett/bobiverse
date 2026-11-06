@@ -1,7 +1,7 @@
 ---
 name: bobiverse-bob-worker
 description: >
-  How to start and operate a bob WORKER agent: tray Agent click, bob-worker.exe command line, automatic grok->cursor->key-prompt selection, CWD <ai root>\bob\worker, always-new agent rule, IRC relay, ping/pong, IRC-loss exit, hang restart, logs, troubleshooting. Use when starting, debugging or changing the worker.
+  How to start and operate a bob WORKER agent: tray Agent click, bob-worker.exe command line, automatic Grok -> Cursor -> OpenCode -> key-prompt selection, CWD <ai root>\bob\worker, always-new agent rule, IRC relay, ping/pong, IRC-loss exit, hang restart, logs, troubleshooting. Use when starting, debugging or changing the worker.
 ---
 
 # bobiverse bob - worker agent (bob-worker.exe)
@@ -55,11 +55,12 @@ click = one `bob-worker.exe` = one window. `Plan` is the same (`--mode plan`, no
 1. **Grok** `agent.exe` (`%USERPROFILE%\.grok\bin\agent.exe`) when the local weekly reading (`unified.jsonl`, Grok 1.0.41 may report no % but a verified
    local login + current weekly period = available) shows tokens, **or when the Grok reading is unknown** (FR #3997: unknown counts as available for seat start; mid-job still uses explicit exhausted only, FR #3923).
 2. else **Cursor** `agent.cmd` (`%LOCALAPPDATA%\cursor-agent\agent.cmd`) when the **high-cost-models OR the auto (low-cost) pool** has more than 0 % left.
-3. else a **prompt in the worker window** asks for an `XAI_API_KEY` for this start only (hidden input): kept in memory, handed to the child's environment, never written to disk, never printed or
+3. else **OpenCode** `opencode.exe` when free or Go fuel has more than 0 % left (FR #6120). The OpenCode model is chosen from per-model fuel readings in fallback order.
+4. else a **prompt in the worker window** asks for an `XAI_API_KEY` for this start only (hidden input): kept in memory, handed to the child's environment, never written to disk, never printed or
    logged. Cancel = nothing starts (exit 4).
 
-An unknown **Grok** reading is available for seat start (FR #3997). An unknown **Cursor** pool reading is "not available" (falls through). Readings come from `<ai root>\bob\tools\Get-BobAgentFuel.ps1` (the tray's own local readers:
-`Get-BobCursorAgentWeeklyRemaining` via `Get-CursorAgentUsage.py`, `Get-BobWeeklyRemaining`, `Get-BobGrokAvailability`; no digest GET).
+An unknown **Grok** reading is available for seat start (FR #3997). An unknown **Cursor** pool reading is "not available" (falls through). An unknown **OpenCode** reading is also "not available". Readings come from `<ai root>\bob\tools\Get-BobAgentFuel.ps1` (the tray's own local readers:
+`Get-BobCursorAgentWeeklyRemaining` via `Get-CursorAgentUsage.py`, `Get-BobWeeklyRemaining`, `Get-BobGrokAvailability`, `Get-BobOpencodeFuel.ps1`; no digest GET).
 
 ## What the worker agent gets
 

@@ -1,6 +1,6 @@
 ﻿<#
 .SYNOPSIS
-  Print the agent-fuel readings bob-worker.exe uses to pick grok -> cursor -> dialog (FR #3997). JSON on stdout, nothing else.
+  Print the agent-fuel readings bob-worker.exe uses to pick grok -> cursor -> opencode -> dialog (FR #3997 / #6120). JSON on stdout, nothing else.
 .DESCRIPTION
   LOCAL readings only (CAST IRON, same sources as the tray): Cursor pools via Get-BobCursorAgentWeeklyRemaining
   (tools\Get-CursorAgentUsage.py or BOB_CURSOR_AGENT_FIXTURE; high-cost-models + auto/low-cost + on-demand), then
@@ -15,7 +15,7 @@ $ErrorActionPreference = 'SilentlyContinue'
 $WarningPreference = 'SilentlyContinue'
 $ProgressPreference = 'SilentlyContinue'
 if (-not $InstallRoot) { $InstallRoot = Split-Path -Parent $PSScriptRoot }
-$out = [ordered]@{ ok = $false; cursor = [ordered]@{ high = $null; low = $null; any = $null; on_demand_used_cents = $null; on_demand_limit_cents = $null; on_demand_remaining_pct = $null; overspend_state = $null }; grok = [ordered]@{ remaining_pct = $null; state = 'unknown'; reason = '' } }
+$out = [ordered]@{ ok = $false; cursor = [ordered]@{ high = $null; low = $null; any = $null; on_demand_used_cents = $null; on_demand_limit_cents = $null; on_demand_remaining_pct = $null; overspend_state = $null }; grok = [ordered]@{ remaining_pct = $null; state = 'unknown'; reason = '' }; opencode = [ordered]@{ free = $null; go = $null; models = [ordered]@{}; free_model_ids = @() } }
 try {
     $psd1 = Join-Path $InstallRoot 'src\BobBridge.psd1'
     if (-not (Test-Path -LiteralPath $psd1)) { throw 'no BobBridge' }
@@ -66,6 +66,25 @@ try {
         }
         if ($null -eq $out.grok.remaining_pct -and $w -and $null -ne $w.remaining_pct -and [string]$w.remaining_pct -ne '') {
             $out.grok.remaining_pct = [int]$w.remaining_pct
+        }
+    } catch { }
+    try {
+        $opHelper = Join-Path $PSScriptRoot 'Get-BobOpencodeFuel.ps1'
+        if (Test-Path -LiteralPath $opHelper) {
+            $opRaw = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $opHelper 2>$null
+            if ($opRaw) {
+                $op = $opRaw | ConvertFrom-Json -ErrorAction Stop
+                if ($op.free -ne $null) { $out.opencode.free = [int]$op.free }
+                if ($op.go -ne $null) { $out.opencode.go = [int]$op.go }
+                if ($op.models) {
+                    $op.models | Get-Member -MemberType NoteProperty | ForEach-Object {
+                        $out.opencode.models[$_.Name] = [int]$op.models.($_.Name)
+                    }
+                }
+                if ($op.free_model_ids) {
+                    $out.opencode.free_model_ids = @($op.free_model_ids)
+                }
+            }
         }
     } catch { }
 } catch { $out.ok = $false }
