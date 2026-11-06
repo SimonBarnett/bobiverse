@@ -114,9 +114,10 @@ def test_fr6097_title_only_columns_resolve_ename(tmp_path, monkeypatch):
         http_post=fake_post,
         mode="direct",
     )
-    assert out.get("error") != "ename_column_missing", out
-    assert "FormActivateMob" in actions
-    assert "ProcStartActivateMob" in actions
+    # FR #6108: title is not zoomname; SDK mapping must not guess.
+    assert out.get("error") == "ename_column_missing", out
+    assert "FormActivateMob" not in actions
+    assert "ProcStartActivateMob" not in actions
 
 
 def test_fr6097_form_c_columns_resolve_ename():
@@ -176,7 +177,8 @@ def test_fr6097_early_fail_logs_reply_shape_and_honest_errs(tmp_path, monkeypatc
     assert "ProcEndMob" not in actions
     assert "FormExitFormMob" in actions
     log = json.loads((tmp_path / "jobs" / "cafef00d" / "wcf-prepare.json").read_text(encoding="utf-8"))
-    shape = log.get("form_start_shape") or log.get("reply_shape")
+    shapes = log.get("form_start_shapes") or []
+    shape = shapes[0] if shapes else (log.get("form_start_shape") or log.get("reply_shape"))
     assert isinstance(shape, dict), log
     assert "keys" in shape
     assert "columns" in shape

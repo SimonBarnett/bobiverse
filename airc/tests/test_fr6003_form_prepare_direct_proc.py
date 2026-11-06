@@ -140,19 +140,19 @@ def test_fr6003_form_prepare_dispatch_never_loads_sdk_module(tmp_path, monkeypat
 
 
 def test_fr6003_form_via_eform_opt_in_only(tmp_path, monkeypatch):
-    """EFORM formprep runner is opt-in via AIRC_PRIORITY_FORM_VIA_EFORM=1."""
-    root = tmp_path / "airc-install"
-    pw_dir = root / "airc" / "priority-worker" / "sdk"
-    pw_dir.mkdir(parents=True)
-    (pw_dir / "run-repprep-via-exec.mjs").write_text("// stub repprep\n", encoding="utf-8")
-    (pw_dir / "run-formprep-via-eform.mjs").write_text("// stub eform\n", encoding="utf-8")
-    monkeypatch.setenv("AIRC_INSTALL_ROOT", str(root))
+    """FR #6108: AIRC_PRIORITY_FORM_VIA_EFORM no longer selects the unscoped SDK path."""
+    pri = tmp_path / "priority"
+    (pri / "bin").mkdir(parents=True)
+    (pri / "bin" / "WINRUN.EXE").write_text("stub", encoding="utf-8")
+    prep = tmp_path / "prep"
+    prep.mkdir()
     monkeypatch.setenv("AIRC_PRIORITY_FORM_VIA_EFORM", "1")
     monkeypatch.delenv("AIRC_PRIORITY_FORM_VIA_EXEC", raising=False)
+    monkeypatch.setenv(ac._WINRUN_ARGV_OPTIN, "1")
     monkeypatch.setattr(
-        ac._priority,
-        "resolve_priority_worker_dir",
-        lambda _r: root / "airc" / "priority-worker",
+        ac,
+        "_priority_sdk_repprep",
+        lambda **kw: (_ for _ in ()).throw(AssertionError("SDK form path removed")),
     )
     seen = {}
 
@@ -161,7 +161,7 @@ def test_fr6003_form_via_eform_opt_in_only(tmp_path, monkeypatch):
 
         class P:
             returncode = 0
-            stdout = '{"ok":true,"ended":true,"errors":[]}\n'
+            stdout = ""
             stderr = ""
 
         return P()
@@ -173,32 +173,32 @@ def test_fr6003_form_via_eform_opt_in_only(tmp_path, monkeypatch):
         instance={
             "credentialTarget": "PriorityWeb/x",
             "company": "live1",
-            "url": "https://example.invalid",
-            "user": "api-user",
+            "user": "tabula",
+            "prepDir": str(prep),
+            "priorityRoot": str(pri),
         },
         cred_fetcher=lambda _t: "secret-placeholder-priority-pw",
-        node_runner=fake_run,
+        process_runner=fake_run,
     )
-    assert out.get("ok") is True
-    joined = " ".join(str(a).replace("\\", "/") for a in seen["argv"])
-    assert "run-formprep-via-eform.mjs" in joined
-    assert "run-repprep-via-exec.mjs" not in joined
+    assert out.get("runner") == "winrun"
+    joined = " ".join(str(a).replace("\\", "/") for a in (seen.get("argv") or []))
+    assert "run-formprep-via-eform.mjs" not in joined
 
 
 def test_fr6003_form_via_exec_opt_in_only(tmp_path, monkeypatch):
-    """procStart/EXEC SDK path is opt-in via AIRC_PRIORITY_FORM_VIA_EXEC=1."""
-    root = tmp_path / "airc-install"
-    pw_dir = root / "airc" / "priority-worker" / "sdk"
-    pw_dir.mkdir(parents=True)
-    (pw_dir / "run-repprep-via-exec.mjs").write_text("// stub repprep\n", encoding="utf-8")
-    (pw_dir / "run-formprep-via-eform.mjs").write_text("// stub eform\n", encoding="utf-8")
-    monkeypatch.setenv("AIRC_INSTALL_ROOT", str(root))
+    """FR #6108: AIRC_PRIORITY_FORM_VIA_EXEC no longer starts FORMPREPDRCT2 via SDK."""
+    pri = tmp_path / "priority"
+    (pri / "bin").mkdir(parents=True)
+    (pri / "bin" / "WINRUN.EXE").write_text("stub", encoding="utf-8")
+    prep = tmp_path / "prep"
+    prep.mkdir()
     monkeypatch.delenv("AIRC_PRIORITY_FORM_VIA_EFORM", raising=False)
     monkeypatch.setenv("AIRC_PRIORITY_FORM_VIA_EXEC", "1")
+    monkeypatch.setenv(ac._WINRUN_ARGV_OPTIN, "1")
     monkeypatch.setattr(
-        ac._priority,
-        "resolve_priority_worker_dir",
-        lambda _r: root / "airc" / "priority-worker",
+        ac,
+        "_priority_sdk_repprep",
+        lambda **kw: (_ for _ in ()).throw(AssertionError("SDK form path removed")),
     )
     seen = {}
 
@@ -207,7 +207,7 @@ def test_fr6003_form_via_exec_opt_in_only(tmp_path, monkeypatch):
 
         class P:
             returncode = 0
-            stdout = '{"ok":true,"ended":true,"errors":[]}\n'
+            stdout = ""
             stderr = ""
 
         return P()
@@ -219,16 +219,16 @@ def test_fr6003_form_via_exec_opt_in_only(tmp_path, monkeypatch):
         instance={
             "credentialTarget": "PriorityWeb/x",
             "company": "live1",
-            "url": "https://example.invalid",
             "user": "tabula",
+            "prepDir": str(prep),
+            "priorityRoot": str(pri),
         },
         cred_fetcher=lambda _t: "secret-placeholder-priority-pw",
-        node_runner=fake_run,
+        process_runner=fake_run,
     )
-    assert out.get("ok") is True
-    joined = " ".join(str(a).replace("\\", "/") for a in seen["argv"])
-    assert "run-repprep-via-exec.mjs" in joined
-    assert seen["argv"][seen["argv"].index("--proc") + 1] == "FORMPREPDRCT2"
+    assert out.get("runner") == "winrun"
+    joined = " ".join(str(a).replace("\\", "/") for a in (seen.get("argv") or []))
+    assert "run-repprep-via-exec.mjs" not in joined
 
 
 def test_fr6003_typed_form_still_selects_f_row_and_formprep_proc(tmp_path):
@@ -270,5 +270,5 @@ def test_fr6003_hooks_wire_prepare_exec_dispatcher():
     src = (ROOT / "airc" / "scripts" / "airc_console.py").read_text(encoding="utf-8")
     assert "sdk_exec=lambda **kw: _priority_prepare_exec(" in src
     assert "_priority_winrun_formprep" in src
-    assert "AIRC_PRIORITY_FORM_VIA_EXEC" in src
+    assert "no EFORM/EXEC SDK opt-in" in src
     assert "_WINRUN_ARGV_OPTIN" in src

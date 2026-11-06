@@ -210,11 +210,20 @@ try {
   dump('eform-rows.json', rows);
   const pack = rows && rows.EFORM ? rows.EFORM : {};
   const idxs = Object.keys(pack).filter((k) => k !== 'undefined');
-  if (idxs.length < 1) {
-    emitFail('search', 'form not found in EFORM: ' + formName);
+  const matched = idxs.filter((k) => {
+    const row = pack[k] || {};
+    return String(row.ENAME || '').trim() === formName;
+  });
+  if (matched.length !== 1) {
+    emitFail(
+      'search',
+      matched.length < 1
+        ? 'form not found in EFORM: ' + formName
+        : 'EFORM ENAME not unique for ' + formName + ' rows=' + matched.length
+    );
     process.exit(2);
   }
-  const idx = Number(idxs[0]);
+  const idx = Number(matched[0]);
   await eform.setActiveRow(idx);
 } catch (e) {
   dump('search-error.json', { message: e.message, type: e.type });

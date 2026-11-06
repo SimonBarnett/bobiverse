@@ -35,6 +35,7 @@ def test_fr6113_form_error_no_ename_lookup_or_activate(tmp_path, monkeypatch):
     )
     assert out.get("error") == "form_error", out
     assert out.get("ok") is False
+    assert out.get("fatalerror") is True
     assert "No API Licence" in str(out.get("form_error") or out.get("last_message") or "")
     assert actions.count("FormStartMob") == 1
     assert "FormQueryDlgExecuteMob" not in actions
@@ -42,7 +43,9 @@ def test_fr6113_form_error_no_ename_lookup_or_activate(tmp_path, monkeypatch):
     assert "ProcStartActivateMob" not in actions
     log = json.loads((tmp_path / "jobs" / "aabb6113" / "wcf-prepare.json").read_text(encoding="utf-8"))
     assert log.get("error") == "form_error"
+    assert log.get("fatalerror") is True
     assert "No API Licence" in str(log.get("form_error") or "")
+    assert log.get("form_start_shapes")
 
 
 def test_fr6113_relay_http_400_form_error_is_not_ok():
@@ -55,4 +58,26 @@ def test_fr6113_relay_http_400_form_error_is_not_ok():
     ).call("FormStartMob", fields={"form": "EFORM"})
     assert out.get("ok") is False
     assert out.get("error") == "form_error"
+    assert out.get("fatalerror") is True
     assert "licence" in str(out.get("form_error") or "")
+
+
+def test_fr6113_fatal_flag_only_1_or_2():
+    assert wcf._is_fatal_flag(True) is True
+    assert wcf._is_fatal_flag(1) is True
+    assert wcf._is_fatal_flag("2") is True
+    assert wcf._is_fatal_flag(0) is False
+    assert wcf._is_fatal_flag("0") is False
+    assert wcf._is_fatal_flag("false") is False
+    assert wcf._is_fatal_flag(None) is False
+
+
+def test_fr6113_apply_level_error_ignores_nonfatal_flag():
+    parsed = {"ok": True}
+    wcf.apply_level_error(parsed, {"Form": [{"fatalerror": "0"}]})
+    assert parsed.get("ok") is True
+    parsed = {"ok": True}
+    wcf.apply_level_error(parsed, {"Form": [{"Error": "x", "fatalerror": 1}]})
+    assert parsed.get("ok") is False
+    assert parsed.get("error") == "form_error"
+    assert parsed.get("fatalerror") is True

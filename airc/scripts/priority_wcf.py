@@ -385,27 +385,34 @@ def _first_procedure(loaded: dict[str, Any] | None) -> dict[str, Any] | None:
     return None
 
 
+def _is_fatal_flag(value: Any) -> bool:
+    """Match SDK fatalerror semantics: only 1 or 2 (and bool True) are fatal."""
+    if value is True:
+        return True
+    return value in (1, 2, "1", "2")
+
+
 def apply_level_error(parsed: dict[str, Any], loaded: dict[str, Any] | None) -> None:
     """FR #6113: Form/Procedure Error is not a successful Result."""
     form = _first_form(loaded)
     if form:
         err = form.get("Error") or form.get("error")
-        fatal = form.get("fatalerror") or form.get("fatalError")
-        if err or fatal:
+        fatal = form.get("fatalerror") if form.get("fatalerror") is not None else form.get("fatalError")
+        if err or _is_fatal_flag(fatal):
             parsed["ok"] = False
             parsed["error"] = "form_error"
             parsed["form_error"] = redact(str(err or "fatalerror"))[:200]
-            parsed["fatalerror"] = bool(fatal)
+            parsed["fatalerror"] = _is_fatal_flag(fatal)
             return
     proc = _first_procedure(loaded)
     if proc:
         err = proc.get("Error") or proc.get("error")
-        fatal = proc.get("fatalerror") or proc.get("fatalError")
-        if err or fatal:
+        fatal = proc.get("fatalerror") if proc.get("fatalerror") is not None else proc.get("fatalError")
+        if err or _is_fatal_flag(fatal):
             parsed["ok"] = False
             parsed["error"] = "proc_error"
             parsed["form_error"] = redact(str(err or "fatalerror"))[:200]
-            parsed["fatalerror"] = bool(fatal)
+            parsed["fatalerror"] = _is_fatal_flag(fatal)
 
 
 def decorate_mob_result(parsed: dict[str, Any], result_text: str) -> None:
@@ -641,7 +648,7 @@ class PriorityWcfClient:
                 parsed.pop("error", None)
             else:
                 parsed["ok"] = False
-                if not is_real_fault and not parsed.get("error"):
+                if not is_real_fault:
                     parsed["error"] = WCF_HTTP_ERROR
         if has_result and parsed.get("ok") is True:
             parsed.pop("raw", None)
@@ -968,13 +975,8 @@ def _as_int(value: Any, default: int = 0) -> int:
 
 
 def _column_label(col: dict[str, Any]) -> str:
-    """SDK uses zoomname (ParseJO 4882). sendtitles=false may leave it blank."""
-    for key in ("zoomname", "name", "title", "text"):
-        raw = str(col.get(key) or "").strip()
-        if raw and _ENAME_RE.match(raw.upper()):
-            return raw.upper() if key != "zoomname" else raw
-    zoom = str(col.get("zoomname") or "").strip()
-    return zoom
+    """SDK ParseJO 4882: column key is NewColumn.zoomname only."""
+    return str(col.get("zoomname") or "").strip()
 
 
 def _form0(blob: dict[str, Any]) -> dict[str, Any] | None:
@@ -1025,7 +1027,7 @@ class _FormMeta:
             if name:
                 self.by_name[name] = tid
             self._take_columns(tid, table.get("NewColumn"))
-        extra_c = form.get("C") or form.get("columns")
+        extra_c = form.get("C")
         fallback_tid = _as_int((_position(form) or {}).get("table"), -1)
         if extra_c and fallback_tid >= 0:
             self._take_columns(fallback_tid, extra_c)
@@ -1192,7 +1194,7 @@ def _form_reply_shape(blob: dict[str, Any], form: dict[str, Any] | None) -> dict
                         "name": _column_label(col),
                     }
                 )
-        for col in form.get("C") or form.get("columns") or []:
+        for col in form.get("C") or []:
             if isinstance(col, dict):
                 columns.append(
                     {
@@ -1202,7 +1204,15 @@ def _form_reply_shape(blob: dict[str, Any], form: dict[str, Any] | None) -> dict
                 )
     row_n = 0
     if form:
-        row_n = len({_as_int(str(rt.get("FV") or "").split("\t")[2], 0) for rt in (form.get("RT") or []) if isinstance(rt, dict)})
+        lines = set()
+        for rt in form.get("RT") or []:
+            if not isinstance(rt, dict):
+                continue
+            parts = str(rt.get("FV") or "").split("\t")
+            if len(parts) < 3:
+                continue
+            lines.add(_as_int(parts[2], 0))
+        row_n = len(lines)
     encoded = json.dumps(blob, separators=(",", ":")) if blob else ""
     return {
         "keys": sorted(str(k) for k in (blob or {}).keys()),
@@ -1520,8 +1530,10 @@ def run_wcf_form_prepare(
     row_ename = ""
     row_enames: list[str] = []
     activation: dict[str, str] | None = None
-    form_start_shape: dict[str, Any] | None = None
+    form_start_shapes: list[dict[str, Any]] = []
+    query_shape: dict[str, Any] | None = None
     form_error_text = ""
+    form_fatal = False
     meta = _FormMeta()
 
     def _cleanup() -> None:
@@ -1536,7 +1548,8 @@ def run_wcf_form_prepare(
         raise RuntimeError(code)
 
     def _kill() -> None:
-        client.call("ProcKillProcessMob", fields=_session_fields(session))
+        if session:
+            client.call("ProcKillProcessMob", fields=_session_fields(session))
 
     if not form:
         error = "ename_missing"
@@ -1547,15 +1560,27 @@ def run_wcf_form_prepare(
             opened = client.call("FormStartMob", fields=_form_start_fields("EFORM", auto_retrieve=False))
             opened_blob = _load_blob(opened)
             opened_form = _form0(opened_blob)
-            form_start_shape = _form_reply_shape(opened_blob, opened_form)
+            form_start_shapes.append(_form_reply_shape(opened_blob, opened_form))
             if opened.get("error") == "form_error" or (
                 opened_form
-                and (opened_form.get("Error") or opened_form.get("fatalerror"))
+                and (
+                    opened_form.get("Error")
+                    or _is_fatal_flag(
+                        opened_form.get("fatalerror")
+                        if opened_form.get("fatalerror") is not None
+                        else opened_form.get("fatalError")
+                    )
+                )
             ):
                 form_error_text = str(
                     opened.get("form_error")
-                    or opened_form.get("Error")
+                    or (opened_form.get("Error") if opened_form else None)
                     or "fatalerror"
+                )
+                form_fatal = bool(opened.get("fatalerror")) or _is_fatal_flag(
+                    opened_form.get("fatalerror")
+                    if opened_form.get("fatalerror") is not None
+                    else opened_form.get("fatalError")
                 )
                 last_message = form_error_text
                 _fail("form_error")
@@ -1566,22 +1591,6 @@ def run_wcf_form_prepare(
             eform_tid = meta.table_id("EFORM", opened_form)
             statexml = _state_from_form(opened_form, statexml, meta, eform_tid)
             field_id = meta.ename_field(eform_tid)
-            if field_id is None:
-                client.call("FormExitFormMob", fields=_with_state(statexml))
-                form_open = False
-                opened = client.call(
-                    "FormStartMob",
-                    fields=_form_start_fields("EFORM", auto_retrieve=False, sendtitles=True),
-                )
-                if opened.get("ok") is True:
-                    form_open = True
-                    opened_blob = _load_blob(opened)
-                    opened_form = _form0(opened_blob)
-                    meta.absorb(opened_form)
-                    eform_tid = meta.table_id("EFORM", opened_form)
-                    statexml = _state_from_form(opened_form, statexml, meta, eform_tid)
-                    field_id = meta.ename_field(eform_tid)
-            form_start_shape = _form_reply_shape(opened_blob, opened_form)
             if field_id is None:
                 _fail("ename_column_missing")
             found = client.call(
@@ -1596,6 +1605,7 @@ def run_wcf_form_prepare(
                 _fail(str(found.get("error") or "search_failed"))
             found_blob = _load_blob(found)
             found_form = _form0(found_blob)
+            query_shape = _form_reply_shape(found_blob, found_form)
             if found_form is None:
                 _fail("search_failed")
             meta.absorb(found_form)
@@ -1842,8 +1852,9 @@ def run_wcf_form_prepare(
         out["error"] = error
         if error == "errs_unknown":
             out["errs"] = None
-        if form_error_text:
-            out["form_error"] = form_error_text
+    if form_error_text:
+        out["form_error"] = form_error_text
+        out["fatalerror"] = form_fatal
     wrote = _write_prepare_log(
         job_id,
         {
@@ -1855,9 +1866,11 @@ def run_wcf_form_prepare(
             "activation": activation,
             "error": error,
             "form_error": form_error_text,
+            "fatalerror": form_fatal,
             "errs": err_n,
             "rows": err_rows_out or [],
-            **({"form_start_shape": form_start_shape} if form_start_shape else {}),
+            **({"form_start_shapes": form_start_shapes} if form_start_shapes else {}),
+            **({"query_shape": query_shape} if query_shape else {}),
         },
         secrets,
     )
