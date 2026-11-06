@@ -71,3 +71,13 @@ def test_relay_deliver_nacks_hostile_before_ack(tmp_path):
     assert injected
     assert not any("opencode-skips-hostile" in w for w in written)
 
+
+def test_bob_setup_opencode_skill_no_orphan_fr6134():
+    """MRB #6135: skill insert must keep 'stronger seat (Grok first' contiguous (harvest #1616)."""
+    root = Path(__file__).resolve().parents[1]
+    skill = (root / ".grok" / "skills" / "bob-setup-opencode" / "SKILL.md").read_text(encoding="utf-8")
+    assert "Hostile MRB stays on a stronger\nseat (Grok first, then Cursor)." in skill
+    assert "Chair gate (FR #6134)" in skill
+    # orphan continuation after a mid-paragraph insert must not remain
+    assert "\n\nseat (Grok first, then Cursor)." not in skill
+

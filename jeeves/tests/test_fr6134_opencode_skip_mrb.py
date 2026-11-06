@@ -116,3 +116,32 @@ def test_unknown_kind_does_not_block_mrb(_home):
     st, job = gitclaim.offer_focus_top(_home, "redqueen-4004", "#redqueen")
     assert st == "ok"
     assert str(job.get("task")).upper() == "MRB"
+
+
+def test_opencode_skips_uat_offer_fr_still_ok(_home):
+    """FR #6134: UAT is also hostile for OpenCode; FR still offered."""
+    _queue(
+        _home,
+        [
+            _row("SimonBarnett/bobiverse", "UAT", 0, 1),
+            _row("SimonBarnett/bobiverse", "FR", 6134, 2),
+        ],
+    )
+    fi.handle_focus_cmd(_home, "hi bobiverse")
+    _seed_kind(_home, "redqueen", "1001", "opencode")
+    st, job = gitclaim.offer_focus_top(_home, "redqueen-1001", "#redqueen")
+    assert st == "ok"
+    assert job is not None
+    assert str(job.get("task")).upper() == "FR"
+    assert str(job.get("id")) == "#6134"
+
+
+def test_assign_row_refuses_uat_to_opencode(_home):
+    _queue(_home, [_row("SimonBarnett/bobiverse", "UAT", 0, 1)])
+    _seed_kind(_home, "redqueen", "1001", "opencode")
+    st, detail = gitclaim.assign_row(
+        _home, "redqueen-1001", "SimonBarnett/bobiverse", "UAT", "0"
+    )
+    assert st == "refused"
+    assert "OpenCode" in str(detail) or "opencode" in str(detail).lower() or "6134" in str(detail)
+
