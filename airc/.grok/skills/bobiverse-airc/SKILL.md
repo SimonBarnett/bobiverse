@@ -89,6 +89,7 @@ Self-update on start uses **`Update-BobiverseService.ps1`** (detached Apply - ne
 **Uninstall (FR #1566):** MSI `/x` runs `Uninstall-Airc.cmd` before RemoveFiles (`REMOVE="ALL" AND NOT UPGRADINGPRODUCTCODE`) to stop/remove service `Airc`; ConsoleHome secrets stay. Manual: `scripts\Uninstall-Airc.cmd`.
 
 ## Harvested lessons (intake)
+- A Mob Result with Form.Error/fatalerror is not success even with HTTP 400 and a Result element; fail form_error and do not retry sendtitles.
 - When FR #5960 refuses Priority verbs if no allowlist, remember constructor injection of priority_runner and skip that short-circuit so tests/SelfTest still call the hook; production default runner stays optional-absent.
 
 ## Do not
