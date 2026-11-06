@@ -214,6 +214,8 @@ Generalised from 21 harvested lessons that never reached this book (audit for FR
 - **Fleet identity:** the fleet id is the registered fleet machine name; ionos's Windows COMPUTERNAME is WIN-MPRE8VI4U6U, which folds to ionos. Seat nicks are `machine-pid`, and `canonical_worker_nick` must parse them without the registry. The assign wire uses the full IRC nick, never a digest display alias. Unit tests must register machine ids, or seat parsing returns None. (4 lessons: harvest #1296, #1067, #1069, 1 held intake row)
 
 ## Harvested lessons (intake)
+- bob-worker: FR #6119 --- Cursor on-demand spend limit (used_cents >= limit_cents / overspend_state=at-limit) is out-of-fuel even when high/low pool remain % looks non-zero; Get-BobAgentFuel surfaces on_demand_*; two fast done-miss releases under BOB_WORKER_FAST_DONE_MISS_S (default 60s) enter the same hold (no !bored / NACK out-of-fuel).
+
 
 - When bob-worker nudges stranded ACK, finish FR #3948 handoff (PASS @ SHA + --auto) and DONE immediately; never leave MRB ACC open.
 - bob-worker stranded-ACK nudge on re-offered MRB: re-post PASS @ unchanged SHA, leave --auto, DONE at once --- do not wait on rematch worktree.
