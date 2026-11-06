@@ -356,6 +356,7 @@ routes to bobiverse via the split rule.
 - EFORM NewColumn zoomname can be empty when sendtitles is false; map ENAME from title/name/Form.C, retry FormStartMob with sendtitles=true, and do not ProcEndMob until a procedure session exists.
 - After heal_bored_latency queues !recycleseat, drop those bored-latency findings before stall_filer. Detector may still fire for the scan log; filing them as FRs just re-queues the receipt.
 - When a CLI drops a promised JSON mode, parse the documented plain-text table with regex, strip ANSI, return None on parse failure, and keep stdin-based interop so both live CLI output and legacy fixtures keep working.
+- Cursor on-demand at-limit: trust overspend_state or used>=limit only (never rounded remain_pct alone); null pools + on-demand fields must not mid-job exhaust; turn_ended clears hard-402 holds only
 
 ## Harvest digest (lessons audit 2026-10-06)
 
