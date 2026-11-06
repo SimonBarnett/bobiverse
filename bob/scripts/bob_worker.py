@@ -3636,6 +3636,7 @@ class Relay:
         self.on_hold_assign: Optional[Callable[[str], None]] = None
         # FR #4180: while True (out-of-fuel hold), refuse assigns without inject; callback NACKs.
         self.refuse_assign_while: Optional[Callable[[], bool]] = None
+        self.skips_hostile_assign: Optional[Callable[[str], bool]] = None  # FR #6134
         self.on_refuse_assign: Optional[Callable[[str], None]] = None
         # FR #4115: write ACK/NACK to the seat outbox (program, no agent turn).
         self.write_outbox: Optional[Callable[[str], bool]] = None
@@ -3672,6 +3673,27 @@ class Relay:
             self._persist_last_from(line)
             return "skipped"
         line = format_from(nick, target, text, outbox=self.outbox_path)
+        # FR #6134: OpenCode seats NACK hostile MRB/UAT before ACK-on-receipt / inject.
+        if assign_job_ref(line):
+            skip_hostile = False
+            try:
+                skip_hostile = bool(self.skips_hostile_assign and self.skips_hostile_assign(line))
+            except Exception:
+                skip_hostile = False
+            if skip_hostile:
+                with self._lock:
+                    if line == self._last_line:
+                        return "duplicate"
+                    self._last_line = line
+                self.log("relay: skipped hostile assign (opencode FR #6134) " + line[:120])
+                self._persist_last_from(line)
+                nack = opencode_hostile_nack_line(line)
+                if nack and self.write_outbox:
+                    try:
+                        self.write_outbox(nack)
+                    except Exception:
+                        pass
+                return "opencode_skips_hostile"
         # FR #4180: out-of-fuel hold — never inject; NACK via callback; stay quiet.
         if assign_job_ref(line):
             refuse = False
@@ -3938,6 +3960,25 @@ class Relay:
                     except Exception:
                         pass
             return 0
+        # FR #6134: NACK hostile MRB/UAT that were held before kind was known / seat restarted.
+        kept = []
+        for line in flush:
+            skip = False
+            try:
+                skip = bool(self.skips_hostile_assign and self.skips_hostile_assign(line))
+            except Exception:
+                skip = False
+            if skip:
+                self.log("relay: skipped hostile held assign (opencode FR #6134) " + (line or "")[:120])
+                nack = opencode_hostile_nack_line(line)
+                if nack and self.write_outbox:
+                    try:
+                        self.write_outbox(nack)
+                    except Exception:
+                        pass
+                continue
+            kept.append(line)
+        flush = kept
         if not flush:
             return 0
         first, rest = flush[0], flush[1:]
@@ -4735,6 +4776,69 @@ def ack_on_receipt_line(line: str) -> Optional[str]:
     if not key:
         return None
     return f"ACK {key}"
+
+
+def opencode_skips_hostile_assign(kind: str, line: str) -> bool:
+    """FR #6134: OpenCode seats must not take MRB/UAT assigns (hostile / repo UAT)."""
+    if (kind or "").strip().lower() != "opencode":
+        return False
+    key = (assign_job_key(line) or "").upper()
+    return key.startswith("MRB ") or key.startswith("UAT ")
+
+
+def opencode_hostile_nack_line(line: str) -> Optional[str]:
+    """FR #6134: NACK without ACK so the chair can re-offer to a Grok/Cursor seat."""
+    key = assign_job_key(line)
+    if not key:
+        return None
+    return f"NACK {key} opencode-skips-hostile (FR #6134)"
+
+
+def post_digest_seat_kind(
+    *,
+    machine: str,
+    pid: int | str,
+    nick: str = "",
+    kind: str = "",
+    agent: str = "",
+    model: str = "",
+    working_on: str = "",
+    url: str | None = None,
+    env: Optional[dict] = None,
+    log: Optional[Callable[[str], None]] = None,
+) -> bool:
+    """POST digest worker kind so the chair can skip OpenCode for MRB/UAT (FR #6134)."""
+    env = os.environ if env is None else env
+    report = (url or env.get("BOB_REPORT_URL") or env.get("BOB_DIGEST_URL") or DEFAULT_DIGEST_REPORT_URL).strip()
+    if not report:
+        return False
+    mid = normalize_machine_id(machine) or str(machine or "").strip().lower()
+    kind_s = (kind or "").strip().lower()
+    try:
+        pid_i = int(str(pid))
+    except (TypeError, ValueError):
+        return False
+    agent_s = (agent or "").strip() or (kind_s if kind_s else "")
+    payload = {
+        "online": True,
+        "id": mid,
+        "pid": pid_i,
+        "kind": kind_s or "grok",
+        "state": "idle",
+        "nick": (nick or "").strip() or seat_nick(mid, pid_i),
+        "working_on": (working_on or "").strip(),
+        "agent": agent_s,
+    }
+    if (model or "").strip():
+        payload["model"] = str(model).strip()
+    ok = bool(_http_post_json(report, payload, log=log))
+    if not ok and log:
+        try:
+            log(f"post_digest_seat_kind failed mid={mid} kind={kind_s}")
+        except Exception:
+            pass
+    return ok
+
 
 
 def busy_holding_nack_line(line: str, holding: str) -> Optional[str]:
@@ -6522,6 +6626,7 @@ class Supervisor:
         )
         # FR #4180: refuse (NACK out-of-fuel) assigns while the seat is in out-of-fuel hold.
         relay.refuse_assign_while = lambda: bool(self.bored and self.bored.out_of_fuel)
+        relay.skips_hostile_assign = lambda line: opencode_skips_hostile_assign(self.kind, line)
         relay.on_refuse_assign = self._nack_assign_out_of_fuel
         # FR #4115: program ACK/NACK via seat outbox (ACK on receipt; NACK extra held assigns).
         if getattr(relay, "write_outbox", None) is None and self.run_dir is not None:
@@ -8385,6 +8490,19 @@ def run_agent(args, log: Log) -> int:
     except Exception as e:
         log(f"worker: IRC connect failed ({type(e).__name__}: {str(e)[:100]}) - NOT starting an agent")
         return EXIT_IRC_FAIL
+    # FR #6134: publish agent kind so the chair can skip OpenCode for MRB/UAT.
+    try:
+        model = (os.environ.get("BOB_OPENCODE_MODEL") or "").strip() if kind == "opencode" else ""
+        post_digest_seat_kind(
+            machine=machine,
+            pid=pid,
+            nick=nick,
+            kind=kind,
+            model=model,
+            log=log,
+        )
+    except Exception as e:
+        log(f"worker: post_digest_seat_kind failed {type(e).__name__}")
     grace = float(getattr(args, "startup_grace_s", 60.0) or 60.0)
     if kind == "grok" and grace < 60.0:
         # Grok TUI session.create often needs 30-60s on slower boxes (FR #955 ionos evidence).

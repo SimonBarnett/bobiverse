@@ -258,3 +258,4 @@ Generalised from 21 harvested lessons that never reached this book (audit for FR
 - Cursor transcript type=turn_ended (any status, incl. error) must end the turn for done-miss; ACK past ack_stale_s must clear, post GIVEUP ... ack-stale (FR #4784), then !bored reason ack-stale even when an open turn bumped release_gen.
 - When gh or the GitHub API fails with a TLS handshake timeout before the PR can be read, GIVEUP the open MRB instead of leaving the ACK for done-miss and instead of inventing a verdict.
 - done-miss with stranded ACK for a different job than this session completed: GIVEUP that ACK immediately (never invent DONE); FR work without a PR is not DONE
+- **FR #6134:** OpenCode seats skip hostile MRB/UAT offers (chair `offer_focus_top` / `!assign` refuse when digest `kind=opencode`); still take FR/FIX/docs/harvest. Worker backstop NACKs MRB/UAT before ACK-on-receipt and posts digest kind on seat start.

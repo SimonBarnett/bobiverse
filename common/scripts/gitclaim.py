@@ -7363,6 +7363,70 @@ def _save_seat_out_of_fuel_unlocked(home: Path, seats: dict) -> None:
     os.replace(str(tmp), str(path))
 
 
+
+def seat_agent_kind(home: Path, nick: str) -> str:
+    """Digest agent kind for a seat nick (``grok`` / ``cursor`` / ``opencode`` / ...).
+
+    Empty string when unknown. FR #6134: OpenCode seats skip hostile MRB/UAT offers.
+    Prefer pid-keyed ``workers`` (merge reports carry ``kind``); fall back to
+    ``worker_list`` kind/agent when present.
+    """
+    me = (canonical_worker_nick(nick) or nick or "").strip()
+    parsed = bobreport.parse_seat_nick(me)
+    if not parsed:
+        return ""
+    mid, pid = parsed
+    try:
+        doc = bobreport.load_digest(_root(home))
+    except Exception:
+        return ""
+    ent = (doc.get("machines") or {}).get(mid) or {}
+    if not isinstance(ent, dict):
+        return ""
+    workers = ent.get("workers") if isinstance(ent.get("workers"), dict) else {}
+    w = workers.get(str(pid)) if isinstance(workers.get(str(pid)), dict) else {}
+    kind = str((w or {}).get("kind") or "").strip().lower()
+    if kind:
+        return kind
+    agent = str((w or {}).get("agent") or "").strip().lower()
+    if "opencode" in agent:
+        return "opencode"
+    for r in bobreport._coerce_worker_list(ent.get("worker_list")):
+        if str(r.get("nick") or "").strip().lower() != me.lower():
+            continue
+        k = str(r.get("kind") or "").strip().lower()
+        if k:
+            return k
+        a = str(r.get("agent") or "").strip().lower()
+        if "opencode" in a:
+            return "opencode"
+    return ""
+
+
+def seat_skips_hostile_review(kind: str) -> bool:
+    """True when this agent kind must not take MRB/UAT (FR #6134 OpenCode trial)."""
+    return (kind or "").strip().lower() == "opencode"
+
+
+def row_blocked_for_opencode_seat(
+    row: dict,
+    nick: str,
+    home: Path | None = None,
+    *,
+    kind: str | None = None,
+) -> bool:
+    """True when an OpenCode seat must not be offered this MRB/UAT row (FR #6134)."""
+    task = str((row or {}).get("task") or "").upper()
+    if task not in ("MRB", "UAT"):
+        return False
+    k = kind
+    if k is None:
+        if home is None:
+            return False
+        k = seat_agent_kind(home, nick)
+    return seat_skips_hostile_review(k)
+
+
 def seat_is_out_of_fuel(home: Path, nick: str, now: float | None = None) -> bool:
     """FR #4181: seat marked after GIVEUP out-of-fuel (blocks offers until cleared)."""
     key = _seat_key(nick)
@@ -8234,6 +8298,9 @@ def offer_focus_top(
                 # FR #1093: stamp WP0/issue pins before the machine gate (stale rows).
                 _stamp_require_machine(cand_eff)
                 if row_blocked_for_machine(cand_eff, me):
+                    return None
+                # FR #6134: OpenCode seats take FR/FIX/docs/harvest only — skip MRB/UAT.
+                if row_blocked_for_opencode_seat(cand_eff, me, home):
                     return None
                 return cand_eff
 
@@ -10430,6 +10497,16 @@ def assign_row(
             shop_rows = []
         if shop_rows and me.lower() not in {str(r.get("nick") or "").lower() for r in shop_rows}:
             return "refused", f"{me}: not in the shop channel (not a live seat)"
+    # FR #6134: refuse hostile review/UAT to OpenCode seats (chair !assign path).
+    try:
+        _kind = seat_agent_kind(home, me)
+        if seat_skips_hostile_review(_kind) and task_u in ("MRB", "UAT"):
+            return (
+                "refused",
+                f"{me}: OpenCode seats skip {task_u} (FR #6134; use Grok/Cursor)",
+            )
+    except Exception:
+        pass
     free = free_seat_nicks(home, live)
     try:
         with _lock(home):
