@@ -10,8 +10,16 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$pack = [IO.Path]::GetFullPath($PackRoot)
-$dest = [IO.Path]::GetFullPath($TargetRoot)
+$pack = [IO.Path]::GetFullPath($PackRoot).TrimEnd('\')
+$dest = [IO.Path]::GetFullPath($TargetRoot).TrimEnd('\')
+if ($pack -eq $dest) {
+    throw "pack and target must differ: $pack"
+}
+$sep = [IO.Path]::DirectorySeparatorChar
+if ($pack.StartsWith($dest + $sep, [StringComparison]::OrdinalIgnoreCase) -or
+    $dest.StartsWith($pack + $sep, [StringComparison]::OrdinalIgnoreCase)) {
+    throw "pack and target must not nest: pack=$pack target=$dest"
+}
 if (-not (Test-Path -LiteralPath $pack)) {
     throw "pack missing: $pack"
 }
@@ -22,12 +30,12 @@ if (-not (Test-Path -LiteralPath $dest)) {
 Copy-Item -Path (Join-Path $pack '*') -Destination $dest -Recurse -Force
 
 $wanted = @{}
-Get-ChildItem -LiteralPath $pack -Recurse -File | ForEach-Object {
+Get-ChildItem -LiteralPath $pack -Recurse -File -Force | ForEach-Object {
     $rel = $_.FullName.Substring($pack.Length).TrimStart('\', '/')
     $wanted[$rel.Replace('/', '\').ToLowerInvariant()] = $true
 }
 
-Get-ChildItem -LiteralPath $dest -Recurse -File | ForEach-Object {
+Get-ChildItem -LiteralPath $dest -Recurse -File -Force | ForEach-Object {
     $rel = $_.FullName.Substring($dest.Length).TrimStart('\', '/')
     $key = $rel.Replace('/', '\').ToLowerInvariant()
     if (-not $wanted.ContainsKey($key)) {
