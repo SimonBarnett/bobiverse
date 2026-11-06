@@ -11,7 +11,7 @@ FR #5283 / FR #5905 / FR #5948 / FR #5960. This folder is the **service-owned** 
 Pack stages:
 
 - `sdk/run-repprep-via-exec.mjs` --- EXEC procStart walk for report/procedure prepare (REPPREPDIRECT2); form defaults to WINRUN (FR #6003)
-- `sdk/run-formprep-via-eform.mjs` --- optional EFORM/formStart FORMPREPDRCT2 walk; opt-in only via `AIRC_PRIORITY_FORM_VIA_EFORM=1` (FR #5946 / #6003)
+- `sdk/run-formprep-via-eform.mjs` --- manual EFORM/formStart FORMPREPDRCT2 walk (exactly-one equal-ENAME); console form prepare is WINRUN only (FR #6108)
 - `sdk/run-formwalk-readonly.mjs` --- opt-in SDK walk (`AIRC_PRIORITY_FORM_VIA_SDK=1`); default live walk is sqlcmd (FR #5991)
 - `node_modules/priority-web-sdk` (+ transitive deps) via **always** `npm ci --omit=dev`
   at pack time (FR #5913: never skip when a stale `node_modules` is already present)
@@ -19,7 +19,7 @@ Pack stages:
 Resolver order (see `airc_console._priority_prepare_exec`): default **form** uses WINRUN
 (`WINACTIV -P FORMPREP <ENAME>`, FR #6017)
 (`priorityRoot/bin/WINRUN.EXE`, override `AIRC_PRIORITY_WINRUN` / `winrunPath`). Default
-report/procedure use `sdk/run-repprep-via-exec.mjs`. EFORM only when `AIRC_PRIORITY_FORM_VIA_EFORM=1` (then
+report/procedure use `sdk/run-repprep-via-exec.mjs`. Manual `run-formprep-via-eform.mjs` requires exactly one EFORM row whose ENAME equals the requested form (FR #6108); console never selects that path via env.
 `AIRC_PRIORITY_FORMPREP_MJS`). No `drop\` path.
 
 Form-walk default (FR #5991): `airc_console._priority_sql_formwalk` via sqlcmd (`-E`) against
