@@ -8,8 +8,8 @@ Modes
   --mode maintenance Jeeves maintenance after --heal still failing (FR #2412): cwd --work-root, diagnose/fix, file intake
 
 Rules (CAST IRON, Simon t762u-t765u)
-  * Agent choice is ALWAYS automatic by token availability (FR #3997): Grok (local weekly > 0 or unknown read)
-    -> Cursor (high or low pool > 0) -> dialog asking for a Grok session key (kept in memory only, handed to the child env, never written/printed).
+  * Agent choice is ALWAYS automatic by token availability (FR #3997 / #6120): Grok (local weekly > 0 or unknown read)
+    -> Cursor (high or low pool > 0) -> OpenCode (free or Go fuel > 0) -> dialog asking for a Grok session key (kept in memory only, handed to the child env, never written/printed).
   * EVERY launch is a NEW agent: new session id, new console window, new run dir. Never --resume/--continue/-r, never
     reuse or attach to an existing window/process (assert_fresh() enforces it; a restart after a hang is a NEW agent too).
     ONE exception (FR #2522): --mode maintenance SHOULD resume its own last maintenance session (recorded by this exe)
@@ -79,6 +79,34 @@ def _common_scripts_dir() -> Path:
     return here.parent.parent / "common" / "scripts"
 
 
+def _resolve_opencode_fuel_helper_path(
+    cwd: str | Path | None = None,
+    source_file: str | Path | None = None,
+    install_root: str | Path | None = None,
+) -> Path:
+    """Locate ``opencode_fuel.py`` for embedding in the PowerShell wrapper.
+
+    Resolution is independent of the seat's working directory.  The helper is
+    found from the Bob install root / worktree layout (``common/scripts`` next to
+    ``bob/scripts``), with fallbacks to the configured install root and the
+    legacy cwd-based path.
+    """
+    source = Path(source_file).resolve() if source_file else Path(__file__).resolve()
+    here = source.parent
+    candidates = [
+        (here.parent.parent / "common" / "scripts" / "opencode_fuel.py"),
+        (here.parent / "common" / "scripts" / "opencode_fuel.py"),
+    ]
+    if install_root is not None:
+        candidates.append(Path(install_root) / "common" / "scripts" / "opencode_fuel.py")
+    if cwd is not None:
+        candidates.append(Path(cwd).parent / "common" / "scripts" / "opencode_fuel.py")
+    for cand in candidates:
+        if cand.is_file():
+            return cand.resolve()
+    return candidates[0].resolve()
+
+
 def log_install_root_guard(install_root: str | Path, log: Callable[[str], None] = print, *, run=subprocess.run) -> Optional[str]:
     """FR #4843: at seat start, surface when the live install checkout is off main."""
     try:
@@ -112,6 +140,13 @@ except Exception:  # pragma: no cover
     install_root_branch_warning = None  # type: ignore
     refuse_job_git = None  # type: ignore
     suggest_job_worktree = None  # type: ignore
+
+try:
+    if str(_common_scripts_dir()) not in sys.path:
+        sys.path.insert(0, str(_common_scripts_dir()))
+    import opencode_fuel  # noqa: E402
+except Exception:  # pragma: no cover
+    opencode_fuel = None  # type: ignore
 
 DEFAULT_HOST = "irc.ntsa.uk"
 DEFAULT_PORT = 6697
@@ -248,6 +283,10 @@ class Fuel:
     cursor_low: Optional[int] = None
     grok_pct: Optional[int] = None
     grok_state: str = "unknown"
+    opencode_free: Optional[int] = None
+    opencode_go: Optional[int] = None
+    opencode_models: dict = field(default_factory=dict)
+    opencode_free_model_ids: tuple = field(default_factory=tuple)
 
 
 def parse_fuel(text: str) -> Fuel:
@@ -272,7 +311,25 @@ def parse_fuel(text: str) -> Fuel:
 
     cur = doc.get("cursor") or {}
     grok = doc.get("grok") or {}
-    return Fuel(_i(cur.get("high")), _i(cur.get("low")), _i(grok.get("remaining_pct")), str(grok.get("state") or "unknown").lower())
+    op = doc.get("opencode") or {}
+    op_free = _i(op.get("free")) if isinstance(op, dict) else None
+    op_go = _i(op.get("go")) if isinstance(op, dict) else None
+    op_models = op.get("models") if isinstance(op, dict) and isinstance(op.get("models"), dict) else {}
+    op_free_ids = op.get("free_model_ids") if isinstance(op, dict) else None
+    if isinstance(op_free_ids, (list, tuple)):
+        op_free_ids = tuple(str(i) for i in op_free_ids)
+    else:
+        op_free_ids = ()
+    return Fuel(
+        _i(cur.get("high")),
+        _i(cur.get("low")),
+        _i(grok.get("remaining_pct")),
+        str(grok.get("state") or "unknown").lower(),
+        op_free,
+        op_go,
+        dict(op_models),
+        op_free_ids,
+    )
 
 
 def read_fuel(install_root: Path, run: Callable = subprocess.run, timeout: float = 90.0) -> Fuel:
@@ -289,6 +346,93 @@ def read_fuel(install_root: Path, run: Callable = subprocess.run, timeout: float
 
 def cursor_has_tokens(f: Fuel) -> bool:
     return any(v is not None and v > 0 for v in (f.cursor_high, f.cursor_low))
+
+
+def opencode_has_tokens(f: Fuel) -> bool:
+    """True when OpenCode fuel readings show at least one usable pool.
+
+    Unknown readings are treated as unavailable for seat selection, unlike Grok.
+    When per-model Go readings exist, aggregate `opencode_go` alone is not enough:
+    every listed Go model must be exhausted and free must be unavailable before we
+    treat the seat as out of OpenCode fuel (FR #6120 - do not launch capped glm-5.3).
+    """
+    if f.opencode_free is not None and f.opencode_free > 0:
+        return True
+    models = f.opencode_models or {}
+    if models:
+        for v in models.values():
+            try:
+                if int(v or 0) > 0:
+                    return True
+            except (TypeError, ValueError):
+                continue
+        return False
+    return f.opencode_go is not None and f.opencode_go > 0
+
+
+def opencode_pauses_state_dir(env: Optional[dict] = None) -> Path:
+    """Default directory for the worker's OpenCode pause JSON file."""
+    env = os.environ if env is None else env
+    base = env.get("BOB_OPENCODE_PAUSE_STATE_DIR") or env.get("LOCALAPPDATA") or str(Path.home() / "AppData" / "Local")
+    return Path(base) / "Bobiverse" / "worker" / "state"
+
+
+def opencode_default_model(
+    f: Fuel,
+    state_dir: Optional[Path] = None,
+    *,
+    now: Optional[float] = None,
+) -> Optional[str]:
+    """Pick a sensible OpenCode model from fuel readings (issue #6120).
+
+    Per-model caps are respected: when per-model readings exist, only choose a
+    Go model that has positive remaining fuel. Paused models are skipped so a
+    rolling 5-hour cap hit does not immediately re-trigger on the next run.
+    When no Go model is usable, fall back to a free model discovered from live
+    ``opencode models`` output, then to a legacy free default, else return None.
+    """
+    if state_dir is None:
+        state_dir = opencode_pauses_state_dir()
+
+    def _paused(model_id: str) -> bool:
+        if not opencode_fuel:
+            return False
+        return opencode_fuel.is_opencode_model_paused(model_id, state_dir, now=now)
+
+    models = f.opencode_models or {}
+    if models:
+        order = opencode_fuel.OPENCODE_GO_FALLBACK_ORDER if opencode_fuel else ("glm-5.3",)
+        for m in order:
+            try:
+                if int(models.get(m) or 0) > 0:
+                    candidate = f"opencode-go/{m}"
+                    if _paused(candidate):
+                        continue
+                    return candidate
+            except (TypeError, ValueError):
+                continue
+        # Per-model readings exist but no Go model has fuel; free tier is next.
+        if f.opencode_free is not None and f.opencode_free > 0:
+            for free_id in f.opencode_free_model_ids:
+                if _paused(str(free_id)):
+                    continue
+                return str(free_id)
+            if not _paused("opencode/beam-free"):
+                return "opencode/beam-free"
+        return None
+
+    # No per-model readings: prefer free if available, else aggregate Go default.
+    if f.opencode_free is not None and f.opencode_free > 0:
+        for free_id in f.opencode_free_model_ids:
+            if _paused(str(free_id)):
+                continue
+            return str(free_id)
+        if not _paused("opencode/beam-free"):
+            return "opencode/beam-free"
+    if f.opencode_go is not None and f.opencode_go > 0:
+        if not _paused("opencode-go/glm-5.3"):
+            return "opencode-go/glm-5.3"
+    return None
 
 
 def grok_has_tokens(f: Fuel) -> bool:
@@ -320,6 +464,8 @@ def fuel_reading_known(f: Fuel, kind: str) -> bool:
     # Cursor: relay ACKs on receipt (#4115), so _inject_line uses this probe, not stop_fn.
     if k == "cursor":
         return f.cursor_high is not None or f.cursor_low is not None
+    if k == "opencode":
+        return f.opencode_free is not None or f.opencode_go is not None
     return False
 
 
@@ -339,6 +485,8 @@ def fuel_explicitly_exhausted(f: Fuel, kind: str) -> bool:
         return st in ("exhausted", "empty", "none", "unavailable")
     if k == "cursor":
         return not cursor_has_tokens(f)
+    if k == "opencode":
+        return not opencode_has_tokens(f)
     return False
 
 
@@ -348,18 +496,24 @@ def format_fuel_reading(f: Fuel, kind: str = "") -> str:
     return (
         f"kind={k or '-'} pct={f.grok_pct!s} state={f.grok_state!s} "
         f"cursor_high={f.cursor_high!s} cursor_low={f.cursor_low!s} "
+        f"opencode_free={f.opencode_free!s} opencode_go={f.opencode_go!s} "
         f"known={fuel_reading_known(f, k)} exhausted={fuel_explicitly_exhausted(f, k)}"
     )
 
 
 @dataclass(frozen=True)
 class Decision:
-    kind: str  # cursor | grok | dialog | none
+    kind: str  # cursor | grok | opencode | dialog | none
     reason: str
 
 
-def select_agent(fuel: Fuel, cursor_cmd: Optional[str], grok_exe: Optional[str]) -> Decision:
-    """grok (local weekly > 0 or unknown) -> cursor (high/low pool > 0) -> dialog (session key). Pure; no I/O. FR #3997."""
+def select_agent(
+    fuel: Fuel,
+    cursor_cmd: Optional[str],
+    grok_exe: Optional[str],
+    opencode_cmd: Optional[str] = None,
+) -> Decision:
+    """grok -> cursor -> opencode -> dialog (session key). Pure; no I/O. FR #3997 / #6120."""
     if grok_exe and grok_has_tokens(fuel):
         return Decision(
             "grok",
@@ -376,11 +530,19 @@ def select_agent(fuel: Fuel, cursor_cmd: Optional[str], grok_exe: Optional[str])
     why_cur = "cursor: " + (
         "agent.cmd missing" if not cursor_cmd else f"no tokens (high={fuel.cursor_high} low={fuel.cursor_low})"
     )
+    if opencode_cmd and opencode_has_tokens(fuel):
+        return Decision(
+            "opencode",
+            f"{why_grok}; {why_cur}; opencode tokens remain (free={fuel.opencode_free} go={fuel.opencode_go})",
+        )
+    why_op = "opencode: " + (
+        "opencode.exe missing" if not opencode_cmd else f"no tokens (free={fuel.opencode_free} go={fuel.opencode_go})"
+    )
     if not grok_exe:
-        return Decision("none", f"{why_grok}; {why_cur}")
+        return Decision("none", f"{why_grok}; {why_cur}; {why_op}")
     return Decision(
         "dialog",
-        f"{why_grok}; {why_cur} -> ask for a session key",
+        f"{why_grok}; {why_cur}; {why_op} -> ask for a session key",
     )
 
 
@@ -406,6 +568,21 @@ def resolve_grok_exe(env: Optional[dict] = None, which: Callable = shutil.which)
         if p.is_file():
             return str(p)
     w = which("agent.exe")
+    return str(w) if w else None
+
+
+def resolve_opencode_cmd(env: Optional[dict] = None, which: Callable = shutil.which) -> Optional[str]:
+    """Find opencode.exe: WinGet Links first, then PATH."""
+    env = os.environ if env is None else env
+    la = env.get("LOCALAPPDATA", "")
+    if la:
+        p = Path(la) / "Microsoft" / "WinGet" / "Links" / "opencode.exe"
+        if p.is_file():
+            return str(p)
+    w = which("opencode.exe")
+    if w:
+        return str(w)
+    w = which("opencode")
     return str(w) if w else None
 
 
@@ -1005,6 +1182,96 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
         files[pfile] = prompt
         files[lfile] = "\n".join(["$ErrorActionPreference = 'Stop'", f"$prompt = [IO.File]::ReadAllText('{esc(pfile)}')",
                                   f"Set-Location -LiteralPath '{esc(cwd)}'", agent_line, "exit $LASTEXITCODE"])
+        argv = ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", lfile]
+    elif kind == "opencode":
+        # FR #6120: OpenCode is a headless CLI one-shot per prompt.  The wrapper runs the
+        # initial prompt from a file, then loops on injected console lines so the worker
+        # can drive it like a persistent seat.  The model comes from $env:BOB_OPENCODE_MODEL.
+        #
+        # Runtime 5h rolling-cap guard: each ``opencode run`` is watched.  If it hits a
+        # 429 / rate-limit / rolling-limit message, produces no output before the watchdog,
+        # or exits with a payment/balance error, the wrapper kills the process tree, logs
+        # to opencode-out-of-fuel.log, and records a pause for that model until the window
+        # resets (parsed from output if present, else a conservative 1-hour default).
+        pfile = str(Path(run_dir) / "prompt.txt")
+        lfile = str(Path(run_dir) / "launch-opencode.ps1")
+        esc = lambda s: str(s).replace("'", "''")  # noqa: E731
+        files[pfile] = prompt
+        helper_path = _resolve_opencode_fuel_helper_path(cwd=cwd)
+        files[lfile] = "\n".join([
+            r"$ErrorActionPreference = 'Stop'",
+            r"if (-not $env:BOB_OPENCODE_MODEL) { throw 'BOB_OPENCODE_MODEL is required (no exhausted glm-5.3 fallback)' }",
+            r"$model = $env:BOB_OPENCODE_MODEL",
+            f"$exe = '{esc(exe)}'",
+            f"$prompt = [IO.File]::ReadAllText('{esc(pfile)}')",
+            r"$fuelLog = Join-Path $env:LOCALAPPDATA 'Bobiverse\worker\logs\opencode-out-of-fuel.log'",
+            r"$pauseStateDir = Join-Path $env:LOCALAPPDATA 'Bobiverse\worker\state'",
+            f"$pyHelper = '{esc(str(helper_path))}'",
+            r"New-Item -ItemType Directory -Force -Path (Split-Path -Parent $fuelLog) | Out-Null",
+            r"New-Item -ItemType Directory -Force -Path $pauseStateDir | Out-Null",
+            r"function Invoke-Opencode($line) {",
+            r"    $argList = @('run', '-m', $model, $line)",
+            r"""    $argStr = ($argList | ForEach-Object { if ($_ -match '[\s"]') { $escaped = $_ -replace '(\\*)"', '$1$1\"'; $escaped = $escaped -replace '(\\+)$', '$1$1'; '"' + $escaped + '"' } else { $_ } }) -join ' '""",
+            r"    $psi = New-Object System.Diagnostics.ProcessStartInfo",
+            r"    $psi.FileName = $exe",
+            r"    $psi.Arguments = $argStr",
+            r"    $psi.RedirectStandardOutput = $true",
+            r"    $psi.RedirectStandardError = $true",
+            r"    $psi.UseShellExecute = $false",
+            r"    $psi.CreateNoWindow = $true",
+            r"    $proc = $null",
+            r"    $stdout = ''",
+            r"    $stderr = ''",
+            r"    try {",
+            r"        $proc = [System.Diagnostics.Process]::Start($psi)",
+            r"        $stdoutTask = $proc.StandardOutput.ReadToEndAsync()",
+            r"        $stderrTask = $proc.StandardError.ReadToEndAsync()",
+            r"        $watchdogMs = if ($env:BOB_OPENCODE_WATCHDOG_MS) { [int]$env:BOB_OPENCODE_WATCHDOG_MS } else { 120000 }",
+            r"        $timedOut = -not $proc.WaitForExit($watchdogMs)",
+            r"        if ($timedOut) { try { & taskkill /T /F /PID $proc.Id 2>$null | Out-Null } catch { } }",
+            r"        [void]$proc.WaitForExit(5000)",
+            r"        $stdout = if ($stdoutTask.Wait(5000)) { [string]$stdoutTask.Result } else { '' }",
+            r"        $stderr = if ($stderrTask.Wait(5000)) { [string]$stderrTask.Result } else { '' }",
+            r"        $exitCode = if ($proc.HasExited) { $proc.ExitCode } else { -1 }",
+            r"    } catch {",
+            r"        $stdout = ''",
+            r"        $stderr = $_",
+            r"        $exitCode = -1",
+            r"    }",
+            r"    $outStr = $stdout + [Environment]::NewLine + $stderr",
+            r"    Write-Output $outStr",
+            r"    $limitPattern = 'Payment Required|usage balance exhausted|Too Many Requests|rate limit|rolling limit'",
+            r"    $codePattern = '(HTTP|status( code)?)\D{0,3}(402|429)'",
+            r"    $hitLimit = $timedOut -or ($exitCode -ne 0 -and (($outStr -match $limitPattern) -or ($outStr -match $codePattern)))",
+            r"    if ($hitLimit) {",
+            r"        if ($proc -and -not $proc.HasExited) { try { & taskkill /T /F /PID $proc.Id 2>$null | Out-Null } catch { } }",
+            r"        if ($timedOut) { $msg = 'watchdog timeout (no output)' } else {",
+            r"            $matchLines = $outStr -split '\r?\n' | Where-Object { $_ -match $limitPattern -or $_ -match $codePattern }",
+            r"            $msg = ($matchLines | Select-Object -First 3) -join ' '",
+            r"            if (-not $msg) { $msg = ($outStr -replace '\s+', ' ').Trim(); if ($msg.Length -gt 300) { $msg = $msg.Substring(0, 300) } }",
+            r"        }",
+            r"        $entry = @{ pid = $PID; ts = (Get-Date -Format o); model = $model; text = $msg } | ConvertTo-Json -Compress",
+            r"        Add-Content -Path $fuelLog -Value $entry -ErrorAction SilentlyContinue",
+            r"        $py = (Get-Command python.exe -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source)",
+            r"        if (-not $py) { $py = 'python.exe' }",
+            r"        $prevEap = $ErrorActionPreference",
+            r"        $ErrorActionPreference = 'Continue'",
+            r"        try {",
+            r"            $recordOutput = $outStr | & $py $pyHelper record-pause --dir $pauseStateDir --model $model 2>&1 | Out-String",
+            r"            $recordExit = $LASTEXITCODE",
+            r"        } finally { $ErrorActionPreference = $prevEap }",
+            r"        if ($recordExit -ne 0) {",
+            r"            $failText = ('record-pause helper failed (exit ' + $recordExit + '): ' + $recordOutput)",
+            r"            $failEntry = @{ pid = $PID; ts = (Get-Date -Format o); model = $model; text = $failText } | ConvertTo-Json -Compress",
+            r"            Add-Content -Path $fuelLog -Value $failEntry -ErrorAction SilentlyContinue",
+            r"        }",
+            r"    }",
+            r"    if ($proc) { try { $proc.Dispose() } catch { } }",
+            r"}",
+            r"try { Invoke-Opencode $prompt } catch { [Console]::Error.WriteLine('opencode initial run failed: ' + $_) }",
+            r"while ($true) { $line = [Console]::ReadLine(); if ($null -eq $line -or $line -eq 'exit') { break }; if (-not [string]::IsNullOrWhiteSpace($line)) { try { Invoke-Opencode $line } catch { [Console]::Error.WriteLine('opencode run failed: ' + $_) } } }",
+            r"exit 0",
+        ])
         argv = ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", lfile]
     else:
         raise ValueError(f"unknown agent kind {kind!r}")
@@ -2714,6 +2981,8 @@ def out_of_fuel_reading_clears_hard_hold(
         return int(fuel.grok_pct) > int(clear_floor_pct)
     if k == "cursor":
         return cursor_has_tokens(fuel)
+    if k == "opencode":
+        return opencode_has_tokens(fuel)
     return False
 
 
@@ -2750,7 +3019,14 @@ def out_of_fuel_reading_clears_soft_hold(
                 f"reading kind=cursor high={fuel.cursor_high} low={fuel.cursor_low}",
             )
         return False, ""
-    if cursor_has_tokens(fuel) or grok_has_tokens(fuel):
+    if k == "opencode":
+        if opencode_has_tokens(fuel):
+            return (
+                True,
+                f"reading kind=opencode free={fuel.opencode_free} go={fuel.opencode_go}",
+            )
+        return False, ""
+    if cursor_has_tokens(fuel) or grok_has_tokens(fuel) or opencode_has_tokens(fuel):
         return True, "reading"
     return False, ""
 
@@ -2789,11 +3065,13 @@ def default_unified_log_path() -> Path:
 
 
 def default_out_of_fuel_log_path(kind: str, *, env: Optional[dict] = None) -> Optional[Path]:
-    """Log path to tail for mid-job out-of-fuel (FR #3012 grok / FR #3019 cursor).
+    r"""Log path to tail for mid-job out-of-fuel (FR #3012 grok / FR #3019 cursor / FR #6120 opencode).
 
     Override with ``BOB_WORKER_OUT_OF_FUEL_LOG``. Grok defaults to ``unified.jsonl``.
     Cursor has no durable fleet enqueue log yet — returns the override only (watcher waits
     until the path appears; mid-job fuel-reading poll still covers Cursor).
+    OpenCode writes wrapper-caught 402/429/quota failures to a shared log under
+    ``%LOCALAPPDATA%\Bobiverse\worker\logs`` so the fuel watcher can tail them.
     """
     env = os.environ if env is None else env
     override = (env.get("BOB_WORKER_OUT_OF_FUEL_LOG") or "").strip()
@@ -2804,12 +3082,15 @@ def default_out_of_fuel_log_path(kind: str, *, env: Optional[dict] = None) -> Op
         return default_unified_log_path()
     if k == "cursor":
         return None
+    if k == "opencode":
+        base = Path(env.get("LOCALAPPDATA") or str(Path.home() / "AppData" / "Local"))
+        return base / "Bobiverse" / "worker" / "logs" / "opencode-out-of-fuel.log"
     return None
 
 
 def should_start_fuel_watcher(kind: str) -> bool:
-    """FR #3019: out-of-fuel watcher for grok **and** cursor (not plan/monitor-only kinds)."""
-    return (kind or "").strip().lower() in ("grok", "cursor")
+    """FR #3019 / #6120: out-of-fuel watcher for grok, cursor and opencode (not plan/monitor-only kinds)."""
+    return (kind or "").strip().lower() in ("grok", "cursor", "opencode")
 
 
 def _http_post_json(
@@ -6241,6 +6522,10 @@ class Supervisor:
             lost = fuel_explicitly_exhausted(fuel, "grok")
             self.log(f"out-of-fuel: mid-job reading {snap}")
             return lost
+        if kind == "opencode":
+            lost = fuel_explicitly_exhausted(fuel, "opencode")
+            self.log(f"out-of-fuel: mid-job reading {snap}")
+            return lost
         return False
 
     def _clear_watchdogs_for_out_of_fuel(self) -> None:
@@ -7667,17 +7952,30 @@ def run_plan(args, log: Log) -> int:
         log(f"plan: folder missing {folder}")
         return EXIT_USAGE
     dec, cursor_cmd, grok_exe, fuel = _choose(args, log, folder, "plan")
+    opencode_cmd = resolve_opencode_cmd()
+    if opencode_cmd and dec.kind in ("dialog", "none"):
+        dec = select_agent(fuel, cursor_cmd, grok_exe, opencode_cmd)
     secret = None
     kind = dec.kind
     if kind == "none":
         return EXIT_NO_AGENT
     if kind == "dialog":
-        key = ask_session_key("No Cursor or Grok tokens remain. Enter an XAI_API_KEY for this Plan only (kept in memory, never saved).", "Grok plan session key")
+        key = ask_session_key("No Cursor, Grok or OpenCode tokens remain. Enter an XAI_API_KEY for this Plan only (kept in memory, never saved).", "Grok plan session key")
         if not key:
             log("plan: no key given - not starting")
             return EXIT_NO_AGENT
         secret, kind = SecretStr(key), "grok"
-    exe = cursor_cmd if kind == "cursor" else grok_exe
+    if kind == "cursor":
+        exe = cursor_cmd
+    elif kind == "opencode":
+        exe = opencode_cmd
+        oc_model = opencode_default_model(fuel)
+        if not oc_model:
+            log("opencode: no usable model (capped/paused) - not starting")
+            return EXIT_NO_AGENT
+        os.environ["BOB_OPENCODE_MODEL"] = oc_model
+    else:
+        exe = grok_exe
     run_dir = _new_run_dir("plan", "plan")
     machine = normalize_machine_id(args.machine_id) if args.machine_id else default_machine_id()
     nick = "%s-plan" % (machine or "plan")
@@ -7730,20 +8028,33 @@ def run_monitor(args, log: Log) -> int:
         log(f"monitor: AGENTS.md missing in {folder}")
         return EXIT_USAGE
     dec, cursor_cmd, grok_exe, fuel = _choose(args, log, folder, "monitor")
+    opencode_cmd = resolve_opencode_cmd()
+    if opencode_cmd and dec.kind in ("dialog", "none"):
+        dec = select_agent(fuel, cursor_cmd, grok_exe, opencode_cmd)
     secret = None
     kind = dec.kind
     if kind == "none":
         return EXIT_NO_AGENT
     if kind == "dialog":
         key = ask_session_key(
-            "No Cursor or Grok tokens remain. Enter an XAI_API_KEY for this Jeeves Monitor only (kept in memory, never saved).",
+            "No Cursor, Grok or OpenCode tokens remain. Enter an XAI_API_KEY for this Jeeves Monitor only (kept in memory, never saved).",
             "Grok monitor session key",
         )
         if not key:
             log("monitor: no key given - not starting")
             return EXIT_NO_AGENT
         secret, kind = SecretStr(key), "grok"
-    exe = cursor_cmd if kind == "cursor" else grok_exe
+    if kind == "cursor":
+        exe = cursor_cmd
+    elif kind == "opencode":
+        exe = opencode_cmd
+        oc_model = opencode_default_model(fuel)
+        if not oc_model:
+            log("opencode: no usable model (capped/paused) - not starting")
+            return EXIT_NO_AGENT
+        os.environ["BOB_OPENCODE_MODEL"] = oc_model
+    else:
+        exe = grok_exe
     run_dir = _new_run_dir("monitor", "monitor")
     run_dir.mkdir(parents=True, exist_ok=True)
     ensure_console("Jeeves Monitor (%s) - closing this window ends the agent" % kind)
@@ -7822,20 +8133,33 @@ def run_maintenance(args, log: Log, *, spawn: Optional[Callable] = None, poll_s:
         log(f"maintenance: AGENTS.md missing in {folder}")
         return EXIT_USAGE
     dec, cursor_cmd, grok_exe, fuel = _choose(args, log, folder, "maintenance")
+    opencode_cmd = resolve_opencode_cmd()
+    if opencode_cmd and dec.kind in ("dialog", "none"):
+        dec = select_agent(fuel, cursor_cmd, grok_exe, opencode_cmd)
     secret = None
     kind = dec.kind
     if kind == "none":
         return EXIT_NO_AGENT
     if kind == "dialog":
         key = ask_session_key(
-            "No Cursor or Grok tokens remain. Enter an XAI_API_KEY for this Jeeves maintenance agent only (kept in memory, never saved).",
+            "No Cursor, Grok or OpenCode tokens remain. Enter an XAI_API_KEY for this Jeeves maintenance agent only (kept in memory, never saved).",
             "Grok maintenance session key",
         )
         if not key:
             log("maintenance: no key given - not starting")
             return EXIT_NO_AGENT
         secret, kind = SecretStr(key), "grok"
-    exe = cursor_cmd if kind == "cursor" else grok_exe
+    if kind == "cursor":
+        exe = cursor_cmd
+    elif kind == "opencode":
+        exe = opencode_cmd
+        oc_model = opencode_default_model(fuel)
+        if not oc_model:
+            log("opencode: no usable model (capped/paused) - not starting")
+            return EXIT_NO_AGENT
+        os.environ["BOB_OPENCODE_MODEL"] = oc_model
+    else:
+        exe = grok_exe
     rd = Path(run_dir) if run_dir else _new_run_dir("maintenance", "maintenance")
     rd.mkdir(parents=True, exist_ok=True)
     set_title = console or ensure_console
@@ -7904,17 +8228,30 @@ def run_agent(args, log: Log) -> int:
         log(f"worker: folder missing {folder}")
         return EXIT_USAGE
     dec, cursor_cmd, grok_exe, fuel = _choose(args, log, folder, "agent")
+    opencode_cmd = resolve_opencode_cmd()
+    if opencode_cmd and dec.kind in ("dialog", "none"):
+        dec = select_agent(fuel, cursor_cmd, grok_exe, opencode_cmd)
     secret = None
     kind = dec.kind
     if kind == "none":
         return EXIT_NO_AGENT
     if kind == "dialog":
-        key = ask_session_key("No Cursor or Grok tokens remain. Enter an XAI_API_KEY to start this worker (kept in memory only, never saved).", "Grok worker session key")
+        key = ask_session_key("No Cursor, Grok or OpenCode tokens remain. Enter an XAI_API_KEY to start this worker (kept in memory only, never saved).", "Grok worker session key")
         if not key:
             log("worker: no key given - not starting")
             return EXIT_NO_AGENT
         secret, kind = SecretStr(key), "grok"
-    exe = cursor_cmd if kind == "cursor" else grok_exe
+    if kind == "cursor":
+        exe = cursor_cmd
+    elif kind == "opencode":
+        exe = opencode_cmd
+        oc_model = opencode_default_model(fuel)
+        if not oc_model:
+            log("opencode: no usable model (capped/paused) - not starting")
+            return EXIT_NO_AGENT
+        os.environ["BOB_OPENCODE_MODEL"] = oc_model
+    else:
+        exe = grok_exe
     pid = os.getpid()
     nick = seat_nick(machine, pid)
     run_dir = _new_run_dir(machine, "worker")
@@ -8308,9 +8645,9 @@ def main(argv: Optional[list] = None) -> int:
             args.startup_grace_s = 60.0
     log = Log(_state_root() / "logs" / f"bob-worker-{args.mode}.log", echo=args.echo)
     if args.dry_run:
-        cc, ge = resolve_cursor_cmd(), resolve_grok_exe()
+        cc, ge, oe = resolve_cursor_cmd(), resolve_grok_exe(), resolve_opencode_cmd()
         fuel = read_fuel(Path(args.install_root))
-        dec = select_agent(fuel, cc, ge)
+        dec = select_agent(fuel, cc, ge, oe)
         if args.mode == "plan":
             cwd = str(Path(args.install_root) / "plan")
         elif args.mode in ("monitor", "maintenance"):
@@ -8318,7 +8655,7 @@ def main(argv: Optional[list] = None) -> int:
         else:
             cwd = str(Path(args.install_root) / "worker")
         print(json.dumps({"decision": dec.kind, "reason": dec.reason, "cursor_cmd": bool(cc), "grok_exe": bool(ge),
-                          "fuel": fuel.__dict__, "cwd": cwd, "mode": args.mode}))
+                          "opencode_cmd": bool(oe), "fuel": fuel.__dict__, "cwd": cwd, "mode": args.mode}))
         return EXIT_OK
     # FR #2522 / Simon: ONLY mode=agent is capped. Plan + maintenance (+ monitor) start freely on top of 2 workers.
     if args.mode in CAPPED_MODES:

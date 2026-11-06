@@ -23,4 +23,4 @@ def test_fr3997_select_agent_prefers_grok_when_both_have_fuel():
 
 def test_fr3997_agent_fuel_helper_synopsis_grok_first():
     text = (ROOT / "tray" / "tools" / "Get-BobAgentFuel.ps1").read_text(encoding="utf-8-sig")
-    assert "grok -> cursor -> dialog" in text
+    assert "grok -> cursor -> opencode -> dialog" in text
