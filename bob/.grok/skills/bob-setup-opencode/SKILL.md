@@ -19,9 +19,10 @@ Fuel ids: `opencode-free`, `opencode-go`.
 
 Low-cost CLI coding agent for routine FR/fix PRs, docs PRs and harvest work when
 Cursor Models / Grok seats are thin or capped. Hostile MRB stays on a stronger
-Chair gate (FR #6134): when digest `kind=opencode`, Jeeves skips offering MRB/UAT to that seat (`!bored` and `!assign` refuse). Hostile review stays on Grok/Cursor. The worker also NACKs MRB/UAT before ACK if offered.
-
-seat (Grok first, then Cursor). CodeRabbit stays advisory, never required.
+seat (Grok first, then Cursor). Chair gate (FR #6134): when digest `kind=opencode`,
+Jeeves skips offering MRB/UAT to that seat (`!bored` and `!assign` refuse). Hostile
+review stays on Grok/Cursor. The worker also NACKs MRB/UAT before ACK if offered.
+CodeRabbit stays advisory, never required.
 
 ## CAST IRON — never put API keys in code, tests, logs, argv, IRC or docs
 
