@@ -919,6 +919,7 @@ class Client:
         self._bobiverse_last_query: dict[str, float] = {}
         self._bobiverse_last_tray: dict[str, float] = {}
         self._bobiverse_pull_last = 0.0
+        self._digest_fuel_last = 0.0  # FR #6141 ear fuel publish tick
         # #42: ChanServ roster mirror (chair only). Query state; registry file is the cache.
         self._cs_collector: registered_machines.ChanServListCollector | None = None
         self._unregister_pending = unregister_cmd.PendingUnregisterStore()
@@ -2641,6 +2642,31 @@ class Client:
         except Exception:
             pass
         info(f"INFO depart-request handled reason={reason}")
+
+
+    def _maybe_publish_digest_fuel(self) -> None:
+        """FR #6141: fleet bob-ear posts local peer fuel merges; tray no longer POSTs fuel."""
+        if getattr(self.args, "chair", False):
+            return
+        if not bobtalk.is_fleet_bob_nick(self.original_nick):
+            return
+        mid = self._local_machine_id()
+        if not mid:
+            return
+        interval = bobreport.digest_fuel_heartbeat_s()
+        if interval <= 0:
+            interval = bobreport.DEFAULT_DIGEST_FUEL_HEARTBEAT_S
+        now = time.time()
+        if now - self._digest_fuel_last < interval:
+            return
+        self._digest_fuel_last = now
+        try:
+            code = bobreport.publish_local_peer_fuel(self.home, mid)
+        except Exception as exc:  # noqa: BLE001 — never break outbox on fuel publish
+            info(f"INFO digest-fuel publish skip: {exc}")
+            return
+        if code is not None:
+            info(f"INFO digest-fuel webhook POST {code} machine={mid}")
 
     def _maybe_bobiverse_pull(self) -> None:
         """Refresh local digest via public HTTP GET (#174). No IRC !bobiverse."""
@@ -4479,6 +4505,7 @@ class Client:
                 return
             try:
                 self._maybe_bobiverse_pull()
+                self._maybe_publish_digest_fuel()  # FR #6141 ear owns fuel POST
                 # FR #68: establish chair/ChanServ privileges before draining backlog.
                 self._maybe_chanserv_sync()
                 self._expire_register_waits()

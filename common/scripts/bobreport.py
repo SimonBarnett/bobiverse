@@ -3806,6 +3806,238 @@ def _peer_delta_put(payload: dict, key: str, val: object) -> bool:
     return False
 
 
+
+DIGEST_FUEL_HEARTBEAT_ENV = "BOB_EAR_DIGEST_FUEL_S"
+DEFAULT_DIGEST_FUEL_HEARTBEAT_S = 30.0
+_FUEL_PUBLISH_EXTRA_FIELDS = (
+    "weekly_known",
+    "remaining_pct",
+    "account_remaining_pct",
+    "cursor_remaining_pct",
+    "cursor_pools",
+    "fuel_mode",
+)
+
+
+def digest_fuel_heartbeat_s() -> float:
+    raw = (os.environ.get(DIGEST_FUEL_HEARTBEAT_ENV) or "").strip()
+    if raw:
+        try:
+            return max(0.0, float(raw))
+        except ValueError:
+            pass
+    return DEFAULT_DIGEST_FUEL_HEARTBEAT_S
+
+
+def digest_fuel_post_state_path(home: Path) -> Path:
+    return Path(home) / "digest-fuel-post-state.json"
+
+
+def peer_fuel_fingerprint(peer: dict) -> str:
+    """Stable fingerprint of fuel fields that must trigger a merge POST (FR #6141)."""
+    if not isinstance(peer, dict):
+        return ""
+    parts: list[str] = []
+    for key in (
+        "weekly",
+        "weekly_known",
+        "cursor_label",
+        "cursor_period_end",
+        "sand_period_end",
+        "period_end",
+        "model",
+        "kind",
+        "repo",
+        "sha",
+        "fuel",
+        "fuel_mode",
+        "working_on",
+        "online",
+        "status",
+        "remaining_pct",
+        "account_remaining_pct",
+        "cursor_remaining_pct",
+        "overage_gbp",
+        "overage_usd",
+        "overspend_state",
+        "on_demand_used_cents",
+        "on_demand_limit_cents",
+        "on_demand_remaining_pct",
+        "running",
+        "queued",
+    ):
+        parts.append(f"{key}={peer.get(key)!s}")
+    pcent = peer.get("pcent")
+    if isinstance(pcent, dict):
+        parts.append("pcent=" + json.dumps(pcent, sort_keys=True, separators=(",", ":")))
+    else:
+        parts.append("pcent=")
+    pools = peer.get("cursor_pools")
+    if isinstance(pools, list):
+        slim = []
+        for row in pools:
+            if not isinstance(row, dict):
+                continue
+            slim.append(
+                {
+                    "group_id": row.get("group_id"),
+                    "remaining_pct": row.get("remaining_pct"),
+                    "period_end": row.get("period_end"),
+                    "machine_id": row.get("machine_id"),
+                }
+            )
+        parts.append("pools=" + json.dumps(slim, sort_keys=True, separators=(",", ":")))
+    else:
+        parts.append("pools=")
+    jobs = peer.get("jobs")
+    if isinstance(jobs, list):
+        parts.append("jobs=" + json.dumps(jobs, sort_keys=True, separators=(",", ":")))
+    else:
+        parts.append("jobs=")
+    return "|".join(parts)
+
+
+def build_peer_fuel_merge_payload(peer: dict, machine_id: str) -> dict | None:
+    """Build op=merge fuel payload from local bob-peer (FR #6141)."""
+    mid = normalize_machine_id(machine_id) or normalize_machine_id(peer.get("id"))
+    if not mid or not isinstance(peer, dict):
+        return None
+    payload: dict = {
+        "op": "merge",
+        "machine": mid,
+        "online": True if peer.get("online", True) else False,
+        "status": str(peer.get("status") or "operational"),
+    }
+    if peer.get("lastSeen"):
+        payload["lastSeen"] = str(peer.get("lastSeen"))
+    weekly_known = False
+    if peer.get("weekly") not in (None, ""):
+        try:
+            payload["weekly"] = int(peer.get("weekly"))
+            weekly_known = True
+        except (TypeError, ValueError):
+            payload["weekly"] = None
+    else:
+        payload["weekly"] = None
+    if "weekly_known" in peer and peer.get("weekly_known") not in (None, ""):
+        weekly_known = bool(peer.get("weekly_known"))
+    elif peer.get("weekly_known") is False:
+        weekly_known = False
+    payload["weekly_known"] = weekly_known
+    for key in _MERGE_PEER_FIELDS:
+        if key in ("weekly", "lastSeen", "online", "status"):
+            continue
+        if key in peer and peer.get(key) not in (None, ""):
+            payload[key] = peer.get(key)
+    for key in _FUEL_PUBLISH_EXTRA_FIELDS:
+        if key == "weekly_known":
+            continue
+        if key in peer and peer.get(key) not in (None, ""):
+            payload[key] = peer.get(key)
+    if isinstance(peer.get("cursor_pools"), list):
+        payload["cursor_pools"] = _coerce_cursor_pools(peer.get("cursor_pools"), machine_id=mid)
+    blob = json.dumps(payload, separators=(",", ":"), default=str)
+    if looks_like_secret(blob):
+        return None
+    return payload
+
+
+def post_report_json(payload: dict, *, url: str | None = None, timeout: float = 15.0) -> int | None:
+    """POST JSON to report URL. Returns HTTP status or None on transport failure."""
+    import urllib.error
+    import urllib.request
+
+    target = (url or digest_url()).strip()
+    if not target or not isinstance(payload, dict):
+        return None
+    body = json.dumps(payload, separators=(",", ":"), default=str).encode("utf-8")
+    if looks_like_secret(body.decode("utf-8", "replace")):
+        return None
+    try:
+        req = urllib.request.Request(
+            target,
+            data=body,
+            method="POST",
+            headers={"Content-Type": "application/json", "Accept": "application/json"},
+        )
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return int(getattr(resp, "status", 0) or 0)
+    except urllib.error.HTTPError as exc:
+        try:
+            return int(exc.code)
+        except Exception:
+            return None
+    except (urllib.error.URLError, TimeoutError, OSError, ValueError):
+        return None
+
+
+def publish_local_peer_fuel(
+    home: Path,
+    machine_id: str,
+    *,
+    force: bool = False,
+    url: str | None = None,
+    now: float | None = None,
+) -> int | None:
+    """POST local peer fuel merge when fingerprint changed or heartbeat due (FR #6141).
+
+    Returns HTTP status on successful 2xx POST, None when skipped or failed.
+    """
+    mid = normalize_machine_id(machine_id)
+    if not mid:
+        return None
+    peer = bobstat.read_peer(home, mid)
+    if not peer:
+        return None
+    # Refresh Cursor remaining when peer lacks numeric fuel (#70 / FR #6141 gather assist).
+    try:
+        bobstat.refresh_peer_cursor_remaining(home, mid)
+        peer = bobstat.read_peer(home, mid) or peer
+    except OSError:
+        pass
+    payload = build_peer_fuel_merge_payload(peer, mid)
+    if not payload:
+        return None
+    fp = peer_fuel_fingerprint(peer)
+    state_path = digest_fuel_post_state_path(home)
+    posted: dict = {}
+    if state_path.is_file():
+        try:
+            raw = json.loads(state_path.read_text(encoding="utf-8"))
+            if isinstance(raw, dict):
+                posted = {str(k): v for k, v in raw.items()}
+        except (OSError, json.JSONDecodeError, TypeError, ValueError):
+            posted = {}
+    ts_now = float(time.time() if now is None else now)
+    last_fp = str(posted.get(mid) or "")
+    at_key = mid + "@posted_at"
+    last_at = None
+    if at_key in posted:
+        try:
+            last_at = float(posted[at_key])
+        except (TypeError, ValueError):
+            last_at = None
+    heartbeat_s = digest_fuel_heartbeat_s()
+    heartbeat_due = False
+    if heartbeat_s > 0 and last_fp:
+        if last_at is None:
+            heartbeat_due = True
+        else:
+            heartbeat_due = (ts_now - last_at) >= heartbeat_s
+    if not force and last_fp == fp and not heartbeat_due:
+        return None
+    code = post_report_json(payload, url=url)
+    if code is not None and 200 <= int(code) < 300:
+        posted[mid] = fp
+        posted[at_key] = ts_now
+        try:
+            state_path.write_text(json.dumps(posted, indent=2) + "\n", encoding="utf-8")
+        except OSError:
+            pass
+        return int(code)
+    return None
+
+
 def merge_payload_local_peer_ahead_of_chair(
     home: Path, machine_id: str, chair_machine: dict
 ) -> dict | None:
