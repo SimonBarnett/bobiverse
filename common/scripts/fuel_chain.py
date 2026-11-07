@@ -480,6 +480,27 @@ def assign_suffix(row: dict) -> str:
     return " ".join(parts)
 
 
+def coderabbit_hold_message(row: dict, now: float) -> str:
+    """Actionable refuse/log detail for a pending CodeRabbit MRB hold (FR #6211)."""
+    repo = str((row or {}).get("repo") or "").strip() or "?"
+    num = str((row or {}).get("id") or "").strip().lstrip("#") or "?"
+    stamp = str((row or {}).get("coderabbit") or "pending").strip().lower() or "pending"
+    wait_s = float(wait_seconds())
+    try:
+        since = float((row or {}).get("coderabbit_wait_since") or now)
+    except (TypeError, ValueError):
+        since = float(now)
+    try:
+        age = max(0.0, float(now) - since)
+    except (TypeError, ValueError):
+        age = 0.0
+    rem = max(0.0, wait_s - age)
+    return (
+        f"coderabbit_hold {repo}#{num} stamp={stamp} "
+        f"age_s={int(age)} rem_s={int(rem)}"
+    )
+
+
 def gate_cleared(stamp: str) -> bool:
     """True when merge/offer may proceed for this CodeRabbit stamp."""
     return str(stamp or "").strip().lower() in (
