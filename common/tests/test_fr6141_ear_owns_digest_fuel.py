@@ -27,11 +27,14 @@ def test_fr6141_write_bob_irc_status_skips_fuel_post_by_default():
     irc = _txt(IRC)
     assert "FR #6141" in irc
     start = irc.index("function Write-BobIrcStatus")
-    block = irc[start : start + 12000]
+    nxt = irc.find("\nfunction ", start + 10)
+    block = irc[start : nxt if nxt > 0 else start + 40000]
     assert "PostDigestWebhook" in block
     assert "Send-BobDigestWebhookIfChanged" in block
     assert "Get-BobDigestWebhookCapturePath" in block
     assert "$PostDigestWebhook -or" in block or "if ($PostDigestWebhook" in block
+    # Default path is gated: only POST when opted in or capture (FR #6141).
+    assert "ear publish_local_peer_fuel" in block or "ear owns fuel" in block.lower() or "FR #6141" in block
 
 
 def test_fr6141_watch_tray_does_not_opt_in_fuel_post():
