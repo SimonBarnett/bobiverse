@@ -711,6 +711,24 @@ def _parse_iso_ts(raw: str) -> Optional[float]:
         return None
 
 
+def _rate_limit_scan_without_worker(text: str) -> str:
+    """Quoted-stock strip when ``bob_worker.provider_fuel_scan_text`` cannot be imported.
+
+    Drops a stock phrase only when it is the entire quoted span. Contractions,
+    a bare ``402 Payment Required``, and ``status_code=402 "usage balance exhausted"``
+    stay so a missing worker import does not hide a real provider limit.
+    """
+    cleaned = re.sub(r"`[^`]*`", " ", text or "")
+    stock = (
+        r"(?:402\s*Payment\s*Required|Payment\s*Required|usage\s+balance\s+exhausted"
+        r"|NEEDS_AUTH|OUTCOME_NEEDS_AUTH)"
+    )
+    cleaned = re.sub(rf"(?<!\w)'{stock}'(?!\w)", " ", cleaned, flags=re.IGNORECASE)
+    if re.search(r"(?i)(?:\bhttp\b|\bstatus(?:_code| code)?)\D{0,12}\b(402|429)\b", cleaned):
+        return cleaned
+    return re.sub(rf'"{stock}"', " ", cleaned, flags=re.IGNORECASE)
+
+
 def looks_like_rate_limit(text: str | None) -> bool:
     """True when ``opencode run`` output text indicates a rate/rolling/payment limit.
 
@@ -733,7 +751,7 @@ def looks_like_rate_limit(text: str | None) -> bool:
         except Exception:
             continue
     else:
-        scan = re.sub(r"`[^`]*`", " ", text)
+        scan = _rate_limit_scan_without_worker(text)
     t = scan.lower()
     if any(phrase in t for phrase in RATE_LIMIT_PHRASES):
         return True

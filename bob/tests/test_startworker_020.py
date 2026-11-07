@@ -393,6 +393,7 @@ def test_tray_wiring_timer_heartbeat_helper_and_click_function_contract():
     assert "--refresh-fuel" in probe and "return $unknown" in probe
     # Refresh timeout must not replace a real first list with the all-installed placeholder.
     assert "if ($Refresh) { return $null }" in probe
+    assert "catch {" in probe and probe.count("if ($Refresh) { return $null }") >= 2
     assert "fuel unknown (not exhausted)" in probe
     assert "if (-not $refreshUnknown) { return @($again) }" in probe
     assert "return @($obj.agents)" in probe

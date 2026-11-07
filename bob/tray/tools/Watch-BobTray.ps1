@@ -3206,7 +3206,12 @@ function Get-BobTrayWorkerAgentChoices {
         }
         return @($obj.agents)
     }
-    catch { return $fallback }
+    catch {
+        # Malformed JSON or a Start-Process throw on refresh must not replace
+        # the first list with the disabled rebuild rows. Timeout already returns $null.
+        if ($Refresh) { return $null }
+        return $fallback
+    }
     finally {
         if ($p) { try { $p.Dispose() } catch { } }
         Remove-Item -LiteralPath $outFile, $errFile -Force -ErrorAction SilentlyContinue
