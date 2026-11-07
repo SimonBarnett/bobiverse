@@ -19,12 +19,14 @@ def test_fr6103_healed_nicks_dropped_from_filer():
             },
         }
     )
-    assert {x["key"] for x in found} == {"flamingo-35004", "flamingo-47616"}
+    # FR #6195: one finding per machine (stable key), not per PID nick.
+    assert {x["key"] for x in found} == {"flamingo"}
+    assert len(found) == 1
     kept = chair_health.drop_healed_bored_findings(
         found,
         ["bored-latency recycleseat=flamingo-35004 id=abc lag_s=441"],
     )
-    assert [x["key"] for x in kept] == ["flamingo-47616"]
+    assert kept == []
 
 
 def test_fr6103_stall_scan_filters_healed_before_filer():

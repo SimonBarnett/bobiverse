@@ -100,17 +100,32 @@ def drop_healed_bored_findings(
     findings: list[dict],
     heal_lines: list[str] | None,
 ) -> list[dict]:
-    """FR #6103: heal already recycled the seat — do not file it as an FR."""
+    """FR #6103: heal already recycled the seat - do not file it as an FR.
+
+    FR #6195: bored-latency findings key on machine id; heal lines still name the
+    volatile nick. Drop when the finding key, evidence nick, or that nick's machine
+    matches a healed recycleseat target.
+    """
     healed = healed_bored_nicks(heal_lines)
     if not healed:
         return list(findings or [])
+    healed_machines: set[str] = set()
+    try:
+        import stall_detectors as sd
+
+        for nick in healed:
+            healed_machines.add(sd._bored_latency_stable_key(nick))
+    except Exception:
+        healed_machines = set()
     kept = []
     for item in findings or []:
         if str(item.get("id") or "") != "bored-latency":
             kept.append(item)
             continue
         key = str(item.get("key") or "").strip().lower()
-        if key in healed:
+        ev = item.get("evidence") if isinstance(item.get("evidence"), dict) else {}
+        nick = str((ev or {}).get("nick") or "").strip().lower()
+        if key in healed or nick in healed or key in healed_machines:
             continue
         kept.append(item)
     return kept
