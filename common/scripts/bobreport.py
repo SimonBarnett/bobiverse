@@ -3945,9 +3945,14 @@ def _peer_delta_put(payload: dict, key: str, val: object) -> bool:
 
 DIGEST_FUEL_HEARTBEAT_ENV = "BOB_EAR_DIGEST_FUEL_S"
 DEFAULT_DIGEST_FUEL_HEARTBEAT_S = 30.0
+# FR #6145: ear polls for fingerprint delta at this cadence (max lag pin).
+DIGEST_FUEL_DELTA_ENV = "BOB_EAR_DIGEST_FUEL_DELTA_S"
+DEFAULT_DIGEST_FUEL_DELTA_S = 5.0
+DIGEST_FUEL_MAX_LAG_S = DEFAULT_DIGEST_FUEL_DELTA_S
 _FUEL_PUBLISH_EXTRA_FIELDS = (
     "weekly_known",
     "remaining_pct",
+    "overage_fetched_at",
     "account_remaining_pct",
     "cursor_remaining_pct",
     "cursor_pools",
@@ -3965,12 +3970,27 @@ def digest_fuel_heartbeat_s() -> float:
     return DEFAULT_DIGEST_FUEL_HEARTBEAT_S
 
 
+def digest_fuel_delta_s() -> float:
+    """FR #6145: how often the ear may check for a fuel fingerprint delta (default 5s)."""
+    raw = (os.environ.get(DIGEST_FUEL_DELTA_ENV) or "").strip()
+    if raw:
+        try:
+            return max(0.0, float(raw))
+        except ValueError:
+            pass
+    return DEFAULT_DIGEST_FUEL_DELTA_S
+
+
 def digest_fuel_post_state_path(home: Path) -> Path:
     return Path(home) / "digest-fuel-post-state.json"
 
 
 def peer_fuel_fingerprint(peer: dict) -> str:
-    """Stable fingerprint of fuel fields that must trigger a merge POST (FR #6141)."""
+    """Stable fingerprint of fuel fields that must trigger a merge POST (FR #6141 / #6145).
+
+    FR #6145: remaining / OpenCode pcent / Copilot overage_fetched_at / grok_account
+    deltas must force a merge POST (no suppress).
+    """
     if not isinstance(peer, dict):
         return ""
     parts: list[str] = []
@@ -3995,10 +4015,12 @@ def peer_fuel_fingerprint(peer: dict) -> str:
         "cursor_remaining_pct",
         "overage_gbp",
         "overage_usd",
+        "overage_fetched_at",
         "overspend_state",
         "on_demand_used_cents",
         "on_demand_limit_cents",
         "on_demand_remaining_pct",
+        "grok_account",
         "running",
         "queued",
     ):
@@ -4159,7 +4181,10 @@ def publish_local_peer_fuel(
     url: str | None = None,
     now: float | None = None,
 ) -> int | None:
-    """POST local peer fuel merge when fingerprint changed or heartbeat due (FR #6141).
+    """POST local peer fuel merge when fingerprint changed or heartbeat due (FR #6141 / #6145).
+
+    Fingerprint delta always POSTs (``force=True`` or fp change). Unchanged fingerprint
+    skips until heartbeat. Max lag pin: ``DIGEST_FUEL_MAX_LAG_S`` (ear delta poll).
 
     Returns HTTP status on successful 2xx POST, None when skipped or failed.
     """
