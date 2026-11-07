@@ -28,13 +28,15 @@ def test_rebuild_first_section_header_is_grok_accounts_not_cursor():
 
 
 def test_status_render_never_sections_cursor_even_if_snapshot_has_rows():
-    """BobStatus.cs must not paint a Cursor section (snapshot may still carry cursor[])."""
+    """BobStatus.cs must not paint Cursor spending-group rows (snapshot may still carry cursor[])."""
     src = STATUS_CS.read_text(encoding="utf-8-sig")
     render = src[src.index("public int Render") : src.index("protected override void OnPaint")]
-    assert 'Section(g, y, "Cursor"' not in render
+    # FR #6214: shared "Cursor / xAI weekly" heading is OK; separate Cursor Models bar is not.
+    assert 'Section(g, y, "Cursor Models"' not in render
     assert "foreach (StatusRow r in m.Cursor)" not in render
     assert 'Section(g, y, "Grok accounts"' not in render
     assert "foreach (StatusRow r in m.Grok)" in render
+    assert "Cursor / xAI" in render
 
 
 def test_status_model_never_fills_cursor_from_hover_pools():

@@ -2808,23 +2808,54 @@ function Rebuild-BobTrayTiles {
     $script:tileHost = $stage
     try {
         # #42: ChanServ-registered channels ARE the machine rows (one per digest roster id).
-        # FR #4938: Cursor pool section removed after account unification.
+        # FR #4938: Cursor spending-group bars removed after account unification.
         # FR #5032: no "Grok accounts" heading --- every row is a Grok pool; optional overspend only.
-        # FR #6149: fuel-family strip with logos (text fallback when asset missing).
-        $cursorRight = $null
-        try {
-            $cr = Get-BobTrayCursorFuelRemaining
-            if ($null -ne $cr -and [string]$cr -ne '') { $cursorRight = ('{0}%' -f [int]$cr) }
-        } catch { }
-        $y = Add-BobTrayFuelFamilyRow -X 0 -Y $y -Family 'cursor' -Title 'Cursor Models' -RightText $cursorRight
-        $xaiRight = $null
+        # FR #6149: fuel-family logos (text fallback when asset missing).
+        # FR #6214: Cursor + xAI share one quota pool — one capacity row (not two).
+        $cursorPct = $null
+        try { $cursorPct = Get-BobTrayCursorFuelRemaining } catch { $cursorPct = $null }
+        $xaiPct = $null
         if ($null -ne $AccountPct -and [string]$AccountPct -ne '') {
-            try { $xaiRight = ('{0}%' -f [int]$AccountPct) } catch { }
+            try { $xaiPct = [int]$AccountPct } catch { $xaiPct = $null }
         }
-        $xaiTitle = 'xAI weekly'
-        if ($AccountLabel) { $xaiTitle = ('xAI weekly - {0}' -f [string]$AccountLabel) }
-        elseif ($AccountName) { $xaiTitle = ('xAI weekly - {0}' -f [string]$AccountName) }
-        $y = Add-BobTrayFuelFamilyRow -X 0 -Y $y -Family 'xai' -Title $xaiTitle -RightText $xaiRight
+        $sharedRefs = @(
+            [pscustomobject]@{ pool_id = 'local-unified'; family = 'cursor'; remaining_pct = $cursorPct; period_end = $null; label = 'Cursor Models' },
+            [pscustomobject]@{ pool_id = 'local-unified'; family = 'xai'; remaining_pct = $xaiPct; period_end = $null; label = 'xAI weekly' }
+        )
+        $sharedPools = @()
+        try { $sharedPools = @(Resolve-BobCursorXaiSharedPools -Refs $sharedRefs) } catch { $sharedPools = @() }
+        if ($sharedPools.Count -eq 0) {
+            $sharedPools = @([pscustomobject]@{
+                    pool_id       = 'local-unified'
+                    families      = @('cursor', 'xai')
+                    remaining_pct = $(if ($null -ne $xaiPct) { $xaiPct } elseif ($null -ne $cursorPct) { $cursorPct } else { $null })
+                    period_end    = $null
+                    label         = 'Cursor / xAI weekly'
+                    known         = $false
+                })
+        }
+        foreach ($sp in $sharedPools) {
+            if (-not $sp) { continue }
+            $sharedRight = $null
+            if ($null -ne $sp.remaining_pct -and [string]$sp.remaining_pct -ne '') {
+                try { $sharedRight = ('{0}%' -f [int]$sp.remaining_pct) } catch { }
+            }
+            $sharedTitle = 'Cursor / xAI weekly'
+            try {
+                if (Get-Command Format-BobCursorXaiSharedPoolTitle -ErrorAction SilentlyContinue) {
+                    $sharedTitle = Format-BobCursorXaiSharedPoolTitle -Pool $sp -AccountLabel $AccountLabel -AccountName $AccountName
+                }
+                else {
+                    if ($AccountLabel) { $sharedTitle = ('Cursor / xAI weekly - {0}' -f [string]$AccountLabel) }
+                    elseif ($AccountName) { $sharedTitle = ('Cursor / xAI weekly - {0}' -f [string]$AccountName) }
+                }
+            } catch {
+                if ($AccountLabel) { $sharedTitle = ('Cursor / xAI weekly - {0}' -f [string]$AccountLabel) }
+                elseif ($AccountName) { $sharedTitle = ('Cursor / xAI weekly - {0}' -f [string]$AccountName) }
+            }
+            # One capacity row; logo prefers xai (weekly meter) with cursor still in title text.
+            $y = Add-BobTrayFuelFamilyRow -X 0 -Y $y -Family 'xai' -Title $sharedTitle -RightText $sharedRight
+        }
         $ocRight = $null
         $ocTitle = 'OpenCode'
         try {

@@ -178,12 +178,12 @@ namespace BobDialogs
             Draw(g, m.Title, fTitle, Fg, 14, y);
             Draw(g, "X", fHead, Muted, CloseRect.X + 6, 10);
             y += 26;
-            // Dashboard = per-machine Grok pools + workers and one account-wide Copilot pool (no Cursor section).
+            // Dashboard = per-machine Grok pools + workers and one account-wide Copilot pool.
             // FR #5032: no "Grok accounts" heading --- every row is a Grok pool.
             // FR #6149: fuel-family logos (assets\fuel-logos) with text fallback.
+            // FR #6214: Cursor + xAI share one quota pool — one capacity heading (not two).
             if (m.Note.Length > 0) { Draw(g, m.Note, fText, Muted, 14, y); y += 22; }
-            y = Section(g, y, "Cursor Models", "", "cursor");
-            y = Section(g, y, "xAI weekly", "", "xai");
+            y = Section(g, y, "Cursor / xAI weekly", "", "xai");
             if (m.Grok.Count > 0)
             {
                 if (m.Overspend != null && m.Overspend.Length > 0)

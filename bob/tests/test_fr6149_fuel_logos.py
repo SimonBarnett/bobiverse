@@ -41,9 +41,12 @@ def test_fr6149_watch_tipform_wires_logo_helpers_and_strip():
     assert "function Add-BobTrayFuelFamilyRow" in text
     assert "FR #6149" in text
     assert "assets\\fuel-logos" in text or "assets\fuel-logos" in text
-    # Four families painted
-    for fam in ("cursor", "xai", "opencode", "copilot"):
+    # FR #6214: Cursor+xAI share one capacity row (xai logo); OpenCode + Copilot stay distinct.
+    for fam in ("xai", "opencode", "copilot"):
         assert f"Family '{fam}'" in text or f'Family "{fam}"' in text
+    assert "Cursor / xAI" in text
+    # Logo assets + fallback helpers still cover all four families (including cursor).
+    assert "Get-BobTrayFuelLogoFallbackText" in text
 
 
 def test_fr6149_status_draws_logos_with_fallback():
@@ -51,7 +54,9 @@ def test_fr6149_status_draws_logos_with_fallback():
     cm = COMMON.read_text(encoding="utf-8")
     assert "FuelLogo" in cm and "FuelLogoFallback" in cm
     assert "fuel-logos" in cm
-    assert 'Section(g, y, "Cursor Models", "", "cursor")' in st
+    # FR #6214: one shared Cursor / xAI weekly heading (not two capacity headers).
+    assert 'Section(g, y, "Cursor / xAI weekly", "", "xai")' in st
+    assert 'Section(g, y, "Cursor Models"' not in st
     # FIX #6180: Copilot uses SelectCopilotLine + titleColor; family logo arg remains.
     assert '"copilot"' in st and "SelectCopilotLine" in st
     assert "FuelLogoFallback" in st
