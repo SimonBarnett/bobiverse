@@ -862,6 +862,94 @@ function Format-BobResetLabel {
     catch { return $null }
 }
 
+
+function Format-BobOpencodePoolLine {
+    <#
+    .SYNOPSIS
+      TipForm/Status OpenCode free/go line (FR #6147 / FR-007). Unknown = n/a.
+    #>
+    param(
+        $FreePct = $null,
+        $GoPct = $null,
+        $Pool = $null
+    )
+    if ($Pool) {
+        if ($null -eq $FreePct) {
+            try {
+                if ($null -ne $Pool.free) { $FreePct = $Pool.free }
+                elseif ($null -ne $Pool.'opencode-free') { $FreePct = $Pool.'opencode-free' }
+                elseif ($null -ne $Pool.opencode_free) { $FreePct = $Pool.opencode_free }
+            } catch { }
+        }
+        if ($null -eq $GoPct) {
+            try {
+                if ($null -ne $Pool.go) { $GoPct = $Pool.go }
+                elseif ($null -ne $Pool.'opencode-go') { $GoPct = $Pool.'opencode-go' }
+                elseif ($null -ne $Pool.opencode_go) { $GoPct = $Pool.opencode_go }
+            } catch { }
+        }
+    }
+    # MRB #6175 / CodeRabbit: non-numeric (unknown/n/a) must not throw on [int] cast.
+    $FreePct = ConvertTo-BobTrayIntOrNull $FreePct
+    $GoPct = ConvertTo-BobTrayIntOrNull $GoPct
+    $freeKnown = Test-BobTrayRemainingKnown $FreePct
+    $goKnown = Test-BobTrayRemainingKnown $GoPct
+    if (-not $freeKnown -and -not $goKnown) { return 'OpenCode  n/a' }
+    $freeBit = if ($freeKnown) { ('{0}%' -f [int]$FreePct) } else { 'n/a' }
+    $goBit = if ($goKnown) { ('{0}%' -f [int]$GoPct) } else { 'n/a' }
+    return ('OpenCode  free {0} | go {1}' -f $freeBit, $goBit)
+}
+
+function Get-BobOpencodePaintFromDigest {
+    <#
+    .SYNOPSIS
+      Read machines.<id>.pcent opencode-free/go from a report digest (FR #6147).
+    #>
+    param(
+        $Digest,
+        [string]$MachineId = ''
+    )
+    $free = $null
+    $go = $null
+    if (-not $Digest -or -not $Digest.machines) {
+        return [pscustomobject]@{ free = $null; go = $null }
+    }
+    $mids = @()
+    if ($MachineId) { $mids += ,([string]$MachineId.Trim().ToLowerInvariant()) }
+    try {
+        foreach ($p in @($Digest.machines.PSObject.Properties)) {
+            $n = [string]$p.Name
+            if ($n) { $mids += ,($n.Trim().ToLowerInvariant()) }
+        }
+    } catch { }
+    $seen = @{}
+    foreach ($mid in $mids) {
+        if (-not $mid -or $seen.ContainsKey($mid)) { continue }
+        $seen[$mid] = $true
+        $ent = $null
+        try { $ent = $Digest.machines.$mid } catch { $ent = $null }
+        if (-not $ent) {
+            try {
+                foreach ($p in @($Digest.machines.PSObject.Properties)) {
+                    if ([string]$p.Name.Trim().ToLowerInvariant() -eq $mid) { $ent = $p.Value; break }
+                }
+            } catch { }
+        }
+        if (-not $ent -or -not $ent.pcent) { continue }
+        $pc = $ent.pcent
+        try {
+            if ($null -ne $pc.'opencode-free' -and [string]$pc.'opencode-free' -ne '') { $free = $pc.'opencode-free' }
+            elseif ($null -ne $pc.opencode_free -and [string]$pc.opencode_free -ne '') { $free = $pc.opencode_free }
+        } catch { }
+        try {
+            if ($null -ne $pc.'opencode-go' -and [string]$pc.'opencode-go' -ne '') { $go = $pc.'opencode-go' }
+            elseif ($null -ne $pc.opencode_go -and [string]$pc.opencode_go -ne '') { $go = $pc.opencode_go }
+        } catch { }
+        if ((Test-BobTrayRemainingKnown $free) -or (Test-BobTrayRemainingKnown $go)) { break }
+    }
+    return [pscustomobject]@{ free = $free; go = $go }
+}
+
 function Format-BobCopilotPoolLine {
     <#
     .SYNOPSIS
@@ -1244,8 +1332,9 @@ function Get-BobCursorGroupRemainFromLocalDoc {
             return [int]$g.remaining_pct
         }
     }
-    if ($want -eq 'auto' -and $null -ne $LocalCursorDoc.remaining_pct) {
-        return [int]$LocalCursorDoc.remaining_pct
+    # FR #6144: empty remaining_pct must not cast to 0.
+    if ($want -eq 'auto' -and (Test-BobTrayRemainingKnown $LocalCursorDoc.remaining_pct)) {
+        try { return [int]$LocalCursorDoc.remaining_pct } catch { return $null }
     }
     return $null
 }
@@ -1624,8 +1713,27 @@ function ConvertFrom-BobReportDigestTask {
 
 function Format-BobCursorControlPoolPctLabel {
     param($RemainingPct)
-    if ($null -eq $RemainingPct) { return 'n/a' }
+    # FR #6144: empty / unknown -> n/a; genuine 0 stays 0%.
+    if (-not (Test-BobTrayRemainingKnown $RemainingPct)) { return 'n/a' }
     return ('{0}%' -f [int]$RemainingPct)
+}
+
+
+function Test-BobCursorAccountCacheAcceptable {
+    param($Cache, [string]$LocalMachineId, [string]$LocalPeriodEnd)
+    # FR #6144 / MRB #6169: accept cached account label only if local-origin,
+    # unexpired period_end, and (when local period known) matching billing period.
+    if (-not $Cache -or -not $Cache.label -or $Cache.label -eq 'empty') { return $false }
+    $mid = ''
+    if ($Cache.machine) { $mid = [string]$Cache.machine.Trim().ToLowerInvariant() }
+    if (-not $mid) { return $false }  # legacy entries without machine = foreign
+    if ($LocalMachineId -and $mid -ne [string]$LocalMachineId.Trim().ToLowerInvariant()) { return $false }
+    if (-not $Cache.period_end) { return $false }
+    if (-not (Test-BobCursorPoolPeriodEndCurrent -PeriodEnd ([string]$Cache.period_end))) { return $false }
+    if ($LocalPeriodEnd -and [string]$LocalPeriodEnd.Trim()) {
+        if ([string]$Cache.period_end.Trim() -ne [string]$LocalPeriodEnd.Trim()) { return $false }
+    }
+    return $true
 }
 
 function Format-BobCursorControlPoolHeading {
@@ -1817,8 +1925,8 @@ function Get-BobCursorPoolsForTray {
         $remain = Get-BobCursorGroupRemainFromLocalDoc -LocalCursorDoc $LocalCursorDoc -GroupId $gid
         if ($null -eq $remain) {
             if ($gid -eq 'grok-chat') {
-                # Seat cache may hold sand under groups.'grok-chat' only (not remaining_pct).
-                if ($ce -and $ce.groups -and $ce.groups.'grok-chat' -and
+                # FR #6144: -LocalOnly publish uses local meters only (no seat-cache Sand).
+                if (-not $LocalOnly -and $ce -and $ce.groups -and $ce.groups.'grok-chat' -and
                     $null -ne $ce.groups.'grok-chat'.remaining_pct -and
                     [string]$ce.groups.'grok-chat'.remaining_pct -ne '') {
                     try { $remain = [int]$ce.groups.'grok-chat'.remaining_pct } catch { }
@@ -1843,7 +1951,7 @@ function Get-BobCursorPoolsForTray {
         $pe = $null
         if ($gid -eq 'grok-chat') {
             if ($sandPeriodEnd) { $pe = $sandPeriodEnd }
-            elseif ($ce -and $ce.groups -and $ce.groups.'grok-chat' -and $ce.groups.'grok-chat'.period_end) {
+            elseif (-not $LocalOnly -and $ce -and $ce.groups -and $ce.groups.'grok-chat' -and $ce.groups.'grok-chat'.period_end) {
                 $pe = [string]$ce.groups.'grok-chat'.period_end
             }
         }
@@ -2280,7 +2388,11 @@ function Get-BobTrayHover {
             } catch { }
         }
         if ($peek.cursor_label -and [string]$peek.cursor_label -ne 'empty') {
-            try { Save-BobCursorAccountCache -Label ([string]$peek.cursor_label) -PeriodEnd $(if ($peek.cursor_period_end) { [string]$peek.cursor_period_end } else { $null }) } catch { }
+            # MRB #6169: never stamp a peer label into the local account cache.
+            # Only persist peer seat pool for the peer machine; local cache needs a fresh local reading.
+            if ($mid -eq $machineId) {
+                try { Save-BobCursorAccountCache -Label ([string]$peek.cursor_label) -PeriodEnd $(if ($peek.cursor_period_end) { [string]$peek.cursor_period_end } else { $null }) -MachineId $machineId } catch { }
+            }
             try {
                 $peekSeat = Get-BobSeatForMachine -MachineId $mid
                 if ($peekSeat) {
@@ -2682,7 +2794,10 @@ function Get-BobTrayHover {
     if (-not $acctPctLabel -or $acctPctLabel -eq 'empty') {
         try {
             $cc = Read-BobCursorAccountCache
-            if ($cc -and $cc.label -and [string]$cc.label -ne 'empty') {
+            # FR #6144: refuse foreign/expired cache (machine stamp + period_end).
+            $localPe = $null
+            if ($cursorWeek -and $cursorWeek.period_end) { $localPe = [string]$cursorWeek.period_end }
+            if (Test-BobCursorAccountCacheAcceptable -Cache $cc -LocalMachineId $machineId -LocalPeriodEnd $localPe) {
                 $acctPctLabel = [string]$cc.label
                 if (-not $cursorWeek) { $cursorWeek = [pscustomobject]@{} }
                 if ($cc.period_end -and -not $cursorWeek.period_end) {
@@ -2694,7 +2809,7 @@ function Get-BobTrayHover {
     if ($acctPctLabel -and $acctPctLabel -ne 'empty') {
         $cend = $null
         if ($cursorWeek -and $cursorWeek.period_end) { $cend = [string]$cursorWeek.period_end }
-        Save-BobCursorAccountCache -Label $acctPctLabel -PeriodEnd $cend
+        Save-BobCursorAccountCache -Label $acctPctLabel -PeriodEnd $cend -MachineId $machineId
     }
     try {
         $localSeat = Get-BobSeatForMachine -MachineId $machineId
@@ -2735,6 +2850,10 @@ function Get-BobTrayHover {
         if ($ghPosting.issue_posting_ready) { $ghLine = 'GitHub issue post: ready' }
         else { $ghLine = 'GitHub issue post: not ready' }
     }
+    # FR #6147: OpenCode free/go from digest pcent (n/a when unknown).
+    $ocPaint = Get-BobOpencodePaintFromDigest -Digest $reportDigest -MachineId $machineId
+    $opencodeLine = Format-BobOpencodePoolLine -FreePct $ocPaint.free -GoPct $ocPaint.go
+    if ($opencodeLine) { $jobLines = @(('  {0}' -f $opencodeLine)) + $jobLines }
     $copilotLine = Format-BobCopilotPoolLine -Pool $(if ($reportDigest -and $reportDigest.copilot) { $reportDigest.copilot } else { $null })
     if ($copilotLine) { $jobLines = @(('  {0}' -f $copilotLine)) + $jobLines }
     $jobsText = (($poolLines + $jobLines) -join "`n")
@@ -2783,6 +2902,9 @@ function Get-BobTrayHover {
         account_period_end = $(if ($cursorWeek -and $cursorWeek.period_end) { [string]$cursorWeek.period_end } else { $null })
         account_reset_label = $(if ($cursorWeek -and $cursorWeek.period_end) { Format-BobResetLabel -PeriodEnd $cursorWeek.period_end -FetchedAt $cursorWeek.fetched_at } else { $null })
         gh_posting          = $ghPosting
+        opencode_free       = $ocPaint.free
+        opencode_go         = $ocPaint.go
+        opencode_line       = $opencodeLine
         copilot_pool        = $(if ($reportDigest -and $reportDigest.copilot) { $reportDigest.copilot } else { $null })
         copilot_line        = $(Format-BobCopilotPoolLine -Pool $(if ($reportDigest -and $reportDigest.copilot) { $reportDigest.copilot } else { $null }))
         chair_channels      = $(

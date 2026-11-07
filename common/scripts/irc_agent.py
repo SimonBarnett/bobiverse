@@ -2654,7 +2654,12 @@ class Client:
 
 
     def _maybe_publish_digest_fuel(self) -> None:
-        """FR #6141: fleet bob-ear posts local peer fuel merges; tray no longer POSTs fuel."""
+        """FR #6141 / #6145: fleet bob-ear posts local peer fuel merges; tray no longer POSTs fuel.
+
+        FR #6145: poll at digest_fuel_delta_s (default 5s) so remaining/OpenCode/Copilot/account
+        fingerprint deltas POST within DIGEST_FUEL_MAX_LAG_S. Heartbeat (30s) still lives inside
+        publish_local_peer_fuel for unchanged fingerprints.
+        """
         if getattr(self.args, "chair", False):
             return
         if not bobtalk.is_fleet_bob_nick(self.original_nick):
@@ -2662,9 +2667,9 @@ class Client:
         mid = self._local_machine_id()
         if not mid:
             return
-        interval = bobreport.digest_fuel_heartbeat_s()
+        interval = bobreport.digest_fuel_delta_s()
         if interval <= 0:
-            interval = bobreport.DEFAULT_DIGEST_FUEL_HEARTBEAT_S
+            interval = bobreport.DEFAULT_DIGEST_FUEL_DELTA_S
         now = time.time()
         if now - self._digest_fuel_last < interval:
             return

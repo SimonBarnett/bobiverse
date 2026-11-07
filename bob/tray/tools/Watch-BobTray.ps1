@@ -2248,7 +2248,7 @@ function Update-Hover {
                     # Format-BobCursorAccountLabel will pick tip/overspend when RemainingPct empty
                 }
             }
-            Rebuild-BobTrayTiles -Machines @($h.machines) -CursorPools @($h.cursor_pools) -AccountName $h.account_name -AccountPct $h.account_remaining_pct -AccountLabel $h.account_label -AccountReset $h.account_reset_label -AccountOverageGbp $h.account_overage_gbp -ChairChannels @($h.chair_channels) -CopilotPool $h.copilot_pool
+            Rebuild-BobTrayTiles -Machines @($h.machines) -CursorPools @($h.cursor_pools) -AccountName $h.account_name -AccountPct $h.account_remaining_pct -AccountLabel $h.account_label -AccountReset $h.account_reset_label -AccountOverageGbp $h.account_overage_gbp -ChairChannels @($h.chair_channels) -CopilotPool $h.copilot_pool -OpencodeLine $h.opencode_line -OpencodeFree $h.opencode_free -OpencodeGo $h.opencode_go
             if ($script:alertLabel) {
                 $script:alertLabel.Text = ('alert: {0}' -f $script:alertKind)
                 $yAlert = 40
@@ -2768,7 +2768,7 @@ function Rebuild-BobTrayTiles {
     # FR #4938 / FR #5032: TipForm shows per-machine Grok pool rows (no 'Grok accounts' heading).
     # Cursor spending-group bars (grok chat / high cost / Low cost) are removed from the card.
     # Fuel still reads local Cursor/Grok elsewhere; this is display-only.
-    param($Machines, $CursorPools, $AccountName, $AccountPct, $AccountLabel, $AccountReset, $AccountOverageGbp, $ChairChannels, $CopilotPool)
+    param($Machines, $CursorPools, $AccountName, $AccountPct, $AccountLabel, $AccountReset, $AccountOverageGbp, $ChairChannels, $CopilotPool, $OpencodeLine = '', $OpencodeFree = $null, $OpencodeGo = $null)
     if (-not $script:tileHost) { return }
 
     # Format everything first so a throw never leaves a cleared host.
@@ -2838,6 +2838,13 @@ function Rebuild-BobTrayTiles {
             $y = Add-BobTraySectionHeader -X 0 -Y $y -Title '' -Icon $grokIcon -Agent $grokAgent `
                 -RightText $overLine -RightColor $overColor
         }
+        # FR #6147: OpenCode free/go (digest pcent); n/a when unknown.
+        $ocLine = [string]$OpencodeLine
+        if (-not $ocLine) {
+            try { $ocLine = Format-BobOpencodePoolLine -FreePct $OpencodeFree -GoPct $OpencodeGo } catch { $ocLine = 'OpenCode  n/a' }
+        }
+        if (-not $ocLine) { $ocLine = 'OpenCode  n/a' }
+        $y = Add-BobTraySectionHeader -X 0 -Y $y -Title $ocLine
         # FR #5172: one account-wide Copilot pool (not per machine).
         $copilotLine = $null
         try { $copilotLine = Format-BobCopilotPoolLine -Pool $CopilotPool } catch { }
