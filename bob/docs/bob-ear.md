@@ -116,3 +116,16 @@ Get-Content <ai root>\bob\home\irc.log -Tail 40 -ErrorAction SilentlyContinue  #
 - Skill: `.grok/skills/bobiverse-bob/SKILL.md`
 - Post-install: `docs/post-install.md`
 - Digest curls: `docs/webhooks.md` (hosted on jeeves)
+
+## Grok account label on digest (FR #6143 / FR-003)
+
+The fleet ear publishes `machines.<id>.grok_account` --- the signed-in xAI/Grok account label (email, or `first_name last_name` when email is absent). This is not `bob-<machine>` and is not `cursor_pools[].account`.
+
+**Source (profile only):** resolve auth path in order `BOB_GROK_AUTH_PATH`, nonempty `GROK_AUTH_PATH`, `$GROK_HOME/auth.json`, then `~/.grok/auth.json`. Read only `email` / `first_name` / `last_name` from each non-`xai::api_key` entry. Never read or POST `key`, `refresh_token`, or other credentials. If the file is missing, has no profile, or has more than one distinct label, publish null (GET shows n/a). If the file is unreadable (I/O/JSON error), skip the POST so a transient failure does not clear a good label.
+
+**Wire:** ear-owned scalar `grok_account` (kept out of peer fill / `_MERGE_PEER_FIELDS`). Label-only `op=merge` POST via `publish_grok_account_label` on the outbox tick (same cadence as digest fuel). Logs `grok account publish ok|failed` without the label or path.
+
+**LocalSystem / service account:** if ircBob runs as a different Windows user than the interactive Grok login, set NSSM `BOB_GROK_AUTH_PATH` to that user's `auth.json` (never put the file contents in env).
+
+**Rejected sources:** `settings_cache.json` (no identity), `bob-seats.json` (configured attribution), ACP auth/info (not used here).
+
