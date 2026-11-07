@@ -721,16 +721,20 @@ def looks_like_rate_limit(text: str | None) -> bool:
     """
     if not text or not isinstance(text, str):
         return False
-    text = re.sub(r"`[^`]*`", " ", text)
-    # MRB #6231: only strip instructional stock phrases, not apostrophes in
-    # provider prose (``Provider's response: 402 ...``).
-    text = re.sub(
-        r"['\"](?:402\s*Payment\s*Required|Payment\s*Required|usage\s+balance\s+exhausted|NEEDS_AUTH|OUTCOME_NEEDS_AUTH)['\"]",
-        " ",
-        text,
-        flags=re.IGNORECASE,
-    )
-    t = text.lower()
+    # Same provenance rules as the worker hold (MRB #6231): backticks and a
+    # stock phrase that is the whole quoted span are instructions. Apostrophes
+    # stay. A fuel-log JSON line is scanned from its text field.
+    scan = text
+    for mod_name in ("bob_worker", "bob.scripts.bob_worker"):
+        try:
+            mod = __import__(mod_name, fromlist=["provider_fuel_scan_text"])
+            scan = mod.provider_fuel_scan_text(text)
+            break
+        except Exception:
+            continue
+    else:
+        scan = re.sub(r"`[^`]*`", " ", text)
+    t = scan.lower()
     if any(phrase in t for phrase in RATE_LIMIT_PHRASES):
         return True
     return bool(re.search(r"\b(http|status( code)?)\D{0,3}(402|429)\b", t, re.IGNORECASE))

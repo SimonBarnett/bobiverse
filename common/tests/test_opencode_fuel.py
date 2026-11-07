@@ -480,7 +480,8 @@ def test_looks_like_rate_limit_detects_phrases():
 def test_looks_like_rate_limit_ignores_instructional_quotations():
     skill = "mid-job `402 Payment Required` / `usage balance exhausted` is out-of-fuel"
     assert of.looks_like_rate_limit(skill) is False
-    assert of.looks_like_rate_limit("see 'Payment Required' in the task text") is False
+    assert of.looks_like_rate_limit("Provider's response: 402 Payment Required for model 'beam-free'") is True
+    assert of.looks_like_rate_limit("can't complete: 402 Payment Required, don't retry") is True
 
 
 def test_looks_like_rate_limit_ignores_bare_codes_in_normal_output():

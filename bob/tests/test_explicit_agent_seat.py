@@ -184,39 +184,36 @@ def test_known_exhausted_opencode_stays_unavailable_on_the_menu(monkeypatch, cap
 def test_slow_cursor_read_does_not_drop_opencode(tmp_path: Path):
     import subprocess
     import threading
-    import time
 
     (tmp_path / "tools").mkdir()
     (tmp_path / "tools" / "Get-BobAgentFuel.ps1").write_text("x", encoding="utf-8")
-    state = {"n": 0, "max": 0}
+    # All three readers must be inside the call together. A barrier times out
+    # if one provider blocks the others from starting.
+    barrier = threading.Barrier(3, timeout=5)
+    started = []
     lock = threading.Lock()
 
     def run(cmd, timeout=8, **_k):
         provider = cmd[cmd.index("-Provider") + 1]
+        barrier.wait()
         with lock:
-            state["n"] += 1
-            state["max"] = max(state["max"], state["n"])
-        try:
-            time.sleep(0.2)
-            if provider == "cursor":
-                raise subprocess.TimeoutExpired(cmd, timeout)
-            if provider == "opencode":
-                stdout = '{"opencode":{"free":100,"go":null}}'
-            else:
-                stdout = '{"grok":{"remaining_pct":40,"state":"available"}}'
+            started.append(provider)
+        if provider == "cursor":
+            raise subprocess.TimeoutExpired(cmd, timeout)
+        if provider == "opencode":
+            stdout = '{"opencode":{"free":100,"go":null}}'
+        else:
+            stdout = '{"grok":{"remaining_pct":40,"state":"available"}}'
 
-            class R:
-                pass
+        class R:
+            pass
 
-            out = R()
-            out.stdout = stdout
-            return out
-        finally:
-            with lock:
-                state["n"] -= 1
+        out = R()
+        out.stdout = stdout
+        return out
 
     fuel = bw.read_fuel_bounded(tmp_path, run=run, per_provider_s=2)
-    assert state["max"] >= 2
+    assert set(started) == {"cursor", "grok", "opencode"}
     assert fuel.opencode_free == 100
     assert fuel.grok_pct == 40
     assert fuel.cursor_high is None

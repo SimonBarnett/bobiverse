@@ -391,6 +391,11 @@ def test_tray_wiring_timer_heartbeat_helper_and_click_function_contract():
     probe = w[w.index("function Get-BobTrayWorkerAgentChoices"): w.index("function Update-BobTrayWorkerAgentsMenu")]
     assert "$waitMs = 8000" in probe and "WaitForExit($waitMs)" in probe and "& $exe" not in probe
     assert "--refresh-fuel" in probe and "return $unknown" in probe
+    # Refresh timeout must not replace a real first list with the all-installed placeholder.
+    assert "if ($Refresh) { return $null }" in probe
+    assert "fuel unknown (not exhausted)" in probe
+    assert "if (-not $refreshUnknown) { return @($again) }" in probe
+    assert "return @($obj.agents)" in probe
     assert "RedirectStandardOutput" in probe and "Start-Process" in probe
     refresh = w[w.index("function Start-BobTrayWorkerAgentsRefresh"): w.index("$notify = New-Object System.Windows.Forms.NotifyIcon")]
     assert "CreateRunspace" in refresh and "BeginInvoke" in refresh

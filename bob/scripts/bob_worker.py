@@ -3433,36 +3433,72 @@ _OUT_OF_FUEL_RX = re.compile(
 DEFAULT_DIGEST_REPORT_URL = "https://bob.ntsa.uk/bob/v1/report"
 
 
-# Instructional quotations (skill / task text) are not a provider response.
-# Backtick spans are dropped. Single- and double-quoted *stock phrases* are
-# dropped (not arbitrary apostrophe spans --- provider lines like
-# ``Provider's response: 402 ...`` must still hold; MRB #6231).
-# A quoted stock phrase is dropped only when the line has no unquoted
-# HTTP/status code, so a real ``status_code=402 "usage balance exhausted"``
-# line still holds.
+# Instructional mentions are markdown code spans and a stock phrase that is the
+# entire quoted span (MRB #6231). Apostrophes in contractions are not quotes.
+# A wrapper fuel-log line is scanned from its text field, not as a JSON quotation.
 _BACKTICK_SPAN_RX = re.compile(r"`[^`]*`")
-_QUOTED_STOCK_FUEL_MENTION_RX = re.compile(
-    r"['\"](?:402\s*Payment\s*Required|Payment\s*Required|usage\s+balance\s+exhausted|NEEDS_AUTH|OUTCOME_NEEDS_AUTH)['\"]",
-    re.IGNORECASE,
+_STOCK_MENTION_RX = re.compile(
+    r"(?i)^(?:402\s*payment\s*required|payment\s*required"
+    r"|usage\s+balance\s+exhausted|needs_auth|outcome_needs_auth)$"
 )
-_SHORT_DOUBLE_MENTION_RX = _QUOTED_STOCK_FUEL_MENTION_RX  # back-compat alias
+_SQ_SPAN_RX = re.compile(r"(?<!\w)'([^'\n]{0,80})'(?!\w)")
+_DQ_SPAN_RX = re.compile(r'"([^"\n]{0,80})"')
 _UNQUOTED_PROVIDER_STATUS_RX = re.compile(
-    r"(?i)(?:\bhttp\b|\bstatus(?:_code| code)?\b)\D{0,12}\b(402|429)\b"
+    r"(?i)(?:\bhttp\b|\bstatus(?:_code| code)?)\D{0,12}\b(402|429)\b"
 )
+
+
+def fuel_log_recorded_text(text: str) -> Optional[str]:
+    """Return the text field of a wrapper fuel-log JSON line, else None."""
+    raw = (text or "").strip()
+    if not raw.startswith("{"):
+        return None
+    try:
+        obj = json.loads(raw)
+    except ValueError:
+        return None
+    if not isinstance(obj, dict):
+        return None
+    recorded = obj.get("text")
+    if not isinstance(recorded, str):
+        return None
+    if "pid" not in obj and "model" not in obj:
+        return None
+    return recorded
+
+
+def _strip_instructional_mentions(text: str) -> str:
+    """Drop backtick spans and a stock phrase that is the whole quoted span.
+
+    Provider's and can't stay. A span whose entire content is 402 Payment Required
+    is an instruction. status_code=402 "usage balance exhausted" keeps the quoted
+    detail because the status code sits outside the quotes.
+    """
+
+    def stock_or_keep(match):
+        inner = match.group(1).strip()
+        return " " if _STOCK_MENTION_RX.match(inner) else match.group(0)
+
+    cleaned = _BACKTICK_SPAN_RX.sub(" ", text or "")
+    cleaned = _SQ_SPAN_RX.sub(stock_or_keep, cleaned)
+    if _UNQUOTED_PROVIDER_STATUS_RX.search(cleaned):
+        return cleaned
+    return _DQ_SPAN_RX.sub(stock_or_keep, cleaned)
 
 
 def provider_fuel_scan_text(text: str) -> str:
     """Text the fuel detector may treat as a provider response.
 
-    Skill lines quote ``402 Payment Required`` as an instruction. That quotation
-    must not arm a hold. A bare provider line, or the same phrase beside an
-    unquoted status code, still scans.
+    Skill lines quote 402 Payment Required inside backticks. That mention must
+    not arm a hold. The wrapper fuel-log text value is scanned as recorded
+    evidence, so a bare 402 Payment Required stored there still holds.
     """
-    raw = text or ""
-    cleaned = _BACKTICK_SPAN_RX.sub(" ", raw)
-    if _UNQUOTED_PROVIDER_STATUS_RX.search(cleaned):
-        return cleaned
-    return _QUOTED_STOCK_FUEL_MENTION_RX.sub(" ", cleaned)
+    recorded = fuel_log_recorded_text(text)
+    if recorded is not None:
+        # JSON quotes belong to the envelope. A bare provider sentence in text
+        # is evidence. A stock phrase that the text itself quotes is not.
+        return _strip_instructional_mentions(recorded)
+    return _strip_instructional_mentions(text or "")
 
 
 def is_out_of_fuel_text(text: str) -> bool:
