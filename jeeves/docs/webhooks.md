@@ -20,6 +20,11 @@ Auth: **none. No route needs a password or shared secret** (v0.1.16). Nothing to
 | GET | `/bob/v1/hours/export?user=…&format=csv\|json` | Export entries |
 | GET | `/health` | Local BobCallback liveness (FR #1136): `ok`, `lock_age_s`, `last_digest_write`; **not** published on the IIS front-door |
 
+### Machine field `grok_account` (FR #6143)
+
+`GET /bob/v1/report` and `POST /bob/v1/report` `op=merge` accept optional machine scalar `grok_account` (string or null). Ear-owned: omit keeps the stored value; null / `cleared: ["grok_account"]` removes it. Not filled from peer files. Never include credentials in the payload.
+
+
 Git hooks must target **`/bob/v1/git`**, never `/bob/v1/report`.
 
 ### FR #5170: webhook-first queue; Copilot virtual seat
