@@ -88,7 +88,10 @@ def test_mrb2723_harvested_lessons_fr_bullets_outside_digest_scan():
     text = _utf8_no_bom(WK)
     assert "## Harvested lessons (intake)" in text
     h_start = text.index("## Harvested lessons (intake)")
-    h_chunk = text[h_start:]
+    # MRB #6224 / CodeRabbit: stop at next ## so a later section cannot satisfy the pin.
+    h_rest = text[h_start + 3 :]
+    h_nxt = h_rest.find("\n## ")
+    h_chunk = text[h_start : h_start + 3 + h_nxt] if h_nxt >= 0 else text[h_start:]
     fr_bullets = [ln for ln in h_chunk.splitlines() if ln.startswith("- **FR #")]
     assert len(fr_bullets) >= 1
     # At least one FR intake bullet would fail the digest closing-paren rule.
