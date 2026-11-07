@@ -190,11 +190,17 @@ def test_uat_not_offered_to_author_seat_when_other_seat_live(_home):
 
 def test_uat_not_offered_to_sibling_seat_on_same_machine(_home):
     """FR #227 / #818: same machine, different pid still blocked for repo UAT #0 when another machine is live."""
+    # FR #4211: live_seat_nicks prefers worker_list; legacy workers without heartbeat are ghosts.
     doc = bobreport.empty_digest()
     doc["machines"]["marchhare"] = bobreport._empty_machine("marchhare")
-    doc["machines"]["marchhare"]["workers"] = {"16564": {"state": "idle"}, "41912": {"state": "idle"}}
+    doc["machines"]["marchhare"]["worker_list"] = [
+        {"nick": "marchhare-16564", "state": "idle"},
+        {"nick": "marchhare-41912", "state": "idle"},
+    ]
     doc["machines"]["flamingo"] = bobreport._empty_machine("flamingo")
-    doc["machines"]["flamingo"]["workers"] = {"9": {"state": "idle"}}
+    doc["machines"]["flamingo"]["worker_list"] = [
+        {"nick": "flamingo-9", "state": "idle"},
+    ]
     bobreport.save_digest(_home, doc)
     registered_machines.save_registered(_home, {"marchhare", "flamingo", "ionos"})
     _queue(

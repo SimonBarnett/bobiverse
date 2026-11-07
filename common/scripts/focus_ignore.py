@@ -364,6 +364,10 @@ def is_ignored(home: Path, repo: str) -> bool:
     return any(repo_match(ig, repo) for ig in ignored_list(home))
 
 
+# FR #6208: irc_agent !build / resync historically called load_ignored; alias ignored_list.
+load_ignored = ignored_list
+
+
 # ---------------------------------------------------------------- ordering
 _TASK_ORDER = {"MRB": 0, "UAT": 1, "FR": 2}
 
@@ -687,17 +691,25 @@ def _purge_repo_from_queue(home: Path, repo: str) -> int:
 
 
 def handle_ignore_cmd(home: Path, token: str) -> list[str]:
+    """Add repo to ignored.json and purge queue rows (FR #6208: always re-purge).
+
+    A repeated ``!ignore`` for a repo already on the list is a safe cleanup: purge
+    any rows that leaked back via late webhooks/resync, do not rewrite ignored.json.
+    """
     canon = normalize_repo(token)
     if not canon:
         return ["ignore: bad repo (use name or owner/name)"]
     repos = ignored_list(home)
-    if any(r.lower() == canon.lower() for r in repos):
-        return [f"ignore: already ignoring {canon} (purged 0 queued)"]
-    if "/" in canon:
-        repos = [r for r in repos if r.lower() != _short(canon)]
-    repos.append(canon)
-    _save_ignored(home, repos)
-    return [f"ignore: now ignoring {canon} (purged {_purge_repo_from_queue(home, canon)} queued)"]
+    already = any(r.lower() == canon.lower() for r in repos)
+    if not already:
+        if "/" in canon:
+            repos = [r for r in repos if r.lower() != _short(canon)]
+        repos.append(canon)
+        _save_ignored(home, repos)
+    purged = _purge_repo_from_queue(home, canon)
+    if already:
+        return [f"ignore: already ignoring {canon} (purged {purged} queued)"]
+    return [f"ignore: now ignoring {canon} (purged {purged} queued)"]
 
 
 def handle_unignore_cmd(home: Path, token: str) -> list[str]:

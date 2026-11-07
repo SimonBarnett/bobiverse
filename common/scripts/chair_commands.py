@@ -94,7 +94,8 @@ COMMANDS: tuple = (
     CommandSpec("ignore", "!ignore {repo}", "suppress a repo from the whole Jeeves process (simon/ops)", OPS_ROLES,
                 "!ignore SimonBarnett/old-sandbox",
                 "Adds owner/name or bare name to ignored.json. Ignored repos get no queue rows, no !list rows, "
-                "no assign. Also purges already-queued items for that repo.", ("ignored", "unignore", "list")),
+                "no assign/ACK/accept (FR #6208). Purges queued items; repeating !ignore re-purges leaks.",
+                ("ignored", "unignore", "list")),
     CommandSpec("ignored", "!ignored", "list ignored repos by PM (open to anyone)", ALL_ROLES, "!ignored",
                 "Replies by PM with the current ignore list (or ignored: (none)).", ("ignore", "unignore")),
     CommandSpec("unignore", "!unignore {repo}", "resume handling a previously ignored repo (simon/ops)", OPS_ROLES,

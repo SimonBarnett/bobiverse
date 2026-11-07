@@ -375,8 +375,58 @@ def accept_job_by_ref(
     ident: str,
     title: str = "",
 ) -> tuple[str, dict | None]:
-    """Move matching unaccepted (or offered) row to accepted. Idempotent if already accepted by nick."""
+    """Move matching unaccepted (or offered) row to accepted. Idempotent if already accepted by nick.
+
+    FR #6208: refuse ACK/accept for a persistently ignored repo (status ``ignored``).
+    """
     try:
+        import focus_ignore as _fi_ignore
+
+        if _fi_ignore.is_ignored(home, repo):
+            # Drop any leaked queue row and clear seat hold so the seat is free.
+            try:
+                with gitclaim._lock(home):
+                    try:
+                        doc = gitclaim._load_queue_unlocked(home)
+                    except (OSError, ValueError):
+                        doc = None
+                    if doc is not None:
+                        before_u = len(doc.get("unaccepted") or [])
+                        before_a = len(doc.get("accepted") or [])
+                        doc["unaccepted"] = [
+                            r
+                            for r in (doc.get("unaccepted") or [])
+                            if not (
+                                isinstance(r, dict)
+                                and _fi_ignore.repo_match(repo, str(r.get("repo") or ""))
+                                and str(r.get("id") or "") == ident
+                            )
+                        ]
+                        # FR #6208: also drop a matching accepted row so a timed-out
+                        # !ignore purge cannot leave the seat busy on an ignored repo.
+                        doc["accepted"] = [
+                            r
+                            for r in (doc.get("accepted") or [])
+                            if not (
+                                isinstance(r, dict)
+                                and _fi_ignore.repo_match(repo, str(r.get("repo") or ""))
+                                and str(r.get("id") or "") == ident
+                                and str(r.get("nick") or "") == nick
+                            )
+                        ]
+                        if (
+                            len(doc.get("unaccepted") or []) != before_u
+                            or len(doc.get("accepted") or []) != before_a
+                        ):
+                            with contextlib.suppress(OSError):
+                                gitclaim._write_queue(gitclaim.queue_path(home), doc)
+            except (TimeoutError, OSError):
+                pass
+            with contextlib.suppress(Exception):
+                gitclaim.clear_seat_hold(
+                    home, nick, repo=repo, task=task, ident=ident
+                )
+            return "ignored", None
         with gitclaim._lock(home):
             try:
                 doc = gitclaim._load_queue_unlocked(home)
@@ -786,6 +836,36 @@ def handle_shop_worker_line(
         )
         out["status"] = st
         out["job"] = job
+        # FR #6208: ignored-repo ACK must free the seat (no ledger busy / no ack-missing hold).
+        if st == "ignored":
+            with contextlib.suppress(Exception):
+                gitclaim.clear_seat_hold(
+                    home,
+                    nick,
+                    repo=parsed.repo,
+                    task=parsed.task,
+                    ident=parsed.id,
+                )
+            return out
+        if st == "missing":
+            # FR #6208: missing ACK for an ignored repo is still ignored (not ack-missing hold).
+            # Recheck before ledger_note_event so an ignored ACK never stamps ACK busy.
+            try:
+                import focus_ignore as _fi_ignore
+
+                if _fi_ignore.is_ignored(home, parsed.repo):
+                    out["status"] = "ignored"
+                    with contextlib.suppress(Exception):
+                        gitclaim.clear_seat_hold(
+                            home,
+                            nick,
+                            repo=parsed.repo,
+                            task=parsed.task,
+                            ident=parsed.id,
+                        )
+                    return out
+            except Exception:  # noqa: BLE001
+                pass
         try:  # t852u: durable seat ledger (survives resync)
             gitclaim.ledger_note_event(home, nick, "ACK", parsed.task, parsed.repo, parsed.id, job if isinstance(job, dict) else None)
         except Exception:  # noqa: BLE001
