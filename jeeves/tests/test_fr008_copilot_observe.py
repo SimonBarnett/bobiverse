@@ -1,4 +1,4 @@
-"""FR #6148 / FR-008: dispatch-independent Copilot quota observer into digest."""
+"""FR #6148 / FR-008: Copilot quota observer into digest (chair gate: FR #6204)."""
 from __future__ import annotations
 
 import json
@@ -275,7 +275,9 @@ def test_refresh_allowance_preserves_fetched_at_on_failure(tmp_path):
     assert doc.get("fetched_epoch") == NOW + 400
 
 
-def test_chair_tick_observes_even_when_dispatch_disabled(tmp_path, monkeypatch):
+def test_chair_tick_skips_observe_when_dispatch_disabled(tmp_path, monkeypatch):
+    """FR #6204: default with dispatch off is zero quota GETs and no observation write."""
+    monkeypatch.delenv("BOB_COPILOT_OBSERVE", raising=False)
     monkeypatch.setenv("BOB_DIGEST_HOME", str(tmp_path))
     bobreport.save_digest(tmp_path, bobreport.empty_digest())
     calls = {"n": 0}
@@ -308,15 +310,60 @@ def test_chair_tick_observes_even_when_dispatch_disabled(tmp_path, monkeypatch):
         owners={"SimonBarnett"},
     )
     j._github_json = github_json  # type: ignore[method-assign]
-    # No allowance => dispatch disabled; observer must still run.
     assert cd.dispatch_enabled(tmp_path) is False
+    assert cd.should_observe_quota(tmp_path) is False
+    j._copilot_tick()
+    assert not cd.observation_path(tmp_path).is_file()
+    assert calls["n"] == 0
+
+
+def test_chair_tick_observes_when_opt_in_and_dispatch_disabled(tmp_path, monkeypatch):
+    """FR #6204: explicit opt-in observes while dispatch stays off (no allowance write)."""
+    monkeypatch.setenv("BOB_COPILOT_OBSERVE", "1")
+    monkeypatch.setenv("BOB_DIGEST_HOME", str(tmp_path))
+    bobreport.save_digest(tmp_path, bobreport.empty_digest())
+    calls = {"n": 0}
+
+    class Clock:
+        def __init__(self):
+            self.t = NOW
+
+        def __call__(self):
+            return self.t
+
+    clk = Clock()
+
+    def github_json(method, url, body=None):
+        calls["n"] += 1
+        if "copilot_internal/user" in url:
+            return UNLIMITED, 200
+        return {}, 200
+
+    j = ch.ChairJobs(
+        tmp_path,
+        tmp_path,
+        log=lambda *_a, **_k: None,
+        http=lambda *a, **k: 200,
+        fetch_json=lambda url: [],
+        token_loader=lambda: ("FAKE_token_for_tests_only", "file:x"),
+        clock=clk,
+        sleep=lambda s: None,
+        spawn=False,
+        owners={"SimonBarnett"},
+    )
+    j._github_json = github_json  # type: ignore[method-assign]
+    assert cd.dispatch_enabled(tmp_path) is False
+    assert cd.observation_opt_in(tmp_path) is True
     j._copilot_tick()
     assert cd.observation_path(tmp_path).is_file()
     assert cd.load_observation(tmp_path)["fetched_at"] == _iso(NOW)
     assert calls["n"] >= 1
+    assert not cd._allow_path(tmp_path).is_file()
+    assert cd.dispatch_enabled(tmp_path) is False
 
 
-def test_chair_tick_no_token_records_attempt(tmp_path, monkeypatch):
+def test_chair_tick_no_token_records_attempt_when_opt_in(tmp_path, monkeypatch):
+    monkeypatch.setenv("BOB_COPILOT_OBSERVE", "true")
     monkeypatch.setenv("BOB_DIGEST_HOME", str(tmp_path))
     bobreport.save_digest(tmp_path, bobreport.empty_digest())
 
@@ -340,3 +387,28 @@ def test_chair_tick_no_token_records_attempt(tmp_path, monkeypatch):
     doc = cd.load_observation(tmp_path)
     assert doc.get("last_error") == "no_token"
     assert doc.get("fetched_at") in ("", None)
+
+
+def test_chair_tick_no_token_skips_observe_by_default(tmp_path, monkeypatch):
+    monkeypatch.delenv("BOB_COPILOT_OBSERVE", raising=False)
+    monkeypatch.setenv("BOB_DIGEST_HOME", str(tmp_path))
+    bobreport.save_digest(tmp_path, bobreport.empty_digest())
+
+    class Clock:
+        def __call__(self):
+            return NOW
+
+    j = ch.ChairJobs(
+        tmp_path,
+        tmp_path,
+        log=lambda *_a, **_k: None,
+        http=lambda *a, **k: 200,
+        fetch_json=lambda url: [],
+        token_loader=lambda: (None, "missing"),
+        clock=Clock(),
+        sleep=lambda s: None,
+        spawn=False,
+        owners={"SimonBarnett"},
+    )
+    j._copilot_tick()
+    assert not cd.observation_path(tmp_path).is_file()
