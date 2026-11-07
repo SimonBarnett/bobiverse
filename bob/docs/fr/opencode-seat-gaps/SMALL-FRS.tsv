@@ -7,3 +7,4 @@ FR-OC-PACK	MSI/Sync ships opencode_fuel + Get-BobOpencodeFuel + skill	FR-OC-PACK
 FR-OC-FLEET	Per-box OpenCode setup smoke checklist (no secrets)	FR-OC-FLEET.md	OPEN	SimonBarnett/bobiverse#6160
 #6146	Ear publishes OpenCode pcent	(digest-ear-publish)	OPEN	SimonBarnett/bobiverse#6146
 #6147	TipForm/Status paint OpenCode pools	(digest-ear-publish)	OPEN	SimonBarnett/bobiverse#6147
+FR-OC-READY	Windows OpenCode worker readiness (native shell, worktree consent, gh auth)	(fr-6240)	OPEN	SimonBarnett/bobiverse#6240

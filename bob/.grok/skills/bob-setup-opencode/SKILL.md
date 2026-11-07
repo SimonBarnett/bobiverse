@@ -168,6 +168,60 @@ public remaining-quota API.
 
 
 
+## Windows worker readiness (FR #6240)
+
+OpenCode seats on Windows must use **PowerShell-native** discovery, a **consented
+job worktree**, and **supported gh auth** --- never Unix `grep`/`head`, never
+credential-store hunting, never bypassing `external_directory` denials.
+
+### 1) Native shell / file search
+
+Do **not** run `grep -Rni` / `head`. Use one of:
+
+```powershell
+# Preferred Assert (pathlib search; do not run the .py as a CLI):
+.\scripts\Assert-BobOpencodeWorkerReadiness.ps1 -WorktreePath <job-wt> -SkipWorktree -SkipGhAuth -SkipGit -SkipPrLookup  # preferred; module is imported, not a CLI
+
+# Or PowerShell:
+Get-ChildItem -Path . -Recurse -Include *.py,*.cs,*.ps1,*.md -File -ErrorAction SilentlyContinue |
+  Select-String -Pattern 'opencode' -SimpleMatch |
+  Select-Object -First 50 Path, LineNumber, Line
+```
+
+### 2) Worktree context / consent
+
+- Create the job tree with `Get-BobiverseJobWorktreePath` + `git worktree add` (FR #4843 / #4988).
+- Prefer launching OpenCode with **CWD = assigned worktree** so tools are not
+  `external_directory` relative to `<ai root>\bob\worker`.
+- If OpenCode requests `external_directory` for that worktree, use the supported
+  approval flow for a **narrow** grant. If the user rejects the tool call, **stop**
+  --- do not retry via another tool, do not widen scope, do not disable denials.
+- Validate with `git -C <worktree> status` / `branch` only after consent or when CWD is the worktree.
+
+### 3) GitHub CLI auth preflight (no secret reads)
+
+```powershell
+gh auth status
+# If it says run gh auth login: STOP and escalate. Supported remedy only:
+#   gh auth login
+# CAST IRON: never Get-Content ~/.config/gh/hosts.yml, never search
+# D:\ai\agentic_irc or profile dirs for tokens, never invent GH_TOKEN.
+```
+
+### Readiness assert
+
+```powershell
+# From a seat whose CWD is the assigned worktree:
+.\scripts\Assert-BobOpencodeWorkerReadiness.ps1 -WorktreePath <job-wt>
+
+# Fixture / offline:
+.\scripts\Assert-BobOpencodeWorkerReadiness.ps1 -SkipGhAuth -SkipGit -SkipPrLookup -Permission rejected
+```
+
+Exit codes: 1 native search, 2 worktree consent/cwd/git status-branch, 3 gh auth or scoped PR lookup, 4 unexpected.
+Non-zero means **blocked** --- never claim DONE/completed for queued work until
+re-run exits 0 with evidence.
+
 ## Fleet smoke checklist (FR #6160 / FR-OC-FLEET)
 
 Run on each box after install/repair. The script **never** reads `auth.json` body
@@ -205,6 +259,9 @@ Trial metrics template lives in that same doc.
 | `opencode : The term 'opencode' is not recognized` | WinGet install incomplete or Links folder not on PATH; use full path or add `%LOCALAPPDATA%\Microsoft\WinGet\Links` to User PATH |
 | Auth errors / 401 | Re-run `opencode auth login`; verify `auth.json` provider id is `opencode-go` |
 | Model 429 / cap hit | Wrapper kills the hung run, records a pause for that model in `opencode-pauses.json`, and the seat falls back to the next Go model or free model on its next start |
+| `grep` / `head` not recognized | Use Get-ChildItem + Select-String or Assert-BobOpencodeWorkerReadiness (FR #6240); never assume Unix tools |
+| `external_directory` auto-reject / user rejected tool | Relaunch with CWD=job worktree or request narrow consent; never bypass (FR #6240) |
+| `gh auth login` required / gh not authenticated | Run supported `gh auth login`; never read hosts.yml or hunt tokens (FR #6240) |
 | npm route fails on old Node | Use winget route only |
 
 ## Do not
