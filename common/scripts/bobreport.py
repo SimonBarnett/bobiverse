@@ -258,7 +258,28 @@ _CLEARABLE_MERGE_FIELDS = frozenset({
     "on_demand_remaining_pct",
     "overage_fetched_at",
     "usd_gbp_rate",
+    # FR #6144: omit/unknown Cursor must clear sticky label (not leave foreign 0%).
+    "cursor_label",
 })
+# FR #6144: fields cleared when publisher sends cursor_known=false.
+_CURSOR_UNKNOWN_CLEAR_FIELDS = (
+    "pcent",
+    "cursor_label",
+    "cursor_pools",
+    "sand_period_end",
+    "cursor_period_end",
+    "overage_gbp",
+    "overage_usd",
+    "overspend_state",
+    "on_demand_used_cents",
+    "on_demand_limit_cents",
+    "on_demand_remaining_pct",
+    "overage_fetched_at",
+    "usd_gbp_rate",
+    "remaining_pct",
+    "account_remaining_pct",
+    "cursor_remaining_pct",
+)
 _PEER_CLEAR = object()  # sentinel: peer wants an explicit null clear in the merge delta
 _TRAY_MACHINE_EXPORT_KEYS = (
     "id",
@@ -297,6 +318,8 @@ _TRAY_MACHINE_EXPORT_KEYS = (
     "overage_fetched_at",
     "usd_gbp_rate",
     "console_nicks",
+    "cursor_known",
+    "weekly_known",
 )
 WORKER_NICK_RE = re.compile(r"^w-([a-z0-9]+)-(\d+)_?$", re.I)
 
@@ -1093,6 +1116,9 @@ def _coerce_machine(mid: str, raw: object) -> dict:
     for key in _MERGE_PEER_FIELDS:
         if key in raw and raw[key] is not None:
             base[key] = raw[key]
+    for flag in ("cursor_known", "weekly_known"):
+        if flag in raw and raw[flag] is not None:
+            base[flag] = bool(raw[flag])
     if "running" in base:
         try:
             base["running"] = int(base["running"])
@@ -1841,6 +1867,10 @@ def _machine_fingerprint(ent: dict) -> str:
     for key in _MERGE_PEER_FIELDS:
         if key in ent:
             view[key] = ent.get(key)
+    if "cursor_known" in ent:
+        view["cursor_known"] = ent.get("cursor_known")
+    if "weekly_known" in ent:
+        view["weekly_known"] = ent.get("weekly_known")
     return json.dumps(view, sort_keys=True, separators=(",", ":"))
 
 
@@ -1909,10 +1939,14 @@ def _store_machine_pool_rows(ent: dict, raw_rows: object) -> None:
             pcent[_POOL_PCENT_KEY.get(pid, pid)] = rem
             changed = True
         if pe:
-            field = "period_end" if pid == "grok-weekly" else "cursor_period_end"
+            # FR #6144: Sand reset stays on sand_period_end (never xAI period_end).
+            if pid in ("grok-weekly", "grok-chat"):
+                field = "sand_period_end"
+            else:
+                field = "cursor_period_end"
             if ent.get(field) in (None, ""):
                 ent[field] = pe
-    if changed:
+    if changed and not ent.get("_skip_pool_pcent_backfill"):
         ent["pcent"] = pcent
 
 
@@ -2037,15 +2071,27 @@ def _apply_merge_payload(doc: dict, mid: str, payload: dict) -> list[str]:
         "weekly_known" in payload and weekly_known in (0, "false", "False", "0", "")
     ):
         ent.pop("weekly", None)
-    if "pcent" in payload and isinstance(payload["pcent"], dict):
+    # FR #6144: cursor_known=false clears Cursor group; omit keeps legacy merge.
+    cursor_known_raw = payload.get("cursor_known") if "cursor_known" in payload else None
+    cursor_unknown = False
+    if "cursor_known" in payload:
+        if cursor_known_raw is False or cursor_known_raw in (0, "false", "False", "0", ""):
+            cursor_unknown = True
+            ent["cursor_known"] = False
+            for ck in _CURSOR_UNKNOWN_CLEAR_FIELDS:
+                ent.pop(ck, None)
+        else:
+            ent["cursor_known"] = True
+    if (not cursor_unknown) and "pcent" in payload and isinstance(payload["pcent"], dict):
         # FR #976: per-machine pcent is replace-latest (reporter's current reading), not min-ratchet.
         ent["pcent"] = _merge_pcent_lesser(
             ent.get("pcent"), payload["pcent"], replace=True
         )
     if payload.get("uptime_since"):
         ent["uptime_since"] = str(payload["uptime_since"])
-    if isinstance(payload.get("cursor_pools"), list):
+    if (not cursor_unknown) and isinstance(payload.get("cursor_pools"), list):
         _store_machine_pool_rows(ent, payload["cursor_pools"])
+
     if pid_raw is not None and str(pid_raw) != "":
         try:
             pid_s = str(int(str(pid_raw)))
@@ -2099,6 +2145,22 @@ def _apply_merge_payload(doc: dict, mid: str, payload: dict) -> list[str]:
         if key == "jobs" and not isinstance(val, list):
             continue
         if key == "pcent" and isinstance(val, dict):
+            continue
+        if cursor_unknown and key in (
+            "cursor_label",
+            "cursor_period_end",
+            "sand_period_end",
+            "cursor_pools",
+            "pcent",
+            "overage_gbp",
+            "overage_usd",
+            "overspend_state",
+            "on_demand_used_cents",
+            "on_demand_limit_cents",
+            "on_demand_remaining_pct",
+            "overage_fetched_at",
+            "usd_gbp_rate",
+        ):
             continue
         if key in ("weekly",) and val is not None:
             # FR #976: skip write when reporter marked weekly unknown (cleared above).
@@ -3174,16 +3236,45 @@ def export_machine_for_tray(
 ) -> dict:
     """Tray-complete machine row: digest presence + bob-peers metrics."""
     base = _coerce_machine(mid, ent)
+    # FR #6144: do not peer-refill Cursor group when cursor_known is false, or weekly when unknown.
+    cursor_known_ent = ent.get("cursor_known")
+    weekly_known_ent = ent.get("weekly_known")
+    _cursor_peer_block = {
+        "pcent",
+        "cursor_label",
+        "cursor_pools",
+        "cursor_period_end",
+        "sand_period_end",
+        "overage_gbp",
+        "overage_usd",
+        "overspend_state",
+        "on_demand_used_cents",
+        "on_demand_limit_cents",
+        "on_demand_remaining_pct",
+        "cur",
+    }
     peer = bobstat.read_peer(home, mid)
     if peer:
         for key in _peer_fill_keys():
             if key not in peer or peer[key] is None or peer[key] == "":
+                continue
+            if cursor_known_ent is False and key in _cursor_peer_block:
+                continue
+            if weekly_known_ent is False and key == "weekly":
                 continue
             if key not in base or base.get(key) in (None, "", [], {}):
                 base[key] = peer[key]
     for key in _peer_fill_keys():
         if key in ent and ent[key] is not None and ent[key] != "":
             base[key] = ent[key]
+    if cursor_known_ent is False:
+        for key in _cursor_peer_block:
+            base.pop(key, None)
+        base["cursor_known"] = False
+    if "cursor_known" in ent:
+        base["cursor_known"] = ent.get("cursor_known")
+    if "weekly_known" in ent:
+        base["weekly_known"] = ent.get("weekly_known")
     try:
         base["running"] = int(base.get("running") or 0)
     except (TypeError, ValueError):
@@ -3244,25 +3335,58 @@ def _cursor_pool_overage(ent: dict) -> str | None:
 
 
 def _cursor_pool_period(ent: dict, pool_id: str | None = None) -> tuple[str | None, str | None]:
-    """Per-pool reset clock: grok-weekly/sand = Cursor Sand period end (NOT the xAI weekly ``period_end``,
-    #80); else Cursor billing."""
+    """Per-pool reset clock (FR #6144): dedicated Sand/billing first, then this machine's
+    stored pool-row period_end, then legacy machine ``period_end`` only when no Cursor
+    clocks or pool rows exist. grok-weekly/sand never uses xAI ``period_end`` when Sand
+    clock is present (#80)."""
     pid = str(pool_id or "").strip().lower()
+    rows = ent.get("cursor_pools") if isinstance(ent.get("cursor_pools"), list) else []
+    row_pe = None
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        rid = str(row.get("id") or row.get("group_id") or "").strip().lower()
+        if pid in ("grok-weekly", "grok-chat", "sand", "cursor-grok-chat"):
+            if rid not in ("grok-weekly", "grok-chat", "sand", "cursor-grok-chat"):
+                continue
+        else:
+            aliases = {pid, "auto", "low-cost-models", "cursor-models", "high-cost-models"}
+            if rid not in aliases and rid != pid:
+                continue
+        pe = row.get("period_end") or row.get("reset")
+        if pe not in (None, ""):
+            row_pe = str(pe)
+            break
+    has_cursor_clock = any(
+        ent.get(k) not in (None, "") for k in ("sand_period_end", "cursor_period_end")
+    ) or bool(rows)
     if pid in ("grok-weekly", "grok-chat", "sand", "cursor-grok-chat"):
-        weekly = ent.get("sand_period_end") or ent.get("period_end")
+        weekly = ent.get("sand_period_end")
         if weekly not in (None, ""):
             period_s = str(weekly)
             return period_s, period_s
+        if row_pe:
+            return row_pe, row_pe
+        # FR #6144: legacy period_end was the Sand/weekly clock before sand_period_end
+        # existed. Prefer it for grok pools when Sand clock is absent (even if
+        # cursor_period_end is set). Never prefer period_end over sand_period_end.
+        legacy = ent.get("period_end")
+        if legacy not in (None, ""):
+            period_s = str(legacy)
+            return period_s, period_s
         return None, None
     cursor_period = ent.get("cursor_period_end")
-    if cursor_period in (None, ""):
-        # Fall back to weekly only when billing end is unknown
+    if cursor_period not in (None, ""):
+        period_s = str(cursor_period)
+        return period_s, period_s
+    if row_pe:
+        return row_pe, row_pe
+    if not has_cursor_clock:
         weekly = ent.get("period_end")
         if weekly not in (None, ""):
             period_s = str(weekly)
             return period_s, period_s
-        return None, None
-    period_s = str(cursor_period)
-    return period_s, period_s
+    return None, None
 
 
 def _pcent_remaining_for_pool(pcent: dict, pool_id: str) -> int | None:

@@ -283,7 +283,7 @@ function Test-BobDigestWebhookPayloadChanged {
     $lastPath = Get-BobDigestWebhookLastPostPath
     $prev = Read-JsonFile $lastPath
     if (-not $prev) { return $true }
-    $keys = @('online', 'status', 'working_on', 'repo', 'sha', 'model', 'fuel', 'weekly', 'cursor_label', 'pools_sig')
+    $keys = @('online', 'status', 'working_on', 'repo', 'sha', 'model', 'fuel', 'weekly', 'weekly_known', 'cursor_known', 'cursor_label', 'pools_sig')  # FR #6144: cursor_known / weekly_known
     foreach ($k in $keys) {
         $a = $null
         $b = $null

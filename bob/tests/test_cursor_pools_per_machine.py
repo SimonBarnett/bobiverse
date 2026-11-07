@@ -74,7 +74,9 @@ def test_rows_never_cleared_by_empty_or_unparseable_post(home):
 def test_grok_weekly_period_end_and_pcent_stored_per_machine(home):
     merge(home, "win-mpre8vi4u6u", cursor_pools=bob_rows(grok=12))
     ent = bobreport.load_digest(home)["machines"]["win-mpre8vi4u6u"]
-    assert ent["pcent"]["grok-chat"] == 12 and ent["period_end"] == WK
+    # FR #6144: grok-weekly/chat pool rows backfill sand_period_end (not xAI period_end).
+    assert ent["pcent"]["grok-chat"] == 12 and ent["sand_period_end"] == WK
+    assert ent.get("period_end") in (None, "")
     assert ent["pcent"]["cursor-models"] == 70 and ent["cursor_period_end"] == FUT
 
 
