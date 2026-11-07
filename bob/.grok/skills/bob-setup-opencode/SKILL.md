@@ -1,5 +1,5 @@
 ---
-name: setup-bob-opencode
+name: bob-setup-opencode
 description: >
   Install or repair OpenCode on a Bob Fleet Windows seat, put opencode.exe on
   PATH, configure the opencode-go provider key from the session env/secret store,
@@ -10,6 +10,19 @@ github: https://github.com/SimonBarnett/bobiverse
 ---
 
 # Setup Bob OpenCode (Windows seat)
+
+> **CAST IRON RULE - HARVEST AND FILE EVERYTHING (read this first, every time).**
+> 1. ALWAYS harvest skills you learn and file EVERY issue / FR / bug / gap you find to the intake webhook in the
+>    SAME turn. Never leave a finding unfiled, never "note it for later", never skip it because it is small.
+> 2. File with the intake webhook (no secret or login needed; `POST https://irc.ntsa.uk/bob/v1/intake`; offline it is
+>    queued locally and retried):
+>    `.\scripts\Report-BobiverseIntakeIssue.ps1 -Repo SimonBarnett/bobiverse -Kind issue -Title "short title" -Body "what / where / evidence / fix"`
+>    (`-Kind issue|fr|skill|harvest`; always pass an explicit `-Repo owner/name`).
+> 3. BEFORE finishing ANY debugging session run the harvest step:
+>    `.\scripts\Invoke-BobiverseHarvest.ps1 -Summary "what broke / what fixed it" -Lesson "one learned playbook line"`
+>    then `.\scripts\Invoke-BobiverseHarvest.ps1 -Flush` to resend anything that was queued while offline.
+> 4. Never put a token, password, SASL/NickServ secret, key or private hostname in a filing, a skill or a log.
+
 
 Home: `SimonBarnett/bobiverse` `bob/.grok/skills/bob-setup-opencode`. Honesty box:
 using this skill obliges a harvest PR/issue back here (see `harvest-agent-skills`).
@@ -168,8 +181,7 @@ Run on each box after install/repair. The script **never** reads `auth.json` bod
 .\scripts\Assert-BobOpencodeFleetSmoke.ps1
 ```
 
-Exit non-zero when `opencode` is missing, auth is absent/unrestricted, pong fails,
-or `bob-worker --dry-run` cannot see `opencode_cmd`. Opt-outs: `-SkipPong`,
+Exit codes: 1 opencode missing, 2 auth missing/unrestricted ACL, 3 pong fail, 4 dry-run/worker, 5 unexpected (see Assert-BobOpencodeFleetSmoke.ps1 header). Non-zero when opencode is missing, auth is absent/unrestricted, pong fails, or bob-worker --dry-run cannot see opencode_cmd. Opt-outs: `-SkipPong`,
 `-SkipDryRun`, `-SkipAuth`. Optional `-RequireOpencodeDecision` when fuel fixtures
 should force `decision=opencode`.
 
@@ -197,3 +209,7 @@ Trial metrics template lives in that same doc.
 - `harvest-agent-skills`
 - Bob digest webhook fuel
 - `opencode_fuel.py` (shared cap/fallback logic)
+
+## Inject path (FR #6158)
+
+OpenCode seats default to batched KEY_EVENT when `BOB_WORKER_INJECT_PASTE` is unset (clipboard paste into the ReadLine wrapper is unreliable). Set `BOB_WORKER_INJECT_PASTE=1` to opt into paste. Needs a rebuilt `bob-worker.exe` and a **new** tray Agent seat after Sync.

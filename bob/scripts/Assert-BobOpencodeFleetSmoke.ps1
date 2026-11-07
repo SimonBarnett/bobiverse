@@ -91,7 +91,8 @@ function Resolve-OpencodeExe {
 
 function Test-AuthAclRestricted {
     param([Parameter(Mandatory = $true)][string]$Path)
-    # Presence + inheritance disabled + current user has a grant. Never read body.
+    # Presence + inheritance disabled + ONLY current user Allow-read (setup skill icacls posture).
+    # Never read body. Reject extra Allow grants to other principals (FR #6160 MRB).
     if (-not (Test-Path -LiteralPath $Path)) { return $false }
     try {
         $acl = Get-Acl -LiteralPath $Path
@@ -100,14 +101,25 @@ function Test-AuthAclRestricted {
             return $false
         }
         $user = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
-        $ok = $false
+        $userOk = $false
         foreach ($r in @($acl.Access)) {
-            if ($r.IdentityReference.Value -eq $user -and ($r.FileSystemRights.ToString() -match 'Read|FullControl|Modify')) {
-                $ok = $true
-                break
+            $rights = $r.FileSystemRights.ToString()
+            $reads = $rights -match 'Read|FullControl|Modify|Write|Delete|ChangePermissions|TakeOwnership'
+            if (-not $reads) { continue }
+            if ($r.AccessControlType -eq 'Deny') {
+                # Deny to current user blocks seat read; Deny to others is fine
+                if ($r.IdentityReference.Value -eq $user) { return $false }
+                continue
+            }
+            # Allow with read-ish rights
+            if ($r.IdentityReference.Value -eq $user) {
+                $userOk = $true
+            } else {
+                # another principal still has Allow read/write --- not exclusive
+                return $false
             }
         }
-        return $ok
+        return $userOk
     } catch {
         return $false
     }
@@ -125,12 +137,21 @@ if (-not $oc) {
     Fail-Smoke 1 "opencode.exe not on PATH (winget Links / Programs\opencode). See bob-setup-opencode Troubleshoot."
 } else {
     Write-Smoke ("opencode exe=$oc")
+    $prevEap = $ErrorActionPreference
     try {
-        $ver = & $oc --version 2>&1 | Out-String
-        $ver = ($ver -replace '\s+', ' ').Trim()
-        if (-not $ver) { Fail-Smoke 1 "opencode --version returned empty" }
-        else { Write-Smoke ("version=$ver") }
+        $ErrorActionPreference = 'Continue'
+        $verLines = & $oc --version 2>&1
+        $verExit = $LASTEXITCODE
+        $ErrorActionPreference = $prevEap
+        if ($verExit -ne 0) {
+            Fail-Smoke 1 ("opencode --version exit=" + $verExit)
+        } else {
+            $ver = (($verLines | ForEach-Object { "$_" }) -join ' ' -replace '\s+', ' ').Trim()
+            if (-not $ver) { Fail-Smoke 1 "opencode --version returned empty" }
+            else { Write-Smoke ("version=$ver") }
+        }
     } catch {
+        $ErrorActionPreference = $prevEap
         Fail-Smoke 1 ("opencode --version failed: " + $_.Exception.Message)
     }
 }
@@ -210,24 +231,34 @@ if (-not $SkipDryRun) {
         Fail-Smoke 4 "bob-worker.exe not found (pass -WorkerExe or install under <InstallRoot>\worker). Dry-run cannot see OpenCode exe."
     } else {
         Write-Smoke ("dry-run exe=$exe install_root=$InstallRoot")
+        $prevEap = $ErrorActionPreference
         try {
-            $raw = & $exe --dry-run --install-root $InstallRoot 2>&1 | Out-String
-            $jsonLine = ($raw -split "`r?`n" | Where-Object { $_.Trim().StartsWith('{') } | Select-Object -Last 1)
-            if (-not $jsonLine) {
-                Fail-Smoke 4 "dry-run produced no JSON object"
+            $ErrorActionPreference = 'Continue'
+            $rawLines = & $exe --dry-run --install-root $InstallRoot 2>&1
+            $dryExit = $LASTEXITCODE
+            $ErrorActionPreference = $prevEap
+            if ($dryExit -ne 0) {
+                Fail-Smoke 4 ("dry-run exit=" + $dryExit)
             } else {
-                $obj = $jsonLine | ConvertFrom-Json
-                $ocCmd = $false
-                if ($null -ne $obj.opencode_cmd) { $ocCmd = [bool]$obj.opencode_cmd }
-                Write-Smoke ("dry-run decision=$($obj.decision) opencode_cmd=$ocCmd")
-                if (-not $ocCmd) {
-                    Fail-Smoke 4 "dry-run opencode_cmd=false (opencode.exe not visible to bob-worker resolve)"
-                }
-                if ($RequireOpencodeDecision -and [string]$obj.decision -ne 'opencode') {
-                    Fail-Smoke 4 ("-RequireOpencodeDecision set but decision=$($obj.decision)")
+                $raw = (($rawLines | ForEach-Object { "$_" }) -join "`n")
+                $jsonLine = ($raw -split "`r?`n" | Where-Object { $_.Trim().StartsWith('{') } | Select-Object -Last 1)
+                if (-not $jsonLine) {
+                    Fail-Smoke 4 "dry-run produced no JSON object"
+                } else {
+                    $obj = $jsonLine | ConvertFrom-Json
+                    $ocCmd = $false
+                    if ($null -ne $obj.opencode_cmd) { $ocCmd = [bool]$obj.opencode_cmd }
+                    Write-Smoke ("dry-run decision=$($obj.decision) opencode_cmd=$ocCmd")
+                    if (-not $ocCmd) {
+                        Fail-Smoke 4 "dry-run opencode_cmd=false (opencode.exe not visible to bob-worker resolve)"
+                    }
+                    if ($RequireOpencodeDecision -and [string]$obj.decision -ne 'opencode') {
+                        Fail-Smoke 4 ("-RequireOpencodeDecision set but decision=$($obj.decision)")
+                    }
                 }
             }
         } catch {
+            $ErrorActionPreference = $prevEap
             Fail-Smoke 4 ("dry-run failed: " + $_.Exception.Message)
         }
     }

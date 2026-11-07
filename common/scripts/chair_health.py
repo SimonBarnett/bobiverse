@@ -785,6 +785,9 @@ class ChairJobs:
 
         FR #5267: release stranded accepts before any Copilot API call, including
         when there is no token (dispatch stays off).
+
+        FR #6148: always run read-only observe_quota first (dispatch-independent),
+        so digest copilot.fetched_at stays truthful even when dispatch is off/cooldown.
         """
         import copilot_dispatch
 
@@ -795,15 +798,31 @@ class ChairJobs:
                 f"released={swept.get('released', 0)}"
             )
         token, _src = self.token_loader()
+        now_f = self.clock()
+
+        def fetch_user() -> dict:
+            data, code = self._github_json(
+                "GET", "https://api.github.com/copilot_internal/user"
+            )
+            if not 200 <= int(code) < 300:
+                raise RuntimeError(f"http_{int(code)}")
+            if not isinstance(data, dict):
+                raise RuntimeError("parse")
+            return data
+
         if not token:
+            def _no_token() -> dict:
+                raise RuntimeError("no_token")
+
+            copilot_dispatch.observe_quota(
+                self.digest_home, fetch_user=_no_token, now=now_f
+            )
             self.log("WARN copilot-dispatch skipped: no token")
             return
 
-        def fetch_user() -> dict:
-            data, _code = self._github_json(
-                "GET", "https://api.github.com/copilot_internal/user"
-            )
-            return data if isinstance(data, dict) else {}
+        copilot_dispatch.observe_quota(
+            self.digest_home, fetch_user=fetch_user, now=now_f
+        )
 
         def post(path: str, body: dict) -> dict:
             url = path if str(path).startswith("http") else (

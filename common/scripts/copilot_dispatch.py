@@ -38,6 +38,7 @@ REQUIRED_HOOK_EVENTS = (
     "workflow_run",
 )
 ALLOWANCE_NAME = "copilot-allowance.json"
+OBSERVATION_NAME = "copilot-observation.json"
 JOBS_NAME = "copilot-jobs.json"
 MRB_BACKOFF_NAME = "copilot-mrb-backoff.json"
 TASK_TIMEOUT_S = 4 * 3600.0
@@ -118,6 +119,184 @@ def set_allowance(home: Path, remaining: int | None = None, exhausted: bool | No
             _clear_copilot_cooldown(doc)
     Path(home).mkdir(parents=True, exist_ok=True)
     _allow_path(home).write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8")
+
+
+
+def observation_path(home: Path) -> Path:
+    return Path(home) / OBSERVATION_NAME
+
+
+def load_observation(home: Path) -> dict:
+    p = observation_path(home)
+    if not p.is_file():
+        return {}
+    try:
+        doc = json.loads(p.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return doc if isinstance(doc, dict) else {}
+
+
+def _write_observation(home: Path, doc: dict) -> None:
+    """Atomic replace for copilot-observation.json (FR #6148)."""
+    path = observation_path(home)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = json.dumps(doc, indent=2) + "\n"
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.{int(time.time() * 1000) % 1000000}.tmp")
+    try:
+        tmp.write_text(payload, encoding="utf-8")
+        os.replace(tmp, path)
+    finally:
+        with contextlib.suppress(OSError):
+            tmp.unlink(missing_ok=True)
+
+
+def _iso_utc(epoch: float) -> str:
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(float(epoch)))
+
+
+def _error_category(exc: BaseException | None = None, *, status: int | None = None) -> str:
+    if status is not None and int(status) > 0:
+        return f"http_{int(status)}"
+    if exc is None:
+        return "parse"
+    msg = str(exc).strip().lower()
+    if "no_token" in msg or msg == "no token":
+        return "no_token"
+    for token in ("http_403", "http_401", "http_429", "http_500", "http_502", "http_503"):
+        if token in msg:
+            return token
+    if "403" in msg:
+        return "http_403"
+    if "401" in msg:
+        return "http_401"
+    if "429" in msg:
+        return "http_429"
+    if "timeout" in msg:
+        return "timeout"
+    return "parse"
+
+
+def _premium_incomplete(raw: dict | None) -> bool:
+    """Observer-only: premium_interactions without remaining/percent/unlimited => unknown."""
+    if not isinstance(raw, dict):
+        return False
+    snaps = raw.get("quota_snapshots")
+    prem = snaps.get("premium_interactions") if isinstance(snaps, dict) else None
+    if not isinstance(prem, dict):
+        return False
+    return not any(k in prem for k in ("remaining", "percent_remaining", "unlimited"))
+
+
+def observe_quota(
+    home: Path,
+    *,
+    fetch_user: Callable[[], dict] | None = None,
+    now: float | None = None,
+) -> dict:
+    """FR #6148: read-only Copilot quota observation, independent of dispatch.
+
+    Never creates or mutates copilot-allowance.json. Never calls mark_tokens_exhausted
+    or queue helpers. fetched_at advances only on a successful parse.
+    """
+    now_f = time.time() if now is None else float(now)
+    prev = load_observation(home)
+    # Cache on last attempt epoch; reject future epochs as cache-valid (clock skew).
+    attempted = _num(prev.get("attempted_epoch"))
+    if attempted is None:
+        attempted = _num(prev.get("fetched_epoch"))
+    if (
+        attempted is not None
+        and attempted <= now_f
+        and (now_f - attempted) < CACHE_S
+        and prev.get("state")
+    ):
+        return prev
+
+    attempted_at = _iso_utc(now_f)
+    err = None
+    raw = None
+    if fetch_user is None:
+        err = "no_token"
+    else:
+        try:
+            raw = fetch_user()
+            if not isinstance(raw, dict):
+                err = "parse"
+                raw = None
+            elif isinstance(raw.get("status"), int) and not (200 <= int(raw["status"]) < 300):
+                err = _error_category(status=int(raw["status"]))
+                raw = None
+        except Exception as exc:  # noqa: BLE001
+            err = _error_category(exc)
+            log.warning("copilot observe failed: %s", type(exc).__name__)
+
+    if err is None and _premium_incomplete(raw):
+        err = "parse"
+        pool = parse_user_quota(None)
+        pool["state"] = "unknown"
+    elif err is None:
+        pool = parse_user_quota(raw)
+    else:
+        pool = None
+
+    if pool is not None and pool.get("state") != "unknown":
+        doc = dict(prev)
+        for key in (
+            "plan",
+            "used",
+            "remaining",
+            "unlimited",
+            "percent_remaining",
+            "entitlement",
+            "overage_permitted",
+            "reset_at",
+            "source",
+            "state",
+        ):
+            if key in pool:
+                doc[key] = pool[key]
+        doc["fetched_at"] = attempted_at
+        doc["fetched_epoch"] = now_f
+        doc["attempted_at"] = attempted_at
+        doc["attempted_epoch"] = now_f
+        doc.pop("last_error", None)
+        _write_observation(home, doc)
+        return doc
+
+    # Failure or unknown-without-prior-success: keep last good fetched_at.
+    doc = dict(prev) if prev else {}
+    if pool is not None and not prev.get("fetched_at"):
+        # First observation is incomplete/unknown.
+        for key in ("plan", "used", "remaining", "unlimited", "percent_remaining", "reset_at", "source", "state"):
+            if key in pool:
+                doc[key] = pool[key]
+        doc["state"] = "unknown"
+        doc["fetched_at"] = ""
+        doc["fetched_epoch"] = now_f
+    elif not prev:
+        doc = {
+            "plan": "",
+            "used": None,
+            "remaining": None,
+            "unlimited": False,
+            "percent_remaining": None,
+            "reset_at": "",
+            "source": "copilot_internal/user",
+            "state": "unknown",
+            "fetched_at": "",
+            "fetched_epoch": now_f,
+        }
+    doc["attempted_at"] = attempted_at
+    doc["attempted_epoch"] = now_f
+    if err:
+        doc["last_error"] = err
+    elif pool is not None and pool.get("state") == "unknown":
+        doc["last_error"] = "parse"
+        if not doc.get("fetched_at"):
+            doc["state"] = "unknown"
+    _write_observation(home, doc)
+    return doc
 
 
 def _num(val: object) -> float | None:
@@ -329,21 +508,33 @@ def refresh_allowance(
     if fetch_user is None:
         pool = dict(parse_user_quota(None))
         pool["state"] = "unknown"
-        pool["fetched_at"] = ""
         pool["fetched_epoch"] = now_f
+        pool["attempted_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now_f))
+        pool["fetched_at"] = doc.get("fetched_at") or ""
+        pool["last_error"] = "no_token"
         Path(home).mkdir(parents=True, exist_ok=True)
         merged = dict(doc)
         merged.update(pool)
         _allow_path(home).write_text(json.dumps(merged, indent=2) + "\n", encoding="utf-8")
         return merged
+    fetch_ok = False
     try:
         raw = fetch_user()
         pool = parse_user_quota(raw if isinstance(raw, dict) else None)
+        fetch_ok = pool.get("state") in ("ok", "exhausted")
     except Exception as exc:  # noqa: BLE001
         log.warning("copilot_internal/user failed: %s", type(exc).__name__)
         pool = parse_user_quota(None)
-    pool["fetched_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now_f))
+        fetch_ok = False
     pool["fetched_epoch"] = now_f
+    pool["attempted_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now_f))
+    if fetch_ok:
+        pool["fetched_at"] = pool["attempted_at"]
+    else:
+        # FR #6148: keep prior successful fetched_at; only stamp attempt time.
+        prev_fa = doc.get("fetched_at") or ""
+        pool["fetched_at"] = prev_fa
+        pool["last_error"] = "parse"
     if pool.get("state") == "ok":
         pool["tasks_exhausted"] = False
         pool["exhausted"] = False
@@ -360,29 +551,67 @@ def refresh_allowance(
     return merged
 
 
+def _parse_fetched_epoch(doc: dict) -> float:
+    """Last-success stamp for digest pooling (FR #6148 / FIX #6180).
+
+    Prefer ``fetched_at`` (advances only on successful parse). Do not rank by
+    ``fetched_epoch`` alone: refresh/observe set that on failed attempts too,
+    which would let a failed allowance outrank a successful observation.
+    When ``fetched_at`` is missing, fall back to ``fetched_epoch`` only if the
+    doc looks like a successful parse (state ok/exhausted) so first-write
+    ordering still works.
+    """
+    fa = str(doc.get("fetched_at") or "").strip()
+    if fa:
+        try:
+            # Accept Zulu ISO used by refresh/observe.
+            return float(time.mktime(time.strptime(fa.replace("Z", ""), "%Y-%m-%dT%H:%M:%S"))) - time.timezone
+        except (TypeError, ValueError, OverflowError):
+            pass
+    state = str(doc.get("state") or "").strip().lower()
+    if state in ("ok", "exhausted"):
+        ep = _num(doc.get("fetched_epoch"))
+        if ep is not None:
+            return float(ep)
+    return -1.0
+
+
 def pool_for_digest(home: Path) -> dict:
-    """FR #5965: surface coding-agent exhausted/failed state over unlimited tile."""
-    doc = load_allowance(home)
-    state = str(doc.get("state") or "unknown")
+    """FR #5965 + FR #6148: prefer freshest observation; keep cooldown from allowance."""
+    allow = load_allowance(home)
+    obs = load_observation(home)
+    # Quota fields from the source with the newer successful fetched_at.
+    allow_ep = _parse_fetched_epoch(allow) if allow.get("fetched_at") or allow.get("state") else -1.0
+    obs_ep = _parse_fetched_epoch(obs) if obs.get("fetched_at") or obs.get("state") else -1.0
+    if obs_ep > allow_ep and obs:
+        quota = obs
+    elif allow_ep >= 0 or allow.get("state"):
+        quota = allow
+    else:
+        quota = obs if obs else allow
+    state = str(quota.get("state") or "unknown")
     exhausted = bool(
-        doc.get("exhausted")
-        or doc.get("tasks_exhausted")
+        allow.get("exhausted")
+        or allow.get("tasks_exhausted")
         or state in ("exhausted", "quota_exhausted", "failed")
+        or str(allow.get("state") or "") in ("exhausted", "quota_exhausted", "failed")
     )
     if exhausted and state in ("", "unknown", "ok"):
         state = "exhausted"
+    attempted = str(quota.get("attempted_at") or obs.get("attempted_at") or allow.get("attempted_at") or "")
     return {
-        "plan": doc.get("plan") or "",
-        "used": doc.get("used"),
-        "remaining": doc.get("remaining"),
-        "unlimited": bool(doc.get("unlimited")) and not exhausted,
-        "percent_remaining": doc.get("percent_remaining"),
-        "reset_at": doc.get("reset_at") or "",
-        "source": doc.get("source") or "copilot_internal/user",
-        "fetched_at": doc.get("fetched_at") or "",
+        "plan": quota.get("plan") or "",
+        "used": quota.get("used"),
+        "remaining": quota.get("remaining"),
+        "unlimited": bool(quota.get("unlimited")) and not exhausted,
+        "percent_remaining": quota.get("percent_remaining"),
+        "reset_at": quota.get("reset_at") or "",
+        "source": quota.get("source") or "copilot_internal/user",
+        "fetched_at": quota.get("fetched_at") or "",
+        "attempted_at": attempted,
         "state": state,
-        "resume_at": doc.get("exhausted_until_utc") or "",
-        "resume_source": doc.get("exhausted_until_source") or "",
+        "resume_at": allow.get("exhausted_until_utc") or "",
+        "resume_source": allow.get("exhausted_until_source") or "",
     }
 
 

@@ -35,10 +35,11 @@ def test_fr6160_assert_script_exists_and_documents_exits():
     src = _read(SCRIPT)
     assert "FR #6160" in src or "FR-OC-FLEET" in src
     assert "never" in src.lower() and "auth.json" in src
-    assert "Get-Content" not in src or "never" in src.lower()
-    # Must not cat auth body
-    assert "Get-Content -LiteralPath $AuthPath" not in src
+    # Must not cat auth body (any Get-Content of $AuthPath / ReadAllText)
+    assert not re.search(r"(?i)Get-Content[^\n]*\$AuthPath", src), "Get-Content must not read $AuthPath"
     assert "ReadAllText($AuthPath)" not in src
+    # ACL exclusivity: reject extra Allow grants (MRB #6184)
+    assert "another principal" in src or "ONLY current user" in src
     assert "-SkipPong" in src and "-SkipDryRun" in src
     assert "opencode_cmd" in src
     assert "bob-worker" in src
@@ -51,7 +52,8 @@ def test_fr6160_assert_script_exists_and_documents_exits():
 def test_fr6160_script_exits_nonzero_when_opencode_missing(tmp_path: Path):
     """Clear PATH so Resolve-OpencodeExe fails; expect exit 1."""
     if sys.platform != "win32":
-        return
+        import pytest
+        pytest.skip("Windows-only smoke subprocess")
     # Minimal env: empty PATH, skip auth/pong/dry-run so only PATH check fails.
     env = dict(**{k: v for k, v in __import__("os").environ.items() if k.upper() != "PATH"})
     env["PATH"] = str(tmp_path)  # empty of opencode
@@ -73,6 +75,7 @@ def test_fr6160_script_exits_nonzero_when_opencode_missing(tmp_path: Path):
         text=True,
         timeout=60,
         env=env,
+        check=False,
     )
     assert proc.returncode == 1, (proc.returncode, proc.stdout, proc.stderr)
     assert "FAIL" in proc.stdout or "opencode" in proc.stdout.lower()
@@ -81,14 +84,16 @@ def test_fr6160_script_exits_nonzero_when_opencode_missing(tmp_path: Path):
 def test_fr6160_script_exits_nonzero_when_worker_missing(tmp_path: Path):
     """Dry-run path: fake opencode on PATH but missing bob-worker -> exit 4."""
     if sys.platform != "win32":
-        return
+        import pytest
+        pytest.skip("Windows-only smoke subprocess")
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir()
-    # stub opencode.cmd that prints a version
+    # stub opencode.cmd so Get-Command prefers the stub, not host PATH
     stub = fake_bin / "opencode.cmd"
     stub.write_text("@echo off\r\necho 0.0.0-test\r\n", encoding="ascii")
     env = dict(__import__("os").environ)
-    env["PATH"] = str(fake_bin) + ";" + env.get("PATH", "")
+    # Isolate PATH to the stub only (CodeRabbit / MRB #6184)
+    env["PATH"] = str(fake_bin)
     env["LOCALAPPDATA"] = str(tmp_path / "la")
     (tmp_path / "la").mkdir(parents=True, exist_ok=True)
     bogus_root = tmp_path / "bob-install"
@@ -113,6 +118,7 @@ def test_fr6160_script_exits_nonzero_when_worker_missing(tmp_path: Path):
         text=True,
         timeout=60,
         env=env,
+        check=False,
     )
     assert proc.returncode == 4, (proc.returncode, proc.stdout, proc.stderr)
     assert "dry-run" in proc.stdout.lower() or "bob-worker" in proc.stdout.lower()
@@ -152,3 +158,50 @@ def test_fr6160_park_maps_issue():
     assert "FR-OC-FLEET" in tsv and "6160" in tsv
     park = _read(PARK)
     assert "Assert" in park or "checklist" in park.lower() or "Smoke" in park
+
+
+def test_fr6160_acl_helper_rejects_extra_allow_principal(tmp_path: Path):
+    """Protected DACL with current-user Allow + other Allow must fail exit 2."""
+    if sys.platform != "win32":
+        import pytest
+        pytest.skip("Windows-only ACL smoke")
+    import os
+    import getpass
+    auth = tmp_path / "auth.json"
+    auth.write_text('{"x":1}', encoding="ascii")
+    user = os.environ.get("USERNAME") or getpass.getuser()
+    for args in (
+        ["icacls", str(auth), "/reset"],
+        ["icacls", str(auth), "/inheritance:r", "/grant:r", f"{user}:(R)"],
+        ["icacls", str(auth), "/grant", "Users:(R)"],
+    ):
+        subprocess.run(args, capture_output=True, text=True, check=False)
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    (fake_bin / "opencode.cmd").write_text("@echo off\r\necho 0.0.0-test\r\n", encoding="ascii")
+    env = dict(os.environ)
+    env["PATH"] = str(fake_bin)
+    env["LOCALAPPDATA"] = str(tmp_path / "la")
+    (tmp_path / "la").mkdir(parents=True, exist_ok=True)
+    proc = subprocess.run(
+        [
+            "powershell",
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(SCRIPT),
+            "-SkipPong",
+            "-SkipDryRun",
+            "-AuthPath",
+            str(auth),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        env=env,
+        check=False,
+    )
+    assert proc.returncode == 2, (proc.returncode, proc.stdout, proc.stderr)
+    assert "ACL" in proc.stdout or "auth" in proc.stdout.lower()
+

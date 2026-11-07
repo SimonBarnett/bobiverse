@@ -28,6 +28,8 @@ namespace BobDialogs
     {
         public string Title = "bob", Alert = "none", Version = "", Overspend = "", Note = "";
         public string CopilotLine = "Copilot  unknown";
+        public string CopilotStaleLine = "";
+        public long CopilotFreshUntil = 0;
         public string OpencodeLine = "OpenCode  n/a";
         public List<StatusRow> Cursor = new List<StatusRow>(), Grok = new List<StatusRow>();
 
@@ -52,6 +54,8 @@ namespace BobDialogs
             m.Version = Common.Str(d, "version"); m.Overspend = Common.Str(d, "overspend");
             string oc = Common.Str(d, "opencode_line"); if (oc.Length > 0) m.OpencodeLine = oc;
             string cp = Common.Str(d, "copilot_line"); if (cp.Length > 0) m.CopilotLine = cp;
+            string cps = Common.Str(d, "copilot_stale_line"); if (cps.Length > 0) m.CopilotStaleLine = cps;
+            m.CopilotFreshUntil = Common.Long(d, "copilot_fresh_until", 0);
             string a = Common.Str(d, "alert"); if (a.Length > 0) m.Alert = a;
             IList c = Common.List(d.ContainsKey("cursor") ? d["cursor"] : null);
             if (c != null) foreach (object o in c) { Dictionary<string, object> rd = Common.Dict(o); if (rd != null && Common.Str(rd, "heading").Length > 0) m.Cursor.Add(ParseRow(rd)); }
@@ -63,6 +67,7 @@ namespace BobDialogs
 
     internal class CardView : Panel
     {
+        public string AssetsRoot = "";
         public StatusModel Model = new StatusModel();
         public string Footer = "";
         readonly Font fTitle = new Font("Segoe UI Semibold", 11f), fSect = new Font("Segoe UI Semibold", 9.5f), fHead = new Font("Segoe UI Semibold", 9f),
@@ -112,9 +117,56 @@ namespace BobDialogs
 
         int Section(Graphics g, int y, string title, string right)
         {
-            Draw(g, title, fSect, Fg, 14, y);
+            return Section(g, y, title, right, null, Fg);
+        }
+
+        int Section(Graphics g, int y, string title, string right, string fuelFamily)
+        {
+            return Section(g, y, title, right, fuelFamily, Fg);
+        }
+
+        // FR #6149 logo + FR #6148 / FIX #6180 titleColor for stale Copilot.
+        int Section(Graphics g, int y, string title, string right, string fuelFamily, Color titleColor)
+        {
+            int x = 14;
+            if (fuelFamily != null && fuelFamily.Length > 0)
+            {
+                Image logo = Common.FuelLogo(AssetsRoot, fuelFamily);
+                if (logo != null)
+                {
+                    try { g.DrawImage(logo, x, y, 18, 18); }
+                    catch { }
+                    finally { try { logo.Dispose(); } catch { } }
+                    x += 22;
+                }
+                else
+                {
+                    string fb = Common.FuelLogoFallback(fuelFamily);
+                    Draw(g, "[" + fb + "]", fSmall, Muted, x, y + 2);
+                    x += TextW(g, "[" + fb + "]", fSmall) + 6;
+                }
+            }
+            Draw(g, title, fSect, titleColor, x, y);
             if (right.Length > 0) Draw(g, right, fHead, Red, W - 14 - TextW(g, right, fHead) - 2, y);
             return y + 22;
+        }
+
+        internal static string SelectCopilotLine(StatusModel m, DateTime utcNow)
+        {
+            if (m == null) return "Copilot  unknown";
+            string line = m.CopilotLine;
+            if (string.IsNullOrEmpty(line)) line = "Copilot  unknown";
+            if (m.CopilotFreshUntil > 0)
+            {
+                long nowEpoch = new DateTimeOffset(utcNow).ToUnixTimeSeconds();
+                if (nowEpoch >= m.CopilotFreshUntil)
+                {
+                    if (!string.IsNullOrEmpty(m.CopilotStaleLine)) line = m.CopilotStaleLine;
+                    else if (!line.StartsWith("Copilot  [stale", StringComparison.Ordinal))
+                        line = line.Replace("Copilot  ", "Copilot  [stale]  ");
+                }
+            }
+            return line;
         }
 
         // Draws (or just measures) the whole card and returns its height.
@@ -128,11 +180,14 @@ namespace BobDialogs
             y += 26;
             // Dashboard = per-machine Grok pools + workers and one account-wide Copilot pool (no Cursor section).
             // FR #5032: no "Grok accounts" heading --- every row is a Grok pool.
+            // FR #6149: fuel-family logos (assets\fuel-logos) with text fallback.
             if (m.Note.Length > 0) { Draw(g, m.Note, fText, Muted, 14, y); y += 22; }
+            y = Section(g, y, "Cursor Models", "", "cursor");
+            y = Section(g, y, "xAI weekly", "", "xai");
             if (m.Grok.Count > 0)
             {
                 if (m.Overspend != null && m.Overspend.Length > 0)
-                    y = Section(g, y, "", m.Overspend);
+                    y = Section(g, y, "", m.Overspend, "xai");
                 foreach (StatusRow r in m.Grok)
                 {
                     y = UsageRow(g, 32, y, r, 354);
@@ -141,8 +196,11 @@ namespace BobDialogs
                     y += 8;
                 }
             }
-            y = Section(g, y, m.OpencodeLine, "");
-            y = Section(g, y, m.CopilotLine, "");
+            // FR #6147 pool line + FR #6149 logo; FIX #6180 re-age Copilot with stale colour.
+            y = Section(g, y, m.OpencodeLine, "", "opencode");
+            string paintCopilot = SelectCopilotLine(m, DateTime.UtcNow);
+            Color copilotFg = paintCopilot.StartsWith("Copilot  [stale", StringComparison.Ordinal) ? Red : Fg;
+            y = Section(g, y, paintCopilot, "", "copilot", copilotFg);
             y += 6;
             Draw(g, "alert: " + m.Alert, fSmall, m.Alert == "none" ? Muted : Red, 14, y);
             string v = Footer.Length > 0 ? Footer : m.Version;
@@ -169,10 +227,12 @@ namespace BobDialogs
         DateTime lastWrite = DateTime.MinValue;
         long lastLen = -1;
         readonly System.Windows.Forms.Timer poll = new System.Windows.Forms.Timer();
+        string lastPaintedCopilot = "";
 
         public StatusForm(string root)
         {
             file = Path.Combine(root, "run\\tray-status.json");
+            card.AssetsRoot = root ?? "";
             Text = "Bobiverse status";
             FormBorderStyle = FormBorderStyle.None; ShowInTaskbar = false; TopMost = true; StartPosition = FormStartPosition.Manual;
             BackColor = Color.FromArgb(22, 27, 34);
@@ -218,7 +278,18 @@ namespace BobDialogs
                     return;
                 }
                 FileInfo fi = new FileInfo(file);
-                if (!first && fi.LastWriteTimeUtc == lastWrite && fi.Length == lastLen) return;
+                bool unchanged = (!first && fi.LastWriteTimeUtc == lastWrite && fi.Length == lastLen);
+                if (unchanged)
+                {
+                    // FR #6148: re-age Copilot line while the window stays open even if snapshot bytes are unchanged.
+                    string after = CardView.SelectCopilotLine(card.Model, DateTime.UtcNow);
+                    if (!string.Equals(lastPaintedCopilot, after, StringComparison.Ordinal))
+                    {
+                        lastPaintedCopilot = after;
+                        card.Invalidate();
+                    }
+                    return;
+                }
                 string json;
                 using (FileStream fs = new FileStream(file, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete))
                 using (StreamReader sr = new StreamReader(fs, Encoding.UTF8, true)) json = sr.ReadToEnd();
@@ -226,6 +297,7 @@ namespace BobDialogs
                 double ageMin = (DateTime.UtcNow - fi.LastWriteTimeUtc).TotalMinutes;
                 if (ageMin > 10) m.Note = "snapshot is " + (int)ageMin + " min old (tray not polling?)";
                 lastWrite = fi.LastWriteTimeUtc; lastLen = fi.Length;
+                lastPaintedCopilot = CardView.SelectCopilotLine(m, DateTime.UtcNow);
                 card.Model = m;
                 if (!first) { Resize2(false); }
                 card.Invalidate();

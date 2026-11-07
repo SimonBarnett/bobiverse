@@ -497,10 +497,12 @@ def test_opencode_fuel_ps1_pipes_windowed_payload_via_stdin():
 
 
 def test_opencode_fuel_ps1_pythonpath_resolves_common_scripts_in_work_tree():
+    """FR #6159: resolve opencode_fuel.py as a file (scripts\\ then common\\scripts\\)."""
     text = OPENCODE_FUEL_PS1.read_text(encoding="utf-8-sig")
-    assert "common\\scripts" in text
-    assert "Test-Path -LiteralPath $common -PathType Container" in text
-    assert "$env:PYTHONPATH = \"$common;$env:PYTHONPATH\"" in text
+    assert "scripts\\opencode_fuel.py" in text
+    assert "common\\scripts\\opencode_fuel.py" in text
+    assert "PathType Leaf" in text
+    assert "$env:PYTHONPATH = \"$pyDir;$env:PYTHONPATH\"" in text
 
 
 def test_opencode_fuel_ps1_uses_windowed_fuel_translation():

@@ -92,22 +92,27 @@ try {
     }
 
     if ($statsByWindow) {
-        # Resolve common\scripts from either a repo checkout (bob\tray\tools) or an
-        # installed layout (<ai root>\bob\tools), keeping the lookup inside the bob work tree.
-        $common = $null
+        # FR #6159: resolve opencode_fuel.py as a FILE. Flat installs compose it to
+        # <root>\scripts\opencode_fuel.py; repo checkouts keep common\scripts\.
+        # Prefer scripts\ then common\scripts\ at each ancestor. An empty
+        # common\scripts directory must not stop the search.
+        $pyDir = $null
         $current = $PSScriptRoot
         while ($current) {
-            $candidate = Join-Path $current 'common\scripts'
-            if (Test-Path -LiteralPath $candidate -PathType Container) {
-                $common = $candidate
-                break
+            foreach ($rel in @('scripts\opencode_fuel.py', 'common\scripts\opencode_fuel.py')) {
+                $candidate = Join-Path $current $rel
+                if (Test-Path -LiteralPath $candidate -PathType Leaf) {
+                    $pyDir = Split-Path -Parent $candidate
+                    break
+                }
             }
+            if ($pyDir) { break }
             $parent = Split-Path -Parent $current
             if ($parent -eq $current) { break }
             $current = $parent
         }
-        if ($common -and (Test-Path -LiteralPath $common -PathType Container)) {
-            $env:PYTHONPATH = "$common;$env:PYTHONPATH"
+        if ($pyDir) {
+            $env:PYTHONPATH = "$pyDir;$env:PYTHONPATH"
         }
         $py = (Get-Command python.exe -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source)
         if (-not $py) { $py = 'python.exe' }

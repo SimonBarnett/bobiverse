@@ -86,10 +86,10 @@ def _resolve_opencode_fuel_helper_path(
 ) -> Path:
     """Locate ``opencode_fuel.py`` for embedding in the PowerShell wrapper.
 
-    Resolution is independent of the seat's working directory.  The helper is
-    found from the Bob install root / worktree layout (``common/scripts`` next to
-    ``bob/scripts``), with fallbacks to the configured install root and the
-    legacy cwd-based path.
+    FR #6159: flat installs compose the helper to ``<root>/scripts/opencode_fuel.py``.
+    Order: source-relative ``common/scripts`` (repo), then ``install_root`` flat
+    ``scripts`` then ``common/scripts``, then ``cwd.parent`` flat ``scripts`` then
+    ``common/scripts``. First existing file wins. Miss returns the first candidate.
     """
     source = Path(source_file).resolve() if source_file else Path(__file__).resolve()
     here = source.parent
@@ -98,9 +98,13 @@ def _resolve_opencode_fuel_helper_path(
         (here.parent / "common" / "scripts" / "opencode_fuel.py"),
     ]
     if install_root is not None:
-        candidates.append(Path(install_root) / "common" / "scripts" / "opencode_fuel.py")
+        root = Path(install_root)
+        candidates.append(root / "scripts" / "opencode_fuel.py")
+        candidates.append(root / "common" / "scripts" / "opencode_fuel.py")
     if cwd is not None:
-        candidates.append(Path(cwd).parent / "common" / "scripts" / "opencode_fuel.py")
+        parent = Path(cwd).parent
+        candidates.append(parent / "scripts" / "opencode_fuel.py")
+        candidates.append(parent / "common" / "scripts" / "opencode_fuel.py")
     for cand in candidates:
         if cand.is_file():
             return cand.resolve()
@@ -954,6 +958,7 @@ def describe_agent_child_launch(
     agent_exe: str,
     prompt: str | None = None,
     session_id: str | None = None,
+    install_root: str | Path | None = None,
 ) -> dict:
     """Canonical cursor/grok child launch for agent and plan (FR #2413).
 
@@ -971,7 +976,7 @@ def describe_agent_child_launch(
         else:
             prompt = worker_prompt(folder, str(rd), machine, nick)
     launch_mode = mode_l if mode_l in ("agent", "plan", "monitor") else "agent"
-    spec = build_launch(kind, launch_mode, folder, prompt, agent_exe, rd, session_id=session_id)
+    spec = build_launch(kind, launch_mode, folder, prompt, agent_exe, rd, session_id=session_id, install_root=install_root)
     env = seat_env_extra(rd, machine, nick)
     skills = str(Path(folder) / ".grok" / "skills")
     return {
@@ -1216,7 +1221,7 @@ def assert_fresh(argv: list, files: Optional[dict] = None, allow_resume: bool = 
 
 
 def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir: Path, session_id: Optional[str] = None,
-                 resume_session_id: Optional[str] = None) -> LaunchSpec:
+                 resume_session_id: Optional[str] = None, install_root: str | Path | None = None) -> LaunchSpec:
     if resume_session_id and not (mode == "maintenance" and kind == "grok"):
         raise ValueError("refusing to launch: only grok maintenance may resume (FR #2522)")
     sid = resume_session_id or session_id or str(uuid.uuid4())
@@ -1264,7 +1269,7 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
         turns_log = str(Path(run_dir) / "opencode-turns.jsonl")
         esc = lambda s: str(s).replace("'", "''")  # noqa: E731
         files[pfile] = prompt
-        helper_path = _resolve_opencode_fuel_helper_path(cwd=cwd)
+        helper_path = _resolve_opencode_fuel_helper_path(cwd=cwd, install_root=install_root)
         # FR #6157: each opencode run emits turn_started / turn_ended into opencode-turns.jsonl
         # so BoredEmitter gets harvest-hold / done-miss / startup-ready parity with Grok.
         files[lfile] = "\n".join([
@@ -2037,6 +2042,7 @@ def inject_console(
     text: str,
     submit_gap_s: float | None = None,
     log: Optional[Callable[[str], None]] = None,
+    kind: str | None = None,
 ) -> bool:
     """Paste text into THIS process's console input and submit with Enter.
 
@@ -2072,6 +2078,10 @@ def inject_console(
         if not log:
             return
         try:
+            # FR #6158: tag path logs with kind= so OpenCode/Cursor/Grok are distinguishable.
+            k = (kind or "").strip().lower()
+            if k and " kind=" not in msg:
+                msg = f"{msg} kind={k}"
             log(msg)
         except Exception:
             pass
@@ -2386,6 +2396,37 @@ def probe_unified_prompt_enqueue(*, agent_pid: int, since_wall: float, log_path:
     return False
 
 
+
+def probe_opencode_turns_submit(turns_path: Path | str, *, since_wall: float) -> bool:
+    """True when opencode-turns.jsonl has turn_started with ts > since_wall (FR #6158).
+
+    Reuses FR #6157 wrapper markers: a new turn_started after the inject baseline means
+    ReadLine accepted a line and Invoke-Opencode began.
+    """
+    path = Path(turns_path)
+    if not path.is_file():
+        return False
+    try:
+        data = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return False
+    lines = data.splitlines()[-200:]
+    for line in reversed(lines):
+        line = line.strip()
+        if not line or '"turn_started"' not in line:
+            continue
+        try:
+            obj = json.loads(line)
+        except Exception:
+            continue
+        if str(obj.get("type") or "") != "turn_started":
+            continue
+        ts = _parse_iso_ts(str(obj.get("ts") or ""))
+        if ts is not None and ts > float(since_wall):
+            return True
+    return False
+
+
 def make_submit_probe(
     kind: str,
     *,
@@ -2396,8 +2437,9 @@ def make_submit_probe(
     sessions_root: Optional[Path] = None,
     text: str = "",
     cursor_chats_root: Optional[Path] = None,
+    run_dir: Path | str | None = None,
 ) -> Optional[Callable[[], bool]]:
-    """Build a submit probe for the agent kind (FR #2696). None = no probe available."""
+    """Build a submit probe for the agent kind (FR #2696 / #6158). None = no probe available."""
     k = (kind or "").strip().lower()
     t0 = float(time.time() if since_wall is None else since_wall)
 
@@ -2424,6 +2466,17 @@ def make_submit_probe(
             return probe_cursor_prompt_history(croot, want, since_wall=t0)
 
         return _cprobe if want else None
+
+    if k == "opencode":
+        # FR #6158: wrapper writes turn_started to run_dir/opencode-turns.jsonl (FR #6157).
+        if run_dir is None:
+            return None
+        turns = Path(run_dir) / "opencode-turns.jsonl"
+
+        def _oprobe() -> bool:
+            return probe_opencode_turns_submit(turns, since_wall=t0)
+
+        return _oprobe
 
     # Unknown kinds: no durable enqueue log on this fleet yet.
     return None
@@ -2532,19 +2585,27 @@ def should_start_cursor_turn_watcher(kind: str) -> bool:
 
 
 def apply_cursor_inject_keys_default(kind: str, log: Optional[Callable[[str], None]] = None) -> bool:
-    """FR #4464: Cursor seats default to batched KEY_EVENT at seat start.
+    """FR #4464 / #6158: Cursor and OpenCode seats default to batched KEY_EVENT at seat start.
 
-    cursor-agent treats Ctrl+V as a literal v. Set BOB_WORKER_INJECT_PASTE=0 when
-    it is unset, even if the cursor turn watcher does not start. An explicit value wins.
+    cursor-agent treats Ctrl+V as a literal v. OpenCode ReadLine paste is unreliable on
+    this fleet (FR-OC-INJECT). Set BOB_WORKER_INJECT_PASTE=0 when it is unset. An explicit
+    value wins (set BOB_WORKER_INJECT_PASTE=1 to force clipboard paste).
     """
-    if (kind or "").strip().lower() != "cursor":
+    k = (kind or "").strip().lower()
+    if k not in ("cursor", "opencode"):
         return False
     if (os.environ.get("BOB_WORKER_INJECT_PASTE") or "").strip():
         return False
     os.environ["BOB_WORKER_INJECT_PASTE"] = "0"
     if log is not None:
         try:
-            log("relay: cursor seat - inject via batched keys (Ctrl+V lands as literal 'v')")
+            if k == "opencode":
+                log(
+                    "relay: opencode seat - inject via batched keys "
+                    "(set BOB_WORKER_INJECT_PASTE=1 to paste)"
+                )
+            else:
+                log("relay: cursor seat - inject via batched keys (Ctrl+V lands as literal 'v')")
         except Exception:
             pass
     return True
@@ -6602,8 +6663,10 @@ class Supervisor:
                  reconnect_grace_s: float | None = None,
                  send_enter: Optional[Callable[[int], bool]] = None,
                  ask_user_watch: Optional["AskUserPendingWatch"] = None,
-                 sessions_root: Optional[Path] = None):
+                 sessions_root: Optional[Path] = None,
+                 install_root: str | Path | None = None):
         self.kind, self.exe, self.cwd, self.machine, self.nick = kind, exe, cwd, machine, nick
+        self.install_root = str(install_root) if install_root else None
         self.run_dir, self.irc, self.relay, self.log = Path(run_dir), irc, relay, log
         self.secret = env_secret
         self.spawn, self.kill, self.probe, self.inject = spawn, kill, probe, inject
@@ -7286,6 +7349,7 @@ class Supervisor:
                 nick=self.nick,
                 agent_exe=self.exe,
                 prompt=self._prompt() + (" " + note if note else ""),
+                install_root=self.install_root,
             )
             spec = child["spec"]
             # FR #2380 / #2413 / #2669: seat env + path normalize + scrub agent-host vars.
@@ -7607,10 +7671,12 @@ class Supervisor:
         kind = (self.kind or "").strip().lower()
         is_cursor = kind == "cursor"
         is_grok = kind == "grok"
+        is_opencode = kind == "opencode"
         # FR #5159: Grok also ACK-on-receipt (FR #4115 / #4889). Treating receipt ACK
         # as ``block_on_receipt_ack`` skipped re-paste and left the job accepted
         # (marchhare-29688 / regression of #4510).
-        receipt_ack = is_cursor or is_grok
+        # FR #6158: OpenCode ACK-on-receipt too --- GIVEUP submit-verify failed after one re-inject.
+        receipt_ack = is_cursor or is_grok or is_opencode
 
         def _turn_running() -> bool:
             b = self.bored
@@ -7635,10 +7701,17 @@ class Supervisor:
             return False
         if on_failed is None and assign_job_ref(line):
             on_failed = lambda l=line: self._inject_recovery().on_failed(l, attempt=1)
+        kind_l = (self.kind or "").strip().lower()
         if not _submit_verify_enabled():
-            return bool(self.inject(proc.pid, line))
+            # FR #6158: still log path=... kind= when verify is opted out.
+            if self.inject is inject_console:
+                return bool(inject_console(proc.pid, line, log=self.log, kind=kind_l))
+            try:
+                return bool(self.inject(proc.pid, line, log=self.log))
+            except TypeError:
+                return bool(self.inject(proc.pid, line))
         sid = self.sessions[-1] if self.sessions else None
-        # Wall-clock probe baseline (events.jsonl / unified.jsonl use UTC wall times).
+        # Wall-clock probe baseline (events.jsonl / unified.jsonl / opencode-turns use UTC wall times).
         since_wall = time.time()
         probe = make_submit_probe(
             self.kind,
@@ -7647,16 +7720,22 @@ class Supervisor:
             agent_pid=int(getattr(proc, "pid", 0) or 0),
             since_wall=since_wall,
             text=line,
+            run_dir=self.run_dir,
         )
         # FR #2791: stop only when the open ACK is for this injected job (not any ACK).
         stop = None
         want = assign_job_ref(line)
-        is_cursor = (self.kind or "").strip().lower() == "cursor"
+        is_cursor = kind_l == "cursor"
         inject_fn = self.inject
-        if is_cursor and self.inject is inject_console:
-            inject_fn = lambda pid, text, log=None: inject_console(
-                pid, text, submit_gap_s=_cursor_submit_gap_s(), log=log
-            )
+        if self.inject is inject_console:
+            if is_cursor:
+                inject_fn = lambda pid, text, log=None: inject_console(
+                    pid, text, submit_gap_s=_cursor_submit_gap_s(), log=log, kind=kind_l
+                )
+            else:
+                inject_fn = lambda pid, text, log=None: inject_console(
+                    pid, text, log=log, kind=kind_l
+                )
         if want and self.bored is not None:
             # FR #2791: job-matched ACK stop when no probe.
             # FR #4732 Cursor / FR #4889 Grok: with a probe, never stop on receipt
@@ -8285,6 +8364,7 @@ def run_plan(args, log: Log) -> int:
         machine=machine or "plan",
         nick=nick,
         agent_exe=exe,
+        install_root=str(args.install_root),
     )
     spec = child["spec"]
     env = prepare_seat_child_env(os.environ, child["env"])  # FR #2413 / #2669
@@ -8363,7 +8443,8 @@ def run_monitor(args, log: Log) -> int:
             set_console_icon(folder)  # find_window_icon only knows bob-systray; still set title
         except Exception:
             pass
-    spec = build_launch(kind, "monitor", str(folder), monitor_prompt(str(folder)), exe, run_dir)
+    spec = build_launch(kind, "monitor", str(folder), monitor_prompt(str(folder)), exe, run_dir,
+                             install_root=str(args.install_root))
     env = prepare_seat_child_env(os.environ)  # FR #2669
     if secret and kind == "grok":
         env["XAI_API_KEY"] = secret.reveal()
@@ -8473,7 +8554,8 @@ def run_maintenance(args, log: Log, *, spawn: Optional[Callable] = None, poll_s:
     prompt = maintenance_prompt(str(folder), done_file=str(done_file), resumed=(how == "resume"))
     spec = build_launch(kind, "maintenance", str(folder), prompt, exe, rd,
                         session_id=(sid if how == "new" else None),
-                        resume_session_id=(sid if how == "resume" else None))
+                        resume_session_id=(sid if how == "resume" else None),
+                             install_root=str(args.install_root))
     env = prepare_seat_child_env(os.environ)  # FR #2669
     if secret and kind == "grok":
         env["XAI_API_KEY"] = secret.reveal()
@@ -8590,6 +8672,7 @@ def run_agent(args, log: Log) -> int:
         # Grok TUI session.create often needs 30-60s on slower boxes (FR #955 ionos evidence).
         grace = 60.0
     log(f"worker: startup_grace_s={grace:.0f}")
+    _install_root = str(args.install_root)
     sup = Supervisor(
         kind=kind,
         exe=exe,
@@ -8602,9 +8685,9 @@ def run_agent(args, log: Log) -> int:
         log=log,
         env_secret=secret,
         startup_grace_s=grace,
+        install_root=_install_root,
     )
     # FR #2782: a hotpatched install exe must reach this seat at its next idle point.
-    _install_root = str(args.install_root)
     sup.stale_build_check = lambda: stale_build_reason(sys.executable, _install_root)
     if not sup.start_agent():
         irc.close("launch failed")

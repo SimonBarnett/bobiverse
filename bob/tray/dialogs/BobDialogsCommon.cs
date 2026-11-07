@@ -1,4 +1,4 @@
-﻿// t828u: shared helpers for the two fast dialog exes (bob-about.exe, bob-status.exe). C# 5 (csc.exe of .NET Framework 4, always present on Windows).
+// t828u: shared helpers for the two fast dialog exes (bob-about.exe, bob-status.exe). C# 5 (csc.exe of .NET Framework 4, always present on Windows).
 // Cold start target: well under 1 s. No PowerShell, no Python, no network: data is read from files the tray / installs already wrote.
 using System;
 using System.Collections;
@@ -155,6 +155,12 @@ namespace BobDialogs
             return s == "true" || s == "1";
         }
 
+        public static long Long(Dictionary<string, object> d, string key, long dflt)
+        {
+            if (d == null || !d.ContainsKey(key) || d[key] == null) return dflt;
+            try { return Convert.ToInt64(d[key]); } catch { return dflt; }
+        }
+
         public static int Int(Dictionary<string, object> d, string key, int dflt)
         {
             object v;
@@ -178,6 +184,41 @@ namespace BobDialogs
             {
                 string p = Path.Combine(root, "assets\\ntsa-gut-logo.png");
                 if (File.Exists(p)) { byte[] b = File.ReadAllBytes(p); return Image.FromStream(new MemoryStream(b)); }
+            }
+            catch { }
+            return null;
+        }
+
+
+        // FR #6149: Bobiverse-owned fuel-family badges (assets\fuel-logos\<family>.png).
+        public static string FuelLogoFallback(string family)
+        {
+            string f = (family ?? "").Trim().ToLowerInvariant();
+            if (f == "cursor" || f == "cu") return "Cu";
+            if (f == "xai" || f == "grok" || f == "x-ai") return "xAI";
+            if (f == "opencode" || f == "oc") return "OC";
+            if (f == "copilot" || f == "gh" || f == "github") return "Gh";
+            if (f.Length == 0) return "?";
+            return f.Length <= 3 ? f.ToUpperInvariant() : f.Substring(0, 3).ToUpperInvariant();
+        }
+
+        public static Image FuelLogo(string root, string family)
+        {
+            string key = null;
+            string f = (family ?? "").Trim().ToLowerInvariant();
+            if (f == "cursor" || f == "cu") key = "cursor";
+            else if (f == "xai" || f == "grok" || f == "x-ai") key = "xai";
+            else if (f == "opencode" || f == "oc") key = "opencode";
+            else if (f == "copilot" || f == "gh" || f == "github") key = "copilot";
+            if (key == null) return null;
+            try
+            {
+                string p = Path.Combine(root ?? "", "assets", "fuel-logos", key + ".png");
+                if (File.Exists(p))
+                {
+                    byte[] b = File.ReadAllBytes(p);
+                    return Image.FromStream(new MemoryStream(b));
+                }
             }
             catch { }
             return null;

@@ -90,12 +90,25 @@ function New-BobTrayStatusModel {
         }
     }
     $ttl = $Title; if (-not $ttl -and $h) { $ttl = [string]$h.title }
-    $copilotPool = $null; $copilotLine = ''
-    if ($h) { $copilotPool = $h.copilot_pool; $copilotLine = [string]$h.copilot_line }
+    $copilotPool = $null; $copilotLine = ''; $copilotStaleLine = ''; $copilotFreshUntil = [int64]0
+    if ($h) {
+        $copilotPool = $h.copilot_pool
+        $copilotLine = [string]$h.copilot_line
+        try { $copilotStaleLine = [string]$h.copilot_stale_line } catch { }
+        try { if ($null -ne $h.copilot_fresh_until) { $copilotFreshUntil = [int64]$h.copilot_fresh_until } } catch { }
+    }
     if (-not $copilotLine -and (Get-Command Format-BobCopilotPoolLine -ErrorAction SilentlyContinue)) {
         $copilotLine = Format-BobCopilotPoolLine -Pool $copilotPool
+        if (-not $copilotStaleLine) { $copilotStaleLine = Format-BobCopilotPoolLine -Pool $copilotPool -ForceStale }
+        if ((Get-Command Get-BobCopilotFreshness -ErrorAction SilentlyContinue)) {
+            try {
+                $fr = Get-BobCopilotFreshness -Pool $copilotPool
+                if ($fr -and $null -ne $fr.fresh_until) { $copilotFreshUntil = [int64]$fr.fresh_until }
+            } catch { }
+        }
     }
     if (-not $copilotLine) { $copilotLine = 'Copilot  unknown' }
+    if (-not $copilotStaleLine) { $copilotStaleLine = 'Copilot  [stale]  unknown' }
     # FR #6147: OpenCode free/go on Status snapshot (n/a when unknown).
     $opencodeLine = ''
     $opencodeFree = $null
@@ -126,6 +139,8 @@ function New-BobTrayStatusModel {
         opencode_line = $opencodeLine
         copilot_pool = $copilotPool
         copilot_line = $copilotLine
+        copilot_stale_line = $copilotStaleLine
+        copilot_fresh_until = $copilotFreshUntil
         alert     = $(if ($AlertKind) { $AlertKind } else { 'none' })
         alerts    = @($Alerts | Where-Object { $_ })
         version   = $Version
@@ -227,7 +242,7 @@ function Sync-BobTrayStatusWorkersFromDigest {
     <#
       FR #1553: refresh TipForm worker lines from the public digest report WITHOUT Get-BobTrayHover.
       Bound HTTP (default 8s) so a peer DNS/UNC hang in hover cannot freeze tray-status.json forever.
-      Updates only grok[].workers (+ ts); leaves cursor pools / attention alone.
+      Updates only grok[].workers (+ ts); leaves cursor pools / attention / copilot_* alone (FR #6148).
       -Digest: optional already-parsed digest (tests / callers that fetched elsewhere).
     #>
     param(

@@ -6,9 +6,10 @@ After Sync-BobiverseFromRepo / MSI upgrade, the flat install contains every file
 
 ## Deliverables
 
-- Sync/MSI include: `common/scripts/opencode_fuel.py`, `tray/tools/Get-BobOpencodeFuel.ps1` (or install tools layout), updated `Get-BobAgentFuel.ps1`, `bob/.grok/skills/bob-setup-opencode/**`.
-- Layout pin test (paths exist after Sync compose).
-- Wrapper `_resolve_opencode_fuel_helper_path` finds helper on install-root layout.
+- Sync/MSI include: flat `scripts/opencode_fuel.py` (composed from `common/scripts`), `tools/Get-BobOpencodeFuel.ps1`, updated `Get-BobAgentFuel.ps1`, `bob/.grok/skills/bob-setup-opencode/**` (also worker Shared book).
+- Layout pin test (paths exist after Sync/Pack compose; missing helper fails the pin).
+- `Get-BobOpencodeFuel.ps1` resolves `scripts\opencode_fuel.py` then `common\scripts\opencode_fuel.py` as files (FR #6159).
+- Wrapper `_resolve_opencode_fuel_helper_path` finds helper on install-root flat `scripts/` (threaded via `build_launch` / `describe_agent_child_launch` `install_root=`).
 
 ## Testable
 
