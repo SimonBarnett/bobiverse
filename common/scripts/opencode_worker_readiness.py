@@ -343,7 +343,7 @@ def classify_pr_lookup(
             "state": "lookup_failed",
             "blocker": "pr_lookup_failed",
             "next_step": (
-                f"Re-run `gh pr view {int(expected_number)} --repo {expected_repo}` "
+                f"Re-run `gh pr view` or `gh issue view {int(expected_number)} --repo {expected_repo}` "
                 "after auth is healthy. Escalate if still failing; never hunt tokens."
             ),
             "detail": redact_secrets(out.strip()[:240]),

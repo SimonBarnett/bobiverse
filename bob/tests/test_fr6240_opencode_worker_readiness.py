@@ -384,3 +384,14 @@ def test_fr6240_assert_pr_lookup_ok_with_fixtures(tmp_path: Path):
     )
     assert proc.returncode == 0, proc.stdout + proc.stderr
     assert "OK FR #6240" in proc.stdout
+
+def test_fr6240_pr_lookup_accepts_issue_json():
+    r = ready.classify_pr_lookup(
+        exit_code=0,
+        stdout='{"number":6147,"url":"https://github.com/SimonBarnett/bobiverse/issues/6147","title":"FR-007"}',
+        expected_repo="SimonBarnett/bobiverse",
+        expected_number=6147,
+    )
+    assert r["ok"] is True
+    assert r["number"] == 6147
+

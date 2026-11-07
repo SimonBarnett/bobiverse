@@ -395,10 +395,17 @@ if (-not $SkipPrLookup) {
             $prev = $ErrorActionPreference
             try {
                 $ErrorActionPreference = 'Continue'
+                # FR #6240 related task #6147 is an Issue; accept PR or Issue view.
                 $probe = & gh pr view $num --repo $repo --json number,url,title 2>&1
                 $prCode = $LASTEXITCODE
                 $prOut = ($probe | Out-String)
                 $prErr = ''
+                if ($prCode -ne 0) {
+                    $probe2 = & gh issue view $num --repo $repo --json number,url,title 2>&1
+                    $prCode = $LASTEXITCODE
+                    $prOut = ($probe2 | Out-String)
+                    $prErr = ''
+                }
             } catch {
                 $prCode = 1
                 $prOut = ''
