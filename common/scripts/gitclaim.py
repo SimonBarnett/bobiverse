@@ -1606,6 +1606,9 @@ _REQUIRE_MACHINE_ISSUE_PINS: dict[tuple[str, str], str] = {
     # FR #5030 / a-search#5221: hasresults redeploy + monitor + CloudWatch + SQL logs
     # (mis-offered to flamingo; soft cues + dedicated redqueen pin land in same FR).
     ("simonbarnett/a-search", "#5221"): "redqueen",
+    # FR #6229 / #6144: live MarchHare source->digest->tray gate (mis-offered to redqueen
+    # while covering merges already on main; bobiverse soft cues never pin per FR #4512).
+    ("simonbarnett/bobiverse", "#6144"): "marchhare",
     # FR #4599: do NOT hard-pin bobiverse #4340 to ionos (Simon: bobiverse work never
     # pinned to ionos). See _REQUIRE_MACHINE_ISSUE_UNPINS.
 }
@@ -1720,7 +1723,8 @@ def infer_require_machine(
     title/body/line cues (dedicated body ``require_machine:``/``=`` pin lines; WP0 live -> ce-priority-dev1; needs-ionos / chair-outbox /
     recycle|recompose|Sync/compose Jeeves / Sync-BobiverseFromRepo near Jeeves / prune queue.json / install(+smoke) on ionos -> ionos;
     FR #5030 a-hasresults-monitor / redeploy live workers|walrus / FilterLogEvents near a-search -> redqueen;
-    FR #587 / #852 / #2451 / #3129 / #4427 / #5030).
+    FR #6229 hard-pin bobiverse#6144 -> marchhare (live MarchHare E2E);
+    FR #587 / #852 / #2451 / #3129 / #4427 / #5030 / #6229).
 
     FR #4512: for ``SimonBarnett/bobiverse``, title/body soft text cues never pin.
     Only labels, hard issue pins/unpins, and dedicated ``require_machine:`` body lines.
