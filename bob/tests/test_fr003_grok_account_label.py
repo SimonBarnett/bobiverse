@@ -258,6 +258,8 @@ def test_publish_posts_label_only(monkeypatch):
     assert posted[0]["machine"] == "redqueen"
     assert posted[0]["grok_account"] == _FAKE_EMAIL
     assert posted[0]["grok_account"] != "bob-redqueen"
+    assert "online" not in posted[0]  # MRB #6167: label-only must not flip status
+    assert "status" not in posted[0]
     assert "key" not in posted[0]
     assert "refresh_token" not in posted[0]
 
@@ -360,3 +362,61 @@ def test_source_pins_ear_identity_out_of_peer_fields():
     agent = Path(irc_agent.__file__).read_text(encoding="utf-8")
     assert "_maybe_publish_grok_account" in agent
     assert "grok account publish ok" in agent
+
+
+def test_fr003_label_payload_omits_online():
+    """MRB #6167: label merge must not send online (avoids status fingerprint churn)."""
+    p = bobreport.build_grok_account_merge_payload("redqueen", _FAKE_EMAIL)
+    assert p.get("grok_account") == _FAKE_EMAIL
+    assert "online" not in p
+    assert "status" not in p
+    p2 = bobreport.build_grok_account_merge_payload("redqueen", None)
+    assert p2.get("grok_account") is None
+    assert "online" not in p2
+
+
+def test_fr003_chair_mismatch_rate_limited(monkeypatch, tmp_path):
+    """MRB #6167: after ok publish, chair=None mismatch must not POST every heartbeat."""
+    import irc_agent
+
+    posts = []
+
+    def fake_publish(mid, label, **kw):
+        posts.append((mid, label))
+        return 204
+
+    monkeypatch.setattr(bobreport, "publish_grok_account_label", fake_publish)
+    monkeypatch.setattr(bobreport, "read_grok_account_label", lambda: ("ok", _FAKE_EMAIL))
+    monkeypatch.setattr(bobreport, "digest_fuel_heartbeat_s", lambda: 1.0)
+
+    class Args:
+        chair = False
+
+    client = irc_agent.Client.__new__(irc_agent.Client)
+    client.args = Args()
+    client.original_nick = "Bob-redqueen"
+    client._local_machine_id = lambda: "redqueen"
+    client._grok_account_last = 0.0
+    client._grok_account_delivered = irc_agent._GROK_ACCOUNT_UNSET
+    client._grok_account_chair = irc_agent._GROK_ACCOUNT_UNSET
+    client._grok_account_chair_mismatch_last = 0.0
+
+    # First publish
+    client._maybe_publish_grok_account()
+    assert len(posts) == 1
+    assert client._grok_account_delivered == _FAKE_EMAIL
+
+    # Simulate digest pull that still lacks grok_account
+    client._grok_account_chair = None
+    client._grok_account_last = 0.0
+    client._maybe_publish_grok_account()
+    # Within 600s chair-mismatch window: no second POST
+    assert len(posts) == 1
+
+    # After rate-limit window, allow one reconcile POST
+    client._grok_account_chair_mismatch_last = 0.0
+    client._grok_account_last = 0.0
+    # pretend 601s ago
+    client._grok_account_chair_mismatch_last = __import__("time").time() - 601.0
+    client._maybe_publish_grok_account()
+    assert len(posts) == 2

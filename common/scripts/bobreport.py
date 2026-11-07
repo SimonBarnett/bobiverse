@@ -4118,9 +4118,13 @@ def post_report_json(payload: dict, *, url: str | None = None, timeout: float = 
 
 
 def build_grok_account_merge_payload(machine_id: str, label: str | None) -> dict:
-    """Label-only merge payload (FR #6143). Never includes credentials."""
+    """Label-only merge payload (FR #6143). Never includes credentials.
+
+    MRB #6167: do not send ``online`` --- ``_apply_merge_payload`` would flip
+    ``status`` to ``I am online`` and churn the machine fingerprint vs fuel POSTs.
+    """
     mid = normalize_machine_id(machine_id) or str(machine_id or "").strip().lower()
-    payload: dict = {"op": "merge", "machine": mid, "id": mid, "online": True}
+    payload: dict = {"op": "merge", "machine": mid, "id": mid}
     if label is None:
         payload["grok_account"] = None
         payload["cleared"] = ["grok_account"]
