@@ -225,10 +225,10 @@ function Sync-BobTrayStatusWorkersFromDigest {
         if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { return $null }
         $digest = $Digest
         if (-not $digest) {
-            $url = [string]$ReportUrl
-            if (-not $url) { $url = [string]$env:BOB_DIGEST_REPORT_URL }
+            # FR #6142: trim before blank check (whitespace-only env -> canonical).
+            $url = ([string]$ReportUrl).Trim()
+            if (-not $url) { $url = ([string]$env:BOB_DIGEST_REPORT_URL).Trim() }
             if (-not $url) { $url = 'https://bob.ntsa.uk/bob/v1/report' }
-            $url = $url.Trim()
             $sec = [Math]::Max(2, [int]$TimeoutSec)
             $resp = Invoke-WebRequest -Uri $url -UseBasicParsing -TimeoutSec $sec -Headers @{ Accept = 'application/json' }
             $ms = $resp.RawContentStream
