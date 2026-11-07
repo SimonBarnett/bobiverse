@@ -46,6 +46,19 @@ Assert: `Assert-BobDigestWebhookLocal.ps1 -ExpectedReportUrl https://bob.ntsa.uk
 
 - **MSI Install-Bob tray (FR #3987 / PR #3993):** during RunInstall, Start-Service ircBob (WaitForStatus 60s soft-fail) runs **before** live TipForm launch; Install-Bob sets `BOBIVERSE_NO_SERVICE_RESTART=1` and interactive `Start-BobTray -SkipServiceRestart` so `Restart-BobTrayService` cannot race the CA. `Invoke-BobTrayServiceControl` skips `START_PENDING`/`STOP_PENDING`. Persistent Startup/HKCU shortcuts may still restart ircBob on logon (intentional).
 
+## Digest fuel publish (FR #6141..#6150 / FR-010)
+
+Ear-owned fleet fuel merges POST to `https://bob.ntsa.uk/bob/v1/report` via `bobreport.publish_local_peer_fuel` (fingerprint change or heartbeat). TipForm/Status **paint only** (Watch-BobTray does not POST fuel unless capture / `-PostDigestWebhook`).
+
+- **Host:** digest GET/docs default `https://bob.ntsa.uk/bob/v1/report` (FR #6142). IRC `--host` stays `irc.ntsa.uk`.
+- **OpenCode ids:** `opencode-free` / `opencode-go` on `machines.<id>.pcent` when local fuel is known (omit when unknown; never invent 0).
+- **Copilot:** account-wide pool line on TipForm/Status; freshness from digest `fetched_at` / paint rules (park FR-008).
+- **Logos:** Bobiverse-owned badges under `bob/tray/assets/fuel-logos/` (`Get-BobTrayFuelLogoImage` / Status `FuelLogo`); text fallback `Cu` / `xAI` / `OC` / `Gh` when an asset is missing (FR #6149). See that folder `LICENSE.md`.
+- **cursor_known:** publishers send `cursor_known` (mirrors `weekly_known`); false clears Cursor label/pcent/pools (FR #6144).
+- Park anti-omnibus: `bob/docs/fr/digest-ear-publish/` (Refs to impl issues; docs PRs must not `Closes` sibling impl FRs).
+
+Refs SimonBarnett/bobiverse#6141 #6142 #6143 #6144 #6145 #6146 #6147 #6148 #6149 (impl). This skill section is FR #6150.
+
 ## Listen and send (FR #2174)
 
 - **Listen:** `Get-Content <bob home>\inbound-transcript.log -Tail 40` — always-on rotating transcript (`UTC channel nick text`, secrets redacted). Independent of `BOB_IRC_DEBUG`.
