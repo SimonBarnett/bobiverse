@@ -153,6 +153,29 @@ Go limits are per-model dollar allowances with rolling caps: 50% per week and
 at run time by the wrapper. `opencode stats` shows local cost only; there is no
 public remaining-quota API.
 
+
+
+## Fleet smoke checklist (FR #6160 / FR-OC-FLEET)
+
+Run on each box after install/repair. The script **never** reads `auth.json` body
+(path + byte length + ACL only).
+
+```powershell
+# Fast PATH + auth ACL + dry-run (no live model call):
+.\scripts\Assert-BobOpencodeFleetSmoke.ps1 -SkipPong
+
+# Full smoke including opencode run pong (needs network + auth):
+.\scripts\Assert-BobOpencodeFleetSmoke.ps1
+```
+
+Exit non-zero when `opencode` is missing, auth is absent/unrestricted, pong fails,
+or `bob-worker --dry-run` cannot see `opencode_cmd`. Opt-outs: `-SkipPong`,
+`-SkipDryRun`, `-SkipAuth`. Optional `-RequireOpencodeDecision` when fuel fixtures
+should force `decision=opencode`.
+
+Ops roll call (machine ids only, no secrets): `bob/docs/opencode-fleet-enabled.md`.
+Trial metrics template lives in that same doc.
+
 ## Troubleshoot
 
 | Symptom | Fix |
