@@ -199,3 +199,13 @@ def test_skill_fr3012_contiguous():
     assert "out-of-fuel" in t.lower() or "out of fuel" in t.lower()
     assert "402" in t
     assert "GIVEUP" in t
+
+
+def test_is_out_of_fuel_text_keeps_apostrophe_provider_lines_mrb6231():
+    """MRB #6231: apostrophes in provider prose must not erase a real 402."""
+    line = "Provider's response: 402 Payment Required for model 'beam-free'"
+    assert "402" in bw.provider_fuel_scan_text(line)
+    assert bw.is_out_of_fuel_text(line) is True
+    # Instructional single-quoted stock phrase still ignored.
+    assert bw.is_out_of_fuel_text("The task says '402 Payment Required' only.") is False
+

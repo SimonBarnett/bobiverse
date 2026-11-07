@@ -499,7 +499,10 @@ def save_agent_list_fuel(fuel: Fuel, *, now: Optional[float] = None, env: Option
     path = agent_list_cache_path(env)
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(fuel_cache_document(fuel, now=now), sort_keys=True), encoding="utf-8")
+        payload = json.dumps(fuel_cache_document(fuel, now=now), sort_keys=True)
+        tmp = path.with_suffix(path.suffix + ".tmp")
+        tmp.write_text(payload, encoding="utf-8")
+        os.replace(tmp, path)
     except OSError:
         return False
     return True
@@ -3431,15 +3434,18 @@ DEFAULT_DIGEST_REPORT_URL = "https://bob.ntsa.uk/bob/v1/report"
 
 
 # Instructional quotations (skill / task text) are not a provider response.
-# Backtick spans and single-quoted mentions are dropped. A double-quoted stock
-# phrase is dropped only when the line has no unquoted HTTP/status code, so a
-# real ``status_code=402 "usage balance exhausted"`` line still holds.
+# Backtick spans are dropped. Single- and double-quoted *stock phrases* are
+# dropped (not arbitrary apostrophe spans --- provider lines like
+# ``Provider's response: 402 ...`` must still hold; MRB #6231).
+# A quoted stock phrase is dropped only when the line has no unquoted
+# HTTP/status code, so a real ``status_code=402 "usage balance exhausted"``
+# line still holds.
 _BACKTICK_SPAN_RX = re.compile(r"`[^`]*`")
-_SINGLE_QUOTED_SPAN_RX = re.compile(r"'[^'\n]{0,200}'")
-_SHORT_DOUBLE_MENTION_RX = re.compile(
-    r'"(?:402\s*Payment\s*Required|Payment\s*Required|usage\s+balance\s+exhausted|NEEDS_AUTH|OUTCOME_NEEDS_AUTH)"',
+_QUOTED_STOCK_FUEL_MENTION_RX = re.compile(
+    r"['\"](?:402\s*Payment\s*Required|Payment\s*Required|usage\s+balance\s+exhausted|NEEDS_AUTH|OUTCOME_NEEDS_AUTH)['\"]",
     re.IGNORECASE,
 )
+_SHORT_DOUBLE_MENTION_RX = _QUOTED_STOCK_FUEL_MENTION_RX  # back-compat alias
 _UNQUOTED_PROVIDER_STATUS_RX = re.compile(
     r"(?i)(?:\bhttp\b|\bstatus(?:_code| code)?\b)\D{0,12}\b(402|429)\b"
 )
@@ -3454,10 +3460,9 @@ def provider_fuel_scan_text(text: str) -> str:
     """
     raw = text or ""
     cleaned = _BACKTICK_SPAN_RX.sub(" ", raw)
-    cleaned = _SINGLE_QUOTED_SPAN_RX.sub(" ", cleaned)
     if _UNQUOTED_PROVIDER_STATUS_RX.search(cleaned):
         return cleaned
-    return _SHORT_DOUBLE_MENTION_RX.sub(" ", cleaned)
+    return _QUOTED_STOCK_FUEL_MENTION_RX.sub(" ", cleaned)
 
 
 def is_out_of_fuel_text(text: str) -> bool:

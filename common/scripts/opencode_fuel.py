@@ -722,7 +722,14 @@ def looks_like_rate_limit(text: str | None) -> bool:
     if not text or not isinstance(text, str):
         return False
     text = re.sub(r"`[^`]*`", " ", text)
-    text = re.sub(r"'[^'\n]{0,200}'", " ", text)
+    # MRB #6231: only strip instructional stock phrases, not apostrophes in
+    # provider prose (``Provider's response: 402 ...``).
+    text = re.sub(
+        r"['\"](?:402\s*Payment\s*Required|Payment\s*Required|usage\s+balance\s+exhausted|NEEDS_AUTH|OUTCOME_NEEDS_AUTH)['\"]",
+        " ",
+        text,
+        flags=re.IGNORECASE,
+    )
     t = text.lower()
     if any(phrase in t for phrase in RATE_LIMIT_PHRASES):
         return True
