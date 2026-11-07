@@ -152,6 +152,27 @@ try:
 except Exception:  # pragma: no cover
     opencode_fuel = None  # type: ignore
 
+try:
+    from opencode_seat_contract import (  # noqa: E402
+        DIR_FORBIDDEN_MESSAGE,
+        DIR_MISSING_MESSAGE,
+        GH_BLOCK_MESSAGE,
+        dir_is_forbidden,
+        gh_auth_blocks,
+        permission_config_text,
+        probe_gh_auth,
+    )
+except ImportError:  # package import (bob.scripts.bob_worker)
+    from bob.scripts.opencode_seat_contract import (  # type: ignore  # noqa: E402
+        DIR_FORBIDDEN_MESSAGE,
+        DIR_MISSING_MESSAGE,
+        GH_BLOCK_MESSAGE,
+        dir_is_forbidden,
+        gh_auth_blocks,
+        permission_config_text,
+        probe_gh_auth,
+    )
+
 DEFAULT_HOST = "irc.ntsa.uk"
 DEFAULT_PORT = 6697
 ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
@@ -1330,6 +1351,11 @@ def worker_prompt(worker_dir: str, home: str, machine: str, nick: str) -> str:
         f"One issue per issue: when MRB (or any worker) finds a twin/duplicate issue, close the later one and comment a reference to the first; never leave both open; done issues are closed too. "
         f"Skill-intake consolidation: when a worker takes an FR from skill intake (label:skill / harvest), it must close all open issues for that skill book (every harvest/skill issue targeting the same book), open one consolidated PR for them, and cite every issue it closes (Closes #N for each); no per-issue PRs for the same skill book; the worker closes the issues itself as part of DONE. "
         f"CAST IRON (FR #4843): never git checkout/switch/commit/merge in the install root ({Path(worker_dir).parent}); always `git -C <install> worktree add -b fr-N <job-wt> origin/main` (e.g. C:\\ai\\bob-wt-fr-<n> or %TEMP%\\bobiverse-fr-<n>). An install root left on fr-* means live seats read unreviewed skills. "
+        f"Windows search (FR #6240): use Get-ChildItem and Select-String. Do not run Unix grep or head. "
+        f"If gh says to run gh auth login, stop and report that. Do not search for tokens, do not read hosts.yml, and do not look in other profiles or password folders. "
+        f"Headless opencode run auto-rejects external_directory and has no --interactive flag. Do not pass --auto. "
+        f"If a worktree or the outbox is rejected, do not retry a broader path. "
+        f"BOB_HOME may be empty. ACK/DONE go to $env:BOB_OUTBOX only. "
         f"Never print or store secrets."
     )
 
@@ -1584,6 +1610,9 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
         helper_path = _resolve_opencode_fuel_helper_path(cwd=cwd, install_root=install_root)
         # FR #6157: each opencode run emits turn_started / turn_ended into opencode-turns.jsonl
         # so BoredEmitter gets harvest-hold / done-miss / startup-ready parity with Grok.
+        # FR #6240: allow external_directory only for this seat's run dir (outbox). * stays ask.
+        cfg_path = str(Path(run_dir) / "opencode-seat.json")
+        files[cfg_path] = permission_config_text(run_dir)
         files[lfile] = "\n".join([
             r"$ErrorActionPreference = 'Stop'",
             r"if (-not $env:BOB_OPENCODE_MODEL) { throw 'BOB_OPENCODE_MODEL is required (no exhausted glm-5.3 fallback)' }",
@@ -1609,6 +1638,20 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             r"    Write-OpencodeTurnMarker 'turn_started' $turnN",
             r"    try {",
             r"    $argList = @('run', '-m', $model, $line)",
+            r"    $ocDir = [string]$env:BOB_OPENCODE_DIR",
+            r"    if ($ocDir) {",
+            r"        if ($ocDir -match '(?i)(\.config\\gh|hosts\.yml|\.git-credentials|\\passwords|\.netrc)') {",
+            r"            Write-Output 'opencode-ready: blocked opencode_dir_forbidden. Next: unset BOB_OPENCODE_DIR. Do not point OpenCode at a credential store.'",
+            r"            exit 4",
+            r"        }",
+            r"        if (Test-Path -LiteralPath $ocDir -PathType Container) {",
+            r"            $argList = @('run', '--dir', $ocDir, '-m', $model, $line)",
+            r"        } else {",
+            r"            Write-Output 'opencode-ready: blocked opencode_dir_missing. Next: set BOB_OPENCODE_DIR to the assigned worktree. Headless opencode run has no --interactive flag and auto-rejects external_directory. Do not pass --auto.'",
+            r"            exit 4",
+            r"        }",
+            r"    }",
+            r"    if ($argList -contains '--auto') { throw 'opencode --auto is forbidden' }",
             r"""    $argStr = ($argList | ForEach-Object { if ($_ -match '[\s"]') { $escaped = $_ -replace '(\\*)"', '$1$1\"'; $escaped = $escaped -replace '(\\+)$', '$1$1'; '"' + $escaped + '"' } else { $_ } }) -join ' '""",
             r"    $proc = $null",
             r"    $stdout = ''",
@@ -1622,6 +1665,7 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             r"        $outFile = Join-Path $env:TEMP ('bob-oc-out-' + [guid]::NewGuid().ToString('n') + '.txt')",
             r"        $errFile = Join-Path $env:TEMP ('bob-oc-err-' + [guid]::NewGuid().ToString('n') + '.txt')",
             # MRB #6163 / CodeRabbit: ArgumentList array drops quotes/spaces in $line; use pre-escaped $argStr.
+            f"        $env:OPENCODE_CONFIG = '{esc(str(Path(run_dir) / 'opencode-seat.json'))}'",
             r"        $proc = Start-Process -FilePath $exe -ArgumentList $argStr -NoNewWindow -PassThru -RedirectStandardOutput $outFile -RedirectStandardError $errFile",
             r"        $timedOut = $false",
             r"        $lastLen = 0",
@@ -7710,6 +7754,11 @@ class Supervisor:
         return worker_prompt(self.cwd, str(self.run_dir), self.machine, self.nick)
 
     def start_agent(self, note: str = "") -> bool:
+        if (self.kind or "").strip().lower() == "opencode":
+            blocked, msg = probe_gh_auth(subprocess.run)
+            if blocked:
+                self.log(msg)
+                return False
         with self._lock:
             if self._shutting:
                 return False
