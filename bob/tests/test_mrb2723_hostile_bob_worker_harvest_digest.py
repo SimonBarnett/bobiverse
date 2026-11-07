@@ -65,11 +65,34 @@ def test_mrb2723_audit_table_path_present():
 
 
 def test_mrb2723_digest_bullets_complete_lines():
+    """Digest completeness applies only to ## Harvest digest, not ## Harvested lessons.
+
+    FR #6223: scanning to EOF pulled in `- **FR #N:**` intake bullets that are not
+    digest audit lines (they need not end with `)` / lessons:/held).
+    """
     text = _utf8_no_bom(WK)
     start = text.index("## Harvest digest (lessons audit 2026-10-06)")
-    chunk = text[start:]
+    rest = text[start + 3 :]  # skip the digest heading's own ##
+    nxt = rest.find("\n## ")
+    chunk = text[start : start + 3 + nxt] if nxt >= 0 else text[start:]
+    assert "## Harvested lessons" not in chunk
     bullets = [ln for ln in chunk.splitlines() if ln.startswith("- **")]
     assert len(bullets) >= 3
     for ln in bullets:
         assert ln.rstrip().endswith(")") or "lessons:" in ln or "held" in ln
         assert "orphan" not in ln.lower()
+
+
+def test_mrb2723_harvested_lessons_fr_bullets_outside_digest_scan():
+    """FR #6223: Harvested lessons may use `- **FR #` without digest closing paren."""
+    text = _utf8_no_bom(WK)
+    assert "## Harvested lessons (intake)" in text
+    h_start = text.index("## Harvested lessons (intake)")
+    h_chunk = text[h_start:]
+    fr_bullets = [ln for ln in h_chunk.splitlines() if ln.startswith("- **FR #")]
+    assert len(fr_bullets) >= 1
+    # At least one FR intake bullet would fail the digest closing-paren rule.
+    assert any(
+        not (ln.rstrip().endswith(")") or "lessons:" in ln or "held" in ln)
+        for ln in fr_bullets
+    )
