@@ -1,0 +1,11 @@
+id	title	file	status
+FR-001	Ear owns digest fuel publish; tray fuel POST off	docs/fr/FR-001.md	unfiled
+FR-002	Canonical digest URL https://bob.ntsa.uk/bob/v1/report	docs/fr/FR-002.md	unfiled
+FR-003	Publish xAI/Grok account label on digest	docs/fr/FR-003.md	unfiled
+FR-004	MarchHare pool remaining/reset correctness	docs/fr/FR-004.md	unfiled
+FR-005	Immediate digest POST when pool remaining changes	docs/fr/FR-005.md	unfiled
+FR-006	Ear publishes OpenCode pcent opencode-free/opencode-go	docs/fr/FR-006.md	unfiled
+FR-007	TipForm/Status paint OpenCode pools	docs/fr/FR-007.md	unfiled
+FR-008	Copilot systray freshness and visibility	docs/fr/FR-008.md	unfiled
+FR-009	Company logos for Cursor xAI OpenCode Copilot	docs/fr/FR-009.md	unfiled
+FR-010	Docs/skills: ear publishes tray paints bob.ntsa.uk OpenCode Copilot logos	docs/fr/FR-010.md	unfiled
