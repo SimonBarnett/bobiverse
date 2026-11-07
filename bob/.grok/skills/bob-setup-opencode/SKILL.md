@@ -187,3 +187,7 @@ public remaining-quota API.
 - `harvest-agent-skills`
 - Bob digest webhook fuel
 - `opencode_fuel.py` (shared cap/fallback logic)
+
+## Inject path (FR #6158)
+
+OpenCode seats default to batched KEY_EVENT when `BOB_WORKER_INJECT_PASTE` is unset (clipboard paste into the ReadLine wrapper is unreliable). Set `BOB_WORKER_INJECT_PASTE=1` to opt into paste. Needs a rebuilt `bob-worker.exe` and a **new** tray Agent seat after Sync.
