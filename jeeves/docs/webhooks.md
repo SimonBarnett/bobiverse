@@ -82,7 +82,7 @@ curl -sS -X POST "https://bob.ntsa.uk/bob/v1/intake" \
   -d "{\"kind\":\"harvest\",\"title\":\"example lesson\",\"body\":\"…\",\"repo\":\"SimonBarnett/bobiverse\"}"
 ```
 
-Optional **`dedupe_key`** (FR #4963, at most 128 chars; else `400 bad_dedupe_key`): scoped per `repo`. Decision order after allowlist/rate/redaction:
+Optional **`dedupe_key`** (FR #4963, at most 128 chars; else `400 bad_dedupe_key`): scoped per `repo`. When omitted on `kind=issue|fr`, intake derives a stable `msgfp:` key from a normalized title+body fingerprint (FR #6196: strips timestamps, intake ids, machine-pid nicks, `lag_s`; exact match only; no fuzzy merge). An explicit `dedupe_key` keeps priority. Decision order after allowlist/rate/redaction:
 
 1. **`idempotency_key`** — same POST retry is a no-op (`duplicate: true`, original `action`/`number`/`url`).
 2. **`dedupe_key`** — open match: comment (`action=commented`); closed match: reopen then comment (`action=reopened`); no match: file a new issue (`action=filed`) with hidden `<!-- intake-dedupe:<sha256(repo|dedupe_key)> -->` and a local `intake/records/dedupe-*.json` index (rebuilt from `gh issue list --search` if the index is lost).
