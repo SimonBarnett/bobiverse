@@ -67,6 +67,7 @@ namespace BobDialogs
 
     internal class CardView : Panel
     {
+        public string AssetsRoot = "";
         public StatusModel Model = new StatusModel();
         public string Footer = "";
         readonly Font fTitle = new Font("Segoe UI Semibold", 11f), fSect = new Font("Segoe UI Semibold", 9.5f), fHead = new Font("Segoe UI Semibold", 9f),
@@ -116,12 +117,36 @@ namespace BobDialogs
 
         int Section(Graphics g, int y, string title, string right)
         {
-            return Section(g, y, title, right, Fg);
+            return Section(g, y, title, right, null, Fg);
         }
 
-        int Section(Graphics g, int y, string title, string right, Color titleColor)
+        int Section(Graphics g, int y, string title, string right, string fuelFamily)
         {
-            Draw(g, title, fSect, titleColor, 14, y);
+            return Section(g, y, title, right, fuelFamily, Fg);
+        }
+
+        // FR #6149 logo + FR #6148 / FIX #6180 titleColor for stale Copilot.
+        int Section(Graphics g, int y, string title, string right, string fuelFamily, Color titleColor)
+        {
+            int x = 14;
+            if (fuelFamily != null && fuelFamily.Length > 0)
+            {
+                Image logo = Common.FuelLogo(AssetsRoot, fuelFamily);
+                if (logo != null)
+                {
+                    try { g.DrawImage(logo, x, y, 18, 18); }
+                    catch { }
+                    finally { try { logo.Dispose(); } catch { } }
+                    x += 22;
+                }
+                else
+                {
+                    string fb = Common.FuelLogoFallback(fuelFamily);
+                    Draw(g, "[" + fb + "]", fSmall, Muted, x, y + 2);
+                    x += TextW(g, "[" + fb + "]", fSmall) + 6;
+                }
+            }
+            Draw(g, title, fSect, titleColor, x, y);
             if (right.Length > 0) Draw(g, right, fHead, Red, W - 14 - TextW(g, right, fHead) - 2, y);
             return y + 22;
         }
@@ -155,11 +180,14 @@ namespace BobDialogs
             y += 26;
             // Dashboard = per-machine Grok pools + workers and one account-wide Copilot pool (no Cursor section).
             // FR #5032: no "Grok accounts" heading --- every row is a Grok pool.
+            // FR #6149: fuel-family logos (assets\fuel-logos) with text fallback.
             if (m.Note.Length > 0) { Draw(g, m.Note, fText, Muted, 14, y); y += 22; }
+            y = Section(g, y, "Cursor Models", "", "cursor");
+            y = Section(g, y, "xAI weekly", "", "xai");
             if (m.Grok.Count > 0)
             {
                 if (m.Overspend != null && m.Overspend.Length > 0)
-                    y = Section(g, y, "", m.Overspend);
+                    y = Section(g, y, "", m.Overspend, "xai");
                 foreach (StatusRow r in m.Grok)
                 {
                     y = UsageRow(g, 32, y, r, 354);
@@ -168,10 +196,11 @@ namespace BobDialogs
                     y += 8;
                 }
             }
-            y = Section(g, y, m.OpencodeLine, "");
+            // FR #6147 pool line + FR #6149 logo; FIX #6180 re-age Copilot with stale colour.
+            y = Section(g, y, m.OpencodeLine, "", "opencode");
             string paintCopilot = SelectCopilotLine(m, DateTime.UtcNow);
             Color copilotFg = paintCopilot.StartsWith("Copilot  [stale", StringComparison.Ordinal) ? Red : Fg;
-            y = Section(g, y, paintCopilot, "", copilotFg);
+            y = Section(g, y, paintCopilot, "", "copilot", copilotFg);
             y += 6;
             Draw(g, "alert: " + m.Alert, fSmall, m.Alert == "none" ? Muted : Red, 14, y);
             string v = Footer.Length > 0 ? Footer : m.Version;
@@ -203,6 +232,7 @@ namespace BobDialogs
         public StatusForm(string root)
         {
             file = Path.Combine(root, "run\\tray-status.json");
+            card.AssetsRoot = root ?? "";
             Text = "Bobiverse status";
             FormBorderStyle = FormBorderStyle.None; ShowInTaskbar = false; TopMost = true; StartPosition = FormStartPosition.Manual;
             BackColor = Color.FromArgb(22, 27, 34);

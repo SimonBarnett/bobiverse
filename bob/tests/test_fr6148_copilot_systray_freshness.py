@@ -34,12 +34,15 @@ def test_watch_always_shows_copilot_unknown_fallback():
     sec = w[w.index("function Rebuild-BobTrayTiles") : w.index("Atomic swap on the TipForm")]
     assert "Copilot  unknown" in sec
     assert "Format-BobCopilotPoolLine" in sec
-    # FIX #6180: escape `[` in -like; TitleColor paints stale red (RightColor alone never did).
+    # FIX #6180: escape `[` in -like; TitleColor paints stale red (via FuelFamilyRow).
     assert "TitleColor" in sec
+    assert "Add-BobTrayFuelFamilyRow" in sec
     assert "`[stale" in sec or "``[stale" in w
     hdr = w[w.index("function Add-BobTraySectionHeader") : w.index("function Set-BobTrayHelpTip")]
     assert "[System.Drawing.Color]$TitleColor" in hdr
     assert "TitleColor.A" in hdr
+    fam = w[w.index("function Add-BobTrayFuelFamilyRow") : w.index("function Get-BobTrayLogoImage")]
+    assert "TitleColor" in fam
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="PowerShell formatter")
