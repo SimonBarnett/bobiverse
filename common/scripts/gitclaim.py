@@ -3786,6 +3786,10 @@ def _coerce_row(row: dict) -> dict | None:
         out["review"] = str(row.get("review"))
     if row.get("coderabbit_head_sha"):
         out["coderabbit_head_sha"] = str(row.get("coderabbit_head_sha"))
+    # FR #6211 / #5865: current PR tip SHA must survive reload so CodeRabbit
+    # new-head reset (stale ready on older SHA) still holds on !assign / !bored.
+    if row.get("head_sha"):
+        out["head_sha"] = str(row.get("head_sha"))
     if row.get("changed_files") is not None:
         out["changed_files"] = row.get("changed_files")
     try:
@@ -6075,6 +6079,9 @@ def summarize_empty_offer(home: Path, nick: str = "") -> dict:
         "stamp_implementer": 0,
         "stamp_fix": 0,
         "stamp_giveup": 0,
+        # FR #6211: CodeRabbit current-head hold (not opaque blocked_other).
+        "coderabbit_hold": 0,
+        "coderabbit_hold_row": "",
     }
     try:
         path = queue_path(home)
@@ -6114,6 +6121,8 @@ def summarize_empty_offer(home: Path, nick: str = "") -> dict:
         stamp_implementer = 0
         stamp_fix = 0
         stamp_giveup = 0
+        coderabbit_hold = 0
+        coderabbit_hold_row = ""
         for r in rows:
             repo = str(r.get("repo") or "")
             if strict and focused:
@@ -6186,6 +6195,32 @@ def summarize_empty_offer(home: Path, nick: str = "") -> dict:
                 }
                 if me.lower() in skips:
                     continue
+            else:
+                cand = row
+            # FR #6211: count CodeRabbit holds separately (stamped pending within wait;
+            # no live HTTP; cleared stamps ready/failed/timeout/absent/off are not holds).
+            if _canon_task(cand) == "MRB":
+                try:
+                    import fuel_chain
+
+                    if fuel_chain.stage_enabled("coderabbit"):
+                        st = str(cand.get("coderabbit") or "").strip().lower()
+                        if st in ("", "pending"):
+                            try:
+                                since = float(cand.get("coderabbit_wait_since") or now_f)
+                                age = float(now_f) - since
+                            except (TypeError, ValueError):
+                                age = 0.0
+                            if age < float(fuel_chain.wait_seconds()):
+                                coderabbit_hold += 1
+                                if not coderabbit_hold_row:
+                                    rid = str(cand.get("id") or "").strip().lstrip("#")
+                                    coderabbit_hold_row = (
+                                        f"{repo}#{rid}" if rid else repo
+                                    )
+                                continue
+                except Exception:
+                    pass
             if sticky_pin:
                 to_c = (canonical_worker_nick(to) or to).strip().lower()
                 me_l = me.lower()
@@ -6202,6 +6237,8 @@ def summarize_empty_offer(home: Path, nick: str = "") -> dict:
         out["stamp_implementer"] = stamp_implementer
         out["stamp_fix"] = stamp_fix
         out["stamp_giveup"] = stamp_giveup
+        out["coderabbit_hold"] = coderabbit_hold
+        out["coderabbit_hold_row"] = coderabbit_hold_row
     except Exception:
         # Fail closed for quiet-idle nudge / empty-offer honesty (MRB #5921).
         out["offerable"] = 0
@@ -6658,6 +6695,8 @@ def format_empty_offer_detail(nick: str, stats: dict | None = None) -> str:
         stamp_implementer = int(stats.get("stamp_implementer") or 0)
         stamp_fix = int(stats.get("stamp_fix") or 0)
         stamp_giveup = int(stats.get("stamp_giveup") or 0)
+        coderabbit_hold = int(stats.get("coderabbit_hold") or 0)
+        coderabbit_hold_row = str(stats.get("coderabbit_hold_row") or "").strip()
     except (TypeError, ValueError):
         return f"{nick}: nothing queued"
     if unaccepted <= 0:
@@ -6681,6 +6720,12 @@ def format_empty_offer_detail(nick: str, stats: dict | None = None) -> str:
         extra.append(f"ledger={ledger}")
     if sticky:
         extra.append(f"sticky={sticky}")
+    if coderabbit_hold:
+        # FR #6211: concrete hold, not opaque blocked_other.
+        if coderabbit_hold_row:
+            extra.append(f"coderabbit_hold={coderabbit_hold} row={coderabbit_hold_row}")
+        else:
+            extra.append(f"coderabbit_hold={coderabbit_hold}")
     if blocked_other:
         extra.append(f"blocked_other={blocked_other}")
     base = (
@@ -8285,6 +8330,13 @@ def offer_focus_top(
                     if fuel_chain.apply_mrb_coderabbit_gate(
                         cand, now_f, lookup=cr_check
                     ):
+                        # FR #6211: row-specific hold in chair log (shop stays "nothing queued").
+                        with contextlib.suppress(Exception):
+                            _log_queue_purge(
+                                "INFO "
+                                + fuel_chain.coderabbit_hold_message(cand, now_f)
+                                + " via=bored"
+                            )
                         purged = True
                         return None
                 except Exception:
@@ -8613,6 +8665,13 @@ def offer_top(
                         row, now_f, lookup=cr_check
                     ):
                         # Persist wait/pending stamps even while the offer is held.
+                        # FR #6211: row-specific hold in chair log.
+                        with contextlib.suppress(Exception):
+                            _log_queue_purge(
+                                "INFO "
+                                + fuel_chain.coderabbit_hold_message(row, now_f)
+                                + " via=offer_top"
+                            )
                         purged = True
                         i += 1
                         continue
@@ -10525,20 +10584,24 @@ def assign_row(
     pr_exists=None, is_pull=None, issue_open=None,
     fetch_issue=None,
     fetch_pr=None,
+    coderabbit_lookup=None,
 ) -> tuple[str, dict | str]:
     """Chair-driven manual assign (t849u): stamp ``offered_to`` on one named unaccepted row.
 
     Returns ("ok", job) -> caller posts ``format_assign_line`` in the worker's shop channel as Jeeves
     and the worker's ACK accepts it (``accept_offered``); or ("refused", reason).
     The same eligibility as ``offer_focus_top`` applies: real seat nick, not busy, row queued and
-    unaccepted, no self-MRB/UAT, not needs-human/skip/cooldown/machine-pinned/already given up by
-    this seat, not offered to another seat inside OFFER_TIMEOUT_S.
+    unaccepted, no self-MRB/UAT, not skip/cooldown/machine-pinned/already given up by this seat,
+    not offered to another seat inside OFFER_TIMEOUT_S, and (FR #6211) the automatic MRB
+    CodeRabbit current-head hold. Intentional exception (FR #4336): ordinary ``!assign`` may
+    still hand out ``needs_human`` FR/MRB rows that auto-offer blocks.
 
     FR #3400: refuse assign to a nick not in the shop (not a live seat). If the named job is only
     on ``accepted`` under a departed nick, release it (prior ACK void) then offer.
 
     FR #4422 / #4652: when the named open FR/MRB/FIX is missing from the unaccepted queue, fetch it from
     GitHub and enqueue it, then offer (instead of refusing "not in the unaccepted queue").
+    ``coderabbit_lookup`` is an optional test/budget checker for ``apply_mrb_coderabbit_gate``.
     """
     import time as _time
 
@@ -10711,6 +10774,35 @@ def assign_row(
             ):
                 return "refused", f"{me} authored/implemented this (no self-{task_u})"
             cand = cand_eff
+            # FR #6211: honor automatic MRB CodeRabbit hold on ordinary !assign.
+            # Persist wait/pending stamps; never stamp offered_to / seat hold on refuse.
+            # needs_human remains the intentional manual exception (checked above only for FIX).
+            if task_u == "MRB":
+                try:
+                    import fuel_chain
+
+                    lookup = coderabbit_lookup
+                    if lookup is None:
+
+                        def lookup(repo_s: str, num_s: str, _row=cand):
+                            return fuel_chain.lookup_coderabbit_state(
+                                repo_s, num_s, str(_row.get("head_sha") or "")
+                            )
+
+                    if fuel_chain.apply_mrb_coderabbit_gate(
+                        cand, now_f, lookup=lookup
+                    ):
+                        detail = fuel_chain.coderabbit_hold_message(cand, now_f)
+                        doc["unaccepted"][idx] = cand
+                        try:
+                            _write_queue(queue_path(home), doc)
+                        except OSError:
+                            pass
+                        with contextlib.suppress(Exception):
+                            _log_queue_purge(f"INFO {detail} via=assign")
+                        return "refused", detail
+                except Exception:
+                    pass
             to = str(cand.get("offered_to") or "").strip()
             if to and to.lower() != me.lower():
                 try:
