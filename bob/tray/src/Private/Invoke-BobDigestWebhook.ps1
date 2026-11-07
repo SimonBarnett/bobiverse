@@ -10,6 +10,7 @@ function Get-BobDigestWebhookCaptureDir {
 }
 
 function Get-BobDigestWebhookReportUrl {
+    # FR #6142: packaged bobiverse.json reportUrl is SoT for POST; $null suppresses POST (no live-host fallback).
     $cfg = Get-BobiverseConfig
     if ($cfg -and $cfg.reportUrl -and [string]$cfg.reportUrl.Trim()) {
         return [string]$cfg.reportUrl.Trim()

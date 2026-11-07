@@ -24,8 +24,8 @@ description: >
 > 4. Never put a token, password, SASL/NickServ secret, key or private hostname in a filing, a skill or a log.
 
 
-Self-contained harvest from `agentic_build` skills
-`setup-github-webhooks` and `bob-digest-webhook` (URL table only).
+Self-contained harvest from `agentic_build` `setup-github-webhooks`
+plus the archived `bob-digest-webhook` URL table (superseded here; FR #6142).
 No IRC restart. No digest producer code.
 
 ## Two different Bob URLs (do not mix)
@@ -35,12 +35,14 @@ No IRC restart. No digest producer code.
 | **GitHub webhook** (this skill) | `https://bob.ntsa.uk/bob/v1/git` | GitHub → Jeeves `GIT ...` on `#bobiverse` |
 | **Digest report** (document only) | `https://bob.ntsa.uk/bob/v1/report` | Fleet / TipForm GET+POST `op=merge`; `config/bobiverse.json` `reportUrl` |
 
-Never point a GitHub hook at `/bob/v1/report` (that path expects
-`X-Bob-Secret` digest merges). Never HMAC/webhook secret in git,
+Never point a GitHub hook at `/bob/v1/report` (digest merges are
+roster-gated; no shared secret). Never HMAC/webhook secret in git,
 issues, or channel.
 
-Source of truth for reportUrl in the build pack:
-`agentic_build/config/bobiverse.json` → `"reportUrl": "https://bob.ntsa.uk/bob/v1/report"`.
+Source of truth for fleet `reportUrl` (FR #6142):
+`bob/tray/config/bobiverse.json` -> `"reportUrl": "https://bob.ntsa.uk/bob/v1/report"`.
+GET helpers fall back to that URL; POST selectors use config/env only (no live-host invent).
+This skill supersedes the archived `bob-digest-webhook` URL table.
 
 ## Gate: hook BEFORE any push or issue (required)
 

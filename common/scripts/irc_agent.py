@@ -48,6 +48,9 @@ import chair_commands  # noqa: E402
 import chair_health  # noqa: E402
 import chan_workers  # noqa: E402
 import talk_seat_ghost  # noqa: E402
+
+# FR #6143: unset markers for grok_account delivery / chair compare (distinct from None clear).
+_GROK_ACCOUNT_UNSET = object()
 import talk_seat_pid  # noqa: E402
 import wire  # noqa: E402
 import channel_only  # noqa: E402
@@ -920,6 +923,12 @@ class Client:
         self._bobiverse_last_tray: dict[str, float] = {}
         self._bobiverse_pull_last = 0.0
         self._digest_fuel_last = 0.0  # FR #6141 ear fuel publish tick
+        # FR #6143: last successfully POSTed grok_account (str or None); chair row for compare.
+        self._grok_account_last = 0.0
+        self._grok_account_delivered = _GROK_ACCOUNT_UNSET
+        self._grok_account_chair = _GROK_ACCOUNT_UNSET
+        # MRB #6167: rate-limit chair-mismatch re-POST (rollout GET may lack grok_account).
+        self._grok_account_chair_mismatch_last = 0.0
         # #42: ChanServ roster mirror (chair only). Query state; registry file is the cache.
         self._cs_collector: registered_machines.ChanServListCollector | None = None
         self._unregister_pending = unregister_cmd.PendingUnregisterStore()
@@ -2668,6 +2677,66 @@ class Client:
         if code is not None:
             info(f"INFO digest-fuel webhook POST {code} machine={mid}")
 
+    def _maybe_publish_grok_account(self) -> None:
+        """FR #6143: fleet bob-ear POSTs grok_account label-only merge (no secrets)."""
+        if getattr(self.args, "chair", False):
+            return
+        if not bobtalk.is_fleet_bob_nick(self.original_nick):
+            return
+        mid = self._local_machine_id()
+        if not mid:
+            return
+        interval = bobreport.digest_fuel_heartbeat_s()
+        if interval <= 0:
+            interval = bobreport.DEFAULT_DIGEST_FUEL_HEARTBEAT_S
+        now = time.time()
+        # First tick always runs; then same cadence as fuel publish.
+        if self._grok_account_last > 0.0 and now - self._grok_account_last < interval:
+            return
+        self._grok_account_last = now
+        try:
+            status, label = bobreport.read_grok_account_label()
+        except Exception as exc:  # noqa: BLE001
+            info(f"INFO grok account publish skip: {type(exc).__name__}")
+            return
+        if status == "unknown":
+            return
+        desired: str | None = label if status == "ok" else None
+        delivered = self._grok_account_delivered
+        chair = self._grok_account_chair
+        need = False
+        if delivered is _GROK_ACCOUNT_UNSET or delivered != desired:
+            need = True
+        elif chair is not _GROK_ACCOUNT_UNSET and chair != desired:
+            # MRB #6167: during rollout the public GET may omit grok_account; do not
+            # re-POST every fuel heartbeat. Reconcile at most every 10 minutes.
+            chair_gap = 600.0
+            if now - float(self._grok_account_chair_mismatch_last or 0.0) >= chair_gap:
+                need = True
+        if not need:
+            return
+        # Send null only when chair has a value or we previously delivered one.
+        if desired is None:
+            had = (delivered is not _GROK_ACCOUNT_UNSET and delivered is not None) or (
+                chair is not _GROK_ACCOUNT_UNSET and chair not in (None, "")
+            )
+            if not had:
+                self._grok_account_delivered = None
+                return
+        try:
+            code = bobreport.publish_grok_account_label(mid, desired)
+        except Exception as exc:  # noqa: BLE001
+            info(f"INFO grok account publish failed status=exc {type(exc).__name__}")
+            return
+        if code is not None:
+            self._grok_account_delivered = desired
+            # Optimistic reconcile until next digest pull (stops heartbeat churn).
+            self._grok_account_chair = desired
+            self._grok_account_chair_mismatch_last = now
+            info("INFO grok account publish ok")
+        else:
+            info("INFO grok account publish failed status=none")
+
     def _maybe_bobiverse_pull(self) -> None:
         """Refresh local digest via public HTTP GET (#174). No IRC !bobiverse."""
         if not self._should_bobiverse_pull():
@@ -2691,6 +2760,13 @@ class Client:
         mid = self._local_machine_id()
         machines = doc.get("machines") if isinstance(doc.get("machines"), dict) else {}
         chair_ent = machines.get(mid) if mid else None
+        # FR #6143: remember chair grok_account so label publish can reconcile.
+        if mid and isinstance(chair_ent, dict):
+            raw_ga = chair_ent.get("grok_account")
+            if isinstance(raw_ga, str) and raw_ga.strip():
+                self._grok_account_chair = raw_ga.strip()
+            else:
+                self._grok_account_chair = None
         payload = None
         if mid and isinstance(chair_ent, dict):
             payload = bobreport.merge_payload_local_peer_ahead_of_chair(self.home, mid, chair_ent)
@@ -4506,6 +4582,7 @@ class Client:
             try:
                 self._maybe_bobiverse_pull()
                 self._maybe_publish_digest_fuel()  # FR #6141 ear owns fuel POST
+                self._maybe_publish_grok_account()  # FR #6143 grok_account label
                 # FR #68: establish chair/ChanServ privileges before draining backlog.
                 self._maybe_chanserv_sync()
                 self._expire_register_waits()

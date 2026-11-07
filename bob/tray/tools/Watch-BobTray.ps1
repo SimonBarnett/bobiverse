@@ -1019,8 +1019,9 @@ function Get-BobTrayGrokFuelRemaining {
 }
 
 function Get-BobTrayDigestReportUrl {
-    $u = [string]$env:BOB_DIGEST_REPORT_URL
-    if ($u) { return $u.Trim() }
+    # FR #6142: trim before blank check so whitespace-only env falls back to canonical.
+    $u = ([string]$env:BOB_DIGEST_REPORT_URL).Trim()
+    if ($u) { return $u }
     return 'https://bob.ntsa.uk/bob/v1/report'
 }
 

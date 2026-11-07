@@ -9,7 +9,10 @@
 param(
     [string]$InstallRoot = '',
     [string]$CapturePath = '',
-    [string]$MachineId = ''
+    [string]$MachineId = '',
+    # FR #6142: destination pin (capture still offline). Opt-in live GET with -CheckPublic.
+    [string]$ExpectedReportUrl = 'https://bob.ntsa.uk/bob/v1/report',
+    [switch]$CheckPublic
 )
 
 $ErrorActionPreference = 'Stop'
@@ -86,6 +89,62 @@ try {
         $overBefore = Get-BobCursorOverageGbp
     }
 } catch { $overBefore = $null }
+
+# FR #6142: pin resolved POST/GET destinations before capture smoke.
+$expected = ([string]$ExpectedReportUrl).Trim()
+if (-not $expected) { $expected = 'https://bob.ntsa.uk/bob/v1/report' }
+$resolvedPost = $null
+$resolvedGet = $null
+try {
+    $resolvedPost = & (Get-Module BobBridge) { Get-BobDigestReportUrl }
+} catch { $resolvedPost = $null }
+try {
+    $resolvedGet = & (Get-Module BobBridge) { Get-BobDigestUrl }
+} catch { $resolvedGet = $null }
+$urlFail = @()
+if ([string]$resolvedPost -ne $expected) {
+    $src = if ($env:BOB_REPORT_URL) { 'env:BOB_REPORT_URL' } else { 'config.reportUrl or null' }
+    $urlFail += ("POST Get-BobDigestReportUrl expected={0} got={1} source={2}" -f $expected, $resolvedPost, $src)
+}
+if ([string]$resolvedGet -ne $expected) {
+    # Get-BobDigestUrl reads BOB_DIGEST_URL / config only (not BOB_DIGEST_REPORT_URL).
+    $src = if ($env:BOB_DIGEST_URL) { 'env:BOB_DIGEST_URL' } else { 'config digestUrl/reportUrl or default' }
+    $urlFail += ("GET Get-BobDigestUrl expected={0} got={1} source={2}" -f $expected, $resolvedGet, $src)
+}
+# MRB #6165 / CodeRabbit Major: tray GET uses Get-BobTrayDigestReportUrl -> BOB_DIGEST_REPORT_URL.
+# Get-BobDigestUrl can still resolve to the canonical default while the tray override points at irc.
+$trayOverride = ([string]$env:BOB_DIGEST_REPORT_URL).Trim()
+if ($trayOverride -and $trayOverride -ne $expected) {
+    $urlFail += ("tray env:BOB_DIGEST_REPORT_URL expected={0} got={1}" -f $expected, $trayOverride)
+}
+if ($CheckPublic) {
+    # Opt-in read-only public probe (Watch-BobWebhooks pattern). Never print body.
+    $pubOk = $false
+    $pubStatus = '000'
+    $pubErr = ''
+    try {
+        $resp = Invoke-WebRequest -Uri $expected -Method Get -UseBasicParsing -TimeoutSec 20
+        $pubStatus = [string][int]$resp.StatusCode
+        if ([int]$resp.StatusCode -eq 200) { $pubOk = $true }
+    } catch {
+        $pubErr = $_.Exception.Message
+        try {
+            if ($_.Exception.Response -and $_.Exception.Response.StatusCode) {
+                $pubStatus = [string][int]$_.Exception.Response.StatusCode
+            }
+        } catch { }
+    }
+    Write-Host ("INFO CheckPublic GET {0} status={1}" -f $expected, $pubStatus)
+    if (-not $pubOk) {
+        $urlFail += ("CheckPublic GET expected=200 got={0} url={1} err={2}" -f $pubStatus, $expected, $pubErr)
+    }
+}
+if ($urlFail.Count -gt 0) {
+    Write-Host 'FAIL Assert-BobDigestWebhookLocal URL pin:'
+    $urlFail | ForEach-Object { Write-Host "  - $_" }
+    exit 1
+}
+Write-Host ("INFO URL pin ok post={0} get={1}" -f $resolvedPost, $resolvedGet)
 
 Write-Host ("INFO Write-BobIrcStatus machine={0} capture={1}" -f $MachineId, $CapturePath)
 $null = Write-BobIrcStatus

@@ -281,6 +281,9 @@ _CURSOR_UNKNOWN_CLEAR_FIELDS = (
     "cursor_remaining_pct",
 )
 _PEER_CLEAR = object()  # sentinel: peer wants an explicit null clear in the merge delta
+# FR #6143: ear-owned identity scalars. Keep out of _MERGE_PEER_FIELDS so tray peer
+# rewrites cannot clear or restore a stale grok_account via peer fill.
+_EAR_IDENTITY_FIELDS = ("grok_account",)
 _TRAY_MACHINE_EXPORT_KEYS = (
     "id",
     "nick",
@@ -320,6 +323,7 @@ _TRAY_MACHINE_EXPORT_KEYS = (
     "console_nicks",
     "cursor_known",
     "weekly_known",
+    "grok_account",
 )
 WORKER_NICK_RE = re.compile(r"^w-([a-z0-9]+)-(\d+)_?$", re.I)
 
@@ -360,6 +364,110 @@ def secret_marker_hit(text: str) -> str | None:
         if m in lower:
             return m
     return None
+
+
+# FR #6143: Grok account label from auth.json (profile fields only; never key/refresh_token).
+_GROK_ACCOUNT_MAX_LEN = 254
+_GROK_API_KEY_SCOPE_RX = re.compile(r"(?i)(^|::)api[_-]?key$|xai::api_key")
+_GROK_CTRL_RX = re.compile(r"[\x00-\x1f\x7f]")
+
+
+def resolve_grok_auth_path(env: dict[str, str] | None = None) -> Path | None:
+    """Path order: BOB_GROK_AUTH_PATH, nonempty GROK_AUTH_PATH, $GROK_HOME/auth.json, ~/.grok/auth.json."""
+    e = os.environ if env is None else env
+    for key in ("BOB_GROK_AUTH_PATH", "GROK_AUTH_PATH"):
+        raw = (e.get(key) or "").strip()
+        if raw:
+            return Path(raw)
+    grok_home = (e.get("GROK_HOME") or "").strip()
+    if grok_home:
+        return Path(grok_home) / "auth.json"
+    return Path.home() / ".grok" / "auth.json"
+
+
+def _sanitize_grok_account_label(raw: object) -> str | None:
+    """Trim, strip controls, length-cap; reject secret-marker hits. Never log the value."""
+    if not isinstance(raw, str):
+        return None
+    s = _GROK_CTRL_RX.sub("", raw).strip()
+    if not s or len(s) > _GROK_ACCOUNT_MAX_LEN:
+        return None
+    if secret_marker_hit(s) or looks_like_secret(s):
+        return None
+    return s
+
+
+def _label_from_grok_profile(obj: dict) -> str | None:
+    """Prefer email; else first_name last_name. Read only those three keys."""
+    email = _sanitize_grok_account_label(obj.get("email"))
+    if email:
+        return email
+    first = _sanitize_grok_account_label(obj.get("first_name")) or ""
+    last = _sanitize_grok_account_label(obj.get("last_name")) or ""
+    name = " ".join(p for p in (first, last) if p).strip()
+    return _sanitize_grok_account_label(name) if name else None
+
+
+def _iter_grok_auth_profiles(doc: object) -> list[dict]:
+    """Collect profile-bearing dicts from auth.json (issuer::client map or scopes)."""
+    out: list[dict] = []
+    if not isinstance(doc, dict):
+        return out
+    scopes = doc.get("scopes")
+    items: list[tuple[object, object]] = []
+    if isinstance(scopes, dict):
+        items.extend(scopes.items())
+    elif isinstance(scopes, list):
+        for i, row in enumerate(scopes):
+            items.append((i, row))
+    # Live ~/.grok/auth.json is keyed by issuer::client_id at the top level.
+    if not items:
+        items = list(doc.items())
+    for key, val in items:
+        key_s = str(key or "")
+        if _GROK_API_KEY_SCOPE_RX.search(key_s):
+            continue
+        if not isinstance(val, dict):
+            continue
+        # Skip credential-only blobs with no profile fields.
+        if not any(k in val for k in ("email", "first_name", "last_name")):
+            continue
+        out.append(val)
+    return out
+
+
+def read_grok_account_label(env: dict[str, str] | None = None) -> tuple[str, str | None]:
+    """FR #6143: tri-state Grok account label from auth.json.
+
+    Returns ``(\"ok\", label)``, ``(\"none\", None)``, or ``(\"unknown\", None)``.
+    Never returns key / refresh_token / other credential fields.
+    """
+    path = resolve_grok_auth_path(env)
+    if path is None:
+        return ("none", None)
+    try:
+        if not path.is_file():
+            return ("none", None)
+        raw = path.read_text(encoding="utf-8")
+        doc = json.loads(raw)
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return ("unknown", None)
+    if not isinstance(doc, dict):
+        return ("none", None)
+    labels: list[str] = []
+    seen: set[str] = set()
+    for profile in _iter_grok_auth_profiles(doc):
+        label = _label_from_grok_profile(profile)
+        if not label:
+            continue
+        if label not in seen:
+            seen.add(label)
+            labels.append(label)
+    if not labels:
+        return ("none", None)
+    if len(labels) > 1:
+        return ("none", None)
+    return ("ok", labels[0])
 
 
 _GIT_ACTION_WORDS = frozenset(
@@ -1119,6 +1227,13 @@ def _coerce_machine(mid: str, raw: object) -> dict:
     for flag in ("cursor_known", "weekly_known"):
         if flag in raw and raw[flag] is not None:
             base[flag] = bool(raw[flag])
+    # FR #6143: ear-owned identity survives reload; never peer-filled.
+    for key in _EAR_IDENTITY_FIELDS:
+        val = raw.get(key)
+        if isinstance(val, str) and val.strip():
+            cleaned = _sanitize_grok_account_label(val)
+            if cleaned:
+                base[key] = cleaned
     if "running" in base:
         try:
             base["running"] = int(base["running"])
@@ -1871,6 +1986,10 @@ def _machine_fingerprint(ent: dict) -> str:
         view["cursor_known"] = ent.get("cursor_known")
     if "weekly_known" in ent:
         view["weekly_known"] = ent.get("weekly_known")
+    # FR #6143: label-only change must fingerprint so merge returns 204.
+    for key in _EAR_IDENTITY_FIELDS:
+        if key in ent:
+            view[key] = ent.get(key)
     return json.dumps(view, sort_keys=True, separators=(",", ":"))
 
 
@@ -2017,7 +2136,14 @@ def _apply_cleared_merge_fields(ent: dict, payload: dict) -> None:
     for key in _CLEARABLE_MERGE_FIELDS:
         if key in payload and _clearable_empty(payload.get(key)):
             keys.append(key)
+    # FR #6143: grok_account clears via null / "" / cleared[] (ear-owned, not peer).
+    for key in _EAR_IDENTITY_FIELDS:
+        if key in payload and _clearable_empty(payload.get(key)):
+            keys.append(key)
     for key in keys:
+        if key in _EAR_IDENTITY_FIELDS:
+            ent.pop(key, None)
+            continue
         if key not in _CLEARABLE_MERGE_FIELDS and key != "working_on":
             continue
         if key == "working_on":
@@ -2172,6 +2298,16 @@ def _apply_merge_payload(doc: dict, mid: str, payload: dict) -> list[str]:
             ent[key] = val
             continue
         ent[key] = val
+    # FR #6143: ear-owned grok_account (omit = keep; null/blank already cleared above).
+    for key in _EAR_IDENTITY_FIELDS:
+        if key not in payload:
+            continue
+        val = payload[key]
+        if _clearable_empty(val):
+            continue
+        cleaned = _sanitize_grok_account_label(val)
+        if cleaned:
+            ent[key] = cleaned
     # FR #5690: unify GBP from USD with one rate after field writes.
     if "overage_usd" in payload and not _clearable_empty(payload.get("overage_usd")):
         _unify_overage_gbp_from_usd(ent, payload)
@@ -4066,12 +4202,22 @@ def build_peer_fuel_merge_payload(peer: dict, machine_id: str) -> dict | None:
     return payload
 
 
+def report_post_url(env: dict[str, str] | None = None) -> str:
+    """FR #6143: BOB_REPORT_URL, then BOB_DIGEST_URL, then public default."""
+    e = os.environ if env is None else env
+    for key in ("BOB_REPORT_URL", "BOB_DIGEST_URL", DIGEST_URL_ENV):
+        raw = (e.get(key) or "").strip()
+        if raw:
+            return raw
+    return digest_url()
+
+
 def post_report_json(payload: dict, *, url: str | None = None, timeout: float = 15.0) -> int | None:
     """POST JSON to report URL. Returns HTTP status or None on transport failure."""
     import urllib.error
     import urllib.request
 
-    target = (url or digest_url()).strip()
+    target = (url or report_post_url()).strip()
     if not target or not isinstance(payload, dict):
         return None
     body = json.dumps(payload, separators=(",", ":"), default=str).encode("utf-8")
@@ -4093,6 +4239,40 @@ def post_report_json(payload: dict, *, url: str | None = None, timeout: float = 
             return None
     except (urllib.error.URLError, TimeoutError, OSError, ValueError):
         return None
+
+
+def build_grok_account_merge_payload(machine_id: str, label: str | None) -> dict:
+    """Label-only merge payload (FR #6143). Never includes credentials.
+
+    MRB #6167: do not send ``online`` --- ``_apply_merge_payload`` would flip
+    ``status`` to ``I am online`` and churn the machine fingerprint vs fuel POSTs.
+    """
+    mid = normalize_machine_id(machine_id) or str(machine_id or "").strip().lower()
+    payload: dict = {"op": "merge", "machine": mid, "id": mid}
+    if label is None:
+        payload["grok_account"] = None
+        payload["cleared"] = ["grok_account"]
+    else:
+        payload["grok_account"] = label
+    return payload
+
+
+def publish_grok_account_label(
+    machine_id: str,
+    label: str | None,
+    *,
+    url: str | None = None,
+    timeout: float = 10.0,
+) -> int | None:
+    """POST grok_account-only merge. Returns HTTP status on 2xx, else None.
+
+    Logs must never include the label. Caller logs ok/failed without the value.
+    """
+    payload = build_grok_account_merge_payload(machine_id, label)
+    code = post_report_json(payload, url=url, timeout=timeout)
+    if code is not None and 200 <= int(code) < 300:
+        return int(code)
+    return None
 
 
 def publish_local_peer_fuel(

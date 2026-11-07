@@ -71,3 +71,23 @@ def test_upgrade_note_documents_bob_public_base():
     text = (ROOT / "common/docs/post-install.md").read_text(encoding="utf-8")
     assert "bob.ntsa.uk" in text
     assert "BOB_PUBLIC_BASE" in text or "reportUrl" in text
+
+def test_fr6142_assert_and_skills_cite_bob_host():
+    """FR #6142: Assert default + active skills cite bob.ntsa.uk for report (IRC stays separate)."""
+    assert_ps = (ROOT / "jeeves/scripts/Assert-BobDigestWebhookLocal.ps1").read_text(encoding="utf-8")
+    assert "ExpectedReportUrl" in assert_ps
+    assert "[string]$ExpectedReportUrl = 'https://bob.ntsa.uk/bob/v1/report'" in assert_ps
+    assert "https://bob.ntsa.uk/bob/v1/report" in assert_ps
+    assert "CheckPublic" in assert_ps
+    assert "tray env:BOB_DIGEST_REPORT_URL" in assert_ps
+    plan = (ROOT / "bob/agents/plan/.grok/skills/plan-bob-webhooks/SKILL.md").read_text(encoding="utf-8")
+    assert "bob/tray/config/bobiverse.json" in plan
+    never = plan.split("Never point a GitHub hook", 1)[1].split("## Gate", 1)[0]
+    assert "X-Bob-Secret" not in never
+    jeeves = (ROOT / "jeeves/.grok/skills/bobiverse-jeeves/SKILL.md").read_text(encoding="utf-8")
+    start = jeeves.index("Webhook health probe")
+    probe = jeeves[start : start + 700]
+    assert "https://bob.ntsa.uk" in probe
+    assert "https://irc.ntsa.uk" not in probe
+    bob = (ROOT / "bob/.grok/skills/bobiverse-bob/SKILL.md").read_text(encoding="utf-8")
+    assert "FR #6142" in bob and "bob.ntsa.uk/bob/v1/report" in bob

@@ -1252,54 +1252,86 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
         # can drive it like a persistent seat.  The model comes from $env:BOB_OPENCODE_MODEL.
         #
         # Runtime 5h rolling-cap guard: each ``opencode run`` is watched.  If it hits a
-        # 429 / rate-limit / rolling-limit message, produces no output before the watchdog,
-        # or exits with a payment/balance error, the wrapper kills the process tree, logs
-        # to opencode-out-of-fuel.log, and records a pause for that model until the window
+        # 429 / rate-limit / rolling-limit message, stalls with no stdout/stderr for the
+        # idle watchdog (BOB_OPENCODE_WATCHDOG_MS, default 120s), or exits with a
+        # payment/balance error, the wrapper kills the process tree, logs to
+        # opencode-out-of-fuel.log, and records a pause for that model until the window
         # resets (parsed from output if present, else a conservative 1-hour default).
+        # FR #6156: wall-clock alone while the process still produces output must not kill
+        # or pause — only idle/no-output (or real 402/429 text) trips the guard.
         pfile = str(Path(run_dir) / "prompt.txt")
         lfile = str(Path(run_dir) / "launch-opencode.ps1")
+        turns_log = str(Path(run_dir) / "opencode-turns.jsonl")
         esc = lambda s: str(s).replace("'", "''")  # noqa: E731
         files[pfile] = prompt
         helper_path = _resolve_opencode_fuel_helper_path(cwd=cwd)
+        # FR #6157: each opencode run emits turn_started / turn_ended into opencode-turns.jsonl
+        # so BoredEmitter gets harvest-hold / done-miss / startup-ready parity with Grok.
         files[lfile] = "\n".join([
             r"$ErrorActionPreference = 'Stop'",
             r"if (-not $env:BOB_OPENCODE_MODEL) { throw 'BOB_OPENCODE_MODEL is required (no exhausted glm-5.3 fallback)' }",
             r"$model = $env:BOB_OPENCODE_MODEL",
             f"$exe = '{esc(exe)}'",
             f"$prompt = [IO.File]::ReadAllText('{esc(pfile)}')",
+            f"$turnsLog = '{esc(turns_log)}'",
+            r"$script:ocTurnN = 0",
             r"$fuelLog = Join-Path $env:LOCALAPPDATA 'Bobiverse\worker\logs\opencode-out-of-fuel.log'",
             r"$pauseStateDir = Join-Path $env:LOCALAPPDATA 'Bobiverse\worker\state'",
             f"$pyHelper = '{esc(str(helper_path))}'",
             r"New-Item -ItemType Directory -Force -Path (Split-Path -Parent $fuelLog) | Out-Null",
             r"New-Item -ItemType Directory -Force -Path $pauseStateDir | Out-Null",
+            r"New-Item -ItemType Directory -Force -Path (Split-Path -Parent $turnsLog) | Out-Null",
+            r"function Write-OpencodeTurnMarker([string]$Type, [int]$TurnNumber) {",
+            r"    # FR #6157: durable turn markers for BoredEmitter / Supervisor",
+            r"    $entry = @{ type = $Type; ts = (Get-Date -Format o); turn_number = $TurnNumber } | ConvertTo-Json -Compress",
+            r"    Add-Content -LiteralPath $turnsLog -Value $entry -ErrorAction SilentlyContinue",
+            r"}",
             r"function Invoke-Opencode($line) {",
+            r"    $script:ocTurnN++",
+            r"    $turnN = $script:ocTurnN",
+            r"    Write-OpencodeTurnMarker 'turn_started' $turnN",
+            r"    try {",
             r"    $argList = @('run', '-m', $model, $line)",
             r"""    $argStr = ($argList | ForEach-Object { if ($_ -match '[\s"]') { $escaped = $_ -replace '(\\*)"', '$1$1\"'; $escaped = $escaped -replace '(\\+)$', '$1$1'; '"' + $escaped + '"' } else { $_ } }) -join ' '""",
-            r"    $psi = New-Object System.Diagnostics.ProcessStartInfo",
-            r"    $psi.FileName = $exe",
-            r"    $psi.Arguments = $argStr",
-            r"    $psi.RedirectStandardOutput = $true",
-            r"    $psi.RedirectStandardError = $true",
-            r"    $psi.UseShellExecute = $false",
-            r"    $psi.CreateNoWindow = $true",
             r"    $proc = $null",
             r"    $stdout = ''",
             r"    $stderr = ''",
+            r"    $outFile = $null",
+            r"    $errFile = $null",
+            r"    $timedOut = $false",
             r"    try {",
-            r"        $proc = [System.Diagnostics.Process]::Start($psi)",
-            r"        $stdoutTask = $proc.StandardOutput.ReadToEndAsync()",
-            r"        $stderrTask = $proc.StandardError.ReadToEndAsync()",
+            # FR #6156: redirect to files and treat growing file size as heartbeat (not absolute WaitForExit).
             r"        $watchdogMs = if ($env:BOB_OPENCODE_WATCHDOG_MS) { [int]$env:BOB_OPENCODE_WATCHDOG_MS } else { 120000 }",
-            r"        $timedOut = -not $proc.WaitForExit($watchdogMs)",
-            r"        if ($timedOut) { try { & taskkill /T /F /PID $proc.Id 2>$null | Out-Null } catch { } }",
-            r"        [void]$proc.WaitForExit(5000)",
-            r"        $stdout = if ($stdoutTask.Wait(5000)) { [string]$stdoutTask.Result } else { '' }",
-            r"        $stderr = if ($stderrTask.Wait(5000)) { [string]$stderrTask.Result } else { '' }",
+            r"        $outFile = Join-Path $env:TEMP ('bob-oc-out-' + [guid]::NewGuid().ToString('n') + '.txt')",
+            r"        $errFile = Join-Path $env:TEMP ('bob-oc-err-' + [guid]::NewGuid().ToString('n') + '.txt')",
+            # MRB #6163 / CodeRabbit: ArgumentList array drops quotes/spaces in $line; use pre-escaped $argStr.
+            r"        $proc = Start-Process -FilePath $exe -ArgumentList $argStr -NoNewWindow -PassThru -RedirectStandardOutput $outFile -RedirectStandardError $errFile",
+            r"        $timedOut = $false",
+            r"        $lastLen = 0",
+            r"        $lastBeat = [datetime]::UtcNow",
+            r"        while (-not $proc.HasExited) {",
+            r"            $len = 0",
+            r"            if (Test-Path -LiteralPath $outFile) { $len += (Get-Item -LiteralPath $outFile).Length }",
+            r"            if (Test-Path -LiteralPath $errFile) { $len += (Get-Item -LiteralPath $errFile).Length }",
+            r"            if ($len -gt $lastLen) { $lastLen = $len; $lastBeat = [datetime]::UtcNow }",
+            r"            $idleMs = ([datetime]::UtcNow - $lastBeat).TotalMilliseconds",
+            r"            if ($idleMs -ge $watchdogMs) {",
+            r"                $timedOut = $true",
+            r"                try { & taskkill /T /F /PID $proc.Id 2>$null | Out-Null } catch { }",
+            r"                break",
+            r"            }",
+            r"            Start-Sleep -Milliseconds 100",
+            r"        }",
+            r"        try { $proc.WaitForExit(2000) | Out-Null } catch { }",
+            r"        if (Test-Path -LiteralPath $outFile) { $stdout = [IO.File]::ReadAllText($outFile) } else { $stdout = '' }",
+            r"        if (Test-Path -LiteralPath $errFile) { $stderr = [IO.File]::ReadAllText($errFile) } else { $stderr = '' }",
             r"        $exitCode = if ($proc.HasExited) { $proc.ExitCode } else { -1 }",
             r"    } catch {",
             r"        $stdout = ''",
             r"        $stderr = $_",
             r"        $exitCode = -1",
+            r"    } finally {",
+            r"        foreach ($f in @($outFile, $errFile)) { if ($f -and (Test-Path -LiteralPath $f)) { Remove-Item -LiteralPath $f -Force -ErrorAction SilentlyContinue } }",
             r"    }",
             r"    $outStr = $stdout + [Environment]::NewLine + $stderr",
             r"    Write-Output $outStr",
@@ -1330,6 +1362,7 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             r"        }",
             r"    }",
             r"    if ($proc) { try { $proc.Dispose() } catch { } }",
+            r"    } finally { Write-OpencodeTurnMarker 'turn_ended' $turnN }",
             r"}",
             r"try { Invoke-Opencode $prompt } catch { [Console]::Error.WriteLine('opencode initial run failed: ' + $_) }",
             r"while ($true) { $line = [Console]::ReadLine(); if ($null -eq $line -or $line -eq 'exit') { break }; if (-not [string]::IsNullOrWhiteSpace($line)) { try { Invoke-Opencode $line } catch { [Console]::Error.WriteLine('opencode run failed: ' + $_) } } }",
@@ -2464,6 +2497,30 @@ def bored_on_turn_end_enabled() -> bool:
 def should_start_turn_watcher(kind: str) -> bool:
     """FR #2802: grok turn watcher only when opt-in is on (default on)."""
     return (kind or "").strip().lower() == "grok" and bored_on_turn_end_enabled()
+
+
+def should_start_opencode_turn_watcher(kind: str) -> bool:
+    """FR #6157: OpenCode seats tail run_dir/opencode-turns.jsonl (wrapper markers).
+
+    Opt out with BOB_WORKER_BORED_ON_TURN_END=0 or BOB_WORKER_OPENCODE_TURN_WATCH=0.
+    """
+    if (kind or "").strip().lower() != "opencode" or not bored_on_turn_end_enabled():
+        return False
+    raw = (os.environ.get("BOB_WORKER_OPENCODE_TURN_WATCH") or "1").strip().lower()
+    return raw not in ("0", "false", "no", "off")
+
+
+def startup_turn_release_enabled(kind: str) -> bool:
+    """FR #6157: startup wait_ready / first-turn release for grok or opencode turn watchers.
+
+    Cursor uses its own quiet-period watcher and does not gate startup on events.jsonl.
+    """
+    k = (kind or "").strip().lower()
+    if k == "grok":
+        return should_start_turn_watcher(k)
+    if k == "opencode":
+        return should_start_opencode_turn_watcher(k)
+    return False
 
 
 def should_start_cursor_turn_watcher(kind: str) -> bool:
@@ -5321,7 +5378,8 @@ class BoredEmitter:
     """t770u / FR #1611 / FR #2802 / FR #2834: the EXE (never the model) posts `PRIVMSG #<machine> :!bored`:
       * on seat start (agent ready), after DONE/NACK/GIVEUP **once the harvest hold ends**, and while idle
         (first idle after idle_s, then every repeat_s);
-      * FR #2802: grok ``turn_ended`` releases the harvest hold early (and idle turn end -> reason ``turn``);
+      * FR #2802 / #6157: grok ``events.jsonl`` or OpenCode ``opencode-turns.jsonl`` ``turn_ended``
+        releases the harvest hold early (and idle turn end -> reason ``turn``);
         ``harvest_hold_s`` remains the fallback when no turn-end signal arrives;
       * FR #2834: when a turn is open (watcher saw ``turn_started``, no ``turn_ended`` yet), keep holding
         past ``harvest_hold_s`` until ``turn_ended`` or ``turn_hold_max_s`` (default 600 s);
@@ -7018,18 +7076,26 @@ class Supervisor:
         apply_cursor_inject_keys_default("cursor", log=self.log)
 
     def _start_turn_watcher(self, session_id: str) -> None:
-        """FR #2802: follow current grok session events.jsonl for turn_ended → early !bored."""
+        """FR #2802 / #6157: follow grok events.jsonl or opencode-turns.jsonl for turn_ended → early !bored."""
         self._stop_turn_watcher()
         if self.bored and should_start_cursor_turn_watcher(self.kind):
             self._start_cursor_turn_watcher()
             return
-        if not self.bored or not should_start_turn_watcher(self.kind):
+        use_grok = bool(self.bored and should_start_turn_watcher(self.kind))
+        use_opencode = bool(self.bored and should_start_opencode_turn_watcher(self.kind))
+        if not use_grok and not use_opencode:
             return
         self._turn_watch_stop = threading.Event()
         cwd = str(self.cwd)
         sid_box = {"sid": session_id}
+        run_dir = Path(self.run_dir) if getattr(self, "run_dir", None) else None
 
         def _path() -> Optional[Path]:
+            # FR #6157: OpenCode wrapper markers live under the seat run_dir.
+            if use_opencode:
+                if run_dir is None:
+                    return None
+                return run_dir / "opencode-turns.jsonl"
             sid = sid_box["sid"]
             if self.sessions:
                 sid = self.sessions[-1]
@@ -7081,10 +7147,14 @@ class Supervisor:
             poll_s=0.5,
             log=self.log,
         )
-        th = threading.Thread(target=watcher.run, name="grok-turn-watch", daemon=True)
+        watch_name = "opencode-turn-watch" if use_opencode else "grok-turn-watch"
+        th = threading.Thread(target=watcher.run, name=watch_name, daemon=True)
         self._turn_watch_thread = th
         th.start()
-        self.log(f"bored: turn watcher started (session={session_id})")
+        if use_opencode:
+            self.log(f"bored: opencode turn watcher started (run_dir={run_dir})")
+        else:
+            self.log(f"bored: turn watcher started (session={session_id})")
 
     def _on_inject(self, line: str = "") -> None:
         self.detector.note_inject(self.clock())
@@ -7197,6 +7267,16 @@ class Supervisor:
                 return False
             if self.bored:
                 self.bored.set_ready(False)  # a (re)starting agent is not idle
+            # FR #6157 / MRB #6164: hang-restart reuses run_dir; truncate OpenCode turn markers
+            # before spawn so GrokTurnWatcher (offset 0) cannot replay a prior agent's turn_ended
+            # into startup release / done-miss / harvest hold. Markers written after this clear
+            # (between spawn and watcher start) are still seen.
+            if (self.kind or "").strip().lower() == "opencode" and self.run_dir is not None:
+                try:
+                    turns = Path(self.run_dir) / "opencode-turns.jsonl"
+                    turns.write_text("", encoding="utf-8")
+                except OSError:
+                    pass
             child = describe_agent_child_launch(
                 kind=self.kind,
                 mode="agent",
@@ -7371,7 +7451,9 @@ class Supervisor:
             self._startup_session_id = self.sessions[-1] if self.sessions else None
             self._startup_saw_turn_started = False
             self._startup_defer_start_bored = False
-            self._startup_turn_release_enabled = should_start_turn_watcher(self.kind)
+            # FR #6157: grok OR opencode turn watchers enable startup wait_ready / first-turn release.
+            self._startup_turn_release_enabled = startup_turn_release_enabled(self.kind)
+
             if self._min_ready_timer is not None:
                 try:
                     self._min_ready_timer.cancel()
