@@ -927,6 +927,8 @@ class Client:
         self._grok_account_last = 0.0
         self._grok_account_delivered = _GROK_ACCOUNT_UNSET
         self._grok_account_chair = _GROK_ACCOUNT_UNSET
+        # MRB #6167: rate-limit chair-mismatch re-POST (rollout GET may lack grok_account).
+        self._grok_account_chair_mismatch_last = 0.0
         # #42: ChanServ roster mirror (chair only). Query state; registry file is the cache.
         self._cs_collector: registered_machines.ChanServListCollector | None = None
         self._unregister_pending = unregister_cmd.PendingUnregisterStore()
@@ -2706,7 +2708,11 @@ class Client:
         if delivered is _GROK_ACCOUNT_UNSET or delivered != desired:
             need = True
         elif chair is not _GROK_ACCOUNT_UNSET and chair != desired:
-            need = True
+            # MRB #6167: during rollout the public GET may omit grok_account; do not
+            # re-POST every fuel heartbeat. Reconcile at most every 10 minutes.
+            chair_gap = 600.0
+            if now - float(self._grok_account_chair_mismatch_last or 0.0) >= chair_gap:
+                need = True
         if not need:
             return
         # Send null only when chair has a value or we previously delivered one.
@@ -2724,6 +2730,9 @@ class Client:
             return
         if code is not None:
             self._grok_account_delivered = desired
+            # Optimistic reconcile until next digest pull (stops heartbeat churn).
+            self._grok_account_chair = desired
+            self._grok_account_chair_mismatch_last = now
             info("INFO grok account publish ok")
         else:
             info("INFO grok account publish failed status=none")
