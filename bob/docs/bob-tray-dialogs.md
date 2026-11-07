@@ -75,10 +75,12 @@ rows with workers `{irc nick}: {doing|idle}`, one Copilot pool tile, alert and v
 "Grok accounts" heading).
 
 
-## Copilot freshness (FR #6148)
+## Copilot freshness (FR #6148) + historical-max % (FR #6215)
 
 - `Format-BobCopilotPoolLine` / `Get-BobCopilotFreshness` treat `fetched_at` older than **900 seconds** (or missing/unparseable/far-future) as stale.
 - A future `resume_at` (dispatch cooldown) does **not** force fresh: age is always from `fetched_at`.
-- Stale paint: `Copilot  [stale <age>] <value>` or `Copilot  [stale] <value>` (reset countdown omitted). TipForm paints the title red via `Add-BobTraySectionHeader -TitleColor` (escape `` `[ `` in `-like` patterns so `[stale` is literal).
-- Snapshot fields: `copilot_line`, `copilot_stale_line`, `copilot_fresh_until` (unix seconds). Native Status re-ages an open window at the deadline without waiting for a new poll.
-- TipForm always shows a Copilot line (`Copilot  unknown` when absent).
+- Stale paint: `Copilot  [stale <age>] <value>` or `Copilot  [stale] <value>`. TipForm paints the title red via `Add-BobTraySectionHeader -TitleColor` (escape `` `[ `` in `-like` patterns so `[stale` is literal).
+- **FR #6215:** known `reset_at` still paints a `reset <countdown>` using the same `Format-BobResetLabel` convention as other pools (even when stale). Past/missing reset stays omitted.
+- **FR #6215:** when `used` and `max_recorded_usage` are known, append `(N.NN% of max recorded)` (two decimals, invariant). The denominator is a historical high-water mark bumped when usage exceeds it — **not** a contractual quota. Missing/zero denominator paints no percentage (never invent 0/100% or divide-by-zero).
+- Snapshot fields: `copilot_line`, `copilot_stale_line`, `copilot_fresh_until` (unix seconds), plus digest `max_recorded_usage`. Native Status re-ages an open window at the deadline without waiting for a new poll.
+- TipForm always shows a Copilot line (`Copilot  unknown` when absent). Display-only: does not enable Copilot dispatch (`BOB_FUEL_COPILOT` / #6204).

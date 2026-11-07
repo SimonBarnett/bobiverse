@@ -260,6 +260,10 @@ def observe_quota(
         ):
             if key in pool:
                 doc[key] = pool[key]
+        # FR #6215: keep prior max_recorded_usage; bump when used exceeds it.
+        if "max_recorded_usage" in prev and "max_recorded_usage" not in doc:
+            doc["max_recorded_usage"] = prev.get("max_recorded_usage")
+        update_max_recorded_usage(doc, doc.get("used"))
         doc["fetched_at"] = attempted_at
         doc["fetched_epoch"] = now_f
         doc["attempted_at"] = attempted_at
@@ -310,6 +314,32 @@ def _num(val: object) -> float | None:
         return float(val)
     except (TypeError, ValueError):
         return None
+
+
+def update_max_recorded_usage(doc: dict, used: object) -> float | None:
+    """FR #6215: bump historical max when usage exceeds the recorded high-water mark.
+
+    This is a display denominator only — never a contractual quota / allowance.
+    """
+    if not isinstance(doc, dict):
+        return None
+    u = _num(used)
+    if u is None:
+        return _num(doc.get("max_recorded_usage"))
+    prev = _num(doc.get("max_recorded_usage"))
+    if prev is None or u > prev:
+        doc["max_recorded_usage"] = float(u)
+        return float(u)
+    return float(prev)
+
+
+def historical_max_pct(used: object, max_recorded: object) -> str | None:
+    """usage / max_recorded_usage * 100 as a two-decimal string, or None when unknown."""
+    u = _num(used)
+    m = _num(max_recorded)
+    if u is None or m is None or m <= 0:
+        return None
+    return f"{(100.0 * float(u) / float(m)):.2f}"
 
 
 def parse_user_quota(doc: dict | None) -> dict:
@@ -548,6 +578,10 @@ def refresh_allowance(
     Path(home).mkdir(parents=True, exist_ok=True)
     merged = dict(doc)
     merged.update(pool)
+    # FR #6215: preserve prior max across refresh; bump when used exceeds it.
+    if "max_recorded_usage" in doc and _num(merged.get("max_recorded_usage")) is None:
+        merged["max_recorded_usage"] = doc.get("max_recorded_usage")
+    update_max_recorded_usage(merged, merged.get("used"))
     _allow_path(home).write_text(json.dumps(merged, indent=2) + "\n", encoding="utf-8")
     if merged.get("state") == "exhausted":
         mark_tokens_exhausted(home, now=now_f, reset_date=merged.get("reset_at"))
@@ -603,7 +637,20 @@ def pool_for_digest(home: Path) -> dict:
     if exhausted and state in ("", "unknown", "ok"):
         state = "exhausted"
     attempted = str(quota.get("attempted_at") or obs.get("attempted_at") or allow.get("attempted_at") or "")
-    return {
+    # FR #6215: historical max is the higher of observation/allowance water-marks and current used.
+    max_rec = None
+    for src in (quota, obs, allow):
+        if not isinstance(src, dict):
+            continue
+        cand = _num(src.get("max_recorded_usage"))
+        if cand is None:
+            continue
+        if max_rec is None or cand > max_rec:
+            max_rec = cand
+    used_n = _num(quota.get("used"))
+    if used_n is not None and (max_rec is None or used_n > max_rec):
+        max_rec = used_n
+    out = {
         "plan": quota.get("plan") or "",
         "used": quota.get("used"),
         "remaining": quota.get("remaining"),
@@ -617,6 +664,9 @@ def pool_for_digest(home: Path) -> dict:
         "resume_at": allow.get("exhausted_until_utc") or "",
         "resume_source": allow.get("exhausted_until_source") or "",
     }
+    if max_rec is not None:
+        out["max_recorded_usage"] = max_rec
+    return out
 
 
 def _error_text(blob: object) -> str:
