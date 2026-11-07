@@ -261,8 +261,8 @@ _CLEARABLE_MERGE_FIELDS = frozenset({
     # FR #6144: omit/unknown Cursor must clear sticky label (not leave foreign 0%).
     "cursor_label",
 })
-# FR #6144: fields cleared when publisher sends cursor_known=false.
-_CURSOR_UNKNOWN_CLEAR_FIELDS = (
+# FR #6144 / MRB #6169: one Cursor-group key set for clear / merge-skip / peer-block.
+_CURSOR_GROUP_KEYS = frozenset({
     "pcent",
     "cursor_label",
     "cursor_pools",
@@ -279,7 +279,9 @@ _CURSOR_UNKNOWN_CLEAR_FIELDS = (
     "remaining_pct",
     "account_remaining_pct",
     "cursor_remaining_pct",
-)
+    "cur",
+})
+_CURSOR_UNKNOWN_CLEAR_FIELDS = tuple(sorted(_CURSOR_GROUP_KEYS))
 _PEER_CLEAR = object()  # sentinel: peer wants an explicit null clear in the merge delta
 # FR #6143: ear-owned identity scalars. Keep out of _MERGE_PEER_FIELDS so tray peer
 # rewrites cannot clear or restore a stale grok_account via peer fill.
@@ -2272,21 +2274,7 @@ def _apply_merge_payload(doc: dict, mid: str, payload: dict) -> list[str]:
             continue
         if key == "pcent" and isinstance(val, dict):
             continue
-        if cursor_unknown and key in (
-            "cursor_label",
-            "cursor_period_end",
-            "sand_period_end",
-            "cursor_pools",
-            "pcent",
-            "overage_gbp",
-            "overage_usd",
-            "overspend_state",
-            "on_demand_used_cents",
-            "on_demand_limit_cents",
-            "on_demand_remaining_pct",
-            "overage_fetched_at",
-            "usd_gbp_rate",
-        ):
+        if cursor_unknown and key in _CURSOR_GROUP_KEYS:
             continue
         if key in ("weekly",) and val is not None:
             # FR #976: skip write when reporter marked weekly unknown (cleared above).
@@ -3375,20 +3363,7 @@ def export_machine_for_tray(
     # FR #6144: do not peer-refill Cursor group when cursor_known is false, or weekly when unknown.
     cursor_known_ent = ent.get("cursor_known")
     weekly_known_ent = ent.get("weekly_known")
-    _cursor_peer_block = {
-        "pcent",
-        "cursor_label",
-        "cursor_pools",
-        "cursor_period_end",
-        "sand_period_end",
-        "overage_gbp",
-        "overage_usd",
-        "overspend_state",
-        "on_demand_used_cents",
-        "on_demand_limit_cents",
-        "on_demand_remaining_pct",
-        "cur",
-    }
+    _cursor_peer_block = set(_CURSOR_GROUP_KEYS)
     peer = bobstat.read_peer(home, mid)
     if peer:
         for key in _peer_fill_keys():
