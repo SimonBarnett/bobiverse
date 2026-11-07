@@ -801,8 +801,10 @@ class ChairJobs:
         FR #5267: release stranded accepts before any Copilot API call, including
         when there is no token (dispatch stays off).
 
-        FR #6148: always run read-only observe_quota first (dispatch-independent),
-        so digest copilot.fetched_at stays truthful even when dispatch is off/cooldown.
+        FR #6148 + FR #6204: read-only observe_quota runs when dispatch is enabled
+        or when observation is explicitly opted in (``BOB_COPILOT_OBSERVE`` /
+        allowance ``observe``). Default with dispatch off is zero quota GETs and
+        no observation file write.
         """
         import copilot_dispatch
 
@@ -814,6 +816,7 @@ class ChairJobs:
             )
         token, _src = self.token_loader()
         now_f = self.clock()
+        observe = copilot_dispatch.should_observe_quota(self.digest_home)
 
         def fetch_user() -> dict:
             data, code = self._github_json(
@@ -826,18 +829,20 @@ class ChairJobs:
             return data
 
         if not token:
-            def _no_token() -> dict:
-                raise RuntimeError("no_token")
+            if observe:
+                def _no_token() -> dict:
+                    raise RuntimeError("no_token")
 
-            copilot_dispatch.observe_quota(
-                self.digest_home, fetch_user=_no_token, now=now_f
-            )
+                copilot_dispatch.observe_quota(
+                    self.digest_home, fetch_user=_no_token, now=now_f
+                )
             self.log("WARN copilot-dispatch skipped: no token")
             return
 
-        copilot_dispatch.observe_quota(
-            self.digest_home, fetch_user=fetch_user, now=now_f
-        )
+        if observe:
+            copilot_dispatch.observe_quota(
+                self.digest_home, fetch_user=fetch_user, now=now_f
+            )
 
         def post(path: str, body: dict) -> dict:
             url = path if str(path).startswith("http") else (

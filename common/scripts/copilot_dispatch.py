@@ -194,7 +194,11 @@ def observe_quota(
     fetch_user: Callable[[], dict] | None = None,
     now: float | None = None,
 ) -> dict:
-    """FR #6148: read-only Copilot quota observation, independent of dispatch.
+    """FR #6148: read-only Copilot quota observation (does not enable dispatch).
+
+    FR #6204: the chair calls this only when ``should_observe_quota`` is true
+    (dispatch enabled, or explicit observation opt-in). Direct callers may still
+    use it in tests.
 
     Never creates or mutates copilot-allowance.json. Never calls mark_tokens_exhausted
     or queue helpers. fetched_at advances only on a successful parse.
@@ -1148,6 +1152,42 @@ def _explicitly_off(val: object) -> bool:
     if val is False or val == 0:
         return True
     return isinstance(val, str) and val.strip().lower() in ("0", "false", "no", "off")
+
+
+def _explicitly_on(val: object) -> bool:
+    if val is True or val == 1:
+        return True
+    return isinstance(val, str) and val.strip().lower() in ("1", "true", "yes", "on")
+
+
+def observation_opt_in(home: Path) -> bool:
+    """FR #6204: explicit Copilot quota observation opt-in (off by default).
+
+    Independent of dispatch. Sources (first match wins for env off):
+    - env ``BOB_COPILOT_OBSERVE`` on/off
+    - allowance ``observe: true`` or ``observation.enabled: true``
+      (usable when dispatch is ``enabled: false`` but observation is wanted)
+    """
+    raw = os.environ.get("BOB_COPILOT_OBSERVE")
+    if raw is not None and str(raw).strip():
+        if _explicitly_off(raw):
+            return False
+        if _explicitly_on(raw):
+            return True
+    if not _allow_path(home).is_file():
+        return False
+    doc = load_allowance(home)
+    if _explicitly_on(doc.get("observe")):
+        return True
+    obs = doc.get("observation")
+    if isinstance(obs, dict) and _explicitly_on(obs.get("enabled")):
+        return True
+    return False
+
+
+def should_observe_quota(home: Path) -> bool:
+    """FR #6204: observe when dispatch is on, or when observation is explicitly opted in."""
+    return dispatch_enabled(home) or observation_opt_in(home)
 
 
 def dispatch_enabled(home: Path) -> bool:
