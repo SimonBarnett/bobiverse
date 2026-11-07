@@ -2819,8 +2819,8 @@ function Rebuild-BobTrayTiles {
             try { $xaiPct = [int]$AccountPct } catch { $xaiPct = $null }
         }
         $sharedRefs = @(
-            [pscustomobject]@{ pool_id = 'local-unified'; family = 'cursor'; remaining_pct = $cursorPct; period_end = $null; label = 'Cursor Models' },
-            [pscustomobject]@{ pool_id = 'local-unified'; family = 'xai'; remaining_pct = $xaiPct; period_end = $null; label = 'xAI weekly' }
+            [pscustomobject]@{ pool_id = 'local-unified'; family = 'cursor'; remaining_pct = $cursorPct; period_end = $null },
+            [pscustomobject]@{ pool_id = 'local-unified'; family = 'xai'; remaining_pct = $xaiPct; period_end = $null }
         )
         $sharedPools = @()
         try { $sharedPools = @(Resolve-BobCursorXaiSharedPools -Refs $sharedRefs) } catch { $sharedPools = @() }
