@@ -49,3 +49,19 @@ def test_bob_vision_pack_validates():
         text=True,
     )
     assert r.returncode == 0, r.stdout + r.stderr
+
+
+def test_bob_vision_s2_agents_submenu_fr6226():
+    """FR #6226: S2 + Architecture document Agents submenu (post-#6216 / #6222)."""
+    text = VISION.read_text(encoding="utf-8")
+    assert "Tray **Agent**" not in text
+    assert "Tray **Agents**" in text
+    for name in ("Automatic", "Grok", "Cursor", "OpenCode"):
+        assert name in text, name
+    arch = text[text.index("## Architecture") :]
+    # Singular Architecture menu row must not remain.
+    assert "Agents" in arch.split("Plan", 1)[0]
+    assert "Plan" in arch
+    # Reject leftover singular Agent menu label (space-padded as in the old tree).
+    assert " Agent  " not in arch.replace("Agents", "X")
+    assert "one console = one agent" in text
