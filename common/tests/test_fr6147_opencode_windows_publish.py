@@ -231,3 +231,15 @@ def test_fr6147_export_machine_for_tray_keeps_opencode_windows(tmp_path: Path):
     )
     assert exported["pcent"]["opencode-go"] == 28
     assert exported["opencode_windows"]["week"]["remaining_pct"] == 28
+
+
+def test_mrb6232_peer_fuel_fingerprint_includes_opencode_windows():
+    import bobreport as br
+
+    base = {"id": "marchhare", "pcent": {"opencode-free": 100, "opencode-go": 28}}
+    a = dict(base)
+    a["opencode_windows"] = {"week": {"remaining_pct": 28, "status": "known"}}
+    b = dict(base)
+    b["opencode_windows"] = {"week": {"remaining_pct": 10, "status": "known"}}
+    assert br.peer_fuel_fingerprint(a) != br.peer_fuel_fingerprint(b)
+

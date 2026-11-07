@@ -764,7 +764,7 @@ def test_fr6147_normalize_fixture_reset_labels_and_exhausted_limits():
     assert "reset 1d 2h" in paint["window_lines"][1]
     assert "reset 26d 18h" in paint["window_lines"][2]
     # Free=100 must not imply Go availability when limiting window is exhausted.
-    assert "go weekly 0%" in paint["summary"] or paint["go_remaining"] == 0
+    assert "go weekly 0%" in paint["summary"]
 
 
 def test_fr6147_stale_clears_known_values():

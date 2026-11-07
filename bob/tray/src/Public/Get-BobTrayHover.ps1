@@ -3110,8 +3110,12 @@ function Get-BobTrayHover {
     }
     $opencodeWindowLines = @()
     if ($ocPack -and $ocPack.window_lines) { $opencodeWindowLines = @($ocPack.window_lines) }
-    if ($opencodeLine) { $jobLines = @(('  {0}' -f $opencodeLine)) + $jobLines }
-    foreach ($wl in @($opencodeWindowLines)) { if ($wl) { $jobLines = @(('  {0}' -f $wl)) + $jobLines } }
+    # MRB #6232: prepend summary + window lines as one block (summary, rolling,
+    # weekly, monthly). Per-line prepend reversed the window order.
+    $ocBlock = @()
+    if ($opencodeLine) { $ocBlock += (('  {0}' -f $opencodeLine)) }
+    foreach ($wl in @($opencodeWindowLines)) { if ($wl) { $ocBlock += (('  {0}' -f $wl)) } }
+    if ($ocBlock.Count -gt 0) { $jobLines = $ocBlock + $jobLines }
     $copilotPoolObj = $(if ($reportDigest -and $reportDigest.copilot) { $reportDigest.copilot } else { $null })
     $copilotFresh = Get-BobCopilotFreshness -Pool $copilotPoolObj
     $copilotLine = Format-BobCopilotPoolLine -Pool $copilotPoolObj
