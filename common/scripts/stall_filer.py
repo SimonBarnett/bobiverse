@@ -57,7 +57,7 @@ def issue_body(finding: dict[str, Any], *, excerpt: str = "") -> str:
     fp = str(finding.get("fingerprint") or "")
     ev = finding.get("evidence") if isinstance(finding.get("evidence"), dict) else {}
     nick = str((ev or {}).get("nick") or "").strip()
-    machine = str((ev or {}).get("machine") or finding.get("key") or "").strip()
+    machine = str((ev or {}).get("machine") or "").strip()
     redacted = crash_report.redact(json.dumps(ev or {}, indent=2)[:4000])
     log_bit = crash_report.redact((excerpt or "")[-2000:])
     # FR #6195: stable machine + volatile nick in the header (not only JSON evidence).

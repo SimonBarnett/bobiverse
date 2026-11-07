@@ -136,3 +136,24 @@ def test_fr6195_issue_body_names_stable_machine_and_volatile_nick():
     assert "key=`redqueen`" in body
     assert "redqueen-14160" in body
     assert "machine=`redqueen`" in body or '"machine": "redqueen"' in body
+
+
+def test_fr6195_hyphenated_machine_fallback_strips_trailing_pid():
+    """Fallback regex must keep hyphenated machine ids (CodeRabbit / MRB #6197)."""
+    assert sd._bored_latency_stable_key("ce-priority-dev1-12345") == "ce-priority-dev1"
+    assert sd._bored_latency_stable_key("redqueen-14160") == "redqueen"
+    assert sd._bored_latency_stable_key("unparsable") == "unparsable"
+
+
+def test_fr6195_issue_body_machine_only_from_evidence():
+    """Do not present a non-machine finding key as machine= (MRB #6197)."""
+    finding = {
+        "id": "ack-stale",
+        "key": "row-xyz",
+        "fingerprint": "stall:ack-stale:row-xyz",
+        "title": "stall:ack-stale:row-xyz",
+        "evidence": {"nick": "redqueen-1", "lag_s": 10},
+    }
+    body = sf.issue_body(finding)
+    assert "machine=`row-xyz`" not in body
+    assert "nick=`redqueen-1`" in body

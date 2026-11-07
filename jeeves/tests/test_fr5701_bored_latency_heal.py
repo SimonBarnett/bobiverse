@@ -111,6 +111,9 @@ def test_stall_scan_wires_bored_latency_heal():
     scan = src[src.find("def _stall_scan") :]
     assert "heal_bored_latency" in scan
     assert "heal_mrb_reviewer_deadlock" in scan
+    heal = scan[scan.find("heal_bored_latency") : scan.find("if bored_healed")]
+    assert "unaccepted=" in heal
+    assert 'doc.get("unaccepted")' in heal
 
 
 def test_detector_still_fires_after_heal_pattern():

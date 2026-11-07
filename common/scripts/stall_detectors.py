@@ -306,7 +306,8 @@ def _bored_latency_stable_key(nick: str) -> str:
     full nick filed a new intake issue on every recycle/restart. Seat slots are not
     carried in the nick, so this detector keys **per machine** (one open issue per
     machine; later PIDs comment on it via FR #4963 / stall_filer). Falls back to the
-    nick when the machine cannot be parsed.
+    nick when the machine cannot be parsed. Trailing ``-<digits>`` is stripped so
+    hyphenated machine ids (e.g. ``ce-priority-dev1-12345``) stay stable.
     """
     mid = ""
     try:
@@ -317,10 +318,26 @@ def _bored_latency_stable_key(nick: str) -> str:
         return str(mid).strip().lower()
     canon = gitclaim.canonical_worker_nick(nick) or nick
     n = (canon or nick or "").strip().lower()
-    m = re.match(r"^([a-z0-9][a-z0-9_.]*)-(\d+)$", n)
+    m = re.match(r"^(.+)-(\d+)$", n)
     if m:
         return m.group(1)
     return n
+
+
+def _has_live_offer(snap: dict[str, Any], nick: str, now: float) -> bool:
+    me = (gitclaim.canonical_worker_nick(nick) or nick or "").strip().lower()
+    for row in snap.get("unaccepted") or []:
+        if not isinstance(row, dict):
+            continue
+        offered_to = str(row.get("offered_to") or "").strip()
+        offered_nick = (
+            gitclaim.canonical_worker_nick(offered_to) or offered_to
+        ).strip().lower()
+        if offered_nick != me or gitclaim._is_lost_done_reoffer_to(row, nick):
+            continue
+        if gitclaim._offer_age_s(row, now) < gitclaim.offer_timeout_s(row):
+            return True
+    return False
 
 
 def detect_bored_latency(snap: dict[str, Any]) -> list[dict[str, Any]]:
@@ -334,7 +351,7 @@ def detect_bored_latency(snap: dict[str, Any]) -> list[dict[str, Any]]:
     for nick in idle:
         if not nick:
             continue
-        if nick in busy or nick.lower() in busy:
+        if nick in busy or nick.lower() in busy or _has_live_offer(snap, nick, now):
             continue
         ts = last_bored.get(nick)
         if ts is None:
