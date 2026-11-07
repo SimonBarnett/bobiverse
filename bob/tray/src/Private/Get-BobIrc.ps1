@@ -1904,11 +1904,9 @@ function Get-BobIrcChairDigestPeerForMachine {
 
 function Sync-BobDigestWebhookAfterBobiversePull {
     param([Parameter(Mandatory)]$LocalDoc)
+    # FR #6141: ear owns fuel merge POST (publish_local_peer_fuel). Tray pull no longer POSTs.
     if (-not $LocalDoc) { return }
-    $mid = [string]$LocalDoc.id
-    if (-not $mid) { return }
-    $chair = Get-BobIrcChairDigestPeerForMachine -MachineId $mid
-    Send-BobDigestWebhookIfChanged -Doc $LocalDoc -Before $chair | Out-Null
+    return
 }
 
 function Request-BobIrcBobiversePull {
@@ -2415,6 +2413,8 @@ function Send-BobDigestWebhookIfChanged {
 function Write-BobIrcStatus {
     param(
         [switch]$SkipDigestWebhook,
+        # FR #6141: ear owns fuel merge POST; tray gather/paint only unless opted in or capture.
+        [switch]$PostDigestWebhook,
         [switch]$PassThru
     )
     $id = Get-ThisMachineId
@@ -2614,8 +2614,14 @@ function Write-BobIrcStatus {
     Write-JsonFile $peerPath $doc
     # FR #341: never append idle/busy/operational/long-running status to outbox.
     # Keep peer JSON + digest webhook only (Jeeves owns worker busy/idle via ACK/DONE).
-    if (-not $SkipDigestWebhook) {
-        Send-BobDigestWebhookIfChanged -Doc $doc -Before $before | Out-Null
+    # FR #6141: default is no fuel POST from tray/Write-BobIrcStatus (ear publish_local_peer_fuel).
+    # Capture mode (Assert / hermetic tests) and -PostDigestWebhook still POST.
+    $capturePath = $null
+    try { $capturePath = Get-BobDigestWebhookCapturePath } catch { }
+    if ($PostDigestWebhook -or $capturePath) {
+        if (-not $SkipDigestWebhook) {
+            Send-BobDigestWebhookIfChanged -Doc $doc -Before $before | Out-Null
+        }
     }
     if ($PassThru) { return $doc }
 }
