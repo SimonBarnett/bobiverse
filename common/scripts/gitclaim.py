@@ -6219,8 +6219,11 @@ def summarize_empty_offer(home: Path, nick: str = "") -> dict:
                                         f"{repo}#{rid}" if rid else repo
                                     )
                                 continue
-                except Exception:
-                    pass
+                except Exception as exc:  # noqa: BLE001
+                    print(
+                        f"WARN summarize_empty_offer coderabbit hold: {type(exc).__name__}",
+                        flush=True,
+                    )
             if sticky_pin:
                 to_c = (canonical_worker_nick(to) or to).strip().lower()
                 me_l = me.lower()
@@ -10801,8 +10804,12 @@ def assign_row(
                         with contextlib.suppress(Exception):
                             _log_queue_purge(f"INFO {detail} via=assign")
                         return "refused", detail
-                except Exception:
-                    pass
+                except Exception as exc:  # noqa: BLE001 - fail-open like offer_focus_top
+                    with contextlib.suppress(Exception):
+                        _log_queue_purge(
+                            f"WARN coderabbit gate error via=assign "
+                            f"{repo}#{num}: {type(exc).__name__}"
+                        )
             to = str(cand.get("offered_to") or "").strip()
             if to and to.lower() != me.lower():
                 try:
