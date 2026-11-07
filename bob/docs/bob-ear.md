@@ -37,6 +37,19 @@ Workers still only inject lines **FROM Jeeves** addressed to that seat (`bob_wor
 
 Do **not** mint a fresh GUID for an already-registered NickServ account.
 
+## Digest fuel publish (FR #6141..#6150)
+
+Canonical digest: `GET https://bob.ntsa.uk/bob/v1/report`. The **ircBob ear** owns fuel merge POSTs (`publish_local_peer_fuel`); TipForm/Status paint only.
+
+| Surface | Notes |
+|--------|--------|
+| OpenCode | `pcent.opencode-free` / `pcent.opencode-go` when local fuel known; omit unknown; never invent 0 |
+| Copilot | TipForm/Status account-wide Copilot pool line; treat stale fetched_at as not current |
+| Logos | `bob/tray/assets/fuel-logos/` (cursor, xai, opencode, copilot) + text fallback; see LICENSE.md |
+| cursor_known | false clears Cursor label/pcent/pools; Sand uses `sand_period_end` |
+
+Park drafts: `bob/docs/fr/digest-ear-publish/` (Refs, not Closes, for impl FRs). Vision: `bob/docs/vision-digest-ear-publish.md`.
+
 ## Public airc console roster (FR #5204 / FR #5947)
 
 `GET https://bob.ntsa.uk/bob/v1/report` includes `airc_consoles` (flat nick list) plus `airc_console_details` (`[{nick, machine, channel}]`) and per-machine `console_nicks`. Chair NAMES on **every** channel Jeeves sits in (registered shops and customer channels) record live `*_console` nicks; PART/QUIT clears them. No NickServ, no secrets. Priority Agent airc picker can verify presence without IRC credentials.
