@@ -25,6 +25,57 @@ def test_is_out_of_fuel_text_detects_402_payment_required():
     assert bw.is_out_of_fuel_text("provider out of credits mid-turn")
 
 
+def _wrapper_fuel_log(text: str, pid: int = 16740, model: str = "opencode/beam-free") -> str:
+    """Same envelope the OpenCode wrapper writes with ConvertTo-Json -Compress."""
+    return json.dumps(
+        {"pid": pid, "ts": "2026-11-07T21:33:22Z", "model": model, "text": text},
+        separators=(",", ":"),
+    )
+
+
+def test_provider_402_survives_quotes_and_fuel_log_envelope():
+    """Raw provider text, the wrapper JSON line, and the watcher all agree."""
+    import opencode_fuel as of
+
+    skill = (
+        "Mid-job `402 Payment Required` / `usage balance exhausted` / Cursor `NEEDS_AUTH` "
+        "is out-of-fuel (FR #3012): the exe must GIVEUP. never treat 402 as a missed DONE."
+    )
+    rows = [
+        ("402 Payment Required: Grok Build usage balance exhausted", True, True, True),
+        ("402 Payment Required", True, True, True),
+        ("Provider's response: 402 Payment Required for model 'beam-free'", True, True, True),
+        ("can't complete: 402 Payment Required, don't retry", True, True, True),
+        ('shell.turn.inference_failed status_code=402 "usage balance exhausted"', True, True, True),
+        ("HTTP 402", False, False, True),
+        (skill, False, False, False),
+        ("The task says '402 Payment Required' and \"usage balance exhausted\" in the instructions.", False, False, False),
+        ("docs `402 Payment Required` however provider said 402 Payment Required: usage balance exhausted", True, True, True),
+        ('{"completion_tokens":402}', False, False, False),
+        ("watchdog timeout (no output)", False, False, False),
+    ]
+    for raw, want_fuel, want_hard, want_rate in rows:
+        assert bw.is_out_of_fuel_text(raw) is want_fuel, raw
+        assert bw.is_hard_402_out_of_fuel_text(raw) is want_hard, raw
+        assert of.looks_like_rate_limit(raw) is want_rate, raw
+        logged = _wrapper_fuel_log(raw)
+        assert bw.fuel_log_recorded_text(logged) == raw
+        assert bw.is_out_of_fuel_text(logged) is want_fuel, logged
+        assert bw.is_hard_402_out_of_fuel_text(logged) is want_hard, logged
+
+    # Watcher path: the fuel-log line is what _emit_line actually receives.
+    hits = []
+    watcher = bw.GrokOutOfFuelWatcher(on_hit=hits.append, agent_pid=16740)
+    watcher._emit_line(_wrapper_fuel_log("402 Payment Required"))
+    assert hits and bw.is_hard_402_out_of_fuel_text(hits[0])
+    watcher._fired = False
+    hits.clear()
+    watcher._emit_line(_wrapper_fuel_log(skill))
+    assert hits == []
+    watcher._emit_line(_wrapper_fuel_log("402 Payment Required", pid=999))
+    assert hits == []
+
+
 def test_is_out_of_fuel_text_ignores_instructional_quotations():
     """Skill / task text that quotes the provider phrase is not exhaustion."""
     skill = (

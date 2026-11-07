@@ -485,7 +485,27 @@ def test_looks_like_rate_limit_detects_phrases():
 def test_looks_like_rate_limit_ignores_instructional_quotations():
     skill = "mid-job `402 Payment Required` / `usage balance exhausted` is out-of-fuel"
     assert of.looks_like_rate_limit(skill) is False
-    assert of.looks_like_rate_limit("see 'Payment Required' in the task text") is False
+    assert of.looks_like_rate_limit("Provider's response: 402 Payment Required for model 'beam-free'") is True
+    assert of.looks_like_rate_limit("can't complete: 402 Payment Required, don't retry") is True
+
+
+def test_rate_limit_import_fallback_drops_exact_stock_quotes(monkeypatch):
+    """If bob_worker cannot be imported, exact quoted stock phrases still drop."""
+    import builtins
+
+    real_import = builtins.__import__
+
+    def blocked(name, globals=None, locals=None, fromlist=(), level=0):
+        if name in ("bob_worker", "bob.scripts.bob_worker"):
+            raise ImportError(name)
+        return real_import(name, globals, locals, fromlist, level)
+
+    monkeypatch.setattr(builtins, "__import__", blocked)
+    assert of.looks_like_rate_limit("The task says '402 Payment Required' only.") is False
+    assert of.looks_like_rate_limit('see "usage balance exhausted" in the instructions') is False
+    assert of.looks_like_rate_limit("Provider's response: 402 Payment Required for model 'beam-free'") is True
+    assert of.looks_like_rate_limit("402 Payment Required") is True
+    assert of.looks_like_rate_limit('status_code=402 "usage balance exhausted"') is True
 
 
 def test_looks_like_rate_limit_ignores_bare_codes_in_normal_output():

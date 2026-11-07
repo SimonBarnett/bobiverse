@@ -3194,28 +3194,37 @@ function Get-BobTrayWorkerAgentChoices {
         $p = Start-Process -FilePath $exe -ArgumentList $argList -PassThru -WindowStyle Hidden -RedirectStandardOutput $outFile -RedirectStandardError $errFile
         if (-not $p.WaitForExit($waitMs)) {
             try { $p.Kill() } catch { }
+            # A refresh that dies keeps the list already shown. The timeout placeholder
+            # marks every agent installed and clickable, which would hide a real miss.
+            if ($Refresh) { return $null }
             return $unknown
         }
         $raw = ''
         if (Test-Path -LiteralPath $outFile) { $raw = [string](Get-Content -LiteralPath $outFile -Raw -ErrorAction SilentlyContinue) }
         $line = ($raw -split "`r?`n" | Where-Object { $_.Trim().StartsWith('{') } | Select-Object -Last 1)
-        if (-not $line) { return $fallback }
+        if (-not $line) { if ($Refresh) { return $null }; return $fallback }
         $obj = $line | ConvertFrom-Json
-        if (-not $obj.agents) { return $fallback }
+        if (-not $obj.agents) { if ($Refresh) { return $null }; return $fallback }
         if (-not $Refresh -and $obj.refresh) {
-            $again = @(Get-BobTrayWorkerAgentChoices -InstallRoot $InstallRoot -Refresh)
-            # MRB #6231: refresh timeout returns synthetic $unknown (all
-            # 'fuel unknown...'); keep the first lookup's rows instead.
+            # MRB #6231: a killed refresh returns $null. A synthetic all-unknown
+            # list would mark missing and exhausted agents clickable. Keep the
+            # first lookup unless the refresh returned a real reading.
+            $again = @(Get-BobTrayWorkerAgentChoices -InstallRoot $InstallRoot -Refresh | Where-Object { $_ -and $_.id })
             $againReasons = @($again | ForEach-Object { [string]$_.reason })
-            $refreshTimedOut = (
-                $againReasons.Count -ge 3 -and
+            $refreshUnknown = (
+                $again.Count -eq 0 -or
                 (@($againReasons | Where-Object { $_ -like 'fuel unknown (not exhausted)*' }).Count -ge 3)
             )
-            if ($again -and -not $refreshTimedOut) { return $again }
+            if (-not $refreshUnknown) { return @($again) }
         }
         return @($obj.agents)
     }
-    catch { return $fallback }
+    catch {
+        # Malformed JSON or a Start-Process throw on refresh must not replace
+        # the first list with the disabled rebuild rows. Timeout already returns $null.
+        if ($Refresh) { return $null }
+        return $fallback
+    }
     finally {
         if ($p) { try { $p.Dispose() } catch { } }
         Remove-Item -LiteralPath $outFile, $errFile -Force -ErrorAction SilentlyContinue
