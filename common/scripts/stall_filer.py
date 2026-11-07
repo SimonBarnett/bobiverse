@@ -55,13 +55,23 @@ def _dedupe_key(fp: str) -> str:
 
 def issue_body(finding: dict[str, Any], *, excerpt: str = "") -> str:
     fp = str(finding.get("fingerprint") or "")
-    ev = finding.get("evidence") or {}
-    redacted = crash_report.redact(json.dumps(ev, indent=2)[:4000])
+    ev = finding.get("evidence") if isinstance(finding.get("evidence"), dict) else {}
+    nick = str((ev or {}).get("nick") or "").strip()
+    machine = str((ev or {}).get("machine") or "").strip()
+    redacted = crash_report.redact(json.dumps(ev or {}, indent=2)[:4000])
     log_bit = crash_report.redact((excerpt or "")[-2000:])
+    # FR #6195: stable machine + volatile nick in the header (not only JSON evidence).
+    ident = (
+        f"fingerprint=`{fp}`\n"
+        f"detector=`{finding.get('id')}` key=`{finding.get('key')}`\n"
+    )
+    if machine:
+        ident += f"machine=`{machine}`\n"
+    if nick:
+        ident += f"nick=`{nick}`\n"
     return (
         f"{FP_MARKER.format(fp=fp)}\n"
-        f"fingerprint=`{fp}`\n"
-        f"detector=`{finding.get('id')}` key=`{finding.get('key')}`\n\n"
+        f"{ident}\n"
         f"## Evidence\n```json\n{redacted}\n```\n"
         f"## Log excerpt\n```\n{log_bit}\n```\n"
         f"\n---\n_via-intake FR=#5164 stall detector_\n"

@@ -5,6 +5,7 @@ Each detector returns zero or more findings:
 """
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Any
 
@@ -298,6 +299,31 @@ def _accepted_nicks(snap: dict[str, Any]) -> set[str]:
     return out
 
 
+def _bored_latency_stable_key(nick: str) -> str:
+    """Stable bored-latency fingerprint key: machine id, not ephemeral PID (FR #6195).
+
+    Worker seat nicks are ``<machine>-<pid>``. Keying the stall fingerprint on the
+    full nick filed a new intake issue on every recycle/restart. Seat slots are not
+    carried in the nick, so this detector keys **per machine** (one open issue per
+    machine; later PIDs comment on it via FR #4963 / stall_filer). Falls back to the
+    nick when the machine cannot be parsed. Trailing ``-<digits>`` is stripped so
+    hyphenated machine ids (e.g. ``ce-priority-dev1-12345``) stay stable.
+    """
+    mid = ""
+    try:
+        mid = gitclaim._seat_machine_id(nick) or ""
+    except Exception:
+        mid = ""
+    if mid:
+        return str(mid).strip().lower()
+    canon = gitclaim.canonical_worker_nick(nick) or nick
+    n = (canon or nick or "").strip().lower()
+    m = re.match(r"^(.+)-(\d+)$", n)
+    if m:
+        return m.group(1)
+    return n
+
+
 def _has_live_offer(snap: dict[str, Any], nick: str, now: float) -> bool:
     me = (gitclaim.canonical_worker_nick(nick) or nick or "").strip().lower()
     for row in snap.get("unaccepted") or []:
@@ -320,7 +346,8 @@ def detect_bored_latency(snap: dict[str, Any]) -> list[dict[str, Any]]:
     last_bored = snap.get("last_bored") or {}
     last_activity = snap.get("last_activity") or {}
     busy = _accepted_nicks(snap)
-    out = []
+    # One finding per stable machine key (FR #6195); keep the worst lag nick.
+    best: dict[str, tuple[str, float]] = {}
     for nick in idle:
         if not nick:
             continue
@@ -339,12 +366,22 @@ def detect_bored_latency(snap: dict[str, Any]) -> list[dict[str, Any]]:
         lag = now - float(ts)
         if lag < BORED_LATENCY_S:
             continue
+        key = _bored_latency_stable_key(nick)
+        prev = best.get(key)
+        if prev is None or lag > prev[1]:
+            best[key] = (nick, lag)
+    out = []
+    for key, (nick, lag) in sorted(best.items()):
         out.append(
             {
                 "id": BORED_LATENCY_ID,
-                "key": nick.lower(),
-                "title": f"stall:bored-latency:{nick}",
-                "evidence": {"nick": nick, "lag_s": int(lag)},
+                "key": key,
+                "title": f"stall:bored-latency:{key}",
+                "evidence": {
+                    "nick": nick,
+                    "machine": key,
+                    "lag_s": int(lag),
+                },
             }
         )
     return out
