@@ -23,8 +23,9 @@ Everything about starting and running a **worker agent** from the bob install (`
 
 ## Start it (three ways)
 
-1. **Tray: click `Agent`** (Bobiverse tray, notification area). It is a single menu item - there is NO sub-menu. One click = one NEW
-   worker agent in ONE window (below). The tray copies `bob-worker.exe` to `%LOCALAPPDATA%\Bobiverse\worker\bin\bob-worker-<hash>.exe` and runs that copy (visible console), so
+1. **Tray: open `Agents`** (Bobiverse tray, notification area). Submenu rows are Automatic, Grok, Cursor, and OpenCode
+   (from `bob-worker.exe --list-agents`). One choice = one NEW worker agent in ONE window (below). Plan stays a separate top-level click.
+   The tray copies `bob-worker.exe` to `%LOCALAPPDATA%\Bobiverse\worker\bin\bob-worker-<hash>.exe` and runs that copy (visible console), so
    an MSI upgrade/uninstall never finds the installed exe locked and never disturbs a running seat.
 2. **Command line** (PowerShell, any time; same thing the tray runs):
    `& <ai root>\bob\worker\bob-worker.exe --mode agent --install-root <ai root>\bob --machine-id <machine>`
@@ -57,9 +58,10 @@ click = one `bob-worker.exe` = one window. `Plan` is the same (`--mode plan`, no
 2. else **Cursor** `agent.cmd` (`%LOCALAPPDATA%\cursor-agent\agent.cmd`) when the **high-cost-models OR the auto (low-cost) pool** has more than 0 % left.
 3. else **OpenCode** `opencode.exe` when free or Go fuel has more than 0 % left (FR #6120). The OpenCode model is chosen from per-model fuel readings in fallback order.
 
-The tray **Agents** menu lists Automatic plus Grok, Cursor, and OpenCode. Automatic is the order above. Any other row passes `--agent grok|cursor|opencode` and starts only that agent. If its command is missing, or OpenCode has no real usable fuel (Go-only also needs `auth.json` present, body never read), the worker refuses and does not start Grok or Cursor instead. Preview: `bob-worker.exe --list-agents --install-root <ai root>\bob`. One explicit seat: `bob-worker.exe --mode agent --agent opencode --install-root <ai root>\bob --machine-id <machine>` after rebuilding `bob-worker.exe`. Fuel helper on disk is `scripts\opencode_fuel.py`.
 4. else a **prompt in the worker window** asks for an `XAI_API_KEY` for this start only (hidden input): kept in memory, handed to the child's environment, never written to disk, never printed or
    logged. Cancel = nothing starts (exit 4).
+
+The tray **Agents** menu lists Automatic plus Grok, Cursor, and OpenCode. Automatic is the order above. Any other row passes `--agent grok|cursor|opencode` and starts only that agent. If its command is missing, or OpenCode has no real usable fuel (Go-only also needs `auth.json` present, body never read), the worker refuses and does not start Grok or Cursor instead. Preview: `bob-worker.exe --list-agents --install-root <ai root>\bob`. One explicit seat: `bob-worker.exe --mode agent --agent opencode --install-root <ai root>\bob --machine-id <machine>` after rebuilding `bob-worker.exe`. Fuel helper on disk is `scripts\opencode_fuel.py`.
 
 An unknown **Grok** reading is available for seat start (FR #3997). An unknown **Cursor** pool reading is "not available" (falls through). An unknown **OpenCode** reading is also "not available". Readings come from `<ai root>\bob\tools\Get-BobAgentFuel.ps1` (the tray's own local readers:
 `Get-BobCursorAgentWeeklyRemaining` via `Get-CursorAgentUsage.py`, `Get-BobWeeklyRemaining`, `Get-BobGrokAvailability`, `Get-BobOpencodeFuel.ps1`; no digest GET).

@@ -368,7 +368,7 @@ def test_tray_wiring_timer_heartbeat_helper_and_click_function_contract():
     w = (TRAY_TOOLS / "Watch-BobTray.ps1").read_text(encoding="utf-8")
     assert "'BobTrayStartWorker.ps1'" in w
     assert "Invoke-BobTrayStartWorkerQueue -Dir $script:startWorkerDir" in w
-    assert "Start-BobTrayWorkerExe -Mode $mode -Quiet" in w                    # the SAME function as the Agent / Plan click
+    assert "Start-BobTrayWorkerExe -Mode $mode -Agent $agent -Quiet" in w                    # the SAME function as the Agent / Plan click
     assert "$startWorkerTimer.Start()" in w and "$startWorkerTimer.Stop()" in w
     assert "Write-BobTrayAlive" in w and "'tray.alive'" in w                   # heartbeat removed on exit => ear NACKs at once
     # FR #2697: heartbeat must not share the WinForms UI thread with the 30s poll refresh.
@@ -379,7 +379,7 @@ def test_tray_wiring_timer_heartbeat_helper_and_click_function_contract():
     i = w.index("function Start-BobTrayWorkerExe")
     body = w[i:w.index("$script:attention = $false", i)]
     assert "[switch]$Quiet" in body and "return [int]$childPid" in body and "-not $Quiet" in body
-    assert "Start-BobTrayWorkerExe -Mode 'agent' })" in w                      # the click still works unchanged
+    assert "Start-BobTrayWorkerExe -Mode 'agent'" in w  # Agents submenu / Plan still call the same helper                      # the click still works unchanged
     sync = (ROOT / "scripts" / "Sync-BobTrayFromAgenticBuild.ps1").read_text(encoding="utf-8")
     assert "BobTrayStartWorker.ps1" in sync                                    # survives a vendor re-sync
 

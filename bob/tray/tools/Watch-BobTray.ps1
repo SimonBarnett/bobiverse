@@ -3112,12 +3112,20 @@ function Show-BobTrayCard {
     }
 }
 
+$script:BobTrayAgentChoicesCache = $null
 function Get-BobTrayWorkerAgentChoices {
     <#
       Agents submenu rows from bob-worker.exe --list-agents.
       Automatic stays available. Explicit rows come only from that JSON.
       An older exe with no --list-agents does not get a guessed OpenCode launch.
+      Cold path / no -Refresh returns cache or fallback only (never blocks UI startup).
+      -Refresh bounds the child with WaitForExit (default 8s) so a slow fuel read cannot
+      freeze the tray for read_fuel's 90s timeout (MRB #6216).
     #>
+    param(
+        [int]$TimeoutSec = 8,
+        [switch]$Refresh
+    )
     $fallbackReason = 'this bob-worker.exe has no --list-agents; rebuild to choose an agent'
     $fallback = @(
         [ordered]@{ id = 'auto'; label = 'Automatic'; available = $true; installed = $true; reason = 'Grok, then Cursor, then OpenCode' }
@@ -3125,19 +3133,52 @@ function Get-BobTrayWorkerAgentChoices {
         [ordered]@{ id = 'cursor'; label = 'Cursor'; available = $false; installed = $false; reason = $fallbackReason }
         [ordered]@{ id = 'opencode'; label = 'OpenCode'; available = $false; installed = $false; reason = $fallbackReason }
     )
-    $exe = Join-Path $RepoRoot 'worker\bob-worker.exe'
-    if (-not (Test-Path -LiteralPath $exe)) { return $fallback }
-    try {
-        $raw = & $exe --list-agents --install-root $RepoRoot 2>$null | Out-String
-        $line = ($raw -split "`r?`n" | Where-Object { $_.Trim().StartsWith('{') } | Select-Object -Last 1)
-        if (-not $line) { return $fallback }
-        $obj = $line | ConvertFrom-Json
-        if (-not $obj.agents) { return $fallback }
-        return @($obj.agents)
+    if (-not $Refresh) {
+        if ($script:BobTrayAgentChoicesCache) { return $script:BobTrayAgentChoicesCache }
+        return $fallback
     }
-    catch { return $fallback }
+    $exe = Join-Path $RepoRoot 'worker\bob-worker.exe'
+    if (-not (Test-Path -LiteralPath $exe)) {
+        $script:BobTrayAgentChoicesCache = $fallback
+        return $fallback
+    }
+    try {
+        $psi = New-Object System.Diagnostics.ProcessStartInfo
+        $psi.FileName = $exe
+        $psi.Arguments = ('--list-agents --install-root "{0}"' -f $RepoRoot)
+        $psi.UseShellExecute = $false
+        $psi.RedirectStandardOutput = $true
+        $psi.RedirectStandardError = $true
+        $psi.CreateNoWindow = $true
+        $proc = New-Object System.Diagnostics.Process
+        $proc.StartInfo = $psi
+        [void]$proc.Start()
+        $ms = [Math]::Max(1, $TimeoutSec) * 1000
+        if (-not $proc.WaitForExit($ms)) {
+            try { $proc.Kill() } catch { }
+            try { [void]$proc.WaitForExit(2000) } catch { }
+            if ($script:BobTrayAgentChoicesCache) { return $script:BobTrayAgentChoicesCache }
+            return $fallback
+        }
+        $raw = $proc.StandardOutput.ReadToEnd()
+        $line = ($raw -split "`r?`n" | Where-Object { $_.Trim().StartsWith('{') } | Select-Object -Last 1)
+        if (-not $line) {
+            if ($script:BobTrayAgentChoicesCache) { return $script:BobTrayAgentChoicesCache }
+            return $fallback
+        }
+        $obj = $line | ConvertFrom-Json
+        if (-not $obj.agents) {
+            if ($script:BobTrayAgentChoicesCache) { return $script:BobTrayAgentChoicesCache }
+            return $fallback
+        }
+        $script:BobTrayAgentChoicesCache = @($obj.agents)
+        return $script:BobTrayAgentChoicesCache
+    }
+    catch {
+        if ($script:BobTrayAgentChoicesCache) { return $script:BobTrayAgentChoicesCache }
+        return $fallback
+    }
 }
-
 function Update-BobTrayWorkerAgentsMenu {
     param($MenuItem)
     if (-not $MenuItem) { return }
@@ -3146,7 +3187,7 @@ function Update-BobTrayWorkerAgentsMenu {
         $id = [string]$row.id
         $label = [string]$row.label
         $reason = [string]$row.reason
-        $text = if ($reason) { '{0} — {1}' -f $label, $reason } else { $label }
+        $text = if ($reason) { '{0} - {1}' -f $label, $reason } else { $label }
         $item = New-Object System.Windows.Forms.ToolStripMenuItem $text
         $item.Tag = $id
         $available = $false
@@ -3175,7 +3216,12 @@ $miStatus.Font = New-Object System.Drawing.Font($miStatus.Font, [System.Drawing.
 # Agents lists installed worker choices (Automatic / Grok / Cursor / OpenCode). Plan stays one click.
 # Explicit choices pass --agent and the worker refuses instead of starting a different agent.
 $miAgents = $menu.Items.Add('Agents')
-$miAgents.Add_DropDownOpening({ Update-BobTrayWorkerAgentsMenu $miAgents })
+# DropDownOpening refreshes with a bounded --list-agents child; cold Update uses fallback/cache only.
+$miAgents.Add_DropDownOpening({
+        [void](Get-BobTrayWorkerAgentChoices -Refresh -TimeoutSec 8)
+        Update-BobTrayWorkerAgentsMenu $miAgents
+    })
+# Seed labels without calling bob-worker (engine mode and UI startup must stay responsive).
 Update-BobTrayWorkerAgentsMenu $miAgents
 $miPlan = $menu.Items.Add('Plan')
 $miPlan.Add_Click({ Start-BobTrayWorkerExe -Mode 'plan' })

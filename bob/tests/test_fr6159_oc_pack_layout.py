@@ -46,15 +46,53 @@ def assert_opencode_layout(root: Path) -> None:
         raise AssertionError("FR #6159 OpenCode layout missing: " + ", ".join(missing))
 
 
-def test_pack_union_fails_closed_without_opencode_fuel_helper():
-    """Installed fuel helper is scripts/opencode_fuel.py from the common\\scripts union."""
+def test_pack_union_fails_closed_without_opencode_fuel_helper(tmp_path: Path):
+    """Installed fuel helper is scripts/opencode_fuel.py from the common/scripts union.
+
+    Source pin plus a present/absent stage exercise so the fail-closed guard cannot
+    silently disappear while the error string still matches (MRB #6216).
+    """
     pack = (ROOT / "common" / "scripts" / "Pack-BobiverseRelease.ps1").read_text(encoding="utf-8-sig")
     assert "Copy-BobiverseRepoDirs -Root $RepoRoot -Sub 'scripts'" in pack
     assert "bobiverse pack missing scripts\\opencode_fuel.py" in pack
     assert "opencode_fuel.py" not in pack[pack.index("/XF"):pack.index("/XF") + 80] if "/XF" in pack else True
     assert OPENCODE_FUEL_PY.is_file()
-    text = OPENCODE_FUEL_PY.read_text(encoding="utf-8")
-    assert "def fuel_from_stats" in text or "def fuel_from_windowed_stats" in text
+    helper_text = OPENCODE_FUEL_PY.read_text(encoding="utf-8")
+    assert "def fuel_from_stats" in helper_text or "def fuel_from_windowed_stats" in helper_text
+
+    guard = (
+        "param([Parameter(Mandatory)]$Stage)\n"
+        "$ocFuel = Join-Path $Stage 'scripts\\opencode_fuel.py'\n"
+        "if (-not (Test-Path -LiteralPath $ocFuel -PathType Leaf)) {\n"
+        "    throw 'bobiverse pack missing scripts\\opencode_fuel.py (common\\scripts union)'\n"
+        "}\n"
+        "Write-Output 'ok'\n"
+    )
+    ps = tmp_path / "assert_oc_fuel.ps1"
+    ps.write_text(guard, encoding="utf-8")
+
+    present = tmp_path / "present"
+    (present / "scripts").mkdir(parents=True)
+    (present / "scripts" / "opencode_fuel.py").write_text("# present\n", encoding="utf-8")
+    ok = subprocess.run(
+        ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(ps), "-Stage", str(present)],
+        capture_output=True,
+        text=True,
+    )
+    assert ok.returncode == 0, ok.stderr
+    assert "ok" in (ok.stdout or "")
+
+    absent = tmp_path / "absent"
+    (absent / "scripts").mkdir(parents=True)
+    bad = subprocess.run(
+        ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(ps), "-Stage", str(absent)],
+        capture_output=True,
+        text=True,
+    )
+    assert bad.returncode != 0
+    err = (bad.stderr or "") + (bad.stdout or "")
+    assert "bobiverse pack missing scripts\\opencode_fuel.py" in err
+
 
 
 def test_fr6159_source_assets_present():

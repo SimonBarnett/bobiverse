@@ -132,3 +132,30 @@ def test_unknown_agent_is_usage(capsys, tmp_path: Path):
     assert code == bw.EXIT_USAGE
     err = capsys.readouterr().err
     assert "copilot" in err
+
+
+def test_tray_agents_menu_bounds_list_agents_and_uses_ascii_dash():
+    """MRB #6216: never sync-block startup; Refresh uses WaitForExit; ASCII ' - '."""
+    tray = Path(__file__).resolve().parents[1] / "tray" / "tools" / "Watch-BobTray.ps1"
+    text = tray.read_text(encoding="utf-8")
+    assert "$script:BobTrayAgentChoicesCache" in text
+    assert "WaitForExit" in text
+    assert "Get-BobTrayWorkerAgentChoices -Refresh -TimeoutSec 8" in text
+    open_at = text.index("$miAgents = $menu.Items.Add('Agents')")
+    chunk = text[open_at : open_at + 700]
+    assert "Get-BobTrayWorkerAgentChoices -Refresh" in chunk
+    assert "{0} - {1}" in text
+    # Menu format must be ASCII; other pre-existing em dashes in comments are out of scope.
+    assert "{0} " + chr(0x2014) + " {1}" not in text
+
+
+def test_worker_skill_keeps_key_prompt_as_list_item_four():
+    skill = Path(__file__).resolve().parents[1] / ".grok" / "skills" / "bobiverse-bob-worker" / "SKILL.md"
+    text = skill.read_text(encoding="utf-8")
+    i3 = text.index("3. else **OpenCode**")
+    i4 = text.index("4. else a **prompt in the worker window**")
+    ia = text.index("The tray **Agents** menu lists")
+    assert i3 < i4 < ia
+    start = text.index("## Start it")
+    always = text.index("## ALWAYS")
+    assert "`Agents`" in text[start:always]
