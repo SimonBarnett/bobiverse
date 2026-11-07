@@ -889,6 +889,9 @@ function Format-BobOpencodePoolLine {
             } catch { }
         }
     }
+    # MRB #6175 / CodeRabbit: non-numeric (unknown/n/a) must not throw on [int] cast.
+    $FreePct = ConvertTo-BobTrayIntOrNull $FreePct
+    $GoPct = ConvertTo-BobTrayIntOrNull $GoPct
     $freeKnown = Test-BobTrayRemainingKnown $FreePct
     $goKnown = Test-BobTrayRemainingKnown $GoPct
     if (-not $freeKnown -and -not $goKnown) { return 'OpenCode  n/a' }
