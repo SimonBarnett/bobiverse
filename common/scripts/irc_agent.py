@@ -22,7 +22,55 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+def prefer_install_scripts_path(
+    *,
+    env: dict | None = None,
+    frozen: bool | None = None,
+    executable: str | Path | None = None,
+    path_list: list | None = None,
+) -> str | None:
+    """When frozen, put InstallRoot\\scripts ahead of _MEIPASS (FR #6237).
+
+    PyInstaller onefile embeds ``bobreport`` under ``_MEIPASS``. Hotpatched install scripts bobreport.py (Sync/compose) is invisible until
+    rebuild unless that scripts dir wins sys.path before the bobreport import.
+    ``BOB_INSTALL_ROOT`` (Start-Bob FR #2666) or ``sys.executable`` layout locates
+    the install root. Non-frozen / missing on-disk ``bobreport.py``: no-op.
+    """
+    e = os.environ if env is None else env
+    is_frozen = (
+        bool(getattr(sys, "frozen", False)) or hasattr(sys, "_MEIPASS")
+        if frozen is None
+        else bool(frozen)
+    )
+    if not is_frozen:
+        return None
+    root = (e.get("BOB_INSTALL_ROOT") or "").strip()
+    if not root:
+        exe = Path(sys.executable if executable is None else executable).resolve()
+        if exe.parent.name.lower() == "scripts":
+            root = str(exe.parent.parent)
+        else:
+            root = str(exe.parent)
+    scripts = Path(root) / "scripts"
+    if not (scripts / "bobreport.py").is_file():
+        return None
+    sp = path_list if path_list is not None else sys.path
+    s = str(scripts.resolve())
+    while s in sp:
+        sp.remove(s)
+    sp.insert(0, s)
+    return s
+
+
+# FR #6237: frozen ear prefers InstallRoot\scripts over _MEIPASS so hotpatched
+# bobreport (e.g. DIGEST_HTTP_USER_AGENT) wins without rebuilding bob-ear.exe.
+_mei_scripts = str(Path(__file__).resolve().parent)
+_install_scripts = prefer_install_scripts_path()
+if _install_scripts:
+    if _mei_scripts not in sys.path:
+        sys.path.append(_mei_scripts)
+else:
+    sys.path.insert(0, _mei_scripts)
 import bob_recycle  # noqa: E402
 import bobreport  # noqa: E402
 import bobstat  # noqa: E402
