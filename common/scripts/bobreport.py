@@ -4161,6 +4161,15 @@ def peer_fuel_fingerprint(peer: dict) -> str:
         parts.append("pcent=" + json.dumps(pcent, sort_keys=True, separators=(",", ":")))
     else:
         parts.append("pcent=")
+    # MRB #6232 / FR #6147: window-only deltas must POST before heartbeat.
+    oc_windows = peer.get("opencode_windows")
+    if isinstance(oc_windows, dict):
+        parts.append(
+            "opencode_windows="
+            + json.dumps(oc_windows, sort_keys=True, separators=(",", ":"))
+        )
+    else:
+        parts.append("opencode_windows=")
     pools = peer.get("cursor_pools")
     if isinstance(pools, list):
         slim = []
@@ -4465,8 +4474,15 @@ def _apply_windows_fixture(doc: dict, windows_fixture: str) -> dict:
     lim_id, lim_rem = of.limiting_go_window(windows)
     out["limiting"] = lim_id
     if lim_rem is not None:
-        out["opencode-go"] = int(lim_rem)
-        out["go"] = int(lim_rem)
+        # MRB #6232: never overstate vs model-based remain.
+        cur = out.get("opencode-go")
+        try:
+            cur_i = int(cur) if cur is not None else None
+        except (TypeError, ValueError):
+            cur_i = None
+        chosen = int(lim_rem) if cur_i is None else min(cur_i, int(lim_rem))
+        out["opencode-go"] = chosen
+        out["go"] = chosen
     return out
 
 
@@ -4494,7 +4510,15 @@ def _parse_opencode_helper_stdout(raw_out: str) -> dict:
             out["limiting"] = lim_id
             # Honest go remaining from limiting window when known.
             if lim_rem is not None:
-                out["opencode-go"] = int(lim_rem)
+                # MRB #6232: never overstate vs model-based remain.
+                cur = out.get("opencode-go")
+                try:
+                    cur_i = int(cur) if cur is not None else None
+                except (TypeError, ValueError):
+                    cur_i = None
+                out["opencode-go"] = (
+                    int(lim_rem) if cur_i is None else min(cur_i, int(lim_rem))
+                )
         except Exception:
             if doc.get("limiting") not in (None, ""):
                 out["limiting"] = str(doc.get("limiting"))
@@ -4540,7 +4564,15 @@ def _read_opencode_fuel_doc_from_fixture(fixture: str) -> dict:
         lim_id, lim_rem = of.limiting_go_window(explicit_windows)
         out["limiting"] = lim_id
         if lim_rem is not None:
-            out[of.FUEL_ID_GO] = int(lim_rem)
+            # MRB #6232: never overstate vs model-based remain.
+            cur = out.get(of.FUEL_ID_GO)
+            try:
+                cur_i = int(cur) if cur is not None else None
+            except (TypeError, ValueError):
+                cur_i = None
+            out[of.FUEL_ID_GO] = (
+                int(lim_rem) if cur_i is None else min(cur_i, int(lim_rem))
+            )
     elif isinstance(fuel.get("windows"), dict):
         try:
             out["windows"] = of.normalize_go_windows(fuel["windows"])

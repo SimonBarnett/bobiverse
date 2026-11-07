@@ -54,3 +54,16 @@ def test_mocks_and_fr007_name_three_go_windows():
     fr = FR007.read_text(encoding="utf-8")
     assert "rolling" in fr and "weekly" in fr and "monthly" in fr
     assert "Starts on first use" in fr
+
+
+def test_mrb6232_hover_prepends_opencode_block_in_order():
+    """MRB #6232: summary + windows prepended as one block (not reverse per-line)."""
+    from pathlib import Path
+
+    src = Path(__file__).resolve().parents[1] / "tray" / "src" / "Public" / "Get-BobTrayHover.ps1"
+    text = src.read_text(encoding="utf-8")
+    assert "$ocBlock" in text
+    assert "foreach ($wl in @($opencodeWindowLines))" in text
+    # Must not per-line prepend window rows after summary (old reverse bug).
+    assert "foreach ($wl in @($opencodeWindowLines)) { if ($wl) { $jobLines = @(('  {0}' -f $wl)) + $jobLines } }" not in text
+
