@@ -1,0 +1,9 @@
+id	title	file	status	github
+FR-OC-SYNC	Sync/ff + rebuild bob-worker so live exe selects OpenCode	FR-OC-SYNC.md	OPEN	SimonBarnett/bobiverse#6154
+FR-OC-WATCHDOG	Heartbeat/output-based OpenCode watchdog (no absolute 120s kill)	FR-OC-WATCHDOG.md	OPEN	SimonBarnett/bobiverse#6156
+FR-OC-TURN	OpenCode turn_ended into BoredEmitter; startup/done-miss pins	FR-OC-TURN.md	OPEN	SimonBarnett/bobiverse#6157
+FR-OC-INJECT	Pin inject path for OpenCode ReadLine wrapper	FR-OC-INJECT.md	OPEN	SimonBarnett/bobiverse#6158
+FR-OC-PACK	MSI/Sync ships opencode_fuel + Get-BobOpencodeFuel + skill	FR-OC-PACK.md	OPEN	SimonBarnett/bobiverse#6159
+FR-OC-FLEET	Per-box OpenCode setup smoke checklist (no secrets)	FR-OC-FLEET.md	OPEN	SimonBarnett/bobiverse#6160
+#6146	Ear publishes OpenCode pcent	(digest-ear-publish)	OPEN	SimonBarnett/bobiverse#6146
+#6147	TipForm/Status paint OpenCode pools	(digest-ear-publish)	OPEN	SimonBarnett/bobiverse#6147
