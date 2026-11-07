@@ -1,6 +1,6 @@
 # Bobiverse webhooks (Jeeves / digest host)
 
-Default public base: `https://bob.ntsa.uk`. Local listener often `127.0.0.1:7700` (align IIS; do not bake `:19781`).
+Default public base: `https://bob.ntsa.uk` (FR #5272 / FR #6142). IRC host stays `irc.ntsa.uk` (TLS 6697); never use the IRC hostname for `/bob/v1/*` HTTP. Local listener often `127.0.0.1:7700` (align IIS; do not bake `:19781`).
 
 Auth: **none. No route needs a password or shared secret** (v0.1.16). Nothing to copy between machines. Protection is validation instead: body size caps (413), strict JSON/op schema (400), per-machine rate limit (429), GitHub hooks only for allow-listed owners (`BOB_GIT_OWNERS`, default `SimonBarnett`; 403 otherwise), and `POST /bob/v1/report` only from machine ids on the **roster Jeeves publishes** (`registered-machines.json`, mirrored from ChanServ by the chair; 403 otherwise). The receiver only reads that file - it never talks to ChanServ or IRC. A stray `X-Bob-Secret` header is ignored. `POST /bob/v1/intake`, `POST|GET /bob/v1/jira`, and `POST|GET /bob/v1/hours` stay open with their own rate limits / schema gates (hours also rejects obvious credential fields and never logs request bodies).
 

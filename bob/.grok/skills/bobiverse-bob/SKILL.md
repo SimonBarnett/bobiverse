@@ -27,6 +27,11 @@ Foundation: `bobiverse-fleet-ops` (shared ops/hotpatch/health) and `harvest` -> 
 for its own machine, drains `home\outbox.txt`, and hosts the talk seats. The **TipForm tray** is an interactive companion
 (not a service, not a `BobFleet-*` task). Digest POSTs need no secret (roster-gated by Jeeves).
 
+**Digest URL (FR #6142):** canonical GET+docs default is `https://bob.ntsa.uk/bob/v1/report`
+(`bob/tray/config/bobiverse.json` `reportUrl`; `Get-BobDigestUrl` / tray helpers). IRC `--host` stays
+`irc.ntsa.uk`. POST selectors (`Get-BobDigestReportUrl`) use config/env only --- they do not invent a live host.
+Assert: `Assert-BobDigestWebhookLocal.ps1 -ExpectedReportUrl https://bob.ntsa.uk/bob/v1/report` (+ optional `-CheckPublic` GET).
+
 | Piece | Where |
 |---|---|
 | Install root | `<ai root>\bob` (`scripts\`, `tools\` TipForm, `src\` BobBridge, `assets\bob-systray.ico`, `config\`, `logs\`, `.grok\skills\`, `PIN.txt`, `VERSION`, **`VISION.md`** for MRB/UAT — FR #1615) |
