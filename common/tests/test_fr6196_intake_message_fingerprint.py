@@ -178,3 +178,17 @@ def test_fr6196_derive_key_stable_and_capped():
     assert k.startswith("msgfp:")
     assert len(k) <= 128
     assert k == intake.derive_message_dedupe_key("t", "b")
+
+def test_fr6196_hyphenated_machine_pid_still_dedupes():
+    """Trailing -<digits> strip must leave hyphenated machine ids intact (MRB #6199)."""
+    a = intake.normalize_message_for_dedupe(
+        "stall:bored-latency:ce-priority-dev1-12345",
+        "Error: timeout",
+    )
+    b = intake.normalize_message_for_dedupe(
+        "stall:bored-latency:ce-priority-dev1-99999",
+        "Error: timeout",
+    )
+    assert a == b
+    assert "12345" not in a and "99999" not in a
+    assert "ce-priority-dev1" in a
