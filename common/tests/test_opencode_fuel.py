@@ -724,3 +724,9 @@ def test_save_opencode_pauses_runs_while_lock_held(tmp_path, monkeypatch):
 
     monkeypatch.setattr(of, "save_opencode_pauses", checked_save)
     assert of.record_opencode_pause(state_dir, "opencode-go/glm-5.3", "rate limit") is not None
+
+
+def test_looks_like_rate_limit_keeps_apostrophe_provider_lines_mrb6231():
+    line = "Provider's response: 402 Payment Required for model 'beam-free'"
+    assert of.looks_like_rate_limit(line) is True
+

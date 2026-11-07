@@ -3191,7 +3191,14 @@ function Get-BobTrayWorkerAgentChoices {
         if (-not $obj.agents) { return $fallback }
         if (-not $Refresh -and $obj.refresh) {
             $again = @(Get-BobTrayWorkerAgentChoices -InstallRoot $InstallRoot -Refresh)
-            if ($again) { return $again }
+            # MRB #6231: refresh timeout returns synthetic $unknown (all
+            # 'fuel unknown...'); keep the first lookup's rows instead.
+            $againReasons = @($again | ForEach-Object { [string]$_.reason })
+            $refreshTimedOut = (
+                $againReasons.Count -ge 3 -and
+                (@($againReasons | Where-Object { $_ -like 'fuel unknown (not exhausted)*' }).Count -ge 3)
+            )
+            if ($again -and -not $refreshTimedOut) { return $again }
         }
         return @($obj.agents)
     }
