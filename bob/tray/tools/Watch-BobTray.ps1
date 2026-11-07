@@ -3152,13 +3152,20 @@ function Get-BobTrayWorkerAgentChoices {
       An older exe with no --list-agents does not get a guessed OpenCode launch.
       The child is killed at 8s. read_fuel can otherwise block for 90s.
     #>
-    param([string]$InstallRoot = $RepoRoot)
+    param([string]$InstallRoot = $RepoRoot, [switch]$Refresh)
     $fallbackReason = 'this bob-worker.exe has no --list-agents; rebuild to choose an agent'
+    $unknownReason = 'fuel unknown (not exhausted); start checks this agent'
     $fallback = @(
         [ordered]@{ id = 'auto'; label = 'Automatic'; available = $true; installed = $true; reason = 'Grok, then Cursor, then OpenCode' }
         [ordered]@{ id = 'grok'; label = 'Grok'; available = $false; installed = $false; reason = $fallbackReason }
         [ordered]@{ id = 'cursor'; label = 'Cursor'; available = $false; installed = $false; reason = $fallbackReason }
         [ordered]@{ id = 'opencode'; label = 'OpenCode'; available = $false; installed = $false; reason = $fallbackReason }
+    )
+    $unknown = @(
+        [ordered]@{ id = 'auto'; label = 'Automatic'; available = $true; installed = $true; reason = 'Grok, then Cursor, then OpenCode' }
+        [ordered]@{ id = 'grok'; label = 'Grok'; available = $true; installed = $true; reason = $unknownReason }
+        [ordered]@{ id = 'cursor'; label = 'Cursor'; available = $true; installed = $true; reason = $unknownReason }
+        [ordered]@{ id = 'opencode'; label = 'OpenCode'; available = $true; installed = $true; reason = $unknownReason }
     )
     $exe = Join-Path $InstallRoot 'worker\bob-worker.exe'
     if (-not (Test-Path -LiteralPath $exe)) { return $fallback }
@@ -3167,10 +3174,14 @@ function Get-BobTrayWorkerAgentChoices {
     $p = $null
     try {
         # File redirect, then WaitForExit. The call operator would block the runspace for the whole fuel read.
-        $p = Start-Process -FilePath $exe -ArgumentList @('--list-agents', '--install-root', $InstallRoot) -PassThru -WindowStyle Hidden -RedirectStandardOutput $outFile -RedirectStandardError $errFile
-        if (-not $p.WaitForExit(8000)) {
+        $argList = @('--list-agents', '--install-root', $InstallRoot)
+        if ($Refresh) { $argList += '--refresh-fuel' }
+        $waitMs = 8000
+        if ($Refresh) { $waitMs = 24000 }
+        $p = Start-Process -FilePath $exe -ArgumentList $argList -PassThru -WindowStyle Hidden -RedirectStandardOutput $outFile -RedirectStandardError $errFile
+        if (-not $p.WaitForExit($waitMs)) {
             try { $p.Kill() } catch { }
-            return $fallback
+            return $unknown
         }
         $raw = ''
         if (Test-Path -LiteralPath $outFile) { $raw = [string](Get-Content -LiteralPath $outFile -Raw -ErrorAction SilentlyContinue) }
@@ -3178,6 +3189,10 @@ function Get-BobTrayWorkerAgentChoices {
         if (-not $line) { return $fallback }
         $obj = $line | ConvertFrom-Json
         if (-not $obj.agents) { return $fallback }
+        if (-not $Refresh -and $obj.refresh) {
+            $again = @(Get-BobTrayWorkerAgentChoices -InstallRoot $InstallRoot -Refresh)
+            if ($again) { return $again }
+        }
         return @($obj.agents)
     }
     catch { return $fallback }
@@ -3273,9 +3288,9 @@ $miAgents = $menu.Items.Add('Agents')
 # Seed is local text only. Opening the menu (visible PowerShell tray) refreshes off the UI thread.
 Update-BobTrayWorkerAgentsMenu $miAgents @(
     [ordered]@{ id = 'auto'; label = 'Automatic'; available = $true; installed = $true; reason = 'Grok, then Cursor, then OpenCode' }
-    [ordered]@{ id = 'grok'; label = 'Grok'; available = $false; installed = $false; reason = 'availability loads when this menu opens' }
-    [ordered]@{ id = 'cursor'; label = 'Cursor'; available = $false; installed = $false; reason = 'availability loads when this menu opens' }
-    [ordered]@{ id = 'opencode'; label = 'OpenCode'; available = $false; installed = $false; reason = 'availability loads when this menu opens' }
+    [ordered]@{ id = 'grok'; label = 'Grok'; available = $true; installed = $true; reason = 'fuel unknown (not exhausted); start checks this agent' }
+    [ordered]@{ id = 'cursor'; label = 'Cursor'; available = $true; installed = $true; reason = 'fuel unknown (not exhausted); start checks this agent' }
+    [ordered]@{ id = 'opencode'; label = 'OpenCode'; available = $true; installed = $true; reason = 'fuel unknown (not exhausted); start checks this agent' }
 )
 $miAgents.Add_DropDownOpening({
         if (Get-Command Test-BobTrayEngineMode -ErrorAction SilentlyContinue) {

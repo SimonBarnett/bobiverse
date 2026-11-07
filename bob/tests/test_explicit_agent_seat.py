@@ -111,20 +111,115 @@ def test_dry_run_explicit_opencode_refuses_instead_of_grok(monkeypatch, capsys, 
     assert payload["opencode_cmd"] is True
 
 
-def test_dry_run_explicit_opencode_accepts_real_free_fuel(monkeypatch, capsys, tmp_path: Path):
+def test_list_agents_unknown_fuel_stays_clickable_and_does_not_read(monkeypatch, capsys, tmp_path: Path):
+    calls = []
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
     monkeypatch.setattr(bw, "resolve_grok_exe", lambda *a, **k: GRK)
     monkeypatch.setattr(bw, "resolve_cursor_cmd", lambda *a, **k: CUR)
     monkeypatch.setattr(bw, "resolve_opencode_cmd", lambda *a, **k: OP)
-    monkeypatch.setattr(
-        bw, "read_fuel", lambda *a, **k: _fuel(grok_pct=99, grok_state="available", opencode_free=100)
-    )
+    monkeypatch.setattr(bw, "read_fuel", lambda *a, **k: calls.append(1) or _fuel())
     monkeypatch.setattr(bw, "opencode_auth_file_present", lambda env=None: False)
+    code = bw.main(["--list-agents", "--install-root", str(tmp_path)])
+    assert code == bw.EXIT_OK
+    assert calls == []
+    listed = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+    assert listed["refresh"] is True
+    by_id = {row["id"]: row for row in listed["agents"]}
+    assert by_id["auto"]["available"] is True
+    for agent_id in ("grok", "cursor", "opencode"):
+        assert by_id[agent_id]["available"] is True
+        assert by_id[agent_id]["fuel_state"] == "unknown"
+        assert "not exhausted" in by_id[agent_id]["reason"]
+        assert "no usable fuel" not in by_id[agent_id]["reason"]
+
+
+def test_refresh_fuel_uses_real_reading_then_cache(monkeypatch, capsys, tmp_path: Path):
+    calls = []
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+    (tmp_path / "tools").mkdir()
+    (tmp_path / "tools" / "Get-BobAgentFuel.ps1").write_text("x", encoding="utf-8")
+    monkeypatch.setattr(bw, "resolve_grok_exe", lambda *a, **k: GRK)
+    monkeypatch.setattr(bw, "resolve_cursor_cmd", lambda *a, **k: CUR)
+    monkeypatch.setattr(bw, "resolve_opencode_cmd", lambda *a, **k: OP)
+    monkeypatch.setattr(bw, "opencode_auth_file_present", lambda env=None: False)
+
+    def read(install_root, run=None, timeout=90.0, provider=""):
+        calls.append(provider)
+        return _fuel(grok_pct=99, grok_state="available", opencode_free=100)
+
+    monkeypatch.setattr(bw, "read_fuel", read)
+    code = bw.main(["--list-agents", "--refresh-fuel", "--install-root", str(tmp_path)])
+    assert code == bw.EXIT_OK
+    assert set(calls) == {"cursor", "grok", "opencode"}
+    listed = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+    assert listed["refresh"] is False
+    by_id = {row["id"]: row for row in listed["agents"]}
+    assert by_id["opencode"]["available"] is True
+    assert by_id["opencode"]["fuel_state"] == "known"
+    calls.clear()
+    code = bw.main(["--list-agents", "--install-root", str(tmp_path)])
+    assert code == bw.EXIT_OK
+    assert calls == []
+    again = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+    assert again["refresh"] is False
+    assert {row["id"]: row["available"] for row in again["agents"]}["opencode"] is True
+
+
+def test_known_exhausted_opencode_stays_unavailable_on_the_menu(monkeypatch, capsys, tmp_path: Path):
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+    monkeypatch.setattr(bw, "resolve_grok_exe", lambda *a, **k: GRK)
+    monkeypatch.setattr(bw, "resolve_cursor_cmd", lambda *a, **k: CUR)
+    monkeypatch.setattr(bw, "resolve_opencode_cmd", lambda *a, **k: OP)
+    monkeypatch.setattr(bw, "opencode_auth_file_present", lambda env=None: True)
+    assert bw.save_agent_list_fuel(_fuel(grok_pct=99, grok_state="available", opencode_free=0, opencode_go=0))
     code = bw.main(["--list-agents", "--install-root", str(tmp_path)])
     assert code == bw.EXIT_OK
     listed = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
     by_id = {row["id"]: row for row in listed["agents"]}
-    assert by_id["opencode"]["available"] is True
-    assert by_id["auto"]["available"] is True
+    assert by_id["opencode"]["available"] is False
+    assert by_id["opencode"]["reason"].startswith("explicit opencode: no usable fuel")
+    assert listed["refresh"] is False
+
+
+def test_slow_cursor_read_does_not_drop_opencode(tmp_path: Path):
+    import subprocess
+    import threading
+    import time
+
+    (tmp_path / "tools").mkdir()
+    (tmp_path / "tools" / "Get-BobAgentFuel.ps1").write_text("x", encoding="utf-8")
+    state = {"n": 0, "max": 0}
+    lock = threading.Lock()
+
+    def run(cmd, timeout=8, **_k):
+        provider = cmd[cmd.index("-Provider") + 1]
+        with lock:
+            state["n"] += 1
+            state["max"] = max(state["max"], state["n"])
+        try:
+            time.sleep(0.2)
+            if provider == "cursor":
+                raise subprocess.TimeoutExpired(cmd, timeout)
+            if provider == "opencode":
+                stdout = '{"opencode":{"free":100,"go":null}}'
+            else:
+                stdout = '{"grok":{"remaining_pct":40,"state":"available"}}'
+
+            class R:
+                pass
+
+            out = R()
+            out.stdout = stdout
+            return out
+        finally:
+            with lock:
+                state["n"] -= 1
+
+    fuel = bw.read_fuel_bounded(tmp_path, run=run, per_provider_s=2)
+    assert state["max"] >= 2
+    assert fuel.opencode_free == 100
+    assert fuel.grok_pct == 40
+    assert fuel.cursor_high is None
 
 
 def test_unknown_agent_is_usage(capsys, tmp_path: Path):
