@@ -1008,10 +1008,20 @@ def looks_like_rate_limit(text: str | None) -> bool:
 
     Bare ``402``/``429`` digits are not enough; they must appear with HTTP/status
     context (e.g. ``HTTP 429``, ``status 429``) to avoid false pauses from issue
-    numbers, commit hashes and timings in normal output.
+    numbers, commit hashes and timings in normal output. Markdown backtick
+    quotations (the worker skill documents the phrase) are not a provider limit.
     """
     if not text or not isinstance(text, str):
         return False
+    text = re.sub(r"`[^`]*`", " ", text)
+    # MRB #6231: only strip instructional stock phrases, not apostrophes in
+    # provider prose (``Provider's response: 402 ...``).
+    text = re.sub(
+        r"['\"](?:402\s*Payment\s*Required|Payment\s*Required|usage\s+balance\s+exhausted|NEEDS_AUTH|OUTCOME_NEEDS_AUTH)['\"]",
+        " ",
+        text,
+        flags=re.IGNORECASE,
+    )
     t = text.lower()
     if any(phrase in t for phrase in RATE_LIMIT_PHRASES):
         return True

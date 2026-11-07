@@ -398,8 +398,14 @@ namespace BobDialogs
             return pi.dwProcessId;
         }
 
-        // Menu probe. Kills the worker if fuel read exceeds timeoutMs so the tray thread never waits.
+        // Menu probe. The UI thread never waits. A slow fuel read is not exhaustion:
+        // lookup-timeout keeps the installed rows clickable and the launch path checks for real.
         public static string TryListAgents(string root, int timeoutMs, out string error)
+        {
+            return TryListAgents(root, timeoutMs, false, out error);
+        }
+
+        public static string TryListAgents(string root, int timeoutMs, bool refresh, out string error)
         {
             error = "";
             string exe = Path.Combine(root ?? "", "worker\\bob-worker.exe");
@@ -408,7 +414,7 @@ namespace BobDialogs
             {
                 ProcessStartInfo psi = new ProcessStartInfo();
                 psi.FileName = exe;
-                psi.Arguments = "--list-agents --install-root " + Quote(root);
+                psi.Arguments = "--list-agents --install-root " + Quote(root) + (refresh ? " --refresh-fuel" : "");
                 psi.UseShellExecute = false;
                 psi.RedirectStandardOutput = true;
                 psi.RedirectStandardError = true;
@@ -422,7 +428,7 @@ namespace BobDialogs
                     {
                         try { p.Kill(); } catch { }
                         try { p.WaitForExit(2000); } catch { }
-                        error = "fuel list timed out";
+                        error = "lookup-timeout";
                         return "";
                     }
                     string json = "";
@@ -870,9 +876,10 @@ namespace BobDialogs
         {
             parent.DropDownItems.Clear();
             AddAgentChoice(parent, "auto", "Automatic - Grok, then Cursor, then OpenCode", true, record);
-            AddAgentChoice(parent, "grok", "Grok - availability loads when this menu opens", false, record);
-            AddAgentChoice(parent, "cursor", "Cursor - availability loads when this menu opens", false, record);
-            AddAgentChoice(parent, "opencode", "OpenCode - availability loads when this menu opens", false, record);
+            string unknown = "fuel unknown (not exhausted); start checks this agent";
+            AddAgentChoice(parent, "grok", "Grok - " + unknown, true, record);
+            AddAgentChoice(parent, "cursor", "Cursor - " + unknown, true, record);
+            AddAgentChoice(parent, "opencode", "OpenCode - " + unknown, true, record);
         }
 
         void AddAgentChoice(ToolStripMenuItem parent, string id, string text, bool enabled, bool record)
@@ -902,22 +909,31 @@ namespace BobDialogs
             string rootCopy = root;
             System.Threading.ThreadPool.QueueUserWorkItem(delegate
             {
-                string err;
-                string json = WorkerLauncher.TryListAgents(rootCopy, 8000, out err);
                 try
                 {
-                    if (menu.IsHandleCreated)
+                    string err;
+                    // Fast list (cache or unknown). One child. A second open while this runs is ignored.
+                    string json = WorkerLauncher.TryListAgents(rootCopy, 8000, false, out err);
+                    PostAgentList(parent, json, err);
+                    if (json.IndexOf("\"refresh\": true") >= 0 || json.IndexOf("\"refresh\":true") >= 0)
                     {
-                        menu.BeginInvoke((MethodInvoker)delegate
-                        {
-                            try { ApplyAgentList(parent, json, err); }
-                            finally { System.Threading.Interlocked.Exchange(ref agentListBusy, 0); }
-                        });
+                        string err2;
+                        string json2 = WorkerLauncher.TryListAgents(rootCopy, 24000, true, out err2);
+                        if (json2.Length > 0) PostAgentList(parent, json2, err2);
                     }
-                    else System.Threading.Interlocked.Exchange(ref agentListBusy, 0);
                 }
-                catch { System.Threading.Interlocked.Exchange(ref agentListBusy, 0); }
+                finally { System.Threading.Interlocked.Exchange(ref agentListBusy, 0); }
             });
+        }
+
+        void PostAgentList(ToolStripMenuItem parent, string json, string err)
+        {
+            try
+            {
+                if (!menu.IsHandleCreated) return;
+                menu.BeginInvoke((MethodInvoker)delegate { ApplyAgentList(parent, json, err); });
+            }
+            catch { }
         }
 
         void ApplyAgentList(ToolStripMenuItem parent, string json, string err)
@@ -927,10 +943,15 @@ namespace BobDialogs
             {
                 parent.DropDownItems.Clear();
                 AddAgentChoice(parent, "auto", "Automatic - Grok, then Cursor, then OpenCode", true, false);
-                string why = err.Length > 0 ? err : "this bob-worker.exe has no --list-agents; rebuild to choose an agent";
-                AddAgentChoice(parent, "grok", "Grok - " + why, false, false);
-                AddAgentChoice(parent, "cursor", "Cursor - " + why, false, false);
-                AddAgentChoice(parent, "opencode", "OpenCode - " + why, false, false);
+                // A killed slow read is not "out of fuel". Missing --list-agents still cannot launch an explicit row.
+                bool lookupTimeout = err == "lookup-timeout";
+                string why = lookupTimeout
+                    ? "fuel unknown (not exhausted); start checks this agent"
+                    : (err.Length > 0 ? err : "this bob-worker.exe has no --list-agents; rebuild to choose an agent");
+                bool enabled = lookupTimeout;
+                AddAgentChoice(parent, "grok", "Grok - " + why, enabled, false);
+                AddAgentChoice(parent, "cursor", "Cursor - " + why, enabled, false);
+                AddAgentChoice(parent, "opencode", "OpenCode - " + why, enabled, false);
                 return;
             }
             parent.DropDownItems.Clear();
