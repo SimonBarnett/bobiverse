@@ -46,15 +46,40 @@ def assert_opencode_layout(root: Path) -> None:
         raise AssertionError("FR #6159 OpenCode layout missing: " + ", ".join(missing))
 
 
-def test_pack_union_fails_closed_without_opencode_fuel_helper():
-    """Installed fuel helper is scripts/opencode_fuel.py from the common\\scripts union."""
+def _stage_product_body(pack: str) -> str:
+    start = pack.index("function Stage-Product")
+    nxt = pack.index("\nfunction ", start + 1)
+    return pack[start:nxt]
+
+
+def test_pack_union_fails_closed_without_opencode_fuel_helper(tmp_path):
+    """The pack calls the fuel guard on every stage. Missing file throws; a real file does not."""
     pack = (ROOT / "common" / "scripts" / "Pack-BobiverseRelease.ps1").read_text(encoding="utf-8-sig")
-    assert "Copy-BobiverseRepoDirs -Root $RepoRoot -Sub 'scripts'" in pack
-    assert "bobiverse pack missing scripts\\opencode_fuel.py" in pack
+    guard_at = pack.index("function Assert-BobiverseStageHasOpencodeFuel")
+    assert guard_at < pack.index("function Stage-Product")
+    guard = pack[guard_at:pack.index("function Stage-Product")]
+    assert "Test-Path -LiteralPath $ocFuel -PathType Leaf" in guard
+    assert "throw 'bobiverse pack missing scripts\\opencode_fuel.py (common\\scripts union)'" in guard
+    body = _stage_product_body(pack)
+    copy_at = body.index("Copy-BobiverseRepoDirs -Root $RepoRoot -Sub 'scripts'")
+    call_at = body.index("Assert-BobiverseStageHasOpencodeFuel -Stage $stage")
+    between = body[copy_at:call_at]
+    assert "if (" not in between
     assert "opencode_fuel.py" not in pack[pack.index("/XF"):pack.index("/XF") + 80] if "/XF" in pack else True
     assert OPENCODE_FUEL_PY.is_file()
     text = OPENCODE_FUEL_PY.read_text(encoding="utf-8")
     assert "def fuel_from_stats" in text or "def fuel_from_windowed_stats" in text
+
+    def missing_helper(stage: Path) -> bool:
+        return not (stage / "scripts" / "opencode_fuel.py").is_file()
+
+    empty = tmp_path / "empty-stage"
+    (empty / "scripts").mkdir(parents=True)
+    present = tmp_path / "present-stage"
+    dest = present / "scripts" / "opencode_fuel.py"
+    dest.parent.mkdir(parents=True)
+    dest.write_text(text, encoding="utf-8")
+    assert missing_helper(empty) and not missing_helper(present)
 
 
 def test_fr6159_source_assets_present():

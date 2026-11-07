@@ -35,9 +35,9 @@ Docs in `docs\`:
 
 ## Agent and Plan (tray, single click each)
 
-- The tray has two plain items, **Agent** and **Plan** (no submenus). Each click runs `bob-worker.exe` (`<ai root>\bob\worker`) which starts a **NEW** agent
+- The tray has **Agents** (a submenu) and **Plan** (one click). Each start runs `bob-worker.exe` (`<ai root>\bob\worker`) which starts a **NEW** agent
   every time - it NEVER resumes, continues or attaches to an existing agent session, window or process (no `--resume`/`--continue`).
-- The agent is chosen automatically by token availability: local Grok weekly tokens > 0 (or unknown read) -> `agent.exe`; else Cursor pool > 0 -> `agent.cmd`; else OpenCode free/Go fuel > 0 -> `opencode.exe`; else a hidden-input prompt in the same window asks for a Grok session key (FR #3997 / #6120).
+- **Automatic** keeps Grok, then Cursor, then OpenCode (FR #3997 / #6120). **Grok**, **Cursor**, and **OpenCode** pass `--agent` and start only that agent. A missing command or unusable OpenCode fuel refuses. It does not start a different agent. The compiled `bob-tray.exe` owns this menu. Rebuild it with `scripts\Build-BobDialogs.ps1` together with `bob-worker.exe`.
 - Agent CWD is `<ai root>\bob\worker`; Plan CWD is `<ai root>\bob\plan`. Both folders have their own AGENTS.md + skills with the CAST IRON harvest rule on top.
 - Full start / troubleshooting guide: `bobiverse-bob-worker` and `bobiverse-bob-plan`.
 

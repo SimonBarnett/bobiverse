@@ -272,7 +272,14 @@ namespace BobDialogs
         static string Quote(string a) { return Regex.IsMatch(a, "[\\s\"]") ? "\"" + a.Replace("\"", "\\\"") + "\"" : a; }
 
         // FR #2421: prefer bob-worker --describe-launch JSON (same plan as Watch-BobTray / CLI).
-        static bool TryDescribeLaunch(string installExe, string root, string mode, string machine, out string run, out List<string> argv, out string wd, out string title)
+        static bool IsExplicitAgent(string agent)
+        {
+            if (string.IsNullOrEmpty(agent)) return false;
+            string a = agent.Trim().ToLowerInvariant();
+            return a == "grok" || a == "cursor" || a == "opencode";
+        }
+
+        static bool TryDescribeLaunch(string installExe, string root, string mode, string machine, string agent, out string run, out List<string> argv, out string wd, out string title)
         {
             run = ""; argv = null; wd = ""; title = "";
             try
@@ -283,6 +290,7 @@ namespace BobDialogs
                 args.Append("--describe-launch --mode ").Append(Quote(mode));
                 args.Append(" --install-root ").Append(Quote(root));
                 if (machine.Length > 0) args.Append(" --machine-id ").Append(Quote(machine));
+                if (IsExplicitAgent(agent)) args.Append(" --agent ").Append(Quote(agent.Trim().ToLowerInvariant()));
                 psi.Arguments = args.ToString();
                 psi.UseShellExecute = false;
                 psi.RedirectStandardOutput = true;
@@ -323,6 +331,12 @@ namespace BobDialogs
         // its own visible console (CREATE_NEW_CONSOLE). Returns the pid, or 0 with `error` set.
         public static int Launch(string root, string mode, string machine, out string error)
         {
+            return Launch(root, mode, machine, "", out error);
+        }
+
+        // agent is "" or "auto" for Grok then Cursor then OpenCode. grok/cursor/opencode never substitute.
+        public static int Launch(string root, string mode, string machine, string agent, out string error)
+        {
             LaunchCalls++;
             error = "";
             string refusal = CapRefusal(mode);
@@ -334,7 +348,7 @@ namespace BobDialogs
             List<string> argv = null;
             string wd = "";
             string title = "";
-            bool fromPlan = TryDescribeLaunch(exe, root, mode, machine, out run, out argv, out wd, out title);
+            bool fromPlan = TryDescribeLaunch(exe, root, mode, machine, agent, out run, out argv, out wd, out title);
 
             if (!fromPlan)
             {
@@ -347,6 +361,7 @@ namespace BobDialogs
                 run = Path.Combine(bin, "bob-worker-" + hash + ".exe");
                 argv = new List<string>(new string[] { "--mode", mode, "--install-root", root });
                 if (machine.Length > 0) { argv.Add("--machine-id"); argv.Add(machine); }
+                if (IsExplicitAgent(agent)) { argv.Add("--agent"); argv.Add(agent.Trim().ToLowerInvariant()); }
                 wd = Path.Combine(root, mode == "plan" ? "plan" : "worker");
                 title = "Bob " + mode + " - starting (closing this window ends the agent)";
             }
@@ -381,6 +396,57 @@ namespace BobDialogs
             { error = "start failed: " + new Win32Exception(Marshal.GetLastWin32Error()).Message; return 0; }
             CloseHandle(pi.hThread); CloseHandle(pi.hProcess);
             return pi.dwProcessId;
+        }
+
+        // Menu probe. Kills the worker if fuel read exceeds timeoutMs so the tray thread never waits.
+        public static string TryListAgents(string root, int timeoutMs, out string error)
+        {
+            error = "";
+            string exe = Path.Combine(root ?? "", "worker\\bob-worker.exe");
+            if (!File.Exists(exe)) { error = "bob-worker.exe missing"; return ""; }
+            try
+            {
+                ProcessStartInfo psi = new ProcessStartInfo();
+                psi.FileName = exe;
+                psi.Arguments = "--list-agents --install-root " + Quote(root);
+                psi.UseShellExecute = false;
+                psi.RedirectStandardOutput = true;
+                psi.RedirectStandardError = true;
+                psi.CreateNoWindow = true;
+                using (Process p = Process.Start(psi))
+                {
+                    if (p == null) { error = "list-agents did not start"; return ""; }
+                    // Read after the wait. Reading stdout to EOF first blocks for the whole fuel read (up to 90s)
+                    // and the timeout never fires. A full pipe still unblocks when WaitForExit returns and we Kill.
+                    if (!p.WaitForExit(timeoutMs))
+                    {
+                        try { p.Kill(); } catch { }
+                        try { p.WaitForExit(2000); } catch { }
+                        error = "fuel list timed out";
+                        return "";
+                    }
+                    string json = "";
+                    try { json = p.StandardOutput.ReadToEnd(); } catch { }
+                    try { p.StandardError.ReadToEnd(); } catch { }
+                    string payload = "";
+                    foreach (string line in (json ?? "").Replace("\r", "").Split('\n'))
+                    {
+                        string t = line.Trim();
+                        if (t.StartsWith("{") && t.IndexOf("\"agents\"") >= 0) payload = t;
+                    }
+                    if (p.ExitCode != 0 || payload.Length == 0)
+                    {
+                        error = "this bob-worker.exe has no --list-agents; rebuild to choose an agent";
+                        return "";
+                    }
+                    return payload;
+                }
+            }
+            catch
+            {
+                error = "list-agents failed";
+                return "";
+            }
         }
     }
 
@@ -479,8 +545,14 @@ namespace BobDialogs
 
             ToolStripMenuItem miStatus = Item("Status", delegate { ShowStatus(); });
             miStatus.Font = new Font(miStatus.Font, FontStyle.Bold);   // bold = the default action
-            Item("Agent", delegate { StartWorker("agent"); });
-            Item("Plan", delegate { StartWorker("plan"); });
+            // Agents submenu is filled without calling bob-worker (fuel read can take 90s).
+            // DropDownOpening refreshes from --list-agents on a background thread.
+            ToolStripMenuItem miAgents = new ToolStripMenuItem("Agents");
+            MenuItems.Add("Agents");
+            SeedAgentChoices(miAgents, true);
+            miAgents.DropDownOpening += delegate { BeginRefreshAgentChoices(miAgents); };
+            menu.Items.Add(miAgents);
+            Item("Plan", delegate { StartWorker("plan", ""); });
             Item("Acknowledge", delegate { Acknowledge(); ShowAbout(); });
             Item("Open log", delegate { OpenLog(); });
             menu.Items.Add(new ToolStripSeparator()); MenuItems.Add("-");
@@ -794,11 +866,110 @@ namespace BobDialogs
             catch { }
         }
 
-        void StartWorker(string mode)
+        void SeedAgentChoices(ToolStripMenuItem parent, bool record)
+        {
+            parent.DropDownItems.Clear();
+            AddAgentChoice(parent, "auto", "Automatic - Grok, then Cursor, then OpenCode", true, record);
+            AddAgentChoice(parent, "grok", "Grok - availability loads when this menu opens", false, record);
+            AddAgentChoice(parent, "cursor", "Cursor - availability loads when this menu opens", false, record);
+            AddAgentChoice(parent, "opencode", "OpenCode - availability loads when this menu opens", false, record);
+        }
+
+        void AddAgentChoice(ToolStripMenuItem parent, string id, string text, bool enabled, bool record)
+        {
+            ToolStripMenuItem mi = new ToolStripMenuItem(text);
+            mi.Tag = id;
+            mi.Enabled = enabled;
+            mi.Click += OnAgentChoiceClick;
+            parent.DropDownItems.Add(mi);
+            if (record) MenuItems.Add(text);
+        }
+
+        void OnAgentChoiceClick(object sender, EventArgs e)
+        {
+            ToolStripMenuItem mi = sender as ToolStripMenuItem;
+            string id = mi == null || mi.Tag == null ? "" : Convert.ToString(mi.Tag);
+            if (id.Length == 0) return;
+            if (string.Equals(id, "auto", StringComparison.OrdinalIgnoreCase)) StartWorker("agent", "");
+            else StartWorker("agent", id);
+        }
+
+        int agentListBusy;
+
+        void BeginRefreshAgentChoices(ToolStripMenuItem parent)
+        {
+            if (System.Threading.Interlocked.Exchange(ref agentListBusy, 1) == 1) return;
+            string rootCopy = root;
+            System.Threading.ThreadPool.QueueUserWorkItem(delegate
+            {
+                string err;
+                string json = WorkerLauncher.TryListAgents(rootCopy, 8000, out err);
+                try
+                {
+                    if (menu.IsHandleCreated)
+                    {
+                        menu.BeginInvoke((MethodInvoker)delegate
+                        {
+                            try { ApplyAgentList(parent, json, err); }
+                            finally { System.Threading.Interlocked.Exchange(ref agentListBusy, 0); }
+                        });
+                    }
+                    else System.Threading.Interlocked.Exchange(ref agentListBusy, 0);
+                }
+                catch { System.Threading.Interlocked.Exchange(ref agentListBusy, 0); }
+            });
+        }
+
+        void ApplyAgentList(ToolStripMenuItem parent, string json, string err)
+        {
+            List<Dictionary<string, object>> rows = ParseAgentRows(json);
+            if (rows == null || rows.Count == 0)
+            {
+                parent.DropDownItems.Clear();
+                AddAgentChoice(parent, "auto", "Automatic - Grok, then Cursor, then OpenCode", true, false);
+                string why = err.Length > 0 ? err : "this bob-worker.exe has no --list-agents; rebuild to choose an agent";
+                AddAgentChoice(parent, "grok", "Grok - " + why, false, false);
+                AddAgentChoice(parent, "cursor", "Cursor - " + why, false, false);
+                AddAgentChoice(parent, "opencode", "OpenCode - " + why, false, false);
+                return;
+            }
+            parent.DropDownItems.Clear();
+            foreach (Dictionary<string, object> row in rows)
+            {
+                string id = Common.Str(row, "id");
+                string label = Common.Str(row, "label");
+                string reason = Common.Str(row, "reason");
+                if (label.Length == 0) label = id;
+                string text = reason.Length > 0 ? label + " - " + reason : label;
+                bool available = Common.Bool(row, "available");
+                if (id.Length == 0) continue;
+                AddAgentChoice(parent, id, text, available, false);
+            }
+        }
+
+        static List<Dictionary<string, object>> ParseAgentRows(string json)
+        {
+            if (string.IsNullOrWhiteSpace(json)) return null;
+            Dictionary<string, object> doc;
+            try { doc = Common.Dict(Common.ParseJson(json.Trim())); }
+            catch { return null; }
+            if (doc == null || !doc.ContainsKey("agents")) return null;
+            IList raw = Common.List(doc["agents"]);
+            if (raw == null) return null;
+            List<Dictionary<string, object>> rows = new List<Dictionary<string, object>>();
+            foreach (object o in raw)
+            {
+                Dictionary<string, object> row = Common.Dict(o);
+                if (row != null) rows.Add(row);
+            }
+            return rows;
+        }
+
+        void StartWorker(string mode, string agent)
         {
             ApplyEngineEnv();
             string err; string mid = machine.Length > 0 ? machine : Common.MachineId();
-            int pid = WorkerLauncher.Launch(root, mode, mid, out err);
+            int pid = WorkerLauncher.Launch(root, mode, mid, agent ?? "", out err);
             if (pid == 0 && err.Length > 0)
                 try { MessageBox.Show(err, "Bobiverse", MessageBoxButtons.OK, err.StartsWith("start failed") || err.StartsWith("bob-worker.exe") ? MessageBoxIcon.Warning : MessageBoxIcon.Information); } catch { }
         }

@@ -9,10 +9,12 @@
 # _Watch-Bobiverse-<id>, then relaunches this tray. BAD: native
 # NotifyIcon.Text white chip - Clear-BobNativeTip always.
 # Exactly one TipForm; never Form.Show after ShowParkedAt.
-# Empty fuel: Agents start / Plan may prompt for session XAI_API_KEY or CURSOR_API_KEY
+# Empty fuel: explicit Agents choices refuse; Plan may prompt for session XAI_API_KEY or CURSOR_API_KEY
 # (child process env only; never persist User/Machine env or auth.json).
-# Agent / Plan (top-level, single click, no submenu; t762u): bob-worker.exe --mode agent|plan, cwd <install>\worker | <install>\plan.
-# Every click = a NEW agent (never resume/continue/attach; previous agents left running). Agent selection is automatic (cursor > grok > key dialog).
+# Agents (submenu) / Plan (top-level click). Agents lists Automatic, Grok, Cursor, OpenCode.
+# Every click = a NEW agent (never resume/continue/attach). Automatic is Grok then Cursor then OpenCode.
+# An explicit row passes --agent and never starts a different agent.
+# Engine mode (bob-tray.exe owns the icon) must not call --list-agents while this script is starting.
 # Replaces the blank Interactive PowerShell window.
 # Not a Windows service. Requires powershell.exe -STA.
 # FR #5052: MUST_REPORT = timer/webhook/heartbeat/IRC-post failures (Invoke-BobMustReportFailure).
@@ -3117,7 +3119,9 @@ function Get-BobTrayWorkerAgentChoices {
       Agents submenu rows from bob-worker.exe --list-agents.
       Automatic stays available. Explicit rows come only from that JSON.
       An older exe with no --list-agents does not get a guessed OpenCode launch.
+      The child is killed at 8s. read_fuel can otherwise block for 90s.
     #>
+    param([string]$InstallRoot = $RepoRoot)
     $fallbackReason = 'this bob-worker.exe has no --list-agents; rebuild to choose an agent'
     $fallback = @(
         [ordered]@{ id = 'auto'; label = 'Automatic'; available = $true; installed = $true; reason = 'Grok, then Cursor, then OpenCode' }
@@ -3125,10 +3129,20 @@ function Get-BobTrayWorkerAgentChoices {
         [ordered]@{ id = 'cursor'; label = 'Cursor'; available = $false; installed = $false; reason = $fallbackReason }
         [ordered]@{ id = 'opencode'; label = 'OpenCode'; available = $false; installed = $false; reason = $fallbackReason }
     )
-    $exe = Join-Path $RepoRoot 'worker\bob-worker.exe'
+    $exe = Join-Path $InstallRoot 'worker\bob-worker.exe'
     if (-not (Test-Path -LiteralPath $exe)) { return $fallback }
+    $outFile = Join-Path $env:TEMP ('bob-list-agents-' + [guid]::NewGuid().ToString('n') + '.txt')
+    $errFile = $outFile + '.err'
+    $p = $null
     try {
-        $raw = & $exe --list-agents --install-root $RepoRoot 2>$null | Out-String
+        # File redirect, then WaitForExit. The call operator would block the runspace for the whole fuel read.
+        $p = Start-Process -FilePath $exe -ArgumentList @('--list-agents', '--install-root', $InstallRoot) -PassThru -WindowStyle Hidden -RedirectStandardOutput $outFile -RedirectStandardError $errFile
+        if (-not $p.WaitForExit(8000)) {
+            try { $p.Kill() } catch { }
+            return $fallback
+        }
+        $raw = ''
+        if (Test-Path -LiteralPath $outFile) { $raw = [string](Get-Content -LiteralPath $outFile -Raw -ErrorAction SilentlyContinue) }
         $line = ($raw -split "`r?`n" | Where-Object { $_.Trim().StartsWith('{') } | Select-Object -Last 1)
         if (-not $line) { return $fallback }
         $obj = $line | ConvertFrom-Json
@@ -3136,25 +3150,37 @@ function Get-BobTrayWorkerAgentChoices {
         return @($obj.agents)
     }
     catch { return $fallback }
+    finally {
+        if ($p) { try { $p.Dispose() } catch { } }
+        Remove-Item -LiteralPath $outFile, $errFile -Force -ErrorAction SilentlyContinue
+    }
 }
 
 function Update-BobTrayWorkerAgentsMenu {
-    param($MenuItem)
+    param($MenuItem, $Rows)
     if (-not $MenuItem) { return }
+    if ($null -eq $Rows) { $Rows = @(Get-BobTrayWorkerAgentChoices) }
     $MenuItem.DropDownItems.Clear()
-    foreach ($row in @(Get-BobTrayWorkerAgentChoices)) {
+    foreach ($row in @($Rows)) {
         $id = [string]$row.id
         $label = [string]$row.label
         $reason = [string]$row.reason
-        $text = if ($reason) { '{0} — {1}' -f $label, $reason } else { $label }
+        $text = if ($reason) { '{0} - {1}' -f $label, $reason } else { $label }
         $item = New-Object System.Windows.Forms.ToolStripMenuItem $text
         $item.Tag = $id
         $available = $false
         try { $available = [bool]$row.available } catch { $available = $false }
         $item.Enabled = $available
+        # Sender is the clicked item. An empty tag must not start Automatic.
         $item.Add_Click({
-                $picked = [string]$this.Tag
-                if ($picked -eq 'auto' -or -not $picked) {
+                param($sender, $e)
+                $picked = ''
+                if ($sender) { $picked = [string]$sender.Tag }
+                if (-not $picked) {
+                    Write-TrayLog 'agents menu click missing tag; not starting'
+                    return
+                }
+                if ($picked -eq 'auto') {
                     Start-BobTrayWorkerExe -Mode 'agent' -Agent ''
                 }
                 else {
@@ -3163,6 +3189,43 @@ function Update-BobTrayWorkerAgentsMenu {
             })
         [void]$MenuItem.DropDownItems.Add($item)
     }
+}
+
+function Start-BobTrayWorkerAgentsRefresh {
+    param($MenuItem)
+    # One probe at a time, off the WinForms thread. The click handler stays on the UI thread.
+    if ($script:bobTrayAgentsBusy) { return }
+    $script:bobTrayAgentsBusy = $true
+    $rootCopy = [string]$RepoRoot
+    $rs = [runspacefactory]::CreateRunspace()
+    $rs.Open()
+    $ps = [powershell]::Create()
+    $ps.Runspace = $rs
+    $def = ${function:Get-BobTrayWorkerAgentChoices}.ToString()
+    [void]$ps.AddScript({
+            param($InstallRoot, $Definition)
+            Set-Item -Path function:Get-BobTrayWorkerAgentChoices -Value ([scriptblock]::Create($Definition))
+            return @(Get-BobTrayWorkerAgentChoices -InstallRoot $InstallRoot)
+        }).AddArgument($rootCopy).AddArgument($def)
+    $handle = $ps.BeginInvoke()
+    $timer = New-Object System.Windows.Forms.Timer
+    $timer.Interval = 250
+    $script:bobTrayAgentsProbe = [pscustomobject]@{
+        Ps = $ps; Rs = $rs; Handle = $handle; Timer = $timer; Menu = $MenuItem
+    }
+    $timer.Add_Tick({
+            $probe = $script:bobTrayAgentsProbe
+            if (-not $probe -or -not $probe.Handle.IsCompleted) { return }
+            $probe.Timer.Stop()
+            $rows = $null
+            try { $rows = @($probe.Ps.EndInvoke($probe.Handle)) } catch { $rows = $null }
+            try { $probe.Ps.Dispose() } catch { }
+            try { $probe.Rs.Close(); $probe.Rs.Dispose() } catch { }
+            $script:bobTrayAgentsBusy = $false
+            $script:bobTrayAgentsProbe = $null
+            if ($rows) { Update-BobTrayWorkerAgentsMenu $probe.Menu $rows }
+        })
+    $timer.Start()
 }
 
 $notify = New-Object System.Windows.Forms.NotifyIcon
@@ -3175,8 +3238,20 @@ $miStatus.Font = New-Object System.Drawing.Font($miStatus.Font, [System.Drawing.
 # Agents lists installed worker choices (Automatic / Grok / Cursor / OpenCode). Plan stays one click.
 # Explicit choices pass --agent and the worker refuses instead of starting a different agent.
 $miAgents = $menu.Items.Add('Agents')
-$miAgents.Add_DropDownOpening({ Update-BobTrayWorkerAgentsMenu $miAgents })
-Update-BobTrayWorkerAgentsMenu $miAgents
+# Do not call --list-agents here. Engine mode never shows this menu; a fuel read can take 90s.
+# Seed is local text only. Opening the menu (visible PowerShell tray) refreshes off the UI thread.
+Update-BobTrayWorkerAgentsMenu $miAgents @(
+    [ordered]@{ id = 'auto'; label = 'Automatic'; available = $true; installed = $true; reason = 'Grok, then Cursor, then OpenCode' }
+    [ordered]@{ id = 'grok'; label = 'Grok'; available = $false; installed = $false; reason = 'availability loads when this menu opens' }
+    [ordered]@{ id = 'cursor'; label = 'Cursor'; available = $false; installed = $false; reason = 'availability loads when this menu opens' }
+    [ordered]@{ id = 'opencode'; label = 'OpenCode'; available = $false; installed = $false; reason = 'availability loads when this menu opens' }
+)
+$miAgents.Add_DropDownOpening({
+        if (Get-Command Test-BobTrayEngineMode -ErrorAction SilentlyContinue) {
+            if (Test-BobTrayEngineMode) { return }
+        }
+        Start-BobTrayWorkerAgentsRefresh $miAgents
+    })
 $miPlan = $menu.Items.Add('Plan')
 $miPlan.Add_Click({ Start-BobTrayWorkerExe -Mode 'plan' })
 $miAck = $menu.Items.Add('Acknowledge')

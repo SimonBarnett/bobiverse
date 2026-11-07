@@ -295,7 +295,11 @@ def test_tray_menu_is_status_agent_plan_acknowledge_log_restart_exit(dialogs, tm
     # FR #5111: Reload engine sits between Restart and Exit (host-only recycle; Exit stays last).
     assert items == [
         "Status",
-        "Agent",
+        "Agents",
+        "Automatic - Grok, then Cursor, then OpenCode",
+        "Grok - availability loads when this menu opens",
+        "Cursor - availability loads when this menu opens",
+        "OpenCode - availability loads when this menu opens",
         "Plan",
         "Acknowledge",
         "Open log",
@@ -304,6 +308,7 @@ def test_tray_menu_is_status_agent_plan_acknowledge_log_restart_exit(dialogs, tm
         "Reload engine",
         "Exit",
     ]
+    assert "Agent" not in items
     src = (DIALOGS / "BobTray.cs").read_text(encoding="utf-8-sig")
     assert 'miStatus.Font = new Font(miStatus.Font, FontStyle.Bold)' in src and "DoubleClick" in src or "MouseClick" in src
 

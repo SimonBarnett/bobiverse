@@ -98,6 +98,15 @@ function Stage-BobAgentFolders([string]$Stage) {
     }
 }
 
+function Assert-BobiverseStageHasOpencodeFuel([string]$Stage) {
+    # Get-BobOpencodeFuel imports flat scripts\opencode_fuel.py. A stage without it
+    # installs a tray that cannot read OpenCode fuel. Fail before the MSI is built.
+    $ocFuel = Join-Path $Stage 'scripts\opencode_fuel.py'
+    if (-not (Test-Path -LiteralPath $ocFuel -PathType Leaf)) {
+        throw 'bobiverse pack missing scripts\opencode_fuel.py (common\scripts union)'
+    }
+}
+
 function Stage-Product([string]$Name) {
     $stage = Join-Path $OutDir ("$Name-$Version")
     if (Test-Path $stage) { Remove-Item -Recurse -Force $stage }
@@ -105,10 +114,7 @@ function Stage-Product([string]$Name) {
     # t773u: the flat staged scripts\ is the UNION of common\scripts + jeeves\scripts + bob\scripts + airc\scripts.
     Copy-BobiverseRepoDirs -Root $RepoRoot -Sub 'scripts' -Dest (Join-Path $stage 'scripts')
     # Flat scripts\opencode_fuel.py comes from common\scripts (Get-BobOpencodeFuel import).
-    $ocFuel = Join-Path $stage 'scripts\opencode_fuel.py'
-    if (-not (Test-Path -LiteralPath $ocFuel -PathType Leaf)) {
-        throw 'bobiverse pack missing scripts\opencode_fuel.py (common\scripts union)'
-    }
+    Assert-BobiverseStageHasOpencodeFuel -Stage $stage
     # Issue #2: do not ship __pycache__ (self-copy / heat noise)
     Get-ChildItem -Path (Join-Path $stage 'scripts') -Recurse -Directory -Filter '__pycache__' -ErrorAction SilentlyContinue |
         Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
