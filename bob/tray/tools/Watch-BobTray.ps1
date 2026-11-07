@@ -2329,6 +2329,84 @@ function Invoke-BobTrayStatus {
 # has no picture; nothing is drawn in its place.
 $script:ntsaGutLogoPath = Join-Path $RepoRoot 'assets\ntsa-gut-logo.png'
 
+
+# FR #6149: fuel-family logos (original Bobiverse badges under assets\fuel-logos).
+$script:bobFuelLogoRoot = Join-Path $RepoRoot 'assets\fuel-logos'
+$script:bobFuelLogoCache = @{}
+
+function Get-BobTrayFuelLogoFallbackText {
+    param([Parameter(Mandatory)][string]$Family)
+    switch -Regex ([string]$Family.ToLowerInvariant()) {
+        '^(cursor|cu)$' { return 'Cu' }
+        '^(xai|grok|x-?ai)$' { return 'xAI' }
+        '^(opencode|oc)$' { return 'OC' }
+        '^(copilot|gh|github)$' { return 'Gh' }
+        default { return ([string]$Family).Substring(0, [Math]::Min(3, ([string]$Family).Length)) }
+    }
+}
+
+function Get-BobTrayFuelLogoPath {
+    param([Parameter(Mandatory)][string]$Family)
+    $key = switch -Regex ([string]$Family.ToLowerInvariant()) {
+        '^(cursor|cu)$' { 'cursor' }
+        '^(xai|grok|x-?ai)$' { 'xai' }
+        '^(opencode|oc)$' { 'opencode' }
+        '^(copilot|gh|github)$' { 'copilot' }
+        default { return $null }
+    }
+    if (-not $key) { return $null }
+    $root = $script:bobFuelLogoRoot
+    if (-not $root) { $root = Join-Path $RepoRoot 'assets\fuel-logos' }
+    return (Join-Path $root ($key + '.png'))
+}
+
+function Get-BobTrayFuelLogoImage {
+    param([Parameter(Mandatory)][string]$Family)
+    $path = Get-BobTrayFuelLogoPath -Family $Family
+    if (-not $path) { return $null }
+    if ($script:bobFuelLogoCache.ContainsKey($path)) {
+        return $script:bobFuelLogoCache[$path]
+    }
+    $img = $null
+    if (Test-Path -LiteralPath $path) {
+        try {
+            $bytes = [IO.File]::ReadAllBytes($path)
+            $ms = New-Object System.IO.MemoryStream(,$bytes)
+            $img = [System.Drawing.Image]::FromStream($ms)
+            # Keep stream alive with image via clone
+            $clone = New-Object System.Drawing.Bitmap $img
+            $img.Dispose(); $ms.Dispose()
+            $img = $clone
+        } catch {
+            Write-TrayLog ('fuel logo load failed ' + $path + ': ' + $_.Exception.Message)
+            $img = $null
+        }
+    } else {
+        Write-TrayLog ('fuel logo missing: ' + $path)
+    }
+    $script:bobFuelLogoCache[$path] = $img
+    return $img
+}
+
+function Add-BobTrayFuelFamilyRow {
+    param(
+        [int]$X,
+        [int]$Y,
+        [Parameter(Mandatory)][string]$Family,
+        [string]$Title,
+        [string]$RightText
+    )
+    $icon = $null
+    try { $icon = Get-BobTrayFuelLogoImage -Family $Family } catch { $icon = $null }
+    $label = if ($Title) { $Title } else { $Family }
+    if (-not $icon) {
+        $fb = Get-BobTrayFuelLogoFallbackText -Family $Family
+        $label = ('[{0}] {1}' -f $fb, $label)
+    }
+    return (Add-BobTraySectionHeader -X $X -Y $Y -Title $label -Icon $icon -RightText $RightText)
+}
+
+
 function Get-BobTrayLogoImage {
     if (Test-Path -LiteralPath $script:ntsaGutLogoPath) {
         try {
@@ -2719,6 +2797,41 @@ function Rebuild-BobTrayTiles {
         # #42: ChanServ-registered channels ARE the machine rows (one per digest roster id).
         # FR #4938: Cursor pool section removed after account unification.
         # FR #5032: no "Grok accounts" heading --- every row is a Grok pool; optional overspend only.
+        # FR #6149: fuel-family strip with logos (text fallback when asset missing).
+        $cursorRight = $null
+        try {
+            $cr = Get-BobTrayCursorFuelRemaining
+            if ($null -ne $cr -and [string]$cr -ne '') { $cursorRight = ('{0}%' -f [int]$cr) }
+        } catch { }
+        $y = Add-BobTrayFuelFamilyRow -X 0 -Y $y -Family 'cursor' -Title 'Cursor Models' -RightText $cursorRight
+        $xaiRight = $null
+        if ($null -ne $AccountPct -and [string]$AccountPct -ne '') {
+            try { $xaiRight = ('{0}%' -f [int]$AccountPct) } catch { }
+        }
+        $xaiTitle = 'xAI weekly'
+        if ($AccountLabel) { $xaiTitle = ('xAI weekly - {0}' -f [string]$AccountLabel) }
+        elseif ($AccountName) { $xaiTitle = ('xAI weekly - {0}' -f [string]$AccountName) }
+        $y = Add-BobTrayFuelFamilyRow -X 0 -Y $y -Family 'xai' -Title $xaiTitle -RightText $xaiRight
+        $ocRight = $null
+        $ocTitle = 'OpenCode'
+        try {
+            $free = $null; $go = $null
+            foreach ($m in @($Machines)) {
+                if (-not $m -or -not $m.pcent) { continue }
+                $pc = $m.pcent
+                if ($null -eq $free -and $pc.'opencode-free' -ne $null -and [string]$pc.'opencode-free' -ne '') { $free = [int]$pc.'opencode-free' }
+                if ($null -eq $go -and $pc.'opencode-go' -ne $null -and [string]$pc.'opencode-go' -ne '') { $go = [int]$pc.'opencode-go' }
+            }
+            if ($null -ne $free -or $null -ne $go) {
+                $parts = @()
+                if ($null -ne $free) { $parts += ('free {0}%' -f $free) }
+                if ($null -ne $go) { $parts += ('go {0}%' -f $go) }
+                $ocTitle = ('OpenCode - {0}' -f ($parts -join ' | '))
+                if ($null -ne $go) { $ocRight = ('{0}%' -f $go) }
+                elseif ($null -ne $free) { $ocRight = ('{0}%' -f $free) }
+            }
+        } catch { }
+        $y = Add-BobTrayFuelFamilyRow -X 0 -Y $y -Family 'opencode' -Title $ocTitle -RightText $ocRight
         $overLine = Format-BobTrayCursorOverspendLine -OverageGbp $AccountOverageGbp
         $overColor = [System.Drawing.Color]::FromArgb(248, 81, 73)
         if ($overLine) {
@@ -2736,7 +2849,8 @@ function Rebuild-BobTrayTiles {
         $copilotLine = $null
         try { $copilotLine = Format-BobCopilotPoolLine -Pool $CopilotPool } catch { }
         if ($copilotLine) {
-            $y = Add-BobTraySectionHeader -X 0 -Y $y -Title $copilotLine
+            # FR #6149: Copilot family logo (text fallback inside Add-BobTrayFuelFamilyRow).
+            $y = Add-BobTrayFuelFamilyRow -X 0 -Y $y -Family 'copilot' -Title $copilotLine
         }
         $indent = 18
         $shownMachines = @{}

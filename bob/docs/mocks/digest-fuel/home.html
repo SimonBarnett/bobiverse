@@ -7,7 +7,8 @@
   body { font-family: Segoe UI, sans-serif; background:#111; color:#eee; margin:24px; }
   h1 { font-size:18px; }
   .row { display:flex; align-items:center; gap:12px; padding:10px 12px; margin:8px 0; background:#1c1c1c; border-radius:8px; }
-  .logo { width:28px; height:28px; border-radius:6px; display:flex; align-items:center; justify-content:center; font-size:11px; font-weight:700; color:#111; }
+  .logo { width:28px; height:28px; border-radius:6px; object-fit:cover; }
+  .logo-fallback { width:28px; height:28px; border-radius:6px; display:none; align-items:center; justify-content:center; font-size:11px; font-weight:700; color:#111; }
   .cursor { background:#7c3aed; }
   .xai { background:#fff; }
   .opencode { background:#22c55e; }
@@ -20,10 +21,10 @@
 </head>
 <body>
 <h1>Bob Status - fuel (primary)</h1>
-<div class="row"><div class="logo cursor">Cu</div><div class="meta"><div class="name">Cursor Models</div><div class="sub">local Spending first</div></div><div class="pct">72%</div></div>
-<div class="row"><div class="logo xai">xAI</div><div class="meta"><div class="name">xAI weekly</div><div class="sub">account: demo-operator@example.com</div></div><div class="pct">88%</div></div>
-<div class="row"><div class="logo opencode">OC</div><div class="meta"><div class="name">OpenCode</div><div class="sub">free 100% | go 50%</div></div><div class="pct">50%</div></div>
-<div class="row"><div class="logo copilot">Gh</div><div class="meta"><div class="name">GitHub Copilot</div><div class="sub">business | fresh</div></div><div class="pct">unlimited</div></div>
-<p class="sub">Logos are placeholders in HTML mocks; product uses redistributable brand marks with text fallback.</p>
+<div class="row" data-family="cursor"><img class="logo" src="../../../tray/assets/fuel-logos/cursor.png" alt="Cursor" onerror="this.style.display='none';this.nextElementSibling.style.display='flex'"/><div class="logo-fallback cursor">Cu</div><div class="meta"><div class="name">Cursor Models</div><div class="sub">local Spending first</div></div><div class="pct">72%</div></div>
+<div class="row" data-family="xai"><img class="logo" src="../../../tray/assets/fuel-logos/xai.png" alt="xAI" onerror="this.style.display='none';this.nextElementSibling.style.display='flex'"/><div class="logo-fallback xai">xAI</div><div class="meta"><div class="name">xAI weekly</div><div class="sub">account: demo-operator@example.com</div></div><div class="pct">88%</div></div>
+<div class="row" data-family="opencode"><img class="logo" src="../../../tray/assets/fuel-logos/opencode.png" alt="OpenCode" onerror="this.style.display='none';this.nextElementSibling.style.display='flex'"/><div class="logo-fallback opencode">OC</div><div class="meta"><div class="name">OpenCode</div><div class="sub">free 100% | go 50%</div></div><div class="pct">50%</div></div>
+<div class="row" data-family="copilot"><img class="logo" src="../../../tray/assets/fuel-logos/copilot.png" alt="Copilot" onerror="this.style.display='none';this.nextElementSibling.style.display='flex'"/><div class="logo-fallback copilot">Gh</div><div class="meta"><div class="name">GitHub Copilot</div><div class="sub">business | fresh</div></div><div class="pct">unlimited</div></div>
+<p class="sub">FR #6149: logos are Bobiverse-owned badges under bob/tray/assets/fuel-logos (see LICENSE.md); missing asset uses text fallback.</p>
 </body>
 </html>
