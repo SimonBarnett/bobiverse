@@ -395,10 +395,12 @@ if ($Product -eq 'jeeves') { $mirror += @{ Rel = 'tools'; Dst = 'tools'; Xf = @(
 foreach ($m in $mirror) {
     $from = Get-BobiverseRepoPath -Root $clone -Rel $m.Rel
     if (-not (Test-Path -LiteralPath $from -PathType Container)) { continue }
-    # FR #6154 / FR #269: never /XO on bob tray tools\ - git mtimes are often older than a
+    # FR #6154 / FR #269: never /XO on *bob* tray tools\ only - git mtimes are often older than a
     # pre-#6120 flat Get-BobAgentFuel.ps1, so /XO left OpenCode fuel helpers stale after ff.
+    # Jeeves tools\ keep /XO (CodeRabbit / MRB #6162): do not force-overwrite newer install tools
+    # from an older external clone.
     $dst = Join-Path $InstallRoot $m.Dst
-    if ($m.Dst -eq 'tools') {
+    if ($Product -eq 'bob' -and $m.Dst -eq 'tools') {
         $roboArgs = @($from, $dst, '/E', '/NFL', '/NDL', '/NJH', '/NJS', '/nc', '/ns', '/np')
         $xoNote = ' (tools-no-xo FR #6154)'
     } else {
