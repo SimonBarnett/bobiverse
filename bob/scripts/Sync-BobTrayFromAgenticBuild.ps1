@@ -86,7 +86,7 @@ foreach ($leaf in $ownedTools) {
     if (Test-Path -LiteralPath $p) { $ownedKeep[$leaf] = [IO.File]::ReadAllBytes($p) }
 }
 $ownedAssetKeep = @{}
-foreach ($leaf in @('ntsa-gut-logo.png')) {
+foreach ($leaf in @('ntsa-gut-logo.png', 'fuel-logos\\cursor.png', 'fuel-logos\\xai.png', 'fuel-logos\\opencode.png', 'fuel-logos\\copilot.png', 'fuel-logos\\LICENSE.md')) {
     $ap = Join-Path $OutDir "assets\$leaf"
     if (Test-Path -LiteralPath $ap) { $ownedAssetKeep[$leaf] = [IO.File]::ReadAllBytes($ap) }
 }
@@ -97,6 +97,7 @@ New-Item -ItemType Directory -Force -Path @(
     (Join-Path $OutDir 'tools'),
     (Join-Path $OutDir 'src'),
     (Join-Path $OutDir 'assets'),
+    (Join-Path $OutDir 'assets\fuel-logos'),
     (Join-Path $OutDir 'config')
 ) | Out-Null
 
@@ -142,6 +143,21 @@ if (-not (Test-Path -LiteralPath $ico)) { throw "missing $ico" }
 Copy-Item -LiteralPath $ico -Destination (Join-Path $OutDir 'assets\bob-systray.ico') -Force
 # t804u: the ntsa logo (Acknowledge badge) is bobiverse-owned, not in agentic_build: keep the one already vendored across a re-sync.
 if ($ownedAssetKeep.ContainsKey('ntsa-gut-logo.png')) { [IO.File]::WriteAllBytes((Join-Path $OutDir 'assets\ntsa-gut-logo.png'), $ownedAssetKeep['ntsa-gut-logo.png']) }
+# FR #6149: Bobiverse fuel-family logos (original badges + LICENSE).
+$fuelLogoSrc = Join-Path $srcRoot 'assets\fuel-logos'
+$fuelLogoDst = Join-Path $OutDir 'assets\fuel-logos'
+if (Test-Path -LiteralPath $fuelLogoSrc) {
+    New-Item -ItemType Directory -Force -Path $fuelLogoDst | Out-Null
+    Copy-Item -LiteralPath (Join-Path $fuelLogoSrc '*') -Destination $fuelLogoDst -Force -ErrorAction SilentlyContinue
+}
+foreach ($leaf in @('fuel-logos\cursor.png', 'fuel-logos\xai.png', 'fuel-logos\opencode.png', 'fuel-logos\copilot.png', 'fuel-logos\LICENSE.md')) {
+    if ($ownedAssetKeep.ContainsKey($leaf)) {
+        $dest = Join-Path $OutDir ('assets\' + $leaf)
+        New-Item -ItemType Directory -Force -Path (Split-Path -Parent $dest) | Out-Null
+        [IO.File]::WriteAllBytes($dest, $ownedAssetKeep[$leaf])
+    }
+}
+
 
 foreach ($cfg in @('bobiverse.json', 'bob-seats.json', 'default.json', 'fleet-registry.json')) {
     $from = Join-Path $srcRoot "config\$cfg"

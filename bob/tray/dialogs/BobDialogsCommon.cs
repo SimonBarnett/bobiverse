@@ -183,6 +183,41 @@ namespace BobDialogs
             return null;
         }
 
+
+        // FR #6149: Bobiverse-owned fuel-family badges (assets\fuel-logos\<family>.png).
+        public static string FuelLogoFallback(string family)
+        {
+            string f = (family ?? "").Trim().ToLowerInvariant();
+            if (f == "cursor" || f == "cu") return "Cu";
+            if (f == "xai" || f == "grok" || f == "x-ai") return "xAI";
+            if (f == "opencode" || f == "oc") return "OC";
+            if (f == "copilot" || f == "gh" || f == "github") return "Gh";
+            if (f.Length == 0) return "?";
+            return f.Length <= 3 ? f.ToUpperInvariant() : f.Substring(0, 3).ToUpperInvariant();
+        }
+
+        public static Image FuelLogo(string root, string family)
+        {
+            string key = null;
+            string f = (family ?? "").Trim().ToLowerInvariant();
+            if (f == "cursor" || f == "cu") key = "cursor";
+            else if (f == "xai" || f == "grok" || f == "x-ai") key = "xai";
+            else if (f == "opencode" || f == "oc") key = "opencode";
+            else if (f == "copilot" || f == "gh" || f == "github") key = "copilot";
+            if (key == null) return null;
+            try
+            {
+                string p = Path.Combine(root ?? "", "assets", "fuel-logos", key + ".png");
+                if (File.Exists(p))
+                {
+                    byte[] b = File.ReadAllBytes(p);
+                    return Image.FromStream(new MemoryStream(b));
+                }
+            }
+            catch { }
+            return null;
+        }
+
         public static Icon AppIcon()
         {
             try { return Icon.ExtractAssociatedIcon(Application.ExecutablePath); } catch { return null; }
