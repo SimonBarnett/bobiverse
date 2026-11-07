@@ -1632,15 +1632,20 @@ function Format-BobCursorControlPoolPctLabel {
 
 
 function Test-BobCursorAccountCacheAcceptable {
-    param($Cache, [string]$LocalMachineId)
-    # FR #6144: accept cached account label only if local-origin and unexpired period_end.
+    param($Cache, [string]$LocalMachineId, [string]$LocalPeriodEnd)
+    # FR #6144 / MRB #6169: accept cached account label only if local-origin,
+    # unexpired period_end, and (when local period known) matching billing period.
     if (-not $Cache -or -not $Cache.label -or $Cache.label -eq 'empty') { return $false }
     $mid = ''
     if ($Cache.machine) { $mid = [string]$Cache.machine.Trim().ToLowerInvariant() }
     if (-not $mid) { return $false }  # legacy entries without machine = foreign
     if ($LocalMachineId -and $mid -ne [string]$LocalMachineId.Trim().ToLowerInvariant()) { return $false }
     if (-not $Cache.period_end) { return $false }
-    return (Test-BobCursorPoolPeriodEndCurrent -PeriodEnd ([string]$Cache.period_end))
+    if (-not (Test-BobCursorPoolPeriodEndCurrent -PeriodEnd ([string]$Cache.period_end))) { return $false }
+    if ($LocalPeriodEnd -and [string]$LocalPeriodEnd.Trim()) {
+        if ([string]$Cache.period_end.Trim() -ne [string]$LocalPeriodEnd.Trim()) { return $false }
+    }
+    return $true
 }
 
 function Format-BobCursorControlPoolHeading {
@@ -2295,7 +2300,11 @@ function Get-BobTrayHover {
             } catch { }
         }
         if ($peek.cursor_label -and [string]$peek.cursor_label -ne 'empty') {
-            try { Save-BobCursorAccountCache -Label ([string]$peek.cursor_label) -PeriodEnd $(if ($peek.cursor_period_end) { [string]$peek.cursor_period_end } else { $null }) -MachineId $machineId } catch { }
+            # MRB #6169: never stamp a peer label into the local account cache.
+            # Only persist peer seat pool for the peer machine; local cache needs a fresh local reading.
+            if ($mid -eq $machineId) {
+                try { Save-BobCursorAccountCache -Label ([string]$peek.cursor_label) -PeriodEnd $(if ($peek.cursor_period_end) { [string]$peek.cursor_period_end } else { $null }) -MachineId $machineId } catch { }
+            }
             try {
                 $peekSeat = Get-BobSeatForMachine -MachineId $mid
                 if ($peekSeat) {
@@ -2698,7 +2707,9 @@ function Get-BobTrayHover {
         try {
             $cc = Read-BobCursorAccountCache
             # FR #6144: refuse foreign/expired cache (machine stamp + period_end).
-            if (Test-BobCursorAccountCacheAcceptable -Cache $cc -LocalMachineId $machineId) {
+            $localPe = $null
+            if ($cursorWeek -and $cursorWeek.period_end) { $localPe = [string]$cursorWeek.period_end }
+            if (Test-BobCursorAccountCacheAcceptable -Cache $cc -LocalMachineId $machineId -LocalPeriodEnd $localPe) {
                 $acctPctLabel = [string]$cc.label
                 if (-not $cursorWeek) { $cursorWeek = [pscustomobject]@{} }
                 if ($cc.period_end -and -not $cursorWeek.period_end) {

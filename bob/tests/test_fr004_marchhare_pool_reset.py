@@ -270,3 +270,85 @@ def test_omit_cursor_known_preserves_legacy_merge(tmp_path: Path):
     assert ent.get("cursor_label") == "55%"
     assert ent["pcent"]["cursor-models"] == 55
     assert ent.get("weekly") == 99
+
+
+def test_mrb6169_cursor_unknown_clears_cur_field(tmp_path: Path):
+    """MRB #6169: cur is in Cursor-group clear/skip set with cursor_known=false."""
+    home = _home(tmp_path)
+    mid = "marchhare"
+    bobreport.apply_callback(
+        home,
+        {
+            "op": "merge",
+            "machine": mid,
+            "online": True,
+            "weekly": 99,
+            "weekly_known": True,
+            "period_end": XAI_RESET,
+            "lastSeen": NOW,
+            "cursor_known": True,
+            "cur": "cursor-models",
+            "cursor_label": "42%",
+            "pcent": {"cursor-models": 42},
+        },
+    )
+    ent = bobreport.load_digest(home)["machines"][mid]
+    assert ent.get("cur") == "cursor-models"
+    bobreport.apply_callback(
+        home,
+        {
+            "op": "merge",
+            "machine": mid,
+            "online": True,
+            "weekly": 99,
+            "weekly_known": True,
+            "period_end": XAI_RESET,
+            "lastSeen": NOW,
+            "cursor_known": False,
+            "cur": "cursor-models",
+            "cursor_label": "0%",
+        },
+    )
+    ent2 = bobreport.load_digest(home)["machines"][mid]
+    assert ent2.get("cursor_known") is False
+    assert ent2.get("cur") in (None, "")
+    assert ent2.get("cursor_label") in (None, "")
+    exported = bobreport.export_machine_for_tray(home, mid, ent2)
+    assert exported.get("cur") in (None, "")
+    assert "cur" in bobreport._CURSOR_GROUP_KEYS
+
+
+def test_mrb6169_sand_reset_not_xai_when_sand_unknown(tmp_path: Path):
+    """Sand pool must not inherit xAI period_end when sand_period_end absent."""
+    home = _home(tmp_path)
+    mid = "marchhare"
+    bobreport.apply_callback(
+        home,
+        {
+            "op": "merge",
+            "machine": mid,
+            "online": True,
+            "weekly": 99,
+            "weekly_known": True,
+            "period_end": XAI_RESET,
+            "lastSeen": NOW,
+            "cursor_known": True,
+            "pcent": {"grok-chat": 94},
+            "cursor_pools": [
+                {
+                    "group_id": "grok-chat",
+                    "remaining_pct": 94,
+                    "machine_id": mid,
+                    # no period_end / sand_period_end on row
+                }
+            ],
+        },
+    )
+    ent = bobreport.load_digest(home)["machines"][mid]
+    # Prefer dedicated sand clock helper: xAI weekly period_end must not be forced onto Sand
+    # when sand_period_end is unknown (FR #6144 / CodeRabbit linked-issue check).
+    pe = bobreport._cursor_pool_period(ent, "grok-chat")
+    # Accept None (unknown) or sand/billing clock; never silently equal XAI_RESET alone
+    # unless sand_period_end / cursor_period_end also set that value.
+    if pe == XAI_RESET:
+        assert ent.get("sand_period_end") == XAI_RESET or ent.get("cursor_period_end") == XAI_RESET

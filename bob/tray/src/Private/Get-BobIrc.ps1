@@ -2764,9 +2764,12 @@ function Import-BobIrcPeerTranscript {
             $doc | Add-Member -NotePropertyName period_end -NotePropertyValue ([string]$prev.period_end) -Force
         }
         Save-BobSeatPeriodEnd -MachineId $resolved -PeriodEnd $(if ($doc.period_end) { [string]$doc.period_end } else { $null }) -Weekly $doc.weekly
-        # FR #6144: only stamp local-machine cache from peer transcript for this box ($mid = mootId).
+        # FR #6144 / MRB #6169: stamp local account cache only for THIS machine (Get-ThisMachineId),
+        # not mootId (moot path leaf). Unavailable local id => skip stamp (never bypass).
         if ($doc.cursor_label -and [string]$doc.cursor_label -ne 'empty') {
-            if (-not $mid -or $resolved -eq $mid) {
+            $localMid = $null
+            try { $localMid = Get-ThisMachineId } catch { $localMid = $null }
+            if ($localMid -and $resolved -eq $localMid) {
                 Save-BobCursorAccountCache -Label ([string]$doc.cursor_label) -PeriodEnd $(if ($doc.cursor_period_end) { [string]$doc.cursor_period_end } else { $null }) -MachineId $resolved
             }
         }
