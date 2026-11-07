@@ -2735,7 +2735,22 @@ def resolve_done_fr_implementer_seat(
     return nick
 
 
-def _append_unaccepted(doc: dict, claim: GitClaim, **extra: str) -> str:
+def _append_unaccepted(doc: dict, claim: GitClaim, home: Path | None = None, **extra: str) -> str:
+    # FR #6208: never enqueue (or refresh) rows for a persistently ignored repo.
+    if home is not None:
+        import focus_ignore as _fi_ignore
+
+        if _fi_ignore.is_ignored(home, claim.repo):
+            store_repo = canonical_queue_repo(claim.repo)
+            doc["unaccepted"] = [
+                r
+                for r in (doc.get("unaccepted") or [])
+                if not (
+                    isinstance(r, dict)
+                    and _fi_ignore.repo_match(store_repo, str(r.get("repo") or ""))
+                )
+            ]
+            return "skipped"
     if claim.task == "FR" and issue_skip_fr_reason(
         title=claim.title, body=claim.body, labels=claim.labels, state=claim.state
     ):
@@ -2880,8 +2895,15 @@ def _stamp_require_machine(row: dict, claim: GitClaim | None = None) -> None:
         row["require_machine"] = req
 
 
-def _apply_label_mutation(doc: dict, claim: GitClaim) -> str:
+def _apply_label_mutation(doc: dict, claim: GitClaim, home: Path | None = None) -> str:
     """FR #3275: labeled/unlabeled update labels on matching rows; re-eval FR skip locally."""
+    # FR #6208: ignored repos must not gain new unaccepted rows from label events.
+    if home is not None:
+        import focus_ignore as _fi_ignore
+
+        if _fi_ignore.is_ignored(home, claim.repo):
+            n = _remove_unaccepted(doc, claim.repo, claim.task, claim.id)
+            return "removed" if n else "noop"
     updated = False
     found_unaccepted = False
     for bucket in ("unaccepted", "accepted"):
@@ -2914,7 +2936,7 @@ def _apply_label_mutation(doc: dict, claim: GitClaim) -> str:
                 return "removed"
             return "updated" if updated else "noop"
         if not found_unaccepted and not repo_archived_for_queue(claim.repo):
-            ch = _append_unaccepted(doc, claim)
+            ch = _append_unaccepted(doc, claim, home=home)
             if ch == "skipped":
                 return "noop"
             if ch == "added":
@@ -2934,7 +2956,7 @@ def _apply_label_mutation(doc: dict, claim: GitClaim) -> str:
         extra: dict[str, str] = {
             "url": f"https://github.com/{claim.repo}/pull/{str(claim.id).lstrip('#')}",
         }
-        ch = _append_unaccepted(doc, claim, **extra)
+        ch = _append_unaccepted(doc, claim, home=home, **extra)
         if ch == "skipped":
             return "noop"
         if ch == "added":
@@ -2959,7 +2981,7 @@ def _apply_claim_to_doc(doc: dict, claim: GitClaim, home: Path | None = None) ->
     changed = "noop"
 
     if ev in ("issues", "pull_request") and action in ("labeled", "unlabeled"):
-        return _apply_label_mutation(doc, claim)
+        return _apply_label_mutation(doc, claim, home=home)
 
     if ev == "issues" and action in ("opened", "reopened"):
         if issue_skip_fr_reason(
@@ -2969,6 +2991,12 @@ def _apply_claim_to_doc(doc: dict, claim: GitClaim, home: Path | None = None) ->
         elif action == "reopened":
             # FR #4373: leave done, clear pins, stamp history, re-enter unaccepted.
             # FR #4695: also clear fr_done so seats are not held until !resync.
+            # FR #6208: ignored repos stay out of unaccepted.
+            if home is not None:
+                import focus_ignore as _fi_ignore
+
+                if _fi_ignore.is_ignored(home, claim.repo):
+                    return "noop"
             changed = requeue_reopened_issue(
                 doc,
                 claim,
@@ -2980,7 +3008,7 @@ def _apply_claim_to_doc(doc: dict, claim: GitClaim, home: Path | None = None) ->
                 changed = "noop"
         else:
             _remove_unaccepted_tasks(doc, claim.repo, claim.id, {"UAT", "PR"})
-            changed = _append_unaccepted(doc, claim)
+            changed = _append_unaccepted(doc, claim, home=home)
             if changed == "skipped":
                 changed = "noop"
     elif ev == "issues" and action == "closed":
@@ -3028,6 +3056,15 @@ def _apply_claim_to_doc(doc: dict, claim: GitClaim, home: Path | None = None) ->
         "edited",
         "synchronize",
     ):
+        # FR #6208: persistent !ignore blocks late synchronize / reopen enqueue.
+        if home is not None:
+            import focus_ignore as _fi_ignore
+
+            if _fi_ignore.is_ignored(home, claim.repo):
+                n_drop = 0
+                for task_u in ("MRB", "FIX", "PR", "UAT"):
+                    n_drop += _remove_unaccepted(doc, claim.repo, task_u, claim.id)
+                return "removed" if n_drop else "noop"
         # FR #4827: original seat's PR closes the FR the ack-stale requeue handed to someone else.
         _prune_stale_requeue_duplicate(doc, claim)
         if claim.harvest_lesson:
@@ -3090,7 +3127,7 @@ def _apply_claim_to_doc(doc: dict, claim: GitClaim, home: Path | None = None) ->
                     stamp_fix_seats_on_mrb_rows(doc, claim.repo, claim.id, nick)
             changed = "updated"
         else:
-            changed = _append_unaccepted(doc, claim, **extra)
+            changed = _append_unaccepted(doc, claim, home=home, **extra)
             for r in doc["unaccepted"]:
                 if not _same(r, claim.repo, "MRB", claim.id):
                     continue
@@ -3186,7 +3223,7 @@ def _apply_claim_to_doc(doc: dict, claim: GitClaim, home: Path | None = None) ->
                 requeue_reopened_issue(doc, fr, via="webhook", actor="", home=home)
             changed = "updated"
     else:
-        changed = _append_unaccepted(doc, claim)
+        changed = _append_unaccepted(doc, claim, home=home)
     return changed
 
 
@@ -8139,8 +8176,15 @@ def offer_focus_top(
                 cb = (canonical_worker_nick(b) or b or "").strip().lower()
                 return bool(ca) and ca == cb
 
+            import focus_ignore  # lazy: avoid import cycle; needed before _eligible (FR #6208)
+
             def _eligible(cand: dict) -> dict | None:
                 nonlocal purged
+                # FR #6208: belt-and-braces - never offer an ignored repo (incl. fallback walk).
+                if focus_ignore.is_ignored(home, str(cand.get("repo") or "")):
+                    if _drop_unaccepted_row(doc, cand, kind="ignored", reason="repo-ignored"):
+                        purged = True
+                    return None
                 if row_needs_human(cand, me) or row_on_cooldown(cand, now_f, me, live=live):
                     return None  # FR #180: per-seat GIVEUP cooldown / needs-human
                 if row_awaits_mrb1(cand):
@@ -8305,10 +8349,8 @@ def offer_focus_top(
                 return cand_eff
 
             # Prefer focus order. If that yields nothing, fall back only within focused
-            # repos when strict (operator asked to focus bobiverse — do not leak Club-Madeira
-            # etc.). When strict is off, fall back to the full unaccepted list.
-            import focus_ignore  # lazy: avoid import cycle at module load
-
+            # repos when strict (operator asked to focus bobiverse - do not leak Club-Madeira
+            # etc.). When strict is off, fall back to unaccepted minus ignored (FR #6208).
             order = ordered_unaccepted(home, doc["unaccepted"])
             pick = None
             for cand in order:
@@ -8316,6 +8358,7 @@ def offer_focus_top(
                 if pick is not None:
                     break
             if pick is None:
+                ignored = focus_ignore.ignored_list(home)
                 if focus_ignore.is_strict(home):
                     focused = set()
                     try:
@@ -8329,6 +8372,10 @@ def offer_focus_top(
                     fallback = [
                         r for r in (doc.get("unaccepted") or [])
                         if isinstance(r, dict)
+                        and not any(
+                            focus_ignore.repo_match(ig, str(r.get("repo") or ""))
+                            for ig in ignored
+                        )
                         and (
                             not focused
                             or any(
@@ -8342,6 +8389,10 @@ def offer_focus_top(
                     fallback = [
                         r for r in (doc.get("unaccepted") or [])
                         if isinstance(r, dict)
+                        and not any(
+                            focus_ignore.repo_match(ig, str(r.get("repo") or ""))
+                            for ig in ignored
+                        )
                     ]
                 # FR #3205: fallback uses the same kind+number order as focus walk.
                 fallback.sort(key=lambda r: focus_ignore.offer_sort_key(home, r))
@@ -10413,18 +10464,29 @@ def enqueue_open_github_item(
         extra["url"] = f"https://github.com/{claim.repo}/pull/{num}"
         if claim.refs:
             extra["refs"] = ",".join(claim.refs)
-    changed = _append_unaccepted(doc, claim, **extra)
+    # FR #6208: honour persistent !ignore on manual / assign enqueue too.
+    if home is not None:
+        import focus_ignore as _fi_ignore
+
+        if _fi_ignore.is_ignored(home, claim.repo):
+            return "skipped", f"ignored {claim.task} {claim.repo}{claim.id}"
+    changed = _append_unaccepted(doc, claim, home=home, **extra)
     if changed == "added":
         return "added", f"enqueued {claim.task} {claim.repo}{claim.id}"
     if changed == "duplicate":
         return "duplicate", f"already queued {claim.task} {claim.repo}{claim.id}"
     if changed == "skipped":
         why = ""
-        if claim.task == "MRB":
+        if home is not None:
+            import focus_ignore as _fi_ignore
+
+            if _fi_ignore.is_ignored(home, claim.repo):
+                why = "repo-ignored"
+        if not why and claim.task == "MRB":
             why = pr_hold_reason(
                 title=claim.title, body=claim.body, labels=claim.labels
             ) or ""
-        elif claim.task == "FR":
+        elif not why and claim.task == "FR":
             why = (
                 fr_hold_reason(
                     title=claim.title, body=claim.body, labels=claim.labels
