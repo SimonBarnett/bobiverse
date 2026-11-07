@@ -4276,6 +4276,244 @@ def publish_grok_account_label(
     return None
 
 
+
+def _resolve_opencode_fuel_helper_ps1(env: dict[str, str] | None = None) -> Path | None:
+    """Locate Get-BobOpencodeFuel.ps1 (repo tray/tools or install tools layout)."""
+    e = os.environ if env is None else env
+    override = (e.get("BOB_OPENCODE_FUEL_HELPER") or "").strip()
+    if override:
+        p = Path(override)
+        return p if p.is_file() else None
+    here = Path(__file__).resolve()
+    candidates: list[Path] = [
+        here.parents[2] / "bob" / "tray" / "tools" / "Get-BobOpencodeFuel.ps1",
+        here.parents[1] / "tray" / "tools" / "Get-BobOpencodeFuel.ps1",
+        here.parents[1] / "tools" / "Get-BobOpencodeFuel.ps1",
+    ]
+    install = (e.get("BOB_INSTALL_ROOT") or "").strip()
+    if install:
+        root = Path(install)
+        candidates.extend(
+            [
+                root / "tray" / "tools" / "Get-BobOpencodeFuel.ps1",
+                root / "tools" / "Get-BobOpencodeFuel.ps1",
+                root / "bob" / "tray" / "tools" / "Get-BobOpencodeFuel.ps1",
+            ]
+        )
+    for c in candidates:
+        try:
+            if c.is_file():
+                return c
+        except OSError:
+            continue
+    return None
+
+
+def _clamp_opencode_pcent_value(raw: object) -> int | None:
+    """Return 0..100 int, or None when unknown / unparseable (never invent 0 for None)."""
+    if raw is None or raw == "":
+        return None
+    try:
+        v = int(raw)
+    except (TypeError, ValueError):
+        return None
+    if v < 0:
+        return 0
+    if v > 100:
+        return 100
+    return v
+
+
+# FR #6146 / CodeRabbit Major: never block the ear 5s fuel tick on a slow PowerShell
+# helper (Get-BobOpencodeFuel.ps1 can wait up to 25s per opencode stats window).
+# Process-level TTL cache + short helper timeout; stale cache returned on miss/timeout.
+OPENCODE_FUEL_CACHE_ENV = "BOB_OPENCODE_FUEL_CACHE_S"
+DEFAULT_OPENCODE_FUEL_CACHE_S = 30.0
+OPENCODE_FUEL_HELPER_TIMEOUT_ENV = "BOB_OPENCODE_FUEL_HELPER_TIMEOUT_S"
+DEFAULT_OPENCODE_FUEL_HELPER_TIMEOUT_S = 5.0
+_opencode_pcent_cache: dict[str, object] = {"at": 0.0, "value": {}}
+
+
+def clear_opencode_pcent_cache() -> None:
+    """Reset process OpenCode pcent cache (tests / forced refresh)."""
+    _opencode_pcent_cache["at"] = 0.0
+    _opencode_pcent_cache["value"] = {}
+
+
+def opencode_fuel_cache_s(env: dict[str, str] | None = None) -> float:
+    e = os.environ if env is None else env
+    raw = (e.get(OPENCODE_FUEL_CACHE_ENV) or "").strip()
+    if raw:
+        try:
+            return max(0.0, float(raw))
+        except ValueError:
+            pass
+    return DEFAULT_OPENCODE_FUEL_CACHE_S
+
+
+def opencode_fuel_helper_timeout_s(env: dict[str, str] | None = None) -> float:
+    e = os.environ if env is None else env
+    raw = (e.get(OPENCODE_FUEL_HELPER_TIMEOUT_ENV) or "").strip()
+    if raw:
+        try:
+            return max(0.5, min(30.0, float(raw)))
+        except ValueError:
+            pass
+    return DEFAULT_OPENCODE_FUEL_HELPER_TIMEOUT_S
+
+
+def _parse_opencode_helper_stdout(raw_out: str) -> dict[str, int]:
+    out: dict[str, int] = {}
+    text = (raw_out or "").strip()
+    if not text:
+        return out
+    line = text.splitlines()[-1].strip()
+    try:
+        doc = json.loads(line)
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return out
+    if not isinstance(doc, dict):
+        return out
+    mapping = (
+        ("opencode-free", ("opencode-free", "free")),
+        ("opencode-go", ("opencode-go", "go")),
+    )
+    for dest, keys in mapping:
+        raw = None
+        for k in keys:
+            if k in doc and doc.get(k) not in (None, ""):
+                raw = doc.get(k)
+                break
+        clamped = _clamp_opencode_pcent_value(raw)
+        if clamped is not None:
+            out[dest] = clamped
+    return out
+
+
+def _read_opencode_pcent_from_fixture(fixture: str) -> dict[str, int]:
+    out: dict[str, int] = {}
+    try:
+        import opencode_fuel as of
+    except ImportError:
+        return out
+    try:
+        stats = of.parse_opencode_stats_text_or_json(fixture)
+        fuel = of.fuel_from_stats(stats)
+    except Exception:
+        return out
+    for key in (of.FUEL_ID_FREE, of.FUEL_ID_GO):
+        clamped = _clamp_opencode_pcent_value(fuel.get(key))
+        if clamped is not None:
+            out[key] = clamped
+    return out
+
+
+def _read_opencode_pcent_from_helper(
+    helper: Path, env: dict[str, str], timeout_s: float
+) -> dict[str, int]:
+    try:
+        import subprocess
+    except ImportError:
+        return {}
+    try:
+        proc = subprocess.run(
+            [
+                "powershell.exe",
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                str(helper),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=timeout_s,
+            env={**dict(os.environ), **dict(env)},
+        )
+    except (OSError, subprocess.TimeoutExpired, ValueError):
+        return {}
+    return _parse_opencode_helper_stdout(proc.stdout or "")
+
+
+def read_local_opencode_pcent(
+    env: dict[str, str] | None = None,
+    *,
+    now: float | None = None,
+    force: bool = False,
+) -> dict[str, int]:
+    """Read local OpenCode fuel as digest pcent keys (FR #6146).
+
+    Returns only known readings (``opencode-free`` / ``opencode-go``). Unknown
+    values are omitted --- never invent ``0``. Explicit exhausted ``0`` is kept.
+
+    Prefers ``BOB_OPENCODE_FUEL_FIXTURE`` (stats JSON/text via ``opencode_fuel``).
+    Otherwise calls ``Get-BobOpencodeFuel.ps1`` when present.
+
+    Helper path uses a short timeout (``BOB_OPENCODE_FUEL_HELPER_TIMEOUT_S``,
+    default 5s) and a process TTL cache (``BOB_OPENCODE_FUEL_CACHE_S``, default
+    30s) so the ear 5s fuel tick cannot stall the outbox loop on a slow
+    ``opencode stats`` (CodeRabbit Major on PR #6176).
+    """
+    e = os.environ if env is None else env
+    fixture = (e.get("BOB_OPENCODE_FUEL_FIXTURE") or "").strip()
+    if fixture:
+        return _read_opencode_pcent_from_fixture(fixture)
+
+    ts = float(time.time() if now is None else now)
+    cache_s = opencode_fuel_cache_s(e)
+    last_at = float(_opencode_pcent_cache.get("at") or 0.0)
+    last_val = _opencode_pcent_cache.get("value")
+    cached = dict(last_val) if isinstance(last_val, dict) else {}
+    if not force and cache_s > 0 and last_at > 0 and (ts - last_at) < cache_s:
+        return dict(cached)
+
+    helper = _resolve_opencode_fuel_helper_ps1(e)
+    if helper is None:
+        return dict(cached) if cached else {}
+
+    fresh = _read_opencode_pcent_from_helper(
+        helper, dict(e), opencode_fuel_helper_timeout_s(e)
+    )
+    if fresh:
+        _opencode_pcent_cache["at"] = ts
+        _opencode_pcent_cache["value"] = dict(fresh)
+        return dict(fresh)
+    # Timeout / empty: keep stale cache when present; stamp at so we do not
+    # re-hammer a hanging helper every 5s tick.
+    _opencode_pcent_cache["at"] = ts
+    if cached:
+        return dict(cached)
+    _opencode_pcent_cache["value"] = {}
+    return {}
+
+
+def enrich_peer_with_opencode_pcent(
+    peer: dict,
+    opencode_pcent: dict[str, int] | None = None,
+) -> dict:
+    """Merge known OpenCode pcent into a peer copy (FR #6146).
+
+    Omits unknown keys; keeps explicit ``0`` (exhausted). Does not invent zeros.
+    """
+    if not isinstance(peer, dict):
+        return peer
+    enriched = dict(peer)
+    oc = opencode_pcent if isinstance(opencode_pcent, dict) else {}
+    if not oc:
+        return enriched
+    base = enriched.get("pcent") if isinstance(enriched.get("pcent"), dict) else {}
+    pcent = dict(base)
+    for key in ("opencode-free", "opencode-go"):
+        if key not in oc:
+            continue
+        clamped = _clamp_opencode_pcent_value(oc.get(key))
+        if clamped is None:
+            continue
+        pcent[key] = clamped
+    enriched["pcent"] = pcent
+    return enriched
+
+
 def publish_local_peer_fuel(
     home: Path,
     machine_id: str,
@@ -4284,10 +4522,12 @@ def publish_local_peer_fuel(
     url: str | None = None,
     now: float | None = None,
 ) -> int | None:
-    """POST local peer fuel merge when fingerprint changed or heartbeat due (FR #6141 / #6145).
+    """POST local peer fuel merge when fingerprint changed or heartbeat due (FR #6141 / #6145 / #6146).
 
     Fingerprint delta always POSTs (``force=True`` or fp change). Unchanged fingerprint
     skips until heartbeat. Max lag pin: ``DIGEST_FUEL_MAX_LAG_S`` (ear delta poll).
+    FR #6146: enrich with local OpenCode pcent (TTL-cached helper) before fingerprint.
+
 
     Returns HTTP status on successful 2xx POST, None when skipped or failed.
     """
@@ -4302,6 +4542,13 @@ def publish_local_peer_fuel(
         bobstat.refresh_peer_cursor_remaining(home, mid)
         peer = bobstat.read_peer(home, mid) or peer
     except OSError:
+        pass
+    # FR #6146: enrich with local OpenCode pcent before fingerprint/POST.
+    try:
+        oc = read_local_opencode_pcent()
+        if oc:
+            peer = enrich_peer_with_opencode_pcent(peer, oc)
+    except Exception:
         pass
     payload = build_peer_fuel_merge_payload(peer, mid)
     if not payload:
