@@ -180,6 +180,8 @@ def test_digest_includes_copilot(tmp_path, monkeypatch):
         "plan", "used", "remaining", "unlimited", "percent_remaining",
         "reset_at", "source", "fetched_at", "attempted_at", "state",
         "resume_at", "resume_source",
+        # FR #6215: historical high-water mark for display % (not a quota).
+        "max_recorded_usage",
     }
     assert set(obj["copilot"].keys()) <= allowed
     cd.observe_quota(

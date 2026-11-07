@@ -988,11 +988,37 @@ function Get-BobOpencodePaintFromDigest {
     return [pscustomobject]@{ free = $free; go = $go }
 }
 
+function Get-BobCopilotHistoricalMaxPct {
+    <#
+    .SYNOPSIS
+      FR #6215: usage / max_recorded_usage * 100 as a two-decimal string.
+      Denominator is a historical high-water mark, never a contractual quota.
+      Missing/zero denominator => $null (caller paints no fabricated %).
+    #>
+    param($Used, $MaxRecorded)
+    $u = $null
+    $m = $null
+    try {
+        if ($null -ne $Used -and [string]$Used -ne '') { $u = [double]$Used }
+    } catch { return $null }
+    try {
+        if ($null -ne $MaxRecorded -and [string]$MaxRecorded -ne '') { $m = [double]$MaxRecorded }
+    } catch { return $null }
+    if ($null -eq $u -or $null -eq $m -or $m -le 0) { return $null }
+    return [string]::Format(
+        [System.Globalization.CultureInfo]::InvariantCulture,
+        '{0:0.00}',
+        (100.0 * $u / $m)
+    )
+}
+
 function Format-BobCopilotPoolLine {
     <#
     .SYNOPSIS
-      One account-wide Copilot pool line for TipForm (FR #5172 / FR #6148).
+      One account-wide Copilot pool line for TipForm (FR #5172 / FR #6148 / FR #6215).
       Tray never calls GitHub. Stale fetched_at gets [stale] / [stale <age>] marker.
+      FR #6215: known reset countdown paints even when stale; unlimited rows may
+      append "N.NN% of max recorded" from max_recorded_usage (historical, not quota).
     #>
     param($Pool, $Now = $null, [switch]$ForceStale)
     if (-not $Pool) { return 'Copilot  unknown' }
@@ -1001,8 +1027,9 @@ function Format-BobCopilotPoolLine {
     $reset = [string]$Pool.reset_at
     $freshness = Get-BobCopilotFreshness -Pool $Pool -Now $Now
     $isStale = $ForceStale -or ($freshness.state -eq 'stale')
+    # FR #6215: same countdown convention as other pools; do not hide when stale.
     $resetBit = ''
-    if (-not $isStale -and $reset) {
+    if ($reset -and -not [string]::IsNullOrWhiteSpace($reset)) {
         try {
             $lab = Format-BobResetLabel -PeriodEnd $reset -Now $Now
             if ($lab) { $resetBit = ('  reset {0}' -f $lab) }
@@ -1025,20 +1052,25 @@ function Format-BobCopilotPoolLine {
             $staleBit = '[stale]  '
         }
     }
+    $maxRec = $null
+    try { $maxRec = $Pool.max_recorded_usage } catch { }
+    $pctBit = ''
+    $pct = Get-BobCopilotHistoricalMaxPct -Used $used -MaxRecorded $maxRec
+    if ($pct) { $pctBit = (' ({0}% of max recorded)' -f $pct) }
     $unlimited = $false
     try { if ($Pool.unlimited) { $unlimited = [bool]$Pool.unlimited } } catch { }
     $value = 'unknown'
     if ($unlimited) {
         $n = 0
         try { if ($null -ne $used) { $n = [int]$used } } catch { }
-        $value = ('unlimited, {0} used{1}' -f $n, $resetBit)
+        $value = ('unlimited, {0} used{1}{2}' -f $n, $pctBit, $resetBit)
     }
     elseif ($state -eq 'unknown') { $value = 'unknown' }
     elseif ($state -eq 'exhausted') { $value = 'exhausted' }
     else {
         $rem = $Pool.remaining
         if ($null -ne $rem -and [string]$rem -ne '') {
-            $value = ('{0} remaining{1}' -f $rem, $resetBit)
+            $value = ('{0} remaining{1}{2}' -f $rem, $pctBit, $resetBit)
         } else {
             $value = 'unknown'
         }
