@@ -124,8 +124,11 @@ def detect_self_review_deadlock(snap: dict[str, Any]) -> list[dict[str, Any]]:
         return []
     ledger = snap.get("ledger") or {}
     for row in waiting:
+        # FR #6203 / MRB #6205: pass live so a busy eligible non-author
+        # reviewer suppresses the deadlock (helper: busy third-party can review).
+        # Idle stays for the per-nick idle checks below.
         if snap.get("home") and gitclaim.mrb_has_eligible_reviewer(
-            Path(snap["home"]), row, idle, ledger=ledger, now=snap.get("now"),
+            Path(snap["home"]), row, live, ledger=ledger, now=snap.get("now"),
         ):
             return []
         for nick in idle:
