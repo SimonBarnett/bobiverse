@@ -1811,6 +1811,11 @@ def validate_payload(
     dedupe = str(payload.get("dedupe_key") or "").strip()
     if len(dedupe) > 128:
         return "bad_dedupe_key", {}
+    # FR #6196: when caller omits dedupe_key, derive from normalized message text.
+    # Explicit keys keep priority and current #4963 behaviour. Ephemeral caller keys
+    # (e.g. stall nick-PID) are fixed at the source (FR #6195), not rewritten here.
+    if not dedupe and kind in ("issue", "fr"):
+        dedupe = derive_message_dedupe_key(title, body)
     norm = {
         "kind": kind,
         "repo": repo,
@@ -1975,6 +1980,64 @@ def _record_path(home: Path, intake_id: str) -> Path:
 def _idem_path(home: Path, key: str) -> Path:
     h = hashlib.sha256(key.encode("utf-8")).hexdigest()[:32]
     return intake_root(home) / "records" / f"idem-{h}.json"
+
+
+
+def normalize_message_for_dedupe(title: str, body: str) -> str:
+    """Deterministic message text for FR #6196 fingerprint fallback.
+
+    Strip only known volatile tokens (timestamps, machine-pid nicks, intake/request
+    ids, lag_s). Keep error text, codes, types, paths, and other numbers.
+    Exact match only - no fuzzy merge.
+    """
+    text = f"{title or ''}\n{body or ''}"
+    # HTML / intake markers (ids inside are volatile)
+    text = re.sub(r"<!--.*?-->", " ", text, flags=re.DOTALL)
+    # ISO-8601 / common Z timestamps
+    text = re.sub(
+        r"\b\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?\b",
+        " ",
+        text,
+    )
+    # intake ids / UUIDs
+    text = re.sub(r"\bin_[0-9a-fA-F]{8,}\b", " ", text)
+    text = re.sub(
+        r"\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b",
+        " ",
+        text,
+    )
+    # lag_s per-occurrence counters
+    text = re.sub(r"\blag_s\s*[:=]\s*\d+\b", " ", text, flags=re.IGNORECASE)
+    # Stall titles: stall:<detector>:<machine>-<pid> -> stall:<detector>:<machine>
+    text = re.sub(
+        r"\b(stall:[a-z0-9_-]+:)([a-z0-9_.]+)-(\d+)\b",
+        r"\1\2",
+        text,
+        flags=re.IGNORECASE,
+    )
+    # nick=/seat= values with machine-pid (optional quotes)
+    text = re.sub(
+        r"\b(nick|seat)\b(\s*[:=]\s*)([`'\"]?)([a-z][a-z0-9_.]*)-(\d+)\3",
+        r"\1\2\3\4\3",
+        text,
+        flags=re.IGNORECASE,
+    )
+    # Other seat nicks: 4+ digit PID; skip fr/pr/mrb/fix/issue short prefixes
+    text = re.sub(
+        r"\b(?!(?:fr|pr|mrb|fix|issue|cv|wp|v)-)([a-z][a-z0-9_.]{1,})-(\d{4,})\b",
+        r"\1",
+        text,
+        flags=re.IGNORECASE,
+    )
+    text = re.sub(r"\s+", " ", text).strip().lower()
+    return text
+
+
+def derive_message_dedupe_key(title: str, body: str) -> str:
+    """Stable ``msgfp:<sha>`` dedupe_key derived from normalized title+body (FR #6196)."""
+    norm = normalize_message_for_dedupe(title, body)
+    digest = hashlib.sha256(norm.encode("utf-8")).hexdigest()[:32]
+    return f"msgfp:{digest}"
 
 
 def intake_dedupe_sha(repo: str, dedupe_key: str) -> str:
