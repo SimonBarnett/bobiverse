@@ -862,6 +862,44 @@ function Format-BobResetLabel {
     catch { return $null }
 }
 
+function Get-BobCopilotFreshness {
+    <#
+    .SYNOPSIS
+      FR #6148: fresh/stale/none for report.copilot.fetched_at (900s threshold).
+      Never uses snapshot ts or file mtime. Allows up to 120s future skew.
+      Future resume_at (cooldown) does not force fresh: age by fetched_at still.
+    #>
+    param($Pool, $Now = $null)
+    $threshold = 900
+    $skew = 120
+    $nowUtc = $null
+    if ($null -ne $Now) {
+        try { $nowUtc = ConvertTo-BobUtcDateTime $Now } catch { $nowUtc = $null }
+    }
+    if (-not $nowUtc) { $nowUtc = [DateTime]::UtcNow }
+    if (-not $Pool) {
+        return [pscustomobject]@{ state = 'none'; age_s = $null; fresh_until = 0 }
+    }
+    $fa = $null
+    try { $fa = [string]$Pool.fetched_at } catch { }
+    if (-not $fa -or [string]::IsNullOrWhiteSpace($fa)) {
+        return [pscustomobject]@{ state = 'stale'; age_s = $null; fresh_until = 0 }
+    }
+    $fetched = ConvertTo-BobUtcDateTime $fa
+    if (-not $fetched) {
+        return [pscustomobject]@{ state = 'stale'; age_s = $null; fresh_until = 0 }
+    }
+    $age = [int][math]::Floor(($nowUtc - $fetched).TotalSeconds)
+    if ($age -lt -$skew) {
+        return [pscustomobject]@{ state = 'stale'; age_s = $null; fresh_until = 0 }
+    }
+    if ($age -lt 0) { $age = 0 }
+    $until = [int64]([DateTimeOffset]$fetched.AddSeconds($threshold)).ToUnixTimeSeconds()
+    if ($age -le $threshold) {
+        return [pscustomobject]@{ state = 'fresh'; age_s = $age; fresh_until = $until }
+    }
+    return [pscustomobject]@{ state = 'stale'; age_s = $age; fresh_until = $until }
+}
 
 function Format-BobOpencodePoolLine {
     <#
@@ -953,35 +991,61 @@ function Get-BobOpencodePaintFromDigest {
 function Format-BobCopilotPoolLine {
     <#
     .SYNOPSIS
-      One account-wide Copilot pool line for TipForm (FR #5172). Tray never calls GitHub.
+      One account-wide Copilot pool line for TipForm (FR #5172 / FR #6148).
+      Tray never calls GitHub. Stale fetched_at gets [stale] / [stale <age>] marker.
     #>
-    param($Pool)
+    param($Pool, $Now = $null, [switch]$ForceStale)
     if (-not $Pool) { return 'Copilot  unknown' }
     $state = [string]$Pool.state
     $used = $Pool.used
     $reset = [string]$Pool.reset_at
+    $freshness = Get-BobCopilotFreshness -Pool $Pool -Now $Now
+    $isStale = $ForceStale -or ($freshness.state -eq 'stale')
     $resetBit = ''
-    if ($reset) {
+    if (-not $isStale -and $reset) {
         try {
-            $lab = Format-BobResetLabel -PeriodEnd $reset
+            $lab = Format-BobResetLabel -PeriodEnd $reset -Now $Now
             if ($lab) { $resetBit = ('  reset {0}' -f $lab) }
         } catch { }
     }
+    $staleBit = ''
+    if ($isStale) {
+        if ($null -ne $freshness.age_s) {
+            try {
+                $ageLab = Format-BobTrayFuelStaleAge -AgeSec ([int]$freshness.age_s)
+                if ($ageLab -and $ageLab -ne 'stale') {
+                    $staleBit = ('[{0}]  ' -f $ageLab)
+                } else {
+                    $staleBit = '[stale]  '
+                }
+            } catch {
+                $staleBit = '[stale]  '
+            }
+        } else {
+            $staleBit = '[stale]  '
+        }
+    }
     $unlimited = $false
     try { if ($Pool.unlimited) { $unlimited = [bool]$Pool.unlimited } } catch { }
+    $value = 'unknown'
     if ($unlimited) {
         $n = 0
         try { if ($null -ne $used) { $n = [int]$used } } catch { }
-        return ('Copilot  unlimited, {0} used{1}' -f $n, $resetBit)
+        $value = ('unlimited, {0} used{1}' -f $n, $resetBit)
     }
-    if ($state -eq 'unknown') { return 'Copilot  unknown' }
-    if ($state -eq 'exhausted') { return 'Copilot  exhausted' }
-    $rem = $Pool.remaining
-    if ($null -ne $rem -and [string]$rem -ne '') {
-        return ('Copilot  {0} remaining{1}' -f $rem, $resetBit)
+    elseif ($state -eq 'unknown') { $value = 'unknown' }
+    elseif ($state -eq 'exhausted') { $value = 'exhausted' }
+    else {
+        $rem = $Pool.remaining
+        if ($null -ne $rem -and [string]$rem -ne '') {
+            $value = ('{0} remaining{1}' -f $rem, $resetBit)
+        } else {
+            $value = 'unknown'
+        }
     }
-    return 'Copilot  unknown'
+    return ('Copilot  {0}{1}' -f $staleBit, $value)
 }
+
 
 function Test-BobPeriodExpired {
     # True when period_end is known and already past: the usage figure that goes with it is stale.
@@ -2854,7 +2918,12 @@ function Get-BobTrayHover {
     $ocPaint = Get-BobOpencodePaintFromDigest -Digest $reportDigest -MachineId $machineId
     $opencodeLine = Format-BobOpencodePoolLine -FreePct $ocPaint.free -GoPct $ocPaint.go
     if ($opencodeLine) { $jobLines = @(('  {0}' -f $opencodeLine)) + $jobLines }
-    $copilotLine = Format-BobCopilotPoolLine -Pool $(if ($reportDigest -and $reportDigest.copilot) { $reportDigest.copilot } else { $null })
+    $copilotPoolObj = $(if ($reportDigest -and $reportDigest.copilot) { $reportDigest.copilot } else { $null })
+    $copilotFresh = Get-BobCopilotFreshness -Pool $copilotPoolObj
+    $copilotLine = Format-BobCopilotPoolLine -Pool $copilotPoolObj
+    if (-not $copilotLine) { $copilotLine = 'Copilot  unknown' }
+    $copilotStaleLine = Format-BobCopilotPoolLine -Pool $copilotPoolObj -ForceStale
+    if (-not $copilotStaleLine) { $copilotStaleLine = 'Copilot  [stale]  unknown' }
     if ($copilotLine) { $jobLines = @(('  {0}' -f $copilotLine)) + $jobLines }
     $jobsText = (($poolLines + $jobLines) -join "`n")
     if ($ghLine) { $jobsText = $jobsText + "`n" + $ghLine }
@@ -2905,8 +2974,11 @@ function Get-BobTrayHover {
         opencode_free       = $ocPaint.free
         opencode_go         = $ocPaint.go
         opencode_line       = $opencodeLine
-        copilot_pool        = $(if ($reportDigest -and $reportDigest.copilot) { $reportDigest.copilot } else { $null })
-        copilot_line        = $(Format-BobCopilotPoolLine -Pool $(if ($reportDigest -and $reportDigest.copilot) { $reportDigest.copilot } else { $null }))
+        copilot_pool        = $copilotPoolObj
+        copilot_line        = $copilotLine
+        copilot_stale_line  = $copilotStaleLine
+        copilot_freshness   = $copilotFresh
+        copilot_fresh_until = $(if ($copilotFresh -and $null -ne $copilotFresh.fresh_until) { [int64]$copilotFresh.fresh_until } else { [int64]0 })
         chair_channels      = $(
             if ($reportDigest -and $reportDigest.chair_channels) {
                 @($reportDigest.chair_channels | ForEach-Object { [string]$_ })

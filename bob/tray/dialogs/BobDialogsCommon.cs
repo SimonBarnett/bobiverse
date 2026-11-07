@@ -1,4 +1,4 @@
-﻿// t828u: shared helpers for the two fast dialog exes (bob-about.exe, bob-status.exe). C# 5 (csc.exe of .NET Framework 4, always present on Windows).
+// t828u: shared helpers for the two fast dialog exes (bob-about.exe, bob-status.exe). C# 5 (csc.exe of .NET Framework 4, always present on Windows).
 // Cold start target: well under 1 s. No PowerShell, no Python, no network: data is read from files the tray / installs already wrote.
 using System;
 using System.Collections;
@@ -153,6 +153,12 @@ namespace BobDialogs
             if (v is bool) return (bool)v;
             string s = Convert.ToString(v, System.Globalization.CultureInfo.InvariantCulture).ToLowerInvariant();
             return s == "true" || s == "1";
+        }
+
+        public static long Long(Dictionary<string, object> d, string key, long dflt)
+        {
+            if (d == null || !d.ContainsKey(key) || d[key] == null) return dflt;
+            try { return Convert.ToInt64(d[key]); } catch { return dflt; }
         }
 
         public static int Int(Dictionary<string, object> d, string key, int dflt)

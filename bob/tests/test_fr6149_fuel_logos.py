@@ -52,7 +52,8 @@ def test_fr6149_status_draws_logos_with_fallback():
     assert "FuelLogo" in cm and "FuelLogoFallback" in cm
     assert "fuel-logos" in cm
     assert 'Section(g, y, "Cursor Models", "", "cursor")' in st
-    assert 'Section(g, y, m.CopilotLine, "", "copilot")' in st
+    # FIX #6180: Copilot uses SelectCopilotLine + titleColor; family logo arg remains.
+    assert '"copilot"' in st and "SelectCopilotLine" in st
     assert "FuelLogoFallback" in st
 
 

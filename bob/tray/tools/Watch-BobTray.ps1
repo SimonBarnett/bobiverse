@@ -2394,7 +2394,8 @@ function Add-BobTrayFuelFamilyRow {
         [int]$Y,
         [Parameter(Mandatory)][string]$Family,
         [string]$Title,
-        [string]$RightText
+        [string]$RightText,
+        [System.Drawing.Color]$TitleColor
     )
     $icon = $null
     try { $icon = Get-BobTrayFuelLogoImage -Family $Family } catch { $icon = $null }
@@ -2403,7 +2404,7 @@ function Add-BobTrayFuelFamilyRow {
         $fb = Get-BobTrayFuelLogoFallbackText -Family $Family
         $label = ('[{0}] {1}' -f $fb, $label)
     }
-    return (Add-BobTraySectionHeader -X $X -Y $Y -Title $label -Icon $icon -RightText $RightText)
+    return (Add-BobTraySectionHeader -X $X -Y $Y -Title $label -Icon $icon -RightText $RightText -TitleColor $TitleColor)
 }
 
 
@@ -2588,7 +2589,8 @@ function Add-BobTraySectionHeader {
         [switch]$WithHelp,
         $Agent,
         [string]$RightText,
-        [System.Drawing.Color]$RightColor
+        [System.Drawing.Color]$RightColor,
+        [System.Drawing.Color]$TitleColor
     )
     $iconW = 0
     if ($Icon) {
@@ -2609,7 +2611,8 @@ function Add-BobTraySectionHeader {
     $nm = New-Object System.Windows.Forms.Label
     $nm.AutoSize = $true
     $nm.Font = New-Object System.Drawing.Font 'Segoe UI Semibold', 9.5
-    $nm.ForeColor = $fg
+    if ($null -ne $TitleColor -and $TitleColor.A -gt 0) { $nm.ForeColor = $TitleColor }
+    else { $nm.ForeColor = $fg }
     $nm.BackColor = [System.Drawing.Color]::Transparent
     $nm.Text = $Title
     $nm.Location = New-Object System.Drawing.Point ($X + $iconW), $Y
@@ -2831,6 +2834,12 @@ function Rebuild-BobTrayTiles {
                 elseif ($null -ne $free) { $ocRight = ('{0}%' -f $free) }
             }
         } catch { }
+        # FR #6147: prefer Format-BobOpencodePoolLine when digest hover fields exist.
+        $ocLine = [string]$OpencodeLine
+        if (-not $ocLine) {
+            try { $ocLine = Format-BobOpencodePoolLine -FreePct $OpencodeFree -GoPct $OpencodeGo } catch { $ocLine = '' }
+        }
+        if ($ocLine) { $ocTitle = $ocLine }
         $y = Add-BobTrayFuelFamilyRow -X 0 -Y $y -Family 'opencode' -Title $ocTitle -RightText $ocRight
         $overLine = Format-BobTrayCursorOverspendLine -OverageGbp $AccountOverageGbp
         $overColor = [System.Drawing.Color]::FromArgb(248, 81, 73)
@@ -2838,20 +2847,15 @@ function Rebuild-BobTrayTiles {
             $y = Add-BobTraySectionHeader -X 0 -Y $y -Title '' -Icon $grokIcon -Agent $grokAgent `
                 -RightText $overLine -RightColor $overColor
         }
-        # FR #6147: OpenCode free/go (digest pcent); n/a when unknown.
-        $ocLine = [string]$OpencodeLine
-        if (-not $ocLine) {
-            try { $ocLine = Format-BobOpencodePoolLine -FreePct $OpencodeFree -GoPct $OpencodeGo } catch { $ocLine = 'OpenCode  n/a' }
-        }
-        if (-not $ocLine) { $ocLine = 'OpenCode  n/a' }
-        $y = Add-BobTraySectionHeader -X 0 -Y $y -Title $ocLine
-        # FR #5172: one account-wide Copilot pool (not per machine).
+        # FR #5172 / FR #6148 / FR #6149: Copilot pool with logo; TitleColor paints stale red.
         $copilotLine = $null
         try { $copilotLine = Format-BobCopilotPoolLine -Pool $CopilotPool } catch { }
-        if ($copilotLine) {
-            # FR #6149: Copilot family logo (text fallback inside Add-BobTrayFuelFamilyRow).
-            $y = Add-BobTrayFuelFamilyRow -X 0 -Y $y -Family 'copilot' -Title $copilotLine
+        if (-not $copilotLine) { $copilotLine = 'Copilot  unknown' }
+        $copilotColor = [System.Drawing.Color]::Empty
+        if ($copilotLine -like 'Copilot  `[stale*') {
+            $copilotColor = [System.Drawing.Color]::FromArgb(248, 81, 73)
         }
+        $y = Add-BobTrayFuelFamilyRow -X 0 -Y $y -Family 'copilot' -Title $copilotLine -TitleColor $copilotColor
         $indent = 18
         $shownMachines = @{}
         foreach ($m in @($Machines)) {
