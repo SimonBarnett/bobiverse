@@ -175,6 +175,33 @@ def test_digest_includes_copilot(tmp_path, monkeypatch):
     assert "copilot" in obj
     assert obj["copilot"]["state"] in ("ok", "unknown", "exhausted")
     assert obj["copilot"]["unlimited"] is True
+    # FR #6148: public field allowlist + observation precedence
+    allowed = {
+        "plan", "used", "remaining", "unlimited", "percent_remaining",
+        "reset_at", "source", "fetched_at", "attempted_at", "state",
+        "resume_at", "resume_source",
+    }
+    assert set(obj["copilot"].keys()) <= allowed
+    cd.observe_quota(
+        tmp_path,
+        fetch_user=lambda: {
+            "copilot_plan": "business",
+            "quota_reset_date_utc": "2026-12-01T00:00:00.000Z",
+            "quota_snapshots": {
+                "premium_interactions": {
+                    "credits_used": 1,
+                    "remaining": 7,
+                    "percent_remaining": 5.0,
+                    "unlimited": False,
+                }
+            },
+        },
+        now=400.0,
+    )
+    obj2 = bobreport.build_digest_object(tmp_path, "Jeeves")
+    assert obj2["copilot"]["remaining"] == 7
+    assert obj2["copilot"]["unlimited"] is False
+    assert "attempted_at" in obj2["copilot"]
 
 
 def test_no_cache_does_not_steal_queue(tmp_path):

@@ -2725,10 +2725,17 @@ function Rebuild-BobTrayTiles {
             $y = Add-BobTraySectionHeader -X 0 -Y $y -Title '' -Icon $grokIcon -Agent $grokAgent `
                 -RightText $overLine -RightColor $overColor
         }
-        # FR #5172: one account-wide Copilot pool (not per machine).
+        # FR #5172 / FR #6148: one account-wide Copilot pool (always show; re-age stale).
         $copilotLine = $null
         try { $copilotLine = Format-BobCopilotPoolLine -Pool $CopilotPool } catch { }
-        if ($copilotLine) {
+        if (-not $copilotLine) { $copilotLine = 'Copilot  unknown' }
+        $copilotColor = $null
+        if ($copilotLine -like 'Copilot  [stale*') {
+            $copilotColor = [System.Drawing.Color]::FromArgb(248, 81, 73)
+        }
+        if ($copilotColor) {
+            $y = Add-BobTraySectionHeader -X 0 -Y $y -Title $copilotLine -RightColor $copilotColor
+        } else {
             $y = Add-BobTraySectionHeader -X 0 -Y $y -Title $copilotLine
         }
         $indent = 18

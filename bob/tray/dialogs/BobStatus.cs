@@ -1,4 +1,4 @@
-﻿// t828u: Status card as a fast compiled exe. Same content as the TipForm: Copilot pool + Grok account rows
+// t828u: Status card as a fast compiled exe. Same content as the TipForm: Copilot pool + Grok account rows
 // (Cursor spending-group bars removed after account unification), workers as "{irc nick}: {doing|idle}" from the digest,
 // alert, version footer.
 // Data is the snapshot the tray writes after every poll (<root>\run\tray-status.json); this exe never touches the network, so it
@@ -28,6 +28,8 @@ namespace BobDialogs
     {
         public string Title = "bob", Alert = "none", Version = "", Overspend = "", Note = "";
         public string CopilotLine = "Copilot  unknown";
+        public string CopilotStaleLine = "";
+        public long CopilotFreshUntil = 0;
         public List<StatusRow> Cursor = new List<StatusRow>(), Grok = new List<StatusRow>();
 
         static StatusRow ParseRow(Dictionary<string, object> d)
@@ -50,6 +52,8 @@ namespace BobDialogs
             string t = Common.Str(d, "title"); if (t.Length > 0) m.Title = t;
             m.Version = Common.Str(d, "version"); m.Overspend = Common.Str(d, "overspend");
             string cp = Common.Str(d, "copilot_line"); if (cp.Length > 0) m.CopilotLine = cp;
+            string cps = Common.Str(d, "copilot_stale_line"); if (cps.Length > 0) m.CopilotStaleLine = cps;
+            m.CopilotFreshUntil = Common.Long(d, "copilot_fresh_until", 0);
             string a = Common.Str(d, "alert"); if (a.Length > 0) m.Alert = a;
             IList c = Common.List(d.ContainsKey("cursor") ? d["cursor"] : null);
             if (c != null) foreach (object o in c) { Dictionary<string, object> rd = Common.Dict(o); if (rd != null && Common.Str(rd, "heading").Length > 0) m.Cursor.Add(ParseRow(rd)); }
@@ -110,9 +114,32 @@ namespace BobDialogs
 
         int Section(Graphics g, int y, string title, string right)
         {
-            Draw(g, title, fSect, Fg, 14, y);
+            return Section(g, y, title, right, Fg);
+        }
+
+        int Section(Graphics g, int y, string title, string right, Color titleColor)
+        {
+            Draw(g, title, fSect, titleColor, 14, y);
             if (right.Length > 0) Draw(g, right, fHead, Red, W - 14 - TextW(g, right, fHead) - 2, y);
             return y + 22;
+        }
+
+        internal static string SelectCopilotLine(StatusModel m, DateTime utcNow)
+        {
+            if (m == null) return "Copilot  unknown";
+            string line = m.CopilotLine;
+            if (string.IsNullOrEmpty(line)) line = "Copilot  unknown";
+            if (m.CopilotFreshUntil > 0)
+            {
+                long nowEpoch = new DateTimeOffset(utcNow).ToUnixTimeSeconds();
+                if (nowEpoch >= m.CopilotFreshUntil)
+                {
+                    if (!string.IsNullOrEmpty(m.CopilotStaleLine)) line = m.CopilotStaleLine;
+                    else if (!line.StartsWith("Copilot  [stale", StringComparison.Ordinal))
+                        line = line.Replace("Copilot  ", "Copilot  [stale]  ");
+                }
+            }
+            return line;
         }
 
         // Draws (or just measures) the whole card and returns its height.
@@ -139,7 +166,9 @@ namespace BobDialogs
                     y += 8;
                 }
             }
-            y = Section(g, y, m.CopilotLine, "");
+            string paintCopilot = SelectCopilotLine(m, DateTime.UtcNow);
+            Color copilotFg = paintCopilot.StartsWith("Copilot  [stale", StringComparison.Ordinal) ? Red : Fg;
+            y = Section(g, y, paintCopilot, "", copilotFg);
             y += 6;
             Draw(g, "alert: " + m.Alert, fSmall, m.Alert == "none" ? Muted : Red, 14, y);
             string v = Footer.Length > 0 ? Footer : m.Version;
@@ -166,6 +195,7 @@ namespace BobDialogs
         DateTime lastWrite = DateTime.MinValue;
         long lastLen = -1;
         readonly System.Windows.Forms.Timer poll = new System.Windows.Forms.Timer();
+        string lastPaintedCopilot = "";
 
         public StatusForm(string root)
         {
@@ -215,7 +245,18 @@ namespace BobDialogs
                     return;
                 }
                 FileInfo fi = new FileInfo(file);
-                if (!first && fi.LastWriteTimeUtc == lastWrite && fi.Length == lastLen) return;
+                bool unchanged = (!first && fi.LastWriteTimeUtc == lastWrite && fi.Length == lastLen);
+                if (unchanged)
+                {
+                    // FR #6148: re-age Copilot line while the window stays open even if snapshot bytes are unchanged.
+                    string after = CardView.SelectCopilotLine(card.Model, DateTime.UtcNow);
+                    if (!string.Equals(lastPaintedCopilot, after, StringComparison.Ordinal))
+                    {
+                        lastPaintedCopilot = after;
+                        card.Invalidate();
+                    }
+                    return;
+                }
                 string json;
                 using (FileStream fs = new FileStream(file, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete))
                 using (StreamReader sr = new StreamReader(fs, Encoding.UTF8, true)) json = sr.ReadToEnd();
@@ -223,6 +264,7 @@ namespace BobDialogs
                 double ageMin = (DateTime.UtcNow - fi.LastWriteTimeUtc).TotalMinutes;
                 if (ageMin > 10) m.Note = "snapshot is " + (int)ageMin + " min old (tray not polling?)";
                 lastWrite = fi.LastWriteTimeUtc; lastLen = fi.Length;
+                lastPaintedCopilot = CardView.SelectCopilotLine(m, DateTime.UtcNow);
                 card.Model = m;
                 if (!first) { Resize2(false); }
                 card.Invalidate();

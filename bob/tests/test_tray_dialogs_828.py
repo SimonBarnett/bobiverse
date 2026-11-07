@@ -138,8 +138,14 @@ $h = [pscustomobject]@{{
                [pscustomobject]@{{ id = 'flamingo'; remaining_pct = 0; worker_lines = @() }})
 }}
 $pool = '{json.dumps(copilot_pool)}' | ConvertFrom-Json
+$fmtPool = $pool
+if ($fmtPool -and -not $fmtPool.fetched_at) {{
+  $fmtPool = $pool | Select-Object *
+  $fmtPool | Add-Member -NotePropertyName fetched_at -NotePropertyValue ([DateTime]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ssZ')) -Force
+}}
 $h | Add-Member -NotePropertyName copilot_pool -NotePropertyValue $pool
-$h | Add-Member -NotePropertyName copilot_line -NotePropertyValue (Format-BobCopilotPoolLine -Pool $pool)
+$h | Add-Member -NotePropertyName copilot_line -NotePropertyValue (Format-BobCopilotPoolLine -Pool $fmtPool)
+$h | Add-Member -NotePropertyName copilot_stale_line -NotePropertyValue (Format-BobCopilotPoolLine -Pool $fmtPool -ForceStale)
 $m = New-BobTrayStatusModel -Hover $h -AlertKind 'stall' -Alerts @('agent_stall x') -Version 'bob 1.2.3' -Machine 'marchhare' -Short 'bob marchhare tip' -Attention $true -AttentionSeq 7 -Pulse $true
 $p = Write-BobTrayStatusSnapshot -Root '{root}' -Model $m
 $p = Write-BobTrayStatusSnapshot -Root '{root}' -Model $m   # second write = the atomic Replace path

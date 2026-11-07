@@ -73,3 +73,11 @@ The plain-text block under the title (the old hover / tooltip `jobs_text`: fuel 
 was drawn by mistake. It is gone from the exe and from the snapshot (`jobs_text` is no longer written): per-machine Grok pool
 rows with workers `{irc nick}: {doing|idle}`, one Copilot pool tile, alert and version (FR #4938: no Cursor pool section; FR #5032: no
 "Grok accounts" heading).
+
+
+## Copilot freshness (FR #6148)
+
+- `Format-BobCopilotPoolLine` / `Get-BobCopilotFreshness` treat `fetched_at` older than **900 seconds** (or missing/unparseable/far-future) as stale.
+- Stale paint: `Copilot  [stale <age>] <value>` or `Copilot  [stale] <value>` (reset countdown omitted).
+- Snapshot fields: `copilot_line`, `copilot_stale_line`, `copilot_fresh_until` (unix seconds). Native Status re-ages an open window at the deadline without waiting for a new poll.
+- TipForm always shows a Copilot line (`Copilot  unknown` when absent).

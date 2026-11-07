@@ -29,3 +29,9 @@ Pulled from LOCKED vision (plan-20261107-132147).
 - OpenCode pcent round-trip (extends test_opencode_digest_6120)
 - Lag fixture: remaining change -> GET within bound
 - TipForm/Status paint pins for logos + OpenCode + Copilot
+
+## Copilot observation (FR #6148)
+
+- Chair ear `observe_quota` writes `copilot-observation.json` (dispatch-independent).
+- `fetched_at` is last successful observation; `attempted_at` is last attempt.
+- Public `report.copilot` prefers the fresher of observation vs allowance.
