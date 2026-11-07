@@ -20,6 +20,7 @@
   Skips when BOBIVERSE_NO_UPDATE=1. For -Product airc, also skips when config\airc.json
   sync_from_repo is false/absent (FR #3289; override BOBIVERSE_SYNC_FROM_REPO=1). Does not overwrite config\, home\, or secrets.
   FR #269: flat scripts/ is always refreshed from the split-repo script dirs (no robocopy /XO on scripts).
+  FR #6154: bob tray tools\ is also forced (no /XO) so Get-BobAgentFuel/Get-BobOpencodeFuel refresh; bob-setup-opencode skill syncs for Product=bob.
   Git checkout mtimes are often older than a previous flat compose, so /XO left scripts/gitclaim.py stale after ff.
   Use -ComposeOnly after a manual git pull --ff-only to recompose without restarting the service.
 .PARAMETER ComposeOnly
@@ -394,10 +395,19 @@ if ($Product -eq 'jeeves') { $mirror += @{ Rel = 'tools'; Dst = 'tools'; Xf = @(
 foreach ($m in $mirror) {
     $from = Get-BobiverseRepoPath -Root $clone -Rel $m.Rel
     if (-not (Test-Path -LiteralPath $from -PathType Container)) { continue }
-    $roboArgs = @($from, (Join-Path $InstallRoot $m.Dst), '/E', '/XO', '/NFL', '/NDL', '/NJH', '/NJS', '/nc', '/ns', '/np')
+    # FR #6154 / FR #269: never /XO on bob tray tools\ - git mtimes are often older than a
+    # pre-#6120 flat Get-BobAgentFuel.ps1, so /XO left OpenCode fuel helpers stale after ff.
+    $dst = Join-Path $InstallRoot $m.Dst
+    if ($m.Dst -eq 'tools') {
+        $roboArgs = @($from, $dst, '/E', '/NFL', '/NDL', '/NJH', '/NJS', '/nc', '/ns', '/np')
+        $xoNote = ' (tools-no-xo FR #6154)'
+    } else {
+        $roboArgs = @($from, $dst, '/E', '/XO', '/NFL', '/NDL', '/NJH', '/NJS', '/nc', '/ns', '/np')
+        $xoNote = ''
+    }
     if ($m.Xf.Count) { $roboArgs += @('/XF') + $m.Xf }
     & robocopy.exe @roboArgs | Out-Null
-    if ($LASTEXITCODE -ge 8) { Write-Host ("WARN sync-robocopy {0} exit={1}" -f $m.Dst, $LASTEXITCODE) } else { Write-Host ("INFO sync-robocopy {0} ok" -f $m.Dst) }
+    if ($LASTEXITCODE -ge 8) { Write-Host ("WARN sync-robocopy {0} exit={1}" -f $m.Dst, $LASTEXITCODE) } else { Write-Host ("INFO sync-robocopy {0} ok{1}" -f $m.Dst, $xoNote) }
 }
 
 # t828u: compile the Acknowledge/Status dialog exes into <install>\tools when missing or older than their sources (csc.exe is in-box on Windows;
@@ -436,6 +446,7 @@ if ($skillsDirs.Count -gt 0) {
     New-Item -ItemType Directory -Force -Path $skillsDst | Out-Null
     $bookNames = @($skillsDirs | ForEach-Object { Get-ChildItem -LiteralPath $_ -Directory -ErrorAction SilentlyContinue } |
             Where-Object { $_.Name -in @('harvest', 'harvest-agent-skills', 'bobiverse-fleet-ops') -or
+                ($Product -eq 'bob' -and $_.Name -eq 'bob-setup-opencode') -or  # FR #6154 OpenCode setup skill
                 ($Product -and ($_.Name -eq "bobiverse-$Product" -or $_.Name -like "bobiverse-$Product-*")) } |
             ForEach-Object { $_.Name })
     foreach ($name in $bookNames) {
