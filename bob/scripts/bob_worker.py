@@ -1252,10 +1252,13 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
         # can drive it like a persistent seat.  The model comes from $env:BOB_OPENCODE_MODEL.
         #
         # Runtime 5h rolling-cap guard: each ``opencode run`` is watched.  If it hits a
-        # 429 / rate-limit / rolling-limit message, produces no output before the watchdog,
-        # or exits with a payment/balance error, the wrapper kills the process tree, logs
-        # to opencode-out-of-fuel.log, and records a pause for that model until the window
+        # 429 / rate-limit / rolling-limit message, stalls with no stdout/stderr for the
+        # idle watchdog (BOB_OPENCODE_WATCHDOG_MS, default 120s), or exits with a
+        # payment/balance error, the wrapper kills the process tree, logs to
+        # opencode-out-of-fuel.log, and records a pause for that model until the window
         # resets (parsed from output if present, else a conservative 1-hour default).
+        # FR #6156: wall-clock alone while the process still produces output must not kill
+        # or pause — only idle/no-output (or real 402/429 text) trips the guard.
         pfile = str(Path(run_dir) / "prompt.txt")
         lfile = str(Path(run_dir) / "launch-opencode.ps1")
         turns_log = str(Path(run_dir) / "opencode-turns.jsonl")
@@ -1290,32 +1293,45 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             r"    try {",
             r"    $argList = @('run', '-m', $model, $line)",
             r"""    $argStr = ($argList | ForEach-Object { if ($_ -match '[\s"]') { $escaped = $_ -replace '(\\*)"', '$1$1\"'; $escaped = $escaped -replace '(\\+)$', '$1$1'; '"' + $escaped + '"' } else { $_ } }) -join ' '""",
-            r"    $psi = New-Object System.Diagnostics.ProcessStartInfo",
-            r"    $psi.FileName = $exe",
-            r"    $psi.Arguments = $argStr",
-            r"    $psi.RedirectStandardOutput = $true",
-            r"    $psi.RedirectStandardError = $true",
-            r"    $psi.UseShellExecute = $false",
-            r"    $psi.CreateNoWindow = $true",
             r"    $proc = $null",
             r"    $stdout = ''",
             r"    $stderr = ''",
+            r"    $outFile = $null",
+            r"    $errFile = $null",
             r"    $timedOut = $false",
             r"    try {",
-            r"        $proc = [System.Diagnostics.Process]::Start($psi)",
-            r"        $stdoutTask = $proc.StandardOutput.ReadToEndAsync()",
-            r"        $stderrTask = $proc.StandardError.ReadToEndAsync()",
+            # FR #6156: redirect to files and treat growing file size as heartbeat (not absolute WaitForExit).
             r"        $watchdogMs = if ($env:BOB_OPENCODE_WATCHDOG_MS) { [int]$env:BOB_OPENCODE_WATCHDOG_MS } else { 120000 }",
-            r"        $timedOut = -not $proc.WaitForExit($watchdogMs)",
-            r"        if ($timedOut) { try { & taskkill /T /F /PID $proc.Id 2>$null | Out-Null } catch { } }",
-            r"        [void]$proc.WaitForExit(5000)",
-            r"        $stdout = if ($stdoutTask.Wait(5000)) { [string]$stdoutTask.Result } else { '' }",
-            r"        $stderr = if ($stderrTask.Wait(5000)) { [string]$stderrTask.Result } else { '' }",
+            r"        $outFile = Join-Path $env:TEMP ('bob-oc-out-' + [guid]::NewGuid().ToString('n') + '.txt')",
+            r"        $errFile = Join-Path $env:TEMP ('bob-oc-err-' + [guid]::NewGuid().ToString('n') + '.txt')",
+            # MRB #6163 / CodeRabbit: ArgumentList array drops quotes/spaces in $line; use pre-escaped $argStr.
+            r"        $proc = Start-Process -FilePath $exe -ArgumentList $argStr -NoNewWindow -PassThru -RedirectStandardOutput $outFile -RedirectStandardError $errFile",
+            r"        $timedOut = $false",
+            r"        $lastLen = 0",
+            r"        $lastBeat = [datetime]::UtcNow",
+            r"        while (-not $proc.HasExited) {",
+            r"            $len = 0",
+            r"            if (Test-Path -LiteralPath $outFile) { $len += (Get-Item -LiteralPath $outFile).Length }",
+            r"            if (Test-Path -LiteralPath $errFile) { $len += (Get-Item -LiteralPath $errFile).Length }",
+            r"            if ($len -gt $lastLen) { $lastLen = $len; $lastBeat = [datetime]::UtcNow }",
+            r"            $idleMs = ([datetime]::UtcNow - $lastBeat).TotalMilliseconds",
+            r"            if ($idleMs -ge $watchdogMs) {",
+            r"                $timedOut = $true",
+            r"                try { & taskkill /T /F /PID $proc.Id 2>$null | Out-Null } catch { }",
+            r"                break",
+            r"            }",
+            r"            Start-Sleep -Milliseconds 100",
+            r"        }",
+            r"        try { $proc.WaitForExit(2000) | Out-Null } catch { }",
+            r"        if (Test-Path -LiteralPath $outFile) { $stdout = [IO.File]::ReadAllText($outFile) } else { $stdout = '' }",
+            r"        if (Test-Path -LiteralPath $errFile) { $stderr = [IO.File]::ReadAllText($errFile) } else { $stderr = '' }",
             r"        $exitCode = if ($proc.HasExited) { $proc.ExitCode } else { -1 }",
             r"    } catch {",
             r"        $stdout = ''",
             r"        $stderr = $_",
             r"        $exitCode = -1",
+            r"    } finally {",
+            r"        foreach ($f in @($outFile, $errFile)) { if ($f -and (Test-Path -LiteralPath $f)) { Remove-Item -LiteralPath $f -Force -ErrorAction SilentlyContinue } }",
             r"    }",
             r"    $outStr = $stdout + [Environment]::NewLine + $stderr",
             r"    Write-Output $outStr",
