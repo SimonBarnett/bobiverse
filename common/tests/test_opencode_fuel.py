@@ -477,6 +477,12 @@ def test_looks_like_rate_limit_detects_phrases():
     assert of.looks_like_rate_limit("all good here") is False
 
 
+def test_looks_like_rate_limit_ignores_instructional_quotations():
+    skill = "mid-job `402 Payment Required` / `usage balance exhausted` is out-of-fuel"
+    assert of.looks_like_rate_limit(skill) is False
+    assert of.looks_like_rate_limit("see 'Payment Required' in the task text") is False
+
+
 def test_looks_like_rate_limit_ignores_bare_codes_in_normal_output():
     assert of.looks_like_rate_limit("Fixed issue #4290 and PR #6429") is False
     assert of.looks_like_rate_limit("Commit abc429def completed in 402ms") is False

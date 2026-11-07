@@ -167,7 +167,9 @@ def test_build_launch_opencode_creates_wrapper(tmp_path: Path):
     assert "--dir $pauseStateDir" in script
     assert "--model $model" in script
     # The full OpenCode output must be piped to the helper's stdin, never argv.
-    assert "$outStr | & $py $pyHelper record-pause --dir $pauseStateDir --model $model 2>&1 | Out-String" in script
+    assert "$scan | & $py $pyHelper record-pause --dir $pauseStateDir --model $model 2>&1 | Out-String" in script
+    assert "Replace([string]$line, ' ')" in script
+    assert "[regex]::Replace($scan, '`[^`]*`', ' ')" in script
     assert "$ErrorActionPreference = 'Continue'" in script
     assert "$recordExit = $LASTEXITCODE" in script
     assert "record-pause helper failed" in script

@@ -25,6 +25,26 @@ def test_is_out_of_fuel_text_detects_402_payment_required():
     assert bw.is_out_of_fuel_text("provider out of credits mid-turn")
 
 
+def test_is_out_of_fuel_text_ignores_instructional_quotations():
+    """Skill / task text that quotes the provider phrase is not exhaustion."""
+    skill = (
+        "Mid-job `402 Payment Required` / `usage balance exhausted` / Cursor `NEEDS_AUTH` "
+        "is out-of-fuel (FR #3012): the exe must GIVEUP. never treat 402 as a missed DONE."
+    )
+    assert bw.is_out_of_fuel_text(skill) is False
+    assert bw.is_hard_402_out_of_fuel_text(skill) is False
+    quoted = "The task says '402 Payment Required' and \"usage balance exhausted\" in the instructions."
+    assert bw.is_out_of_fuel_text(quoted) is False
+    assert bw.is_hard_402_out_of_fuel_text(quoted) is False
+    # The live false positive: the fuel log stored the seat prompt, not a provider body.
+    logged = (
+        '{"pid":16740,"model":"opencode/beam-free","text":"The exe posts PRIVMSG. '
+        '**FR #3012:** mid-job `402 Payment Required` / `usage balance exhausted` is out-of-fuel"}'
+    )
+    assert bw.is_out_of_fuel_text(logged) is False
+    assert bw.is_hard_402_out_of_fuel_text(logged) is False
+
+
 def test_is_out_of_fuel_text_ignores_token_count_402():
     # Bare "402" in completion_tokens / timestamps must not trip out-of-fuel.
     line = (

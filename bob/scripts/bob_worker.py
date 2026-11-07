@@ -1493,15 +1493,20 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             r"    }",
             r"    $outStr = $stdout + [Environment]::NewLine + $stderr",
             r"    Write-Output $outStr",
+            r"    # Drop the prompt echo and markdown quotations before the fuel match.",
+            r"    # The seat prompt documents `402 Payment Required`; that is not a provider 402.",
+            r"    $scan = $outStr",
+            r"    if ($line) { $scan = $scan.Replace([string]$line, ' ') }",
+            r"    $scan = [regex]::Replace($scan, '`[^`]*`', ' ')",
             r"    $limitPattern = 'Payment Required|usage balance exhausted|Too Many Requests|rate limit|rolling limit'",
             r"    $codePattern = '(HTTP|status( code)?)\D{0,3}(402|429)'",
-            r"    $hitLimit = $timedOut -or ($exitCode -ne 0 -and (($outStr -match $limitPattern) -or ($outStr -match $codePattern)))",
+            r"    $hitLimit = $timedOut -or ($exitCode -ne 0 -and (($scan -match $limitPattern) -or ($scan -match $codePattern)))",
             r"    if ($hitLimit) {",
             r"        if ($proc -and -not $proc.HasExited) { try { & taskkill /T /F /PID $proc.Id 2>$null | Out-Null } catch { } }",
             r"        if ($timedOut) { $msg = 'watchdog timeout (no output)' } else {",
-            r"            $matchLines = $outStr -split '\r?\n' | Where-Object { $_ -match $limitPattern -or $_ -match $codePattern }",
+            r"            $matchLines = $scan -split '\r?\n' | Where-Object { $_ -match $limitPattern -or $_ -match $codePattern }",
             r"            $msg = ($matchLines | Select-Object -First 3) -join ' '",
-            r"            if (-not $msg) { $msg = ($outStr -replace '\s+', ' ').Trim(); if ($msg.Length -gt 300) { $msg = $msg.Substring(0, 300) } }",
+            r"            if (-not $msg) { $msg = ($scan -replace '\s+', ' ').Trim(); if ($msg.Length -gt 300) { $msg = $msg.Substring(0, 300) } }",
             r"        }",
             r"        $entry = @{ pid = $PID; ts = (Get-Date -Format o); model = $model; text = $msg } | ConvertTo-Json -Compress",
             r"        Add-Content -Path $fuelLog -Value $entry -ErrorAction SilentlyContinue",
@@ -1510,7 +1515,7 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             r"        $prevEap = $ErrorActionPreference",
             r"        $ErrorActionPreference = 'Continue'",
             r"        try {",
-            r"            $recordOutput = $outStr | & $py $pyHelper record-pause --dir $pauseStateDir --model $model 2>&1 | Out-String",
+            r"            $recordOutput = $scan | & $py $pyHelper record-pause --dir $pauseStateDir --model $model 2>&1 | Out-String",
             r"            $recordExit = $LASTEXITCODE",
             r"        } finally { $ErrorActionPreference = $prevEap }",
             r"        if ($recordExit -ne 0) {",
@@ -3269,9 +3274,39 @@ _OUT_OF_FUEL_RX = re.compile(
 DEFAULT_DIGEST_REPORT_URL = "https://bob.ntsa.uk/bob/v1/report"
 
 
+# Instructional quotations (skill / task text) are not a provider response.
+# Backtick spans and single-quoted mentions are dropped. A double-quoted stock
+# phrase is dropped only when the line has no unquoted HTTP/status code, so a
+# real ``status_code=402 "usage balance exhausted"`` line still holds.
+_BACKTICK_SPAN_RX = re.compile(r"`[^`]*`")
+_SINGLE_QUOTED_SPAN_RX = re.compile(r"'[^'\n]{0,200}'")
+_SHORT_DOUBLE_MENTION_RX = re.compile(
+    r'"(?:402\s*Payment\s*Required|Payment\s*Required|usage\s+balance\s+exhausted|NEEDS_AUTH|OUTCOME_NEEDS_AUTH)"',
+    re.IGNORECASE,
+)
+_UNQUOTED_PROVIDER_STATUS_RX = re.compile(
+    r"(?i)(?:\bhttp\b|\bstatus(?:_code| code)?\b)\D{0,12}\b(402|429)\b"
+)
+
+
+def provider_fuel_scan_text(text: str) -> str:
+    """Text the fuel detector may treat as a provider response.
+
+    Skill lines quote ``402 Payment Required`` as an instruction. That quotation
+    must not arm a hold. A bare provider line, or the same phrase beside an
+    unquoted status code, still scans.
+    """
+    raw = text or ""
+    cleaned = _BACKTICK_SPAN_RX.sub(" ", raw)
+    cleaned = _SINGLE_QUOTED_SPAN_RX.sub(" ", cleaned)
+    if _UNQUOTED_PROVIDER_STATUS_RX.search(cleaned):
+        return cleaned
+    return _SHORT_DOUBLE_MENTION_RX.sub(" ", cleaned)
+
+
 def is_out_of_fuel_text(text: str) -> bool:
     """True when agent/log text is a provider fuel/quota/auth exhaustion (FR #3012 / #3019)."""
-    return bool(_OUT_OF_FUEL_RX.search(text or ""))
+    return bool(_OUT_OF_FUEL_RX.search(provider_fuel_scan_text(text)))
 
 
 # FR #4858: hard API 402 / usage-balance-exhausted (not mid-job reading, not NEEDS_AUTH).
@@ -3290,7 +3325,7 @@ def is_hard_402_out_of_fuel_text(text: str) -> bool:
 
     Mid-job fuel-reading GIVEUP text and NEEDS_AUTH are out-of-fuel but not hard 402.
     """
-    return bool(_HARD_402_OUT_OF_FUEL_RX.search(text or ""))
+    return bool(_HARD_402_OUT_OF_FUEL_RX.search(provider_fuel_scan_text(text)))
 
 
 def out_of_fuel_reading_clears_hard_hold(
