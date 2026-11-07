@@ -252,6 +252,19 @@ def test_bored_latency_ignores_live_offer_but_not_expired_or_lost_done_offer():
     row["prior_holder"] = nick
     assert sd.detect_bored_latency(snap)
 
+    # Missing/invalid offered_ts must not look live under the 180s done window.
+    # A real ~100s done offer is still inside that window and stays suppressed.
+    row.pop("prior_holder", None)
+    row["offered_via"] = "done"
+    row["offered_ts"] = ""
+    assert sd.detect_bored_latency(snap)
+    row.pop("offered_ts", None)
+    assert sd.detect_bored_latency(snap)
+    row["offered_ts"] = "not-a-timestamp"
+    assert sd.detect_bored_latency(snap)
+    row["offered_ts"] = datetime.fromtimestamp(now - 100, timezone.utc).isoformat()
+    assert sd.detect_bored_latency(snap) == []
+
 
 def test_filer_dedupe_comment_not_second_issue(tmp_path: Path):
     finding = {
