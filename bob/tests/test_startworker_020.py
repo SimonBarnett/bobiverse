@@ -389,7 +389,8 @@ def test_tray_wiring_timer_heartbeat_helper_and_click_function_contract():
     menu_fn = w[w.index("function Update-BobTrayWorkerAgentsMenu"): w.index("function Start-BobTrayWorkerAgentsRefresh")]
     assert "\u2014" not in menu_fn and "param($sender, $e)" in menu_fn
     probe = w[w.index("function Get-BobTrayWorkerAgentChoices"): w.index("function Update-BobTrayWorkerAgentsMenu")]
-    assert "WaitForExit(8000)" in probe and "& $exe" not in probe
+    assert "$waitMs = 8000" in probe and "WaitForExit($waitMs)" in probe and "& $exe" not in probe
+    assert "--refresh-fuel" in probe and "return $unknown" in probe
     assert "RedirectStandardOutput" in probe and "Start-Process" in probe
     refresh = w[w.index("function Start-BobTrayWorkerAgentsRefresh"): w.index("$notify = New-Object System.Windows.Forms.NotifyIcon")]
     assert "CreateRunspace" in refresh and "BeginInvoke" in refresh
@@ -409,6 +410,10 @@ def test_tray_wiring_timer_heartbeat_helper_and_click_function_contract():
     assert "ThreadPool.QueueUserWorkItem" in cs
     listed = cs[cs.index("public static string TryListAgents"): cs.index("internal static class RobotIcon")]
     assert listed.index("WaitForExit(timeoutMs)") < listed.index("ReadToEnd")
+    assert "lookup-timeout" in listed and "fuel list timed out" not in cs
+    assert "--refresh-fuel" in listed
+    assert "fuel unknown (not exhausted); start checks this agent" in cs
+    assert cs.count("TryListAgents(rootCopy,") == 2
     # Constructor seeds the menu and does not call the worker.
     ctor = cs[cs.index("public TrayContext"): cs.index("void StartEngine")]
     assert "SeedAgentChoices" in ctor and "TryListAgents" not in ctor

@@ -167,7 +167,9 @@ def test_build_launch_opencode_creates_wrapper(tmp_path: Path):
     assert "--dir $pauseStateDir" in script
     assert "--model $model" in script
     # The full OpenCode output must be piped to the helper's stdin, never argv.
-    assert "$outStr | & $py $pyHelper record-pause --dir $pauseStateDir --model $model 2>&1 | Out-String" in script
+    assert "$scan | & $py $pyHelper record-pause --dir $pauseStateDir --model $model 2>&1 | Out-String" in script
+    assert "Replace([string]$line, ' ')" in script
+    assert "[regex]::Replace($scan, '`[^`]*`', ' ')" in script
     assert "$ErrorActionPreference = 'Continue'" in script
     assert "$recordExit = $LASTEXITCODE" in script
     assert "record-pause helper failed" in script
@@ -336,14 +338,42 @@ def test_mrb6163_opencode_prompt_with_spaces_reaches_child(tmp_path: Path):
 
 
 def test_fr6156_opencode_watchdog_allows_long_run_with_output(tmp_path: Path):
-    """Periodic stdout past the idle threshold must not pause / kill as out-of-fuel (FR #6156)."""
+    """Flushed ticks inside the idle cap must finish a run longer than that cap (FR #6156).
+
+    The production loop is unchanged: a child whose redirected stdout and stderr
+    stay the same length for ``BOB_OPENCODE_WATCHDOG_MS`` is still killed. A
+    silent live child is not treated as progress.
+
+    The old fixture used buffered ``Write-Output`` every 150ms against a 2s cap.
+    Nested powershell cold start can leave that redirect file unchanged for
+    longer than 2s, so the idle kill fired before any tick was visible (runs
+    of about 7s that logged ``watchdog timeout (no output)``). This child
+    flushes a line as soon as the script is executing. The cap is above that
+    cold start. Later gaps stay far under the cap, and the series lasts longer
+    than the cap, so a wall-clock kill would have stopped it.
+    """
     if shutil.which("powershell.exe") is None:
         pytest.skip("powershell.exe not available")
 
-    # Fake opencode: emit ticks every 150ms for ~3s. Idle watchdog is 2s so startup+gaps stay alive.
+    watchdog_ms = 8000
+    tick_ms = 250
+    tick_count = 40  # 10s of gaps after the first flushed line
+    assert tick_ms * tick_count > watchdog_ms
+    assert tick_ms * 4 < watchdog_ms
+
     fake_opencode = tmp_path / "fake-opencode-ticks.ps1"
     fake_opencode.write_text(
-        "1..20 | ForEach-Object { Write-Output ('tick ' + $_); Start-Sleep -Milliseconds 150 }; exit 0\n",
+        "\n".join([
+            "[Console]::Out.WriteLine('tick-start')",
+            "[Console]::Out.Flush()",
+            f"1..{tick_count} | ForEach-Object {{",
+            "    [Console]::Out.WriteLine('tick ' + $_)",
+            "    [Console]::Out.Flush()",
+            f"    Start-Sleep -Milliseconds {tick_ms}",
+            "}",
+            "exit 0",
+            "",
+        ]),
         encoding="utf-8",
     )
     fake_exe = tmp_path / "opencode.cmd"
@@ -360,26 +390,35 @@ def test_fr6156_opencode_watchdog_allows_long_run_with_output(tmp_path: Path):
         p = Path(path)
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text(body, encoding="utf-8")
+    # Production idle compare stays a length gap, not a wall-clock WaitForExit.
+    wrapper = Path(script_key).read_text(encoding="utf-8")
+    assert "if ($idleMs -ge $watchdogMs)" in wrapper
+    assert "$proc.WaitForExit($watchdogMs)" not in wrapper
 
     env = os.environ.copy()
-    env["BOB_OPENCODE_WATCHDOG_MS"] = "2000"
+    env["BOB_OPENCODE_WATCHDOG_MS"] = str(watchdog_ms)
     env["LOCALAPPDATA"] = str(tmp_path)
     env["BOB_OPENCODE_MODEL"] = "opencode/beam-free"
 
+    start = time.time()
     result = subprocess.run(
         ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(script_key)],
         input="exit\n",
         capture_output=True,
         text=True,
         env=env,
-        timeout=30,
+        timeout=60,
     )
+    elapsed = time.time() - start
     assert result.returncode == 0, (result.stderr or result.stdout or "<no output>")[:800]
+    assert elapsed > (watchdog_ms / 1000.0), f"run ended before the idle cap ({elapsed:.1f}s)"
     fuel_log = tmp_path / "Bobiverse" / "worker" / "logs" / "opencode-out-of-fuel.log"
     if fuel_log.is_file():
         blob = fuel_log.read_text(encoding="utf-8")
         assert "watchdog timeout" not in blob, blob
-    assert "tick" in (result.stdout or "").lower() or "tick" in (result.stderr or "").lower()
+    combined = ((result.stdout or "") + "\n" + (result.stderr or "")).lower()
+    assert "tick-start" in combined
+    assert f"tick {tick_count}" in combined
 
 
 def test_should_start_fuel_watcher_includes_opencode():

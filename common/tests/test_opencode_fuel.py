@@ -477,6 +477,12 @@ def test_looks_like_rate_limit_detects_phrases():
     assert of.looks_like_rate_limit("all good here") is False
 
 
+def test_looks_like_rate_limit_ignores_instructional_quotations():
+    skill = "mid-job `402 Payment Required` / `usage balance exhausted` is out-of-fuel"
+    assert of.looks_like_rate_limit(skill) is False
+    assert of.looks_like_rate_limit("see 'Payment Required' in the task text") is False
+
+
 def test_looks_like_rate_limit_ignores_bare_codes_in_normal_output():
     assert of.looks_like_rate_limit("Fixed issue #4290 and PR #6429") is False
     assert of.looks_like_rate_limit("Commit abc429def completed in 402ms") is False
@@ -718,3 +724,9 @@ def test_save_opencode_pauses_runs_while_lock_held(tmp_path, monkeypatch):
 
     monkeypatch.setattr(of, "save_opencode_pauses", checked_save)
     assert of.record_opencode_pause(state_dir, "opencode-go/glm-5.3", "rate limit") is not None
+
+
+def test_looks_like_rate_limit_keeps_apostrophe_provider_lines_mrb6231():
+    line = "Provider's response: 402 Payment Required for model 'beam-free'"
+    assert of.looks_like_rate_limit(line) is True
+

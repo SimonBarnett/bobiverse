@@ -9,7 +9,11 @@
   A failed Cursor reader sets cursor.error (stage text, paths stripped) and leaves high/low null (= unknown).
 #>
 [CmdletBinding()]
-param([string]$InstallRoot = '')
+param(
+    [string]$InstallRoot = '',
+    [ValidateSet('all', 'cursor', 'grok', 'opencode')]
+    [string]$Provider = 'all'
+)
 
 $ErrorActionPreference = 'SilentlyContinue'
 $WarningPreference = 'SilentlyContinue'
@@ -21,6 +25,7 @@ try {
     if (-not (Test-Path -LiteralPath $psd1)) { throw 'no BobBridge' }
     Import-Module $psd1 -Force -ErrorAction Stop
     $out.ok = $true
+    if ($Provider -eq 'all' -or $Provider -eq 'cursor') {
     try {
         if ($env:BOB_AGENT_FUEL_CURSOR_FAULT) { throw [string]$env:BOB_AGENT_FUEL_CURSOR_FAULT }
         $doc = Get-BobCursorAgentWeeklyRemaining
@@ -54,6 +59,8 @@ try {
         if ($raw.Length -gt 180) { $raw = $raw.Substring(0, 180) }
         $out.cursor.error = $raw
     }
+    }
+    if ($Provider -eq 'all' -or $Provider -eq 'grok') {
     try {
         $w = Get-BobWeeklyRemaining
         $auth = $null
@@ -68,6 +75,8 @@ try {
             $out.grok.remaining_pct = [int]$w.remaining_pct
         }
     } catch { }
+    }
+    if ($Provider -eq 'all' -or $Provider -eq 'opencode') {
     try {
         $opHelper = Join-Path $PSScriptRoot 'Get-BobOpencodeFuel.ps1'
         if (Test-Path -LiteralPath $opHelper) {
@@ -87,6 +96,7 @@ try {
             }
         }
     } catch { }
+    }
 } catch { $out.ok = $false }
 [Console]::Out.WriteLine(($out | ConvertTo-Json -Compress -Depth 5))
 exit 0

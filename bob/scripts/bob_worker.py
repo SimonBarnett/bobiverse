@@ -359,16 +359,153 @@ def parse_fuel(text: str) -> Fuel:
     )
 
 
-def read_fuel(install_root: Path, run: Callable = subprocess.run, timeout: float = 90.0) -> Fuel:
+def read_fuel(install_root: Path, run: Callable = subprocess.run, timeout: float = 90.0, provider: str = "") -> Fuel:
     helper = Path(install_root) / "tools" / "Get-BobAgentFuel.ps1"
     if not helper.is_file():
         return Fuel()
+    cmd = ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(helper), "-InstallRoot", str(install_root)]
+    if provider:
+        cmd.extend(["-Provider", provider])
     try:
-        r = run(["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(helper), "-InstallRoot", str(install_root)],
-                capture_output=True, text=True, timeout=timeout, creationflags=CREATE_NO_WINDOW if os.name == "nt" else 0)
+        r = run(cmd, capture_output=True, text=True, timeout=timeout, creationflags=CREATE_NO_WINDOW if os.name == "nt" else 0)
         return parse_fuel(r.stdout or "")
     except Exception:
         return Fuel()
+
+
+def merge_fuel_parts(parts: dict) -> Fuel:
+    """Combine per-provider readings. A missing part stays unknown and does not wipe the others."""
+    cursor = parts.get("cursor") or Fuel()
+    grok = parts.get("grok") or Fuel()
+    opencode = parts.get("opencode") or Fuel()
+    return Fuel(
+        cursor.cursor_high,
+        cursor.cursor_low,
+        grok.grok_pct,
+        grok.grok_state or "unknown",
+        cursor.on_demand_used_cents,
+        cursor.on_demand_limit_cents,
+        cursor.on_demand_remaining_pct,
+        cursor.overspend_state or "unknown",
+        opencode.opencode_free,
+        opencode.opencode_go,
+        dict(opencode.opencode_models or {}),
+        tuple(opencode.opencode_free_model_ids or ()),
+    )
+
+
+def read_fuel_bounded(install_root: Path, run: Callable = subprocess.run, per_provider_s: float = 8.0) -> Fuel:
+    """Read Cursor, Grok, and OpenCode on separate budgets so one slow reader cannot hide the others."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    names = ("cursor", "grok", "opencode")
+
+    def one(name: str) -> Fuel:
+        return read_fuel(install_root, run=run, timeout=per_provider_s, provider=name)
+
+    parts: dict = {}
+    with ThreadPoolExecutor(max_workers=len(names)) as pool:
+        fut_map = {pool.submit(one, name): name for name in names}
+        for fut, name in fut_map.items():
+            try:
+                parts[name] = fut.result()
+            except Exception:
+                parts[name] = Fuel()
+    return merge_fuel_parts(parts)
+
+
+AGENT_LIST_CACHE_NAME = "agent-list-fuel.json"
+AGENT_LIST_CACHE_MAX_AGE_S = 45.0
+UNKNOWN_MENU_REASON = "fuel unknown (not exhausted); start checks this agent"
+
+
+def agent_list_cache_path(env: Optional[dict] = None) -> Path:
+    return opencode_pauses_state_dir(env) / AGENT_LIST_CACHE_NAME
+
+
+def fuel_cache_document(fuel: Fuel, now: Optional[float] = None) -> dict:
+    """Percents and states only. Never a path, token, or auth body."""
+    return {
+        "ts": float(now if now is not None else time.time()),
+        "cursor_high": fuel.cursor_high,
+        "cursor_low": fuel.cursor_low,
+        "grok_pct": fuel.grok_pct,
+        "grok_state": fuel.grok_state or "unknown",
+        "on_demand_used_cents": fuel.on_demand_used_cents,
+        "on_demand_limit_cents": fuel.on_demand_limit_cents,
+        "on_demand_remaining_pct": fuel.on_demand_remaining_pct,
+        "overspend_state": fuel.overspend_state or "unknown",
+        "opencode_free": fuel.opencode_free,
+        "opencode_go": fuel.opencode_go,
+        "opencode_models": dict(fuel.opencode_models or {}),
+        "opencode_free_model_ids": list(fuel.opencode_free_model_ids or ()),
+    }
+
+
+def fuel_from_cache_document(doc: dict) -> Fuel:
+    def _i(v):
+        try:
+            return None if v is None or v == "" else int(v)
+        except (TypeError, ValueError):
+            return None
+
+    models = doc.get("opencode_models") if isinstance(doc.get("opencode_models"), dict) else {}
+    ids = doc.get("opencode_free_model_ids")
+    if not isinstance(ids, (list, tuple)):
+        ids = ()
+    return Fuel(
+        _i(doc.get("cursor_high")),
+        _i(doc.get("cursor_low")),
+        _i(doc.get("grok_pct")),
+        str(doc.get("grok_state") or "unknown").lower(),
+        _i(doc.get("on_demand_used_cents")),
+        _i(doc.get("on_demand_limit_cents")),
+        _i(doc.get("on_demand_remaining_pct")),
+        str(doc.get("overspend_state") or "unknown").lower() or "unknown",
+        _i(doc.get("opencode_free")),
+        _i(doc.get("opencode_go")),
+        {str(k): _i(v) for k, v in models.items()},
+        tuple(str(i) for i in ids),
+    )
+
+
+def load_fresh_agent_list_fuel(
+    *,
+    now: Optional[float] = None,
+    max_age_s: float = AGENT_LIST_CACHE_MAX_AGE_S,
+    env: Optional[dict] = None,
+) -> Optional[Fuel]:
+    path = agent_list_cache_path(env)
+    try:
+        doc = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(doc, dict):
+        return None
+    try:
+        ts = float(doc.get("ts"))
+    except (TypeError, ValueError):
+        return None
+    age = float(now if now is not None else time.time()) - ts
+    if age < 0 or age > float(max_age_s):
+        return None
+    return fuel_from_cache_document(doc)
+
+
+def save_agent_list_fuel(fuel: Fuel, *, now: Optional[float] = None, env: Optional[dict] = None) -> bool:
+    """Persist a menu reading only when at least one provider actually answered."""
+    if not any(fuel_reading_known(fuel, kind) for kind in ("grok", "cursor", "opencode")):
+        return False
+    path = agent_list_cache_path(env)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        payload = json.dumps(fuel_cache_document(fuel, now=now), sort_keys=True)
+        tmp = path.with_suffix(path.suffix + ".tmp")
+        tmp.write_text(payload, encoding="utf-8")
+        os.replace(tmp, path)
+    except OSError:
+        return False
+    return True
 
 
 def cursor_on_demand_at_limit(f: Fuel) -> bool:
@@ -673,20 +810,41 @@ def list_worker_agents(
     opencode_cmd: Optional[str],
     *,
     auth_present: bool,
+    readings_known: bool = True,
 ) -> list:
-    """Systray Agents submenu. One row per agent, not per fuel pool."""
+    """Systray Agents submenu. One row per agent, not per fuel pool.
+
+    Unknown fuel is not exhaustion. An installed agent stays clickable and the
+    launch path still reads fuel and refuses a real miss. A known exhausted
+    reading stays unavailable.
+    """
     rows = [
         {
             "id": "auto",
             "label": "Automatic",
             "available": True,
             "installed": True,
+            "fuel_state": "known",
             "reason": "Grok, then Cursor, then OpenCode",
         }
     ]
     labels = (("grok", "Grok"), ("cursor", "Cursor"), ("opencode", "OpenCode"))
     installed = {"grok": bool(grok_exe), "cursor": bool(cursor_cmd), "opencode": bool(opencode_cmd)}
     for agent_id, label in labels:
+        present = installed[agent_id]
+        known = bool(readings_known) and fuel_reading_known(fuel, agent_id)
+        if present and not known:
+            rows.append(
+                {
+                    "id": agent_id,
+                    "label": label,
+                    "available": True,
+                    "installed": True,
+                    "fuel_state": "unknown",
+                    "reason": UNKNOWN_MENU_REASON,
+                }
+            )
+            continue
         dec = explicit_agent_decision(
             agent_id, fuel, cursor_cmd, grok_exe, opencode_cmd, auth_present=auth_present
         )
@@ -695,7 +853,8 @@ def list_worker_agents(
                 "id": agent_id,
                 "label": label,
                 "available": dec.kind == agent_id,
-                "installed": installed[agent_id],
+                "installed": present,
+                "fuel_state": "known",
                 "reason": dec.reason,
             }
         )
@@ -1493,15 +1652,20 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             r"    }",
             r"    $outStr = $stdout + [Environment]::NewLine + $stderr",
             r"    Write-Output $outStr",
+            r"    # Drop the prompt echo and markdown quotations before the fuel match.",
+            r"    # The seat prompt documents `402 Payment Required`; that is not a provider 402.",
+            r"    $scan = $outStr",
+            r"    if ($line) { $scan = $scan.Replace([string]$line, ' ') }",
+            r"    $scan = [regex]::Replace($scan, '`[^`]*`', ' ')",
             r"    $limitPattern = 'Payment Required|usage balance exhausted|Too Many Requests|rate limit|rolling limit'",
             r"    $codePattern = '(HTTP|status( code)?)\D{0,3}(402|429)'",
-            r"    $hitLimit = $timedOut -or ($exitCode -ne 0 -and (($outStr -match $limitPattern) -or ($outStr -match $codePattern)))",
+            r"    $hitLimit = $timedOut -or ($exitCode -ne 0 -and (($scan -match $limitPattern) -or ($scan -match $codePattern)))",
             r"    if ($hitLimit) {",
             r"        if ($proc -and -not $proc.HasExited) { try { & taskkill /T /F /PID $proc.Id 2>$null | Out-Null } catch { } }",
             r"        if ($timedOut) { $msg = 'watchdog timeout (no output)' } else {",
-            r"            $matchLines = $outStr -split '\r?\n' | Where-Object { $_ -match $limitPattern -or $_ -match $codePattern }",
+            r"            $matchLines = $scan -split '\r?\n' | Where-Object { $_ -match $limitPattern -or $_ -match $codePattern }",
             r"            $msg = ($matchLines | Select-Object -First 3) -join ' '",
-            r"            if (-not $msg) { $msg = ($outStr -replace '\s+', ' ').Trim(); if ($msg.Length -gt 300) { $msg = $msg.Substring(0, 300) } }",
+            r"            if (-not $msg) { $msg = ($scan -replace '\s+', ' ').Trim(); if ($msg.Length -gt 300) { $msg = $msg.Substring(0, 300) } }",
             r"        }",
             r"        $entry = @{ pid = $PID; ts = (Get-Date -Format o); model = $model; text = $msg } | ConvertTo-Json -Compress",
             r"        Add-Content -Path $fuelLog -Value $entry -ErrorAction SilentlyContinue",
@@ -1510,7 +1674,7 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             r"        $prevEap = $ErrorActionPreference",
             r"        $ErrorActionPreference = 'Continue'",
             r"        try {",
-            r"            $recordOutput = $outStr | & $py $pyHelper record-pause --dir $pauseStateDir --model $model 2>&1 | Out-String",
+            r"            $recordOutput = $scan | & $py $pyHelper record-pause --dir $pauseStateDir --model $model 2>&1 | Out-String",
             r"            $recordExit = $LASTEXITCODE",
             r"        } finally { $ErrorActionPreference = $prevEap }",
             r"        if ($recordExit -ne 0) {",
@@ -3269,9 +3433,41 @@ _OUT_OF_FUEL_RX = re.compile(
 DEFAULT_DIGEST_REPORT_URL = "https://bob.ntsa.uk/bob/v1/report"
 
 
+# Instructional quotations (skill / task text) are not a provider response.
+# Backtick spans are dropped. Single- and double-quoted *stock phrases* are
+# dropped (not arbitrary apostrophe spans --- provider lines like
+# ``Provider's response: 402 ...`` must still hold; MRB #6231).
+# A quoted stock phrase is dropped only when the line has no unquoted
+# HTTP/status code, so a real ``status_code=402 "usage balance exhausted"``
+# line still holds.
+_BACKTICK_SPAN_RX = re.compile(r"`[^`]*`")
+_QUOTED_STOCK_FUEL_MENTION_RX = re.compile(
+    r"['\"](?:402\s*Payment\s*Required|Payment\s*Required|usage\s+balance\s+exhausted|NEEDS_AUTH|OUTCOME_NEEDS_AUTH)['\"]",
+    re.IGNORECASE,
+)
+_SHORT_DOUBLE_MENTION_RX = _QUOTED_STOCK_FUEL_MENTION_RX  # back-compat alias
+_UNQUOTED_PROVIDER_STATUS_RX = re.compile(
+    r"(?i)(?:\bhttp\b|\bstatus(?:_code| code)?\b)\D{0,12}\b(402|429)\b"
+)
+
+
+def provider_fuel_scan_text(text: str) -> str:
+    """Text the fuel detector may treat as a provider response.
+
+    Skill lines quote ``402 Payment Required`` as an instruction. That quotation
+    must not arm a hold. A bare provider line, or the same phrase beside an
+    unquoted status code, still scans.
+    """
+    raw = text or ""
+    cleaned = _BACKTICK_SPAN_RX.sub(" ", raw)
+    if _UNQUOTED_PROVIDER_STATUS_RX.search(cleaned):
+        return cleaned
+    return _QUOTED_STOCK_FUEL_MENTION_RX.sub(" ", cleaned)
+
+
 def is_out_of_fuel_text(text: str) -> bool:
     """True when agent/log text is a provider fuel/quota/auth exhaustion (FR #3012 / #3019)."""
-    return bool(_OUT_OF_FUEL_RX.search(text or ""))
+    return bool(_OUT_OF_FUEL_RX.search(provider_fuel_scan_text(text)))
 
 
 # FR #4858: hard API 402 / usage-balance-exhausted (not mid-job reading, not NEEDS_AUTH).
@@ -3290,7 +3486,7 @@ def is_hard_402_out_of_fuel_text(text: str) -> bool:
 
     Mid-job fuel-reading GIVEUP text and NEEDS_AUTH are out-of-fuel but not hard 402.
     """
-    return bool(_HARD_402_OUT_OF_FUEL_RX.search(text or ""))
+    return bool(_HARD_402_OUT_OF_FUEL_RX.search(provider_fuel_scan_text(text)))
 
 
 def out_of_fuel_reading_clears_hard_hold(
@@ -9205,6 +9401,7 @@ def main(argv: Optional[list] = None) -> int:
     p.add_argument("--no-tls", action="store_true", help="tests only")
     p.add_argument("--dry-run", action="store_true", help="print the agent selection as JSON and exit (starts nothing)")
     p.add_argument("--list-agents", action="store_true", help="print installed agent choices as JSON and exit (starts nothing)")
+    p.add_argument("--refresh-fuel", action="store_true", help="with --list-agents, read each provider on its own short budget and cache the result")
     p.add_argument("--describe-launch", action="store_true", help="FR #2413/MRB #2417: print describe_worker_exe_launch JSON and exit (tray/CLI shared plan)")
     p.add_argument("--echo", action="store_true", help="also print the log to stdout")
     p.add_argument(
@@ -9249,13 +9446,33 @@ def main(argv: Optional[list] = None) -> int:
     log = Log(_state_root() / "logs" / f"bob-worker-{args.mode}.log", echo=args.echo)
     if args.list_agents or args.dry_run:
         cc, ge, oe = resolve_cursor_cmd(), resolve_grok_exe(), resolve_opencode_cmd()
-        fuel = read_fuel(Path(args.install_root))
         auth_present = opencode_auth_file_present()
         if args.list_agents:
+            # Menu listing must return without the 90s combined fuel read. A fresh
+            # cache is shown as known. Otherwise the rows stay clickable and unknown,
+            # and --refresh-fuel fills the cache one provider at a time.
+            refresh = False
+            readings_known = False
+            if args.refresh_fuel:
+                fuel = read_fuel_bounded(Path(args.install_root))
+                save_agent_list_fuel(fuel)
+                readings_known = True
+            else:
+                cached = load_fresh_agent_list_fuel()
+                if cached is not None:
+                    fuel = cached
+                    readings_known = True
+                else:
+                    fuel = Fuel()
+                    refresh = True
             print(json.dumps({
-                "agents": list_worker_agents(fuel, cc, ge, oe, auth_present=auth_present),
+                "agents": list_worker_agents(
+                    fuel, cc, ge, oe, auth_present=auth_present, readings_known=readings_known
+                ),
+                "refresh": refresh,
             }, sort_keys=True))
             return EXIT_OK
+        fuel = read_fuel(Path(args.install_root))
         dec = select_agent(fuel, cc, ge)
         dec = resolve_seat_decision(
             args.agent, dec, fuel, cc, ge, oe, auth_present=auth_present
