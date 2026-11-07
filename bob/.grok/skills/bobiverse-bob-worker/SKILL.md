@@ -50,7 +50,9 @@ click = one `bob-worker.exe` = one window. `Plan` is the same (`--mode plan`, no
 * Ctrl+C is the agent's own key (the exe ignores it). The relay types into this same console's input, so you can also type in the window yourself.
 * The Grok key prompt (when no tokens remain) appears **inside this same window**, input hidden - no dialog.
 
-## Which agent starts - automatic, by token availability (never a menu choice)
+## Which agent starts
+
+Automatic order, used when Agents → Automatic is chosen or `--agent` is omitted:
 
 1. **Grok** `agent.exe` (`%USERPROFILE%\.grok\bin\agent.exe`) when the local weekly reading (`unified.jsonl`, Grok 1.0.41 may report no % but a verified
    local login + current weekly period = available) shows tokens, **or when the Grok reading is unknown** (FR #3997: unknown counts as available for seat start; mid-job still uses explicit exhausted only, FR #3923).
@@ -58,6 +60,8 @@ click = one `bob-worker.exe` = one window. `Plan` is the same (`--mode plan`, no
 3. else **OpenCode** `opencode.exe` when free or Go fuel has more than 0 % left (FR #6120). The OpenCode model is chosen from per-model fuel readings in fallback order.
 4. else a **prompt in the worker window** asks for an `XAI_API_KEY` for this start only (hidden input): kept in memory, handed to the child's environment, never written to disk, never printed or
    logged. Cancel = nothing starts (exit 4).
+
+The compiled tray **Agents** menu (`bob-tray.exe` / `BobTray.cs`) lists Automatic plus Grok, Cursor, and OpenCode. **Plan** stays one click. An explicit row passes `--agent grok|cursor|opencode` and starts only that agent. A missing command, or OpenCode with no real usable fuel (Go-only also needs `auth.json` present, body never read), refuses and does not start another agent. Preview: `bob-worker.exe --list-agents --install-root <ai root>\bob`. One explicit seat, after rebuilding both `bob-tray.exe` (`scripts\Build-BobDialogs.ps1`) and `bob-worker.exe` (`scripts\Build-BobWorker.ps1`): `bob-worker.exe --mode agent --agent opencode --install-root <ai root>\bob --machine-id <machine>`. Fuel helper on disk is `scripts\opencode_fuel.py`.
 
 An unknown **Grok** reading is available for seat start (FR #3997). An unknown **Cursor** pool reading is "not available" (falls through). An unknown **OpenCode** reading is also "not available". Readings come from `<ai root>\bob\tools\Get-BobAgentFuel.ps1` (the tray's own local readers:
 `Get-BobCursorAgentWeeklyRemaining` via `Get-CursorAgentUsage.py`, `Get-BobWeeklyRemaining`, `Get-BobGrokAvailability`, `Get-BobOpencodeFuel.ps1`; no digest GET).

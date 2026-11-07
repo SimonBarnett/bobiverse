@@ -285,6 +285,17 @@ def test_ear_pm_gets_a_pm_reply_and_ignores_itself_and_chair_ears(bob, tmp_path)
     assert bob._maybe_startworker("Simon", "#marchhare", "hello", to_channel=True, to_me=False) is False
 
 
+def test_write_request_records_explicit_opencode_agent(tmp_path):
+    qd = tmp_path / "run" / "startworker"
+    rid = sw.write_request(qd, "agent", "Simon", "owner", agent="opencode")
+    body = json.loads((qd / f"req-{rid}.json").read_text(encoding="utf-8"))
+    assert body["mode"] == "agent"
+    assert body["agent"] == "opencode"
+    rid_auto = sw.write_request(qd, "agent", "Simon", "owner")
+    auto = json.loads((qd / f"req-{rid_auto}.json").read_text(encoding="utf-8"))
+    assert "agent" not in auto
+
+
 def test_dispatch_runs_before_the_other_command_handlers():
     src = (REPO / "common" / "scripts" / "irc_agent.py").read_text(encoding="utf-8")
     assert src.index("self._maybe_startworker(src, target, body") < src.index("bobtalk.parse_recycle_command(body)")
@@ -357,7 +368,9 @@ def test_tray_wiring_timer_heartbeat_helper_and_click_function_contract():
     w = (TRAY_TOOLS / "Watch-BobTray.ps1").read_text(encoding="utf-8")
     assert "'BobTrayStartWorker.ps1'" in w
     assert "Invoke-BobTrayStartWorkerQueue -Dir $script:startWorkerDir" in w
-    assert "Start-BobTrayWorkerExe -Mode $mode -Quiet" in w                    # the SAME function as the Agent / Plan click
+    # Queue launch is the same function as a menu click, and it forwards the requested agent.
+    assert "Start-BobTrayWorkerExe -Mode $mode -Agent $agent -Quiet" in w
+    assert "$miPlan.Add_Click({ Start-BobTrayWorkerExe -Mode 'plan' })" in w
     assert "$startWorkerTimer.Start()" in w and "$startWorkerTimer.Stop()" in w
     assert "Write-BobTrayAlive" in w and "'tray.alive'" in w                   # heartbeat removed on exit => ear NACKs at once
     # FR #2697: heartbeat must not share the WinForms UI thread with the 30s poll refresh.
@@ -368,7 +381,37 @@ def test_tray_wiring_timer_heartbeat_helper_and_click_function_contract():
     i = w.index("function Start-BobTrayWorkerExe")
     body = w[i:w.index("$script:attention = $false", i)]
     assert "[switch]$Quiet" in body and "return [int]$childPid" in body and "-not $Quiet" in body
-    assert "Start-BobTrayWorkerExe -Mode 'agent' })" in w                      # the click still works unchanged
+    assert "--agent" in body
+    # Click uses the event sender. An empty tag must not start Automatic.
+    click = w[w.index("$item.Add_Click"): w.index("$item.Add_Click") + 700]
+    assert "param($sender, $e)" in click and "$sender.Tag" in click
+    assert "agents menu click missing tag; not starting" in click
+    menu_fn = w[w.index("function Update-BobTrayWorkerAgentsMenu"): w.index("function Start-BobTrayWorkerAgentsRefresh")]
+    assert "\u2014" not in menu_fn and "param($sender, $e)" in menu_fn
+    probe = w[w.index("function Get-BobTrayWorkerAgentChoices"): w.index("function Update-BobTrayWorkerAgentsMenu")]
+    assert "WaitForExit(8000)" in probe and "& $exe" not in probe
+    assert "RedirectStandardOutput" in probe and "Start-Process" in probe
+    refresh = w[w.index("function Start-BobTrayWorkerAgentsRefresh"): w.index("$notify = New-Object System.Windows.Forms.NotifyIcon")]
+    assert "CreateRunspace" in refresh and "BeginInvoke" in refresh
+    # Engine mode must not call --list-agents while the script is still starting.
+    assert "Do not call --list-agents here" in w
+    assert w.count("Update-BobTrayWorkerAgentsMenu $miAgents") == 1
+    opening = w[w.index("$miAgents.Add_DropDownOpening"): w.index("$miPlan = $menu.Items.Add('Plan')")]
+    assert "Test-BobTrayEngineMode) { return }" in opening
+    assert "Start-BobTrayWorkerAgentsRefresh $miAgents" in opening
+    assert "Get-BobTrayWorkerAgentChoices" not in opening
+    cs = (ROOT / "bob" / "tray" / "dialogs" / "BobTray.cs").read_text(encoding="utf-8-sig")
+    assert 'new ToolStripMenuItem("Agents")' in cs
+    assert 'Item("Plan"' in cs
+    assert 'Item("Agent"' not in cs
+    assert "TryListAgents" in cs and "BeginRefreshAgentChoices" in cs
+    assert "OnAgentChoiceClick" in cs and "mi.Tag = id" in cs
+    assert "ThreadPool.QueueUserWorkItem" in cs
+    listed = cs[cs.index("public static string TryListAgents"): cs.index("internal static class RobotIcon")]
+    assert listed.index("WaitForExit(timeoutMs)") < listed.index("ReadToEnd")
+    # Constructor seeds the menu and does not call the worker.
+    ctor = cs[cs.index("public TrayContext"): cs.index("void StartEngine")]
+    assert "SeedAgentChoices" in ctor and "TryListAgents" not in ctor
     sync = (ROOT / "scripts" / "Sync-BobTrayFromAgenticBuild.ps1").read_text(encoding="utf-8")
     assert "BobTrayStartWorker.ps1" in sync                                    # survives a vendor re-sync
 

@@ -88,13 +88,21 @@ function Invoke-BobTrayStartWorkerQueue {
         if (-not $req) { $reason = 'unreadable' }
         else {
             $mode = [string]$req.mode
+            $agent = ''
+            if ($req.PSObject.Properties.Name -contains 'agent') { $agent = ([string]$req.agent).Trim().ToLowerInvariant() }
             $expires = [DateTimeOffset]::FromUnixTimeSeconds([int64]$req.expires).UtcDateTime
             if ($mode -notin @('agent', 'plan')) { $reason = 'bad-mode' }
+            elseif ($agent -and $agent -notin @('auto', 'grok', 'cursor', 'opencode')) { $reason = 'bad-agent' }
             elseif ($Now -gt $expires) { $reason = 'expired' }
             elseif ((Get-BobTrayWorkerCapRefusal -Mode $mode)) { $reason = 'cap' }
             else {
                 try {
-                    $pidOut = [int](@(& $Launch $mode)[-1])
+                    if ($agent -and $agent -ne 'auto') {
+                        $pidOut = [int](@(& $Launch $mode $agent)[-1])
+                    }
+                    else {
+                        $pidOut = [int](@(& $Launch $mode)[-1])
+                    }
                     if ($pidOut -gt 0) { $ok = $true } else { $reason = 'launch-failed' }
                 }
                 catch { $reason = 'launch-error: ' + $_.Exception.Message }

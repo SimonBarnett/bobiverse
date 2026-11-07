@@ -182,8 +182,18 @@ Run on each box after install/repair. The script **never** reads `auth.json` bod
 ```
 
 Exit codes: 1 opencode missing, 2 auth missing/unrestricted ACL, 3 pong fail, 4 dry-run/worker, 5 unexpected (see Assert-BobOpencodeFleetSmoke.ps1 header). Non-zero when opencode is missing, auth is absent/unrestricted, pong fails, or bob-worker --dry-run cannot see opencode_cmd. Opt-outs: `-SkipPong`,
-`-SkipDryRun`, `-SkipAuth`. Optional `-RequireOpencodeDecision` when fuel fixtures
-should force `decision=opencode`.
+`-SkipDryRun`, `-SkipAuth`. Optional `-RequireOpencodeDecision` only asserts a dry-run
+that already selected OpenCode. It does not change selection and must not be used
+with a faked empty Grok reading.
+
+## One explicit OpenCode seat
+
+Automatic selection stays Grok, then Cursor, then OpenCode. To start OpenCode while Grok still has fuel, rebuild `bob-worker.exe` from this tree, keep `scripts\opencode_fuel.py` on the install (pack union of `common\scripts`), then either:
+
+- tray **Agents → OpenCode** (the row shows the real reason and stays disabled when the command or fuel is missing), or
+- `& <ai root>\bob\worker\bob-worker.exe --mode agent --agent opencode --install-root <ai root>\bob --machine-id <machine>`
+
+A tray request file may also set `"agent":"opencode"` beside `"mode":"agent"`. The worker starts OpenCode only when `opencode.exe` resolves and fuel is really usable (`free` or `go` above 0). Go-only fuel also needs `%USERPROFILE%\.local\share\opencode\auth.json` to exist. The file body is never read. If that check fails the process exits without starting Grok or Cursor. Do not copy Git or `gh` tokens into `auth.json`.
 
 Ops roll call (machine ids only, no secrets): `bob/docs/opencode-fleet-enabled.md`.
 Trial metrics template lives in that same doc.

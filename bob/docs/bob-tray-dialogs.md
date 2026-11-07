@@ -42,10 +42,10 @@ now owns everything the user touches: the notify icon and its robot images (idle
 pre-created, so the first right-click is as fast as the tenth), click / double-click handling, the flashing, and the hover text.
 It runs the Status and About windows in-process (no second process to start).
 
-* **Menu**: **Status** (bold, the default), Agent, Plan, Acknowledge, Open log, separator, Restart, Reload engine (FR #5111), Exit. Left click = acknowledge + Status;
-  double click = Status.
-* **Agent / Plan** are native: the 2-worker cap is the **union** of IRC agent seat marker pids (live) and live agent `bob-worker` roots (FR #3181 / FR #4307 / MRB #4311), the worker exe is run from the sha256
-  run-copy under `%LOCALAPPDATA%\Bobiverse\worker\bin`, and it opens its own console window (same rules as the PowerShell launcher).
+* **Menu**: **Status** (bold, the default), **Agents** (Automatic, Grok, Cursor, OpenCode), **Plan**, Acknowledge, Open log, separator, Restart, Reload engine (FR #5111), Exit. Left click = acknowledge + Status;
+  double click = Status. Agents does not call `bob-worker --list-agents` while the icon is created. Opening the submenu refreshes that list on a background thread (8s cap). An older worker without `--list-agents` leaves the explicit rows disabled.
+* **Agents / Plan** are native (`BobTray.cs` `WorkerLauncher.Launch`). Plan stays one click with no `--agent`. Automatic omits `--agent`. Grok, Cursor, and OpenCode pass `--agent` and the worker refuses instead of starting a different agent. The 2-worker cap is the **union** of IRC agent seat marker pids (live) and live agent `bob-worker` roots (FR #3181 / FR #4307 / MRB #4311). The worker exe runs from the sha256
+  run-copy under `%LOCALAPPDATA%\Bobiverse\worker\bin`, and it opens its own console window (same rules as the PowerShell launcher). Rebuild `bob-tray.exe` and `bob-worker.exe` together (`scripts\Build-BobDialogs.ps1`, `scripts\Build-BobWorker.ps1`). Keep `scripts\opencode_fuel.py` on the install.
 * **The engine** - the data collection (digest, Grok / Cursor pools, alerts, BobBridge) is still PowerShell. `bob-tray.exe` starts
   `tools\_Watch-BobTray-<machine>.ps1` hidden with `BOB_TRAY_ENGINE=1` and `BOB_TRAY_EXE_PID`; in that mode the script never shows an icon.
   Exe and engine talk only through files in `<root>\run`: `tray-status.json` (engine -> exe: `short` hover text, `alert`, `attention`,

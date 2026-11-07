@@ -79,14 +79,16 @@ def _fn(text: str, name: str) -> str:
 
 
 # ------------------------------------------------------------------------------------------------ tray menu structure
-def test_tray_agent_and_plan_are_plain_single_click_items_without_submenus():
+def test_tray_agents_menu_lists_choices_and_plan_stays_one_click():
     t = _tray()
     block = t[t.index("$miStatus = $menu.Items.Add('Status')"): t.index("$notify.ContextMenuStrip = $menu")]
-    assert "$menu.Items.Add('Agent')" in block and "$menu.Items.Add('Plan')" in block
-    assert "Add('Agents')" not in block and ".Text = 'Agents'" not in block
-    assert "DropDown" not in block
-    assert "$miAgents.Add_Click({ Start-BobTrayWorkerExe -Mode 'agent' })" in block
+    assert "$menu.Items.Add('Agents')" in block and "$menu.Items.Add('Plan')" in block
+    assert "Update-BobTrayWorkerAgentsMenu" in block
+    assert "DropDownOpening" in block
     assert "$miPlan.Add_Click({ Start-BobTrayWorkerExe -Mode 'plan' })" in block
+    assert "Get-BobTrayWorkerAgentChoices" in t
+    assert "--list-agents" in t
+    assert "Start-BobTrayWorkerExe -Mode 'agent' -Agent" in t
     for gone in ("Build-BobTrayAgentsMenu", "Build-BobTrayPlanMenu", "Start-BobTrayPlanAgent", "New-BobTrayPlanWorkspace", "BobPlans"):
         assert gone not in t, gone
     assert "function Stop-BobTrayAgentWatchSeat" in t      # #32: seats are never killed by the tray on its own
@@ -245,7 +247,8 @@ def test_stage_has_worker_plan_folders_and_the_exe_inputs(bob_stage):
     for j in JOB_SKILLS:                                       # the bob book (install root) carries them too
         assert (s / ".grok" / "skills" / j / "SKILL.md").is_file(), j
     tray = (s / "tools" / "Watch-BobTray.ps1").read_text(encoding="utf-8-sig")
-    assert "Start-BobTrayWorkerExe" in tray and "Build-BobTrayAgentsMenu" not in tray
+    assert "Start-BobTrayWorkerExe" in tray and "Update-BobTrayWorkerAgentsMenu" in tray
+    assert "Build-BobTrayAgentsMenu" not in tray
 
 
 def test_stage_skills_carry_the_harvest_rule_with_install_absolute_paths(bob_stage):
