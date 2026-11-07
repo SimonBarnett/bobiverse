@@ -20,6 +20,11 @@ def test_fr002_assert_has_expected_url_and_check_public():
     assert "CheckPublic" in s
     assert "Get-BobDigestReportUrl" in s
     assert "Get-BobDigestUrl" in s
+    # Parameter default must be the canonical URL (not only a blank-value fallback).
+    assert "[string]$ExpectedReportUrl = 'https://bob.ntsa.uk/bob/v1/report'" in s
+    # MRB #6165: tray override pin (Get-BobTrayDigestReportUrl / BOB_DIGEST_REPORT_URL).
+    assert "BOB_DIGEST_REPORT_URL" in s
+    assert "tray env:BOB_DIGEST_REPORT_URL" in s
     # Opt-in GET only; no POST / RestMethod in the public probe path.
     pub = s[s.index("if ($CheckPublic)") : s.index("if ($urlFail.Count")]
     assert "Invoke-WebRequest" in pub

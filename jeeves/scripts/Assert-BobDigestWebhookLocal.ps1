@@ -107,8 +107,15 @@ if ([string]$resolvedPost -ne $expected) {
     $urlFail += ("POST Get-BobDigestReportUrl expected={0} got={1} source={2}" -f $expected, $resolvedPost, $src)
 }
 if ([string]$resolvedGet -ne $expected) {
-    $src = if ($env:BOB_DIGEST_URL) { 'env:BOB_DIGEST_URL' } elseif ($env:BOB_DIGEST_REPORT_URL) { 'env:BOB_DIGEST_REPORT_URL' } else { 'config digestUrl/reportUrl or default' }
+    # Get-BobDigestUrl reads BOB_DIGEST_URL / config only (not BOB_DIGEST_REPORT_URL).
+    $src = if ($env:BOB_DIGEST_URL) { 'env:BOB_DIGEST_URL' } else { 'config digestUrl/reportUrl or default' }
     $urlFail += ("GET Get-BobDigestUrl expected={0} got={1} source={2}" -f $expected, $resolvedGet, $src)
+}
+# MRB #6165 / CodeRabbit Major: tray GET uses Get-BobTrayDigestReportUrl -> BOB_DIGEST_REPORT_URL.
+# Get-BobDigestUrl can still resolve to the canonical default while the tray override points at irc.
+$trayOverride = ([string]$env:BOB_DIGEST_REPORT_URL).Trim()
+if ($trayOverride -and $trayOverride -ne $expected) {
+    $urlFail += ("tray env:BOB_DIGEST_REPORT_URL expected={0} got={1}" -f $expected, $trayOverride)
 }
 if ($CheckPublic) {
     # Opt-in read-only public probe (Watch-BobWebhooks pattern). Never print body.

@@ -76,8 +76,10 @@ def test_fr6142_assert_and_skills_cite_bob_host():
     """FR #6142: Assert default + active skills cite bob.ntsa.uk for report (IRC stays separate)."""
     assert_ps = (ROOT / "jeeves/scripts/Assert-BobDigestWebhookLocal.ps1").read_text(encoding="utf-8")
     assert "ExpectedReportUrl" in assert_ps
+    assert "[string]$ExpectedReportUrl = 'https://bob.ntsa.uk/bob/v1/report'" in assert_ps
     assert "https://bob.ntsa.uk/bob/v1/report" in assert_ps
     assert "CheckPublic" in assert_ps
+    assert "tray env:BOB_DIGEST_REPORT_URL" in assert_ps
     plan = (ROOT / "bob/agents/plan/.grok/skills/plan-bob-webhooks/SKILL.md").read_text(encoding="utf-8")
     assert "bob/tray/config/bobiverse.json" in plan
     never = plan.split("Never point a GitHub hook", 1)[1].split("## Gate", 1)[0]
