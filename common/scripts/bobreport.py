@@ -2195,15 +2195,13 @@ def _apply_merge_payload(doc: dict, mid: str, payload: dict) -> list[str]:
         ent.pop("weekly", None)
     # FR #976: reporter says weekly is unknown — clear a stuck 0 (lesser ratchet left 0 forever).
     weekly_known = payload.get("weekly_known")
-    if weekly_known is False or (
-        "weekly_known" in payload and weekly_known in (0, "false", "False", "0", "")
-    ):
+    if "weekly_known" in payload and _is_false_like(weekly_known):
         ent.pop("weekly", None)
     # FR #6144: cursor_known=false clears Cursor group; omit keeps legacy merge.
     cursor_known_raw = payload.get("cursor_known") if "cursor_known" in payload else None
     cursor_unknown = False
     if "cursor_known" in payload:
-        if cursor_known_raw is False or cursor_known_raw in (0, "false", "False", "0", ""):
+        if _is_false_like(cursor_known_raw):
             cursor_unknown = True
             ent["cursor_known"] = False
             for ck in _CURSOR_UNKNOWN_CLEAR_FIELDS:
@@ -2278,9 +2276,7 @@ def _apply_merge_payload(doc: dict, mid: str, payload: dict) -> list[str]:
             continue
         if key in ("weekly",) and val is not None:
             # FR #976: skip write when reporter marked weekly unknown (cleared above).
-            if weekly_known is False or (
-                "weekly_known" in payload and weekly_known in (0, "false", "False", "0", "")
-            ):
+            if "weekly_known" in payload and _is_false_like(weekly_known):
                 continue
             # Per-machine weekly is replace-latest (not min-ratchet).
             ent[key] = val
@@ -4048,6 +4044,33 @@ DEFAULT_DIGEST_FUEL_HEARTBEAT_S = 30.0
 DIGEST_FUEL_DELTA_ENV = "BOB_EAR_DIGEST_FUEL_DELTA_S"
 DEFAULT_DIGEST_FUEL_DELTA_S = 5.0
 DIGEST_FUEL_MAX_LAG_S = DEFAULT_DIGEST_FUEL_DELTA_S
+_FALSE_LIKE_VALUES = (0, "false", "False", "0", "")
+
+
+def _is_false_like(raw: object) -> bool:
+    """Chair/ear agree: False or false-like scalars count as unknown/false."""
+    return raw is False or raw in _FALSE_LIKE_VALUES
+
+
+def _normalize_peer_cursor_known(peer: dict) -> bool | None:
+    """Tri-state cursor_known from peer JSON for ear publish (FR #6188).
+
+    True/False when the peer carries an explicit flag (bool or false-like scalar).
+    None when the key is absent or the value is None --- omit on the wire so the
+    chair keeps legacy merge for old peers. Do not infer from Cursor measurements.
+    """
+    if not isinstance(peer, dict) or "cursor_known" not in peer:
+        return None
+    raw = peer.get("cursor_known")
+    if raw is None:
+        return None
+    if isinstance(raw, bool):
+        return raw
+    if _is_false_like(raw):
+        return False
+    return True
+
+
 _FUEL_PUBLISH_EXTRA_FIELDS = (
     "weekly_known",
     "remaining_pct",
@@ -4097,6 +4120,8 @@ def peer_fuel_fingerprint(peer: dict) -> str:
     if not isinstance(peer, dict):
         return ""
     parts: list[str] = []
+    # FR #6188: normalised cursor_known so flag-only flips POST before heartbeat.
+    parts.append(f"cursor_known={_normalize_peer_cursor_known(peer)!s}")
     for key in (
         "weekly",
         "weekly_known",
@@ -4185,6 +4210,10 @@ def build_peer_fuel_merge_payload(peer: dict, machine_id: str) -> dict | None:
     elif peer.get("weekly_known") is False:
         weekly_known = False
     payload["weekly_known"] = weekly_known
+    # FR #6188: forward explicit cursor_known as JSON bool; omit when absent/null.
+    cursor_known = _normalize_peer_cursor_known(peer)
+    if cursor_known is not None:
+        payload["cursor_known"] = cursor_known
     for key in _MERGE_PEER_FIELDS:
         if key in ("weekly", "lastSeen", "online", "status"):
             continue
