@@ -862,6 +862,91 @@ function Format-BobResetLabel {
     catch { return $null }
 }
 
+
+function Format-BobOpencodePoolLine {
+    <#
+    .SYNOPSIS
+      TipForm/Status OpenCode free/go line (FR #6147 / FR-007). Unknown = n/a.
+    #>
+    param(
+        $FreePct = $null,
+        $GoPct = $null,
+        $Pool = $null
+    )
+    if ($Pool) {
+        if ($null -eq $FreePct) {
+            try {
+                if ($null -ne $Pool.free) { $FreePct = $Pool.free }
+                elseif ($null -ne $Pool.'opencode-free') { $FreePct = $Pool.'opencode-free' }
+                elseif ($null -ne $Pool.opencode_free) { $FreePct = $Pool.opencode_free }
+            } catch { }
+        }
+        if ($null -eq $GoPct) {
+            try {
+                if ($null -ne $Pool.go) { $GoPct = $Pool.go }
+                elseif ($null -ne $Pool.'opencode-go') { $GoPct = $Pool.'opencode-go' }
+                elseif ($null -ne $Pool.opencode_go) { $GoPct = $Pool.opencode_go }
+            } catch { }
+        }
+    }
+    $freeKnown = Test-BobTrayRemainingKnown $FreePct
+    $goKnown = Test-BobTrayRemainingKnown $GoPct
+    if (-not $freeKnown -and -not $goKnown) { return 'OpenCode  n/a' }
+    $freeBit = if ($freeKnown) { ('{0}%' -f [int]$FreePct) } else { 'n/a' }
+    $goBit = if ($goKnown) { ('{0}%' -f [int]$GoPct) } else { 'n/a' }
+    return ('OpenCode  free {0} | go {1}' -f $freeBit, $goBit)
+}
+
+function Get-BobOpencodePaintFromDigest {
+    <#
+    .SYNOPSIS
+      Read machines.<id>.pcent opencode-free/go from a report digest (FR #6147).
+    #>
+    param(
+        $Digest,
+        [string]$MachineId = ''
+    )
+    $free = $null
+    $go = $null
+    if (-not $Digest -or -not $Digest.machines) {
+        return [pscustomobject]@{ free = $null; go = $null }
+    }
+    $mids = @()
+    if ($MachineId) { $mids += ,([string]$MachineId.Trim().ToLowerInvariant()) }
+    try {
+        foreach ($p in @($Digest.machines.PSObject.Properties)) {
+            $n = [string]$p.Name
+            if ($n) { $mids += ,($n.Trim().ToLowerInvariant()) }
+        }
+    } catch { }
+    $seen = @{}
+    foreach ($mid in $mids) {
+        if (-not $mid -or $seen.ContainsKey($mid)) { continue }
+        $seen[$mid] = $true
+        $ent = $null
+        try { $ent = $Digest.machines.$mid } catch { $ent = $null }
+        if (-not $ent) {
+            try {
+                foreach ($p in @($Digest.machines.PSObject.Properties)) {
+                    if ([string]$p.Name.Trim().ToLowerInvariant() -eq $mid) { $ent = $p.Value; break }
+                }
+            } catch { }
+        }
+        if (-not $ent -or -not $ent.pcent) { continue }
+        $pc = $ent.pcent
+        try {
+            if ($null -ne $pc.'opencode-free' -and [string]$pc.'opencode-free' -ne '') { $free = $pc.'opencode-free' }
+            elseif ($null -ne $pc.opencode_free -and [string]$pc.opencode_free -ne '') { $free = $pc.opencode_free }
+        } catch { }
+        try {
+            if ($null -ne $pc.'opencode-go' -and [string]$pc.'opencode-go' -ne '') { $go = $pc.'opencode-go' }
+            elseif ($null -ne $pc.opencode_go -and [string]$pc.opencode_go -ne '') { $go = $pc.opencode_go }
+        } catch { }
+        if ((Test-BobTrayRemainingKnown $free) -or (Test-BobTrayRemainingKnown $go)) { break }
+    }
+    return [pscustomobject]@{ free = $free; go = $go }
+}
+
 function Format-BobCopilotPoolLine {
     <#
     .SYNOPSIS
@@ -2735,6 +2820,10 @@ function Get-BobTrayHover {
         if ($ghPosting.issue_posting_ready) { $ghLine = 'GitHub issue post: ready' }
         else { $ghLine = 'GitHub issue post: not ready' }
     }
+    # FR #6147: OpenCode free/go from digest pcent (n/a when unknown).
+    $ocPaint = Get-BobOpencodePaintFromDigest -Digest $reportDigest -MachineId $machineId
+    $opencodeLine = Format-BobOpencodePoolLine -FreePct $ocPaint.free -GoPct $ocPaint.go
+    if ($opencodeLine) { $jobLines = @(('  {0}' -f $opencodeLine)) + $jobLines }
     $copilotLine = Format-BobCopilotPoolLine -Pool $(if ($reportDigest -and $reportDigest.copilot) { $reportDigest.copilot } else { $null })
     if ($copilotLine) { $jobLines = @(('  {0}' -f $copilotLine)) + $jobLines }
     $jobsText = (($poolLines + $jobLines) -join "`n")
@@ -2783,6 +2872,9 @@ function Get-BobTrayHover {
         account_period_end = $(if ($cursorWeek -and $cursorWeek.period_end) { [string]$cursorWeek.period_end } else { $null })
         account_reset_label = $(if ($cursorWeek -and $cursorWeek.period_end) { Format-BobResetLabel -PeriodEnd $cursorWeek.period_end -FetchedAt $cursorWeek.fetched_at } else { $null })
         gh_posting          = $ghPosting
+        opencode_free       = $ocPaint.free
+        opencode_go         = $ocPaint.go
+        opencode_line       = $opencodeLine
         copilot_pool        = $(if ($reportDigest -and $reportDigest.copilot) { $reportDigest.copilot } else { $null })
         copilot_line        = $(Format-BobCopilotPoolLine -Pool $(if ($reportDigest -and $reportDigest.copilot) { $reportDigest.copilot } else { $null }))
         chair_channels      = $(

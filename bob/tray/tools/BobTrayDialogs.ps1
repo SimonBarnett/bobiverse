@@ -1,4 +1,4 @@
-﻿#Requires -Version 5.1
+#Requires -Version 5.1
 # t828u: the Acknowledge (About) and Status dialogs are compiled exes (tools\bob-about.exe, tools\bob-status.exe; sources in
 # dialogs\). Status shows Grok accounts and the Copilot pool (no Cursor pool bars). The tray only (a) writes the status snapshot
 # <root>\run\tray-status.json after every poll and (b) starts the exe.
@@ -96,6 +96,19 @@ function New-BobTrayStatusModel {
         $copilotLine = Format-BobCopilotPoolLine -Pool $copilotPool
     }
     if (-not $copilotLine) { $copilotLine = 'Copilot  unknown' }
+    # FR #6147: OpenCode free/go on Status snapshot (n/a when unknown).
+    $opencodeLine = ''
+    $opencodeFree = $null
+    $opencodeGo = $null
+    if ($h) {
+        $opencodeLine = [string]$h.opencode_line
+        $opencodeFree = $h.opencode_free
+        $opencodeGo = $h.opencode_go
+    }
+    if (-not $opencodeLine -and (Get-Command Format-BobOpencodePoolLine -ErrorAction SilentlyContinue)) {
+        $opencodeLine = Format-BobOpencodePoolLine -FreePct $opencodeFree -GoPct $opencodeGo
+    }
+    if (-not $opencodeLine) { $opencodeLine = 'OpenCode  n/a' }
     return [ordered]@{
         v         = 1
         ts        = [int64][DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
@@ -108,6 +121,9 @@ function New-BobTrayStatusModel {
         overspend = $over
         cursor    = @($cursor.ToArray())
         grok      = @($grok.ToArray())
+        opencode_free = $opencodeFree
+        opencode_go = $opencodeGo
+        opencode_line = $opencodeLine
         copilot_pool = $copilotPool
         copilot_line = $copilotLine
         alert     = $(if ($AlertKind) { $AlertKind } else { 'none' })
