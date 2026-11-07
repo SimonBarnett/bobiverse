@@ -180,3 +180,56 @@ def test_ack_refuses_when_ignored_row_still_in_queue(_home):
 def test_load_ignored_alias(_home):
     fi.handle_ignore_cmd(_home, "o/a")
     assert fi.load_ignored(_home) == fi.ignored_list(_home) == ["o/a"]
+
+
+def test_requeue_reopened_skips_ignored(_home):
+    """requeue_reopened_issue must pass home so ignored repos stay out of unaccepted."""
+    repo = "SimonBarnett/agentic_fomprep"
+    fi.handle_ignore_cmd(_home, repo)
+    doc = {"v": 1, "unaccepted": [], "accepted": [], "done": []}
+    claim = gitclaim.GitClaim(
+        repo=repo,
+        task="FR",
+        id="#99",
+        event="issues",
+        action="reopened",
+        title="x",
+        body="",
+        labels=(),
+        state="open",
+        line=f"FR {repo}#99",
+        refs=(),
+    )
+    # Seed a done row that reopen would otherwise promote.
+    doc["done"] = [_row(repo, "FR", 99, 1)]
+    changed = gitclaim.requeue_reopened_issue(
+        doc, claim, via="test", actor="simon", home=_home
+    )
+    assert changed == "skipped"
+    assert doc.get("unaccepted") == []
+    assert len(doc.get("done") or []) == 1
+
+
+def test_ignored_ack_drops_accepted_row(_home):
+    repo = "o/ignored"
+    nick = "redqueen-1"
+    accepted = _row(repo, "FR", 7, 1, nick=nick, accepted_ts=gitclaim._utc_now())
+    _queue(_home, [], accepted=[accepted])
+    fi.handle_ignore_cmd(_home, repo)
+    # Force accepted row back (simulate purge lock timeout leaving accepted).
+    _queue(_home, [], accepted=[accepted])
+    st, job = shop_listen.accept_job_by_ref(
+        _home,
+        nick=nick,
+        channel="#redqueen",
+        repo=repo,
+        task="FR",
+        ident="#7",
+    )
+    assert st == "ignored" and job is None
+    assert gitclaim.load_unaccepted(_home) == []
+    assert not any(
+        str(r.get("repo")) == repo and str(r.get("id")) == "#7" and str(r.get("nick")) == nick
+        for r in gitclaim.load_accepted(_home)
+        if isinstance(r, dict)
+    )

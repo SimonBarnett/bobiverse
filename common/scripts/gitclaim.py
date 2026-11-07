@@ -2154,6 +2154,12 @@ def requeue_reopened_issue(
     """
     if claim.task != "FR":
         return "noop"
+    # FR #6208: refuse before mutating done/accepted so ignore does not wipe history.
+    if home is not None:
+        import focus_ignore as _fi_ignore
+
+        if _fi_ignore.is_ignored(home, claim.repo):
+            return "skipped"
     removed = pop_done_fr_rows(doc, claim.repo, claim.id)
     # Accepted FR for a reopened issue must not stay claimed.
     before_acc = len(doc.get("accepted") or [])
@@ -2164,7 +2170,7 @@ def requeue_reopened_issue(
     ]
     _remove_unaccepted_tasks(doc, claim.repo, claim.id, {"UAT", "PR"})
     prior = removed[0] if removed else None
-    changed = _append_unaccepted(doc, claim)
+    changed = _append_unaccepted(doc, claim, home=home)
     if changed == "skipped":
         return "skipped"
     # Find the live unaccepted row and stamp reopen metadata.
@@ -12343,7 +12349,7 @@ def resync_from_github(
                     extra_add["url"] = mrb_url
                 if claim.task == "MRB":
                     extra_add.update(mrb_author_extra_from_doc(doc, claim))
-                if _append_unaccepted(doc, claim, **extra_add) == "added":
+                if _append_unaccepted(doc, claim, home=home, **extra_add) == "added":
                     added += 1
                     if prior_done is not None:
                         for r in doc["unaccepted"]:
@@ -12362,7 +12368,7 @@ def resync_from_github(
                 uat = GitClaim(repo=urepo, task="UAT", id="#0", event="repo", action="uat",
                                line=f"UAT {urepo}: all issues closed, all PRs merged ({len(merged)} merged this cycle)",
                                refs=tuple(merged) + tuple(x for x in linked if x not in merged))
-                if _append_unaccepted(doc, uat) == "added":
+                if _append_unaccepted(doc, uat, home=home) == "added":
                     for r in doc["unaccepted"]:
                         if _same(r, urepo, "UAT", "#0"):
                             r["repo_uat"] = True

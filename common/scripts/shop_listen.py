@@ -391,7 +391,8 @@ def accept_job_by_ref(
                     except (OSError, ValueError):
                         doc = None
                     if doc is not None:
-                        before = len(doc.get("unaccepted") or [])
+                        before_u = len(doc.get("unaccepted") or [])
+                        before_a = len(doc.get("accepted") or [])
                         doc["unaccepted"] = [
                             r
                             for r in (doc.get("unaccepted") or [])
@@ -401,7 +402,22 @@ def accept_job_by_ref(
                                 and str(r.get("id") or "") == ident
                             )
                         ]
-                        if len(doc.get("unaccepted") or []) != before:
+                        # FR #6208: also drop a matching accepted row so a timed-out
+                        # !ignore purge cannot leave the seat busy on an ignored repo.
+                        doc["accepted"] = [
+                            r
+                            for r in (doc.get("accepted") or [])
+                            if not (
+                                isinstance(r, dict)
+                                and _fi_ignore.repo_match(repo, str(r.get("repo") or ""))
+                                and str(r.get("id") or "") == ident
+                                and str(r.get("nick") or "") == nick
+                            )
+                        ]
+                        if (
+                            len(doc.get("unaccepted") or []) != before_u
+                            or len(doc.get("accepted") or []) != before_a
+                        ):
                             with contextlib.suppress(OSError):
                                 gitclaim._write_queue(gitclaim.queue_path(home), doc)
             except (TimeoutError, OSError):
@@ -831,12 +847,9 @@ def handle_shop_worker_line(
                     ident=parsed.id,
                 )
             return out
-        try:  # t852u: durable seat ledger (survives resync)
-            gitclaim.ledger_note_event(home, nick, "ACK", parsed.task, parsed.repo, parsed.id, job if isinstance(job, dict) else None)
-        except Exception:  # noqa: BLE001
-            pass
         if st == "missing":
             # FR #6208: missing ACK for an ignored repo is still ignored (not ack-missing hold).
+            # Recheck before ledger_note_event so an ignored ACK never stamps ACK busy.
             try:
                 import focus_ignore as _fi_ignore
 
@@ -853,6 +866,11 @@ def handle_shop_worker_line(
                     return out
             except Exception:  # noqa: BLE001
                 pass
+        try:  # t852u: durable seat ledger (survives resync)
+            gitclaim.ledger_note_event(home, nick, "ACK", parsed.task, parsed.repo, parsed.id, job if isinstance(job, dict) else None)
+        except Exception:  # noqa: BLE001
+            pass
+        if st == "missing":
             # FR #4642: a re-ACK of a job this seat already DONE'd must not recreate
             # an ack-missing hold (lost follow-up DONE then nak-busy forever).
             if gitclaim.seat_done_without_later_offer(
