@@ -17,7 +17,7 @@ $ErrorActionPreference = 'SilentlyContinue'
 $WarningPreference = 'SilentlyContinue'
 $ProgressPreference = 'SilentlyContinue'
 
-$out = [ordered]@{ free = $null; go = $null; models = [ordered]@{}; free_model_ids = @() }
+$out = [ordered]@{ free = $null; go = $null; models = [ordered]@{}; free_model_ids = @(); windows = $null; limiting = $null }
 try {
     $fixture = $env:BOB_OPENCODE_FUEL_FIXTURE
     $statsByWindow = $null
@@ -156,8 +156,13 @@ else:
             if ($parsed.free_model_ids) {
                 $out.free_model_ids = @($parsed.free_model_ids)
             }
+            # FR #6147: pass through Go rolling/weekly/monthly window records + limiting id.
+            if ($parsed.windows) { $out.windows = $parsed.windows }
+            if ($null -ne $parsed.limiting -and [string]$parsed.limiting -ne '') {
+                $out.limiting = [string]$parsed.limiting
+            }
         }
     }
 } catch { }
-[Console]::Out.WriteLine(($out | ConvertTo-Json -Compress -Depth 5))
+[Console]::Out.WriteLine(($out | ConvertTo-Json -Compress -Depth 6))
 exit 0

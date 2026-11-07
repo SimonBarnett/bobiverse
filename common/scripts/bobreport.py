@@ -242,6 +242,8 @@ _MERGE_PEER_FIELDS = (
     # FR #5690: FX age + rate so tray can show freshness; server can unify GBP.
     "overage_fetched_at",
     "usd_gbp_rate",
+    # FR #6147: OpenCode Go rolling/weekly/monthly window records for digest paint.
+    "opencode_windows",
 )
 # FR #5690: when a merge payload carries these as null (or lists them in cleared[]),
 # pop the sticky chair value. Omit-null used to leave stale overage/repo forever.
@@ -326,6 +328,7 @@ _TRAY_MACHINE_EXPORT_KEYS = (
     "cursor_known",
     "weekly_known",
     "grok_account",
+    "opencode_windows",
 )
 WORKER_NICK_RE = re.compile(r"^w-([a-z0-9]+)-(\d+)_?$", re.I)
 
@@ -4356,17 +4359,22 @@ def _clamp_opencode_pcent_value(raw: object) -> int | None:
 # FR #6146 / CodeRabbit Major: never block the ear 5s fuel tick on a slow PowerShell
 # helper (Get-BobOpencodeFuel.ps1 can wait up to 25s per opencode stats window).
 # Process-level TTL cache + short helper timeout; stale cache returned on miss/timeout.
+# FR #6147: cache the full helper/fixture fuel doc (pcent + windows + limiting).
 OPENCODE_FUEL_CACHE_ENV = "BOB_OPENCODE_FUEL_CACHE_S"
 DEFAULT_OPENCODE_FUEL_CACHE_S = 30.0
 OPENCODE_FUEL_HELPER_TIMEOUT_ENV = "BOB_OPENCODE_FUEL_HELPER_TIMEOUT_S"
 DEFAULT_OPENCODE_FUEL_HELPER_TIMEOUT_S = 5.0
-_opencode_pcent_cache: dict[str, object] = {"at": 0.0, "value": {}}
+OPENCODE_WINDOWS_FIXTURE_ENV = "BOB_OPENCODE_WINDOWS_FIXTURE"
+_opencode_fuel_cache: dict[str, object] = {"at": 0.0, "doc": {}}
+# Back-compat alias used by older tests that poke the private cache name.
+_opencode_pcent_cache = _opencode_fuel_cache
 
 
 def clear_opencode_pcent_cache() -> None:
-    """Reset process OpenCode pcent cache (tests / forced refresh)."""
-    _opencode_pcent_cache["at"] = 0.0
-    _opencode_pcent_cache["value"] = {}
+    """Reset process OpenCode fuel cache (tests / forced refresh)."""
+    _opencode_fuel_cache["at"] = 0.0
+    _opencode_fuel_cache["doc"] = {}
+    _opencode_fuel_cache["value"] = {}
 
 
 def opencode_fuel_cache_s(env: dict[str, str] | None = None) -> float:
@@ -4391,16 +4399,9 @@ def opencode_fuel_helper_timeout_s(env: dict[str, str] | None = None) -> float:
     return DEFAULT_OPENCODE_FUEL_HELPER_TIMEOUT_S
 
 
-def _parse_opencode_helper_stdout(raw_out: str) -> dict[str, int]:
+def _pcent_from_opencode_fuel_doc(doc: dict | None) -> dict[str, int]:
+    """Extract known ``opencode-free`` / ``opencode-go`` ints from a fuel doc."""
     out: dict[str, int] = {}
-    text = (raw_out or "").strip()
-    if not text:
-        return out
-    line = text.splitlines()[-1].strip()
-    try:
-        doc = json.loads(line)
-    except (json.JSONDecodeError, TypeError, ValueError):
-        return out
     if not isinstance(doc, dict):
         return out
     mapping = (
@@ -4419,27 +4420,140 @@ def _parse_opencode_helper_stdout(raw_out: str) -> dict[str, int]:
     return out
 
 
-def _read_opencode_pcent_from_fixture(fixture: str) -> dict[str, int]:
-    out: dict[str, int] = {}
+def _windows_from_opencode_fuel_doc(doc: dict | None) -> dict:
+    """Normalize Go windows from a fuel doc, or {} when absent."""
+    if not isinstance(doc, dict):
+        return {}
+    raw = doc.get("windows")
+    if not isinstance(raw, dict) or not raw:
+        return {}
+    try:
+        import opencode_fuel as of
+    except ImportError:
+        return {}
+    try:
+        return of.normalize_go_windows(raw)
+    except Exception:
+        return {}
+
+
+def _apply_windows_fixture(doc: dict, windows_fixture: str) -> dict:
+    """Merge ``BOB_OPENCODE_WINDOWS_FIXTURE`` JSON into a fuel doc."""
+    text = (windows_fixture or "").strip()
+    if not text:
+        return doc
+    try:
+        parsed = json.loads(text)
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return doc
+    if not isinstance(parsed, dict):
+        return doc
+    # Allow either a bare windows map or a wrapper ``{"windows": {...}}``.
+    raw_windows = parsed.get("windows") if isinstance(parsed.get("windows"), dict) else parsed
+    if not isinstance(raw_windows, dict):
+        return doc
+    try:
+        import opencode_fuel as of
+    except ImportError:
+        return doc
+    try:
+        windows = of.normalize_go_windows(raw_windows)
+    except Exception:
+        return doc
+    out = dict(doc)
+    out["windows"] = windows
+    lim_id, lim_rem = of.limiting_go_window(windows)
+    out["limiting"] = lim_id
+    if lim_rem is not None:
+        out["opencode-go"] = int(lim_rem)
+        out["go"] = int(lim_rem)
+    return out
+
+
+def _parse_opencode_helper_stdout(raw_out: str) -> dict:
+    """Parse Get-BobOpencodeFuel.ps1 JSON into a full fuel doc (FR #6146 / #6147)."""
+    out: dict = {}
+    text = (raw_out or "").strip()
+    if not text:
+        return out
+    line = text.splitlines()[-1].strip()
+    try:
+        doc = json.loads(line)
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return out
+    if not isinstance(doc, dict):
+        return out
+    out.update(_pcent_from_opencode_fuel_doc(doc))
+    windows = _windows_from_opencode_fuel_doc(doc)
+    if windows:
+        out["windows"] = windows
+        try:
+            import opencode_fuel as of
+
+            lim_id, lim_rem = of.limiting_go_window(windows)
+            out["limiting"] = lim_id
+            # Honest go remaining from limiting window when known.
+            if lim_rem is not None:
+                out["opencode-go"] = int(lim_rem)
+        except Exception:
+            if doc.get("limiting") not in (None, ""):
+                out["limiting"] = str(doc.get("limiting"))
+    elif doc.get("limiting") not in (None, ""):
+        out["limiting"] = str(doc.get("limiting"))
+    return out
+
+
+def _read_opencode_fuel_doc_from_fixture(fixture: str) -> dict:
+    """Build a full fuel doc from ``BOB_OPENCODE_FUEL_FIXTURE`` (FR #6146 / #6147).
+
+    Rich JSON may carry a top-level ``windows`` object (clarification fixture).
+    Free/go still derive from costs/free_models when present; limiting window
+    remaining overrides go when known so exhausted week stays honest.
+    """
+    out: dict = {}
     try:
         import opencode_fuel as of
     except ImportError:
         return out
+    parsed_json = None
+    try:
+        parsed_json = json.loads(fixture)
+    except (json.JSONDecodeError, TypeError, ValueError):
+        parsed_json = None
+    explicit_windows = None
+    if isinstance(parsed_json, dict) and isinstance(parsed_json.get("windows"), dict):
+        try:
+            explicit_windows = of.normalize_go_windows(parsed_json["windows"])
+        except Exception:
+            explicit_windows = None
     try:
         stats = of.parse_opencode_stats_text_or_json(fixture)
         fuel = of.fuel_from_stats(stats)
     except Exception:
-        return out
+        fuel = {}
     for key in (of.FUEL_ID_FREE, of.FUEL_ID_GO):
         clamped = _clamp_opencode_pcent_value(fuel.get(key))
         if clamped is not None:
             out[key] = clamped
+    if explicit_windows is not None:
+        out["windows"] = explicit_windows
+        lim_id, lim_rem = of.limiting_go_window(explicit_windows)
+        out["limiting"] = lim_id
+        if lim_rem is not None:
+            out[of.FUEL_ID_GO] = int(lim_rem)
+    elif isinstance(fuel.get("windows"), dict):
+        try:
+            out["windows"] = of.normalize_go_windows(fuel["windows"])
+        except Exception:
+            out["windows"] = dict(fuel["windows"])
+        if fuel.get("limiting") not in (None, ""):
+            out["limiting"] = fuel.get("limiting")
     return out
 
 
-def _read_opencode_pcent_from_helper(
+def _read_opencode_fuel_doc_from_helper(
     helper: Path, env: dict[str, str], timeout_s: float
-) -> dict[str, int]:
+) -> dict:
     try:
         import subprocess
     except ImportError:
@@ -4464,6 +4578,77 @@ def _read_opencode_pcent_from_helper(
     return _parse_opencode_helper_stdout(proc.stdout or "")
 
 
+def _read_opencode_pcent_from_fixture(fixture: str) -> dict[str, int]:
+    """Back-compat: pcent ints only from a fuel fixture string."""
+    return _pcent_from_opencode_fuel_doc(_read_opencode_fuel_doc_from_fixture(fixture))
+
+
+def _read_opencode_pcent_from_helper(
+    helper: Path, env: dict[str, str], timeout_s: float
+) -> dict[str, int]:
+    """Back-compat: pcent ints only from the PowerShell helper."""
+    return _pcent_from_opencode_fuel_doc(
+        _read_opencode_fuel_doc_from_helper(helper, env, timeout_s)
+    )
+
+
+def read_local_opencode_fuel_doc(
+    env: dict[str, str] | None = None,
+    *,
+    now: float | None = None,
+    force: bool = False,
+) -> dict:
+    """Read full local OpenCode fuel doc (pcent + windows + limiting; FR #6147).
+
+    Fixtures: ``BOB_OPENCODE_FUEL_FIXTURE`` (stats/rich JSON) and optional
+    ``BOB_OPENCODE_WINDOWS_FIXTURE`` (pure windows JSON). Helper path uses the
+    same TTL cache / short timeout as ``read_local_opencode_pcent``.
+    """
+    e = os.environ if env is None else env
+    fixture = (e.get("BOB_OPENCODE_FUEL_FIXTURE") or "").strip()
+    win_fixture = (e.get(OPENCODE_WINDOWS_FIXTURE_ENV) or "").strip()
+    if fixture:
+        doc = _read_opencode_fuel_doc_from_fixture(fixture)
+        if win_fixture:
+            doc = _apply_windows_fixture(doc, win_fixture)
+        return doc
+    if win_fixture:
+        return _apply_windows_fixture({}, win_fixture)
+
+    ts = float(time.time() if now is None else now)
+    cache_s = opencode_fuel_cache_s(e)
+    last_at = float(_opencode_fuel_cache.get("at") or 0.0)
+    last_doc = _opencode_fuel_cache.get("doc")
+    if not isinstance(last_doc, dict):
+        # Migrate older cache shape that stored pcent under ``value``.
+        last_val = _opencode_fuel_cache.get("value")
+        last_doc = dict(last_val) if isinstance(last_val, dict) else {}
+    cached = dict(last_doc) if isinstance(last_doc, dict) else {}
+    if not force and cache_s > 0 and last_at > 0 and (ts - last_at) < cache_s:
+        return dict(cached)
+
+    helper = _resolve_opencode_fuel_helper_ps1(e)
+    if helper is None:
+        return dict(cached) if cached else {}
+
+    fresh = _read_opencode_fuel_doc_from_helper(
+        helper, dict(e), opencode_fuel_helper_timeout_s(e)
+    )
+    if fresh:
+        _opencode_fuel_cache["at"] = ts
+        _opencode_fuel_cache["doc"] = dict(fresh)
+        _opencode_fuel_cache["value"] = _pcent_from_opencode_fuel_doc(fresh)
+        return dict(fresh)
+    # Timeout / empty: keep stale cache when present; stamp at so we do not
+    # re-hammer a hanging helper every 5s tick.
+    _opencode_fuel_cache["at"] = ts
+    if cached:
+        return dict(cached)
+    _opencode_fuel_cache["doc"] = {}
+    _opencode_fuel_cache["value"] = {}
+    return {}
+
+
 def read_local_opencode_pcent(
     env: dict[str, str] | None = None,
     *,
@@ -4483,63 +4668,58 @@ def read_local_opencode_pcent(
     30s) so the ear 5s fuel tick cannot stall the outbox loop on a slow
     ``opencode stats`` (CodeRabbit Major on PR #6176).
     """
-    e = os.environ if env is None else env
-    fixture = (e.get("BOB_OPENCODE_FUEL_FIXTURE") or "").strip()
-    if fixture:
-        return _read_opencode_pcent_from_fixture(fixture)
+    doc = read_local_opencode_fuel_doc(env, now=now, force=force)
+    return _pcent_from_opencode_fuel_doc(doc)
 
-    ts = float(time.time() if now is None else now)
-    cache_s = opencode_fuel_cache_s(e)
-    last_at = float(_opencode_pcent_cache.get("at") or 0.0)
-    last_val = _opencode_pcent_cache.get("value")
-    cached = dict(last_val) if isinstance(last_val, dict) else {}
-    if not force and cache_s > 0 and last_at > 0 and (ts - last_at) < cache_s:
-        return dict(cached)
 
-    helper = _resolve_opencode_fuel_helper_ps1(e)
-    if helper is None:
-        return dict(cached) if cached else {}
-
-    fresh = _read_opencode_pcent_from_helper(
-        helper, dict(e), opencode_fuel_helper_timeout_s(e)
-    )
-    if fresh:
-        _opencode_pcent_cache["at"] = ts
-        _opencode_pcent_cache["value"] = dict(fresh)
-        return dict(fresh)
-    # Timeout / empty: keep stale cache when present; stamp at so we do not
-    # re-hammer a hanging helper every 5s tick.
-    _opencode_pcent_cache["at"] = ts
-    if cached:
-        return dict(cached)
-    _opencode_pcent_cache["value"] = {}
-    return {}
+def read_local_opencode_windows(
+    env: dict[str, str] | None = None,
+    *,
+    now: float | None = None,
+    force: bool = False,
+) -> dict:
+    """Read normalized OpenCode Go windows (FR #6147), or {} when unknown."""
+    doc = read_local_opencode_fuel_doc(env, now=now, force=force)
+    return _windows_from_opencode_fuel_doc(doc)
 
 
 def enrich_peer_with_opencode_pcent(
     peer: dict,
     opencode_pcent: dict[str, int] | None = None,
+    opencode_windows: dict | None = None,
 ) -> dict:
-    """Merge known OpenCode pcent into a peer copy (FR #6146).
+    """Merge known OpenCode pcent + windows into a peer copy (FR #6146 / #6147).
 
-    Omits unknown keys; keeps explicit ``0`` (exhausted). Does not invent zeros.
+    Omits unknown pcent keys; keeps explicit ``0`` (exhausted). Does not invent
+    zeros. Sets ``opencode_windows`` when a normalized windows map is supplied.
     """
     if not isinstance(peer, dict):
         return peer
     enriched = dict(peer)
     oc = opencode_pcent if isinstance(opencode_pcent, dict) else {}
-    if not oc:
-        return enriched
-    base = enriched.get("pcent") if isinstance(enriched.get("pcent"), dict) else {}
-    pcent = dict(base)
-    for key in ("opencode-free", "opencode-go"):
-        if key not in oc:
-            continue
-        clamped = _clamp_opencode_pcent_value(oc.get(key))
-        if clamped is None:
-            continue
-        pcent[key] = clamped
-    enriched["pcent"] = pcent
+    if oc:
+        base = enriched.get("pcent") if isinstance(enriched.get("pcent"), dict) else {}
+        pcent = dict(base)
+        for key in ("opencode-free", "opencode-go"):
+            if key not in oc:
+                continue
+            clamped = _clamp_opencode_pcent_value(oc.get(key))
+            if clamped is None:
+                continue
+            pcent[key] = clamped
+        enriched["pcent"] = pcent
+    wins_in = opencode_windows
+    if wins_in is None and isinstance(oc.get("windows"), dict):
+        wins_in = oc.get("windows")
+    if isinstance(wins_in, dict) and wins_in:
+        try:
+            import opencode_fuel as of
+
+            normalized = of.normalize_go_windows(wins_in)
+        except Exception:
+            normalized = dict(wins_in)
+        if normalized:
+            enriched["opencode_windows"] = normalized
     return enriched
 
 
@@ -4551,11 +4731,12 @@ def publish_local_peer_fuel(
     url: str | None = None,
     now: float | None = None,
 ) -> int | None:
-    """POST local peer fuel merge when fingerprint changed or heartbeat due (FR #6141 / #6145 / #6146).
+    """POST local peer fuel merge when fingerprint changed or heartbeat due (FR #6141 / #6145 / #6146 / #6147).
 
     Fingerprint delta always POSTs (``force=True`` or fp change). Unchanged fingerprint
     skips until heartbeat. Max lag pin: ``DIGEST_FUEL_MAX_LAG_S`` (ear delta poll).
-    FR #6146: enrich with local OpenCode pcent (TTL-cached helper) before fingerprint.
+    FR #6146 / #6147: enrich with local OpenCode pcent + windows (TTL-cached helper)
+    before fingerprint.
 
 
     Returns HTTP status on successful 2xx POST, None when skipped or failed.
@@ -4572,11 +4753,13 @@ def publish_local_peer_fuel(
         peer = bobstat.read_peer(home, mid) or peer
     except OSError:
         pass
-    # FR #6146: enrich with local OpenCode pcent before fingerprint/POST.
+    # FR #6146 / #6147: enrich with local OpenCode pcent + windows before fingerprint/POST.
     try:
-        oc = read_local_opencode_pcent()
-        if oc:
-            peer = enrich_peer_with_opencode_pcent(peer, oc)
+        oc_doc = read_local_opencode_fuel_doc()
+        oc = _pcent_from_opencode_fuel_doc(oc_doc)
+        wins = _windows_from_opencode_fuel_doc(oc_doc)
+        if oc or wins:
+            peer = enrich_peer_with_opencode_pcent(peer, oc, wins)
     except Exception:
         pass
     payload = build_peer_fuel_merge_payload(peer, mid)

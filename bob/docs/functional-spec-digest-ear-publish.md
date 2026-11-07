@@ -19,6 +19,7 @@ Pulled from LOCKED vision (plan-20261107-132147).
 ## Fields
 
 - machines.<id>.pcent.opencode-free / opencode-go (int remaining % or omit)
+- machines.<id>.opencode_windows (Go rolling/weekly/monthly used/rem/reset when known; unstarted rolling = Starts on first use)
 - machines.<id> xAI account label field (name pinned in FR-003; not bob-<machine> alone)
 - report.copilot with fresh fetched_at when refresh succeeds
 

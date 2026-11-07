@@ -53,6 +53,15 @@ CAP_WINDOWS: dict[str, float] = {
     "month": 1.00,
 }
 
+# TipForm/Status Go windows (FR #6147 clarification). ``rolling`` is not read from
+# ``opencode stats``; it is unstarted unless a fixture or runtime pause supplies it.
+GO_WINDOW_IDS: tuple[str, ...] = ("rolling", "week", "month")
+GO_WINDOW_LABELS: dict[str, str] = {
+    "rolling": "rolling",
+    "week": "weekly",
+    "month": "monthly",
+}
+
 # Free models available without an account (issue #6120).
 OPENCODE_FREE_MODELS: tuple[str, ...] = (
     "beam-free",
@@ -559,6 +568,273 @@ def parse_opencode_stats_json(doc: dict | None) -> dict:
     return {"costs": costs, "free_models": free_models, "parse_success": parse_success}
 
 
+
+def _window_record(
+    status: str,
+    *,
+    used_pct: Optional[int] = None,
+    remaining_pct: Optional[int] = None,
+    reset_label: Optional[str] = None,
+    fetched_at: Optional[str] = None,
+) -> dict:
+    """One Go window paint record (FR #6147). Never invent used/remaining/reset."""
+    return {
+        "status": status,
+        "used_pct": used_pct,
+        "remaining_pct": remaining_pct,
+        "reset_label": reset_label,
+        "fetched_at": fetched_at,
+    }
+
+
+def _used_from_remaining(remaining: Optional[int]) -> Optional[int]:
+    if remaining is None:
+        return None
+    return _clamp_pct(100 - int(remaining))
+
+
+def model_remaining_pct_for_single_window(
+    model: str, windowed: dict, window: str
+) -> Optional[int]:
+    """Remaining % for one CAP window only (week or month)."""
+    if window not in CAP_WINDOWS:
+        return None
+    cap = OPENCODE_GO_CAPS.get(model)
+    if cap is None or cap <= 0:
+        return None
+    costs = _cost_for_model_windowed(windowed, model)
+    cost = costs.get(window)
+    if cost is None:
+        return None
+    fraction = CAP_WINDOWS[window]
+    limit = cap * fraction
+    if limit <= 0:
+        return None
+    return _clamp_pct(100.0 - (100.0 * cost / limit))
+
+
+def _aggregate_remaining_for_window(windowed: dict, window: str) -> Optional[int]:
+    """Best-model remaining for one CAP window, or None when unknown."""
+    rems: list[int] = []
+    for model in OPENCODE_GO_FALLBACK_ORDER:
+        rem = model_remaining_pct_for_single_window(model, windowed, window)
+        if rem is not None:
+            rems.append(rem)
+    if not rems:
+        return None
+    return max(rems)
+
+
+def normalize_go_windows(raw: object) -> dict[str, dict]:
+    """Normalize fixture/digest Go window maps (FR #6147).
+
+    Accepted statuses: unknown, unstarted, known, exhausted, stale.
+    Used/remaining must agree when both present (used + remaining == 100).
+    Reset labels are kept only when non-empty strings are supplied.
+    """
+    out: dict[str, dict] = {
+        wid: _window_record("unknown") for wid in GO_WINDOW_IDS
+    }
+    if not isinstance(raw, dict):
+        return out
+    for wid in GO_WINDOW_IDS:
+        src = raw.get(wid)
+        if not isinstance(src, dict):
+            continue
+        status = str(src.get("status") or "unknown").strip().lower()
+        if status not in ("unknown", "unstarted", "known", "exhausted", "stale"):
+            status = "unknown"
+        used = _clamp_pct(src.get("used_pct")) if src.get("used_pct") is not None and str(src.get("used_pct")) != "" else None
+        rem = _clamp_pct(src.get("remaining_pct")) if src.get("remaining_pct") is not None and str(src.get("remaining_pct")) != "" else None
+        if rem is not None and used is None:
+            used = _used_from_remaining(rem)
+        elif used is not None and rem is None:
+            rem = _clamp_pct(100 - int(used))
+        elif used is not None and rem is not None and (used + rem) != 100:
+            # Prefer remaining as source of truth when both disagree.
+            used = _used_from_remaining(rem)
+        reset = src.get("reset_label")
+        reset_label = str(reset).strip() if reset not in (None, "") else None
+        fetched = src.get("fetched_at")
+        fetched_at = str(fetched).strip() if fetched not in (None, "") else None
+        if status == "unstarted":
+            # Clarification fixture: unstarted rolling is 0% used, no invented rem/reset.
+            out[wid] = _window_record(
+                "unstarted",
+                used_pct=0 if used is None else used,
+                remaining_pct=None,
+                reset_label=None,
+                fetched_at=fetched_at,
+            )
+        elif status == "exhausted":
+            out[wid] = _window_record(
+                "exhausted",
+                used_pct=100 if used is None else used,
+                remaining_pct=0 if rem is None else rem,
+                reset_label=reset_label,
+                fetched_at=fetched_at,
+            )
+        elif status in ("known", "stale"):
+            out[wid] = _window_record(
+                status,
+                used_pct=used,
+                remaining_pct=rem,
+                reset_label=reset_label,
+                fetched_at=fetched_at,
+            )
+        else:
+            out[wid] = _window_record("unknown", fetched_at=fetched_at)
+    return out
+
+
+def limiting_go_window(windows: dict[str, dict] | None) -> tuple[Optional[str], Optional[int]]:
+    """Return (window_id, remaining_pct) for the most-restrictive known Go window.
+
+    Exhausted windows win (remaining 0). Unknown/unstarted do not prove availability.
+    """
+    windows = windows if isinstance(windows, dict) else {}
+    best_id: Optional[str] = None
+    best_rem: Optional[int] = None
+    for wid in GO_WINDOW_IDS:
+        rec = windows.get(wid) if isinstance(windows.get(wid), dict) else None
+        if not rec:
+            continue
+        status = str(rec.get("status") or "")
+        rem = rec.get("remaining_pct")
+        if status == "exhausted":
+            rem = 0 if rem is None else _clamp_pct(rem)
+        if status not in ("known", "exhausted", "stale"):
+            continue
+        if rem is None:
+            continue
+        rem_i = int(rem)
+        if best_rem is None or rem_i < best_rem:
+            best_rem = rem_i
+            best_id = wid
+    return best_id, best_rem
+
+
+def go_windows_from_windowed_stats(
+    windowed: dict[str, dict] | None,
+    *,
+    rolling: dict | None = None,
+) -> dict[str, dict]:
+    """Build Go rolling/weekly/monthly paint records from CAP window stats.
+
+    ``rolling`` is never inferred from ``opencode stats``. When omitted, rolling
+    is ``unstarted`` (Starts on first use). Week/month remaining come from the
+    same cost/cap math as fuel selection; reset labels are omitted unless the
+    caller supplies them on ``rolling`` or via ``normalize_go_windows``.
+    """
+    windowed = windowed if isinstance(windowed, dict) else {}
+    windows: dict[str, dict] = {}
+    if isinstance(rolling, dict):
+        windows["rolling"] = normalize_go_windows({"rolling": rolling})["rolling"]
+    else:
+        windows["rolling"] = _window_record("unstarted", used_pct=0)
+
+    for wid in ("week", "month"):
+        rem = _aggregate_remaining_for_window(windowed, wid)
+        if rem is None:
+            # Distinguish missing CAP data from a failed parse of that window.
+            raw = windowed.get(wid)
+            if isinstance(raw, dict) and raw.get("parse_success") is False:
+                windows[wid] = _window_record("unknown")
+            elif not isinstance(raw, dict):
+                windows[wid] = _window_record("unknown")
+            else:
+                windows[wid] = _window_record("unknown")
+        elif rem <= 0:
+            windows[wid] = _window_record(
+                "exhausted", used_pct=100, remaining_pct=0
+            )
+        else:
+            windows[wid] = _window_record(
+                "known",
+                used_pct=_used_from_remaining(rem),
+                remaining_pct=rem,
+            )
+    return windows
+
+
+def format_go_window_line(window_id: str, rec: dict | None) -> str:
+    """One TipForm/Status line for a Go window (used vs remaining; honest n/a)."""
+    label = GO_WINDOW_LABELS.get(window_id, window_id)
+    rec = rec if isinstance(rec, dict) else {}
+    status = str(rec.get("status") or "unknown")
+    if status == "unstarted":
+        return f"go {label}  Starts on first use  (0% used)"
+    if status == "unknown":
+        return f"go {label}  n/a"
+    used = rec.get("used_pct")
+    rem = rec.get("remaining_pct")
+    bits: list[str] = []
+    if used is not None:
+        bits.append(f"{int(used)}% used")
+    if rem is not None:
+        bits.append(f"{int(rem)}% rem")
+    if not bits:
+        mid = "n/a"
+    else:
+        mid = " · ".join(bits)
+    reset = rec.get("reset_label")
+    if reset:
+        mid = f"{mid}  reset {reset}"
+    if status == "stale":
+        mid = f"{mid}  [stale]"
+    if status == "exhausted" and rem is None:
+        mid = "100% used · 0% rem" + (f"  reset {reset}" if reset else "")
+    return f"go {label}  {mid}"
+
+
+def format_opencode_paint_lines(
+    free_remaining: Optional[int],
+    windows: dict[str, dict] | None,
+    *,
+    stale: bool = False,
+) -> dict:
+    """Build TipForm/Status OpenCode paint payload (FR #6147).
+
+    Returns summary line, free line, window lines, limiting window id, and
+    aggregate go remaining (most restrictive known window). Free stays distinct.
+    """
+    windows = normalize_go_windows(windows) if windows is not None else {
+        wid: _window_record("unknown") for wid in GO_WINDOW_IDS
+    }
+    if stale:
+        for wid, rec in list(windows.items()):
+            if rec.get("status") in ("known", "exhausted", "unstarted"):
+                windows[wid] = dict(rec)
+                windows[wid]["status"] = "stale" if rec.get("status") != "unstarted" else "unstarted"
+                if rec.get("status") != "unstarted":
+                    windows[wid]["used_pct"] = None
+                    windows[wid]["remaining_pct"] = None
+                    windows[wid]["reset_label"] = None
+    lim_id, lim_rem = limiting_go_window(windows)
+    free_bit = f"{int(free_remaining)}%" if free_remaining is not None else "n/a"
+    window_lines = [format_go_window_line(wid, windows.get(wid)) for wid in GO_WINDOW_IDS]
+    if free_remaining is None and lim_rem is None and all(
+        str((windows.get(w) or {}).get("status")) in ("unknown",) for w in GO_WINDOW_IDS
+    ):
+        summary = "OpenCode  n/a"
+    else:
+        go_bit = f"{int(lim_rem)}%" if lim_rem is not None else "n/a"
+        if lim_id:
+            go_bit = f"{GO_WINDOW_LABELS.get(lim_id, lim_id)} {go_bit}"
+        summary = f"OpenCode  free {free_bit} | go {go_bit}"
+        if stale:
+            summary = f"{summary} [stale]"
+    return {
+        "summary": summary,
+        "free_line": f"OpenCode free  {free_bit}",
+        "window_lines": window_lines,
+        "windows": windows,
+        "limiting": lim_id,
+        "go_remaining": lim_rem,
+        "free_remaining": free_remaining,
+    }
+
+
 def fuel_from_stats(stats: dict | None) -> dict:
     """Build digest fuel numbers from an OpenCode stats document.
 
@@ -589,11 +865,23 @@ def fuel_from_stats(stats: dict | None) -> dict:
     free_model_ids = stats.get("free_model_ids")
     if not isinstance(free_model_ids, (list, tuple)):
         free_model_ids = []
+    windows = {
+        "rolling": _window_record("unstarted", used_pct=0),
+        "week": _window_record("unknown"),
+        "month": _window_record(
+            "exhausted" if go_remaining == 0 else ("known" if go_remaining is not None else "unknown"),
+            used_pct=_used_from_remaining(go_remaining) if go_remaining is not None else None,
+            remaining_pct=go_remaining,
+        ),
+    }
+    lim_id, _lim_rem = limiting_go_window(windows)
     return {
         FUEL_ID_FREE: free_remaining,
         FUEL_ID_GO: go_remaining,
         "models": go_by_model,
         "free_model_ids": list(free_model_ids),
+        "windows": windows,
+        "limiting": lim_id,
     }
 
 
@@ -620,11 +908,15 @@ def fuel_from_windowed_stats(windowed: dict[str, dict] | None) -> dict:
         ids = wstats.get("free_model_ids")
         if isinstance(ids, (list, tuple)):
             free_model_ids.extend(str(i) for i in ids)
+    windows = go_windows_from_windowed_stats(windowed)
+    lim_id, _lim_rem = limiting_go_window(windows)
     return {
         FUEL_ID_FREE: free_remaining,
         FUEL_ID_GO: go_remaining,
         "models": go_by_model,
         "free_model_ids": list(dict.fromkeys(free_model_ids)),
+        "windows": windows,
+        "limiting": lim_id,
     }
 
 

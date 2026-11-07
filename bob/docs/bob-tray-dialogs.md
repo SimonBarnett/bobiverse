@@ -84,3 +84,7 @@ rows with workers `{irc nick}: {doing|idle}`, one Copilot pool tile, alert and v
 - **FR #6215:** when `used` and `max_recorded_usage` are known, append `(N.NN% of max recorded)` (two decimals, invariant). The denominator is a historical high-water mark bumped when usage exceeds it — **not** a contractual quota. Missing/zero denominator paints no percentage (never invent 0/100% or divide-by-zero).
 - Snapshot fields: `copilot_line`, `copilot_stale_line`, `copilot_fresh_until` (unix seconds), plus digest `max_recorded_usage`. Native Status re-ages an open window at the deadline without waiting for a new poll.
 - TipForm always shows a Copilot line (`Copilot  unknown` when absent). Display-only: does not enable Copilot dispatch (`BOB_FUEL_COPILOT` / #6204).
+
+## OpenCode windows (FR #6147)
+
+Status snapshot may carry opencode_windows and opencode_window_lines (Go rolling/weekly/monthly used vs rem; unstarted rolling = Starts on first use). Summary opencode_line still paints free + limiting go. Unknown/stale stay n/a; never invent reset countdowns.

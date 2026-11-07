@@ -17,7 +17,7 @@ LOCKED
 | S3 | xAI account label | Known seats expose xAI/Grok account label != bob-<machine> | GET machines.<id> after tick | Missing, nick-only, or secret leaked |
 | S4 | MarchHare pool truth | weekly/pcent/pool/reset match local meters within one publish cycle | Local meter vs GET | null/0% or stale reset with fresh lastSeen |
 | S5 | No-lag on change | Remaining/OpenCode/Copilot delta visible on GET within 5s (or one pinned ear tick) | Fixture delta -> GET | Fingerprint suppress; multi-day stale fetched_at |
-| S6 | OpenCode display | pcent.opencode-free and opencode-go on digest + TipForm when local fuel known | Fixture + UI | Absent while local fuel known |
+| S6 | OpenCode display | pcent.opencode-free/go plus Go rolling/weekly/monthly window lines on digest + TipForm when known | Fixture + UI | Absent/unknown/stale stay n/a; no invented reset |
 | S7 | Copilot on systray | Status/TipForm Copilot line present and matches fresh digest | UI + GET copilot.fetched_at | Missing tile or multi-day fetch painted as current |
 | S8 | Logo identity | Cursor, xAI/Grok, OpenCode, Copilot rows show correct logo or text fallback | Mocks + Status/TipForm | Wrong/missing logo with no fallback |
 

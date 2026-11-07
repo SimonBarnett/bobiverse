@@ -31,6 +31,7 @@ namespace BobDialogs
         public string CopilotStaleLine = "";
         public long CopilotFreshUntil = 0;
         public string OpencodeLine = "OpenCode  n/a";
+        public List<string> OpencodeWindowLines = new List<string>();
         public List<StatusRow> Cursor = new List<StatusRow>(), Grok = new List<StatusRow>();
 
         static StatusRow ParseRow(Dictionary<string, object> d)
@@ -53,6 +54,8 @@ namespace BobDialogs
             string t = Common.Str(d, "title"); if (t.Length > 0) m.Title = t;
             m.Version = Common.Str(d, "version"); m.Overspend = Common.Str(d, "overspend");
             string oc = Common.Str(d, "opencode_line"); if (oc.Length > 0) m.OpencodeLine = oc;
+            IList ocw = Common.List(d.ContainsKey("opencode_window_lines") ? d["opencode_window_lines"] : null);
+            if (ocw != null) foreach (object o in ocw) { string s = Convert.ToString(o); if (!string.IsNullOrEmpty(s)) m.OpencodeWindowLines.Add(s); }
             string cp = Common.Str(d, "copilot_line"); if (cp.Length > 0) m.CopilotLine = cp;
             string cps = Common.Str(d, "copilot_stale_line"); if (cps.Length > 0) m.CopilotStaleLine = cps;
             m.CopilotFreshUntil = Common.Long(d, "copilot_fresh_until", 0);
@@ -196,8 +199,17 @@ namespace BobDialogs
                     y += 8;
                 }
             }
-            // FR #6147 pool line + FR #6149 logo; FIX #6180 re-age Copilot with stale colour.
+            // FR #6147 pool line + window lines + FR #6149 logo; FIX #6180 re-age Copilot with stale colour.
             y = Section(g, y, m.OpencodeLine, "", "opencode");
+            if (m.OpencodeWindowLines != null)
+            {
+                foreach (string wl in m.OpencodeWindowLines)
+                {
+                    if (string.IsNullOrEmpty(wl)) continue;
+                    Draw(g, wl, fText, Fg, 32, y);
+                    y += 16;
+                }
+            }
             string paintCopilot = SelectCopilotLine(m, DateTime.UtcNow);
             Color copilotFg = paintCopilot.StartsWith("Copilot  [stale", StringComparison.Ordinal) ? Red : Fg;
             y = Section(g, y, paintCopilot, "", "copilot", copilotFg);

@@ -109,17 +109,27 @@ function New-BobTrayStatusModel {
     }
     if (-not $copilotLine) { $copilotLine = 'Copilot  unknown' }
     if (-not $copilotStaleLine) { $copilotStaleLine = 'Copilot  [stale]  unknown' }
-    # FR #6147: OpenCode free/go on Status snapshot (n/a when unknown).
+    # FR #6147: OpenCode free/go + window lines on Status snapshot (n/a when unknown).
     $opencodeLine = ''
     $opencodeFree = $null
     $opencodeGo = $null
+    $opencodeWindows = $null
+    $opencodeWindowLines = @()
     if ($h) {
         $opencodeLine = [string]$h.opencode_line
         $opencodeFree = $h.opencode_free
         $opencodeGo = $h.opencode_go
+        try { $opencodeWindows = $h.opencode_windows } catch { }
+        try { if ($h.opencode_window_lines) { $opencodeWindowLines = @($h.opencode_window_lines) } } catch { }
+    }
+    if ($opencodeWindows -and (Get-Command Format-BobOpencodeWindowLines -ErrorAction SilentlyContinue)) {
+        $pack = Format-BobOpencodeWindowLines -FreePct $opencodeFree -Windows $opencodeWindows
+        if (-not $opencodeLine) { $opencodeLine = [string]$pack.summary }
+        if ($opencodeWindowLines.Count -eq 0 -and $pack.window_lines) { $opencodeWindowLines = @($pack.window_lines) }
+        if ($null -eq $opencodeGo -and $null -ne $pack.go_remaining) { $opencodeGo = $pack.go_remaining }
     }
     if (-not $opencodeLine -and (Get-Command Format-BobOpencodePoolLine -ErrorAction SilentlyContinue)) {
-        $opencodeLine = Format-BobOpencodePoolLine -FreePct $opencodeFree -GoPct $opencodeGo
+        $opencodeLine = Format-BobOpencodePoolLine -FreePct $opencodeFree -GoPct $opencodeGo -Windows $opencodeWindows
     }
     if (-not $opencodeLine) { $opencodeLine = 'OpenCode  n/a' }
     return [ordered]@{
@@ -137,6 +147,8 @@ function New-BobTrayStatusModel {
         opencode_free = $opencodeFree
         opencode_go = $opencodeGo
         opencode_line = $opencodeLine
+        opencode_windows = $opencodeWindows
+        opencode_window_lines = @($opencodeWindowLines)
         copilot_pool = $copilotPool
         copilot_line = $copilotLine
         copilot_stale_line = $copilotStaleLine

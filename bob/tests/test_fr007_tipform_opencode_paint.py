@@ -55,6 +55,9 @@ def test_mocks_align_opencode_free_go():
     home = MOCK_HOME.read_text(encoding="utf-8")
     empty = MOCK_EMPTY.read_text(encoding="utf-8")
     assert "OpenCode" in home
-    assert "free 100%" in home and "go 50%" in home
+    assert "free 100%" in home
+    # FR #6147 clarification mock: limiting weekly remaining + used/rem window lines.
+    assert "go weekly 28%" in home or "28% rem" in home
+    assert "Starts on first use" in home
     assert "OpenCode" in empty
     assert "n/a" in empty

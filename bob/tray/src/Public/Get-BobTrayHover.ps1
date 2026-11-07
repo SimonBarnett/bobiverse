@@ -901,16 +901,153 @@ function Get-BobCopilotFreshness {
     return [pscustomobject]@{ state = 'stale'; age_s = $age; fresh_until = $until }
 }
 
+function Format-BobOpencodeWindowLine {
+    <#
+    .SYNOPSIS
+      One Go window line (rolling/weekly/monthly). Used vs remaining; honest n/a (FR #6147).
+    #>
+    param(
+        [Parameter(Mandatory)][ValidateSet('rolling','week','month')][string]$WindowId,
+        $Record = $null
+    )
+    $label = switch ($WindowId) {
+        'rolling' { 'rolling' }
+        'week' { 'weekly' }
+        'month' { 'monthly' }
+        default { $WindowId }
+    }
+    $status = 'unknown'
+    try { if ($Record -and $Record.status) { $status = ([string]$Record.status).Trim().ToLowerInvariant() } } catch { }
+    $dot = [string][char]0x00B7
+    if ($status -eq 'unstarted') {
+        return ('go {0}  Starts on first use  (0% used)' -f $label)
+    }
+    if ($status -eq 'unknown' -or -not $Record) {
+        return ('go {0}  n/a' -f $label)
+    }
+    $used = ConvertTo-BobTrayIntOrNull $(try { $Record.used_pct } catch { $null })
+    $rem = ConvertTo-BobTrayIntOrNull $(try { $Record.remaining_pct } catch { $null })
+    if ($status -eq 'exhausted') {
+        if ($null -eq $used) { $used = 100 }
+        if ($null -eq $rem) { $rem = 0 }
+    }
+    $bits = @()
+    if ($null -ne $used) { $bits += ('{0}% used' -f [int]$used) }
+    if ($null -ne $rem) { $bits += ('{0}% rem' -f [int]$rem) }
+    if ($bits.Count -eq 0) { $mid = 'n/a' } else { $mid = ($bits -join (' {0} ' -f $dot)) }
+    $reset = $null
+    try { if ($Record.reset_label) { $reset = [string]$Record.reset_label } } catch { }
+    if ($reset) { $mid = ('{0}  reset {1}' -f $mid, $reset) }
+    if ($status -eq 'stale') { $mid = ('{0}  [stale]' -f $mid) }
+    return ('go {0}  {1}' -f $label, $mid)
+}
+
+function Format-BobOpencodeWindowLines {
+    <#
+    .SYNOPSIS
+      Free + Go rolling/weekly/monthly lines for TipForm/Status (FR #6147 clarification).
+    #>
+    param(
+        $FreePct = $null,
+        $Windows = $null,
+        [switch]$Stale
+    )
+    $FreePct = ConvertTo-BobTrayIntOrNull $FreePct
+    $freeBit = if (Test-BobTrayRemainingKnown $FreePct) { ('{0}%' -f [int]$FreePct) } else { 'n/a' }
+    $ids = @('rolling', 'week', 'month')
+    $winMap = @{}
+    if ($Windows) {
+        foreach ($id in $ids) {
+            $rec = $null
+            try { $rec = $Windows.$id } catch { $rec = $null }
+            if (-not $rec) {
+                try {
+                    foreach ($p in @($Windows.PSObject.Properties)) {
+                        if ([string]$p.Name -eq $id) { $rec = $p.Value; break }
+                    }
+                } catch { }
+            }
+            if ($Stale -and $rec) {
+                $st = ''
+                try { $st = [string]$rec.status } catch { }
+                if ($st -and $st -ne 'unstarted') {
+                    $rec = [pscustomobject]@{
+                        status = 'stale'
+                        used_pct = $null
+                        remaining_pct = $null
+                        reset_label = $null
+                    }
+                }
+            }
+            $winMap[$id] = $rec
+        }
+    }
+    $windowLines = @()
+    foreach ($id in $ids) {
+        $windowLines += ,(Format-BobOpencodeWindowLine -WindowId $id -Record $winMap[$id])
+    }
+    $limId = $null
+    $limRem = $null
+    foreach ($id in $ids) {
+        $rec = $winMap[$id]
+        if (-not $rec) { continue }
+        $st = ''
+        try { $st = ([string]$rec.status).ToLowerInvariant() } catch { }
+        if ($st -notin @('known', 'exhausted', 'stale')) { continue }
+        $rem = ConvertTo-BobTrayIntOrNull $(try { $rec.remaining_pct } catch { $null })
+        if ($st -eq 'exhausted' -and $null -eq $rem) { $rem = 0 }
+        if ($null -eq $rem) { continue }
+        if ($null -eq $limRem -or [int]$rem -lt [int]$limRem) {
+            $limRem = [int]$rem
+            $limId = $id
+        }
+    }
+    $anyWinKnown = $false
+    foreach ($id in $ids) {
+        $rec = $winMap[$id]
+        if (-not $rec) { continue }
+        $st = ''
+        try { $st = ([string]$rec.status).ToLowerInvariant() } catch { }
+        if ($st -and $st -ne 'unknown') { $anyWinKnown = $true; break }
+    }
+    if (-not (Test-BobTrayRemainingKnown $FreePct) -and -not $anyWinKnown -and $null -eq $limRem) {
+        $summary = 'OpenCode  n/a'
+    } else {
+        $goBit = if ($null -ne $limRem) { ('{0}%' -f [int]$limRem) } else { 'n/a' }
+        if ($limId) {
+            $limLabel = switch ($limId) { 'rolling' { 'rolling' } 'week' { 'weekly' } 'month' { 'monthly' } default { $limId } }
+            $goBit = ('{0} {1}' -f $limLabel, $goBit)
+        }
+        $summary = ('OpenCode  free {0} | go {1}' -f $freeBit, $goBit)
+        if ($Stale) { $summary = ('{0} [stale]' -f $summary) }
+    }
+    return [pscustomobject]@{
+        summary = $summary
+        free_line = ('OpenCode free  {0}' -f $freeBit)
+        window_lines = @($windowLines)
+        limiting = $limId
+        go_remaining = $limRem
+        free = $FreePct
+    }
+}
+
 function Format-BobOpencodePoolLine {
     <#
     .SYNOPSIS
       TipForm/Status OpenCode free/go line (FR #6147 / FR-007). Unknown = n/a.
+      When -Windows is supplied, summary prefers limiting Go window (clarification).
     #>
     param(
         $FreePct = $null,
         $GoPct = $null,
-        $Pool = $null
+        $Pool = $null,
+        $Windows = $null,
+        [switch]$Stale
     )
+    if ($Windows) {
+        $pack = Format-BobOpencodeWindowLines -FreePct $FreePct -Windows $Windows -Stale:$Stale
+        return [string]$pack.summary
+    }
     if ($Pool) {
         if ($null -eq $FreePct) {
             try {
@@ -925,6 +1062,16 @@ function Format-BobOpencodePoolLine {
                 elseif ($null -ne $Pool.'opencode-go') { $GoPct = $Pool.'opencode-go' }
                 elseif ($null -ne $Pool.opencode_go) { $GoPct = $Pool.opencode_go }
             } catch { }
+        }
+        if (-not $Windows) {
+            try {
+                if ($Pool.windows) { $Windows = $Pool.windows }
+                elseif ($Pool.opencode_windows) { $Windows = $Pool.opencode_windows }
+            } catch { }
+        }
+        if ($Windows) {
+            $pack = Format-BobOpencodeWindowLines -FreePct $FreePct -Windows $Windows -Stale:$Stale
+            return [string]$pack.summary
         }
     }
     # MRB #6175 / CodeRabbit: non-numeric (unknown/n/a) must not throw on [int] cast.
@@ -941,7 +1088,7 @@ function Format-BobOpencodePoolLine {
 function Get-BobOpencodePaintFromDigest {
     <#
     .SYNOPSIS
-      Read machines.<id>.pcent opencode-free/go from a report digest (FR #6147).
+      Read machines.<id>.pcent opencode-free/go and opencode_windows from a report digest (FR #6147).
     #>
     param(
         $Digest,
@@ -949,8 +1096,9 @@ function Get-BobOpencodePaintFromDigest {
     )
     $free = $null
     $go = $null
+    $windows = $null
     if (-not $Digest -or -not $Digest.machines) {
-        return [pscustomobject]@{ free = $null; go = $null }
+        return [pscustomobject]@{ free = $null; go = $null; windows = $null }
     }
     $mids = @()
     if ($MachineId) { $mids += ,([string]$MachineId.Trim().ToLowerInvariant()) }
@@ -983,9 +1131,12 @@ function Get-BobOpencodePaintFromDigest {
             if ($null -ne $pc.'opencode-go' -and [string]$pc.'opencode-go' -ne '') { $go = $pc.'opencode-go' }
             elseif ($null -ne $pc.opencode_go -and [string]$pc.opencode_go -ne '') { $go = $pc.opencode_go }
         } catch { }
-        if ((Test-BobTrayRemainingKnown $free) -or (Test-BobTrayRemainingKnown $go)) { break }
+        try {
+            if ($ent.opencode_windows) { $windows = $ent.opencode_windows }
+        } catch { }
+        if ((Test-BobTrayRemainingKnown $free) -or (Test-BobTrayRemainingKnown $go) -or $windows) { break }
     }
-    return [pscustomobject]@{ free = $free; go = $go }
+    return [pscustomobject]@{ free = $free; go = $go; windows = $windows }
 }
 
 function Get-BobCopilotHistoricalMaxPct {
@@ -2946,10 +3097,21 @@ function Get-BobTrayHover {
         if ($ghPosting.issue_posting_ready) { $ghLine = 'GitHub issue post: ready' }
         else { $ghLine = 'GitHub issue post: not ready' }
     }
-    # FR #6147: OpenCode free/go from digest pcent (n/a when unknown).
+    # FR #6147: OpenCode free/go + Go rolling/weekly/monthly windows from digest.
     $ocPaint = Get-BobOpencodePaintFromDigest -Digest $reportDigest -MachineId $machineId
-    $opencodeLine = Format-BobOpencodePoolLine -FreePct $ocPaint.free -GoPct $ocPaint.go
+    $ocStale = $false
+    try { if ($reportDigest -and $reportDigest.stale) { $ocStale = $true } } catch { }
+    $ocPack = $null
+    if ($ocPaint.windows) {
+        $ocPack = Format-BobOpencodeWindowLines -FreePct $ocPaint.free -Windows $ocPaint.windows -Stale:$ocStale
+        $opencodeLine = [string]$ocPack.summary
+    } else {
+        $opencodeLine = Format-BobOpencodePoolLine -FreePct $ocPaint.free -GoPct $ocPaint.go
+    }
+    $opencodeWindowLines = @()
+    if ($ocPack -and $ocPack.window_lines) { $opencodeWindowLines = @($ocPack.window_lines) }
     if ($opencodeLine) { $jobLines = @(('  {0}' -f $opencodeLine)) + $jobLines }
+    foreach ($wl in @($opencodeWindowLines)) { if ($wl) { $jobLines = @(('  {0}' -f $wl)) + $jobLines } }
     $copilotPoolObj = $(if ($reportDigest -and $reportDigest.copilot) { $reportDigest.copilot } else { $null })
     $copilotFresh = Get-BobCopilotFreshness -Pool $copilotPoolObj
     $copilotLine = Format-BobCopilotPoolLine -Pool $copilotPoolObj
@@ -3004,8 +3166,10 @@ function Get-BobTrayHover {
         account_reset_label = $(if ($cursorWeek -and $cursorWeek.period_end) { Format-BobResetLabel -PeriodEnd $cursorWeek.period_end -FetchedAt $cursorWeek.fetched_at } else { $null })
         gh_posting          = $ghPosting
         opencode_free       = $ocPaint.free
-        opencode_go         = $ocPaint.go
+        opencode_go         = $(if ($ocPack -and $null -ne $ocPack.go_remaining) { $ocPack.go_remaining } else { $ocPaint.go })
         opencode_line       = $opencodeLine
+        opencode_windows    = $(if ($ocPaint.windows) { $ocPaint.windows } else { $null })
+        opencode_window_lines = @($opencodeWindowLines)
         copilot_pool        = $copilotPoolObj
         copilot_line        = $copilotLine
         copilot_stale_line  = $copilotStaleLine
