@@ -40,6 +40,17 @@ def test_fr6141_watch_tray_does_not_opt_in_fuel_post():
     assert "Write-BobIrcStatus" in w
 
 
+def test_fr6141_sync_after_pull_no_longer_posts():
+    irc = _txt(IRC)
+    start = irc.index("function Sync-BobDigestWebhookAfterBobiversePull")
+    block = irc[start : start + 800]
+    assert "FR #6141" in block
+    assert "Send-BobDigestWebhookIfChanged" not in block or block.index("return") < block.find("Send-BobDigestWebhookIfChanged")
+    # Early return: no Send call on the live path
+    assert "return" in block
+    assert "ear owns fuel" in block.lower() or "publish_local_peer_fuel" in block
+
+
 def test_fr6141_ear_tick_calls_publish_local_peer_fuel():
     src = _txt(IRC_AGENT)
     assert "FR #6141" in src
