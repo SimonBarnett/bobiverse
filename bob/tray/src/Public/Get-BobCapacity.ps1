@@ -464,9 +464,14 @@ function Test-BobFuelHasIncluded {
             return ($null -ne $p -and $p -gt 0)
         }
         'grok-build' {
-            $p = Get-BobSharedCursorXaiRemainingFromCapacity -Capacity $Capacity -Machine $Machine
+            # FR #6214 / MRB #6218: use shared remaining only when this machine has its own xAI reading.
+            # Cursor-only % must not make grok-build look included (auth-failed / unknown / null %).
+            $p = $null
+            if ($null -ne (Get-BobRemainingPctValue $Machine.grok_build)) {
+                $p = Get-BobSharedCursorXaiRemainingFromCapacity -Capacity $Capacity -Machine $Machine
+            }
             if ($null -ne $p) { return ($p -gt 0) }
-            # FR #430: null % is not exhaustion — use explicit availability when present.
+            # FR #430: null % is not exhaustion - use explicit availability when present.
             $st = $null
             if ($Machine.grok_build -and $Machine.grok_build.PSObject.Properties['availability']) {
                 $st = [string]$Machine.grok_build.availability

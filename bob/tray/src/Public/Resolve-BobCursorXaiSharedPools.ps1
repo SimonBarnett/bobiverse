@@ -72,12 +72,14 @@ function Resolve-BobCursorXaiSharedPools {
     $out = @()
     foreach ($key in @($byId.Keys)) {
         $p = $byId[$key]
-        if (-not $p.label) {
-            $fams = @($p.families)
-            if (($fams -contains 'cursor') -and ($fams -contains 'xai')) {
-                $p.label = 'Cursor / xAI weekly'
-            }
-            elseif ($fams -contains 'xai') { $p.label = 'xAI weekly' }
+        $fams = @($p.families)
+        # Shared Cursor+xAI pools always use the combined heading (MRB #6218), even when a
+        # ref carried a family-only label such as 'Cursor Models'.
+        if (($fams -contains 'cursor') -and ($fams -contains 'xai')) {
+            $p.label = 'Cursor / xAI weekly'
+        }
+        elseif (-not $p.label) {
+            if ($fams -contains 'xai') { $p.label = 'xAI weekly' }
             elseif ($fams -contains 'cursor') { $p.label = 'Cursor Models' }
             else { $p.label = 'Cursor / xAI weekly' }
         }

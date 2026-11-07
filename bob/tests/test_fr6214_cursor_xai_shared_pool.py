@@ -203,3 +203,48 @@ $distinct = Get-BobSharedCursorXaiAggregateRemaining -Refs @(
     data = json.loads(out.strip().splitlines()[-1])
     assert int(data["shared"]) == 40
     assert int(data["distinct"]) == 100
+
+
+@needs_ps
+def test_fr6214_shared_label_prefers_combined_when_both_families(tmp_path: Path):
+    """MRB #6218: ref labels Cursor Models / xAI weekly must not win over combined heading."""
+    out = _run_shared(
+        r"""
+$pools = @(Resolve-BobCursorXaiSharedPools -Refs @(
+  [pscustomobject]@{ pool_id = 'local-unified'; family = 'cursor'; remaining_pct = 40; label = 'Cursor Models' },
+  [pscustomobject]@{ pool_id = 'local-unified'; family = 'xai'; remaining_pct = 40; label = 'xAI weekly' }
+))
+Write-Output $pools[0].label
+""",
+        tmp_path,
+    )
+    assert "Cursor / xAI weekly" in out
+
+
+@needs_ps
+def test_fr6214_grok_build_ignores_cursor_only_when_xai_unknown(tmp_path: Path):
+    """MRB #6218: auth-failed/null grok_build must not inherit Cursor remaining as included."""
+    capacity = str(CAPACITY).replace("'", "''")
+    shared = str(SHARED).replace("'", "''")
+    body = rf"""
+. '{shared}'
+. '{capacity}'
+$cap = [pscustomobject]@{{ cursor_models = [pscustomobject]@{{ remaining_pct = 50 }} }}
+$m = [pscustomobject]@{{ grok_build = [pscustomobject]@{{ remaining_pct = $null; availability = 'auth-failed' }} }}
+$r = Test-BobFuelHasIncluded -Capacity $cap -Machine $m -Fuel 'grok-build'
+$c = Test-BobFuelHasIncluded -Capacity $cap -Machine $m -Fuel 'cursor-models'
+[pscustomobject]@{{ grok = [bool]$r; cursor = [bool]$c }} | ConvertTo-Json -Compress
+"""
+    out = _run_shared(body, tmp_path)
+    data = json.loads(out.strip().splitlines()[-1])
+    assert data["grok"] is False
+    assert data["cursor"] is True
+
+
+def test_fr6214_tipform_shared_refs_omit_family_only_labels():
+    w = _txt(WATCH)
+    start = w.index("$sharedRefs = @(")
+    chunk = w[start : start + 450]
+    assert "family = 'cursor'" in chunk and "family = 'xai'" in chunk
+    assert "label = 'Cursor Models'" not in chunk
+    assert "label = 'xAI weekly'" not in chunk
