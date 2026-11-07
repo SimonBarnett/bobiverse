@@ -249,13 +249,19 @@ function Get-BobCursorAccountCachePath {
 }
 
 function Save-BobCursorAccountCache {
-    param([string]$Label, [string]$PeriodEnd)
+    param(
+        [string]$Label,
+        [string]$PeriodEnd,
+        [string]$MachineId = ''
+    )
+    # FR #6144: stamp writer machine so hover refuses foreign/expired 0% labels.
     if (-not $Label -or $Label -eq 'empty') { return }
     $p = Get-BobCursorAccountCachePath
     if (-not $p) { return }
     $doc = [pscustomobject]@{
         label      = [string]$Label
         period_end = $(if ($PeriodEnd) { [string]$PeriodEnd } else { $null })
+        machine    = $(if ($MachineId) { [string]$MachineId.Trim().ToLowerInvariant() } else { $null })
         updated_at = [DateTime]::UtcNow.ToString('o')
     }
     try { Write-JsonFile $p $doc } catch { }
@@ -1475,11 +1481,25 @@ function ConvertTo-BobDigestCursorPoolRows {
         if (-not $rowChan -and $p.channel) { $rowChan = [string]$p.channel.Trim() }
         elseif (-not $rowChan -and $p.shop) { $rowChan = [string]$p.shop.Trim() }
         elseif (-not $rowChan -and $rowMid) { $rowChan = Get-BobIrcShopChannel -MachineId $rowMid }
+        # FR #6144: prefer remaining_pct / period_end; fall back to remaining / reset only when absent.
+        $remPct = $null
+        $names = @($p.PSObject.Properties | ForEach-Object { $_.Name })
+        if ($names -contains 'remaining_pct') {
+            $remPct = $p.remaining_pct
+        } elseif ($names -contains 'remaining') {
+            $remPct = $p.remaining
+        }
+        $peVal = $null
+        if ($names -contains 'period_end' -and $p.period_end) {
+            $peVal = [string]$p.period_end
+        } elseif ($names -contains 'reset' -and $p.reset) {
+            $peVal = [string]$p.reset
+        }
         $row = [pscustomobject]@{
             group_id      = $gid
             group_label   = $(if ($p.group_label) { [string]$p.group_label } elseif ($p.label) { [string]$p.label } else { $gid })
-            remaining_pct = $p.remaining_pct
-            period_end    = $(if ($p.period_end) { [string]$p.period_end } else { $null })
+            remaining_pct = $remPct
+            period_end    = $peVal
         }
         if ($rowMid) { $row | Add-Member -NotePropertyName machine_id -NotePropertyValue $rowMid -Force }
         if ($rowAcct) { $row | Add-Member -NotePropertyName account -NotePropertyValue $rowAcct -Force }
@@ -2144,6 +2164,7 @@ function Get-BobDigestWebhookFingerprint {
         [string]([int]$Doc.running)
         [string]([int]$Doc.queued)
         [string]$Doc.weekly
+        [string]$Doc.cursor_known
         [string]$Doc.cursor_label
         [string]$Doc.cursor_period_end
         [string]$Doc.sand_period_end
@@ -2196,10 +2217,18 @@ function Build-BobDigestWebhookMergePayload {
         try { $weeklyKnown = [bool]$Doc.weekly_known } catch { }
     }
     $payload.weekly_known = $weeklyKnown
-    if ($Doc.cursor_label) { $payload.cursor_label = [string]$Doc.cursor_label }
-    if ($Doc.cursor_period_end) { $payload.cursor_period_end = [string]$Doc.cursor_period_end }
-    # #456: Sand / grok-chat weekly reset — distinct from Cursor billingCycleEnd.
-    if ($Doc.sand_period_end) { $payload.sand_period_end = [string]$Doc.sand_period_end }
+    # FR #6144: always publish cursor_known (mirrors weekly_known).
+    $cursorKnown = $true
+    if ($null -ne $Doc.cursor_known -and [string]$Doc.cursor_known -ne '') {
+        try { $cursorKnown = [bool]$Doc.cursor_known } catch { $cursorKnown = $true }
+    }
+    $payload.cursor_known = $cursorKnown
+    if ($cursorKnown) {
+        if ($Doc.cursor_label) { $payload.cursor_label = [string]$Doc.cursor_label }
+        if ($Doc.cursor_period_end) { $payload.cursor_period_end = [string]$Doc.cursor_period_end }
+        # #456: Sand / grok-chat weekly reset — distinct from Cursor billingCycleEnd.
+        if ($Doc.sand_period_end) { $payload.sand_period_end = [string]$Doc.sand_period_end }
+    }
     if ($Doc.period_end) { $payload.period_end = [string]$Doc.period_end }
     if ($Doc.model) { $payload.model = [string]$Doc.model }
     if ($Doc.kind) { $payload.kind = [string]$Doc.kind }
@@ -2214,13 +2243,16 @@ function Build-BobDigestWebhookMergePayload {
     if ($null -ne $Doc.running) { $payload.running = [int]$Doc.running }
     if ($null -ne $Doc.queued) { $payload.queued = [int]$Doc.queued }
     if ($Doc.jobs -and @($Doc.jobs).Count -gt 0) { $payload.jobs = @($Doc.jobs) }
-    if ($Doc.pcent) { $payload.pcent = $Doc.pcent }
-    # #456: each Bob reports per-pool remaining + period_end (grok-chat weekly vs high/auto billing).
-    if ($Doc.cursor_pools) {
-        $docMid = ''
-        if ($Doc.id) { $docMid = [string]$Doc.id }
-        $poolRows = @(ConvertTo-BobDigestCursorPoolRows -Pools @($Doc.cursor_pools) -MachineId $docMid)
-        if ($poolRows.Count -gt 0) { $payload.cursor_pools = @($poolRows) }
+    # FR #6144: when cursor_known is false, omit pcent / cursor_pools (chair clears).
+    if ($cursorKnown) {
+        if ($Doc.pcent) { $payload.pcent = $Doc.pcent }
+        # #456: each Bob reports per-pool remaining + period_end (grok-chat weekly vs high/auto billing).
+        if ($Doc.cursor_pools) {
+            $docMid = ''
+            if ($Doc.id) { $docMid = [string]$Doc.id }
+            $poolRows = @(ConvertTo-BobDigestCursorPoolRows -Pools @($Doc.cursor_pools) -MachineId $docMid)
+            if ($poolRows.Count -gt 0) { $payload.cursor_pools = @($poolRows) }
+        }
     }
     # FR #5690: always publish overspend fields (null clears sticky chair values; like weekly_known/#976).
     if ($null -ne $Doc.overage_gbp -and [string]$Doc.overage_gbp -ne '') {
@@ -2476,7 +2508,13 @@ function Write-BobIrcStatus {
     try {
         $cw = Get-BobCursorAgentWeeklyRemaining
         if ($cw) {
-            if ($null -ne $cw.remaining_pct) { $cursorRemainingPct = [int]$cw.remaining_pct }
+            # FR #6144: empty string must not cast to confident 0.
+            if ((Get-Command Test-BobTrayRemainingKnown -ErrorAction SilentlyContinue) -and
+                (Test-BobTrayRemainingKnown $cw.remaining_pct)) {
+                try { $cursorRemainingPct = [int]$cw.remaining_pct } catch { $cursorRemainingPct = $null }
+            } elseif ($null -ne $cw.remaining_pct -and [string]$cw.remaining_pct -ne '') {
+                try { $cursorRemainingPct = [int]$cw.remaining_pct } catch { $cursorRemainingPct = $null }
+            }
             $cursorLabel = Format-BobCursorAccountLabel -RemainingPct $cw.remaining_pct -UsedPct $cw.used_pct
             try { $overageGbp = Get-BobCursorOverageGbp } catch { }
             if ($null -eq $overageGbp -and $null -ne $cw.overage_gbp) { $overageGbp = [double]$cw.overage_gbp }
@@ -2487,7 +2525,7 @@ function Write-BobIrcStatus {
             # #456: Sand / grok-chat weekly reset (never Cursor billingCycleEnd).
             if ($cw.sand_period_end) { $sandPeriodEnd = [string]$cw.sand_period_end }
             if ($cursorLabel -and $cursorLabel -ne 'empty') {
-                Save-BobCursorAccountCache -Label $cursorLabel -PeriodEnd $cursorPeriodEnd
+                Save-BobCursorAccountCache -Label $cursorLabel -PeriodEnd $cursorPeriodEnd -MachineId $id
             }
         }
     } catch { }
@@ -2542,6 +2580,20 @@ function Write-BobIrcStatus {
         # FR #976: false when Get-BobWeeklyRemaining could not measure (clears stuck 0 on chair).
         weekly_known           = ($null -ne $week)
         period_end             = $periodEnd
+        # FR #6144: false when Cursor reading absent / no known remaining and no overage.
+        cursor_known           = $(
+            if (-not $cw) { $false }
+            elseif ($null -ne $cursorRemainingPct) { $true }
+            elseif ($null -ne $overageGbp) { $true }
+            elseif ($cw.cursor_spending_groups) {
+                $anyKnown = $false
+                foreach ($g in @($cw.cursor_spending_groups)) {
+                    if ($g -and $null -ne $g.remaining_pct -and [string]$g.remaining_pct -ne '') { $anyKnown = $true; break }
+                }
+                $anyKnown
+            }
+            else { $false }
+        )
         cursor_label           = $cursorLabel
         cursor_period_end      = $cursorPeriodEnd
         sand_period_end        = $sandPeriodEnd
@@ -2555,7 +2607,8 @@ function Write-BobIrcStatus {
         on_demand_limit_cents  = $(if ($cw) { $cw.on_demand_limit_cents } else { $null })
         on_demand_remaining_pct = $(if ($cw) { $cw.on_demand_remaining_pct } else { $null })
         usd_gbp_rate           = $(if ($cw -and $null -ne $cw.usd_gbp_rate -and [string]$cw.usd_gbp_rate -ne '') { $cw.usd_gbp_rate } else { $null })
-        overage_fetched_at     = $(if ($cw -and $cw.ts) { [string]$cw.ts } elseif ($null -ne $overageGbp -or ($cw -and $null -ne $cw.overage_usd)) { $seen } else { $null })
+        # FR #6144: use converter fetched_at (not heartbeat) for cached overage freshness.
+        overage_fetched_at     = $(if ($cw -and $cw.fetched_at) { [string]$cw.fetched_at } elseif ($cw -and $cw.ts) { [string]$cw.ts } elseif ($null -ne $overageGbp -or ($cw -and $null -ne $cw.overage_usd)) { $null } else { $null })
         pcent                  = $pcent
         running                = @($running).Count + $liveN
         queued                 = @($inbox).Count
@@ -2569,7 +2622,25 @@ function Write-BobIrcStatus {
         responding             = $responding
         source                 = 'irc'
     }
+    # FR #6144: when Cursor unknown, omit label/pcent/pools on the peer doc (chair clears).
+    if ($doc.cursor_known -eq $false) {
+        $doc.cursor_label = $null
+        $doc.cursor_period_end = $null
+        $doc.sand_period_end = $null
+        $doc.remaining_pct = $null
+        $doc.account_remaining_pct = $null
+        $doc.cursor_remaining_pct = $null
+        $doc.pcent = $null
+        $doc.overage_gbp = $null
+        $doc.overage_usd = $null
+        $doc.overspend_state = $null
+        $doc.on_demand_used_cents = $null
+        $doc.on_demand_limit_cents = $null
+        $doc.on_demand_remaining_pct = $null
+        $doc.overage_fetched_at = $null
+    }
     try {
+        if ($doc.cursor_known -eq $false) { throw 'skip-pools-cursor-unknown' }
         # FR #445 / #456: publish only this host's pools (never peer/fleet values as own).
         # Each pool carries its own period_end (grok-chat = Sand weekly; high/auto = billing).
         $poolRows = @(Get-BobCursorPoolsForTray -MachineId $id -LocalCursorDoc $cw -PcentRows @() -LocalOnly)
@@ -2693,8 +2764,11 @@ function Import-BobIrcPeerTranscript {
             $doc | Add-Member -NotePropertyName period_end -NotePropertyValue ([string]$prev.period_end) -Force
         }
         Save-BobSeatPeriodEnd -MachineId $resolved -PeriodEnd $(if ($doc.period_end) { [string]$doc.period_end } else { $null }) -Weekly $doc.weekly
+        # FR #6144: only stamp local-machine cache from peer transcript for this box ($mid = mootId).
         if ($doc.cursor_label -and [string]$doc.cursor_label -ne 'empty') {
-            Save-BobCursorAccountCache -Label ([string]$doc.cursor_label) -PeriodEnd $(if ($doc.cursor_period_end) { [string]$doc.cursor_period_end } else { $null })
+            if (-not $mid -or $resolved -eq $mid) {
+                Save-BobCursorAccountCache -Label ([string]$doc.cursor_label) -PeriodEnd $(if ($doc.cursor_period_end) { [string]$doc.cursor_period_end } else { $null }) -MachineId $resolved
+            }
         }
         $doc = Merge-BobIrcPeerRemaining -Prev $prev -Incoming $doc
         Write-JsonFile $peerPath $doc

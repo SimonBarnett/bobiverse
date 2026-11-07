@@ -1244,8 +1244,9 @@ function Get-BobCursorGroupRemainFromLocalDoc {
             return [int]$g.remaining_pct
         }
     }
-    if ($want -eq 'auto' -and $null -ne $LocalCursorDoc.remaining_pct) {
-        return [int]$LocalCursorDoc.remaining_pct
+    # FR #6144: empty remaining_pct must not cast to 0.
+    if ($want -eq 'auto' -and (Test-BobTrayRemainingKnown $LocalCursorDoc.remaining_pct)) {
+        try { return [int]$LocalCursorDoc.remaining_pct } catch { return $null }
     }
     return $null
 }
@@ -1624,8 +1625,22 @@ function ConvertFrom-BobReportDigestTask {
 
 function Format-BobCursorControlPoolPctLabel {
     param($RemainingPct)
-    if ($null -eq $RemainingPct) { return 'n/a' }
+    # FR #6144: empty / unknown -> n/a; genuine 0 stays 0%.
+    if (-not (Test-BobTrayRemainingKnown $RemainingPct)) { return 'n/a' }
     return ('{0}%' -f [int]$RemainingPct)
+}
+
+
+function Test-BobCursorAccountCacheAcceptable {
+    param($Cache, [string]$LocalMachineId)
+    # FR #6144: accept cached account label only if local-origin and unexpired period_end.
+    if (-not $Cache -or -not $Cache.label -or $Cache.label -eq 'empty') { return $false }
+    $mid = ''
+    if ($Cache.machine) { $mid = [string]$Cache.machine.Trim().ToLowerInvariant() }
+    if (-not $mid) { return $false }  # legacy entries without machine = foreign
+    if ($LocalMachineId -and $mid -ne [string]$LocalMachineId.Trim().ToLowerInvariant()) { return $false }
+    if (-not $Cache.period_end) { return $false }
+    return (Test-BobCursorPoolPeriodEndCurrent -PeriodEnd ([string]$Cache.period_end))
 }
 
 function Format-BobCursorControlPoolHeading {
@@ -1817,8 +1832,8 @@ function Get-BobCursorPoolsForTray {
         $remain = Get-BobCursorGroupRemainFromLocalDoc -LocalCursorDoc $LocalCursorDoc -GroupId $gid
         if ($null -eq $remain) {
             if ($gid -eq 'grok-chat') {
-                # Seat cache may hold sand under groups.'grok-chat' only (not remaining_pct).
-                if ($ce -and $ce.groups -and $ce.groups.'grok-chat' -and
+                # FR #6144: -LocalOnly publish uses local meters only (no seat-cache Sand).
+                if (-not $LocalOnly -and $ce -and $ce.groups -and $ce.groups.'grok-chat' -and
                     $null -ne $ce.groups.'grok-chat'.remaining_pct -and
                     [string]$ce.groups.'grok-chat'.remaining_pct -ne '') {
                     try { $remain = [int]$ce.groups.'grok-chat'.remaining_pct } catch { }
@@ -1843,7 +1858,7 @@ function Get-BobCursorPoolsForTray {
         $pe = $null
         if ($gid -eq 'grok-chat') {
             if ($sandPeriodEnd) { $pe = $sandPeriodEnd }
-            elseif ($ce -and $ce.groups -and $ce.groups.'grok-chat' -and $ce.groups.'grok-chat'.period_end) {
+            elseif (-not $LocalOnly -and $ce -and $ce.groups -and $ce.groups.'grok-chat' -and $ce.groups.'grok-chat'.period_end) {
                 $pe = [string]$ce.groups.'grok-chat'.period_end
             }
         }
@@ -2280,7 +2295,7 @@ function Get-BobTrayHover {
             } catch { }
         }
         if ($peek.cursor_label -and [string]$peek.cursor_label -ne 'empty') {
-            try { Save-BobCursorAccountCache -Label ([string]$peek.cursor_label) -PeriodEnd $(if ($peek.cursor_period_end) { [string]$peek.cursor_period_end } else { $null }) } catch { }
+            try { Save-BobCursorAccountCache -Label ([string]$peek.cursor_label) -PeriodEnd $(if ($peek.cursor_period_end) { [string]$peek.cursor_period_end } else { $null }) -MachineId $machineId } catch { }
             try {
                 $peekSeat = Get-BobSeatForMachine -MachineId $mid
                 if ($peekSeat) {
@@ -2682,7 +2697,8 @@ function Get-BobTrayHover {
     if (-not $acctPctLabel -or $acctPctLabel -eq 'empty') {
         try {
             $cc = Read-BobCursorAccountCache
-            if ($cc -and $cc.label -and [string]$cc.label -ne 'empty') {
+            # FR #6144: refuse foreign/expired cache (machine stamp + period_end).
+            if (Test-BobCursorAccountCacheAcceptable -Cache $cc -LocalMachineId $machineId) {
                 $acctPctLabel = [string]$cc.label
                 if (-not $cursorWeek) { $cursorWeek = [pscustomobject]@{} }
                 if ($cc.period_end -and -not $cursorWeek.period_end) {
@@ -2694,7 +2710,7 @@ function Get-BobTrayHover {
     if ($acctPctLabel -and $acctPctLabel -ne 'empty') {
         $cend = $null
         if ($cursorWeek -and $cursorWeek.period_end) { $cend = [string]$cursorWeek.period_end }
-        Save-BobCursorAccountCache -Label $acctPctLabel -PeriodEnd $cend
+        Save-BobCursorAccountCache -Label $acctPctLabel -PeriodEnd $cend -MachineId $machineId
     }
     try {
         $localSeat = Get-BobSeatForMachine -MachineId $machineId
