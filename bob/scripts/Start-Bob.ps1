@@ -81,6 +81,27 @@ if (Test-Path -LiteralPath $updater) {
 $earExe = Join-Path $scriptDir 'bob-ear.exe'
 $useEarExe = Test-Path -LiteralPath $earExe -PathType Leaf
 $agent = Join-Path $scriptDir 'irc_agent.py'
+# FR #6237: when python is available and on-disk bobreport.py is newer than bob-ear.exe,
+# prefer python irc_agent.py so a hotpatched digest User-Agent applies without waiting for
+# the next bob-ear.exe rebuild. MSI boxes without python still use the frozen ear.
+$bobreportPy = Join-Path $scriptDir 'bobreport.py'
+if ($useEarExe -and (Test-Path -LiteralPath $bobreportPy -PathType Leaf)) {
+    try {
+        if (-not $Python) {
+            try { $Python = Resolve-BobiversePython } catch { $Python = '' }
+        }
+        if ($Python -and (Test-Path -LiteralPath $Python -PathType Leaf)) {
+            $brTime = (Get-Item -LiteralPath $bobreportPy).LastWriteTimeUtc
+            $earTime = (Get-Item -LiteralPath $earExe).LastWriteTimeUtc
+            if ($brTime -gt $earTime) {
+                Write-Host 'INFO FR #6237 bobreport.py newer than bob-ear.exe; using python irc_agent.py so hotpatch applies'
+                $useEarExe = $false
+            }
+        }
+    } catch {
+        Write-Host ("WARN FR #6237 prefer-scripts check failed: {0}" -f $_.Exception.Message)
+    }
+}
 $shop = "#$MachineId"
 # FR #3834: Bob ears also JOIN #wonderland (airc client fallback; Jeeves grants +o).
 $channel = "#bobiverse,#wonderland,$shop"
