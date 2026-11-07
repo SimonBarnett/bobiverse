@@ -552,24 +552,35 @@ def refresh_allowance(
 
 
 def _parse_fetched_epoch(doc: dict) -> float:
-    ep = _num(doc.get("fetched_epoch"))
-    if ep is not None:
-        return float(ep)
+    """Last-success stamp for digest pooling (FR #6148 / FIX #6180).
+
+    Prefer ``fetched_at`` (advances only on successful parse). Do not rank by
+    ``fetched_epoch`` alone: refresh/observe set that on failed attempts too,
+    which would let a failed allowance outrank a successful observation.
+    When ``fetched_at`` is missing, fall back to ``fetched_epoch`` only if the
+    doc looks like a successful parse (state ok/exhausted) so first-write
+    ordering still works.
+    """
     fa = str(doc.get("fetched_at") or "").strip()
-    if not fa:
-        return -1.0
-    try:
-        # Accept Zulu ISO used by refresh/observe.
-        return float(time.mktime(time.strptime(fa.replace("Z", ""), "%Y-%m-%dT%H:%M:%S"))) - time.timezone
-    except (TypeError, ValueError, OverflowError):
-        return -1.0
+    if fa:
+        try:
+            # Accept Zulu ISO used by refresh/observe.
+            return float(time.mktime(time.strptime(fa.replace("Z", ""), "%Y-%m-%dT%H:%M:%S"))) - time.timezone
+        except (TypeError, ValueError, OverflowError):
+            pass
+    state = str(doc.get("state") or "").strip().lower()
+    if state in ("ok", "exhausted"):
+        ep = _num(doc.get("fetched_epoch"))
+        if ep is not None:
+            return float(ep)
+    return -1.0
 
 
 def pool_for_digest(home: Path) -> dict:
     """FR #5965 + FR #6148: prefer freshest observation; keep cooldown from allowance."""
     allow = load_allowance(home)
     obs = load_observation(home)
-    # Quota fields from the source with the newer parseable fetched_at.
+    # Quota fields from the source with the newer successful fetched_at.
     allow_ep = _parse_fetched_epoch(allow) if allow.get("fetched_at") or allow.get("state") else -1.0
     obs_ep = _parse_fetched_epoch(obs) if obs.get("fetched_at") or obs.get("state") else -1.0
     if obs_ep > allow_ep and obs:

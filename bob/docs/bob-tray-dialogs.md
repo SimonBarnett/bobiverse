@@ -78,6 +78,7 @@ rows with workers `{irc nick}: {doing|idle}`, one Copilot pool tile, alert and v
 ## Copilot freshness (FR #6148)
 
 - `Format-BobCopilotPoolLine` / `Get-BobCopilotFreshness` treat `fetched_at` older than **900 seconds** (or missing/unparseable/far-future) as stale.
-- Stale paint: `Copilot  [stale <age>] <value>` or `Copilot  [stale] <value>` (reset countdown omitted).
+- A future `resume_at` (dispatch cooldown) does **not** force fresh: age is always from `fetched_at`.
+- Stale paint: `Copilot  [stale <age>] <value>` or `Copilot  [stale] <value>` (reset countdown omitted). TipForm paints the title red via `Add-BobTraySectionHeader -TitleColor` (escape `` `[ `` in `-like` patterns so `[stale` is literal).
 - Snapshot fields: `copilot_line`, `copilot_stale_line`, `copilot_fresh_until` (unix seconds). Native Status re-ages an open window at the deadline without waiting for a new poll.
 - TipForm always shows a Copilot line (`Copilot  unknown` when absent).

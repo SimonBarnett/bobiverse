@@ -7,14 +7,14 @@ Build/pack: `scripts\Build-BobEar.ps1` (PyInstaller) -> staged by `Pack-Bobivers
 
 ## Channels and homes
 
-- JOIN `#bobiverse` + `#wonderland` + `#{MachineId}` (identical `Start-Bob` `--channel #bobiverse,#wonderland,#<machine>` on every box — Ionos host, MarchHare, Flamingo, …; FR #3834)
-- **DIGEST_ID_FOLD (harvest #2280 / PR #2279):** digest aliases fold to the real shop id — `ionos` -> `win-mpre8vi4u6u`, `dev1` -> `ce-priority-dev1`. Helpers (`inbound_transcript.channel_list_for_machine` / `canonical_machine_id`) must never emit `#ionos` or `#dev1` as the shop channel.
+- JOIN `#bobiverse` + `#wonderland` + `#{MachineId}` (identical `Start-Bob` `--channel #bobiverse,#wonderland,#<machine>` on every box â€” Ionos host, MarchHare, Flamingo, â€¦; FR #3834)
+- **DIGEST_ID_FOLD (harvest #2280 / PR #2279):** digest aliases fold to the real shop id â€” `ionos` -> `win-mpre8vi4u6u`, `dev1` -> `ce-priority-dev1`. Helpers (`inbound_transcript.channel_list_for_machine` / `canonical_machine_id`) must never emit `#ionos` or `#dev1` as the shop channel.
 - After Jeeves `!register`: expect **+o** on shop, **+h** on `#bobiverse`, **+o** on `#wonderland` (FR #3834)
 - Home: `<ai root>\bob\home` when ObjectName is LocalSystem; else often `~\.bobiverse`
-- **`--home` isolation (FR #2350):** an explicit scratch `--home` (UAT under `%TEMP%`, …) does **not** merge `~\.agentic-irc-bobiverse`. Fleet basenames `home` / `.bobiverse` still one-time migrate. Opt-in: `BOB_MIGRATE_LEGACY=1`. Opt-out: `BOB_HOME_NO_MIGRATE=1`.
+- **`--home` isolation (FR #2350):** an explicit scratch `--home` (UAT under `%TEMP%`, â€¦) does **not** merge `~\.agentic-irc-bobiverse`. Fleet basenames `home` / `.bobiverse` still one-time migrate. Opt-in: `BOB_MIGRATE_LEGACY=1`. Opt-out: `BOB_HOME_NO_MIGRATE=1`.
 - Agents: nick `{machine}-{pid}`, JOIN **shop only**
 
-## Listen (inbound transcript) — FR #2174
+## Listen (inbound transcript) â€” FR #2174
 
 Every running ear always appends scrubbed inbound PRIVMSG lines to:
 
@@ -22,7 +22,7 @@ Every running ear always appends scrubbed inbound PRIVMSG lines to:
 <bob home>\inbound-transcript.log
 ```
 
-Each line is `UTC-timestamp channel nick text` (secrets redacted). The file rotates by size (`inbound-transcript.log.1` …). This is **always on** — it does not need `BOB_IRC_DEBUG`. Raw wire dump (`irc.log`) remains opt-in via `BOB_IRC_DEBUG=1`.
+Each line is `UTC-timestamp channel nick text` (secrets redacted). The file rotates by size (`inbound-transcript.log.1` â€¦). This is **always on** â€” it does not need `BOB_IRC_DEBUG`. Raw wire dump (`irc.log`) remains opt-in via `BOB_IRC_DEBUG=1`.
 
 Workers still only inject lines **FROM Jeeves** addressed to that seat (`bob_worker.accept_for_agent`); other PRIVMSG stay in the transcript for Shell/operators.
 
@@ -33,7 +33,7 @@ Workers still only inject lines **FROM Jeeves** addressed to that seat (`bob_wor
 | Ergo PASS | `<ai root>\bob\config\ergo.password` or `~\.grok\ergo\connect.password` |
 | NickServ SASL | `<ai root>\bob\home\nickserv.password` -> `BOB_IRC_SASL_USER=bob-{machine}` |
 | Service logon | `config\service.password` / `BOBIVERSE_SERVICE_PASSWORD` -> DPAPI `service.cred` |
-| Digest POST | none (no secret; the digest accepts machine ids on the roster Jeeves publishes). **FR #6141:** ircBob ear owns fuel merge POSTs (`publish_local_peer_fuel`); Watch-BobTray gathers peer JSON for paint only. |
+| Digest POST | none (no secret; the digest accepts machine ids on the roster Jeeves publishes). **FR #6141 / #6145:** ircBob ear owns fuel merge POSTs (`publish_local_peer_fuel`); fingerprint deltas (remaining / OpenCode pcent / Copilot `overage_fetched_at` / `grok_account`) POST within `BOB_EAR_DIGEST_FUEL_DELTA_S` (default 5s, `DIGEST_FUEL_MAX_LAG_S`). Unchanged fingerprints wait for heartbeat (`BOB_EAR_DIGEST_FUEL_S`, default 30s). Watch-BobTray gathers peer JSON for paint only. **FR #6144:** publishers send `cursor_known` (mirrors `weekly_known`); when false the chair clears Cursor label/pcent/pools and does not peer-refill them. Sand resets use `sand_period_end` (not xAI `period_end`). **FR #6146:** when local OpenCode fuel is known, merge pcent includes `opencode-free` / `opencode-go` (omit when unknown; never invent 0). Helper reads use a short timeout + TTL cache so the 5s fuel tick cannot stall the outbox loop. |
 
 Do **not** mint a fresh GUID for an already-registered NickServ account.
 
@@ -41,7 +41,7 @@ Do **not** mint a fresh GUID for an already-registered NickServ account.
 
 `GET https://bob.ntsa.uk/bob/v1/report` includes `airc_consoles` (flat nick list) plus `airc_console_details` (`[{nick, machine, channel}]`) and per-machine `console_nicks`. Chair NAMES on **every** channel Jeeves sits in (registered shops and customer channels) record live `*_console` nicks; PART/QUIT clears them. No NickServ, no secrets. Priority Agent airc picker can verify presence without IRC credentials.
 
-## Outbox (send) — identical on every machine
+## Outbox (send) â€” identical on every machine
 
 UTF-8 **no BOM**. Append one complete line per send to `<bob home>\outbox.txt`. Only lines starting with `PRIVMSG ` are sent raw (same interface on Ionos / MarchHare / Flamingo):
 
@@ -52,7 +52,7 @@ PRIVMSG #bobiverse :!help
 PRIVMSG {machine}_console :<short-cmd>
 ```
 
-Offset is tracked in `outbox.txt.pos`; up to 8 lines drain per tick. If `<ai root>\bob\home` is LocalSystem-ACL only, interactive users cannot write the outbox — use a talk-seat / worker run home for agent replies.
+Offset is tracked in `outbox.txt.pos`; up to 8 lines drain per tick. If `<ai root>\bob\home` is LocalSystem-ACL only, interactive users cannot write the outbox â€” use a talk-seat / worker run home for agent replies.
 
 Raw shop-op verbs (bob-* ear, own `#{machine}` only; `shop_ops.raw_op_line`): `KICK`, `NAMES`, and `MODE +/-o|v|h <nick>` (FR #4069 adds half-op `+h`/`-h` alongside op/voice).
 
@@ -82,10 +82,10 @@ Workaround until this tip is deployed: `Restart-Service ircBob`.
 
 ## Tray / recycle
 
-- Product Sync/ff runs on **ircBob Start-Bob** only — TipForm Start never updates the tree.
+- Product Sync/ff runs on **ircBob Start-Bob** only â€” TipForm Start never updates the tree.
 - TipForm menu **Restart** -> `Restart-BobTrayWatcher` -> `Start-BobFleetTray -ForceNew` (restarts `ircBob` via `Restart-BobTrayService`, then relaunches TipForm in the interactive session so Sync/ff runs on ear start).
 - Ear-only: Desktop / Start Menu **Restart ircBob** / `scripts\Restart-BobEar.ps1` (announce -> `Restart-Service ircBob`).
-- **FR #2943 / VISION S3:** departure PRIVMSG + `depart-request.txt` go to the **service** ear home (`<InstallRoot>\home`, via `Get-BobiverseEarServiceHome`) — the path LocalSystem `Start-Bob` drains — not `%USERPROFILE%\.bobiverse` (orphan undrained outbox).
+- **FR #2943 / VISION S3:** departure PRIVMSG + `depart-request.txt` go to the **service** ear home (`<InstallRoot>\home`, via `Get-BobiverseEarServiceHome`) â€” the path LocalSystem `Start-Bob` drains â€” not `%USERPROFILE%\.bobiverse` (orphan undrained outbox).
 - Quiet MSI: `Start-BobTrayInteractive.ps1` registers ONLOGON `/IT` task `BobiverseTray` (no session-0 TipForm).
 - `!recycle` / `!recycle {machine}`: announce -> restart tray + `ircBob`.
 - **FR #5059** `!recycleseat <nick> [machine]`: authorised ops (+o/+h like `!register`), bob-* ear, Jeeves or owner queue a stop+verify+start for a named worker seat. The elevated tray consumes `run\recycleseat\req-*.json`; if stop fails or the PID is still alive, no new seat is started and the failure is reported to intake.
@@ -95,7 +95,7 @@ Workaround until this tip is deployed: `Restart-Service ircBob`.
 
 - `BOB_IRC_DEBUG=1` creates `<home>\irc.log` as soon as the Client starts (`debug-open`), then logs `session start` / `tcp-ok` / `tls-ok` (or `tls-fail`) before any IRC line arrives.
 - TCP and TLS each use a 20s timeout so a hung handshake fails loudly instead of sitting silent after `prior-clean`.
-- `--once` connects, JOINs, then exits (`INFO once: session complete`) — smoke/UAT friendly; omit `--once` for a long-running ear.
+- `--once` connects, JOINs, then exits (`INFO once: session complete`) â€” smoke/UAT friendly; omit `--once` for a long-running ear.
 - `prior_irc` also matches frozen `bob-ear.exe` priors (same nick/home) and keeps PyInstaller onefile ancestors so the live child is not orphaned.
 - Related: scratch `--home` must not merge `~\.agentic-irc-bobiverse` (FR #2350).
 
@@ -106,7 +106,7 @@ Get-Service ircBob
 Get-Content <ai root>\bob\home\inbound-transcript.log -Tail 40 -ErrorAction SilentlyContinue
 Get-Content <ai root>\bob\home\irc.log -Tail 40 -ErrorAction SilentlyContinue  # only when BOB_IRC_DEBUG=1
 # Expect: SASL user=bob-<machine>, joined #bobiverse,#wonderland,#<machine> as Bob-<machine> (FR #3834)
-# Expect: inbound-transcript.log lines like: 2026-10-04T12:00:00Z #marchhare Jeeves …
+# Expect: inbound-transcript.log lines like: 2026-10-04T12:00:00Z #marchhare Jeeves â€¦
 # Scratch UAT: $env:BOB_IRC_DEBUG=1; bob-ear.exe --nick ear-test --home $tmp --channel #x --host irc.ntsa.uk --once
 # Expect irc.log contains debug-open + tcp-ok + tls-ok; process exits after JOIN
 ```

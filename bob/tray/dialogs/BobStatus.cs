@@ -30,6 +30,7 @@ namespace BobDialogs
         public string CopilotLine = "Copilot  unknown";
         public string CopilotStaleLine = "";
         public long CopilotFreshUntil = 0;
+        public string OpencodeLine = "OpenCode  n/a";
         public List<StatusRow> Cursor = new List<StatusRow>(), Grok = new List<StatusRow>();
 
         static StatusRow ParseRow(Dictionary<string, object> d)
@@ -51,6 +52,7 @@ namespace BobDialogs
             if (d == null) { m.Note = "snapshot is not an object"; return m; }
             string t = Common.Str(d, "title"); if (t.Length > 0) m.Title = t;
             m.Version = Common.Str(d, "version"); m.Overspend = Common.Str(d, "overspend");
+            string oc = Common.Str(d, "opencode_line"); if (oc.Length > 0) m.OpencodeLine = oc;
             string cp = Common.Str(d, "copilot_line"); if (cp.Length > 0) m.CopilotLine = cp;
             string cps = Common.Str(d, "copilot_stale_line"); if (cps.Length > 0) m.CopilotStaleLine = cps;
             m.CopilotFreshUntil = Common.Long(d, "copilot_fresh_until", 0);
@@ -166,6 +168,7 @@ namespace BobDialogs
                     y += 8;
                 }
             }
+            y = Section(g, y, m.OpencodeLine, "");
             string paintCopilot = SelectCopilotLine(m, DateTime.UtcNow);
             Color copilotFg = paintCopilot.StartsWith("Copilot  [stale", StringComparison.Ordinal) ? Red : Fg;
             y = Section(g, y, paintCopilot, "", copilotFg);
@@ -305,6 +308,7 @@ namespace BobDialogs
                 sb.AppendLine(m.Title); sb.AppendLine("cursor=" + m.Cursor.Count + " grok=" + m.Grok.Count + " alert=" + m.Alert);
                 foreach (StatusRow r in m.Cursor) sb.AppendLine("C " + r.Heading);
                 foreach (StatusRow r in m.Grok) { sb.AppendLine("G " + r.Heading); foreach (string l in r.Lines) sb.AppendLine("W " + l); }
+                sb.AppendLine(m.OpencodeLine);
                 sb.AppendLine(m.CopilotLine);
                 if (outFile.Length > 0) File.WriteAllText(outFile, sb.ToString(), new UTF8Encoding(false)); else Console.Write(sb.ToString());
                 return 0;

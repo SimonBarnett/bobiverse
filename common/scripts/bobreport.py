@@ -258,7 +258,30 @@ _CLEARABLE_MERGE_FIELDS = frozenset({
     "on_demand_remaining_pct",
     "overage_fetched_at",
     "usd_gbp_rate",
+    # FR #6144: omit/unknown Cursor must clear sticky label (not leave foreign 0%).
+    "cursor_label",
 })
+# FR #6144 / MRB #6169: one Cursor-group key set for clear / merge-skip / peer-block.
+_CURSOR_GROUP_KEYS = frozenset({
+    "pcent",
+    "cursor_label",
+    "cursor_pools",
+    "sand_period_end",
+    "cursor_period_end",
+    "overage_gbp",
+    "overage_usd",
+    "overspend_state",
+    "on_demand_used_cents",
+    "on_demand_limit_cents",
+    "on_demand_remaining_pct",
+    "overage_fetched_at",
+    "usd_gbp_rate",
+    "remaining_pct",
+    "account_remaining_pct",
+    "cursor_remaining_pct",
+    "cur",
+})
+_CURSOR_UNKNOWN_CLEAR_FIELDS = tuple(sorted(_CURSOR_GROUP_KEYS))
 _PEER_CLEAR = object()  # sentinel: peer wants an explicit null clear in the merge delta
 # FR #6143: ear-owned identity scalars. Keep out of _MERGE_PEER_FIELDS so tray peer
 # rewrites cannot clear or restore a stale grok_account via peer fill.
@@ -300,6 +323,8 @@ _TRAY_MACHINE_EXPORT_KEYS = (
     "overage_fetched_at",
     "usd_gbp_rate",
     "console_nicks",
+    "cursor_known",
+    "weekly_known",
     "grok_account",
 )
 WORKER_NICK_RE = re.compile(r"^w-([a-z0-9]+)-(\d+)_?$", re.I)
@@ -1201,6 +1226,9 @@ def _coerce_machine(mid: str, raw: object) -> dict:
     for key in _MERGE_PEER_FIELDS:
         if key in raw and raw[key] is not None:
             base[key] = raw[key]
+    for flag in ("cursor_known", "weekly_known"):
+        if flag in raw and raw[flag] is not None:
+            base[flag] = bool(raw[flag])
     # FR #6143: ear-owned identity survives reload; never peer-filled.
     for key in _EAR_IDENTITY_FIELDS:
         val = raw.get(key)
@@ -1956,6 +1984,10 @@ def _machine_fingerprint(ent: dict) -> str:
     for key in _MERGE_PEER_FIELDS:
         if key in ent:
             view[key] = ent.get(key)
+    if "cursor_known" in ent:
+        view["cursor_known"] = ent.get("cursor_known")
+    if "weekly_known" in ent:
+        view["weekly_known"] = ent.get("weekly_known")
     # FR #6143: label-only change must fingerprint so merge returns 204.
     for key in _EAR_IDENTITY_FIELDS:
         if key in ent:
@@ -2028,10 +2060,14 @@ def _store_machine_pool_rows(ent: dict, raw_rows: object) -> None:
             pcent[_POOL_PCENT_KEY.get(pid, pid)] = rem
             changed = True
         if pe:
-            field = "period_end" if pid == "grok-weekly" else "cursor_period_end"
+            # FR #6144: Sand reset stays on sand_period_end (never xAI period_end).
+            if pid in ("grok-weekly", "grok-chat"):
+                field = "sand_period_end"
+            else:
+                field = "cursor_period_end"
             if ent.get(field) in (None, ""):
                 ent[field] = pe
-    if changed:
+    if changed and not ent.get("_skip_pool_pcent_backfill"):
         ent["pcent"] = pcent
 
 
@@ -2163,15 +2199,27 @@ def _apply_merge_payload(doc: dict, mid: str, payload: dict) -> list[str]:
         "weekly_known" in payload and weekly_known in (0, "false", "False", "0", "")
     ):
         ent.pop("weekly", None)
-    if "pcent" in payload and isinstance(payload["pcent"], dict):
+    # FR #6144: cursor_known=false clears Cursor group; omit keeps legacy merge.
+    cursor_known_raw = payload.get("cursor_known") if "cursor_known" in payload else None
+    cursor_unknown = False
+    if "cursor_known" in payload:
+        if cursor_known_raw is False or cursor_known_raw in (0, "false", "False", "0", ""):
+            cursor_unknown = True
+            ent["cursor_known"] = False
+            for ck in _CURSOR_UNKNOWN_CLEAR_FIELDS:
+                ent.pop(ck, None)
+        else:
+            ent["cursor_known"] = True
+    if (not cursor_unknown) and "pcent" in payload and isinstance(payload["pcent"], dict):
         # FR #976: per-machine pcent is replace-latest (reporter's current reading), not min-ratchet.
         ent["pcent"] = _merge_pcent_lesser(
             ent.get("pcent"), payload["pcent"], replace=True
         )
     if payload.get("uptime_since"):
         ent["uptime_since"] = str(payload["uptime_since"])
-    if isinstance(payload.get("cursor_pools"), list):
+    if (not cursor_unknown) and isinstance(payload.get("cursor_pools"), list):
         _store_machine_pool_rows(ent, payload["cursor_pools"])
+
     if pid_raw is not None and str(pid_raw) != "":
         try:
             pid_s = str(int(str(pid_raw)))
@@ -2225,6 +2273,8 @@ def _apply_merge_payload(doc: dict, mid: str, payload: dict) -> list[str]:
         if key == "jobs" and not isinstance(val, list):
             continue
         if key == "pcent" and isinstance(val, dict):
+            continue
+        if cursor_unknown and key in _CURSOR_GROUP_KEYS:
             continue
         if key in ("weekly",) and val is not None:
             # FR #976: skip write when reporter marked weekly unknown (cleared above).
@@ -3310,16 +3360,32 @@ def export_machine_for_tray(
 ) -> dict:
     """Tray-complete machine row: digest presence + bob-peers metrics."""
     base = _coerce_machine(mid, ent)
+    # FR #6144: do not peer-refill Cursor group when cursor_known is false, or weekly when unknown.
+    cursor_known_ent = ent.get("cursor_known")
+    weekly_known_ent = ent.get("weekly_known")
+    _cursor_peer_block = set(_CURSOR_GROUP_KEYS)
     peer = bobstat.read_peer(home, mid)
     if peer:
         for key in _peer_fill_keys():
             if key not in peer or peer[key] is None or peer[key] == "":
+                continue
+            if cursor_known_ent is False and key in _cursor_peer_block:
+                continue
+            if weekly_known_ent is False and key == "weekly":
                 continue
             if key not in base or base.get(key) in (None, "", [], {}):
                 base[key] = peer[key]
     for key in _peer_fill_keys():
         if key in ent and ent[key] is not None and ent[key] != "":
             base[key] = ent[key]
+    if cursor_known_ent is False:
+        for key in _cursor_peer_block:
+            base.pop(key, None)
+        base["cursor_known"] = False
+    if "cursor_known" in ent:
+        base["cursor_known"] = ent.get("cursor_known")
+    if "weekly_known" in ent:
+        base["weekly_known"] = ent.get("weekly_known")
     try:
         base["running"] = int(base.get("running") or 0)
     except (TypeError, ValueError):
@@ -3380,25 +3446,58 @@ def _cursor_pool_overage(ent: dict) -> str | None:
 
 
 def _cursor_pool_period(ent: dict, pool_id: str | None = None) -> tuple[str | None, str | None]:
-    """Per-pool reset clock: grok-weekly/sand = Cursor Sand period end (NOT the xAI weekly ``period_end``,
-    #80); else Cursor billing."""
+    """Per-pool reset clock (FR #6144): dedicated Sand/billing first, then this machine's
+    stored pool-row period_end, then legacy machine ``period_end`` only when no Cursor
+    clocks or pool rows exist. grok-weekly/sand never uses xAI ``period_end`` when Sand
+    clock is present (#80)."""
     pid = str(pool_id or "").strip().lower()
+    rows = ent.get("cursor_pools") if isinstance(ent.get("cursor_pools"), list) else []
+    row_pe = None
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        rid = str(row.get("id") or row.get("group_id") or "").strip().lower()
+        if pid in ("grok-weekly", "grok-chat", "sand", "cursor-grok-chat"):
+            if rid not in ("grok-weekly", "grok-chat", "sand", "cursor-grok-chat"):
+                continue
+        else:
+            aliases = {pid, "auto", "low-cost-models", "cursor-models", "high-cost-models"}
+            if rid not in aliases and rid != pid:
+                continue
+        pe = row.get("period_end") or row.get("reset")
+        if pe not in (None, ""):
+            row_pe = str(pe)
+            break
+    has_cursor_clock = any(
+        ent.get(k) not in (None, "") for k in ("sand_period_end", "cursor_period_end")
+    ) or bool(rows)
     if pid in ("grok-weekly", "grok-chat", "sand", "cursor-grok-chat"):
-        weekly = ent.get("sand_period_end") or ent.get("period_end")
+        weekly = ent.get("sand_period_end")
         if weekly not in (None, ""):
             period_s = str(weekly)
             return period_s, period_s
+        if row_pe:
+            return row_pe, row_pe
+        # FR #6144: legacy period_end was the Sand/weekly clock before sand_period_end
+        # existed. Prefer it for grok pools when Sand clock is absent (even if
+        # cursor_period_end is set). Never prefer period_end over sand_period_end.
+        legacy = ent.get("period_end")
+        if legacy not in (None, ""):
+            period_s = str(legacy)
+            return period_s, period_s
         return None, None
     cursor_period = ent.get("cursor_period_end")
-    if cursor_period in (None, ""):
-        # Fall back to weekly only when billing end is unknown
+    if cursor_period not in (None, ""):
+        period_s = str(cursor_period)
+        return period_s, period_s
+    if row_pe:
+        return row_pe, row_pe
+    if not has_cursor_clock:
         weekly = ent.get("period_end")
         if weekly not in (None, ""):
             period_s = str(weekly)
             return period_s, period_s
-        return None, None
-    period_s = str(cursor_period)
-    return period_s, period_s
+    return None, None
 
 
 def _pcent_remaining_for_pool(pcent: dict, pool_id: str) -> int | None:
@@ -3945,9 +4044,14 @@ def _peer_delta_put(payload: dict, key: str, val: object) -> bool:
 
 DIGEST_FUEL_HEARTBEAT_ENV = "BOB_EAR_DIGEST_FUEL_S"
 DEFAULT_DIGEST_FUEL_HEARTBEAT_S = 30.0
+# FR #6145: ear polls for fingerprint delta at this cadence (max lag pin).
+DIGEST_FUEL_DELTA_ENV = "BOB_EAR_DIGEST_FUEL_DELTA_S"
+DEFAULT_DIGEST_FUEL_DELTA_S = 5.0
+DIGEST_FUEL_MAX_LAG_S = DEFAULT_DIGEST_FUEL_DELTA_S
 _FUEL_PUBLISH_EXTRA_FIELDS = (
     "weekly_known",
     "remaining_pct",
+    "overage_fetched_at",
     "account_remaining_pct",
     "cursor_remaining_pct",
     "cursor_pools",
@@ -3965,12 +4069,31 @@ def digest_fuel_heartbeat_s() -> float:
     return DEFAULT_DIGEST_FUEL_HEARTBEAT_S
 
 
+def digest_fuel_delta_s() -> float:
+    """FR #6145: how often the ear may check for a fuel fingerprint delta (default 5s).
+
+    Cap at DIGEST_FUEL_MAX_LAG_S so a large BOB_EAR_DIGEST_FUEL_DELTA_S cannot
+    break the FR-005 five-second lag pin.
+    """
+    raw = (os.environ.get(DIGEST_FUEL_DELTA_ENV) or "").strip()
+    if raw:
+        try:
+            return min(DIGEST_FUEL_MAX_LAG_S, max(0.0, float(raw)))
+        except ValueError:
+            pass
+    return DEFAULT_DIGEST_FUEL_DELTA_S
+
+
 def digest_fuel_post_state_path(home: Path) -> Path:
     return Path(home) / "digest-fuel-post-state.json"
 
 
 def peer_fuel_fingerprint(peer: dict) -> str:
-    """Stable fingerprint of fuel fields that must trigger a merge POST (FR #6141)."""
+    """Stable fingerprint of fuel fields that must trigger a merge POST (FR #6141 / #6145).
+
+    FR #6145: remaining / OpenCode pcent / Copilot overage_fetched_at / grok_account
+    deltas must force a merge POST (no suppress).
+    """
     if not isinstance(peer, dict):
         return ""
     parts: list[str] = []
@@ -3995,10 +4118,12 @@ def peer_fuel_fingerprint(peer: dict) -> str:
         "cursor_remaining_pct",
         "overage_gbp",
         "overage_usd",
+        "overage_fetched_at",
         "overspend_state",
         "on_demand_used_cents",
         "on_demand_limit_cents",
         "on_demand_remaining_pct",
+        "grok_account",
         "running",
         "queued",
     ):
@@ -4151,6 +4276,244 @@ def publish_grok_account_label(
     return None
 
 
+
+def _resolve_opencode_fuel_helper_ps1(env: dict[str, str] | None = None) -> Path | None:
+    """Locate Get-BobOpencodeFuel.ps1 (repo tray/tools or install tools layout)."""
+    e = os.environ if env is None else env
+    override = (e.get("BOB_OPENCODE_FUEL_HELPER") or "").strip()
+    if override:
+        p = Path(override)
+        return p if p.is_file() else None
+    here = Path(__file__).resolve()
+    candidates: list[Path] = [
+        here.parents[2] / "bob" / "tray" / "tools" / "Get-BobOpencodeFuel.ps1",
+        here.parents[1] / "tray" / "tools" / "Get-BobOpencodeFuel.ps1",
+        here.parents[1] / "tools" / "Get-BobOpencodeFuel.ps1",
+    ]
+    install = (e.get("BOB_INSTALL_ROOT") or "").strip()
+    if install:
+        root = Path(install)
+        candidates.extend(
+            [
+                root / "tray" / "tools" / "Get-BobOpencodeFuel.ps1",
+                root / "tools" / "Get-BobOpencodeFuel.ps1",
+                root / "bob" / "tray" / "tools" / "Get-BobOpencodeFuel.ps1",
+            ]
+        )
+    for c in candidates:
+        try:
+            if c.is_file():
+                return c
+        except OSError:
+            continue
+    return None
+
+
+def _clamp_opencode_pcent_value(raw: object) -> int | None:
+    """Return 0..100 int, or None when unknown / unparseable (never invent 0 for None)."""
+    if raw is None or raw == "":
+        return None
+    try:
+        v = int(raw)
+    except (TypeError, ValueError):
+        return None
+    if v < 0:
+        return 0
+    if v > 100:
+        return 100
+    return v
+
+
+# FR #6146 / CodeRabbit Major: never block the ear 5s fuel tick on a slow PowerShell
+# helper (Get-BobOpencodeFuel.ps1 can wait up to 25s per opencode stats window).
+# Process-level TTL cache + short helper timeout; stale cache returned on miss/timeout.
+OPENCODE_FUEL_CACHE_ENV = "BOB_OPENCODE_FUEL_CACHE_S"
+DEFAULT_OPENCODE_FUEL_CACHE_S = 30.0
+OPENCODE_FUEL_HELPER_TIMEOUT_ENV = "BOB_OPENCODE_FUEL_HELPER_TIMEOUT_S"
+DEFAULT_OPENCODE_FUEL_HELPER_TIMEOUT_S = 5.0
+_opencode_pcent_cache: dict[str, object] = {"at": 0.0, "value": {}}
+
+
+def clear_opencode_pcent_cache() -> None:
+    """Reset process OpenCode pcent cache (tests / forced refresh)."""
+    _opencode_pcent_cache["at"] = 0.0
+    _opencode_pcent_cache["value"] = {}
+
+
+def opencode_fuel_cache_s(env: dict[str, str] | None = None) -> float:
+    e = os.environ if env is None else env
+    raw = (e.get(OPENCODE_FUEL_CACHE_ENV) or "").strip()
+    if raw:
+        try:
+            return max(0.0, float(raw))
+        except ValueError:
+            pass
+    return DEFAULT_OPENCODE_FUEL_CACHE_S
+
+
+def opencode_fuel_helper_timeout_s(env: dict[str, str] | None = None) -> float:
+    e = os.environ if env is None else env
+    raw = (e.get(OPENCODE_FUEL_HELPER_TIMEOUT_ENV) or "").strip()
+    if raw:
+        try:
+            return max(0.5, min(30.0, float(raw)))
+        except ValueError:
+            pass
+    return DEFAULT_OPENCODE_FUEL_HELPER_TIMEOUT_S
+
+
+def _parse_opencode_helper_stdout(raw_out: str) -> dict[str, int]:
+    out: dict[str, int] = {}
+    text = (raw_out or "").strip()
+    if not text:
+        return out
+    line = text.splitlines()[-1].strip()
+    try:
+        doc = json.loads(line)
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return out
+    if not isinstance(doc, dict):
+        return out
+    mapping = (
+        ("opencode-free", ("opencode-free", "free")),
+        ("opencode-go", ("opencode-go", "go")),
+    )
+    for dest, keys in mapping:
+        raw = None
+        for k in keys:
+            if k in doc and doc.get(k) not in (None, ""):
+                raw = doc.get(k)
+                break
+        clamped = _clamp_opencode_pcent_value(raw)
+        if clamped is not None:
+            out[dest] = clamped
+    return out
+
+
+def _read_opencode_pcent_from_fixture(fixture: str) -> dict[str, int]:
+    out: dict[str, int] = {}
+    try:
+        import opencode_fuel as of
+    except ImportError:
+        return out
+    try:
+        stats = of.parse_opencode_stats_text_or_json(fixture)
+        fuel = of.fuel_from_stats(stats)
+    except Exception:
+        return out
+    for key in (of.FUEL_ID_FREE, of.FUEL_ID_GO):
+        clamped = _clamp_opencode_pcent_value(fuel.get(key))
+        if clamped is not None:
+            out[key] = clamped
+    return out
+
+
+def _read_opencode_pcent_from_helper(
+    helper: Path, env: dict[str, str], timeout_s: float
+) -> dict[str, int]:
+    try:
+        import subprocess
+    except ImportError:
+        return {}
+    try:
+        proc = subprocess.run(
+            [
+                "powershell.exe",
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                str(helper),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=timeout_s,
+            env={**dict(os.environ), **dict(env)},
+        )
+    except (OSError, subprocess.TimeoutExpired, ValueError):
+        return {}
+    return _parse_opencode_helper_stdout(proc.stdout or "")
+
+
+def read_local_opencode_pcent(
+    env: dict[str, str] | None = None,
+    *,
+    now: float | None = None,
+    force: bool = False,
+) -> dict[str, int]:
+    """Read local OpenCode fuel as digest pcent keys (FR #6146).
+
+    Returns only known readings (``opencode-free`` / ``opencode-go``). Unknown
+    values are omitted --- never invent ``0``. Explicit exhausted ``0`` is kept.
+
+    Prefers ``BOB_OPENCODE_FUEL_FIXTURE`` (stats JSON/text via ``opencode_fuel``).
+    Otherwise calls ``Get-BobOpencodeFuel.ps1`` when present.
+
+    Helper path uses a short timeout (``BOB_OPENCODE_FUEL_HELPER_TIMEOUT_S``,
+    default 5s) and a process TTL cache (``BOB_OPENCODE_FUEL_CACHE_S``, default
+    30s) so the ear 5s fuel tick cannot stall the outbox loop on a slow
+    ``opencode stats`` (CodeRabbit Major on PR #6176).
+    """
+    e = os.environ if env is None else env
+    fixture = (e.get("BOB_OPENCODE_FUEL_FIXTURE") or "").strip()
+    if fixture:
+        return _read_opencode_pcent_from_fixture(fixture)
+
+    ts = float(time.time() if now is None else now)
+    cache_s = opencode_fuel_cache_s(e)
+    last_at = float(_opencode_pcent_cache.get("at") or 0.0)
+    last_val = _opencode_pcent_cache.get("value")
+    cached = dict(last_val) if isinstance(last_val, dict) else {}
+    if not force and cache_s > 0 and last_at > 0 and (ts - last_at) < cache_s:
+        return dict(cached)
+
+    helper = _resolve_opencode_fuel_helper_ps1(e)
+    if helper is None:
+        return dict(cached) if cached else {}
+
+    fresh = _read_opencode_pcent_from_helper(
+        helper, dict(e), opencode_fuel_helper_timeout_s(e)
+    )
+    if fresh:
+        _opencode_pcent_cache["at"] = ts
+        _opencode_pcent_cache["value"] = dict(fresh)
+        return dict(fresh)
+    # Timeout / empty: keep stale cache when present; stamp at so we do not
+    # re-hammer a hanging helper every 5s tick.
+    _opencode_pcent_cache["at"] = ts
+    if cached:
+        return dict(cached)
+    _opencode_pcent_cache["value"] = {}
+    return {}
+
+
+def enrich_peer_with_opencode_pcent(
+    peer: dict,
+    opencode_pcent: dict[str, int] | None = None,
+) -> dict:
+    """Merge known OpenCode pcent into a peer copy (FR #6146).
+
+    Omits unknown keys; keeps explicit ``0`` (exhausted). Does not invent zeros.
+    """
+    if not isinstance(peer, dict):
+        return peer
+    enriched = dict(peer)
+    oc = opencode_pcent if isinstance(opencode_pcent, dict) else {}
+    if not oc:
+        return enriched
+    base = enriched.get("pcent") if isinstance(enriched.get("pcent"), dict) else {}
+    pcent = dict(base)
+    for key in ("opencode-free", "opencode-go"):
+        if key not in oc:
+            continue
+        clamped = _clamp_opencode_pcent_value(oc.get(key))
+        if clamped is None:
+            continue
+        pcent[key] = clamped
+    enriched["pcent"] = pcent
+    return enriched
+
+
 def publish_local_peer_fuel(
     home: Path,
     machine_id: str,
@@ -4159,7 +4522,12 @@ def publish_local_peer_fuel(
     url: str | None = None,
     now: float | None = None,
 ) -> int | None:
-    """POST local peer fuel merge when fingerprint changed or heartbeat due (FR #6141).
+    """POST local peer fuel merge when fingerprint changed or heartbeat due (FR #6141 / #6145 / #6146).
+
+    Fingerprint delta always POSTs (``force=True`` or fp change). Unchanged fingerprint
+    skips until heartbeat. Max lag pin: ``DIGEST_FUEL_MAX_LAG_S`` (ear delta poll).
+    FR #6146: enrich with local OpenCode pcent (TTL-cached helper) before fingerprint.
+
 
     Returns HTTP status on successful 2xx POST, None when skipped or failed.
     """
@@ -4174,6 +4542,13 @@ def publish_local_peer_fuel(
         bobstat.refresh_peer_cursor_remaining(home, mid)
         peer = bobstat.read_peer(home, mid) or peer
     except OSError:
+        pass
+    # FR #6146: enrich with local OpenCode pcent before fingerprint/POST.
+    try:
+        oc = read_local_opencode_pcent()
+        if oc:
+            peer = enrich_peer_with_opencode_pcent(peer, oc)
+    except Exception:
         pass
     payload = build_peer_fuel_merge_payload(peer, mid)
     if not payload:

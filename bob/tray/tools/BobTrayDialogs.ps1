@@ -109,6 +109,19 @@ function New-BobTrayStatusModel {
     }
     if (-not $copilotLine) { $copilotLine = 'Copilot  unknown' }
     if (-not $copilotStaleLine) { $copilotStaleLine = 'Copilot  [stale]  unknown' }
+    # FR #6147: OpenCode free/go on Status snapshot (n/a when unknown).
+    $opencodeLine = ''
+    $opencodeFree = $null
+    $opencodeGo = $null
+    if ($h) {
+        $opencodeLine = [string]$h.opencode_line
+        $opencodeFree = $h.opencode_free
+        $opencodeGo = $h.opencode_go
+    }
+    if (-not $opencodeLine -and (Get-Command Format-BobOpencodePoolLine -ErrorAction SilentlyContinue)) {
+        $opencodeLine = Format-BobOpencodePoolLine -FreePct $opencodeFree -GoPct $opencodeGo
+    }
+    if (-not $opencodeLine) { $opencodeLine = 'OpenCode  n/a' }
     return [ordered]@{
         v         = 1
         ts        = [int64][DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
@@ -121,6 +134,9 @@ function New-BobTrayStatusModel {
         overspend = $over
         cursor    = @($cursor.ToArray())
         grok      = @($grok.ToArray())
+        opencode_free = $opencodeFree
+        opencode_go = $opencodeGo
+        opencode_line = $opencodeLine
         copilot_pool = $copilotPool
         copilot_line = $copilotLine
         copilot_stale_line = $copilotStaleLine

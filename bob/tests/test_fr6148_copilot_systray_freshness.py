@@ -34,6 +34,28 @@ def test_watch_always_shows_copilot_unknown_fallback():
     sec = w[w.index("function Rebuild-BobTrayTiles") : w.index("Atomic swap on the TipForm")]
     assert "Copilot  unknown" in sec
     assert "Format-BobCopilotPoolLine" in sec
+    # FIX #6180: escape `[` in -like; TitleColor paints stale red (RightColor alone never did).
+    assert "TitleColor" in sec
+    assert "`[stale" in sec or "``[stale" in w
+    hdr = w[w.index("function Add-BobTraySectionHeader") : w.index("function Set-BobTrayHelpTip")]
+    assert "[System.Drawing.Color]$TitleColor" in hdr
+    assert "TitleColor.A" in hdr
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="PowerShell formatter")
+def test_format_stale_despite_future_resume_at():
+    """FIX #6180: future resume_at must not force fresh when fetched_at is aged."""
+    now = "2026-11-07T12:00:00Z"
+    line = _ps_format(
+        {
+            "state": "exhausted",
+            "remaining": 0,
+            "fetched_at": "2026-11-07T11:00:00Z",
+            "resume_at": "2026-12-01T00:00:00Z",
+        },
+        now,
+    )
+    assert "[stale" in line
 
 
 def test_status_reages_copilot_deadline():

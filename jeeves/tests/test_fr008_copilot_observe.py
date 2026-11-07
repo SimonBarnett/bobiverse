@@ -1,4 +1,4 @@
-﻿"""FR #6148 / FR-008: dispatch-independent Copilot quota observer into digest."""
+"""FR #6148 / FR-008: dispatch-independent Copilot quota observer into digest."""
 from __future__ import annotations
 
 import json
@@ -225,6 +225,39 @@ def test_pool_for_digest_prefers_newer_observation(tmp_path):
     for banned in ("fetched_epoch", "fuels", "enabled", "last_error"):
         assert banned not in pool or pool.get(banned) is None or banned == "last_error"
     assert "last_error" not in pool
+
+
+def test_pool_for_digest_failed_allowance_does_not_outrank_observation(tmp_path):
+    """FIX #6180: failed refresh bumps fetched_epoch but must not beat a newer obs fetched_at."""
+    cd.observe_quota(tmp_path, fetch_user=lambda: LIMITED, now=NOW + 400)
+    cd.refresh_allowance(tmp_path, fetch_user=lambda: UNLIMITED, now=NOW)
+
+    def boom():
+        raise RuntimeError("nope")
+
+    cd.refresh_allowance(tmp_path, fetch_user=boom, now=NOW + 800)
+    allow = cd.load_allowance(tmp_path)
+    assert allow["fetched_at"] == _iso(NOW)
+    assert allow.get("fetched_epoch") == NOW + 800
+    pool = cd.pool_for_digest(tmp_path)
+    assert pool["remaining"] == 140
+    assert pool["fetched_at"] == _iso(NOW + 400)
+    assert pool["unlimited"] is False
+
+
+def test_pool_for_digest_failed_observation_does_not_outrank_allowance(tmp_path):
+    """FIX #6180: first failed observe after successful allowance keeps allowance quota."""
+    cd.refresh_allowance(tmp_path, fetch_user=lambda: UNLIMITED, now=NOW)
+
+    def boom():
+        raise RuntimeError("nope")
+
+    cd.observe_quota(tmp_path, fetch_user=boom, now=NOW + 400)
+    obs = cd.load_observation(tmp_path)
+    assert not (obs.get("fetched_at") or "").strip() or obs.get("state") == "unknown"
+    pool = cd.pool_for_digest(tmp_path)
+    assert pool["unlimited"] is True
+    assert pool["fetched_at"] == _iso(NOW)
 
 
 def test_refresh_allowance_preserves_fetched_at_on_failure(tmp_path):
