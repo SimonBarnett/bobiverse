@@ -1023,6 +1023,9 @@ class ChairJobs:
                 last_bored=last_bored,
                 last_activity=last_activity,
                 accepted=list(doc.get("accepted") or []),
+                # Same unaccepted rows as the detect_all snapshot below, so a
+                # live offer suppresses recycle as well as the stall finding.
+                unaccepted=list(doc.get("unaccepted") or []),
                 now=self.clock(),
             )
         if bored_healed:

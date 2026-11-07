@@ -9507,6 +9507,7 @@ def heal_bored_latency(
     last_bored: dict | None = None,
     last_activity: dict | None = None,
     accepted: list | None = None,
+    unaccepted: list | None = None,
     now: float | None = None,
     install_root=None,
     cooldown_s: float | None = None,
@@ -9516,6 +9517,10 @@ def heal_bored_latency(
     Chair-local recycleseat JSON never reaches a remote tray (FR #5220). PRIVMSG
     ``!recycleseat <nick> <machine>`` on the seat shop only (never ``#bobiverse``).
     Rate-limited per nick (shared with MRB deadlock heal).
+
+    ``unaccepted`` is the same queue snapshot ``detect_bored_latency`` uses for
+    live-offer suppression (PR #5852). Omit it only when the caller has no
+    offer rows; an empty list does not load the queue.
     """
     import time as _time
 
@@ -9534,6 +9539,7 @@ def heal_bored_latency(
         "last_bored": dict(last_bored or {}),
         "last_activity": dict(last_activity or {}),
         "accepted": list(accepted or []),
+        "unaccepted": list(unaccepted or []),
     }
     findings = _sd.detect_bored_latency(snap)
     if not findings:
@@ -12409,14 +12415,37 @@ def resync_from_github(
         return {"ok": False, "error": str(exc)}
 
 
+def _unparseable_offer_age_s() -> float:
+    """Age for a missing or unparseable ``offered_ts``.
+
+    Older than every sticky offer window, so the row is not a live offer
+    (giveup/done/nack is ``OFFER_TIMEOUT_S + GIVEUP_OFFER_EXTRA_S``, and
+    ``OFFER_TIMEOUT_S + 1`` still sits inside that window). Younger than the
+    seat-hold and out-of-fuel reapers: those marks stay until a parseable
+    timestamp ages out. ``float("inf")`` would reap them.
+    """
+    windows = [offer_timeout_s(None)]
+    windows.extend(
+        offer_timeout_s({"offered_via": via}) for via in _RELEASE_OFFER_VIA
+    )
+    return max(windows) + 1.0
+
+
 def _offer_age_s(row: dict, now: float) -> float:
-    """Seconds since ``offered_ts`` (or +inf when missing/unparseable)."""
+    """Seconds since ``offered_ts``.
+
+    Missing or unparseable timestamps return :func:`_unparseable_offer_age_s`.
+    """
+    raw = ""
+    if isinstance(row, dict):
+        raw = str(row.get("offered_ts") or "").strip()
+    if not raw:
+        return _unparseable_offer_age_s()
     try:
-        return float(now) - datetime.fromisoformat(
-            str(row.get("offered_ts") or "").replace("Z", "+00:00")
-        ).timestamp()
-    except ValueError:
-        return OFFER_TIMEOUT_S + 1.0
+        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        return float(now) - parsed.timestamp()
+    except (ValueError, OverflowError, OSError):
+        return _unparseable_offer_age_s()
 
 
 def seat_pending_offer(home: Path, nick: str, now: float | None = None) -> dict | None:
