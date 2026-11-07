@@ -179,8 +179,8 @@ credential-store hunting, never bypassing `external_directory` denials.
 Do **not** run `grep -Rni` / `head`. Use one of:
 
 ```powershell
-# Bounded name+content search (preferred helper):
-python common\scripts\opencode_worker_readiness.py  # imported by Assert
+# Preferred Assert (pathlib search; do not run the .py as a CLI):
+.\scripts\Assert-BobOpencodeWorkerReadiness.ps1 -WorktreePath <job-wt> -SkipWorktree -SkipGhAuth -SkipGit -SkipPrLookup  # preferred; module is imported, not a CLI
 
 # Or PowerShell:
 Get-ChildItem -Path . -Recurse -Include *.py,*.cs,*.ps1,*.md -File -ErrorAction SilentlyContinue |
@@ -215,10 +215,10 @@ gh auth status
 .\scripts\Assert-BobOpencodeWorkerReadiness.ps1 -WorktreePath <job-wt>
 
 # Fixture / offline:
-.\scripts\Assert-BobOpencodeWorkerReadiness.ps1 -SkipGhAuth -Permission rejected
+.\scripts\Assert-BobOpencodeWorkerReadiness.ps1 -SkipGhAuth -SkipGit -SkipPrLookup -Permission rejected
 ```
 
-Exit codes: 1 native search, 2 worktree consent/cwd, 3 gh auth missing/error, 4 unexpected.
+Exit codes: 1 native search, 2 worktree consent/cwd/git status-branch, 3 gh auth or scoped PR lookup, 4 unexpected.
 Non-zero means **blocked** --- never claim DONE/completed for queued work until
 re-run exits 0 with evidence.
 

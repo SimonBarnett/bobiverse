@@ -1,12 +1,11 @@
-"""FR #6240: OpenCode Windows worker readiness — native search, worktree, gh auth."""
+"""FR #6240: OpenCode Windows worker readiness - native search, worktree, gh auth."""
 from __future__ import annotations
 
-import json
-import os
 import subprocess
 import sys
 from pathlib import Path
 
+import pytest
 from repo_layout import ROOT
 
 sys.path.insert(0, str(ROOT / "common" / "scripts"))
@@ -18,6 +17,8 @@ ASSERT = ROOT / "bob" / "scripts" / "Assert-BobOpencodeWorkerReadiness.ps1"
 SKILL = ROOT / "bob" / ".grok" / "skills" / "bob-setup-opencode" / "SKILL.md"
 HELPER = ROOT / "common" / "scripts" / "opencode_worker_readiness.py"
 
+pytestmark_win = pytest.mark.skipif(sys.platform != "win32", reason="needs Windows PowerShell 5.1")
+
 
 def test_fr6240_helper_and_assert_exist():
     assert HELPER.is_file()
@@ -26,6 +27,8 @@ def test_fr6240_helper_and_assert_exist():
     assert "FR #6240" in text
     assert "hosts.yml" in text  # documented forbid
     assert "grep" in text.lower() or "native" in text.lower()
+    assert "BOB_FR6240_INSTALL_ROOT" in text  # paths via env, not Python string interpolate
+    assert "exit 4" in text
 
 
 def test_fr6240_redact_secrets_strips_pats():
@@ -55,6 +58,20 @@ def test_fr6240_native_search_bounds_hits(tmp_path: Path):
     r = ready.windows_native_search(tmp_path, needle="opencode", max_hits=3)
     assert r["ok"] is True
     assert len(r["hits"]) == 3
+
+
+def test_fr6240_native_search_skips_unreadable_and_huge(tmp_path: Path):
+    good = tmp_path / "ok.py"
+    good.write_text("opencode here\n", encoding="utf-8")
+    huge = tmp_path / "huge.py"
+    huge.write_bytes(b"x" * (ready.MAX_READ_BYTES + 10))
+    named = tmp_path / "opencode_big.py"
+    named.write_bytes(b"y" * (ready.MAX_READ_BYTES + 5))
+    r = ready.windows_native_search(tmp_path, needle="opencode", max_hits=10)
+    assert r["ok"] is True
+    assert any(h.endswith("ok.py") for h in r["hits"])
+    assert any("opencode_big.py" in h for h in r["hits"])
+    assert not any(h.endswith("huge.py") for h in r["hits"])
 
 
 def test_fr6240_worktree_authorized_inside_ok(tmp_path: Path):
@@ -93,6 +110,23 @@ def test_fr6240_worktree_missing_permission_blocked(tmp_path: Path):
     assert r["blocker"] == "worktree_permission_missing"
 
 
+def test_fr6240_git_status_failed_blocks():
+    r = ready.classify_git_worktree(status_exit=128, status_stderr="fatal: not a git repository")
+    assert r["ok"] is False
+    assert r["blocker"] == "git_status_failed"
+
+
+def test_fr6240_git_ok_reports_branch():
+    r = ready.classify_git_worktree(
+        status_exit=0,
+        status_stdout="On branch fr-6240\nnothing to commit",
+        branch_exit=0,
+        branch_stdout="fr-6240\n",
+    )
+    assert r["ok"] is True
+    assert r["branch"] == "fr-6240"
+
+
 def test_fr6240_gh_auth_missing_no_credential_hunt():
     r = ready.classify_gh_auth(
         exit_code=1,
@@ -103,7 +137,6 @@ def test_fr6240_gh_auth_missing_no_credential_hunt():
     assert r["blocker"] == "gh_auth_missing"
     assert "gh auth login" in r["next_step"]
     assert "hosts.yml" in r["next_step"] or "token" in r["next_step"].lower()
-    # must not recommend hunting
     assert "agentic_irc" not in r["next_step"].lower()
     assert "search" not in r["next_step"].lower() or "Do not search" in r["next_step"]
 
@@ -111,12 +144,33 @@ def test_fr6240_gh_auth_missing_no_credential_hunt():
 def test_fr6240_gh_auth_ok_redacts_token_material():
     r = ready.classify_gh_auth(
         exit_code=0,
-        stdout="✓ Logged in to github.com account Example (keyring)\nToken: github_pat_SECRETVALUEHERE\n",
+        stdout="Logged in to github.com account Example (keyring)\nToken: github_pat_SECRETVALUEHERE\n",
         stderr="",
     )
     assert r["ok"] is True
     assert "github_pat_" not in r["detail"]
     assert "SECRET" not in r["detail"]
+
+
+def test_fr6240_pr_lookup_authorized():
+    r = ready.classify_pr_lookup(
+        exit_code=0,
+        stdout='{"number":6147,"url":"https://github.com/SimonBarnett/bobiverse/pull/6147"}',
+        expected_repo="SimonBarnett/bobiverse",
+        expected_number=6147,
+    )
+    assert r["ok"] is True
+    assert r["number"] == 6147
+
+
+def test_fr6240_pr_lookup_missing_auth():
+    r = ready.classify_pr_lookup(
+        exit_code=1,
+        stderr="To get started with GitHub CLI, please run: gh auth login\n",
+    )
+    assert r["ok"] is False
+    assert r["blocker"] == "gh_auth_missing"
+    assert "hosts.yml" in r["next_step"]
 
 
 def test_fr6240_forbidden_paths_documented():
@@ -137,6 +191,19 @@ def test_fr6240_summarize_not_completed_when_blocked():
     assert "worktree_permission_rejected" in s["blockers"]
 
 
+def test_fr6240_summarize_includes_git_and_pr():
+    s = ready.summarize_readiness(
+        search={"ok": True},
+        worktree={"ok": True},
+        gh={"ok": True},
+        git={"ok": False, "blocker": "git_status_failed", "next_step": "fix git"},
+        pr={"ok": True},
+    )
+    assert s["ok"] is False
+    assert s["completed"] is False
+    assert "git_status_failed" in s["blockers"]
+
+
 def test_fr6240_skill_documents_windows_readiness():
     text = SKILL.read_text(encoding="utf-8")
     assert "FR #6240" in text or "6240" in text
@@ -144,9 +211,15 @@ def test_fr6240_skill_documents_windows_readiness():
     assert "Assert-BobOpencodeWorkerReadiness" in text
     assert "gh auth login" in text
     assert "hosts.yml" in text
-    # forbid is documented; primary recipe must be PowerShell/pathlib
     assert "Do **not** run" in text or "Do not" in text
     assert "Get-ChildItem" in text or "Select-String" in text or "pathlib" in text
+
+
+def test_fr6240_skill_prefers_assert_not_py_cli():
+    text = SKILL.read_text(encoding="utf-8")
+    block = text.split("### 1) Native shell")[1].split("### 2)")[0]
+    assert "Assert-BobOpencodeWorkerReadiness" in block
+    assert "python common\\scripts\\opencode_worker_readiness.py" not in block
 
 
 def _run_assert(args: list[str]) -> subprocess.CompletedProcess[str]:
@@ -162,6 +235,7 @@ def _run_assert(args: list[str]) -> subprocess.CompletedProcess[str]:
     return subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
 
 
+@pytestmark_win
 def test_fr6240_assert_exits_2_when_permission_rejected(tmp_path: Path):
     wt = tmp_path / "wt"
     wt.mkdir()
@@ -175,17 +249,19 @@ def test_fr6240_assert_exits_2_when_permission_rejected(tmp_path: Path):
             "-Permission",
             "rejected",
             "-SkipGhAuth",
+            "-SkipGit",
+            "-SkipPrLookup",
         ]
     )
     assert proc.returncode == 2, proc.stdout + proc.stderr
     assert "worktree" in (proc.stdout + proc.stderr).lower()
 
 
+@pytestmark_win
 def test_fr6240_assert_exits_3_when_gh_auth_missing(tmp_path: Path):
     wt = tmp_path / "wt"
     wt.mkdir()
     (wt / "x.py").write_text("opencode\n", encoding="utf-8")
-    # cwd=wt so worktree ok; fixture missing gh via -File (preserves exit code)
     proc = subprocess.run(
         [
             "powershell.exe",
@@ -204,6 +280,8 @@ def test_fr6240_assert_exits_3_when_gh_auth_missing(tmp_path: Path):
             "To get started with GitHub CLI, please run: gh auth login",
             "-GhAuthExitCode",
             "1",
+            "-SkipGit",
+            "-SkipPrLookup",
         ],
         capture_output=True,
         text=True,
@@ -217,6 +295,7 @@ def test_fr6240_assert_exits_3_when_gh_auth_missing(tmp_path: Path):
     assert "Do not" in combined or "hosts.yml" in combined
 
 
+@pytestmark_win
 def test_fr6240_assert_ok_skip_gh_authorized_worktree(tmp_path: Path):
     wt = tmp_path / "wt"
     wt.mkdir()
@@ -229,12 +308,79 @@ def test_fr6240_assert_ok_skip_gh_authorized_worktree(tmp_path: Path):
             "Bypass",
             "-Command",
             f"Set-Location -LiteralPath '{wt}'; & '{ASSERT}' -InstallRoot '{wt}' "
-            f"-WorktreePath '{wt}' -SkipGhAuth",
+            f"-WorktreePath '{wt}' -SkipGhAuth -SkipGit -SkipPrLookup",
         ],
         capture_output=True,
         text=True,
         encoding="utf-8",
         errors="replace",
+    )
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "OK FR #6240" in proc.stdout
+
+
+@pytestmark_win
+def test_fr6240_assert_exits_2_when_git_status_fails(tmp_path: Path):
+    wt = tmp_path / "wt"
+    wt.mkdir()
+    (wt / "x.py").write_text("opencode\n", encoding="utf-8")
+    proc = _run_assert(
+        [
+            "-InstallRoot",
+            str(wt),
+            "-WorktreePath",
+            str(wt),
+            "-Permission",
+            "authorized",
+            "-SkipGhAuth",
+            "-SkipPrLookup",
+            "-GitStatusExitCode",
+            "128",
+            "-GitStatusStderr",
+            "fatal: not a git repository",
+            "-GitBranchExitCode",
+            "0",
+            "-GitBranchStdout",
+            "main",
+        ]
+    )
+    assert proc.returncode == 2, proc.stdout + proc.stderr
+
+
+@pytestmark_win
+def test_fr6240_assert_pr_lookup_ok_with_fixtures(tmp_path: Path):
+    wt = tmp_path / "wt"
+    wt.mkdir()
+    (wt / "x.py").write_text("opencode\n", encoding="utf-8")
+    proc = subprocess.run(
+        [
+            "powershell.exe",
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(ASSERT),
+            "-InstallRoot",
+            str(wt),
+            "-WorktreePath",
+            str(wt),
+            "-Permission",
+            "authorized",
+            "-SkipGit",
+            "-GhAuthStdout",
+            "Logged in to github.com account Example (keyring)",
+            "-GhAuthExitCode",
+            "0",
+            "-PrLookupStdout",
+            '{"number":6147,"url":"https://github.com/SimonBarnett/bobiverse/pull/6147"}',
+            "-PrLookupExitCode",
+            "0",
+        ],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        cwd=str(wt),
     )
     assert proc.returncode == 0, proc.stdout + proc.stderr
     assert "OK FR #6240" in proc.stdout
