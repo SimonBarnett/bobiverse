@@ -111,12 +111,16 @@ def detect_self_review_deadlock(snap: dict[str, Any]) -> list[dict[str, Any]]:
         waiting.append(row)
     if not waiting:
         return []
-    # FR #6112: author-only idle is not a deadlock (need another machine,
-    # not an FR). Cross-author giveup pairs still file.
+    # FR #6112: author-only idle is not a deadlock when we cannot check
+    # cloud eligibility (no home) --- need another machine, not an FR.
+    # FR #6203: when home is present, defer to mrb_has_eligible_reviewer
+    # below. Copilot backoff with only the author idle is a genuine
+    # no-eligible-reviewer deadlock; never skip that gate.
     idle_l = {n.lower() for n in idle}
-    if waiting and all(
+    author_only = bool(waiting) and all(
         idle_l <= {a.lower() for a in _author_nicks(row)} for row in waiting
-    ):
+    )
+    if author_only and not snap.get("home"):
         return []
     ledger = snap.get("ledger") or {}
     for row in waiting:
