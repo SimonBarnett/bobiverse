@@ -1258,21 +1258,36 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
         # resets (parsed from output if present, else a conservative 1-hour default).
         pfile = str(Path(run_dir) / "prompt.txt")
         lfile = str(Path(run_dir) / "launch-opencode.ps1")
+        turns_log = str(Path(run_dir) / "opencode-turns.jsonl")
         esc = lambda s: str(s).replace("'", "''")  # noqa: E731
         files[pfile] = prompt
         helper_path = _resolve_opencode_fuel_helper_path(cwd=cwd)
+        # FR #6157: each opencode run emits turn_started / turn_ended into opencode-turns.jsonl
+        # so BoredEmitter gets harvest-hold / done-miss / startup-ready parity with Grok.
         files[lfile] = "\n".join([
             r"$ErrorActionPreference = 'Stop'",
             r"if (-not $env:BOB_OPENCODE_MODEL) { throw 'BOB_OPENCODE_MODEL is required (no exhausted glm-5.3 fallback)' }",
             r"$model = $env:BOB_OPENCODE_MODEL",
             f"$exe = '{esc(exe)}'",
             f"$prompt = [IO.File]::ReadAllText('{esc(pfile)}')",
+            f"$turnsLog = '{esc(turns_log)}'",
+            r"$script:ocTurnN = 0",
             r"$fuelLog = Join-Path $env:LOCALAPPDATA 'Bobiverse\worker\logs\opencode-out-of-fuel.log'",
             r"$pauseStateDir = Join-Path $env:LOCALAPPDATA 'Bobiverse\worker\state'",
             f"$pyHelper = '{esc(str(helper_path))}'",
             r"New-Item -ItemType Directory -Force -Path (Split-Path -Parent $fuelLog) | Out-Null",
             r"New-Item -ItemType Directory -Force -Path $pauseStateDir | Out-Null",
+            r"New-Item -ItemType Directory -Force -Path (Split-Path -Parent $turnsLog) | Out-Null",
+            r"function Write-OpencodeTurnMarker([string]$Type, [int]$TurnNumber) {",
+            r"    # FR #6157: durable turn markers for BoredEmitter / Supervisor",
+            r"    $entry = @{ type = $Type; ts = (Get-Date -Format o); turn_number = $TurnNumber } | ConvertTo-Json -Compress",
+            r"    Add-Content -LiteralPath $turnsLog -Value $entry -ErrorAction SilentlyContinue",
+            r"}",
             r"function Invoke-Opencode($line) {",
+            r"    $script:ocTurnN++",
+            r"    $turnN = $script:ocTurnN",
+            r"    Write-OpencodeTurnMarker 'turn_started' $turnN",
+            r"    try {",
             r"    $argList = @('run', '-m', $model, $line)",
             r"""    $argStr = ($argList | ForEach-Object { if ($_ -match '[\s"]') { $escaped = $_ -replace '(\\*)"', '$1$1\"'; $escaped = $escaped -replace '(\\+)$', '$1$1'; '"' + $escaped + '"' } else { $_ } }) -join ' '""",
             r"    $psi = New-Object System.Diagnostics.ProcessStartInfo",
@@ -1285,6 +1300,7 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             r"    $proc = $null",
             r"    $stdout = ''",
             r"    $stderr = ''",
+            r"    $timedOut = $false",
             r"    try {",
             r"        $proc = [System.Diagnostics.Process]::Start($psi)",
             r"        $stdoutTask = $proc.StandardOutput.ReadToEndAsync()",
@@ -1330,6 +1346,7 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             r"        }",
             r"    }",
             r"    if ($proc) { try { $proc.Dispose() } catch { } }",
+            r"    } finally { Write-OpencodeTurnMarker 'turn_ended' $turnN }",
             r"}",
             r"try { Invoke-Opencode $prompt } catch { [Console]::Error.WriteLine('opencode initial run failed: ' + $_) }",
             r"while ($true) { $line = [Console]::ReadLine(); if ($null -eq $line -or $line -eq 'exit') { break }; if (-not [string]::IsNullOrWhiteSpace($line)) { try { Invoke-Opencode $line } catch { [Console]::Error.WriteLine('opencode run failed: ' + $_) } } }",
@@ -2464,6 +2481,30 @@ def bored_on_turn_end_enabled() -> bool:
 def should_start_turn_watcher(kind: str) -> bool:
     """FR #2802: grok turn watcher only when opt-in is on (default on)."""
     return (kind or "").strip().lower() == "grok" and bored_on_turn_end_enabled()
+
+
+def should_start_opencode_turn_watcher(kind: str) -> bool:
+    """FR #6157: OpenCode seats tail run_dir/opencode-turns.jsonl (wrapper markers).
+
+    Opt out with BOB_WORKER_BORED_ON_TURN_END=0 or BOB_WORKER_OPENCODE_TURN_WATCH=0.
+    """
+    if (kind or "").strip().lower() != "opencode" or not bored_on_turn_end_enabled():
+        return False
+    raw = (os.environ.get("BOB_WORKER_OPENCODE_TURN_WATCH") or "1").strip().lower()
+    return raw not in ("0", "false", "no", "off")
+
+
+def startup_turn_release_enabled(kind: str) -> bool:
+    """FR #6157: startup wait_ready / first-turn release for grok or opencode turn watchers.
+
+    Cursor uses its own quiet-period watcher and does not gate startup on events.jsonl.
+    """
+    k = (kind or "").strip().lower()
+    if k == "grok":
+        return should_start_turn_watcher(k)
+    if k == "opencode":
+        return should_start_opencode_turn_watcher(k)
+    return False
 
 
 def should_start_cursor_turn_watcher(kind: str) -> bool:
@@ -5321,7 +5362,8 @@ class BoredEmitter:
     """t770u / FR #1611 / FR #2802 / FR #2834: the EXE (never the model) posts `PRIVMSG #<machine> :!bored`:
       * on seat start (agent ready), after DONE/NACK/GIVEUP **once the harvest hold ends**, and while idle
         (first idle after idle_s, then every repeat_s);
-      * FR #2802: grok ``turn_ended`` releases the harvest hold early (and idle turn end -> reason ``turn``);
+      * FR #2802 / #6157: grok ``events.jsonl`` or OpenCode ``opencode-turns.jsonl`` ``turn_ended``
+        releases the harvest hold early (and idle turn end -> reason ``turn``);
         ``harvest_hold_s`` remains the fallback when no turn-end signal arrives;
       * FR #2834: when a turn is open (watcher saw ``turn_started``, no ``turn_ended`` yet), keep holding
         past ``harvest_hold_s`` until ``turn_ended`` or ``turn_hold_max_s`` (default 600 s);
@@ -7018,18 +7060,26 @@ class Supervisor:
         apply_cursor_inject_keys_default("cursor", log=self.log)
 
     def _start_turn_watcher(self, session_id: str) -> None:
-        """FR #2802: follow current grok session events.jsonl for turn_ended → early !bored."""
+        """FR #2802 / #6157: follow grok events.jsonl or opencode-turns.jsonl for turn_ended → early !bored."""
         self._stop_turn_watcher()
         if self.bored and should_start_cursor_turn_watcher(self.kind):
             self._start_cursor_turn_watcher()
             return
-        if not self.bored or not should_start_turn_watcher(self.kind):
+        use_grok = bool(self.bored and should_start_turn_watcher(self.kind))
+        use_opencode = bool(self.bored and should_start_opencode_turn_watcher(self.kind))
+        if not use_grok and not use_opencode:
             return
         self._turn_watch_stop = threading.Event()
         cwd = str(self.cwd)
         sid_box = {"sid": session_id}
+        run_dir = Path(self.run_dir) if getattr(self, "run_dir", None) else None
 
         def _path() -> Optional[Path]:
+            # FR #6157: OpenCode wrapper markers live under the seat run_dir.
+            if use_opencode:
+                if run_dir is None:
+                    return None
+                return run_dir / "opencode-turns.jsonl"
             sid = sid_box["sid"]
             if self.sessions:
                 sid = self.sessions[-1]
@@ -7081,10 +7131,14 @@ class Supervisor:
             poll_s=0.5,
             log=self.log,
         )
-        th = threading.Thread(target=watcher.run, name="grok-turn-watch", daemon=True)
+        watch_name = "opencode-turn-watch" if use_opencode else "grok-turn-watch"
+        th = threading.Thread(target=watcher.run, name=watch_name, daemon=True)
         self._turn_watch_thread = th
         th.start()
-        self.log(f"bored: turn watcher started (session={session_id})")
+        if use_opencode:
+            self.log(f"bored: opencode turn watcher started (run_dir={run_dir})")
+        else:
+            self.log(f"bored: turn watcher started (session={session_id})")
 
     def _on_inject(self, line: str = "") -> None:
         self.detector.note_inject(self.clock())
@@ -7371,7 +7425,9 @@ class Supervisor:
             self._startup_session_id = self.sessions[-1] if self.sessions else None
             self._startup_saw_turn_started = False
             self._startup_defer_start_bored = False
-            self._startup_turn_release_enabled = should_start_turn_watcher(self.kind)
+            # FR #6157: grok OR opencode turn watchers enable startup wait_ready / first-turn release.
+            self._startup_turn_release_enabled = startup_turn_release_enabled(self.kind)
+
             if self._min_ready_timer is not None:
                 try:
                     self._min_ready_timer.cancel()
