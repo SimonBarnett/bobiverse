@@ -428,6 +428,28 @@ function Test-BobMachineCanStrikeFuel {
     return ($fuels -contains $Fuel)
 }
 
+function Get-BobSharedCursorXaiRemainingFromCapacity {
+    # FR #6214: Cursor Models + xAI weekly are one pool for capacity identity.
+    param($Capacity, $Machine)
+    $cursorP = Get-BobRemainingPctValue $(if ($Capacity) { $Capacity.cursor_models } else { $null })
+    $xaiP = Get-BobRemainingPctValue $(if ($Machine) { $Machine.grok_build } else { $null })
+    if (Get-Command Resolve-BobCursorXaiSharedPools -ErrorAction SilentlyContinue) {
+        try {
+            $pools = @(Resolve-BobCursorXaiSharedPools -Refs @(
+                    [pscustomobject]@{ pool_id = 'local-unified'; family = 'cursor'; remaining_pct = $cursorP }
+                    [pscustomobject]@{ pool_id = 'local-unified'; family = 'xai'; remaining_pct = $xaiP }
+                ))
+            if ($pools.Count -gt 0 -and $null -ne $pools[0].remaining_pct -and [string]$pools[0].remaining_pct -ne '') {
+                return [int]$pools[0].remaining_pct
+            }
+        }
+        catch { }
+    }
+    if ($null -ne $xaiP) { return [int]$xaiP }
+    if ($null -ne $cursorP) { return [int]$cursorP }
+    return $null
+}
+
 function Test-BobFuelHasIncluded {
     param(
         $Capacity,
@@ -437,11 +459,12 @@ function Test-BobFuelHasIncluded {
     )
     switch ($Fuel) {
         'cursor-models' {
-            $p = Get-BobRemainingPctValue $Capacity.cursor_models
+            # FR #6214: shared with xAI weekly — either ref can supply remaining.
+            $p = Get-BobSharedCursorXaiRemainingFromCapacity -Capacity $Capacity -Machine $Machine
             return ($null -ne $p -and $p -gt 0)
         }
         'grok-build' {
-            $p = Get-BobRemainingPctValue $Machine.grok_build
+            $p = Get-BobSharedCursorXaiRemainingFromCapacity -Capacity $Capacity -Machine $Machine
             if ($null -ne $p) { return ($p -gt 0) }
             # FR #430: null % is not exhaustion — use explicit availability when present.
             $st = $null

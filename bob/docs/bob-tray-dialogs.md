@@ -21,7 +21,7 @@ Staged and installed trees stay flat. The old spellings (`third_party\bob-tray`,
 * **About**: ntsa badge (embedded), "by Simon Barnett", `bob <version>  machine: <id>`, then one block per install of bob / jeeves / airc / ergo
   (version, BUILD.json date, commit, path, service state - the same text as the old `Format-BobInstallInfo`). The window opens first; the install
   scan (services, BUILD.json, git only when BUILD.json has no commit) runs on a worker thread and fills the box.
-* **Status** (FR #4938 / #5179): Grok account rows (one grok/cursor account per machine; Cursor spending-group bars removed), each machine's
+* **Status** (FR #4938 / #5179 / #6214): one shared Cursor / xAI weekly capacity heading (not separate Cursor Models + xAI weekly totals); Grok account rows (one grok/cursor account per machine; Cursor spending-group bars removed), each machine's
   workers as `{irc nick}: {doing|idle}` from the digest, `alert: <kind>`, version footer. It paints from `<root>\run\tray-status.json`, which
   the tray writes (atomically) after every poll; the exe never touches the network and re-reads the file every 2 s. Parked until X / Esc; drag by the title.
   One account-wide Copilot tile uses `copilot_pool` / `copilot_line` from the snapshot, showing `unknown` when absent and
