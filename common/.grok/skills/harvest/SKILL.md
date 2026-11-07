@@ -358,6 +358,7 @@ routes to bobiverse via the split rule.
 - When a CLI drops a promised JSON mode, parse the documented plain-text table with regex, strip ANSI, return None on parse failure, and keep stdin-based interop so both live CLI output and legacy fixtures keep working.
 - MRB #6169: Import-BobIrcPeerTranscript must stamp account cache with Get-ThisMachineId not mootId; Hover must not Save-BobCursorAccountCache for foreign peer labels
 - chair_health._copilot_tick must not call observe_quota while Copilot dispatch is disabled unless observation_opt_in (BOB_COPILOT_OBSERVE or allowance observe); settle_stuck_accepted still runs first
+- Hostile digest completeness pins must stop at the next ## heading so ## Harvested lessons - **FR #** intake bullets are not judged by digest closing-paren rules.
 
 ## Harvest digest (lessons audit 2026-10-06)
 
