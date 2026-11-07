@@ -40,6 +40,7 @@ FIXTURE_FREE100_GO50 = '{"costs": {"glm-5.3": 7.5}, "free_models": ["beam-free"]
 
 
 def test_fr6146_read_local_opencode_pcent_from_fixture(monkeypatch):
+    bobreport.clear_opencode_pcent_cache()
     monkeypatch.setenv("BOB_OPENCODE_FUEL_FIXTURE", FIXTURE_FREE100_GO50)
     monkeypatch.delenv("BOB_OPENCODE_FUEL_HELPER", raising=False)
     got = bobreport.read_local_opencode_pcent()
@@ -50,6 +51,7 @@ def test_fr6146_read_local_opencode_pcent_from_fixture(monkeypatch):
 
 
 def test_fr6146_read_local_opencode_pcent_unknown_omits(monkeypatch):
+    bobreport.clear_opencode_pcent_cache()
     monkeypatch.delenv("BOB_OPENCODE_FUEL_FIXTURE", raising=False)
     # Force helper miss so live CLI is not required
     monkeypatch.setenv("BOB_OPENCODE_FUEL_HELPER", str(Path("C:/no/such/Get-BobOpencodeFuel.ps1")))
@@ -188,3 +190,82 @@ def test_fr6146_publish_omits_opencode_when_unknown(tmp_path: Path, monkeypatch)
     assert "opencode-free" not in pcent
     assert "opencode-go" not in pcent
     assert pcent.get("grok-chat") == 42
+
+
+# --- MRB #6176 hostile: helper TTL cache + short timeout (CodeRabbit Major) ---
+
+
+def test_mrb6176_helper_timeout_default_is_short():
+    assert bobreport.DEFAULT_OPENCODE_FUEL_HELPER_TIMEOUT_S <= 5.0
+    assert bobreport.DEFAULT_OPENCODE_FUEL_CACHE_S >= 5.0
+    # Source must not use the old 45s helper timeout on the ear tick path.
+    src = Path(bobreport.__file__).read_text(encoding="utf-8")
+    assert "timeout=45" not in src
+    assert "DEFAULT_OPENCODE_FUEL_HELPER_TIMEOUT_S" in src
+    assert "_opencode_pcent_cache" in src
+
+
+def test_mrb6176_helper_cache_avoids_repeat_subprocess(monkeypatch, tmp_path: Path):
+    """Within TTL, second read must not spawn PowerShell again."""
+    from unittest import mock
+
+    bobreport.clear_opencode_pcent_cache()
+    monkeypatch.delenv("BOB_OPENCODE_FUEL_FIXTURE", raising=False)
+    helper = tmp_path / "Get-BobOpencodeFuel.ps1"
+    helper.write_text("# stub\n", encoding="utf-8")
+    monkeypatch.setenv("BOB_OPENCODE_FUEL_HELPER", str(helper))
+    monkeypatch.setenv("BOB_OPENCODE_FUEL_CACHE_S", "30")
+    calls: list[float] = []
+
+    class FakeProc:
+        stdout = '{"free": 80, "go": 40}\n'
+        returncode = 0
+
+    def fake_run(*args, **kwargs):
+        calls.append(float(kwargs.get("timeout") or 0))
+        return FakeProc()
+
+    with mock.patch("subprocess.run", fake_run):
+        a = bobreport.read_local_opencode_pcent(now=1000.0)
+        b = bobreport.read_local_opencode_pcent(now=1010.0)  # within 30s TTL
+    assert a == {"opencode-free": 80, "opencode-go": 40}
+    assert b == a
+    assert len(calls) == 1
+    assert calls[0] <= 5.0
+
+
+def test_mrb6176_helper_timeout_returns_stale_cache(monkeypatch, tmp_path: Path):
+    """On helper timeout, keep last good reading; avoid re-hammer within stamp."""
+    from unittest import mock
+    import subprocess as sp
+
+    bobreport.clear_opencode_pcent_cache()
+    monkeypatch.delenv("BOB_OPENCODE_FUEL_FIXTURE", raising=False)
+    helper = tmp_path / "Get-BobOpencodeFuel.ps1"
+    helper.write_text("# stub\n", encoding="utf-8")
+    monkeypatch.setenv("BOB_OPENCODE_FUEL_HELPER", str(helper))
+    monkeypatch.setenv("BOB_OPENCODE_FUEL_CACHE_S", "30")
+
+    class FakeProc:
+        stdout = '{"free": 70, "go": 20}\n'
+        returncode = 0
+
+    n = {"i": 0}
+
+    def fake_run(*args, **kwargs):
+        n["i"] += 1
+        if n["i"] == 1:
+            return FakeProc()
+        raise sp.TimeoutExpired(cmd=args[0], timeout=kwargs.get("timeout"))
+
+    with mock.patch("subprocess.run", fake_run):
+        first = bobreport.read_local_opencode_pcent(now=2000.0, force=True)
+        # Force refresh after TTL: times out -> stale
+        second = bobreport.read_local_opencode_pcent(now=2040.0, force=True)
+        # Within new stamp window without force: no third subprocess
+        third = bobreport.read_local_opencode_pcent(now=2045.0)
+    assert first == {"opencode-free": 70, "opencode-go": 20}
+    assert second == first
+    assert third == first
+    assert n["i"] == 2
+
