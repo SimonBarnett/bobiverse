@@ -132,3 +132,21 @@ def test_unknown_agent_is_usage(capsys, tmp_path: Path):
     assert code == bw.EXIT_USAGE
     err = capsys.readouterr().err
     assert "copilot" in err
+
+
+def test_skill_start_it_agents_submenu_fr6220():
+    """FR #6220: Start-it documents Agents submenu; no single-Agent / NO sub-menu claim."""
+    skill = Path(__file__).resolve().parents[1] / ".grok" / "skills" / "bobiverse-bob-worker" / "SKILL.md"
+    text = skill.read_text(encoding="utf-8")
+    assert "NO sub-menu" not in text
+    assert "single menu item" not in text
+    start = text.index("## Start it (three ways)")
+    which = text.index("## Which agent starts")
+    chunk = text[start:which]
+    assert "**Tray: `Agents` submenu**" in chunk
+    for name in ("Automatic", "Grok", "Cursor", "OpenCode"):
+        assert name in chunk, name
+    assert "--list-agents" in chunk
+    assert "Plan** stays a separate top-level click" in chunk or "**Plan** stays a separate top-level click" in chunk
+    assert "One tray **Agents** menu pick" in text
+    assert "tray Agents submenu" in text.split("---", 2)[1]
