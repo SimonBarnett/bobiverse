@@ -1,4 +1,4 @@
-# Gap analysis — digest ear publish (vs origin/main a02e56a2)
+# Gap analysis - digest ear publish (vs origin/main a02e56a2)
 
 Compared Success rows to modules on detached `origin/main` worktree `repo/` (2026-11-07).
 
@@ -14,5 +14,5 @@ Compared Success rows to modules on detached `origin/main` worktree `repo/` (202
 | S8 Logos | No per-family company logos on fuel rows (Bob About uses ntsa-gut-logo only) | Assets + Status/TipForm/mocks for Cursor, xAI, OpenCode, Copilot |
 
 ## Non-gaps
-- OpenCode seat/fuel math: already on main via PR #6121 / FR #6120 — do not re-implement.
+- OpenCode seat/fuel math: already on main via PR #6121 / FR #6120 - do not re-implement.
 - CAST IRON: local Cursor Spending remains fuel-gate SoT when known; digest fills nulls only.

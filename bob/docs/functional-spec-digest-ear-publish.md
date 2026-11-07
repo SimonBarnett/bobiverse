@@ -1,4 +1,4 @@
-# Functional spec — digest ear-publish + TipForm fuel logos
+# Functional spec - digest ear-publish + TipForm fuel logos
 
 Pulled from LOCKED vision (plan-20261107-132147).
 

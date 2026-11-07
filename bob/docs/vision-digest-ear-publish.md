@@ -4,7 +4,7 @@ Feature request on existing repo SimonBarnett/bobiverse. Reuses fleet **service*
 
 ## Objective
 
-Every fleet box publishes truthful, low-lag fuel (Cursor, xAI, OpenCode, Copilot) from the **bob-ear** service to `https://bob.ntsa.uk/bob/v1/report`, and TipForm/Status shows those pools with company logos and the real xAI account label — so operators never trust a week-old or nick-only digest again.
+Every fleet box publishes truthful, low-lag fuel (Cursor, xAI, OpenCode, Copilot) from the **bob-ear** service to `https://bob.ntsa.uk/bob/v1/report`, and TipForm/Status shows those pools with company logos and the real xAI account label - so operators never trust a week-old or nick-only digest again.
 
 LOCKED
 
@@ -68,6 +68,6 @@ LOCKED
 
 ## UNKNOWN
 
-- Exact on-disk source for xAI account label string per seat (Grok auth snapshot field name) — discover on origin/main during FR-003
-- Exact ear tick interval if sub-5s on-change is impractical on LocalSystem — pin in FR-005 (must still beat multi-day lag)
+- Exact on-disk source for xAI account label string per seat (Grok auth snapshot field name) - discover on origin/main during FR-003
+- Exact ear tick interval if sub-5s on-change is impractical on LocalSystem - pin in FR-005 (must still beat multi-day lag)
 - Final logo asset license/source files (must be redistributable; text fallback required)
