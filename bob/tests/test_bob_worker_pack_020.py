@@ -236,8 +236,12 @@ def test_stage_has_worker_plan_folders_and_the_exe_inputs(bob_stage):
               "tools/validate-vision-pack.py"):
         assert (s / "plan" / f).is_file(), f"plan/{f}"
     assert (s / "tools" / "Get-BobAgentFuel.ps1").is_file()
+    assert (s / "tools" / "Get-BobOpencodeFuel.ps1").is_file()  # FR #6159
+    assert (s / "scripts" / "opencode_fuel.py").is_file()  # FR #6159 flat compose
     assert (s / "scripts" / "bob_worker.py").is_file() and (s / "scripts" / "Build-BobWorker.ps1").is_file()
     assert (s / "assets" / "bob-systray.ico").is_file()
+    assert (s / ".grok" / "skills" / "bob-setup-opencode" / "SKILL.md").is_file()  # FR #6159
+    assert (s / "worker" / ".grok" / "skills" / "bob-setup-opencode" / "SKILL.md").is_file()
     for j in JOB_SKILLS:                                       # the bob book (install root) carries them too
         assert (s / ".grok" / "skills" / j / "SKILL.md").is_file(), j
     tray = (s / "tools" / "Watch-BobTray.ps1").read_text(encoding="utf-8-sig")

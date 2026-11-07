@@ -86,10 +86,10 @@ def _resolve_opencode_fuel_helper_path(
 ) -> Path:
     """Locate ``opencode_fuel.py`` for embedding in the PowerShell wrapper.
 
-    Resolution is independent of the seat's working directory.  The helper is
-    found from the Bob install root / worktree layout (``common/scripts`` next to
-    ``bob/scripts``), with fallbacks to the configured install root and the
-    legacy cwd-based path.
+    FR #6159: flat installs compose the helper to ``<root>/scripts/opencode_fuel.py``.
+    Order: source-relative ``common/scripts`` (repo), then ``install_root`` flat
+    ``scripts`` then ``common/scripts``, then ``cwd.parent`` flat ``scripts`` then
+    ``common/scripts``. First existing file wins. Miss returns the first candidate.
     """
     source = Path(source_file).resolve() if source_file else Path(__file__).resolve()
     here = source.parent
@@ -98,9 +98,13 @@ def _resolve_opencode_fuel_helper_path(
         (here.parent / "common" / "scripts" / "opencode_fuel.py"),
     ]
     if install_root is not None:
-        candidates.append(Path(install_root) / "common" / "scripts" / "opencode_fuel.py")
+        root = Path(install_root)
+        candidates.append(root / "scripts" / "opencode_fuel.py")
+        candidates.append(root / "common" / "scripts" / "opencode_fuel.py")
     if cwd is not None:
-        candidates.append(Path(cwd).parent / "common" / "scripts" / "opencode_fuel.py")
+        parent = Path(cwd).parent
+        candidates.append(parent / "scripts" / "opencode_fuel.py")
+        candidates.append(parent / "common" / "scripts" / "opencode_fuel.py")
     for cand in candidates:
         if cand.is_file():
             return cand.resolve()
@@ -954,6 +958,7 @@ def describe_agent_child_launch(
     agent_exe: str,
     prompt: str | None = None,
     session_id: str | None = None,
+    install_root: str | Path | None = None,
 ) -> dict:
     """Canonical cursor/grok child launch for agent and plan (FR #2413).
 
@@ -971,7 +976,7 @@ def describe_agent_child_launch(
         else:
             prompt = worker_prompt(folder, str(rd), machine, nick)
     launch_mode = mode_l if mode_l in ("agent", "plan", "monitor") else "agent"
-    spec = build_launch(kind, launch_mode, folder, prompt, agent_exe, rd, session_id=session_id)
+    spec = build_launch(kind, launch_mode, folder, prompt, agent_exe, rd, session_id=session_id, install_root=install_root)
     env = seat_env_extra(rd, machine, nick)
     skills = str(Path(folder) / ".grok" / "skills")
     return {
@@ -1216,7 +1221,7 @@ def assert_fresh(argv: list, files: Optional[dict] = None, allow_resume: bool = 
 
 
 def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir: Path, session_id: Optional[str] = None,
-                 resume_session_id: Optional[str] = None) -> LaunchSpec:
+                 resume_session_id: Optional[str] = None, install_root: str | Path | None = None) -> LaunchSpec:
     if resume_session_id and not (mode == "maintenance" and kind == "grok"):
         raise ValueError("refusing to launch: only grok maintenance may resume (FR #2522)")
     sid = resume_session_id or session_id or str(uuid.uuid4())
@@ -1264,7 +1269,7 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
         turns_log = str(Path(run_dir) / "opencode-turns.jsonl")
         esc = lambda s: str(s).replace("'", "''")  # noqa: E731
         files[pfile] = prompt
-        helper_path = _resolve_opencode_fuel_helper_path(cwd=cwd)
+        helper_path = _resolve_opencode_fuel_helper_path(cwd=cwd, install_root=install_root)
         # FR #6157: each opencode run emits turn_started / turn_ended into opencode-turns.jsonl
         # so BoredEmitter gets harvest-hold / done-miss / startup-ready parity with Grok.
         files[lfile] = "\n".join([
@@ -6602,8 +6607,10 @@ class Supervisor:
                  reconnect_grace_s: float | None = None,
                  send_enter: Optional[Callable[[int], bool]] = None,
                  ask_user_watch: Optional["AskUserPendingWatch"] = None,
-                 sessions_root: Optional[Path] = None):
+                 sessions_root: Optional[Path] = None,
+                 install_root: str | Path | None = None):
         self.kind, self.exe, self.cwd, self.machine, self.nick = kind, exe, cwd, machine, nick
+        self.install_root = str(install_root) if install_root else None
         self.run_dir, self.irc, self.relay, self.log = Path(run_dir), irc, relay, log
         self.secret = env_secret
         self.spawn, self.kill, self.probe, self.inject = spawn, kill, probe, inject
@@ -7286,6 +7293,7 @@ class Supervisor:
                 nick=self.nick,
                 agent_exe=self.exe,
                 prompt=self._prompt() + (" " + note if note else ""),
+                install_root=self.install_root,
             )
             spec = child["spec"]
             # FR #2380 / #2413 / #2669: seat env + path normalize + scrub agent-host vars.
@@ -8285,6 +8293,7 @@ def run_plan(args, log: Log) -> int:
         machine=machine or "plan",
         nick=nick,
         agent_exe=exe,
+        install_root=str(args.install_root),
     )
     spec = child["spec"]
     env = prepare_seat_child_env(os.environ, child["env"])  # FR #2413 / #2669
@@ -8363,7 +8372,8 @@ def run_monitor(args, log: Log) -> int:
             set_console_icon(folder)  # find_window_icon only knows bob-systray; still set title
         except Exception:
             pass
-    spec = build_launch(kind, "monitor", str(folder), monitor_prompt(str(folder)), exe, run_dir)
+    spec = build_launch(kind, "monitor", str(folder), monitor_prompt(str(folder)), exe, run_dir,
+                             install_root=str(args.install_root))
     env = prepare_seat_child_env(os.environ)  # FR #2669
     if secret and kind == "grok":
         env["XAI_API_KEY"] = secret.reveal()
@@ -8473,7 +8483,8 @@ def run_maintenance(args, log: Log, *, spawn: Optional[Callable] = None, poll_s:
     prompt = maintenance_prompt(str(folder), done_file=str(done_file), resumed=(how == "resume"))
     spec = build_launch(kind, "maintenance", str(folder), prompt, exe, rd,
                         session_id=(sid if how == "new" else None),
-                        resume_session_id=(sid if how == "resume" else None))
+                        resume_session_id=(sid if how == "resume" else None),
+                             install_root=str(args.install_root))
     env = prepare_seat_child_env(os.environ)  # FR #2669
     if secret and kind == "grok":
         env["XAI_API_KEY"] = secret.reveal()
@@ -8590,6 +8601,7 @@ def run_agent(args, log: Log) -> int:
         # Grok TUI session.create often needs 30-60s on slower boxes (FR #955 ionos evidence).
         grace = 60.0
     log(f"worker: startup_grace_s={grace:.0f}")
+    _install_root = str(args.install_root)
     sup = Supervisor(
         kind=kind,
         exe=exe,
@@ -8602,9 +8614,9 @@ def run_agent(args, log: Log) -> int:
         log=log,
         env_secret=secret,
         startup_grace_s=grace,
+        install_root=_install_root,
     )
     # FR #2782: a hotpatched install exe must reach this seat at its next idle point.
-    _install_root = str(args.install_root)
     sup.stale_build_check = lambda: stale_build_reason(sys.executable, _install_root)
     if not sup.start_agent():
         irc.close("launch failed")
