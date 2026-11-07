@@ -7251,6 +7251,16 @@ class Supervisor:
                 return False
             if self.bored:
                 self.bored.set_ready(False)  # a (re)starting agent is not idle
+            # FR #6157 / MRB #6164: hang-restart reuses run_dir; truncate OpenCode turn markers
+            # before spawn so GrokTurnWatcher (offset 0) cannot replay a prior agent's turn_ended
+            # into startup release / done-miss / harvest hold. Markers written after this clear
+            # (between spawn and watcher start) are still seen.
+            if (self.kind or "").strip().lower() == "opencode" and self.run_dir is not None:
+                try:
+                    turns = Path(self.run_dir) / "opencode-turns.jsonl"
+                    turns.write_text("", encoding="utf-8")
+                except OSError:
+                    pass
             child = describe_agent_child_launch(
                 kind=self.kind,
                 mode="agent",
