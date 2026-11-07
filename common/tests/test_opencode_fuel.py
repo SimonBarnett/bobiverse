@@ -88,12 +88,15 @@ REAL_STATS_SAMPLE = """ÔöîÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔ�
 
 
 def test_fuel_from_stats_unknown_is_empty():
-    assert of.fuel_from_stats({}) == {
-        "opencode-free": None,
-        "opencode-go": None,
-        "models": {},
-        "free_model_ids": [],
-    }
+    fuel = of.fuel_from_stats({})
+    assert fuel["opencode-free"] is None
+    assert fuel["opencode-go"] is None
+    assert fuel["models"] == {}
+    assert fuel["free_model_ids"] == []
+    assert fuel["windows"]["rolling"]["status"] == "unstarted"
+    assert fuel["windows"]["week"]["status"] == "unknown"
+    assert fuel["windows"]["month"]["status"] == "unknown"
+
 
 
 def test_fuel_from_stats_computes_remaining_pct():
@@ -384,12 +387,14 @@ def test_fuel_from_windowed_stats_free_when_any_window_has_free_models():
 
 
 def test_fuel_from_windowed_stats_unknown_without_data():
-    assert of.fuel_from_windowed_stats({}) == {
-        "opencode-free": None,
-        "opencode-go": None,
-        "models": {},
-        "free_model_ids": [],
-    }
+    fuel = of.fuel_from_windowed_stats({})
+    assert fuel["opencode-free"] is None
+    assert fuel["opencode-go"] is None
+    assert fuel["models"] == {}
+    assert fuel["free_model_ids"] == []
+    assert fuel["windows"]["rolling"]["status"] == "unstarted"
+    assert fuel["windows"]["week"]["status"] == "unknown"
+    assert fuel["windows"]["month"]["status"] == "unknown"
 
 
 def test_fuel_from_windowed_stats_missing_model_in_successful_window_counts_as_zero():
@@ -725,8 +730,63 @@ def test_save_opencode_pauses_runs_while_lock_held(tmp_path, monkeypatch):
     monkeypatch.setattr(of, "save_opencode_pauses", checked_save)
     assert of.record_opencode_pause(state_dir, "opencode-go/glm-5.3", "rate limit") is not None
 
+def test_fr6147_go_windows_used_vs_remaining_and_unstarted_rolling():
+    windowed = {
+        "week": {"costs": {"glm-5.3": 5.4}, "parse_success": True},  # 5.4/7.5 = 72% used => 28% rem
+        "month": {"costs": {"glm-5.3": 5.4}, "parse_success": True},  # 5.4/15 = 36% used => 64% rem
+    }
+    fuel = of.fuel_from_windowed_stats(windowed)
+    win = fuel["windows"]
+    assert win["rolling"]["status"] == "unstarted"
+    assert win["rolling"]["used_pct"] == 0
+    assert win["rolling"]["reset_label"] is None
+    assert win["week"]["status"] == "known"
+    assert win["week"]["used_pct"] == 72
+    assert win["week"]["remaining_pct"] == 28
+    assert win["month"]["used_pct"] == 36
+    assert win["month"]["remaining_pct"] == 64
+    assert fuel["limiting"] == "week"
+    paint = of.format_opencode_paint_lines(100, win)
+    assert "Starts on first use" in paint["window_lines"][0]
+    assert "72% used" in paint["window_lines"][1]
+    assert "28% rem" in paint["window_lines"][1]
+    assert "36% used" in paint["window_lines"][2]
+    assert "64% rem" in paint["window_lines"][2]
+    assert paint["go_remaining"] == 28
+    assert "free 100%" in paint["summary"]
+
+
+def test_fr6147_normalize_fixture_reset_labels_and_exhausted_limits():
+    raw = {
+        "rolling": {"status": "unstarted", "used_pct": 0},
+        "week": {"status": "exhausted", "used_pct": 100, "remaining_pct": 0, "reset_label": "1d 2h"},
+        "month": {"status": "known", "used_pct": 36, "remaining_pct": 64, "reset_label": "26d 18h"},
+    }
+    win = of.normalize_go_windows(raw)
+    lim, rem = of.limiting_go_window(win)
+    assert lim == "week" and rem == 0
+    paint = of.format_opencode_paint_lines(100, win)
+    assert paint["go_remaining"] == 0
+    assert "reset 1d 2h" in paint["window_lines"][1]
+    assert "reset 26d 18h" in paint["window_lines"][2]
+    # Free=100 must not imply Go availability when limiting window is exhausted.
+    assert "go weekly 0%" in paint["summary"]
+
+
+def test_fr6147_stale_clears_known_values():
+    win = of.normalize_go_windows({
+        "rolling": {"status": "unstarted"},
+        "week": {"status": "known", "used_pct": 72, "remaining_pct": 28, "reset_label": "1d 2h"},
+        "month": {"status": "known", "used_pct": 36, "remaining_pct": 64},
+    })
+    paint = of.format_opencode_paint_lines(100, win, stale=True)
+    assert paint["windows"]["week"]["status"] == "stale"
+    assert paint["windows"]["week"]["remaining_pct"] is None
+    assert paint["windows"]["rolling"]["status"] == "unstarted"
+    assert "[stale]" in paint["summary"]
 
 def test_looks_like_rate_limit_keeps_apostrophe_provider_lines_mrb6231():
     line = "Provider's response: 402 Payment Required for model 'beam-free'"
     assert of.looks_like_rate_limit(line) is True
+
 

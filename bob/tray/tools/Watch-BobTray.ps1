@@ -2258,7 +2258,7 @@ function Update-Hover {
                     # Format-BobCursorAccountLabel will pick tip/overspend when RemainingPct empty
                 }
             }
-            Rebuild-BobTrayTiles -Machines @($h.machines) -CursorPools @($h.cursor_pools) -AccountName $h.account_name -AccountPct $h.account_remaining_pct -AccountLabel $h.account_label -AccountReset $h.account_reset_label -AccountOverageGbp $h.account_overage_gbp -ChairChannels @($h.chair_channels) -CopilotPool $h.copilot_pool -OpencodeLine $h.opencode_line -OpencodeFree $h.opencode_free -OpencodeGo $h.opencode_go
+            Rebuild-BobTrayTiles -Machines @($h.machines) -CursorPools @($h.cursor_pools) -AccountName $h.account_name -AccountPct $h.account_remaining_pct -AccountLabel $h.account_label -AccountReset $h.account_reset_label -AccountOverageGbp $h.account_overage_gbp -ChairChannels @($h.chair_channels) -CopilotPool $h.copilot_pool -OpencodeLine $h.opencode_line -OpencodeFree $h.opencode_free -OpencodeGo $h.opencode_go -OpencodeWindows $h.opencode_windows -OpencodeWindowLines @($h.opencode_window_lines)
             if ($script:alertLabel) {
                 $script:alertLabel.Text = ('alert: {0}' -f $script:alertKind)
                 $yAlert = 40
@@ -2781,7 +2781,7 @@ function Rebuild-BobTrayTiles {
     # FR #4938 / FR #5032: TipForm shows per-machine Grok pool rows (no 'Grok accounts' heading).
     # Cursor spending-group bars (grok chat / high cost / Low cost) are removed from the card.
     # Fuel still reads local Cursor/Grok elsewhere; this is display-only.
-    param($Machines, $CursorPools, $AccountName, $AccountPct, $AccountLabel, $AccountReset, $AccountOverageGbp, $ChairChannels, $CopilotPool, $OpencodeLine = '', $OpencodeFree = $null, $OpencodeGo = $null)
+    param($Machines, $CursorPools, $AccountName, $AccountPct, $AccountLabel, $AccountReset, $AccountOverageGbp, $ChairChannels, $CopilotPool, $OpencodeLine = '', $OpencodeFree = $null, $OpencodeGo = $null, $OpencodeWindows = $null, $OpencodeWindowLines = @())
     if (-not $script:tileHost) { return }
 
     # Format everything first so a throw never leaves a cleared host.
@@ -2875,13 +2875,26 @@ function Rebuild-BobTrayTiles {
                 elseif ($null -ne $free) { $ocRight = ('{0}%' -f $free) }
             }
         } catch { }
-        # FR #6147: prefer Format-BobOpencodePoolLine when digest hover fields exist.
+        # FR #6147: prefer Format-BobOpencodePoolLine / window lines when digest hover fields exist.
         $ocLine = [string]$OpencodeLine
+        $ocWinLines = @($OpencodeWindowLines)
+        if ($OpencodeWindows -and (Get-Command Format-BobOpencodeWindowLines -ErrorAction SilentlyContinue)) {
+            try {
+                $pack = Format-BobOpencodeWindowLines -FreePct $OpencodeFree -Windows $OpencodeWindows
+                if (-not $ocLine) { $ocLine = [string]$pack.summary }
+                if ($ocWinLines.Count -eq 0 -and $pack.window_lines) { $ocWinLines = @($pack.window_lines) }
+                if ($null -ne $pack.go_remaining) { $ocRight = ('{0}%' -f [int]$pack.go_remaining) }
+            } catch { }
+        }
         if (-not $ocLine) {
-            try { $ocLine = Format-BobOpencodePoolLine -FreePct $OpencodeFree -GoPct $OpencodeGo } catch { $ocLine = '' }
+            try { $ocLine = Format-BobOpencodePoolLine -FreePct $OpencodeFree -GoPct $OpencodeGo -Windows $OpencodeWindows } catch { $ocLine = '' }
         }
         if ($ocLine) { $ocTitle = $ocLine }
         $y = Add-BobTrayFuelFamilyRow -X 0 -Y $y -Family 'opencode' -Title $ocTitle -RightText $ocRight
+        foreach ($wl in @($ocWinLines)) {
+            if (-not $wl) { continue }
+            $y = Add-BobTraySectionHeader -X 18 -Y $y -Title ([string]$wl)
+        }
         $overLine = Format-BobTrayCursorOverspendLine -OverageGbp $AccountOverageGbp
         $overColor = [System.Drawing.Color]::FromArgb(248, 81, 73)
         if ($overLine) {
