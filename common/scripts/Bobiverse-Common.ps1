@@ -3090,7 +3090,7 @@ function Sync-BobiverseAgentFolders {
     $skillsDirs = @(Get-BobiverseRepoDirs -Root $RepoRoot -Sub '.grok\skills')
     $enc = New-Object System.Text.UTF8Encoding($false)
     $defs = @(
-        @{ Name = 'worker'; Shared = @('bobiverse-bob', 'bobiverse-bob-worker', 'bobiverse-bob-plan', 'bobiverse-bob-job-irc', 'bobiverse-bob-job-fr', 'bobiverse-bob-job-mrb', 'bobiverse-bob-job-uat', 'bobiverse-fleet-ops', 'harvest', 'harvest-agent-skills') },
+        @{ Name = 'worker'; Shared = @('bobiverse-bob', 'bobiverse-bob-worker', 'bobiverse-bob-plan', 'bobiverse-bob-job-irc', 'bobiverse-bob-job-fr', 'bobiverse-bob-job-mrb', 'bobiverse-bob-job-uat', 'bobiverse-fleet-ops', 'harvest', 'harvest-agent-skills', 'bob-setup-opencode') }, # FR #6159 OpenCode setup on worker seats
         @{ Name = 'plan';   Shared = @('harvest', 'harvest-agent-skills') }
     )
     $made = 0

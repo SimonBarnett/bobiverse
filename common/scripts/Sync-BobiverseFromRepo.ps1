@@ -20,7 +20,7 @@
   Skips when BOBIVERSE_NO_UPDATE=1. For -Product airc, also skips when config\airc.json
   sync_from_repo is false/absent (FR #3289; override BOBIVERSE_SYNC_FROM_REPO=1). Does not overwrite config\, home\, or secrets.
   FR #269: flat scripts/ is always refreshed from the split-repo script dirs (no robocopy /XO on scripts).
-  FR #6154: bob tray tools\ is also forced (no /XO) so Get-BobAgentFuel/Get-BobOpencodeFuel refresh; bob-setup-opencode skill syncs for Product=bob.
+  FR #6154 / #6159: bob tray tools\ is also forced (no /XO) so Get-BobAgentFuel/Get-BobOpencodeFuel refresh; bob-setup-opencode skill syncs for Product=bob (install root + worker Shared).
   Git checkout mtimes are often older than a previous flat compose, so /XO left scripts/gitclaim.py stale after ff.
   Use -ComposeOnly after a manual git pull --ff-only to recompose without restarting the service.
 .PARAMETER ComposeOnly
