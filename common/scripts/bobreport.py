@@ -24,6 +24,10 @@ REPORT_CMD = "!report"
 REPORT_GONE = "ERR report gone — use callback or GET /bob/v1/report"
 NO_MACHINE = "ERR no such machine"
 DEFAULT_DIGEST_URL = "https://bob.ntsa.uk/bob/v1/report"
+
+# FR #6144: edge/WAF returns 403 to default Python-urllib User-Agent; ear digest
+# pull then never POSTs fuel (stale weekly). Identify as bobreport explicitly.
+DIGEST_HTTP_USER_AGENT = "Bobiverse-bobreport/1.0"
 DIGEST_URL_ENV = "BOB_DIGEST_URL"
 BOBIVERSE_GONE = "ERR !bobiverse gone — GET https://bob.ntsa.uk/bob/v1/report"
 DIGEST_PREFIX = "BOB DIGEST v1 "
@@ -831,7 +835,14 @@ def fetch_digest_http(url: str | None = None, timeout: float = 15.0) -> dict | N
     if not target:
         return None
     try:
-        req = urllib.request.Request(target, method="GET", headers={"Accept": "application/json"})
+        req = urllib.request.Request(
+            target,
+            method="GET",
+            headers={
+                "Accept": "application/json",
+                "User-Agent": DIGEST_HTTP_USER_AGENT,
+            },
+        )
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             raw = resp.read().decode("utf-8", "replace")
         doc = json.loads(raw or "{}")
@@ -4270,7 +4281,11 @@ def post_report_json(payload: dict, *, url: str | None = None, timeout: float = 
             target,
             data=body,
             method="POST",
-            headers={"Content-Type": "application/json", "Accept": "application/json"},
+            headers={
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+                "User-Agent": DIGEST_HTTP_USER_AGENT,
+            },
         )
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             return int(getattr(resp, "status", 0) or 0)
