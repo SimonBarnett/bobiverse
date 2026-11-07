@@ -1,4 +1,4 @@
-# Feature request: OpenCode bobiverse seat — remaining gaps (2026-11-07)
+# Feature request: OpenCode bobiverse seat --- remaining gaps (2026-11-07)
 
 Target repo: SimonBarnett/bobiverse (existing). Shape: service.
 
@@ -8,11 +8,11 @@ FR mirrors: `docs/fr/opencode-seat-gaps/`
 
 ## Success
 
-See vision Success S1–S5.
+See vision Success S1-S5.
 
 ## Non-gaps
 
-FR #6120 / #6121 / #6134 seat core already on main — do not re-implement.
+FR #6120 / #6121 / #6134 seat core already on main --- do not re-implement.
 
 ## Implementation issues (Refs, not Closes)
 

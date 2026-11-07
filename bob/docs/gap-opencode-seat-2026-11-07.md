@@ -1,4 +1,4 @@
-# Gap analysis — OpenCode as bobiverse seat (vs origin/main 88a5ec9e)
+# Gap analysis --- OpenCode as bobiverse seat (vs origin/main 88a5ec9e)
 
 Compared Success rows to modules on detached `origin/main` worktree `repo/` and live install `C:\ai\bob` (2026-11-07).
 
@@ -16,9 +16,9 @@ Compared Success rows to modules on detached `origin/main` worktree `repo/` and 
 
 ## Non-gaps
 
-- OpenCode seat/fuel/selection/wrapper core: already on main via PR #6121 / FR #6120 — do not re-implement.
-- Chair OpenCode skip hostile: FR #6134 — do not re-implement.
-- Digest logos / bob.ntsa.uk / ear-owns-publish: separate digest-ear-publish pack (#6141 closed; #6142–#6150 open).
+- OpenCode seat/fuel/selection/wrapper core: already on main via PR #6121 / FR #6120 --- do not re-implement.
+- Chair OpenCode skip hostile: FR #6134 --- do not re-implement.
+- Digest logos / bob.ntsa.uk / ear-owns-publish: separate digest-ear-publish pack (#6141 closed; #6142-#6150 open).
 
 ## Evidence
 

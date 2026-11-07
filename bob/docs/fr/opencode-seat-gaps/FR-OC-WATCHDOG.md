@@ -6,16 +6,17 @@ Long healthy `opencode run` jobs must not be killed/paused as out-of-fuel solely
 
 ## Deliverables
 
-- Replace absolute `WaitForExit(BOB_OPENCODE_WATCHDOG_MS)` kill with idle/no-output detection (or raise default and only kill when no stdout/stderr progress).
-- Do not call `record-pause` on wall-clock alone while the process is alive and producing output.
-- Keep real 402/429 / rolling-limit → pause behaviour.
-- Regression test: simulated run >120s with periodic output does not pause; silent hang still kills.
+- Replace absolute `WaitForExit(BOB_OPENCODE_WATCHDOG_MS)` kill with idle/activity detection.
+- Prefer a heartbeat / progress marker (or growing redirected stdout/stderr length) so a healthy silent tool call is not treated as a hang.
+- Do not call `record-pause` on wall-clock or silent-hang alone while the process is alive; `record-pause` only on confirmed 402/429 / rolling-limit evidence.
+- Silent hang past threshold: kill/recycle the child; do **not** pause fuel solely for silence.
+- Regression tests: run >120s with periodic output or heartbeat -> no kill/pause; silent hang -> kill without pause; 402/429 text -> pause as today.
 
 ## Testable
 
-1. Unit/integration: wrapper with output past 120s → no pause entry.
-2. Silent hang past threshold → kill + optional pause.
-3. 429/402 text → pause as today.
+1. Unit/integration: wrapper with output or heartbeat past 120s -> no kill and no pause entry.
+2. Silent hang past threshold -> kill/recycle; **no** `record-pause` without limit evidence.
+3. 429/402 text -> pause as today.
 
 ## Evidence of gap
 

@@ -6,7 +6,7 @@ Operators/agents can enable OpenCode on a fleet box using `bob-setup-opencode` w
 
 ## Deliverables
 
-- Smoke steps: winget/PATH, `opencode --version`, auth.json **presence + ACL** only (never cat body), `opencode run -m <free-or-go> "pong"`, `bob-worker --dry-run` decision.
+- Smoke steps: winget/PATH, `opencode --version`, auth.json **presence + ACL** only (never cat body), `opencode run -m <free-or-go> "pong"` must exit 0 with an expected pong-class reply (auth/timeout/nonzero = fail), `bob-worker --dry-run` decision.
 - Document which machines are OpenCode-enabled (ops note / digest kind) without secrets.
 - Tie to FR #6120 trial metrics (optional report template: PRs attempted, first MRB pass, fuel used).
 
