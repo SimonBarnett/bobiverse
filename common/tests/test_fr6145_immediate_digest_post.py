@@ -51,6 +51,15 @@ def test_fr6145_delta_s_default_and_env(monkeypatch):
     assert bobreport.digest_fuel_delta_s() == 3.0
 
 
+
+
+def test_fr6145_delta_s_caps_above_max_lag(monkeypatch):
+    monkeypatch.setenv("BOB_EAR_DIGEST_FUEL_DELTA_S", "60")
+    assert bobreport.digest_fuel_delta_s() == bobreport.DIGEST_FUEL_MAX_LAG_S
+    monkeypatch.setenv("BOB_EAR_DIGEST_FUEL_DELTA_S", "2.5")
+    assert bobreport.digest_fuel_delta_s() == 2.5
+
+
 def test_fr6145_unchanged_fingerprint_skips_post(tmp_path: Path):
     home = tmp_path / "home"
     home.mkdir()
@@ -209,8 +218,54 @@ def test_fr6145_ear_tick_uses_delta_s_not_only_heartbeat():
     src = (Path(__file__).resolve().parents[1] / "scripts" / "irc_agent.py").read_text(
         encoding="utf-8"
     )
-    assert "FR #6145" in src or "digest_fuel_delta_s" in src
-    block = src[src.index("def _maybe_publish_digest_fuel") : src.index("def _maybe_publish_digest_fuel") + 900]
+    assert "digest_fuel_delta_s" in src
+    block = src[
+        src.index("def _maybe_publish_digest_fuel") : src.index("def _maybe_publish_digest_fuel") + 900
+    ]
     assert "digest_fuel_delta_s" in block
-    # Must not gate solely on heartbeat (30s) for delta detection.
-    assert "digest_fuel_heartbeat_s" not in block or "digest_fuel_delta_s" in block
+    assert "digest_fuel_heartbeat_s" not in block
+
+
+def test_fr6145_ear_client_polls_at_delta_not_heartbeat(monkeypatch, tmp_path: Path):
+    """Hostile: Client._maybe_publish_digest_fuel fires again after 5s, not only after 30s."""
+    import irc_agent
+    import types
+
+    home = tmp_path / "home"
+    home.mkdir()
+    calls: list[float] = []
+
+    class Clock:
+        def __init__(self):
+            self.t = 1000.0
+
+        def time(self):
+            return self.t
+
+    clock = Clock()
+    monkeypatch.setattr(irc_agent.time, "time", clock.time)
+    monkeypatch.setattr(bobreport, "digest_fuel_delta_s", lambda: 5.0)
+    monkeypatch.setattr(
+        bobreport,
+        "publish_local_peer_fuel",
+        lambda *a, **k: calls.append(clock.t) or 204,
+    )
+
+    client = irc_agent.Client.__new__(irc_agent.Client)
+    client.args = types.SimpleNamespace(chair=False)
+    client.original_nick = "Bob-redqueen"
+    client.home = home
+    client._digest_fuel_last = 0.0
+    client._local_machine_id = lambda: "redqueen"
+    monkeypatch.setattr(irc_agent.bobtalk, "is_fleet_bob_nick", lambda *_a, **_k: True)
+
+    client._maybe_publish_digest_fuel()
+    assert len(calls) == 1
+    clock.t += 4.0
+    client._maybe_publish_digest_fuel()
+    assert len(calls) == 1  # still inside 5s window
+    clock.t += 1.5
+    client._maybe_publish_digest_fuel()
+    assert len(calls) == 2
+    # Heartbeat is 30s; at t+5.5 we already posted again via delta cadence.
+    assert calls[1] - calls[0] < 30.0

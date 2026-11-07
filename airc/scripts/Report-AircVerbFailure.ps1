@@ -102,7 +102,7 @@ _via-Report-AircVerbFailure FR=#5775_
         & $report -Kind issue -Repo $Repo -Title $title -Body $body -IdempotencyKey $key 2>$null | Out-Null
     } else {
         $url = $env:BOB_INTAKE_URL
-        if (-not $url) { $url = 'https://irc.ntsa.uk/bob/v1/intake' }
+        if (-not $url) { $url = 'https://bob.ntsa.uk/bob/v1/intake' }
         $payload = @{
             kind            = 'issue'
             repo            = $Repo

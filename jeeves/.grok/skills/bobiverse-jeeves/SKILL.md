@@ -63,9 +63,10 @@ stay the digest roster (`machines`); `#wonderland` is never a machine id. Privil
 ## Chair background jobs (inside ircJeeves, no extra task)
 
 1. **Webhook health probe, every 30 min** (`chair_health.probe_cycle`): for BOTH `http://127.0.0.1:7700` and
-   `https://irc.ntsa.uk` it checks `GET /bob/v1/report` (200), `GET /bob/v1/jira` (200), `GET /bob/v1/intake/<id>` (404 counts
-   as up) and a synthetic `POST /bob/v1/git` ping (zen `jeeves-health-probe`, answered 204 with no queue entry and no
-   announce). One retry before calling a target down. Each run is logged (`INFO webhook-health ...`); state is
+   `https://bob.ntsa.uk` (defaults; FR #5272 / FR #6142; IRC host stays `irc.ntsa.uk`; overrides:
+   `JEEVES_PROBE_LOCAL`, `JEEVES_PROBE_PUBLIC`, `BOB_PUBLIC_BASE`) it checks `GET /bob/v1/report` (200),
+   `GET /bob/v1/jira` (200), `GET /bob/v1/intake/<id>` (404 counts as up) and a synthetic `POST /bob/v1/git` ping
+   (zen `jeeves-health-probe`, answered 204 with no queue entry and no announce). One retry before calling a target down. Each run is logged (`INFO webhook-health ...`); state is
    `webhook-health.json`; `#bobiverse` is told ONLY on up<->down transitions (`WEBHOOK DOWN ...` / `WEBHOOK RECOVERED ...`)
    through `chair-outbox.txt`.
 2. **GitHub resync, hourly + webhook gap** (FR #3212; was 15 min): `gitclaim.resync_from_github` via `chair_health` /

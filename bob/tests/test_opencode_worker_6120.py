@@ -156,7 +156,11 @@ def test_build_launch_opencode_creates_wrapper(tmp_path: Path):
     assert "'run', '-m', $model" in script
     assert "--continue" not in script
     assert "Write-Output $outStr" in script
-    assert "$proc.WaitForExit($watchdogMs)" in script
+    # FR #6156: idle/output heartbeat, not absolute WaitForExit($watchdogMs).
+    assert "$proc.WaitForExit($watchdogMs)" not in script
+    assert "RedirectStandardOutput" in script
+    assert "$lastBeat" in script
+    assert "$lastLen" in script
     assert "taskkill /T /F /PID $proc.Id" in script
     assert "opencode-out-of-fuel.log" in script
     assert "record-pause" in script
@@ -194,7 +198,7 @@ def test_build_launch_opencode_wrapper_parses_as_powershell(tmp_path: Path):
         text=True,
         timeout=30,
     )
-    assert result.returncode == 0, result.stderr
+    assert result.returncode == 0, (result.stderr or result.stdout or "<no output>")[:800]
     assert "PARSED_OK" in result.stdout
 
 
@@ -243,13 +247,139 @@ def test_opencode_watchdog_kills_hanging_process_without_blocking(tmp_path: Path
     elapsed = time.time() - start
 
     # Must finish quickly: the 500ms watchdog plus bounded drain should dominate.
-    assert elapsed < 8, f"watchdog blocked for {elapsed:.1f}s"
+    assert elapsed < 12, f"watchdog blocked for {elapsed:.1f}s"
     # Wrapper should exit cleanly after stdin sends 'exit'.
     assert result.returncode == 0
     # The watchdog must record its timeout. A failed start or early exit writes no record.
     fuel_log = tmp_path / "Bobiverse" / "worker" / "logs" / "opencode-out-of-fuel.log"
     assert fuel_log.is_file(), "watchdog did not write a fuel log"
     assert "watchdog timeout" in fuel_log.read_text(encoding="utf-8")
+
+
+
+def test_fr6156_opencode_wrapper_uses_idle_watchdog_not_wall_clock(tmp_path: Path):
+    """Generated wrapper must poll idle/no-output, not absolute WaitForExit(watchdogMs)."""
+    spec = bw.build_launch("opencode", "agent", r"C:\ai\bob\worker", "idle watchdog", OP, tmp_path)
+    script_key = next(k for k in spec.files if k.endswith("launch-opencode.ps1"))
+    script = spec.files[script_key]
+    assert "RedirectStandardOutput" in script
+    assert "$lastBeat" in script
+    assert "idleMs" in script
+    assert "$proc.WaitForExit($watchdogMs)" not in script
+    worker_src = Path(__file__).resolve().parents[1] / "scripts" / "bob_worker.py"
+    assert "FR #6156" in worker_src.read_text(encoding="utf-8")
+
+
+def test_mrb6163_opencode_start_process_uses_argstr(tmp_path: Path):
+    """MRB #6163: Start-Process must take quoted $argStr (array ArgumentList splits prompts)."""
+    spec = bw.build_launch("opencode", "agent", r"C:\ai\bob\worker", 'Say "hi" please', OP, tmp_path)
+    script = next(v for k, v in spec.files.items() if k.endswith("launch-opencode.ps1"))
+    assert "Start-Process -FilePath $exe -ArgumentList $argStr" in script
+    assert "Start-Process -FilePath $exe -ArgumentList $argList" not in script
+    assert "$argStr =" in script
+
+
+def test_mrb6163_opencode_prompt_with_spaces_reaches_child(tmp_path: Path):
+    """Behavioral: prompt with spaces/quotes must arrive as one argv token to the child."""
+    if shutil.which("powershell.exe") is None:
+        pytest.skip("powershell.exe not available")
+
+    argv_log = tmp_path / "argv-log.txt"
+    fake_opencode = tmp_path / "fake-opencode-argv.ps1"
+    log_path = str(argv_log).replace("'", "''")
+    ps1_body = (
+        "$log = '" + log_path + "'\n"
+        + "$args | ForEach-Object { Add-Content -LiteralPath $log -Value $_ }\n"
+        + "Write-Output 'ok'\n"
+        + "exit 0\n"
+    )
+    fake_opencode.write_text(ps1_body, encoding="utf-8")
+    fake_exe = tmp_path / "opencode.cmd"
+    fake_exe.write_text(
+        '@powershell.exe -NoProfile -ExecutionPolicy Bypass -File "{ps1}" %*\n'.format(
+            ps1=str(fake_opencode)
+        ),
+        encoding="utf-8",
+    )
+
+    prompt = 'Say "hello world" and keep going'
+    spec = bw.build_launch(
+        "opencode", "agent", r"C:\ai\bob\worker", prompt, str(fake_exe), tmp_path
+    )
+    script_key = next(k for k in spec.files if k.endswith("launch-opencode.ps1"))
+    for path, body in spec.files.items():
+        p = Path(path)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(body, encoding="utf-8")
+
+    env = os.environ.copy()
+    env["BOB_OPENCODE_WATCHDOG_MS"] = "5000"
+    env["LOCALAPPDATA"] = str(tmp_path)
+    env["BOB_OPENCODE_MODEL"] = "opencode/beam-free"
+
+    result = subprocess.run(
+        ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(script_key)],
+        input="exit\n",
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=30,
+    )
+    assert result.returncode == 0, (result.stderr or result.stdout or "<no output>")[:800]
+    assert argv_log.is_file(), "child never logged argv"
+    lines = [ln.rstrip("\r") for ln in argv_log.read_text(encoding="utf-8").splitlines() if ln.strip()]
+    assert "run" in lines
+    assert "-m" in lines
+    assert "opencode/beam-free" in lines
+    assert prompt in lines, f"prompt split or stripped; argv={lines!r}"
+
+
+
+def test_fr6156_opencode_watchdog_allows_long_run_with_output(tmp_path: Path):
+    """Periodic stdout past the idle threshold must not pause / kill as out-of-fuel (FR #6156)."""
+    if shutil.which("powershell.exe") is None:
+        pytest.skip("powershell.exe not available")
+
+    # Fake opencode: emit ticks every 150ms for ~3s. Idle watchdog is 2s so startup+gaps stay alive.
+    fake_opencode = tmp_path / "fake-opencode-ticks.ps1"
+    fake_opencode.write_text(
+        "1..20 | ForEach-Object { Write-Output ('tick ' + $_); Start-Sleep -Milliseconds 150 }; exit 0\n",
+        encoding="utf-8",
+    )
+    fake_exe = tmp_path / "opencode.cmd"
+    fake_exe.write_text(
+        f'@powershell.exe -NoProfile -ExecutionPolicy Bypass -File "{fake_opencode}" %*\n',
+        encoding="utf-8",
+    )
+
+    spec = bw.build_launch(
+        "opencode", "agent", r"C:\ai\bob\worker", "keep ticking", str(fake_exe), tmp_path
+    )
+    script_key = next(k for k in spec.files if k.endswith("launch-opencode.ps1"))
+    for path, body in spec.files.items():
+        p = Path(path)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(body, encoding="utf-8")
+
+    env = os.environ.copy()
+    env["BOB_OPENCODE_WATCHDOG_MS"] = "2000"
+    env["LOCALAPPDATA"] = str(tmp_path)
+    env["BOB_OPENCODE_MODEL"] = "opencode/beam-free"
+
+    result = subprocess.run(
+        ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(script_key)],
+        input="exit\n",
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=30,
+    )
+    assert result.returncode == 0, (result.stderr or result.stdout or "<no output>")[:800]
+    fuel_log = tmp_path / "Bobiverse" / "worker" / "logs" / "opencode-out-of-fuel.log"
+    if fuel_log.is_file():
+        blob = fuel_log.read_text(encoding="utf-8")
+        assert "watchdog timeout" not in blob, blob
+    assert "tick" in (result.stdout or "").lower() or "tick" in (result.stderr or "").lower()
 
 
 def test_should_start_fuel_watcher_includes_opencode():

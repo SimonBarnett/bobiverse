@@ -33,7 +33,7 @@ Workers still only inject lines **FROM Jeeves** addressed to that seat (`bob_wor
 | Ergo PASS | `<ai root>\bob\config\ergo.password` or `~\.grok\ergo\connect.password` |
 | NickServ SASL | `<ai root>\bob\home\nickserv.password` -> `BOB_IRC_SASL_USER=bob-{machine}` |
 | Service logon | `config\service.password` / `BOBIVERSE_SERVICE_PASSWORD` -> DPAPI `service.cred` |
-| Digest POST | none (no secret; the digest accepts machine ids on the roster Jeeves publishes). **FR #6141 / #6145:** ircBob ear owns fuel merge POSTs (`publish_local_peer_fuel`); fingerprint deltas (remaining / OpenCode pcent / Copilot `overage_fetched_at` / `grok_account`) POST within `BOB_EAR_DIGEST_FUEL_DELTA_S` (default 5s, `DIGEST_FUEL_MAX_LAG_S`). Unchanged fingerprints wait for heartbeat (`BOB_EAR_DIGEST_FUEL_S`, default 30s). Watch-BobTray gathers peer JSON for paint only. |
+| Digest POST | none (no secret; the digest accepts machine ids on the roster Jeeves publishes). **FR #6141 / #6145:** ircBob ear owns fuel merge POSTs (`publish_local_peer_fuel`); fingerprint deltas (remaining / OpenCode pcent / Copilot `overage_fetched_at` / `grok_account`) POST within `BOB_EAR_DIGEST_FUEL_DELTA_S` (default 5s, `DIGEST_FUEL_MAX_LAG_S`). Unchanged fingerprints wait for heartbeat (`BOB_EAR_DIGEST_FUEL_S`, default 30s). Watch-BobTray gathers peer JSON for paint only. **FR #6144:** publishers send `cursor_known` (mirrors `weekly_known`); when false the chair clears Cursor label/pcent/pools and does not peer-refill them. Sand resets use `sand_period_end` (not xAI `period_end`). |
 
 Do **not** mint a fresh GUID for an already-registered NickServ account.
 
