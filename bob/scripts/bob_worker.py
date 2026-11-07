@@ -574,6 +574,154 @@ class Decision:
     reason: str
 
 
+def opencode_auth_file_present(env: Optional[dict] = None) -> bool:
+    """True when the OpenCode auth file exists. Never reads the body or any token."""
+    env = os.environ if env is None else env
+    home = (env.get("USERPROFILE") or env.get("HOME") or "").strip()
+    if not home:
+        return False
+    return (Path(home) / ".local" / "share" / "opencode" / "auth.json").is_file()
+
+
+EXPLICIT_AGENTS = ("grok", "cursor", "opencode")
+
+
+def normalize_explicit_agent(raw: Optional[str]) -> str:
+    """``''`` keeps automatic Grok → Cursor → OpenCode. Explicit ids never fall through."""
+    value = (raw or "").strip().lower()
+    if value in ("", "auto", "default"):
+        return ""
+    if value in EXPLICIT_AGENTS:
+        return value
+    raise ValueError(
+        "unknown --agent %r (expected grok, cursor, opencode, or omit for automatic selection)" % (raw,)
+    )
+
+
+def explicit_opencode_decision(
+    fuel: Fuel,
+    opencode_cmd: Optional[str],
+    *,
+    auth_present: bool,
+) -> Decision:
+    """Explicit OpenCode request. Never falls through to Grok or Cursor.
+
+    Requires a real ``opencode`` command and a real usable fuel reading.
+    Go-only fuel also requires the auth file to exist (presence only).
+    """
+    if not opencode_cmd:
+        return Decision("refuse", "explicit opencode: opencode.exe missing")
+    if not opencode_has_tokens(fuel):
+        return Decision(
+            "refuse",
+            "explicit opencode: no usable fuel (free=%s go=%s)"
+            % (fuel.opencode_free, fuel.opencode_go),
+        )
+    free_ok = fuel.opencode_free is not None and int(fuel.opencode_free) > 0
+    if not free_ok and not auth_present:
+        return Decision("refuse", "explicit opencode: auth.json absent (body not read)")
+    return Decision(
+        "opencode",
+        "explicit opencode (free=%s go=%s)" % (fuel.opencode_free, fuel.opencode_go),
+    )
+
+
+def explicit_agent_decision(
+    requested: str,
+    fuel: Fuel,
+    cursor_cmd: Optional[str],
+    grok_exe: Optional[str],
+    opencode_cmd: Optional[str],
+    *,
+    auth_present: bool,
+) -> Decision:
+    """One requested agent. ``refuse`` never starts a different agent."""
+    agent_id = normalize_explicit_agent(requested)
+    if agent_id == "grok":
+        if not grok_exe:
+            return Decision("refuse", "explicit grok: agent.exe missing")
+        if not grok_has_tokens(fuel):
+            return Decision(
+                "refuse",
+                "explicit grok: not available (pct=%s state=%s)" % (fuel.grok_pct, fuel.grok_state),
+            )
+        return Decision(
+            "grok",
+            "explicit grok (weekly pct=%s state=%s)" % (fuel.grok_pct, fuel.grok_state),
+        )
+    if agent_id == "cursor":
+        if not cursor_cmd:
+            return Decision("refuse", "explicit cursor: agent.cmd missing")
+        if not cursor_has_tokens(fuel):
+            return Decision(
+                "refuse",
+                "explicit cursor: no tokens (high=%s low=%s)" % (fuel.cursor_high, fuel.cursor_low),
+            )
+        return Decision(
+            "cursor",
+            "explicit cursor (high=%s low=%s)" % (fuel.cursor_high, fuel.cursor_low),
+        )
+    if agent_id == "opencode":
+        return explicit_opencode_decision(fuel, opencode_cmd, auth_present=auth_present)
+    return Decision("refuse", "explicit agent %s is not supported" % (requested,))
+
+
+def list_worker_agents(
+    fuel: Fuel,
+    cursor_cmd: Optional[str],
+    grok_exe: Optional[str],
+    opencode_cmd: Optional[str],
+    *,
+    auth_present: bool,
+) -> list:
+    """Systray Agents submenu. One row per agent, not per fuel pool."""
+    rows = [
+        {
+            "id": "auto",
+            "label": "Automatic",
+            "available": True,
+            "installed": True,
+            "reason": "Grok, then Cursor, then OpenCode",
+        }
+    ]
+    labels = (("grok", "Grok"), ("cursor", "Cursor"), ("opencode", "OpenCode"))
+    installed = {"grok": bool(grok_exe), "cursor": bool(cursor_cmd), "opencode": bool(opencode_cmd)}
+    for agent_id, label in labels:
+        dec = explicit_agent_decision(
+            agent_id, fuel, cursor_cmd, grok_exe, opencode_cmd, auth_present=auth_present
+        )
+        rows.append(
+            {
+                "id": agent_id,
+                "label": label,
+                "available": dec.kind == agent_id,
+                "installed": installed[agent_id],
+                "reason": dec.reason,
+            }
+        )
+    return rows
+
+
+def resolve_seat_decision(
+    requested: Optional[str],
+    dec: Decision,
+    fuel: Fuel,
+    cursor_cmd: Optional[str],
+    grok_exe: Optional[str],
+    opencode_cmd: Optional[str],
+    *,
+    auth_present: bool,
+) -> Decision:
+    """Apply an explicit agent request, else the automatic Grok → Cursor → OpenCode order."""
+    if normalize_explicit_agent(requested):
+        return explicit_agent_decision(
+            requested, fuel, cursor_cmd, grok_exe, opencode_cmd, auth_present=auth_present
+        )
+    if opencode_cmd and dec.kind in ("dialog", "none"):
+        return select_agent(fuel, cursor_cmd, grok_exe, opencode_cmd)
+    return dec
+
+
 def select_agent(
     fuel: Fuel,
     cursor_cmd: Optional[str],
@@ -881,6 +1029,7 @@ def describe_worker_exe_launch(
     work_root: str | Path | None = None,
     local_app_data: str | Path | None = None,
     source: str = "tray",
+    agent: str = "",
 ) -> dict:
     """Canonical bob-worker.exe process launch (FR #2413 / FR #2698).
 
@@ -906,6 +1055,9 @@ def describe_worker_exe_launch(
     )
     run_exe = base / "Bobiverse" / "worker" / "bin" / ("bob-worker-%s.exe" % digest)
     argv = ["--mode", mode_l, "--install-root", str(root)]
+    agent_l = normalize_explicit_agent(agent)
+    if agent_l:
+        argv += ["--agent", agent_l]
     mid = (machine_id or "").strip().lstrip("#")
     if mid:
         argv += ["--machine-id", mid]
@@ -941,6 +1093,7 @@ def describe_worker_exe_launch(
         "argv": argv,
         "cwd": str(cwd),
         "title": title,
+        "agent": agent_l,
     }
     if icon is not None:
         out["icon"] = icon
@@ -8323,6 +8476,23 @@ def _choose(args, log: Log, folder: Path, mode: str):
     return dec, cursor_cmd, grok_exe, fuel
 
 
+def _explicit_refusal_exit(dec: Decision, log: Log, mode: str) -> Optional[int]:
+    """Show an explicit refusal. Never starts another agent."""
+    if dec.kind != "refuse":
+        return None
+    log(f"select[{mode}]: refused - {dec.reason}")
+    try:
+        sys.stdout = sys.__stdout__
+        sys.stderr = sys.__stderr__
+        ensure_console("Bob worker - refused")
+        print("\nBob worker: " + dec.reason + ".\nNot starting a different agent.\n")
+        if os.name == "nt":
+            time.sleep(8)
+    except Exception:
+        pass
+    return EXIT_NO_AGENT
+
+
 def run_plan(args, log: Log) -> int:
     folder = Path(args.install_root) / "plan"
     if not folder.is_dir():
@@ -8330,8 +8500,14 @@ def run_plan(args, log: Log) -> int:
         return EXIT_USAGE
     dec, cursor_cmd, grok_exe, fuel = _choose(args, log, folder, "plan")
     opencode_cmd = resolve_opencode_cmd()
-    if opencode_cmd and dec.kind in ("dialog", "none"):
-        dec = select_agent(fuel, cursor_cmd, grok_exe, opencode_cmd)
+    dec = resolve_seat_decision(
+        getattr(args, "agent", ""),
+        dec, fuel, cursor_cmd, grok_exe, opencode_cmd,
+        auth_present=opencode_auth_file_present(),
+    )
+    stopped = _explicit_refusal_exit(dec, log, "plan")
+    if stopped is not None:
+        return stopped
     secret = None
     kind = dec.kind
     if kind == "none":
@@ -8407,8 +8583,14 @@ def run_monitor(args, log: Log) -> int:
         return EXIT_USAGE
     dec, cursor_cmd, grok_exe, fuel = _choose(args, log, folder, "monitor")
     opencode_cmd = resolve_opencode_cmd()
-    if opencode_cmd and dec.kind in ("dialog", "none"):
-        dec = select_agent(fuel, cursor_cmd, grok_exe, opencode_cmd)
+    dec = resolve_seat_decision(
+        getattr(args, "agent", ""),
+        dec, fuel, cursor_cmd, grok_exe, opencode_cmd,
+        auth_present=opencode_auth_file_present(),
+    )
+    stopped = _explicit_refusal_exit(dec, log, "monitor")
+    if stopped is not None:
+        return stopped
     secret = None
     kind = dec.kind
     if kind == "none":
@@ -8513,8 +8695,14 @@ def run_maintenance(args, log: Log, *, spawn: Optional[Callable] = None, poll_s:
         return EXIT_USAGE
     dec, cursor_cmd, grok_exe, fuel = _choose(args, log, folder, "maintenance")
     opencode_cmd = resolve_opencode_cmd()
-    if opencode_cmd and dec.kind in ("dialog", "none"):
-        dec = select_agent(fuel, cursor_cmd, grok_exe, opencode_cmd)
+    dec = resolve_seat_decision(
+        getattr(args, "agent", ""),
+        dec, fuel, cursor_cmd, grok_exe, opencode_cmd,
+        auth_present=opencode_auth_file_present(),
+    )
+    stopped = _explicit_refusal_exit(dec, log, "maintenance")
+    if stopped is not None:
+        return stopped
     secret = None
     kind = dec.kind
     if kind == "none":
@@ -8609,8 +8797,14 @@ def run_agent(args, log: Log) -> int:
         return EXIT_USAGE
     dec, cursor_cmd, grok_exe, fuel = _choose(args, log, folder, "agent")
     opencode_cmd = resolve_opencode_cmd()
-    if opencode_cmd and dec.kind in ("dialog", "none"):
-        dec = select_agent(fuel, cursor_cmd, grok_exe, opencode_cmd)
+    dec = resolve_seat_decision(
+        getattr(args, "agent", ""),
+        dec, fuel, cursor_cmd, grok_exe, opencode_cmd,
+        auth_present=opencode_auth_file_present(),
+    )
+    stopped = _explicit_refusal_exit(dec, log, "agent")
+    if stopped is not None:
+        return stopped
     secret = None
     kind = dec.kind
     if kind == "none":
@@ -8994,6 +9188,11 @@ def worker_cap_refusal(procs: list, my_pid: int, *, for_mode: str = "agent") -> 
 def main(argv: Optional[list] = None) -> int:
     p = argparse.ArgumentParser(prog="bob-worker", description="Start ONE NEW agent (worker with IRC, plan, or Jeeves monitor) chosen by token availability.")
     p.add_argument("--mode", choices=("agent", "plan", "monitor", "maintenance"), default="agent")
+    p.add_argument(
+        "--agent",
+        default="",
+        help="explicit seat agent: grok, cursor, or opencode (omit for automatic Grok then Cursor then OpenCode)",
+    )
     p.add_argument("--install-root", default=DEFAULT_INSTALL_ROOT)
     p.add_argument(
         "--work-root",
@@ -9005,6 +9204,7 @@ def main(argv: Optional[list] = None) -> int:
     p.add_argument("--port", type=int, default=DEFAULT_PORT)
     p.add_argument("--no-tls", action="store_true", help="tests only")
     p.add_argument("--dry-run", action="store_true", help="print the agent selection as JSON and exit (starts nothing)")
+    p.add_argument("--list-agents", action="store_true", help="print installed agent choices as JSON and exit (starts nothing)")
     p.add_argument("--describe-launch", action="store_true", help="FR #2413/MRB #2417: print describe_worker_exe_launch JSON and exit (tray/CLI shared plan)")
     p.add_argument("--echo", action="store_true", help="also print the log to stdout")
     p.add_argument(
@@ -9014,6 +9214,14 @@ def main(argv: Optional[list] = None) -> int:
         help="seconds to hold inject/!bored after agent spawn (FR #955; default 60, or BOB_WORKER_STARTUP_GRACE_S)",
     )
     args = p.parse_args(argv)
+    try:
+        args.agent = normalize_explicit_agent(args.agent)
+    except ValueError as e:
+        try:
+            print(str(e), file=sys.stderr)
+        except Exception:
+            pass
+        return EXIT_USAGE
     if getattr(args, "describe_launch", False):
         try:
             plan = describe_worker_exe_launch(
@@ -9022,6 +9230,7 @@ def main(argv: Optional[list] = None) -> int:
                 args.machine_id or "",
                 work_root=(args.work_root or None),
                 source="cli",
+                agent=args.agent,
             )
         except ValueError as e:
             try:
@@ -9038,17 +9247,27 @@ def main(argv: Optional[list] = None) -> int:
         except ValueError:
             args.startup_grace_s = 60.0
     log = Log(_state_root() / "logs" / f"bob-worker-{args.mode}.log", echo=args.echo)
-    if args.dry_run:
+    if args.list_agents or args.dry_run:
         cc, ge, oe = resolve_cursor_cmd(), resolve_grok_exe(), resolve_opencode_cmd()
         fuel = read_fuel(Path(args.install_root))
-        dec = select_agent(fuel, cc, ge, oe)
+        auth_present = opencode_auth_file_present()
+        if args.list_agents:
+            print(json.dumps({
+                "agents": list_worker_agents(fuel, cc, ge, oe, auth_present=auth_present),
+            }, sort_keys=True))
+            return EXIT_OK
+        dec = select_agent(fuel, cc, ge)
+        dec = resolve_seat_decision(
+            args.agent, dec, fuel, cc, ge, oe, auth_present=auth_present
+        )
         if args.mode == "plan":
             cwd = str(Path(args.install_root) / "plan")
         elif args.mode in ("monitor", "maintenance"):
             cwd = str(Path(args.work_root) if args.work_root else _default_jeeves_root(Path(args.install_root)))
         else:
             cwd = str(Path(args.install_root) / "worker")
-        print(json.dumps({"decision": dec.kind, "reason": dec.reason, "cursor_cmd": bool(cc), "grok_exe": bool(ge),
+        print(json.dumps({"decision": dec.kind, "reason": dec.reason, "agent": args.agent or "auto",
+                          "cursor_cmd": bool(cc), "grok_exe": bool(ge),
                           "opencode_cmd": bool(oe), "fuel": fuel.__dict__, "cwd": cwd, "mode": args.mode}))
         return EXIT_OK
     # FR #2522 / Simon: ONLY mode=agent is capped. Plan + maintenance (+ monitor) start freely on top of 2 workers.

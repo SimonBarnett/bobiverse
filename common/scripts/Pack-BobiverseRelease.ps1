@@ -104,6 +104,11 @@ function Stage-Product([string]$Name) {
     New-Item -ItemType Directory -Force -Path "$stage\scripts", "$stage\docs", "$stage\.grok\skills", "$stage\src", "$stage\config", "$stage\third_party\nssm\win64" | Out-Null
     # t773u: the flat staged scripts\ is the UNION of common\scripts + jeeves\scripts + bob\scripts + airc\scripts.
     Copy-BobiverseRepoDirs -Root $RepoRoot -Sub 'scripts' -Dest (Join-Path $stage 'scripts')
+    # Flat scripts\opencode_fuel.py comes from common\scripts (Get-BobOpencodeFuel import).
+    $ocFuel = Join-Path $stage 'scripts\opencode_fuel.py'
+    if (-not (Test-Path -LiteralPath $ocFuel -PathType Leaf)) {
+        throw 'bobiverse pack missing scripts\opencode_fuel.py (common\scripts union)'
+    }
     # Issue #2: do not ship __pycache__ (self-copy / heat noise)
     Get-ChildItem -Path (Join-Path $stage 'scripts') -Recurse -Directory -Filter '__pycache__' -ErrorAction SilentlyContinue |
         Remove-Item -Recurse -Force -ErrorAction SilentlyContinue

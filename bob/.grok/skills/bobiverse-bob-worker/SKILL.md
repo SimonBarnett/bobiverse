@@ -50,12 +50,14 @@ click = one `bob-worker.exe` = one window. `Plan` is the same (`--mode plan`, no
 * Ctrl+C is the agent's own key (the exe ignores it). The relay types into this same console's input, so you can also type in the window yourself.
 * The Grok key prompt (when no tokens remain) appears **inside this same window**, input hidden - no dialog.
 
-## Which agent starts - automatic, by token availability (never a menu choice)
+## Which agent starts - automatic by default; Agents menu can request one
 
 1. **Grok** `agent.exe` (`%USERPROFILE%\.grok\bin\agent.exe`) when the local weekly reading (`unified.jsonl`, Grok 1.0.41 may report no % but a verified
    local login + current weekly period = available) shows tokens, **or when the Grok reading is unknown** (FR #3997: unknown counts as available for seat start; mid-job still uses explicit exhausted only, FR #3923).
 2. else **Cursor** `agent.cmd` (`%LOCALAPPDATA%\cursor-agent\agent.cmd`) when the **high-cost-models OR the auto (low-cost) pool** has more than 0 % left.
 3. else **OpenCode** `opencode.exe` when free or Go fuel has more than 0 % left (FR #6120). The OpenCode model is chosen from per-model fuel readings in fallback order.
+
+The tray **Agents** menu lists Automatic plus Grok, Cursor, and OpenCode. Automatic is the order above. Any other row passes `--agent grok|cursor|opencode` and starts only that agent. If its command is missing, or OpenCode has no real usable fuel (Go-only also needs `auth.json` present, body never read), the worker refuses and does not start Grok or Cursor instead. Preview: `bob-worker.exe --list-agents --install-root <ai root>\bob`. One explicit seat: `bob-worker.exe --mode agent --agent opencode --install-root <ai root>\bob --machine-id <machine>` after rebuilding `bob-worker.exe`. Fuel helper on disk is `scripts\opencode_fuel.py`.
 4. else a **prompt in the worker window** asks for an `XAI_API_KEY` for this start only (hidden input): kept in memory, handed to the child's environment, never written to disk, never printed or
    logged. Cancel = nothing starts (exit 4).
 

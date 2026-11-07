@@ -46,6 +46,17 @@ def assert_opencode_layout(root: Path) -> None:
         raise AssertionError("FR #6159 OpenCode layout missing: " + ", ".join(missing))
 
 
+def test_pack_union_fails_closed_without_opencode_fuel_helper():
+    """Installed fuel helper is scripts/opencode_fuel.py from the common\\scripts union."""
+    pack = (ROOT / "common" / "scripts" / "Pack-BobiverseRelease.ps1").read_text(encoding="utf-8-sig")
+    assert "Copy-BobiverseRepoDirs -Root $RepoRoot -Sub 'scripts'" in pack
+    assert "bobiverse pack missing scripts\\opencode_fuel.py" in pack
+    assert "opencode_fuel.py" not in pack[pack.index("/XF"):pack.index("/XF") + 80] if "/XF" in pack else True
+    assert OPENCODE_FUEL_PY.is_file()
+    text = OPENCODE_FUEL_PY.read_text(encoding="utf-8")
+    assert "def fuel_from_stats" in text or "def fuel_from_windowed_stats" in text
+
+
 def test_fr6159_source_assets_present():
     assert AGENT_FUEL.is_file()
     assert OPENCODE_FUEL_PS1.is_file()

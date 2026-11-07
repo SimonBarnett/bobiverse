@@ -200,12 +200,15 @@ def engine_alive(qdir, now: float | None = None, max_age: float = ENGINE_ALIVE_M
         return False
 
 
-def write_request(qdir, mode: str, by: str, kind: str, now: float | None = None) -> str:
+def write_request(qdir, mode: str, by: str, kind: str, now: float | None = None, agent: str = "") -> str:
     now = time.time() if now is None else now
     rid = time.strftime("%Y%m%d-%H%M%S", time.gmtime(now)) + "-" + uuid.uuid4().hex[:6]
     d = Path(qdir)
     d.mkdir(parents=True, exist_ok=True)
     body = {"id": rid, "mode": mode, "by": by, "kind": kind, "ts": int(now), "expires": int(now + REQUEST_TTL_S)}
+    picked = (agent or "").strip().lower()
+    if picked and picked != "auto":
+        body["agent"] = picked
     tmp = d / f".req-{rid}.tmp"
     tmp.write_text(json.dumps(body), encoding="utf-8")
     os.replace(tmp, d / f"req-{rid}.json")          # atomic: the tray never reads a half-written file

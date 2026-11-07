@@ -14,12 +14,10 @@ INSTALL = ROOT / "bob" / "scripts" / "Install-Bob.ps1"
 
 def test_fr2523_tray_agent_click_uses_bob_worker_not_watch():
     text = TRAY.read_text(encoding="utf-8")
-    # Top-level Agent menu must start bob-worker (t762u).
+    # Agents submenu starts bob-worker; Plan stays a separate click.
     assert "Start-BobTrayWorkerExe -Mode 'agent'" in text
-    assert re.search(
-        r"\$miAgents\s*=\s*\$menu\.Items\.Add\('Agent'\)\s*\n\$miAgents\.Add_Click\(\{\s*Start-BobTrayWorkerExe",
-        text,
-    )
+    assert "$menu.Items.Add('Agents')" in text
+    assert "$menu.Items.Add('Plan')" in text
 
 
 def test_fr2523_start_watch_gated_when_bob_worker_active():

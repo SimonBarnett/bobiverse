@@ -285,6 +285,17 @@ def test_ear_pm_gets_a_pm_reply_and_ignores_itself_and_chair_ears(bob, tmp_path)
     assert bob._maybe_startworker("Simon", "#marchhare", "hello", to_channel=True, to_me=False) is False
 
 
+def test_write_request_records_explicit_opencode_agent(tmp_path):
+    qd = tmp_path / "run" / "startworker"
+    rid = sw.write_request(qd, "agent", "Simon", "owner", agent="opencode")
+    body = json.loads((qd / f"req-{rid}.json").read_text(encoding="utf-8"))
+    assert body["mode"] == "agent"
+    assert body["agent"] == "opencode"
+    rid_auto = sw.write_request(qd, "agent", "Simon", "owner")
+    auto = json.loads((qd / f"req-{rid_auto}.json").read_text(encoding="utf-8"))
+    assert "agent" not in auto
+
+
 def test_dispatch_runs_before_the_other_command_handlers():
     src = (REPO / "common" / "scripts" / "irc_agent.py").read_text(encoding="utf-8")
     assert src.index("self._maybe_startworker(src, target, body") < src.index("bobtalk.parse_recycle_command(body)")
