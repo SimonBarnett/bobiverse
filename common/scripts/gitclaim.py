@@ -9052,6 +9052,14 @@ RECYCLESEAT_IRC_COOLDOWN_S = BORED_LATENCY_HEAL_COOLDOWN_S
 RECYCLESEAT_ACK_WAIT_S = 180.0
 RECYCLESEAT_PENDING_STATE = "recycleseat-pending.json"
 
+# FR #6256: bounded idle-seat recovery when author-only MRB deadlock is remediable
+# by a fresh same-machine session (exact-seat self_mrb). Shares IRC cooldown with
+# bored-latency / recycleseat pending gates.
+IDLE_SEAT_RECOVERY_STATE = "idle-seat-recovery.json"
+IDLE_SEAT_RECOVERY_MAX_ATTEMPTS = 3
+IDLE_SEAT_RECOVERY_COOLDOWN_S = RECYCLESEAT_IRC_COOLDOWN_S
+WORKER_STATE_FRESH_S = 600.0
+
 
 def mrb_reviewer_deadlock_state_path(home: Path) -> Path:
     return _root(home) / MRB_REVIEWER_DEADLOCK_STATE
@@ -9425,6 +9433,329 @@ def _save_mrb_deadlock_state(home: Path, state: dict) -> None:
         pass
 
 
+
+def idle_seat_recovery_state_path(home: Path) -> Path:
+    return _root(home) / IDLE_SEAT_RECOVERY_STATE
+
+
+def _load_idle_seat_recovery_state(home: Path) -> dict:
+    path = idle_seat_recovery_state_path(home)
+    if not path.is_file():
+        return {"machines": {}}
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8-sig"))
+    except Exception:
+        return {"machines": {}}
+    if not isinstance(raw, dict):
+        return {"machines": {}}
+    machines = raw.get("machines")
+    if not isinstance(machines, dict):
+        machines = {}
+    return {"machines": machines}
+
+
+def _save_idle_seat_recovery_state(home: Path, state: dict) -> None:
+    path = idle_seat_recovery_state_path(home)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        clean = {"machines": {}}
+        for key, val in (state.get("machines") or {}).items():
+            mid = bobreport.fold_machine_id(str(key or ""))
+            if not mid or not isinstance(val, dict):
+                continue
+            clean["machines"][mid] = {
+                "attempts": int(val.get("attempts") or 0),
+                "window_ts": float(val.get("window_ts") or 0),
+                "last_ts": float(val.get("last_ts") or 0),
+                "last_nick": str(val.get("last_nick") or ""),
+                "last_sig": str(val.get("last_sig") or ""),
+                "last_result": str(val.get("last_result") or ""),
+            }
+        tmp = path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(clean, indent=0) + "\n", encoding="utf-8")
+        os.replace(tmp, path)
+    except OSError:
+        pass
+
+
+def _coderabbit_hold_stamp(row: dict, now: float) -> bool:
+    """True when the row is stamped as waiting on CodeRabbit (no live API)."""
+    if not isinstance(row, dict):
+        return False
+    st = str(row.get("coderabbit") or "").strip().lower()
+    if st in ("pending", "waiting", "hold"):
+        return True
+    # Stamped wait window without a terminal outcome.
+    if st in ("", "off", "ready", "failed", "timeout", "absent"):
+        return False
+    try:
+        since = float(row.get("coderabbit_wait_since") or 0)
+    except (TypeError, ValueError):
+        since = 0.0
+    return bool(since and (float(now) - since) >= 0 and st not in ("ready", "failed", "timeout"))
+
+
+def worker_evidence_fresh(
+    home: Path,
+    nick: str,
+    now: float,
+    *,
+    last_activity: dict | None = None,
+    max_age_s: float | None = None,
+) -> bool:
+    """FR #6256: trust per-seat activity, never machine lastSeen alone."""
+    max_age = float(WORKER_STATE_FRESH_S if max_age_s is None else max_age_s)
+    canon = (canonical_worker_nick(nick) or nick or "").strip()
+    if not canon:
+        return False
+    ts = None
+    if isinstance(last_activity, dict):
+        for key in (canon, canon.lower(), nick, str(nick).lower()):
+            if key in last_activity and last_activity[key] not in (None, ""):
+                try:
+                    ts = float(last_activity[key])
+                    break
+                except (TypeError, ValueError):
+                    pass
+    if ts is None:
+        with contextlib.suppress(Exception):
+            ts = last_worker_activity(home, canon)
+    if ts is None:
+        # Digest worker_list updated= is seat evidence; machines[].lastSeen is not.
+        with contextlib.suppress(Exception):
+            import datetime as _dt
+
+            doc = bobreport.load_digest(_root(home))
+            parsed = bobreport.parse_seat_nick(canon)
+            if parsed:
+                mid, _pid = parsed
+                ent = (doc.get("machines") or {}).get(mid) or {}
+                for r in bobreport._coerce_worker_list(ent.get("worker_list")):
+                    if str(r.get("nick") or "").strip().lower() != canon.lower():
+                        continue
+                    raw = str(r.get("updated") or "").strip()
+                    if not raw:
+                        break
+                    try:
+                        if raw.endswith("Z"):
+                            raw = raw[:-1] + "+00:00"
+                        ts = _dt.datetime.fromisoformat(raw).timestamp()
+                    except Exception:
+                        ts = None
+                    break
+    if ts is None:
+        return False
+    age = float(now) - float(ts)
+    # Future stamps (clock skew / fixture mismatch) are not fresh evidence.
+    if age < 0:
+        return False
+    return age <= max_age
+
+
+def _seat_accepted_or_offered(home: Path, nick: str, *, accepted: list | None = None) -> bool:
+    canon = (canonical_worker_nick(nick) or nick or "").strip().lower()
+    if not canon:
+        return False
+    with contextlib.suppress(Exception):
+        if worker_working_on(home, nick):
+            return True
+    rows = accepted
+    if rows is None:
+        with contextlib.suppress(Exception):
+            doc = load_queue(home)
+            rows = list(doc.get("accepted") or [])
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+        by = (canonical_worker_nick(str(row.get("accepted_by") or "")) or str(row.get("accepted_by") or "")).strip().lower()
+        if by and by == canon:
+            return True
+        offered = (canonical_worker_nick(str(row.get("offered_to") or "")) or str(row.get("offered_to") or "")).strip().lower()
+        if offered and offered == canon:
+            return True
+    return False
+
+
+def author_only_recovery_blocked_reason(
+    home: Path,
+    nick: str,
+    info: dict,
+    now: float,
+    *,
+    last_activity: dict | None = None,
+    accepted: list | None = None,
+    cooldown_s: float | None = None,
+) -> str:
+    """Why FR #6256 must not !recycleseat this author-only idle seat ('' = ok)."""
+    canon = (canonical_worker_nick(nick) or nick or "").strip()
+    if not canon:
+        return "recycle_skipped:no_nick"
+    if _seat_accepted_or_offered(home, canon, accepted=accepted):
+        return "recycle_skipped:busy"
+    # Unlocked read: heal_mrb holds the queue lock; seat_is_out_of_fuel would nest-lock.
+    try:
+        if _seat_key(canon) in _load_seat_out_of_fuel_unlocked(home, now):
+            return "recycle_skipped:out_of_fuel"
+    except Exception:
+        pass
+    kind = ""
+    with contextlib.suppress(Exception):
+        kind = seat_agent_kind(home, canon)
+    if seat_skips_hostile_review(kind):
+        return "recycle_skipped:opencode_hostile"
+    rows = [r for r in (info.get("rows") or []) if isinstance(r, dict)]
+    remediable = [r for r in rows if not _coderabbit_hold_stamp(r, now)]
+    if rows and not remediable:
+        return "recycle_skipped:coderabbit_only"
+    if not worker_evidence_fresh(home, canon, now, last_activity=last_activity):
+        return "recycle_skipped:stale_worker"
+    cool = float(IDLE_SEAT_RECOVERY_COOLDOWN_S if cooldown_s is None else cooldown_s)
+    blocked = recycleseat_send_blocked_reason(home, canon, now=now, cooldown_s=cool)
+    if blocked:
+        return blocked
+    parsed = bobreport.parse_seat_nick(canon)
+    mid = bobreport.fold_machine_id(parsed[0]) if parsed else ""
+    if not mid:
+        return "recycle_skipped:no_machine"
+    st = _load_idle_seat_recovery_state(home)
+    ent = (st.get("machines") or {}).get(mid) or {}
+    attempts = int(ent.get("attempts") or 0)
+    window_ts = float(ent.get("window_ts") or 0)
+    # Reset attempt window 24h after the first sent in the window (skips must not extend it).
+    if window_ts and (float(now) - window_ts) >= 86400.0:
+        attempts = 0
+    if attempts >= int(IDLE_SEAT_RECOVERY_MAX_ATTEMPTS):
+        return "recycle_skipped:attempt_cap"
+    return ""
+
+
+def _pick_author_only_recovery_nick(info: dict) -> str:
+    idle = [
+        (canonical_worker_nick(n) or n or "").strip()
+        for n in (info.get("idle") or [])
+        if (canonical_worker_nick(n) or n or "").strip()
+    ]
+    idle = sorted({n for n in idle if n.lower() != "copilot"}, key=lambda n: n.lower())
+    return idle[0] if idle else ""
+
+
+def _record_idle_seat_recovery(
+    home: Path,
+    nick: str,
+    *,
+    now: float,
+    signature: str,
+    result: str,
+) -> None:
+    parsed = bobreport.parse_seat_nick(nick)
+    mid = bobreport.fold_machine_id(parsed[0]) if parsed else ""
+    if not mid:
+        return
+    st = _load_idle_seat_recovery_state(home)
+    machines = st.setdefault("machines", {})
+    ent = dict(machines.get(mid) or {})
+    window_ts = float(ent.get("window_ts") or 0)
+    attempts = int(ent.get("attempts") or 0)
+    if window_ts and (float(now) - window_ts) >= 86400.0:
+        attempts = 0
+        window_ts = 0.0
+    if result == "sent":
+        attempts += 1
+        window_ts = window_ts or float(now)
+    ent.update(
+        {
+            "attempts": attempts,
+            "window_ts": window_ts,
+            "last_ts": float(now),
+            "last_nick": nick,
+            "last_sig": str(signature or ""),
+            "last_result": str(result or ""),
+        }
+    )
+    machines[mid] = ent
+    _save_idle_seat_recovery_state(home, st)
+
+
+def maybe_recycle_author_only_idle_seat(
+    home: Path,
+    info: dict,
+    *,
+    now: float,
+    install_root=None,
+    last_activity: dict | None = None,
+    accepted: list | None = None,
+    cooldown_s: float | None = None,
+) -> list[str]:
+    """FR #6256: one bounded shop !recycleseat when a fresh session can clear self_mrb.
+
+    Keeps author/implementer provenance on the row. Never recycles for
+    CodeRabbit-only holds, stale worker evidence, OpenCode hostile-skip,
+    busy/out-of-fuel, or past the per-machine attempt cap.
+    """
+    if not info or info.get("kind") != "author_only":
+        return []
+    pick = _pick_author_only_recovery_nick(info)
+    if not pick:
+        return ["idle-recovery recycle_skipped:no_idle"]
+    reason = author_only_recovery_blocked_reason(
+        home,
+        pick,
+        info,
+        now,
+        last_activity=last_activity,
+        accepted=accepted,
+        cooldown_s=cooldown_s,
+    )
+    if reason:
+        _record_idle_seat_recovery(
+            home, pick, now=now, signature=str(info.get("signature") or ""), result=reason
+        )
+        return [f"idle-recovery {reason} seat={pick}"]
+    lines: list[str] = []
+    root = resolve_recycleseat_install_root(home, install_root)
+    try:
+        import recycleseat as _rs
+
+        rid = _rs.write_request(
+            _rs.queue_dir(root),
+            pick,
+            "jeeves",
+            "idle-seat-recovery",
+            now=now,
+        )
+        skip = enqueue_recycleseat_shop_only(home, pick)
+        if skip:
+            _record_idle_seat_recovery(
+                home,
+                pick,
+                now=now,
+                signature=str(info.get("signature") or ""),
+                result=str(skip),
+            )
+            lines.append(f"idle-recovery {skip} seat={pick} id={rid}")
+            return lines
+        _mark_recycleseat_sent(home, pick, now=now, rid=rid)
+        _record_idle_seat_recovery(
+            home,
+            pick,
+            now=now,
+            signature=str(info.get("signature") or ""),
+            result="sent",
+        )
+        lines.append(f"idle-recovery recycleseat={pick} id={rid}")
+    except Exception as exc:  # noqa: BLE001
+        _record_idle_seat_recovery(
+            home,
+            pick,
+            now=now,
+            signature=str(info.get("signature") or ""),
+            result=f"failed:{type(exc).__name__}",
+        )
+        lines.append(f"idle-recovery recycle_failed:{pick}:{type(exc).__name__}")
+    return lines
+
+
+
 def heal_mrb_reviewer_deadlock(
     home: Path,
     *,
@@ -9434,11 +9765,15 @@ def heal_mrb_reviewer_deadlock(
     now: float | None = None,
     locked_doc: dict | None = None,
     cooldown_s: float | None = None,
+    last_activity: dict | None = None,
+    accepted: list | None = None,
 ) -> list[str]:
-    """FR #5163: resolve idle-seat MRB reviewer deadlock.
+    """FR #5163 / #6256: resolve idle-seat MRB reviewer deadlock.
 
     1. Cross give-up: clear give-ups for idle non-author seats so an offer can proceed.
-    2. Author-only: flag MRBs (FR #5889); never !recycleseat.
+    2. Author-only: flag MRBs (FR #5889). When a fresh same-machine session would
+       clear exact-seat self_mrb, also issue one bounded shop-only !recycleseat
+       (FR #6256 idle-seat recovery). Never erase author/implementer provenance.
 
     Returns human-readable heal lines (empty when no action).
     """
@@ -9520,13 +9855,11 @@ def heal_mrb_reviewer_deadlock(
             n += 1
         if n:
             lines.append(
-                f"mrb-reviewer-deadlock author_only flagged={n} "
-                f"(no recycle; needs non-author seat)"
+                f"mrb-reviewer-deadlock author_only flagged={n}"
             )
         else:
             lines.append(
-                "mrb-reviewer-deadlock author_only flagged=0 "
-                "(no recycle; needs non-author seat)"
+                "mrb-reviewer-deadlock author_only flagged=0"
             )
         return n
 
@@ -9559,6 +9892,19 @@ def heal_mrb_reviewer_deadlock(
                     )
             else:
                 _flag_author_only(locked_doc, info)
+                lines.extend(
+                    maybe_recycle_author_only_idle_seat(
+                        home,
+                        info,
+                        now=now_f,
+                        install_root=install_root,
+                        last_activity=last_activity,
+                        accepted=accepted
+                        if accepted is not None
+                        else list(locked_doc.get("accepted") or []),
+                        cooldown_s=cool,
+                    )
+                )
             _stamp(info)
             return lines
 
@@ -9582,6 +9928,19 @@ def heal_mrb_reviewer_deadlock(
             else:
                 if _flag_author_only(doc, info):
                     _write_queue(queue_path(home), doc)
+                lines.extend(
+                    maybe_recycle_author_only_idle_seat(
+                        home,
+                        info,
+                        now=now_f,
+                        install_root=install_root,
+                        last_activity=last_activity,
+                        accepted=accepted
+                        if accepted is not None
+                        else list(doc.get("accepted") or []),
+                        cooldown_s=cool,
+                    )
+                )
             _stamp(info)
     except (TimeoutError, OSError, ValueError, json.JSONDecodeError):
         return lines
