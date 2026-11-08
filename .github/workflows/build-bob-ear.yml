@@ -19,6 +19,8 @@ jobs:
         shell: pwsh
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
       - uses: actions/setup-python@v5
         with:
@@ -31,7 +33,11 @@ jobs:
           Install-BobiversePythonDeps -Python (Get-Command python).Source
 
       - name: Confirm behavior files match 050ca9fa
+        env:
+          WORKFLOW_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
+          $head = (git rev-parse HEAD).Trim()
+          if ($head -ne $env:WORKFLOW_COMMIT) { throw "checkout $head is not $env:WORKFLOW_COMMIT" }
           $expected = "050ca9faa51728769780de2774df9fc7e440dfad"
           git fetch --no-tags --depth=1 origin $expected
           git diff --exit-code $expected -- `
@@ -45,6 +51,8 @@ jobs:
             bob/tray/src/BobBridge.psm1
 
       - name: Build with Build-BobEar.ps1
+        env:
+          WORKFLOW_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
           $root = (Get-Location).Path
           $out = Join-Path $env:RUNNER_TEMP "bob-ear-out"
@@ -61,7 +69,7 @@ jobs:
           Copy-Item -LiteralPath "$root\bob\docs\deploy-pool-monitor-manifest.txt" -Destination (Join-Path $stage "deploy-pool-monitor-manifest.txt")
           @(
             "behavior_source_sha=050ca9faa51728769780de2774df9fc7e440dfad"
-            "workflow_commit=$($env:GITHUB_SHA)"
+            "workflow_commit=$($env:WORKFLOW_COMMIT)"
             "exe_name=bob-ear.exe"
             "exe_sha256=$hash"
           ) | Set-Content -Encoding ascii (Join-Path $stage "provenance.txt")
