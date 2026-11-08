@@ -76,13 +76,22 @@ if (-not $RepoRoot -or -not (Test-Path -LiteralPath $RepoRoot)) {
 # FR #3289 start-up update policy (config\airc.json + env):
 #   sync_from_repo default OFF for MSI (unsigned main must not run as SYSTEM).
 #   self_update default ON (sha256-checked release MSI). Lock workstations set both false.
-#   BOBIVERSE_NO_UPDATE=1 skips both; BOBIVERSE_SYNC_FROM_REPO / BOBIVERSE_SELF_UPDATE override;
-#   BOB_AUTOUPDATE=0 skips self-update only.
+#   BOBIVERSE_NO_UPDATE=1 skips both (FR #6259: trimmed Process+Machine via Get-BobiverseNoUpdateReason);
+#   BOBIVERSE_SYNC_FROM_REPO / BOBIVERSE_SELF_UPDATE override; BOB_AUTOUPDATE=0 skips self-update only.
+$commonPs1 = Join-Path $scriptDir 'Bobiverse-Common.ps1'
+if (-not (Test-Path -LiteralPath $commonPs1)) {
+    # Checkout / sparse tree: common lives beside airc/, not staged into scripts/.
+    $commonPs1 = Join-Path (Split-Path -Parent (Split-Path -Parent $scriptDir)) 'common\scripts\Bobiverse-Common.ps1'
+}
+if (-not (Test-Path -LiteralPath $commonPs1)) {
+    throw "Bobiverse-Common.ps1 missing (looked in $scriptDir and repo common\\scripts)"
+}
+. $commonPs1
 function Get-AircStartUpdatePolicy {
     param([Parameter(Mandatory)][string]$InstallRoot)
     $syncOn = $false
     $selfOn = $true
-    if ($env:BOBIVERSE_NO_UPDATE -eq '1') {
+    if (Get-BobiverseNoUpdateReason -InstallRoot $InstallRoot) {
         return [pscustomobject]@{ SyncFromRepo = $false; SelfUpdate = $false }
     }
     $capPath = Join-Path $InstallRoot 'config\airc.json'
@@ -105,6 +114,12 @@ function Get-AircStartUpdatePolicy {
     return [pscustomobject]@{ SyncFromRepo = $syncOn; SelfUpdate = $selfOn }
 }
 $aircPolicy = Get-AircStartUpdatePolicy -InstallRoot $RepoRoot
+$noUpdateReason = Get-BobiverseNoUpdateReason -InstallRoot $RepoRoot
+if ($noUpdateReason) {
+    Write-Host ("INFO no-update-guard seen=1 effective=1 reason={0} sync=suppressed updater=suppressed" -f $noUpdateReason)
+} else {
+    Write-Host "INFO no-update-guard seen=0 effective=0"
+}
 Write-Host ("INFO sync-from-repo={0} (config)" -f $(if ($aircPolicy.SyncFromRepo) { 'on' } else { 'off' }))
 Write-Host ("INFO self-update={0} (config)" -f $(if ($aircPolicy.SelfUpdate) { 'on' } else { 'off' }))
 $sync = Join-Path $scriptDir 'Sync-BobiverseFromRepo.ps1'

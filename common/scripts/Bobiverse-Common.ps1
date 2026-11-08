@@ -9,6 +9,22 @@ function Test-BobiverseIsAdmin {
     $p = New-Object Security.Principal.WindowsPrincipal($id)
     return $p.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 }
+function Get-BobiverseNoUpdateReason {
+    <#
+      FR #6259: documented no-update guard BOBIVERSE_NO_UPDATE=1 (skips Sync + Update on service start).
+      Trim Process and Machine values: NSSM AppEnvironmentExtra / REG_MULTI_SZ often carry trailing CR/space,
+      and Start-Bob previously compared $env: exactly to "1" so Sync still ran while Update (which Trimmed)
+      skipped. Returns a non-secret reason string when the guard is effective; else $null.
+      Does not cover BOB_AUTOUPDATE=0 or config\autoupdate.disabled (those opt out of release Update only).
+    #>
+    param([string]$InstallRoot = '')
+    foreach ($scope in @('Process', 'Machine')) {
+        $n = [Environment]::GetEnvironmentVariable('BOBIVERSE_NO_UPDATE', $scope)
+        if ($n -and ($n.Trim() -eq '1')) { return 'BOBIVERSE_NO_UPDATE=1' }
+    }
+    return $null
+}
+
 
 function Protect-BobiverseSecretPath {
     <#
@@ -1664,7 +1680,7 @@ function Sync-BobiverseWorkTree {
     $res = [ordered]@{ Ok = $false; Pulled = $false; Bootstrapped = $false; Branch = ''; Reason = ''; Log = $log }
     function Done([string]$why) { $res.Reason = $why; return [pscustomobject]$res }
     try {
-        if ($env:BOBIVERSE_NO_UPDATE -eq '1') { return (Done 'BOBIVERSE_NO_UPDATE=1') }
+        if (Get-BobiverseNoUpdateReason -InstallRoot $InstallRoot) { return (Done 'BOBIVERSE_NO_UPDATE=1') }
         $git = if ($GitExe) { $GitExe } else { Resolve-BobiverseGitExe }
         if (-not $git) { return (Done 'git.exe missing') }
         if (-not $Remote) { $Remote = [string]$env:BOBIVERSE_REMOTE }

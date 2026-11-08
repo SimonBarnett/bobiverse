@@ -62,19 +62,26 @@ if (Test-Path -LiteralPath $nsFile) {
 #      installed version on any failure. BOBIVERSE_REPO (explicit dev override) syncs from that clone instead.
 #   2. release self-update (Update-BobiverseService.ps1): only when a GitHub release is newer than the VERSION now installed (the
 #      ff'd tree counts), so the MSI path stays the safety net for boxes where git is unavailable.
-#   Opt out of BOTH with BOBIVERSE_NO_UPDATE=1; of the release check only with BOB_AUTOUPDATE=0.
-$sync = Join-Path $scriptDir 'Sync-BobiverseFromRepo.ps1'
-if ((Test-Path -LiteralPath $sync) -and ($env:BOBIVERSE_NO_UPDATE -ne '1')) {
-    try { & $sync -Product bob -InstallRoot $InstallRoot }
-    catch { Write-Host "WARN sync-from-repo: $($_.Exception.Message)" }
-}
-# v0.1.17 self-update on service start: token-less GitHub latest-release check; when newer, a DETACHED
-# helper (scheduled task) downloads + sha256-verifies the MSI, replaces the install and rolls back on failure.
-# Never blocks or fails the start. Never touches Ergo. Opt out: BOB_AUTOUPDATE=0 (or BOBIVERSE_NO_UPDATE=1).
-$updater = Join-Path $scriptDir 'Update-BobiverseService.ps1'
-if (Test-Path -LiteralPath $updater) {
-    try { & $updater -Product bob -InstallRoot $InstallRoot -ServiceName ircBob }
-    catch { Write-Host "WARN self-update: $($_.Exception.Message)" }
+#   Opt out of BOTH with BOBIVERSE_NO_UPDATE=1 (FR #6259: trim Process+Machine via Get-BobiverseNoUpdateReason;
+#   suppress Sync AND Update invocation before either begins). Release-only opt out: BOB_AUTOUPDATE=0.
+$noUpdateReason = Get-BobiverseNoUpdateReason -InstallRoot $InstallRoot
+if ($noUpdateReason) {
+    Write-Host ("INFO no-update-guard seen=1 effective=1 reason={0} sync=suppressed updater=suppressed" -f $noUpdateReason)
+} else {
+    Write-Host "INFO no-update-guard seen=0 effective=0 sync=allowed updater=allowed"
+    $sync = Join-Path $scriptDir 'Sync-BobiverseFromRepo.ps1'
+    if (Test-Path -LiteralPath $sync) {
+        try { & $sync -Product bob -InstallRoot $InstallRoot }
+        catch { Write-Host "WARN sync-from-repo: $($_.Exception.Message)" }
+    }
+    # v0.1.17 self-update on service start: token-less GitHub latest-release check; when newer, a DETACHED
+    # helper (scheduled task) downloads + sha256-verifies the MSI, replaces the install and rolls back on failure.
+    # Never blocks or fails the start. Never touches Ergo. Opt out: BOB_AUTOUPDATE=0 (or BOBIVERSE_NO_UPDATE=1).
+    $updater = Join-Path $scriptDir 'Update-BobiverseService.ps1'
+    if (Test-Path -LiteralPath $updater) {
+        try { & $updater -Product bob -InstallRoot $InstallRoot -ServiceName ircBob }
+        catch { Write-Host "WARN self-update: $($_.Exception.Message)" }
+    }
 }
 
 # FR #1481 / MRB #1488: prefer bob-ear.exe *after* sync/self-update so a just-staged exe is seen.
