@@ -1,5 +1,8 @@
 # Isolated bob-ear.exe build. Not a release, MSI, install, or service start.
 # Build-BobEar.ps1 owns the PyInstaller command and the --help smoke check.
+# FR #6254: behavior_source_sha pins the eight pool-monitor files to d563eca67adf1f73213628d8eb4b2dc2f308b73c
+# (main merge of reviewed PR #6252 / head c91bfa596ce67925815568f2df748195a18abb12). Packaging commits
+# that only touch this workflow/manifest/tests stay ahead of that pin.
 name: build-bob-ear
 
 on:
@@ -7,6 +10,7 @@ on:
   pull_request:
     paths:
       - .github/workflows/build-bob-ear.yml
+      - bob/docs/deploy-pool-monitor-manifest.txt
 
 permissions:
   contents: read
@@ -33,13 +37,13 @@ jobs:
           . .\common\scripts\Bobiverse-Common.ps1
           Install-BobiversePythonDeps -Python (Get-Command python).Source
 
-      - name: Confirm behavior files match 99783eb
+      - name: Confirm behavior files match d563eca
         env:
           WORKFLOW_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
           $head = (git rev-parse HEAD).Trim()
           if ($head -ne $env:WORKFLOW_COMMIT) { throw "checkout $head is not $env:WORKFLOW_COMMIT" }
-          $expected = "99783eb90c23a9ee8bb9bbd326a6de0500de1d8f"
+          $expected = "d563eca67adf1f73213628d8eb4b2dc2f308b73c"
           git fetch --no-tags --depth=1 origin $expected
           git diff --exit-code $expected -- `
             common/scripts/bobreport.py `
@@ -69,7 +73,7 @@ jobs:
           Copy-Item -LiteralPath $exe -Destination (Join-Path $stage "bob-ear.exe")
           Copy-Item -LiteralPath "$root\bob\docs\deploy-pool-monitor-manifest.txt" -Destination (Join-Path $stage "deploy-pool-monitor-manifest.txt")
           @(
-            "behavior_source_sha=99783eb90c23a9ee8bb9bbd326a6de0500de1d8f"
+            "behavior_source_sha=d563eca67adf1f73213628d8eb4b2dc2f308b73c"
             "workflow_commit=$($env:WORKFLOW_COMMIT)"
             "exe_name=bob-ear.exe"
             "exe_sha256=$hash"
