@@ -152,6 +152,11 @@ try:
 except Exception:  # pragma: no cover
     opencode_fuel = None  # type: ignore
 
+try:
+    from opencode_seat_contract import probe_gh_auth, write_project_dir  # noqa: E402
+except ImportError:  # package import (bob.scripts.bob_worker)
+    from bob.scripts.opencode_seat_contract import probe_gh_auth, write_project_dir  # type: ignore  # noqa: E402
+
 DEFAULT_HOST = "irc.ntsa.uk"
 DEFAULT_PORT = 6697
 ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
@@ -1330,6 +1335,12 @@ def worker_prompt(worker_dir: str, home: str, machine: str, nick: str) -> str:
         f"One issue per issue: when MRB (or any worker) finds a twin/duplicate issue, close the later one and comment a reference to the first; never leave both open; done issues are closed too. "
         f"Skill-intake consolidation: when a worker takes an FR from skill intake (label:skill / harvest), it must close all open issues for that skill book (every harvest/skill issue targeting the same book), open one consolidated PR for them, and cite every issue it closes (Closes #N for each); no per-issue PRs for the same skill book; the worker closes the issues itself as part of DONE. "
         f"CAST IRON (FR #4843): never git checkout/switch/commit/merge in the install root ({Path(worker_dir).parent}); always `git -C <install> worktree add -b fr-N <job-wt> origin/main` (e.g. C:\\ai\\bob-wt-fr-<n> or %TEMP%\\bobiverse-fr-<n>). An install root left on fr-* means live seats read unreviewed skills. "
+        f"Windows search (FR #6240): use Get-ChildItem and Select-String. Do not run Unix grep or head. "
+        f"If gh says to run gh auth login, stop and report that. Do not search for tokens, do not read hosts.yml, and do not look in other profiles or password folders. "
+        f"Headless opencode run auto-rejects external_directory and has no --interactive flag. Do not pass --auto. "
+        f"Do not write an external_directory allow. A denial stays a denial. "
+        f"The worker records the assigned job worktree. If that folder is missing, this run is blocked, not finished. "
+        f"BOB_HOME may be empty. ACK/DONE go to $env:BOB_OUTBOX only. "
         f"Never print or store secrets."
     )
 
@@ -1584,6 +1595,8 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
         helper_path = _resolve_opencode_fuel_helper_path(cwd=cwd, install_root=install_root)
         # FR #6157: each opencode run emits turn_started / turn_ended into opencode-turns.jsonl
         # so BoredEmitter gets harvest-hold / done-miss / startup-ready parity with Grok.
+        # FR #6240: no external_directory allow. Job --dir comes from opencode-project-dir.txt.
+        job_file = str(Path(run_dir) / "opencode-project-dir.txt")
         files[lfile] = "\n".join([
             r"$ErrorActionPreference = 'Stop'",
             r"if (-not $env:BOB_OPENCODE_MODEL) { throw 'BOB_OPENCODE_MODEL is required (no exhausted glm-5.3 fallback)' }",
@@ -1604,11 +1617,33 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             r"    Add-Content -LiteralPath $turnsLog -Value $entry -ErrorAction SilentlyContinue",
             r"}",
             r"function Invoke-Opencode($line) {",
+            f"    $jobFile = '{esc(job_file)}'",
+            r"    $ocDir = ''",
+            r"    if (Test-Path -LiteralPath $jobFile) { $ocDir = ([IO.File]::ReadAllText($jobFile)).Trim() }",
+            r"    if ($ocDir) {",
+            r"        $norm = $ocDir.Replace('/','\')",
+            r"        $check = $norm",
+            r"        if (Test-Path -LiteralPath $ocDir) {",
+            r"            $item = Get-Item -LiteralPath $ocDir -Force",
+            r"            if ($item.Target) { foreach ($t in @($item.Target)) { $check = $check + ' ' + ([string]$t).Replace('/','\') } }",
+            r"        }",
+            r"        if ($check -match '(?i)(\.config\\gh|hosts\.yml|\.git-credentials|\\passwords|\.netrc)') {",
+            r"            Write-Output 'opencode-ready: blocked opencode_dir_forbidden. Next: the job worktree path is a credential path. Do not point OpenCode at a credential store.'",
+            r"            exit 4",
+            r"        }",
+            r"        if (-not (Test-Path -LiteralPath $ocDir -PathType Container)) {",
+            r"            Write-Output 'opencode-ready: blocked worktree_absent. Next: create the assigned job worktree (Get-BobiverseJobWorktreePath) or answer external_directory in interactive opencode (the TUI). opencode run auto-rejects that ask and has no --interactive flag. Do not pass --auto. This run is not a completed job.'",
+            r"            return",
+            r"        }",
+            r"        $argList = @('run', '--dir', $ocDir, '-m', $model, $line)",
+            r"    } else {",
+            r"        $argList = @('run', '-m', $model, $line)",
+            r"    }",
+            r"    if ($argList -contains '--auto') { throw 'opencode --auto is forbidden' }",
             r"    $script:ocTurnN++",
             r"    $turnN = $script:ocTurnN",
             r"    Write-OpencodeTurnMarker 'turn_started' $turnN",
             r"    try {",
-            r"    $argList = @('run', '-m', $model, $line)",
             r"""    $argStr = ($argList | ForEach-Object { if ($_ -match '[\s"]') { $escaped = $_ -replace '(\\*)"', '$1$1\"'; $escaped = $escaped -replace '(\\+)$', '$1$1'; '"' + $escaped + '"' } else { $_ } }) -join ' '""",
             r"    $proc = $null",
             r"    $stdout = ''",
@@ -7710,6 +7745,11 @@ class Supervisor:
         return worker_prompt(self.cwd, str(self.run_dir), self.machine, self.nick)
 
     def start_agent(self, note: str = "") -> bool:
+        if (self.kind or "").strip().lower() == "opencode":
+            blocked, msg = probe_gh_auth(subprocess.run)
+            if blocked:
+                self.log(msg)
+                return False
         with self._lock:
             if self._shutting:
                 return False
@@ -8084,6 +8124,18 @@ class Supervisor:
     def _inject_line(self, proc, line: str, *, on_failed=None, force_verify: bool = False, sync: bool | None = None) -> bool:
         if proc.poll() is not None:
             return False
+        if (self.kind or "").strip().lower() == "opencode" and self.run_dir and assign_job_ref(line):
+            try:
+                recorded = write_project_dir(self.run_dir, line, os.environ)
+                if recorded:
+                    self.log(f"opencode-ready: job worktree recorded {recorded}")
+                else:
+                    self.log(
+                        "opencode-ready: blocked worktree_base_unset. "
+                        "Next: set BOB_JOB_WORKTREE_BASE or BOB_BRIDGE_HOME. Do not pass --auto."
+                    )
+            except Exception as e:
+                self.log(f"opencode-ready: job dir not recorded {type(e).__name__}")
         if on_failed is None and assign_job_ref(line):
             on_failed = lambda l=line: self._inject_recovery().on_failed(l, attempt=1)
         kind_l = (self.kind or "").strip().lower()
