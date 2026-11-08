@@ -1500,11 +1500,22 @@ function Get-BobiverseJobWorktreeBase {
     }
     if (-not $chosen) {
         $dataRoot = Get-BobiverseDataDriveRoot -Disks $Disks -SystemDrive $SystemDrive
-        $chosen = [IO.Path]::Combine($dataRoot.TrimEnd('\'), 'ai', 'worktrees')
+        # FR #6257: TrimEnd('\') on 'C:\' yields 'C:'. Path.Combine('C:', 'ai', ...) is
+        # cwd-relative on that drive (Win32), so worker CWD became ...\bob\worker\ai\worktrees.
+        # Keep a trailing slash on drive-only roots before Combine.
+        $root = [string]$dataRoot
+        if ($root -match '^[A-Za-z]:$') { $root = $root + '\' }
+        elseif ($root -match '^[A-Za-z]:\\+$') { $root = $root.Substring(0, 2) + '\' }
+        else { $root = $root.TrimEnd('\') }
+        $chosen = [IO.Path]::Combine($root, 'ai', 'worktrees')
     }
     $full = [IO.Path]::GetFullPath($chosen)
     if (Test-BobiverseIsDriveRoot $full) {
         throw "FR #4988: job worktree base must not be a drive root ($full); use <drive>\\ai\\worktrees or set BOB_JOB_WORKTREE_BASE"
+    }
+    # FR #6257: default/override must never land under the live bob\worker seat CWD.
+    if ($full -match '(?i)[\\/]bob[\\/]worker([\\/]|$)') {
+        throw "FR #6257: job worktree base resolved under bob\worker ($full); refuse cwd-relative drive Combine"
     }
     if ($Create -and -not (Test-Path -LiteralPath $full)) {
         New-Item -ItemType Directory -Force -Path $full | Out-Null
