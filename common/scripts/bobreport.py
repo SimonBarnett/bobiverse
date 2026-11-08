@@ -4448,11 +4448,17 @@ def resolve_fuel_report_target(
 _last_post_outcome: dict = {}
 _last_fuel_publish_diag: dict = {}
 _last_xai_acquisition: dict = {}
+_last_opencode_acquisition: dict = {}
 
 
 def last_fuel_publish_diag() -> dict:
     """Last ear fuel publish attempt. No payload values, no secrets."""
     return dict(_last_fuel_publish_diag)
+
+
+def last_opencode_acquisition() -> dict:
+    """Last OpenCode/Go zen acquisition attempt (FR #6263). No secrets."""
+    return dict(_last_opencode_acquisition)
 
 
 def format_fuel_publish_diag(diag: dict | None) -> str:
@@ -4466,7 +4472,9 @@ def format_fuel_publish_diag(diag: dict | None) -> str:
     return (
         "home_role={role} target_host={host} target_path={path} url_source={src} "
         "http_status={status} ack={ack} error={error} reason={reason} "
-        "pcent_keys={keys} provider_fields={prov} acquisition={acq} machine={machine} skipped={skipped}"
+        "pcent_keys={keys} provider_fields={prov} acquisition={acq} "
+        "opencode_acquisition={oc_acq} opencode_source={oc_src} "
+        "machine={machine} skipped={skipped}"
     ).format(
         role=d.get("home_role") or "unlocalized",
         host=d.get("target_host") or "-",
@@ -4479,6 +4487,8 @@ def format_fuel_publish_diag(diag: dict | None) -> str:
         keys=keys,
         prov=prov,
         acq=d.get("acquisition") or "-",
+        oc_acq=d.get("opencode_acquisition") or "-",
+        oc_src=d.get("opencode_source") or "-",
         machine=d.get("machine") or "-",
         skipped=d.get("skipped") or "-",
     )
@@ -5259,6 +5269,42 @@ def _read_opencode_pcent_from_helper(
     )
 
 
+
+def resolve_opencode_go_api_key(
+    env: dict[str, str] | None = None,
+    *,
+    install_root: str | Path | None = None,
+) -> tuple[str, str]:
+    """Return (api_key, key_source) for Go zen usage (FR #6263).
+
+    key_source is ``env``, ``config-file``, or empty string when absent. Never logs the key.
+    Config file: ``<InstallRoot>\\config\\opencode-go.apikey`` (trimmed; CR/space OK).
+    """
+    e = os.environ if env is None else env
+    key = (e.get("BOB_OPENCODE_GO_API_KEY") or "").strip()
+    if key:
+        return key, "env"
+    root = (str(install_root) if install_root else (e.get("BOB_INSTALL_ROOT") or "")).strip()
+    if not root:
+        return "", ""
+    path = Path(root) / "config" / "opencode-go.apikey"
+    try:
+        if path.is_file():
+            raw = path.read_text(encoding="utf-8-sig")
+            key = (raw or "").strip()
+            if key:
+                return key, "config-file"
+    except OSError:
+        pass
+    return "", ""
+
+
+def _stamp_opencode_acquisition(**fields) -> None:
+    global _last_opencode_acquisition
+    clean = {k: v for k, v in fields.items() if k not in {"api_key", "key", "authorization", "secret"}}
+    _last_opencode_acquisition = dict(clean)
+
+
 def read_local_opencode_fuel_doc(
     env: dict[str, str] | None = None,
     *,
@@ -5274,7 +5320,7 @@ def read_local_opencode_fuel_doc(
     completed document and does not replace it with an empty shell.
     """
     e = os.environ if env is None else env
-    # FR #6248: service-owned official Go zen usage (fixture or Bearer key).
+    # FR #6248 / #6263: service-owned official Go zen usage (fixture or Bearer key).
     # Tray helper / handoff is not the acquisition path.
     zen_fixture = (e.get("BOB_OPENCODE_GO_USAGE_FIXTURE") or "").strip()
     if zen_fixture:
@@ -5289,10 +5335,19 @@ def read_local_opencode_fuel_doc(
                 status_i = 200
                 payload = zen_fixture
             read = of.interpret_go_zen_usage_response(status_i, payload)
-            return of.fuel_doc_from_go_zen_read(read)
+            doc = of.fuel_doc_from_go_zen_read(read)
+            kind = read.get("kind") if isinstance(read, dict) else "unavailable"
+            _stamp_opencode_acquisition(
+                kind=kind,
+                configured=True,
+                key_source="fixture",
+                source=of.GO_ZEN_USAGE_SOURCE,
+            )
+            return doc
         except Exception:
+            _stamp_opencode_acquisition(kind="unavailable", configured=True, key_source="fixture")
             return {}
-    api_key = (e.get("BOB_OPENCODE_GO_API_KEY") or "").strip()
+    api_key, key_source = resolve_opencode_go_api_key(e)
     if api_key:
         # FR #6248 / MRB #6252: Bearer zen fetch must honour opencode_fuel_cache_s
         # (digest fuel ticks every ~5s). Keep last good go-zen doc on failure.
@@ -5312,6 +5367,13 @@ def read_local_opencode_fuel_doc(
             and (ts - last_at) < cache_s
             and str(cached.get("source") or "") == of.GO_ZEN_USAGE_SOURCE
         ):
+            _stamp_opencode_acquisition(
+                kind=str(cached.get("provider_read") or "json"),
+                configured=True,
+                key_source=key_source,
+                source=of.GO_ZEN_USAGE_SOURCE,
+                cache="hit",
+            )
             return dict(cached)
         try:
             read = of.fetch_go_zen_usage(
@@ -5320,18 +5382,44 @@ def read_local_opencode_fuel_doc(
             )
             doc = of.fuel_doc_from_go_zen_read(read)
             kind = read.get("kind") if isinstance(read, dict) else None
+            _stamp_opencode_acquisition(
+                kind=kind or "unavailable",
+                configured=True,
+                key_source=key_source,
+                source=of.GO_ZEN_USAGE_SOURCE,
+                schema=(read or {}).get("schema") if isinstance(read, dict) else None,
+            )
             if kind == "json" and isinstance(doc, dict) and doc:
                 _opencode_fuel_cache["at"] = ts
                 _opencode_fuel_cache["doc"] = dict(doc)
                 _opencode_fuel_cache["value"] = _pcent_from_opencode_fuel_doc(doc)
                 return dict(doc)
-            if str(cached.get("source") or "") == of.GO_ZEN_USAGE_SOURCE:
+            # Failed provider read: keep last good when present; else return honest unknown doc.
+            if str(cached.get("source") or "") == of.GO_ZEN_USAGE_SOURCE and cached.get("provider_read") == "json":
                 return dict(cached)
+            if str(cached.get("source") or "") == of.GO_ZEN_USAGE_SOURCE:
+                # Prefer last good windows if any known meter exists.
+                wins = cached.get("windows") if isinstance(cached.get("windows"), dict) else {}
+                known = any(
+                    isinstance(wins.get(w), dict) and wins[w].get("status") in ("known", "exhausted")
+                    for w in ("rolling", "week", "month")
+                )
+                if known:
+                    return dict(cached)
             return dict(doc) if isinstance(doc, dict) else {}
         except Exception:
+            _stamp_opencode_acquisition(
+                kind="unavailable",
+                configured=True,
+                key_source=key_source,
+                source=of.GO_ZEN_USAGE_SOURCE,
+            )
             if str(cached.get("source") or "") == of.GO_ZEN_USAGE_SOURCE:
                 return dict(cached)
             return {}
+    # No Go key configured: fall through to helper/stats. Stamp missing_key when
+    # we are about to leave the zen path (FR #6263).
+    _stamp_opencode_acquisition(kind="missing_key", configured=False, key_source="")
     fixture = (e.get("BOB_OPENCODE_FUEL_FIXTURE") or "").strip()
     win_fixture = (e.get(OPENCODE_WINDOWS_FIXTURE_ENV) or "").strip()
     if fixture:
@@ -5828,6 +5916,8 @@ def publish_local_peer_fuel(
         "pcent_keys": [],
         "payload_keys": [],
         "provider_fields": [],
+        "opencode_acquisition": None,
+        "opencode_source": None,
         "target_host": None,
         "target_path": None,
         "url_source": None,
@@ -5869,6 +5959,11 @@ def publish_local_peer_fuel(
             peer = enrich_peer_with_opencode_pcent(peer, oc, wins)
         if isinstance(oc_doc, dict) and oc_doc.get("source"):
             _last_fuel_publish_diag["opencode_source"] = str(oc_doc.get("source"))
+        acq = last_opencode_acquisition()
+        if acq.get("kind"):
+            _last_fuel_publish_diag["opencode_acquisition"] = str(acq.get("kind"))
+        if acq.get("source") and not _last_fuel_publish_diag.get("opencode_source"):
+            _last_fuel_publish_diag["opencode_source"] = str(acq.get("source"))
     except Exception:
         pass
     # FR #6248: attach ear-owned grok_account (Redqueen publishes real X identity).
