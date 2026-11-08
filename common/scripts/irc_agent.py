@@ -882,6 +882,33 @@ def open_debug_log(home: Path, *, enabled: bool) -> Path | None:
     return path
 
 
+
+_SHOP_LINE_RESETS_BORED_RE = re.compile(
+    r"(?i)^(?:@?\S+[:,]\s*)?(?:ACK|DONE|NACK|GIVEUP)\b"
+)
+
+
+def safe_shop_line_resets_bored_clock(body: str) -> bool:
+    """FR #5203 / FR #6245: reset last_bored on shop verbs even if disk gitclaim lags.
+
+    Frozen bob-ear prefers InstallRoot\\scripts (FR #6237). A tip irc_agent can
+    call gitclaim.shop_line_resets_bored_clock while a pre-FR #5203 disk gitclaim
+    lacks the attribute; that AttributeError killed the reader (crash a5c0ad2b).
+    Prefer the live helper when present; otherwise use the same regex inline.
+    """
+    fn = getattr(gitclaim, "shop_line_resets_bored_clock", None)
+    if callable(fn):
+        try:
+            return bool(fn(body))
+        except Exception:  # noqa: BLE001 - stale or broken helper must not kill IRC
+            pass
+    text = (body or "").strip()
+    if not text:
+        return False
+    return bool(_SHOP_LINE_RESETS_BORED_RE.match(text))
+
+
+
 class Client:
     def __init__(self, args: argparse.Namespace) -> None:
         self.args = args
@@ -3730,7 +3757,7 @@ class Client:
             except Exception as exc:  # noqa: BLE001
                 info(f"WARN last-bored stamp {type(exc).__name__}")
             return True
-        if gitclaim.shop_line_resets_bored_clock(body):
+        if safe_shop_line_resets_bored_clock(body):
             try:
                 gitclaim.record_last_bored(self.home, src, now)
             except Exception as exc:  # noqa: BLE001
