@@ -953,7 +953,8 @@ function Format-BobOpencodeWindowLines {
         [switch]$Stale
     )
     $FreePct = ConvertTo-BobTrayIntOrNull $FreePct
-    $freeBit = if (Test-BobTrayRemainingKnown $FreePct) { ('{0}%' -f [int]$FreePct) } else { 'n/a' }
+    # Stale must not keep painting a previous 100% as the current free pool.
+    $freeBit = if ((-not $Stale) -and (Test-BobTrayRemainingKnown $FreePct)) { ('{0}%' -f [int]$FreePct) } else { 'n/a' }
     $ids = @('rolling', 'week', 'month')
     $winMap = @{}
     if ($Windows) {
@@ -1002,32 +1003,60 @@ function Format-BobOpencodeWindowLines {
             $limId = $id
         }
     }
-    $anyWinKnown = $false
+    # Missing windows still name Free and each Go window. A single "OpenCode n/a"
+    # with an empty line list is what the MarchHare card painted.
+    $goBit = if ($null -ne $limRem) { ('{0}%' -f [int]$limRem) } else { 'n/a' }
+    if ($limId) {
+        $limLabel = switch ($limId) { 'rolling' { 'rolling' } 'week' { 'weekly' } 'month' { 'monthly' } default { $limId } }
+        $goBit = ('{0} {1}' -f $limLabel, $goBit)
+    }
+    $summary = ('OpenCode  free {0} | go {1}' -f $freeBit, $goBit)
+    if ($Stale) { $summary = ('{0} [stale]' -f $summary) }
+    $freeHeading = ('free  {0}' -f $freeBit)
+    $windowsOut = [ordered]@{}
+    $bars = New-Object System.Collections.Generic.List[object]
+    $freeKnown = (-not $Stale) -and (Test-BobTrayRemainingKnown $FreePct)
+    $bars.Add([pscustomobject]@{
+        id = 'free'
+        heading = $freeHeading
+        known = [bool]$freeKnown
+        pct = $(if ($freeKnown) { [int]$FreePct } else { 0 })
+    })
     foreach ($id in $ids) {
         $rec = $winMap[$id]
-        if (-not $rec) { continue }
-        $st = ''
-        try { $st = ([string]$rec.status).ToLowerInvariant() } catch { }
-        if ($st -and $st -ne 'unknown') { $anyWinKnown = $true; break }
-    }
-    if (-not (Test-BobTrayRemainingKnown $FreePct) -and -not $anyWinKnown -and $null -eq $limRem) {
-        $summary = 'OpenCode  n/a'
-    } else {
-        $goBit = if ($null -ne $limRem) { ('{0}%' -f [int]$limRem) } else { 'n/a' }
-        if ($limId) {
-            $limLabel = switch ($limId) { 'rolling' { 'rolling' } 'week' { 'weekly' } 'month' { 'monthly' } default { $limId } }
-            $goBit = ('{0} {1}' -f $limLabel, $goBit)
+        if (-not $rec) {
+            $windowsOut[$id] = [pscustomobject]@{ status = 'unknown'; used_pct = $null; remaining_pct = $null; reset_label = $null }
+        } else {
+            $windowsOut[$id] = $rec
         }
-        $summary = ('OpenCode  free {0} | go {1}' -f $freeBit, $goBit)
-        if ($Stale) { $summary = ('{0} [stale]' -f $summary) }
+        $line = Format-BobOpencodeWindowLine -WindowId $id -Record $windowsOut[$id]
+        $st = ''
+        try { $st = ([string]$windowsOut[$id].status).ToLowerInvariant() } catch { }
+        $rem = ConvertTo-BobTrayIntOrNull $(try { $windowsOut[$id].remaining_pct } catch { $null })
+        $barKnown = $false
+        $barPct = 0
+        if ($st -eq 'exhausted' -and $null -eq $rem) { $rem = 0 }
+        if (($st -eq 'known' -or $st -eq 'exhausted') -and $null -ne $rem) {
+            $barKnown = $true
+            $barPct = [int]$rem
+        }
+        $bars.Add([pscustomobject]@{
+            id = $id
+            heading = [string]$line
+            known = [bool]$barKnown
+            pct = $barPct
+        })
     }
     return [pscustomobject]@{
         summary = $summary
         free_line = ('OpenCode free  {0}' -f $freeBit)
+        free_heading = $freeHeading
         window_lines = @($windowLines)
+        windows = [pscustomobject]$windowsOut
+        bars = @($bars.ToArray())
         limiting = $limId
         go_remaining = $limRem
-        free = $FreePct
+        free = $(if ($Stale) { $null } else { $FreePct })
     }
 }
 
@@ -1083,6 +1112,34 @@ function Format-BobOpencodePoolLine {
     $freeBit = if ($freeKnown) { ('{0}%' -f [int]$FreePct) } else { 'n/a' }
     $goBit = if ($goKnown) { ('{0}%' -f [int]$GoPct) } else { 'n/a' }
     return ('OpenCode  free {0} | go {1}' -f $freeBit, $goBit)
+}
+
+function Read-BobOpencodeLocalFuel {
+    <#
+      Last completed Get-BobOpencodeFuel.ps1 document (<root>\run\opencode-fuel.json).
+      The tray paints this when the public digest has no OpenCode pools. No credentials.
+    #>
+    $candidates = New-Object System.Collections.Generic.List[string]
+    if ($env:BOB_OPENCODE_FUEL_CACHE_FILE) { [void]$candidates.Add([string]$env:BOB_OPENCODE_FUEL_CACHE_FILE) }
+    if ($env:BOB_INSTALL_ROOT) { [void]$candidates.Add((Join-Path $env:BOB_INSTALL_ROOT 'run\opencode-fuel.json')) }
+    $dir = $PSScriptRoot
+    $guard = 0
+    while ($dir -and $guard -lt 8) {
+        [void]$candidates.Add((Join-Path $dir 'run\opencode-fuel.json'))
+        $parent = Split-Path -Parent $dir
+        if (-not $parent -or $parent -eq $dir) { break }
+        $dir = $parent
+        $guard++
+    }
+    foreach ($p in $candidates) {
+        if (-not $p) { continue }
+        if (-not (Test-Path -LiteralPath $p -PathType Leaf)) { continue }
+        try {
+            $raw = [System.IO.File]::ReadAllText($p)
+            if ($raw) { return ($raw | ConvertFrom-Json) }
+        } catch { }
+    }
+    return $null
 }
 
 function Get-BobOpencodePaintFromDigest {
@@ -3098,20 +3155,44 @@ function Get-BobTrayHover {
         else { $ghLine = 'GitHub issue post: not ready' }
     }
     # FR #6147: OpenCode free/go + Go rolling/weekly/monthly windows from digest.
+    # Digest miss falls through to the local helper cache. Null windows still
+    # format four pool rows (free + rolling/weekly/monthly) as n/a.
     $ocPaint = Get-BobOpencodePaintFromDigest -Digest $reportDigest -MachineId $machineId
     $ocStale = $false
     try { if ($reportDigest -and $reportDigest.stale) { $ocStale = $true } } catch { }
-    $ocPack = $null
-    if ($ocPaint.windows) {
-        $ocPack = Format-BobOpencodeWindowLines -FreePct $ocPaint.free -Windows $ocPaint.windows -Stale:$ocStale
-        $opencodeLine = [string]$ocPack.summary
-    } else {
-        $opencodeLine = Format-BobOpencodePoolLine -FreePct $ocPaint.free -GoPct $ocPaint.go
+    $digestFreeKnown = Test-BobTrayRemainingKnown (ConvertTo-BobTrayIntOrNull $ocPaint.free)
+    $digestGoKnown = Test-BobTrayRemainingKnown (ConvertTo-BobTrayIntOrNull $ocPaint.go)
+    if ((-not $ocPaint.windows) -and (-not $digestFreeKnown) -and (-not $digestGoKnown)) {
+        $localFuel = Read-BobOpencodeLocalFuel
+        if ($localFuel) {
+            $free = $ocPaint.free
+            $go = $ocPaint.go
+            $windows = $null
+            try { if ($null -ne $localFuel.free -and [string]$localFuel.free -ne '') { $free = $localFuel.free } } catch { }
+            try { if ($null -ne $localFuel.go -and [string]$localFuel.go -ne '') { $go = $localFuel.go } } catch { }
+            try { if ($localFuel.windows) { $windows = $localFuel.windows } } catch { }
+            $ocPaint = [pscustomobject]@{ free = $free; go = $go; windows = $windows }
+            $fetched = $null
+            try { $fetched = [string]$localFuel.fetched_at } catch { }
+            if (-not $fetched) { $ocStale = $true }
+            else {
+                try {
+                    $parsed = [datetime]::Parse($fetched, [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::RoundtripKind).ToUniversalTime()
+                    $age = ([datetime]::UtcNow - $parsed).TotalSeconds
+                    if ($age -lt -120 -or $age -gt 900) { $ocStale = $true }
+                } catch { $ocStale = $true }
+            }
+        }
     }
+    $ocPack = Format-BobOpencodeWindowLines -FreePct $ocPaint.free -Windows $ocPaint.windows -Stale:$ocStale
+    $opencodeLine = [string]$ocPack.summary
     $opencodeWindowLines = @()
-    if ($ocPack -and $ocPack.window_lines) { $opencodeWindowLines = @($ocPack.window_lines) }
-    # MRB #6232: prepend summary + window lines as one block (summary, rolling,
-    # weekly, monthly). Per-line prepend reversed the window order.
+    if ($ocPack.free_heading) { $opencodeWindowLines += [string]$ocPack.free_heading }
+    if ($ocPack.window_lines) { $opencodeWindowLines += @($ocPack.window_lines) }
+    $opencodeBars = @()
+    if ($ocPack.bars) { $opencodeBars = @($ocPack.bars) }
+    # MRB #6232: prepend summary + pool lines as one block (summary, free,
+    # rolling, weekly, monthly). Per-line prepend reversed the window order.
     $ocBlock = @()
     if ($opencodeLine) { $ocBlock += (('  {0}' -f $opencodeLine)) }
     foreach ($wl in @($opencodeWindowLines)) { if ($wl) { $ocBlock += (('  {0}' -f $wl)) } }
@@ -3169,11 +3250,12 @@ function Get-BobTrayHover {
         account_period_end = $(if ($cursorWeek -and $cursorWeek.period_end) { [string]$cursorWeek.period_end } else { $null })
         account_reset_label = $(if ($cursorWeek -and $cursorWeek.period_end) { Format-BobResetLabel -PeriodEnd $cursorWeek.period_end -FetchedAt $cursorWeek.fetched_at } else { $null })
         gh_posting          = $ghPosting
-        opencode_free       = $ocPaint.free
+        opencode_free       = $(if ($ocPack) { $ocPack.free } else { $ocPaint.free })
         opencode_go         = $(if ($ocPack -and $null -ne $ocPack.go_remaining) { $ocPack.go_remaining } else { $ocPaint.go })
         opencode_line       = $opencodeLine
-        opencode_windows    = $(if ($ocPaint.windows) { $ocPaint.windows } else { $null })
+        opencode_windows    = $(if ($ocPack -and $ocPack.windows) { $ocPack.windows } elseif ($ocPaint.windows) { $ocPaint.windows } else { $null })
         opencode_window_lines = @($opencodeWindowLines)
+        opencode_bars       = @($opencodeBars)
         copilot_pool        = $copilotPoolObj
         copilot_line        = $copilotLine
         copilot_stale_line  = $copilotStaleLine

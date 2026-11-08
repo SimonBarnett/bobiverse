@@ -4388,6 +4388,12 @@ OPENCODE_FUEL_CACHE_ENV = "BOB_OPENCODE_FUEL_CACHE_S"
 DEFAULT_OPENCODE_FUEL_CACHE_S = 30.0
 OPENCODE_FUEL_HELPER_TIMEOUT_ENV = "BOB_OPENCODE_FUEL_HELPER_TIMEOUT_S"
 DEFAULT_OPENCODE_FUEL_HELPER_TIMEOUT_S = 5.0
+# The ear fuel tick must not block. The helper itself runs ``opencode models``
+# plus two ``opencode stats`` windows (up to 25s each). Waiting the old 5s
+# killed that process before it printed JSON, so the digest stayed
+# free=null/go=null/windows=null. The helper runs in the background; this is
+# only how long a stuck child may live before it is killed.
+OPENCODE_FUEL_HELPER_DEADLINE_S = 120.0
 OPENCODE_WINDOWS_FIXTURE_ENV = "BOB_OPENCODE_WINDOWS_FIXTURE"
 _opencode_fuel_cache: dict[str, object] = {"at": 0.0, "doc": {}}
 # Back-compat alias used by older tests that poke the private cache name.
@@ -4396,9 +4402,25 @@ _opencode_pcent_cache = _opencode_fuel_cache
 
 def clear_opencode_pcent_cache() -> None:
     """Reset process OpenCode fuel cache (tests / forced refresh)."""
+    proc = _opencode_fuel_cache.get("proc")
+    if proc is not None:
+        try:
+            if proc.poll() is None:
+                proc.kill()
+        except Exception:
+            pass
+    stdout_path = _opencode_fuel_cache.get("stdout_path")
+    if isinstance(stdout_path, str) and stdout_path:
+        try:
+            os.unlink(stdout_path)
+        except OSError:
+            pass
     _opencode_fuel_cache["at"] = 0.0
     _opencode_fuel_cache["doc"] = {}
     _opencode_fuel_cache["value"] = {}
+    _opencode_fuel_cache["proc"] = None
+    _opencode_fuel_cache["proc_started"] = 0.0
+    _opencode_fuel_cache["stdout_path"] = ""
 
 
 def opencode_fuel_cache_s(env: dict[str, str] | None = None) -> float:
@@ -4539,6 +4561,10 @@ def _parse_opencode_helper_stdout(raw_out: str) -> dict:
                 out["limiting"] = str(doc.get("limiting"))
     elif doc.get("limiting") not in (None, ""):
         out["limiting"] = str(doc.get("limiting"))
+    if doc.get("fetched_at") not in (None, ""):
+        out["fetched_at"] = str(doc.get("fetched_at"))
+    if doc.get("read_state") not in (None, ""):
+        out["read_state"] = str(doc.get("read_state"))
     return out
 
 
@@ -4598,15 +4624,115 @@ def _read_opencode_fuel_doc_from_fixture(fixture: str) -> dict:
     return out
 
 
-def _read_opencode_fuel_doc_from_helper(
-    helper: Path, env: dict[str, str], timeout_s: float
-) -> dict:
-    try:
-        import subprocess
-    except ImportError:
+def _opencode_fuel_cache_file(
+    env: dict[str, str] | None, helper: Path | None = None
+) -> Path | None:
+    """Shared tray/ear cache. Only when an install root or explicit path is set.
+
+    A helper that merely lives in a temp directory must not create ``run/``
+    outside that test. The installed layout is ``<root>\\tools\\Get-BobOpencodeFuel.ps1``
+    writing ``<root>\\run\\opencode-fuel.json``.
+    """
+    e = os.environ if env is None else env
+    override = (e.get("BOB_OPENCODE_FUEL_CACHE_FILE") or "").strip()
+    if override:
+        return Path(override)
+    install = (e.get("BOB_INSTALL_ROOT") or "").strip()
+    if install:
+        return Path(install) / "run" / "opencode-fuel.json"
+    if helper is not None:
+        parent = helper.resolve().parent
+        if parent.name.lower() == "tools":
+            return parent.parent / "run" / "opencode-fuel.json"
+    return None
+
+
+def _opencode_fuel_doc_has_signal(doc: dict | None) -> bool:
+    """True when a fuel doc carries a real reading (not an all-unknown shell)."""
+    if not isinstance(doc, dict):
+        return False
+    if _pcent_from_opencode_fuel_doc(doc):
+        return True
+    wins = doc.get("windows")
+    if not isinstance(wins, dict):
+        return False
+    for rec in wins.values():
+        if not isinstance(rec, dict):
+            continue
+        status = str(rec.get("status") or "unknown").strip().lower()
+        if status not in ("unknown", ""):
+            return True
+        if rec.get("remaining_pct") not in (None, ""):
+            return True
+    return False
+
+
+def _load_opencode_fuel_disk(env: dict[str, str], helper: Path | None) -> dict:
+    path = _opencode_fuel_cache_file(env, helper)
+    if path is None or not path.is_file():
         return {}
     try:
-        proc = subprocess.run(
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return {}
+    return _parse_opencode_helper_stdout(text)
+
+
+def _store_opencode_fuel_doc(
+    doc: dict, ts: float, env: dict[str, str], helper: Path | None
+) -> None:
+    stored = dict(doc)
+    _opencode_fuel_cache["at"] = ts
+    _opencode_fuel_cache["doc"] = stored
+    _opencode_fuel_cache["value"] = _pcent_from_opencode_fuel_doc(stored)
+    path = _opencode_fuel_cache_file(env, helper)
+    if path is None:
+        return
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(".json.tmp")
+        tmp.write_text(
+            json.dumps(stored, sort_keys=True) + "\n", encoding="utf-8"
+        )
+        os.replace(tmp, path)
+    except OSError:
+        return
+
+
+def _drop_opencode_fuel_proc() -> None:
+    path = _opencode_fuel_cache.get("stdout_path")
+    _opencode_fuel_cache["proc"] = None
+    _opencode_fuel_cache["proc_started"] = 0.0
+    _opencode_fuel_cache["stdout_path"] = ""
+    if isinstance(path, str) and path:
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+
+
+def _start_opencode_fuel_helper(helper: Path, env: dict[str, str], now: float) -> bool:
+    """Start Get-BobOpencodeFuel.ps1 and return without waiting.
+
+    A 5s ``subprocess.run`` timeout killed ``opencode stats`` before the helper
+    printed JSON (three sequential CLI calls, 25s each). The ear tick only
+    polls. ``poll()`` returning immediately covers unit-test stubs.
+    """
+    try:
+        import subprocess
+        import tempfile
+    except ImportError:
+        return False
+    if _opencode_fuel_cache.get("proc") is not None:
+        return True
+    try:
+        fd, name = tempfile.mkstemp(prefix="oc-fuel-", suffix=".out")
+        os.close(fd)
+        fh = open(name, "w", encoding="utf-8")
+    except OSError:
+        return False
+    try:
+        proc = subprocess.Popen(
             [
                 "powershell.exe",
                 "-NoProfile",
@@ -4615,14 +4741,104 @@ def _read_opencode_fuel_doc_from_helper(
                 "-File",
                 str(helper),
             ],
-            capture_output=True,
-            text=True,
-            timeout=timeout_s,
+            stdout=fh,
+            stderr=subprocess.DEVNULL,
+            stdin=subprocess.DEVNULL,
             env={**dict(os.environ), **dict(env)},
         )
-    except (OSError, subprocess.TimeoutExpired, ValueError):
+    except (OSError, ValueError):
+        try:
+            fh.close()
+        except OSError:
+            pass
+        try:
+            os.unlink(name)
+        except OSError:
+            pass
+        return False
+    try:
+        fh.close()
+    except OSError:
+        pass
+    _opencode_fuel_cache["proc"] = proc
+    _opencode_fuel_cache["proc_started"] = now
+    _opencode_fuel_cache["stdout_path"] = name
+    return True
+
+
+def _take_opencode_fuel_helper(now: float) -> tuple[str, dict]:
+    """Poll the background helper.
+
+    Returns ``("idle", {})`` when nothing is running, ``("running", {})`` while
+    it is still working, ``("doc", parsed)`` when it has exited, or
+    ``("failed", {})`` when it was killed for exceeding the deadline.
+    """
+    proc = _opencode_fuel_cache.get("proc")
+    if proc is None:
+        return "idle", {}
+    started = float(_opencode_fuel_cache.get("proc_started") or now)
+    try:
+        code = proc.poll()
+    except Exception:
+        code = None
+    if code is None:
+        if (now - started) >= OPENCODE_FUEL_HELPER_DEADLINE_S:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+            _drop_opencode_fuel_proc()
+            return "failed", {}
+        return "running", {}
+    path = _opencode_fuel_cache.get("stdout_path")
+    text = ""
+    if isinstance(path, str) and path:
+        try:
+            text = Path(path).read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            text = ""
+    _drop_opencode_fuel_proc()
+    return "doc", _parse_opencode_helper_stdout(text)
+
+
+def _accept_opencode_fuel_doc(fresh: dict, cached: dict) -> dict:
+    """Keep the last real reading when a failed helper returns an empty shell.
+
+    A completed ``read_state=ok`` document is the new truth, even if some
+    windows are unknown. A missing binary must not wipe week/month numbers.
+    """
+    if not isinstance(fresh, dict):
+        return dict(cached) if isinstance(cached, dict) else {}
+    if (
+        not _opencode_fuel_doc_has_signal(fresh)
+        and _opencode_fuel_doc_has_signal(cached)
+        and str(fresh.get("read_state") or "") != "ok"
+    ):
+        return dict(cached)
+    return dict(fresh)
+
+
+def _read_opencode_fuel_doc_from_helper(
+    helper: Path, env: dict[str, str], timeout_s: float
+) -> dict:
+    """Back-compat wrapper. ``timeout_s`` is not a wait: the helper is polled.
+
+    The historical signature kept the short-timeout argument so older callers
+    still import. The ear path no longer blocks on it.
+    """
+    del timeout_s
+    now = time.time()
+    status, doc = _take_opencode_fuel_helper(now)
+    if status == "doc":
+        return doc
+    if status == "running":
         return {}
-    return _parse_opencode_helper_stdout(proc.stdout or "")
+    if not _start_opencode_fuel_helper(helper, env, now):
+        return {}
+    status, doc = _take_opencode_fuel_helper(now)
+    if status == "doc":
+        return doc
+    return {}
 
 
 def _read_opencode_pcent_from_fixture(fixture: str) -> dict[str, int]:
@@ -4648,8 +4864,10 @@ def read_local_opencode_fuel_doc(
     """Read full local OpenCode fuel doc (pcent + windows + limiting; FR #6147).
 
     Fixtures: ``BOB_OPENCODE_FUEL_FIXTURE`` (stats/rich JSON) and optional
-    ``BOB_OPENCODE_WINDOWS_FIXTURE`` (pure windows JSON). Helper path uses the
-    same TTL cache / short timeout as ``read_local_opencode_pcent``.
+    ``BOB_OPENCODE_WINDOWS_FIXTURE`` (pure windows JSON). The PowerShell helper
+    is started in the background and polled. The ear tick does not wait on
+    ``opencode stats``. A helper that is still running returns the last
+    completed document and does not replace it with an empty shell.
     """
     e = os.environ if env is None else env
     fixture = (e.get("BOB_OPENCODE_FUEL_FIXTURE") or "").strip()
@@ -4671,29 +4889,42 @@ def read_local_opencode_fuel_doc(
         last_val = _opencode_fuel_cache.get("value")
         last_doc = dict(last_val) if isinstance(last_val, dict) else {}
     cached = dict(last_doc) if isinstance(last_doc, dict) else {}
+    helper = _resolve_opencode_fuel_helper_ps1(e)
+    if not cached:
+        disk = _load_opencode_fuel_disk(e, helper)
+        if disk:
+            cached = disk
+            _opencode_fuel_cache["doc"] = dict(disk)
+            _opencode_fuel_cache["value"] = _pcent_from_opencode_fuel_doc(disk)
+
+    status, fresh = _take_opencode_fuel_helper(ts)
+    if status == "doc":
+        chosen = _accept_opencode_fuel_doc(fresh, cached)
+        _store_opencode_fuel_doc(chosen, ts, e, helper)
+        return dict(chosen)
+    if status == "running":
+        return dict(cached) if cached else {}
+    if status == "failed":
+        # Deadline kill: back off for one TTL, keep the last real document.
+        _opencode_fuel_cache["at"] = ts
+        return dict(cached) if cached else {}
+
     if not force and cache_s > 0 and last_at > 0 and (ts - last_at) < cache_s:
         return dict(cached)
 
-    helper = _resolve_opencode_fuel_helper_ps1(e)
     if helper is None:
         return dict(cached) if cached else {}
-
-    fresh = _read_opencode_fuel_doc_from_helper(
-        helper, dict(e), opencode_fuel_helper_timeout_s(e)
-    )
-    if fresh:
+    if not _start_opencode_fuel_helper(helper, dict(e), ts):
         _opencode_fuel_cache["at"] = ts
-        _opencode_fuel_cache["doc"] = dict(fresh)
-        _opencode_fuel_cache["value"] = _pcent_from_opencode_fuel_doc(fresh)
-        return dict(fresh)
-    # Timeout / empty: keep stale cache when present; stamp at so we do not
-    # re-hammer a hanging helper every 5s tick.
-    _opencode_fuel_cache["at"] = ts
-    if cached:
-        return dict(cached)
-    _opencode_fuel_cache["doc"] = {}
-    _opencode_fuel_cache["value"] = {}
-    return {}
+        return dict(cached) if cached else {}
+    status, fresh = _take_opencode_fuel_helper(ts)
+    if status == "doc":
+        chosen = _accept_opencode_fuel_doc(fresh, cached)
+        _store_opencode_fuel_doc(chosen, ts, e, helper)
+        return dict(chosen)
+    # Still running (live opencode) or failed to exit yet: do not stamp an
+    # empty document over the last reading, and do not block the tick.
+    return dict(cached) if cached else {}
 
 
 def read_local_opencode_pcent(

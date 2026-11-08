@@ -32,6 +32,7 @@ namespace BobDialogs
         public long CopilotFreshUntil = 0;
         public string OpencodeLine = "OpenCode  n/a";
         public List<string> OpencodeWindowLines = new List<string>();
+        public List<OpencodeBarRow> OpencodeBars = new List<OpencodeBarRow>();
         public List<StatusRow> Cursor = new List<StatusRow>(), Grok = new List<StatusRow>();
 
         static StatusRow ParseRow(Dictionary<string, object> d)
@@ -56,6 +57,12 @@ namespace BobDialogs
             string oc = Common.Str(d, "opencode_line"); if (oc.Length > 0) m.OpencodeLine = oc;
             IList ocw = Common.List(d.ContainsKey("opencode_window_lines") ? d["opencode_window_lines"] : null);
             if (ocw != null) foreach (object o in ocw) { string s = Convert.ToString(o); if (!string.IsNullOrEmpty(s)) m.OpencodeWindowLines.Add(s); }
+            IList ocb = Common.List(d.ContainsKey("opencode_bars") ? d["opencode_bars"] : null);
+            if (ocb != null)
+            {
+                foreach (OpencodeBarRow row in OpencodePaint.Rows(m.OpencodeLine, null, ocb))
+                    m.OpencodeBars.Add(row);
+            }
             string cp = Common.Str(d, "copilot_line"); if (cp.Length > 0) m.CopilotLine = cp;
             string cps = Common.Str(d, "copilot_stale_line"); if (cps.Length > 0) m.CopilotStaleLine = cps;
             m.CopilotFreshUntil = Common.Long(d, "copilot_fresh_until", 0);
@@ -201,14 +208,16 @@ namespace BobDialogs
             }
             // FR #6147 pool line + window lines + FR #6149 logo; FIX #6180 re-age Copilot with stale colour.
             y = Section(g, y, m.OpencodeLine, "", "opencode");
-            if (m.OpencodeWindowLines != null)
+            // Free plus Go rolling/weekly/monthly. Empty snapshot fields still draw
+            // four unknown tracks (known=false), never a 100% fill.
+            IList barSource = m.OpencodeBars != null && m.OpencodeBars.Count > 0 ? (IList)m.OpencodeBars : null;
+            foreach (OpencodeBarRow b in OpencodePaint.Rows(m.OpencodeLine, m.OpencodeWindowLines, barSource))
             {
-                foreach (string wl in m.OpencodeWindowLines)
-                {
-                    if (string.IsNullOrEmpty(wl)) continue;
-                    Draw(g, wl, fText, Fg, 32, y);
-                    y += 16;
-                }
+                StatusRow r = new StatusRow();
+                r.Heading = b.Heading ?? "";
+                r.Bar.Known = b.Known;
+                r.Bar.Pct = b.Known ? Math.Max(0, Math.Min(100, b.Pct)) : 0;
+                y = UsageRow(g, 32, y, r, 354);
             }
             string paintCopilot = SelectCopilotLine(m, DateTime.UtcNow);
             Color copilotFg = paintCopilot.StartsWith("Copilot  [stale", StringComparison.Ordinal) ? Red : Fg;
@@ -351,6 +360,8 @@ namespace BobDialogs
                 foreach (StatusRow r in m.Cursor) sb.AppendLine("C " + r.Heading);
                 foreach (StatusRow r in m.Grok) { sb.AppendLine("G " + r.Heading); foreach (string l in r.Lines) sb.AppendLine("W " + l); }
                 sb.AppendLine(m.OpencodeLine);
+                foreach (OpencodeBarRow b in OpencodePaint.Rows(m.OpencodeLine, m.OpencodeWindowLines, m.OpencodeBars))
+                    sb.AppendLine((b.Known ? "OB " : "OU ") + b.Heading + " pct=" + b.Pct.ToString());
                 sb.AppendLine(m.CopilotLine);
                 if (outFile.Length > 0) File.WriteAllText(outFile, sb.ToString(), new UTF8Encoding(false)); else Console.Write(sb.ToString());
                 return 0;

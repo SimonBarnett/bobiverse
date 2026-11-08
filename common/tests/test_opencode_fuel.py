@@ -793,6 +793,57 @@ def test_fr6147_normalize_fixture_reset_labels_and_exhausted_limits():
     assert "go weekly 0%" in paint["summary"]
 
 
+def test_null_runtime_keeps_free_and_go_windows_without_inventing_quota():
+    """The MarchHare snapshot shape: free=null, go=null, windows=null.
+
+    Pool rows must still exist. Unknown is n/a, not 100%, and rolling is not
+    relabelled "Starts on first use" when stats were never read. ``opencode
+    stats`` has no remaining-quota field and no 5-hour reset.
+    """
+    paint = of.format_opencode_paint_lines(None, None)
+    assert paint["summary"] == "OpenCode  free n/a | go n/a"
+    assert paint["free_remaining"] is None
+    assert paint["go_remaining"] is None
+    assert "100%" not in paint["summary"]
+    assert len(paint["window_lines"]) == 3
+    joined = "\n".join(paint["window_lines"])
+    assert "Starts on first use" not in joined
+    assert "reset " not in joined
+    assert all("n/a" in line for line in paint["window_lines"])
+    assert paint["windows"]["rolling"]["status"] == "unknown"
+    assert paint["windows"]["week"]["status"] == "unknown"
+    assert paint["windows"]["month"]["status"] == "unknown"
+    bars = of.opencode_pool_bars(None, None)
+    assert [b["id"] for b in bars] == ["free", "rolling", "week", "month"]
+    assert all(b["known"] is False for b in bars)
+    assert all(b["pct"] == 0 for b in bars)
+    assert all("100%" not in b["heading"] for b in bars)
+
+
+def test_known_windows_bars_use_remaining_not_unknown_hundred():
+    windowed = {
+        "week": {"costs": {"glm-5.3": 5.4}, "parse_success": True},
+        "month": {"costs": {"glm-5.3": 5.4}, "parse_success": True},
+    }
+    fuel = of.fuel_from_windowed_stats(windowed)
+    bars = of.opencode_pool_bars(None, fuel["windows"])
+    by_id = {b["id"]: b for b in bars}
+    assert by_id["free"]["known"] is False
+    assert by_id["rolling"]["known"] is False
+    assert "Starts on first use" in by_id["rolling"]["heading"]
+    assert by_id["week"]["known"] is True
+    assert by_id["week"]["pct"] == 28
+    assert by_id["month"]["known"] is True
+    assert by_id["month"]["pct"] == 64
+    stale = of.opencode_pool_bars(100, fuel["windows"], stale=True)
+    stale_by = {b["id"]: b for b in stale}
+    assert all(b["known"] is False for b in stale)
+    assert "100%" not in stale_by["free"]["heading"]
+    assert "[stale]" in stale_by["week"]["heading"]
+    assert "28%" not in stale_by["week"]["heading"]
+    assert "[stale]" in stale_by["month"]["heading"]
+
+
 def test_fr6147_stale_clears_known_values():
     win = of.normalize_go_windows({
         "rolling": {"status": "unstarted"},

@@ -87,4 +87,8 @@ rows with workers `{irc nick}: {doing|idle}`, one Copilot pool tile, alert and v
 
 ## OpenCode windows (FR #6147)
 
-Status snapshot may carry opencode_windows and opencode_window_lines (Go rolling/weekly/monthly used vs rem; unstarted rolling = Starts on first use). Summary opencode_line still paints free + limiting go. Unknown/stale stay n/a; never invent reset countdowns.
+Status snapshot carries `opencode_line`, `opencode_window_lines` and `opencode_bars` for **free** plus Go **rolling / weekly / monthly**. A digest with `opencode_windows=null` (the MarchHare card that showed only `[OC] OpenCode n/a`) still writes those four rows. Unknown bars are empty tracks (`known=false`); they are never filled as 100%. Stale clears the painted percent. Unstarted rolling (`Starts on first use`, no reset) is only used after a completed stats read. A missing helper result stays `unknown`.
+
+There is no OpenCode remaining-quota API. Free percent is 100 only when `opencode models` lists an uncapped free model; otherwise free stays null. Weekly and monthly percents are local `opencode stats --models --days 7|30` cost versus the hardcoded caps, not a provider balance. The 5-hour rolling window and any reset countdown are **not** in `opencode stats`. Reset text is shown only when a record already has `reset_label`.
+
+The ear must not wait on the helper: `Get-BobOpencodeFuel.ps1` runs three `opencode` calls (up to 25s each). `bobreport.py` starts it in the background and polls. The helper writes `<root>\run\opencode-fuel.json`. The tray reads that file when the public digest has no OpenCode pools. Packaging for a live card: rebuild `bob-status.exe` and `bob-tray.exe` (they compile `OpencodePaint.cs` + `BobStatus.cs`), and install `Get-BobTrayHover.ps1`, `BobTrayDialogs.ps1`, `Watch-BobTray.ps1`, `Get-BobOpencodeFuel.ps1`, `scripts\opencode_fuel.py`, and `scripts\bobreport.py` (the ear publisher; a tray-only copy leaves the digest empty).

@@ -811,28 +811,71 @@ def format_opencode_paint_lines(
                     windows[wid]["remaining_pct"] = None
                     windows[wid]["reset_label"] = None
     lim_id, lim_rem = limiting_go_window(windows)
-    free_bit = f"{int(free_remaining)}%" if free_remaining is not None else "n/a"
+    # Stale clears the painted percent. The caller still receives the raw value
+    # on ``free_remaining``; the line must not keep showing it as current.
+    free_bit = (
+        f"{int(free_remaining)}%" if free_remaining is not None and not stale else "n/a"
+    )
     window_lines = [format_go_window_line(wid, windows.get(wid)) for wid in GO_WINDOW_IDS]
-    if free_remaining is None and lim_rem is None and all(
-        str((windows.get(w) or {}).get("status")) in ("unknown",) for w in GO_WINDOW_IDS
-    ):
-        summary = "OpenCode  n/a"
-    else:
-        go_bit = f"{int(lim_rem)}%" if lim_rem is not None else "n/a"
-        if lim_id:
-            go_bit = f"{GO_WINDOW_LABELS.get(lim_id, lim_id)} {go_bit}"
-        summary = f"OpenCode  free {free_bit} | go {go_bit}"
-        if stale:
-            summary = f"{summary} [stale]"
+    # Missing upstream data still names Free and Go. Collapsing to one "OpenCode n/a"
+    # erased the pool rows on the tray (MarchHare snapshot windows=null).
+    go_bit = f"{int(lim_rem)}%" if lim_rem is not None else "n/a"
+    if lim_id:
+        go_bit = f"{GO_WINDOW_LABELS.get(lim_id, lim_id)} {go_bit}"
+    summary = f"OpenCode  free {free_bit} | go {go_bit}"
+    if stale:
+        summary = f"{summary} [stale]"
     return {
         "summary": summary,
         "free_line": f"OpenCode free  {free_bit}",
+        "free_heading": f"free  {free_bit}",
         "window_lines": window_lines,
         "windows": windows,
         "limiting": lim_id,
         "go_remaining": lim_rem,
         "free_remaining": free_remaining,
     }
+
+
+def opencode_pool_bars(
+    free_remaining: Optional[int],
+    windows: dict[str, dict] | None,
+    *,
+    stale: bool = False,
+) -> list[dict]:
+    """Status/TipForm bars for Free plus Go rolling/weekly/monthly.
+
+    ``known`` is false when the reading is missing. ``pct`` is remaining percent
+    and is ignored by the renderer unless ``known`` is true — unknown is never
+    painted as 100%. Rolling stays unknown here unless ``windows`` says otherwise;
+    ``opencode stats`` cannot supply the 5-hour window or a reset countdown.
+    """
+    paint = format_opencode_paint_lines(free_remaining, windows, stale=stale)
+    free_known = free_remaining is not None and not stale
+    free_bit = f"{int(free_remaining)}%" if free_known else "n/a"
+    bars: list[dict] = [
+        {
+            "id": "free",
+            "heading": f"free  {free_bit}",
+            "known": free_known,
+            "pct": int(free_remaining) if free_known else 0,
+        }
+    ]
+    win_map = paint["windows"] if isinstance(paint.get("windows"), dict) else {}
+    for wid, line in zip(GO_WINDOW_IDS, paint["window_lines"]):
+        rec = win_map.get(wid) if isinstance(win_map.get(wid), dict) else {}
+        status = str(rec.get("status") or "unknown")
+        rem = rec.get("remaining_pct")
+        known = status in ("known", "exhausted") and rem is not None
+        bars.append(
+            {
+                "id": wid,
+                "heading": line,
+                "known": known,
+                "pct": int(rem) if known else 0,
+            }
+        )
+    return bars
 
 
 def fuel_from_stats(stats: dict | None) -> dict:

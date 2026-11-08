@@ -2875,25 +2875,42 @@ function Rebuild-BobTrayTiles {
                 elseif ($null -ne $free) { $ocRight = ('{0}%' -f $free) }
             }
         } catch { }
-        # FR #6147: prefer Format-BobOpencodePoolLine / window lines when digest hover fields exist.
+        # FR #6147: always format Free + Go windows. Null windows still draw bars as n/a.
         $ocLine = [string]$OpencodeLine
         $ocWinLines = @($OpencodeWindowLines)
-        if ($OpencodeWindows -and (Get-Command Format-BobOpencodeWindowLines -ErrorAction SilentlyContinue)) {
+        $ocBars = @()
+        if (Get-Command Format-BobOpencodeWindowLines -ErrorAction SilentlyContinue) {
             try {
                 $pack = Format-BobOpencodeWindowLines -FreePct $OpencodeFree -Windows $OpencodeWindows
-                if (-not $ocLine) { $ocLine = [string]$pack.summary }
-                if ($ocWinLines.Count -eq 0 -and $pack.window_lines) { $ocWinLines = @($pack.window_lines) }
+                if ($pack.summary) { $ocLine = [string]$pack.summary }
+                $ocWinLines = @()
+                if ($pack.free_heading) { $ocWinLines += [string]$pack.free_heading }
+                if ($pack.window_lines) { $ocWinLines += @($pack.window_lines) }
+                if ($pack.bars) { $ocBars = @($pack.bars) }
                 if ($null -ne $pack.go_remaining) { $ocRight = ('{0}%' -f [int]$pack.go_remaining) }
             } catch { }
         }
         if (-not $ocLine) {
             try { $ocLine = Format-BobOpencodePoolLine -FreePct $OpencodeFree -GoPct $OpencodeGo -Windows $OpencodeWindows } catch { $ocLine = '' }
         }
-        if ($ocLine) { $ocTitle = $ocLine }
+        if (-not $ocLine) { $ocLine = 'OpenCode  free n/a | go n/a' }
+        if ($ocBars.Count -eq 0 -and $ocWinLines.Count -eq 0) {
+            $ocWinLines = @('free  n/a', 'go rolling  n/a', 'go weekly  n/a', 'go monthly  n/a')
+        }
+        $ocTitle = $ocLine
         $y = Add-BobTrayFuelFamilyRow -X 0 -Y $y -Family 'opencode' -Title $ocTitle -RightText $ocRight
-        foreach ($wl in @($ocWinLines)) {
-            if (-not $wl) { continue }
-            $y = Add-BobTraySectionHeader -X 18 -Y $y -Title ([string]$wl)
+        if ($ocBars.Count -gt 0) {
+            foreach ($b in @($ocBars)) {
+                if (-not $b) { continue }
+                $barPct = $null
+                try { if ($b.known) { $barPct = [int]$b.pct } } catch { $barPct = $null }
+                $y = Add-BobTrayUsageRow -X 18 -Y $y -Heading ([string]$b.heading) -RemainingPct $barPct -BarWidth 336 -Icon $null
+            }
+        } else {
+            foreach ($wl in @($ocWinLines)) {
+                if (-not $wl) { continue }
+                $y = Add-BobTraySectionHeader -X 18 -Y $y -Title ([string]$wl)
+            }
         }
         $overLine = Format-BobTrayCursorOverspendLine -OverageGbp $AccountOverageGbp
         $overColor = [System.Drawing.Color]::FromArgb(248, 81, 73)
