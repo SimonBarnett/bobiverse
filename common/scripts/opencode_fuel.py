@@ -378,10 +378,32 @@ def parse_opencode_stats_text(text: str | None) -> dict:
     successful.
     """
     if not text or not isinstance(text, str):
-        return {"costs": {}, "free_models": [], "total_cost": None, "parse_success": False}
+        return {
+            "costs": {},
+            "free_models": [],
+            "total_cost": None,
+            "parse_success": False,
+            "sessions": None,
+            "messages": None,
+            "empty_local_history": False,
+        }
 
     text = _strip_ansi(text)
     lines = text.splitlines()
+    sessions: Optional[int] = None
+    messages: Optional[int] = None
+    for line in lines:
+        upper = line.upper()
+        if _is_table_row(line) and "MODEL USAGE" in upper:
+            break
+        if sessions is None:
+            found = re.search(r"\bSessions\s+(\d+)", line, re.IGNORECASE)
+            if found:
+                sessions = int(found.group(1))
+        if messages is None:
+            found = re.search(r"\bMessages\s+(\d+)", line, re.IGNORECASE)
+            if found:
+                messages = int(found.group(1))
 
     costs: dict[str, float] = {}
     free_models: list[str] = []
@@ -461,7 +483,20 @@ def parse_opencode_stats_text(text: str | None) -> dict:
             current_model = None
 
     parse_success = saw_table_marker or bool(costs) or bool(free_models) or total_cost is not None
-    return {"costs": costs, "free_models": free_models, "total_cost": total_cost, "parse_success": parse_success}
+    # Explicit 0 sessions and 0 messages with no model cost is this process's
+    # empty local history. It is not evidence the interactive user is unstarted.
+    empty_local_history = bool(
+        sessions == 0 and messages == 0 and not costs and not free_models
+    )
+    return {
+        "costs": costs,
+        "free_models": free_models,
+        "total_cost": total_cost,
+        "parse_success": parse_success,
+        "sessions": sessions,
+        "messages": messages,
+        "empty_local_history": empty_local_history,
+    }
 
 
 def parse_opencode_stats_text_or_json(raw: str | None) -> dict:
@@ -491,6 +526,9 @@ def parse_opencode_stats_text_or_json(raw: str | None) -> dict:
         "costs": parsed["costs"],
         "free_models": parsed["free_models"],
         "parse_success": parsed["parse_success"],
+        "sessions": parsed.get("sessions"),
+        "messages": parsed.get("messages"),
+        "empty_local_history": bool(parsed.get("empty_local_history")),
     }
 
 
@@ -757,13 +795,28 @@ def go_windows_from_windowed_stats(
     return windows
 
 
+def format_local_model_lines(local_costs: dict | None, *, window_label: str = "7d") -> list[str]:
+    """Per-model lines from ``opencode stats`` cost. Not a provider balance."""
+    if not isinstance(local_costs, dict) or not local_costs:
+        return []
+    rows: list[tuple[str, float]] = []
+    for slug, raw in local_costs.items():
+        try:
+            rows.append((str(slug), float(raw)))
+        except (TypeError, ValueError):
+            continue
+    rows.sort(key=lambda item: (-item[1], item[0]))
+    return [f"{slug}  {window_label} local ${cost:.2f}" for slug, cost in rows]
+
+
 def format_go_window_line(window_id: str, rec: dict | None) -> str:
     """One TipForm/Status line for a Go window (used vs remaining; honest n/a)."""
     label = GO_WINDOW_LABELS.get(window_id, window_id)
     rec = rec if isinstance(rec, dict) else {}
     status = str(rec.get("status") or "unknown")
     if status == "unstarted":
-        return f"go {label}  Starts on first use  (0% used)"
+        # No 5-hour sample. Do not claim 0% used.
+        return f"go {label}  not measured"
     if status == "unknown":
         return f"go {label}  n/a"
     used = rec.get("used_pct")
@@ -772,7 +825,8 @@ def format_go_window_line(window_id: str, rec: dict | None) -> str:
     if used is not None:
         bits.append(f"{int(used)}% used")
     if rem is not None:
-        bits.append(f"{int(rem)}% rem")
+        # Cost-versus-cap estimate, not a provider remaining balance.
+        bits.append(f"{int(rem)}% rem est")
     if not bits:
         mid = "n/a"
     else:
@@ -783,7 +837,7 @@ def format_go_window_line(window_id: str, rec: dict | None) -> str:
     if status == "stale":
         mid = f"{mid}  [stale]"
     if status == "exhausted" and rem is None:
-        mid = "100% used · 0% rem" + (f"  reset {reset}" if reset else "")
+        mid = "100% used · 0% rem est" + (f"  reset {reset}" if reset else "")
     return f"go {label}  {mid}"
 
 
@@ -823,7 +877,7 @@ def format_opencode_paint_lines(
     window_lines = [format_go_window_line(wid, windows.get(wid)) for wid in GO_WINDOW_IDS]
     # Missing upstream data still names Free and Go. Collapsing to one "OpenCode n/a"
     # erased the pool rows on the tray (MarchHare snapshot windows=null).
-    go_bit = f"{int(lim_rem)}%" if lim_rem is not None else "n/a"
+    go_bit = f"est {int(lim_rem)}%" if lim_rem is not None else "n/a"
     if lim_id:
         go_bit = f"{GO_WINDOW_LABELS.get(lim_id, lim_id)} {go_bit}"
     summary = f"OpenCode  free {free_bit} | go {go_bit}"
@@ -839,6 +893,13 @@ def format_opencode_paint_lines(
         "go_remaining": lim_rem,
         "free_remaining": free_remaining,
     }
+
+
+def local_cache_paint_stale(*, digest_stale: bool, local_windows_applied: bool) -> bool:
+    """Digest ``stale`` must not blank windows taken from a fresh local cache."""
+    if local_windows_applied:
+        return False
+    return bool(digest_stale)
 
 
 def opencode_pool_bars(
@@ -950,7 +1011,26 @@ def fuel_from_windowed_stats(windowed: dict[str, dict] | None) -> dict:
     wrapper and is not part of the windowed stats reading.
     """
     windowed = windowed if isinstance(windowed, dict) else {}
-    go_by_model = _go_models_remaining_for_windows(windowed)
+    explicit_empty = False
+    any_cost = False
+    local_costs: dict[str, float] = {}
+    sessions = None
+    messages = None
+    for wid, raw in windowed.items():
+        if not isinstance(raw, dict):
+            continue
+        costs = raw.get("costs") if isinstance(raw.get("costs"), dict) else {}
+        if costs:
+            any_cost = True
+            if wid == "week" or not local_costs:
+                local_costs = {str(k): float(v) for k, v in costs.items()}
+        if raw.get("empty_local_history"):
+            explicit_empty = True
+        if sessions is None and raw.get("sessions") is not None:
+            sessions = raw.get("sessions")
+            messages = raw.get("messages")
+    empty_history = explicit_empty and not any_cost
+    go_by_model = {} if empty_history else _go_models_remaining_for_windows(windowed)
     go_remaining: Optional[int] = None
     if go_by_model:
         go_remaining = max(go_by_model.values())
@@ -963,11 +1043,22 @@ def fuel_from_windowed_stats(windowed: dict[str, dict] | None) -> dict:
         ids = wstats.get("free_model_ids")
         if isinstance(ids, (list, tuple)):
             free_model_ids.extend(str(i) for i in ids)
-    windows = go_windows_from_windowed_stats(windowed)
+    if empty_history:
+        windows = {wid: _window_record("unknown") for wid in GO_WINDOW_IDS}
+        go_remaining = None
+    else:
+        windows = go_windows_from_windowed_stats(windowed)
     lim_id, _lim_rem = limiting_go_window(windows)
+    history = {
+        "sessions": sessions,
+        "messages": messages,
+        "empty": empty_history,
+    }
     return {
         FUEL_ID_FREE: free_remaining,
         FUEL_ID_GO: go_remaining,
+        "local_costs": local_costs,
+        "history": history,
         "models": go_by_model,
         "free_model_ids": list(dict.fromkeys(free_model_ids)),
         "windows": windows,

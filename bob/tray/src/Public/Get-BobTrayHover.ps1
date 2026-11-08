@@ -920,7 +920,7 @@ function Format-BobOpencodeWindowLine {
     try { if ($Record -and $Record.status) { $status = ([string]$Record.status).Trim().ToLowerInvariant() } } catch { }
     $dot = [string][char]0x00B7
     if ($status -eq 'unstarted') {
-        return ('go {0}  Starts on first use  (0% used)' -f $label)
+        return ('go {0}  not measured' -f $label)
     }
     if ($status -eq 'unknown' -or -not $Record) {
         return ('go {0}  n/a' -f $label)
@@ -933,7 +933,7 @@ function Format-BobOpencodeWindowLine {
     }
     $bits = @()
     if ($null -ne $used) { $bits += ('{0}% used' -f [int]$used) }
-    if ($null -ne $rem) { $bits += ('{0}% rem' -f [int]$rem) }
+    if ($null -ne $rem) { $bits += ('{0}% rem est' -f [int]$rem) }
     if ($bits.Count -eq 0) { $mid = 'n/a' } else { $mid = ($bits -join (' {0} ' -f $dot)) }
     $reset = $null
     try { if ($Record.reset_label) { $reset = [string]$Record.reset_label } } catch { }
@@ -1009,7 +1009,7 @@ function Format-BobOpencodeWindowLines {
     }
     # Missing windows still name Free and each Go window. A single "OpenCode n/a"
     # with an empty line list is what the MarchHare card painted.
-    $goBit = if ($null -ne $limRem) { ('{0}%' -f [int]$limRem) } else { 'n/a' }
+    $goBit = if ($null -ne $limRem) { ('est {0}%' -f [int]$limRem) } else { 'n/a' }
     if ($limId) {
         $limLabel = switch ($limId) { 'rolling' { 'rolling' } 'week' { 'weekly' } 'month' { 'monthly' } default { $limId } }
         $goBit = ('{0} {1}' -f $limLabel, $goBit)
@@ -1116,7 +1116,7 @@ function Format-BobOpencodePoolLine {
     if ($freeKnown -and [int]$FreePct -eq 100) { $freeBit = 'catalogue' }
     elseif ($freeKnown) { $freeBit = ('{0}%' -f [int]$FreePct) }
     else { $freeBit = 'n/a' }
-    $goBit = if ($goKnown) { ('{0}%' -f [int]$GoPct) } else { 'n/a' }
+    $goBit = if ($goKnown) { ('est {0}%' -f [int]$GoPct) } else { 'n/a' }
     return ('OpenCode  free {0} | go {1}' -f $freeBit, $goBit)
 }
 
@@ -3202,12 +3202,23 @@ function Get-BobTrayHover {
         try { if ($localFuel.windows) { $lwins = $localFuel.windows } } catch { }
         if ($lwins) {
             $ocPaint = [pscustomobject]@{ free = $lfree; go = $lgo; windows = $lwins }
+            # A stale digest flag must not blank week/month just taken from this cache.
+            $ocStale = $false
         }
     }
     $ocPack = Format-BobOpencodeWindowLines -FreePct $ocPaint.free -Windows $ocPaint.windows -Stale:$ocStale
     $opencodeLine = [string]$ocPack.summary
     $opencodeWindowLines = @()
     if ($ocPack.free_heading) { $opencodeWindowLines += [string]$ocPack.free_heading }
+    if ($localFresh -and $localFuel -and $localFuel.local_costs) {
+        foreach ($costProp in @($localFuel.local_costs.PSObject.Properties)) {
+            $usd = $null
+            try { $usd = [double]$costProp.Value } catch { $usd = $null }
+            if ($null -eq $usd) { continue }
+            $shown = $usd.ToString('0.00', [Globalization.CultureInfo]::InvariantCulture)
+            $opencodeWindowLines += ('{0}  7d local ${1}' -f [string]$costProp.Name, $shown)
+        }
+    }
     if ($ocPack.window_lines) { $opencodeWindowLines += @($ocPack.window_lines) }
     $opencodeBars = @()
     if ($ocPack.bars) { $opencodeBars = @($ocPack.bars) }

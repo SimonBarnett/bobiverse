@@ -286,6 +286,9 @@ def test_parse_opencode_stats_text_returns_none_on_failure():
         "free_models": [],
         "total_cost": None,
         "parse_success": False,
+        "sessions": None,
+        "messages": None,
+        "empty_local_history": False,
     }
     garbage = of.parse_opencode_stats_text("not a stats table")
     assert garbage["total_cost"] is None
@@ -341,6 +344,9 @@ def test_parse_opencode_stats_text_or_json_returns_empty_for_garbage():
         "costs": {},
         "free_models": [],
         "parse_success": False,
+        "sessions": None,
+        "messages": None,
+        "empty_local_history": False,
     }
 
 
@@ -767,7 +773,8 @@ def test_fr6147_go_windows_used_vs_remaining_and_unstarted_rolling():
     assert win["month"]["remaining_pct"] == 64
     assert fuel["limiting"] == "week"
     paint = of.format_opencode_paint_lines(100, win)
-    assert "Starts on first use" in paint["window_lines"][0]
+    assert "not measured" in paint["window_lines"][0]
+    assert "0% used" not in paint["window_lines"][0]
     assert "72% used" in paint["window_lines"][1]
     assert "28% rem" in paint["window_lines"][1]
     assert "36% used" in paint["window_lines"][2]
@@ -791,7 +798,7 @@ def test_fr6147_normalize_fixture_reset_labels_and_exhausted_limits():
     assert "reset 1d 2h" in paint["window_lines"][1]
     assert "reset 26d 18h" in paint["window_lines"][2]
     # Free=100 must not imply Go availability when limiting window is exhausted.
-    assert "go weekly 0%" in paint["summary"]
+    assert "go weekly est 0%" in paint["summary"]
 
 
 # MarchHare run/opencode-fuel.json at 2026-11-08T14:02:58Z (read_state=ok).
@@ -826,6 +833,117 @@ MARCHHARE_1403_CACHE = {
 }
 
 
+def test_digest_stale_does_not_blank_fresh_local_week():
+    wins = {
+        "rolling": {"status": "unstarted", "used_pct": 0},
+        "week": {"status": "known", "used_pct": 72, "remaining_pct": 28},
+        "month": {"status": "known", "used_pct": 36, "remaining_pct": 64},
+    }
+    assert of.local_cache_paint_stale(digest_stale=True, local_windows_applied=True) is False
+    assert of.local_cache_paint_stale(digest_stale=True, local_windows_applied=False) is True
+    kept = of.format_opencode_paint_lines(
+        None, wins, stale=of.local_cache_paint_stale(digest_stale=True, local_windows_applied=True)
+    )
+    assert kept["windows"]["week"]["remaining_pct"] == 28
+    assert kept["windows"]["month"]["remaining_pct"] == 64
+    blanked = of.format_opencode_paint_lines(
+        None, wins, stale=of.local_cache_paint_stale(digest_stale=True, local_windows_applied=False)
+    )
+    assert blanked["windows"]["week"]["remaining_pct"] is None
+    assert blanked["windows"]["month"]["remaining_pct"] is None
+
+
+# Sanitized 2026-11-08 opencode stats --models --days 7. Dollar figures are local
+# stats cost, not a provider remaining balance.
+_ADMIN_STATS_7D = """
+┌────────────────────────────────────────────────────────┐
+│ Sessions                                             41│
+│ Messages                                            809│
+│                      COST & TOKENS                     │
+│ Total Cost                                       $15.82│
+│                      MODEL USAGE                       │
+│ opencode-go/kimi-k2.7-code                             │
+│ Cost                                         $13.8461 │
+│ opencode-go/glm-5.3                                    │
+│ Cost                                          $1.9668 │
+│ opencode/beam-free                                     │
+│ Cost                                          $0.0000 │
+│ opencode-go/longcat-2.0                                │
+│ Cost                                          $0.0028 │
+│ opencode-go/glm-5.3-flash                              │
+│ Cost                                          $0.0014 │
+│                      TOOL USAGE                        │
+└────────────────────────────────────────────────────────┘
+"""
+
+_SYSTEM_STATS_7D = """
+┌────────────────────────────────────────────────────────┐
+│ Sessions                                              0│
+│ Messages                                              0│
+│                      COST & TOKENS                     │
+│ Total Cost                                        $0.00│
+└────────────────────────────────────────────────────────┘
+"""
+
+
+def test_system_empty_stats_are_not_user_unstarted():
+    parsed = of.parse_opencode_stats_text(_SYSTEM_STATS_7D)
+    assert parsed["sessions"] == 0
+    assert parsed["messages"] == 0
+    assert parsed["empty_local_history"] is True
+    assert parsed["costs"] == {}
+    fuel = of.fuel_from_windowed_stats({"week": parsed})
+    assert fuel["history"]["empty"] is True
+    assert fuel["windows"]["rolling"]["status"] == "unknown"
+    assert fuel["windows"]["week"]["status"] == "unknown"
+    assert fuel["windows"]["month"]["status"] == "unknown"
+    assert fuel["local_costs"] == {}
+    paint = of.format_opencode_paint_lines(None, fuel["windows"])
+    assert "not measured" not in "\n".join(paint["window_lines"])
+    assert "0% used" not in "\n".join(paint["window_lines"])
+    assert all("n/a" in line for line in paint["window_lines"])
+
+
+def test_administrator_stats_keep_per_model_local_cost():
+    parsed = of.parse_opencode_stats_text(_ADMIN_STATS_7D)
+    assert parsed["sessions"] == 41
+    assert parsed["messages"] == 809
+    assert parsed["empty_local_history"] is False
+    assert parsed["costs"]["kimi-k2.7-code"] == 13.8461
+    assert parsed["costs"]["glm-5.3"] == 1.9668
+    assert parsed["costs"]["longcat-2.0"] == 0.0028
+    assert parsed["costs"]["glm-5.3-flash"] == 0.0014
+    fuel = of.fuel_from_windowed_stats({"week": parsed})
+    assert fuel["history"]["empty"] is False
+    assert fuel["history"]["sessions"] == 41
+    assert fuel["local_costs"]["kimi-k2.7-code"] == 13.8461
+    lines = of.format_local_model_lines(fuel["local_costs"])
+    assert lines[0] == "kimi-k2.7-code  7d local $13.85"
+    assert "glm-5.3  7d local $1.97" in lines
+    assert all("rem" not in line for line in lines)
+    paint = of.format_opencode_paint_lines(None, fuel["windows"])
+    assert "0% used" not in paint["window_lines"][0]
+    assert "not measured" in paint["window_lines"][0]
+
+
+def test_empty_service_history_does_not_replace_user_local_costs():
+    import bobreport
+
+    cached = {
+        "local_costs": {"kimi-k2.7-code": 13.8461},
+        "history": {"sessions": 41, "messages": 809, "empty": False},
+        "read_state": "ok",
+    }
+    fresh = {
+        "read_state": "ok",
+        "history": {"sessions": 0, "messages": 0, "empty": True},
+        "windows": {"rolling": {"status": "unknown"}, "week": {"status": "unknown"}, "month": {"status": "unknown"}},
+    }
+    kept = bobreport._accept_opencode_fuel_doc(fresh, cached)
+    assert kept["local_costs"]["kimi-k2.7-code"] == 13.8461
+    assert kept["history"]["sessions"] == 41
+
+
 def test_marchhare_1403_cache_is_not_a_go_quota_and_keeps_unstarted_rolling():
     """Digest free=100 must not be painted as remaining quota.
 
@@ -837,7 +955,8 @@ def test_marchhare_1403_cache_is_not_a_go_quota_and_keeps_unstarted_rolling():
     paint = of.format_opencode_paint_lines(100, wins)
     assert paint["summary"] == "OpenCode  free catalogue | go n/a"
     assert "100%" not in paint["summary"]
-    assert "Starts on first use" in paint["window_lines"][0]
+    assert "not measured" in paint["window_lines"][0]
+    assert "0% used" not in paint["window_lines"][0]
     assert paint["windows"]["rolling"]["status"] == "unstarted"
     assert paint["windows"]["rolling"]["remaining_pct"] is None
     assert "n/a" in paint["window_lines"][1]
@@ -850,7 +969,8 @@ def test_marchhare_1403_cache_is_not_a_go_quota_and_keeps_unstarted_rolling():
     assert by_id["free"]["pct"] == 0
     assert by_id["free"]["heading"] == "free  catalogue"
     assert by_id["rolling"]["known"] is False
-    assert "Starts on first use" in by_id["rolling"]["heading"]
+    assert "not measured" in by_id["rolling"]["heading"]
+    assert "0% used" not in by_id["rolling"]["heading"]
     assert by_id["week"]["known"] is False
     assert by_id["month"]["known"] is False
     assert "100%" not in by_id["week"]["heading"]
@@ -894,7 +1014,8 @@ def test_known_windows_bars_use_remaining_not_unknown_hundred():
     by_id = {b["id"]: b for b in bars}
     assert by_id["free"]["known"] is False
     assert by_id["rolling"]["known"] is False
-    assert "Starts on first use" in by_id["rolling"]["heading"]
+    assert "not measured" in by_id["rolling"]["heading"]
+    assert "0% used" not in by_id["rolling"]["heading"]
     assert by_id["week"]["known"] is True
     assert by_id["week"]["pct"] == 28
     assert by_id["month"]["known"] is True

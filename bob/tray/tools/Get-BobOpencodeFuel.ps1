@@ -20,7 +20,12 @@ $ProgressPreference = 'SilentlyContinue'
 $out = [ordered]@{
     free = $null; go = $null; models = [ordered]@{}; free_model_ids = @()
     windows = $null; limiting = $null; read_state = 'unavailable'; fetched_at = $null
+    local_costs = $null; history = $null; reader = 'user'
 }
+try {
+    $wid = [System.Security.Principal.WindowsIdentity]::GetCurrent()
+    if ($wid -and $wid.IsSystem) { $out.reader = 'service' }
+} catch { }
 try {
     $fixture = $env:BOB_OPENCODE_FUEL_FIXTURE
     $statsByWindow = $null
@@ -173,6 +178,8 @@ else:
             if ($null -ne $parsed.limiting -and [string]$parsed.limiting -ne '') {
                 $out.limiting = [string]$parsed.limiting
             }
+            if ($parsed.local_costs) { $out.local_costs = $parsed.local_costs }
+            if ($parsed.history) { $out.history = $parsed.history }
             $out.read_state = 'ok'
         } elseif ($out.read_state -eq 'unavailable') {
             $out.read_state = 'parser_missing'
@@ -202,7 +209,10 @@ try {
         $cache = Join-Path $run 'opencode-fuel.json'
     }
     $keepExisting = $false
-    if ([string]$out.read_state -ne 'ok' -and (Test-Path -LiteralPath $cache -PathType Leaf)) {
+    $emptyNow = $false
+    try { if ($out.history -and $out.history.empty) { $emptyNow = $true } } catch { }
+    $refuseEmpty = ([string]$out.read_state -ne 'ok') -or $emptyNow
+    if ($refuseEmpty -and (Test-Path -LiteralPath $cache -PathType Leaf)) {
         try {
             $prev = [System.IO.File]::ReadAllText($cache) | ConvertFrom-Json
             foreach ($id in @('rolling', 'week', 'month')) {
@@ -218,6 +228,13 @@ try {
                 $v = $null
                 try { $v = $prev.$k } catch { $v = $null }
                 if ($null -ne $v -and [string]$v -ne '') { $keepExisting = $true }
+            }
+            if ($emptyNow) {
+                $prevSessions = 0
+                try { if ($prev.history -and $null -ne $prev.history.sessions) { $prevSessions = [int]$prev.history.sessions } } catch { }
+                $prevCosts = $false
+                try { if ($prev.local_costs) { $prevCosts = $true } } catch { }
+                if ($prevSessions -gt 0 -or $prevCosts) { $keepExisting = $true }
             }
         } catch { }
     }

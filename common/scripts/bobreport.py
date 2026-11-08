@@ -4664,6 +4664,18 @@ def _parse_opencode_helper_stdout(raw_out: str) -> dict:
         out["fetched_at"] = str(doc.get("fetched_at"))
     if doc.get("read_state") not in (None, ""):
         out["read_state"] = str(doc.get("read_state"))
+    costs = doc.get("local_costs")
+    if isinstance(costs, dict) and costs:
+        out["local_costs"] = {
+            str(k): float(v) for k, v in costs.items() if v not in (None, "")
+        }
+    hist = doc.get("history")
+    if isinstance(hist, dict):
+        out["history"] = {
+            "sessions": hist.get("sessions"),
+            "messages": hist.get("messages"),
+            "empty": bool(hist.get("empty")),
+        }
     return out
 
 
@@ -4905,6 +4917,19 @@ def _accept_opencode_fuel_doc(fresh: dict, cached: dict) -> dict:
     """
     if not isinstance(fresh, dict):
         return dict(cached) if isinstance(cached, dict) else {}
+    fresh_hist = fresh.get("history") if isinstance(fresh.get("history"), dict) else {}
+    cached_costs = cached.get("local_costs") if isinstance(cached, dict) else None
+    cached_hist = cached.get("history") if isinstance(cached, dict) and isinstance(cached.get("history"), dict) else {}
+    cached_sessions = 0
+    try:
+        cached_sessions = int(cached_hist.get("sessions") or 0)
+    except (TypeError, ValueError):
+        cached_sessions = 0
+    # A service process's empty opencode stats must not replace the user's local history.
+    if fresh_hist.get("empty") is True and (
+        (isinstance(cached_costs, dict) and cached_costs) or cached_sessions > 0
+    ):
+        return dict(cached)
     if (
         not _opencode_fuel_doc_has_signal(fresh)
         and _opencode_fuel_doc_has_signal(cached)
