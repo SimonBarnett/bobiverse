@@ -206,22 +206,24 @@ else:
                         }
                     }
                 } catch { $env:BOB_OPENCODE_PROVIDER_PREVIOUS = '' }
+                # Single-quoted Python literals only: Windows PowerShell 5.1 strips
+                # embedded " when -c is a native argument (same contract as $script above).
                 $limitsScript = @'
 import json, os, opencode_fuel
 prev = None
-raw = os.environ.get("BOB_OPENCODE_PROVIDER_PREVIOUS") or ""
+raw = os.environ.get('BOB_OPENCODE_PROVIDER_PREVIOUS') or ''
 if raw.strip():
     try:
         prev = json.loads(raw)
     except json.JSONDecodeError:
         prev = None
 read = opencode_fuel.fetch_usage_limits(
-    os.environ.get("BOB_OPENCODE_USAGE_URL") or "",
-    os.environ.get("OPENCODE_SERVER_PASSWORD") or None,
-    os.environ.get("OPENCODE_SERVER_USERNAME") or None,
+    os.environ.get('BOB_OPENCODE_USAGE_URL') or '',
+    os.environ.get('OPENCODE_SERVER_PASSWORD') or None,
+    os.environ.get('OPENCODE_SERVER_USERNAME') or None,
 )
 windows = opencode_fuel.windows_from_usage_read(read, previous=prev)
-print(json.dumps({"provider_read": read.get("kind"), "windows": windows}))
+print(json.dumps({'provider_read': read.get('kind'), 'windows': windows}))
 '@
                 $limitsRaw = $null
                 try { $limitsRaw = & $py -c $limitsScript } catch { $limitsRaw = $null }
