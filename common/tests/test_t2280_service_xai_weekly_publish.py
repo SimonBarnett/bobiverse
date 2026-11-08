@@ -72,6 +72,7 @@ def test_enrich_splits_xai_remaining_from_cursor_sand():
     assert peer["pcent"]["grok-chat"] == 98
     meter = peer["xai_weekly"]
     assert meter["provider"] == "xai"
+    assert meter["window"] == "weekly"
     assert meter["direction"] == "remaining"
     assert meter["remaining_pct"] == 72
     assert meter["used_pct"] == 28
@@ -182,6 +183,146 @@ def test_urlerror_records_reason_and_is_not_an_ack(tmp_path: Path):
     assert "error=URLError" in line
     text = (home / "digest-fuel-publish-diag.json").read_text(encoding="utf-8")
     assert "digest-absent" not in text
+
+
+def test_system_profile_weekly_log_is_not_read(monkeypatch, tmp_path: Path):
+    monkeypatch.delenv("BOB_WEEKLY_LOG", raising=False)
+    monkeypatch.setenv("USERPROFILE", r"C:\Windows\system32\config\systemprofile")
+    monkeypatch.delenv("HOME", raising=False)
+    path, identity = bobreport.xai_weekly_log_candidate()
+    assert path is None
+    assert identity == "system-profile-skipped"
+    assert bobreport.read_local_xai_weekly() is None
+    explicit = tmp_path / "unified.jsonl"
+    explicit.write_text("not-a-billing-line\n", encoding="utf-8")
+    monkeypatch.setenv("BOB_WEEKLY_LOG", str(explicit))
+    path2, identity2 = bobreport.xai_weekly_log_candidate()
+    assert path2 == explicit
+    assert identity2 == "explicit"
+
+
+def test_peer_heading_names_provider_window_and_direction():
+    hover = Path(__file__).resolve().parents[2] / "bob" / "tray" / "src" / "Public" / "Get-BobTrayHover.ps1"
+    text = hover.read_text(encoding="utf-8")
+    assert "function Format-BobPeerPoolHeading" in text
+    assert "cursor-models', 'grok-build', 'copilot', 'grok-bot'" not in text
+    watch = Path(__file__).resolve().parents[2] / "bob" / "tray" / "tools" / "Watch-BobTray.ps1"
+    assert "Format-BobPeerPoolHeading" in watch.read_text(encoding="utf-8")
+
+
+def test_local_system_cache_home_is_install_root_home():
+    home = bobreport.resolve_ear_cache_home(
+        explicit_home="",
+        install_root=r"C:\ai\bob",
+        local_system=True,
+        userprofile=r"C:\Users\Administrator",
+    )
+    assert str(home).replace("/", "\\").lower().endswith("\\ai\\bob\\home")
+    user = bobreport.resolve_ear_cache_home(
+        explicit_home="",
+        install_root=r"C:\ai\bob",
+        local_system=False,
+        userprofile=r"C:\Users\Administrator",
+    )
+    assert str(user).replace("/", "\\").lower().endswith("\\administrator\\.bobiverse")
+    assert "administrator" not in str(home).lower()
+
+
+def test_heartbeat_stamps_fresh_last_seen_and_logs_target(tmp_path: Path, monkeypatch):
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("BOB_EAR_DIGEST_FUEL_S", "30")
+    monkeypatch.delenv("BOB_INSTALL_ROOT", raising=False)
+    bobstat.write_peer(
+        home,
+        {
+            "ok": True,
+            "id": "marchhare",
+            "online": True,
+            "status": "operational",
+            "weekly": 10,
+            "weekly_known": True,
+            "lastSeen": "2026-11-07T22:11:09Z",
+            "pcent": {"grok-chat": 74},
+        },
+    )
+    bodies: list[dict] = []
+
+    def fake_urlopen(req, timeout=0):  # noqa: ARG001
+        bodies.append(json.loads(req.data.decode("utf-8")))
+
+        class Resp:
+            status = 200
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def read(self):
+                return b""
+
+        return Resp()
+
+    with mock.patch("urllib.request.urlopen", fake_urlopen):
+        assert (
+            bobreport.publish_local_peer_fuel(
+                home, "marchhare", force=False, url="https://bob.ntsa.uk/bob/v1/report", now=1_700_000_000
+            )
+            == 200
+        )
+        assert (
+            bobreport.publish_local_peer_fuel(
+                home, "marchhare", force=False, url="https://bob.ntsa.uk/bob/v1/report", now=1_700_000_040
+            )
+            == 200
+        )
+    assert len(bodies) == 2
+    assert bodies[0]["lastSeen"] != "2026-11-07T22:11:09Z"
+    assert bodies[1]["lastSeen"] != bodies[0]["lastSeen"]
+    assert bodies[0]["pcent"]["grok-chat"] == 74
+    diag = bobreport.last_fuel_publish_diag()
+    assert diag["ack"] is True
+    assert diag["http_status"] == 200
+    assert diag["target_host"] == "bob.ntsa.uk"
+    assert diag["target_path"] == "/bob/v1/report"
+    assert diag["url_source"] == "explicit"
+    line = bobreport.format_fuel_publish_diag(diag)
+    assert "target_host=bob.ntsa.uk" in line
+    assert "ack=true" in line
+    doc = {"machines": {}}
+    bobreport._apply_merge_payload(doc, "marchhare", bodies[1])
+    assert doc["machines"]["marchhare"]["lastSeen"] == bodies[1]["lastSeen"]
+
+
+def test_config_report_host_is_not_rewritten(tmp_path: Path, monkeypatch):
+    root = tmp_path / "install"
+    cfg = root / "config"
+    cfg.mkdir(parents=True)
+    (cfg / "bobiverse.json").write_text(
+        json.dumps({"reportUrl": "https://bob.ntsa.uk/bob/v1/report", "host": "irc.ntsa.uk"}),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("BOB_INSTALL_ROOT", str(root))
+    monkeypatch.delenv("BOB_REPORT_URL", raising=False)
+    chosen = bobreport.resolve_fuel_report_target()
+    assert chosen["ok"] is True
+    assert chosen["host"] == "bob.ntsa.uk"
+    assert chosen["path"] == "/bob/v1/report"
+    assert chosen["source"] == "config"
+    (cfg / "bobiverse.json").write_text(
+        json.dumps({"reportUrl": "https://irc.ntsa.uk/bob/v1/report?token=secret"}),
+        encoding="utf-8",
+    )
+    refused = bobreport.resolve_fuel_report_target()
+    assert refused["ok"] is False
+    assert refused["error"] == "query"
+    assert "token" not in json.dumps(refused)
+    embedded = bobreport.resolve_fuel_report_target("https://user:pw@bob.ntsa.uk/bob/v1/report")
+    assert embedded["ok"] is False
+    assert embedded["error"] == "userinfo"
+    assert "pw" not in json.dumps(embedded)
 
 
 def test_service_home_candidate_is_install_root_home(monkeypatch, tmp_path: Path):

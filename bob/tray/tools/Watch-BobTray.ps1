@@ -2943,17 +2943,38 @@ function Rebuild-BobTrayTiles {
             $fuelStale = $false
             try { if ($m.fuel_stale) { $fuelStale = [bool]$m.fuel_stale } } catch { }
             # 0% is real (#179). FR #5032: stale peer % is hidden (shown as [stale] + age).
-            $pctLabel = $null
-            if (-not $fuelStale -and $null -ne $pct -and [string]$pct -ne '') { $pctLabel = ('{0}%' -f [int]$pct) }
             $seat = [string]$m.seat_label
             if (-not $seat) { $seat = [string]$m.seat_email }
-            $nameHeading = $id
-            if ($seat) { $nameHeading = ('{0}  -  {1}' -f $id, $seat) }
-            $machHeading = $nameHeading
-            if ($pctLabel) { $machHeading = ('{0} ({1})' -f $nameHeading, $pctLabel) }
-            if ($fuelStale) { $machHeading = ('{0} [stale]' -f $machHeading) }
-            if ($m.reset_label -and ($pctLabel -or $fuelStale)) {
-                $machHeading = ('{0} - {1}' -f $machHeading, [string]$m.reset_label)
+            $prov = ''
+            $win = ''
+            $dir = ''
+            try { if ($m.provider) { $prov = [string]$m.provider } } catch { }
+            try { if ($m.window) { $win = [string]$m.window } } catch { }
+            try { if ($m.direction) { $dir = [string]$m.direction } } catch { }
+            $usedP = $null
+            $acct = ''
+            $srcMeter = ''
+            $absReset = ''
+            try { if ($null -ne $m.used_pct -and [string]$m.used_pct -ne '') { $usedP = $m.used_pct } } catch { }
+            try { if ($m.meter_account) { $acct = [string]$m.meter_account } } catch { }
+            try { if ($m.meter_source) { $srcMeter = [string]$m.meter_source } } catch { }
+            try { if ($m.period_end_absolute) { $absReset = [string]$m.period_end_absolute } } catch { }
+            if (Get-Command Format-BobPeerPoolHeading -ErrorAction SilentlyContinue) {
+                $machHeading = Format-BobPeerPoolHeading -MachineId $id -SeatLabel $seat -RemainingPct $pct `
+                    -ResetLabel $(if ($m.reset_label) { [string]$m.reset_label } else { '' }) -FuelStale $fuelStale `
+                    -Provider $prov -Window $win -Direction $dir -UsedPct $usedP -Account $acct `
+                    -PeriodEnd $absReset -Source $srcMeter
+            } else {
+                $pctLabel = $null
+                if (-not $fuelStale -and $null -ne $pct -and [string]$pct -ne '') { $pctLabel = ('{0}%' -f [int]$pct) }
+                $nameHeading = $id
+                if ($seat) { $nameHeading = ('{0}  -  {1}' -f $id, $seat) }
+                $machHeading = $nameHeading
+                if ($pctLabel) { $machHeading = ('{0} ({1})' -f $nameHeading, $pctLabel) }
+                if ($fuelStale) { $machHeading = ('{0} [stale]' -f $machHeading) }
+                if ($m.reset_label -and ($pctLabel -or $fuelStale)) {
+                    $machHeading = ('{0} - {1}' -f $machHeading, [string]$m.reset_label)
+                }
             }
             $rowPct = if ($fuelStale) { $null } else { $pct }
             $y = Add-BobTrayUsageRow -X $indent -Y $y -Heading $machHeading `

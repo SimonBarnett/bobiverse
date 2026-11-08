@@ -946,6 +946,16 @@ class Client:
         if args.home:
             os.environ["BOB_HOME"] = str(Path(args.home).expanduser())
         self.home = seal.home()
+        try:
+            info(
+                "INFO ear cache home={0} role={1} install_root={2}".format(
+                    self.home,
+                    bobreport.classify_publish_home(Path(self.home)),
+                    (os.environ.get("BOB_INSTALL_ROOT") or "-"),
+                )
+            )
+        except Exception:
+            pass
         # #53: first start under the jeeves/bobiverse home names -> copy data from the old
         # ~\\.agentic-irc-* home (kept as backup). Idempotent; never blocks the connect.
         try:

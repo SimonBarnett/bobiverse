@@ -181,6 +181,55 @@ function Step-BobWeeklyPeriodForward {
     }
 }
 
+function Format-BobPeerPoolHeading {
+    <#
+      Peer row. A published xAI meter names provider, window, and direction.
+      A bare percent stays unlabeled. The seat alias is not the meter account.
+    #>
+    param(
+        [string]$MachineId,
+        [string]$SeatLabel = '',
+        $RemainingPct = $null,
+        [string]$ResetLabel = '',
+        [bool]$FuelStale = $false,
+        [string]$Provider = '',
+        [string]$Window = '',
+        [string]$Direction = '',
+        $UsedPct = $null,
+        [string]$Account = '',
+        [string]$PeriodEnd = '',
+        [string]$Source = ''
+    )
+    $id = ([string]$MachineId).ToUpperInvariant()
+    if ($Provider -and $Direction) {
+        $win = if ($Window) { $Window } else { 'weekly' }
+        $bits = @($id, $Provider, $win, $Direction)
+        if (-not $FuelStale -and $null -ne $RemainingPct -and [string]$RemainingPct -ne '' -and $Direction -eq 'remaining') {
+            $bits += ('{0}%' -f [int]$RemainingPct)
+        }
+        if (-not $FuelStale -and $null -ne $UsedPct -and [string]$UsedPct -ne '') {
+            $bits += ('used {0}%' -f [int]$UsedPct)
+        }
+        if ($Account) { $bits += ('account {0}' -f $Account) }
+        if ($PeriodEnd) { $bits += ('reset {0}' -f $PeriodEnd) }
+        elseif ($ResetLabel) { $bits += [string]$ResetLabel }
+        if ($FuelStale) { $bits += '[stale]' }
+        if ($Source) { $bits += [string]$Source }
+        return ($bits -join '  ')
+    }
+    $name = $id
+    if ($SeatLabel) { $name = ('{0}  -  {1}' -f $id, $SeatLabel) }
+    $line = $name
+    if (-not $FuelStale -and $null -ne $RemainingPct -and [string]$RemainingPct -ne '') {
+        $line = ('{0} ({1}%)' -f $name, [int]$RemainingPct)
+    }
+    if ($FuelStale) { $line = ('{0} [stale]' -f $line) }
+    if ($ResetLabel -and (($null -ne $RemainingPct -and [string]$RemainingPct -ne '') -or $FuelStale)) {
+        $line = ('{0} - {1}' -f $line, $ResetLabel)
+    }
+    return $line
+}
+
 function Get-BobWeeklyRemaining {
     [CmdletBinding()]
     param([string]$LogPath, [datetime]$UtcNow = [datetime]::UtcNow)
@@ -3091,18 +3140,50 @@ function Get-BobTrayHover {
             seat_email           = $(if ($seatInfo) { [string]$seatInfo.email } else { $null })
         }
         $tiles += ,$tile
-        $jlName = $mid
-        if ($seatInfo -and $seatInfo.label) { $jlName = ('{0}  -  {1}' -f $mid, $seatInfo.label) }
-        $machHeading = ('  {0}' -f $jlName)
-        if ($null -ne $wPct) { $machHeading = ('{0} ({1}%)' -f $machHeading, [int]$wPct) }
-        if ($fuelStale) { $machHeading = ('{0} [stale]' -f $machHeading) }
-        if ($tileAvail -and $null -eq $wPct -and -not $fuelStale) { $machHeading = ('{0} [{1}]' -f $machHeading, $tileAvail) }
-        if ($tileReset) { $machHeading = ('{0} - {1}' -f $machHeading, $tileReset) }
-        $jobLines += $machHeading
-        $tileFuels = @('cursor-models', 'grok-build', 'copilot', 'grok-bot')
-        if ($mid -match '2012') { $tileFuels = @() }
-        $tile | Add-Member -NotePropertyName fuels -NotePropertyValue $tileFuels -Force
-        if ($tileFuels.Count -gt 0) { $jobLines += ('    fuels: {0}' -f ($tileFuels -join ', ')) }
+        $meter = $null
+        foreach ($wr in @($digestWeeklyRows)) {
+            if ($wr -and [string]$wr.machine -eq $mid) { $meter = $wr; break }
+        }
+        $prov = ''
+        $win = ''
+        $dir = ''
+        $usedP = $null
+        $acct = ''
+        $srcMeter = ''
+        $absReset = ''
+        if ($meter -and $meter.provider -and $meter.direction) {
+            $prov = [string]$meter.provider
+            $dir = [string]$meter.direction
+            $win = 'weekly'
+            if ($meter.used_pct -ne $null -and [string]$meter.used_pct -ne '') { $usedP = $meter.used_pct }
+            if ($meter.account) { $acct = [string]$meter.account }
+            if ($meter.source) { $srcMeter = [string]$meter.source }
+            if ($meter.period_end) { $absReset = [string]$meter.period_end }
+        } elseif ($mid -eq $machineId -and $week -and $week.source) {
+            $prov = 'xai'
+            $win = 'weekly'
+            $dir = 'remaining'
+            $usedP = $week.used_pct
+            $srcMeter = [string]$week.source
+            if ($week.period_end) { $absReset = [string]$week.period_end }
+        }
+        $tile | Add-Member -NotePropertyName provider -NotePropertyValue $(if ($prov) { $prov } else { $null }) -Force
+        $tile | Add-Member -NotePropertyName window -NotePropertyValue $(if ($win) { $win } else { $null }) -Force
+        $tile | Add-Member -NotePropertyName direction -NotePropertyValue $(if ($dir) { $dir } else { $null }) -Force
+        $tile | Add-Member -NotePropertyName used_pct -NotePropertyValue $usedP -Force
+        $tile | Add-Member -NotePropertyName meter_account -NotePropertyValue $(if ($acct) { $acct } else { $null }) -Force
+        $tile | Add-Member -NotePropertyName meter_source -NotePropertyValue $(if ($srcMeter) { $srcMeter } else { $null }) -Force
+        $tile | Add-Member -NotePropertyName period_end_absolute -NotePropertyValue $(if ($absReset) { $absReset } else { $null }) -Force
+        $seatLab = ''
+        if ($seatInfo -and $seatInfo.label) { $seatLab = [string]$seatInfo.label }
+        $machHeading = Format-BobPeerPoolHeading -MachineId $mid -SeatLabel $seatLab -RemainingPct $wPct `
+            -ResetLabel $(if ($tileReset) { [string]$tileReset } else { '' }) -FuelStale $fuelStale `
+            -Provider $prov -Window $win -Direction $dir -UsedPct $usedP -Account $acct `
+            -PeriodEnd $absReset -Source $srcMeter
+        if (-not $prov -and $tileAvail -and $null -eq $wPct -and -not $fuelStale) {
+            $machHeading = ('{0} [{1}]' -f $machHeading, $tileAvail)
+        }
+        $jobLines += ('  {0}' -f $machHeading)
         # FR #352: TipForm/tooltip --- out of tokens, open with key.
         # Grok Build exhaustion only (explicit remaining_pct=0 or availability=exhausted).
         # Never Cursor Sand / pcent.grok-chat (those are Spending bars, not xAI weekly).

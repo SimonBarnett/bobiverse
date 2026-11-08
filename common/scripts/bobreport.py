@@ -4334,17 +4334,120 @@ def build_peer_fuel_merge_payload(peer: dict, machine_id: str) -> dict | None:
 
 
 def report_post_url(env: dict[str, str] | None = None) -> str:
-    """FR #6143: BOB_REPORT_URL, then BOB_DIGEST_URL, then public default."""
+    """Fuel POST URL. Config reportUrl, then BOB_REPORT_URL, then digest default.
+
+    Does not rewrite hostnames. ``irc.ntsa.uk`` stays the IRC host unless that
+    string is the configured reportUrl.
+    """
+    chosen = resolve_fuel_report_target(env=env)
+    return str(chosen.get("url") or "")
+
+
+def resolve_ear_cache_home(
+    *,
+    explicit_home: str = "",
+    install_root: str = "",
+    local_system: bool = False,
+    userprofile: str = "",
+) -> Path:
+    """Same home Start-Bob.ps1 passes to ``irc_agent --home``.
+
+    LocalSystem with no ``-BobHome`` uses ``<InstallRoot>\\home``. A user
+    session with no ``-BobHome`` uses ``%USERPROFILE%\\.bobiverse``. An
+    explicit home wins. This does not look at the Administrator profile.
+    """
+    raw = (explicit_home or "").strip()
+    if raw:
+        return Path(raw)
+    if local_system:
+        root = (install_root or "").strip()
+        if not root:
+            raise ValueError("local-system ear requires InstallRoot")
+        return Path(root) / "home"
+    profile = (userprofile or "").strip()
+    if not profile:
+        raise ValueError("user ear requires a profile")
+    return Path(profile) / ".bobiverse"
+
+
+def _safe_report_target(raw: str, source: str) -> dict:
+    """Host and path only. Userinfo, query, and fragment are refused, not stripped."""
+    import urllib.parse
+
+    text = (raw or "").strip()
+    if not text:
+        return {"ok": False, "error": "empty-url", "source": source}
+    try:
+        parts = urllib.parse.urlsplit(text)
+    except ValueError:
+        return {"ok": False, "error": "malformed-url", "source": source}
+    if parts.scheme not in ("https", "http"):
+        return {"ok": False, "error": "scheme", "source": source}
+    if parts.username is not None or parts.password is not None:
+        return {"ok": False, "error": "userinfo", "source": source}
+    if parts.query or parts.fragment:
+        return {"ok": False, "error": "query", "source": source}
+    host = parts.hostname
+    if not host:
+        return {"ok": False, "error": "host", "source": source}
+    path = parts.path or "/"
+    netloc = host if parts.port is None else f"{host}:{int(parts.port)}"
+    url = urllib.parse.urlunsplit((parts.scheme, netloc, path, "", ""))
+    return {
+        "ok": True,
+        "url": url,
+        "host": host,
+        "path": path,
+        "source": source,
+        "error": None,
+    }
+
+
+def bobiverse_config_report_url(env: dict[str, str] | None = None) -> str | None:
+    """``<BOB_INSTALL_ROOT>/config/bobiverse.json`` reportUrl, or None."""
     e = os.environ if env is None else env
-    for key in ("BOB_REPORT_URL", "BOB_DIGEST_URL", DIGEST_URL_ENV):
-        raw = (e.get(key) or "").strip()
-        if raw:
-            return raw
-    return digest_url()
+    root = (e.get("BOB_INSTALL_ROOT") or "").strip()
+    if not root:
+        return None
+    path = Path(root) / "config" / "bobiverse.json"
+    if not path.is_file():
+        return None
+    try:
+        doc = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, UnicodeError):
+        return None
+    if not isinstance(doc, dict):
+        return None
+    raw = doc.get("reportUrl")
+    if isinstance(raw, str) and raw.strip():
+        return raw.strip()
+    return None
+
+
+def resolve_fuel_report_target(
+    url: str | None = None, env: dict[str, str] | None = None
+) -> dict:
+    """Where the ear fuel POST goes, and which rule chose it.
+
+    Order: explicit url argument, install config reportUrl, BOB_REPORT_URL,
+    then the public digest default (``https://bob.ntsa.uk/bob/v1/report``).
+    Hosts are not rewritten.
+    """
+    e = os.environ if env is None else env
+    if url and str(url).strip():
+        return _safe_report_target(str(url).strip(), "explicit")
+    configured = bobiverse_config_report_url(e)
+    if configured:
+        return _safe_report_target(configured, "config")
+    env_url = (e.get("BOB_REPORT_URL") or "").strip()
+    if env_url:
+        return _safe_report_target(env_url, "env")
+    return _safe_report_target(digest_url(), "default")
 
 
 _last_post_outcome: dict = {}
 _last_fuel_publish_diag: dict = {}
+_last_xai_acquisition: dict = {}
 
 
 def last_fuel_publish_diag() -> dict:
@@ -4358,16 +4461,24 @@ def format_fuel_publish_diag(diag: dict | None) -> str:
     pcent = d.get("pcent_keys") or []
     keys = ",".join(str(k) for k in pcent) if pcent else "-"
     reason = d.get("reason") or "-"
+    fields = d.get("provider_fields") or []
+    prov = ",".join(str(k) for k in fields) if fields else "-"
     return (
-        "home_role={role} http_status={status} ack={ack} error={error} "
-        "reason={reason} pcent_keys={keys} machine={machine} skipped={skipped}"
+        "home_role={role} target_host={host} target_path={path} url_source={src} "
+        "http_status={status} ack={ack} error={error} reason={reason} "
+        "pcent_keys={keys} provider_fields={prov} acquisition={acq} machine={machine} skipped={skipped}"
     ).format(
         role=d.get("home_role") or "unlocalized",
+        host=d.get("target_host") or "-",
+        path=d.get("target_path") or "-",
+        src=d.get("url_source") or "-",
         status=d.get("http_status") if d.get("http_status") is not None else "-",
         ack="true" if d.get("ack") else "false",
         error=d.get("error") or "-",
         reason=str(reason).replace(" ", "_")[:180],
         keys=keys,
+        prov=prov,
+        acq=d.get("acquisition") or "-",
         machine=d.get("machine") or "-",
         skipped=d.get("skipped") or "-",
     )
@@ -5297,18 +5408,41 @@ def enrich_peer_with_opencode_pcent(
 _XAI_WEEKLY_BILLING_MARK = "billing: fetched credits config"
 
 
-def xai_weekly_log_path() -> Path | None:
-    """Local Grok CLI log. BOB_WEEKLY_LOG, else the user unified.jsonl. No key files."""
+def _is_windows_system_profile(path: Path) -> bool:
+    """LocalSystem's profile. It is not the interactive user's Grok home."""
+    text = str(path).replace("/", "\\").lower()
+    return "\\systemprofile\\" in text or text.endswith("\\systemprofile")
+
+
+def xai_weekly_log_candidate() -> tuple[Path | None, str]:
+    """Where a service may read the weekly billing line.
+
+    ``BOB_WEEKLY_LOG`` is an explicit file. Otherwise the process profile's
+    ``.grok/logs/unified.jsonl`` is used only when that profile is not
+    LocalSystem's ``systemprofile``. The system profile is skipped so the
+    service does not publish an unknown from the wrong identity, and this
+    does not open ``Users\\Administrator``.
+    """
     raw = (os.environ.get("BOB_WEEKLY_LOG") or "").strip()
     if raw:
-        return Path(raw)
+        path = Path(raw)
+        if _is_windows_system_profile(path):
+            return None, "system-profile-refused"
+        return path, "explicit"
     exe = (os.environ.get("BOB_GROK_EXE") or "").lower()
     if "fake-grok" in exe:
-        return None
+        return None, "fake-grok"
     home = (os.environ.get("USERPROFILE") or os.environ.get("HOME") or "").strip()
     if not home:
-        return None
-    return Path(home) / ".grok" / "logs" / "unified.jsonl"
+        return None, "no-profile"
+    if _is_windows_system_profile(Path(home)):
+        return None, "system-profile-skipped"
+    return Path(home) / ".grok" / "logs" / "unified.jsonl", "process-profile"
+
+
+def xai_weekly_log_path() -> Path | None:
+    path, _identity = xai_weekly_log_candidate()
+    return path
 
 
 def _parse_xai_period_end(raw: object) -> datetime | None:
@@ -5411,9 +5545,12 @@ def parse_xai_weekly_log_text(text: str, *, now: datetime | None = None) -> dict
 
 
 def read_local_xai_weekly(*, now: datetime | None = None) -> dict | None:
-    path = xai_weekly_log_path()
+    global _last_xai_acquisition
+    path, identity = xai_weekly_log_candidate()
+    _last_xai_acquisition = {"identity": identity, "read": False}
     if path is None or not path.is_file():
         return None
+    _last_xai_acquisition["read"] = True
     try:
         # Tail only: the billing line is at the end of a long CLI log.
         size = path.stat().st_size
@@ -5458,6 +5595,7 @@ def enrich_peer_with_xai_weekly(peer: dict, reading: dict | None) -> dict:
         )
         enriched["xai_weekly"] = {
             "provider": "xai",
+            "window": "weekly",
             "direction": "remaining",
             "remaining_pct": remaining,
             "used_pct": enriched.get("xai_weekly_used_pct"),
@@ -5477,6 +5615,7 @@ def enrich_peer_with_xai_weekly(peer: dict, reading: dict | None) -> dict:
         )
         enriched["xai_weekly"] = {
             "provider": "xai",
+            "window": "weekly",
             "direction": "remaining",
             "remaining_pct": None,
             "used_pct": None,
@@ -5519,6 +5658,11 @@ def publish_local_peer_fuel(
         "reason": None,
         "pcent_keys": [],
         "payload_keys": [],
+        "provider_fields": [],
+        "target_host": None,
+        "target_path": None,
+        "url_source": None,
+        "home": str(home),
         "skipped": None,
     }
     if home_role == "legacy-admin-not-active":
@@ -5542,10 +5686,11 @@ def publish_local_peer_fuel(
     # Does not call the network and does not copy credentials.
     try:
         xai = read_local_xai_weekly()
+        _last_fuel_publish_diag["acquisition"] = _last_xai_acquisition.get("identity")
         if xai:
             peer = enrich_peer_with_xai_weekly(peer, xai)
     except Exception:
-        pass
+        _last_fuel_publish_diag["acquisition"] = "read-failed"
     # FR #6146 / #6147: enrich with local OpenCode pcent + windows before fingerprint/POST.
     try:
         oc_doc = read_local_opencode_fuel_doc()
@@ -5591,7 +5736,23 @@ def publish_local_peer_fuel(
     if not force and last_fp == fp and not heartbeat_due:
         _last_fuel_publish_diag["skipped"] = "fingerprint-unchanged"
         return None
-    code = post_report_json(payload, url=url)
+    # Heartbeat and change posts both carry a fresh lastSeen. Re-sending the
+    # peer file's old lastSeen left the canonical row on the previous day
+    # while the HTTP status was still 200.
+    payload["lastSeen"] = datetime.fromtimestamp(ts_now, timezone.utc).strftime(
+        "%Y-%m-%dT%H:%M:%S.%fZ"
+    )
+    target = resolve_fuel_report_target(url)
+    _last_fuel_publish_diag["url_source"] = target.get("source")
+    _last_fuel_publish_diag["target_host"] = target.get("host")
+    _last_fuel_publish_diag["target_path"] = target.get("path")
+    meter = payload.get("xai_weekly") if isinstance(payload.get("xai_weekly"), dict) else {}
+    _last_fuel_publish_diag["provider_fields"] = sorted(str(k) for k in meter)
+    if not target.get("ok"):
+        _last_fuel_publish_diag["skipped"] = "url-rejected"
+        _last_fuel_publish_diag["error"] = target.get("error")
+        return None
+    code = post_report_json(payload, url=str(target.get("url") or ""))
     _last_fuel_publish_diag.update(
         {
             "http_status": _last_post_outcome.get("http_status"),
