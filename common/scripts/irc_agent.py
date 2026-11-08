@@ -22,6 +22,42 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
+# Only the publisher hotpatch is loaded from InstallRoot\\scripts. Putting that
+# directory on sys.path also shadowed gitclaim and every other ear import with
+# whatever old file was still on disk (reader AttributeError on
+# shop_line_resets_bored_clock). Other modules stay in the frozen embed.
+FROZEN_SCRIPT_OVERLAY = ("bobreport",)
+BOBREPORT_OVERLAY_MARKER = "def opencode_install_root"
+
+
+class _InstallScriptOverlay:
+    """Meta path finder: overlay an allowlisted module, never the whole scripts dir."""
+
+    def __init__(self, scripts: Path):
+        self.scripts = Path(scripts)
+
+    def find_spec(self, fullname, path, target=None):  # noqa: ARG002
+        if fullname not in FROZEN_SCRIPT_OVERLAY:
+            return None
+        file = self.scripts / (fullname + ".py")
+        if not file.is_file():
+            return None
+        try:
+            text = file.read_text(encoding="utf-8")
+        except OSError:
+            return None
+        if fullname == "bobreport" and BOBREPORT_OVERLAY_MARKER not in text:
+            return None
+        import importlib.util
+
+        return importlib.util.spec_from_file_location(fullname, file)
+
+
+def _install_script_overlay(scripts: Path) -> None:
+    sys.meta_path[:] = [f for f in sys.meta_path if not isinstance(f, _InstallScriptOverlay)]
+    sys.meta_path.insert(0, _InstallScriptOverlay(scripts))
+
+
 def prefer_install_scripts_path(
     *,
     env: dict | None = None,
@@ -29,12 +65,12 @@ def prefer_install_scripts_path(
     executable: str | Path | None = None,
     path_list: list | None = None,
 ) -> str | None:
-    """When frozen, put InstallRoot\\scripts ahead of _MEIPASS (FR #6237).
+    """When frozen, overlay a compatible on-disk bobreport.py (FR #6237).
 
-    PyInstaller onefile embeds ``bobreport`` under ``_MEIPASS``. Hotpatched install scripts bobreport.py (Sync/compose) is invisible until
-    rebuild unless that scripts dir wins sys.path before the bobreport import.
-    ``BOB_INSTALL_ROOT`` (Start-Bob FR #2666) or ``sys.executable`` layout locates
-    the install root. Non-frozen / missing on-disk ``bobreport.py``: no-op.
+    Does not put InstallRoot\\scripts on sys.path. An older bobreport.py that
+    lacks ``opencode_install_root`` stays on disk and is not imported. Non-frozen
+    or missing bobreport.py: no-op. ``path_list`` is left unchanged. The overlay
+    finder is installed only for the real startup call (``path_list is None``).
     """
     e = os.environ if env is None else env
     is_frozen = (
@@ -54,12 +90,9 @@ def prefer_install_scripts_path(
     scripts = Path(root) / "scripts"
     if not (scripts / "bobreport.py").is_file():
         return None
-    sp = path_list if path_list is not None else sys.path
-    s = str(scripts.resolve())
-    while s in sp:
-        sp.remove(s)
-    sp.insert(0, s)
-    return s
+    if path_list is None:
+        _install_script_overlay(scripts)
+    return str(scripts.resolve())
 
 
 # FR #6237: frozen ear prefers InstallRoot\scripts over _MEIPASS so hotpatched
@@ -105,6 +138,16 @@ import channel_only  # noqa: E402
 import startworker  # noqa: E402
 import recycleseat  # noqa: E402  # FR #5059
 import bobiverse_build  # noqa: E402  # FR #4006
+
+def _shop_line_resets_bored_clock(body: str) -> bool:
+    """FR #5203. An older on-disk gitclaim without this name must not kill the reader."""
+    fn = getattr(gitclaim, "shop_line_resets_bored_clock", None)
+    if not callable(fn):
+        return False
+    try:
+        return bool(fn(body))
+    except Exception:
+        return False
 
 FLOOD_S = 0.8
 # FR #4796: slower ear outbox pace for PRIVMSG to *_console (driver-side under Ergo fakelag).
@@ -903,6 +946,16 @@ class Client:
         if args.home:
             os.environ["BOB_HOME"] = str(Path(args.home).expanduser())
         self.home = seal.home()
+        try:
+            info(
+                "INFO ear cache home={0} role={1} install_root={2}".format(
+                    self.home,
+                    bobreport.classify_publish_home(Path(self.home)),
+                    (os.environ.get("BOB_INSTALL_ROOT") or "-"),
+                )
+            )
+        except Exception:
+            pass
         # #53: first start under the jeeves/bobiverse home names -> copy data from the old
         # ~\\.agentic-irc-* home (kept as backup). Idempotent; never blocks the connect.
         try:
@@ -2725,10 +2778,15 @@ class Client:
         try:
             code = bobreport.publish_local_peer_fuel(self.home, mid)
         except Exception as exc:  # noqa: BLE001 — never break outbox on fuel publish
-            info(f"INFO digest-fuel publish skip: {exc}")
+            info(f"INFO digest-fuel publish skip: {type(exc).__name__}")
             return
-        if code is not None:
-            info(f"INFO digest-fuel webhook POST {code} machine={mid}")
+        # Ack is a field. A POST word in this line is not by itself an HTTP success,
+        # and a URLError is not proof the digest is missing.
+        info(
+            "INFO digest-fuel "
+            + bobreport.format_fuel_publish_diag(bobreport.last_fuel_publish_diag())
+            + f" code={code}"
+        )
 
     def _maybe_publish_grok_account(self) -> None:
         """FR #6143: fleet bob-ear POSTs grok_account label-only merge (no secrets)."""
@@ -3730,7 +3788,7 @@ class Client:
             except Exception as exc:  # noqa: BLE001
                 info(f"WARN last-bored stamp {type(exc).__name__}")
             return True
-        if gitclaim.shop_line_resets_bored_clock(body):
+        if _shop_line_resets_bored_clock(body):
             try:
                 gitclaim.record_last_bored(self.home, src, now)
             except Exception as exc:  # noqa: BLE001

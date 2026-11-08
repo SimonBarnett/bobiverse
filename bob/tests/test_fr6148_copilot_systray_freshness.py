@@ -32,12 +32,13 @@ def test_format_helpers_exist():
 def test_watch_always_shows_copilot_unknown_fallback():
     w = WATCH.read_text(encoding="utf-8-sig")
     sec = w[w.index("function Rebuild-BobTrayTiles") : w.index("Atomic swap on the TipForm")]
-    assert "Copilot  unknown" in sec
+    assert "copilot  allowance  unknown" in sec
     assert "Format-BobCopilotPoolLine" in sec
-    # FIX #6180: escape `[` in -like; TitleColor paints stale red (via FuelFamilyRow).
-    assert "TitleColor" in sec
+    assert "Get-BobCopilotMeterBarPct" in sec
     assert "Add-BobTrayFuelFamilyRow" in sec
-    assert "`[stale" in sec or "``[stale" in w
+    assert "Add-BobTrayUsageRow" in sec
+    # Stale stays a label. It is not the red alarm color.
+    assert "Copilot  `[stale" not in sec
     hdr = w[w.index("function Add-BobTraySectionHeader") : w.index("function Set-BobTrayHelpTip")]
     assert "[System.Drawing.Color]$TitleColor" in hdr
     assert "TitleColor.A" in hdr
@@ -121,7 +122,7 @@ def test_format_fresh_unlimited():
         },
         now,
     )
-    assert line.startswith("Copilot  unlimited, 39 used")
+    assert line.startswith("copilot  included  unlimited  used 39")
     assert "[stale" not in line
 
 
@@ -137,7 +138,7 @@ def test_format_stale_by_age():
         now,
     )
     assert "[stale" in line
-    assert "140 remaining" in line
+    assert "allowance  remaining  140" in line
     assert "reset" not in line
 
 
@@ -145,7 +146,7 @@ def test_format_stale_by_age():
 def test_format_missing_fetched_at_stale():
     line = _ps_format({"state": "ok", "remaining": 5}, "2026-11-07T12:00:00Z")
     assert "[stale]" in line
-    assert "5 remaining" in line
+    assert "allowance  remaining  5" in line
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="PowerShell formatter")

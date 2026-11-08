@@ -7,7 +7,11 @@ import sys
 import time
 from pathlib import Path
 
+import pytest
+
 import opencode_fuel as of
+
+REPO = Path(__file__).resolve().parents[2]
 
 
 # Captured sample of real ``opencode stats --models`` output, including
@@ -286,6 +290,9 @@ def test_parse_opencode_stats_text_returns_none_on_failure():
         "free_models": [],
         "total_cost": None,
         "parse_success": False,
+        "sessions": None,
+        "messages": None,
+        "empty_local_history": False,
     }
     garbage = of.parse_opencode_stats_text("not a stats table")
     assert garbage["total_cost"] is None
@@ -341,6 +348,9 @@ def test_parse_opencode_stats_text_or_json_returns_empty_for_garbage():
         "costs": {},
         "free_models": [],
         "parse_success": False,
+        "sessions": None,
+        "messages": None,
+        "empty_local_history": False,
     }
 
 
@@ -767,13 +777,16 @@ def test_fr6147_go_windows_used_vs_remaining_and_unstarted_rolling():
     assert win["month"]["remaining_pct"] == 64
     assert fuel["limiting"] == "week"
     paint = of.format_opencode_paint_lines(100, win)
-    assert "Starts on first use" in paint["window_lines"][0]
+    assert "not measured" in paint["window_lines"][0]
+    assert "0% used" not in paint["window_lines"][0]
     assert "72% used" in paint["window_lines"][1]
     assert "28% rem" in paint["window_lines"][1]
     assert "36% used" in paint["window_lines"][2]
     assert "64% rem" in paint["window_lines"][2]
     assert paint["go_remaining"] == 28
-    assert "free 100%" in paint["summary"]
+    assert "free catalogue" not in paint["summary"]
+    assert paint["summary"].startswith("OpenCode  go ")
+    assert "100%" not in paint["summary"]
 
 
 def test_fr6147_normalize_fixture_reset_labels_and_exhausted_limits():
@@ -790,7 +803,591 @@ def test_fr6147_normalize_fixture_reset_labels_and_exhausted_limits():
     assert "reset 1d 2h" in paint["window_lines"][1]
     assert "reset 26d 18h" in paint["window_lines"][2]
     # Free=100 must not imply Go availability when limiting window is exhausted.
-    assert "go weekly 0%" in paint["summary"]
+    assert "go weekly est 0%" in paint["summary"]
+
+
+# MarchHare run/opencode-fuel.json at 2026-11-08T14:02:58Z (read_state=ok).
+MARCHHARE_1403_CACHE = {
+    "fetched_at": "2026-11-08T14:02:58.8574209Z",
+    "limiting": None,
+    "opencode-free": 100,
+    "read_state": "ok",
+    "windows": {
+        "month": {
+            "fetched_at": None,
+            "remaining_pct": None,
+            "reset_label": None,
+            "status": "unknown",
+            "used_pct": None,
+        },
+        "rolling": {
+            "fetched_at": None,
+            "remaining_pct": None,
+            "reset_label": None,
+            "status": "unstarted",
+            "used_pct": 0,
+        },
+        "week": {
+            "fetched_at": None,
+            "remaining_pct": None,
+            "reset_label": None,
+            "status": "unknown",
+            "used_pct": None,
+        },
+    },
+}
+
+
+def test_digest_stale_does_not_blank_fresh_local_week():
+    wins = {
+        "rolling": {"status": "unstarted", "used_pct": 0},
+        "week": {"status": "known", "used_pct": 72, "remaining_pct": 28},
+        "month": {"status": "known", "used_pct": 36, "remaining_pct": 64},
+    }
+    assert of.local_cache_paint_stale(digest_stale=True, local_windows_applied=True) is False
+    assert of.local_cache_paint_stale(digest_stale=True, local_windows_applied=False) is True
+    kept = of.format_opencode_paint_lines(
+        None, wins, stale=of.local_cache_paint_stale(digest_stale=True, local_windows_applied=True)
+    )
+    assert kept["windows"]["week"]["remaining_pct"] == 28
+    assert kept["windows"]["month"]["remaining_pct"] == 64
+    blanked = of.format_opencode_paint_lines(
+        None, wins, stale=of.local_cache_paint_stale(digest_stale=True, local_windows_applied=False)
+    )
+    assert blanked["windows"]["week"]["remaining_pct"] is None
+    assert blanked["windows"]["month"]["remaining_pct"] is None
+
+
+# Sanitized 2026-11-08 opencode stats --models --days 7. Dollar figures are local
+# stats cost, not a provider remaining balance.
+_ADMIN_STATS_7D = """
+┌────────────────────────────────────────────────────────┐
+│ Sessions                                             41│
+│ Messages                                            809│
+│                      COST & TOKENS                     │
+│ Total Cost                                       $15.82│
+│                      MODEL USAGE                       │
+│ opencode-go/kimi-k2.7-code                             │
+│ Cost                                         $13.8461 │
+│ opencode-go/glm-5.3                                    │
+│ Cost                                          $1.9668 │
+│ opencode/beam-free                                     │
+│ Cost                                          $0.0000 │
+│ opencode-go/longcat-2.0                                │
+│ Cost                                          $0.0028 │
+│ opencode-go/glm-5.3-flash                              │
+│ Cost                                          $0.0014 │
+│                      TOOL USAGE                        │
+└────────────────────────────────────────────────────────┘
+"""
+
+_SYSTEM_STATS_7D = """
+┌────────────────────────────────────────────────────────┐
+│ Sessions                                              0│
+│ Messages                                              0│
+│                      COST & TOKENS                     │
+│ Total Cost                                        $0.00│
+└────────────────────────────────────────────────────────┘
+"""
+
+
+def test_usage_limits_schema_paints_used_percent_not_a_balance():
+    """Fixture meters, not a live console reading."""
+    now = 1_700_000_000_000
+    doc = {
+        "workspace": {"id": "ws_fixture"},
+        "go": {
+            "rolling": {"percent": 0, "limited": False, "resetsAt": now + 3 * 3600 * 1000},
+            "weekly": {"percent": 10, "limited": False, "resetsAt": now + (2 * 3600 + 5 * 60) * 1000},
+            "monthly": {"percent": 40, "limited": False, "resetsAt": now + (2 * 24 * 3600) * 1000},
+        },
+        "budgets": [],
+    }
+    wins = of.provider_windows_from_usage_limits(doc, now_ms=now)
+    assert wins is not None
+    assert wins["rolling"]["source"] == "provider"
+    assert wins["rolling"]["used_pct"] == 0
+    assert wins["rolling"]["remaining_pct"] is None
+    assert wins["rolling"]["status"] == "known"
+    rolling = of.format_go_window_line("rolling", wins["rolling"])
+    assert rolling == "go rolling  0% used  reset 3h 0m"
+    assert "Starts on first use" not in rolling
+    assert "0% used" in rolling
+    weekly = of.format_go_window_line("week", wins["week"])
+    assert weekly == "go weekly  10% used  reset 2h 5m"
+    assert "rem" not in weekly
+    monthly = of.format_go_window_line("month", wins["month"])
+    assert "40% used" in monthly
+    assert monthly.endswith("reset 2d 0h")
+    assert of.provider_windows_from_usage_limits({"workspace": {}, "go": None, "budgets": []}) is None
+
+
+def test_usage_base_accepts_literal_loopback_only():
+    assert (
+        of.usage_limits_request_url("http://127.0.0.1:4096")
+        == "http://127.0.0.1:4096/api/experimental/usage/limits"
+    )
+    assert (
+        of.usage_limits_request_url("https://127.0.0.1:4096/")
+        == "https://127.0.0.1:4096/api/experimental/usage/limits"
+    )
+    assert (
+        of.usage_limits_request_url("http://[::1]:4096")
+        == "http://[::1]:4096/api/experimental/usage/limits"
+    )
+    assert (
+        of.usage_limits_request_url("http://127.0.0.2:4096")
+        == "http://127.0.0.2:4096/api/experimental/usage/limits"
+    )
+    rejected = [
+        "",
+        "127.0.0.1:4096",
+        "http://",
+        "http://[::1",
+        "http://::1:4096",
+        "ftp://127.0.0.1:4096",
+        "file:///etc/passwd",
+        "http://localhost:4096",
+        "http://example.com:4096",
+        "http://8.8.8.8:4096",
+        "http://10.0.0.1:4096",
+        "http://0.0.0.0:4096",
+        "http://[2001:db8::1]:4096",
+        "http://[::]:4096",
+        "http://opencode:secret@127.0.0.1:4096",
+        "http://opencode@127.0.0.1:4096",
+        "http://127.0.0.1:4096/?q=1",
+        "http://127.0.0.1:4096/#frag",
+        "http://127.0.0.1:4096/api/experimental/usage/limits",
+        "http://127.0.0.1:0",
+        "http://127.0.0.1:65536",
+        "http://127.0.0.1:abc",
+        "http://127.0.0.1:4096:80",
+    ]
+    for raw in rejected:
+        with pytest.raises(of.UsageLimitsURLError):
+            of.usage_limits_request_url(raw)
+
+
+def test_fetch_rejects_nonloopback_without_a_connection():
+    off = of.fetch_usage_limits("http://example.com:4096", "secret-not-logged")
+    embedded = of.fetch_usage_limits("http://opencode:secret@127.0.0.1:4096", "secret-not-logged")
+    assert off["kind"] == "unavailable" and off["doc"] is None
+    assert embedded["kind"] == "unavailable" and embedded["doc"] is None
+
+
+def _loopback_limits_server(status, body=b"", location=None, seen=None, content_type=None):
+    import threading
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            if seen is not None:
+                seen.setdefault("hits", []).append(
+                    {"path": self.path, "auth": self.headers.get("Authorization")}
+                )
+            self.send_response(status)
+            if location:
+                self.send_header("Location", location)
+            if body:
+                self.send_header("Content-Type", content_type or "application/json")
+                self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            if body:
+                self.wfile.write(body)
+
+        def log_message(self, fmt, *args):
+            return
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    return server
+
+
+def test_fetch_usage_limits_uses_published_route_and_server_username(monkeypatch):
+    import base64
+
+    body = b'{"workspace":{"id":"ws"},"go":null,"budgets":[]}'
+    seen = {}
+    server = _loopback_limits_server(200, body, seen=seen)
+    port = server.server_address[1]
+    monkeypatch.setenv("http_proxy", "http://192.0.2.1:9")
+    monkeypatch.setenv("https_proxy", "http://192.0.2.1:9")
+    try:
+        read = of.fetch_usage_limits(
+            f"http://127.0.0.1:{port}",
+            "secret-not-logged",
+            username="tray",
+            timeout=2,
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+    assert read["kind"] == "unsigned"
+    assert read["doc"]["go"] is None
+    assert seen["hits"][0]["path"] == "/api/experimental/usage/limits"
+    auth = seen["hits"][0]["auth"]
+    assert auth.startswith("Basic ")
+    assert "secret-not-logged" not in auth
+    user, password = base64.b64decode(auth.split(" ", 1)[1]).decode("utf-8").split(":", 1)
+    assert user == "tray"
+    assert password == "secret-not-logged"
+
+
+def test_fetch_defaults_basic_username_to_opencode():
+    import base64
+
+    body = b'{"go":null}'
+    seen = {}
+    server = _loopback_limits_server(200, body, seen=seen)
+    port = server.server_address[1]
+    try:
+        of.fetch_usage_limits(f"http://127.0.0.1:{port}", "pw", timeout=2)
+    finally:
+        server.shutdown()
+        server.server_close()
+    auth = seen["hits"][0]["auth"]
+    user, _password = base64.b64decode(auth.split(" ", 1)[1]).decode("utf-8").split(":", 1)
+    assert user == "opencode"
+
+
+def test_fetch_does_not_follow_auth_carrying_redirect():
+    seen = {}
+    server = _loopback_limits_server(
+        302,
+        location="http://example.com/steal",
+        seen=seen,
+    )
+    port = server.server_address[1]
+    try:
+        read = of.fetch_usage_limits(
+            f"http://127.0.0.1:{port}",
+            "secret-not-logged",
+            username="opencode",
+            timeout=2,
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+    assert read["kind"] == "unavailable"
+    assert read["doc"] is None
+    assert len(seen["hits"]) == 1
+    assert seen["hits"][0]["path"] == "/api/experimental/usage/limits"
+    assert seen["hits"][0]["auth"].startswith("Basic ")
+
+
+def test_fetch_does_not_follow_same_host_redirect():
+    seen = {}
+    server = _loopback_limits_server(302, location="/steal", seen=seen)
+    port = server.server_address[1]
+    try:
+        read = of.fetch_usage_limits(f"http://127.0.0.1:{port}", "pw", timeout=2)
+    finally:
+        server.shutdown()
+        server.server_close()
+    assert read["kind"] == "unavailable"
+    assert read["doc"] is None
+    assert [hit["path"] for hit in seen["hits"]] == ["/api/experimental/usage/limits"]
+
+
+def _provider_previous():
+    return {
+        "rolling": {"status": "known", "used_pct": 0, "remaining_pct": None, "source": "provider"},
+        "week": {"status": "known", "used_pct": 10, "remaining_pct": None, "source": "provider"},
+        "month": {"status": "known", "used_pct": 40, "remaining_pct": None, "source": "provider"},
+    }
+
+
+def _stats_estimate_windows():
+    return {
+        "rolling": {"status": "unstarted", "used_pct": 0, "remaining_pct": None},
+        "week": {"status": "known", "used_pct": 72, "remaining_pct": 28},
+        "month": {"status": "known", "used_pct": 36, "remaining_pct": 64},
+    }
+
+
+def test_provider_read_failure_is_unknown_not_stats_estimate():
+    out = of.resolve_provider_windows(None, failed=True, previous=_stats_estimate_windows())
+    for wid in ("rolling", "week", "month"):
+        assert out[wid]["source"] == "provider"
+        assert out[wid]["status"] == "unknown"
+        assert out[wid]["used_pct"] is None
+        assert out[wid]["remaining_pct"] is None
+    assert "28" not in of.format_go_window_line("week", out["week"])
+    assert "rem" not in of.format_go_window_line("week", out["week"])
+
+
+def test_provider_read_failure_keeps_stale_last_provider_not_stats():
+    out = of.resolve_provider_windows(None, failed=True, previous=_provider_previous())
+    assert out["week"]["status"] == "stale"
+    assert out["week"]["source"] == "provider"
+    assert out["week"]["used_pct"] is None
+    assert out["week"]["remaining_pct"] is None
+    line = of.format_go_window_line("week", out["week"])
+    assert line == "go weekly  n/a  [stale]"
+    assert "10%" not in line
+    assert "rem" not in line
+
+
+def test_provider_go_null_is_unknown_not_stale_or_stats():
+    doc = {"workspace": {"id": "ws"}, "go": None, "budgets": []}
+    out = of.resolve_provider_windows(doc, failed=False, previous=_provider_previous())
+    assert out["rolling"]["status"] == "unknown"
+    assert out["week"]["status"] == "unknown"
+    assert out["month"]["status"] == "unknown"
+    assert out["week"]["source"] == "provider"
+    assert out["week"]["used_pct"] is None
+    line = of.format_go_window_line("week", out["week"])
+    assert line == "go weekly  n/a"
+    assert "[stale]" not in line
+    assert "10%" not in line
+
+
+def test_absent_provider_window_stays_unknown():
+    now = 1_700_000_000_000
+    doc = {
+        "go": {
+            "rolling": {"percent": 0, "limited": False, "resetsAt": now + 3 * 3600 * 1000},
+            "monthly": {"percent": 40, "limited": False, "resetsAt": now + 2 * 24 * 3600 * 1000},
+        }
+    }
+    out = of.resolve_provider_windows(doc, failed=False, previous=_provider_previous(), now_ms=now)
+    assert out["week"]["status"] == "unknown"
+    assert out["week"]["source"] == "provider"
+    assert out["week"]["used_pct"] is None
+    rolling = of.format_go_window_line("rolling", out["rolling"])
+    assert rolling == "go rolling  0% used  reset 3h 0m"
+    assert "Starts with your next request" not in rolling
+    assert "Starts on first use" not in rolling
+    assert out["month"]["used_pct"] == 40
+    assert out["month"]["remaining_pct"] is None
+    paint = of.format_opencode_paint_lines(None, out)
+    assert paint["windows"]["rolling"]["remaining_pct"] is None
+    assert "rem est" not in "\n".join(paint["window_lines"])
+    bars = {bar["id"]: bar for bar in of.opencode_pool_bars(None, out)}
+    assert bars["rolling"]["known"] is True
+    assert bars["rolling"]["pct"] == 0
+    assert bars["week"]["known"] is False
+    assert bars["month"]["pct"] == 40
+
+
+def test_provider_failure_leaves_local_cost_lines_separate():
+    parsed = of.parse_opencode_stats_text(_ADMIN_STATS_7D)
+    fuel = of.fuel_from_windowed_stats({"week": parsed})
+    windows = of.resolve_provider_windows(None, failed=True, previous=None)
+    costs = of.format_local_model_lines(fuel["local_costs"])
+    assert costs[0] == "kimi-k2.7-code  7d local $13.85"
+    assert all(windows[wid]["source"] == "provider" for wid in ("rolling", "week", "month"))
+    assert all(windows[wid]["remaining_pct"] is None for wid in windows)
+    assert fuel["local_costs"]["glm-5.3"] == 1.9668
+    joined = "\n".join(of.format_go_window_line(wid, windows[wid]) for wid in windows)
+    assert "13.85" not in joined
+    assert "rem est" not in joined
+
+
+def test_http_200_html_is_non_json_and_not_a_quota():
+    html = "<!DOCTYPE html><html><body>72% used weekly</body></html>"
+    read = of.interpret_usage_limits_response(200, "text/html; charset=utf-8", html)
+    assert read == {"kind": "non_json", "doc": None}
+    windows = of.windows_from_usage_read(read, previous=_stats_estimate_windows())
+    assert windows["week"]["status"] == "unknown"
+    assert windows["week"]["source"] == "provider"
+    assert windows["week"]["used_pct"] is None
+    assert windows["week"]["remaining_pct"] is None
+    line = of.format_go_window_line("week", windows["week"])
+    assert line == "go weekly  n/a"
+    assert "72" not in line
+    assert "rem" not in line
+    labeled = of.interpret_usage_limits_response(
+        200, "text/html", '{"go":{"rolling":{"percent":72,"limited":false,"resetsAt":1}}}'
+    )
+    assert labeled["kind"] == "non_json"
+    assert labeled["doc"] is None
+
+
+def test_http_200_html_from_loopback_does_not_become_go_null(monkeypatch):
+    html = b"<!DOCTYPE html><html><body>OpenCode</body></html>"
+    seen = {}
+    server = _loopback_limits_server(
+        200, html, seen=seen, content_type="text/html; charset=utf-8"
+    )
+    port = server.server_address[1]
+    monkeypatch.setenv("http_proxy", "http://192.0.2.1:9")
+    try:
+        read = of.fetch_usage_limits(f"http://127.0.0.1:{port}", "pw", username="opencode", timeout=2)
+    finally:
+        server.shutdown()
+        server.server_close()
+    assert read["kind"] == "non_json"
+    assert read["doc"] is None
+    assert seen["hits"][0]["path"] == "/api/experimental/usage/limits"
+    windows = of.windows_from_usage_read(read, previous=_provider_previous())
+    assert windows["week"]["status"] == "stale"
+    assert windows["week"]["used_pct"] is None
+    assert "10%" not in of.format_go_window_line("week", windows["week"])
+
+
+def test_json_null_is_unsigned_not_html_failure():
+    read = of.interpret_usage_limits_response(200, "application/json", "null")
+    assert read["kind"] == "unsigned"
+    windows = of.windows_from_usage_read(read, previous=_provider_previous())
+    assert windows["month"]["status"] == "unknown"
+    assert windows["month"]["used_pct"] is None
+    assert "[stale]" not in of.format_go_window_line("month", windows["month"])
+
+
+def test_fuel_helper_uses_server_auth_and_replaces_stats_windows():
+    text = (REPO / "bob" / "tray" / "tools" / "Get-BobOpencodeFuel.ps1").read_text(encoding="utf-8")
+    assert "OPENCODE_SERVER_PASSWORD" in text
+    assert "OPENCODE_SERVER_USERNAME" in text
+    assert "OPENCODE_PASSWORD" not in text.replace("OPENCODE_SERVER_PASSWORD", "")
+    assert "windows_from_usage_read" in text
+    assert "$out.go = $null" in text
+    assert "$out.provider = 'usage-limits'" in text
+    assert "$out.provider_read" in text
+
+
+def test_system_empty_stats_are_not_user_unstarted():
+    parsed = of.parse_opencode_stats_text(_SYSTEM_STATS_7D)
+    assert parsed["sessions"] == 0
+    assert parsed["messages"] == 0
+    assert parsed["empty_local_history"] is True
+    assert parsed["costs"] == {}
+    fuel = of.fuel_from_windowed_stats({"week": parsed})
+    assert fuel["history"]["empty"] is True
+    assert fuel["windows"]["rolling"]["status"] == "unknown"
+    assert fuel["windows"]["week"]["status"] == "unknown"
+    assert fuel["windows"]["month"]["status"] == "unknown"
+    assert fuel["local_costs"] == {}
+    paint = of.format_opencode_paint_lines(None, fuel["windows"])
+    assert "not measured" not in "\n".join(paint["window_lines"])
+    assert "0% used" not in "\n".join(paint["window_lines"])
+    assert all("n/a" in line for line in paint["window_lines"])
+
+
+def test_administrator_stats_keep_per_model_local_cost():
+    parsed = of.parse_opencode_stats_text(_ADMIN_STATS_7D)
+    assert parsed["sessions"] == 41
+    assert parsed["messages"] == 809
+    assert parsed["empty_local_history"] is False
+    assert parsed["costs"]["kimi-k2.7-code"] == 13.8461
+    assert parsed["costs"]["glm-5.3"] == 1.9668
+    assert parsed["costs"]["longcat-2.0"] == 0.0028
+    assert parsed["costs"]["glm-5.3-flash"] == 0.0014
+    fuel = of.fuel_from_windowed_stats({"week": parsed})
+    assert fuel["history"]["empty"] is False
+    assert fuel["history"]["sessions"] == 41
+    assert fuel["local_costs"]["kimi-k2.7-code"] == 13.8461
+    lines = of.format_local_model_lines(fuel["local_costs"])
+    assert lines[0] == "kimi-k2.7-code  7d local $13.85"
+    assert "glm-5.3  7d local $1.97" in lines
+    assert all("rem" not in line for line in lines)
+    paint = of.format_opencode_paint_lines(None, fuel["windows"])
+    assert "0% used" not in paint["window_lines"][0]
+    assert "not measured" in paint["window_lines"][0]
+
+
+def test_empty_service_history_does_not_replace_user_local_costs():
+    import bobreport
+
+    cached = {
+        "local_costs": {"kimi-k2.7-code": 13.8461},
+        "history": {"sessions": 41, "messages": 809, "empty": False},
+        "read_state": "ok",
+    }
+    fresh = {
+        "read_state": "ok",
+        "history": {"sessions": 0, "messages": 0, "empty": True},
+        "windows": {"rolling": {"status": "unknown"}, "week": {"status": "unknown"}, "month": {"status": "unknown"}},
+    }
+    kept = bobreport._accept_opencode_fuel_doc(fresh, cached)
+    assert kept["local_costs"]["kimi-k2.7-code"] == 13.8461
+    assert kept["history"]["sessions"] == 41
+
+
+def test_marchhare_1403_cache_is_not_a_go_quota_and_keeps_unstarted_rolling():
+    """Digest free=100 must not be painted as remaining quota.
+
+    Rolling unstarted/used 0/remaining null is the normal 'stats has no 5-hour
+    window' record. Week and month unknown means no parsed Go cost, not a
+    renderer failure and not 100%.
+    """
+    wins = MARCHHARE_1403_CACHE["windows"]
+    paint = of.format_opencode_paint_lines(100, wins)
+    assert paint["summary"] == "OpenCode  go n/a"
+    assert paint["free_heading"] is None
+    assert "100%" not in paint["summary"]
+    assert "not measured" in paint["window_lines"][0]
+    assert "0% used" not in paint["window_lines"][0]
+    assert paint["windows"]["rolling"]["status"] == "unstarted"
+    assert paint["windows"]["rolling"]["remaining_pct"] is None
+    assert "n/a" in paint["window_lines"][1]
+    assert "n/a" in paint["window_lines"][2]
+    assert paint["windows"]["week"]["status"] == "unknown"
+    assert paint["windows"]["month"]["status"] == "unknown"
+    bars = of.opencode_pool_bars(100, wins)
+    by_id = {b["id"]: b for b in bars}
+    assert "free" not in by_id
+    assert by_id["rolling"]["known"] is False
+    assert "not measured" in by_id["rolling"]["heading"]
+    assert "0% used" not in by_id["rolling"]["heading"]
+    assert by_id["week"]["known"] is False
+    assert by_id["month"]["known"] is False
+    assert "100%" not in by_id["week"]["heading"]
+    assert "100%" not in by_id["month"]["heading"]
+
+
+def test_null_runtime_keeps_free_and_go_windows_without_inventing_quota():
+    """The MarchHare snapshot shape: free=null, go=null, windows=null.
+
+    Pool rows must still exist. Unknown is n/a, not 100%, and rolling is not
+    relabelled "Starts on first use" when stats were never read. ``opencode
+    stats`` has no remaining-quota field and no 5-hour reset.
+    """
+    paint = of.format_opencode_paint_lines(None, None)
+    assert paint["summary"] == "OpenCode  free n/a | go n/a"
+    assert paint["free_remaining"] is None
+    assert paint["go_remaining"] is None
+    assert "100%" not in paint["summary"]
+    assert len(paint["window_lines"]) == 3
+    joined = "\n".join(paint["window_lines"])
+    assert "Starts on first use" not in joined
+    assert "reset " not in joined
+    assert all("n/a" in line for line in paint["window_lines"])
+    assert paint["windows"]["rolling"]["status"] == "unknown"
+    assert paint["windows"]["week"]["status"] == "unknown"
+    assert paint["windows"]["month"]["status"] == "unknown"
+    bars = of.opencode_pool_bars(None, None)
+    assert [b["id"] for b in bars] == ["free", "rolling", "week", "month"]
+    assert all(b["known"] is False for b in bars)
+    assert all(b["pct"] == 0 for b in bars)
+    assert all("100%" not in b["heading"] for b in bars)
+
+
+def test_known_windows_bars_use_remaining_not_unknown_hundred():
+    windowed = {
+        "week": {"costs": {"glm-5.3": 5.4}, "parse_success": True},
+        "month": {"costs": {"glm-5.3": 5.4}, "parse_success": True},
+    }
+    fuel = of.fuel_from_windowed_stats(windowed)
+    bars = of.opencode_pool_bars(None, fuel["windows"])
+    by_id = {b["id"]: b for b in bars}
+    assert by_id["free"]["known"] is False
+    assert by_id["rolling"]["known"] is False
+    assert "not measured" in by_id["rolling"]["heading"]
+    assert "0% used" not in by_id["rolling"]["heading"]
+    assert by_id["week"]["known"] is True
+    assert by_id["week"]["pct"] == 28
+    assert by_id["month"]["known"] is True
+    assert by_id["month"]["pct"] == 64
+    stale = of.opencode_pool_bars(100, fuel["windows"], stale=True)
+    stale_by = {b["id"]: b for b in stale}
+    assert all(b["known"] is False for b in stale)
+    assert "100%" not in stale_by["free"]["heading"]
+    assert "[stale]" in stale_by["week"]["heading"]
+    assert "28%" not in stale_by["week"]["heading"]
+    assert "[stale]" in stale_by["month"]["heading"]
 
 
 def test_fr6147_stale_clears_known_values():

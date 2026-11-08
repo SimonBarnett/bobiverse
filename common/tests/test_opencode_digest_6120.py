@@ -1,7 +1,10 @@
 """Digest / webhook tests for OpenCode fuel ids (issue #6120)."""
 from __future__ import annotations
 
+import json
+import time
 from pathlib import Path
+from unittest import mock
 
 import bobreport
 
@@ -205,6 +208,36 @@ def test_mrb6176_helper_timeout_default_is_short():
     assert "_opencode_pcent_cache" in src
 
 
+def _popen_writer(payload: str, *, running: bool = False):
+    """Popen stand-in. A running child does not write; a finished one does."""
+
+    class Proc:
+        def __init__(self):
+            self.returncode = None if running else 0
+            self.killed = False
+
+        def poll(self):
+            if self.killed:
+                self.returncode = -9
+                return -9
+            if running:
+                return None
+            self.returncode = 0
+            return 0
+
+        def kill(self):
+            self.killed = True
+
+    def fake_popen(argv, **kwargs):  # noqa: ARG001
+        fh = kwargs.get("stdout")
+        if fh is not None and not running:
+            fh.write(payload)
+            fh.flush()
+        return Proc()
+
+    return fake_popen
+
+
 def test_mrb6176_helper_cache_avoids_repeat_subprocess(monkeypatch, tmp_path: Path):
     """Within TTL, second read must not spawn PowerShell again."""
     from unittest import mock
@@ -215,29 +248,23 @@ def test_mrb6176_helper_cache_avoids_repeat_subprocess(monkeypatch, tmp_path: Pa
     helper.write_text("# stub\n", encoding="utf-8")
     monkeypatch.setenv("BOB_OPENCODE_FUEL_HELPER", str(helper))
     monkeypatch.setenv("BOB_OPENCODE_FUEL_CACHE_S", "30")
-    calls: list[float] = []
+    calls: list[int] = []
 
-    class FakeProc:
-        stdout = '{"free": 80, "go": 40}\n'
-        returncode = 0
+    def fake_popen(argv, **kwargs):
+        calls.append(1)
+        return _popen_writer('{"free": 80, "go": 40}\n')(argv, **kwargs)
 
-    def fake_run(*args, **kwargs):
-        calls.append(float(kwargs.get("timeout") or 0))
-        return FakeProc()
-
-    with mock.patch("subprocess.run", fake_run):
+    with mock.patch("subprocess.Popen", fake_popen):
         a = bobreport.read_local_opencode_pcent(now=1000.0)
         b = bobreport.read_local_opencode_pcent(now=1010.0)  # within 30s TTL
     assert a == {"opencode-free": 80, "opencode-go": 40}
     assert b == a
     assert len(calls) == 1
-    assert calls[0] <= 5.0
 
 
 def test_mrb6176_helper_timeout_returns_stale_cache(monkeypatch, tmp_path: Path):
-    """On helper timeout, keep last good reading; avoid re-hammer within stamp."""
+    """A still-running helper must not wipe the last good reading or block."""
     from unittest import mock
-    import subprocess as sp
 
     bobreport.clear_opencode_pcent_cache()
     monkeypatch.delenv("BOB_OPENCODE_FUEL_FIXTURE", raising=False)
@@ -245,27 +272,191 @@ def test_mrb6176_helper_timeout_returns_stale_cache(monkeypatch, tmp_path: Path)
     helper.write_text("# stub\n", encoding="utf-8")
     monkeypatch.setenv("BOB_OPENCODE_FUEL_HELPER", str(helper))
     monkeypatch.setenv("BOB_OPENCODE_FUEL_CACHE_S", "30")
-
-    class FakeProc:
-        stdout = '{"free": 70, "go": 20}\n'
-        returncode = 0
-
     n = {"i": 0}
 
-    def fake_run(*args, **kwargs):
+    def fake_popen(argv, **kwargs):
         n["i"] += 1
-        if n["i"] == 1:
-            return FakeProc()
-        raise sp.TimeoutExpired(cmd=args[0], timeout=kwargs.get("timeout"))
+        running = n["i"] > 1
+        return _popen_writer(
+            '{"free": 70, "go": 20}\n', running=running
+        )(argv, **kwargs)
 
-    with mock.patch("subprocess.run", fake_run):
+    with mock.patch("subprocess.Popen", fake_popen):
         first = bobreport.read_local_opencode_pcent(now=2000.0, force=True)
-        # Force refresh after TTL: times out -> stale
+        # TTL elapsed, refresh starts a helper that is still inside opencode stats.
         second = bobreport.read_local_opencode_pcent(now=2040.0, force=True)
-        # Within new stamp window without force: no third subprocess
-        third = bobreport.read_local_opencode_pcent(now=2045.0)
+        # Still in flight: no third spawn, last numbers kept.
+        third = bobreport.read_local_opencode_pcent(now=2045.0, force=True)
     assert first == {"opencode-free": 70, "opencode-go": 20}
     assert second == first
     assert third == first
     assert n["i"] == 2
+    bobreport.clear_opencode_pcent_cache()
+
+
+# MarchHare tray-status.json after the 10fe0381 install: helper killed before JSON.
+_NULL_HELPER_JSON = (
+    '{"free": null, "go": null, "windows": {"rolling": {"status": "unknown"},'
+    ' "week": {"status": "unknown"}, "month": {"status": "unknown"}},'
+    ' "read_state": "opencode_missing", "limiting": null}\n'
+)
+_LATER_HELPER_JSON = (
+    '{"free": null, "go": 28, "windows": {'
+    '"rolling": {"status": "unknown"},'
+    '"week": {"status": "known", "used_pct": 72, "remaining_pct": 28, "reset_label": "1d 2h"},'
+    '"month": {"status": "known", "used_pct": 36, "remaining_pct": 64, "reset_label": "26d 18h"}'
+    '}, "read_state": "ok", "limiting": "week"}\n'
+)
+
+
+def test_slow_helper_does_not_block_and_later_tick_keeps_windows(monkeypatch, tmp_path: Path):
+    """Live opencode outlives the old 5s kill. The next tick must see its JSON."""
+    from unittest import mock
+
+    bobreport.clear_opencode_pcent_cache()
+    monkeypatch.delenv("BOB_OPENCODE_FUEL_FIXTURE", raising=False)
+    monkeypatch.delenv("BOB_OPENCODE_WINDOWS_FIXTURE", raising=False)
+    helper = tmp_path / "Get-BobOpencodeFuel.ps1"
+    helper.write_text("# stub\n", encoding="utf-8")
+    monkeypatch.setenv("BOB_OPENCODE_FUEL_HELPER", str(helper))
+    monkeypatch.setenv("BOB_OPENCODE_FUEL_CACHE_S", "0")
+    phase = {"running": True}
+
+    def fake_popen(argv, **kwargs):
+        class Proc:
+            def poll(self):
+                if phase["running"]:
+                    return None
+                path = bobreport._opencode_fuel_cache.get("stdout_path")
+                if isinstance(path, str) and path:
+                    Path(path).write_text(_LATER_HELPER_JSON, encoding="utf-8")
+                return 0
+
+            def kill(self):
+                phase["running"] = False
+
+        return Proc()
+
+    with mock.patch("subprocess.Popen", fake_popen):
+        started = time.perf_counter()
+        first = bobreport.read_local_opencode_fuel_doc(now=3000.0, force=True)
+        elapsed = time.perf_counter() - started
+        assert elapsed < 1.0
+        assert first == {}
+        phase["running"] = False
+        second = bobreport.read_local_opencode_fuel_doc(now=3005.0, force=True)
+    assert "opencode-free" not in second
+    assert second.get("opencode-go") == 28
+    wins = second["windows"]
+    assert wins["rolling"]["status"] == "unknown"
+    assert wins["week"]["remaining_pct"] == 28
+    assert wins["week"]["reset_label"] == "1d 2h"
+    assert wins["month"]["remaining_pct"] == 64
+    bobreport.clear_opencode_pcent_cache()
+
+
+def test_missing_upstream_publishes_windows_without_inventing_free(
+    tmp_path: Path, monkeypatch
+):
+    """Null helper JSON still publishes three Go windows and does not set free=100."""
+    import bobstat
+
+    bobreport.clear_opencode_pcent_cache()
+    monkeypatch.delenv("BOB_OPENCODE_FUEL_FIXTURE", raising=False)
+    monkeypatch.delenv("BOB_OPENCODE_WINDOWS_FIXTURE", raising=False)
+    helper = tmp_path / "Get-BobOpencodeFuel.ps1"
+    helper.write_text("# stub\n", encoding="utf-8")
+    monkeypatch.setenv("BOB_OPENCODE_FUEL_HELPER", str(helper))
+    home = tmp_path / "home"
+    home.mkdir()
+    bobstat.write_peer(
+        home,
+        {
+            "ok": True,
+            "id": "marchhare",
+            "online": True,
+            "status": "operational",
+            "weekly": 80,
+            "weekly_known": True,
+            "pcent": {"grok-chat": 42},
+            "lastSeen": "2026-11-08T11:59:00Z",
+        },
+    )
+    posted: list[dict] = []
+
+    def fake_urlopen(req, timeout=0):  # noqa: ARG001
+        posted.append(json.loads(req.data.decode("utf-8")))
+
+        class Resp:
+            status = 204
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def read(self):
+                return b""
+
+        return Resp()
+
+    with mock.patch("subprocess.Popen", _popen_writer(_NULL_HELPER_JSON)):
+        with mock.patch("urllib.request.urlopen", fake_urlopen):
+            code = bobreport.publish_local_peer_fuel(
+                home, "marchhare", force=True, url="https://example.test/bob/v1/report"
+            )
+    assert code == 204
+    body = posted[0]
+    pcent = body.get("pcent") or {}
+    assert "opencode-free" not in pcent
+    assert "opencode-go" not in pcent
+    assert pcent.get("grok-chat") == 42
+    wins = body["opencode_windows"]
+    assert wins["rolling"]["status"] == "unknown"
+    assert wins["week"]["status"] == "unknown"
+    assert wins["month"]["status"] == "unknown"
+    assert wins["rolling"].get("remaining_pct") is None
+    bobreport.clear_opencode_pcent_cache()
+
+
+def test_disk_cache_survives_restart_and_failed_reread_does_not_wipe(
+    tmp_path: Path, monkeypatch
+):
+    """Tray and ear share run/opencode-fuel.json. A later opencode_missing must not erase week."""
+    bobreport.clear_opencode_pcent_cache()
+    monkeypatch.delenv("BOB_OPENCODE_FUEL_FIXTURE", raising=False)
+    cache = tmp_path / "run" / "opencode-fuel.json"
+    monkeypatch.setenv("BOB_OPENCODE_FUEL_CACHE_FILE", str(cache))
+    monkeypatch.setenv("BOB_OPENCODE_FUEL_CACHE_S", "0")
+    helper = tmp_path / "Get-BobOpencodeFuel.ps1"
+    helper.write_text("# stub\n", encoding="utf-8")
+    monkeypatch.setenv("BOB_OPENCODE_FUEL_HELPER", str(helper))
+
+    with mock.patch("subprocess.Popen", _popen_writer(_LATER_HELPER_JSON)):
+        first = bobreport.read_local_opencode_fuel_doc(now=4000.0, force=True)
+    assert first["windows"]["week"]["remaining_pct"] == 28
+    assert cache.is_file()
+    bobreport.clear_opencode_pcent_cache()
+    phase = {"running": True}
+
+    def hanging(argv, **kwargs):  # noqa: ARG001
+        class Proc:
+            def poll(self):
+                return None if phase["running"] else 0
+
+            def kill(self):
+                phase["running"] = False
+
+        return Proc()
+
+    with mock.patch("subprocess.Popen", hanging):
+        during = bobreport.read_local_opencode_fuel_doc(now=5000.0, force=True)
+    assert during["windows"]["week"]["remaining_pct"] == 28
+    bobreport.clear_opencode_pcent_cache()
+    with mock.patch("subprocess.Popen", _popen_writer(_NULL_HELPER_JSON)):
+        failed = bobreport.read_local_opencode_fuel_doc(now=6000.0, force=True)
+    assert failed["windows"]["week"]["remaining_pct"] == 28
+    assert "opencode-free" not in failed
+    bobreport.clear_opencode_pcent_cache()
 

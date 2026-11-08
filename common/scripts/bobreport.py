@@ -9,6 +9,7 @@ import json
 import os
 import re
 import shutil
+import sys
 import threading
 import time
 import uuid
@@ -217,6 +218,9 @@ _PCENT_KEYS_BY_POOL: dict[str, tuple[str, ...]] = {
 }
 # #40: pcent keys that follow the Grok weekly clock but are not Cursor pools.
 _GROK_WEEKLY_EXTRA_PCENT_KEYS = ("grok-build",)
+# Hosts with no Cursor login still publish these. grok-chat/sand is Cursor Sand,
+# not xAI weekly, and must not ride along in this set.
+_NON_CURSOR_PCENT_KEYS = ("grok-build", "opencode-free", "opencode-go")
 _MERGE_PEER_FIELDS = (
     "weekly",
     "cursor_label",
@@ -248,6 +252,12 @@ _MERGE_PEER_FIELDS = (
     "usd_gbp_rate",
     # FR #6147: OpenCode Go rolling/weekly/monthly window records for digest paint.
     "opencode_windows",
+    # xAI weekly meter identity. remaining stays on weekly / pcent.grok-build.
+    # The object is the peer-visible row: provider, direction, source, fetched_at, period_end.
+    "xai_weekly_used_pct",
+    "xai_weekly_source",
+    "xai_weekly_fetched_at",
+    "xai_weekly",
 )
 # FR #5690: when a merge payload carries these as null (or lists them in cleared[]),
 # pop the sticky chair value. Omit-null used to leave stale overage/repo forever.
@@ -266,6 +276,9 @@ _CLEARABLE_MERGE_FIELDS = frozenset({
     "usd_gbp_rate",
     # FR #6144: omit/unknown Cursor must clear sticky label (not leave foreign 0%).
     "cursor_label",
+    "xai_weekly_used_pct",
+    "xai_weekly_source",
+    "xai_weekly_fetched_at",
 })
 # FR #6144 / MRB #6169: one Cursor-group key set for clear / merge-skip / peer-block.
 _CURSOR_GROUP_KEYS = frozenset({
@@ -333,6 +346,10 @@ _TRAY_MACHINE_EXPORT_KEYS = (
     "weekly_known",
     "grok_account",
     "opencode_windows",
+    "xai_weekly_used_pct",
+    "xai_weekly_source",
+    "xai_weekly_fetched_at",
+    "xai_weekly",
 )
 WORKER_NICK_RE = re.compile(r"^w-([a-z0-9]+)-(\d+)_?$", re.I)
 
@@ -2170,6 +2187,37 @@ def _apply_cleared_merge_fields(ent: dict, payload: dict) -> None:
         ent.pop(key, None)
 
 
+def _non_cursor_pcent(pcent: object) -> dict:
+    """xAI weekly and OpenCode percents. Not Cursor Sand / grok-chat."""
+    if not isinstance(pcent, dict):
+        return {}
+    out: dict = {}
+    for key in _NON_CURSOR_PCENT_KEYS:
+        if key not in pcent or pcent.get(key) in (None, ""):
+            continue
+        out[key] = pcent.get(key)
+    return out
+
+
+def _merge_non_cursor_pcent(existing: object, incoming: object | None) -> dict:
+    """Keep grok-build and OpenCode when cursor_known is false.
+
+    Cursor keys in either map are dropped. An incoming null for a kept key clears it.
+    ``incoming is None`` means the payload omitted pcent: keep the existing non-Cursor keys.
+    """
+    kept = _non_cursor_pcent(existing)
+    if not isinstance(incoming, dict):
+        return kept
+    for key in _NON_CURSOR_PCENT_KEYS:
+        if key not in incoming:
+            continue
+        if incoming.get(key) in (None, ""):
+            kept.pop(key, None)
+        else:
+            kept[key] = incoming.get(key)
+    return kept
+
+
 def _apply_merge_payload(doc: dict, mid: str, payload: dict) -> list[str]:
     """Mutate digest doc for one machine merge; return new English actions."""
     actions: list[str] = []
@@ -2219,7 +2267,14 @@ def _apply_merge_payload(doc: dict, mid: str, payload: dict) -> list[str]:
             cursor_unknown = True
             ent["cursor_known"] = False
             for ck in _CURSOR_UNKNOWN_CLEAR_FIELDS:
+                if ck == "pcent":
+                    continue
                 ent.pop(ck, None)
+            ent["pcent"] = _merge_non_cursor_pcent(
+                ent.get("pcent"), payload.get("pcent") if "pcent" in payload else None
+            )
+            if not ent["pcent"]:
+                ent.pop("pcent", None)
         else:
             ent["cursor_known"] = True
     if (not cursor_unknown) and "pcent" in payload and isinstance(payload["pcent"], dict):
@@ -3388,8 +3443,21 @@ def export_machine_for_tray(
     for key in _peer_fill_keys():
         if key in ent and ent[key] is not None and ent[key] != "":
             base[key] = ent[key]
+    if cursor_known_ent is False and peer:
+        kept = _non_cursor_pcent(base.get("pcent"))
+        for key, val in _non_cursor_pcent(peer.get("pcent")).items():
+            kept.setdefault(key, val)
+        if kept:
+            base["pcent"] = kept
     if cursor_known_ent is False:
         for key in _cursor_peer_block:
+            if key == "pcent":
+                kept = _non_cursor_pcent(base.get("pcent"))
+                if kept:
+                    base["pcent"] = kept
+                else:
+                    base.pop("pcent", None)
+                continue
             base.pop(key, None)
         base["cursor_known"] = False
     if "cursor_known" in ent:
@@ -4181,6 +4249,13 @@ def peer_fuel_fingerprint(peer: dict) -> str:
         )
     else:
         parts.append("opencode_windows=")
+    for key in ("xai_weekly_used_pct", "xai_weekly_source", "xai_weekly_fetched_at"):
+        parts.append(f"{key}={peer.get(key)!s}")
+    meter = peer.get("xai_weekly")
+    if isinstance(meter, dict):
+        parts.append("xai_weekly=" + json.dumps(meter, sort_keys=True, separators=(",", ":")))
+    else:
+        parts.append("xai_weekly=")
     pools = peer.get("cursor_pools")
     if isinstance(pools, list):
         slim = []
@@ -4247,6 +4322,9 @@ def build_peer_fuel_merge_payload(peer: dict, machine_id: str) -> dict | None:
             continue
         if key in peer and peer.get(key) not in (None, ""):
             payload[key] = peer.get(key)
+    for key in ("xai_weekly_used_pct", "xai_weekly_source", "xai_weekly_fetched_at"):
+        if key in peer:
+            payload[key] = peer.get(key)
     if isinstance(peer.get("cursor_pools"), list):
         payload["cursor_pools"] = _coerce_cursor_pools(peer.get("cursor_pools"), machine_id=mid)
     blob = json.dumps(payload, separators=(",", ":"), default=str)
@@ -4256,25 +4334,221 @@ def build_peer_fuel_merge_payload(peer: dict, machine_id: str) -> dict | None:
 
 
 def report_post_url(env: dict[str, str] | None = None) -> str:
-    """FR #6143: BOB_REPORT_URL, then BOB_DIGEST_URL, then public default."""
+    """Fuel POST URL. Config reportUrl, then BOB_REPORT_URL, then digest default.
+
+    Does not rewrite hostnames. ``irc.ntsa.uk`` stays the IRC host unless that
+    string is the configured reportUrl.
+    """
+    chosen = resolve_fuel_report_target(env=env)
+    return str(chosen.get("url") or "")
+
+
+def resolve_ear_cache_home(
+    *,
+    explicit_home: str = "",
+    install_root: str = "",
+    local_system: bool = False,
+    userprofile: str = "",
+) -> Path:
+    """Same home Start-Bob.ps1 passes to ``irc_agent --home``.
+
+    LocalSystem with no ``-BobHome`` uses ``<InstallRoot>\\home``. A user
+    session with no ``-BobHome`` uses ``%USERPROFILE%\\.bobiverse``. An
+    explicit home wins. This does not look at the Administrator profile.
+    """
+    raw = (explicit_home or "").strip()
+    if raw:
+        return Path(raw)
+    if local_system:
+        root = (install_root or "").strip()
+        if not root:
+            raise ValueError("local-system ear requires InstallRoot")
+        return Path(root) / "home"
+    profile = (userprofile or "").strip()
+    if not profile:
+        raise ValueError("user ear requires a profile")
+    return Path(profile) / ".bobiverse"
+
+
+def _safe_report_target(raw: str, source: str) -> dict:
+    """Host and path only. Userinfo, query, and fragment are refused, not stripped."""
+    import urllib.parse
+
+    text = (raw or "").strip()
+    if not text:
+        return {"ok": False, "error": "empty-url", "source": source}
+    try:
+        parts = urllib.parse.urlsplit(text)
+    except ValueError:
+        return {"ok": False, "error": "malformed-url", "source": source}
+    if parts.scheme not in ("https", "http"):
+        return {"ok": False, "error": "scheme", "source": source}
+    if parts.username is not None or parts.password is not None:
+        return {"ok": False, "error": "userinfo", "source": source}
+    if parts.query or parts.fragment:
+        return {"ok": False, "error": "query", "source": source}
+    host = parts.hostname
+    if not host:
+        return {"ok": False, "error": "host", "source": source}
+    path = parts.path or "/"
+    netloc = host if parts.port is None else f"{host}:{int(parts.port)}"
+    url = urllib.parse.urlunsplit((parts.scheme, netloc, path, "", ""))
+    return {
+        "ok": True,
+        "url": url,
+        "host": host,
+        "path": path,
+        "source": source,
+        "error": None,
+    }
+
+
+def bobiverse_config_report_url(env: dict[str, str] | None = None) -> str | None:
+    """``<BOB_INSTALL_ROOT>/config/bobiverse.json`` reportUrl, or None."""
     e = os.environ if env is None else env
-    for key in ("BOB_REPORT_URL", "BOB_DIGEST_URL", DIGEST_URL_ENV):
-        raw = (e.get(key) or "").strip()
-        if raw:
-            return raw
-    return digest_url()
+    root = (e.get("BOB_INSTALL_ROOT") or "").strip()
+    if not root:
+        return None
+    path = Path(root) / "config" / "bobiverse.json"
+    if not path.is_file():
+        return None
+    try:
+        doc = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, UnicodeError):
+        return None
+    if not isinstance(doc, dict):
+        return None
+    raw = doc.get("reportUrl")
+    if isinstance(raw, str) and raw.strip():
+        return raw.strip()
+    return None
+
+
+def resolve_fuel_report_target(
+    url: str | None = None, env: dict[str, str] | None = None
+) -> dict:
+    """Where the ear fuel POST goes, and which rule chose it.
+
+    Order: explicit url argument, install config reportUrl, BOB_REPORT_URL,
+    then the public digest default (``https://bob.ntsa.uk/bob/v1/report``).
+    Hosts are not rewritten.
+    """
+    e = os.environ if env is None else env
+    if url and str(url).strip():
+        return _safe_report_target(str(url).strip(), "explicit")
+    configured = bobiverse_config_report_url(e)
+    if configured:
+        return _safe_report_target(configured, "config")
+    env_url = (e.get("BOB_REPORT_URL") or "").strip()
+    if env_url:
+        return _safe_report_target(env_url, "env")
+    return _safe_report_target(digest_url(), "default")
+
+
+_last_post_outcome: dict = {}
+_last_fuel_publish_diag: dict = {}
+_last_xai_acquisition: dict = {}
+
+
+def last_fuel_publish_diag() -> dict:
+    """Last ear fuel publish attempt. No payload values, no secrets."""
+    return dict(_last_fuel_publish_diag)
+
+
+def format_fuel_publish_diag(diag: dict | None) -> str:
+    """One stdout line. Ack is explicit; a POST word alone is not success."""
+    d = diag if isinstance(diag, dict) else {}
+    pcent = d.get("pcent_keys") or []
+    keys = ",".join(str(k) for k in pcent) if pcent else "-"
+    reason = d.get("reason") or "-"
+    fields = d.get("provider_fields") or []
+    prov = ",".join(str(k) for k in fields) if fields else "-"
+    return (
+        "home_role={role} target_host={host} target_path={path} url_source={src} "
+        "http_status={status} ack={ack} error={error} reason={reason} "
+        "pcent_keys={keys} provider_fields={prov} acquisition={acq} machine={machine} skipped={skipped}"
+    ).format(
+        role=d.get("home_role") or "unlocalized",
+        host=d.get("target_host") or "-",
+        path=d.get("target_path") or "-",
+        src=d.get("url_source") or "-",
+        status=d.get("http_status") if d.get("http_status") is not None else "-",
+        ack="true" if d.get("ack") else "false",
+        error=d.get("error") or "-",
+        reason=str(reason).replace(" ", "_")[:180],
+        keys=keys,
+        prov=prov,
+        acq=d.get("acquisition") or "-",
+        machine=d.get("machine") or "-",
+        skipped=d.get("skipped") or "-",
+    )
+
+
+def classify_publish_home(home: Path) -> str:
+    """Label the directory a fuel POST would use.
+
+    ``Users/Administrator/.agentic-irc-bobiverse`` is a known non-active cache.
+    It is not the LocalSystem service home. Any other path stays ``unlocalized``
+    until it matches ``BOB_EAR_HOME`` or ``<BOB_INSTALL_ROOT>/home``.
+    """
+    parts = [str(p).lower() for p in Path(home).parts]
+    if ".agentic-irc-bobiverse" in parts:
+        idx = parts.index(".agentic-irc-bobiverse")
+        if idx >= 1 and parts[idx - 1] == "administrator":
+            return "legacy-admin-not-active"
+    try:
+        resolved = Path(home).resolve()
+    except OSError:
+        resolved = Path(home)
+    cand = service_publish_home_candidate()
+    if cand is not None:
+        try:
+            if resolved == cand.resolve():
+                return "service"
+        except OSError:
+            if resolved == cand:
+                return "service"
+    return "unlocalized"
+
+
+def service_publish_home_candidate() -> Path | None:
+    """InstallRoot\\home for LocalSystem ircBob. Empty when it cannot be named."""
+    ov = (os.environ.get("BOB_EAR_HOME") or "").strip()
+    if ov:
+        return Path(ov)
+    root = (os.environ.get("BOB_INSTALL_ROOT") or "").strip()
+    if root:
+        return Path(root) / "home"
+    return None
+
+
+def _record_post_outcome(*, status: int | None, error: str | None, reason: str | None) -> None:
+    global _last_post_outcome
+    ack = status is not None and 200 <= int(status) < 300
+    _last_post_outcome = {
+        "http_status": status,
+        "ack": ack,
+        "error": error,
+        "reason": reason,
+    }
 
 
 def post_report_json(payload: dict, *, url: str | None = None, timeout: float = 15.0) -> int | None:
-    """POST JSON to report URL. Returns HTTP status or None on transport failure."""
+    """POST JSON to report URL. Returns HTTP status or None on transport failure.
+
+    A ``URLError`` is a transport failure with a reason string. It is not evidence
+    that the digest document is absent or that auth was rejected.
+    """
     import urllib.error
     import urllib.request
 
     target = (url or report_post_url()).strip()
     if not target or not isinstance(payload, dict):
+        _record_post_outcome(status=None, error="no-target", reason=None)
         return None
     body = json.dumps(payload, separators=(",", ":"), default=str).encode("utf-8")
     if looks_like_secret(body.decode("utf-8", "replace")):
+        _record_post_outcome(status=None, error="secret-refused", reason=None)
         return None
     try:
         req = urllib.request.Request(
@@ -4288,13 +4562,23 @@ def post_report_json(payload: dict, *, url: str | None = None, timeout: float = 
             },
         )
         with urllib.request.urlopen(req, timeout=timeout) as resp:
-            return int(getattr(resp, "status", 0) or 0)
+            code = int(getattr(resp, "status", 0) or 0)
+            _record_post_outcome(status=code, error=None, reason=None)
+            return code
     except urllib.error.HTTPError as exc:
         try:
-            return int(exc.code)
+            code = int(exc.code)
         except Exception:
-            return None
-    except (urllib.error.URLError, TimeoutError, OSError, ValueError):
+            code = None
+        _record_post_outcome(status=code, error="HTTPError", reason=None)
+        return code
+    except urllib.error.URLError as exc:
+        why = getattr(exc, "reason", None)
+        text = f"{type(why).__name__}:{why}" if why is not None else "URLError"
+        _record_post_outcome(status=None, error="URLError", reason=text[:180])
+        return None
+    except (TimeoutError, OSError, ValueError) as exc:
+        _record_post_outcome(status=None, error=type(exc).__name__, reason=str(exc)[:180])
         return None
 
 
@@ -4333,6 +4617,47 @@ def publish_grok_account_label(
 
 
 
+def _path_under_meipass(path: Path) -> bool:
+    """True when ``path`` is inside a PyInstaller onefile unpack (_MEIPASS / Temp)."""
+    mei = getattr(sys, "_MEIPASS", None)
+    if not mei:
+        return False
+    try:
+        path.resolve().relative_to(Path(str(mei)).resolve())
+    except (OSError, ValueError):
+        return False
+    return True
+
+
+def opencode_install_root(env: dict[str, str] | None = None) -> Path | None:
+    """Install root for the fuel helper and cache.
+
+    Same order as the ear: ``BOB_INSTALL_ROOT`` (Start-Bob sets this before
+    ``bob-ear.exe``), else a frozen ``scripts\\bob-ear.exe`` → parent of
+    ``scripts``. ``__file__`` under ``_MEIPASS`` is never the install root.
+    """
+    e = os.environ if env is None else env
+    override = (e.get("BOB_INSTALL_ROOT") or "").strip()
+    if override:
+        return Path(override)
+    if not (getattr(sys, "frozen", False) or hasattr(sys, "_MEIPASS")):
+        return None
+    exe = Path(sys.executable).resolve()
+    if exe.parent.name.lower() == "scripts":
+        return exe.parent.parent
+    return exe.parent
+
+
+def on_disk_bobreport_replaces_embed(*, exe_calls_prefer_install_scripts: bool) -> bool:
+    """Whether a copied ``scripts\\bobreport.py`` is the module the ear imports.
+
+    True only when that frozen exe was built with ``prefer_install_scripts_path``
+    and is started again. The running MarchHare exe imports bobreport at startup
+    from its embed; a script copy is not a sufficient deploy by itself.
+    """
+    return bool(exe_calls_prefer_install_scripts)
+
+
 def _resolve_opencode_fuel_helper_ps1(env: dict[str, str] | None = None) -> Path | None:
     """Locate Get-BobOpencodeFuel.ps1 (repo tray/tools or install tools layout)."""
     e = os.environ if env is None else env
@@ -4341,14 +4666,19 @@ def _resolve_opencode_fuel_helper_ps1(env: dict[str, str] | None = None) -> Path
         p = Path(override)
         return p if p.is_file() else None
     here = Path(__file__).resolve()
-    candidates: list[Path] = [
-        here.parents[2] / "bob" / "tray" / "tools" / "Get-BobOpencodeFuel.ps1",
-        here.parents[1] / "tray" / "tools" / "Get-BobOpencodeFuel.ps1",
-        here.parents[1] / "tools" / "Get-BobOpencodeFuel.ps1",
-    ]
-    install = (e.get("BOB_INSTALL_ROOT") or "").strip()
-    if install:
-        root = Path(install)
+    candidates: list[Path] = []
+    # Frozen bob-ear.exe sets __file__ under _MEIPASS. Those parents are Temp,
+    # not <install>\\tools.
+    if not _path_under_meipass(here):
+        candidates.extend(
+            [
+                here.parents[2] / "bob" / "tray" / "tools" / "Get-BobOpencodeFuel.ps1",
+                here.parents[1] / "tray" / "tools" / "Get-BobOpencodeFuel.ps1",
+                here.parents[1] / "tools" / "Get-BobOpencodeFuel.ps1",
+            ]
+        )
+    root = opencode_install_root(e)
+    if root is not None:
         candidates.extend(
             [
                 root / "tray" / "tools" / "Get-BobOpencodeFuel.ps1",
@@ -4388,17 +4718,91 @@ OPENCODE_FUEL_CACHE_ENV = "BOB_OPENCODE_FUEL_CACHE_S"
 DEFAULT_OPENCODE_FUEL_CACHE_S = 30.0
 OPENCODE_FUEL_HELPER_TIMEOUT_ENV = "BOB_OPENCODE_FUEL_HELPER_TIMEOUT_S"
 DEFAULT_OPENCODE_FUEL_HELPER_TIMEOUT_S = 5.0
+# The ear fuel tick must not block. The helper itself runs ``opencode models``
+# plus two ``opencode stats`` windows (up to 25s each). Waiting the old 5s
+# killed that process before it printed JSON, so the digest stayed
+# free=null/go=null/windows=null. The helper runs in the background; this is
+# only how long a stuck powershell may live. The kill is a process tree so
+# opencode children started by that powershell die with it.
+OPENCODE_FUEL_HELPER_DEADLINE_S = 120.0
+# The frozen bootstrap overlays only bobreport, and only when that file defines
+# opencode_install_root. Other on-disk scripts (gitclaim and the rest of the
+# ear import closure) stay unused. Do not delete them and do not copy them over
+# to chase a reader crash; the embed that matches the exe is what loads.
+FROZEN_EAR_FUEL_DEPLOY = {
+    "overlay_modules": ("bobreport",),
+    "disk_module_shadows_embed": False,
+    "do_not_delete_disk_module": True,
+    "when_disk_module_present": (
+        "scripts/bob-ear.exe",
+        "scripts/bobreport.py",
+        "tools/Get-BobOpencodeFuel.ps1",
+        "scripts/opencode_fuel.py",
+    ),
+    "when_disk_module_absent": (
+        "scripts/bob-ear.exe",
+        "tools/Get-BobOpencodeFuel.ps1",
+        "scripts/opencode_fuel.py",
+    ),
+    "cache_rel": "run/opencode-fuel.json",
+    "script_copy_sufficient": False,
+    "builder": "bob/scripts/Build-BobEar.ps1",
+    "entry": "scripts/irc_agent.py",
+}
 OPENCODE_WINDOWS_FIXTURE_ENV = "BOB_OPENCODE_WINDOWS_FIXTURE"
 _opencode_fuel_cache: dict[str, object] = {"at": 0.0, "doc": {}}
 # Back-compat alias used by older tests that poke the private cache name.
 _opencode_pcent_cache = _opencode_fuel_cache
 
 
+def _kill_opencode_fuel_process(proc: object) -> None:
+    """Stop the helper powershell and, on Windows, the opencode processes it started.
+
+    ``Popen.kill`` stops only powershell.exe. ``Get-BobOpencodeFuel.ps1`` starts
+    ``opencode`` as children; a deadline that kills the parent alone leaves them
+    running. ``taskkill /T`` is the tree. Tests pass a fake with no ``pid``.
+    """
+    pid = getattr(proc, "pid", None)
+    if os.name == "nt" and isinstance(pid, int) and pid > 0:
+        try:
+            import subprocess
+
+            subprocess.run(
+                ["taskkill", "/T", "/F", "/PID", str(pid)],
+                capture_output=True,
+                timeout=15,
+                check=False,
+            )
+        except Exception:
+            pass
+    try:
+        poll = getattr(proc, "poll", None)
+        still = True if poll is None else poll() is None
+        if still:
+            kill = getattr(proc, "kill", None)
+            if kill is not None:
+                kill()
+    except Exception:
+        pass
+
+
 def clear_opencode_pcent_cache() -> None:
     """Reset process OpenCode fuel cache (tests / forced refresh)."""
+    proc = _opencode_fuel_cache.get("proc")
+    if proc is not None:
+        _kill_opencode_fuel_process(proc)
+    stdout_path = _opencode_fuel_cache.get("stdout_path")
+    if isinstance(stdout_path, str) and stdout_path:
+        try:
+            os.unlink(stdout_path)
+        except OSError:
+            pass
     _opencode_fuel_cache["at"] = 0.0
     _opencode_fuel_cache["doc"] = {}
     _opencode_fuel_cache["value"] = {}
+    _opencode_fuel_cache["proc"] = None
+    _opencode_fuel_cache["proc_started"] = 0.0
+    _opencode_fuel_cache["stdout_path"] = ""
 
 
 def opencode_fuel_cache_s(env: dict[str, str] | None = None) -> float:
@@ -4539,6 +4943,22 @@ def _parse_opencode_helper_stdout(raw_out: str) -> dict:
                 out["limiting"] = str(doc.get("limiting"))
     elif doc.get("limiting") not in (None, ""):
         out["limiting"] = str(doc.get("limiting"))
+    if doc.get("fetched_at") not in (None, ""):
+        out["fetched_at"] = str(doc.get("fetched_at"))
+    if doc.get("read_state") not in (None, ""):
+        out["read_state"] = str(doc.get("read_state"))
+    costs = doc.get("local_costs")
+    if isinstance(costs, dict) and costs:
+        out["local_costs"] = {
+            str(k): float(v) for k, v in costs.items() if v not in (None, "")
+        }
+    hist = doc.get("history")
+    if isinstance(hist, dict):
+        out["history"] = {
+            "sessions": hist.get("sessions"),
+            "messages": hist.get("messages"),
+            "empty": bool(hist.get("empty")),
+        }
     return out
 
 
@@ -4598,15 +5018,115 @@ def _read_opencode_fuel_doc_from_fixture(fixture: str) -> dict:
     return out
 
 
-def _read_opencode_fuel_doc_from_helper(
-    helper: Path, env: dict[str, str], timeout_s: float
-) -> dict:
-    try:
-        import subprocess
-    except ImportError:
+def _opencode_fuel_cache_file(
+    env: dict[str, str] | None, helper: Path | None = None
+) -> Path | None:
+    """Shared tray/ear cache. Only when an install root or explicit path is set.
+
+    A helper that merely lives in a temp directory must not create ``run/``
+    outside that test. The installed layout is ``<root>\\tools\\Get-BobOpencodeFuel.ps1``
+    writing ``<root>\\run\\opencode-fuel.json``.
+    """
+    e = os.environ if env is None else env
+    override = (e.get("BOB_OPENCODE_FUEL_CACHE_FILE") or "").strip()
+    if override:
+        return Path(override)
+    root = opencode_install_root(e)
+    if root is not None:
+        return root / "run" / "opencode-fuel.json"
+    if helper is not None and not _path_under_meipass(helper):
+        parent = helper.resolve().parent
+        if parent.name.lower() == "tools":
+            return parent.parent / "run" / "opencode-fuel.json"
+    return None
+
+
+def _opencode_fuel_doc_has_signal(doc: dict | None) -> bool:
+    """True when a fuel doc carries a real reading (not an all-unknown shell)."""
+    if not isinstance(doc, dict):
+        return False
+    if _pcent_from_opencode_fuel_doc(doc):
+        return True
+    wins = doc.get("windows")
+    if not isinstance(wins, dict):
+        return False
+    for rec in wins.values():
+        if not isinstance(rec, dict):
+            continue
+        status = str(rec.get("status") or "unknown").strip().lower()
+        if status not in ("unknown", ""):
+            return True
+        if rec.get("remaining_pct") not in (None, ""):
+            return True
+    return False
+
+
+def _load_opencode_fuel_disk(env: dict[str, str], helper: Path | None) -> dict:
+    path = _opencode_fuel_cache_file(env, helper)
+    if path is None or not path.is_file():
         return {}
     try:
-        proc = subprocess.run(
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return {}
+    return _parse_opencode_helper_stdout(text)
+
+
+def _store_opencode_fuel_doc(
+    doc: dict, ts: float, env: dict[str, str], helper: Path | None
+) -> None:
+    stored = dict(doc)
+    _opencode_fuel_cache["at"] = ts
+    _opencode_fuel_cache["doc"] = stored
+    _opencode_fuel_cache["value"] = _pcent_from_opencode_fuel_doc(stored)
+    path = _opencode_fuel_cache_file(env, helper)
+    if path is None:
+        return
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(".json.tmp")
+        tmp.write_text(
+            json.dumps(stored, sort_keys=True) + "\n", encoding="utf-8"
+        )
+        os.replace(tmp, path)
+    except OSError:
+        return
+
+
+def _drop_opencode_fuel_proc() -> None:
+    path = _opencode_fuel_cache.get("stdout_path")
+    _opencode_fuel_cache["proc"] = None
+    _opencode_fuel_cache["proc_started"] = 0.0
+    _opencode_fuel_cache["stdout_path"] = ""
+    if isinstance(path, str) and path:
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+
+
+def _start_opencode_fuel_helper(helper: Path, env: dict[str, str], now: float) -> bool:
+    """Start Get-BobOpencodeFuel.ps1 and return without waiting.
+
+    A 5s ``subprocess.run`` timeout killed ``opencode stats`` before the helper
+    printed JSON (three sequential CLI calls, 25s each). The ear tick only
+    polls. ``poll()`` returning immediately covers unit-test stubs.
+    """
+    try:
+        import subprocess
+        import tempfile
+    except ImportError:
+        return False
+    if _opencode_fuel_cache.get("proc") is not None:
+        return True
+    try:
+        fd, name = tempfile.mkstemp(prefix="oc-fuel-", suffix=".out")
+        os.close(fd)
+        fh = open(name, "w", encoding="utf-8")
+    except OSError:
+        return False
+    try:
+        proc = subprocess.Popen(
             [
                 "powershell.exe",
                 "-NoProfile",
@@ -4615,14 +5135,114 @@ def _read_opencode_fuel_doc_from_helper(
                 "-File",
                 str(helper),
             ],
-            capture_output=True,
-            text=True,
-            timeout=timeout_s,
+            stdout=fh,
+            stderr=subprocess.DEVNULL,
+            stdin=subprocess.DEVNULL,
             env={**dict(os.environ), **dict(env)},
         )
-    except (OSError, subprocess.TimeoutExpired, ValueError):
+    except (OSError, ValueError):
+        try:
+            fh.close()
+        except OSError:
+            pass
+        try:
+            os.unlink(name)
+        except OSError:
+            pass
+        return False
+    try:
+        fh.close()
+    except OSError:
+        pass
+    _opencode_fuel_cache["proc"] = proc
+    _opencode_fuel_cache["proc_started"] = now
+    _opencode_fuel_cache["stdout_path"] = name
+    return True
+
+
+def _take_opencode_fuel_helper(now: float) -> tuple[str, dict]:
+    """Poll the background helper.
+
+    Returns ``("idle", {})`` when nothing is running, ``("running", {})`` while
+    it is still working, ``("doc", parsed)`` when it has exited, or
+    ``("failed", {})`` when it was killed for exceeding the deadline.
+    """
+    proc = _opencode_fuel_cache.get("proc")
+    if proc is None:
+        return "idle", {}
+    started = float(_opencode_fuel_cache.get("proc_started") or now)
+    try:
+        code = proc.poll()
+    except Exception:
+        code = None
+    if code is None:
+        if (now - started) >= OPENCODE_FUEL_HELPER_DEADLINE_S:
+            _kill_opencode_fuel_process(proc)
+            _drop_opencode_fuel_proc()
+            return "failed", {}
+        return "running", {}
+    path = _opencode_fuel_cache.get("stdout_path")
+    text = ""
+    if isinstance(path, str) and path:
+        try:
+            text = Path(path).read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            text = ""
+    _drop_opencode_fuel_proc()
+    return "doc", _parse_opencode_helper_stdout(text)
+
+
+def _accept_opencode_fuel_doc(fresh: dict, cached: dict) -> dict:
+    """Keep the last real reading when a failed helper returns an empty shell.
+
+    A completed ``read_state=ok`` document is the new truth, even if some
+    windows are unknown. A missing binary must not wipe week/month numbers.
+    """
+    if not isinstance(fresh, dict):
+        return dict(cached) if isinstance(cached, dict) else {}
+    fresh_hist = fresh.get("history") if isinstance(fresh.get("history"), dict) else {}
+    cached_costs = cached.get("local_costs") if isinstance(cached, dict) else None
+    cached_hist = cached.get("history") if isinstance(cached, dict) and isinstance(cached.get("history"), dict) else {}
+    cached_sessions = 0
+    try:
+        cached_sessions = int(cached_hist.get("sessions") or 0)
+    except (TypeError, ValueError):
+        cached_sessions = 0
+    # A service process's empty opencode stats must not replace the user's local history.
+    if fresh_hist.get("empty") is True and (
+        (isinstance(cached_costs, dict) and cached_costs) or cached_sessions > 0
+    ):
+        return dict(cached)
+    if (
+        not _opencode_fuel_doc_has_signal(fresh)
+        and _opencode_fuel_doc_has_signal(cached)
+        and str(fresh.get("read_state") or "") != "ok"
+    ):
+        return dict(cached)
+    return dict(fresh)
+
+
+def _read_opencode_fuel_doc_from_helper(
+    helper: Path, env: dict[str, str], timeout_s: float
+) -> dict:
+    """Back-compat wrapper. ``timeout_s`` is not a wait: the helper is polled.
+
+    The historical signature kept the short-timeout argument so older callers
+    still import. The ear path no longer blocks on it.
+    """
+    del timeout_s
+    now = time.time()
+    status, doc = _take_opencode_fuel_helper(now)
+    if status == "doc":
+        return doc
+    if status == "running":
         return {}
-    return _parse_opencode_helper_stdout(proc.stdout or "")
+    if not _start_opencode_fuel_helper(helper, env, now):
+        return {}
+    status, doc = _take_opencode_fuel_helper(now)
+    if status == "doc":
+        return doc
+    return {}
 
 
 def _read_opencode_pcent_from_fixture(fixture: str) -> dict[str, int]:
@@ -4648,8 +5268,10 @@ def read_local_opencode_fuel_doc(
     """Read full local OpenCode fuel doc (pcent + windows + limiting; FR #6147).
 
     Fixtures: ``BOB_OPENCODE_FUEL_FIXTURE`` (stats/rich JSON) and optional
-    ``BOB_OPENCODE_WINDOWS_FIXTURE`` (pure windows JSON). Helper path uses the
-    same TTL cache / short timeout as ``read_local_opencode_pcent``.
+    ``BOB_OPENCODE_WINDOWS_FIXTURE`` (pure windows JSON). The PowerShell helper
+    is started in the background and polled. The ear tick does not wait on
+    ``opencode stats``. A helper that is still running returns the last
+    completed document and does not replace it with an empty shell.
     """
     e = os.environ if env is None else env
     fixture = (e.get("BOB_OPENCODE_FUEL_FIXTURE") or "").strip()
@@ -4671,29 +5293,42 @@ def read_local_opencode_fuel_doc(
         last_val = _opencode_fuel_cache.get("value")
         last_doc = dict(last_val) if isinstance(last_val, dict) else {}
     cached = dict(last_doc) if isinstance(last_doc, dict) else {}
+    helper = _resolve_opencode_fuel_helper_ps1(e)
+    if not cached:
+        disk = _load_opencode_fuel_disk(e, helper)
+        if disk:
+            cached = disk
+            _opencode_fuel_cache["doc"] = dict(disk)
+            _opencode_fuel_cache["value"] = _pcent_from_opencode_fuel_doc(disk)
+
+    status, fresh = _take_opencode_fuel_helper(ts)
+    if status == "doc":
+        chosen = _accept_opencode_fuel_doc(fresh, cached)
+        _store_opencode_fuel_doc(chosen, ts, e, helper)
+        return dict(chosen)
+    if status == "running":
+        return dict(cached) if cached else {}
+    if status == "failed":
+        # Deadline kill: back off for one TTL, keep the last real document.
+        _opencode_fuel_cache["at"] = ts
+        return dict(cached) if cached else {}
+
     if not force and cache_s > 0 and last_at > 0 and (ts - last_at) < cache_s:
         return dict(cached)
 
-    helper = _resolve_opencode_fuel_helper_ps1(e)
     if helper is None:
         return dict(cached) if cached else {}
-
-    fresh = _read_opencode_fuel_doc_from_helper(
-        helper, dict(e), opencode_fuel_helper_timeout_s(e)
-    )
-    if fresh:
+    if not _start_opencode_fuel_helper(helper, dict(e), ts):
         _opencode_fuel_cache["at"] = ts
-        _opencode_fuel_cache["doc"] = dict(fresh)
-        _opencode_fuel_cache["value"] = _pcent_from_opencode_fuel_doc(fresh)
-        return dict(fresh)
-    # Timeout / empty: keep stale cache when present; stamp at so we do not
-    # re-hammer a hanging helper every 5s tick.
-    _opencode_fuel_cache["at"] = ts
-    if cached:
-        return dict(cached)
-    _opencode_fuel_cache["doc"] = {}
-    _opencode_fuel_cache["value"] = {}
-    return {}
+        return dict(cached) if cached else {}
+    status, fresh = _take_opencode_fuel_helper(ts)
+    if status == "doc":
+        chosen = _accept_opencode_fuel_doc(fresh, cached)
+        _store_opencode_fuel_doc(chosen, ts, e, helper)
+        return dict(chosen)
+    # Still running (live opencode) or failed to exit yet: do not stamp an
+    # empty document over the last reading, and do not block the tick.
+    return dict(cached) if cached else {}
 
 
 def read_local_opencode_pcent(
@@ -4770,6 +5405,347 @@ def enrich_peer_with_opencode_pcent(
     return enriched
 
 
+_XAI_WEEKLY_BILLING_MARK = "billing: fetched credits config"
+
+
+def meter_sample_is_stale(
+    fetched_at: object,
+    *,
+    now: datetime,
+    max_age_s: float,
+    last_seen: object = None,
+) -> bool:
+    """True when the billing sample is too old to paint as current.
+
+    ``last_seen`` is the service heartbeat. It is not the measurement clock
+    and cannot make an old sample current.
+    """
+    del last_seen
+    parsed = _parse_iso_ts(fetched_at)
+    if parsed is None:
+        return True
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    clock = now if now.tzinfo else now.replace(tzinfo=timezone.utc)
+    return (clock - parsed.astimezone(timezone.utc)).total_seconds() > float(max_age_s)
+
+
+def _is_windows_system_profile(path: Path) -> bool:
+    """LocalSystem's profile. It is not the interactive user's Grok home."""
+    text = str(path).replace("/", "\\").lower()
+    return "\\systemprofile\\" in text or text.endswith("\\systemprofile")
+
+
+def xai_weekly_log_candidate() -> tuple[Path | None, str]:
+    """Where a service may read the weekly billing line.
+
+    ``BOB_WEEKLY_LOG`` is an explicit file. Otherwise the process profile's
+    ``.grok/logs/unified.jsonl`` is used only when that profile is not
+    LocalSystem's ``systemprofile``. The system profile is skipped so the
+    service does not publish an unknown from the wrong identity, and this
+    does not open ``Users\\Administrator``.
+    """
+    raw = (os.environ.get("BOB_WEEKLY_LOG") or "").strip()
+    if raw:
+        path = Path(raw)
+        if _is_windows_system_profile(path):
+            return None, "system-profile-refused"
+        return path, "explicit"
+    exe = (os.environ.get("BOB_GROK_EXE") or "").lower()
+    if "fake-grok" in exe:
+        return None, "fake-grok"
+    home = (os.environ.get("USERPROFILE") or os.environ.get("HOME") or "").strip()
+    if not home:
+        return None, "no-profile"
+    if _is_windows_system_profile(Path(home)):
+        return None, "system-profile-skipped"
+    return Path(home) / ".grok" / "logs" / "unified.jsonl", "process-profile"
+
+
+def xai_weekly_log_path() -> Path | None:
+    path, _identity = xai_weekly_log_candidate()
+    return path
+
+
+def xai_weekly_handoff_path(env: dict[str, str] | None = None) -> Path | None:
+    """Collector handoff. The user-context tray writes this; the service only reads it.
+
+    ``BOB_XAI_WEEKLY_FILE``, else ``<BOB_INSTALL_ROOT>/run/xai-weekly.json``.
+    Not a credential file and not a profile scan.
+    """
+    e = os.environ if env is None else env
+    raw = (e.get("BOB_XAI_WEEKLY_FILE") or "").strip()
+    if raw:
+        return Path(raw)
+    root = (e.get("BOB_INSTALL_ROOT") or "").strip()
+    if not root:
+        return None
+    return Path(root) / "run" / "xai-weekly.json"
+
+
+def parse_xai_weekly_handoff(doc: object, *, now: datetime | None = None) -> dict | None:
+    """Meter document from the collector. Missing percent stays unknown, not 0.
+
+    A torn write (``WriteAllText`` is not atomic) fails JSON parse and is ignored.
+    ``account`` is not a match key: the collector always leaves it null.
+    """
+    if not isinstance(doc, dict):
+        return None
+    if str(doc.get("provider") or "") != "xai":
+        return None
+    window = str(doc.get("window") or "")
+    direction = str(doc.get("direction") or "")
+    if not window or direction != "remaining":
+        return None
+    known = bool(doc.get("weekly_known"))
+    remaining = doc.get("remaining_pct")
+    used = doc.get("used_pct")
+    if known:
+        try:
+            remaining_i = int(remaining)
+            if not 0 <= remaining_i <= 100:
+                return None
+        except (TypeError, ValueError):
+            return None
+    else:
+        remaining_i = None
+    used_i = None
+    if used not in (None, ""):
+        try:
+            used_i = int(used)
+        except (TypeError, ValueError):
+            used_i = None
+    reading = {
+        "remaining_pct": remaining_i,
+        "used_pct": used_i,
+        "period_end": str(doc["period_end"]) if doc.get("period_end") else None,
+        "fetched_at": str(doc["fetched_at"]) if doc.get("fetched_at") else None,
+        "source": str(doc.get("source") or "collector-handoff"),
+        "weekly_known": known and remaining_i is not None,
+        "provider": "xai",
+        "window": window,
+        "direction": "remaining",
+        "account": None,
+    }
+    pe = _parse_xai_period_end(reading.get("period_end"))
+    clock = now or datetime.now(timezone.utc)
+    if clock.tzinfo is None:
+        clock = clock.replace(tzinfo=timezone.utc)
+    if pe is not None and pe <= clock.astimezone(timezone.utc):
+        reading["remaining_pct"] = None
+        reading["used_pct"] = None
+        reading["weekly_known"] = False
+        reading["stale"] = True
+    return reading
+
+
+def _parse_xai_period_end(raw: object) -> datetime | None:
+    if raw in (None, ""):
+        return None
+    text = str(raw).strip()
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def parse_xai_weekly_log_text(text: str, *, now: datetime | None = None) -> dict | None:
+    """Last Grok CLI weekly billing event.
+
+    ``creditUsagePercent`` is used percent. ``remaining_pct`` is ``100 - used``.
+    A 1.0.41 event with no percent is unknown: remaining stays null, never 0.
+    A period that has already ended is unknown, not last week's percent.
+    This does not read the grok.com dashboard and does not invent a dashboard figure.
+    """
+    if not text:
+        return None
+    raw_line = None
+    for line in text.splitlines():
+        if _XAI_WEEKLY_BILLING_MARK in line:
+            raw_line = line.strip()
+    if not raw_line:
+        return None
+    try:
+        doc = json.loads(raw_line)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(doc, dict):
+        return None
+    cfg = doc.get("config")
+    ctx = doc.get("ctx")
+    if not isinstance(cfg, dict) and isinstance(ctx, dict):
+        cfg = ctx.get("config")
+    if not isinstance(cfg, dict):
+        return None
+    period = cfg.get("currentPeriod") if isinstance(cfg.get("currentPeriod"), dict) else {}
+    ptype = str(period.get("type") or "")
+    if "WEEKLY" not in ptype:
+        return None
+    period_end = period.get("end")
+    fetched_at = doc.get("ts")
+    used_raw = cfg.get("creditUsagePercent")
+    reading: dict = {
+        "remaining_pct": None,
+        "used_pct": None,
+        "period_end": str(period_end) if period_end not in (None, "") else None,
+        "fetched_at": str(fetched_at) if fetched_at not in (None, "") else None,
+        "source": None,
+        "weekly_known": False,
+        "provider": "xai",
+        "account": None,
+    }
+    if used_raw not in (None, ""):
+        try:
+            used = float(used_raw)
+        except (TypeError, ValueError):
+            used = None
+        if used is None or used < 0 or used > 100:
+            return None
+        used_pct = int(round(used))
+        remaining = int(round(100.0 - used))
+        if remaining < 0:
+            remaining = 0
+        if remaining > 100:
+            remaining = 100
+        reading.update(
+            {
+                "remaining_pct": remaining,
+                "used_pct": used_pct,
+                "source": "unified.jsonl:billing:creditUsagePercent",
+                "weekly_known": True,
+            }
+        )
+    else:
+        has_new = any(k in cfg for k in ("prepaidBalance", "onDemandUsed", "onDemandCap", "isUnifiedBillingUser"))
+        if not has_new and not reading["period_end"]:
+            return None
+        reading["source"] = "unified.jsonl:billing:grok-1.0.41-period"
+        reading["weekly_known"] = False
+    pe = _parse_xai_period_end(reading.get("period_end"))
+    clock = now or datetime.now(timezone.utc)
+    if clock.tzinfo is None:
+        clock = clock.replace(tzinfo=timezone.utc)
+    if pe is not None and pe <= clock.astimezone(timezone.utc):
+        reading["remaining_pct"] = None
+        reading["used_pct"] = None
+        reading["weekly_known"] = False
+        reading["stale"] = True
+    return reading
+
+
+def _read_xai_log_file(path: Path, *, now: datetime | None) -> dict | None:
+    try:
+        size = path.stat().st_size
+        with path.open("rb") as handle:
+            handle.seek(max(0, size - 1024 * 1024))
+            blob = handle.read().decode("utf-8", errors="replace")
+    except OSError:
+        return None
+    return parse_xai_weekly_log_text(blob, now=now)
+
+
+def read_local_xai_weekly(*, now: datetime | None = None) -> dict | None:
+    """Explicit log, then the collector handoff, then a non-system profile log.
+
+    A LocalSystem profile with no explicit file and no handoff returns None.
+    That is not a measurement and must not be published as unknown weekly.
+    """
+    global _last_xai_acquisition
+    path, identity = xai_weekly_log_candidate()
+    if identity == "explicit" and path is not None and path.is_file():
+        reading = _read_xai_log_file(path, now=now)
+        _last_xai_acquisition = {"identity": "explicit", "read": reading is not None}
+        if reading:
+            return reading
+    handoff = xai_weekly_handoff_path()
+    if handoff is not None and handoff.is_file():
+        try:
+            doc = json.loads(handoff.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError, UnicodeError):
+            doc = None
+        reading = parse_xai_weekly_handoff(doc, now=now)
+        if reading:
+            _last_xai_acquisition = {"identity": "collector-handoff", "read": True}
+            return reading
+    if identity == "process-profile" and path is not None and path.is_file():
+        reading = _read_xai_log_file(path, now=now)
+        _last_xai_acquisition = {"identity": "process-profile", "read": reading is not None}
+        return reading
+    _last_xai_acquisition = {"identity": identity, "read": False}
+    return None
+
+
+def enrich_peer_with_xai_weekly(peer: dict, reading: dict | None) -> dict:
+    """Put a measured xAI weekly into the peer as remaining percent.
+
+    ``pcent.grok-build`` and ``weekly`` are remaining, never the used percent
+    and never Cursor Sand (``grok-chat``). Unknown does not write 0.
+    """
+    if not isinstance(peer, dict) or not isinstance(reading, dict):
+        return peer
+    enriched = dict(peer)
+    pcent = dict(enriched.get("pcent")) if isinstance(enriched.get("pcent"), dict) else {}
+    # This meter must not be stored as Cursor Sand.
+    if reading.get("weekly_known") and reading.get("remaining_pct") is not None:
+        try:
+            remaining = int(reading["remaining_pct"])
+        except (TypeError, ValueError):
+            remaining = None
+        if remaining is None or not 0 <= remaining <= 100:
+            return enriched
+        enriched["weekly"] = remaining
+        enriched["weekly_known"] = True
+        pcent["grok-build"] = remaining
+        if reading.get("period_end"):
+            enriched["period_end"] = str(reading["period_end"])
+        if reading.get("used_pct") is not None:
+            enriched["xai_weekly_used_pct"] = int(reading["used_pct"])
+        else:
+            enriched["xai_weekly_used_pct"] = None
+        enriched["xai_weekly_source"] = str(reading.get("source") or "")
+        enriched["xai_weekly_fetched_at"] = (
+            str(reading["fetched_at"]) if reading.get("fetched_at") else None
+        )
+        enriched["xai_weekly"] = {
+            "provider": "xai",
+            "window": str(reading.get("window") or "weekly"),
+            "direction": "remaining",
+            "remaining_pct": remaining,
+            "used_pct": enriched.get("xai_weekly_used_pct"),
+            "source": enriched.get("xai_weekly_source"),
+            "fetched_at": enriched.get("xai_weekly_fetched_at"),
+            "period_end": enriched.get("period_end"),
+            "account": None,
+        }
+    else:
+        enriched["weekly"] = None
+        enriched["weekly_known"] = False
+        pcent.pop("grok-build", None)
+        enriched["xai_weekly_used_pct"] = None
+        enriched["xai_weekly_source"] = str(reading.get("source") or "") or None
+        enriched["xai_weekly_fetched_at"] = (
+            str(reading["fetched_at"]) if reading.get("fetched_at") else None
+        )
+        enriched["xai_weekly"] = {
+            "provider": "xai",
+            "window": str(reading.get("window") or "weekly"),
+            "direction": "remaining",
+            "remaining_pct": None,
+            "used_pct": None,
+            "source": enriched.get("xai_weekly_source"),
+            "fetched_at": enriched.get("xai_weekly_fetched_at"),
+            "period_end": reading.get("period_end"),
+            "account": None,
+        }
+    enriched["pcent"] = pcent
+    return enriched
+
+
 def publish_local_peer_fuel(
     home: Path,
     machine_id: str,
@@ -4788,8 +5764,32 @@ def publish_local_peer_fuel(
 
     Returns HTTP status on successful 2xx POST, None when skipped or failed.
     """
+    global _last_fuel_publish_diag
     mid = normalize_machine_id(machine_id)
+    home_role = classify_publish_home(Path(home))
+    _last_fuel_publish_diag = {
+        "home_role": home_role,
+        "machine": mid or "",
+        "http_status": None,
+        "ack": False,
+        "error": None,
+        "reason": None,
+        "pcent_keys": [],
+        "payload_keys": [],
+        "provider_fields": [],
+        "target_host": None,
+        "target_path": None,
+        "url_source": None,
+        "home": str(home),
+        "skipped": None,
+    }
+    if home_role == "legacy-admin-not-active":
+        # Do not post or rewrite the Administrator legacy cache. It is not the
+        # LocalSystem service home, and this path must not be cleared.
+        _last_fuel_publish_diag["skipped"] = "legacy-admin-home-not-service"
+        return None
     if not mid:
+        _last_fuel_publish_diag["skipped"] = "no-machine"
         return None
     peer = bobstat.read_peer(home, mid)
     if not peer:
@@ -4800,6 +5800,15 @@ def publish_local_peer_fuel(
         peer = bobstat.read_peer(home, mid) or peer
     except OSError:
         pass
+    # Service pool monitor: local xAI weekly remaining, before fingerprint/POST.
+    # Does not call the network and does not copy credentials.
+    try:
+        xai = read_local_xai_weekly()
+        _last_fuel_publish_diag["acquisition"] = _last_xai_acquisition.get("identity")
+        if xai:
+            peer = enrich_peer_with_xai_weekly(peer, xai)
+    except Exception:
+        _last_fuel_publish_diag["acquisition"] = "read-failed"
     # FR #6146 / #6147: enrich with local OpenCode pcent + windows before fingerprint/POST.
     try:
         oc_doc = read_local_opencode_fuel_doc()
@@ -4811,7 +5820,11 @@ def publish_local_peer_fuel(
         pass
     payload = build_peer_fuel_merge_payload(peer, mid)
     if not payload:
+        _last_fuel_publish_diag["skipped"] = "no-payload"
         return None
+    pcent = payload.get("pcent") if isinstance(payload.get("pcent"), dict) else {}
+    _last_fuel_publish_diag["pcent_keys"] = sorted(str(k) for k in pcent)
+    _last_fuel_publish_diag["payload_keys"] = sorted(str(k) for k in payload)
     fp = peer_fuel_fingerprint(peer)
     state_path = digest_fuel_post_state_path(home)
     posted: dict = {}
@@ -4839,8 +5852,41 @@ def publish_local_peer_fuel(
         else:
             heartbeat_due = (ts_now - last_at) >= heartbeat_s
     if not force and last_fp == fp and not heartbeat_due:
+        _last_fuel_publish_diag["skipped"] = "fingerprint-unchanged"
         return None
-    code = post_report_json(payload, url=url)
+    # Heartbeat and change posts both carry a fresh lastSeen. Re-sending the
+    # peer file's old lastSeen left the canonical row on the previous day
+    # while the HTTP status was still 200.
+    payload["lastSeen"] = datetime.fromtimestamp(ts_now, timezone.utc).strftime(
+        "%Y-%m-%dT%H:%M:%S.%fZ"
+    )
+    target = resolve_fuel_report_target(url)
+    _last_fuel_publish_diag["url_source"] = target.get("source")
+    _last_fuel_publish_diag["target_host"] = target.get("host")
+    _last_fuel_publish_diag["target_path"] = target.get("path")
+    meter = payload.get("xai_weekly") if isinstance(payload.get("xai_weekly"), dict) else {}
+    _last_fuel_publish_diag["provider_fields"] = sorted(str(k) for k in meter)
+    if not target.get("ok"):
+        _last_fuel_publish_diag["skipped"] = "url-rejected"
+        _last_fuel_publish_diag["error"] = target.get("error")
+        return None
+    code = post_report_json(payload, url=str(target.get("url") or ""))
+    _last_fuel_publish_diag.update(
+        {
+            "http_status": _last_post_outcome.get("http_status"),
+            "ack": bool(_last_post_outcome.get("ack")),
+            "error": _last_post_outcome.get("error"),
+            "reason": _last_post_outcome.get("reason"),
+        }
+    )
+    if home_role != "legacy-admin-not-active":
+        try:
+            diag_path = Path(home) / "digest-fuel-publish-diag.json"
+            diag_path.write_text(
+                json.dumps(_last_fuel_publish_diag, indent=2) + "\n", encoding="utf-8"
+            )
+        except OSError:
+            pass
     if code is not None and 200 <= int(code) < 300:
         posted[mid] = fp
         posted[at_key] = ts_now

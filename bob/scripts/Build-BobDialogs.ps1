@@ -47,8 +47,8 @@ New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
 $built = @()
 foreach ($d in @(
         @{ Exe = 'bob-about.exe';  Srcs = @('BobAbout.cs');  Main = 'BobDialogs.AboutProgram';  Refs = @('System.ServiceProcess.dll') },
-        @{ Exe = 'bob-status.exe'; Srcs = @('BobStatus.cs'); Main = 'BobDialogs.StatusProgram'; Refs = @() },
-        @{ Exe = 'bob-tray.exe';   Srcs = @('BobAbout.cs', 'BobStatus.cs', 'BobTray.cs'); Main = 'BobDialogs.TrayProgram'; Refs = @('System.ServiceProcess.dll', 'System.Management.dll') })) {
+        @{ Exe = 'bob-status.exe'; Srcs = @('OpencodePaint.cs', 'BobStatus.cs'); Main = 'BobDialogs.StatusProgram'; Refs = @() },
+        @{ Exe = 'bob-tray.exe';   Srcs = @('BobAbout.cs', 'OpencodePaint.cs', 'BobStatus.cs', 'BobTray.cs'); Main = 'BobDialogs.TrayProgram'; Refs = @('System.ServiceProcess.dll', 'System.Management.dll') })) {
     $out = Join-Path $OutDir $d.Exe
     $tmp = $out + '.new'
     $argv = @('/nologo', '/target:winexe', '/optimize+', '/debug-', '/platform:anycpu', "/out:$tmp",

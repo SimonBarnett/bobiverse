@@ -2243,9 +2243,25 @@ function Build-BobDigestWebhookMergePayload {
     if ($null -ne $Doc.running) { $payload.running = [int]$Doc.running }
     if ($null -ne $Doc.queued) { $payload.queued = [int]$Doc.queued }
     if ($Doc.jobs -and @($Doc.jobs).Count -gt 0) { $payload.jobs = @($Doc.jobs) }
-    # FR #6144: when cursor_known is false, omit pcent / cursor_pools (chair clears).
+    # cursor_known false clears Cursor Sand / spending keys. xAI weekly (grok-build)
+    # and OpenCode pcent still have to be in the payload or peers with no Cursor
+    # login stay empty. grok-chat is Sand, not this weekly meter.
+    $nonCursorPcent = @('grok-build', 'opencode-free', 'opencode-go')
+    if ($Doc.pcent) {
+        if ($cursorKnown) {
+            $payload.pcent = $Doc.pcent
+        } else {
+            $keptPcent = [ordered]@{}
+            foreach ($pcProp in @($Doc.pcent.PSObject.Properties)) {
+                $pcName = [string]$pcProp.Name
+                if ($nonCursorPcent -notcontains $pcName) { continue }
+                if ($null -eq $pcProp.Value -or [string]$pcProp.Value -eq '') { continue }
+                $keptPcent[$pcName] = $pcProp.Value
+            }
+            if ($keptPcent.Count -gt 0) { $payload.pcent = [pscustomobject]$keptPcent }
+        }
+    }
     if ($cursorKnown) {
-        if ($Doc.pcent) { $payload.pcent = $Doc.pcent }
         # #456: each Bob reports per-pool remaining + period_end (grok-chat weekly vs high/auto billing).
         if ($Doc.cursor_pools) {
             $docMid = ''
@@ -2443,6 +2459,49 @@ function Send-BobDigestWebhookIfChanged {
     return $null
 }
 
+function Save-BobXaiWeeklyHandoff {
+    <#
+      User-context collector already read the billing log. Write the meter only
+      to <BOB_INSTALL_ROOT>\run\xai-weekly.json for the LocalSystem ear.
+      No profile scan and no secrets.
+    #>
+    param($Weekly)
+    $root = ([string]$env:BOB_INSTALL_ROOT).Trim()
+    if (-not $root) { return }
+    if (-not $Weekly) { return }
+    $run = Join-Path $root 'run'
+    try {
+        if (-not (Test-Path -LiteralPath $run)) { New-Item -ItemType Directory -Force -Path $run | Out-Null }
+    } catch { return }
+    $rem = $null
+    $known = $false
+    if ($null -ne $Weekly.remaining_pct -and [string]$Weekly.remaining_pct -ne '') {
+        try { $rem = [int]$Weekly.remaining_pct; $known = $true } catch { $rem = $null; $known = $false }
+    }
+    $used = $null
+    if ($null -ne $Weekly.used_pct -and [string]$Weekly.used_pct -ne '') {
+        try { $used = [int]$Weekly.used_pct } catch { $used = $null }
+    }
+    $doc = [ordered]@{
+        provider      = 'xai'
+        window        = 'weekly'
+        direction     = 'remaining'
+        remaining_pct = $rem
+        used_pct      = $used
+        source        = $(if ($Weekly.source) { [string]$Weekly.source } else { $null })
+        fetched_at    = $(if ($Weekly.fetched_at) { [string]$Weekly.fetched_at } else { $null })
+        period_end    = $(if ($Weekly.period_end) { [string]$Weekly.period_end } else { $null })
+        weekly_known  = [bool]$known
+        # account is always null here: this file is not an account match.
+        # WriteAllText is not atomic; a torn file is ignored by the ear parser.
+        account       = $null
+    }
+    try {
+        $json = $doc | ConvertTo-Json -Compress -Depth 4
+        [System.IO.File]::WriteAllText((Join-Path $run 'xai-weekly.json'), $json, (New-Object System.Text.UTF8Encoding $false))
+    } catch { }
+}
+
 function Write-BobIrcStatus {
     param(
         [switch]$SkipDigestWebhook,
@@ -2499,6 +2558,7 @@ function Write-BobIrcStatus {
     catch { }
     $seen = [DateTime]::UtcNow.ToString('o')
     Save-BobSeatPeriodEnd -MachineId $id -PeriodEnd $periodEnd -Weekly $week -ClearWeekly:([bool]($w -and $w.stale))
+    try { Save-BobXaiWeeklyHandoff -Weekly $w } catch { }
     $cursorLabel = $null
     $cursorPeriodEnd = $null
     $sandPeriodEnd = $null

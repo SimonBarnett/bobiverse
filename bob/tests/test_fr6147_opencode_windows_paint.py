@@ -17,7 +17,7 @@ def test_format_opencode_window_helpers_exist():
     src = HOVER.read_text(encoding="utf-8-sig")
     assert "function Format-BobOpencodeWindowLine" in src
     assert "function Format-BobOpencodeWindowLines" in src
-    assert "Starts on first use" in src
+    assert "not measured" in src
     assert "opencode_windows" in src
     assert "opencode_window_lines" in src
     # BOM-less PS1 must build middle-dot via char code, not a literal.

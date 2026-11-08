@@ -1,0 +1,32 @@
+# Pool-monitor deploy pin
+# Source-pass parent: 35f2dab3e8c00065871c77d42ffec960a5ad1938
+# Hashes are sha256 of the file bytes in this commit, before this manifest.
+# This file is the pin list. It is not a live install.
+#
+# Limits (review of 35f2dab, still true):
+# - Save-BobXaiWeeklyHandoff uses File.WriteAllText. A torn write is not valid JSON.
+#   parse_xai_weekly_handoff / read_local_xai_weekly ignore it. No partial meter is published.
+# - account in xai-weekly.json is always null. It is not an account-identity match.
+#
+# Frozen ear: bob-ear.exe embeds irc_agent.py. Disk overlay loads only bobreport,
+# and only when that file contains "def opencode_install_root". gitclaim stays in the embed.
+# irc_agent.py changes require Build-BobEar.ps1 then Install-BobEarExe.ps1.
+# Install-BobEarExe copies the previous exe to scripts\bob-ear.exe.bak and restores it
+# if the new exe fails --help. It does not stop or start ircBob.
+#
+# Build (Windows host, not this Linux cloud, not a live machine):
+#   pwsh -File bob/scripts/Build-BobEar.ps1 -RepoRoot <checkout> -OutDir <stage>
+# CI: .github/workflows/build-bob-ear.yml (pull_request on that file, or workflow_dispatch once on main) uploads artifact name bob-ear (exe + sha256 + provenance + this manifest). Not a release/MSI/install/service start.
+#
+# sha256  bytes  path
+eab06dc9e54ae9fd537a0c5e3f51c92bde6a48f518f7754b042b6d01666b3343  217228  common/scripts/bobreport.py
+a1ba1c04469fe21813d10f3895ed48e127ccfac12aaed733c667a96862887b5a  217996  common/scripts/irc_agent.py
+50a12756ef4ddb02cc67602cdfdb6417defde2cfd90937c2e4bda20619a9b283  65650  common/scripts/opencode_fuel.py
+27b24e85b250766fd1ff0c2726acddd6d4f2e9a8a6ed5c32935e642249410191  159166  bob/tray/src/Public/Get-BobTrayHover.ps1
+18b1b8f9c6b1c74194884da7801adcaa8dfa0d348772c2c072992b174360937a  119483  bob/tray/src/Private/Get-BobIrc.ps1
+b2e5db78a69c435e85ddf9a3242f579700fa4eecb56c87a8ca489c1ae3b7b14e  174485  bob/tray/tools/Watch-BobTray.ps1
+a76d9bd3c1e686e7ae5ae6e6490b6c8cccaf0b238d79c1158638338a46512ffe  15501  bob/tray/tools/Get-BobOpencodeFuel.ps1
+cd34a2609aaa75ea1e0f35a431b899c2da7b2df1b34f6b06bd0c0138201045ee  4005  bob/tray/src/BobBridge.psm1
+9058da61c8a1731fa2fd36f0ca8d1a18d1fccf4270e76a5e0a281bd566bfaecb  4204  bob/scripts/Build-BobEar.ps1
+caff95030f576823ad482a6c4c915d71aa6616bc56b89f20f3ae2c1224c53ec2  1937  bob/scripts/Install-BobEarExe.ps1
+28e68030605824ea0510a50773af4f73d6825bf390fa81bf3462d70f3b12a2f8  7064  bob/scripts/Start-Bob.ps1

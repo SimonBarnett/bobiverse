@@ -9,12 +9,16 @@ All functions are pure / testable and never touch credentials.
 """
 from __future__ import annotations
 
+import ipaddress
 import json
 import os
 import re
 import sys
 import tempfile
 import time
+import urllib.error
+import urllib.parse
+import urllib.request
 import uuid
 from pathlib import Path
 from typing import Optional
@@ -378,10 +382,32 @@ def parse_opencode_stats_text(text: str | None) -> dict:
     successful.
     """
     if not text or not isinstance(text, str):
-        return {"costs": {}, "free_models": [], "total_cost": None, "parse_success": False}
+        return {
+            "costs": {},
+            "free_models": [],
+            "total_cost": None,
+            "parse_success": False,
+            "sessions": None,
+            "messages": None,
+            "empty_local_history": False,
+        }
 
     text = _strip_ansi(text)
     lines = text.splitlines()
+    sessions: Optional[int] = None
+    messages: Optional[int] = None
+    for line in lines:
+        upper = line.upper()
+        if _is_table_row(line) and "MODEL USAGE" in upper:
+            break
+        if sessions is None:
+            found = re.search(r"\bSessions\s+(\d+)", line, re.IGNORECASE)
+            if found:
+                sessions = int(found.group(1))
+        if messages is None:
+            found = re.search(r"\bMessages\s+(\d+)", line, re.IGNORECASE)
+            if found:
+                messages = int(found.group(1))
 
     costs: dict[str, float] = {}
     free_models: list[str] = []
@@ -461,7 +487,20 @@ def parse_opencode_stats_text(text: str | None) -> dict:
             current_model = None
 
     parse_success = saw_table_marker or bool(costs) or bool(free_models) or total_cost is not None
-    return {"costs": costs, "free_models": free_models, "total_cost": total_cost, "parse_success": parse_success}
+    # Explicit 0 sessions and 0 messages with no model cost is this process's
+    # empty local history. It is not evidence the interactive user is unstarted.
+    empty_local_history = bool(
+        sessions == 0 and messages == 0 and not costs and not free_models
+    )
+    return {
+        "costs": costs,
+        "free_models": free_models,
+        "total_cost": total_cost,
+        "parse_success": parse_success,
+        "sessions": sessions,
+        "messages": messages,
+        "empty_local_history": empty_local_history,
+    }
 
 
 def parse_opencode_stats_text_or_json(raw: str | None) -> dict:
@@ -491,6 +530,9 @@ def parse_opencode_stats_text_or_json(raw: str | None) -> dict:
         "costs": parsed["costs"],
         "free_models": parsed["free_models"],
         "parse_success": parsed["parse_success"],
+        "sessions": parsed.get("sessions"),
+        "messages": parsed.get("messages"),
+        "empty_local_history": bool(parsed.get("empty_local_history")),
     }
 
 
@@ -646,17 +688,33 @@ def normalize_go_windows(raw: object) -> dict[str, dict]:
             status = "unknown"
         used = _clamp_pct(src.get("used_pct")) if src.get("used_pct") is not None and str(src.get("used_pct")) != "" else None
         rem = _clamp_pct(src.get("remaining_pct")) if src.get("remaining_pct") is not None and str(src.get("remaining_pct")) != "" else None
-        if rem is not None and used is None:
-            used = _used_from_remaining(rem)
-        elif used is not None and rem is None:
-            rem = _clamp_pct(100 - int(used))
-        elif used is not None and rem is not None and (used + rem) != 100:
-            # Prefer remaining as source of truth when both disagree.
-            used = _used_from_remaining(rem)
+        # Provider meters publish used percent only. Do not invent a remaining balance.
+        provider = str(src.get("source") or "").strip().lower() == "provider"
+        if not provider:
+            if rem is not None and used is None:
+                used = _used_from_remaining(rem)
+            elif used is not None and rem is None:
+                rem = _clamp_pct(100 - int(used))
+            elif used is not None and rem is not None and (used + rem) != 100:
+                # Prefer remaining as source of truth when both disagree.
+                used = _used_from_remaining(rem)
         reset = src.get("reset_label")
         reset_label = str(reset).strip() if reset not in (None, "") else None
         fetched = src.get("fetched_at")
         fetched_at = str(fetched).strip() if fetched not in (None, "") else None
+        if provider:
+            rec = _window_record(
+                status,
+                used_pct=used,
+                remaining_pct=rem,
+                reset_label=reset_label,
+                fetched_at=fetched_at,
+            )
+            rec["source"] = "provider"
+            if src.get("limited") is not None:
+                rec["limited"] = bool(src.get("limited"))
+            out[wid] = rec
+            continue
         if status == "unstarted":
             # Clarification fixture: unstarted rolling is 0% used, no invented rem/reset.
             out[wid] = _window_record(
@@ -757,13 +815,36 @@ def go_windows_from_windowed_stats(
     return windows
 
 
+def format_local_model_lines(local_costs: dict | None, *, window_label: str = "7d") -> list[str]:
+    """Per-model lines from ``opencode stats`` cost. Not a provider balance."""
+    if not isinstance(local_costs, dict) or not local_costs:
+        return []
+    rows: list[tuple[str, float]] = []
+    for slug, raw in local_costs.items():
+        try:
+            rows.append((str(slug), float(raw)))
+        except (TypeError, ValueError):
+            continue
+    rows.sort(key=lambda item: (-item[1], item[0]))
+    return [f"{slug}  {window_label} local ${cost:.2f}" for slug, cost in rows]
+
+
 def format_go_window_line(window_id: str, rec: dict | None) -> str:
     """One TipForm/Status line for a Go window (used vs remaining; honest n/a)."""
     label = GO_WINDOW_LABELS.get(window_id, window_id)
     rec = rec if isinstance(rec, dict) else {}
     status = str(rec.get("status") or "unknown")
+    if rec.get("source") == "provider" and rec.get("used_pct") is not None:
+        mid = f"{int(rec['used_pct'])}% used"
+        reset = rec.get("reset_label")
+        if reset:
+            mid = f"{mid}  reset {reset}"
+        if status == "exhausted" or rec.get("limited"):
+            mid = f"{mid}  limited"
+        return f"go {label}  {mid}"
     if status == "unstarted":
-        return f"go {label}  Starts on first use  (0% used)"
+        # No 5-hour sample was read. Do not claim 0% used.
+        return f"go {label}  not measured"
     if status == "unknown":
         return f"go {label}  n/a"
     used = rec.get("used_pct")
@@ -772,7 +853,8 @@ def format_go_window_line(window_id: str, rec: dict | None) -> str:
     if used is not None:
         bits.append(f"{int(used)}% used")
     if rem is not None:
-        bits.append(f"{int(rem)}% rem")
+        # Cost-versus-cap estimate, not a provider remaining balance.
+        bits.append(f"{int(rem)}% rem est")
     if not bits:
         mid = "n/a"
     else:
@@ -783,7 +865,7 @@ def format_go_window_line(window_id: str, rec: dict | None) -> str:
     if status == "stale":
         mid = f"{mid}  [stale]"
     if status == "exhausted" and rem is None:
-        mid = "100% used · 0% rem" + (f"  reset {reset}" if reset else "")
+        mid = "100% used · 0% rem est" + (f"  reset {reset}" if reset else "")
     return f"go {label}  {mid}"
 
 
@@ -811,28 +893,384 @@ def format_opencode_paint_lines(
                     windows[wid]["remaining_pct"] = None
                     windows[wid]["reset_label"] = None
     lim_id, lim_rem = limiting_go_window(windows)
-    free_bit = f"{int(free_remaining)}%" if free_remaining is not None else "n/a"
-    window_lines = [format_go_window_line(wid, windows.get(wid)) for wid in GO_WINDOW_IDS]
-    if free_remaining is None and lim_rem is None and all(
-        str((windows.get(w) or {}).get("status")) in ("unknown",) for w in GO_WINDOW_IDS
-    ):
-        summary = "OpenCode  n/a"
+    # Stale clears the painted percent. Free ``100`` is catalogue availability
+    # (a free model is listed). It is not a measured remaining quota, so it is
+    # not painted as ``100%``.
+    if stale or free_remaining is None:
+        free_bit = "n/a"
+    elif int(free_remaining) == 100:
+        free_bit = "catalogue"
     else:
-        go_bit = f"{int(lim_rem)}%" if lim_rem is not None else "n/a"
-        if lim_id:
-            go_bit = f"{GO_WINDOW_LABELS.get(lim_id, lim_id)} {go_bit}"
+        free_bit = f"{int(free_remaining)}%"
+    window_lines = [format_go_window_line(wid, windows.get(wid)) for wid in GO_WINDOW_IDS]
+    # Missing upstream data still names Free and Go. Collapsing to one "OpenCode n/a"
+    # erased the pool rows on the tray (MarchHare snapshot windows=null).
+    go_bit = f"est {int(lim_rem)}%" if lim_rem is not None else "n/a"
+    if lim_id:
+        go_bit = f"{GO_WINDOW_LABELS.get(lim_id, lim_id)} {go_bit}"
+    if free_bit == "catalogue":
+        summary = f"OpenCode  go {go_bit}"
+        free_heading = None
+    else:
         summary = f"OpenCode  free {free_bit} | go {go_bit}"
-        if stale:
-            summary = f"{summary} [stale]"
+        free_heading = f"free  {free_bit}"
+    if stale:
+        summary = f"{summary} [stale]"
     return {
         "summary": summary,
-        "free_line": f"OpenCode free  {free_bit}",
+        "free_line": f"OpenCode free  {free_bit}" if free_heading else "",
+        "free_heading": free_heading,
         "window_lines": window_lines,
         "windows": windows,
         "limiting": lim_id,
         "go_remaining": lim_rem,
         "free_remaining": free_remaining,
     }
+
+
+def reset_label_from_epoch_ms(resets_at: object, now_ms: int) -> Optional[str]:
+    """Countdown from UsageLimits.Meter.resetsAt (milliseconds). No invented clock."""
+    if resets_at is None or now_ms is None:
+        return None
+    try:
+        delta_ms = int(resets_at) - int(now_ms)
+    except (TypeError, ValueError):
+        return None
+    if delta_ms <= 0:
+        return None
+    minutes = delta_ms // 60000
+    days = minutes // (60 * 24)
+    hours = (minutes % (60 * 24)) // 60
+    mins = minutes % 60
+    if days > 0:
+        return f"{days}d {hours}h"
+    if hours > 0:
+        return f"{hours}h {mins}m"
+    return f"{mins}m"
+
+
+def provider_windows_from_usage_limits(
+    doc: dict | None, *, now_ms: int | None = None
+) -> dict | None:
+    """Map published UsageLimits.Info.go into paint windows.
+
+    GET /api/experimental/usage/limits on the local OpenCode server
+    (https://opencode.ai/docs/api, operation experimental.usage.limits).
+    ``percent`` is the meter's published number. The console labels that same
+    meter "% used"; this does not invent a remaining balance. ``resetsAt`` is
+    milliseconds since the epoch. ``go`` null means the location is not signed in.
+    """
+    if not isinstance(doc, dict):
+        return None
+    go = doc.get("go")
+    if go is None and isinstance(doc.get("data"), dict):
+        go = doc["data"].get("go")
+    if go is None:
+        return None
+    if not isinstance(go, dict):
+        return None
+    if now_ms is None:
+        now_ms = int(time.time() * 1000)
+    keys = (("rolling", "rolling"), ("week", "weekly"), ("month", "monthly"))
+    out: dict[str, dict] = {}
+    for wid, key in keys:
+        meter = go.get(key)
+        if not isinstance(meter, dict) or meter.get("percent") is None:
+            out[wid] = _window_record("unknown")
+            out[wid]["source"] = "provider"
+            continue
+        used = _clamp_pct(meter.get("percent"))
+        limited = bool(meter.get("limited"))
+        status = "exhausted" if limited or (used is not None and used >= 100) else "known"
+        rec = _window_record(
+            status,
+            used_pct=used,
+            remaining_pct=None,
+            reset_label=reset_label_from_epoch_ms(meter.get("resetsAt"), now_ms),
+        )
+        rec["source"] = "provider"
+        rec["limited"] = limited
+        out[wid] = rec
+    return out
+
+
+class UsageLimitsURLError(ValueError):
+    """BOB_OPENCODE_USAGE_URL is not a literal loopback base."""
+
+
+class _NoAuthRedirect(urllib.request.HTTPRedirectHandler):
+    """Refuse every redirect so Basic auth cannot be replayed onto Location."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: ARG002
+        raise urllib.error.HTTPError(
+            getattr(req, "full_url", "") or "",
+            code,
+            "redirect refused",
+            headers,
+            fp,
+        )
+
+
+def usage_limits_request_url(base_url: str) -> str:
+    """Loopback GET for operation experimental.usage.limits.
+
+    Accepts only ``http`` or ``https`` with a literal loopback address
+    (``127.0.0.0/8`` or ``::1``). Rejects names, userinfo, query, fragment,
+    and a port outside 1..65535. The path is always the published route.
+    """
+    raw = (base_url or "").strip()
+    if not raw:
+        raise UsageLimitsURLError("missing")
+    try:
+        parts = urllib.parse.urlsplit(raw)
+    except ValueError as exc:
+        raise UsageLimitsURLError("malformed") from exc
+    if parts.scheme not in ("http", "https"):
+        raise UsageLimitsURLError("scheme")
+    if parts.username is not None or parts.password is not None:
+        raise UsageLimitsURLError("credentials")
+    if parts.query or parts.fragment:
+        raise UsageLimitsURLError("extra")
+    if parts.path not in ("", "/"):
+        raise UsageLimitsURLError("path")
+    host = parts.hostname
+    if not host:
+        raise UsageLimitsURLError("host")
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError as exc:
+        raise UsageLimitsURLError("host") from exc
+    if not ip.is_loopback:
+        raise UsageLimitsURLError("nonloopback")
+    try:
+        port = parts.port
+    except ValueError as exc:
+        raise UsageLimitsURLError("port") from exc
+    if port is not None and not (1 <= int(port) <= 65535):
+        raise UsageLimitsURLError("port")
+    host_text = f"[{ip.compressed}]" if ip.version == 6 else str(ip)
+    netloc = host_text if port is None else f"{host_text}:{int(port)}"
+    return urllib.parse.urlunsplit(
+        (parts.scheme, netloc, "/api/experimental/usage/limits", "", "")
+    )
+
+
+def interpret_usage_limits_response(
+    status: int | None, content_type: str | None, body: str | None
+) -> dict:
+    """Classify a limits response without inventing a quota.
+
+    ``json`` is a usage object whose ``go`` value is an object.
+    ``unsigned`` is JSON ``null`` or a usage object with ``go`` null
+    (the location is not signed in). ``non_json`` is a 200 that is not a
+    JSON usage document, including ``text/html``. ``unavailable`` is any
+    other status. The body of a non-JSON response is discarded.
+    """
+    if status is None or int(status) != 200:
+        return {"kind": "unavailable", "doc": None}
+    media = ""
+    if content_type:
+        media = content_type.split(";", 1)[0].strip().lower()
+    text = body if isinstance(body, str) else ""
+    stripped = text.strip()
+    json_media = media in ("application/json", "text/json") or media.endswith("+json")
+    if media and not json_media:
+        return {"kind": "non_json", "doc": None}
+    if stripped.startswith("<"):
+        return {"kind": "non_json", "doc": None}
+    if not stripped:
+        return {"kind": "non_json", "doc": None}
+    try:
+        parsed = json.loads(stripped)
+    except json.JSONDecodeError:
+        return {"kind": "non_json", "doc": None}
+    if parsed is None:
+        return {"kind": "unsigned", "doc": None}
+    if not isinstance(parsed, dict):
+        return {"kind": "non_json", "doc": None}
+    go = parsed.get("go")
+    if go is None and isinstance(parsed.get("data"), dict):
+        go = parsed["data"].get("go")
+    if go is None:
+        return {"kind": "unsigned", "doc": parsed}
+    if not isinstance(go, dict):
+        return {"kind": "non_json", "doc": None}
+    return {"kind": "json", "doc": parsed}
+
+
+def fetch_usage_limits(
+    base_url: str,
+    password: str | None = None,
+    username: str | None = None,
+    timeout: float = 5.0,
+) -> dict:
+    """GET Go meters from a loopback OpenCode server.
+
+    Username defaults to ``opencode`` (``OPENCODE_SERVER_USERNAME``).
+    Password is ``OPENCODE_SERVER_PASSWORD`` when the caller already has it.
+    Redirects are not followed. A 200 HTML page is ``non_json``, not a quota
+    and not ``go: null``. This does not read key files.
+    """
+    try:
+        url = usage_limits_request_url(base_url)
+    except UsageLimitsURLError:
+        return {"kind": "unavailable", "doc": None}
+    user = username or "opencode"
+    headers = {"Accept": "application/json"}
+    if password:
+        import base64
+
+        token = base64.b64encode(f"{user}:{password}".encode("utf-8")).decode("ascii")
+        headers["Authorization"] = "Basic " + token
+    req = urllib.request.Request(url, headers=headers, method="GET")
+    # Empty ProxyHandler ignores http_proxy so the Authorization header stays on loopback.
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoAuthRedirect)
+    try:
+        with opener.open(req, timeout=timeout) as resp:
+            raw = resp.read().decode("utf-8", errors="replace")
+            status = getattr(resp, "status", None)
+            resp_headers = getattr(resp, "headers", None)
+            content_type = resp_headers.get("Content-Type") if resp_headers is not None else None
+    except (urllib.error.URLError, TimeoutError, OSError, ValueError):
+        return {"kind": "unavailable", "doc": None}
+    return interpret_usage_limits_response(
+        200 if status is None else int(status), content_type, raw
+    )
+
+
+def _unknown_provider_windows() -> dict[str, dict]:
+    out: dict[str, dict] = {}
+    for wid in GO_WINDOW_IDS:
+        rec = _window_record("unknown")
+        rec["source"] = "provider"
+        out[wid] = rec
+    return out
+
+
+def _stale_provider_windows(previous: dict | None) -> dict[str, dict] | None:
+    if not isinstance(previous, dict):
+        return None
+    out: dict[str, dict] = {}
+    saw = False
+    for wid in GO_WINDOW_IDS:
+        rec = previous.get(wid)
+        if not isinstance(rec, dict) or rec.get("source") != "provider":
+            out[wid] = _window_record("unknown")
+            out[wid]["source"] = "provider"
+            continue
+        saw = True
+        stale = _window_record("stale")
+        stale["source"] = "provider"
+        out[wid] = stale
+    return out if saw else None
+
+
+def resolve_provider_windows(
+    doc: dict | None,
+    *,
+    failed: bool,
+    previous: dict | None = None,
+    now_ms: int | None = None,
+) -> dict[str, dict]:
+    """Provider windows when BOB_OPENCODE_USAGE_URL is set.
+
+    A failed read or ``go: null`` is unknown (or stale last-known provider
+    meters). Stats estimate windows are never returned from here.
+    """
+    if failed or doc is None:
+        stale = _stale_provider_windows(previous)
+        return stale if stale is not None else _unknown_provider_windows()
+    if not isinstance(doc, dict) or doc.get("go") is None:
+        return _unknown_provider_windows()
+    parsed = provider_windows_from_usage_limits(doc, now_ms=now_ms)
+    if not parsed:
+        return _unknown_provider_windows()
+    return parsed
+
+
+def windows_from_usage_read(
+    read: dict | None,
+    *,
+    previous: dict | None = None,
+    now_ms: int | None = None,
+) -> dict[str, dict]:
+    """Windows for one classified limits read.
+
+    ``non_json`` and ``unavailable`` are a failed provider read: unknown, or
+    stale last-known provider meters. They never become stats estimates.
+    ``unsigned`` is an honest unknown, not a stale percent and not a cost line.
+    """
+    kind = read.get("kind") if isinstance(read, dict) else "unavailable"
+    doc = read.get("doc") if isinstance(read, dict) else None
+    if kind == "json":
+        return resolve_provider_windows(doc if isinstance(doc, dict) else None, failed=False, now_ms=now_ms)
+    if kind == "unsigned":
+        return _unknown_provider_windows()
+    return resolve_provider_windows(None, failed=True, previous=previous)
+
+
+def local_cache_paint_stale(*, digest_stale: bool, local_windows_applied: bool) -> bool:
+    """Digest ``stale`` must not blank windows taken from a fresh local cache."""
+    if local_windows_applied:
+        return False
+    return bool(digest_stale)
+
+
+def opencode_pool_bars(
+    free_remaining: Optional[int],
+    windows: dict[str, dict] | None,
+    *,
+    stale: bool = False,
+) -> list[dict]:
+    """Status/TipForm bars for Free plus Go rolling/weekly/monthly.
+
+    ``known`` is false when the reading is missing. ``pct`` is remaining percent
+    and is ignored by the renderer unless ``known`` is true — unknown is never
+    painted as 100%. Rolling stays unknown here unless ``windows`` says otherwise;
+    ``opencode stats`` cannot supply the 5-hour window or a reset countdown.
+    """
+    paint = format_opencode_paint_lines(free_remaining, windows, stale=stale)
+    # Catalogue availability must not fill a remaining-quota bar.
+    free_known = (
+        free_remaining is not None and not stale and int(free_remaining) != 100
+    )
+    if stale or free_remaining is None:
+        free_bit = "n/a"
+    elif int(free_remaining) == 100:
+        free_bit = "catalogue"
+    else:
+        free_bit = f"{int(free_remaining)}%"
+    bars: list[dict] = []
+    if free_bit != "catalogue":
+        bars.append(
+            {
+                "id": "free",
+                "heading": f"free  {free_bit}",
+                "known": free_known,
+                "pct": int(free_remaining) if free_known else 0,
+            }
+        )
+    win_map = paint["windows"] if isinstance(paint.get("windows"), dict) else {}
+    for wid, line in zip(GO_WINDOW_IDS, paint["window_lines"]):
+        rec = win_map.get(wid) if isinstance(win_map.get(wid), dict) else {}
+        status = str(rec.get("status") or "unknown")
+        rem = rec.get("remaining_pct")
+        used = rec.get("used_pct")
+        if rec.get("source") == "provider" and used is not None and status in ("known", "exhausted"):
+            known = True
+            pct = int(used)
+        else:
+            known = status in ("known", "exhausted") and rem is not None
+            pct = int(rem) if known else 0
+        bars.append(
+            {
+                "id": wid,
+                "heading": line,
+                "known": known,
+                "pct": pct,
+            }
+        )
+    return bars
 
 
 def fuel_from_stats(stats: dict | None) -> dict:
@@ -895,7 +1333,26 @@ def fuel_from_windowed_stats(windowed: dict[str, dict] | None) -> dict:
     wrapper and is not part of the windowed stats reading.
     """
     windowed = windowed if isinstance(windowed, dict) else {}
-    go_by_model = _go_models_remaining_for_windows(windowed)
+    explicit_empty = False
+    any_cost = False
+    local_costs: dict[str, float] = {}
+    sessions = None
+    messages = None
+    for wid, raw in windowed.items():
+        if not isinstance(raw, dict):
+            continue
+        costs = raw.get("costs") if isinstance(raw.get("costs"), dict) else {}
+        if costs:
+            any_cost = True
+            if wid == "week" or not local_costs:
+                local_costs = {str(k): float(v) for k, v in costs.items()}
+        if raw.get("empty_local_history"):
+            explicit_empty = True
+        if sessions is None and raw.get("sessions") is not None:
+            sessions = raw.get("sessions")
+            messages = raw.get("messages")
+    empty_history = explicit_empty and not any_cost
+    go_by_model = {} if empty_history else _go_models_remaining_for_windows(windowed)
     go_remaining: Optional[int] = None
     if go_by_model:
         go_remaining = max(go_by_model.values())
@@ -908,11 +1365,22 @@ def fuel_from_windowed_stats(windowed: dict[str, dict] | None) -> dict:
         ids = wstats.get("free_model_ids")
         if isinstance(ids, (list, tuple)):
             free_model_ids.extend(str(i) for i in ids)
-    windows = go_windows_from_windowed_stats(windowed)
+    if empty_history:
+        windows = {wid: _window_record("unknown") for wid in GO_WINDOW_IDS}
+        go_remaining = None
+    else:
+        windows = go_windows_from_windowed_stats(windowed)
     lim_id, _lim_rem = limiting_go_window(windows)
+    history = {
+        "sessions": sessions,
+        "messages": messages,
+        "empty": empty_history,
+    }
     return {
         FUEL_ID_FREE: free_remaining,
         FUEL_ID_GO: go_remaining,
+        "local_costs": local_costs,
+        "history": history,
         "models": go_by_model,
         "free_model_ids": list(dict.fromkeys(free_model_ids)),
         "windows": windows,
