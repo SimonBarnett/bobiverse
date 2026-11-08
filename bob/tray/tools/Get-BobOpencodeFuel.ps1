@@ -181,6 +181,25 @@ else:
             if ($parsed.local_costs) { $out.local_costs = $parsed.local_costs }
             if ($parsed.history) { $out.history = $parsed.history }
             $out.read_state = 'ok'
+            if ($env:BOB_OPENCODE_USAGE_URL) {
+                $limitsScript = @'
+import json, os, opencode_fuel
+doc = opencode_fuel.fetch_usage_limits(
+    os.environ.get("BOB_OPENCODE_USAGE_URL") or "",
+    os.environ.get("OPENCODE_PASSWORD") or None,
+)
+windows = opencode_fuel.provider_windows_from_usage_limits(doc)
+print(json.dumps(windows or {}))
+'@
+                $limitsRaw = & $py -c $limitsScript
+                if ($limitsRaw) {
+                    $limits = $limitsRaw | ConvertFrom-Json -ErrorAction SilentlyContinue
+                    if ($limits -and ($limits.rolling -or $limits.week -or $limits.month)) {
+                        $out.windows = $limits
+                        $out.provider = 'usage-limits'
+                    }
+                }
+            }
         } elseif ($out.read_state -eq 'unavailable') {
             $out.read_state = 'parser_missing'
         }

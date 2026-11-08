@@ -814,8 +814,16 @@ def format_go_window_line(window_id: str, rec: dict | None) -> str:
     label = GO_WINDOW_LABELS.get(window_id, window_id)
     rec = rec if isinstance(rec, dict) else {}
     status = str(rec.get("status") or "unknown")
+    if rec.get("source") == "provider" and rec.get("used_pct") is not None:
+        mid = f"{int(rec['used_pct'])}% used"
+        reset = rec.get("reset_label")
+        if reset:
+            mid = f"{mid}  reset {reset}"
+        if status == "exhausted" or rec.get("limited"):
+            mid = f"{mid}  limited"
+        return f"go {label}  {mid}"
     if status == "unstarted":
-        # No 5-hour sample. Do not claim 0% used.
+        # No 5-hour sample was read. Do not claim 0% used.
         return f"go {label}  not measured"
     if status == "unknown":
         return f"go {label}  n/a"
@@ -893,6 +901,116 @@ def format_opencode_paint_lines(
         "go_remaining": lim_rem,
         "free_remaining": free_remaining,
     }
+
+
+def reset_label_from_epoch_ms(resets_at: object, now_ms: int) -> Optional[str]:
+    """Countdown from UsageLimits.Meter.resetsAt (milliseconds). No invented clock."""
+    if resets_at is None or now_ms is None:
+        return None
+    try:
+        delta_ms = int(resets_at) - int(now_ms)
+    except (TypeError, ValueError):
+        return None
+    if delta_ms <= 0:
+        return None
+    minutes = delta_ms // 60000
+    days = minutes // (60 * 24)
+    hours = (minutes % (60 * 24)) // 60
+    mins = minutes % 60
+    if days > 0:
+        return f"{days}d {hours}h"
+    if hours > 0:
+        return f"{hours}h {mins}m"
+    return f"{mins}m"
+
+
+def provider_windows_from_usage_limits(
+    doc: dict | None, *, now_ms: int | None = None
+) -> dict | None:
+    """Map published UsageLimits.Info.go into paint windows.
+
+    GET /api/experimental/usage/limits on the local OpenCode server
+    (https://opencode.ai/docs/api, operation experimental.usage.limits).
+    ``percent`` is the meter's published number. The console labels that same
+    meter "% used"; this does not invent a remaining balance. ``resetsAt`` is
+    milliseconds since the epoch. ``go`` null means the location is not signed in.
+    """
+    if not isinstance(doc, dict):
+        return None
+    go = doc.get("go")
+    if go is None and isinstance(doc.get("data"), dict):
+        go = doc["data"].get("go")
+    if go is None:
+        return None
+    if not isinstance(go, dict):
+        return None
+    if now_ms is None:
+        now_ms = int(time.time() * 1000)
+    keys = (("rolling", "rolling"), ("week", "weekly"), ("month", "monthly"))
+    out: dict[str, dict] = {}
+    for wid, key in keys:
+        meter = go.get(key)
+        if not isinstance(meter, dict) or meter.get("percent") is None:
+            out[wid] = _window_record("unknown")
+            out[wid]["source"] = "provider"
+            continue
+        used = _clamp_pct(meter.get("percent"))
+        limited = bool(meter.get("limited"))
+        status = "exhausted" if limited or (used is not None and used >= 100) else "known"
+        rec = _window_record(
+            status,
+            used_pct=used,
+            remaining_pct=None,
+            reset_label=reset_label_from_epoch_ms(meter.get("resetsAt"), now_ms),
+        )
+        rec["source"] = "provider"
+        rec["limited"] = limited
+        out[wid] = rec
+    return out
+
+
+def usage_limits_request_url(base_url: str) -> str:
+    """Published local-server route. Operation experimental.usage.limits."""
+    base = (base_url or "").strip().rstrip("/")
+    if not base:
+        raise ValueError("missing usage server base")
+    return base + "/api/experimental/usage/limits"
+
+
+def fetch_usage_limits(
+    base_url: str, password: str | None = None, timeout: float = 5.0
+) -> dict | None:
+    """GET the signed-in location's Go meters.
+
+    Basic auth username is the documented ``opencode``. The password is
+    ``OPENCODE_PASSWORD`` when the caller already has it. This function does
+    not read key files and does not include the password in errors.
+    """
+    import urllib.error
+    import urllib.request
+
+    url = usage_limits_request_url(base_url)
+    headers = {"Accept": "application/json"}
+    if password:
+        import base64
+
+        token = base64.b64encode(f"opencode:{password}".encode("utf-8")).decode("ascii")
+        headers["Authorization"] = "Basic " + token
+    req = urllib.request.Request(url, headers=headers, method="GET")
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            raw = resp.read().decode("utf-8", errors="replace")
+    except (urllib.error.URLError, TimeoutError, OSError, ValueError):
+        return None
+    if not raw or raw.strip() in ("", "null"):
+        return None
+    try:
+        doc = json.loads(raw)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(doc, dict):
+        return None
+    return doc
 
 
 def local_cache_paint_stale(*, digest_stale: bool, local_windows_applied: bool) -> bool:

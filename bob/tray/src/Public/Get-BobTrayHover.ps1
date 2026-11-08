@@ -918,7 +918,22 @@ function Format-BobOpencodeWindowLine {
     }
     $status = 'unknown'
     try { if ($Record -and $Record.status) { $status = ([string]$Record.status).Trim().ToLowerInvariant() } } catch { }
+    $source = ''
+    try { if ($Record -and $Record.source) { $source = ([string]$Record.source).Trim().ToLowerInvariant() } } catch { }
     $dot = [string][char]0x00B7
+    if ($source -eq 'provider') {
+        $usedP = ConvertTo-BobTrayIntOrNull $(try { $Record.used_pct } catch { $null })
+        if ($null -ne $usedP) {
+            $mid = ('{0}% used' -f [int]$usedP)
+            $resetP = $null
+            try { if ($Record.reset_label) { $resetP = [string]$Record.reset_label } } catch { }
+            if ($resetP) { $mid = ('{0}  reset {1}' -f $mid, $resetP) }
+            $limited = $false
+            try { if ($Record.limited) { $limited = $true } } catch { }
+            if ($status -eq 'exhausted' -or $limited) { $mid = ('{0}  limited' -f $mid) }
+            return ('go {0}  {1}' -f $label, $mid)
+        }
+    }
     if ($status -eq 'unstarted') {
         return ('go {0}  not measured' -f $label)
     }
@@ -1037,10 +1052,17 @@ function Format-BobOpencodeWindowLines {
         $st = ''
         try { $st = ([string]$windowsOut[$id].status).ToLowerInvariant() } catch { }
         $rem = ConvertTo-BobTrayIntOrNull $(try { $windowsOut[$id].remaining_pct } catch { $null })
+        $usedBar = ConvertTo-BobTrayIntOrNull $(try { $windowsOut[$id].used_pct } catch { $null })
+        $srcBar = ''
+        try { if ($windowsOut[$id].source) { $srcBar = ([string]$windowsOut[$id].source).ToLowerInvariant() } } catch { }
         $barKnown = $false
         $barPct = 0
         if ($st -eq 'exhausted' -and $null -eq $rem) { $rem = 0 }
-        if (($st -eq 'known' -or $st -eq 'exhausted') -and $null -ne $rem) {
+        if ($srcBar -eq 'provider' -and $null -ne $usedBar -and ($st -eq 'known' -or $st -eq 'exhausted')) {
+            # Provider meter percent is used, matching the console bar, not a remaining balance.
+            $barKnown = $true
+            $barPct = [int]$usedBar
+        } elseif (($st -eq 'known' -or $st -eq 'exhausted') -and $null -ne $rem) {
             $barKnown = $true
             $barPct = [int]$rem
         }

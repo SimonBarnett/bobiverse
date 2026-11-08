@@ -886,6 +886,65 @@ _SYSTEM_STATS_7D = """
 """
 
 
+def test_usage_limits_schema_paints_used_percent_not_a_balance():
+    """Fixture meters, not a live console reading."""
+    now = 1_700_000_000_000
+    doc = {
+        "workspace": {"id": "ws_fixture"},
+        "go": {
+            "rolling": {"percent": 0, "limited": False, "resetsAt": now + 3 * 3600 * 1000},
+            "weekly": {"percent": 10, "limited": False, "resetsAt": now + (2 * 3600 + 5 * 60) * 1000},
+            "monthly": {"percent": 40, "limited": False, "resetsAt": now + (2 * 24 * 3600) * 1000},
+        },
+        "budgets": [],
+    }
+    wins = of.provider_windows_from_usage_limits(doc, now_ms=now)
+    assert wins is not None
+    assert wins["rolling"]["source"] == "provider"
+    assert wins["rolling"]["used_pct"] == 0
+    assert wins["rolling"]["remaining_pct"] is None
+    assert wins["rolling"]["status"] == "known"
+    rolling = of.format_go_window_line("rolling", wins["rolling"])
+    assert rolling == "go rolling  0% used  reset 3h 0m"
+    assert "Starts on first use" not in rolling
+    assert "0% used" in rolling
+    weekly = of.format_go_window_line("week", wins["week"])
+    assert weekly == "go weekly  10% used  reset 2h 5m"
+    assert "rem" not in weekly
+    monthly = of.format_go_window_line("month", wins["month"])
+    assert "40% used" in monthly
+    assert monthly.endswith("reset 2d 0h")
+    assert of.provider_windows_from_usage_limits({"workspace": {}, "go": None, "budgets": []}) is None
+
+
+def test_fetch_usage_limits_uses_published_route(monkeypatch):
+    captured = {}
+
+    class Resp:
+        def read(self):
+            return b'{"workspace":{"id":"ws"},"go":null,"budgets":[]}'
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    def fake_urlopen(req, timeout=0):
+        captured["url"] = req.full_url
+        captured["auth"] = req.get_header("Authorization")
+        captured["timeout"] = timeout
+        return Resp()
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    doc = of.fetch_usage_limits("http://127.0.0.1:4096", "secret-not-logged")
+    assert doc["go"] is None
+    assert captured["url"] == "http://127.0.0.1:4096/api/experimental/usage/limits"
+    assert captured["auth"].startswith("Basic ")
+    assert "secret-not-logged" not in captured["auth"]
+    assert captured["timeout"] == 5.0
+
+
 def test_system_empty_stats_are_not_user_unstarted():
     parsed = of.parse_opencode_stats_text(_SYSTEM_STATS_7D)
     assert parsed["sessions"] == 0
