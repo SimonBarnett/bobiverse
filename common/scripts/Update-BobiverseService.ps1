@@ -83,11 +83,24 @@ function Write-UpdLog {
 }
 
 function Get-OptOutReason {
+    # FR #6259: BOBIVERSE_NO_UPDATE via shared trimmed Process+Machine helper when Common is available.
+    $common = Join-Path $PSScriptRoot 'Bobiverse-Common.ps1'
+    if (-not (Test-Path -LiteralPath $common)) {
+        $common = Join-Path $InstallRoot 'scripts\Bobiverse-Common.ps1'
+    }
+    if (Test-Path -LiteralPath $common) {
+        . $common
+        $nu = Get-BobiverseNoUpdateReason -InstallRoot $InstallRoot
+        if ($nu) { return $nu }
+    } else {
+        foreach ($scope in @('Process', 'Machine')) {
+            $n = [Environment]::GetEnvironmentVariable('BOBIVERSE_NO_UPDATE', $scope)
+            if ($n -and ($n.Trim() -eq '1')) { return 'BOBIVERSE_NO_UPDATE=1' }
+        }
+    }
     foreach ($scope in @('Process', 'Machine')) {
         $v = [Environment]::GetEnvironmentVariable('BOB_AUTOUPDATE', $scope)
         if ($v -and ($v.Trim() -match '^(0|false|no|off)$')) { return "BOB_AUTOUPDATE=$($v.Trim())" }
-        $n = [Environment]::GetEnvironmentVariable('BOBIVERSE_NO_UPDATE', $scope)
-        if ($n -and ($n.Trim() -eq '1')) { return 'BOBIVERSE_NO_UPDATE=1' }
     }
     if ($InstallRoot -and (Test-Path -LiteralPath (Join-Path $InstallRoot 'config\autoupdate.disabled'))) {
         return 'config\autoupdate.disabled present'

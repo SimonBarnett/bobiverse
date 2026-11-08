@@ -48,12 +48,12 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
-if ($env:BOBIVERSE_NO_UPDATE -eq '1') {
-    Write-Host 'INFO sync-skip BOBIVERSE_NO_UPDATE=1'
+. (Join-Path $PSScriptRoot 'Bobiverse-Common.ps1')   # t780u: needed up front for the <drive>:\ai discovery; FR #6259 guard helper
+$noUpdateReason = Get-BobiverseNoUpdateReason -InstallRoot $InstallRoot
+if ($noUpdateReason) {
+    Write-Host ("INFO sync-skip {0}" -f $noUpdateReason)
     exit 0
 }
-
-. (Join-Path $PSScriptRoot 'Bobiverse-Common.ps1')   # t780u: needed up front for the <drive>:\ai discovery
 if (-not $InstallRoot) {
     if (-not $Product) { throw 'Sync-BobiverseFromRepo: pass -InstallRoot or -Product' }
     $InstallRoot = Get-BobiverseProductRoot -Product $Product   # t780u: discovered <drive>:\ai
