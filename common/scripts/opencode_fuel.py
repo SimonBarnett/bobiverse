@@ -1198,6 +1198,7 @@ def resolve_provider_windows(
 # with usagePercent (used) + resetInSec. A later schema uses usage.{rolling,weekly,monthly}.
 GO_ZEN_USAGE_DEFAULT_URL = "https://opencode.ai/zen/go/v1/usage"
 GO_ZEN_USAGE_SOURCE = "go-zen-usage"
+GO_ZEN_USAGE_USER_AGENT = "Bobiverse-bobreport/1.0"  # FR #6263 / same class as digest FR #6144
 
 
 def go_zen_usage_request_url(raw: str | None = None) -> str:
@@ -1279,11 +1280,21 @@ def interpret_go_zen_usage_response(
     if code == 401:
         return {"kind": "auth_error", "doc": parsed, "windows": _unknown_provider_windows()}
     if code == 403:
+        # FR #6263: Cloudflare 1010 / browser_signature_banned is not "no subscription".
+        blob = (stripped + " " + json.dumps(parsed, sort_keys=True)).lower() if parsed is not None else stripped.lower()
+        if "1010" in blob or "browser_signature_banned" in blob:
+            return {
+                "kind": "blocked_1010",
+                "doc": parsed,
+                "windows": _unknown_provider_windows(),
+            }
         return {
             "kind": "entitlement_error",
             "doc": parsed,
             "windows": _unknown_provider_windows(),
         }
+    if code == 429:
+        return {"kind": "rate_limited", "doc": parsed, "windows": _unknown_provider_windows()}
     if code != 200:
         return {"kind": "unavailable", "doc": parsed, "windows": _unknown_provider_windows()}
     if not isinstance(parsed, dict):
@@ -1357,6 +1368,8 @@ def fetch_go_zen_usage(
     headers = {
         "Accept": "application/json",
         "Authorization": "Bearer " + key,
+        # Truthful product UA (FR #6263). Bare Python-urllib is edge-banned (FR #6144 class).
+        "User-Agent": GO_ZEN_USAGE_USER_AGENT,
     }
     req = urllib.request.Request(endpoint, headers=headers, method="GET")
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoAuthRedirect)

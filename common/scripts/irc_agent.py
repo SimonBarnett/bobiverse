@@ -22,12 +22,13 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-# Only the publisher hotpatch is loaded from InstallRoot\\scripts. Putting that
+# Only allowlisted hotpatches (bobreport, opencode_fuel FR #6263) load from InstallRoot\\scripts. Putting that
 # directory on sys.path also shadowed gitclaim and every other ear import with
 # whatever old file was still on disk (reader AttributeError on
 # shop_line_resets_bored_clock). Other modules stay in the frozen embed.
-FROZEN_SCRIPT_OVERLAY = ("bobreport",)
+FROZEN_SCRIPT_OVERLAY = ("bobreport", "opencode_fuel")
 BOBREPORT_OVERLAY_MARKER = "def opencode_install_root"
+OPENCODE_FUEL_OVERLAY_MARKER = "GO_ZEN_USAGE_USER_AGENT"  # FR #6263
 
 
 class _InstallScriptOverlay:
@@ -47,6 +48,8 @@ class _InstallScriptOverlay:
         except OSError:
             return None
         if fullname == "bobreport" and BOBREPORT_OVERLAY_MARKER not in text:
+            return None
+        if fullname == "opencode_fuel" and OPENCODE_FUEL_OVERLAY_MARKER not in text:
             return None
         import importlib.util
 
