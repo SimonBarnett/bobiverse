@@ -4442,13 +4442,21 @@ DEFAULT_OPENCODE_FUEL_HELPER_TIMEOUT_S = 5.0
 # only how long a stuck powershell may live. The kill is a process tree so
 # opencode children started by that powershell die with it.
 OPENCODE_FUEL_HELPER_DEADLINE_S = 120.0
-# PyInstaller onefile embeds bobreport inside bob-ear.exe. The process imports
-# it once at startup. Copying scripts\\bobreport.py does not change an older
-# exe and does not change an already-running exe. Build-BobEar.ps1 is the
-# recipe; the rebuilt exe is the frozen artifact that carries this publisher.
+# irc_agent calls prefer_install_scripts_path before import bobreport. A rebuilt
+# bob-ear.exe still loads InstallRoot\\scripts\\bobreport.py when that file
+# exists, so an old on-disk module keeps the 5s helper timeout. Do not delete
+# the file to force the embed. When the file is absent, the embed is imported.
 FROZEN_EAR_FUEL_DEPLOY = {
-    "required_frozen": ("scripts/bob-ear.exe",),
-    "helper_outside_exe": (
+    "disk_module_shadows_embed": True,
+    "do_not_delete_disk_module": True,
+    "when_disk_module_present": (
+        "scripts/bob-ear.exe",
+        "scripts/bobreport.py",
+        "tools/Get-BobOpencodeFuel.ps1",
+        "scripts/opencode_fuel.py",
+    ),
+    "when_disk_module_absent": (
+        "scripts/bob-ear.exe",
         "tools/Get-BobOpencodeFuel.ps1",
         "scripts/opencode_fuel.py",
     ),

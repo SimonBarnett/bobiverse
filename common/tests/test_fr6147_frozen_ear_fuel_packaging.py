@@ -1,11 +1,13 @@
 """Frozen bob-ear.exe packaging for the OpenCode fuel publisher.
 
-Copying scripts/bobreport.py is not enough: the ear imports bobreport at
-startup from the PyInstaller embed. The cache must be the install run dir,
-not _MEIPASS.
+prefer_install_scripts_path runs before import bobreport, so an existing
+scripts/bobreport.py shadows the PyInstaller embed even after a rebuild.
 """
 from __future__ import annotations
 
+import subprocess
+import sys
+import textwrap
 from pathlib import Path
 
 import bobreport
@@ -15,12 +17,61 @@ BUILD = ROOT / "bob" / "scripts" / "Build-BobEar.ps1"
 AGENT = ROOT / "common" / "scripts" / "irc_agent.py"
 
 
-def test_deploy_manifest_requires_rebuilt_ear_not_a_script_copy():
+def _ear_import_snippet() -> str:
+    """The real startup lines: prefer_install_scripts_path, then import bobreport."""
+    src = AGENT.read_text(encoding="utf-8")
+    fn_start = src.index("def prefer_install_scripts_path(")
+    fn_end = src.index("\n# FR #6237:", fn_start)
+    boot_start = src.index("_mei_scripts = str(Path(__file__).resolve().parent)")
+    boot_end = src.index("import bobreport", boot_start)
+    boot = src[boot_start:boot_end] + "import bobreport\n"
+    boot = "\n".join(
+        line for line in boot.splitlines() if "bob_recycle" not in line
+    )
+    return src[fn_start:fn_end] + "\n" + boot + "\n"
+
+
+def _run_frozen_import(install: Path, mei: Path, exe: Path) -> str:
+    (mei / "irc_agent.py").write_text("# embed stand-in\n", encoding="utf-8")
+    driver = textwrap.dedent(
+        f"""
+        import os, sys
+        from pathlib import Path
+        os.environ["BOB_INSTALL_ROOT"] = {str(install)!r}
+        sys.frozen = True
+        sys._MEIPASS = {str(mei)!r}
+        sys.executable = {str(exe)!r}
+        sys.path[:] = [{str(mei)!r}]
+        __file__ = {str(mei / "irc_agent.py")!r}
+        """
+    ) + _ear_import_snippet() + (
+        "print(bobreport.MARKER)\n"
+        "print(bobreport.OPENCODE_FUEL_HELPER_DEADLINE_S)\n"
+    )
+    proc = subprocess.run(
+        [sys.executable, "-c", driver],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert proc.returncode == 0, proc.stderr or proc.stdout
+    return proc.stdout
+
+
+def test_deploy_manifest_installs_disk_bobreport_when_present():
     spec = bobreport.FROZEN_EAR_FUEL_DEPLOY
+    assert spec["disk_module_shadows_embed"] is True
+    assert spec["do_not_delete_disk_module"] is True
     assert spec["script_copy_sufficient"] is False
-    assert spec["required_frozen"] == ("scripts/bob-ear.exe",)
-    assert "tools/Get-BobOpencodeFuel.ps1" in spec["helper_outside_exe"]
-    assert "scripts/opencode_fuel.py" in spec["helper_outside_exe"]
+    present = spec["when_disk_module_present"]
+    assert present[0] == "scripts/bob-ear.exe"
+    assert "scripts/bobreport.py" in present
+    assert "tools/Get-BobOpencodeFuel.ps1" in present
+    assert "scripts/opencode_fuel.py" in present
+    absent = spec["when_disk_module_absent"]
+    assert "scripts/bob-ear.exe" in absent
+    assert "scripts/bobreport.py" not in absent
+    assert "tools/Get-BobOpencodeFuel.ps1" in absent
     assert spec["cache_rel"] == "run/opencode-fuel.json"
     assert spec["builder"] == "bob/scripts/Build-BobEar.ps1"
     assert spec["entry"] == "scripts/irc_agent.py"
@@ -103,6 +154,44 @@ def test_bob_install_root_wins_over_frozen_exe_layout(tmp_path: Path, monkeypatc
     assert bobreport._resolve_opencode_fuel_helper_ps1() == helper.resolve()
     cache = bobreport._opencode_fuel_cache_file(None)
     assert cache == Path(install) / "run" / "opencode-fuel.json"
+
+
+def test_disk_bobreport_shadows_embed_on_frozen_import(tmp_path: Path):
+    """Rebuilt exe + old scripts/bobreport.py still imports the old 5s module."""
+    install = tmp_path / "bob"
+    scripts = install / "scripts"
+    scripts.mkdir(parents=True)
+    mei = tmp_path / "_MEI"
+    mei.mkdir()
+    exe = scripts / "bob-ear.exe"
+    exe.write_bytes(b"MZ")
+    (scripts / "bobreport.py").write_text(
+        "MARKER = 'disk'\nOPENCODE_FUEL_HELPER_DEADLINE_S = 5.0\n",
+        encoding="utf-8",
+    )
+    (mei / "bobreport.py").write_text(
+        "MARKER = 'embed'\nOPENCODE_FUEL_HELPER_DEADLINE_S = 120.0\n",
+        encoding="utf-8",
+    )
+    out = _run_frozen_import(install, mei, exe)
+    assert out.splitlines()[:2] == ["disk", "5.0"]
+
+
+def test_absent_disk_bobreport_imports_embed(tmp_path: Path):
+    install = tmp_path / "bob"
+    scripts = install / "scripts"
+    scripts.mkdir(parents=True)
+    mei = tmp_path / "_MEI"
+    mei.mkdir()
+    exe = scripts / "bob-ear.exe"
+    exe.write_bytes(b"MZ")
+    assert not (scripts / "bobreport.py").exists()
+    (mei / "bobreport.py").write_text(
+        "MARKER = 'embed'\nOPENCODE_FUEL_HELPER_DEADLINE_S = 120.0\n",
+        encoding="utf-8",
+    )
+    out = _run_frozen_import(install, mei, exe)
+    assert out.splitlines()[:2] == ["embed", "120.0"]
 
 
 def test_deadline_kill_uses_windows_process_tree(monkeypatch):
