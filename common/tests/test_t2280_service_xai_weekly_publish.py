@@ -185,6 +185,63 @@ def test_urlerror_records_reason_and_is_not_an_ack(tmp_path: Path):
     assert "digest-absent" not in text
 
 
+def test_old_sample_stays_stale_when_heartbeat_is_fresh():
+    now = datetime(2026, 11, 8, 15, 18, tzinfo=timezone.utc)
+    fetched = "2026-11-06T15:18:00Z"
+    last_seen = "2026-11-08T15:18:00Z"
+    assert bobreport.meter_sample_is_stale(
+        fetched, now=now, max_age_s=90, last_seen=last_seen
+    ) is True
+    fresh = bobreport.meter_sample_is_stale(
+        "2026-11-08T15:17:30Z", now=now, max_age_s=90, last_seen="2026-11-01T00:00:00Z"
+    )
+    assert fresh is False
+
+
+def test_collector_handoff_parses_a_real_sample(monkeypatch, tmp_path: Path):
+    log = tmp_path / "unified.jsonl"
+    log.write_text(
+        '{"ts":"2026-11-08T15:10:00Z","msg":"billing: fetched credits config",'
+        '"ctx":{"config":{"currentPeriod":{"type":"USAGE_PERIOD_TYPE_WEEKLY",'
+        '"end":"2026-11-14T12:00:00Z"},"creditUsagePercent":28}}}\n',
+        encoding="utf-8",
+    )
+    now = datetime(2026, 11, 8, 15, 18, tzinfo=timezone.utc)
+    parsed = bobreport.parse_xai_weekly_log_text(log.read_text(encoding="utf-8"), now=now)
+    assert parsed["weekly_known"] is True
+    assert parsed["used_pct"] == 28
+    assert parsed["remaining_pct"] == 72
+    handoff = {
+        "provider": "xai",
+        "window": "weekly",
+        "direction": "remaining",
+        "remaining_pct": parsed["remaining_pct"],
+        "used_pct": parsed["used_pct"],
+        "source": parsed["source"],
+        "fetched_at": parsed["fetched_at"],
+        "period_end": parsed["period_end"],
+        "weekly_known": True,
+        "account": None,
+    }
+    root = tmp_path / "install"
+    (root / "run").mkdir(parents=True)
+    (root / "run" / "xai-weekly.json").write_text(json.dumps(handoff), encoding="utf-8")
+    monkeypatch.setenv("BOB_INSTALL_ROOT", str(root))
+    monkeypatch.delenv("BOB_WEEKLY_LOG", raising=False)
+    monkeypatch.setenv("USERPROFILE", r"C:\Windows\system32\config\systemprofile")
+    monkeypatch.delenv("HOME", raising=False)
+    reading = bobreport.read_local_xai_weekly(now=now)
+    assert reading is not None
+    assert reading["provider"] == "xai"
+    assert reading["window"] == "weekly"
+    assert reading["direction"] == "remaining"
+    assert reading["fetched_at"] == "2026-11-08T15:10:00Z"
+    assert bobreport._last_xai_acquisition["identity"] == "collector-handoff"
+    peer = bobreport.enrich_peer_with_xai_weekly({"id": "marchhare", "ok": True}, reading)
+    assert peer["xai_weekly"]["fetched_at"] == "2026-11-08T15:10:00Z"
+    assert peer["xai_weekly"]["window"] == "weekly"
+
+
 def test_system_profile_weekly_log_is_not_read(monkeypatch, tmp_path: Path):
     monkeypatch.delenv("BOB_WEEKLY_LOG", raising=False)
     monkeypatch.setenv("USERPROFILE", r"C:\Windows\system32\config\systemprofile")
@@ -206,6 +263,8 @@ def test_peer_heading_names_provider_window_and_direction():
     text = hover.read_text(encoding="utf-8")
     assert "function Format-BobPeerPoolHeading" in text
     assert "cursor-models', 'grok-build', 'copilot', 'grok-bot'" not in text
+    assert "$meter.window" in text
+    assert "fetched_at" in text[text.index("Measurement clock") : text.index("Measurement clock") + 800]
     watch = Path(__file__).resolve().parents[2] / "bob" / "tray" / "tools" / "Watch-BobTray.ps1"
     assert "Format-BobPeerPoolHeading" in watch.read_text(encoding="utf-8")
 

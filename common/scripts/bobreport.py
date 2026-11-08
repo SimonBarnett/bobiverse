@@ -5408,6 +5408,28 @@ def enrich_peer_with_opencode_pcent(
 _XAI_WEEKLY_BILLING_MARK = "billing: fetched credits config"
 
 
+def meter_sample_is_stale(
+    fetched_at: object,
+    *,
+    now: datetime,
+    max_age_s: float,
+    last_seen: object = None,
+) -> bool:
+    """True when the billing sample is too old to paint as current.
+
+    ``last_seen`` is the service heartbeat. It is not the measurement clock
+    and cannot make an old sample current.
+    """
+    del last_seen
+    parsed = _parse_iso_ts(fetched_at)
+    if parsed is None:
+        return True
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    clock = now if now.tzinfo else now.replace(tzinfo=timezone.utc)
+    return (clock - parsed.astimezone(timezone.utc)).total_seconds() > float(max_age_s)
+
+
 def _is_windows_system_profile(path: Path) -> bool:
     """LocalSystem's profile. It is not the interactive user's Grok home."""
     text = str(path).replace("/", "\\").lower()
@@ -5443,6 +5465,74 @@ def xai_weekly_log_candidate() -> tuple[Path | None, str]:
 def xai_weekly_log_path() -> Path | None:
     path, _identity = xai_weekly_log_candidate()
     return path
+
+
+def xai_weekly_handoff_path(env: dict[str, str] | None = None) -> Path | None:
+    """Collector handoff. The user-context tray writes this; the service only reads it.
+
+    ``BOB_XAI_WEEKLY_FILE``, else ``<BOB_INSTALL_ROOT>/run/xai-weekly.json``.
+    Not a credential file and not a profile scan.
+    """
+    e = os.environ if env is None else env
+    raw = (e.get("BOB_XAI_WEEKLY_FILE") or "").strip()
+    if raw:
+        return Path(raw)
+    root = (e.get("BOB_INSTALL_ROOT") or "").strip()
+    if not root:
+        return None
+    return Path(root) / "run" / "xai-weekly.json"
+
+
+def parse_xai_weekly_handoff(doc: object, *, now: datetime | None = None) -> dict | None:
+    """Meter document from the collector. Missing percent stays unknown, not 0."""
+    if not isinstance(doc, dict):
+        return None
+    if str(doc.get("provider") or "") != "xai":
+        return None
+    window = str(doc.get("window") or "")
+    direction = str(doc.get("direction") or "")
+    if not window or direction != "remaining":
+        return None
+    known = bool(doc.get("weekly_known"))
+    remaining = doc.get("remaining_pct")
+    used = doc.get("used_pct")
+    if known:
+        try:
+            remaining_i = int(remaining)
+            if not 0 <= remaining_i <= 100:
+                return None
+        except (TypeError, ValueError):
+            return None
+    else:
+        remaining_i = None
+    used_i = None
+    if used not in (None, ""):
+        try:
+            used_i = int(used)
+        except (TypeError, ValueError):
+            used_i = None
+    reading = {
+        "remaining_pct": remaining_i,
+        "used_pct": used_i,
+        "period_end": str(doc["period_end"]) if doc.get("period_end") else None,
+        "fetched_at": str(doc["fetched_at"]) if doc.get("fetched_at") else None,
+        "source": str(doc.get("source") or "collector-handoff"),
+        "weekly_known": known and remaining_i is not None,
+        "provider": "xai",
+        "window": window,
+        "direction": "remaining",
+        "account": None,
+    }
+    pe = _parse_xai_period_end(reading.get("period_end"))
+    clock = now or datetime.now(timezone.utc)
+    if clock.tzinfo is None:
+        clock = clock.replace(tzinfo=timezone.utc)
+    if pe is not None and pe <= clock.astimezone(timezone.utc):
+        reading["remaining_pct"] = None
+        reading["used_pct"] = None
+        reading["weekly_known"] = False
+        reading["stale"] = True
+    return reading
 
 
 def _parse_xai_period_end(raw: object) -> datetime | None:
@@ -5544,15 +5634,8 @@ def parse_xai_weekly_log_text(text: str, *, now: datetime | None = None) -> dict
     return reading
 
 
-def read_local_xai_weekly(*, now: datetime | None = None) -> dict | None:
-    global _last_xai_acquisition
-    path, identity = xai_weekly_log_candidate()
-    _last_xai_acquisition = {"identity": identity, "read": False}
-    if path is None or not path.is_file():
-        return None
-    _last_xai_acquisition["read"] = True
+def _read_xai_log_file(path: Path, *, now: datetime | None) -> dict | None:
     try:
-        # Tail only: the billing line is at the end of a long CLI log.
         size = path.stat().st_size
         with path.open("rb") as handle:
             handle.seek(max(0, size - 1024 * 1024))
@@ -5560,6 +5643,37 @@ def read_local_xai_weekly(*, now: datetime | None = None) -> dict | None:
     except OSError:
         return None
     return parse_xai_weekly_log_text(blob, now=now)
+
+
+def read_local_xai_weekly(*, now: datetime | None = None) -> dict | None:
+    """Explicit log, then the collector handoff, then a non-system profile log.
+
+    A LocalSystem profile with no explicit file and no handoff returns None.
+    That is not a measurement and must not be published as unknown weekly.
+    """
+    global _last_xai_acquisition
+    path, identity = xai_weekly_log_candidate()
+    if identity == "explicit" and path is not None and path.is_file():
+        reading = _read_xai_log_file(path, now=now)
+        _last_xai_acquisition = {"identity": "explicit", "read": reading is not None}
+        if reading:
+            return reading
+    handoff = xai_weekly_handoff_path()
+    if handoff is not None and handoff.is_file():
+        try:
+            doc = json.loads(handoff.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError, UnicodeError):
+            doc = None
+        reading = parse_xai_weekly_handoff(doc, now=now)
+        if reading:
+            _last_xai_acquisition = {"identity": "collector-handoff", "read": True}
+            return reading
+    if identity == "process-profile" and path is not None and path.is_file():
+        reading = _read_xai_log_file(path, now=now)
+        _last_xai_acquisition = {"identity": "process-profile", "read": reading is not None}
+        return reading
+    _last_xai_acquisition = {"identity": identity, "read": False}
+    return None
 
 
 def enrich_peer_with_xai_weekly(peer: dict, reading: dict | None) -> dict:
@@ -5595,7 +5709,7 @@ def enrich_peer_with_xai_weekly(peer: dict, reading: dict | None) -> dict:
         )
         enriched["xai_weekly"] = {
             "provider": "xai",
-            "window": "weekly",
+            "window": str(reading.get("window") or "weekly"),
             "direction": "remaining",
             "remaining_pct": remaining,
             "used_pct": enriched.get("xai_weekly_used_pct"),
@@ -5615,7 +5729,7 @@ def enrich_peer_with_xai_weekly(peer: dict, reading: dict | None) -> dict:
         )
         enriched["xai_weekly"] = {
             "provider": "xai",
-            "window": "weekly",
+            "window": str(reading.get("window") or "weekly"),
             "direction": "remaining",
             "remaining_pct": None,
             "used_pct": None,

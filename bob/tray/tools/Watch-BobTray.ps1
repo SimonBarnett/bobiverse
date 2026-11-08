@@ -2921,12 +2921,12 @@ function Rebuild-BobTrayTiles {
         # FR #5172 / FR #6148 / FR #6149: Copilot pool with logo; TitleColor paints stale red.
         $copilotLine = $null
         try { $copilotLine = Format-BobCopilotPoolLine -Pool $CopilotPool } catch { }
-        if (-not $copilotLine) { $copilotLine = 'Copilot  unknown' }
-        $copilotColor = [System.Drawing.Color]::Empty
-        if ($copilotLine -like 'Copilot  `[stale*') {
-            $copilotColor = [System.Drawing.Color]::FromArgb(248, 81, 73)
-        }
-        $y = Add-BobTrayFuelFamilyRow -X 0 -Y $y -Family 'copilot' -Title $copilotLine -TitleColor $copilotColor
+        if (-not $copilotLine) { $copilotLine = 'copilot  allowance  unknown' }
+        # Stale is a label, not an alarm color. FR #6204: this paint does not poll GitHub.
+        $y = Add-BobTrayFuelFamilyRow -X 0 -Y $y -Family 'copilot' -Title $copilotLine
+        $copilotBar = $null
+        try { $copilotBar = Get-BobCopilotMeterBarPct -Pool $CopilotPool } catch { $copilotBar = $null }
+        $y = Add-BobTrayUsageRow -X 18 -Y $y -Heading $copilotLine -RemainingPct $copilotBar -BarWidth 336 -Icon $null
         $indent = 18
         $shownMachines = @{}
         foreach ($m in @($Machines)) {

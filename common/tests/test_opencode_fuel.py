@@ -784,7 +784,8 @@ def test_fr6147_go_windows_used_vs_remaining_and_unstarted_rolling():
     assert "36% used" in paint["window_lines"][2]
     assert "64% rem" in paint["window_lines"][2]
     assert paint["go_remaining"] == 28
-    assert "free catalogue" in paint["summary"]
+    assert "free catalogue" not in paint["summary"]
+    assert paint["summary"].startswith("OpenCode  go ")
     assert "100%" not in paint["summary"]
 
 
@@ -1314,7 +1315,8 @@ def test_marchhare_1403_cache_is_not_a_go_quota_and_keeps_unstarted_rolling():
     """
     wins = MARCHHARE_1403_CACHE["windows"]
     paint = of.format_opencode_paint_lines(100, wins)
-    assert paint["summary"] == "OpenCode  free catalogue | go n/a"
+    assert paint["summary"] == "OpenCode  go n/a"
+    assert paint["free_heading"] is None
     assert "100%" not in paint["summary"]
     assert "not measured" in paint["window_lines"][0]
     assert "0% used" not in paint["window_lines"][0]
@@ -1326,9 +1328,7 @@ def test_marchhare_1403_cache_is_not_a_go_quota_and_keeps_unstarted_rolling():
     assert paint["windows"]["month"]["status"] == "unknown"
     bars = of.opencode_pool_bars(100, wins)
     by_id = {b["id"]: b for b in bars}
-    assert by_id["free"]["known"] is False
-    assert by_id["free"]["pct"] == 0
-    assert by_id["free"]["heading"] == "free  catalogue"
+    assert "free" not in by_id
     assert by_id["rolling"]["known"] is False
     assert "not measured" in by_id["rolling"]["heading"]
     assert "0% used" not in by_id["rolling"]["heading"]

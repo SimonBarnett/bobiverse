@@ -908,13 +908,18 @@ def format_opencode_paint_lines(
     go_bit = f"est {int(lim_rem)}%" if lim_rem is not None else "n/a"
     if lim_id:
         go_bit = f"{GO_WINDOW_LABELS.get(lim_id, lim_id)} {go_bit}"
-    summary = f"OpenCode  free {free_bit} | go {go_bit}"
+    if free_bit == "catalogue":
+        summary = f"OpenCode  go {go_bit}"
+        free_heading = None
+    else:
+        summary = f"OpenCode  free {free_bit} | go {go_bit}"
+        free_heading = f"free  {free_bit}"
     if stale:
         summary = f"{summary} [stale]"
     return {
         "summary": summary,
-        "free_line": f"OpenCode free  {free_bit}",
-        "free_heading": f"free  {free_bit}",
+        "free_line": f"OpenCode free  {free_bit}" if free_heading else "",
+        "free_heading": free_heading,
         "window_lines": window_lines,
         "windows": windows,
         "limiting": lim_id,
@@ -1235,14 +1240,16 @@ def opencode_pool_bars(
         free_bit = "catalogue"
     else:
         free_bit = f"{int(free_remaining)}%"
-    bars: list[dict] = [
-        {
-            "id": "free",
-            "heading": f"free  {free_bit}",
-            "known": free_known,
-            "pct": int(free_remaining) if free_known else 0,
-        }
-    ]
+    bars: list[dict] = []
+    if free_bit != "catalogue":
+        bars.append(
+            {
+                "id": "free",
+                "heading": f"free  {free_bit}",
+                "known": free_known,
+                "pct": int(free_remaining) if free_known else 0,
+            }
+        )
     win_map = paint["windows"] if isinstance(paint.get("windows"), dict) else {}
     for wid, line in zip(GO_WINDOW_IDS, paint["window_lines"]):
         rec = win_map.get(wid) if isinstance(win_map.get(wid), dict) else {}

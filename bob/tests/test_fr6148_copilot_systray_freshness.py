@@ -32,12 +32,13 @@ def test_format_helpers_exist():
 def test_watch_always_shows_copilot_unknown_fallback():
     w = WATCH.read_text(encoding="utf-8-sig")
     sec = w[w.index("function Rebuild-BobTrayTiles") : w.index("Atomic swap on the TipForm")]
-    assert "Copilot  unknown" in sec
+    assert "copilot  allowance  unknown" in sec
     assert "Format-BobCopilotPoolLine" in sec
-    # FIX #6180: escape `[` in -like; TitleColor paints stale red (via FuelFamilyRow).
-    assert "TitleColor" in sec
+    assert "Get-BobCopilotMeterBarPct" in sec
     assert "Add-BobTrayFuelFamilyRow" in sec
-    assert "`[stale" in sec or "``[stale" in w
+    assert "Add-BobTrayUsageRow" in sec
+    # Stale stays a label. It is not the red alarm color.
+    assert "Copilot  `[stale" not in sec
     hdr = w[w.index("function Add-BobTraySectionHeader") : w.index("function Set-BobTrayHelpTip")]
     assert "[System.Drawing.Color]$TitleColor" in hdr
     assert "TitleColor.A" in hdr

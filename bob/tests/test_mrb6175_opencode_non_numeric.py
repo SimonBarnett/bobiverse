@@ -51,9 +51,9 @@ foreach ($c in $cases) {{
     assert proc.returncode == 0, proc.stderr or proc.stdout
     lines = [ln.strip() for ln in proc.stdout.splitlines() if ln.strip()]
     assert any("n/a" in ln for ln in lines[:3]), lines
-    assert lines[-1] == "OpenCode  free catalogue | go est 50%", lines
+    assert lines[-1] == "OpenCode  go est 50%", lines
     # first case: free unknown -> n/a, go 50%
     assert lines[0] == "OpenCode  free n/a | go est 50%", lines
-    assert lines[1] == "OpenCode  free catalogue | go n/a", lines
+    assert lines[1] == "OpenCode  go n/a", lines
     assert lines[2] == "OpenCode  n/a", lines
     assert lines[3] == "OpenCode  n/a", lines

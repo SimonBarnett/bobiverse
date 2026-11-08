@@ -204,10 +204,10 @@ function Format-BobPeerPoolHeading {
     if ($Provider -and $Direction) {
         $win = if ($Window) { $Window } else { 'weekly' }
         $bits = @($id, $Provider, $win, $Direction)
-        if (-not $FuelStale -and $null -ne $RemainingPct -and [string]$RemainingPct -ne '' -and $Direction -eq 'remaining') {
+        if ($null -ne $RemainingPct -and [string]$RemainingPct -ne '' -and $Direction -eq 'remaining') {
             $bits += ('{0}%' -f [int]$RemainingPct)
         }
-        if (-not $FuelStale -and $null -ne $UsedPct -and [string]$UsedPct -ne '') {
+        if ($null -ne $UsedPct -and [string]$UsedPct -ne '') {
             $bits += ('used {0}%' -f [int]$UsedPct)
         }
         if ($Account) { $bits += ('account {0}' -f $Account) }
@@ -1078,18 +1078,26 @@ function Format-BobOpencodeWindowLines {
         $limLabel = switch ($limId) { 'rolling' { 'rolling' } 'week' { 'weekly' } 'month' { 'monthly' } default { $limId } }
         $goBit = ('{0} {1}' -f $limLabel, $goBit)
     }
-    $summary = ('OpenCode  free {0} | go {1}' -f $freeBit, $goBit)
+    # Catalogue free (always 100 from the model list) is not a measured allowance row.
+    if ($freeCatalogue) {
+        $summary = ('OpenCode  go {0}' -f $goBit)
+        $freeHeading = $null
+    } else {
+        $summary = ('OpenCode  free {0} | go {1}' -f $freeBit, $goBit)
+        $freeHeading = ('free  {0}' -f $freeBit)
+    }
     if ($Stale) { $summary = ('{0} [stale]' -f $summary) }
-    $freeHeading = ('free  {0}' -f $freeBit)
     $windowsOut = [ordered]@{}
     $bars = New-Object System.Collections.Generic.List[object]
-    $freeKnown = (-not $Stale) -and (-not $freeCatalogue) -and (Test-BobTrayRemainingKnown $FreePct)
-    $bars.Add([pscustomobject]@{
-        id = 'free'
-        heading = $freeHeading
-        known = [bool]$freeKnown
-        pct = $(if ($freeKnown) { [int]$FreePct } else { 0 })
-    })
+    if (-not $freeCatalogue) {
+        $freeKnown = (-not $Stale) -and (Test-BobTrayRemainingKnown $FreePct)
+        $bars.Add([pscustomobject]@{
+            id = 'free'
+            heading = $freeHeading
+            known = [bool]$freeKnown
+            pct = $(if ($freeKnown) { [int]$FreePct } else { 0 })
+        })
+    }
     foreach ($id in $ids) {
         $rec = $winMap[$id]
         if (-not $rec) {
@@ -1184,10 +1192,12 @@ function Format-BobOpencodePoolLine {
     $freeKnown = Test-BobTrayRemainingKnown $FreePct
     $goKnown = Test-BobTrayRemainingKnown $GoPct
     if (-not $freeKnown -and -not $goKnown) { return 'OpenCode  n/a' }
-    if ($freeKnown -and [int]$FreePct -eq 100) { $freeBit = 'catalogue' }
-    elseif ($freeKnown) { $freeBit = ('{0}%' -f [int]$FreePct) }
-    else { $freeBit = 'n/a' }
     $goBit = if ($goKnown) { ('est {0}%' -f [int]$GoPct) } else { 'n/a' }
+    if ($freeKnown -and [int]$FreePct -eq 100) {
+        return ('OpenCode  go {0}' -f $goBit)
+    }
+    if ($freeKnown) { $freeBit = ('{0}%' -f [int]$FreePct) }
+    else { $freeBit = 'n/a' }
     return ('OpenCode  free {0} | go {1}' -f $freeBit, $goBit)
 }
 
@@ -1344,23 +1354,55 @@ function Format-BobCopilotPoolLine {
     if ($pct) { $pctBit = (' ({0}% of max recorded)' -f $pct) }
     $unlimited = $false
     try { if ($Pool.unlimited) { $unlimited = [bool]$Pool.unlimited } } catch { }
-    $value = 'unknown'
+    $staleLabel = ''
+    if ($isStale) { $staleLabel = $(if ($staleBit) { $staleBit.Trim() } else { '[stale]' }) }
+    $resetLabel = ''
+    if ($resetBit) { $resetLabel = $resetBit.Trim() }
+    # Same meter tokens as other providers. Unlimited is not a remaining fill.
+    # The tray does not call GitHub (FR #6204 polling stays opt-in and off).
     if ($unlimited) {
-        $n = 0
-        try { if ($null -ne $used) { $n = [int]$used } } catch { }
-        $value = ('unlimited, {0} used{1}{2}' -f $n, $pctBit, $resetBit)
+        $n = $null
+        try { if ($null -ne $used -and [string]$used -ne '') { $n = [int]$used } } catch { }
+        $bits = @('copilot', 'included', 'unlimited')
+        if ($null -ne $n) { $bits += ('used {0}' -f $n) }
+        if ($pctBit) { $bits += $pctBit.Trim() }
+        if ($staleLabel) { $bits += $staleLabel }
+        if ($resetLabel) { $bits += $resetLabel }
+        return ($bits -join '  ')
     }
-    elseif ($state -eq 'unknown') { $value = 'unknown' }
-    elseif ($state -eq 'exhausted') { $value = 'exhausted' }
-    else {
-        $rem = $Pool.remaining
-        if ($null -ne $rem -and [string]$rem -ne '') {
-            $value = ('{0} remaining{1}{2}' -f $rem, $pctBit, $resetBit)
-        } else {
-            $value = 'unknown'
-        }
+    if ($state -eq 'exhausted') {
+        $bits = @('copilot', 'allowance', 'exhausted')
+        if ($staleLabel) { $bits += $staleLabel }
+        if ($resetLabel) { $bits += $resetLabel }
+        return ($bits -join '  ')
     }
-    return ('Copilot  {0}{1}' -f $staleBit, $value)
+    $rem = $null
+    try { if ($null -ne $Pool.remaining -and [string]$Pool.remaining -ne '') { $rem = $Pool.remaining } } catch { }
+    if ($null -eq $rem) {
+        $bits = @('copilot', 'allowance', 'unknown')
+        if ($staleLabel) { $bits += $staleLabel }
+        return ($bits -join '  ')
+    }
+    $bits = @('copilot', 'allowance', 'remaining', ('{0}' -f $rem))
+    if ($pctBit) { $bits += $pctBit.Trim() }
+    if ($staleLabel) { $bits += $staleLabel }
+    if ($resetLabel) { $bits += $resetLabel }
+    return ($bits -join '  ')
+}
+
+function Get-BobCopilotMeterBarPct {
+    <#
+      Live bar only for a fresh numeric remaining. Unlimited and stale are not a fill.
+    #>
+    param($Pool, $Now = $null)
+    if (-not $Pool) { return $null }
+    $freshness = Get-BobCopilotFreshness -Pool $Pool -Now $Now
+    if ($freshness.state -eq 'stale') { return $null }
+    $unlimited = $false
+    try { if ($Pool.unlimited) { $unlimited = [bool]$Pool.unlimited } } catch { }
+    if ($unlimited) { return $null }
+    if ($null -eq $Pool.remaining -or [string]$Pool.remaining -eq '') { return $null }
+    try { return [int]$Pool.remaining } catch { return $null }
 }
 
 
@@ -1969,6 +2011,7 @@ function Expand-BobReportDigestView {
                     lastSeen = $(if ($node.lastSeen) { [string]$node.lastSeen } else { $null })
                     out_of_tokens = $outTok
                     status = $(if ($st) { $st } else { $null })
+                    window = $(if ($xai -and $xai.window) { [string]$xai.window } else { $null })
                     provider = $(if ($xai -and $xai.provider) { [string]$xai.provider } else { $null })
                     direction = $(if ($xai -and $xai.direction) { [string]$xai.direction } else { $null })
                     account = $(if ($xai -and $xai.account) { [string]$xai.account } elseif ($node.grok_account) { [string]$node.grok_account } else { $null })
@@ -2677,31 +2720,30 @@ function Get-BobTrayHover {
         if ($null -eq $pct) { continue }
         # FR AgentMonitor#150: digest must not overwrite this host's local Grok pool (incl. n/a).
         if ($mac -eq $machineId -and $localWeeklyLocked -and -not $outTok) { continue }
-        $age = $null
-        if ($wr.lastSeen) {
-            $age = Get-BobLastSeenAgeSec -Record ([pscustomobject]@{ lastSeen = $wr.lastSeen })
+        # Measurement clock is xai_weekly.fetched_at. lastSeen is only liveness
+        # and must not make an old billing sample look current.
+        $measureAt = $null
+        try { if ($wr.fetched_at) { $measureAt = [string]$wr.fetched_at } } catch { }
+        $measureAge = $null
+        if ($measureAt) {
+            $measureAge = Get-BobLastSeenAgeSec -Record ([pscustomobject]@{ lastSeen = $measureAt })
         }
-        if ($null -ne $age) { $fuelAgeBy[$mac] = [int]$age }
-        # Local out_of_tokens and fresh peers keep a live %; stale peers are marked.
+        if ($null -ne $measureAge) { $fuelAgeBy[$mac] = [int]$measureAge }
         $isPeer = ($mac -ne $machineId)
-        if ($isPeer -and -not $outTok -and $null -ne $age -and $age -gt $fuelStaleAfter) {
+        $sampleStale = $false
+        if ($isPeer -and -not $outTok) {
+            if (-not $measureAt -or $null -eq $measureAge -or [int]$measureAge -gt $fuelStaleAfter) {
+                $sampleStale = $true
+            }
+        }
+        if ($sampleStale) {
             $fuelStaleBy[$mac] = $true
-            # Do not put a confident current % into weeklyBy.
+            $weeklyBy[$mac] = $pct
             if ($wr.period_end) {
                 if (-not ($mac -eq $machineId -and $periodEndBy.ContainsKey($machineId))) {
                     $periodEndBy[$mac] = [string]$wr.period_end
                 }
             }
-            continue
-        }
-        if ($isPeer -and -not $outTok -and $null -eq $age -and $wr.lastSeen) {
-            # Unparseable lastSeen: treat as stale rather than live.
-            $fuelStaleBy[$mac] = $true
-            continue
-        }
-        if ($isPeer -and -not $outTok -and -not $wr.lastSeen) {
-            # FR #5032 / MRB #5037: missing lastSeen must not paint a confident live %.
-            $fuelStaleBy[$mac] = $true
             continue
         }
         $weeklyBy[$mac] = $pct
@@ -3075,21 +3117,17 @@ function Get-BobTrayHover {
             $tileEnd = $livePeriod.period_end
             $tileReset = $livePeriod.reset_label
         } else {
-            # FR #5032: never paint a confident current % from a stale digest reading.
-            $wPct = $null
-            $tileReset = $null
+            # Last-known percent stays for the heading. The bar is not a live fill.
+            # Age is the measurement fetched_at, not the heartbeat lastSeen.
             $ageSec = $null
             if ($fuelAgeBy.ContainsKey($mid)) { $ageSec = [int]$fuelAgeBy[$mid] }
-            elseif ($seenBy.ContainsKey($mid)) {
-                $ageSec = Get-BobLastSeenAgeSec -Record ([pscustomobject]@{ lastSeen = $seenBy[$mid] })
-            }
             if ($null -ne $ageSec -and $ageSec -ge 0) {
                 $tileReset = Format-BobTrayFuelStaleAge -AgeSec $ageSec
             } else {
                 $tileReset = 'stale'
             }
             $tileAvail = 'stale'
-            $tileAvailReason = 'digest-lastSeen-stale'
+            $tileAvailReason = 'meter-fetched-at-stale'
         }
         $upSince = $null
         if ($uptimeByMachine.ContainsKey($mid)) { $upSince = [string]$uptimeByMachine[$mid] }
@@ -3154,7 +3192,8 @@ function Get-BobTrayHover {
         if ($meter -and $meter.provider -and $meter.direction) {
             $prov = [string]$meter.provider
             $dir = [string]$meter.direction
-            $win = 'weekly'
+            $win = ''
+            try { if ($meter.window) { $win = [string]$meter.window } } catch { }
             if ($meter.used_pct -ne $null -and [string]$meter.used_pct -ne '') { $usedP = $meter.used_pct }
             if ($meter.account) { $acct = [string]$meter.account }
             if ($meter.source) { $srcMeter = [string]$meter.source }
@@ -3162,6 +3201,7 @@ function Get-BobTrayHover {
         } elseif ($mid -eq $machineId -and $week -and $week.source) {
             $prov = 'xai'
             $win = 'weekly'
+            try { if ($week.kind) { $win = [string]$week.kind } } catch { }
             $dir = 'remaining'
             $usedP = $week.used_pct
             $srcMeter = [string]$week.source
