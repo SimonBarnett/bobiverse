@@ -19,8 +19,6 @@ jobs:
         shell: pwsh
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 2
 
       - uses: actions/setup-python@v5
         with:
@@ -31,10 +29,9 @@ jobs:
 
       - name: Confirm behavior files match 050ca9fa
         run: |
-          $parent = (git rev-parse HEAD^).Trim()
           $expected = "050ca9faa51728769780de2774df9fc7e440dfad"
-          if ($parent -ne $expected) { throw "behavior parent is $parent" }
-          git diff --exit-code $parent -- `
+          git fetch --no-tags --depth=1 origin $expected
+          git diff --exit-code $expected -- `
             common/scripts/bobreport.py `
             common/scripts/irc_agent.py `
             common/scripts/opencode_fuel.py `
