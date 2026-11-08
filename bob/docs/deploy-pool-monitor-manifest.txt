@@ -16,7 +16,7 @@
 #
 # Build (Windows host, not this Linux cloud, not a live machine):
 #   pwsh -File bob/scripts/Build-BobEar.ps1 -RepoRoot <checkout> -OutDir <stage>
-# No sanctioned CI artifact path publishes bob-ear.exe for this branch.
+# CI: .github/workflows/build-bob-ear.yml (pull_request on that file, or workflow_dispatch once on main) uploads artifact name bob-ear (exe + sha256 + provenance + this manifest). Not a release/MSI/install/service start.
 #
 # sha256  bytes  path
 eab06dc9e54ae9fd537a0c5e3f51c92bde6a48f518f7754b042b6d01666b3343  217228  common/scripts/bobreport.py

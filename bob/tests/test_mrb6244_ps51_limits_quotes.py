@@ -12,6 +12,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[1]
 FUEL_PS1 = ROOT / "tray" / "tools" / "Get-BobOpencodeFuel.ps1"
 
@@ -38,6 +40,7 @@ def test_limits_script_has_no_double_quotes():
     assert "{'provider_read'" in body or "{'provider_read':" in body
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="powershell.exe host-only")
 def test_limits_script_runs_under_powershell_51_c():
     """Behavioral: powershell.exe -c of the tip limitsScript must not SyntaxError."""
     src = FUEL_PS1.read_text(encoding="utf-8-sig")

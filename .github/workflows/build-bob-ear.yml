@@ -21,6 +21,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
 
       - uses: actions/setup-python@v5
         with:
@@ -32,13 +33,13 @@ jobs:
           . .\common\scripts\Bobiverse-Common.ps1
           Install-BobiversePythonDeps -Python (Get-Command python).Source
 
-      - name: Confirm behavior files match 050ca9fa
+      - name: Confirm behavior files match 99783eb
         env:
           WORKFLOW_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
           $head = (git rev-parse HEAD).Trim()
           if ($head -ne $env:WORKFLOW_COMMIT) { throw "checkout $head is not $env:WORKFLOW_COMMIT" }
-          $expected = "050ca9faa51728769780de2774df9fc7e440dfad"
+          $expected = "99783eb90c23a9ee8bb9bbd326a6de0500de1d8f"
           git fetch --no-tags --depth=1 origin $expected
           git diff --exit-code $expected -- `
             common/scripts/bobreport.py `
@@ -68,7 +69,7 @@ jobs:
           Copy-Item -LiteralPath $exe -Destination (Join-Path $stage "bob-ear.exe")
           Copy-Item -LiteralPath "$root\bob\docs\deploy-pool-monitor-manifest.txt" -Destination (Join-Path $stage "deploy-pool-monitor-manifest.txt")
           @(
-            "behavior_source_sha=050ca9faa51728769780de2774df9fc7e440dfad"
+            "behavior_source_sha=99783eb90c23a9ee8bb9bbd326a6de0500de1d8f"
             "workflow_commit=$($env:WORKFLOW_COMMIT)"
             "exe_name=bob-ear.exe"
             "exe_sha256=$hash"

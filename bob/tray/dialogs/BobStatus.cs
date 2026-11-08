@@ -217,6 +217,8 @@ namespace BobDialogs
                 r.Heading = b.Heading ?? "";
                 r.Bar.Known = b.Known;
                 r.Bar.Pct = b.Known ? Math.Max(0, Math.Min(100, b.Pct)) : 0;
+                // Match ParseRow defaults so known OpenCode bars are visible (not black on dark track).
+                r.Bar.R = 88; r.Bar.G = 166; r.Bar.B = 255;
                 y = UsageRow(g, 32, y, r, 354);
             }
             string paintCopilot = SelectCopilotLine(m, DateTime.UtcNow);
