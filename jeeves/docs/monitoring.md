@@ -33,3 +33,7 @@ When seats hear `nothing queued` while `queue.json` still has unaccepted rows:
 - Gated-only queue + idle seats → EXIT 0
 - Idle seats + offerable row → EXIT 1
 - Pin-only empty offer sustained >10m → EXIT 1 (`queue_flow`, FR #2448 / #2446)
+## Idle-seat eligibility recovery (FR #6256)
+
+See [idle-seat-recovery.md](idle-seat-recovery.md) for the decision table, evidence freshness, and shop-only `!recycleseat` handoff when author-only MRB deadlock is remediable by a fresh session.
+
