@@ -9,6 +9,7 @@ import json
 import os
 import re
 import shutil
+import sys
 import threading
 import time
 import uuid
@@ -4333,6 +4334,47 @@ def publish_grok_account_label(
 
 
 
+def _path_under_meipass(path: Path) -> bool:
+    """True when ``path`` is inside a PyInstaller onefile unpack (_MEIPASS / Temp)."""
+    mei = getattr(sys, "_MEIPASS", None)
+    if not mei:
+        return False
+    try:
+        path.resolve().relative_to(Path(str(mei)).resolve())
+    except (OSError, ValueError):
+        return False
+    return True
+
+
+def opencode_install_root(env: dict[str, str] | None = None) -> Path | None:
+    """Install root for the fuel helper and cache.
+
+    Same order as the ear: ``BOB_INSTALL_ROOT`` (Start-Bob sets this before
+    ``bob-ear.exe``), else a frozen ``scripts\\bob-ear.exe`` → parent of
+    ``scripts``. ``__file__`` under ``_MEIPASS`` is never the install root.
+    """
+    e = os.environ if env is None else env
+    override = (e.get("BOB_INSTALL_ROOT") or "").strip()
+    if override:
+        return Path(override)
+    if not (getattr(sys, "frozen", False) or hasattr(sys, "_MEIPASS")):
+        return None
+    exe = Path(sys.executable).resolve()
+    if exe.parent.name.lower() == "scripts":
+        return exe.parent.parent
+    return exe.parent
+
+
+def on_disk_bobreport_replaces_embed(*, exe_calls_prefer_install_scripts: bool) -> bool:
+    """Whether a copied ``scripts\\bobreport.py`` is the module the ear imports.
+
+    True only when that frozen exe was built with ``prefer_install_scripts_path``
+    and is started again. The running MarchHare exe imports bobreport at startup
+    from its embed; a script copy is not a sufficient deploy by itself.
+    """
+    return bool(exe_calls_prefer_install_scripts)
+
+
 def _resolve_opencode_fuel_helper_ps1(env: dict[str, str] | None = None) -> Path | None:
     """Locate Get-BobOpencodeFuel.ps1 (repo tray/tools or install tools layout)."""
     e = os.environ if env is None else env
@@ -4341,14 +4383,19 @@ def _resolve_opencode_fuel_helper_ps1(env: dict[str, str] | None = None) -> Path
         p = Path(override)
         return p if p.is_file() else None
     here = Path(__file__).resolve()
-    candidates: list[Path] = [
-        here.parents[2] / "bob" / "tray" / "tools" / "Get-BobOpencodeFuel.ps1",
-        here.parents[1] / "tray" / "tools" / "Get-BobOpencodeFuel.ps1",
-        here.parents[1] / "tools" / "Get-BobOpencodeFuel.ps1",
-    ]
-    install = (e.get("BOB_INSTALL_ROOT") or "").strip()
-    if install:
-        root = Path(install)
+    candidates: list[Path] = []
+    # Frozen bob-ear.exe sets __file__ under _MEIPASS. Those parents are Temp,
+    # not <install>\\tools.
+    if not _path_under_meipass(here):
+        candidates.extend(
+            [
+                here.parents[2] / "bob" / "tray" / "tools" / "Get-BobOpencodeFuel.ps1",
+                here.parents[1] / "tray" / "tools" / "Get-BobOpencodeFuel.ps1",
+                here.parents[1] / "tools" / "Get-BobOpencodeFuel.ps1",
+            ]
+        )
+    root = opencode_install_root(e)
+    if root is not None:
         candidates.extend(
             [
                 root / "tray" / "tools" / "Get-BobOpencodeFuel.ps1",
@@ -4392,23 +4439,66 @@ DEFAULT_OPENCODE_FUEL_HELPER_TIMEOUT_S = 5.0
 # plus two ``opencode stats`` windows (up to 25s each). Waiting the old 5s
 # killed that process before it printed JSON, so the digest stayed
 # free=null/go=null/windows=null. The helper runs in the background; this is
-# only how long a stuck child may live before it is killed.
+# only how long a stuck powershell may live. The kill is a process tree so
+# opencode children started by that powershell die with it.
 OPENCODE_FUEL_HELPER_DEADLINE_S = 120.0
+# PyInstaller onefile embeds bobreport inside bob-ear.exe. The process imports
+# it once at startup. Copying scripts\\bobreport.py does not change an older
+# exe and does not change an already-running exe. Build-BobEar.ps1 is the
+# recipe; the rebuilt exe is the frozen artifact that carries this publisher.
+FROZEN_EAR_FUEL_DEPLOY = {
+    "required_frozen": ("scripts/bob-ear.exe",),
+    "helper_outside_exe": (
+        "tools/Get-BobOpencodeFuel.ps1",
+        "scripts/opencode_fuel.py",
+    ),
+    "cache_rel": "run/opencode-fuel.json",
+    "script_copy_sufficient": False,
+    "builder": "bob/scripts/Build-BobEar.ps1",
+    "entry": "scripts/irc_agent.py",
+}
 OPENCODE_WINDOWS_FIXTURE_ENV = "BOB_OPENCODE_WINDOWS_FIXTURE"
 _opencode_fuel_cache: dict[str, object] = {"at": 0.0, "doc": {}}
 # Back-compat alias used by older tests that poke the private cache name.
 _opencode_pcent_cache = _opencode_fuel_cache
 
 
+def _kill_opencode_fuel_process(proc: object) -> None:
+    """Stop the helper powershell and, on Windows, the opencode processes it started.
+
+    ``Popen.kill`` stops only powershell.exe. ``Get-BobOpencodeFuel.ps1`` starts
+    ``opencode`` as children; a deadline that kills the parent alone leaves them
+    running. ``taskkill /T`` is the tree. Tests pass a fake with no ``pid``.
+    """
+    pid = getattr(proc, "pid", None)
+    if os.name == "nt" and isinstance(pid, int) and pid > 0:
+        try:
+            import subprocess
+
+            subprocess.run(
+                ["taskkill", "/T", "/F", "/PID", str(pid)],
+                capture_output=True,
+                timeout=15,
+                check=False,
+            )
+        except Exception:
+            pass
+    try:
+        poll = getattr(proc, "poll", None)
+        still = True if poll is None else poll() is None
+        if still:
+            kill = getattr(proc, "kill", None)
+            if kill is not None:
+                kill()
+    except Exception:
+        pass
+
+
 def clear_opencode_pcent_cache() -> None:
     """Reset process OpenCode fuel cache (tests / forced refresh)."""
     proc = _opencode_fuel_cache.get("proc")
     if proc is not None:
-        try:
-            if proc.poll() is None:
-                proc.kill()
-        except Exception:
-            pass
+        _kill_opencode_fuel_process(proc)
     stdout_path = _opencode_fuel_cache.get("stdout_path")
     if isinstance(stdout_path, str) and stdout_path:
         try:
@@ -4637,10 +4727,10 @@ def _opencode_fuel_cache_file(
     override = (e.get("BOB_OPENCODE_FUEL_CACHE_FILE") or "").strip()
     if override:
         return Path(override)
-    install = (e.get("BOB_INSTALL_ROOT") or "").strip()
-    if install:
-        return Path(install) / "run" / "opencode-fuel.json"
-    if helper is not None:
+    root = opencode_install_root(e)
+    if root is not None:
+        return root / "run" / "opencode-fuel.json"
+    if helper is not None and not _path_under_meipass(helper):
         parent = helper.resolve().parent
         if parent.name.lower() == "tools":
             return parent.parent / "run" / "opencode-fuel.json"
@@ -4783,10 +4873,7 @@ def _take_opencode_fuel_helper(now: float) -> tuple[str, dict]:
         code = None
     if code is None:
         if (now - started) >= OPENCODE_FUEL_HELPER_DEADLINE_S:
-            try:
-                proc.kill()
-            except Exception:
-                pass
+            _kill_opencode_fuel_process(proc)
             _drop_opencode_fuel_proc()
             return "failed", {}
         return "running", {}
