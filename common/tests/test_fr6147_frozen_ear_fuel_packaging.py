@@ -20,7 +20,7 @@ AGENT = ROOT / "common" / "scripts" / "irc_agent.py"
 def _ear_import_snippet() -> str:
     """The real startup lines: prefer_install_scripts_path, then import bobreport."""
     src = AGENT.read_text(encoding="utf-8")
-    fn_start = src.index("def prefer_install_scripts_path(")
+    fn_start = src.index("FROZEN_SCRIPT_OVERLAY")
     fn_end = src.index("\n# FR #6237:", fn_start)
     boot_start = src.index("_mei_scripts = str(Path(__file__).resolve().parent)")
     boot_end = src.index("import bobreport", boot_start)
@@ -31,8 +31,19 @@ def _ear_import_snippet() -> str:
     return src[fn_start:fn_end] + "\n" + boot + "\n"
 
 
-def _run_frozen_import(install: Path, mei: Path, exe: Path) -> str:
+def _run_frozen_import(install: Path, mei: Path, exe: Path, *, gitclaim: bool = False) -> str:
     (mei / "irc_agent.py").write_text("# embed stand-in\n", encoding="utf-8")
+    tail = (
+        "print(bobreport.MARKER)\n"
+        "print(bobreport.OPENCODE_FUEL_HELPER_DEADLINE_S)\n"
+    )
+    if gitclaim:
+        tail += (
+            "import gitclaim\n"
+            "print('gitclaim=' + str(callable(getattr(gitclaim, 'shop_line_resets_bored_clock', None))))\n"
+            "fn = getattr(gitclaim, 'shop_line_resets_bored_clock', None)\n"
+            "print('call=' + str(bool(fn('DONE job')) if fn else 'missing'))\n"
+        )
     driver = textwrap.dedent(
         f"""
         import os, sys
@@ -41,13 +52,10 @@ def _run_frozen_import(install: Path, mei: Path, exe: Path) -> str:
         sys.frozen = True
         sys._MEIPASS = {str(mei)!r}
         sys.executable = {str(exe)!r}
-        sys.path[:] = [{str(mei)!r}]
+        sys.path.insert(0, {str(mei)!r})
         __file__ = {str(mei / "irc_agent.py")!r}
         """
-    ) + _ear_import_snippet() + (
-        "print(bobreport.MARKER)\n"
-        "print(bobreport.OPENCODE_FUEL_HELPER_DEADLINE_S)\n"
-    )
+    ) + _ear_import_snippet() + tail
     proc = subprocess.run(
         [sys.executable, "-c", driver],
         capture_output=True,
@@ -60,7 +68,8 @@ def _run_frozen_import(install: Path, mei: Path, exe: Path) -> str:
 
 def test_deploy_manifest_installs_disk_bobreport_when_present():
     spec = bobreport.FROZEN_EAR_FUEL_DEPLOY
-    assert spec["disk_module_shadows_embed"] is True
+    assert spec["overlay_modules"] == ("bobreport",)
+    assert spec["disk_module_shadows_embed"] is False
     assert spec["do_not_delete_disk_module"] is True
     assert spec["script_copy_sufficient"] is False
     present = spec["when_disk_module_present"]
@@ -156,8 +165,8 @@ def test_bob_install_root_wins_over_frozen_exe_layout(tmp_path: Path, monkeypatc
     assert cache == Path(install) / "run" / "opencode-fuel.json"
 
 
-def test_disk_bobreport_shadows_embed_on_frozen_import(tmp_path: Path):
-    """Rebuilt exe + old scripts/bobreport.py still imports the old 5s module."""
+def test_old_disk_bobreport_falls_back_to_embed(tmp_path: Path):
+    """Old on-disk bobreport stays put and is not the module the ear imports."""
     install = tmp_path / "bob"
     scripts = install / "scripts"
     scripts.mkdir(parents=True)
@@ -174,7 +183,64 @@ def test_disk_bobreport_shadows_embed_on_frozen_import(tmp_path: Path):
         encoding="utf-8",
     )
     out = _run_frozen_import(install, mei, exe)
-    assert out.splitlines()[:2] == ["disk", "5.0"]
+    assert out.splitlines()[:2] == ["embed", "120.0"]
+    assert (scripts / "bobreport.py").is_file()
+
+
+def test_pinned_disk_bobreport_overlays_embed(tmp_path: Path):
+    install = tmp_path / "bob"
+    scripts = install / "scripts"
+    scripts.mkdir(parents=True)
+    mei = tmp_path / "_MEI"
+    mei.mkdir()
+    exe = scripts / "bob-ear.exe"
+    exe.write_bytes(b"MZ")
+    (scripts / "bobreport.py").write_text(
+        "MARKER = 'disk'\nOPENCODE_FUEL_HELPER_DEADLINE_S = 120.0\n"
+        "def opencode_install_root(env=None):\n    return None\n",
+        encoding="utf-8",
+    )
+    (mei / "bobreport.py").write_text(
+        "MARKER = 'embed'\nOPENCODE_FUEL_HELPER_DEADLINE_S = 5.0\n",
+        encoding="utf-8",
+    )
+    out = _run_frozen_import(install, mei, exe)
+    assert out.splitlines()[:2] == ["disk", "120.0"]
+
+
+def test_old_disk_gitclaim_does_not_shadow_embed(tmp_path: Path):
+    """Installed gitclaim without shop_line_resets_bored_clock must not be imported."""
+    install = tmp_path / "bob"
+    scripts = install / "scripts"
+    scripts.mkdir(parents=True)
+    mei = tmp_path / "_MEI"
+    mei.mkdir()
+    exe = scripts / "bob-ear.exe"
+    exe.write_bytes(b"MZ")
+    (scripts / "bobreport.py").write_text(
+        "MARKER = 'disk'\nOPENCODE_FUEL_HELPER_DEADLINE_S = 120.0\n"
+        "def opencode_install_root(env=None):\n    return None\n",
+        encoding="utf-8",
+    )
+    (scripts / "gitclaim.py").write_text(
+        "def is_bored_command(body):\n    return False\n",
+        encoding="utf-8",
+    )
+    (mei / "bobreport.py").write_text(
+        "MARKER = 'embed'\nOPENCODE_FUEL_HELPER_DEADLINE_S = 5.0\n",
+        encoding="utf-8",
+    )
+    (mei / "gitclaim.py").write_text(
+        "def shop_line_resets_bored_clock(body):\n"
+        "    return str(body).startswith('DONE')\n",
+        encoding="utf-8",
+    )
+    out = _run_frozen_import(install, mei, exe, gitclaim=True)
+    lines = out.splitlines()
+    assert lines[:2] == ["disk", "120.0"]
+    assert "gitclaim=True" in lines
+    assert "call=True" in lines
+    assert (scripts / "gitclaim.py").is_file()
 
 
 def test_absent_disk_bobreport_imports_embed(tmp_path: Path):

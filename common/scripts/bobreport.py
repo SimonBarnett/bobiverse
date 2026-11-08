@@ -4442,12 +4442,13 @@ DEFAULT_OPENCODE_FUEL_HELPER_TIMEOUT_S = 5.0
 # only how long a stuck powershell may live. The kill is a process tree so
 # opencode children started by that powershell die with it.
 OPENCODE_FUEL_HELPER_DEADLINE_S = 120.0
-# irc_agent calls prefer_install_scripts_path before import bobreport. A rebuilt
-# bob-ear.exe still loads InstallRoot\\scripts\\bobreport.py when that file
-# exists, so an old on-disk module keeps the 5s helper timeout. Do not delete
-# the file to force the embed. When the file is absent, the embed is imported.
+# The frozen bootstrap overlays only bobreport, and only when that file defines
+# opencode_install_root. Other on-disk scripts (gitclaim and the rest of the
+# ear import closure) stay unused. Do not delete them and do not copy them over
+# to chase a reader crash; the embed that matches the exe is what loads.
 FROZEN_EAR_FUEL_DEPLOY = {
-    "disk_module_shadows_embed": True,
+    "overlay_modules": ("bobreport",),
+    "disk_module_shadows_embed": False,
     "do_not_delete_disk_module": True,
     "when_disk_module_present": (
         "scripts/bob-ear.exe",
