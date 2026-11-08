@@ -78,7 +78,15 @@ if (-not $RepoRoot -or -not (Test-Path -LiteralPath $RepoRoot)) {
 #   self_update default ON (sha256-checked release MSI). Lock workstations set both false.
 #   BOBIVERSE_NO_UPDATE=1 skips both (FR #6259: trimmed Process+Machine via Get-BobiverseNoUpdateReason);
 #   BOBIVERSE_SYNC_FROM_REPO / BOBIVERSE_SELF_UPDATE override; BOB_AUTOUPDATE=0 skips self-update only.
-. (Join-Path $scriptDir 'Bobiverse-Common.ps1')
+$commonPs1 = Join-Path $scriptDir 'Bobiverse-Common.ps1'
+if (-not (Test-Path -LiteralPath $commonPs1)) {
+    # Checkout / sparse tree: common lives beside airc/, not staged into scripts/.
+    $commonPs1 = Join-Path (Split-Path -Parent (Split-Path -Parent $scriptDir)) 'common\scripts\Bobiverse-Common.ps1'
+}
+if (-not (Test-Path -LiteralPath $commonPs1)) {
+    throw "Bobiverse-Common.ps1 missing (looked in $scriptDir and repo common\\scripts)"
+}
+. $commonPs1
 function Get-AircStartUpdatePolicy {
     param([Parameter(Mandatory)][string]$InstallRoot)
     $syncOn = $false

@@ -69,6 +69,8 @@ def test_helper_absent_and_empty_are_disabled():
     script = rf"""
 . '{COMMON}'
 Remove-Item Env:BOBIVERSE_NO_UPDATE -ErrorAction SilentlyContinue
+$mach = [Environment]::GetEnvironmentVariable('BOBIVERSE_NO_UPDATE', 'Machine')
+if ($mach -and ($mach.Trim() -eq '1')) {{ Write-Output 'SKIP_MACHINE_GUARD'; exit 0 }}
 $r = Get-BobiverseNoUpdateReason
 if ($r) {{ throw "unexpected $r" }}
 $env:BOBIVERSE_NO_UPDATE = ''
@@ -78,7 +80,7 @@ Write-Output 'OK'
 """
     p = _ps(script, env={})
     assert p.returncode == 0, (p.stdout, p.stderr)
-    assert "OK" in p.stdout
+    assert ("OK" in p.stdout) or ("SKIP_MACHINE_GUARD" in p.stdout)
 
 
 @pytest.mark.skipif(not shutil.which("git"), reason="git harness")
@@ -131,6 +133,9 @@ def test_start_airc_uses_shared_no_update_helper():
     assert "Get-BobiverseNoUpdateReason" in t
     assert "no-update-guard" in t
     assert "$env:BOBIVERSE_NO_UPDATE -eq '1'" not in t
+    # MSI stages Common beside Start-*; checkout falls back to repo common/scripts.
+    assert "common\\scripts\\Bobiverse-Common.ps1" in t
+    assert "Test-Path -LiteralPath $commonPs1" in t
     # Sync / Update remain gated by policy flags (already false when guard on).
     assert "& $sync -Product airc" in t
     assert "& $updater -Product airc" in t
