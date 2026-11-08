@@ -413,3 +413,52 @@ def test_start_agent_refuses_opencode_when_gh_auth_is_missing(monkeypatch):
     sup.kind = "opencode"
     sup.log = lambda *_a, **_k: None
     assert sup.start_agent() is False
+
+def test_opencode_job_block_callback_is_opencode_only():
+    """Grok/Cursor must not inherit OpenCode multi-key / flood NACK wiring."""
+    relay = bw.Relay(log=lambda *_a, **_k: None)
+    for kind, expect in (("opencode", True), ("grok", False), ("cursor", False)):
+        sup = bw.Supervisor.__new__(bw.Supervisor)
+        sup.kind = kind
+        relay.opencode_job_block = (
+            sup._opencode_job_block if (sup.kind or "").strip().lower() == "opencode" else None
+        )
+        assert (relay.opencode_job_block is not None) is expect
+
+
+def test_grok_relay_without_opencode_job_block_keeps_multi_key_assign(tmp_path: Path):
+    written: list[str] = []
+    injected: list[str] = []
+    relay = bw.Relay(log=lambda *_a, **_k: None, outbox_path=tmp_path / "outbox.txt")
+    relay.write_outbox = lambda text: written.append(text) or True
+    relay.set_target(lambda line: injected.append(line) or True)
+    relay.opencode_job_block = None
+    status = relay.deliver(
+        "jeeves",
+        "#redqueen",
+        "redqueen-1: FR SimonBarnett/bobiverse#3 https://a FR SimonBarnett/bobiverse#4 https://b",
+    )
+    assert status == "injected"
+    assert injected
+    assert any(item.startswith("ACK FR SimonBarnett/bobiverse#3") for item in written)
+    assert not any("job-context-ambiguous" in item for item in written)
+
+
+def test_grok_flood_coalesce_when_opencode_job_block_unset(tmp_path: Path):
+    injected: list[str] = []
+    relay = bw.Relay(
+        log=lambda *_a, **_k: None,
+        outbox_path=tmp_path / "outbox.txt",
+        clock=lambda: 0.0,
+        max_burst=1,
+    )
+    relay.write_outbox = lambda text: True
+    relay.set_target(lambda line: injected.append(line) or True)
+    relay.opencode_job_block = None
+    assert relay.deliver("jeeves", "#redqueen", "redqueen-1: FR SimonBarnett/bobiverse#1 https://x") == "injected"
+    assert relay.deliver("jeeves", "#redqueen", "redqueen-1: FR SimonBarnett/bobiverse#2 https://x") == "coalescing"
+    if relay._timer is not None:
+        relay._timer.cancel()
+    relay._flush_overflow()
+    assert any("flood-coalesced" in line for line in injected)
+

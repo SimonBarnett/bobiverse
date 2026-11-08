@@ -7420,7 +7420,10 @@ class Supervisor:
         # FR #4180: refuse (NACK out-of-fuel) assigns while the seat is in out-of-fuel hold.
         relay.refuse_assign_while = lambda: bool(self.bored and self.bored.out_of_fuel)
         relay.skips_hostile_assign = lambda line: opencode_skips_hostile_assign(self.kind, line)
-        relay.opencode_job_block = self._opencode_job_block
+        # FR #6240: OpenCode-only. Grok/Cursor must keep flood coalesce + multi-key ACK.
+        relay.opencode_job_block = (
+            self._opencode_job_block if (self.kind or "").strip().lower() == "opencode" else None
+        )
         relay.on_refuse_assign = self._nack_assign_out_of_fuel
         # FR #4115: program ACK/NACK via seat outbox (ACK on receipt; NACK extra held assigns).
         if getattr(relay, "write_outbox", None) is None and self.run_dir is not None:
