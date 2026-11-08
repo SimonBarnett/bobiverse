@@ -128,7 +128,7 @@ def test_format_unlimited_with_historical_max_and_reset():
         },
         now,
     )
-    assert "unlimited, 1937 used" in line
+    assert "included  unlimited  used 1937" in line
     assert "96.85% of max recorded" in line
     assert "reset" in line
     assert "[stale" not in line
@@ -150,7 +150,7 @@ def test_format_stale_still_shows_reset_and_max_pct():
         now,
     )
     assert "[stale" in line
-    assert "unlimited, 1937 used" in line
+    assert "included  unlimited  used 1937" in line
     assert "96.85% of max recorded" in line
     assert "reset" in line
 
@@ -169,7 +169,7 @@ def test_format_zero_usage_zero_pct():
         },
         now,
     )
-    assert "0 used" in line
+    assert "used 0" in line
     assert "0.00% of max recorded" in line
 
 
@@ -186,7 +186,7 @@ def test_format_missing_denominator_no_pct():
         },
         now,
     )
-    assert "1937 used" in line
+    assert "used 1937" in line
     assert "of max recorded" not in line
     assert "n/a%" not in line
     assert "Infinity" not in line

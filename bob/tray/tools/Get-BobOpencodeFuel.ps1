@@ -17,7 +17,15 @@ $ErrorActionPreference = 'SilentlyContinue'
 $WarningPreference = 'SilentlyContinue'
 $ProgressPreference = 'SilentlyContinue'
 
-$out = [ordered]@{ free = $null; go = $null; models = [ordered]@{}; free_model_ids = @(); windows = $null; limiting = $null }
+$out = [ordered]@{
+    free = $null; go = $null; models = [ordered]@{}; free_model_ids = @()
+    windows = $null; limiting = $null; read_state = 'unavailable'; fetched_at = $null
+    local_costs = $null; history = $null; reader = 'user'
+}
+try {
+    $wid = [System.Security.Principal.WindowsIdentity]::GetCurrent()
+    if ($wid -and $wid.IsSystem) { $out.reader = 'service' }
+} catch { }
 try {
     $fixture = $env:BOB_OPENCODE_FUEL_FIXTURE
     $statsByWindow = $null
@@ -36,6 +44,7 @@ try {
         if (-not $exe) {
             $exe = (Get-Command opencode -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source)
         }
+        if (-not $exe) { $out.read_state = 'opencode_missing' }
         if ($exe) {
             # Plain-text model table is the only machine-readable source available.
             # OpenCode caps are rolling: 50% per week, 100% per month.  The 5-hour
@@ -113,9 +122,17 @@ try {
         }
         if ($pyDir) {
             $env:PYTHONPATH = "$pyDir;$env:PYTHONPATH"
+        } else {
+            $out.read_state = 'parser_missing'
         }
         $py = (Get-Command python.exe -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source)
-        if (-not $py) { $py = 'python.exe' }
+        if (-not $py) {
+            $py = (Get-Command python -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source)
+        }
+        if (-not $py) {
+            $out.read_state = 'parser_missing'
+            $py = 'python.exe'
+        }
         $script = @'
 import json, sys, opencode_fuel
 raw = sys.stdin.read()
@@ -161,8 +178,146 @@ else:
             if ($null -ne $parsed.limiting -and [string]$parsed.limiting -ne '') {
                 $out.limiting = [string]$parsed.limiting
             }
+            if ($parsed.local_costs) { $out.local_costs = $parsed.local_costs }
+            if ($parsed.history) { $out.history = $parsed.history }
+            $out.read_state = 'ok'
+            if ($env:BOB_OPENCODE_USAGE_URL) {
+                # Configured provider read must not fall back to stats windows.
+                $out.go = $null
+                $out.limiting = $null
+                $env:BOB_OPENCODE_PROVIDER_PREVIOUS = ''
+                try {
+                    $prevCache = $env:BOB_OPENCODE_FUEL_CACHE_FILE
+                    if (-not $prevCache) {
+                        $prevRoot = $env:BOB_INSTALL_ROOT
+                        if (-not $prevRoot) { $prevRoot = Split-Path -Parent $PSScriptRoot }
+                        $prevCache = Join-Path (Join-Path $prevRoot 'run') 'opencode-fuel.json'
+                    }
+                    if (Test-Path -LiteralPath $prevCache -PathType Leaf) {
+                        $prevDoc = [System.IO.File]::ReadAllText($prevCache) | ConvertFrom-Json
+                        $providerPrev = $false
+                        foreach ($id in @('rolling', 'week', 'month')) {
+                            $rec = $null
+                            try { $rec = $prevDoc.windows.$id } catch { $rec = $null }
+                            if ($rec -and [string]$rec.source -eq 'provider') { $providerPrev = $true }
+                        }
+                        if ($providerPrev -and $prevDoc.windows) {
+                            $env:BOB_OPENCODE_PROVIDER_PREVIOUS = ($prevDoc.windows | ConvertTo-Json -Compress -Depth 6)
+                        }
+                    }
+                } catch { $env:BOB_OPENCODE_PROVIDER_PREVIOUS = '' }
+                # Single-quoted Python literals only: Windows PowerShell 5.1 strips
+                # embedded " when -c is a native argument (same contract as $script above).
+                $limitsScript = @'
+import json, os, opencode_fuel
+prev = None
+raw = os.environ.get('BOB_OPENCODE_PROVIDER_PREVIOUS') or ''
+if raw.strip():
+    try:
+        prev = json.loads(raw)
+    except json.JSONDecodeError:
+        prev = None
+read = opencode_fuel.fetch_usage_limits(
+    os.environ.get('BOB_OPENCODE_USAGE_URL') or '',
+    os.environ.get('OPENCODE_SERVER_PASSWORD') or None,
+    os.environ.get('OPENCODE_SERVER_USERNAME') or None,
+)
+windows = opencode_fuel.windows_from_usage_read(read, previous=prev)
+print(json.dumps({'provider_read': read.get('kind'), 'windows': windows}))
+'@
+                $limitsRaw = $null
+                try { $limitsRaw = & $py -c $limitsScript } catch { $limitsRaw = $null }
+                $env:BOB_OPENCODE_PROVIDER_PREVIOUS = ''
+                $limits = $null
+                if ($limitsRaw) {
+                    try { $limits = $limitsRaw | ConvertFrom-Json } catch { $limits = $null }
+                }
+                $unknownProvider = { [ordered]@{ status = 'unknown'; used_pct = $null; remaining_pct = $null; reset_label = $null; source = 'provider' } }
+                $readWindows = $null
+                try { $readWindows = $limits.windows } catch { $readWindows = $null }
+                if ($readWindows -and ($readWindows.rolling -or $readWindows.week -or $readWindows.month)) {
+                    $out.windows = $readWindows
+                } else {
+                    $out.windows = [ordered]@{
+                        rolling = (& $unknownProvider)
+                        week    = (& $unknownProvider)
+                        month   = (& $unknownProvider)
+                    }
+                }
+                $kind = ''
+                try { if ($limits.provider_read) { $kind = [string]$limits.provider_read } } catch { $kind = '' }
+                if (-not $kind) { $kind = 'unavailable' }
+                $out.provider_read = $kind
+                $out.provider = 'usage-limits'
+            }
+        } elseif ($out.read_state -eq 'unavailable') {
+            $out.read_state = 'parser_missing'
         }
     }
 } catch { }
-[Console]::Out.WriteLine(($out | ConvertTo-Json -Compress -Depth 6))
+if (-not $out.windows) {
+    # No stats document. Do not call rolling "Starts on first use" — that is only
+    # honest after a completed stats read. opencode has no remaining-quota API
+    # and stats does not return the 5-hour window or a reset time.
+    $unknownWindow = { [ordered]@{ status = 'unknown'; used_pct = $null; remaining_pct = $null; reset_label = $null } }
+    $out.windows = [ordered]@{
+        rolling = (& $unknownWindow)
+        week    = (& $unknownWindow)
+        month   = (& $unknownWindow)
+    }
+}
+$out.fetched_at = [DateTime]::UtcNow.ToString('o')
+$json = $out | ConvertTo-Json -Compress -Depth 6
+try {
+    $cache = $env:BOB_OPENCODE_FUEL_CACHE_FILE
+    if (-not $cache) {
+        $root = $env:BOB_INSTALL_ROOT
+        if (-not $root) { $root = Split-Path -Parent $PSScriptRoot }
+        $run = Join-Path $root 'run'
+        if (-not (Test-Path -LiteralPath $run)) { New-Item -ItemType Directory -Force -Path $run | Out-Null }
+        $cache = Join-Path $run 'opencode-fuel.json'
+    }
+    $keepExisting = $false
+    $emptyNow = $false
+    try { if ($out.history -and $out.history.empty) { $emptyNow = $true } } catch { }
+    $refuseEmpty = ([string]$out.read_state -ne 'ok') -or $emptyNow
+    if ($refuseEmpty -and (Test-Path -LiteralPath $cache -PathType Leaf)) {
+        try {
+            $prev = [System.IO.File]::ReadAllText($cache) | ConvertFrom-Json
+            foreach ($id in @('rolling', 'week', 'month')) {
+                $rec = $null
+                try { $rec = $prev.windows.$id } catch { $rec = $null }
+                if (-not $rec) { continue }
+                $st = ''
+                try { $st = [string]$rec.status } catch { }
+                if ($st -and $st -ne 'unknown') { $keepExisting = $true }
+                if ($null -ne $rec.remaining_pct -and [string]$rec.remaining_pct -ne '') { $keepExisting = $true }
+            }
+            foreach ($k in @('free', 'go', 'opencode-free', 'opencode-go')) {
+                $v = $null
+                try { $v = $prev.$k } catch { $v = $null }
+                if ($null -ne $v -and [string]$v -ne '') { $keepExisting = $true }
+            }
+            if ($emptyNow) {
+                $prevSessions = 0
+                try { if ($prev.history -and $null -ne $prev.history.sessions) { $prevSessions = [int]$prev.history.sessions } } catch { }
+                $prevCosts = $false
+                try { if ($prev.local_costs) { $prevCosts = $true } } catch { }
+                if ($prevSessions -gt 0 -or $prevCosts) { $keepExisting = $true }
+            }
+        } catch { }
+    }
+    if (-not $keepExisting) {
+        $tmp = $cache + '.tmp'
+        $cacheDir = Split-Path -Parent $cache
+        if ($cacheDir -and -not (Test-Path -LiteralPath $cacheDir)) { New-Item -ItemType Directory -Force -Path $cacheDir | Out-Null }
+        [System.IO.File]::WriteAllText($tmp, $json, (New-Object System.Text.UTF8Encoding $false))
+        if (Test-Path -LiteralPath $cache) {
+            [System.IO.File]::Replace($tmp, $cache, [NullString]::Value)
+        } else {
+            [System.IO.File]::Move($tmp, $cache)
+        }
+    }
+} catch { }
+[Console]::Out.WriteLine($json)
 exit 0

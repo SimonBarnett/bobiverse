@@ -2875,25 +2875,42 @@ function Rebuild-BobTrayTiles {
                 elseif ($null -ne $free) { $ocRight = ('{0}%' -f $free) }
             }
         } catch { }
-        # FR #6147: prefer Format-BobOpencodePoolLine / window lines when digest hover fields exist.
+        # FR #6147: always format Free + Go windows. Null windows still draw bars as n/a.
         $ocLine = [string]$OpencodeLine
         $ocWinLines = @($OpencodeWindowLines)
-        if ($OpencodeWindows -and (Get-Command Format-BobOpencodeWindowLines -ErrorAction SilentlyContinue)) {
+        $ocBars = @()
+        if (Get-Command Format-BobOpencodeWindowLines -ErrorAction SilentlyContinue) {
             try {
                 $pack = Format-BobOpencodeWindowLines -FreePct $OpencodeFree -Windows $OpencodeWindows
-                if (-not $ocLine) { $ocLine = [string]$pack.summary }
-                if ($ocWinLines.Count -eq 0 -and $pack.window_lines) { $ocWinLines = @($pack.window_lines) }
+                if ($pack.summary) { $ocLine = [string]$pack.summary }
+                $ocWinLines = @()
+                if ($pack.free_heading) { $ocWinLines += [string]$pack.free_heading }
+                if ($pack.window_lines) { $ocWinLines += @($pack.window_lines) }
+                if ($pack.bars) { $ocBars = @($pack.bars) }
                 if ($null -ne $pack.go_remaining) { $ocRight = ('{0}%' -f [int]$pack.go_remaining) }
             } catch { }
         }
         if (-not $ocLine) {
             try { $ocLine = Format-BobOpencodePoolLine -FreePct $OpencodeFree -GoPct $OpencodeGo -Windows $OpencodeWindows } catch { $ocLine = '' }
         }
-        if ($ocLine) { $ocTitle = $ocLine }
+        if (-not $ocLine) { $ocLine = 'OpenCode  free n/a | go n/a' }
+        if ($ocBars.Count -eq 0 -and $ocWinLines.Count -eq 0) {
+            $ocWinLines = @('free  n/a', 'go rolling  n/a', 'go weekly  n/a', 'go monthly  n/a')
+        }
+        $ocTitle = $ocLine
         $y = Add-BobTrayFuelFamilyRow -X 0 -Y $y -Family 'opencode' -Title $ocTitle -RightText $ocRight
-        foreach ($wl in @($ocWinLines)) {
-            if (-not $wl) { continue }
-            $y = Add-BobTraySectionHeader -X 18 -Y $y -Title ([string]$wl)
+        if ($ocBars.Count -gt 0) {
+            foreach ($b in @($ocBars)) {
+                if (-not $b) { continue }
+                $barPct = $null
+                try { if ($b.known) { $barPct = [int]$b.pct } } catch { $barPct = $null }
+                $y = Add-BobTrayUsageRow -X 18 -Y $y -Heading ([string]$b.heading) -RemainingPct $barPct -BarWidth 336 -Icon $null
+            }
+        } else {
+            foreach ($wl in @($ocWinLines)) {
+                if (-not $wl) { continue }
+                $y = Add-BobTraySectionHeader -X 18 -Y $y -Title ([string]$wl)
+            }
         }
         $overLine = Format-BobTrayCursorOverspendLine -OverageGbp $AccountOverageGbp
         $overColor = [System.Drawing.Color]::FromArgb(248, 81, 73)
@@ -2904,12 +2921,12 @@ function Rebuild-BobTrayTiles {
         # FR #5172 / FR #6148 / FR #6149: Copilot pool with logo; TitleColor paints stale red.
         $copilotLine = $null
         try { $copilotLine = Format-BobCopilotPoolLine -Pool $CopilotPool } catch { }
-        if (-not $copilotLine) { $copilotLine = 'Copilot  unknown' }
-        $copilotColor = [System.Drawing.Color]::Empty
-        if ($copilotLine -like 'Copilot  `[stale*') {
-            $copilotColor = [System.Drawing.Color]::FromArgb(248, 81, 73)
-        }
-        $y = Add-BobTrayFuelFamilyRow -X 0 -Y $y -Family 'copilot' -Title $copilotLine -TitleColor $copilotColor
+        if (-not $copilotLine) { $copilotLine = 'copilot  allowance  unknown' }
+        # Stale is a label, not an alarm color. FR #6204: this paint does not poll GitHub.
+        $y = Add-BobTrayFuelFamilyRow -X 0 -Y $y -Family 'copilot' -Title $copilotLine
+        $copilotBar = $null
+        try { $copilotBar = Get-BobCopilotMeterBarPct -Pool $CopilotPool } catch { $copilotBar = $null }
+        $y = Add-BobTrayUsageRow -X 18 -Y $y -Heading $copilotLine -RemainingPct $copilotBar -BarWidth 336 -Icon $null
         $indent = 18
         $shownMachines = @{}
         foreach ($m in @($Machines)) {
@@ -2926,17 +2943,38 @@ function Rebuild-BobTrayTiles {
             $fuelStale = $false
             try { if ($m.fuel_stale) { $fuelStale = [bool]$m.fuel_stale } } catch { }
             # 0% is real (#179). FR #5032: stale peer % is hidden (shown as [stale] + age).
-            $pctLabel = $null
-            if (-not $fuelStale -and $null -ne $pct -and [string]$pct -ne '') { $pctLabel = ('{0}%' -f [int]$pct) }
             $seat = [string]$m.seat_label
             if (-not $seat) { $seat = [string]$m.seat_email }
-            $nameHeading = $id
-            if ($seat) { $nameHeading = ('{0}  -  {1}' -f $id, $seat) }
-            $machHeading = $nameHeading
-            if ($pctLabel) { $machHeading = ('{0} ({1})' -f $nameHeading, $pctLabel) }
-            if ($fuelStale) { $machHeading = ('{0} [stale]' -f $machHeading) }
-            if ($m.reset_label -and ($pctLabel -or $fuelStale)) {
-                $machHeading = ('{0} - {1}' -f $machHeading, [string]$m.reset_label)
+            $prov = ''
+            $win = ''
+            $dir = ''
+            try { if ($m.provider) { $prov = [string]$m.provider } } catch { }
+            try { if ($m.window) { $win = [string]$m.window } } catch { }
+            try { if ($m.direction) { $dir = [string]$m.direction } } catch { }
+            $usedP = $null
+            $acct = ''
+            $srcMeter = ''
+            $absReset = ''
+            try { if ($null -ne $m.used_pct -and [string]$m.used_pct -ne '') { $usedP = $m.used_pct } } catch { }
+            try { if ($m.meter_account) { $acct = [string]$m.meter_account } } catch { }
+            try { if ($m.meter_source) { $srcMeter = [string]$m.meter_source } } catch { }
+            try { if ($m.period_end_absolute) { $absReset = [string]$m.period_end_absolute } } catch { }
+            if (Get-Command Format-BobPeerPoolHeading -ErrorAction SilentlyContinue) {
+                $machHeading = Format-BobPeerPoolHeading -MachineId $id -SeatLabel $seat -RemainingPct $pct `
+                    -ResetLabel $(if ($m.reset_label) { [string]$m.reset_label } else { '' }) -FuelStale $fuelStale `
+                    -Provider $prov -Window $win -Direction $dir -UsedPct $usedP -Account $acct `
+                    -PeriodEnd $absReset -Source $srcMeter
+            } else {
+                $pctLabel = $null
+                if (-not $fuelStale -and $null -ne $pct -and [string]$pct -ne '') { $pctLabel = ('{0}%' -f [int]$pct) }
+                $nameHeading = $id
+                if ($seat) { $nameHeading = ('{0}  -  {1}' -f $id, $seat) }
+                $machHeading = $nameHeading
+                if ($pctLabel) { $machHeading = ('{0} ({1})' -f $nameHeading, $pctLabel) }
+                if ($fuelStale) { $machHeading = ('{0} [stale]' -f $machHeading) }
+                if ($m.reset_label -and ($pctLabel -or $fuelStale)) {
+                    $machHeading = ('{0} - {1}' -f $machHeading, [string]$m.reset_label)
+                }
             }
             $rowPct = if ($fuelStale) { $null } else { $pct }
             $y = Add-BobTrayUsageRow -X $indent -Y $y -Heading $machHeading `

@@ -181,6 +181,55 @@ function Step-BobWeeklyPeriodForward {
     }
 }
 
+function Format-BobPeerPoolHeading {
+    <#
+      Peer row. A published xAI meter names provider, window, and direction.
+      A bare percent stays unlabeled. The seat alias is not the meter account.
+    #>
+    param(
+        [string]$MachineId,
+        [string]$SeatLabel = '',
+        $RemainingPct = $null,
+        [string]$ResetLabel = '',
+        [bool]$FuelStale = $false,
+        [string]$Provider = '',
+        [string]$Window = '',
+        [string]$Direction = '',
+        $UsedPct = $null,
+        [string]$Account = '',
+        [string]$PeriodEnd = '',
+        [string]$Source = ''
+    )
+    $id = ([string]$MachineId).ToUpperInvariant()
+    if ($Provider -and $Direction) {
+        $win = if ($Window) { $Window } else { 'weekly' }
+        $bits = @($id, $Provider, $win, $Direction)
+        if ($null -ne $RemainingPct -and [string]$RemainingPct -ne '' -and $Direction -eq 'remaining') {
+            $bits += ('{0}%' -f [int]$RemainingPct)
+        }
+        if ($null -ne $UsedPct -and [string]$UsedPct -ne '') {
+            $bits += ('used {0}%' -f [int]$UsedPct)
+        }
+        if ($Account) { $bits += ('account {0}' -f $Account) }
+        if ($PeriodEnd) { $bits += ('reset {0}' -f $PeriodEnd) }
+        elseif ($ResetLabel) { $bits += [string]$ResetLabel }
+        if ($FuelStale) { $bits += '[stale]' }
+        if ($Source) { $bits += [string]$Source }
+        return ($bits -join '  ')
+    }
+    $name = $id
+    if ($SeatLabel) { $name = ('{0}  -  {1}' -f $id, $SeatLabel) }
+    $line = $name
+    if (-not $FuelStale -and $null -ne $RemainingPct -and [string]$RemainingPct -ne '') {
+        $line = ('{0} ({1}%)' -f $name, [int]$RemainingPct)
+    }
+    if ($FuelStale) { $line = ('{0} [stale]' -f $line) }
+    if ($ResetLabel -and (($null -ne $RemainingPct -and [string]$RemainingPct -ne '') -or $FuelStale)) {
+        $line = ('{0} - {1}' -f $line, $ResetLabel)
+    }
+    return $line
+}
+
 function Get-BobWeeklyRemaining {
     [CmdletBinding()]
     param([string]$LogPath, [datetime]$UtcNow = [datetime]::UtcNow)
@@ -918,9 +967,24 @@ function Format-BobOpencodeWindowLine {
     }
     $status = 'unknown'
     try { if ($Record -and $Record.status) { $status = ([string]$Record.status).Trim().ToLowerInvariant() } } catch { }
+    $source = ''
+    try { if ($Record -and $Record.source) { $source = ([string]$Record.source).Trim().ToLowerInvariant() } } catch { }
     $dot = [string][char]0x00B7
+    if ($source -eq 'provider') {
+        $usedP = ConvertTo-BobTrayIntOrNull $(try { $Record.used_pct } catch { $null })
+        if ($null -ne $usedP) {
+            $mid = ('{0}% used' -f [int]$usedP)
+            $resetP = $null
+            try { if ($Record.reset_label) { $resetP = [string]$Record.reset_label } } catch { }
+            if ($resetP) { $mid = ('{0}  reset {1}' -f $mid, $resetP) }
+            $limited = $false
+            try { if ($Record.limited) { $limited = $true } } catch { }
+            if ($status -eq 'exhausted' -or $limited) { $mid = ('{0}  limited' -f $mid) }
+            return ('go {0}  {1}' -f $label, $mid)
+        }
+    }
     if ($status -eq 'unstarted') {
-        return ('go {0}  Starts on first use  (0% used)' -f $label)
+        return ('go {0}  not measured' -f $label)
     }
     if ($status -eq 'unknown' -or -not $Record) {
         return ('go {0}  n/a' -f $label)
@@ -933,7 +997,7 @@ function Format-BobOpencodeWindowLine {
     }
     $bits = @()
     if ($null -ne $used) { $bits += ('{0}% used' -f [int]$used) }
-    if ($null -ne $rem) { $bits += ('{0}% rem' -f [int]$rem) }
+    if ($null -ne $rem) { $bits += ('{0}% rem est' -f [int]$rem) }
     if ($bits.Count -eq 0) { $mid = 'n/a' } else { $mid = ($bits -join (' {0} ' -f $dot)) }
     $reset = $null
     try { if ($Record.reset_label) { $reset = [string]$Record.reset_label } } catch { }
@@ -953,7 +1017,12 @@ function Format-BobOpencodeWindowLines {
         [switch]$Stale
     )
     $FreePct = ConvertTo-BobTrayIntOrNull $FreePct
-    $freeBit = if (Test-BobTrayRemainingKnown $FreePct) { ('{0}%' -f [int]$FreePct) } else { 'n/a' }
+    # Stale must not keep painting a previous value. 100 is catalogue availability
+    # from ``opencode models``, not a remaining-quota measurement, so it is not a fill.
+    $freeCatalogue = (-not $Stale) -and ($null -ne $FreePct) -and ([int]$FreePct -eq 100)
+    if ($Stale -or -not (Test-BobTrayRemainingKnown $FreePct)) { $freeBit = 'n/a' }
+    elseif ($freeCatalogue) { $freeBit = 'catalogue' }
+    else { $freeBit = ('{0}%' -f [int]$FreePct) }
     $ids = @('rolling', 'week', 'month')
     $winMap = @{}
     if ($Windows) {
@@ -1002,32 +1071,75 @@ function Format-BobOpencodeWindowLines {
             $limId = $id
         }
     }
-    $anyWinKnown = $false
+    # Missing windows still name Free and each Go window. A single "OpenCode n/a"
+    # with an empty line list is what the MarchHare card painted.
+    $goBit = if ($null -ne $limRem) { ('est {0}%' -f [int]$limRem) } else { 'n/a' }
+    if ($limId) {
+        $limLabel = switch ($limId) { 'rolling' { 'rolling' } 'week' { 'weekly' } 'month' { 'monthly' } default { $limId } }
+        $goBit = ('{0} {1}' -f $limLabel, $goBit)
+    }
+    # Catalogue free (always 100 from the model list) is not a measured allowance row.
+    if ($freeCatalogue) {
+        $summary = ('OpenCode  go {0}' -f $goBit)
+        $freeHeading = $null
+    } else {
+        $summary = ('OpenCode  free {0} | go {1}' -f $freeBit, $goBit)
+        $freeHeading = ('free  {0}' -f $freeBit)
+    }
+    if ($Stale) { $summary = ('{0} [stale]' -f $summary) }
+    $windowsOut = [ordered]@{}
+    $bars = New-Object System.Collections.Generic.List[object]
+    if (-not $freeCatalogue) {
+        $freeKnown = (-not $Stale) -and (Test-BobTrayRemainingKnown $FreePct)
+        $bars.Add([pscustomobject]@{
+            id = 'free'
+            heading = $freeHeading
+            known = [bool]$freeKnown
+            pct = $(if ($freeKnown) { [int]$FreePct } else { 0 })
+        })
+    }
     foreach ($id in $ids) {
         $rec = $winMap[$id]
-        if (-not $rec) { continue }
-        $st = ''
-        try { $st = ([string]$rec.status).ToLowerInvariant() } catch { }
-        if ($st -and $st -ne 'unknown') { $anyWinKnown = $true; break }
-    }
-    if (-not (Test-BobTrayRemainingKnown $FreePct) -and -not $anyWinKnown -and $null -eq $limRem) {
-        $summary = 'OpenCode  n/a'
-    } else {
-        $goBit = if ($null -ne $limRem) { ('{0}%' -f [int]$limRem) } else { 'n/a' }
-        if ($limId) {
-            $limLabel = switch ($limId) { 'rolling' { 'rolling' } 'week' { 'weekly' } 'month' { 'monthly' } default { $limId } }
-            $goBit = ('{0} {1}' -f $limLabel, $goBit)
+        if (-not $rec) {
+            $windowsOut[$id] = [pscustomobject]@{ status = 'unknown'; used_pct = $null; remaining_pct = $null; reset_label = $null }
+        } else {
+            $windowsOut[$id] = $rec
         }
-        $summary = ('OpenCode  free {0} | go {1}' -f $freeBit, $goBit)
-        if ($Stale) { $summary = ('{0} [stale]' -f $summary) }
+        $line = Format-BobOpencodeWindowLine -WindowId $id -Record $windowsOut[$id]
+        $st = ''
+        try { $st = ([string]$windowsOut[$id].status).ToLowerInvariant() } catch { }
+        $rem = ConvertTo-BobTrayIntOrNull $(try { $windowsOut[$id].remaining_pct } catch { $null })
+        $usedBar = ConvertTo-BobTrayIntOrNull $(try { $windowsOut[$id].used_pct } catch { $null })
+        $srcBar = ''
+        try { if ($windowsOut[$id].source) { $srcBar = ([string]$windowsOut[$id].source).ToLowerInvariant() } } catch { }
+        $barKnown = $false
+        $barPct = 0
+        if ($st -eq 'exhausted' -and $null -eq $rem) { $rem = 0 }
+        if ($srcBar -eq 'provider' -and $null -ne $usedBar -and ($st -eq 'known' -or $st -eq 'exhausted')) {
+            # Provider meter percent is used, matching the console bar, not a remaining balance.
+            $barKnown = $true
+            $barPct = [int]$usedBar
+        } elseif (($st -eq 'known' -or $st -eq 'exhausted') -and $null -ne $rem) {
+            $barKnown = $true
+            $barPct = [int]$rem
+        }
+        $bars.Add([pscustomobject]@{
+            id = $id
+            heading = [string]$line
+            known = [bool]$barKnown
+            pct = $barPct
+        })
     }
     return [pscustomobject]@{
         summary = $summary
         free_line = ('OpenCode free  {0}' -f $freeBit)
+        free_heading = $freeHeading
         window_lines = @($windowLines)
+        windows = [pscustomobject]$windowsOut
+        bars = @($bars.ToArray())
         limiting = $limId
         go_remaining = $limRem
-        free = $FreePct
+        free = $(if ($Stale) { $null } else { $FreePct })
     }
 }
 
@@ -1080,9 +1192,41 @@ function Format-BobOpencodePoolLine {
     $freeKnown = Test-BobTrayRemainingKnown $FreePct
     $goKnown = Test-BobTrayRemainingKnown $GoPct
     if (-not $freeKnown -and -not $goKnown) { return 'OpenCode  n/a' }
-    $freeBit = if ($freeKnown) { ('{0}%' -f [int]$FreePct) } else { 'n/a' }
-    $goBit = if ($goKnown) { ('{0}%' -f [int]$GoPct) } else { 'n/a' }
+    $goBit = if ($goKnown) { ('est {0}%' -f [int]$GoPct) } else { 'n/a' }
+    if ($freeKnown -and [int]$FreePct -eq 100) {
+        return ('OpenCode  go {0}' -f $goBit)
+    }
+    if ($freeKnown) { $freeBit = ('{0}%' -f [int]$FreePct) }
+    else { $freeBit = 'n/a' }
     return ('OpenCode  free {0} | go {1}' -f $freeBit, $goBit)
+}
+
+function Read-BobOpencodeLocalFuel {
+    <#
+      Last completed Get-BobOpencodeFuel.ps1 document (<root>\run\opencode-fuel.json).
+      The tray paints this when the public digest has no OpenCode pools. No credentials.
+    #>
+    $candidates = New-Object System.Collections.Generic.List[string]
+    if ($env:BOB_OPENCODE_FUEL_CACHE_FILE) { [void]$candidates.Add([string]$env:BOB_OPENCODE_FUEL_CACHE_FILE) }
+    if ($env:BOB_INSTALL_ROOT) { [void]$candidates.Add((Join-Path $env:BOB_INSTALL_ROOT 'run\opencode-fuel.json')) }
+    $dir = $PSScriptRoot
+    $guard = 0
+    while ($dir -and $guard -lt 8) {
+        [void]$candidates.Add((Join-Path $dir 'run\opencode-fuel.json'))
+        $parent = Split-Path -Parent $dir
+        if (-not $parent -or $parent -eq $dir) { break }
+        $dir = $parent
+        $guard++
+    }
+    foreach ($p in $candidates) {
+        if (-not $p) { continue }
+        if (-not (Test-Path -LiteralPath $p -PathType Leaf)) { continue }
+        try {
+            $raw = [System.IO.File]::ReadAllText($p)
+            if ($raw) { return ($raw | ConvertFrom-Json) }
+        } catch { }
+    }
+    return $null
 }
 
 function Get-BobOpencodePaintFromDigest {
@@ -1210,23 +1354,55 @@ function Format-BobCopilotPoolLine {
     if ($pct) { $pctBit = (' ({0}% of max recorded)' -f $pct) }
     $unlimited = $false
     try { if ($Pool.unlimited) { $unlimited = [bool]$Pool.unlimited } } catch { }
-    $value = 'unknown'
+    $staleLabel = ''
+    if ($isStale) { $staleLabel = $(if ($staleBit) { $staleBit.Trim() } else { '[stale]' }) }
+    $resetLabel = ''
+    if ($resetBit) { $resetLabel = $resetBit.Trim() }
+    # Same meter tokens as other providers. Unlimited is not a remaining fill.
+    # The tray does not call GitHub (FR #6204 polling stays opt-in and off).
     if ($unlimited) {
-        $n = 0
-        try { if ($null -ne $used) { $n = [int]$used } } catch { }
-        $value = ('unlimited, {0} used{1}{2}' -f $n, $pctBit, $resetBit)
+        $n = $null
+        try { if ($null -ne $used -and [string]$used -ne '') { $n = [int]$used } } catch { }
+        $bits = @('copilot', 'included', 'unlimited')
+        if ($null -ne $n) { $bits += ('used {0}' -f $n) }
+        if ($pctBit) { $bits += $pctBit.Trim() }
+        if ($staleLabel) { $bits += $staleLabel }
+        if ($resetLabel) { $bits += $resetLabel }
+        return ($bits -join '  ')
     }
-    elseif ($state -eq 'unknown') { $value = 'unknown' }
-    elseif ($state -eq 'exhausted') { $value = 'exhausted' }
-    else {
-        $rem = $Pool.remaining
-        if ($null -ne $rem -and [string]$rem -ne '') {
-            $value = ('{0} remaining{1}{2}' -f $rem, $pctBit, $resetBit)
-        } else {
-            $value = 'unknown'
-        }
+    if ($state -eq 'exhausted') {
+        $bits = @('copilot', 'allowance', 'exhausted')
+        if ($staleLabel) { $bits += $staleLabel }
+        if ($resetLabel) { $bits += $resetLabel }
+        return ($bits -join '  ')
     }
-    return ('Copilot  {0}{1}' -f $staleBit, $value)
+    $rem = $null
+    try { if ($null -ne $Pool.remaining -and [string]$Pool.remaining -ne '') { $rem = $Pool.remaining } } catch { }
+    if ($null -eq $rem) {
+        $bits = @('copilot', 'allowance', 'unknown')
+        if ($staleLabel) { $bits += $staleLabel }
+        return ($bits -join '  ')
+    }
+    $bits = @('copilot', 'allowance', 'remaining', ('{0}' -f $rem))
+    if ($pctBit) { $bits += $pctBit.Trim() }
+    if ($staleLabel) { $bits += $staleLabel }
+    if ($resetLabel) { $bits += $resetLabel }
+    return ($bits -join '  ')
+}
+
+function Get-BobCopilotMeterBarPct {
+    <#
+      Live bar only for a fresh numeric remaining. Unlimited and stale are not a fill.
+    #>
+    param($Pool, $Now = $null)
+    if (-not $Pool) { return $null }
+    $freshness = Get-BobCopilotFreshness -Pool $Pool -Now $Now
+    if ($freshness.state -eq 'stale') { return $null }
+    $unlimited = $false
+    try { if ($Pool.unlimited) { $unlimited = [bool]$Pool.unlimited } } catch { }
+    if ($unlimited) { return $null }
+    if ($null -eq $Pool.remaining -or [string]$Pool.remaining -eq '') { return $null }
+    try { return [int]$Pool.remaining } catch { return $null }
 }
 
 
@@ -1824,13 +2000,24 @@ function Expand-BobReportDigestView {
             if ($st -match '(?i)out[_-]?of[_-]?fuel|out[_-]?of[_-]?tokens') { $outTok = $true }
             if ($null -ne $weekPct -or $outTok) {
                 if ($null -eq $weekPct -and $outTok) { $weekPct = 0 }
+                $xai = $null
+                try { if ($node.xai_weekly) { $xai = $node.xai_weekly } } catch { $xai = $null }
+                # Identity comes only from the published meter. A bare weekly int is not
+                # labelled xAI, and grok-chat/sand is not this row's source.
                 $weeklyRows += ,[pscustomobject]@{
                     machine = $mid
                     weekly  = $weekPct
-                    period_end = $(if ($node.period_end) { [string]$node.period_end } elseif ($node.reset) { [string]$node.reset } else { $null })
+                    period_end = $(if ($xai -and $xai.period_end) { [string]$xai.period_end } elseif ($node.period_end) { [string]$node.period_end } elseif ($node.reset) { [string]$node.reset } else { $null })
                     lastSeen = $(if ($node.lastSeen) { [string]$node.lastSeen } else { $null })
                     out_of_tokens = $outTok
                     status = $(if ($st) { $st } else { $null })
+                    window = $(if ($xai -and $xai.window) { [string]$xai.window } else { $null })
+                    provider = $(if ($xai -and $xai.provider) { [string]$xai.provider } else { $null })
+                    direction = $(if ($xai -and $xai.direction) { [string]$xai.direction } else { $null })
+                    account = $(if ($xai -and $xai.account) { [string]$xai.account } elseif ($node.grok_account) { [string]$node.grok_account } else { $null })
+                    source = $(if ($xai -and $xai.source) { [string]$xai.source } else { $null })
+                    fetched_at = $(if ($xai -and $xai.fetched_at) { [string]$xai.fetched_at } else { $null })
+                    used_pct = $(if ($xai -and $null -ne $xai.used_pct -and [string]$xai.used_pct -ne '') { $xai.used_pct } else { $null })
                 }
             }
             if ($node.pcent) {
@@ -2533,31 +2720,30 @@ function Get-BobTrayHover {
         if ($null -eq $pct) { continue }
         # FR AgentMonitor#150: digest must not overwrite this host's local Grok pool (incl. n/a).
         if ($mac -eq $machineId -and $localWeeklyLocked -and -not $outTok) { continue }
-        $age = $null
-        if ($wr.lastSeen) {
-            $age = Get-BobLastSeenAgeSec -Record ([pscustomobject]@{ lastSeen = $wr.lastSeen })
+        # Measurement clock is xai_weekly.fetched_at. lastSeen is only liveness
+        # and must not make an old billing sample look current.
+        $measureAt = $null
+        try { if ($wr.fetched_at) { $measureAt = [string]$wr.fetched_at } } catch { }
+        $measureAge = $null
+        if ($measureAt) {
+            $measureAge = Get-BobLastSeenAgeSec -Record ([pscustomobject]@{ lastSeen = $measureAt })
         }
-        if ($null -ne $age) { $fuelAgeBy[$mac] = [int]$age }
-        # Local out_of_tokens and fresh peers keep a live %; stale peers are marked.
+        if ($null -ne $measureAge) { $fuelAgeBy[$mac] = [int]$measureAge }
         $isPeer = ($mac -ne $machineId)
-        if ($isPeer -and -not $outTok -and $null -ne $age -and $age -gt $fuelStaleAfter) {
+        $sampleStale = $false
+        if ($isPeer -and -not $outTok) {
+            if (-not $measureAt -or $null -eq $measureAge -or [int]$measureAge -gt $fuelStaleAfter) {
+                $sampleStale = $true
+            }
+        }
+        if ($sampleStale) {
             $fuelStaleBy[$mac] = $true
-            # Do not put a confident current % into weeklyBy.
+            $weeklyBy[$mac] = $pct
             if ($wr.period_end) {
                 if (-not ($mac -eq $machineId -and $periodEndBy.ContainsKey($machineId))) {
                     $periodEndBy[$mac] = [string]$wr.period_end
                 }
             }
-            continue
-        }
-        if ($isPeer -and -not $outTok -and $null -eq $age -and $wr.lastSeen) {
-            # Unparseable lastSeen: treat as stale rather than live.
-            $fuelStaleBy[$mac] = $true
-            continue
-        }
-        if ($isPeer -and -not $outTok -and -not $wr.lastSeen) {
-            # FR #5032 / MRB #5037: missing lastSeen must not paint a confident live %.
-            $fuelStaleBy[$mac] = $true
             continue
         }
         $weeklyBy[$mac] = $pct
@@ -2931,21 +3117,17 @@ function Get-BobTrayHover {
             $tileEnd = $livePeriod.period_end
             $tileReset = $livePeriod.reset_label
         } else {
-            # FR #5032: never paint a confident current % from a stale digest reading.
-            $wPct = $null
-            $tileReset = $null
+            # Last-known percent stays for the heading. The bar is not a live fill.
+            # Age is the measurement fetched_at, not the heartbeat lastSeen.
             $ageSec = $null
             if ($fuelAgeBy.ContainsKey($mid)) { $ageSec = [int]$fuelAgeBy[$mid] }
-            elseif ($seenBy.ContainsKey($mid)) {
-                $ageSec = Get-BobLastSeenAgeSec -Record ([pscustomobject]@{ lastSeen = $seenBy[$mid] })
-            }
             if ($null -ne $ageSec -and $ageSec -ge 0) {
                 $tileReset = Format-BobTrayFuelStaleAge -AgeSec $ageSec
             } else {
                 $tileReset = 'stale'
             }
             $tileAvail = 'stale'
-            $tileAvailReason = 'digest-lastSeen-stale'
+            $tileAvailReason = 'meter-fetched-at-stale'
         }
         $upSince = $null
         if ($uptimeByMachine.ContainsKey($mid)) { $upSince = [string]$uptimeByMachine[$mid] }
@@ -2996,18 +3178,52 @@ function Get-BobTrayHover {
             seat_email           = $(if ($seatInfo) { [string]$seatInfo.email } else { $null })
         }
         $tiles += ,$tile
-        $jlName = $mid
-        if ($seatInfo -and $seatInfo.label) { $jlName = ('{0}  -  {1}' -f $mid, $seatInfo.label) }
-        $machHeading = ('  {0}' -f $jlName)
-        if ($null -ne $wPct) { $machHeading = ('{0} ({1}%)' -f $machHeading, [int]$wPct) }
-        if ($fuelStale) { $machHeading = ('{0} [stale]' -f $machHeading) }
-        if ($tileAvail -and $null -eq $wPct -and -not $fuelStale) { $machHeading = ('{0} [{1}]' -f $machHeading, $tileAvail) }
-        if ($tileReset) { $machHeading = ('{0} - {1}' -f $machHeading, $tileReset) }
-        $jobLines += $machHeading
-        $tileFuels = @('cursor-models', 'grok-build', 'copilot', 'grok-bot')
-        if ($mid -match '2012') { $tileFuels = @() }
-        $tile | Add-Member -NotePropertyName fuels -NotePropertyValue $tileFuels -Force
-        if ($tileFuels.Count -gt 0) { $jobLines += ('    fuels: {0}' -f ($tileFuels -join ', ')) }
+        $meter = $null
+        foreach ($wr in @($digestWeeklyRows)) {
+            if ($wr -and [string]$wr.machine -eq $mid) { $meter = $wr; break }
+        }
+        $prov = ''
+        $win = ''
+        $dir = ''
+        $usedP = $null
+        $acct = ''
+        $srcMeter = ''
+        $absReset = ''
+        if ($meter -and $meter.provider -and $meter.direction) {
+            $prov = [string]$meter.provider
+            $dir = [string]$meter.direction
+            $win = ''
+            try { if ($meter.window) { $win = [string]$meter.window } } catch { }
+            if ($meter.used_pct -ne $null -and [string]$meter.used_pct -ne '') { $usedP = $meter.used_pct }
+            if ($meter.account) { $acct = [string]$meter.account }
+            if ($meter.source) { $srcMeter = [string]$meter.source }
+            if ($meter.period_end) { $absReset = [string]$meter.period_end }
+        } elseif ($mid -eq $machineId -and $week -and $week.source) {
+            $prov = 'xai'
+            $win = 'weekly'
+            try { if ($week.kind) { $win = [string]$week.kind } } catch { }
+            $dir = 'remaining'
+            $usedP = $week.used_pct
+            $srcMeter = [string]$week.source
+            if ($week.period_end) { $absReset = [string]$week.period_end }
+        }
+        $tile | Add-Member -NotePropertyName provider -NotePropertyValue $(if ($prov) { $prov } else { $null }) -Force
+        $tile | Add-Member -NotePropertyName window -NotePropertyValue $(if ($win) { $win } else { $null }) -Force
+        $tile | Add-Member -NotePropertyName direction -NotePropertyValue $(if ($dir) { $dir } else { $null }) -Force
+        $tile | Add-Member -NotePropertyName used_pct -NotePropertyValue $usedP -Force
+        $tile | Add-Member -NotePropertyName meter_account -NotePropertyValue $(if ($acct) { $acct } else { $null }) -Force
+        $tile | Add-Member -NotePropertyName meter_source -NotePropertyValue $(if ($srcMeter) { $srcMeter } else { $null }) -Force
+        $tile | Add-Member -NotePropertyName period_end_absolute -NotePropertyValue $(if ($absReset) { $absReset } else { $null }) -Force
+        $seatLab = ''
+        if ($seatInfo -and $seatInfo.label) { $seatLab = [string]$seatInfo.label }
+        $machHeading = Format-BobPeerPoolHeading -MachineId $mid -SeatLabel $seatLab -RemainingPct $wPct `
+            -ResetLabel $(if ($tileReset) { [string]$tileReset } else { '' }) -FuelStale $fuelStale `
+            -Provider $prov -Window $win -Direction $dir -UsedPct $usedP -Account $acct `
+            -PeriodEnd $absReset -Source $srcMeter
+        if (-not $prov -and $tileAvail -and $null -eq $wPct -and -not $fuelStale) {
+            $machHeading = ('{0} [{1}]' -f $machHeading, $tileAvail)
+        }
+        $jobLines += ('  {0}' -f $machHeading)
         # FR #352: TipForm/tooltip --- out of tokens, open with key.
         # Grok Build exhaustion only (explicit remaining_pct=0 or availability=exhausted).
         # Never Cursor Sand / pcent.grok-chat (those are Spending bars, not xAI weekly).
@@ -3097,21 +3313,70 @@ function Get-BobTrayHover {
         if ($ghPosting.issue_posting_ready) { $ghLine = 'GitHub issue post: ready' }
         else { $ghLine = 'GitHub issue post: not ready' }
     }
-    # FR #6147: OpenCode free/go + Go rolling/weekly/monthly windows from digest.
+    # FR #6147: digest may already carry catalogue free=100 and omit windows.
+    # A fresh local cache in the same run directory still wins for windows.
+    # MarchHare 14:03: cache rolling=unstarted was painted as unknown because
+    # digest free suppressed the cache read.
     $ocPaint = Get-BobOpencodePaintFromDigest -Digest $reportDigest -MachineId $machineId
     $ocStale = $false
     try { if ($reportDigest -and $reportDigest.stale) { $ocStale = $true } } catch { }
-    $ocPack = $null
-    if ($ocPaint.windows) {
-        $ocPack = Format-BobOpencodeWindowLines -FreePct $ocPaint.free -Windows $ocPaint.windows -Stale:$ocStale
-        $opencodeLine = [string]$ocPack.summary
-    } else {
-        $opencodeLine = Format-BobOpencodePoolLine -FreePct $ocPaint.free -GoPct $ocPaint.go
+    $localFuel = $null
+    try { $localFuel = Read-BobOpencodeLocalFuel } catch { $localFuel = $null }
+    $localFresh = $false
+    if ($localFuel) {
+        $fetched = $null
+        try { $fetched = [string]$localFuel.fetched_at } catch { }
+        if ($fetched) {
+            try {
+                $parsed = [datetime]::Parse($fetched, [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::RoundtripKind).ToUniversalTime()
+                $age = ([datetime]::UtcNow - $parsed).TotalSeconds
+                if ($age -ge -120 -and $age -le 900) { $localFresh = $true }
+            } catch { }
+        }
     }
+    if ($localFresh) {
+        $lfree = $ocPaint.free
+        $lgo = $ocPaint.go
+        foreach ($pair in @(
+                @('free', 'free'),
+                @('opencode-free', 'free'),
+                @('go', 'go'),
+                @('opencode-go', 'go')
+            )) {
+            $raw = $null
+            try {
+                $prop = $localFuel.PSObject.Properties[$pair[0]]
+                if ($prop) { $raw = $prop.Value }
+            } catch { $raw = $null }
+            if ($null -eq $raw -or [string]$raw -eq '') { continue }
+            if ($pair[1] -eq 'free') { $lfree = $raw } else { $lgo = $raw }
+        }
+        $lwins = $null
+        try { if ($localFuel.windows) { $lwins = $localFuel.windows } } catch { }
+        if ($lwins) {
+            $ocPaint = [pscustomobject]@{ free = $lfree; go = $lgo; windows = $lwins }
+            # A stale digest flag must not blank week/month just taken from this cache.
+            $ocStale = $false
+        }
+    }
+    $ocPack = Format-BobOpencodeWindowLines -FreePct $ocPaint.free -Windows $ocPaint.windows -Stale:$ocStale
+    $opencodeLine = [string]$ocPack.summary
     $opencodeWindowLines = @()
-    if ($ocPack -and $ocPack.window_lines) { $opencodeWindowLines = @($ocPack.window_lines) }
-    # MRB #6232: prepend summary + window lines as one block (summary, rolling,
-    # weekly, monthly). Per-line prepend reversed the window order.
+    if ($ocPack.free_heading) { $opencodeWindowLines += [string]$ocPack.free_heading }
+    if ($localFresh -and $localFuel -and $localFuel.local_costs) {
+        foreach ($costProp in @($localFuel.local_costs.PSObject.Properties)) {
+            $usd = $null
+            try { $usd = [double]$costProp.Value } catch { $usd = $null }
+            if ($null -eq $usd) { continue }
+            $shown = $usd.ToString('0.00', [Globalization.CultureInfo]::InvariantCulture)
+            $opencodeWindowLines += ('{0}  7d local ${1}' -f [string]$costProp.Name, $shown)
+        }
+    }
+    if ($ocPack.window_lines) { $opencodeWindowLines += @($ocPack.window_lines) }
+    $opencodeBars = @()
+    if ($ocPack.bars) { $opencodeBars = @($ocPack.bars) }
+    # MRB #6232: prepend summary + pool lines as one block (summary, free,
+    # rolling, weekly, monthly). Per-line prepend reversed the window order.
     $ocBlock = @()
     if ($opencodeLine) { $ocBlock += (('  {0}' -f $opencodeLine)) }
     foreach ($wl in @($opencodeWindowLines)) { if ($wl) { $ocBlock += (('  {0}' -f $wl)) } }
@@ -3169,11 +3434,12 @@ function Get-BobTrayHover {
         account_period_end = $(if ($cursorWeek -and $cursorWeek.period_end) { [string]$cursorWeek.period_end } else { $null })
         account_reset_label = $(if ($cursorWeek -and $cursorWeek.period_end) { Format-BobResetLabel -PeriodEnd $cursorWeek.period_end -FetchedAt $cursorWeek.fetched_at } else { $null })
         gh_posting          = $ghPosting
-        opencode_free       = $ocPaint.free
+        opencode_free       = $(if ($ocPack) { $ocPack.free } else { $ocPaint.free })
         opencode_go         = $(if ($ocPack -and $null -ne $ocPack.go_remaining) { $ocPack.go_remaining } else { $ocPaint.go })
         opencode_line       = $opencodeLine
-        opencode_windows    = $(if ($ocPaint.windows) { $ocPaint.windows } else { $null })
+        opencode_windows    = $(if ($ocPack -and $ocPack.windows) { $ocPack.windows } elseif ($ocPaint.windows) { $ocPaint.windows } else { $null })
         opencode_window_lines = @($opencodeWindowLines)
+        opencode_bars       = @($opencodeBars)
         copilot_pool        = $copilotPoolObj
         copilot_line        = $copilotLine
         copilot_stale_line  = $copilotStaleLine

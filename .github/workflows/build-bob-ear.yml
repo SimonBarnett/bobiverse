@@ -1,0 +1,83 @@
+# Isolated bob-ear.exe build. Not a release, MSI, install, or service start.
+# Build-BobEar.ps1 owns the PyInstaller command and the --help smoke check.
+name: build-bob-ear
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - .github/workflows/build-bob-ear.yml
+
+permissions:
+  contents: read
+
+jobs:
+  build-bob-ear:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install PyInstaller and the ear Python dependency
+        run: |
+          python -m pip install --upgrade pip pyinstaller
+          . .\common\scripts\Bobiverse-Common.ps1
+          Install-BobiversePythonDeps -Python (Get-Command python).Source
+
+      - name: Confirm behavior files match 99783eb
+        env:
+          WORKFLOW_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          $head = (git rev-parse HEAD).Trim()
+          if ($head -ne $env:WORKFLOW_COMMIT) { throw "checkout $head is not $env:WORKFLOW_COMMIT" }
+          $expected = "99783eb90c23a9ee8bb9bbd326a6de0500de1d8f"
+          git fetch --no-tags --depth=1 origin $expected
+          git diff --exit-code $expected -- `
+            common/scripts/bobreport.py `
+            common/scripts/irc_agent.py `
+            common/scripts/opencode_fuel.py `
+            bob/tray/src/Public/Get-BobTrayHover.ps1 `
+            bob/tray/src/Private/Get-BobIrc.ps1 `
+            bob/tray/tools/Watch-BobTray.ps1 `
+            bob/tray/tools/Get-BobOpencodeFuel.ps1 `
+            bob/tray/src/BobBridge.psm1
+
+      - name: Build with Build-BobEar.ps1
+        env:
+          WORKFLOW_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          $root = (Get-Location).Path
+          $out = Join-Path $env:RUNNER_TEMP "bob-ear-out"
+          New-Item -ItemType Directory -Force -Path $out | Out-Null
+          $py = (Get-Command python).Source
+          & "$root\bob\scripts\Build-BobEar.ps1" -RepoRoot $root -OutDir $out -Python $py
+          if ($LASTEXITCODE -ne 0) { throw "Build-BobEar.ps1 exit $LASTEXITCODE" }
+          $exe = Join-Path $out "ear-build\dist\bob-ear.exe"
+          if (-not (Test-Path -LiteralPath $exe)) { throw "Build-BobEar.ps1 did not leave bob-ear.exe" }
+          $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $exe).Hash.ToLowerInvariant()
+          $stage = Join-Path $env:RUNNER_TEMP "bob-ear-artifact"
+          New-Item -ItemType Directory -Force -Path $stage | Out-Null
+          Copy-Item -LiteralPath $exe -Destination (Join-Path $stage "bob-ear.exe")
+          Copy-Item -LiteralPath "$root\bob\docs\deploy-pool-monitor-manifest.txt" -Destination (Join-Path $stage "deploy-pool-monitor-manifest.txt")
+          @(
+            "behavior_source_sha=99783eb90c23a9ee8bb9bbd326a6de0500de1d8f"
+            "workflow_commit=$($env:WORKFLOW_COMMIT)"
+            "exe_name=bob-ear.exe"
+            "exe_sha256=$hash"
+          ) | Set-Content -Encoding ascii (Join-Path $stage "provenance.txt")
+          Set-Content -Encoding ascii (Join-Path $stage "bob-ear.exe.sha256") "$hash  bob-ear.exe"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bob-ear
+          path: ${{ runner.temp }}/bob-ear-artifact
+          if-no-files-found: error
