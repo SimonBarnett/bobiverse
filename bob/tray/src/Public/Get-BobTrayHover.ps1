@@ -1909,13 +1909,23 @@ function Expand-BobReportDigestView {
             if ($st -match '(?i)out[_-]?of[_-]?fuel|out[_-]?of[_-]?tokens') { $outTok = $true }
             if ($null -ne $weekPct -or $outTok) {
                 if ($null -eq $weekPct -and $outTok) { $weekPct = 0 }
+                $xai = $null
+                try { if ($node.xai_weekly) { $xai = $node.xai_weekly } } catch { $xai = $null }
+                # Identity comes only from the published meter. A bare weekly int is not
+                # labelled xAI, and grok-chat/sand is not this row's source.
                 $weeklyRows += ,[pscustomobject]@{
                     machine = $mid
                     weekly  = $weekPct
-                    period_end = $(if ($node.period_end) { [string]$node.period_end } elseif ($node.reset) { [string]$node.reset } else { $null })
+                    period_end = $(if ($xai -and $xai.period_end) { [string]$xai.period_end } elseif ($node.period_end) { [string]$node.period_end } elseif ($node.reset) { [string]$node.reset } else { $null })
                     lastSeen = $(if ($node.lastSeen) { [string]$node.lastSeen } else { $null })
                     out_of_tokens = $outTok
                     status = $(if ($st) { $st } else { $null })
+                    provider = $(if ($xai -and $xai.provider) { [string]$xai.provider } else { $null })
+                    direction = $(if ($xai -and $xai.direction) { [string]$xai.direction } else { $null })
+                    account = $(if ($xai -and $xai.account) { [string]$xai.account } elseif ($node.grok_account) { [string]$node.grok_account } else { $null })
+                    source = $(if ($xai -and $xai.source) { [string]$xai.source } else { $null })
+                    fetched_at = $(if ($xai -and $xai.fetched_at) { [string]$xai.fetched_at } else { $null })
+                    used_pct = $(if ($xai -and $null -ne $xai.used_pct -and [string]$xai.used_pct -ne '') { $xai.used_pct } else { $null })
                 }
             }
             if ($node.pcent) {

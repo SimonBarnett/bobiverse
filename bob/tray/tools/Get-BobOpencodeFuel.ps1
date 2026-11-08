@@ -182,23 +182,71 @@ else:
             if ($parsed.history) { $out.history = $parsed.history }
             $out.read_state = 'ok'
             if ($env:BOB_OPENCODE_USAGE_URL) {
+                # Configured provider read must not fall back to stats windows.
+                $out.go = $null
+                $out.limiting = $null
+                $env:BOB_OPENCODE_PROVIDER_PREVIOUS = ''
+                try {
+                    $prevCache = $env:BOB_OPENCODE_FUEL_CACHE_FILE
+                    if (-not $prevCache) {
+                        $prevRoot = $env:BOB_INSTALL_ROOT
+                        if (-not $prevRoot) { $prevRoot = Split-Path -Parent $PSScriptRoot }
+                        $prevCache = Join-Path (Join-Path $prevRoot 'run') 'opencode-fuel.json'
+                    }
+                    if (Test-Path -LiteralPath $prevCache -PathType Leaf) {
+                        $prevDoc = [System.IO.File]::ReadAllText($prevCache) | ConvertFrom-Json
+                        $providerPrev = $false
+                        foreach ($id in @('rolling', 'week', 'month')) {
+                            $rec = $null
+                            try { $rec = $prevDoc.windows.$id } catch { $rec = $null }
+                            if ($rec -and [string]$rec.source -eq 'provider') { $providerPrev = $true }
+                        }
+                        if ($providerPrev -and $prevDoc.windows) {
+                            $env:BOB_OPENCODE_PROVIDER_PREVIOUS = ($prevDoc.windows | ConvertTo-Json -Compress -Depth 6)
+                        }
+                    }
+                } catch { $env:BOB_OPENCODE_PROVIDER_PREVIOUS = '' }
                 $limitsScript = @'
 import json, os, opencode_fuel
-doc = opencode_fuel.fetch_usage_limits(
+prev = None
+raw = os.environ.get("BOB_OPENCODE_PROVIDER_PREVIOUS") or ""
+if raw.strip():
+    try:
+        prev = json.loads(raw)
+    except json.JSONDecodeError:
+        prev = None
+read = opencode_fuel.fetch_usage_limits(
     os.environ.get("BOB_OPENCODE_USAGE_URL") or "",
-    os.environ.get("OPENCODE_PASSWORD") or None,
+    os.environ.get("OPENCODE_SERVER_PASSWORD") or None,
+    os.environ.get("OPENCODE_SERVER_USERNAME") or None,
 )
-windows = opencode_fuel.provider_windows_from_usage_limits(doc)
-print(json.dumps(windows or {}))
+windows = opencode_fuel.windows_from_usage_read(read, previous=prev)
+print(json.dumps({"provider_read": read.get("kind"), "windows": windows}))
 '@
-                $limitsRaw = & $py -c $limitsScript
+                $limitsRaw = $null
+                try { $limitsRaw = & $py -c $limitsScript } catch { $limitsRaw = $null }
+                $env:BOB_OPENCODE_PROVIDER_PREVIOUS = ''
+                $limits = $null
                 if ($limitsRaw) {
-                    $limits = $limitsRaw | ConvertFrom-Json -ErrorAction SilentlyContinue
-                    if ($limits -and ($limits.rolling -or $limits.week -or $limits.month)) {
-                        $out.windows = $limits
-                        $out.provider = 'usage-limits'
+                    try { $limits = $limitsRaw | ConvertFrom-Json } catch { $limits = $null }
+                }
+                $unknownProvider = { [ordered]@{ status = 'unknown'; used_pct = $null; remaining_pct = $null; reset_label = $null; source = 'provider' } }
+                $readWindows = $null
+                try { $readWindows = $limits.windows } catch { $readWindows = $null }
+                if ($readWindows -and ($readWindows.rolling -or $readWindows.week -or $readWindows.month)) {
+                    $out.windows = $readWindows
+                } else {
+                    $out.windows = [ordered]@{
+                        rolling = (& $unknownProvider)
+                        week    = (& $unknownProvider)
+                        month   = (& $unknownProvider)
                     }
                 }
+                $kind = ''
+                try { if ($limits.provider_read) { $kind = [string]$limits.provider_read } } catch { $kind = '' }
+                if (-not $kind) { $kind = 'unavailable' }
+                $out.provider_read = $kind
+                $out.provider = 'usage-limits'
             }
         } elseif ($out.read_state -eq 'unavailable') {
             $out.read_state = 'parser_missing'

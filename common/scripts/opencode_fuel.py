@@ -9,12 +9,16 @@ All functions are pure / testable and never touch credentials.
 """
 from __future__ import annotations
 
+import ipaddress
 import json
 import os
 import re
 import sys
 import tempfile
 import time
+import urllib.error
+import urllib.parse
+import urllib.request
 import uuid
 from pathlib import Path
 from typing import Optional
@@ -684,17 +688,33 @@ def normalize_go_windows(raw: object) -> dict[str, dict]:
             status = "unknown"
         used = _clamp_pct(src.get("used_pct")) if src.get("used_pct") is not None and str(src.get("used_pct")) != "" else None
         rem = _clamp_pct(src.get("remaining_pct")) if src.get("remaining_pct") is not None and str(src.get("remaining_pct")) != "" else None
-        if rem is not None and used is None:
-            used = _used_from_remaining(rem)
-        elif used is not None and rem is None:
-            rem = _clamp_pct(100 - int(used))
-        elif used is not None and rem is not None and (used + rem) != 100:
-            # Prefer remaining as source of truth when both disagree.
-            used = _used_from_remaining(rem)
+        # Provider meters publish used percent only. Do not invent a remaining balance.
+        provider = str(src.get("source") or "").strip().lower() == "provider"
+        if not provider:
+            if rem is not None and used is None:
+                used = _used_from_remaining(rem)
+            elif used is not None and rem is None:
+                rem = _clamp_pct(100 - int(used))
+            elif used is not None and rem is not None and (used + rem) != 100:
+                # Prefer remaining as source of truth when both disagree.
+                used = _used_from_remaining(rem)
         reset = src.get("reset_label")
         reset_label = str(reset).strip() if reset not in (None, "") else None
         fetched = src.get("fetched_at")
         fetched_at = str(fetched).strip() if fetched not in (None, "") else None
+        if provider:
+            rec = _window_record(
+                status,
+                used_pct=used,
+                remaining_pct=rem,
+                reset_label=reset_label,
+                fetched_at=fetched_at,
+            )
+            rec["source"] = "provider"
+            if src.get("limited") is not None:
+                rec["limited"] = bool(src.get("limited"))
+            out[wid] = rec
+            continue
         if status == "unstarted":
             # Clarification fixture: unstarted rolling is 0% used, no invented rem/reset.
             out[wid] = _window_record(
@@ -969,48 +989,219 @@ def provider_windows_from_usage_limits(
     return out
 
 
+class UsageLimitsURLError(ValueError):
+    """BOB_OPENCODE_USAGE_URL is not a literal loopback base."""
+
+
+class _NoAuthRedirect(urllib.request.HTTPRedirectHandler):
+    """Refuse every redirect so Basic auth cannot be replayed onto Location."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: ARG002
+        raise urllib.error.HTTPError(
+            getattr(req, "full_url", "") or "",
+            code,
+            "redirect refused",
+            headers,
+            fp,
+        )
+
+
 def usage_limits_request_url(base_url: str) -> str:
-    """Published local-server route. Operation experimental.usage.limits."""
-    base = (base_url or "").strip().rstrip("/")
-    if not base:
-        raise ValueError("missing usage server base")
-    return base + "/api/experimental/usage/limits"
+    """Loopback GET for operation experimental.usage.limits.
+
+    Accepts only ``http`` or ``https`` with a literal loopback address
+    (``127.0.0.0/8`` or ``::1``). Rejects names, userinfo, query, fragment,
+    and a port outside 1..65535. The path is always the published route.
+    """
+    raw = (base_url or "").strip()
+    if not raw:
+        raise UsageLimitsURLError("missing")
+    try:
+        parts = urllib.parse.urlsplit(raw)
+    except ValueError as exc:
+        raise UsageLimitsURLError("malformed") from exc
+    if parts.scheme not in ("http", "https"):
+        raise UsageLimitsURLError("scheme")
+    if parts.username is not None or parts.password is not None:
+        raise UsageLimitsURLError("credentials")
+    if parts.query or parts.fragment:
+        raise UsageLimitsURLError("extra")
+    if parts.path not in ("", "/"):
+        raise UsageLimitsURLError("path")
+    host = parts.hostname
+    if not host:
+        raise UsageLimitsURLError("host")
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError as exc:
+        raise UsageLimitsURLError("host") from exc
+    if not ip.is_loopback:
+        raise UsageLimitsURLError("nonloopback")
+    try:
+        port = parts.port
+    except ValueError as exc:
+        raise UsageLimitsURLError("port") from exc
+    if port is not None and not (1 <= int(port) <= 65535):
+        raise UsageLimitsURLError("port")
+    host_text = f"[{ip.compressed}]" if ip.version == 6 else str(ip)
+    netloc = host_text if port is None else f"{host_text}:{int(port)}"
+    return urllib.parse.urlunsplit(
+        (parts.scheme, netloc, "/api/experimental/usage/limits", "", "")
+    )
+
+
+def interpret_usage_limits_response(
+    status: int | None, content_type: str | None, body: str | None
+) -> dict:
+    """Classify a limits response without inventing a quota.
+
+    ``json`` is a usage object whose ``go`` value is an object.
+    ``unsigned`` is JSON ``null`` or a usage object with ``go`` null
+    (the location is not signed in). ``non_json`` is a 200 that is not a
+    JSON usage document, including ``text/html``. ``unavailable`` is any
+    other status. The body of a non-JSON response is discarded.
+    """
+    if status is None or int(status) != 200:
+        return {"kind": "unavailable", "doc": None}
+    media = ""
+    if content_type:
+        media = content_type.split(";", 1)[0].strip().lower()
+    text = body if isinstance(body, str) else ""
+    stripped = text.strip()
+    json_media = media in ("application/json", "text/json") or media.endswith("+json")
+    if media and not json_media:
+        return {"kind": "non_json", "doc": None}
+    if stripped.startswith("<"):
+        return {"kind": "non_json", "doc": None}
+    if not stripped:
+        return {"kind": "non_json", "doc": None}
+    try:
+        parsed = json.loads(stripped)
+    except json.JSONDecodeError:
+        return {"kind": "non_json", "doc": None}
+    if parsed is None:
+        return {"kind": "unsigned", "doc": None}
+    if not isinstance(parsed, dict):
+        return {"kind": "non_json", "doc": None}
+    go = parsed.get("go")
+    if go is None and isinstance(parsed.get("data"), dict):
+        go = parsed["data"].get("go")
+    if go is None:
+        return {"kind": "unsigned", "doc": parsed}
+    if not isinstance(go, dict):
+        return {"kind": "non_json", "doc": None}
+    return {"kind": "json", "doc": parsed}
 
 
 def fetch_usage_limits(
-    base_url: str, password: str | None = None, timeout: float = 5.0
-) -> dict | None:
-    """GET the signed-in location's Go meters.
+    base_url: str,
+    password: str | None = None,
+    username: str | None = None,
+    timeout: float = 5.0,
+) -> dict:
+    """GET Go meters from a loopback OpenCode server.
 
-    Basic auth username is the documented ``opencode``. The password is
-    ``OPENCODE_PASSWORD`` when the caller already has it. This function does
-    not read key files and does not include the password in errors.
+    Username defaults to ``opencode`` (``OPENCODE_SERVER_USERNAME``).
+    Password is ``OPENCODE_SERVER_PASSWORD`` when the caller already has it.
+    Redirects are not followed. A 200 HTML page is ``non_json``, not a quota
+    and not ``go: null``. This does not read key files.
     """
-    import urllib.error
-    import urllib.request
-
-    url = usage_limits_request_url(base_url)
+    try:
+        url = usage_limits_request_url(base_url)
+    except UsageLimitsURLError:
+        return {"kind": "unavailable", "doc": None}
+    user = username or "opencode"
     headers = {"Accept": "application/json"}
     if password:
         import base64
 
-        token = base64.b64encode(f"opencode:{password}".encode("utf-8")).decode("ascii")
+        token = base64.b64encode(f"{user}:{password}".encode("utf-8")).decode("ascii")
         headers["Authorization"] = "Basic " + token
     req = urllib.request.Request(url, headers=headers, method="GET")
+    # Empty ProxyHandler ignores http_proxy so the Authorization header stays on loopback.
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoAuthRedirect)
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with opener.open(req, timeout=timeout) as resp:
             raw = resp.read().decode("utf-8", errors="replace")
+            status = getattr(resp, "status", None)
+            resp_headers = getattr(resp, "headers", None)
+            content_type = resp_headers.get("Content-Type") if resp_headers is not None else None
     except (urllib.error.URLError, TimeoutError, OSError, ValueError):
+        return {"kind": "unavailable", "doc": None}
+    return interpret_usage_limits_response(
+        200 if status is None else int(status), content_type, raw
+    )
+
+
+def _unknown_provider_windows() -> dict[str, dict]:
+    out: dict[str, dict] = {}
+    for wid in GO_WINDOW_IDS:
+        rec = _window_record("unknown")
+        rec["source"] = "provider"
+        out[wid] = rec
+    return out
+
+
+def _stale_provider_windows(previous: dict | None) -> dict[str, dict] | None:
+    if not isinstance(previous, dict):
         return None
-    if not raw or raw.strip() in ("", "null"):
-        return None
-    try:
-        doc = json.loads(raw)
-    except json.JSONDecodeError:
-        return None
-    if not isinstance(doc, dict):
-        return None
-    return doc
+    out: dict[str, dict] = {}
+    saw = False
+    for wid in GO_WINDOW_IDS:
+        rec = previous.get(wid)
+        if not isinstance(rec, dict) or rec.get("source") != "provider":
+            out[wid] = _window_record("unknown")
+            out[wid]["source"] = "provider"
+            continue
+        saw = True
+        stale = _window_record("stale")
+        stale["source"] = "provider"
+        out[wid] = stale
+    return out if saw else None
+
+
+def resolve_provider_windows(
+    doc: dict | None,
+    *,
+    failed: bool,
+    previous: dict | None = None,
+    now_ms: int | None = None,
+) -> dict[str, dict]:
+    """Provider windows when BOB_OPENCODE_USAGE_URL is set.
+
+    A failed read or ``go: null`` is unknown (or stale last-known provider
+    meters). Stats estimate windows are never returned from here.
+    """
+    if failed or doc is None:
+        stale = _stale_provider_windows(previous)
+        return stale if stale is not None else _unknown_provider_windows()
+    if not isinstance(doc, dict) or doc.get("go") is None:
+        return _unknown_provider_windows()
+    parsed = provider_windows_from_usage_limits(doc, now_ms=now_ms)
+    if not parsed:
+        return _unknown_provider_windows()
+    return parsed
+
+
+def windows_from_usage_read(
+    read: dict | None,
+    *,
+    previous: dict | None = None,
+    now_ms: int | None = None,
+) -> dict[str, dict]:
+    """Windows for one classified limits read.
+
+    ``non_json`` and ``unavailable`` are a failed provider read: unknown, or
+    stale last-known provider meters. They never become stats estimates.
+    ``unsigned`` is an honest unknown, not a stale percent and not a cost line.
+    """
+    kind = read.get("kind") if isinstance(read, dict) else "unavailable"
+    doc = read.get("doc") if isinstance(read, dict) else None
+    if kind == "json":
+        return resolve_provider_windows(doc if isinstance(doc, dict) else None, failed=False, now_ms=now_ms)
+    if kind == "unsigned":
+        return _unknown_provider_windows()
+    return resolve_provider_windows(None, failed=True, previous=previous)
 
 
 def local_cache_paint_stale(*, digest_stale: bool, local_windows_applied: bool) -> bool:
@@ -1057,13 +1248,19 @@ def opencode_pool_bars(
         rec = win_map.get(wid) if isinstance(win_map.get(wid), dict) else {}
         status = str(rec.get("status") or "unknown")
         rem = rec.get("remaining_pct")
-        known = status in ("known", "exhausted") and rem is not None
+        used = rec.get("used_pct")
+        if rec.get("source") == "provider" and used is not None and status in ("known", "exhausted"):
+            known = True
+            pct = int(used)
+        else:
+            known = status in ("known", "exhausted") and rem is not None
+            pct = int(rem) if known else 0
         bars.append(
             {
                 "id": wid,
                 "heading": line,
                 "known": known,
-                "pct": int(rem) if known else 0,
+                "pct": pct,
             }
         )
     return bars

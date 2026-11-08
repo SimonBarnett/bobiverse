@@ -218,6 +218,9 @@ _PCENT_KEYS_BY_POOL: dict[str, tuple[str, ...]] = {
 }
 # #40: pcent keys that follow the Grok weekly clock but are not Cursor pools.
 _GROK_WEEKLY_EXTRA_PCENT_KEYS = ("grok-build",)
+# Hosts with no Cursor login still publish these. grok-chat/sand is Cursor Sand,
+# not xAI weekly, and must not ride along in this set.
+_NON_CURSOR_PCENT_KEYS = ("grok-build", "opencode-free", "opencode-go")
 _MERGE_PEER_FIELDS = (
     "weekly",
     "cursor_label",
@@ -249,6 +252,12 @@ _MERGE_PEER_FIELDS = (
     "usd_gbp_rate",
     # FR #6147: OpenCode Go rolling/weekly/monthly window records for digest paint.
     "opencode_windows",
+    # xAI weekly meter identity. remaining stays on weekly / pcent.grok-build.
+    # The object is the peer-visible row: provider, direction, source, fetched_at, period_end.
+    "xai_weekly_used_pct",
+    "xai_weekly_source",
+    "xai_weekly_fetched_at",
+    "xai_weekly",
 )
 # FR #5690: when a merge payload carries these as null (or lists them in cleared[]),
 # pop the sticky chair value. Omit-null used to leave stale overage/repo forever.
@@ -267,6 +276,9 @@ _CLEARABLE_MERGE_FIELDS = frozenset({
     "usd_gbp_rate",
     # FR #6144: omit/unknown Cursor must clear sticky label (not leave foreign 0%).
     "cursor_label",
+    "xai_weekly_used_pct",
+    "xai_weekly_source",
+    "xai_weekly_fetched_at",
 })
 # FR #6144 / MRB #6169: one Cursor-group key set for clear / merge-skip / peer-block.
 _CURSOR_GROUP_KEYS = frozenset({
@@ -334,6 +346,10 @@ _TRAY_MACHINE_EXPORT_KEYS = (
     "weekly_known",
     "grok_account",
     "opencode_windows",
+    "xai_weekly_used_pct",
+    "xai_weekly_source",
+    "xai_weekly_fetched_at",
+    "xai_weekly",
 )
 WORKER_NICK_RE = re.compile(r"^w-([a-z0-9]+)-(\d+)_?$", re.I)
 
@@ -2171,6 +2187,37 @@ def _apply_cleared_merge_fields(ent: dict, payload: dict) -> None:
         ent.pop(key, None)
 
 
+def _non_cursor_pcent(pcent: object) -> dict:
+    """xAI weekly and OpenCode percents. Not Cursor Sand / grok-chat."""
+    if not isinstance(pcent, dict):
+        return {}
+    out: dict = {}
+    for key in _NON_CURSOR_PCENT_KEYS:
+        if key not in pcent or pcent.get(key) in (None, ""):
+            continue
+        out[key] = pcent.get(key)
+    return out
+
+
+def _merge_non_cursor_pcent(existing: object, incoming: object | None) -> dict:
+    """Keep grok-build and OpenCode when cursor_known is false.
+
+    Cursor keys in either map are dropped. An incoming null for a kept key clears it.
+    ``incoming is None`` means the payload omitted pcent: keep the existing non-Cursor keys.
+    """
+    kept = _non_cursor_pcent(existing)
+    if not isinstance(incoming, dict):
+        return kept
+    for key in _NON_CURSOR_PCENT_KEYS:
+        if key not in incoming:
+            continue
+        if incoming.get(key) in (None, ""):
+            kept.pop(key, None)
+        else:
+            kept[key] = incoming.get(key)
+    return kept
+
+
 def _apply_merge_payload(doc: dict, mid: str, payload: dict) -> list[str]:
     """Mutate digest doc for one machine merge; return new English actions."""
     actions: list[str] = []
@@ -2220,7 +2267,14 @@ def _apply_merge_payload(doc: dict, mid: str, payload: dict) -> list[str]:
             cursor_unknown = True
             ent["cursor_known"] = False
             for ck in _CURSOR_UNKNOWN_CLEAR_FIELDS:
+                if ck == "pcent":
+                    continue
                 ent.pop(ck, None)
+            ent["pcent"] = _merge_non_cursor_pcent(
+                ent.get("pcent"), payload.get("pcent") if "pcent" in payload else None
+            )
+            if not ent["pcent"]:
+                ent.pop("pcent", None)
         else:
             ent["cursor_known"] = True
     if (not cursor_unknown) and "pcent" in payload and isinstance(payload["pcent"], dict):
@@ -3389,8 +3443,21 @@ def export_machine_for_tray(
     for key in _peer_fill_keys():
         if key in ent and ent[key] is not None and ent[key] != "":
             base[key] = ent[key]
+    if cursor_known_ent is False and peer:
+        kept = _non_cursor_pcent(base.get("pcent"))
+        for key, val in _non_cursor_pcent(peer.get("pcent")).items():
+            kept.setdefault(key, val)
+        if kept:
+            base["pcent"] = kept
     if cursor_known_ent is False:
         for key in _cursor_peer_block:
+            if key == "pcent":
+                kept = _non_cursor_pcent(base.get("pcent"))
+                if kept:
+                    base["pcent"] = kept
+                else:
+                    base.pop("pcent", None)
+                continue
             base.pop(key, None)
         base["cursor_known"] = False
     if "cursor_known" in ent:
@@ -4182,6 +4249,13 @@ def peer_fuel_fingerprint(peer: dict) -> str:
         )
     else:
         parts.append("opencode_windows=")
+    for key in ("xai_weekly_used_pct", "xai_weekly_source", "xai_weekly_fetched_at"):
+        parts.append(f"{key}={peer.get(key)!s}")
+    meter = peer.get("xai_weekly")
+    if isinstance(meter, dict):
+        parts.append("xai_weekly=" + json.dumps(meter, sort_keys=True, separators=(",", ":")))
+    else:
+        parts.append("xai_weekly=")
     pools = peer.get("cursor_pools")
     if isinstance(pools, list):
         slim = []
@@ -4248,6 +4322,9 @@ def build_peer_fuel_merge_payload(peer: dict, machine_id: str) -> dict | None:
             continue
         if key in peer and peer.get(key) not in (None, ""):
             payload[key] = peer.get(key)
+    for key in ("xai_weekly_used_pct", "xai_weekly_source", "xai_weekly_fetched_at"):
+        if key in peer:
+            payload[key] = peer.get(key)
     if isinstance(peer.get("cursor_pools"), list):
         payload["cursor_pools"] = _coerce_cursor_pools(peer.get("cursor_pools"), machine_id=mid)
     blob = json.dumps(payload, separators=(",", ":"), default=str)
@@ -4266,16 +4343,101 @@ def report_post_url(env: dict[str, str] | None = None) -> str:
     return digest_url()
 
 
+_last_post_outcome: dict = {}
+_last_fuel_publish_diag: dict = {}
+
+
+def last_fuel_publish_diag() -> dict:
+    """Last ear fuel publish attempt. No payload values, no secrets."""
+    return dict(_last_fuel_publish_diag)
+
+
+def format_fuel_publish_diag(diag: dict | None) -> str:
+    """One stdout line. Ack is explicit; a POST word alone is not success."""
+    d = diag if isinstance(diag, dict) else {}
+    pcent = d.get("pcent_keys") or []
+    keys = ",".join(str(k) for k in pcent) if pcent else "-"
+    reason = d.get("reason") or "-"
+    return (
+        "home_role={role} http_status={status} ack={ack} error={error} "
+        "reason={reason} pcent_keys={keys} machine={machine} skipped={skipped}"
+    ).format(
+        role=d.get("home_role") or "unlocalized",
+        status=d.get("http_status") if d.get("http_status") is not None else "-",
+        ack="true" if d.get("ack") else "false",
+        error=d.get("error") or "-",
+        reason=str(reason).replace(" ", "_")[:180],
+        keys=keys,
+        machine=d.get("machine") or "-",
+        skipped=d.get("skipped") or "-",
+    )
+
+
+def classify_publish_home(home: Path) -> str:
+    """Label the directory a fuel POST would use.
+
+    ``Users/Administrator/.agentic-irc-bobiverse`` is a known non-active cache.
+    It is not the LocalSystem service home. Any other path stays ``unlocalized``
+    until it matches ``BOB_EAR_HOME`` or ``<BOB_INSTALL_ROOT>/home``.
+    """
+    parts = [str(p).lower() for p in Path(home).parts]
+    if ".agentic-irc-bobiverse" in parts:
+        idx = parts.index(".agentic-irc-bobiverse")
+        if idx >= 1 and parts[idx - 1] == "administrator":
+            return "legacy-admin-not-active"
+    try:
+        resolved = Path(home).resolve()
+    except OSError:
+        resolved = Path(home)
+    cand = service_publish_home_candidate()
+    if cand is not None:
+        try:
+            if resolved == cand.resolve():
+                return "service"
+        except OSError:
+            if resolved == cand:
+                return "service"
+    return "unlocalized"
+
+
+def service_publish_home_candidate() -> Path | None:
+    """InstallRoot\\home for LocalSystem ircBob. Empty when it cannot be named."""
+    ov = (os.environ.get("BOB_EAR_HOME") or "").strip()
+    if ov:
+        return Path(ov)
+    root = (os.environ.get("BOB_INSTALL_ROOT") or "").strip()
+    if root:
+        return Path(root) / "home"
+    return None
+
+
+def _record_post_outcome(*, status: int | None, error: str | None, reason: str | None) -> None:
+    global _last_post_outcome
+    ack = status is not None and 200 <= int(status) < 300
+    _last_post_outcome = {
+        "http_status": status,
+        "ack": ack,
+        "error": error,
+        "reason": reason,
+    }
+
+
 def post_report_json(payload: dict, *, url: str | None = None, timeout: float = 15.0) -> int | None:
-    """POST JSON to report URL. Returns HTTP status or None on transport failure."""
+    """POST JSON to report URL. Returns HTTP status or None on transport failure.
+
+    A ``URLError`` is a transport failure with a reason string. It is not evidence
+    that the digest document is absent or that auth was rejected.
+    """
     import urllib.error
     import urllib.request
 
     target = (url or report_post_url()).strip()
     if not target or not isinstance(payload, dict):
+        _record_post_outcome(status=None, error="no-target", reason=None)
         return None
     body = json.dumps(payload, separators=(",", ":"), default=str).encode("utf-8")
     if looks_like_secret(body.decode("utf-8", "replace")):
+        _record_post_outcome(status=None, error="secret-refused", reason=None)
         return None
     try:
         req = urllib.request.Request(
@@ -4289,13 +4451,23 @@ def post_report_json(payload: dict, *, url: str | None = None, timeout: float = 
             },
         )
         with urllib.request.urlopen(req, timeout=timeout) as resp:
-            return int(getattr(resp, "status", 0) or 0)
+            code = int(getattr(resp, "status", 0) or 0)
+            _record_post_outcome(status=code, error=None, reason=None)
+            return code
     except urllib.error.HTTPError as exc:
         try:
-            return int(exc.code)
+            code = int(exc.code)
         except Exception:
-            return None
-    except (urllib.error.URLError, TimeoutError, OSError, ValueError):
+            code = None
+        _record_post_outcome(status=code, error="HTTPError", reason=None)
+        return code
+    except urllib.error.URLError as exc:
+        why = getattr(exc, "reason", None)
+        text = f"{type(why).__name__}:{why}" if why is not None else "URLError"
+        _record_post_outcome(status=None, error="URLError", reason=text[:180])
+        return None
+    except (TimeoutError, OSError, ValueError) as exc:
+        _record_post_outcome(status=None, error=type(exc).__name__, reason=str(exc)[:180])
         return None
 
 
@@ -5122,6 +5294,201 @@ def enrich_peer_with_opencode_pcent(
     return enriched
 
 
+_XAI_WEEKLY_BILLING_MARK = "billing: fetched credits config"
+
+
+def xai_weekly_log_path() -> Path | None:
+    """Local Grok CLI log. BOB_WEEKLY_LOG, else the user unified.jsonl. No key files."""
+    raw = (os.environ.get("BOB_WEEKLY_LOG") or "").strip()
+    if raw:
+        return Path(raw)
+    exe = (os.environ.get("BOB_GROK_EXE") or "").lower()
+    if "fake-grok" in exe:
+        return None
+    home = (os.environ.get("USERPROFILE") or os.environ.get("HOME") or "").strip()
+    if not home:
+        return None
+    return Path(home) / ".grok" / "logs" / "unified.jsonl"
+
+
+def _parse_xai_period_end(raw: object) -> datetime | None:
+    if raw in (None, ""):
+        return None
+    text = str(raw).strip()
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def parse_xai_weekly_log_text(text: str, *, now: datetime | None = None) -> dict | None:
+    """Last Grok CLI weekly billing event.
+
+    ``creditUsagePercent`` is used percent. ``remaining_pct`` is ``100 - used``.
+    A 1.0.41 event with no percent is unknown: remaining stays null, never 0.
+    A period that has already ended is unknown, not last week's percent.
+    This does not read the grok.com dashboard and does not invent a dashboard figure.
+    """
+    if not text:
+        return None
+    raw_line = None
+    for line in text.splitlines():
+        if _XAI_WEEKLY_BILLING_MARK in line:
+            raw_line = line.strip()
+    if not raw_line:
+        return None
+    try:
+        doc = json.loads(raw_line)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(doc, dict):
+        return None
+    cfg = doc.get("config")
+    ctx = doc.get("ctx")
+    if not isinstance(cfg, dict) and isinstance(ctx, dict):
+        cfg = ctx.get("config")
+    if not isinstance(cfg, dict):
+        return None
+    period = cfg.get("currentPeriod") if isinstance(cfg.get("currentPeriod"), dict) else {}
+    ptype = str(period.get("type") or "")
+    if "WEEKLY" not in ptype:
+        return None
+    period_end = period.get("end")
+    fetched_at = doc.get("ts")
+    used_raw = cfg.get("creditUsagePercent")
+    reading: dict = {
+        "remaining_pct": None,
+        "used_pct": None,
+        "period_end": str(period_end) if period_end not in (None, "") else None,
+        "fetched_at": str(fetched_at) if fetched_at not in (None, "") else None,
+        "source": None,
+        "weekly_known": False,
+        "provider": "xai",
+        "account": None,
+    }
+    if used_raw not in (None, ""):
+        try:
+            used = float(used_raw)
+        except (TypeError, ValueError):
+            used = None
+        if used is None or used < 0 or used > 100:
+            return None
+        used_pct = int(round(used))
+        remaining = int(round(100.0 - used))
+        if remaining < 0:
+            remaining = 0
+        if remaining > 100:
+            remaining = 100
+        reading.update(
+            {
+                "remaining_pct": remaining,
+                "used_pct": used_pct,
+                "source": "unified.jsonl:billing:creditUsagePercent",
+                "weekly_known": True,
+            }
+        )
+    else:
+        has_new = any(k in cfg for k in ("prepaidBalance", "onDemandUsed", "onDemandCap", "isUnifiedBillingUser"))
+        if not has_new and not reading["period_end"]:
+            return None
+        reading["source"] = "unified.jsonl:billing:grok-1.0.41-period"
+        reading["weekly_known"] = False
+    pe = _parse_xai_period_end(reading.get("period_end"))
+    clock = now or datetime.now(timezone.utc)
+    if clock.tzinfo is None:
+        clock = clock.replace(tzinfo=timezone.utc)
+    if pe is not None and pe <= clock.astimezone(timezone.utc):
+        reading["remaining_pct"] = None
+        reading["used_pct"] = None
+        reading["weekly_known"] = False
+        reading["stale"] = True
+    return reading
+
+
+def read_local_xai_weekly(*, now: datetime | None = None) -> dict | None:
+    path = xai_weekly_log_path()
+    if path is None or not path.is_file():
+        return None
+    try:
+        # Tail only: the billing line is at the end of a long CLI log.
+        size = path.stat().st_size
+        with path.open("rb") as handle:
+            handle.seek(max(0, size - 1024 * 1024))
+            blob = handle.read().decode("utf-8", errors="replace")
+    except OSError:
+        return None
+    return parse_xai_weekly_log_text(blob, now=now)
+
+
+def enrich_peer_with_xai_weekly(peer: dict, reading: dict | None) -> dict:
+    """Put a measured xAI weekly into the peer as remaining percent.
+
+    ``pcent.grok-build`` and ``weekly`` are remaining, never the used percent
+    and never Cursor Sand (``grok-chat``). Unknown does not write 0.
+    """
+    if not isinstance(peer, dict) or not isinstance(reading, dict):
+        return peer
+    enriched = dict(peer)
+    pcent = dict(enriched.get("pcent")) if isinstance(enriched.get("pcent"), dict) else {}
+    # This meter must not be stored as Cursor Sand.
+    if reading.get("weekly_known") and reading.get("remaining_pct") is not None:
+        try:
+            remaining = int(reading["remaining_pct"])
+        except (TypeError, ValueError):
+            remaining = None
+        if remaining is None or not 0 <= remaining <= 100:
+            return enriched
+        enriched["weekly"] = remaining
+        enriched["weekly_known"] = True
+        pcent["grok-build"] = remaining
+        if reading.get("period_end"):
+            enriched["period_end"] = str(reading["period_end"])
+        if reading.get("used_pct") is not None:
+            enriched["xai_weekly_used_pct"] = int(reading["used_pct"])
+        else:
+            enriched["xai_weekly_used_pct"] = None
+        enriched["xai_weekly_source"] = str(reading.get("source") or "")
+        enriched["xai_weekly_fetched_at"] = (
+            str(reading["fetched_at"]) if reading.get("fetched_at") else None
+        )
+        enriched["xai_weekly"] = {
+            "provider": "xai",
+            "direction": "remaining",
+            "remaining_pct": remaining,
+            "used_pct": enriched.get("xai_weekly_used_pct"),
+            "source": enriched.get("xai_weekly_source"),
+            "fetched_at": enriched.get("xai_weekly_fetched_at"),
+            "period_end": enriched.get("period_end"),
+            "account": None,
+        }
+    else:
+        enriched["weekly"] = None
+        enriched["weekly_known"] = False
+        pcent.pop("grok-build", None)
+        enriched["xai_weekly_used_pct"] = None
+        enriched["xai_weekly_source"] = str(reading.get("source") or "") or None
+        enriched["xai_weekly_fetched_at"] = (
+            str(reading["fetched_at"]) if reading.get("fetched_at") else None
+        )
+        enriched["xai_weekly"] = {
+            "provider": "xai",
+            "direction": "remaining",
+            "remaining_pct": None,
+            "used_pct": None,
+            "source": enriched.get("xai_weekly_source"),
+            "fetched_at": enriched.get("xai_weekly_fetched_at"),
+            "period_end": reading.get("period_end"),
+            "account": None,
+        }
+    enriched["pcent"] = pcent
+    return enriched
+
+
 def publish_local_peer_fuel(
     home: Path,
     machine_id: str,
@@ -5140,8 +5507,27 @@ def publish_local_peer_fuel(
 
     Returns HTTP status on successful 2xx POST, None when skipped or failed.
     """
+    global _last_fuel_publish_diag
     mid = normalize_machine_id(machine_id)
+    home_role = classify_publish_home(Path(home))
+    _last_fuel_publish_diag = {
+        "home_role": home_role,
+        "machine": mid or "",
+        "http_status": None,
+        "ack": False,
+        "error": None,
+        "reason": None,
+        "pcent_keys": [],
+        "payload_keys": [],
+        "skipped": None,
+    }
+    if home_role == "legacy-admin-not-active":
+        # Do not post or rewrite the Administrator legacy cache. It is not the
+        # LocalSystem service home, and this path must not be cleared.
+        _last_fuel_publish_diag["skipped"] = "legacy-admin-home-not-service"
+        return None
     if not mid:
+        _last_fuel_publish_diag["skipped"] = "no-machine"
         return None
     peer = bobstat.read_peer(home, mid)
     if not peer:
@@ -5151,6 +5537,14 @@ def publish_local_peer_fuel(
         bobstat.refresh_peer_cursor_remaining(home, mid)
         peer = bobstat.read_peer(home, mid) or peer
     except OSError:
+        pass
+    # Service pool monitor: local xAI weekly remaining, before fingerprint/POST.
+    # Does not call the network and does not copy credentials.
+    try:
+        xai = read_local_xai_weekly()
+        if xai:
+            peer = enrich_peer_with_xai_weekly(peer, xai)
+    except Exception:
         pass
     # FR #6146 / #6147: enrich with local OpenCode pcent + windows before fingerprint/POST.
     try:
@@ -5163,7 +5557,11 @@ def publish_local_peer_fuel(
         pass
     payload = build_peer_fuel_merge_payload(peer, mid)
     if not payload:
+        _last_fuel_publish_diag["skipped"] = "no-payload"
         return None
+    pcent = payload.get("pcent") if isinstance(payload.get("pcent"), dict) else {}
+    _last_fuel_publish_diag["pcent_keys"] = sorted(str(k) for k in pcent)
+    _last_fuel_publish_diag["payload_keys"] = sorted(str(k) for k in payload)
     fp = peer_fuel_fingerprint(peer)
     state_path = digest_fuel_post_state_path(home)
     posted: dict = {}
@@ -5191,8 +5589,25 @@ def publish_local_peer_fuel(
         else:
             heartbeat_due = (ts_now - last_at) >= heartbeat_s
     if not force and last_fp == fp and not heartbeat_due:
+        _last_fuel_publish_diag["skipped"] = "fingerprint-unchanged"
         return None
     code = post_report_json(payload, url=url)
+    _last_fuel_publish_diag.update(
+        {
+            "http_status": _last_post_outcome.get("http_status"),
+            "ack": bool(_last_post_outcome.get("ack")),
+            "error": _last_post_outcome.get("error"),
+            "reason": _last_post_outcome.get("reason"),
+        }
+    )
+    if home_role != "legacy-admin-not-active":
+        try:
+            diag_path = Path(home) / "digest-fuel-publish-diag.json"
+            diag_path.write_text(
+                json.dumps(_last_fuel_publish_diag, indent=2) + "\n", encoding="utf-8"
+            )
+        except OSError:
+            pass
     if code is not None and 200 <= int(code) < 300:
         posted[mid] = fp
         posted[at_key] = ts_now

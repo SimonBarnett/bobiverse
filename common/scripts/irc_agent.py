@@ -2768,10 +2768,15 @@ class Client:
         try:
             code = bobreport.publish_local_peer_fuel(self.home, mid)
         except Exception as exc:  # noqa: BLE001 — never break outbox on fuel publish
-            info(f"INFO digest-fuel publish skip: {exc}")
+            info(f"INFO digest-fuel publish skip: {type(exc).__name__}")
             return
-        if code is not None:
-            info(f"INFO digest-fuel webhook POST {code} machine={mid}")
+        # Ack is a field. A POST word in this line is not by itself an HTTP success,
+        # and a URLError is not proof the digest is missing.
+        info(
+            "INFO digest-fuel "
+            + bobreport.format_fuel_publish_diag(bobreport.last_fuel_publish_diag())
+            + f" code={code}"
+        )
 
     def _maybe_publish_grok_account(self) -> None:
         """FR #6143: fleet bob-ear POSTs grok_account label-only merge (no secrets)."""

@@ -7,7 +7,11 @@ import sys
 import time
 from pathlib import Path
 
+import pytest
+
 import opencode_fuel as of
+
+REPO = Path(__file__).resolve().parents[2]
 
 
 # Captured sample of real ``opencode stats --models`` output, including
@@ -917,32 +921,330 @@ def test_usage_limits_schema_paints_used_percent_not_a_balance():
     assert of.provider_windows_from_usage_limits({"workspace": {}, "go": None, "budgets": []}) is None
 
 
-def test_fetch_usage_limits_uses_published_route(monkeypatch):
-    captured = {}
+def test_usage_base_accepts_literal_loopback_only():
+    assert (
+        of.usage_limits_request_url("http://127.0.0.1:4096")
+        == "http://127.0.0.1:4096/api/experimental/usage/limits"
+    )
+    assert (
+        of.usage_limits_request_url("https://127.0.0.1:4096/")
+        == "https://127.0.0.1:4096/api/experimental/usage/limits"
+    )
+    assert (
+        of.usage_limits_request_url("http://[::1]:4096")
+        == "http://[::1]:4096/api/experimental/usage/limits"
+    )
+    assert (
+        of.usage_limits_request_url("http://127.0.0.2:4096")
+        == "http://127.0.0.2:4096/api/experimental/usage/limits"
+    )
+    rejected = [
+        "",
+        "127.0.0.1:4096",
+        "http://",
+        "http://[::1",
+        "http://::1:4096",
+        "ftp://127.0.0.1:4096",
+        "file:///etc/passwd",
+        "http://localhost:4096",
+        "http://example.com:4096",
+        "http://8.8.8.8:4096",
+        "http://10.0.0.1:4096",
+        "http://0.0.0.0:4096",
+        "http://[2001:db8::1]:4096",
+        "http://[::]:4096",
+        "http://opencode:secret@127.0.0.1:4096",
+        "http://opencode@127.0.0.1:4096",
+        "http://127.0.0.1:4096/?q=1",
+        "http://127.0.0.1:4096/#frag",
+        "http://127.0.0.1:4096/api/experimental/usage/limits",
+        "http://127.0.0.1:0",
+        "http://127.0.0.1:65536",
+        "http://127.0.0.1:abc",
+        "http://127.0.0.1:4096:80",
+    ]
+    for raw in rejected:
+        with pytest.raises(of.UsageLimitsURLError):
+            of.usage_limits_request_url(raw)
 
-    class Resp:
-        def read(self):
-            return b'{"workspace":{"id":"ws"},"go":null,"budgets":[]}'
 
-        def __enter__(self):
-            return self
+def test_fetch_rejects_nonloopback_without_a_connection():
+    off = of.fetch_usage_limits("http://example.com:4096", "secret-not-logged")
+    embedded = of.fetch_usage_limits("http://opencode:secret@127.0.0.1:4096", "secret-not-logged")
+    assert off["kind"] == "unavailable" and off["doc"] is None
+    assert embedded["kind"] == "unavailable" and embedded["doc"] is None
 
-        def __exit__(self, *a):
-            return False
 
-    def fake_urlopen(req, timeout=0):
-        captured["url"] = req.full_url
-        captured["auth"] = req.get_header("Authorization")
-        captured["timeout"] = timeout
-        return Resp()
+def _loopback_limits_server(status, body=b"", location=None, seen=None, content_type=None):
+    import threading
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
-    doc = of.fetch_usage_limits("http://127.0.0.1:4096", "secret-not-logged")
-    assert doc["go"] is None
-    assert captured["url"] == "http://127.0.0.1:4096/api/experimental/usage/limits"
-    assert captured["auth"].startswith("Basic ")
-    assert "secret-not-logged" not in captured["auth"]
-    assert captured["timeout"] == 5.0
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            if seen is not None:
+                seen.setdefault("hits", []).append(
+                    {"path": self.path, "auth": self.headers.get("Authorization")}
+                )
+            self.send_response(status)
+            if location:
+                self.send_header("Location", location)
+            if body:
+                self.send_header("Content-Type", content_type or "application/json")
+                self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            if body:
+                self.wfile.write(body)
+
+        def log_message(self, fmt, *args):
+            return
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    return server
+
+
+def test_fetch_usage_limits_uses_published_route_and_server_username(monkeypatch):
+    import base64
+
+    body = b'{"workspace":{"id":"ws"},"go":null,"budgets":[]}'
+    seen = {}
+    server = _loopback_limits_server(200, body, seen=seen)
+    port = server.server_address[1]
+    monkeypatch.setenv("http_proxy", "http://192.0.2.1:9")
+    monkeypatch.setenv("https_proxy", "http://192.0.2.1:9")
+    try:
+        read = of.fetch_usage_limits(
+            f"http://127.0.0.1:{port}",
+            "secret-not-logged",
+            username="tray",
+            timeout=2,
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+    assert read["kind"] == "unsigned"
+    assert read["doc"]["go"] is None
+    assert seen["hits"][0]["path"] == "/api/experimental/usage/limits"
+    auth = seen["hits"][0]["auth"]
+    assert auth.startswith("Basic ")
+    assert "secret-not-logged" not in auth
+    user, password = base64.b64decode(auth.split(" ", 1)[1]).decode("utf-8").split(":", 1)
+    assert user == "tray"
+    assert password == "secret-not-logged"
+
+
+def test_fetch_defaults_basic_username_to_opencode():
+    import base64
+
+    body = b'{"go":null}'
+    seen = {}
+    server = _loopback_limits_server(200, body, seen=seen)
+    port = server.server_address[1]
+    try:
+        of.fetch_usage_limits(f"http://127.0.0.1:{port}", "pw", timeout=2)
+    finally:
+        server.shutdown()
+        server.server_close()
+    auth = seen["hits"][0]["auth"]
+    user, _password = base64.b64decode(auth.split(" ", 1)[1]).decode("utf-8").split(":", 1)
+    assert user == "opencode"
+
+
+def test_fetch_does_not_follow_auth_carrying_redirect():
+    seen = {}
+    server = _loopback_limits_server(
+        302,
+        location="http://example.com/steal",
+        seen=seen,
+    )
+    port = server.server_address[1]
+    try:
+        read = of.fetch_usage_limits(
+            f"http://127.0.0.1:{port}",
+            "secret-not-logged",
+            username="opencode",
+            timeout=2,
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+    assert read["kind"] == "unavailable"
+    assert read["doc"] is None
+    assert len(seen["hits"]) == 1
+    assert seen["hits"][0]["path"] == "/api/experimental/usage/limits"
+    assert seen["hits"][0]["auth"].startswith("Basic ")
+
+
+def test_fetch_does_not_follow_same_host_redirect():
+    seen = {}
+    server = _loopback_limits_server(302, location="/steal", seen=seen)
+    port = server.server_address[1]
+    try:
+        read = of.fetch_usage_limits(f"http://127.0.0.1:{port}", "pw", timeout=2)
+    finally:
+        server.shutdown()
+        server.server_close()
+    assert read["kind"] == "unavailable"
+    assert read["doc"] is None
+    assert [hit["path"] for hit in seen["hits"]] == ["/api/experimental/usage/limits"]
+
+
+def _provider_previous():
+    return {
+        "rolling": {"status": "known", "used_pct": 0, "remaining_pct": None, "source": "provider"},
+        "week": {"status": "known", "used_pct": 10, "remaining_pct": None, "source": "provider"},
+        "month": {"status": "known", "used_pct": 40, "remaining_pct": None, "source": "provider"},
+    }
+
+
+def _stats_estimate_windows():
+    return {
+        "rolling": {"status": "unstarted", "used_pct": 0, "remaining_pct": None},
+        "week": {"status": "known", "used_pct": 72, "remaining_pct": 28},
+        "month": {"status": "known", "used_pct": 36, "remaining_pct": 64},
+    }
+
+
+def test_provider_read_failure_is_unknown_not_stats_estimate():
+    out = of.resolve_provider_windows(None, failed=True, previous=_stats_estimate_windows())
+    for wid in ("rolling", "week", "month"):
+        assert out[wid]["source"] == "provider"
+        assert out[wid]["status"] == "unknown"
+        assert out[wid]["used_pct"] is None
+        assert out[wid]["remaining_pct"] is None
+    assert "28" not in of.format_go_window_line("week", out["week"])
+    assert "rem" not in of.format_go_window_line("week", out["week"])
+
+
+def test_provider_read_failure_keeps_stale_last_provider_not_stats():
+    out = of.resolve_provider_windows(None, failed=True, previous=_provider_previous())
+    assert out["week"]["status"] == "stale"
+    assert out["week"]["source"] == "provider"
+    assert out["week"]["used_pct"] is None
+    assert out["week"]["remaining_pct"] is None
+    line = of.format_go_window_line("week", out["week"])
+    assert line == "go weekly  n/a  [stale]"
+    assert "10%" not in line
+    assert "rem" not in line
+
+
+def test_provider_go_null_is_unknown_not_stale_or_stats():
+    doc = {"workspace": {"id": "ws"}, "go": None, "budgets": []}
+    out = of.resolve_provider_windows(doc, failed=False, previous=_provider_previous())
+    assert out["rolling"]["status"] == "unknown"
+    assert out["week"]["status"] == "unknown"
+    assert out["month"]["status"] == "unknown"
+    assert out["week"]["source"] == "provider"
+    assert out["week"]["used_pct"] is None
+    line = of.format_go_window_line("week", out["week"])
+    assert line == "go weekly  n/a"
+    assert "[stale]" not in line
+    assert "10%" not in line
+
+
+def test_absent_provider_window_stays_unknown():
+    now = 1_700_000_000_000
+    doc = {
+        "go": {
+            "rolling": {"percent": 0, "limited": False, "resetsAt": now + 3 * 3600 * 1000},
+            "monthly": {"percent": 40, "limited": False, "resetsAt": now + 2 * 24 * 3600 * 1000},
+        }
+    }
+    out = of.resolve_provider_windows(doc, failed=False, previous=_provider_previous(), now_ms=now)
+    assert out["week"]["status"] == "unknown"
+    assert out["week"]["source"] == "provider"
+    assert out["week"]["used_pct"] is None
+    rolling = of.format_go_window_line("rolling", out["rolling"])
+    assert rolling == "go rolling  0% used  reset 3h 0m"
+    assert "Starts with your next request" not in rolling
+    assert "Starts on first use" not in rolling
+    assert out["month"]["used_pct"] == 40
+    assert out["month"]["remaining_pct"] is None
+    paint = of.format_opencode_paint_lines(None, out)
+    assert paint["windows"]["rolling"]["remaining_pct"] is None
+    assert "rem est" not in "\n".join(paint["window_lines"])
+    bars = {bar["id"]: bar for bar in of.opencode_pool_bars(None, out)}
+    assert bars["rolling"]["known"] is True
+    assert bars["rolling"]["pct"] == 0
+    assert bars["week"]["known"] is False
+    assert bars["month"]["pct"] == 40
+
+
+def test_provider_failure_leaves_local_cost_lines_separate():
+    parsed = of.parse_opencode_stats_text(_ADMIN_STATS_7D)
+    fuel = of.fuel_from_windowed_stats({"week": parsed})
+    windows = of.resolve_provider_windows(None, failed=True, previous=None)
+    costs = of.format_local_model_lines(fuel["local_costs"])
+    assert costs[0] == "kimi-k2.7-code  7d local $13.85"
+    assert all(windows[wid]["source"] == "provider" for wid in ("rolling", "week", "month"))
+    assert all(windows[wid]["remaining_pct"] is None for wid in windows)
+    assert fuel["local_costs"]["glm-5.3"] == 1.9668
+    joined = "\n".join(of.format_go_window_line(wid, windows[wid]) for wid in windows)
+    assert "13.85" not in joined
+    assert "rem est" not in joined
+
+
+def test_http_200_html_is_non_json_and_not_a_quota():
+    html = "<!DOCTYPE html><html><body>72% used weekly</body></html>"
+    read = of.interpret_usage_limits_response(200, "text/html; charset=utf-8", html)
+    assert read == {"kind": "non_json", "doc": None}
+    windows = of.windows_from_usage_read(read, previous=_stats_estimate_windows())
+    assert windows["week"]["status"] == "unknown"
+    assert windows["week"]["source"] == "provider"
+    assert windows["week"]["used_pct"] is None
+    assert windows["week"]["remaining_pct"] is None
+    line = of.format_go_window_line("week", windows["week"])
+    assert line == "go weekly  n/a"
+    assert "72" not in line
+    assert "rem" not in line
+    labeled = of.interpret_usage_limits_response(
+        200, "text/html", '{"go":{"rolling":{"percent":72,"limited":false,"resetsAt":1}}}'
+    )
+    assert labeled["kind"] == "non_json"
+    assert labeled["doc"] is None
+
+
+def test_http_200_html_from_loopback_does_not_become_go_null(monkeypatch):
+    html = b"<!DOCTYPE html><html><body>OpenCode</body></html>"
+    seen = {}
+    server = _loopback_limits_server(
+        200, html, seen=seen, content_type="text/html; charset=utf-8"
+    )
+    port = server.server_address[1]
+    monkeypatch.setenv("http_proxy", "http://192.0.2.1:9")
+    try:
+        read = of.fetch_usage_limits(f"http://127.0.0.1:{port}", "pw", username="opencode", timeout=2)
+    finally:
+        server.shutdown()
+        server.server_close()
+    assert read["kind"] == "non_json"
+    assert read["doc"] is None
+    assert seen["hits"][0]["path"] == "/api/experimental/usage/limits"
+    windows = of.windows_from_usage_read(read, previous=_provider_previous())
+    assert windows["week"]["status"] == "stale"
+    assert windows["week"]["used_pct"] is None
+    assert "10%" not in of.format_go_window_line("week", windows["week"])
+
+
+def test_json_null_is_unsigned_not_html_failure():
+    read = of.interpret_usage_limits_response(200, "application/json", "null")
+    assert read["kind"] == "unsigned"
+    windows = of.windows_from_usage_read(read, previous=_provider_previous())
+    assert windows["month"]["status"] == "unknown"
+    assert windows["month"]["used_pct"] is None
+    assert "[stale]" not in of.format_go_window_line("month", windows["month"])
+
+
+def test_fuel_helper_uses_server_auth_and_replaces_stats_windows():
+    text = (REPO / "bob" / "tray" / "tools" / "Get-BobOpencodeFuel.ps1").read_text(encoding="utf-8")
+    assert "OPENCODE_SERVER_PASSWORD" in text
+    assert "OPENCODE_SERVER_USERNAME" in text
+    assert "OPENCODE_PASSWORD" not in text.replace("OPENCODE_SERVER_PASSWORD", "")
+    assert "windows_from_usage_read" in text
+    assert "$out.go = $null" in text
+    assert "$out.provider = 'usage-limits'" in text
+    assert "$out.provider_read" in text
 
 
 def test_system_empty_stats_are_not_user_unstarted():
