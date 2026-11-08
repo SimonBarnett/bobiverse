@@ -99,6 +99,9 @@ def test_generated_wrapper_does_not_grant_external_directory(tmp_path: Path):
     assert "$argList = @('run', '-m', $model, $line)" in script
     assert "'run', '--dir', $ocDir" in script
     assert "blocked worktree_absent" in script
+    assert "Write-OpencodeJobNack" in script
+    assert "job-context-malformed" in script
+    assert "answer external_directory" not in script
     assert "opencode --auto is forbidden" in script
     assert "'--interactive'" not in script
     assert "Get-Content" not in script
@@ -113,6 +116,123 @@ def test_worker_prompt_is_windows_native_and_blocks_credential_hunt():
     assert "--auto" in text
     assert "Do not pass --auto" in text
     assert "BOB_HOME may be empty" in text
+    assert "no evidence that an interactive Allow" in text
+
+
+def test_unset_env_uses_data_drive_default_and_refuses_a_drive_root():
+    disks = [
+        {"Root": "C:\\", "DriveType": 3},
+        {"Root": "D:\\", "DriveType": 3},
+        {"Root": "E:\\", "DriveType": 2},
+    ]
+    base = c.job_worktree_base({}, disks=disks, system_drive="C:")
+    assert base.replace("/", "\\").rstrip("\\").lower() == "d:\\ai\\worktrees"
+    only_sys = c.job_worktree_base(
+        {}, disks=[{"Root": "C:\\", "DriveType": 3}], system_drive="C:"
+    )
+    assert only_sys.replace("/", "\\").rstrip("\\").lower() == "c:\\ai\\worktrees"
+    other = c.job_worktree_base(
+        {},
+        disks=[{"Root": "D:\\", "DriveType": 2}, {"Root": "E:\\", "DriveType": 3}],
+        system_drive="C:",
+    )
+    assert other.replace("/", "\\").rstrip("\\").lower() == "e:\\ai\\worktrees"
+    with pytest.raises(c.WorktreeBaseError):
+        c.job_worktree_base({"BOB_JOB_WORKTREE_BASE": "D:\\"}, disks=disks)
+    with pytest.raises(c.WorktreeBaseError):
+        c.job_worktree_base({"BOB_BRIDGE_HOME": "C:/"}, disks=disks)
+    line = "FROM jeeves #marchhare n: FR bobiverse#6147 https://x"
+    recorded = c.project_dir_for_assign(line, {}, disks=disks, system_drive="C:")
+    norm = recorded.replace("/", "\\").lower()
+    assert norm == "d:\\ai\\worktrees\\bobiverse\\fr-6147"
+
+
+def test_malformed_assign_nacks_and_writes_nothing(tmp_path: Path):
+    env = {"BOB_BRIDGE_HOME": str(tmp_path / "bridge")}
+    line = "FROM jeeves #marchhare n: FR ..#1 https://x"
+    decision = c.classify_opencode_job(line, env)
+    assert decision["state"] == "malformed"
+    assert decision["nack"] == "NACK FR ..#1 job-context-malformed (FR #6240)"
+    assert c.write_project_dir(tmp_path, line, env) == ""
+    assert not (tmp_path / "opencode-project-dir.txt").exists()
+    slash = "FROM jeeves #marchhare n: FR ../bobiverse#2 https://x"
+    assert c.classify_opencode_job(slash, env)["state"] == "malformed"
+    secret = "FROM jeeves #marchhare n: FR bobiverse#3 https://x"
+    blocked = c.classify_opencode_job(secret, {"BOB_JOB_WORKTREE_BASE": "C:/passwords"})
+    assert blocked["state"] == "forbidden"
+    assert "opencode-dir-forbidden" in blocked["nack"]
+    assert c.write_project_dir(tmp_path, secret, {"BOB_JOB_WORKTREE_BASE": "C:/passwords"}) == ""
+
+
+def test_missing_dir_nacks_before_any_record_and_existing_dir_replaces_it(tmp_path: Path):
+    env = {"BOB_BRIDGE_HOME": str(tmp_path / "bridge")}
+    first = "FROM jeeves #marchhare n: FR SimonBarnett/bobiverse#6147 https://x"
+    missing = c.classify_opencode_job(first, env)
+    assert missing["state"] == "absent"
+    assert missing["nack"] == "NACK FR SimonBarnett/bobiverse#6147 worktree-absent (FR #6240)"
+    assert c.record_opencode_job(tmp_path, first, env)["nack"] == missing["nack"]
+    assert not (tmp_path / "opencode-project-dir.txt").exists()
+    path = Path(c.project_dir_for_assign(first, env))
+    path.mkdir(parents=True)
+    ready = c.record_opencode_job(tmp_path, first, env)
+    assert ready["state"] == "project" and ready["nack"] == ""
+    assert (tmp_path / "opencode-project-dir.txt").read_text(encoding="utf-8").strip() == str(path)
+    second = "FROM jeeves #marchhare n: FR SimonBarnett/bobiverse#99 https://x"
+    assert c.classify_opencode_job(second, env)["state"] == "absent"
+    assert (tmp_path / "opencode-project-dir.txt").read_text(encoding="utf-8").strip() == str(path)
+    path2 = Path(c.project_dir_for_assign(second, env))
+    path2.mkdir(parents=True)
+    moved = c.record_opencode_job(tmp_path, second, env)
+    assert moved["state"] == "project"
+    assert (tmp_path / "opencode-project-dir.txt").read_text(encoding="utf-8").strip() == str(path2)
+    args = c.opencode_run_args("opencode/beam-free", "hello", str(path2))
+    assert args[:3] == ["run", "--dir", str(path2.resolve())]
+    assert "--auto" not in args
+    assert "OPENCODE_CONFIG" not in args
+
+
+def test_relay_nacks_missing_worktree_before_ack_and_accepts_a_later_one(tmp_path: Path):
+    written: list[str] = []
+    injected: list[str] = []
+    relay = bw.Relay(log=lambda *_a, **_k: None, outbox_path=tmp_path / "outbox.txt")
+    relay.write_outbox = lambda text: written.append(text) or True
+    relay.set_target(lambda line: injected.append(line) or True)
+    env = {"BOB_BRIDGE_HOME": str(tmp_path / "bridge")}
+    relay.opencode_job_block = lambda line: c.opencode_job_context_nack(line, env)
+    text = "marchhare-22088: FR SimonBarnett/bobiverse#6147 https://x"
+    status = relay.deliver("jeeves", "#marchhare", text)
+    assert status == "opencode_job_blocked"
+    assert injected == []
+    assert any(item.startswith("NACK FR SimonBarnett/bobiverse#6147 worktree-absent") for item in written)
+    assert not any(item.startswith("ACK ") for item in written)
+    status_again = relay.deliver("jeeves", "#marchhare", text)
+    assert status_again == "opencode_job_blocked"
+    assert not any(item.startswith("ACK ") for item in written)
+    path = Path(c.project_dir_for_assign("FR SimonBarnett/bobiverse#6147 https://x", env))
+    path.mkdir(parents=True)
+    written.clear()
+    status_ok = relay.deliver("jeeves", "#marchhare", text)
+    assert status_ok == "injected"
+    assert injected
+    assert any(item.startswith("ACK FR SimonBarnett/bobiverse#6147") for item in written)
+    assert not any("worktree-absent" in item for item in written)
+
+
+def test_held_missing_worktree_is_nacked_instead_of_injected(tmp_path: Path):
+    written: list[str] = []
+    injected: list[str] = []
+    relay = bw.Relay(log=lambda *_a, **_k: None)
+    relay.write_outbox = lambda text: written.append(text) or True
+    relay.set_target(lambda line: injected.append(line) or True)
+    env = {"BOB_BRIDGE_HOME": str(tmp_path / "bridge")}
+    relay.opencode_job_block = lambda line: c.opencode_job_context_nack(line, env)
+    relay._pending.append(
+        "FROM jeeves #marchhare marchhare-22088: FR SimonBarnett/bobiverse#7 https://x"
+    )
+    assert relay.release_held_assigns() == 0
+    assert injected == []
+    assert any("worktree-absent" in item for item in written)
+    assert not any(item.startswith("ACK ") for item in written)
 
 
 def test_start_agent_refuses_opencode_when_gh_auth_is_missing(monkeypatch):
