@@ -4,6 +4,9 @@ name: build-bob-ear
 
 on:
   workflow_dispatch:
+  pull_request:
+    paths:
+      - .github/workflows/build-bob-ear.yml
 
 permissions:
   contents: read
