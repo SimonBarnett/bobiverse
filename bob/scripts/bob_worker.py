@@ -153,9 +153,29 @@ except Exception:  # pragma: no cover
     opencode_fuel = None  # type: ignore
 
 try:
-    from opencode_seat_contract import probe_gh_auth, write_project_dir  # noqa: E402
+    from opencode_seat_contract import (  # noqa: E402
+        console_text,
+        message_job_keys,
+        opencode_job_context_nack,
+        prepare_opencode_wire,
+        probe_gh_auth,
+    )
 except ImportError:  # package import (bob.scripts.bob_worker)
-    from bob.scripts.opencode_seat_contract import probe_gh_auth, write_project_dir  # type: ignore  # noqa: E402
+    from bob.scripts.opencode_seat_contract import (  # type: ignore  # noqa: E402
+        console_text,
+        message_job_keys,
+        opencode_job_context_nack,
+        prepare_opencode_wire,
+        probe_gh_auth,
+    )
+
+
+class JobContextRefused(Exception):
+    """FR #6240: the assign was NACKed before the model saw it. Do not hold it."""
+
+    def __init__(self, nack: str):
+        super().__init__(nack)
+        self.nack = nack
 
 DEFAULT_HOST = "irc.ntsa.uk"
 DEFAULT_PORT = 6697
@@ -1339,7 +1359,8 @@ def worker_prompt(worker_dir: str, home: str, machine: str, nick: str) -> str:
         f"If gh says to run gh auth login, stop and report that. Do not search for tokens, do not read hosts.yml, and do not look in other profiles or password folders. "
         f"Headless opencode run auto-rejects external_directory and has no --interactive flag. Do not pass --auto. "
         f"Do not write an external_directory allow. A denial stays a denial. "
-        f"The worker records the assigned job worktree. If that folder is missing, this run is blocked, not finished. "
+        f"There is no evidence that an interactive Allow is honored by a later opencode run. "
+        f"The program NACKs a missing or refused job worktree before you see the assign. That is not DONE. "
         f"BOB_HOME may be empty. ACK/DONE go to $env:BOB_OUTBOX only. "
         f"Never print or store secrets."
     )
@@ -1595,8 +1616,8 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
         helper_path = _resolve_opencode_fuel_helper_path(cwd=cwd, install_root=install_root)
         # FR #6157: each opencode run emits turn_started / turn_ended into opencode-turns.jsonl
         # so BoredEmitter gets harvest-hold / done-miss / startup-ready parity with Grok.
-        # FR #6240: no external_directory allow. Job --dir comes from opencode-project-dir.txt.
-        job_file = str(Path(run_dir) / "opencode-project-dir.txt")
+        # FR #6240: no external_directory allow. Each injected assign carries its own
+        # @@BOBJOB1 frame. The standing prompt is not a job and is not scanned.
         files[lfile] = "\n".join([
             r"$ErrorActionPreference = 'Stop'",
             r"if (-not $env:BOB_OPENCODE_MODEL) { throw 'BOB_OPENCODE_MODEL is required (no exhausted glm-5.3 fallback)' }",
@@ -1616,23 +1637,44 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             r"    $entry = @{ type = $Type; ts = (Get-Date -Format o); turn_number = $TurnNumber } | ConvertTo-Json -Compress",
             r"    Add-Content -LiteralPath $turnsLog -Value $entry -ErrorAction SilentlyContinue",
             r"}",
-            r"function Invoke-Opencode($line) {",
-            f"    $jobFile = '{esc(job_file)}'",
-            r"    $ocDir = ''",
-            r"    if (Test-Path -LiteralPath $jobFile) { $ocDir = ([IO.File]::ReadAllText($jobFile)).Trim() }",
+            r"function Write-OpencodeJobNack([string]$JobKey, [string]$Reason) {",
+            r"    if (-not $JobKey) { return }",
+            r"    $nack = 'NACK ' + $JobKey + ' ' + $Reason + ' (FR #6240)'",
+            r"    if ($env:BOB_OUTBOX) {",
+            r"        Add-Content -LiteralPath $env:BOB_OUTBOX -Value $nack -ErrorAction SilentlyContinue",
+            r"        $refuse = Join-Path (Split-Path -Parent $env:BOB_OUTBOX) 'opencode-job-refused.txt'",
+            r"        Add-Content -LiteralPath $refuse -Value $JobKey -ErrorAction SilentlyContinue",
+            r"    }",
+            r"    Write-Output $nack",
+            r"}",
+            r"function Invoke-OpencodeRun([string]$line, [string]$jobKey, [string]$ocDir) {",
+            r"    if ($jobKey -and -not $ocDir) {",
+            r"        Write-Output 'opencode-ready: blocked job_context_malformed. Next: the worker message had no job directory. No DONE.'",
+            r"        Write-OpencodeJobNack $jobKey 'job-context-malformed'",
+            r"        return",
+            r"    }",
             r"    if ($ocDir) {",
+            r"        try { $full = [IO.Path]::GetFullPath($ocDir) } catch { $full = $ocDir }",
+            r"        $root = [IO.Path]::GetPathRoot($full)",
+            r"        if ($root -and ($full.TrimEnd('\') -eq $root.TrimEnd('\'))) {",
+            r"            Write-Output 'opencode-ready: blocked worktree_base_refused. Next: the job directory canonicalized to a drive root. No DONE.'",
+            r"            Write-OpencodeJobNack $jobKey 'worktree-base-refused'",
+            r"            return",
+            r"        }",
             r"        $norm = $ocDir.Replace('/','\')",
-            r"        $check = $norm",
+            r"        $check = $norm + ' ' + $full.Replace('/','\')",
             r"        if (Test-Path -LiteralPath $ocDir) {",
             r"            $item = Get-Item -LiteralPath $ocDir -Force",
             r"            if ($item.Target) { foreach ($t in @($item.Target)) { $check = $check + ' ' + ([string]$t).Replace('/','\') } }",
             r"        }",
             r"        if ($check -match '(?i)(\.config\\gh|hosts\.yml|\.git-credentials|\\passwords|\.netrc)') {",
             r"            Write-Output 'opencode-ready: blocked opencode_dir_forbidden. Next: the job worktree path is a credential path. Do not point OpenCode at a credential store.'",
+            r"            Write-OpencodeJobNack $jobKey 'opencode-dir-forbidden'",
             r"            exit 4",
             r"        }",
             r"        if (-not (Test-Path -LiteralPath $ocDir -PathType Container)) {",
-            r"            Write-Output 'opencode-ready: blocked worktree_absent. Next: create the assigned job worktree (Get-BobiverseJobWorktreePath) or answer external_directory in interactive opencode (the TUI). opencode run auto-rejects that ask and has no --interactive flag. Do not pass --auto. This run is not a completed job.'",
+            r"            Write-Output 'opencode-ready: blocked worktree_absent. Next: create the assigned job worktree (Get-BobiverseJobWorktreePath). Do not pass --auto. This run is not a completed job.'",
+            r"            Write-OpencodeJobNack $jobKey 'worktree-absent'",
             r"            return",
             r"        }",
             r"        $argList = @('run', '--dir', $ocDir, '-m', $model, $line)",
@@ -1721,8 +1763,61 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             r"    if ($proc) { try { $proc.Dispose() } catch { } }",
             r"    } finally { Write-OpencodeTurnMarker 'turn_ended' $turnN }",
             r"}",
-            r"try { Invoke-Opencode $prompt } catch { [Console]::Error.WriteLine('opencode initial run failed: ' + $_) }",
-            r"while ($true) { $line = [Console]::ReadLine(); if ($null -eq $line -or $line -eq 'exit') { break }; if (-not [string]::IsNullOrWhiteSpace($line)) { try { Invoke-Opencode $line } catch { [Console]::Error.WriteLine('opencode run failed: ' + $_) } } }",
+            r"function Split-OpencodeFrame([string]$raw) {",
+            r"    $prefix = '@@BOBJOB1|'",
+            r"    if (-not $raw.StartsWith($prefix)) { return $null }",
+            r"    $rest = $raw.Substring($prefix.Length)",
+            r"    $keyEnd = $rest.IndexOf('|')",
+            r"    if ($keyEnd -lt 1) { return $null }",
+            r"    $dirEnd = $rest.IndexOf('|', $keyEnd + 1)",
+            r"    if ($dirEnd -lt 0) { return $null }",
+            r"    $key = $rest.Substring(0, $keyEnd)",
+            r"    $dir = $rest.Substring($keyEnd + 1, $dirEnd - $keyEnd - 1)",
+            r"    $line = $rest.Substring($dirEnd + 1)",
+            r"    if (-not $dir -or -not $line.StartsWith('FROM ')) { return $null }",
+            r"    if ($key -notmatch '^(?i)(FR|MRB|UAT) \S+#\d+$') { return $null }",
+            r"    return @{ key = $key; dir = $dir; line = $line }",
+            r"}",
+            r"function Get-OpencodeFromJobKeys([string]$raw) {",
+            r"    if ($raw -notmatch '^(?i)FROM\s+\S+\s+\S+\s+(.*)$') { return @() }",
+            r"    $body = $Matches[1]",
+            r"    $keys = @()",
+            r"    foreach ($m in [regex]::Matches($body, '(?i)(FR|MRB|UAT)\s+(\S+#\d+)')) {",
+            r"        $keys += ($m.Groups[1].Value.ToUpper() + ' ' + $m.Groups[2].Value)",
+            r"    }",
+            r"    return $keys",
+            r"}",
+            r"function Invoke-OpencodeInbound([string]$raw) {",
+            r"    $frame = Split-OpencodeFrame $raw",
+            r"    if ($frame) {",
+            r"        Invoke-OpencodeRun $frame.line $frame.key $frame.dir",
+            r"        return",
+            r"    }",
+            r"    if ($raw.StartsWith('@@BOBJOB1')) {",
+            r"        $key = ''",
+            r"        $tail = $raw.Substring(9).TrimStart('| ')",
+            r"        $km = [regex]::Match($tail, '^(?i)((?:FR|MRB|UAT)\s+\S+#\d+)')",
+            r"        if ($km.Success) {",
+            r"            $rawKey = $km.Groups[1].Value",
+            r"            $spaceAt = $rawKey.IndexOf(' ')",
+            r"            $key = $rawKey.Substring(0, $spaceAt).ToUpper() + $rawKey.Substring($spaceAt)",
+            r"        }",
+            r"        Write-Output 'opencode-ready: blocked job_context_malformed. Next: the console line lost its job frame. No DONE.'",
+            r"        Write-OpencodeJobNack $key 'job-context-malformed'",
+            r"        return",
+            r"    }",
+            r"    $fromKeys = @(Get-OpencodeFromJobKeys $raw)",
+            r"    if ($fromKeys.Count -ge 1) {",
+            r"        $reason = 'job-context-malformed'",
+            r"        if ($fromKeys.Count -gt 1) { $reason = 'job-context-ambiguous' }",
+            r"        foreach ($k in $fromKeys) { Write-OpencodeJobNack $k $reason }",
+            r"        Write-Output 'opencode-ready: blocked job_context_malformed. Next: a FROM assign arrived without its job frame. No DONE.'",
+            r"        return",
+            r"    }",
+            r"    Invoke-OpencodeRun $raw '' ''",
+            r"}",
+            r"try { Invoke-OpencodeRun $prompt '' '' } catch { [Console]::Error.WriteLine('opencode initial run failed: ' + $_) }",
+            r"while ($true) { $line = [Console]::ReadLine(); if ($null -eq $line -or $line -eq 'exit') { break }; if (-not [string]::IsNullOrWhiteSpace($line)) { try { Invoke-OpencodeInbound $line } catch { [Console]::Error.WriteLine('opencode run failed: ' + $_) } } }",
             r"exit 0",
         ])
         argv = ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", lfile]
@@ -2002,9 +2097,8 @@ def build_enter_records():
 
 
 def one_line(text: str, maxlen: int = 600) -> str:
-    t = re.sub(r"[\x00-\x1f\x7f]+", " ", text or "")
-    t = re.sub(r"\s+", " ", t).strip()
-    return t[:maxlen]
+    """Console inject payload. Control characters, including tab, become spaces."""
+    return console_text(text, maxlen)
 
 
 def _submit_gap_s(default: float = 0.20) -> float:
@@ -2412,10 +2506,10 @@ def inject_console(
     Ctrl+V chord has been queued and the submit gap has elapsed (best-effort) so
     operator clipboard is not permanently clobbered. pid is call-signature only.
     """
-    if os.name != "nt":
-        return False
+    # FR #6240: this is the real transport. Tabs do not survive. OpenCode job
+    # frames use pipes so the key and directory are still here after one_line.
     text = one_line(text)
-    if not text:
+    if not text or os.name != "nt":
         return False
     gap = _submit_gap_s() if submit_gap_s is None else max(0.05, float(submit_gap_s))
     k32 = ctypes.WinDLL("kernel32", use_last_error=True)
@@ -4164,6 +4258,8 @@ class Relay:
         self._overflow: list = []
         self._sent: list = []
         self._last_line = ""
+        # FR #6240: job keys NACKed after ACK. An identical resend is re-judged.
+        self._context_refused_keys: set = set()
         self._timer: Optional[threading.Timer] = None
         self.last_injected_at: Optional[float] = None
         self.injected = 0
@@ -4175,6 +4271,10 @@ class Relay:
         # FR #4180: while True (out-of-fuel hold), refuse assigns without inject; callback NACKs.
         self.refuse_assign_while: Optional[Callable[[], bool]] = None
         self.skips_hostile_assign: Optional[Callable[[str], bool]] = None  # FR #6134
+        # FR #6240: NACK text when an OpenCode assign has no safe existing worktree.
+        # Empty string accepts the assign. The callback must not write the project file;
+        # the inject path records it only for the line that is actually sent.
+        self.opencode_job_block: Optional[Callable[[str], str]] = None
         self.on_refuse_assign: Optional[Callable[[str], None]] = None
         # FR #4115: write ACK/NACK to the seat outbox (program, no agent turn).
         self.write_outbox: Optional[Callable[[str], bool]] = None
@@ -4195,6 +4295,84 @@ class Relay:
                     self._persist_last_from(line)
                     continue
                 self._do_inject(line)
+
+    def _job_context_nack(self, line: str) -> str:
+        """FR #6240: NACK text, or '' when this line may be ACK'd."""
+        fn = self.opencode_job_block
+        if not fn or not assign_job_ref(line):
+            return ""
+        try:
+            nack = fn(line)
+        except Exception:
+            key = assign_job_key(line)
+            nack = f"NACK {key} job-context-malformed (FR #6240)" if key else ""
+        return (nack or "").strip()
+
+    def _write_nacks(self, nack: str) -> None:
+        if not nack or not self.write_outbox:
+            return
+        for part in nack.splitlines():
+            text = part.strip()
+            if not text:
+                continue
+            try:
+                self.write_outbox(text)
+            except Exception:
+                pass
+
+    def _refused_path(self) -> Optional[Path]:
+        if not self.outbox_path:
+            return None
+        return Path(self.outbox_path).parent / "opencode-job-refused.txt"
+
+    def _note_context_refused(self, line: str) -> None:
+        keys = message_job_keys(line)
+        if not keys:
+            key = assign_job_key(line)
+            keys = [key] if key else []
+        with self._lock:
+            for key in keys:
+                self._context_refused_keys.add(key.lower())
+            if line and line == self._last_line:
+                self._last_line = ""
+
+    def _consume_context_refusal(self, line: str) -> bool:
+        """True when this message was NACKed for job context and may be retried."""
+        keys = message_job_keys(line)
+        if not keys:
+            key = assign_job_key(line)
+            keys = [key] if key else []
+        wanted = {key.lower() for key in keys if key}
+        if not wanted:
+            return False
+        hit = bool(wanted & self._context_refused_keys)
+        self._context_refused_keys -= wanted
+        path = self._refused_path()
+        if path and path.is_file():
+            try:
+                have = {item.strip().lower() for item in path.read_text(encoding="utf-8").splitlines() if item.strip()}
+            except OSError:
+                have = set()
+            if wanted & have:
+                hit = True
+                remain = sorted(have - wanted)
+                try:
+                    if remain:
+                        path.write_text("\n".join(remain) + "\n", encoding="utf-8")
+                    else:
+                        path.unlink()
+                except OSError:
+                    pass
+        return hit
+
+    def _refuse_job_context(self, line: str, nack: str) -> str:
+        # Do not remember this line as delivered. The same assign must be
+        # judged again after the worktree exists; a duplicate drop would
+        # swallow the chair's retry.
+        self.log("relay: NACK job context before ACK " + nack.splitlines()[0])
+        self._persist_last_from(line)
+        self._write_nacks(nack)
+        return "opencode_job_blocked"
 
     def deliver(self, nick: str, target: str, text: str) -> str:
         nq = is_nothing_queued(text)
@@ -4232,6 +4410,17 @@ class Relay:
                     except Exception:
                         pass
                 return "opencode_skips_hostile"
+        # FR #6240: one FROM message, one job. Missing context NACKs before ACK.
+        # A standing-prompt example is not a FROM message, so it is not a job.
+        if self.opencode_job_block:
+            keys = message_job_keys(line)
+            if len(keys) > 1:
+                nacks = "\n".join(f"NACK {key} job-context-ambiguous (FR #6240)" for key in keys)
+                return self._refuse_job_context(line, nacks)
+            if len(keys) == 1:
+                nack = self._job_context_nack(line)
+                if nack:
+                    return self._refuse_job_context(line, nack)
         # FR #4180: out-of-fuel hold — never inject; NACK via callback; stay quiet.
         if assign_job_ref(line):
             refuse = False
@@ -4261,7 +4450,7 @@ class Relay:
         if hold and assign_job_ref(line):
             first_held = False
             with self._lock:
-                if line == self._last_line:
+                if line == self._last_line and not self._consume_context_refusal(line):
                     return "duplicate"
                 self._last_line = line
                 pending_assigns = sum(1 for p in self._pending if assign_job_ref(p))
@@ -4283,7 +4472,7 @@ class Relay:
         do_inject = False
         ack_first = False
         with self._lock:
-            if line == self._last_line:
+            if line == self._last_line and not self._consume_context_refusal(line):
                 return "duplicate"
             self._last_line = line
             if self._inject is None:
@@ -4352,6 +4541,16 @@ class Relay:
         if fn:
             try:
                 ok = bool(fn(line))
+            except JobContextRefused as refused:
+                # ACK may already have been written. NACK releases the chair.
+                # Clear the dedup so the same text can be judged again once the
+                # directory exists. Do not hold the line.
+                nack = refused.nack
+                self.log("relay: job context refused after ACK " + (nack.splitlines()[0] if nack else ""))
+                self._note_context_refused(line)
+                self._persist_last_from(line)
+                self._write_nacks(nack)
+                return "opencode_job_blocked"
             except Exception as e:  # never let the read thread die on an inject error
                 self.log(f"relay: inject error {type(e).__name__}")
         if ok:
@@ -4399,9 +4598,51 @@ class Relay:
             self._timer = None
             items, self._overflow = self._overflow, []
             self._sent.append(self.clock())
-        if items:
-            joined = " | ".join(i[5:] if i.startswith("FROM ") else i for i in items)
-            self._do_inject("FROM (flood-coalesced %d messages) %s" % (len(items), one_line(joined, 600)))
+        if not items:
+            return
+        if self.opencode_job_block:
+            self._flush_opencode_overflow(items)
+            return
+        joined = " | ".join(i[5:] if i.startswith("FROM ") else i for i in items)
+        self._do_inject("FROM (flood-coalesced %d messages) %s" % (len(items), one_line(joined, 600)))
+
+    def _flush_opencode_overflow(self, items: list) -> None:
+        """Do not join OpenCode assigns into one line. That ACK'd only the first id.
+
+        Several job messages in one flood are each NACKed ``job-context-ambiguous``
+        with no ACK and no inject. One delayed assign is judged on its own.
+        """
+        job_lines = [line for line in items if message_job_keys(line)]
+        if len(items) > 1 and job_lines:
+            for line in job_lines:
+                nacks = "\n".join(
+                    f"NACK {key} job-context-ambiguous (FR #6240)" for key in message_job_keys(line)
+                )
+                self.log("relay: reject coalesced opencode assign " + nacks.splitlines()[0])
+                self._write_nacks(nacks)
+                self._note_context_refused(line)
+            for line in items:
+                if line not in job_lines:
+                    self._do_inject(line)
+            return
+        if len(job_lines) == 1 and len(items) == 1:
+            line = job_lines[0]
+            keys = message_job_keys(line)
+            if len(keys) != 1:
+                nacks = "\n".join(f"NACK {key} job-context-ambiguous (FR #6240)" for key in keys)
+                self._write_nacks(nacks)
+                self._note_context_refused(line)
+                return
+            nack = self._job_context_nack(line)
+            if nack:
+                self._write_nacks(nack)
+                self._note_context_refused(line)
+                return
+            self._ack_on_receipt(line)
+            self._do_inject(line)
+            return
+        joined = " | ".join(i[5:] if i.startswith("FROM ") else i for i in items)
+        self._do_inject("FROM (flood-coalesced %d messages) %s" % (len(items), one_line(joined, 600)))
 
     def hold(self, line: str) -> None:
         """Queue a line for the next agent that becomes ready (used after a hang restart)."""
@@ -4517,6 +4758,17 @@ class Relay:
                 continue
             kept.append(line)
         flush = kept
+        # FR #6240: a held assign whose worktree is gone NACKs instead of injecting.
+        runnable = []
+        for line in flush:
+            nack = self._job_context_nack(line)
+            if nack:
+                self.log("relay: NACK held assign job context " + nack.splitlines()[0])
+                self._write_nacks(nack)
+                self._note_context_refused(line)
+                continue
+            runnable.append(line)
+        flush = runnable
         if not flush:
             return 0
         first, rest = flush[0], flush[1:]
@@ -7168,6 +7420,10 @@ class Supervisor:
         # FR #4180: refuse (NACK out-of-fuel) assigns while the seat is in out-of-fuel hold.
         relay.refuse_assign_while = lambda: bool(self.bored and self.bored.out_of_fuel)
         relay.skips_hostile_assign = lambda line: opencode_skips_hostile_assign(self.kind, line)
+        # FR #6240: OpenCode-only. Grok/Cursor must keep flood coalesce + multi-key ACK.
+        relay.opencode_job_block = (
+            self._opencode_job_block if (self.kind or "").strip().lower() == "opencode" else None
+        )
         relay.on_refuse_assign = self._nack_assign_out_of_fuel
         # FR #4115: program ACK/NACK via seat outbox (ACK on receipt; NACK extra held assigns).
         if getattr(relay, "write_outbox", None) is None and self.run_dir is not None:
@@ -7307,6 +7563,14 @@ class Supervisor:
             self.relay.release_held_assigns()
         except Exception:
             pass
+
+    def _opencode_job_block(self, line: str) -> str:
+        """FR #6240: NACK before ACK when this OpenCode assign has no safe worktree."""
+        if (self.kind or "").strip().lower() != "opencode":
+            return ""
+        if not assign_job_ref(line):
+            return ""
+        return opencode_job_context_nack(line, os.environ)
 
     def _nack_assign_out_of_fuel(self, line: str) -> None:
         """FR #4180: shop NACK for an assign that arrived during the out-of-fuel hold."""
@@ -8124,29 +8388,31 @@ class Supervisor:
     def _inject_line(self, proc, line: str, *, on_failed=None, force_verify: bool = False, sync: bool | None = None) -> bool:
         if proc.poll() is not None:
             return False
-        if (self.kind or "").strip().lower() == "opencode" and self.run_dir and assign_job_ref(line):
-            try:
-                recorded = write_project_dir(self.run_dir, line, os.environ)
-                if recorded:
-                    self.log(f"opencode-ready: job worktree recorded {recorded}")
-                else:
-                    self.log(
-                        "opencode-ready: blocked worktree_base_unset. "
-                        "Next: set BOB_JOB_WORKTREE_BASE or BOB_BRIDGE_HOME. Do not pass --auto."
-                    )
-            except Exception as e:
-                self.log(f"opencode-ready: job dir not recorded {type(e).__name__}")
+        wire = line
+        if (self.kind or "").strip().lower() == "opencode" and message_job_keys(line):
+            keys = message_job_keys(line)
+            if len(keys) != 1:
+                raise JobContextRefused(
+                    "\n".join(f"NACK {key} job-context-ambiguous (FR #6240)" for key in keys)
+                )
+            prepared = prepare_opencode_wire(line, os.environ)
+            if prepared.get("nack"):
+                self.log(prepared.get("message") or prepared["nack"])
+                raise JobContextRefused(prepared["nack"])
+            if prepared.get("state") == "project" and prepared.get("wire"):
+                wire = prepared["wire"]
+                self.log(f"opencode-ready: job worktree {prepared['path']}")
         if on_failed is None and assign_job_ref(line):
             on_failed = lambda l=line: self._inject_recovery().on_failed(l, attempt=1)
         kind_l = (self.kind or "").strip().lower()
         if not _submit_verify_enabled():
             # FR #6158: still log path=... kind= when verify is opted out.
             if self.inject is inject_console:
-                return bool(inject_console(proc.pid, line, log=self.log, kind=kind_l))
+                return bool(inject_console(proc.pid, wire, log=self.log, kind=kind_l))
             try:
-                return bool(self.inject(proc.pid, line, log=self.log))
+                return bool(self.inject(proc.pid, wire, log=self.log))
             except TypeError:
-                return bool(self.inject(proc.pid, line))
+                return bool(self.inject(proc.pid, wire))
         sid = self.sessions[-1] if self.sessions else None
         # Wall-clock probe baseline (events.jsonl / unified.jsonl / opencode-turns use UTC wall times).
         since_wall = time.time()
@@ -8191,7 +8457,7 @@ class Supervisor:
 
         return inject_with_submit_verify(
             proc.pid,
-            line,
+            wire,
             inject_fn=inject_fn,
             enter_fn=send_console_enter,
             probe_fn=probe,
