@@ -953,8 +953,12 @@ function Format-BobOpencodeWindowLines {
         [switch]$Stale
     )
     $FreePct = ConvertTo-BobTrayIntOrNull $FreePct
-    # Stale must not keep painting a previous 100% as the current free pool.
-    $freeBit = if ((-not $Stale) -and (Test-BobTrayRemainingKnown $FreePct)) { ('{0}%' -f [int]$FreePct) } else { 'n/a' }
+    # Stale must not keep painting a previous value. 100 is catalogue availability
+    # from ``opencode models``, not a remaining-quota measurement, so it is not a fill.
+    $freeCatalogue = (-not $Stale) -and ($null -ne $FreePct) -and ([int]$FreePct -eq 100)
+    if ($Stale -or -not (Test-BobTrayRemainingKnown $FreePct)) { $freeBit = 'n/a' }
+    elseif ($freeCatalogue) { $freeBit = 'catalogue' }
+    else { $freeBit = ('{0}%' -f [int]$FreePct) }
     $ids = @('rolling', 'week', 'month')
     $winMap = @{}
     if ($Windows) {
@@ -1015,7 +1019,7 @@ function Format-BobOpencodeWindowLines {
     $freeHeading = ('free  {0}' -f $freeBit)
     $windowsOut = [ordered]@{}
     $bars = New-Object System.Collections.Generic.List[object]
-    $freeKnown = (-not $Stale) -and (Test-BobTrayRemainingKnown $FreePct)
+    $freeKnown = (-not $Stale) -and (-not $freeCatalogue) -and (Test-BobTrayRemainingKnown $FreePct)
     $bars.Add([pscustomobject]@{
         id = 'free'
         heading = $freeHeading
@@ -1109,7 +1113,9 @@ function Format-BobOpencodePoolLine {
     $freeKnown = Test-BobTrayRemainingKnown $FreePct
     $goKnown = Test-BobTrayRemainingKnown $GoPct
     if (-not $freeKnown -and -not $goKnown) { return 'OpenCode  n/a' }
-    $freeBit = if ($freeKnown) { ('{0}%' -f [int]$FreePct) } else { 'n/a' }
+    if ($freeKnown -and [int]$FreePct -eq 100) { $freeBit = 'catalogue' }
+    elseif ($freeKnown) { $freeBit = ('{0}%' -f [int]$FreePct) }
+    else { $freeBit = 'n/a' }
     $goBit = if ($goKnown) { ('{0}%' -f [int]$GoPct) } else { 'n/a' }
     return ('OpenCode  free {0} | go {1}' -f $freeBit, $goBit)
 }
@@ -3154,34 +3160,48 @@ function Get-BobTrayHover {
         if ($ghPosting.issue_posting_ready) { $ghLine = 'GitHub issue post: ready' }
         else { $ghLine = 'GitHub issue post: not ready' }
     }
-    # FR #6147: OpenCode free/go + Go rolling/weekly/monthly windows from digest.
-    # Digest miss falls through to the local helper cache. Null windows still
-    # format four pool rows (free + rolling/weekly/monthly) as n/a.
+    # FR #6147: digest may already carry catalogue free=100 and omit windows.
+    # A fresh local cache in the same run directory still wins for windows.
+    # MarchHare 14:03: cache rolling=unstarted was painted as unknown because
+    # digest free suppressed the cache read.
     $ocPaint = Get-BobOpencodePaintFromDigest -Digest $reportDigest -MachineId $machineId
     $ocStale = $false
     try { if ($reportDigest -and $reportDigest.stale) { $ocStale = $true } } catch { }
-    $digestFreeKnown = Test-BobTrayRemainingKnown (ConvertTo-BobTrayIntOrNull $ocPaint.free)
-    $digestGoKnown = Test-BobTrayRemainingKnown (ConvertTo-BobTrayIntOrNull $ocPaint.go)
-    if ((-not $ocPaint.windows) -and (-not $digestFreeKnown) -and (-not $digestGoKnown)) {
-        $localFuel = Read-BobOpencodeLocalFuel
-        if ($localFuel) {
-            $free = $ocPaint.free
-            $go = $ocPaint.go
-            $windows = $null
-            try { if ($null -ne $localFuel.free -and [string]$localFuel.free -ne '') { $free = $localFuel.free } } catch { }
-            try { if ($null -ne $localFuel.go -and [string]$localFuel.go -ne '') { $go = $localFuel.go } } catch { }
-            try { if ($localFuel.windows) { $windows = $localFuel.windows } } catch { }
-            $ocPaint = [pscustomobject]@{ free = $free; go = $go; windows = $windows }
-            $fetched = $null
-            try { $fetched = [string]$localFuel.fetched_at } catch { }
-            if (-not $fetched) { $ocStale = $true }
-            else {
-                try {
-                    $parsed = [datetime]::Parse($fetched, [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::RoundtripKind).ToUniversalTime()
-                    $age = ([datetime]::UtcNow - $parsed).TotalSeconds
-                    if ($age -lt -120 -or $age -gt 900) { $ocStale = $true }
-                } catch { $ocStale = $true }
-            }
+    $localFuel = $null
+    try { $localFuel = Read-BobOpencodeLocalFuel } catch { $localFuel = $null }
+    $localFresh = $false
+    if ($localFuel) {
+        $fetched = $null
+        try { $fetched = [string]$localFuel.fetched_at } catch { }
+        if ($fetched) {
+            try {
+                $parsed = [datetime]::Parse($fetched, [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::RoundtripKind).ToUniversalTime()
+                $age = ([datetime]::UtcNow - $parsed).TotalSeconds
+                if ($age -ge -120 -and $age -le 900) { $localFresh = $true }
+            } catch { }
+        }
+    }
+    if ($localFresh) {
+        $lfree = $ocPaint.free
+        $lgo = $ocPaint.go
+        foreach ($pair in @(
+                @('free', 'free'),
+                @('opencode-free', 'free'),
+                @('go', 'go'),
+                @('opencode-go', 'go')
+            )) {
+            $raw = $null
+            try {
+                $prop = $localFuel.PSObject.Properties[$pair[0]]
+                if ($prop) { $raw = $prop.Value }
+            } catch { $raw = $null }
+            if ($null -eq $raw -or [string]$raw -eq '') { continue }
+            if ($pair[1] -eq 'free') { $lfree = $raw } else { $lgo = $raw }
+        }
+        $lwins = $null
+        try { if ($localFuel.windows) { $lwins = $localFuel.windows } } catch { }
+        if ($lwins) {
+            $ocPaint = [pscustomobject]@{ free = $lfree; go = $lgo; windows = $lwins }
         }
     }
     $ocPack = Format-BobOpencodeWindowLines -FreePct $ocPaint.free -Windows $ocPaint.windows -Stale:$ocStale

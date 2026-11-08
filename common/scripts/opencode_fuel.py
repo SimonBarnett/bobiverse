@@ -811,11 +811,15 @@ def format_opencode_paint_lines(
                     windows[wid]["remaining_pct"] = None
                     windows[wid]["reset_label"] = None
     lim_id, lim_rem = limiting_go_window(windows)
-    # Stale clears the painted percent. The caller still receives the raw value
-    # on ``free_remaining``; the line must not keep showing it as current.
-    free_bit = (
-        f"{int(free_remaining)}%" if free_remaining is not None and not stale else "n/a"
-    )
+    # Stale clears the painted percent. Free ``100`` is catalogue availability
+    # (a free model is listed). It is not a measured remaining quota, so it is
+    # not painted as ``100%``.
+    if stale or free_remaining is None:
+        free_bit = "n/a"
+    elif int(free_remaining) == 100:
+        free_bit = "catalogue"
+    else:
+        free_bit = f"{int(free_remaining)}%"
     window_lines = [format_go_window_line(wid, windows.get(wid)) for wid in GO_WINDOW_IDS]
     # Missing upstream data still names Free and Go. Collapsing to one "OpenCode n/a"
     # erased the pool rows on the tray (MarchHare snapshot windows=null).
@@ -851,8 +855,16 @@ def opencode_pool_bars(
     ``opencode stats`` cannot supply the 5-hour window or a reset countdown.
     """
     paint = format_opencode_paint_lines(free_remaining, windows, stale=stale)
-    free_known = free_remaining is not None and not stale
-    free_bit = f"{int(free_remaining)}%" if free_known else "n/a"
+    # Catalogue availability must not fill a remaining-quota bar.
+    free_known = (
+        free_remaining is not None and not stale and int(free_remaining) != 100
+    )
+    if stale or free_remaining is None:
+        free_bit = "n/a"
+    elif int(free_remaining) == 100:
+        free_bit = "catalogue"
+    else:
+        free_bit = f"{int(free_remaining)}%"
     bars: list[dict] = [
         {
             "id": "free",

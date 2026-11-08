@@ -93,7 +93,7 @@ There is no OpenCode remaining-quota API. Free percent is 100 only when `opencod
 
 The ear must not wait on the helper: `Get-BobOpencodeFuel.ps1` runs three `opencode` calls (up to 25s each). `bobreport.py` starts it in the background and polls. A 120s deadline stops that powershell **and its opencode children** (`taskkill /T`), not the parent alone.
 
-`free 100%` means the model catalogue lists an uncapped free model. It is not a measured remaining quota. Weekly/monthly percents, when present, are local `opencode stats` cost versus hardcoded caps, not a provider balance. Unknown Go windows stay `n/a`.
+`free catalogue` means `opencode models` listed an uncapped free model. It is not a remaining-quota bar and is not drawn as 100%. Weekly/monthly percents, when a stats cost for a capped Go model parses, are local cost versus hardcoded caps, not a provider balance. Unknown week/month stay `n/a`. Rolling `unstarted` (Starts on first use, no remaining) is kept; `opencode stats` has no 5-hour window. A fresh `run\opencode-fuel.json` supplies those windows even when the digest already has catalogue free.
 
 **Frozen ear bootstrap.** Only `bobreport` is overlaid from `scripts\`, and only when that file defines `opencode_install_root`. Every other ear import, including `gitclaim`, comes from the exe embed. An old `scripts\gitclaim.py` is left in place and is not imported. Do not delete scripts to force the embed, and do not copy the rest of `scripts\` over the embed.
 

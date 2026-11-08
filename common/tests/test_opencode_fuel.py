@@ -773,7 +773,8 @@ def test_fr6147_go_windows_used_vs_remaining_and_unstarted_rolling():
     assert "36% used" in paint["window_lines"][2]
     assert "64% rem" in paint["window_lines"][2]
     assert paint["go_remaining"] == 28
-    assert "free 100%" in paint["summary"]
+    assert "free catalogue" in paint["summary"]
+    assert "100%" not in paint["summary"]
 
 
 def test_fr6147_normalize_fixture_reset_labels_and_exhausted_limits():
@@ -791,6 +792,69 @@ def test_fr6147_normalize_fixture_reset_labels_and_exhausted_limits():
     assert "reset 26d 18h" in paint["window_lines"][2]
     # Free=100 must not imply Go availability when limiting window is exhausted.
     assert "go weekly 0%" in paint["summary"]
+
+
+# MarchHare run/opencode-fuel.json at 2026-11-08T14:02:58Z (read_state=ok).
+MARCHHARE_1403_CACHE = {
+    "fetched_at": "2026-11-08T14:02:58.8574209Z",
+    "limiting": None,
+    "opencode-free": 100,
+    "read_state": "ok",
+    "windows": {
+        "month": {
+            "fetched_at": None,
+            "remaining_pct": None,
+            "reset_label": None,
+            "status": "unknown",
+            "used_pct": None,
+        },
+        "rolling": {
+            "fetched_at": None,
+            "remaining_pct": None,
+            "reset_label": None,
+            "status": "unstarted",
+            "used_pct": 0,
+        },
+        "week": {
+            "fetched_at": None,
+            "remaining_pct": None,
+            "reset_label": None,
+            "status": "unknown",
+            "used_pct": None,
+        },
+    },
+}
+
+
+def test_marchhare_1403_cache_is_not_a_go_quota_and_keeps_unstarted_rolling():
+    """Digest free=100 must not be painted as remaining quota.
+
+    Rolling unstarted/used 0/remaining null is the normal 'stats has no 5-hour
+    window' record. Week and month unknown means no parsed Go cost, not a
+    renderer failure and not 100%.
+    """
+    wins = MARCHHARE_1403_CACHE["windows"]
+    paint = of.format_opencode_paint_lines(100, wins)
+    assert paint["summary"] == "OpenCode  free catalogue | go n/a"
+    assert "100%" not in paint["summary"]
+    assert "Starts on first use" in paint["window_lines"][0]
+    assert paint["windows"]["rolling"]["status"] == "unstarted"
+    assert paint["windows"]["rolling"]["remaining_pct"] is None
+    assert "n/a" in paint["window_lines"][1]
+    assert "n/a" in paint["window_lines"][2]
+    assert paint["windows"]["week"]["status"] == "unknown"
+    assert paint["windows"]["month"]["status"] == "unknown"
+    bars = of.opencode_pool_bars(100, wins)
+    by_id = {b["id"]: b for b in bars}
+    assert by_id["free"]["known"] is False
+    assert by_id["free"]["pct"] == 0
+    assert by_id["free"]["heading"] == "free  catalogue"
+    assert by_id["rolling"]["known"] is False
+    assert "Starts on first use" in by_id["rolling"]["heading"]
+    assert by_id["week"]["known"] is False
+    assert by_id["month"]["known"] is False
+    assert "100%" not in by_id["week"]["heading"]
+    assert "100%" not in by_id["month"]["heading"]
 
 
 def test_null_runtime_keeps_free_and_go_windows_without_inventing_quota():
