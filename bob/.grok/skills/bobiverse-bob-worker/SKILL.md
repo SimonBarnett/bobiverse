@@ -151,7 +151,7 @@ A PyInstaller onefile `bob-worker.exe` (or hashed `bob-worker-<hash>.exe`) is **
 ## Install-root job git (FR #4843)
 
 * **Install-root job git (FR #4843 / FR #4988):** never git checkout/commit in --install-root. Seats must `git worktree add` to `Get-BobiverseJobWorktreePath` (`<data drive>\ai\worktrees\<repo>\<job>`; never a drive root). At agent start bob-worker logs install-root: WARN FR #4843 when the install checkout is not on main. Helper: common/scripts/bob_install_root_guard.py (refuse_job_git, install_root_branch_warning).
-* **OpenCode Windows (FR #6240):** search with `Get-ChildItem` and `Select-String`, not `grep`/`head`. `BOB_HOME` may be empty. ACK/DONE use `$env:BOB_OUTBOX` only. If `gh auth status` is not logged in, stop; the next step is `gh auth login`. Do not read `hosts.yml` or search for tokens. Headless `opencode run` auto-rejects `external_directory` and has no `--interactive` flag. Do not pass `--auto`. Set `BOB_OPENCODE_DIR` to the assigned worktree so the worker passes `--dir`. A denial stays a denial. See `bob/docs/opencode-windows-readiness.md`.
+* **OpenCode Windows (FR #6240):** search with `Get-ChildItem` and `Select-String`, not `grep`/`head`. `BOB_HOME` may be empty. ACK/DONE use `$env:BOB_OUTBOX` only. If `gh auth status` is not logged in, stop; the next step is `gh auth login`. Do not read `hosts.yml` or search for tokens. Headless `opencode run` auto-rejects `external_directory` and has no `--interactive` flag. Do not pass `--auto` and do not add an `external_directory` allow. The worker records the assigned job worktree; `--dir` is used only when that folder exists. If it does not, the run is blocked, not finished. A denial stays a denial. See `bob/docs/opencode-windows-readiness.md`.
 
 ## Troubleshooting
 

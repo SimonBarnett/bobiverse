@@ -7,13 +7,16 @@ protocol path the worker sets.
 """
 from __future__ import annotations
 
-import json
 import re
 from pathlib import Path
 
-# Credential stores and password folders must never become --dir or an allow rule.
+# Credential stores and password folders must never become --dir.
+# Slashes are normalized before the match so C:/passwords and C:\passwords agree.
 DIR_FORBIDDEN_RX = re.compile(
-    r"(?i)(\\.config\\gh|hosts\.yml|\.git-credentials|\\passwords|\.netrc)"
+    r"(?i)(\\.config\\gh|hosts\.yml|\.git-credentials|\\passwords(?:\\|$)|\\.netrc)"
+)
+_ASSIGN_RX = re.compile(
+    r"(?i)\b(FR|MRB|UAT)\s+([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)#(\d+)\b"
 )
 _TOKEN_RX = re.compile(
     r"(?i)(github_pat_[A-Za-z0-9_]+|ghp_[A-Za-z0-9]+|gho_[A-Za-z0-9]+|"
@@ -29,11 +32,12 @@ DIR_FORBIDDEN_MESSAGE = (
     "opencode-ready: blocked opencode_dir_forbidden. "
     "Next: unset BOB_OPENCODE_DIR. Do not point OpenCode at a credential store."
 )
-DIR_MISSING_MESSAGE = (
-    "opencode-ready: blocked opencode_dir_missing. "
-    "Next: set BOB_OPENCODE_DIR to the assigned worktree from Get-BobiverseJobWorktreePath. "
-    "Headless opencode run has no --interactive flag and auto-rejects external_directory. "
-    "Do not pass --auto."
+WORKTREE_ABSENT_MESSAGE = (
+    "opencode-ready: blocked worktree_absent. "
+    "Next: create the assigned job worktree (Get-BobiverseJobWorktreePath) "
+    "or answer external_directory in interactive opencode (the TUI). "
+    "opencode run auto-rejects that ask and has no --interactive flag. "
+    "Do not pass --auto. This run is not a completed job."
 )
 
 
@@ -43,8 +47,26 @@ def redact_secrets(text: str) -> str:
     return _TOKEN_RX.sub("[REDACTED]", text)
 
 
+def _guard_forms(path: str) -> list[str]:
+    raw = (path or "").strip().strip('"')
+    forms = []
+    if raw:
+        forms.append(raw.replace("/", "\\"))
+    try:
+        resolved = str(Path(raw).resolve(strict=False))
+    except (OSError, ValueError):
+        resolved = ""
+    if resolved:
+        forms.append(resolved.replace("/", "\\"))
+    return forms
+
+
 def dir_is_forbidden(path: str) -> bool:
-    return bool(DIR_FORBIDDEN_RX.search(path or ""))
+    """True for credential paths, including slash variants and symlink targets.
+
+    Does not open or read any file in the path.
+    """
+    return any(DIR_FORBIDDEN_RX.search(form) for form in _guard_forms(path))
 
 
 def gh_auth_blocks(stdout: str, stderr: str, exit_code: int) -> tuple[bool, str]:
@@ -70,30 +92,67 @@ def gh_auth_blocks(stdout: str, stderr: str, exit_code: int) -> tuple[bool, str]
     )
 
 
-def permission_config(run_dir: str | Path) -> dict:
-    """Allow external_directory only for this seat's run directory.
+def worktree_base_from_env(env: dict | None) -> str:
+    """Same base as Get-BobiverseJobWorktreeBase when the env is already set.
 
-    ``*`` stays ``ask``. Headless ``opencode run`` auto-rejects ask, so every
-    other external path (credential stores, other repos) stays blocked.
-    The specific allow is last so it wins over ``*``.
+    Does not invent a drive and does not create a directory.
     """
-    run = str(run_dir or "").rstrip("\\/")
-    if not run or dir_is_forbidden(run):
-        raise ValueError("run dir missing or forbidden")
-    specific = run + "\\*"
-    return {
-        "$schema": "https://opencode.ai/config.json",
-        "permission": {
-            "external_directory": {
-                "*": "ask",
-                specific: "allow",
-            }
-        },
-    }
+    env = env or {}
+    explicit = str(env.get("BOB_JOB_WORKTREE_BASE") or "").strip()
+    if explicit:
+        return explicit
+    bridge = str(env.get("BOB_BRIDGE_HOME") or "").strip()
+    if not bridge:
+        return ""
+    return str(Path(bridge) / "worktrees")
 
 
-def permission_config_text(run_dir: str | Path) -> str:
-    return json.dumps(permission_config(run_dir), indent=2)
+def project_dir_for_assign(line: str, env: dict | None) -> str:
+    """``<base>/<repo-leaf>/<fr-N>`` for one assign line, or ``''``."""
+    match = _ASSIGN_RX.search(line or "")
+    base = worktree_base_from_env(env)
+    if not match or not base:
+        return ""
+    kind, _owner, repo, num = match.groups()
+    repo_leaf = re.sub(r"[^A-Za-z0-9._-]+", "-", repo).strip("-") or "job"
+    return str(Path(base) / repo_leaf / f"{kind.lower()}-{num}")
+
+
+def write_project_dir(run_dir: str | Path, line: str, env: dict | None) -> str:
+    """Record the job worktree for the next opencode run. Does not create it."""
+    path = project_dir_for_assign(line, env)
+    if not path:
+        return ""
+    dest = Path(run_dir) / "opencode-project-dir.txt"
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_text(path + "\n", encoding="utf-8")
+    return path
+
+
+def resolve_project_dir(path: str) -> dict:
+    """Decide whether this run may pass ``--dir``.
+
+    Empty means no job has been recorded: the seat may start in the worker
+    folder, and that is not a claim that the job tree is reachable.
+    A recorded path that is missing or a credential path blocks this run.
+    A real directory that is not forbidden is the OpenCode project directory.
+    Nothing here grants ``external_directory``.
+    """
+    raw = (path or "").strip()
+    if not raw:
+        return {"state": "no_job", "blocked": False, "dir": "", "message": ""}
+    if dir_is_forbidden(raw):
+        return {"state": "forbidden", "blocked": True, "dir": "", "message": DIR_FORBIDDEN_MESSAGE}
+    folder = Path(raw)
+    if not folder.is_dir():
+        return {"state": "absent", "blocked": True, "dir": "", "message": WORKTREE_ABSENT_MESSAGE}
+    try:
+        resolved = str(folder.resolve(strict=False))
+    except (OSError, ValueError):
+        resolved = raw
+    if dir_is_forbidden(resolved):
+        return {"state": "forbidden", "blocked": True, "dir": "", "message": DIR_FORBIDDEN_MESSAGE}
+    return {"state": "project", "blocked": False, "dir": resolved, "message": ""}
 
 
 def probe_gh_auth(run) -> tuple[bool, str]:
@@ -116,11 +175,14 @@ def probe_gh_auth(run) -> tuple[bool, str]:
 
 
 def opencode_run_args(model: str, prompt: str, opencode_dir: str = "") -> list[str]:
-    """argv after the opencode executable. Never includes ``--auto``."""
-    args = ["run", "-m", model, prompt]
-    directory = (opencode_dir or "").strip()
-    if not directory:
-        return args
-    if dir_is_forbidden(directory):
-        raise ValueError(DIR_FORBIDDEN_MESSAGE)
-    return ["run", "--dir", directory, "-m", model, prompt]
+    """argv after the opencode executable. Never includes ``--auto``.
+
+    ``opencode_dir`` is the job worktree for this run, not a seat-wide default.
+    A missing or forbidden path raises. An empty path omits ``--dir``.
+    """
+    decision = resolve_project_dir(opencode_dir)
+    if decision["blocked"]:
+        raise ValueError(decision["message"])
+    if not decision["dir"]:
+        return ["run", "-m", model, prompt]
+    return ["run", "--dir", decision["dir"], "-m", model, prompt]
