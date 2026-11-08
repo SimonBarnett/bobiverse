@@ -52,8 +52,8 @@ remote tray (FR #5220 / #5756).
 
 Stall-heal log lines:
 
-- `mrb-reviewer-deadlock author_only flagged=N (no recycle; needs non-author seat)`
-  still appears when flagging; recovery lines are separate:
+- `mrb-reviewer-deadlock author_only flagged=N` still appears when flagging;
+  recovery lines are separate:
 - `idle-recovery recycleseat=<nick> id=<rid>` on send
 - `idle-recovery recycle_skipped:<reason> seat=<nick>` when blocked
 
@@ -70,3 +70,12 @@ prevent duplicate stops across ticks, reconnects, and chair restarts.
   stamps in place when that is the real blocker.
 - Success looks like: stop verified on the machine, new nick JOINs, normal
   offer, real worker ACK. Process start or heartbeat alone is not queue recovery.
+
+## Machine-side stop/start and offer path
+
+Chair recovery only enqueues shop `!recycleseat`. The tray/ear recycleseat
+controller re-reads PID + creation identity, pending offers/accepted rows and
+worker state immediately before stop; cancels if the seat became busy or identity
+changed; verifies the old tree is gone before starting one replacement; never
+restarts ear/tray/Jeeves. Replacement JOIN, `!bored`, offer and ACK remain the
+normal shop path (process start alone is not queue recovery).

@@ -228,10 +228,9 @@ def test_fr6256_busy_or_out_of_fuel_no_recycle(tmp_path, monkeypatch):
         last_activity={nick: now - 10},
     )
     # With only author-blocked MRB and forced idle, heal may still flag; recycle must skip busy.
-    if lines:
-        assert not any(
-            "idle-recovery recycleseat=" in x for x in lines
-        ), lines
+    assert lines, "expected author_only heal lines when forced idle with accepted seat"
+    assert any("busy" in x for x in lines), lines
+    assert not any("idle-recovery recycleseat=" in x for x in lines), lines
     assert "!recycleseat" not in _outbox_text(tmp_path)
 
     # Out-of-fuel mark (reset recovery + pending so only fuel gate applies)
@@ -371,3 +370,115 @@ def test_fr6256_attempt_cap_stops_churn(tmp_path, monkeypatch):
             gitclaim.note_recycleseat_ack(tmp_path, nick, now=now + 1)
     assert sends == gitclaim.IDLE_SEAT_RECOVERY_MAX_ATTEMPTS
     assert _outbox_text(tmp_path).count("!recycleseat") == sends
+
+
+def test_fr6256_enqueue_exception_not_marked_sent(tmp_path, monkeypatch):
+    """Undelivered shop !recycleseat must not stamp sent / consume attempts."""
+    nick = "redqueen-16788"
+    _seed_idle(tmp_path, monkeypatch, nick)
+    now = NOW
+    info = {
+        "kind": "author_only",
+        "idle": [nick],
+        "signature": "sig-enqueue-raise",
+        "rows": [_mrb_row(repo="SimonBarnett/bobiverse", num=6255, author=nick)],
+    }
+    install = tmp_path / "install"
+    install.mkdir()
+
+    def boom(*_a, **_k):
+        raise OSError("fleet outbox unavailable")
+
+    monkeypatch.setattr(gitclaim, "enqueue_recycleseat_shop_only", boom)
+    lines = gitclaim.maybe_recycle_author_only_idle_seat(
+        tmp_path,
+        info,
+        now=now,
+        install_root=install,
+        last_activity={nick: now - 10},
+    )
+    assert any("recycle_failed" in x and "OSError" in x for x in lines), lines
+    assert "!recycleseat" not in _outbox_text(tmp_path)
+    pending = gitclaim._load_recycleseat_pending(tmp_path)
+    assert nick not in (pending.get("seats") or {})
+    st = gitclaim._load_idle_seat_recovery_state(tmp_path)
+    ent = (st.get("machines") or {}).get("redqueen") or {}
+    assert int(ent.get("attempts") or 0) == 0
+    assert str(ent.get("last_result") or "").startswith("failed:")
+
+
+def test_fr6256_enqueue_skip_not_marked_sent(tmp_path, monkeypatch):
+    nick = "redqueen-16788"
+    _seed_idle(tmp_path, monkeypatch, nick)
+    now = NOW
+    info = {
+        "kind": "author_only",
+        "idle": [nick],
+        "signature": "sig-enqueue-skip",
+        "rows": [_mrb_row(repo="SimonBarnett/bobiverse", num=6255, author=nick)],
+    }
+    install = tmp_path / "install"
+    install.mkdir()
+    monkeypatch.setattr(
+        gitclaim,
+        "enqueue_recycleseat_shop_only",
+        lambda *_a, **_k: "recycle_skipped:no_machine",
+    )
+    lines = gitclaim.maybe_recycle_author_only_idle_seat(
+        tmp_path,
+        info,
+        now=now,
+        install_root=install,
+        last_activity={nick: now - 10},
+    )
+    assert any("recycle_skipped:no_machine" in x for x in lines), lines
+    pending = gitclaim._load_recycleseat_pending(tmp_path)
+    assert nick not in (pending.get("seats") or {})
+    st = gitclaim._load_idle_seat_recovery_state(tmp_path)
+    ent = (st.get("machines") or {}).get("redqueen") or {}
+    assert int(ent.get("attempts") or 0) == 0
+    assert ent.get("last_result") == "recycle_skipped:no_machine"
+
+
+def test_fr6256_skip_results_do_not_extend_attempt_window(tmp_path, monkeypatch):
+    """Skip ticks must not refresh window_ts; 24h after first sent resets attempts."""
+    nick = "redqueen-16788"
+    _seed_idle(tmp_path, monkeypatch, nick)
+    mid = "redqueen"
+    base = NOW
+    gitclaim._save_idle_seat_recovery_state(
+        tmp_path,
+        {
+            "machines": {
+                mid: {
+                    "attempts": gitclaim.IDLE_SEAT_RECOVERY_MAX_ATTEMPTS,
+                    "window_ts": base,
+                    "last_ts": base + 50_000,
+                    "last_nick": nick,
+                    "last_sig": "old",
+                    "last_result": "recycle_skipped:attempt_cap",
+                }
+            }
+        },
+    )
+    info = {
+        "kind": "author_only",
+        "idle": [nick],
+        "signature": "sig-window",
+        "rows": [_mrb_row(repo="SimonBarnett/bobiverse", num=8001, author=nick)],
+    }
+    # Still inside 24h window -> attempt_cap
+    reason = gitclaim.author_only_recovery_blocked_reason(
+        tmp_path, nick, info, base + 80_000, last_activity={nick: base + 80_000 - 5}
+    )
+    assert reason == "recycle_skipped:attempt_cap"
+    # After 24h from window_ts (despite fresher last_ts) -> clear
+    reason2 = gitclaim.author_only_recovery_blocked_reason(
+        tmp_path,
+        nick,
+        info,
+        base + 86_500,
+        last_activity={nick: base + 86_500 - 5},
+    )
+    assert reason2 == ""
+

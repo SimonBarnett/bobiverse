@@ -9465,6 +9465,7 @@ def _save_idle_seat_recovery_state(home: Path, state: dict) -> None:
                 continue
             clean["machines"][mid] = {
                 "attempts": int(val.get("attempts") or 0),
+                "window_ts": float(val.get("window_ts") or 0),
                 "last_ts": float(val.get("last_ts") or 0),
                 "last_nick": str(val.get("last_nick") or ""),
                 "last_sig": str(val.get("last_sig") or ""),
@@ -9619,9 +9620,9 @@ def author_only_recovery_blocked_reason(
     st = _load_idle_seat_recovery_state(home)
     ent = (st.get("machines") or {}).get(mid) or {}
     attempts = int(ent.get("attempts") or 0)
-    last_ts = float(ent.get("last_ts") or 0)
-    # Reset attempt window after a long quiet period (24h).
-    if last_ts and (float(now) - last_ts) >= 86400.0:
+    window_ts = float(ent.get("window_ts") or 0)
+    # Reset attempt window 24h after the first sent in the window (skips must not extend it).
+    if window_ts and (float(now) - window_ts) >= 86400.0:
         attempts = 0
     if attempts >= int(IDLE_SEAT_RECOVERY_MAX_ATTEMPTS):
         return "recycle_skipped:attempt_cap"
@@ -9653,15 +9654,18 @@ def _record_idle_seat_recovery(
     st = _load_idle_seat_recovery_state(home)
     machines = st.setdefault("machines", {})
     ent = dict(machines.get(mid) or {})
-    last_ts = float(ent.get("last_ts") or 0)
+    window_ts = float(ent.get("window_ts") or 0)
     attempts = int(ent.get("attempts") or 0)
-    if last_ts and (float(now) - last_ts) >= 86400.0:
+    if window_ts and (float(now) - window_ts) >= 86400.0:
         attempts = 0
+        window_ts = 0.0
     if result == "sent":
         attempts += 1
+        window_ts = window_ts or float(now)
     ent.update(
         {
             "attempts": attempts,
+            "window_ts": window_ts,
             "last_ts": float(now),
             "last_nick": nick,
             "last_sig": str(signature or ""),
@@ -9719,10 +9723,7 @@ def maybe_recycle_author_only_idle_seat(
             "idle-seat-recovery",
             now=now,
         )
-        skip = None
-        with contextlib.suppress(Exception):
-            skip = enqueue_recycleseat_shop_only(home, pick)
-        _mark_recycleseat_sent(home, pick, now=now, rid=rid)
+        skip = enqueue_recycleseat_shop_only(home, pick)
         if skip:
             _record_idle_seat_recovery(
                 home,
@@ -9733,6 +9734,7 @@ def maybe_recycle_author_only_idle_seat(
             )
             lines.append(f"idle-recovery {skip} seat={pick} id={rid}")
             return lines
+        _mark_recycleseat_sent(home, pick, now=now, rid=rid)
         _record_idle_seat_recovery(
             home,
             pick,
