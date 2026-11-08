@@ -5294,15 +5294,43 @@ def read_local_opencode_fuel_doc(
             return {}
     api_key = (e.get("BOB_OPENCODE_GO_API_KEY") or "").strip()
     if api_key:
-        try:
-            import opencode_fuel as of
+        # FR #6248 / MRB #6252: Bearer zen fetch must honour opencode_fuel_cache_s
+        # (digest fuel ticks every ~5s). Keep last good go-zen doc on failure.
+        import opencode_fuel as of
 
+        ts = float(time.time() if now is None else now)
+        cache_s = opencode_fuel_cache_s(e)
+        last_at = float(_opencode_fuel_cache.get("at") or 0.0)
+        last_doc = _opencode_fuel_cache.get("doc")
+        if not isinstance(last_doc, dict):
+            last_doc = {}
+        cached = dict(last_doc)
+        if (
+            not force
+            and cache_s > 0
+            and last_at > 0
+            and (ts - last_at) < cache_s
+            and str(cached.get("source") or "") == of.GO_ZEN_USAGE_SOURCE
+        ):
+            return dict(cached)
+        try:
             read = of.fetch_go_zen_usage(
                 api_key,
                 url=(e.get("BOB_OPENCODE_GO_USAGE_URL") or "").strip() or None,
             )
-            return of.fuel_doc_from_go_zen_read(read)
+            doc = of.fuel_doc_from_go_zen_read(read)
+            kind = read.get("kind") if isinstance(read, dict) else None
+            if kind == "json" and isinstance(doc, dict) and doc:
+                _opencode_fuel_cache["at"] = ts
+                _opencode_fuel_cache["doc"] = dict(doc)
+                _opencode_fuel_cache["value"] = _pcent_from_opencode_fuel_doc(doc)
+                return dict(doc)
+            if str(cached.get("source") or "") == of.GO_ZEN_USAGE_SOURCE:
+                return dict(cached)
+            return dict(doc) if isinstance(doc, dict) else {}
         except Exception:
+            if str(cached.get("source") or "") == of.GO_ZEN_USAGE_SOURCE:
+                return dict(cached)
             return {}
     fixture = (e.get("BOB_OPENCODE_FUEL_FIXTURE") or "").strip()
     win_fixture = (e.get(OPENCODE_WINDOWS_FIXTURE_ENV) or "").strip()

@@ -193,3 +193,56 @@ def test_fetch_go_zen_usage_sends_bearer(monkeypatch):
     assert captured["url"].endswith("/zen/go/v1/usage")
     assert read["kind"] == "json"
     assert read["windows"]["week"]["used_pct"] == 72
+
+
+def test_go_zen_api_key_path_uses_ttl_cache(monkeypatch):
+    """MRB #6252: Bearer zen fetch must not run on every digest fuel tick."""
+    bobreport._opencode_fuel_cache.clear()
+    bobreport._opencode_fuel_cache.update({"at": 0.0, "doc": {}})
+    monkeypatch.setenv("BOB_OPENCODE_GO_API_KEY", "FAKE_TEST_KEY")
+    monkeypatch.setenv("BOB_OPENCODE_FUEL_CACHE_S", "60")
+    monkeypatch.delenv("BOB_OPENCODE_GO_USAGE_FIXTURE", raising=False)
+    monkeypatch.delenv("BOB_OPENCODE_FUEL_FIXTURE", raising=False)
+    monkeypatch.delenv("BOB_OPENCODE_WINDOWS_FIXTURE", raising=False)
+    calls = {"n": 0}
+
+    def fake_fetch(api_key, *, url=None):
+        calls["n"] += 1
+        return opencode_fuel.interpret_go_zen_usage_response(
+            200, json.dumps(PINNED_SCHEMA), now_ms=1_700_000_000_000
+        )
+
+    monkeypatch.setattr(opencode_fuel, "fetch_go_zen_usage", fake_fetch)
+    d1 = bobreport.read_local_opencode_fuel_doc(now=1000.0)
+    d2 = bobreport.read_local_opencode_fuel_doc(now=1010.0)
+    assert calls["n"] == 1
+    assert d1["windows"]["week"]["used_pct"] == 72
+    assert d2["windows"]["week"]["used_pct"] == 72
+    # force bypasses TTL
+    d3 = bobreport.read_local_opencode_fuel_doc(now=1015.0, force=True)
+    assert calls["n"] == 2
+    assert d3["windows"]["week"]["used_pct"] == 72
+
+
+def test_go_zen_api_key_path_keeps_last_good_on_failure(monkeypatch):
+    bobreport._opencode_fuel_cache.clear()
+    bobreport._opencode_fuel_cache.update({"at": 0.0, "doc": {}})
+    monkeypatch.setenv("BOB_OPENCODE_GO_API_KEY", "FAKE_TEST_KEY")
+    monkeypatch.setenv("BOB_OPENCODE_FUEL_CACHE_S", "1")
+    monkeypatch.delenv("BOB_OPENCODE_GO_USAGE_FIXTURE", raising=False)
+    state = {"ok": True}
+
+    def fake_fetch(api_key, *, url=None):
+        if state["ok"]:
+            return opencode_fuel.interpret_go_zen_usage_response(
+                200, json.dumps(PINNED_SCHEMA), now_ms=1_700_000_000_000
+            )
+        raise RuntimeError("network down")
+
+    monkeypatch.setattr(opencode_fuel, "fetch_go_zen_usage", fake_fetch)
+    d1 = bobreport.read_local_opencode_fuel_doc(now=2000.0, force=True)
+    assert d1["windows"]["week"]["used_pct"] == 72
+    state["ok"] = False
+    d2 = bobreport.read_local_opencode_fuel_doc(now=2100.0, force=True)
+    assert d2["windows"]["week"]["used_pct"] == 72
+
