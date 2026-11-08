@@ -1,0 +1,71 @@
+# Isolated bob-ear.exe build. Not a release, MSI, install, or service start.
+# Build-BobEar.ps1 owns the PyInstaller command and the --help smoke check.
+name: build-bob-ear
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-bob-ear:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install PyInstaller
+        run: python -m pip install --upgrade pip pyinstaller
+
+      - name: Confirm behavior files match 050ca9fa
+        run: |
+          $parent = (git rev-parse HEAD^).Trim()
+          $expected = "050ca9faa51728769780de2774df9fc7e440dfad"
+          if ($parent -ne $expected) { throw "behavior parent is $parent" }
+          git diff --exit-code $parent -- `
+            common/scripts/bobreport.py `
+            common/scripts/irc_agent.py `
+            common/scripts/opencode_fuel.py `
+            bob/tray/src/Public/Get-BobTrayHover.ps1 `
+            bob/tray/src/Private/Get-BobIrc.ps1 `
+            bob/tray/tools/Watch-BobTray.ps1 `
+            bob/tray/tools/Get-BobOpencodeFuel.ps1 `
+            bob/tray/src/BobBridge.psm1
+
+      - name: Build with Build-BobEar.ps1
+        run: |
+          $root = (Get-Location).Path
+          $out = Join-Path $env:RUNNER_TEMP "bob-ear-out"
+          New-Item -ItemType Directory -Force -Path $out | Out-Null
+          $py = (Get-Command python).Source
+          & "$root\bob\scripts\Build-BobEar.ps1" -RepoRoot $root -OutDir $out -Python $py
+          if ($LASTEXITCODE -ne 0) { throw "Build-BobEar.ps1 exit $LASTEXITCODE" }
+          $exe = Join-Path $out "ear-build\dist\bob-ear.exe"
+          if (-not (Test-Path -LiteralPath $exe)) { throw "Build-BobEar.ps1 did not leave bob-ear.exe" }
+          $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $exe).Hash.ToLowerInvariant()
+          $stage = Join-Path $env:RUNNER_TEMP "bob-ear-artifact"
+          New-Item -ItemType Directory -Force -Path $stage | Out-Null
+          Copy-Item -LiteralPath $exe -Destination (Join-Path $stage "bob-ear.exe")
+          Copy-Item -LiteralPath "$root\bob\docs\deploy-pool-monitor-manifest.txt" -Destination (Join-Path $stage "deploy-pool-monitor-manifest.txt")
+          @(
+            "behavior_source_sha=050ca9faa51728769780de2774df9fc7e440dfad"
+            "workflow_commit=$($env:GITHUB_SHA)"
+            "exe_name=bob-ear.exe"
+            "exe_sha256=$hash"
+          ) | Set-Content -Encoding ascii (Join-Path $stage "provenance.txt")
+          Set-Content -Encoding ascii (Join-Path $stage "bob-ear.exe.sha256") "$hash  bob-ear.exe"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bob-ear
+          path: ${{ runner.temp }}/bob-ear-artifact
+          if-no-files-found: error
