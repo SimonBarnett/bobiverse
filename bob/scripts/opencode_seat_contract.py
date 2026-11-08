@@ -276,6 +276,20 @@ def _repo_leaf(repo: str) -> str:
 
 
 FRAME_MARK = "@@BOBJOB1"
+_FRAME_KEY_RX = re.compile(r"(?i)^(FR|MRB|UAT)\s+\S+#\d+$")
+
+
+def console_text(text: str, maxlen: int = 600) -> str:
+    """What ``inject_console`` pastes. Control characters, including tab, become spaces.
+
+    ``one_line`` in the worker is this function. A job frame has to round-trip
+    through it or the wrapper must refuse the line.
+    """
+    flattened = re.sub(r"[\x00-\x1f\x7f]+", " ", text or "")
+    flattened = re.sub(r"\s+", " ", flattened).strip()
+    if maxlen is not None and maxlen >= 0:
+        return flattened[:maxlen]
+    return flattened
 
 
 def message_job_keys(line: str) -> list[str]:
@@ -420,25 +434,122 @@ def classify_opencode_job(
 
 
 def frame_opencode_message(line: str, key: str, directory: str) -> str:
-    """Bind this message to its directory. The wrapper strips the prefix.
+    """Bind this message to its directory with a pipe frame.
 
-    The standing prompt is never framed. A later message cannot change this
-    message's directory.
+    ``inject_console`` runs the text through ``console_text`` / ``one_line``,
+    which turns tabs and other control characters into spaces. Pipes survive.
+    The key and directory are checked after that sanitization, so a frame that
+    would change them is refused.
     """
-    if any(ch in (key or "") for ch in "\t\r\n") or any(ch in (directory or "") for ch in "\t\r\n"):
+    if not key or not directory or not (line or "").startswith("FROM "):
         raise ValueError("job context cannot be framed")
-    return f"{FRAME_MARK}\t{key}\t{directory}\t{line}"
+    if "|" in key or "|" in directory:
+        raise ValueError("job context cannot be framed")
+    raw = f"{FRAME_MARK}|{key}|{directory}|{line}"
+    parsed = parse_opencode_frame(console_text(raw))
+    if not parsed or parsed["key"] != key or parsed["dir"] != directory:
+        raise ValueError("frame does not survive console inject")
+    if not parsed["line"].startswith("FROM "):
+        raise ValueError("frame does not survive console inject")
+    return raw
 
 
 def parse_opencode_frame(raw: str) -> dict | None:
-    """Return ``{key, dir, line}`` when ``raw`` is a worker job frame, else None."""
+    """Return ``{key, dir, line}`` for a pipe frame that survived console inject."""
     text = raw or ""
-    if not text.startswith(FRAME_MARK + "\t"):
+    prefix = FRAME_MARK + "|"
+    if not text.startswith(prefix):
         return None
-    parts = text.split("\t", 3)
-    if len(parts) != 4 or not parts[1]:
+    rest = text[len(prefix):]
+    key_end = rest.find("|")
+    if key_end <= 0:
         return None
-    return {"key": parts[1], "dir": parts[2], "line": parts[3]}
+    dir_end = rest.find("|", key_end + 1)
+    if dir_end < 0:
+        return None
+    key = rest[:key_end]
+    directory = rest[key_end + 1:dir_end]
+    line = rest[dir_end + 1:]
+    if not _FRAME_KEY_RX.match(key) or not directory or "|" in directory:
+        return None
+    if not line.startswith("FROM "):
+        return None
+    return {"key": key, "dir": directory, "line": line}
+
+
+def _broken_frame_key(text: str) -> str:
+    """Job key from a ``@@BOBJOB1`` line whose pipes did not survive."""
+    if not (text or "").startswith(FRAME_MARK):
+        return ""
+    tail = text[len(FRAME_MARK):].lstrip("| ")
+    match = re.match(r"(?i)^((?:FR|MRB|UAT)\s+\S+#\d+)", tail)
+    if match:
+        kind, rest = match.group(1).split(None, 1)
+        return f"{kind.upper()} {rest}"
+    idx = text.upper().find(" FROM ")
+    if idx < 0:
+        return ""
+    keys = message_job_keys(text[idx + 1:])
+    if len(keys) == 1:
+        return keys[0]
+    return ""
+
+
+def decode_opencode_inbound(raw: str) -> dict:
+    """What the wrapper does with one console line after ``one_line``.
+
+    A valid frame runs that directory. A broken frame, or a FROM assign with
+    no frame, is a NACK and does not start the model. Other text can run
+    with no ``--dir``. The standing prompt is not passed here.
+    """
+    text = raw or ""
+    parsed = parse_opencode_frame(text)
+    if parsed:
+        return {
+            "action": "project",
+            "key": parsed["key"],
+            "dir": parsed["dir"],
+            "line": parsed["line"],
+            "nack": "",
+            "run": True,
+            "reason": "",
+        }
+    if text.startswith(FRAME_MARK):
+        key = _broken_frame_key(text)
+        nack = _nack_key(key, "job-context-malformed") if key else ""
+        return {
+            "action": "nack",
+            "key": key,
+            "dir": "",
+            "line": "",
+            "nack": nack,
+            "run": False,
+            "reason": "job-context-malformed",
+        }
+    keys = message_job_keys(text)
+    if len(keys) == 1:
+        return {
+            "action": "nack",
+            "key": keys[0],
+            "dir": "",
+            "line": "",
+            "nack": _nack_key(keys[0], "job-context-malformed"),
+            "run": False,
+            "reason": "job-context-malformed",
+        }
+    if len(keys) > 1:
+        nacks = [_nack_key(key, "job-context-ambiguous") for key in keys]
+        return {
+            "action": "nack",
+            "key": "",
+            "dir": "",
+            "line": "",
+            "nack": "\n".join(nacks),
+            "nacks": nacks,
+            "run": False,
+            "reason": "job-context-ambiguous",
+        }
+    return {"action": "run", "key": "", "dir": "", "line": text, "nack": "", "run": True, "reason": ""}
 
 
 def prepare_opencode_wire(
@@ -453,7 +564,12 @@ def prepare_opencode_wire(
         return {**decision, "wire": line}
     if decision["nack"]:
         return {**decision, "wire": ""}
-    return {**decision, "wire": frame_opencode_message(line, decision["key"], decision["path"])}
+    try:
+        wire = frame_opencode_message(line, decision["key"], decision["path"])
+    except ValueError:
+        nack = _nack_key(decision["key"], "job-context-malformed")
+        return {**decision, "state": "malformed", "nack": nack, "nacks": [nack], "wire": ""}
+    return {**decision, "wire": wire}
 
 
 def opencode_job_context_nack(

@@ -96,9 +96,14 @@ def test_generated_wrapper_does_not_grant_external_directory(tmp_path: Path):
     assert "OPENCODE_CONFIG" not in script
     assert "BOB_OPENCODE_DIR" not in script
     assert "opencode-project-dir.txt" not in script
-    assert "@@BOBJOB1" in script
+    assert "@@BOBJOB1|" in script
+    assert "[char]9" not in script
     assert "Invoke-OpencodeRun $prompt '' ''" in script
-    assert "[regex]::Match" not in script
+    inbound = script.split("function Invoke-OpencodeInbound", 1)[1]
+    bare = inbound.find("Invoke-OpencodeRun $raw '' ''")
+    assert inbound.find("job-context-malformed") < bare
+    assert inbound.find("Get-OpencodeFromJobKeys") < bare
+    assert "Split-OpencodeFrame" in script
     assert "$argList = @('run', '-m', $model, $line)" in script
     assert "'run', '--dir', $ocDir" in script
     assert "blocked worktree_absent" in script
@@ -184,6 +189,46 @@ def test_standing_prompt_example_is_not_a_job():
     wire = c.prepare_opencode_wire(prompt, {})
     assert wire["wire"] == prompt
     assert c.parse_opencode_frame(prompt) is None
+    inbound = c.decode_opencode_inbound(bw.one_line(prompt))
+    assert inbound["action"] == "run" and inbound["nack"] == "" and inbound["run"] is True
+
+
+def test_job_frame_survives_inject_console_one_line_and_a_broken_frame_does_not_run(tmp_path: Path):
+    import inspect
+
+    source = inspect.getsource(bw.inject_console)
+    assert source.index("one_line(text)") < source.index('os.name != "nt"')
+    env = {"BOB_BRIDGE_HOME": str(tmp_path / "bridge")}
+    first = "FROM jeeves #marchhare n: FR SimonBarnett/bobiverse#6147 https://x"
+    second = "FROM jeeves #marchhare n: FR SimonBarnett/bobiverse#99 https://x" + (" tail" * 200)
+    for line in (first, second):
+        Path(c.project_dir_for_assign(line, env)).mkdir(parents=True, exist_ok=True)
+    wires = [c.prepare_opencode_wire(line, env) for line in (first, second)]
+    decoded = [c.decode_opencode_inbound(bw.one_line(item["wire"])) for item in wires]
+    assert decoded[0]["dir"] == wires[0]["path"]
+    assert decoded[1]["dir"] == wires[1]["path"]
+    assert decoded[0]["dir"] != decoded[1]["dir"]
+    assert decoded[0]["key"] == "FR SimonBarnett/bobiverse#6147"
+    assert decoded[1]["key"] == "FR SimonBarnett/bobiverse#99"
+    assert decoded[1]["line"].startswith("FROM ")
+    assert len(wires[1]["wire"]) > 600
+    assert len(bw.one_line(wires[1]["wire"])) == 600
+    tabbed = (
+        "@@BOBJOB1\tFR SimonBarnett/bobiverse#6147\t"
+        + wires[0]["path"]
+        + "\t"
+        + first
+    )
+    broken = c.decode_opencode_inbound(bw.one_line(tabbed))
+    assert "\t" not in bw.one_line(tabbed)
+    assert broken["action"] == "nack" and broken["run"] is False
+    assert broken["key"] == "FR SimonBarnett/bobiverse#6147"
+    assert "job-context-malformed" in broken["nack"]
+    naked = c.decode_opencode_inbound(bw.one_line(first))
+    assert naked["action"] == "nack" and naked["run"] is False
+    assert naked["key"] == "FR SimonBarnett/bobiverse#6147"
+    lost = c.decode_opencode_inbound("@@BOBJOB1 not a frame")
+    assert lost["action"] == "nack" and lost["run"] is False
 
 
 def test_two_assigns_keep_separate_directories(tmp_path: Path):
@@ -205,6 +250,15 @@ def test_two_assigns_keep_separate_directories(tmp_path: Path):
     assert frame_one["key"] == "FR SimonBarnett/bobiverse#6147"
     assert "@@BOBJOB1" not in frame_one["line"]
     assert "--auto" not in one["wire"] and "OPENCODE_CONFIG" not in one["wire"]
+    carried_one = c.decode_opencode_inbound(bw.one_line(one["wire"]))
+    carried_two = c.decode_opencode_inbound(bw.one_line(two["wire"]))
+    assert carried_one["action"] == "project" and carried_one["run"] is True
+    assert carried_two["action"] == "project" and carried_two["run"] is True
+    assert carried_one["key"] == frame_one["key"] and carried_one["dir"] == frame_one["dir"]
+    assert carried_two["key"] == frame_two["key"] and carried_two["dir"] == frame_two["dir"]
+    assert carried_one["dir"] != carried_two["dir"]
+    assert carried_one["line"].startswith("FROM ")
+    assert "@@BOBJOB1" not in carried_one["line"]
 
 
 def test_missing_dir_nacks_and_existing_dir_is_framed(tmp_path: Path):

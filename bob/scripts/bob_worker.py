@@ -154,6 +154,7 @@ except Exception:  # pragma: no cover
 
 try:
     from opencode_seat_contract import (  # noqa: E402
+        console_text,
         message_job_keys,
         opencode_job_context_nack,
         prepare_opencode_wire,
@@ -161,6 +162,7 @@ try:
     )
 except ImportError:  # package import (bob.scripts.bob_worker)
     from bob.scripts.opencode_seat_contract import (  # type: ignore  # noqa: E402
+        console_text,
         message_job_keys,
         opencode_job_context_nack,
         prepare_opencode_wire,
@@ -1761,15 +1763,55 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             r"    if ($proc) { try { $proc.Dispose() } catch { } }",
             r"    } finally { Write-OpencodeTurnMarker 'turn_ended' $turnN }",
             r"}",
+            r"function Split-OpencodeFrame([string]$raw) {",
+            r"    $prefix = '@@BOBJOB1|'",
+            r"    if (-not $raw.StartsWith($prefix)) { return $null }",
+            r"    $rest = $raw.Substring($prefix.Length)",
+            r"    $keyEnd = $rest.IndexOf('|')",
+            r"    if ($keyEnd -lt 1) { return $null }",
+            r"    $dirEnd = $rest.IndexOf('|', $keyEnd + 1)",
+            r"    if ($dirEnd -lt 0) { return $null }",
+            r"    $key = $rest.Substring(0, $keyEnd)",
+            r"    $dir = $rest.Substring($keyEnd + 1, $dirEnd - $keyEnd - 1)",
+            r"    $line = $rest.Substring($dirEnd + 1)",
+            r"    if (-not $dir -or -not $line.StartsWith('FROM ')) { return $null }",
+            r"    if ($key -notmatch '^(?i)(FR|MRB|UAT) \S+#\d+$') { return $null }",
+            r"    return @{ key = $key; dir = $dir; line = $line }",
+            r"}",
+            r"function Get-OpencodeFromJobKeys([string]$raw) {",
+            r"    if ($raw -notmatch '^(?i)FROM\s+\S+\s+\S+\s+(.*)$') { return @() }",
+            r"    $body = $Matches[1]",
+            r"    $keys = @()",
+            r"    foreach ($m in [regex]::Matches($body, '(?i)(FR|MRB|UAT)\s+(\S+#\d+)')) {",
+            r"        $keys += ($m.Groups[1].Value.ToUpper() + ' ' + $m.Groups[2].Value)",
+            r"    }",
+            r"    return $keys",
+            r"}",
             r"function Invoke-OpencodeInbound([string]$raw) {",
-            r"    $mark = '@@BOBJOB1' + [char]9",
-            r"    if ($raw.StartsWith($mark)) {",
-            r"        $parts = $raw.Split([char]9, 4)",
-            r"        if ($parts.Length -lt 4 -or -not $parts[1]) {",
-            r"            Write-Output 'opencode-ready: blocked job_context_malformed. Next: the worker message had no job context. No DONE.'",
-            r"            return",
+            r"    $frame = Split-OpencodeFrame $raw",
+            r"    if ($frame) {",
+            r"        Invoke-OpencodeRun $frame.line $frame.key $frame.dir",
+            r"        return",
+            r"    }",
+            r"    if ($raw.StartsWith('@@BOBJOB1')) {",
+            r"        $key = ''",
+            r"        $tail = $raw.Substring(9).TrimStart('| ')",
+            r"        $km = [regex]::Match($tail, '^(?i)((?:FR|MRB|UAT)\s+\S+#\d+)')",
+            r"        if ($km.Success) {",
+            r"            $rawKey = $km.Groups[1].Value",
+            r"            $spaceAt = $rawKey.IndexOf(' ')",
+            r"            $key = $rawKey.Substring(0, $spaceAt).ToUpper() + $rawKey.Substring($spaceAt)",
             r"        }",
-            r"        Invoke-OpencodeRun $parts[3] $parts[1] $parts[2]",
+            r"        Write-Output 'opencode-ready: blocked job_context_malformed. Next: the console line lost its job frame. No DONE.'",
+            r"        Write-OpencodeJobNack $key 'job-context-malformed'",
+            r"        return",
+            r"    }",
+            r"    $fromKeys = @(Get-OpencodeFromJobKeys $raw)",
+            r"    if ($fromKeys.Count -ge 1) {",
+            r"        $reason = 'job-context-malformed'",
+            r"        if ($fromKeys.Count -gt 1) { $reason = 'job-context-ambiguous' }",
+            r"        foreach ($k in $fromKeys) { Write-OpencodeJobNack $k $reason }",
+            r"        Write-Output 'opencode-ready: blocked job_context_malformed. Next: a FROM assign arrived without its job frame. No DONE.'",
             r"        return",
             r"    }",
             r"    Invoke-OpencodeRun $raw '' ''",
@@ -2055,9 +2097,8 @@ def build_enter_records():
 
 
 def one_line(text: str, maxlen: int = 600) -> str:
-    t = re.sub(r"[\x00-\x1f\x7f]+", " ", text or "")
-    t = re.sub(r"\s+", " ", t).strip()
-    return t[:maxlen]
+    """Console inject payload. Control characters, including tab, become spaces."""
+    return console_text(text, maxlen)
 
 
 def _submit_gap_s(default: float = 0.20) -> float:
@@ -2465,10 +2506,10 @@ def inject_console(
     Ctrl+V chord has been queued and the submit gap has elapsed (best-effort) so
     operator clipboard is not permanently clobbered. pid is call-signature only.
     """
-    if os.name != "nt":
-        return False
+    # FR #6240: this is the real transport. Tabs do not survive. OpenCode job
+    # frames use pipes so the key and directory are still here after one_line.
     text = one_line(text)
-    if not text:
+    if not text or os.name != "nt":
         return False
     gap = _submit_gap_s() if submit_gap_s is None else max(0.05, float(submit_gap_s))
     k32 = ctypes.WinDLL("kernel32", use_last_error=True)
