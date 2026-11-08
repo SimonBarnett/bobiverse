@@ -122,7 +122,7 @@ def test_format_fresh_unlimited():
         },
         now,
     )
-    assert line.startswith("Copilot  unlimited, 39 used")
+    assert line.startswith("copilot  included  unlimited  used 39")
     assert "[stale" not in line
 
 
@@ -138,7 +138,7 @@ def test_format_stale_by_age():
         now,
     )
     assert "[stale" in line
-    assert "140 remaining" in line
+    assert "allowance  remaining  140" in line
     assert "reset" not in line
 
 
@@ -146,7 +146,7 @@ def test_format_stale_by_age():
 def test_format_missing_fetched_at_stale():
     line = _ps_format({"state": "ok", "remaining": 5}, "2026-11-07T12:00:00Z")
     assert "[stale]" in line
-    assert "5 remaining" in line
+    assert "allowance  remaining  5" in line
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="PowerShell formatter")

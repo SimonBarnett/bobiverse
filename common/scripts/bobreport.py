@@ -5484,7 +5484,11 @@ def xai_weekly_handoff_path(env: dict[str, str] | None = None) -> Path | None:
 
 
 def parse_xai_weekly_handoff(doc: object, *, now: datetime | None = None) -> dict | None:
-    """Meter document from the collector. Missing percent stays unknown, not 0."""
+    """Meter document from the collector. Missing percent stays unknown, not 0.
+
+    A torn write (``WriteAllText`` is not atomic) fails JSON parse and is ignored.
+    ``account`` is not a match key: the collector always leaves it null.
+    """
     if not isinstance(doc, dict):
         return None
     if str(doc.get("provider") or "") != "xai":

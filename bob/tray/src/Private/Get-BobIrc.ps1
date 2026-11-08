@@ -2492,6 +2492,8 @@ function Save-BobXaiWeeklyHandoff {
         fetched_at    = $(if ($Weekly.fetched_at) { [string]$Weekly.fetched_at } else { $null })
         period_end    = $(if ($Weekly.period_end) { [string]$Weekly.period_end } else { $null })
         weekly_known  = [bool]$known
+        # account is always null here: this file is not an account match.
+        # WriteAllText is not atomic; a torn file is ignored by the ear parser.
         account       = $null
     }
     try {
