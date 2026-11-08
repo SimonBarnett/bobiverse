@@ -689,8 +689,11 @@ def normalize_go_windows(raw: object) -> dict[str, dict]:
         used = _clamp_pct(src.get("used_pct")) if src.get("used_pct") is not None and str(src.get("used_pct")) != "" else None
         rem = _clamp_pct(src.get("remaining_pct")) if src.get("remaining_pct") is not None and str(src.get("remaining_pct")) != "" else None
         # Provider meters publish used percent only. Do not invent a remaining balance.
-        provider = str(src.get("source") or "").strip().lower() == "provider"
-        if not provider:
+        # FR #6248 go-zen-usage already pairs used+remaining; keep that source.
+        src_name = str(src.get("source") or "").strip().lower()
+        provider = src_name == "provider"
+        go_zen = src_name == GO_ZEN_USAGE_SOURCE
+        if not provider and not go_zen:
             if rem is not None and used is None:
                 used = _used_from_remaining(rem)
             elif used is not None and rem is None:
@@ -702,7 +705,7 @@ def normalize_go_windows(raw: object) -> dict[str, dict]:
         reset_label = str(reset).strip() if reset not in (None, "") else None
         fetched = src.get("fetched_at")
         fetched_at = str(fetched).strip() if fetched not in (None, "") else None
-        if provider:
+        if provider or go_zen:
             rec = _window_record(
                 status,
                 used_pct=used,
@@ -710,7 +713,7 @@ def normalize_go_windows(raw: object) -> dict[str, dict]:
                 reset_label=reset_label,
                 fetched_at=fetched_at,
             )
-            rec["source"] = "provider"
+            rec["source"] = GO_ZEN_USAGE_SOURCE if go_zen else "provider"
             if src.get("limited") is not None:
                 rec["limited"] = bool(src.get("limited"))
             out[wid] = rec
@@ -1186,6 +1189,239 @@ def resolve_provider_windows(
     if not parsed:
         return _unknown_provider_windows()
     return parsed
+
+
+
+# FR #6248: official Go zen usage API (anomalyco/opencode PR #16513).
+# GET https://opencode.ai/zen/go/v1/usage with Bearer <Go API key>.
+# Pinned first-party route returns useBalance + rollingUsage/weeklyUsage/monthlyUsage
+# with usagePercent (used) + resetInSec. A later schema uses usage.{rolling,weekly,monthly}.
+GO_ZEN_USAGE_DEFAULT_URL = "https://opencode.ai/zen/go/v1/usage"
+GO_ZEN_USAGE_SOURCE = "go-zen-usage"
+
+
+def go_zen_usage_request_url(raw: str | None = None) -> str:
+    """Normalize the Go zen usage URL. Empty -> default production path."""
+    text = (raw or "").strip() or GO_ZEN_USAGE_DEFAULT_URL
+    parts = urllib.parse.urlsplit(text)
+    if parts.scheme not in ("http", "https"):
+        raise ValueError("scheme")
+    if parts.username is not None or parts.password is not None:
+        raise ValueError("credentials")
+    path = parts.path or "/zen/go/v1/usage"
+    return urllib.parse.urlunsplit((parts.scheme, parts.netloc, path, "", ""))
+
+
+def _go_zen_meter_to_window(meter: object, *, now_ms: int, fetched_at: str) -> dict:
+    """Map one zen usage meter to a paint window. percent is USED (dashboard)."""
+    if not isinstance(meter, dict):
+        rec = _window_record("unknown", fetched_at=fetched_at)
+        rec["source"] = GO_ZEN_USAGE_SOURCE
+        return rec
+    used = _clamp_pct(meter.get("usagePercent"))
+    if used is None:
+        used = _clamp_pct(meter.get("percent"))
+    if used is None:
+        rec = _window_record("unknown", fetched_at=fetched_at)
+        rec["source"] = GO_ZEN_USAGE_SOURCE
+        return rec
+    status_raw = str(meter.get("status") or "").strip().lower()
+    limited = status_raw in {"rate-limited", "limited", "exhausted"} or used >= 100
+    status = "exhausted" if limited else "known"
+    reset_label = None
+    if meter.get("resetInSec") is not None:
+        try:
+            reset_label = reset_label_from_epoch_ms(
+                int(now_ms) + int(meter["resetInSec"]) * 1000, now_ms
+            )
+        except (TypeError, ValueError):
+            reset_label = None
+    if reset_label is None:
+        reset_label = reset_label_from_epoch_ms(meter.get("resetsAt"), now_ms)
+    remaining = None if used is None else max(0, 100 - int(used))
+    rec = _window_record(
+        status,
+        used_pct=used,
+        remaining_pct=remaining,
+        reset_label=reset_label,
+        fetched_at=fetched_at,
+    )
+    rec["source"] = GO_ZEN_USAGE_SOURCE
+    rec["limited"] = limited
+    return rec
+
+
+def interpret_go_zen_usage_response(
+    status: int | None,
+    body: str | None,
+    *,
+    now_ms: int | None = None,
+    fetched_at: str | None = None,
+) -> dict:
+    """Classify a zen/go/v1/usage response without inventing quota.
+
+    Returns ``kind`` in {json, auth_error, entitlement_error, unavailable, malformed}
+    and ``windows`` when kind is json (rolling/week/month).
+    """
+    clock_ms = int(time.time() * 1000) if now_ms is None else int(now_ms)
+    fetched = fetched_at or time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(clock_ms / 1000.0))
+    if status is None:
+        return {"kind": "unavailable", "doc": None, "windows": _unknown_provider_windows()}
+    code = int(status)
+    text = body if isinstance(body, str) else ""
+    stripped = text.strip()
+    parsed = None
+    if stripped:
+        try:
+            parsed = json.loads(stripped)
+        except json.JSONDecodeError:
+            parsed = None
+    if code == 401:
+        return {"kind": "auth_error", "doc": parsed, "windows": _unknown_provider_windows()}
+    if code == 403:
+        return {
+            "kind": "entitlement_error",
+            "doc": parsed,
+            "windows": _unknown_provider_windows(),
+        }
+    if code != 200:
+        return {"kind": "unavailable", "doc": parsed, "windows": _unknown_provider_windows()}
+    if not isinstance(parsed, dict):
+        return {"kind": "malformed", "doc": None, "windows": _unknown_provider_windows()}
+
+    # Schema A (pinned PR #16513): useBalance + rollingUsage/weeklyUsage/monthlyUsage
+    if any(k in parsed for k in ("rollingUsage", "weeklyUsage", "monthlyUsage")):
+        mapping = (
+            ("rolling", parsed.get("rollingUsage")),
+            ("week", parsed.get("weeklyUsage")),
+            ("month", parsed.get("monthlyUsage")),
+        )
+        windows = {
+            wid: _go_zen_meter_to_window(meter, now_ms=clock_ms, fetched_at=fetched)
+            for wid, meter in mapping
+        }
+        return {"kind": "json", "doc": parsed, "windows": windows, "schema": "usagePercent"}
+
+    # Schema B: usage.{rolling,weekly,monthly} with percent/status/resetsAt
+    usage = parsed.get("usage")
+    if isinstance(usage, dict):
+        mapping = (
+            ("rolling", usage.get("rolling")),
+            ("week", usage.get("weekly")),
+            ("month", usage.get("monthly")),
+        )
+        windows = {
+            wid: _go_zen_meter_to_window(meter, now_ms=clock_ms, fetched_at=fetched)
+            for wid, meter in mapping
+        }
+        return {"kind": "json", "doc": parsed, "windows": windows, "schema": "usage-nested"}
+
+    # Schema C: same shape as experimental limits (go.rolling/weekly/monthly.percent)
+    if isinstance(parsed.get("go"), dict) or (
+        isinstance(parsed.get("data"), dict) and isinstance(parsed["data"].get("go"), dict)
+    ):
+        mapped = provider_windows_from_usage_limits(parsed, now_ms=clock_ms)
+        if mapped:
+            for wid, rec in mapped.items():
+                if isinstance(rec, dict):
+                    rec["source"] = GO_ZEN_USAGE_SOURCE
+                    rec["fetched_at"] = fetched
+                    if rec.get("used_pct") is not None and rec.get("remaining_pct") is None:
+                        try:
+                            rec["remaining_pct"] = max(0, 100 - int(rec["used_pct"]))
+                        except (TypeError, ValueError):
+                            pass
+            return {"kind": "json", "doc": parsed, "windows": mapped, "schema": "go-limits"}
+
+    return {"kind": "malformed", "doc": parsed, "windows": _unknown_provider_windows()}
+
+
+def fetch_go_zen_usage(
+    api_key: str,
+    *,
+    url: str | None = None,
+    timeout: float = 5.0,
+    now_ms: int | None = None,
+) -> dict:
+    """GET official Go zen usage with Bearer API key. Never follows redirects with auth.
+
+    Does not read key files. Callers pass an intentionally configured service key.
+    """
+    key = (api_key or "").strip()
+    if not key:
+        return {"kind": "auth_error", "doc": None, "windows": _unknown_provider_windows()}
+    try:
+        endpoint = go_zen_usage_request_url(url)
+    except ValueError:
+        return {"kind": "unavailable", "doc": None, "windows": _unknown_provider_windows()}
+    headers = {
+        "Accept": "application/json",
+        "Authorization": "Bearer " + key,
+    }
+    req = urllib.request.Request(endpoint, headers=headers, method="GET")
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoAuthRedirect)
+    try:
+        with opener.open(req, timeout=timeout) as resp:
+            raw = resp.read().decode("utf-8", errors="replace")
+            status = getattr(resp, "status", None)
+            code = 200 if status is None else int(status)
+    except urllib.error.HTTPError as exc:
+        try:
+            raw = exc.read().decode("utf-8", errors="replace")
+        except Exception:
+            raw = ""
+        return interpret_go_zen_usage_response(int(exc.code), raw, now_ms=now_ms)
+    except (urllib.error.URLError, TimeoutError, OSError, ValueError):
+        return {"kind": "unavailable", "doc": None, "windows": _unknown_provider_windows()}
+    return interpret_go_zen_usage_response(code, raw, now_ms=now_ms)
+
+
+def fuel_doc_from_go_zen_read(read: dict | None, *, fetched_at: str | None = None) -> dict:
+    """Build an ear fuel doc from a classified zen usage read (FR #6248)."""
+    windows = {}
+    if isinstance(read, dict) and isinstance(read.get("windows"), dict):
+        windows = dict(read["windows"])
+    else:
+        windows = _unknown_provider_windows()
+    # Derive go remaining from the tightest known window (lowest remaining).
+    go_rem = None
+    for wid in GO_WINDOW_IDS:
+        rec = windows.get(wid)
+        if not isinstance(rec, dict):
+            continue
+        rem = rec.get("remaining_pct")
+        if rem is None:
+            continue
+        try:
+            rem_i = int(rem)
+        except (TypeError, ValueError):
+            continue
+        if go_rem is None or rem_i < go_rem:
+            go_rem = rem_i
+    pcent: dict[str, int] = {}
+    if go_rem is not None:
+        pcent["opencode-go"] = go_rem
+    # Availability catalogue must not be invented as a quota here.
+    out = {
+        "pcent": pcent,
+        "windows": windows,
+        "source": GO_ZEN_USAGE_SOURCE,
+        "fetched_at": fetched_at
+        or (
+            next(
+                (
+                    str(windows[w].get("fetched_at"))
+                    for w in GO_WINDOW_IDS
+                    if isinstance(windows.get(w), dict) and windows[w].get("fetched_at")
+                ),
+                None,
+            )
+        ),
+        "provider_read": (read or {}).get("kind") if isinstance(read, dict) else None,
+        "schema": (read or {}).get("schema") if isinstance(read, dict) else None,
+    }
+    out.update(pcent)
+    return out
 
 
 def windows_from_usage_read(

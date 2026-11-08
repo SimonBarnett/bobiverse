@@ -5274,6 +5274,36 @@ def read_local_opencode_fuel_doc(
     completed document and does not replace it with an empty shell.
     """
     e = os.environ if env is None else env
+    # FR #6248: service-owned official Go zen usage (fixture or Bearer key).
+    # Tray helper / handoff is not the acquisition path.
+    zen_fixture = (e.get("BOB_OPENCODE_GO_USAGE_FIXTURE") or "").strip()
+    if zen_fixture:
+        try:
+            import opencode_fuel as of
+
+            status_s, _, body = zen_fixture.partition("\n")
+            if status_s.strip().isdigit() and body:
+                status_i = int(status_s.strip())
+                payload = body
+            else:
+                status_i = 200
+                payload = zen_fixture
+            read = of.interpret_go_zen_usage_response(status_i, payload)
+            return of.fuel_doc_from_go_zen_read(read)
+        except Exception:
+            return {}
+    api_key = (e.get("BOB_OPENCODE_GO_API_KEY") or "").strip()
+    if api_key:
+        try:
+            import opencode_fuel as of
+
+            read = of.fetch_go_zen_usage(
+                api_key,
+                url=(e.get("BOB_OPENCODE_GO_USAGE_URL") or "").strip() or None,
+            )
+            return of.fuel_doc_from_go_zen_read(read)
+        except Exception:
+            return {}
     fixture = (e.get("BOB_OPENCODE_FUEL_FIXTURE") or "").strip()
     win_fixture = (e.get(OPENCODE_WINDOWS_FIXTURE_ENV) or "").strip()
     if fixture:
@@ -5468,10 +5498,11 @@ def xai_weekly_log_path() -> Path | None:
 
 
 def xai_weekly_handoff_path(env: dict[str, str] | None = None) -> Path | None:
-    """Collector handoff. The user-context tray writes this; the service only reads it.
+    """Legacy tray handoff path (FR #6248: not an acquisition source).
 
-    ``BOB_XAI_WEEKLY_FILE``, else ``<BOB_INSTALL_ROOT>/run/xai-weekly.json``.
-    Not a credential file and not a profile scan.
+    Kept for parsers/tests of old files. ``read_local_xai_weekly`` does not
+    load this. Service owns measurement via ``BOB_WEEKLY_LOG`` or a non-system
+    process profile.
     """
     e = os.environ if env is None else env
     raw = (e.get("BOB_XAI_WEEKLY_FILE") or "").strip()
@@ -5662,16 +5693,8 @@ def read_local_xai_weekly(*, now: datetime | None = None) -> dict | None:
         _last_xai_acquisition = {"identity": "explicit", "read": reading is not None}
         if reading:
             return reading
-    handoff = xai_weekly_handoff_path()
-    if handoff is not None and handoff.is_file():
-        try:
-            doc = json.loads(handoff.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError, UnicodeError):
-            doc = None
-        reading = parse_xai_weekly_handoff(doc, now=now)
-        if reading:
-            _last_xai_acquisition = {"identity": "collector-handoff", "read": True}
-            return reading
+    # FR #6248: tray handoff is not an acquisition path. Service owns the
+    # measurement (explicit BOB_WEEKLY_LOG or a non-system process profile).
     if identity == "process-profile" and path is not None and path.is_file():
         reading = _read_xai_log_file(path, now=now)
         _last_xai_acquisition = {"identity": "process-profile", "read": reading is not None}
@@ -5809,13 +5832,28 @@ def publish_local_peer_fuel(
             peer = enrich_peer_with_xai_weekly(peer, xai)
     except Exception:
         _last_fuel_publish_diag["acquisition"] = "read-failed"
-    # FR #6146 / #6147: enrich with local OpenCode pcent + windows before fingerprint/POST.
+    # FR #6146 / #6147 / #6248: enrich with service-owned OpenCode windows before POST.
     try:
         oc_doc = read_local_opencode_fuel_doc()
         oc = _pcent_from_opencode_fuel_doc(oc_doc)
         wins = _windows_from_opencode_fuel_doc(oc_doc)
         if oc or wins:
             peer = enrich_peer_with_opencode_pcent(peer, oc, wins)
+        if isinstance(oc_doc, dict) and oc_doc.get("source"):
+            _last_fuel_publish_diag["opencode_source"] = str(oc_doc.get("source"))
+    except Exception:
+        pass
+    # FR #6248: attach ear-owned grok_account (Redqueen publishes real X identity).
+    try:
+        _src, label = read_grok_account_label()
+        if label:
+            peer = dict(peer)
+            peer["grok_account"] = label
+            xai_meter = peer.get("xai_weekly")
+            if isinstance(xai_meter, dict):
+                meter = dict(xai_meter)
+                meter["account"] = label
+                peer["xai_weekly"] = meter
     except Exception:
         pass
     payload = build_peer_fuel_merge_payload(peer, mid)
