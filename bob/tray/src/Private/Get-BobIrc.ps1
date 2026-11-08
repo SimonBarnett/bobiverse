@@ -2461,11 +2461,12 @@ function Send-BobDigestWebhookIfChanged {
 
 function Save-BobXaiWeeklyHandoff {
     <#
-      User-context collector already read the billing log. Write the meter only
-      to <BOB_INSTALL_ROOT>\run\xai-weekly.json for the LocalSystem ear.
-      No profile scan and no secrets.
+      FR #6248: tray must not write usage handoffs. The bob-ear service owns
+      provider acquisition and digest publish; the tray only reads the digest.
+      Kept as a no-op so older callers do not resurrect the handoff design.
     #>
     param($Weekly)
+    return
     $root = ([string]$env:BOB_INSTALL_ROOT).Trim()
     if (-not $root) { return }
     if (-not $Weekly) { return }
@@ -2558,7 +2559,7 @@ function Write-BobIrcStatus {
     catch { }
     $seen = [DateTime]::UtcNow.ToString('o')
     Save-BobSeatPeriodEnd -MachineId $id -PeriodEnd $periodEnd -Weekly $week -ClearWeekly:([bool]($w -and $w.stale))
-    try { Save-BobXaiWeeklyHandoff -Weekly $w } catch { }
+    # FR #6248: no tray usage handoff write
     $cursorLabel = $null
     $cursorPeriodEnd = $null
     $sandPeriodEnd = $null

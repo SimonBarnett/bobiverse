@@ -223,6 +223,12 @@ def test_collector_handoff_parses_a_real_sample(monkeypatch, tmp_path: Path):
         "weekly_known": True,
         "account": None,
     }
+    # FR #6248: tray handoff is not an acquisition path. Parser still accepts the
+    # document shape; LocalSystem with only a handoff file stays skipped.
+    parsed_handoff = bobreport.parse_xai_weekly_handoff(handoff, now=now)
+    assert parsed_handoff is not None
+    assert parsed_handoff["remaining_pct"] == 72
+    assert parsed_handoff["fetched_at"] == "2026-11-08T15:10:00Z"
     root = tmp_path / "install"
     (root / "run").mkdir(parents=True)
     (root / "run" / "xai-weekly.json").write_text(json.dumps(handoff), encoding="utf-8")
@@ -231,13 +237,11 @@ def test_collector_handoff_parses_a_real_sample(monkeypatch, tmp_path: Path):
     monkeypatch.setenv("USERPROFILE", r"C:\Windows\system32\config\systemprofile")
     monkeypatch.delenv("HOME", raising=False)
     reading = bobreport.read_local_xai_weekly(now=now)
-    assert reading is not None
-    assert reading["provider"] == "xai"
-    assert reading["window"] == "weekly"
-    assert reading["direction"] == "remaining"
-    assert reading["fetched_at"] == "2026-11-08T15:10:00Z"
-    assert bobreport._last_xai_acquisition["identity"] == "collector-handoff"
-    peer = bobreport.enrich_peer_with_xai_weekly({"id": "marchhare", "ok": True}, reading)
+    assert reading is None
+    assert bobreport._last_xai_acquisition["identity"] == "system-profile-skipped"
+    peer = bobreport.enrich_peer_with_xai_weekly(
+        {"id": "marchhare", "ok": True}, parsed_handoff
+    )
     assert peer["xai_weekly"]["fetched_at"] == "2026-11-08T15:10:00Z"
     assert peer["xai_weekly"]["window"] == "weekly"
 
