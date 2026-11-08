@@ -79,6 +79,17 @@ def test_fr6263_classify_429_and_5xx():
     )
 
 
+def test_fr6263_request_id_1010_is_not_blocked_1010():
+    # MRB #6264 / CodeRabbit: unrelated JSON field "1010" must not flip entitlement.
+    body = json.dumps({"error": "no_sub", "request_id": "1010"})
+    assert opencode_fuel.interpret_go_zen_usage_response(403, body)["kind"] == "entitlement_error"
+
+
+def test_fr6263_html_error_1010_body_is_blocked():
+    html = "<html>error code: 1010 Access denied</html>"
+    assert opencode_fuel.interpret_go_zen_usage_response(403, html)["kind"] == "blocked_1010"
+
+
 def test_fr6263_failed_read_stays_unknown_with_provider_read(monkeypatch):
     monkeypatch.setenv("BOB_OPENCODE_GO_API_KEY", "FAKE_GO_KEY")
     monkeypatch.delenv("BOB_OPENCODE_GO_USAGE_FIXTURE", raising=False)
@@ -201,3 +212,9 @@ def test_fr6263_frozen_overlay_allowlists_opencode_fuel():
 
     assert "opencode_fuel" in irc_agent.FROZEN_SCRIPT_OVERLAY
     assert "bobreport" in irc_agent.FROZEN_SCRIPT_OVERLAY
+    assert irc_agent.OPENCODE_FUEL_OVERLAY_MARKER == "GO_ZEN_USAGE_USER_AGENT"
+    assert hasattr(opencode_fuel, "GO_ZEN_USAGE_USER_AGENT")
+    assert opencode_fuel.GO_ZEN_USAGE_USER_AGENT == bobreport.DIGEST_HTTP_USER_AGENT
+    # Marker must appear in the on-disk module so frozen overlay accepts the hotpatch.
+    src = Path(opencode_fuel.__file__).read_text(encoding="utf-8")
+    assert irc_agent.OPENCODE_FUEL_OVERLAY_MARKER in src

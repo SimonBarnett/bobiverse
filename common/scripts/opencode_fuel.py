@@ -1281,13 +1281,30 @@ def interpret_go_zen_usage_response(
         return {"kind": "auth_error", "doc": parsed, "windows": _unknown_provider_windows()}
     if code == 403:
         # FR #6263: Cloudflare 1010 / browser_signature_banned is not "no subscription".
-        blob = (stripped + " " + json.dumps(parsed, sort_keys=True)).lower() if parsed is not None else stripped.lower()
-        if "1010" in blob or "browser_signature_banned" in blob:
-            return {
-                "kind": "blocked_1010",
-                "doc": parsed,
-                "windows": _unknown_provider_windows(),
-            }
+        # Prefer structured error/error_code/message; do not treat bare "1010" in
+        # unrelated JSON fields (e.g. request_id) as an edge block (MRB #6264).
+        if isinstance(parsed, dict):
+            err = parsed.get("error")
+            err_code = parsed.get("error_code")
+            msg = str(parsed.get("message") or "").lower()
+            if (
+                err in (1010, "1010")
+                or err_code in (1010, "1010")
+                or "browser_signature_banned" in msg
+            ):
+                return {
+                    "kind": "blocked_1010",
+                    "doc": parsed,
+                    "windows": _unknown_provider_windows(),
+                }
+        else:
+            blob = stripped.lower()
+            if "browser_signature_banned" in blob or "error code: 1010" in blob or "error 1010" in blob:
+                return {
+                    "kind": "blocked_1010",
+                    "doc": parsed,
+                    "windows": _unknown_provider_windows(),
+                }
         return {
             "kind": "entitlement_error",
             "doc": parsed,
