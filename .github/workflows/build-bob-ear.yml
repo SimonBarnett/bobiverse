@@ -24,8 +24,11 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install PyInstaller
-        run: python -m pip install --upgrade pip pyinstaller
+      - name: Install PyInstaller and the ear Python dependency
+        run: |
+          python -m pip install --upgrade pip pyinstaller
+          . .\common\scripts\Bobiverse-Common.ps1
+          Install-BobiversePythonDeps -Python (Get-Command python).Source
 
       - name: Confirm behavior files match 050ca9fa
         run: |
