@@ -92,12 +92,14 @@ def test_manifest_hashes_match_tip_bytes():
     by_path = {path.replace("\\", "/"): (digest, size) for digest, size, path in rows}
     for rel in BEHAVIOR_FILES:
         assert rel in by_path, f"manifest missing {rel}"
+    # Every declared row (behavior + deploy scripts) must match tip bytes.
+    for rel, (want_digest, want_size) in by_path.items():
         data = (ROOT / rel).read_bytes()
         digest = hashlib.sha256(data).hexdigest()
         size = len(data)
-        assert by_path[rel] == (digest, size), (
+        assert (digest, size) == (want_digest, want_size), (
             f"manifest hash mismatch for {rel}: "
-            f"manifest={by_path[rel]} tip=({digest}, {size})"
+            f"manifest={(want_digest, want_size)} tip=({digest}, {size})"
         )
 
 
