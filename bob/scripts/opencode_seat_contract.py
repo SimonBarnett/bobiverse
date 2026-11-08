@@ -7,6 +7,7 @@ protocol path the worker sets.
 """
 from __future__ import annotations
 
+import os
 import re
 from pathlib import Path
 
@@ -15,9 +16,10 @@ from pathlib import Path
 DIR_FORBIDDEN_RX = re.compile(
     r"(?i)(\\.config\\gh|hosts\.yml|\.git-credentials|\\passwords(?:\\|$)|\\.netrc)"
 )
-_ASSIGN_RX = re.compile(
-    r"(?i)\b(FR|MRB|UAT)\s+([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)#(\d+)\b"
-)
+# Same assign shape as the worker: TYPE + non-space ref ending in #digits.
+# Repo may be owner/name or a leaf. A drive-root or ".." ref is refused later.
+_ASSIGN_RX = re.compile(r"(?i)\b(FR|MRB|UAT)\s+(\S+)#(\d+)\b")
+_JOB_KEY_RX = re.compile(r"(?i)\b(FR|MRB|UAT)\s+(\S+#\d+)\b")
 _TOKEN_RX = re.compile(
     r"(?i)(github_pat_[A-Za-z0-9_]+|ghp_[A-Za-z0-9]+|gho_[A-Za-z0-9]+|"
     r"ghu_[A-Za-z0-9]+|ghs_[A-Za-z0-9]+|ghr_[A-Za-z0-9]+)"
@@ -30,14 +32,22 @@ GH_BLOCK_MESSAGE = (
 )
 DIR_FORBIDDEN_MESSAGE = (
     "opencode-ready: blocked opencode_dir_forbidden. "
-    "Next: unset BOB_OPENCODE_DIR. Do not point OpenCode at a credential store."
+    "Next: the job worktree path is a credential path. Do not point OpenCode at a credential store."
 )
 WORKTREE_ABSENT_MESSAGE = (
     "opencode-ready: blocked worktree_absent. "
-    "Next: create the assigned job worktree (Get-BobiverseJobWorktreePath) "
-    "or answer external_directory in interactive opencode (the TUI). "
-    "opencode run auto-rejects that ask and has no --interactive flag. "
+    "Next: create the assigned job worktree (Get-BobiverseJobWorktreePath). "
+    "Headless opencode run auto-rejects external_directory and has no --interactive flag. "
+    "An interactive TUI answer is not evidence that a later opencode run will allow the outbox. "
     "Do not pass --auto. This run is not a completed job."
+)
+BASE_REFUSED_MESSAGE = (
+    "opencode-ready: blocked worktree_base_refused. "
+    "Next: set BOB_JOB_WORKTREE_BASE to <drive>\\ai\\worktrees. A drive root is refused."
+)
+MALFORMED_MESSAGE = (
+    "opencode-ready: blocked job_context_malformed. "
+    "Next: the assign did not match owner/repo#N or repo#N. No DONE."
 )
 
 
@@ -92,41 +102,260 @@ def gh_auth_blocks(stdout: str, stderr: str, exit_code: int) -> tuple[bool, str]
     )
 
 
-def worktree_base_from_env(env: dict | None) -> str:
-    """Same base as Get-BobiverseJobWorktreeBase when the env is already set.
+class WorktreeBaseError(ValueError):
+    """FR #4988: the job worktree base resolved to a drive root or was refused."""
 
-    Does not invent a drive and does not create a directory.
+
+def is_drive_root(path: str) -> bool:
+    """True for ``D:`` or ``D:\\`` (and slash forms). Not true for ``D:\\ai\\worktrees``."""
+    raw = (path or "").strip().strip('"').replace("/", "\\")
+    if not raw:
+        return False
+    trimmed = raw.rstrip("\\")
+    if re.fullmatch(r"[A-Za-z]:", trimmed):
+        return True
+    root = ""
+    match = re.match(r"^([A-Za-z]:)\\", raw)
+    if match:
+        root = match.group(1)
+    return bool(root) and trimmed.upper() == root.upper()
+
+
+def data_drive_root(disks: list | None, system_drive: str = "C:") -> str:
+    """Prefer non-system ``D:\\``, else another fixed disk, else the system drive.
+
+    ``disks`` entries are ``{"Root": "D:\\\\", "DriveType": 3}``. DriveType 3 is a
+    fixed disk, matching ``Get-BobiverseDataDriveRoot``.
+    """
+    sys = (system_drive or "C:").strip().rstrip("\\") + "\\"
+    fixed: list[str] = []
+    for disk in disks or []:
+        root = str((disk or {}).get("Root") or "")
+        if not root:
+            continue
+        if not root.endswith("\\"):
+            root += "\\"
+        if str((disk or {}).get("DriveType")) != "3":
+            continue
+        fixed.append(root)
+    for root in fixed:
+        if root.lower() != sys.lower() and re.fullmatch(r"(?i)d:\\", root):
+            return root
+    for root in fixed:
+        if root.lower() != sys.lower():
+            return root
+    return sys
+
+
+def _local_fixed_disks() -> list[dict]:
+    """Fixed disks on Windows only. Does not read files. Empty off Windows."""
+    if os.name != "nt":
+        return []
+    try:
+        import ctypes
+    except Exception:
+        return []
+    out = []
+    for letter in "CDEFGHIJKLMNOPQRSTUVWXYZ":
+        root = f"{letter}:\\"
+        try:
+            kind = int(ctypes.windll.kernel32.GetDriveTypeW(root))
+        except Exception:
+            continue
+        if kind == 3:
+            out.append({"Root": root, "DriveType": 3})
+    return out
+
+
+def job_worktree_base(
+    env: dict | None = None,
+    disks: list | None = None,
+    system_drive: str = "",
+) -> str:
+    """Override order matches ``Get-BobiverseJobWorktreeBase``. Never a drive root.
+
+    Unset env uses ``<data-drive>\\ai\\worktrees``. This does not create the directory.
     """
     env = env or {}
     explicit = str(env.get("BOB_JOB_WORKTREE_BASE") or "").strip()
     if explicit:
-        return explicit
-    bridge = str(env.get("BOB_BRIDGE_HOME") or "").strip()
-    if not bridge:
+        chosen = explicit
+    else:
+        bridge = str(env.get("BOB_BRIDGE_HOME") or "").strip()
+        if bridge:
+            if is_drive_root(bridge):
+                raise WorktreeBaseError(BASE_REFUSED_MESSAGE)
+            chosen = str(Path(bridge) / "worktrees")
+        else:
+            sys_drive = system_drive or str(env.get("SystemDrive") or "C:")
+            probe = disks if disks is not None else _local_fixed_disks()
+            chosen = _join_path(data_drive_root(probe, sys_drive), "ai", "worktrees")
+    if is_drive_root(chosen):
+        raise WorktreeBaseError(BASE_REFUSED_MESSAGE)
+    return chosen.rstrip("\\/")
+
+
+def _join_path(base: str, *parts: str) -> str:
+    """Join a Windows drive path with backslashes. Local test paths keep ``Path``."""
+    raw = (base or "").strip()
+    if re.match(r"^[A-Za-z]:", raw) or "\\" in raw:
+        joined = raw.replace("/", "\\").rstrip("\\")
+        for part in parts:
+            piece = (part or "").replace("/", "\\").strip("\\")
+            if piece:
+                joined = joined + "\\" + piece
+        return joined
+    path = Path(raw)
+    for part in parts:
+        path = path / part
+    return str(path)
+
+
+def _repo_leaf(repo: str) -> str:
+    """Last path segment, matching ``Get-BobiverseJobWorktreePath``. ``..`` is refused."""
+    text = (repo or "").replace("\\", "/").strip().strip("/")
+    if not text or ".." in text.split("/"):
         return ""
-    return str(Path(bridge) / "worktrees")
+    if "/" in text:
+        text = text.split("/")[-1]
+    if text in {".", ".."}:
+        return ""
+    leaf = re.sub(r"[^A-Za-z0-9._-]+", "-", text).strip("-")
+    if not leaf or set(leaf) <= {"."}:
+        return ""
+    return leaf
 
 
-def project_dir_for_assign(line: str, env: dict | None) -> str:
-    """``<base>/<repo-leaf>/<fr-N>`` for one assign line, or ``''``."""
+def _job_key(line: str) -> str:
+    match = _JOB_KEY_RX.search(line or "")
+    if not match:
+        return ""
+    return f"{match.group(1).upper()} {match.group(2)}"
+
+
+def _nack(line: str, reason: str) -> str:
+    key = _job_key(line)
+    if not key:
+        return ""
+    return f"NACK {key} {reason} (FR #6240)"
+
+
+def project_dir_for_assign(
+    line: str,
+    env: dict | None = None,
+    disks: list | None = None,
+    system_drive: str = "",
+) -> str:
+    """``<base>\\<repo-leaf>\\<fr-N>`` or ``''`` when the assign text does not match.
+
+    A matched assign whose leaf is ``..`` or empty returns ``''`` so the caller
+    NACKs instead of launching in the worker folder.
+    """
     match = _ASSIGN_RX.search(line or "")
-    base = worktree_base_from_env(env)
-    if not match or not base:
+    if not match:
         return ""
-    kind, _owner, repo, num = match.groups()
-    repo_leaf = re.sub(r"[^A-Za-z0-9._-]+", "-", repo).strip("-") or "job"
-    return str(Path(base) / repo_leaf / f"{kind.lower()}-{num}")
+    base = job_worktree_base(env, disks=disks, system_drive=system_drive)
+    kind, repo, num = match.groups()
+    leaf = _repo_leaf(repo)
+    if not leaf:
+        return ""
+    job = f"{kind.lower()}-{num}"
+    path = _join_path(base, leaf, job)
+    if is_drive_root(path):
+        return ""
+    base_norm = base.replace("/", "\\").rstrip("\\").lower()
+    path_norm = path.replace("/", "\\").rstrip("\\").lower()
+    if not path_norm.startswith(base_norm + "\\"):
+        return ""
+    return path
 
 
-def write_project_dir(run_dir: str | Path, line: str, env: dict | None) -> str:
-    """Record the job worktree for the next opencode run. Does not create it."""
-    path = project_dir_for_assign(line, env)
+def classify_opencode_job(
+    line: str,
+    env: dict | None = None,
+    disks: list | None = None,
+    system_drive: str = "",
+) -> dict:
+    """Job context for one line. Does not create a directory and does not write a file.
+
+    ``not_assign`` is a startup or chat line: no ``--dir`` is required.
+    An assign that cannot be a safe existing directory returns a NACK and no path.
+    """
+    if not _JOB_KEY_RX.search(line or ""):
+        return {"state": "not_assign", "nack": "", "path": "", "message": ""}
+    try:
+        path = project_dir_for_assign(line, env, disks=disks, system_drive=system_drive)
+    except WorktreeBaseError:
+        return {
+            "state": "base_refused",
+            "nack": _nack(line, "worktree-base-refused"),
+            "path": "",
+            "message": BASE_REFUSED_MESSAGE,
+        }
     if not path:
-        return ""
+        return {
+            "state": "malformed",
+            "nack": _nack(line, "job-context-malformed"),
+            "path": "",
+            "message": MALFORMED_MESSAGE,
+        }
+    decision = resolve_project_dir(path)
+    if decision["state"] == "forbidden":
+        return {
+            "state": "forbidden",
+            "nack": _nack(line, "opencode-dir-forbidden"),
+            "path": "",
+            "message": decision["message"],
+        }
+    if decision["state"] != "project":
+        return {
+            "state": "absent",
+            "nack": _nack(line, "worktree-absent"),
+            "path": path,
+            "message": decision["message"],
+        }
+    return {"state": "project", "nack": "", "path": path, "message": ""}
+
+
+def record_opencode_job(
+    run_dir: str | Path,
+    line: str,
+    env: dict | None = None,
+    disks: list | None = None,
+    system_drive: str = "",
+) -> dict:
+    """Write ``opencode-project-dir.txt`` only when the job directory exists and is safe."""
+    decision = classify_opencode_job(line, env, disks=disks, system_drive=system_drive)
+    if decision["state"] != "project" or not decision["path"] or not run_dir:
+        return decision
     dest = Path(run_dir) / "opencode-project-dir.txt"
     dest.parent.mkdir(parents=True, exist_ok=True)
-    dest.write_text(path + "\n", encoding="utf-8")
-    return path
+    dest.write_text(decision["path"] + "\n", encoding="utf-8")
+    return decision
+
+
+def opencode_job_context_nack(
+    line: str,
+    env: dict | None = None,
+    disks: list | None = None,
+    system_drive: str = "",
+) -> str:
+    """NACK text when this assign must not be ACK'd, else ``''``."""
+    return classify_opencode_job(line, env, disks=disks, system_drive=system_drive)["nack"]
+
+
+def write_project_dir(
+    run_dir: str | Path,
+    line: str,
+    env: dict | None = None,
+    disks: list | None = None,
+    system_drive: str = "",
+) -> str:
+    """Record the job worktree. Returns ``''`` when the run must not use ``--dir``."""
+    decision = record_opencode_job(run_dir, line, env, disks=disks, system_drive=system_drive)
+    if decision["state"] == "project":
+        return decision["path"]
+    return ""
 
 
 def resolve_project_dir(path: str) -> dict:

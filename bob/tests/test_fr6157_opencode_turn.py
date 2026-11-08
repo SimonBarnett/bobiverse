@@ -239,6 +239,7 @@ def test_fr6157_start_agent_clears_opencode_turns_before_spawn(tmp_path: Path, m
         assert turns.read_text(encoding="utf-8") == ""
         return FakeProc()
 
+    monkeypatch.setattr(bw, "probe_gh_auth", lambda *_a, **_k: (False, ""))
     monkeypatch.setattr(bw, "describe_agent_child_launch", fake_describe)
     monkeypatch.setattr(bw, "prepare_seat_child_env", lambda base, env: dict(env or {}))
     monkeypatch.setattr(bw, "should_start_cursor_turn_watcher", lambda k: False)
@@ -268,6 +269,7 @@ def test_fr6157_start_agent_clears_opencode_turns_before_spawn(tmp_path: Path, m
     sup._shutting = False
     sup.bored = FakeBored()
     sup.kind = "opencode"
+    sup.install_root = str(tmp_path)
     sup.run_dir = run_dir
     sup.cwd = str(tmp_path)
     sup.machine = "redqueen"
