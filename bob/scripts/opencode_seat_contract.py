@@ -49,6 +49,10 @@ MALFORMED_MESSAGE = (
     "opencode-ready: blocked job_context_malformed. "
     "Next: the assign did not match owner/repo#N or repo#N. No DONE."
 )
+AMBIGUOUS_MESSAGE = (
+    "opencode-ready: blocked job_context_ambiguous. "
+    "Next: one worker message contained more than one job. No ACK."
+)
 
 
 def redact_secrets(text: str) -> str:
@@ -104,6 +108,50 @@ def gh_auth_blocks(stdout: str, stderr: str, exit_code: int) -> tuple[bool, str]
 
 class WorktreeBaseError(ValueError):
     """FR #4988: the job worktree base resolved to a drive root or was refused."""
+
+
+def canonicalize_path(path: str) -> str:
+    """Lexical ``.`` / ``..`` normalization. Does not touch the filesystem.
+
+    ``D:\\ai\\..`` becomes ``D:\\``, which ``is_drive_root`` then refuses.
+    This matches ``[IO.Path]::GetFullPath`` for drive paths without reading files.
+    """
+    raw = (path or "").strip().strip('"')
+    if not raw:
+        return ""
+    slash = raw.replace("/", "\\")
+    drive_match = re.match(r"^([A-Za-z]:)(.*)$", slash)
+    if drive_match or ("\\" in raw and not raw.startswith("/")):
+        if not drive_match:
+            return slash
+        rest = drive_match.group(2).lstrip("\\")
+        stack: list[str] = []
+        for part in rest.split("\\"):
+            if part in ("", "."):
+                continue
+            if part == "..":
+                if stack:
+                    stack.pop()
+                continue
+            stack.append(part)
+        if not stack:
+            return drive_match.group(1) + "\\"
+        return drive_match.group(1) + "\\" + "\\".join(stack)
+    absolute = raw.startswith("/")
+    stack = []
+    for part in raw.replace("\\", "/").split("/"):
+        if part in ("", "."):
+            continue
+        if part == "..":
+            if stack and stack[-1] != "..":
+                stack.pop()
+            elif not absolute:
+                stack.append("..")
+            continue
+        stack.append(part)
+    if absolute:
+        return "/" + "/".join(stack)
+    return "/".join(stack) or "."
 
 
 def is_drive_root(path: str) -> bool:
@@ -179,17 +227,18 @@ def job_worktree_base(
     env = env or {}
     explicit = str(env.get("BOB_JOB_WORKTREE_BASE") or "").strip()
     if explicit:
-        chosen = explicit
+        chosen = canonicalize_path(explicit)
     else:
         bridge = str(env.get("BOB_BRIDGE_HOME") or "").strip()
         if bridge:
-            if is_drive_root(bridge):
+            bridge_c = canonicalize_path(bridge)
+            if is_drive_root(bridge_c):
                 raise WorktreeBaseError(BASE_REFUSED_MESSAGE)
-            chosen = str(Path(bridge) / "worktrees")
+            chosen = canonicalize_path(_join_path(bridge_c, "worktrees"))
         else:
             sys_drive = system_drive or str(env.get("SystemDrive") or "C:")
             probe = disks if disks is not None else _local_fixed_disks()
-            chosen = _join_path(data_drive_root(probe, sys_drive), "ai", "worktrees")
+            chosen = canonicalize_path(_join_path(data_drive_root(probe, sys_drive), "ai", "worktrees"))
     if is_drive_root(chosen):
         raise WorktreeBaseError(BASE_REFUSED_MESSAGE)
     return chosen.rstrip("\\/")
@@ -226,18 +275,63 @@ def _repo_leaf(repo: str) -> str:
     return leaf
 
 
-def _job_key(line: str) -> str:
-    match = _JOB_KEY_RX.search(line or "")
-    if not match:
-        return ""
-    return f"{match.group(1).upper()} {match.group(2)}"
+FRAME_MARK = "@@BOBJOB1"
 
 
-def _nack(line: str, reason: str) -> str:
-    key = _job_key(line)
+def message_job_keys(line: str) -> list[str]:
+    """Job keys on one worker ``FROM nick target body`` message.
+
+    Any other text, including the standing prompt and its example
+    ``FR SimonBarnett/a-search#637``, has no job keys. The body is the
+    text after the FROM envelope, not a search of an arbitrary string.
+    """
+    text = (line or "").strip()
+    parts = text.split(None, 3)
+    if len(parts) < 4 or parts[0].upper() != "FROM":
+        return []
+    found: list[str] = []
+    for match in _JOB_KEY_RX.finditer(parts[3]):
+        key = f"{match.group(1).upper()} {match.group(2)}"
+        if key not in found:
+            found.append(key)
+    return found
+
+
+def _nack_key(key: str, reason: str) -> str:
     if not key:
         return ""
     return f"NACK {key} {reason} (FR #6240)"
+
+
+def _nack(line: str, reason: str) -> str:
+    keys = message_job_keys(line)
+    if not keys:
+        return ""
+    return _nack_key(keys[0], reason)
+
+
+def _project_dir_for_key(
+    key: str,
+    env: dict | None = None,
+    disks: list | None = None,
+    system_drive: str = "",
+) -> str:
+    match = re.match(r"(?i)^(FR|MRB|UAT)\s+(\S+)#(\d+)$", (key or "").strip())
+    if not match:
+        return ""
+    base = job_worktree_base(env, disks=disks, system_drive=system_drive)
+    kind, repo, num = match.groups()
+    leaf = _repo_leaf(repo)
+    if not leaf:
+        return ""
+    path = canonicalize_path(_join_path(base, leaf, f"{kind.lower()}-{num}"))
+    if is_drive_root(path):
+        return ""
+    base_norm = canonicalize_path(base).replace("/", "\\").rstrip("\\").lower()
+    path_norm = path.replace("/", "\\").rstrip("\\").lower()
+    if not path_norm.startswith(base_norm + "\\"):
+        return ""
+    return path
 
 
 def project_dir_for_assign(
@@ -246,28 +340,11 @@ def project_dir_for_assign(
     disks: list | None = None,
     system_drive: str = "",
 ) -> str:
-    """``<base>\\<repo-leaf>\\<fr-N>`` or ``''`` when the assign text does not match.
-
-    A matched assign whose leaf is ``..`` or empty returns ``''`` so the caller
-    NACKs instead of launching in the worker folder.
-    """
-    match = _ASSIGN_RX.search(line or "")
-    if not match:
+    """``<base>\\<repo-leaf>\\<fr-N>`` for one FROM assign, else ``''``."""
+    keys = message_job_keys(line)
+    if len(keys) != 1:
         return ""
-    base = job_worktree_base(env, disks=disks, system_drive=system_drive)
-    kind, repo, num = match.groups()
-    leaf = _repo_leaf(repo)
-    if not leaf:
-        return ""
-    job = f"{kind.lower()}-{num}"
-    path = _join_path(base, leaf, job)
-    if is_drive_root(path):
-        return ""
-    base_norm = base.replace("/", "\\").rstrip("\\").lower()
-    path_norm = path.replace("/", "\\").rstrip("\\").lower()
-    if not path_norm.startswith(base_norm + "\\"):
-        return ""
-    return path
+    return _project_dir_for_key(keys[0], env, disks=disks, system_drive=system_drive)
 
 
 def classify_opencode_job(
@@ -276,62 +353,107 @@ def classify_opencode_job(
     disks: list | None = None,
     system_drive: str = "",
 ) -> dict:
-    """Job context for one line. Does not create a directory and does not write a file.
+    """Job context for one worker message. Does not create a directory.
 
-    ``not_assign`` is a startup or chat line: no ``--dir`` is required.
-    An assign that cannot be a safe existing directory returns a NACK and no path.
+    Text that is not a single FROM assign, including the standing prompt, is
+    ``not_assign``. Two job ids in one message are ``ambiguous`` and must not
+    be ACK'd as the first id. A bad single assign returns one NACK and no path.
     """
-    if not _JOB_KEY_RX.search(line or ""):
-        return {"state": "not_assign", "nack": "", "path": "", "message": ""}
+    keys = message_job_keys(line)
+    if not keys:
+        return {"state": "not_assign", "nack": "", "nacks": [], "path": "", "key": "", "message": ""}
+    if len(keys) != 1:
+        nacks = [_nack_key(key, "job-context-ambiguous") for key in keys]
+        return {
+            "state": "ambiguous",
+            "nack": "\n".join(nacks),
+            "nacks": nacks,
+            "path": "",
+            "key": "",
+            "message": AMBIGUOUS_MESSAGE,
+        }
+    key = keys[0]
     try:
-        path = project_dir_for_assign(line, env, disks=disks, system_drive=system_drive)
+        path = _project_dir_for_key(key, env, disks=disks, system_drive=system_drive)
     except WorktreeBaseError:
+        nack = _nack_key(key, "worktree-base-refused")
         return {
             "state": "base_refused",
-            "nack": _nack(line, "worktree-base-refused"),
+            "nack": nack,
+            "nacks": [nack],
             "path": "",
+            "key": key,
             "message": BASE_REFUSED_MESSAGE,
         }
     if not path:
+        nack = _nack_key(key, "job-context-malformed")
         return {
             "state": "malformed",
-            "nack": _nack(line, "job-context-malformed"),
+            "nack": nack,
+            "nacks": [nack],
             "path": "",
+            "key": key,
             "message": MALFORMED_MESSAGE,
         }
     decision = resolve_project_dir(path)
     if decision["state"] == "forbidden":
+        nack = _nack_key(key, "opencode-dir-forbidden")
         return {
             "state": "forbidden",
-            "nack": _nack(line, "opencode-dir-forbidden"),
+            "nack": nack,
+            "nacks": [nack],
             "path": "",
+            "key": key,
             "message": decision["message"],
         }
     if decision["state"] != "project":
+        nack = _nack_key(key, "worktree-absent")
         return {
             "state": "absent",
-            "nack": _nack(line, "worktree-absent"),
+            "nack": nack,
+            "nacks": [nack],
             "path": path,
+            "key": key,
             "message": decision["message"],
         }
-    return {"state": "project", "nack": "", "path": path, "message": ""}
+    return {"state": "project", "nack": "", "nacks": [], "path": path, "key": key, "message": ""}
 
 
-def record_opencode_job(
-    run_dir: str | Path,
+def frame_opencode_message(line: str, key: str, directory: str) -> str:
+    """Bind this message to its directory. The wrapper strips the prefix.
+
+    The standing prompt is never framed. A later message cannot change this
+    message's directory.
+    """
+    if any(ch in (key or "") for ch in "\t\r\n") or any(ch in (directory or "") for ch in "\t\r\n"):
+        raise ValueError("job context cannot be framed")
+    return f"{FRAME_MARK}\t{key}\t{directory}\t{line}"
+
+
+def parse_opencode_frame(raw: str) -> dict | None:
+    """Return ``{key, dir, line}`` when ``raw`` is a worker job frame, else None."""
+    text = raw or ""
+    if not text.startswith(FRAME_MARK + "\t"):
+        return None
+    parts = text.split("\t", 3)
+    if len(parts) != 4 or not parts[1]:
+        return None
+    return {"key": parts[1], "dir": parts[2], "line": parts[3]}
+
+
+def prepare_opencode_wire(
     line: str,
     env: dict | None = None,
     disks: list | None = None,
     system_drive: str = "",
 ) -> dict:
-    """Write ``opencode-project-dir.txt`` only when the job directory exists and is safe."""
+    """Frame a single accepted assign. A refusal carries NACK text and no wire."""
     decision = classify_opencode_job(line, env, disks=disks, system_drive=system_drive)
-    if decision["state"] != "project" or not decision["path"] or not run_dir:
-        return decision
-    dest = Path(run_dir) / "opencode-project-dir.txt"
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    dest.write_text(decision["path"] + "\n", encoding="utf-8")
-    return decision
+    if decision["state"] == "not_assign":
+        return {**decision, "wire": line}
+    if decision["nack"]:
+        return {**decision, "wire": ""}
+    return {**decision, "wire": frame_opencode_message(line, decision["key"], decision["path"])}
 
 
 def opencode_job_context_nack(
@@ -340,7 +462,7 @@ def opencode_job_context_nack(
     disks: list | None = None,
     system_drive: str = "",
 ) -> str:
-    """NACK text when this assign must not be ACK'd, else ``''``."""
+    """NACK text when this message must not be ACK'd, else ``''``."""
     return classify_opencode_job(line, env, disks=disks, system_drive=system_drive)["nack"]
 
 
@@ -351,8 +473,9 @@ def write_project_dir(
     disks: list | None = None,
     system_drive: str = "",
 ) -> str:
-    """Record the job worktree. Returns ``''`` when the run must not use ``--dir``."""
-    decision = record_opencode_job(run_dir, line, env, disks=disks, system_drive=system_drive)
+    """Return the job directory when it exists. Does not write a shared path file."""
+    del run_dir
+    decision = classify_opencode_job(line, env, disks=disks, system_drive=system_drive)
     if decision["state"] == "project":
         return decision["path"]
     return ""

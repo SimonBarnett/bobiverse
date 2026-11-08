@@ -9,10 +9,10 @@ Public CLI reference used here: [OpenCode CLI](https://dev.opencode.ai/docs/cli/
 ## What the worker does
 
 - `gh auth status` before the model starts. If the CLI is not logged in, the seat does not start and logs `gh_auth_missing`. The status body is not logged. No `hosts.yml` read and no token search.
-- The job worktree base follows `Get-BobiverseJobWorktreeBase`: `BOB_JOB_WORKTREE_BASE`, else `BOB_BRIDGE_HOME\worktrees` when the bridge is not a drive root, else `<data-drive>\ai\worktrees` (non-system `D:\` when that fixed disk is present, else the system drive). A drive-root base is refused. The worker does not create the folder.
-- On each assign the path is `<base>\<repo-leaf>\<fr-N>` (`owner/repo` or a bare repo leaf). The run file `opencode-project-dir.txt` is written only when that directory already exists and is not a credential path (`C:/passwords`, `C:/Users/.../.config/gh`, and a symlink to either).
-- A missing directory, a drive-root base, a forbidden path, or an assign whose repo leaf is `..` or empty is NACKed (`worktree-absent`, `worktree-base-refused`, `opencode-dir-forbidden`, or `job-context-malformed`) before ACK. The line is not injected and the chair does not keep the job. That is not DONE.
-- If the folder disappears after ACK, the launch wrapper NACKs the same way and does not start `opencode run` for that line. An assign with no recorded directory is not run from `C:\ai\bob\worker`.
+- The job worktree base follows `Get-BobiverseJobWorktreeBase`: `BOB_JOB_WORKTREE_BASE`, else `BOB_BRIDGE_HOME\worktrees` when the bridge is not a drive root, else `<data-drive>\ai\worktrees` (non-system `D:\` when that fixed disk is present, else the system drive). The path is canonicalized first, so `D:\ai\..` is a drive root and is refused. The worker does not create the folder.
+- A job is one `FROM` message with one id. The standing prompt is not a job; the example `FR SimonBarnett/a-search#637` in that prompt does not NACK and does not stop the model. Each accepted assign is injected with its own `@@BOBJOB1` directory binding. There is no shared `opencode-project-dir.txt`.
+- A missing directory, a drive-root base, a forbidden path, or a `..` / empty repo leaf is NACKed before ACK. Two job ids in one message, or several assigns collapsed by the flood guard, are NACKed `job-context-ambiguous` with no ACK. That is not DONE.
+- If the folder disappears after ACK, the launch NACKs that message's key and a later copy of the same assign is judged again. Headless outbox DONE stays denied. This does not grant a bypass.
 - There is no seat-wide `BOB_OPENCODE_DIR`. A stale manual directory is not the project context. There is no `external_directory` allow and no `OPENCODE_CONFIG` grant.
 
 PR #6241 (on main) is the preflight script: relaunch with the job worktree as cwd, or ask for narrow consent. This launch follows that. It does not add a second copy of that script and it does not widen consent.
