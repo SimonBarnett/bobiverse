@@ -270,3 +270,4 @@ Generalised from 21 harvested lessons that never reached this book (audit for FR
 - When gh or the GitHub API fails with a TLS handshake timeout before the PR can be read, GIVEUP the open MRB instead of leaving the ACK for done-miss and instead of inventing a verdict.
 - done-miss with stranded ACK for a different job than this session completed: GIVEUP that ACK immediately (never invent DONE); FR work without a PR is not DONE
 - **FR #6134:** OpenCode seats skip hostile MRB/UAT offers (chair `offer_focus_top` / `!assign` refuse when digest `kind=opencode`); still take FR/FIX/docs/harvest. Worker backstop NACKs MRB/UAT before ACK-on-receipt and posts digest kind on seat start.
+- PyInstaller: co-located module next to entry script beats --paths shadow; overwrite stub for freeze and restore in finally; prove with local freeze --version before PASS
