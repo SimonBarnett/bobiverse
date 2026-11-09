@@ -1424,16 +1424,24 @@ namespace BobDialogs
 
         public static string[] ListLabels(string root)
         {
-            string dir = KeysDir(root);
-            if (!Directory.Exists(dir)) return new string[0];
-            List<string> labs = new List<string>();
-            foreach (string f in Directory.GetFiles(dir, "*.apikey"))
+            // Optional menu must not take down TipForm start (UnauthorizedAccess / IO).
+            try
             {
-                string name = Path.GetFileNameWithoutExtension(f) ?? "";
-                if (ValidLabel(name)) labs.Add(name);
+                string dir = KeysDir(root);
+                if (!Directory.Exists(dir)) return new string[0];
+                List<string> labs = new List<string>();
+                foreach (string f in Directory.GetFiles(dir, "*.apikey"))
+                {
+                    string name = Path.GetFileNameWithoutExtension(f) ?? "";
+                    if (ValidLabel(name)) labs.Add(name);
+                }
+                labs.Sort(StringComparer.OrdinalIgnoreCase);
+                return labs.ToArray();
             }
-            labs.Sort(StringComparer.OrdinalIgnoreCase);
-            return labs.ToArray();
+            catch
+            {
+                return new string[0];
+            }
         }
 
         public static string ReadSelected(string root)

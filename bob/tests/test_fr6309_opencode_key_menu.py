@@ -67,6 +67,11 @@ def test_fr6309_tray_source_has_opencode_keys_menu_and_masked_input():
     assert "WriteAllText(dest, key" in store
     assert "Write-Host" not in store
     assert "Console.Write(key" not in store
+    # ListLabels must catch IO/ACL failures so SeedOpencodeKeyChoices cannot abort tray start.
+    list_body = store.split("public static string[] ListLabels", 1)[1].split("public static string ReadSelected", 1)[0]
+    assert "try" in list_body
+    assert "catch" in list_body
+    assert 'return new string[0]' in list_body
 
 
 def test_fr6309_docs_mention_tipform_opencode_keys_menu():
