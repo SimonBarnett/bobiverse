@@ -246,6 +246,9 @@ Checks:
 
 ## Harvested MRB discipline
 
+- **Combined startup contract wiring (class of #6291/#6296):** when a tip adds `assert_ear_dispatch_contracts` (or any combined startup contract), MRB must pin that `main()` calls the combined helper --- tip tests that call the helper directly do not prove startup wiring. Do not park this playbook under `harvest/SKILL.md` (move/fold here).
+
+
 - **FR #4925 foreign `gh pr checkout`:** never checkout another repo's PR from the bob install CWD; use a `%TEMP%` worktree/clone. Install remote bobiverse + foreign `--repo` is a refuse/warn (`Assert-BobiverseForeignPrCheckout.ps1`).
 
 - **FR #4906 conflict FIX re-offer:** conflict_blocked resync must call offer_dirty_conflict_fix (not bare enqueue_conflict_fix) so DONE same-SHA conflict FIX re-offers; !assign FIX accepts CONFLICTING/DIRTY even when checks are green.
