@@ -5933,8 +5933,8 @@ def _parse_auth_expires_at(raw: object) -> datetime | None:
 
 def _auth_entry_bearer(entry: dict) -> str | None:
     """Session bearer from one auth.json entry. Prefer ``key``, else ``access_token``."""
-    for field in ("key", "access_token"):
-        val = entry.get(field)
+    for name in ("key", "access_token"):
+        val = entry.get(name)
         if isinstance(val, str) and val.strip():
             return val.strip()
     return None
