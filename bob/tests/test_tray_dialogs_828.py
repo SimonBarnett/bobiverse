@@ -161,14 +161,14 @@ Write-Output $p
 
 COPILOT_POOLS = [
     # FR #6301: meter is "<x>% left" (optional reset); unlimited without max => unknown.
-    (None, "Copilot  unknown"),
-    ({"state": "unknown"}, "Copilot  unknown"),
-    ({"state": "ok", "remaining": 42}, "Copilot  42% left"),
-    ({"state": "ok", "remaining": 0}, "Copilot  0% left"),
-    ({"state": "exhausted", "remaining": 0}, "Copilot  0% left"),
-    ({"unlimited": True, "used": 12, "remaining": 0}, "Copilot  unknown"),
-    ({"state": "exhausted", "unlimited": True, "used": 12, "remaining": 0}, "Copilot  unknown"),
-    ({"state": "unknown", "unlimited": True}, "Copilot  unknown"),
+    (None, "Copilot - unknown"),
+    ({"state": "unknown"}, "Copilot - unknown"),
+    ({"state": "ok", "remaining": 42}, "Copilot - 42% left"),
+    ({"state": "ok", "remaining": 0}, "Copilot - 0% left"),
+    ({"state": "exhausted", "remaining": 0}, "Copilot - 0% left"),
+    ({"unlimited": True, "used": 12, "remaining": 0}, "Copilot - unknown"),
+    ({"state": "exhausted", "unlimited": True, "used": 12, "remaining": 0}, "Copilot - unknown"),
+    ({"state": "unknown", "unlimited": True}, "Copilot - unknown"),
 ]
 
 
@@ -196,7 +196,7 @@ if (-not $p) {{ throw 'snapshot write failed' }}
     assert r.returncode == 0, r.stdout + r.stderr
     d = json.loads((tmp_path / "run" / "tray-status.json").read_text(encoding="utf-8"))
     assert d["copilot_pool"] is None
-    assert d["copilot_line"] == "Copilot  unknown"
+    assert d["copilot_line"] == "Copilot - unknown"
 
 
 @needs_csc

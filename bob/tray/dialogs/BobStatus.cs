@@ -27,9 +27,13 @@ namespace BobDialogs
     internal class StatusModel
     {
         public string Title = "bob", Alert = "none", Version = "", Overspend = "", Note = "";
-        public string CopilotLine = "Copilot  unknown";
+        public string CopilotLine = "Copilot - unknown";
         public string CopilotStaleLine = "";
         public long CopilotFreshUntil = 0;
+        // FR #6317: remaining-% bar for Copilot UsageRow (null/unknown => empty track).
+        public bool CopilotBarKnown;
+        public int CopilotBarPct;
+        public int CopilotBarR = 88, CopilotBarG = 166, CopilotBarB = 255;
         public string OpencodeLine = "OpenCode  n/a";
         public List<string> OpencodeWindowLines = new List<string>();
         public List<OpencodeBarRow> OpencodeBars = new List<OpencodeBarRow>();
@@ -66,6 +70,16 @@ namespace BobDialogs
             string cp = Common.Str(d, "copilot_line"); if (cp.Length > 0) m.CopilotLine = cp;
             string cps = Common.Str(d, "copilot_stale_line"); if (cps.Length > 0) m.CopilotStaleLine = cps;
             m.CopilotFreshUntil = Common.Long(d, "copilot_fresh_until", 0);
+            // FR #6317: optional copilot_bar { known, pct, r, g, b } from tray snapshot.
+            Dictionary<string, object> cbar = Common.Dict(d.ContainsKey("copilot_bar") ? d["copilot_bar"] : null);
+            if (cbar != null)
+            {
+                m.CopilotBarKnown = Common.Bool(cbar, "known");
+                m.CopilotBarPct = Math.Max(0, Math.Min(100, Common.Int(cbar, "pct", 0)));
+                m.CopilotBarR = Common.Int(cbar, "r", 88);
+                m.CopilotBarG = Common.Int(cbar, "g", 166);
+                m.CopilotBarB = Common.Int(cbar, "b", 255);
+            }
             string a = Common.Str(d, "alert"); if (a.Length > 0) m.Alert = a;
             IList c = Common.List(d.ContainsKey("cursor") ? d["cursor"] : null);
             if (c != null) foreach (object o in c) { Dictionary<string, object> rd = Common.Dict(o); if (rd != null && Common.Str(rd, "heading").Length > 0) m.Cursor.Add(ParseRow(rd)); }
@@ -163,17 +177,17 @@ namespace BobDialogs
 
         internal static string SelectCopilotLine(StatusModel m, DateTime utcNow)
         {
-            if (m == null) return "Copilot  unknown";
+            if (m == null) return "Copilot - unknown";
             string line = m.CopilotLine;
-            if (string.IsNullOrEmpty(line)) line = "Copilot  unknown";
+            if (string.IsNullOrEmpty(line)) line = "Copilot - unknown";
             if (m.CopilotFreshUntil > 0)
             {
                 long nowEpoch = new DateTimeOffset(utcNow).ToUnixTimeSeconds();
                 if (nowEpoch >= m.CopilotFreshUntil)
                 {
                     if (!string.IsNullOrEmpty(m.CopilotStaleLine)) line = m.CopilotStaleLine;
-                    else if (!line.StartsWith("Copilot  [stale", StringComparison.Ordinal))
-                        line = line.Replace("Copilot  ", "Copilot  [stale]  ");
+                    else if (line.IndexOf("[stale", StringComparison.Ordinal) < 0)
+                        line = line.Replace("Copilot - ", "Copilot - [stale] ").Replace("Copilot  ", "Copilot - [stale] ");
                 }
             }
             return line;
@@ -221,16 +235,20 @@ namespace BobDialogs
                 r.Bar.R = b.R; r.Bar.G = b.G; r.Bar.B = b.B;
                 y = UsageRow(g, 32, y, r, 354);
             }
+            // FR #6317: Copilot like OpenCode rows — family header (no right text / not red),
+            // then left-aligned 'Copilot - <text>' UsageRow + remaining bar.
             string paintCopilot = SelectCopilotLine(m, DateTime.UtcNow);
-            Color copilotFg = paintCopilot.StartsWith("Copilot  [stale", StringComparison.Ordinal) ? Red : Fg;
-            // FR #6301: section title is just Copilot; meter text is the remainder of the line.
-            string copilotTitle = "Copilot";
-            string copilotRight = paintCopilot;
             if (paintCopilot.StartsWith("Copilot  ", StringComparison.Ordinal))
-                copilotRight = paintCopilot.Substring("Copilot  ".Length).Trim();
-            else if (paintCopilot.StartsWith("Copilot ", StringComparison.Ordinal))
-                copilotRight = paintCopilot.Substring("Copilot ".Length).Trim();
-            y = Section(g, y, copilotTitle, copilotRight, "copilot", copilotFg);
+                paintCopilot = "Copilot - " + paintCopilot.Substring("Copilot  ".Length).Trim();
+            y = Section(g, y, "Copilot", "", "copilot");
+            StatusRow copilotRow = new StatusRow();
+            copilotRow.Heading = paintCopilot;
+            copilotRow.Bar.Known = m.CopilotBarKnown;
+            copilotRow.Bar.Pct = m.CopilotBarKnown ? Math.Max(0, Math.Min(100, m.CopilotBarPct)) : 0;
+            copilotRow.Bar.R = m.CopilotBarR;
+            copilotRow.Bar.G = m.CopilotBarG;
+            copilotRow.Bar.B = m.CopilotBarB;
+            y = UsageRow(g, 32, y, copilotRow, 354);
             y += 6;
             Draw(g, "alert: " + m.Alert, fSmall, m.Alert == "none" ? Muted : Red, 14, y);
             string v = Footer.Length > 0 ? Footer : m.Version;

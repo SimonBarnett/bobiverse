@@ -117,8 +117,33 @@ function New-BobTrayStatusModel {
             } catch { }
         }
     }
-    if (-not $copilotLine) { $copilotLine = 'Copilot  unknown' }
-    if (-not $copilotStaleLine) { $copilotStaleLine = 'Copilot  [stale]  unknown' }
+    if (-not $copilotLine) { $copilotLine = 'Copilot - unknown' }
+    if (-not $copilotStaleLine) { $copilotStaleLine = 'Copilot - [stale] unknown' }
+    # FR #6317: remaining-% bar object for Status UsageRow.
+    $copilotBar = $null
+    if ($h) {
+        try { if ($h.copilot_bar) { $copilotBar = $h.copilot_bar } } catch { }
+    }
+    if (-not $copilotBar -and (Get-Command Get-BobCopilotMeterBarPct -ErrorAction SilentlyContinue)) {
+        $pct = $null
+        try { $pct = Get-BobCopilotMeterBarPct -Pool $copilotPool } catch { $pct = $null }
+        if ($null -ne $pct) {
+            $rgb = $null
+            try { if (Get-Command Get-BobTrayBarFillRgb -ErrorAction SilentlyContinue) { $rgb = Get-BobTrayBarFillRgb -Pct ([int]$pct) } } catch { }
+            $copilotBar = [pscustomobject]@{
+                known = $true
+                pct   = [int]$pct
+                r     = $(if ($rgb) { [int]$rgb.r } else { 88 })
+                g     = $(if ($rgb) { [int]$rgb.g } else { 166 })
+                b     = $(if ($rgb) { [int]$rgb.b } else { 255 })
+            }
+        } else {
+            $copilotBar = [pscustomobject]@{ known = $false; pct = 0; r = 88; g = 166; b = 255 }
+        }
+    }
+    if (-not $copilotBar) {
+        $copilotBar = [pscustomobject]@{ known = $false; pct = 0; r = 88; g = 166; b = 255 }
+    }
     # FR #6147: OpenCode free/go + window lines on Status snapshot (n/a when unknown).
     $opencodeLine = ''
     $opencodeFree = $null
@@ -187,6 +212,7 @@ function New-BobTrayStatusModel {
         copilot_line = $copilotLine
         copilot_stale_line = $copilotStaleLine
         copilot_fresh_until = $copilotFreshUntil
+        copilot_bar = $copilotBar
         alert     = $(if ($AlertKind) { $AlertKind } else { 'none' })
         alerts    = @($Alerts | Where-Object { $_ })
         version   = $Version

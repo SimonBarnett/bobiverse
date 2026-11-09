@@ -2258,7 +2258,10 @@ function Update-Hover {
                     # Format-BobCursorAccountLabel will pick tip/overspend when RemainingPct empty
                 }
             }
-            Rebuild-BobTrayTiles -Machines @($h.machines) -CursorPools @($h.cursor_pools) -AccountName $h.account_name -AccountPct $h.account_remaining_pct -AccountLabel $h.account_label -AccountReset $h.account_reset_label -AccountOverageGbp $h.account_overage_gbp -ChairChannels @($h.chair_channels) -CopilotPool $h.copilot_pool -OpencodeLine $h.opencode_line -OpencodeFree $h.opencode_free -OpencodeGo $h.opencode_go -OpencodeWindows $h.opencode_windows -OpencodeWindowLines @($h.opencode_window_lines)
+            # FR #6317 / MRB #6321: pass hover-formatted Copilot line + bar (Format-BobCopilotPoolLine is module-private).
+            $copilotBarPct = $null
+            try { if ($h.copilot_bar -and $h.copilot_bar.known) { $copilotBarPct = [int]$h.copilot_bar.pct } } catch { $copilotBarPct = $null }
+            Rebuild-BobTrayTiles -Machines @($h.machines) -CursorPools @($h.cursor_pools) -AccountName $h.account_name -AccountPct $h.account_remaining_pct -AccountLabel $h.account_label -AccountReset $h.account_reset_label -AccountOverageGbp $h.account_overage_gbp -ChairChannels @($h.chair_channels) -CopilotPool $h.copilot_pool -CopilotLine ([string]$h.copilot_line) -CopilotBarPct $copilotBarPct -OpencodeLine $h.opencode_line -OpencodeFree $h.opencode_free -OpencodeGo $h.opencode_go -OpencodeWindows $h.opencode_windows -OpencodeWindowLines @($h.opencode_window_lines)
             if ($script:alertLabel) {
                 $script:alertLabel.Text = ('alert: {0}' -f $script:alertKind)
                 $yAlert = 40
@@ -2781,7 +2784,7 @@ function Rebuild-BobTrayTiles {
     # FR #4938 / FR #5032: TipForm shows per-machine Grok pool rows (no 'Grok accounts' heading).
     # Cursor spending-group bars (grok chat / high cost / Low cost) are removed from the card.
     # Fuel still reads local Cursor/Grok elsewhere; this is display-only.
-    param($Machines, $CursorPools, $AccountName, $AccountPct, $AccountLabel, $AccountReset, $AccountOverageGbp, $ChairChannels, $CopilotPool, $OpencodeLine = '', $OpencodeFree = $null, $OpencodeGo = $null, $OpencodeWindows = $null, $OpencodeWindowLines = @())
+    param($Machines, $CursorPools, $AccountName, $AccountPct, $AccountLabel, $AccountReset, $AccountOverageGbp, $ChairChannels, $CopilotPool, $CopilotLine = '', $CopilotBarPct = $null, $OpencodeLine = '', $OpencodeFree = $null, $OpencodeGo = $null, $OpencodeWindows = $null, $OpencodeWindowLines = @())
     if (-not $script:tileHost) { return }
 
     # Format everything first so a throw never leaves a cleared host.
@@ -2878,18 +2881,22 @@ function Rebuild-BobTrayTiles {
             $y = Add-BobTraySectionHeader -X 0 -Y $y -Title '' -Icon $grokIcon -Agent $grokAgent `
                 -RightText $overLine -RightColor $overColor
         }
-        # FR #5172 / FR #6148 / FR #6149 / FR #6301: Copilot title only; meter is "% left - reset".
-        $copilotLine = $null
-        try { $copilotLine = Format-BobCopilotPoolLine -Pool $CopilotPool } catch { }
-        if (-not $copilotLine) { $copilotLine = 'Copilot  unknown' }
-        $copilotMeter = $copilotLine
-        if ($copilotMeter.StartsWith('Copilot  ')) { $copilotMeter = $copilotMeter.Substring(9).Trim() }
-        elseif ($copilotMeter.StartsWith('Copilot ')) { $copilotMeter = $copilotMeter.Substring(8).Trim() }
-        # Stale is a label, not an alarm color. FR #6204: this paint does not poll GitHub.
+        # FR #5172 / FR #6148 / FR #6149 / FR #6301 / FR #6317:
+        # Copilot like OpenCode rows: family header (no RightText), then left-aligned
+        # 'Copilot - <text>' UsageRow + remaining bar. Stale is text, not red/right-aligned.
+        # Prefer hover-supplied line/bar (exported Get-BobTrayHover). Module-private
+        # Format-BobCopilotPoolLine is invisible outside BobBridge (MRB #6321 FAIL).
+        $copilotLine = [string]$CopilotLine
+        if (-not $copilotLine) {
+            try { $copilotLine = Format-BobCopilotPoolLine -Pool $CopilotPool } catch { }
+        }
+        if (-not $copilotLine) { $copilotLine = 'Copilot - unknown' }
+        $copilotBar = $CopilotBarPct
+        if ($null -eq $copilotBar) {
+            try { $copilotBar = Get-BobCopilotMeterBarPct -Pool $CopilotPool } catch { $copilotBar = $null }
+        }
         $y = Add-BobTrayFuelFamilyRow -X 0 -Y $y -Family 'copilot' -Title 'Copilot'
-        $copilotBar = $null
-        try { $copilotBar = Get-BobCopilotMeterBarPct -Pool $CopilotPool } catch { $copilotBar = $null }
-        $y = Add-BobTrayUsageRow -X 18 -Y $y -Heading $copilotMeter -RemainingPct $copilotBar -BarWidth 336 -Icon $null
+        $y = Add-BobTrayUsageRow -X 18 -Y $y -Heading $copilotLine -RemainingPct $copilotBar -BarWidth 336 -Icon $null
         $indent = 18
         $shownMachines = @{}
         foreach ($m in @($Machines)) {
