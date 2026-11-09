@@ -2,8 +2,12 @@
 
 Headless ``opencode run`` auto-rejects ``external_directory`` asks. It has
 ``--dir`` and no ``--interactive`` flag. ``--auto`` would approve those asks
-and is never used. ``BOB_HOME`` may be empty. ``BOB_OUTBOX`` is the run-dir
-protocol path the worker sets.
+and is never used. ``BOB_HOME`` may be empty.
+
+FR #6333: for OpenCode jobs ``BOB_OUTBOX`` is ``<worktree>/.bob/outbox.txt``
+(inside ``--dir``) so headless runs can append ACK/DONE without an
+``external_directory`` grant. The worker tails that file; run-dir outbox
+remains for program ACK-on-receipt. Never ``--auto``, never allow rules.
 """
 from __future__ import annotations
 
@@ -846,6 +850,118 @@ def create_job_worktree(
     return True, ""
 
 
+
+
+# FR #6333: in-worktree outbox so headless opencode run can write without external_directory.
+OPENCODE_BOB_DIRNAME = ".bob"
+OPENCODE_OUTBOX_NAME = "outbox.txt"
+_OUT_JOB_WIRE_RX = re.compile(
+    r"(?is)^(?:PRIVMSG\s+(?P<target>\S+)\s+:?)?(?P<verb>ACK|DONE|NACK|GIVEUP)\s+"
+    r"(?P<task>FR|MRB|UAT)\s+(?P<ref>\S+#\d+)\b"
+)
+
+
+def opencode_outbox_path(worktree: str | Path) -> Path:
+    """``<worktree>/.bob/outbox.txt`` inside ``opencode run --dir`` (FR #6333)."""
+    return Path(worktree) / OPENCODE_BOB_DIRNAME / OPENCODE_OUTBOX_NAME
+
+
+def exclude_bob_dir_from_git(worktree: str | Path) -> bool:
+    """Append ``.bob/`` to ``.git/info/exclude`` (not a committed .gitignore).
+
+    Returns True when the exclude line is present after this call.
+    """
+    root = Path(worktree)
+    git = root / ".git"
+    if git.is_file():
+        try:
+            raw = git.read_text(encoding="utf-8", errors="replace").strip()
+        except OSError:
+            return False
+        if raw.lower().startswith("gitdir:"):
+            git_dir = Path(raw.split(":", 1)[1].strip())
+            if not git_dir.is_absolute():
+                git_dir = (root / git_dir).resolve()
+            # Linked worktrees: info/exclude lives in the common git dir.
+            common = git_dir / "commondir"
+            try:
+                if common.is_file():
+                    target = Path(common.read_text(encoding="utf-8", errors="replace").strip())
+                    git_dir = target if target.is_absolute() else (git_dir / target).resolve()
+            except OSError:
+                return False
+        else:
+            return False
+    elif git.is_dir():
+        git_dir = git
+    else:
+        return False
+    exclude = git_dir / "info" / "exclude"
+    try:
+        exclude.parent.mkdir(parents=True, exist_ok=True)
+        existing = ""
+        if exclude.is_file():
+            existing = exclude.read_text(encoding="utf-8", errors="replace")
+        needle = ".bob/"
+        if needle not in existing.splitlines() and f"\n{needle}" not in f"\n{existing}":
+            # Exact line match
+            lines = existing.splitlines()
+            if needle not in lines and ".bob" not in lines:
+                with exclude.open("a", encoding="utf-8", newline="\n") as fh:
+                    if existing and not existing.endswith(("\n", "\r")):
+                        fh.write("\n")
+                    fh.write(".bob/\n")
+        return True
+    except OSError:
+        return False
+
+
+def ensure_opencode_bob_outbox(worktree: str | Path) -> Path:
+    """Create ``.bob/outbox.txt``, exclude ``.bob/`` from git status (FR #6333)."""
+    path = opencode_outbox_path(worktree)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if not path.is_file():
+        path.write_text("", encoding="utf-8")
+    exclude_bob_dir_from_git(worktree)
+    return path
+
+
+def opencode_outbox_job_key(payload: str) -> str:
+    """Typed ``FR owner/repo#N`` from a shop wire / PRIVMSG payload, else ``''``."""
+    m = _OUT_JOB_WIRE_RX.match((payload or "").strip())
+    if not m:
+        return ""
+    return f"{m.group('task').upper()} {m.group('ref')}"
+
+
+def opencode_outbox_line_allowed(
+    payload: str,
+    *,
+    job_key: str,
+    shop: str = "",
+) -> bool:
+    """True when *payload* is a well-formed ACK/DONE/NACK/GIVEUP for *job_key*.
+
+    Optional PRIVMSG target must match *shop* when both are set. Malformed lines
+    and wrong-job lines are refused (FR #6333).
+    """
+    text = (payload or "").strip()
+    if not text or not (job_key or "").strip():
+        return False
+    m = _OUT_JOB_WIRE_RX.match(text)
+    if not m:
+        return False
+    want = " ".join((job_key or "").split())
+    got = f"{m.group('task').upper()} {m.group('ref')}"
+    if got.lower() != want.lower():
+        return False
+    target = (m.group("target") or "").strip()
+    shop_s = (shop or "").strip()
+    if target and shop_s and target.lower() != shop_s.lower():
+        return False
+    return True
+
+
 def ensure_opencode_job_worktree(
     line: str,
     env: dict | None = None,
@@ -863,6 +979,12 @@ def ensure_opencode_job_worktree(
     """
     decision = classify_opencode_job(line, env, disks=disks, system_drive=system_drive)
     if decision["state"] != "absent":
+        if decision.get("state") == "project" and decision.get("path"):
+            try:
+                ob = ensure_opencode_bob_outbox(decision["path"])
+                decision = {**decision, "outbox": str(ob)}
+            except OSError:
+                pass
         return decision
     key = decision.get("key") or ""
     path = decision.get("path") or ""
@@ -886,6 +1008,11 @@ def ensure_opencode_job_worktree(
         }
     ready = classify_opencode_job(line, env, disks=disks, system_drive=system_drive)
     if ready["state"] == "project":
+        try:
+            ob = ensure_opencode_bob_outbox(ready["path"])
+            ready = {**ready, "outbox": str(ob)}
+        except OSError:
+            pass
         return ready
     # Create claimed ok but classify still absent/forbidden — surface as create failed.
     reason = "worktree-create-failed:verify"
