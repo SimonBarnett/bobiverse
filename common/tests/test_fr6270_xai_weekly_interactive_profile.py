@@ -60,9 +60,10 @@ def test_fr6270_system_profile_still_skipped_without_interactive_log(monkeypatch
     assert bobreport._last_xai_acquisition["identity"] == "system-profile-skipped"
 
 def test_fr6270_publish_skips_do_not_carry_stale_weekly(monkeypatch, tmp_path: Path):
-    """Ear publish must clear carried weekly when acquisition is system-profile-skipped.
+    """FR #6274 revisits blank-on-skip: keep last-good with error; never post as fresh.
 
-    Fixtures: prior peer weekly=19; skip leaves weekly unknown (never re-post 19).
+    Fixtures: prior peer weekly=19 with fetched_at; live fetch unavailable on
+    system-profile-skipped (no auth) -> keep 19, fresh=false, explicit error.
     """
     import json
     from unittest import mock
@@ -72,6 +73,7 @@ def test_fr6270_publish_skips_do_not_carry_stale_weekly(monkeypatch, tmp_path: P
     home = tmp_path / "home"
     home.mkdir()
     mid = "marchhare"
+    last_at = "2026-11-09T06:00:00Z"
     bobstat.write_peer(
         home,
         {
@@ -82,11 +84,14 @@ def test_fr6270_publish_skips_do_not_carry_stale_weekly(monkeypatch, tmp_path: P
             "weekly": 19,
             "weekly_known": True,
             "pcent": {"grok-build": 19},
-            "lastSeen": "2026-11-09T06:00:00Z",
+            "xai_weekly_fetched_at": last_at,
+            "xai_weekly_source": "prior-live",
+            "lastSeen": last_at,
         },
     )
     monkeypatch.delenv("BOB_WEEKLY_LOG", raising=False)
     monkeypatch.delenv("BOB_GROK_WEEKLY_USER_HOME", raising=False)
+    monkeypatch.delenv("BOB_GROK_AUTH_PATH", raising=False)
     monkeypatch.setenv("USERPROFILE", str(tmp_path / "systemprofile"))
     (tmp_path / "systemprofile").mkdir(exist_ok=True)
     monkeypatch.setenv("USERNAME", "tester")
@@ -117,7 +122,11 @@ def test_fr6270_publish_skips_do_not_carry_stale_weekly(monkeypatch, tmp_path: P
     assert code == 204
     assert len(posted) == 1
     body = posted[0]
-    assert body.get("weekly_known") is False
-    assert body.get("weekly") in (None, "")
+    assert body.get("weekly") == 19
+    assert body.get("weekly_known") is True
+    meter = body.get("xai_weekly") or {}
+    assert meter.get("fresh") is False
+    assert meter.get("fetched_at") == last_at
+    assert meter.get("error")
     assert bobreport._last_fuel_publish_diag.get("acquisition") == "system-profile-skipped"
 
