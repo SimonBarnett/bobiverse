@@ -140,5 +140,7 @@ The fleet ear publishes `machines.<id>.grok_account` --- the signed-in xAI/Grok 
 
 **LocalSystem / service account:** if ircBob runs as a different Windows user than the interactive Grok login, set NSSM `BOB_GROK_AUTH_PATH` to that user's `auth.json` (never put the file contents in env).
 
+**FR #6270 xAI weekly under LocalSystem:** the ear must not publish weekly from the system profile. Prefer `BOB_WEEKLY_LOG` (explicit unified.jsonl) or `BOB_GROK_WEEKLY_USER_HOME` (interactive user home). A live LocalSystem process may also resolve the console user's `Users\<name>\.grok\logs\unified.jsonl` (usage log only; never auth.json / credentials). When acquisition is `system-profile-skipped`, publish `weekly_known=false` and do not re-post a carried previous weekly as fresh. Diag fields: `home_role`, `acquisition`, `xai_weekly_fetched_at`, `xai_weekly_source`. Offline pins: `bob/tests/test_fr6270_ear_weekly_admin_profile.py`, `common/tests/test_fr6270_xai_weekly_interactive_profile.py`. Live provider page + digest screenshot remains Slab.
+
 **Rejected sources:** `settings_cache.json` (no identity), `bob-seats.json` (configured attribution), ACP auth/info (not used here).
 

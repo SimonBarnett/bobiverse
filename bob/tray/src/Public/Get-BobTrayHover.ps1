@@ -90,14 +90,159 @@ function Get-SessionContextRemaining {
     catch { return $null }
 }
 
-function Get-BobWeeklyLogPath {
-    if ($env:BOB_WEEKLY_LOG -and $env:BOB_WEEKLY_LOG.Trim()) {
-        return $env:BOB_WEEKLY_LOG.Trim()
+function Test-BobWeeklyProcessLooksLikeSystemHome {
+    <#
+    .SYNOPSIS
+      FR #6270: true when this process should not trust USERPROFILE\.grok (LocalSystem /
+      service profile). Tests may force via BOB_WEEKLY_FORCE_SYSTEM_PROFILE=1.
+    #>
+    if ($env:BOB_WEEKLY_FORCE_SYSTEM_PROFILE -and ($env:BOB_WEEKLY_FORCE_SYSTEM_PROFILE -match '^(?i)1|true|yes|on$')) {
+        return $true
     }
-    # Isolated Fake-Grok tests must not scrape the operator CLI log.
+    try {
+        $id = [Security.Principal.WindowsIdentity]::GetCurrent()
+        if ($id.User -and [string]$id.User.Value -eq 'S-1-5-18') { return $true }
+        if ($id.Name -and ($id.Name -match 'SYSTEM$')) { return $true }
+    } catch { }
+    $up = [string]$env:USERPROFILE
+    if (-not $up) { return $false }
+    if ($up -match '(?i)\\System32\\Config\\SystemProfile$') { return $true }
+    if ($up -match '(?i)\\Windows\\SystemProfile$') { return $true }
+    if ($up -match '(?i)\\Windows\\ServiceProfiles\\') { return $true }
+    return $false
+}
+
+function Resolve-BobGrokWeeklyUserHome {
+    <#
+    .SYNOPSIS
+      FR #6270: resolve which Windows user home owns the Grok CLI unified.jsonl weekly
+      reading. Service/SYSTEM must read the signed-in interactive profile (never invent
+      a %; never copy credentials). Returns home_role / acquisition for digest diag.
+    #>
+    [CmdletBinding()]
+    param()
     $exe = [string]$env:BOB_GROK_EXE
-    if ($exe -and ($exe -match '(?i)Fake-Grok')) { return $null }
-    return (Join-Path $env:USERPROFILE '.grok\logs\unified.jsonl')
+    if ($exe -and ($exe -match '(?i)Fake-Grok')) {
+        return [pscustomobject]@{
+            home_path   = $null
+            log_path    = $null
+            home_role   = 'test'
+            acquisition = 'fake-grok'
+            account     = $null
+        }
+    }
+    if ($env:BOB_WEEKLY_LOG -and $env:BOB_WEEKLY_LOG.Trim()) {
+        $lp = $env:BOB_WEEKLY_LOG.Trim()
+        $hp = $null
+        try { $hp = Split-Path -Parent (Split-Path -Parent (Split-Path -Parent $lp)) } catch { }
+        return [pscustomobject]@{
+            home_path   = $hp
+            log_path    = $lp
+            home_role   = $(if (Test-BobWeeklyProcessLooksLikeSystemHome) { 'service' } else { 'interactive' })
+            acquisition = 'env-override'
+            account     = $null
+        }
+    }
+    $isSystem = [bool](Test-BobWeeklyProcessLooksLikeSystemHome)
+    $overrideHome = $null
+    if ($env:BOB_GROK_WEEKLY_USER_HOME -and $env:BOB_GROK_WEEKLY_USER_HOME.Trim()) {
+        $overrideHome = $env:BOB_GROK_WEEKLY_USER_HOME.Trim().TrimEnd('\')
+    }
+    if ($overrideHome) {
+        $log = Join-Path $overrideHome '.grok\logs\unified.jsonl'
+        $acct = $null
+        try { $acct = Split-Path -Leaf $overrideHome } catch { }
+        $has = Test-Path -LiteralPath $log
+        return [pscustomobject]@{
+            home_path   = $overrideHome
+            log_path    = $(if ($has) { $log } else { $null })
+            home_role   = $(if ($isSystem) { 'service' } else { 'interactive' })
+            acquisition = $(if ($has) { 'interactive-profile' } else { 'system-profile-skipped' })
+            account     = $acct
+        }
+    }
+    $localHome = $null
+    if ($env:USERPROFILE -and $env:USERPROFILE.Trim()) {
+        $localHome = $env:USERPROFILE.Trim().TrimEnd('\')
+    }
+    if (-not $isSystem -and $localHome) {
+        $log = Join-Path $localHome '.grok\logs\unified.jsonl'
+        $acct = $null
+        try { $acct = Split-Path -Leaf $localHome } catch { }
+        return [pscustomobject]@{
+            home_path   = $localHome
+            log_path    = $(if (Test-Path -LiteralPath $log) { $log } else { $log })
+            home_role   = 'interactive'
+            acquisition = $(if (Test-Path -LiteralPath $log) { 'local-profile' } else { 'local-profile-missing' })
+            account     = $acct
+        }
+    }
+    # Service / SYSTEM: prefer the console interactive user home (no credential read).
+    # Forced system-profile tests (BOB_WEEKLY_FORCE_SYSTEM_PROFILE) skip WMI auto-resolve
+    # unless BOB_GROK_WEEKLY_USER_HOME was already handled above.
+    $userHome = $null
+    $account = $null
+    $forceSystem = [bool]($env:BOB_WEEKLY_FORCE_SYSTEM_PROFILE -and ($env:BOB_WEEKLY_FORCE_SYSTEM_PROFILE -match '^(?i)1|true|yes|on$'))
+    $liveSystem = $false
+    try {
+        $un = [string]$env:USERNAME
+        if ($un -and ($un -eq 'SYSTEM' -or $un.EndsWith('$'))) { $liveSystem = $true }
+    } catch { }
+    if (-not $forceSystem -and $liveSystem) {
+        try {
+            $cs = Get-CimInstance -ClassName Win32_ComputerSystem -ErrorAction Stop
+            if ($cs.UserName) {
+                $parts = ([string]$cs.UserName) -split '\\'
+                $account = if ($parts.Count -gt 1) { $parts[-1] } else { [string]$cs.UserName }
+            }
+        } catch { }
+        if (-not $account) {
+            try {
+                $explorer = Get-CimInstance Win32_Process -Filter "Name='explorer.exe'" -ErrorAction SilentlyContinue |
+                    Select-Object -First 1
+                if ($explorer) {
+                    $owner = Invoke-CimMethod -InputObject $explorer -MethodName GetOwner -ErrorAction SilentlyContinue
+                    if ($owner -and $owner.User) { $account = [string]$owner.User }
+                }
+            } catch { }
+        }
+        if ($account) {
+            $drive = if ($env:SystemDrive) { $env:SystemDrive } else { 'C:' }
+            $cand = Join-Path $drive (Join-Path 'Users' $account)
+            if (Test-Path -LiteralPath $cand) { $userHome = $cand }
+        }
+    }
+    if ($userHome) {
+        $log = Join-Path $userHome '.grok\logs\unified.jsonl'
+        if (Test-Path -LiteralPath $log) {
+            return [pscustomobject]@{
+                home_path   = $userHome
+                log_path    = $log
+                home_role   = 'service'
+                acquisition = 'interactive-profile'
+                account     = $account
+            }
+        }
+    }
+    return [pscustomobject]@{
+        home_path   = $localHome
+        log_path    = $null
+        home_role   = 'service'
+        acquisition = 'system-profile-skipped'
+        account     = $account
+    }
+}
+
+function Get-BobWeeklyLogPath {
+    # FR #6270: service/SYSTEM reads the signed-in interactive profile log when present.
+    $resolved = Resolve-BobGrokWeeklyUserHome
+    if ($resolved -and $resolved.log_path) { return [string]$resolved.log_path }
+    if ($resolved -and $resolved.home_path -and $resolved.acquisition -ne 'system-profile-skipped') {
+        return (Join-Path $resolved.home_path '.grok\logs\unified.jsonl')
+    }
+    if ($resolved -and $resolved.acquisition -eq 'system-profile-skipped') { return $null }
+    if ($env:USERPROFILE) { return (Join-Path $env:USERPROFILE '.grok\logs\unified.jsonl') }
+    return $null
 }
 
 function Format-BobTrayFuelStaleAge {
