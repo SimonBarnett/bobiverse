@@ -1022,6 +1022,70 @@ def _intake_pr_changed_paths(blob) -> list[str]:
     return out
 
 
+def fetch_pr_changed_paths(repo: str, num: int, *, fetch_json=None) -> list[str]:
+    """GET /repos/{repo}/pulls/{num}/files filenames (FR #6359).
+
+    Used when webhook/list payloads omit ``changed_files``. Soft-fail to [] on
+    errors so body heuristics still apply. ``fetch_json`` is the test seam.
+    """
+    repo_s = str(repo or "").strip()
+    try:
+        n = int(str(num).lstrip("#"))
+    except (TypeError, ValueError):
+        return []
+    if not repo_s or n <= 0:
+        return []
+    url = f"https://api.github.com/repos/{repo_s}/pulls/{n}/files?per_page=100"
+    getter = fetch_json
+    if getter is None:
+        token = (os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN") or "").strip()
+        if not token:
+            return []
+
+        def _default(u: str):
+            req = urllib.request.Request(
+                u,
+                headers={
+                    "Authorization": f"Bearer {token}",
+                    "Accept": "application/vnd.github+json",
+                    "User-Agent": "bobiverse-gitclaim",
+                },
+                method="GET",
+            )
+            with urllib.request.urlopen(req, timeout=8) as resp:
+                raw = resp.read()
+                return json.loads(
+                    raw.decode("utf-8") if isinstance(raw, (bytes, bytearray)) else raw
+                )
+
+        getter = _default
+    try:
+        data = getter(url)
+    except Exception:  # noqa: BLE001
+        return []
+    if isinstance(data, dict):
+        data = data.get("files") or data.get("items") or []
+    if not isinstance(data, (list, tuple)):
+        return []
+    return _intake_pr_changed_paths({"files": list(data)})
+
+
+def resolve_intake_pr_changed_paths(
+    blob,
+    *,
+    repo: str = "",
+    number=None,
+    fetch_json=None,
+) -> list[str]:
+    """Prefer paths on *blob*; else fetch when repo+number known (FR #6359)."""
+    paths = _intake_pr_changed_paths(blob)
+    if paths:
+        return paths
+    if not repo or number is None:
+        return []
+    return fetch_pr_changed_paths(repo, number, fetch_json=fetch_json)
+
+
 def is_intake_harvest_only_paths(paths=None) -> bool:
     """True when every changed path is under docs/intake-harvest/ (FR #6356).
 
@@ -1053,27 +1117,30 @@ def is_intake_harvest_receipt_pr(
     status word (DONE/PASS/FAIL/GIVEUP/SKIP/twin/…). Real worker promote PRs lack
     ``via-intake`` and receipt-status titles.
 
-    FR #2705: ``harvest-lesson`` / ``lesson(<book>):`` skill-book PRs are offerable MRB
-    work --- never treated as receipts.
+    FR #2705: ``harvest-lesson`` / ``lesson(<book>):`` skill-book PRs that touch
+    ``.grok/skills/**`` (or other non-intake-harvest paths) are offerable MRB work.
 
     FR #5685: ``via-intake``+``skill`` tips with a ``_via-intake`` / queue-me stub body and
     no ``Lesson`` section are receipts (e.g. docs/intake-harvest only), even when the
     title is not ``harvest:`` / ``skill``.
 
-    FR #6356: bare ``MRB (light triage)`` boilerplate (intake.LESSON_PR_MRB_INSTRUCTION)
-    is not a Lesson body. Tips whose changed files are only under ``docs/intake-harvest/``
-    are receipts even when a Lesson heading was pasted.
+    FR #6356 / #6359: bare ``MRB (light triage)`` boilerplate is not a Lesson body.
+    Tips whose changed files are only under ``docs/intake-harvest/`` are receipts even
+    with a ``Lesson`` heading, ``lesson(...)`` title, or ``harvest-lesson`` label
+    (bobiverse#6358).
     """
     title_s = (title or "").strip()
     body_s = body or ""
     labs = {str(x).strip().lower() for x in (labels or []) if str(x).strip()}
+    # FR #6356 / #6359: docs/intake-harvest-only tips are receipts even when titled
+    # lesson(...) or labelled harvest-lesson (GhCliFiler empty-files drafts).
+    # Path check must run before the FR #2705 lesson-title exemption.
+    if is_intake_harvest_only_paths(files):
+        return True
     if "harvest-lesson" in labs:
         return False
     if re.match(r"(?i)^lesson\s*\(", title_s):
         return False
-    # FR #6356: GhCliFiler empty-files drafts only touch docs/intake-harvest/.
-    if is_intake_harvest_only_paths(files):
-        return True
     harvestish = bool(HARVEST_TITLE_RE.match(title_s))
     via_intake_skill = "via-intake" in labs and "skill" in labs
     if via_intake_skill and (harvestish or _INTAKE_HARVEST_FOOTER_RE.search(body_s)):
@@ -1108,6 +1175,9 @@ def is_offerable_intake_skill_lesson_pr(
     """
     labs = {str(x).strip().lower() for x in (labels or []) if str(x).strip()}
     if "via-intake" not in labs or "skill" not in labs:
+        return False
+    # FR #6359: belt-and-braces even if receipt exemptions change order.
+    if is_intake_harvest_only_paths(files):
         return False
     if is_intake_harvest_receipt_pr(title=title, body=body, labels=labels, files=files):
         return False
@@ -2447,7 +2517,7 @@ def claim_from_payload(
         # FR #2650 / #2604: draft PRs never become MRB (resync already skips drafts).
         # FR #5506: draft via-intake+skill lesson PRs are offerable (not receipts).
         # MRB #2651: also edited/synchronize — _apply_claim_to_doc appends unaccepted for those.
-        _paths = _intake_pr_changed_paths(pr)
+        _paths = resolve_intake_pr_changed_paths(pr, repo=repo, number=ident)
         if action in ("opened", "ready_for_review", "edited", "synchronize") and pr.get("draft") is True:
             _head_early = pr.get("head") if isinstance(pr.get("head"), dict) else {}
             _user = pr.get("user") if isinstance(pr.get("user"), dict) else {}
@@ -10704,7 +10774,7 @@ def claim_from_github_issue(repo: str, issue: dict) -> GitClaim | None:
         return None
     if issue.get("pull_request") is not None or str(issue.get("html_url") or "").find("/pull/") >= 0:
         # Open PR -> MRB row.
-        _paths = _intake_pr_changed_paths(issue)
+        _paths = resolve_intake_pr_changed_paths(issue, repo=repo, number=num)
         if issue.get("draft") is True and not is_offerable_intake_skill_lesson_pr(
             title=title, body=body, labels=labels, files=_paths
         ):
@@ -12126,7 +12196,9 @@ def resync_from_github(
             # FR #5506: draft via-intake+skill lessons backfill as MRB (#4444/#4967).
             if pr.get("draft") is True:
                 pr_labels = _label_names(pr.get("labels"))
-                _resync_paths = _intake_pr_changed_paths(pr)
+                _resync_paths = resolve_intake_pr_changed_paths(
+                    pr, repo=repo, number=num, fetch_json=getter
+                )
                 _resync_head_draft = pr.get("head") if isinstance(pr.get("head"), dict) else {}
                 _resync_user = pr.get("user") if isinstance(pr.get("user"), dict) else {}
                 if not (
@@ -12171,7 +12243,7 @@ def resync_from_github(
                 title=title,
                 body=body,
                 labels=pr_labels,
-                files=_intake_pr_changed_paths(pr),
+                files=resolve_intake_pr_changed_paths(pr, repo=repo, number=num, fetch_json=getter),
             ):
                 skipped_draft += 1
                 skipped_open_pulls.add((repo, f"#{num}"))
