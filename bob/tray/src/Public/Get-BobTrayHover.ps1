@@ -3031,6 +3031,8 @@ function Get-BobTrayHover {
             $measureAge = Get-BobLastSeenAgeSec -Record ([pscustomobject]@{ lastSeen = $measureAt })
         }
         if ($null -ne $measureAge) { $fuelAgeBy[$mac] = [int]$measureAge }
+        # FR #6289: carry digest fetched_at into weekFetchedBy for hover weekly_fetched_at / tile FetchedAt.
+        if ($measureAt) { $weekFetchedBy[$mac] = $measureAt }
         $sampleStale = (-not $meterFresh)
         if (-not $sampleStale -and -not $outTok) {
             $isPeer = ($mac -ne $machineId)
