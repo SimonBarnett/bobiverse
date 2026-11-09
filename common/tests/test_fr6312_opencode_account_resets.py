@@ -1,4 +1,4 @@
-"""FR #6312: digest keeps opencode_account; third-layout resetsAt parse (ms/s/ISO)."""
+"""FR #6312 / #6318: digest opencode_account; resetsAt parse; webhooks + mid-digest pins."""
 from __future__ import annotations
 
 import json
@@ -141,6 +141,10 @@ def test_fr6312_hub_merge_roundtrip_opencode_account_and_window_reset(tmp_path: 
         briefer_nick="Jeeves",
     )
     assert code_bad in (200, 204, 400), code_bad
+    # FR #6318: assert digest before the good overwrite so a leaked bad label cannot hide.
+    mid_digest = bobreport.build_digest_object(tmp_path, "Jeeves")
+    mid_ent = (mid_digest.get("machines") or {}).get(MID) or {}
+    assert "password=" not in json.dumps(mid_ent)
 
     wire = json.dumps(payload, separators=(",", ":")).encode("utf-8")
     code, _ = bobcallback.handle_report_post(
@@ -190,3 +194,7 @@ def test_fr6312_webhooks_doc_names_opencode_account():
     text = (root / "jeeves" / "docs" / "webhooks.md").read_text(encoding="utf-8")
     assert "opencode_account" in text
     assert "grok_account" in text
+    # FR #6318: pin ear reset contract phrases, not only account field names.
+    assert "resets_at" in text
+    assert "reset unavailable" in text
+    assert "reset_label" in text

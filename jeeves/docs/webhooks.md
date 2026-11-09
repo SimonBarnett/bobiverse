@@ -24,9 +24,9 @@ Auth: **none. No route needs a password or shared secret** (v0.1.16). Nothing to
 
 `GET /bob/v1/report` and `POST /bob/v1/report` `op=merge` accept optional machine scalar `grok_account` (string or null). Ear-owned: omit keeps the stored value; null / `cleared: ["grok_account"]` removes it. Not filled from peer files. Never include credentials in the payload.
 
-### Machine field `opencode_account` (FR #6301 / FR #6312)
+### Machine field `opencode_account` (FR #6301 / FR #6312 / FR #6318)
 
-Same semantics as `grok_account`: optional string label or null on `op=merge`; `GET` returns it; omit keeps the stored value; null / `cleared: ["opencode_account"]` removes it. Ear-owned (not peer-filled). Never holds API key material. Per-window `opencode_windows.*.resets_at` and `error` are retained on merge/export (not dropped).
+Same semantics as `grok_account`: optional string label or null on `op=merge`; `GET` returns it; omit keeps the stored value; null / `cleared: ["opencode_account"]` removes it. Ear-owned (not peer-filled). Never holds API key material. Per-window `opencode_windows.*.resets_at` and `error` are retained on merge/export (not dropped). Ear paint contract (FR #6312 / #6318): missing or unparseable OpenCode `resetsAt` produces `error: "reset unavailable"` with null `reset_label` and no invented `resets_at`; a past absolute reset keeps `resets_at` and sets `reset_label` to null (countdown only while the reset is still in the future). Reporters should send the complete `opencode_windows` map on each merge - the hub replaces the stored map rather than deep-merging partial window rows.
 
 
 Git hooks must target **`/bob/v1/git`**, never `/bob/v1/report`.
