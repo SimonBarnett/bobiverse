@@ -157,6 +157,7 @@ try:
         console_text,
         message_job_keys,
         opencode_job_context_nack,
+        opencode_job_context_nack_ready,
         prepare_opencode_wire,
         probe_gh_auth,
     )
@@ -165,6 +166,7 @@ except ImportError:  # package import (bob.scripts.bob_worker)
         console_text,
         message_job_keys,
         opencode_job_context_nack,
+        opencode_job_context_nack_ready,
         prepare_opencode_wire,
         probe_gh_auth,
     )
@@ -4286,8 +4288,9 @@ class Relay:
         # FR #4180: while True (out-of-fuel hold), refuse assigns without inject; callback NACKs.
         self.refuse_assign_while: Optional[Callable[[], bool]] = None
         self.skips_hostile_assign: Optional[Callable[[str], bool]] = None  # FR #6134
-        # FR #6240: NACK text when an OpenCode assign has no safe existing worktree.
-        # Empty string accepts the assign. The callback must not write the project file;
+        # FR #6240 / #6320: NACK text when an OpenCode assign has no safe worktree.
+        # Empty string accepts the assign. OpenCode seats create Get-BobiverseJobWorktreePath
+        # before ACK (FR #6320). The callback must not write the project file;
         # the inject path records it only for the line that is actually sent.
         self.opencode_job_block: Optional[Callable[[str], str]] = None
         self.on_refuse_assign: Optional[Callable[[str], None]] = None
@@ -7580,12 +7583,24 @@ class Supervisor:
             pass
 
     def _opencode_job_block(self, line: str) -> str:
-        """FR #6240: NACK before ACK when this OpenCode assign has no safe worktree."""
+        """FR #6240 / #6320: ensure job worktree exists, else NACK before ACK."""
         if (self.kind or "").strip().lower() != "opencode":
             return ""
         if not assign_job_ref(line):
             return ""
-        return opencode_job_context_nack(line, os.environ)
+        nick = ""
+        try:
+            nick = str(getattr(self, "nick", "") or os.environ.get("BOB_NICK") or "")
+        except Exception:
+            nick = ""
+        install = getattr(self, "install_root", None) or os.environ.get("BOB_INSTALL_ROOT") or ""
+        return opencode_job_context_nack_ready(
+            line,
+            os.environ,
+            install_root=install or None,
+            run=subprocess.run,
+            nick=nick,
+        )
 
     def _nack_assign_out_of_fuel(self, line: str) -> None:
         """FR #4180: shop NACK for an assign that arrived during the out-of-fuel hold."""
