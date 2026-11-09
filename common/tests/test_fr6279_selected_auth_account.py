@@ -271,3 +271,140 @@ def test_fr6279_publish_does_not_overwrite_meter_with_sibling(
     peer["xai_weekly"] = meter
     assert peer["xai_weekly"]["account"] is None
     assert "grok_account" not in peer
+
+def test_fr6279_provider_http_error_keeps_selected_provenance(
+    tmp_path: Path, monkeypatch
+):
+    """After bearer selection, HTTP failure must not drop selected (MRB #6280)."""
+    path = tmp_path / "auth.json"
+    path.write_text(
+        json.dumps(
+            {
+                "https://auth.x.ai::expired": {
+                    "key": "FAKE_EXPIRED_KEY",
+                    "email": "expired@example.test",
+                    "expires_at": "2020-01-01T00:00:00Z",
+                },
+                "https://auth.x.ai::live": {
+                    "key": "FAKE_LIVE_KEY",
+                    "expires_at": "2099-01-01T00:00:00Z",
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("BOB_GROK_AUTH_PATH", str(path))
+    monkeypatch.delenv("BOB_WEEKLY_LOG", raising=False)
+
+    def boom(req, timeout=0):  # noqa: ARG001
+        import urllib.error
+
+        raise urllib.error.HTTPError(
+            url="https://cli-chat-proxy.grok.com/v1/billing?format=credits",
+            code=503,
+            msg="unavailable",
+            hdrs=None,
+            fp=None,
+        )
+
+    with mock.patch("urllib.request.urlopen", boom):
+        reading = bobreport.fetch_live_xai_weekly(
+            now=datetime(2026, 11, 9, 11, 20, tzinfo=timezone.utc)
+        )
+    assert reading is None
+    acq = bobreport._last_xai_acquisition
+    assert acq.get("selected") is True
+    assert acq.get("account") is None
+    assert "503" in str(acq.get("error") or "")
+
+
+def test_fr6279_publish_after_provider_fail_does_not_borrow_sibling(
+    tmp_path: Path, monkeypatch
+):
+    """publish_local_peer_fuel must not stamp sibling label after selected fail."""
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / "machines").mkdir()
+    auth = tmp_path / "auth.json"
+    auth.write_text(
+        json.dumps(
+            {
+                "https://auth.x.ai::expired": {
+                    "key": "FAKE_EXPIRED_KEY",
+                    "email": "expired@example.test",
+                    "expires_at": "2020-01-01T00:00:00Z",
+                },
+                "https://auth.x.ai::live": {
+                    "key": "FAKE_LIVE_KEY",
+                    "expires_at": "2099-01-01T00:00:00Z",
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("BOB_GROK_AUTH_PATH", str(auth))
+    monkeypatch.delenv("BOB_WEEKLY_LOG", raising=False)
+    monkeypatch.setenv("BOB_MACHINE_ID", "flamingo")
+
+    def boom(req, timeout=0):  # noqa: ARG001
+        import urllib.error
+
+        raise urllib.error.HTTPError(
+            url="https://cli-chat-proxy.grok.com/v1/billing?format=credits",
+            code=502,
+            msg="bad gateway",
+            hdrs=None,
+            fp=None,
+        )
+
+    with mock.patch("urllib.request.urlopen", boom):
+        assert (
+            bobreport.fetch_live_xai_weekly(
+                now=datetime(2026, 11, 9, 11, 25, tzinfo=timezone.utc)
+            )
+            is None
+        )
+
+    peer = {
+        "pcent": {"grok-build": 40},
+        "weekly": 40,
+        "weekly_known": True,
+        "xai_weekly": {
+            "provider": "xai",
+            "window": "weekly",
+            "direction": "remaining",
+            "remaining_pct": 40,
+            "source": "last-good",
+            "fetched_at": "2026-11-09T10:00:00Z",
+            "account": "stale@example.test",
+            "fresh": False,
+        },
+        "xai_weekly_fetched_at": "2026-11-09T10:00:00Z",
+        "grok_account": "expired@example.test",
+    }
+    # Apply the same attach block publish_local_peer_fuel uses after fetch.
+    acq = bobreport._last_xai_acquisition if isinstance(
+        bobreport._last_xai_acquisition, dict
+    ) else {}
+    selected = bool(acq.get("selected"))
+    assert selected is True
+    peer = dict(peer)
+    if selected:
+        label = acq.get("account")
+        xai_meter = peer.get("xai_weekly")
+        if isinstance(xai_meter, dict):
+            meter = dict(xai_meter)
+            meter["account"] = label
+            peer["xai_weekly"] = meter
+        if label:
+            peer["grok_account"] = label
+        else:
+            peer.pop("grok_account", None)
+    assert peer["xai_weekly"]["account"] is None
+    assert "grok_account" not in peer
+    # Sibling independent reader still sees expired label; must not be used.
+    src, borrowed = bobreport.read_grok_account_label(
+        {"BOB_GROK_AUTH_PATH": str(auth)}
+    )
+    assert src == "ok"
+    assert borrowed == "expired@example.test"
