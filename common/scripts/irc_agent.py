@@ -5146,9 +5146,9 @@ def clean_crashed_priors(nick: str, home: str, *, once: bool) -> None:
 
 def main() -> None:
     import signal
-    # FR #6282: fail loud at startup when gitclaim lacks shop-claim helpers
-    # (build/hotpatch mismatch), never inside a PRIVMSG handler.
-    assert_ear_gitclaim_contract()
+    # FR #6282: fail loud at startup when gitclaim/unregister_cmd lack dispatch helpers
+    # (build/hotpatch mismatch), never inside a PRIVMSG/NOTICE handler.
+    assert_ear_dispatch_contracts()
     try:
         import crash_report
 

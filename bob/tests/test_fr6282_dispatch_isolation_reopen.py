@@ -224,3 +224,15 @@ def test_fr6282_unregister_cmd_contract_pins_parse_helpers():
     irc_agent.assert_ear_dispatch_contracts()
     assert callable(unregister_cmd.parse_chanserv_register_result)
     assert callable(unregister_cmd.parse_chanserv_unregister_confirm)
+
+
+def test_fr6282_main_calls_assert_ear_dispatch_contracts():
+    """MRB #6291: startup must run full dispatch contracts (unregister_cmd + gitclaim)."""
+    src = Path(irc_agent.__file__).read_text(encoding="utf-8")
+    main_idx = src.index("def main() -> None:")
+    next_def = src.find("\ndef ", main_idx + 1)
+    body = src[main_idx: next_def if next_def != -1 else None]
+    assert "assert_ear_dispatch_contracts()" in body
+    # Must not call the gitclaim-only helper alone at startup.
+    assert "assert_ear_gitclaim_contract()" not in body
+    irc_agent.assert_ear_dispatch_contracts()
