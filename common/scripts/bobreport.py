@@ -5945,12 +5945,15 @@ def _auth_slot_is_api_key(slot: object) -> bool:
     return s == "xai::api_key" or s.endswith("::api_key") or s == "api_key"
 
 
-def load_grok_auth_bearer(path: Path) -> tuple[str | None, str | None]:
-    """Load interactive session bearer from Grok CLI auth.json.
+def load_grok_auth_session(
+    path: Path,
+) -> tuple[str | None, str | None, str | None]:
+    """Load interactive session bearer + label from the *same* auth.json entry.
 
-    Returns ``(token, error)``. ``error`` is one of:
+    Returns ``(token, error, account_label)``. ``error`` is one of:
     ``auth-file-unreadable``, ``auth-file-bad-json``, ``auth-key-missing``, or None.
-    Never logs or returns credential material in ``error``.
+    ``account_label`` is email / name from the selected entry only (FR #6279);
+    never borrowed from a sibling entry. Never logs credential values.
 
     Layout (Grok CLI / flamingo field names): top-level map keyed by
     ``issuer::client_id``; each entry may carry ``key`` (access token),
@@ -5960,18 +5963,19 @@ def load_grok_auth_bearer(path: Path) -> tuple[str | None, str | None]:
     try:
         raw = path.read_text(encoding="utf-8")
     except OSError:
-        return None, "auth-file-unreadable"
+        return None, "auth-file-unreadable", None
     except UnicodeError:
-        return None, "auth-file-bad-json"
+        return None, "auth-file-bad-json", None
     try:
         doc = json.loads(raw)
     except json.JSONDecodeError:
-        return None, "auth-file-bad-json"
+        return None, "auth-file-bad-json", None
     if not isinstance(doc, dict) or not doc:
-        return None, "auth-key-missing"
+        return None, "auth-key-missing", None
 
     now = datetime.now(timezone.utc)
-    candidates: list[tuple[int, str]] = []
+    # rank, token, label (from same entry only)
+    candidates: list[tuple[int, str, str | None]] = []
     for slot, entry in doc.items():
         if not isinstance(entry, dict):
             continue
@@ -5985,16 +5989,24 @@ def load_grok_auth_bearer(path: Path) -> tuple[str | None, str | None]:
         rank = 0
         if exp is not None and exp <= now:
             rank = 1
-        candidates.append((rank, token))
+        label = _label_from_grok_profile(entry)
+        candidates.append((rank, token, label))
     if not candidates:
-        return None, "auth-key-missing"
+        return None, "auth-key-missing", None
     candidates.sort(key=lambda t: t[0])
-    return candidates[0][1], None
+    _rank, token, label = candidates[0]
+    return token, None, label
+
+
+def load_grok_auth_bearer(path: Path) -> tuple[str | None, str | None]:
+    """Compat: session key only (FR #6274). Prefer ``load_grok_auth_session``."""
+    token, err, _label = load_grok_auth_session(path)
+    return token, err
 
 
 def _grok_auth_bearer_from_file(path: Path) -> str | None:
-    """Compat wrapper: session key only (FR #6274). Prefer ``load_grok_auth_bearer``."""
-    token, _err = load_grok_auth_bearer(path)
+    """Compat wrapper: session key only (FR #6274). Prefer ``load_grok_auth_session``."""
+    token, _err, _label = load_grok_auth_session(path)
     return token
 
 
@@ -6076,15 +6088,17 @@ def fetch_live_xai_weekly(*, now: datetime | None = None) -> dict | None:
         }
         return None
     try:
-        token, auth_err = load_grok_auth_bearer(path)
+        token, auth_err, selected_label = load_grok_auth_session(path)
     except OSError:
-        token, auth_err = None, "auth-file-unreadable"
+        token, auth_err, selected_label = None, "auth-file-unreadable", None
     if not token:
         _last_xai_acquisition = {
             "identity": identity,
             "read": False,
             "live": False,
             "error": auth_err or "auth-key-missing",
+            "selected": True,
+            "account": selected_label,
         }
         return None
     try:
@@ -6135,12 +6149,15 @@ def fetch_live_xai_weekly(*, now: datetime | None = None) -> dict | None:
             "error": "provider-no-creditUsagePercent",
         }
         return None
+    reading["account"] = selected_label
     _last_xai_acquisition = {
         "identity": "live-billing",
         "read": True,
         "live": True,
         "error": None,
         "auth_identity": identity,
+        "selected": True,
+        "account": selected_label,
     }
     return reading
 
@@ -6273,7 +6290,7 @@ def enrich_peer_with_xai_weekly(peer: dict, reading: dict | None) -> dict:
             "source": enriched.get("xai_weekly_source"),
             "fetched_at": enriched.get("xai_weekly_fetched_at"),
             "period_end": enriched.get("period_end"),
-            "account": None,
+            "account": reading.get("account"),
             "fresh": bool(reading.get("fresh", True)),
             "error": reading.get("error"),
         }
@@ -6295,7 +6312,7 @@ def enrich_peer_with_xai_weekly(peer: dict, reading: dict | None) -> dict:
             "source": enriched.get("xai_weekly_source"),
             "fetched_at": enriched.get("xai_weekly_fetched_at"),
             "period_end": reading.get("period_end"),
-            "account": None,
+            "account": reading.get("account"),
             "fresh": False,
             "error": reading.get("error"),
         }
@@ -6395,17 +6412,35 @@ def publish_local_peer_fuel(
             _last_fuel_publish_diag["opencode_source"] = str(acq.get("source"))
     except Exception:
         pass
-    # FR #6248: attach ear-owned grok_account (Redqueen publishes real X identity).
+    # FR #6248 / #6279: attach ear-owned grok_account.
+    # When this cycle selected an auth entry for live weekly, attribute from that
+    # entry only (never borrow a sibling label for the meter). Unlabeled selection
+    # stays unattributed. Independent read_grok_account_label is used only when
+    # no selection happened this cycle.
     try:
-        _src, label = read_grok_account_label()
-        if label:
-            peer = dict(peer)
-            peer["grok_account"] = label
+        peer = dict(peer)
+        acq = _last_xai_acquisition if isinstance(_last_xai_acquisition, dict) else {}
+        selected = bool(acq.get("selected"))
+        if selected:
+            label = acq.get("account")
             xai_meter = peer.get("xai_weekly")
             if isinstance(xai_meter, dict):
                 meter = dict(xai_meter)
                 meter["account"] = label
                 peer["xai_weekly"] = meter
+            if label:
+                peer["grok_account"] = label
+            else:
+                peer.pop("grok_account", None)
+        else:
+            _src, label = read_grok_account_label()
+            if label:
+                peer["grok_account"] = label
+                xai_meter = peer.get("xai_weekly")
+                if isinstance(xai_meter, dict):
+                    meter = dict(xai_meter)
+                    meter["account"] = label
+                    peer["xai_weekly"] = meter
     except Exception:
         pass
     payload = build_peer_fuel_merge_payload(peer, mid)
