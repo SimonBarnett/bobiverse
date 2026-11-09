@@ -6232,6 +6232,8 @@ def _read_xai_log_file(path: Path, *, now: datetime | None) -> dict | None:
 
 XAI_BILLING_CREDITS_URL = "https://cli-chat-proxy.grok.com/v1/billing?format=credits"
 XAI_BILLING_SOURCE = "cli-chat-proxy:/v1/billing?format=credits"
+# FR #6314: billing 401/403 with Grok CLI auth.json => expired sign-in (not network/5xx).
+XAI_GROK_LOGIN_EXPIRED = "grok-login-expired"
 
 
 def xai_weekly_auth_path() -> tuple[Path | None, str]:
@@ -6690,11 +6692,19 @@ def fetch_live_xai_weekly(*, now: datetime | None = None) -> dict | None:
     except urllib.error.HTTPError as e:
         # FR #6279: bearer was selected; keep provenance so publish does not
         # fall back to sibling read_grok_account_label on provider failure.
+        # FR #6314: 401/403 with session auth => grok-login-expired (distinct
+        # from network/parse/5xx). Never refresh/rewrite auth.json here.
+        code = int(getattr(e, "code", 0) or 0)
+        err = (
+            XAI_GROK_LOGIN_EXPIRED
+            if code in (401, 403)
+            else f"provider-http-{code}"
+        )
         _last_xai_acquisition = {
             "identity": identity,
             "read": False,
             "live": False,
-            "error": f"provider-http-{int(getattr(e, 'code', 0) or 0)}",
+            "error": err,
             "selected": True,
             "account": selected_label,
         }

@@ -431,6 +431,8 @@ function Format-BobTrayXaiWeeklyRow {
       remaining_pct is the digest meter value (never recomputed from used, never local log).
       fresh=false => stale mark (age_s / fetched_at) + error when present; last % only with that mark.
       null meter => clear 'no reading' (never empty bar, never another source).
+      FR #6314: error grok-login-expired expands to 'Grok login expired: run Grok on <m> to sign in again'
+      in the heading; .error stays the class string for diagnostics.
     #>
     param(
         [string]$MachineId,
@@ -461,6 +463,14 @@ function Format-BobTrayXaiWeeklyRow {
     } catch { $fresh = $true }
     $err = ''
     try { if ($XaiWeekly.error) { $err = [string]$XaiWeekly.error } } catch { }
+    # FR #6314: expand grok-login-expired for TipForm/Status heading; keep class in .error.
+    $errDisplay = $err
+    $midLower = ([string]$MachineId).ToLowerInvariant()
+    if (-not $midLower) { $midLower = ([string]$id).ToLowerInvariant() }
+    if ($err -eq 'grok-login-expired') {
+        $who = if ($midLower) { $midLower } else { 'this machine' }
+        $errDisplay = ('Grok login expired: run Grok on {0} to sign in again' -f $who)
+    }
     $age = $null
     try {
         if ($null -ne $XaiWeekly.age_s -and [string]$XaiWeekly.age_s -ne '') {
@@ -488,7 +498,7 @@ function Format-BobTrayXaiWeeklyRow {
         $parts += ('{0}% left' -f [int]$pct)
     } else {
         $parts += 'no reading'
-        if ($err) { $parts += ('({0})' -f $err) }
+        if ($errDisplay) { $parts += ('({0})' -f $errDisplay) }
     }
     if ($acct) { $parts += [string]$acct }
     if (-not $fresh) {
@@ -498,7 +508,7 @@ function Format-BobTrayXaiWeeklyRow {
         }
         if ($stale -notmatch '^\[') { $stale = ('[{0}]' -f $stale) }
         $parts += $stale
-        if ($err -and ($null -ne $pct)) { $parts += $err }
+        if ($errDisplay -and ($null -ne $pct)) { $parts += $errDisplay }
     }
     if ($resetLabel -and ($null -ne $pct -or -not $fresh)) {
         $parts += [string]$resetLabel
