@@ -5582,14 +5582,83 @@ def _is_windows_system_profile(path: Path) -> bool:
     return "\\systemprofile\\" in text or text.endswith("\\systemprofile")
 
 
+def _is_local_system_process() -> bool:
+    """True when this process is Windows LocalSystem (live service), not a test USERPROFILE spoof.
+
+    Unit tests often set USERPROFILE to systemprofile while USERNAME stays the
+    interactive login; those must not auto-open Users\\* (keep system-profile-skipped
+    unless BOB_GROK_WEEKLY_USER_HOME / BOB_WEEKLY_LOG is set).
+    """
+    if os.name != "nt":
+        return False
+    name = (os.environ.get("USERNAME") or "").strip().upper()
+    if name in ("SYSTEM",):
+        return True
+    # LocalSystem / computer account often appears as COMPUTERNAME$
+    if name.endswith("$"):
+        return True
+    return False
+
+
+def _interactive_grok_user_home() -> Path | None:
+    """FR #6270: interactive console user home that owns ``.grok`` (usage log only; never auth.json).
+
+    Honours ``BOB_GROK_WEEKLY_USER_HOME``. Otherwise resolves Win32 console user /
+    explorer owner and returns that Users\\<name> directory when it exists.
+    """
+    override = (os.environ.get("BOB_GROK_WEEKLY_USER_HOME") or "").strip().rstrip("\\/")
+    if override:
+        return Path(override)
+    if os.name != "nt":
+        return None
+    account = None
+    try:
+        import subprocess
+
+        # Avoid PowerShell; keep ASCII + short timeout for the ear tick.
+        r = subprocess.run(
+            [
+                "powershell",
+                "-NoProfile",
+                "-Command",
+                (
+                    "$u=$null; try { $u=(Get-CimInstance Win32_ComputerSystem -EA Stop).UserName } catch {}; "
+                    "if (-not $u) { $e=Get-CimInstance Win32_Process -Filter \"Name='explorer.exe'\" -EA SilentlyContinue | "
+                    "Select-Object -First 1; if ($e) { $o=Invoke-CimMethod -InputObject $e -MethodName GetOwner -EA SilentlyContinue; "
+                    "if ($o -and $o.User) { $u= if ($o.Domain) { \"$($o.Domain)\\$($o.User)\" } else { $o.User } } } }; "
+                    "if ($u) { Write-Output $u }"
+                ),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=8,
+            check=False,
+        )
+        line = (r.stdout or "").strip().splitlines()
+        if line:
+            account = line[-1].strip()
+    except Exception:
+        account = None
+    if not account:
+        return None
+    user = account.split("\\")[-1].strip()
+    if not user or user.upper() in ("SYSTEM", "LOCAL SERVICE", "NETWORK SERVICE"):
+        return None
+    drive = (os.environ.get("SystemDrive") or "C:").rstrip("\\/")
+    cand = Path(drive) / "Users" / user
+    if cand.is_dir():
+        return cand
+    return None
+
+
 def xai_weekly_log_candidate() -> tuple[Path | None, str]:
     """Where a service may read the weekly billing line.
 
     ``BOB_WEEKLY_LOG`` is an explicit file. Otherwise the process profile's
-    ``.grok/logs/unified.jsonl`` is used only when that profile is not
-    LocalSystem's ``systemprofile``. The system profile is skipped so the
-    service does not publish an unknown from the wrong identity, and this
-    does not open ``Users\\Administrator``.
+    ``.grok/logs/unified.jsonl`` is used when that profile is not LocalSystem's
+    ``systemprofile``. FR #6270: a live LocalSystem ear (or
+    ``BOB_GROK_WEEKLY_USER_HOME``) may read the signed-in interactive user's
+    unified.jsonl (usage log only; never auth/credentials).
     """
     raw = (os.environ.get("BOB_WEEKLY_LOG") or "").strip()
     if raw:
@@ -5604,6 +5673,19 @@ def xai_weekly_log_candidate() -> tuple[Path | None, str]:
     if not home:
         return None, "no-profile"
     if _is_windows_system_profile(Path(home)):
+        # Prefer explicit interactive home (tests + NSSM AppEnvironmentExtra).
+        override = (os.environ.get("BOB_GROK_WEEKLY_USER_HOME") or "").strip()
+        allow_auto = _is_local_system_process() and not (
+            (os.environ.get("BOB_WEEKLY_FORCE_SYSTEM_PROFILE") or "").strip().lower()
+            in ("1", "true", "yes", "on")
+        )
+        user_home = None
+        if override or allow_auto:
+            user_home = _interactive_grok_user_home()
+        if user_home is not None:
+            log = user_home / ".grok" / "logs" / "unified.jsonl"
+            if log.is_file():
+                return log, "interactive-profile"
         return None, "system-profile-skipped"
     return Path(home) / ".grok" / "logs" / "unified.jsonl", "process-profile"
 
@@ -5797,10 +5879,11 @@ def _read_xai_log_file(path: Path, *, now: datetime | None) -> dict | None:
 
 
 def read_local_xai_weekly(*, now: datetime | None = None) -> dict | None:
-    """Explicit log, then the collector handoff, then a non-system profile log.
+    """Explicit log, then interactive/process profile unified.jsonl (FR #6270).
 
-    A LocalSystem profile with no explicit file and no handoff returns None.
-    That is not a measurement and must not be published as unknown weekly.
+    A LocalSystem profile with no explicit file and no interactive user log
+    returns None. That is not a measurement and must not be published as a
+    fresh weekly (never re-post a carried value as current).
     """
     global _last_xai_acquisition
     path, identity = xai_weekly_log_candidate()
@@ -5810,10 +5893,10 @@ def read_local_xai_weekly(*, now: datetime | None = None) -> dict | None:
         if reading:
             return reading
     # FR #6248: tray handoff is not an acquisition path. Service owns the
-    # measurement (explicit BOB_WEEKLY_LOG or a non-system process profile).
-    if identity == "process-profile" and path is not None and path.is_file():
+    # measurement (explicit BOB_WEEKLY_LOG, interactive-profile, or process-profile).
+    if identity in ("process-profile", "interactive-profile") and path is not None and path.is_file():
         reading = _read_xai_log_file(path, now=now)
-        _last_xai_acquisition = {"identity": "process-profile", "read": reading is not None}
+        _last_xai_acquisition = {"identity": identity, "read": reading is not None}
         return reading
     _last_xai_acquisition = {"identity": identity, "read": False}
     return None
@@ -5945,11 +6028,37 @@ def publish_local_peer_fuel(
     # Does not call the network and does not copy credentials.
     try:
         xai = read_local_xai_weekly()
-        _last_fuel_publish_diag["acquisition"] = _last_xai_acquisition.get("identity")
+        acq = _last_xai_acquisition.get("identity")
+        _last_fuel_publish_diag["acquisition"] = acq
         if xai:
             peer = enrich_peer_with_xai_weekly(peer, xai)
+        elif acq in (
+            "system-profile-skipped",
+            "system-profile-refused",
+            "fake-grok",
+        ):
+            # FR #6270 / mrb-6272: LocalSystem skip must not re-post a carried
+            # peer.weekly as a fresh reading (weekly_known=false clears).
+            peer = enrich_peer_with_xai_weekly(
+                peer,
+                {
+                    "weekly_known": False,
+                    "remaining_pct": None,
+                    "source": str(acq),
+                    "fetched_at": None,
+                },
+            )
     except Exception:
         _last_fuel_publish_diag["acquisition"] = "read-failed"
+        peer = enrich_peer_with_xai_weekly(
+            peer,
+            {
+                "weekly_known": False,
+                "remaining_pct": None,
+                "source": "read-failed",
+                "fetched_at": None,
+            },
+        )
     # FR #6146 / #6147 / #6248: enrich with service-owned OpenCode windows before POST.
     try:
         oc_doc = read_local_opencode_fuel_doc()

@@ -1528,7 +1528,20 @@ function Merge-BobIrcDigestPeerWithPrevious {
         return $Doc
     }
     $names = Get-BobIrcDigestMachinePropertyNames $Ent
-    if ($names -notcontains 'weekly' -and $null -ne $Prev.weekly) {
+    # FR #6270: never re-post a carried Prev.weekly as a fresh reading when the new
+    # acquisition explicitly marks weekly unknown (system-profile-skipped / weekly_known=false).
+    $weeklyKnownFalse = $false
+    if ($names -contains 'weekly_known') {
+        try { if (-not [bool]$Ent.weekly_known) { $weeklyKnownFalse = $true } } catch { }
+    }
+    if ($Doc.PSObject.Properties.Name -contains 'weekly_known') {
+        try { if (-not [bool]$Doc.weekly_known) { $weeklyKnownFalse = $true } } catch { }
+    }
+    if ($weeklyKnownFalse) {
+        $Doc | Add-Member -NotePropertyName weekly -NotePropertyValue $null -Force
+        $Doc | Add-Member -NotePropertyName weekly_known -NotePropertyValue $false -Force
+    }
+    elseif ($names -notcontains 'weekly' -and $null -ne $Prev.weekly) {
         $Doc | Add-Member -NotePropertyName weekly -NotePropertyValue $Prev.weekly -Force
     }
     if ($names -notcontains 'period_end' -and -not ($names -contains 'reset' -and $Ent.reset) -and $Prev.period_end) {
@@ -2217,6 +2230,12 @@ function Build-BobDigestWebhookMergePayload {
         try { $weeklyKnown = [bool]$Doc.weekly_known } catch { }
     }
     $payload.weekly_known = $weeklyKnown
+    # FR #6270: acquisition diag for Status / digest (no secrets).
+    if ($Doc.home_role) { $payload.home_role = [string]$Doc.home_role }
+    if ($Doc.acquisition) { $payload.acquisition = [string]$Doc.acquisition }
+    if ($Doc.grok_account) { $payload.grok_account = [string]$Doc.grok_account }
+    if ($Doc.xai_weekly_fetched_at) { $payload.xai_weekly_fetched_at = [string]$Doc.xai_weekly_fetched_at }
+    if ($Doc.xai_weekly_source) { $payload.xai_weekly_source = [string]$Doc.xai_weekly_source }
     # FR #6144: always publish cursor_known (mirrors weekly_known).
     $cursorKnown = $true
     if ($null -ne $Doc.cursor_known -and [string]$Doc.cursor_known -ne '') {
@@ -2551,12 +2570,20 @@ function Write-BobIrcStatus {
     }
     $week = $null
     $periodEnd = $null
+    $w = $null
+    $weeklyAcq = $null
+    try { $weeklyAcq = Resolve-BobGrokWeeklyUserHome } catch { $weeklyAcq = $null }
     try {
         $w = Get-BobWeeklyRemaining
         if ($w -and $null -ne $w.remaining_pct) { $week = [int]$w.remaining_pct }
         if ($w -and $w.period_end) { $periodEnd = [string]$w.period_end }
     }
     catch { }
+    # FR #6270: system-profile-skipped must not invent a % from seat-period-end cache.
+    if ($weeklyAcq -and [string]$weeklyAcq.acquisition -eq 'system-profile-skipped') {
+        $week = $null
+        if (-not ($w -and $w.period_end)) { $periodEnd = $null }
+    }
     $seen = [DateTime]::UtcNow.ToString('o')
     Save-BobSeatPeriodEnd -MachineId $id -PeriodEnd $periodEnd -Weekly $week -ClearWeekly:([bool]($w -and $w.stale))
     # FR #6248: no tray usage handoff write
@@ -2682,6 +2709,12 @@ function Write-BobIrcStatus {
         started_at             = $startedAt
         responding             = $responding
         source                 = 'irc'
+        # FR #6270: publish acquisition provenance (never credentials).
+        home_role              = $(if ($weeklyAcq) { [string]$weeklyAcq.home_role } else { $null })
+        acquisition            = $(if ($weeklyAcq) { [string]$weeklyAcq.acquisition } else { $null })
+        grok_account           = $(if ($weeklyAcq -and $weeklyAcq.account) { [string]$weeklyAcq.account } else { $null })
+        xai_weekly_fetched_at  = $(if ($w -and $w.fetched_at) { [string]$w.fetched_at } else { $null })
+        xai_weekly_source      = $(if ($w -and $w.source) { [string]$w.source } else { $null })
     }
     # FR #6144: when Cursor unknown, omit label/pcent/pools on the peer doc (chair clears).
     if ($doc.cursor_known -eq $false) {
