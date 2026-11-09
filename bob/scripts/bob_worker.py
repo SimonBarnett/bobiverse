@@ -158,6 +158,9 @@ try:
         message_job_keys,
         opencode_job_context_nack,
         opencode_job_context_nack_ready,
+        opencode_outbox_line_allowed,
+        opencode_outbox_path,
+        ensure_opencode_bob_outbox,
         prepare_opencode_wire,
         probe_gh_auth,
     )
@@ -167,6 +170,9 @@ except ImportError:  # package import (bob.scripts.bob_worker)
         message_job_keys,
         opencode_job_context_nack,
         opencode_job_context_nack_ready,
+        opencode_outbox_line_allowed,
+        opencode_outbox_path,
+        ensure_opencode_bob_outbox,
         prepare_opencode_wire,
         probe_gh_auth,
     )
@@ -1379,6 +1385,7 @@ def worker_prompt(worker_dir: str, home: str, machine: str, nick: str) -> str:
         f"There is no evidence that an interactive Allow is honored by a later opencode run. "
         f"The program NACKs a missing or refused job worktree before you see the assign. That is not DONE. "
         f"BOB_HOME may be empty. ACK/DONE go to $env:BOB_OUTBOX only. "
+        f"OpenCode (FR #6333): for a job with --dir <worktree>, $env:BOB_OUTBOX is <worktree>\\.bob\\outbox.txt (inside the project directory). The program still ACK-on-receipt via the run-dir outbox; your DONE/GIVEUP must append to $env:BOB_OUTBOX. Never request external_directory and never pass --auto. "
         f"Never print or store secrets."
     )
 
@@ -1694,6 +1701,11 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             r"            Write-OpencodeJobNack $jobKey 'worktree-absent'",
             r"            return",
             r"        }",
+            r"        # FR #6333: BOB_OUTBOX inside --dir so headless opencode can append without external_directory.",
+            r"        $bobDir = Join-Path $ocDir '.bob'",
+            r"        New-Item -ItemType Directory -Force -Path $bobDir | Out-Null",
+            r"        $env:BOB_OUTBOX = Join-Path $bobDir 'outbox.txt'",
+            r"        if (-not (Test-Path -LiteralPath $env:BOB_OUTBOX)) { [IO.File]::WriteAllText($env:BOB_OUTBOX, '') }",
             r"        $argList = @('run', '--dir', $ocDir, '-m', $model, $line)",
             r"    } else {",
             r"        $argList = @('run', '-m', $model, $line)",
@@ -6361,13 +6373,22 @@ class BoredEmitter:
             self._done_job_keys.discard(key)
 
     def should_forward_outbox(self, payload: str) -> bool:
-        """FR #4730: False for a replayed ACK of a job already DONE/NACK/GIVEUP'd."""
+        """FR #4730: False for a replayed ACK of a job already DONE/NACK/GIVEUP'd.
+
+        FR #6333: also False for a duplicate ACK while the same job ACK is already open
+        (program ACK-on-receipt already posted).
+        """
         p = (payload or "").strip()
         if not _OUT_ACK_RX.match(p):
             return True
         job = outbox_job_key(p)
         with self._cv:
-            return not (job and job in self._finished_job_keys)
+            if job and job in self._finished_job_keys:
+                return False
+            # Dedupe model ACK after program ACK-on-receipt for the same open job.
+            if job and self._ack_open and self._ack_job_key and job == self._ack_job_key:
+                return False
+            return True
 
     def note_stale_replay_user_assign(
         self,
@@ -7959,13 +7980,48 @@ class Supervisor:
                 self.bored.note_stand_down(ref)
 
     def may_send_outbox(self, payload: str) -> bool:
-        """FR #4730: drop replayed ACK for a finished job before it hits IRC."""
+        """FR #4730: drop replayed ACK for a finished job before it hits IRC.
+
+        FR #6333: when an OpenCode job outbox is active, only forward well-formed
+        ACK/DONE/NACK/GIVEUP lines for that job key (drop malformed / wrong-job).
+        Duplicate ACK while the same job is already open is dropped.
+        """
+        p = (payload or "").strip()
+        job_key = getattr(self, "_opencode_job_key", "") or ""
+        if job_key and getattr(self, "_opencode_job_outbox", None) is not None:
+            shop = ""
+            try:
+                shop = self.irc.shop if self.irc else shop_channel(self.machine)
+            except Exception:
+                shop = shop_channel(getattr(self, "machine", "") or "")
+            # Only apply the strict filter to typed job verbs; plain chatter is dropped.
+            if _OUT_ACK_RX.match(p) or _OUT_DONE_RX.match(p) or _OUT_FREE_RX.match(p):
+                if not opencode_outbox_line_allowed(p, job_key=job_key, shop=shop):
+                    return False
+            elif p.upper().startswith("PRIVMSG"):
+                # PRIVMSG that is not a typed job line: drop from job outbox.
+                if not opencode_outbox_line_allowed(p, job_key=job_key, shop=shop):
+                    return False
+            else:
+                # bare non-job text from job outbox: drop
+                if not opencode_outbox_line_allowed(p, job_key=job_key, shop=shop):
+                    return False
         if self.bored is None:
             return True
         try:
             return bool(self.bored.should_forward_outbox(payload))
         except Exception:
             return True
+
+    def opencode_extra_outbox_paths(self) -> list:
+        """FR #6333: active OpenCode job ``.bob/outbox.txt`` for the outbox loop."""
+        ob = getattr(self, "_opencode_job_outbox", None)
+        if ob is None:
+            return []
+        try:
+            return [Path(ob)]
+        except Exception:
+            return []
 
     def on_outbox_wire(self, payload: str) -> None:
         """BoredEmitter + FR #2383 ACK-miss clear; used as the outbox_loop on_payload."""
@@ -8432,6 +8488,15 @@ class Supervisor:
             if prepared.get("state") == "project" and prepared.get("wire"):
                 wire = prepared["wire"]
                 self.log(f"opencode-ready: job worktree {prepared['path']}")
+                # FR #6333: tail in-worktree .bob/outbox.txt; stamp FROM footer with that path.
+                try:
+                    ob = ensure_opencode_bob_outbox(prepared["path"])
+                    self._opencode_job_outbox = Path(ob)
+                    self._opencode_job_key = str(prepared.get("key") or "")
+                    if getattr(self, "relay", None) is not None:
+                        self.relay.outbox_path = Path(ob)
+                except Exception as e:  # noqa: BLE001
+                    self.log(f"opencode-ready: bob outbox setup failed {type(e).__name__}")
         if on_failed is None and assign_job_ref(line):
             on_failed = lambda l=line: self._inject_recovery().on_failed(l, attempt=1)
         kind_l = (self.kind or "").strip().lower()
@@ -9009,11 +9074,30 @@ def outbox_loop(
     log: Callable[[str], None],
     on_payload: Optional[Callable[[str], None]] = None,
     may_send: Optional[Callable[[str], bool]] = None,
+    extra_paths: Optional[Callable[[], list]] = None,
 ) -> None:
     ensure_outbox(path)
     while not stop.wait(0.5):  # outbound only; inbound relay is NOT polled
         try:
             drain_outbox(path, irc, log, on_payload, may_send)
+            # FR #6333: also drain OpenCode in-worktree .bob/outbox.txt when active.
+            extras: list = []
+            if extra_paths is not None:
+                try:
+                    extras = list(extra_paths() or [])
+                except Exception:
+                    extras = []
+            for extra in extras:
+                try:
+                    ep = Path(extra)
+                except Exception:
+                    continue
+                if not ep or ep.resolve() == Path(path).resolve():
+                    continue
+                try:
+                    drain_outbox(ep, irc, log, on_payload, may_send)
+                except Exception as e:  # pragma: no cover
+                    log(f"outbox(job): {type(e).__name__}")
         except Exception as e:  # pragma: no cover
             log(f"outbox: {type(e).__name__}")
 
@@ -9469,6 +9553,7 @@ def run_agent(args, log: Log) -> int:
     threading.Thread(
         target=outbox_loop,
         args=(run_dir / "outbox.txt", irc, sup.stop, log, sup.on_outbox_wire, sup.may_send_outbox),
+        kwargs={"extra_paths": sup.opencode_extra_outbox_paths},
         name="outbox",
         daemon=True,
     ).start()
