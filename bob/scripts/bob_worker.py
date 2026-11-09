@@ -177,6 +177,7 @@ try:
         opencode_outbox_path,
         ensure_opencode_bob_outbox,
         prepare_opencode_wire,
+        frame_opencode_message,
         probe_gh_auth,
     )
 except ImportError:  # package import (bob.scripts.bob_worker)
@@ -191,6 +192,7 @@ except ImportError:  # package import (bob.scripts.bob_worker)
         opencode_outbox_path,
         ensure_opencode_bob_outbox,
         prepare_opencode_wire,
+        frame_opencode_message,
         probe_gh_auth,
     )
 
@@ -1676,6 +1678,7 @@ def worker_prompt(worker_dir: str, home: str, machine: str, nick: str) -> str:
         f"The program NACKs a missing or refused job worktree before you see the assign. That is not DONE. "
         f"BOB_HOME may be empty. ACK/DONE go to $env:BOB_OUTBOX only. "
         f"OpenCode (FR #6333): for a job with --dir <worktree>, $env:BOB_OUTBOX is <worktree>\\.bob\\outbox.txt (inside the project directory). The program still ACK-on-receipt via the run-dir outbox; your DONE/GIVEUP must append to $env:BOB_OUTBOX. Never request external_directory and never pass --auto. "
+        f"OpenCode (FR #6366): end-of-job for each FR/MRB/UAT — git status/diff, finish work, commit on fr-<N>, git push -u origin HEAD, gh pr create with Closes owner/repo#N, then append DONE to $env:BOB_OUTBOX. The turn is not over until DONE is written. "
         f"Never print or store secrets."
     )
 
@@ -2014,22 +2017,56 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             r"    $timedOut = $false",
             r"    try {",
             # FR #6156: redirect to files and treat growing file size as heartbeat (not absolute WaitForExit).
+            # FR #6366: also treat descendant CPU / worktree mtime as heartbeat; hard ceiling for real hangs.
             r"        $watchdogMs = if ($env:BOB_OPENCODE_WATCHDOG_MS) { [int]$env:BOB_OPENCODE_WATCHDOG_MS } else { 120000 }",
+            r"        $hardCeilingMs = if ($env:BOB_OPENCODE_HARD_CEILING_MS) { [int]$env:BOB_OPENCODE_HARD_CEILING_MS } else { 1800000 }",
             r"        $outFile = Join-Path $env:TEMP ('bob-oc-out-' + [guid]::NewGuid().ToString('n') + '.txt')",
             r"        $errFile = Join-Path $env:TEMP ('bob-oc-err-' + [guid]::NewGuid().ToString('n') + '.txt')",
             # MRB #6163 / CodeRabbit: ArgumentList array drops quotes/spaces in $line; use pre-escaped $argStr.
-            r"        $proc = Start-Process -FilePath $exe -ArgumentList $argStr -NoNewWindow -PassThru -RedirectStandardOutput $outFile -RedirectStandardError $errFile",
+            r"        if ($ocDir) { $proc = Start-Process -FilePath $exe -ArgumentList $argStr -WorkingDirectory $ocDir -NoNewWindow -PassThru -RedirectStandardOutput $outFile -RedirectStandardError $errFile } else { $proc = Start-Process -FilePath $exe -ArgumentList $argStr -NoNewWindow -PassThru -RedirectStandardOutput $outFile -RedirectStandardError $errFile }",
             r"        $timedOut = $false",
+            r"        $killReason = ''",
             r"        $lastLen = 0",
+            r"        $lastCpu = -1.0",
+            r"        $lastWtStamp = $null",
+            r"        $lastBusyCheck = [datetime]::UtcNow",
             r"        $lastBeat = [datetime]::UtcNow",
+            r"        $runStarted = [datetime]::UtcNow",
             r"        while (-not $proc.HasExited) {",
             r"            $len = 0",
             r"            if (Test-Path -LiteralPath $outFile) { $len += (Get-Item -LiteralPath $outFile).Length }",
             r"            if (Test-Path -LiteralPath $errFile) { $len += (Get-Item -LiteralPath $errFile).Length }",
             r"            if ($len -gt $lastLen) { $lastLen = $len; $lastBeat = [datetime]::UtcNow }",
+            r"            $busy = $false",
+            r"            if (([datetime]::UtcNow - $lastBusyCheck).TotalMilliseconds -ge 2000) {",
+            r"                $lastBusyCheck = [datetime]::UtcNow",
+            r"                try {",
+            r"                    $kids = @(Get-CimInstance Win32_Process -Filter ('ParentProcessId=' + $proc.Id) -ErrorAction SilentlyContinue)",
+            r"                    $cpuSum = 0.0",
+            r"                    foreach ($tp in $kids) { try { $cpuSum += [double]$tp.UserModeTime + [double]$tp.KernelModeTime } catch { } }",
+            r"                    try { $self = Get-CimInstance Win32_Process -Filter ('ProcessId=' + $proc.Id) -ErrorAction SilentlyContinue; if ($self) { $cpuSum += [double]$self.UserModeTime + [double]$self.KernelModeTime } } catch { }",
+            r"                    if ($lastCpu -ge 0 -and $cpuSum -gt $lastCpu) { $busy = $true; $lastBeat = [datetime]::UtcNow }",
+            r"                    $lastCpu = $cpuSum",
+            r"                } catch { }",
+            r"                if ($ocDir -and (Test-Path -LiteralPath $ocDir)) {",
+            r"                    try {",
+            r"                        $stamp = (Get-ChildItem -LiteralPath $ocDir -Recurse -File -Depth 3 -ErrorAction SilentlyContinue | Sort-Object LastWriteTimeUtc -Descending | Select-Object -First 1).LastWriteTimeUtc",
+            r"                        if ($stamp -and $lastWtStamp -and $stamp -gt $lastWtStamp) { $busy = $true; $lastBeat = [datetime]::UtcNow }",
+            r"                        if ($stamp) { $lastWtStamp = $stamp }",
+            r"                    } catch { }",
+            r"                }",
+            r"            }",
             r"            $idleMs = ([datetime]::UtcNow - $lastBeat).TotalMilliseconds",
+            r"            $runMs = ([datetime]::UtcNow - $runStarted).TotalMilliseconds",
+            r"            if ($runMs -ge $hardCeilingMs) {",
+            r"                $timedOut = $true",
+            r"                $killReason = ('hard ceiling ' + [int]$hardCeilingMs + 'ms')",
+            r"                try { & taskkill /T /F /PID $proc.Id 2>$null | Out-Null } catch { }",
+            r"                break",
+            r"            }",
             r"            if ($idleMs -ge $watchdogMs) {",
             r"                $timedOut = $true",
+            r"                $killReason = ('watchdog timeout (no output/cpu/worktree idle ' + [int]$watchdogMs + 'ms)')",
             r"                try { & taskkill /T /F /PID $proc.Id 2>$null | Out-Null } catch { }",
             r"                break",
             r"            }",
@@ -2055,14 +2092,22 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             r"    $scan = [regex]::Replace($scan, '`[^`]*`', ' ')",
             r"    $limitPattern = 'Payment Required|usage balance exhausted|Too Many Requests|rate limit|rolling limit'",
             r"    $codePattern = '(HTTP|status( code)?)\D{0,3}(402|429)'",
-            r"    $hitLimit = $timedOut -or ($exitCode -ne 0 -and (($scan -match $limitPattern) -or ($scan -match $codePattern)))",
+            # FR #6366: watchdog timeout kills the run but must NOT record a model pause
+            # (done-miss finish-runs looked like out-of-fuel). Only real 402/429/limit text pauses.
+            r"    $hitLimit = ($exitCode -ne 0 -and (($scan -match $limitPattern) -or ($scan -match $codePattern)))",
+            r"    if ($timedOut) {",
+            r"        if ($proc -and -not $proc.HasExited) { try { & taskkill /T /F /PID $proc.Id 2>$null | Out-Null } catch { } }",
+            r"        if (-not $killReason) { $killReason = 'watchdog timeout (no output)' }",
+            r"        $msg = $killReason",
+            r"        Write-Output ('opencode-watchdog: kill reason=' + $msg)",
+            r"        $entry = @{ pid = $PID; ts = (Get-Date -Format o); model = $model; text = $msg; pause = $false } | ConvertTo-Json -Compress",
+            r"        Add-Content -Path $fuelLog -Value $entry -ErrorAction SilentlyContinue",
+            r"    }",
             r"    if ($hitLimit) {",
             r"        if ($proc -and -not $proc.HasExited) { try { & taskkill /T /F /PID $proc.Id 2>$null | Out-Null } catch { } }",
-            r"        if ($timedOut) { $msg = 'watchdog timeout (no output)' } else {",
-            r"            $matchLines = $scan -split '\r?\n' | Where-Object { $_ -match $limitPattern -or $_ -match $codePattern }",
-            r"            $msg = ($matchLines | Select-Object -First 3) -join ' '",
-            r"            if (-not $msg) { $msg = ($scan -replace '\s+', ' ').Trim(); if ($msg.Length -gt 300) { $msg = $msg.Substring(0, 300) } }",
-            r"        }",
+            r"        $matchLines = $scan -split '\r?\n' | Where-Object { $_ -match $limitPattern -or $_ -match $codePattern }",
+            r"        $msg = ($matchLines | Select-Object -First 3) -join ' '",
+            r"        if (-not $msg) { $msg = ($scan -replace '\s+', ' ').Trim(); if ($msg.Length -gt 300) { $msg = $msg.Substring(0, 300) } }",
             r"        $entry = @{ pid = $PID; ts = (Get-Date -Format o); model = $model; text = $msg } | ConvertTo-Json -Compress",
             r"        Add-Content -Path $fuelLog -Value $entry -ErrorAction SilentlyContinue",
             r"        $py = (Get-Command python.exe -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source)",
@@ -2416,7 +2461,11 @@ def build_enter_records():
 
 
 def one_line(text: str, maxlen: int = 600) -> str:
-    """Console inject payload. Control characters, including tab, become spaces."""
+    """Console inject payload. Control characters, including tab, become spaces.
+
+    FR #6366: OpenCode inject_console passes maxlen=2000 for ``@@BOBJOB1`` frames
+    so finish-run checklists survive; default 600 keeps FR #6240 prefix-only contract.
+    """
     return console_text(text, maxlen)
 
 
@@ -2827,7 +2876,11 @@ def inject_console(
     """
     # FR #6240: this is the real transport. Tabs do not survive. OpenCode job
     # frames use pipes so the key and directory are still here after one_line.
-    text = one_line(text)
+    # FR #6366: OpenCode finish frames need the full checklist body (maxlen 2000).
+    _oc_frame = (kind or "").strip().lower() == "opencode" and (text or "").startswith(
+        "@@BOBJOB1|"
+    )
+    text = one_line(text, 2000) if _oc_frame else one_line(text)
     if not text or os.name != "nt":
         return False
     gap = _submit_gap_s() if submit_gap_s is None else max(0.05, float(submit_gap_s))
@@ -6468,6 +6521,101 @@ def done_miss_reminder_line(*, shop: str, outbox: str | Path, job_key: str) -> s
     )
 
 
+def opencode_finish_run_max() -> int:
+    """FR #6366: max OpenCode finish-runs after done-miss (default 3, clamp 1..10)."""
+    raw = (os.environ.get("BOB_OPENCODE_FINISH_RUN_MAX") or "").strip()
+    if not raw:
+        return 3
+    try:
+        n = int(raw)
+    except ValueError:
+        return 3
+    return max(1, min(10, n))
+
+
+def opencode_job_finish_steps(
+    *,
+    job_key: str,
+    worktree: str | Path,
+    outbox: str | Path,
+) -> str:
+    """FR #6366: end-of-job checklist for OpenCode (initial assign + finish re-prompt)."""
+    key = (job_key or "job").strip() or "job"
+    m = re.search(r"(?i)#(\d+)\s*$", key)
+    issue_n = m.group(1) if m else "N"
+    branch = f"fr-{issue_n}" if issue_n != "N" else "fr-N"
+    wt = str(worktree or "").strip()
+    ob = str(outbox or "").strip()
+    return (
+        f"FINISH {key}. Work so far is already in the worktree ({wt}). "
+        "This is a NEW opencode run (no --resume/--continue). "
+        "1) git status and git diff. 2) Finish remaining work. "
+        f"3) Commit on branch {branch}. 4) git push -u origin HEAD. "
+        f"5) gh pr create --base main with Closes for {key} (full owner/repo#N). "
+        f"6) Append DONE for {key} with the PR URL to $env:BOB_OUTBOX ({ob}). "
+        "The turn is not over until DONE is written. Do not check the outbox first."
+    )
+
+
+def opencode_done_miss_reminder_line(
+    *,
+    shop: str,
+    outbox: str | Path,
+    job_key: str,
+    worktree: str | Path,
+) -> str:
+    """FR #6366: full-frame OpenCode finish re-prompt (survives console inject)."""
+    key = (job_key or "job").strip() or "job"
+    wt = str(worktree or "").strip()
+    if not wt:
+        return done_miss_reminder_line(shop=shop, outbox=outbox, job_key=key)
+    body = opencode_job_finish_steps(job_key=key, worktree=wt, outbox=outbox)
+    from_line = format_from("bob-worker", shop, body, outbox=outbox)
+    try:
+        return frame_opencode_message(from_line, key, wt)
+    except Exception:
+        return from_line
+
+
+def opencode_finish_progress_snapshot(worktree: str | Path) -> dict:
+    """FR #6366: cheap git snapshot for finish-run progress (HEAD + porcelain)."""
+    root = Path(worktree or "")
+    out: dict = {"head": "", "porcelain": "", "ok": False}
+    if not root.is_dir():
+        return out
+    try:
+        import subprocess
+
+        head = subprocess.run(
+            ["git", "-C", str(root), "rev-parse", "HEAD"],
+            capture_output=True,
+            text=True,
+            timeout=8,
+        )
+        por = subprocess.run(
+            ["git", "-C", str(root), "status", "--porcelain"],
+            capture_output=True,
+            text=True,
+            timeout=8,
+        )
+        out["head"] = (head.stdout or "").strip()
+        out["porcelain"] = (por.stdout or "").strip()
+        out["ok"] = head.returncode == 0
+    except Exception:
+        pass
+    return out
+
+
+def opencode_finish_progress_changed(before: dict, after: dict) -> bool:
+    """True when HEAD or porcelain changed between finish-run snapshots."""
+    if not isinstance(before, dict) or not isinstance(after, dict):
+        return False
+    return (before.get("head"), before.get("porcelain")) != (
+        after.get("head"),
+        after.get("porcelain"),
+    )
+
+
 _BUSY_HELD_RX = re.compile(
     r"(?i)\bbusy\s*\(\s*held\s+((?:FR|MRB|UAT|FIX|BUILD|PR)\s+\S+#\d+)\s*\)"
 )
@@ -6650,6 +6798,9 @@ class BoredEmitter:
         # FR #4784: job key for GIVEUP before !bored on done-miss / ack-stale release.
         self._release_giveup_key: Optional[str] = None
         self.seat_release_giveup_fn: Optional[Callable[[str, str], None]] = None
+        # FR #6366: OpenCode finish-run decide hook ("retry"|"giveup"); attempt counter.
+        self.opencode_finish_decide_fn: Optional[Callable[[str], str]] = None
+        self._opencode_finish_attempt: int = 0
         # FR #3012 / #3019: out-of-fuel hold (suppress !bored; GIVEUP via out_of_fuel_release_fn).
         self._out_of_fuel = False
         self._out_of_fuel_at: Optional[float] = None
@@ -6813,6 +6964,7 @@ class BoredEmitter:
 
     def _clear_done_miss(self) -> None:
         """FR #2875: drop armed / reminded / release-pending done-miss state."""
+        self._opencode_finish_attempt = 0
         self._done_miss_armed_at = None
         self._done_miss_key = None
         self._done_miss_reminded = False
@@ -6839,6 +6991,12 @@ class BoredEmitter:
             return
         key = self._done_miss_key or (self._ack_job_key or "job")
         self._done_miss_reminded = True
+        self._opencode_finish_attempt = int(getattr(self, "_opencode_finish_attempt", 0) or 0) + 1
+        if getattr(self, "opencode_finish_decide_fn", None) is not None:
+            self.log(
+                f"opencode finish-run key={key} attempt="
+                f"{self._opencode_finish_attempt}/{opencode_finish_run_max()} progress=pending"
+            )
         self.log(f"done-miss: reminder injected for {key}")
         fn = self.done_miss_remind_fn
         if fn is not None:
@@ -7111,6 +7269,26 @@ class BoredEmitter:
                 if self._ack_open and self._ack_at is not None:
                     key = self._ack_job_key or "job"
                     if self._done_miss_reminded:
+                        # FR #6366: OpenCode finish-run decide (retry while progress / under max).
+                        decide = self.opencode_finish_decide_fn
+                        if decide is not None:
+                            try:
+                                verdict = str(decide(key) or "giveup").strip().lower()
+                            except Exception as e:  # noqa: BLE001
+                                self.log(
+                                    f"opencode finish-run decide failed {type(e).__name__}; giveup"
+                                )
+                                verdict = "giveup"
+                            if verdict == "retry":
+                                self._done_miss_reminded = False
+                                self._done_miss_armed_at = now
+                                self._done_miss_key = key
+                                self._done_miss_release_pending = False
+                                self.log(
+                                    f"done-miss: OpenCode finish-run retry armed for {key}"
+                                )
+                                self._cv.notify_all()
+                                return
                         ack_age = now - float(self._ack_at)
                         if ack_age < float(self.fast_done_miss_s):
                             self._fast_done_miss_streak = int(self._fast_done_miss_streak) + 1
@@ -7122,7 +7300,11 @@ class BoredEmitter:
                         else:
                             self._fast_done_miss_streak = 0
                         # FR #6119: repeated short done-miss => out-of-fuel (stop !bored churn).
-                        if self._fast_done_miss_streak >= int(self.fast_done_miss_need):
+                        # FR #6366: skip convert when OpenCode finish-decide is wired (not out-of-fuel).
+                        if (
+                            decide is None
+                            and self._fast_done_miss_streak >= int(self.fast_done_miss_need)
+                        ):
                             convert_fast_miss = True
                             convert_fast_key = key
                             self._done_miss_armed_at = None
@@ -7818,6 +8000,8 @@ class Supervisor:
         # FR #2875: turn_ended with ACK open and no DONE → remind via run-dir inject, then release.
         if self.bored is not None:
             self.bored.done_miss_remind_fn = self._inject_done_miss_reminder
+            if (self.kind or "").strip().lower() == "opencode":
+                self.bored.opencode_finish_decide_fn = self._opencode_finish_decide
             # FR #4784: GIVEUP accepted row to Jeeves before !bored on done-miss / ack-stale.
             self.bored.seat_release_giveup_fn = self._release_seat_giveup_job
         # FR #2782: idle-only check before !bored; returns a reason when a newer install build exists.
@@ -8882,6 +9066,33 @@ class Supervisor:
                 self.log(prepared.get("message") or prepared["nack"])
                 raise JobContextRefused(prepared["nack"])
             if prepared.get("state") == "project" and prepared.get("wire"):
+                # FR #6366: append finish checklist into the FROM body before framing.
+                try:
+                    key = str(prepared.get("key") or "")
+                    path = str(prepared.get("path") or "")
+                    if key and path and line.startswith("FROM "):
+                        steps = opencode_job_finish_steps(
+                            job_key=key,
+                            worktree=path,
+                            outbox=str(Path(path) / ".bob" / "outbox.txt"),
+                        )
+                        if "FINISH " not in line and "FR #6366" not in line:
+                            # Rebuild FROM with steps appended to payload.
+                            m = re.match(
+                                r"(?is)^(FROM\s+\S+\s+\S+\s+)(.*?)(\s*\[outbox:[^\]]*\]\s*)?$",
+                                line,
+                            )
+                            if m:
+                                head, body, foot = m.group(1), m.group(2), (m.group(3) or "")
+                                enriched = f"{head}{body} {steps}{foot}".strip()
+                                prepared = {
+                                    **prepared,
+                                    "wire": frame_opencode_message(
+                                        enriched, key, path
+                                    ),
+                                }
+                except Exception as e:  # noqa: BLE001
+                    self.log(f"opencode-ready: finish-steps append skipped {type(e).__name__}")
                 wire = prepared["wire"]
                 self.log(f"opencode-ready: job worktree {prepared['path']}")
                 # FR #6333: tail in-worktree .bob/outbox.txt; stamp FROM footer with that path.
@@ -9093,19 +9304,58 @@ class Supervisor:
             self._check_ack_miss(proc)
 
     def _inject_done_miss_reminder(self, job_key: str) -> None:
-        """FR #2875: inject one FROM bob-worker reminder into the live agent console."""
+        """FR #2875 / #6366: inject done-miss reminder (OpenCode: full finish frame)."""
         outbox = outbox_path_for_run(self.run_dir)
         shop = shop_channel(self.machine)
-        line = done_miss_reminder_line(shop=shop, outbox=outbox, job_key=job_key)
+        kind = (self.kind or "").strip().lower()
+        if kind == "opencode":
+            wt = str(os.environ.get("BOB_JOB_WORKTREE") or "").strip()
+            job_ob = getattr(self, "_opencode_job_outbox", None)
+            if job_ob is not None:
+                outbox = Path(job_ob)
+                if not wt:
+                    try:
+                        # <worktree>/.bob/outbox.txt -> worktree
+                        wt = str(Path(job_ob).resolve().parent.parent)
+                    except Exception:
+                        wt = ""
+            if wt:
+                # Snapshot before finish-run for progress compare.
+                self._opencode_finish_snap = opencode_finish_progress_snapshot(wt)
+                line = opencode_done_miss_reminder_line(
+                    shop=shop, outbox=outbox, job_key=job_key, worktree=wt
+                )
+            else:
+                line = done_miss_reminder_line(shop=shop, outbox=outbox, job_key=job_key)
+        else:
+            line = done_miss_reminder_line(shop=shop, outbox=outbox, job_key=job_key)
         with self._lock:
             proc = self.proc
         if proc is None or proc.poll() is not None:
             self.log(f"done-miss: no live agent to remind for {job_key}")
             return
         try:
+            # OpenCode finish frames: one_line raises maxlen to 2000 for @@BOBJOB1.
             self._inject_line(proc, line)
         except Exception as e:
             self.log(f"done-miss: remind inject failed {type(e).__name__}")
+
+    def _opencode_finish_decide(self, job_key: str) -> str:
+        """FR #6366: retry finish-run while progress and under max; else giveup."""
+        max_n = opencode_finish_run_max()
+        attempt = int(getattr(self.bored, "_opencode_finish_attempt", 0) or 0) if self.bored else 0
+        wt = str(os.environ.get("BOB_JOB_WORKTREE") or "").strip()
+        before = getattr(self, "_opencode_finish_snap", None) or {}
+        after = opencode_finish_progress_snapshot(wt) if wt else {}
+        progress = opencode_finish_progress_changed(before, after) if before else False
+        self.log(
+            f"opencode finish-run key={job_key} attempt={attempt}/{max_n} "
+            f"progress={'yes' if progress else 'no'}"
+        )
+        if progress and attempt < max_n:
+            self._opencode_finish_snap = after
+            return "retry"
+        return "giveup"
 
     def _check_ack_miss(self, proc) -> None:
         # FR #4180: out-of-fuel is not an ACK miss — never remind or recycle.
