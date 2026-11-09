@@ -1,0 +1,92 @@
+# Isolated bob-tray / bob-status / bob-about build (FR #6285).
+# Not a release, MSI, install, or tray restart. Build-BobDialogs.ps1 owns csc.exe.
+# Uploads SHA-256 provenance so Slab can hotpatch MarchHare from a known artifact.
+name: build-bob-tray
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - .github/workflows/build-bob-tray.yml
+      - bob/tray/**
+      - bob/scripts/Build-BobDialogs.ps1
+      - bob/tests/test_fr6285_tray_build_ci.py
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/build-bob-tray.yml
+      - bob/tray/**
+      - bob/scripts/Build-BobDialogs.ps1
+      - bob/tests/test_fr6285_tray_build_ci.py
+
+permissions:
+  contents: read
+
+jobs:
+  build-bob-tray:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+
+      - name: Build tray dialogs with Build-BobDialogs.ps1
+        env:
+          WORKFLOW_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          $root = (Get-Location).Path
+          $head = (git rev-parse HEAD).Trim()
+          if ($head -ne $env:WORKFLOW_COMMIT) { throw "checkout $head is not $env:WORKFLOW_COMMIT" }
+          $out = Join-Path $env:RUNNER_TEMP "bob-tray-out"
+          New-Item -ItemType Directory -Force -Path $out | Out-Null
+          & "$root\bob\scripts\Build-BobDialogs.ps1" -RepoRoot $root -OutDir $out
+          if ($LASTEXITCODE -ne 0) { throw "Build-BobDialogs.ps1 exit $LASTEXITCODE" }
+          foreach ($name in @("bob-tray.exe", "bob-status.exe", "bob-about.exe")) {
+            $exe = Join-Path $out $name
+            if (-not (Test-Path -LiteralPath $exe)) { throw "missing $name" }
+          }
+          # FR #6285: compiled Status/TipForm heading must be "xAI weekly" (UTF-16LE in PE).
+          $tray = Join-Path $out "bob-tray.exe"
+          $bytes = [System.IO.File]::ReadAllBytes($tray)
+          $needle = [System.Text.Encoding]::Unicode.GetBytes("xAI weekly")
+          $bad = [System.Text.Encoding]::Unicode.GetBytes("Cursor / xAI weekly")
+          function Find-Bytes([byte[]]$hay, [byte[]]$need) {
+            for ($i = 0; $i -le $hay.Length - $need.Length; $i++) {
+              $ok = $true
+              for ($j = 0; $j -lt $need.Length; $j++) {
+                if ($hay[$i + $j] -ne $need[$j]) { $ok = $false; break }
+              }
+              if ($ok) { return $true }
+            }
+            return $false
+          }
+          if (-not (Find-Bytes $bytes $needle)) {
+            throw "bob-tray.exe missing UTF-16LE heading 'xAI weekly' (FR #6285)"
+          }
+          if (Find-Bytes $bytes $bad) {
+            throw "bob-tray.exe still embeds stale heading 'Cursor / xAI weekly' (FR #6285)"
+          }
+          $stage = Join-Path $env:RUNNER_TEMP "bob-tray-artifact"
+          New-Item -ItemType Directory -Force -Path $stage | Out-Null
+          $prov = New-Object System.Collections.Generic.List[string]
+          $prov.Add("workflow_commit=$($env:WORKFLOW_COMMIT)")
+          $prov.Add("builder=Build-BobDialogs.ps1")
+          $prov.Add("fr=6285")
+          foreach ($name in @("bob-tray.exe", "bob-status.exe", "bob-about.exe")) {
+            $exe = Join-Path $out $name
+            Copy-Item -LiteralPath $exe -Destination (Join-Path $stage $name)
+            $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $exe).Hash.ToLowerInvariant()
+            Set-Content -Encoding ascii (Join-Path $stage "$name.sha256") "$hash  $name"
+            $prov.Add(("exe_sha256_{0}={1}" -f ($name -replace '\.exe$',''), $hash))
+          }
+          $prov | Set-Content -Encoding ascii (Join-Path $stage "provenance.txt")
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bob-tray
+          path: ${{ runner.temp }}/bob-tray-artifact
+          if-no-files-found: error
