@@ -664,17 +664,18 @@ def resolve_repo_clone(
 ) -> str:
     """Locate the machine clone for *repo* (owner/name or leaf). Never invents a path.
 
-    Order: ``BOB_REPO_CLONE_<leaf>``, ``BOB_REPO_CLONE``, bobiverse->install_root,
+    Order: ``BOB_REPO_CLONE_<leaf>``, bobiverse->install_root,
     ``BOB_AI_ROOT\\<leaf>`` or ``<parent of install_root>\\<leaf>`` when that folder is a git checkout.
+    Bare ``BOB_REPO_CLONE`` is ignored (docs/mrb-6324) — it has no repo name.
     """
     env = env or {}
     leaf = _repo_leaf(repo)
     if not leaf:
         return ""
+    # Leaf-specific clone env only (docs/mrb-6324 / CodeRabbit amber on PR #6324).
     for key in (
         f"BOB_REPO_CLONE_{leaf}",
         f"BOB_REPO_CLONE_{leaf.upper()}",
-        "BOB_REPO_CLONE",
     ):
         raw = str(env.get(key) or "").strip().strip('"')
         if raw and _is_git_checkout(raw):
@@ -703,7 +704,15 @@ def _job_branch_from_key(key: str) -> str:
 
 
 def _git_run(run, args: list[str], *, timeout: float = 120.0):
-    return run(args, capture_output=True, text=True, timeout=timeout)
+    # docs/mrb-6324: UTF-8 decode (Windows default cp can strict-fail on git UTF-8).
+    return run(
+        args,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=timeout,
+    )
 
 
 def _is_timeout_exc(exc: BaseException) -> bool:
