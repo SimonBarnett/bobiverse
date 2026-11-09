@@ -6115,11 +6115,15 @@ def fetch_live_xai_weekly(*, now: datetime | None = None) -> dict | None:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             raw = resp.read().decode("utf-8", errors="replace")
     except urllib.error.HTTPError as e:
+        # FR #6279: bearer was selected; keep provenance so publish does not
+        # fall back to sibling read_grok_account_label on provider failure.
         _last_xai_acquisition = {
             "identity": identity,
             "read": False,
             "live": False,
             "error": f"provider-http-{int(getattr(e, 'code', 0) or 0)}",
+            "selected": True,
+            "account": selected_label,
         }
         return None
     except Exception as e:
@@ -6128,6 +6132,8 @@ def fetch_live_xai_weekly(*, now: datetime | None = None) -> dict | None:
             "read": False,
             "live": False,
             "error": f"provider-{type(e).__name__}",
+            "selected": True,
+            "account": selected_label,
         }
         return None
     try:
@@ -6138,6 +6144,8 @@ def fetch_live_xai_weekly(*, now: datetime | None = None) -> dict | None:
             "read": False,
             "live": False,
             "error": "provider-bad-json",
+            "selected": True,
+            "account": selected_label,
         }
         return None
     reading = parse_xai_billing_credits_response(doc, now=now)
@@ -6147,6 +6155,8 @@ def fetch_live_xai_weekly(*, now: datetime | None = None) -> dict | None:
             "read": False,
             "live": False,
             "error": "provider-no-creditUsagePercent",
+            "selected": True,
+            "account": selected_label,
         }
         return None
     reading["account"] = selected_label
