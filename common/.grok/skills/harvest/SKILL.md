@@ -363,6 +363,7 @@ routes to bobiverse via the split rule.
 - Win32 ctypes on x64: set GetCurrentProcess.restype=HANDLE (and CreateFileW/token API argtypes) or OpenProcessToken returns ERROR_INVALID_HANDLE (6) before SeBackupPrivilege CreateFile runs
 - Copilot tray paint: Format-BobCopilotPoolLine uses 'Copilot - <meter>'; UsageRow with remaining bar; never Section RightText/red-for-stale; Get-BobCopilotMeterBarPct keeps % when stale
 - FR #6341: at run_agent after nick/pid, write_live_seat_marker(CWD) then set BOB_JOB_WORKTREE_BASE via resolve_and_ensure_job_worktree_base; seat_env_extra exports BASE/WORKTREE; OpenCode prepare sets BOB_JOB_WORKTREE; prompt pins Get-ChildItem -Depth (not -MaxDepth). WinPS skill edits: use Python UTF-8, never Get-Content/Set-Content round-trip (em-dash mojibake FR #3935).
+- !assign refuse: use format_assign_refusal_log (untruncated single-line + outcome= token); never info(...[:200]); WinPS Set-Content -Encoding utf8 can BOM commit msgs and break python -c escape strings - write helper scripts as files
 
 ## Harvest digest (lessons audit 2026-10-06)
 
