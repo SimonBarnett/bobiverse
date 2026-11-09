@@ -2041,11 +2041,23 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             r"            if (([datetime]::UtcNow - $lastBusyCheck).TotalMilliseconds -ge 2000) {",
             r"                $lastBusyCheck = [datetime]::UtcNow",
             r"                try {",
-            r"                    $kids = @(Get-CimInstance Win32_Process -Filter ('ParentProcessId=' + $proc.Id) -ErrorAction SilentlyContinue)",
+            # FR #6366 / MRB #6367: walk ALL descendants (pytest under shell is a grandchild).
+            r"                    $all = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue)",
+            r"                    $desc = New-Object 'System.Collections.Generic.HashSet[int]'",
+            r"                    $queue = New-Object System.Collections.Queue",
+            r"                    $queue.Enqueue([int]$proc.Id)",
+            r"                    while ($queue.Count -gt 0) {",
+            r"                        $pidCur = [int]$queue.Dequeue()",
+            r"                        foreach ($tp in $all) {",
+            r"                            if ([int]$tp.ParentProcessId -eq $pidCur -and $desc.Add([int]$tp.ProcessId)) { $queue.Enqueue([int]$tp.ProcessId) }",
+            r"                        }",
+            r"                    }",
             r"                    $cpuSum = 0.0",
-            r"                    foreach ($tp in $kids) { try { $cpuSum += [double]$tp.UserModeTime + [double]$tp.KernelModeTime } catch { } }",
             r"                    try { $self = Get-CimInstance Win32_Process -Filter ('ProcessId=' + $proc.Id) -ErrorAction SilentlyContinue; if ($self) { $cpuSum += [double]$self.UserModeTime + [double]$self.KernelModeTime } } catch { }",
-            r"                    if ($lastCpu -ge 0 -and $cpuSum -gt $lastCpu) { $busy = $true; $lastBeat = [datetime]::UtcNow }",
+            r"                    foreach ($tp in $all) { if ($desc.Contains([int]$tp.ProcessId)) { try { $cpuSum += [double]$tp.UserModeTime + [double]$tp.KernelModeTime } catch { } } }",
+            # Alive descendant (e.g. silent pytest grandchild) keeps the run busy even if CPU sum resets.
+            r"                    if ($desc.Count -gt 0) { $busy = $true; $lastBeat = [datetime]::UtcNow }",
+            r"                    elseif ($lastCpu -ge 0 -and $cpuSum -gt $lastCpu) { $busy = $true; $lastBeat = [datetime]::UtcNow }",
             r"                    $lastCpu = $cpuSum",
             r"                } catch { }",
             r"                if ($ocDir -and (Test-Path -LiteralPath $ocDir)) {",
@@ -6600,15 +6612,21 @@ def opencode_finish_progress_snapshot(worktree: str | Path) -> dict:
         )
         out["head"] = (head.stdout or "").strip()
         out["porcelain"] = (por.stdout or "").strip()
-        out["ok"] = head.returncode == 0
+        out["ok"] = head.returncode == 0 and por.returncode == 0
     except Exception:
         pass
     return out
 
 
 def opencode_finish_progress_changed(before: dict, after: dict) -> bool:
-    """True when HEAD or porcelain changed between finish-run snapshots."""
+    """True when HEAD or porcelain changed between finish-run snapshots.
+
+    FR #6366 / MRB #6367: a failed git snapshot (ok=False / empty after a real
+    before) is not progress — index.lock / timeout must not burn a finish-run.
+    """
     if not isinstance(before, dict) or not isinstance(after, dict):
+        return False
+    if not before.get("ok") or not after.get("ok"):
         return False
     return (before.get("head"), before.get("porcelain")) != (
         after.get("head"),

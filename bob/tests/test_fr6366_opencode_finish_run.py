@@ -216,3 +216,32 @@ def test_fr6366_pause_file_untouched_by_done_miss_helpers(tmp_path: Path, monkey
         worktree=str(tmp_path),
     )
     assert not pause.exists()
+
+
+def test_fr6366_watchdog_walks_descendants(tmp_path: Path):
+    """MRB #6367: busy check must BFS descendants, not only ParentProcessId=opencode."""
+    spec = bw.build_launch(
+        "opencode",
+        "agent",
+        r"C:\ai\bob\worker",
+        "prompt",
+        "opencode.exe",
+        tmp_path,
+    )
+    script_key = next(k for k in spec.files if k.endswith("launch-opencode.ps1"))
+    script = spec.files[script_key]
+    assert "HashSet[int]" in script or "HashSet" in script
+    assert "$queue.Enqueue" in script
+    assert "ParentProcessId -eq $pidCur" in script or "ParentProcessId -eq" in script
+    # Must not rely only on Filter ParentProcessId=$proc.Id for the busy set.
+    assert "walk ALL descendants" in script or "$desc.Count -gt 0" in script
+    assert "ParentProcessId=' + $proc.Id)" not in script
+
+
+def test_fr6366_failed_snapshot_is_not_progress():
+    before = {"head": "abc", "porcelain": "", "ok": True}
+    after_fail = {"head": "", "porcelain": "", "ok": False}
+    assert not bw.opencode_finish_progress_changed(before, after_fail)
+    assert not bw.opencode_finish_progress_changed(after_fail, before)
+    after_ok = {"head": "def", "porcelain": " M a.txt", "ok": True}
+    assert bw.opencode_finish_progress_changed(before, after_ok)
