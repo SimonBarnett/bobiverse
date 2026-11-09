@@ -76,14 +76,24 @@ function New-BobTrayStatusModel {
             $shown[[string]$resolved] = $true
             $up = ([string]$resolved).ToUpperInvariant()
             $pct = $m.remaining_pct
-            $pctLabel = $null
-            if ($null -ne $pct -and [string]$pct -ne '') { $pctLabel = ('{0}%' -f [int]$pct) }   # 0% is real (#179)
-            $seat = [string]$m.seat_label; if (-not $seat) { $seat = [string]$m.seat_email }
-            $heading = $up
-            if ($seat) { $heading = ('{0}  -  {1}' -f $up, $seat) }
-            if ($pctLabel) { $heading = ('{0} ({1})' -f $heading, $pctLabel) }
-            if ($pctLabel -and $m.reset_label) { $heading = ('{0} - {1}' -f $heading, [string]$m.reset_label) }
-            $row = ConvertTo-BobTrayStatusBar -RemainingPct $pct
+            # FR #6285: prefer digest xai_weekly pool_heading; bar uses bar_pct (null when stale/no reading).
+            $heading = $null
+            try { if ($m.pool_heading) { $heading = [string]$m.pool_heading } } catch { }
+            if (-not $heading) {
+                $pctLabel = $null
+                if ($null -ne $pct -and [string]$pct -ne '') { $pctLabel = ('{0}%' -f [int]$pct) }   # 0% is real (#179)
+                $seat = [string]$m.seat_label; if (-not $seat) { $seat = [string]$m.seat_email }
+                $heading = $up
+                if ($seat) { $heading = ('{0}  -  {1}' -f $up, $seat) }
+                if ($pctLabel) { $heading = ('{0} ({1})' -f $heading, $pctLabel) }
+                if ($pctLabel -and $m.reset_label) { $heading = ('{0} - {1}' -f $heading, [string]$m.reset_label) }
+            }
+            $barPct = $pct
+            try {
+                if ($null -ne $m.PSObject.Properties['bar_pct']) { $barPct = $m.bar_pct }
+                elseif ($m.fuel_stale) { $barPct = $null }
+            } catch { }
+            $row = ConvertTo-BobTrayStatusBar -RemainingPct $barPct
             $row.heading = $heading; $row.red = $false; $row.help = ''
             $row.workers = @($m.worker_lines | Where-Object { $_ } | ForEach-Object { [string]$_ })   # "{irc nick}: {doing|idle}" from the digest
             $grok.Add($row)

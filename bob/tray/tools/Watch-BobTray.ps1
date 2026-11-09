@@ -2811,51 +2811,12 @@ function Rebuild-BobTrayTiles {
         # FR #4938: Cursor spending-group bars removed after account unification.
         # FR #5032: no "Grok accounts" heading --- every row is a Grok pool; optional overspend only.
         # FR #6149: fuel-family logos (text fallback when asset missing).
-        # FR #6214: Cursor + xAI share one quota pool — one capacity row (not two).
-        $cursorPct = $null
-        try { $cursorPct = Get-BobTrayCursorFuelRemaining } catch { $cursorPct = $null }
-        $xaiPct = $null
-        if ($null -ne $AccountPct -and [string]$AccountPct -ne '') {
-            try { $xaiPct = [int]$AccountPct } catch { $xaiPct = $null }
-        }
-        $sharedRefs = @(
-            [pscustomobject]@{ pool_id = 'local-unified'; family = 'cursor'; remaining_pct = $cursorPct; period_end = $null },
-            [pscustomobject]@{ pool_id = 'local-unified'; family = 'xai'; remaining_pct = $xaiPct; period_end = $null }
-        )
-        $sharedPools = @()
-        try { $sharedPools = @(Resolve-BobCursorXaiSharedPools -Refs $sharedRefs) } catch { $sharedPools = @() }
-        if ($sharedPools.Count -eq 0) {
-            $sharedPools = @([pscustomobject]@{
-                    pool_id       = 'local-unified'
-                    families      = @('cursor', 'xai')
-                    remaining_pct = $(if ($null -ne $xaiPct) { $xaiPct } elseif ($null -ne $cursorPct) { $cursorPct } else { $null })
-                    period_end    = $null
-                    label         = 'Cursor / xAI weekly'
-                    known         = $false
-                })
-        }
-        foreach ($sp in $sharedPools) {
-            if (-not $sp) { continue }
-            $sharedRight = $null
-            if ($null -ne $sp.remaining_pct -and [string]$sp.remaining_pct -ne '') {
-                try { $sharedRight = ('{0}%' -f [int]$sp.remaining_pct) } catch { }
-            }
-            $sharedTitle = 'Cursor / xAI weekly'
-            try {
-                if (Get-Command Format-BobCursorXaiSharedPoolTitle -ErrorAction SilentlyContinue) {
-                    $sharedTitle = Format-BobCursorXaiSharedPoolTitle -Pool $sp -AccountLabel $AccountLabel -AccountName $AccountName
-                }
-                else {
-                    if ($AccountLabel) { $sharedTitle = ('Cursor / xAI weekly - {0}' -f [string]$AccountLabel) }
-                    elseif ($AccountName) { $sharedTitle = ('Cursor / xAI weekly - {0}' -f [string]$AccountName) }
-                }
-            } catch {
-                if ($AccountLabel) { $sharedTitle = ('Cursor / xAI weekly - {0}' -f [string]$AccountLabel) }
-                elseif ($AccountName) { $sharedTitle = ('Cursor / xAI weekly - {0}' -f [string]$AccountName) }
-            }
-            # One capacity row; logo prefers xai (weekly meter) with cursor still in title text.
-            $y = Add-BobTrayFuelFamilyRow -X 0 -Y $y -Family 'xai' -Title $sharedTitle -RightText $sharedRight
-        }
+        # FR #6285: section heading is 'xAI weekly' only (Cursor is not mixed into this title).
+        # Per-machine rows below are painted from digest xai_weekly only.
+        $sharedTitle = 'xAI weekly'
+        if ($AccountLabel) { $sharedTitle = ('xAI weekly - {0}' -f [string]$AccountLabel) }
+        elseif ($AccountName) { $sharedTitle = ('xAI weekly - {0}' -f [string]$AccountName) }
+        $y = Add-BobTrayFuelFamilyRow -X 0 -Y $y -Family 'xai' -Title $sharedTitle -RightText $null
         $ocRight = $null
         $ocTitle = 'OpenCode'
         try {
@@ -2942,7 +2903,7 @@ function Rebuild-BobTrayTiles {
             $pct = $m.remaining_pct
             $fuelStale = $false
             try { if ($m.fuel_stale) { $fuelStale = [bool]$m.fuel_stale } } catch { }
-            # 0% is real (#179). FR #5032: stale peer % is hidden (shown as [stale] + age).
+            # FR #6285: prefer pool_heading from Format-BobTrayXaiWeeklyRow (digest xai_weekly).
             $seat = [string]$m.seat_label
             if (-not $seat) { $seat = [string]$m.seat_email }
             $prov = ''
@@ -2959,24 +2920,32 @@ function Rebuild-BobTrayTiles {
             try { if ($m.meter_account) { $acct = [string]$m.meter_account } } catch { }
             try { if ($m.meter_source) { $srcMeter = [string]$m.meter_source } } catch { }
             try { if ($m.period_end_absolute) { $absReset = [string]$m.period_end_absolute } } catch { }
-            if (Get-Command Format-BobPeerPoolHeading -ErrorAction SilentlyContinue) {
-                $machHeading = Format-BobPeerPoolHeading -MachineId $id -SeatLabel $seat -RemainingPct $pct `
-                    -ResetLabel $(if ($m.reset_label) { [string]$m.reset_label } else { '' }) -FuelStale $fuelStale `
-                    -Provider $prov -Window $win -Direction $dir -UsedPct $usedP -Account $acct `
-                    -PeriodEnd $absReset -Source $srcMeter
-            } else {
-                $pctLabel = $null
-                if (-not $fuelStale -and $null -ne $pct -and [string]$pct -ne '') { $pctLabel = ('{0}%' -f [int]$pct) }
-                $nameHeading = $id
-                if ($seat) { $nameHeading = ('{0}  -  {1}' -f $id, $seat) }
-                $machHeading = $nameHeading
-                if ($pctLabel) { $machHeading = ('{0} ({1})' -f $nameHeading, $pctLabel) }
-                if ($fuelStale) { $machHeading = ('{0} [stale]' -f $machHeading) }
-                if ($m.reset_label -and ($pctLabel -or $fuelStale)) {
-                    $machHeading = ('{0} - {1}' -f $machHeading, [string]$m.reset_label)
+            $machHeading = $null
+            try { if ($m.pool_heading) { $machHeading = [string]$m.pool_heading } } catch { }
+            if (-not $machHeading) {
+                if (Get-Command Format-BobPeerPoolHeading -ErrorAction SilentlyContinue) {
+                    $machHeading = Format-BobPeerPoolHeading -MachineId $id -SeatLabel $seat -RemainingPct $pct `
+                        -ResetLabel $(if ($m.reset_label) { [string]$m.reset_label } else { '' }) -FuelStale $fuelStale `
+                        -Provider $prov -Window $win -Direction $dir -UsedPct $usedP -Account $acct `
+                        -PeriodEnd $absReset -Source $srcMeter
+                } else {
+                    $pctLabel = $null
+                    if (-not $fuelStale -and $null -ne $pct -and [string]$pct -ne '') { $pctLabel = ('{0}%' -f [int]$pct) }
+                    $nameHeading = $id
+                    if ($seat) { $nameHeading = ('{0}  -  {1}' -f $id, $seat) }
+                    $machHeading = $nameHeading
+                    if ($pctLabel) { $machHeading = ('{0} ({1})' -f $nameHeading, $pctLabel) }
+                    if ($fuelStale) { $machHeading = ('{0} [stale]' -f $machHeading) }
+                    if ($m.reset_label -and ($pctLabel -or $fuelStale)) {
+                        $machHeading = ('{0} - {1}' -f $machHeading, [string]$m.reset_label)
+                    }
                 }
             }
-            $rowPct = if ($fuelStale) { $null } else { $pct }
+            $rowPct = $null
+            try {
+                if ($null -ne $m.PSObject.Properties['bar_pct']) { $rowPct = $m.bar_pct }
+                else { $rowPct = if ($fuelStale) { $null } else { $pct } }
+            } catch { $rowPct = if ($fuelStale) { $null } else { $pct } }
             $y = Add-BobTrayUsageRow -X $indent -Y $y -Heading $machHeading `
                 -RemainingPct $rowPct -BarWidth 354 -Icon $null
             if ($null -ne $pct -and -not $fuelStale -and [int]$pct -le 0) {
