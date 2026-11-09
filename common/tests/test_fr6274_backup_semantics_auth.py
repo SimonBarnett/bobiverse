@@ -47,35 +47,35 @@ def test_fr6274_backup_reader_requests_backup_semantics_flag(tmp_path: Path, mon
 
     flags_seen: list[int] = []
 
-    real = bobreport.read_bytes_win32_backup
-
-    def wrap(p: Path):
-        # Spy by patching CreateFileW inside the helper via ctypes after import path.
-        return real(p)
-
     import ctypes
     from ctypes import wintypes
 
-    kernel32 = ctypes.windll.kernel32
-    # Pin HANDLE restype on the real CreateFileW before replacing it; the helper
-    # sets prototypes on whatever kernel32.CreateFileW currently is (the spy).
-    kernel32.CreateFileW.restype = wintypes.HANDLE
-    kernel32.CreateFileW.argtypes = [
-        wintypes.LPCWSTR,
-        wintypes.DWORD,
-        wintypes.DWORD,
-        wintypes.LPVOID,
-        wintypes.DWORD,
-        wintypes.DWORD,
-        wintypes.HANDLE,
-    ]
-    orig_create = kernel32.CreateFileW
+    real_windll = ctypes.WinDLL
 
-    def spy_create(name, access, share, sec, disp, flags, template):
-        flags_seen.append(int(flags))
-        return orig_create(name, access, share, sec, disp, flags, template)
+    def windll_factory(name, *a, **k):
+        dll = real_windll(name, *a, **k)
+        if str(name).lower() in ("kernel32", "kernel32.dll"):
+            orig_create = dll.CreateFileW
 
-    monkeypatch.setattr(kernel32, "CreateFileW", spy_create)
+            def spy_create(path_name, access, share, sec, disp, flags, template):
+                flags_seen.append(int(flags))
+                return orig_create(path_name, access, share, sec, disp, flags, template)
+
+            # Preserve HANDLE prototypes the helper will overwrite on this private dll.
+            spy_create.restype = wintypes.HANDLE  # type: ignore[attr-defined]
+            spy_create.argtypes = [  # type: ignore[attr-defined]
+                wintypes.LPCWSTR,
+                wintypes.DWORD,
+                wintypes.DWORD,
+                wintypes.LPVOID,
+                wintypes.DWORD,
+                wintypes.DWORD,
+                wintypes.HANDLE,
+            ]
+            dll.CreateFileW = spy_create  # type: ignore[method-assign]
+        return dll
+
+    monkeypatch.setattr(ctypes, "WinDLL", windll_factory)
     data, err = bobreport.read_bytes_win32_backup(path)
     assert err is None, f"backup read failed win32={err}"
     assert data == payload
@@ -83,6 +83,7 @@ def test_fr6274_backup_reader_requests_backup_semantics_flag(tmp_path: Path, mon
     assert any(f & FILE_FLAG_BACKUP_SEMANTICS for f in flags_seen)
 
 
+@pytest.mark.skipif(os.name != "nt", reason="backup path is Windows-only (os.name==nt)")
 def test_fr6274_load_prefers_backup_over_normal_read(tmp_path: Path, monkeypatch):
     path = tmp_path / "auth.json"
     path.write_text(json.dumps(_flamingo_shaped_auth("FAKE_VIA_BACKUP")), encoding="utf-8")
@@ -102,6 +103,7 @@ def test_fr6274_load_prefers_backup_over_normal_read(tmp_path: Path, monkeypatch
     assert label == "backup-fake@example.test"
 
 
+@pytest.mark.skipif(os.name != "nt", reason="backup path is Windows-only (os.name==nt)")
 def test_fr6274_unreadable_includes_win32_when_both_fail(tmp_path: Path, monkeypatch):
     path = tmp_path / "auth.json"
     path.write_text("{}", encoding="utf-8")
@@ -172,6 +174,7 @@ def test_fr6274_backup_fetch_survives_admin_only_acl(tmp_path: Path, monkeypatch
     assert before.returncode == 0  # silence unused if needed
 
 
+@pytest.mark.skipif(os.name != "nt", reason="backup path is Windows-only (os.name==nt)")
 def test_fr6274_fetch_live_uses_backup_when_read_text_denied(tmp_path: Path, monkeypatch):
     path = tmp_path / "auth.json"
     path.write_text(json.dumps(_flamingo_shaped_auth("FAKE_LIVE_BACKUP_KEY")), encoding="utf-8")
@@ -220,3 +223,12 @@ def test_fr6274_fetch_live_uses_backup_when_read_text_denied(tmp_path: Path, mon
     assert reading.get("remaining_pct") == 39
     assert reading.get("used_pct") == 61
     assert bobreport._last_xai_acquisition.get("error") in (None, "")
+
+def test_mrb6292_backup_reader_uses_private_windll():
+    """MRB #6292: read_bytes_win32_backup must use ctypes.WinDLL(..., use_last_error=True)."""
+    import inspect
+    src = inspect.getsource(bobreport.read_bytes_win32_backup)
+    assert 'WinDLL("kernel32", use_last_error=True)' in src
+    assert 'WinDLL("advapi32", use_last_error=True)' in src
+    assert "ctypes.windll.kernel32" not in src
+    assert "ctypes.get_last_error" in src

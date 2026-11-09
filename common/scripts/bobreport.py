@@ -5946,10 +5946,10 @@ def read_bytes_win32_backup(path: Path) -> tuple[bytes | None, int | None]:
             ("Privileges", LUID_AND_ATTRIBUTES * 1),
         ]
 
-    kernel32 = ctypes.windll.kernel32
-    advapi32 = ctypes.windll.advapi32
-    GetLastError = kernel32.GetLastError
-    SetLastError = kernel32.SetLastError
+    # Private WinDLL handles (bob_worker / FR #3996 pattern): never mutate
+    # process-wide ctypes.windll prototypes; use_last_error keeps GetLastError stable.
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
     # x64: default cdecl int restype truncates HANDLEs (FR #6274 / class of #3996).
     # GetCurrentProcess must be HANDLE too --- without it OpenProcessToken fails
     # with ERROR_INVALID_HANDLE (6) and the backup path never reaches CreateFile.
@@ -6001,7 +6001,10 @@ def read_bytes_win32_backup(path: Path) -> tuple[bytes | None, int | None]:
     ]
 
     def _err() -> int:
-        return int(GetLastError() or 0)
+        return int(ctypes.get_last_error() or 0)
+
+    def _set_err(code: int = 0) -> None:
+        ctypes.set_last_error(int(code))
 
     token = wintypes.HANDLE()
     if not advapi32.OpenProcessToken(
@@ -6023,7 +6026,7 @@ def read_bytes_win32_backup(path: Path) -> tuple[bytes | None, int | None]:
     prev_size = wintypes.DWORD()
     # Enable; ignore ERROR_NOT_ALL_ASSIGNED (1300) until CreateFile proves it.
     # Interactive seats often lack SeBackupPrivilege; LocalSystem has it.
-    SetLastError(0)
+    _set_err(0)
     advapi32.AdjustTokenPrivileges(
         token,
         False,
@@ -6035,7 +6038,7 @@ def read_bytes_win32_backup(path: Path) -> tuple[bytes | None, int | None]:
     adj_err = _err()
     handle = None
     try:
-        SetLastError(0)
+        _set_err(0)
         handle = kernel32.CreateFileW(
             str(path),
             GENERIC_READ,
@@ -6049,14 +6052,14 @@ def read_bytes_win32_backup(path: Path) -> tuple[bytes | None, int | None]:
         if hv in (-1, 0xFFFFFFFF, 0xFFFFFFFFFFFFFFFF, 0):
             return None, _err() or adj_err or 5
         size_high = wintypes.DWORD(0)
-        SetLastError(0)
+        _set_err(0)
         size_low = kernel32.GetFileSize(handle, ctypes.byref(size_high))
         if size_low == 0xFFFFFFFF and _err():
             chunks: list[bytes] = []
             buf = ctypes.create_string_buffer(65536)
             read = wintypes.DWORD(0)
             while True:
-                SetLastError(0)
+                _set_err(0)
                 if not kernel32.ReadFile(handle, buf, 65536, ctypes.byref(read), None):
                     err = _err()
                     if err in (0, 38):  # EOF
@@ -6073,7 +6076,7 @@ def read_bytes_win32_backup(path: Path) -> tuple[bytes | None, int | None]:
             return b"", None
         buf = ctypes.create_string_buffer(total)
         read = wintypes.DWORD(0)
-        SetLastError(0)
+        _set_err(0)
         if not kernel32.ReadFile(handle, buf, total, ctypes.byref(read), None):
             return None, _err() or 5
         return buf.raw[: read.value], None
@@ -6087,7 +6090,7 @@ def read_bytes_win32_backup(path: Path) -> tuple[bytes | None, int | None]:
         # Disable privilege again (best effort).
         try:
             tp.Privileges[0].Attributes = 0
-            SetLastError(0)
+            _set_err(0)
             advapi32.AdjustTokenPrivileges(
                 token, False, ctypes.byref(tp), 0, None, None
             )
