@@ -92,6 +92,18 @@ rows with workers `{irc nick}: {doing|idle}`, one Copilot pool tile, alert and v
 - Snapshot fields: `copilot_line`, `copilot_stale_line`, `copilot_fresh_until` (unix seconds), plus digest `max_recorded_usage`. Native Status re-ages an open window at the deadline without waiting for a new poll.
 - TipForm always shows a Copilot line (`Copilot  unknown` when absent). Display-only: does not enable Copilot dispatch (`BOB_FUEL_COPILOT` / #6204).
 
+## FR #6301 tray fuel rows and agent starts
+
+OpenCode Go window lines and the Copilot meter use remaining percent: `<title> - <x>% left - <reset>` (OpenCode: `go <window> - <x>% left - <reset>`). Bars paint remaining % green to red. Copilot title is exactly `Copilot` (no included-unlimited prose). 100% used / exhausted paints `0% left`. Unlimited Copilot without a historical max paints `unknown`. Reset labels come from real digest/API data (`Nd Hh` above 24h, else `Hh Mm`); never invent rem-est text.
+
+**Digest-only OpenCode paint:** `Get-BobTrayHover` must not read or overlay `run\opencode-fuel.json` for Status/hover. Digest-known `opencode_windows` always win. When every window error is `no key set`, show that instead of n/a.
+
+**Agent starts:** Agents menu entries (Automatic / Grok / Cursor / OpenCode) carry no fuel or quota reason text. OpenCode model submenu is omitted (OpenCode has `/model`); `bob-worker` sets `BOB_OPENCODE_MODEL` from `opencode_default_model`.
+
+**Labelled OpenCode keys (Part D):** ear reads `config\opencode-keys\<label>.apikey` (SYSTEM+Administrators ACL) via `Write-BobOpencodeGoApiKey.ps1` or hand-copy; publishes `opencode_account` and `no key set` when absent. TipForm masked set/select menu lands in FR #6309.
+
+Offline pins: `bob/tests/test_fr6301_tray_fuel_agent_starts.py`, `common/tests/test_fr6301_opencode_keys.py`, `bob/tests/test_mrb6303_docs_pins.py`.
+
 ## FR #6309 TipForm OpenCode keys menu
 
 Context menu **OpenCode keys** offers Set key (masked PasswordChar dialog), select among `config\opencode-keys\*.apikey` labels, and Remove key. Writes use SYSTEM+Administrators ACL (same as `Write-BobOpencodeGoApiKey.ps1`). Headless test flags: `--opencode-key-write|--opencode-key-select|--opencode-key-remove`. Removing the last key clears digest `opencode_account` via fuel merge `cleared[]`.
