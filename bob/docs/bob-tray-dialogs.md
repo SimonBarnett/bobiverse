@@ -100,9 +100,13 @@ OpenCode Go window lines and the Copilot meter use remaining percent: `<title> -
 
 **Agent starts:** Agents menu entries (Automatic / Grok / Cursor / OpenCode) carry no fuel or quota reason text. OpenCode model submenu is omitted (OpenCode has `/model`); `bob-worker` sets `BOB_OPENCODE_MODEL` from `opencode_default_model`.
 
-**Labelled OpenCode keys (Part D):** ear reads `config\opencode-keys\<label>.apikey` (SYSTEM+Administrators ACL) via `Write-BobOpencodeGoApiKey.ps1` or hand-copy; publishes `opencode_account` and `no key set` when absent. TipForm masked set/select menu is follow-up #6309.
+**Labelled OpenCode keys (Part D):** ear reads `config\opencode-keys\<label>.apikey` (SYSTEM+Administrators ACL) via `Write-BobOpencodeGoApiKey.ps1` or hand-copy; publishes `opencode_account` and `no key set` when absent. TipForm masked set/select menu lands in FR #6309.
 
 Offline pins: `bob/tests/test_fr6301_tray_fuel_agent_starts.py`, `common/tests/test_fr6301_opencode_keys.py`, `bob/tests/test_mrb6303_docs_pins.py`.
+
+## FR #6309 TipForm OpenCode keys menu
+
+Context menu **OpenCode keys** offers Set key (masked PasswordChar dialog), select among `config\opencode-keys\*.apikey` labels, and Remove key. Writes use SYSTEM+Administrators ACL (same as `Write-BobOpencodeGoApiKey.ps1`). Headless test flags: `--opencode-key-write|--opencode-key-select|--opencode-key-remove`. Removing the last key clears digest `opencode_account` via fuel merge `cleared[]`.
 
 ## OpenCode windows (FR #6147)
 
