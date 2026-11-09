@@ -182,3 +182,4 @@ Generalised from 32 harvested lessons that never reached this book (audit for FR
 - Write reload to run/tray-cmd.txt so elevated bob-tray.exe KillEngineTree+StartEngine; never taskkill the High-integrity engine from a Medium shell
 - HOTPATCH overlays commit and hotpatched= only; never overwrite VERSION built= from BUILD.json.
 - PowerShell $t and $T are one variable; hotpatch verify must use distinct names. HSwap overlay must prune files removed from the pack (sdk\priority-web-sdk).
+- Tray C# heading changes need CI Build-BobDialogs.ps1 on windows-latest; source-only merge leaves live tools\bob-tray.exe stale --- assert UTF-16LE xAI weekly in the PE and upload sha256 provenance for Slab hotpatch
