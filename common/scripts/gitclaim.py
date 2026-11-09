@@ -130,9 +130,13 @@ HARVEST_TITLE_RE = re.compile(r"(?i)^(harvest|skill)\b")
 _INTAKE_HARVEST_FOOTER_RE = re.compile(r"(?i)Invoke-BobiverseHarvest|Session summary:")
 # FR #5685: Report-*IntakeIssue / GhCliFiler footers without a Lesson body are stubs.
 _VIA_INTAKE_ID_FOOTER_RE = re.compile(r"(?i)_via-intake\b")
+# FR #6356: require a real Lesson section. Bare LESSON_PR_MRB_INSTRUCTION
+# ("MRB (light triage): ...") is prepended to every skill *draft* receipt and must
+# not make docs/intake-harvest-only tips offerable as MRB.
 _INTAKE_SKILL_LESSON_BODY_RE = re.compile(
-    r"(?im)^(?:##\s*)?Lesson\b|MRB \(light triage\)"
+    r"(?im)^(?:##\s*)?Lesson\b"
 )
+_INTAKE_HARVEST_PATH_RE = re.compile(r"(?i)^docs/intake-harvest/")
 _QUEUE_ME_STUB_RE = re.compile(r"(?im)^\s*queue\s+me\b")
 _HARVEST_RECEIPT_STATUS_RE = re.compile(
     r"(?i)\b(?:GIVEUP|SKIP|self-MRB|twin|DONE|PASS|FAIL)\b|\bduplicate of\b"
@@ -993,11 +997,54 @@ def _heal_lesson_mrb_row(row: dict, opener: str) -> None:
         row["implementer_seat"] = opener
 
 
+
+def _intake_pr_changed_paths(blob) -> list[str]:
+    """Best-effort changed paths from a PR/issue dict (FR #6356).
+
+    Accepts ``changed_files`` as a list of path strings or GitHub file objects
+    with ``filename`` / ``path``. Empty when unknown (body heuristics still apply).
+    """
+    if not isinstance(blob, dict):
+        return []
+    raw = blob.get("changed_files")
+    if raw is None:
+        raw = blob.get("files")
+    if not isinstance(raw, (list, tuple)):
+        return []
+    out: list[str] = []
+    for item in raw:
+        if isinstance(item, str) and item.strip():
+            out.append(item.strip())
+        elif isinstance(item, dict):
+            name = str(item.get("filename") or item.get("path") or "").strip()
+            if name:
+                out.append(name)
+    return out
+
+
+def is_intake_harvest_only_paths(paths=None) -> bool:
+    """True when every changed path is under docs/intake-harvest/ (FR #6356).
+
+    GhCliFiler create_draft_pr with empty files writes only
+    ``docs/intake-harvest/<branch>.md``. Real skill-book / harvest-lesson tips
+    also touch ``.grok/skills/**`` or other docs.
+    """
+    items = [
+        str(p).replace("\\", "/").lstrip("./")
+        for p in (paths or [])
+        if str(p).strip()
+    ]
+    if not items:
+        return False
+    return all(_INTAKE_HARVEST_PATH_RE.match(p) for p in items)
+
+
 def is_intake_harvest_receipt_pr(
     *,
     title: str = "",
     body: str = "",
     labels: tuple[str, ...] | list[str] = (),
+    files=None,
 ) -> bool:
     """True when a pull is an intake harvest/skill receipt, not shop MRB work (FR #2650).
 
@@ -1007,11 +1054,15 @@ def is_intake_harvest_receipt_pr(
     ``via-intake`` and receipt-status titles.
 
     FR #2705: ``harvest-lesson`` / ``lesson(<book>):`` skill-book PRs are offerable MRB
-    work — never treated as receipts.
+    work --- never treated as receipts.
 
     FR #5685: ``via-intake``+``skill`` tips with a ``_via-intake`` / queue-me stub body and
-    no ``Lesson`` / light-triage brief are receipts (e.g. docs/intake-harvest only),
-    even when the title is not ``harvest:`` / ``skill``.
+    no ``Lesson`` section are receipts (e.g. docs/intake-harvest only), even when the
+    title is not ``harvest:`` / ``skill``.
+
+    FR #6356: bare ``MRB (light triage)`` boilerplate (intake.LESSON_PR_MRB_INSTRUCTION)
+    is not a Lesson body. Tips whose changed files are only under ``docs/intake-harvest/``
+    are receipts even when a Lesson heading was pasted.
     """
     title_s = (title or "").strip()
     body_s = body or ""
@@ -1020,6 +1071,9 @@ def is_intake_harvest_receipt_pr(
         return False
     if re.match(r"(?i)^lesson\s*\(", title_s):
         return False
+    # FR #6356: GhCliFiler empty-files drafts only touch docs/intake-harvest/.
+    if is_intake_harvest_only_paths(files):
+        return True
     harvestish = bool(HARVEST_TITLE_RE.match(title_s))
     via_intake_skill = "via-intake" in labs and "skill" in labs
     if via_intake_skill and (harvestish or _INTAKE_HARVEST_FOOTER_RE.search(body_s)):
@@ -1028,7 +1082,7 @@ def is_intake_harvest_receipt_pr(
         return True
     if harvestish and _HARVEST_RECEIPT_STATUS_RE.search(title_s):
         return True
-    # FR #5685: status stub (queue me / bare via-intake footer) without a Lesson body.
+    # FR #5685 / #6356: stub (queue me / bare via-intake footer) without a Lesson section.
     if via_intake_skill and not _INTAKE_SKILL_LESSON_BODY_RE.search(body_s):
         if _VIA_INTAKE_ID_FOOTER_RE.search(body_s) or _QUEUE_ME_STUB_RE.search(body_s):
             return True
@@ -1040,20 +1094,22 @@ def is_offerable_intake_skill_lesson_pr(
     title: str = "",
     body: str = "",
     labels: tuple[str, ...] | list[str] = (),
+    files=None,
 ) -> bool:
-    """FR #5506 / #5685: real via-intake+skill lesson (not a GhCliFiler receipt).
+    """FR #5506 / #5685 / #6356: real via-intake+skill lesson (not a GhCliFiler receipt).
 
-    Drafts with a lesson body / light-triage brief are shop MRB work. Receipt
+    Drafts with a ``Lesson`` / ``## Lesson`` section are shop MRB work. Receipt
     titles or ``Invoke-BobiverseHarvest`` / ``Session summary:`` footers stay skipped.
 
-    FR #5685: a non-harvest title alone is not enough — require ``Lesson`` /
-    ``MRB (light triage)`` in the body so queue-me / docs/intake-harvest stubs
-    (agentic_fomprep#144) are never offered as MRB.
+    FR #5685 / #6356: a non-harvest title alone is not enough --- require a ``Lesson``
+    section in the body. Bare ``MRB (light triage)`` boilerplate (prepended to every
+    skill draft) and docs/intake-harvest-only tips (agentic_fomprep#144 / #377) are
+    never offered as MRB.
     """
     labs = {str(x).strip().lower() for x in (labels or []) if str(x).strip()}
     if "via-intake" not in labs or "skill" not in labs:
         return False
-    if is_intake_harvest_receipt_pr(title=title, body=body, labels=labels):
+    if is_intake_harvest_receipt_pr(title=title, body=body, labels=labels, files=files):
         return False
     title_s = (title or "").strip()
     if _HARVEST_RECEIPT_STATUS_RE.search(title_s):
@@ -2391,12 +2447,13 @@ def claim_from_payload(
         # FR #2650 / #2604: draft PRs never become MRB (resync already skips drafts).
         # FR #5506: draft via-intake+skill lesson PRs are offerable (not receipts).
         # MRB #2651: also edited/synchronize — _apply_claim_to_doc appends unaccepted for those.
+        _paths = _intake_pr_changed_paths(pr)
         if action in ("opened", "ready_for_review", "edited", "synchronize") and pr.get("draft") is True:
             _head_early = pr.get("head") if isinstance(pr.get("head"), dict) else {}
             _user = pr.get("user") if isinstance(pr.get("user"), dict) else {}
             if not (
                 is_offerable_intake_skill_lesson_pr(
-                    title=title, body=body, labels=labels
+                    title=title, body=body, labels=labels, files=_paths
                 )
                 or is_copilot_fr_implement_pr(
                     title=title,
@@ -2411,7 +2468,7 @@ def claim_from_payload(
         # FR #2650 / MRB #2651: intake harvest receipt PRs never become MRB via webhook
         # (opened/ready_for_review/edited/synchronize all call _append_unaccepted).
         if action in ("opened", "ready_for_review", "edited", "synchronize") and is_intake_harvest_receipt_pr(
-            title=title, body=body, labels=labels
+            title=title, body=body, labels=labels, files=_paths
         ):
             return None
         # FR #5500 / #6340: docs/mrb-* pin PRs skip webhook MRB while the original
@@ -10647,11 +10704,14 @@ def claim_from_github_issue(repo: str, issue: dict) -> GitClaim | None:
         return None
     if issue.get("pull_request") is not None or str(issue.get("html_url") or "").find("/pull/") >= 0:
         # Open PR -> MRB row.
+        _paths = _intake_pr_changed_paths(issue)
         if issue.get("draft") is True and not is_offerable_intake_skill_lesson_pr(
-            title=title, body=body, labels=labels
+            title=title, body=body, labels=labels, files=_paths
         ):
             return None
-        if is_intake_harvest_receipt_pr(title=title, body=body, labels=labels):
+        if is_intake_harvest_receipt_pr(
+            title=title, body=body, labels=labels, files=_paths
+        ):
             return None
         # FR #6340: explicit !assign / enqueue must reach docs/mrb pins (never
         # refuse with docs_mrb_pin). Auto resync/webhook still skip parent-open
@@ -12066,11 +12126,12 @@ def resync_from_github(
             # FR #5506: draft via-intake+skill lessons backfill as MRB (#4444/#4967).
             if pr.get("draft") is True:
                 pr_labels = _label_names(pr.get("labels"))
+                _resync_paths = _intake_pr_changed_paths(pr)
                 _resync_head_draft = pr.get("head") if isinstance(pr.get("head"), dict) else {}
                 _resync_user = pr.get("user") if isinstance(pr.get("user"), dict) else {}
                 if not (
                     is_offerable_intake_skill_lesson_pr(
-                        title=title, body=body, labels=pr_labels
+                        title=title, body=body, labels=pr_labels, files=_resync_paths
                     )
                     or is_copilot_fr_implement_pr(
                         title=title,
@@ -12104,9 +12165,14 @@ def resync_from_github(
                         flush=True,
                     )
                     continue
-            # FR #2650: intake harvest receipt PRs (even non-draft) never become MRB.
+            # FR #2650 / #6356: intake harvest receipt PRs (even non-draft) never become MRB.
             pr_labels = _label_names(pr.get("labels"))
-            if is_intake_harvest_receipt_pr(title=title, body=body, labels=pr_labels):
+            if is_intake_harvest_receipt_pr(
+                title=title,
+                body=body,
+                labels=pr_labels,
+                files=_intake_pr_changed_paths(pr),
+            ):
                 skipped_draft += 1
                 skipped_open_pulls.add((repo, f"#{num}"))
                 print(
