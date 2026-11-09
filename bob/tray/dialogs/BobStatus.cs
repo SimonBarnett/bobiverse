@@ -191,9 +191,9 @@ namespace BobDialogs
             // Dashboard = per-machine Grok pools + workers and one account-wide Copilot pool.
             // FR #5032: no "Grok accounts" heading --- every row is a Grok pool.
             // FR #6149: fuel-family logos (assets\fuel-logos) with text fallback.
-            // FR #6214: Cursor + xAI share one quota pool — one capacity heading (not two).
+            // FR #6285: xAI weekly section only (Cursor not mixed into this heading).
             if (m.Note.Length > 0) { Draw(g, m.Note, fText, Muted, 14, y); y += 22; }
-            y = Section(g, y, "Cursor / xAI weekly", "", "xai");
+            y = Section(g, y, "xAI weekly", "", "xai");
             if (m.Grok.Count > 0)
             {
                 if (m.Overspend != null && m.Overspend.Length > 0)

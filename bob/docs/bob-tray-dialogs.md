@@ -21,7 +21,7 @@ Staged and installed trees stay flat. The old spellings (`third_party\bob-tray`,
 * **About**: ntsa badge (embedded), "by Simon Barnett", `bob <version>  machine: <id>`, then one block per install of bob / jeeves / airc / ergo
   (version, BUILD.json date, commit, path, service state - the same text as the old `Format-BobInstallInfo`). The window opens first; the install
   scan (services, BUILD.json, git only when BUILD.json has no commit) runs on a worker thread and fills the box.
-* **Status** (FR #4938 / #5179 / #6214): one shared Cursor / xAI weekly capacity heading (not separate Cursor Models + xAI weekly totals); Grok account rows (one grok/cursor account per machine; Cursor spending-group bars removed), each machine's
+* **Status** (FR #4938 / #5179 / #6214 / #6285): one **xAI weekly** capacity heading (digest `machines.<m>.xai_weekly` only; Cursor not mixed into this title); Grok account rows (one grok/cursor account per machine; Cursor spending-group bars removed), each machine's
   workers as `{irc nick}: {doing|idle}` from the digest, `alert: <kind>`, version footer. It paints from `<root>\run\tray-status.json`, which
   the tray writes (atomically) after every poll; the exe never touches the network and re-reads the file every 2 s. Parked until X / Esc; drag by the title.
   One account-wide Copilot tile uses `copilot_pool` / `copilot_line` from the snapshot, showing `unknown` when absent and
@@ -74,7 +74,10 @@ was drawn by mistake. It is gone from the exe and from the snapshot (`jobs_text`
 rows with workers `{irc nick}: {doing|idle}`, one Copilot pool tile, alert and version (FR #4938: no Cursor pool section; FR #5032: no
 "Grok accounts" heading).
 
-**Digest-only fleet Cursor/xAI weekly (FR #6267).** When a public digest is present, **peer** machine rows take remaining % only from that machine's digest record (`weekly` / `cursor_pools` / `pcent`). Peer peek, peCache, and seat-min sharing must not paint a non-digest value (class of MarchHare showing `ntsa (43%)` while digest was 74%). The **local** row keeps a known `unified.jsonl` weekly when AgentMonitor#150 local-lock is set; seat-min must not overwrite that local reading with a peer digest min. Account label prefers digest `cursor_pools.account` (or `nick`) over hardcoded `bob-seats.json` labels such as `ntsa`. Missing digest weekly on a peer paints unknown — never silent local/bridge fallback and never unknown-as-zero. Offline pin: `bob/tests/test_fr6267_tray_digest_only_weekly.py`.
+**Digest-only fleet Cursor/xAI weekly (FR #6267, partly superseded by FR #6285).** When a public digest is present, **peer** machine rows take remaining % only from that machine's digest record. Peer peek, peCache, and seat-min sharing must not paint a non-digest value (class of MarchHare showing `ntsa (43%)` while digest was 74%). Account label prefers digest `cursor_pools.account` (or `nick`) over hardcoded `bob-seats.json` labels such as `ntsa`. Missing digest weekly on a peer paints unknown — never silent local/bridge fallback and never unknown-as-zero. Offline pin: `bob/tests/test_fr6267_tray_digest_only_weekly.py`.
+
+**FR #6285 (supersedes FR #6267 local-row guidance for xAI weekly display):** every TipForm/Status **xAI weekly** row (including this host) is painted only from digest `machines.<m>.xai_weekly` (`remaining_pct`, `fresh`/`age_s`/`error`, `period_end`, `account`). Never local `unified.jsonl` / `Get-BobWeeklyRemaining` for display — with or without a digest. Null meter or no digest => clear `no reading`. Section heading is exactly **xAI weekly** (never Cursor AccountLabel/AccountName). Local weekly may still feed worker fuel selection and seat period cache; it must not paint TipForm/Status rows.
+
 
 
 ## Copilot freshness (FR #6148) + historical-max % (FR #6215)

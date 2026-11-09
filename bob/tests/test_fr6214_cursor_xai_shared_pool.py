@@ -47,9 +47,9 @@ def test_fr6214_tipform_paints_one_shared_cursor_xai_capacity_row():
     # Must not paint two independent capacity rows for Cursor Models + xAI weekly.
     assert "Title 'Cursor Models'" not in sec
     assert 'Title "Cursor Models"' not in sec
-    # Shared pool row present (title mentions both or shared helper).
-    assert "Resolve-BobCursorXaiSharedPools" in sec or "shared" in sec.lower()
-    assert "Cursor / xAI" in sec or "Cursor/xAI" in sec or "shared_pool" in sec.lower()
+    # FR #6285: TipForm section heading is xAI weekly only (Cursor not mixed in).
+    assert "xAI weekly" in sec
+    assert "Cursor / xAI" not in sec
     # OpenCode + Copilot remain distinct family rows.
     assert "Family 'opencode'" in sec or 'Family "opencode"' in sec
     assert "Family 'copilot'" in sec or 'Family "copilot"' in sec
@@ -64,11 +64,10 @@ def test_fr6214_tipform_paints_one_shared_cursor_xai_capacity_row():
 def test_fr6214_status_one_shared_section_not_two_capacity_headers():
     st = _txt(STATUS)
     render = st[st.index("public int Render") : st.index("protected override void OnPaint")]
-    # No separate empty Cursor Models + xAI weekly capacity headers.
+    # FR #6285: one xAI weekly capacity header (Cursor Models bar stays out).
     assert 'Section(g, y, "Cursor Models"' not in render
-    assert 'Section(g, y, "xAI weekly"' not in render
-    # One shared heading (logo family may be xai or cursor-xai).
-    assert "Cursor / xAI" in render or "Cursor/xAI" in render or "shared" in render.lower()
+    assert 'Section(g, y, "xAI weekly"' in render
+    assert "Cursor / xAI" not in render
     assert "foreach (StatusRow r in m.Grok)" in render
     assert '"opencode"' in render and '"copilot"' in render
 
@@ -242,9 +241,12 @@ $c = Test-BobFuelHasIncluded -Capacity $cap -Machine $m -Fuel 'cursor-models'
 
 
 def test_fr6214_tipform_shared_refs_omit_family_only_labels():
+    # FR #6285: TipForm no longer builds sharedRefs for a Cursor/xAI mixed heading;
+    # section title is 'xAI weekly' only. Capacity identity still uses Resolve-* helpers elsewhere.
     w = _txt(WATCH)
-    start = w.index("$sharedRefs = @(")
-    chunk = w[start : start + 450]
-    assert "family = 'cursor'" in chunk and "family = 'xai'" in chunk
-    assert "label = 'Cursor Models'" not in chunk
-    assert "label = 'xAI weekly'" not in chunk
+    start = w.index("function Rebuild-BobTrayTiles")
+    end = w.index("Atomic swap on the TipForm")
+    sec = w[start:end]
+    assert "xAI weekly" in sec
+    assert "Cursor / xAI" not in sec
+    assert "$sharedRefs = @(" not in sec
