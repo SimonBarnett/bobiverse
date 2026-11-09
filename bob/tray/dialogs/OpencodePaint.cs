@@ -14,6 +14,9 @@ namespace BobDialogs
         public string Heading = "";
         public bool Known;
         public int Pct;
+        public int R = 88;
+        public int G = 166;
+        public int B = 255;
     }
 
     internal static class OpencodePaint
@@ -76,6 +79,9 @@ namespace BobDialogs
                 row.Heading = heading;
                 row.Known = known;
                 row.Pct = pct;
+                row.R = d.Contains("r") ? Int(d, "r") : 88;
+                row.G = d.Contains("g") ? Int(d, "g") : 166;
+                row.B = d.Contains("b") ? Int(d, "b") : 255;
                 rows.Add(row);
             }
             return rows;
@@ -88,6 +94,7 @@ namespace BobDialogs
             row.Heading = src.Heading ?? "";
             row.Known = src.Known;
             row.Pct = src.Known ? Math.Max(0, Math.Min(100, src.Pct)) : 0;
+            row.R = src.R; row.G = src.G; row.B = src.B;
             return row;
         }
 

@@ -206,8 +206,8 @@ namespace BobDialogs
                     y += 8;
                 }
             }
-            // FR #6147 pool line + window lines + FR #6149 logo; FIX #6180 re-age Copilot with stale colour.
-            y = Section(g, y, m.OpencodeLine, "", "opencode");
+            // FR #6147 / FR #6301: section title is OpenCode; window rows carry % left + reset.
+            y = Section(g, y, "OpenCode", "", "opencode");
             // Free plus Go rolling/weekly/monthly. Empty snapshot fields still draw
             // four unknown tracks (known=false), never a 100% fill.
             IList barSource = m.OpencodeBars != null && m.OpencodeBars.Count > 0 ? (IList)m.OpencodeBars : null;
@@ -217,13 +217,20 @@ namespace BobDialogs
                 r.Heading = b.Heading ?? "";
                 r.Bar.Known = b.Known;
                 r.Bar.Pct = b.Known ? Math.Max(0, Math.Min(100, b.Pct)) : 0;
-                // Match ParseRow defaults so known OpenCode bars are visible (not black on dark track).
-                r.Bar.R = 88; r.Bar.G = 166; r.Bar.B = 255;
+                // FR #6301: green->red remaining fill from bar RGB (Get-BobTrayBarFillRgb).
+                r.Bar.R = b.R; r.Bar.G = b.G; r.Bar.B = b.B;
                 y = UsageRow(g, 32, y, r, 354);
             }
             string paintCopilot = SelectCopilotLine(m, DateTime.UtcNow);
             Color copilotFg = paintCopilot.StartsWith("Copilot  [stale", StringComparison.Ordinal) ? Red : Fg;
-            y = Section(g, y, paintCopilot, "", "copilot", copilotFg);
+            // FR #6301: section title is just Copilot; meter text is the remainder of the line.
+            string copilotTitle = "Copilot";
+            string copilotRight = paintCopilot;
+            if (paintCopilot.StartsWith("Copilot  ", StringComparison.Ordinal))
+                copilotRight = paintCopilot.Substring("Copilot  ".Length).Trim();
+            else if (paintCopilot.StartsWith("Copilot ", StringComparison.Ordinal))
+                copilotRight = paintCopilot.Substring("Copilot ".Length).Trim();
+            y = Section(g, y, copilotTitle, copilotRight, "copilot", copilotFg);
             y += 6;
             Draw(g, "alert: " + m.Alert, fSmall, m.Alert == "none" ? Muted : Red, 14, y);
             string v = Footer.Length > 0 ? Footer : m.Version;

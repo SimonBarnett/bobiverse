@@ -875,11 +875,11 @@ namespace BobDialogs
         void SeedAgentChoices(ToolStripMenuItem parent, bool record)
         {
             parent.DropDownItems.Clear();
+            // FR #6301: start entries carry no fuel/quota state text.
             AddAgentChoice(parent, "auto", "Automatic - Grok, then Cursor, then OpenCode", true, record);
-            string unknown = "fuel unknown (not exhausted); start checks this agent";
-            AddAgentChoice(parent, "grok", "Grok - " + unknown, true, record);
-            AddAgentChoice(parent, "cursor", "Cursor - " + unknown, true, record);
-            AddAgentChoice(parent, "opencode", "OpenCode - " + unknown, true, record);
+            AddAgentChoice(parent, "grok", "Grok", true, record);
+            AddAgentChoice(parent, "cursor", "Cursor", true, record);
+            AddAgentChoice(parent, "opencode", "OpenCode", true, record);
         }
 
         void AddAgentChoice(ToolStripMenuItem parent, string id, string text, bool enabled, bool record)
@@ -897,6 +897,17 @@ namespace BobDialogs
             ToolStripMenuItem mi = sender as ToolStripMenuItem;
             string id = mi == null || mi.Tag == null ? "" : Convert.ToString(mi.Tag);
             if (id.Length == 0) return;
+            string model = "";
+            int pipe = id.IndexOf('|');
+            if (pipe > 0)
+            {
+                model = id.Substring(pipe + 1);
+                id = id.Substring(0, pipe);
+            }
+            // FR #6301: chosen OpenCode model is passed via BOB_OPENCODE_MODEL (inherited by CreateProcess).
+            if (model.Length > 0) Environment.SetEnvironmentVariable("BOB_OPENCODE_MODEL", model);
+            else if (string.Equals(id, "opencode", StringComparison.OrdinalIgnoreCase))
+                Environment.SetEnvironmentVariable("BOB_OPENCODE_MODEL", null);
             if (string.Equals(id, "auto", StringComparison.OrdinalIgnoreCase)) StartWorker("agent", "");
             else StartWorker("agent", id);
         }
@@ -942,16 +953,15 @@ namespace BobDialogs
             if (rows == null || rows.Count == 0)
             {
                 parent.DropDownItems.Clear();
+                // FR #6301: no fuel text on start entries.
                 AddAgentChoice(parent, "auto", "Automatic - Grok, then Cursor, then OpenCode", true, false);
-                // A killed slow read is not "out of fuel". Missing --list-agents still cannot launch an explicit row.
                 bool lookupTimeout = err == "lookup-timeout";
-                string why = lookupTimeout
-                    ? "fuel unknown (not exhausted); start checks this agent"
-                    : (err.Length > 0 ? err : "this bob-worker.exe has no --list-agents; rebuild to choose an agent");
-                bool enabled = lookupTimeout;
-                AddAgentChoice(parent, "grok", "Grok - " + why, enabled, false);
-                AddAgentChoice(parent, "cursor", "Cursor - " + why, enabled, false);
-                AddAgentChoice(parent, "opencode", "OpenCode - " + why, enabled, false);
+                bool enabled = lookupTimeout || err.Length == 0;
+                if (!lookupTimeout && err.Length > 0 && err.IndexOf("no --list-agents", StringComparison.OrdinalIgnoreCase) >= 0)
+                    enabled = false;
+                AddAgentChoice(parent, "grok", "Grok", enabled, false);
+                AddAgentChoice(parent, "cursor", "Cursor", enabled, false);
+                AddAgentChoice(parent, "opencode", "OpenCode", enabled, false);
                 return;
             }
             parent.DropDownItems.Clear();
@@ -959,12 +969,38 @@ namespace BobDialogs
             {
                 string id = Common.Str(row, "id");
                 string label = Common.Str(row, "label");
-                string reason = Common.Str(row, "reason");
                 if (label.Length == 0) label = id;
-                string text = reason.Length > 0 ? label + " - " + reason : label;
                 bool available = Common.Bool(row, "available");
                 if (id.Length == 0) continue;
-                AddAgentChoice(parent, id, text, available, false);
+                IList models = Common.List(row.ContainsKey("models") ? row["models"] : null);
+                if (string.Equals(id, "opencode", StringComparison.OrdinalIgnoreCase) && models != null && models.Count > 0)
+                {
+                    ToolStripMenuItem oc = new ToolStripMenuItem(label);
+                    oc.Enabled = available;
+                    foreach (object mo in models)
+                    {
+                        Dictionary<string, object> md = Common.Dict(mo);
+                        if (md == null) continue;
+                        string mid = Common.Str(md, "id");
+                        string mlab = Common.Str(md, "label");
+                        if (mid.Length == 0) continue;
+                        if (mlab.Length == 0) mlab = mid;
+                        ToolStripMenuItem mi = new ToolStripMenuItem(mlab);
+                        mi.Tag = "opencode|" + mid;
+                        mi.Enabled = available;
+                        mi.Click += OnAgentChoiceClick;
+                        oc.DropDownItems.Add(mi);
+                    }
+                    // Also allow default OpenCode start (worker picks model).
+                    ToolStripMenuItem def = new ToolStripMenuItem("Default model");
+                    def.Tag = "opencode";
+                    def.Enabled = available;
+                    def.Click += OnAgentChoiceClick;
+                    oc.DropDownItems.Insert(0, def);
+                    parent.DropDownItems.Add(oc);
+                    continue;
+                }
+                AddAgentChoice(parent, id, label, available, false);
             }
         }
 

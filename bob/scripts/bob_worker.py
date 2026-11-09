@@ -828,6 +828,21 @@ def explicit_agent_decision(
     return Decision("refuse", "explicit agent %s is not supported" % (requested,))
 
 
+
+def opencode_model_menu_rows(fuel: Fuel) -> list:
+    """FR #6301: models the installed OpenCode fuel helper reported (not hard-coded)."""
+    rows = []
+    seen = set()
+    models = fuel.opencode_models or {}
+    for mid in list(fuel.opencode_free_model_ids or ()) + list(models.keys()):
+        m = str(mid or "").strip()
+        if not m or m in seen:
+            continue
+        seen.add(m)
+        rows.append({"id": m, "label": m})
+    return rows
+
+
 def list_worker_agents(
     fuel: Fuel,
     cursor_cmd: Optional[str],
@@ -850,6 +865,7 @@ def list_worker_agents(
             "available": True,
             "installed": True,
             "fuel_state": "known",
+            # FR #6301: start entries carry no fuel/quota state text.
             "reason": "Grok, then Cursor, then OpenCode",
         }
     ]
@@ -859,30 +875,32 @@ def list_worker_agents(
         present = installed[agent_id]
         known = bool(readings_known) and fuel_reading_known(fuel, agent_id)
         if present and not known:
-            rows.append(
-                {
-                    "id": agent_id,
-                    "label": label,
-                    "available": True,
-                    "installed": True,
-                    "fuel_state": "unknown",
-                    "reason": UNKNOWN_MENU_REASON,
-                }
-            )
+            row = {
+                "id": agent_id,
+                "label": label,
+                "available": True,
+                "installed": True,
+                "fuel_state": "unknown",
+                "reason": "",
+            }
+            if agent_id == "opencode":
+                row["models"] = opencode_model_menu_rows(fuel)
+            rows.append(row)
             continue
         dec = explicit_agent_decision(
             agent_id, fuel, cursor_cmd, grok_exe, opencode_cmd, auth_present=auth_present
         )
-        rows.append(
-            {
-                "id": agent_id,
-                "label": label,
-                "available": dec.kind == agent_id,
-                "installed": present,
-                "fuel_state": "known",
-                "reason": dec.reason,
-            }
-        )
+        row = {
+            "id": agent_id,
+            "label": label,
+            "available": dec.kind == agent_id,
+            "installed": present,
+            "fuel_state": "known",
+            "reason": "",
+        }
+        if agent_id == "opencode":
+            row["models"] = opencode_model_menu_rows(fuel)
+        rows.append(row)
     return rows
 
 

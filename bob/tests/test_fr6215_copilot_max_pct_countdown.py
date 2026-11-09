@@ -20,7 +20,7 @@ COMMON = ROOT.parent / "common" / "scripts" / "copilot_dispatch.py"
 def test_helpers_and_labels_exist():
     src = HOVER.read_text(encoding="utf-8-sig")
     assert "function Get-BobCopilotHistoricalMaxPct" in src
-    assert "of max recorded" in src
+    assert "% left" in src  # FR #6301 display
     assert "Format-BobCopilotPoolLine" in src
     # Reset countdown must not be gated only on fresh (FR #6215).
     fmt = src[src.index("function Format-BobCopilotPoolLine") : src.index("function Test-BobPeriodExpired")]
@@ -128,10 +128,12 @@ def test_format_unlimited_with_historical_max_and_reset():
         },
         now,
     )
-    assert "included  unlimited  used 1937" in line
-    assert "96.85% of max recorded" in line
-    assert "reset" in line
+    # FR #6301: 1937/2000 ~ 97% used => 3% left; reset countdown kept.
+    assert "Copilot  3% left" in line
+    assert "reset" in line or "d" in line  # compact reset label
     assert "[stale" not in line
+    assert "included" not in line.lower()
+    assert "of max recorded" not in line
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="PowerShell formatter")
@@ -150,9 +152,9 @@ def test_format_stale_still_shows_reset_and_max_pct():
         now,
     )
     assert "[stale" in line
-    assert "included  unlimited  used 1937" in line
-    assert "96.85% of max recorded" in line
-    assert "reset" in line
+    assert "Copilot  3% left" in line
+    assert "reset" in line or "d" in line
+    assert "included" not in line.lower()
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="PowerShell formatter")
@@ -169,8 +171,8 @@ def test_format_zero_usage_zero_pct():
         },
         now,
     )
-    assert "used 0" in line
-    assert "0.00% of max recorded" in line
+    assert "Copilot  100% left" in line
+    assert "of max recorded" not in line
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="PowerShell formatter")
@@ -186,7 +188,8 @@ def test_format_missing_denominator_no_pct():
         },
         now,
     )
-    assert "used 1937" in line
+    # No max_recorded_usage => cannot compute % left.
+    assert line.startswith("Copilot  unknown") or "unknown" in line
     assert "of max recorded" not in line
     assert "n/a%" not in line
     assert "Infinity" not in line
@@ -222,7 +225,8 @@ def test_format_usage_above_max_shows_100_after_client_bump_field():
         },
         now,
     )
-    assert "100.00% of max recorded" in line
+    assert "Copilot  0% left" in line
+    assert "of max recorded" not in line
 
 
 def test_status_still_uses_formatter_line():

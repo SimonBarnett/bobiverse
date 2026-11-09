@@ -1,4 +1,4 @@
-"""MRB #6244: known OpenCode Status dialog bars must set ParseRow-default RGB."""
+"""MRB #6244 / FR #6301: known OpenCode Status bars use bar RGB (green->red remaining)."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -11,7 +11,7 @@ def test_opencode_bar_rows_set_parse_row_default_rgb():
     start = src.find("foreach (OpencodeBarRow b in OpencodePaint.Rows")
     assert start >= 0
     chunk = src[start : start + 700]
-    assert "r.Bar.R = 88" in chunk
-    assert "r.Bar.G = 166" in chunk
-    assert "r.Bar.B = 255" in chunk
+    assert "r.Bar.R = b.R" in chunk
+    assert "r.Bar.G = b.G" in chunk
+    assert "r.Bar.B = b.B" in chunk
     assert "r.Bar.Known = b.Known" in chunk

@@ -1255,7 +1255,8 @@ function Get-BobCopilotFreshness {
 function Format-BobOpencodeWindowLine {
     <#
     .SYNOPSIS
-      One Go window line (rolling/weekly/monthly). Used vs remaining; honest n/a (FR #6147).
+      One Go window line (rolling/weekly/monthly). FR #6301: go window - x% left - reset.
+      No rem est. Missing windows use the digest error field when present.
     #>
     param(
         [Parameter(Mandatory)][ValidateSet('rolling','week','month')][string]$WindowId,
@@ -1269,27 +1270,10 @@ function Format-BobOpencodeWindowLine {
     }
     $status = 'unknown'
     try { if ($Record -and $Record.status) { $status = ([string]$Record.status).Trim().ToLowerInvariant() } } catch { }
-    $source = ''
-    try { if ($Record -and $Record.source) { $source = ([string]$Record.source).Trim().ToLowerInvariant() } } catch { }
-    $dot = [string][char]0x00B7
-    if ($source -eq 'provider') {
-        $usedP = ConvertTo-BobTrayIntOrNull $(try { $Record.used_pct } catch { $null })
-        if ($null -ne $usedP) {
-            $mid = ('{0}% used' -f [int]$usedP)
-            $resetP = $null
-            try { if ($Record.reset_label) { $resetP = [string]$Record.reset_label } } catch { }
-            if ($resetP) { $mid = ('{0}  reset {1}' -f $mid, $resetP) }
-            $limited = $false
-            try { if ($Record.limited) { $limited = $true } } catch { }
-            if ($status -eq 'exhausted' -or $limited) { $mid = ('{0}  limited' -f $mid) }
-            return ('go {0}  {1}' -f $label, $mid)
-        }
-    }
+    $err = $null
+    try { if ($Record -and $Record.error) { $err = ([string]$Record.error).Trim() } } catch { }
     if ($status -eq 'unstarted') {
-        return ('go {0}  not measured' -f $label)
-    }
-    if ($status -eq 'unknown' -or -not $Record) {
-        return ('go {0}  n/a' -f $label)
+        return ('go {0} - not measured' -f $label)
     }
     $used = ConvertTo-BobTrayIntOrNull $(try { $Record.used_pct } catch { $null })
     $rem = ConvertTo-BobTrayIntOrNull $(try { $Record.remaining_pct } catch { $null })
@@ -1297,15 +1281,75 @@ function Format-BobOpencodeWindowLine {
         if ($null -eq $used) { $used = 100 }
         if ($null -eq $rem) { $rem = 0 }
     }
-    $bits = @()
-    if ($null -ne $used) { $bits += ('{0}% used' -f [int]$used) }
-    if ($null -ne $rem) { $bits += ('{0}% rem est' -f [int]$rem) }
-    if ($bits.Count -eq 0) { $mid = 'n/a' } else { $mid = ($bits -join (' {0} ' -f $dot)) }
+    if ($null -eq $rem -and $null -ne $used -and ($status -eq 'known' -or $status -eq 'exhausted' -or $status -eq 'stale')) {
+        $rem = [math]::Max(0, 100 - [int]$used)
+    }
+    if ($status -eq 'unknown' -or -not $Record -or $null -eq $rem) {
+        if ($err) { return ('go {0} - {1}' -f $label, $err) }
+        return ('go {0} - n/a' -f $label)
+    }
+    $mid = ('{0}% left' -f [int]$rem)
     $reset = $null
-    try { if ($Record.reset_label) { $reset = [string]$Record.reset_label } } catch { }
-    if ($reset) { $mid = ('{0}  reset {1}' -f $mid, $reset) }
-    if ($status -eq 'stale') { $mid = ('{0}  [stale]' -f $mid) }
-    return ('go {0}  {1}' -f $label, $mid)
+    try { if ($Record.reset_label) { $reset = ([string]$Record.reset_label).Trim() } } catch { }
+    if ($reset) { $mid = ('{0} - {1}' -f $mid, $reset) }
+    elseif ($err) { $mid = ('{0} - {1}' -f $mid, $err) }
+    if ($status -eq 'stale') { $mid = ('{0} [stale]' -f $mid) }
+    return ('go {0} - {1}' -f $label, $mid)
+}
+
+
+function Test-BobOpencodeWindowsHaveKnown {
+    param($Windows)
+    if (-not $Windows) { return $false }
+    foreach ($id in @('rolling', 'week', 'month')) {
+        $rec = $null
+        try { $rec = $Windows.$id } catch { $rec = $null }
+        if (-not $rec) {
+            try {
+                foreach ($p in @($Windows.PSObject.Properties)) {
+                    if ([string]$p.Name -eq $id) { $rec = $p.Value; break }
+                }
+            } catch { }
+        }
+        if (-not $rec) { continue }
+        $st = ''
+        try { $st = ([string]$rec.status).ToLowerInvariant() } catch { }
+        if ($st -in @('known', 'exhausted')) { return $true }
+    }
+    return $false
+}
+
+function Merge-BobOpencodePaintPreferDigest {
+    <#
+    .SYNOPSIS
+      FR #6301 Part C: digest known windows win over a fresh local cache that is
+      still unstarted/unknown (class of MarchHare n/a flicker).
+    #>
+    param($DigestPaint, $LocalWindows, $LocalFree = $null, $LocalGo = $null)
+    if (-not $DigestPaint) { $DigestPaint = [pscustomobject]@{ free = $null; go = $null; windows = $null } }
+    $digestKnown = Test-BobOpencodeWindowsHaveKnown -Windows $DigestPaint.windows
+    $localKnown = Test-BobOpencodeWindowsHaveKnown -Windows $LocalWindows
+    if ($digestKnown -and -not $localKnown) {
+        return [pscustomobject]@{
+            free = $DigestPaint.free
+            go = $DigestPaint.go
+            windows = $DigestPaint.windows
+            prefer = 'digest'
+        }
+    }
+    if ($LocalWindows) {
+        $free = $DigestPaint.free
+        $go = $DigestPaint.go
+        if ($null -ne $LocalFree -and [string]$LocalFree -ne '') { $free = $LocalFree }
+        if ($null -ne $LocalGo -and [string]$LocalGo -ne '') { $go = $LocalGo }
+        return [pscustomobject]@{ free = $free; go = $go; windows = $LocalWindows; prefer = 'local' }
+    }
+    return [pscustomobject]@{
+        free = $DigestPaint.free
+        go = $DigestPaint.go
+        windows = $DigestPaint.windows
+        prefer = 'digest'
+    }
 }
 
 function Format-BobOpencodeWindowLines {
@@ -1393,11 +1437,17 @@ function Format-BobOpencodeWindowLines {
     $bars = New-Object System.Collections.Generic.List[object]
     if (-not $freeCatalogue) {
         $freeKnown = (-not $Stale) -and (Test-BobTrayRemainingKnown $FreePct)
+        $freePctVal = $(if ($freeKnown) { [int]$FreePct } else { 0 })
+        $freeRgb = @{ r = 88; g = 166; b = 255 }
+        if ($freeKnown) { try { $freeRgb = Get-BobTrayBarFillRgb -Pct $freePctVal } catch { } }
         $bars.Add([pscustomobject]@{
             id = 'free'
             heading = $freeHeading
             known = [bool]$freeKnown
-            pct = $(if ($freeKnown) { [int]$FreePct } else { 0 })
+            pct = $freePctVal
+            r = [int]$freeRgb.r
+            g = [int]$freeRgb.g
+            b = [int]$freeRgb.b
         })
     }
     foreach ($id in $ids) {
@@ -1417,19 +1467,26 @@ function Format-BobOpencodeWindowLines {
         $barKnown = $false
         $barPct = 0
         if ($st -eq 'exhausted' -and $null -eq $rem) { $rem = 0 }
-        if ($srcBar -eq 'provider' -and $null -ne $usedBar -and ($st -eq 'known' -or $st -eq 'exhausted')) {
-            # Provider meter percent is used, matching the console bar, not a remaining balance.
-            $barKnown = $true
-            $barPct = [int]$usedBar
-        } elseif (($st -eq 'known' -or $st -eq 'exhausted') -and $null -ne $rem) {
+        if ($null -eq $rem -and $null -ne $usedBar -and ($st -eq 'known' -or $st -eq 'exhausted')) {
+            $rem = [math]::Max(0, 100 - [int]$usedBar)
+        }
+        # FR #6301: bar fill is remaining % (green to red), never used %.
+        if (($st -eq 'known' -or $st -eq 'exhausted' -or $st -eq 'stale') -and $null -ne $rem) {
             $barKnown = $true
             $barPct = [int]$rem
+        }
+        $rgb = @{ r = 88; g = 166; b = 255 }
+        if ($barKnown) {
+            try { $rgb = Get-BobTrayBarFillRgb -Pct $barPct } catch { }
         }
         $bars.Add([pscustomobject]@{
             id = $id
             heading = [string]$line
             known = [bool]$barKnown
             pct = $barPct
+            r = [int]$rgb.r
+            g = [int]$rgb.g
+            b = [int]$rgb.b
         })
     }
     return [pscustomobject]@{
@@ -1612,10 +1669,8 @@ function Get-BobCopilotHistoricalMaxPct {
 function Format-BobCopilotPoolLine {
     <#
     .SYNOPSIS
-      One account-wide Copilot pool line for TipForm (FR #5172 / FR #6148 / FR #6215).
-      Tray never calls GitHub. Stale fetched_at gets [stale] / [stale <age>] marker.
-      FR #6215: known reset countdown paints even when stale; unlimited rows may
-      append "N.NN% of max recorded" from max_recorded_usage (historical, not quota).
+      FR #6301: title Copilot; meter '<x>% left - <reset>'. 100% used => 0% left.
+      No included-unlimited prose. Stale fetched_at gets [stale] marker.
     #>
     param($Pool, $Now = $null, [switch]$ForceStale)
     if (-not $Pool) { return 'Copilot  unknown' }
@@ -1624,77 +1679,57 @@ function Format-BobCopilotPoolLine {
     $reset = [string]$Pool.reset_at
     $freshness = Get-BobCopilotFreshness -Pool $Pool -Now $Now
     $isStale = $ForceStale -or ($freshness.state -eq 'stale')
-    # FR #6215: same countdown convention as other pools; do not hide when stale.
-    $resetBit = ''
+    $resetCompact = $null
     if ($reset -and -not [string]::IsNullOrWhiteSpace($reset)) {
         try {
             $lab = Format-BobResetLabel -PeriodEnd $reset -Now $Now
-            if ($lab) { $resetBit = ('  reset {0}' -f $lab) }
+            if ($lab) {
+                $resetCompact = ($lab -replace ' days?', 'd' -replace ' hours?', 'h' -replace ' minutes?', 'm' -replace ',', '' -replace '  ', ' ').Trim()
+            }
         } catch { }
     }
-    $staleBit = ''
+    $staleLabel = ''
     if ($isStale) {
         if ($null -ne $freshness.age_s) {
             try {
                 $ageLab = Format-BobTrayFuelStaleAge -AgeSec ([int]$freshness.age_s)
-                if ($ageLab -and $ageLab -ne 'stale') {
-                    $staleBit = ('[{0}]  ' -f $ageLab)
-                } else {
-                    $staleBit = '[stale]  '
-                }
-            } catch {
-                $staleBit = '[stale]  '
-            }
-        } else {
-            $staleBit = '[stale]  '
-        }
+                if ($ageLab -and $ageLab -ne 'stale') { $staleLabel = ('[{0}]' -f $ageLab) }
+                else { $staleLabel = '[stale]' }
+            } catch { $staleLabel = '[stale]' }
+        } else { $staleLabel = '[stale]' }
     }
-    $maxRec = $null
-    try { $maxRec = $Pool.max_recorded_usage } catch { }
-    $pctBit = ''
-    $pct = Get-BobCopilotHistoricalMaxPct -Used $used -MaxRecorded $maxRec
-    if ($pct) { $pctBit = (' ({0}% of max recorded)' -f $pct) }
+    $left = $null
     $unlimited = $false
     try { if ($Pool.unlimited) { $unlimited = [bool]$Pool.unlimited } } catch { }
-    $staleLabel = ''
-    if ($isStale) { $staleLabel = $(if ($staleBit) { $staleBit.Trim() } else { '[stale]' }) }
-    $resetLabel = ''
-    if ($resetBit) { $resetLabel = $resetBit.Trim() }
-    # Same meter tokens as other providers. Unlimited is not a remaining fill.
-    # The tray does not call GitHub (FR #6204 polling stays opt-in and off).
     if ($unlimited) {
-        $n = $null
-        try { if ($null -ne $used -and [string]$used -ne '') { $n = [int]$used } } catch { }
-        $bits = @('copilot', 'included', 'unlimited')
-        if ($null -ne $n) { $bits += ('used {0}' -f $n) }
-        if ($pctBit) { $bits += $pctBit.Trim() }
-        if ($staleLabel) { $bits += $staleLabel }
-        if ($resetLabel) { $bits += $resetLabel }
-        return ($bits -join '  ')
+        $pctStr = Get-BobCopilotHistoricalMaxPct -Used $used -MaxRecorded $(try { $Pool.max_recorded_usage } catch { $null })
+        if ($pctStr) {
+            try {
+                $usedPct = [int][math]::Round([double]$pctStr)
+                $left = [math]::Max(0, 100 - $usedPct)
+            } catch { $left = $null }
+        }
+    } elseif ($state -eq 'exhausted') {
+        $left = 0
+    } else {
+        try { if ($null -ne $Pool.remaining -and [string]$Pool.remaining -ne '') { $left = [int]$Pool.remaining } } catch { }
     }
-    if ($state -eq 'exhausted') {
-        $bits = @('copilot', 'allowance', 'exhausted')
-        if ($staleLabel) { $bits += $staleLabel }
-        if ($resetLabel) { $bits += $resetLabel }
-        return ($bits -join '  ')
-    }
-    $rem = $null
-    try { if ($null -ne $Pool.remaining -and [string]$Pool.remaining -ne '') { $rem = $Pool.remaining } } catch { }
-    if ($null -eq $rem) {
-        $bits = @('copilot', 'allowance', 'unknown')
+    if ($null -eq $left) {
+        $bits = @('Copilot', 'unknown')
         if ($staleLabel) { $bits += $staleLabel }
         return ($bits -join '  ')
     }
-    $bits = @('copilot', 'allowance', 'remaining', ('{0}' -f $rem))
-    if ($pctBit) { $bits += $pctBit.Trim() }
+    $mid = ('{0}% left' -f [int]$left)
+    if ($resetCompact) { $mid = ('{0} - {1}' -f $mid, $resetCompact) }
+    $bits = @('Copilot', $mid)
     if ($staleLabel) { $bits += $staleLabel }
-    if ($resetLabel) { $bits += $resetLabel }
     return ($bits -join '  ')
 }
 
 function Get-BobCopilotMeterBarPct {
     <#
-      Live bar only for a fresh numeric remaining. Unlimited and stale are not a fill.
+      FR #6301: bar is % left. Unlimited uses 100 - historical-max used pct.
+      Stale is not a fill.
     #>
     param($Pool, $Now = $null)
     if (-not $Pool) { return $null }
@@ -1702,11 +1737,20 @@ function Get-BobCopilotMeterBarPct {
     if ($freshness.state -eq 'stale') { return $null }
     $unlimited = $false
     try { if ($Pool.unlimited) { $unlimited = [bool]$Pool.unlimited } } catch { }
-    if ($unlimited) { return $null }
+    if ($unlimited) {
+        $pctStr = Get-BobCopilotHistoricalMaxPct -Used $Pool.used -MaxRecorded $(try { $Pool.max_recorded_usage } catch { $null })
+        if (-not $pctStr) { return $null }
+        try {
+            $usedPct = [int][math]::Round([double]$pctStr)
+            return [int][math]::Max(0, 100 - $usedPct)
+        } catch { return $null }
+    }
+    $state = ''
+    try { $state = [string]$Pool.state } catch { }
+    if ($state -eq 'exhausted') { return 0 }
     if ($null -eq $Pool.remaining -or [string]$Pool.remaining -eq '') { return $null }
     try { return [int]$Pool.remaining } catch { return $null }
 }
-
 
 function Test-BobPeriodExpired {
     # True when period_end is known and already past: the usage figure that goes with it is stale.
@@ -3726,9 +3770,12 @@ function Get-BobTrayHover {
         $lwins = $null
         try { if ($localFuel.windows) { $lwins = $localFuel.windows } } catch { }
         if ($lwins) {
-            $ocPaint = [pscustomobject]@{ free = $lfree; go = $lgo; windows = $lwins }
-            # A stale digest flag must not blank week/month just taken from this cache.
-            $ocStale = $false
+            # FR #6301 Part C: digest known windows beat local unstarted/unknown cache.
+            $merged = Merge-BobOpencodePaintPreferDigest -DigestPaint $ocPaint -LocalWindows $lwins -LocalFree $lfree -LocalGo $lgo
+            $ocPaint = [pscustomobject]@{ free = $merged.free; go = $merged.go; windows = $merged.windows }
+            if ($merged.prefer -eq 'local' -or (Test-BobOpencodeWindowsHaveKnown -Windows $ocPaint.windows)) {
+                $ocStale = $false
+            }
         }
     }
     $ocPack = Format-BobOpencodeWindowLines -FreePct $ocPaint.free -Windows $ocPaint.windows -Stale:$ocStale
