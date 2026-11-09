@@ -1,7 +1,8 @@
 """FR #6285: TipForm/Status xAI weekly rows come only from digest xai_weekly.
 
-No local unified.jsonl / Get-BobWeeklyRemaining for display. Stale marks + error
-from the meter. Null meter => clear 'no reading'. Heading is 'xAI weekly' only.
+No local unified.jsonl / Get-BobWeeklyRemaining for display (digest present or
+absent). Stale marks + error from the meter. Null meter => clear 'no reading'.
+Heading is exactly 'xAI weekly'.
 """
 from __future__ import annotations
 
@@ -33,15 +34,16 @@ def test_fr6285_pins_digest_only_helpers_and_heading():
     assert "FR #6285" in h
     assert "function Format-BobTrayXaiWeeklyRow" in h
     assert "function Select-BobTrayXaiWeeklyFromDigestNode" in h
-    # Display must not prefer local weekly over digest xai_weekly for own machine.
-    assert "localWeeklyLocked" in h  # still may exist for non-display
-    # But the xAI paint path must cite FR #6285 digest-only.
-    assert "digest xai_weekly" in h.lower() or "xai_weekly only" in h.lower() or "FR #6285" in h
+    assert "never seed TipForm/Status weeklyBy" in h or "CAST IRON: never seed" in h
+    # No offline local-% seed for display (MRB #6286 fix).
+    assert "if (-not $digestPresent)" not in h.split("FR #6285 CAST IRON")[1][:800]
 
     w = _txt(WATCH)
     rebuild = w[w.index("function Rebuild-BobTrayTiles") : w.index("Atomic swap on the TipForm")]
-    assert "xAI weekly" in rebuild
+    assert "$sharedTitle = 'xAI weekly'" in rebuild
     assert "Cursor / xAI" not in rebuild
+    assert "xAI weekly - {0}" not in rebuild
+    assert "AccountLabel" not in rebuild.split("$sharedTitle = 'xAI weekly'")[1][:200]
     assert "FR #6285" in rebuild
     assert "pool_heading" in rebuild
     assert "bar_pct" in rebuild
@@ -57,6 +59,31 @@ def test_fr6285_pins_digest_only_helpers_and_heading():
 
     d = _txt(DOCS)
     assert "FR #6285" in d
+    assert "supersedes FR #6267 local-row" in d
+
+
+def test_fr6285_display_path_does_not_call_local_weekly_reader():
+    """Source pin: Format/Select helpers and the paint path never call Get-BobWeeklyRemaining for display seed."""
+    h = _txt(HOVER)
+    start = h.index("function Format-BobTrayXaiWeeklyRow")
+    mid = h.index("function Select-BobTrayXaiWeeklyFromDigestNode")
+    end = h.index("\nfunction ", mid + 10)
+    window = h[start:end]
+    assert "Get-BobWeeklyRemaining" not in window
+    assert "unified.jsonl" not in window
+    assert "xai_weekly" in window
+
+    # Paint always uses Format-BobTrayXaiWeeklyRow; no local $week.source paint branch.
+    paint = h[h.index("FR #6285: always paint via Format-BobTrayXaiWeeklyRow") :]
+    paint = paint[: paint.index("FR #352:")]
+    assert "Format-BobTrayXaiWeeklyRow" in paint
+    assert "$week.source" not in paint
+    assert "elseif ($mid -eq $machineId -and $week" not in paint
+    # Comment may name Get-BobWeeklyRemaining; the call itself must not appear in paint.
+    assert "Get-BobWeeklyRemaining" not in paint.replace(
+        "Never Format-BobPeerPoolHeading / local Get-BobWeeklyRemaining for this section.",
+        "",
+    )
 
 
 @needs_ps
@@ -80,6 +107,7 @@ def test_fr6285_format_fresh_stale_null_account(tmp_path: Path):
             if ($fresh.heading -notmatch '14% left') {{ throw ('fresh heading={{0}}' -f $fresh.heading) }}
             if ($fresh.heading -notmatch 'bob-marchhare') {{ throw 'account missing' }}
             if ($fresh.heading -match '\\[stale') {{ throw 'fresh must not show stale mark' }}
+            if ($fresh.bar_pct -ne 14) {{ throw 'fresh bar_pct' }}
 
             $stale = Format-BobTrayXaiWeeklyRow -MachineId 'marchhare' -XaiWeekly ([pscustomobject]@{{
                 remaining_pct = 14
@@ -100,6 +128,9 @@ def test_fr6285_format_fresh_stale_null_account(tmp_path: Path):
             if ($null -ne $none.remaining_pct) {{ throw 'null meter must not invent pct' }}
             if ($none.heading -notmatch 'no reading') {{ throw ('null heading={{0}}' -f $none.heading) }}
             if ($null -ne $none.bar_pct) {{ throw 'null meter empty bar' }}
+
+            $none2 = Format-BobTrayXaiWeeklyRow -MachineId 'flamingo' -XaiWeekly $null -NoReadingReason 'no digest'
+            if ($none2.heading -notmatch 'no digest') {{ throw ('no-digest reason={{0}}' -f $none2.heading) }}
 
             # Digest node with weekly=88 but xai_weekly null must not use weekly.
             $sel = Select-BobTrayXaiWeeklyFromDigestNode -Node ([pscustomobject]@{{
@@ -130,16 +161,12 @@ def test_fr6285_format_fresh_stale_null_account(tmp_path: Path):
     assert "ok" in (r.stdout or "")
 
 
-@needs_ps
-def test_fr6285_display_path_does_not_call_local_weekly_reader(tmp_path: Path):
-    """Source pin: Format-BobTrayXaiWeeklyRow / Select helpers never call Get-BobWeeklyRemaining."""
+def test_fr6285_no_local_weekly_seed_when_digest_absent():
+    """Hostile: display seed block that painted local % without digest must stay gone."""
     h = _txt(HOVER)
-    # Slice from Format-BobTrayXaiWeeklyRow through Select-BobTrayXaiWeeklyFromDigestNode end.
-    start = h.index("function Format-BobTrayXaiWeeklyRow")
-    mid = h.index("function Select-BobTrayXaiWeeklyFromDigestNode")
-    # take a bounded window after Select
-    end = h.index("\nfunction ", mid + 10)
-    window = h[start:end]
-    assert "Get-BobWeeklyRemaining" not in window
-    assert "unified.jsonl" not in window
-    assert "xai_weekly" in window
+    # After CAST IRON comment, weeklyBy must not be assigned from $week.remaining_pct.
+    cast = h.index("FR #6285 CAST IRON")
+    window = h[cast : cast + 1200]
+    assert "$weeklyBy[$machineId] = $remainPct" not in window
+    assert "$remainPct = [int]$week.remaining_pct" not in window
+    assert "Save-BobSeatPeriodEnd" in window  # cache path may remain
