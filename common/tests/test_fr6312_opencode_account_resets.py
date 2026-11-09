@@ -194,7 +194,10 @@ def test_fr6312_webhooks_doc_names_opencode_account():
     text = (root / "jeeves" / "docs" / "webhooks.md").read_text(encoding="utf-8")
     assert "opencode_account" in text
     assert "grok_account" in text
-    # FR #6318: pin ear reset contract phrases, not only account field names.
+    # FR #6318 / docs/mrb-6319: pin distinctive rule phrases (not only field names).
     assert "resets_at" in text
     assert "reset unavailable" in text
     assert "reset_label" in text
+    assert "past absolute" in text
+    assert "deep-merging" in text
+    assert "resetInSec" in text
