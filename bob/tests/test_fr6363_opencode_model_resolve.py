@@ -28,7 +28,10 @@ def test_fr6363_env_beats_config_and_fuel(tmp_path, monkeypatch):
     bw._OPENCODE_MODEL_ENV_AT_START = "opencode/beam-free"
     logs: list[str] = []
     fuel = bw.Fuel(opencode_free=100, opencode_free_model_ids=("opencode/beam-free",))
-    got = bw.resolve_opencode_model(fuel, env=dict(**{k: v for k, v in __import__("os").environ.items()}), log_fn=logs.append)
+    env = dict(**{k: v for k, v in __import__("os").environ.items()})
+    got = bw.resolve_opencode_model(
+        fuel, state_dir=tmp_path, env=env, log_fn=logs.append
+    )
     assert got == "opencode/beam-free"
     assert any("source=env" in line and "model=opencode/beam-free" in line for line in logs)
 
@@ -43,7 +46,7 @@ def test_fr6363_config_used_when_env_unset(tmp_path, monkeypatch):
     bw._OPENCODE_MODEL_ENV_AT_START = None
     logs: list[str] = []
     fuel = bw.Fuel(opencode_free=100, opencode_free_model_ids=("opencode/beam-free",))
-    got = bw.resolve_opencode_model(fuel, log_fn=logs.append)
+    got = bw.resolve_opencode_model(fuel, state_dir=tmp_path, log_fn=logs.append)
     assert got == "opencode/deepseek-v4.1-flash-free"
     assert any("source=config" in line for line in logs)
 
@@ -65,25 +68,27 @@ def test_fr6363_paused_config_falls_back_to_fuel(tmp_path, monkeypatch):
     assert any("paused" in line for line in logs)
 
 
-def test_fr6363_neither_set_uses_fuel_unchanged():
+def test_fr6363_neither_set_uses_fuel_unchanged(tmp_path):
     bw._OPENCODE_MODEL_ENV_AT_START = None
-    # Point OPENCODE_CONFIG at a missing file so global home configs cannot win.
-    import os
-
-    os.environ["OPENCODE_CONFIG"] = str(Path("C:/no/such/opencode-fr6363.jsonc"))
-    try:
-        fuel = bw.Fuel(
-            opencode_free=100,
-            opencode_go=50,
-            opencode_models={},
-            opencode_free_model_ids=("opencode/beam-free",),
-        )
-        logs: list[str] = []
-        got = bw.resolve_opencode_model(fuel, log_fn=logs.append)
-        assert got == "opencode/beam-free"
-        assert any("source=fuel" in line for line in logs)
-    finally:
-        os.environ.pop("OPENCODE_CONFIG", None)
+    env = {
+        "OPENCODE_CONFIG": str(tmp_path / "missing.jsonc"),
+        "XDG_CONFIG_HOME": str(tmp_path),
+        "USERPROFILE": str(tmp_path),
+        "HOME": str(tmp_path),
+        "LOCALAPPDATA": str(tmp_path),
+    }
+    fuel = bw.Fuel(
+        opencode_free=100,
+        opencode_go=50,
+        opencode_models={},
+        opencode_free_model_ids=("opencode/beam-free",),
+    )
+    logs: list[str] = []
+    got = bw.resolve_opencode_model(
+        fuel, state_dir=tmp_path, env=env, log_fn=logs.append
+    )
+    assert got == "opencode/beam-free"
+    assert any("source=fuel" in line for line in logs)
 
 
 def test_fr6363_worker_export_not_operator_override(tmp_path, monkeypatch):
@@ -95,7 +100,7 @@ def test_fr6363_worker_export_not_operator_override(tmp_path, monkeypatch):
     monkeypatch.setenv("BOB_OPENCODE_MODEL", "opencode/beam-free")  # fake prior worker export
     logs: list[str] = []
     fuel = bw.Fuel(opencode_free=100, opencode_free_model_ids=("opencode/beam-free",))
-    got = bw.resolve_opencode_model(fuel, log_fn=logs.append)
+    got = bw.resolve_opencode_model(fuel, state_dir=tmp_path, log_fn=logs.append)
     assert got == "opencode/deepseek-v4.1-flash-free"
     assert any("source=config" in line for line in logs)
 
@@ -124,4 +129,4 @@ def test_fr6363_star_free_recognised_when_configured(tmp_path, monkeypatch):
     # free pool available; deepseek not in OPENCODE_FREE_MODELS hard list
     assert "deepseek-v4.1-flash-free" not in bw.opencode_fuel.OPENCODE_FREE_MODELS
     fuel = bw.Fuel(opencode_free=100, opencode_free_model_ids=("opencode/beam-free",))
-    assert bw.resolve_opencode_model(fuel) == "opencode/deepseek-v4.1-flash-free"
+    assert bw.resolve_opencode_model(fuel, state_dir=tmp_path) == "opencode/deepseek-v4.1-flash-free"
