@@ -54,7 +54,7 @@ Automatic order, used when Agents → Automatic is chosen or `--agent` is omitte
 1. **Grok** `agent.exe` (`%USERPROFILE%\.grok\bin\agent.exe`) when the local weekly reading (`unified.jsonl`, Grok 1.0.41 may report no % but a verified
    local login + current weekly period = available) shows tokens, **or when the Grok reading is unknown** (FR #3997: unknown counts as available for seat start; mid-job still uses explicit exhausted only, FR #3923).
 2. else **Cursor** `agent.cmd` (`%LOCALAPPDATA%\cursor-agent\agent.cmd`) when the **high-cost-models OR the auto (low-cost) pool** has more than 0 % left.
-3. else **OpenCode** `opencode.exe` when free or Go fuel has more than 0 % left (FR #6120). The OpenCode model is chosen from per-model fuel readings in fallback order.
+3. else **OpenCode** `opencode.exe` when free or Go fuel has more than 0 % left (FR #6120). Model resolution (FR #6363): operator BOB_OPENCODE_MODEL captured at process start, else model from OpenCode config (OPENCODE_CONFIG or ~/.config/opencode/opencode.json(c)), else fuel-based opencode_default_model(); paused/known-capped candidates fall through; log opencode model=<id> source=env|config|fuel skipped=.... Explicit *-free ids (e.g. opencode/deepseek-v4.1-flash-free) are usable when configured.
 4. else a **prompt in the worker window** asks for an `XAI_API_KEY` for this start only (hidden input): kept in memory, handed to the child's environment, never written to disk, never printed or
    logged. Cancel = nothing starts (exit 4).
 
@@ -271,3 +271,4 @@ Generalised from 21 harvested lessons that never reached this book (audit for FR
 - done-miss with stranded ACK for a different job than this session completed: GIVEUP that ACK immediately (never invent DONE); FR work without a PR is not DONE
 - **FR #6134:** OpenCode seats skip hostile MRB/UAT offers (chair `offer_focus_top` / `!assign` refuse when digest `kind=opencode`); still take FR/FIX/docs/harvest. Worker backstop NACKs MRB/UAT before ACK-on-receipt and posts digest kind on seat start.
 - PyInstaller: co-located module next to entry script beats --paths shadow; overwrite stub for freeze and restore in finally; prove with local freeze --version before PASS
+- **FR #6363:** OpenCode model = operator env (at start) > opencode.json(c) model > fuel default; do not treat worker re-exports of BOB_OPENCODE_MODEL as operator overrides; keep -m <resolved>.

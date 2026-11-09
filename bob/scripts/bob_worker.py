@@ -162,6 +162,9 @@ try:
 except Exception:  # pragma: no cover
     opencode_fuel = None  # type: ignore
 
+# FR #6363: operator BOB_OPENCODE_MODEL captured at process start (not worker re-exports).
+_OPENCODE_MODEL_ENV_AT_START: Optional[str] = None
+
 try:
     from opencode_seat_contract import (  # noqa: E402
         console_text,
@@ -666,6 +669,214 @@ def opencode_default_model(
             return "opencode-go/glm-5.3"
     return None
 
+
+def capture_opencode_model_env_at_start(env: Optional[dict] = None) -> Optional[str]:
+    """Record operator ``BOB_OPENCODE_MODEL`` once at process start (FR #6363).
+
+    Later worker exports into ``os.environ`` must not count as an operator override.
+    """
+    global _OPENCODE_MODEL_ENV_AT_START
+    env = os.environ if env is None else env
+    raw = str(env.get("BOB_OPENCODE_MODEL") or "").strip()
+    _OPENCODE_MODEL_ENV_AT_START = raw or None
+    return _OPENCODE_MODEL_ENV_AT_START
+
+
+def _strip_jsonc(text: str) -> str:
+    """Strip // and /* */ comments and trailing commas for OpenCode JSONC configs."""
+    out: list[str] = []
+    i = 0
+    n = len(text)
+    in_str = False
+    while i < n:
+        c = text[i]
+        if in_str:
+            out.append(c)
+            if c == "\\" and i + 1 < n:
+                out.append(text[i + 1])
+                i += 2
+                continue
+            if c == '"':
+                in_str = False
+            i += 1
+            continue
+        if c == '"':
+            in_str = True
+            out.append(c)
+            i += 1
+            continue
+        if c == "/" and i + 1 < n:
+            nxt = text[i + 1]
+            if nxt == "/":
+                i += 2
+                while i < n and text[i] not in "\n\r":
+                    i += 1
+                continue
+            if nxt == "*":
+                i += 2
+                while i + 1 < n and not (text[i] == "*" and text[i + 1] == "/"):
+                    i += 1
+                i = min(i + 2, n)
+                continue
+        out.append(c)
+        i += 1
+    stripped = "".join(out)
+    return re.sub(r",\s*([}\]])", r"\1", stripped)
+
+
+def opencode_global_config_candidates(env: Optional[dict] = None) -> list[Path]:
+    """Paths to try for the OpenCode global config (FR #6363)."""
+    env = os.environ if env is None else env
+    paths: list[Path] = []
+    custom = str(env.get("OPENCODE_CONFIG") or "").strip()
+    if custom:
+        paths.append(Path(custom))
+    xdg = str(env.get("XDG_CONFIG_HOME") or "").strip()
+    home = Path(env.get("USERPROFILE") or env.get("HOME") or Path.home())
+    bases: list[Path] = []
+    if xdg:
+        bases.append(Path(xdg) / "opencode")
+    bases.append(home / ".config" / "opencode")
+    local = str(env.get("LOCALAPPDATA") or "").strip()
+    if local:
+        bases.append(Path(local) / "opencode")
+    for base in bases:
+        for name in ("opencode.jsonc", "opencode.json"):
+            paths.append(base / name)
+    seen: set[str] = set()
+    out: list[Path] = []
+    for p in paths:
+        key = str(p).lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(p)
+    return out
+
+
+def read_opencode_config_model(
+    env: Optional[dict] = None,
+    *,
+    path: Optional[Path] = None,
+) -> Optional[str]:
+    """Read ``model`` from OpenCode config (JSON/JSONC). FR #6363."""
+    env = os.environ if env is None else env
+    candidates = [path] if path is not None else opencode_global_config_candidates(env)
+    for cand in candidates:
+        if cand is None:
+            continue
+        try:
+            if not cand.is_file():
+                continue
+        except OSError:
+            continue
+        try:
+            raw = cand.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        try:
+            doc = json.loads(_strip_jsonc(raw))
+        except (TypeError, ValueError, json.JSONDecodeError):
+            continue
+        if not isinstance(doc, dict):
+            continue
+        model = str(doc.get("model") or "").strip()
+        if model:
+            return model
+    return None
+
+
+def _opencode_model_known_capped(model: str, fuel: Fuel) -> bool:
+    """True when fuel readings prove the model is exhausted (unknown = not capped)."""
+    mid = str(model or "").strip()
+    if not mid:
+        return True
+    models = fuel.opencode_models or {}
+    if mid.startswith("opencode-go/"):
+        leaf = mid.split("/", 1)[-1]
+        if leaf in models:
+            try:
+                return int(models.get(leaf) or 0) <= 0
+            except (TypeError, ValueError):
+                return True
+        return False
+    leaf = mid.split("/")[-1]
+    is_free = mid.endswith("-free") or leaf.endswith("-free")
+    if opencode_fuel is not None:
+        try:
+            is_free = bool(
+                opencode_fuel._is_free_model(leaf)
+                or opencode_fuel._is_free_model(mid)
+                or is_free
+            )
+        except Exception:  # noqa: BLE001
+            pass
+    if is_free and fuel.opencode_free is not None:
+        try:
+            return int(fuel.opencode_free) <= 0
+        except (TypeError, ValueError):
+            return True
+    return False
+
+
+def resolve_opencode_model(
+    fuel: Fuel,
+    state_dir: Optional[Path] = None,
+    *,
+    now: Optional[float] = None,
+    env: Optional[dict] = None,
+    log_fn: Optional[Callable[[str], None]] = None,
+) -> Optional[str]:
+    """Resolve OpenCode model: operator env -> config -> fuel (FR #6363).
+
+    Skips paused or known-capped candidates and falls through. Logs one grep-able
+    line: ``opencode model=<id> source=env|config|fuel skipped=<...>``.
+    """
+    env = os.environ if env is None else env
+    if state_dir is None:
+        state_dir = opencode_pauses_state_dir(env)
+
+    def _paused(model_id: str) -> bool:
+        if not opencode_fuel:
+            return False
+        return opencode_fuel.is_opencode_model_paused(model_id, state_dir, now=now)
+
+    skipped: list[str] = []
+    candidates: list[tuple[str, str]] = []
+
+    env_model = (_OPENCODE_MODEL_ENV_AT_START or "").strip()
+    if env_model:
+        candidates.append(("env", env_model))
+
+    cfg_model = read_opencode_config_model(env)
+    if cfg_model:
+        candidates.append(("config", cfg_model))
+
+    fuel_model = opencode_default_model(fuel, state_dir=state_dir, now=now)
+    if fuel_model:
+        candidates.append(("fuel", fuel_model))
+
+    chosen: Optional[str] = None
+    source = ""
+    for src, mid in candidates:
+        if _paused(mid):
+            skipped.append(f"{src}:{mid}:paused")
+            continue
+        if _opencode_model_known_capped(mid, fuel):
+            skipped.append(f"{src}:{mid}:capped")
+            continue
+        chosen = mid
+        source = src
+        break
+
+    skip_s = ",".join(skipped) if skipped else "-"
+    line = f"opencode model={chosen or '-'} source={source or '-'} skipped={skip_s}"
+    if log_fn is not None:
+        try:
+            log_fn(line)
+        except Exception:  # noqa: BLE001
+            pass
+    return chosen
 
 def grok_has_tokens(f: Fuel) -> bool:
     """True when seat start may pick Grok (FR #3997).
@@ -9381,7 +9592,7 @@ def run_plan(args, log: Log) -> int:
         exe = cursor_cmd
     elif kind == "opencode":
         exe = opencode_cmd
-        oc_model = opencode_default_model(fuel)
+        oc_model = resolve_opencode_model(fuel, log_fn=log)
         if not oc_model:
             log("opencode: no usable model (capped/paused) - not starting")
             return EXIT_NO_AGENT
@@ -9467,7 +9678,7 @@ def run_monitor(args, log: Log) -> int:
         exe = cursor_cmd
     elif kind == "opencode":
         exe = opencode_cmd
-        oc_model = opencode_default_model(fuel)
+        oc_model = resolve_opencode_model(fuel, log_fn=log)
         if not oc_model:
             log("opencode: no usable model (capped/paused) - not starting")
             return EXIT_NO_AGENT
@@ -9579,7 +9790,7 @@ def run_maintenance(args, log: Log, *, spawn: Optional[Callable] = None, poll_s:
         exe = cursor_cmd
     elif kind == "opencode":
         exe = opencode_cmd
-        oc_model = opencode_default_model(fuel)
+        oc_model = resolve_opencode_model(fuel, log_fn=log)
         if not oc_model:
             log("opencode: no usable model (capped/paused) - not starting")
             return EXIT_NO_AGENT
@@ -9678,7 +9889,7 @@ def run_agent(args, log: Log) -> int:
         exe = cursor_cmd
     elif kind == "opencode":
         exe = opencode_cmd
-        oc_model = opencode_default_model(fuel)
+        oc_model = resolve_opencode_model(fuel, log_fn=log)
         if not oc_model:
             log("opencode: no usable model (capped/paused) - not starting")
             return EXIT_NO_AGENT
@@ -10091,6 +10302,7 @@ def main(argv: Optional[list] = None) -> int:
         help="seconds to hold inject/!bored after agent spawn (FR #955; default 60, or BOB_WORKER_STARTUP_GRACE_S)",
     )
     args = p.parse_args(argv)
+    capture_opencode_model_env_at_start()
     if getattr(args, 'version', False):
         print(get_source_commit())
         return EXIT_OK
