@@ -18,6 +18,7 @@ import socket
 import ssl
 import sys
 import threading
+import traceback
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -29,6 +30,26 @@ from pathlib import Path
 FROZEN_SCRIPT_OVERLAY = ("bobreport", "opencode_fuel")
 BOBREPORT_OVERLAY_MARKER = "def opencode_install_root"
 OPENCODE_FUEL_OVERLAY_MARKER = "GO_ZEN_USAGE_USER_AGENT"  # FR #6263
+
+# FR #6282: frozen/disk gitclaim must expose shop claim helpers. Fail at startup
+# when a build/hotpatch mismatch would otherwise AttributeError inside the reader.
+_EAR_GITCLAIM_REQUIRED = (
+    "shop_line_resets_bored_clock",
+    "note_worker_activity",
+    "worker_shop_channel",
+    "is_bored_command",
+    "parse_worker_ack",
+)
+
+
+def assert_ear_gitclaim_contract(mod=None) -> None:
+    """Raise RuntimeError when gitclaim lacks ear shop-claim helpers (FR #6282)."""
+    m = mod if mod is not None else gitclaim  # type: ignore[name-defined]
+    missing = [n for n in _EAR_GITCLAIM_REQUIRED if not callable(getattr(m, n, None))]
+    if missing:
+        raise RuntimeError(
+            "FR #6282 gitclaim contract missing: " + ", ".join(missing)
+        )
 
 
 class _InstallScriptOverlay:
@@ -3825,7 +3846,14 @@ class Client:
                 info(f"WARN last-bored stamp {type(exc).__name__}")
         shop = gitclaim.worker_shop_channel(src)
         if shop and bobreport.normalize_channel(target).lower() == shop:
-            gitclaim.note_worker_activity(self.home, src, now)
+            try:
+                gitclaim.note_worker_activity(self.home, src, now)
+            except Exception as exc:  # noqa: BLE001 - FR #6282 never kill reader
+                info(
+                    f"WARN git-claim activity {type(exc).__name__}: {exc}"
+                )
+                for line in traceback.format_exc().strip().splitlines():
+                    info(f"WARN git-claim activity | {line}")
         return False
 
     def _git_bored(self, src: str, target: str, now: float, *, chair: bool = False) -> None:
@@ -4378,6 +4406,18 @@ class Client:
             info(f"INFO file DONE id={msg_id} fail")
         return True
 
+    def _call_handler(self, name: str, fn, *args, **kwargs):
+        """FR #6282: never let one message handler kill the IRC reader session."""
+        try:
+            return fn(*args, **kwargs)
+        except Exception as exc:  # noqa: BLE001 - dispatch boundary
+            info(
+                f"ERROR handler={name} {type(exc).__name__}: {exc}"
+            )
+            for line in traceback.format_exc().strip().splitlines():
+                info(f"ERROR handler={name} | {line}")
+            return None
+
     def reader(self) -> None:
         assert self.sock is not None
         buf = b""
@@ -4591,7 +4631,13 @@ class Client:
                         self.send(line)
                     if cmd == "PRIVMSG" and " :" in wire:
                         target = parts[1].lstrip(":") if len(parts) > 1 else ""
-                        self.handle_privmsg(prefix, target, wire.split(" :", 1)[1])
+                        self._call_handler(
+                            "handle_privmsg",
+                            self.handle_privmsg,
+                            prefix,
+                            target,
+                            wire.split(" :", 1)[1],
+                        )
         except OSError:
             return
         finally:
@@ -4923,6 +4969,9 @@ def clean_crashed_priors(nick: str, home: str, *, once: bool) -> None:
 
 def main() -> None:
     import signal
+    # FR #6282: fail loud at startup when gitclaim lacks shop-claim helpers
+    # (build/hotpatch mismatch), never inside a PRIVMSG handler.
+    assert_ear_gitclaim_contract()
     try:
         import crash_report
 
