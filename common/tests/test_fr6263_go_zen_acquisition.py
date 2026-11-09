@@ -128,8 +128,11 @@ def test_fr6263_missing_key_distinct_from_provider_failure(monkeypatch):
     acq = bobreport.last_opencode_acquisition()
     assert acq.get("kind") == "missing_key"
     assert acq.get("configured") is False
-    # No fabricated go-zen source when key absent
+    # No fabricated go-zen source when key absent; FR #6301: explicit no-key state.
     assert doc.get("source") != opencode_fuel.GO_ZEN_USAGE_SOURCE
+    assert doc.get("opencode_state") == bobreport.OPENCODE_NO_KEY_STATE or doc.get("source") == "no-key"
+    week = (doc.get("windows") or {}).get("week") or {}
+    assert week.get("error") == "no key set"
 
 
 def test_fr6263_config_file_key_without_logging_secret(tmp_path, monkeypatch):

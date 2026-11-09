@@ -150,12 +150,19 @@ def test_fr6301_agent_start_entries_have_no_fuel_text():
 
 
 
-def test_fr6301_opencode_models_listed_for_submenu():
+def test_fr6301_opencode_no_models_submenu_on_agent_rows():
+    """Owner dropped model-choice; OpenCode has /model. No tray models list."""
     worker = WORKER.read_text(encoding="utf-8")
-    assert "opencode_model_menu_rows" in worker or "models" in worker[worker.index("def list_worker_agents") : worker.index("def list_worker_agents") + 3500]
+    chunk = worker[worker.index("def list_worker_agents") : worker.index("def list_worker_agents") + 3500]
+    assert 'row["models"]' not in chunk
+    assert "opencode_model_menu_rows(fuel)" not in chunk
     tray = TRAY_CS.read_text(encoding="utf-8")
-    assert "models" in tray[tray.index("void ApplyAgentList") : tray.index("void ApplyAgentList") + 2000]
-    assert "BOB_OPENCODE_MODEL" in tray
+    apply = tray[tray.index("void ApplyAgentList") : tray.index("void ApplyAgentList") + 2500]
+    assert "opencode|" not in apply
+    assert "Default model" not in apply
+    assert "BOB_OPENCODE_MODEL" not in tray
+    click = tray[tray.index("void OnAgentChoiceClick") : tray.index("void OnAgentChoiceClick") + 900]
+    assert "SetEnvironmentVariable(\"BOB_OPENCODE_MODEL\"" not in click
 
 
 def test_fr6301_reset_label_from_epoch_compact():
@@ -172,3 +179,15 @@ def test_fr6301_reset_label_from_epoch_compact():
 def test_fr6301_prefer_digest_helper_exists():
     src = HOVER.read_text(encoding="utf-8-sig")
     assert "function Test-BobOpencodeWindowsHaveKnown" in src or "function Merge-BobOpencodePaintPreferDigest" in src
+
+
+def test_fr6301_tray_paint_ignores_opencode_fuel_json():
+    """Part C: Get-BobTrayHover paint path must not call Read-BobOpencodeLocalFuel."""
+    src = HOVER.read_text(encoding="utf-8-sig")
+    # Function may remain for tools/tests, but the hover paint path must not invoke it.
+    paint_idx = src.find("function Get-BobTrayHover")
+    assert paint_idx > 0
+    paint = src[paint_idx:]
+    assert "Read-BobOpencodeLocalFuel" not in paint
+    assert "FR #6285" in src or "digest only" in src.lower()
+    assert "Merge-BobOpencodePaintPreferDigest" in src  # helper may stay unused

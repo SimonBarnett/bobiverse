@@ -897,17 +897,9 @@ namespace BobDialogs
             ToolStripMenuItem mi = sender as ToolStripMenuItem;
             string id = mi == null || mi.Tag == null ? "" : Convert.ToString(mi.Tag);
             if (id.Length == 0) return;
-            string model = "";
+            // FR #6301: OpenCode model submenu dropped (OpenCode has /model). Start by agent id only.
             int pipe = id.IndexOf('|');
-            if (pipe > 0)
-            {
-                model = id.Substring(pipe + 1);
-                id = id.Substring(0, pipe);
-            }
-            // FR #6301: chosen OpenCode model is passed via BOB_OPENCODE_MODEL (inherited by CreateProcess).
-            if (model.Length > 0) Environment.SetEnvironmentVariable("BOB_OPENCODE_MODEL", model);
-            else if (string.Equals(id, "opencode", StringComparison.OrdinalIgnoreCase))
-                Environment.SetEnvironmentVariable("BOB_OPENCODE_MODEL", null);
+            if (pipe > 0) id = id.Substring(0, pipe);
             if (string.Equals(id, "auto", StringComparison.OrdinalIgnoreCase)) StartWorker("agent", "");
             else StartWorker("agent", id);
         }
@@ -972,34 +964,7 @@ namespace BobDialogs
                 if (label.Length == 0) label = id;
                 bool available = Common.Bool(row, "available");
                 if (id.Length == 0) continue;
-                IList models = Common.List(row.ContainsKey("models") ? row["models"] : null);
-                if (string.Equals(id, "opencode", StringComparison.OrdinalIgnoreCase) && models != null && models.Count > 0)
-                {
-                    ToolStripMenuItem oc = new ToolStripMenuItem(label);
-                    oc.Enabled = available;
-                    foreach (object mo in models)
-                    {
-                        Dictionary<string, object> md = Common.Dict(mo);
-                        if (md == null) continue;
-                        string mid = Common.Str(md, "id");
-                        string mlab = Common.Str(md, "label");
-                        if (mid.Length == 0) continue;
-                        if (mlab.Length == 0) mlab = mid;
-                        ToolStripMenuItem mi = new ToolStripMenuItem(mlab);
-                        mi.Tag = "opencode|" + mid;
-                        mi.Enabled = available;
-                        mi.Click += OnAgentChoiceClick;
-                        oc.DropDownItems.Add(mi);
-                    }
-                    // Also allow default OpenCode start (worker picks model).
-                    ToolStripMenuItem def = new ToolStripMenuItem("Default model");
-                    def.Tag = "opencode";
-                    def.Enabled = available;
-                    def.Click += OnAgentChoiceClick;
-                    oc.DropDownItems.Insert(0, def);
-                    parent.DropDownItems.Add(oc);
-                    continue;
-                }
+                // FR #6301: no OpenCode models submenu (OpenCode has /model).
                 AddAgentChoice(parent, id, label, available, false);
             }
         }

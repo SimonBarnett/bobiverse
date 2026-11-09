@@ -1419,7 +1419,21 @@ function Format-BobOpencodeWindowLines {
     }
     # Missing windows still name Free and each Go window. A single "OpenCode n/a"
     # with an empty line list is what the MarchHare card painted.
-    $goBit = if ($null -ne $limRem) { ('est {0}%' -f [int]$limRem) } else { 'n/a' }
+    # FR #6301: when every window says "no key set", prefer that over n/a.
+    $noKey = $false
+    if ($null -eq $limRem) {
+        $errs = @()
+        foreach ($id in $ids) {
+            $rec = $winMap[$id]
+            $e = $null
+            try { if ($rec -and $rec.error) { $e = ([string]$rec.error).Trim() } } catch { }
+            if ($e) { $errs += ,$e }
+        }
+        if ($errs.Count -gt 0 -and ($errs | Where-Object { $_ -eq 'no key set' }).Count -eq $errs.Count) {
+            $noKey = $true
+        }
+    }
+    $goBit = if ($null -ne $limRem) { ('est {0}%' -f [int]$limRem) } elseif ($noKey) { 'no key set' } else { 'n/a' }
     if ($limId) {
         $limLabel = switch ($limId) { 'rolling' { 'rolling' } 'week' { 'weekly' } 'month' { 'monthly' } default { $limId } }
         $goBit = ('{0} {1}' -f $limLabel, $goBit)
@@ -1563,7 +1577,7 @@ function Format-BobOpencodePoolLine {
 function Read-BobOpencodeLocalFuel {
     <#
       Last completed Get-BobOpencodeFuel.ps1 document (<root>\run\opencode-fuel.json).
-      The tray paints this when the public digest has no OpenCode pools. No credentials.
+      FR #6301 Part C / FR #6285: kept for tools/tests; Get-BobTrayHover paint path must not call this.
     #>
     $candidates = New-Object System.Collections.Generic.List[string]
     if ($env:BOB_OPENCODE_FUEL_CACHE_FILE) { [void]$candidates.Add([string]$env:BOB_OPENCODE_FUEL_CACHE_FILE) }
@@ -3729,68 +3743,15 @@ function Get-BobTrayHover {
         if ($ghPosting.issue_posting_ready) { $ghLine = 'GitHub issue post: ready' }
         else { $ghLine = 'GitHub issue post: not ready' }
     }
-    # FR #6147: digest may already carry catalogue free=100 and omit windows.
-    # A fresh local cache in the same run directory still wins for windows.
-    # MarchHare 14:03: cache rolling=unstarted was painted as unknown because
-    # digest free suppressed the cache read.
+    # FR #6301 Part C / FR #6285: tray paints OpenCode from the digest only.
+    # Do not read or overlay run\opencode-fuel.json (prefer-digest helpers remain unused here).
     $ocPaint = Get-BobOpencodePaintFromDigest -Digest $reportDigest -MachineId $machineId
     $ocStale = $false
     try { if ($reportDigest -and $reportDigest.stale) { $ocStale = $true } } catch { }
-    $localFuel = $null
-    try { $localFuel = Read-BobOpencodeLocalFuel } catch { $localFuel = $null }
-    $localFresh = $false
-    if ($localFuel) {
-        $fetched = $null
-        try { $fetched = [string]$localFuel.fetched_at } catch { }
-        if ($fetched) {
-            try {
-                $parsed = [datetime]::Parse($fetched, [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::RoundtripKind).ToUniversalTime()
-                $age = ([datetime]::UtcNow - $parsed).TotalSeconds
-                if ($age -ge -120 -and $age -le 900) { $localFresh = $true }
-            } catch { }
-        }
-    }
-    if ($localFresh) {
-        $lfree = $ocPaint.free
-        $lgo = $ocPaint.go
-        foreach ($pair in @(
-                @('free', 'free'),
-                @('opencode-free', 'free'),
-                @('go', 'go'),
-                @('opencode-go', 'go')
-            )) {
-            $raw = $null
-            try {
-                $prop = $localFuel.PSObject.Properties[$pair[0]]
-                if ($prop) { $raw = $prop.Value }
-            } catch { $raw = $null }
-            if ($null -eq $raw -or [string]$raw -eq '') { continue }
-            if ($pair[1] -eq 'free') { $lfree = $raw } else { $lgo = $raw }
-        }
-        $lwins = $null
-        try { if ($localFuel.windows) { $lwins = $localFuel.windows } } catch { }
-        if ($lwins) {
-            # FR #6301 Part C: digest known windows beat local unstarted/unknown cache.
-            $merged = Merge-BobOpencodePaintPreferDigest -DigestPaint $ocPaint -LocalWindows $lwins -LocalFree $lfree -LocalGo $lgo
-            $ocPaint = [pscustomobject]@{ free = $merged.free; go = $merged.go; windows = $merged.windows }
-            if ($merged.prefer -eq 'local' -or (Test-BobOpencodeWindowsHaveKnown -Windows $ocPaint.windows)) {
-                $ocStale = $false
-            }
-        }
-    }
     $ocPack = Format-BobOpencodeWindowLines -FreePct $ocPaint.free -Windows $ocPaint.windows -Stale:$ocStale
     $opencodeLine = [string]$ocPack.summary
     $opencodeWindowLines = @()
     if ($ocPack.free_heading) { $opencodeWindowLines += [string]$ocPack.free_heading }
-    if ($localFresh -and $localFuel -and $localFuel.local_costs) {
-        foreach ($costProp in @($localFuel.local_costs.PSObject.Properties)) {
-            $usd = $null
-            try { $usd = [double]$costProp.Value } catch { $usd = $null }
-            if ($null -eq $usd) { continue }
-            $shown = $usd.ToString('0.00', [Globalization.CultureInfo]::InvariantCulture)
-            $opencodeWindowLines += ('{0}  7d local ${1}' -f [string]$costProp.Name, $shown)
-        }
-    }
     if ($ocPack.window_lines) { $opencodeWindowLines += @($ocPack.window_lines) }
     $opencodeBars = @()
     if ($ocPack.bars) { $opencodeBars = @($ocPack.bars) }

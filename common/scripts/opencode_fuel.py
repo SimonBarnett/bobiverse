@@ -618,15 +618,22 @@ def _window_record(
     remaining_pct: Optional[int] = None,
     reset_label: Optional[str] = None,
     fetched_at: Optional[str] = None,
+    resets_at: Optional[str] = None,
+    error: Optional[str] = None,
 ) -> dict:
-    """One Go window paint record (FR #6147). Never invent used/remaining/reset."""
-    return {
+    """One Go window paint record (FR #6147 / #6301). Never invent used/remaining/reset."""
+    rec = {
         "status": status,
         "used_pct": used_pct,
         "remaining_pct": remaining_pct,
         "reset_label": reset_label,
         "fetched_at": fetched_at,
     }
+    if resets_at not in (None, ""):
+        rec["resets_at"] = str(resets_at).strip()
+    if error not in (None, ""):
+        rec["error"] = str(error).strip()
+    return rec
 
 
 def _used_from_remaining(remaining: Optional[int]) -> Optional[int]:
@@ -705,6 +712,10 @@ def normalize_go_windows(raw: object) -> dict[str, dict]:
         reset_label = str(reset).strip() if reset not in (None, "") else None
         fetched = src.get("fetched_at")
         fetched_at = str(fetched).strip() if fetched not in (None, "") else None
+        resets_raw = src.get("resets_at")
+        resets_at = str(resets_raw).strip() if resets_raw not in (None, "") else None
+        err_raw = src.get("error")
+        error = str(err_raw).strip() if err_raw not in (None, "") else None
         if provider or go_zen:
             rec = _window_record(
                 status,
@@ -712,6 +723,8 @@ def normalize_go_windows(raw: object) -> dict[str, dict]:
                 remaining_pct=rem,
                 reset_label=reset_label,
                 fetched_at=fetched_at,
+                resets_at=resets_at,
+                error=error,
             )
             rec["source"] = GO_ZEN_USAGE_SOURCE if go_zen else "provider"
             if src.get("limited") is not None:
@@ -726,6 +739,7 @@ def normalize_go_windows(raw: object) -> dict[str, dict]:
                 remaining_pct=None,
                 reset_label=None,
                 fetched_at=fetched_at,
+                error=error,
             )
         elif status == "exhausted":
             out[wid] = _window_record(
@@ -734,6 +748,8 @@ def normalize_go_windows(raw: object) -> dict[str, dict]:
                 remaining_pct=0 if rem is None else rem,
                 reset_label=reset_label,
                 fetched_at=fetched_at,
+                resets_at=resets_at,
+                error=error,
             )
         elif status in ("known", "stale"):
             out[wid] = _window_record(
@@ -742,9 +758,13 @@ def normalize_go_windows(raw: object) -> dict[str, dict]:
                 remaining_pct=rem,
                 reset_label=reset_label,
                 fetched_at=fetched_at,
+                resets_at=resets_at,
+                error=error,
             )
         else:
-            out[wid] = _window_record("unknown", fetched_at=fetched_at)
+            out[wid] = _window_record(
+                "unknown", fetched_at=fetched_at, error=error, resets_at=resets_at
+            )
     return out
 
 
@@ -1213,32 +1233,61 @@ def go_zen_usage_request_url(raw: str | None = None) -> str:
     return urllib.parse.urlunsplit((parts.scheme, parts.netloc, path, "", ""))
 
 
+def _epoch_ms_to_iso_z(epoch_ms: object) -> Optional[str]:
+    """Absolute UTC ISO for digest ``resets_at``. None when epoch is unusable."""
+    try:
+        ms = int(epoch_ms)
+    except (TypeError, ValueError):
+        return None
+    if ms <= 0:
+        return None
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(ms / 1000.0))
+
+
 def _go_zen_meter_to_window(meter: object, *, now_ms: int, fetched_at: str) -> dict:
     """Map one zen usage meter to a paint window. percent is USED (dashboard)."""
     if not isinstance(meter, dict):
-        rec = _window_record("unknown", fetched_at=fetched_at)
+        rec = _window_record(
+            "unknown",
+            fetched_at=fetched_at,
+            error="meter missing",
+        )
         rec["source"] = GO_ZEN_USAGE_SOURCE
         return rec
     used = _clamp_pct(meter.get("usagePercent"))
     if used is None:
         used = _clamp_pct(meter.get("percent"))
     if used is None:
-        rec = _window_record("unknown", fetched_at=fetched_at)
+        rec = _window_record(
+            "unknown",
+            fetched_at=fetched_at,
+            error="usage percent missing",
+        )
         rec["source"] = GO_ZEN_USAGE_SOURCE
         return rec
     status_raw = str(meter.get("status") or "").strip().lower()
     limited = status_raw in {"rate-limited", "limited", "exhausted"} or used >= 100
     status = "exhausted" if limited else "known"
     reset_label = None
+    resets_at_iso = None
+    epoch_ms = None
     if meter.get("resetInSec") is not None:
         try:
-            reset_label = reset_label_from_epoch_ms(
-                int(now_ms) + int(meter["resetInSec"]) * 1000, now_ms
-            )
+            epoch_ms = int(now_ms) + int(meter["resetInSec"]) * 1000
+            reset_label = reset_label_from_epoch_ms(epoch_ms, now_ms)
+            resets_at_iso = _epoch_ms_to_iso_z(epoch_ms)
         except (TypeError, ValueError):
             reset_label = None
-    if reset_label is None:
-        reset_label = reset_label_from_epoch_ms(meter.get("resetsAt"), now_ms)
+            resets_at_iso = None
+    if reset_label is None and meter.get("resetsAt") is not None:
+        epoch_ms = meter.get("resetsAt")
+        reset_label = reset_label_from_epoch_ms(epoch_ms, now_ms)
+        resets_at_iso = _epoch_ms_to_iso_z(epoch_ms)
+    # Never invent a reset. When the API omits it, leave null and say so.
+    reset_error = None
+    if reset_label is None and resets_at_iso is None:
+        if meter.get("resetInSec") is None and meter.get("resetsAt") is None:
+            reset_error = "reset unavailable"
     remaining = None if used is None else max(0, 100 - int(used))
     rec = _window_record(
         status,
@@ -1246,6 +1295,8 @@ def _go_zen_meter_to_window(meter: object, *, now_ms: int, fetched_at: str) -> d
         remaining_pct=remaining,
         reset_label=reset_label,
         fetched_at=fetched_at,
+        resets_at=resets_at_iso,
+        error=reset_error,
     )
     rec["source"] = GO_ZEN_USAGE_SOURCE
     rec["limited"] = limited

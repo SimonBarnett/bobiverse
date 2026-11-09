@@ -883,8 +883,7 @@ def list_worker_agents(
                 "fuel_state": "unknown",
                 "reason": "",
             }
-            if agent_id == "opencode":
-                row["models"] = opencode_model_menu_rows(fuel)
+            # FR #6301: no tray-facing OpenCode models submenu (OpenCode has /model).
             rows.append(row)
             continue
         dec = explicit_agent_decision(
@@ -898,8 +897,6 @@ def list_worker_agents(
             "fuel_state": "known",
             "reason": "",
         }
-        if agent_id == "opencode":
-            row["models"] = opencode_model_menu_rows(fuel)
         rows.append(row)
     return rows
 
