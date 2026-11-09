@@ -24,6 +24,10 @@ Auth: **none. No route needs a password or shared secret** (v0.1.16). Nothing to
 
 `GET /bob/v1/report` and `POST /bob/v1/report` `op=merge` accept optional machine scalar `grok_account` (string or null). Ear-owned: omit keeps the stored value; null / `cleared: ["grok_account"]` removes it. Not filled from peer files. Never include credentials in the payload.
 
+### Machine field `opencode_account` (FR #6301 / FR #6312)
+
+Same semantics as `grok_account`: optional string label or null on `op=merge`; `GET` returns it; omit keeps the stored value; null / `cleared: ["opencode_account"]` removes it. Ear-owned (not peer-filled). Never holds API key material. Per-window `opencode_windows.*.resets_at` and `error` are retained on merge/export (not dropped).
+
 
 Git hooks must target **`/bob/v1/git`**, never `/bob/v1/report`.
 
