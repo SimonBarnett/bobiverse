@@ -196,3 +196,35 @@ def test_docs_mention_off_thread_create():
     text = (REPO / "bob" / "docs" / "opencode-windows-readiness.md").read_text(encoding="utf-8")
     assert "FR #6328" in text
     assert "read thread" in text.lower() or "off the IRC" in text or "off-thread" in text.lower()
+
+def test_has_pending_work_true_while_worktree_creating():
+    relay = bw.Relay(log=lambda *_a, **_k: None)
+    with relay._lock:
+        relay._worktree_creating_keys.add("fr simonbarnett/bobiverse#1")
+    assert relay.has_pending_work() is True
+    with relay._lock:
+        relay._worktree_creating_keys.clear()
+    assert relay.has_pending_work() is False
+
+
+def test_overflow_flush_uses_classify_ensure_not_legacy_block_only(tmp_path: Path):
+    """Production OpenCode clears opencode_job_block; overflow must still ensure."""
+    env = {"BOB_JOB_WORKTREE_BASE": str(tmp_path / "worktrees")}
+    written: list[str] = []
+    injected: list[str] = []
+    relay = bw.Relay(log=lambda *_a, **_k: None, outbox_path=tmp_path / "outbox.txt")
+    relay.write_outbox = lambda text: written.append(text) or True
+    relay.set_target(lambda line: injected.append(line) or True)
+    relay.opencode_job_classify = lambda line: c.opencode_job_context_nack(line, env)
+    relay.opencode_ensure_worktree = lambda line: c.opencode_job_context_nack_ready(
+        line, env, install_root=None
+    )
+    relay.opencode_job_block = None
+    line = bw.format_from(
+        "jeeves", "#marchhare", "marchhare-1: FR SimonBarnett/bobiverse#77 https://x"
+    )
+    relay._flush_opencode_overflow([line])
+    assert injected == []
+    assert any("worktree-create-failed:no-clone" in item for item in written)
+    assert not any(item.startswith("ACK ") for item in written)
+

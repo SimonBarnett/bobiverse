@@ -4696,7 +4696,8 @@ class Relay:
             self._sent.append(self.clock())
         if not items:
             return
-        if self.opencode_job_block:
+        # FR #6328: production OpenCode binds classify/ensure and clears legacy block.
+        if self.opencode_job_block or self.opencode_job_classify:
             self._flush_opencode_overflow(items)
             return
         joined = " | ".join(i[5:] if i.startswith("FROM ") else i for i in items)
@@ -4729,11 +4730,25 @@ class Relay:
                 self._write_nacks(nacks)
                 self._note_context_refused(line)
                 return
-            nack = self._job_context_nack(line)
-            if nack:
-                self._write_nacks(nack)
-                self._note_context_refused(line)
-                return
+            # Timer thread (not IRC read): classify then ensure sync when absent.
+            if self.opencode_job_classify:
+                nack = self._job_context_classify(line)
+                if nack and is_worktree_absent_nack(nack) and self.opencode_ensure_worktree:
+                    try:
+                        nack = (self.opencode_ensure_worktree(line) or "").strip()
+                    except Exception:
+                        job = assign_job_key(line) or "job"
+                        nack = f"NACK {job} worktree-create-failed:unknown (FR #6240)"
+                if nack:
+                    self._write_nacks(nack)
+                    self._note_context_refused(line)
+                    return
+            else:
+                nack = self._job_context_nack(line)
+                if nack:
+                    self._write_nacks(nack)
+                    self._note_context_refused(line)
+                    return
             self._ack_on_receipt(line)
             self._do_inject(line)
             return
@@ -4891,13 +4906,16 @@ class Relay:
         return n
 
     def has_pending_work(self) -> bool:
-        """FR #3192: True while an undelivered/unacked assign is parked in the relay.
+        """FR #3192 / #6328: True while an undelivered/unacked assign is parked in the relay.
 
-        Covers ``held`` (no inject target), ``held_until_turn_end``, ``inject_failed``, and
-        coalesced overflow lines that still look like Jeeves assigns — so BoredEmitter must
+        Covers ``held`` (no inject target), ``held_until_turn_end``, ``inject_failed``,
+        coalesced overflow lines that still look like Jeeves assigns, and in-flight
+        OpenCode worktree creates (``_worktree_creating_keys``) — so BoredEmitter must
         not post ``!bored`` until the seat has consumed the assign (or it is dropped).
         """
         with self._lock:
+            if self._worktree_creating_keys:
+                return True
             for line in self._pending:
                 if assign_job_ref(line):
                     return True
