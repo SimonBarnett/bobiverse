@@ -52,6 +52,30 @@ def assert_ear_gitclaim_contract(mod=None) -> None:
         )
 
 
+_EAR_UNREGISTER_CMD_REQUIRED = (
+    "parse_chanserv_register_result",
+    "parse_chanserv_unregister_confirm",
+)
+
+
+def assert_ear_unregister_cmd_contract(mod=None) -> None:
+    """Raise when unregister_cmd lacks ChanServ NOTICE helpers (FR #6282 reopen)."""
+    import unregister_cmd as _uc
+
+    m = mod if mod is not None else _uc
+    missing = [n for n in _EAR_UNREGISTER_CMD_REQUIRED if not callable(getattr(m, n, None))]
+    if missing:
+        raise RuntimeError(
+            "FR #6282 unregister_cmd contract missing: " + ", ".join(missing)
+        )
+
+
+def assert_ear_dispatch_contracts() -> None:
+    """Startup contract for ear message-dispatch helpers (FR #6282)."""
+    assert_ear_gitclaim_contract()
+    assert_ear_unregister_cmd_contract()
+
+
 class _InstallScriptOverlay:
     """Meta path finder: overlay an allowlisted module, never the whole scripts dir."""
 
@@ -1866,7 +1890,13 @@ class Client:
                 self._finish_register_fail(shop, mid, who, reason)
 
     def _on_chanserv_notice(self, text: str) -> None:
-        kind, shop = unregister_cmd.parse_chanserv_register_result(text)
+        # FR #6282 reopen: soft-skip when flat unregister_cmd is missing parse helpers
+        # (startup contract should have refused; keep reader alive if we still get here).
+        parse_reg = getattr(unregister_cmd, "parse_chanserv_register_result", None)
+        if not callable(parse_reg):
+            info("WARN chanserv-notice skipped: unregister_cmd.parse_chanserv_register_result missing")
+            return
+        kind, shop = parse_reg(text)
         pending_map = getattr(self, "_cs_register_wait", None) or {}
         if pending_map and kind in ("ok", "fail"):
             shop_l = (shop or "").lower()
@@ -1885,10 +1915,15 @@ class Client:
                     reason = (text or "ChanServ REGISTER failed").strip()[:200]
                     self._finish_register_fail(shop_use, mid, who, reason)
         # FR #4008: ChanServ UNREGISTER verification-code round-trip
-        conf = unregister_cmd.parse_chanserv_unregister_confirm(text)
+        parse_unreg = getattr(unregister_cmd, "parse_chanserv_unregister_confirm", None)
+        conf = parse_unreg(text) if callable(parse_unreg) else None
         if conf:
             shop, code = conf
-            asker = self._cs_unregister_wait.pop(shop.lower(), None)
+            wait = getattr(self, "_cs_unregister_wait", None)
+            if not isinstance(wait, dict):
+                wait = {}
+                self._cs_unregister_wait = wait
+            asker = wait.pop(shop.lower(), None)
             self.send(f"PRIVMSG ChanServ :UNREGISTER {shop} {code}")
             info(f"INFO unregister ChanServ confirm shop={shop} asker={asker or '?'}")
         col = self._cs_collector
@@ -4406,16 +4441,67 @@ class Client:
             info(f"INFO file DONE id={msg_id} fail")
         return True
 
+    def _log_dispatch_error(
+        self,
+        name: str,
+        exc: BaseException,
+        *,
+        cmd: str = "",
+        src: str = "",
+        target: str = "",
+    ) -> None:
+        """FR #6282 reopen: log full redacted traceback; never raise; never log body."""
+        try:
+            tb = traceback.format_exception(type(exc), exc, exc.__traceback__)
+            blob = "".join(tb)
+            try:
+                import crash_report
+
+                blob = crash_report.redact(blob)
+            except Exception:
+                pass
+            at = "?"
+            try:
+                frames = traceback.extract_tb(exc.__traceback__) or []
+                for fr in reversed(frames):
+                    p = (fr.filename or "").replace(chr(92), "/")
+                    if "/site-packages/" in p or p.endswith("threading.py"):
+                        continue
+                    at = f"{fr.name}:{Path(fr.filename).name}:{fr.lineno}"
+                    break
+                if at == "?" and frames:
+                    fr = frames[-1]
+                    at = f"{fr.name}:{Path(fr.filename).name}:{fr.lineno}"
+            except Exception:
+                at = "?"
+            info(
+                f"irc-handler-error hook={name} at={at} cmd={cmd or '-'} "
+                f"src={src or '-'} target={target or '-'} exc={type(exc).__name__}"
+            )
+            info(f"ERROR handler={name} {type(exc).__name__}: {exc}")
+            for line in blob.strip().splitlines():
+                info(f"ERROR handler={name} | {line}")
+        except Exception:
+            try:
+                info(f"irc-handler-error hook={name} exc={type(exc).__name__}")
+            except Exception:
+                pass
+
     def _call_handler(self, name: str, fn, *args, **kwargs):
         """FR #6282: never let one message handler kill the IRC reader session."""
+        meta = kwargs.pop("_dispatch_meta", None) or {}
         try:
             return fn(*args, **kwargs)
         except Exception as exc:  # noqa: BLE001 - dispatch boundary
-            info(
-                f"ERROR handler={name} {type(exc).__name__}: {exc}"
+            # Always unbound Client method so bare test doubles still work.
+            Client._log_dispatch_error(
+                self,
+                name,
+                exc,
+                cmd=str(meta.get("cmd") or ""),
+                src=str(meta.get("src") or ""),
+                target=str(meta.get("target") or ""),
             )
-            for line in traceback.format_exc().strip().splitlines():
-                info(f"ERROR handler={name} | {line}")
             return None
 
     def reader(self) -> None:
@@ -4526,23 +4612,58 @@ class Client:
                         if cmd == "ERROR" and is_connect_throttle(detail):
                             self._throttled = True
                     if cmd == "NOTICE" and prefix.split("!", 1)[0].lower() == "chanserv":
-                        try:
-                            self._on_chanserv_notice(trailing)
-                        except Exception as exc:  # never kill the reader over a mirror bug
-                            info(f"INFO chanserv-sync notice error {type(exc).__name__}")
+                        # FR #6282 reopen: same isolation + full traceback as PRIVMSG.
+                        self._call_handler(
+                            "chanserv_notice",
+                            self._on_chanserv_notice,
+                            trailing,
+                            _dispatch_meta={
+                                "cmd": "NOTICE",
+                                "src": prefix.split("!", 1)[0],
+                                "target": (parts[1] if len(parts) > 1 else ""),
+                            },
+                        )
                     if cmd in ("381", "464", "491", "481", "221") or (cmd == "MODE" and len(parts) > 2 and not parts[1].startswith("#")):
-                        self._on_oper_numeric(cmd, parts, trailing)
+                        self._call_handler(
+                            "oper_numeric",
+                            self._on_oper_numeric,
+                            cmd,
+                            parts,
+                            trailing,
+                            _dispatch_meta={"cmd": cmd, "src": prefix.split("!", 1)[0]},
+                        )
                     if cmd in ("353", "MODE"):
-                        self._on_chair_channel_line(cmd, parts, trailing)
+                        self._call_handler(
+                            "chair_channel_line",
+                            self._on_chair_channel_line,
+                            cmd,
+                            parts,
+                            trailing,
+                            _dispatch_meta={"cmd": cmd},
+                        )
                     if cmd in ("353", "366", "JOIN", "PART", "KICK", "QUIT", "NICK", "ACCOUNT", "MODE", "330", "318") or (
                         cmd == "PRIVMSG" and "account" in tags
                     ):
-                        self._chair_wire(cmd, parts, trailing, prefix, tags)
+                        self._call_handler(
+                            "chair_wire",
+                            self._chair_wire,
+                            cmd,
+                            parts,
+                            trailing,
+                            prefix,
+                            tags,
+                            _dispatch_meta={"cmd": cmd, "src": prefix.split("!", 1)[0]},
+                        )
                     if cmd in ("JOIN", "366", "MODE"):
-                        try:
-                            self._on_register_presence_line(cmd, parts, trailing, prefix)
-                        except Exception as exc:
-                            info(f"INFO register-join {type(exc).__name__}")
+                        self._call_handler(
+                            "register_presence",
+                            self._on_register_presence_line,
+                            cmd,
+                            parts,
+                            trailing,
+                            prefix,
+                            _dispatch_meta={"cmd": cmd},
+                        )
                     if cmd == "001":
                         self.ready.set()
 
@@ -4575,7 +4696,14 @@ class Client:
 
                     if cmd == "404":
                         # FR #3868: ERR_CANNOTSENDTOCHAN — outbox !assign to a channel we left.
-                        self._on_cannot_send_numeric(cmd, parts, trailing)
+                        self._call_handler(
+                            "cannot_send",
+                            self._on_cannot_send_numeric,
+                            cmd,
+                            parts,
+                            trailing,
+                            _dispatch_meta={"cmd": cmd},
+                        )
 
                     if cmd == "JOIN":
                         ch = parts[1].lstrip(":") if len(parts) > 1 else ""
@@ -4584,18 +4712,35 @@ class Client:
                         joiner = prefix.split("!", 1)[0].lstrip(":") if prefix else ""
                         if joiner:
                             for one in bobreport.expand_join_channels(ch):
-                                self.handle_join(joiner, one)
+                                self._call_handler(
+                                    "handle_join",
+                                    self.handle_join,
+                                    joiner,
+                                    one,
+                                    _dispatch_meta={"cmd": "JOIN", "src": joiner, "target": one},
+                                )
                     if cmd == "PART":
                         ch = parts[1].lstrip(":") if len(parts) > 1 else ""
                         if not ch and trailing:
                             ch = trailing
                         who = prefix.split("!", 1)[0].lstrip(":") if prefix else ""
                         if who:
-                            self.handle_part(who, ch)
+                            self._call_handler(
+                                "handle_part",
+                                self.handle_part,
+                                who,
+                                ch,
+                                _dispatch_meta={"cmd": "PART", "src": who, "target": ch},
+                            )
                     if cmd == "QUIT":
                         who = prefix.split("!", 1)[0].lstrip(":") if prefix else ""
                         if who:
-                            self.handle_quit(who)
+                            self._call_handler(
+                                "handle_quit",
+                                self.handle_quit,
+                                who,
+                                _dispatch_meta={"cmd": "QUIT", "src": who},
+                            )
                     if cmd in ("433", "432"):
                         if self.live_nick == self.original_nick:
                             # Fleet Bob-* ears: do not silently fall back to _l when the
@@ -4627,8 +4772,19 @@ class Client:
                     if trailing and "nickname is reserved" in trailing.lower():
                         self._nickname_reserved = True
                         info(f"INFO NICKNAME_RESERVED {trailing.strip()[:180]}")
-                    for line in self.sasl_on_line(cmd, parts[1:], trailing):
-                        self.send(line)
+                    def _sasl_lines():
+                        return self.sasl_on_line(cmd, parts[1:], trailing)
+
+                    sasl_out = self._call_handler(
+                        "sasl_on_line",
+                        _sasl_lines,
+                        _dispatch_meta={"cmd": cmd},
+                    )
+                    for line in sasl_out or []:
+                        try:
+                            self.send(line)
+                        except OSError:
+                            pass
                     if cmd == "PRIVMSG" and " :" in wire:
                         target = parts[1].lstrip(":") if len(parts) > 1 else ""
                         self._call_handler(
@@ -4637,8 +4793,16 @@ class Client:
                             prefix,
                             target,
                             wire.split(" :", 1)[1],
+                            _dispatch_meta={
+                                "cmd": "PRIVMSG",
+                                "src": prefix.split("!", 1)[0],
+                                "target": target,
+                            },
                         )
         except OSError:
+            return
+        except Exception as exc:  # noqa: BLE001 - FR #6282 reopen: never kill silently
+            self._log_dispatch_error("reader", exc, cmd="line")
             return
         finally:
             self.dead.set()
@@ -4862,10 +5026,17 @@ class Client:
         if not self.joined.wait(30):
             self._abort_gate("NO JOIN")
         # FR #313: bob-* REGISTER #{machine} with ChanServ (founder persists).
-        self._maybe_register_shop_chanserv()
-        mid = self._local_machine_id()
-        if mid:
-            self._maybe_refresh_cursor_fuel(mid)
+        # FR #6282 reopen: never let register/fuel TypeError end the IRC session.
+        try:
+            self._maybe_register_shop_chanserv()
+        except Exception as exc:  # noqa: BLE001
+            self._log_dispatch_error("register_shop_chanserv", exc, cmd="REGISTER")
+        try:
+            mid = self._local_machine_id()
+            if mid:
+                self._maybe_refresh_cursor_fuel(mid)
+        except Exception as exc:  # noqa: BLE001
+            self._log_dispatch_error("refresh_cursor_fuel", exc, cmd="fuel")
         if self.args.hello:
             self.say(self.args.hello)
         if self.args.announce_key:
@@ -4917,10 +5088,16 @@ class Client:
                     backoff = max(backoff, NICKNAME_RESERVED_BACKOFF_S)
             except Exception as e:
                 info(f"INFO session end {type(e).__name__}")
+                # FR #6282 reopen: always log full traceback for session-end faults.
+                try:
+                    self._log_dispatch_error("session", e, cmd="session")
+                except Exception:
+                    for line in traceback.format_exc().strip().splitlines():
+                        info(f"ERROR session | {line}")
             try:
                 if self.sock:
                     self.sock.close()
-            except OSError:
+            except Exception:
                 pass
             self.sock = None
             if self._no_reconnect:
