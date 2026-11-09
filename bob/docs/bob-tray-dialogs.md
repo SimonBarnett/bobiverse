@@ -74,7 +74,7 @@ was drawn by mistake. It is gone from the exe and from the snapshot (`jobs_text`
 rows with workers `{irc nick}: {doing|idle}`, one Copilot pool tile, alert and version (FR #4938: no Cursor pool section; FR #5032: no
 "Grok accounts" heading).
 
-**Digest-only fleet Cursor/xAI weekly (FR #6267).** When a public digest is present, each machine row's remaining % comes from that machine's digest record (`weekly` / `cursor_pools` / `pcent`). Peer peek, peCache, and seat-min sharing must not paint a non-digest value (class of MarchHare showing `ntsa (43%)` while digest was 74%). Account label prefers digest `cursor_pools.account` (or `nick`) over hardcoded `bob-seats.json` labels such as `ntsa`. Missing digest weekly paints unknown — never silent local/bridge fallback and never unknown-as-zero. Offline pin: `bob/tests/test_fr6267_tray_digest_only_weekly.py`.
+**Digest-only fleet Cursor/xAI weekly (FR #6267).** When a public digest is present, **peer** machine rows take remaining % only from that machine's digest record (`weekly` / `cursor_pools` / `pcent`). Peer peek, peCache, and seat-min sharing must not paint a non-digest value (class of MarchHare showing `ntsa (43%)` while digest was 74%). The **local** row keeps a known `unified.jsonl` weekly when AgentMonitor#150 local-lock is set; seat-min must not overwrite that local reading with a peer digest min. Account label prefers digest `cursor_pools.account` (or `nick`) over hardcoded `bob-seats.json` labels such as `ntsa`. Missing digest weekly on a peer paints unknown — never silent local/bridge fallback and never unknown-as-zero. Offline pin: `bob/tests/test_fr6267_tray_digest_only_weekly.py`.
 
 
 ## Copilot freshness (FR #6148) + historical-max % (FR #6215)

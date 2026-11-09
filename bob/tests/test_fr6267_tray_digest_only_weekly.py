@@ -36,6 +36,10 @@ def test_fr6267_helpers_and_digest_lock_pins():
     peek = h[h.index("Read-BobPeerPeek") : h.index("Durable fallback: seat-period-end.json")]
     assert "digestWeeklyLocked" in peek
     assert "FR #6267" in peek
+    # Seat-min must not paint a peer digest min onto a known local weekly (AgentMonitor#150).
+    seat_min = h[h.index("Same xAI seat => one shared remaining %") : h.index("Durable fallback: seat-period-end.json")]
+    assert "never seat-min a peer digest % onto a known local weekly" in seat_min
+    assert "if ($smid -eq $machineId -and $localWeeklyLocked) { continue }" in seat_min
     # peCache peer fill gated when digest present / locked.
     pec = h[h.index("Durable fallback: seat-period-end.json") : h.index("t785u: this host")]
     assert "FR #6267" in pec
@@ -73,6 +77,11 @@ def test_fr6267_digest_74_beats_local_or_peek_43(tmp_path: Path):
             $seat = [pscustomobject]@{{ id = 'ntsa'; label = 'ntsa'; email = 'si@ntsa.uk' }}
             $label = Resolve-BobTrayDigestAccountLabel -DigestEnt $ent -SeatInfo $seat
             if ($label -ne 'bob-marchhare') {{ throw ("label={{0}}" -f $label) }}
+            # Seat-min apply guard: local lock must skip overwrite (pin source phrase).
+            $hover = Get-Content -LiteralPath '{HOVER}' -Raw
+            if ($hover -notmatch 'never seat-min a peer digest % onto a known local weekly') {{
+                throw 'missing local seat-min guard comment'
+            }}
             Write-Output 'ok'
             """
         ).strip()
