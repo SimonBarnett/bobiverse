@@ -2967,24 +2967,13 @@ function Get-BobTrayHover {
     # peer peek / peCache / seat-min must not paint a non-digest % over them.
     $digestWeeklyLocked = @{}
     $digestPresent = [bool]$reportDigest
+    # Local unified.jsonl still feeds worker fuel selection / seat period cache elsewhere.
+    # FR #6285 CAST IRON: never seed TipForm/Status weeklyBy / remainPct / paint from it
+    # (digest present or absent). Missing digest => clear 'no reading', never a local %.
     $week = Get-BobWeeklyRemaining
     $remainPct = $null
     $weekFetched = $null
-    # FR #6285: TipForm/Status xAI weekly DISPLAY is digest xai_weekly only (including
-    # this host). Local unified.jsonl still feeds worker fuel selection elsewhere, but
-    # must not seed weeklyBy / paint when a digest is present.
-    $localWeeklyLocked = [bool]$week
-    if (-not $digestPresent) {
-        if ($week -and (Test-BobTrayRemainingKnown $week.remaining_pct)) {
-            $remainPct = [int]$week.remaining_pct
-            $weekFetched = [string]$week.fetched_at
-            $weeklyBy[$machineId] = $remainPct
-            if ($weekFetched) { $weekFetchedBy[$machineId] = $weekFetched }
-        }
-        if ($week -and $week.period_end) {
-            $periodEndBy[$machineId] = [string]$week.period_end
-        }
-    }
+    $localWeeklyLocked = $false
     if ($week) {
         Save-BobSeatPeriodEnd -MachineId $machineId -PeriodEnd $(if ($week.period_end) { [string]$week.period_end } else { $null }) -Weekly $(if ($null -ne $week.remaining_pct -and (Test-BobTrayRemainingKnown $week.remaining_pct)) { [int]$week.remaining_pct } else { $null }) -ClearWeekly:([bool]$week.stale)
     }
@@ -2997,11 +2986,8 @@ function Get-BobTrayHover {
         if ($null -eq $pct) { continue }
         if ($src -eq 'grok-build' -and $mac) {
             # FR #6285 / #5047: digespcent grok-build is not digest xai_weekly --- never paint
-            # peer or local TipForm xAI rows from pcent when a digest is present.
-            if ($digestPresent) { continue }
-            if ($mac -eq $machineId -and $localWeeklyLocked) { continue }
-            if ($mac -ne $machineId) { continue }
-            $weeklyBy[$mac] = $pct
+            # TipForm xAI rows from pcent (digest present or absent).
+            continue
         }
     }
     # HTTP digest machine.weekly -> Grok tiles (#179). 0% is valid for peers.
@@ -3067,6 +3053,13 @@ function Get-BobTrayHover {
                 Save-BobSeatPeriodEnd -MachineId $mac -PeriodEnd $(if ($wr.period_end) { [string]$wr.period_end } else { $null }) -Weekly $pct
             }
         } catch { }
+    }
+    # FR #6285: hover/alert remainPct from digest xai_weekly for this host only when fresh.
+    if ($digestPresent -and $weeklyBy.ContainsKey($machineId) -and $null -ne $weeklyBy[$machineId]) {
+        if (-not ($fuelStaleBy.ContainsKey($machineId) -and $fuelStaleBy[$machineId])) {
+            $remainPct = [int]$weeklyBy[$machineId]
+            if ($weekFetchedBy.ContainsKey($machineId)) { $weekFetched = [string]$weekFetchedBy[$machineId] }
+        }
     }
     $cursorWeek = $null
     $cursorRemain = $null
@@ -3539,80 +3532,74 @@ function Get-BobTrayHover {
         $acct = ''
         $srcMeter = ''
         $absReset = ''
-        # FR #6285: paint heading from digest xai_weekly only when digest is present.
-        $xaiRow = $null
+        # FR #6285: always paint via Format-BobTrayXaiWeeklyRow (digest xai_weekly or null).
+        # Never Format-BobPeerPoolHeading / local Get-BobWeeklyRemaining for this section.
+        $xaiMeter = $null
+        $noReadWhy = 'no digest'
         if ($digestPresent) {
-            $xaiMeter = $null
+            $noReadWhy = 'digest xai_weekly null'
             if ($meter) { try { $xaiMeter = $meter.xai_weekly } catch { $xaiMeter = $null } }
             if ($null -eq $xaiMeter -and $digestEnt) {
                 $xaiMeter = Select-BobTrayXaiWeeklyFromDigestNode -Node $digestEnt
             }
-            $xaiRow = Format-BobTrayXaiWeeklyRow -MachineId $mid -XaiWeekly $xaiMeter
-            $wPct = $xaiRow.remaining_pct
-            $fuelStale = [bool]$xaiRow.fuel_stale
-            $tileReset = $xaiRow.reset_label
-            $acct = $(if ($xaiRow.account) { [string]$xaiRow.account } else { '' })
-            $absReset = $(if ($xaiRow.period_end) { [string]$xaiRow.period_end } else { '' })
-            $srcMeter = 'digest-xai_weekly'
-            $prov = 'xai'
-            $win = 'weekly'
-            $dir = 'remaining'
-            $tile.remaining_pct = $wPct
-            $tile.fuel_stale = $fuelStale
-            $tile.reset_label = $tileReset
-            $tile.weekly_source = 'digest-xai_weekly'
-        } elseif ($meter -and $meter.provider -and $meter.direction) {
-            $prov = [string]$meter.provider
-            $dir = [string]$meter.direction
-            $win = ''
-            try { if ($meter.window) { $win = [string]$meter.window } } catch { }
-            if ($meter.used_pct -ne $null -and [string]$meter.used_pct -ne '') { $usedP = $meter.used_pct }
-            if ($meter.account) { $acct = [string]$meter.account }
-            if ($meter.source) { $srcMeter = [string]$meter.source }
-            if ($meter.period_end) { $absReset = [string]$meter.period_end }
-        } elseif ($mid -eq $machineId -and $week -and $week.source) {
-            $prov = 'xai'
-            $win = 'weekly'
-            try { if ($week.kind) { $win = [string]$week.kind } } catch { }
-            $dir = 'remaining'
-            $usedP = $week.used_pct
-            $srcMeter = [string]$week.source
-            if ($week.period_end) { $absReset = [string]$week.period_end }
+            # Peer age / missing fetched_at can force stale even when xai_weekly.fresh is true.
+            if ($xaiMeter -and $fuelStaleBy.ContainsKey($mid) -and $fuelStaleBy[$mid]) {
+                try {
+                    $forceStale = [ordered]@{}
+                    foreach ($p in @($xaiMeter.PSObject.Properties)) { $forceStale[$p.Name] = $p.Value }
+                    $forceStale['fresh'] = $false
+                    if (-not $forceStale.Contains('age_s') -or $null -eq $forceStale['age_s']) {
+                        if ($fuelAgeBy.ContainsKey($mid)) { $forceStale['age_s'] = [int]$fuelAgeBy[$mid] }
+                    }
+                    $xaiMeter = [pscustomobject]$forceStale
+                } catch { }
+            }
         }
-        $tile | Add-Member -NotePropertyName provider -NotePropertyValue $(if ($prov) { $prov } else { $null }) -Force
-        $tile | Add-Member -NotePropertyName window -NotePropertyValue $(if ($win) { $win } else { $null }) -Force
-        $tile | Add-Member -NotePropertyName direction -NotePropertyValue $(if ($dir) { $dir } else { $null }) -Force
+        $xaiRow = Format-BobTrayXaiWeeklyRow -MachineId $mid -XaiWeekly $xaiMeter -NoReadingReason $noReadWhy
+        $wPct = $xaiRow.remaining_pct
+        $fuelStale = [bool]$xaiRow.fuel_stale
+        if ($fuelStaleBy.ContainsKey($mid) -and $fuelStaleBy[$mid]) { $fuelStale = $true }
+        $tileReset = $xaiRow.reset_label
+        $acct = $(if ($xaiRow.account) { [string]$xaiRow.account } else { '' })
+        $absReset = $(if ($xaiRow.period_end) { [string]$xaiRow.period_end } else { '' })
+        $srcMeter = $(if ($digestPresent) { 'digest-xai_weekly' } else { 'none' })
+        $prov = 'xai'
+        $win = 'weekly'
+        $dir = 'remaining'
+        if ($xaiMeter -and $null -ne $xaiMeter.used_pct -and [string]$xaiMeter.used_pct -ne '') {
+            $usedP = $xaiMeter.used_pct
+        }
+        $tile.remaining_pct = $wPct
+        $tile.fuel_stale = $fuelStale
+        $tile.reset_label = $tileReset
+        $tile.weekly_source = $srcMeter
+        $tile | Add-Member -NotePropertyName provider -NotePropertyValue $prov -Force
+        $tile | Add-Member -NotePropertyName window -NotePropertyValue $win -Force
+        $tile | Add-Member -NotePropertyName direction -NotePropertyValue $dir -Force
         $tile | Add-Member -NotePropertyName used_pct -NotePropertyValue $usedP -Force
         $tile | Add-Member -NotePropertyName meter_account -NotePropertyValue $(if ($acct) { $acct } else { $null }) -Force
-        $tile | Add-Member -NotePropertyName meter_source -NotePropertyValue $(if ($srcMeter) { $srcMeter } else { $null }) -Force
+        $tile | Add-Member -NotePropertyName meter_source -NotePropertyValue $srcMeter -Force
         $tile | Add-Member -NotePropertyName period_end_absolute -NotePropertyValue $(if ($absReset) { $absReset } else { $null }) -Force
-        $seatLab = ''
-        if ($digestSeatLabel) { $seatLab = [string]$digestSeatLabel }
-        elseif ($seatInfo -and $seatInfo.label) { $seatLab = [string]$seatInfo.label }
-        if (-not $acct -and $digestSeatLabel -and -not $digestPresent) { $acct = [string]$digestSeatLabel }
-        if ($xaiRow) {
-            $machHeading = [string]$xaiRow.heading
-            $tile | Add-Member -NotePropertyName pool_heading -NotePropertyValue $machHeading -Force
-            $tile | Add-Member -NotePropertyName bar_pct -NotePropertyValue $xaiRow.bar_pct -Force
-        } else {
-            if (-not $srcMeter -and $weeklySource -eq 'digest-xai_weekly') { $srcMeter = 'digest-xai_weekly' }
-            $machHeading = Format-BobPeerPoolHeading -MachineId $mid -SeatLabel $seatLab -RemainingPct $wPct `
-                -ResetLabel $(if ($tileReset) { [string]$tileReset } else { '' }) -FuelStale $fuelStale `
-                -Provider $prov -Window $win -Direction $dir -UsedPct $usedP -Account $acct `
-                -PeriodEnd $absReset -Source $srcMeter
-            if (-not $prov -and $tileAvail -and $null -eq $wPct -and -not $fuelStale) {
-                $machHeading = ('{0} [{1}]' -f $machHeading, $tileAvail)
-            }
-            $tile | Add-Member -NotePropertyName pool_heading -NotePropertyValue $machHeading -Force
-            $tile | Add-Member -NotePropertyName bar_pct -NotePropertyValue $(if ($fuelStale) { $null } else { $wPct }) -Force
-        }
+        $machHeading = [string]$xaiRow.heading
+        $barPct = $xaiRow.bar_pct
+        if ($fuelStale) { $barPct = $null }
+        $tile | Add-Member -NotePropertyName pool_heading -NotePropertyValue $machHeading -Force
+        $tile | Add-Member -NotePropertyName bar_pct -NotePropertyValue $barPct -Force
         $jobLines += ('  {0}' -f $machHeading)
         # FR #352: TipForm/tooltip --- out of tokens, open with key.
-        # Grok Build exhaustion only (explicit remaining_pct=0 or availability=exhausted).
+        # Grok Build exhaustion only (explicit remaining_pct=0, availability=exhausted,
+        # or digest out_of_tokens / status=out_of_fuel). Null meter still keeps the hint.
         # Never Cursor Sand / pcent.grok-chat (those are Spending bars, not xAI weekly).
         $outOfTokens = $false
         if ($tileAvail -eq 'exhausted') { $outOfTokens = $true }
         elseif ($null -ne $wPct -and [int]$wPct -le 0) { $outOfTokens = $true }
+        elseif ($meter -and $meter.out_of_tokens) { $outOfTokens = $true }
+        else {
+            try {
+                $mst = [string]$meter.status
+                if ($mst -match '(?i)out[_-]?of[_-]?fuel|out[_-]?of[_-]?tokens') { $outOfTokens = $true }
+            } catch { }
+        }
         if ($outOfTokens) {
             $jobLines += '    out of tokens, open with key'
             $tile | Add-Member -NotePropertyName out_of_tokens -NotePropertyValue $true -Force

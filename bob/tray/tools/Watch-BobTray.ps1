@@ -2811,11 +2811,9 @@ function Rebuild-BobTrayTiles {
         # FR #4938: Cursor spending-group bars removed after account unification.
         # FR #5032: no "Grok accounts" heading --- every row is a Grok pool; optional overspend only.
         # FR #6149: fuel-family logos (text fallback when asset missing).
-        # FR #6285: section heading is 'xAI weekly' only (Cursor is not mixed into this title).
+        # FR #6285: section heading is exactly 'xAI weekly' (never Cursor AccountLabel/AccountName).
         # Per-machine rows below are painted from digest xai_weekly only.
         $sharedTitle = 'xAI weekly'
-        if ($AccountLabel) { $sharedTitle = ('xAI weekly - {0}' -f [string]$AccountLabel) }
-        elseif ($AccountName) { $sharedTitle = ('xAI weekly - {0}' -f [string]$AccountName) }
         $y = Add-BobTrayFuelFamilyRow -X 0 -Y $y -Family 'xai' -Title $sharedTitle -RightText $null
         $ocRight = $null
         $ocTitle = 'OpenCode'
