@@ -10987,6 +10987,73 @@ def enqueue_open_github_item(
     return "refused", f"enqueue {changed}"
 
 
+
+def assign_refusal_outcome_token(reason: str) -> str:
+    """Stable grep token for !assign refuse paths (FR #6348)."""
+    r = str(reason or "").lower()
+    if "accepted by live seat" in r:
+        return "accepted_by_seat"
+    if "not in the unaccepted queue" in r:
+        return "not_queued_skipped"
+    if "superseded" in r:
+        return "superseded_by_pr"
+    if "busy (" in r or ": busy (" in r:
+        return "busy"
+    if "cooldown" in r:
+        return "cooldown"
+    return "other"
+
+
+def format_assign_refusal_log(
+    *,
+    nick: str,
+    worker: str,
+    repo: str,
+    ident: str,
+    task: str,
+    reason: object,
+    redact_fn=None,
+) -> str:
+    """Full single-line stdout log for !assign refuse (FR #6348).
+
+    Never truncates. Embedded newlines become spaces. Reason text is redacted
+    with ``crash_report.redact`` (or *redact_fn*) before emit.
+    """
+    raw = str(reason if reason is not None else "")
+    nl = chr(10)
+    cr = chr(13)
+    flat = " ".join(
+        part.strip()
+        for part in raw.replace(cr + nl, nl).replace(cr, nl).split(nl)
+    )
+    flat = " ".join(flat.split())
+    if redact_fn is None:
+        try:
+            from crash_report import redact as _redact
+
+            redact_fn = _redact
+        except Exception:  # noqa: BLE001
+            def _identity(s: str) -> str:
+                return s
+
+            redact_fn = _identity
+    try:
+        flat = str(redact_fn(flat))
+    except Exception:  # noqa: BLE001
+        pass
+    token = assign_refusal_outcome_token(flat)
+    ident_s = str(ident or "").strip()
+    if ident_s and not ident_s.startswith("#"):
+        ident_s = f"#{ident_s}"
+    repo_s = str(repo or "").strip()
+    task_s = str(task or "").strip().upper() or "?"
+    return (
+        f"INFO git-assign refused outcome={token} "
+        f"nick={nick} worker={worker} {repo_s}{ident_s} {task_s}: {flat}"
+    )
+
+
+
 def assign_row(
     home: Path,
     nick: str,
