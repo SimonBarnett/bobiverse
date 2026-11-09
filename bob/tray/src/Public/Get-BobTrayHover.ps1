@@ -146,6 +146,53 @@ function Resolve-BobSeatMateWeekly {
     return $null
 }
 
+function Select-BobTrayFleetWeeklyPct {
+    <#
+    .SYNOPSIS
+      FR #6267: when a digest is present, fleet Cursor/xAI weekly comes only from that
+      machine's digest record. Non-digest candidates (peer peek, peCache, bridge) never
+      paint a confident % and never fabricate zero for unknown.
+    #>
+    param(
+        $DigestWeeklyPct,
+        $NonDigestPct = $null,
+        [switch]$DigestPresent
+    )
+    if ($DigestPresent) {
+        if ($null -ne $DigestWeeklyPct -and (Test-BobTrayRemainingKnown $DigestWeeklyPct)) {
+            return [pscustomobject]@{ remaining_pct = [int]$DigestWeeklyPct; source = 'digest' }
+        }
+        return [pscustomobject]@{ remaining_pct = $null; source = 'none' }
+    }
+    if ($null -ne $NonDigestPct -and (Test-BobTrayRemainingKnown $NonDigestPct)) {
+        return [pscustomobject]@{ remaining_pct = [int]$NonDigestPct; source = 'fallback' }
+    }
+    return [pscustomobject]@{ remaining_pct = $null; source = 'none' }
+}
+
+function Resolve-BobTrayDigestAccountLabel {
+    <#
+    .SYNOPSIS
+      FR #6267: prefer digest cursor_pools.account (or nick) over bob-seats.json labels
+      such as hardcoded 'ntsa' when painting fleet Grok/xAI rows.
+    #>
+    param($DigestEnt, $SeatInfo = $null)
+    if ($DigestEnt) {
+        foreach ($row in @($DigestEnt.cursor_pools)) {
+            if (-not $row) { continue }
+            $acct = [string]$row.account
+            if ($acct) { return $acct }
+        }
+        $nick = [string]$DigestEnt.nick
+        if ($nick) { return $nick }
+    }
+    if ($SeatInfo) {
+        if ($SeatInfo.label) { return [string]$SeatInfo.label }
+        if ($SeatInfo.email) { return [string]$SeatInfo.email }
+    }
+    return $null
+}
+
 function Step-BobWeeklyPeriodForward {
     <#
     .SYNOPSIS
@@ -2657,6 +2704,10 @@ function Get-BobTrayHover {
     $weeklyBy = @{}
     $periodEndBy = @{}
     $weekFetchedBy = @{}
+    # FR #6267: machines whose live weekly came from the digest stay digest-only;
+    # peer peek / peCache / seat-min must not paint a non-digest % over them.
+    $digestWeeklyLocked = @{}
+    $digestPresent = [bool]$reportDigest
     $week = Get-BobWeeklyRemaining
     $remainPct = $null
     $weekFetched = $null
@@ -2739,6 +2790,8 @@ function Get-BobTrayHover {
         if ($sampleStale) {
             $fuelStaleBy[$mac] = $true
             $weeklyBy[$mac] = $pct
+            # FR #6267: digest sample still owns this machine; peek/peCache must not replace it.
+            $digestWeeklyLocked[$mac] = $true
             if ($wr.period_end) {
                 if (-not ($mac -eq $machineId -and $periodEndBy.ContainsKey($machineId))) {
                     $periodEndBy[$mac] = [string]$wr.period_end
@@ -2747,6 +2800,8 @@ function Get-BobTrayHover {
             continue
         }
         $weeklyBy[$mac] = $pct
+        # FR #6267: live digest weekly locks this machine against non-digest overwrite.
+        $digestWeeklyLocked[$mac] = $true
         if ($wr.period_end) {
             if (-not ($mac -eq $machineId -and $periodEndBy.ContainsKey($machineId))) {
                 $periodEndBy[$mac] = [string]$wr.period_end
@@ -2807,12 +2862,21 @@ function Get-BobTrayHover {
                 $periodEndBy[$mid] = [string]$peek.period_end
             }
         }
+        elseif ($digestPresent -or ($digestWeeklyLocked.ContainsKey($mid) -and $digestWeeklyLocked[$mid])) {
+            # FR #6267: digest-only fleet weekly --- peer peek must not paint 43% over digest 74%.
+            if ($peek.period_end -and -not ($periodEndBy.ContainsKey($mid) -and $periodEndBy[$mid])) {
+                $periodEndBy[$mid] = [string]$peek.period_end
+            }
+        }
         elseif ($null -ne $peek.weekly -and (Test-BobTrayRemainingKnown $peek.weekly)) {
-            $weeklyBy[$mid] = [int]$peek.weekly
-            if ($peek.period_end) { $periodEndBy[$mid] = [string]$peek.period_end }
-            try {
-                Save-BobSeatPeriodEnd -MachineId $mid -PeriodEnd $(if ($peek.period_end) { [string]$peek.period_end } else { $null }) -Weekly ([int]$peek.weekly)
-            } catch { }
+            $selPeek = Select-BobTrayFleetWeeklyPct -DigestWeeklyPct $null -NonDigestPct $peek.weekly -DigestPresent:$false
+            if ($null -ne $selPeek.remaining_pct) {
+                $weeklyBy[$mid] = [int]$selPeek.remaining_pct
+                if ($peek.period_end) { $periodEndBy[$mid] = [string]$peek.period_end }
+                try {
+                    Save-BobSeatPeriodEnd -MachineId $mid -PeriodEnd $(if ($peek.period_end) { [string]$peek.period_end } else { $null }) -Weekly ([int]$selPeek.remaining_pct)
+                } catch { }
+            }
         }
         elseif ($peek.period_end) {
             $periodEndBy[$mid] = [string]$peek.period_end
@@ -2884,11 +2948,13 @@ function Get-BobTrayHover {
 
     # Same xAI seat => one shared remaining % (account-level).
     # FR #5032: never copy a fuel-stale peer % onto another machine.
+    # FR #6267: never seat-min a non-digest % over a digest-locked machine (ntsa 43 over marchhare 74).
     foreach ($seat in @(Get-BobSeatConfig)) {
         $vals = @()
         foreach ($sm in @($seat.machines)) {
             $smid = [string]$sm
             if ($fuelStaleBy.ContainsKey($smid) -and $fuelStaleBy[$smid]) { continue }
+            if ($digestPresent -and -not ($digestWeeklyLocked.ContainsKey($smid) -and $digestWeeklyLocked[$smid])) { continue }
             if ($smid -and $weeklyBy.ContainsKey($smid) -and $null -ne $weeklyBy[$smid]) {
                 $vals += ,([int]$weeklyBy[$smid])
             }
@@ -2900,6 +2966,9 @@ function Get-BobTrayHover {
                 if (-not $smid) { continue }
                 if ($fuelStaleBy.ContainsKey($smid) -and $fuelStaleBy[$smid]) { continue }
                 if ($smid -eq $machineId -and $localWeeklyLocked -and -not $weeklyBy.ContainsKey($smid)) { continue }
+                # FR #6267: digest-locked peers keep their own digest % (no seat-min clobber).
+                if ($digestWeeklyLocked.ContainsKey($smid) -and $digestWeeklyLocked[$smid]) { continue }
+                if ($digestPresent -and $smid -ne $machineId) { continue }
                 $weeklyBy[$smid] = [int]$shared
             }
         }
@@ -2932,6 +3001,9 @@ function Get-BobTrayHover {
             if ($mid2 -eq $machineId -and $localWeeklyLocked) { continue }
             if ($fuelStaleBy.ContainsKey($mid2) -and $fuelStaleBy[$mid2]) { continue }
             if ($weeklyBy.ContainsKey($mid2) -and $null -ne $weeklyBy[$mid2]) { continue }
+            # FR #6267: with a digest present, peer weekly is digest-only (never peCache 43%).
+            if ($digestPresent -and $mid2 -ne $machineId) { continue }
+            if ($digestWeeklyLocked.ContainsKey($mid2) -and $digestWeeklyLocked[$mid2]) { continue }
             if ($peCache.weekly_by_machine.ContainsKey($mid2) -and $null -ne $peCache.weekly_by_machine[$mid2]) {
                 # FR #5032: durable cache must not resurrect a stale peer % as live.
                 # FR #5047: peer peCache without a known fresh lastSeen is fuel_stale (no confident live %).
@@ -2980,6 +3052,9 @@ function Get-BobTrayHover {
                 }
                 elseif ($null -ne $seatWeek) {
                     if ($smid -eq $machineId -and $localWeeklyLocked) { continue }
+                    # FR #6267: digest-only peers never take seat peCache weekly.
+                    if ($digestPresent -and $smid -ne $machineId) { continue }
+                    if ($digestWeeklyLocked.ContainsKey($smid) -and $digestWeeklyLocked[$smid]) { continue }
                     # FR #5047: seat peCache weekly must not paint peers without fresh lastSeen.
                     if ($smid -ne $machineId) {
                         if ($fuelStaleBy.ContainsKey($smid) -and $fuelStaleBy[$smid]) { continue }
@@ -3007,6 +3082,9 @@ function Get-BobTrayHover {
                     $smid = [string]$sm
                     if ($smid -eq $machineId -and $localWeeklyLocked) { continue }
                     if ($smid -and (-not $weeklyBy.ContainsKey($smid) -or $null -eq $weeklyBy[$smid])) {
+                        # FR #6267: digest-only peers never take seat peCache weekly.
+                        if ($digestPresent -and $smid -ne $machineId) { continue }
+                        if ($digestWeeklyLocked.ContainsKey($smid) -and $digestWeeklyLocked[$smid]) { continue }
                         # FR #5047: seat peCache weekly must not paint peers without fresh lastSeen.
                         if ($smid -ne $machineId) {
                             if ($fuelStaleBy.ContainsKey($smid) -and $fuelStaleBy[$smid]) { continue }
@@ -3152,6 +3230,18 @@ function Get-BobTrayHover {
         }
         # #60: this machine's pools + overspend from the digest machines.<id> (what its Bob POSTed).
         $dm = Get-BobTrayDigestMachineSummary -Digest $reportDigest -MachineId $mid
+        $digestEnt = $null
+        if ($reportDigest -and $reportDigest.machines) {
+            foreach ($dp in @($reportDigest.machines.PSObject.Properties)) {
+                if ([string]$dp.Name -ieq $mid) { $digestEnt = $dp.Value; break }
+            }
+        }
+        # FR #6267: prefer digest account (bob-marchhare) over bob-seats.json 'ntsa'.
+        $digestSeatLabel = Resolve-BobTrayDigestAccountLabel -DigestEnt $digestEnt -SeatInfo $seatInfo
+        $weeklySource = 'none'
+        if ($digestWeeklyLocked.ContainsKey($mid) -and $digestWeeklyLocked[$mid]) { $weeklySource = 'digest' }
+        elseif ($mid -eq $machineId -and $localWeeklyLocked -and $null -ne $wPct) { $weeklySource = 'local' }
+        elseif ($null -ne $wPct) { $weeklySource = 'fallback' }
         $tileWorkers = @(Get-BobTrayDigestWorkers -Digest $reportDigest -MachineId $mid)
         $tileWorkerLines = @($tileWorkers | ForEach-Object { Format-BobTrayWorkerLine -Worker $_ } | Where-Object { $_ })
         $tile = New-Object psobject -Property @{
@@ -3174,8 +3264,9 @@ function Get-BobTrayHover {
             fuel_stale           = $fuelStale
             up_since             = $upSince
             seat_id              = $(if ($seatInfo) { [string]$seatInfo.id } else { $null })
-            seat_label           = $(if ($seatInfo) { [string]$seatInfo.label } else { $null })
+            seat_label           = $(if ($digestSeatLabel) { [string]$digestSeatLabel } else { $null })
             seat_email           = $(if ($seatInfo) { [string]$seatInfo.email } else { $null })
+            weekly_source        = $weeklySource
         }
         $tiles += ,$tile
         $meter = $null
@@ -3215,7 +3306,10 @@ function Get-BobTrayHover {
         $tile | Add-Member -NotePropertyName meter_source -NotePropertyValue $(if ($srcMeter) { $srcMeter } else { $null }) -Force
         $tile | Add-Member -NotePropertyName period_end_absolute -NotePropertyValue $(if ($absReset) { $absReset } else { $null }) -Force
         $seatLab = ''
-        if ($seatInfo -and $seatInfo.label) { $seatLab = [string]$seatInfo.label }
+        if ($digestSeatLabel) { $seatLab = [string]$digestSeatLabel }
+        elseif ($seatInfo -and $seatInfo.label) { $seatLab = [string]$seatInfo.label }
+        if (-not $acct -and $digestSeatLabel) { $acct = [string]$digestSeatLabel }
+        if (-not $srcMeter -and $weeklySource -eq 'digest') { $srcMeter = 'digest' }
         $machHeading = Format-BobPeerPoolHeading -MachineId $mid -SeatLabel $seatLab -RemainingPct $wPct `
             -ResetLabel $(if ($tileReset) { [string]$tileReset } else { '' }) -FuelStale $fuelStale `
             -Provider $prov -Window $win -Direction $dir -UsedPct $usedP -Account $acct `
