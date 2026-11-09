@@ -326,6 +326,8 @@ class GitClaim:
     opened_by: str = ""
     # FR #4851: webhook sender (issues closed) for shop CANCEL "closed by <user>".
     actor: str = ""
+    # FR #6340: clean docs/mrb pin whose original is already merged/closed.
+    docs_mrb_orphan: bool = False
 
 
 def _utc_now() -> str:
@@ -869,6 +871,18 @@ def is_docs_mrb_pin_pr(
     if re.match(r"(?i)^docs/mrb-", (head_ref or "").strip()):
         return True
     return bool(re.match(r"(?i)^docs/mrb-\d+", (title or "").strip()))
+
+
+_DOCS_MRB_PARENT_RE = re.compile(r"(?i)^docs/mrb-(\d+)\b")
+
+
+def docs_mrb_pin_parent_pr_id(*, title: str = "", head_ref: str = "") -> str:
+    """Parent PR id ``#N`` from ``docs/mrb-N`` head/title, or empty (FR #6340)."""
+    for blob in ((head_ref or "").strip(), (title or "").strip()):
+        m = _DOCS_MRB_PARENT_RE.match(blob)
+        if m:
+            return f"#{m.group(1)}"
+    return ""
 
 
 def is_lesson_or_pin_pr(
@@ -2242,7 +2256,13 @@ def fr_is_superseded(
 
 
 
-def claim_from_payload(event: str, payload: dict, *, line: str = "") -> GitClaim | None:
+def claim_from_payload(
+    event: str,
+    payload: dict,
+    *,
+    line: str = "",
+    docs_mrb_parent_open=None,
+) -> GitClaim | None:
     """Build a claim from the GitHub webhook body. None if not a queue-driving event.
 
     issues opened/reopened -> FR (skipped for skill/harvest/safe-to-close/umbrella/closed ΓÇö FR #180)
@@ -2394,14 +2414,34 @@ def claim_from_payload(event: str, payload: dict, *, line: str = "") -> GitClaim
             title=title, body=body, labels=labels
         ):
             return None
-        # FR #5500: docs/mrb-* pin PRs never become MRB via webhook.
+        # FR #5500 / #6340: docs/mrb-* pin PRs skip webhook MRB while the original
+        # is still open. When the parent is already merged/closed, claim one MRB.
         _head = pr.get("head") if isinstance(pr.get("head"), dict) else {}
+        _docs_mrb_orphan_claim = False
         if action in ("opened", "ready_for_review", "edited", "synchronize") and is_docs_mrb_pin_pr(
             title=title,
             head_ref=str(_head.get("ref") or ""),
             labels=labels,
         ):
-            return None
+            parent = docs_mrb_pin_parent_pr_id(
+                title=title, head_ref=str(_head.get("ref") or "")
+            )
+            parent_open = True
+            if parent and docs_mrb_parent_open is not None:
+                try:
+                    parent_open = bool(docs_mrb_parent_open(repo, parent))
+                except Exception:  # noqa: BLE001
+                    parent_open = True
+            if parent_open or not parent:
+                return None
+            if is_lesson_of_lesson_pr(
+                title=title,
+                body=body,
+                labels=labels,
+                head_ref=str(_head.get("ref") or ""),
+            ):
+                return None
+            _docs_mrb_orphan_claim = True
         # bobiverse#224 / #781: FAIL-fix PRs never start a second MRB (open/ready only).
         if action in ("opened", "ready_for_review") and is_mrb_fix_pr_title(title):
             return None
@@ -2431,19 +2471,27 @@ def claim_from_payload(event: str, payload: dict, *, line: str = "") -> GitClaim
         else:
             opener = ""
         task = "MRB" if action in ("opened", "ready_for_review") else "MRB"
+        orphan_line = src
+        if _docs_mrb_orphan_claim:
+            hint = (
+                f"docs_mrb_orphan parent={parent} "
+                "(missing required check -> FAIL or re-run; no pin-of-pin)"
+            )
+            orphan_line = f"{src} | {hint}" if src else hint
         return GitClaim(
             repo=repo,
             task=task,
             id=ident,
             event=ev,
             action=action,
-            line=src,
+            line=orphan_line,
             refs=refs,
             title=title,
             body=body,
             labels=labels,
             harvest_lesson=lesson,
             opened_by=opener,
+            docs_mrb_orphan=_docs_mrb_orphan_claim,
         )
 
     if ev == "pull_request" and action == "closed":
@@ -2812,6 +2860,8 @@ def _append_unaccepted(doc: dict, claim: GitClaim, home: Path | None = None, **e
                     if k in _IMPLEMENTER_KEEP_KEYS and str(row.get(k) or "").strip():
                         continue
                     row[k] = v
+                if claim.docs_mrb_orphan:
+                    row["docs_mrb_orphan"] = "1"
                 _stamp_require_machine(row, claim)
                 return "duplicate"
         return "duplicate"
@@ -2842,6 +2892,8 @@ def _append_unaccepted(doc: dict, claim: GitClaim, home: Path | None = None, **e
     # FR #2340: persist issue state so closed rows can be purged/skipped offline.
     if claim.state:
         row["state"] = str(claim.state).strip().lower()
+    if claim.docs_mrb_orphan:
+        row["docs_mrb_orphan"] = "1"
     for k, v in extra.items():
         if not v:
             continue
@@ -3095,6 +3147,8 @@ def _apply_claim_to_doc(doc: dict, claim: GitClaim, home: Path | None = None) ->
         if implementer:
             extra["author_seat"] = implementer
             extra["implementer_seat"] = implementer
+        if claim.docs_mrb_orphan:
+            extra["docs_mrb_orphan"] = "1"
         # FR #4929: synchronize after a prior MRB PASS must clear done[] / mrb_done
         # before append; otherwise purge drops the new row while FIX is still ACC.
         if action == "synchronize":
@@ -3718,7 +3772,9 @@ def _coerce_row(row: dict) -> dict | None:
                 # FR #4706 / #4585: FIX CI head SHA + failure signature must survive reload
                 # FR #4718: seat that FAILed this MRB head must not be offered it again
                 # FR #4857: main-side FIX stamp survives reload (belt with id/fail_signature)
-                "pass_sha", "fail_signature", "check_run_id", "mrb_fail_by", "main_red_fix"):
+                "pass_sha", "fail_signature", "check_run_id", "mrb_fail_by", "main_red_fix",
+                # FR #6340: clean orphan docs/mrb pin offerable as one MRB
+                "docs_mrb_orphan"):
         if row.get(key):
             out[key] = str(row.get(key))
     if row.get("refs"):
@@ -4552,27 +4608,9 @@ def mrb_row_not_offerable_reason(
     if isinstance(labs, str):
         labs = [labs]
     labs_t = tuple(str(x) for x in labs)
-    head_ref = str(
-        row.get("head")
-        or row.get("head_ref")
-        or row.get("headRefName")
-        or row.get("branch")
-        or ""
-    )
-    # FR #5500: every docs/mrb-* pin is not an MRB job (not only pin-of-pin).
-    if is_docs_mrb_pin_pr(
-        title=str(row.get("title") or ""),
-        head_ref=head_ref,
-        labels=labs_t,
-    ):
-        return "docs_mrb_pin"
-    if is_lesson_of_lesson_pr(
-        title=str(row.get("title") or ""),
-        body=str(row.get("body") or ""),
-        labels=labs_t,
-        head_ref=head_ref,
-    ):
-        return "lesson_of_lesson"
+    # FR #5500 / #6340: docs/mrb-* and pin-of-pin are skipped at auto enqueue
+    # (resync/webhook) only. Once a row is queued --- orphan stamp, or explicit
+    # !assign --- offer must not refuse with docs_mrb_pin / lesson_of_lesson.
     hold = pr_hold_reason(
         title=str(row.get("title") or ""),
         body=str(row.get("body") or ""),
@@ -10615,19 +10653,28 @@ def claim_from_github_issue(repo: str, issue: dict) -> GitClaim | None:
             return None
         if is_intake_harvest_receipt_pr(title=title, body=body, labels=labels):
             return None
-        if is_docs_mrb_pin_pr(title=title, labels=labels):
-            return None
+        # FR #6340: explicit !assign / enqueue must reach docs/mrb pins (never
+        # refuse with docs_mrb_pin). Auto resync/webhook still skip parent-open
+        # and pin-of-pin; stamp docs_mrb_orphan so the row is auditable.
+        docs_pin = is_docs_mrb_pin_pr(title=title, labels=labels)
         if is_mrb_fix_pr_title(title):
             return None
         lesson = is_harvest_lesson_pr(title=title, labels=labels)
         refs = extract_closes_issue_ids(title, body, repo=repo) if not lesson else ()
+        orphan_line = ""
+        if docs_pin:
+            parent = docs_mrb_pin_parent_pr_id(title=title)
+            orphan_line = (
+                f"docs_mrb_orphan parent={parent or '?'} "
+                "(explicit enqueue; missing required check -> FAIL or re-run)"
+            )
         return GitClaim(
             repo=canonical_queue_repo(repo),
             task="MRB",
             id=f"#{num}",
             event="pull_request",
             action="opened",
-            line="",
+            line=orphan_line,
             title=title,
             body=body,
             labels=labels,
@@ -10635,6 +10682,7 @@ def claim_from_github_issue(repo: str, issue: dict) -> GitClaim | None:
             refs=tuple(refs) if refs else (),
             harvest_lesson=lesson,
             opened_by=lesson_pr_opener_seat(body) if lesson else "",
+            docs_mrb_orphan=docs_pin,
         )
     if issue_skip_fr_reason(title=title, body=body, labels=labels, state=state or "open"):
         return None
@@ -11999,11 +12047,13 @@ def resync_from_github(
                     flush=True,
                 )
                 continue
-            # FR #5500: docs/mrb-* pins never become MRB (resync stored empty title
-            # so offer-time lesson_of_lesson could not see first-level pins).
-            # FR #6044: still fall through when DIRTY/CONFLICTING so #4679 FIX
-            # can fold an orphan pin whose original already merged.
+            # FR #5500: docs/mrb-* pins skip MRB while the original is still open
+            # (resync used to store empty title so offer-time could not see pins).
+            # FR #6044: DIRTY/CONFLICTING still fall through to FIX.
+            # FR #6340: clean orphan (parent already merged/closed) falls through
+            # as one MRB with docs_mrb_orphan stamp.
             _resync_head = pr.get("head") if isinstance(pr.get("head"), dict) else {}
+            _docs_mrb_orphan_resync = False
             if is_docs_mrb_pin_pr(
                 title=title,
                 head_ref=str(_resync_head.get("ref") or ""),
@@ -12026,7 +12076,21 @@ def resync_from_github(
                     )
                 except Exception:  # noqa: BLE001
                     pin_dirty = ""
-                if not pin_dirty:
+                pin_parent = docs_mrb_pin_parent_pr_id(
+                    title=title, head_ref=str(_resync_head.get("ref") or "")
+                )
+                pin_lesson_of_lesson = is_lesson_of_lesson_pr(
+                    title=title,
+                    body=body,
+                    labels=pr_labels,
+                    head_ref=str(_resync_head.get("ref") or ""),
+                )
+                if pin_dirty:
+                    print(
+                        f"resync dirty docs/mrb pin PR {repo}#{num} -> FIX",
+                        flush=True,
+                    )
+                elif pin_lesson_of_lesson or not pin_parent or pin_parent in open_pr_ids:
                     skipped_draft += 1
                     skipped_open_pulls.add((repo, f"#{num}"))
                     print(
@@ -12034,10 +12098,13 @@ def resync_from_github(
                         flush=True,
                     )
                     continue
-                print(
-                    f"resync dirty docs/mrb pin PR {repo}#{num} -> FIX",
-                    flush=True,
-                )
+                else:
+                    _docs_mrb_orphan_resync = True
+                    print(
+                        f"resync orphan docs/mrb pin PR {repo}#{num} "
+                        f"parent {pin_parent} -> MRB",
+                        flush=True,
+                    )
             # FR #4466 / #4594 / #4596: open PR with auto-merge on the PASSed SHA.
             # Still queued/in_progress -> skip ci-wait (not a new MRB).
             # Already concluded FAILURE -> offer FIX (per-PR when main is green;
@@ -12415,6 +12482,12 @@ def resync_from_github(
                 )
                 continue
             lesson = is_harvest_lesson_pr(title=title, labels=pr_labels)
+            orphan_line = ""
+            if _docs_mrb_orphan_resync:
+                orphan_line = (
+                    f"docs_mrb_orphan parent={pin_parent} "
+                    "(missing required check -> FAIL or re-run; no pin-of-pin)"
+                )
             desired.append(
                 GitClaim(
                     repo=repo,
@@ -12422,10 +12495,14 @@ def resync_from_github(
                     id=f"#{num}",
                     event="pull_request",
                     action="opened",
-                    line="",
+                    line=orphan_line,
                     refs=() if lesson else refs,
+                    title=title,
+                    body=body,
+                    labels=pr_labels,
                     harvest_lesson=lesson,
                     opened_by=lesson_pr_opener_seat(body) if lesson else "",
+                    docs_mrb_orphan=_docs_mrb_orphan_resync,
                 )
             )
         for iss in issues:
@@ -12788,6 +12865,8 @@ def resync_from_github(
                             for k, v in author_extra.items():
                                 if v:
                                     r[k] = v
+                        if claim.docs_mrb_orphan:
+                            r["docs_mrb_orphan"] = "1"
                         if prior_done is not None:
                             # FR #4373: reopen via rebuild — clear pins + history note.
                             prepare_reopened_fr_row(
@@ -12811,6 +12890,8 @@ def resync_from_github(
                     extra_add["url"] = mrb_url
                 if claim.task == "MRB":
                     extra_add.update(mrb_author_extra_from_doc(doc, claim))
+                if claim.docs_mrb_orphan:
+                    extra_add["docs_mrb_orphan"] = "1"
                 if _append_unaccepted(doc, claim, home=home, **extra_add) == "added":
                     added += 1
                     if prior_done is not None:
