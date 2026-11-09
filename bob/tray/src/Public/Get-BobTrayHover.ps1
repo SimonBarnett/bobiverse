@@ -1683,11 +1683,11 @@ function Get-BobCopilotHistoricalMaxPct {
 function Format-BobCopilotPoolLine {
     <#
     .SYNOPSIS
-      FR #6301: title Copilot; meter '<x>% left - <reset>'. 100% used => 0% left.
-      No included-unlimited prose. Stale fetched_at gets [stale] marker.
+      FR #6301 / FR #6317: 'Copilot - <x>% left - <reset>' (OpenCode-style hyphen).
+      100% used => 0% left. No included-unlimited prose. Stale gets [stale] marker.
     #>
     param($Pool, $Now = $null, [switch]$ForceStale)
-    if (-not $Pool) { return 'Copilot  unknown' }
+    if (-not $Pool) { return 'Copilot - unknown' }
     $state = [string]$Pool.state
     $used = $Pool.used
     $reset = [string]$Pool.reset_at
@@ -1729,26 +1729,25 @@ function Format-BobCopilotPoolLine {
         try { if ($null -ne $Pool.remaining -and [string]$Pool.remaining -ne '') { $left = [int]$Pool.remaining } } catch { }
     }
     if ($null -eq $left) {
-        $bits = @('Copilot', 'unknown')
+        $bits = @('Copilot - unknown')
         if ($staleLabel) { $bits += $staleLabel }
-        return ($bits -join '  ')
+        return ($bits -join ' ')
     }
     $mid = ('{0}% left' -f [int]$left)
     if ($resetCompact) { $mid = ('{0} - {1}' -f $mid, $resetCompact) }
-    $bits = @('Copilot', $mid)
+    $bits = @(('Copilot - {0}' -f $mid))
     if ($staleLabel) { $bits += $staleLabel }
-    return ($bits -join '  ')
+    return ($bits -join ' ')
 }
 
 function Get-BobCopilotMeterBarPct {
     <#
-      FR #6301: bar is % left. Unlimited uses 100 - historical-max used pct.
-      Stale is not a fill.
+      FR #6301 / FR #6317: bar is % left. Unlimited uses 100 - historical-max used pct.
+      Stale still returns the remaining % so TipForm/Status draw an empty/partial bar
+      (0% left => empty fill). Unknown / unparseable => null (neutral empty track).
     #>
     param($Pool, $Now = $null)
     if (-not $Pool) { return $null }
-    $freshness = Get-BobCopilotFreshness -Pool $Pool -Now $Now
-    if ($freshness.state -eq 'stale') { return $null }
     $unlimited = $false
     try { if ($Pool.unlimited) { $unlimited = [bool]$Pool.unlimited } } catch { }
     if ($unlimited) {
@@ -3764,9 +3763,26 @@ function Get-BobTrayHover {
     $copilotPoolObj = $(if ($reportDigest -and $reportDigest.copilot) { $reportDigest.copilot } else { $null })
     $copilotFresh = Get-BobCopilotFreshness -Pool $copilotPoolObj
     $copilotLine = Format-BobCopilotPoolLine -Pool $copilotPoolObj
-    if (-not $copilotLine) { $copilotLine = 'Copilot  unknown' }
+    if (-not $copilotLine) { $copilotLine = 'Copilot - unknown' }
     $copilotStaleLine = Format-BobCopilotPoolLine -Pool $copilotPoolObj -ForceStale
-    if (-not $copilotStaleLine) { $copilotStaleLine = 'Copilot  [stale]  unknown' }
+    if (-not $copilotStaleLine) { $copilotStaleLine = 'Copilot - [stale] unknown' }
+    # FR #6317: remaining-% bar for Status/TipForm (null => neutral empty track).
+    $copilotBarPct = $null
+    try { $copilotBarPct = Get-BobCopilotMeterBarPct -Pool $copilotPoolObj } catch { $copilotBarPct = $null }
+    $copilotBar = $null
+    if ($null -ne $copilotBarPct) {
+        $rgb = $null
+        try { $rgb = Get-BobTrayBarFillRgb -Pct ([int]$copilotBarPct) } catch { }
+        $copilotBar = [pscustomobject]@{
+            known = $true
+            pct   = [int]$copilotBarPct
+            r     = $(if ($rgb) { [int]$rgb.r } else { 88 })
+            g     = $(if ($rgb) { [int]$rgb.g } else { 166 })
+            b     = $(if ($rgb) { [int]$rgb.b } else { 255 })
+        }
+    } else {
+        $copilotBar = [pscustomobject]@{ known = $false; pct = 0; r = 88; g = 166; b = 255 }
+    }
     if ($copilotLine) { $jobLines = @(('  {0}' -f $copilotLine)) + $jobLines }
     $jobsText = (($poolLines + $jobLines) -join "`n")
     if ($ghLine) { $jobsText = $jobsText + "`n" + $ghLine }
@@ -3825,6 +3841,7 @@ function Get-BobTrayHover {
         copilot_stale_line  = $copilotStaleLine
         copilot_freshness   = $copilotFresh
         copilot_fresh_until = $(if ($copilotFresh -and $null -ne $copilotFresh.fresh_until) { [int64]$copilotFresh.fresh_until } else { [int64]0 })
+        copilot_bar         = $copilotBar
         chair_channels      = $(
             if ($reportDigest -and $reportDigest.chair_channels) {
                 @($reportDigest.chair_channels | ForEach-Object { [string]$_ })

@@ -129,7 +129,7 @@ def test_format_unlimited_with_historical_max_and_reset():
         now,
     )
     # FR #6301: 1937/2000 ~ 97% used => 3% left; reset countdown kept.
-    assert "Copilot  3% left" in line
+    assert "Copilot - 3% left" in line
     assert "reset" in line or "d" in line  # compact reset label
     assert "[stale" not in line
     assert "included" not in line.lower()
@@ -152,7 +152,7 @@ def test_format_stale_still_shows_reset_and_max_pct():
         now,
     )
     assert "[stale" in line
-    assert "Copilot  3% left" in line
+    assert "Copilot - 3% left" in line
     assert "reset" in line or "d" in line
     assert "included" not in line.lower()
 
@@ -171,7 +171,7 @@ def test_format_zero_usage_zero_pct():
         },
         now,
     )
-    assert "Copilot  100% left" in line
+    assert "Copilot - 100% left" in line
     assert "of max recorded" not in line
 
 
@@ -189,7 +189,7 @@ def test_format_missing_denominator_no_pct():
         now,
     )
     # No max_recorded_usage => cannot compute % left.
-    assert line.startswith("Copilot  unknown") or "unknown" in line
+    assert line.startswith("Copilot - unknown") or "unknown" in line
     assert "of max recorded" not in line
     assert "n/a%" not in line
     assert "Infinity" not in line
@@ -225,7 +225,7 @@ def test_format_usage_above_max_shows_100_after_client_bump_field():
         },
         now,
     )
-    assert "Copilot  0% left" in line
+    assert "Copilot - 0% left" in line
     assert "of max recorded" not in line
 
 

@@ -2878,18 +2878,16 @@ function Rebuild-BobTrayTiles {
             $y = Add-BobTraySectionHeader -X 0 -Y $y -Title '' -Icon $grokIcon -Agent $grokAgent `
                 -RightText $overLine -RightColor $overColor
         }
-        # FR #5172 / FR #6148 / FR #6149 / FR #6301: Copilot title only; meter is "% left - reset".
+        # FR #5172 / FR #6148 / FR #6149 / FR #6301 / FR #6317:
+        # Copilot like OpenCode rows: family header (no RightText), then left-aligned
+        # 'Copilot - <text>' UsageRow + remaining bar. Stale is text, not red/right-aligned.
         $copilotLine = $null
         try { $copilotLine = Format-BobCopilotPoolLine -Pool $CopilotPool } catch { }
-        if (-not $copilotLine) { $copilotLine = 'Copilot  unknown' }
-        $copilotMeter = $copilotLine
-        if ($copilotMeter.StartsWith('Copilot  ')) { $copilotMeter = $copilotMeter.Substring(9).Trim() }
-        elseif ($copilotMeter.StartsWith('Copilot ')) { $copilotMeter = $copilotMeter.Substring(8).Trim() }
-        # Stale is a label, not an alarm color. FR #6204: this paint does not poll GitHub.
-        $y = Add-BobTrayFuelFamilyRow -X 0 -Y $y -Family 'copilot' -Title 'Copilot'
+        if (-not $copilotLine) { $copilotLine = 'Copilot - unknown' }
         $copilotBar = $null
         try { $copilotBar = Get-BobCopilotMeterBarPct -Pool $CopilotPool } catch { $copilotBar = $null }
-        $y = Add-BobTrayUsageRow -X 18 -Y $y -Heading $copilotMeter -RemainingPct $copilotBar -BarWidth 336 -Icon $null
+        $y = Add-BobTrayFuelFamilyRow -X 0 -Y $y -Family 'copilot' -Title 'Copilot'
+        $y = Add-BobTrayUsageRow -X 18 -Y $y -Heading $copilotLine -RemainingPct $copilotBar -BarWidth 336 -Icon $null
         $indent = 18
         $shownMachines = @{}
         foreach ($m in @($Machines)) {
