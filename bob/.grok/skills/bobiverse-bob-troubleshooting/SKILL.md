@@ -55,6 +55,8 @@ Start with `bobiverse-fleet-ops` (health checks, hotpatch rules, known-failure t
 | Watch `-RepoRoot` is the install root; intake helper missing | Live `Watch-BobTray -RepoRoot` is `<ai root>\bob`, not `bob\tray`. Dot `tray\src\Private\Invoke-BobMustReportFailure.ps1` and `common\scripts\Report-BobRuntimeFailure.ps1` (flat `src\` / `scripts\` fallbacks) before claiming an intake report (MRB #5060 / harvest #5063). Do not park this under harvest/SKILL.md. |
 | Digest webhook / timer fails with no GitHub issue | **FR #5050:** `trayDigestTimer` Write-BobIrcStatus catch must log and call `Report-BobRuntimeFailure` (intake, deduped). Ear/Jeeves crash-hook install failures also report. Remaining empty `catch { }` cleanup is a follow-up, not silent on this timer. |
 
+| Ear joins then leaves every ~60s; log shows AttributeError on gitclaim.shop_line_resets_bored_clock or unlogged TypeError in git-claim | **FR #6282:** handler exception escaped Client.reader and set dead. PRIVMSG dispatch uses _call_handler (full traceback, session stays up); assert_ear_gitclaim_contract fails loud at ear startup on build/hotpatch mismatch; keep gitclaim out of FROZEN_SCRIPT_OVERLAY. Rebuild/hotpatch bob-ear.exe with matching gitclaim. Offline pin: bob/tests/test_fr6282_gitclaim_handler_isolation.py. |
+
 Finish every session with the harvest step.
 
 - tray: FR #4142 headless engine UI-thread spin --- skip TipForm/Update-Hover UI and NotifyIcon flash/pulse when BOB_TRAY_ENGINE=1; poll re-entrancy Stop/Start + tick-slow logs (>2s); Write-BobIrcStatus on ThreadPool digest timer; engine.alive watchdog (#4136) remains the band-aid for hung ticks
