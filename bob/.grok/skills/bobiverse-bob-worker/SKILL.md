@@ -156,7 +156,7 @@ A PyInstaller onefile `bob-worker.exe` (or hashed `bob-worker-<hash>.exe`) is **
 ## Seat marker + job worktree env (FR #6341)
 
 * At agent start, bob-worker **atomically rewrites** <ai root>\bob\worker\.bobiverse-seat with the live nick and pid (replaces any stale file from an older session).
-* Every agent child inherits **$env:BOB_JOB_WORKTREE_BASE** (resolved like Get-BobiverseJobWorktreeBase / FR #4988; directory created if missing). When OpenCode has prepared a job tree, **$env:BOB_JOB_WORKTREE** is the exact path. Seats must use these env vars and **never search drives** for i\worktrees.
+* Every agent child inherits **$env:BOB_JOB_WORKTREE_BASE** (resolved like Get-BobiverseJobWorktreeBase / FR #4988; directory created if missing). When OpenCode has prepared a job tree, **$env:BOB_JOB_WORKTREE** is the exact path. Seats must use these env vars and **never search drives** for ai\worktrees.
 * Seats run **Windows PowerShell 5.1**: use Get-ChildItem -Depth, not -MaxDepth (that parameter is PowerShell 7+).
 * Outbox path rules from FR #6333 are unchanged (BOB_OUTBOX run-dir vs OpenCode <worktree>\.bob\outbox.txt).
 
