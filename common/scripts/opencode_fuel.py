@@ -951,12 +951,63 @@ def format_opencode_paint_lines(
     }
 
 
+def parse_resets_at_to_epoch_ms(raw: object) -> Optional[int]:
+    """FR #6312: parse OpenCode ``resetsAt`` as epoch ms, epoch s, or ISO-8601.
+
+    Returns milliseconds since epoch, or None when missing/unparseable.
+    Never invents a clock. Integers below 1e12 are treated as seconds.
+    """
+    if raw is None:
+        return None
+    if isinstance(raw, bool):
+        return None
+    if isinstance(raw, (int, float)):
+        try:
+            n = int(raw)
+        except (TypeError, ValueError, OverflowError):
+            return None
+        if n <= 0:
+            return None
+        if n < 1_000_000_000_000:
+            n = n * 1000
+        return n
+    text = str(raw).strip()
+    if not text:
+        return None
+    # Numeric string (ms or s).
+    try:
+        if text.isdigit() or (text.startswith("-") and text[1:].isdigit()):
+            return parse_resets_at_to_epoch_ms(int(text))
+        as_float = float(text)
+        if as_float == int(as_float):
+            return parse_resets_at_to_epoch_ms(int(as_float))
+    except (TypeError, ValueError, OverflowError):
+        pass
+    # ISO-8601 (Z or offset). Prefer stdlib; tolerate trailing Z.
+    iso = text
+    if iso.endswith("Z") or iso.endswith("z"):
+        iso = iso[:-1] + "+00:00"
+    try:
+        from datetime import datetime, timezone
+
+        dt = datetime.fromisoformat(iso)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        ms = int(dt.timestamp() * 1000)
+        return ms if ms > 0 else None
+    except (TypeError, ValueError, OverflowError, OSError):
+        return None
+
+
 def reset_label_from_epoch_ms(resets_at: object, now_ms: int) -> Optional[str]:
     """Countdown from UsageLimits.Meter.resetsAt (milliseconds). No invented clock."""
     if resets_at is None or now_ms is None:
         return None
+    epoch_ms = parse_resets_at_to_epoch_ms(resets_at)
+    if epoch_ms is None:
+        return None
     try:
-        delta_ms = int(resets_at) - int(now_ms)
+        delta_ms = int(epoch_ms) - int(now_ms)
     except (TypeError, ValueError):
         return None
     if delta_ms <= 0:
@@ -980,8 +1031,9 @@ def provider_windows_from_usage_limits(
     GET /api/experimental/usage/limits on the local OpenCode server
     (https://opencode.ai/docs/api, operation experimental.usage.limits).
     ``percent`` is the meter's published number. The console labels that same
-    meter "% used"; this does not invent a remaining balance. ``resetsAt`` is
-    milliseconds since the epoch. ``go`` null means the location is not signed in.
+    meter "% used"; this does not invent a remaining balance. ``resetsAt`` may be
+    epoch ms, epoch s, or ISO-8601 (FR #6312); missing/unparseable sets
+    ``error: reset unavailable``. ``go`` null means the location is not signed in.
     """
     if not isinstance(doc, dict):
         return None
@@ -1005,11 +1057,24 @@ def provider_windows_from_usage_limits(
         used = _clamp_pct(meter.get("percent"))
         limited = bool(meter.get("limited"))
         status = "exhausted" if limited or (used is not None and used >= 100) else "known"
+        # FR #6312: third layout resetsAt as ms / s / ISO; missing/unparseable -> error.
+        resets_raw = meter.get("resetsAt")
+        epoch_ms = parse_resets_at_to_epoch_ms(resets_raw) if resets_raw is not None else None
+        reset_label = (
+            reset_label_from_epoch_ms(epoch_ms, now_ms) if epoch_ms is not None else None
+        )
+        resets_at_iso = _epoch_ms_to_iso_z(epoch_ms) if epoch_ms is not None else None
+        reset_error = None
+        if reset_label is None and resets_at_iso is None:
+            reset_error = "reset unavailable"
+        # Provider meters publish used percent only; do not invent remaining here.
         rec = _window_record(
             status,
             used_pct=used,
             remaining_pct=None,
-            reset_label=reset_label_from_epoch_ms(meter.get("resetsAt"), now_ms),
+            reset_label=reset_label,
+            resets_at=resets_at_iso,
+            error=reset_error,
         )
         rec["source"] = "provider"
         rec["limited"] = limited
@@ -1277,17 +1342,18 @@ def _go_zen_meter_to_window(meter: object, *, now_ms: int, fetched_at: str) -> d
             reset_label = reset_label_from_epoch_ms(epoch_ms, now_ms)
             resets_at_iso = _epoch_ms_to_iso_z(epoch_ms)
         except (TypeError, ValueError):
+            epoch_ms = None
             reset_label = None
             resets_at_iso = None
-    if reset_label is None and meter.get("resetsAt") is not None:
-        epoch_ms = meter.get("resetsAt")
-        reset_label = reset_label_from_epoch_ms(epoch_ms, now_ms)
-        resets_at_iso = _epoch_ms_to_iso_z(epoch_ms)
-    # Never invent a reset. When the API omits it, leave null and say so.
+    if resets_at_iso is None and meter.get("resetsAt") is not None:
+        epoch_ms = parse_resets_at_to_epoch_ms(meter.get("resetsAt"))
+        if epoch_ms is not None:
+            reset_label = reset_label_from_epoch_ms(epoch_ms, now_ms)
+            resets_at_iso = _epoch_ms_to_iso_z(epoch_ms)
+    # Never invent a reset. Missing or unparseable -> explicit error (FR #6312).
     reset_error = None
     if reset_label is None and resets_at_iso is None:
-        if meter.get("resetInSec") is None and meter.get("resetsAt") is None:
-            reset_error = "reset unavailable"
+        reset_error = "reset unavailable"
     remaining = None if used is None else max(0, 100 - int(used))
     rec = _window_record(
         status,
