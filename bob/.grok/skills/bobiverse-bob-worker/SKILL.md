@@ -272,3 +272,4 @@ Generalised from 21 harvested lessons that never reached this book (audit for FR
 - **FR #6134:** OpenCode seats skip hostile MRB/UAT offers (chair `offer_focus_top` / `!assign` refuse when digest `kind=opencode`); still take FR/FIX/docs/harvest. Worker backstop NACKs MRB/UAT before ACK-on-receipt and posts digest kind on seat start.
 - PyInstaller: co-located module next to entry script beats --paths shadow; overwrite stub for freeze and restore in finally; prove with local freeze --version before PASS
 - **FR #6363:** OpenCode model = operator env (at start) > opencode.json(c) model > fuel default; do not treat worker re-exports of BOB_OPENCODE_MODEL as operator overrides; keep -m <resolved>.
+- OpenCode done-miss must re-prompt with a full @@BOBJOB1 finish frame and N progress retries; never record-pause on watchdog timeout
