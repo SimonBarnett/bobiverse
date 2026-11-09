@@ -43,6 +43,7 @@ jobs:
       - name: Install PyInstaller and Bob Python deps
         run: |
           python -m pip install --upgrade pip pyinstaller
+          if ($LASTEXITCODE -ne 0) { throw "pip install pyinstaller failed: $LASTEXITCODE" }
           . .\common\scripts\Bobiverse-Common.ps1
           Install-BobiversePythonDeps -Python (Get-Command python).Source
 

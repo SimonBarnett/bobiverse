@@ -49,6 +49,7 @@ def test_fr6349_worker_ci_workflow_pins():
     assert "workflow_dispatch" in text
     assert "setup-python@v5" in text
     assert "pyinstaller" in text.lower()
+    assert "pip install pyinstaller failed" in text
     assert "exe_size" in text or "size_bytes" in text
     assert "build_time" in text
     assert BUILD.is_file()
@@ -77,7 +78,7 @@ def test_fr6349_docs_list_ci_artifact():
     assert "bob/tests/test_fr6349_worker_build_ci.py" in docs
 
 
-def test_fr6349_version_flag_prints_meta_commit(tmp_path: Path, monkeypatch):
+def test_fr6349_version_flag_prints_meta_commit(tmp_path: Path, monkeypatch, capsys):
     """Source tree: --version reads bob_worker_build_meta.SOURCE_COMMIT."""
     scripts = ROOT / "bob" / "scripts"
     monkeypatch.syspath_prepend(str(scripts))
@@ -87,21 +88,29 @@ def test_fr6349_version_flag_prints_meta_commit(tmp_path: Path, monkeypatch):
     try:
         meta.SOURCE_COMMIT = "abc123deadbeef6349"
         import bob_worker as bw  # noqa: WPS433
+        import importlib
+
+        importlib.reload(bw)
 
         if hasattr(bw, "get_source_commit"):
             assert bw.get_source_commit() == "abc123deadbeef6349"
+        capsys.readouterr()  # discard earlier noise
         code = bw.main(["--version"])
+        out = capsys.readouterr().out.strip()
         assert code == 0
+        assert "abc123deadbeef6349" in out
     finally:
         meta.SOURCE_COMMIT = prev
 
 
-@pytest.mark.skipif(
-    not PS or os.name != "nt",
-    reason=f"needs Windows + powershell/pwsh (PS={PS!r})",
-)
-def test_fr6349_build_script_mentions_hidden_import_and_paths():
-    """Text gate only: full PyInstaller freeze belongs in GHA (slow)."""
+def test_fr6349_build_script_overwrites_colocated_stub_for_freeze():
+    """MRB #6352: co-located stub beats --paths; freeze must overwrite then restore."""
     build = BUILD.read_text(encoding="utf-8")
     assert "hidden-import" in build or "bob_worker_build_meta" in build
     assert "SourceCommit" in build
+    assert "stub-bak" in build or "stubBackup" in build or "stub-bak" in build.replace("_", "-")
+    assert "restored bob_worker_build_meta.py stub" in build or "restoredStub" in build
+    assert "Copy-Item -LiteralPath $stubMeta" in build or "stubMeta" in build
+    assert "finally" in build
+    # Must not rely on --paths metaDir alone (that left --version=unknown on GHA).
+    assert "stub overwritten for freeze" in build

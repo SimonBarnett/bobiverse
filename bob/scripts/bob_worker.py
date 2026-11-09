@@ -55,7 +55,7 @@ def get_source_commit() -> str:
     try:
         from bob_worker_build_meta import SOURCE_COMMIT as _sc
         return str(_sc or 'unknown')
-    except Exception:
+    except ImportError:
         return 'unknown'
 
 EXIT_USAGE = 64
