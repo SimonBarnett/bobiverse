@@ -155,8 +155,38 @@ def test_worker_prompt_names_in_worktree_outbox():
     assert "external_directory" in text.lower()
 
 
-def test_may_send_outbox_forwards_done_drops_bad(tmp_path: Path):
-    """drain_outbox passes bare payloads (no PRIVMSG prefix) into may_send."""
+def test_may_send_outbox_forwards_done_keeps_other_job_nack(tmp_path: Path):
+    """Run-dir may_send must not drop NACKs for a different job (MRB #6334)."""
+    bored = bw.BoredEmitter(
+        send=lambda: True,
+        log=lambda *_a, **_k: None,
+    )
+    bored._ack_open = False
+
+    sup = bw.Supervisor.__new__(bw.Supervisor)
+    sup._opencode_job_key = "FR SimonBarnett/bobiverse#6333"
+    sup._opencode_job_outbox = tmp_path / ".bob" / "outbox.txt"
+    sup.machine = "marchhare"
+    sup.irc = MagicMock()
+    sup.irc.shop = "#marchhare"
+    sup.bored = bored
+
+    # Stale key must not block run-dir NACK for another job.
+    assert (
+        bw.Supervisor.may_send_outbox(
+            sup, "NACK FR SimonBarnett/bobiverse#9999 worktree-create-failed:no-clone (FR #6240)"
+        )
+        is True
+    )
+    assert (
+        bw.Supervisor.may_send_outbox(
+            sup, "DONE FR SimonBarnett/bobiverse#6333 https://example/pull/9"
+        )
+        is True
+    )
+
+
+def test_may_send_job_outbox_filters_wrong_key(tmp_path: Path):
     bored = bw.BoredEmitter(
         send=lambda: True,
         log=lambda *_a, **_k: None,
@@ -173,19 +203,18 @@ def test_may_send_outbox_forwards_done_drops_bad(tmp_path: Path):
     sup.bored = bored
 
     assert (
-        bw.Supervisor.may_send_outbox(
+        bw.Supervisor.may_send_job_outbox(
             sup, "DONE FR SimonBarnett/bobiverse#6333 https://example/pull/9"
         )
         is True
     )
-    assert bw.Supervisor.may_send_outbox(sup, "hello chatter") is False
+    assert bw.Supervisor.may_send_job_outbox(sup, "hello chatter") is False
     assert (
-        bw.Supervisor.may_send_outbox(sup, "DONE FR SimonBarnett/bobiverse#1 https://x")
+        bw.Supervisor.may_send_job_outbox(sup, "DONE FR SimonBarnett/bobiverse#1 https://x")
         is False
     )
-    # Duplicate ACK while the same job is already open is dropped.
     assert (
-        bw.Supervisor.may_send_outbox(sup, "ACK FR SimonBarnett/bobiverse#6333") is False
+        bw.Supervisor.may_send_job_outbox(sup, "ACK FR SimonBarnett/bobiverse#6333") is False
     )
 
 
@@ -271,3 +300,58 @@ def test_no_auto_in_run_args_with_worktree(tmp_path: Path):
     args = c.opencode_run_args("opencode/beam-free", "hello", str(tmp_path))
     assert args[:3] == ["run", "--dir", str(tmp_path.resolve())]
     assert "--auto" not in args
+
+def test_exclude_bob_dir_linked_worktree(tmp_path: Path):
+    """Linked worktree exclude must write the common gitdir info/exclude (MRB #6334)."""
+    clone = _init_clone(tmp_path / "clone")
+    wt = tmp_path / "linked-wt"
+    subprocess.run(
+        ["git", "-C", str(clone), "worktree", "add", "-b", "fr-6333-test", str(wt), "origin/main"],
+        check=True,
+        capture_output=True,
+    )
+    ob = c.ensure_opencode_bob_outbox(wt)
+    assert ob.is_file()
+    common_exclude = clone / ".git" / "info" / "exclude"
+    assert common_exclude.is_file()
+    assert ".bob/" in common_exclude.read_text(encoding="utf-8").splitlines()
+    st = subprocess.run(
+        ["git", "-C", str(wt), "status", "--porcelain"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert ".bob" not in st.stdout
+
+
+def test_outbox_loop_skips_missing_extra(tmp_path: Path, monkeypatch):
+    """Missing worktree outbox must not be recreated by drain (MRB #6334)."""
+    run_ob = tmp_path / "run" / "outbox.txt"
+    run_ob.parent.mkdir(parents=True)
+    run_ob.write_text("", encoding="utf-8")
+    missing = tmp_path / "gone" / ".bob" / "outbox.txt"
+    stop = __import__("threading").Event()
+    irc = MagicMock()
+    irc.alive = True
+
+    def drain(path, *a, **k):
+        if Path(path) == missing:
+            raise AssertionError("must not drain missing extra")
+
+    monkeypatch.setattr(bw, "drain_outbox", drain)
+    monkeypatch.setattr(bw, "ensure_outbox", lambda p: None)
+
+    def wait_once(timeout):
+        stop.set()
+        return True
+
+    stop.wait = wait_once  # type: ignore
+    bw.outbox_loop(
+        run_ob,
+        irc,
+        stop,
+        lambda *_: None,
+        extra_paths=lambda: [missing],
+    )
+    assert not missing.exists()
+
