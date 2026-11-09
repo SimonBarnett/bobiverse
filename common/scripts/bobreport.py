@@ -5,10 +5,12 @@ from __future__ import annotations
 import contextlib
 import copy
 import functools
+import hashlib
 import json
 import os
 import re
 import shutil
+import subprocess
 import sys
 import threading
 import time
@@ -302,9 +304,9 @@ _CURSOR_GROUP_KEYS = frozenset({
 })
 _CURSOR_UNKNOWN_CLEAR_FIELDS = tuple(sorted(_CURSOR_GROUP_KEYS))
 _PEER_CLEAR = object()  # sentinel: peer wants an explicit null clear in the merge delta
-# FR #6143: ear-owned identity scalars. Keep out of _MERGE_PEER_FIELDS so tray peer
-# rewrites cannot clear or restore a stale grok_account via peer fill.
-_EAR_IDENTITY_FIELDS = ("grok_account",)
+# FR #6143 / #6301: ear-owned identity scalars. Keep out of _MERGE_PEER_FIELDS so tray
+# peer rewrites cannot clear or restore a stale label via peer fill.
+_EAR_IDENTITY_FIELDS = ("grok_account", "opencode_account")
 _TRAY_MACHINE_EXPORT_KEYS = (
     "id",
     "nick",
@@ -345,6 +347,7 @@ _TRAY_MACHINE_EXPORT_KEYS = (
     "cursor_known",
     "weekly_known",
     "grok_account",
+    "opencode_account",
     "opencode_windows",
     "xai_weekly_used_pct",
     "xai_weekly_source",
@@ -4231,6 +4234,7 @@ def peer_fuel_fingerprint(peer: dict) -> str:
         "on_demand_limit_cents",
         "on_demand_remaining_pct",
         "grok_account",
+        "opencode_account",
         "running",
         "queued",
     ):
@@ -4325,6 +4329,16 @@ def build_peer_fuel_merge_payload(peer: dict, machine_id: str) -> dict | None:
     for key in ("xai_weekly_used_pct", "xai_weekly_source", "xai_weekly_fetched_at"):
         if key in peer:
             payload[key] = peer.get(key)
+    # FR #6143 / #6301: ear-owned account labels travel with fuel merge.
+    for key in _EAR_IDENTITY_FIELDS:
+        if key not in peer:
+            continue
+        val = peer.get(key)
+        if val in (None, ""):
+            continue
+        cleaned = _sanitize_grok_account_label(val)
+        if cleaned:
+            payload[key] = cleaned
     if isinstance(peer.get("cursor_pools"), list):
         payload["cursor_pools"] = _coerce_cursor_pools(peer.get("cursor_pools"), machine_id=mid)
     blob = json.dumps(payload, separators=(",", ":"), default=str)
@@ -5270,39 +5284,369 @@ def _read_opencode_pcent_from_helper(
 
 
 
+# FR #6301 Part D: labelled OpenCode Go keys under config\opencode-keys\<label>.apikey.
+# Legacy single-key sources (env + config\opencode-go.apikey) map to label "default".
+OPENCODE_KEYS_DIRNAME = "opencode-keys"
+OPENCODE_KEY_SELECTED_NAME = "selected.txt"
+OPENCODE_KEY_SELECTED_LEGACY = "opencode-key-selected"
+OPENCODE_DEFAULT_LABEL = "default"
+OPENCODE_NO_KEY_STATE = "no key set"
+_OPENCODE_LABEL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._@+-]{0,63}$")
+
+
+def _sanitize_opencode_key_label(raw: object) -> str | None:
+    """Safe label for digest / file stem. Never a secret."""
+    if not isinstance(raw, str):
+        return None
+    text = raw.strip()
+    if not text or len(text) > 64:
+        return None
+    if not _OPENCODE_LABEL_RE.match(text):
+        return None
+    lowered = text.lower()
+    if lowered in {"selected", "selected.txt", "readme", "readme.txt"}:
+        return None
+    return text
+
+
+def opencode_keys_dir(install_root: str | Path | None, env: dict[str, str] | None = None) -> Path | None:
+    """Return ``<InstallRoot>\\config\\opencode-keys`` or None when root unknown."""
+    e = os.environ if env is None else env
+    root = (str(install_root) if install_root else (e.get("BOB_INSTALL_ROOT") or "")).strip()
+    if not root:
+        return None
+    return Path(root) / "config" / OPENCODE_KEYS_DIRNAME
+
+
+def _read_opencode_key_file(path: Path) -> str:
+    """Read and trim one apikey file. Never logs the value."""
+    try:
+        if not path.is_file():
+            return ""
+        return (path.read_text(encoding="utf-8-sig") or "").strip()
+    except OSError:
+        return ""
+
+
+def _opencode_key_acl_is_system_admins_only(path: Path) -> bool | None:
+    """True when DACL is SYSTEM+Administrators only; None when icacls unavailable."""
+    if os.name != "nt" or not path.exists():
+        return None
+    try:
+        r = subprocess.run(
+            ["icacls", str(path)],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=15,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if r.returncode != 0:
+        return None
+    blob = (r.stdout or "") + "\n" + (r.stderr or "")
+    lowered = blob.lower()
+    # Broad principals mean the ACL is looser than SYSTEM+Administrators.
+    for needle in (
+        "everyone",
+        "authenticated users",
+        "builtin\\users",
+        "nt authority\\authenticated users",
+        "users:",
+    ):
+        if needle in lowered:
+            return False
+    has_system = ("nt authority\\system" in lowered) or ("system:" in lowered)
+    has_admins = ("builtin\\administrators" in lowered) or ("administrators:" in lowered)
+    if not (has_system and has_admins):
+        return False
+    return True
+
+
+def tighten_opencode_key_acl(path: Path) -> bool:
+    """Force SYSTEM+Administrators-only ACL. Returns True when icacls ran and tightened/set.
+
+    Reports via acquisition stamp when callers record the label; never logs key text.
+    """
+    if os.name != "nt" or not path.exists():
+        return False
+    already = _opencode_key_acl_is_system_admins_only(path)
+    if already is True:
+        return False
+    try:
+        r = subprocess.run(
+            [
+                "icacls",
+                str(path),
+                "/inheritance:r",
+                "/grant:r",
+                "NT AUTHORITY\\SYSTEM:(F)",
+                "/grant:r",
+                "BUILTIN\\Administrators:(F)",
+            ],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=15,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return r.returncode == 0
+
+
+def _list_labelled_opencode_keys(
+    keys_dir: Path,
+    *,
+    tighten: bool = True,
+) -> tuple[dict[str, str], list[str]]:
+    """Return ({label: key}, labels_whose_acl_were_tightened). Keys never logged."""
+    out: dict[str, str] = {}
+    tightened: list[str] = []
+    if not keys_dir.is_dir():
+        return out, tightened
+    try:
+        entries = sorted(keys_dir.iterdir(), key=lambda p: p.name.lower())
+    except OSError:
+        return out, tightened
+    for path in entries:
+        if not path.is_file():
+            continue
+        name = path.name
+        if not name.lower().endswith(".apikey"):
+            continue
+        label = _sanitize_opencode_key_label(name[: -len(".apikey")])
+        if not label:
+            continue
+        key = _read_opencode_key_file(path)
+        if not key:
+            continue
+        if tighten and tighten_opencode_key_acl(path):
+            tightened.append(label)
+        # First wins on case-insensitive collision.
+        if label.lower() not in {k.lower() for k in out}:
+            out[label] = key
+    return out, tightened
+
+
+def _read_opencode_selected_label(
+    install_root: str | Path,
+    keys_dir: Path | None,
+    env: dict[str, str] | None = None,
+) -> str | None:
+    """Selected label from selected.txt, legacy file, or BOB_OPENCODE_KEY_LABEL."""
+    e = os.environ if env is None else env
+    env_label = _sanitize_opencode_key_label(e.get("BOB_OPENCODE_KEY_LABEL") or "")
+    if env_label:
+        return env_label
+    candidates: list[Path] = []
+    if keys_dir is not None:
+        candidates.append(keys_dir / OPENCODE_KEY_SELECTED_NAME)
+    root = Path(install_root)
+    candidates.append(root / "config" / OPENCODE_KEY_SELECTED_LEGACY)
+    for path in candidates:
+        try:
+            if not path.is_file():
+                continue
+            raw = (path.read_text(encoding="utf-8-sig") or "").strip().splitlines()
+            if not raw:
+                continue
+            label = _sanitize_opencode_key_label(raw[0].strip())
+            if label:
+                return label
+        except OSError:
+            continue
+    return None
+
+
 def resolve_opencode_go_api_key(
     env: dict[str, str] | None = None,
     *,
     install_root: str | Path | None = None,
 ) -> tuple[str, str]:
-    """Return (api_key, key_source) for Go zen usage (FR #6263).
+    """Return (api_key, key_source) for Go zen usage (FR #6263 / #6301 Part D).
 
-    key_source is ``env``, ``config-file``, or empty string when absent. Never logs the key.
-    Config file: ``<InstallRoot>\\config\\opencode-go.apikey`` (trimmed; CR/space OK).
+    key_source is ``env``, ``config-file``, ``labelled-file``, or empty when absent.
+    Never logs the key. Prefer ``resolve_opencode_go_api_key_selection`` for label.
+    """
+    sel = resolve_opencode_go_api_key_selection(env, install_root=install_root)
+    return str(sel.get("api_key") or ""), str(sel.get("key_source") or "")
+
+
+def resolve_opencode_go_api_key_selection(
+    env: dict[str, str] | None = None,
+    *,
+    install_root: str | Path | None = None,
+    tighten_acl: bool = True,
+) -> dict:
+    """FR #6301 Part D: labelled store + legacy default sources.
+
+    Returns dict with api_key, key_source, label, labels, acl_tightened, key_fingerprint.
+    ``key_fingerprint`` is a short non-reversible token for cache invalidation only.
+    Never includes raw key material in logs/digest fields beyond api_key for the caller.
+    Same key in env + legacy file is reported once as label ``default``.
     """
     e = os.environ if env is None else env
-    key = (e.get("BOB_OPENCODE_GO_API_KEY") or "").strip()
-    if key:
-        return key, "env"
     root = (str(install_root) if install_root else (e.get("BOB_INSTALL_ROOT") or "")).strip()
-    if not root:
-        return "", ""
-    path = Path(root) / "config" / "opencode-go.apikey"
-    try:
-        if path.is_file():
-            raw = path.read_text(encoding="utf-8-sig")
-            key = (raw or "").strip()
-            if key:
-                return key, "config-file"
-    except OSError:
-        pass
-    return "", ""
+    keys_dir = opencode_keys_dir(root or None, e) if root else None
+    labelled: dict[str, str] = {}
+    tightened: list[str] = []
+    if keys_dir is not None:
+        labelled, tightened = _list_labelled_opencode_keys(keys_dir, tighten=tighten_acl)
+
+    env_key = (e.get("BOB_OPENCODE_GO_API_KEY") or "").strip()
+    file_key = ""
+    legacy_path = Path(root) / "config" / "opencode-go.apikey" if root else None
+    if legacy_path is not None:
+        file_key = _read_opencode_key_file(legacy_path)
+        if file_key and tighten_acl and tighten_opencode_key_acl(legacy_path):
+            tightened.append(OPENCODE_DEFAULT_LABEL)
+
+    # Legacy sources collapse to one "default" entry (same key reported once).
+    default_key = ""
+    default_source = ""
+    if env_key and file_key and env_key == file_key:
+        default_key = env_key
+        default_source = "env"
+    elif env_key:
+        default_key = env_key
+        default_source = "env"
+    elif file_key:
+        default_key = file_key
+        default_source = "config-file"
+
+    # If labelled store already has "default", do not duplicate the same material.
+    if default_key:
+        existing_default = None
+        for lab, val in labelled.items():
+            if lab.lower() == OPENCODE_DEFAULT_LABEL:
+                existing_default = val
+                break
+        if existing_default is None:
+            labelled[OPENCODE_DEFAULT_LABEL] = default_key
+        elif existing_default == default_key:
+            pass  # same key once
+        # else: labelled default wins; legacy ignored for selection material
+
+    labels = sorted(labelled.keys(), key=lambda s: s.lower())
+    selected = _read_opencode_selected_label(root, keys_dir, e) if root else None
+    chosen_label = ""
+    chosen_key = ""
+    key_source = ""
+    if selected:
+        for lab, val in labelled.items():
+            if lab.lower() == selected.lower():
+                chosen_label = lab
+                chosen_key = val
+                key_source = (
+                    default_source
+                    if lab.lower() == OPENCODE_DEFAULT_LABEL and default_key == val
+                    else "labelled-file"
+                )
+                if lab.lower() == OPENCODE_DEFAULT_LABEL and default_source:
+                    key_source = default_source
+                break
+    if not chosen_key and labelled:
+        # No/invalid selection: prefer explicit default, else first label.
+        if OPENCODE_DEFAULT_LABEL in labelled:
+            chosen_label = OPENCODE_DEFAULT_LABEL
+            chosen_key = labelled[OPENCODE_DEFAULT_LABEL]
+            key_source = default_source or "labelled-file"
+        else:
+            # Case-insensitive default
+            for lab, val in labelled.items():
+                if lab.lower() == OPENCODE_DEFAULT_LABEL:
+                    chosen_label = lab
+                    chosen_key = val
+                    key_source = default_source or "labelled-file"
+                    break
+        if not chosen_key:
+            chosen_label = labels[0]
+            chosen_key = labelled[chosen_label]
+            key_source = "labelled-file"
+
+    # Fingerprint for cache bust (length + stable hash of key; never the key).
+    fp = ""
+    if chosen_key:
+        try:
+            fp = hashlib.sha256(chosen_key.encode("utf-8")).hexdigest()[:16]
+        except Exception:
+            fp = str(len(chosen_key))
+
+    return {
+        "api_key": chosen_key,
+        "key_source": key_source if chosen_key else "",
+        "label": chosen_label if chosen_key else "",
+        "labels": labels,
+        "acl_tightened": list(tightened),
+        "key_fingerprint": fp,
+        "configured": bool(chosen_key),
+    }
 
 
 def _stamp_opencode_acquisition(**fields) -> None:
     global _last_opencode_acquisition
-    clean = {k: v for k, v in fields.items() if k not in {"api_key", "key", "authorization", "secret"}}
+    clean = {
+        k: v
+        for k, v in fields.items()
+        if k
+        not in {
+            "api_key",
+            "key",
+            "authorization",
+            "secret",
+            "BOB_OPENCODE_GO_API_KEY",
+        }
+    }
+    # Never retain raw key material if a caller slipped it in.
+    for bad in list(clean):
+        if "key" in bad.lower() and bad not in {
+            "key_source",
+            "key_fingerprint",
+            "missing_key",
+            "labelled_keys",
+        }:
+            if isinstance(clean.get(bad), str) and len(str(clean.get(bad))) > 32:
+                clean.pop(bad, None)
     _last_opencode_acquisition = dict(clean)
+
+
+def _no_key_opencode_fuel_doc(*, fetched_at: str | None = None) -> dict:
+    """Honest fuel doc when no Go key is configured (FR #6301 Part D)."""
+    fetched = fetched_at or time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    try:
+        import opencode_fuel as of
+
+        windows = of._unknown_provider_windows()  # noqa: SLF001
+    except Exception:
+        windows = {
+            wid: {
+                "status": "unknown",
+                "used_pct": None,
+                "remaining_pct": None,
+                "reset_label": None,
+                "fetched_at": fetched,
+            }
+            for wid in ("rolling", "week", "month")
+        }
+    for wid, rec in list(windows.items()):
+        if isinstance(rec, dict):
+            row = dict(rec)
+            row["error"] = OPENCODE_NO_KEY_STATE
+            row["fetched_at"] = fetched
+            row["reset_label"] = None
+            row["resets_at"] = None
+            windows[wid] = row
+    return {
+        "pcent": {},
+        "windows": windows,
+        "source": "no-key",
+        "fetched_at": fetched,
+        "provider_read": "missing_key",
+        "opencode_account": None,
+        "opencode_state": OPENCODE_NO_KEY_STATE,
+    }
 
 
 def read_local_opencode_fuel_doc(
@@ -5347,10 +5691,16 @@ def read_local_opencode_fuel_doc(
         except Exception:
             _stamp_opencode_acquisition(kind="unavailable", configured=True, key_source="fixture")
             return {}
-    api_key, key_source = resolve_opencode_go_api_key(e)
+    sel = resolve_opencode_go_api_key_selection(e)
+    api_key = str(sel.get("api_key") or "")
+    key_source = str(sel.get("key_source") or "")
+    account_label = str(sel.get("label") or "")
+    key_fp = str(sel.get("key_fingerprint") or "")
+    acl_tightened = list(sel.get("acl_tightened") or [])
     if api_key:
         # FR #6248 / MRB #6252: Bearer zen fetch must honour opencode_fuel_cache_s
         # (digest fuel ticks every ~5s). Keep last good go-zen doc on failure.
+        # FR #6301: bust cache when selected label / key fingerprint changes (no restart).
         import opencode_fuel as of
 
         ts = float(time.time() if now is None else now)
@@ -5360,8 +5710,12 @@ def read_local_opencode_fuel_doc(
         if not isinstance(last_doc, dict):
             last_doc = {}
         cached = dict(last_doc)
+        cache_fp = str(_opencode_fuel_cache.get("key_fingerprint") or "")
+        cache_label = str(_opencode_fuel_cache.get("label") or "")
+        same_key = cache_fp == key_fp and cache_label == account_label
         if (
             not force
+            and same_key
             and cache_s > 0
             and last_at > 0
             and (ts - last_at) < cache_s
@@ -5371,33 +5725,53 @@ def read_local_opencode_fuel_doc(
                 kind=str(cached.get("provider_read") or "json"),
                 configured=True,
                 key_source=key_source,
+                label=account_label,
                 source=of.GO_ZEN_USAGE_SOURCE,
                 cache="hit",
+                acl_tightened=acl_tightened or None,
+                labels=list(sel.get("labels") or []),
             )
-            return dict(cached)
+            out = dict(cached)
+            if account_label:
+                out["opencode_account"] = account_label
+            return out
         try:
             read = of.fetch_go_zen_usage(
                 api_key,
                 url=(e.get("BOB_OPENCODE_GO_USAGE_URL") or "").strip() or None,
             )
             doc = of.fuel_doc_from_go_zen_read(read)
+            if isinstance(doc, dict) and account_label:
+                doc["opencode_account"] = account_label
             kind = read.get("kind") if isinstance(read, dict) else None
             _stamp_opencode_acquisition(
                 kind=kind or "unavailable",
                 configured=True,
                 key_source=key_source,
+                label=account_label,
                 source=of.GO_ZEN_USAGE_SOURCE,
                 schema=(read or {}).get("schema") if isinstance(read, dict) else None,
+                acl_tightened=acl_tightened or None,
+                labels=list(sel.get("labels") or []),
             )
             if kind == "json" and isinstance(doc, dict) and doc:
                 _opencode_fuel_cache["at"] = ts
                 _opencode_fuel_cache["doc"] = dict(doc)
                 _opencode_fuel_cache["value"] = _pcent_from_opencode_fuel_doc(doc)
+                _opencode_fuel_cache["key_fingerprint"] = key_fp
+                _opencode_fuel_cache["label"] = account_label
                 return dict(doc)
             # Failed provider read: keep last good when present; else return honest unknown doc.
-            if str(cached.get("source") or "") == of.GO_ZEN_USAGE_SOURCE and cached.get("provider_read") == "json":
-                return dict(cached)
-            if str(cached.get("source") or "") == of.GO_ZEN_USAGE_SOURCE:
+            if (
+                same_key
+                and str(cached.get("source") or "") == of.GO_ZEN_USAGE_SOURCE
+                and cached.get("provider_read") == "json"
+            ):
+                out = dict(cached)
+                if account_label:
+                    out["opencode_account"] = account_label
+                return out
+            if same_key and str(cached.get("source") or "") == of.GO_ZEN_USAGE_SOURCE:
                 # Prefer last good windows if any known meter exists.
                 wins = cached.get("windows") if isinstance(cached.get("windows"), dict) else {}
                 known = any(
@@ -5405,21 +5779,37 @@ def read_local_opencode_fuel_doc(
                     for w in ("rolling", "week", "month")
                 )
                 if known:
-                    return dict(cached)
+                    out = dict(cached)
+                    if account_label:
+                        out["opencode_account"] = account_label
+                    return out
             return dict(doc) if isinstance(doc, dict) else {}
         except Exception:
             _stamp_opencode_acquisition(
                 kind="unavailable",
                 configured=True,
                 key_source=key_source,
+                label=account_label,
                 source=of.GO_ZEN_USAGE_SOURCE,
+                acl_tightened=acl_tightened or None,
             )
-            if str(cached.get("source") or "") == of.GO_ZEN_USAGE_SOURCE:
-                return dict(cached)
+            if same_key and str(cached.get("source") or "") == of.GO_ZEN_USAGE_SOURCE:
+                out = dict(cached)
+                if account_label:
+                    out["opencode_account"] = account_label
+                return out
             return {}
-    # No Go key configured: fall through to helper/stats. Stamp missing_key when
-    # we are about to leave the zen path (FR #6263).
-    _stamp_opencode_acquisition(kind="missing_key", configured=False, key_source="")
+    # FR #6301 Part D: no labelled keys and no legacy default -> "no key set".
+    # Do not fall through to the tray CLI helper for Go windows (FR #6285 digest-only).
+    _stamp_opencode_acquisition(
+        kind="missing_key",
+        configured=False,
+        key_source="",
+        label="",
+        opencode_state=OPENCODE_NO_KEY_STATE,
+        acl_tightened=acl_tightened or None,
+        labels=list(sel.get("labels") or []),
+    )
     fixture = (e.get("BOB_OPENCODE_FUEL_FIXTURE") or "").strip()
     win_fixture = (e.get(OPENCODE_WINDOWS_FIXTURE_ENV) or "").strip()
     if fixture:
@@ -5429,52 +5819,8 @@ def read_local_opencode_fuel_doc(
         return doc
     if win_fixture:
         return _apply_windows_fixture({}, win_fixture)
-
-    ts = float(time.time() if now is None else now)
-    cache_s = opencode_fuel_cache_s(e)
-    last_at = float(_opencode_fuel_cache.get("at") or 0.0)
-    last_doc = _opencode_fuel_cache.get("doc")
-    if not isinstance(last_doc, dict):
-        # Migrate older cache shape that stored pcent under ``value``.
-        last_val = _opencode_fuel_cache.get("value")
-        last_doc = dict(last_val) if isinstance(last_val, dict) else {}
-    cached = dict(last_doc) if isinstance(last_doc, dict) else {}
-    helper = _resolve_opencode_fuel_helper_ps1(e)
-    if not cached:
-        disk = _load_opencode_fuel_disk(e, helper)
-        if disk:
-            cached = disk
-            _opencode_fuel_cache["doc"] = dict(disk)
-            _opencode_fuel_cache["value"] = _pcent_from_opencode_fuel_doc(disk)
-
-    status, fresh = _take_opencode_fuel_helper(ts)
-    if status == "doc":
-        chosen = _accept_opencode_fuel_doc(fresh, cached)
-        _store_opencode_fuel_doc(chosen, ts, e, helper)
-        return dict(chosen)
-    if status == "running":
-        return dict(cached) if cached else {}
-    if status == "failed":
-        # Deadline kill: back off for one TTL, keep the last real document.
-        _opencode_fuel_cache["at"] = ts
-        return dict(cached) if cached else {}
-
-    if not force and cache_s > 0 and last_at > 0 and (ts - last_at) < cache_s:
-        return dict(cached)
-
-    if helper is None:
-        return dict(cached) if cached else {}
-    if not _start_opencode_fuel_helper(helper, dict(e), ts):
-        _opencode_fuel_cache["at"] = ts
-        return dict(cached) if cached else {}
-    status, fresh = _take_opencode_fuel_helper(ts)
-    if status == "doc":
-        chosen = _accept_opencode_fuel_doc(fresh, cached)
-        _store_opencode_fuel_doc(chosen, ts, e, helper)
-        return dict(chosen)
-    # Still running (live opencode) or failed to exit yet: do not stamp an
-    # empty document over the last reading, and do not block the tick.
-    return dict(cached) if cached else {}
+    # Explicit no-key fuel doc (tests / machines without Go key).
+    return _no_key_opencode_fuel_doc()
 
 
 def read_local_opencode_pcent(
@@ -6628,8 +6974,9 @@ def publish_local_peer_fuel(
         _last_fuel_publish_diag["acquisition"] = "read-failed"
         _last_fuel_publish_diag["xai_weekly_error"] = type(exc).__name__
         peer = enrich_peer_keep_last_good_xai_weekly(peer, error="read-failed")
-    # FR #6146 / #6147 / #6248: enrich with service-owned OpenCode windows before POST.
+    # FR #6146 / #6147 / #6248 / #6301: enrich with service-owned OpenCode windows + account label.
     try:
+        peer = dict(peer)
         oc_doc = read_local_opencode_fuel_doc()
         oc = _pcent_from_opencode_fuel_doc(oc_doc)
         wins = _windows_from_opencode_fuel_doc(oc_doc)
@@ -6642,6 +6989,31 @@ def publish_local_peer_fuel(
             _last_fuel_publish_diag["opencode_acquisition"] = str(acq.get("kind"))
         if acq.get("source") and not _last_fuel_publish_diag.get("opencode_source"):
             _last_fuel_publish_diag["opencode_source"] = str(acq.get("source"))
+        if acq.get("acl_tightened"):
+            _last_fuel_publish_diag["opencode_acl_tightened"] = True
+        # Account label is the selected key label string (never the key).
+        label = None
+        if isinstance(oc_doc, dict):
+            label = oc_doc.get("opencode_account") or acq.get("label")
+        else:
+            label = acq.get("label")
+        cleaned = _sanitize_grok_account_label(label) if label else None
+        if cleaned:
+            peer["opencode_account"] = cleaned
+            _last_fuel_publish_diag["opencode_account_set"] = True
+        elif acq.get("kind") == "missing_key" or (
+            isinstance(oc_doc, dict) and oc_doc.get("opencode_state") == OPENCODE_NO_KEY_STATE
+        ):
+            peer["opencode_account"] = None
+            if isinstance(peer.get("opencode_windows"), dict):
+                # Ensure paint surfaces "no key set" via window error fields.
+                wins2 = peer["opencode_windows"]
+                for wid, rec in list(wins2.items()):
+                    if isinstance(rec, dict) and not rec.get("error"):
+                        row = dict(rec)
+                        row["error"] = OPENCODE_NO_KEY_STATE
+                        wins2[wid] = row
+            _last_fuel_publish_diag["opencode_state"] = OPENCODE_NO_KEY_STATE
     except Exception:
         pass
     # FR #6248 / #6279: attach ear-owned grok_account.

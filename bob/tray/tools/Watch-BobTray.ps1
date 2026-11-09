@@ -2852,11 +2852,12 @@ function Rebuild-BobTrayTiles {
         if (-not $ocLine) {
             try { $ocLine = Format-BobOpencodePoolLine -FreePct $OpencodeFree -GoPct $OpencodeGo -Windows $OpencodeWindows } catch { $ocLine = '' }
         }
-        if (-not $ocLine) { $ocLine = 'OpenCode  free n/a | go n/a' }
+        if (-not $ocLine) { $ocLine = 'OpenCode  go n/a' }
         if ($ocBars.Count -eq 0 -and $ocWinLines.Count -eq 0) {
-            $ocWinLines = @('free  n/a', 'go rolling  n/a', 'go weekly  n/a', 'go monthly  n/a')
+            $ocWinLines = @('go rolling - n/a', 'go weekly - n/a', 'go monthly - n/a')
         }
-        $ocTitle = $ocLine
+        # FR #6301: section title is OpenCode only (fuel detail lives in window rows).
+        $ocTitle = 'OpenCode'
         $y = Add-BobTrayFuelFamilyRow -X 0 -Y $y -Family 'opencode' -Title $ocTitle -RightText $ocRight
         if ($ocBars.Count -gt 0) {
             foreach ($b in @($ocBars)) {
@@ -2877,15 +2878,18 @@ function Rebuild-BobTrayTiles {
             $y = Add-BobTraySectionHeader -X 0 -Y $y -Title '' -Icon $grokIcon -Agent $grokAgent `
                 -RightText $overLine -RightColor $overColor
         }
-        # FR #5172 / FR #6148 / FR #6149: Copilot pool with logo; TitleColor paints stale red.
+        # FR #5172 / FR #6148 / FR #6149 / FR #6301: Copilot title only; meter is "% left - reset".
         $copilotLine = $null
         try { $copilotLine = Format-BobCopilotPoolLine -Pool $CopilotPool } catch { }
-        if (-not $copilotLine) { $copilotLine = 'copilot  allowance  unknown' }
+        if (-not $copilotLine) { $copilotLine = 'Copilot  unknown' }
+        $copilotMeter = $copilotLine
+        if ($copilotMeter.StartsWith('Copilot  ')) { $copilotMeter = $copilotMeter.Substring(9).Trim() }
+        elseif ($copilotMeter.StartsWith('Copilot ')) { $copilotMeter = $copilotMeter.Substring(8).Trim() }
         # Stale is a label, not an alarm color. FR #6204: this paint does not poll GitHub.
-        $y = Add-BobTrayFuelFamilyRow -X 0 -Y $y -Family 'copilot' -Title $copilotLine
+        $y = Add-BobTrayFuelFamilyRow -X 0 -Y $y -Family 'copilot' -Title 'Copilot'
         $copilotBar = $null
         try { $copilotBar = Get-BobCopilotMeterBarPct -Pool $CopilotPool } catch { $copilotBar = $null }
-        $y = Add-BobTrayUsageRow -X 18 -Y $y -Heading $copilotLine -RemainingPct $copilotBar -BarWidth 336 -Icon $null
+        $y = Add-BobTrayUsageRow -X 18 -Y $y -Heading $copilotMeter -RemainingPct $copilotBar -BarWidth 336 -Icon $null
         $indent = 18
         $shownMachines = @{}
         foreach ($m in @($Machines)) {
@@ -3172,18 +3176,19 @@ function Get-BobTrayWorkerAgentChoices {
     #>
     param([string]$InstallRoot = $RepoRoot, [switch]$Refresh)
     $fallbackReason = 'this bob-worker.exe has no --list-agents; rebuild to choose an agent'
-    $unknownReason = 'fuel unknown (not exhausted); start checks this agent'
+    # FR #6301: start entries carry no fuel/quota prose (empty reason).
+    $unknownReason = ''
     $fallback = @(
-        [ordered]@{ id = 'auto'; label = 'Automatic'; available = $true; installed = $true; reason = 'Grok, then Cursor, then OpenCode' }
-        [ordered]@{ id = 'grok'; label = 'Grok'; available = $false; installed = $false; reason = $fallbackReason }
-        [ordered]@{ id = 'cursor'; label = 'Cursor'; available = $false; installed = $false; reason = $fallbackReason }
-        [ordered]@{ id = 'opencode'; label = 'OpenCode'; available = $false; installed = $false; reason = $fallbackReason }
+        [ordered]@{ id = 'auto'; label = 'Automatic'; available = $true; installed = $true; reason = 'Grok, then Cursor, then OpenCode'; fuel_state = 'known' }
+        [ordered]@{ id = 'grok'; label = 'Grok'; available = $false; installed = $false; reason = $fallbackReason; fuel_state = 'known' }
+        [ordered]@{ id = 'cursor'; label = 'Cursor'; available = $false; installed = $false; reason = $fallbackReason; fuel_state = 'known' }
+        [ordered]@{ id = 'opencode'; label = 'OpenCode'; available = $false; installed = $false; reason = $fallbackReason; fuel_state = 'known' }
     )
     $unknown = @(
-        [ordered]@{ id = 'auto'; label = 'Automatic'; available = $true; installed = $true; reason = 'Grok, then Cursor, then OpenCode' }
-        [ordered]@{ id = 'grok'; label = 'Grok'; available = $true; installed = $true; reason = $unknownReason }
-        [ordered]@{ id = 'cursor'; label = 'Cursor'; available = $true; installed = $true; reason = $unknownReason }
-        [ordered]@{ id = 'opencode'; label = 'OpenCode'; available = $true; installed = $true; reason = $unknownReason }
+        [ordered]@{ id = 'auto'; label = 'Automatic'; available = $true; installed = $true; reason = 'Grok, then Cursor, then OpenCode'; fuel_state = 'known' }
+        [ordered]@{ id = 'grok'; label = 'Grok'; available = $true; installed = $true; reason = $unknownReason; fuel_state = 'unknown' }
+        [ordered]@{ id = 'cursor'; label = 'Cursor'; available = $true; installed = $true; reason = $unknownReason; fuel_state = 'unknown' }
+        [ordered]@{ id = 'opencode'; label = 'OpenCode'; available = $true; installed = $true; reason = $unknownReason; fuel_state = 'unknown' }
     )
     $exe = Join-Path $InstallRoot 'worker\bob-worker.exe'
     if (-not (Test-Path -LiteralPath $exe)) { return $fallback }
@@ -3215,10 +3220,17 @@ function Get-BobTrayWorkerAgentChoices {
             # list would mark missing and exhausted agents clickable. Keep the
             # first lookup unless the refresh returned a real reading.
             $again = @(Get-BobTrayWorkerAgentChoices -InstallRoot $InstallRoot -Refresh | Where-Object { $_ -and $_.id })
-            $againReasons = @($again | ForEach-Object { [string]$_.reason })
+            # FR #6301: placeholder unknown rows use fuel_state=unknown + empty reason.
+            # A real reading sets fuel_state=known (even when reason is empty).
+            $nonAuto = @($again | Where-Object { [string]$_.id -ne 'auto' })
+            $unknownFuel = @($nonAuto | Where-Object {
+                    $fs = [string]$_.fuel_state
+                    $rs = [string]$_.reason
+                    ($fs -eq 'unknown') -or ($rs -like 'fuel unknown (not exhausted)*')
+                }).Count
             $refreshUnknown = (
                 $again.Count -eq 0 -or
-                (@($againReasons | Where-Object { $_ -like 'fuel unknown (not exhausted)*' }).Count -ge 3)
+                ($nonAuto.Count -ge 3 -and $unknownFuel -ge 3)
             )
             if (-not $refreshUnknown) { return @($again) }
         }
@@ -3322,9 +3334,9 @@ $miAgents = $menu.Items.Add('Agents')
 # Seed is local text only. Opening the menu (visible PowerShell tray) refreshes off the UI thread.
 Update-BobTrayWorkerAgentsMenu $miAgents @(
     [ordered]@{ id = 'auto'; label = 'Automatic'; available = $true; installed = $true; reason = 'Grok, then Cursor, then OpenCode' }
-    [ordered]@{ id = 'grok'; label = 'Grok'; available = $true; installed = $true; reason = 'fuel unknown (not exhausted); start checks this agent' }
-    [ordered]@{ id = 'cursor'; label = 'Cursor'; available = $true; installed = $true; reason = 'fuel unknown (not exhausted); start checks this agent' }
-    [ordered]@{ id = 'opencode'; label = 'OpenCode'; available = $true; installed = $true; reason = 'fuel unknown (not exhausted); start checks this agent' }
+    [ordered]@{ id = 'grok'; label = 'Grok'; available = $true; installed = $true; reason = '' }
+    [ordered]@{ id = 'cursor'; label = 'Cursor'; available = $true; installed = $true; reason = '' }
+    [ordered]@{ id = 'opencode'; label = 'OpenCode'; available = $true; installed = $true; reason = '' }
 )
 $miAgents.Add_DropDownOpening({
         if (Get-Command Test-BobTrayEngineMode -ErrorAction SilentlyContinue) {

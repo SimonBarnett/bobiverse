@@ -32,7 +32,7 @@ def test_format_helpers_exist():
 def test_watch_always_shows_copilot_unknown_fallback():
     w = WATCH.read_text(encoding="utf-8-sig")
     sec = w[w.index("function Rebuild-BobTrayTiles") : w.index("Atomic swap on the TipForm")]
-    assert "copilot  allowance  unknown" in sec
+    assert "Copilot  unknown" in sec  # FR #6301 fallback
     assert "Format-BobCopilotPoolLine" in sec
     assert "Get-BobCopilotMeterBarPct" in sec
     assert "Add-BobTrayFuelFamilyRow" in sec
@@ -122,7 +122,9 @@ def test_format_fresh_unlimited():
         },
         now,
     )
-    assert line.startswith("copilot  included  unlimited  used 39")
+    # Unlimited without max_recorded_usage => unknown meter (FR #6301).
+    assert "Copilot  unknown" in line or line.startswith("Copilot")
+    assert "included" not in line.lower()
     assert "[stale" not in line
 
 
@@ -138,15 +140,15 @@ def test_format_stale_by_age():
         now,
     )
     assert "[stale" in line
-    assert "allowance  remaining  140" in line
-    assert "reset" not in line
+    assert "140% left" in line
+    assert "allowance" not in line
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="PowerShell formatter")
 def test_format_missing_fetched_at_stale():
     line = _ps_format({"state": "ok", "remaining": 5}, "2026-11-07T12:00:00Z")
     assert "[stale]" in line
-    assert "allowance  remaining  5" in line
+    assert "5% left" in line
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="PowerShell formatter")

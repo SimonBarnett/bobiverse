@@ -78,7 +78,9 @@ def test_list_agents_is_agents_not_fuel_pools():
     assert "opencode-free" not in json.dumps(rows)
     bare = bw.list_worker_agents(_fuel(), None, None, None, auth_present=False)
     assert bare[1]["installed"] is False and bare[1]["available"] is False
-    assert bare[3]["reason"].startswith("explicit opencode:")
+    # FR #6301: agent-start rows carry no fuel/reason text.
+    assert bare[3]["reason"] == ""
+    assert bare[3]["available"] is False
 
 
 def test_describe_launch_passes_explicit_agent_only_when_requested(tmp_path: Path):
@@ -129,8 +131,8 @@ def test_list_agents_unknown_fuel_stays_clickable_and_does_not_read(monkeypatch,
     for agent_id in ("grok", "cursor", "opencode"):
         assert by_id[agent_id]["available"] is True
         assert by_id[agent_id]["fuel_state"] == "unknown"
-        assert "not exhausted" in by_id[agent_id]["reason"]
-        assert "no usable fuel" not in by_id[agent_id]["reason"]
+        # FR #6301: no fuel prose on start entries.
+        assert by_id[agent_id]["reason"] == ""
 
 
 def test_refresh_fuel_uses_real_reading_then_cache(monkeypatch, capsys, tmp_path: Path):
@@ -177,7 +179,8 @@ def test_known_exhausted_opencode_stays_unavailable_on_the_menu(monkeypatch, cap
     listed = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
     by_id = {row["id"]: row for row in listed["agents"]}
     assert by_id["opencode"]["available"] is False
-    assert by_id["opencode"]["reason"].startswith("explicit opencode: no usable fuel")
+    # FR #6301: unavailable still, but reason text is empty on the menu.
+    assert by_id["opencode"]["reason"] == ""
     assert listed["refresh"] is False
 
 

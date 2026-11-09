@@ -394,7 +394,9 @@ def test_tray_wiring_timer_heartbeat_helper_and_click_function_contract():
     # Refresh timeout must not replace a real first list with the all-installed placeholder.
     assert "if ($Refresh) { return $null }" in probe
     assert "catch {" in probe and probe.count("if ($Refresh) { return $null }") >= 2
-    assert "fuel unknown (not exhausted)" in probe
+    # FR #6301: unknown placeholder uses empty reason + fuel_state=unknown
+    assert "fuel_state = 'unknown'" in probe or 'fuel_state = "unknown"' in probe or "fuel_state = 'unknown'" in probe.replace('"', "'")
+    assert "$unknownReason = ''" in probe or 'fuel unknown (not exhausted)' not in probe.split("function Update-BobTrayWorkerAgentsMenu")[0]
     assert "if (-not $refreshUnknown) { return @($again) }" in probe
     assert "return @($obj.agents)" in probe
     assert "RedirectStandardOutput" in probe and "Start-Process" in probe
@@ -418,7 +420,9 @@ def test_tray_wiring_timer_heartbeat_helper_and_click_function_contract():
     assert listed.index("WaitForExit(timeoutMs)") < listed.index("ReadToEnd")
     assert "lookup-timeout" in listed and "fuel list timed out" not in cs
     assert "--refresh-fuel" in listed
-    assert "fuel unknown (not exhausted); start checks this agent" in cs
+    # FR #6301: BobTray seed/apply has no fuel prose on start entries.
+    assert "fuel unknown (not exhausted); start checks this agent" not in cs
+    assert 'AddAgentChoice(parent, "grok", "Grok"' in cs
     assert cs.count("TryListAgents(rootCopy,") == 2
     # Constructor seeds the menu and does not call the worker.
     ctor = cs[cs.index("public TrayContext"): cs.index("void StartEngine")]

@@ -160,14 +160,15 @@ Write-Output $p
 
 
 COPILOT_POOLS = [
+    # FR #6301: meter is "<x>% left" (optional reset); unlimited without max => unknown.
     (None, "Copilot  unknown"),
     ({"state": "unknown"}, "Copilot  unknown"),
-    ({"state": "ok", "remaining": 42}, "Copilot  42 remaining"),
-    ({"state": "ok", "remaining": 0}, "Copilot  0 remaining"),
-    ({"state": "exhausted", "remaining": 0}, "Copilot  exhausted"),
-    ({"unlimited": True, "used": 12, "remaining": 0}, "Copilot  unlimited, 12 used"),
-    ({"state": "exhausted", "unlimited": True, "used": 12, "remaining": 0}, "Copilot  unlimited, 12 used"),
-    ({"state": "unknown", "unlimited": True}, "Copilot  unlimited, 0 used"),
+    ({"state": "ok", "remaining": 42}, "Copilot  42% left"),
+    ({"state": "ok", "remaining": 0}, "Copilot  0% left"),
+    ({"state": "exhausted", "remaining": 0}, "Copilot  0% left"),
+    ({"unlimited": True, "used": 12, "remaining": 0}, "Copilot  unknown"),
+    ({"state": "exhausted", "unlimited": True, "used": 12, "remaining": 0}, "Copilot  unknown"),
+    ({"state": "unknown", "unlimited": True}, "Copilot  unknown"),
 ]
 
 
@@ -297,9 +298,9 @@ def test_tray_menu_is_status_agent_plan_acknowledge_log_restart_exit(dialogs, tm
         "Status",
         "Agents",
         "Automatic - Grok, then Cursor, then OpenCode",
-        "Grok - fuel unknown (not exhausted); start checks this agent",
-        "Cursor - fuel unknown (not exhausted); start checks this agent",
-        "OpenCode - fuel unknown (not exhausted); start checks this agent",
+        "Grok",
+        "Cursor",
+        "OpenCode",
         "Plan",
         "Acknowledge",
         "Open log",

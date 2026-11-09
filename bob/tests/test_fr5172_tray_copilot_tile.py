@@ -12,9 +12,9 @@ def test_format_copilot_pool_line_exists():
     src = HOVER.read_text(encoding="utf-8-sig")
     assert "function Format-BobCopilotPoolLine" in src
     assert "function Get-BobCopilotFreshness" in src
-    assert "unlimited, {0} used" in src
+    assert "% left" in src
     assert "Copilot  unknown" in src
-    assert "exhausted" in src
+    assert "exhausted" in src  # state check still present
     assert "copilot_pool" in src
     assert "copilot_line" in src
     assert "copilot_stale_line" in src

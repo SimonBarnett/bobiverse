@@ -25,39 +25,39 @@ FIRST = {
     "refresh": True,
     "agents": [
         {"id": "auto", "label": "Automatic", "available": True, "installed": True,
-         "reason": "Grok, then Cursor, then OpenCode"},
+         "reason": "Grok, then Cursor, then OpenCode", "fuel_state": "known"},
         {"id": "grok", "label": "Grok", "available": True, "installed": True,
-         "reason": "explicit grok (weekly pct=99)"},
+         "reason": "", "fuel_state": "known"},
         {"id": "cursor", "label": "Cursor", "available": False, "installed": False,
-         "reason": "explicit cursor: agent.cmd missing"},
+         "reason": "", "fuel_state": "known"},
         {"id": "opencode", "label": "OpenCode", "available": False, "installed": True,
-         "reason": "explicit opencode: no usable fuel (free=0 go=0)"},
+         "reason": "", "fuel_state": "known"},
     ],
 }
 UNKNOWN = {
     "refresh": False,
     "agents": [
         {"id": "auto", "label": "Automatic", "available": True, "installed": True,
-         "reason": "Grok, then Cursor, then OpenCode"},
+         "reason": "Grok, then Cursor, then OpenCode", "fuel_state": "known"},
         {"id": "grok", "label": "Grok", "available": True, "installed": True,
-         "reason": "fuel unknown (not exhausted); start checks this agent"},
+         "reason": "", "fuel_state": "unknown"},
         {"id": "cursor", "label": "Cursor", "available": True, "installed": True,
-         "reason": "fuel unknown (not exhausted); start checks this agent"},
+         "reason": "", "fuel_state": "unknown"},
         {"id": "opencode", "label": "OpenCode", "available": True, "installed": True,
-         "reason": "fuel unknown (not exhausted); start checks this agent"},
+         "reason": "", "fuel_state": "unknown"},
     ],
 }
 REAL = {
     "refresh": False,
     "agents": [
         {"id": "auto", "label": "Automatic", "available": True, "installed": True,
-         "reason": "Grok, then Cursor, then OpenCode"},
+         "reason": "Grok, then Cursor, then OpenCode", "fuel_state": "known"},
         {"id": "grok", "label": "Grok", "available": True, "installed": True,
-         "reason": "explicit grok (weekly pct=99)"},
+         "reason": "", "fuel_state": "known"},
         {"id": "cursor", "label": "Cursor", "available": False, "installed": False,
-         "reason": "explicit cursor: agent.cmd missing"},
+         "reason": "", "fuel_state": "known"},
         {"id": "opencode", "label": "OpenCode", "available": True, "installed": True,
-         "reason": "explicit opencode (free=100)"},
+         "reason": "", "fuel_state": "known"},
     ],
 }
 
