@@ -32,6 +32,7 @@ def test_fr6285_tray_ci_workflow_pins():
     assert "runs-on: windows-latest" in text
     assert "Build-BobDialogs.ps1" in text
     assert "bob/tray/**" in text
+    assert "bob/tests/test_fr6285_tray_build_ci.py" in text
     assert "persist-credentials: false" in text
     assert "upload-artifact@v4" in text
     assert "name: bob-tray" in text
@@ -41,6 +42,9 @@ def test_fr6285_tray_ci_workflow_pins():
     assert "bob-tray.exe" in text
     assert "xAI weekly" in text
     assert "Cursor / xAI weekly" in text  # asserted absent from the PE
+    # Active throw paths (not merely commented mention of the heading strings).
+    assert "missing UTF-16LE heading" in text
+    assert "still embeds stale heading" in text
     assert "workflow_dispatch" in text
     assert BUILD.is_file()
 
@@ -57,7 +61,10 @@ def test_fr6285_status_cs_heading_and_docs_ci():
     assert "Build-BobDialogs.ps1" in docs
 
 
-@pytest.mark.skipif(not PS or os.name != "nt", reason="needs Windows PowerShell + csc")
+@pytest.mark.skipif(
+    not PS or os.name != "nt",
+    reason=f"needs Windows + powershell/pwsh + csc (PS={PS!r})",
+)
 def test_fr6285_local_build_embeds_xai_weekly_heading(tmp_path: Path):
     out = tmp_path / "tray-out"
     out.mkdir()
@@ -86,3 +93,9 @@ def test_fr6285_local_build_embeds_xai_weekly_heading(tmp_path: Path):
     bad = "Cursor / xAI weekly".encode("utf-16le")
     assert needle in data, "built bob-tray.exe missing UTF-16LE 'xAI weekly'"
     assert bad not in data, "built bob-tray.exe still has stale Cursor mixed heading"
+
+def test_mrb6294_docs_list_ci_triggers_including_test_path():
+    """MRB #6294: docs must list the same path filters as build-bob-tray.yml."""
+    docs = DOCS.read_text(encoding="utf-8-sig")
+    assert "bob/tests/test_fr6285_tray_build_ci.py" in docs
+    assert "missing UTF-16LE heading" in docs or "still embeds stale heading" in docs
