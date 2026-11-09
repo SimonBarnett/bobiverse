@@ -3204,7 +3204,7 @@ function Get-BobTrayWorkerAgentChoices {
         $p = Start-Process -FilePath $exe -ArgumentList $argList -PassThru -WindowStyle Hidden -RedirectStandardOutput $outFile -RedirectStandardError $errFile
         if (-not $p.WaitForExit($waitMs)) {
             try { $p.Kill() } catch { }
-            # A refresh that dies keeps the list already shown. The timeout placeholder
+            # A refresh that dies keeps the list already shown. The timeout stub list
             # marks every agent installed and clickable, which would hide a real miss.
             if ($Refresh) { return $null }
             return $unknown
@@ -3220,7 +3220,7 @@ function Get-BobTrayWorkerAgentChoices {
             # list would mark missing and exhausted agents clickable. Keep the
             # first lookup unless the refresh returned a real reading.
             $again = @(Get-BobTrayWorkerAgentChoices -InstallRoot $InstallRoot -Refresh | Where-Object { $_ -and $_.id })
-            # FR #6301: placeholder unknown rows use fuel_state=unknown + empty reason.
+            # FR #6301: unknown-fuel stub rows use fuel_state=unknown + empty reason.
             # A real reading sets fuel_state=known (even when reason is empty).
             $nonAuto = @($again | Where-Object { [string]$_.id -ne 'auto' })
             $unknownFuel = @($nonAuto | Where-Object {

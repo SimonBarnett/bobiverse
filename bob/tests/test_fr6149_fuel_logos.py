@@ -81,9 +81,20 @@ def test_fr6149_sync_copies_fuel_logos():
 
 
 def test_fr6149_no_placeholder_or_scraped_claim():
-    for p in (ASSETS / "LICENSE.md", WATCH, SYNC):
+    """FR #6149 / FR #6323: forbid logo/asset PLACEHOLDER claims; allow Watch prose.
+
+    LICENSE + Sync must not say PLACEHOLDER. Watch-BobTray may use the word in
+    comments about timeout/fuel_state stubs; still forbid logo-asset tokens there.
+    """
+    for p in (ASSETS / "LICENSE.md", SYNC):
         t = p.read_text(encoding="utf-8-sig")
         assert "PLACEHOLDER" not in t.upper()
+    watch = WATCH.read_text(encoding="utf-8-sig").upper()
+    # Logo-scoped tokens only (FR #6323): do not blanket-scan Watch for PLACEHOLDER.
+    assert "PLACEHOLDER.PNG" not in watch
+    assert "<<PLACEHOLDER>>" not in watch
+    assert "FUEL-LOGOS/PLACEHOLDER" not in watch.replace("\\", "/")
+    assert "FUEL-LOGOS\\PLACEHOLDER" not in watch
     # Assets are tiny original badges; refuse obvious scraped multi-MB dumps without license note
     for name in FAMILIES:
         assert (ASSETS / f"{name}.png").stat().st_size < 50_000
