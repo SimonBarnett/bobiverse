@@ -1,8 +1,8 @@
-"""FR #5500: never offer docs/mrb-* PRs as MRB (first-level pin or pin-of-pin).
+"""FR #5500 / #6340: auto-skip docs/mrb pins; explicit !assign must still offer.
 
-Chair offered MRB bobiverse#5499 head docs/mrb-5215. FR #4917 only skipped
-lesson-of-lesson / pin-of-pin; first-level docs/mrb still queued. Skip all
-docs/mrb-* at offer, webhook, resync, and claim_from_github_issue.
+FR #5500: webhook / resync skip first-level docs/mrb while the original is open
+(and pin-of-pin / harvest-lesson stay skipped). FR #6340: once a row is queued
+(orphan stamp or explicit enqueue), offer must not refuse with docs_mrb_pin.
 """
 from __future__ import annotations
 
@@ -27,19 +27,20 @@ def _docs_mrb_row(**extra):
     return row
 
 
-def test_fr5500_docs_mrb_title_not_offerable():
-    why = gitclaim.mrb_row_not_offerable_reason(_docs_mrb_row())
-    assert why == "docs_mrb_pin"
-    assert gitclaim.mrb_row_offerable(_docs_mrb_row()) is False
+def test_fr5500_docs_mrb_queued_row_is_offerable():
+    """FR #6340: offer path must not refuse a queued docs/mrb pin."""
+    assert gitclaim.mrb_row_not_offerable_reason(_docs_mrb_row()) is None
+    assert gitclaim.mrb_row_offerable(_docs_mrb_row()) is True
+    assert gitclaim.mrb_row_offerable(_docs_mrb_row(docs_mrb_orphan="1")) is True
 
 
-def test_fr5500_docs_mrb_head_only_not_offerable():
+def test_fr5500_docs_mrb_head_only_queued_offerable():
     row = _docs_mrb_row(title="pin harvest skip after harvest-lesson MRB")
     assert gitclaim.is_docs_mrb_pin_pr(
         title=row["title"], head_ref=row["head"]
     )
-    assert gitclaim.mrb_row_not_offerable_reason(row) == "docs_mrb_pin"
-    assert gitclaim.mrb_row_offerable(row) is False
+    assert gitclaim.mrb_row_not_offerable_reason(row) is None
+    assert gitclaim.mrb_row_offerable(row) is True
 
 
 def test_fr5500_product_pr_still_offerable():
@@ -57,6 +58,7 @@ def test_fr5500_product_pr_still_offerable():
 
 
 def test_fr5500_webhook_opened_docs_mrb_does_not_claim():
+    """Without parent-open checker, webhook still skips (safe default)."""
     claim = gitclaim.claim_from_payload(
         "pull_request",
         {
@@ -75,7 +77,8 @@ def test_fr5500_webhook_opened_docs_mrb_does_not_claim():
     assert claim is None
 
 
-def test_fr5500_claim_from_github_issue_docs_mrb_none():
+def test_fr5500_claim_from_github_issue_docs_mrb_for_assign():
+    """FR #6340 acceptance 7: explicit enqueue reaches docs/mrb pins."""
     issue = {
         "number": 5499,
         "title": "docs/mrb-5215: pin harvest skip after harvest-lesson MRB",
@@ -86,10 +89,13 @@ def test_fr5500_claim_from_github_issue_docs_mrb_none():
         "draft": False,
         "labels": [],
     }
-    assert gitclaim.claim_from_github_issue(REPO, issue) is None
+    claim = gitclaim.claim_from_github_issue(REPO, issue)
+    assert claim is not None
+    assert claim.task == "MRB"
+    assert claim.docs_mrb_orphan is True
 
 
-def test_fr5500_enqueue_docs_mrb_skipped(tmp_path: Path):
+def test_fr5500_enqueue_docs_mrb_added(tmp_path: Path):
     home = tmp_path / "chair"
     home.mkdir()
     gitclaim._write_queue(
@@ -113,6 +119,7 @@ def test_fr5500_enqueue_docs_mrb_skipped(tmp_path: Path):
     status, detail = gitclaim.enqueue_open_github_item(
         doc, REPO, "MRB", "5499", fetch_issue=fetch_issue, home=home
     )
-    assert status == "refused"
-    assert "not an open offerable" in detail
-    assert not any(r.get("id") == "#5499" for r in (doc.get("unaccepted") or []))
+    assert status == "added", (status, detail)
+    rows = [r for r in (doc.get("unaccepted") or []) if r.get("id") == "#5499"]
+    assert rows
+    assert rows[0].get("docs_mrb_orphan") in ("1", "true", True, 1)

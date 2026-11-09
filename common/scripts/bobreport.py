@@ -3054,7 +3054,18 @@ def apply_git_webhook(home: Path, event: str, payload: dict) -> GitWebhookOutcom
     if hit:
         line = redact_git_announce_line(line, hit)
 
-    claim = gitclaim.claim_from_payload(event, payload, line=line)
+    # FR #6340: webhook may claim one MRB for a clean docs/mrb orphan when the
+    # parent pull is already merged/closed (injectable open-checker).
+    docs_mrb_parent_open = None
+    try:
+        _parent_chk = gitclaim.github_pr_exists_checker(home=home)
+        if _parent_chk is not None:
+            docs_mrb_parent_open = _parent_chk
+    except Exception:  # noqa: BLE001
+        docs_mrb_parent_open = None
+    claim = gitclaim.claim_from_payload(
+        event, payload, line=line, docs_mrb_parent_open=docs_mrb_parent_open
+    )
     if claim is not None:
         queued = gitclaim.enqueue_unaccepted(home, claim)
         # FR #1811: surface queue-lock-timeout / queue-read / queue-write (claim also spooled).
