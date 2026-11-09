@@ -2966,6 +2966,8 @@ function Get-BobTrayHover {
                 if (-not $smid) { continue }
                 if ($fuelStaleBy.ContainsKey($smid) -and $fuelStaleBy[$smid]) { continue }
                 if ($smid -eq $machineId -and $localWeeklyLocked -and -not $weeklyBy.ContainsKey($smid)) { continue }
+                # FR #6267 / AgentMonitor#150: never seat-min a peer digest % onto a known local weekly.
+                if ($smid -eq $machineId -and $localWeeklyLocked) { continue }
                 # FR #6267: digest-locked peers keep their own digest % (no seat-min clobber).
                 if ($digestWeeklyLocked.ContainsKey($smid) -and $digestWeeklyLocked[$smid]) { continue }
                 if ($digestPresent -and $smid -ne $machineId) { continue }
