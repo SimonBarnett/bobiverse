@@ -666,7 +666,7 @@ def resolve_repo_clone(
 
     Order: ``BOB_REPO_CLONE_<leaf>``, bobiverse->install_root,
     ``BOB_AI_ROOT\\<leaf>`` or ``<parent of install_root>\\<leaf>`` when that folder is a git checkout.
-    Bare ``BOB_REPO_CLONE`` is ignored (docs/mrb-6324) — it has no repo name.
+    Bare ``BOB_REPO_CLONE`` is ignored (docs/mrb-6324) --- it has no repo name.
     """
     env = env or {}
     leaf = _repo_leaf(repo)
@@ -1023,7 +1023,7 @@ def ensure_opencode_job_worktree(
         except OSError:
             pass
         return ready
-    # Create claimed ok but classify still absent/forbidden — surface as create failed.
+    # Create claimed ok but classify still absent/forbidden --- surface as create failed.
     reason = "worktree-create-failed:verify"
     nack = _nack_key(key, reason)
     return {

@@ -16,3 +16,10 @@ def test_docs_mrb6319_webhooks_pins_reset_rules():
     assert "go-zen" in text or "go zen" in text.lower()
     # Must not claim missing resetsAt alone always means unavailable when resetInSec exists.
     assert "even when" in text and "resetsAt` is absent" in text
+
+def test_docs_mrb6319_webhooks_pins_resetinsec_wins_when_both_present():
+    text = WEBHOOKS.read_text(encoding="utf-8")
+    assert "resetInSec" in text and "resetsAt" in text
+    assert "`resetInSec` wins" in text
+    assert "_go_zen_meter_to_window" in text
+

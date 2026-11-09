@@ -47,3 +47,28 @@ def test_docs_mrb6324_git_run_requests_utf8():
     src = inspect.getsource(c._git_run)
     assert 'encoding="utf-8"' in src or "encoding='utf-8'" in src
     assert "errors=" in src
+
+
+class _FakeProc:
+    def __init__(self, stdout, stderr=b"", returncode=0):
+        self.stdout = stdout
+        self.stderr = stderr
+        self.returncode = returncode
+
+
+def test_docs_mrb6324_git_run_replaces_invalid_utf8():
+    """Invalid UTF-8 from git must be replaced; _git_run must not raise."""
+    bad = b"ok-\xff-tail"
+
+    def fake_run(args, **kwargs):
+        assert kwargs.get("encoding") in ("utf-8", "utf8")
+        assert kwargs.get("errors") == "replace"
+        text = bad.decode(kwargs["encoding"], errors=kwargs["errors"])
+        return _FakeProc(text)
+
+    proc = c._git_run(fake_run, ["git", "status"])
+    assert isinstance(proc.stdout, str)
+    assert "\ufffd" in proc.stdout
+    assert proc.stdout.startswith("ok-")
+    assert "tail" in proc.stdout
+
