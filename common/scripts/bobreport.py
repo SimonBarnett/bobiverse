@@ -5908,21 +5908,94 @@ def xai_weekly_auth_path() -> tuple[Path | None, str]:
     return None, "no-profile"
 
 
-def _grok_auth_bearer_from_file(path: Path) -> str | None:
-    """Load the session ``key`` from auth.json into memory. Never log the value."""
+def _parse_auth_expires_at(raw: object) -> datetime | None:
+    """Parse auth.json expires_at; never logs values."""
+    if raw is None:
+        return None
+    if isinstance(raw, (int, float)):
+        try:
+            return datetime.fromtimestamp(float(raw), tz=timezone.utc)
+        except (OverflowError, OSError, ValueError):
+            return None
+    s = str(raw).strip()
+    if not s:
+        return None
     try:
-        doc = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError, TypeError, ValueError):
+        if s.endswith("Z"):
+            s = s[:-1] + "+00:00"
+        dt = datetime.fromisoformat(s)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc)
+    except ValueError:
         return None
+
+
+def _auth_entry_bearer(entry: dict) -> str | None:
+    """Session bearer from one auth.json entry. Prefer ``key``, else ``access_token``."""
+    for field in ("key", "access_token"):
+        val = entry.get(field)
+        if isinstance(val, str) and val.strip():
+            return val.strip()
+    return None
+
+
+def _auth_slot_is_api_key(slot: object) -> bool:
+    s = str(slot or "").strip().lower()
+    return s == "xai::api_key" or s.endswith("::api_key") or s == "api_key"
+
+
+def load_grok_auth_bearer(path: Path) -> tuple[str | None, str | None]:
+    """Load interactive session bearer from Grok CLI auth.json.
+
+    Returns ``(token, error)``. ``error`` is one of:
+    ``auth-file-unreadable``, ``auth-file-bad-json``, ``auth-key-missing``, or None.
+    Never logs or returns credential material in ``error``.
+
+    Layout (Grok CLI / flamingo field names): top-level map keyed by
+    ``issuer::client_id``; each entry may carry ``key`` (access token),
+    ``refresh_token``, ``expires_at``, profile fields. ``xai::api_key`` slots
+    are skipped for the live billing session path. Prefer a non-expired entry.
+    """
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except OSError:
+        return None, "auth-file-unreadable"
+    except UnicodeError:
+        return None, "auth-file-bad-json"
+    try:
+        doc = json.loads(raw)
+    except json.JSONDecodeError:
+        return None, "auth-file-bad-json"
     if not isinstance(doc, dict) or not doc:
-        return None
-    for _issuer, entry in doc.items():
+        return None, "auth-key-missing"
+
+    now = datetime.now(timezone.utc)
+    candidates: list[tuple[int, str]] = []
+    for slot, entry in doc.items():
         if not isinstance(entry, dict):
             continue
-        key = entry.get("key")
-        if isinstance(key, str) and key.strip():
-            return key.strip()
-    return None
+        if _auth_slot_is_api_key(slot):
+            continue
+        token = _auth_entry_bearer(entry)
+        if not token:
+            continue
+        exp = _parse_auth_expires_at(entry.get("expires_at"))
+        # rank: 0 = unexpired / unknown expiry, 1 = expired
+        rank = 0
+        if exp is not None and exp <= now:
+            rank = 1
+        candidates.append((rank, token))
+    if not candidates:
+        return None, "auth-key-missing"
+    candidates.sort(key=lambda t: t[0])
+    return candidates[0][1], None
+
+
+def _grok_auth_bearer_from_file(path: Path) -> str | None:
+    """Compat wrapper: session key only (FR #6274). Prefer ``load_grok_auth_bearer``."""
+    token, _err = load_grok_auth_bearer(path)
+    return token
 
 
 def parse_xai_billing_credits_response(
@@ -6002,13 +6075,16 @@ def fetch_live_xai_weekly(*, now: datetime | None = None) -> dict | None:
             "error": "auth-file-missing",
         }
         return None
-    token = _grok_auth_bearer_from_file(path)
+    try:
+        token, auth_err = load_grok_auth_bearer(path)
+    except OSError:
+        token, auth_err = None, "auth-file-unreadable"
     if not token:
         _last_xai_acquisition = {
             "identity": identity,
             "read": False,
             "live": False,
-            "error": "auth-key-missing",
+            "error": auth_err or "auth-key-missing",
         }
         return None
     try:
