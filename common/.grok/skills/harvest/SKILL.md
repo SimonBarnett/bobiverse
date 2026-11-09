@@ -360,6 +360,7 @@ routes to bobiverse via the split rule.
 - chair_health._copilot_tick must not call observe_quota while Copilot dispatch is disabled unless observation_opt_in (BOB_COPILOT_OBSERVE or allowance observe); settle_stuck_accepted still runs first
 - Digest HTTP from Python must send Bobiverse-bobreport User-Agent; bare urllib UA gets edge 403 and starves ear fuel merge --- verify with Write-BobIrcStatus -PostDigestWebhook and digest machines.<id>.weekly
 - BOBIVERSE_NO_UPDATE must Trim Process+Machine (NSSM AppEnvironmentExtra padding); Start-Bob/Jeeves/Airc suppress Sync and Update invocation before either begins and log no-update-guard seen/effective (FR #6259).
+- Win32 ctypes on x64: set GetCurrentProcess.restype=HANDLE (and CreateFileW/token API argtypes) or OpenProcessToken returns ERROR_INVALID_HANDLE (6) before SeBackupPrivilege CreateFile runs
 
 ## Harvest digest (lessons audit 2026-10-06)
 
