@@ -360,6 +360,7 @@ routes to bobiverse via the split rule.
 - chair_health._copilot_tick must not call observe_quota while Copilot dispatch is disabled unless observation_opt_in (BOB_COPILOT_OBSERVE or allowance observe); settle_stuck_accepted still runs first
 - Digest HTTP from Python must send Bobiverse-bobreport User-Agent; bare urllib UA gets edge 403 and starves ear fuel merge --- verify with Write-BobIrcStatus -PostDigestWebhook and digest machines.<id>.weekly
 - BOBIVERSE_NO_UPDATE must Trim Process+Machine (NSSM AppEnvironmentExtra padding); Start-Bob/Jeeves/Airc suppress Sync and Update invocation before either begins and log no-update-guard seen/effective (FR #6259).
+- FR #6267: when TipForm paints peer Cursor/xAI weekly below digest (e.g. ntsa 43 vs marchhare digest 74), lock digest weekly against peer peek/peCache/seat-min and prefer digest cursor_pools.account over bob-seats.json labels
 
 ## Harvest digest (lessons audit 2026-10-06)
 
