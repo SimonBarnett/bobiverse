@@ -153,6 +153,13 @@ A PyInstaller onefile `bob-worker.exe` (or hashed `bob-worker-<hash>.exe`) is **
 * **Install-root job git (FR #4843 / FR #4988):** never git checkout/commit in --install-root. Seats must `git worktree add` to `Get-BobiverseJobWorktreePath` (`<data drive>\ai\worktrees\<repo>\<job>`; never a drive root). At agent start bob-worker logs install-root: WARN FR #4843 when the install checkout is not on main. Helper: common/scripts/bob_install_root_guard.py (refuse_job_git, install_root_branch_warning).
 * **OpenCode Windows (FR #6240):** search with `Get-ChildItem` and `Select-String`, not `grep`/`head`. `BOB_HOME` may be empty. ACK/DONE use `$env:BOB_OUTBOX` only. If `gh auth status` is not logged in, stop; the next step is `gh auth login`. Do not read `hosts.yml` or search for tokens. Headless `opencode run` auto-rejects `external_directory` and has no `--interactive` flag. Do not pass `--auto` and do not add an `external_directory` allow. An interactive TUI Allow is not evidence that a later `opencode run` will allow the outbox. A job is one `FROM` message. The standing prompt's example id is not a job. `--dir` is the directory bound to that message, and only when the folder exists. A missing folder is NACKed before ACK. A drive root, including a path that canonicalizes to one, is refused. A denial stays a denial. See `bob/docs/opencode-windows-readiness.md`.
 
+## Seat marker + job worktree env (FR #6341)
+
+* At agent start, bob-worker **atomically rewrites** <ai root>\bob\worker\.bobiverse-seat with the live nick and pid (replaces any stale file from an older session).
+* Every agent child inherits **$env:BOB_JOB_WORKTREE_BASE** (resolved like Get-BobiverseJobWorktreeBase / FR #4988; directory created if missing). When OpenCode has prepared a job tree, **$env:BOB_JOB_WORKTREE** is the exact path. Seats must use these env vars and **never search drives** for i\worktrees.
+* Seats run **Windows PowerShell 5.1**: use Get-ChildItem -Depth, not -MaxDepth (that parameter is PowerShell 7+).
+* Outbox path rules from FR #6333 are unchanged (BOB_OUTBOX run-dir vs OpenCode <worktree>\.bob\outbox.txt).
+
 ## Troubleshooting
 
 | Symptom | Cause / fix |

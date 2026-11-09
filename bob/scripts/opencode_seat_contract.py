@@ -832,7 +832,7 @@ def create_job_worktree(
         pass
     # Soft-cap seat marker (FR #3641). Best-effort; never fail the create.
     try:
-        marker = {"nick": nick or "opencode", "issue": 0, "repo": ""}
+        marker = {"nick": nick or "opencode", "pid": int(os.getpid()), "issue": 0, "repo": ""}
         m = re.match(r"(?i)^(FR|MRB|UAT)\s+(\S+)#(\d+)$", (key or "").strip())
         if m:
             marker["issue"] = int(m.group(3))

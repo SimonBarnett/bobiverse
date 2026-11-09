@@ -95,3 +95,11 @@ File every issue / FR / bug and every learned playbook (CAST IRON rule at the to
 ## Startup readiness (FR #955 / #2884)
 
 Do not expect an assign in the first seconds after tray Agent start. ``bob-worker`` holds inject and ``!bored`` until the first grok ``turn_ended`` after spawn (FR #2884; floor ``BOB_WORKER_STARTUP_MIN_S``, default 10 s) so the TUI can finish the startup prompt, then fires ``!bored reason=start``. ``startup_grace_s`` (default 60, override ``BOB_WORKER_STARTUP_GRACE_S`` / ``--startup-grace-s``) remains the **fallback** when no turn signal arrives (non-grok kinds, watcher failure, hung first turn). Early IRC assigns are held and flushed when ready. IRC connect retries up to 3 times before fail-closed.
+
+## Env the launcher sets (FR #6341)
+
+* $env:BOB_OUTBOX --- seat outbox (FR #2380 / #6333). Never the ear home\outbox.txt.
+* $env:BOB_JOB_WORKTREE_BASE --- job worktree root (<data drive>\ai\worktrees or override). Directory exists before ACK.
+* $env:BOB_JOB_WORKTREE --- exact job worktree when the program has prepared one (OpenCode).
+* <ai root>\bob\worker\.bobiverse-seat --- rewritten at startup with live nick/pid; ignore stale files from older sessions.
+* Windows PowerShell 5.1 only: Get-ChildItem -Depth, not -MaxDepth.

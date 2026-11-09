@@ -156,6 +156,7 @@ try:
     from opencode_seat_contract import (  # noqa: E402
         console_text,
         is_worktree_absent_nack,
+        job_worktree_base,
         message_job_keys,
         opencode_job_context_nack,
         opencode_job_context_nack_ready,
@@ -169,6 +170,7 @@ except ImportError:  # package import (bob.scripts.bob_worker)
     from bob.scripts.opencode_seat_contract import (  # type: ignore  # noqa: E402
         console_text,
         is_worktree_absent_nack,
+        job_worktree_base,
         message_job_keys,
         opencode_job_context_nack,
         opencode_job_context_nack_ready,
@@ -1143,6 +1145,60 @@ def write_job_repo_marker(run_dir: Path | str, job_ref: str | None) -> str:
     return repo
 
 
+
+SEAT_MARKER_NAME = ".bobiverse-seat"
+
+
+def write_live_seat_marker(
+    cwd: Path | str,
+    *,
+    nick: str,
+    pid: int,
+    machine: str = "",
+    extra: dict | None = None,
+) -> Path:
+    """Atomically rewrite ``<cwd>/.bobiverse-seat`` with the live nick/pid (FR #6341).
+
+    Replaces any stale marker from an older session. Uses a temp file + ``os.replace``.
+    """
+    folder = Path(cwd)
+    folder.mkdir(parents=True, exist_ok=True)
+    marker: dict = {"nick": (nick or "").strip(), "pid": int(pid)}
+    mid = (machine or "").strip().lstrip("#").lower()
+    if mid:
+        marker["machine"] = mid
+    if extra:
+        for k, v in extra.items():
+            if v is None:
+                continue
+            marker[str(k)] = v
+    target = folder / SEAT_MARKER_NAME
+    tmp = folder / f"{SEAT_MARKER_NAME}.{os.getpid()}.{uuid.uuid4().hex[:8]}.tmp"
+    payload = json.dumps(marker, separators=(",", ":"))
+    tmp.write_text(payload, encoding="utf-8")
+    try:
+        os.replace(str(tmp), str(target))
+    finally:
+        if tmp.is_file():
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
+    return target
+
+
+def resolve_and_ensure_job_worktree_base(env: dict | None = None) -> str:
+    """Resolve ``BOB_JOB_WORKTREE_BASE`` (FR #4988 / #6341) and create the directory.
+
+    Never returns a drive root. Prefer existing env ``BOB_JOB_WORKTREE_BASE``, else
+    ``job_worktree_base`` (bridge/worktrees or ``<data-drive>\\ai\\worktrees``).
+    """
+    e = dict(env or os.environ)
+    base = job_worktree_base(e)
+    path = Path(base)
+    path.mkdir(parents=True, exist_ok=True)
+    return str(path)
+
 def seat_env_extra(
     run_dir: Path | str,
     machine: str,
@@ -1155,6 +1211,7 @@ def seat_env_extra(
     ``Invoke-BobiverseHarvest.ps1`` and legacy Watch-AgentHealth readers stamp
     ``source.seat`` / footer ``seat=`` for lesson-PR self-MRB blocking.
     FR #3189: optional ``BOB_JOB_REPO`` so harvest targets the offered product repo.
+    FR #6341: also export ``BOB_JOB_WORKTREE_BASE`` (and ``BOB_JOB_WORKTREE`` when set).
     """
     outbox = str(outbox_path_for_run(run_dir))
     mid = (machine or "").strip().lstrip("#")
@@ -1170,6 +1227,16 @@ def seat_env_extra(
     jr = (job_repo or "").strip()
     if jr:
         out["BOB_JOB_REPO"] = harvest_repo_for_job(jr if "#" in jr else f"{jr}#1")
+    # FR #6341: export job worktree base so seats never search drives for D: vs C:.
+    try:
+        out["BOB_JOB_WORKTREE_BASE"] = resolve_and_ensure_job_worktree_base()
+    except Exception:
+        existing = (os.environ.get("BOB_JOB_WORKTREE_BASE") or "").strip()
+        if existing:
+            out["BOB_JOB_WORKTREE_BASE"] = existing
+    job_wt = (os.environ.get("BOB_JOB_WORKTREE") or "").strip()
+    if job_wt:
+        out["BOB_JOB_WORKTREE"] = job_wt
     return out
 
 
@@ -1380,7 +1447,7 @@ def worker_prompt(worker_dir: str, home: str, machine: str, nick: str) -> str:
         f"One issue per issue: when MRB (or any worker) finds a twin/duplicate issue, close the later one and comment a reference to the first; never leave both open; done issues are closed too. "
         f"Skill-intake consolidation: when a worker takes an FR from skill intake (label:skill / harvest), it must close all open issues for that skill book (every harvest/skill issue targeting the same book), open one consolidated PR for them, and cite every issue it closes (Closes #N for each); no per-issue PRs for the same skill book; the worker closes the issues itself as part of DONE. "
         f"CAST IRON (FR #4843): never git checkout/switch/commit/merge in the install root ({Path(worker_dir).parent}); always `git -C <install> worktree add -b fr-N <job-wt> origin/main` (e.g. C:\\ai\\bob-wt-fr-<n> or %TEMP%\\bobiverse-fr-<n>). An install root left on fr-* means live seats read unreviewed skills. "
-        f"Windows search (FR #6240): use Get-ChildItem and Select-String. Do not run Unix grep or head. "
+        f"Windows PowerShell 5.1 only (FR #6341): use Get-ChildItem -Depth (not -MaxDepth); use Select-String. Do not run Unix grep or head. Job worktrees: use $env:BOB_JOB_WORKTREE_BASE (and $env:BOB_JOB_WORKTREE when set); never search drives for ai\\worktrees. "
         f"If gh says to run gh auth login, stop and report that. Do not search for tokens, do not read hosts.yml, and do not look in other profiles or password folders. "
         f"Headless opencode run auto-rejects external_directory and has no --interactive flag. Do not pass --auto. "
         f"Do not write an external_directory allow. A denial stays a denial. "
@@ -8604,6 +8671,10 @@ class Supervisor:
                         wire = wire.replace(f"[outbox: {stale}]", f"[outbox: {ob}]")
                     self._opencode_job_outbox = Path(ob)
                     self._opencode_job_key = str(prepared.get("key") or "")
+                    try:
+                        os.environ["BOB_JOB_WORKTREE"] = str(prepared.get("path") or "")
+                    except Exception:
+                        pass
                     if getattr(self, "relay", None) is not None:
                         self.relay.outbox_path = Path(ob)
                 except Exception as e:  # noqa: BLE001
@@ -9606,6 +9677,18 @@ def run_agent(args, log: Log) -> int:
         exe = grok_exe
     pid = os.getpid()
     nick = seat_nick(machine, pid)
+    # FR #6341: rewrite stale <worker>/.bobiverse-seat with live nick/pid before the agent starts.
+    try:
+        marker = write_live_seat_marker(folder, nick=nick, pid=pid, machine=machine)
+        log(f"worker: seat marker {marker} nick={nick} pid={pid}")
+    except Exception as e:
+        log(f"worker: seat marker write failed {type(e).__name__}")
+    try:
+        base = resolve_and_ensure_job_worktree_base()
+        os.environ["BOB_JOB_WORKTREE_BASE"] = base
+        log(f"worker: BOB_JOB_WORKTREE_BASE={base}")
+    except Exception as e:
+        log(f"worker: BOB_JOB_WORKTREE_BASE failed {type(e).__name__}")
     run_dir = _new_run_dir(machine, "worker")
     run_dir.mkdir(parents=True, exist_ok=True)
     ensure_outbox(run_dir / "outbox.txt")  # FR #866: path must exist before first agent write

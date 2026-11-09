@@ -151,3 +151,9 @@ Generalised from 196 harvested lessons that never reached this book (audit for F
 - **FIX after MRB FAIL (FR #5142):** when the offer is `FIX` for a FAIL board (or a companion `fix(mrb-N)` PR), push the fix commit onto the assigned original tip so that PR carries the change, then close the companion as duplicate. Do not DONE only the companion while the assigned head is unchanged.
 - **FIX CI after MRB PASS (FR #4585):** when Jeeves parks a PASSed+auto-merge PR with a red required check, it offers `FIX owner/repo#N` (one per shared failure signature). ACK then fix CI on that tip or on main when the break is shared; push; DONE with the PR URL. Never re-open MRB while the head SHA is unchanged.
 - **Re-ACK after DONE (FR #4642):** Jeeves ignores a later ACK of a job this seat already DONE, and logs duplicate-after-done, unless an offer was stamped after that DONE. On !bored, a hold for a job already in that seat DONE ledger is cleared instead of NAK busy. The worker puts its last DONE line back on the outbox when the busy NAK names that same job.
+
+## Job worktree env + PowerShell 5.1 (FR #6341)
+
+* Use $env:BOB_JOB_WORKTREE_BASE (always set by bob-worker) and $env:BOB_JOB_WORKTREE when present for the exact job checkout. Do not probe C:\ai\worktrees vs D:\ai\worktrees by hand.
+* Live seat identity is in <worker>\.bobiverse-seat (rewritten at seat start with nick/pid). Prefer $env:BOB_NICK for the wire nick.
+* Shell is Windows PowerShell 5.1: Get-ChildItem -Depth N, never -MaxDepth.
