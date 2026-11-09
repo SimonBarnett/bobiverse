@@ -6,6 +6,7 @@ with entry.key (flamingo field names). Never 82/74/43/75/35.
 from __future__ import annotations
 
 import json
+import os
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -87,7 +88,10 @@ def test_fr6274_auth_file_unreadable_diag(tmp_path: Path, monkeypatch):
         )
     assert reading is None
     err = bobreport._last_xai_acquisition.get("error")
-    assert err in ("auth-file-unreadable", "auth-file-unreadable:win32-5")
+    expected = (
+        "auth-file-unreadable:win32-5" if os.name == "nt" else "auth-file-unreadable"
+    )
+    assert err == expected
     assert bobreport._last_xai_acquisition.get("identity") == "explicit-auth"
 
 
