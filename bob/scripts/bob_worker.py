@@ -7982,36 +7982,30 @@ class Supervisor:
     def may_send_outbox(self, payload: str) -> bool:
         """FR #4730: drop replayed ACK for a finished job before it hits IRC.
 
-        FR #6333: when an OpenCode job outbox is active, only forward well-formed
-        ACK/DONE/NACK/GIVEUP lines for that job key (drop malformed / wrong-job).
-        Duplicate ACK while the same job is already open is dropped.
+        Used for the run-dir outbox. Do not apply the OpenCode job-key filter here
+        (FR #6333 MRB): program NACKs for a new key can arrive while `_opencode_job_key`
+        is still the previous job. Job-key filtering is `may_send_job_outbox` only.
         """
-        p = (payload or "").strip()
-        job_key = getattr(self, "_opencode_job_key", "") or ""
-        if job_key and getattr(self, "_opencode_job_outbox", None) is not None:
-            shop = ""
-            try:
-                shop = self.irc.shop if self.irc else shop_channel(self.machine)
-            except Exception:
-                shop = shop_channel(getattr(self, "machine", "") or "")
-            # Only apply the strict filter to typed job verbs; plain chatter is dropped.
-            if _OUT_ACK_RX.match(p) or _OUT_DONE_RX.match(p) or _OUT_FREE_RX.match(p):
-                if not opencode_outbox_line_allowed(p, job_key=job_key, shop=shop):
-                    return False
-            elif p.upper().startswith("PRIVMSG"):
-                # PRIVMSG that is not a typed job line: drop from job outbox.
-                if not opencode_outbox_line_allowed(p, job_key=job_key, shop=shop):
-                    return False
-            else:
-                # bare non-job text from job outbox: drop
-                if not opencode_outbox_line_allowed(p, job_key=job_key, shop=shop):
-                    return False
         if self.bored is None:
             return True
         try:
             return bool(self.bored.should_forward_outbox(payload))
         except Exception:
             return True
+
+    def may_send_job_outbox(self, payload: str) -> bool:
+        """FR #6333: worktree `.bob/outbox.txt` — job-key filter then run-dir rules."""
+        p = (payload or "").strip()
+        job_key = getattr(self, "_opencode_job_key", "") or ""
+        if job_key:
+            shop = ""
+            try:
+                shop = self.irc.shop if self.irc else shop_channel(self.machine)
+            except Exception:
+                shop = shop_channel(getattr(self, "machine", "") or "")
+            if not opencode_outbox_line_allowed(p, job_key=job_key, shop=shop):
+                return False
+        return self.may_send_outbox(payload)
 
     def opencode_extra_outbox_paths(self) -> list:
         """FR #6333: active OpenCode job ``.bob/outbox.txt`` for the outbox loop."""
@@ -8491,6 +8485,9 @@ class Supervisor:
                 # FR #6333: tail in-worktree .bob/outbox.txt; stamp FROM footer with that path.
                 try:
                     ob = ensure_opencode_bob_outbox(prepared["path"])
+                    stale = getattr(getattr(self, "relay", None), "outbox_path", None)
+                    if stale:
+                        wire = wire.replace(f"[outbox: {stale}]", f"[outbox: {ob}]")
                     self._opencode_job_outbox = Path(ob)
                     self._opencode_job_key = str(prepared.get("key") or "")
                     if getattr(self, "relay", None) is not None:
@@ -9075,6 +9072,7 @@ def outbox_loop(
     on_payload: Optional[Callable[[str], None]] = None,
     may_send: Optional[Callable[[str], bool]] = None,
     extra_paths: Optional[Callable[[], list]] = None,
+    may_send_extra: Optional[Callable[[str], bool]] = None,
 ) -> None:
     ensure_outbox(path)
     while not stop.wait(0.5):  # outbound only; inbound relay is NOT polled
@@ -9087,15 +9085,17 @@ def outbox_loop(
                     extras = list(extra_paths() or [])
                 except Exception:
                     extras = []
+            job_may = may_send_extra if may_send_extra is not None else may_send
             for extra in extras:
                 try:
                     ep = Path(extra)
                 except Exception:
                     continue
-                if not ep or ep.resolve() == Path(path).resolve():
+                # Skip missing paths so drain_outbox cannot mkdir a removed worktree.
+                if (not ep.is_file()) or ep.resolve() == Path(path).resolve():
                     continue
                 try:
-                    drain_outbox(ep, irc, log, on_payload, may_send)
+                    drain_outbox(ep, irc, log, on_payload, job_may)
                 except Exception as e:  # pragma: no cover
                     log(f"outbox(job): {type(e).__name__}")
         except Exception as e:  # pragma: no cover
@@ -9553,7 +9553,10 @@ def run_agent(args, log: Log) -> int:
     threading.Thread(
         target=outbox_loop,
         args=(run_dir / "outbox.txt", irc, sup.stop, log, sup.on_outbox_wire, sup.may_send_outbox),
-        kwargs={"extra_paths": sup.opencode_extra_outbox_paths},
+        kwargs={
+            "extra_paths": sup.opencode_extra_outbox_paths,
+            "may_send_extra": sup.may_send_job_outbox,
+        },
         name="outbox",
         daemon=True,
     ).start()

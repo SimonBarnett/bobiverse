@@ -846,6 +846,14 @@ def exclude_bob_dir_from_git(worktree: str | Path) -> bool:
             git_dir = Path(raw.split(":", 1)[1].strip())
             if not git_dir.is_absolute():
                 git_dir = (root / git_dir).resolve()
+            # Linked worktrees: info/exclude lives in the common git dir.
+            common = git_dir / "commondir"
+            try:
+                if common.is_file():
+                    target = Path(common.read_text(encoding="utf-8", errors="replace").strip())
+                    git_dir = target if target.is_absolute() else (git_dir / target).resolve()
+            except OSError:
+                return False
         else:
             return False
     elif git.is_dir():
