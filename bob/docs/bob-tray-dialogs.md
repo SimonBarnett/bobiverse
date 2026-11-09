@@ -78,6 +78,8 @@ rows with workers `{irc nick}: {doing|idle}`, one Copilot pool tile, alert and v
 
 **FR #6285 (supersedes FR #6267 local-row guidance for xAI weekly display):** every TipForm/Status **xAI weekly** row (including this host) is painted only from digest `machines.<m>.xai_weekly` (`remaining_pct`, `fresh`/`age_s`/`error`, `period_end`, `account`). Never local `unified.jsonl` / `Get-BobWeeklyRemaining` for display — with or without a digest. Null meter or no digest => clear `no reading`. Section heading is exactly **xAI weekly** (never Cursor AccountLabel/AccountName). Local weekly may still feed worker fuel selection and seat period cache; it must not paint TipForm/Status rows.
 
+**FR #6285 CI (`build-bob-tray.yml`):** GitHub Actions on `windows-latest` compiles `bob-tray.exe` / `bob-status.exe` / `bob-about.exe` via `bob/scripts/Build-BobDialogs.ps1` whenever `bob/tray/**`, `bob/scripts/Build-BobDialogs.ps1`, `.github/workflows/build-bob-tray.yml`, or `bob/tests/test_fr6285_tray_build_ci.py` changes (plus `workflow_dispatch`). The job uploads the three exes plus `*.sha256` and `provenance.txt` (workflow commit + SHA-256). A smoke check fails if the PE lacks UTF-16LE `xAI weekly` or still embeds `Cursor / xAI weekly` (throw text includes `missing UTF-16LE heading` / `still embeds stale heading`). Source-only merges do not update a live `tools\bob-tray.exe`; Slab (or Pack/Sync) must deploy a built artifact / rebuild locally after C# heading changes.
+
 
 
 ## Copilot freshness (FR #6148) + historical-max % (FR #6215)

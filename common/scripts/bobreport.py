@@ -5908,6 +5908,212 @@ def xai_weekly_auth_path() -> tuple[Path | None, str]:
     return None, "no-profile"
 
 
+
+def read_bytes_win32_backup(path: Path) -> tuple[bytes | None, int | None]:
+    """FR #6274: read via SeBackupPrivilege + FILE_FLAG_BACKUP_SEMANTICS.
+
+    LocalSystem (ircBob) must read interactive Administrator ``auth.json`` even
+    when Grok ``agent.exe`` resets the ACL to Administrator-only. Never changes
+    file permissions. Privilege is enabled only for the open/read window.
+    Returns ``(data, None)`` on success, ``(None, win32_error)`` on failure.
+    Non-Windows returns ``(None, None)`` so callers fall back to a normal open.
+    """
+    if os.name != "nt":
+        return None, None
+    import ctypes
+    from ctypes import wintypes
+
+    path = Path(path)
+    GENERIC_READ = 0x80000000
+    FILE_SHARE_READ = 0x00000001
+    FILE_SHARE_WRITE = 0x00000002
+    OPEN_EXISTING = 3
+    FILE_FLAG_BACKUP_SEMANTICS = 0x02000000
+    INVALID_HANDLE_VALUE = ctypes.c_void_p(-1).value
+    TOKEN_QUERY = 0x0008
+    TOKEN_ADJUST_PRIVILEGES = 0x0020
+    SE_PRIVILEGE_ENABLED = 0x00000002
+
+    class LUID(ctypes.Structure):
+        _fields_ = [("LowPart", wintypes.DWORD), ("HighPart", wintypes.LONG)]
+
+    class LUID_AND_ATTRIBUTES(ctypes.Structure):
+        _fields_ = [("Luid", LUID), ("Attributes", wintypes.DWORD)]
+
+    class TOKEN_PRIVILEGES(ctypes.Structure):
+        _fields_ = [
+            ("PrivilegeCount", wintypes.DWORD),
+            ("Privileges", LUID_AND_ATTRIBUTES * 1),
+        ]
+
+    # Private WinDLL handles (bob_worker / FR #3996 pattern): never mutate
+    # process-wide ctypes.windll prototypes; use_last_error keeps GetLastError stable.
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
+    # x64: default cdecl int restype truncates HANDLEs (FR #6274 / class of #3996).
+    # GetCurrentProcess must be HANDLE too --- without it OpenProcessToken fails
+    # with ERROR_INVALID_HANDLE (6) and the backup path never reaches CreateFile.
+    kernel32.GetCurrentProcess.restype = wintypes.HANDLE
+    kernel32.GetCurrentProcess.argtypes = []
+    kernel32.CreateFileW.restype = wintypes.HANDLE
+    kernel32.CreateFileW.argtypes = [
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.LPVOID,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.HANDLE,
+    ]
+    kernel32.ReadFile.restype = wintypes.BOOL
+    kernel32.ReadFile.argtypes = [
+        wintypes.HANDLE,
+        wintypes.LPVOID,
+        wintypes.DWORD,
+        wintypes.LPDWORD,
+        wintypes.LPVOID,
+    ]
+    kernel32.GetFileSize.restype = wintypes.DWORD
+    kernel32.GetFileSize.argtypes = [wintypes.HANDLE, wintypes.LPDWORD]
+    kernel32.CloseHandle.restype = wintypes.BOOL
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    advapi32.OpenProcessToken.restype = wintypes.BOOL
+    advapi32.OpenProcessToken.argtypes = [
+        wintypes.HANDLE,
+        wintypes.DWORD,
+        ctypes.POINTER(wintypes.HANDLE),
+    ]
+    advapi32.LookupPrivilegeValueW.restype = wintypes.BOOL
+    advapi32.LookupPrivilegeValueW.argtypes = [
+        wintypes.LPCWSTR,
+        wintypes.LPCWSTR,
+        ctypes.POINTER(LUID),
+    ]
+    advapi32.AdjustTokenPrivileges.restype = wintypes.BOOL
+    # PreviousState / ReturnLength may be NULL when disabling (finally).
+    advapi32.AdjustTokenPrivileges.argtypes = [
+        wintypes.HANDLE,
+        wintypes.BOOL,
+        wintypes.LPVOID,
+        wintypes.DWORD,
+        wintypes.LPVOID,
+        wintypes.LPVOID,
+    ]
+
+    def _err() -> int:
+        return int(ctypes.get_last_error() or 0)
+
+    def _set_err(code: int = 0) -> None:
+        ctypes.set_last_error(int(code))
+
+    token = wintypes.HANDLE()
+    if not advapi32.OpenProcessToken(
+        kernel32.GetCurrentProcess(),
+        TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY,
+        ctypes.byref(token),
+    ):
+        return None, _err() or 5
+    tp = TOKEN_PRIVILEGES()
+    tp.PrivilegeCount = 1
+    if not advapi32.LookupPrivilegeValueW(
+        None, "SeBackupPrivilege", ctypes.byref(tp.Privileges[0].Luid)
+    ):
+        err = _err() or 1313
+        kernel32.CloseHandle(token)
+        return None, err
+    tp.Privileges[0].Attributes = SE_PRIVILEGE_ENABLED
+    prev = TOKEN_PRIVILEGES()
+    prev_size = wintypes.DWORD()
+    # Enable; ignore ERROR_NOT_ALL_ASSIGNED (1300) until CreateFile proves it.
+    # Interactive seats often lack SeBackupPrivilege; LocalSystem has it.
+    _set_err(0)
+    advapi32.AdjustTokenPrivileges(
+        token,
+        False,
+        ctypes.byref(tp),
+        ctypes.sizeof(prev),
+        ctypes.byref(prev),
+        ctypes.byref(prev_size),
+    )
+    adj_err = _err()
+    handle = None
+    try:
+        _set_err(0)
+        handle = kernel32.CreateFileW(
+            str(path),
+            GENERIC_READ,
+            FILE_SHARE_READ | FILE_SHARE_WRITE,
+            None,
+            OPEN_EXISTING,
+            FILE_FLAG_BACKUP_SEMANTICS,
+            None,
+        )
+        hv = int(handle) if handle is not None else -1
+        if hv in (-1, 0xFFFFFFFF, 0xFFFFFFFFFFFFFFFF, 0):
+            return None, _err() or adj_err or 5
+        size_high = wintypes.DWORD(0)
+        _set_err(0)
+        size_low = kernel32.GetFileSize(handle, ctypes.byref(size_high))
+        if size_low == 0xFFFFFFFF and _err():
+            chunks: list[bytes] = []
+            buf = ctypes.create_string_buffer(65536)
+            read = wintypes.DWORD(0)
+            while True:
+                _set_err(0)
+                if not kernel32.ReadFile(handle, buf, 65536, ctypes.byref(read), None):
+                    err = _err()
+                    if err in (0, 38):  # EOF
+                        break
+                    return None, err
+                if read.value == 0:
+                    break
+                chunks.append(buf.raw[: read.value])
+            return b"".join(chunks), None
+        total = int(size_low) + (int(size_high.value) << 32)
+        if total < 0 or total > 8 * 1024 * 1024:
+            return None, 12  # ERROR_INVALID_ACCESS / truncate
+        if total == 0:
+            return b"", None
+        buf = ctypes.create_string_buffer(total)
+        read = wintypes.DWORD(0)
+        _set_err(0)
+        if not kernel32.ReadFile(handle, buf, total, ctypes.byref(read), None):
+            return None, _err() or 5
+        return buf.raw[: read.value], None
+    finally:
+        try:
+            hv = int(handle) if handle is not None else -1
+            if hv not in (-1, 0, 0xFFFFFFFF, 0xFFFFFFFFFFFFFFFF):
+                kernel32.CloseHandle(handle)
+        except Exception:
+            pass
+        # Disable privilege again (best effort).
+        try:
+            tp.Privileges[0].Attributes = 0
+            _set_err(0)
+            advapi32.AdjustTokenPrivileges(
+                token, False, ctypes.byref(tp), 0, None, None
+            )
+        except Exception:
+            pass
+        try:
+            if token.value:
+                kernel32.CloseHandle(token)
+        except Exception:
+            pass
+
+
+def read_text_win32_backup(path: Path) -> tuple[str | None, int | None]:
+    """UTF-8 text wrapper for :func:`read_bytes_win32_backup`."""
+    data, err = read_bytes_win32_backup(path)
+    if data is None:
+        return None, err
+    try:
+        return data.decode("utf-8"), None
+    except UnicodeError:
+        return None, None  # signal bad-json path via caller
+
+
 def _parse_auth_expires_at(raw: object) -> datetime | None:
     """Parse auth.json expires_at; never logs values."""
     if raw is None:
@@ -5951,21 +6157,37 @@ def load_grok_auth_session(
     """Load interactive session bearer + label from the *same* auth.json entry.
 
     Returns ``(token, error, account_label)``. ``error`` is one of:
-    ``auth-file-unreadable``, ``auth-file-bad-json``, ``auth-key-missing``, or None.
+    ``auth-file-unreadable``, ``auth-file-unreadable:win32-N``,
+    ``auth-file-bad-json``, ``auth-key-missing``, or None.
     ``account_label`` is email / name from the selected entry only (FR #6279);
     never borrowed from a sibling entry. Never logs credential values.
+
+    FR #6274: on Windows prefer ``SeBackupPrivilege`` + ``FILE_FLAG_BACKUP_SEMANTICS``
+    so LocalSystem can read Administrator-only ``auth.json`` after Grok agent.exe
+    strips inherited SYSTEM ACLs. Never changes file permissions. Falls back to a
+    normal open when backup read is unavailable (dev seats).
 
     Layout (Grok CLI / flamingo field names): top-level map keyed by
     ``issuer::client_id``; each entry may carry ``key`` (access token),
     ``refresh_token``, ``expires_at``, profile fields. ``xai::api_key`` slots
     are skipped for the live billing session path. Prefer a non-expired entry.
     """
-    try:
-        raw = path.read_text(encoding="utf-8")
-    except OSError:
-        return None, "auth-file-unreadable", None
-    except UnicodeError:
-        return None, "auth-file-bad-json", None
+    raw = None
+    win_err: int | None = None
+    if os.name == "nt":
+        raw, win_err = read_text_win32_backup(path)
+        if raw is None and win_err is None:
+            # decode failure from backup bytes -> bad json
+            return None, "auth-file-bad-json", None
+    if raw is None:
+        try:
+            raw = path.read_text(encoding="utf-8")
+        except OSError:
+            if win_err:
+                return None, f"auth-file-unreadable:win32-{int(win_err)}", None
+            return None, "auth-file-unreadable", None
+        except UnicodeError:
+            return None, "auth-file-bad-json", None
     try:
         doc = json.loads(raw)
     except json.JSONDecodeError:

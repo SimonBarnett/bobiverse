@@ -38,9 +38,9 @@ One issue per issue: when MRB (or any worker) finds a twin/duplicate issue, clos
 Using any skill from this book obliges you to report back here, in the same
 turn you learn or fix something. Do not ask permission. Do not defer.
 
-- Gap, bug or wish → issue (`FR:` for features). When the operator has no
+- Gap, bug or wish â†’ issue (`FR:` for features). When the operator has no
   GitHub account, POST `kind: issue` | `fr` to `/bob/v1/intake`.
-- New or fixed playbook → branch + PR (never `main`).
+- New or fixed playbook â†’ branch + PR (never `main`).
 - Empty harvest only when nothing is new and nothing is broken.
 
 **Home:** `https://github.com/SimonBarnett/bobiverse`. Frontmatter `github:`
@@ -88,20 +88,20 @@ flowchart TD
 
 *Caption: prefer `gh`; fall back to the Bob webhook intake; if offline, queue locally and retry.*
 
-1. **`gh` available and authenticated** → branch + PR against
+1. **`gh` available and authenticated** â†’ branch + PR against
    `SimonBarnett/bobiverse` (skills) or an issue (`harvest:` / `FR:`). If the PR
    cannot be opened, file a `harvest:` issue with the intended PR title, branch,
    file list and body in this turn.
-2. **No `gh`, or not authenticated** → POST to the Bob webhook intake
+2. **No `gh`, or not authenticated** â†’ POST to the Bob webhook intake
    `https://bob.ntsa.uk/bob/v1/intake`. No GitHub account needed; the
    service files it with label `via-intake`. Send an `idempotency_key` so
    retries never duplicate. Missing/empty `kind` defaults to `issue`.
-3. **Offline / intake unreachable** → write the JSON payload to a local
+3. **Offline / intake unreachable** â†’ write the JSON payload to a local
    `harvest-outbox/` (or `report-outbox/` / `install-outbox/`) folder and retry
    it (same `idempotency_key`) on the next run. Helper:
    `scripts/Report-BobiverseIntakeIssue.ps1`.
 
-### Open skill / harvest receipts → consolidate then PR (FR #1682 / FR #1684)
+### Open skill / harvest receipts â†’ consolidate then PR (FR #1682 / FR #1684)
 
 Intake `kind: skill|harvest` creates `label:skill` issues. The chair **offers** them as FR promote jobs (not product code FRs; they still do not block repo UAT). Do **not** GIVEUP. Without a promote PR the lessons never reach MRB merge.
 
@@ -109,10 +109,10 @@ When you have `gh` write (same turn or on a skill-promote assign):
 
 1. Group open `label:skill` issues **by owner skill book** (see `harvest-agent-skills` table).
 2. **Close duplicate** receipts for the same book/lesson.
-3. Open **one** `harvest/…` PR per book (or one multi-book PR with clear paths) that promotes unique Lesson lines; PR body uses `Closes …` / `Duplicates closed: …`.
+3. Open **one** `harvest/â€¦` PR per book (or one multi-book PR with clear paths) that promotes unique Lesson lines; PR body uses `Closes â€¦` / `Duplicates closed: â€¦`.
 4. Leave merge to hostile **MRB**. Never push `main`.
 
-Full steps: skill `harvest-agent-skills` section **Worker: consolidate open skill receipts → promote PR**.
+Full steps: skill `harvest-agent-skills` section **Worker: consolidate open skill receipts â†’ promote PR**.
 
 ### Intake must link an existing harvest PR (FR #1812 / harvest #2013)
 
@@ -233,7 +233,7 @@ routes to bobiverse via the split rule.
 - FR #4297: dirty install ff-block leaves flat Invoke-BobiverseHarvest.ps1 lagging tip; Sync tip-overlays harvest+intake via Sync-BobiverseHarvestScriptsFromOrigin (class of FR #2581); prefer common\scripts when present; ComposeOnly/service restart refreshes flat copies.
 - FR #4357: PASS of a harvest-lesson / docs/mrb MRB (re-offer + merge origin/main / re-arm / DONE PASS process cues) skips filing another tip (SKIPPED harvest lesson-MRB PASS loop) --- stops a-search tip flood after light-triage PASS.
 - FR #4288: -ExistingPrUrl (or a pull URL in Summary/Lesson) fail-closes tip filing (SKIPPED; linked to that PR). Product -Repo -> harvest-agent-skills without ExistingPrUrl stays intentional (FR #3189); do not redirect product playbooks to bobiverse harvest.
-- Owner-missing harvest holds titled `harvest: hold for …` are SKIP_FR even with empty labels (FR #3658 / #3317 carve-out from #1682); `gh_filer.ensure_labels` creates `owner-missing` before issue create so unlabeled retry cannot re-offer the hold.
+- Owner-missing harvest holds titled `harvest: hold for â€¦` are SKIP_FR even with empty labels (FR #3658 / #3317 carve-out from #1682); `gh_filer.ensure_labels` creates `owner-missing` before issue create so unlabeled retry cannot re-offer the hold.
 
 - When Clear-BobiverseJobWorktrees removes 0 under low disk: file intake or GIVEUP / use a roomy drive - never hand-delete wt-bob-main/wt-airc/operator trees; write .bobiverse-seat so -Force skips live owners
 - GET /bob/v1/report must never call GitHub pr_exists while holding gitclaim queue lock; snapshot under lock, check outside, re-lock with cached verdicts + single-flight + short lock_timeout
@@ -245,7 +245,7 @@ routes to bobiverse via the split rule.
 - FR #3827: FAIL-supersede skip also matches stay/durable in bobiverse-bob-job-mrb, thin harvest tip/restatement, and do-not-append second copy under harvest (tip #3826 class)
 - FR #4308: FAIL-supersede skip also matches thinner tip + durable lesson already on main (a-search#1980/#2283 tip-loop class; not contiguous thin harvest tip)
 - FR #4484: FAIL-supersede skip also matches restates main and admit main already has (a-search#3470 class; those phrases are not already-on-main / second-copy / job-mrb)
-- FR #3959 / #3957: FAIL-supersede skip also matches durable home is bobiverse-bob-job-mrb and do not park … under harvest/SKILL.md (words between); CAST IRON already on main is a thin-twin cue (tip #3958 class)
+- FR #3959 / #3957: FAIL-supersede skip also matches durable home is bobiverse-bob-job-mrb and do not park â€¦ under harvest/SKILL.md (words between); CAST IRON already on main is a thin-twin cue (tip #3958 class)
 - Harvest pytest OutboxDir: always use tmp_path / harvest-outbox; never hardcode D:/bobfleet job paths (hosts without D: fail New-Item).
 - Product docs/**/*.md must decode as UTF-8; use repo_layout.REPO not Legacy ROOT for rglob; lone cp1252 0x97 breaks harvest-log readers
 - When appending skill-harvest-log entries, write a real trailing newline byte; a literal backslash-n fails endswith(b'\n') harvest-log gates on CI
@@ -326,7 +326,7 @@ routes to bobiverse via the split rule.
 - bob-ear: BOB_IRC_RECV_TIMEOUT_S + IDLE_PING_S + IDLE_DEAD_S client PING keepalive; half-open ESTABLISHED sockets must idle-dead reconnect (FR #4980), not stay deaf while ircBob Running
 - Jeeves resync: fix(mrb-N) targeting main/master while parent is open must queue as MRB (else FIX-linked parent + skip-fix deadlock); stacked non-default base still skips; among main-base twins keep lowest PR number only
 - !build LiveStateTouched: busy chair may purge >5 closed/done queue rows during a long suite; default max_lost=15 (FR #5042) while empty/majority wipe still aborts.
-- FR #5052: classify catch { } — timer/webhook/heartbeat must Invoke-BobMustReportFailure; Dispose/Parse/ToInt/Hide stay BEST_EFFORT
+- FR #5052: classify catch { } â€” timer/webhook/heartbeat must Invoke-BobMustReportFailure; Dispose/Parse/ToInt/Hide stay BEST_EFFORT
 - From-source airc beside NSSM must use child-owned --log-file; Start-Process RedirectStandard pipes die when the parent shell exits and kill info() after NAMES.
 - When asserting IRC flood sleep, drain FloodTokenBucket first; a full bucket returns wait=0 on the first take.
 - Vendor Sync-BobTrayFromAgenticBuild wipes OutDir; every Watch-dotsourced tray helper (StartWorker, RecycleSeat) must be in ownedTools or a re-sync deletes it.
@@ -341,7 +341,7 @@ routes to bobiverse via the split rule.
 - is_offerable_intake_skill_lesson_pr must require Lesson/light-triage body; via-intake+skill with _via-intake footer or queue me and no Lesson is a receipt (fomprep#144)
 - Tray cursor_pools: prefer LocalCursorDoc.period_end over cursor-pools.json group period_end; never persist or re-read an expired group period_end (FR #5689) or digest _mask_expired_pools nulls remaining forever
 - airc IPC$ auth: use shared airc_wnet (WNetAddConnection2W) for network installer _net_use and EXTENSION so CredMan passwords never land on net use argv / 4688 (FR #5721 / #5709)
-- After FR #5737, WhatIf pins must stub plan_psexec deployed/would-redeploy — PATH find_psexec no longer makes dry-run ok on undeployed seats
+- After FR #5737, WhatIf pins must stub plan_psexec deployed/would-redeploy â€” PATH find_psexec no longer makes dry-run ok on undeployed seats
 - airc bad_id: service on_line must dispatch action=bad_id (err+DONE) and log auth-allow without body; ear _AIRC_REPLY_BODY_RE must accept non-hex id= so waiters see DONE
 - LEGION default_installer_run tests must use a non-local host (not this machine name) or install_local skips the install_remote monkeypatch; scrub FAKE_ needles via runtime concat for FR #5721 source pins.
 - LEGION CredMan/SYSTEM-fallback unit pins must monkeypatch read_remote_airc_profile_result; otherwise host SMB profile_unreadable exits before run_fn and flakes on MarchHare-class boxes.
@@ -360,6 +360,7 @@ routes to bobiverse via the split rule.
 - chair_health._copilot_tick must not call observe_quota while Copilot dispatch is disabled unless observation_opt_in (BOB_COPILOT_OBSERVE or allowance observe); settle_stuck_accepted still runs first
 - Digest HTTP from Python must send Bobiverse-bobreport User-Agent; bare urllib UA gets edge 403 and starves ear fuel merge --- verify with Write-BobIrcStatus -PostDigestWebhook and digest machines.<id>.weekly
 - BOBIVERSE_NO_UPDATE must Trim Process+Machine (NSSM AppEnvironmentExtra padding); Start-Bob/Jeeves/Airc suppress Sync and Update invocation before either begins and log no-update-guard seen/effective (FR #6259).
+- Win32 ctypes on x64: set GetCurrentProcess.restype=HANDLE (and CreateFileW/token API argtypes) or OpenProcessToken returns ERROR_INVALID_HANDLE (6) before SeBackupPrivilege CreateFile runs
 - When a tip adds assert_ear_dispatch_contracts (or any combined startup contract), MRB must pin that main() calls the combined helper --- tip tests that call the helper directly do not prove startup wiring (class of #6291/#6296).
 
 ## Harvest digest (lessons audit 2026-10-06)

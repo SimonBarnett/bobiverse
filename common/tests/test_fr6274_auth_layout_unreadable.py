@@ -6,6 +6,7 @@ with entry.key (flamingo field names). Never 82/74/43/75/35.
 from __future__ import annotations
 
 import json
+import os
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -79,12 +80,18 @@ def test_fr6274_auth_file_unreadable_diag(tmp_path: Path, monkeypatch):
         raise PermissionError(13, "Access is denied", str(self))
 
     # LocalSystem often sees the path (is_file) but cannot read ACL-protected auth.json.
+    # FR #6274 backup path must also fail for this diag (win32 code retained).
+    monkeypatch.setattr(bobreport, "read_text_win32_backup", lambda p: (None, 5))
     with mock.patch.object(Path, "read_text", boom):
         reading = bobreport.fetch_live_xai_weekly(
             now=datetime(2026, 11, 9, 9, 0, tzinfo=timezone.utc)
         )
     assert reading is None
-    assert bobreport._last_xai_acquisition.get("error") == "auth-file-unreadable"
+    err = bobreport._last_xai_acquisition.get("error")
+    expected = (
+        "auth-file-unreadable:win32-5" if os.name == "nt" else "auth-file-unreadable"
+    )
+    assert err == expected
     assert bobreport._last_xai_acquisition.get("identity") == "explicit-auth"
 
 
