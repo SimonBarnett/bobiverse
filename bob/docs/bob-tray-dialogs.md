@@ -92,6 +92,10 @@ rows with workers `{irc nick}: {doing|idle}`, one Copilot pool tile, alert and v
 - Snapshot fields: `copilot_line`, `copilot_stale_line`, `copilot_fresh_until` (unix seconds), plus digest `max_recorded_usage`. Native Status re-ages an open window at the deadline without waiting for a new poll.
 - TipForm always shows a Copilot line (`Copilot  unknown` when absent). Display-only: does not enable Copilot dispatch (`BOB_FUEL_COPILOT` / #6204).
 
+## FR #6309 TipForm OpenCode keys menu
+
+Context menu **OpenCode keys** offers Set key (masked PasswordChar dialog), select among `config\opencode-keys\*.apikey` labels, and Remove key. Writes use SYSTEM+Administrators ACL (same as `Write-BobOpencodeGoApiKey.ps1`). Headless test flags: `--opencode-key-write|--opencode-key-select|--opencode-key-remove`. Removing the last key clears digest `opencode_account` via fuel merge `cleared[]`.
+
 ## OpenCode windows (FR #6147)
 
 Status snapshot carries `opencode_line`, `opencode_window_lines` and `opencode_bars` for **free** plus Go **rolling / weekly / monthly**. A digest with `opencode_windows=null` (the MarchHare card that showed only `[OC] OpenCode n/a`) still writes those four rows. Unknown bars are empty tracks (`known=false`); they are never filled as 100%. Stale clears the painted percent. Unstarted rolling (`Starts on first use`, no reset) is only used after a completed stats read. A missing helper result stays `unknown`.

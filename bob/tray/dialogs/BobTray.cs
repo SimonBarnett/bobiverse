@@ -561,6 +561,12 @@ namespace BobDialogs
             Item("Plan", delegate { StartWorker("plan", ""); });
             Item("Acknowledge", delegate { Acknowledge(); ShowAbout(); });
             Item("Open log", delegate { OpenLog(); });
+            // FR #6309: TipForm masked OpenCode key set/select/remove.
+            ToolStripMenuItem miOcKeys = new ToolStripMenuItem("OpenCode keys");
+            MenuItems.Add("OpenCode keys");
+            SeedOpencodeKeyChoices(miOcKeys, true);
+            miOcKeys.DropDownOpening += delegate { SeedOpencodeKeyChoices(miOcKeys, false); };
+            menu.Items.Add(miOcKeys);
             menu.Items.Add(new ToolStripSeparator()); MenuItems.Add("-");
             Item("Restart", delegate { Restart(); });
             Item("Reload engine", delegate { ReloadEngine(); });
@@ -996,6 +1002,88 @@ namespace BobDialogs
                 try { MessageBox.Show(err, "Bobiverse", MessageBoxButtons.OK, err.StartsWith("start failed") || err.StartsWith("bob-worker.exe") ? MessageBoxIcon.Warning : MessageBoxIcon.Information); } catch { }
         }
 
+
+        void SeedOpencodeKeyChoices(ToolStripMenuItem parent, bool record)
+        {
+            parent.DropDownItems.Clear();
+            ToolStripMenuItem set = new ToolStripMenuItem("Set key...");
+            set.Click += delegate { SetOpencodeKeyInteractive(); };
+            parent.DropDownItems.Add(set);
+            if (record) MenuItems.Add("Set key...");
+            string[] labels = OpencodeKeysStore.ListLabels(root);
+            string selected = OpencodeKeysStore.ReadSelected(root);
+            foreach (string lab in labels)
+            {
+                string mark = string.Equals(lab, selected, StringComparison.OrdinalIgnoreCase) ? " (selected)" : "";
+                ToolStripMenuItem mi = new ToolStripMenuItem("Select " + lab + mark);
+                string capture = lab;
+                mi.Click += delegate { SelectOpencodeKey(capture); };
+                parent.DropDownItems.Add(mi);
+            }
+            ToolStripMenuItem rem = new ToolStripMenuItem("Remove key...");
+            rem.Click += delegate { RemoveOpencodeKeyInteractive(); };
+            parent.DropDownItems.Add(rem);
+            if (record) MenuItems.Add("Remove key...");
+        }
+
+        void SetOpencodeKeyInteractive()
+        {
+            using (OpencodeKeyDialog dlg = new OpencodeKeyDialog(""))
+            {
+                if (dlg.ShowDialog() != DialogResult.OK) return;
+                string err;
+                if (!OpencodeKeysStore.Write(root, dlg.LabelValue, dlg.KeyValue, true, out err))
+                {
+                    try { MessageBox.Show(err.Length > 0 ? err : "write failed", "OpenCode keys", MessageBoxButtons.OK, MessageBoxIcon.Warning); } catch { }
+                    return;
+                }
+                try { MessageBox.Show("Saved labelled OpenCode key '" + dlg.LabelValue + "' (selected).", "OpenCode keys", MessageBoxButtons.OK, MessageBoxIcon.Information); } catch { }
+            }
+        }
+
+        void SelectOpencodeKey(string label)
+        {
+            string err;
+            if (!OpencodeKeysStore.Select(root, label, out err))
+            {
+                try { MessageBox.Show(err.Length > 0 ? err : "select failed", "OpenCode keys", MessageBoxButtons.OK, MessageBoxIcon.Warning); } catch { }
+                return;
+            }
+            try { MessageBox.Show("Selected OpenCode key '" + label + "'.", "OpenCode keys", MessageBoxButtons.OK, MessageBoxIcon.Information); } catch { }
+        }
+
+        void RemoveOpencodeKeyInteractive()
+        {
+            string[] labels = OpencodeKeysStore.ListLabels(root);
+            if (labels.Length == 0)
+            {
+                try { MessageBox.Show("No labelled OpenCode keys on this box.", "OpenCode keys", MessageBoxButtons.OK, MessageBoxIcon.Information); } catch { }
+                return;
+            }
+            string pick = labels[0];
+            if (labels.Length > 1)
+            {
+                using (OpencodeKeyPickDialog dlg = new OpencodeKeyPickDialog(labels, OpencodeKeysStore.ReadSelected(root)))
+                {
+                    if (dlg.ShowDialog() != DialogResult.OK) return;
+                    pick = dlg.LabelValue;
+                }
+            }
+            else
+            {
+                DialogResult dr = DialogResult.Cancel;
+                try { dr = MessageBox.Show("Remove OpenCode key '" + pick + "'?", "OpenCode keys", MessageBoxButtons.OKCancel, MessageBoxIcon.Warning); } catch { }
+                if (dr != DialogResult.OK) return;
+            }
+            string err;
+            if (!OpencodeKeysStore.Remove(root, pick, out err))
+            {
+                try { MessageBox.Show(err.Length > 0 ? err : "remove failed", "OpenCode keys", MessageBoxButtons.OK, MessageBoxIcon.Warning); } catch { }
+                return;
+            }
+            try { MessageBox.Show("Removed OpenCode key '" + pick + "'.", "OpenCode keys", MessageBoxButtons.OK, MessageBoxIcon.Information); } catch { }
+        }
+
         void OpenLog()
         {
             try
@@ -1264,6 +1352,38 @@ namespace BobDialogs
                 else Console.Out.Write(report);
                 return 0;
             }
+            // FR #6309: headless OpenCode key store helpers (tests; never print key material).
+            if (Common.Flag(args, "--opencode-key-write") || Common.Flag(args, "--opencode-key-select") || Common.Flag(args, "--opencode-key-remove"))
+            {
+                string label = Common.Arg(args, "--label");
+                string keyFile = Common.Arg(args, "--key-file");
+                string err = "";
+                bool ok = false;
+                string op = "";
+                if (Common.Flag(args, "--opencode-key-write"))
+                {
+                    op = "write";
+                    string key = "";
+                    if (keyFile.Length > 0 && File.Exists(keyFile))
+                        key = (File.ReadAllText(keyFile, Encoding.UTF8) ?? "").Trim();
+                    ok = OpencodeKeysStore.Write(root, label, key, true, out err);
+                }
+                else if (Common.Flag(args, "--opencode-key-select"))
+                {
+                    op = "select";
+                    ok = OpencodeKeysStore.Select(root, label, out err);
+                }
+                else
+                {
+                    op = "remove";
+                    ok = OpencodeKeysStore.Remove(root, label, out err);
+                }
+                string body = (ok ? "ok=" + op : "err=" + op) + " label=" + label + (err.Length > 0 ? " detail=" + err : "") + "\r\n";
+                string tout = Common.Arg(args, "--text-out");
+                if (tout.Length > 0) File.WriteAllText(tout, body, new UTF8Encoding(false));
+                else Console.Write(body);
+                return ok ? 0 : 2;
+            }
             bool timing = Common.Arg(args, "--timing-out").Length > 0;
             string dumpMenu = Common.Arg(args, "--dump-menu");
             // FR #2585: second instance must log already-running (never unexpected) and must not tray-up.
@@ -1285,6 +1405,207 @@ namespace BobDialogs
             return 0;
         }
     }
+
+
+    // FR #6309: labelled OpenCode Go keys under config\opencode-keys (SYSTEM+Administrators ACL).
+    internal static class OpencodeKeysStore
+    {
+        static readonly Regex LabelRe = new Regex(@"^[A-Za-z0-9][A-Za-z0-9._@+-]{0,63}$", RegexOptions.CultureInvariant);
+
+        public static string KeysDir(string root)
+        {
+            return Path.Combine(root ?? "", "config", "opencode-keys");
+        }
+
+        public static bool ValidLabel(string label)
+        {
+            return !string.IsNullOrEmpty(label) && LabelRe.IsMatch(label);
+        }
+
+        public static string[] ListLabels(string root)
+        {
+            string dir = KeysDir(root);
+            if (!Directory.Exists(dir)) return new string[0];
+            List<string> labs = new List<string>();
+            foreach (string f in Directory.GetFiles(dir, "*.apikey"))
+            {
+                string name = Path.GetFileNameWithoutExtension(f) ?? "";
+                if (ValidLabel(name)) labs.Add(name);
+            }
+            labs.Sort(StringComparer.OrdinalIgnoreCase);
+            return labs.ToArray();
+        }
+
+        public static string ReadSelected(string root)
+        {
+            try
+            {
+                string p = Path.Combine(KeysDir(root), "selected.txt");
+                if (!File.Exists(p)) return "";
+                return (File.ReadAllText(p, Encoding.UTF8) ?? "").Trim();
+            }
+            catch { return ""; }
+        }
+
+        public static bool Write(string root, string label, string key, bool select, out string err)
+        {
+            err = "";
+            if (!ValidLabel(label)) { err = "invalid label"; return false; }
+            if (string.IsNullOrEmpty(key) || key.Trim().Length == 0) { err = "empty key"; return false; }
+            key = key.Trim();
+            try
+            {
+                string dir = KeysDir(root);
+                Directory.CreateDirectory(dir);
+                string dest = Path.Combine(dir, label + ".apikey");
+                File.WriteAllText(dest, key, new UTF8Encoding(false));
+                key = null;
+                TightenAcl(dest);
+                if (select)
+                {
+                    string sel = Path.Combine(dir, "selected.txt");
+                    File.WriteAllText(sel, label + "\n", new UTF8Encoding(false));
+                    TightenAcl(sel);
+                }
+                TightenAcl(dir);
+                return true;
+            }
+            catch (Exception ex) { err = ex.GetType().Name; return false; }
+        }
+
+        public static bool Select(string root, string label, out string err)
+        {
+            err = "";
+            if (!ValidLabel(label)) { err = "invalid label"; return false; }
+            string dest = Path.Combine(KeysDir(root), label + ".apikey");
+            if (!File.Exists(dest)) { err = "missing label"; return false; }
+            try
+            {
+                string dir = KeysDir(root);
+                Directory.CreateDirectory(dir);
+                string sel = Path.Combine(dir, "selected.txt");
+                File.WriteAllText(sel, label + "\n", new UTF8Encoding(false));
+                TightenAcl(sel);
+                return true;
+            }
+            catch (Exception ex) { err = ex.GetType().Name; return false; }
+        }
+
+        public static bool Remove(string root, string label, out string err)
+        {
+            err = "";
+            if (!ValidLabel(label)) { err = "invalid label"; return false; }
+            try
+            {
+                string dir = KeysDir(root);
+                string dest = Path.Combine(dir, label + ".apikey");
+                if (File.Exists(dest)) File.Delete(dest);
+                string selected = ReadSelected(root);
+                if (string.Equals(selected, label, StringComparison.OrdinalIgnoreCase))
+                {
+                    string[] left = ListLabels(root);
+                    string selPath = Path.Combine(dir, "selected.txt");
+                    if (left.Length == 0)
+                    {
+                        if (File.Exists(selPath)) File.Delete(selPath);
+                    }
+                    else
+                    {
+                        File.WriteAllText(selPath, left[0] + "\n", new UTF8Encoding(false));
+                        TightenAcl(selPath);
+                    }
+                }
+                return true;
+            }
+            catch (Exception ex) { err = ex.GetType().Name; return false; }
+        }
+
+        static void TightenAcl(string path)
+        {
+            try
+            {
+                // SYSTEM + Administrators + current user (UAC-filtered admins still need explicit grant).
+                string me = Environment.UserDomainName + "\\" + Environment.UserName;
+                string args = string.Format("\"{0}\" /inheritance:r /grant:r \"NT AUTHORITY\\SYSTEM:(F)\" \"BUILTIN\\Administrators:(F)\" \"{1}\":(F)", path, me);
+                ProcessStartInfo psi = new ProcessStartInfo(
+                    Path.Combine(Environment.GetEnvironmentVariable("SystemRoot") ?? "C:\\Windows", "System32\\icacls.exe"),
+                    args);
+                psi.UseShellExecute = false; psi.CreateNoWindow = true;
+                using (Process p = Process.Start(psi))
+                {
+                    if (p != null) p.WaitForExit(15000);
+                }
+            }
+            catch { }
+        }
+    }
+
+    internal class OpencodeKeyDialog : Form
+    {
+        readonly TextBox labelBox;
+        readonly TextBox keyBox;
+        public string LabelValue { get { return (labelBox.Text ?? "").Trim(); } }
+        public string KeyValue { get { return keyBox.Text ?? ""; } }
+
+        public OpencodeKeyDialog(string initialLabel)
+        {
+            Text = "OpenCode Go API key";
+            FormBorderStyle = FormBorderStyle.FixedDialog;
+            StartPosition = FormStartPosition.CenterScreen;
+            ClientSize = new Size(420, 160);
+            MaximizeBox = false; MinimizeBox = false; ShowInTaskbar = false;
+            Font = new Font("Segoe UI", 9f);
+            Label l1 = new Label(); l1.Text = "Label"; l1.Location = new Point(16, 18); l1.AutoSize = true;
+            labelBox = new TextBox(); labelBox.Location = new Point(100, 14); labelBox.Width = 290; labelBox.Text = initialLabel ?? "";
+            Label l2 = new Label(); l2.Text = "API key"; l2.Location = new Point(16, 54); l2.AutoSize = true;
+            keyBox = new TextBox(); keyBox.Location = new Point(100, 50); keyBox.Width = 290; keyBox.PasswordChar = '*'; keyBox.UseSystemPasswordChar = true;
+            Button ok = new Button(); ok.Text = "Save"; ok.Location = new Point(220, 100); ok.DialogResult = DialogResult.None;
+            Button cancel = new Button(); cancel.Text = "Cancel"; cancel.Location = new Point(310, 100); cancel.DialogResult = DialogResult.Cancel;
+            ok.Click += delegate
+            {
+                if (!OpencodeKeysStore.ValidLabel(LabelValue))
+                {
+                    MessageBox.Show(this, "Label must be 1-64 chars: letter/digit then . _ @ + -", "OpenCode keys", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    return;
+                }
+                if ((KeyValue ?? "").Trim().Length == 0)
+                {
+                    MessageBox.Show(this, "Key is required.", "OpenCode keys", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    return;
+                }
+                DialogResult = DialogResult.OK;
+                Close();
+            };
+            Controls.AddRange(new Control[] { l1, labelBox, l2, keyBox, ok, cancel });
+            AcceptButton = ok; CancelButton = cancel;
+        }
+    }
+
+    internal class OpencodeKeyPickDialog : Form
+    {
+        readonly ComboBox box;
+        public string LabelValue { get { return (box.SelectedItem == null ? "" : Convert.ToString(box.SelectedItem)) ?? ""; } }
+
+        public OpencodeKeyPickDialog(string[] labels, string selected)
+        {
+            Text = "Remove OpenCode key";
+            FormBorderStyle = FormBorderStyle.FixedDialog;
+            StartPosition = FormStartPosition.CenterScreen;
+            ClientSize = new Size(360, 120);
+            MaximizeBox = false; MinimizeBox = false; ShowInTaskbar = false;
+            Font = new Font("Segoe UI", 9f);
+            Label l = new Label(); l.Text = "Label to remove"; l.Location = new Point(16, 18); l.AutoSize = true;
+            box = new ComboBox(); box.DropDownStyle = ComboBoxStyle.DropDownList; box.Location = new Point(16, 42); box.Width = 320;
+            foreach (string lab in labels) box.Items.Add(lab);
+            if (!string.IsNullOrEmpty(selected) && box.Items.Contains(selected)) box.SelectedItem = selected;
+            else if (box.Items.Count > 0) box.SelectedIndex = 0;
+            Button ok = new Button(); ok.Text = "Remove"; ok.Location = new Point(160, 78); ok.DialogResult = DialogResult.OK;
+            Button cancel = new Button(); cancel.Text = "Cancel"; cancel.Location = new Point(250, 78); cancel.DialogResult = DialogResult.Cancel;
+            Controls.AddRange(new Control[] { l, box, ok, cancel });
+            AcceptButton = ok; CancelButton = cancel;
+        }
+    }
+
 
     // FR #1642: append JSON lines to %LOCALAPPDATA%\Bobiverse\tray-lifecycle.log; suppress intentional Exit.
     internal static class TrayLifecycle

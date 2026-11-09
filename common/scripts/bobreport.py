@@ -4329,12 +4329,17 @@ def build_peer_fuel_merge_payload(peer: dict, machine_id: str) -> dict | None:
     for key in ("xai_weekly_used_pct", "xai_weekly_source", "xai_weekly_fetched_at"):
         if key in peer:
             payload[key] = peer.get(key)
-    # FR #6143 / #6301: ear-owned account labels travel with fuel merge.
+    # FR #6143 / #6301 / #6309: ear-owned account labels travel with fuel merge.
+    # Explicit None/"" must clear sticky digest labels (cleared[]), not omit.
     for key in _EAR_IDENTITY_FIELDS:
         if key not in peer:
             continue
         val = peer.get(key)
         if val in (None, ""):
+            payload[key] = None
+            cleared = payload.setdefault("cleared", [])
+            if isinstance(cleared, list) and key not in cleared:
+                cleared.append(key)
             continue
         cleaned = _sanitize_grok_account_label(val)
         if cleaned:
