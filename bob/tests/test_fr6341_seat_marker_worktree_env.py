@@ -97,3 +97,10 @@ def test_docs_pin_fr6341_phrases():
         assert "PowerShell 5.1" in text or "Windows PowerShell 5.1" in text, label
         assert "-Depth" in text, label
         assert "FR #6341" in text, label
+
+
+def test_fr6341_bob_worker_skill_pins_ai_worktrees_not_bel():
+    worker = _skill_text("bob", ".grok", "skills", "bobiverse-bob-worker", "SKILL.md")
+    assert "ai\\worktrees" in worker
+    assert "\x07" not in worker
+    assert "for i\\worktrees" not in worker
