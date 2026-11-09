@@ -362,6 +362,7 @@ routes to bobiverse via the split rule.
 - BOBIVERSE_NO_UPDATE must Trim Process+Machine (NSSM AppEnvironmentExtra padding); Start-Bob/Jeeves/Airc suppress Sync and Update invocation before either begins and log no-update-guard seen/effective (FR #6259).
 - Win32 ctypes on x64: set GetCurrentProcess.restype=HANDLE (and CreateFileW/token API argtypes) or OpenProcessToken returns ERROR_INVALID_HANDLE (6) before SeBackupPrivilege CreateFile runs
 - Copilot tray paint: Format-BobCopilotPoolLine uses 'Copilot - <meter>'; UsageRow with remaining bar; never Section RightText/red-for-stale; Get-BobCopilotMeterBarPct keeps % when stale
+- When FIX is offered for an MRB-FAIL tip that already has a stacked fix PR targeting the tip branch, merge that fix PR into the tip and DONE FIX with the assigned PR URL so chair requeues MRB.
 
 ## Harvest digest (lessons audit 2026-10-06)
 
