@@ -22,7 +22,7 @@ import bobtalk
 import registered_machines
 
 REPORT_CMD = "!report"
-REPORT_GONE = "ERR report gone — use callback or GET /bob/v1/report"
+REPORT_GONE = "ERR report gone - use callback or GET /bob/v1/report"
 NO_MACHINE = "ERR no such machine"
 DEFAULT_DIGEST_URL = "https://bob.ntsa.uk/bob/v1/report"
 
@@ -30,7 +30,7 @@ DEFAULT_DIGEST_URL = "https://bob.ntsa.uk/bob/v1/report"
 # pull then never POSTs fuel (stale weekly). Identify as bobreport explicitly.
 DIGEST_HTTP_USER_AGENT = "Bobiverse-bobreport/1.0"
 DIGEST_URL_ENV = "BOB_DIGEST_URL"
-BOBIVERSE_GONE = "ERR !bobiverse gone — GET https://bob.ntsa.uk/bob/v1/report"
+BOBIVERSE_GONE = "ERR !bobiverse gone - GET https://bob.ntsa.uk/bob/v1/report"
 DIGEST_PREFIX = "BOB DIGEST v1 "
 MAX_DIGEST_LINE = 350
 FLEET_CHANNEL = "#bobiverse"
@@ -76,7 +76,7 @@ def roster_machine_ids(home: Path | None = None, *, fold: bool = True) -> tuple[
     An empty/missing registry is an EMPTY roster, not a bootstrap fleet.
 
     ``home`` may be the chair home (``~/.jeeves``); the ChanServ mirror lives in the digest
-    home (``BOB_DIGEST_HOME`` / ``~/.bobiverse``) — FR #69.
+    home (``BOB_DIGEST_HOME`` / ``~/.bobiverse``) - FR #69.
     """
     if home is None:
         home = _default_digest_home()
@@ -1466,7 +1466,7 @@ def _pid_alive(pid: int) -> bool:
         try:
             import ctypes
 
-            # SYNCHRONIZE — OpenProcess succeeds for live PIDs we can see; ACCESS_DENIED (5) often
+            # SYNCHRONIZE - OpenProcess succeeds for live PIDs we can see; ACCESS_DENIED (5) often
             # means the process exists but we lack rights.
             h = ctypes.windll.kernel32.OpenProcess(0x00100000, 0, int(pid))
             if h:
@@ -1534,7 +1534,7 @@ def break_stale_digest_lock(home: Path, max_age_s: float | None = None) -> dict 
     if size == 0:
         reason = "empty"
     elif age >= max_age:
-        # Never unlink a lock still held by *this* live process — health-watchdog
+        # Never unlink a lock still held by *this* live process - health-watchdog
         # GET timeouts used to break our own 30s+ holder (mtime not refreshed) and
         # cascade ConnectionAbortedError + foreign-stale fights with the chair.
         # FR #6100: exception when digest *content* ts is also stale (hung writer).
@@ -2255,7 +2255,7 @@ def _apply_merge_payload(doc: dict, mid: str, payload: dict) -> list[str]:
     # linger next to the new reset (MarchHare showed weekly=8 against a reset 7 days later).
     if weekly_rolled and payload.get("period_end") and payload.get("weekly") is None:
         ent.pop("weekly", None)
-    # FR #976: reporter says weekly is unknown — clear a stuck 0 (lesser ratchet left 0 forever).
+    # FR #976: reporter says weekly is unknown - clear a stuck 0 (lesser ratchet left 0 forever).
     weekly_known = payload.get("weekly_known")
     if "weekly_known" in payload and _is_false_like(weekly_known):
         ent.pop("weekly", None)
@@ -2396,7 +2396,7 @@ def clear_seat_doing(
     """Set a seat idle in digest ``worker_list`` + ``workers`` (FR #1430).
 
     Used when an accepted MERGED MRB is purged from the queue while the seat's
-    digest still shows ``doing bobiverse MRB #N`` — that false busy made every
+    digest still shows ``doing bobiverse MRB #N`` - that false busy made every
     !bored return ``nak busy`` and stranded the next offer (e.g. repo UAT).
     When ``only_if_work_contains`` is set, clear only if current work/working_on
     mentions that needle (PR number / task id).
@@ -2650,7 +2650,7 @@ def shop_down(home: Path, machine_id: str, briefer_nick: str = "") -> PresenceOu
     _set_online(ent, False)
     _note_event(doc, "shop-down", machine=mid)
     save_digest(home, doc)
-    action = f"lost {nick} — {shop} closed"
+    action = f"lost {nick} - {shop} closed"
     return PresenceOutcome(ok=True, actions=[action], shop_closed=True, machine_id=mid)
 
 
@@ -2959,7 +2959,7 @@ def enqueue_chair_fleet_privmsg(home: Path, body: str, channel: str = FLEET_CHAN
 
 
 def apply_git_webhook(home: Path, event: str, payload: dict) -> GitWebhookOutcome:
-    """Announce path only — never secret-scan the full GitHub JSON body (FR #206).
+    """Announce path only - never secret-scan the full GitHub JSON body (FR #206).
 
     FR #4706: ``check_run`` / ``check_suite`` also drive merge-on-green FIX re-offers
     for parked CI-failed tips (new head SHA) without waiting for ``!resync``.
@@ -3339,7 +3339,7 @@ def _stamp_pool_identity(row: dict, mid: str, *, account: str | None = None, cha
     if explicit and explicit in NICK_TO_MACHINE:
         explicit = ""
     if explicit and canonical and explicit.startswith("bob-") and explicit != canonical:
-        # Explicit bob-* that is not the canonical mid nick is a legacy alias — ignore.
+        # Explicit bob-* that is not the canonical mid nick is a legacy alias - ignore.
         if NICK_TO_MACHINE.get(explicit) == norm or explicit == "bob-ionos":
             explicit = ""
     acct = explicit or canonical
@@ -5878,6 +5878,261 @@ def _read_xai_log_file(path: Path, *, now: datetime | None) -> dict | None:
     return parse_xai_weekly_log_text(blob, now=now)
 
 
+
+XAI_BILLING_CREDITS_URL = "https://cli-chat-proxy.grok.com/v1/billing?format=credits"
+XAI_BILLING_SOURCE = "cli-chat-proxy:/v1/billing?format=credits"
+
+
+def xai_weekly_auth_path() -> tuple[Path | None, str]:
+    """FR #6274: auth.json for the interactive/process Grok session (usage fetch only).
+
+    Never logs or returns credential material - path identity only.
+    Honours ``BOB_GROK_AUTH_PATH``, then interactive home (``BOB_GROK_WEEKLY_USER_HOME`` /
+    live LocalSystem resolve), else the process profile when it is not systemprofile.
+    """
+    raw = (os.environ.get("BOB_GROK_AUTH_PATH") or "").strip()
+    if raw:
+        return Path(raw), "explicit-auth"
+    home = (os.environ.get("USERPROFILE") or os.environ.get("HOME") or "").strip()
+    if home and _is_windows_system_profile(Path(home)):
+        allow_auto = _is_local_system_process() or bool(
+            (os.environ.get("BOB_GROK_WEEKLY_USER_HOME") or "").strip()
+        )
+        if allow_auto:
+            user_home = _interactive_grok_user_home()
+            if user_home is not None:
+                return user_home / ".grok" / "auth.json", "interactive-auth"
+        return None, "system-profile-skipped"
+    if home:
+        return Path(home) / ".grok" / "auth.json", "process-auth"
+    return None, "no-profile"
+
+
+def _grok_auth_bearer_from_file(path: Path) -> str | None:
+    """Load the session ``key`` from auth.json into memory. Never log the value."""
+    try:
+        doc = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError, TypeError, ValueError):
+        return None
+    if not isinstance(doc, dict) or not doc:
+        return None
+    for _issuer, entry in doc.items():
+        if not isinstance(entry, dict):
+            continue
+        key = entry.get("key")
+        if isinstance(key, str) and key.strip():
+            return key.strip()
+    return None
+
+
+def parse_xai_billing_credits_response(
+    doc: object, *, now: datetime | None = None
+) -> dict | None:
+    """Parse CLI ``/v1/billing?format=credits`` into a weekly remaining reading.
+
+    ``creditUsagePercent`` is used percent; remaining is ``100 - used``.
+    Absent percent is not a known weekly figure (do not invent 0).
+    """
+    if not isinstance(doc, dict):
+        return None
+    cfg = doc.get("config")
+    if not isinstance(cfg, dict):
+        return None
+    used_raw = cfg.get("creditUsagePercent")
+    if used_raw is None:
+        return None
+    try:
+        used_f = float(used_raw)
+    except (TypeError, ValueError):
+        return None
+    if not 0.0 <= used_f <= 100.0:
+        return None
+    used_i = int(round(used_f))
+    remaining = max(0, min(100, 100 - used_i))
+    period_end = None
+    cp = cfg.get("currentPeriod")
+    if isinstance(cp, dict) and cp.get("end"):
+        period_end = str(cp["end"])
+    elif cfg.get("billingPeriodEnd"):
+        period_end = str(cfg["billingPeriodEnd"])
+    clock = now or datetime.now(timezone.utc)
+    if clock.tzinfo is None:
+        clock = clock.replace(tzinfo=timezone.utc)
+    fetched = clock.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return {
+        "remaining_pct": remaining,
+        "used_pct": used_i,
+        "weekly_known": True,
+        "period_end": period_end,
+        "fetched_at": fetched,
+        "source": XAI_BILLING_SOURCE,
+        "fresh": True,
+        "provider": "xai",
+        "window": "weekly",
+        "direction": "remaining",
+        "account": None,
+        "error": None,
+    }
+
+
+def fetch_live_xai_weekly(*, now: datetime | None = None) -> dict | None:
+    """FR #6274: live weekly via CLI billing endpoint using the signed-in session.
+
+    Uses auth.json ``key`` in-process only (never copied, printed, or moved).
+    Passive unified.jsonl is never treated as a fresh reading.
+    """
+    global _last_xai_acquisition
+    import urllib.error
+    import urllib.request
+
+    path, identity = xai_weekly_auth_path()
+    if path is None:
+        _last_xai_acquisition = {
+            "identity": identity,
+            "read": False,
+            "live": False,
+            "error": identity or "auth-missing",
+        }
+        return None
+    if not path.is_file():
+        _last_xai_acquisition = {
+            "identity": identity,
+            "read": False,
+            "live": False,
+            "error": "auth-file-missing",
+        }
+        return None
+    token = _grok_auth_bearer_from_file(path)
+    if not token:
+        _last_xai_acquisition = {
+            "identity": identity,
+            "read": False,
+            "live": False,
+            "error": "auth-key-missing",
+        }
+        return None
+    try:
+        timeout = float(os.environ.get("BOB_XAI_WEEKLY_FETCH_TIMEOUT_S") or "8")
+    except ValueError:
+        timeout = 8.0
+    timeout = max(1.0, min(timeout, 30.0))
+    req = urllib.request.Request(XAI_BILLING_CREDITS_URL, method="GET")
+    req.add_header("Authorization", "Bearer " + token)
+    req.add_header("Accept", "application/json")
+    req.add_header("User-Agent", "xai-grok-cli")
+    req.add_header("x-xai-token-auth", "xai-grok-cli")
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            raw = resp.read().decode("utf-8", errors="replace")
+    except urllib.error.HTTPError as e:
+        _last_xai_acquisition = {
+            "identity": identity,
+            "read": False,
+            "live": False,
+            "error": f"provider-http-{int(getattr(e, 'code', 0) or 0)}",
+        }
+        return None
+    except Exception as e:
+        _last_xai_acquisition = {
+            "identity": identity,
+            "read": False,
+            "live": False,
+            "error": f"provider-{type(e).__name__}",
+        }
+        return None
+    try:
+        doc = json.loads(raw)
+    except json.JSONDecodeError:
+        _last_xai_acquisition = {
+            "identity": identity,
+            "read": False,
+            "live": False,
+            "error": "provider-bad-json",
+        }
+        return None
+    reading = parse_xai_billing_credits_response(doc, now=now)
+    if not reading:
+        _last_xai_acquisition = {
+            "identity": identity,
+            "read": False,
+            "live": False,
+            "error": "provider-no-creditUsagePercent",
+        }
+        return None
+    _last_xai_acquisition = {
+        "identity": "live-billing",
+        "read": True,
+        "live": True,
+        "error": None,
+        "auth_identity": identity,
+    }
+    return reading
+
+
+def enrich_peer_keep_last_good_xai_weekly(
+    peer: dict, *, error: str, now: datetime | None = None
+) -> dict:
+    """FR #6274: on live-fetch failure keep last-good with true age; never blank a knowable value."""
+    if not isinstance(peer, dict):
+        return peer
+    enriched = dict(peer)
+    meter = enriched.get("xai_weekly") if isinstance(enriched.get("xai_weekly"), dict) else {}
+    last_at = enriched.get("xai_weekly_fetched_at") or meter.get("fetched_at")
+    last_rem = enriched.get("weekly")
+    if last_rem is None:
+        last_rem = meter.get("remaining_pct")
+    age_s = None
+    clock = now or datetime.now(timezone.utc)
+    if clock.tzinfo is None:
+        clock = clock.replace(tzinfo=timezone.utc)
+    if last_at:
+        parsed = _parse_xai_period_end(last_at)
+        if parsed is not None:
+            age_s = max(0, int((clock - parsed.astimezone(timezone.utc)).total_seconds()))
+    rem_i = None
+    if last_rem is not None:
+        try:
+            rem_i = int(last_rem)
+        except (TypeError, ValueError):
+            rem_i = None
+        if rem_i is not None and not 0 <= rem_i <= 100:
+            rem_i = None
+    pcent = dict(enriched.get("pcent")) if isinstance(enriched.get("pcent"), dict) else {}
+    out_meter = {
+        "provider": "xai",
+        "window": "weekly",
+        "direction": "remaining",
+        "remaining_pct": rem_i,
+        "used_pct": enriched.get("xai_weekly_used_pct")
+        if enriched.get("xai_weekly_used_pct") is not None
+        else meter.get("used_pct"),
+        "source": enriched.get("xai_weekly_source")
+        or meter.get("source")
+        or "last-good",
+        "fetched_at": last_at,
+        "period_end": enriched.get("period_end") or meter.get("period_end"),
+        "account": None,
+        "fresh": False,
+        "error": str(error or "live-fetch-failed"),
+        "age_s": age_s,
+    }
+    if rem_i is not None:
+        enriched["weekly"] = rem_i
+        enriched["weekly_known"] = True
+        pcent["grok-build"] = rem_i
+    else:
+        enriched["weekly"] = None
+        enriched["weekly_known"] = False
+        pcent.pop("grok-build", None)
+    enriched["pcent"] = pcent
+    enriched["xai_weekly"] = out_meter
+    enriched["xai_weekly_fetched_at"] = last_at
+    enriched["xai_weekly_source"] = out_meter.get("source")
+    if out_meter.get("used_pct") is not None:
+        enriched["xai_weekly_used_pct"] = out_meter.get("used_pct")
+    return enriched
+
+
 def read_local_xai_weekly(*, now: datetime | None = None) -> dict | None:
     """Explicit log, then interactive/process profile unified.jsonl (FR #6270).
 
@@ -5943,6 +6198,8 @@ def enrich_peer_with_xai_weekly(peer: dict, reading: dict | None) -> dict:
             "fetched_at": enriched.get("xai_weekly_fetched_at"),
             "period_end": enriched.get("period_end"),
             "account": None,
+            "fresh": bool(reading.get("fresh", True)),
+            "error": reading.get("error"),
         }
     else:
         enriched["weekly"] = None
@@ -5963,6 +6220,8 @@ def enrich_peer_with_xai_weekly(peer: dict, reading: dict | None) -> dict:
             "fetched_at": enriched.get("xai_weekly_fetched_at"),
             "period_end": reading.get("period_end"),
             "account": None,
+            "fresh": False,
+            "error": reading.get("error"),
         }
     enriched["pcent"] = pcent
     return enriched
@@ -6024,41 +6283,26 @@ def publish_local_peer_fuel(
         peer = bobstat.read_peer(home, mid) or peer
     except OSError:
         pass
-    # Service pool monitor: local xAI weekly remaining, before fingerprint/POST.
-    # Does not call the network and does not copy credentials.
+    # FR #6274: live xAI weekly via CLI billing endpoint (signed-in session key
+    # in-memory only). Passive unified.jsonl is never a fresh reading. On failure
+    # keep last-good with true age + explicit error (do not blank a knowable value).
     try:
-        xai = read_local_xai_weekly()
+        xai = fetch_live_xai_weekly()
         acq = _last_xai_acquisition.get("identity")
+        err = _last_xai_acquisition.get("error")
         _last_fuel_publish_diag["acquisition"] = acq
-        if xai:
+        if err:
+            _last_fuel_publish_diag["xai_weekly_error"] = err
+        if xai and xai.get("weekly_known") and xai.get("fresh"):
             peer = enrich_peer_with_xai_weekly(peer, xai)
-        elif acq in (
-            "system-profile-skipped",
-            "system-profile-refused",
-            "fake-grok",
-        ):
-            # FR #6270 / mrb-6272: LocalSystem skip must not re-post a carried
-            # peer.weekly as a fresh reading (weekly_known=false clears).
-            peer = enrich_peer_with_xai_weekly(
-                peer,
-                {
-                    "weekly_known": False,
-                    "remaining_pct": None,
-                    "source": str(acq),
-                    "fetched_at": None,
-                },
+        else:
+            peer = enrich_peer_keep_last_good_xai_weekly(
+                peer, error=str(err or acq or "live-fetch-failed")
             )
-    except Exception:
+    except Exception as exc:
         _last_fuel_publish_diag["acquisition"] = "read-failed"
-        peer = enrich_peer_with_xai_weekly(
-            peer,
-            {
-                "weekly_known": False,
-                "remaining_pct": None,
-                "source": "read-failed",
-                "fetched_at": None,
-            },
-        )
+        _last_fuel_publish_diag["xai_weekly_error"] = type(exc).__name__
+        peer = enrich_peer_keep_last_good_xai_weekly(peer, error="read-failed")
     # FR #6146 / #6147 / #6248: enrich with service-owned OpenCode windows before POST.
     try:
         oc_doc = read_local_opencode_fuel_doc()
