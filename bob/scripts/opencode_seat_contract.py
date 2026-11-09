@@ -1,4 +1,4 @@
-"""FR #6240 / #6320: OpenCode Windows seat contract. No credential reads.
+"""FR #6240 / #6320 / #6328: OpenCode Windows seat contract. No credential reads.
 
 Headless ``opencode run`` auto-rejects ``external_directory`` asks. It has
 ``--dir`` and no ``--interactive`` flag. ``--auto`` would approve those asks
@@ -46,6 +46,12 @@ CREATE_FAILED_MESSAGE = (
     "Next: the worker could not create Get-BobiverseJobWorktreePath. "
     "Do not pass --auto. This run is not a completed job."
 )
+# FR #6328: keep git worktree create bounded so a hung remote cannot starve IRC.
+# Create itself runs off the IRC read thread; these caps still limit wall time.
+WORKTREE_FETCH_TIMEOUT_S = 30.0
+WORKTREE_ADD_TIMEOUT_S = 60.0
+WORKTREE_SPARSE_TIMEOUT_S = 30.0
+WORKTREE_REV_TIMEOUT_S = 15.0
 BASE_REFUSED_MESSAGE = (
     "opencode-ready: blocked worktree_base_refused. "
     "Next: set BOB_JOB_WORKTREE_BASE to <drive>\\ai\\worktrees. A drive root is refused."
@@ -585,10 +591,17 @@ def opencode_job_context_nack(
 ) -> str:
     """NACK text when this message must not be ACK'd, else ``''``.
 
-    Does not create a worktree. OpenCode seats use ``opencode_job_context_nack_ready``
-    (FR #6320) so the worker creates ``Get-BobiverseJobWorktreePath`` before ACK.
+    Does not create a worktree. Cheap classify for the IRC read thread (FR #6328).
+    OpenCode seats park ``worktree-absent`` and call ``opencode_job_context_nack_ready``
+    off-thread (FR #6320 / #6328) so create finishes before ACK.
     """
     return classify_opencode_job(line, env, disks=disks, system_drive=system_drive)["nack"]
+
+
+def is_worktree_absent_nack(nack: str) -> bool:
+    """True when *nack* is the classify-only absent reason (create may still succeed)."""
+    text = (nack or "").strip().lower()
+    return "worktree-absent" in text
 
 
 def write_project_dir(
@@ -689,6 +702,17 @@ def _git_run(run, args: list[str], *, timeout: float = 120.0):
     return run(args, capture_output=True, text=True, timeout=timeout)
 
 
+def _is_timeout_exc(exc: BaseException) -> bool:
+    name = type(exc).__name__
+    if name == 'TimeoutExpired':
+        return True
+    try:
+        import subprocess as _sp
+        return isinstance(exc, _sp.TimeoutExpired)
+    except Exception:
+        return False
+
+
 def _branch_exists(run, clone: str, branch: str) -> bool:
     try:
         proc = _git_run(run, ["git", "-C", clone, "show-ref", "--verify", "--quiet", f"refs/heads/{branch}"])
@@ -710,6 +734,8 @@ def create_job_worktree(
     Returns ``(ok, error_class)``. *error_class* is empty on success and is the
     ``worktree-create-failed:<class>`` suffix on failure. Never points at a
     credential path. Does not pass ``--auto`` or widen OpenCode dirs.
+
+    FR #6328: git steps use short timeouts; callers run this off the IRC read thread.
     """
     import subprocess as _sp
 
@@ -738,7 +764,11 @@ def create_job_worktree(
         return False, "disk"
     # Best-effort tip fetch; failure alone does not block if a local tip exists.
     try:
-        _git_run(run, ["git", "-C", clone, "fetch", "origin", "main"], timeout=180.0)
+        _git_run(
+            run,
+            ["git", "-C", clone, "fetch", "origin", "main"],
+            timeout=WORKTREE_FETCH_TIMEOUT_S,
+        )
     except Exception:
         pass
 
@@ -747,7 +777,7 @@ def create_job_worktree(
             proc = _git_run(
                 run,
                 ["git", "-C", clone, "rev-parse", "--verify", ref],
-                timeout=30.0,
+                timeout=WORKTREE_REV_TIMEOUT_S,
             )
             return int(getattr(proc, "returncode", 1)) == 0
         except Exception:
@@ -758,7 +788,7 @@ def create_job_worktree(
             proc = _git_run(
                 run,
                 ["git", "-C", clone, "worktree", "add", str(folder), branch],
-                timeout=180.0,
+                timeout=WORKTREE_ADD_TIMEOUT_S,
             )
         else:
             start = "origin/main"
@@ -769,11 +799,13 @@ def create_job_worktree(
             proc = _git_run(
                 run,
                 ["git", "-C", clone, "worktree", "add", "-b", branch, str(folder), start],
-                timeout=180.0,
+                timeout=WORKTREE_ADD_TIMEOUT_S,
             )
     except OSError:
         return False, "disk"
-    except Exception:
+    except Exception as exc:
+        if _is_timeout_exc(exc):
+            return False, "timeout"
         return False, "git-worktree"
     code = int(getattr(proc, "returncode", 1))
     if code != 0:
@@ -787,7 +819,11 @@ def create_job_worktree(
         return False, "git-worktree"
     # Sparse install clones: disable once so the job tree is full (FR #4029).
     try:
-        _git_run(run, ["git", "-C", str(folder), "sparse-checkout", "disable"], timeout=60.0)
+        _git_run(
+            run,
+            ["git", "-C", str(folder), "sparse-checkout", "disable"],
+            timeout=WORKTREE_SPARSE_TIMEOUT_S,
+        )
     except Exception:
         pass
     # Soft-cap seat marker (FR #3641). Best-effort; never fail the create.

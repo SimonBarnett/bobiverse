@@ -415,15 +415,24 @@ def test_start_agent_refuses_opencode_when_gh_auth_is_missing(monkeypatch):
     assert sup.start_agent() is False
 
 def test_opencode_job_block_callback_is_opencode_only():
-    """Grok/Cursor must not inherit OpenCode multi-key / flood NACK wiring."""
+    """Grok/Cursor must not inherit OpenCode multi-key / flood NACK wiring (FR #6328)."""
     relay = bw.Relay(log=lambda *_a, **_k: None)
     for kind, expect in (("opencode", True), ("grok", False), ("cursor", False)):
         sup = bw.Supervisor.__new__(bw.Supervisor)
         sup.kind = kind
-        relay.opencode_job_block = (
-            sup._opencode_job_block if (sup.kind or "").strip().lower() == "opencode" else None
-        )
-        assert (relay.opencode_job_block is not None) is expect
+        # Mirror Supervisor wire: classify + ensure off-thread for OpenCode.
+        if (sup.kind or "").strip().lower() == "opencode":
+            relay.opencode_job_classify = sup._opencode_job_classify
+            relay.opencode_ensure_worktree = sup._opencode_ensure_worktree
+            relay.opencode_job_block = None
+        else:
+            relay.opencode_job_classify = None
+            relay.opencode_ensure_worktree = None
+            relay.opencode_job_block = None
+        gated = relay.opencode_job_classify is not None or relay.opencode_job_block is not None
+        assert gated is expect
+        if expect:
+            assert relay.opencode_ensure_worktree is not None
 
 
 def test_grok_relay_without_opencode_job_block_keeps_multi_key_assign(tmp_path: Path):

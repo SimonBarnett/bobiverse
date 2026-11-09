@@ -155,6 +155,7 @@ except Exception:  # pragma: no cover
 try:
     from opencode_seat_contract import (  # noqa: E402
         console_text,
+        is_worktree_absent_nack,
         message_job_keys,
         opencode_job_context_nack,
         opencode_job_context_nack_ready,
@@ -164,6 +165,7 @@ try:
 except ImportError:  # package import (bob.scripts.bob_worker)
     from bob.scripts.opencode_seat_contract import (  # type: ignore  # noqa: E402
         console_text,
+        is_worktree_absent_nack,
         message_job_keys,
         opencode_job_context_nack,
         opencode_job_context_nack_ready,
@@ -4288,11 +4290,14 @@ class Relay:
         # FR #4180: while True (out-of-fuel hold), refuse assigns without inject; callback NACKs.
         self.refuse_assign_while: Optional[Callable[[], bool]] = None
         self.skips_hostile_assign: Optional[Callable[[str], bool]] = None  # FR #6134
-        # FR #6240 / #6320: NACK text when an OpenCode assign has no safe worktree.
-        # Empty string accepts the assign. OpenCode seats create Get-BobiverseJobWorktreePath
-        # before ACK (FR #6320). The callback must not write the project file;
-        # the inject path records it only for the line that is actually sent.
+        # FR #6240 / #6320 / #6328: OpenCode job context.
+        # Cheap classify (opencode_job_classify) runs on the IRC read thread.
+        # Slow ensure (opencode_ensure_worktree) runs on a daemon thread; ACK waits.
+        # Legacy opencode_job_block still runs sync ensure when classify/ensure unset.
         self.opencode_job_block: Optional[Callable[[str], str]] = None
+        self.opencode_job_classify: Optional[Callable[[str], str]] = None
+        self.opencode_ensure_worktree: Optional[Callable[[str], str]] = None
+        self._worktree_creating_keys: set = set()
         self.on_refuse_assign: Optional[Callable[[str], None]] = None
         # FR #4115: write ACK/NACK to the seat outbox (program, no agent turn).
         self.write_outbox: Optional[Callable[[str], bool]] = None
@@ -4315,7 +4320,7 @@ class Relay:
                 self._do_inject(line)
 
     def _job_context_nack(self, line: str) -> str:
-        """FR #6240: NACK text, or '' when this line may be ACK'd."""
+        """FR #6240: NACK text, or '' when this line may be ACK'd (legacy sync ensure)."""
         fn = self.opencode_job_block
         if not fn or not assign_job_ref(line):
             return ""
@@ -4325,6 +4330,70 @@ class Relay:
             key = assign_job_key(line)
             nack = f"NACK {key} job-context-malformed (FR #6240)" if key else ""
         return (nack or "").strip()
+
+    def _job_context_classify(self, line: str) -> str:
+        """FR #6328: cheap classify NACK on the IRC read thread (no git)."""
+        fn = self.opencode_job_classify
+        if not fn or not assign_job_ref(line):
+            return ""
+        try:
+            nack = fn(line)
+        except Exception:
+            key = assign_job_key(line)
+            nack = f"NACK {key} job-context-malformed (FR #6240)" if key else ""
+        return (nack or "").strip()
+
+    def _park_worktree_create(self, nick: str, target: str, text: str, line: str) -> str:
+        """FR #6328: run ensure off the IRC read thread; ACK only after create."""
+        key = (assign_job_key(line) or "").strip().lower()
+        with self._lock:
+            if key and key in self._worktree_creating_keys:
+                self.log("relay: worktree create already in flight " + (key or "?"))
+                self._persist_last_from(line)
+                return "opencode_worktree_pending"
+            if key:
+                self._worktree_creating_keys.add(key)
+        self.log("relay: park worktree create off read thread " + (key or line[:80]))
+        self._persist_last_from(line)
+        th = threading.Thread(
+            target=self._worktree_create_then_deliver,
+            args=(nick, target, text, line, key),
+            name="opencode-wt-create",
+            daemon=True,
+        )
+        th.start()
+        return "opencode_worktree_pending"
+
+    def _worktree_create_then_deliver(
+        self, nick: str, target: str, text: str, line: str, key: str
+    ) -> None:
+        """Background: ensure worktree, then NACK or re-enter deliver for ACK."""
+        nack = ""
+        try:
+            fn = self.opencode_ensure_worktree
+            if fn:
+                nack = (fn(line) or "").strip()
+            else:
+                job = assign_job_key(line) or "job"
+                nack = f"NACK {job} worktree-create-failed:unknown (FR #6240)"
+        except Exception:
+            job = assign_job_key(line) or "job"
+            nack = f"NACK {job} worktree-create-failed:unknown (FR #6240)"
+        finally:
+            if key:
+                with self._lock:
+                    self._worktree_creating_keys.discard(key)
+        if nack:
+            try:
+                self._refuse_job_context(line, nack)
+            except Exception as e:
+                self.log(f"relay: worktree create NACK error {type(e).__name__}")
+            return
+        try:
+            # Worktree exists now; classify will accept. Do not park again.
+            self.deliver(nick, target, text)
+        except Exception as e:
+            self.log(f"relay: worktree create resume error {type(e).__name__}")
 
     def _write_nacks(self, nack: str) -> None:
         if not nack or not self.write_outbox:
@@ -4428,17 +4497,26 @@ class Relay:
                     except Exception:
                         pass
                 return "opencode_skips_hostile"
-        # FR #6240: one FROM message, one job. Missing context NACKs before ACK.
+        # FR #6240 / #6328: one FROM message, one job. Missing context NACKs before ACK.
+        # Classify is cheap on the read thread; create runs off-thread (no ACK until done).
         # A standing-prompt example is not a FROM message, so it is not a job.
-        if self.opencode_job_block:
+        if self.opencode_job_classify or self.opencode_job_block:
             keys = message_job_keys(line)
             if len(keys) > 1:
                 nacks = "\n".join(f"NACK {key} job-context-ambiguous (FR #6240)" for key in keys)
                 return self._refuse_job_context(line, nacks)
             if len(keys) == 1:
-                nack = self._job_context_nack(line)
-                if nack:
-                    return self._refuse_job_context(line, nack)
+                if self.opencode_job_classify:
+                    nack = self._job_context_classify(line)
+                    if nack and is_worktree_absent_nack(nack) and self.opencode_ensure_worktree:
+                        return self._park_worktree_create(nick, target, text, line)
+                    if nack:
+                        return self._refuse_job_context(line, nack)
+                else:
+                    # Legacy sync ensure path (unit tests that bind opencode_job_block only).
+                    nack = self._job_context_nack(line)
+                    if nack:
+                        return self._refuse_job_context(line, nack)
         # FR #4180: out-of-fuel hold — never inject; NACK via callback; stay quiet.
         if assign_job_ref(line):
             refuse = False
@@ -7438,10 +7516,16 @@ class Supervisor:
         # FR #4180: refuse (NACK out-of-fuel) assigns while the seat is in out-of-fuel hold.
         relay.refuse_assign_while = lambda: bool(self.bored and self.bored.out_of_fuel)
         relay.skips_hostile_assign = lambda line: opencode_skips_hostile_assign(self.kind, line)
-        # FR #6240: OpenCode-only. Grok/Cursor must keep flood coalesce + multi-key ACK.
-        relay.opencode_job_block = (
-            self._opencode_job_block if (self.kind or "").strip().lower() == "opencode" else None
-        )
+        # FR #6240 / #6328: OpenCode-only. Classify on read thread; ensure off-thread.
+        # Grok/Cursor must keep flood coalesce + multi-key ACK (callbacks stay None).
+        if (self.kind or "").strip().lower() == "opencode":
+            relay.opencode_job_classify = self._opencode_job_classify
+            relay.opencode_ensure_worktree = self._opencode_ensure_worktree
+            relay.opencode_job_block = None
+        else:
+            relay.opencode_job_classify = None
+            relay.opencode_ensure_worktree = None
+            relay.opencode_job_block = None
         relay.on_refuse_assign = self._nack_assign_out_of_fuel
         # FR #4115: program ACK/NACK via seat outbox (ACK on receipt; NACK extra held assigns).
         if getattr(relay, "write_outbox", None) is None and self.run_dir is not None:
@@ -7582,8 +7666,16 @@ class Supervisor:
         except Exception:
             pass
 
-    def _opencode_job_block(self, line: str) -> str:
-        """FR #6240 / #6320: ensure job worktree exists, else NACK before ACK."""
+    def _opencode_job_classify(self, line: str) -> str:
+        """FR #6328: cheap classify on the IRC read thread (no git create)."""
+        if (self.kind or "").strip().lower() != "opencode":
+            return ""
+        if not assign_job_ref(line):
+            return ""
+        return opencode_job_context_nack(line, os.environ)
+
+    def _opencode_ensure_worktree(self, line: str) -> str:
+        """FR #6240 / #6320 / #6328: ensure job worktree off the IRC read thread."""
         if (self.kind or "").strip().lower() != "opencode":
             return ""
         if not assign_job_ref(line):
@@ -7601,6 +7693,10 @@ class Supervisor:
             run=subprocess.run,
             nick=nick,
         )
+
+    def _opencode_job_block(self, line: str) -> str:
+        """Legacy sync ensure (tests / callers that still bind opencode_job_block)."""
+        return self._opencode_ensure_worktree(line)
 
     def _nack_assign_out_of_fuel(self, line: str) -> None:
         """FR #4180: shop NACK for an assign that arrived during the out-of-fuel hold."""
