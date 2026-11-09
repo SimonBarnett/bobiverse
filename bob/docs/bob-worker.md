@@ -30,6 +30,10 @@ One compiled program, `<ai root>\bob\worker\bob-worker.exe` (`scripts/bob_worker
   Jeeves then assigns in `!focus` order; ACK marks the seat doing, DONE marks it idle. Exact lines: `bobiverse-bob-job-irc`.
 * **Exit codes**: 0 ok / window closed, 2 IRC unreachable at start (no agent started), 3 IRC lost, 4 no agent or key cancelled, 5 restart limit, 6 launch failed, 64 usage.
 
+## CI artifact (FR #6349)
+
+GitHub Actions workflow `.github/workflows/build-bob-worker.yml` builds `bob-worker.exe` on `windows-latest` via `bob/scripts/Build-BobWorker.ps1` whenever `bob/scripts/bob_worker.py`, `bob/scripts/Build-BobWorker.ps1`, `bob/scripts/bob_worker_build_meta.py`, `.github/workflows/build-bob-worker.yml`, or `bob/tests/test_fr6349_worker_build_ci.py` changes (plus `workflow_dispatch`). The job uploads artifact `bob-worker` with the exe, `bob-worker.exe.sha256`, and `provenance.txt` / `manifest.txt` (source commit SHA, exe SHA256, size bytes, build time UTC). `bob-worker.exe --version` prints the embedded source commit. Same pattern as `build-bob-ear.yml` and `build-bob-tray.yml`. No sign, no release, no fleet deploy --- installing stays a separate manual / Pack / Sync step.
+
 ## Installer / updater
 
 The MSI lays `worker\bob-worker.exe`, `worker\` and `plan\` (skills, AGENTS, generated CLAUDE/GROK/.cursor), `tools\Get-BobAgentFuel.ps1`. Repo installs and `Sync-BobiverseFromRepo.ps1` build the folders with `Sync-BobiverseAgentFolders` (never deletes `plan\work` or a running exe; the exe only ever arrives with the MSI).
