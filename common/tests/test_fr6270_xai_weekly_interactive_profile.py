@@ -58,3 +58,66 @@ def test_fr6270_system_profile_still_skipped_without_interactive_log(monkeypatch
     assert identity == "system-profile-skipped"
     assert bobreport.read_local_xai_weekly() is None
     assert bobreport._last_xai_acquisition["identity"] == "system-profile-skipped"
+
+def test_fr6270_publish_skips_do_not_carry_stale_weekly(monkeypatch, tmp_path: Path):
+    """Ear publish must clear carried weekly when acquisition is system-profile-skipped.
+
+    Fixtures: prior peer weekly=19; skip leaves weekly unknown (never re-post 19).
+    """
+    import json
+    from unittest import mock
+
+    import bobstat
+
+    home = tmp_path / "home"
+    home.mkdir()
+    mid = "marchhare"
+    bobstat.write_peer(
+        home,
+        {
+            "ok": True,
+            "id": mid,
+            "online": True,
+            "status": "operational",
+            "weekly": 19,
+            "weekly_known": True,
+            "pcent": {"grok-build": 19},
+            "lastSeen": "2026-11-09T06:00:00Z",
+        },
+    )
+    monkeypatch.delenv("BOB_WEEKLY_LOG", raising=False)
+    monkeypatch.delenv("BOB_GROK_WEEKLY_USER_HOME", raising=False)
+    monkeypatch.setenv("USERPROFILE", str(tmp_path / "systemprofile"))
+    (tmp_path / "systemprofile").mkdir(exist_ok=True)
+    monkeypatch.setenv("USERNAME", "tester")
+
+    posted: list[dict] = []
+
+    def fake_urlopen(req, timeout=0):  # noqa: ARG001
+        posted.append(json.loads(req.data.decode("utf-8")))
+
+        class Resp:
+            status = 204
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def read(self):
+                return b""
+
+        return Resp()
+
+    with mock.patch("urllib.request.urlopen", fake_urlopen):
+        code = bobreport.publish_local_peer_fuel(
+            home, mid, force=True, url="https://example.test/bob/v1/report"
+        )
+    assert code == 204
+    assert len(posted) == 1
+    body = posted[0]
+    assert body.get("weekly_known") is False
+    assert body.get("weekly") in (None, "")
+    assert bobreport._last_fuel_publish_diag.get("acquisition") == "system-profile-skipped"
+

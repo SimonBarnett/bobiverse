@@ -6028,11 +6028,37 @@ def publish_local_peer_fuel(
     # Does not call the network and does not copy credentials.
     try:
         xai = read_local_xai_weekly()
-        _last_fuel_publish_diag["acquisition"] = _last_xai_acquisition.get("identity")
+        acq = _last_xai_acquisition.get("identity")
+        _last_fuel_publish_diag["acquisition"] = acq
         if xai:
             peer = enrich_peer_with_xai_weekly(peer, xai)
+        elif acq in (
+            "system-profile-skipped",
+            "system-profile-refused",
+            "fake-grok",
+        ):
+            # FR #6270 / mrb-6272: LocalSystem skip must not re-post a carried
+            # peer.weekly as a fresh reading (weekly_known=false clears).
+            peer = enrich_peer_with_xai_weekly(
+                peer,
+                {
+                    "weekly_known": False,
+                    "remaining_pct": None,
+                    "source": str(acq),
+                    "fetched_at": None,
+                },
+            )
     except Exception:
         _last_fuel_publish_diag["acquisition"] = "read-failed"
+        peer = enrich_peer_with_xai_weekly(
+            peer,
+            {
+                "weekly_known": False,
+                "remaining_pct": None,
+                "source": "read-failed",
+                "fetched_at": None,
+            },
+        )
     # FR #6146 / #6147 / #6248: enrich with service-owned OpenCode windows before POST.
     try:
         oc_doc = read_local_opencode_fuel_doc()
