@@ -362,6 +362,7 @@ routes to bobiverse via the split rule.
 - BOBIVERSE_NO_UPDATE must Trim Process+Machine (NSSM AppEnvironmentExtra padding); Start-Bob/Jeeves/Airc suppress Sync and Update invocation before either begins and log no-update-guard seen/effective (FR #6259).
 - Win32 ctypes on x64: set GetCurrentProcess.restype=HANDLE (and CreateFileW/token API argtypes) or OpenProcessToken returns ERROR_INVALID_HANDLE (6) before SeBackupPrivilege CreateFile runs
 - Copilot tray paint: Format-BobCopilotPoolLine uses 'Copilot - <meter>'; UsageRow with remaining bar; never Section RightText/red-for-stale; Get-BobCopilotMeterBarPct keeps % when stale
+- OpenCode ensure_opencode_job_worktree must not run on Relay.deliver/IRC read thread; park worktree-absent, create off-thread, ACK only after create; keep worktree-create-failed:* NACK.
 
 ## Harvest digest (lessons audit 2026-10-06)
 
