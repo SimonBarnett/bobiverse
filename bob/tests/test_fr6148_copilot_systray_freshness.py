@@ -32,13 +32,13 @@ def test_format_helpers_exist():
 def test_watch_always_shows_copilot_unknown_fallback():
     w = WATCH.read_text(encoding="utf-8-sig")
     sec = w[w.index("function Rebuild-BobTrayTiles") : w.index("Atomic swap on the TipForm")]
-    assert "Copilot  unknown" in sec  # FR #6301 fallback
+    assert "Copilot - unknown" in sec  # FR #6301 fallback
     assert "Format-BobCopilotPoolLine" in sec
     assert "Get-BobCopilotMeterBarPct" in sec
     assert "Add-BobTrayFuelFamilyRow" in sec
     assert "Add-BobTrayUsageRow" in sec
     # Stale stays a label. It is not the red alarm color.
-    assert "Copilot  `[stale" not in sec
+    assert "Copilot - `[stale" not in sec
     hdr = w[w.index("function Add-BobTraySectionHeader") : w.index("function Set-BobTrayHelpTip")]
     assert "[System.Drawing.Color]$TitleColor" in hdr
     assert "TitleColor.A" in hdr
@@ -123,7 +123,7 @@ def test_format_fresh_unlimited():
         now,
     )
     # Unlimited without max_recorded_usage => unknown meter (FR #6301).
-    assert "Copilot  unknown" in line or line.startswith("Copilot")
+    assert "Copilot - unknown" in line or line.startswith("Copilot")
     assert "included" not in line.lower()
     assert "[stale" not in line
 
@@ -176,16 +176,16 @@ def test_format_null_pool_unknown():
     finally:
         Path(name).unlink(missing_ok=True)
     assert r.returncode == 0, r.stderr
-    assert r.stdout.strip().splitlines()[-1].strip() == "Copilot  unknown"
+    assert r.stdout.strip().splitlines()[-1].strip() == "Copilot - unknown"
 
 
 def test_digest_fuel_mocks_have_copilot_shapes():
     home = MOCK_HOME.read_text(encoding="utf-8")
     err = MOCK_ERROR.read_text(encoding="utf-8")
     assert "Copilot" in home
-    assert "Formatter line: Copilot  unlimited" in home or "unlimited" in home.lower()
+    assert "Formatter line: Copilot - unlimited" in home or "unlimited" in home.lower()
     assert "stale" in err.lower()
-    assert "Formatter line: Copilot  [stale" in err or "not current" in err
+    assert "Formatter line: Copilot - [stale" in err or "not current" in err
 
 
 def test_legacy_mocks_mention_copilot_or_stale_when_present():

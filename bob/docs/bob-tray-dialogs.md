@@ -88,15 +88,19 @@ rows with workers `{irc nick}: {doing|idle}`, one Copilot pool tile, alert and v
 
 - `Format-BobCopilotPoolLine` / `Get-BobCopilotFreshness` treat `fetched_at` older than **900 seconds** (or missing/unparseable/far-future) as stale.
 - A future `resume_at` (dispatch cooldown) does **not** force fresh: age is always from `fetched_at`.
-- Stale paint: `Copilot  [stale <age>] <value>` or `Copilot  [stale] <value>`. TipForm paints the title red via `Add-BobTraySectionHeader -TitleColor` (escape `` `[ `` in `-like` patterns so `[stale` is literal).
-- **FR #6215:** known `reset_at` still paints a `reset <countdown>` using the same `Format-BobResetLabel` convention as other pools (even when stale). Past/missing reset stays omitted.
-- **FR #6215:** when `used` and `max_recorded_usage` are known, append `(N.NN% of max recorded)` (two decimals, invariant). The denominator is a historical high-water mark bumped when usage exceeds it — **not** a contractual quota. Missing/zero denominator paints no percentage (never invent 0/100% or divide-by-zero).
-- Snapshot fields: `copilot_line`, `copilot_stale_line`, `copilot_fresh_until` (unix seconds), plus digest `max_recorded_usage`. Native Status re-ages an open window at the deadline without waiting for a new poll.
-- TipForm always shows a Copilot line (`Copilot  unknown` when absent). Display-only: does not enable Copilot dispatch (`BOB_FUEL_COPILOT` / #6204).
+- Stale paint: `Copilot - <value> [stale <age>]` (or `[stale]`). Stale is a text marker only --- TipForm/Status do **not** paint Copilot red or right-align the meter (FR #6317).
+- **FR #6215:** known `reset_at` still paints a countdown using the same `Format-BobResetLabel` convention as other pools (even when stale). Past/missing reset stays omitted.
+- **FR #6215:** when `used` and `max_recorded_usage` are known, remaining % is derived from historical max (high-water mark bumped when usage exceeds it --- **not** a contractual quota). Missing/zero denominator paints `unknown`.
+- Snapshot fields: `copilot_line`, `copilot_stale_line`, `copilot_fresh_until` (unix seconds), `copilot_bar` (`known`/`pct`/`r`/`g`/`b`), plus digest `max_recorded_usage`. Native Status re-ages an open window at the deadline without waiting for a new poll.
+- TipForm always shows a Copilot line (`Copilot - unknown` when absent). Display-only: does not enable Copilot dispatch (`BOB_FUEL_COPILOT` / #6204).
 
 ## FR #6301 tray fuel rows and agent starts
 
 OpenCode Go window lines and the Copilot meter use remaining percent: `<title> - <x>% left - <reset>` (OpenCode: `go <window> - <x>% left - <reset>`). Bars paint remaining % green to red. Copilot title is exactly `Copilot` (no included-unlimited prose). 100% used / exhausted paints `0% left`. Unlimited Copilot without a historical max paints `unknown`. Reset labels come from real digest/API data (`Nd Hh` above 24h, else `Hh Mm`); never invent rem-est text.
+
+## FR #6317 Copilot layout like OpenCode rows
+
+TipForm and Status paint Copilot as a family header plus one left-aligned UsageRow `Copilot - <current text>` with a remaining-% bar (green-to-red; `0% left` => empty fill; unknown => neutral empty track). Never put the meter on section RightText and never colour the Copilot block red for stale. `Get-BobCopilotMeterBarPct` keeps the remaining % when stale so the bar still draws. Live MarchHare hover screenshot remains Slab.
 
 **Digest-only OpenCode paint:** `Get-BobTrayHover` must not read or overlay `run\opencode-fuel.json` for Status/hover. Digest-known `opencode_windows` always win. When every window error is `no key set`, show that instead of n/a.
 
