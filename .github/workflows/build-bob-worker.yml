@@ -1,0 +1,97 @@
+# Isolated bob-worker.exe build (FR #6349).
+# Not a release, MSI, install, or seat restart. Build-BobWorker.ps1 owns PyInstaller.
+# Uploads SHA-256 provenance so seats can hotpatch from a known artifact (manual install).
+name: build-bob-worker
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - .github/workflows/build-bob-worker.yml
+      - bob/scripts/bob_worker.py
+      - bob/scripts/Build-BobWorker.ps1
+      - bob/scripts/bob_worker_build_meta.py
+      - bob/tests/test_fr6349_worker_build_ci.py
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/build-bob-worker.yml
+      - bob/scripts/bob_worker.py
+      - bob/scripts/Build-BobWorker.ps1
+      - bob/scripts/bob_worker_build_meta.py
+      - bob/tests/test_fr6349_worker_build_ci.py
+
+permissions:
+  contents: read
+
+jobs:
+  build-bob-worker:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install PyInstaller and Bob Python deps
+        run: |
+          python -m pip install --upgrade pip pyinstaller
+          . .\common\scripts\Bobiverse-Common.ps1
+          Install-BobiversePythonDeps -Python (Get-Command python).Source
+
+      - name: Build bob-worker.exe with Build-BobWorker.ps1
+        env:
+          WORKFLOW_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          $root = (Get-Location).Path
+          $head = (git rev-parse HEAD).Trim()
+          if ($head -ne $env:WORKFLOW_COMMIT) { throw "checkout $head is not $env:WORKFLOW_COMMIT" }
+          $out = Join-Path $env:RUNNER_TEMP "bob-worker-out"
+          New-Item -ItemType Directory -Force -Path $out | Out-Null
+          $py = (Get-Command python).Source
+          & "$root\bob\scripts\Build-BobWorker.ps1" -RepoRoot $root -OutDir $out -Python $py -SourceCommit $env:WORKFLOW_COMMIT
+          if ($LASTEXITCODE -ne 0) { throw "Build-BobWorker.ps1 exit $LASTEXITCODE" }
+          $exe = Join-Path $out "worker-build\dist\bob-worker.exe"
+          if (-not (Test-Path -LiteralPath $exe)) { throw "missing bob-worker.exe" }
+          # FR #6349: --version must print the PR/push head commit.
+          $prevEap = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
+          $ver = & $exe --version 2>&1
+          $vcode = $LASTEXITCODE
+          $ErrorActionPreference = $prevEap
+          $verText = (($ver | Out-String) -replace '\s', '').Trim()
+          $expected = ($env:WORKFLOW_COMMIT).ToLowerInvariant()
+          if ($vcode -ne 0 -or $verText.ToLowerInvariant() -ne $expected) {
+            throw "bob-worker.exe --version='$verText' expected '$expected' (exit $vcode)"
+          }
+          $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $exe).Hash.ToLowerInvariant()
+          $size = (Get-Item -LiteralPath $exe).Length
+          $builtAt = [DateTime]::UtcNow.ToString("o")
+          $stage = Join-Path $env:RUNNER_TEMP "bob-worker-artifact"
+          New-Item -ItemType Directory -Force -Path $stage | Out-Null
+          Copy-Item -LiteralPath $exe -Destination (Join-Path $stage "bob-worker.exe")
+          Set-Content -Encoding ascii (Join-Path $stage "bob-worker.exe.sha256") "$hash  bob-worker.exe"
+          @(
+            "source_commit=$($env:WORKFLOW_COMMIT)"
+            "workflow_commit=$($env:WORKFLOW_COMMIT)"
+            "exe_name=bob-worker.exe"
+            "exe_sha256=$hash"
+            "exe_size_bytes=$size"
+            "build_time_utc=$builtAt"
+            "builder=Build-BobWorker.ps1"
+            "fr=6349"
+          ) | Set-Content -Encoding ascii (Join-Path $stage "provenance.txt")
+          # Alias for operators who look for manifest.txt
+          Copy-Item -LiteralPath (Join-Path $stage "provenance.txt") -Destination (Join-Path $stage "manifest.txt")
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bob-worker
+          path: ${{ runner.temp }}/bob-worker-artifact
+          if-no-files-found: error

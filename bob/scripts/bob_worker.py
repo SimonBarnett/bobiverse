@@ -48,6 +48,16 @@ from pathlib import Path
 from typing import Callable, Optional
 
 EXIT_OK = 0
+
+
+def get_source_commit() -> str:
+    """Return the SHA embedded at freeze time (FR #6349), else 'unknown'."""
+    try:
+        from bob_worker_build_meta import SOURCE_COMMIT as _sc
+        return str(_sc or 'unknown')
+    except Exception:
+        return 'unknown'
+
 EXIT_USAGE = 64
 EXIT_IRC_FAIL = 2  # could not connect / register: no agent was started
 EXIT_IRC_LOST = 3  # IRC lost for good (grace 0 immediate, or reconnect grace exhausted): agent tree killed
@@ -10068,6 +10078,7 @@ def main(argv: Optional[list] = None) -> int:
     p.add_argument("--host", default=DEFAULT_HOST)
     p.add_argument("--port", type=int, default=DEFAULT_PORT)
     p.add_argument("--no-tls", action="store_true", help="tests only")
+    p.add_argument("--version", action="store_true", help="print embedded source commit SHA and exit (FR #6349)")
     p.add_argument("--dry-run", action="store_true", help="print the agent selection as JSON and exit (starts nothing)")
     p.add_argument("--list-agents", action="store_true", help="print installed agent choices as JSON and exit (starts nothing)")
     p.add_argument("--refresh-fuel", action="store_true", help="with --list-agents, read each provider on its own short budget and cache the result")
@@ -10080,6 +10091,9 @@ def main(argv: Optional[list] = None) -> int:
         help="seconds to hold inject/!bored after agent spawn (FR #955; default 60, or BOB_WORKER_STARTUP_GRACE_S)",
     )
     args = p.parse_args(argv)
+    if getattr(args, 'version', False):
+        print(get_source_commit())
+        return EXIT_OK
     try:
         args.agent = normalize_explicit_agent(args.agent)
     except ValueError as e:
