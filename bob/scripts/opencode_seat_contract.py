@@ -1,4 +1,4 @@
-"""FR #6240: OpenCode Windows seat contract. No credential reads.
+"""FR #6240 / #6320: OpenCode Windows seat contract. No credential reads.
 
 Headless ``opencode run`` auto-rejects ``external_directory`` asks. It has
 ``--dir`` and no ``--interactive`` flag. ``--auto`` would approve those asks
@@ -39,6 +39,11 @@ WORKTREE_ABSENT_MESSAGE = (
     "Next: create the assigned job worktree (Get-BobiverseJobWorktreePath). "
     "Headless opencode run auto-rejects external_directory and has no --interactive flag. "
     "An interactive TUI answer is not evidence that a later opencode run will allow the outbox. "
+    "Do not pass --auto. This run is not a completed job."
+)
+CREATE_FAILED_MESSAGE = (
+    "opencode-ready: blocked worktree_create_failed. "
+    "Next: the worker could not create Get-BobiverseJobWorktreePath. "
     "Do not pass --auto. This run is not a completed job."
 )
 BASE_REFUSED_MESSAGE = (
@@ -578,7 +583,11 @@ def opencode_job_context_nack(
     disks: list | None = None,
     system_drive: str = "",
 ) -> str:
-    """NACK text when this message must not be ACK'd, else ``''``."""
+    """NACK text when this message must not be ACK'd, else ``''``.
+
+    Does not create a worktree. OpenCode seats use ``opencode_job_context_nack_ready``
+    (FR #6320) so the worker creates ``Get-BobiverseJobWorktreePath`` before ACK.
+    """
     return classify_opencode_job(line, env, disks=disks, system_drive=system_drive)["nack"]
 
 
@@ -621,6 +630,261 @@ def resolve_project_dir(path: str) -> dict:
     if dir_is_forbidden(resolved):
         return {"state": "forbidden", "blocked": True, "dir": "", "message": DIR_FORBIDDEN_MESSAGE}
     return {"state": "project", "blocked": False, "dir": resolved, "message": ""}
+
+
+
+
+def _is_git_checkout(root: str | Path) -> bool:
+    """True when *root* looks like a git checkout (.git file or directory)."""
+    marker = Path(root) / ".git"
+    return marker.exists()
+
+
+def resolve_repo_clone(
+    repo: str,
+    env: dict | None = None,
+    install_root: str | Path | None = None,
+) -> str:
+    """Locate the machine clone for *repo* (owner/name or leaf). Never invents a path.
+
+    Order: ``BOB_REPO_CLONE_<leaf>``, ``BOB_REPO_CLONE``, bobiverse->install_root,
+    ``BOB_AI_ROOT\\<leaf>`` or ``<parent of install_root>\\<leaf>`` when that folder is a git checkout.
+    """
+    env = env or {}
+    leaf = _repo_leaf(repo)
+    if not leaf:
+        return ""
+    for key in (
+        f"BOB_REPO_CLONE_{leaf}",
+        f"BOB_REPO_CLONE_{leaf.upper()}",
+        "BOB_REPO_CLONE",
+    ):
+        raw = str(env.get(key) or "").strip().strip('"')
+        if raw and _is_git_checkout(raw):
+            return str(Path(raw))
+    if leaf.lower() == "bobiverse" and install_root:
+        root = Path(str(install_root))
+        if _is_git_checkout(root):
+            return str(root)
+    ai_root = str(env.get("BOB_AI_ROOT") or "").strip().strip('"')
+    if not ai_root and install_root:
+        inst = Path(str(install_root))
+        if inst.name.lower() == "bob":
+            ai_root = str(inst.parent)
+    if ai_root:
+        cand = Path(ai_root) / leaf
+        if _is_git_checkout(cand):
+            return str(cand)
+    return ""
+
+
+def _job_branch_from_key(key: str) -> str:
+    match = re.match(r"(?i)^(FR|MRB|UAT)\s+(\S+)#(\d+)$", (key or "").strip())
+    if not match:
+        return ""
+    return f"{match.group(1).lower()}-{match.group(3)}"
+
+
+def _git_run(run, args: list[str], *, timeout: float = 120.0):
+    return run(args, capture_output=True, text=True, timeout=timeout)
+
+
+def _branch_exists(run, clone: str, branch: str) -> bool:
+    try:
+        proc = _git_run(run, ["git", "-C", clone, "show-ref", "--verify", "--quiet", f"refs/heads/{branch}"])
+        return int(getattr(proc, "returncode", 1)) == 0
+    except Exception:
+        return False
+
+
+def create_job_worktree(
+    path: str,
+    key: str,
+    *,
+    clone_root: str,
+    run=None,
+    nick: str = "",
+) -> tuple[bool, str]:
+    """Create ``path`` as a linked worktree from *clone_root*. Idempotent.
+
+    Returns ``(ok, error_class)``. *error_class* is empty on success and is the
+    ``worktree-create-failed:<class>`` suffix on failure. Never points at a
+    credential path. Does not pass ``--auto`` or widen OpenCode dirs.
+    """
+    import subprocess as _sp
+
+    run = run or _sp.run
+    raw = (path or "").strip()
+    if not raw:
+        return False, "malformed"
+    if dir_is_forbidden(raw):
+        return False, "forbidden"
+    folder = Path(raw)
+    if folder.is_dir():
+        return True, ""
+    if folder.exists():
+        return False, "path-exists"
+    clone = (clone_root or "").strip()
+    if not clone or not _is_git_checkout(clone):
+        return False, "no-clone"
+    if dir_is_forbidden(clone):
+        return False, "forbidden"
+    branch = _job_branch_from_key(key)
+    if not branch:
+        return False, "malformed"
+    try:
+        folder.parent.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        return False, "disk"
+    # Best-effort tip fetch; failure alone does not block if a local tip exists.
+    try:
+        _git_run(run, ["git", "-C", clone, "fetch", "origin", "main"], timeout=180.0)
+    except Exception:
+        pass
+
+    def _ref_ok(ref: str) -> bool:
+        try:
+            proc = _git_run(
+                run,
+                ["git", "-C", clone, "rev-parse", "--verify", ref],
+                timeout=30.0,
+            )
+            return int(getattr(proc, "returncode", 1)) == 0
+        except Exception:
+            return False
+
+    try:
+        if _branch_exists(run, clone, branch):
+            proc = _git_run(
+                run,
+                ["git", "-C", clone, "worktree", "add", str(folder), branch],
+                timeout=180.0,
+            )
+        else:
+            start = "origin/main"
+            for cand in ("origin/main", "main", "HEAD"):
+                if _ref_ok(cand):
+                    start = cand
+                    break
+            proc = _git_run(
+                run,
+                ["git", "-C", clone, "worktree", "add", "-b", branch, str(folder), start],
+                timeout=180.0,
+            )
+    except OSError:
+        return False, "disk"
+    except Exception:
+        return False, "git-worktree"
+    code = int(getattr(proc, "returncode", 1))
+    if code != 0:
+        err = ((getattr(proc, "stderr", "") or "") + (getattr(proc, "stdout", "") or "")).lower()
+        if "already exists" in err and folder.is_dir():
+            return True, ""
+        if "no space" in err or "disk" in err:
+            return False, "disk"
+        return False, "git-worktree"
+    if not folder.is_dir():
+        return False, "git-worktree"
+    # Sparse install clones: disable once so the job tree is full (FR #4029).
+    try:
+        _git_run(run, ["git", "-C", str(folder), "sparse-checkout", "disable"], timeout=60.0)
+    except Exception:
+        pass
+    # Soft-cap seat marker (FR #3641). Best-effort; never fail the create.
+    try:
+        marker = {"nick": nick or "opencode", "issue": 0, "repo": ""}
+        m = re.match(r"(?i)^(FR|MRB|UAT)\s+(\S+)#(\d+)$", (key or "").strip())
+        if m:
+            marker["issue"] = int(m.group(3))
+            marker["repo"] = m.group(2)
+        import json as _json
+
+        (folder / ".bobiverse-seat").write_text(
+            _json.dumps(marker, separators=(",", ":")),
+            encoding="utf-8",
+        )
+    except Exception:
+        pass
+    if dir_is_forbidden(str(folder)):
+        return False, "forbidden"
+    return True, ""
+
+
+def ensure_opencode_job_worktree(
+    line: str,
+    env: dict | None = None,
+    *,
+    install_root: str | Path | None = None,
+    disks: list | None = None,
+    system_drive: str = "",
+    run=None,
+    nick: str = "",
+) -> dict:
+    """Classify the assign; when absent, create the worktree then re-classify (FR #6320).
+
+    Credential / base / malformed refusals are unchanged. A create failure returns
+    ``state=create_failed`` with ``NACK ... worktree-create-failed:<class>``.
+    """
+    decision = classify_opencode_job(line, env, disks=disks, system_drive=system_drive)
+    if decision["state"] != "absent":
+        return decision
+    key = decision.get("key") or ""
+    path = decision.get("path") or ""
+    match = re.match(r"(?i)^(FR|MRB|UAT)\s+(\S+)#(\d+)$", key.strip()) if key else None
+    repo = match.group(2) if match else ""
+    clone = resolve_repo_clone(repo, env, install_root=install_root)
+    ok, err_class = create_job_worktree(
+        path, key, clone_root=clone, run=run, nick=nick
+    )
+    if not ok:
+        reason = f"worktree-create-failed:{err_class or 'unknown'}"
+        nack = _nack_key(key, reason)
+        return {
+            "state": "create_failed",
+            "nack": nack,
+            "nacks": [nack],
+            "path": path,
+            "key": key,
+            "message": CREATE_FAILED_MESSAGE,
+            "error_class": err_class or "unknown",
+        }
+    ready = classify_opencode_job(line, env, disks=disks, system_drive=system_drive)
+    if ready["state"] == "project":
+        return ready
+    # Create claimed ok but classify still absent/forbidden — surface as create failed.
+    reason = "worktree-create-failed:verify"
+    nack = _nack_key(key, reason)
+    return {
+        "state": "create_failed",
+        "nack": nack,
+        "nacks": [nack],
+        "path": path,
+        "key": key,
+        "message": CREATE_FAILED_MESSAGE,
+        "error_class": "verify",
+    }
+
+
+def opencode_job_context_nack_ready(
+    line: str,
+    env: dict | None = None,
+    *,
+    install_root: str | Path | None = None,
+    disks: list | None = None,
+    system_drive: str = "",
+    run=None,
+    nick: str = "",
+) -> str:
+    """NACK text after ensuring the worktree exists (FR #6320), else ``''``."""
+    return ensure_opencode_job_worktree(
+        line,
+        env,
+        install_root=install_root,
+        disks=disks,
+        system_drive=system_drive,
+        run=run,
+        nick=nick,
+    )["nack"]
 
 
 def probe_gh_auth(run) -> tuple[bool, str]:
