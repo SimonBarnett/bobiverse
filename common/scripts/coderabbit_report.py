@@ -122,12 +122,24 @@ def record_done(
     # Prefer new fixed/rejected/na; fall back to confirmed/fp.
     fixed = int(counters.get("fixed") or counters.get("confirmed") or 0)
     rejected = int(counters.get("rejected") or counters.get("fp") or 0)
+    # FR #6387: measured tokens_in+tokens_out win; tokens=unknown / none stay 0 only
+    # for the CR light/full median math (unknown rows do not invent a spend figure —
+    # the durable job_cost_ledger stores unknown explicitly).
+    tokens_val = 0
+    tin = meta.get("tokens_in")
+    tout = meta.get("tokens_out")
+    if tin is not None or tout is not None:
+        tokens_val = int(tin or 0) + int(tout or 0)
+    elif meta.get("tokens_unknown"):
+        tokens_val = 0
+    else:
+        tokens_val = int(meta.get("tokens") or counters.get("tokens") or 0)
     row = make_row(
         pr=f"{repo}{ident}",
         seat=seat,
         cr_mode=str(meta.get("cr_mode") or "off"),
         review=str(meta.get("review") or "full"),
-        tokens=int(meta.get("tokens") or counters.get("tokens") or 0),
+        tokens=tokens_val,
         cr_findings=int(counters.get("cr_findings") or 0),
         fixed=fixed,
         rejected=rejected,

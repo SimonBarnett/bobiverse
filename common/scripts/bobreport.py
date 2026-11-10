@@ -3889,6 +3889,16 @@ def _digest_stuck(home: Path) -> list:
         return []
 
 
+def _digest_job_costs(home: Path) -> dict:
+    """FR #6387: per-PR measured token totals for the digest report."""
+    try:
+        import job_cost_ledger
+
+        return job_cost_ledger.digest_section(home)
+    except Exception:
+        return {"pr_count": 0, "job_count": 0, "per_pr": []}
+
+
 def build_digest_object(home: Path, briefer_nick: str, now: datetime | None = None) -> dict:
     """GET /bob/v1/report payload: ChanServ roster shops only + chair_channels."""
     doc = load_digest(home)
@@ -3935,6 +3945,8 @@ def build_digest_object(home: Path, briefer_nick: str, now: datetime | None = No
         "airc_console_details": _airc_console_details_export(doc, exported),
         # FR #5510: stuck-job sweep report (silent accepts / untracked / held rules).
         "stuck": _digest_stuck(home),
+        # FR #6387: per-PR measured token totals across FR + MRB + FIX (+ UAT).
+        "job_costs": _digest_job_costs(home),
     }
 
 
