@@ -4,7 +4,7 @@ Deterministic, token-less, no secrets. Pure functions (no sockets / no clock unl
 fake-IRC tests drive them exactly like the live chair does. ``irc_agent.Client`` is the thin glue.
 
 gh-Jeeves reference commands restored here: !help !list (+ !filter alias) !status !stuck !resync !sweep !ignore
-!ignored !unignore !focus !unfocus !recycle !build (FR #4006) !installtest (FR #4026) and the bare ``ping`` -> ``pong``. The shop wire (``!bored``,
+!ignored !unignore !focus !unfocus !pin !unpin !recycle !build (FR #4006) !installtest (FR #4026) and the bare ``ping`` -> ``pong``. The shop wire (``!bored``,
 ``ACK``/``DONE``/``NACK``) lives in gitclaim / shop_listen and is not a PM command.
 
 AUTHORIZATION MATRIX (see docs/jeeves-commands.md)::
@@ -129,6 +129,24 @@ COMMANDS: tuple = (
         "needs_human on matching rows, or only the named seat from giveup_seats. Also clears "
         "seat-ledger.json giveup[owner/repo#n] for that seat or the whole key. Reply by PM.",
         ("assign", "list"),
+    ),
+    CommandSpec(
+        "unpin",
+        "!unpin owner/repo#N",
+        "ops: set require_machine=any on the live queue row (FR #6407)",
+        OPS_ROLES,
+        "!unpin SimonBarnett/ce-priority#6",
+        "Under the queue lock: stamp require_machine=any on matching unaccepted/accepted rows and save. Operator any survives cue re-inference and !resync. Remaining hard _REQUIRE_MACHINE_ISSUE_PINS (ionos/redqueen/marchhare) still win over any; ce-priority-dev1 hard pins are retired. CE-PRIORITY-DEV1 is no longer a pin target.",
+        ("pin", "assign", "list"),
+    ),
+    CommandSpec(
+        "pin",
+        "!pin owner/repo#N <machine>",
+        "ops: set require_machine=<machine> on the live queue row (FR #6407)",
+        OPS_ROLES,
+        "!pin SimonBarnett/a-search#9 redqueen",
+        "Under the queue lock: stamp require_machine on matching rows and save. Survives cue re-inference and !resync. Refuses retired ce-priority-dev1 / non-machine tokens.",
+        ("unpin", "assign", "list"),
     ),
     CommandSpec("recycle", "!recycle [machine|all|dry-run [machine|all]]",
                 "route recycle to bob seats: bare/all = fleet; machine = one box; dry-run = plan only", OPS_ROLES,
@@ -261,7 +279,7 @@ MATRIX = {
     "help": "any", "list": "any", "filter": "any", "status": "any", "ignored": "any", "stuck": "any", "ping": "any",
     "focus-read": "any",
     "ignore": "ops", "unignore": "ops", "sweep": "ops", "resync": "ops", "recycle": "ops", "build": "ops",
-    "installtest": "ops", "assign": "ops", "cleargiveup": "ops",
+    "installtest": "ops", "assign": "ops", "cleargiveup": "ops", "pin": "ops", "unpin": "ops",
     "focus": "ops+allow", "unfocus": "ops+allow",
 }
 
@@ -288,6 +306,8 @@ def denied_line(cmd: str) -> str:
         "installtest": "installtest: denied (simon or bob-* ops only)",
         "assign": "assign: denied (simon or bob-* ops only)",
         "cleargiveup": "cleargiveup: denied (simon or bob-* ops only)",
+        "pin": "pin: denied (simon or bob-* ops only)",
+        "unpin": "unpin: denied (simon or bob-* ops only)",
     }.get(cmd, f"{cmd}: denied")
 
 

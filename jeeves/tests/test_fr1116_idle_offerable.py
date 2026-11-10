@@ -51,7 +51,7 @@ def test_idle_with_only_gated_rows_is_ok(tmp_path, monkeypatch):
                         "repo": "SimonBarnett/agentic_fomprep",
                         "task": "FR",
                         "id": "#56",
-                        "require_machine": "ce-priority-dev1",
+                        "require_machine": "redqueen",
                         "title": "WP0 live",
                         "labels": ["feature-request"],
                         "line": "FR SimonBarnett/agentic_fomprep#56",

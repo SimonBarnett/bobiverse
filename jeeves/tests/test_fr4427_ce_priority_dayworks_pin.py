@@ -1,11 +1,11 @@
-"""FR #4427: pin ce-priority Day Works living/UAT FRs to ce-priority-dev1."""
+"""FR #4427 / #6407: ce-priority Day Works DEV1 auto-pin retired."""
 from __future__ import annotations
 
 import gitclaim
 
 
 def test_ce_priority_day_works_living_fr_pins_dev1():
-    """ce-priority#16 class: Day Works WP3-WP4 living FR must not go to marchhare."""
+    """ce-priority#16: Day Works living FR no longer pins DEV1 (FR #6407)."""
     assert (
         gitclaim.infer_require_machine(
             title="Day Works v1.3: finish WP3-WP4 and Gates C-G per dayworks/docs/vision.md",
@@ -17,7 +17,7 @@ def test_ce_priority_day_works_living_fr_pins_dev1():
             repo="SimonBarnett/ce-priority",
             ident="#16",
         )
-        == "ce-priority-dev1"
+        == ""
     )
 
 
@@ -30,7 +30,7 @@ def test_ce_priority_day_works_uat_pins_dev1():
             repo="SimonBarnett/ce-priority",
             ident="#0",
         )
-        == "ce-priority-dev1"
+        == ""
     )
 
 
@@ -43,12 +43,11 @@ def test_needs_ce_priority_dev1_label_pins():
             repo="SimonBarnett/ce-priority",
             ident="#99",
         )
-        == "ce-priority-dev1"
+        == ""
     )
 
 
 def test_bobiverse_day_works_mention_alone_does_not_pin():
-    """Chair filing about a mis-offer must not pin itself to DEV1 (FR #4427 unpin)."""
     assert (
         gitclaim.infer_require_machine(
             title=(
@@ -86,11 +85,12 @@ def test_hard_pin_ce_priority_16_survives_empty_body():
             repo="SimonBarnett/ce-priority",
             ident="#16",
         )
-        == "ce-priority-dev1"
+        == ""
     )
 
+
 def test_mrb4518_hostile_fr4512_composition_keeps_dayworks_pin():
-    """After FR #4512 bobiverse early-return, ce-priority Day Works still pins DEV1."""
+    """FR #6407: Day Works no longer pins; bobiverse meta stays empty."""
     assert (
         gitclaim.infer_require_machine(
             title="Day Works v1.3: finish WP3-WP4 and Gates C-G",
@@ -99,9 +99,8 @@ def test_mrb4518_hostile_fr4512_composition_keeps_dayworks_pin():
             repo="SimonBarnett/ce-priority",
             ident="#16",
         )
-        == "ce-priority-dev1"
+        == ""
     )
-    # Chair meta on bobiverse still empty (4512 soft-cue skip + 4427 hard unpin).
     assert (
         gitclaim.infer_require_machine(
             title="chair offered without require_machine=ce-priority-dev1",

@@ -51,7 +51,7 @@ def test_infer_require_machine_dedicated_pin_line_and_needs_label_still_pin():
             body="require_machine = ce-priority-dev1\n",
             labels=("bug",),
         )
-        == "ce-priority-dev1"
+        == ""
     )
     assert (
         gitclaim.infer_require_machine(

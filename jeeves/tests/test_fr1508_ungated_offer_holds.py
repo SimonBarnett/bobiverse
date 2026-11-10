@@ -58,6 +58,7 @@ def test_body_mention_of_require_machine_does_not_pin(tmp_path, monkeypatch):
 
 
 def test_title_ce_priority_dev1_still_pins(tmp_path, monkeypatch):
+    """FR #6407: DEV1 title cues retired (bobiverse soft-cue skip already)."""
     monkeypatch.setenv("BOB_DIGEST_HOME", str(tmp_path))
     mid = gitclaim.infer_require_machine(
         title="chair: stamp require_machine=ce-priority-dev1 on ce-priority UAT #0",
@@ -66,10 +67,11 @@ def test_title_ce_priority_dev1_still_pins(tmp_path, monkeypatch):
         repo="SimonBarnett/bobiverse",
         ident="#1102",
     )
-    assert mid == "ce-priority-dev1"
+    assert mid == ""
 
 
 def test_wp0_live_in_body_still_pins(tmp_path, monkeypatch):
+    """FR #6407: WP0 live / PRIORITY_WP0_INSTANCE no longer pin DEV1."""
     monkeypatch.setenv("BOB_DIGEST_HOME", str(tmp_path))
     mid = gitclaim.infer_require_machine(
         title="FR: WP0 live proof",
@@ -78,7 +80,7 @@ def test_wp0_live_in_body_still_pins(tmp_path, monkeypatch):
         repo="SimonBarnett/agentic_fomprep",
         ident="#56",
     )
-    assert mid == "ce-priority-dev1"
+    assert mid == ""
 
 
 def test_clear_orphan_digest_mrb_doing(tmp_path, monkeypatch):
@@ -206,16 +208,20 @@ def test_queue_flow_alerts_zero_seat_require_machine_pins(tmp_path):
                 "v": 1,
                 "unaccepted": [
                     {
-                        "repo": "SimonBarnett/bobiverse",
+                        "repo": "SimonBarnett/a-search",
                         "task": "FR",
                         "id": "#1102",
-                        "require_machine": "ce-priority-dev1",
+                        "require_machine": "redqueen",
+                        "labels": ["needs-redqueen", "feature-request"],
+                        "body": "require_machine: redqueen\n",
                     },
                     {
                         "repo": "SimonBarnett/agentic_fomprep",
                         "task": "FR",
                         "id": "#56",
-                        "require_machine": "ce-priority-dev1",
+                        "require_machine": "redqueen",
+                        "labels": ["needs-redqueen", "feature-request"],
+                        "body": "require_machine: redqueen\n",
                     },
                 ],
                 "accepted": [],
@@ -234,7 +240,7 @@ def test_queue_flow_alerts_zero_seat_require_machine_pins(tmp_path):
                             {"nick": "win-mpre8vi4u6u-1", "state": "idle", "work": ""}
                         ]
                     },
-                    "ce-priority-dev1": {"worker_list": []},
+                    "redqueen": {"worker_list": []},
                 }
             }
         ),
@@ -247,7 +253,7 @@ def test_queue_flow_alerts_zero_seat_require_machine_pins(tmp_path):
     joined = " ".join(payload.get("notes") or payload.get("findings") or [])
     assert "require_machine pins only" in joined
     assert "no seats on" in joined
-    assert "ce-priority-dev1" in joined
+    assert "redqueen" in joined
     assert int(payload.get("ungated_offerable_count") or 0) == 0
 
 

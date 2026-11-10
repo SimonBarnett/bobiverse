@@ -3894,6 +3894,84 @@ class Client:
         info(f"INFO cleargiveup {repo}{ident} seat={who_s} by={src} kind={who.kind}")
         return True
 
+    def _maybe_unpin(self, src: str, target: str, body: str, *, to_channel: bool) -> bool:
+        """Chair only (FR #6407): ``!unpin owner/repo#N`` ops PM/channel, reply PM."""
+        if not getattr(self.args, "chair", False):
+            return False
+        if not body.lstrip().lower().startswith("!unpin"):
+            return False
+        if to_channel and not self._joined_channel(target):
+            return False
+        if src.lower() in self._mine_nicks():
+            return True
+        who = self._principal(src)
+        if not who.ops:
+            self._cmd_reply(src, "unpin", [chair_commands.denied_line("unpin")])
+            self._whois_hint(src)
+            info(f"INFO unpin denied nick={src} kind={who.kind}")
+            return True
+        parsed = gitclaim.parse_unpin_cmd(body)
+        if parsed is None:
+            self._cmd_reply(src, "unpin", ["unpin: usage !unpin owner/repo#N"])
+            return True
+        repo, ident = parsed
+        out = gitclaim.set_require_machine_job(self.home, repo, ident, "any")
+        if not out.get("ok"):
+            err = out.get("error") or "lock"
+            self._cmd_reply(src, "unpin", [f"unpin: refused - {err}"])
+            return True
+        self._cmd_reply(
+            src,
+            "unpin",
+            [
+                f"unpin: {out.get('repo')}{out.get('id')} require_machine={out.get('require_machine')} "
+                f"queue_rows={out.get('queue_rows')}"
+            ],
+        )
+        info(f"INFO unpin {repo}{ident} by={src} kind={who.kind}")
+        return True
+
+    def _maybe_pin(self, src: str, target: str, body: str, *, to_channel: bool) -> bool:
+        """Chair only (FR #6407): ``!pin owner/repo#N <machine>`` ops PM/channel, reply PM."""
+        if not getattr(self.args, "chair", False):
+            return False
+        if not body.lstrip().lower().startswith("!pin"):
+            return False
+        # Do not steal !ping
+        low = body.lstrip().lower()
+        if low.startswith("!ping") or low == "ping" or low.startswith("ping "):
+            return False
+        if to_channel and not self._joined_channel(target):
+            return False
+        if src.lower() in self._mine_nicks():
+            return True
+        who = self._principal(src)
+        if not who.ops:
+            self._cmd_reply(src, "pin", [chair_commands.denied_line("pin")])
+            self._whois_hint(src)
+            info(f"INFO pin denied nick={src} kind={who.kind}")
+            return True
+        parsed = gitclaim.parse_pin_cmd(body)
+        if parsed is None:
+            self._cmd_reply(src, "pin", ["pin: usage !pin owner/repo#N <machine>"])
+            return True
+        repo, ident, mid = parsed
+        out = gitclaim.set_require_machine_job(self.home, repo, ident, mid)
+        if not out.get("ok"):
+            err = out.get("error") or "lock"
+            self._cmd_reply(src, "pin", [f"pin: refused - {err}"])
+            return True
+        self._cmd_reply(
+            src,
+            "pin",
+            [
+                f"pin: {out.get('repo')}{out.get('id')} require_machine={out.get('require_machine')} "
+                f"queue_rows={out.get('queue_rows')}"
+            ],
+        )
+        info(f"INFO pin {repo}{ident} mid={mid} by={src} kind={who.kind}")
+        return True
+
     def _maybe_focus_ignore(self, src: str, target: str, body: str, *, to_channel: bool) -> bool:
         """Chair only (#39 gap 3): !focus / !unfocus / !focus strict / !ignore / !unignore / !ignored.
 
@@ -4369,6 +4447,10 @@ class Client:
         if self._maybe_assign(src, target, body, to_channel=to_channel):
             return
         if self._maybe_cleargiveup(src, target, body, to_channel=to_channel):
+            return
+        if self._maybe_unpin(src, target, body, to_channel=to_channel):
+            return
+        if self._maybe_pin(src, target, body, to_channel=to_channel):
             return
         if self._maybe_focus_ignore(src, target, body, to_channel=to_channel):
             return
