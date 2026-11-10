@@ -739,7 +739,6 @@ def format_opencode_model_unavailable_error(
     cues = (
         "not available in your region",
         "unavailable in your region",
-        "region",
         "model not found",
         "model unavailable",
         "unknown model",
@@ -749,7 +748,7 @@ def format_opencode_model_unavailable_error(
     if not any(c in low for c in cues):
         return None
     mid = str(model or "").strip() or "(configured OpenCode model)"
-    if "region" in low:
+    if "region" in low and ("unavailable" in low or "not available" in low):
         return (
             "OpenCode model unavailable: %s (set OpenCode console region to Global "
             "for paid V4 Pro, or pick a model available in this region). "
