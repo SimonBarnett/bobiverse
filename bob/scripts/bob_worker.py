@@ -9107,7 +9107,26 @@ class Supervisor:
         except Exception:
             return []
 
-    def measure_done_usage(self) -> dict:
+    def _usage_baseline_path(self):
+        """FR #6435: seat run-dir snapshot of cumulative usage at ACK."""
+        if self.run_dir is None:
+            return None
+        return Path(self.run_dir) / "usage-baseline.json"
+
+    def snapshot_usage_baseline(self, job: str = "") -> None:
+        """FR #6435: capture cumulative seat usage at job start (ACK) for per-job deltas."""
+        path = self._usage_baseline_path()
+        if path is None:
+            return
+        try:
+            import done_usage as _du
+
+            usage = self.measure_done_usage(apply_baseline=False)
+            _du.save_usage_baseline(path, usage, job=job or "")
+        except Exception:
+            pass
+
+    def measure_done_usage(self, *, apply_baseline: bool = True) -> dict:
         """FR #6387: seat usage snapshot for DONE stamping (usage files only; no secrets)."""
         try:
             import done_usage as _du
@@ -9145,17 +9164,29 @@ class Supervisor:
         # FR #6420: OpenCode measures from its own SQLite session data for the job
         # worktree, falling back to an explicit fixture path, then the configured model.
         if kind == "opencode":
-            return self._measure_opencode_usage(oc_path)
+            usage = self._measure_opencode_usage(oc_path)
+        else:
+            try:
+                usage = _du.measure_seat_usage(
+                    kind,
+                    grok_usage_path=grok_path,
+                    cursor_usage_path=cursor_path,
+                    opencode_usage_path=oc_path,
+                    aider_usage_path=aider_path,
+                )
+            except Exception:
+                usage = {"tokens_unknown": True}
+        if not apply_baseline:
+            return usage
+        # FR #6435: convert cumulative seat totals into per-job deltas when a baseline exists.
         try:
-            return _du.measure_seat_usage(
-                kind,
-                grok_usage_path=grok_path,
-                cursor_usage_path=cursor_path,
-                opencode_usage_path=oc_path,
-                aider_usage_path=aider_path,
-            )
+            base_path = self._usage_baseline_path()
+            if base_path is not None and base_path.is_file():
+                baseline = _du.load_usage_baseline(base_path)
+                return _du.usage_delta(baseline, usage)
         except Exception:
-            return {"tokens_unknown": True}
+            pass
+        return usage
 
     def _opencode_job_directory(self) -> str:
         """FR #6420: the job worktree OpenCode ran in (parent of ``.bob/outbox.txt``)."""
@@ -9196,11 +9227,11 @@ class Supervisor:
         return usage
 
     def enrich_done_line(self, payload: str) -> str:
-        """FR #6387 / #6409: append model/token + worker_build onto a DONE outbox line."""
+        """FR #6387 / #6409 / #6435: append per-job model/token + worker_build onto DONE."""
         try:
             import done_usage as _du
 
-            usage = self.measure_done_usage()
+            usage = self.measure_done_usage(apply_baseline=True)
             return _du.enrich_done_payload(
                 payload, usage, worker_build=short_build_sha()
             )
@@ -9212,6 +9243,10 @@ class Supervisor:
         p = (payload or "").strip()
         if _OUT_ACK_RX.match(p) or _OUT_DONE_RX.match(p) or _OUT_FREE_RX.match(p):
             self.ack_miss.note_ack()
+        if _OUT_ACK_RX.match(p):
+            # FR #6435: snapshot cumulative usage at ACK so DONE stamps a per-job delta.
+            with contextlib.suppress(Exception):
+                self.snapshot_usage_baseline(job=outbox_job_key(p) or "")
         if _OUT_DONE_RX.match(p) or _OUT_FREE_RX.match(p):
             with contextlib.suppress(Exception):
                 self.relay.note_outbound(p)

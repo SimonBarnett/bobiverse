@@ -26,6 +26,8 @@ def make_row(
     tokens_unknown: bool = True,
     done_at: float | None = None,
     url: str = "",
+    attempt: int = 1,
+    source: str = "done",
 ) -> dict[str, Any]:
     measured = (
         tokens_in is not None or tokens_out is not None or tokens_cached is not None
@@ -36,6 +38,13 @@ def make_row(
         tokens_unknown = False
     else:
         tokens_unknown = True
+    try:
+        attempt_i = int(attempt) if attempt is not None else 1
+    except (TypeError, ValueError):
+        attempt_i = 1
+    if attempt_i < 1:
+        attempt_i = 1
+    src = str(source or "").strip() or "done"
     return {
         "pr": str(pr or ""),
         "task": str(task or "").strip().upper(),
@@ -48,7 +57,23 @@ def make_row(
         "tokens_unknown": bool(tokens_unknown),
         "done_at": float(done_at if done_at is not None else time.time()),
         "url": str(url or ""),
+        "attempt": attempt_i,
+        "source": src,
     }
+
+
+def _row_key(row: Mapping[str, Any]) -> tuple:
+    """FR #6435: idempotency key — same job/PR/attempt (and seat+task) is one row."""
+    try:
+        attempt = int(row.get("attempt") or 1)
+    except (TypeError, ValueError):
+        attempt = 1
+    return (
+        str(row.get("pr") or ""),
+        str(row.get("task") or "").strip().upper(),
+        str(row.get("seat") or ""),
+        attempt,
+    )
 
 
 def load_rows(home: Path) -> list[dict]:
@@ -169,7 +194,11 @@ def record_done(
     url: str = "",
     done_at: float | None = None,
 ) -> dict[str, Any]:
-    """Append one DONE measurement row from shop rest tokens."""
+    """Record one DONE measurement row from shop rest tokens (idempotent per job).
+
+    FR #6435: the same ``(pr, task, seat, attempt)`` key updates the existing row
+    instead of appending a duplicate (DONE replay / double relay).
+    """
     meta = done_usage.parse_done_usage(rest or "")
     pr = f"{repo}{ident}"
     row = make_row(
@@ -184,8 +213,31 @@ def record_done(
         tokens_unknown=bool(meta.get("tokens_unknown")),
         done_at=done_at,
         url=url or "",
+        attempt=int(meta.get("attempt") or 1),
+        source=str(meta.get("source") or "done"),
     )
     rows = load_rows(home)
+    key = _row_key(row)
+    for i, existing in enumerate(rows):
+        if _row_key(existing) == key:
+            # Keep the first done_at; refresh measured fields from the latest stamp.
+            merged = dict(existing)
+            for k in (
+                "model",
+                "tokens_in",
+                "tokens_out",
+                "tokens_cached",
+                "legacy_tokens",
+                "tokens_unknown",
+                "url",
+                "source",
+                "attempt",
+            ):
+                if k in row:
+                    merged[k] = row[k]
+            rows[i] = merged
+            save_rows(home, rows)
+            return merged
     rows.append(row)
     save_rows(home, rows)
     return row
