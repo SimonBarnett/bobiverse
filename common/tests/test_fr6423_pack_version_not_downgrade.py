@@ -2,6 +2,9 @@
 from __future__ import annotations
 
 import subprocess
+import sys
+
+import pytest
 from pathlib import Path
 
 from repo_layout import ROOT
@@ -38,11 +41,17 @@ def test_fr6423_common_helpers_and_pack_gate_present():
     assert "SkipPublishedVersionCheck" in p
     assert "LatestPublishedVersion" in p
     assert "-not $SkipMsi" in p
+    assert "SkipPublishedVersionCheck is only allowed together with -SkipMsi" in p
+    assert "LatestPublishedVersion is only allowed together with -SkipMsi" in p
     v = _read(VISION)
     assert "FR #6423" in v
     assert "common/VERSION" in v
 
 
+@pytest.mark.skipif(
+    sys.platform != "win32",
+    reason="FR #6423 assert smoke needs Windows powershell.exe",
+)
 def test_fr6423_compare_and_assert_refuse_downgrade(tmp_path: Path):
     ps1 = tmp_path / "fr6423.ps1"
     common_path = str(COMMON).replace("'", "''")

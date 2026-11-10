@@ -27,9 +27,9 @@ param(
     [switch]$SkipAircExe,
     # Tests only (needs -SkipMsi): skip airc-network-installer.exe (FR #3991 PyInstaller + UAC).
     [switch]$SkipAircNetworkInstallerExe,
-    # FR #6423: optional override for the published-release downgrade gate (unit tests).
+    # FR #6423 / MRB #6427: test-only override for the published-release downgrade gate (requires -SkipMsi).
     [string]$LatestPublishedVersion = '',
-    # FR #6423: skip GitHub latest comparison (auto when -SkipMsi; release packs must not skip).
+    # FR #6423 / MRB #6427: skip GitHub latest comparison (requires -SkipMsi; release packs must not skip).
     [switch]$SkipPublishedVersionCheck
 )
 
@@ -48,6 +48,13 @@ if (-not $Version) {
 $msiVersion = ConvertTo-BobiverseMsiProductVersion -Version $Version
 # FR #6423: refuse packing a ProductVersion below the latest GitHub release (UAT/release path).
 # -SkipMsi stage tests keep historical -Version pins (e.g. 0.1.99) and auto-skip this gate.
+# Bypass switches are test-only: require -SkipMsi so a release MSI pack cannot skip the gate (MRB #6427).
+if ($SkipPublishedVersionCheck -and -not $SkipMsi) {
+    throw '-SkipPublishedVersionCheck is only allowed together with -SkipMsi (release packs must not skip FR #6423)'
+}
+if ($LatestPublishedVersion -and -not $SkipMsi) {
+    throw '-LatestPublishedVersion is only allowed together with -SkipMsi (test override must not ship an MSI)'
+}
 if (-not $SkipPublishedVersionCheck -and -not $SkipMsi) {
     Assert-BobiversePackVersionNotDowngrade -Version $msiVersion -Repo 'SimonBarnett/bobiverse' -LatestPublishedVersion $LatestPublishedVersion
 }
