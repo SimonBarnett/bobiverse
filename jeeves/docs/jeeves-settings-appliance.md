@@ -1,4 +1,4 @@
-# Jeeves appliance settings (FR #6436 foundation + FR #6440 LAN HTTP)
+# Jeeves appliance settings (FR #6436 foundation + FR #6440 LAN HTTP + FR #6441 auth)
 
 Internal-only settings surface for the Ergo chair host. **Never** publish this
 on Cloudflare or public DNS. Do **not** front it via `bob.ntsa.uk` or
@@ -12,12 +12,31 @@ on Cloudflare or public DNS. Do **not** front it via `bob.ntsa.uk` or
 3. Browser / API clients must use a source IP in RFC1918 (`10/8`, `172.16/12`,
    `192.168/16`) or loopback. The server rejects other sources even if DNS is
    wrong.
-4. Foundation module: `common/scripts/jeeves_settings.py` (schema, LAN gate,
-   secret-safe GET, validated PUT, timestamped backups, audit JSONL, rollback).
+4. Foundation modules: `common/scripts/jeeves_settings.py` (schema, LAN gate,
+   secret-safe GET/PUT, backup/audit/rollback) and
+   `common/scripts/jeeves_settings_auth.py` (AD/CredMan + sessions).
 5. LAN HTTP UI: see **Enable the LAN HTTP UI (FR #6440)** below.
-6. AD/CredMan login (FR #6441) and restart-when-idle / status (FR #6443) remain child FRs.
-   NSSM env migrate/apply is FR #6442 (see **Migrate NSSM env** below).
+6. NSSM env migrate/apply is FR #6442 (see **Migrate NSSM env** below).
+   Restart-when-idle / status is FR #6443. Auth is FR #6441 (see **Auth** below).
 
+## Auth (FR #6441)
+
+Settings API/UI must require login (authed helpers). LAN HTTP still needs a
+follow-up to call these helpers and present login/cookie sessions.
+
+1. **LAN first.** Non-RFC1918 sources are rejected before credential checks.
+2. **Windows / AD.** Win32 LogonUser network logon via authenticate_windows_logon.
+   Prefer DOMAIN\user or pass domain separately.
+3. **CredMan fallback.** Generic credential target **`Jeeves/ApplianceAdmin`**
+   (`CREDMAN_TARGET`). Username + password must match CredMan; missing target
+   fails closed.
+4. **Sessions.** Successful login returns a random `session_token`. Only the
+   SHA-256 hash is stored under chair home `appliance-sessions.json` (actor +
+   expiry). TTL default 8h. Passwords are never stored, logged, or returned.
+5. **Authed helpers.** api_get_settings_authed / api_put_setting_authed /
+   api_rollback_authed reject missing/invalid/expired sessions. Audit actor
+   comes from the session (not a caller-supplied spoof). Secret settings still
+   return only `set` / `unset`.
 
 ## Enable the LAN HTTP UI (FR #6440)
 
@@ -34,7 +53,7 @@ JSON: `GET /api/settings`, `PUT /api/settings/<KEY>`, `POST /api/rollback`, `GET
 
 Socket-layer gate: the server binds only to LAN/loopback and `verify_request` drops non-RFC1918 peers before handlers run. Helpers also reject non-LAN `client_ip`.
 
-**Never** put this behind Cloudflare, `bob.ntsa.uk`, or `irc.ntsa.uk`. AD/CredMan login is FR #6441; restart-when-idle / status is FR #6443.
+**Never** put this behind Cloudflare, `bob.ntsa.uk`, or `irc.ntsa.uk`. Auth helpers are FR #6441 (HTTP cookie/session wire is a follow-up); NSSM apply is FR #6442; restart-when-idle / status is FR #6443.
 
 Module: `common/scripts/jeeves_settings_http.py` (started from `ChairJobs` via `maybe_start_from_chair`).
 
@@ -45,6 +64,7 @@ Module: `common/scripts/jeeves_settings_http.py` (started from `ChairJobs` via `
 | Config file | `appliance-settings.json` |
 | Audit log | `settings-audit.jsonl` |
 | Backups | `settings-backups/<id>.json` |
+| Sessions | `appliance-sessions.json` (token hashes only) |
 
 Environment variables still override file values; the API shows `source=env`
 when that happens. Secret keys return only `set` / `unset` (never plaintext).

@@ -3,7 +3,7 @@
 Off by default: importing this module never starts a server.
 FR #6442: migrate NSSM/env inventory into appliance-settings.json and apply
 file-backed values into the process environment (env still overrides).
-HTTP UI is FR #6440; AD/CredMan auth is FR #6441.
+HTTP UI is FR #6440; Auth/sessions: jeeves_settings_auth (FR #6441).
 """
 from __future__ import annotations
 
