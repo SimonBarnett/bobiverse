@@ -8,7 +8,7 @@ Agent playbook: `jeeves/.grok/skills/bobiverse-build/SKILL.md` (FR #4038) --- ho
 
 | Field | Meaning |
 |---|---|
-| `machine` | Build host (bobiverse: `ionos`) |
+| `machine` | Build host (bobiverse: `flamingo`) |
 | `baseline` | Usually `last_release_tag` |
 | `suites[]` | `{name, cmd, cwd, env, timeout}` — run at ref and baseline |
 | `pack` | Commands + artifact globs (+ `.sha256`) |
@@ -52,7 +52,7 @@ Deterministic, injectable, **zero AI tokens**. Module: `common/scripts/bobiverse
 ### Flow
 
 1. Chair `!build` decides and announces `BUILD v1 repos=... version=... ref=...` on `#bobiverse`.
-2. Recipe machine (bobiverse: `ionos` / DIGEST_ID_FOLD `win-mpre8vi4u6u`) consumes the wire via `consume_build_v1` and enqueues `home/build-queue/*.json` (spawn/pack outside the chair process).
+2. Recipe machine (bobiverse: `flamingo`; digest id is `flamingo`, no DIGEST_ID_FOLD alias required) consumes the wire via `consume_build_v1` and enqueues `home/build-queue/*.json` (spawn/pack outside the chair process).
 3. `BuildRunner.run()`:
    - Ensures `work_dir` / `log_dir` and recipe `cache_dirs` under `work_dir/cache` (override root with env `BOBIVERSE_DOWNLOAD_CACHE`).
    - Resolves baseline (injectable; default stub tag `baseline`).
@@ -92,7 +92,7 @@ Optional follow-on after a successful BUILD. Ops-only, **zero AI tokens**.
 
 Chair decides + PM; announces `INSTALLTEST v1 repo=... version=... tag=...` on `#bobiverse` when accepted.
 Requires `install_test` in `.bobiverse/build.yml` (machine, products, optional `msiexec_extra`).
-Runs on `install_test.machine` (bobiverse: `ionos` / DIGEST_ID_FOLD).
+Runs on `install_test.machine` (bobiverse: `flamingo`).
 
 ### Runner (`InstallTestRunner`)
 

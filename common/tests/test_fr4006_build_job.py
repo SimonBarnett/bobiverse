@@ -36,7 +36,7 @@ def test_fr4006_help_ops_sees_build_worker_hides():
 
 def test_fr4006_bobiverse_recipe_loads():
     recipe = bb.load_recipe(ROOT)
-    assert recipe.machine == "ionos"
+    assert recipe.machine == "flamingo"
     assert len(recipe.suites) >= 4
     names = {s.name for s in recipe.suites}
     assert {"jeeves", "airc", "common", "bob"} <= names

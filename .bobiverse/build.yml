@@ -1,5 +1,5 @@
-﻿# FR #4006 — bobiverse BUILD recipe (deterministic, no agent).
-machine: ionos
+# FR #4006 — bobiverse BUILD recipe (deterministic, no agent).
+machine: flamingo
 baseline: last_release_tag
 channel: "#bobiverse"
 max_parallel_builds: 1
@@ -43,7 +43,7 @@ release:
   tag: "v{{version}}"
   never_latest: true
 install_test:
-  machine: ionos
+  machine: flamingo
   note: "WP3 - optional INSTALL-TEST after successful BUILD"
   products:
     - jeeves
