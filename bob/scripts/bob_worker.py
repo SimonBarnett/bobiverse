@@ -6556,6 +6556,11 @@ def opencode_job_finish_steps(
     m = re.search(r"(?i)#(\d+)\s*$", key)
     issue_n = m.group(1) if m else "N"
     branch = f"fr-{issue_n}" if issue_n != "N" else "fr-N"
+    pm = re.search(
+        r"(?i)\b(?:FR|MRB|UAT|FIX)\s+([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)#(\d+)\b",
+        key,
+    )
+    closes_ref = f"{pm.group(1)}#{pm.group(2)}" if pm else key
     wt = str(worktree or "").strip()
     ob = str(outbox or "").strip()
     return (
@@ -6563,7 +6568,7 @@ def opencode_job_finish_steps(
         "This is a NEW opencode run (no --resume/--continue). "
         "1) git status and git diff. 2) Finish remaining work. "
         f"3) Commit on branch {branch}. 4) git push -u origin HEAD. "
-        f"5) Open the PR with gh pr create --base main --body \"Closes {key}\" "
+        f"5) Open the PR with gh pr create --base main --body \"Closes {closes_ref}\" "
         f"(or --body-file pointing at a markdown file inside this worktree, e.g. .bob/pr-body.md). "
         "Keep scratch files and base comparisons inside this job worktree or the worker run folder --- "
         "never under %TEMP%. Do not request external_directory and do not pass --auto. "
@@ -7177,10 +7182,16 @@ class BoredEmitter:
                 self._done_job_keys.pop()
         fn = getattr(self, "job_end_cleanup_fn", None)
         if fn is not None:
-            try:
-                fn(job)
-            except Exception as e:  # noqa: BLE001
-                self.log(f"job-end cleanup failed {type(e).__name__}")
+            # FR #6370 MRB: do not run git worktree remove/prune while BoredEmitter._cv is held.
+            def _cleanup(j=job, cleanup=fn, log=self.log):
+                try:
+                    cleanup(j)
+                except Exception as e:  # noqa: BLE001
+                    log(f"job-end cleanup failed {type(e).__name__}")
+
+            threading.Thread(
+                target=_cleanup, name="opencode-job-end-cleanup", daemon=True
+            ).start()
 
 
     def note_fresh_assign(self, line: str) -> None:
@@ -7525,6 +7536,7 @@ class BoredEmitter:
                 self._done_miss_key = None
             self._cv.notify_all()
 
+
     def turn_ended(
         self,
         at: float | None = None,
@@ -7554,11 +7566,15 @@ class BoredEmitter:
                 if self._ack_open and self._ack_at is not None:
                     key = self._ack_job_key or "job"
                     if self._done_miss_reminded:
-                        # FR #6366: OpenCode finish-run decide (retry while progress / under max).
+                        # FR #6366 / #6370 MRB: decide() runs git/gh — schedule outside _cv.
                         decide = self.opencode_finish_decide_fn
                         if decide is not None:
                             try:
-                                verdict = str(decide(key) or "giveup").strip().lower()
+                                self._cv.release()
+                                try:
+                                    verdict = str(decide(key) or "giveup").strip().lower()
+                                finally:
+                                    self._cv.acquire()
                             except Exception as e:  # noqa: BLE001
                                 self.log(
                                     f"opencode finish-run decide failed {type(e).__name__}; giveup"
@@ -9651,10 +9667,10 @@ class Supervisor:
         if ob is None:
             ob = outbox_path_for_run(self.run_dir)
         try:
-            ensure_outbox(Path(ob))
-            prev = Path(ob).read_text(encoding="utf-8") if Path(ob).is_file() else ""
-            Path(ob).write_text(line + "\n" + prev, encoding="utf-8")
-            self.log(f"opencode finish: auto DONE written for {key}")
+            if append_outbox_line(Path(ob), line):
+                self.log(f"opencode finish: auto DONE written for {key}")
+            else:
+                self.log(f"opencode finish: auto DONE write failed for {key}")
         except Exception as e:  # noqa: BLE001
             self.log(f"opencode finish: auto DONE write failed {type(e).__name__}")
         if self.bored is not None:

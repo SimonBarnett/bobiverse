@@ -22,6 +22,8 @@ def test_fr6370_finish_prompt_pins_body_and_no_temp():
     assert "never under" in low or "never" in low
     assert "external_directory" in low
     assert "worktree" in low
+    assert "Closes SimonBarnett/bobiverse#6370" in text
+    assert "Closes FR SimonBarnett/bobiverse#6370" not in text
     prompt = bw.worker_prompt(r"C:\ai\bob\worker", r"C:\run", "marchhare", "marchhare-1")
     plow = prompt.lower()
     assert "6370" in plow or "--body" in plow
