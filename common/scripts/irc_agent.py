@@ -2736,15 +2736,20 @@ class Client:
         text = (body or "").strip()
         looks = text.lower().startswith("recycle ")
 
+        def _chair_disp() -> str:
+            # Diagnostics must not raise (corrupt digest.json / UnicodeDecodeError).
+            try:
+                return (bobreport.digest_chair_nick(self.home) or "").strip() or "-"
+            except Exception:  # noqa: BLE001
+                return "-"
+
         def _drop(reason: str, *, machine: str | None = None) -> bool:
             if not looks:
                 return False
             mid = (machine or self._local_machine_id() or "-").strip() or "-"
-            chair_raw = (bobreport.digest_chair_nick(self.home) or "").strip()
-            chair_disp = chair_raw or "-"
             info(
                 f"INFO recycle wire dropped reason={reason} machine={mid} "
-                f"from={src} chair={chair_disp}"
+                f"from={src} chair={_chair_disp()}"
             )
             return False
 
@@ -2769,7 +2774,10 @@ class Client:
                 return _drop("not_recycle_wire", machine=local)
             if mid != local:
                 return _drop("machine_mismatch", machine=local)
-        chair = (bobreport.digest_chair_nick(self.home) or "").strip().lower()
+        try:
+            chair = (bobreport.digest_chair_nick(self.home) or "").strip().lower()
+        except Exception:  # noqa: BLE001 - treat unreadable digest as chair_missing
+            return _drop("chair_missing", machine=local)
         # Case-insensitive (digest may store "Jeeves", wire sender is often "jeeves").
         if not chair:
             return _drop("chair_missing", machine=local)
