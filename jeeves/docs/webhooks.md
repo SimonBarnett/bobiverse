@@ -171,3 +171,7 @@ When the handler is offline, webhook intakes should be cached and processed on r
 ## Intake ARR 502.3 (FR #1014)
 
 When public /bob/v1/intake returns IIS **502.3**, BobCallback is not listening on 127.0.0.1:7700. See [fr-1014-intake-arr-restore.md](./fr-1014-intake-arr-restore.md). Assert: .\scripts\Assert-BobIntakeLocal.ps1.
+
+## Front-page HTML docs (FR #6453)
+
+Static pages under `jeeves/www/irc-ntsa/` are copied to the IIS site physical path by `Install-BobWebhooks.ps1`. Browse `https://bob.ntsa.uk/` (keeps the `bobiverse acme` marker) and `https://bob.ntsa.uk/docs/webhooks/`. Registry: `common/scripts/bob_webhook_docs.py` (tests fail if a BobCallback route lacks a doc entry).

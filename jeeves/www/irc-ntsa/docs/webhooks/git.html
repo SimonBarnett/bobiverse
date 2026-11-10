@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>GitHub git webhook — bob.ntsa.uk</title>
+<style>
+body{font-family:system-ui,Segoe UI,sans-serif;margin:2rem;max-width:52rem;line-height:1.45;color:#122}
+header{margin-bottom:1.5rem}
+h1{font-size:1.6rem;margin:0 0 .4rem}
+h2{font-size:1.2rem;margin-top:1.6rem;border-bottom:1px solid #ccd;padding-bottom:.2rem}
+a{color:#0645ad}
+.meta{color:#456;font-size:.95rem}
+pre{background:#f4f6f8;padding:.8rem;overflow:auto;border:1px solid #dde}
+table{border-collapse:collapse;width:100%}
+td,th{border:1px solid #ccd;padding:.4rem .55rem;text-align:left;vertical-align:top}
+.nav{margin:.8rem 0 1.2rem}
+.badge{display:inline-block;background:#e8eef7;border:1px solid #b9c7dd;border-radius:4px;padding:0 .35rem;font-size:.85rem}
+</style>
+</head>
+<body>
+<header>
+<p class="meta"><a href="/">bob.ntsa.uk</a> · <a href="index.html">Webhooks</a> · GitHub git webhook</p>
+<h1>GitHub git webhook</h1>
+</header>
+<p class="nav"><a href="index.html">Webhooks &amp; API index</a></p>
+<section id="git">
+<h2>GitHub git webhook <span class="badge">POST /bob/v1/git</span></h2>
+<p><strong>Direction:</strong> in · <strong>Purpose:</strong> GitHub delivery into the digest job queue (issues, PRs, checks, comments).</p>
+<p><strong>Who calls it:</strong> GitHub repository webhooks (allow-listed owners).</p>
+<p><strong>Auth (named only):</strong> None shared secret. Owner allow-list via BOB_GIT_OWNERS (default SimonBarnett). Event must be accepted.</p>
+<p><strong>Request schema:</strong> GitHub webhook JSON + X-GitHub-Event / X-GitHub-Delivery headers.</p>
+<p><strong>Response schema:</strong> 204/202 accepted; 403 owner/event; 429 rate.</p>
+<p><strong>Status codes:</strong> 202/204 accepted; 400 bad JSON; 403 owner/event; 413; 429.</p>
+<p><strong>Retry / idempotency:</strong> GitHub retries deliveries; chair also !resync / hourly github-resync fallback.</p>
+<p><strong>Rate limits:</strong> 120/min per repository.</p>
+<p><strong>Reachability:</strong> Public Cloudflare. Never post git events to /bob/v1/report.</p>
+<p><strong>Source:</strong> <code>common/scripts/bobcallback.py, gitclaim.py</code> · <strong>Related:</strong> FR #5170 / #4711 / #4955</p>
+<p><strong>Redacted example</strong></p>
+<pre>POST https://bob.ntsa.uk/bob/v1/git
+Content-Type: application/json
+X-GitHub-Event: issues
+
+{&quot;action&quot;:&quot;opened&quot;,&quot;repository&quot;:{&quot;full_name&quot;:&quot;SimonBarnett/example&quot;},&quot;issue&quot;:{&quot;number&quot;:1,&quot;title&quot;:&quot;example&quot;}}</pre>
+</section>
+
+<footer class="meta" style="margin-top:2.5rem">FR #6453 · static read-only docs · no secrets</footer>
+</body>
+</html>

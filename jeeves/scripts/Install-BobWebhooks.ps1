@@ -1,4 +1,4 @@
-﻿#Requires -Version 5.1
+#Requires -Version 5.1
 <#
 .SYNOPSIS
   Idempotent IIS URL Rewrite rules for bobcallback on 127.0.0.1:7700
@@ -137,3 +137,21 @@ try {
     Write-Host "WARN could not enable ARR proxy: $($_.Exception.Message)"
 }
 Write-Host 'INFO Install-BobWebhooks done'
+
+# FR #6453: sync static front-page + webhook docs into IIS physical path (read-only HTML).
+$wwwSrc = Join-Path $PSScriptRoot '..\www\irc-ntsa'
+if (Test-Path -LiteralPath $wwwSrc) {
+    $null = New-Item -ItemType Directory -Force -Path $PhysicalPath
+    Copy-Item -LiteralPath (Join-Path $wwwSrc 'index.html') -Destination (Join-Path $PhysicalPath 'index.html') -Force
+    $docsSrc = Join-Path $wwwSrc 'docs'
+    if (Test-Path -LiteralPath $docsSrc) {
+        $docsDst = Join-Path $PhysicalPath 'docs'
+        if (Test-Path -LiteralPath $docsDst) {
+            Remove-Item -LiteralPath $docsDst -Recurse -Force
+        }
+        Copy-Item -LiteralPath $docsSrc -Destination $docsDst -Recurse -Force
+    }
+    Write-Host "INFO synced FR #6453 www docs from $wwwSrc -> $PhysicalPath"
+} else {
+    Write-Host "WARN FR #6453 www source missing: $wwwSrc"
+}
