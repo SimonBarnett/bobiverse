@@ -94,9 +94,13 @@ rows with workers `{irc nick}: {doing|idle}`, one Copilot pool tile, alert and v
 - Snapshot fields: `copilot_line`, `copilot_stale_line`, `copilot_fresh_until` (unix seconds), `copilot_bar` (`known`/`pct`/`r`/`g`/`b`), plus digest `max_recorded_usage`. Native Status re-ages an open window at the deadline without waiting for a new poll.
 - TipForm always shows a Copilot line (`Copilot - unknown` when absent). Display-only: does not enable Copilot dispatch (`BOB_FUEL_COPILOT` / #6204).
 
+## FR #6371 pool tile updated time (and stale)
+
+Each TipForm/Status pool reading paints when it was taken: `updated HH:mm` in **local** time from that reading's own `fetched_at` (never the tray redraw clock). Helpers: `Format-BobPoolUpdatedLabel`, `Get-BobPoolReadingFreshness`, `Get-BobPoolStaleAfterSec` (default **900s** / 15 min; override `BOB_TRAY_POOL_STALE_S`). When a reset countdown exists it is kept **and** the updated stamp is shown; when there is no reset, only the updated stamp (do not invent a reset; do not paint `reset unavailable` as a countdown on a known rem%). If `fetched_at` is older than the stale threshold, append `[stale <age>]` so "unchanged" and "not updated" are distinct. Tray paint only --- no digest/provider schema change. Offline pin: `bob/tests/test_fr6371_tray_pool_updated.py`.
+
 ## FR #6301 tray fuel rows and agent starts
 
-OpenCode Go window lines and the Copilot meter use remaining percent: `<title> - <x>% left - <reset>` (OpenCode: `go <window> - <x>% left - <reset>`). Bars paint remaining % green to red. Copilot title is exactly `Copilot` (no included-unlimited prose). 100% used / exhausted paints `0% left`. Unlimited Copilot without a historical max paints `unknown`. Reset labels come from real digest/API data (`Nd Hh` above 24h, else `Hh Mm`); never invent rem-est text.
+OpenCode Go window lines and the Copilot meter use remaining percent: `<title> - <x>% left - <reset>` (OpenCode: `go <window> - <x>% left - <reset> - updated HH:mm`). Bars paint remaining % green to red. Copilot title is exactly `Copilot` (no included-unlimited prose). 100% used / exhausted paints `0% left`. Unlimited Copilot without a historical max paints `unknown`. Reset labels come from real digest/API data (`Nd Hh` above 24h, else `Hh Mm`); never invent rem-est text.
 
 ## FR #6317 Copilot layout like OpenCode rows
 
