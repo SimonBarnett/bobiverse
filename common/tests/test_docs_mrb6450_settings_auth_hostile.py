@@ -69,13 +69,14 @@ def test_docs_mrb6450_docs_and_vision_keep_auth_and_http():
     assert "6440" in vision and "6441" in vision
 
 
-def test_docs_mrb6450_http_still_unauthed_noted(tmp_path):
-    """Pin known gap: HTTP module still imports unauthed helpers (follow-up #6451)."""
+def test_docs_mrb6450_http_uses_authed_helpers():
+    """FR #6451 closed the gap: HTTP module calls api_*_authed."""
     http_src = (
         Path(__file__).resolve().parents[2]
         / "common"
         / "scripts"
         / "jeeves_settings_http.py"
     ).read_text(encoding="utf-8")
-    assert "api_get_settings(" in http_src
-    assert "api_get_settings_authed" not in http_src
+    assert "api_get_settings_authed" in http_src
+    assert "api_put_setting_authed" in http_src
+    assert "/api/login" in http_src
