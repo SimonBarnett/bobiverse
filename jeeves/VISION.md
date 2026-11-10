@@ -94,6 +94,8 @@ Operator surfaces today: IRC commands, chair logs, webhook health, and the MONIT
 - MONITORING agent reports via intake and never `!assign` / queue edits
 - FR #6436 appliance settings foundation: schema covers inventoried Jeeves-read settings (gap test); reject non-RFC1918 sources; secrets return only set/unset; validate + backup + audit + rollback; docs for internal DNS `jeeves.ntsa.uk` (never public / never via bob.ntsa.uk); unused = no behaviour change (no server on import)
 - FR #6441 appliance auth: LAN + Windows/AD LogonUser or CredMan `Jeeves/ApplianceAdmin`; session token hashes only; authed get/put/rollback; never log/return passwords; unused = no server on import
+- FR #6440 LAN HTTP settings UI: off by default; bind RFC1918/loopback only; schema-driven JSON/HTML via `jeeves_settings_http.py`
+- FR #6442 NSSM migrate/apply: SCHEMA file-backed settings; `migrate_nssm_env_to_file` + `apply_file_settings` on `jeeves_main` start; env still overrides; secrets audited set/unset only
 
 ## UNKNOWN
 
