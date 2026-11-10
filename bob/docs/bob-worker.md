@@ -34,7 +34,7 @@ One compiled program, `<ai root>\bob\worker\bob-worker.exe` (`scripts/bob_worker
 
 ## Build identity on the wire (FR #6409)
 
-After IRC join the seat posts a hello line on `#<machine>`:
+After IRC join and a successful agent launch the seat posts a hello line on `#<machine>` (MRB #6411: no ready claim when launch fails):
 
 `worker ready kind=<grok|cursor|opencode> build=<short sha>`
 

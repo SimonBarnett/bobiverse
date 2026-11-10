@@ -68,7 +68,7 @@ def short_build_sha(commit: str | None = None) -> str:
 
 
 def worker_hello_line(kind: str, *, build: str | None = None) -> str:
-    """FR #6409: first shop presence line after IRC join."""
+    """FR #6409: shop presence line after successful agent start (MRB #6411)."""
     k = (kind or "").strip().lower() or "grok"
     b = short_build_sha(build) if build is not None else short_build_sha()
     return f"worker ready kind={k} build={b}"
@@ -10773,7 +10773,7 @@ def run_agent(args, log: Log) -> int:
         log(f"worker: IRC connect failed ({type(e).__name__}: {str(e)[:100]}) - NOT starting an agent")
         return EXIT_IRC_FAIL
     # FR #6134: publish agent kind so the chair can skip OpenCode for MRB/UAT.
-    # FR #6409: hello line + digest worker_build short SHA (or unknown).
+    # FR #6409: digest worker_build short SHA (or unknown); hello after start_agent (MRB #6411).
     build = short_build_sha()
     try:
         model = (os.environ.get("BOB_OPENCODE_MODEL") or "").strip() if kind == "opencode" else ""
@@ -10788,14 +10788,6 @@ def run_agent(args, log: Log) -> int:
         )
     except Exception as e:
         log(f"worker: post_digest_seat_kind failed {type(e).__name__}")
-    try:
-        hello = worker_hello_line(kind, build=build)
-        if irc.say(irc.shop, hello):
-            log(f"worker: hello {hello}")
-        else:
-            log("worker: hello say failed")
-    except Exception as e:
-        log(f"worker: hello failed {type(e).__name__}")
     grace = float(getattr(args, "startup_grace_s", 60.0) or 60.0)
     if kind == "grok" and grace < 60.0:
         # Grok TUI session.create often needs 30-60s on slower boxes (FR #955 ionos evidence).
@@ -10821,6 +10813,15 @@ def run_agent(args, log: Log) -> int:
     if not sup.start_agent():
         irc.close("launch failed")
         return EXIT_LAUNCH_FAIL
+    # FR #6409 / MRB #6411: announce ready only after agent process starts (CodeRabbit).
+    try:
+        hello = worker_hello_line(kind, build=build)
+        if irc.say(irc.shop, hello):
+            log(f"worker: hello {hello}")
+        else:
+            log("worker: hello say failed")
+    except Exception as e:
+        log(f"worker: hello failed {type(e).__name__}")
     threading.Thread(
         target=outbox_loop,
         args=(run_dir / "outbox.txt", irc, sup.stop, log, sup.on_outbox_wire, sup.may_send_outbox),
