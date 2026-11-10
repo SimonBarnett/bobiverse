@@ -1179,6 +1179,15 @@ class ChairJobs:
         }
         findings = stall_detectors.detect_all(snap)
         findings = drop_healed_bored_findings(findings, bored_healed)
+        # FR #6439: HTTPS stall callbacks + daily heartbeat (same wake URL as close).
+        with contextlib.suppress(Exception):
+            import stall_callbacks
+
+            stall_callbacks.maybe_heartbeat(self.digest_home, now=self.clock())
+            if findings:
+                stall_callbacks.emit_findings(
+                    self.digest_home, findings, now=self.clock()
+                )
         if not findings:
             return
         # FR #5181: park all-gave-up rows so the next scan skips them

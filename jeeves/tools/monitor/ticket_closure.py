@@ -552,6 +552,7 @@ def _wake_via_webhook(item: dict[str, Any]) -> dict[str, Any]:
         headers["Authorization"] = f"Bearer {secret}"
         headers["X-Bob-Wake-Secret"] = secret
     payload = {
+        "event": str(item.get("callback_event") or "close"),
         "text": text,
         "brief": text,
         "repo": item.get("repo"),
@@ -560,7 +561,15 @@ def _wake_via_webhook(item: dict[str, Any]) -> dict[str, Any]:
         "state": item.get("event") or item.get("state"),
         "title": item.get("title") or "",
         "agent": "Bob",
+        "seat": str(item.get("seat") or ""),
+        "machine": str(item.get("machine") or ""),
+        "since": item.get("since"),
+        "reason": str(item.get("reason") or ""),
     }
+    # Drop empty optional FR #6439 fields so close payloads stay lean.
+    for _k in ("seat", "machine", "since", "reason"):
+        if payload.get(_k) in ("", None):
+            payload.pop(_k, None)
     poster = _WAKE_HTTP_POST or _default_wake_http_post
     try:
         poster(url, payload, headers)
