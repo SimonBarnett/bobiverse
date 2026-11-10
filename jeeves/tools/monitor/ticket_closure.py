@@ -3,8 +3,9 @@
 
 Phase-1 events: issue closed, PR merged, PR closed (unmerged).
 Phase-2: optional waiting_on registry narrows reports.
-Event source (FR #6391): poll GitHub closed issues/PRs for focus repos when
-``JEEVES_TICKET_CLOSURE_FIXTURE`` is unset. Fixture stays for tests only.
+Event source (FR #6391 / #6400): poll GitHub closed issues/PRs for focus repos when
+``JEEVES_TICKET_CLOSURE_FIXTURE`` is unset. Per-repo ``poll_cursors`` + page
+pagination (FR #6400). Fixture stays for tests only.
 Wake transport (FR #6391): HTTPS POST to ``JEEVES_TICKET_CLOSURE_WAKE_URL``
 (secret from env, never logged). Failed POST stays ``pending`` with backoff.
 Legacy GrokBotApi send remains only when wake is forced without a URL (tests).
@@ -47,6 +48,8 @@ _WAKE_HTTP_POST: Callable[..., Any] | None = None
 _CLOCK: Callable[[], float] = time.time
 WAKE_BACKOFF_S = 60.0
 WAKE_BACKOFF_MAX_S = 900.0
+POLL_PER_PAGE = 50
+POLL_MAX_PAGES = 20
 
 
 def _utc_iso_now() -> str:
@@ -172,7 +175,11 @@ def _default_github_fetch(url: str, *, token: str = "") -> Any:
     )
     try:
         with urllib.request.urlopen(req, timeout=30) as resp:
-            return json.loads(resp.read().decode("utf-8"))
+            body = json.loads(resp.read().decode("utf-8"))
+            link = resp.headers.get("Link") if hasattr(resp, "headers") else None
+            if link:
+                return body, link
+            return body
     except urllib.error.HTTPError as e:
         if e.code in (403, 429):
             raise
@@ -215,42 +222,100 @@ def _gh_issue_to_event(repo: str, item: dict[str, Any]) -> dict[str, Any] | None
     return row
 
 
+def _parse_link_next(link_header: str | None) -> str | None:
+    """Return the URL for rel=next from a GitHub Link header, if present."""
+    if not link_header:
+        return None
+    for part in str(link_header).split(","):
+        chunk = part.strip()
+        if 'rel="next"' not in chunk and "rel=next" not in chunk:
+            continue
+        if "<" in chunk and ">" in chunk:
+            return chunk[chunk.index("<") + 1 : chunk.index(">")].strip()
+    return None
+
+
+def _fetch_page(
+    fetcher: Callable[..., Any],
+    url: str,
+    *,
+    token: str,
+) -> tuple[list[Any], str | None]:
+    """Call *fetcher*; accept a bare list or ``(list, link_header)`` tuple."""
+    raw = fetcher(url, token=token)
+    if isinstance(raw, tuple) and len(raw) >= 1:
+        data = raw[0]
+        link = raw[1] if len(raw) > 1 else None
+        return (data if isinstance(data, list) else [], link if isinstance(link, str) else None)
+    if isinstance(raw, list):
+        return raw, None
+    return [], None
+
+
 def _poll_github_closes(
     repos: set[str],
     *,
     token: str,
-    since: str | None,
+    cursors: dict[str, str],
     fetch: Callable[..., Any] | None = None,
-) -> list[dict[str, Any]]:
-    """Poll GitHub Issues API (includes PRs) for closes since *since* (ISO8601).
+    per_page: int = POLL_PER_PAGE,
+    max_pages: int = POLL_MAX_PAGES,
+) -> tuple[list[dict[str, Any]], dict[str, str]]:
+    """Poll GitHub Issues API per repo with pagination (FR #6400).
 
-    When *since* is missing, return no rows (caller seeds the cursor to now so
-    the first live poll does not replay historical closes / flood wake).
+    Each focused repo keeps its own ``since`` cursor. Pages continue via
+    ``page=`` until a short page, or via ``Link: rel=next`` when the fetcher
+    returns a link header. Cursors advance from every fetched close before any
+    waiting filter is applied by the caller.
     """
     fetcher = fetch or _GITHUB_FETCH or _default_github_fetch
     out: list[dict[str, Any]] = []
-    if not repos or not token or not since:
-        return out
+    updated = {str(k): str(v) for k, v in cursors.items() if str(k).strip() and str(v).strip()}
+    if not repos or not token:
+        return out, updated
     for repo in sorted(repos):
         if "/" not in repo:
             continue
-        q = f"state=closed&sort=updated&direction=asc&per_page=50&since={since}"
-        url = f"https://api.github.com/repos/{repo}/issues?{q}"
-        try:
-            data = fetcher(url, token=token)
-        except Exception:  # noqa: BLE001
+        since = str(updated.get(repo) or "").strip()
+        if not since:
             continue
-        if not isinstance(data, list):
-            continue
-        for item in data:
-            if not isinstance(item, dict):
-                continue
-            if str(item.get("state") or "").lower() != "closed":
-                continue
-            ev = _gh_issue_to_event(repo, item)
-            if ev:
+        page = 1
+        next_url: str | None = None
+        repo_newest = since
+        while page <= max_pages:
+            if next_url:
+                url = next_url
+            else:
+                q = (
+                    f"state=closed&sort=updated&direction=asc"
+                    f"&per_page={int(per_page)}&page={page}&since={since}"
+                )
+                url = f"https://api.github.com/repos/{repo}/issues?{q}"
+            try:
+                data, link = _fetch_page(fetcher, url, token=token)
+            except Exception:  # noqa: BLE001
+                break
+            for item in data:
+                if not isinstance(item, dict):
+                    continue
+                if str(item.get("state") or "").lower() != "closed":
+                    continue
+                ev = _gh_issue_to_event(repo, item)
+                if not ev:
+                    continue
                 out.append(ev)
-    return out
+                ca = str(ev.get("closed_at") or "").strip()
+                if ca and ca > repo_newest:
+                    repo_newest = ca
+            next_url = _parse_link_next(link)
+            if next_url:
+                page += 1
+                continue
+            if len(data) < int(per_page):
+                break
+            page += 1
+        updated[repo] = repo_newest
+    return out, updated
 
 
 def _load_events(
@@ -258,12 +323,12 @@ def _load_events(
     repos: set[str],
     *,
     token: str = "",
-    since: str | None = None,
-) -> list[dict[str, Any]]:
+    cursors: dict[str, str] | None = None,
+) -> tuple[list[dict[str, Any]], dict[str, str]]:
     if fixture is not None and fixture.is_file():
-        return _load_fixture_events(fixture, repos)
-    # FR #6391: real source when fixture unset.
-    return _poll_github_closes(repos, token=token, since=since)
+        return _load_fixture_events(fixture, repos), dict(cursors or {})
+    # FR #6391 / #6400: real source when fixture unset.
+    return _poll_github_closes(repos, token=token, cursors=dict(cursors or {}))
 
 
 def _canon_ticket(text: str) -> str:
@@ -459,21 +524,40 @@ def check(args):
     seen = _load_map(state, "seen")
     pending = _load_map(state, "pending")
     poll_cursor = str(state.get("poll_cursor") or "").strip() or None
+    raw_cursors = state.get("poll_cursors")
+    poll_cursors: dict[str, str] = {}
+    if isinstance(raw_cursors, dict):
+        for k, v in raw_cursors.items():
+            ks, vs = str(k).strip(), str(v).strip()
+            if ks and vs:
+                poll_cursors[ks] = vs
     token_loader = _GITHUB_TOKEN or _default_github_token
     token, _tok_src = token_loader()
     now = float(_CLOCK())
-    # First live poll: seed cursor to now; do not replay historical closes.
-    if fixture is None and poll_cursor is None:
-        poll_cursor = _utc_iso_now()
-        events = []
+    focused = {r for r in repos if "/" in r}
+    # First live poll: seed per-repo cursors to now; do not replay history.
+    if fixture is None and not poll_cursors and not poll_cursor:
+        seed = _utc_iso_now()
+        poll_cursors = {r: seed for r in focused}
+        poll_cursor = seed
+        events: list[dict[str, Any]] = []
+    elif fixture is None:
+        # Migrate legacy global cursor into any missing per-repo slots.
+        fallback = poll_cursor or _utc_iso_now()
+        for r in focused:
+            if r not in poll_cursors:
+                poll_cursors[r] = fallback
+        events, poll_cursors = _load_events(
+            fixture, repos, token=token or "", cursors=poll_cursors
+        )
     else:
-        events = _load_events(fixture, repos, token=token or "", since=poll_cursor)
+        events, poll_cursors = _load_events(
+            fixture, repos, token=token or "", cursors=poll_cursors
+        )
     waiting = _load_waiting(chair, digest)
-    # Advance cursor from every fetched close before the waiting filter so a
-    # Phase-2 registry cannot stall the global cursor on non-waiting pages.
+    # Cursors already advanced inside _poll_github_closes from all pages.
     newest_closed = poll_cursor
-    for ev in events:
-        ca = str(ev.get("closed_at") or "").strip()
+    for ca in poll_cursors.values():
         if ca and (newest_closed is None or ca > newest_closed):
             newest_closed = ca
     if waiting:
@@ -545,6 +629,8 @@ def check(args):
             blob["last_wake_at"] = last_wake_at
         if poll_cursor:
             blob["poll_cursor"] = poll_cursor
+        if poll_cursors:
+            blob["poll_cursors"] = dict(sorted(poll_cursors.items()))
         tmp = state_path.with_name(f"{state_path.name}.{os.getpid()}.tmp")
         tmp.write_text(
             json.dumps(blob, separators=(",", ":"), sort_keys=True),
