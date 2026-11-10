@@ -9,6 +9,8 @@
   reconcile when git webhooks go quiet (``WEBHOOK_GAP_S``). Uses ETag/304 conditional GETs and the shared
   ``github_api_budget`` hourly counter. Token SOURCE (never the value) is written once per process to
   ``resync-token-source.log``. Webhooks remain the source of truth; REST is the exception path.
+* FR #6391 ticket-closure every ``TICKET_CLOSURE_S`` (2 min): poll GitHub closed issues/PRs for focus
+  repos and POST wakes to the Bob wake webhook (pending + backoff on transport failure).
 
 Everything network/clock/disk is injectable so tests use fakes.
 """
@@ -46,6 +48,9 @@ FIRST_STUCK_SWEEP_DELAY_S = 20.0
 INTAKE_OUTBOX_S = 60.0
 FIRST_INTAKE_OUTBOX_DELAY_S = 30.0
 INTAKE_OUTBOX_BACKOFF_MAX_S = 900.0
+# FR #6391: ticket-closure poll + wake (GitHub source + Bob wake webhook).
+TICKET_CLOSURE_S = 120.0
+FIRST_TICKET_CLOSURE_DELAY_S = 45.0
 WEBHOOK_GAP_S = gab.WEBHOOK_GAP_S
 FIRST_RESYNC_DELAY_S = 120.0
 FIRST_PROBE_DELAY_S = 45.0
@@ -199,6 +204,50 @@ def _fmt_age(sec: float) -> str:
     if sec < 5400:
         return f"{sec // 60}m"
     return f"{sec // 3600}h{(sec % 3600) // 60:02d}m"
+
+
+def run_ticket_closure_cycle(
+    *,
+    chair_home: Path,
+    digest_home: Path,
+    log=None,
+) -> dict:
+    """FR #6391: one ticket-closure poll (+ wake delivery when URL/flag set).
+
+    Imports ``ticket_closure`` lazily so frozen/dev path layouts and unit tests
+    that stub this helper stay independent of the monitor package.
+    """
+    import sys
+    from argparse import Namespace
+
+    try:
+        import ticket_closure as tc
+    except ImportError:
+        mon = Path(__file__).resolve().parents[2] / "jeeves" / "tools" / "monitor"
+        if mon.is_dir() and str(mon) not in sys.path:
+            sys.path.insert(0, str(mon))
+        import ticket_closure as tc  # noqa: E402
+
+    payload, _code = tc.check(
+        Namespace(
+            chair_home=str(chair_home),
+            digest_home=str(digest_home),
+            dry_run=False,
+            help_exit0=False,
+        )
+    )
+    out = payload if isinstance(payload, dict) else {}
+    if log is not None:
+        try:
+            log(
+                "INFO ticket-closure "
+                f"closed={out.get('closed_count', 0)} woke={out.get('woke', 0)} "
+                f"pending={out.get('pending_count', 0)} "
+                f"transport={out.get('wake_transport') or 'none'}"
+            )
+        except Exception:  # noqa: BLE001
+            pass
+    return out
 
 
 def probe_cycle(home: Path, *, now: float, http=default_http, sleep=time.sleep, retry_s: float = 5.0,
@@ -520,16 +569,40 @@ class ChairJobs:
         self.next_intake_outbox = t0 + FIRST_INTAKE_OUTBOX_DELAY_S
         self._intake_backoff_s = INTAKE_OUTBOX_S
         self._intake_announced_at = 0.0
+        self.next_ticket_closure = t0 + FIRST_TICKET_CLOSURE_DELAY_S
         self.resync_fail_streak = 0
         self.busy = threading.Lock()
         self.token_source = ""            # set at first resync
         self._token_logged = False
         self.last_resync: dict = {}
         self.last_resync_at = 0.0
+        self.last_ticket_closure: dict = {}
+        self.last_ticket_closure_at = 0.0
         self._startup_resync_done = False
+        self._ticket_closure_logged = False
         # FR #4959: !resync sets this so the next cycle skips If-None-Match.
         self._force_refresh_resync = False
         self.api_budget = gab.GithubApiBudget(self.home, clock=self.clock, log=self.log)
+        # FR #6391: one startup line for ticket-closure schedule + wake transport.
+        try:
+            wake = (
+                os.environ.get("JEEVES_TICKET_CLOSURE_WAKE_URL")
+                or os.environ.get("JEEVES_BOB_WAKE_URL")
+                or ""
+            ).strip()
+            transport = "webhook" if wake else (
+                "grokbot"
+                if str(os.environ.get("JEEVES_TICKET_CLOSURE_WAKE") or "").strip().lower()
+                in {"1", "true", "yes", "on"}
+                else "disabled"
+            )
+            self.log(
+                f"INFO ticket-closure enabled interval={int(TICKET_CLOSURE_S)}s "
+                f"wake={transport}"
+            )
+            self._ticket_closure_logged = True
+        except Exception:  # noqa: BLE001
+            pass
 
     def _announce(self, text: str) -> None:
         import bobreport
@@ -586,6 +659,7 @@ class ChairJobs:
             self.next_copilot,
             self.next_webhook_ensure,
             self.next_intake_outbox,
+            self.next_ticket_closure,
         ):
             return False
         if not self.busy.acquire(blocking=False):
@@ -704,6 +778,21 @@ class ChairJobs:
                     INTAKE_OUTBOX_BACKOFF_MAX_S, max(INTAKE_OUTBOX_S, self._intake_backoff_s) * 2.0
                 )
                 self.next_intake_outbox = now + self._intake_backoff_s
+        now = self.clock()
+        if now >= self.next_ticket_closure:
+            self.next_ticket_closure = now + TICKET_CLOSURE_S
+            try:
+                out = run_ticket_closure_cycle(
+                    chair_home=self.home,
+                    digest_home=self.digest_home,
+                    log=self.log,
+                )
+                self.last_ticket_closure = out if isinstance(out, dict) else {}
+                self.last_ticket_closure_at = now
+            except Exception as exc:  # noqa: BLE001
+                self.log(f"WARN ticket-closure: {type(exc).__name__}: {exc}")
+                self.last_ticket_closure = {"ok": False, "error": type(exc).__name__}
+                self.last_ticket_closure_at = now
 
     def _drain_intake_outbox(self) -> None:
         """FR #5359: retry the whole intake/outbox with backoff; announce queued age."""

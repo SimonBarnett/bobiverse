@@ -1,9 +1,13 @@
 #!/usr/bin/env python3
-"""FR #6063 / #6064 / #6069: newly closed tickets on watched/focused repos.
+"""FR #6063 / #6064 / #6069 / #6391: newly closed tickets on watched/focused repos.
 
 Phase-1 events: issue closed, PR merged, PR closed (unmerged).
 Phase-2: optional waiting_on registry narrows reports.
-Reads a fixture when JEEVES_TICKET_CLOSURE_FIXTURE is set (tests / offline).
+Event source (FR #6391): poll GitHub closed issues/PRs for focus repos when
+``JEEVES_TICKET_CLOSURE_FIXTURE`` is unset. Fixture stays for tests only.
+Wake transport (FR #6391): HTTPS POST to ``JEEVES_TICKET_CLOSURE_WAKE_URL``
+(secret from env, never logged). Failed POST stays ``pending`` with backoff.
+Legacy GrokBotApi send remains only when wake is forced without a URL (tests).
 Never writes queue.json and never assigns work.
 """
 from __future__ import annotations
@@ -11,8 +15,11 @@ from __future__ import annotations
 import json
 import os
 import sys
+import time
+import urllib.error
+import urllib.request
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from _common import (
     EXIT_FINDING,
@@ -29,8 +36,15 @@ STATE_NAME = "monitor-ticket-closure.json"
 _LEGACY_STATE_NAME = "ticket_closure_state.json"
 WAITING_NAME = "ticket-closure-waiting.json"
 WAKE_SKIP_NAME = "ticket-closure-wake-skips.json"
-# Tests inject a send callable; production uses GrokBotApi via wake_bob.
+# Tests inject a send callable; production prefers HTTPS wake webhook.
 _WAKE_SEND = None
+# Injectables for FR #6391 tests / chair wiring.
+_GITHUB_FETCH: Callable[..., Any] | None = None
+_GITHUB_TOKEN: Callable[[], tuple[str, str]] | None = None
+_WAKE_HTTP_POST: Callable[..., Any] | None = None
+_CLOCK: Callable[[], float] = time.time
+WAKE_BACKOFF_S = 60.0
+WAKE_BACKOFF_MAX_S = 900.0
 
 
 def _load_json(path: Path) -> Any:
@@ -103,18 +117,8 @@ def _normalize(row: dict[str, Any]) -> dict[str, Any] | None:
     return out
 
 
-def _load_events(fixture: Path | None, repos: set[str]) -> list[dict[str, Any]]:
-    if fixture is None or not fixture.is_file():
-        return []
-    data = _load_json(fixture)
-    rows = []
-    if isinstance(data, dict):
-        raw = data.get("closed")
-        if isinstance(raw, list):
-            rows = [r for r in raw if isinstance(r, dict)]
-    elif isinstance(data, list):
-        rows = [r for r in data if isinstance(r, dict)]
-    out = []
+def _filter_repo_events(rows: list[dict[str, Any]], repos: set[str]) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
     for row in rows:
         norm = _normalize(row)
         if not norm:
@@ -126,6 +130,132 @@ def _load_events(fixture: Path | None, repos: set[str]) -> list[dict[str, Any]]:
         norm["repo"] = _resolve_repo(norm["repo"], repos)
         out.append(norm)
     return out
+
+
+def _load_fixture_events(fixture: Path, repos: set[str]) -> list[dict[str, Any]]:
+    data = _load_json(fixture)
+    rows: list[dict[str, Any]] = []
+    if isinstance(data, dict):
+        raw = data.get("closed")
+        if isinstance(raw, list):
+            rows = [r for r in raw if isinstance(r, dict)]
+    elif isinstance(data, list):
+        rows = [r for r in data if isinstance(r, dict)]
+    return _filter_repo_events(rows, repos)
+
+
+def _default_github_token() -> tuple[str, str]:
+    try:
+        import chair_health as ch
+
+        return ch.default_token()
+    except Exception:  # noqa: BLE001
+        tok = (os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN") or "").strip()
+        return (tok, "env") if tok else ("", "none")
+
+
+def _default_github_fetch(url: str, *, token: str = "") -> Any:
+    req = urllib.request.Request(
+        url,
+        headers={
+            "Accept": "application/vnd.github+json",
+            "User-Agent": "bobiverse-jeeves-ticket-closure",
+            **({"Authorization": f"Bearer {token}"} if token else {}),
+        },
+        method="GET",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        if e.code in (403, 429):
+            raise
+        return []
+    except (OSError, json.JSONDecodeError, urllib.error.URLError):
+        return []
+
+
+def _gh_issue_to_event(repo: str, item: dict[str, Any]) -> dict[str, Any] | None:
+    try:
+        number = int(item.get("number"))
+    except (TypeError, ValueError):
+        return None
+    if number <= 0:
+        return None
+    pr = item.get("pull_request")
+    closed_at = str(item.get("closed_at") or "").strip()
+    title = str(item.get("title") or "").strip()
+    if isinstance(pr, dict):
+        merged_at = str(item.get("merged_at") or pr.get("merged_at") or "").strip()
+        ev = "merged" if merged_at else "closed"
+        row: dict[str, Any] = {
+            "kind": "pr",
+            "event": ev,
+            "repo": repo,
+            "number": number,
+            "merged": ev == "merged",
+        }
+    else:
+        row = {
+            "kind": "issue",
+            "event": "closed",
+            "repo": repo,
+            "number": number,
+        }
+    if closed_at:
+        row["closed_at"] = closed_at
+    if title:
+        row["title"] = title
+    return row
+
+
+def _poll_github_closes(
+    repos: set[str],
+    *,
+    token: str,
+    since: str | None,
+    fetch: Callable[..., Any] | None = None,
+) -> list[dict[str, Any]]:
+    """Poll GitHub Issues API (includes PRs) for closes since *since* (ISO8601)."""
+    fetcher = fetch or _GITHUB_FETCH or _default_github_fetch
+    out: list[dict[str, Any]] = []
+    if not repos or not token:
+        return out
+    for repo in sorted(repos):
+        if "/" not in repo:
+            continue
+        q = "state=closed&sort=updated&direction=asc&per_page=50"
+        if since:
+            q += f"&since={since}"
+        url = f"https://api.github.com/repos/{repo}/issues?{q}"
+        try:
+            data = fetcher(url, token=token)
+        except Exception:  # noqa: BLE001
+            continue
+        if not isinstance(data, list):
+            continue
+        for item in data:
+            if not isinstance(item, dict):
+                continue
+            if str(item.get("state") or "").lower() != "closed":
+                continue
+            ev = _gh_issue_to_event(repo, item)
+            if ev:
+                out.append(ev)
+    return out
+
+
+def _load_events(
+    fixture: Path | None,
+    repos: set[str],
+    *,
+    token: str = "",
+    since: str | None = None,
+) -> list[dict[str, Any]]:
+    if fixture is not None and fixture.is_file():
+        return _load_fixture_events(fixture, repos)
+    # FR #6391: real source when fixture unset.
+    return _poll_github_closes(repos, token=token, since=since)
 
 
 def _canon_ticket(text: str) -> str:
@@ -167,13 +297,107 @@ def _load_waiting(chair: Path, digest: Path) -> set[str]:
     return set()
 
 
+def _wake_url() -> str:
+    return (
+        os.environ.get("JEEVES_TICKET_CLOSURE_WAKE_URL")
+        or os.environ.get("JEEVES_BOB_WAKE_URL")
+        or ""
+    ).strip()
+
+
+def _wake_secret() -> str:
+    return (
+        os.environ.get("JEEVES_TICKET_CLOSURE_WAKE_SECRET")
+        or os.environ.get("JEEVES_BOB_WAKE_SECRET")
+        or ""
+    ).strip()
+
+
 def _wake_enabled() -> bool:
+    if _wake_url():
+        return True
     return str(os.environ.get("JEEVES_TICKET_CLOSURE_WAKE") or "").strip().lower() in {
         "1",
         "true",
         "yes",
         "on",
     }
+
+
+def _wake_transport_name() -> str:
+    if _wake_url():
+        return "webhook"
+    if _wake_enabled():
+        return "grokbot"
+    return "none"
+
+
+def _default_wake_http_post(url: str, body: dict[str, Any], headers: dict[str, str]) -> dict[str, Any]:
+    raw = json.dumps(body, separators=(",", ":")).encode("utf-8")
+    req = urllib.request.Request(
+        url,
+        data=raw,
+        headers={
+            "Content-Type": "application/json",
+            "User-Agent": "bobiverse-jeeves-ticket-closure",
+            **headers,
+        },
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        status = int(getattr(resp, "status", 200) or 200)
+        if status >= 400:
+            raise ConnectionError(f"wake HTTP {status}")
+        return {"ok": True, "status": status}
+
+
+def _wake_via_webhook(item: dict[str, Any]) -> dict[str, Any]:
+    url = _wake_url()
+    if not url:
+        return {"ok": False, "woke": False, "error": "no_wake_url", "brief": ""}
+    try:
+        text = build_wake_brief(item)
+    except WakeBriefError:
+        return {
+            "ok": False,
+            "woke": False,
+            "error": "invalid_ticket",
+            "detail": "need owner/repo and issue/PR number",
+            "brief": "",
+        }
+    headers: dict[str, str] = {}
+    secret = _wake_secret()
+    if secret:
+        headers["Authorization"] = f"Bearer {secret}"
+        headers["X-Bob-Wake-Secret"] = secret
+    payload = {
+        "text": text,
+        "brief": text,
+        "repo": item.get("repo"),
+        "number": item.get("number"),
+        "kind": item.get("kind"),
+        "state": item.get("event") or item.get("state"),
+        "title": item.get("title") or "",
+        "agent": "Bob",
+    }
+    poster = _WAKE_HTTP_POST or _default_wake_http_post
+    try:
+        poster(url, payload, headers)
+    except Exception as e:  # noqa: BLE001
+        return {
+            "ok": False,
+            "woke": False,
+            "error": "wake_unreachable",
+            "detail": str(type(e).__name__)[:80],
+            "brief": text,
+        }
+    return {"ok": True, "woke": True, "brief": text, "agent": "Bob", "transport": "webhook"}
+
+
+def _deliver_wake(item: dict[str, Any]) -> dict[str, Any]:
+    if _wake_url():
+        return _wake_via_webhook(item)
+    return wake_bob(item, send=_WAKE_SEND)
 
 
 def _load_map(state: Any, key: str) -> dict[str, Any]:
@@ -206,10 +430,6 @@ def check(args):
     repos = _focus_repos(focus_path)
     fx = (os.environ.get("JEEVES_TICKET_CLOSURE_FIXTURE") or "").strip()
     fixture = Path(fx) if fx else None
-    events = _load_events(fixture, repos)
-    waiting = _load_waiting(chair, digest)
-    if waiting:
-        events = [ev for ev in events if _event_ticket_id(ev) in waiting]
     ops = ops_home(chair, digest)
     state_path = ops / STATE_NAME
     state = _load_json(state_path)
@@ -217,12 +437,26 @@ def check(args):
         state = _load_json(ops / _LEGACY_STATE_NAME) or _load_json(
             chair / _LEGACY_STATE_NAME
         )
+    if not isinstance(state, dict):
+        state = {}
     seen = _load_map(state, "seen")
     pending = _load_map(state, "pending")
+    poll_cursor = str(state.get("poll_cursor") or "").strip() or None
+    token_loader = _GITHUB_TOKEN or _default_github_token
+    token, _tok_src = token_loader()
+    now = float(_CLOCK())
+    events = _load_events(fixture, repos, token=token or "", since=poll_cursor)
+    waiting = _load_waiting(chair, digest)
+    if waiting:
+        events = [ev for ev in events if _event_ticket_id(ev) in waiting]
     closed = []
     handled = set(seen) | set(pending)
+    newest_closed = poll_cursor
     for ev in events:
         key = _event_key(ev)
+        ca = str(ev.get("closed_at") or "").strip()
+        if ca and (newest_closed is None or ca > newest_closed):
+            newest_closed = ca
         if key in handled:
             continue
         row = dict(ev)
@@ -235,29 +469,59 @@ def check(args):
         handled.add(key)
     woke_n = 0
     skip_n = 0
+    last_wake_at = state.get("last_wake_at")
     if _wake_enabled():
         for key, ev in list(pending.items()):
             item = ev if isinstance(ev, dict) else {}
-            result = wake_bob(item, send=_WAKE_SEND)
+            # FR #6391: honour retry backoff on failed webhook POSTs.
+            try:
+                nxt = float(item.get("next_retry_at") or 0.0)
+            except (TypeError, ValueError):
+                nxt = 0.0
+            if nxt > now:
+                continue
+            result = _deliver_wake(item)
             if result.get("woke"):
-                seen[key] = item
+                clean = {k: v for k, v in item.items() if k not in {"next_retry_at", "fail_count"}}
+                seen[key] = clean
                 pending.pop(key, None)
                 woke_n += 1
+                last_wake_at = now
                 continue
             reason = str(result.get("error") or "wake_failed")
+            # FR #6391: transport failures stay pending (retry). Invalid tickets can skip.
+            if reason in {"wake_unreachable", "bob_unreachable", "no_wake_url"}:
+                fails = int(item.get("fail_count") or 0) + 1
+                backoff = min(WAKE_BACKOFF_MAX_S, WAKE_BACKOFF_S * (2 ** max(0, fails - 1)))
+                item = dict(item)
+                item["fail_count"] = fails
+                item["next_retry_at"] = now + backoff
+                item["last_error"] = reason
+                pending[key] = item
+                continue
             if not _write_skip(ops, key, item, reason):
                 continue
             seen[key] = item
             pending.pop(key, None)
             skip_n += 1
+    last_poll_at = now
+    if newest_closed:
+        poll_cursor = newest_closed
     try:
         state_path.parent.mkdir(parents=True, exist_ok=True)
+        blob = {
+            "seen": seen,
+            "pending": pending,
+            "last_poll_at": last_poll_at,
+            "pending_count": len(pending),
+            "wake_transport": _wake_transport_name(),
+        }
+        if last_wake_at is not None:
+            blob["last_wake_at"] = last_wake_at
+        if poll_cursor:
+            blob["poll_cursor"] = poll_cursor
         state_path.write_text(
-            json.dumps(
-                {"seen": seen, "pending": pending},
-                separators=(",", ":"),
-                sort_keys=True,
-            ),
+            json.dumps(blob, separators=(",", ":"), sort_keys=True),
             encoding="utf-8",
         )
     except OSError:
@@ -278,6 +542,9 @@ def check(args):
             "woke": woke_n,
             "wake_skips": skip_n,
             "pending_count": len(pending),
+            "last_poll_at": last_poll_at,
+            "last_wake_at": last_wake_at,
+            "wake_transport": _wake_transport_name(),
             "findings": findings,
             "remediation": remediation,
         },

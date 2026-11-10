@@ -44,7 +44,7 @@ Run deterministic checks before reasoning. Exit **0** ok / **1** finding / **2**
 
 **Github resync focus (FR #3146):** `github_resync_focus` flags non-empty `focus.repos` with empty unaccepted / discover miss (silent `github_resync ok repos=0`). Product: `chair_health.discover_repos` unions focus. Ops: `resync-repos.txt` + `!resync`.
 
-**Ticket closure (FR #6063 / #6064 / #6069 / #6081):** `ticket_closure` reports newly closed issues / merged PRs / unmerged closed PRs on focused repos (`closed[]`). De-dupe cursor is `monitor-ticket-closure.json` under ops home; keys are `owner/repo#N` plus `delivery_id` / `closed_at`. New closes stay in `pending` until a wake-host run (`JEEVES_TICKET_CLOSURE_WAKE=1`) calls `wake_bob` / Wake-GrokBotBob, or a skip is written to `ticket-closure-wake-skips.json`; only then `seen`. Optional Phase-2 wait registry: `ticket-closure-waiting.json`. Never writes queue.json, never `!assign`.
+**Ticket closure (FR #6063 / #6064 / #6069 / #6081 / #6391):** `ticket_closure` reports newly closed issues / merged PRs / unmerged closed PRs on focused repos (`closed[]`). Live source (FR #6391): ChairJobs polls GitHub every 120s when `JEEVES_TICKET_CLOSURE_FIXTURE` is unset; fixture is tests-only. De-dupe state is `monitor-ticket-closure.json` (`seen` / `pending` / `poll_cursor` / `last_poll_at` / `last_wake_at` / `pending_count`). Preferred wake: HTTPS POST to `JEEVES_TICKET_CLOSURE_WAKE_URL` (secret never logged); transport failure stays `pending` with backoff. Legacy `JEEVES_TICKET_CLOSURE_WAKE=1` without URL still uses `wake_bob` / GrokBotApi. Optional Phase-2 wait registry: `ticket-closure-waiting.json`. Never writes queue.json, never `!assign`.
 
 ## Auto-start (FR #954)
 
