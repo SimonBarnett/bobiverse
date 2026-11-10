@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>BobCallback health — bob.ntsa.uk</title>
+<style>
+body{font-family:system-ui,Segoe UI,sans-serif;margin:2rem;max-width:52rem;line-height:1.45;color:#122}
+header{margin-bottom:1.5rem}
+h1{font-size:1.6rem;margin:0 0 .4rem}
+h2{font-size:1.2rem;margin-top:1.6rem;border-bottom:1px solid #ccd;padding-bottom:.2rem}
+a{color:#0645ad}
+.meta{color:#456;font-size:.95rem}
+pre{background:#f4f6f8;padding:.8rem;overflow:auto;border:1px solid #dde}
+table{border-collapse:collapse;width:100%}
+td,th{border:1px solid #ccd;padding:.4rem .55rem;text-align:left;vertical-align:top}
+.nav{margin:.8rem 0 1.2rem}
+.badge{display:inline-block;background:#e8eef7;border:1px solid #b9c7dd;border-radius:4px;padding:0 .35rem;font-size:.85rem}
+</style>
+</head>
+<body>
+<header>
+<p class="meta"><a href="/">bob.ntsa.uk</a> · <a href="index.html">Webhooks</a> · BobCallback health</p>
+<h1>BobCallback health</h1>
+</header>
+<p class="nav"><a href="index.html">Webhooks &amp; API index</a></p>
+<section id="health-local">
+<h2>BobCallback health <span class="badge">GET /health</span></h2>
+<p><strong>Direction:</strong> local · <strong>Purpose:</strong> Liveness + digest.lock age for watchdog.</p>
+<p><strong>Who calls it:</strong> Local watchdog thread, ops on chair host.</p>
+<p><strong>Auth (named only):</strong> None.</p>
+<p><strong>Request schema:</strong> No body.</p>
+<p><strong>Response schema:</strong> JSON ok, lock_age_s, last_digest_write, pid fields.</p>
+<p><strong>Status codes:</strong> 200.</p>
+<p><strong>Retry / idempotency:</strong> Safe GET.</p>
+<p><strong>Rate limits:</strong> n/a</p>
+<p><strong>Reachability:</strong> Not published on IIS front-door (404 on bob.ntsa.uk).</p>
+<p><strong>Source:</strong> <code>common/scripts/bobcallback.py</code> · <strong>Related:</strong> FR #1136</p>
+<p><strong>Redacted example</strong></p>
+<pre>GET http://127.0.0.1:7700/health</pre>
+</section>
+
+<footer class="meta" style="margin-top:2.5rem">FR #6453 · static read-only docs · no secrets</footer>
+</body>
+</html>

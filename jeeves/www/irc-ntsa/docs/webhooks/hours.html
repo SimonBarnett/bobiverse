@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Hours API — bob.ntsa.uk</title>
+<style>
+body{font-family:system-ui,Segoe UI,sans-serif;margin:2rem;max-width:52rem;line-height:1.45;color:#122}
+header{margin-bottom:1.5rem}
+h1{font-size:1.6rem;margin:0 0 .4rem}
+h2{font-size:1.2rem;margin-top:1.6rem;border-bottom:1px solid #ccd;padding-bottom:.2rem}
+a{color:#0645ad}
+.meta{color:#456;font-size:.95rem}
+pre{background:#f4f6f8;padding:.8rem;overflow:auto;border:1px solid #dde}
+table{border-collapse:collapse;width:100%}
+td,th{border:1px solid #ccd;padding:.4rem .55rem;text-align:left;vertical-align:top}
+.nav{margin:.8rem 0 1.2rem}
+.badge{display:inline-block;background:#e8eef7;border:1px solid #b9c7dd;border-radius:4px;padding:0 .35rem;font-size:.85rem}
+</style>
+</head>
+<body>
+<header>
+<p class="meta"><a href="/">bob.ntsa.uk</a> · <a href="index.html">Webhooks</a> · Hours API</p>
+<h1>Hours API</h1>
+</header>
+<p class="nav"><a href="index.html">Webhooks &amp; API index</a></p>
+<section id="hours-post">
+<h2>Hours create <span class="badge">POST /bob/v1/hours</span></h2>
+<p><strong>Direction:</strong> in · <strong>Purpose:</strong> Create a work-time entry for timesheet drafting.</p>
+<p><strong>Who calls it:</strong> Agents / operators posting partial work logs.</p>
+<p><strong>Auth (named only):</strong> None. Rejects obvious credential fields; never logs request bodies.</p>
+<p><strong>Request schema:</strong> JSON with idempotency_key, user, timing fields (see bobhours.py).</p>
+<p><strong>Response schema:</strong> JSON entry id / status.</p>
+<p><strong>Status codes:</strong> 200/201; 400 schema/credentials; 413; 429.</p>
+<p><strong>Retry / idempotency:</strong> idempotency_key required for create; safe retry.</p>
+<p><strong>Rate limits:</strong> Default 60/min (env BOB_HOURS_RATE_PER_MIN).</p>
+<p><strong>Reachability:</strong> Public Cloudflare.</p>
+<p><strong>Source:</strong> <code>common/scripts/bobhours.py</code> · <strong>Related:</strong> FR #3450</p>
+<p><strong>Redacted example</strong></p>
+<pre>POST https://bob.ntsa.uk/bob/v1/hours
+Content-Type: application/json
+
+{&quot;idempotency_key&quot;:&quot;example-hours-1&quot;,&quot;user&quot;:&quot;ExampleUser&quot;,&quot;minutes&quot;:30,&quot;note&quot;:&quot;example&quot;}</pre>
+</section>
+
+<section id="hours-get">
+<h2>Hours list / summary / export <span class="badge">GET /bob/v1/hours</span></h2>
+<p><strong>Direction:</strong> in · <strong>Purpose:</strong> List, day summary, or export hours entries.</p>
+<p><strong>Who calls it:</strong> Operators and timesheet tools.</p>
+<p><strong>Auth (named only):</strong> None.</p>
+<p><strong>Request schema:</strong> Query: user, from, to, date, format=csv|json, optional filters.</p>
+<p><strong>Response schema:</strong> JSON list/summary or CSV export.</p>
+<p><strong>Status codes:</strong> 200; 400 bad query.</p>
+<p><strong>Retry / idempotency:</strong> Safe GET.</p>
+<p><strong>Rate limits:</strong> Proxy only for GET.</p>
+<p><strong>Reachability:</strong> Public Cloudflare.</p>
+<p><strong>Source:</strong> <code>common/scripts/bobhours.py</code> · <strong>Related:</strong> FR #3450</p>
+<p><strong>Redacted example</strong></p>
+<pre>GET https://bob.ntsa.uk/bob/v1/hours?user=ExampleUser&amp;from=2026-01-01&amp;to=2026-01-02
+GET https://bob.ntsa.uk/bob/v1/hours/summary?user=ExampleUser&amp;date=2026-01-01
+GET https://bob.ntsa.uk/bob/v1/hours/export?user=ExampleUser&amp;format=csv</pre>
+</section>
+
+<section id="hours-actions">
+<h2>Hours heartbeat / close / withdraw <span class="badge">POST /bob/v1/hours/{id}/heartbeat|close|withdraw</span></h2>
+<p><strong>Direction:</strong> in · <strong>Purpose:</strong> Heartbeat an open entry, close it, or soft-withdraw.</p>
+<p><strong>Who calls it:</strong> Agents holding an open hours id.</p>
+<p><strong>Auth (named only):</strong> None. Schema + rate gates.</p>
+<p><strong>Request schema:</strong> JSON body (close may include note); id in path.</p>
+<p><strong>Response schema:</strong> JSON status.</p>
+<p><strong>Status codes:</strong> 200; 400; 404; 429.</p>
+<p><strong>Retry / idempotency:</strong> heartbeat safe; close/withdraw are state transitions (retry carefully).</p>
+<p><strong>Rate limits:</strong> Shares hours write rate (60/min default).</p>
+<p><strong>Reachability:</strong> Public Cloudflare.</p>
+<p><strong>Source:</strong> <code>common/scripts/bobhours.py</code> · <strong>Related:</strong> FR #3450</p>
+<p><strong>Redacted example</strong></p>
+<pre>POST https://bob.ntsa.uk/bob/v1/hours/example-id/heartbeat
+Content-Type: application/json
+
+{}</pre>
+</section>
+
+<footer class="meta" style="margin-top:2.5rem">FR #6453 · static read-only docs · no secrets</footer>
+</body>
+</html>

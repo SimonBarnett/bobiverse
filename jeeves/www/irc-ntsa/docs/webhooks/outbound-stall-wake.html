@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Outbound stall / ticket-closure wake — bob.ntsa.uk</title>
+<style>
+body{font-family:system-ui,Segoe UI,sans-serif;margin:2rem;max-width:52rem;line-height:1.45;color:#122}
+header{margin-bottom:1.5rem}
+h1{font-size:1.6rem;margin:0 0 .4rem}
+h2{font-size:1.2rem;margin-top:1.6rem;border-bottom:1px solid #ccd;padding-bottom:.2rem}
+a{color:#0645ad}
+.meta{color:#456;font-size:.95rem}
+pre{background:#f4f6f8;padding:.8rem;overflow:auto;border:1px solid #dde}
+table{border-collapse:collapse;width:100%}
+td,th{border:1px solid #ccd;padding:.4rem .55rem;text-align:left;vertical-align:top}
+.nav{margin:.8rem 0 1.2rem}
+.badge{display:inline-block;background:#e8eef7;border:1px solid #b9c7dd;border-radius:4px;padding:0 .35rem;font-size:.85rem}
+</style>
+</head>
+<body>
+<header>
+<p class="meta"><a href="/">bob.ntsa.uk</a> · <a href="index.html">Webhooks</a> · Outbound stall / ticket-closure wake</p>
+<h1>Outbound stall / ticket-closure wake</h1>
+</header>
+<p class="nav"><a href="index.html">Webhooks &amp; API index</a></p>
+<section id="outbound-stall-wake">
+<h2>Jeeves stall / ticket-closure wake (outbound) <span class="badge">POST https://&lt;operator-configured-wake-host&gt;/ (JEEVES_TICKET_CLOSURE_WAKE_URL)</span></h2>
+<p><strong>Direction:</strong> out · <strong>Purpose:</strong> HTTPS wake callbacks when MONITORING detects stalls or ticket-closure events (same transport as FR #6391).</p>
+<p><strong>Who calls it:</strong> jeeves/tools/monitor/ticket_closure.py and common/scripts/stall_callbacks.py on the chair.</p>
+<p><strong>Auth (named only):</strong> Named only: whatever the wake URL operator configured (Bearer or shared header). Never documented as a literal secret here.</p>
+<p><strong>Request schema:</strong> JSON wake brief (event, subject, summary). No passwords.</p>
+<p><strong>Response schema:</strong> 2xx accepted; non-2xx retried with backoff.</p>
+<p><strong>Status codes:</strong> 2xx ok; connection errors queued/debounced.</p>
+<p><strong>Retry / idempotency:</strong> Debounced per event/subject; drain_pending retries.</p>
+<p><strong>Rate limits:</strong> Internal backoff (WAKE_BACKOFF_S .. WAKE_BACKOFF_MAX_S).</p>
+<p><strong>Reachability:</strong> Outbound from chair only. Not an inbound bob.ntsa.uk route.</p>
+<p><strong>Source:</strong> <code>common/scripts/stall_callbacks.py, jeeves/tools/monitor/ticket_closure.py</code> · <strong>Related:</strong> FR #6391 / #6439</p>
+<p><strong>Redacted example</strong></p>
+<pre>POST https://example-wake.example/hook
+Authorization: Bearer REDACTED
+Content-Type: application/json
+
+{&quot;event&quot;:&quot;stall&quot;,&quot;subject&quot;:&quot;example&quot;,&quot;summary&quot;:&quot;redacted&quot;}</pre>
+</section>
+
+<footer class="meta" style="margin-top:2.5rem">FR #6453 · static read-only docs · no secrets</footer>
+</body>
+</html>

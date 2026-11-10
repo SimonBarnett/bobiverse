@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>bobiverse acme — bob.ntsa.uk</title>
+<style>
+body{font-family:system-ui,Segoe UI,sans-serif;margin:2rem;max-width:52rem;line-height:1.45;color:#122}
+header{margin-bottom:1.5rem}
+h1{font-size:1.6rem;margin:0 0 .4rem}
+h2{font-size:1.2rem;margin-top:1.6rem;border-bottom:1px solid #ccd;padding-bottom:.2rem}
+a{color:#0645ad}
+.meta{color:#456;font-size:.95rem}
+pre{background:#f4f6f8;padding:.8rem;overflow:auto;border:1px solid #dde}
+table{border-collapse:collapse;width:100%}
+td,th{border:1px solid #ccd;padding:.4rem .55rem;text-align:left;vertical-align:top}
+.nav{margin:.8rem 0 1.2rem}
+.badge{display:inline-block;background:#e8eef7;border:1px solid #b9c7dd;border-radius:4px;padding:0 .35rem;font-size:.85rem}
+</style>
+</head>
+<body>
+<header>
+<p class="meta"><a href="/">bob.ntsa.uk</a></p>
+<h1>bobiverse acme</h1>
+</header>
+
+<p><strong>bobiverse acme</strong></p>
+<p>Public HTTP front door for Bobiverse fleet webhooks (IIS + Cloudflare).
+API JSON lives under <code>/bob/v1/*</code>.</p>
+<h2>Webhooks &amp; API</h2>
+<p>Read-only documentation for each inbound and outbound webhook:</p>
+<ul>
+<li><a href="docs/webhooks/index.html">Webhooks &amp; API index</a></li>
+<li><a href="docs/webhooks/report.html">Report / digest</a> — <code>GET|POST /bob/v1/report</code></li>
+<li><a href="docs/webhooks/git.html">GitHub git</a> — <code>POST /bob/v1/git</code></li>
+<li><a href="docs/webhooks/intake.html">Intake / harvest</a> — <code>POST /bob/v1/intake</code></li>
+<li><a href="docs/webhooks/jira.html">Jira</a> — <code>GET|POST /bob/v1/jira</code></li>
+<li><a href="docs/webhooks/hours.html">Hours</a> — <code>GET|POST /bob/v1/hours</code></li>
+<li><a href="docs/webhooks/outbound-stall-wake.html">Outbound stall / ticket-closure wake</a> (FR #6391 / #6439)</li>
+<li><a href="docs/webhooks/digest-local.html">Local digest alias</a> · <a href="docs/webhooks/health-local.html">Local /health</a></li>
+</ul>
+<p class="meta">Live digest JSON: <a href="/bob/v1/report"><code>/bob/v1/report</code></a></p>
+
+<footer class="meta" style="margin-top:2.5rem">FR #6453 · static read-only docs · no secrets</footer>
+</body>
+</html>
