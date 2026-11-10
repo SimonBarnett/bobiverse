@@ -26,7 +26,11 @@ param(
     # Tests only (needs -SkipMsi): skip airc.exe (FR #2397 PyInstaller).
     [switch]$SkipAircExe,
     # Tests only (needs -SkipMsi): skip airc-network-installer.exe (FR #3991 PyInstaller + UAC).
-    [switch]$SkipAircNetworkInstallerExe
+    [switch]$SkipAircNetworkInstallerExe,
+    # FR #6423: optional override for the published-release downgrade gate (unit tests).
+    [string]$LatestPublishedVersion = '',
+    # FR #6423: skip GitHub latest comparison (auto when -SkipMsi; release packs must not skip).
+    [switch]$SkipPublishedVersionCheck
 )
 
 $ErrorActionPreference = 'Stop'
@@ -42,6 +46,11 @@ if (-not $Version) {
 }
 # FR #4389: MSI Product/@Version is major.minor.build only; fold x.y.z.w -> x.y.(z+w) (1.0.0.1 -> 1.0.1).
 $msiVersion = ConvertTo-BobiverseMsiProductVersion -Version $Version
+# FR #6423: refuse packing a ProductVersion below the latest GitHub release (UAT/release path).
+# -SkipMsi stage tests keep historical -Version pins (e.g. 0.1.99) and auto-skip this gate.
+if (-not $SkipPublishedVersionCheck -and -not $SkipMsi) {
+    Assert-BobiversePackVersionNotDowngrade -Version $msiVersion -Repo 'SimonBarnett/bobiverse' -LatestPublishedVersion $LatestPublishedVersion
+}
 
 $fetchNssm = (Get-BobiverseRepoPath -Root $RepoRoot -Rel 'scripts\Fetch-Nssm.ps1')
 $fetchWix = (Get-BobiverseRepoPath -Root $RepoRoot -Rel 'scripts\Fetch-Wix.ps1')

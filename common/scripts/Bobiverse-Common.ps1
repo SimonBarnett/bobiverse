@@ -2421,6 +2421,92 @@ function Assert-BobiverseStageVersionAligned {
     Write-Host ("INFO FR #3686 stage version aligned product={0} version={1}" -f $label, $want)
 }
 
+function Compare-BobiverseVersion {
+    <#
+      FR #6423: compare two marketing/MSI versions after ConvertTo-BobiverseMsiProductVersion fold.
+      Returns -1 (Left < Right), 0 (equal), 1 (Left > Right).
+    #>
+    param(
+        [Parameter(Mandatory)][string]$Left,
+        [Parameter(Mandatory)][string]$Right
+    )
+    $a = [version](ConvertTo-BobiverseMsiProductVersion -Version $Left)
+    $b = [version](ConvertTo-BobiverseMsiProductVersion -Version $Right)
+    if ($a -lt $b) { return -1 }
+    if ($a -gt $b) { return 1 }
+    return 0
+}
+
+function Get-BobiverseLatestPublishedVersion {
+    <#
+      FR #6423: highest published GitHub release tag for Repo (strips leading v; folds 4-part).
+      -LatestPublishedVersion overrides network (unit tests). Empty override uses gh release list.
+      Fail-closed for callers that require a value: returns '' only when override empty and gh yields none.
+    #>
+    param(
+        [string]$Repo = 'SimonBarnett/bobiverse',
+        [string]$LatestPublishedVersion = ''
+    )
+    $override = ([string]$LatestPublishedVersion).Trim()
+    if ($override) {
+        return (ConvertTo-BobiverseMsiProductVersion -Version $override)
+    }
+    $gh = Get-Command gh -ErrorAction SilentlyContinue
+    if (-not $gh) { return '' }
+    # WinPS 5.1: capture as a single string via Out-String; ConvertFrom-Json -InputObject
+    # so a JSON array does not collapse to one row whose .tagName is space-joined.
+    $raw = ((& gh release list -R $Repo --limit 50 --json tagName) | Out-String).Trim()
+    if ($LASTEXITCODE -ne 0 -or -not $raw) { return '' }
+    try {
+        $parsed = ConvertFrom-Json -InputObject $raw
+    } catch {
+        return ''
+    }
+    $best = $null
+    foreach ($row in @($parsed)) {
+        if ($null -eq $row) { continue }
+        $tag = [string]$row.tagName
+        if ($null -eq $tag) { continue }
+        $tag = $tag.Trim()
+        if (-not $tag -or $tag.Contains(' ')) { continue }
+        try {
+            $v = [version](ConvertTo-BobiverseMsiProductVersion -Version $tag)
+        } catch {
+            continue
+        }
+        if ($null -eq $best -or $v -gt $best) { $best = $v }
+    }
+    if ($null -eq $best) { return '' }
+    return $best.ToString()
+}
+
+function Assert-BobiversePackVersionNotDowngrade {
+    <#
+      FR #6423: pack ProductVersion must be >= latest published GitHub release.
+      Pass -LatestPublishedVersion in tests; omit to resolve via Get-BobiverseLatestPublishedVersion.
+      When latest cannot be resolved and -AllowMissingPublished is set, warn and return; else throw.
+    #>
+    param(
+        [Parameter(Mandatory)][string]$Version,
+        [string]$Repo = 'SimonBarnett/bobiverse',
+        [string]$LatestPublishedVersion = '',
+        [switch]$AllowMissingPublished
+    )
+    $want = ConvertTo-BobiverseMsiProductVersion -Version $Version
+    $latest = Get-BobiverseLatestPublishedVersion -Repo $Repo -LatestPublishedVersion $LatestPublishedVersion
+    if (-not $latest) {
+        if ($AllowMissingPublished) {
+            Write-Host 'WARN FR #6423 no published release resolved; skip downgrade gate'
+            return
+        }
+        throw ("FR #6423 pack cannot resolve latest published version for {0} (refuse to pack without downgrade gate)" -f $Repo)
+    }
+    if ((Compare-BobiverseVersion -Left $want -Right $latest) -lt 0) {
+        throw ("FR #6423 pack refuses ProductVersion downgrade: pack={0} latestPublished={1}" -f $want, $latest)
+    }
+    Write-Host ("INFO FR #6423 pack version ok pack={0} latestPublished={1}" -f $want, $latest)
+}
+
 function Assert-BobiverseInstallVersion {
     <#
       FR #2564: when MSI forwards ProductVersion, InstallRoot\VERSION must match.
