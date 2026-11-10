@@ -62,8 +62,9 @@ ircJeeves (chair)
 BobCallback (:7700)
   └─ /bob/v1/git|intake|report|digest|jira  (IIS TLS)
 
-Appliance settings (FR #6436 foundation + FR #6440 LAN HTTP)
+Appliance settings (FR #6436 foundation + FR #6440 LAN HTTP + FR #6441 auth)
   ├─ common/scripts/jeeves_settings.py --- schema, LAN gate, secret-safe API
+  ├─ common/scripts/jeeves_settings_auth.py --- AD/CredMan + sessions; api_*_authed
   └─ common/scripts/jeeves_settings_http.py --- LAN bind :7701 UI/API; off by default
 
 MONITORING agent (jeeves CWD)
