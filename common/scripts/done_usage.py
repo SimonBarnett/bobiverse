@@ -18,9 +18,11 @@ _LEGACY_TOKENS_RX = re.compile(r"(?i)\btokens=(\d+)\b")
 _TOKENS_IN_RX = re.compile(r"(?i)\btokens_in=(\d+)\b")
 _TOKENS_OUT_RX = re.compile(r"(?i)\btokens_out=(\d+)\b")
 _TOKENS_CACHED_RX = re.compile(r"(?i)\btokens_cached=(\d+)\b")
+_ATTEMPT_RX = re.compile(r"(?i)\battempt=(\d+)\b")
+_SOURCE_RX = re.compile(r"(?i)\bsource=([^\s]+)")
 # Strip model-written counters when a measured stamp replaces them.
 _STRIP_USAGE_RX = re.compile(
-    r"(?i)\s*\b(?:model|tokens|tokens_in|tokens_out|tokens_cached|worker_build)=[^\s]+"
+    r"(?i)\s*\b(?:model|tokens|tokens_in|tokens_out|tokens_cached|worker_build|attempt|source)=[^\s]+"
 )
 
 
@@ -33,6 +35,8 @@ def _empty(*, unknown: bool = True) -> dict[str, Any]:
         "legacy_tokens": None,
         "tokens_unknown": bool(unknown),
         "tokens_total": None,
+        "attempt": 1,
+        "source": "done",
     }
 
 
@@ -95,6 +99,11 @@ def parse_done_usage(rest: str) -> dict[str, Any]:
     else:
         out["tokens_unknown"] = True
         out["tokens_total"] = None
+    am = _ATTEMPT_RX.search(text)
+    out["attempt"] = int(am.group(1)) if am else 1
+    sm = _SOURCE_RX.search(text)
+    src = str(sm.group(1)).strip() if sm else "done"
+    out["source"] = src or "done"
     return out
 
 
@@ -132,6 +141,13 @@ def format_done_usage_suffix(
     if build.lower() in ("", "none", "null"):
         build = "unknown"
     parts.append(f"worker_build={build}")
+    # FR #6435: attempt/source distinguish retries from duplicate DONE writes.
+    attempt = _int_or_none(u.get("attempt"))
+    if attempt is not None and int(attempt) != 1:
+        parts.append(f"attempt={int(attempt)}")
+    source = str(u.get("source") or "").strip()
+    if source and source.lower() not in ("", "done", "none", "null"):
+        parts.append(f"source={source}")
     return " ".join(parts)
 
 
@@ -426,6 +442,118 @@ def read_aider_usage(path: Path | str | None) -> dict[str, Any]:
         return _empty(unknown=True)
     model = doc.get("model") or doc.get("main_model") or ""
     return _from_token_map(doc, model=str(model), default_provider="aider")
+
+
+
+def usage_delta(
+    baseline: Mapping[str, Any] | None,
+    current: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    """FR #6435: per-job tokens = current cumulative minus baseline at job start.
+
+    When either side is unknown/missing, return unknown (never invent a 0 spend).
+    Negative deltas (counter reset) fall back to the current absolute reading.
+    """
+    cur = dict(current or {})
+    base = dict(baseline or {})
+    if cur.get("tokens_unknown") or (
+        cur.get("tokens_in") is None
+        and cur.get("tokens_out") is None
+        and cur.get("tokens_cached") is None
+        and cur.get("legacy_tokens") is None
+    ):
+        out = _empty(unknown=True)
+        out["model"] = str(cur.get("model") or base.get("model") or "")
+        return out
+    if not base or base.get("tokens_unknown"):
+        # No baseline: treat current as the job total (first job on a seat / fixture).
+        out = dict(cur)
+        out.setdefault("attempt", 1)
+        out.setdefault("source", "done")
+        return out
+
+    def _delta(key: str) -> Optional[int]:
+        c = _int_or_none(cur.get(key))
+        b = _int_or_none(base.get(key))
+        if c is None:
+            return None
+        if b is None:
+            return c
+        d = int(c) - int(b)
+        return d if d >= 0 else c
+
+    tin = _delta("tokens_in")
+    tout = _delta("tokens_out")
+    tc = _delta("tokens_cached")
+    out = _empty(unknown=False)
+    out["model"] = str(cur.get("model") or base.get("model") or "")
+    out["tokens_in"] = tin
+    out["tokens_out"] = tout
+    out["tokens_cached"] = tc
+    if tin is None and tout is None and tc is None:
+        out["tokens_unknown"] = True
+        out["tokens_total"] = None
+    else:
+        out["tokens_unknown"] = False
+        total = 0
+        if tin is not None:
+            total += tin
+        if tout is not None:
+            total += tout
+        out["tokens_total"] = total
+    out["attempt"] = _int_or_none(cur.get("attempt")) or 1
+    out["source"] = str(cur.get("source") or "done")
+    return out
+
+
+def load_usage_baseline(path: Path | str | None) -> dict[str, Any]:
+    """Load a job-start usage snapshot written by the worker (FR #6435)."""
+    doc = _load_json(path)
+    if not isinstance(doc, dict):
+        return _empty(unknown=True)
+    usage = doc.get("usage") if isinstance(doc.get("usage"), dict) else doc
+    if not isinstance(usage, dict):
+        return _empty(unknown=True)
+    out = _from_token_map(usage, model=str(usage.get("model") or doc.get("model") or ""))
+    if out.get("tokens_unknown") and any(
+        k in usage for k in ("tokens_in", "tokens_out", "tokens_cached", "inputTokens", "outputTokens")
+    ):
+        return _from_token_map(usage, model=str(usage.get("model") or ""))
+    # Prefer already-normalized fields when present.
+    if any(usage.get(k) is not None for k in ("tokens_in", "tokens_out", "tokens_cached")):
+        out = _empty(unknown=False)
+        out["model"] = str(usage.get("model") or doc.get("model") or "")
+        out["tokens_in"] = _int_or_none(usage.get("tokens_in"))
+        out["tokens_out"] = _int_or_none(usage.get("tokens_out"))
+        out["tokens_cached"] = _int_or_none(usage.get("tokens_cached"))
+        if out["tokens_in"] is None and out["tokens_out"] is None and out["tokens_cached"] is None:
+            return _empty(unknown=True)
+        out["tokens_unknown"] = False
+        total = 0
+        if out["tokens_in"] is not None:
+            total += int(out["tokens_in"])
+        if out["tokens_out"] is not None:
+            total += int(out["tokens_out"])
+        out["tokens_total"] = total
+    return out
+
+
+def save_usage_baseline(path: Path | str, usage: Mapping[str, Any] | None, *, job: str = "") -> None:
+    """Persist a job-start usage snapshot next to the seat run dir (FR #6435)."""
+    p = Path(path)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    u = dict(usage or {})
+    payload = {
+        "job": str(job or ""),
+        "usage": {
+            "model": str(u.get("model") or ""),
+            "tokens_in": u.get("tokens_in"),
+            "tokens_out": u.get("tokens_out"),
+            "tokens_cached": u.get("tokens_cached"),
+            "tokens_unknown": bool(u.get("tokens_unknown", True)),
+        },
+    }
+    p.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
 
 
 def measure_seat_usage(

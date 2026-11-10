@@ -146,6 +146,13 @@ def record_done(
         na=int(counters.get("na") or 0),
     )
     rows = load_rows(home)
+    # FR #6435: same (pr, seat) DONE MRB is one CR report row (ignore duplicate relay).
+    key = (str(row.get("pr") or ""), str(row.get("seat") or ""))
+    for i, existing in enumerate(rows):
+        if (str(existing.get("pr") or ""), str(existing.get("seat") or "")) == key:
+            rows[i] = row
+            save_rows(home, rows)
+            return row
     rows.append(row)
     save_rows(home, rows)
     return row
