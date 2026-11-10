@@ -9,7 +9,7 @@
   reconcile when git webhooks go quiet (``WEBHOOK_GAP_S``). Uses ETag/304 conditional GETs and the shared
   ``github_api_budget`` hourly counter. Token SOURCE (never the value) is written once per process to
   ``resync-token-source.log``. Webhooks remain the source of truth; REST is the exception path.
-* FR #6391 ticket-closure every ``TICKET_CLOSURE_S`` (2 min): poll GitHub closed issues/PRs for focus
+* FR #6391 / #6405 ticket-closure every ``TICKET_CLOSURE_S`` (default 15 min backup): poll GitHub closed issues/PRs for focus
   repos and POST wakes to the Bob wake webhook (pending + backoff on transport failure).
 
 Everything network/clock/disk is injectable so tests use fakes.
@@ -48,9 +48,21 @@ FIRST_STUCK_SWEEP_DELAY_S = 20.0
 INTAKE_OUTBOX_S = 60.0
 FIRST_INTAKE_OUTBOX_DELAY_S = 30.0
 INTAKE_OUTBOX_BACKOFF_MAX_S = 900.0
-# FR #6391: ticket-closure poll + wake (GitHub source + Bob wake webhook).
-TICKET_CLOSURE_S = 120.0
+# FR #6391 / #6405: ticket-closure poll backup (webhook is event-first). Default 15 min.
+TICKET_CLOSURE_S = 900.0
 FIRST_TICKET_CLOSURE_DELAY_S = 45.0
+
+def ticket_closure_interval_s() -> float:
+    """FR #6405: default 15 min; override with JEEVES_TICKET_CLOSURE_S (>=60)."""
+    raw = (os.environ.get("JEEVES_TICKET_CLOSURE_S") or "").strip()
+    if raw:
+        try:
+            val = float(raw)
+            if val >= 60.0:
+                return val
+        except ValueError:
+            pass
+    return float(TICKET_CLOSURE_S)
 WEBHOOK_GAP_S = gab.WEBHOOK_GAP_S
 FIRST_RESYNC_DELAY_S = 120.0
 FIRST_PROBE_DELAY_S = 45.0
@@ -245,7 +257,8 @@ def run_ticket_closure_cycle(
                 f"pending={out.get('pending_count', 0)} "
                 f"transport={out.get('wake_transport') or 'none'} "
                 f"poll={out.get('poll_outcome') or '?'} "
-                f"err={out.get('last_poll_error') or '-'}"
+                f"err={out.get('last_poll_error') or '-'} "
+                f"token_source={out.get('ticket_closure_token_source') or out.get('token_source') or 'none'}"
             )
         except Exception:  # noqa: BLE001
             pass
@@ -599,7 +612,7 @@ class ChairJobs:
                 else "disabled"
             )
             self.log(
-                f"INFO ticket-closure enabled interval={int(TICKET_CLOSURE_S)}s "
+                f"INFO ticket-closure enabled interval={int(ticket_closure_interval_s())}s "
                 f"wake={transport}"
             )
             self._ticket_closure_logged = True
@@ -782,7 +795,7 @@ class ChairJobs:
                 self.next_intake_outbox = now + self._intake_backoff_s
         now = self.clock()
         if now >= self.next_ticket_closure:
-            self.next_ticket_closure = now + TICKET_CLOSURE_S
+            self.next_ticket_closure = now + ticket_closure_interval_s()
             try:
                 out = run_ticket_closure_cycle(
                     chair_home=self.home,

@@ -3610,10 +3610,18 @@ class Client:
                     ok_age = None
                 ok_s = f"{ok_age}s ago" if ok_age is not None else "never"
                 err_bit = f" err={err}" if err else ""
+                tok = (
+                    tc.get("ticket_closure_token_source")
+                    or tc.get("token_source")
+                    or "?"
+                )
+                interval = int(chair_health.ticket_closure_interval_s())
                 out.append(
                     f"ticket_closure: {age_s} pending={pending} woke={woke} "
                     f"transport={transport} poll={outcome} last_ok={ok_s}{err_bit} "
-                    f"(every {int(chair_health.TICKET_CLOSURE_S)}s)"
+                    f"ticket_closure_token_source={tok} "
+                    f"(every {interval}s)"
+
                 )
             except Exception:  # noqa: BLE001
                 pass

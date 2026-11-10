@@ -279,6 +279,27 @@ def _try_report_handler_failure(
         return
 
 
+
+def _ticket_closure_from_git(
+    home: Path,
+    event: str,
+    payload: dict,
+    *,
+    delivery_id: str = "",
+) -> None:
+    """FR #6405: event-first close notices (same pending/seen/wake as the poller)."""
+    try:
+        import ticket_closure as tc
+    except ImportError:
+        import sys
+
+        mon = Path(__file__).resolve().parents[2] / "jeeves" / "tools" / "monitor"
+        if mon.is_dir() and str(mon) not in sys.path:
+            sys.path.insert(0, str(mon))
+        import ticket_closure as tc  # noqa: E402
+    tc.ingest_github_webhook(home, event, payload, delivery_id=delivery_id)
+
+
 def handle_git_webhook(
     headers: dict[str, str],
     body: bytes | str,
@@ -345,6 +366,17 @@ def handle_git_webhook(
         return 500, b""
     if eid:
         webhook_queue.mark_done(home, eid, result={"ok": True})
+    # FR #6405: close notices from issues/PR closed|merged webhooks (deduped with poller).
+    if event.lower() in {"issues", "pull_request"}:
+        try:
+            _ticket_closure_from_git(
+                home,
+                event,
+                payload,
+                delivery_id=str(hdrs.get("x-github-delivery") or ""),
+            )
+        except Exception:  # noqa: BLE001
+            pass
     return 204, b""
 
 

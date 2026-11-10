@@ -3,14 +3,15 @@
 
 Phase-1 events: issue closed, PR merged, PR closed (unmerged).
 Phase-2: optional waiting_on registry narrows reports.
-Event source (FR #6391 / #6400): poll GitHub closed issues/PRs for focus repos when
-``JEEVES_TICKET_CLOSURE_FIXTURE`` is unset. Per-repo ``poll_cursors`` + page
-pagination (FR #6400). Fixture stays for tests only.
+Event source (FR #6391 / #6400 / #6405): GitHub webhook closes are event-first;
+poll is a slow backup with per-repo ``poll_cursors`` + page pagination when
+``JEEVES_TICKET_CLOSURE_FIXTURE`` is unset. Fixture stays for tests only.
 Wake transport (FR #6391): HTTPS POST to ``JEEVES_TICKET_CLOSURE_WAKE_URL``
 (secret from env, never logged). Failed POST stays ``pending`` with backoff.
 Poll health (FR #6401): ``last_poll_ok_at`` / ``last_poll_error`` / ``poll_outcome``.
 Legacy GrokBotApi send remains only when wake is forced without a URL (tests).
 Never writes queue.json and never assigns work.
+FR #6405: warn (rate-limited) when the poller has no token; never log the token.
 """
 from __future__ import annotations
 
@@ -49,6 +50,9 @@ _WAKE_HTTP_POST: Callable[..., Any] | None = None
 _CLOCK: Callable[[], float] = time.time
 WAKE_BACKOFF_S = 60.0
 WAKE_BACKOFF_MAX_S = 900.0
+NO_TOKEN_WARN_S = 900.0
+_LAST_NO_TOKEN_WARN_AT = 0.0
+_LOG = None  # optional callable(str) for chair / tests
 POLL_PER_PAGE = 50
 POLL_MAX_PAGES = 20
 
@@ -92,6 +96,46 @@ def _event_key(row: dict[str, Any]) -> str:
     ev = str(row.get("event") or "").strip().lower()
     ident = str(row.get("delivery_id") or row.get("closed_at") or "").strip()
     return f"{repo}#{num}:{ev}:{ident}"
+
+
+def _ticket_identity(row: dict[str, Any]) -> str:
+    """Stable close identity across webhook delivery_id and poll closed_at (FR #6405)."""
+    repo = str(row.get("repo") or "").strip().lower()
+    num = str(row.get("number") or "").strip()
+    ev = str(row.get("event") or "").strip().lower()
+    return f"{repo}#{num}:{ev}"
+
+
+def _already_handled(seen: dict[str, Any], pending: dict[str, Any], row: dict[str, Any]) -> bool:
+    """Dedupe webhook delivery_id vs poll closed_at for the same close (FR #6405).
+
+    Same repo#number:event with the same closed_at is one close across sources.
+    A later re-close (new closed_at) remains a distinct event (FR #6064).
+    """
+    key = _event_key(row)
+    if key in seen or key in pending:
+        return True
+    ident = _ticket_identity(row)
+    ca = str(row.get("closed_at") or "").strip()
+    if ident.endswith(":") or ident.count("#") != 1:
+        return False
+    for bag in (seen, pending):
+        for existing in bag.values():
+            if not isinstance(existing, dict):
+                continue
+            if _ticket_identity(existing) != ident:
+                continue
+            eca = str(existing.get("closed_at") or "").strip()
+            if ca and eca:
+                if ca == eca:
+                    return True
+                continue
+            # One side missing closed_at: match when the other key/ident carries this close time.
+            if ca and str(_event_key(existing)).endswith(":" + ca):
+                return True
+            if eca and key.endswith(":" + eca):
+                return True
+    return False
 
 
 def _normalize(row: dict[str, Any]) -> dict[str, Any] | None:
@@ -164,6 +208,23 @@ def _default_github_token() -> tuple[str, str]:
         return (tok, "env") if tok else ("", "none")
 
 
+def _log(msg: str) -> None:
+    text = str(msg or "").strip()
+    if not text:
+        return
+    sink = _LOG
+    if callable(sink):
+        try:
+            sink(text)
+            return
+        except Exception:  # noqa: BLE001
+            pass
+    try:
+        print(text, flush=True)
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def _default_github_fetch(url: str, *, token: str = "") -> Any:
     req = urllib.request.Request(
         url,
@@ -183,6 +244,12 @@ def _default_github_fetch(url: str, *, token: str = "") -> Any:
             return body
     except urllib.error.HTTPError as e:
         if e.code in (403, 429):
+            reset = ""
+            try:
+                reset = str(e.headers.get("X-RateLimit-Reset") or e.headers.get("x-ratelimit-reset") or "")
+            except Exception:  # noqa: BLE001
+                reset = ""
+            _log(f"WARN ticket-closure GitHub HTTP {e.code} reset={reset or '-'}")
             raise
         return []
     except (OSError, json.JSONDecodeError, urllib.error.URLError):
@@ -538,6 +605,253 @@ def _write_skip(ops: Path, key: str, ev: dict[str, Any], reason: str) -> bool:
         return False
 
 
+
+def _maybe_warn_no_token(*, now: float, token_source: str) -> bool:
+    """Rate-limited WARN when poller has no GitHub token. Never logs the token."""
+    global _LAST_NO_TOKEN_WARN_AT
+    src = (token_source or "").strip().lower() or "none"
+    if src != "none":
+        return False
+    if _LAST_NO_TOKEN_WARN_AT and (now - float(_LAST_NO_TOKEN_WARN_AT)) < NO_TOKEN_WARN_S:
+        return False
+    _LAST_NO_TOKEN_WARN_AT = now
+    _log(
+        "WARN ticket-closure: no GitHub token "
+        "(gh_filer config/github.token or GITHUB_TOKEN/GH_TOKEN); "
+        "poll backup skipped until a token is available"
+    )
+    return True
+
+
+def close_event_from_github_webhook(
+    event: str,
+    payload: dict[str, Any],
+    *,
+    delivery_id: str = "",
+) -> dict[str, Any] | None:
+    """Map issues/pull_request closed|merged webhook payloads to a close event."""
+    if not isinstance(payload, dict):
+        return None
+    ev = str(event or "").strip().lower()
+    action = str(payload.get("action") or "").strip().lower()
+    repo_obj = payload.get("repository") if isinstance(payload.get("repository"), dict) else {}
+    repo = str(repo_obj.get("full_name") or "").strip()
+    if not repo and isinstance(payload.get("repo"), str):
+        repo = str(payload.get("repo") or "").strip()
+    did = str(delivery_id or payload.get("delivery_id") or "").strip()
+    if ev == "issues" and action == "closed":
+        issue = payload.get("issue") if isinstance(payload.get("issue"), dict) else None
+        if not issue:
+            return None
+        try:
+            number = int(issue.get("number"))
+        except (TypeError, ValueError):
+            return None
+        row: dict[str, Any] = {
+            "kind": "issue",
+            "event": "closed",
+            "repo": repo,
+            "number": number,
+            "source": "webhook",
+        }
+        ca = str(issue.get("closed_at") or "").strip()
+        if ca:
+            row["closed_at"] = ca
+        title = str(issue.get("title") or "").strip()
+        if title:
+            row["title"] = title
+        if did:
+            row["delivery_id"] = did
+        return row
+    if ev == "pull_request" and action == "closed":
+        pr = payload.get("pull_request") if isinstance(payload.get("pull_request"), dict) else None
+        if not pr:
+            return None
+        try:
+            number = int(pr.get("number"))
+        except (TypeError, ValueError):
+            return None
+        merged_at = str(pr.get("merged_at") or "").strip()
+        merged = bool(pr.get("merged")) or bool(merged_at)
+        row = {
+            "kind": "pr",
+            "event": "merged" if merged else "closed",
+            "repo": repo,
+            "number": number,
+            "merged": merged,
+            "source": "webhook",
+        }
+        ca = str(pr.get("closed_at") or merged_at or "").strip()
+        if ca:
+            row["closed_at"] = ca
+        if merged_at:
+            row["merged_at"] = merged_at
+        title = str(pr.get("title") or "").strip()
+        if title:
+            row["title"] = title
+        if did:
+            row["delivery_id"] = did
+        return row
+    return None
+
+
+def _persist_state(
+    state_path: Path,
+    *,
+    seen: dict[str, Any],
+    pending: dict[str, Any],
+    poll_cursor: str | None,
+    last_poll_at: Any,
+    last_wake_at: Any,
+    poll_cursors: dict[str, str] | None = None,
+    extra: dict[str, Any] | None = None,
+) -> None:
+    try:
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+        blob: dict[str, Any] = {
+            "seen": seen,
+            "pending": pending,
+            "pending_count": len(pending),
+            "wake_transport": _wake_transport_name(),
+        }
+        if last_poll_at is not None:
+            blob["last_poll_at"] = last_poll_at
+        if last_wake_at is not None:
+            blob["last_wake_at"] = last_wake_at
+        if poll_cursor:
+            blob["poll_cursor"] = poll_cursor
+        if poll_cursors:
+            blob["poll_cursors"] = dict(sorted(poll_cursors.items()))
+        if extra:
+            blob.update(extra)
+        tmp = state_path.with_name(f"{state_path.name}.{os.getpid()}.tmp")
+        tmp.write_text(
+            json.dumps(blob, separators=(",", ":"), sort_keys=True),
+            encoding="utf-8",
+        )
+        os.replace(tmp, state_path)
+    except OSError:
+        pass
+
+
+def _drain_pending_wakes(
+    ops: Path,
+    *,
+    seen: dict[str, Any],
+    pending: dict[str, Any],
+    now: float,
+    last_wake_at: Any,
+) -> tuple[int, int, Any]:
+    woke_n = 0
+    skip_n = 0
+    if not _wake_enabled():
+        return woke_n, skip_n, last_wake_at
+    for key, ev in list(pending.items()):
+        item = ev if isinstance(ev, dict) else {}
+        try:
+            nxt = float(item.get("next_retry_at") or 0.0)
+        except (TypeError, ValueError):
+            nxt = 0.0
+        if nxt > now:
+            continue
+        result = _deliver_wake(item)
+        if result.get("woke"):
+            clean = {k: v for k, v in item.items() if k not in {"next_retry_at", "fail_count"}}
+            seen[key] = clean
+            pending.pop(key, None)
+            woke_n += 1
+            last_wake_at = now
+            continue
+        reason = str(result.get("error") or "wake_failed")
+        if reason in {"wake_unreachable", "bob_unreachable", "no_wake_url"}:
+            fails = int(item.get("fail_count") or 0) + 1
+            backoff = min(WAKE_BACKOFF_MAX_S, WAKE_BACKOFF_S * (2 ** max(0, fails - 1)))
+            item = dict(item)
+            item["fail_count"] = fails
+            item["next_retry_at"] = now + backoff
+            item["last_error"] = reason
+            pending[key] = item
+            continue
+        if not _write_skip(ops, key, item, reason):
+            continue
+        seen[key] = item
+        pending.pop(key, None)
+        skip_n += 1
+    return woke_n, skip_n, last_wake_at
+
+
+def ingest_github_webhook(
+    home: Path | str,
+    event: str,
+    payload: dict[str, Any],
+    *,
+    delivery_id: str = "",
+    chair_home: Path | str | None = None,
+    digest_home: Path | str | None = None,
+) -> dict[str, Any]:
+    """FR #6405: apply one GitHub close webhook through the same pending/seen/wake path."""
+    row = close_event_from_github_webhook(event, payload, delivery_id=delivery_id)
+    if not row:
+        return {"ok": True, "accepted": False, "reason": "not_a_close"}
+    digest = Path(digest_home or home)
+    chair = Path(chair_home or home)
+    focus_path = resolve_focus_path(chair, digest)
+    repos = _focus_repos(focus_path)
+    repo = str(row.get("repo") or "").strip()
+    if repo and repos and repo not in repos:
+        return {"ok": True, "accepted": False, "reason": "not_focused"}
+    waiting = _load_waiting(chair, digest)
+    if waiting and _event_ticket_id(row) not in waiting:
+        return {"ok": True, "accepted": False, "reason": "not_waiting"}
+    ops = ops_home(chair, digest)
+    state_path = ops / STATE_NAME
+    state = _load_json(state_path)
+    if not isinstance(state, dict):
+        state = {}
+    seen = _load_map(state, "seen")
+    pending = _load_map(state, "pending")
+    poll_cursor = str(state.get("poll_cursor") or "").strip() or None
+    raw_cursors = state.get("poll_cursors")
+    poll_cursors: dict[str, str] = {}
+    if isinstance(raw_cursors, dict):
+        for k, v in raw_cursors.items():
+            ks, vs = str(k).strip(), str(v).strip()
+            if ks and vs:
+                poll_cursors[ks] = vs
+    last_wake_at = state.get("last_wake_at")
+    now = float(_CLOCK())
+    key = _event_key(row)
+    if _already_handled(seen, pending, row):
+        return {"ok": True, "accepted": False, "reason": "duplicate", "key": key}
+    try:
+        row = dict(row)
+        row["brief"] = build_wake_brief(row)
+    except WakeBriefError as exc:
+        return {"ok": False, "accepted": False, "reason": "brief", "error": type(exc).__name__}
+    pending[key] = row
+    woke_n, skip_n, last_wake_at = _drain_pending_wakes(
+        ops, seen=seen, pending=pending, now=now, last_wake_at=last_wake_at
+    )
+    _persist_state(
+        state_path,
+        seen=seen,
+        pending=pending,
+        poll_cursor=poll_cursor,
+        poll_cursors=poll_cursors,
+        last_poll_at=state.get("last_poll_at"),
+        last_wake_at=last_wake_at,
+        extra={"last_webhook_at": now, "token_source": str(state.get("token_source") or "")},
+    )
+    return {
+        "ok": True,
+        "accepted": True,
+        "key": key,
+        "woke": woke_n,
+        "wake_skips": skip_n,
+        "pending_count": len(pending),
+    }
+
+
 def check(args):
     chair, digest = resolve_homes(args)
     focus_path = resolve_focus_path(chair, digest)
@@ -569,8 +883,12 @@ def check(args):
                 poll_cursors[ks] = vs
     token_loader = _GITHUB_TOKEN or _default_github_token
     token, _tok_src = token_loader()
+    token_source = str(_tok_src or ("env" if token else "none")).strip() or "none"
+    if not token:
+        token_source = "none"
     now = float(_CLOCK())
     focused = {r for r in repos if "/" in r}
+    warned = False
     # First live poll: seed per-repo cursors to now; do not replay history.
     if fixture is None and not poll_cursors and not poll_cursor:
         seed = _utc_iso_now()
@@ -579,13 +897,19 @@ def check(args):
         events: list[dict[str, Any]] = []
         poll_outcome = "seeded"
         last_poll_error = None
-    elif fixture is None and not (token or "").strip():
+        if not token:
+            warned = _maybe_warn_no_token(now=now, token_source=token_source)
+            poll_outcome = "skipped_no_token"
+            last_poll_error = "no_github_token"
+            poll_meta["source"] = "github"
+    elif fixture is None and not token:
         # Migrate legacy global cursor into any missing per-repo slots.
         fallback = poll_cursor or _utc_iso_now()
         for r in focused:
             if r not in poll_cursors:
                 poll_cursors[r] = fallback
         events = []
+        warned = _maybe_warn_no_token(now=now, token_source=token_source)
         poll_outcome = "skipped_no_token"
         last_poll_error = "no_github_token"
         poll_meta["source"] = "github"
@@ -630,91 +954,46 @@ def check(args):
     if waiting:
         events = [ev for ev in events if _event_ticket_id(ev) in waiting]
     closed = []
-    handled = set(seen) | set(pending)
     for ev in events:
-        key = _event_key(ev)
-        if key in handled:
+        if _already_handled(seen, pending, ev):
             continue
+        key = _event_key(ev)
         row = dict(ev)
         try:
             row["brief"] = build_wake_brief(row)
         except WakeBriefError:
             continue
+        row.setdefault("source", "poll")
         closed.append(row)
         pending[key] = row
-        handled.add(key)
-    woke_n = 0
-    skip_n = 0
     last_wake_at = state.get("last_wake_at")
-    if _wake_enabled():
-        for key, ev in list(pending.items()):
-            item = ev if isinstance(ev, dict) else {}
-            # FR #6391: honour retry backoff on failed webhook POSTs.
-            try:
-                nxt = float(item.get("next_retry_at") or 0.0)
-            except (TypeError, ValueError):
-                nxt = 0.0
-            if nxt > now:
-                continue
-            result = _deliver_wake(item)
-            if result.get("woke"):
-                clean = {k: v for k, v in item.items() if k not in {"next_retry_at", "fail_count"}}
-                seen[key] = clean
-                pending.pop(key, None)
-                woke_n += 1
-                last_wake_at = now
-                continue
-            reason = str(result.get("error") or "wake_failed")
-            # FR #6391: transport failures stay pending (retry). Invalid tickets can skip.
-            if reason in {"wake_unreachable", "bob_unreachable", "no_wake_url"}:
-                fails = int(item.get("fail_count") or 0) + 1
-                backoff = min(WAKE_BACKOFF_MAX_S, WAKE_BACKOFF_S * (2 ** max(0, fails - 1)))
-                item = dict(item)
-                item["fail_count"] = fails
-                item["next_retry_at"] = now + backoff
-                item["last_error"] = reason
-                pending[key] = item
-                continue
-            if not _write_skip(ops, key, item, reason):
-                continue
-            seen[key] = item
-            pending.pop(key, None)
-            skip_n += 1
+    woke_n, skip_n, last_wake_at = _drain_pending_wakes(
+        ops, seen=seen, pending=pending, now=now, last_wake_at=last_wake_at
+    )
     last_poll_at = now
     if poll_outcome in {"ok", "seeded", "fixture", "partial"}:
         last_poll_ok_at = now
     if newest_closed:
         poll_cursor = newest_closed
-    try:
-        state_path.parent.mkdir(parents=True, exist_ok=True)
-        blob = {
-            "seen": seen,
-            "pending": pending,
-            "last_poll_at": last_poll_at,
-            "pending_count": len(pending),
-            "wake_transport": _wake_transport_name(),
-            "poll_outcome": poll_outcome,
-        }
-        if last_wake_at is not None:
-            blob["last_wake_at"] = last_wake_at
-        if last_poll_ok_at is not None:
-            blob["last_poll_ok_at"] = last_poll_ok_at
-        if last_poll_error:
-            blob["last_poll_error"] = last_poll_error
-        elif "last_poll_error" in blob:
-            blob.pop("last_poll_error", None)
-        if poll_cursor:
-            blob["poll_cursor"] = poll_cursor
-        if poll_cursors:
-            blob["poll_cursors"] = dict(sorted(poll_cursors.items()))
-        tmp = state_path.with_name(f"{state_path.name}.{os.getpid()}.tmp")
-        tmp.write_text(
-            json.dumps(blob, separators=(",", ":"), sort_keys=True),
-            encoding="utf-8",
-        )
-        os.replace(tmp, state_path)
-    except OSError:
-        pass
+    extra = {
+        "token_source": token_source,
+        "ticket_closure_token_source": token_source,
+        "poll_outcome": poll_outcome,
+    }
+    if last_poll_ok_at is not None:
+        extra["last_poll_ok_at"] = last_poll_ok_at
+    if last_poll_error:
+        extra["last_poll_error"] = last_poll_error
+    _persist_state(
+        state_path,
+        seen=seen,
+        pending=pending,
+        poll_cursor=poll_cursor,
+        poll_cursors=poll_cursors,
+        last_poll_at=last_poll_at,
+        last_wake_at=last_wake_at,
+        extra=extra,
+    )
     ok = not closed
     findings = []
     remediation = []
@@ -738,6 +1017,9 @@ def check(args):
             "poll_failed_repos": list(poll_meta.get("failed_repos") or []),
             "last_wake_at": last_wake_at,
             "wake_transport": _wake_transport_name(),
+            "token_source": token_source,
+            "ticket_closure_token_source": token_source,
+            "no_token_warned": warned,
             "findings": findings,
             "remediation": remediation,
         },
