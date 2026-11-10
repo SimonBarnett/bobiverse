@@ -955,6 +955,19 @@ def handle_shop_worker_line(
             gitclaim.ledger_note_event(home, nick, parsed.verb, parsed.task, parsed.repo, parsed.id, job if isinstance(job, dict) else None)
         except Exception:  # noqa: BLE001
             pass
+        # FR #6439: wake Bob on shop GIVEUP (same HTTPS wake URL as close notices).
+        if parsed.verb == "GIVEUP":
+            with contextlib.suppress(Exception):
+                import stall_callbacks
+
+                stall_callbacks.emit_giveup(
+                    home,
+                    repo=parsed.repo,
+                    number=str(parsed.id or "").lstrip("#"),
+                    seat=nick,
+                    machine=str(mid or ""),
+                    reason=reason or "giveup",
+                )
         payload = format_activity_payload(
             machine=mid, pid=pid, nick=nick, kind=kind, working_on="", state="idle"
         )
