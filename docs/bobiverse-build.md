@@ -54,7 +54,7 @@ Deterministic, injectable, **zero AI tokens**. Module: `common/scripts/bobiverse
 1. Chair `!build` decides and announces `BUILD v1 repos=... version=... ref=...` on `#bobiverse`.
 2. Recipe machine (bobiverse: `flamingo`; digest id is `flamingo`, no DIGEST_ID_FOLD alias required) consumes the wire via `consume_build_v1` and enqueues `home/build-queue/*.json` (spawn/pack outside the chair process).
 3. `BuildRunner.run()`:
-   - Ensures `work_dir` / `log_dir` and recipe `cache_dirs` under `work_dir/cache` (override root with env `BOBIVERSE_DOWNLOAD_CACHE`).
+   - Ensures `work_dir` / `log_dir` and recipe `cache_dirs` under `work_dir/cache` (override download/cache root with env `BOBIVERSE_DOWNLOAD_CACHE`; override BUILD work root with env `BOBIVERSE_BUILD_WORK_DIR` so `run_bobiverse_build.py` uses `$BOBIVERSE_BUILD_WORK_DIR/<version>` when `--work-dir` is absent --- FR #6479).
    - Resolves baseline (injectable; default stub tag `baseline`).
    - Runs each suite at ref and at baseline; one solo rerun on ref failure; classifies.
    - Hard timeouts (FR #3965 class) via `run_command` --- kill + `timed_out` => `step_failure`.

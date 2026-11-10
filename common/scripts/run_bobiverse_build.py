@@ -86,6 +86,27 @@ def checkout(repo: str, ref: str, work: Path, log: list[str]) -> tuple[Path, Pat
     return src, None, sha, ""
 
 
+
+def resolve_build_work_dir(
+    version: str,
+    *,
+    work_dir_arg: str = "",
+    env: dict | None = None,
+) -> Path:
+    """Resolve BUILD work directory (FR #6479).
+
+    Precedence: ``--work-dir`` arg (as-is), else env ``BOBIVERSE_BUILD_WORK_DIR`` /
+    ``<version>``, else ``%ProgramData%/Bobiverse/build-work/<version>``.
+    """
+    if (work_dir_arg or "").strip():
+        return Path(work_dir_arg)
+    e = env if env is not None else os.environ
+    override = (e.get("BOBIVERSE_BUILD_WORK_DIR") or "").strip()
+    if override:
+        return Path(override) / version
+    return Path(e.get("ProgramData", "C:/ProgramData")) / "Bobiverse" / "build-work" / version
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(description="FR #4025 bobiverse BUILD runner")
     p.add_argument("--repo-root", default=".", help="git / install root with .bobiverse/build.yml")
@@ -94,7 +115,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--ref", default="HEAD")
     p.add_argument("--job", default="", help="path to build-queue JSON from chair")
     p.add_argument("--queue-dir", default="", help="drain oldest *.json from this dir")
-    p.add_argument("--work-dir", default="", help="default: %ProgramData%/Bobiverse/build-work")
+    p.add_argument("--work-dir", default="", help="default: BOBIVERSE_BUILD_WORK_DIR/<version> or %ProgramData%/Bobiverse/build-work/<version>")
     p.add_argument("--fake-filer", action="store_true")
     p.add_argument("--dry-run", action="store_true")
     p.add_argument("--checkout", action="store_true", help="clean clone at ref + baseline worktree")
@@ -166,7 +187,7 @@ def main(argv: list[str] | None = None) -> int:
     rc = 1
     filer = None
     try:
-        work = Path(args.work_dir) if args.work_dir else Path(os.environ.get("ProgramData", "C:/ProgramData")) / "Bobiverse" / "build-work" / version
+        work = resolve_build_work_dir(version, work_dir_arg=args.work_dir)
         log_dir = work / "logs"
         root = Path(args.repo_root).resolve()
         baseline_root = None
