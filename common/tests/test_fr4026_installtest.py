@@ -86,7 +86,7 @@ def test_fr4026_decide_dry_run_plan():
         may=cc.may,
         denied_line=cc.denied_line,
         recipe_loader=lambda r: bb.load_recipe(ROOT),
-        local_machine="win-mpre8vi4u6u",
+        local_machine="flamingo",
     )
     assert dec and dec.ok and dec.dry_run
     assert any("dry-run" in ln for ln in dec.pm_lines)
@@ -98,17 +98,18 @@ def test_fr4026_machine_fold_ionos_matches_win_mpre():
     assert bb.is_recipe_build_machine("ionos", "win-mpre8vi4u6u")
     assert bb.is_recipe_build_machine("win-mpre8vi4u6u", "ionos")
     assert not bb.is_recipe_build_machine("ionos", "marchhare")
-    who = cc.Principal("ear", "Bob-win-mpre8vi4u6u", "", "win-mpre8vi4u6u")
+    who = cc.Principal("ear", "Bob-flamingo", "", "flamingo")
     dec = bb.decide_installtest(
         who=who,
         body="!installtest SimonBarnett/bobiverse 0.1.32",
         may=cc.may,
         denied_line=cc.denied_line,
         recipe_loader=lambda r: bb.load_recipe(ROOT),
-        local_machine="win-mpre8vi4u6u",
+        local_machine="flamingo",
     )
     assert dec and dec.ok and dec.route.startswith("INSTALLTEST v1")
-    assert "ionos" in dec.machine or bb.fold_build_machine(dec.machine) == "win-mpre8vi4u6u"
+    assert dec.machine == "flamingo"
+    assert bb.is_recipe_build_machine(dec.machine, "flamingo")
 
 
 def test_fr4026_decide_wrong_machine():
@@ -237,7 +238,7 @@ def test_fr4026_runner_postcheck_fail_files_blocker(tmp_path: Path):
 def test_fr4026_recipe_install_test_products():
     recipe = bb.load_recipe(ROOT)
     assert recipe.install_test
-    assert recipe.install_test.get("machine") == "ionos"
+    assert recipe.install_test.get("machine") == "flamingo"
     prods = recipe.install_test.get("products") or []
     assert set(prods) >= {"jeeves", "bob", "airc"}
 
@@ -282,9 +283,9 @@ def test_fr4026_mrb4085_hostile_queued_means_enqueued(tmp_path: Path):
         may=cc.may,
         denied_line=cc.denied_line,
         recipe_loader=lambda r: bb.load_recipe(ROOT),
-        local_machine="win-mpre8vi4u6u",
+        local_machine="flamingo",
     )
     assert dec and dec.ok and dec.route.startswith("INSTALLTEST v1")
     q = tmp_path / "build-queue"
-    assert bb.consume_installtest_v1(dec.route, "win-mpre8vi4u6u", "ionos", queue_dir=q) is True
+    assert bb.consume_installtest_v1(dec.route, "flamingo", "flamingo", queue_dir=q) is True
     assert list(q.glob("installtest-*.json")), "PM queued claim requires enqueue"

@@ -29,7 +29,7 @@ Each repo that supports `!build` ships this file at the repo root.
 
 | Field | Meaning |
 |---|---|
-| `machine` | Build host (bobiverse: `ionos`; DIGEST_ID_FOLD accepts `win-mpre8vi4u6u`) |
+| `machine` | Build host (bobiverse: `flamingo`; digest id is `flamingo`) |
 | `baseline` | Usually `last_release_tag` |
 | `suites[]` | `{name, cmd, cwd, env, timeout}` run at **ref** and **baseline** |
 | `pack` | Commands + artifact globs (+ `.sha256`); templates `{{version}}` / `{{out_dir}}` / `{{ref}}` |
