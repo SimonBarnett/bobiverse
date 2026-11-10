@@ -26,8 +26,9 @@ def test_fr4610_gate_bucket_uses_dedicated_body_pin_not_raw_stamp():
         "repo": "SimonBarnett/bobiverse",
         "task": "FR",
         "id": "#4610b",
-        "title": "DEV1 pin",
-        "body": "require_machine: ce-priority-dev1\n",
+        "title": "IONOS pin",
+        # FR #6407: ce-priority-dev1 dedicated pins retired; use a live machine.
+        "body": "require_machine: ionos\n",
         "labels": ["feature-request"],
     }
     assert queue_flow._gate_bucket(dedicated) == "require_machine"

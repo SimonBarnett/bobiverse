@@ -255,13 +255,23 @@ def test_ignore_family(chair, op):
 
 
 def test_pin_unpin_family(chair, op):
-    # FR #6407: ops may pin/unpin; non-ops denied above.
+    # FR #6407: ops may pin/unpin; assert queue stamp changes (not only reply prefix).
     out = pm(chair, op, "!unpin o/a#1")
     assert out[0].startswith("unpin:")
+    assert "queue_rows=1" in out[0]
+    assert "require_machine=any" in out[0]
+    assert gitclaim.load_unaccepted(chair.home)[0].get("require_machine") == "any"
     out = pm(chair, op, "!pin o/a#1 ionos")
     assert out[0].startswith("pin:")
+    assert "queue_rows=1" in out[0]
+    assert "require_machine=ionos" in out[0]
+    assert gitclaim.load_unaccepted(chair.home)[0].get("require_machine") == "ionos"
     assert pm(chair, op, "!unpin")[0].startswith("unpin: usage")
     assert pm(chair, op, "!pin o/a#1")[0].startswith("pin: usage")
+    # Unknown id: ok with zero rows (not a refusal).
+    miss = pm(chair, op, "!unpin o/a#999")
+    assert miss[0].startswith("unpin:")
+    assert "queue_rows=0" in miss[0]
 
 
 def test_cleargiveup_family(chair, op):
