@@ -6,7 +6,9 @@
                    "buildGrok":  "build0.1",
                    "buildGrokFallback":  "grok-4.5",
                    "buildCursor":  "composer-2.5",
-                   "uatCursor":  "claude-opus-5-thinking-high"
+                   "uatCursor":  "claude-opus-5-thinking-high",
+                   "opencodeFree":  "opencode/deepseek-v4.1-flash-free",
+                   "opencodePaid":  "opencode-go/deepseek-v4-pro"
                },
     "repoPairModelTier":  {
                               "less":  "composer-2.5",
