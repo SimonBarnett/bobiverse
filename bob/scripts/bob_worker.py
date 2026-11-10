@@ -1678,7 +1678,7 @@ def worker_prompt(worker_dir: str, home: str, machine: str, nick: str) -> str:
         f"The program NACKs a missing or refused job worktree before you see the assign. That is not DONE. "
         f"BOB_HOME may be empty. ACK/DONE go to $env:BOB_OUTBOX only. "
         f"OpenCode (FR #6333): for a job with --dir <worktree>, $env:BOB_OUTBOX is <worktree>\\.bob\\outbox.txt (inside the project directory). The program still ACK-on-receipt via the run-dir outbox; your DONE/GIVEUP must append to $env:BOB_OUTBOX. Never request external_directory and never pass --auto. "
-        f"OpenCode (FR #6366 / #6370): end-of-job for each FR/MRB/UAT — git status/diff, finish work, commit on fr-<N>, git push -u origin HEAD, gh pr create --body (or --body-file inside the job worktree) with Closes owner/repo#N, keep scratch in the worktree/run folder never %TEMP%, then append DONE to $env:BOB_OUTBOX. The turn is not over until DONE is written. "
+        f"OpenCode (FR #6366 / #6370 / #6378): end-of-job for each FR/MRB/UAT — git status/diff, finish work, commit on fr-<N>, git push -u origin HEAD, gh pr create --body (or --body-file inside the job worktree) with Closes owner/repo#N, keep scratch in the worktree/run folder never %TEMP%, then immediately append DONE to $env:BOB_OUTBOX (never gh pr checks --watch / never poll CI). The turn is not over until DONE is written. "
         f"Never print or store secrets."
     )
 
@@ -6551,7 +6551,7 @@ def opencode_job_finish_steps(
     worktree: str | Path,
     outbox: str | Path,
 ) -> str:
-    """FR #6366 / #6370: end-of-job checklist for OpenCode (initial assign + finish re-prompt)."""
+    """FR #6366 / #6370 / #6378: end-of-job checklist for OpenCode (initial assign + finish re-prompt)."""
     key = (job_key or "job").strip() or "job"
     m = re.search(r"(?i)#(\d+)\s*$", key)
     issue_n = m.group(1) if m else "N"
@@ -6572,7 +6572,9 @@ def opencode_job_finish_steps(
         f"(or --body-file pointing at a markdown file inside this worktree, e.g. .bob/pr-body.md). "
         "Keep scratch files and base comparisons inside this job worktree or the worker run folder --- "
         "never under %TEMP%. Do not request external_directory and do not pass --auto. "
-        f"6) Append DONE for {key} with the PR URL to $env:BOB_OUTBOX ({ob}). "
+        f"6) Immediately append DONE for {key} with the PR URL to $env:BOB_OUTBOX ({ob}) "
+        "right after gh pr create returns the URL. "
+        "Never wait on or poll CI (no gh pr checks --watch, no checks --watch, no waiting for CodeRabbit). "
         "The turn is not over until DONE is written. Do not check the outbox first."
     )
 
@@ -6620,6 +6622,7 @@ def opencode_finish_progress_snapshot(
         "branch": "",
         "origin_head": "",
         "has_pr": False,
+        "pr_url": "",
         "ok": False,
     }
     if not root.is_dir():
@@ -6673,7 +6676,7 @@ def opencode_finish_progress_snapshot(
                         "--state",
                         "open",
                         "--json",
-                        "number",
+                        "number,url",
                         "--limit",
                         "1",
                     ],
@@ -6684,6 +6687,16 @@ def opencode_finish_progress_snapshot(
                 )
                 if pr.returncode == 0 and (pr.stdout or "").strip() not in ("", "[]"):
                     out["has_pr"] = True
+                    try:
+                        import json as _json
+
+                        _rows = _json.loads((pr.stdout or "").strip())
+                        if isinstance(_rows, list) and _rows:
+                            _u = str((_rows[0] or {}).get("url") or "").strip()
+                            if "github.com" in _u and "/pull/" in _u:
+                                out["pr_url"] = _u
+                    except Exception:
+                        pass
     except Exception:
         pass
     return out
@@ -6712,6 +6725,90 @@ def opencode_parse_job_repo_issue(job_key: str) -> tuple[str, str] | None:
     if not m:
         return None
     return m.group(1), m.group(2)
+
+
+
+def opencode_stamp_outbox_footer(line: str, outbox: str | Path) -> str:
+    """FR #6378: every inject footer must be the *current* job worktree outbox.
+
+    Replaces any existing ``[outbox: ...]`` (including a previous job's path) or
+    appends one when missing. Never leave a cached prior-job footer.
+    """
+    ob = str(outbox or "").strip()
+    if not ob:
+        return line or ""
+    s = line or ""
+    footer = f"[outbox: {ob}]"
+    s2 = re.sub(r"\s*\[outbox:\s*[^\]]*\]\s*$", "", s, flags=re.IGNORECASE).rstrip()
+    return f"{s2} {footer}"
+
+
+def opencode_finish_open_pr_url(
+    worktree: str | Path,
+    job_key: str,
+    *,
+    run=None,
+) -> str:
+    """FR #6378: URL of an open PR for the job branch, else ``""``."""
+    import json as _json
+    import subprocess as _sp
+
+    run = _sp.run if run is None else run
+    root = Path(worktree or "")
+    if not root.is_dir():
+        return ""
+    try:
+        br = run(
+            ["git", "-C", str(root), "rev-parse", "--abbrev-ref", "HEAD"],
+            capture_output=True,
+            text=True,
+            timeout=8,
+        )
+        branch = (br.stdout or "").strip() if br.returncode == 0 else ""
+    except Exception:
+        branch = ""
+    if not branch or branch == "HEAD":
+        return ""
+    parsed = opencode_parse_job_repo_issue(job_key)
+    repo = parsed[0] if parsed else ""
+    argv = ["gh", "pr", "list"]
+    if repo:
+        argv.extend(["--repo", repo])
+    argv.extend(
+        [
+            "--head",
+            branch,
+            "--state",
+            "open",
+            "--json",
+            "url,number",
+            "--limit",
+            "1",
+        ]
+    )
+    try:
+        pr = run(
+            argv,
+            capture_output=True,
+            text=True,
+            timeout=20,
+            cwd=str(root),
+        )
+    except Exception:
+        return ""
+    if pr.returncode != 0:
+        return ""
+    raw = (pr.stdout or "").strip()
+    if not raw or raw == "[]":
+        return ""
+    try:
+        data = _json.loads(raw)
+    except Exception:
+        return ""
+    if not isinstance(data, list) or not data:
+        return ""
+    url = str((data[0] or {}).get("url") or "").strip()
+    return url if "github.com" in url and "/pull/" in url else ""
 
 
 def opencode_finish_branch_ahead_no_pr(
@@ -9414,9 +9511,9 @@ class Supervisor:
                 # FR #6333: tail in-worktree .bob/outbox.txt; stamp FROM footer with that path.
                 try:
                     ob = ensure_opencode_bob_outbox(prepared["path"])
-                    stale = getattr(getattr(self, "relay", None), "outbox_path", None)
-                    if stale:
-                        wire = wire.replace(f"[outbox: {stale}]", f"[outbox: {ob}]")
+                    # FR #6378: always rewrite footer to *this* job worktree outbox
+                    # (never leave a prior job's cached [outbox: ...] path).
+                    wire = opencode_stamp_outbox_footer(wire, ob)
                     self._opencode_job_outbox = Path(ob)
                     self._opencode_job_key = str(prepared.get("key") or "")
                     try:
@@ -9656,8 +9753,15 @@ class Supervisor:
         except Exception as e:
             self.log(f"done-miss: remind inject failed {type(e).__name__}")
 
-    def _opencode_finish_post_done(self, job_key: str, pr_url: str) -> None:
-        """FR #6370: append DONE to the OpenCode job outbox after auto-PR."""
+    def _opencode_finish_post_done(
+        self,
+        job_key: str,
+        pr_url: str,
+        *,
+        pr_opened_by: str = "worker",
+        done_by: str = "worker",
+    ) -> None:
+        """FR #6370 / #6378: append DONE to the OpenCode job outbox (auto-PR or model PR)."""
         key = (job_key or "").strip() or "job"
         url = (pr_url or "").strip()
         payload = f"DONE {key} {url}".strip()
@@ -9668,7 +9772,10 @@ class Supervisor:
             ob = outbox_path_for_run(self.run_dir)
         try:
             if append_outbox_line(Path(ob), line):
-                self.log(f"opencode finish: auto DONE written for {key}")
+                self.log(
+                    f"opencode finish: auto DONE written for {key} "
+                    f"pr_opened_by={pr_opened_by} done_by={done_by}"
+                )
             else:
                 self.log(f"opencode finish: auto DONE write failed for {key}")
         except Exception as e:  # noqa: BLE001
@@ -9706,6 +9813,24 @@ class Supervisor:
         if progress and attempt < max_n:
             self._opencode_finish_snap = after
             return "retry"
+        # FR #6378: model already opened a PR but skipped DONE -> worker DONE (not GIVEUP).
+        if wt and (after.get("has_pr") or before.get("has_pr")):
+            url = str(after.get("pr_url") or before.get("pr_url") or "").strip()
+            if not url:
+                try:
+                    url = opencode_finish_open_pr_url(wt, job_key)
+                except Exception as e:  # noqa: BLE001
+                    self.log(f"opencode finish: open-PR lookup failed {type(e).__name__}")
+                    url = ""
+            if url:
+                self.log(
+                    f"opencode finish: existing PR {url} pr_opened_by=model done_by=worker"
+                )
+                self._opencode_finish_post_done(
+                    job_key, url, pr_opened_by="model", done_by="worker"
+                )
+                self._opencode_job_end_cleanup(job_key)
+                return "done"
         # FR #6370: before GIVEUP, open PR if branch is pushed ahead with no PR.
         if wt:
             try:
@@ -9714,8 +9839,10 @@ class Supervisor:
                 self.log(f"opencode finish: auto-PR failed {type(e).__name__}")
                 url = ""
             if url:
-                self.log(f"opencode finish: auto-PR {url}")
-                self._opencode_finish_post_done(job_key, url)
+                self.log(f"opencode finish: auto-PR {url} pr_opened_by=worker done_by=worker")
+                self._opencode_finish_post_done(
+                    job_key, url, pr_opened_by="worker", done_by="worker"
+                )
                 self._opencode_job_end_cleanup(job_key)
                 return "done"
             self._opencode_job_end_cleanup(job_key)

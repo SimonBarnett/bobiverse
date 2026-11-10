@@ -219,7 +219,7 @@ def test_fr6370_finish_decide_auto_pr_returns_done(tmp_path: Path, monkeypatch):
         def log(self, msg: str) -> None:
             self.logs.append(msg)
 
-        def _opencode_finish_post_done(self, job_key: str, pr_url: str) -> None:
+        def _opencode_finish_post_done(self, job_key: str, pr_url: str, **kw) -> None:
             self.posted = (job_key, pr_url)
 
         def _opencode_job_end_cleanup(self, job=None) -> None:
