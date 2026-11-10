@@ -1,0 +1,117 @@
+# Isolated jeeves.exe build (FR #6395).
+# Not a release, MSI, install, or service restart. Build-Jeeves.ps1 owns PyInstaller.
+# Uploads SHA-256 provenance (MANIFEST.json) so Slab can install from a known artifact.
+name: build-jeeves
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - .github/workflows/build-jeeves.yml
+      - jeeves/**
+      - jeeves/scripts/Build-Jeeves.ps1
+      - common/**
+      - common/scripts/jeeves_main.py
+      - common/scripts/jeeves_build_meta.py
+      - common/tests/test_fr6395_jeeves_build_ci.py
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/build-jeeves.yml
+      - jeeves/**
+      - jeeves/scripts/Build-Jeeves.ps1
+      - common/**
+      - common/scripts/jeeves_main.py
+      - common/scripts/jeeves_build_meta.py
+      - common/tests/test_fr6395_jeeves_build_ci.py
+
+permissions:
+  contents: read
+
+jobs:
+  build-jeeves:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install PyInstaller and Bob Python deps
+        run: |
+          python -m pip install --upgrade pip pyinstaller
+          if ($LASTEXITCODE -ne 0) { throw "pip install pyinstaller failed: $LASTEXITCODE" }
+          . .\common\scripts\Bobiverse-Common.ps1
+          Install-BobiversePythonDeps -Python (Get-Command python).Source
+
+      - name: Build jeeves.exe with Build-Jeeves.ps1
+        env:
+          WORKFLOW_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          $root = (Get-Location).Path
+          $head = (git rev-parse HEAD).Trim()
+          if ($head -ne $env:WORKFLOW_COMMIT) { throw "checkout $head is not $env:WORKFLOW_COMMIT" }
+          $out = Join-Path $env:RUNNER_TEMP "jeeves-out"
+          New-Item -ItemType Directory -Force -Path $out | Out-Null
+          $py = (Get-Command python).Source
+          & "$root\jeeves\scripts\Build-Jeeves.ps1" -RepoRoot $root -OutDir $out -Python $py -SourceCommit $env:WORKFLOW_COMMIT
+          if ($LASTEXITCODE -ne 0) { throw "Build-Jeeves.ps1 exit $LASTEXITCODE" }
+          $exe = Join-Path $out "jeeves-build\dist\jeeves.exe"
+          if (-not (Test-Path -LiteralPath $exe)) { throw "missing jeeves.exe" }
+          # FR #6395: --version must print the PR/push head commit.
+          $prevEap = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
+          $ver = & $exe --version 2>&1
+          $vcode = $LASTEXITCODE
+          $ErrorActionPreference = $prevEap
+          $verText = (($ver | Out-String) -replace '\s', '').Trim()
+          $expected = ($env:WORKFLOW_COMMIT).ToLowerInvariant()
+          if ($vcode -ne 0 -or $verText.ToLowerInvariant() -ne $expected) {
+            throw "jeeves.exe --version='$verText' expected '$expected' (exit $vcode)"
+          }
+          $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $exe).Hash.ToLowerInvariant()
+          $size = (Get-Item -LiteralPath $exe).Length
+          $builtAt = [DateTime]::UtcNow.ToString("o")
+          $runId = [string]$env:GITHUB_RUN_ID
+          $stage = Join-Path $env:RUNNER_TEMP "jeeves-artifact"
+          New-Item -ItemType Directory -Force -Path $stage | Out-Null
+          Copy-Item -LiteralPath $exe -Destination (Join-Path $stage "jeeves.exe")
+          Set-Content -Encoding ascii (Join-Path $stage "jeeves.exe.sha256") "$hash  jeeves.exe"
+          $manifest = [ordered]@{
+            source_commit   = $env:WORKFLOW_COMMIT
+            workflow_commit = $env:WORKFLOW_COMMIT
+            exe_name        = "jeeves.exe"
+            exe_sha256      = $hash
+            exe_size_bytes  = $size
+            build_time_utc  = $builtAt
+            workflow_run_id = $runId
+            builder         = "Build-Jeeves.ps1"
+            fr              = "6395"
+            files           = @("jeeves.exe", "jeeves.exe.sha256", "MANIFEST.json")
+          }
+          ($manifest | ConvertTo-Json -Depth 5) | Set-Content -Encoding utf8 (Join-Path $stage "MANIFEST.json")
+          # Operator-friendly plaintext twin of the JSON fields.
+          @(
+            "source_commit=$($env:WORKFLOW_COMMIT)"
+            "workflow_commit=$($env:WORKFLOW_COMMIT)"
+            "exe_name=jeeves.exe"
+            "exe_sha256=$hash"
+            "exe_size_bytes=$size"
+            "build_time_utc=$builtAt"
+            "workflow_run_id=$runId"
+            "builder=Build-Jeeves.ps1"
+            "fr=6395"
+            "files=jeeves.exe,jeeves.exe.sha256,MANIFEST.json"
+          ) | Set-Content -Encoding ascii (Join-Path $stage "provenance.txt")
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: jeeves
+          path: ${{ runner.temp }}/jeeves-artifact
+          if-no-files-found: error

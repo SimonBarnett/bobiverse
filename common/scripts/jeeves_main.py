@@ -1,6 +1,7 @@
 """FR #1993: jeeves.exe entry — chair + BobCallback one process.
 
 Modes:
+  --version     print embedded source commit SHA and exit (FR #6395)
   --self-test   offline/live checks, exit 0/1/2, optional JSON (WP2: --check)
   --heal        deterministic allowlist repairs (WP2: --dry-run / --force-orphan-busy;
                 FR #2412: if still failing, start one rate-limited maintenance agent)
@@ -21,6 +22,17 @@ import time
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
+
+
+
+def get_source_commit() -> str:
+    """FR #6395: embedded checkout SHA for ``jeeves.exe --version``."""
+    try:
+        from jeeves_build_meta import SOURCE_COMMIT as _sc
+
+        return str(_sc or "unknown").strip() or "unknown"
+    except Exception:
+        return "unknown"
 
 
 def harden_stdio_replace() -> None:
@@ -707,6 +719,7 @@ def main(argv: list[str] | None = None) -> int:
             sys.stderr.write(f"WARN FR #5050 jeeves install report: {type(inner).__name__}\n")
     argv = list(sys.argv[1:] if argv is None else argv)
     p = argparse.ArgumentParser(description="jeeves.exe foundation (FR #1993)")
+    p.add_argument("--version", action="store_true", help="print embedded source commit SHA and exit (FR #6395)")
     p.add_argument("--self-test", action="store_true")
     p.add_argument("--heal", action="store_true", help="WP2: deterministic allowlist heal")
     p.add_argument("--dry-run", action="store_true", help="with --heal: report actions only")
@@ -740,6 +753,10 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--port", type=int, default=7700)
     p.add_argument("--nick", default="Jeeves")
     args, unknown = p.parse_known_args(argv)
+
+    if args.version:
+        safe_print(get_source_commit())
+        return 0
 
     home = resolve_digest_home(digest_home=args.digest_home or "", home=args.home or "")
     chair_home = resolve_chair_home(home=args.home or "") if (args.home or "").strip() else resolve_chair_home()

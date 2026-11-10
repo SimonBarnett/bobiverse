@@ -65,6 +65,18 @@ Exit codes match `Invoke-JeevesMonitorCheck`: **0=ok, 1=finding, 2=error**.
 - **FR #2522 plugin checks:** `--self-test` also loads `check_<name>.py` from `jeeves/checks` (registry: `common/scripts/jeeves_checks.py`; bundled by `Build-Jeeves.ps1 --add-data`). Unknown names still exit 2; a broken plugin is an error, not a crash. New checks ship via PR + MRB only.
 - Shop empty reply: `format_nothing_queued` is ALWAYS the single short line `<nick>: nothing queued` (Jeeves must hand out work, never a summary). The breakdown `format_empty_offer_detail` (`0 offerable under focus (N unaccepted, X out-of-focus, Y require_machine, self_mrb=..., ledger=..., sticky=...)`) goes to the chair log only (FR #2309). Sticky same-nick MRB offers without ACK stop refreshing `offered_ts` and clear after `OFFER_STICKY_MAX` rebroadcasts.
 
+
+## CI artifact (FR #6395)
+
+GitHub Actions workflow `.github/workflows/build-jeeves.yml` builds `jeeves.exe` on `windows-latest` via `jeeves/scripts/Build-Jeeves.ps1` on `workflow_dispatch` and on `pull_request` / `push` to `main` when `jeeves/**`, `common/**`, the workflow, or `common/tests/test_fr6395_jeeves_build_ci.py` change. The job uploads artifact `jeeves` with:
+
+- `jeeves.exe`
+- `jeeves.exe.sha256`
+- `MANIFEST.json` (source commit SHA, exe SHA-256, size bytes, build time UTC, workflow run id, file list)
+- `provenance.txt` (same fields as plaintext)
+
+`jeeves.exe --version` prints the embedded source commit. **Installation stays manual (Slab):** download the artifact for the desired main SHA, verify `Get-FileHash` matches `MANIFEST.json` / `jeeves.exe.sha256`, back up the live exe, copy the new `jeeves.exe`, restart only `ircJeeves`, then confirm `--version` and `--self-test`. **Rollback:** restore the backed-up exe and restart. No release, MSI, or automatic service restart from this workflow. Same pattern as `build-bob-worker.yml` (FR #6349).
+
 ## Acceptance metrics
 
 | Id | Metric | Target |
