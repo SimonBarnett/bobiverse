@@ -122,3 +122,4 @@ Hotpatch = back up `<ai root>\jeeves`, copy changed `scripts\*`, `Restart-Servic
 - When requeue_reopened_issue puts an FR back in unaccepted, also clear ledger fr_done in the same locked step (pass home); keep the hold when there is no reopen and an open Closes-PR still covers the issue. (context: FR #4695 / tip #4697)
 
 - FR #5510: stuck-job sweep every 10 min — classify open/queue work, release silent/dead-holder accepts (30m), enqueue untracked offerable, digest stuck + !stuck; never touch needs_human/require_machine/self-MRB; no merge/close.
+- **FR #6395:** Jeeves freeze CI mirrors build-bob-worker: Build-Jeeves.ps1 -SourceCommit overwrites jeeves_build_meta stub then restores; artifact MANIFEST.json carries source SHA/hash/size/run id for Slab hash-check install (moved from wrong-book tip #6398; product PR #6397).
