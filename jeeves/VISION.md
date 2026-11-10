@@ -77,11 +77,7 @@ LOCKED
 
 ## Screens
 
-<<<<<<< HEAD
-Operator surfaces today: IRC commands, chair logs, webhook health, and the MONITORING agent. FR #6436 locks an **internal-only appliance settings foundation** (schema + LAN gate + secret-safe API helpers + docs for `jeeves.ntsa.uk`); FR #6440 binds the LAN HTTP schema UI; FR #6443 adds restart-when-idle + read-only status; AD/CredMan login and NSSM apply remain child FRs. Never expose settings via `bob.ntsa.uk` or public Cloudflare.
-=======
-Operator surfaces today: IRC commands, chair logs, webhook health, and the MONITORING agent. FR #6436 locks an **internal-only appliance settings foundation** (schema + LAN gate + secret-safe API helpers + docs for `jeeves.ntsa.uk`); FR #6440 binds the LAN HTTP schema UI (off by default); FR #6441 locks AD/CredMan auth + sessions; NSSM apply (#6442), idle restart and read-only status (#6443) remain child FRs. Never expose settings via `bob.ntsa.uk` or public Cloudflare.
->>>>>>> origin/main
+Operator surfaces today: IRC commands, chair logs, webhook health, and the MONITORING agent. FR #6436 locks an **internal-only appliance settings foundation** (schema + LAN gate + secret-safe API helpers + docs for `jeeves.ntsa.uk`); FR #6440 binds the LAN HTTP schema UI (off by default); FR #6441 locks AD/CredMan auth + sessions; FR #6443 adds restart-when-idle + read-only status; NSSM apply (#6442) remains a child FR. Never expose settings via `bob.ntsa.uk` or public Cloudflare.
 
 | id | file | state |
 |----|------|-------|

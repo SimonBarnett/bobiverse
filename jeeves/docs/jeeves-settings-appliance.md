@@ -16,11 +16,7 @@ on Cloudflare or public DNS. Do **not** front it via `bob.ntsa.uk` or
    secret-safe GET/PUT, backup/audit/rollback) and
    `common/scripts/jeeves_settings_auth.py` (AD/CredMan + sessions).
 5. LAN HTTP UI: see **Enable the LAN HTTP UI (FR #6440)** below.
-<<<<<<< HEAD
-6. AD/CredMan login (FR #6441), NSSM apply (FR #6442). Restart-when-idle + status: see below (FR #6443).
-=======
-6. NSSM apply is #6442; restart-when-idle / status is #6443.
->>>>>>> origin/main
+6. AD/CredMan login is FR #6441 (see Auth below). NSSM apply is #6442. Restart-when-idle + status: see below (FR #6443).
 
 ## Auth (FR #6441)
 
