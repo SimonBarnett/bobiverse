@@ -367,6 +367,7 @@ routes to bobiverse via the split rule.
 - is_intake_harvest_receipt_pr: run docs/intake-harvest-only path filter BEFORE lesson(/harvest-lesson exemptions; resolve_intake_pr_changed_paths fetches /pulls/n/files when blob has no paths
 - OpenCode finish: treat origin tip and open PR as progress; before GIVEUP open PR for pushed tip with no PR; keep PR body and scratch inside job worktree never %TEMP%; prune Temp extra worktrees at job end
 - Pool tiles with no reset must show reading updated HH:mm (local from fetched_at) so unchanged fuel does not look frozen; stale threshold separates not-updated from unchanged
+- jeeves/docs Markdown must reject stray control bytes (BEL/lone CR); pin find_control_chars with a BEL unit negative as well as the live-docs scan (FR #6384).
 
 ## Harvest digest (lessons audit 2026-10-06)
 
