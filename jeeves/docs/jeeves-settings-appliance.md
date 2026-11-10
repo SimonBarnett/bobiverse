@@ -17,7 +17,7 @@ on Cloudflare or public DNS. Do **not** front it via `bob.ntsa.uk` or
    `common/scripts/jeeves_settings_auth.py` (AD/CredMan + sessions).
 5. LAN HTTP UI: see **Enable the LAN HTTP UI (FR #6440)** below.
 6. NSSM env migrate/apply is FR #6442 (see **Migrate NSSM env** below).
-   Restart-when-idle / status is FR #6443. Auth is FR #6441 (see **Auth** below).
+   Auth is FR #6441 (see **Auth** below). Restart-when-idle + status is FR #6443 (see below).
 
 ## Auth (FR #6441)
 
@@ -49,13 +49,28 @@ Off by default. On the chair host (walrus), set NSSM / process env and restart `
 | `JEEVES_SETTINGS_HTTP_PORT` | TCP port (default **7701**) |
 
 Browse `http://jeeves.ntsa.uk:7701/` from a LAN client (or `http://127.0.0.1:7701/` on the host).
-JSON: `GET /api/settings`, `PUT /api/settings/<KEY>`, `POST /api/rollback`, `GET /api/schema`.
+JSON: `GET /api/settings`, `PUT /api/settings/<KEY>`, `POST /api/rollback`, `GET /api/schema`,
+`GET /api/status`, `POST /api/restart-when-idle`.
 
 Socket-layer gate: the server binds only to LAN/loopback and `verify_request` drops non-RFC1918 peers before handlers run. Helpers also reject non-LAN `client_ip`.
 
 **Never** put this behind Cloudflare, `bob.ntsa.uk`, or `irc.ntsa.uk`. Auth helpers are FR #6441 (HTTP cookie/session wire is a follow-up); NSSM apply is FR #6442; restart-when-idle / status is FR #6443.
 
 Module: `common/scripts/jeeves_settings_http.py` (started from `ChairJobs` via `maybe_start_from_chair`).
+
+
+## Restart-when-idle + status (FR #6443)
+
+Read-only status (LAN only):
+
+- HTML: `GET /status`
+- JSON: `GET /api/status` — `version`, `source_commit`, `uptime_s`, `queue`, `seats`, `fuel` (no secrets)
+
+Restart `ircJeeves` only when the accepted queue is empty (no review/job running):
+
+- `POST /api/restart-when-idle` with optional `{"actor":"..."}`
+- If accepted work is present, the request is **deferred** to `settings-restart-pending.json` under chair home; `ChairJobs` ticks `tick_restart_when_idle` on the stall cadence and restarts when idle.
+- CAST IRON: restarts **ircJeeves** only — never Ergo, never `BobIrcd`.
 
 ## Storage
 
@@ -107,6 +122,7 @@ migration.
 ## Operator notes
 
 - Unused: importing the settings modules does not start a server unless
-  `JEEVES_SETTINGS_HTTP=1` (FR #6440).
-- `jeeves_main` applies file-backed settings on start (FR #6442); env still overrides.
-- Restart-required keys are flagged in the schema; idle restart is child FR #6443.
+  JEEVES_SETTINGS_HTTP=1 (FR #6440).
+- jeeves_main applies file-backed settings on start (FR #6442); env still overrides.
+- Restart-required keys are flagged in the schema; use **Restart-when-idle** (FR #6443)
+  so ircJeeves restarts only when accepted work is clear.

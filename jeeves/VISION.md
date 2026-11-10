@@ -62,10 +62,10 @@ ircJeeves (chair)
 BobCallback (:7700)
   └─ /bob/v1/git|intake|report|digest|jira  (IIS TLS)
 
-Appliance settings (FR #6436 + #6440 HTTP + #6441 auth + #6442 migrate/apply)
-  ├─ common/scripts/jeeves_settings.py --- schema, LAN gate, secret-safe API, migrate/apply
+Appliance settings (FR #6436 + #6440 HTTP + #6441 auth + #6442 migrate + #6443 restart/status)
+  ├─ common/scripts/jeeves_settings.py --- schema, LAN, migrate/apply, restart-when-idle, status
   ├─ common/scripts/jeeves_settings_auth.py --- AD/CredMan + sessions; api_*_authed
-  └─ common/scripts/jeeves_settings_http.py --- LAN bind :7701 UI/API; off by default
+  └─ common/scripts/jeeves_settings_http.py --- LAN bind :7701 UI/API/status; off by default
 
 MONITORING agent (jeeves CWD)
   └─ Invoke-JeevesMonitorCheck* --- report via intake; never act as chair
@@ -77,7 +77,7 @@ LOCKED
 
 ## Screens
 
-Operator surfaces today: IRC commands, chair logs, webhook health, and the MONITORING agent. FR #6436 locks an **internal-only appliance settings foundation** (schema + LAN gate + secret-safe API helpers + docs for `jeeves.ntsa.uk`); FR #6440 binds the LAN HTTP schema UI (off by default); FR #6441 locks AD/CredMan auth + sessions; FR #6442 migrates NSSM env into `appliance-settings.json` and applies file settings on start; idle restart and read-only status (#6443) remain child FRs. Never expose settings via `bob.ntsa.uk` or public Cloudflare.
+Operator surfaces today: IRC commands, chair logs, webhook health, and the MONITORING agent. FR #6436 locks an **internal-only appliance settings foundation** (schema + LAN gate + secret-safe API helpers + docs for jeeves.ntsa.uk); FR #6440 binds the LAN HTTP schema UI (off by default); FR #6441 locks AD/CredMan auth + sessions; FR #6442 migrates NSSM env into ppliance-settings.json and applies file settings on start; FR #6443 adds restart-when-idle (ircJeeves only) + read-only status. Never expose settings via ob.ntsa.uk or public Cloudflare.
 
 | id | file | state |
 |----|------|-------|
@@ -92,7 +92,7 @@ Operator surfaces today: IRC commands, chair logs, webhook health, and the MONIT
 - CAST IRON harvest + intake every session; never print secrets
 - Hotpatch: never touch Ergo / `BobIrcd`; restart only `ircJeeves`
 - MONITORING agent reports via intake and never `!assign` / queue edits
-- FR #6436 appliance settings foundation: schema covers inventoried Jeeves-read settings (gap test); reject non-RFC1918 sources; secrets return only set/unset; validate + backup + audit + rollback; docs for internal DNS `jeeves.ntsa.uk` (never public / never via bob.ntsa.uk); unused = no behaviour change (no server on import)
+- FR #6436 appliance settings foundation: schema covers inventoried Jeeves-read settings (gap test); reject non-RFC1918 sources; secrets return only set/unset; validate + backup + audit + rollback; docs for internal DNS jeeves.ntsa.uk (never public / never via bob.ntsa.uk); unused = no behaviour change (no server on import)
 - FR #6441 appliance auth: LAN + Windows/AD LogonUser or CredMan `Jeeves/ApplianceAdmin`; session token hashes only; authed get/put/rollback; never log/return passwords; unused = no server on import
 - FR #6440 LAN HTTP settings UI: off by default; bind RFC1918/loopback only; schema-driven JSON/HTML via `jeeves_settings_http.py`
 - FR #6442 NSSM migrate/apply: SCHEMA file-backed settings; `migrate_nssm_env_to_file` + `apply_file_settings` on `jeeves_main` start; env still overrides; secrets audited set/unset only
@@ -101,6 +101,5 @@ Operator surfaces today: IRC commands, chair logs, webhook health, and the MONIT
 
 - Follow-up: LAN HTTP UI (#6440) must call FR #6441 `api_*_authed` + login/cookie session wire (UI still uses unauthed helpers until that lands)
 
-- Child FR: restart-when-idle for restart-required settings; read-only status (version/SHA, uptime, queue, seats, fuel)
 - Exact digest ghost-nick TTL vs live_seat_nicks under heavy report lag beyond FR #5088 exact-seat give-up
 - Whether UAT dead-author inherit should ever narrow further after more recycle evidence
