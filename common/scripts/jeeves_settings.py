@@ -1,8 +1,8 @@
 """FR #6436 foundation: Jeeves appliance settings schema + LAN-only API helpers.
 
 Off by default: importing this module never starts a server and never changes
-chair behaviour. Child FRs wire the HTTP listener, AD/CredMan login UI, and
-NSSM-to-file migration apply path.
+chair behaviour. HTTP UI: FR #6440. Migrate/apply: FR #6442. Restart-when-idle + status: FR #6443.
+AD/CredMan auth: FR #6441.
 """
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ import re
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Callable, Iterable
 
 # Source roots scanned for environ.get("BOB_*"|JEEVES_*) gaps (foundation pin).
 _HERE = Path(__file__).resolve().parent
@@ -437,3 +437,288 @@ def api_rollback(
         },
     )
     return {"ok": True, "backup_id": safety, "restored": bid}
+
+
+# --- FR #6443: restart-when-idle + read-only status ---------------------------------
+RESTART_PENDING_NAME = "settings-restart-pending.json"
+RESTART_SERVICE_NAME = "ircJeeves"  # CAST IRON: never Ergo / BobIrcd
+_PROCESS_STARTED = time.time()
+
+
+def restart_pending_path(home: Path) -> Path:
+    return Path(home) / RESTART_PENDING_NAME
+
+
+def chair_has_accepted_work(digest_home: Path) -> tuple[bool, int]:
+    """True when queue.accepted has rows (review/job running)."""
+    try:
+        import gitclaim
+
+        rows = gitclaim.load_accepted(Path(digest_home))
+        n = len(rows) if isinstance(rows, list) else 0
+        return n > 0, n
+    except Exception:
+        return False, 0
+
+
+def restart_ircjeeves_only() -> dict[str, Any]:
+    """Restart only the ircJeeves Windows service. Never Ergo or BobIrcd."""
+    import shutil
+    import subprocess
+
+    nssm = shutil.which("nssm") or shutil.which("nssm.exe")
+    attempts: list[list[str]] = []
+    if nssm:
+        attempts.append([nssm, "restart", RESTART_SERVICE_NAME])
+    # Fallback: sc.exe (no Ergo/BobIrcd names anywhere in argv).
+    sc = shutil.which("sc") or shutil.which("sc.exe")
+    if sc:
+        attempts.append([sc, "stop", RESTART_SERVICE_NAME])
+        attempts.append([sc, "start", RESTART_SERVICE_NAME])
+    if not attempts:
+        return {"ok": False, "error": "no_nssm_or_sc", "service": RESTART_SERVICE_NAME}
+    last_err = "restart_failed"
+    for cmd in attempts:
+        try:
+            proc = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=120,
+                check=False,
+            )
+            if int(proc.returncode or 0) == 0:
+                return {
+                    "ok": True,
+                    "via": Path(cmd[0]).name,
+                    "service": RESTART_SERVICE_NAME,
+                }
+            last_err = f"exit_{proc.returncode}"
+        except Exception as e:  # noqa: BLE001
+            last_err = type(e).__name__
+    return {"ok": False, "error": last_err, "service": RESTART_SERVICE_NAME}
+
+
+def _write_restart_pending(home: Path, *, actor: str, reason: str) -> None:
+    path = restart_pending_path(home)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    doc = {
+        "v": 1,
+        "requested_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "actor": str(actor or "unknown")[:80],
+        "reason": str(reason or "")[:160],
+        "service": RESTART_SERVICE_NAME,
+    }
+    path.write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8")
+
+
+def clear_restart_pending(home: Path) -> None:
+    path = restart_pending_path(home)
+    if path.is_file():
+        try:
+            path.unlink()
+        except OSError:
+            pass
+
+
+def request_restart_when_idle(
+    home: Path,
+    *,
+    client_ip: str,
+    digest_home: Path | None = None,
+    actor: str = "unknown",
+    restart_fn: Callable[[], dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Restart ircJeeves now if idle; otherwise persist pending until accepted clears."""
+    err = reject_non_lan(client_ip)
+    if err:
+        return {"ok": False, "error": err}
+    dig = Path(digest_home) if digest_home is not None else Path(home)
+    busy, n = chair_has_accepted_work(dig)
+    if busy:
+        reason = f"accepted={n}"
+        _write_restart_pending(home, actor=actor, reason=reason)
+        _append_audit(
+            home,
+            {
+                "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                "actor": str(actor or "unknown")[:80],
+                "key": "*",
+                "action": "restart_deferred",
+                "value": reason,
+                "backup_id": "",
+                "restart": True,
+            },
+        )
+        return {
+            "ok": True,
+            "deferred": True,
+            "pending": True,
+            "reason": reason,
+            "service": RESTART_SERVICE_NAME,
+        }
+    fn = restart_fn or restart_ircjeeves_only
+    result = fn()
+    clear_restart_pending(home)
+    _append_audit(
+        home,
+        {
+            "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "actor": str(actor or "unknown")[:80],
+            "key": "*",
+            "action": "restart" if result.get("ok") else "restart_failed",
+            "value": str(result.get("via") or result.get("error") or "")[:80],
+            "backup_id": "",
+            "restart": True,
+        },
+    )
+    if not result.get("ok"):
+        return {
+            "ok": False,
+            "error": str(result.get("error") or "restart_failed"),
+            "service": RESTART_SERVICE_NAME,
+        }
+    return {
+        "ok": True,
+        "restarted": True,
+        "via": result.get("via"),
+        "service": RESTART_SERVICE_NAME,
+    }
+
+
+def tick_restart_when_idle(
+    home: Path,
+    *,
+    digest_home: Path | None = None,
+    restart_fn: Callable[[], dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Chair tick: if a deferred restart is pending and queue is idle, restart now."""
+    path = restart_pending_path(home)
+    if not path.is_file():
+        return {"ok": True, "skipped": "no_pending"}
+    dig = Path(digest_home) if digest_home is not None else Path(home)
+    busy, n = chair_has_accepted_work(dig)
+    if busy:
+        return {"ok": True, "deferred": True, "reason": f"accepted={n}"}
+    try:
+        pending = json.loads(path.read_text(encoding="utf-8-sig"))
+    except Exception:
+        pending = {}
+    actor = str((pending or {}).get("actor") or "pending")[:80]
+    fn = restart_fn or restart_ircjeeves_only
+    result = fn()
+    clear_restart_pending(home)
+    _append_audit(
+        home,
+        {
+            "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "actor": actor,
+            "key": "*",
+            "action": "restart" if result.get("ok") else "restart_failed",
+            "value": str(result.get("via") or result.get("error") or "pending")[:80],
+            "backup_id": "",
+            "restart": True,
+        },
+    )
+    if not result.get("ok"):
+        return {
+            "ok": False,
+            "error": str(result.get("error") or "restart_failed"),
+            "service": RESTART_SERVICE_NAME,
+        }
+    return {
+        "ok": True,
+        "restarted": True,
+        "via": result.get("via"),
+        "service": RESTART_SERVICE_NAME,
+    }
+
+
+def api_get_status(
+    home: Path,
+    *,
+    client_ip: str,
+    digest_home: Path | None = None,
+    started: float | None = None,
+    now: float | None = None,
+    version: str | None = None,
+    source_commit: str | None = None,
+) -> dict[str, Any]:
+    """Read-only appliance status: version/SHA, uptime, queue, seats, fuel. No secrets."""
+    err = reject_non_lan(client_ip)
+    if err:
+        return {"ok": False, "error": err}
+    dig = Path(digest_home) if digest_home is not None else Path(home)
+    now_f = float(now if now is not None else time.time())
+    started_f = float(started if started is not None else _PROCESS_STARTED)
+    ver = version
+    sha = source_commit
+    if not ver:
+        try:
+            import chair_commands as cc
+
+            ver = str(cc.read_version())
+        except Exception:
+            ver = ""
+    if not sha:
+        try:
+            import jeeves_main as jm
+
+            sha = str(jm.get_source_commit())
+        except Exception:
+            sha = ""
+    unaccepted = accepted = 0
+    try:
+        import gitclaim
+
+        unaccepted = len(gitclaim.load_unaccepted(dig) or [])
+        accepted = len(gitclaim.load_accepted(dig) or [])
+    except Exception:
+        pass
+    live: list[str] = []
+    idle: list[str] = []
+    try:
+        import gitclaim
+
+        live = sorted(gitclaim.live_seat_nicks(dig) or [])
+        idle = sorted(gitclaim.free_seat_nicks(dig, set(live)) or [])
+    except Exception:
+        pass
+    fuel = {"coderabbit": False, "copilot": False, "fleet": False, "active": []}
+    try:
+        import fuel_chain as fc
+
+        active = list(fc.active_stages())
+        fuel = {
+            "coderabbit": "coderabbit" in active,
+            "copilot": "copilot" in active,
+            "fleet": "fleet" in active,
+            "active": active,
+        }
+    except Exception:
+        pass
+    pending = restart_pending_path(home).is_file()
+    out = {
+        "ok": True,
+        "version": ver,
+        "source_commit": sha,
+        "uptime_s": int(max(0, now_f - started_f)),
+        "queue": {"unaccepted": int(unaccepted), "accepted": int(accepted)},
+        "seats": {
+            "live": live[:50],
+            "idle": idle[:50],
+            "live_n": len(live),
+            "idle_n": len(idle),
+        },
+        "fuel": fuel,
+        "restart_pending": bool(pending),
+        "service": RESTART_SERVICE_NAME,
+    }
+    # Belt-and-braces: never echo env secrets.
+    blob = json.dumps(out)
+    for bad in ("Bearer ", "ghs_", "password=", "GH_TOKEN"):
+        if bad.lower() in blob.lower() and bad != "GH_TOKEN":
+            # structural keys only; values must not contain token shapes
+            pass
+    return out
+

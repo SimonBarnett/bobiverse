@@ -15,8 +15,7 @@ on Cloudflare or public DNS. Do **not** front it via `bob.ntsa.uk` or
 4. Foundation module: `common/scripts/jeeves_settings.py` (schema, LAN gate,
    secret-safe GET, validated PUT, timestamped backups, audit JSONL, rollback).
 5. LAN HTTP UI: see **Enable the LAN HTTP UI (FR #6440)** below.
-6. AD/CredMan login (FR #6441), NSSM apply (FR #6442), and restart-when-idle /
-   status (FR #6443) are separate child FRs.
+6. AD/CredMan login (FR #6441), NSSM apply (FR #6442). Restart-when-idle + status: see below (FR #6443).
 
 
 ## Enable the LAN HTTP UI (FR #6440)
@@ -30,13 +29,28 @@ Off by default. On the chair host (walrus), set NSSM / process env and restart `
 | `JEEVES_SETTINGS_HTTP_PORT` | TCP port (default **7701**) |
 
 Browse `http://jeeves.ntsa.uk:7701/` from a LAN client (or `http://127.0.0.1:7701/` on the host).
-JSON: `GET /api/settings`, `PUT /api/settings/<KEY>`, `POST /api/rollback`, `GET /api/schema`.
+JSON: `GET /api/settings`, `PUT /api/settings/<KEY>`, `POST /api/rollback`, `GET /api/schema`,
+`GET /api/status`, `POST /api/restart-when-idle`.
 
 Socket-layer gate: the server binds only to LAN/loopback and `verify_request` drops non-RFC1918 peers before handlers run. Helpers also reject non-LAN `client_ip`.
 
 **Never** put this behind Cloudflare, `bob.ntsa.uk`, or `irc.ntsa.uk`. AD/CredMan login is FR #6441; NSSM apply is FR #6442; restart-when-idle / status is FR #6443.
 
 Module: `common/scripts/jeeves_settings_http.py` (started from `ChairJobs` via `maybe_start_from_chair`).
+
+
+## Restart-when-idle + status (FR #6443)
+
+Read-only status (LAN only):
+
+- HTML: `GET /status`
+- JSON: `GET /api/status` — `version`, `source_commit`, `uptime_s`, `queue`, `seats`, `fuel` (no secrets)
+
+Restart `ircJeeves` only when the accepted queue is empty (no review/job running):
+
+- `POST /api/restart-when-idle` with optional `{"actor":"..."}`
+- If accepted work is present, the request is **deferred** to `settings-restart-pending.json` under chair home; `ChairJobs` ticks `tick_restart_when_idle` on the stall cadence and restarts when idle.
+- CAST IRON: restarts **ircJeeves** only — never Ergo, never `BobIrcd`.
 
 ## Storage
 
@@ -53,5 +67,5 @@ when that happens. Secret keys return only `set` / `unset` (never plaintext).
 
 - Unused: importing the module does not start a server and does not change
   chair behaviour.
-- Restart-required keys are flagged in the schema; foundation does not restart
-  `ircJeeves` (child FR: restart when idle).
+- Restart-required keys are flagged in the schema; use **Restart-when-idle** (FR #6443)
+  so `ircJeeves` restarts only when accepted work is clear.

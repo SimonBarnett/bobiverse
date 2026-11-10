@@ -8,6 +8,7 @@ bob.ntsa.uk / irc.ntsa.uk / Cloudflare. Auth is child FR #6441.
 from __future__ import annotations
 
 import json
+import time
 import os
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -113,7 +114,7 @@ button{{margin-top:1rem;padding:.4rem .8rem;}}
 </style></head><body>
 <h1>Jeeves appliance settings</h1>
 <p class="note">LAN-only (FR #6440). Secrets are write-only (set/unset).
-Auth lands in FR #6441. Never expose via bob.ntsa.uk.</p>
+Auth lands in FR #6441. Never expose via bob.ntsa.uk. <a href="/status">Status</a></p>
 <table>
 <thead><tr><th>Key</th><th>Type</th><th>Value</th><th>Source</th><th>Restart</th><th>Description</th></tr></thead>
 <tbody>
@@ -148,14 +149,64 @@ document.getElementById('save').onclick = save;
 """
 
 
+def _render_status_html(status: dict[str, Any]) -> str:
+    q = status.get("queue") if isinstance(status.get("queue"), dict) else {}
+    seats = status.get("seats") if isinstance(status.get("seats"), dict) else {}
+    fuel = status.get("fuel") if isinstance(status.get("fuel"), dict) else {}
+    pending = "yes" if status.get("restart_pending") else "no"
+    return f"""<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8"/>
+<title>Jeeves status</title>
+<style>body{{font-family:system-ui,sans-serif;margin:1.5rem;}} code{{font-size:.9em;}}</style>
+</head><body>
+<h1>Jeeves status</h1>
+<p class="note">Read-only (FR #6443). No secrets. <a href="/">Settings</a></p>
+<ul>
+<li>version: <code>{status.get("version") or ""}</code></li>
+<li>source_commit: <code>{status.get("source_commit") or ""}</code></li>
+<li>uptime_s: <code>{status.get("uptime_s")}</code></li>
+<li>queue: unaccepted=<code>{q.get("unaccepted")}</code> accepted=<code>{q.get("accepted")}</code></li>
+<li>seats: live=<code>{seats.get("live_n")}</code> idle=<code>{seats.get("idle_n")}</code></li>
+<li>fuel active: <code>{", ".join(fuel.get("active") or []) or "(none)"}</code></li>
+<li>restart_pending: <code>{pending}</code></li>
+</ul>
+<p><button type="button" id="restart">Restart ircJeeves when idle</button>
+<span id="rstatus"></span></p>
+<script>
+document.getElementById('restart').onclick = async () => {{
+  const el = document.getElementById('rstatus');
+  el.textContent = 'requesting…';
+  const r = await fetch('/api/restart-when-idle', {{
+    method: 'POST',
+    headers: {{'Content-Type': 'application/json'}},
+    body: JSON.stringify({{actor: 'ui'}})
+  }});
+  const j = await r.json().catch(() => ({{}}));
+  el.textContent = JSON.stringify(j);
+}};
+</script>
+</body></html>
+"""
+
+
 class SettingsHTTPServer(ThreadingHTTPServer):
     """Threading server that refuses non-LAN peers before handle_request."""
 
     daemon_threads = True
     allow_reuse_address = True
 
-    def __init__(self, server_address, RequestHandlerClass, *, home: Path):
+    def __init__(
+        self,
+        server_address,
+        RequestHandlerClass,
+        *,
+        home: Path,
+        digest_home: Path | None = None,
+        started: float | None = None,
+    ):
         self.home = Path(home)
+        self.digest_home = Path(digest_home) if digest_home is not None else Path(home)
+        self.started = float(started if started is not None else time.time())
         super().__init__(server_address, RequestHandlerClass)
 
     def verify_request(self, request, client_address) -> bool:  # noqa: ANN001
@@ -235,6 +286,29 @@ class _Handler(BaseHTTPRequestHandler):
             ]
             self._send_json(200, {"ok": True, "schema": rows})
             return
+        if path in ("/status", "/ui/status"):
+            view = js.api_get_status(
+                home,
+                client_ip=ip,
+                digest_home=self.server.digest_home,
+                started=self.server.started,
+            )
+            if not view.get("ok"):
+                self._send_json(403, view)
+                return
+            html = _render_status_html(view)
+            self._send(200, html.encode("utf-8"), "text/html; charset=utf-8")
+            return
+        if path == "/api/status":
+            view = js.api_get_status(
+                home,
+                client_ip=ip,
+                digest_home=self.server.digest_home,
+                started=self.server.started,
+            )
+            code = 200 if view.get("ok") else 403
+            self._send_json(code, view)
+            return
         self._send_json(404, {"ok": False, "error": "not found"})
 
     def do_PUT(self) -> None:  # noqa: N802
@@ -259,18 +333,28 @@ class _Handler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:  # noqa: N802
         ip = _client_ip(self)
         path = urlparse(self.path).path
-        if path != "/api/rollback":
-            self._send_json(404, {"ok": False, "error": "not found"})
-            return
         doc = self._read_json()
-        result = js.api_rollback(
-            self.server.home,
-            client_ip=ip,
-            backup_id=str(doc.get("backup_id") or ""),
-            actor=str(doc.get("actor") or "http")[:80],
-        )
-        code = 200 if result.get("ok") else (403 if "forbidden" in str(result.get("error") or "") else 400)
-        self._send_json(code, result)
+        if path == "/api/rollback":
+            result = js.api_rollback(
+                self.server.home,
+                client_ip=ip,
+                backup_id=str(doc.get("backup_id") or ""),
+                actor=str(doc.get("actor") or "http")[:80],
+            )
+            code = 200 if result.get("ok") else (403 if "forbidden" in str(result.get("error") or "") else 400)
+            self._send_json(code, result)
+            return
+        if path == "/api/restart-when-idle":
+            result = js.request_restart_when_idle(
+                self.server.home,
+                client_ip=ip,
+                digest_home=self.server.digest_home,
+                actor=str(doc.get("actor") or "http")[:80],
+            )
+            code = 200 if result.get("ok") else (403 if "forbidden" in str(result.get("error") or "") else 400)
+            self._send_json(code, result)
+            return
+        self._send_json(404, {"ok": False, "error": "not found"})
 
 
 def start_settings_http(
@@ -278,6 +362,8 @@ def start_settings_http(
     *,
     bind: str | None = None,
     port: int | None = None,
+    digest_home: Path | None = None,
+    started: float | None = None,
 ) -> SettingsHTTPServer | None:
     """Start the LAN settings listener when enabled. None when off or bind refused."""
     if not settings_http_enabled():
@@ -291,7 +377,13 @@ def start_settings_http(
     if err:
         return None
     try:
-        srv = SettingsHTTPServer((host, p), _Handler, home=Path(home))
+        srv = SettingsHTTPServer(
+            (host, p),
+            _Handler,
+            home=Path(home),
+            digest_home=Path(digest_home) if digest_home is not None else Path(home),
+            started=started,
+        )
     except OSError:
         return None
     t = threading.Thread(target=srv.serve_forever, name="jeeves-settings-http", daemon=True)
@@ -313,12 +405,16 @@ def maybe_start_from_chair(
     home: Path,
     *,
     log: Callable[[str], None] | None = None,
+    digest_home: Path | None = None,
+    started: float | None = None,
 ) -> SettingsHTTPServer | None:
     """Chair hook: start when enabled; log one line; never raise."""
     try:
         if not settings_http_enabled():
             return None
-        srv = start_settings_http(home)
+        srv = start_settings_http(
+            home, digest_home=digest_home, started=started
+        )
         if log:
             if srv is None:
                 log("WARN settings-http enabled but failed to bind (check LAN bind/port)")

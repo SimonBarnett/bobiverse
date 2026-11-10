@@ -624,7 +624,10 @@ class ChairJobs:
             import jeeves_settings_http as _settings_http
 
             self._settings_http = _settings_http.maybe_start_from_chair(
-                self.home, log=self.log
+                self.home,
+                log=self.log,
+                digest_home=self.digest_home,
+                started=t0,
             )
         except Exception:  # noqa: BLE001
             self._settings_http = None
@@ -772,6 +775,20 @@ class ChairJobs:
                 self._stall_scan()
             except Exception as exc:  # noqa: BLE001
                 self.log(f"WARN stall-scan: {type(exc).__name__}: {exc}")
+            # FR #6443: deferred settings restart when accepted queue is clear.
+            try:
+                import jeeves_settings as _js_restart
+
+                tick = _js_restart.tick_restart_when_idle(
+                    self.home, digest_home=self.digest_home
+                )
+                if tick.get("restarted"):
+                    self.log(
+                        "INFO settings-restart "
+                        f"via={tick.get('via')} service={tick.get('service')}"
+                    )
+            except Exception as exc:  # noqa: BLE001
+                self.log(f"WARN settings-restart: {type(exc).__name__}: {exc}")
         now = self.clock()
         if now >= self.next_stuck_sweep:
             self.next_stuck_sweep = now + STUCK_SWEEP_S
