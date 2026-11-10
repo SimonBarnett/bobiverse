@@ -3,8 +3,9 @@
 
 Phase-1 events: issue closed, PR merged, PR closed (unmerged).
 Phase-2: optional waiting_on registry narrows reports.
-Event source (FR #6391): poll GitHub closed issues/PRs for focus repos when
-``JEEVES_TICKET_CLOSURE_FIXTURE`` is unset. Fixture stays for tests only.
+Event source (FR #6391 / #6400): poll GitHub closed issues/PRs for focus repos when
+``JEEVES_TICKET_CLOSURE_FIXTURE`` is unset. Per-repo ``poll_cursors`` + page
+pagination (FR #6400). Fixture stays for tests only.
 Wake transport (FR #6391): HTTPS POST to ``JEEVES_TICKET_CLOSURE_WAKE_URL``
 (secret from env, never logged). Failed POST stays ``pending`` with backoff.
 Poll health (FR #6401): ``last_poll_ok_at`` / ``last_poll_error`` / ``poll_outcome``.
@@ -48,6 +49,8 @@ _WAKE_HTTP_POST: Callable[..., Any] | None = None
 _CLOCK: Callable[[], float] = time.time
 WAKE_BACKOFF_S = 60.0
 WAKE_BACKOFF_MAX_S = 900.0
+POLL_PER_PAGE = 50
+POLL_MAX_PAGES = 20
 
 
 def _utc_iso_now() -> str:
@@ -173,7 +176,11 @@ def _default_github_fetch(url: str, *, token: str = "") -> Any:
     )
     try:
         with urllib.request.urlopen(req, timeout=30) as resp:
-            return json.loads(resp.read().decode("utf-8"))
+            body = json.loads(resp.read().decode("utf-8"))
+            link = resp.headers.get("Link") if hasattr(resp, "headers") else None
+            if link:
+                return body, link
+            return body
     except urllib.error.HTTPError as e:
         if e.code in (403, 429):
             raise
@@ -216,50 +223,116 @@ def _gh_issue_to_event(repo: str, item: dict[str, Any]) -> dict[str, Any] | None
     return row
 
 
+def _parse_link_next(link_header: str | None) -> str | None:
+    """Return the URL for rel=next from a GitHub Link header, if present."""
+    if not link_header:
+        return None
+    for part in str(link_header).split(","):
+        chunk = part.strip()
+        if 'rel="next"' not in chunk and "rel=next" not in chunk:
+            continue
+        if "<" in chunk and ">" in chunk:
+            return chunk[chunk.index("<") + 1 : chunk.index(">")].strip()
+    return None
+
+
+def _fetch_page(
+    fetcher: Callable[..., Any],
+    url: str,
+    *,
+    token: str,
+) -> tuple[list[Any], str | None]:
+    """Call *fetcher*; accept a bare list or ``(list, link_header)`` tuple."""
+    raw = fetcher(url, token=token)
+    if isinstance(raw, tuple) and len(raw) >= 1:
+        data = raw[0]
+        link = raw[1] if len(raw) > 1 else None
+        return (data if isinstance(data, list) else [], link if isinstance(link, str) else None)
+    if isinstance(raw, list):
+        return raw, None
+    return [], None
+
+
 def _poll_github_closes(
     repos: set[str],
     *,
     token: str,
-    since: str | None,
+    cursors: dict[str, str],
     fetch: Callable[..., Any] | None = None,
-) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    """Poll GitHub Issues API (includes PRs) for closes since *since* (ISO8601).
+    per_page: int = POLL_PER_PAGE,
+    max_pages: int = POLL_MAX_PAGES,
+) -> tuple[list[dict[str, Any]], dict[str, str], dict[str, Any]]:
+    """Poll GitHub Issues API per repo with pagination (FR #6400 / #6401).
 
-    When *since* is missing, return no rows (caller seeds the cursor to now so
-    the first live poll does not replay historical closes / flood wake).
+    Each focused repo keeps its own ``since`` cursor. Pages continue via
+    ``page=`` until a short page, or via ``Link: rel=next`` when the fetcher
+    returns a link header. Cursors advance from every fetched close before any
+    waiting filter is applied by the caller.
 
-    Returns ``(events, meta)`` where meta has ``attempted``, ``ok_repos``,
-    ``failed_repos`` (FR #6401).
+    Returns ``(events, updated_cursors, meta)`` where meta has ``attempted``,
+    ``ok_repos``, ``failed_repos`` (FR #6401).
     """
     fetcher = fetch or _GITHUB_FETCH or _default_github_fetch
     out: list[dict[str, Any]] = []
+    updated = {str(k): str(v) for k, v in cursors.items() if str(k).strip() and str(v).strip()}
     meta: dict[str, Any] = {"attempted": [], "ok_repos": [], "failed_repos": []}
-    if not repos or not token or not since:
-        return out, meta
+    if not repos or not token:
+        return out, updated, meta
     for repo in sorted(repos):
         if "/" not in repo:
             continue
+        since = str(updated.get(repo) or "").strip()
+        if not since:
+            continue
         meta["attempted"].append(repo)
-        q = f"state=closed&sort=updated&direction=asc&per_page=50&since={since}"
-        url = f"https://api.github.com/repos/{repo}/issues?{q}"
-        try:
-            data = fetcher(url, token=token)
-        except Exception as exc:  # noqa: BLE001
-            meta["failed_repos"].append({"repo": repo, "error": type(exc).__name__})
-            continue
-        if not isinstance(data, list):
-            meta["failed_repos"].append({"repo": repo, "error": "bad_response"})
-            continue
-        meta["ok_repos"].append(repo)
-        for item in data:
-            if not isinstance(item, dict):
-                continue
-            if str(item.get("state") or "").lower() != "closed":
-                continue
-            ev = _gh_issue_to_event(repo, item)
-            if ev:
+        page = 1
+        next_url: str | None = None
+        repo_newest = since
+        repo_ok = False
+        repo_failed = False
+        while page <= max_pages:
+            if next_url:
+                url = next_url
+            else:
+                q = (
+                    f"state=closed&sort=updated&direction=asc"
+                    f"&per_page={int(per_page)}&page={page}&since={since}"
+                )
+                url = f"https://api.github.com/repos/{repo}/issues?{q}"
+            try:
+                data, link = _fetch_page(fetcher, url, token=token)
+            except Exception as exc:  # noqa: BLE001
+                meta["failed_repos"].append({"repo": repo, "error": type(exc).__name__})
+                repo_failed = True
+                break
+            repo_ok = True
+            for item in data:
+                if not isinstance(item, dict):
+                    continue
+                if str(item.get("state") or "").lower() != "closed":
+                    continue
+                ev = _gh_issue_to_event(repo, item)
+                if not ev:
+                    continue
                 out.append(ev)
-    return out, meta
+                ca = str(ev.get("closed_at") or "").strip()
+                if ca and ca > repo_newest:
+                    repo_newest = ca
+            next_url = _parse_link_next(link)
+            if next_url:
+                page += 1
+                continue
+            if len(data) < int(per_page):
+                break
+            page += 1
+        if repo_ok:
+            meta["ok_repos"].append(repo)
+            updated[repo] = repo_newest
+        elif not repo_failed:
+            # no pages attempted (should not happen once since is set)
+            updated[repo] = repo_newest
+    return out, updated, meta
+
 
 
 def _load_events(
@@ -267,20 +340,27 @@ def _load_events(
     repos: set[str],
     *,
     token: str = "",
-    since: str | None = None,
-) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    cursors: dict[str, str] | None = None,
+) -> tuple[list[dict[str, Any]], dict[str, str], dict[str, Any]]:
     if fixture is not None and fixture.is_file():
-        return _load_fixture_events(fixture, repos), {
-            "attempted": [],
-            "ok_repos": [],
-            "failed_repos": [],
-            "source": "fixture",
-        }
-    # FR #6391: real source when fixture unset.
-    events, meta = _poll_github_closes(repos, token=token, since=since)
+        return (
+            _load_fixture_events(fixture, repos),
+            dict(cursors or {}),
+            {
+                "attempted": [],
+                "ok_repos": [],
+                "failed_repos": [],
+                "source": "fixture",
+            },
+        )
+    # FR #6391 / #6400 / #6401: real source when fixture unset.
+    events, updated, meta = _poll_github_closes(
+        repos, token=token, cursors=dict(cursors or {})
+    )
     meta = dict(meta)
     meta["source"] = "github"
-    return events, meta
+    return events, updated, meta
+
 
 
 def _canon_ticket(text: str) -> str:
@@ -480,31 +560,47 @@ def check(args):
     last_poll_error = str(state.get("last_poll_error") or "").strip() or None
     poll_outcome = "ok"
     poll_meta: dict[str, Any] = {"attempted": [], "ok_repos": [], "failed_repos": []}
+    raw_cursors = state.get("poll_cursors")
+    poll_cursors: dict[str, str] = {}
+    if isinstance(raw_cursors, dict):
+        for k, v in raw_cursors.items():
+            ks, vs = str(k).strip(), str(v).strip()
+            if ks and vs:
+                poll_cursors[ks] = vs
     token_loader = _GITHUB_TOKEN or _default_github_token
     token, _tok_src = token_loader()
     now = float(_CLOCK())
-    # First live poll: seed cursor to now; do not replay historical closes.
-    if fixture is None and poll_cursor is None:
-        poll_cursor = _utc_iso_now()
+    focused = {r for r in repos if "/" in r}
+    # First live poll: seed per-repo cursors to now; do not replay history.
+    if fixture is None and not poll_cursors and not poll_cursor:
+        seed = _utc_iso_now()
+        poll_cursors = {r: seed for r in focused}
+        poll_cursor = seed
         events: list[dict[str, Any]] = []
         poll_outcome = "seeded"
         last_poll_error = None
     elif fixture is None and not (token or "").strip():
+        # Migrate legacy global cursor into any missing per-repo slots.
+        fallback = poll_cursor or _utc_iso_now()
+        for r in focused:
+            if r not in poll_cursors:
+                poll_cursors[r] = fallback
         events = []
         poll_outcome = "skipped_no_token"
         last_poll_error = "no_github_token"
         poll_meta["source"] = "github"
-    else:
-        events, poll_meta = _load_events(
-            fixture, repos, token=token or "", since=poll_cursor
+    elif fixture is None:
+        fallback = poll_cursor or _utc_iso_now()
+        for r in focused:
+            if r not in poll_cursors:
+                poll_cursors[r] = fallback
+        events, poll_cursors, poll_meta = _load_events(
+            fixture, repos, token=token or "", cursors=poll_cursors
         )
         failed = poll_meta.get("failed_repos") or []
         attempted = poll_meta.get("attempted") or []
         ok_repos = poll_meta.get("ok_repos") or []
-        if poll_meta.get("source") == "fixture":
-            poll_outcome = "fixture"
-            last_poll_error = None
-        elif attempted and not ok_repos:
+        if attempted and not ok_repos:
             poll_outcome = "repos_failed"
             err0 = failed[0] if failed else {"error": "unknown"}
             last_poll_error = (
@@ -519,12 +615,16 @@ def check(args):
         else:
             poll_outcome = "ok"
             last_poll_error = None
+    else:
+        events, poll_cursors, poll_meta = _load_events(
+            fixture, repos, token=token or "", cursors=poll_cursors
+        )
+        poll_outcome = "fixture"
+        last_poll_error = None
     waiting = _load_waiting(chair, digest)
-    # Advance cursor from every fetched close before the waiting filter so a
-    # Phase-2 registry cannot stall the global cursor on non-waiting pages.
+    # Cursors already advanced inside _poll_github_closes from all pages.
     newest_closed = poll_cursor
-    for ev in events:
-        ca = str(ev.get("closed_at") or "").strip()
+    for ca in poll_cursors.values():
         if ca and (newest_closed is None or ca > newest_closed):
             newest_closed = ca
     if waiting:
@@ -605,6 +705,8 @@ def check(args):
             blob.pop("last_poll_error", None)
         if poll_cursor:
             blob["poll_cursor"] = poll_cursor
+        if poll_cursors:
+            blob["poll_cursors"] = dict(sorted(poll_cursors.items()))
         tmp = state_path.with_name(f"{state_path.name}.{os.getpid()}.tmp")
         tmp.write_text(
             json.dumps(blob, separators=(",", ":"), sort_keys=True),
