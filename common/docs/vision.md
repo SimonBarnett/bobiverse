@@ -71,7 +71,7 @@ Systray is the Bob UI surface; HTML mocks document tray states for UAT later.
 ## LOCKED (pack layout)
 
 - Canonical tip VERSION is **`common/VERSION`** (`Get-BobiverseRepoPath` aliases legacy `src\VERSION` / `VERSION` to it). Pack stamps stage `VERSION` / `src\VERSION` / `BUILD.json` from the pack `-Version` (default: that file) as MSI ProductVersion (FR #3686 / #4389).
-- **FR #6423:** `Pack-BobiverseRelease` refuses a ProductVersion **below** the latest GitHub release tag for `SimonBarnett/bobiverse` (no silent downgrade after the 1.0.x line). `-SkipMsi` stage tests auto-skip that gate; release packs must not.
+- **FR #6423:** `Pack-BobiverseRelease` refuses a ProductVersion **below** the latest GitHub release tag for `SimonBarnett/bobiverse` (no silent downgrade after the 1.0.x line). `-SkipMsi` stage tests auto-skip that gate; `-SkipPublishedVersionCheck` / `-LatestPublishedVersion` require `-SkipMsi` so release MSI packs cannot bypass (MRB #6427).
 - Jeeves MSI stages Ergo under payload `ergo\` (`ergo.exe`, `default.yaml`, languages…).
   Install copies/seeds **`<ai root>\ergo`** and registers service **`BobIrcd`** (NSSM in Ergo root).
 - Bob MSI stages **`Watch-AgentHealth\`** (Desktop install IF MISSING) + **`Start-BobTray.ps1`**.
