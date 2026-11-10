@@ -3597,9 +3597,16 @@ class Client:
                     pending = "?"
                 woke = tc.get("woke", 0)
                 transport = tc.get("wake_transport") or "?"
+                tok = (
+                    tc.get("ticket_closure_token_source")
+                    or tc.get("token_source")
+                    or "?"
+                )
+                interval = int(chair_health.ticket_closure_interval_s())
                 out.append(
                     f"ticket_closure: {age_s} pending={pending} woke={woke} "
-                    f"transport={transport} (every {int(chair_health.TICKET_CLOSURE_S)}s)"
+                    f"transport={transport} ticket_closure_token_source={tok} "
+                    f"(every {interval}s)"
                 )
             except Exception:  # noqa: BLE001
                 pass

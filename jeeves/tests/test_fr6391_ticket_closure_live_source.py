@@ -247,7 +247,7 @@ def test_fr6391_build_manifest_includes_modules():
 def test_fr6391_chair_jobs_schedules_ticket_closure(tmp_path, monkeypatch):
     import chair_health as ch
 
-    assert ch.TICKET_CLOSURE_S == 120.0
+    assert ch.TICKET_CLOSURE_S == 900.0  # FR #6405 backup poll
     logs: list[str] = []
     ran = {"n": 0}
 
