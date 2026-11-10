@@ -1223,30 +1223,60 @@ function Format-BobResetLabel {
     catch { return $null }
 }
 
-function Get-BobCopilotFreshness {
+function Get-BobPoolStaleAfterSec {
     <#
     .SYNOPSIS
-      FR #6148: fresh/stale/none for report.copilot.fetched_at (900s threshold).
-      Never uses snapshot ts or file mtime. Allows up to 120s future skew.
-      Future resume_at (cooldown) does not force fresh: age by fetched_at still.
+      FR #6371: pool-tile stale threshold seconds (default 900 / 15 min).
+      Override: BOB_TRAY_POOL_STALE_S (clamped 60..86400).
     #>
-    param($Pool, $Now = $null)
-    $threshold = 900
+    $raw = $null
+    try { $raw = ($env:BOB_TRAY_POOL_STALE_S) } catch { }
+    if (-not $raw -or [string]::IsNullOrWhiteSpace([string]$raw)) { return 900 }
+    try {
+        $n = [int]$raw
+        if ($n -lt 60) { return 60 }
+        if ($n -gt 86400) { return 86400 }
+        return $n
+    } catch { return 900 }
+}
+
+function Format-BobPoolUpdatedLabel {
+    <#
+    .SYNOPSIS
+      FR #6371: 'updated HH:mm' in local time from the reading's fetched_at.
+      Never uses tray redraw time. Missing/unparseable => $null.
+    #>
+    param($FetchedAt, $Now = $null)
+    if (-not $FetchedAt -or [string]::IsNullOrWhiteSpace([string]$FetchedAt)) { return $null }
+    $fetched = ConvertTo-BobUtcDateTime $FetchedAt
+    if (-not $fetched) { return $null }
+    try {
+        $local = $fetched.ToLocalTime()
+        return ('updated {0:HH:mm}' -f $local)
+    } catch { return $null }
+}
+
+function Get-BobPoolReadingFreshness {
+    <#
+    .SYNOPSIS
+      FR #6371: fresh/stale/none for any pool reading's fetched_at.
+      Default threshold Get-BobPoolStaleAfterSec (15 min). Allows 120s future skew.
+    #>
+    param($FetchedAt = $null, $Now = $null, $StaleAfterSec = $null)
+    $threshold = if ($null -ne $StaleAfterSec -and [string]$StaleAfterSec -ne '') {
+        try { [int]$StaleAfterSec } catch { Get-BobPoolStaleAfterSec }
+    } else { Get-BobPoolStaleAfterSec }
+    if ($threshold -lt 60) { $threshold = 60 }
     $skew = 120
     $nowUtc = $null
     if ($null -ne $Now) {
         try { $nowUtc = ConvertTo-BobUtcDateTime $Now } catch { $nowUtc = $null }
     }
     if (-not $nowUtc) { $nowUtc = [DateTime]::UtcNow }
-    if (-not $Pool) {
+    if (-not $FetchedAt -or [string]::IsNullOrWhiteSpace([string]$FetchedAt)) {
         return [pscustomobject]@{ state = 'none'; age_s = $null; fresh_until = 0 }
     }
-    $fa = $null
-    try { $fa = [string]$Pool.fetched_at } catch { }
-    if (-not $fa -or [string]::IsNullOrWhiteSpace($fa)) {
-        return [pscustomobject]@{ state = 'stale'; age_s = $null; fresh_until = 0 }
-    }
-    $fetched = ConvertTo-BobUtcDateTime $fa
+    $fetched = ConvertTo-BobUtcDateTime $FetchedAt
     if (-not $fetched) {
         return [pscustomobject]@{ state = 'stale'; age_s = $null; fresh_until = 0 }
     }
@@ -1262,15 +1292,39 @@ function Get-BobCopilotFreshness {
     return [pscustomobject]@{ state = 'stale'; age_s = $age; fresh_until = $until }
 }
 
+function Get-BobCopilotFreshness {
+    <#
+    .SYNOPSIS
+      FR #6148: fresh/stale/none for report.copilot.fetched_at (900s threshold).
+      Never uses snapshot ts or file mtime. Allows up to 120s future skew.
+      Future resume_at (cooldown) does not force fresh: age by fetched_at still.
+      FR #6371: delegates age math to Get-BobPoolReadingFreshness (same default 900s).
+    #>
+    param($Pool, $Now = $null)
+    if (-not $Pool) {
+        return [pscustomobject]@{ state = 'none'; age_s = $null; fresh_until = 0 }
+    }
+    $fa = $null
+    try { $fa = [string]$Pool.fetched_at } catch { }
+    # Missing fetched_at stays 'stale' (FR #6148), not 'none'.
+    if (-not $fa -or [string]::IsNullOrWhiteSpace($fa)) {
+        return [pscustomobject]@{ state = 'stale'; age_s = $null; fresh_until = 0 }
+    }
+    return Get-BobPoolReadingFreshness -FetchedAt $fa -Now $Now -StaleAfterSec 900
+}
+
 function Format-BobOpencodeWindowLine {
     <#
     .SYNOPSIS
       One Go window line (rolling/weekly/monthly). FR #6301: go window - x% left - reset.
+      FR #6371: append reading updated HH:mm (local) from fetched_at; stale when aged.
       No rem est. Missing windows use the digest error field when present.
+      'reset unavailable' is not painted as a countdown when rem% is known.
     #>
     param(
         [Parameter(Mandatory)][ValidateSet('rolling','week','month')][string]$WindowId,
-        $Record = $null
+        $Record = $null,
+        $Now = $null
     )
     $label = switch ($WindowId) {
         'rolling' { 'rolling' }
@@ -1301,9 +1355,27 @@ function Format-BobOpencodeWindowLine {
     $mid = ('{0}% left' -f [int]$rem)
     $reset = $null
     try { if ($Record.reset_label) { $reset = ([string]$Record.reset_label).Trim() } } catch { }
-    if ($reset) { $mid = ('{0} - {1}' -f $mid, $reset) }
-    elseif ($err) { $mid = ('{0} - {1}' -f $mid, $err) }
-    if ($status -eq 'stale') { $mid = ('{0} [stale]' -f $mid) }
+    if ($reset) {
+        $mid = ('{0} - {1}' -f $mid, $reset)
+    } elseif ($err -and $err -ne 'reset unavailable') {
+        $mid = ('{0} - {1}' -f $mid, $err)
+    }
+    $fetchedAt = $null
+    try { if ($Record.fetched_at) { $fetchedAt = ([string]$Record.fetched_at).Trim() } } catch { }
+    $updated = Format-BobPoolUpdatedLabel -FetchedAt $fetchedAt -Now $Now
+    if ($updated) { $mid = ('{0} - {1}' -f $mid, $updated) }
+    $freshness = Get-BobPoolReadingFreshness -FetchedAt $fetchedAt -Now $Now
+    $isStale = ($status -eq 'stale') -or ($freshness.state -eq 'stale')
+    if ($isStale) {
+        $staleLabel = '[stale]'
+        if ($null -ne $freshness.age_s) {
+            try {
+                $ageLab = Format-BobTrayFuelStaleAge -AgeSec ([int]$freshness.age_s)
+                if ($ageLab -and $ageLab -ne 'stale') { $staleLabel = ('[{0}]' -f $ageLab) }
+            } catch { }
+        }
+        $mid = ('{0} {1}' -f $mid, $staleLabel)
+    }
     return ('go {0} - {1}' -f $label, $mid)
 }
 
@@ -1739,12 +1811,18 @@ function Format-BobCopilotPoolLine {
         try { if ($null -ne $Pool.remaining -and [string]$Pool.remaining -ne '') { $left = [int]$Pool.remaining } } catch { }
     }
     if ($null -eq $left) {
-        $bits = @('Copilot - unknown')
+        $unk = 'Copilot - unknown'
+        $updatedUnk = Format-BobPoolUpdatedLabel -FetchedAt $(try { [string]$Pool.fetched_at } catch { $null }) -Now $Now
+        if ($updatedUnk) { $unk = ('{0} - {1}' -f $unk, $updatedUnk) }
+        $bits = @($unk)
         if ($staleLabel) { $bits += $staleLabel }
         return ($bits -join ' ')
     }
     $mid = ('{0}% left' -f [int]$left)
     if ($resetCompact) { $mid = ('{0} - {1}' -f $mid, $resetCompact) }
+    # FR #6371: reading updated time from fetched_at (local HH:mm).
+    $updated = Format-BobPoolUpdatedLabel -FetchedAt $(try { [string]$Pool.fetched_at } catch { $null }) -Now $Now
+    if ($updated) { $mid = ('{0} - {1}' -f $mid, $updated) }
     $bits = @(('Copilot - {0}' -f $mid))
     if ($staleLabel) { $bits += $staleLabel }
     return ($bits -join ' ')
