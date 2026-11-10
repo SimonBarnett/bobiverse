@@ -31,6 +31,13 @@ Also: `jeeves.exe --self-test --check offer` and monitor `queue_flow` JSON (`gat
 
 `tools/monitor/queue_flow.py`: when `unaccepted>0` and idle seats still see `offerable=0` with a require_machine-dominated backlog for **>10 minutes**, EXIT 1 with a `pin-only empty offer` finding (state file `monitor-empty-offer-starve.json` under the ops/chair home). Gated-empty under 10m stays EXIT 0 + notes.
 
+## Idle-offer line (FR #6360)
+
+Seats told `nothing queued` are tracked in the chair home's `idle-after-empty.json`. New work is pushed to the oldest `told_at` first, and the usual eligibility gates still apply (FR #6134 OpenCode MRB/UAT block, machine pins, cooldowns, focus/ignore).
+
+- A repeat `!bored` **keeps the seat's place** and refreshes the 900 s expiry through `last_seen`; it does not move the seat to the back of the line.
+- `told_at` resets only after an offer, an ACK, an expiry, or the seat going offline.
+
 ## Related
 
 - Living architecture pin / chair exe: #1993

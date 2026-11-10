@@ -14,6 +14,7 @@ It is not a second source of truth.
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 import time
@@ -6414,10 +6415,26 @@ def _write_idle_after_empty(home: Path, doc: dict) -> None:
     tmp.replace(path)
 
 
+def _idle_after_empty_ts(value) -> float | None:
+    """Positive finite float from a stored idle timestamp, else ``None`` (FR #6360)."""
+    try:
+        out = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(out) or out <= 0:
+        return None
+    return out
+
+
 def note_idle_after_empty(
     home: Path, nick: str, channel: str, *, now: float | None = None
 ) -> None:
-    """Record that Jeeves told this seat ``nothing queued`` (FR #2803)."""
+    """Record that Jeeves told this seat ``nothing queued`` (FR #2803).
+
+    FR #6360: a repeat ``!bored`` keeps the seat's original ``told_at`` (its place in the
+    idle-offer line) while it stays in a continuous idle period; ``last_seen`` is refreshed
+    and drives expiry. A stale prior row starts a new period.
+    """
     import time as _time
 
     me = (canonical_worker_nick(nick) or nick or "").strip()
@@ -6432,11 +6449,23 @@ def note_idle_after_empty(
             doc = _load_idle_after_empty(home)
             seats = doc.setdefault("seats", {})
             prev = seats.get(me) if isinstance(seats.get(me), dict) else {}
+            prev_told = _idle_after_empty_ts(prev.get("told_at"))
+            prev_seen = _idle_after_empty_ts(prev.get("last_seen"))
+            ref = prev_seen if prev_seen is not None else prev_told
+            if (
+                prev_told is not None
+                and ref is not None
+                and (now_f - ref) <= IDLE_AFTER_EMPTY_MAX_AGE_S
+            ):
+                told_at = prev_told
+            else:
+                told_at = float(now_f)
             seats[me] = {
                 "nick": me,
                 "channel": shop,
-                "told_at": float(now_f),
-                "last_push_at": float(prev.get("last_push_at") or 0.0),
+                "told_at": told_at,
+                "last_seen": float(now_f),
+                "last_push_at": _idle_after_empty_ts(prev.get("last_push_at")) or 0.0,
             }
             _write_idle_after_empty(home, doc)
     except (TimeoutError, OSError):
@@ -6495,7 +6524,12 @@ def list_idle_after_empty(
                     told = float(ent.get("told_at") or 0.0)
                 except (TypeError, ValueError):
                     told = 0.0
-                if told <= 0 or (now_f - told) > IDLE_AFTER_EMPTY_MAX_AGE_S:
+                # FR #6360: expire on the latest "nothing queued" (``last_seen``); legacy
+                # rows without it fall back to ``told_at``.
+                last_seen = _idle_after_empty_ts(ent.get("last_seen"))
+                if last_seen is None:
+                    last_seen = told
+                if told <= 0 or (now_f - last_seen) > IDLE_AFTER_EMPTY_MAX_AGE_S:
                     continue
                 # If digest has any live seats, drop entries that are gone.
                 if live_l and nick_c.lower() not in live_l:
@@ -6513,6 +6547,7 @@ def list_idle_after_empty(
                     "nick": nick_c,
                     "channel": chan,
                     "told_at": told,
+                    "last_seen": last_seen,
                     "last_push_at": last_push,
                 }
                 keep[nick_c] = row

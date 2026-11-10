@@ -33,7 +33,7 @@ Every reply is also appended to `<chair home>/cmd-trace.log` (bounded to ~256 KB
 | `ping` / `ping <glob>` (no `!`) | `pong` | in a channel or by PM |
 | `!register <#channel|machine>` | `ACK registered #<mid>` after ChanServ confirms; else `ERR !register ChanServ ...` / timeout; denied: `ERR !register denied (+o/+h required)` | +o/+h in #bobiverse (FR #4008 / #5274); ACK + roster + `REGISTERED v1 <mid>` on #bobiverse only after ChanServ REGISTER ok (or already-registered); operators.txt ignored |
 | `!unregister <#channel|machine> [confirm]` / `!unregister dry-run <..>` | plan PM then `ACK unregistered #<mid>`; dry-run sends nothing; core refuse; idempotent not-registered | +o/+h gate; confirm or repeat within 60s; ChanServ UNREGISTER (+ code NOTICE); remove_registered; PART; `UNREGISTERED v1 <mid>` in #bobiverse; airc falls back to #wonderland (FR #3834/#4008); dry-run/confirm plan lists `*_console` nicks in `#<mid>` or `none seen` (FR #4040) |
-| shop wire: `!bored`, `ACK`, `DONE`, `NACK`/`GIVEUP` | assign line / quiet | unchanged (`gitclaim`, `shop_listen`) |
+| shop wire: `!bored`, `ACK`, `DONE`, `NACK`/`GIVEUP` | assign line / quiet | unchanged (`gitclaim`, `shop_listen`). A repeat `!bored` keeps the seat's place in the idle-offer line; see `empty-offer-playbook.md` (FR #6360) |
 
 * **GIVEUP `out-of-fuel` (FR #4181):** after a successful shop `GIVEUP … out-of-fuel`, the chair notes the nick in `seat-out-of-fuel.json` and **skips** FR #2811 `giveup-offer` (log `giveup-offer skipped … reason=out-of-fuel`). `offer_after_release` / `offer_focus_top` / `bored_gate` also refuse while marked. A fresh `!bored` clears the mark (worker only bores after fuel returns per bob-worker FR #3012) then offers normally. Other GIVEUP reasons keep giveup-offer.
 
