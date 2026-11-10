@@ -40,7 +40,9 @@ $hidden = @(
     'irc_agent', 'bobcallback', 'gitclaim', 'bobreport', 'intake', 'jeeves_locks', 'jeeves_maintenance', 'jeeves_checks', 'focus_ignore',
     'chair_commands', 'chair_health', 'chair_oper',
     'shop_chanserv', 'shop_listen', 'shop_ops',
-    'health', 'queue_flow', 'focus_seat', 'webhook_health'
+    'health', 'queue_flow', 'focus_seat', 'webhook_health',
+    # FR #6391: ticket-closure live source + Bob wake webhook (monitor package).
+    'ticket_closure', 'wake_brief', 'wake_grok_bot_bob'
 )
 $hiddenArgs = @(); foreach ($h in $hidden) { $hiddenArgs += @('--hidden-import', $h) }
 

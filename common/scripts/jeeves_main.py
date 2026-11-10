@@ -706,6 +706,12 @@ def parse_http_bind(raw: str) -> tuple[str, int]:
 
 def main(argv: list[str] | None = None) -> int:
     harden_stdio_replace()
+    argv = list(sys.argv[1:] if argv is None else argv)
+    # FR #6395 / MRB #6397: parse --version before crash_report.install so a
+    # policy INFO line cannot pollute the exact SHA that CI / Build-Jeeves compare.
+    if "--version" in argv:
+        safe_print(get_source_commit())
+        return 0
     try:
         import crash_report
 
@@ -717,7 +723,6 @@ def main(argv: list[str] | None = None) -> int:
             runtime_failure.report("jeeves", exc, site="crash_report.install")
         except Exception as inner:
             sys.stderr.write(f"WARN FR #5050 jeeves install report: {type(inner).__name__}\n")
-    argv = list(sys.argv[1:] if argv is None else argv)
     p = argparse.ArgumentParser(description="jeeves.exe foundation (FR #1993)")
     p.add_argument("--version", action="store_true", help="print embedded source commit SHA and exit (FR #6395)")
     p.add_argument("--self-test", action="store_true")
@@ -754,6 +759,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--nick", default="Jeeves")
     args, unknown = p.parse_known_args(argv)
 
+    # --version already handled above (before crash_report); keep flag for --help.
     if args.version:
         safe_print(get_source_commit())
         return 0

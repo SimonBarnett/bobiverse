@@ -64,6 +64,7 @@ def test_fr6395_build_script_source_commit_and_meta_stub():
     assert "stub-bak" in build or "stubBackup" in build or "stub-bak" in build.replace("_", "-")
     assert "restored" in build.lower() and "jeeves_build_meta" in build
     assert "finally" in build
+    assert "ticket_closure" in build and "wake_brief" in build
     assert "stub overwritten for freeze" in build
 
     meta = META.read_text(encoding="utf-8")
@@ -98,11 +99,16 @@ def test_fr6395_version_flag_prints_meta_commit(monkeypatch, capsys):
 
         if hasattr(jm, "get_source_commit"):
             assert jm.get_source_commit() == "abc123deadbeef6395"
+        import crash_report  # noqa: E402
+
+        installs: list = []
+        monkeypatch.setattr(crash_report, "install", installs.append)
         capsys.readouterr()
         code = jm.main(["--version"])
         out = capsys.readouterr().out.strip()
         assert code == 0
-        assert "abc123deadbeef6395" in out
+        assert out == "abc123deadbeef6395"
+        assert installs == []
     finally:
         meta.SOURCE_COMMIT = prev
 
