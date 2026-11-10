@@ -120,7 +120,7 @@ def test_entry_expires_and_repeat_refreshes_expiry(home):
     assert gitclaim.list_idle_after_empty(home, now=t0 + 1501, live=set()) == []
 
 
-def test_redile_after_offer_resets_told_at(home):
+def test_reidle_after_offer_resets_told_at(home):
     said = []
     _put_idle_digest(home, "marchhare-1")
     t0 = 1000.0
