@@ -190,18 +190,34 @@ def test_fr6443_http_status_and_restart_endpoints(tmp_path, monkeypatch):
         lambda: calls.append("r") or {"ok": True, "via": "test"},
     )
     srv = http.start_settings_http(
-        chair, bind="127.0.0.1", port=port, digest_home=digest
+        chair,
+        bind="127.0.0.1",
+        port=port,
+        digest_home=digest,
+        authenticator=lambda u, p, d="": u == "ApplianceAdmin" and p == "FAKE_ok",
     )
     assert srv is not None
     base = f"http://127.0.0.1:{port}"
     try:
-        with urllib.request.urlopen(base + "/api/status", timeout=5) as resp:
+        from http.cookiejar import CookieJar
+        jar = CookieJar()
+        opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(jar))
+        login = urllib.request.Request(
+            base + "/api/login",
+            data=json.dumps({"username": "ApplianceAdmin", "password": "FAKE_ok"}).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with opener.open(login, timeout=5) as resp:
+            assert json.loads(resp.read().decode("utf-8")).get("ok") is True
+
+        with opener.open(base + "/api/status", timeout=5) as resp:
             body = json.loads(resp.read().decode("utf-8"))
         assert body.get("ok") is True
         assert "uptime_s" in body
         assert "queue" in body
 
-        with urllib.request.urlopen(base + "/status", timeout=5) as resp:
+        with opener.open(base + "/status", timeout=5) as resp:
             html = resp.read().decode("utf-8")
         assert "uptime" in html.lower() or "queue" in html.lower()
 
@@ -211,7 +227,7 @@ def test_fr6443_http_status_and_restart_endpoints(tmp_path, monkeypatch):
             headers={"Content-Type": "application/json"},
             method="POST",
         )
-        with urllib.request.urlopen(req, timeout=5) as resp:
+        with opener.open(req, timeout=5) as resp:
             out = json.loads(resp.read().decode("utf-8"))
         assert out.get("ok") is True
         assert calls == ["r"] or out.get("restarted") or out.get("deferred") is not None
