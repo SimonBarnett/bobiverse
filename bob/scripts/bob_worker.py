@@ -58,6 +58,21 @@ def get_source_commit() -> str:
     except ImportError:
         return 'unknown'
 
+
+def short_build_sha(commit: str | None = None) -> str:
+    """FR #6409: short source SHA for hello / DONE / digest (never empty)."""
+    raw = str(commit if commit is not None else get_source_commit() or "").strip()
+    if not raw or raw.lower() in ("unknown", "none", "null"):
+        return "unknown"
+    return raw[:12]
+
+
+def worker_hello_line(kind: str, *, build: str | None = None) -> str:
+    """FR #6409: first shop presence line after IRC join."""
+    k = (kind or "").strip().lower() or "grok"
+    b = short_build_sha(build) if build is not None else short_build_sha()
+    return f"worker ready kind={k} build={b}"
+
 EXIT_USAGE = 64
 EXIT_IRC_FAIL = 2  # could not connect / register: no agent was started
 EXIT_IRC_LOST = 3  # IRC lost for good (grace 0 immediate, or reconnect grace exhausted): agent tree killed
@@ -6072,11 +6087,15 @@ def post_digest_seat_kind(
     agent: str = "",
     model: str = "",
     working_on: str = "",
+    worker_build: str | None = None,
     url: str | None = None,
     env: Optional[dict] = None,
     log: Optional[Callable[[str], None]] = None,
 ) -> bool:
-    """POST digest worker kind so the chair can skip OpenCode for MRB/UAT (FR #6134)."""
+    """POST digest worker kind so the chair can skip OpenCode for MRB/UAT (FR #6134).
+
+    FR #6409: payload always includes ``worker_build`` (short SHA or ``unknown``).
+    """
     env = os.environ if env is None else env
     report = (url or env.get("BOB_REPORT_URL") or env.get("BOB_DIGEST_URL") or DEFAULT_DIGEST_REPORT_URL).strip()
     if not report:
@@ -6088,6 +6107,7 @@ def post_digest_seat_kind(
     except (TypeError, ValueError):
         return False
     agent_s = (agent or "").strip() or (kind_s if kind_s else "")
+    build = short_build_sha(worker_build) if worker_build is not None else short_build_sha()
     payload = {
         "online": True,
         "id": mid,
@@ -6097,6 +6117,7 @@ def post_digest_seat_kind(
         "nick": (nick or "").strip() or seat_nick(mid, pid_i),
         "working_on": (working_on or "").strip(),
         "agent": agent_s,
+        "worker_build": build,
     }
     if (model or "").strip():
         payload["model"] = str(model).strip()
@@ -9063,12 +9084,14 @@ class Supervisor:
             return {"tokens_unknown": True}
 
     def enrich_done_line(self, payload: str) -> str:
-        """FR #6387: append measured model/token fields onto a DONE outbox line."""
+        """FR #6387 / #6409: append model/token + worker_build onto a DONE outbox line."""
         try:
             import done_usage as _du
 
             usage = self.measure_done_usage()
-            return _du.enrich_done_payload(payload, usage)
+            return _du.enrich_done_payload(
+                payload, usage, worker_build=short_build_sha()
+            )
         except Exception:
             return payload
 
@@ -10750,6 +10773,8 @@ def run_agent(args, log: Log) -> int:
         log(f"worker: IRC connect failed ({type(e).__name__}: {str(e)[:100]}) - NOT starting an agent")
         return EXIT_IRC_FAIL
     # FR #6134: publish agent kind so the chair can skip OpenCode for MRB/UAT.
+    # FR #6409: hello line + digest worker_build short SHA (or unknown).
+    build = short_build_sha()
     try:
         model = (os.environ.get("BOB_OPENCODE_MODEL") or "").strip() if kind == "opencode" else ""
         post_digest_seat_kind(
@@ -10758,10 +10783,19 @@ def run_agent(args, log: Log) -> int:
             nick=nick,
             kind=kind,
             model=model,
+            worker_build=build,
             log=log,
         )
     except Exception as e:
         log(f"worker: post_digest_seat_kind failed {type(e).__name__}")
+    try:
+        hello = worker_hello_line(kind, build=build)
+        if irc.say(irc.shop, hello):
+            log(f"worker: hello {hello}")
+        else:
+            log("worker: hello say failed")
+    except Exception as e:
+        log(f"worker: hello failed {type(e).__name__}")
     grace = float(getattr(args, "startup_grace_s", 60.0) or 60.0)
     if kind == "grok" and grace < 60.0:
         # Grok TUI session.create often needs 30-60s on slower boxes (FR #955 ionos evidence).

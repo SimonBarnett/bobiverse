@@ -58,14 +58,14 @@ def test_format_suffix_measured():
             "tokens_cached": 5,
         }
     )
-    assert s == "model=xai/grok-4.5 tokens_in=10 tokens_out=2 tokens_cached=5"
+    assert s == "model=xai/grok-4.5 tokens_in=10 tokens_out=2 tokens_cached=5 worker_build=unknown"
 
 
 def test_format_suffix_unknown():
-    assert done_usage.format_done_usage_suffix({}) == "tokens=unknown"
+    assert done_usage.format_done_usage_suffix({}) == "tokens=unknown worker_build=unknown"
     assert (
         done_usage.format_done_usage_suffix({"tokens_unknown": True, "model": "x"})
-        == "model=x tokens=unknown"
+        == "model=x tokens=unknown worker_build=unknown"
     )
 
 
