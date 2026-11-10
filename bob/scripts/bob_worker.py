@@ -9097,6 +9097,10 @@ class Supervisor:
                 cand = Path(self.run_dir) / "aider-usage.json"
                 if cand.is_file():
                     aider_path = str(cand)
+        # FR #6420: OpenCode measures from its own SQLite session data for the job
+        # worktree, falling back to an explicit fixture path, then the configured model.
+        if kind == "opencode":
+            return self._measure_opencode_usage(oc_path)
         try:
             return _du.measure_seat_usage(
                 kind,
@@ -9107,6 +9111,44 @@ class Supervisor:
             )
         except Exception:
             return {"tokens_unknown": True}
+
+    def _opencode_job_directory(self) -> str:
+        """FR #6420: the job worktree OpenCode ran in (parent of ``.bob/outbox.txt``)."""
+        ob = getattr(self, "_opencode_job_outbox", None)
+        if ob is None:
+            return ""
+        try:
+            wt = Path(ob).parent.parent
+        except Exception:
+            return ""
+        try:
+            if wt.is_dir():
+                return str(wt)
+        except Exception:
+            return ""
+        return ""
+
+    def _measure_opencode_usage(self, oc_path: str | None) -> dict:
+        """FR #6420: OpenCode DONE usage from its SQLite session data, then a fixture."""
+        try:
+            import done_usage as _du
+        except Exception:
+            return {"tokens_unknown": True}
+        directory = self._opencode_job_directory()
+        usage = None
+        if directory:
+            try:
+                usage = _du.read_opencode_sqlite_usage(directory=directory)
+            except Exception:
+                usage = None
+        if usage is None or usage.get("tokens_unknown"):
+            usage = _du.measure_seat_usage("opencode", opencode_usage_path=oc_path)
+        if usage and not str(usage.get("model") or "").strip():
+            cfg = (os.environ.get("BOB_OPENCODE_MODEL") or "").strip()
+            if cfg:
+                usage = dict(usage)
+                usage["model"] = cfg
+        return usage
 
     def enrich_done_line(self, payload: str) -> str:
         """FR #6387 / #6409: append model/token + worker_build onto a DONE outbox line."""
