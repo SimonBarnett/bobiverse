@@ -1,9 +1,10 @@
-"""FR #6440: LAN-bound HTTP listener + schema-driven settings UI for jeeves.ntsa.uk.
+"""FR #6440 / #6451: LAN-bound HTTP listener + schema UI with session auth.
 
 Off by default. Enable with ``JEEVES_SETTINGS_HTTP=1`` (or ``JEEVES_SETTINGS_UI=1``).
 Binds only to RFC1918 / loopback. Rejects non-LAN peers in ``verify_request``
-(socket layer) and again via ``jeeves_settings`` API helpers. Never fronts via
-bob.ntsa.uk / irc.ntsa.uk / Cloudflare. Auth is child FR #6441.
+(socket layer). Settings/status mutating routes require FR #6441 sessions
+(cookie ``jeeves_appliance_session`` or ``Authorization: Bearer``). Never fronts
+via bob.ntsa.uk / irc.ntsa.uk / Cloudflare.
 """
 from __future__ import annotations
 
@@ -11,17 +12,20 @@ import json
 import time
 import os
 import threading
+from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import unquote, urlparse
 
 import jeeves_settings as js
+import jeeves_settings_auth as auth
 
 DEFAULT_PORT = 7701
 ENV_ENABLE = ("JEEVES_SETTINGS_HTTP", "JEEVES_SETTINGS_UI")
 ENV_BIND = "JEEVES_SETTINGS_HTTP_BIND"
 ENV_PORT = "JEEVES_SETTINGS_HTTP_PORT"
+SESSION_COOKIE_NAME = "jeeves_appliance_session"
 
 
 def settings_http_enabled() -> bool:
@@ -113,8 +117,9 @@ code{{font-size:.9em;}}
 button{{margin-top:1rem;padding:.4rem .8rem;}}
 </style></head><body>
 <h1>Jeeves appliance settings</h1>
-<p class="note">LAN-only (FR #6440). Secrets are write-only (set/unset).
-Auth lands in FR #6441. Never expose via bob.ntsa.uk. <a href="/status">Status</a></p>
+<p class="note">LAN-only (FR #6440 / #6451). Secrets are write-only (set/unset).
+Session cookie required. Never expose via bob.ntsa.uk.
+<a href="/status">Status</a> · <a href="/logout">Log out</a></p>
 <table>
 <thead><tr><th>Key</th><th>Type</th><th>Value</th><th>Source</th><th>Restart</th><th>Description</th></tr></thead>
 <tbody>
@@ -134,9 +139,11 @@ async function save() {{
     if (el.dataset.secret === '1' && !value) continue;
     const r = await fetch('/api/settings/' + encodeURIComponent(key), {{
       method: 'PUT',
+      credentials: 'same-origin',
       headers: {{'Content-Type': 'application/json'}},
-      body: JSON.stringify({{value, actor: 'ui'}})
+      body: JSON.stringify({{value}})
     }});
+    if (r.status === 401 || r.status === 403) {{ location.href = '/login'; return; }}
     const j = await r.json().catch(() => ({{}}));
     if (j.ok) ok++; else fail++;
   }}
@@ -144,6 +151,54 @@ async function save() {{
   if (fail === 0) location.reload();
 }}
 document.getElementById('save').onclick = save;
+</script>
+</body></html>
+"""
+
+
+def _render_login_html(error: str = "") -> str:
+    err = (error or "").replace("<", "&lt;")
+    note = f'<p class="note" style="color:#a00">{err}</p>' if err else ""
+    return f"""<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8"/>
+<title>Jeeves settings login</title>
+<style>
+body{{font-family:system-ui,sans-serif;margin:1.5rem;max-width:28rem;}}
+label{{display:block;margin:.6rem 0 .2rem;}}
+input{{width:100%;padding:.4rem;box-sizing:border-box;}}
+button{{margin-top:1rem;padding:.4rem .8rem;}}
+.note{{color:#444;}}
+</style></head><body>
+<h1>Jeeves settings login</h1>
+<p class="note">LAN-only AD/Windows or CredMan (FR #6441 / #6451). Passwords are never logged.</p>
+{note}
+<form id="f">
+<label>Username<input name="username" autocomplete="username" required/></label>
+<label>Domain (optional)<input name="domain" autocomplete="organization"/></label>
+<label>Password<input name="password" type="password" autocomplete="current-password" required/></label>
+<button type="submit">Sign in</button>
+<span id="status"></span>
+</form>
+<script>
+document.getElementById('f').onsubmit = async (ev) => {{
+  ev.preventDefault();
+  const fd = new FormData(ev.target);
+  const status = document.getElementById('status');
+  status.textContent = '…';
+  const r = await fetch('/api/login', {{
+    method: 'POST',
+    credentials: 'same-origin',
+    headers: {{'Content-Type': 'application/json'}},
+    body: JSON.stringify({{
+      username: fd.get('username') || '',
+      password: fd.get('password') || '',
+      domain: fd.get('domain') || ''
+    }})
+  }});
+  const j = await r.json().catch(() => ({{}}));
+  if (j.ok) {{ location.href = '/'; return; }}
+  status.textContent = j.error || ('HTTP ' + r.status);
+}};
 </script>
 </body></html>
 """
@@ -178,9 +233,11 @@ document.getElementById('restart').onclick = async () => {{
   el.textContent = 'requesting…';
   const r = await fetch('/api/restart-when-idle', {{
     method: 'POST',
+    credentials: 'same-origin',
     headers: {{'Content-Type': 'application/json'}},
-    body: JSON.stringify({{actor: 'ui'}})
+    body: JSON.stringify({{}})
   }});
+  if (r.status === 401 || r.status === 403) {{ location.href = '/login'; return; }}
   const j = await r.json().catch(() => ({{}}));
   el.textContent = JSON.stringify(j);
 }};
@@ -203,10 +260,12 @@ class SettingsHTTPServer(ThreadingHTTPServer):
         home: Path,
         digest_home: Path | None = None,
         started: float | None = None,
+        authenticator: Callable[..., bool] | None = None,
     ):
         self.home = Path(home)
         self.digest_home = Path(digest_home) if digest_home is not None else Path(home)
         self.started = float(started if started is not None else time.time())
+        self.authenticator = authenticator
         super().__init__(server_address, RequestHandlerClass)
 
     def verify_request(self, request, client_address) -> bool:  # noqa: ANN001
@@ -230,16 +289,36 @@ class _Handler(BaseHTTPRequestHandler):
             msg = "[redacted]"
         # Intentionally quiet in tests; chair can wrap via maybe_start log.
 
-    def _send(self, code: int, body: bytes, content_type: str) -> None:
+    def _send(
+        self,
+        code: int,
+        body: bytes,
+        content_type: str,
+        *,
+        extra_headers: list[tuple[str, str]] | None = None,
+    ) -> None:
         self.send_response(code)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
+        for k, v in extra_headers or ():
+            self.send_header(k, v)
         self.end_headers()
         self.wfile.write(body)
 
-    def _send_json(self, code: int, doc: dict[str, Any]) -> None:
-        self._send(code, _json_bytes(doc), "application/json; charset=utf-8")
+    def _send_json(
+        self,
+        code: int,
+        doc: dict[str, Any],
+        *,
+        extra_headers: list[tuple[str, str]] | None = None,
+    ) -> None:
+        self._send(
+            code,
+            _json_bytes(doc),
+            "application/json; charset=utf-8",
+            extra_headers=extra_headers,
+        )
 
     def _read_json(self) -> dict[str, Any]:
         length = int(self.headers.get("Content-Length") or 0)
@@ -250,27 +329,87 @@ class _Handler(BaseHTTPRequestHandler):
             return {}
         return doc if isinstance(doc, dict) else {}
 
+    def _session_token(self) -> str | None:
+        authz = (self.headers.get("Authorization") or "").strip()
+        if authz.lower().startswith("bearer "):
+            tok = authz[7:].strip()
+            return tok or None
+        raw = self.headers.get("Cookie") or ""
+        if not raw:
+            return None
+        jar = SimpleCookie()
+        try:
+            jar.load(raw)
+        except Exception:
+            return None
+        morsel = jar.get(SESSION_COOKIE_NAME)
+        if morsel is None:
+            return None
+        tok = str(morsel.value or "").strip()
+        return tok or None
+
+    def _auth_code(self, result: dict[str, Any]) -> int:
+        err = str(result.get("error") or "")
+        if err.startswith("unauthorized"):
+            return 401
+        if "forbidden" in err:
+            return 403
+        return 400
+
+    def _session_cookie_header(self, token: str, *, max_age: int) -> str:
+        # LAN HTTP may be plain http://; omit Secure. HttpOnly + SameSite=Strict.
+        return (
+            f"{SESSION_COOKIE_NAME}={token}; Path=/; HttpOnly; SameSite=Strict; "
+            f"Max-Age={int(max_age)}"
+        )
+
+    def _clear_session_cookie_header(self) -> str:
+        return f"{SESSION_COOKIE_NAME}=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0"
+
     def do_GET(self) -> None:  # noqa: N802
         ip = _client_ip(self)
         path = urlparse(self.path).path
         home = self.server.home
+        tok = self._session_token()
+        if path in ("/login", "/ui/login"):
+            html = _render_login_html()
+            self._send(200, html.encode("utf-8"), "text/html; charset=utf-8")
+            return
+        if path in ("/logout", "/ui/logout"):
+            auth.logout(home, client_ip=ip, session_token=tok)
+            html = _render_login_html("Signed out.")
+            self._send(
+                200,
+                html.encode("utf-8"),
+                "text/html; charset=utf-8",
+                extra_headers=[("Set-Cookie", self._clear_session_cookie_header())],
+            )
+            return
         if path in ("/", "/index.html", "/ui"):
-            view = js.api_get_settings(home, client_ip=ip)
+            view = auth.api_get_settings_authed(
+                home, client_ip=ip, session_token=tok
+            )
             if not view.get("ok"):
-                self._send_json(403, view)
+                html = _render_login_html(str(view.get("error") or "Sign in required"))
+                self._send(200, html.encode("utf-8"), "text/html; charset=utf-8")
                 return
             html = _render_html(list(view.get("settings") or []))
             self._send(200, html.encode("utf-8"), "text/html; charset=utf-8")
             return
         if path == "/api/settings":
-            view = js.api_get_settings(home, client_ip=ip)
-            code = 200 if view.get("ok") else 403
+            view = auth.api_get_settings_authed(
+                home, client_ip=ip, session_token=tok
+            )
+            code = 200 if view.get("ok") else self._auth_code(view)
             self._send_json(code, view)
             return
         if path == "/api/schema":
-            err = js.reject_non_lan(ip)
-            if err:
-                self._send_json(403, {"ok": False, "error": err})
+            # Schema is non-secret metadata but still session-gated on the LAN UI.
+            gate = auth.require_session(
+                home, client_ip=ip, session_token=tok
+            )
+            if not gate.get("ok"):
+                self._send_json(self._auth_code(gate), gate)
                 return
             rows = [
                 {
@@ -287,6 +426,13 @@ class _Handler(BaseHTTPRequestHandler):
             self._send_json(200, {"ok": True, "schema": rows})
             return
         if path in ("/status", "/ui/status"):
+            gate = auth.require_session(
+                home, client_ip=ip, session_token=tok
+            )
+            if not gate.get("ok"):
+                html = _render_login_html(str(gate.get("error") or "Sign in required"))
+                self._send(200, html.encode("utf-8"), "text/html; charset=utf-8")
+                return
             view = js.api_get_status(
                 home,
                 client_ip=ip,
@@ -300,6 +446,12 @@ class _Handler(BaseHTTPRequestHandler):
             self._send(200, html.encode("utf-8"), "text/html; charset=utf-8")
             return
         if path == "/api/status":
+            gate = auth.require_session(
+                home, client_ip=ip, session_token=tok
+            )
+            if not gate.get("ok"):
+                self._send_json(self._auth_code(gate), gate)
+                return
             view = js.api_get_status(
                 home,
                 client_ip=ip,
@@ -320,38 +472,90 @@ class _Handler(BaseHTTPRequestHandler):
             return
         key = unquote(path[len(prefix) :]).strip()
         doc = self._read_json()
-        result = js.api_put_setting(
+        result = auth.api_put_setting_authed(
             self.server.home,
             client_ip=ip,
+            session_token=self._session_token(),
             key=key,
             value=doc.get("value"),
-            actor=str(doc.get("actor") or "http")[:80],
         )
-        code = 200 if result.get("ok") else (403 if "forbidden" in str(result.get("error") or "") else 400)
+        code = 200 if result.get("ok") else self._auth_code(result)
         self._send_json(code, result)
 
     def do_POST(self) -> None:  # noqa: N802
         ip = _client_ip(self)
         path = urlparse(self.path).path
         doc = self._read_json()
-        if path == "/api/rollback":
-            result = js.api_rollback(
+        if path == "/api/login":
+            # Never echo password fields back.
+            result = auth.login(
                 self.server.home,
                 client_ip=ip,
-                backup_id=str(doc.get("backup_id") or ""),
-                actor=str(doc.get("actor") or "http")[:80],
+                username=str(doc.get("username") or ""),
+                password=str(doc.get("password") or ""),
+                domain=str(doc.get("domain") or ""),
+                authenticator=self.server.authenticator,
             )
-            code = 200 if result.get("ok") else (403 if "forbidden" in str(result.get("error") or "") else 400)
+            if result.get("ok"):
+                tok = str(result.get("session_token") or "")
+                max_age = int(result.get("expires_in") or auth.SESSION_TTL_S)
+                # Response body still includes session_token for bearer clients;
+                # cookie is for browsers. Password keys are never present.
+                safe = {
+                    k: v
+                    for k, v in result.items()
+                    if k not in ("password", "passwd", "secret")
+                }
+                self._send_json(
+                    200,
+                    safe,
+                    extra_headers=[
+                        ("Set-Cookie", self._session_cookie_header(tok, max_age=max_age))
+                    ],
+                )
+                return
+            self._send_json(self._auth_code(result), result)
+            return
+        if path == "/api/logout":
+            result = auth.logout(
+                self.server.home,
+                client_ip=ip,
+                session_token=self._session_token(),
+            )
+            self._send_json(
+                200 if result.get("ok") else self._auth_code(result),
+                result,
+                extra_headers=[("Set-Cookie", self._clear_session_cookie_header())],
+            )
+            return
+        if path == "/api/rollback":
+            result = auth.api_rollback_authed(
+                self.server.home,
+                client_ip=ip,
+                session_token=self._session_token(),
+                backup_id=str(doc.get("backup_id") or ""),
+            )
+            code = 200 if result.get("ok") else self._auth_code(result)
             self._send_json(code, result)
             return
         if path == "/api/restart-when-idle":
+            gate = auth.require_session(
+                self.server.home,
+                client_ip=ip,
+                session_token=self._session_token(),
+            )
+            if not gate.get("ok"):
+                self._send_json(self._auth_code(gate), gate)
+                return
             result = js.request_restart_when_idle(
                 self.server.home,
                 client_ip=ip,
                 digest_home=self.server.digest_home,
-                actor=str(doc.get("actor") or "http")[:80],
+                actor=str(gate.get("actor") or "http")[:80],
             )
-            code = 200 if result.get("ok") else (403 if "forbidden" in str(result.get("error") or "") else 400)
+            code = 200 if result.get("ok") else (
+                403 if "forbidden" in str(result.get("error") or "") else 400
+            )
             self._send_json(code, result)
             return
         self._send_json(404, {"ok": False, "error": "not found"})
@@ -364,6 +568,7 @@ def start_settings_http(
     port: int | None = None,
     digest_home: Path | None = None,
     started: float | None = None,
+    authenticator: Callable[..., bool] | None = None,
 ) -> SettingsHTTPServer | None:
     """Start the LAN settings listener when enabled. None when off or bind refused."""
     if not settings_http_enabled():
@@ -383,6 +588,7 @@ def start_settings_http(
             home=Path(home),
             digest_home=Path(digest_home) if digest_home is not None else Path(home),
             started=started,
+            authenticator=authenticator,
         )
     except OSError:
         return None

@@ -78,7 +78,7 @@ LOCKED
 
 ## Screens
 
-Operator surfaces today: IRC commands, chair logs, webhook health, and the MONITORING agent. FR #6436 locks an **internal-only appliance settings foundation** (schema + LAN gate + secret-safe API helpers + docs for jeeves.ntsa.uk); FR #6440 binds the LAN HTTP schema UI (off by default); FR #6441 locks AD/CredMan auth + sessions; FR #6442 migrates NSSM env into appliance-settings.json and applies file settings on start; FR #6443 adds restart-when-idle (ircJeeves only) + read-only status. FR #6453 locks **static** webhook/API docs on the public IIS front-door bob.ntsa.uk (`jeeves/www/irc-ntsa`, linked from the bobiverse acme home page; not a product website). Never expose settings via bob.ntsa.uk or public Cloudflare.
+Operator surfaces today: IRC commands, chair logs, webhook health, and the MONITORING agent. FR #6436 locks an **internal-only appliance settings foundation** (schema + LAN gate + secret-safe API helpers + docs for jeeves.ntsa.uk); FR #6440 binds the LAN HTTP schema UI (off by default); FR #6441 locks AD/CredMan auth + sessions; FR #6451 wires LAN HTTP login/cookie/Bearer; FR #6442 migrates NSSM env into appliance-settings.json and applies file settings on start; FR #6443 adds restart-when-idle (ircJeeves only) + read-only status. FR #6453 locks **static** webhook/API docs on the public IIS front-door bob.ntsa.uk (`jeeves/www/irc-ntsa`, linked from the bobiverse acme home page; not a product website). Never expose settings via bob.ntsa.uk or public Cloudflare.
 
 | id | file | state |
 |----|------|-------|
@@ -101,7 +101,7 @@ Operator surfaces today: IRC commands, chair logs, webhook health, and the MONIT
 
 ## UNKNOWN
 
-- Follow-up: LAN HTTP UI (#6440) must call FR #6441 `api_*_authed` + login/cookie session wire (UI still uses unauthed helpers until that lands)
+- FR #6451 LAN HTTP session wire: cookie/Bearer + /api/login; settings/status/restart use authed gates (landed)
 
 - Exact digest ghost-nick TTL vs live_seat_nicks under heavy report lag beyond FR #5088 exact-seat give-up
 - Whether UAT dead-author inherit should ever narrow further after more recycle evidence

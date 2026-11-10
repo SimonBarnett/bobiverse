@@ -21,8 +21,9 @@ on Cloudflare or public DNS. Do **not** front it via `bob.ntsa.uk` or
 
 ## Auth (FR #6441)
 
-Settings API/UI must require login (authed helpers). LAN HTTP still needs a
-follow-up to call these helpers and present login/cookie sessions.
+Settings API/UI require login (authed helpers). FR #6451 wires LAN HTTP to
+api_*_authed with POST /api/login, HttpOnly cookie jeeves_appliance_session,
+and Authorization: Bearer <token>. Unauthenticated API calls return 401.
 
 1. **LAN first.** Non-RFC1918 sources are rejected before credential checks.
 2. **Windows / AD.** Win32 LogonUser network logon via authenticate_windows_logon.
@@ -54,7 +55,7 @@ JSON: `GET /api/settings`, `PUT /api/settings/<KEY>`, `POST /api/rollback`, `GET
 
 Socket-layer gate: the server binds only to LAN/loopback and `verify_request` drops non-RFC1918 peers before handlers run. Helpers also reject non-LAN `client_ip`.
 
-**Never** put this behind Cloudflare, `bob.ntsa.uk`, or `irc.ntsa.uk`. Auth helpers are FR #6441 (HTTP cookie/session wire is a follow-up); NSSM apply is FR #6442; restart-when-idle / status is FR #6443.
+**Never** put this behind Cloudflare, `bob.ntsa.uk`, or `irc.ntsa.uk`. Auth helpers are FR #6441; HTTP cookie/Bearer session wire is FR #6451; NSSM apply is FR #6442; restart-when-idle / status is FR #6443.
 
 Module: `common/scripts/jeeves_settings_http.py` (started from `ChairJobs` via `maybe_start_from_chair`).
 

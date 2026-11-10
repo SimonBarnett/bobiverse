@@ -30,11 +30,26 @@ def test_docs_mrb6446_schema_and_rollback_http(tmp_path, monkeypatch):
     home = tmp_path / "home"
     home.mkdir()
     port = _free_port()
-    srv = http.start_settings_http(home, bind="127.0.0.1", port=port)
+    srv = http.start_settings_http(
+        home,
+        bind="127.0.0.1",
+        port=port,
+        authenticator=lambda u, p, d="": True,
+    )
     assert srv is not None
     base = f"http://127.0.0.1:{port}"
     try:
-        with urllib.request.urlopen(base + "/api/schema", timeout=5) as resp:
+        login = urllib.request.Request(
+            base + "/api/login",
+            data=json.dumps({"username": "u", "password": "FAKE_x"}).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(login, timeout=5) as resp:
+            tok = json.loads(resp.read().decode("utf-8"))["session_token"]
+        hdr = {"Authorization": f"Bearer {tok}", "Content-Type": "application/json"}
+        req = urllib.request.Request(base + "/api/schema", headers=hdr, method="GET")
+        with urllib.request.urlopen(req, timeout=5) as resp:
             schema = json.loads(resp.read().decode("utf-8"))
         assert schema.get("ok") is True
         keys = {r["key"] for r in schema.get("schema") or []}
@@ -43,7 +58,7 @@ def test_docs_mrb6446_schema_and_rollback_http(tmp_path, monkeypatch):
         put = urllib.request.Request(
             base + "/api/settings/BOB_CODERABBIT_WAIT_MIN",
             data=json.dumps({"value": "21", "actor": "hostile"}).encode("utf-8"),
-            headers={"Content-Type": "application/json"},
+            headers=hdr,
             method="PUT",
         )
         with urllib.request.urlopen(put, timeout=5) as resp:
@@ -55,7 +70,7 @@ def test_docs_mrb6446_schema_and_rollback_http(tmp_path, monkeypatch):
         rb = urllib.request.Request(
             base + "/api/rollback",
             data=json.dumps({"backup_id": backup_id, "actor": "hostile"}).encode("utf-8"),
-            headers={"Content-Type": "application/json"},
+            headers=hdr,
             method="POST",
         )
         with urllib.request.urlopen(rb, timeout=5) as resp:

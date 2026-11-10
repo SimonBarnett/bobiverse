@@ -53,16 +53,37 @@ def test_fr6440_non_lan_connect_refused(tmp_path, monkeypatch):
         http.stop_settings_http(srv)
 
 
+def _login_bearer(base: str, *, username: str = "ApplianceAdmin", password: str = "FAKE_ok") -> str:
+    req = urllib.request.Request(
+        base + "/api/login",
+        data=json.dumps({"username": username, "password": password}).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=5) as resp:
+        body = json.loads(resp.read().decode("utf-8"))
+    assert body.get("ok") is True
+    return str(body["session_token"])
+
+
 def test_fr6440_get_put_round_trip(tmp_path, monkeypatch):
     monkeypatch.setenv("JEEVES_SETTINGS_HTTP", "1")
     home = tmp_path / "home"
     home.mkdir()
     port = _free_port()
-    srv = http.start_settings_http(home, bind="127.0.0.1", port=port)
+    srv = http.start_settings_http(
+        home,
+        bind="127.0.0.1",
+        port=port,
+        authenticator=lambda u, p, d="": u == "ApplianceAdmin" and p == "FAKE_ok",
+    )
     assert srv is not None
     base = f"http://127.0.0.1:{port}"
     try:
-        with urllib.request.urlopen(base + "/api/settings", timeout=5) as resp:
+        tok = _login_bearer(base)
+        hdr = {"Authorization": f"Bearer {tok}"}
+        req = urllib.request.Request(base + "/api/settings", headers=hdr, method="GET")
+        with urllib.request.urlopen(req, timeout=5) as resp:
             body = json.loads(resp.read().decode("utf-8"))
         assert body.get("ok") is True
         keys = {r["key"] for r in body.get("settings") or []}
@@ -74,7 +95,7 @@ def test_fr6440_get_put_round_trip(tmp_path, monkeypatch):
         req = urllib.request.Request(
             base + "/api/settings/BOB_CODERABBIT_WAIT_MIN",
             data=json.dumps({"value": "15", "actor": "tester"}).encode("utf-8"),
-            headers={"Content-Type": "application/json"},
+            headers={**hdr, "Content-Type": "application/json"},
             method="PUT",
         )
         with urllib.request.urlopen(req, timeout=5) as resp:
@@ -84,10 +105,10 @@ def test_fr6440_get_put_round_trip(tmp_path, monkeypatch):
         cfg = js.load_config_file(home)
         assert str(cfg.get("BOB_CODERABBIT_WAIT_MIN")) == "15"
 
-        # HTML UI served
+        # HTML UI served after auth (cookie not set here; login page without bearer)
         with urllib.request.urlopen(base + "/", timeout=5) as resp:
             html = resp.read().decode("utf-8")
-        assert "BOB_CODERABBIT_WAIT_MIN" in html or "settings" in html.lower()
+        assert "login" in html.lower() or "BOB_CODERABBIT_WAIT_MIN" in html
         assert "text/html" in (resp.headers.get("Content-Type") or "")
     finally:
         http.stop_settings_http(srv)
@@ -98,13 +119,22 @@ def test_fr6440_put_invalid_rejected(tmp_path, monkeypatch):
     home = tmp_path / "home"
     home.mkdir()
     port = _free_port()
-    srv = http.start_settings_http(home, bind="127.0.0.1", port=port)
+    srv = http.start_settings_http(
+        home,
+        bind="127.0.0.1",
+        port=port,
+        authenticator=lambda u, p, d="": True,
+    )
     assert srv is not None
     try:
+        tok = _login_bearer(base := f"http://127.0.0.1:{port}", password="x")
         req = urllib.request.Request(
             f"http://127.0.0.1:{port}/api/settings/BOB_CODERABBIT_WAIT_MIN",
             data=json.dumps({"value": "nope"}).encode("utf-8"),
-            headers={"Content-Type": "application/json"},
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {tok}",
+            },
             method="PUT",
         )
         try:
