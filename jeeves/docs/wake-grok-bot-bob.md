@@ -13,7 +13,7 @@ On new ticket closures Jeeves detects closes and wakes Bob. Primary transport (F
 
 Startup log (chair): `INFO ticket-closure enabled interval=120s wake=webhook|grokbot|disabled`.
 
-`!status` includes a `ticket_closure:` line (last run age, pending, woke, transport).
+`!status` includes a `ticket_closure:` line (last run age, pending, woke, transport, poll outcome, last_ok, err).
 
 ## Legacy hand-off (desktop Grok Bot)
 
