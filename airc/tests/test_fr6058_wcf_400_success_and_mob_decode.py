@@ -63,10 +63,13 @@ def test_fr6058_http_400_empty_or_bad_xml_fails():
         inst, passed_password=_pw(), http_post=lambda *a, **k: (400, "")
     ).get_version()
     assert empty["ok"] is False
+    assert empty["error"] == wcf.WCF_HTTP_ERROR
+    assert empty.get("http_status") == 400
     junk = wcf.PriorityWcfClient(
         inst, passed_password=_pw(), http_post=lambda *a, **k: (400, "<not-soap")
     ).get_version()
     assert junk["ok"] is False
+    assert junk["error"] == wcf.WCF_HTTP_ERROR
     no_result = wcf.PriorityWcfClient(
         inst,
         passed_password=_pw(),
