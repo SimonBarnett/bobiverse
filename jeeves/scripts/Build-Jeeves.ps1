@@ -43,7 +43,7 @@ $hidden = @(
     'health', 'queue_flow', 'focus_seat', 'webhook_health',
     # FR #6391: ticket-closure live source + Bob wake webhook (monitor package).
     'ticket_closure', 'wake_brief', 'wake_grok_bot_bob',
-    # FR #6436 / #6440 / #6441: settings foundation + LAN HTTP + auth.
+    # FR #6436 / #6440 / #6441 / #6442: settings + HTTP + auth + migrate/apply.
     'jeeves_settings', 'jeeves_settings_http', 'jeeves_settings_auth',
     # FR #6439: stall HTTPS callbacks (reuse wake URL) + detectors/filer used by chair_health.
     'stall_callbacks', 'stall_detectors', 'stall_filer'

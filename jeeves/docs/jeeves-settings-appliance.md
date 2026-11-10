@@ -16,7 +16,8 @@ on Cloudflare or public DNS. Do **not** front it via `bob.ntsa.uk` or
    secret-safe GET/PUT, backup/audit/rollback) and
    `common/scripts/jeeves_settings_auth.py` (AD/CredMan + sessions).
 5. LAN HTTP UI: see **Enable the LAN HTTP UI (FR #6440)** below.
-6. NSSM apply is #6442; restart-when-idle / status is #6443.
+6. NSSM env migrate/apply is FR #6442 (see **Migrate NSSM env** below).
+   Restart-when-idle / status is FR #6443. Auth is FR #6441 (see **Auth** below).
 
 ## Auth (FR #6441)
 
@@ -68,9 +69,44 @@ Module: `common/scripts/jeeves_settings_http.py` (started from `ChairJobs` via `
 Environment variables still override file values; the API shows `source=env`
 when that happens. Secret keys return only `set` / `unset` (never plaintext).
 
+
+## Migrate NSSM env into the chair file (FR #6442)
+
+Settings that used to live only in NSSM `AppEnvironmentExtra` for `ircJeeves`
+are inventoriable in `SCHEMA` and stored in `appliance-settings.json` under the
+chair home. Process environment values still **override** the file (API shows
+`source=env`).
+
+### Safe migration (no secret print)
+
+From an elevated shell on the chair host (after a backup of NSSM parameters):
+
+```powershell
+# Dry inventory: Python helpers never print secret plaintext
+python -c "import jeeves_settings as j; from pathlib import Path; print(j.migrate_nssm_env_to_file(Path($env:BOB_HOME)))"
+```
+
+Or call `jeeves_settings.migrate_nssm_env_to_file(chair_home)` from a maintenance
+script. The function:
+
+1. Copies non-empty schema keys from the current process env into
+   `appliance-settings.json` (timestamped backup + audit row per key).
+2. Writes `set` / `unset` only for secret keys in the audit log (never the
+   token/password value).
+3. Leaves NSSM env in place until you remove entries; env continues to win
+   until removed. Then restart `ircJeeves` so `apply_file_settings` loads the
+   file for keys no longer in NSSM.
+
+`jeeves_main` / `jeeves.exe` calls `apply_file_settings(chair_home)` on start so
+file-backed values become live when env is unset.
+
+Do **not** paste `GH_TOKEN` / IRC passwords into tickets, chat, or harvest
+filings. Prefer CredMan / file permissions on chair home for secrets after
+migration.
+
 ## Operator notes
 
-- Unused: importing the modules does not start a server and does not change
-  chair behaviour.
-- Restart-required keys are flagged in the schema; foundation does not restart
-  `ircJeeves` (child FR: restart when idle).
+- Unused: importing the settings modules does not start a server unless
+  `JEEVES_SETTINGS_HTTP=1` (FR #6440).
+- `jeeves_main` applies file-backed settings on start (FR #6442); env still overrides.
+- Restart-required keys are flagged in the schema; idle restart is child FR #6443.
