@@ -274,3 +274,4 @@ Generalised from 21 harvested lessons that never reached this book (audit for FR
 - **FR #6363:** OpenCode model = operator env (at start) > opencode.json(c) model > fuel default; do not treat worker re-exports of BOB_OPENCODE_MODEL as operator overrides; keep -m <resolved>.
 - OpenCode done-miss must re-prompt with a full @@BOBJOB1 finish frame and N progress retries; never record-pause on watchdog timeout
 - **FR #6378:** OpenCode finish: append DONE immediately after `gh pr create` (never `gh pr checks --watch` / CI poll); if an open PR exists and DONE was skipped, worker writes DONE (`pr_opened_by=model done_by=worker`); inject `[outbox:]` footer always from the *current* job worktree `.bob/outbox.txt` (never a prior job path).
+- Jeeves freeze CI mirrors build-bob-worker: Build-Jeeves.ps1 -SourceCommit overwrites jeeves_build_meta stub then restores; artifact MANIFEST.json carries source SHA/hash/size/run id for Slab hash-check install
