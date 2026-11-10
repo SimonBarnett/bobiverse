@@ -35,12 +35,14 @@ $rec = [pscustomobject]@{{
 }}
 $line = Format-BobOpencodeWindowLine -WindowId week -Record $rec -Now $now
 Write-Output $line
+$lab = Format-BobPoolUpdatedLabel -FetchedAt $rec.fetched_at -Now $now
+Write-Output ($lab -replace '^updated ','')
 """
-    line = _ps(script)
+    out_lines = _ps(script).splitlines()
+    line = out_lines[0]
+    expected_hhmm = out_lines[1]
     assert line.startswith("go weekly - 100% left")
-    assert "updated " in line
-    # Local HH:MM from 10:00Z depends on machine TZ; stamp shape only.
-    assert __import__("re").search(r"updated \d{1,2}:\d{2}", line), line
+    assert f"updated {expected_hhmm}" in line, (line, expected_hhmm)
     assert "reset unavailable" not in line
     # No countdown segment: after "% left" comes updated (not Nd/Hh).
     after = line.split("100% left", 1)[1]
@@ -127,3 +129,28 @@ def test_fr6371_docs_mention_updated_stamp():
     hover = HOVER.read_text(encoding="utf-8-sig")
     assert "Format-BobPoolUpdatedLabel" in hover
     assert "Get-BobPoolReadingFreshness" in hover
+
+
+@pytest.mark.skipif(os.name != "nt" or not PS, reason="Windows PowerShell")
+def test_fr6371_stale_threshold_env_override():
+    """BOB_TRAY_POOL_STALE_S overrides default 900s and clamps 60..86400."""
+    script = f"""
+. '{HOVER}'
+$env:BOB_TRAY_POOL_STALE_S = '300'
+Write-Output ('DEF=' + (Get-BobPoolStaleAfterSec))
+$now = [datetime]'2026-11-10T10:06:00Z'
+$fresh = Get-BobPoolReadingFreshness -FetchedAt '2026-11-10T10:00:00Z' -Now $now
+Write-Output ('STATE300=' + $fresh.state)
+$env:BOB_TRAY_POOL_STALE_S = '10'
+Write-Output ('CLAMP_LO=' + (Get-BobPoolStaleAfterSec))
+$env:BOB_TRAY_POOL_STALE_S = '999999'
+Write-Output ('CLAMP_HI=' + (Get-BobPoolStaleAfterSec))
+Remove-Item Env:BOB_TRAY_POOL_STALE_S -ErrorAction SilentlyContinue
+Write-Output ('BACK=' + (Get-BobPoolStaleAfterSec))
+"""
+    out = {ln.split("=", 1)[0]: ln.split("=", 1)[1] for ln in _ps(script).splitlines() if "=" in ln}
+    assert out.get("DEF") == "300"
+    assert out.get("STATE300") == "stale"  # 360s age > 300s threshold
+    assert out.get("CLAMP_LO") == "60"
+    assert out.get("CLAMP_HI") == "86400"
+    assert out.get("BACK") == "900"
