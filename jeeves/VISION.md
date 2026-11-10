@@ -62,6 +62,10 @@ ircJeeves (chair)
 BobCallback (:7700)
   └─ /bob/v1/git|intake|report|digest|jira  (IIS TLS)
 
+Appliance settings foundation (FR #6436)
+  └─ common/scripts/jeeves_settings.py --- schema, LAN gate, secret-safe
+     GET/PUT, backup/audit/rollback; off until child FRs bind HTTP
+
 MONITORING agent (jeeves CWD)
   └─ Invoke-JeevesMonitorCheck* --- report via intake; never act as chair
 ```
@@ -72,11 +76,11 @@ LOCKED
 
 ## Screens
 
-Jeeves has no TipForm product UI. Operator surfaces are IRC commands, chair logs, webhook health, and the MONITORING agent. HTML mocks are out of scope until a status site is chosen (see UNKNOWN).
+Operator surfaces today: IRC commands, chair logs, webhook health, and the MONITORING agent. FR #6436 locks an **internal-only appliance settings foundation** (schema + LAN gate + secret-safe API helpers + docs for `jeeves.ntsa.uk`); the browser UI, AD/CredMan login, NSSM apply, idle restart, and read-only status page are child FRs. Never expose settings via `bob.ntsa.uk` or public Cloudflare.
 
 | id | file | state |
 |----|------|-------|
-| (none) | --- | no design-uat mocks yet |
+| (none) | --- | no design-uat mocks yet; foundation module only |
 
 ## LOCKED
 
@@ -87,9 +91,13 @@ Jeeves has no TipForm product UI. Operator surfaces are IRC commands, chair logs
 - CAST IRON harvest + intake every session; never print secrets
 - Hotpatch: never touch Ergo / `BobIrcd`; restart only `ircJeeves`
 - MONITORING agent reports via intake and never `!assign` / queue edits
+- FR #6436 appliance settings foundation: schema covers inventoried Jeeves-read settings (gap test); reject non-RFC1918 sources; secrets return only set/unset; validate + backup + audit + rollback; docs for internal DNS `jeeves.ntsa.uk` (never public / never via bob.ntsa.uk); unused = no behaviour change (no server on import)
 
 ## UNKNOWN
 
-- Future HTML / TipForm-style status surface for queue and webhook health (IRC + monitor scripts remain primary)
+- Child FR: HTTP listener + schema-driven web UI bound to LAN / `jeeves.ntsa.uk`
+- Child FR: AD / Windows auth or CredMan local admin login for the settings UI
+- Child FR: migrate NSSM-only env settings into chair-owned config file + apply path
+- Child FR: restart-when-idle for restart-required settings; read-only status (version/SHA, uptime, queue, seats, fuel)
 - Exact digest ghost-nick TTL vs live_seat_nicks under heavy report lag beyond FR #5088 exact-seat give-up
 - Whether UAT dead-author inherit should ever narrow further after more recycle evidence
