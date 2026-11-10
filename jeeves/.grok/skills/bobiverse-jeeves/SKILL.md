@@ -69,7 +69,7 @@ stay the digest roster (`machines`); `#wonderland` is never a machine id. Privil
    (zen `jeeves-health-probe`, answered 204 with no queue entry and no announce). One retry before calling a target down. Each run is logged (`INFO webhook-health ...`); state is
    `webhook-health.json`; `#bobiverse` is told ONLY on up<->down transitions (`WEBHOOK DOWN ...` / `WEBHOOK RECOVERED ...`)
    through `chair-outbox.txt`.
-2. **Ticket closure wake** (FR #6391 / #6405): event-first from GIT webhooks; poll backup every TICKET_CLOSURE_S default 900s (JEEVES_TICKET_CLOSURE_S); no-token WARN + 	icket_closure_token_source; HTTPS wake with backoff. State: monitor-ticket-closure.json. Startup log + !status 	icket_closure: line. Docs: jeeves/docs/wake-grok-bot-bob.md.
+2. **Ticket closure wake** (FR #6391 / #6400 / #6405): event-first from GIT webhooks; poll backup every `TICKET_CLOSURE_S` default 900s (`JEEVES_TICKET_CLOSURE_S`) with per-repo `poll_cursors` + page pagination; no-token WARN + `ticket_closure_token_source`; HTTPS wake with backoff. State: `monitor-ticket-closure.json`. Startup log + `!status` `ticket_closure:` line. Docs: `jeeves/docs/wake-grok-bot-bob.md`.
 3. **GitHub resync, hourly + webhook gap** (FR #3212; was 15 min): `gitclaim.resync_from_github` via `chair_health` /
    `github_api_budget` (ETag/304 conditional GETs, hourly call budget, backoff floor). Authenticated with the existing
    Jeeves token from `config\github.token` via `gh_filer`; token handling is unchanged and the value is never logged - only
