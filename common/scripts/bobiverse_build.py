@@ -2059,6 +2059,7 @@ def make_github_prerelease_fn(
 
 LIVE_STATE_FILES = (
     "queue.json", "focus.json", "seat-holds.json", "seat-ledger.json",
+    "job-cost-ledger.json",  # FR #6387: measured DONE model/token rows
     "offer-precompute.json", "registered-machines.json",
 )
 _DEAD_URL = "http://127.0.0.1:9/isolated-build-suite"

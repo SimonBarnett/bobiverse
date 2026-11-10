@@ -67,7 +67,44 @@ def mrb_cr_meta(rest: str) -> dict[str, object]:
     counters = mrb_cr_counters(rest)
     if "tokens" in counters:
         out["tokens"] = int(counters["tokens"])
+    # FR #6387: measured fields win over a bare legacy tokens= when present.
+    try:
+        import done_usage as _du
+
+        usage = _du.parse_done_usage(rest or "")
+        if usage.get("model"):
+            out["model"] = str(usage["model"])
+        if usage.get("tokens_in") is not None:
+            out["tokens_in"] = int(usage["tokens_in"])
+        if usage.get("tokens_out") is not None:
+            out["tokens_out"] = int(usage["tokens_out"])
+        if usage.get("tokens_cached") is not None:
+            out["tokens_cached"] = int(usage["tokens_cached"])
+        if usage.get("tokens_unknown"):
+            out["tokens_unknown"] = True
+        elif usage.get("tokens_total") is not None and "tokens" not in out:
+            out["tokens"] = int(usage["tokens_total"])
+    except Exception:  # noqa: BLE001
+        pass
     return out
+
+
+def done_usage_meta(rest: str) -> dict[str, object]:
+    """FR #6387: measured model/token fields after the DONE URL (unknown ≠ 0)."""
+    try:
+        import done_usage as _du
+
+        return dict(_du.parse_done_usage(rest or ""))
+    except Exception:  # noqa: BLE001
+        return {
+            "model": "",
+            "tokens_in": None,
+            "tokens_out": None,
+            "tokens_cached": None,
+            "legacy_tokens": None,
+            "tokens_unknown": True,
+            "tokens_total": None,
+        }
 
 
 @dataclass(frozen=True)
@@ -941,6 +978,21 @@ def handle_shop_worker_line(
             gitclaim.ledger_note_event(
                 home, nick, "DONE", parsed.task, parsed.repo, parsed.id,
                 job if isinstance(job, dict) else None, result=parsed.result, url=parsed.url,
+            )
+        except Exception:  # noqa: BLE001
+            pass
+        # FR #6387: durable per-job cost ledger for every DONE (FR/MRB/FIX/UAT).
+        try:
+            import job_cost_ledger
+
+            job_cost_ledger.record_done(
+                home,
+                repo=parsed.repo,
+                ident=parsed.id,
+                task=parsed.task,
+                seat=nick,
+                rest=parsed.rest or "",
+                url=parsed.url or "",
             )
         except Exception:  # noqa: BLE001
             pass

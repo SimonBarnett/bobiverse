@@ -9016,6 +9016,62 @@ class Supervisor:
         except Exception:
             return []
 
+    def measure_done_usage(self) -> dict:
+        """FR #6387: seat usage snapshot for DONE stamping (usage files only; no secrets)."""
+        try:
+            import done_usage as _du
+        except Exception:
+            return {"tokens_unknown": True}
+        kind = (self.kind or "").strip().lower() or "grok"
+        grok_path = None
+        if kind == "grok":
+            sid = self.sessions[-1] if self.sessions else None
+            if sid:
+                grok_path = _du.grok_usage_path_for_session(
+                    str(self.cwd),
+                    str(sid),
+                    sessions_root=self.sessions_root,
+                )
+            env_g = (os.environ.get("BOB_GROK_USAGE_PATH") or "").strip()
+            if env_g:
+                grok_path = Path(env_g)
+        cursor_path = (os.environ.get("BOB_CURSOR_USAGE_PATH") or "").strip() or None
+        oc_path = (os.environ.get("BOB_OPENCODE_USAGE_PATH") or "").strip() or None
+        aider_path = (os.environ.get("BOB_AIDER_USAGE_PATH") or "").strip() or None
+        if self.run_dir is not None:
+            if not cursor_path:
+                cand = Path(self.run_dir) / "cursor-usage.json"
+                if cand.is_file():
+                    cursor_path = str(cand)
+            if not oc_path:
+                cand = Path(self.run_dir) / "opencode-usage.json"
+                if cand.is_file():
+                    oc_path = str(cand)
+            if not aider_path:
+                cand = Path(self.run_dir) / "aider-usage.json"
+                if cand.is_file():
+                    aider_path = str(cand)
+        try:
+            return _du.measure_seat_usage(
+                kind,
+                grok_usage_path=grok_path,
+                cursor_usage_path=cursor_path,
+                opencode_usage_path=oc_path,
+                aider_usage_path=aider_path,
+            )
+        except Exception:
+            return {"tokens_unknown": True}
+
+    def enrich_done_line(self, payload: str) -> str:
+        """FR #6387: append measured model/token fields onto a DONE outbox line."""
+        try:
+            import done_usage as _du
+
+            usage = self.measure_done_usage()
+            return _du.enrich_done_payload(payload, usage)
+        except Exception:
+            return payload
+
     def on_outbox_wire(self, payload: str) -> None:
         """BoredEmitter + FR #2383 ACK-miss clear; used as the outbox_loop on_payload."""
         p = (payload or "").strip()
@@ -10015,7 +10071,14 @@ class Supervisor:
             self.irc.on_nak_line = self._replay_done_on_busy_hold  # FR #4642
         ob = self.run_dir / "outbox.txt"
         try:
-            drain_outbox(ob, self.irc, self.log, self.on_outbox_wire, self.may_send_outbox)
+            drain_outbox(
+                ob,
+                self.irc,
+                self.log,
+                self.on_outbox_wire,
+                self.may_send_outbox,
+                enrich_line=self.enrich_done_line,
+            )
         except Exception as e:
             self.log(f"irc: post-reconnect outbox flush {type(e).__name__}")
         if self.bored is None:
@@ -10115,6 +10178,7 @@ def drain_outbox(
     log: Callable[[str], None],
     on_payload: Optional[Callable[[str], None]] = None,
     may_send: Optional[Callable[[str], bool]] = None,
+    enrich_line: Optional[Callable[[str], str]] = None,
 ) -> int:
     """Move outbox.txt aside atomically, send each line to the shop channel. Plain text or `PRIVMSG #shop :text`."""
     path = Path(path)
@@ -10143,6 +10207,19 @@ def drain_outbox(
             m = re.match(r"(?i)^PRIVMSG\s+(\S+)\s+:?(.*)$", ln)
             target, text = (m.group(1), m.group(2)) if m else (irc.shop, ln)
             payload = text.strip()
+            # FR #6387: worker stamps measured model/tokens onto DONE before IRC send.
+            if enrich_line is not None and _OUT_DONE_RX.match(payload):
+                try:
+                    enriched = enrich_line(payload)
+                except Exception:
+                    enriched = payload
+                if isinstance(enriched, str) and enriched.strip():
+                    payload = enriched.strip()
+                    text = payload
+                    if m:
+                        ln = f"PRIVMSG {target} :{payload}"
+                    else:
+                        ln = payload
             if _OUT_BORED_RX.match(payload):  # t770u: !bored is posted by the exe ONLY, never by the model
                 log("outbox: refused agent-written !bored (the exe posts it)")
                 continue
@@ -10220,11 +10297,12 @@ def outbox_loop(
     may_send: Optional[Callable[[str], bool]] = None,
     extra_paths: Optional[Callable[[], list]] = None,
     may_send_extra: Optional[Callable[[str], bool]] = None,
+    enrich_line: Optional[Callable[[str], str]] = None,
 ) -> None:
     ensure_outbox(path)
     while not stop.wait(0.5):  # outbound only; inbound relay is NOT polled
         try:
-            drain_outbox(path, irc, log, on_payload, may_send)
+            drain_outbox(path, irc, log, on_payload, may_send, enrich_line=enrich_line)
             # FR #6333: also drain OpenCode in-worktree .bob/outbox.txt when active.
             extras: list = []
             if extra_paths is not None:
@@ -10242,7 +10320,7 @@ def outbox_loop(
                 if (not ep.is_file()) or ep.resolve() == Path(path).resolve():
                     continue
                 try:
-                    drain_outbox(ep, irc, log, on_payload, job_may)
+                    drain_outbox(ep, irc, log, on_payload, job_may, enrich_line=enrich_line)
                 except Exception as e:  # pragma: no cover
                     log(f"outbox(job): {type(e).__name__}")
         except Exception as e:  # pragma: no cover
@@ -10715,6 +10793,7 @@ def run_agent(args, log: Log) -> int:
         kwargs={
             "extra_paths": sup.opencode_extra_outbox_paths,
             "may_send_extra": sup.may_send_job_outbox,
+            "enrich_line": sup.enrich_done_line,
         },
         name="outbox",
         daemon=True,
