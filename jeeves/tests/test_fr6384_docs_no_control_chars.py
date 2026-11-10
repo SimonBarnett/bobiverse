@@ -37,3 +37,17 @@ def test_fr6384_docs_have_no_stray_control_chars():
     assert not problems, "stray control characters in jeeves/docs:\n" + "\n".join(
         problems
     )
+
+
+def test_fr6384_find_control_chars_reports_bel(tmp_path: Path):
+    """Negative: BEL (0x07) is reported with file and line (FR #6384 / MRB #6385)."""
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    (docs / "bel.md").write_bytes(b"a \x07 b\n")
+    problems = find_control_chars(docs)
+    assert problems, problems
+    joined = "\n".join(problems).replace("\\", "/")
+    assert "0x07" in joined and "bel.md" in joined, problems
+    (docs / "ok.md").write_bytes(b"hello\r\nworld\n")
+    ok_hits = [x for x in find_control_chars(docs) if "ok.md" in x.replace("\\", "/")]
+    assert not ok_hits, ok_hits
