@@ -772,6 +772,14 @@ def main(argv: list[str] | None = None) -> int:
         if raw and is_ephemeral_test_home(Path(raw)):
             os.environ.pop(key, None)
 
+    # FR #6442: apply appliance-settings.json into environ (env still wins).
+    try:
+        import jeeves_settings as _jeeves_settings
+
+        _jeeves_settings.apply_file_settings(Path(chair_home))
+    except Exception:
+        pass
+
     # FR #2524: bare jeeves.exe (no mode) must fail-fast exit 2 without grabbing
     # the instance mutex - NSSM AppExit Restart otherwise loops and fills stderr
     # during cutover when AppParameters are empty/missing.

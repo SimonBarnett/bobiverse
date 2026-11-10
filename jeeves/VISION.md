@@ -64,7 +64,7 @@ BobCallback (:7700)
 
 Appliance settings foundation (FR #6436)
   └─ common/scripts/jeeves_settings.py --- schema, LAN gate, secret-safe
-     GET/PUT, backup/audit/rollback; off until child FRs bind HTTP
+     GET/PUT, backup/audit/rollback; file apply/migrate FR #6442; HTTP UI FR #6440
 
 MONITORING agent (jeeves CWD)
   └─ Invoke-JeevesMonitorCheck* --- report via intake; never act as chair

@@ -14,9 +14,7 @@ on Cloudflare or public DNS. Do **not** front it via `bob.ntsa.uk` or
    wrong.
 4. Foundation module: `common/scripts/jeeves_settings.py` (schema, LAN gate,
    secret-safe GET, validated PUT, timestamped backups, audit JSONL, rollback).
-5. HTTP listener, AD/CredMan login UI, and NSSM apply path are **child FRs**
-   after this foundation. Until those land, operators use the Python helpers /
-   future CLI against chair home (`~\.jeeves`).
+5. LAN HTTP UI: FR #6440. AD/CredMan auth: FR #6441. NSSM→file migrate/apply: FR #6442.
 
 ## Storage
 
@@ -28,6 +26,41 @@ on Cloudflare or public DNS. Do **not** front it via `bob.ntsa.uk` or
 
 Environment variables still override file values; the API shows `source=env`
 when that happens. Secret keys return only `set` / `unset` (never plaintext).
+
+
+## Migrate NSSM env into the chair file (FR #6442)
+
+Settings that used to live only in NSSM `AppEnvironmentExtra` for `ircJeeves`
+are inventoriable in `SCHEMA` and stored in `appliance-settings.json` under the
+chair home. Process environment values still **override** the file (API shows
+`source=env`).
+
+### Safe migration (no secret print)
+
+From an elevated shell on the chair host (after a backup of NSSM parameters):
+
+```powershell
+# Dry inventory: Python helpers never print secret plaintext
+python -c "import jeeves_settings as j; from pathlib import Path; print(j.migrate_nssm_env_to_file(Path($env:BOB_HOME)))"
+```
+
+Or call `jeeves_settings.migrate_nssm_env_to_file(chair_home)` from a maintenance
+script. The function:
+
+1. Copies non-empty schema keys from the current process env into
+   `appliance-settings.json` (timestamped backup + audit row per key).
+2. Writes `set` / `unset` only for secret keys in the audit log (never the
+   token/password value).
+3. Leaves NSSM env in place until you remove entries; env continues to win
+   until removed. Then restart `ircJeeves` so `apply_file_settings` loads the
+   file for keys no longer in NSSM.
+
+`jeeves_main` / `jeeves.exe` calls `apply_file_settings(chair_home)` on start so
+file-backed values become live when env is unset.
+
+Do **not** paste `GH_TOKEN` / IRC passwords into tickets, chat, or harvest
+filings. Prefer CredMan / file permissions on chair home for secrets after
+migration.
 
 ## Operator notes
 
