@@ -62,7 +62,7 @@ It runs the Status and About windows in-process (no second process to start).
 ## Hot-patch the tray (FR #5111)
 
 1. Stage patched files into the live install (`bob\tray\tools\Watch-BobTray.ps1`, helpers; rebuild `bob-tray.exe` only if the C# host changed: `scripts\Build-BobDialogs.ps1`).
-2. Write `reload` (one line) to `<install>\run\tray-cmd.txt`, or use TipForm **Reload engine**.
+2. Write `reload` (one line) to `<install>\run\tray-cmd.txt`, or use **Reload engine** on the tray icon's right-click menu.
 3. Verify one `powershell.exe` engine under one `bob-tray.exe` host (`BOB_TRAY_ENGINE=1`). ircBob / seat pids stay put.
 4. Confirm digest / `engine.alive` ticks after the new engine start.
 * **Single instance**: a named mutex per normalized install root (FR #2585: trim quotes/trailing slash + `GetFullPath` so argv variants share one mutex). A second `bob-tray.exe` logs `process-exit reason=already-running` (never `unexpected`) and does not write `tray-up`.
