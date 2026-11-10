@@ -42,7 +42,9 @@ $hidden = @(
     'shop_chanserv', 'shop_listen', 'shop_ops',
     'health', 'queue_flow', 'focus_seat', 'webhook_health',
     # FR #6391: ticket-closure live source + Bob wake webhook (monitor package).
-    'ticket_closure', 'wake_brief', 'wake_grok_bot_bob'
+    'ticket_closure', 'wake_brief', 'wake_grok_bot_bob',
+    # FR #6439: stall HTTPS callbacks (reuse wake URL) + detectors/filer used by chair_health.
+    'stall_callbacks', 'stall_detectors', 'stall_filer'
 )
 $hiddenArgs = @(); foreach ($h in $hidden) { $hiddenArgs += @('--hidden-import', $h) }
 

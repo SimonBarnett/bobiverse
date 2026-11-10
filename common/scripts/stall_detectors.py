@@ -18,11 +18,13 @@ RESYNC_FAIL_ID = "resync-fail"
 ACK_STALE_ID = "ack-stale"
 BORED_LATENCY_ID = "bored-latency"
 STALE_DIGEST_ID = "stale-digest"
+IDLE_WITH_WORK_ID = "idle-with-work"
 
 RESYNC_FAIL_N = 3
 ACK_STALE_S = 45 * 60
 BORED_LATENCY_S = 240.0
 STALE_DIGEST_S = 900.0
+IDLE_WITH_WORK_S = 10 * 60.0
 
 
 def fingerprint(detector_id: str, key: str) -> str:
@@ -411,6 +413,66 @@ def _iso_age_s(raw: object, now: float) -> float | None:
         return None
 
 
+
+def detect_idle_with_work(snap: dict[str, Any]) -> list[dict[str, Any]]:
+    """FR #6439: idle seats + unaccepted work waiting > N min with no live offer."""
+    idle_raw = snap.get("idle") or []
+    idle = [n for n in idle_raw if str(n or "").strip()]
+    if not idle:
+        return []
+    now = float(snap.get("now") or 0)
+    if now <= 0:
+        now = __import__("time").time()
+    limit = float(snap.get("idle_with_work_s") or IDLE_WITH_WORK_S)
+    waiting: list[str] = []
+    oldest_age = 0.0
+    for row in snap.get("unaccepted") or []:
+        if not isinstance(row, dict):
+            continue
+        if row.get("needs_human"):
+            continue
+        offered_to = str(row.get("offered_to") or "").strip()
+        if offered_to:
+            try:
+                age_offer = float(gitclaim._offer_age_s(row, now))
+            except Exception:
+                age_offer = 0.0
+            try:
+                win = float(gitclaim.offer_timeout_s(row))
+            except Exception:
+                win = 120.0
+            if age_offer < win:
+                # Live offer in window: not "no offer made".
+                continue
+        ts_raw = str(row.get("ts") or "").strip()
+        if not ts_raw:
+            continue
+        age = _iso_age_s(ts_raw, now)
+        if age is None:
+            continue
+        if age < limit:
+            continue
+        rid = _row_id(row)
+        waiting.append(rid)
+        if age > oldest_age:
+            oldest_age = age
+    if not waiting:
+        return []
+    return [
+        {
+            "id": IDLE_WITH_WORK_ID,
+            "key": "queue",
+            "title": "stall:idle-with-work:queue",
+            "evidence": {
+                "idle_n": len(idle),
+                "waiting": waiting[:20],
+                "age_s": int(oldest_age),
+                "machine": "",
+            },
+        }
+    ]
+
+
 def detect_stale_digest(snap: dict[str, Any]) -> list[dict[str, Any]]:
     """FR #6100: public digest ts (or all lastSeen) older than the threshold."""
     now = float(snap.get("now") or 0)
@@ -444,6 +506,7 @@ DETECTORS = (
     detect_ack_stale,
     detect_bored_latency,
     detect_stale_digest,
+    detect_idle_with_work,
 )
 
 

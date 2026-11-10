@@ -33,6 +33,35 @@ When no wake URL is set and `JEEVES_TICKET_CLOSURE_WAKE=1`, `ticket_closure.chec
 
 **CAST IRON:** this wake is not chair `!assign` and never edits `queue.json`.
 
+## Stall + heartbeat callbacks (FR #6439)
+
+When `JEEVES_TICKET_CLOSURE_WAKE_URL` is set, the chair also POSTs stall and heartbeat events on the **same** URL, secret and auth headers as close notices. State lives in digest home `stall-callbacks.json` (debounced + pending; never secrets).
+
+### Payload schema
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `event` | string | `close` (ticket closure), `idle_with_work`, `offer_timeout`, `giveup`, `self_review_deadlock`, `seat_down`, `resync_failed`, `rate_limited`, `chair_degraded`, `heartbeat` |
+| `repo` | string | `owner/name` when known |
+| `number` | int/string | issue or PR number when known |
+| `seat` | string | worker nick when known |
+| `machine` | string | machine id when known |
+| `since` | number | unix seconds when the condition was observed |
+| `reason` | string | short redacted reason (no tokens/log dumps) |
+
+Close notices (FR #6391) also keep `text` / `brief` / `kind` / `state` / `title` / `agent`. Empty optional stall fields are omitted on close payloads so they stay lean. `event` is always `close` for those wakes.
+
+### Rules
+
+- Debounce: one POST per `(event, subject)` until clear or 60 minutes.
+- Failed POSTs stay in `pending` with exponential backoff (same idea as ticket-closure).
+- Per-event switch: `JEEVES_STALL_CALLBACK_<EVENT>=0` disables (default all on when URL configured).
+- Daily `heartbeat` around 06:00 UTC once per day.
+- No change when the wake URL is unset.
+- Sources: `stall_callbacks.emit_findings` from `chair_health._stall_scan`; `emit_giveup` from shop `GIVEUP`; detectors map `idle-with-work`, `ack-stale`->`offer_timeout`, `all-gave-up`->`giveup`, `self-review-deadlock`, `bored-latency`->`seat_down`, `resync-fail` (->`rate_limited` on HTTP 429), `stale-digest`->`chair_degraded`.
+
+Build: `Build-Jeeves.ps1` also hidden-imports `stall_callbacks`, `stall_detectors`, `stall_filer`.
+
 ## Config (fleet)
 
 | Env | Purpose |
