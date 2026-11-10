@@ -897,9 +897,17 @@ T ':Jeeves!j@h PRIVMSG #m :BOB DIGEST v1 x' ''
 
 # ----------------------------------------------------------------------------------------------- t815u: hard cap of 2 live workers
 def _seats(*roots):
+    """Onefile seat fixtures: bootloader + child, mode=agent (FR #3181 / #6422).
+
+    Missing mode is ``unknown`` and never counts as an agent seat; unit gates must
+    pass mode explicitly so they stay hermetic on a live 2-seat box.
+    """
     rows = []
     for r in roots:
-        rows += [(r, 1, "bob-worker-aaa.exe"), (r + 1, r, "bob-worker-aaa.exe")]      # onefile: bootloader + child
+        rows += [
+            (r, 1, "bob-worker-aaa.exe", "agent"),
+            (r + 1, r, "bob-worker-aaa.exe", "agent"),
+        ]  # onefile: bootloader + child
     return rows + [(900, 1, "grok.exe"), (901, 900, "python.exe")]
 
 
@@ -910,10 +918,16 @@ def test_cap_counts_live_seats_other_than_my_own_tree():
     assert bw.other_live_workers(me, 101) == 0 and bw.other_live_workers(me, 100) == 0
     assert bw.other_live_workers(_seats(100, 200), 101) == 1
     assert bw.other_live_workers(_seats(100, 200, 300), 101) == 2        # two others => I must not start
-    assert bw.other_live_workers(_seats(100, 200) + [(777, 1, "bob-worker.exe")], 101) == 2
+    assert bw.other_live_workers(_seats(100, 200) + [(777, 1, "bob-worker.exe", "agent")], 101) == 2
+    # FR #3181 / #6422: missing mode is unknown — never agent — so bare exe tuples do not count.
+    bare = [(100, 1, "bob-worker-aaa.exe"), (101, 100, "bob-worker-aaa.exe"),
+            (200, 1, "bob-worker-aaa.exe"), (201, 200, "bob-worker-aaa.exe")]
+    assert bw.other_live_workers(bare, 101) == 0
 
 
 def test_third_worker_is_refused_two_are_fine_and_env_can_only_lower(monkeypatch):
+    # FR #6422: force process-only cap path so live IRC seat markers cannot bleed in.
+    monkeypatch.setattr(bw, "count_irc_agent_seats", None)
     monkeypatch.delenv("BOB_WORKER_MAX", raising=False)
     assert bw.worker_cap_refusal(_seats(200, 300), 5000) != "" and "max 2 workers" in bw.worker_cap_refusal(_seats(200, 300), 5000)
     assert bw.worker_cap_refusal(_seats(200), 5000) == ""                 # one other running: I am the 2nd
@@ -927,6 +941,8 @@ def test_third_worker_is_refused_two_are_fine_and_env_can_only_lower(monkeypatch
 
 
 def test_main_refuses_to_start_when_two_workers_are_already_running(monkeypatch, tmp_path):
+    # FR #6422: hermetic process-only refusal (no live IRC marker contamination).
+    monkeypatch.setattr(bw, "count_irc_agent_seats", None)
     monkeypatch.setattr(bw, "snapshot_procs", lambda: _seats(200, 300))
     monkeypatch.setattr(bw, "_state_root", lambda: tmp_path)
     monkeypatch.setattr(bw, "ensure_console", lambda *a, **k: True)
