@@ -17,7 +17,9 @@ import os
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
@@ -45,6 +47,10 @@ _WAKE_HTTP_POST: Callable[..., Any] | None = None
 _CLOCK: Callable[[], float] = time.time
 WAKE_BACKOFF_S = 60.0
 WAKE_BACKOFF_MAX_S = 900.0
+
+
+def _utc_iso_now() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def _load_json(path: Path) -> Any:
@@ -216,17 +222,19 @@ def _poll_github_closes(
     since: str | None,
     fetch: Callable[..., Any] | None = None,
 ) -> list[dict[str, Any]]:
-    """Poll GitHub Issues API (includes PRs) for closes since *since* (ISO8601)."""
+    """Poll GitHub Issues API (includes PRs) for closes since *since* (ISO8601).
+
+    When *since* is missing, return no rows (caller seeds the cursor to now so
+    the first live poll does not replay historical closes / flood wake).
+    """
     fetcher = fetch or _GITHUB_FETCH or _default_github_fetch
     out: list[dict[str, Any]] = []
-    if not repos or not token:
+    if not repos or not token or not since:
         return out
     for repo in sorted(repos):
         if "/" not in repo:
             continue
-        q = "state=closed&sort=updated&direction=asc&per_page=50"
-        if since:
-            q += f"&since={since}"
+        q = f"state=closed&sort=updated&direction=asc&per_page=50&since={since}"
         url = f"https://api.github.com/repos/{repo}/issues?{q}"
         try:
             data = fetcher(url, token=token)
@@ -298,11 +306,18 @@ def _load_waiting(chair: Path, digest: Path) -> set[str]:
 
 
 def _wake_url() -> str:
-    return (
+    raw = (
         os.environ.get("JEEVES_TICKET_CLOSURE_WAKE_URL")
         or os.environ.get("JEEVES_BOB_WAKE_URL")
         or ""
     ).strip()
+    if not raw:
+        return ""
+    scheme = (urllib.parse.urlparse(raw).scheme or "").lower()
+    # FR #6391 MRB: Bearer/X-Bob-Wake-Secret must not leave the host on cleartext.
+    if scheme != "https":
+        return ""
+    return raw
 
 
 def _wake_secret() -> str:
@@ -344,7 +359,9 @@ def _default_wake_http_post(url: str, body: dict[str, Any], headers: dict[str, s
         },
         method="POST",
     )
-    with urllib.request.urlopen(req, timeout=30) as resp:
+    # Do not follow redirects: Authorization must not hop to another host.
+    opener = urllib.request.build_opener(urllib.request.HTTPHandler(), urllib.request.HTTPSHandler())
+    with opener.open(req, timeout=30) as resp:
         status = int(getattr(resp, "status", 200) or 200)
         if status >= 400:
             raise ConnectionError(f"wake HTTP {status}")
@@ -445,18 +462,26 @@ def check(args):
     token_loader = _GITHUB_TOKEN or _default_github_token
     token, _tok_src = token_loader()
     now = float(_CLOCK())
-    events = _load_events(fixture, repos, token=token or "", since=poll_cursor)
+    # First live poll: seed cursor to now; do not replay historical closes.
+    if fixture is None and poll_cursor is None:
+        poll_cursor = _utc_iso_now()
+        events = []
+    else:
+        events = _load_events(fixture, repos, token=token or "", since=poll_cursor)
     waiting = _load_waiting(chair, digest)
+    # Advance cursor from every fetched close before the waiting filter so a
+    # Phase-2 registry cannot stall the global cursor on non-waiting pages.
+    newest_closed = poll_cursor
+    for ev in events:
+        ca = str(ev.get("closed_at") or "").strip()
+        if ca and (newest_closed is None or ca > newest_closed):
+            newest_closed = ca
     if waiting:
         events = [ev for ev in events if _event_ticket_id(ev) in waiting]
     closed = []
     handled = set(seen) | set(pending)
-    newest_closed = poll_cursor
     for ev in events:
         key = _event_key(ev)
-        ca = str(ev.get("closed_at") or "").strip()
-        if ca and (newest_closed is None or ca > newest_closed):
-            newest_closed = ca
         if key in handled:
             continue
         row = dict(ev)
@@ -520,10 +545,12 @@ def check(args):
             blob["last_wake_at"] = last_wake_at
         if poll_cursor:
             blob["poll_cursor"] = poll_cursor
-        state_path.write_text(
+        tmp = state_path.with_name(f"{state_path.name}.{os.getpid()}.tmp")
+        tmp.write_text(
             json.dumps(blob, separators=(",", ":"), sort_keys=True),
             encoding="utf-8",
         )
+        os.replace(tmp, state_path)
     except OSError:
         pass
     ok = not closed

@@ -18,6 +18,25 @@ import ticket_closure as tc  # noqa: E402
 from test_fr6064_ticket_closure_dedupe import STATE, _fx, _homes
 
 
+@pytest.fixture(autouse=True)
+def _no_real_wake(monkeypatch):
+    """Never POST a real wake webhook from unit tests (host may set BOB wake URL)."""
+    for name in (
+        "JEEVES_TICKET_CLOSURE_WAKE_URL",
+        "JEEVES_BOB_WAKE_URL",
+        "JEEVES_TICKET_CLOSURE_WAKE_SECRET",
+        "JEEVES_BOB_WAKE_SECRET",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setattr(
+        tc,
+        "_WAKE_HTTP_POST",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("real wake POST")),
+    )
+
+
+
+
 def _args(chair: Path, digest: Path) -> Namespace:
     return Namespace(
         chair_home=str(chair),
@@ -27,17 +46,55 @@ def _args(chair: Path, digest: Path) -> Namespace:
     )
 
 
-def test_fr6391_no_fixture_polls_github_mocked(tmp_path: Path, monkeypatch):
+def test_fr6391_first_poll_seeds_cursor_no_history(tmp_path: Path, monkeypatch):
+    """No poll_cursor: seed to now and do not fetch/replay historical closes."""
     chair, digest = _homes(tmp_path)
     monkeypatch.delenv("JEEVES_TICKET_CLOSURE_FIXTURE", raising=False)
     monkeypatch.delenv("JEEVES_TICKET_CLOSURE_WAKE", raising=False)
-    monkeypatch.delenv("JEEVES_TICKET_CLOSURE_WAKE_URL", raising=False)
 
     calls: list[str] = []
 
     def fetch(url: str, **_kw):
         calls.append(url)
-        if "/issues?" in url or "/issues?" in url.replace("?", "?"):
+        return [
+            {
+                "number": 1,
+                "title": "ancient",
+                "state": "closed",
+                "closed_at": "2020-01-01T00:00:00Z",
+            }
+        ]
+
+    monkeypatch.setattr(tc, "_GITHUB_FETCH", fetch)
+    monkeypatch.setattr(tc, "_GITHUB_TOKEN", lambda: ("tok", "test"))
+    payload, code = tc.check(_args(chair, digest))
+    assert code == 0
+    assert payload.get("closed_count") == 0
+    assert calls == []
+    body = json.loads((digest / STATE).read_text(encoding="utf-8"))
+    assert body.get("poll_cursor")
+    assert "T" in body["poll_cursor"] and body["poll_cursor"].endswith("Z")
+
+
+def test_fr6391_no_fixture_polls_github_mocked(tmp_path: Path, monkeypatch):
+    chair, digest = _homes(tmp_path)
+    monkeypatch.delenv("JEEVES_TICKET_CLOSURE_FIXTURE", raising=False)
+    monkeypatch.delenv("JEEVES_TICKET_CLOSURE_WAKE", raising=False)
+
+    # Seed a prior cursor so this cycle actually polls (first poll only seeds).
+    ops = digest
+    ops.mkdir(parents=True, exist_ok=True)
+    (ops / STATE).write_text(
+        json.dumps({"seen": {}, "pending": {}, "poll_cursor": "2026-11-10T11:00:00Z"}),
+        encoding="utf-8",
+    )
+
+    calls: list[str] = []
+
+    def fetch(url: str, **_kw):
+        calls.append(url)
+        if "/issues?" in url:
+            assert "since=2026-11-10T11:00:00Z" in url
             return [
                 {
                     "number": 99,
@@ -67,14 +124,25 @@ def test_fr6391_no_fixture_polls_github_mocked(tmp_path: Path, monkeypatch):
     assert any("api.github.com/repos/SimonBarnett/bobiverse/issues" in u for u in calls)
     assert payload.get("last_poll_at")
     body = json.loads((digest / STATE).read_text(encoding="utf-8"))
-    assert body.get("poll_cursor")
+    assert body.get("poll_cursor") == "2026-11-10T12:05:00Z"
     assert body.get("last_poll_at")
+
+
+def test_fr6391_wake_url_https_only(monkeypatch):
+    monkeypatch.setenv("JEEVES_TICKET_CLOSURE_WAKE_URL", "http://example.test/wake")
+    assert tc._wake_url() == ""
+    monkeypatch.setenv("JEEVES_TICKET_CLOSURE_WAKE_URL", "https://example.test/wake")
+    assert tc._wake_url() == "https://example.test/wake"
 
 
 def test_fr6391_dedupe_across_restarts(tmp_path: Path, monkeypatch):
     chair, digest = _homes(tmp_path)
     monkeypatch.delenv("JEEVES_TICKET_CLOSURE_FIXTURE", raising=False)
-    monkeypatch.delenv("JEEVES_TICKET_CLOSURE_WAKE_URL", raising=False)
+
+    (digest / STATE).write_text(
+        json.dumps({"seen": {}, "pending": {}, "poll_cursor": "2026-11-10T09:00:00Z"}),
+        encoding="utf-8",
+    )
 
     def fetch(url: str, **_kw):
         return [
@@ -225,6 +293,10 @@ def test_fr6391_e2e_closed_pr_to_one_post(tmp_path: Path, monkeypatch):
     monkeypatch.delenv("JEEVES_TICKET_CLOSURE_FIXTURE", raising=False)
     monkeypatch.setenv("JEEVES_TICKET_CLOSURE_WAKE_URL", "https://example.test/wake")
     monkeypatch.setenv("JEEVES_TICKET_CLOSURE_WAKE_SECRET", "x")
+    (digest / STATE).write_text(
+        json.dumps({"seen": {}, "pending": {}, "poll_cursor": "2026-11-10T10:00:00Z"}),
+        encoding="utf-8",
+    )
 
     def fetch(url: str, **_kw):
         return [
