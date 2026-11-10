@@ -42,7 +42,9 @@ $hidden = @(
     'shop_chanserv', 'shop_listen', 'shop_ops',
     'health', 'queue_flow', 'focus_seat', 'webhook_health',
     # FR #6391: ticket-closure live source + Bob wake webhook (monitor package).
-    'ticket_closure', 'wake_brief', 'wake_grok_bot_bob'
+    'ticket_closure', 'wake_brief', 'wake_grok_bot_bob',
+    # FR #6436 / #6440: appliance settings foundation + LAN HTTP UI.
+    'jeeves_settings', 'jeeves_settings_http'
 )
 $hiddenArgs = @(); foreach ($h in $hidden) { $hiddenArgs += @('--hidden-import', $h) }
 

@@ -618,6 +618,16 @@ class ChairJobs:
             self._ticket_closure_logged = True
         except Exception:  # noqa: BLE001
             pass
+        # FR #6440: optional LAN settings HTTP (off unless JEEVES_SETTINGS_HTTP=1).
+        self._settings_http = None
+        try:
+            import jeeves_settings_http as _settings_http
+
+            self._settings_http = _settings_http.maybe_start_from_chair(
+                self.home, log=self.log
+            )
+        except Exception:  # noqa: BLE001
+            self._settings_http = None
 
     def _announce(self, text: str) -> None:
         import bobreport
