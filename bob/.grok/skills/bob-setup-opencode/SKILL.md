@@ -226,18 +226,25 @@ re-run exits 0 with evidence.
 
 OpenCode reads `%USERPROFILE%\.config\opencode\AGENTS.md` at the start of every
 run, so rules put there apply to every OpenCode seat on the box. On MarchHare the
-seat relies on this file for the finish-step fixes in #6370. Its three rules are:
+seat used this file as an interim finish-step fix for #6370 (merged in PR #6374).
+Keep the Bob rules in a **managed section** so other operator instructions in the
+same file are preserved. The three rules are:
 
 1. Open the PR with `gh pr create --body "..."` (inline body). Do **not** write a
    PR body file, and never one under `%TEMP%`.
 2. Never write to `%TEMP%` or any path outside the job worktree. Keep all scratch
    files inside the job worktree (and do not commit them).
 3. Do not create base checkouts or extra git worktrees. To compare against the
-   base, use `git stash` in the job worktree, then `git stash pop`.
+   base, prefer `git diff origin/main...HEAD` / `git log` in the job worktree. If
+   you must stash, use a named stash (`git stash push -m bob-fr-6370-compare`) and
+   pop **only** that entry --- never a bare `git stash pop` (it can apply an
+   unrelated older stash when the worktree was already clean).
 
-Create it once per seat after install. Deleting the file undoes the behaviour, and
-it does **not** widen any permission (it only restricts writes). Drop it once
-#6370 ships the same rules in the worker's finish steps.
+Create the managed section once per seat after install. Removing **only that
+section** undoes the Bob rules; do not delete the whole `AGENTS.md` if it holds
+other operator text. The file does **not** widen any permission (it only
+restricts writes). Once a rebuilt `bob-worker.exe` with the #6370 finish steps is
+running on the box, the managed section is optional and may be removed.
 
 ## Fleet smoke checklist (FR #6160 / FR-OC-FLEET)
 
