@@ -62,9 +62,9 @@ ircJeeves (chair)
 BobCallback (:7700)
   └─ /bob/v1/git|intake|report|digest|jira  (IIS TLS)
 
-Appliance settings foundation (FR #6436)
-  └─ common/scripts/jeeves_settings.py --- schema, LAN gate, secret-safe
-     GET/PUT, backup/audit/rollback; off until child FRs bind HTTP
+Appliance settings (FR #6436 foundation + FR #6440 LAN HTTP)
+  ├─ common/scripts/jeeves_settings.py --- schema, LAN gate, secret-safe API
+  └─ common/scripts/jeeves_settings_http.py --- LAN bind :7701 UI/API; off by default
 
 MONITORING agent (jeeves CWD)
   └─ Invoke-JeevesMonitorCheck* --- report via intake; never act as chair
@@ -76,7 +76,7 @@ LOCKED
 
 ## Screens
 
-Operator surfaces today: IRC commands, chair logs, webhook health, and the MONITORING agent. FR #6436 locks an **internal-only appliance settings foundation** (schema + LAN gate + secret-safe API helpers + docs for `jeeves.ntsa.uk`); the browser UI, AD/CredMan login, NSSM apply, idle restart, and read-only status page are child FRs. Never expose settings via `bob.ntsa.uk` or public Cloudflare.
+Operator surfaces today: IRC commands, chair logs, webhook health, and the MONITORING agent. FR #6436 locks an **internal-only appliance settings foundation** (schema + LAN gate + secret-safe API helpers + docs for `jeeves.ntsa.uk`); FR #6440 binds the LAN HTTP schema UI (off by default); AD/CredMan login, NSSM apply, idle restart, and read-only status remain child FRs. Never expose settings via `bob.ntsa.uk` or public Cloudflare.
 
 | id | file | state |
 |----|------|-------|
