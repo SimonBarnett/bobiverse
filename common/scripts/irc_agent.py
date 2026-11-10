@@ -3597,6 +3597,19 @@ class Client:
                     pending = "?"
                 woke = tc.get("woke", 0)
                 transport = tc.get("wake_transport") or "?"
+                outcome = tc.get("poll_outcome") or "?"
+                err = str(tc.get("last_poll_error") or "").strip()
+                ok_at = tc.get("last_poll_ok_at")
+                try:
+                    ok_age = (
+                        int(time.time() - float(ok_at))
+                        if ok_at is not None and float(ok_at) > 0
+                        else None
+                    )
+                except (TypeError, ValueError):
+                    ok_age = None
+                ok_s = f"{ok_age}s ago" if ok_age is not None else "never"
+                err_bit = f" err={err}" if err else ""
                 tok = (
                     tc.get("ticket_closure_token_source")
                     or tc.get("token_source")
@@ -3605,8 +3618,10 @@ class Client:
                 interval = int(chair_health.ticket_closure_interval_s())
                 out.append(
                     f"ticket_closure: {age_s} pending={pending} woke={woke} "
-                    f"transport={transport} ticket_closure_token_source={tok} "
+                    f"transport={transport} poll={outcome} last_ok={ok_s}{err_bit} "
+                    f"ticket_closure_token_source={tok} "
                     f"(every {interval}s)"
+
                 )
             except Exception:  # noqa: BLE001
                 pass

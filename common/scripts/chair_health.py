@@ -256,6 +256,8 @@ def run_ticket_closure_cycle(
                 f"closed={out.get('closed_count', 0)} woke={out.get('woke', 0)} "
                 f"pending={out.get('pending_count', 0)} "
                 f"transport={out.get('wake_transport') or 'none'} "
+                f"poll={out.get('poll_outcome') or '?'} "
+                f"err={out.get('last_poll_error') or '-'} "
                 f"token_source={out.get('ticket_closure_token_source') or out.get('token_source') or 'none'}"
             )
         except Exception:  # noqa: BLE001

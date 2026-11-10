@@ -8,6 +8,7 @@ poll is a slow backup with per-repo ``poll_cursors`` + page pagination when
 ``JEEVES_TICKET_CLOSURE_FIXTURE`` is unset. Fixture stays for tests only.
 Wake transport (FR #6391): HTTPS POST to ``JEEVES_TICKET_CLOSURE_WAKE_URL``
 (secret from env, never logged). Failed POST stays ``pending`` with backoff.
+Poll health (FR #6401): ``last_poll_ok_at`` / ``last_poll_error`` / ``poll_outcome``.
 Legacy GrokBotApi send remains only when wake is forced without a URL (tests).
 Never writes queue.json and never assigns work.
 FR #6405: warn (rate-limited) when the poller has no token; never log the token.
@@ -327,28 +328,35 @@ def _poll_github_closes(
     fetch: Callable[..., Any] | None = None,
     per_page: int = POLL_PER_PAGE,
     max_pages: int = POLL_MAX_PAGES,
-) -> tuple[list[dict[str, Any]], dict[str, str]]:
-    """Poll GitHub Issues API per repo with pagination (FR #6400).
+) -> tuple[list[dict[str, Any]], dict[str, str], dict[str, Any]]:
+    """Poll GitHub Issues API per repo with pagination (FR #6400 / #6401).
 
     Each focused repo keeps its own ``since`` cursor. Pages continue via
     ``page=`` until a short page, or via ``Link: rel=next`` when the fetcher
     returns a link header. Cursors advance from every fetched close before any
     waiting filter is applied by the caller.
+
+    Returns ``(events, updated_cursors, meta)`` where meta has ``attempted``,
+    ``ok_repos``, ``failed_repos`` (FR #6401).
     """
     fetcher = fetch or _GITHUB_FETCH or _default_github_fetch
     out: list[dict[str, Any]] = []
     updated = {str(k): str(v) for k, v in cursors.items() if str(k).strip() and str(v).strip()}
+    meta: dict[str, Any] = {"attempted": [], "ok_repos": [], "failed_repos": []}
     if not repos or not token:
-        return out, updated
+        return out, updated, meta
     for repo in sorted(repos):
         if "/" not in repo:
             continue
         since = str(updated.get(repo) or "").strip()
         if not since:
             continue
+        meta["attempted"].append(repo)
         page = 1
         next_url: str | None = None
         repo_newest = since
+        repo_ok = False
+        repo_failed = False
         while page <= max_pages:
             if next_url:
                 url = next_url
@@ -360,8 +368,11 @@ def _poll_github_closes(
                 url = f"https://api.github.com/repos/{repo}/issues?{q}"
             try:
                 data, link = _fetch_page(fetcher, url, token=token)
-            except Exception:  # noqa: BLE001
+            except Exception as exc:  # noqa: BLE001
+                meta["failed_repos"].append({"repo": repo, "error": type(exc).__name__})
+                repo_failed = True
                 break
+            repo_ok = True
             for item in data:
                 if not isinstance(item, dict):
                     continue
@@ -381,8 +392,14 @@ def _poll_github_closes(
             if len(data) < int(per_page):
                 break
             page += 1
-        updated[repo] = repo_newest
-    return out, updated
+        if repo_ok:
+            meta["ok_repos"].append(repo)
+            updated[repo] = repo_newest
+        elif not repo_failed:
+            # no pages attempted (should not happen once since is set)
+            updated[repo] = repo_newest
+    return out, updated, meta
+
 
 
 def _load_events(
@@ -391,11 +408,26 @@ def _load_events(
     *,
     token: str = "",
     cursors: dict[str, str] | None = None,
-) -> tuple[list[dict[str, Any]], dict[str, str]]:
+) -> tuple[list[dict[str, Any]], dict[str, str], dict[str, Any]]:
     if fixture is not None and fixture.is_file():
-        return _load_fixture_events(fixture, repos), dict(cursors or {})
-    # FR #6391 / #6400: real source when fixture unset.
-    return _poll_github_closes(repos, token=token, cursors=dict(cursors or {}))
+        return (
+            _load_fixture_events(fixture, repos),
+            dict(cursors or {}),
+            {
+                "attempted": [],
+                "ok_repos": [],
+                "failed_repos": [],
+                "source": "fixture",
+            },
+        )
+    # FR #6391 / #6400 / #6401: real source when fixture unset.
+    events, updated, meta = _poll_github_closes(
+        repos, token=token, cursors=dict(cursors or {})
+    )
+    meta = dict(meta)
+    meta["source"] = "github"
+    return events, updated, meta
+
 
 
 def _canon_ticket(text: str) -> str:
@@ -838,6 +870,10 @@ def check(args):
     seen = _load_map(state, "seen")
     pending = _load_map(state, "pending")
     poll_cursor = str(state.get("poll_cursor") or "").strip() or None
+    last_poll_ok_at = state.get("last_poll_ok_at")
+    last_poll_error = str(state.get("last_poll_error") or "").strip() or None
+    poll_outcome = "ok"
+    poll_meta: dict[str, Any] = {"attempted": [], "ok_repos": [], "failed_repos": []}
     raw_cursors = state.get("poll_cursors")
     poll_cursors: dict[str, str] = {}
     if isinstance(raw_cursors, dict):
@@ -859,28 +895,56 @@ def check(args):
         poll_cursors = {r: seed for r in focused}
         poll_cursor = seed
         events: list[dict[str, Any]] = []
+        poll_outcome = "seeded"
+        last_poll_error = None
         if not token:
             warned = _maybe_warn_no_token(now=now, token_source=token_source)
+            poll_outcome = "skipped_no_token"
+            last_poll_error = "no_github_token"
+            poll_meta["source"] = "github"
     elif fixture is None and not token:
+        # Migrate legacy global cursor into any missing per-repo slots.
         fallback = poll_cursor or _utc_iso_now()
         for r in focused:
             if r not in poll_cursors:
                 poll_cursors[r] = fallback
         events = []
         warned = _maybe_warn_no_token(now=now, token_source=token_source)
+        poll_outcome = "skipped_no_token"
+        last_poll_error = "no_github_token"
+        poll_meta["source"] = "github"
     elif fixture is None:
-        # Migrate legacy global cursor into any missing per-repo slots.
         fallback = poll_cursor or _utc_iso_now()
         for r in focused:
             if r not in poll_cursors:
                 poll_cursors[r] = fallback
-        events, poll_cursors = _load_events(
+        events, poll_cursors, poll_meta = _load_events(
             fixture, repos, token=token or "", cursors=poll_cursors
         )
+        failed = poll_meta.get("failed_repos") or []
+        attempted = poll_meta.get("attempted") or []
+        ok_repos = poll_meta.get("ok_repos") or []
+        if attempted and not ok_repos:
+            poll_outcome = "repos_failed"
+            err0 = failed[0] if failed else {"error": "unknown"}
+            last_poll_error = (
+                f"{err0.get('repo', '?')}:{err0.get('error', 'fail')}"
+                if isinstance(err0, dict)
+                else "repos_failed"
+            )
+        elif failed:
+            poll_outcome = "partial"
+            err0 = failed[0] if isinstance(failed[0], dict) else {"error": "fail"}
+            last_poll_error = f"{err0.get('repo', '?')}:{err0.get('error', 'fail')}"
+        else:
+            poll_outcome = "ok"
+            last_poll_error = None
     else:
-        events, poll_cursors = _load_events(
+        events, poll_cursors, poll_meta = _load_events(
             fixture, repos, token=token or "", cursors=poll_cursors
         )
+        poll_outcome = "fixture"
+        last_poll_error = None
     waiting = _load_waiting(chair, digest)
     # Cursors already advanced inside _poll_github_closes from all pages.
     newest_closed = poll_cursor
@@ -907,8 +971,19 @@ def check(args):
         ops, seen=seen, pending=pending, now=now, last_wake_at=last_wake_at
     )
     last_poll_at = now
+    if poll_outcome in {"ok", "seeded", "fixture", "partial"}:
+        last_poll_ok_at = now
     if newest_closed:
         poll_cursor = newest_closed
+    extra = {
+        "token_source": token_source,
+        "ticket_closure_token_source": token_source,
+        "poll_outcome": poll_outcome,
+    }
+    if last_poll_ok_at is not None:
+        extra["last_poll_ok_at"] = last_poll_ok_at
+    if last_poll_error:
+        extra["last_poll_error"] = last_poll_error
     _persist_state(
         state_path,
         seen=seen,
@@ -917,10 +992,7 @@ def check(args):
         poll_cursors=poll_cursors,
         last_poll_at=last_poll_at,
         last_wake_at=last_wake_at,
-        extra={
-            "token_source": token_source,
-            "ticket_closure_token_source": token_source,
-        },
+        extra=extra,
     )
     ok = not closed
     findings = []
@@ -939,6 +1011,10 @@ def check(args):
             "wake_skips": skip_n,
             "pending_count": len(pending),
             "last_poll_at": last_poll_at,
+            "last_poll_ok_at": last_poll_ok_at,
+            "last_poll_error": last_poll_error,
+            "poll_outcome": poll_outcome,
+            "poll_failed_repos": list(poll_meta.get("failed_repos") or []),
             "last_wake_at": last_wake_at,
             "wake_transport": _wake_transport_name(),
             "token_source": token_source,
