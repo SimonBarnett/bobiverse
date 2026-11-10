@@ -866,8 +866,49 @@ OPENCODE_BOB_DIRNAME = ".bob"
 OPENCODE_OUTBOX_NAME = "outbox.txt"
 _OUT_JOB_WIRE_RX = re.compile(
     r"(?is)^(?:PRIVMSG\s+(?P<target>\S+)\s+:?)?(?P<verb>ACK|DONE|NACK|GIVEUP)\s+"
-    r"(?P<task>FR|MRB|UAT)\s+(?P<ref>\S+#\d+)\b"
+    r"(?P<task>FR|MRB|UAT)\s+(?P<ref>(?:[^\s#]+#\d+|#\d+))\b"
 )
+
+
+def _issue_num_from_ref(ref: str) -> str:
+    m = re.search(r"#(\d+)\s*$", (ref or "").strip())
+    return m.group(1) if m else ""
+
+
+def opencode_job_refs_match(got_task: str, got_ref: str, want_key: str) -> bool:
+    """True when *got* names the same job as *want_key* (FR #6472).
+
+    Accepts exact `TASK owner/repo#N`, short `TASK #N`, and repo-qualified
+    `TASK repo#N` when the issue number matches the current job key.
+    """
+    want = " ".join((want_key or "").split())
+    if not want:
+        return False
+    parts = want.split(None, 1)
+    if len(parts) != 2:
+        return False
+    want_task, want_ref = parts[0], parts[1]
+    if (got_task or "").upper() != want_task.upper():
+        return False
+    gref = (got_ref or "").strip()
+    wref = (want_ref or "").strip()
+    if gref.lower() == wref.lower():
+        return True
+    gn = _issue_num_from_ref(gref)
+    wn = _issue_num_from_ref(wref)
+    if not gn or gn != wn:
+        return False
+    # Short #N form written by models.
+    if gref == f"#{gn}":
+        return True
+    gl = gref.lower()
+    wl = wref.lower()
+    # bobiverse#N vs SimonBarnett/bobiverse#N (either direction).
+    if wl.endswith("/" + gl) or wl.endswith(gl):
+        return True
+    if gl.endswith("/" + wl) or gl.endswith(wl):
+        return True
+    return False
 
 
 def opencode_outbox_path(worktree: str | Path) -> Path:
@@ -943,6 +984,32 @@ def opencode_outbox_job_key(payload: str) -> str:
     return f"{m.group('task').upper()} {m.group('ref')}"
 
 
+def opencode_outbox_refuse_reason(
+    payload: str,
+    *,
+    job_key: str,
+    shop: str = "",
+) -> str | None:
+    """None when *payload* may send; else a short refuse tag (FR #6333 / #6472).
+
+    Tags: `malformed`, `job-key mismatch`, `wrong channel`. Empty *job_key*
+    refuses as `malformed` (no current job to bind).
+    """
+    text = (payload or "").strip()
+    if not text or not (job_key or "").strip():
+        return "malformed"
+    m = _OUT_JOB_WIRE_RX.match(text)
+    if not m:
+        return "malformed"
+    if not opencode_job_refs_match(m.group("task"), m.group("ref"), job_key):
+        return "job-key mismatch"
+    target = (m.group("target") or "").strip()
+    shop_s = (shop or "").strip()
+    if target and shop_s and target.lower() != shop_s.lower():
+        return "wrong channel"
+    return None
+
+
 def opencode_outbox_line_allowed(
     payload: str,
     *,
@@ -952,23 +1019,11 @@ def opencode_outbox_line_allowed(
     """True when *payload* is a well-formed ACK/DONE/NACK/GIVEUP for *job_key*.
 
     Optional PRIVMSG target must match *shop* when both are set. Malformed lines
-    and wrong-job lines are refused (FR #6333).
+    and wrong-job lines are refused (FR #6333). FR #6472: short `#N` and
+    repo-qualified refs that share the current job issue number are accepted;
+    trailing PR URL / text after the ref stay allowed by the wire regex.
     """
-    text = (payload or "").strip()
-    if not text or not (job_key or "").strip():
-        return False
-    m = _OUT_JOB_WIRE_RX.match(text)
-    if not m:
-        return False
-    want = " ".join((job_key or "").split())
-    got = f"{m.group('task').upper()} {m.group('ref')}"
-    if got.lower() != want.lower():
-        return False
-    target = (m.group("target") or "").strip()
-    shop_s = (shop or "").strip()
-    if target and shop_s and target.lower() != shop_s.lower():
-        return False
-    return True
+    return opencode_outbox_refuse_reason(payload, job_key=job_key, shop=shop) is None
 
 
 def ensure_opencode_job_worktree(

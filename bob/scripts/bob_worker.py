@@ -214,6 +214,7 @@ try:
         opencode_job_context_nack,
         opencode_job_context_nack_ready,
         opencode_outbox_line_allowed,
+        opencode_outbox_refuse_reason,
         opencode_outbox_path,
         ensure_opencode_bob_outbox,
         prepare_opencode_wire,
@@ -229,6 +230,7 @@ except ImportError:  # package import (bob.scripts.bob_worker)
         opencode_job_context_nack,
         opencode_job_context_nack_ready,
         opencode_outbox_line_allowed,
+        opencode_outbox_refuse_reason,
         opencode_outbox_path,
         ensure_opencode_bob_outbox,
         prepare_opencode_wire,
@@ -7391,23 +7393,30 @@ class BoredEmitter:
             self._finished_job_keys.discard(key)
             self._done_job_keys.discard(key)
 
+    def outbox_ack_refuse_reason(self, payload: str) -> Optional[str]:
+        """FR #4730 / #6333 / #6472: ACK-only refuse tag, else None (allow).
+
+        Tags: ``finished-job ACK replay``, ``duplicate ACK``.
+        """
+        p = (payload or "").strip()
+        if not _OUT_ACK_RX.match(p):
+            return None
+        job = outbox_job_key(p)
+        with self._cv:
+            if job and job in self._finished_job_keys:
+                return "finished-job ACK replay"
+            # Dedupe model ACK after program ACK-on-receipt for the same open job.
+            if job and self._ack_open and self._ack_job_key and job == self._ack_job_key:
+                return "duplicate ACK"
+            return None
+
     def should_forward_outbox(self, payload: str) -> bool:
         """FR #4730: False for a replayed ACK of a job already DONE/NACK/GIVEUP'd.
 
         FR #6333: also False for a duplicate ACK while the same job ACK is already open
         (program ACK-on-receipt already posted).
         """
-        p = (payload or "").strip()
-        if not _OUT_ACK_RX.match(p):
-            return True
-        job = outbox_job_key(p)
-        with self._cv:
-            if job and job in self._finished_job_keys:
-                return False
-            # Dedupe model ACK after program ACK-on-receipt for the same open job.
-            if job and self._ack_open and self._ack_job_key and job == self._ack_job_key:
-                return False
-            return True
+        return self.outbox_ack_refuse_reason(payload) is None
 
     def note_stale_replay_user_assign(
         self,
@@ -9083,8 +9092,12 @@ class Supervisor:
         except Exception:
             return True
 
-    def may_send_job_outbox(self, payload: str) -> bool:
-        """FR #6333: worktree `.bob/outbox.txt` — job-key filter then run-dir rules."""
+    def may_send_job_outbox(self, payload: str):
+        """FR #6333 / #6472: worktree ``.bob/outbox.txt`` job-key filter then ACK rules.
+
+        Returns True, or ``(False, reason)`` so drain_outbox logs the real refuse
+        tag instead of always "stale replay".
+        """
         p = (payload or "").strip()
         job_key = getattr(self, "_opencode_job_key", "") or ""
         if job_key:
@@ -9093,9 +9106,18 @@ class Supervisor:
                 shop = self.irc.shop if self.irc else shop_channel(self.machine)
             except Exception:
                 shop = shop_channel(getattr(self, "machine", "") or "")
-            if not opencode_outbox_line_allowed(p, job_key=job_key, shop=shop):
-                return False
-        return self.may_send_outbox(payload)
+            reason = opencode_outbox_refuse_reason(p, job_key=job_key, shop=shop)
+            if reason:
+                return (False, reason)
+        if self.bored is None:
+            return True
+        try:
+            ack_reason = self.bored.outbox_ack_refuse_reason(payload)
+        except Exception:
+            ack_reason = None
+        if ack_reason:
+            return (False, ack_reason)
+        return True
 
     def opencode_extra_outbox_paths(self) -> list:
         """FR #6333: active OpenCode job ``.bob/outbox.txt`` for the outbox loop."""
@@ -10395,13 +10417,22 @@ def drain_outbox(
                 continue
             # FR #4730: drop replayed ACK for a finished job before it hits IRC; still bookkeep.
             if may_send is not None:
+                refuse_reason = ""
                 try:
-                    allow = bool(may_send(payload))
+                    decision = may_send(payload)
+                    if isinstance(decision, tuple):
+                        allow = bool(decision[0]) if decision else False
+                        refuse_reason = str(decision[1]) if len(decision) > 1 else ""
+                    else:
+                        allow = bool(decision)
                 except Exception:
                     allow = True
+                    refuse_reason = ""
                 if not allow:
                     preview = _scrub(one_line(payload, 80))
-                    log(f"outbox: dropped stale replay ({len(payload)} chars): {preview}")
+                    # FR #6472: prefer may_send refuse tag; bare False stays "stale replay".
+                    tag = (refuse_reason or "").strip() or "stale replay"
+                    log(f"outbox: dropped {tag} ({len(payload)} chars): {preview}")
                     if on_payload:
                         try:
                             on_payload(text)

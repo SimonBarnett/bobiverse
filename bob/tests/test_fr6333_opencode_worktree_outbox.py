@@ -208,14 +208,14 @@ def test_may_send_job_outbox_filters_wrong_key(tmp_path: Path):
         )
         is True
     )
-    assert bw.Supervisor.may_send_job_outbox(sup, "hello chatter") is False
-    assert (
-        bw.Supervisor.may_send_job_outbox(sup, "DONE FR SimonBarnett/bobiverse#1 https://x")
-        is False
-    )
-    assert (
-        bw.Supervisor.may_send_job_outbox(sup, "ACK FR SimonBarnett/bobiverse#6333") is False
-    )
+    # FR #6472: may_send_job_outbox returns (False, reason) on refuse.
+    assert bw.Supervisor.may_send_job_outbox(sup, "hello chatter") == (False, "malformed")
+    assert bw.Supervisor.may_send_job_outbox(
+        sup, "DONE FR SimonBarnett/bobiverse#1 https://x"
+    ) == (False, "job-key mismatch")
+    assert bw.Supervisor.may_send_job_outbox(
+        sup, "ACK FR SimonBarnett/bobiverse#6333"
+    ) == (False, "duplicate ACK")
 
 
 def test_should_forward_dedupes_open_ack():

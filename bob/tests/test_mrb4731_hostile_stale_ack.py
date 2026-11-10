@@ -34,7 +34,8 @@ def test_source_pins_fr4730_needles():
     src = open(bw.__file__, encoding="utf-8").read()
     assert "FR #4730" in src
     assert "ignore stale ACK" in src
-    assert "dropped stale replay" in src
+    assert "stale replay" in src
+    assert "dropped" in src and "FR #6472" in src
     assert "note_fresh_assign" in src
     assert "_finished_job_keys" in src
     assert "may_send_outbox" in src
