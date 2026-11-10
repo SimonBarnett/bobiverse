@@ -1678,7 +1678,7 @@ def worker_prompt(worker_dir: str, home: str, machine: str, nick: str) -> str:
         f"The program NACKs a missing or refused job worktree before you see the assign. That is not DONE. "
         f"BOB_HOME may be empty. ACK/DONE go to $env:BOB_OUTBOX only. "
         f"OpenCode (FR #6333): for a job with --dir <worktree>, $env:BOB_OUTBOX is <worktree>\\.bob\\outbox.txt (inside the project directory). The program still ACK-on-receipt via the run-dir outbox; your DONE/GIVEUP must append to $env:BOB_OUTBOX. Never request external_directory and never pass --auto. "
-        f"OpenCode (FR #6366): end-of-job for each FR/MRB/UAT — git status/diff, finish work, commit on fr-<N>, git push -u origin HEAD, gh pr create with Closes owner/repo#N, then append DONE to $env:BOB_OUTBOX. The turn is not over until DONE is written. "
+        f"OpenCode (FR #6366 / #6370): end-of-job for each FR/MRB/UAT — git status/diff, finish work, commit on fr-<N>, git push -u origin HEAD, gh pr create --body (or --body-file inside the job worktree) with Closes owner/repo#N, keep scratch in the worktree/run folder never %TEMP%, then append DONE to $env:BOB_OUTBOX. The turn is not over until DONE is written. "
         f"Never print or store secrets."
     )
 
@@ -6551,7 +6551,7 @@ def opencode_job_finish_steps(
     worktree: str | Path,
     outbox: str | Path,
 ) -> str:
-    """FR #6366: end-of-job checklist for OpenCode (initial assign + finish re-prompt)."""
+    """FR #6366 / #6370: end-of-job checklist for OpenCode (initial assign + finish re-prompt)."""
     key = (job_key or "job").strip() or "job"
     m = re.search(r"(?i)#(\d+)\s*$", key)
     issue_n = m.group(1) if m else "N"
@@ -6563,10 +6563,14 @@ def opencode_job_finish_steps(
         "This is a NEW opencode run (no --resume/--continue). "
         "1) git status and git diff. 2) Finish remaining work. "
         f"3) Commit on branch {branch}. 4) git push -u origin HEAD. "
-        f"5) gh pr create --base main with Closes for {key} (full owner/repo#N). "
+        f"5) Open the PR with gh pr create --base main --body \"Closes {key}\" "
+        f"(or --body-file pointing at a markdown file inside this worktree, e.g. .bob/pr-body.md). "
+        "Keep scratch files and base comparisons inside this job worktree or the worker run folder --- "
+        "never under %TEMP%. Do not request external_directory and do not pass --auto. "
         f"6) Append DONE for {key} with the PR URL to $env:BOB_OUTBOX ({ob}). "
         "The turn is not over until DONE is written. Do not check the outbox first."
     )
+
 
 
 def opencode_done_miss_reminder_line(
@@ -6589,49 +6593,304 @@ def opencode_done_miss_reminder_line(
         return from_line
 
 
-def opencode_finish_progress_snapshot(worktree: str | Path) -> dict:
-    """FR #6366: cheap git snapshot for finish-run progress (HEAD + porcelain)."""
+def opencode_finish_progress_snapshot(
+    worktree: str | Path,
+    *,
+    check_pr: bool = True,
+    run=None,
+) -> dict:
+    """FR #6366 / #6370: finish-run progress (HEAD, porcelain, origin tip, PR).
+
+    ``origin_head`` is the remote tip for the current branch when present (push
+    without a new local commit still counts). ``has_pr`` is True when ``gh`` sees
+    an open PR for that head branch.
+    """
+    import subprocess as _sp
+
+    run = _sp.run if run is None else run
     root = Path(worktree or "")
-    out: dict = {"head": "", "porcelain": "", "ok": False}
+    out: dict = {
+        "head": "",
+        "porcelain": "",
+        "branch": "",
+        "origin_head": "",
+        "has_pr": False,
+        "ok": False,
+    }
     if not root.is_dir():
         return out
     try:
-        import subprocess
-
-        head = subprocess.run(
+        head = run(
             ["git", "-C", str(root), "rev-parse", "HEAD"],
             capture_output=True,
             text=True,
             timeout=8,
         )
-        por = subprocess.run(
+        por = run(
             ["git", "-C", str(root), "status", "--porcelain"],
+            capture_output=True,
+            text=True,
+            timeout=8,
+        )
+        br = run(
+            ["git", "-C", str(root), "rev-parse", "--abbrev-ref", "HEAD"],
             capture_output=True,
             text=True,
             timeout=8,
         )
         out["head"] = (head.stdout or "").strip()
         out["porcelain"] = (por.stdout or "").strip()
+        branch = (br.stdout or "").strip()
+        if branch == "HEAD":
+            branch = ""
+        out["branch"] = branch
         out["ok"] = head.returncode == 0 and por.returncode == 0
+        if out["ok"] and branch:
+            # Prefer origin/<branch>; fall back to upstream.
+            for ref in (f"origin/{branch}", "@{u}"):
+                tip = run(
+                    ["git", "-C", str(root), "rev-parse", ref],
+                    capture_output=True,
+                    text=True,
+                    timeout=8,
+                )
+                if tip.returncode == 0:
+                    out["origin_head"] = (tip.stdout or "").strip()
+                    break
+            if check_pr:
+                pr = run(
+                    [
+                        "gh",
+                        "pr",
+                        "list",
+                        "--head",
+                        branch,
+                        "--state",
+                        "open",
+                        "--json",
+                        "number",
+                        "--limit",
+                        "1",
+                    ],
+                    capture_output=True,
+                    text=True,
+                    timeout=20,
+                    cwd=str(root),
+                )
+                if pr.returncode == 0 and (pr.stdout or "").strip() not in ("", "[]"):
+                    out["has_pr"] = True
     except Exception:
         pass
     return out
 
 
 def opencode_finish_progress_changed(before: dict, after: dict) -> bool:
-    """True when HEAD or porcelain changed between finish-run snapshots.
+    """True when finish-run snapshot fields show real progress.
 
-    FR #6366 / MRB #6367: a failed git snapshot (ok=False / empty after a real
-    before) is not progress — index.lock / timeout must not burn a finish-run.
+    FR #6366 / MRB #6367: failed snapshots are not progress.
+    FR #6370: push (origin_head) or a new open PR also counts, not only local commits.
     """
     if not isinstance(before, dict) or not isinstance(after, dict):
         return False
     if not before.get("ok") or not after.get("ok"):
         return False
-    return (before.get("head"), before.get("porcelain")) != (
-        after.get("head"),
-        after.get("porcelain"),
+    keys = ("head", "porcelain", "origin_head", "has_pr")
+    return tuple(before.get(k) for k in keys) != tuple(after.get(k) for k in keys)
+
+
+def opencode_parse_job_repo_issue(job_key: str) -> tuple[str, str] | None:
+    """Return ``(owner/repo, issue_n)`` from ``FR owner/repo#N``, else None."""
+    m = re.search(
+        r"(?i)\b(?:FR|MRB|UAT|FIX)\s+([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)#(\d+)\b",
+        job_key or "",
     )
+    if not m:
+        return None
+    return m.group(1), m.group(2)
+
+
+def opencode_finish_branch_ahead_no_pr(
+    worktree: str | Path,
+    *,
+    base: str = "origin/main",
+    run=None,
+) -> tuple[bool, str, str]:
+    """True when current branch tip is on origin, ahead of *base*, and has no open PR.
+
+    Returns ``(ok, branch, origin_head)``.
+    """
+    import subprocess as _sp
+
+    run = _sp.run if run is None else run
+    snap = opencode_finish_progress_snapshot(worktree, check_pr=True, run=run)
+    branch = str(snap.get("branch") or "").strip()
+    origin_head = str(snap.get("origin_head") or "").strip()
+    if not snap.get("ok") or not branch or not origin_head:
+        return False, branch, origin_head
+    if snap.get("has_pr"):
+        return False, branch, origin_head
+    try:
+        cnt = run(
+            ["git", "-C", str(worktree), "rev-list", "--count", f"{base}..{origin_head}"],
+            capture_output=True,
+            text=True,
+            timeout=8,
+        )
+        if cnt.returncode != 0:
+            return False, branch, origin_head
+        n = int((cnt.stdout or "0").strip() or "0")
+    except Exception:
+        return False, branch, origin_head
+    return n > 0, branch, origin_head
+
+
+def opencode_finish_auto_pr(
+    worktree: str | Path,
+    job_key: str,
+    *,
+    base: str = "main",
+    run=None,
+    title: str | None = None,
+) -> str:
+    """FR #6370: open a PR for a pushed tip with no PR. Return PR URL or ``""``."""
+    import subprocess as _sp
+
+    run = _sp.run if run is None else run
+    root = Path(worktree or "")
+    parsed = opencode_parse_job_repo_issue(job_key)
+    if not root.is_dir() or not parsed:
+        return ""
+    repo, issue_n = parsed
+    ahead, branch, _origin = opencode_finish_branch_ahead_no_pr(
+        root, base=f"origin/{base}", run=run
+    )
+    if not ahead or not branch:
+        return ""
+    body = (
+        f"Closes {repo}#{issue_n}\n\n"
+        f"Auto-opened by bob-worker OpenCode finish recovery (FR #6370) for `{job_key}` "
+        f"after finish-runs pushed the branch without a PR.\n"
+    )
+    bob = root / ".bob"
+    try:
+        bob.mkdir(parents=True, exist_ok=True)
+        body_file = bob / "pr-body-auto.md"
+        body_file.write_text(body.replace("\\n", "\n"), encoding="utf-8")
+    except OSError:
+        return ""
+    pr_title = title or f"{job_key.split()[0]} #{issue_n}: finish recovery"
+    try:
+        created = run(
+            [
+                "gh",
+                "pr",
+                "create",
+                "--repo",
+                repo,
+                "--base",
+                base,
+                "--head",
+                branch,
+                "--title",
+                pr_title,
+                "--body-file",
+                str(body_file),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=60,
+            cwd=str(root),
+        )
+    except Exception:
+        return ""
+    if created.returncode != 0:
+        return ""
+    url = (created.stdout or "").strip().splitlines()
+    url = next((u.strip() for u in url if "github.com" in u and "/pull/" in u), "")
+    return url
+
+
+def opencode_cleanup_extra_worktrees(
+    job_worktree: str | Path,
+    *,
+    temp_root: str | Path | None = None,
+    run=None,
+    log_fn: Optional[Callable[[str], None]] = None,
+) -> list[str]:
+    """FR #6370: remove extra git worktrees under Temp for this repo; prune.
+
+    Only removes listed worktrees whose path is under the process TEMP folder and
+    is not the job worktree itself. Returns removed paths.
+    """
+    import subprocess as _sp
+
+    run = _sp.run if run is None else run
+    root = Path(job_worktree or "")
+    removed: list[str] = []
+    if not root.is_dir():
+        return removed
+    try:
+        job_res = root.resolve()
+    except OSError:
+        return removed
+    if temp_root is None:
+        temp_root = os.environ.get("TEMP") or os.environ.get("TMP") or ""
+    try:
+        temp_res = Path(temp_root).resolve() if temp_root else None
+    except OSError:
+        temp_res = None
+    if temp_res is None:
+        return removed
+    try:
+        listed = run(
+            ["git", "-C", str(root), "worktree", "list", "--porcelain"],
+            capture_output=True,
+            text=True,
+            timeout=20,
+        )
+    except Exception:
+        return removed
+    if listed.returncode != 0:
+        return removed
+    paths: list[Path] = []
+    for line in (listed.stdout or "").splitlines():
+        if line.startswith("worktree "):
+            paths.append(Path(line[len("worktree ") :].strip()))
+    for p in paths:
+        try:
+            pre = p.resolve()
+        except OSError:
+            continue
+        if pre == job_res:
+            continue
+        try:
+            pre.relative_to(temp_res)
+        except ValueError:
+            continue
+        try:
+            rm = run(
+                ["git", "-C", str(root), "worktree", "remove", "--force", str(p)],
+                capture_output=True,
+                text=True,
+                timeout=60,
+            )
+            if rm.returncode == 0:
+                removed.append(str(p))
+                if log_fn:
+                    log_fn(f"opencode finish: removed extra worktree {p}")
+        except Exception as e:  # noqa: BLE001
+            if log_fn:
+                log_fn(f"opencode finish: worktree remove failed {type(e).__name__}")
+    try:
+        run(
+            ["git", "-C", str(root), "worktree", "prune"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except Exception:
+        pass
+    return removed
 
 
 _BUSY_HELD_RX = re.compile(
@@ -6818,6 +7077,7 @@ class BoredEmitter:
         self.seat_release_giveup_fn: Optional[Callable[[str, str], None]] = None
         # FR #6366: OpenCode finish-run decide hook ("retry"|"giveup"); attempt counter.
         self.opencode_finish_decide_fn: Optional[Callable[[str], str]] = None
+        self.job_end_cleanup_fn: Optional[Callable[[Optional[str]], None]] = None
         self._opencode_finish_attempt: int = 0
         # FR #3012 / #3019: out-of-fuel hold (suppress !bored; GIVEUP via out_of_fuel_release_fn).
         self._out_of_fuel = False
@@ -6915,6 +7175,13 @@ class BoredEmitter:
             self._done_job_keys.add(job)
             while len(self._done_job_keys) > 64:
                 self._done_job_keys.pop()
+        fn = getattr(self, "job_end_cleanup_fn", None)
+        if fn is not None:
+            try:
+                fn(job)
+            except Exception as e:  # noqa: BLE001
+                self.log(f"job-end cleanup failed {type(e).__name__}")
+
 
     def note_fresh_assign(self, line: str) -> None:
         """FR #4730: re-offer of a finished job may ACK again; clear its finished mark."""
@@ -7304,6 +7571,20 @@ class BoredEmitter:
                                 self._done_miss_release_pending = False
                                 self.log(
                                     f"done-miss: OpenCode finish-run retry armed for {key}"
+                                )
+                                self._cv.notify_all()
+                                return
+                            if verdict == "done":
+                                # FR #6370: worker auto-opened PR + posted DONE — no GIVEUP.
+                                self._ack_open = False
+                                self._ack_job_key = None
+                                self._clear_done_miss()
+                                self._fast_done_miss_streak = 0
+                                self._release_giveup_key = None
+                                self._done_miss_release_pending = False
+                                self._begin_harvest_hold(now)
+                                self.log(
+                                    f"done-miss: OpenCode finish auto-PR DONE for {key}"
                                 )
                                 self._cv.notify_all()
                                 return
@@ -8020,6 +8301,7 @@ class Supervisor:
             self.bored.done_miss_remind_fn = self._inject_done_miss_reminder
             if (self.kind or "").strip().lower() == "opencode":
                 self.bored.opencode_finish_decide_fn = self._opencode_finish_decide
+                self.bored.job_end_cleanup_fn = self._opencode_job_end_cleanup
             # FR #4784: GIVEUP accepted row to Jeeves before !bored on done-miss / ack-stale.
             self.bored.seat_release_giveup_fn = self._release_seat_giveup_job
         # FR #2782: idle-only check before !bored; returns a reason when a newer install build exists.
@@ -9358,8 +9640,43 @@ class Supervisor:
         except Exception as e:
             self.log(f"done-miss: remind inject failed {type(e).__name__}")
 
+    def _opencode_finish_post_done(self, job_key: str, pr_url: str) -> None:
+        """FR #6370: append DONE to the OpenCode job outbox after auto-PR."""
+        key = (job_key or "").strip() or "job"
+        url = (pr_url or "").strip()
+        payload = f"DONE {key} {url}".strip()
+        shop = shop_channel(self.machine)
+        line = f"PRIVMSG {shop} :{payload}"
+        ob = getattr(self, "_opencode_job_outbox", None)
+        if ob is None:
+            ob = outbox_path_for_run(self.run_dir)
+        try:
+            ensure_outbox(Path(ob))
+            prev = Path(ob).read_text(encoding="utf-8") if Path(ob).is_file() else ""
+            Path(ob).write_text(line + "\n" + prev, encoding="utf-8")
+            self.log(f"opencode finish: auto DONE written for {key}")
+        except Exception as e:  # noqa: BLE001
+            self.log(f"opencode finish: auto DONE write failed {type(e).__name__}")
+        if self.bored is not None:
+            try:
+                self.bored.on_outbox(payload)
+            except Exception as e:  # noqa: BLE001
+                self.log(f"opencode finish: bored on_outbox failed {type(e).__name__}")
+
+    def _opencode_job_end_cleanup(self, job: Optional[str] = None) -> None:
+        """FR #6370: drop Temp worktrees left by the OpenCode run."""
+        if (self.kind or "").strip().lower() != "opencode":
+            return
+        wt = str(os.environ.get("BOB_JOB_WORKTREE") or "").strip()
+        if not wt:
+            return
+        try:
+            opencode_cleanup_extra_worktrees(wt, log_fn=self.log)
+        except Exception as e:  # noqa: BLE001
+            self.log(f"opencode finish: cleanup failed {type(e).__name__}")
+
     def _opencode_finish_decide(self, job_key: str) -> str:
-        """FR #6366: retry finish-run while progress and under max; else giveup."""
+        """FR #6366 / #6370: retry while progress; else auto-PR or giveup."""
         max_n = opencode_finish_run_max()
         attempt = int(getattr(self.bored, "_opencode_finish_attempt", 0) or 0) if self.bored else 0
         wt = str(os.environ.get("BOB_JOB_WORKTREE") or "").strip()
@@ -9373,6 +9690,19 @@ class Supervisor:
         if progress and attempt < max_n:
             self._opencode_finish_snap = after
             return "retry"
+        # FR #6370: before GIVEUP, open PR if branch is pushed ahead with no PR.
+        if wt:
+            try:
+                url = opencode_finish_auto_pr(wt, job_key)
+            except Exception as e:  # noqa: BLE001
+                self.log(f"opencode finish: auto-PR failed {type(e).__name__}")
+                url = ""
+            if url:
+                self.log(f"opencode finish: auto-PR {url}")
+                self._opencode_finish_post_done(job_key, url)
+                self._opencode_job_end_cleanup(job_key)
+                return "done"
+            self._opencode_job_end_cleanup(job_key)
         return "giveup"
 
     def _check_ack_miss(self, proc) -> None:
