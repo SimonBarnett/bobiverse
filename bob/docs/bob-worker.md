@@ -32,6 +32,16 @@ One compiled program, `<ai root>\bob\worker\bob-worker.exe` (`scripts/bob_worker
 
 ## CI artifact (FR #6349)
 
+## Build identity on the wire (FR #6409)
+
+After IRC join the seat posts a hello line on `#<machine>`:
+
+`worker ready kind=<grok|cursor|opencode> build=<short sha>`
+
+`<short sha>` is the first 12 characters of the freeze-time source commit (`bob-worker.exe --version` / FR #6349). When `bob_worker_build_meta` is missing or unset, the field is `unknown` (never omitted).
+
+Every DONE the outbox drain enriches (FR #6387) also carries `worker_build=<short|unknown>` next to `model=` / `tokens_*`. The digest activity POST (`post_digest_seat_kind`) includes the same `worker_build` key. No new network calls; ACK framing is unchanged.
+
 GitHub Actions workflow `.github/workflows/build-bob-worker.yml` builds `bob-worker.exe` on `windows-latest` via `bob/scripts/Build-BobWorker.ps1` whenever `bob/scripts/bob_worker.py`, `bob/scripts/Build-BobWorker.ps1`, `bob/scripts/bob_worker_build_meta.py`, `.github/workflows/build-bob-worker.yml`, or `bob/tests/test_fr6349_worker_build_ci.py` changes (plus `workflow_dispatch`). The job uploads artifact `bob-worker` with the exe, `bob-worker.exe.sha256`, and `provenance.txt` / `manifest.txt` (source commit SHA, exe SHA256, size bytes, build time UTC). `bob-worker.exe --version` prints the embedded source commit. Same pattern as `build-bob-ear.yml` and `build-bob-tray.yml`. No sign, no release, no fleet deploy --- installing stays a separate manual / Pack / Sync step.
 
 ## Installer / updater

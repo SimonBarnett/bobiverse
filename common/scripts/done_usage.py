@@ -19,7 +19,7 @@ _TOKENS_OUT_RX = re.compile(r"(?i)\btokens_out=(\d+)\b")
 _TOKENS_CACHED_RX = re.compile(r"(?i)\btokens_cached=(\d+)\b")
 # Strip model-written counters when a measured stamp replaces them.
 _STRIP_USAGE_RX = re.compile(
-    r"(?i)\s*\b(?:model|tokens|tokens_in|tokens_out|tokens_cached)=[^\s]+"
+    r"(?i)\s*\b(?:model|tokens|tokens_in|tokens_out|tokens_cached|worker_build)=[^\s]+"
 )
 
 
@@ -97,8 +97,15 @@ def parse_done_usage(rest: str) -> dict[str, Any]:
     return out
 
 
-def format_done_usage_suffix(usage: Mapping[str, Any] | None) -> str:
-    """Wire suffix: measured fields, or ``tokens=unknown`` (never a fabricated 0)."""
+def format_done_usage_suffix(
+    usage: Mapping[str, Any] | None,
+    *,
+    worker_build: str | None = None,
+) -> str:
+    """Wire suffix: measured fields, or ``tokens=unknown`` (never a fabricated 0).
+
+    FR #6409: always ends with ``worker_build=<short|unknown>`` next to model/tokens.
+    """
     u = dict(usage or {})
     model = str(u.get("model") or "").strip()
     tin = _int_or_none(u.get("tokens_in"))
@@ -120,6 +127,10 @@ def format_done_usage_suffix(usage: Mapping[str, Any] | None) -> str:
             parts.append(f"tokens_cached={tc}")
     else:
         parts.append("tokens=unknown")
+    build = str(worker_build or "").strip() or "unknown"
+    if build.lower() in ("", "none", "null"):
+        build = "unknown"
+    parts.append(f"worker_build={build}")
     return " ".join(parts)
 
 
@@ -127,17 +138,24 @@ def _strip_usage_fields(text: str) -> str:
     return _STRIP_USAGE_RX.sub("", text or "").rstrip()
 
 
-def enrich_done_payload(payload: str, usage: Mapping[str, Any] | None) -> str:
+def enrich_done_payload(
+    payload: str,
+    usage: Mapping[str, Any] | None,
+    *,
+    worker_build: str | None = None,
+) -> str:
     """Append a measured usage stamp to a DONE line; leave non-DONE lines alone.
 
     When a measured value exists, model-written ``tokens=`` / ``model=`` counters
     on the line are removed so the measured stamp wins.
+
+    FR #6409: ``worker_build=<short|unknown>`` is always included.
     """
     text = (payload or "").strip()
     if not text or not _DONE_RX.match(text):
         return payload if payload is not None else ""
     cleaned = _strip_usage_fields(text).rstrip()
-    suffix = format_done_usage_suffix(usage)
+    suffix = format_done_usage_suffix(usage, worker_build=worker_build)
     if not suffix:
         return cleaned
     return f"{cleaned} {suffix}".rstrip()
