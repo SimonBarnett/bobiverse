@@ -57,6 +57,7 @@ It runs the Status and About windows in-process (no second process to start).
   Restart allows up to 60 seconds for the graceful IRC logout and bootstrap (FR #5177). Commands are claimed before callbacks,
   and engine startup discards stale commands so an interrupted restart cannot replay.
 * **Reload engine** (FR #5111): host-only recycle. Write `reload` to `<root>\run\tray-cmd.txt` (or menu **Reload engine**). The elevated `bob-tray.exe` runs `KillEngineTree` + `StartEngine` only --- no `taskkill` from Medium integrity, no host exit, no seat kill, no `sc stop ircBob`. Engine must leave `reload` lines for the host.
+* **Restart or Reload engine?** Use **Restart** after installing a new `bob-tray.exe` (C# host) or a new worker that seats should start on: it logs out of IRC cleanly, drains the outbox, and relaunches the tray host without restarting ircBob (up to about 60 s). Use **Reload engine** only after hot-patching the PowerShell engine scripts (`Watch-BobTray.ps1` and helpers); it keeps the same host process, so it never loads a new `bob-tray.exe`.
 
 ## Hot-patch the tray (FR #5111)
 
