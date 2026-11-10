@@ -48,10 +48,11 @@ def test_fr6429_launch_uses_child_env_block_only():
     assert 'env["BOB_OPENCODE_MODEL"]' in click
     assert "SetEnvironmentVariable(\"BOB_OPENCODE_MODEL\"" not in click
     assert "SetEnvironmentVariable(\"BOB_OPENCODE_MODEL\"" not in tray
-    # tray-env.json must not receive the slot model
+    # tray-env.json must not receive the slot model (Launch path; never write slot into shared env file)
     launch = tray[tray.index("public static int Launch(string root, string mode, string machine, string agent, IDictionary childEnv") :]
     launch = launch[: launch.index("static IntPtr BuildChildEnvironmentBlock") + 800]
-    assert "tray-env.json" not in launch or "never" in tray.lower()
+    assert "tray-env.json" not in launch
+    assert 'env["BOB_OPENCODE_MODEL"]' in click
     assert "RememberOpencodeSlotLaunch" in tray
     assert "OpencodeSlotRunning" in tray
     assert "ResolveOpencodeSlotModel" in tray
@@ -114,3 +115,22 @@ def test_fr6429_docs_pin_submenu_and_child_env():
     # old FR #6301 "no submenu" sentence must be gone
     assert "OpenCode has `/model`" not in text
     assert "no OpenCode models submenu" not in text.lower()
+
+
+def test_fr6429_tray_models_json_overrides_defaults():
+    """MRB #6432: OpencodeModelsConfigPaths yields defaults first, tray-models.json last."""
+    tray = TRAY_CS.read_text(encoding="utf-8")
+    block = tray[tray.index("static IEnumerable<string> OpencodeModelsConfigPaths") : tray.index("static IEnumerable<string> OpencodeModelsConfigPaths") + 1100]
+    default_i = block.index('yield return Path.Combine(root, "tray", "config", "default.json")')
+    # last yield is LOCALAPPDATA tray-models.json (after the default yields)
+    local_assign = block.index('string local = Path.Combine')
+    assert default_i < local_assign, "defaults must be yielded before tray-models.json so local overrides win"
+    assert "tray-models.json" in block[local_assign:]
+    assert "MRB #6432" in block or "overrides win" in block
+
+
+def test_fr6429_format_helper_ignores_bare_region_noise():
+    sys.path.insert(0, str(WORKER.parent))
+    import bob_worker as bw
+
+    assert bw.format_opencode_model_unavailable_error("AWS region us-east-1 timed out") is None

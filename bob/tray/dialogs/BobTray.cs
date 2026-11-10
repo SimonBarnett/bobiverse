@@ -483,14 +483,16 @@ namespace BobDialogs
 
         static IEnumerable<string> OpencodeModelsConfigPaths(string root)
         {
-            string local = Path.Combine(Environment.GetEnvironmentVariable("LOCALAPPDATA") ?? Path.GetTempPath(), "Bobiverse", "tray-models.json");
-            yield return local;
+            // FR #6429 / MRB #6432: ship defaults first, then LOCALAPPDATA tray-models.json last
+            // so configured overrides win (TryReadOpencodeModels applies later paths over earlier).
             if (!string.IsNullOrEmpty(root))
             {
                 yield return Path.Combine(root, "tray", "config", "default.json");
                 yield return Path.Combine(root, "bob", "tray", "config", "default.json");
                 yield return Path.Combine(root, "config", "default.json");
             }
+            string local = Path.Combine(Environment.GetEnvironmentVariable("LOCALAPPDATA") ?? Path.GetTempPath(), "Bobiverse", "tray-models.json");
+            yield return local;
         }
 
         public static void RememberOpencodeSlotLaunch(string slot, int pid, string model)
@@ -1220,9 +1222,12 @@ namespace BobDialogs
             if (pid == 0 && err.Length > 0)
             {
                 string shown = err;
-                if (IsOpencodeModelUnavailableMessage(err))
+                bool opencodeLaunch = (opencodeSlot == "free" || opencodeSlot == "paid")
+                    || string.Equals(agent, "opencode", StringComparison.OrdinalIgnoreCase);
+                bool modelUnavailable = opencodeLaunch && IsOpencodeModelUnavailableMessage(err);
+                if (modelUnavailable)
                     shown = "OpenCode model unavailable (check region Global for paid V4 Pro, or that the model id exists). " + err;
-                try { MessageBox.Show(shown, "Bobiverse", MessageBoxButtons.OK, err.StartsWith("start failed") || err.StartsWith("bob-worker.exe") || IsOpencodeModelUnavailableMessage(err) ? MessageBoxIcon.Warning : MessageBoxIcon.Information); } catch { }
+                try { MessageBox.Show(shown, "Bobiverse", MessageBoxButtons.OK, err.StartsWith("start failed") || err.StartsWith("bob-worker.exe") || modelUnavailable ? MessageBoxIcon.Warning : MessageBoxIcon.Information); } catch { }
                 return;
             }
             if (pid > 0 && (opencodeSlot == "free" || opencodeSlot == "paid") && childEnv != null && childEnv.Contains("BOB_OPENCODE_MODEL"))
@@ -1233,11 +1238,12 @@ namespace BobDialogs
         {
             if (string.IsNullOrEmpty(err)) return false;
             string e = err.ToLowerInvariant();
-            return e.IndexOf("region", StringComparison.Ordinal) >= 0
+            // MRB #6432: do not match bare "region" (false positives on AWS region timeouts).
+            return e.IndexOf("not available in your region", StringComparison.Ordinal) >= 0
+                || e.IndexOf("unavailable in your region", StringComparison.Ordinal) >= 0
                 || e.IndexOf("model unavailable", StringComparison.Ordinal) >= 0
                 || e.IndexOf("model not found", StringComparison.Ordinal) >= 0
-                || e.IndexOf("provider_model", StringComparison.Ordinal) >= 0
-                || e.IndexOf("not available in your region", StringComparison.Ordinal) >= 0;
+                || e.IndexOf("provider_model", StringComparison.Ordinal) >= 0;
         }
 
 
