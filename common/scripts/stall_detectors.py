@@ -20,6 +20,11 @@ BORED_LATENCY_ID = "bored-latency"
 STALE_DIGEST_ID = "stale-digest"
 IDLE_WITH_WORK_ID = "idle-with-work"
 
+# FR #6462: operator / FR #6407 unpin tokens on require_machine. These mean "no
+# machine pin" (same set as gitclaim.row_require_machine / _stamp_require_machine).
+# They must not fire sticky-auto-pin when infer is empty.
+_REQUIRE_MACHINE_UNPIN_TOKENS = frozenset({"*", "any", "none", "-"})
+
 RESYNC_FAIL_N = 3
 ACK_STALE_S = 45 * 60
 BORED_LATENCY_S = 240.0
@@ -231,6 +236,11 @@ def detect_sticky_auto_pin(snap: dict[str, Any]) -> list[dict[str, Any]]:
     for row in snap.get("unaccepted") or []:
         stamped = str(row.get("require_machine") or "").strip().lower()
         if not stamped:
+            continue
+        # FR #6462: any/none/*/ - are intentional unpins (operator !unpin or
+        # retired-machine rewrite after FR #6407). Infer '' is the healthy
+        # match; do not file stall:sticky-auto-pin:...:any (class of #6462/#6463).
+        if stamped in _REQUIRE_MACHINE_UNPIN_TOKENS:
             continue
         inferred = gitclaim.infer_require_machine(
             title=str(row.get("title") or ""),
