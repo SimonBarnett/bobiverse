@@ -2726,13 +2726,35 @@ class Client:
         info(f"INFO bob local recycle machine={mid} from={who}")
 
     def _maybe_execute_recycle_wire(self, src: str, body: str) -> bool:
+        """Consume chair-routed RECYCLE wire on a bob-* ear (FR #197 / #6389).
+
+        FR #6389: every early drop of a RECYCLE-looking body logs
+        ``INFO recycle wire dropped reason=... machine=... from=... chair=...``
+        so a silent miss (e.g. MarchHare 2026-11-10) is diagnosable. Ordinary
+        chat that is not a recycle wire stays quiet.
+        """
+        text = (body or "").strip()
+        looks = text.lower().startswith("recycle ")
+
+        def _drop(reason: str, *, machine: str | None = None) -> bool:
+            if not looks:
+                return False
+            mid = (machine or self._local_machine_id() or "-").strip() or "-"
+            chair_raw = (bobreport.digest_chair_nick(self.home) or "").strip()
+            chair_disp = chair_raw or "-"
+            info(
+                f"INFO recycle wire dropped reason={reason} machine={mid} "
+                f"from={src} chair={chair_disp}"
+            )
+            return False
+
         if getattr(self.args, "chair", False):
-            return False
+            return _drop("is_chair")
         if not bobtalk.is_fleet_bob_nick(self.original_nick):
-            return False
+            return _drop("not_fleet_bob")
         local = self._local_machine_id()
         if not local:
-            return False
+            return _drop("no_local_machine")
         # FR #197 route or legacy RECYCLE v1
         jeeves = bob_recycle.parse_jeeves_recycle_route(body)
         if jeeves:
@@ -2740,14 +2762,19 @@ class Client:
             if scope == "fleet" or mid == "fleet":
                 mid = local
             elif mid != local:
-                return False
+                return _drop("machine_mismatch", machine=local)
         else:
             mid = bob_recycle.parse_recycle_wire(body)
-            if not mid or mid != local:
-                return False
+            if not mid:
+                return _drop("not_recycle_wire", machine=local)
+            if mid != local:
+                return _drop("machine_mismatch", machine=local)
         chair = (bobreport.digest_chair_nick(self.home) or "").strip().lower()
-        if not chair or src.strip().lower() != chair:
-            return False
+        # Case-insensitive (digest may store "Jeeves", wire sender is often "jeeves").
+        if not chair:
+            return _drop("chair_missing", machine=local)
+        if src.strip().lower() != chair:
+            return _drop("chair_mismatch", machine=local)
         self._announce_departure("recycle")
         info(f"INFO recycle announcing restart machine={mid} from={src}")
         bob_recycle.execute_local_recycle(
