@@ -67,11 +67,36 @@ def short_build_sha(commit: str | None = None) -> str:
     return raw[:12]
 
 
-def worker_hello_line(kind: str, *, build: str | None = None) -> str:
-    """FR #6409: shop presence line after successful agent start (MRB #6411)."""
+def resolve_seat_hello_model(kind: str, env: Optional[dict] = None) -> str:
+    """FR #6418: the configured model the seat's agent will launch with ('' when unreadable).
+
+    OpenCode: the launch model is ``BOB_OPENCODE_MODEL`` (``run_agent`` exports the
+    ``resolve_opencode_model`` pick there: operator env -> OpenCode config -> fuel),
+    then the OpenCode config's ``model``. Grok / Cursor (and any other kind) have no
+    model configuration the worker can already read, so the hello line reports
+    ``unknown`` for them. Local reads only: no network or provider calls, and never
+    credentials or auth files.
+    """
+    env = os.environ if env is None else env
+    if (kind or "").strip().lower() != "opencode":
+        return ""
+    m = str(env.get("BOB_OPENCODE_MODEL") or "").strip()
+    if m:
+        return m
+    return read_opencode_config_model(env) or ""
+
+
+def worker_hello_line(kind: str, *, model: str | None = None, build: str | None = None) -> str:
+    """FR #6409 / FR #6418: shop presence line after successful agent start (MRB #6411).
+
+    FR #6418: ``model=<configured model|unknown>`` always sits between ``kind=`` and
+    ``build=`` (never omitted); by default it is resolved from the same configuration
+    the agent will launch with (see ``resolve_seat_hello_model``).
+    """
     k = (kind or "").strip().lower() or "grok"
+    m = (str(model).strip() if model is not None else resolve_seat_hello_model(k)) or "unknown"
     b = short_build_sha(build) if build is not None else short_build_sha()
-    return f"worker ready kind={k} build={b}"
+    return f"worker ready kind={k} model={m} build={b}"
 
 EXIT_USAGE = 64
 EXIT_IRC_FAIL = 2  # could not connect / register: no agent was started
@@ -789,7 +814,7 @@ def read_opencode_config_model(
             continue
         try:
             raw = cand.read_text(encoding="utf-8")
-        except OSError:
+        except (OSError, UnicodeDecodeError):
             continue
         try:
             doc = json.loads(_strip_jsonc(raw))
@@ -10774,15 +10799,16 @@ def run_agent(args, log: Log) -> int:
         return EXIT_IRC_FAIL
     # FR #6134: publish agent kind so the chair can skip OpenCode for MRB/UAT.
     # FR #6409: digest worker_build short SHA (or unknown); hello after start_agent (MRB #6411).
+    # FR #6418: one configured-model value shared by the digest payload and the hello line.
     build = short_build_sha()
+    seat_model = resolve_seat_hello_model(kind)
     try:
-        model = (os.environ.get("BOB_OPENCODE_MODEL") or "").strip() if kind == "opencode" else ""
         post_digest_seat_kind(
             machine=machine,
             pid=pid,
             nick=nick,
             kind=kind,
-            model=model,
+            model=seat_model,
             worker_build=build,
             log=log,
         )
@@ -10815,7 +10841,7 @@ def run_agent(args, log: Log) -> int:
         return EXIT_LAUNCH_FAIL
     # FR #6409 / MRB #6411: announce ready only after agent process starts (CodeRabbit).
     try:
-        hello = worker_hello_line(kind, build=build)
+        hello = worker_hello_line(kind, model=seat_model, build=build)
         if irc.say(irc.shop, hello):
             log(f"worker: hello {hello}")
         else:

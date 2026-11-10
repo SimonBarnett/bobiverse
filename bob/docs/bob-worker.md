@@ -36,9 +36,11 @@ One compiled program, `<ai root>\bob\worker\bob-worker.exe` (`scripts/bob_worker
 
 After IRC join and a successful agent launch the seat posts a hello line on `#<machine>` (MRB #6411: no ready claim when launch fails):
 
-`worker ready kind=<grok|cursor|opencode> build=<short sha>`
+`worker ready kind=<grok|cursor|opencode> model=<configured model> build=<short sha>`
 
 `<short sha>` is the first 12 characters of the freeze-time source commit (`bob-worker.exe --version` / FR #6349). When `bob_worker_build_meta` is missing or unset, the field is `unknown` (never omitted).
+
+`model=` (FR #6418) is the model the seat's agent will launch with, taken from the configuration the worker already reads: for OpenCode the launch model (`BOB_OPENCODE_MODEL` as resolved by FR #6363, then the OpenCode config's `model`). Kinds with no readable model configuration (Grok, Cursor) report `unknown`. The key is never omitted, and finding it makes no network or provider calls and never reads credentials or auth files. The digest activity POST (`post_digest_seat_kind`) reports the same value as `model=` at seat start.
 
 Every DONE the outbox drain enriches (FR #6387) also carries `worker_build=<short|unknown>` next to `model=` / `tokens_*`. The digest activity POST (`post_digest_seat_kind`) includes the same `worker_build` key. No new network calls; ACK framing is unchanged.
 
