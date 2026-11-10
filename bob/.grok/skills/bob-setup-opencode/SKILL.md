@@ -222,6 +222,23 @@ Exit codes: 1 native search, 2 worktree consent/cwd/git status-branch, 3 gh auth
 Non-zero means **blocked** --- never claim DONE/completed for queued work until
 re-run exits 0 with evidence.
 
+## Global OpenCode instructions (FR #6376)
+
+OpenCode reads `%USERPROFILE%\.config\opencode\AGENTS.md` at the start of every
+run, so rules put there apply to every OpenCode seat on the box. On MarchHare the
+seat relies on this file for the finish-step fixes in #6370. Its three rules are:
+
+1. Open the PR with `gh pr create --body "..."` (inline body). Do **not** write a
+   PR body file, and never one under `%TEMP%`.
+2. Never write to `%TEMP%` or any path outside the job worktree. Keep all scratch
+   files inside the job worktree (and do not commit them).
+3. Do not create base checkouts or extra git worktrees. To compare against the
+   base, use `git stash` in the job worktree, then `git stash pop`.
+
+Create it once per seat after install. Deleting the file undoes the behaviour, and
+it does **not** widen any permission (it only restricts writes). Drop it once
+#6370 ships the same rules in the worker's finish steps.
+
 ## Fleet smoke checklist (FR #6160 / FR-OC-FLEET)
 
 Run on each box after install/repair. The script **never** reads `auth.json` body
