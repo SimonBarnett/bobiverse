@@ -3583,6 +3583,26 @@ class Client:
                     out.append(bud.status_line())
             except Exception:  # noqa: BLE001
                 pass
+            # FR #6391: ticket-closure last poll / wake / pending.
+            try:
+                tc = j.last_ticket_closure if isinstance(j.last_ticket_closure, dict) else {}
+                age = (
+                    int(time.time() - j.last_ticket_closure_at)
+                    if j.last_ticket_closure_at
+                    else None
+                )
+                age_s = f"{age}s ago" if age is not None else "not run yet"
+                pending = tc.get("pending_count")
+                if pending is None:
+                    pending = "?"
+                woke = tc.get("woke", 0)
+                transport = tc.get("wake_transport") or "?"
+                out.append(
+                    f"ticket_closure: {age_s} pending={pending} woke={woke} "
+                    f"transport={transport} (every {int(chair_health.TICKET_CLOSURE_S)}s)"
+                )
+            except Exception:  # noqa: BLE001
+                pass
         except Exception:  # noqa: BLE001
             pass
         return out

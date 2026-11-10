@@ -1,7 +1,7 @@
 ---
 name: bobiverse-jeeves
 description: >
-  Maintain and debug the Jeeves chair (ircJeeves) and its webhooks on the Ergo host. Architecture, paths, ports, config, logs, background jobs (webhook health, GitHub resync), install/upgrade/hotpatch. Use in <ai root>\jeeves or for Jeeves service, !register, ChanServ, BobCallback, intake, or /bobiverse-jeeves.
+  Maintain and debug the Jeeves chair (ircJeeves) and its webhooks on the Ergo host. Architecture, paths, ports, config, logs, background jobs (webhook health, ticket-closure wake, GitHub resync), install/upgrade/hotpatch. Use in <ai root>\jeeves or for Jeeves service, !register, ChanServ, BobCallback, intake, or /bobiverse-jeeves.
 ---
 
 # bobiverse-jeeves
@@ -69,7 +69,8 @@ stay the digest roster (`machines`); `#wonderland` is never a machine id. Privil
    (zen `jeeves-health-probe`, answered 204 with no queue entry and no announce). One retry before calling a target down. Each run is logged (`INFO webhook-health ...`); state is
    `webhook-health.json`; `#bobiverse` is told ONLY on up<->down transitions (`WEBHOOK DOWN ...` / `WEBHOOK RECOVERED ...`)
    through `chair-outbox.txt`.
-2. **GitHub resync, hourly + webhook gap** (FR #3212; was 15 min): `gitclaim.resync_from_github` via `chair_health` /
+2. **Ticket closure wake, every 2 min** (FR #6391, `chair_health.TICKET_CLOSURE_S=120`): poll GitHub closed issues/PRs for focus repos; HTTPS POST to `JEEVES_TICKET_CLOSURE_WAKE_URL` / `JEEVES_BOB_WAKE_URL` with `wake_brief`; failed POST stays `pending` with backoff. State: `monitor-ticket-closure.json`. Startup log + `!status` `ticket_closure:` line. Docs: `jeeves/docs/wake-grok-bot-bob.md`.
+3. **GitHub resync, hourly + webhook gap** (FR #3212; was 15 min): `gitclaim.resync_from_github` via `chair_health` /
    `github_api_budget` (ETag/304 conditional GETs, hourly call budget, backoff floor). Authenticated with the existing
    Jeeves token from `config\github.token` via `gh_filer`; token handling is unchanged and the value is never logged - only
    the token SOURCE is written once per process to `resync-token-source.log`. **Webhooks update the queue with zero REST** (including `issues`/`pull_request` `labeled`/`unlabeled` label mutations — FR #3275);

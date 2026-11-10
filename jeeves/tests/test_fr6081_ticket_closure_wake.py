@@ -60,7 +60,8 @@ def test_fr6081_wake_success_marks_seen(tmp_path: Path, monkeypatch):
     assert not (digest / "queue.json").exists()
 
 
-def test_fr6081_unreachable_persists_skip_then_seen(tmp_path: Path, monkeypatch):
+def test_fr6081_unreachable_keeps_pending_backoff(tmp_path: Path, monkeypatch):
+    """FR #6391 supersedes #6081: transport failure stays pending with backoff (not seen)."""
     chair, digest = _homes(tmp_path)
     fx = _fx(tmp_path / "events.json", [_row()])
     monkeypatch.setenv("JEEVES_TICKET_CLOSURE_FIXTURE", str(fx))
@@ -73,15 +74,18 @@ def test_fr6081_unreachable_persists_skip_then_seen(tmp_path: Path, monkeypatch)
     payload, code = tc.check(_args(chair, digest))
     assert code == 1
     assert payload.get("woke") == 0
-    skips = digest / tc.WAKE_SKIP_NAME
-    assert skips.is_file()
-    blob = json.loads(skips.read_text(encoding="utf-8"))
-    assert any("bob_unreachable" in json.dumps(v) for v in blob.values())
+    assert payload.get("pending_count") >= 1
     body = json.loads((digest / STATE).read_text(encoding="utf-8"))
-    assert any("del-81" in k for k in (body.get("seen") or {}))
+    assert body.get("seen") in ({}, None)
+    pend = next(v for k, v in (body.get("pending") or {}).items() if "del-81" in k)
+    assert int(pend.get("fail_count") or 0) >= 1
+    assert float(pend.get("next_retry_at") or 0) > 0
+    # Still pending on immediate re-check (backoff not elapsed); no new closed[].
     payload2, code2 = tc.check(_args(chair, digest))
     assert code2 == 0
     assert payload2.get("closed") == []
+    body2 = json.loads((digest / STATE).read_text(encoding="utf-8"))
+    assert any("del-81" in k for k in (body2.get("pending") or {}))
 
 
 def test_fr6081_skip_write_fail_keeps_pending(tmp_path: Path, monkeypatch):
