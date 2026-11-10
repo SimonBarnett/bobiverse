@@ -71,8 +71,10 @@ CLAIM_ACTIONS: dict[tuple[str, str], str] = {
     ("pull_request", "ready_for_review"): "MRB",
 }
 # t826u: `Closes #N` and the full `Closes owner/repo#N` form (what the worker FR skill mandates in every FR PR body).
+# FR #6460: do NOT treat `Refs` as a closer. Refs is citation-only (docs/mrb pins, parents,
+# follow-ups). Including refs? here dequeued open FRs when a docs/mrb pin merged (class of #6451 / #6452).
 CLOSES_RE = re.compile(
-    r"(?i)\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?|refs?)\s+(?:(?P<repo>[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+))?#(?P<num>\d+)\b"
+    r"(?i)\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s+(?:(?P<repo>[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+))?#(?P<num>\d+)\b"
 )
 
 REPO_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
@@ -813,9 +815,11 @@ def repo_archived_for_queue(repo: str, *, payload: dict | None = None) -> bool:
 
 
 def extract_closes_issue_ids(*texts: str, repo: str = "") -> tuple[str, ...]:
-    """Issue ids referenced via Closes/Fixes/Resolves/Refs #n or ``Closes owner/repo#n`` (deterministic).
+    """Issue ids referenced via Closes/Fixes/Resolves #n or ``Closes owner/repo#n`` (deterministic).
 
-    With ``repo`` given, a link that names ANOTHER repo is ignored (it closes an issue elsewhere, not a row of this repo's queue).
+    FR #6460: ``Refs`` / ``Ref`` are intentionally excluded (citation only; they must not
+    dequeue or supersede an open FR). With ``repo`` given, a link that names ANOTHER repo
+    is ignored (it closes an issue elsewhere, not a row of this repo's queue).
     """
     found: list[str] = []
     seen: set[str] = set()

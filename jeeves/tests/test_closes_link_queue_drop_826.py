@@ -20,7 +20,9 @@ def test_closes_regex_forms():
     assert extract_closes_issue_ids("Closes #5") == ("#5",)
     assert extract_closes_issue_ids("closes SimonBarnett/bobiverse#5") == ("#5",)
     assert extract_closes_issue_ids("Fixes a/b#7 and Resolves #8") == ("#7", "#8")
-    assert extract_closes_issue_ids("Closes #5", "Refs #5") == ("#5",)
+    assert extract_closes_issue_ids("Closes #5", "Refs #5") == ("#5",)  # Closes wins; Refs ignored
+    assert extract_closes_issue_ids("Refs #5") == ()  # FR #6460: Refs alone is not a closer
+    assert extract_closes_issue_ids("Refs SimonBarnett/bobiverse#5") == ()
 
 
 def test_closes_link_to_another_repo_is_ignored_when_repo_given():
