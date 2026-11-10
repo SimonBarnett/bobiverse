@@ -62,9 +62,9 @@ ircJeeves (chair)
 BobCallback (:7700)
   └─ /bob/v1/git|intake|report|digest|jira  (IIS TLS)
 
-Appliance settings foundation (FR #6436)
-  └─ common/scripts/jeeves_settings.py --- schema, LAN gate, secret-safe
-     GET/PUT, backup/audit/rollback; file apply/migrate FR #6442; HTTP UI FR #6440
+Appliance settings (FR #6436 foundation + FR #6440 LAN HTTP + FR #6442 migrate/apply)
+  ├─ common/scripts/jeeves_settings.py --- schema, LAN gate, secret-safe API, migrate/apply
+  └─ common/scripts/jeeves_settings_http.py --- LAN bind :7701 UI/API; off by default
 
 MONITORING agent (jeeves CWD)
   └─ Invoke-JeevesMonitorCheck* --- report via intake; never act as chair
@@ -76,7 +76,7 @@ LOCKED
 
 ## Screens
 
-Operator surfaces today: IRC commands, chair logs, webhook health, and the MONITORING agent. FR #6436 locks an **internal-only appliance settings foundation** (schema + LAN gate + secret-safe API helpers + docs for `jeeves.ntsa.uk`); the browser UI, AD/CredMan login, NSSM apply, idle restart, and read-only status page are child FRs. Never expose settings via `bob.ntsa.uk` or public Cloudflare.
+Operator surfaces today: IRC commands, chair logs, webhook health, and the MONITORING agent. FR #6436 locks an **internal-only appliance settings foundation** (schema + LAN gate + secret-safe API helpers + docs for `jeeves.ntsa.uk`); FR #6440 binds the LAN HTTP schema UI (off by default); FR #6442 migrates NSSM env into `appliance-settings.json` and applies file settings on start; AD/CredMan login (#6441), idle restart and read-only status (#6443) remain child FRs. Never expose settings via `bob.ntsa.uk` or public Cloudflare.
 
 | id | file | state |
 |----|------|-------|
@@ -95,9 +95,7 @@ Operator surfaces today: IRC commands, chair logs, webhook health, and the MONIT
 
 ## UNKNOWN
 
-- Child FR: HTTP listener + schema-driven web UI bound to LAN / `jeeves.ntsa.uk`
 - Child FR: AD / Windows auth or CredMan local admin login for the settings UI
-- Child FR: migrate NSSM-only env settings into chair-owned config file + apply path
 - Child FR: restart-when-idle for restart-required settings; read-only status (version/SHA, uptime, queue, seats, fuel)
 - Exact digest ghost-nick TTL vs live_seat_nicks under heavy report lag beyond FR #5088 exact-seat give-up
 - Whether UAT dead-author inherit should ever narrow further after more recycle evidence
