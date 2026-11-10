@@ -1,8 +1,8 @@
 """FR #6436 foundation: Jeeves appliance settings schema + LAN-only API helpers.
 
 Off by default: importing this module never starts a server and never changes
-chair behaviour. HTTP UI: FR #6440. Migrate/apply: FR #6442. Restart-when-idle + status: FR #6443.
-AD/CredMan auth: FR #6441.
+chair behaviour. HTTP UI: FR #6440. Auth/sessions: jeeves_settings_auth (FR #6441).
+Migrate/apply: FR #6442. Restart-when-idle + status: FR #6443.
 """
 from __future__ import annotations
 
