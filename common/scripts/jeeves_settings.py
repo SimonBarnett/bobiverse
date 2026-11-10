@@ -1,9 +1,12 @@
 """FR #6436 foundation: Jeeves appliance settings schema + LAN-only API helpers.
 
-Off by default: importing this module never starts a server and never changes
-chair behaviour. HTTP UI: FR #6440. Auth/sessions: jeeves_settings_auth (FR #6441).
-Migrate/apply: FR #6442. Restart-when-idle + status: FR #6443.
+Off by default: importing this module never starts a server.
+FR #6442: migrate NSSM/env inventory into appliance-settings.json and apply
+file-backed values into the process environment (env still overrides).
+FR #6443: restart-when-idle (ircJeeves only) + read-only status.
+HTTP UI is FR #6440; Auth/sessions: jeeves_settings_auth (FR #6441).
 """
+
 from __future__ import annotations
 
 import ipaddress
@@ -13,7 +16,7 @@ import re
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Iterable
+from typing import Any, Iterable
 
 # Source roots scanned for environ.get("BOB_*"|JEEVES_*) gaps (foundation pin).
 _HERE = Path(__file__).resolve().parent
@@ -36,11 +39,11 @@ _ENV_GET_RE = re.compile(
 # (transient / OS / install-only). Keep the gap test honest for real config.
 _SCAN_ALLOW_MISSING = frozenset(
     {
+        # Install / host / tool paths --- not appliance UI knobs (FR #6442).
         "BOBIVERSE_PYTHON",
         "BOB_INSTALL_ROOT",
         "JEEVES_INSTALL_ROOT",
         "BOB_MACHINE_ID",
-        "BOB_PUBLIC_BASE",
         "BOB_WEEKLY_LOG",
         "BOB_WEEKLY_FORCE_SYSTEM_PROFILE",
         "BOB_XAI_WEEKLY_FETCH_TIMEOUT_S",
@@ -51,28 +54,12 @@ _SCAN_ALLOW_MISSING = frozenset(
         "BOB_EAR_HOME",
         "BOB_HOME",
         "BOB_IRC_DEBUG",
-        "BOB_IRC_IDLE_DEAD_S",
-        "BOB_IRC_IDLE_PING_S",
-        "BOB_IRC_RECONNECT_MAX",
-        "BOB_IRC_RECV_TIMEOUT_S",
         "BOB_IRC_SKIP_PRIOR_CLEAN",
-        "BOB_IRC_THROTTLE_BASE_S",
         "BOB_CHANSERV_REGISTER_JOIN_WAIT_S",
         "BOB_CHANSERV_REGISTER_WAIT_S",
         "BOB_CHANSERV_SYNC_TTL_S",
         "BOB_CONSOLE_OUTBOX_FLOOD_S",
-        "BOB_DIGEST_STALE_S",
-        "BOB_DIGEST_URL",
-        "BOB_BORED_IDLE_S",
         "BOB_GITCLAIM_LOCK_S",
-        "BOB_COPILOT_OBSERVE",
-        "JEEVES_BOB_WAKE_URL",
-        "JEEVES_PROBE_LOCAL",
-        "JEEVES_PROBE_PUBLIC",
-        "JEEVES_RESYNC_REPOS",
-        "JEEVES_TICKET_CLOSURE_S",
-        "JEEVES_TICKET_CLOSURE_WAKE",
-        "JEEVES_TICKET_CLOSURE_WAKE_URL",
     }
 )
 
@@ -109,8 +96,8 @@ def _spec(
     )
 
 
-# Foundation inventory: fuel chain + chair secrets + common homes.
-# Child FR expands to every remaining scanned key (gap test drives growth).
+# Appliance inventory (FR #6436 + #6442): file-backed; process env still overrides.
+# store=file means migrate/apply target is appliance-settings.json.
 SCHEMA: tuple[SettingSpec, ...] = (
     _spec(
         "BOB_FUEL_CODERABBIT",
@@ -142,52 +129,105 @@ SCHEMA: tuple[SettingSpec, ...] = (
         "0",
         description="Optional fleet fuel stage (off by default).",
     ),
+    _spec(
+        "BOB_COPILOT_OBSERVE",
+        "bool",
+        "0",
+        description="Observe-only Copilot dispatch (no live agents/tasks POST).",
+    ),
     _spec("BOB_DIGEST_HOME", "str", "", description="Digest / report home directory."),
+    _spec("BOB_DIGEST_URL", "str", "", description="Public digest POST URL override."),
+    _spec("BOB_DIGEST_STALE_S", "float", "900", description="Digest stale threshold seconds."),
+    _spec("BOB_PUBLIC_BASE", "str", "", description="Public webhook base URL."),
+    _spec("BOB_BORED_IDLE_S", "float", "120", description="Idle seconds before !bored."),
+    _spec("BOB_IRC_IDLE_DEAD_S", "float", "", description="IRC idle dead timeout seconds."),
+    _spec("BOB_IRC_IDLE_PING_S", "float", "", description="IRC idle ping interval seconds."),
+    _spec("BOB_IRC_RECONNECT_MAX", "int", "", description="Max IRC reconnect attempts."),
+    _spec("BOB_IRC_RECV_TIMEOUT_S", "float", "", description="IRC recv timeout seconds."),
+    _spec("BOB_IRC_THROTTLE_BASE_S", "float", "", description="IRC throttle base seconds."),
     _spec("JEEVES_HOME", "str", "", store="env", description="Chair home override."),
     _spec("BOB_JEEVES_HOME", "str", "", store="env", description="Alias chair home override."),
+    _spec(
+        "JEEVES_TICKET_CLOSURE_S",
+        "float",
+        "900",
+        description="Ticket-closure backup poll interval seconds.",
+    ),
+    _spec(
+        "JEEVES_TICKET_CLOSURE_WAKE",
+        "bool",
+        "0",
+        description="Force legacy GrokBot wake when no wake URL.",
+    ),
+    _spec(
+        "JEEVES_TICKET_CLOSURE_WAKE_URL",
+        "str",
+        "",
+        description="HTTPS Bob wake URL (close + stall callbacks).",
+    ),
+    _spec(
+        "JEEVES_BOB_WAKE_URL",
+        "str",
+        "",
+        description="Alias for ticket-closure / Bob wake URL.",
+    ),
+    _spec(
+        "JEEVES_TICKET_CLOSURE_WAKE_SECRET",
+        "secret",
+        "",
+        restart=True,
+        secret=True,
+        description="Wake webhook Bearer secret (write-only).",
+    ),
+    _spec(
+        "JEEVES_BOB_WAKE_SECRET",
+        "secret",
+        "",
+        restart=True,
+        secret=True,
+        description="Alias wake webhook secret (write-only).",
+    ),
+    _spec("JEEVES_PROBE_LOCAL", "str", "", description="Local webhook probe base URL."),
+    _spec("JEEVES_PROBE_PUBLIC", "str", "", description="Public webhook probe base URL."),
+    _spec("JEEVES_RESYNC_REPOS", "str", "", description="Override resync repo list."),
     _spec(
         "GH_TOKEN",
         "secret",
         "",
-        store="nssm",
         restart=True,
         secret=True,
-        description="GitHub token for chair API (write-only in API).",
+        description="GitHub token for chair API (write-only; file-backed, env overrides).",
     ),
     _spec(
         "GITHUB_TOKEN",
         "secret",
         "",
-        store="nssm",
         restart=True,
         secret=True,
-        description="Alternate GitHub token env (write-only).",
+        description="Alternate GitHub token (write-only; file-backed, env overrides).",
     ),
     _spec(
         "BOB_IRC_PASSWORD",
         "secret",
         "",
-        store="nssm",
         restart=True,
         secret=True,
-        description="Ergo connect password (write-only).",
+        description="Ergo connect password (write-only; file-backed, env overrides).",
     ),
     _spec(
         "BOB_IRC_SASL_PASSWORD",
         "secret",
         "",
-        store="nssm",
         restart=True,
         secret=True,
-        description="SASL password (write-only).",
+        description="SASL password (write-only; file-backed, env overrides).",
     ),
     _spec(
         "BOB_IRC_SASL_USER",
         "str",
         "",
-        store="nssm",
         restart=True,
-        description="SASL username.",
+        description="SASL username (file-backed; env overrides).",
     ),
 )
 
@@ -273,6 +313,8 @@ def validate_value(spec: SettingSpec, value: Any) -> str | None:
             return f"invalid bool for {spec.key}"
         return None
     if spec.type in ("int", "float"):
+        if not str(raw).strip():
+            return None  # empty clears to default at resolve time
         try:
             float(raw) if spec.type == "float" else int(raw)
         except (TypeError, ValueError):
@@ -437,6 +479,90 @@ def api_rollback(
         },
     )
     return {"ok": True, "backup_id": safety, "restored": bid}
+
+def apply_file_settings(home: Path) -> list[str]:
+    """Load appliance-settings.json into os.environ for unset keys (FR #6442).
+
+    Existing non-empty environment values win. Secret values are applied the
+    same way but never returned by the API. Returns the list of keys applied.
+    """
+    cfg = load_config_file(home)
+    applied: list[str] = []
+    for spec in SCHEMA:
+        if spec.store not in ("file", "nssm"):
+            continue
+        if spec.key not in cfg or cfg.get(spec.key) is None:
+            continue
+        cur = os.environ.get(spec.key)
+        if cur is not None and str(cur) != "":
+            continue
+        raw = str(cfg.get(spec.key))
+        os.environ[spec.key] = raw
+        applied.append(spec.key)
+    return applied
+
+
+def migrate_nssm_env_to_file(
+    home: Path,
+    *,
+    actor: str = "migrate",
+    keys: Iterable[str] | None = None,
+) -> dict[str, Any]:
+    """Copy schema keys from process env into appliance-settings.json (FR #6442).
+
+    Intended one-shot when leaving NSSM AppEnvironmentExtra. Does not print or
+    audit secret plaintext (audit value is set/unset). Env still overrides at
+    resolve/apply time until operators remove the NSSM entries.
+    """
+    want = {str(k).strip() for k in (keys or []) if str(k).strip()}
+    cfg = load_config_file(home)
+    before = dict(cfg)
+    migrated: list[str] = []
+    skipped: list[str] = []
+    for spec in SCHEMA:
+        if want and spec.key not in want:
+            continue
+        if spec.store not in ("file", "nssm"):
+            skipped.append(spec.key)
+            continue
+        env_raw = os.environ.get(spec.key)
+        if env_raw is None or str(env_raw) == "":
+            skipped.append(spec.key)
+            continue
+        bad = validate_value(spec, env_raw)
+        if bad:
+            skipped.append(spec.key)
+            continue
+        raw = str(env_raw)
+        if spec.type == "bool":
+            cfg[spec.key] = "1" if _truthy(raw) else "0"
+        else:
+            cfg[spec.key] = raw
+        migrated.append(spec.key)
+    if not migrated:
+        return {"ok": True, "migrated": [], "skipped": skipped, "backup_id": ""}
+    bid = _backup_config(home, before)
+    _write_json(config_path(home), cfg)
+    for key in migrated:
+        spec = SCHEMA_BY_KEY[key]
+        audit_val = (
+            "set"
+            if spec.secret and str(cfg.get(key) or "").strip()
+            else ("unset" if spec.secret else str(cfg.get(key) or ""))
+        )
+        _append_audit(
+            home,
+            {
+                "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                "actor": str(actor or "migrate")[:80],
+                "key": key,
+                "action": "migrate",
+                "value": audit_val,
+                "backup_id": bid,
+                "restart": bool(spec.restart),
+            },
+        )
+    return {"ok": True, "migrated": migrated, "skipped": skipped, "backup_id": bid}
 
 
 # --- FR #6443: restart-when-idle + read-only status ---------------------------------
