@@ -414,11 +414,50 @@ def _iso_age_s(raw: object, now: float) -> float | None:
 
 
 
+def _idle_seat_can_take_row(row: dict[str, Any], idle: list[str]) -> bool:
+    """True when at least one idle seat is not machine-blocked for this row (FR #6464)."""
+    req = gitclaim.row_require_machine(row)
+    if not req:
+        return True
+    # Pinned work: only count it when some idle nick matches. Unparseable nicks
+    # (no registry in a bare unit snap) cannot match a real machine pin, so the
+    # row stays ineligible --- that is the ce-priority DEV1 + flamingo FP class.
+    return any(gitclaim.seat_matches_require_machine(n, req) for n in idle)
+
+
+def _idle_has_offerable(home: Any, idle: list[str]) -> bool:
+    """Fail-closed: True only when some idle seat has ungated offerable work."""
+    try:
+        from pathlib import Path
+
+        home_p = home if isinstance(home, Path) else Path(str(home))
+    except Exception:
+        return False
+    for n in idle:
+        try:
+            off = int(gitclaim.summarize_empty_offer(home_p, n).get("offerable") or 0)
+        except Exception:
+            off = 0
+        if off > 0:
+            return True
+    return False
+
+
 def detect_idle_with_work(snap: dict[str, Any]) -> list[dict[str, Any]]:
-    """FR #6439: idle seats + unaccepted work waiting > N min with no live offer."""
+    """FR #6439: idle seats + unaccepted work waiting > N min with no live offer.
+
+    FR #6464: only count work that idle seats can take. Machine-mismatched pins
+    (class of ce-priority#16/#17 on retired DEV1 while flamingo was idle) must
+    not file ``stall:idle-with-work:queue``. When ``home`` is in the snap, also
+    require ``summarize_empty_offer`` offerable > 0 for some idle seat (same
+    ungated gate as quiet-idle), fail-closed on errors.
+    """
     idle_raw = snap.get("idle") or []
     idle = [n for n in idle_raw if str(n or "").strip()]
     if not idle:
+        return []
+    home = snap.get("home")
+    if home is not None and not _idle_has_offerable(home, idle):
         return []
     now = float(snap.get("now") or 0)
     if now <= 0:
@@ -430,6 +469,8 @@ def detect_idle_with_work(snap: dict[str, Any]) -> list[dict[str, Any]]:
         if not isinstance(row, dict):
             continue
         if row.get("needs_human"):
+            continue
+        if not _idle_seat_can_take_row(row, idle):
             continue
         offered_to = str(row.get("offered_to") or "").strip()
         if offered_to:
