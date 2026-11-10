@@ -2,7 +2,7 @@
 
 Off by default: importing this module never starts a server and never changes
 chair behaviour. Child FRs wire the HTTP listener, AD/CredMan login UI, and
-NSSM-to-file migration apply path.
+NSSM-to-file migration apply path. Auth/sessions: jeeves_settings_auth (FR #6441).
 """
 from __future__ import annotations
 
