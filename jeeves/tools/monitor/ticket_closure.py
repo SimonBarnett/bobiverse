@@ -7,6 +7,7 @@ Event source (FR #6391): poll GitHub closed issues/PRs for focus repos when
 ``JEEVES_TICKET_CLOSURE_FIXTURE`` is unset. Fixture stays for tests only.
 Wake transport (FR #6391): HTTPS POST to ``JEEVES_TICKET_CLOSURE_WAKE_URL``
 (secret from env, never logged). Failed POST stays ``pending`` with backoff.
+Poll health (FR #6401): ``last_poll_ok_at`` / ``last_poll_error`` / ``poll_outcome``.
 Legacy GrokBotApi send remains only when wake is forced without a URL (tests).
 Never writes queue.json and never assigns work.
 """
@@ -221,27 +222,35 @@ def _poll_github_closes(
     token: str,
     since: str | None,
     fetch: Callable[..., Any] | None = None,
-) -> list[dict[str, Any]]:
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """Poll GitHub Issues API (includes PRs) for closes since *since* (ISO8601).
 
     When *since* is missing, return no rows (caller seeds the cursor to now so
     the first live poll does not replay historical closes / flood wake).
+
+    Returns ``(events, meta)`` where meta has ``attempted``, ``ok_repos``,
+    ``failed_repos`` (FR #6401).
     """
     fetcher = fetch or _GITHUB_FETCH or _default_github_fetch
     out: list[dict[str, Any]] = []
+    meta: dict[str, Any] = {"attempted": [], "ok_repos": [], "failed_repos": []}
     if not repos or not token or not since:
-        return out
+        return out, meta
     for repo in sorted(repos):
         if "/" not in repo:
             continue
+        meta["attempted"].append(repo)
         q = f"state=closed&sort=updated&direction=asc&per_page=50&since={since}"
         url = f"https://api.github.com/repos/{repo}/issues?{q}"
         try:
             data = fetcher(url, token=token)
-        except Exception:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001
+            meta["failed_repos"].append({"repo": repo, "error": type(exc).__name__})
             continue
         if not isinstance(data, list):
+            meta["failed_repos"].append({"repo": repo, "error": "bad_response"})
             continue
+        meta["ok_repos"].append(repo)
         for item in data:
             if not isinstance(item, dict):
                 continue
@@ -250,7 +259,7 @@ def _poll_github_closes(
             ev = _gh_issue_to_event(repo, item)
             if ev:
                 out.append(ev)
-    return out
+    return out, meta
 
 
 def _load_events(
@@ -259,11 +268,19 @@ def _load_events(
     *,
     token: str = "",
     since: str | None = None,
-) -> list[dict[str, Any]]:
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     if fixture is not None and fixture.is_file():
-        return _load_fixture_events(fixture, repos)
+        return _load_fixture_events(fixture, repos), {
+            "attempted": [],
+            "ok_repos": [],
+            "failed_repos": [],
+            "source": "fixture",
+        }
     # FR #6391: real source when fixture unset.
-    return _poll_github_closes(repos, token=token, since=since)
+    events, meta = _poll_github_closes(repos, token=token, since=since)
+    meta = dict(meta)
+    meta["source"] = "github"
+    return events, meta
 
 
 def _canon_ticket(text: str) -> str:
@@ -459,15 +476,49 @@ def check(args):
     seen = _load_map(state, "seen")
     pending = _load_map(state, "pending")
     poll_cursor = str(state.get("poll_cursor") or "").strip() or None
+    last_poll_ok_at = state.get("last_poll_ok_at")
+    last_poll_error = str(state.get("last_poll_error") or "").strip() or None
+    poll_outcome = "ok"
+    poll_meta: dict[str, Any] = {"attempted": [], "ok_repos": [], "failed_repos": []}
     token_loader = _GITHUB_TOKEN or _default_github_token
     token, _tok_src = token_loader()
     now = float(_CLOCK())
     # First live poll: seed cursor to now; do not replay historical closes.
     if fixture is None and poll_cursor is None:
         poll_cursor = _utc_iso_now()
+        events: list[dict[str, Any]] = []
+        poll_outcome = "seeded"
+        last_poll_error = None
+    elif fixture is None and not (token or "").strip():
         events = []
+        poll_outcome = "skipped_no_token"
+        last_poll_error = "no_github_token"
+        poll_meta["source"] = "github"
     else:
-        events = _load_events(fixture, repos, token=token or "", since=poll_cursor)
+        events, poll_meta = _load_events(
+            fixture, repos, token=token or "", since=poll_cursor
+        )
+        failed = poll_meta.get("failed_repos") or []
+        attempted = poll_meta.get("attempted") or []
+        ok_repos = poll_meta.get("ok_repos") or []
+        if poll_meta.get("source") == "fixture":
+            poll_outcome = "fixture"
+            last_poll_error = None
+        elif attempted and not ok_repos:
+            poll_outcome = "repos_failed"
+            err0 = failed[0] if failed else {"error": "unknown"}
+            last_poll_error = (
+                f"{err0.get('repo', '?')}:{err0.get('error', 'fail')}"
+                if isinstance(err0, dict)
+                else "repos_failed"
+            )
+        elif failed:
+            poll_outcome = "partial"
+            err0 = failed[0] if isinstance(failed[0], dict) else {"error": "fail"}
+            last_poll_error = f"{err0.get('repo', '?')}:{err0.get('error', 'fail')}"
+        else:
+            poll_outcome = "ok"
+            last_poll_error = None
     waiting = _load_waiting(chair, digest)
     # Advance cursor from every fetched close before the waiting filter so a
     # Phase-2 registry cannot stall the global cursor on non-waiting pages.
@@ -530,6 +581,8 @@ def check(args):
             pending.pop(key, None)
             skip_n += 1
     last_poll_at = now
+    if poll_outcome in {"ok", "seeded", "fixture", "partial"}:
+        last_poll_ok_at = now
     if newest_closed:
         poll_cursor = newest_closed
     try:
@@ -540,9 +593,16 @@ def check(args):
             "last_poll_at": last_poll_at,
             "pending_count": len(pending),
             "wake_transport": _wake_transport_name(),
+            "poll_outcome": poll_outcome,
         }
         if last_wake_at is not None:
             blob["last_wake_at"] = last_wake_at
+        if last_poll_ok_at is not None:
+            blob["last_poll_ok_at"] = last_poll_ok_at
+        if last_poll_error:
+            blob["last_poll_error"] = last_poll_error
+        elif "last_poll_error" in blob:
+            blob.pop("last_poll_error", None)
         if poll_cursor:
             blob["poll_cursor"] = poll_cursor
         tmp = state_path.with_name(f"{state_path.name}.{os.getpid()}.tmp")
@@ -570,6 +630,10 @@ def check(args):
             "wake_skips": skip_n,
             "pending_count": len(pending),
             "last_poll_at": last_poll_at,
+            "last_poll_ok_at": last_poll_ok_at,
+            "last_poll_error": last_poll_error,
+            "poll_outcome": poll_outcome,
+            "poll_failed_repos": list(poll_meta.get("failed_repos") or []),
             "last_wake_at": last_wake_at,
             "wake_transport": _wake_transport_name(),
             "findings": findings,
