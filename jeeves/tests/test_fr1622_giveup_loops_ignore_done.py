@@ -126,11 +126,11 @@ def test_gated_pin_no_live_seats_skipped(tmp_path):
                 "id": "#56",
                 "giveup_count": 2,
                 "task": "FR",
-                "require_machine": "ce-priority-dev1",
+                "require_machine": "redqueen",
             }
         ],
     )
-    # Only marchhare seats live — no ce-priority-dev1.
+    # Only marchhare seats live — no redqueen.
     _write_digest(digest, {"marchhare": {"worker_list": [{"nick": "marchhare-1", "state": "idle"}]}})
     code, payload = _run(chair, digest)
     assert code == 0, payload
@@ -176,15 +176,15 @@ def test_gated_pin_with_live_seats_still_exits_1(tmp_path):
                 "id": "#56",
                 "giveup_count": 2,
                 "task": "FR",
-                "require_machine": "ce-priority-dev1",
+                "require_machine": "redqueen",
             }
         ],
     )
     _write_digest(
         digest,
         {
-            "ce-priority-dev1": {
-                "worker_list": [{"nick": "ce-priority-dev1-1", "state": "idle"}]
+            "redqueen": {
+                "worker_list": [{"nick": "redqueen-1", "state": "idle"}]
             }
         },
     )

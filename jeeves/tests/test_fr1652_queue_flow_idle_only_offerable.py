@@ -69,7 +69,7 @@ def test_queue_flow_no_starve_when_only_orphans_idle_and_work_offerable_to_busy(
                         "repo": "SimonBarnett/agentic_fomprep",
                         "task": "FR",
                         "id": "#56",
-                        "require_machine": "ce-priority-dev1",
+                        "require_machine": "redqueen",
                         "title": "WP0 live",
                         "labels": ["feature-request"],
                         "line": "FR SimonBarnett/agentic_fomprep#56",

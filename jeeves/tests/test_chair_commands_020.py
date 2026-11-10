@@ -21,7 +21,7 @@ CHANS = ["#bobiverse", "#marchhare", "#win-mpre8vi4u6u", "#flamingo"]
 
 GH_JEEVES_COMMANDS = {"help", "list", "status", "resync", "sweep", "ignore", "ignored", "unignore",
                       "focus", "unfocus", "recycle"}          # gh-Jeeves/src/jeeves/commands.py @ 8d76d9a
-OPS_ONLY = {"ignore", "unignore", "focus", "unfocus", "recycle", "resync", "sweep", "assign", "cleargiveup", "build", "installtest"}
+OPS_ONLY = {"ignore", "unignore", "focus", "unfocus", "recycle", "resync", "sweep", "assign", "cleargiveup", "pin", "unpin", "build", "installtest"}
 
 
 class FakeChair:
@@ -64,6 +64,8 @@ class FakeChair:
                "_handle_recycle_command", "_handle_bob_local_recycle_command", "_maybe_startworker",
                "_maybe_recycleseat",  # FR #5059 / #5120: handle_privmsg dispatches this after startworker
                "_maybe_cleargiveup",  # FR #5135
+               "_maybe_unpin",  # FR #6407
+               "_maybe_pin",  # FR #6407
                "_cc", "_ear_machine", "_account_of",
                "_principal", "_jobs", "_jobs_status_lines", "_whois_hint", "_cmd_trace", "_cmd_reply", "_privs", "_privs_skip_whois",
                "_on_channel_names", "_workers"):
@@ -119,7 +121,7 @@ def test_registry_is_valid_and_has_every_gh_jeeves_command():
     assert cc.validate_registry() == []
     names = {c.name for c in cc.COMMANDS}
     assert GH_JEEVES_COMMANDS <= names
-    assert {"filter", "ping", "cleargiveup"} <= names
+    assert {"filter", "ping", "cleargiveup", "pin", "unpin"} <= names
 
 
 def test_help_lists_every_command_for_owner_and_ear(chair):
@@ -181,6 +183,8 @@ def test_allowlist_env_is_focus_only(chair, monkeypatch):
     ("!resync", "resync: denied (simon or bob-* ops only)"),
     ("!sweep #bobiverse", "sweep: denied (simon or bob-* ops only)"),
     ("!cleargiveup o/a#1", "cleargiveup: denied (simon or bob-* ops only)"),
+    ("!unpin o/a#1", "unpin: denied (simon or bob-* ops only)"),
+    ("!pin o/a#1 ionos", "pin: denied (simon or bob-* ops only)"),
 ])
 def test_strangers_and_unverified_simon_are_denied_and_nothing_is_sent(chair, body, deny):
     for nick in ("mallory", "simon", "bob-nosuchbox"):
@@ -247,6 +251,17 @@ def test_ignore_family(chair, op):
     assert pm(chair, "mallory", "!ignored") == ["ignored (1):", "  o/a"]            # reads are open
     assert pm(chair, op, "!unignore o/a")[0] == "unignore: resumed o/a (new events only)"
     assert pm(chair, op, "!ignored") == ["ignored: (none)"]
+
+
+
+def test_pin_unpin_family(chair, op):
+    # FR #6407: ops may pin/unpin; non-ops denied above.
+    out = pm(chair, op, "!unpin o/a#1")
+    assert out[0].startswith("unpin:")
+    out = pm(chair, op, "!pin o/a#1 ionos")
+    assert out[0].startswith("pin:")
+    assert pm(chair, op, "!unpin")[0].startswith("unpin: usage")
+    assert pm(chair, op, "!pin o/a#1")[0].startswith("pin: usage")
 
 
 def test_cleargiveup_family(chair, op):

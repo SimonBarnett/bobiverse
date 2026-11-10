@@ -65,16 +65,20 @@ def test_fr2448_queue_flow_sustained_pin_only_finding(tmp_path, monkeypatch):
                 "v": 1,
                 "unaccepted": [
                     {
-                        "repo": "SimonBarnett/bobiverse",
+                        "repo": "SimonBarnett/a-search",
                         "task": "FR",
                         "id": "#1102",
-                        "require_machine": "ce-priority-dev1",
+                        "require_machine": "redqueen",
+                        "labels": ["needs-redqueen", "feature-request"],
+                        "body": "require_machine: redqueen\n",
                     },
                     {
                         "repo": "SimonBarnett/agentic_fomprep",
                         "task": "FR",
                         "id": "#56",
-                        "require_machine": "ce-priority-dev1",
+                        "require_machine": "redqueen",
+                        "labels": ["needs-redqueen", "feature-request"],
+                        "body": "require_machine: redqueen\n",
                     },
                 ],
                 "accepted": [],
@@ -97,7 +101,7 @@ def test_fr2448_queue_flow_sustained_pin_only_finding(tmp_path, monkeypatch):
                             {"nick": "marchhare-1", "state": "idle", "work": ""}
                         ]
                     },
-                    "ce-priority-dev1": {"worker_list": []},
+                    "redqueen": {"worker_list": []},
                 }
             }
         ),
@@ -139,10 +143,12 @@ def test_fr2448_queue_flow_clears_starve_state_when_queue_empty(tmp_path, monkey
                 "v": 1,
                 "unaccepted": [
                     {
-                        "repo": "SimonBarnett/bobiverse",
+                        "repo": "SimonBarnett/a-search",
                         "task": "FR",
                         "id": "#1",
-                        "require_machine": "ce-priority-dev1",
+                        "require_machine": "redqueen",
+                        "labels": ["needs-redqueen", "feature-request"],
+                        "body": "require_machine: redqueen\n",
                     }
                 ],
                 "accepted": [],
@@ -160,7 +166,7 @@ def test_fr2448_queue_flow_clears_starve_state_when_queue_empty(tmp_path, monkey
                             {"nick": "win-mpre8vi4u6u-1", "state": "idle", "work": ""}
                         ]
                     },
-                    "ce-priority-dev1": {"worker_list": []},
+                    "redqueen": {"worker_list": []},
                 }
             }
         ),

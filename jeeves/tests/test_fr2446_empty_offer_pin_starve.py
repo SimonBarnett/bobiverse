@@ -83,13 +83,17 @@ def test_fr2446_empty_offer_breakdown_counts_require_machine_and_ledger(_home):
                 1993,
                 1,
                 require_machine="ionos",
+                labels=["needs-ionos", "feature-request"],
+                body="require_machine: ionos\n",
             ),
             _row(
-                "SimonBarnett/bobiverse",
+                "SimonBarnett/a-search",
                 "FR",
                 1102,
                 2,
-                require_machine="ce-priority-dev1",
+                require_machine="redqueen",
+                labels=["needs-redqueen", "feature-request"],
+                body="require_machine: redqueen\n",
             ),
         ],
     )
@@ -120,6 +124,8 @@ def test_fr2446_heal_clears_when_all_pin_seats_gave_up(_home):
                 1993,
                 1,
                 require_machine="ionos",
+                labels=["needs-ionos", "feature-request"],
+                body="require_machine: ionos\n",
             ),
         ],
     )
@@ -128,7 +134,14 @@ def test_fr2446_heal_clears_when_all_pin_seats_gave_up(_home):
     live = gitclaim.live_seat_nicks(_home)
     blocked = gitclaim.require_machine_all_live_gave_up(
         _home,
-        {"repo": "SimonBarnett/bobiverse", "id": "#1993", "task": "FR", "require_machine": "ionos"},
+        {
+            "repo": "SimonBarnett/bobiverse",
+            "id": "#1993",
+            "task": "FR",
+            "require_machine": "ionos",
+            "labels": ["needs-ionos"],
+            "body": "require_machine: ionos\n",
+        },
         live,
     )
     assert set(blocked) == {"ionos-100", "ionos-200"}
@@ -137,7 +150,14 @@ def test_fr2446_heal_clears_when_all_pin_seats_gave_up(_home):
     assert gitclaim.ledger_clear_giveup(_home, "SimonBarnett/bobiverse", "#1993") == 0
     blocked2 = gitclaim.require_machine_all_live_gave_up(
         _home,
-        {"repo": "SimonBarnett/bobiverse", "id": "#1993", "task": "FR", "require_machine": "ionos"},
+        {
+            "repo": "SimonBarnett/bobiverse",
+            "id": "#1993",
+            "task": "FR",
+            "require_machine": "ionos",
+            "labels": ["needs-ionos"],
+            "body": "require_machine: ionos\n",
+        },
         live,
     )
     assert blocked2 == []
@@ -160,6 +180,8 @@ def test_fr2446_queue_flow_heals_and_empty_timer(tmp_path, monkeypatch, _home):
                 1993,
                 1,
                 require_machine="ionos",
+                labels=["needs-ionos", "feature-request"],
+                body="require_machine: ionos\n",
             ),
         ],
     )

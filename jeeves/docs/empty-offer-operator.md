@@ -12,7 +12,7 @@ Built by `gitclaim.summarize_empty_offer` / `format_empty_offer_detail` (shop re
 
 Typical pattern (incident 2026-10-05):
 
-1. Focused repos have few open FRs; resync leaves only **machine-pinned** rows (`require_machine=ionos`, `ce-priority-dev1`, …).
+1. Focused repos have few open FRs; resync leaves only **machine-pinned** rows (`require_machine=ionos`, `redqueen`, … (CE-PRIORITY-DEV1 retired FR #6407; use `!unpin` / `!pin`)).
 2. Pin machine seats **GIVEUP** the living FR → durable **seat-ledger** `giveup` blocks those nicks forever.
 3. Other fleet machines cannot take the pin; pin machine has no willing seat → every `!bored` looks empty.
 

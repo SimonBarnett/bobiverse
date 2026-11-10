@@ -71,7 +71,7 @@ def test_stamp_require_machine_keeps_any_unpin_despite_body_cue():
     gitclaim._stamp_require_machine(row)
     assert row["require_machine"] == "any"
     assert gitclaim.row_require_machine(row) == ""
-    # hard pin still wins over unpin
+    # FR #6407: #56 hard pin retired; operator any stays
     pinned = {
         "repo": "SimonBarnett/agentic_fomprep",
         "id": "#56",
@@ -82,7 +82,7 @@ def test_stamp_require_machine_keeps_any_unpin_despite_body_cue():
         "line": "",
     }
     gitclaim._stamp_require_machine(pinned)
-    assert pinned["require_machine"] == "ce-priority-dev1"
+    assert pinned["require_machine"] == "any"
 
 
 def test_purge_dead_mrb_accepted_moves_merged_to_done(tmp_path, monkeypatch):

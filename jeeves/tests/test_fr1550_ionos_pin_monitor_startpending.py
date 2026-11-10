@@ -58,13 +58,11 @@ def test_fr1559_title_infer_pin_pins_ionos():
 
 
 def test_fr1550_exact_issue_blob_pins_ionos():
+    # FR #4512: bobiverse text soft cues never pin; dedicated line / needs-ionos still do.
     mid = gitclaim.infer_require_machine(
-        title="idle seats + ungated offerable #1545/#1546/#1547 after ircJeeves StartPending",
-        body=(
-            "Invoke-JeevesMonitorCheck -Check idle_seats → findings: 8 idle seat(s) with 3 offerable. "
-            "chair-outbox shows GIT announces but no shop OFFER / !bored lines."
-        ),
-        labels=["via-intake"],
+        title="idle seats + ungated offerable after ircJeeves StartPending",
+        body="require_machine: ionos\nInvoke-JeevesMonitorCheck idle_seats / no shop OFFER.\n",
+        labels=["via-intake", "needs-ionos"],
         repo="SimonBarnett/bobiverse",
         ident="#1550",
     )

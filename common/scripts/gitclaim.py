@@ -1587,9 +1587,7 @@ _REQUIRE_MACHINE_NON_MACHINE = frozenset(
 # FR #1824 / #1843: a *dedicated body line* ``require_machine: ionos`` (or ``=``)
 # is an intentional pin — honor it. Inline evidence prose still must not pin.
 _REQUIRE_MACHINE_TITLE_CUES: tuple[tuple[re.Pattern[str], str], ...] = (
-    (re.compile(r"(?i)\bce-priority-dev1\b"), "ce-priority-dev1"),
-    (re.compile(r"(?i)\bce-priority-dev\b"), "ce-priority-dev1"),
-    (re.compile(r"(?i)\brequire_machine\s*=\s*ce-priority-dev1\b"), "ce-priority-dev1"),
+    # FR #6407: ce-priority-dev1 title cues retired (seat gone; Si 2026-11-10).
     (re.compile(r"(?i)\brequire_machine\s*=\s*ionos\b"), "ionos"),
     # FR #5030 / #4422-class: "without/missing require_machine=redqueen" offer-gap
     # meta titles must not self-pin the filing to redqueen.
@@ -1630,18 +1628,14 @@ _REQUIRE_MACHINE_TITLE_CUES: tuple[tuple[re.Pattern[str], str], ...] = (
 # FR #1824 / #4512: dedicated pin lines (MULTILINE). Intentional pins, not evidence prose.
 _REQUIRE_MACHINE_DEDICATED_PIN_CUES: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"(?im)^\s*[`*]*require_machine\s*[:=]\s*ionos\b"), "ionos"),
-    (re.compile(r"(?im)^\s*[`*]*require_machine\s*[:=]\s*ce-priority-dev1\b"), "ce-priority-dev1"),
-    (re.compile(r"(?im)^\s*[`*]*require_machine\s*[:=]\s*ce-priority-dev\b"), "ce-priority-dev1"),
+    # FR #6407: dedicated ce-priority-dev1 / ce-priority-dev pin lines retired.
     (re.compile(r"(?im)^\s*[`*]*require_machine\s*[:=]\s*flamingo\b"), "flamingo"),
     (re.compile(r"(?im)^\s*[`*]*require_machine\s*[:=]\s*marchhare\b"), "marchhare"),
     # FR #5030: dedicated body pin (was missing; body line alone did not stamp)
     (re.compile(r"(?im)^\s*[`*]*require_machine\s*[:=]\s*redqueen\b"), "redqueen"),
 )
 _REQUIRE_MACHINE_BODY_SOFT_CUES: tuple[tuple[re.Pattern[str], str], ...] = (
-    # agentic_fomprep WP0 live proof must run on DEV1
-    (re.compile(r"(?i)PRIORITY_WP0_INSTANCE\s*=\s*ce-priority-dev"), "ce-priority-dev1"),
-    (re.compile(r"(?i)\bWP0\s+live\b"), "ce-priority-dev1"),
-    (re.compile(r"(?i)\bAllowedComputer\s*[:=]\s*CE-PRIORITY-DEV1\b"), "ce-priority-dev1"),
+    # FR #6407: WP0 / AllowedComputer / PRIORITY_WP0_INSTANCE DEV1 soft cues retired.
     # FR #852: recycle/recompose live ircJeeves / prune chair queue on ionos
     (re.compile(r"(?i)\b(?:recycle|recompose)\b.{0,60}\b(?:irc)?jeeves\b"), "ionos"),
     (re.compile(r"(?i)\b(?:irc)?jeeves\b.{0,60}\b(?:recycle|recompose|recycled)\b"), "ionos"),
@@ -1731,10 +1725,8 @@ _BOBIVERSE_REPO_L = "simonbarnett/bobiverse"
 
 # Hard pins for known WP0 / machine-gated issues (FR #1093): survive empty title/body on stale rows.
 _REQUIRE_MACHINE_ISSUE_PINS: dict[tuple[str, str], str] = {
-    ("simonbarnett/agentic_fomprep", "#56"): "ce-priority-dev1",
-    # FR #4427 / ce-priority#16: Day Works living FR mis-offered to marchhare.
-    ("simonbarnett/ce-priority", "#16"): "ce-priority-dev1",
-    # FR #2312 / #1714: ionos orphan workers-map / nak-busy — body pin is past the
+    # FR #6407: agentic_fomprep#56 and ce-priority#16 DEV1 hard pins retired.
+    # FR #2312 / #1714: ionos orphan workers-map / nak-busy - body pin is past the
     # historic body[:500] truncate window; hard pin so marchhare never gets the offer.
     ("simonbarnett/bobiverse", "#1714"): "ionos",
     # FR #2512 / #2511: airc MSI re-pack + install/smoke on ionos (mis-offered to marchhare
@@ -1783,6 +1775,42 @@ _REQUIRE_MACHINE_ISSUE_UNPINS: set[tuple[str, str]] = {
     ("simonbarnett/bobiverse", "#4340"),
     ("simonbarnett/bobiverse", "#4427"),
 }
+
+# FR #6407: CE-PRIORITY-DEV1 seat retired; never stamp/infer this machine again.
+_RETIRED_REQUIRE_MACHINES: frozenset[str] = frozenset(
+    {"ce-priority-dev1", "ce-priority-dev", "dev1"}
+)
+
+
+def _is_retired_require_machine(mid: str) -> bool:
+    """True when mid is the retired CE-PRIORITY-DEV1 seat (FR #6407)."""
+    raw = str(mid or "").strip().lower()
+    if not raw:
+        return False
+    if raw in _RETIRED_REQUIRE_MACHINES:
+        return True
+    try:
+        folded = bobreport.fold_machine_id(bobreport.normalize_machine_id(raw) or raw)
+    except Exception:
+        folded = raw
+    return bool(folded) and folded in _RETIRED_REQUIRE_MACHINES
+
+
+def _rewrite_retired_require_machine_rows(doc: dict) -> int:
+    """Rewrite stamped ce-priority-dev1 -> any on load/resync (FR #6407). Returns count."""
+    n = 0
+    for bucket in ("unaccepted", "accepted"):
+        for row in doc.get(bucket) or []:
+            if not isinstance(row, dict):
+                continue
+            stamped = str(row.get("require_machine") or "").strip().lower()
+            if not stamped or stamped in {"*", "any", "none", "-"}:
+                continue
+            if _is_retired_require_machine(stamped):
+                row["require_machine"] = "any"
+                n += 1
+    return n
+
 
 # FR #2480 / #2471 / #2472: agentic_fomprep evergreen umbrella / MRB-home boards.
 # Labels mrb-home/umbrella/parent-fr should SKIP_FR (#271), but stale queue rows
@@ -1861,7 +1889,7 @@ def infer_require_machine(
     """Return a fleet machine id the job must run on, or '' (FR #587).
 
     Labels ``needs-<machine>`` / ``require_machine:<machine>`` win first, then
-    title/body/line cues (dedicated body ``require_machine:``/``=`` pin lines; WP0 live -> ce-priority-dev1; needs-ionos / chair-outbox /
+    title/body/line cues (dedicated body ``require_machine:``/``=`` pin lines; needs-ionos / chair-outbox /
     recycle|recompose|Sync/compose Jeeves / Sync-BobiverseFromRepo near Jeeves / prune queue.json / install(+smoke) on ionos -> ionos;
     FR #5030 a-hasresults-monitor / redeploy live workers|walrus / FilterLogEvents near a-search -> redqueen;
     FR #6229 hard-pin bobiverse#6144 -> marchhare (live MarchHare E2E);
@@ -1881,6 +1909,8 @@ def infer_require_machine(
         return ""
     pin = _REQUIRE_MACHINE_ISSUE_PINS.get((repo_l, id_l))
     if pin:
+        if _is_retired_require_machine(pin):
+            return ""
         return pin
     for lab in labs:
         s = str(lab or "").strip()
@@ -1888,6 +1918,8 @@ def infer_require_machine(
         if m:
             mid = bobreport.normalize_machine_id(m.group(1)) or m.group(1).strip().lower()
             if mid and mid not in _REQUIRE_MACHINE_NON_MACHINE:
+                if _is_retired_require_machine(mid):
+                    return ""
                 return mid
         # bare needs-ionos style already covered by cue regex below via label join
     body_blob = str(body or "")
@@ -1895,6 +1927,8 @@ def infer_require_machine(
     if repo_l == _BOBIVERSE_REPO_L:
         for rx, mid in _REQUIRE_MACHINE_DEDICATED_PIN_CUES:
             if rx.search(body_blob):
+                if _is_retired_require_machine(mid):
+                    return ""
                 return mid
         return ""
     # Title + labels + assign line: bare machine / require_machine= cues (FR #1508).
@@ -1907,24 +1941,24 @@ def infer_require_machine(
     )
     for rx, mid in _REQUIRE_MACHINE_TITLE_CUES:
         if rx.search(title_blob):
+            if _is_retired_require_machine(mid):
+                return ""
             return mid
     # Body: only strong WP0 / ionos-ops cues (not bare machine name mentions).
     for rx, mid in _REQUIRE_MACHINE_BODY_CUES:
         if rx.search(body_blob) or rx.search(title_blob):
+            if _is_retired_require_machine(mid):
+                return ""
             return mid
     # FR #4745: harvest-lesson / lesson(<book>) tips never inherit Day Works / UAT
     # auto-pin (docs/skill-only MRB). Explicit needs-<machine> labels and dedicated
     # require_machine lines already returned above.
     if is_harvest_lesson_pr(title=str(title or ""), labels=labs):
         return ""
-    # FR #4427: ce-priority Day Works living/umbrella FRs and UAT -> DEV1 only.
+    # FR #6407: Day Works / UAT auto-pin to ce-priority-dev1 retired (seat gone).
+    # Keep the repo/task helpers for docs and older tests that import them.
     if repo_l in _CE_PRIORITY_DAYWORKS_REPOS:
-        task_blob = f"{title_blob}\n{body_blob}"
-        labs_l = {str(x).strip().lower() for x in labs if str(x or "").strip()}
-        if "uat" in labs_l or re.search(r"(?i)\buat\b", title_blob):
-            return "ce-priority-dev1"
-        if _CE_PRIORITY_DAYWORKS_TASK_RE.search(task_blob):
-            return "ce-priority-dev1"
+        pass
     return ""
 
 
@@ -1951,6 +1985,8 @@ def row_require_machine(row: dict) -> str:
     # Operator/monitor unpin: "*" / "any" / "none" means do not re-infer from title/body
     # (titles that mention require_machine=ce-priority-dev1 were re-pinning forever).
     if stamped in {"*", "any", "none", "-"}:
+        return ""
+    if stamped and _is_retired_require_machine(stamped):
         return ""
     labels = row.get("labels") or ()
     if isinstance(labels, str):
@@ -3058,8 +3094,11 @@ def _stamp_require_machine(row: dict, claim: GitClaim | None = None) -> None:
         row["require_machine"] = "any"
         return
     stamped = str(row.get("require_machine") or "").strip().lower()
+    if stamped and _is_retired_require_machine(stamped):
+        stamped = "any"
+        row["require_machine"] = "any"
     if stamped in {"*", "any", "none", "-"}:
-        if hard:
+        if hard and not _is_retired_require_machine(hard):
             row["require_machine"] = hard
         return
     req = infer_require_machine(
@@ -3071,6 +3110,8 @@ def _stamp_require_machine(row: dict, claim: GitClaim | None = None) -> None:
     )
     # FR #4512: bobiverse — clear stale text-cue stamps when inference is empty.
     # FR #4745: harvest-lesson rows clear sticky DEV1 (or other) stamps the same way.
+    if req and _is_retired_require_machine(req):
+        req = ""
     if repo_l == _BOBIVERSE_REPO_L or harvest_lesson:
         if req:
             row["require_machine"] = req
@@ -3079,7 +3120,7 @@ def _stamp_require_machine(row: dict, claim: GitClaim | None = None) -> None:
         return
     if stamped:
         mid = bobreport.normalize_machine_id(stamped) or stamped
-        if mid and mid not in _REQUIRE_MACHINE_NON_MACHINE:
+        if mid and mid not in _REQUIRE_MACHINE_NON_MACHINE and not _is_retired_require_machine(mid):
             return
     if req:
         row["require_machine"] = req
@@ -4099,6 +4140,8 @@ def _read_queue_file(path: Path) -> dict:
     notes = doc.get("stand_down")
     if isinstance(notes, list):
         out["stand_down"] = [n for n in notes if isinstance(n, dict)]
+    # FR #6407: rewrite retired ce-priority-dev1 stamps to any on every load.
+    out["_retired_pin_rewrites"] = _rewrite_retired_require_machine_rows(out)
     return out
 
 
@@ -4134,7 +4177,14 @@ def _write_queue(path: Path, doc: dict) -> None:
 def _load_queue_unlocked(home: Path) -> dict:
     path = queue_path(home)
     if path.exists():
-        return _read_queue_file(path)
+        doc = _read_queue_file(path)
+        n = int(doc.pop("_retired_pin_rewrites", 0) or 0)
+        if n:
+            try:
+                _write_queue(path, doc)
+            except OSError:
+                pass
+        return doc
     root = _root(home)
     legacy_u = _read_legacy_unaccepted(root / LEGACY_UNACCEPTED)
     legacy_a = _read_legacy_accepted(root / LEGACY_ACCEPTED)
@@ -9082,6 +9132,115 @@ def parse_cleargiveup_cmd(body: str) -> tuple[str, str, str] | None:
     if not m:
         return None
     return m.group(1).strip().strip("{}"), f"#{int(m.group(2))}", (m.group(3) or "").strip()
+
+
+_UNPIN_CMD = re.compile(
+    r"^!unpin\s+(\S+?)#(\d+)\s*$",
+    re.IGNORECASE,
+)
+_PIN_CMD = re.compile(
+    r"^!pin\s+(\S+?)#(\d+)\s+([a-z0-9][a-z0-9_.-]*)\s*$",
+    re.IGNORECASE,
+)
+
+
+def parse_unpin_cmd(body: str) -> tuple[str, str] | None:
+    """``!unpin owner/repo#N`` -> (repo, '#N') (FR #6407)."""
+    m = _UNPIN_CMD.match((body or "").strip())
+    if not m:
+        return None
+    return m.group(1).strip().strip("{}"), f"#{int(m.group(2))}"
+
+
+def parse_pin_cmd(body: str) -> tuple[str, str, str] | None:
+    """``!pin owner/repo#N <machine>`` -> (repo, '#N', machine) (FR #6407)."""
+    m = _PIN_CMD.match((body or "").strip())
+    if not m:
+        return None
+    mid = (m.group(3) or "").strip().lower()
+    if not mid or mid in _REQUIRE_MACHINE_NON_MACHINE or _is_retired_require_machine(mid):
+        return None
+    return m.group(1).strip().strip("{}"), f"#{int(m.group(2))}", mid
+
+
+def set_require_machine_job(
+    home: Path, repo: str, ident: str, machine: str
+) -> dict:
+    """FR #6407: set require_machine on matching unaccepted/accepted rows under lock.
+
+    ``machine`` of any/none/*/ - is an operator unpin (survives cue re-inference).
+    A real machine id is an operator pin (kept by _stamp_require_machine).
+    Remaining hard ``_REQUIRE_MACHINE_ISSUE_PINS`` still win over operator any
+    (documented in jeeves-commands); retired ce-priority-dev1 hard pins are gone.
+    """
+    repo_c = canonical_queue_repo((repo or "").strip()) or (repo or "").strip()
+    ident_n = _norm_row_id(ident)
+    raw = str(machine or "").strip().lower()
+    if raw in {"*", "any", "none", "-"}:
+        stamp = "any"
+    else:
+        if _is_retired_require_machine(raw):
+            return {
+                "ok": False,
+                "error": "retired_machine",
+                "queue_rows": 0,
+                "repo": repo_c,
+                "id": ident_n,
+                "require_machine": "",
+            }
+        mid = bobreport.normalize_machine_id(raw) or raw
+        if not mid or mid in _REQUIRE_MACHINE_NON_MACHINE:
+            return {
+                "ok": False,
+                "error": "bad_machine",
+                "queue_rows": 0,
+                "repo": repo_c,
+                "id": ident_n,
+                "require_machine": "",
+            }
+        if _is_retired_require_machine(mid):
+            return {
+                "ok": False,
+                "error": "retired_machine",
+                "queue_rows": 0,
+                "repo": repo_c,
+                "id": ident_n,
+                "require_machine": "",
+            }
+        stamp = mid
+    rows_n = 0
+    try:
+        with _lock(home):
+            doc = _load_queue_unlocked(home)
+            for bucket in ("unaccepted", "accepted"):
+                for row in list(doc.get(bucket) or []):
+                    if not isinstance(row, dict):
+                        continue
+                    if _repo_key(str(row.get("repo") or "")) != _repo_key(repo_c):
+                        continue
+                    if _norm_row_id(row.get("id")) != ident_n:
+                        continue
+                    row["require_machine"] = stamp
+                    rows_n += 1
+            if rows_n:
+                _write_queue(queue_path(home), doc)
+    except (TimeoutError, OSError):
+        return {
+            "ok": False,
+            "error": "lock",
+            "queue_rows": 0,
+            "repo": repo_c,
+            "id": ident_n,
+            "require_machine": stamp,
+        }
+    return {
+        "ok": True,
+        "queue_rows": rows_n,
+        "repo": repo_c,
+        "id": ident_n,
+        "require_machine": stamp,
+    }
+
 
 
 def ledger_clear_giveup_entry(
