@@ -6,6 +6,7 @@ Never fabricate a zero: missing sources become ``tokens=unknown``.
 from __future__ import annotations
 
 import json
+import os
 import re
 from pathlib import Path
 from typing import Any, Mapping, Optional
@@ -161,6 +162,13 @@ def enrich_done_payload(
     return f"{cleaned} {suffix}".rstrip()
 
 
+def _cache_read_tokens(raw: Any) -> Optional[int]:
+    """Cached-input tokens from an OpenCode ``cache`` shape (``{read, write}``) or a plain int."""
+    if isinstance(raw, dict):
+        return _int_or_none(raw.get("read"))
+    return _int_or_none(raw)
+
+
 def _from_token_map(
     raw: Mapping[str, Any],
     *,
@@ -204,9 +212,11 @@ def _from_token_map(
         if "cachedReadTokens" in raw
         else _int_or_none(raw.get("cache_read_tokens"))
         if "cache_read_tokens" in raw
+        else _int_or_none(raw.get("cache_read"))
+        if "cache_read" in raw
         else _int_or_none(raw.get("cached_tokens"))
         if "cached_tokens" in raw
-        else _int_or_none(raw.get("cache"))
+        else _cache_read_tokens(raw.get("cache"))
         if "cache" in raw
         else None
     )
@@ -275,6 +285,138 @@ def read_opencode_usage(path: Path | str | None) -> dict[str, Any]:
         return _from_token_map(tokens, model=str(model), default_provider="opencode")
     usage = doc.get("usage") if isinstance(doc.get("usage"), dict) else doc
     return _from_token_map(usage, model=str(model), default_provider="opencode")
+
+
+def opencode_data_dir(env: Mapping[str, str] | None = None) -> Path:
+    """OpenCode data directory: ``$XDG_DATA_HOME/opencode`` else ``~/.local/share/opencode``.
+
+    FR #6420: OpenCode (v1.14+) stores its SQLite database here. ``auth.json``
+    also lives here, but this helper only returns the directory; nothing reads auth.
+    """
+    env = dict(os.environ if env is None else env)
+    custom = str(env.get("BOB_OPENCODE_DATA_DIR") or "").strip()
+    if custom:
+        return Path(custom)
+    xdg = str(env.get("XDG_DATA_HOME") or "").strip()
+    if xdg:
+        return Path(xdg) / "opencode"
+    return Path.home() / ".local" / "share" / "opencode"
+
+
+def _opencode_model_from_json(raw: Any) -> str:
+    """``providerID/id`` from an OpenCode session ``model`` JSON (or string)."""
+    doc = raw
+    if isinstance(doc, str):
+        try:
+            doc = json.loads(doc)
+        except Exception:
+            return str(doc or "").strip()
+    if not isinstance(doc, dict):
+        return ""
+    mid = str(doc.get("id") or "").strip()
+    prov = str(doc.get("providerID") or doc.get("provider") or "").strip()
+    if not mid:
+        return ""
+    if "/" in mid:
+        return mid
+    if prov:
+        return f"{prov}/{mid}"
+    return mid
+
+
+def _norm_oc_dir(path: str) -> str:
+    """Normalize a directory for case/slash-insensitive OpenCode session matching."""
+    raw = str(path or "").strip()
+    if not raw:
+        return ""
+    try:
+        return os.path.normcase(os.path.normpath(raw))
+    except Exception:
+        return raw.lower()
+
+
+def _oc_dir_variants(path: str) -> set[str]:
+    """Normalized forms of a job worktree path (raw + filesystem-resolved)."""
+    raw = str(path or "").strip()
+    if not raw:
+        return set()
+    out = {_norm_oc_dir(raw)}
+    try:
+        out.add(_norm_oc_dir(str(Path(raw).resolve())))
+    except Exception:
+        pass
+    out.discard("")
+    return out
+
+
+def read_opencode_sqlite_usage(
+    data_dir: Path | str | None = None,
+    *,
+    directory: str = "",
+) -> dict[str, Any]:
+    """Per-job OpenCode token totals from ``opencode.db`` (read-only, no secrets).
+
+    FR #6420: sums the ``session`` aggregate token columns for every session whose
+    ``directory`` matches *directory* (the job worktree). No matching session, a
+    missing/unreadable db, or an all-empty result becomes ``tokens=unknown`` so the
+    DONE line and ledger never carry invented numbers.
+    """
+    want = _oc_dir_variants(directory)
+    if not want:
+        return _empty(unknown=True)
+    base = Path(data_dir) if data_dir is not None else opencode_data_dir()
+    db = base / "opencode.db"
+    if not db.is_file():
+        return _empty(unknown=True)
+    import sqlite3
+
+    try:
+        db_abs = db.resolve()
+    except Exception:
+        db_abs = db
+    try:
+        uri = db_abs.as_uri() + "?mode=ro"
+    except ValueError:
+        uri = f"file:{db_abs.as_posix()}?mode=ro"
+    try:
+        con = sqlite3.connect(uri, uri=True)
+    except sqlite3.Error:
+        return _empty(unknown=True)
+    tin = 0
+    tout = 0
+    tc = 0
+    model = ""
+    matched = False
+    try:
+        try:
+            rows = con.execute(
+                "SELECT model, tokens_input, tokens_output, tokens_cache_read, directory "
+                "FROM session"
+            ).fetchall()
+        except sqlite3.Error:
+            return _empty(unknown=True)
+        for model_raw, t_in, t_out, t_cr, sess_dir in rows:
+            if _norm_oc_dir(str(sess_dir or "")) not in want:
+                continue
+            matched = True
+            tin += int(t_in or 0)
+            tout += int(t_out or 0)
+            tc += int(t_cr or 0)
+            if not model:
+                model = _opencode_model_from_json(model_raw)
+    finally:
+        con.close()
+    if not matched:
+        return _empty(unknown=True)
+    out = _empty(unknown=False)
+    if model:
+        out["model"] = model
+    out["tokens_in"] = tin
+    out["tokens_out"] = tout
+    out["tokens_cached"] = tc
+    out["tokens_unknown"] = False
+    out["tokens_total"] = tin + tout
+    return out
 
 
 def read_aider_usage(path: Path | str | None) -> dict[str, Any]:
