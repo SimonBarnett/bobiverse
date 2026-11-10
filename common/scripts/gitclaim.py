@@ -1436,6 +1436,147 @@ def comment_is_repo_owner(payload: dict, comment: dict) -> bool:
     return assoc == "OWNER"
 
 
+def stamp_coderabbit_from_webhook(home: Path, event: str, payload: dict) -> dict:
+    """FR #6434: stamp MRB queue rows from CodeRabbit webhook surfaces.
+
+    Handles ``pull_request_review`` (ready/failed/skipped), ``issue_comment``
+    (skip walkthrough), and ``check_run`` (CodeRabbit completed check).
+    Returns ``{stamped, repo, id, reason}`` (empty stamped when nothing matched).
+    """
+    out: dict = {"stamped": "", "repo": "", "id": "", "reason": ""}
+    if not isinstance(payload, dict):
+        return out
+    ev = (event or "").strip().lower()
+    if ev not in ("pull_request_review", "issue_comment", "check_run"):
+        return out
+    try:
+        import fuel_chain
+    except Exception:
+        return out
+    if not fuel_chain.stage_enabled("coderabbit"):
+        return out
+
+    repo = ""
+    with contextlib.suppress(Exception):
+        repo = str(_payload_repo(payload) or "").strip()
+    if not repo:
+        rep = payload.get("repository") if isinstance(payload.get("repository"), dict) else {}
+        repo = str(rep.get("full_name") or "").strip()
+    if not repo or not REPO_RE.fullmatch(repo):
+        return out
+
+    num = 0
+    head = ""
+    reviews: list = []
+    comments: list = []
+    checks: list = []
+
+    if ev == "pull_request_review":
+        review = payload.get("review") if isinstance(payload.get("review"), dict) else {}
+        pr = payload.get("pull_request") if isinstance(payload.get("pull_request"), dict) else {}
+        try:
+            num = int(pr.get("number") or 0)
+        except (TypeError, ValueError):
+            num = 0
+        head = str(((pr.get("head") or {}) if isinstance(pr.get("head"), dict) else {}).get("sha") or "")
+        head = head or str(review.get("commit_id") or "")
+        if review:
+            reviews = [review]
+    elif ev == "issue_comment":
+        if str(payload.get("action") or "").strip().lower() not in ("created", "edited"):
+            return out
+        issue = payload.get("issue") if isinstance(payload.get("issue"), dict) else {}
+        if not isinstance(issue.get("pull_request"), dict):
+            return out
+        try:
+            num = int(issue.get("number") or 0)
+        except (TypeError, ValueError):
+            num = 0
+        comment = payload.get("comment") if isinstance(payload.get("comment"), dict) else {}
+        if comment:
+            comments = [comment]
+    elif ev == "check_run":
+        cr = payload.get("check_run") if isinstance(payload.get("check_run"), dict) else {}
+        name = str(cr.get("name") or "")
+        if not fuel_chain.is_coderabbit_check_name(name):
+            return out
+        status = str(cr.get("status") or "").strip().lower()
+        if status not in ("", "completed"):
+            return out
+        head = str(cr.get("head_sha") or "")
+        prs = cr.get("pull_requests") if isinstance(cr.get("pull_requests"), list) else []
+        if prs and isinstance(prs[0], dict):
+            try:
+                num = int(prs[0].get("number") or 0)
+            except (TypeError, ValueError):
+                num = 0
+        checks = [cr]
+
+    if num <= 0:
+        return out
+    ident = f"#{num}"
+    out["repo"] = repo
+    out["id"] = ident
+
+    state = fuel_chain.coderabbit_state_from_surfaces(
+        reviews=reviews, checks=checks, comments=comments, head_sha=head
+    )
+    stamp = ""
+    if state.get("skipped"):
+        why = str(state.get("skip_why") or "skipped").strip() or "skipped"
+        stamp = why if why.startswith("skipped") else f"skipped:{why}"
+    elif state.get("failed"):
+        stamp = "failed"
+    elif state.get("ready"):
+        stamp = "ready"
+    else:
+        return out
+
+    import time as _time
+
+    now_f = _time.time()
+    stamped_any = False
+    try:
+        with _lock(home):
+            try:
+                doc = _load_queue_unlocked(home)
+            except (OSError, ValueError):
+                return out
+            for bucket in ("unaccepted", "accepted"):
+                rows = list(doc.get(bucket) or [])
+                for idx, row in enumerate(rows):
+                    if not isinstance(row, dict):
+                        continue
+                    if str(row.get("repo") or "") != repo:
+                        continue
+                    if _norm_row_id(row.get("id")) != _norm_row_id(ident):
+                        continue
+                    if _canon_task(row) != "MRB":
+                        continue
+                    if head:
+                        row["head_sha"] = head
+                        row["coderabbit_head_sha"] = head.lower()
+                    row["coderabbit"] = stamp
+                    row["coderabbit_reason"] = stamp if stamp != "ready" else "ready:webhook"
+                    paths = row.get("changed_files") or row.get("files") or row.get("paths")
+                    row["review"] = fuel_chain.review_mode_for(stamp, paths if isinstance(paths, (list, tuple)) else None)
+                    if "coderabbit_wait_since" not in row:
+                        row["coderabbit_wait_since"] = float(now_f)
+                    rows[idx] = row
+                    stamped_any = True
+                doc[bucket] = rows
+            if stamped_any:
+                _write_queue(queue_path(home), doc)
+    except Exception:
+        return out
+    if stamped_any:
+        out["stamped"] = stamp
+        out["reason"] = stamp
+        with contextlib.suppress(Exception):
+            _log_queue_purge(f"INFO coderabbit stamp={stamp} {repo}{ident} via={ev}")
+    return out
+
+
 def clear_needs_human_from_owner_issue_comment(
     home: Path, event: str, payload: dict
 ) -> bool:
@@ -4008,11 +4149,13 @@ def _coerce_row(row: dict) -> dict | None:
         out["closed_by"] = str(row.get("closed_by"))
     if row.get("cancel_reason"):
         out["cancel_reason"] = str(row.get("cancel_reason"))[:200]
-    # FR #5317 / #5865: CodeRabbit wait stamps must survive queue reload.
+    # FR #5317 / #5865 / #6434: CodeRabbit wait stamps must survive queue reload.
     if row.get("coderabbit"):
         out["coderabbit"] = str(row.get("coderabbit"))
     if row.get("review"):
         out["review"] = str(row.get("review"))
+    if row.get("coderabbit_reason"):
+        out["coderabbit_reason"] = str(row.get("coderabbit_reason"))[:200]
     if row.get("coderabbit_head_sha"):
         out["coderabbit_head_sha"] = str(row.get("coderabbit_head_sha"))
     # FR #6211 / #5865: current PR tip SHA must survive reload so CodeRabbit
