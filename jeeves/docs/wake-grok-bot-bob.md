@@ -6,7 +6,7 @@ On new ticket closures Jeeves detects closes and wakes Bob. Primary transport (F
 
 | Hop | Where | What |
 |-----|-------|------|
-| 1. Detect | Jeeves chair (`ChairJobs`, every `TICKET_CLOSURE_S` = 120s) | `ticket_closure.check` polls GitHub Issues API for focused repos (closed issues + PRs since `poll_cursor`). Fixture `JEEVES_TICKET_CLOSURE_FIXTURE` is tests-only. |
+| 1. Detect | Jeeves chair (`ChairJobs`, every `TICKET_CLOSURE_S` = 120s) | `ticket_closure.check` polls GitHub Issues API for focused repos (closed issues + PRs since per-repo `poll_cursors`, paginated; legacy `poll_cursor` is the max). Fixture `JEEVES_TICKET_CLOSURE_FIXTURE` is tests-only. |
 | 2. Pending | digest ops home | New closes land in `monitor-ticket-closure.json` `pending` (not `seen`). State also holds `last_poll_at`, `last_wake_at`, `pending_count`, `wake_transport`. |
 | 3. Wake | same chair cycle when URL set | HTTPS POST to `JEEVES_TICKET_CLOSURE_WAKE_URL` / `JEEVES_BOB_WAKE_URL` with brief from `wake_brief.py`. Secret from chair process env `JEEVES_TICKET_CLOSURE_WAKE_SECRET` / `JEEVES_BOB_WAKE_SECRET` only (never logged or written to state). |
 | 4. Retry | transport failure | Failed POST stays `pending` with exponential backoff (`wake_unreachable` / `bob_unreachable` / `no_wake_url`). Do **not** mark `seen` on first failure. |
