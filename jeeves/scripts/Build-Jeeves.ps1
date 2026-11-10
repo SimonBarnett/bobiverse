@@ -44,7 +44,8 @@ $hidden = @(
     # FR #6391: ticket-closure live source + Bob wake webhook (monitor package).
     'ticket_closure', 'wake_brief', 'wake_grok_bot_bob',
     # FR #6439: stall HTTPS callbacks (reuse wake URL) + detectors/filer used by chair_health.
-    'stall_callbacks', 'stall_detectors', 'stall_filer'
+    'stall_callbacks', 'stall_detectors', 'stall_filer',
+    'jeeves_settings', 'jeeves_settings_auth'
 )
 $hiddenArgs = @(); foreach ($h in $hidden) { $hiddenArgs += @('--hidden-import', $h) }
 

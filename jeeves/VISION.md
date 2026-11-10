@@ -76,7 +76,7 @@ LOCKED
 
 ## Screens
 
-Operator surfaces today: IRC commands, chair logs, webhook health, and the MONITORING agent. FR #6436 locks an **internal-only appliance settings foundation** (schema + LAN gate + secret-safe API helpers + docs for `jeeves.ntsa.uk`); the browser UI, AD/CredMan login, NSSM apply, idle restart, and read-only status page are child FRs. Never expose settings via `bob.ntsa.uk` or public Cloudflare.
+Operator surfaces today: IRC commands, chair logs, webhook health, and the MONITORING agent. FR #6436 locks an **internal-only appliance settings foundation** (schema + LAN gate + secret-safe API helpers + docs for `jeeves.ntsa.uk`); auth/sessions (FR #6441) are locked; the browser UI (#6440), NSSM apply (#6442), idle restart and read-only status (#6443) remain child FRs. Never expose settings via `bob.ntsa.uk` or public Cloudflare.
 
 | id | file | state |
 |----|------|-------|
@@ -92,11 +92,11 @@ Operator surfaces today: IRC commands, chair logs, webhook health, and the MONIT
 - Hotpatch: never touch Ergo / `BobIrcd`; restart only `ircJeeves`
 - MONITORING agent reports via intake and never `!assign` / queue edits
 - FR #6436 appliance settings foundation: schema covers inventoried Jeeves-read settings (gap test); reject non-RFC1918 sources; secrets return only set/unset; validate + backup + audit + rollback; docs for internal DNS `jeeves.ntsa.uk` (never public / never via bob.ntsa.uk); unused = no behaviour change (no server on import)
+- FR #6441 appliance auth: LAN + Windows/AD LogonUser or CredMan `Jeeves/ApplianceAdmin`; session token hashes only; authed get/put/rollback; never log/return passwords; unused = no server on import
 
 ## UNKNOWN
 
-- Child FR: HTTP listener + schema-driven web UI bound to LAN / `jeeves.ntsa.uk`
-- Child FR: AD / Windows auth or CredMan local admin login for the settings UI
+- Child FR: HTTP listener + schema-driven web UI bound to LAN / `jeeves.ntsa.uk` (wires FR #6441 auth sessions)
 - Child FR: migrate NSSM-only env settings into chair-owned config file + apply path
 - Child FR: restart-when-idle for restart-required settings; read-only status (version/SHA, uptime, queue, seats, fuel)
 - Exact digest ghost-nick TTL vs live_seat_nicks under heavy report lag beyond FR #5088 exact-seat give-up
