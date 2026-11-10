@@ -15,7 +15,7 @@ param(
 $ErrorActionPreference = 'Stop'
 $appcmd = Join-Path $env:SystemRoot 'system32\inetsrv\appcmd.exe'
 if (-not (Test-Path -LiteralPath $appcmd)) {
-    Write-Host 'WARN appcmd.exe missing — skip IIS webhook install'
+    Write-Host 'WARN appcmd.exe missing --- skip IIS webhook install'
     return
 }
 
