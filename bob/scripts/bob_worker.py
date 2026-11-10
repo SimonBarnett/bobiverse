@@ -724,6 +724,43 @@ def capture_opencode_model_env_at_start(env: Optional[dict] = None) -> Optional[
     return _OPENCODE_MODEL_ENV_AT_START
 
 
+def format_opencode_model_unavailable_error(
+    text: str,
+    *,
+    model: str = "",
+) -> Optional[str]:
+    """FR #6429: clear region/model-unavailable message; never invent a substitute model.
+
+    Returns a human-facing error string when *text* looks like a missing/region-blocked
+    model, else ``None`` (caller keeps the original failure text).
+    """
+    raw = str(text or "")
+    low = raw.lower()
+    cues = (
+        "not available in your region",
+        "unavailable in your region",
+        "region",
+        "model not found",
+        "model unavailable",
+        "unknown model",
+        "provider_model_not_found",
+        "no such model",
+    )
+    if not any(c in low for c in cues):
+        return None
+    mid = str(model or "").strip() or "(configured OpenCode model)"
+    if "region" in low:
+        return (
+            "OpenCode model unavailable: %s (set OpenCode console region to Global "
+            "for paid V4 Pro, or pick a model available in this region). "
+            "No substitute model was selected."
+        ) % mid
+    return (
+        "OpenCode model unavailable: %s. No substitute model was selected."
+    ) % mid
+
+
+
 def _strip_jsonc(text: str) -> str:
     """Strip // and /* */ comments and trailing commas for OpenCode JSONC configs."""
     out: list[str] = []
@@ -2175,6 +2212,15 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             r"            $failEntry = @{ pid = $PID; ts = (Get-Date -Format o); model = $model; text = $failText } | ConvertTo-Json -Compress",
             r"            Add-Content -Path $fuelLog -Value $failEntry -ErrorAction SilentlyContinue",
             r"        }",
+            r"    }",
+            # FR #6429: clear region/model-unavailable (no silent fail, no substitute model).
+            r"    $regionCue = 'not available in your region|unavailable in your region|model not found|model unavailable|unknown model|provider_model_not_found|no such model'",
+            r"    if ($exitCode -ne 0 -and -not $hitLimit -and -not $timedOut -and ($scan -match $regionCue)) {",
+            r"        $availMsg = ('OpenCode model unavailable: ' + $model + ' (set OpenCode console region to Global for paid V4 Pro, or pick a model available in this region). No substitute model was selected.')",
+            r"        Write-Output $availMsg",
+            r"        [Console]::Error.WriteLine($availMsg)",
+            r"        $availEntry = @{ pid = $PID; ts = (Get-Date -Format o); model = $model; text = $availMsg } | ConvertTo-Json -Compress",
+            r"        Add-Content -Path $fuelLog -Value $availEntry -ErrorAction SilentlyContinue",
             r"    }",
             r"    if ($proc) { try { $proc.Dispose() } catch { } }",
             r"    } finally { Write-OpencodeTurnMarker 'turn_ended' $turnN }",

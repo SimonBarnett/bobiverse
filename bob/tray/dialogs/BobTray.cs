@@ -45,7 +45,15 @@ namespace BobDialogs
         static extern bool CreateProcessW(string app, StringBuilder cmd, IntPtr pa, IntPtr ta, bool inherit, int flags, IntPtr env, string cwd, ref STARTUPINFO si, out PROCESS_INFORMATION pi);
         [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr h);
 
+        // FR #6429: CREATE_NEW_CONSOLE | CREATE_UNICODE_ENVIRONMENT when passing a child-only env block.
+        const int CreateNewConsole = 0x00000010;
+        const int CreateUnicodeEnvironment = 0x00000400;
+
         public const int MaxWorkers = 2;   // t815u / FR #2667: hard AGENT-seat cap (plan/maintenance uncapped)
+        // FR #6429: tray OpenCode free/paid slot defaults (overridden by models.opencodeFree / opencodePaid).
+        public const string DefaultOpencodeFreeModel = "opencode/deepseek-v4.1-flash-free";
+        public const string DefaultOpencodePaidModel = "opencode-go/deepseek-v4-pro";
+
         static readonly Regex SeatName = new Regex("^bob-worker(-[0-9a-f]+)?$", RegexOptions.IgnoreCase);
         static readonly Regex ModeArg = new Regex(@"--mode[=\s]+(agent|plan|monitor|maintenance)\b", RegexOptions.IgnoreCase);
 
@@ -337,6 +345,12 @@ namespace BobDialogs
         // agent is "" or "auto" for Grok then Cursor then OpenCode. grok/cursor/opencode never substitute.
         public static int Launch(string root, string mode, string machine, string agent, out string error)
         {
+            return Launch(root, mode, machine, agent, null, out error);
+        }
+
+        // FR #6429: childEnv is applied only to the new seat process (never the tray / tray-env.json).
+        public static int Launch(string root, string mode, string machine, string agent, IDictionary childEnv, out string error)
+        {
             LaunchCalls++;
             error = "";
             string refusal = CapRefusal(mode);
@@ -392,10 +406,169 @@ namespace BobDialogs
             STARTUPINFO si = new STARTUPINFO(); si.cb = Marshal.SizeOf(si);
             si.lpTitle = title;
             PROCESS_INFORMATION pi;
-            if (!CreateProcessW(run, cmd, IntPtr.Zero, IntPtr.Zero, false, 0x10 /* CREATE_NEW_CONSOLE */, IntPtr.Zero, wd, ref si, out pi))
-            { error = "start failed: " + new Win32Exception(Marshal.GetLastWin32Error()).Message; return 0; }
+            IntPtr envBlock = IntPtr.Zero;
+            int flags = CreateNewConsole;
+            try
+            {
+                if (childEnv != null && childEnv.Count > 0)
+                {
+                    envBlock = BuildChildEnvironmentBlock(childEnv);
+                    flags |= CreateUnicodeEnvironment;
+                }
+                if (!CreateProcessW(run, cmd, IntPtr.Zero, IntPtr.Zero, false, flags, envBlock, wd, ref si, out pi))
+                { error = "start failed: " + new Win32Exception(Marshal.GetLastWin32Error()).Message; return 0; }
+            }
+            finally
+            {
+                if (envBlock != IntPtr.Zero) Marshal.FreeHGlobal(envBlock);
+            }
             CloseHandle(pi.hThread); CloseHandle(pi.hProcess);
             return pi.dwProcessId;
+        }
+
+        // FR #6429: Unicode environment block for CreateProcessW (inherit + overrides; child-only).
+        static IntPtr BuildChildEnvironmentBlock(IDictionary overrides)
+        {
+            SortedDictionary<string, string> env = new SortedDictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            foreach (DictionaryEntry e in Environment.GetEnvironmentVariables())
+                env[Convert.ToString(e.Key)] = Convert.ToString(e.Value);
+            if (overrides != null)
+            {
+                foreach (DictionaryEntry e in overrides)
+                {
+                    string k = Convert.ToString(e.Key);
+                    if (string.IsNullOrEmpty(k)) continue;
+                    if (e.Value == null) env.Remove(k);
+                    else env[k] = Convert.ToString(e.Value);
+                }
+            }
+            StringBuilder sb = new StringBuilder();
+            foreach (KeyValuePair<string, string> kv in env)
+                sb.Append(kv.Key).Append('=').Append(kv.Value ?? "").Append('\0');
+            sb.Append('\0');
+            return Marshal.StringToHGlobalUni(sb.ToString());
+        }
+
+        public static string ResolveOpencodeSlotModel(string root, string slot)
+        {
+            string freeDef = DefaultOpencodeFreeModel;
+            string paidDef = DefaultOpencodePaidModel;
+            string free = freeDef;
+            string paid = paidDef;
+            TryReadOpencodeModels(root, ref free, ref paid);
+            if (string.Equals(slot, "paid", StringComparison.OrdinalIgnoreCase))
+                return string.IsNullOrWhiteSpace(paid) ? paidDef : paid.Trim();
+            return string.IsNullOrWhiteSpace(free) ? freeDef : free.Trim();
+        }
+
+        static void TryReadOpencodeModels(string root, ref string free, ref string paid)
+        {
+            foreach (string path in OpencodeModelsConfigPaths(root))
+            {
+                try
+                {
+                    if (!File.Exists(path)) continue;
+                    Dictionary<string, object> doc = Common.Dict(Common.ParseJson(File.ReadAllText(path, Encoding.UTF8)));
+                    if (doc == null) continue;
+                    Dictionary<string, object> models = Common.Dict(doc.ContainsKey("models") ? doc["models"] : null);
+                    if (models == null) continue;
+                    string f = Common.Str(models, "opencodeFree");
+                    string p = Common.Str(models, "opencodePaid");
+                    if (f.Length > 0) free = f;
+                    if (p.Length > 0) paid = p;
+                }
+                catch { }
+            }
+        }
+
+        static IEnumerable<string> OpencodeModelsConfigPaths(string root)
+        {
+            string local = Path.Combine(Environment.GetEnvironmentVariable("LOCALAPPDATA") ?? Path.GetTempPath(), "Bobiverse", "tray-models.json");
+            yield return local;
+            if (!string.IsNullOrEmpty(root))
+            {
+                yield return Path.Combine(root, "tray", "config", "default.json");
+                yield return Path.Combine(root, "bob", "tray", "config", "default.json");
+                yield return Path.Combine(root, "config", "default.json");
+            }
+        }
+
+        public static void RememberOpencodeSlotLaunch(string slot, int pid, string model)
+        {
+            try
+            {
+                string dir = Path.Combine(Environment.GetEnvironmentVariable("LOCALAPPDATA") ?? Path.GetTempPath(), "Bobiverse");
+                Directory.CreateDirectory(dir);
+                string path = Path.Combine(dir, "opencode-slot-launches.json");
+                Dictionary<string, object> doc = new Dictionary<string, object>(StringComparer.OrdinalIgnoreCase);
+                if (File.Exists(path))
+                {
+                    try { doc = Common.Dict(Common.ParseJson(File.ReadAllText(path, Encoding.UTF8))) ?? doc; }
+                    catch { }
+                }
+                string key = string.Equals(slot, "paid", StringComparison.OrdinalIgnoreCase) ? "paid" : "free";
+                doc[key] = new Dictionary<string, object> {
+                    { "pid", pid },
+                    { "model", model ?? "" },
+                    { "ts", DateTime.UtcNow.ToString("o") }
+                };
+                File.WriteAllText(path, SimpleJsonObject(doc), new UTF8Encoding(false));
+            }
+            catch { }
+        }
+
+        public static bool OpencodeSlotRunning(string slot, out string model)
+        {
+            model = "";
+            try
+            {
+                string path = Path.Combine(Environment.GetEnvironmentVariable("LOCALAPPDATA") ?? Path.GetTempPath(), "Bobiverse", "opencode-slot-launches.json");
+                if (!File.Exists(path)) return false;
+                Dictionary<string, object> doc = Common.Dict(Common.ParseJson(File.ReadAllText(path, Encoding.UTF8)));
+                if (doc == null) return false;
+                string key = string.Equals(slot, "paid", StringComparison.OrdinalIgnoreCase) ? "paid" : "free";
+                Dictionary<string, object> row = Common.Dict(doc.ContainsKey(key) ? doc[key] : null);
+                if (row == null) return false;
+                int pid = 0;
+                try { pid = Convert.ToInt32(row.ContainsKey("pid") ? row["pid"] : 0); } catch { return false; }
+                if (pid <= 0) return false;
+                model = Common.Str(row, "model");
+                try { Process.GetProcessById(pid); return true; }
+                catch { return false; }
+            }
+            catch { return false; }
+        }
+
+        static string SimpleJsonObject(Dictionary<string, object> doc)
+        {
+            // Tiny writer for slot state only (no secrets). Prefer ASCII keys.
+            StringBuilder sb = new StringBuilder();
+            sb.Append('{');
+            bool first = true;
+            foreach (KeyValuePair<string, object> kv in doc)
+            {
+                if (!first) sb.Append(',');
+                first = false;
+                sb.Append('"').Append(kv.Key.Replace("\\", "\\\\").Replace("\"", "\\\"")).Append("\":");
+                Dictionary<string, object> nested = kv.Value as Dictionary<string, object>;
+                if (nested != null)
+                {
+                    sb.Append('{');
+                    bool nf = true;
+                    foreach (KeyValuePair<string, object> n in nested)
+                    {
+                        if (!nf) sb.Append(',');
+                        nf = false;
+                        sb.Append('"').Append(n.Key.Replace("\\", "\\\\").Replace("\"", "\\\"")).Append("\":");
+                        if (n.Value is int || n.Value is long) sb.Append(Convert.ToString(n.Value, System.Globalization.CultureInfo.InvariantCulture));
+                        else sb.Append('"').Append(Convert.ToString(n.Value).Replace("\\", "\\\\").Replace("\"", "\\\"")).Append('"');
+                    }
+                    sb.Append('}');
+                }
+                else sb.Append('"').Append(Convert.ToString(kv.Value).Replace("\\", "\\\\").Replace("\"", "\\\"")).Append('"');
+            }
+            sb.Append('}');
+            return sb.ToString();
         }
 
         // Menu probe. The UI thread never waits. A slow fuel read is not exhaustion:
@@ -882,10 +1055,11 @@ namespace BobDialogs
         {
             parent.DropDownItems.Clear();
             // FR #6301: start entries carry no fuel/quota state text.
+            // FR #6429: OpenCode is a free/paid model submenu (replaces the FR #6301 flat OpenCode row).
             AddAgentChoice(parent, "auto", "Automatic - Grok, then Cursor, then OpenCode", true, record);
             AddAgentChoice(parent, "grok", "Grok", true, record);
             AddAgentChoice(parent, "cursor", "Cursor", true, record);
-            AddAgentChoice(parent, "opencode", "OpenCode", true, record);
+            AddOpencodeModelSubmenu(parent, true, record);
         }
 
         void AddAgentChoice(ToolStripMenuItem parent, string id, string text, bool enabled, bool record)
@@ -898,16 +1072,49 @@ namespace BobDialogs
             if (record) MenuItems.Add(text);
         }
 
+        void AddOpencodeModelSubmenu(ToolStripMenuItem parent, bool enabled, bool record)
+        {
+            // FR #6429: Agents > OpenCode > Start free/paid model (child-only BOB_OPENCODE_MODEL).
+            ToolStripMenuItem oc = new ToolStripMenuItem("OpenCode");
+            oc.Enabled = enabled;
+            string freeModel = WorkerLauncher.ResolveOpencodeSlotModel(root, "free");
+            string paidModel = WorkerLauncher.ResolveOpencodeSlotModel(root, "paid");
+            string freeRun; bool freeAlive = WorkerLauncher.OpencodeSlotRunning("free", out freeRun);
+            string paidRun; bool paidAlive = WorkerLauncher.OpencodeSlotRunning("paid", out paidRun);
+            string freeText = "Start free model (" + freeModel + ")";
+            if (freeAlive) freeText += " [running]";
+            freeText += " [default]";
+            string paidText = "Start paid model (" + paidModel + ")";
+            if (paidAlive) paidText += " [running]";
+            AddAgentChoice(oc, "opencode|free", freeText, enabled, record);
+            AddAgentChoice(oc, "opencode|paid", paidText, enabled, record);
+            parent.DropDownItems.Add(oc);
+            if (record) MenuItems.Add("OpenCode");
+        }
+
         void OnAgentChoiceClick(object sender, EventArgs e)
         {
             ToolStripMenuItem mi = sender as ToolStripMenuItem;
             string id = mi == null || mi.Tag == null ? "" : Convert.ToString(mi.Tag);
             if (id.Length == 0) return;
-            // FR #6301: OpenCode model submenu dropped (OpenCode has /model). Start by agent id only.
+            // FR #6429: opencode|free / opencode|paid start with a per-child BOB_OPENCODE_MODEL.
+            // Never Environment.SetEnvironmentVariable on the tray process for the slot model.
+            string slot = "";
             int pipe = id.IndexOf('|');
-            if (pipe > 0) id = id.Substring(0, pipe);
-            if (string.Equals(id, "auto", StringComparison.OrdinalIgnoreCase)) StartWorker("agent", "");
-            else StartWorker("agent", id);
+            if (pipe > 0)
+            {
+                slot = id.Substring(pipe + 1).Trim().ToLowerInvariant();
+                id = id.Substring(0, pipe);
+            }
+            if (string.Equals(id, "auto", StringComparison.OrdinalIgnoreCase)) StartWorker("agent", "", null, "");
+            else if (string.Equals(id, "opencode", StringComparison.OrdinalIgnoreCase) && (slot == "free" || slot == "paid"))
+            {
+                string model = WorkerLauncher.ResolveOpencodeSlotModel(root, slot);
+                Hashtable env = new Hashtable(StringComparer.OrdinalIgnoreCase);
+                env["BOB_OPENCODE_MODEL"] = model;
+                StartWorker("agent", "opencode", env, slot);
+            }
+            else StartWorker("agent", id, null, "");
         }
 
         int agentListBusy;
@@ -959,7 +1166,8 @@ namespace BobDialogs
                     enabled = false;
                 AddAgentChoice(parent, "grok", "Grok", enabled, false);
                 AddAgentChoice(parent, "cursor", "Cursor", enabled, false);
-                AddAgentChoice(parent, "opencode", "OpenCode", enabled, false);
+                // FR #6429: OpenCode free/paid submenu (replaces flat OpenCode row from FR #6301).
+                AddOpencodeModelSubmenu(parent, enabled, false);
                 return;
             }
             parent.DropDownItems.Clear();
@@ -970,7 +1178,12 @@ namespace BobDialogs
                 if (label.Length == 0) label = id;
                 bool available = Common.Bool(row, "available");
                 if (id.Length == 0) continue;
-                // FR #6301: no OpenCode models submenu (OpenCode has /model).
+                // FR #6429: OpenCode becomes the free/paid submenu; other agents stay single-entry.
+                if (string.Equals(id, "opencode", StringComparison.OrdinalIgnoreCase))
+                {
+                    AddOpencodeModelSubmenu(parent, available, false);
+                    continue;
+                }
                 AddAgentChoice(parent, id, label, available, false);
             }
         }
@@ -995,11 +1208,36 @@ namespace BobDialogs
 
         void StartWorker(string mode, string agent)
         {
+            StartWorker(mode, agent, null, "");
+        }
+
+        void StartWorker(string mode, string agent, IDictionary childEnv, string opencodeSlot)
+        {
             ApplyEngineEnv();
             string err; string mid = machine.Length > 0 ? machine : Common.MachineId();
-            int pid = WorkerLauncher.Launch(root, mode, mid, agent ?? "", out err);
+            // FR #6429: childEnv carries BOB_OPENCODE_MODEL for one seat only (never tray process / tray-env.json).
+            int pid = WorkerLauncher.Launch(root, mode, mid, agent ?? "", childEnv, out err);
             if (pid == 0 && err.Length > 0)
-                try { MessageBox.Show(err, "Bobiverse", MessageBoxButtons.OK, err.StartsWith("start failed") || err.StartsWith("bob-worker.exe") ? MessageBoxIcon.Warning : MessageBoxIcon.Information); } catch { }
+            {
+                string shown = err;
+                if (IsOpencodeModelUnavailableMessage(err))
+                    shown = "OpenCode model unavailable (check region Global for paid V4 Pro, or that the model id exists). " + err;
+                try { MessageBox.Show(shown, "Bobiverse", MessageBoxButtons.OK, err.StartsWith("start failed") || err.StartsWith("bob-worker.exe") || IsOpencodeModelUnavailableMessage(err) ? MessageBoxIcon.Warning : MessageBoxIcon.Information); } catch { }
+                return;
+            }
+            if (pid > 0 && (opencodeSlot == "free" || opencodeSlot == "paid") && childEnv != null && childEnv.Contains("BOB_OPENCODE_MODEL"))
+                WorkerLauncher.RememberOpencodeSlotLaunch(opencodeSlot, pid, Convert.ToString(childEnv["BOB_OPENCODE_MODEL"]));
+        }
+
+        static bool IsOpencodeModelUnavailableMessage(string err)
+        {
+            if (string.IsNullOrEmpty(err)) return false;
+            string e = err.ToLowerInvariant();
+            return e.IndexOf("region", StringComparison.Ordinal) >= 0
+                || e.IndexOf("model unavailable", StringComparison.Ordinal) >= 0
+                || e.IndexOf("model not found", StringComparison.Ordinal) >= 0
+                || e.IndexOf("provider_model", StringComparison.Ordinal) >= 0
+                || e.IndexOf("not available in your region", StringComparison.Ordinal) >= 0;
         }
 
 

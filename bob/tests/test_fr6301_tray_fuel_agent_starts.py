@@ -150,19 +150,25 @@ def test_fr6301_agent_start_entries_have_no_fuel_text():
 
 
 
-def test_fr6301_opencode_no_models_submenu_on_agent_rows():
-    """Owner dropped model-choice; OpenCode has /model. No tray models list."""
+def test_fr6301_opencode_models_submenu_replaced_by_fr6429():
+    """FR #6429 replaces the FR #6301 flat OpenCode row with a free/paid submenu.
+
+    Fuel list still has no per-row models array; tray never SetEnvironmentVariable
+    for BOB_OPENCODE_MODEL on the tray process (child-only CreateProcessW env).
+    """
     worker = WORKER.read_text(encoding="utf-8")
     chunk = worker[worker.index("def list_worker_agents") : worker.index("def list_worker_agents") + 3500]
     assert 'row["models"]' not in chunk
     assert "opencode_model_menu_rows(fuel)" not in chunk
     tray = TRAY_CS.read_text(encoding="utf-8")
-    apply = tray[tray.index("void ApplyAgentList") : tray.index("void ApplyAgentList") + 2500]
-    assert "opencode|" not in apply
-    assert "Default model" not in apply
-    assert "BOB_OPENCODE_MODEL" not in tray
-    click = tray[tray.index("void OnAgentChoiceClick") : tray.index("void OnAgentChoiceClick") + 900]
+    assert "AddOpencodeModelSubmenu" in tray
+    assert "opencode|free" in tray
+    assert "opencode|paid" in tray
+    click = tray[tray.index("void OnAgentChoiceClick") : tray.index("void OnAgentChoiceClick") + 1200]
     assert "SetEnvironmentVariable(\"BOB_OPENCODE_MODEL\"" not in click
+    assert "BOB_OPENCODE_MODEL" in click
+    assert "CreateUnicodeEnvironment" in tray
+    assert "BuildChildEnvironmentBlock" in tray
 
 
 def test_fr6301_reset_label_from_epoch_compact():
