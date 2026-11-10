@@ -880,6 +880,8 @@ def opencode_job_refs_match(got_task: str, got_ref: str, want_key: str) -> bool:
 
     Accepts exact `TASK owner/repo#N`, short `TASK #N`, and repo-qualified
     `TASK repo#N` when the issue number matches the current job key.
+    Leaf match is exact (`bobiverse#N` vs `owner/bobiverse#N`), not a bare
+    `endswith` substring (MRB #6473: `search#N` must not match `a-search#N`).
     """
     want = " ".join((want_key or "").split())
     if not want:
@@ -901,14 +903,10 @@ def opencode_job_refs_match(got_task: str, got_ref: str, want_key: str) -> bool:
     # Short #N form written by models.
     if gref == f"#{gn}":
         return True
-    gl = gref.lower()
-    wl = wref.lower()
-    # bobiverse#N vs SimonBarnett/bobiverse#N (either direction).
-    if wl.endswith("/" + gl) or wl.endswith(gl):
-        return True
-    if gl.endswith("/" + wl) or gl.endswith(wl):
-        return True
-    return False
+    # Exact leaf (last path segment including #N), either direction.
+    gleaf = gref.lower().rsplit("/", 1)[-1]
+    wleaf = wref.lower().rsplit("/", 1)[-1]
+    return gleaf == wleaf
 
 
 def opencode_outbox_path(worktree: str | Path) -> Path:

@@ -64,6 +64,22 @@ def test_wrong_job_done_refused_as_job_key_mismatch():
     ) == "malformed"
 
 
+def test_mrb6473_leaf_match_rejects_endswith_substring():
+    """MRB #6473: bare endswith must not treat search#N as a-search#N."""
+    key = "FR SimonBarnett/a-search#6468"
+    assert c.opencode_job_refs_match("FR", "a-search#6468", key)
+    assert c.opencode_job_refs_match("FR", "#6468", key)
+    assert not c.opencode_job_refs_match("FR", "search#6468", key)
+    assert not c.opencode_job_refs_match(
+        "FR", "iverse#6468", "FR SimonBarnett/bobiverse#6468"
+    )
+    assert c.opencode_outbox_refuse_reason(
+        "DONE FR search#6468 https://x",
+        job_key=key,
+        shop=SHOP,
+    ) == "job-key mismatch"
+
+
 def test_may_send_job_outbox_sends_6468_done_and_logs_mismatch(tmp_path: Path):
     logs: list[str] = []
     bored = bw.BoredEmitter(send=lambda: True, log=logs.append)
