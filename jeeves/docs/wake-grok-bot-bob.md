@@ -2,11 +2,12 @@
 
 On new ticket closures Jeeves detects closes and wakes Bob. Primary transport (FR #6391) is an **HTTPS POST** to a configured Bob wake webhook. Legacy GrokBotApi send remains only when wake is forced without a URL (tests / desktop spike).
 
-## Flow (FR #6391)
+## Flow (FR #6391 / #6405)
 
 | Hop | Where | What |
 |-----|-------|------|
-| 1. Detect | Jeeves chair (`ChairJobs`, every `TICKET_CLOSURE_S` = 120s) | `ticket_closure.check` polls GitHub Issues API for focused repos (closed issues + PRs since `poll_cursor`). Fixture `JEEVES_TICKET_CLOSURE_FIXTURE` is tests-only. |
+| 1. Detect (event-first) | BobCallback `POST /bob/v1/git` | `issues`/`pull_request` closed|merged on focused repos call `ticket_closure.ingest_github_webhook` (same pending/seen/wake as the poller). |
+| 1b. Detect (backup poll) | Jeeves chair (`ChairJobs`, every `TICKET_CLOSURE_S` default **900s** / 15 min; override `JEEVES_TICKET_CLOSURE_S`) | `ticket_closure.check` polls GitHub Issues API since `poll_cursor`. Needs a token from `gh_filer` (`config/github.token`) or `GITHUB_TOKEN`/`GH_TOKEN`. No token → rate-limited WARN + `ticket_closure_token_source=none` (never logs the token). Fixture is tests-only. |
 | 2. Pending | digest ops home | New closes land in `monitor-ticket-closure.json` `pending` (not `seen`). State also holds `last_poll_at`, `last_wake_at`, `pending_count`, `wake_transport`. |
 | 3. Wake | same chair cycle when URL set | HTTPS POST to `JEEVES_TICKET_CLOSURE_WAKE_URL` / `JEEVES_BOB_WAKE_URL` with brief from `wake_brief.py`. Secret from chair process env `JEEVES_TICKET_CLOSURE_WAKE_SECRET` / `JEEVES_BOB_WAKE_SECRET` only (never logged or written to state). |
 | 4. Retry | transport failure | Failed POST stays `pending` with exponential backoff (`wake_unreachable` / `bob_unreachable` / `no_wake_url`). Do **not** mark `seen` on first failure. |
