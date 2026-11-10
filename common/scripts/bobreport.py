@@ -2983,6 +2983,11 @@ def apply_git_webhook(home: Path, event: str, payload: dict) -> GitWebhookOutcom
             mrb_merge_on_green.handle_check_run_event(home, payload)
         except Exception:  # noqa: BLE001
             pass
+        # FR #6434: CodeRabbit completed check → stamp MRB coderabbit=ready/skipped.
+        try:
+            gitclaim.stamp_coderabbit_from_webhook(home, ev, payload)
+        except Exception:  # noqa: BLE001
+            pass
         gab.stamp_git_webhook(home)
         cr = payload.get("check_run") if isinstance(payload.get("check_run"), dict) else {}
         conclusion = str((cr or {}).get("conclusion") or "").strip().lower()
@@ -3038,6 +3043,17 @@ def apply_git_webhook(home: Path, event: str, payload: dict) -> GitWebhookOutcom
             import copilot_dispatch
 
             copilot_dispatch.handle_issue_comment(home, payload)
+        except Exception:  # noqa: BLE001
+            pass
+        # FR #6434: CodeRabbit skip walkthrough on issue_comment.
+        try:
+            gitclaim.stamp_coderabbit_from_webhook(home, ev, payload)
+        except Exception:  # noqa: BLE001
+            pass
+    if ev == "pull_request_review":
+        # FR #6434: CodeRabbit review → stamp ready/failed/skipped on MRB rows.
+        try:
+            gitclaim.stamp_coderabbit_from_webhook(home, ev, payload)
         except Exception:  # noqa: BLE001
             pass
     try:
