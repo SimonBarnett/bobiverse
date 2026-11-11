@@ -2493,11 +2493,14 @@ class Client:
             / "build-work"
             / f"{version}-{job_path.stem}"
         )
+        # FR #6585: runner appends progress JSONL; watcher posts to #bobiverse live.
+        progress_path = work_dir / "progress.jsonl"
         cmd = [
             py, "-u", str(script), "--job", str(job_path), "--checkout",
             "--lock-file", str(lock_path), "--result-file", str(result_path),
             "--local-machine", local_machine,
             "--work-dir", str(work_dir),
+            "--progress-file", str(progress_path),
         ]
         logf = open(log_path, "a", encoding="utf-8")
         flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
@@ -2519,8 +2522,40 @@ class Client:
 
         def _watch() -> None:
             rc = None
+            progress_off = 0
             try:
-                rc = proc.wait()
+                # FR #6585: while the child runs, drain progress.jsonl into #bobiverse.
+                while True:
+                    try:
+                        rows = bobiverse_build.read_progress_jsonl(
+                            progress_path, after_offset=progress_off
+                        )
+                        if rows:
+                            try:
+                                progress_off = progress_path.stat().st_size
+                            except Exception:
+                                pass
+                            for row in rows:
+                                ln = str(row.get("line") or "").strip()
+                                if ln:
+                                    _say(ln)
+                    except Exception:
+                        pass
+                    rc = proc.poll()
+                    if rc is not None:
+                        break
+                    time.sleep(2.0)
+                # Final drain after exit (catch last lines).
+                try:
+                    rows = bobiverse_build.read_progress_jsonl(
+                        progress_path, after_offset=progress_off
+                    )
+                    for row in rows:
+                        ln = str(row.get("line") or "").strip()
+                        if ln:
+                            _say(ln)
+                except Exception:
+                    pass
             finally:
                 try:
                     logf.close()

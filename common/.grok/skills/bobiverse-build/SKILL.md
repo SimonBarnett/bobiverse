@@ -28,3 +28,4 @@ Canonical playbook: jeeves/.grok/skills/bobiverse-build/SKILL.md and docs/bobive
 ## Harvested lessons (intake)
 
 - BUILD suite command-not-found (Win 9009 / is not recognized): environment failure, no release-blocker comments; prepend BOBIVERSE_PYTHON dir+Scripts to PATH. FR #6490 / PR #6493.
+- Live `#bobiverse` progress during BUILD (FR #6585): runner writes `progress.jsonl`; ear watcher posts `BUILD progress ... version=... id=...` (steps, suite counts, solo reruns, 10m heartbeat). Rate-limit ~30s; redact secrets; sink failure never fails the build; terminal BUILD ok/fail unchanged.
