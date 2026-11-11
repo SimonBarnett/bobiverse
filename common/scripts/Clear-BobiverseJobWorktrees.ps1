@@ -144,18 +144,39 @@ function Test-IsJobWorktreePath([string]$Path, [string]$RootFull, [string]$KeepF
     return $false
 }
 
+function Test-BobiverseSeatOnlyDirt([string]$PorcelainLine) {
+    <#
+      FR #6563: .bobiverse-seat (and seat scratch under .bob/) are markers, not
+      "local work". Counting them as dirty made Force+StaleSeatHours never reclaim
+      abandoned seat trees (release-blocker test_fr3641_force_reclaims_stale_seat_marker).
+    #>
+    if (-not $PorcelainLine) { return $true }
+    $rel = [string]$PorcelainLine
+    if ($rel.Length -ge 3) { $rel = $rel.Substring(3).Trim() }
+    if ($rel -match ' -> ') { $rel = ($rel -split ' -> ', 2)[-1].Trim() }
+    $rel = $rel.Trim().Trim('"')
+    if (-not $rel) { return $true }
+    if ($rel -eq '.bobiverse-seat') { return $true }
+    if ($rel -eq '.bob' -or $rel -like '.bob/*' -or $rel -like '.bob\*') { return $true }
+    return $false
+}
+
 function Test-WorktreeHasLocalWork {
     <#
       FR #4988: true when the worktree has uncommitted changes or unpushed commits.
       Clear must keep those trees even under low-disk / -Force reclaim.
+      FR #6563: ignore seat-marker-only dirt (.bobiverse-seat / .bob/).
     #>
     param([Parameter(Mandatory)][string]$Path)
     if (-not $Path -or -not (Test-Path -LiteralPath $Path)) { return $false }
     $gitDir = Join-Path $Path '.git'
     if (-not (Test-Path -LiteralPath $gitDir)) { return $false }
     try {
-        $porcelain = & git -C $Path status --porcelain 2>$null
-        if ($LASTEXITCODE -eq 0 -and $porcelain) { return $true }
+        $porcelain = @(& git -C $Path status --porcelain 2>$null | ForEach-Object { "$_" })
+        if ($LASTEXITCODE -eq 0) {
+            $meaningful = @($porcelain | Where-Object { -not (Test-BobiverseSeatOnlyDirt $_) })
+            if ($meaningful.Count -gt 0) { return $true }
+        }
     } catch { }
     try {
         $unpushed = & git -C $Path rev-list --count '@{u}..HEAD' 2>$null
@@ -242,13 +263,17 @@ function Test-WorktreeProtected {
     }
     # Busy tool heuristic: CommandLine cites this path (cwd is not exposed via CIM).
     # FR #3698: skip this process ($PID) - Clear / test harness CommandLines embed paths.
+    # FR #6563: cache the tool-process list once per Clear run (Force walks many trees).
     $selfPid = [int]$PID
-    $procs = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
-        Where-Object {
-            $_.Name -match '(?i)^(git|python|pyinstaller|py|pwsh|powershell)\.exe$' -and
-            [int]$_.ProcessId -ne $selfPid
-        })
-    foreach ($proc in $procs) {
+    if ($null -eq $script:ClearToolProcs) {
+        $script:ClearToolProcs = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
+            Where-Object {
+                $_.Name -match '(?i)^(git|python|pyinstaller|py|pwsh|powershell)\.exe$' -and
+                [int]$_.ProcessId -ne $selfPid
+            })
+    }
+    foreach ($proc in @($script:ClearToolProcs)) {
+        if ([int]$proc.ProcessId -eq $selfPid) { continue }
         $cl = [string]$proc.CommandLine
         if ($cl -and $cl.IndexOf($full, [StringComparison]::OrdinalIgnoreCase) -ge 0) {
             return $true
@@ -310,6 +335,8 @@ if ($KeepPath) {
 
 # FR #3641: expose StaleSeatHours to Test-WorktreeProtected.
 $script:ClearStaleSeatHours = [double]$StaleSeatHours
+# FR #6563: reset cached tool-process list for this invocation.
+$script:ClearToolProcs = $null
 
 $freeGb = Get-FreeGB $rootFull
 Write-Host ("FreeGB={0} MinFreeGB={1} RepoRoot={2} KeepPath={3} StaleSeatHours={4}" -f $freeGb, $MinFreeGB, $rootFull, $keepFull, $StaleSeatHours)
