@@ -74,7 +74,7 @@ Before the first live `!build` on the recipe machine (bobiverse: **flamingo**), 
 | Suite Python on PATH | Put `Python312` and `Scripts` on the ircBob service PATH so suite cmds that start with bare `python` resolve | `suite_python` --- `python` via PATH |
 | GitHub token | `<ai root>\bob\config\github.token` (one line), ACL readable by **SYSTEM** and **Administrators** only; or `GH_TOKEN` on the service | `github_token` --- source tag only (`file:...` / `env:GH_TOKEN`), never the value |
 
-Also checked: `recipe` (parse `.bobiverse/build.yml`), `work_dir` / `cache_dir` (creatable under ProgramData Bobiverse build-work), `pack_tools` (`powershell` + `gh` on PATH).
+Also checked: `recipe` (parse `.bobiverse/build.yml`), `work_dir` / `cache_dir` (creatable under `BOBIVERSE_BUILD_WORK(_DIR)` or ProgramData Bobiverse build-work; FR #6655 also checks `work_dir_free`), `pack_tools` (`powershell` + `gh` on PATH).
 
 Exit 0 only when every item is ok; otherwise non-zero with the missing item named.
 
