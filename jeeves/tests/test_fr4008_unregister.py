@@ -152,6 +152,8 @@ def _make_agent(tmp_path, members):
 
     agent._nick_modes_in_channel = Client._nick_modes_in_channel.__get__(agent, Client)
     agent._register_gate_allowed = Client._register_gate_allowed.__get__(agent, Client)
+    # FR #5349 / #6508: register path checks chair presence before ChanServ REGISTER.
+    agent._chair_present_in_shop = Client._chair_present_in_shop.__get__(agent, Client)
     agent._handle_register_command = Client._handle_register_command.__get__(agent, Client)
     agent._handle_unregister_command = Client._handle_unregister_command.__get__(agent, Client)
     return agent, sent, whispers
@@ -226,7 +228,9 @@ def test_register_gate_uses_modes_not_operators_txt(tmp_path: Path, monkeypatch)
     whispers.clear()
     sent.clear()
     assert agent._handle_register_command("simon", "!register newt") is True
-    assert any("REGISTER #newt" in x for x in sent)
+    # FR #5349: op clears the gate; chair not yet in #newt so JOIN then wait (no REGISTER yet).
+    assert any(x == "JOIN #newt" for x in sent)
+    assert not any("REGISTER #newt" in x for x in sent)
 
 
 def test_fr5161_stale_list_does_not_readd_tombstoned_shop(tmp_path: Path):
