@@ -15,6 +15,9 @@ def _isolated_profiles(monkeypatch, tmp_path_factory):
     fake = tmp_path_factory.mktemp("profiles")
     monkeypatch.setattr(bob_home, "_profile", lambda: fake / "me")
     monkeypatch.setattr(bob_home, "_admin_profile", lambda: fake / "Administrator")
+    # FR #4315 / #6523: !build isolated_suite_env sets BOB_HOME_NO_MIGRATE=1; clear it
+    # so these tests can assert migrate / no-legacy behaviour.
+    monkeypatch.delenv("BOB_HOME_NO_MIGRATE", raising=False)
 
 
 from repo_layout import ROOT  # t773u: split repo; legacy flat paths resolve per service

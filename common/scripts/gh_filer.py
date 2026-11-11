@@ -44,10 +44,18 @@ def _token_candidate_paths() -> list[Path]:
         pass
     # #53: the jeeves install owns the webhook receiver: <InstallRoot>\config\github.token
     # next to scripts\ (works for any InstallRoot, not just <ai root>\jeeves).
-    paths.insert(0, Path(__file__).resolve().parent.parent / "config" / "github.token")
+    install_token = Path(__file__).resolve().parent.parent / "config" / "github.token"
+    paths.insert(0, install_token)
     cfg_env = (os.environ.get("BOB_CONFIG_DIR") or "").strip()
     if cfg_env:
-        paths.insert(0, Path(cfg_env).expanduser() / "github.token")
+        cfg_token = Path(cfg_env).expanduser() / "github.token"
+        # FR #6523: isolated_suite_env always sets BOB_CONFIG_DIR to an empty iso
+        # config dir. Only prepend when the file exists so install-root stays first
+        # for pins / LocalSystem fallback; existing override files still win.
+        if cfg_token.is_file():
+            paths.insert(0, cfg_token)
+        else:
+            paths.append(cfg_token)
     digest = (os.environ.get("BOB_DIGEST_HOME") or "").strip()
     if digest:
         paths.append(Path(digest) / "github.token")

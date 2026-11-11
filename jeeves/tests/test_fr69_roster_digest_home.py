@@ -15,11 +15,13 @@ import shop_listen
 
 
 def _split_homes(tmp_path: Path, monkeypatch):
-    chair = tmp_path / "chair"          # ~/.jeeves stand-in
+    # Name must be .jeeves so fleet_digest_home treats it as chair (FR #69 / #6523).
+    chair = tmp_path / ".jeeves"
     digest = tmp_path / "digest"        # ~/.bobiverse stand-in
     chair.mkdir()
     digest.mkdir()
     monkeypatch.setenv("BOB_DIGEST_HOME", str(digest))
+    monkeypatch.setenv("BOB_HOME", str(chair))
     # Stale chair roster (the bug): only the Ergo host, missing fleet shops
     (chair / "registered-machines.json").write_text(
         json.dumps({"v": 1, "machines": ["win-mpre8vi4u6u"], "source": "stale-migrate"}),
@@ -79,10 +81,12 @@ def test_shop_listen_post_activity_returns_204_with_split_homes(tmp_path, monkey
     assert bobreport.is_roster_machine(digest, "ce-priority-dev1")
 
 
-def test_chair_migration_skips_digest_only_roster_file(tmp_path):
+def test_chair_migration_skips_digest_only_roster_file(tmp_path, monkeypatch):
     """Chair home must not receive a second registered-machines.json that can go stale."""
     import bob_home
 
+    # FR #4315 / #6523: isolated_suite_env sets BOB_HOME_NO_MIGRATE=1
+    monkeypatch.delenv("BOB_HOME_NO_MIGRATE", raising=False)
     old = tmp_path / ".agentic-irc-jeeves"
     old.mkdir()
     (old / "operators.txt").write_text("simon\n", encoding="utf-8")
