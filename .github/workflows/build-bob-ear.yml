@@ -1,9 +1,11 @@
 # Isolated bob-ear.exe build. Not a release, MSI, install, or service start.
 # Build-BobEar.ps1 owns the PyInstaller command and the --help smoke check.
 # FR #6576: behavior_source_sha pins the pool-monitor + bobiverse_build files to
-# 22961fba20bcd8ce126670132a580c7232593c32 (main tip after FR #6558 merge
-# 2da1eb06d0c99cd3384d6bf1bb21faa830526ba5 / PR #6575, plus later tip merges that
-# still share those behavior blobs). History: d563eca / PR #6252 was the prior pin.
+# d48ff017c00fb8e3f4335f9d22df8d76b79ff39a (main tip re-pinned by FR #6671 after the
+# FR #6655 / #6654 / #6647 / #6632 / #6621 build + tray behavior merges). Older baseline:
+# 22961fba20bcd8ce126670132a580c7232593c32 after FR #6558 merge
+# 2da1eb06d0c99cd3384d6bf1bb21faa830526ba5 / PR #6575 (history comment).
+# History: d563eca / PR #6252 was the prior pin.
 # Packaging commits that only touch this workflow/manifest/tests/helpers stay ahead.
 name: build-bob-ear
 
@@ -39,13 +41,13 @@ jobs:
           . .\common\scripts\Bobiverse-Common.ps1
           Install-BobiversePythonDeps -Python (Get-Command python).Source
 
-      - name: Confirm behavior files match 22961fba (FR #6558 / #6576)
+      - name: Confirm behavior files match d48ff017 (FR #6671 / #6576)
         env:
           WORKFLOW_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
           $head = (git rev-parse HEAD).Trim()
           if ($head -ne $env:WORKFLOW_COMMIT) { throw "checkout $head is not $env:WORKFLOW_COMMIT" }
-          $expected = "22961fba20bcd8ce126670132a580c7232593c32"
+          $expected = "d48ff017c00fb8e3f4335f9d22df8d76b79ff39a"
           git fetch --no-tags --depth=1 origin $expected
           git diff --exit-code $expected -- `
             common/scripts/bobreport.py `
@@ -76,7 +78,7 @@ jobs:
           Copy-Item -LiteralPath $exe -Destination (Join-Path $stage "bob-ear.exe")
           Copy-Item -LiteralPath "$root\bob\docs\deploy-pool-monitor-manifest.txt" -Destination (Join-Path $stage "deploy-pool-monitor-manifest.txt")
           @(
-            "behavior_source_sha=22961fba20bcd8ce126670132a580c7232593c32"
+            "behavior_source_sha=d48ff017c00fb8e3f4335f9d22df8d76b79ff39a"
             "workflow_commit=$($env:WORKFLOW_COMMIT)"
             "exe_name=bob-ear.exe"
             "exe_sha256=$hash"

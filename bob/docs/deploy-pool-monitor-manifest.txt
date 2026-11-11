@@ -1,5 +1,6 @@
 # Pool-monitor deploy pin
-# Behavior source sha: 22961fba20bcd8ce126670132a580c7232593c32
+# Behavior source sha: d48ff017c00fb8e3f4335f9d22df8d76b79ff39a
+# FR #6671 re-pin: pool-monitor + build behavior advanced past the 22961fba baseline.
 # FR #6558 merge (PR #6575): 2da1eb06d0c99cd3384d6bf1bb21faa830526ba5
 # Prior pin (PR #6252): d563eca67adf1f73213628d8eb4b2dc2f308b73c
 # Packaging note (FR #6254 / #6576): this manifest/workflow commit is separate from the
@@ -37,11 +38,11 @@
 # Deploy/restart remains owner/Slab gated (CAST IRON: FR seat does not Install or restart).
 #
 # sha256  bytes  path
-2be0be6bba6fa5da45ca2db3b6f6acd5f43984fa968e5bf433fb31cd967b3b0b  274115  common/scripts/bobreport.py
-c19f9b3f38e5449687c9f85fcc53fef6b97dbee01ff98916eda106fe34a4f0c7  249129  common/scripts/irc_agent.py
+0d178c00d1309741b339f0c884d669213297f7541e15672f4fb0cb052487f7be  276890  common/scripts/bobreport.py
+d54e8b3c87a7d484972a93e88ee6bbb9a3f8a86791b8dd45a80abe0990c6782f  251220  common/scripts/irc_agent.py
 9e770badb1a2bcb0fb2eea5a0071f16fbd2c1c7097573f7ddfdd64d6d58a6705  83180  common/scripts/opencode_fuel.py
-240fcc51ca88855ab88bf5ea24147baf8d87734603e5e4ed003883207ed8bd67  119235  common/scripts/bobiverse_build.py
-ac8c09aba6d6cf324738221020afa0d0c4b10138101b8914d82c6be5e0022961  184812  bob/tray/src/Public/Get-BobTrayHover.ps1
+b9c9ab112502343c27683ab9d23384a8217f69c49838e11670dc93fc87daa82c  151434  common/scripts/bobiverse_build.py
+a5bb5fc9cd58ca4bb4d0926077a2297a91cb68ba833f89949e9019f824566c31  185190  bob/tray/src/Public/Get-BobTrayHover.ps1
 4115f618af32cabe19b474c8de9bb9df52a97927dd8fa4ad6467ea45c72228d4  124609  bob/tray/src/Private/Get-BobIrc.ps1
 d5cd913fba2d77bbd61802af7b3b0d08ad08217d4ab5ab66fa2c97b4e50c9d71  177621  bob/tray/tools/Watch-BobTray.ps1
 e16688d64827ee17fe903206668428d22614b15336c8a210377830420bf444c2  16000  bob/tray/tools/Get-BobOpencodeFuel.ps1
