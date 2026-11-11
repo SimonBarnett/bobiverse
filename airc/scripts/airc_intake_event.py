@@ -175,13 +175,19 @@ _stop_stamp_installed = False
 
 
 def _stop_stamp_on_signal(_signum=None, _frame=None) -> None:
+    """Stamp restarting then raise KeyboardInterrupt (FR #2541 stop path).
+
+    Must not swallow SIGINT/SIGBREAK: console read_loop/run/main rely on
+    KeyboardInterrupt for prepare_stop. Stamp first so NSSM escalate-to-kill
+    still leaves restarting (no false abnormal-exit).
+    """
     home = _stop_stamp_home
-    if home is None:
-        return
-    try:
-        mark_restarting(home)
-    except Exception:
-        return
+    if home is not None:
+        try:
+            mark_restarting(home)
+        except Exception:
+            pass
+    raise KeyboardInterrupt
 
 
 def _atexit_mark_clean_if_running() -> None:
