@@ -98,6 +98,11 @@ def test_fr6159_sync_and_shared_ship_opencode_skill():
     common = COMMON.read_text(encoding="utf-8-sig")
     assert "'bob-setup-opencode'" in common
     assert "Name = 'worker'" in common
+    # FR #6660: Pack Stage-Product must stage bob-setup-opencode for Product=bob (same filter as Sync).
+    pack = (ROOT / "common" / "scripts" / "Pack-BobiverseRelease.ps1").read_text(encoding="utf-8-sig")
+    body = _stage_product_body(pack)
+    assert "bob-setup-opencode" in body
+    assert "$Name -eq 'bob' -and $_.Name -eq 'bob-setup-opencode'" in body
 
 
 def test_fr6159_get_bob_opencode_fuel_prefers_flat_scripts_file():
