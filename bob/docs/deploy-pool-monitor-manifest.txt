@@ -1,26 +1,30 @@
 # Pool-monitor deploy pin
-# Behavior source sha: d563eca67adf1f73213628d8eb4b2dc2f308b73c
-# Reviewed PR #6252 head (pre-merge tip): c91bfa596ce67925815568f2df748195a18abb12
-# Packaging note (FR #6254): this manifest/workflow commit is separate from the
-# behavior baseline above. Hashes are sha256 of tip bytes for the listed paths.
+# Behavior source sha: 22961fba20bcd8ce126670132a580c7232593c32
+# FR #6558 merge (PR #6575): 2da1eb06d0c99cd3384d6bf1bb21faa830526ba5
+# Prior pin (PR #6252): d563eca67adf1f73213628d8eb4b2dc2f308b73c
+# Packaging note (FR #6254 / #6576): this manifest/workflow commit is separate from the
+# behavior baseline above. Hashes are sha256 of CRLF-canonical tip bytes for the listed
+# paths (normalize to LF then CRLF before hashing so LF checkouts match Windows deploy).
 # This file is the pin list. It is not a live install.
 #
-# Limits (still true after FR #6248 / #6252):
+# Limits (still true after FR #6248 / #6252 / #6558):
 # - Save-BobXaiWeeklyHandoff is a tray no-op; service owns acquisition/publish.
 # - read_local_xai_weekly does not load tray handoff files.
 # - Unknown OpenCode/Go windows stay unknown (never painted as 0).
 # - account on published meters comes from ear-owned grok_account when present.
 #
-# Frozen ear: bob-ear.exe embeds irc_agent.py. Disk overlay loads only bobreport,
-# and only when that file contains "def opencode_install_root". gitclaim stays in the embed.
-# irc_agent.py changes require Build-BobEar.ps1 then Install-BobEarExe.ps1.
+# Frozen ear: bob-ear.exe embeds irc_agent.py and bobiverse_build.py (BUILD claim path).
+# Disk overlay loads bobreport (when it contains "def opencode_install_root") and
+# opencode_fuel. bobiverse_build stays embedded --- a .py copy alone does not change
+# frozen consumer behaviour; rebuild bob-ear.exe / jeeves.exe after claim changes.
+# irc_agent.py / bobiverse_build.py changes require Build-BobEar.ps1 then Install-BobEarExe.ps1.
 # Install-BobEarExe copies the previous exe to scripts\bob-ear.exe.bak and restores it
 # if the new exe fails --help. It does not stop or start ircBob.
 #
 # Tray Status dialogs (BobStatus / OpencodePaint) are NOT inside bob-ear.exe.
 # Rebuild them with: pwsh -File bob/scripts/Build-BobDialogs.ps1 (separate tray payload).
-# Jeeves/chair: no separate artifact required for this pool-monitor packaging path
-# (digest retention/publish lives in bob-ear / bobreport; chair is unchanged).
+# Jeeves/chair: rebuild jeeves.exe via Build-Jeeves.ps1 / build-jeeves.yml so the chair
+# embed also carries FR #6558 claim expiry (assert_build_claim_embed.py).
 #
 # Sanctioned build (Windows runner or Windows host with PyInstaller):
 #   1) Ensure tip behavior files match behavior_source_sha (workflow guard).
@@ -30,16 +34,18 @@
 #      Contents: bob-ear.exe, bob-ear.exe.sha256, provenance.txt, deploy-pool-monitor-manifest.txt
 # Local smoke (not a deploy):
 #   pwsh -File bob/scripts/Build-BobEar.ps1 -RepoRoot <checkout> -OutDir <stage>
+# Deploy/restart remains owner/Slab gated (CAST IRON: FR seat does not Install or restart).
 #
 # sha256  bytes  path
-8af6c72fd66d5db9236876ba4bce6cad6b7d3fa89f710437a18a5bb762ad8caf  226109  common/scripts/bobreport.py
-99dda5479afebc68fd9bdb86ff06d07eb40b321364f25051119ef2514f35d65d  223981  common/scripts/irc_agent.py
-df7a2ce4104193828b314f3a057a73607c0440a9428f322662f1d542250f648d  77227  common/scripts/opencode_fuel.py
-9d2abc10ccd6c4529145510c71a251a05f4f9cab983549b88df79d18adf12d93  162787  bob/tray/src/Public/Get-BobTrayHover.ps1
-112ad152871b524d6f461306a7ba2f97fda552750e4cc0faefc3439c6704e195  122364  bob/tray/src/Private/Get-BobIrc.ps1
-9323dd2c73298381000d96f0abc6fbcc22bda4f7ba60c6ecd392cddc42d25b20  178267  bob/tray/tools/Watch-BobTray.ps1
+2be0be6bba6fa5da45ca2db3b6f6acd5f43984fa968e5bf433fb31cd967b3b0b  274115  common/scripts/bobreport.py
+c19f9b3f38e5449687c9f85fcc53fef6b97dbee01ff98916eda106fe34a4f0c7  249129  common/scripts/irc_agent.py
+9e770badb1a2bcb0fb2eea5a0071f16fbd2c1c7097573f7ddfdd64d6d58a6705  83180  common/scripts/opencode_fuel.py
+240fcc51ca88855ab88bf5ea24147baf8d87734603e5e4ed003883207ed8bd67  119235  common/scripts/bobiverse_build.py
+ac8c09aba6d6cf324738221020afa0d0c4b10138101b8914d82c6be5e0022961  184812  bob/tray/src/Public/Get-BobTrayHover.ps1
+4115f618af32cabe19b474c8de9bb9df52a97927dd8fa4ad6467ea45c72228d4  124609  bob/tray/src/Private/Get-BobIrc.ps1
+d5cd913fba2d77bbd61802af7b3b0d08ad08217d4ab5ab66fa2c97b4e50c9d71  177621  bob/tray/tools/Watch-BobTray.ps1
 e16688d64827ee17fe903206668428d22614b15336c8a210377830420bf444c2  16000  bob/tray/tools/Get-BobOpencodeFuel.ps1
 66d15e08212fde38c584a8655508ca6ed0313befa63af4c81cfbb17dec64be39  4132  bob/tray/src/BobBridge.psm1
-2c796c104c13b23ed73aa52c91b9f69f51452060838d905a9f333c3075312704  4283  bob/scripts/Build-BobEar.ps1
+0f433f61e89b6da10f6fceacf7b65c5ce18712e9d5ccd9be58b405662124fbbc  6200  bob/scripts/Build-BobEar.ps1
 1e7cbfa19aba50183783341b58fb9ac5b024195a6751687da8a5368941366b2e  1985  bob/scripts/Install-BobEarExe.ps1
-9f6d29673caeec339901110731167e34a3101061bfdb48e1a34d9ac84b65e7c2  7193  bob/scripts/Start-Bob.ps1
+66b5c58e8594dc76596b63c1a16e853f86fe1db59f13844895e9a9139e56f361  7644  bob/scripts/Start-Bob.ps1

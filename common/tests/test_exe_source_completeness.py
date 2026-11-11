@@ -25,6 +25,7 @@ EXE_INPUTS: dict[str, tuple[str, ...]] = {
         "bob/scripts/Build-BobEar.ps1",
         "scripts/irc_agent.py",
         "common/scripts/crash_report.py",
+        "common/scripts/assert_build_claim_embed.py",
         "third_party/bob-tray/assets/bob-systray.ico",
     ),
     "Watch-AgentHealth.exe": (
@@ -37,6 +38,7 @@ EXE_INPUTS: dict[str, tuple[str, ...]] = {
         "jeeves/scripts/Build-Jeeves.ps1",
         "scripts/jeeves_main.py",
         "common/scripts/crash_report.py",
+        "common/scripts/assert_build_claim_embed.py",
     ),
     "airc.exe": (
         "airc/scripts/Build-Airc.ps1",

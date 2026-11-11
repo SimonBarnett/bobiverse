@@ -97,5 +97,20 @@ if (Test-Path -LiteralPath $assertYaml) {
         throw "FR #6487 assert_jeeves_yaml_embed failed (exit $acode)"
     }
 }
+# FR #6558 / #6576: frozen embed must carry build-route claim expiry/logging.
+$assertClaim = Get-BobiverseRepoPath -Root $RepoRoot -Rel 'common\scripts\assert_build_claim_embed.py'
+if (-not $assertClaim -or -not (Test-Path -LiteralPath $assertClaim)) {
+    $assertClaim = Join-Path $RepoRoot 'common\scripts\assert_build_claim_embed.py'
+}
+if (-not (Test-Path -LiteralPath $assertClaim)) {
+    throw 'FR #6558 assert_build_claim_embed.py missing (fail closed)'
+}
+$prevEap = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
+& $Python $assertClaim $work
+$acode = $LASTEXITCODE
+$ErrorActionPreference = $prevEap
+if ($acode -ne 0) {
+    throw "FR #6558 assert_build_claim_embed failed (exit $acode)"
+}
 Write-Host ("INFO built {0} ({1:N1} MB)" -f $exe, ((Get-Item -LiteralPath $exe).Length / 1MB))
 $exe

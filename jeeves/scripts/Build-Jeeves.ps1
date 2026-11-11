@@ -184,6 +184,25 @@ if (Test-Path -LiteralPath $assertEmbed) {
     Write-Host 'WARN FR #4608: assert_jeeves_gitclaim_embed.py missing; skip embed pin'
 }
 
+# FR #6558 / #6576: frozen embed must carry build-route claim expiry/logging (fail closed).
+$assertClaim = Get-BobiverseRepoPath -Root $RepoRoot -Rel 'common\scripts\assert_build_claim_embed.py'
+if (-not $assertClaim -or -not (Test-Path -LiteralPath $assertClaim)) {
+    $assertClaim = Join-Path $RepoRoot 'common\scripts\assert_build_claim_embed.py'
+}
+if (-not (Test-Path -LiteralPath $assertClaim)) {
+    $assertClaim = Join-Path (Split-Path -Parent (Split-Path -Parent $PSScriptRoot)) 'common\scripts\assert_build_claim_embed.py'
+}
+if (-not (Test-Path -LiteralPath $assertClaim)) {
+    throw 'FR #6558 assert_build_claim_embed.py missing (fail closed)'
+}
+$prevEap = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
+& $Python $assertClaim $work
+$acode = $LASTEXITCODE
+$ErrorActionPreference = $prevEap
+if ($acode -ne 0) {
+    throw "FR #6558 assert_build_claim_embed failed (exit $acode)"
+}
+
 if (-not $SkipSmoke) {
     $prevEap = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
     $probeHome = Join-Path $work 'smoke-home'
