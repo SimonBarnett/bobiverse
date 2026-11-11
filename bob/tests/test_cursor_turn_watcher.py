@@ -128,16 +128,27 @@ def test_project_slug_matches_cursor_projects_dir():
     assert bw.cursor_project_slug(r"C:\ai\bob\worker") == "C-ai-bob-worker"
 
 
+def _chats_and_projects(tmp_path):
+    """FR #6713: keep projects_root outside chats_root so bind cannot pick project dirs."""
+    chats = tmp_path / "chats"
+    projects = tmp_path / "projects"
+    chats.mkdir(parents=True, exist_ok=True)
+    projects.mkdir(parents=True, exist_ok=True)
+    return chats, projects
+
+
 def test_tool_gap_several_minutes_does_not_end(tmp_path):
     """Acceptance: multi-tool turn with no final text never emits turn_ended."""
     t0 = time.time()
-    d = _chat(tmp_path, born=t0)
-    projects = tmp_path / "projects"
-    _arm_transcript(d, projects, [_tool_line()])
+    chats, projects = _chats_and_projects(tmp_path)
+    d = _chat(chats, born=t0)
+    tp = _arm_transcript(d, projects, [_tool_line()])
+    # FR #6713 / #5129: freeze after meta/jsonl writes so bind + transcript stay put.
+    _freeze_chat_times(d, t0, transcript=tp)
     now = [t0 + 1]
     ev = []
     w = bw.CursorTurnWatcher(
-        since_wall=t0, chats_root=tmp_path, projects_root=projects, quiet_s=20,
+        since_wall=t0, chats_root=chats, projects_root=projects, quiet_s=20,
         clock=lambda: now[0],
         on_turn_started=lambda n, t: ev.append(("s", n)),
         on_turn_ended=lambda n, t: ev.append(("e", n)),
@@ -151,14 +162,14 @@ def test_tool_gap_several_minutes_does_not_end(tmp_path):
 
 def test_final_assistant_text_then_quiet_ends_once(tmp_path):
     t0 = time.time()
-    d = _chat(tmp_path, born=t0)
-    projects = tmp_path / "projects"
+    chats, projects = _chats_and_projects(tmp_path)
+    d = _chat(chats, born=t0)
     path = _arm_transcript(d, projects, [_tool_line()])
     _freeze_chat_times(d, t0, transcript=path)
     now = [t0 + 1]
     ev = []
     w = bw.CursorTurnWatcher(
-        since_wall=t0, chats_root=tmp_path, projects_root=projects, quiet_s=20,
+        since_wall=t0, chats_root=chats, projects_root=projects, quiet_s=20,
         clock=lambda: now[0],
         on_turn_started=lambda n, t: ev.append(("s", n)),
         on_turn_ended=lambda n, t: ev.append(("e", n)),
@@ -179,19 +190,53 @@ def test_final_assistant_text_then_quiet_ends_once(tmp_path):
 
 def test_user_line_keeps_turn_open(tmp_path):
     t0 = time.time()
-    d = _chat(tmp_path, born=t0)
-    projects = tmp_path / "projects"
+    chats, projects = _chats_and_projects(tmp_path)
+    d = _chat(chats, born=t0)
     tp = _arm_transcript(d, projects, [_text_line(), _user_line()])
     _freeze_chat_times(d, t0, transcript=tp)
     now = [t0 + 1]
     w = bw.CursorTurnWatcher(
-        since_wall=t0, chats_root=tmp_path, projects_root=projects, quiet_s=20,
+        since_wall=t0, chats_root=chats, projects_root=projects, quiet_s=20,
         clock=lambda: now[0],
     )
     assert w.tick() == "started"
     now[0] = t0 + 120
     assert w.tick() is None
     assert w._active is True
+
+
+def test_fr6713_empty_transcript_parse_does_not_quiet_end(tmp_path, monkeypatch):
+    """FR #6713: existing transcript with no parseable objs must not quiet-end."""
+    t0 = time.time()
+    chats, projects = _chats_and_projects(tmp_path)
+    d = _chat(chats, born=t0)
+    tp = _arm_transcript(d, projects, [_user_line()])
+    _freeze_chat_times(d, t0, transcript=tp)
+    now = [t0 + 1]
+    w = bw.CursorTurnWatcher(
+        since_wall=t0, chats_root=chats, projects_root=projects, quiet_s=20,
+        clock=lambda: now[0],
+    )
+    assert w.tick() == "started"
+    monkeypatch.setattr(bw, "cursor_transcript_still_open", lambda _p: None)
+    now[0] = t0 + 120
+    assert w.tick() is None
+    assert w._active is True
+
+
+def test_fr6713_bind_skips_nested_projects_dir(tmp_path):
+    """FR #6713: projects nested under chats_root must not steal the bind."""
+    t0 = time.time()
+    d = _chat(tmp_path, born=t0)
+    projects = tmp_path / "projects"
+    tp = _arm_transcript(d, projects, [_tool_line()])
+    _freeze_chat_times(d, t0, transcript=tp)
+    w = bw.CursorTurnWatcher(
+        since_wall=t0, chats_root=tmp_path, projects_root=projects, quiet_s=20,
+        clock=lambda: t0 + 1,
+    )
+    assert w.tick() == "started"
+    assert w.chat_dir == d
 
 
 def test_mrb5130_tick_started_when_file_mtimes_read_zero(tmp_path, monkeypatch):
