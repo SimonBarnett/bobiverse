@@ -137,6 +137,11 @@ def test_tray_save_handoff_is_noop_source_pin():
 
 
 def test_xai_acquisition_skips_tray_handoff(tmp_path, monkeypatch):
+    """Tray handoff under BOB_INSTALL_ROOT must never be an acquisition source (FR #6248).
+
+    FR #6699: under LocalSystem !build, FR #6270 may prefer interactive-profile.
+    Force system-profile skip so this pin stays about handoff, not interactive logs.
+    """
     handoff = tmp_path / "run" / "xai-weekly.json"
     handoff.parent.mkdir(parents=True)
     handoff.write_text(
@@ -157,9 +162,15 @@ def test_xai_acquisition_skips_tray_handoff(tmp_path, monkeypatch):
     monkeypatch.setenv("USERPROFILE", str(tmp_path / "systemprofile"))
     (tmp_path / "systemprofile").mkdir()
     monkeypatch.delenv("BOB_WEEKLY_LOG", raising=False)
+    monkeypatch.delenv("BOB_GROK_WEEKLY_USER_HOME", raising=False)
+    # Keep FR #6270 interactive auto-pick off for this handoff-skip pin.
+    monkeypatch.setenv("BOB_WEEKLY_FORCE_SYSTEM_PROFILE", "1")
     reading = bobreport.read_local_xai_weekly()
     assert reading is None
     assert bobreport._last_xai_acquisition.get("identity") == "system-profile-skipped"
+    # Handoff file still exists; acquisition must not have used it.
+    assert handoff.is_file()
+    assert bobreport.xai_weekly_handoff_path() == handoff
 
 
 def test_fetch_go_zen_usage_sends_bearer(monkeypatch):
