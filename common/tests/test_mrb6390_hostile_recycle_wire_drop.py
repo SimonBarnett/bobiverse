@@ -90,6 +90,13 @@ def test_mrb6390_ear_handle_privmsg_consumes_recycle_wire(tmp_path, monkeypatch)
         def _maybe_cleargiveup(self, *a, **k):
             return False
 
+        # FR #6407 / #6628: handle_privmsg dispatches pin/unpin before recycle wire.
+        def _maybe_unpin(self, *a, **k):
+            return False
+
+        def _maybe_pin(self, *a, **k):
+            return False
+
         def _maybe_focus_ignore(self, *a, **k):
             return False
 
@@ -129,6 +136,13 @@ def test_mrb6390_ear_handle_privmsg_consumes_recycle_wire(tmp_path, monkeypatch)
         def _maybe_consume_build_v1_wire(self, *a, **k):
             return False
 
+        # FR #6491 / #6628: later handle_privmsg dispatches before recycle wire.
+        def _maybe_consume_build_preflight_wire(self, *a, **k):
+            return False
+
+        def _maybe_release_chair_build_lock_on_result(self, *a, **k):
+            return False
+
         def _is_briefer(self):
             return False
 
@@ -154,3 +168,21 @@ def test_mrb6390_ear_handle_privmsg_consumes_recycle_wire(tmp_path, monkeypatch)
     assert ear.announced == ["recycle"]
     assert any("recycle wire accepted" in m for m in ear.logs)
     assert not any("recycle wire dropped" in m for m in ear.logs)
+
+
+def test_mrb6390_dispatch_ear_binds_pin_unpin_and_build_preflight():
+    """FR #6628: FakeEar dispatch stubs must cover every _maybe_* before recycle wire."""
+    here = Path(__file__).read_text(encoding="utf-8")
+    for needle in (
+        "_maybe_unpin",
+        "_maybe_pin",
+        "_maybe_consume_build_preflight_wire",
+        "_maybe_release_chair_build_lock_on_result",
+    ):
+        assert needle in here
+    e2e = Path(__file__).resolve().parent / "test_fr6389_recycle_wire_drop_log.py"
+    text = e2e.read_text(encoding="utf-8")
+    assert '"_maybe_unpin"' in text or "'_maybe_unpin'" in text
+    assert '"_maybe_pin"' in text or "'_maybe_pin'" in text
+    assert "_maybe_consume_build_preflight_wire" in text
+    assert "_maybe_release_chair_build_lock_on_result" in text
