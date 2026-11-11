@@ -40,3 +40,37 @@ def _fr4315_isolate_digest_home(tmp_path_factory, monkeypatch):
     monkeypatch.setenv("BOB_DIGEST_HOME", str(digest))
     monkeypatch.setenv("BOB_HOME", str(chair))
     yield
+
+
+@pytest.fixture
+def isolated_xai_selection(monkeypatch):
+    """Opt-in hermetic xAI weekly log/auth selection (FR #6699).
+
+    !build seats inherit BOB_GROK_EXE / interactive-home / LocalSystem discovery.
+    Clear selectors and disable LocalSystem auto-pick so handoff-skip pins stay
+    about the claimed path. ``BOB_GROK_WEEKLY_USER_HOME`` still works when a test
+    sets it after this fixture (honoured inside ``_interactive_grok_user_home``).
+    Not autouse — keep FR #6270 live-discovery cases free to opt in.
+    """
+    import bobreport
+
+    for key in (
+        "BOB_WEEKLY_LOG",
+        "BOB_GROK_WEEKLY_USER_HOME",
+        "BOB_GROK_EXE",
+        "BOB_GROK_AUTH_PATH",
+        "GROK_AUTH_PATH",
+        "GROK_HOME",
+        "BOB_WEEKLY_FORCE_SYSTEM_PROFILE",
+    ):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("USERNAME", "tester")
+    monkeypatch.setattr(bobreport, "_is_local_system_process", lambda: False)
+
+    def _home_override_only():
+        override = (os.environ.get("BOB_GROK_WEEKLY_USER_HOME") or "").strip().rstrip("\\/")
+        return Path(override) if override else None
+
+    monkeypatch.setattr(bobreport, "_interactive_grok_user_home", _home_override_only)
+    bobreport._last_xai_acquisition = {}
+    yield

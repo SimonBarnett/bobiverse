@@ -25,7 +25,7 @@ def _billing(used_pct: float = 39.0, remaining_hint: int = 61) -> str:
     )
 
 
-def test_fr6270_interactive_home_env_beats_system_profile(monkeypatch, tmp_path: Path):
+def test_fr6270_interactive_home_env_beats_system_profile(monkeypatch, tmp_path: Path, isolated_xai_selection):
     user = tmp_path / "Users" / "FleetAdmin"
     log = user / ".grok" / "logs" / "unified.jsonl"
     log.parent.mkdir(parents=True)
@@ -47,12 +47,15 @@ def test_fr6270_interactive_home_env_beats_system_profile(monkeypatch, tmp_path:
     assert bobreport._last_xai_acquisition["identity"] == "interactive-profile"
 
 
-def test_fr6270_system_profile_still_skipped_without_interactive_log(monkeypatch, tmp_path: Path):
+def test_fr6270_system_profile_still_skipped_without_interactive_log(
+    monkeypatch, tmp_path: Path, isolated_xai_selection
+):
     monkeypatch.delenv("BOB_WEEKLY_LOG", raising=False)
     monkeypatch.delenv("BOB_GROK_WEEKLY_USER_HOME", raising=False)
     monkeypatch.setenv("USERPROFILE", str(tmp_path / "systemprofile"))
     (tmp_path / "systemprofile").mkdir(exist_ok=True)
     monkeypatch.setenv("USERNAME", "tester")
+    monkeypatch.setenv("BOB_WEEKLY_FORCE_SYSTEM_PROFILE", "1")
     path, identity = bobreport.xai_weekly_log_candidate()
     assert path is None
     assert identity == "system-profile-skipped"
