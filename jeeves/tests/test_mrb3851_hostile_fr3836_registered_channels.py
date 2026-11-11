@@ -45,23 +45,42 @@ def test_hostile_apply_joins_all_registered_paced(home, monkeypatch):
     sleeps = []
     monkeypatch.setattr(irc_agent.time, "sleep", lambda s: sleeps.append(s))
     rm.save_registered(home, {"stale"})
+    # Seed console presence on the channel about to PART so FR #5961 clear is observable.
+    bobreport.set_channel_console_presence(home, "#stale", ["stale_console"])
     sent = []
-    agent = SimpleNamespace(
-        args=SimpleNamespace(chair=True),
-        home=home,
-        channels=["#bobiverse", "#stale"],
-        sent=sent,
-        send=sent.append,
-        _digest_home=lambda: home,
-    )
-    irc_agent.Client._apply_chanserv_channels(
-        agent, ["#bobiverse", "#flamingo", "#wonderland", "#agentic_irc"]
+
+    class _HostileAgent:
+        """Minimal chair stub; bind Client methods so PART clears console presence (FR #5961 / #6572)."""
+
+        args = SimpleNamespace(chair=True)
+
+        def __init__(self):
+            self.home = home
+            self.channels = ["#bobiverse", "#stale"]
+            self.sent = sent
+
+        def send(self, line):
+            sent.append(line)
+
+        def _digest_home(self):
+            return home
+
+        _apply_chanserv_channels = irc_agent.Client._apply_chanserv_channels
+        _clear_channel_console_presence = irc_agent.Client._clear_channel_console_presence
+
+    agent = _HostileAgent()
+    agent._apply_chanserv_channels(
+        ["#bobiverse", "#flamingo", "#wonderland", "#agentic_irc"]
     )
     assert "JOIN #flamingo" in sent
     assert "JOIN #wonderland" in sent
     assert "JOIN #agentic_irc" in sent
     assert any(s.startswith("PART #stale") for s in sent)
     assert "#stale" not in agent.channels
+    presence = bobreport.coerce_airc_console_presence(
+        bobreport.load_digest(home).get("airc_console_presence")
+    )
+    assert all(str(r.get("channel") or "").lower() != "#stale" for r in presence)
     assert sleeps, "JOIN/PART path must call time.sleep(FLOOD_S) for pacing"
     src = Path(irc_agent.__file__).read_text(encoding="utf-8")
     apply = src.split("def _apply_chanserv_channels", 1)[1].split(
@@ -69,6 +88,7 @@ def test_hostile_apply_joins_all_registered_paced(home, monkeypatch):
     )[0]
     assert "time.sleep(FLOOD_S)" in apply
     assert "INFO channel-sync registered=" in apply
+    assert "_clear_channel_console_presence" in apply
 
 
 def test_hostile_bob_plus_o_wonderland_never_console_worker(home):
