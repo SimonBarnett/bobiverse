@@ -198,7 +198,7 @@ def test_old_sample_stays_stale_when_heartbeat_is_fresh():
     assert fresh is False
 
 
-def test_collector_handoff_parses_a_real_sample(monkeypatch, tmp_path: Path):
+def test_collector_handoff_parses_a_real_sample(monkeypatch, tmp_path: Path, isolated_xai_selection):
     log = tmp_path / "unified.jsonl"
     log.write_text(
         '{"ts":"2026-11-08T15:10:00Z","msg":"billing: fetched credits config",'
@@ -236,6 +236,7 @@ def test_collector_handoff_parses_a_real_sample(monkeypatch, tmp_path: Path):
     monkeypatch.delenv("BOB_WEEKLY_LOG", raising=False)
     monkeypatch.setenv("USERPROFILE", r"C:\Windows\system32\config\systemprofile")
     monkeypatch.delenv("HOME", raising=False)
+    monkeypatch.setenv("BOB_WEEKLY_FORCE_SYSTEM_PROFILE", "1")
     reading = bobreport.read_local_xai_weekly(now=now)
     assert reading is None
     assert bobreport._last_xai_acquisition["identity"] == "system-profile-skipped"
@@ -246,10 +247,11 @@ def test_collector_handoff_parses_a_real_sample(monkeypatch, tmp_path: Path):
     assert peer["xai_weekly"]["window"] == "weekly"
 
 
-def test_system_profile_weekly_log_is_not_read(monkeypatch, tmp_path: Path):
+def test_system_profile_weekly_log_is_not_read(monkeypatch, tmp_path: Path, isolated_xai_selection):
     monkeypatch.delenv("BOB_WEEKLY_LOG", raising=False)
     monkeypatch.setenv("USERPROFILE", r"C:\Windows\system32\config\systemprofile")
     monkeypatch.delenv("HOME", raising=False)
+    monkeypatch.setenv("BOB_WEEKLY_FORCE_SYSTEM_PROFILE", "1")
     path, identity = bobreport.xai_weekly_log_candidate()
     assert path is None
     assert identity == "system-profile-skipped"

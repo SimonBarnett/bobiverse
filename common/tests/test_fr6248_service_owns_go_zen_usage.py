@@ -136,11 +136,12 @@ def test_tray_save_handoff_is_noop_source_pin():
     assert "no tray usage handoff write" in src
 
 
-def test_xai_acquisition_skips_tray_handoff(tmp_path, monkeypatch):
+def test_xai_acquisition_skips_tray_handoff(tmp_path, monkeypatch, isolated_xai_selection):
     """Tray handoff under BOB_INSTALL_ROOT must never be an acquisition source (FR #6248).
 
-    FR #6699: under LocalSystem !build, FR #6270 may prefer interactive-profile.
-    Force system-profile skip so this pin stays about handoff, not interactive logs.
+    FR #6699: !build may inherit BOB_GROK_EXE (fake-grok) or FR #6270 interactive
+    discovery. isolated_xai_selection + FORCE_SYSTEM_PROFILE keep this pin about
+    handoff skip, not selector inheritance.
     """
     handoff = tmp_path / "run" / "xai-weekly.json"
     handoff.parent.mkdir(parents=True)
@@ -162,7 +163,6 @@ def test_xai_acquisition_skips_tray_handoff(tmp_path, monkeypatch):
     monkeypatch.setenv("USERPROFILE", str(tmp_path / "systemprofile"))
     (tmp_path / "systemprofile").mkdir()
     monkeypatch.delenv("BOB_WEEKLY_LOG", raising=False)
-    monkeypatch.delenv("BOB_GROK_WEEKLY_USER_HOME", raising=False)
     # Keep FR #6270 interactive auto-pick off for this handoff-skip pin.
     monkeypatch.setenv("BOB_WEEKLY_FORCE_SYSTEM_PROFILE", "1")
     reading = bobreport.read_local_xai_weekly()
@@ -171,6 +171,47 @@ def test_xai_acquisition_skips_tray_handoff(tmp_path, monkeypatch):
     # Handoff file still exists; acquisition must not have used it.
     assert handoff.is_file()
     assert bobreport.xai_weekly_handoff_path() == handoff
+
+
+def test_xai_interactive_log_beats_handoff_remaining(tmp_path, monkeypatch, isolated_xai_selection):
+    """Interactive unified.jsonl wins over tray handoff remaining (FR #6699 / #6248)."""
+    from datetime import datetime, timezone
+
+    handoff = tmp_path / "run" / "xai-weekly.json"
+    handoff.parent.mkdir(parents=True)
+    handoff.write_text(
+        json.dumps(
+            {
+                "provider": "xai",
+                "window": "weekly",
+                "direction": "remaining",
+                "remaining_pct": 43,
+                "weekly_known": True,
+                "fetched_at": "2026-11-08T15:00:00Z",
+                "source": "collector-handoff",
+            }
+        ),
+        encoding="utf-8",
+    )
+    user = tmp_path / "Users" / "FleetAdmin"
+    log = user / ".grok" / "logs" / "unified.jsonl"
+    log.parent.mkdir(parents=True)
+    log.write_text(
+        '{"ts":"2026-11-09T06:00:00Z","msg":"billing: fetched credits config",'
+        '"ctx":{"config":{"currentPeriod":{"type":"USAGE_PERIOD_TYPE_WEEKLY",'
+        '"end":"2026-11-16T12:00:00Z"},"creditUsagePercent":39}}}\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("BOB_INSTALL_ROOT", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path / "systemprofile"))
+    (tmp_path / "systemprofile").mkdir(exist_ok=True)
+    monkeypatch.setenv("BOB_GROK_WEEKLY_USER_HOME", str(user))
+    now = datetime(2026, 11, 9, 7, 0, tzinfo=timezone.utc)
+    reading = bobreport.read_local_xai_weekly(now=now)
+    assert reading is not None
+    assert reading["remaining_pct"] == 61
+    assert bobreport._last_xai_acquisition.get("identity") == "interactive-profile"
+    assert bobreport._last_xai_acquisition.get("source") != "collector-handoff"
 
 
 def test_fetch_go_zen_usage_sends_bearer(monkeypatch):
