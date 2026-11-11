@@ -10,11 +10,13 @@ WP3 (FR #4026): optional `!installtest` --- msiexec pre-release MSIs + post-chec
 """
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import os
 import re
 import subprocess
+import threading
 import time
 import zipfile
 from dataclasses import dataclass, field
@@ -1471,6 +1473,229 @@ class BuildReport:
     errors: list = field(default_factory=list)
 
 
+# ------------------------------------------------------------------ FR #6585 progress
+
+
+_CRED_PATH_RE = re.compile(
+    r"(?i)(?:[/\\]|^)(?:\.config[/\\]gh[/\\]hosts\.yml|github\.token|\.password|identity\.json|"
+    r"\.netrc|credentials\.json)(?=\b|/|\\|$)"
+)
+_GHP_TOKEN_RE = re.compile(r"\bghp_[A-Za-z0-9]{20,}\b")
+_BEARER_RE = re.compile(r"(?i)\bBearer\s+[A-Za-z0-9._\-]{12,}")
+
+
+def parse_pytest_summary_counts(text: str) -> dict[str, int]:
+    """Best-effort pytest summary counts from suite stdout (FR #6585)."""
+    out = {"passed": 0, "failed": 0, "skipped": 0}
+    blob = str(text or "")
+    # Prefer the final ``===== N passed, ... =====`` style line.
+    for line in reversed(blob.splitlines()):
+        if "passed" not in line.lower() and "failed" not in line.lower():
+            continue
+        if "=====" not in line and "passed" not in line.lower():
+            continue
+        m_pass = re.search(r"(?i)\b(\d+)\s+passed\b", line)
+        m_fail = re.search(r"(?i)\b(\d+)\s+failed\b", line)
+        m_skip = re.search(r"(?i)\b(\d+)\s+skipped\b", line)
+        if m_pass or m_fail or m_skip:
+            if m_pass:
+                out["passed"] = int(m_pass.group(1))
+            if m_fail:
+                out["failed"] = int(m_fail.group(1))
+            if m_skip:
+                out["skipped"] = int(m_skip.group(1))
+            return out
+    return out
+
+
+def redact_build_progress_text(text: str, env: dict | None = None) -> str:
+    """Strip secrets / credential-shaped paths from a progress line (FR #6585)."""
+    out = _scrub_secret_fragments(str(text or ""), env=env)
+    out = _GHP_TOKEN_RE.sub("<redacted>", out)
+    out = _BEARER_RE.sub("Bearer <redacted>", out)
+    out = _CRED_PATH_RE.sub("<redacted-path>", out)
+    return out
+
+
+class JsonlProgressSink:
+    """Append one JSON object per progress line (ear watcher tails this file)."""
+
+    def __init__(self, path: Path | str) -> None:
+        self.path = Path(path)
+
+    def __call__(self, line: str) -> None:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        row = {"ts": time.time(), "line": str(line)}
+        with self.path.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(row, ensure_ascii=True) + "\n")
+
+
+def read_progress_jsonl(
+    path: Path | str, *, after_offset: int = 0
+) -> list[dict]:
+    """Read progress JSONL rows starting at *after_offset* bytes (FR #6585)."""
+    p = Path(path)
+    if not p.is_file():
+        return []
+    size = p.stat().st_size
+    off = max(0, int(after_offset or 0))
+    if off >= size:
+        return []
+    with p.open("rb") as fh:
+        fh.seek(off)
+        raw = fh.read().decode("utf-8", errors="replace")
+    rows: list[dict] = []
+    for ln in raw.splitlines():
+        s = ln.strip()
+        if not s:
+            continue
+        try:
+            obj = json.loads(s)
+        except Exception:
+            continue
+        if isinstance(obj, dict) and obj.get("line"):
+            rows.append(obj)
+    return rows
+
+
+class BuildProgressPoster:
+    """Rate-limited BUILD progress lines for #bobiverse (FR #6585).
+
+    * At most one non-forced line every ``min_interval_s`` (default 30).
+    * Heartbeat when nothing posted for ``heartbeat_s`` (default 600).
+    * Every line carries ``version=`` and optional ``id=``.
+    * Sink failures never raise into the build.
+    * Terminal ``BUILD ok|fail`` announces stay separate (unchanged).
+    """
+
+    def __init__(
+        self,
+        *,
+        repo: str,
+        version: str,
+        build_id: str = "",
+        sink: Callable[[str], None] | None = None,
+        min_interval_s: float = 30.0,
+        heartbeat_s: float = 600.0,
+        time_fn: Callable[[], float] | None = None,
+        env: dict | None = None,
+    ) -> None:
+        self.repo = str(repo or "").strip()
+        self.version = str(version or "").strip()
+        self.build_id = str(build_id or "").strip()
+        self.sink = sink
+        self.min_interval_s = float(min_interval_s)
+        self.heartbeat_s = float(heartbeat_s)
+        self.time_fn = time_fn or time.time
+        self.env = env
+        self._last_post_at: float | None = None
+        self._run_started_at = float(self.time_fn())
+        self._current_step = "starting"
+        self._step_started_at = self._run_started_at
+        self._hb_stop = threading.Event()
+        self._hb_thread: threading.Thread | None = None
+
+    def start_heartbeat_thread(self, *, poll_s: float = 30.0) -> None:
+        """Daemon thread: post heartbeat when idle for ``heartbeat_s`` (FR #6585)."""
+        if self._hb_thread is not None:
+            return
+
+        def _loop() -> None:
+            while not self._hb_stop.wait(timeout=max(5.0, float(poll_s))):
+                with contextlib.suppress(Exception):
+                    self.maybe_heartbeat()
+
+        self._hb_thread = threading.Thread(
+            target=_loop, name="build-progress-hb", daemon=True
+        )
+        self._hb_thread.start()
+
+    def stop_heartbeat_thread(self) -> None:
+        self._hb_stop.set()
+
+    def set_current_step(self, step: str) -> None:
+        self._current_step = str(step or "").strip() or "running"
+        self._step_started_at = float(self.time_fn())
+
+    def _id_bit(self) -> str:
+        return f" id={self.build_id}" if self.build_id else ""
+
+    def format_line(self, detail: str) -> str:
+        detail_s = redact_build_progress_text(detail, env=self.env).strip()
+        return (
+            f"BUILD progress {self.repo} version={self.version} "
+            f"{detail_s}{self._id_bit()}"
+        ).strip()
+
+    def emit(self, detail: str, *, force: bool = False) -> bool:
+        """Post one progress line. Returns True when the sink was invoked."""
+        now = float(self.time_fn())
+        if (
+            not force
+            and self._last_post_at is not None
+            and (now - self._last_post_at) < self.min_interval_s
+        ):
+            return False
+        line = self.format_line(detail)
+        if self.sink is None:
+            self._last_post_at = now
+            return True
+        try:
+            self.sink(line)
+        except Exception:
+            return False
+        self._last_post_at = now
+        return True
+
+    def maybe_heartbeat(self) -> bool:
+        now = float(self.time_fn())
+        if self._last_post_at is None:
+            return False
+        if (now - self._last_post_at) < self.heartbeat_s:
+            return False
+        step = self._current_step
+        step_age = max(0, int(now - self._step_started_at))
+        run_age = max(0, int(now - self._run_started_at))
+        return self.emit(
+            f"heartbeat step={step} step_s={step_age} run_s={run_age}",
+            force=True,
+        )
+
+    def step_start(self, step: str) -> bool:
+        self.set_current_step(step)
+        return self.emit(f"step start {step}", force=True)
+
+    def step_end(self, step: str, *, ok: bool | None = None) -> bool:
+        now = float(self.time_fn())
+        elapsed = max(0, int(now - self._step_started_at))
+        bit = ""
+        if ok is True:
+            bit = " ok"
+        elif ok is False:
+            bit = " fail"
+        return self.emit(f"step end {step} elapsed={elapsed}s{bit}", force=True)
+
+    def suite_counts(self, suite: str, *, at: str, stdout: str) -> bool:
+        c = parse_pytest_summary_counts(stdout)
+        return self.emit(
+            f"suite {suite} at={at} passed={c['passed']} failed={c['failed']} "
+            f"skipped={c['skipped']}",
+            force=True,
+        )
+
+    def rerun_progress(
+        self, *, index: int, total: int, nodeid: str, result: str
+    ) -> bool:
+        nid = redact_build_progress_text(nodeid, env=self.env)
+        # Short nodeid for channel flood safety.
+        if len(nid) > 80:
+            nid = nid[:77] + "..."
+        return self.emit(
+            f"rerun {index}/{total} {nid} {result}",
+            force=True,
+        )
+
+
 def run_command(
     cmd: str | list,
     cwd: str | Path | None = None,
@@ -1576,6 +1801,7 @@ class BuildRunner:
         baseline_resolver: Callable | None = None,
         baseline_root: Path | str | None = None,
         build_id: str = "",
+        progress: BuildProgressPoster | None = None,
     ) -> None:
         self.repo_root = Path(repo_root)
         # Baseline suites run in their own checkout of the baseline tag; without one
@@ -1594,6 +1820,17 @@ class BuildRunner:
         self.release_fn = release_fn
         self.baseline_resolver = baseline_resolver
         self.build_id = str(build_id or "").strip()
+        # FR #6585: optional live progress sink (ear tails JSONL -> #bobiverse).
+        self.progress = progress
+
+    def _progress(self) -> BuildProgressPoster | None:
+        return self.progress
+
+    def _prog_heartbeat(self) -> None:
+        prog = self._progress()
+        if prog is not None:
+            with contextlib.suppress(Exception):
+                prog.maybe_heartbeat()
 
     def _id_suffix(self) -> str:
         """FR #6491: append `` id=<build_id>`` to terminal announces when set."""
@@ -1670,9 +1907,17 @@ class BuildRunner:
         out_dir = self.work_dir / "out"
         out_dir.mkdir(parents=True, exist_ok=True)
         assets: list = []
+        prog = self._progress()
+        if prog is not None:
+            with contextlib.suppress(Exception):
+                prog.step_start("suites")
 
         for suite in self.recipe.suites:
             try:
+                self._prog_heartbeat()
+                if prog is not None:
+                    with contextlib.suppress(Exception):
+                        prog.step_start(f"suite {suite.name} ref")
                 rendered_cmd = render_template(
                     suite.cmd,
                     version=self.version,
@@ -1689,6 +1934,15 @@ class BuildRunner:
                 )
                 report.suite_results.append(ref_res)
                 self._write_log(f"{suite.name}-ref.log", ref_res.stdout)
+                if prog is not None:
+                    with contextlib.suppress(Exception):
+                        prog.suite_counts(
+                            suite.name, at=str(self.ref), stdout=ref_res.stdout
+                        )
+                        prog.step_end(
+                            f"suite {suite.name} ref",
+                            ok=(int(ref_res.exit_code) == 0 and not ref_res.timed_out),
+                        )
                 if ref_res.timed_out:
                     failure = classify_step_failure(f"suite:{suite.name}:timeout")
                     filed = file_blocker_or_dedupe(
@@ -1720,6 +1974,9 @@ class BuildRunner:
 
                 ref_failed = int(ref_res.exit_code) != 0
 
+                if prog is not None:
+                    with contextlib.suppress(Exception):
+                        prog.step_start(f"suite {suite.name} baseline")
                 base_cmd = render_template(
                     suite.cmd,
                     version=self.version,
@@ -1736,6 +1993,15 @@ class BuildRunner:
                 )
                 report.suite_results.append(base_res)
                 self._write_log(f"{suite.name}-baseline.log", base_res.stdout)
+                if prog is not None:
+                    with contextlib.suppress(Exception):
+                        prog.suite_counts(
+                            suite.name, at=str(baseline), stdout=base_res.stdout
+                        )
+                        prog.step_end(
+                            f"suite {suite.name} baseline",
+                            ok=(int(base_res.exit_code) == 0 and not base_res.timed_out),
+                        )
                 if base_res.timed_out:
                     failure = classify_step_failure(f"suite:{suite.name}:baseline-timeout")
                     filed = file_blocker_or_dedupe(
@@ -1777,7 +2043,9 @@ class BuildRunner:
                             blocking = True
                         # else: identical failing set vs baseline → pre_existing, do not block
                     else:
-                        for tid in new_ids:
+                        total_reruns = len(new_ids)
+                        for idx, tid in enumerate(new_ids, start=1):
+                            self._prog_heartbeat()
                             solo_cmd = append_pytest_nodeid(rendered_cmd, tid)
                             solo = self.run_command_fn(
                                 solo_cmd,
@@ -1790,6 +2058,19 @@ class BuildRunner:
                             report.suite_results.append(solo)
                             safe = re.sub(r"[^A-Za-z0-9_.-]+", "_", tid)[:80]
                             self._write_log(f"{suite.name}-solo-{safe}.log", solo.stdout)
+                            if prog is not None:
+                                with contextlib.suppress(Exception):
+                                    result = (
+                                        "timeout"
+                                        if solo.timed_out
+                                        else ("pass" if int(solo.exit_code) == 0 else "fail")
+                                    )
+                                    prog.rerun_progress(
+                                        index=idx,
+                                        total=total_reruns,
+                                        nodeid=tid,
+                                        result=result,
+                                    )
                             if solo.timed_out:
                                 failure = classify_step_failure(
                                     f"suite:{suite.name}:solo-timeout:{tid}"
@@ -1840,12 +2121,19 @@ class BuildRunner:
                 blocking = True
                 break
 
+        if prog is not None:
+            with contextlib.suppress(Exception):
+                prog.step_end("suites", ok=(not blocking))
+
         if blocking:
             report.errors.append("blockers present; skipping pack/release")
             report.pack_ok = False
             report.release_ok = False
         else:
             try:
+                if prog is not None:
+                    with contextlib.suppress(Exception):
+                        prog.step_start("pack")
                 pack_cmd = str((self.recipe.pack or {}).get("cmd") or "")
                 rendered_pack = render_template(
                     pack_cmd,
@@ -1975,6 +2263,9 @@ class BuildRunner:
                 report.pack_ok = False
                 blocking = True
                 assets = []
+            if prog is not None:
+                with contextlib.suppress(Exception):
+                    prog.step_end("pack", ok=bool(report.pack_ok) and not blocking)
 
             rel = self.recipe.release or {}
             never_latest = bool(rel.get("never_latest"))
@@ -1987,6 +2278,9 @@ class BuildRunner:
             )
             if not blocking and report.pack_ok and target == "github-prerelease":
                 try:
+                    if prog is not None:
+                        with contextlib.suppress(Exception):
+                            prog.step_start("release")
                     if self.release_fn is not None:
                         self.release_fn(
                             tag=tag,
@@ -2034,6 +2328,9 @@ class BuildRunner:
                     report.blockers_filed.append(filed)
                     report.release_ok = False
                     blocking = True
+                if prog is not None:
+                    with contextlib.suppress(Exception):
+                        prog.step_end("release", ok=bool(report.release_ok))
             elif not blocking and report.pack_ok and not target:
                 report.release_ok = True
 

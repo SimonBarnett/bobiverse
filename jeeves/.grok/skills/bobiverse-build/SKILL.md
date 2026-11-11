@@ -75,6 +75,7 @@ Typical shapes (channel `#bobiverse` + ops PM from chair):
 - **Dry-run plan:** lines starting `build dry-run:` (machine, suites, baseline, would classify, nothing published).
 - **Success:** `BUILD ok <repo> version=... ref=... tag=... prerelease ... id=b-...` (pack+release ran; no new_regression/step_failure blockers).
 - **Failure:** `BUILD fail <repo> version=... ref=... blockers=N pack=... release=... id=b-...` or `BUILD fail ... wrong machine id=b-...`. Chair frees `home/build-locks.json` when id matches (FR #6491); stale locks clear on the next `!build`.
+- **Live progress (FR #6585):** while the runner is up, `#bobiverse` also gets `BUILD progress <repo> version=... ... id=...` lines (step start/end with elapsed, suite pass/fail/skip counts, `rerun N/M <nodeid> pass|fail`, and a heartbeat after 10 minutes idle). Rate-limited (~30s) and redacted; a failed post never fails the build. Terminal `BUILD ok|fail` shape is unchanged.
 - **Status / usage / refuse:** `build status:`, `build: usage ...`, `build: no .bobiverse/build.yml`, lock refuse with running id.
 
 Blocker issues filed by the runner: title like `release-blocker: <test_id> (<version>)`, labels `feature-request` + `release-blocker`. Re-hit comments: `BUILD re-hit <kind> for <test_id> ...`.
