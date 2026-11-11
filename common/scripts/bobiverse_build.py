@@ -15,6 +15,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import subprocess
 import threading
 import time
@@ -984,6 +985,138 @@ def _scrub_secret_fragments(text: str, env: dict | None = None) -> str:
     return out
 
 
+# ------------------------------------------------------------------ build-work root / prune (FR #6655)
+
+
+def resolve_build_work_root(env: dict | None = None) -> Path:
+    """Parent folder for per-version build-work dirs (FR #6479 / #6655).
+
+    Precedence: ``BOBIVERSE_BUILD_WORK_DIR``, else alias ``BOBIVERSE_BUILD_WORK``,
+    else ``%ProgramData%/Bobiverse/build-work``.
+    """
+    e = env if env is not None else os.environ
+    for key in ("BOBIVERSE_BUILD_WORK_DIR", "BOBIVERSE_BUILD_WORK"):
+        override = str(e.get(key) or "").strip()
+        if override:
+            return Path(override)
+    return Path(e.get("ProgramData", "C:/ProgramData")) / "Bobiverse" / "build-work"
+
+
+def resolve_build_work_dir(
+    version: str,
+    *,
+    work_dir_arg: str = "",
+    env: dict | None = None,
+) -> Path:
+    """Resolve BUILD work directory for one version (FR #6479 / #6655).
+
+    Precedence: ``--work-dir`` arg (as-is), else ``<root>/<version>``.
+    """
+    if (work_dir_arg or "").strip():
+        return Path(work_dir_arg)
+    return resolve_build_work_root(env) / str(version)
+
+
+def build_work_min_free_gb(env: dict | None = None) -> float:
+    """Free-space refuse threshold in GB (FR #6655). Default 2.0."""
+    e = env if env is not None else os.environ
+    raw = str(e.get("BOBIVERSE_BUILD_WORK_MIN_FREE_GB") or "2").strip()
+    try:
+        return float(raw)
+    except ValueError:
+        return 2.0
+
+
+def build_work_keep_count(env: dict | None = None) -> int:
+    """How many finished build-work dirs to keep (FR #6655). Default 2."""
+    e = env if env is not None else os.environ
+    raw = str(e.get("BOBIVERSE_BUILD_WORK_KEEP") or "2").strip()
+    try:
+        n = int(raw)
+    except ValueError:
+        return 2
+    return max(0, n)
+
+
+def volume_free_gb(path: Path | str) -> float:
+    """Free space on the volume that holds ``path`` (GB)."""
+    p = Path(path)
+    probe = p if p.exists() else (p.anchor or p.drive or p.parent or Path("."))
+    if not str(probe):
+        probe = Path(".")
+    usage = shutil.disk_usage(str(probe))
+    return float(usage.free) / float(1024**3)
+
+
+def _build_work_dir_idle(path: Path, *, now: float, idle_s: float) -> bool:
+    """True when the dir looks finished/dead (no recent progress heartbeat)."""
+    if idle_s <= 0:
+        return True
+    markers = ("progress.jsonl", "result.json", "runner.log")
+    newest = 0.0
+    try:
+        newest = float(path.stat().st_mtime)
+    except OSError:
+        return True
+    for name in markers:
+        fp = path / name
+        try:
+            newest = max(newest, float(fp.stat().st_mtime))
+        except OSError:
+            continue
+    return (now - newest) >= idle_s
+
+
+def prune_build_work_dirs(
+    root: Path | str,
+    *,
+    keep: int | None = None,
+    active_names: Iterable[str] | None = None,
+    idle_s: float = 6 * 3600,
+    now: float | None = None,
+    env: dict | None = None,
+    remove: Callable[[Path], None] | None = None,
+    log: Callable[[str], None] | None = None,
+) -> list[str]:
+    """Remove finished/dead build-work children, keeping the newest ``keep`` (FR #6655).
+
+    Never removes names in ``active_names`` or dirs with a recent progress/
+    result/runner heartbeat (``idle_s``, default 6h). Returns pruned paths.
+    """
+    base = Path(root)
+    if not base.is_dir():
+        return []
+    keep_n = build_work_keep_count(env) if keep is None else max(0, int(keep))
+    active = {str(x).strip().lower() for x in (active_names or []) if str(x).strip()}
+    ts = float(time.time() if now is None else now)
+    remove_fn = remove or (lambda p: shutil.rmtree(p, ignore_errors=True))
+    log_fn = log or (lambda _m: None)
+
+    children: list[tuple[float, Path]] = []
+    for child in base.iterdir():
+        if not child.is_dir():
+            continue
+        if child.name.strip().lower() in active:
+            continue
+        if not _build_work_dir_idle(child, now=ts, idle_s=idle_s):
+            continue
+        try:
+            mtime = float(child.stat().st_mtime)
+        except OSError:
+            mtime = 0.0
+        children.append((mtime, child))
+    children.sort(key=lambda row: row[0], reverse=True)
+    pruned: list[str] = []
+    for _mtime, child in children[keep_n:]:
+        try:
+            remove_fn(child)
+            pruned.append(str(child))
+            log_fn(f"build: pruned work dir {child}")
+        except Exception as exc:
+            log_fn(f"build: prune failed path={child} err={type(exc).__name__}")
+    return pruned
+
+
 def run_build_preflight(
     *,
     repo: str,
@@ -997,27 +1130,29 @@ def run_build_preflight(
     recipe_loader: Callable | None = None,
     work_dir: Path | str | None = None,
     mkdir: Callable | None = None,
+    free_gb: Callable[[Path], float] | None = None,
     pack_tools: tuple[str, ...] = ("powershell", "gh"),
 ) -> PreflightReport:
     """FR #6492: recipe-machine environment check (no suite/pack/release).
 
     Each item is reported as ``build preflight: <name>=ok|missing <detail>``.
     Exit code 0 only when every item is ok. Never includes token values.
+    FR #6655: ``work_dir_free`` refuses when the build-work volume is under
+    ``BOBIVERSE_BUILD_WORK_MIN_FREE_GB`` (default 2).
     """
-    import shutil as _shutil
-
     e = dict(os.environ if env is None else env)
-    which_fn = which or _shutil.which
+    which_fn = which or shutil.which
     resolve_py = resolve_python or _default_resolve_python
     miss_imp = missing_imports or _default_missing_imports
     tok_src = token_source or _default_token_source
     auth_fn = gh_auth or (lambda: gh_auth_preflight(env=e))
     load_fn = recipe_loader or load_recipe
     mkdir_fn = mkdir or (lambda p: Path(p).mkdir(parents=True, exist_ok=True))
+    free_fn = free_gb or volume_free_gb
 
     root = Path(repo_root)
     if work_dir is None:
-        work = Path(e.get("ProgramData", "C:/ProgramData")) / "Bobiverse" / "build-work" / "preflight"
+        work = resolve_build_work_root(e) / "preflight"
     else:
         work = Path(work_dir)
 
@@ -1113,6 +1248,30 @@ def run_build_preflight(
         items.append(
             PreflightItem(
                 "work_dir",
+                False,
+                f"path={work} err={type(exc).__name__}",
+            )
+        )
+
+    # 6b) FR #6655: build-work volume free space (refuse under threshold)
+    min_free = build_work_min_free_gb(e)
+    try:
+        free = float(free_fn(work))
+        detail = f"free_gb={free:.2f} min_gb={min_free:.2f} path={work}"
+        if free < min_free:
+            items.append(
+                PreflightItem(
+                    "work_dir_free",
+                    False,
+                    detail + "; set BOBIVERSE_BUILD_WORK(_DIR) to a roomy volume or free space",
+                )
+            )
+        else:
+            items.append(PreflightItem("work_dir_free", True, detail))
+    except Exception as exc:
+        items.append(
+            PreflightItem(
+                "work_dir_free",
                 False,
                 f"path={work} err={type(exc).__name__}",
             )

@@ -31,6 +31,8 @@ def _all_ok_hooks(tmp_path: Path):
         recipe_loader=lambda root: recipe,
         work_dir=work,
         mkdir=lambda p: Path(p).mkdir(parents=True, exist_ok=True),
+        # FR #6655: do not use the live volume free space in unit tests.
+        free_gb=lambda p: 99.0,
     )
 
 
@@ -46,6 +48,7 @@ def test_fr6492_preflight_all_ok_exits_zero(tmp_path: Path):
         "github_token",
         "recipe",
         "work_dir",
+        "work_dir_free",
         "cache_dir",
         "pack_tools",
     ):
@@ -84,6 +87,7 @@ def test_fr6492_each_missing_item_reports_and_nonzero(tmp_path: Path):
             if name in ("powershell", "gh")
             else _all_ok_hooks(tmp_path)["which"](name)
         ),
+        "work_dir_free": dict(free_gb=lambda p: 0.5),
     }
     for missing_name, override in cases.items():
         hooks = _all_ok_hooks(tmp_path)

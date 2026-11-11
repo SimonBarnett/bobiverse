@@ -38,3 +38,12 @@ def test_fr6479_blank_env_falls_back_to_default():
     env = {"BOBIVERSE_BUILD_WORK_DIR": "  ", "ProgramData": r"C:\ProgramData"}
     got = rbb.resolve_build_work_dir("1.2.3", work_dir_arg="", env=env)
     assert got == Path(r"C:\ProgramData") / "Bobiverse" / "build-work" / "1.2.3"
+
+
+def test_fr6655_build_work_alias_without_dir_suffix():
+    env = {
+        "BOBIVERSE_BUILD_WORK": r"D:\Bobiverse\build-work",
+        "ProgramData": r"C:\ProgramData",
+    }
+    got = rbb.resolve_build_work_dir("2.0.0", work_dir_arg="", env=env)
+    assert got == Path(r"D:\Bobiverse\build-work") / "2.0.0"

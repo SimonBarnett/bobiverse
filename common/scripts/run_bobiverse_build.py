@@ -94,18 +94,13 @@ def resolve_build_work_dir(
     work_dir_arg: str = "",
     env: dict | None = None,
 ) -> Path:
-    """Resolve BUILD work directory (FR #6479).
+    """Resolve BUILD work directory (FR #6479 / #6655).
 
-    Precedence: ``--work-dir`` arg (as-is), else env ``BOBIVERSE_BUILD_WORK_DIR`` /
-    ``<version>``, else ``%ProgramData%/Bobiverse/build-work/<version>``.
+    Precedence: ``--work-dir`` arg (as-is), else env ``BOBIVERSE_BUILD_WORK_DIR``
+    / ``BOBIVERSE_BUILD_WORK`` / ``<version>``, else
+    ``%ProgramData%/Bobiverse/build-work/<version>``.
     """
-    if (work_dir_arg or "").strip():
-        return Path(work_dir_arg)
-    e = env if env is not None else os.environ
-    override = (e.get("BOBIVERSE_BUILD_WORK_DIR") or "").strip()
-    if override:
-        return Path(override) / version
-    return Path(e.get("ProgramData", "C:/ProgramData")) / "Bobiverse" / "build-work" / version
+    return bb.resolve_build_work_dir(version, work_dir_arg=work_dir_arg, env=env)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -116,7 +111,11 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--ref", default="HEAD")
     p.add_argument("--job", default="", help="path to build-queue JSON from chair")
     p.add_argument("--queue-dir", default="", help="drain oldest *.json from this dir")
-    p.add_argument("--work-dir", default="", help="default: BOBIVERSE_BUILD_WORK_DIR/<version> or %ProgramData%/Bobiverse/build-work/<version>")
+    p.add_argument(
+        "--work-dir",
+        default="",
+        help="default: BOBIVERSE_BUILD_WORK(_DIR)/<version> or %ProgramData%/Bobiverse/build-work/<version>",
+    )
     p.add_argument("--fake-filer", action="store_true")
     p.add_argument("--dry-run", action="store_true")
     p.add_argument("--checkout", action="store_true", help="clean clone at ref + baseline worktree")
@@ -226,6 +225,23 @@ def main(argv: list[str] | None = None) -> int:
     progress = None
     try:
         work = resolve_build_work_dir(version, work_dir_arg=args.work_dir)
+        # FR #6655: prune finished/dead siblings under the build-work root.
+        # Never touch this run's directory (active_names) or recent heartbeats.
+        try:
+            root = bb.resolve_build_work_root()
+            if (args.work_dir or "").strip():
+                # Explicit --work-dir may sit outside the configured root; still
+                # prune the configured root when it exists.
+                pass
+            pruned = bb.prune_build_work_dirs(
+                root,
+                active_names={work.name},
+                log=lambda m: print(m, flush=True),
+            )
+            if pruned:
+                print(f"build: pruned {len(pruned)} old work dir(s)", flush=True)
+        except Exception as exc:
+            print(f"build: prune skipped err={type(exc).__name__}", flush=True)
         log_dir = work / "logs"
         log_dir.mkdir(parents=True, exist_ok=True)
         # FR #6586: progress lines so chair *.runner.log grows during the run.
