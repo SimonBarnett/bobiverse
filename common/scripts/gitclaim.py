@@ -8660,9 +8660,11 @@ def offer_focus_top(
     me_raw = (nick or "").strip()
     me = (canonical_worker_nick(me_raw) or me_raw).strip()
     ledger = ledger_load(home)
-    # FR #3205: when an on-disk precompute fingerprint matches the queue, !bored uses
-    # zero GitHub calls (local eligibility only). Otherwise keep the FR #3188 budget of 1.
-    # Resync / webhook / explicit rebuild_offer_precompute refresh the file off the IRC path.
+    # FR #3205 / #3212 / #6581: when an on-disk precompute fingerprint matches the queue,
+    # !bored uses zero GitHub calls (local eligibility only). Otherwise use
+    # BORED_GITHUB_CALL_BUDGET (production 0 — local-state only; FR #3188's budget-of-one
+    # is retired). Resync / webhook / explicit rebuild_offer_precompute refresh the file
+    # off the IRC path.
     try:
         with _lock(home):
             try:

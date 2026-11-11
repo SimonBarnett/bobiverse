@@ -135,8 +135,8 @@ def test_mrb3265_stale_precompute_allows_github_budget(home: Path):
         issue_open=probe,
     )
     assert st == "ok" and job is not None
-    # Stale path keeps FR #3188 budget (>=0 calls allowed); zero-GitHub only when fresh.
-    # At least the offer must succeed and prefer lowest number.
+    # Stale path uses BORED_GITHUB_CALL_BUDGET (production 0; FR #3212 / #6581).
+    # Fresh fingerprint forces budget 0 explicitly. Offer must still succeed.
     assert job["id"] == "#3"
 
 
