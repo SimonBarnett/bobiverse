@@ -142,10 +142,10 @@ COMMANDS: tuple = (
     CommandSpec(
         "pin",
         "!pin owner/repo#N <machine>",
-        "ops: set require_machine=<machine> on the live queue row (FR #6407)",
+        "ops: set require_machine=<machine> on the live queue row (FR #6407 / #6592)",
         OPS_ROLES,
         "!pin SimonBarnett/a-search#9 redqueen",
-        "Under the queue lock: stamp require_machine on matching rows and save. Survives cue re-inference and !resync. Refuses retired ce-priority-dev1 / non-machine tokens.",
+        "Under the queue lock: stamp require_machine + require_machine_operator on matching rows and save. Survives cue re-inference and !resync (including bobiverse FR #4512). Refuses retired ce-priority-dev1 / non-machine tokens.",
         ("unpin", "assign", "list"),
     ),
     CommandSpec("recycle", "!recycle [machine|all|dry-run [machine|all]]",
