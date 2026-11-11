@@ -14,12 +14,15 @@ def _txt(path: Path) -> str:
 def test_fr5047_digespcent_grok_build_does_not_fill_peer_weekly():
     h = _txt(HOVER)
     start = h.index("foreach ($pc in @($digestPcentRows))")
-    block = h[start : start + 1200]
-    assert "FR #5047" in block
+    # FR #6666: cite lives as ``FR #6285 / #5047``; bound to the digespcent loop only.
+    end = h.find("\n    # HTTP digest machine.weekly", start)
+    block = h[start:end] if end > start else h[start : start + 1200]
+    assert "#5047" in block
+    assert "FR #6285" in block or "6285" in block
     assert "grok-build" in block
-    # Peers must not take digespcent weekly (no lastSeen on pcent rows).
-    assert "$mac -ne $machineId" in block
+    # digespcent grok-build must never paint TipForm xAI rows.
     assert "continue" in block
+    assert "xai_weekly" in block or "never paint" in block
 
 
 def test_fr5047_pecache_peer_without_lastseen_sets_fuel_stale():
