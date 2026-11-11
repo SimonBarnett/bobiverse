@@ -8367,11 +8367,12 @@ def seat_done_without_later_offer(
 
 
 def release_duplicate_done_hold(home: Path, nick: str) -> str:
-    """FR #4642: drop an ack-missing/offer hold the seat already finished.
+    """FR #4642 / #4661 / #6565: drop an ack-missing/offer hold the seat already finished.
 
-    Returns ``TASK repo#id`` when a hold was cleared, else ``''``.
+    Returns `TASK repo#id` when a hold was cleared, else `''`.
     A later re-offer (offered stamp after done) keeps the hold.
-    A PASS board already on the held MRB pull also counts as finished.
+    Finished when: seat ledger done stamp, or queue `done[]` MRB PASS by this
+    nick (FR #6565 — no live GitHub required), or a PASS board on the held MRB pull.
     """
     key = _seat_key(nick)
     if not key:
@@ -8390,6 +8391,21 @@ def release_duplicate_done_hold(home: Path, nick: str) -> str:
     if not repo or not ident:
         return ""
     finished = seat_done_without_later_offer(home, nick, repo, task, ident)
+    if not finished and str(task or "").upper() == "MRB":
+        # FR #4661 / #6565: queue done[] MRB PASS is enough when there is no ledger
+        # done stamp and no live GitHub. Only for MRB holds (never clear a FIX hold
+        # because an earlier MRB PASS exists for the same pull). Honour FR #4642:
+        # when ledger has offered > done, keep the hold (do not override).
+        led = ledger_load(home)
+        done_ts = _seat_job_stamp(led, nick, repo, task, ident, "done")
+        offered_ts = _seat_job_stamp(led, nick, repo, task, ident, "offered")
+        later_offer = (
+            done_ts is not None
+            and offered_ts is not None
+            and offered_ts > done_ts
+        )
+        if not later_offer and nick_done_mrb_pass(home, nick, repo, ident):
+            finished = True
     if not finished:
         row = {"repo": repo, "task": task, "id": ident, "url": ""}
         finished = bool(_lost_done_github_result(row))
