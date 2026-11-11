@@ -1927,6 +1927,14 @@ _RETIRED_REQUIRE_MACHINES: frozenset[str] = frozenset(
 )
 
 
+def _is_operator_require_machine(row: dict) -> bool:
+    """FR #6592: True when !pin/!unpin stamped require_machine_operator on the row."""
+    v = row.get("require_machine_operator")
+    if isinstance(v, bool):
+        return v
+    return str(v or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
 def _is_retired_require_machine(mid: str) -> bool:
     """True when mid is the retired CE-PRIORITY-DEV1 seat (FR #6407)."""
     raw = str(mid or "").strip().lower()
@@ -2139,8 +2147,16 @@ def row_require_machine(row: dict) -> str:
     # FR #4512: bobiverse never trusts a persisted text-cue stamp — re-infer
     # (labels / dedicated pin / hard pin only). Stale ionos stamps clear.
     # FR #4745: harvest-lesson rows re-infer too (sticky Day Works DEV1 must not stick).
+    # FR #6592: operator !pin/!unpin stamps (require_machine_operator) survive re-infer.
     title_s = str(row.get("title") or "")
     if repo_l == _BOBIVERSE_REPO_L or is_harvest_lesson_pr(title=title_s, labels=labels):
+        if _is_operator_require_machine(row):
+            if stamped in {"*", "any", "none", "-"}:
+                return ""
+            if stamped:
+                mid = bobreport.normalize_machine_id(stamped) or stamped
+                if mid and mid not in _REQUIRE_MACHINE_NON_MACHINE and not _is_retired_require_machine(mid):
+                    return mid
         return infer_require_machine(
             title=title_s,
             body=str(row.get("body") or ""),
@@ -2418,6 +2434,7 @@ def prepare_reopened_fr_row(
     # Drop seat / machine pins from the finished attempt.
     for key in (
         "require_machine",
+        "require_machine_operator",  # FR #6592
         "offered_to",
         "offered_ts",
         "offered_via",
@@ -3255,9 +3272,14 @@ def _stamp_require_machine(row: dict, claim: GitClaim | None = None) -> None:
     )
     # FR #4512: bobiverse — clear stale text-cue stamps when inference is empty.
     # FR #4745: harvest-lesson rows clear sticky DEV1 (or other) stamps the same way.
+    # FR #6592: operator !pin/!unpin stamps survive; do not wipe them to any.
     if req and _is_retired_require_machine(req):
         req = ""
     if repo_l == _BOBIVERSE_REPO_L or harvest_lesson:
+        if _is_operator_require_machine(row):
+            if hard and not _is_retired_require_machine(hard):
+                row["require_machine"] = hard
+            return
         if req:
             row["require_machine"] = req
         elif stamped and stamped not in {"*", "any", "none", "-"}:
@@ -4249,6 +4271,9 @@ def _coerce_row(row: dict) -> dict | None:
         out["merged_prs"] = [str(x) for x in mp] if isinstance(mp, list) else [str(mp)]
     if row_needs_human(row):
         out["needs_human"] = True
+    # FR #6592: operator !pin/!unpin flag must survive queue reload.
+    if _is_operator_require_machine(row):
+        out["require_machine_operator"] = "1"
     # FR #2939: one-shot announce when every live seat is self-UAT for repo UAT #0.
     if row.get("self_uat_escalated"):
         out["self_uat_escalated"] = True
@@ -9510,6 +9535,8 @@ def set_require_machine_job(
 
     ``machine`` of any/none/*/ - is an operator unpin (survives cue re-inference).
     A real machine id is an operator pin (kept by _stamp_require_machine).
+    FR #6592: also stamps ``require_machine_operator=1`` so bobiverse / harvest-lesson
+    rows honor the pin under FR #4512 re-infer (bare stamps without the flag still clear).
     Remaining hard ``_REQUIRE_MACHINE_ISSUE_PINS`` still win over operator any
     (documented in jeeves-commands); retired ce-priority-dev1 hard pins are gone.
     """
@@ -9561,6 +9588,8 @@ def set_require_machine_job(
                     if _norm_row_id(row.get("id")) != ident_n:
                         continue
                     row["require_machine"] = stamp
+                    # FR #6592: mark operator !pin/!unpin so bobiverse FR #4512 re-infer keeps it.
+                    row["require_machine_operator"] = "1"
                     rows_n += 1
             if rows_n:
                 _write_queue(queue_path(home), doc)
