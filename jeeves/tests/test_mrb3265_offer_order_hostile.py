@@ -81,21 +81,28 @@ def test_mrb3265_claim_top_kind_then_number_not_seq(home: Path):
 
 
 def test_mrb3265_same_priority_mrb_beats_lower_numbered_fr(home: Path):
-    """Across same-priority repos, any MRB sorts before any FR (kind before number)."""
+    """Across same-priority repos, any MRB sorts before any FR (kind before number).
+
+    Both peers must be HIGH_PRIORITY_REPOS (bobiverse / a-search): !focus 1 on any
+    other repo is clamped to medium (5), which would make this a priority test
+    instead of a same-priority kind-before-number probe (FR #6571).
+    """
     _queue(
         home,
         [
             _row("SimonBarnett/a-search", "FR", 1, seq=1),
-            _row("SimonBarnett/Club-Madeira", "MRB", 99, seq=2),
+            _row("SimonBarnett/bobiverse", "MRB", 99, seq=2),
         ],
     )
     fi.handle_focus_cmd(home, "1 SimonBarnett/a-search")
-    fi.handle_focus_cmd(home, "1 SimonBarnett/Club-Madeira")
+    fi.handle_focus_cmd(home, "1 SimonBarnett/bobiverse")
     # Older ts on a-search must not promote its FR ahead of the MRB.
     doc = fi.load_focus(home)
     doc["repos"]["SimonBarnett/a-search"]["ts"] = "2026-01-01T00:00:00Z"
-    doc["repos"]["SimonBarnett/Club-Madeira"]["ts"] = "2026-12-01T00:00:00Z"
+    doc["repos"]["SimonBarnett/bobiverse"]["ts"] = "2026-12-01T00:00:00Z"
     fi.save_focus(home, doc)
+    assert fi._repo_entry(doc, "SimonBarnett/a-search")[0] == 1
+    assert fi._repo_entry(doc, "SimonBarnett/bobiverse")[0] == 1
     ordered = gitclaim.ordered_unaccepted(home)
     assert ordered[0]["task"] == "MRB" and ordered[0]["id"] == "#99"
     assert ordered[1]["task"] == "FR" and ordered[1]["id"] == "#1"
