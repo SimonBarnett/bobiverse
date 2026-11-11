@@ -3623,7 +3623,10 @@ def apply_queue_event(home: Path, claim: GitClaim) -> str:
                 return "error:queue-read"
 
             dirty = False
-            for pending in _pop_all_pending(home):
+            # FR #6502: keep drained claims so a later write failure can re-spool them
+            # (rename-aside pop already removed them from the pending file).
+            drained: list[GitClaim] = list(_pop_all_pending(home))
+            for pending in drained:
                 ch = _apply_claim_to_doc(doc, pending, home=home)
                 if ch == "error":
                     _spool_pending(home, pending)
@@ -3632,6 +3635,15 @@ def apply_queue_event(home: Path, claim: GitClaim) -> str:
 
             changed = _apply_claim_to_doc(doc, claim, home=home)
             if changed == "error":
+                # Persist any drained pending already merged into doc, then spool the
+                # failing claim so it is not dropped (FR #1811 / #6502).
+                if dirty:
+                    try:
+                        _write_queue(queue_path(home), doc)
+                    except OSError:
+                        for p in drained:
+                            _spool_pending(home, p)
+                _spool_pending(home, claim)
                 return "error"
             if changed != "noop":
                 dirty = True
@@ -3641,6 +3653,8 @@ def apply_queue_event(home: Path, claim: GitClaim) -> str:
             try:
                 _write_queue(queue_path(home), doc)
             except OSError:
+                for p in drained:
+                    _spool_pending(home, p)
                 _spool_pending(home, claim)
                 return "error:queue-write"
             # FR #2375 / #1323: ledger hold so MERGED PRs cannot re-offer if unaccepted leaks back.
@@ -3961,40 +3975,139 @@ def _claim_from_pending_dict(d: dict) -> GitClaim | None:
 
 
 def _spool_pending(home: Path, claim: GitClaim) -> None:
-    """Durable spool so lock/write failures do not drop webhook claims (FR #1811)."""
+    """Durable spool so lock/write failures do not drop webhook claims (FR #1811).
+
+    FR #6502: write a unique sidecar file per claim. Concurrent TimeoutError
+    paths used to append the same ``pending`` file without a lock; interleaved
+    JSON lines were skipped on drain and rows vanished. Sidecars are drained by
+    ``_pop_all_pending`` alongside any legacy shared pending file.
+    """
+    path = pending_path(home)
+    line = json.dumps(_claim_to_pending_dict(claim), separators=(",", ":")) + "\n"
     try:
-        path = pending_path(home)
         path.parent.mkdir(parents=True, exist_ok=True)
-        with path.open("a", encoding="utf-8") as fh:
-            fh.write(json.dumps(_claim_to_pending_dict(claim), separators=(",", ":")) + "\n")
     except OSError:
         pass
+    for attempt in range(5):
+        side = path.with_name(
+            f"{path.name}.side-{os.getpid()}-{time.time_ns()}-{threading.get_ident()}-{attempt}"
+        )
+        try:
+            # O_CREAT|O_EXCL so two threads never share a sidecar path.
+            fd = os.open(str(side), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            try:
+                os.write(fd, line.encode("utf-8"))
+            finally:
+                os.close(fd)
+            return
+        except FileExistsError:
+            continue
+        except OSError:
+            time.sleep(0.01 * (attempt + 1))
+
+
+def _pending_sidecar_paths(home: Path) -> list[Path]:
+    """FR #6502: recover `.side-*` files left when append spool failed under AV."""
+    root = pending_path(home).parent
+    name = pending_path(home).name
+    if not root.is_dir():
+        return []
+    out: list[Path] = []
+    try:
+        for p in root.iterdir():
+            if p.name.startswith(name + ".side-") and p.is_file():
+                out.append(p)
+    except OSError:
+        return []
+    return sorted(out)
 
 
 def _pop_all_pending(home: Path) -> list[GitClaim]:
+    """Drain the durable pending spool under the queue lock (FR #1811 / #6502).
+
+    Atomically renames ``pending`` aside before reading so concurrent
+    ``_spool_pending`` appends (TimeoutError path, outside the lock) land on a
+    fresh file and are not deleted by unlink-after-read.
+    """
     path = pending_path(home)
-    if not path.exists():
-        return []
     out: list[GitClaim] = []
-    try:
-        raw = path.read_text(encoding="utf-8")
-    except OSError:
-        return []
-    try:
-        path.unlink()
-    except OSError:
-        pass
-    for line in raw.splitlines():
-        line = line.strip()
-        if not line:
+    drain: Path | None = None
+    if path.exists():
+        drain = path.with_name(f"{path.name}.drain-{os.getpid()}-{time.time_ns()}")
+        try:
+            os.replace(str(path), str(drain))
+        except FileNotFoundError:
+            drain = None
+        except OSError:
+            # Fallback: best-effort read+unlink (pre-#6502 behaviour).
+            try:
+                raw = path.read_text(encoding="utf-8")
+            except OSError:
+                raw = ""
+            try:
+                path.unlink()
+            except OSError:
+                pass
+            for line in raw.splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    d = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                c = _claim_from_pending_dict(d)
+                if c is not None:
+                    out.append(c)
+            drain = None
+    if drain is not None:
+        try:
+            raw = drain.read_text(encoding="utf-8")
+        except OSError:
+            # Put the unread drain back so the next holder can retry.
+            try:
+                os.replace(str(drain), str(path))
+            except OSError:
+                pass
+            raw = ""
+            drain = None
+        else:
+            try:
+                drain.unlink()
+            except OSError:
+                pass
+            for line in raw.splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    d = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                c = _claim_from_pending_dict(d)
+                if c is not None:
+                    out.append(c)
+    # FR #6502: also drain any sidecar files from failed append retries.
+    for side in _pending_sidecar_paths(home):
+        try:
+            raw = side.read_text(encoding="utf-8")
+        except OSError:
             continue
         try:
-            d = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        c = _claim_from_pending_dict(d)
-        if c is not None:
-            out.append(c)
+            side.unlink()
+        except OSError:
+            pass
+        for line in raw.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                d = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            c = _claim_from_pending_dict(d)
+            if c is not None:
+                out.append(c)
     return out
 
 

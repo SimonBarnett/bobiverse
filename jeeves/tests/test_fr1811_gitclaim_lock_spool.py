@@ -45,9 +45,10 @@ def test_fr1811_lock_timeout_spools_and_distinguishes_err(tmp_path: Path):
     with mock.patch.object(gitclaim, "_lock", boom):
         result = gitclaim.apply_queue_event(home, claim)
     assert result == "error:queue-lock-timeout"
-    pending = gitclaim.pending_path(home)
-    assert pending.exists()
-    body = pending.read_text(encoding="utf-8")
+    # FR #6502: spool is a unique sidecar (not a shared append file).
+    sides = gitclaim._pending_sidecar_paths(home)
+    assert sides, "expected pending sidecar after lock timeout"
+    body = "\n".join(p.read_text(encoding="utf-8") for p in sides)
     assert "#1811" in body
     with mock.patch.object(gitclaim, "_lock", boom):
         assert gitclaim.enqueue_unaccepted(home, claim) == "error:queue-lock-timeout"
@@ -164,9 +165,55 @@ def test_fr1811_concurrent_applies_lose_no_rows(tmp_path: Path):
         for line in pp.read_text(encoding="utf-8").splitlines():
             if line.strip():
                 pending_ids.add(str(json.loads(line).get("id") or ""))
+    # FR #6502: also count sidecar recoveries as present.
+    for side in gitclaim._pending_sidecar_paths(home):
+        for line in side.read_text(encoding="utf-8").splitlines():
+            if line.strip():
+                pending_ids.add(str(json.loads(line).get("id") or ""))
     missing = [
         f"#{1000 + i}"
         for i in range(n)
         if f"#{1000 + i}" not in ids and f"#{1000 + i}" not in pending_ids
     ]
+    assert not missing, missing
+
+
+def test_fr6502_pop_pending_does_not_drop_concurrent_spool(tmp_path: Path):
+    """FR #6502: rename-aside drain must not unlink lines appended during pop."""
+    home = _home(tmp_path)
+    for i in range(5):
+        gitclaim._spool_pending(home, _fr(i))
+
+    seen: set[str] = set()
+    stop = threading.Event()
+
+    def spammer() -> None:
+        for i in range(100, 300):
+            if stop.is_set():
+                break
+            gitclaim._spool_pending(home, _fr(i))
+            time.sleep(0.0005)
+
+    t = threading.Thread(target=spammer)
+    t.start()
+    for _ in range(80):
+        for c in gitclaim._pop_all_pending(home):
+            seen.add(c.id)
+        time.sleep(0.001)
+    stop.set()
+    t.join()
+    for c in gitclaim._pop_all_pending(home):
+        seen.add(c.id)
+    # Leftover primary spool + sidecars.
+    pp = gitclaim.pending_path(home)
+    if pp.exists():
+        for line in pp.read_text(encoding="utf-8").splitlines():
+            if line.strip():
+                seen.add(str(json.loads(line).get("id") or ""))
+    for side in gitclaim._pending_sidecar_paths(home):
+        for line in side.read_text(encoding="utf-8").splitlines():
+            if line.strip():
+                seen.add(str(json.loads(line).get("id") or ""))
+    expect = {f"#{i}" for i in list(range(5)) + list(range(100, 300))}
+    missing = sorted(expect - seen)
     assert not missing, missing
