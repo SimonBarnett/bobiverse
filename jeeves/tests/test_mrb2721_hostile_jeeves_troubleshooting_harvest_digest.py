@@ -106,5 +106,14 @@ def test_mrb2721_digest_bullets_complete_lines():
     bullets = [ln for ln in chunk.splitlines() if ln.startswith("- **")]
     assert len(bullets) >= 7
     for ln in bullets:
-        assert ln.rstrip().endswith(")") or "lessons:" in ln or "held" in ln
+        # Complete lines end with sentence punctuation (lesson-count ) or prose .).
+        # FR #3742 / #4422 / #3867 bullets end with '.' after release-to-unaccepted /
+        # double-offer wording; older pins required only ')'.
+        trimmed = ln.rstrip()
+        assert (
+            trimmed.endswith((")", "."))
+            or "lessons:" in ln
+            or "held" in ln
+        )
+        assert ":**" in ln  # bold title closed before body
         assert "orphan" not in ln.lower()
