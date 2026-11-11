@@ -8367,11 +8367,12 @@ def seat_done_without_later_offer(
 
 
 def release_duplicate_done_hold(home: Path, nick: str) -> str:
-    """FR #4642: drop an ack-missing/offer hold the seat already finished.
+    """FR #4642 / #4661 / #6565: drop an ack-missing/offer hold the seat already finished.
 
-    Returns ``TASK repo#id`` when a hold was cleared, else ``''``.
+    Returns `TASK repo#id` when a hold was cleared, else `''`.
     A later re-offer (offered stamp after done) keeps the hold.
-    A PASS board already on the held MRB pull also counts as finished.
+    Finished when: seat ledger done stamp, or queue `done[]` MRB PASS by this
+    nick (FR #6565 — no live GitHub required), or a PASS board on the held MRB pull.
     """
     key = _seat_key(nick)
     if not key:
