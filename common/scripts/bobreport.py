@@ -5733,10 +5733,13 @@ def read_local_opencode_fuel_doc(
     """Read full local OpenCode fuel doc (pcent + windows + limiting; FR #6147).
 
     Fixtures: ``BOB_OPENCODE_FUEL_FIXTURE`` (stats/rich JSON) and optional
-    ``BOB_OPENCODE_WINDOWS_FIXTURE`` (pure windows JSON). The PowerShell helper
-    is started in the background and polled. The ear tick does not wait on
-    ``opencode stats``. A helper that is still running returns the last
-    completed document and does not replace it with an empty shell.
+    ``BOB_OPENCODE_WINDOWS_FIXTURE`` (pure windows JSON). When
+    ``BOB_OPENCODE_FUEL_HELPER`` points at an existing ``.ps1``, the PowerShell
+    helper is started in the background and polled (MRB #6176 / FR #6632). The
+    ear tick does not wait on ``opencode stats``. A helper that is still
+    running returns the last completed document and does not replace it with
+    an empty shell. Install-path auto-discovery of the helper stays off
+    (FR #6301 / #6285 digest-only Go windows).
     """
     e = os.environ if env is None else env
     # FR #6248 / #6263: service-owned official Go zen usage (fixture or Bearer key).
@@ -5874,17 +5877,6 @@ def read_local_opencode_fuel_doc(
                     out["opencode_account"] = account_label
                 return out
             return {}
-    # FR #6301 Part D: no labelled keys and no legacy default -> "no key set".
-    # Do not fall through to the tray CLI helper for Go windows (FR #6285 digest-only).
-    _stamp_opencode_acquisition(
-        kind="missing_key",
-        configured=False,
-        key_source="",
-        label="",
-        opencode_state=OPENCODE_NO_KEY_STATE,
-        acl_tightened=acl_tightened or None,
-        labels=list(sel.get("labels") or []),
-    )
     fixture = (e.get("BOB_OPENCODE_FUEL_FIXTURE") or "").strip()
     win_fixture = (e.get(OPENCODE_WINDOWS_FIXTURE_ENV) or "").strip()
     if fixture:
@@ -5894,7 +5886,69 @@ def read_local_opencode_fuel_doc(
         return doc
     if win_fixture:
         return _apply_windows_fixture({}, win_fixture)
-    # Explicit no-key fuel doc (tests / machines without Go key).
+
+    # FR #6632 / MRB #6176: explicit BOB_OPENCODE_FUEL_HELPER only. Restore
+    # TTL + background poll + disk cache. Do not auto-discover install tools
+    # (FR #6301 Part D / FR #6285 digest-only Go windows).
+    helper_override = (e.get("BOB_OPENCODE_FUEL_HELPER") or "").strip()
+    if helper_override:
+        helper = Path(helper_override)
+        if helper.is_file():
+            ts = float(time.time() if now is None else now)
+            cache_s = opencode_fuel_cache_s(e)
+            last_at = float(_opencode_fuel_cache.get("at") or 0.0)
+            last_doc = _opencode_fuel_cache.get("doc")
+            if not isinstance(last_doc, dict):
+                # Migrate older cache shape that stored pcent under ``value``.
+                last_val = _opencode_fuel_cache.get("value")
+                last_doc = dict(last_val) if isinstance(last_val, dict) else {}
+            cached = dict(last_doc) if isinstance(last_doc, dict) else {}
+            if not cached:
+                disk = _load_opencode_fuel_disk(e, helper)
+                if disk:
+                    cached = disk
+                    _opencode_fuel_cache["doc"] = dict(disk)
+                    _opencode_fuel_cache["value"] = _pcent_from_opencode_fuel_doc(disk)
+
+            status, fresh = _take_opencode_fuel_helper(ts)
+            if status == "doc":
+                chosen = _accept_opencode_fuel_doc(fresh, cached)
+                _store_opencode_fuel_doc(chosen, ts, e, helper)
+                return dict(chosen)
+            if status == "running":
+                return dict(cached) if cached else {}
+            if status == "failed":
+                # Deadline kill: back off for one TTL, keep the last real document.
+                _opencode_fuel_cache["at"] = ts
+                return dict(cached) if cached else {}
+
+            if not force and cache_s > 0 and last_at > 0 and (ts - last_at) < cache_s:
+                return dict(cached)
+
+            if not _start_opencode_fuel_helper(helper, dict(e), ts):
+                _opencode_fuel_cache["at"] = ts
+                return dict(cached) if cached else {}
+            status, fresh = _take_opencode_fuel_helper(ts)
+            if status == "doc":
+                chosen = _accept_opencode_fuel_doc(fresh, cached)
+                _store_opencode_fuel_doc(chosen, ts, e, helper)
+                return dict(chosen)
+            # Still running (live opencode) or failed to exit yet: do not stamp an
+            # empty document over the last reading, and do not block the tick.
+            return dict(cached) if cached else {}
+
+    # FR #6301 Part D: no labelled keys and no legacy default -> "no key set".
+    # Do not fall through to install-path tray CLI helper for Go windows
+    # (FR #6285 digest-only).
+    _stamp_opencode_acquisition(
+        kind="missing_key",
+        configured=False,
+        key_source="",
+        label="",
+        opencode_state=OPENCODE_NO_KEY_STATE,
+        acl_tightened=acl_tightened or None,
+        labels=list(sel.get("labels") or []),
+    )
     return _no_key_opencode_fuel_doc()
 
 
