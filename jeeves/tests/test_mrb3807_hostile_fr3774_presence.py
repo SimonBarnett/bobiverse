@@ -41,7 +41,12 @@ def test_mrb3807_hostile_install_docs_skill_pin():
     assert "FR #3774" in post
     assert "presence_channels" in post
     skill = SKILL.read_text(encoding="utf-8")
-    assert "FR #3774" in skill
+    # FR #5190 (PR #5223) superseded the FR #3774 client default and rewrote this skill row.
+    assert (
+        "Client must not auto-join `#bobiverse`. "
+        "Control is registered `#{machine}` else `#wonderland`."
+    ) in skill
+    assert "FR #5190" in skill
     assert "presence_channels" in skill
     assert PIN.is_file()
     pin = PIN.read_text(encoding="utf-8")
