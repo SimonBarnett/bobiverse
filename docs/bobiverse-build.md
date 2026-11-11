@@ -67,6 +67,13 @@ Deterministic, injectable, **zero AI tokens**. Module: `common/scripts/bobiverse
 
 FR #6491: terminal `BUILD ok|fail ... id=` frees the chair lock by id; `!build cancel` / `!build status` unchanged; stale locks (older than recipe max run) clear on the next `!build`.
 
+FR #6558 (route claim markers under `%ProgramData%\Bobiverse\build-routes\`):
+
+- Explicit `id=` claims are permanent (FR #5266 single-runner). A second consumer logs one `BUILD v1 route dropped as duplicate ... stale_after=never` line and returns False.
+- Id-less routes (hash fallback `h-<sha16>`) expire when the marker age is **strictly greater** than the local recipe's `recipe_max_run_s` (same estimate as the FR #6491 chair stale lock). Exact threshold age stays a duplicate. Age-based expiry does **not** prove the prior runner has exited.
+- Stale reclaim uses a stable never-unlinked `.reclaim.lock` in the marker directory (do not delete it) plus `os.replace`, so concurrent consumers admit exactly one reclaim.
+- `consume_build_v1` emits one log line per duplicate, claim error, or reclaim when `log=` is set; the agent passes `info`.
+
 ### Test doubles
 
 - `FakeGitHubFiler` --- in-memory `list_open_issues` / `create_issue` / `comment`.

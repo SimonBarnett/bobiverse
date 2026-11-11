@@ -2429,12 +2429,16 @@ class Client:
             info("WARN BUILD v1 recipe load: empty machine; not falling back to ionos")
             return False
         qdir = self._build_queue_dir()
+        # FR #6558: id-less route markers expire after recipe max run; log duplicates once.
+        stale_claim_s = bobiverse_build.recipe_max_run_s(recipe)
         ok = bobiverse_build.consume_build_v1(
             route_line,
             local,
             recipe_machine,
             queue_dir=qdir,
             route_marker_dir=bobiverse_build.default_build_route_marker_dir(),
+            stale_claim_s=stale_claim_s,
+            log=info,
         )
         if ok:
             info(
