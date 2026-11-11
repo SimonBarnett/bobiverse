@@ -122,6 +122,11 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--lock-file", default="", help="BuildLock json to release when done")
     p.add_argument("--result-file", default="", help="write the JSON result here")
     p.add_argument("--local-machine", default=os.environ.get("BOB_MACHINE_ID", ""))
+    p.add_argument(
+        "--preflight",
+        action="store_true",
+        help="FR #6492: recipe-machine env check only (no suite/pack/release)",
+    )
     args = p.parse_args(argv)
 
     job = {}
@@ -147,6 +152,29 @@ def main(argv: list[str] | None = None) -> int:
             repo = repos.split(",")[0].strip()
         elif isinstance(repos, list) and repos:
             repo = str(repos[0]).strip()
+
+    # FR #6492: --preflight runs before version/auth gates (no build).
+    if args.preflight:
+        root = Path(args.repo_root).resolve()
+        report = bb.run_build_preflight(repo=repo, repo_root=root)
+        for ln in report.lines:
+            print(ln, flush=True)
+        if args.result_file:
+            payload = {
+                "kind": "BUILDPREFLIGHT",
+                "repo": repo,
+                "ok": report.ok,
+                "exit_code": report.exit_code,
+                "items": [
+                    {"name": i.name, "ok": i.ok, "detail": i.detail} for i in report.items
+                ],
+                "announce": list(report.lines),
+            }
+            Path(args.result_file).write_text(
+                json.dumps(payload, indent=2) + "\n", encoding="utf-8"
+            )
+        return int(report.exit_code)
+
     version = (args.version or job.get("version") or "").strip()
     ref = ((job.get("ref") if args.ref == "HEAD" else args.ref) or "HEAD").strip()
     build_id = str(job.get("id") or "").strip()

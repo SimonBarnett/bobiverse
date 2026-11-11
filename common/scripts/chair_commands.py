@@ -156,14 +156,15 @@ COMMANDS: tuple = (
                 "announces restarting then executes. Duplicates are cooldown-blocked.", ("help", "status")),
     CommandSpec(
         "build",
-        "!build <owner/repo>[,owner/repo...] <version> [ref] | !build status|cancel|dry-run ...",
+        "!build <owner/repo>[,owner/repo...] <version> [ref] | !build status|cancel|dry-run|preflight ...",
         "queue a deterministic repo BUILD (no agent); failures become release-blocker issues (FR #4006)",
         OPS_ROLES,
         "!build SimonBarnett/bobiverse 0.1.32",
         "Ops only (simon / bob-* / +o/+h). Runs the in-repo .bobiverse/build.yml on the recipe machine. "
         "<version> must be numeric x.y.z or x.y.z.w (digits only, e.g. 0.1.32 / 0.1.32.1); "
         "anything else (v0.1.32, 0.1.32-test2) is refused. "
-        "Subcommands: status, cancel, dry-run. Per-repo single-flight; no recipe => refuse.",
+        "Subcommands: status, cancel, dry-run, preflight (FR #6492 recipe-machine env check, no build). "
+        "Per-repo single-flight; no recipe => refuse.",
         ("status", "list", "focus", "installtest"),
     ),
     CommandSpec(
