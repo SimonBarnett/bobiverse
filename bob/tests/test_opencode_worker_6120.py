@@ -12,6 +12,7 @@ from pathlib import Path
 import pytest
 
 import bob.scripts.bob_worker as bw
+from test_fr6159_oc_pack_layout import _opencode_fuel_fixture_env, _run_opencode_fuel_ps
 
 
 CUR, GRK, OP = r"C:\c\agent.cmd", r"C:\g\agent.exe", r"C:\o\opencode.exe"
@@ -568,32 +569,10 @@ def test_opencode_fuel_ps1_resolves_installed_layout(tmp_path: Path):
     fuel_py_src = Path(bw.__file__).resolve().parent.parent.parent / "common" / "scripts" / "opencode_fuel.py"
     shutil.copy(fuel_py_src, common_scripts / "opencode_fuel.py")
 
-    fixture = '{"costs": {"glm-5.3": 7.5}, "free_models": ["beam-free"]}'
-    env = os.environ.copy()
-    env["BOB_OPENCODE_FUEL_FIXTURE"] = fixture
-    # FR #6670 / #6677: scrub provider URL so fixture pins keep go=50 (not usage-limits null).
-    for key in (
-        "BOB_OPENCODE_USAGE_URL",
-        "OPENCODE_SERVER_PASSWORD",
-        "OPENCODE_SERVER_USERNAME",
-        "BOB_OPENCODE_FUEL_CACHE_FILE",
-        "BOB_INSTALL_ROOT",
-        "PYTHONPATH",
-    ):
-        env.pop(key, None)
-    env.pop("BOB_OPENCODE_FUEL_HELPER", None)
-    # FR #6669 / MRB #6691: prefer this interpreter over WindowsApps store aliases.
-    py_dir = str(Path(sys.executable).resolve().parent)
-    env["PATH"] = py_dir + os.pathsep + env.get("PATH", "")
-    result = subprocess.run(
-        ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(script_dst)],
-        capture_output=True,
-        text=True,
-        env=env,
-        timeout=60,
-    )
-    assert result.returncode == 0, result.stderr
-    parsed = json.loads(result.stdout.strip().splitlines()[-1])
+    # FR #6670 / #6677 / FR #6701: same scrub + explicit interpreter as FR #6159.
+    env = _opencode_fuel_fixture_env()
+    parsed = _run_opencode_fuel_ps(script_dst, env=env, cwd=tmp_path)
+    assert parsed.get("read_state") == "ok"
     assert parsed["go"] == 50
     assert parsed["free"] == 100
 

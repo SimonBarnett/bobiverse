@@ -50,8 +50,55 @@ def _opencode_fuel_fixture_env() -> dict:
     # FR #6669 / MRB #6691: prefer this interpreter over WindowsApps store aliases.
     py_dir = str(Path(sys.executable).resolve().parent)
     env["PATH"] = py_dir + os.pathsep + env.get("PATH", "")
+    # FR #6701: pin the interpreter explicitly. Under LocalSystem the PATH pin
+    # can still resolve a broken store alias; the child then prints nothing.
+    env["BOB_OPENCODE_PYTHON"] = sys.executable
     env["BOB_OPENCODE_FUEL_FIXTURE"] = FIXTURE
     return env
+
+
+def _tail(text: str | None, limit: int = 1200) -> str:
+    body = (text or "").strip()
+    return body[-limit:] if len(body) > limit else body
+
+
+def _run_opencode_fuel_ps(
+    script: Path,
+    *,
+    env: dict,
+    cwd: Path,
+    timeout: int = 60,
+    extra_args: tuple[str, ...] = (),
+) -> dict:
+    """Run a fuel helper and name the failing stage in the assertion message."""
+    result = subprocess.run(
+        [
+            "powershell.exe",
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(script),
+            *extra_args,
+        ],
+        capture_output=True,
+        text=True,
+        env=env,
+        cwd=str(cwd),
+        timeout=timeout,
+    )
+    stage = (
+        f"powershell exit={result.returncode}\n"
+        f"stdout tail:\n{_tail(result.stdout)}\n"
+        f"stderr tail:\n{_tail(result.stderr)}"
+    )
+    assert result.returncode == 0, stage
+    lines = [ln for ln in (result.stdout or "").splitlines() if ln.strip()]
+    assert lines, "empty stdout\n" + stage
+    try:
+        return json.loads(lines[-1])
+    except json.JSONDecodeError as exc:
+        raise AssertionError(f"non-JSON last stdout line: {lines[-1][:500]!r}\n{stage}") from exc
 
 
 OPENCODE_LAYOUT_PATHS = (
@@ -275,26 +322,13 @@ def test_fr6159_flat_install_agent_fuel_returns_opencode(tmp_path: Path):
     # Unrelated cwd so PSScriptRoot-relative resolution must walk to install root.
     work = tmp_path / "elsewhere"
     work.mkdir()
-    result = subprocess.run(
-        [
-            "powershell.exe",
-            "-NoProfile",
-            "-ExecutionPolicy",
-            "Bypass",
-            "-File",
-            str(tools / "Get-BobAgentFuel.ps1"),
-            "-InstallRoot",
-            str(install),
-        ],
-        capture_output=True,
-        text=True,
+    doc = _run_opencode_fuel_ps(
+        tools / "Get-BobAgentFuel.ps1",
         env=env,
-        cwd=str(work),
+        cwd=work,
         timeout=90,
+        extra_args=("-InstallRoot", str(install)),
     )
-    assert result.returncode == 0, result.stderr + result.stdout
-    line = result.stdout.strip().splitlines()[-1]
-    doc = json.loads(line)
     assert doc.get("ok") is True
     oc = doc.get("opencode") or {}
     assert oc.get("free") == 100
@@ -316,30 +350,42 @@ def test_fr6159_flat_opencode_fuel_helper_alone(tmp_path: Path):
     shutil.copy(OPENCODE_FUEL_PS1, tools / "Get-BobOpencodeFuel.ps1")
     shutil.copy(OPENCODE_FUEL_PY, scripts / "opencode_fuel.py")
     env = _opencode_fuel_fixture_env()
-    result = subprocess.run(
-        [
-            "powershell.exe",
-            "-NoProfile",
-            "-ExecutionPolicy",
-            "Bypass",
-            "-File",
-            str(tools / "Get-BobOpencodeFuel.ps1"),
-        ],
-        capture_output=True,
-        text=True,
-        env=env,
-        cwd=str(elsewhere),
-        timeout=60,
+    parsed = _run_opencode_fuel_ps(
+        tools / "Get-BobOpencodeFuel.ps1", env=env, cwd=elsewhere
     )
-    assert result.returncode == 0, result.stderr + result.stdout
-    parsed = json.loads(result.stdout.strip().splitlines()[-1])
+    assert parsed.get("read_state") == "ok"
     assert parsed["free"] == 100
     assert parsed["go"] == 50
 
 
 @pytest.mark.skipif(sys.platform != "win32" or not shutil.which("powershell"), reason="Windows PowerShell")
 @pytest.mark.skipif(not shutil.which("python"), reason="python.exe required")
-def test_fr6670_usage_url_without_scrub_nulls_go(tmp_path: Path, monkeypatch):
+def test_fr6701_flat_helper_uses_python_override_without_python_on_path(tmp_path: Path):
+    """FR #6701: no python.exe on PATH must not null the fixture (LocalSystem class)."""
+    install = tmp_path / "bob"
+    tools = install / "tools"
+    scripts = install / "scripts"
+    elsewhere = tmp_path / "elsewhere"
+    tools.mkdir(parents=True)
+    scripts.mkdir(parents=True)
+    elsewhere.mkdir(parents=True)
+    shutil.copy(OPENCODE_FUEL_PS1, tools / "Get-BobOpencodeFuel.ps1")
+    shutil.copy(OPENCODE_FUEL_PY, scripts / "opencode_fuel.py")
+    env = _opencode_fuel_fixture_env()
+    assert env["BOB_OPENCODE_PYTHON"] == sys.executable
+    # Reproduce a SYSTEM PATH that has no usable python.exe (and no store alias).
+    env["PATH"] = os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), "System32")
+    parsed = _run_opencode_fuel_ps(
+        tools / "Get-BobOpencodeFuel.ps1", env=env, cwd=elsewhere
+    )
+    assert parsed.get("read_state") == "ok"
+    assert parsed.get("free") == 100
+    assert parsed.get("go") == 50
+
+
+@pytest.mark.skipif(sys.platform != "win32" or not shutil.which("powershell"), reason="Windows PowerShell")
+@pytest.mark.skipif(not shutil.which("python"), reason="python.exe required")
+def test_fr6670_usage_url_without_scrub_nulls_go(tmp_path: Path):
     """Regression: inherited BOB_OPENCODE_USAGE_URL must be scrubbed for fixture pins."""
     install = tmp_path / "bob"
     tools = install / "tools"
@@ -350,28 +396,20 @@ def test_fr6670_usage_url_without_scrub_nulls_go(tmp_path: Path, monkeypatch):
     elsewhere.mkdir(parents=True)
     shutil.copy(OPENCODE_FUEL_PS1, tools / "Get-BobOpencodeFuel.ps1")
     shutil.copy(OPENCODE_FUEL_PY, scripts / "opencode_fuel.py")
-    env = os.environ.copy()
-    env["BOB_OPENCODE_FUEL_FIXTURE"] = FIXTURE
+    env = _opencode_fuel_fixture_env()
+    # URL validation rejects this loopback value before any connection; the point
+    # of the pin is the provider branch (go cleared), not a live usage read.
     env["BOB_OPENCODE_USAGE_URL"] = "http://127.0.0.1:9/nope"
-    env.pop("PYTHONPATH", None)
-    result = subprocess.run(
-        [
-            "powershell.exe",
-            "-NoProfile",
-            "-ExecutionPolicy",
-            "Bypass",
-            "-File",
-            str(tools / "Get-BobOpencodeFuel.ps1"),
-        ],
-        capture_output=True,
-        text=True,
-        env=env,
-        cwd=str(elsewhere),
-        timeout=60,
+    parsed = _run_opencode_fuel_ps(
+        tools / "Get-BobOpencodeFuel.ps1", env=env, cwd=elsewhere
     )
-    assert result.returncode == 0, result.stderr + result.stdout
-    parsed = json.loads(result.stdout.strip().splitlines()[-1])
+    # read_state=ok proves the stats stage completed before the provider gate.
+    assert parsed.get("read_state") == "ok"
+    assert parsed.get("free") == 100
+    assert (parsed.get("models") or {}).get("glm-5.3") == 50
+    assert parsed.get("provider_read") == "unavailable"
     assert parsed.get("go") is None
+    assert "go" in parsed
     assert parsed.get("provider") == "usage-limits"
 
 
