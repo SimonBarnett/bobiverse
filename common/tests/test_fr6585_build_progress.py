@@ -239,3 +239,38 @@ def test_fr6585_spawn_cmd_includes_progress_file():
     assert "BUILD progress" in (
         Path(__file__).resolve().parents[2] / "common" / "scripts" / "bobiverse_build.py"
     ).read_text(encoding="utf-8")
+
+
+def test_fr6585_rapid_pass_reruns_rate_limited_fails_forced():
+    """Many fast pass solos do not flood; fail/first/last still post (MRB #6624)."""
+    lines: list[str] = []
+    now = {"t": 0.0}
+    p = bb.BuildProgressPoster(
+        repo="SimonBarnett/bobiverse",
+        version="2.0.0",
+        build_id="rl",
+        sink=lines.append,
+        min_interval_s=30.0,
+        heartbeat_s=9999.0,
+        time_fn=lambda: now["t"],
+    )
+    # Seed last_post via a forced step so the rate window is active.
+    assert p.emit("step start solos", force=True) is True
+    assert p.rerun_progress(index=1, total=10, nodeid="t::a", result="pass") is True
+    # Immediate middle pass is rate-limited.
+    assert p.rerun_progress(index=2, total=10, nodeid="t::b", result="pass") is False
+    # Fail always forces through.
+    assert p.rerun_progress(index=3, total=10, nodeid="t::c", result="fail") is True
+    assert p.rerun_progress(index=4, total=10, nodeid="t::d", result="pass") is False
+    # Last index forces.
+    assert p.rerun_progress(index=10, total=10, nodeid="t::z", result="pass") is True
+    assert sum(1 for ln in lines if "rerun " in ln) == 3
+    assert any("rerun 3/10" in ln and "fail" in ln for ln in lines)
+
+
+def test_fr6585_jsonl_sink_flushes(tmp_path: Path):
+    path = tmp_path / "progress.jsonl"
+    sink = bb.JsonlProgressSink(path)
+    sink("BUILD progress demo")
+    # After __call__ returns, another reader must see the line (flush contract).
+    assert "BUILD progress demo" in path.read_text(encoding="utf-8")

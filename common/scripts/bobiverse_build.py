@@ -1528,6 +1528,7 @@ class JsonlProgressSink:
         row = {"ts": time.time(), "line": str(line)}
         with self.path.open("a", encoding="utf-8") as fh:
             fh.write(json.dumps(row, ensure_ascii=True) + "\n")
+            fh.flush()
 
 
 def read_progress_jsonl(
@@ -1686,13 +1687,25 @@ class BuildProgressPoster:
     def rerun_progress(
         self, *, index: int, total: int, nodeid: str, result: str
     ) -> bool:
+        """Solo rerun lines: flood-safe with bookends + fails always visible.
+
+        FR #6585 rate-limits progress (~30s). Passing solos in a fast burst are
+        rate-limited; first/last index and fail/timeout always force so operators
+        still see progress without hundreds of pass lines.
+        """
         nid = redact_build_progress_text(nodeid, env=self.env)
         # Short nodeid for channel flood safety.
         if len(nid) > 80:
             nid = nid[:77] + "..."
+        res = str(result or "").strip().lower()
+        force = (
+            index <= 1
+            or index >= int(total or 0)
+            or res in ("fail", "timeout", "error")
+        )
         return self.emit(
             f"rerun {index}/{total} {nid} {result}",
-            force=True,
+            force=force,
         )
 
 
