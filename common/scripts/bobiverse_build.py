@@ -202,14 +202,43 @@ def classify_step_failure(step: str) -> FailureClass:
     return FailureClass(f"step:{step}", "step_failure", True, False, False)
 
 
+def has_pytest_session_or_summary(stdout: str) -> bool:
+    """True when suite output shows pytest actually ran (FR #6644).
+
+    A completed session (summary line or session banner) means failures are
+    test failures, not missing-interpreter / command-not-found.
+    """
+    blob = str(stdout or "")
+    if not blob.strip():
+        return False
+    low = blob.lower()
+    if "test session starts" in low:
+        return True
+    if "short test summary info" in low:
+        return True
+    for line in reversed(blob.splitlines()):
+        if "passed" not in line.lower() and "failed" not in line.lower() and "error" not in line.lower():
+            continue
+        if re.search(r"(?i)\b\d+\s+(?:passed|failed|skipped|error)s?\b", line):
+            return True
+    return False
+
+
 def is_command_not_found(stdout: str, exit_code: int) -> bool:
     """True when a suite failed because the shell could not start the command (FR #6490).
 
     Windows cmd uses exit 9009 and ``is not recognized``; Unix shells say
     ``command not found``. Real pytest failures must not match.
+
+    FR #6644: a suite that produced a pytest session/summary is a test
+    failure even when a traceback mentions ``FileNotFoundError`` + ``python``
+    (e.g. WinError 3 long path inside a test). Only treat as environment
+    failure when the command never started.
     """
     code = int(exit_code) if exit_code is not None else -1
     text = stdout or ""
+    if has_pytest_session_or_summary(text):
+        return False
     low = text.lower()
     if code == 9009:
         return True
