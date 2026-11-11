@@ -2487,12 +2487,8 @@ class Client:
         lock_path = bobiverse_build.default_machine_build_lock_path()
         result_path = Path(str(job_path) + ".result.json")
         log_path = Path(str(job_path) + ".runner.log")
-        work_dir = (
-            Path(os.environ.get("ProgramData", "C:/ProgramData"))
-            / "Bobiverse"
-            / "build-work"
-            / f"{version}-{job_path.stem}"
-        )
+        # FR #6655 / #6479: honour BOBIVERSE_BUILD_WORK(_DIR); default ProgramData.
+        work_dir = bobiverse_build.resolve_build_work_root() / f"{version}-{job_path.stem}"
         # FR #6585: runner appends progress JSONL; watcher posts to #bobiverse live.
         progress_path = work_dir / "progress.jsonl"
         cmd = [
