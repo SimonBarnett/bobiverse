@@ -368,6 +368,7 @@ routes to bobiverse via the split rule.
 - OpenCode finish: treat origin tip and open PR as progress; before GIVEUP open PR for pushed tip with no PR; keep PR body and scratch inside job worktree never %TEMP%; prune Temp extra worktrees at job end
 - Pool tiles with no reset must show reading updated HH:mm (local from fetched_at) so unchanged fuel does not look frozen; stale threshold separates not-updated from unchanged
 - When Client gains a helper called from a bound FakeAgent method (_apply_chanserv_channels), bind the new helper on every FakeAgent that already binds the caller (mirror test_chanserv_roster_mirror).
+- Clear-worktree pin tests: accept ErrorRecord.ToString()+else { "$_" } and Remove-BobiversePathForce after $gitExit; enlarge remove block to ~2200; prefer Closes #N near top of PR body for closingIssuesReferences
 
 ## Harvest digest (lessons audit 2026-10-06)
 
