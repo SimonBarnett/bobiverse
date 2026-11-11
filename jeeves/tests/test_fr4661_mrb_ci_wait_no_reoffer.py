@@ -1,4 +1,4 @@
-﻿"""FR #4661: resync must not re-queue PASSed auto-merge MRB; never re-offer to DONE nick."""
+"""FR #4661: resync must not re-queue PASSed auto-merge MRB; never re-offer to DONE nick."""
 from __future__ import annotations
 
 import gitclaim
@@ -122,7 +122,14 @@ def test_done_pass_sha_fallback_matches_head(tmp_path, monkeypatch):
     assert gitclaim.nick_done_mrb_pass(tmp_path, OTHER_NICK, REPO, "#3246") is False
 
 def test_duplicate_after_done_hold_prunes_unaccepted(tmp_path, monkeypatch):
+    """FR #4661 / #6565: done[] MRB PASS clears hold + prunes without live GitHub."""
     monkeypatch.setenv("BOB_DIGEST_HOME", str(tmp_path))
+    # BUILD failure: seat_done_without_later_offer is False (no ledger stamp) and
+    # _lost_done_github_result used live a-search#3246. Force GitHub empty/fail.
+    monkeypatch.setattr(
+        "mrb_merge_gate.fetch_issue_comments",
+        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("offline")),
+    )
     _queue(tmp_path, done_pass=True, unaccepted=True)
     assert gitclaim.note_seat_hold(
         tmp_path,
@@ -130,6 +137,10 @@ def test_duplicate_after_done_hold_prunes_unaccepted(tmp_path, monkeypatch):
         {"repo": REPO, "task": "MRB", "id": "#3246"},
         via="offer",
     )
+    assert gitclaim.seat_done_without_later_offer(
+        tmp_path, NICK, REPO, "MRB", "#3246"
+    ) is False
+    assert gitclaim.nick_done_mrb_pass(tmp_path, NICK, REPO, "#3246") is True
     freed = gitclaim.release_duplicate_done_hold(tmp_path, NICK)
     assert "MRB" in freed
     rows = gitclaim.load_unaccepted(tmp_path)

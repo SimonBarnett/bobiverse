@@ -8391,6 +8391,9 @@ def release_duplicate_done_hold(home: Path, nick: str) -> str:
         return ""
     finished = seat_done_without_later_offer(home, nick, repo, task, ident)
     if not finished:
+        # FR #4661 / #6565: queue done[] MRB PASS is enough (no ledger stamp / no GitHub).
+        finished = nick_done_mrb_pass(home, nick, repo, ident)
+    if not finished:
         row = {"repo": repo, "task": task, "id": ident, "url": ""}
         finished = bool(_lost_done_github_result(row))
     if not finished:
