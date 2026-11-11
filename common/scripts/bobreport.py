@@ -5317,7 +5317,27 @@ def _accept_opencode_fuel_doc(fresh: dict, cached: dict) -> dict:
         and _opencode_fuel_doc_has_signal(cached)
         and str(fresh.get("read_state") or "") != "ok"
     ):
-        return dict(cached)
+        # Keep known windows/history from cache (MarchHare week meters). Parser
+        # drops null free/go, so a missing/failed helper has no free/go keys —
+        # clear those from the cached doc so publish does not re-invent them
+        # (FR #6710). When cache had only free/go, take the fresh windows shell.
+        out = dict(cached)
+        fresh_pcent = _pcent_from_opencode_fuel_doc(fresh)
+        if "opencode-free" not in fresh_pcent:
+            out.pop("free", None)
+            out.pop("opencode-free", None)
+        if "opencode-go" not in fresh_pcent:
+            out.pop("go", None)
+            out.pop("opencode-go", None)
+        cached_wins = out.get("windows") if isinstance(out.get("windows"), dict) else {}
+        if (
+            not _opencode_fuel_doc_has_signal({"windows": cached_wins})
+            and isinstance(fresh.get("windows"), dict)
+        ):
+            out["windows"] = fresh["windows"]
+        if fresh.get("read_state"):
+            out["read_state"] = fresh["read_state"]
+        return out
     return dict(fresh)
 
 
