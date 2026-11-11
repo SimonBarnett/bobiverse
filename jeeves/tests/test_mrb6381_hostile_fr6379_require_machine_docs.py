@@ -33,8 +33,11 @@ def test_mrb6381_require_machine_bullet_one_clean_line():
     assert "`machine:<machine>`" in line
     assert "`offer_focus_top`" in line
     assert "`!assign`" in line
-    assert "`assign_row`" in line
-    assert "`row_machine_mismatch`" in line
+    # FR #6407 rewrite dropped assign_row / row_machine_mismatch from the bullet;
+    # pin the retirement + ops !pin/!unpin instead.
+    assert "CE-PRIORITY-DEV1 is retired" in line
+    assert "!unpin" in line
+    assert "!pin" in line
     assert "A dedicated body line" in line
     assert "`require_machine: <machine>`" in line or "require_machine: <machine>" in line
     assert "(or `=`)" in line or "(or =)" in line

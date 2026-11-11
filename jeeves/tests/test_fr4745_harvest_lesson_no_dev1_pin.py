@@ -146,6 +146,7 @@ def test_assign_harvest_lesson_to_marchhare_accepted(tmp_path, monkeypatch):
 
 
 def test_explicit_needs_label_still_pins_harvest_lesson():
+    # FR #6407: needs-ce-priority-dev1 label no longer pins.
     assert (
         gitclaim.infer_require_machine(
             title="lesson(harvest): needs live box",
@@ -154,5 +155,5 @@ def test_explicit_needs_label_still_pins_harvest_lesson():
             repo="SimonBarnett/ce-priority",
             ident="#40",
         )
-        == "ce-priority-dev1"
+        == ""
     )

@@ -30,9 +30,9 @@ def test_require_machine_any_none_star_skips_reinfer():
             "line": title,
         }
         assert gitclaim.row_require_machine(row) == "", stamp
-    # Without unpin stamp, cues still infer
+    # FR #6407: without unpin stamp, retired WP0/DEV1 cues no longer infer either.
     row2 = {"title": title, "body": "WP0 live", "labels": [], "line": ""}
-    assert gitclaim.row_require_machine(row2) == "ce-priority-dev1"
+    assert gitclaim.row_require_machine(row2) == ""
 
 
 def test_offer_skips_all_seats_when_needs_human(tmp_path, monkeypatch):

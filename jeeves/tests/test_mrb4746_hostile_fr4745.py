@@ -18,6 +18,7 @@ def test_bare_dayworks_title_does_not_pin():
 
 
 def test_living_umbrella_still_pins_dev1():
+    # FR #6407: Day Works / living-umbrella auto-pin to ce-priority-dev1 retired.
     assert (
         gitclaim.infer_require_machine(
             title="Day Works living umbrella remaining work",
@@ -26,11 +27,12 @@ def test_living_umbrella_still_pins_dev1():
             repo="SimonBarnett/ce-priority",
             ident="#201",
         )
-        == "ce-priority-dev1"
+        == ""
     )
 
 
 def test_gate_e_still_pins_dev1():
+    # FR #6407: Gate E auto-pin to ce-priority-dev1 retired.
     assert (
         gitclaim.infer_require_machine(
             title="Gate E smoke on Priority ERP",
@@ -39,7 +41,7 @@ def test_gate_e_still_pins_dev1():
             repo="SimonBarnett/ce-priority",
             ident="#202",
         )
-        == "ce-priority-dev1"
+        == ""
     )
 
 
@@ -58,6 +60,7 @@ def test_gates_d_g_out_of_scope_does_not_pin():
 
 
 def test_dedicated_require_machine_line_pins_harvest_lesson():
+    # FR #6407: dedicated ce-priority-dev1 body line no longer pins.
     assert (
         gitclaim.infer_require_machine(
             title="lesson(harvest): tip",
@@ -66,7 +69,18 @@ def test_dedicated_require_machine_line_pins_harvest_lesson():
             repo="SimonBarnett/ce-priority",
             ident="#204",
         )
-        == "ce-priority-dev1"
+        == ""
+    )
+    # Live machines still pin from a dedicated body line.
+    assert (
+        gitclaim.infer_require_machine(
+            title="lesson(harvest): tip",
+            body="require_machine: ionos\n",
+            labels=["harvest-lesson", "via-intake"],
+            repo="SimonBarnett/bobiverse",
+            ident="#204",
+        )
+        == "ionos"
     )
 
 
