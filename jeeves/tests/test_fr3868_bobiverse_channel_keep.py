@@ -65,6 +65,8 @@ class _FakeAgent:
     _maybe_chanserv_sync = irc_agent.Client._maybe_chanserv_sync
     _on_chanserv_notice = irc_agent.Client._on_chanserv_notice
     _apply_chanserv_channels = irc_agent.Client._apply_chanserv_channels
+    # FR #5961 / #6504: ChanServ PART path clears airc_console_presence for left channels.
+    _clear_channel_console_presence = irc_agent.Client._clear_channel_console_presence
     _chair_status_line = irc_agent.Client._chair_status_line
     _chair_log_status = irc_agent.Client._chair_log_status
     _drain_outbox_path = irc_agent.Client._drain_outbox_path
