@@ -8,6 +8,7 @@ second worktree, runs suites/pack, and publishes a GitHub pre-release (never Lat
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import os
 import shutil
@@ -121,6 +122,11 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--checkout", action="store_true", help="clean clone at ref + baseline worktree")
     p.add_argument("--lock-file", default="", help="BuildLock json to release when done")
     p.add_argument("--result-file", default="", help="write the JSON result here")
+    p.add_argument(
+        "--progress-file",
+        default="",
+        help="FR #6585: append BUILD progress JSONL for the ear to post to #bobiverse",
+    )
     p.add_argument("--local-machine", default=os.environ.get("BOB_MACHINE_ID", ""))
     p.add_argument(
         "--preflight",
@@ -217,6 +223,7 @@ def main(argv: list[str] | None = None) -> int:
             return 4
     rc = 1
     filer = None
+    progress = None
     try:
         work = resolve_build_work_dir(version, work_dir_arg=args.work_dir)
         log_dir = work / "logs"
@@ -226,11 +233,30 @@ def main(argv: list[str] | None = None) -> int:
         root = Path(args.repo_root).resolve()
         baseline_root = None
         sha, tag = "", ""
+        progress_path = Path(args.progress_file) if str(args.progress_file or "").strip() else (work / "progress.jsonl")
+        progress = bb.BuildProgressPoster(
+            repo=repo,
+            version=version,
+            build_id=build_id,
+            sink=bb.JsonlProgressSink(progress_path),
+        )
+        progress.start_heartbeat_thread()
+        result["progress_file"] = str(progress_path)
         if args.checkout and not args.dry_run:
             ck_log: list[str] = []
             print(f"build: checkout start ref={ref}", flush=True)
             try:
+                with contextlib.suppress(Exception):
+                    progress.step_start("checkout")
                 root, baseline_root, sha, tag = checkout(repo, ref, work, ck_log)
+                with contextlib.suppress(Exception):
+                    progress.step_end("checkout", ok=True)
+                    if tag:
+                        progress.emit(f"baseline={tag}", force=True)
+            except Exception:
+                with contextlib.suppress(Exception):
+                    progress.step_end("checkout", ok=False)
+                raise
             finally:
                 (log_dir / "checkout.log").write_text("\n".join(ck_log), encoding="utf-8")
             print(f"build: checkout done sha={sha} baseline={tag or 'none'}", flush=True)
@@ -243,6 +269,8 @@ def main(argv: list[str] | None = None) -> int:
         if local and not bb.is_recipe_build_machine(recipe.machine, local):
             print(f"build: refused machine local={local} recipe={recipe.machine}")
             result["errors"] = ["wrong machine"]
+            with contextlib.suppress(Exception):
+                progress.stop_heartbeat_thread()
             return 3
 
         filer = bb.FakeGitHubFiler() if args.fake_filer else bb.GitHubFiler()
@@ -291,6 +319,7 @@ def main(argv: list[str] | None = None) -> int:
             release_fn=release_fn, baseline_root=baseline_root,
             baseline_resolver=(lambda *_a: tag or "baseline"),
             build_id=build_id,
+            progress=progress,
         )
         t0 = time.time()
         print("build: runner.run begin", flush=True)
@@ -374,6 +403,9 @@ def main(argv: list[str] | None = None) -> int:
         result["announce"] = [announce]
         rc = 1
     finally:
+        if progress is not None:
+            with contextlib.suppress(Exception):
+                progress.stop_heartbeat_thread()
         if args.lock_file:
             try:
                 bb.BuildLock(Path(args.lock_file), max_parallel=1).release(repo)
