@@ -368,6 +368,7 @@ routes to bobiverse via the split rule.
 - OpenCode finish: treat origin tip and open PR as progress; before GIVEUP open PR for pushed tip with no PR; keep PR body and scratch inside job worktree never %TEMP%; prune Temp extra worktrees at job end
 - Pool tiles with no reset must show reading updated HH:mm (local from fetched_at) so unchanged fuel does not look frozen; stale threshold separates not-updated from unchanged
 - When Client gains a helper called from a bound FakeAgent method (_apply_chanserv_channels), bind the new helper on every FakeAgent that already binds the caller (mirror test_chanserv_roster_mirror).
+- When isolation/pack tooling must name AGENTIC_IRC_PASSWORD or legacy .agentic-irc-* paths, extend the self-contained allow-list with a comment; keep import and default-home pins strict.
 
 ## Harvest digest (lessons audit 2026-10-06)
 
