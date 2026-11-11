@@ -65,7 +65,10 @@ def test_no_idle_seats_is_ok_even_with_offerable_work(tmp_path, monkeypatch):
 
 
 def test_require_machine_pin_with_no_matching_idle_seat_is_ok(tmp_path, monkeypatch):
-    """FR #1116 evidence class: ce-priority-dev1 pin while only marchhare idle."""
+    """FR #1116 evidence class: live-machine pin while only marchhare idle.
+
+    FR #6407: ce-priority-dev1 stamps rewrite to any (would look offerable); use ionos.
+    """
     chair = tmp_path / ".jeeves"
     digest = tmp_path / ".bobiverse"
     chair.mkdir()
@@ -81,7 +84,7 @@ def test_require_machine_pin_with_no_matching_idle_seat_is_ok(tmp_path, monkeypa
                         "repo": "SimonBarnett/agentic_fomprep",
                         "task": "FR",
                         "id": "#56",
-                        "require_machine": "ce-priority-dev1",
+                        "require_machine": "ionos",
                         "title": "WP0 live",
                         "labels": ["feature-request"],
                         "line": "FR SimonBarnett/agentic_fomprep#56",

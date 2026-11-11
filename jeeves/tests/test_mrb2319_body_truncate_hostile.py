@@ -72,6 +72,8 @@ def test_mrb2319_blank_line_before_trailing_pin():
 
 
 def test_mrb2319_ce_priority_trailing_pin():
+    # FR #6407: truncate still keeps the dedicated line in the body, but inference
+    # no longer pins retired ce-priority-dev1.
     full = _pad(505) + "\nrequire_machine: ce-priority-dev1\n"
     stored = gitclaim._body_for_queue(full)
     assert _has_pin(stored, "ce-priority-dev1")
@@ -83,7 +85,7 @@ def test_mrb2319_ce_priority_trailing_pin():
             repo="SimonBarnett/other",
             ident="#1",
         )
-        == "ce-priority-dev1"
+        == ""
     )
 
 
