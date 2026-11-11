@@ -27,6 +27,8 @@ param(
     [switch]$SkipAircExe,
     # Tests only (needs -SkipMsi): skip airc-network-installer.exe (FR #3991 PyInstaller + UAC).
     [switch]$SkipAircNetworkInstallerExe,
+    # Tests only (needs -SkipMsi): skip Watch-AgentHealth.exe compile (FR #6603 stage gates).
+    [switch]$SkipWatcherExe,
     # FR #6423 / MRB #6427: test-only override for the published-release downgrade gate (requires -SkipMsi).
     [string]$LatestPublishedVersion = '',
     # FR #6423 / MRB #6427: skip GitHub latest comparison (requires -SkipMsi; release packs must not skip).
@@ -69,6 +71,7 @@ if ($SkipEarExe -and -not $SkipMsi) { throw '-SkipEarExe is only allowed togethe
 if ($SkipJeevesExe -and -not $SkipMsi) { throw '-SkipJeevesExe is only allowed together with -SkipMsi (an MSI without jeeves.exe must never ship; FR #2301)' }
 if ($SkipAircExe -and -not $SkipMsi) { throw '-SkipAircExe is only allowed together with -SkipMsi (an MSI without airc.exe must never ship; FR #2397)' }
 if ($SkipAircNetworkInstallerExe -and -not $SkipMsi) { throw '-SkipAircNetworkInstallerExe is only allowed together with -SkipMsi (an MSI without airc-network-installer.exe must never ship; FR #3991)' }
+if ($SkipWatcherExe -and -not $SkipMsi) { throw '-SkipWatcherExe is only allowed together with -SkipMsi (an MSI without Watch-AgentHealth.exe must never ship; FR #6603)' }
 
 $products = if ($Product -eq 'all') { @('jeeves', 'bob', 'airc') } else { @($Product) }
 
@@ -374,11 +377,15 @@ function Stage-Product([string]$Name) {
             # Drop binary .lnk shortcuts from foreign trees (recreated by Install if needed)
             Get-ChildItem -Path $wahDest -Recurse -Filter '*.lnk' -ErrorAction SilentlyContinue |
                 Remove-Item -Force -ErrorAction SilentlyContinue
-            $buildWatcher = (Get-BobiverseRepoPath -Root $RepoRoot -Rel 'scripts\Build-BobWatcher.ps1')
-            $watcherExe = (& $buildWatcher -RepoRoot $RepoRoot -OutDir $OutDir | Select-Object -Last 1)
-            if (-not $watcherExe -or -not (Test-Path -LiteralPath $watcherExe)) { throw 'Build-BobWatcher.ps1 did not produce Watch-AgentHealth.exe' }
-            Copy-Item -LiteralPath $watcherExe -Destination (Join-Path $wahDest 'Watch-AgentHealth.exe') -Force
-            Write-Host 'INFO bob staged Watch-AgentHealth.exe'
+            if ($SkipWatcherExe) {
+                Write-Host 'WARN bob pack: -SkipWatcherExe (test stage; no Watch-AgentHealth.exe)'
+            } else {
+                $buildWatcher = (Get-BobiverseRepoPath -Root $RepoRoot -Rel 'scripts\Build-BobWatcher.ps1')
+                $watcherExe = (& $buildWatcher -RepoRoot $RepoRoot -OutDir $OutDir | Select-Object -Last 1)
+                if (-not $watcherExe -or -not (Test-Path -LiteralPath $watcherExe)) { throw 'Build-BobWatcher.ps1 did not produce Watch-AgentHealth.exe' }
+                Copy-Item -LiteralPath $watcherExe -Destination (Join-Path $wahDest 'Watch-AgentHealth.exe') -Force
+                Write-Host 'INFO bob staged Watch-AgentHealth.exe'
+            }
             Write-Host "INFO bob staged Watch-AgentHealth from $wahSrc"
         } else {
             Write-Host 'WARN bob pack: Watch-AgentHealth source missing (Desktop install will skip)'
