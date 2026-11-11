@@ -227,6 +227,9 @@ def main(argv: list[str] | None = None) -> int:
     try:
         work = resolve_build_work_dir(version, work_dir_arg=args.work_dir)
         log_dir = work / "logs"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        # FR #6586: progress lines so chair *.runner.log grows during the run.
+        print(f"build: start repo={repo} version={version} work={work}", flush=True)
         root = Path(args.repo_root).resolve()
         baseline_root = None
         sha, tag = "", ""
@@ -241,6 +244,7 @@ def main(argv: list[str] | None = None) -> int:
         result["progress_file"] = str(progress_path)
         if args.checkout and not args.dry_run:
             ck_log: list[str] = []
+            print(f"build: checkout start ref={ref}", flush=True)
             try:
                 with contextlib.suppress(Exception):
                     progress.step_start("checkout")
@@ -254,9 +258,13 @@ def main(argv: list[str] | None = None) -> int:
                     progress.step_end("checkout", ok=False)
                 raise
             finally:
-                log_dir.mkdir(parents=True, exist_ok=True)
                 (log_dir / "checkout.log").write_text("\n".join(ck_log), encoding="utf-8")
+            print(f"build: checkout done sha={sha} baseline={tag or 'none'}", flush=True)
         recipe = bb.load_recipe(root)
+        print(
+            f"build: recipe machine={recipe.machine} suites={len(recipe.suites or [])}",
+            flush=True,
+        )
         local = (args.local_machine or "").strip()
         if local and not bb.is_recipe_build_machine(recipe.machine, local):
             print(f"build: refused machine local={local} recipe={recipe.machine}")
@@ -314,7 +322,13 @@ def main(argv: list[str] | None = None) -> int:
             progress=progress,
         )
         t0 = time.time()
+        print("build: runner.run begin", flush=True)
         report = runner.run(dry_run=bool(args.dry_run))
+        print(
+            f"build: runner.run end ok={report.ok} blockers={len(report.blockers_filed)} "
+            f"s={round(time.time() - t0)}",
+            flush=True,
+        )
         result.update({
             "ok": report.ok,
             "sha": sha,

@@ -162,7 +162,7 @@ def test_fr6585_runner_emits_step_suite_and_rerun(tmp_path: Path):
     )
     calls = {"n": 0}
 
-    def run_cmd(cmd, cwd=None, env=None, timeout=None, name="", ref_or_baseline=""):
+    def run_cmd(cmd, cwd=None, env=None, timeout=None, name="", ref_or_baseline="", log_path=None, **_):
         calls["n"] += 1
         at = str(ref_or_baseline)
         if at.endswith("-solo"):
