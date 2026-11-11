@@ -144,8 +144,14 @@ def test_installers_and_updaters_refresh_the_layer():
 @WIN
 @pytest.mark.parametrize("prod", PRODUCTS)
 def test_pack_stages_the_agent_layer_for_each_product(tmp_path, prod):
+    """Stage-only pack must ship CAST IRON agent layer without compiling frozen exes.
+
+    FR #3396 / #6603: pass every -Skip*Exe that Pack-BobiverseRelease already
+    supports so BUILD seats without PyInstaller still gate the staged skills.
+    Named release-blocker was ``[airc]``; airc already had -SkipAircExe — keep
+    hermetic for jeeves via -SkipJeevesExe too.
+    """
     out = tmp_path / "dist"
-    # FR #3396: SkipEarExe/SkipAircExe so stage tests do not need PyInstaller/network.
     cmd = [
         "powershell",
         "-NoProfile",
@@ -159,8 +165,10 @@ def test_pack_stages_the_agent_layer_for_each_product(tmp_path, prod):
         "-KeepStage",
         "-SkipWorkerExe",
         "-SkipEarExe",
+        "-SkipJeevesExe",
         "-SkipAircExe",
         "-SkipAircNetworkInstallerExe",
+        "-SkipWatcherExe",
         "-OutDir",
         str(out),
     ]
@@ -184,9 +192,17 @@ def test_pack_stages_the_agent_layer_for_each_product(tmp_path, prod):
         t = sk.read_text(encoding="utf-8-sig")
         for mk in RULE_MARKERS:
             assert mk in t, (book, mk)
+        # FR #5272 / #6603: staged intake host must be public bob.ntsa.uk.
+        assert "https://bob.ntsa.uk/bob/v1/intake" in t, book
+        assert "irc.ntsa.uk/bob/v1/intake" not in t, book
     other = [p for p in PRODUCTS if p != prod]
     for p in other:
         assert not (stage / ".grok" / "skills" / f"bobiverse-{p}").exists(), f"{prod} pack leaked {p} skill"
     if prod == "jeeves":
         assert (stage / "docs" / "jeeves-commands.md").is_file()
+    if prod == "airc":
+        # FR #6596 / #6603: no private LAN literals in staged airc command skill.
+        airc_cmd = stage / ".grok" / "skills" / "bobiverse-airc-commands" / "SKILL.md"
+        assert airc_cmd.is_file()
+        assert "10.0.0.8" not in airc_cmd.read_text(encoding="utf-8-sig")
     assert not list(stage.rglob("*.password")) and not list(stage.rglob("github.token"))
