@@ -2509,10 +2509,11 @@ class Client:
         info(f"INFO build runner pid={proc.pid} repo={repo} version={version} log={log_path}")
         chan = bobreport.FLEET_CHANNEL
 
-        def _say(line: str) -> None:
+        def _say(line: str, *, pace: bool = True) -> None:
             try:
                 self.send("PRIVMSG " + chan + " :" + line[:400])
-                time.sleep(FLOOD_S)
+                if pace:
+                    time.sleep(FLOOD_S)
             except Exception:
                 pass
 
@@ -2523,40 +2524,44 @@ class Client:
 
         def _watch() -> None:
             rc = None
-            progress_off = 0
+            # FR #6654: durable offset + logged relay (FR #6585 JSONL already written by runner).
+            def _post_progress(line: str) -> None:
+                _say(line, pace=False)
+
+            relay = bobiverse_build.BuildProgressRelay(
+                progress_path,
+                post_fn=_post_progress,
+                log_fn=info,
+                min_interval_s=FLOOD_S,
+            )
             try:
-                # FR #6585: while the child runs, drain progress.jsonl into #bobiverse.
+                # FR #6585 / #6654: while the child runs, drain progress.jsonl into #bobiverse.
                 while True:
                     try:
-                        rows = bobiverse_build.read_progress_jsonl(
-                            progress_path, after_offset=progress_off
-                        )
-                        if rows:
-                            try:
-                                progress_off = progress_path.stat().st_size
-                            except Exception:
-                                pass
-                            for row in rows:
-                                ln = str(row.get("line") or "").strip()
-                                if ln:
-                                    _say(ln)
-                    except Exception:
-                        pass
+                        while True:
+                            n = relay.drain()
+                            if n <= 0:
+                                break
+                            time.sleep(FLOOD_S)
+                    except Exception as exc:
+                        info(f"INFO build-progress skip reason=watch-loop-failed err={exc}")
                     rc = proc.poll()
                     if rc is not None:
                         break
-                    time.sleep(2.0)
-                # Final drain after exit (catch last lines).
+                    time.sleep(1.0)
+                # Final drain after exit (catch last lines; pace under flood limit).
                 try:
-                    rows = bobiverse_build.read_progress_jsonl(
-                        progress_path, after_offset=progress_off
-                    )
-                    for row in rows:
-                        ln = str(row.get("line") or "").strip()
-                        if ln:
-                            _say(ln)
-                except Exception:
-                    pass
+                    deadline = time.time() + 120.0
+                    while time.time() < deadline:
+                        n = relay.drain()
+                        if n <= 0 and relay.pending_count <= 0:
+                            break
+                        if n > 0:
+                            time.sleep(FLOOD_S)
+                        else:
+                            time.sleep(0.2)
+                except Exception as exc:
+                    info(f"INFO build-progress skip reason=final-drain-failed err={exc}")
             finally:
                 try:
                     logf.close()

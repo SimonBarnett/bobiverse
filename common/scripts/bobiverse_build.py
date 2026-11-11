@@ -19,6 +19,7 @@ import subprocess
 import threading
 import time
 import zipfile
+from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Iterable, NamedTuple, Optional
@@ -1519,6 +1520,9 @@ _CRED_PATH_RE = re.compile(
 )
 _GHP_TOKEN_RE = re.compile(r"\bghp_[A-Za-z0-9]{20,}\b")
 _BEARER_RE = re.compile(r"(?i)\bBearer\s+[A-Za-z0-9._\-]{12,}")
+# FR #6654: no full filesystem paths on #bobiverse progress lines.
+_ABS_WIN_PATH_RE = re.compile(r"(?i)\b[A-Z]:\\[^\s\"']+")
+_ABS_UNC_PATH_RE = re.compile(r"\\\\[^\s\"']+")
 
 
 def parse_pytest_summary_counts(text: str) -> dict[str, int]:
@@ -1546,11 +1550,13 @@ def parse_pytest_summary_counts(text: str) -> dict[str, int]:
 
 
 def redact_build_progress_text(text: str, env: dict | None = None) -> str:
-    """Strip secrets / credential-shaped paths from a progress line (FR #6585)."""
+    """Strip secrets / credential-shaped paths from a progress line (FR #6585 / #6654)."""
     out = _scrub_secret_fragments(str(text or ""), env=env)
     out = _GHP_TOKEN_RE.sub("<redacted>", out)
     out = _BEARER_RE.sub("Bearer <redacted>", out)
     out = _CRED_PATH_RE.sub("<redacted-path>", out)
+    out = _ABS_WIN_PATH_RE.sub("<path>", out)
+    out = _ABS_UNC_PATH_RE.sub("<path>", out)
     return out
 
 
@@ -1568,23 +1574,35 @@ class JsonlProgressSink:
             fh.flush()
 
 
-def read_progress_jsonl(
+def read_progress_jsonl_advance(
     path: Path | str, *, after_offset: int = 0
-) -> list[dict]:
-    """Read progress JSONL rows starting at *after_offset* bytes (FR #6585)."""
+) -> tuple[list[tuple[dict, int]], int]:
+    """Read complete JSONL progress rows after *after_offset* (FR #6654).
+
+    Returns ``(items, new_offset)`` where each item is ``(row_dict, end_offset)``
+    and ``new_offset`` is the byte position after the last complete line scanned
+    (incomplete trailing bytes are left for a later read).
+    """
     p = Path(path)
-    if not p.is_file():
-        return []
-    size = p.stat().st_size
     off = max(0, int(after_offset or 0))
+    if not p.is_file():
+        return [], off
+    size = p.stat().st_size
     if off >= size:
-        return []
+        return [], off
     with p.open("rb") as fh:
         fh.seek(off)
-        raw = fh.read().decode("utf-8", errors="replace")
-    rows: list[dict] = []
-    for ln in raw.splitlines():
-        s = ln.strip()
+        data = fh.read()
+    items: list[tuple[dict, int]] = []
+    cursor = 0
+    while True:
+        nl = data.find(b"\n", cursor)
+        if nl < 0:
+            break
+        chunk = data[cursor : nl + 1]
+        end_off = off + nl + 1
+        cursor = nl + 1
+        s = chunk.decode("utf-8", errors="replace").strip()
         if not s:
             continue
         try:
@@ -1592,8 +1610,136 @@ def read_progress_jsonl(
         except Exception:
             continue
         if isinstance(obj, dict) and obj.get("line"):
-            rows.append(obj)
-    return rows
+            items.append((obj, end_off))
+    return items, off + cursor
+
+
+def read_progress_jsonl(
+    path: Path | str, *, after_offset: int = 0
+) -> list[dict]:
+    """Read progress JSONL rows starting at *after_offset* bytes (FR #6585)."""
+    items, _ = read_progress_jsonl_advance(path, after_offset=after_offset)
+    return [row for row, _ in items]
+
+
+class BuildProgressRelay:
+    """Ear-side drain of ``progress.jsonl`` onto #bobiverse (FR #6654).
+
+    * Persists a ``.pos`` byte offset so an ear restart never re-posts or skips.
+    * Rate-limits posts (default ``min_interval_s`` ~= IRC flood pacing); queued
+      events are delayed, never dropped.
+    * Logs every relay and every skip with a reason via ``log_fn``.
+    * Redacts secrets and absolute paths before posting.
+    """
+
+    def __init__(
+        self,
+        path: Path | str,
+        *,
+        post_fn: Callable[[str], None],
+        offset_path: Path | str | None = None,
+        log_fn: Callable[[str], None] | None = None,
+        min_interval_s: float = 0.8,
+        time_fn: Callable[[], float] | None = None,
+        env: dict | None = None,
+    ) -> None:
+        self.path = Path(path)
+        self.offset_path = (
+            Path(offset_path) if offset_path else Path(str(self.path) + ".pos")
+        )
+        self.post_fn = post_fn
+        self.log_fn = log_fn or (lambda _m: None)
+        self.min_interval_s = float(min_interval_s)
+        self.time_fn = time_fn or time.time
+        self.env = env
+        self._pending: deque[tuple[str, int]] = deque()
+        self._last_post_at: float | None = None
+        committed = self.load_offset()
+        self._committed_offset = committed
+        self._read_offset = committed
+
+    @property
+    def pending_count(self) -> int:
+        return len(self._pending)
+
+    def load_offset(self) -> int:
+        try:
+            if self.offset_path.is_file():
+                return max(0, int(self.offset_path.read_text(encoding="utf-8").strip() or "0"))
+        except Exception as exc:
+            self.log_fn(f"INFO build-progress skip reason=offset-load-failed err={exc}")
+        return 0
+
+    def save_offset(self, off: int) -> None:
+        try:
+            self.offset_path.parent.mkdir(parents=True, exist_ok=True)
+            self.offset_path.write_text(str(int(off)) + "\n", encoding="utf-8")
+            self._committed_offset = int(off)
+        except Exception as exc:
+            self.log_fn(f"INFO build-progress skip reason=offset-save-failed err={exc}")
+
+    def pull_new(self) -> int:
+        """Enqueue newly completed JSONL rows. Returns count added to the queue."""
+        try:
+            items, new_off = read_progress_jsonl_advance(
+                self.path, after_offset=self._read_offset
+            )
+        except Exception as exc:
+            self.log_fn(f"INFO build-progress skip reason=read-failed err={exc}")
+            return 0
+        added = 0
+        for row, end_off in items:
+            raw = str(row.get("line") or "").strip()
+            if not raw:
+                self.log_fn("INFO build-progress skip reason=empty-line")
+                self.save_offset(end_off)
+                continue
+            line = redact_build_progress_text(raw, env=self.env).strip()
+            if not line:
+                self.log_fn("INFO build-progress skip reason=empty-after-redact")
+                self.save_offset(end_off)
+                continue
+            self._pending.append((line, end_off))
+            added += 1
+        self._read_offset = int(new_off)
+        return added
+
+    def flush_due(self) -> int:
+        """Post at most one queued line when the rate-limit allows. Returns 0 or 1."""
+        if not self._pending:
+            return 0
+        now = float(self.time_fn())
+        if (
+            self._last_post_at is not None
+            and (now - self._last_post_at) < self.min_interval_s
+        ):
+            self.log_fn(
+                f"INFO build-progress skip reason=throttle queued={len(self._pending)}"
+            )
+            return 0
+        line, end_off = self._pending.popleft()
+        try:
+            self.post_fn(line)
+        except Exception as exc:
+            self._pending.appendleft((line, end_off))
+            self.log_fn(f"INFO build-progress skip reason=post-failed err={exc}")
+            return 0
+        self._last_post_at = now
+        self.save_offset(end_off)
+        self.log_fn(f"INFO build-progress relay: {line[:160]}")
+        return 1
+
+    def drain(self) -> int:
+        """Pull new rows then flush as many as the rate-limit allows right now."""
+        self.pull_new()
+        posted = 0
+        # Cap iterations so a stuck clock cannot spin forever in tests.
+        for _ in range(max(1, len(self._pending) + 1)):
+            n = self.flush_due()
+            if n == 0:
+                break
+            posted += n
+        return posted
 
 
 class BuildProgressPoster:

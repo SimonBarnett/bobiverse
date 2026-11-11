@@ -230,12 +230,16 @@ def test_fr6585_runner_emits_step_suite_and_rerun(tmp_path: Path):
 
 
 def test_fr6585_spawn_cmd_includes_progress_file():
-    """Ear spawn must pass --progress-file (string pin; full IRC e2e is live-only)."""
+    """Ear spawn must pass --progress-file (string pin; full IRC e2e is live-only).
+
+    FR #6654: ear drains via BuildProgressRelay (durable .pos + logged relay).
+    """
     src = (Path(__file__).resolve().parents[2] / "common" / "scripts" / "irc_agent.py").read_text(
         encoding="utf-8"
     )
     assert "--progress-file" in src
-    assert "read_progress_jsonl" in src
+    assert "BuildProgressRelay" in src
+    assert "progress.jsonl" in src
     assert "BUILD progress" in (
         Path(__file__).resolve().parents[2] / "common" / "scripts" / "bobiverse_build.py"
     ).read_text(encoding="utf-8")
