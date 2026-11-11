@@ -8,6 +8,8 @@ recycle still fired while the stall finding was hidden.
 
 Expired offers and lost-DONE reoffers to the prior holder must still fire.
 A bad timestamp must not reap seat-hold or out-of-fuel marks.
+FR #6103: a successful ``!recycleseat`` heal drops the bored-latency finding
+before filing (FR #6633: stall_scan asserts empty filed titles on recycle).
 """
 from __future__ import annotations
 
@@ -215,12 +217,18 @@ def _stall_scan(tmp_path, monkeypatch, row: dict):
     ],
 )
 def test_stall_scan_wires_live_offer_suppression(tmp_path, monkeypatch, row, recycles):
+    """Live offer suppresses recycle; expired/lost-done still recycle (PR #5852).
+
+    FR #6103 / #6195: when heal queues ``!recycleseat``, ``drop_healed_bored_findings``
+    removes the bored-latency finding before the filer. Recycle rows must log the
+    heal line and must not open ``stall:bored-latency`` issues.
+    """
     logs, filed = _stall_scan(tmp_path, monkeypatch, row)
     text = "\n".join(logs)
     bored_filed = [title for title in filed if title.startswith("stall:bored-latency:")]
     if recycles:
         assert f"bored-latency recycleseat={NICK}" in text, text
-        assert bored_filed, filed
+        assert bored_filed == [], filed
     else:
         assert "bored-latency" not in text, text
         assert bored_filed == []
