@@ -18,6 +18,8 @@ import irc_agent  # noqa: E402
 def test_migration_seals_chair_outbox_at_eof_when_pos_missing(tmp_path, monkeypatch):
     monkeypatch.setattr(bob_home, "_profile", lambda: tmp_path / "me")
     monkeypatch.setattr(bob_home, "_admin_profile", lambda: tmp_path / "Administrator")
+    # FR #4315 / #6523: isolated_suite_env sets BOB_HOME_NO_MIGRATE=1
+    monkeypatch.delenv("BOB_HOME_NO_MIGRATE", raising=False)
     old = tmp_path / ".agentic-irc-bobiverse"
     old.mkdir()
     body = b"PRIVMSG #bobiverse :GIT old-1\nPRIVMSG #bobiverse :GIT old-2\n"
@@ -38,6 +40,7 @@ def test_migration_seals_chair_outbox_at_eof_when_pos_missing(tmp_path, monkeypa
 def test_migration_copies_existing_outbox_pos_when_present(tmp_path, monkeypatch):
     monkeypatch.setattr(bob_home, "_profile", lambda: tmp_path / "me")
     monkeypatch.setattr(bob_home, "_admin_profile", lambda: tmp_path / "Administrator")
+    monkeypatch.delenv("BOB_HOME_NO_MIGRATE", raising=False)
     old = tmp_path / ".agentic-irc-bobiverse"
     old.mkdir()
     body = b"PRIVMSG #bobiverse :GIT a\nPRIVMSG #bobiverse :GIT b\n"
@@ -55,6 +58,7 @@ def test_migration_accepts_legacy_chair_outbox_pos_name(tmp_path, monkeypatch):
     """Some installs used chair-outbox.pos next to chair-outbox.txt."""
     monkeypatch.setattr(bob_home, "_profile", lambda: tmp_path / "me")
     monkeypatch.setattr(bob_home, "_admin_profile", lambda: tmp_path / "Administrator")
+    monkeypatch.delenv("BOB_HOME_NO_MIGRATE", raising=False)
     old = tmp_path / ".agentic-irc-bobiverse"
     old.mkdir()
     (old / "chair-outbox.txt").write_bytes(b"PRIVMSG #bobiverse :x\n")
