@@ -7,6 +7,20 @@ from pathlib import Path
 import airc_legion as lg
 
 
+def _stub_remote_profile(monkeypatch):
+    """FR #5886 / #6560: never hit live IPC/SMB in unit pins."""
+    monkeypatch.setattr(
+        lg,
+        "read_remote_airc_profile_result",
+        lambda host, **_k: {
+            "profile": "",
+            "ok": True,
+            "found": False,
+            "detail": "not-found",
+        },
+    )
+
+
 def test_mrb5604_default_path_falls_to_system_when_credman_missing(monkeypatch):
     """FR #5659 amends #5594: CredMan probe then SYSTEM when missing."""
     import airc_identity as ident
@@ -14,6 +28,7 @@ def test_mrb5604_default_path_falls_to_system_when_credman_missing(monkeypatch):
     monkeypatch.delenv("AIRC_LEGION_USE_CREDMAN", raising=False)
     monkeypatch.delenv("AIRC_LEGION_PASSWORD", raising=False)
     monkeypatch.setattr(ident, "default_credman_reader", lambda t: {})
+    _stub_remote_profile(monkeypatch)
 
     body = lg.installer_legion_work(
         "flamingo",
@@ -28,6 +43,7 @@ def test_mrb5604_default_path_falls_to_system_when_credman_missing(monkeypatch):
 
 def test_mrb5604_empty_credman_falls_through_to_system(monkeypatch):
     monkeypatch.delenv("AIRC_LEGION_PASSWORD", raising=False)
+    _stub_remote_profile(monkeypatch)
 
     body = lg.installer_legion_work(
         "walrus",
@@ -41,7 +57,8 @@ def test_mrb5604_empty_credman_falls_through_to_system(monkeypatch):
     assert body["invoked_installer"] is True
 
 
-def test_mrb5604_whatif_plan_reports_system_identity():
+def test_mrb5604_whatif_plan_reports_system_identity(monkeypatch):
+    _stub_remote_profile(monkeypatch)
     body = lg.installer_legion_work(
         "flamingo",
         whatif=True,
@@ -59,7 +76,8 @@ def test_mrb5604_whatif_plan_reports_system_identity():
     assert body["computer_account"] in body["plan"]["identity"]
 
 
-def test_mrb5604_ok_true_never_maps_access_denied():
+def test_mrb5604_ok_true_never_maps_access_denied(monkeypatch):
+    _stub_remote_profile(monkeypatch)
     body = lg.installer_legion_work(
         "flamingo",
         whatif=False,
@@ -96,3 +114,45 @@ def test_mrb5604_source_has_identity_order_and_system_denied():
     assert "auth_failed" in src
     # packaged isolated kwargs must not force CredMan on the default accept path
     assert '{"target": target, "whatif": bool(whatif)}' in src
+    # FR #6560 / #5886: these hostile pins must stub profile IPC
+    here = Path(__file__).read_text(encoding="utf-8")
+    assert "read_remote_airc_profile_result" in here
+    assert "_stub_remote_profile" in here
+
+
+def test_mrb5604_empty_credman_survives_forced_profile_unreadable(monkeypatch):
+    """FR #6560: stub profile read so flamingo-class hosts cannot flake these pins."""
+    monkeypatch.delenv("AIRC_LEGION_PASSWORD", raising=False)
+    # First prove live unreadable would fail-closed before run_fn.
+    monkeypatch.setattr(
+        lg,
+        "read_remote_airc_profile_result",
+        lambda host, **_k: {
+            "profile": "",
+            "ok": False,
+            "found": False,
+            "detail": "share-unreadable",
+        },
+    )
+    bad = lg.installer_legion_work(
+        "walrus",
+        whatif=False,
+        run_fn=lambda spec: {"ok": True, "status": "ok"},
+        credman=lambda: {},
+    )
+    assert bad["ok"] is False
+    assert bad.get("error") == "profile_unreadable"
+    assert bad.get("invoked_installer") is False
+    # Unit pin path: stub not-found (readable probe) then SYSTEM fallback proceeds.
+    _stub_remote_profile(monkeypatch)
+    body = lg.installer_legion_work(
+        "walrus",
+        whatif=False,
+        run_fn=lambda spec: {"ok": True, "status": "ok"},
+        credman=lambda: {},
+    )
+    assert body["ok"] is True
+    assert body["identity"] == "system"
+    assert body.get("credman_missing") is True
+    assert body["invoked_installer"] is True
+
