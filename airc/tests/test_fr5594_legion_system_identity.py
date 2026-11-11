@@ -8,6 +8,20 @@ import airc_legion as lg
 from airc_auth_helpers import ops_auth
 
 
+def _stub_remote_profile(monkeypatch):
+    """FR #5886 / #6560: never hit live IPC/SMB in unit pins."""
+    monkeypatch.setattr(
+        lg,
+        "read_remote_airc_profile_result",
+        lambda host, **_k: {
+            "profile": "",
+            "ok": True,
+            "found": False,
+            "detail": "not-found",
+        },
+    )
+
+
 def test_fr5594_default_path_no_credman_no_password_env(monkeypatch):
     """FR #5659 amends #5594: CredMan is tried then SYSTEM; missing CredMan falls through."""
     import airc_identity as ident
@@ -21,6 +35,7 @@ def test_fr5594_default_path_no_credman_no_password_env(monkeypatch):
     monkeypatch.delenv("AIRC_LEGION_PASSWORD", raising=False)
     monkeypatch.delenv("AIRC_LEGION_USE_CREDMAN", raising=False)
     monkeypatch.setattr(ident, "default_credman_reader", lambda t: {})
+    _stub_remote_profile(monkeypatch)
 
     body = lg.installer_legion_work("flamingo", whatif=True, run_fn=run_fn)
     assert body["ok"] is True
@@ -52,7 +67,9 @@ def test_fr5594_identity_label_uses_computer_account():
     assert ident["identity_label"] == "SYSTEM (WONDERLAND\\MARCHHARE$)"
 
 
-def test_fr5594_access_denied_maps_to_system_reason():
+def test_fr5594_access_denied_maps_to_system_reason(monkeypatch):
+    _stub_remote_profile(monkeypatch)
+
     def run_fn(spec: dict) -> dict:
         return {
             "ok": False,
@@ -67,8 +84,9 @@ def test_fr5594_access_denied_maps_to_system_reason():
     assert body["target"] == "flamingo"
 
 
-def test_fr5594_explicit_empty_credman_falls_to_system():
+def test_fr5594_explicit_empty_credman_falls_to_system(monkeypatch):
     """FR #5659: missing CredMan falls through to SYSTEM (no fail-closed)."""
+    _stub_remote_profile(monkeypatch)
     seen: list[dict] = []
 
     def run_fn(spec):
@@ -109,3 +127,7 @@ def test_fr5594_pins():
     docs = srcp.parents[1] / "docs" / "airc-remote-control.md"
     assert "computer account" in docs.read_text(encoding="utf-8").lower()
     assert not srcp.read_bytes().startswith(b"\xef\xbb\xbf")
+    # FR #6560 / #5886: CredMan/SYSTEM unit pins must stub profile IPC
+    here = Path(__file__).read_text(encoding="utf-8")
+    assert "_stub_remote_profile" in here
+    assert "read_remote_airc_profile_result" in here
