@@ -217,7 +217,15 @@ def has_pytest_session_or_summary(stdout: str) -> bool:
     if "short test summary info" in low:
         return True
     for line in reversed(blob.splitlines()):
-        if "passed" not in line.lower() and "failed" not in line.lower() and "error" not in line.lower():
+        # FR #6647: keep skipped-only summary lines (e.g. ``===== 1 skipped =====``)
+        # so the regex below can match; do not require passed|failed|error first.
+        low_line = line.lower()
+        if (
+            "passed" not in low_line
+            and "failed" not in low_line
+            and "error" not in low_line
+            and "skipped" not in low_line
+        ):
             continue
         if re.search(r"(?i)\b\d+\s+(?:passed|failed|skipped|error)s?\b", line):
             return True

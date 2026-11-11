@@ -47,3 +47,14 @@ def test_fr6644_missing_interpreter_before_pytest_is_env_failure():
 def test_fr6644_plain_assertion_failure_still_not_env():
     out = "FAILED tests/test_x.py::t - assert 0\n===== 1 failed in 0.10s =====\n"
     assert bb.is_command_not_found(out, 1) is False
+
+
+def test_fr6647_skipped_only_summary_plus_fnf_is_not_env_failure():
+    """Truncated capture: skipped-only summary, no session banner, FNF+python."""
+    out = (
+        "FileNotFoundError: [WinError 3] The system cannot find the path specified: "
+        "'D:\\\\tmp\\\\python'\n"
+        "===== 1 skipped in 0.02s =====\n"
+    )
+    assert bb.has_pytest_session_or_summary(out) is True
+    assert bb.is_command_not_found(out, 1) is False
