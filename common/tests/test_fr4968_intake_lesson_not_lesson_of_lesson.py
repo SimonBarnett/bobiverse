@@ -78,19 +78,30 @@ def test_fr4968_real_lesson_of_lesson_still_filtered():
 
 
 def test_fr4968_purge_dead_mrb_logs_repo_pr_and_reason():
+    """FR #4968 purge drops lesson_of_lesson; FR #6340 offer still does not refuse."""
+    row = {
+        "task": "MRB",
+        "repo": "SimonBarnett/a-search",
+        "id": "#4999",
+        "title": "lesson(harvest-agent-skills): tip-loop meta twin",
+        "body": "FAIL-supersede; tip-loop; CLOSED-duplicate of #4769",
+        "labels": ["harvest-lesson"],
+        "head_ref": "intake/in_meta",
+        "url": "https://github.com/SimonBarnett/a-search/pull/4999",
+    }
+    assert gitclaim.is_lesson_of_lesson_pr(
+        title=row["title"],
+        body=row["body"],
+        labels=row["labels"],
+        head_ref=row["head_ref"],
+    )
+    # Offer path (FR #6340) must not refuse; purge uses a separate reason helper.
+    assert gitclaim.mrb_row_not_offerable_reason(row) is None
+    assert gitclaim.mrb_row_offerable(row) is True
+    assert gitclaim.mrb_row_purge_dead_reason(row) == "lesson_of_lesson"
+
     doc = {
-        "unaccepted": [
-            {
-                "task": "MRB",
-                "repo": "SimonBarnett/a-search",
-                "id": "#4999",
-                "title": "lesson(harvest-agent-skills): tip-loop meta twin",
-                "body": "FAIL-supersede; tip-loop; CLOSED-duplicate of #4769",
-                "labels": ["harvest-lesson"],
-                "head_ref": "intake/in_meta",
-                "url": "https://github.com/SimonBarnett/a-search/pull/4999",
-            }
-        ],
+        "unaccepted": [row],
         "accepted": [],
         "done": [],
     }

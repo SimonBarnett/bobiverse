@@ -5049,6 +5049,7 @@ def mrb_row_not_offerable_reason(
     # FR #5500 / #6340: docs/mrb-* and pin-of-pin are skipped at auto enqueue
     # (resync/webhook) only. Once a row is queued --- orphan stamp, or explicit
     # !assign --- offer must not refuse with docs_mrb_pin / lesson_of_lesson.
+    # Purge still drops lesson_of_lesson via mrb_row_purge_dead_reason (FR #4968).
     hold = pr_hold_reason(
         title=str(row.get("title") or ""),
         body=str(row.get("body") or ""),
@@ -5057,6 +5058,50 @@ def mrb_row_not_offerable_reason(
     if hold:
         return f"hold:{hold}"
     # Structural / live URL checks stay in mrb_row_offerable (shared tail).
+    return None
+
+
+def _mrb_row_head_ref(row: dict) -> str:
+    """Best-effort head ref from a queue row (string or nested head dict)."""
+    head = row.get("head")
+    if isinstance(head, dict):
+        return str(head.get("ref") or head.get("name") or "")
+    return str(
+        head
+        or row.get("head_ref")
+        or row.get("headRefName")
+        or row.get("branch")
+        or ""
+    )
+
+
+def mrb_row_purge_dead_reason(
+    row: dict,
+    *,
+    pr_exists=None,
+) -> str | None:
+    """Why ``purge_dead_mrb`` should drop an unaccepted MRB row, or None to keep.
+
+    Includes every ``mrb_row_not_offerable_reason`` plus ``lesson_of_lesson``
+    (FR #4917 / #4968). Offer path (FR #6340) must not refuse lesson_of_lesson
+    once queued, but leaked meta tips still need queue hygiene.
+    """
+    why = mrb_row_not_offerable_reason(row, pr_exists=pr_exists)
+    if why is not None:
+        return why
+    if _canon_task(row) != "MRB":
+        return None
+    labs = row.get("labels") or ()
+    if isinstance(labs, str):
+        labs = [labs]
+    labs_t = tuple(str(x) for x in labs)
+    if is_lesson_of_lesson_pr(
+        title=str(row.get("title") or ""),
+        body=str(row.get("body") or ""),
+        labels=labs_t,
+        head_ref=_mrb_row_head_ref(row),
+    ):
+        return "lesson_of_lesson"
     return None
 
 
@@ -5072,7 +5117,9 @@ def mrb_row_offerable(
     FR #2375: ``fix(mrb-N)`` / ``mrb-N-fix`` titles are never MRB targets (enqueue already
     skips them; reject at offer too if a row leaked in).
     FR #3928: hold label / ``on hold`` / ``must not merge`` body text → not offerable.
-    FR #4917: lesson-of-lesson / meta tip PRs are never offerable MRB (breaks pin chain).
+    FR #6340: offer must not refuse docs_mrb_pin / lesson_of_lesson once queued
+    (auto enqueue still skips; purge drops lesson_of_lesson via
+    ``mrb_row_purge_dead_reason`` — FR #4968 / #4917).
     FR #4968: intake light-triage boilerplate is stripped before lesson-of-lesson match.
     """
     early = mrb_row_not_offerable_reason(row, pr_exists=pr_exists)
@@ -5838,7 +5885,9 @@ def _purge_dead_mrb_unaccepted(
                     log=log,
                 )
                 continue
-            why = mrb_row_not_offerable_reason(row, pr_exists=row_pr)
+            # FR #4968: purge uses mrb_row_purge_dead_reason so lesson_of_lesson
+            # still drops (offer path deliberately omits that refuse — FR #6340).
+            why = mrb_row_purge_dead_reason(row, pr_exists=row_pr)
             if why is not None or not mrb_row_offerable(row, pr_exists=row_pr):
                 if why is None:
                     why = "not_offerable"
