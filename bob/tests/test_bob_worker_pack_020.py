@@ -217,9 +217,12 @@ def bob_stage(tmp_path_factory):
     if sys.platform != "win32" or not shutil.which("powershell"):
         pytest.skip("needs Windows PowerShell")
     out = tmp_path_factory.mktemp("dist")
+    # FR #6660: -SkipEarExe — this module only asserts worker/plan stage layout.
+    # Building bob-ear.exe via PyInstaller under full !build load flakes (exit -1
+    # mid Analysis) and is unrelated to the pack_020 gates.
     run = subprocess.run(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
                           str(ROOT / "scripts" / "Pack-BobiverseRelease.ps1"), "-Product", "bob", "-SkipMsi", "-KeepStage",
-                          "-SkipWorkerExe", "-OutDir", str(out)], capture_output=True, text=True, timeout=300)
+                          "-SkipWorkerExe", "-SkipEarExe", "-OutDir", str(out)], capture_output=True, text=True, timeout=300)
     assert run.returncode == 0, run.stdout[-1500:] + run.stderr[-1500:]
     ver = (ROOT / "src" / "VERSION").read_text().strip()
     return out / f"bob-{ver}"
@@ -259,10 +262,23 @@ def test_stage_skills_carry_the_harvest_rule_with_install_absolute_paths(bob_sta
     # FR #2835: Sync-BobiverseAgentFolders drops nested skill-dba\.grok; keep the pin if a copy sneaks back.
     files = [f for f in files if "skill-dba" not in f.as_posix().split("/")]
     assert len(files) >= 11 + 8 + 6
+    rule_core = RULE[:-1]  # all markers except the -Repo pin
     for f in files:
         t = f.read_text(encoding="utf-8-sig").replace("\r\n", "\n")
-        for mk in RULE:
-            assert mk in t, f"{f.relative_to(bob_stage)}: missing {mk!r}"
+        rel = f.relative_to(bob_stage).as_posix()
+        for mk in rule_core:
+            assert mk in t, f"{rel}: missing {mk!r}"
+        # FR #3318 / #3506 / #3667 / #6660: plan CAST IRON + visionary harvest books pin skills-visionary.
+        plan_visionary = (
+            "/harvest-skills-visionary/" in f"/{rel}"
+            or "/visionary/" in f"/{rel}"
+            or rel in ("plan/AGENTS.md", "plan/CLAUDE.md", "plan/GROK.md")
+            or rel.endswith("bobiverse-plan.mdc")
+        )
+        if plan_visionary:
+            assert "-Repo SimonBarnett/skills-visionary" in t, f"{rel}: missing skills-visionary pin"
+        else:
+            assert "-Repo SimonBarnett/bobiverse" in t, f"{rel}: missing bobiverse pin"
         assert "..\\scripts\\Report-BobiverseIntakeIssue.ps1" in t, f.relative_to(bob_stage)
         assert ".\\scripts\\Report-BobiverseIntakeIssue.ps1" not in t.replace("..\\scripts\\", ""), f.relative_to(bob_stage)
         # FR #1704: rewritten instruction paths must not gain a third leading dot. Fleet-ops prose may
