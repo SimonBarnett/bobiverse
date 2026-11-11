@@ -370,6 +370,7 @@ routes to bobiverse via the split rule.
 - When Client gains a helper called from a bound FakeAgent method (_apply_chanserv_channels), bind the new helper on every FakeAgent that already binds the caller (mirror test_chanserv_roster_mirror).
 - When a later FR adds GET /pulls/N/files beside mergeability GET /pulls/N, detail-hit pins must exclude /files URLs so FR #4683 skip-when-keys-present stays precise.
 - When isolation/pack tooling must name AGENTIC_IRC_PASSWORD or legacy .agentic-irc-* paths, extend the self-contained allow-list with a comment; keep import and default-home pins strict.
+- Clear-worktree pin tests: accept ErrorRecord.ToString()+else { "$_" } and Remove-BobiversePathForce after $gitExit; enlarge remove block to ~2200; prefer Closes #N near top of PR body for closingIssuesReferences
 
 ## Harvest digest (lessons audit 2026-10-06)
 
