@@ -250,6 +250,10 @@ def test_fr6159_flat_install_agent_fuel_returns_opencode(tmp_path: Path):
     env = os.environ.copy()
     env["BOB_OPENCODE_FUEL_FIXTURE"] = FIXTURE
     env.pop("PYTHONPATH", None)
+    env.pop("BOB_OPENCODE_FUEL_HELPER", None)
+    # FR #6669: prefer this interpreter over WindowsApps store aliases / !build PATH.
+    py_dir = str(Path(sys.executable).resolve().parent)
+    env["PATH"] = py_dir + os.pathsep + env.get("PATH", "")
     # Unrelated cwd so PSScriptRoot-relative resolution must walk to install root.
     work = tmp_path / "elsewhere"
     work.mkdir()
@@ -296,6 +300,10 @@ def test_fr6159_flat_opencode_fuel_helper_alone(tmp_path: Path):
     env = os.environ.copy()
     env["BOB_OPENCODE_FUEL_FIXTURE"] = FIXTURE
     env.pop("PYTHONPATH", None)
+    env.pop("BOB_OPENCODE_FUEL_HELPER", None)
+    # FR #6669/#6670: same interpreter as pytest (avoid WindowsApps python stub).
+    py_dir = str(Path(sys.executable).resolve().parent)
+    env["PATH"] = py_dir + os.pathsep + env.get("PATH", "")
     result = subprocess.run(
         [
             "powershell.exe",
