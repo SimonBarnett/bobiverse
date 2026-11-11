@@ -221,9 +221,16 @@ def test_callback_cmd_and_watchers_use_install_relative_config():
 
 def test_gh_token_candidates_include_install_config_env(monkeypatch, tmp_path):
     import gh_filer
+    from repo_layout import ROOT
     cfg = tmp_path / "cfg"
     cfg.mkdir()
     monkeypatch.setenv("BOB_CONFIG_DIR", str(cfg))
+    # FR #6523: empty iso BOB_CONFIG_DIR must not prepend ahead of install-root.
+    paths = gh_filer._token_candidate_paths()
+    assert paths[0] == (ROOT / "scripts").parent / "config" / "github.token"
+    assert (cfg / "github.token") in paths
+    # Existing override file still wins when present.
+    (cfg / "github.token").write_text("FAKE_TOKEN_FOR_TEST\n", encoding="utf-8")
     assert gh_filer._token_candidate_paths()[0] == cfg / "github.token"
 
 

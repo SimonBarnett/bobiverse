@@ -1,4 +1,4 @@
-﻿"""FR #6523: isolated_suite_env must not steal pytest tmp_path digest/roster homes."""
+"""FR #6523: isolated_suite_env must not steal pytest tmp_path digest/roster homes."""
 from __future__ import annotations
 
 import json
