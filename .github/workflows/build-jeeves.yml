@@ -14,6 +14,8 @@ on:
       - common/scripts/jeeves_main.py
       - common/scripts/jeeves_build_meta.py
       - common/tests/test_fr6395_jeeves_build_ci.py
+      - common/requirements-freeze.txt
+      - common/scripts/assert_jeeves_yaml_embed.py
   push:
     branches: [main]
     paths:
@@ -24,6 +26,8 @@ on:
       - common/scripts/jeeves_main.py
       - common/scripts/jeeves_build_meta.py
       - common/tests/test_fr6395_jeeves_build_ci.py
+      - common/requirements-freeze.txt
+      - common/scripts/assert_jeeves_yaml_embed.py
 
 permissions:
   contents: read
@@ -46,6 +50,7 @@ jobs:
 
       - name: Install PyInstaller and Bob Python deps
         run: |
+          # FR #6553: Install-BobiversePythonDeps also pip -r common/requirements-freeze.txt (PyYAML).
           python -m pip install --upgrade pip pyinstaller
           if ($LASTEXITCODE -ne 0) { throw "pip install pyinstaller failed: $LASTEXITCODE" }
           . .\common\scripts\Bobiverse-Common.ps1

@@ -93,3 +93,9 @@ if (Test-Path -LiteralPath $assertYaml) {
 }
 Write-Host ("INFO built {0} ({1:N1} MB)" -f $exe, ((Get-Item -LiteralPath $exe).Length / 1MB))
 $exe
+
+# FR #6553: fail early when PyYAML is absent --- --collect-all yaml cannot embed what is not installed.
+&  -c "import yaml" 2>
+if ( -ne 0) {
+    throw "FR #6487/#6553: PyYAML required on freeze host (pip install -r common/requirements-freeze.txt or Install-BobiversePythonDeps)"
+}
