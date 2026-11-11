@@ -14,7 +14,7 @@ FAKE = "ghp_FAKE_TOKEN_FOR_TESTS_ONLY"
 def _capture():
     seen = []
 
-    def inner(cmd, cwd=None, env=None, timeout=None, *, name="cmd", ref_or_baseline=""):
+    def inner(cmd, cwd=None, env=None, timeout=None, *, name="cmd", ref_or_baseline="", log_path=None, **_):
         seen.append((name, dict(env or {})))
         return SimpleNamespace(exit_code=0, timed_out=False, stdout="", name=name)
 

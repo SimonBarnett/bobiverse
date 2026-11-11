@@ -71,7 +71,7 @@ def test_fr4349_pack_step_gets_secret_after_isolation(tmp_path, monkeypatch):
     monkeypatch.setenv("BOB_IRC_PASSWORD", "FAKE_SHOULD_STAY_BLANK_IN_SUITE")
     seen = []
 
-    def inner(cmd, cwd=None, env=None, timeout=None, *, name="cmd", ref_or_baseline=""):
+    def inner(cmd, cwd=None, env=None, timeout=None, *, name="cmd", ref_or_baseline="", log_path=None, **_):
         seen.append((name, dict(env or {})))
         return SimpleNamespace(exit_code=0, timed_out=False, stdout="", name=name)
 
@@ -88,7 +88,7 @@ def test_fr4349_suite_steps_do_not_get_pack_secret(tmp_path, monkeypatch):
     monkeypatch.setenv("AIRC_PACK_ERGO_PASSWORD", FAKE_PASS)
     seen = []
 
-    def inner(cmd, cwd=None, env=None, timeout=None, *, name="cmd", ref_or_baseline=""):
+    def inner(cmd, cwd=None, env=None, timeout=None, *, name="cmd", ref_or_baseline="", log_path=None, **_):
         seen.append((name, dict(env or {})))
         return SimpleNamespace(exit_code=0, timed_out=False, stdout="", name=name)
 

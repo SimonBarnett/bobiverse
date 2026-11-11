@@ -27,7 +27,7 @@ def test_guard_passes_isolated_env_and_detects_live_write(tmp_path):
     (live / "queue.json").write_text('{"v":1,"unaccepted":[%s]}' % rows, encoding="utf-8")
     seen = {}
 
-    def ok(cmd, cwd=None, env=None, timeout=None, *, name="", ref_or_baseline=""):
+    def ok(cmd, cwd=None, env=None, timeout=None, *, name="", ref_or_baseline="", log_path=None, **_):
         seen.update(env)
         return "ok"
 
@@ -35,7 +35,7 @@ def test_guard_passes_isolated_env_and_detects_live_write(tmp_path):
     assert run("x", name="jeeves", ref_or_baseline="HEAD") == "ok"
     assert str(tmp_path / "work") in seen["BOB_DIGEST_HOME"]
 
-    def clobber(cmd, cwd=None, env=None, timeout=None, *, name="", ref_or_baseline=""):
+    def clobber(cmd, cwd=None, env=None, timeout=None, *, name="", ref_or_baseline="", log_path=None, **_):
         (live / "queue.json").write_text('{"v":1,"unaccepted":[]}', encoding="utf-8")
         return "ok"
 
@@ -59,7 +59,7 @@ def test_routine_rewrite_is_not_damage(tmp_path):
     (live / "queue.json").write_text('{"v":1,"unaccepted":[{"repo":"o/r","task":"FR","id":"#1"}]}', encoding="utf-8")
     (live / "registered-machines.json").write_text("{}", encoding="utf-8")
 
-    def touch(cmd, cwd=None, env=None, timeout=None, *, name="", ref_or_baseline=""):
+    def touch(cmd, cwd=None, env=None, timeout=None, *, name="", ref_or_baseline="", log_path=None, **_):
         (live / "registered-machines.json").write_text('{"refreshed_ts": 2}', encoding="utf-8")
         (live / "queue.json").write_text('{"v":1,"unaccepted":[{"repo":"o/r","task":"FR","id":"#1","seq":2}]}', encoding="utf-8")
         return "ok"
@@ -73,7 +73,7 @@ def test_fr4315_suite_env_cannot_clobber_digest_home(tmp_path):
     live.mkdir(parents=True)
     seen = {}
 
-    def capture(cmd, cwd=None, env=None, timeout=None, *, name="", ref_or_baseline=""):
+    def capture(cmd, cwd=None, env=None, timeout=None, *, name="", ref_or_baseline="", log_path=None, **_):
         seen.update(env or {})
         return "ok"
 
@@ -111,7 +111,7 @@ def test_fr4408_one_focus_prune_is_not_damage(tmp_path):
         encoding="utf-8",
     )
 
-    def prune_one(cmd, cwd=None, env=None, timeout=None, *, name="", ref_or_baseline=""):
+    def prune_one(cmd, cwd=None, env=None, timeout=None, *, name="", ref_or_baseline="", log_path=None, **_):
         (live / "focus.json").write_text(
             _focus_doc(items={"o/r#2": {"rank": 2, "repo": "o/r", "id": "#2"}}),
             encoding="utf-8",
@@ -129,7 +129,7 @@ def test_fr4408_mass_focus_loss_is_damage(tmp_path):
     items = {f"o/r#{i}": {"rank": i, "repo": "o/r", "id": f"#{i}"} for i in range(8)}
     (live / "focus.json").write_text(_focus_doc(items=items), encoding="utf-8")
 
-    def wipe(cmd, cwd=None, env=None, timeout=None, *, name="", ref_or_baseline=""):
+    def wipe(cmd, cwd=None, env=None, timeout=None, *, name="", ref_or_baseline="", log_path=None, **_):
         (live / "focus.json").write_text(_focus_doc(), encoding="utf-8")
         return "ok"
 
@@ -175,7 +175,7 @@ def test_fr5042_guard_tolerates_ten_queue_loss(tmp_path):
         '{"v":1,"unaccepted":[%s]}' % rows, encoding="utf-8"
     )
 
-    def prune_ten(cmd, cwd=None, env=None, timeout=None, *, name="", ref_or_baseline=""):
+    def prune_ten(cmd, cwd=None, env=None, timeout=None, *, name="", ref_or_baseline="", log_path=None, **_):
         keep = ",".join(
             '{"repo":"o/r","task":"FR","id":"#%d"}' % i for i in range(10, 30)
         )
