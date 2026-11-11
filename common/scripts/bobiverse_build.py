@@ -81,6 +81,28 @@ def load_recipe(repo_root: Path) -> BuildRecipe:
     return validate_recipe(data)
 
 
+def load_recipe_from_candidates(
+    candidates: Iterable[Path] | list[Path] | tuple[Path, ...],
+    *,
+    repo: str = "",
+    missing_kind: str = "build",
+) -> BuildRecipe:
+    """Load the first existing recipe under *candidates*.
+
+    FR #6487: when a ``build.yml`` exists, propagate the real ``RecipeError``
+    (missing PyYAML, validation, parse). The generic ``no .bobiverse/build.yml``
+    line is reserved for when no candidate file is present.
+    """
+    for cand in candidates:
+        root = Path(cand)
+        if not recipe_path(root).is_file():
+            continue
+        return load_recipe(root)
+    label = (repo or "").strip() or "repo"
+    kind = (missing_kind or "build").strip() or "build"
+    raise RecipeError(f"{kind}: {label} has no .bobiverse/build.yml; nothing started")
+
+
 def validate_recipe(data: dict) -> BuildRecipe:
     if not isinstance(data, dict):
         raise RecipeError("build: recipe root must be a mapping")
@@ -2028,13 +2050,15 @@ def load_bobiverse_recipe_local_or_remote(
 ) -> BuildRecipe:
     """Local ``.bobiverse/build.yml`` first; else GitHub fetch (FR #6484 packaged chair).
 
+    FR #6487: a present local file that fails to parse/validate is not treated as
+    missing — the real ``RecipeError`` propagates (no silent remote fallback).
     Raises ``RecipeError`` with the familiar ``nothing started`` line when both miss.
     """
     for cand in candidates:
-        try:
-            return load_recipe(Path(cand))
-        except RecipeError:
+        root = Path(cand)
+        if not recipe_path(root).is_file():
             continue
+        return load_recipe(root)
     if ensure_token is not None:
         try:
             ensure_token()

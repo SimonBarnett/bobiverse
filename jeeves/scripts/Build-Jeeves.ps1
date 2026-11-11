@@ -46,9 +46,13 @@ $hidden = @(
     # FR #6436 / #6440 / #6441 / #6442: settings + HTTP + auth + migrate/apply.
     'jeeves_settings', 'jeeves_settings_http', 'jeeves_settings_auth',
     # FR #6439: stall HTTPS callbacks (reuse wake URL) + detectors/filer used by chair_health.
-    'stall_callbacks', 'stall_detectors', 'stall_filer'
+    'stall_callbacks', 'stall_detectors', 'stall_filer',
+    # FR #6487: !build recipe parse needs PyYAML inside the frozen exe.
+    'yaml', '_yaml', 'bobiverse_build'
 )
 $hiddenArgs = @(); foreach ($h in $hidden) { $hiddenArgs += @('--hidden-import', $h) }
+# FR #6487: pull PyYAML package data/extensions into the freeze when installed on the build host.
+$hiddenArgs += @('--collect-all', 'yaml')
 
 # FR #2522: bundle jeeves\checks (check_*.py plugins loaded by --self-test). Changes ship via PR + MRB + rebuild.
 $checksDir = Get-BobiverseRepoPath -Root $RepoRoot -Rel 'jeeves\checks'
@@ -185,6 +189,38 @@ if (-not $SkipSmoke) {
         throw "jeeves.exe smoke --self-test failed (exit $pcode): $($probe | Out-String)"
     }
     Write-Host ("INFO jeeves.exe smoke --self-test exit={0}" -f $pcode)
+}
+
+# FR #6487: frozen embed must carry PyYAML so !build can parse .bobiverse/build.yml.
+$assertYaml = Get-BobiverseRepoPath -Root $RepoRoot -Rel 'common\scripts\assert_jeeves_yaml_embed.py'
+if (-not $assertYaml -or -not (Test-Path -LiteralPath $assertYaml)) {
+    $assertYaml = Join-Path $RepoRoot 'common\scripts\assert_jeeves_yaml_embed.py'
+}
+if (Test-Path -LiteralPath $assertYaml) {
+    $prevEap = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
+    & $Python $assertYaml $work
+    $acode = $LASTEXITCODE
+    $ErrorActionPreference = $prevEap
+    if ($acode -ne 0) {
+        throw "FR #6487 assert_jeeves_yaml_embed failed (exit $acode)"
+    }
+} else {
+    Write-Host 'WARN FR #6487: assert_jeeves_yaml_embed.py missing; skip yaml embed pin'
+}
+
+# FR #6487: build-host parse of the repo recipe (frozen import covered by embed assert).
+$recipeFile = Join-Path $RepoRoot '.bobiverse\build.yml'
+if (-not (Test-Path -LiteralPath $recipeFile)) {
+    $recipeFile = Get-BobiverseRepoPath -Root $RepoRoot -Rel '.bobiverse\build.yml'
+}
+if ($recipeFile -and (Test-Path -LiteralPath $recipeFile)) {
+    $prevEap = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
+    & $Python -c "import sys; from pathlib import Path; sys.path.insert(0, r'$RepoRoot\common\scripts'); import bobiverse_build as bb; r=bb.load_recipe(Path(r'$RepoRoot')); print('FR #6487 recipe machine=' + r.machine)"
+    $rcode = $LASTEXITCODE
+    $ErrorActionPreference = $prevEap
+    if ($rcode -ne 0) {
+        throw "FR #6487 recipe parse smoke failed (exit $rcode)"
+    }
 }
 
 Write-Host ("INFO built {0} ({1:N1} MB)" -f $exe, ((Get-Item -LiteralPath $exe).Length / 1MB))
