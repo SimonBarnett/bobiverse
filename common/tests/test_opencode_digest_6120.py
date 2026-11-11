@@ -238,6 +238,27 @@ def _popen_writer(payload: str, *, running: bool = False):
     return fake_popen
 
 
+def _hermetic_opencode_helper_env(monkeypatch, tmp_path: Path) -> Path:
+    """Isolate helper reads from install-root disk cache and Go-zen / fixture keys.
+
+    FR #6710: release runners with a prior ``run/opencode-fuel.json`` (or a live
+    Go key) made ``publish_local_peer_fuel`` re-publish cached free/go even when
+    the stub helper returned ``opencode_missing`` nulls.
+    """
+    bobreport.clear_opencode_pcent_cache()
+    monkeypatch.delenv("BOB_OPENCODE_FUEL_FIXTURE", raising=False)
+    monkeypatch.delenv("BOB_OPENCODE_WINDOWS_FIXTURE", raising=False)
+    monkeypatch.delenv("BOB_OPENCODE_GO_API_KEY", raising=False)
+    monkeypatch.delenv("BOB_OPENCODE_GO_USAGE_FIXTURE", raising=False)
+    monkeypatch.delenv("BOB_OPENCODE_KEY_LABEL", raising=False)
+    helper = tmp_path / "Get-BobOpencodeFuel.ps1"
+    helper.write_text("# stub\n", encoding="utf-8")
+    cache = tmp_path / "opencode-fuel.json"
+    monkeypatch.setenv("BOB_OPENCODE_FUEL_HELPER", str(helper))
+    monkeypatch.setenv("BOB_OPENCODE_FUEL_CACHE_FILE", str(cache))
+    return helper
+
+
 def test_mrb6176_helper_cache_avoids_repeat_subprocess(monkeypatch, tmp_path: Path):
     """Within TTL, second read must not spawn PowerShell again."""
     from unittest import mock
@@ -309,16 +330,35 @@ _LATER_HELPER_JSON = (
 )
 
 
+def test_accept_opencode_missing_keeps_windows_drops_cached_free():
+    """FR #6710: opencode_missing null free/go must not re-publish prior free/go."""
+    cached = {
+        "free": 70,
+        "go": 20,
+        "opencode-free": 70,
+        "opencode-go": 20,
+        "read_state": "ok",
+        "windows": {
+            "rolling": {"status": "unknown"},
+            "week": {"status": "known", "remaining_pct": 28},
+            "month": {"status": "known", "remaining_pct": 64},
+        },
+    }
+    # Parser drops null free/go — fresh looks like helper stdout after parse.
+    fresh = bobreport._parse_opencode_helper_stdout(_NULL_HELPER_JSON)
+    assert "opencode-free" not in fresh and fresh.get("read_state") == "opencode_missing"
+    got = bobreport._accept_opencode_fuel_doc(fresh, cached)
+    assert "free" not in got and "opencode-free" not in got
+    assert "go" not in got and "opencode-go" not in got
+    assert got["windows"]["week"]["remaining_pct"] == 28
+    assert got["read_state"] == "opencode_missing"
+
+
 def test_slow_helper_does_not_block_and_later_tick_keeps_windows(monkeypatch, tmp_path: Path):
     """Live opencode outlives the old 5s kill. The next tick must see its JSON."""
     from unittest import mock
 
-    bobreport.clear_opencode_pcent_cache()
-    monkeypatch.delenv("BOB_OPENCODE_FUEL_FIXTURE", raising=False)
-    monkeypatch.delenv("BOB_OPENCODE_WINDOWS_FIXTURE", raising=False)
-    helper = tmp_path / "Get-BobOpencodeFuel.ps1"
-    helper.write_text("# stub\n", encoding="utf-8")
-    monkeypatch.setenv("BOB_OPENCODE_FUEL_HELPER", str(helper))
+    _hermetic_opencode_helper_env(monkeypatch, tmp_path)
     monkeypatch.setenv("BOB_OPENCODE_FUEL_CACHE_S", "0")
     phase = {"running": True}
 
@@ -361,12 +401,12 @@ def test_missing_upstream_publishes_windows_without_inventing_free(
     """Null helper JSON still publishes three Go windows and does not set free=100."""
     import bobstat
 
-    bobreport.clear_opencode_pcent_cache()
-    monkeypatch.delenv("BOB_OPENCODE_FUEL_FIXTURE", raising=False)
-    monkeypatch.delenv("BOB_OPENCODE_WINDOWS_FIXTURE", raising=False)
-    helper = tmp_path / "Get-BobOpencodeFuel.ps1"
-    helper.write_text("# stub\n", encoding="utf-8")
-    monkeypatch.setenv("BOB_OPENCODE_FUEL_HELPER", str(helper))
+    _hermetic_opencode_helper_env(monkeypatch, tmp_path)
+    # Prior disk cache with free/go must not leak into this publish (FR #6710).
+    cache = tmp_path / "opencode-fuel.json"
+    cache.write_text(
+        json.dumps({"free": 70, "go": 20, "read_state": "ok"}) + "\n", encoding="utf-8"
+    )
     home = tmp_path / "home"
     home.mkdir()
     bobstat.write_peer(
@@ -403,9 +443,10 @@ def test_missing_upstream_publishes_windows_without_inventing_free(
 
     with mock.patch("subprocess.Popen", _popen_writer(_NULL_HELPER_JSON)):
         with mock.patch("urllib.request.urlopen", fake_urlopen):
-            code = bobreport.publish_local_peer_fuel(
-                home, "marchhare", force=True, url="https://example.test/bob/v1/report"
-            )
+            with mock.patch("bobreport.fetch_live_xai_weekly", return_value=None):
+                code = bobreport.publish_local_peer_fuel(
+                    home, "marchhare", force=True, url="https://example.test/bob/v1/report"
+                )
     assert code == 204
     body = posted[0]
     pcent = body.get("pcent") or {}
