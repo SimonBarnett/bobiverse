@@ -26,7 +26,9 @@ if (-not $InstallRoot) {
     if (Get-Command Get-BobiverseProductRoot -ErrorAction SilentlyContinue) {
         $InstallRoot = Get-BobiverseProductRoot -Product bob
     } else {
-        $InstallRoot = 'C:\ai\bob'
+        # t780u / FR #6607: never hard-code C:\ai; last-resort is <SystemDrive>\ai\bob
+        $sys = if ($env:SystemDrive) { $env:SystemDrive } else { 'C:' }
+        $InstallRoot = Join-Path $sys 'ai\bob'
     }
 }
 if (-not $LogPath) {
