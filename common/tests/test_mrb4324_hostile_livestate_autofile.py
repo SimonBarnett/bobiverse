@@ -30,9 +30,12 @@ def test_mrb4324_buildrunner_suite_and_pack_catch_call_filer():
 
 def test_mrb4324_cli_outer_except_files_blocker():
     assert "file_runner_abort_blocker" in CLI
-    # outer except must still file when filer exists
-    i_exc = CLI.index("except Exception as exc:")
-    chunk = CLI[i_exc : i_exc + 1200]
+    # FR #6699: first ``except Exception as exc:`` is prune-skip; outer abort is later.
+    i_exc = CLI.index("FR #4316: outer abort")
+    # Walk back to the enclosing except line.
+    except_at = CLI.rfind("except Exception as exc:", 0, i_exc)
+    assert except_at >= 0
+    chunk = CLI[except_at : except_at + 2000]
     assert "file_runner_abort_blocker" in chunk
     assert "blocker=" in chunk
 
