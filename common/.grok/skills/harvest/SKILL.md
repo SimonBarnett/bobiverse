@@ -372,6 +372,7 @@ routes to bobiverse via the split rule.
 - When isolation/pack tooling must name AGENTIC_IRC_PASSWORD or legacy .agentic-irc-* paths, extend the self-contained allow-list with a comment; keep import and default-home pins strict.
 - Clear-worktree pin tests: accept ErrorRecord.ToString()+else { "$_" } and Remove-BobiversePathForce after $gitExit; enlarge remove block to ~2200; prefer Closes #N near top of PR body for closingIssuesReferences
 - test_fr5311_console_wires_dcclisten must inject a sync legion_runner that calls on_done before handle_raw returns; a 1s poll of async/isolated legion_log_send flakes under !build load.
+- OpenCode start_agent tests that spawn must stub probe_gh_auth when CI lacks gh login (FR #6240); mirror test_fr6157
 
 ## Harvest digest (lessons audit 2026-10-06)
 
