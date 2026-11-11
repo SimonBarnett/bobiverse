@@ -115,12 +115,17 @@ def test_fr3641_fresh_seat_marker_survives_soft_cap_with_dead_pid(tmp_path: Path
 
 
 @WIN
-def test_fr3641_force_reclaims_stale_seat_marker(tmp_path: Path):
+def test_fr3641_force_reclaims_stale_seat_marker(tmp_path: Path, monkeypatch):
     """-Force may reclaim a marked tree whose seat marker is older than StaleSeatHours.
 
     FR #3698: a live marker pid protects only when CommandLine cites the worktree
     (StaleSeatHours=0 disables fresh-mtime protection). Hold a citing powershell.
+    FR #6563: isolate BOB_JOB_WORKTREE_BASE so -Force does not sweep the fleet base
+    (that path made this pin time out at 120s on busy boxes).
     """
+    # Keep Force orphan sweep inside tmp (do not walk the live fleet worktree base).
+    monkeypatch.setenv("BOB_JOB_WORKTREE_BASE", str(tmp_path / "wt-base"))
+    (tmp_path / "wt-base").mkdir()
     repo = _init_repo(tmp_path)
     stale = tmp_path / "job-fr-3641-stale"
     live = tmp_path / "job-fr-3641-live"
@@ -162,7 +167,10 @@ def test_fr3641_force_reclaims_stale_seat_marker(tmp_path: Path):
         )
         assert r.returncode == 0, r.stdout + "\n" + r.stderr
         assert live.is_dir(), "live citing pid marker must still skip even with -Force (FR #3698)"
-        assert not stale.is_dir(), "stale dead-pid marker reclaimable with -Force + StaleSeatHours=0"
+        assert not stale.is_dir(), (
+            "stale dead-pid marker reclaimable with -Force + StaleSeatHours=0 "
+            "(FR #6563: seat marker alone is not local work)"
+        )
     finally:
         holder.kill()
         try:
