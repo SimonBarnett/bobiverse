@@ -14,13 +14,20 @@ def test_inject_console_source_prefers_clipboard_and_no_per_char_sleep():
     src = SRC.read_text(encoding="utf-8")
     assert "FR #2498" in src
     assert "_clipboard_set_unicode" in src
+    assert "clipboard_set_verified" in src  # FR #4115 readback before Ctrl+V
     assert "_build_ctrl_v_records" in src
     assert "_write_console_all" in src
     tree = ast.parse(src)
     for node in tree.body:
         if not isinstance(node, ast.FunctionDef):
             continue
-        if node.name in {"_write_console_all", "build_key_records", "_clipboard_set_unicode", "_build_ctrl_v_records"}:
+        if node.name in {
+            "_write_console_all",
+            "build_key_records",
+            "_clipboard_set_unicode",
+            "_build_ctrl_v_records",
+            "clipboard_set_verified",
+        }:
             for sub in ast.walk(node):
                 if isinstance(sub, ast.Call):
                     f = sub.func
@@ -74,8 +81,25 @@ def test_write_console_all_bounded_calls_on_partial_writes():
 
 
 def test_inject_console_clipboard_path_few_writes(monkeypatch):
+    """Paste path must be Ctrl+V + Enter×2 (few writes), not KEY_EVENT batch of len(text)*2.
+
+    FR #6703: inject_console now gates paste on clipboard_set_verified (FR #4115).
+    Mocking only ``_clipboard_set_unicode`` leaves readback None → clipboard_fallback
+    → 268 KEY_EVENT records for a typical FROM line. Echo get after set.
+    """
     writes = []
-    monkeypatch.setattr(bw, "_clipboard_set_unicode", lambda text, log=None: True)
+    held = {"t": None}
+
+    def fake_set(text, log=None):
+        held["t"] = text
+        return True
+
+    def fake_get(log=None):
+        return held["t"]
+
+    monkeypatch.setattr(bw, "_clipboard_set_unicode", fake_set)
+    monkeypatch.setattr(bw, "_clipboard_get_unicode", fake_get)
+    monkeypatch.setattr(bw, "schedule_clipboard_restore", lambda *a, **k: None)
     monkeypatch.setattr(bw, "_build_ctrl_v_records", lambda: bw.build_enter_records())
     monkeypatch.setattr(bw, "_submit_gap_s", lambda default=0.20: 0.05)
     monkeypatch.setattr(bw.time, "sleep", lambda s: None)
@@ -91,5 +115,7 @@ def test_inject_console_clipboard_path_few_writes(monkeypatch):
     monkeypatch.setattr(bw.ctypes, "WinDLL", lambda name, use_last_error=True: make_k32() if "kernel32" in name else SimpleNamespace())
     line = "FROM Jeeves #win-mpre8vi4u6u win-mpre8vi4u6u-7764: MRB SimonBarnett/bobiverse#2473 https://github.com/SimonBarnett/bobiverse/pull/2473"
     assert bw.inject_console(0, line) is True
-    assert writes == [2, 2, 2]
+    assert writes == [2, 2, 2], writes
     assert sum(writes) == 6
+    # Sanity: KEY_EVENT fallback would be ~2 * len(one_line(line)).
+    assert writes[0] < 10
