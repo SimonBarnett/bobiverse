@@ -534,6 +534,9 @@ def run_heal(
             notes.append("health: report only (never restart BobIrcd)")
         else:
             notes.append("health: ok")
+            # FR #6587: surface soft notes (e.g. BobIrcd Stopped/Disabled on remote-Ergo hosts).
+            for n in payload.get("notes") or []:
+                notes.append(str(n))
     except Exception as exc:  # noqa: BLE001
         errors.append(f"health:{type(exc).__name__}")
 
