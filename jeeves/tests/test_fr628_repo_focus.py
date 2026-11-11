@@ -188,7 +188,10 @@ def test_assign_row_ok_then_ack_accepts(_home):
     _queue(_home, [_row("o/a", "MRB", 9, 1)])
     st, job = gitclaim.assign_row(_home, "ionos-7", "o/a", "MRB", "#9")
     assert st == "ok"
-    assert gitclaim.format_assign_line("ionos-7", job) == "ionos-7: MRB o/a#9 https://github.com/o/a/pull/9"
+    # FR #5317/#5865 / #6513: MRB assign lines carry fuel_chain suffix (coderabbit + review=full).
+    assert gitclaim.format_assign_line("ionos-7", job) == (
+        "ionos-7: MRB o/a#9 https://github.com/o/a/pull/9 coderabbit=off review=full"
+    )
     st2, acc = gitclaim.accept_offered(_home, "ionos-7", "#ionos")
     assert st2 == "ok" and acc["id"] == "#9"
     assert gitclaim.assign_row(_home, "ionos-8", "o/a", "MRB", "#9")[0] == "refused"   # already accepted
