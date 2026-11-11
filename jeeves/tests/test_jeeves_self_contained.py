@@ -33,7 +33,17 @@ def test_no_agentic_irc_env_or_home_names_in_jeeves_bob_code():
     for p in list(SCRIPTS.glob("*")) + list((ROOT / "tools").glob("*")):
         if not p.is_file() or p.suffix.lower() not in (".py", ".ps1", ".cmd") or AIRC_PRODUCT.search(p.name):
             continue
-        if p.name in ("bob_home.py", "bob_git_hook.py", "Assert-BobDigestWebhookLocal.ps1", "bob_worker.py"):
+        if p.name in (
+            "bob_home.py",
+            "bob_git_hook.py",
+            "Assert-BobDigestWebhookLocal.ps1",
+            "bob_worker.py",
+            # FR #6515: pack/isolation blank AGENTIC_IRC_PASSWORD and classify legacy
+            # admin .agentic-irc-* caches; not a packaged-Jeeves runtime dependency.
+            "bobiverse_build.py",
+            "Pack-BobiverseRelease.ps1",
+            "bobreport.py",
+        ):
             # Legacy-home compatibility readers / FR #2669 scrub lists intentionally name old homes;
             # they do not make the packaged Jeeves service depend on agentic_irc.
             continue
