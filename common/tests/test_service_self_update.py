@@ -572,9 +572,17 @@ def test_updater_restores_service_identity_after_msi():
 
 
 def test_msi_installs_are_serialised_machine_wide():
+    """Apply acquires Global\\bobiverse-update-msi before Stop-Service / stop-failed.
+
+    FR #6634: do not use bare ``stop-failed`` index — Restore-AircUpdateState logs
+    ``reason=stop-failed`` earlier while carrying AppParameters. The Apply gate is
+    ``Set-Failure ... 'stop-failed'`` after the mutex.
+    """
     t = _t("Update-BobiverseService.ps1")
     assert "Global\\bobiverse-update-msi" in t
-    assert t.index("Global\\bobiverse-update-msi") < t.index("stop-failed")
+    mutex_i = t.index("Global\\bobiverse-update-msi")
+    apply_stop = t.index("Set-Failure -Tag $tag -Result 'stop-failed'")
+    assert mutex_i < apply_stop
 
 
 def test_fr5195_failed_install_restarts_and_mirrors_log():
