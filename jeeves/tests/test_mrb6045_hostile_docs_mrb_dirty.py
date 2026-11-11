@@ -73,16 +73,25 @@ def _resync(home: Path, open_prs: list, details: dict) -> list:
 
 
 def test_mrb6045_clean_docs_mrb_still_skipped(tmp_path: Path):
+    # FR #6340 / #6511: clean orphan docs/mrb pin queues as one MRB (no longer skipped).
     home = _home(tmp_path)
     pr = _docs_mrb_pr(mergeable=True, mergeable_state="clean")
     rows = _resync(home, [pr], {6011: pr})
     jobs = [
         r
         for r in rows
-        if str(r.get("task") or "").upper() in ("FIX", "MRB")
+        if str(r.get("task") or "").upper() == "MRB"
         and "6011" in str(r.get("id") or r.get("url") or "")
     ]
-    assert jobs == []
+    assert len(jobs) == 1, rows
+    assert jobs[0].get("task") == "MRB"
+    fix = [
+        r
+        for r in rows
+        if str(r.get("task") or "").upper() == "FIX"
+        and "6011" in str(r.get("id") or r.get("url") or "")
+    ]
+    assert fix == []
 
 
 def test_mrb6045_dirty_with_merged_original_queues_fix(tmp_path: Path):
