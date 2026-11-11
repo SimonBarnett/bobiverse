@@ -28,12 +28,16 @@ def test_mrb2997_product_test_module_present():
 def test_mrb2997_done_miss_release_sets_release_gen_contiguous():
     text = _t(WORKER_PY)
     # Contiguous window around the done-miss release branch (assignment before log).
+    # FR #6675: FR #4784 comments grew past a fixed 700-char slice.
     assert "FR #2996" in text
     i = text.index("_done_miss_release_pending = True")
-    window = text[i : i + 700]
+    # Bound through the release log line (grew past 700 with FR #4784 comments).
+    log_at = text.index("still no DONE for", i)
+    window = text[i : log_at + 80]
     assert "_release_gen = self._turn_gen" in window
     assert "still no DONE for" in window
     assert "FR #2996" in window
+    assert "FR #4784" in window
 
 
 def test_mrb2997_run_clamps_past_due_wait_contiguous():
