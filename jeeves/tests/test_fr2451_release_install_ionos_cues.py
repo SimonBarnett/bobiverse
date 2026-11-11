@@ -22,6 +22,7 @@ _FR2447_BODY = (
 
 
 def test_fr2451_issue_2447_blob_pins_ionos():
+    # FR #4512 / #6512: bobiverse soft title/body cues never pin (install-on-ionos text).
     assert (
         gitclaim.infer_require_machine(
             title=_FR2447_TITLE,
@@ -30,7 +31,7 @@ def test_fr2451_issue_2447_blob_pins_ionos():
             repo="SimonBarnett/bobiverse",
             ident="#2447",
         )
-        == "ionos"
+        == ""
     )
 
 

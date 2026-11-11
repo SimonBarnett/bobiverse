@@ -66,14 +66,15 @@ def test_fr2486_living_fr_body_skips_heal(home):
     gitclaim.ledger_giveup(home, "ionos-100", "SimonBarnett/bobiverse", "FR", "#1993")
     gitclaim.ledger_giveup(home, "ionos-200", "SimonBarnett/bobiverse", "FR", "#1993")
     live = gitclaim.live_seat_nicks(home)
+    # FR #4512: bobiverse ignores soft stamps; keep a dedicated pin line so the
+    # ionos gate (and all-gave-up check) still applies while Living FR skips heal.
+    living = "Living FR — keep appending\nrequire_machine: ionos\n"
     assert gitclaim.require_machine_all_live_gave_up(
         home,
-        _row(1993, body="Living FR — keep appending"),
+        _row(1993, body=living),
         live,
     )
-    assert gitclaim.row_skip_pin_ledger_heal_reason(
-        _row(1993, body="Living FR — keep appending")
-    )
+    assert gitclaim.row_skip_pin_ledger_heal_reason(_row(1993, body=living))
     assert gitclaim.heal_require_machine_all_gave_up(home, live) == []
     # giveups still present
     assert gitclaim.ledger_clear_giveup(home, "SimonBarnett/bobiverse", "#1993") >= 1
