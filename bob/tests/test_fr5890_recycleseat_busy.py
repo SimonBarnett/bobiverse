@@ -83,16 +83,39 @@ def test_unreadable_work_evidence_fails_closed(setup):
 
 
 def test_busy_check_uses_shared_digest_home(setup, tmp_path, monkeypatch):
+    """BOB_DIGEST_HOME wins outside !build (FR #69 / #5890).
+
+    FR #6667 / #6523: under ``BOBIVERSE_BUILD_SUITE`` fleet_digest_home keeps the
+    pytest tmp home so session isolation BOB_DIGEST_HOME cannot hide work. Clear
+    the suite flag here so this pin still proves the shared-home redirect.
+    """
     _, home = setup
     shared = tmp_path / "digest"
     shared.mkdir()
     (shared / "registered-machines.json").write_text(json.dumps({"machines": ["flamingo"]}))
+    monkeypatch.delenv("BOBIVERSE_BUILD_SUITE", raising=False)
     monkeypatch.setenv("BOB_DIGEST_HOME", str(shared))
     bobreport.save_digest(shared, {"machines": {"flamingo": {
         "workers": {"72904": {"working_on": "FR SimonBarnett/bobiverse#5890"}}
     }}})
     assert not bobreport.digest_path(home).exists()
     assert ask(setup).reason == "busy"
+
+
+def test_busy_check_build_suite_keeps_tmp_digest_home(setup, tmp_path, monkeypatch):
+    """FR #6523 / #6667: !build suite must not redirect tmp home to shared digest."""
+    _, home = setup
+    shared = tmp_path / "digest-iso"
+    shared.mkdir()
+    monkeypatch.setenv("BOBIVERSE_BUILD_SUITE", "1")
+    monkeypatch.setenv("BOB_DIGEST_HOME", str(shared))
+    # Work evidence lives on the ear/tmp home passed into decide — not the iso dir.
+    bobreport.save_digest(home, {"machines": {"flamingo": {
+        "workers": {"72904": {"working_on": "FR SimonBarnett/bobiverse#5890"}}
+    }}})
+    assert ask(setup).reason == "busy"
+    # Shared isolation dir must not be required for the busy read.
+    assert not bobreport.digest_path(shared).exists()
 
 
 def test_recent_ack_is_durable_case_insensitive_and_seat_specific(setup):
