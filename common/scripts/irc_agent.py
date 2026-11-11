@@ -2440,6 +2440,8 @@ class Client:
         repos = job.get("repos") or []
         repo = str(repos[0] if isinstance(repos, list) and repos else repos or "")
         version = str(job.get("version") or "")
+        build_id = str(job.get("id") or "").strip()
+        id_bit = f" id={build_id}" if build_id else ""
         script = None
         for cand in (
             Path(self._install_root()) / "scripts" / "run_bobiverse_build.py",
@@ -2484,7 +2486,10 @@ class Client:
             except Exception:
                 pass
 
-        _say(f"BUILD started {repo} version={version} pid={proc.pid} (deterministic runner, no agent)")
+        _say(
+            f"BUILD started {repo} version={version} pid={proc.pid} "
+            f"(deterministic runner, no agent){id_bit}"
+        )
 
         def _watch() -> None:
             rc = None
@@ -2511,7 +2516,11 @@ class Client:
                             f"BUILD blocker {b.get('action') or ''} #{b.get('number')} {b.get('url') or ''}".strip()
                         )
             except Exception:
-                lines = [f"BUILD fail {repo} version={version} runner rc={rc} (no result file; see {log_path.name})"]
+                # FR #6491: fallback fail announce still carries id= for chair release.
+                lines = [
+                    f"BUILD fail {repo} version={version} runner rc={rc} "
+                    f"(no result file; see {log_path.name}){id_bit}"
+                ]
             for ln in lines[:8]:
                 _say(ln)
             info(f"INFO build runner done repo={repo} version={version} rc={rc}")
@@ -2523,6 +2532,35 @@ class Client:
         if bobiverse_build.parse_build_v1_route(body) is None:
             return False
         return self._maybe_start_build_runner(body, src_hint=src)
+
+    def _maybe_release_chair_build_lock_on_result(self, src: str, body: str) -> bool:
+        """FR #6491: chair frees home build-locks.json when recipe machine reports terminal BUILD.
+
+        Matches by build id only. Returns True when the line is a terminal BUILD ok/fail
+        announce (consumed); False when it is not a result line.
+        """
+        if not getattr(self.args, "chair", False):
+            return False
+        result = bobiverse_build.parse_build_result(body)
+        if result is None:
+            return False
+        lock_path = Path(self.home) / "build-locks.json"
+        lock = bobiverse_build.BuildLock(lock_path, max_parallel=1)
+        released = bobiverse_build.apply_build_result_to_chair_lock(lock, result)
+        bid = str(result.get("id") or "")
+        repo = str(result.get("repo") or "")
+        kind = str(result.get("kind") or "")
+        if released:
+            info(
+                f"INFO FR #6491 build lock released repo={repo} id={bid} "
+                f"kind={kind} from={src or '-'}"
+            )
+        elif bid:
+            info(
+                f"INFO FR #6491 build lock keep repo={repo} id={bid} "
+                f"kind={kind} (no matching chair lock) from={src or '-'}"
+            )
+        return True
 
     def _maybe_start_installtest_runner(self, route_line: str, *, src_hint: str = "") -> bool:
         """FR #4026 WP3: accept INSTALLTEST v1 when local matches install_test.machine; enqueue only."""
@@ -4495,6 +4533,10 @@ class Client:
         if self._maybe_consume_installtest_v1_wire(src, body):
             return
         if self._maybe_consume_build_v1_wire(src, body):
+            return
+        # FR #6491: chair listens for BUILD ok/fail on the fleet channel and frees
+        # home/build-locks.json when the announce id matches the held lock.
+        if self._maybe_release_chair_build_lock_on_result(src, body):
             return
         if self._maybe_execute_recycle_wire(src, body):
             return
