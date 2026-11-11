@@ -72,8 +72,11 @@ def test_mrb3807_hostile_skill_presence_config_precedes_env_fr6547():
     assert "FR #6547" in skill
     assert "wins over env" in skill
     assert "fallback only when the config key is absent" in skill
-    # Must not imply env-only opt-in while Install-Airc writes presence_channels=[].
-    assert "Opt-in only via `AIRC_PRESENCE_CHANNELS=#bobiverse`" not in skill
+    assert "unless the env key is set" in skill
+    assert "remove/omit the config key" in skill
+    # Must not claim config-only opt-in (client strips #bobiverse without env; FR #5190).
+    assert "Opt-in only via" not in skill
+    assert "in config, or remove the key" not in skill
 
 
 def test_mrb3807_hostile_product_pin_ascii_no_bom():
