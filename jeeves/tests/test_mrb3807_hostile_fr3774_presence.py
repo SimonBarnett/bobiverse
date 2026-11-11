@@ -55,6 +55,17 @@ def test_mrb3807_hostile_install_docs_skill_pin():
     assert "resolve_presence_channels" in pin
 
 
+def test_mrb3807_hostile_post_install_presence_default_fr5190():
+    # FR #6545: post-install must not advertise FR #3774 default ["#bobiverse"] after FR #5190.
+    post = POST.read_text(encoding="utf-8")
+    assert "FR #3774" in post
+    assert "FR #5190" in post  # contiguous citation (not only '/ #5190')
+    assert "presence_channels" in post
+    assert 'default `["#bobiverse"]`' not in post
+    assert "Install-Airc client default `[]`" in post
+    assert "no auto-join `#bobiverse`" in post
+
+
 def test_mrb3807_hostile_product_pin_ascii_no_bom():
     raw = PIN.read_bytes()
     assert not raw.startswith(b"\xef\xbb\xbf")
