@@ -289,11 +289,18 @@ def test_cleargiveup_family(chair, op):
 
 
 def test_focus_family(chair, op):
-    assert pm(chair, op, "!focus high o/b")[0] == "focus: o/b priority=1 (high)"
+    # FR #5468 / #5941: !focus high only sticks on HIGH_PRIORITY_REPOS; o/b demotes to medium.
+    assert pm(chair, op, "!focus high o/b")[0] == "focus: o/b priority=5 (medium)"
+    assert pm(chair, op, "!focus high SimonBarnett/bobiverse")[0] == (
+        "focus: SimonBarnett/bobiverse priority=1 (high)"
+    )
     assert pm(chair, op, "!focus strict on") == ["focus strict: on"]
     assert pm(chair, "mallory", "!focus")[0] == "focus strict: on"                  # read is open
     assert pm(chair, op, "!focus o/a#1")[0].startswith("focus: item o/a#1")
     assert pm(chair, op, "!unfocus o/b")[0] == "unfocus: removed o/b"
+    assert pm(chair, op, "!unfocus SimonBarnett/bobiverse")[0] == (
+        "unfocus: removed SimonBarnett/bobiverse"
+    )
     assert pm(chair, op, "!unfocus all")[0].startswith("unfocus: cleared")
     assert pm(chair, op, "!unfocus") == ["unfocus: usage !unfocus {repo|repo#N}|all"]
 
