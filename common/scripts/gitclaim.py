@@ -8391,9 +8391,21 @@ def release_duplicate_done_hold(home: Path, nick: str) -> str:
     if not repo or not ident:
         return ""
     finished = seat_done_without_later_offer(home, nick, repo, task, ident)
-    if not finished:
-        # FR #4661 / #6565: queue done[] MRB PASS is enough (no ledger stamp / no GitHub).
-        finished = nick_done_mrb_pass(home, nick, repo, ident)
+    if not finished and str(task or "").upper() == "MRB":
+        # FR #4661 / #6565: queue done[] MRB PASS is enough when there is no ledger
+        # done stamp and no live GitHub. Only for MRB holds (never clear a FIX hold
+        # because an earlier MRB PASS exists for the same pull). Honour FR #4642:
+        # when ledger has offered > done, keep the hold (do not override).
+        led = ledger_load(home)
+        done_ts = _seat_job_stamp(led, nick, repo, task, ident, "done")
+        offered_ts = _seat_job_stamp(led, nick, repo, task, ident, "offered")
+        later_offer = (
+            done_ts is not None
+            and offered_ts is not None
+            and offered_ts > done_ts
+        )
+        if not later_offer and nick_done_mrb_pass(home, nick, repo, ident):
+            finished = True
     if not finished:
         row = {"repo": repo, "task": task, "id": ident, "url": ""}
         finished = bool(_lost_done_github_result(row))

@@ -146,3 +146,48 @@ def test_duplicate_after_done_hold_prunes_unaccepted(tmp_path, monkeypatch):
     rows = gitclaim.load_unaccepted(tmp_path)
     assert [r for r in rows if r.get("id") == "#3246"] == []
     assert gitclaim.seat_open_job(tmp_path, NICK) == ""
+
+
+def test_done_mrb_pass_does_not_clear_fix_hold(tmp_path, monkeypatch):
+    """Hostile MRB #6583: earlier MRB PASS must not clear a FIX hold on same pull."""
+    monkeypatch.setenv("BOB_DIGEST_HOME", str(tmp_path))
+    monkeypatch.setattr(
+        "mrb_merge_gate.fetch_issue_comments",
+        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("offline")),
+    )
+    _queue(tmp_path, done_pass=True, unaccepted=False)
+    # ack-missing keeps the hold without a queue FIX row (FR #4415).
+    assert gitclaim.note_seat_hold(
+        tmp_path,
+        NICK,
+        {"repo": REPO, "task": "FIX", "id": "#3246"},
+        via="ack-missing",
+    )
+    assert gitclaim.nick_done_mrb_pass(tmp_path, NICK, REPO, "#3246") is True
+    freed = gitclaim.release_duplicate_done_hold(tmp_path, NICK)
+    assert freed == ""
+    assert "FIX" in gitclaim.seat_open_job(tmp_path, NICK)
+
+
+def test_done_mrb_pass_keeps_hold_after_later_offer(tmp_path, monkeypatch):
+    """Hostile MRB #6583: offered > done keeps hold even when done[] has PASS."""
+    import time
+
+    monkeypatch.setenv("BOB_DIGEST_HOME", str(tmp_path))
+    monkeypatch.setattr(
+        "mrb_merge_gate.fetch_issue_comments",
+        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("offline")),
+    )
+    _queue(tmp_path, done_pass=True, unaccepted=True)
+    job = {"repo": REPO, "task": "MRB", "id": "#3246"}
+    gitclaim.ledger_stamp_seat_job(tmp_path, NICK, job, "done")
+    time.sleep(0.02)
+    gitclaim.ledger_stamp_seat_job(tmp_path, NICK, job, "offered")
+    assert gitclaim.note_seat_hold(tmp_path, NICK, job, via="offer")
+    assert gitclaim.seat_done_without_later_offer(
+        tmp_path, NICK, REPO, "MRB", "#3246"
+    ) is False
+    assert gitclaim.nick_done_mrb_pass(tmp_path, NICK, REPO, "#3246") is True
+    freed = gitclaim.release_duplicate_done_hold(tmp_path, NICK)
+    assert freed == ""
+    assert "MRB" in gitclaim.seat_open_job(tmp_path, NICK)
