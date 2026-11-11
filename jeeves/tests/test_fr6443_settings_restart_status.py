@@ -189,26 +189,47 @@ def test_fr6443_http_status_and_restart_endpoints(tmp_path, monkeypatch):
         "restart_ircjeeves_only",
         lambda: calls.append("r") or {"ok": True, "via": "test"},
     )
+    # FR #6451 / #6509: status + restart endpoints require session (cookie/Bearer).
     srv = http.start_settings_http(
-        chair, bind="127.0.0.1", port=port, digest_home=digest
+        chair,
+        bind="127.0.0.1",
+        port=port,
+        digest_home=digest,
+        authenticator=lambda u, p, d="": u == "ApplianceAdmin" and p == "FAKE_ok",
     )
     assert srv is not None
     base = f"http://127.0.0.1:{port}"
     try:
-        with urllib.request.urlopen(base + "/api/status", timeout=5) as resp:
+        login = urllib.request.Request(
+            base + "/api/login",
+            data=json.dumps(
+                {"username": "ApplianceAdmin", "password": "FAKE_ok"}
+            ).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(login, timeout=5) as resp:
+            tok = json.loads(resp.read().decode("utf-8"))["session_token"]
+        hdr = {"Authorization": f"Bearer {tok}"}
+
+        req = urllib.request.Request(
+            base + "/api/status", headers=hdr, method="GET"
+        )
+        with urllib.request.urlopen(req, timeout=5) as resp:
             body = json.loads(resp.read().decode("utf-8"))
         assert body.get("ok") is True
         assert "uptime_s" in body
         assert "queue" in body
 
-        with urllib.request.urlopen(base + "/status", timeout=5) as resp:
+        req = urllib.request.Request(base + "/status", headers=hdr, method="GET")
+        with urllib.request.urlopen(req, timeout=5) as resp:
             html = resp.read().decode("utf-8")
         assert "uptime" in html.lower() or "queue" in html.lower()
 
         req = urllib.request.Request(
             base + "/api/restart-when-idle",
             data=json.dumps({"actor": "ui"}).encode("utf-8"),
-            headers={"Content-Type": "application/json"},
+            headers={**hdr, "Content-Type": "application/json"},
             method="POST",
         )
         with urllib.request.urlopen(req, timeout=5) as resp:
