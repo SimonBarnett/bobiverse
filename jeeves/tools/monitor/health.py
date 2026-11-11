@@ -27,6 +27,36 @@ def _service_state(name: str) -> str:
         return f"error:{type(e).__name__}"
 
 
+def _service_start_type(name: str) -> str:
+    """Return Automatic/Manual/Disabled/missing/skipped (FR #6587)."""
+    if sys.platform != "win32":
+        return "skipped"
+    try:
+        r = subprocess.run(
+            [
+                "powershell",
+                "-NoProfile",
+                "-Command",
+                f"(Get-Service -Name '{name}' -ErrorAction SilentlyContinue).StartType",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        s = (r.stdout or "").strip()
+        return s or "missing"
+    except Exception as e:
+        return f"error:{type(e).__name__}"
+
+
+def _bobircd_expected_running(start_type: str) -> bool:
+    """Local Ergo hosts expect BobIrcd Running; Disabled means remote Ergo by design (FR #6587)."""
+    st = (start_type or "").strip().lower()
+    if st in ("disabled", "skipped"):
+        return False
+    return True
+
+
 def _scheduled_task_state(name: str) -> str:
     """FR #1043: BobCallback on ionos is a Scheduled Task, not Get-Service."""
     if sys.platform != "win32":
@@ -76,12 +106,31 @@ def _bobcallback_ok() -> tuple[str, bool]:
 def check(args):
     chair, _digest = resolve_homes(args)
     findings = []
+    notes = []
     services = {}
     for svc in ("ircJeeves", "BobIrcd"):
         st = _service_state(svc)
-        services[svc] = st
-        if st.lower() not in ("running", "skipped"):
-            findings.append(f"service {svc}={st}")
+        start = _service_start_type(svc)
+        if svc == "BobIrcd":
+            # FR #6587: Stopped+Disabled (remote Ergo) is intentional — soft note only.
+            # Never restart BobIrcd from heal; do not fail self-test/heal for that design.
+            if st.lower() not in ("running", "skipped"):
+                if _bobircd_expected_running(start):
+                    services[svc] = st
+                    findings.append(f"service {svc}={st}")
+                else:
+                    label = f"{st}/{start}" if start and start.lower() != "missing" else st
+                    services[svc] = label
+                    notes.append(
+                        f"BobIrcd={label} soft-ok (StartType=Disabled or skipped; "
+                        f"remote Ergo / never restart from heal; FR #6587)"
+                    )
+            else:
+                services[svc] = st
+        else:
+            services[svc] = st
+            if st.lower() not in ("running", "skipped"):
+                findings.append(f"service {svc}={st}")
     bc_label, bc_ok = _bobcallback_ok()
     services["BobCallback"] = bc_label
     if not bc_ok:
@@ -97,6 +146,7 @@ def check(args):
             "services": services,
             "chair_home": str(chair),
             "findings": findings,
+            "notes": notes,
         },
         EXIT_OK if ok else EXIT_FINDING,
     )
