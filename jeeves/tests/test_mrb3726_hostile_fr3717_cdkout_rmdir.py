@@ -18,12 +18,17 @@ def test_mrb3726_clear_helpers_and_call_order():
     assert "FR #3717 leftover rmdir" in t
     assert "cdk.out*" in t or "cdk.out" in t
     assert "rmdir /s /q" in t
-    # Live remove loop: pre-rmdir, then native git remove, then leftover PathForce.
-    i_deep = t.find("Remove-BobiverseDeepWorktreeDirs -WorktreePath")
-    i_git = t.find("& git -C $rootFull worktree remove --force")
-    i_force = t.find("Remove-BobiversePathForce -Path")
-    assert i_deep > 0 and i_git > 0 and i_force > 0
-    assert i_deep < i_git < i_force
+    # Live remove loop (after "Removing worktree $p"): pre-rmdir deep, then
+    # native git remove, then leftover PathForce. Do not use a whole-file find for
+    # PathForce — FR #4197 adds an earlier early-exit PathForce + continue when
+    # path/.git is missing, which is outside the FR #3717 call chain.
+    start = t.index("Removing worktree $p")
+    block = t[start:]
+    i_deep = block.index("Remove-BobiverseDeepWorktreeDirs -WorktreePath")
+    i_git = block.index("& git -C $rootFull worktree remove --force")
+    i_leftover = block.index("FR #3717 leftover rmdir")
+    i_force = block.index("Remove-BobiversePathForce -Path", i_leftover)
+    assert i_deep < i_git < i_leftover < i_force
     raw = SCRIPT.read_bytes()
     assert not raw.startswith(b"\xef\xbb\xbf")
     assert all(b < 128 for b in raw)
