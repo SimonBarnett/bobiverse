@@ -13,9 +13,9 @@ import registered_machines
 def _home(tmp_path, monkeypatch):
     monkeypatch.setenv("BOB_DIGEST_HOME", str(tmp_path))
     monkeypatch.setenv("JEEVES_OWNER_ACCOUNT", "simon")
-    for k in ("JEEVES_FOCUS_MUTATORS", "JEEVES_FOCUS_MUTATOR_ACCOUNTS"):
+    for k in ("JEEVES_FOCUS_MUTATORS", "JEEVES_FOCUS_MUTATOR_ACCOUNTS", "BOB_CHANSERV_EXCLUDE"):
         monkeypatch.delenv(k, raising=False)
-    registered_machines.save_registered(tmp_path, {"ionos", "win-mpre8vi4u6u"})
+    registered_machines.save_registered(tmp_path, {"ionos", "win-mpre8vi4u6u", "marchhare"})
     bobreport._SEAT_ROSTER_CACHE["key"] = None
     return tmp_path
 
@@ -29,6 +29,27 @@ def _row(repo, task, num, seq, **kw):
 
 def _queue(home, rows):
     gitclaim._write_queue(gitclaim.queue_path(home), {"v": 1, "unaccepted": rows, "accepted": []})
+
+
+def _seed_three_seat_digest(home):
+    """Idle worker_list for author machine + pinned-out marchhare (FR #4211 shape)."""
+    digest = bobreport.empty_digest()
+    digest["machines"]["win-mpre8vi4u6u"] = bobreport._empty_machine("win-mpre8vi4u6u")
+    digest["machines"]["win-mpre8vi4u6u"]["worker_list"] = [
+        {"nick": "win-mpre8vi4u6u-14452", "state": "idle", "work": "", "updated": "2026-10-14T12:00:00Z"},
+        {"nick": "win-mpre8vi4u6u-7764", "state": "idle", "work": "", "updated": "2026-10-14T12:00:00Z"},
+    ]
+    digest["machines"]["marchhare"] = bobreport._empty_machine("marchhare")
+    digest["machines"]["marchhare"]["worker_list"] = [
+        {"nick": "marchhare-40208", "state": "idle", "work": "", "updated": "2026-10-14T12:00:00Z"},
+    ]
+    bobreport.save_digest(home, digest)
+    live = gitclaim.live_seat_nicks(home)
+    free = gitclaim.free_seat_nicks(home, live)
+    for nick in ("win-mpre8vi4u6u-14452", "win-mpre8vi4u6u-7764", "marchhare-40208"):
+        assert nick in {n.lower() for n in live}
+        assert nick in {n.lower() for n in free}
+    return live, free
 
 
 def test_empty_reply_is_one_short_line_even_with_stats():
@@ -81,23 +102,98 @@ def test_hi_repo_outranks_lo_repo(_home):
 
 
 def test_fr2339_sibling_ignores_pinned_out_other_machine(_home):
-    """Author-machine sibling may take MRB when other live seats fail require_machine."""
+    """MRB exact-seat exclusion + separate pin gate for a pinned-out other machine.
+
+    Author/sibling assertions prove FR #2604 exact-seat MRB exclusion. The
+    marchhare assertion proves require_machine (needs-ionos) blocks that seat.
+    FR #4512: bobiverse rows need a supported pin cue (label), not a bare stamp.
+    """
+    registered_machines.save_registered(
+        _home, {"ionos", "win-mpre8vi4u6u", "marchhare"}
+    )
+    bobreport._SEAT_ROSTER_CACHE["key"] = None
     row = _row(
         "SimonBarnett/bobiverse",
         "MRB",
         2319,
         7,
         require_machine="ionos",
+        labels=["needs-ionos"],
         author_seat="win-mpre8vi4u6u-14452",
         implementer_seat="win-mpre8vi4u6u-14452",
         url="https://github.com/SimonBarnett/bobiverse/pull/2319",
     )
     _queue(_home, [row])
     fi.handle_focus_cmd(_home, "hi bobiverse")
-    # Live: ionos sibling + marchhare (pinned out by require_machine=ionos)
-    live = {"win-mpre8vi4u6u-7764", "marchhare-40208", "win-mpre8vi4u6u-14452"}
-    assert gitclaim.review_blocked_for_author(row, "win-mpre8vi4u6u-14452", live) is True  # exact author
-    assert gitclaim.review_blocked_for_author(row, "win-mpre8vi4u6u-7764", live) is False  # sibling; marchhare not viable
+    live, free = _seed_three_seat_digest(_home)
+    parsed = bobreport.parse_seat_nick("marchhare-40208")
+    assert parsed is not None and bobreport.fold_machine_id(parsed[0]) == "marchhare"
+    assert gitclaim.review_blocked_for_author(
+        row, "win-mpre8vi4u6u-14452", live, free=free
+    ) is True  # exact author
+    assert gitclaim.review_blocked_for_author(
+        row, "win-mpre8vi4u6u-7764", live, free=free
+    ) is False  # sibling; marchhare pinned out (MRB exact-seat only)
     assert gitclaim.row_blocked_for_machine(row, "marchhare-40208") is True
-    status, job = gitclaim.offer_focus_top(_home, "win-mpre8vi4u6u-7764", "#win-mpre8vi4u6u")
+    status, job = gitclaim.offer_focus_top(
+        _home,
+        "win-mpre8vi4u6u-7764",
+        "#win-mpre8vi4u6u",
+        pr_exists=None,
+        is_pull=None,
+        issue_open=None,
+    )
     assert status != "empty" and job and str(job.get("id")) in ("#2319", "2319", "#2319")
+
+
+@pytest.mark.parametrize("pinned", [True, False])
+def test_fr2339_uat_sibling_ignores_pinned_out_other_machine(_home, pinned):
+    """UAT sibling-viability: pinned-out other machine does not strand author sibling."""
+    registered_machines.save_registered(
+        _home, {"ionos", "win-mpre8vi4u6u", "marchhare"}
+    )
+    bobreport._SEAT_ROSTER_CACHE["key"] = None
+    labels = ["needs-ionos"] if pinned else []
+    row = {
+        "repo": "SimonBarnett/bobiverse",
+        "task": "UAT",
+        "id": "#0",
+        "seq": 1,
+        "ts": "2026-10-01T10:00:01Z",
+        "line": "UAT SimonBarnett/bobiverse: all issues closed, all PRs merged",
+        "url": "https://github.com/SimonBarnett/bobiverse",
+        "repo_uat": True,
+        "author_seat": "win-mpre8vi4u6u-14452",
+        "implementer_seat": "win-mpre8vi4u6u-14452",
+        "labels": labels,
+    }
+    if pinned:
+        row["require_machine"] = "ionos"
+    _queue(_home, [row])
+    # Empty non-strict focus: all repos offerable.
+    live, free = _seed_three_seat_digest(_home)
+    ledger = gitclaim.ledger_load(_home)
+    assert gitclaim.review_blocked_for_author(
+        row, "win-mpre8vi4u6u-14452", live, ledger, free=free
+    ) is True  # exact author always blocked
+    sibling_blocked = gitclaim.review_blocked_for_author(
+        row, "win-mpre8vi4u6u-7764", live, ledger, free=free
+    )
+    if pinned:
+        assert sibling_blocked is False  # marchhare pinned out => not viable
+        assert gitclaim.row_blocked_for_machine(row, "marchhare-40208") is True
+    else:
+        assert sibling_blocked is True  # unpinned marchhare is viable other-machine seat
+        assert gitclaim.row_blocked_for_machine(row, "marchhare-40208") is False
+    status, job = gitclaim.offer_focus_top(
+        _home,
+        "win-mpre8vi4u6u-7764",
+        "#win-mpre8vi4u6u",
+        pr_exists=None,
+        is_pull=None,
+        issue_open=None,
+    )
+    if pinned:
+        assert status != "empty" and job and str(job.get("id")) in ("#0", "0")
+    else:
+        assert status == "empty" and job is None
