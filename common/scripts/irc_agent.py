@@ -2233,23 +2233,36 @@ class Client:
         def recipe_loader(repo: str):
             # Only bobiverse's own recipe lives in this install; other repos must carry
             # their own .bobiverse/build.yml on GitHub (no recipe -> refusal).
+            def _ensure_token() -> None:
+                import gh_filer
+
+                gh_filer.ensure_gh_token_env()
+
             if bobiverse_build.normalize_repo(repo) != "simonbarnett/bobiverse":
                 try:
-                    import gh_filer
-
-                    gh_filer.ensure_gh_token_env()
+                    _ensure_token()
                 except Exception:
                     pass
                 return bobiverse_build.fetch_remote_recipe(repo)
+            # FR #6484: packaged Jeeves has no local .bobiverse/; fall back to GitHub.
+            # FR #6487: present local YAML that fails to parse is not masked as missing.
             root = Path(self._install_root())
-            # Bobiverse recipe lives at repo root; install tree is bob/jeeves/airc sparse — prefer git root.
-            for cand in (root, root.parent, Path(self.home).resolve().parents[2] if False else root):
-                try:
-                    return bobiverse_build.load_recipe(cand)
-                except bobiverse_build.RecipeError:
-                    continue
-            raise bobiverse_build.RecipeError(
-                f"build: {repo} has no .bobiverse/build.yml; nothing started"
+            build_ref = "main"
+            try:
+                parsed_b = bobiverse_build.parse_build(body)
+                if parsed_b is not None:
+                    _is_build, sub, rest = parsed_b
+                    if sub in ("run", "dry-run"):
+                        toks = (rest or "").split()
+                        if len(toks) >= 3:
+                            build_ref = toks[2]
+            except Exception:
+                build_ref = "main"
+            return bobiverse_build.load_bobiverse_recipe_local_or_remote(
+                [root, root.parent],
+                repo,
+                ref=build_ref,
+                ensure_token=_ensure_token,
             )
 
         ignored = ()
@@ -2316,14 +2329,12 @@ class Client:
                 except Exception:
                     pass
                 return bobiverse_build.fetch_remote_recipe(repo)
+            # FR #6487: do not mask parse/validation errors as missing build.yml.
             root = Path(self._install_root())
-            for cand in (root, root.parent):
-                try:
-                    return bobiverse_build.load_recipe(cand)
-                except bobiverse_build.RecipeError:
-                    continue
-            raise bobiverse_build.RecipeError(
-                f"build: {repo} has no .bobiverse/build.yml; nothing started"
+            return bobiverse_build.load_recipe_from_candidates(
+                [root, root.parent],
+                repo=repo,
+                missing_kind="build",
             )
 
         ignored = ()
@@ -2396,16 +2407,23 @@ class Client:
                 local = bobiverse_build.fold_build_machine(socket.gethostname())
             except Exception:
                 local = ""
-        recipe_machine = "ionos"
+        # FR #6487: never quietly fall back to ionos when a recipe file fails to load.
+        recipe_machine = ""
         try:
-            recipe = bobiverse_build.load_recipe(Path(self._install_root()))
-            recipe_machine = recipe.machine
-        except Exception:
-            try:
-                recipe = bobiverse_build.load_recipe(Path(self._install_root()).parent)
-                recipe_machine = recipe.machine
-            except Exception:
-                recipe_machine = "ionos"
+            recipe = bobiverse_build.load_recipe_from_candidates(
+                [Path(self._install_root()), Path(self._install_root()).parent],
+                repo="SimonBarnett/bobiverse",
+            )
+            recipe_machine = str(recipe.machine or "").strip()
+        except Exception as exc:
+            info(
+                f"WARN BUILD v1 recipe load failed: {type(exc).__name__}: {exc}; "
+                "not falling back to ionos"
+            )
+            return False
+        if not recipe_machine:
+            info("WARN BUILD v1 recipe load: empty machine; not falling back to ionos")
+            return False
         qdir = self._build_queue_dir()
         ok = bobiverse_build.consume_build_v1(
             route_line,
@@ -2576,18 +2594,24 @@ class Client:
                 local = bobiverse_build.fold_build_machine(socket.gethostname())
             except Exception:
                 local = ""
-        recipe_machine = "ionos"
+        # FR #6487: same as BUILD v1 — log recipe load failures; do not invent ionos.
+        recipe_machine = ""
         try:
-            recipe = bobiverse_build.load_recipe(Path(self._install_root()))
+            recipe = bobiverse_build.load_recipe_from_candidates(
+                [Path(self._install_root()), Path(self._install_root()).parent],
+                repo="SimonBarnett/bobiverse",
+            )
             it = recipe.install_test or {}
-            recipe_machine = str(it.get("machine") or recipe.machine or "ionos")
-        except Exception:
-            try:
-                recipe = bobiverse_build.load_recipe(Path(self._install_root()).parent)
-                it = recipe.install_test or {}
-                recipe_machine = str(it.get("machine") or recipe.machine or "ionos")
-            except Exception:
-                recipe_machine = "ionos"
+            recipe_machine = str(it.get("machine") or recipe.machine or "").strip()
+        except Exception as exc:
+            info(
+                f"WARN INSTALLTEST v1 recipe load failed: {type(exc).__name__}: {exc}; "
+                "not falling back to ionos"
+            )
+            return False
+        if not recipe_machine:
+            info("WARN INSTALLTEST v1 recipe load: empty machine; not falling back to ionos")
+            return False
         qdir = self._build_queue_dir()
         ok = bobiverse_build.consume_installtest_v1(
             route_line, local, recipe_machine, queue_dir=qdir

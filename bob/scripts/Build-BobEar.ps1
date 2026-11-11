@@ -47,6 +47,8 @@ $argList = @('-m', 'PyInstaller', '--noconfirm', '--clean', '--onefile', '--cons
     '--distpath', $dist, '--workpath', (Join-Path $work 'build'), '--specpath', $work)
 $argList += $pathArgs
 $argList += $icoArgs
+# FR #6487: ear chair path loads .bobiverse/build.yml; freeze must embed PyYAML.
+$argList += @('--hidden-import', 'yaml', '--hidden-import', '_yaml', '--hidden-import', 'bobiverse_build', '--collect-all', 'yaml')
 $argList += @('--exclude-module', 'tkinter', '--exclude-module', 'numpy', '--exclude-module', 'pandas', '--exclude-module', 'matplotlib', $src)
 # PyInstaller's isolated child can fail when PowerShell captures a live pipeline; use files for both streams.
 $argText = (($argList | ForEach-Object {
@@ -74,6 +76,20 @@ $ErrorActionPreference = $prevEap
 $probeText = ($probe | Out-String)
 if ($pcode -ne 0 -or ($probeText -notmatch 'nick' -and $probeText -notmatch '--host')) {
     throw "bob-ear.exe smoke test failed (exit $pcode): $probeText"
+}
+# FR #6487: frozen embed must carry PyYAML for BUILD recipe parse on the ear.
+$assertYaml = Get-BobiverseRepoPath -Root $RepoRoot -Rel 'common\scripts\assert_jeeves_yaml_embed.py'
+if (-not $assertYaml -or -not (Test-Path -LiteralPath $assertYaml)) {
+    $assertYaml = Join-Path $RepoRoot 'common\scripts\assert_jeeves_yaml_embed.py'
+}
+if (Test-Path -LiteralPath $assertYaml) {
+    $prevEap = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
+    & $Python $assertYaml $work
+    $acode = $LASTEXITCODE
+    $ErrorActionPreference = $prevEap
+    if ($acode -ne 0) {
+        throw "FR #6487 assert_jeeves_yaml_embed failed (exit $acode)"
+    }
 }
 Write-Host ("INFO built {0} ({1:N1} MB)" -f $exe, ((Get-Item -LiteralPath $exe).Length / 1MB))
 $exe
