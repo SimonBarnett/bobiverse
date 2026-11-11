@@ -72,7 +72,11 @@ def test_mrb2795_harvest_ps1_prefers_bob_nick_before_agent_nick():
     agent_assign = window.index("elseif ($env:BOB_AGENT_NICK")
     assert nick_assign < agent_assign
     assert "seatNick" in window
-    compact = window.replace(" ", "").replace("\r", "")
+    # Seat stamp moved from lesson PR footer into intake source.seat (ordered hash).
+    assert "seat = $seatNick" in text
+    source_idx = text.index("source = [ordered]@{")
+    source_window = text[source_idx : source_idx + 400]
+    compact = source_window.replace(" ", "").replace("\r", "")
     assert "seat=$seatNick" in compact
 
 

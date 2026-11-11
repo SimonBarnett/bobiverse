@@ -16,10 +16,11 @@ def _assert_clean_skill(rel: str, *needles: str) -> None:
 
 
 def test_mrb4845_worker_skill_install_root_contiguous():
+    # FR #4988 retired bob-wt-fr-<n>; pin Get-BobiverseJobWorktreePath + guard helpers.
     _assert_clean_skill(
         ".grok/skills/bobiverse-bob-worker/SKILL.md",
         "Install-root job git (FR #4843)",
-        "bob-wt-fr-<n>",
+        "Get-BobiverseJobWorktreePath",
         "refuse_job_git",
         "install_root_branch_warning",
     )

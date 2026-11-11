@@ -41,7 +41,8 @@ def test_mrb2740_lesson_on_behind_main_discipline_bullet():
 
 def test_mrb2740_not_misplaced_under_harvest_lesson_review_steps():
     text = _utf8_no_bom(SKILL)
-    start = text.index("## Harvest-lesson intake PRs (FR #2705)")
+    # Heading gained FR #3299 / #3317 citations; keep the section bounds pin.
+    start = text.index("## Harvest-lesson intake PRs (FR #2705 / FR #3299 / FR #3317)")
     end = text.index("## Skill / markdown diff hygiene")
     section = text[start:end]
     assert "Behind-main Jeeves status FRs:" not in section
