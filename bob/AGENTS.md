@@ -61,6 +61,23 @@ Get-Content <ai root>\bob\logs\stdout.log -Tail 40
 .\scripts\Invoke-BobiverseHarvest.ps1 -Summary '...' -Lesson '...'   # end of every session
 ```
 
+
+
+## Recipe machine BUILD setup (flamingo) --- FR #6492
+
+Before the first live `!build` on the recipe machine (bobiverse: **flamingo**), provision the SYSTEM `ircBob` service. `!build preflight <owner/repo>` (or `python common/scripts/run_bobiverse_build.py --preflight --repo <owner/repo>`) checks each item without building and prints one `build preflight: <name>=ok|missing ...` line per check (never the token value).
+
+| Setup item | What to provision | Preflight check |
+|---|---|---|
+| Runner Python | NSSM `AppEnvironmentExtra` `BOBIVERSE_PYTHON=<full path to python.exe>` (SYSTEM has no user PATH) | `runner_python` --- resolved `BOBIVERSE_PYTHON` / interpreter path |
+| Runner imports | PyYAML installed into that interpreter (`pip install pyyaml`) so YAML `.bobiverse/build.yml` parses | `runner_imports` --- required import list (includes `yaml`) |
+| Suite Python on PATH | Put `Python312` and `Scripts` on the ircBob service PATH so suite cmds that start with bare `python` resolve | `suite_python` --- `python` via PATH |
+| GitHub token | `<ai root>\bob\config\github.token` (one line), ACL readable by **SYSTEM** and **Administrators** only; or `GH_TOKEN` on the service | `github_token` --- source tag only (`file:...` / `env:GH_TOKEN`), never the value |
+
+Also checked: `recipe` (parse `.bobiverse/build.yml`), `work_dir` / `cache_dir` (creatable under ProgramData Bobiverse build-work), `pack_tools` (`powershell` + `gh` on PATH).
+
+Exit 0 only when every item is ok; otherwise non-zero with the missing item named.
+
 ## Do not
 
 - Self-REGISTER the shop with ChanServ (Jeeves `!register` only); mint a fresh NickServ GUID for a registered `bob-*` account

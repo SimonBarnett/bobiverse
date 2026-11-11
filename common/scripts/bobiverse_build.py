@@ -364,7 +364,7 @@ def parse_build(body: str) -> tuple[bool, str, str] | None:
         return True, "", ""
     sub = parts[1].lower()
     rest = parts[2] if len(parts) > 2 else ""
-    if sub in ("status", "cancel", "dry-run", "dryrun", "dry"):
+    if sub in ("status", "cancel", "dry-run", "dryrun", "dry", "preflight"):
         return True, "dry-run" if sub in ("dry-run", "dryrun", "dry") else sub, rest
     # !build <repos> <version> [ref]
     return True, "run", text[len("!build") :].strip()
@@ -422,6 +422,51 @@ def decide_build(
             lock.release(repo)
         return BuildDecision(True, "cancel", [f"build: cancelled lock for {repo}"], [repo], cancel=True)
 
+    if sub == "preflight":
+        # FR #6492: route a no-build environment check to the recipe machine.
+        repo = (rest or "").strip().split()[0] if (rest or "").strip() else ""
+        if not repo or not REPO_RE.match(repo):
+            return BuildDecision(
+                False,
+                "usage",
+                ["build: usage !build preflight <owner/repo>"],
+            )
+        if normalize_repo(repo) in ignored_set:
+            return BuildDecision(
+                False,
+                "ignored",
+                [f"build: {repo} is ignored; nothing started"],
+                [repo],
+            )
+        try:
+            recipe = recipe_loader(repo)
+        except RecipeError as exc:
+            return BuildDecision(
+                False,
+                "no_recipe",
+                [str(exc) if str(exc).startswith("build:") else f"build: {repo} {exc}"],
+                [repo],
+            )
+        if recipe is None:
+            return BuildDecision(
+                False,
+                "no_recipe",
+                [f"build: {repo} has no .bobiverse/build.yml; nothing started"],
+                [repo],
+            )
+        route = f"BUILDPREFLIGHT v1 repo={repo}"
+        return BuildDecision(
+            True,
+            "preflight",
+            [
+                f"build preflight: queued {repo} machine={recipe.machine} "
+                f"(no build; checks runner Python, imports, suite python, "
+                f"token source, recipe, work/cache dirs, pack tools)"
+            ],
+            [repo],
+            route=route,
+        )
+
     dry = sub == "dry-run"
     # run / dry-run: <repos> <version> [ref]
     arg = rest if dry else rest
@@ -440,7 +485,7 @@ def decide_build(
             "usage",
             [
                 "build: usage !build <owner/repo>[,owner/repo...] <version> [ref]",
-                "build: also !build status|cancel|dry-run ...",
+                "build: also !build status|cancel|dry-run|preflight ...",
             ],
             dry_run=dry,
         )
@@ -528,10 +573,18 @@ BUILD_V1_RE = re.compile(
     re.IGNORECASE,
 )
 
+BUILDPREFLIGHT_V1_RE = re.compile(
+    r"^BUILDPREFLIGHT\s+v1\s+repo=(?P<repo>\S+)\s*$",
+    re.IGNORECASE,
+)
+
 INSTALLTEST_V1_RE = re.compile(
     r"^INSTALLTEST\s+v1\s+repo=(?P<repo>\S+)\s+version=(?P<version>\S+)\s+tag=(?P<tag>\S+)\s*$",
     re.IGNORECASE,
 )
+
+# FR #6492: imports the SYSTEM runner must resolve (recipe YAML needs PyYAML).
+BUILD_RUNNER_REQUIRED_IMPORTS = ("yaml",)
 
 # Fallback DIGEST_ID_FOLD when bobreport is not importable (tests / slim envs).
 _BUILD_ID_FOLD = {
@@ -568,6 +621,259 @@ def parse_build_v1_route(text: str) -> dict | None:
         "id": (m.group("id") or "").strip(),
         "raw": raw,
     }
+
+
+def parse_build_preflight_v1_route(text: str) -> dict | None:
+    """FR #6492: parse ``BUILDPREFLIGHT v1 repo=owner/name`` -> dict or None."""
+    raw = (text or "").strip()
+    if raw.startswith(":"):
+        raw = raw[1:].strip()
+    m = BUILDPREFLIGHT_V1_RE.match(raw)
+    if not m:
+        return None
+    repo = (m.group("repo") or "").strip()
+    if not repo:
+        return None
+    return {"repo": repo, "raw": raw}
+
+
+@dataclass
+class PreflightItem:
+    name: str
+    ok: bool
+    detail: str = ""
+
+
+@dataclass
+class PreflightReport:
+    ok: bool
+    exit_code: int = 0
+    items: list = field(default_factory=list)
+    lines: list = field(default_factory=list)
+
+
+def _default_resolve_python(env: dict) -> str:
+    """Resolved interpreter for the SYSTEM runner (BOBIVERSE_PYTHON, else sys.executable)."""
+    import sys as _sys
+
+    override = str((env or {}).get("BOBIVERSE_PYTHON") or "").strip()
+    if override:
+        return override
+    return str(_sys.executable or "").strip()
+
+
+def _default_missing_imports() -> list[str]:
+    missing: list[str] = []
+    for mod in BUILD_RUNNER_REQUIRED_IMPORTS:
+        try:
+            __import__(mod)
+        except Exception:
+            missing.append(mod)
+    return missing
+
+
+def _default_token_source() -> str:
+    try:
+        import gh_filer
+
+        return str(gh_filer.ensure_gh_token_env() or "none")
+    except Exception:
+        for name in ("GH_TOKEN", "GITHUB_TOKEN"):
+            if (os.environ.get(name) or "").strip():
+                return f"env:{name}"
+        return "none"
+
+
+def _scrub_secret_fragments(text: str, env: dict | None = None) -> str:
+    """Never echo token values in preflight details/lines."""
+    out = str(text or "")
+    secrets: list[str] = []
+    src = env if env is not None else os.environ
+    for key in ("GH_TOKEN", "GITHUB_TOKEN"):
+        v = str(src.get(key) or "").strip()
+        if v and len(v) >= 8:
+            secrets.append(v)
+    for v in secrets:
+        out = out.replace(v, "<redacted>")
+    return out
+
+
+def run_build_preflight(
+    *,
+    repo: str,
+    repo_root: Path | str,
+    env: dict | None = None,
+    which: Callable | None = None,
+    resolve_python: Callable | None = None,
+    missing_imports: Callable | None = None,
+    token_source: Callable | None = None,
+    gh_auth: Callable | None = None,
+    recipe_loader: Callable | None = None,
+    work_dir: Path | str | None = None,
+    mkdir: Callable | None = None,
+    pack_tools: tuple[str, ...] = ("powershell", "gh"),
+) -> PreflightReport:
+    """FR #6492: recipe-machine environment check (no suite/pack/release).
+
+    Each item is reported as ``build preflight: <name>=ok|missing <detail>``.
+    Exit code 0 only when every item is ok. Never includes token values.
+    """
+    import shutil as _shutil
+
+    e = dict(os.environ if env is None else env)
+    which_fn = which or _shutil.which
+    resolve_py = resolve_python or _default_resolve_python
+    miss_imp = missing_imports or _default_missing_imports
+    tok_src = token_source or _default_token_source
+    auth_fn = gh_auth or (lambda: gh_auth_preflight(env=e))
+    load_fn = recipe_loader or load_recipe
+    mkdir_fn = mkdir or (lambda p: Path(p).mkdir(parents=True, exist_ok=True))
+
+    root = Path(repo_root)
+    if work_dir is None:
+        work = Path(e.get("ProgramData", "C:/ProgramData")) / "Bobiverse" / "build-work" / "preflight"
+    else:
+        work = Path(work_dir)
+
+    items: list[PreflightItem] = []
+
+    # 1) resolved runner Python (BOBIVERSE_PYTHON / sys.executable)
+    py_path = str(resolve_py(e) or "").strip()
+    if py_path:
+        items.append(PreflightItem("runner_python", True, f"path={py_path}"))
+    else:
+        items.append(
+            PreflightItem(
+                "runner_python",
+                False,
+                "set NSSM AppEnvironmentExtra BOBIVERSE_PYTHON to the full python.exe path",
+            )
+        )
+
+    # 2) required imports in that interpreter's environment (this process for tests)
+    missing = list(miss_imp() or [])
+    if missing:
+        items.append(
+            PreflightItem(
+                "runner_imports",
+                False,
+                "missing=" + ",".join(missing) + " (pip install pyyaml into BOBIVERSE_PYTHON)",
+            )
+        )
+    else:
+        items.append(
+            PreflightItem(
+                "runner_imports",
+                True,
+                "ok=" + ",".join(BUILD_RUNNER_REQUIRED_IMPORTS),
+            )
+        )
+
+    # 3) suite Python on PATH (suites invoke bare `python`)
+    suite_py = which_fn("python")
+    if suite_py:
+        items.append(PreflightItem("suite_python", True, f"path={suite_py}"))
+    else:
+        items.append(
+            PreflightItem(
+                "suite_python",
+                False,
+                "python not on PATH; add Python312 + Scripts to ircBob PATH (FR #6490)",
+            )
+        )
+
+    # 4) GitHub token source tag only (never value)
+    src_tag = _scrub_secret_fragments(str(tok_src() or "none"), e)
+    auth_err = auth_fn()
+    if src_tag == "none" or auth_err:
+        detail = f"source={src_tag}"
+        if auth_err:
+            detail += " " + _scrub_secret_fragments(str(auth_err).split(":")[0], e)
+        items.append(
+            PreflightItem(
+                "github_token",
+                False,
+                detail + "; put token in <install>\\config\\github.token (SYSTEM+Administrators ACL)",
+            )
+        )
+    else:
+        items.append(PreflightItem("github_token", True, f"source={src_tag}"))
+
+    # 5) recipe parse
+    recipe = None
+    try:
+        recipe = load_fn(root)
+        items.append(
+            PreflightItem(
+                "recipe",
+                True,
+                f"machine={getattr(recipe, 'machine', '-') } suites={len(getattr(recipe, 'suites', []) or [])}",
+            )
+        )
+    except Exception as exc:
+        items.append(
+            PreflightItem(
+                "recipe",
+                False,
+                _scrub_secret_fragments(str(exc)[:160], e),
+            )
+        )
+
+    # 6) work dir creatable
+    try:
+        mkdir_fn(work)
+        items.append(PreflightItem("work_dir", True, f"path={work}"))
+    except Exception as exc:
+        items.append(
+            PreflightItem(
+                "work_dir",
+                False,
+                f"path={work} err={type(exc).__name__}",
+            )
+        )
+
+    # 7) cache dir creatable (under work/cache + recipe cache_dirs)
+    cache_root = work / "cache"
+    try:
+        mkdir_fn(cache_root)
+        for rel in (getattr(recipe, "cache_dirs", None) or []) if recipe is not None else []:
+            mkdir_fn(cache_root / str(rel))
+        items.append(PreflightItem("cache_dir", True, f"path={cache_root}"))
+    except Exception as exc:
+        items.append(
+            PreflightItem(
+                "cache_dir",
+                False,
+                f"path={cache_root} err={type(exc).__name__}",
+            )
+        )
+
+    # 8) pack tools on PATH (powershell + gh for Pack-*/Assert-*/release)
+    missing_tools = [t for t in pack_tools if not which_fn(t)]
+    if missing_tools:
+        items.append(
+            PreflightItem(
+                "pack_tools",
+                False,
+                "missing=" + ",".join(missing_tools),
+            )
+        )
+    else:
+        items.append(
+            PreflightItem(
+                "pack_tools",
+                True,
+                "ok=" + ",".join(pack_tools),
+            )
+        )
+
+    lines: list[str] = []
+    for it in items:
+        status = "ok" if it.ok else "missing"
+        detail = _scrub_secret_fragments(it.detail, e)
+        lines.append(f"build preflight: {it.name}={status}" + (f" {detail}" if detail else ""))
+    all_ok = all(i.ok for i in items)
+    return PreflightReport(ok=all_ok, exit_code=0 if all_ok else 1, items=items, lines=lines)
 
 
 def fold_build_machine(mid: str) -> str:

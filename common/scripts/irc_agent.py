@@ -2289,8 +2289,12 @@ class Client:
             except Exception:
                 info("WARN build route announce failed")
             # FR #4025: when this box is the recipe machine, enqueue BUILD v1 (no live pack in chair).
+            # FR #6492: BUILDPREFLIGHT runs env checks only on the recipe machine.
             try:
-                self._maybe_start_build_runner(dec.route, src_hint=who_nick)
+                if dec.reason == "preflight":
+                    self._maybe_start_build_preflight(dec.route, src_hint=who_nick)
+                else:
+                    self._maybe_start_build_runner(dec.route, src_hint=who_nick)
             except Exception as exc:
                 info(f"WARN build enqueue: {type(exc).__name__}: {exc}")
 
@@ -2523,6 +2527,125 @@ class Client:
         if bobiverse_build.parse_build_v1_route(body) is None:
             return False
         return self._maybe_start_build_runner(body, src_hint=src)
+
+    def _maybe_consume_build_preflight_wire(self, src: str, body: str) -> bool:
+        """FR #6492: fleet BUILDPREFLIGHT v1 -> run env checks on the recipe machine."""
+        if bobiverse_build.parse_build_preflight_v1_route(body) is None:
+            return False
+        return self._maybe_start_build_preflight(body, src_hint=src)
+
+    def _maybe_start_build_preflight(self, route_line: str, *, src_hint: str = "") -> bool:
+        """FR #6492: accept BUILDPREFLIGHT v1 when local matches recipe.machine; run --preflight."""
+        import shutil
+        import subprocess
+
+        route = bobiverse_build.parse_build_preflight_v1_route(route_line)
+        if not route:
+            return False
+        local = ""
+        try:
+            local = self._local_machine_id() or ""
+        except Exception:
+            local = ""
+        if not local:
+            try:
+                import socket
+
+                local = bobiverse_build.fold_build_machine(socket.gethostname())
+            except Exception:
+                local = ""
+        recipe_machine = "flamingo"
+        repo_root = Path(self._install_root())
+        try:
+            recipe = bobiverse_build.load_recipe(repo_root)
+            recipe_machine = recipe.machine
+        except Exception:
+            try:
+                repo_root = Path(self._install_root()).parent
+                recipe = bobiverse_build.load_recipe(repo_root)
+                recipe_machine = recipe.machine
+            except Exception:
+                recipe_machine = "flamingo"
+        if not bobiverse_build.is_recipe_build_machine(recipe_machine, local):
+            return False
+        repo = str(route.get("repo") or "")
+        script = None
+        for cand in (
+            Path(self._install_root()) / "scripts" / "run_bobiverse_build.py",
+            Path(self._install_root()).parent / "scripts" / "run_bobiverse_build.py",
+            Path(__file__).resolve().parent / "run_bobiverse_build.py",
+        ):
+            if cand.is_file():
+                script = cand
+                break
+        if script is None:
+            info("WARN FR #6492 build preflight: run_bobiverse_build.py missing")
+            return True
+        py = (
+            os.environ.get("BOBIVERSE_PYTHON")
+            or shutil.which("python")
+            or r"C:\Python\Python312\python.exe"
+        )
+        result_path = Path(self.home) / "build-queue" / f"preflight-{int(time.time())}.result.json"
+        result_path.parent.mkdir(parents=True, exist_ok=True)
+        log_path = Path(str(result_path) + ".log")
+        cmd = [
+            py,
+            "-u",
+            str(script),
+            "--preflight",
+            "--repo",
+            repo,
+            "--repo-root",
+            str(repo_root),
+            "--result-file",
+            str(result_path),
+            "--local-machine",
+            local or recipe_machine,
+        ]
+        logf = open(log_path, "a", encoding="utf-8")
+        flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        proc = subprocess.Popen(cmd, stdout=logf, stderr=subprocess.STDOUT, creationflags=flags)
+        info(
+            f"INFO FR #6492 BUILDPREFLIGHT started pid={proc.pid} repo={repo} "
+            f"machine={local} from={src_hint or '-'}"
+        )
+        chan = bobreport.FLEET_CHANNEL
+
+        def _say(line: str) -> None:
+            try:
+                self.send("PRIVMSG " + chan + " :" + line[:400])
+                time.sleep(FLOOD_S)
+            except Exception:
+                pass
+
+        def _watch() -> None:
+            rc = None
+            try:
+                rc = proc.wait()
+            finally:
+                try:
+                    logf.close()
+                except Exception:
+                    pass
+            lines = []
+            try:
+                res = json.loads(result_path.read_text(encoding="utf-8"))
+                lines = list(res.get("announce") or [])
+            except Exception:
+                lines = [
+                    f"build preflight: runner_python=missing "
+                    f"(no result file; rc={rc}; see {log_path.name})"
+                ]
+            for ln in lines[:12]:
+                _say(ln)
+            _say(
+                f"build preflight: done repo={repo} ok={'yes' if rc == 0 else 'no'} rc={rc}"
+            )
+            info(f"INFO FR #6492 BUILDPREFLIGHT done repo={repo} rc={rc}")
+
+        threading.Thread(target=_watch, name="build-preflight", daemon=True).start()
+        return True
 
     def _maybe_start_installtest_runner(self, route_line: str, *, src_hint: str = "") -> bool:
         """FR #4026 WP3: accept INSTALLTEST v1 when local matches install_test.machine; enqueue only."""
@@ -4495,6 +4618,8 @@ class Client:
         if self._maybe_consume_installtest_v1_wire(src, body):
             return
         if self._maybe_consume_build_v1_wire(src, body):
+            return
+        if self._maybe_consume_build_preflight_wire(src, body):
             return
         if self._maybe_execute_recycle_wire(src, body):
             return
