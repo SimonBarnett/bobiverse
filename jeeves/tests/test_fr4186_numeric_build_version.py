@@ -62,7 +62,9 @@ def test_decide_build_queues_numeric(v):
         recipe_loader=lambda r: bb.BuildRecipe(machine="ionos"), lock=lock,
         new_build_id=lambda: "b-1",
     )
-    assert dec.ok and dec.route == f"BUILD v1 repos=SimonBarnett/bobiverse version={v} ref=HEAD"
+    assert dec.ok and dec.route == (
+        f"BUILD v1 repos=SimonBarnett/bobiverse version={v} ref=HEAD id=b-1"
+    )
 
 
 def test_help_documents_numeric_version():
