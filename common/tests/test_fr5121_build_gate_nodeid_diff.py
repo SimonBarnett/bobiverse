@@ -52,6 +52,33 @@ def test_fr5121_append_pytest_nodeid():
     )
 
 
+def test_fr6561_solo_strips_suite_path_keeps_options():
+    """Solo rerun must not re-run the whole suite folder (FR #6561)."""
+    base = "python -m pytest -q -p no:cacheprovider jeeves/tests"
+    node = "jeeves/tests/test_a.py::test_b"
+    assert bb.append_pytest_nodeid(base, node) == (
+        "python -m pytest -q -p no:cacheprovider jeeves/tests/test_a.py::test_b"
+    )
+
+
+def test_fr6561_solo_keeps_valued_options():
+    cmd = "python -m pytest -q -k expr --timeout 60 -p no:cacheprovider airc/tests"
+    got = bb.append_pytest_nodeid(cmd, "airc/tests/test_x.py::test_y")
+    assert got == (
+        "python -m pytest -q -k expr --timeout 60 -p no:cacheprovider "
+        "airc/tests/test_x.py::test_y"
+    )
+    assert "airc/tests " not in got + " "
+    assert got.endswith("airc/tests/test_x.py::test_y")
+
+
+def test_fr6561_solo_no_positional_still_appends():
+    assert (
+        bb.append_pytest_nodeid("python -m pytest -q -p no:cacheprovider", "x.py::t")
+        == "python -m pytest -q -p no:cacheprovider x.py::t"
+    )
+
+
 def _mini_recipe() -> bb.BuildRecipe:
     return bb.BuildRecipe(
         machine="ionos",

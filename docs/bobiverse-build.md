@@ -56,7 +56,7 @@ Deterministic, injectable, **zero AI tokens**. Module: `common/scripts/bobiverse
 3. `BuildRunner.run()`:
    - Ensures `work_dir` / `log_dir` and recipe `cache_dirs` under `work_dir/cache` (override download/cache root with env `BOBIVERSE_DOWNLOAD_CACHE`; override BUILD work root with env `BOBIVERSE_BUILD_WORK_DIR` so `run_bobiverse_build.py` uses `$BOBIVERSE_BUILD_WORK_DIR/<version>` when `--work-dir` is absent --- FR #6479).
    - Resolves baseline (injectable; default stub tag `baseline`).
-   - Runs each suite at ref and at baseline; one solo rerun on ref failure; classifies.
+   - Runs each suite at ref and at baseline; one solo rerun on ref failure; classifies. FR #6561: the solo command keeps pytest options and runs **only** the failing nodeid (suite folder paths from the recipe are stripped so the rerun is not a second full suite).
    - FR #6490: suite command-not-found (Windows 9009 / `is not recognized`) is an **environment failure** — BUILD fails with a clear error and does **not** file release-blocker comments. The runner prepends `BOBIVERSE_PYTHON`'s folder (and `Scripts`) to PATH so recipe `python` matches the service interpreter.
    - Hard timeouts (FR #3965 class) via `run_command` --- kill + `timed_out` => `step_failure`.
    - Files one intake issue per `new_regression` / `step_failure` with labels `feature-request` + `release-blocker` (`file_blocker_or_dedupe`; comment if open duplicate).
