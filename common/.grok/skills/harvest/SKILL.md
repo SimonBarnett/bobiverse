@@ -373,6 +373,7 @@ routes to bobiverse via the split rule.
 - Clear-worktree pin tests: accept ErrorRecord.ToString()+else { "$_" } and Remove-BobiversePathForce after $gitExit; enlarge remove block to ~2200; prefer Closes #N near top of PR body for closingIssuesReferences
 - test_fr5311_console_wires_dcclisten must inject a sync legion_runner that calls on_done before handle_raw returns; a 1s poll of async/isolated legion_log_send flakes under !build load.
 - OpenCode start_agent tests that spawn must stub probe_gh_auth when CI lacks gh login (FR #6240); mirror test_fr6157
+- OpenCode fuel under LocalSystem: PATH pin can still hit WindowsApps alias; set BOB_OPENCODE_PYTHON to a real interpreter and name empty-stats as stats_failed (not parser_missing).
 
 ## Harvest digest (lessons audit 2026-10-06)
 
