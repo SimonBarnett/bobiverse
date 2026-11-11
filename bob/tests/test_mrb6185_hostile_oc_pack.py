@@ -15,14 +15,13 @@ from pathlib import Path
 import pytest
 
 from repo_layout import ROOT
+from test_fr6159_oc_pack_layout import _opencode_fuel_fixture_env
 
 OPENCODE_FUEL_PS1 = ROOT / "bob" / "tray" / "tools" / "Get-BobOpencodeFuel.ps1"
 OPENCODE_FUEL_PY = ROOT / "common" / "scripts" / "opencode_fuel.py"
 COMMON = ROOT / "common" / "scripts" / "Bobiverse-Common.ps1"
 PACK = ROOT / "bob" / "tests" / "test_bob_worker_pack_020.py"
 WORKER = ROOT / "bob" / "scripts" / "bob_worker.py"
-
-FIXTURE = '{"costs": {"glm-5.3": 7.5}, "free_models": ["beam-free"]}'
 
 
 def test_mrb6185_ps1_source_leaf_not_container_break():
@@ -66,9 +65,10 @@ def test_mrb6185_empty_common_scripts_dir_does_not_block_flat_helper(tmp_path: P
     (install / "common" / "scripts").mkdir(parents=True)  # empty dir trap
     shutil.copy(OPENCODE_FUEL_PS1, tools / "Get-BobOpencodeFuel.ps1")
     shutil.copy(OPENCODE_FUEL_PY, scripts / "opencode_fuel.py")
-    env = os.environ.copy()
-    env["BOB_OPENCODE_FUEL_FIXTURE"] = FIXTURE
-    env.pop("PYTHONPATH", None)
+    # FR #6676: same USAGE_URL scrub as FR #6670 / test_fr6159 (else go stays null).
+    env = _opencode_fuel_fixture_env()
+    py_dir = str(Path(sys.executable).resolve().parent)
+    env["PATH"] = py_dir + os.pathsep + env.get("PATH", "")
     result = subprocess.run(
         [
             "powershell.exe",
