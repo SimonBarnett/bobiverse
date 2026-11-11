@@ -178,6 +178,53 @@ def classify_step_failure(step: str) -> FailureClass:
     return FailureClass(f"step:{step}", "step_failure", True, False, False)
 
 
+def is_command_not_found(stdout: str, exit_code: int) -> bool:
+    """True when a suite failed because the shell could not start the command (FR #6490).
+
+    Windows cmd uses exit 9009 and ``is not recognized``; Unix shells say
+    ``command not found``. Real pytest failures must not match.
+    """
+    code = int(exit_code) if exit_code is not None else -1
+    text = stdout or ""
+    low = text.lower()
+    if code == 9009:
+        return True
+    if "is not recognized as an internal or external command" in low:
+        return True
+    if "is not recognized as a command" in low:
+        return True
+    if "command not found" in low:
+        return True
+    if "filenotfounderror" in low and (
+        "python" in low or "the system cannot find the file" in low
+    ):
+        return True
+    return False
+
+
+def suite_path_env_with_runner_python(env: dict | None = None) -> dict:
+    """Prepend ``BOBIVERSE_PYTHON``'s directory (and ``Scripts``) to PATH (FR #6490)."""
+    import os as _os
+    import sys as _sys
+
+    out = dict(env or {})
+    py = (out.get("BOBIVERSE_PYTHON") or _os.environ.get("BOBIVERSE_PYTHON") or "").strip()
+    if not py:
+        py = (_sys.executable or "").strip()
+    p = Path(py) if py else None
+    if p is not None and p.is_file():
+        dirs = [str(p.parent)]
+        scripts = p.parent / "Scripts"
+        if scripts.is_dir():
+            dirs.append(str(scripts))
+        cur = out.get("PATH")
+        if cur is None:
+            cur = _os.environ.get("PATH") or ""
+        out["PATH"] = _os.pathsep.join(dirs + ([cur] if cur else []))
+        out.setdefault("BOBIVERSE_PYTHON", str(p))
+    return out
+
+
 # FR #5121: pytest FAILED/ERROR nodeids — suite exit-code alone must not hide new failures.
 _PYTEST_FAILED_NODEID_RE = re.compile(
     r"^(?:FAILED|ERROR)\s+(\S+?)(?:\s+-|\s*$)",
@@ -870,11 +917,14 @@ def run_command(
     sp = runner if runner is not None else _sp
     cwd_s = str(cwd) if cwd is not None else None
     env_map = None
-    if env:
-        import os as _os
+    import os as _os
 
-        env_map = dict(_os.environ)
+    # FR #6490: always start from process env and put BOBIVERSE_PYTHON on PATH so
+    # recipe ``python ...`` matches the runner interpreter under SYSTEM / NSSM.
+    env_map = dict(_os.environ)
+    if env:
         env_map.update({str(k): str(v) for k, v in env.items()})
+    env_map = suite_path_env_with_runner_python(env_map)
     t0 = time.time()
     timed_out = False
     exit_code = -1
@@ -1072,6 +1122,21 @@ class BuildRunner:
                     report.blockers_filed.append(filed)
                     blocking = True
                     continue
+
+                # FR #6490: command-not-found is an environment failure — fail the
+                # build clearly and do not classify as regression or file blockers.
+                if is_command_not_found(ref_res.stdout, ref_res.exit_code):
+                    msg = (
+                        f"environment failure: suite {suite.name} command could not start "
+                        f"(exit {ref_res.exit_code}); missing interpreter/tool on PATH "
+                        f"(set BOBIVERSE_PYTHON for the runner service)"
+                    )
+                    report.errors.append(msg)
+                    report.announce_lines.append(
+                        f"BUILD fail {self.repo} version={self.version}: {msg}"
+                    )
+                    blocking = True
+                    break
 
                 ref_failed = int(ref_res.exit_code) != 0
 
