@@ -269,13 +269,102 @@ def new_failing_nodeids(ref_stdout: str, baseline_stdout: str) -> set[str]:
     return parse_pytest_failed_nodeids(ref_stdout) - parse_pytest_failed_nodeids(baseline_stdout)
 
 
+# Pytest CLI options that take a following value (FR #6561 solo path strip).
+_PYTEST_OPTS_WITH_VALUE = frozenset(
+    {
+        "-c",
+        "--config",
+        "-k",
+        "-m",
+        "-o",
+        "--override-ini",
+        "-p",
+        "-r",
+        "-W",
+        "--pythonwarnings",
+        "-n",
+        "--maxfail",
+        "--tb",
+        "--rootdir",
+        "--basetemp",
+        "--confcutdir",
+        "--durations",
+        "--junitxml",
+        "--timeout",
+        "--timeout-method",
+        "--cov",
+        "--cov-report",
+        "--cov-config",
+        "--log-cli-level",
+        "--log-file",
+        "--log-file-level",
+    }
+)
+
+
+def _keep_pytest_option_tokens(args: list[str]) -> list[str]:
+    """Keep pytest options; drop positional suite/path args (FR #6561)."""
+    out: list[str] = []
+    i = 0
+    while i < len(args):
+        tok = args[i]
+        if tok.startswith("-"):
+            out.append(tok)
+            if "=" in tok:
+                i += 1
+                continue
+            if (
+                tok in _PYTEST_OPTS_WITH_VALUE
+                and i + 1 < len(args)
+                and not str(args[i + 1]).startswith("-")
+            ):
+                out.append(args[i + 1])
+                i += 2
+                continue
+            i += 1
+            continue
+        # Positional path / nodeid from the recipe — drop for solo.
+        i += 1
+    return out
+
+
 def append_pytest_nodeid(cmd: str, nodeid: str) -> str:
-    """Append a single nodeid for per-test solo rerun (FR #5121)."""
+    """Build a solo pytest command for one failing nodeid (FR #5121 / #6561).
+
+    Keeps the interpreter, ``-m pytest`` (or bare ``pytest``) and every option.
+    Drops positional suite/path args from the recipe command, then appends
+    exactly one ``nodeid``. When the recipe has no positional path, behaviour
+    matches the old append-only form.
+    """
+    import shlex
+
     c = (cmd or "").rstrip()
     n = (nodeid or "").strip()
     if not n:
         return c
-    return f"{c} {n}"
+    try:
+        tokens = shlex.split(c, posix=True)
+    except ValueError:
+        tokens = c.split()
+    if not tokens:
+        return n
+
+    pytest_idx: int | None = None
+    for i, tok in enumerate(tokens):
+        name = Path(str(tok).replace("\\", "/")).name.lower()
+        if name in ("pytest", "pytest.exe", "py.test"):
+            pytest_idx = i
+            break
+        if tok == "-m" and i + 1 < len(tokens) and tokens[i + 1] in ("pytest", "py.test"):
+            pytest_idx = i + 1
+            break
+    if pytest_idx is None:
+        # Unknown launcher — keep legacy append so classification still runs.
+        return f"{c} {n}"
+
+    head = tokens[: pytest_idx + 1]
+    kept = _keep_pytest_option_tokens(tokens[pytest_idx + 1 :])
+    return " ".join(head + kept + [n])
 
 
 # ------------------------------------------------------------------ dedupe
