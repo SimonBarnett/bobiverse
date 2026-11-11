@@ -52,6 +52,8 @@ def test_fr6158_start_agent_sets_keys_for_opencode(tmp_path, monkeypatch):
     monkeypatch.setenv("BOB_WORKER_OPENCODE_TURN_WATCH", "0")
     monkeypatch.setenv("BOB_OPENCODE_MODEL", "test-model")
     monkeypatch.setattr(bw.threading, "Thread", _Thread)
+    # FR #6668 / #6240: start_agent probes gh auth before spawn; CI seats often lack gh login.
+    monkeypatch.setattr(bw, "probe_gh_auth", lambda *_a, **_k: (False, ""))
     logs: list[str] = []
     relay = bw.Relay(logs.append, clock=lambda: 0.0, persist_dir=tmp_path)
 
