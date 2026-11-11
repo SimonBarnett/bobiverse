@@ -1480,16 +1480,22 @@ def run_command(
     *,
     name: str = "cmd",
     ref_or_baseline: str = "",
+    log_path: str | Path | None = None,
 ) -> SuiteRunResult:
     """Run a shell command with hard timeout (FR #3965 class). Injectable ``runner``.
 
     On timeout the process is killed and ``timed_out=True`` (exit_code=-1).
+
+    FR #6586: when ``log_path`` is set, stdout is streamed line-by-line into that
+    file with an immediate flush so a killed mid-suite build keeps partial output
+    (including failing nodeids seen so far). Injectable fakes without ``stdout``
+    still use ``communicate``.
     """
     import subprocess as _sp
+    import threading
 
     sp = runner if runner is not None else _sp
     cwd_s = str(cwd) if cwd is not None else None
-    env_map = None
     import os as _os
 
     # FR #6490: always start from process env and put BOBIVERSE_PYTHON on PATH so
@@ -1502,45 +1508,123 @@ def run_command(
     timed_out = False
     exit_code = -1
     stdout = ""
+    log_fp = None
+    chunks: list[str] = []
     try:
+        if log_path is not None:
+            lp = Path(log_path)
+            lp.parent.mkdir(parents=True, exist_ok=True)
+            # Line-buffered text so a hard kill still leaves flushed lines on disk.
+            log_fp = open(lp, "w", encoding="utf-8", newline="", buffering=1)
         popen_kw = dict(
             cwd=cwd_s,
             env=env_map,
             stdout=sp.PIPE,
             stderr=sp.STDOUT,
             universal_newlines=True,
+            bufsize=1,
         )
         if isinstance(cmd, (list, tuple)):
             proc = sp.Popen(list(cmd), **popen_kw)
         else:
             proc = sp.Popen(str(cmd), shell=True, **popen_kw)
-        try:
-            out, _ = proc.communicate(timeout=timeout)
-            stdout = out or ""
-            exit_code = int(proc.returncode if proc.returncode is not None else -1)
-        except Exception as exc:
-            timed_out = True
-            exit_code = -1
-            raw_out = getattr(exc, "output", None) or getattr(exc, "stdout", None) or ""
-            if isinstance(raw_out, bytes):
+
+        stream = getattr(proc, "stdout", None)
+        if stream is not None and hasattr(stream, "readline"):
+            pump_err: list[BaseException] = []
+
+            def _pump() -> None:
                 try:
-                    stdout = raw_out.decode("utf-8", "replace")
+                    while True:
+                        line = stream.readline()
+                        if line == "" or line is None:
+                            break
+                        if isinstance(line, bytes):
+                            try:
+                                line = line.decode("utf-8", "replace")
+                            except Exception:
+                                line = str(line)
+                        chunks.append(line)
+                        if log_fp is not None:
+                            try:
+                                log_fp.write(line)
+                                log_fp.flush()
+                            except Exception:
+                                pass
+                except BaseException as exc:  # pragma: no cover - pump best-effort
+                    pump_err.append(exc)
+
+            pump = threading.Thread(target=_pump, name=f"build-pump-{name}", daemon=True)
+            pump.start()
+            try:
+                if timeout is None:
+                    exit_code = int(proc.wait() if proc.returncode is None else proc.returncode)
+                else:
+                    try:
+                        exit_code = int(proc.wait(timeout=float(timeout)))
+                    except Exception:
+                        timed_out = True
+                        exit_code = -1
+                        try:
+                            proc.kill()
+                        except Exception:
+                            pass
+                        try:
+                            proc.wait(timeout=5)
+                        except Exception:
+                            pass
+            finally:
+                pump.join(timeout=2.0)
+            stdout = "".join(chunks)
+            if timed_out:
+                stdout = (stdout or "") + f"\n[timed_out after {timeout}s]"
+            if proc.returncode is not None and not timed_out:
+                exit_code = int(proc.returncode)
+        else:
+            # Injectable FakeSp / no-stdout path (FR #4025 timeout tests).
+            try:
+                out, _ = proc.communicate(timeout=timeout)
+                stdout = out or ""
+                exit_code = int(proc.returncode if proc.returncode is not None else -1)
+            except Exception as exc:
+                timed_out = True
+                exit_code = -1
+                raw_out = getattr(exc, "output", None) or getattr(exc, "stdout", None) or ""
+                if isinstance(raw_out, bytes):
+                    try:
+                        stdout = raw_out.decode("utf-8", "replace")
+                    except Exception:
+                        stdout = str(raw_out)
+                else:
+                    stdout = str(raw_out) if raw_out else ""
+                stdout = (stdout or "") + f"\n[timed_out after {timeout}s]"
+                try:
+                    proc.kill()
                 except Exception:
-                    stdout = str(raw_out)
-            else:
-                stdout = str(raw_out) if raw_out else ""
-            stdout = (stdout or "") + f"\n[timed_out after {timeout}s]"
-            try:
-                proc.kill()
-            except Exception:
-                pass
-            try:
-                proc.wait(timeout=5)
-            except Exception:
-                pass
+                    pass
+                try:
+                    proc.wait(timeout=5)
+                except Exception:
+                    pass
+            if log_fp is not None and stdout:
+                try:
+                    log_fp.write(stdout)
+                    log_fp.flush()
+                except Exception:
+                    pass
     except Exception as exc:
         stdout = f"{type(exc).__name__}: {exc}"
         exit_code = -1
+    finally:
+        if log_fp is not None:
+            try:
+                log_fp.flush()
+            except Exception:
+                pass
+            try:
+                log_fp.close()
+            except Exception:
+                pass
     return SuiteRunResult(
         name=name,
         ref_or_baseline=ref_or_baseline,
@@ -1625,6 +1709,39 @@ class BuildRunner:
         path.write_text(text or "", encoding="utf-8")
         return path
 
+    def _failed_tests_path(self) -> Path:
+        return self.log_dir / "failed-tests.txt"
+
+    def _write_failed_tests_summary(
+        self,
+        *,
+        suite: str,
+        phase: str,
+        stdout: str,
+        extra: str = "",
+    ) -> Path:
+        """FR #6586: rewrite failed-tests.txt after each suite/rerun (not only at end)."""
+        path = self._failed_tests_path()
+        nodeids = sorted(parse_pytest_failed_nodeids(stdout or ""))
+        lines = [
+            f"# failed-tests summary (FR #6586) updated={time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())}",
+            f"# suite={suite} phase={phase}",
+        ]
+        if extra:
+            lines.append(f"# note={extra}")
+        if nodeids:
+            lines.append(f"# count={len(nodeids)}")
+            lines.extend(nodeids)
+        else:
+            lines.append("# count=0")
+            lines.append("(no FAILED/ERROR nodeids parsed)")
+        path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        return path
+
+    def _progress(self, msg: str) -> None:
+        """FR #6586: line to stdout so chair ``*.runner.log`` grows during the run."""
+        print(f"build: {msg}", flush=True)
+
     def _zip_logs(self) -> Path:
         import zipfile
 
@@ -1679,6 +1796,8 @@ class BuildRunner:
                     out_dir=str(out_dir),
                     ref=self.ref,
                 )
+                ref_log = self.log_dir / f"{suite.name}-ref.log"
+                self._progress(f"suite {suite.name} ref start log={ref_log.name}")
                 ref_res = self.run_command_fn(
                     rendered_cmd,
                     cwd=self._suite_cwd(suite),
@@ -1686,9 +1805,18 @@ class BuildRunner:
                     timeout=float(suite.timeout),
                     name=suite.name,
                     ref_or_baseline=self.ref,
+                    log_path=ref_log,
                 )
                 report.suite_results.append(ref_res)
+                # Final rewrite keeps a complete buffer if the stream closed early.
                 self._write_log(f"{suite.name}-ref.log", ref_res.stdout)
+                self._write_failed_tests_summary(
+                    suite=suite.name, phase="ref", stdout=ref_res.stdout
+                )
+                self._progress(
+                    f"suite {suite.name} ref done rc={ref_res.exit_code} "
+                    f"timed_out={ref_res.timed_out} s={ref_res.duration_s:.1f}"
+                )
                 if ref_res.timed_out:
                     failure = classify_step_failure(f"suite:{suite.name}:timeout")
                     filed = file_blocker_or_dedupe(
@@ -1726,6 +1854,8 @@ class BuildRunner:
                     out_dir=str(out_dir),
                     ref=baseline,
                 )
+                base_log = self.log_dir / f"{suite.name}-baseline.log"
+                self._progress(f"suite {suite.name} baseline start log={base_log.name}")
                 base_res = self.run_command_fn(
                     base_cmd,
                     cwd=self._suite_cwd(suite, baseline=True),
@@ -1733,9 +1863,17 @@ class BuildRunner:
                     timeout=float(suite.timeout),
                     name=suite.name,
                     ref_or_baseline=baseline,
+                    log_path=base_log,
                 )
                 report.suite_results.append(base_res)
                 self._write_log(f"{suite.name}-baseline.log", base_res.stdout)
+                self._write_failed_tests_summary(
+                    suite=suite.name, phase="baseline", stdout=base_res.stdout
+                )
+                self._progress(
+                    f"suite {suite.name} baseline done rc={base_res.exit_code} "
+                    f"timed_out={base_res.timed_out} s={base_res.duration_s:.1f}"
+                )
                 if base_res.timed_out:
                     failure = classify_step_failure(f"suite:{suite.name}:baseline-timeout")
                     filed = file_blocker_or_dedupe(
@@ -1779,6 +1917,11 @@ class BuildRunner:
                     else:
                         for tid in new_ids:
                             solo_cmd = append_pytest_nodeid(rendered_cmd, tid)
+                            safe = re.sub(r"[^A-Za-z0-9_.-]+", "_", tid)[:80]
+                            solo_log = self.log_dir / f"{suite.name}-solo-{safe}.log"
+                            self._progress(
+                                f"suite {suite.name} solo start nodeid={tid} log={solo_log.name}"
+                            )
                             solo = self.run_command_fn(
                                 solo_cmd,
                                 cwd=self._suite_cwd(suite),
@@ -1786,10 +1929,19 @@ class BuildRunner:
                                 timeout=float(suite.timeout),
                                 name=suite.name,
                                 ref_or_baseline=f"{self.ref}-solo",
+                                log_path=solo_log,
                             )
                             report.suite_results.append(solo)
-                            safe = re.sub(r"[^A-Za-z0-9_.-]+", "_", tid)[:80]
                             self._write_log(f"{suite.name}-solo-{safe}.log", solo.stdout)
+                            self._write_failed_tests_summary(
+                                suite=suite.name,
+                                phase=f"solo:{tid}",
+                                stdout=solo.stdout or ref_res.stdout,
+                                extra=f"solo_rc={solo.exit_code}",
+                            )
+                            self._progress(
+                                f"suite {suite.name} solo done nodeid={tid} rc={solo.exit_code}"
+                            )
                             if solo.timed_out:
                                 failure = classify_step_failure(
                                     f"suite:{suite.name}:solo-timeout:{tid}"
@@ -3160,7 +3312,16 @@ def guarded_run_command(work_dir: Path | str, live_homes: Iterable[Path | str], 
     gh_steps = frozenset(gh_steps)
     pack_secret_steps = frozenset(pack_secret_steps)
 
-    def _run(cmd, cwd=None, env=None, timeout=None, *, name="cmd", ref_or_baseline=""):
+    def _run(
+        cmd,
+        cwd=None,
+        env=None,
+        timeout=None,
+        *,
+        name="cmd",
+        ref_or_baseline="",
+        log_path=None,
+    ):
         iso = isolated_suite_env(work_dir, f"{name}-{ref_or_baseline}")
         merged = dict(env or {})
         # Isolation wins over suite.env for homes/URLs (FR #4315); blanks GH/IRC secrets.
@@ -3171,7 +3332,15 @@ def guarded_run_command(work_dir: Path | str, live_homes: Iterable[Path | str], 
         if name in pack_secret_steps:
             merged.update(pack_ergo_env())
         before = live_state_fingerprint(homes)
-        res = inner(cmd, cwd=cwd, env=merged, timeout=timeout, name=name, ref_or_baseline=ref_or_baseline)
+        res = inner(
+            cmd,
+            cwd=cwd,
+            env=merged,
+            timeout=timeout,
+            name=name,
+            ref_or_baseline=ref_or_baseline,
+            log_path=log_path,
+        )
         after = live_state_fingerprint(homes)
         damage = live_state_damage(before, after)
         if damage:

@@ -2499,7 +2499,8 @@ class Client:
             "--local-machine", local_machine,
             "--work-dir", str(work_dir),
         ]
-        logf = open(log_path, "a", encoding="utf-8")
+        # FR #6586: line-buffered append so runner.log grows as the child prints.
+        logf = open(log_path, "a", encoding="utf-8", buffering=1)
         flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
         proc = subprocess.Popen(cmd, stdout=logf, stderr=subprocess.STDOUT, creationflags=flags)
         info(f"INFO build runner pid={proc.pid} repo={repo} version={version} log={log_path}")
@@ -2634,7 +2635,8 @@ class Client:
             "--local-machine",
             local or recipe_machine,
         ]
-        logf = open(log_path, "a", encoding="utf-8")
+        # FR #6586: line-buffered append so preflight runner.log grows during the run.
+        logf = open(log_path, "a", encoding="utf-8", buffering=1)
         flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
         proc = subprocess.Popen(cmd, stdout=logf, stderr=subprocess.STDOUT, creationflags=flags)
         info(
