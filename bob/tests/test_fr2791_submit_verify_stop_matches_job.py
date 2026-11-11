@@ -206,9 +206,15 @@ def test_no_repaste_in_unrelated_ack_case():
 
 
 def test_inject_line_source_wires_job_matched_stop():
+    """Pin covers the whole ``_inject_line`` method (FR #6661).
+
+    OpenCode finish-checklist growth pushed ``assign_job_ref`` past a fixed
+    2200-char window; bound the slice to the next class-level ``def``.
+    """
     src = open(bw.__file__, encoding="utf-8").read()
     i = src.index("def _inject_line")
-    body = src[i : i + 2200]
+    j = src.find("\n    def ", i + 1)
+    body = src[i:j] if j > i else src[i : i + 8000]
     assert "assign_job_ref" in body
     assert "ack_job_ref" in body
     assert "ack_open" in body

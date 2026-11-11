@@ -138,6 +138,7 @@ $h = [pscustomobject]@{{
                [pscustomobject]@{{ id = 'flamingo'; remaining_pct = 0; worker_lines = @() }})
 }}
 $pool = '{json.dumps(copilot_pool)}' | ConvertFrom-Json
+# Fresh fetched_at so FR #6371 freshness is not [stale]; may append ' - updated HH:mm'.
 $fmtPool = $pool
 if ($fmtPool -and -not $fmtPool.fetched_at) {{
   $fmtPool = $pool | Select-Object *
@@ -172,12 +173,21 @@ COPILOT_POOLS = [
 ]
 
 
+def _copilot_line_matches(got: str, want: str) -> bool:
+    """Meter text may gain FR #6371 `` - updated HH:mm`` when fetched_at is set."""
+    if got == want:
+        return True
+    import re
+
+    return re.fullmatch(re.escape(want) + r"( - updated \d{2}:\d{2})?", got or "") is not None
+
+
 @pytest.mark.parametrize("pool,line", COPILOT_POOLS)
 def test_copilot_pool_survives_engine_snapshot(tmp_path, pool, line):
     snap = _model_json(tmp_path, pool)
     d = json.loads(snap.read_text(encoding="utf-8"))
     assert d["copilot_pool"] == pool
-    assert d["copilot_line"] == line
+    assert _copilot_line_matches(d["copilot_line"], line), (d["copilot_line"], line)
     assert d["cursor"] == []
     assert len(d["grok"]) == 2
     assert d["grok"][0]["workers"][1] == "marchhare-5832: idle"
@@ -206,7 +216,8 @@ def test_copilot_pool_in_compiled_status(dialogs, tmp_path, pool, line):
     out = tmp_path / "copilot.txt"
     _run(dialogs / "bob-status.exe", "--check", str(snap), "--text-out", str(out))
     lines = out.read_text(encoding="utf-8").splitlines()
-    assert lines.count(line) == 1
+    matches = [ln for ln in lines if _copilot_line_matches(ln, line)]
+    assert len(matches) == 1, (line, lines)
     assert "cursor=0 grok=2 alert=stall" in lines
 
 
@@ -300,6 +311,8 @@ def test_tray_menu_is_status_agent_plan_acknowledge_log_restart_exit(dialogs, tm
         "Automatic - Grok, then Cursor, then OpenCode",
         "Grok",
         "Cursor",
+        "Start free model (opencode/deepseek-v4.1-flash-free) [default]",
+        "Start paid model (opencode-go/deepseek-v4-pro)",
         "OpenCode",
         "Plan",
         "Acknowledge",

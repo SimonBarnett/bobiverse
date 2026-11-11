@@ -166,7 +166,8 @@ def test_inject_with_verify_receipt_ack_one_inject():
 def test_inject_line_wires_grok_like_cursor_when_probe_present():
     src = open(bw.__file__, encoding="utf-8").read()
     i = src.index("def _inject_line")
-    body = src[i : i + 2200]
+    j = src.find("\n    def ", i + 1)
+    body = src[i:j] if j > i else src[i : i + 8000]
     assert "FR #4889" in body or "4889" in body
     assert "cursor_submit_verify_stop" in body
     # Must not wire bare ack_open stop when probe is present (receipt-ACK class).
