@@ -1,4 +1,29 @@
+---
+name: bobiverse-build
+description: >
+  Deterministic zero-token BUILD job (!build): recipe contract, classification,
+  dry-run vs live, how to read #bobiverse BUILD announce lines, when to re-run
+  after release-blocker closes. Companion harvest stub under common/; canonical
+  book also lives at jeeves/.grok/skills/bobiverse-build. Use for !build, BUILD v1,
+  build.yml, pack/release.
+github: https://github.com/SimonBarnett/bobiverse
+---
 
+# bobiverse-build (common harvest companion)
+
+> **CAST IRON RULE - HARVEST AND FILE EVERYTHING (read this first, every time).**
+> 1. ALWAYS harvest skills you learn and file EVERY issue / FR / bug / gap you find to the intake webhook in the
+>    SAME turn. Never leave a finding unfiled, never "note it for later", never skip it because it is small.
+> 2. File with the intake webhook (no secret or login needed; POST https://bob.ntsa.uk/bob/v1/intake; offline it is
+>    queued locally and retried):
+>    .\scripts\Report-BobiverseIntakeIssue.ps1 -Repo SimonBarnett/bobiverse -Kind issue -Title "short title" -Body "what / where / evidence / fix"
+>    (-Kind issue|fr|skill|harvest; always pass an explicit -Repo owner/name).
+> 3. BEFORE finishing ANY debugging session run the harvest step:
+>    .\scripts\Invoke-BobiverseHarvest.ps1 -Summary "what broke / what fixed it" -Lesson "one learned playbook line"
+>    then .\scripts\Invoke-BobiverseHarvest.ps1 -Flush to resend anything that was queued while offline.
+> 4. Never put a token, password, SASL/NickServ secret, key or private hostname in a filing, a skill or a log.
+
+Canonical playbook: jeeves/.grok/skills/bobiverse-build/SKILL.md and docs/bobiverse-build.md.
 
 ## Harvested lessons (intake)
 
