@@ -56,7 +56,7 @@ Hard timeouts (FR #3965 class) via `run_command` kill + `timed_out` => `step_fai
 | Mode | Who | What happens |
 |---|---|---|
 | `!build dry-run <repos> <version> [ref]` | Chair (ops) | Decide only: print plan lines (would classify, would file blockers, would announce). **Nothing published**, no queue job. |
-| `!build <repos> <version> [ref]` | Chair then recipe machine (version must be numeric x.y.z / x.y.z.w, else refused, #4186) | Chair announces wire `BUILD v1 repos=... version=... ref=...` on `#bobiverse` (and PM reply lines). Recipe host `consume_build_v1` enqueues `home/build-queue/*.json`; `BuildRunner.run()` executes suites/pack/release. |
+| `!build <repos> <version> [ref]` | Chair then recipe machine (version must be numeric x.y.z / x.y.z.w, else refused, #4186) | Chair announces wire `BUILD v1 repos=... version=... ref=... id=b-...` on `#bobiverse` (and PM reply lines). Recipe host `consume_build_v1` enqueues `home/build-queue/*.json`; `BuildRunner.run()` executes suites/pack/release. |
 | `!build status [owner/repo]` | Chair | Running lock id or none. |
 | `!build preflight <owner/repo>` | Chair then recipe machine | FR #6492: env check only; one line per item; exit non-zero on any missing. |
 | `!build cancel <owner/repo>` | Chair | Clear lock / cancel path. |
@@ -71,10 +71,10 @@ Ops only (simon / bob-* ears). Workers never see `!build` in `!help`.
 
 Typical shapes (channel `#bobiverse` + ops PM from chair):
 
-- **Route / start:** `BUILD v1 repos=owner/repo version=X ref=Y [id=b-...]` --- recipe machine consumes this. FR #5266: chair and ear both hear the wire, but O_EXCL `%ProgramData%\Bobiverse\build-routes\<id>.claimed` plus a machine-global `build-locks.json` and unique `build-work\<ver>-<job>` keep one runner; git stderr is in `result.json`.
+- **Route / start:** `BUILD v1 repos=owner/repo version=X ref=Y id=b-...` --- recipe machine consumes this. FR #5266: chair and ear both hear the wire, but O_EXCL `%ProgramData%\Bobiverse\build-routes\<id>.claimed` plus a machine-global `build-locks.json` and unique `build-work\<ver>-<job>` keep one runner; git stderr is in `result.json`. FR #6491: `id=` is always on the route; terminal `BUILD ok|fail ... id=` frees the chair `home/build-locks.json` by matching id; a stale chair lock (older than recipe max run) is released on the next `!build`.
 - **Dry-run plan:** lines starting `build dry-run:` (machine, suites, baseline, would classify, nothing published).
-- **Success:** `BUILD ok <repo> version=... ref=... tag=... prerelease ...` (pack+release ran; no new_regression/step_failure blockers).
-- **Failure:** `BUILD fail <repo> version=... ref=... blockers=N pack=... release=...` or `BUILD fail ... wrong machine`.
+- **Success:** `BUILD ok <repo> version=... ref=... tag=... prerelease ... id=b-...` (pack+release ran; no new_regression/step_failure blockers).
+- **Failure:** `BUILD fail <repo> version=... ref=... blockers=N pack=... release=... id=b-...` or `BUILD fail ... wrong machine id=b-...`. Chair frees `home/build-locks.json` when id matches (FR #6491); stale locks clear on the next `!build`.
 - **Status / usage / refuse:** `build status:`, `build: usage ...`, `build: no .bobiverse/build.yml`, lock refuse with running id.
 
 Blocker issues filed by the runner: title like `release-blocker: <test_id> (<version>)`, labels `feature-request` + `release-blocker`. Re-hit comments: `BUILD re-hit <kind> for <test_id> ...`.
@@ -102,4 +102,4 @@ WP3 INSTALL-TEST (FR #4026), when present in the recipe, is a separate follow-on
 - Docs: `docs/bobiverse-build.md`
 - Chair help: `!help build` (ops) / skill `bobiverse-jeeves-commands` section `!build`
 - Parent FR: #4006 (living umbrella --- do not `Closes` it from docs-only PRs); WP2 #4025; this skill book #4038
-- Tests: `common/tests/test_fr4006_build_job.py`, WP2 runner tests, `jeeves/tests/test_fr4038_bobiverse_build_skill.py`
+- Tests: `common/tests/test_fr4006_build_job.py`, WP2 runner tests, `jeeves/tests/test_fr4038_bobiverse_build_skill.py`, `common/tests/test_fr6491_chair_build_lock_release.py` (FR #6491 chair lock release)

@@ -2233,23 +2233,36 @@ class Client:
         def recipe_loader(repo: str):
             # Only bobiverse's own recipe lives in this install; other repos must carry
             # their own .bobiverse/build.yml on GitHub (no recipe -> refusal).
+            def _ensure_token() -> None:
+                import gh_filer
+
+                gh_filer.ensure_gh_token_env()
+
             if bobiverse_build.normalize_repo(repo) != "simonbarnett/bobiverse":
                 try:
-                    import gh_filer
-
-                    gh_filer.ensure_gh_token_env()
+                    _ensure_token()
                 except Exception:
                     pass
                 return bobiverse_build.fetch_remote_recipe(repo)
+            # FR #6484: packaged Jeeves has no local .bobiverse/; fall back to GitHub.
+            # FR #6487: present local YAML that fails to parse is not masked as missing.
             root = Path(self._install_root())
-            # Bobiverse recipe lives at repo root; install tree is bob/jeeves/airc sparse — prefer git root.
-            for cand in (root, root.parent, Path(self.home).resolve().parents[2] if False else root):
-                try:
-                    return bobiverse_build.load_recipe(cand)
-                except bobiverse_build.RecipeError:
-                    continue
-            raise bobiverse_build.RecipeError(
-                f"build: {repo} has no .bobiverse/build.yml; nothing started"
+            build_ref = "main"
+            try:
+                parsed_b = bobiverse_build.parse_build(body)
+                if parsed_b is not None:
+                    _is_build, sub, rest = parsed_b
+                    if sub in ("run", "dry-run"):
+                        toks = (rest or "").split()
+                        if len(toks) >= 3:
+                            build_ref = toks[2]
+            except Exception:
+                build_ref = "main"
+            return bobiverse_build.load_bobiverse_recipe_local_or_remote(
+                [root, root.parent],
+                repo,
+                ref=build_ref,
+                ensure_token=_ensure_token,
             )
 
         ignored = ()
@@ -2320,14 +2333,12 @@ class Client:
                 except Exception:
                     pass
                 return bobiverse_build.fetch_remote_recipe(repo)
+            # FR #6487: do not mask parse/validation errors as missing build.yml.
             root = Path(self._install_root())
-            for cand in (root, root.parent):
-                try:
-                    return bobiverse_build.load_recipe(cand)
-                except bobiverse_build.RecipeError:
-                    continue
-            raise bobiverse_build.RecipeError(
-                f"build: {repo} has no .bobiverse/build.yml; nothing started"
+            return bobiverse_build.load_recipe_from_candidates(
+                [root, root.parent],
+                repo=repo,
+                missing_kind="build",
             )
 
         ignored = ()
@@ -2400,16 +2411,23 @@ class Client:
                 local = bobiverse_build.fold_build_machine(socket.gethostname())
             except Exception:
                 local = ""
-        recipe_machine = "ionos"
+        # FR #6487: never quietly fall back to ionos when a recipe file fails to load.
+        recipe_machine = ""
         try:
-            recipe = bobiverse_build.load_recipe(Path(self._install_root()))
-            recipe_machine = recipe.machine
-        except Exception:
-            try:
-                recipe = bobiverse_build.load_recipe(Path(self._install_root()).parent)
-                recipe_machine = recipe.machine
-            except Exception:
-                recipe_machine = "ionos"
+            recipe = bobiverse_build.load_recipe_from_candidates(
+                [Path(self._install_root()), Path(self._install_root()).parent],
+                repo="SimonBarnett/bobiverse",
+            )
+            recipe_machine = str(recipe.machine or "").strip()
+        except Exception as exc:
+            info(
+                f"WARN BUILD v1 recipe load failed: {type(exc).__name__}: {exc}; "
+                "not falling back to ionos"
+            )
+            return False
+        if not recipe_machine:
+            info("WARN BUILD v1 recipe load: empty machine; not falling back to ionos")
+            return False
         qdir = self._build_queue_dir()
         ok = bobiverse_build.consume_build_v1(
             route_line,
@@ -2444,6 +2462,8 @@ class Client:
         repos = job.get("repos") or []
         repo = str(repos[0] if isinstance(repos, list) and repos else repos or "")
         version = str(job.get("version") or "")
+        build_id = str(job.get("id") or "").strip()
+        id_bit = f" id={build_id}" if build_id else ""
         script = None
         for cand in (
             Path(self._install_root()) / "scripts" / "run_bobiverse_build.py",
@@ -2488,7 +2508,10 @@ class Client:
             except Exception:
                 pass
 
-        _say(f"BUILD started {repo} version={version} pid={proc.pid} (deterministic runner, no agent)")
+        _say(
+            f"BUILD started {repo} version={version} pid={proc.pid} "
+            f"(deterministic runner, no agent){id_bit}"
+        )
 
         def _watch() -> None:
             rc = None
@@ -2515,7 +2538,11 @@ class Client:
                             f"BUILD blocker {b.get('action') or ''} #{b.get('number')} {b.get('url') or ''}".strip()
                         )
             except Exception:
-                lines = [f"BUILD fail {repo} version={version} runner rc={rc} (no result file; see {log_path.name})"]
+                # FR #6491: fallback fail announce still carries id= for chair release.
+                lines = [
+                    f"BUILD fail {repo} version={version} runner rc={rc} "
+                    f"(no result file; see {log_path.name}){id_bit}"
+                ]
             for ln in lines[:8]:
                 _say(ln)
             info(f"INFO build runner done repo={repo} version={version} rc={rc}")
@@ -2647,6 +2674,35 @@ class Client:
         threading.Thread(target=_watch, name="build-preflight", daemon=True).start()
         return True
 
+    def _maybe_release_chair_build_lock_on_result(self, src: str, body: str) -> bool:
+        """FR #6491: chair frees home build-locks.json when recipe machine reports terminal BUILD.
+
+        Matches by build id only. Returns True when the line is a terminal BUILD ok/fail
+        announce (consumed); False when it is not a result line.
+        """
+        if not getattr(self.args, "chair", False):
+            return False
+        result = bobiverse_build.parse_build_result(body)
+        if result is None:
+            return False
+        lock_path = Path(self.home) / "build-locks.json"
+        lock = bobiverse_build.BuildLock(lock_path, max_parallel=1)
+        released = bobiverse_build.apply_build_result_to_chair_lock(lock, result)
+        bid = str(result.get("id") or "")
+        repo = str(result.get("repo") or "")
+        kind = str(result.get("kind") or "")
+        if released:
+            info(
+                f"INFO FR #6491 build lock released repo={repo} id={bid} "
+                f"kind={kind} from={src or '-'}"
+            )
+        elif bid:
+            info(
+                f"INFO FR #6491 build lock keep repo={repo} id={bid} "
+                f"kind={kind} (no matching chair lock) from={src or '-'}"
+            )
+        return True
+
     def _maybe_start_installtest_runner(self, route_line: str, *, src_hint: str = "") -> bool:
         """FR #4026 WP3: accept INSTALLTEST v1 when local matches install_test.machine; enqueue only."""
         local = ""
@@ -2661,18 +2717,24 @@ class Client:
                 local = bobiverse_build.fold_build_machine(socket.gethostname())
             except Exception:
                 local = ""
-        recipe_machine = "ionos"
+        # FR #6487: same as BUILD v1 — log recipe load failures; do not invent ionos.
+        recipe_machine = ""
         try:
-            recipe = bobiverse_build.load_recipe(Path(self._install_root()))
+            recipe = bobiverse_build.load_recipe_from_candidates(
+                [Path(self._install_root()), Path(self._install_root()).parent],
+                repo="SimonBarnett/bobiverse",
+            )
             it = recipe.install_test or {}
-            recipe_machine = str(it.get("machine") or recipe.machine or "ionos")
-        except Exception:
-            try:
-                recipe = bobiverse_build.load_recipe(Path(self._install_root()).parent)
-                it = recipe.install_test or {}
-                recipe_machine = str(it.get("machine") or recipe.machine or "ionos")
-            except Exception:
-                recipe_machine = "ionos"
+            recipe_machine = str(it.get("machine") or recipe.machine or "").strip()
+        except Exception as exc:
+            info(
+                f"WARN INSTALLTEST v1 recipe load failed: {type(exc).__name__}: {exc}; "
+                "not falling back to ionos"
+            )
+            return False
+        if not recipe_machine:
+            info("WARN INSTALLTEST v1 recipe load: empty machine; not falling back to ionos")
+            return False
         qdir = self._build_queue_dir()
         ok = bobiverse_build.consume_installtest_v1(
             route_line, local, recipe_machine, queue_dir=qdir
@@ -4620,6 +4682,10 @@ class Client:
         if self._maybe_consume_build_v1_wire(src, body):
             return
         if self._maybe_consume_build_preflight_wire(src, body):
+            return
+        # FR #6491: chair listens for BUILD ok/fail on the fleet channel and frees
+        # home/build-locks.json when the announce id matches the held lock.
+        if self._maybe_release_chair_build_lock_on_result(src, body):
             return
         if self._maybe_execute_recycle_wire(src, body):
             return

@@ -177,6 +177,7 @@ def main(argv: list[str] | None = None) -> int:
 
     version = (args.version or job.get("version") or "").strip()
     ref = ((job.get("ref") if args.ref == "HEAD" else args.ref) or "HEAD").strip()
+    build_id = str(job.get("id") or "").strip()
     if not version:
         print("build: need --version or job.version", file=sys.stderr)
         return 2
@@ -189,7 +190,8 @@ def main(argv: list[str] | None = None) -> int:
     except Exception:
         pass
 
-    result: dict = {"repo": repo, "version": version, "ref": ref, "ok": False}
+    result: dict = {"repo": repo, "version": version, "ref": ref, "id": build_id, "ok": False}
+    id_bit = f" id={build_id}" if build_id else ""
     if not args.fake_filer and not args.dry_run:
         # #4188: fail at preflight, not 2h later at step:release.
         why = bb.gh_auth_preflight()
@@ -197,7 +199,8 @@ def main(argv: list[str] | None = None) -> int:
         result["gh_auth_source"] = gh_src.split(":", 1)[0]
         if why:
             result["errors"] = [why]
-            result["announce"] = [f"BUILD refused {repo} version={version}: {why}"]
+            # FR #6491: terminal refuse announce carries id= so the chair can free its lock.
+            result["announce"] = [f"BUILD fail {repo} version={version}: {why}{id_bit}"]
             print(json.dumps(result, indent=2, default=str))
             if args.result_file:
                 Path(args.result_file).write_text(json.dumps(result, indent=2, default=str), encoding="utf-8")
@@ -279,6 +282,7 @@ def main(argv: list[str] | None = None) -> int:
             work_dir=work, log_dir=log_dir, local_machine=local or recipe.machine,
             release_fn=release_fn, baseline_root=baseline_root,
             baseline_resolver=(lambda *_a: tag or "baseline"),
+            build_id=build_id,
         )
         t0 = time.time()
         report = runner.run(dry_run=bool(args.dry_run))
@@ -328,7 +332,9 @@ def main(argv: list[str] | None = None) -> int:
         # FR #4316: outer abort (e.g. LiveStateTouched escaping BuildRunner) must still
         # auto-file a release-blocker; suite-regression path alone left these untracked.
         result.setdefault("errors", []).append(f"{type(exc).__name__}: {exc}")
-        announce = f"BUILD fail {repo} version={version}: {type(exc).__name__}: {str(exc)[:200]}"
+        announce = (
+            f"BUILD fail {repo} version={version}: {type(exc).__name__}: {str(exc)[:200]}"
+        )
         if filer is not None:
             try:
                 filed = bb.file_runner_abort_blocker(
@@ -348,6 +354,9 @@ def main(argv: list[str] | None = None) -> int:
                 result.setdefault("errors", []).append(
                     f"blocker_file_failed: {type(file_exc).__name__}: {file_exc}"
                 )
+        # FR #6491: id= last so the chair release_if_id parser finds it.
+        if build_id and " id=" not in announce:
+            announce = f"{announce} id={build_id}"
         result["announce"] = [announce]
         rc = 1
     finally:

@@ -81,6 +81,28 @@ def load_recipe(repo_root: Path) -> BuildRecipe:
     return validate_recipe(data)
 
 
+def load_recipe_from_candidates(
+    candidates: Iterable[Path] | list[Path] | tuple[Path, ...],
+    *,
+    repo: str = "",
+    missing_kind: str = "build",
+) -> BuildRecipe:
+    """Load the first existing recipe under *candidates*.
+
+    FR #6487: when a ``build.yml`` exists, propagate the real ``RecipeError``
+    (missing PyYAML, validation, parse). The generic ``no .bobiverse/build.yml``
+    line is reserved for when no candidate file is present.
+    """
+    for cand in candidates:
+        root = Path(cand)
+        if not recipe_path(root).is_file():
+            continue
+        return load_recipe(root)
+    label = (repo or "").strip() or "repo"
+    kind = (missing_kind or "build").strip() or "build"
+    raise RecipeError(f"{kind}: {label} has no .bobiverse/build.yml; nothing started")
+
+
 def validate_recipe(data: dict) -> BuildRecipe:
     if not isinstance(data, dict):
         raise RecipeError("build: recipe root must be a mapping")
@@ -176,6 +198,53 @@ def classify_failure(
 
 def classify_step_failure(step: str) -> FailureClass:
     return FailureClass(f"step:{step}", "step_failure", True, False, False)
+
+
+def is_command_not_found(stdout: str, exit_code: int) -> bool:
+    """True when a suite failed because the shell could not start the command (FR #6490).
+
+    Windows cmd uses exit 9009 and ``is not recognized``; Unix shells say
+    ``command not found``. Real pytest failures must not match.
+    """
+    code = int(exit_code) if exit_code is not None else -1
+    text = stdout or ""
+    low = text.lower()
+    if code == 9009:
+        return True
+    if "is not recognized as an internal or external command" in low:
+        return True
+    if "is not recognized as a command" in low:
+        return True
+    if "command not found" in low:
+        return True
+    if "filenotfounderror" in low and (
+        "python" in low or "the system cannot find the file" in low
+    ):
+        return True
+    return False
+
+
+def suite_path_env_with_runner_python(env: dict | None = None) -> dict:
+    """Prepend ``BOBIVERSE_PYTHON``'s directory (and ``Scripts``) to PATH (FR #6490)."""
+    import os as _os
+    import sys as _sys
+
+    out = dict(env or {})
+    py = (out.get("BOBIVERSE_PYTHON") or _os.environ.get("BOBIVERSE_PYTHON") or "").strip()
+    if not py:
+        py = (_sys.executable or "").strip()
+    p = Path(py) if py else None
+    if p is not None and p.is_file():
+        dirs = [str(p.parent)]
+        scripts = p.parent / "Scripts"
+        if scripts.is_dir():
+            dirs.append(str(scripts))
+        cur = out.get("PATH")
+        if cur is None:
+            cur = _os.environ.get("PATH") or ""
+        out["PATH"] = _os.pathsep.join(dirs + ([cur] if cur else []))
+        out.setdefault("BOBIVERSE_PYTHON", str(p))
+    return out
 
 
 # FR #5121: pytest FAILED/ERROR nodeids — suite exit-code alone must not hide new failures.
@@ -320,6 +389,60 @@ class BuildLock:
             return None
         return str(ent.get("id") or ent)
 
+    def age_s(self, repo: str, *, now: float | None = None) -> float | None:
+        """Seconds since lock start, or None when unlocked / missing started."""
+        data = self._read()
+        ent = (data.get("builds") or {}).get(normalize_repo(repo))
+        if not ent:
+            return None
+        try:
+            started = float(ent.get("started") or 0)
+        except (TypeError, ValueError):
+            return None
+        if started <= 0:
+            return None
+        return max(0.0, float(now if now is not None else time.time()) - started)
+
+    def release_if_id(self, repo: str, build_id: str) -> bool:
+        """FR #6491: release only when the held id matches ``build_id``."""
+        repo = normalize_repo(repo)
+        want = str(build_id or "").strip()
+        if not want:
+            return False
+        data = self._read()
+        builds = data.setdefault("builds", {})
+        ent = builds.get(repo)
+        if not ent:
+            return False
+        held = str(ent.get("id") or ent)
+        if held != want:
+            return False
+        builds.pop(repo, None)
+        self._write(data)
+        return True
+
+    def release_if_stale(
+        self,
+        repo: str,
+        max_age_s: float,
+        *,
+        now: float | None = None,
+    ) -> tuple[bool, str]:
+        """FR #6491: release when age exceeds ``max_age_s``. Returns (released, old_id)."""
+        repo = normalize_repo(repo)
+        try:
+            limit = float(max_age_s)
+        except (TypeError, ValueError):
+            return False, ""
+        if limit <= 0:
+            return False, ""
+        age = self.age_s(repo, now=now)
+        if age is None or age <= limit:
+            return False, str(self.running_id(repo) or "")
+        old = str(self.running_id(repo) or "")
+        self.release(repo)
+        return True, old
+
 
 def normalize_repo(repo: str) -> str:
     return (repo or "").strip().strip("/").lower()
@@ -395,6 +518,7 @@ def decide_build(
     lock: BuildLock | None = None,
     ignored: Iterable[str] = (),
     new_build_id: Callable[[], str] | None = None,
+    stale_max_age_s: float | None = None,
 ) -> BuildDecision | None:
     parsed = parse_build(body)
     if parsed is None:
@@ -503,6 +627,9 @@ def decide_build(
 
     lines: list[str] = []
     ok_repos: list[str] = []
+    # FR #6491: one !build command shares one build id across its repos so the
+    # BUILD v1 route and terminal BUILD ok/fail announces can match the chair lock.
+    batch_id = (new_build_id or (lambda: f"b-{int(time.time())}"))()
     for repo in repos:
         if normalize_repo(repo) in ignored_set:
             lines.append(f"build: {repo} is ignored; nothing started")
@@ -515,12 +642,25 @@ def decide_build(
         if recipe is None:
             lines.append(f"build: {repo} has no .bobiverse/build.yml; nothing started")
             continue
-        bid = (new_build_id or (lambda: f"b-{int(time.time())}"))()
+        bid = batch_id
         if not dry and lock is not None:
             got, info = lock.try_acquire(repo, bid)
             if not got:
-                lines.append(f"build: {repo} refused; running id={info}")
-                continue
+                # FR #6491: stale chair lock backstop (recipe max run, or explicit override).
+                ttl = (
+                    float(stale_max_age_s)
+                    if stale_max_age_s is not None
+                    else recipe_max_run_s(recipe)
+                )
+                released, old = lock.release_if_stale(repo, ttl)
+                if released:
+                    lines.append(
+                        f"build: {repo} released stale lock id={old} age>{int(ttl)}s"
+                    )
+                    got, info = lock.try_acquire(repo, bid)
+                if not got:
+                    lines.append(f"build: {repo} refused; running id={info}")
+                    continue
         ok_repos.append(repo)
         if dry:
             lines.append(
@@ -541,7 +681,11 @@ def decide_build(
         lines.append("build: nothing started")
     route = ""
     if ok_repos and not dry:
-        route = f"BUILD v1 repos={','.join(ok_repos)} version={version} ref={ref}"
+        # FR #6491: put id= on the wire so the recipe machine and chair share it.
+        route = (
+            f"BUILD v1 repos={','.join(ok_repos)} version={version} "
+            f"ref={ref} id={batch_id}"
+        )
     return BuildDecision(
         bool(ok_repos) or dry and bool(lines),
         "dry_run" if dry else ("ok" if ok_repos else "refused"),
@@ -576,6 +720,19 @@ BUILD_V1_RE = re.compile(
 BUILDPREFLIGHT_V1_RE = re.compile(
     r"^BUILDPREFLIGHT\s+v1\s+repo=(?P<repo>\S+)\s*$",
     re.IGNORECASE,
+)
+
+# FR #6491: terminal result announces from the recipe machine (ok / fail / refuse shapes).
+BUILD_RESULT_RE = re.compile(
+    r"^BUILD\s+(?P<kind>ok|fail)\s+(?P<repo>\S+)"
+    r"(?P<rest>.*?)"
+    r"(?:\s+id=(?P<id>\S+))?\s*$",
+    re.IGNORECASE,
+)
+
+# Backstop when recipe max-run cannot be computed (env overrideable).
+DEFAULT_BUILD_LOCK_STALE_S = float(
+    os.environ.get("BOBIVERSE_BUILD_LOCK_STALE_S") or (6 * 3600)
 )
 
 INSTALLTEST_V1_RE = re.compile(
@@ -874,6 +1031,74 @@ def run_build_preflight(
         lines.append(f"build preflight: {it.name}={status}" + (f" {detail}" if detail else ""))
     all_ok = all(i.ok for i in items)
     return PreflightReport(ok=all_ok, exit_code=0 if all_ok else 1, items=items, lines=lines)
+
+def parse_build_result(text: str) -> dict | None:
+    """FR #6491: parse ``BUILD ok|fail <repo> ... [id=...]`` terminal announce.
+
+    Returns dict with ``kind`` (ok/fail), ``repo``, ``id`` (may be empty), ``raw``;
+    None when the line is not a terminal BUILD result (e.g. BUILD v1 route).
+    """
+    raw = (text or "").strip()
+    if raw.startswith(":"):
+        raw = raw[1:].strip()
+    if not raw.upper().startswith("BUILD "):
+        return None
+    # Route / started / release / blocker chatter is not a terminal result.
+    head = raw.split(None, 2)
+    if len(head) < 3:
+        return None
+    kind = head[1].lower()
+    if kind not in ("ok", "fail"):
+        return None
+    m = BUILD_RESULT_RE.match(raw)
+    if not m:
+        return None
+    repo = (m.group("repo") or "").strip()
+    if not repo or repo.lower().startswith("v1"):
+        return None
+    # Trailing id= may sit inside rest when optional group missed (colon shapes).
+    rid = (m.group("id") or "").strip()
+    if not rid:
+        im = re.search(r"(?:^|\s)id=(\S+)\s*$", raw, re.IGNORECASE)
+        if im:
+            rid = im.group(1).strip()
+    return {
+        "kind": kind,
+        "repo": repo,
+        "id": rid,
+        "raw": raw,
+    }
+
+
+def apply_build_result_to_chair_lock(lock: BuildLock, result: dict | None) -> bool:
+    """FR #6491: release chair lock when result id matches the held id."""
+    if not result or lock is None:
+        return False
+    repo = str(result.get("repo") or "").strip()
+    bid = str(result.get("id") or "").strip()
+    if not repo or not bid:
+        return False
+    return lock.release_if_id(repo, bid)
+
+
+def recipe_max_run_s(recipe: BuildRecipe | None, *, cap: float | None = None) -> float:
+    """FR #6491: stale-lock TTL = suite timeouts (ref+baseline) + pack/release budget.
+
+    When ``recipe`` is missing, returns ``cap`` or ``DEFAULT_BUILD_LOCK_STALE_S``.
+    """
+    limit = float(cap) if cap is not None else float(DEFAULT_BUILD_LOCK_STALE_S)
+    if recipe is None:
+        return limit
+    suite_s = 0.0
+    for s in recipe.suites or []:
+        try:
+            suite_s += float(getattr(s, "timeout", None) or 3600) * 2.0  # ref + baseline
+        except (TypeError, ValueError):
+            suite_s += 7200.0
+    pack_s = 1800.0 if recipe.pack else 0.0
+    release_s = 1800.0 if (recipe.release or {}).get("target") else 0.0
+    computed = suite_s + pack_s + release_s + 600.0
+    return max(computed, 1.0)
 
 
 def fold_build_machine(mid: str) -> str:
@@ -1176,11 +1401,14 @@ def run_command(
     sp = runner if runner is not None else _sp
     cwd_s = str(cwd) if cwd is not None else None
     env_map = None
-    if env:
-        import os as _os
+    import os as _os
 
-        env_map = dict(_os.environ)
+    # FR #6490: always start from process env and put BOBIVERSE_PYTHON on PATH so
+    # recipe ``python ...`` matches the runner interpreter under SYSTEM / NSSM.
+    env_map = dict(_os.environ)
+    if env:
         env_map.update({str(k): str(v) for k, v in env.items()})
+    env_map = suite_path_env_with_runner_python(env_map)
     t0 = time.time()
     timed_out = False
     exit_code = -1
@@ -1258,6 +1486,7 @@ class BuildRunner:
         release_fn: Callable | None = None,
         baseline_resolver: Callable | None = None,
         baseline_root: Path | str | None = None,
+        build_id: str = "",
     ) -> None:
         self.repo_root = Path(repo_root)
         # Baseline suites run in their own checkout of the baseline tag; without one
@@ -1275,6 +1504,11 @@ class BuildRunner:
         self.pack_fn = pack_fn
         self.release_fn = release_fn
         self.baseline_resolver = baseline_resolver
+        self.build_id = str(build_id or "").strip()
+
+    def _id_suffix(self) -> str:
+        """FR #6491: append `` id=<build_id>`` to terminal announces when set."""
+        return f" id={self.build_id}" if self.build_id else ""
 
     def _ensure_dirs(self) -> None:
         self.work_dir.mkdir(parents=True, exist_ok=True)
@@ -1329,6 +1563,7 @@ class BuildRunner:
             )
             report.announce_lines.append(
                 f"BUILD fail {self.repo} version={self.version}: wrong machine"
+                f"{self._id_suffix()}"
             )
             return report
         if dry_run:
@@ -1378,6 +1613,21 @@ class BuildRunner:
                     report.blockers_filed.append(filed)
                     blocking = True
                     continue
+
+                # FR #6490: command-not-found is an environment failure — fail the
+                # build clearly and do not classify as regression or file blockers.
+                if is_command_not_found(ref_res.stdout, ref_res.exit_code):
+                    msg = (
+                        f"environment failure: suite {suite.name} command could not start "
+                        f"(exit {ref_res.exit_code}); missing interpreter/tool on PATH "
+                        f"(set BOBIVERSE_PYTHON for the runner service)"
+                    )
+                    report.errors.append(msg)
+                    report.announce_lines.append(
+                        f"BUILD fail {self.repo} version={self.version}: {msg}"
+                    )
+                    blocking = True
+                    break
 
                 ref_failed = int(ref_res.exit_code) != 0
 
@@ -1719,6 +1969,7 @@ class BuildRunner:
                 f"BUILD ok {self.repo} version={self.version} ref={self.ref} "
                 f"tag={tag_s} prerelease "
                 f"never_latest={bool((self.recipe.release or {}).get('never_latest'))}"
+                f"{self._id_suffix()}"
             )
         else:
             n = len(report.blockers_filed)
@@ -1730,7 +1981,8 @@ class BuildRunner:
             url_bit = (" blocker=" + " ".join(urls)) if urls else ""
             report.announce_lines.append(
                 f"BUILD fail {self.repo} version={self.version} ref={self.ref} "
-                f"blockers={n} pack={report.pack_ok} release={report.release_ok}{url_bit}"
+                f"blockers={n} pack={report.pack_ok} release={report.release_ok}"
+                f"{url_bit}{self._id_suffix()}"
             )
         return report
 
@@ -1754,6 +2006,7 @@ def enqueue_build_job(
         "repos": list(route.get("repos") or []),
         "version": ver,
         "ref": route.get("ref") or "HEAD",
+        "id": str(route.get("id") or "").strip(),
         "local_machine": local_machine,
         "recipe_machine": recipe_machine,
         "queued_at": ts,
@@ -2281,15 +2534,29 @@ class InstallTestRunner:
 # ------------------------------------------------------------------ live helpers (hotpatch-build)
 
 
-def fetch_remote_recipe(repo: str, *, gh_runner: Callable | None = None) -> BuildRecipe | None:
-    """Load ``.bobiverse/build.yml`` from GitHub for ``repo``; None when the repo has none."""
+def fetch_remote_recipe(
+    repo: str,
+    *,
+    ref: str | None = None,
+    gh_runner: Callable | None = None,
+) -> BuildRecipe | None:
+    """Load ``.bobiverse/build.yml`` from GitHub for ``repo``; None when the repo has none.
+
+    Optional *ref* is passed as ``?ref=`` (FR #6484). Empty / ``HEAD`` maps to ``main``.
+    """
     import subprocess as _sp
     import tempfile as _tf
 
     runner = gh_runner or _sp.run
+    api = f"repos/{normalize_repo(repo)}/contents/.bobiverse/build.yml"
+    ref_s = (ref or "").strip()
+    if ref_s and ref_s.upper() != "HEAD":
+        api = f"{api}?ref={ref_s}"
+    elif ref_s.upper() == "HEAD":
+        api = f"{api}?ref=main"
     cp = runner(
         [
-            "gh", "api", f"repos/{normalize_repo(repo)}/contents/.bobiverse/build.yml",
+            "gh", "api", api,
             "-H", "Accept: application/vnd.github.raw",
         ],
         capture_output=True,
@@ -2308,6 +2575,36 @@ def fetch_remote_recipe(repo: str, *, gh_runner: Callable | None = None) -> Buil
         p.mkdir()
         (p / "build.yml").write_text(out, encoding="utf-8")
         return load_recipe(Path(td))
+
+
+def load_bobiverse_recipe_local_or_remote(
+    candidates: list[Path] | tuple[Path, ...],
+    repo: str,
+    *,
+    ref: str | None = None,
+    gh_runner: Callable | None = None,
+    ensure_token: Callable[[], None] | None = None,
+) -> BuildRecipe:
+    """Local ``.bobiverse/build.yml`` first; else GitHub fetch (FR #6484 packaged chair).
+
+    FR #6487: a present local file that fails to parse/validate is not treated as
+    missing — the real ``RecipeError`` propagates (no silent remote fallback).
+    Raises ``RecipeError`` with the familiar ``nothing started`` line when both miss.
+    """
+    for cand in candidates:
+        root = Path(cand)
+        if not recipe_path(root).is_file():
+            continue
+        return load_recipe(root)
+    if ensure_token is not None:
+        try:
+            ensure_token()
+        except Exception:
+            pass
+    recipe = fetch_remote_recipe(repo, ref=ref, gh_runner=gh_runner)
+    if recipe is None:
+        raise RecipeError(f"build: {repo} has no .bobiverse/build.yml; nothing started")
+    return recipe
 
 
 def make_github_prerelease_fn(

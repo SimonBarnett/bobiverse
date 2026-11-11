@@ -51,18 +51,21 @@ Deterministic, injectable, **zero AI tokens**. Module: `common/scripts/bobiverse
 
 ### Flow
 
-1. Chair `!build` decides and announces `BUILD v1 repos=... version=... ref=...` on `#bobiverse`.
+1. Chair `!build` decides and announces `BUILD v1 repos=... version=... ref=... id=b-...` on `#bobiverse` (holds `<chair home>/build-locks.json` until terminal result or cancel). For `SimonBarnett/bobiverse`, the chair loads a local `.bobiverse/build.yml` when present; on a packaged install without that folder it falls back to the GitHub recipe at the requested ref (or `main`) (FR #6484). Other repos always use the remote recipe.
 2. Recipe machine (bobiverse: `flamingo`; digest id is `flamingo`, no DIGEST_ID_FOLD alias required) consumes the wire via `consume_build_v1` and enqueues `home/build-queue/*.json` (spawn/pack outside the chair process).
 3. `BuildRunner.run()`:
    - Ensures `work_dir` / `log_dir` and recipe `cache_dirs` under `work_dir/cache` (override download/cache root with env `BOBIVERSE_DOWNLOAD_CACHE`; override BUILD work root with env `BOBIVERSE_BUILD_WORK_DIR` so `run_bobiverse_build.py` uses `$BOBIVERSE_BUILD_WORK_DIR/<version>` when `--work-dir` is absent --- FR #6479).
    - Resolves baseline (injectable; default stub tag `baseline`).
    - Runs each suite at ref and at baseline; one solo rerun on ref failure; classifies.
+   - FR #6490: suite command-not-found (Windows 9009 / `is not recognized`) is an **environment failure** — BUILD fails with a clear error and does **not** file release-blocker comments. The runner prepends `BOBIVERSE_PYTHON`'s folder (and `Scripts`) to PATH so recipe `python` matches the service interpreter.
    - Hard timeouts (FR #3965 class) via `run_command` --- kill + `timed_out` => `step_failure`.
    - Files one intake issue per `new_regression` / `step_failure` with labels `feature-request` + `release-blocker` (`file_blocker_or_dedupe`; comment if open duplicate).
    - **Pack and release only when there are no new_regression/step_failure blockers** (pre_existing / flaky do not block).
    - Pack renders `{{version}}` / `{{out_dir}}` / `{{ref}}`; verifies artifact names; optional assert cmd.
    - Release target `github-prerelease` with recipe `never_latest: true` => prerelease, never Latest.
    - Zips `log_dir` to `build-logs-{version}.zip`; announce summary lines for `#bobiverse`.
+
+FR #6491: terminal `BUILD ok|fail ... id=` frees the chair lock by id; `!build cancel` / `!build status` unchanged; stale locks (older than recipe max run) clear on the next `!build`.
 
 ### Test doubles
 

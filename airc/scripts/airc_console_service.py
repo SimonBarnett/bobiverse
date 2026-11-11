@@ -1830,6 +1830,9 @@ class AircConsoleService:
             import airc_intake_event as _iev
 
             _iev.note_previous_abnormal_exit(self.home)
+            # FR #6481: SIGINT/SIGBREAK/atexit stamp so planned NSSM stops are not
+            # reported as abnormal-exit on the next start (redqueen keepalive-only class).
+            _iev.install_stop_stamp_handlers(self.home)
         except Exception:
             pass
         info(f"INFO airc-console machine={self.machine} channel={self.channel} nick={self.nick}")
@@ -1838,6 +1841,14 @@ class AircConsoleService:
                 "ERROR no-server-pass: set ConsoleHome/ergo.password or AGENTIC_IRC_PASSWORD. "
                 "irc.ntsa.uk requires PASS; without it TLS ends EOF and the console never registers."
             )
+            # FR #6481: note_previous already wrote stamp=running; orderly refuse must not
+            # look like a crash on the next start.
+            try:
+                import airc_intake_event as _iev
+
+                _iev.mark_clean_exit(self.home)
+            except Exception:
+                pass
             return 2
         backoff = RECONNECT_MIN_S
         while not self._stop.is_set():
@@ -2234,7 +2245,18 @@ def main(argv: list[str] | None = None) -> int:
         return AircConsoleService(args).run()
     except KeyboardInterrupt:
         # FR #4789: belt-and-braces if interrupt escapes run() (e.g. during connect).
+        # FR #6481: do not leave airc-run.stamp=running after an orderly interrupt.
         info("INFO main interrupted -> exit 0")
+        try:
+            import airc_intake_event as _iev
+
+            home = getattr(args, "home", None) or getattr(args, "console_home", None)
+            if home:
+                _iev.mark_clean_exit(home)
+            else:
+                _iev._atexit_mark_clean_if_running()
+        except Exception:
+            pass
         return 0
 
 
