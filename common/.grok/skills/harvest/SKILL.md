@@ -371,6 +371,7 @@ routes to bobiverse via the split rule.
 - When a later FR adds GET /pulls/N/files beside mergeability GET /pulls/N, detail-hit pins must exclude /files URLs so FR #4683 skip-when-keys-present stays precise.
 - When isolation/pack tooling must name AGENTIC_IRC_PASSWORD or legacy .agentic-irc-* paths, extend the self-contained allow-list with a comment; keep import and default-home pins strict.
 - Clear-worktree pin tests: accept ErrorRecord.ToString()+else { "$_" } and Remove-BobiversePathForce after $gitExit; enlarge remove block to ~2200; prefer Closes #N near top of PR body for closingIssuesReferences
+- idle-push undelivered say: clear_seat_offer + clear_seat_hold before stamping last_push_at --- offered_to left sticky makes bored_gate busy and clear_idle_after_empty on the next tick
 
 ## Harvest digest (lessons audit 2026-10-06)
 
