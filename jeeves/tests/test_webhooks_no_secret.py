@@ -1,4 +1,4 @@
-﻿"""v0.1.16: webhooks need NO password/secret. Abuse protection = validation + size + rate + the roster
+"""v0.1.16: webhooks need NO password/secret. Abuse protection = validation + size + rate + the roster
 that Jeeves publishes (registered-machines.json). The receiver never talks to ChanServ/IRC."""
 from __future__ import annotations
 
@@ -219,10 +219,15 @@ def test_bob_write_birc_status_posts_to_live_receiver_without_any_secret(home, t
                        "spendLimitUsage": {"individualUsed": 20011, "individualLimit": 20000}},
             "sand": {"usagePercent": 0.06, "nextResetTimestampUtc": "2026-10-07T17:23:58.025Z"}}))
         script = tmp_path / "run.ps1"
+        # FR #6141 / #6573: tray Write-BobIrcStatus no longer POSTs fuel by default
+        # (ear owns publish_local_peer_fuel). Opt in with -PostDigestWebhook so this
+        # live-receiver no-secret probe still exercises the webhook path.
         script.write_text(
             "$ErrorActionPreference='Stop'\n"
             f"Import-Module '{TRAY / 'src' / 'BobBridge.psd1'}' -Force -DisableNameChecking\n"
-            "& (Get-Module BobBridge) { Write-BobIrcStatus | Out-Null }\n", encoding="utf-8")
+            "& (Get-Module BobBridge) { Write-BobIrcStatus -PostDigestWebhook | Out-Null }\n",
+            encoding="utf-8",
+        )
         env = dict(os.environ, BOB_MACHINE_ID="MarchHare", BOB_BRIDGE_HOME=str(bridge), BOB_IRC_HOME=str(irc),
                    BOB_IRC_CONFIG=str(cfg), BOB_CURSOR_AGENT_FIXTURE=str(fx), BOB_CURSOR_USD_GBP_RATE="0.7538",
                    USERPROFILE=str(prof))  # an empty profile: no .grok\bob\report.secret exists
