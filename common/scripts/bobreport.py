@@ -877,19 +877,50 @@ def digest_path(home: Path) -> Path:
     return Path(home) / "digest.json"
 
 
+def _env_truthy(name: str) -> bool:
+    return (os.environ.get(name) or "").strip().lower() in ("1", "true", "yes", "on")
+
+
+def _is_chair_home(path: Path) -> bool:
+    """True for Jeeves ``--home`` / ``BOB_HOME`` (``.jeeves``), not a digest root."""
+    p = Path(path)
+    if p.name.lower() == ".jeeves":
+        return True
+    bob_home = (os.environ.get("BOB_HOME") or "").strip()
+    if not bob_home:
+        return False
+    try:
+        return p.resolve() == Path(bob_home).resolve()
+    except OSError:
+        return False
+
+
 def fleet_digest_home(home: Path) -> Path:
     """Digest root (digest.json, chair-outbox.txt).
 
     BOB_DIGEST_HOME wins so Jeeves (--home ~/.jeeves) drains
     chair-outbox.txt on the bobiverse digest home. Do not point --home there.
+
+    FR #6523: under ``BOBIVERSE_BUILD_SUITE`` (!build ``isolated_suite_env``), an
+    explicit pytest ``tmp_path`` home must not be redirected to the shared
+    isolation ``BOB_DIGEST_HOME`` (that dir is session-wide and gets polluted).
+    Chair homes (``.jeeves`` / ``BOB_HOME``) still redirect — FR #69.
     """
-    env = (os.environ.get("BOB_DIGEST_HOME") or "").strip()
-    if env:
-        return Path(env)
     p = Path(home)
     if p.name.isdigit() and p.parent.parent.name == "workers":
-        return p.parent.parent.parent
-    return p
+        p = p.parent.parent.parent
+    env = (os.environ.get("BOB_DIGEST_HOME") or "").strip()
+    if not env:
+        return p
+    env_p = Path(env)
+    try:
+        if p.resolve() == env_p.resolve():
+            return env_p
+    except OSError:
+        pass
+    if _env_truthy("BOBIVERSE_BUILD_SUITE") and not _is_chair_home(p):
+        return p
+    return env_p
 
 
 def _empty_machine(machine_id: str) -> dict:

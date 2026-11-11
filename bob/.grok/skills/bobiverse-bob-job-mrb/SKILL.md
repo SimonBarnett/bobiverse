@@ -250,6 +250,7 @@ Checks:
 
 - **FIX with stacked fix PR already open (MRB #6336 / flamingo harvest):** when FIX is offered for an MRB-FAIL tip that already has a stacked fix PR targeting the tip branch, merge that fix PR into the tip and DONE FIX with the assigned PR URL so chair requeues MRB. Do not park this playbook under `harvest/SKILL.md` (move/fold here).
 
+- **Hostile skill-pin refresh after product FR rewrite (class of FR #6522 / mrb3807 / FR #5190):** when a later FR rewrites a product skill and drops an older FR citation (example: FR #5190 dropped FR #3774 from bobiverse-airc-troubleshooting), update the hostile skill pins to the current behaviour sentences and the new FR instead of restoring the obsolete citation. Do not park this playbook under `harvest/SKILL.md` (move/fold here).
 - **Combined startup contract wiring (class of #6291/#6296):** when a tip adds `assert_ear_dispatch_contracts` (or any combined startup contract), MRB must pin that `main()` calls the combined helper --- tip tests that call the helper directly do not prove startup wiring. Do not park this playbook under `harvest/SKILL.md` (move/fold here).
 
 
