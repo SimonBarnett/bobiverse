@@ -5,17 +5,14 @@ worker Shared ships bob-setup-opencode, and pack stage lists OpenCode paths.
 """
 from __future__ import annotations
 
-import json
-import os
 import shutil
-import subprocess
 import sys
 from pathlib import Path
 
 import pytest
 
 from repo_layout import ROOT
-from test_fr6159_oc_pack_layout import _opencode_fuel_fixture_env
+from test_fr6159_oc_pack_layout import _opencode_fuel_fixture_env, _run_opencode_fuel_ps
 
 OPENCODE_FUEL_PS1 = ROOT / "bob" / "tray" / "tools" / "Get-BobOpencodeFuel.ps1"
 OPENCODE_FUEL_PY = ROOT / "common" / "scripts" / "opencode_fuel.py"
@@ -65,26 +62,11 @@ def test_mrb6185_empty_common_scripts_dir_does_not_block_flat_helper(tmp_path: P
     (install / "common" / "scripts").mkdir(parents=True)  # empty dir trap
     shutil.copy(OPENCODE_FUEL_PS1, tools / "Get-BobOpencodeFuel.ps1")
     shutil.copy(OPENCODE_FUEL_PY, scripts / "opencode_fuel.py")
-    # FR #6676: same USAGE_URL scrub as FR #6670 / test_fr6159 (else go stays null).
+    # FR #6676 / FR #6701: shared USAGE_URL scrub + interpreter override.
     env = _opencode_fuel_fixture_env()
-    py_dir = str(Path(sys.executable).resolve().parent)
-    env["PATH"] = py_dir + os.pathsep + env.get("PATH", "")
-    result = subprocess.run(
-        [
-            "powershell.exe",
-            "-NoProfile",
-            "-ExecutionPolicy",
-            "Bypass",
-            "-File",
-            str(tools / "Get-BobOpencodeFuel.ps1"),
-        ],
-        capture_output=True,
-        text=True,
-        env=env,
-        cwd=str(elsewhere),
-        timeout=60,
+    parsed = _run_opencode_fuel_ps(
+        tools / "Get-BobOpencodeFuel.ps1", env=env, cwd=elsewhere
     )
-    assert result.returncode == 0, result.stderr + result.stdout
-    parsed = json.loads(result.stdout.strip().splitlines()[-1])
+    assert parsed.get("read_state") == "ok"
     assert parsed["free"] == 100
     assert parsed["go"] == 50

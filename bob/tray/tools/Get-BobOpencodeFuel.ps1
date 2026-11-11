@@ -125,7 +125,17 @@ try {
         } else {
             $out.read_state = 'parser_missing'
         }
-        $py = (Get-Command python.exe -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source)
+        # FR #6701: an explicit interpreter override avoids PATH ambiguity under
+        # LocalSystem / WindowsApps aliases. Tests set BOB_OPENCODE_PYTHON to the
+        # interpreter already running pytest. Fall back to the PATH lookup.
+        $py = $null
+        $pyOverride = ([string]$env:BOB_OPENCODE_PYTHON).Trim()
+        if ($pyOverride -and (Test-Path -LiteralPath $pyOverride -PathType Leaf)) {
+            $py = $pyOverride
+        }
+        if (-not $py) {
+            $py = (Get-Command python.exe -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source)
+        }
         if (-not $py) {
             $py = (Get-Command python -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source)
         }
@@ -251,7 +261,9 @@ print(json.dumps({'provider_read': read.get('kind'), 'windows': windows}))
                 $out.provider = 'usage-limits'
             }
         } elseif ($out.read_state -eq 'unavailable') {
-            $out.read_state = 'parser_missing'
+            # Interpreter was found (PATH or BOB_OPENCODE_PYTHON) but the stats
+            # child printed nothing. Name the stage instead of a generic miss.
+            $out.read_state = 'stats_failed'
         }
     }
 } catch { }
