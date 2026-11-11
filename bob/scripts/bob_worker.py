@@ -3774,6 +3774,14 @@ class CursorTurnWatcher:
             for d in self.root.glob("*/*"):
                 if not d.is_dir():
                     continue
+                # FR #6713: skip project-tree dirs accidentally nested under chats_root
+                # (tests used tmp/projects beside tmp/ws). Prefer real chat stores.
+                try:
+                    looks_chat = (d / "store.db").is_file() or (d / "meta.json").is_file()
+                except OSError:
+                    looks_chat = False
+                if not looks_chat:
+                    continue
                 try:
                     st = d.stat()
                 except OSError:
@@ -3851,11 +3859,23 @@ class CursorTurnWatcher:
         return None
 
     def _transcript_blocks_end(self, chat_dir: Path) -> bool:
-        """True when a readable transcript still has a tool call or no final assistant text."""
+        """True when a readable transcript still has a tool call or no final assistant text.
+
+        FR #6713: when the transcript file exists but yields no parseable records
+        (``cursor_transcript_still_open`` → ``None``), keep the turn open. Windows
+        full-suite / AV races can briefly read an empty flush; quiet-ending then
+        falsely fires ``turn_ended`` during tool gaps and user-reminder lines.
+        Missing transcript still uses the legacy quiet-gap end (``False`` here).
+        """
         tp = self._transcript_file(chat_dir)
         if tp is None:
             return False
-        return cursor_transcript_still_open(tp) is True
+        open_state = cursor_transcript_still_open(tp)
+        if open_state is True:
+            return True
+        if open_state is None:
+            return True
+        return False
 
     def _transcript_turn_ended_count(self, chat_dir: Path) -> int:
         """FR #4753: count of ``type=turn_ended`` records in the transcript tail."""
