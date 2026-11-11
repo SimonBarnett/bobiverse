@@ -166,3 +166,60 @@ def mark_clean_exit(home) -> None:
 
 def mark_restarting(home) -> None:
     write_stamp(home, "restarting")
+
+
+# FR #6481: planned stops (NSSM CTRL / SIGINT / SIGBREAK / atexit) must not leave
+# stamp=running. Hard kill / power loss still omit handlers -> abnormal-exit.
+_stop_stamp_home = None
+_stop_stamp_installed = False
+
+
+def _stop_stamp_on_signal(_signum=None, _frame=None) -> None:
+    home = _stop_stamp_home
+    if home is None:
+        return
+    try:
+        mark_restarting(home)
+    except Exception:
+        return
+
+
+def _atexit_mark_clean_if_running() -> None:
+    home = _stop_stamp_home
+    if home is None:
+        return
+    try:
+        if read_stamp(home) == "running":
+            mark_clean_exit(home)
+    except Exception:
+        return
+
+
+def install_stop_stamp_handlers(home) -> bool:
+    """Arm SIGINT/SIGBREAK + atexit so orderly stops do not file abnormal-exit.
+
+    Returns True when handlers were installed (or already installed) for *home*.
+    Never raises.
+    """
+    global _stop_stamp_home, _stop_stamp_installed
+    try:
+        _stop_stamp_home = home
+        if _stop_stamp_installed:
+            return True
+        import atexit
+        import signal
+
+        try:
+            signal.signal(signal.SIGINT, _stop_stamp_on_signal)
+        except Exception:
+            pass
+        if hasattr(signal, "SIGBREAK"):
+            try:
+                signal.signal(signal.SIGBREAK, _stop_stamp_on_signal)
+            except Exception:
+                pass
+        atexit.register(_atexit_mark_clean_if_running)
+        _stop_stamp_installed = True
+        return True
+    except Exception:
+        return False
