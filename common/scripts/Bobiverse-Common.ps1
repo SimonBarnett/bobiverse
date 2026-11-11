@@ -2894,6 +2894,29 @@ function Install-BobiversePythonDeps {
         & $Python -m pip install --upgrade $pkg
         if ($LASTEXITCODE -ne 0) { throw "pip install $pkg failed ($LASTEXITCODE)" }
     }
+    # FR #6553 / #6487: freeze host needs PyYAML so Build-Jeeves --collect-all yaml embeds it.
+    $here = $PSScriptRoot
+    if (-not $here) { $here = Split-Path -Parent $MyInvocation.MyCommand.Path }
+    $freeze = Join-Path $here 'requirements-freeze.txt'
+    if (-not (Test-Path -LiteralPath $freeze)) {
+        $freeze = Join-Path (Split-Path -Parent $here) 'requirements-freeze.txt'
+    }
+    if (-not (Test-Path -LiteralPath $freeze)) {
+        $repo = Split-Path -Parent (Split-Path -Parent $here)
+        $freeze = Join-Path $repo 'common\requirements-freeze.txt'
+    }
+    if (Test-Path -LiteralPath $freeze) {
+        Write-Host "INFO python-dep-freeze $freeze (PyYAML for jeeves/ear freeze)"
+        & $Python -m pip install -r $freeze
+        if ($LASTEXITCODE -ne 0) { throw "pip install -r requirements-freeze.txt failed ($LASTEXITCODE)" }
+        & $Python -c "import yaml" 2>$null
+        if ($LASTEXITCODE -ne 0) { throw 'FR #6553: PyYAML missing after requirements-freeze install' }
+        Write-Host 'INFO python-dep-present PyYAML'
+    } else {
+        Write-Host 'WARN FR #6553: requirements-freeze.txt missing; attempting pip install PyYAML'
+        & $Python -m pip install --upgrade 'PyYAML>=6.0'
+        if ($LASTEXITCODE -ne 0) { throw "pip install PyYAML failed ($LASTEXITCODE)" }
+    }
 }
 
 function Get-BobiverseHardlinkCount {

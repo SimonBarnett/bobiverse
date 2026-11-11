@@ -1,3 +1,3 @@
-# Host packages required when freezing jeeves.exe / bob-ear.exe (FR #6487).
-# Build-Jeeves.ps1 / Build-BobEar.ps1 --hidden-import yaml + --collect-all yaml.
+# Host packages required when freezing jeeves.exe / bob-ear.exe (FR #6487 / #6553).
+# Install-BobiversePythonDeps pip -r this file; Build-*.ps1 --hidden-import yaml + --collect-all yaml.
 PyYAML>=6.0

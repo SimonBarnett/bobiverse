@@ -39,6 +39,12 @@ $pyiOk = ($LASTEXITCODE -eq 0)
 $ErrorActionPreference = $prevEap
 if (-not $pyiOk) { throw "PyInstaller missing for $Python (pip install pyinstaller)" }
 
+# FR #6553: fail early when PyYAML is absent --- --collect-all yaml cannot embed what is not installed.
+& $Python -c "import yaml" 2>$null
+if ($LASTEXITCODE -ne 0) {
+    throw "FR #6487/#6553: PyYAML required on freeze host (pip install -r common/requirements-freeze.txt or Install-BobiversePythonDeps)"
+}
+
 $work = Join-Path $OutDir 'ear-build'
 if (Test-Path -LiteralPath $work) { Remove-Item -LiteralPath $work -Recurse -Force }
 New-Item -ItemType Directory -Force -Path $work | Out-Null
