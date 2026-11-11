@@ -197,7 +197,7 @@ Authorized **UPDATE-class** verb. Isolated worker imports in-service `airc_netwo
 ```text
 PRIVMSG {mid}_console :id=c25bd00e DCCLISTEN id=c25bd00e host=<ip> port=<n> token=<hex> tls=1
 PRIVMSG {mid}_console :id=c25bd00e LEGION walrus
-PRIVMSG {mid}_console :id=c25bd00e LEGION 10.0.0.8 -WhatIf
+PRIVMSG {mid}_console :id=c25bd00e LEGION 127.0.0.1 -WhatIf
 PRIVMSG {mid}_console :id=c25bd00e LEGION flamingo -Profile fleet
 ```
 
