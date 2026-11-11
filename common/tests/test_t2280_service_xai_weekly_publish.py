@@ -263,14 +263,19 @@ def test_system_profile_weekly_log_is_not_read(monkeypatch, tmp_path: Path):
 
 
 def test_peer_heading_names_provider_window_and_direction():
+    """FR #6621: peer meter publishes window; hover prefers $meter.window; Watch passes $m.window."""
     hover = Path(__file__).resolve().parents[2] / "bob" / "tray" / "src" / "Public" / "Get-BobTrayHover.ps1"
     text = hover.read_text(encoding="utf-8")
     assert "function Format-BobPeerPoolHeading" in text
     assert "cursor-models', 'grok-build', 'copilot', 'grok-bot'" not in text
     assert "$meter.window" in text
-    assert "fetched_at" in text[text.index("Measurement clock") : text.index("Measurement clock") + 800]
+    # FR #6289 / #6621: age by measurement fetched_at (comment moved off "Measurement clock").
+    assert "measurement fetched_at" in text
+    assert "fetched_at" in text
     watch = Path(__file__).resolve().parents[2] / "bob" / "tray" / "tools" / "Watch-BobTray.ps1"
-    assert "Format-BobPeerPoolHeading" in watch.read_text(encoding="utf-8")
+    watch_text = watch.read_text(encoding="utf-8")
+    assert "Format-BobPeerPoolHeading" in watch_text
+    assert "$m.window" in watch_text
 
 
 def test_local_system_cache_home_is_install_root_home():

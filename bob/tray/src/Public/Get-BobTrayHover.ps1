@@ -3713,6 +3713,10 @@ function Get-BobTrayHover {
         $prov = 'xai'
         $win = 'weekly'
         $dir = 'remaining'
+        # FR #6621: prefer published meter window/provider/direction (Watch-BobTray parity).
+        try { if ($meter -and $meter.provider) { $prov = [string]$meter.provider } } catch { }
+        try { if ($meter -and $meter.window) { $win = [string]$meter.window } } catch { }
+        try { if ($meter -and $meter.direction) { $dir = [string]$meter.direction } } catch { }
         if ($xaiMeter -and $null -ne $xaiMeter.used_pct -and [string]$xaiMeter.used_pct -ne '') {
             $usedP = $xaiMeter.used_pct
         }
