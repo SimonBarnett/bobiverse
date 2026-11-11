@@ -2233,23 +2233,35 @@ class Client:
         def recipe_loader(repo: str):
             # Only bobiverse's own recipe lives in this install; other repos must carry
             # their own .bobiverse/build.yml on GitHub (no recipe -> refusal).
+            def _ensure_token() -> None:
+                import gh_filer
+
+                gh_filer.ensure_gh_token_env()
+
             if bobiverse_build.normalize_repo(repo) != "simonbarnett/bobiverse":
                 try:
-                    import gh_filer
-
-                    gh_filer.ensure_gh_token_env()
+                    _ensure_token()
                 except Exception:
                     pass
                 return bobiverse_build.fetch_remote_recipe(repo)
+            # FR #6484: packaged Jeeves has no local .bobiverse/; fall back to GitHub.
             root = Path(self._install_root())
-            # Bobiverse recipe lives at repo root; install tree is bob/jeeves/airc sparse — prefer git root.
-            for cand in (root, root.parent, Path(self.home).resolve().parents[2] if False else root):
-                try:
-                    return bobiverse_build.load_recipe(cand)
-                except bobiverse_build.RecipeError:
-                    continue
-            raise bobiverse_build.RecipeError(
-                f"build: {repo} has no .bobiverse/build.yml; nothing started"
+            build_ref = "main"
+            try:
+                parsed_b = bobiverse_build.parse_build(body)
+                if parsed_b is not None:
+                    _is_build, sub, rest = parsed_b
+                    if sub in ("run", "dry-run"):
+                        toks = (rest or "").split()
+                        if len(toks) >= 3:
+                            build_ref = toks[2]
+            except Exception:
+                build_ref = "main"
+            return bobiverse_build.load_bobiverse_recipe_local_or_remote(
+                [root, root.parent],
+                repo,
+                ref=build_ref,
+                ensure_token=_ensure_token,
             )
 
         ignored = ()

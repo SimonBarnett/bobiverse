@@ -1975,15 +1975,29 @@ class InstallTestRunner:
 # ------------------------------------------------------------------ live helpers (hotpatch-build)
 
 
-def fetch_remote_recipe(repo: str, *, gh_runner: Callable | None = None) -> BuildRecipe | None:
-    """Load ``.bobiverse/build.yml`` from GitHub for ``repo``; None when the repo has none."""
+def fetch_remote_recipe(
+    repo: str,
+    *,
+    ref: str | None = None,
+    gh_runner: Callable | None = None,
+) -> BuildRecipe | None:
+    """Load ``.bobiverse/build.yml`` from GitHub for ``repo``; None when the repo has none.
+
+    Optional *ref* is passed as ``?ref=`` (FR #6484). Empty / ``HEAD`` maps to ``main``.
+    """
     import subprocess as _sp
     import tempfile as _tf
 
     runner = gh_runner or _sp.run
+    api = f"repos/{normalize_repo(repo)}/contents/.bobiverse/build.yml"
+    ref_s = (ref or "").strip()
+    if ref_s and ref_s.upper() != "HEAD":
+        api = f"{api}?ref={ref_s}"
+    elif ref_s.upper() == "HEAD":
+        api = f"{api}?ref=main"
     cp = runner(
         [
-            "gh", "api", f"repos/{normalize_repo(repo)}/contents/.bobiverse/build.yml",
+            "gh", "api", api,
             "-H", "Accept: application/vnd.github.raw",
         ],
         capture_output=True,
@@ -2002,6 +2016,34 @@ def fetch_remote_recipe(repo: str, *, gh_runner: Callable | None = None) -> Buil
         p.mkdir()
         (p / "build.yml").write_text(out, encoding="utf-8")
         return load_recipe(Path(td))
+
+
+def load_bobiverse_recipe_local_or_remote(
+    candidates: list[Path] | tuple[Path, ...],
+    repo: str,
+    *,
+    ref: str | None = None,
+    gh_runner: Callable | None = None,
+    ensure_token: Callable[[], None] | None = None,
+) -> BuildRecipe:
+    """Local ``.bobiverse/build.yml`` first; else GitHub fetch (FR #6484 packaged chair).
+
+    Raises ``RecipeError`` with the familiar ``nothing started`` line when both miss.
+    """
+    for cand in candidates:
+        try:
+            return load_recipe(Path(cand))
+        except RecipeError:
+            continue
+    if ensure_token is not None:
+        try:
+            ensure_token()
+        except Exception:
+            pass
+    recipe = fetch_remote_recipe(repo, ref=ref, gh_runner=gh_runner)
+    if recipe is None:
+        raise RecipeError(f"build: {repo} has no .bobiverse/build.yml; nothing started")
+    return recipe
 
 
 def make_github_prerelease_fn(
