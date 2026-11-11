@@ -40,8 +40,16 @@ def test_fr3717_docs_skill_mention():
 
 
 @WIN
-def test_fr3717_pre_rmdir_removes_cdkout_before_git(tmp_path: Path):
-    """Helper path: cdk.out* under a fake job tree is removed via cmd rmdir."""
+def test_fr3717_pre_rmdir_removes_cdkout_before_git(tmp_path: Path, monkeypatch):
+    """Helper path: cdk.out* under a fake job tree is removed via cmd rmdir.
+
+    FR #6564: 2.0.0 BUILD listed this node FAILED, but the shared excerpt
+    traceback was ``test_mrb5604_empty_credman_falls_through_to_system`` --- a
+    false attribution from the pre-FR #6561 solo rerun that re-ran the whole
+    suite folder. This pin stays hermetic (helper-only; isolated job-wt base).
+    """
+    monkeypatch.setenv("BOB_JOB_WORKTREE_BASE", str(tmp_path / "wt-base"))
+    (tmp_path / "wt-base").mkdir()
     # Dot the Clear script's function block (before RepoRoot bootstrap), then call helper.
     tree = tmp_path / "job-fr-a-search-3717"
     deep = tree / "cdk.out-fr136" / ("a" * 40) / ("b" * 40)
@@ -53,6 +61,8 @@ def test_fr3717_pre_rmdir_removes_cdkout_before_git(tmp_path: Path):
         "$ErrorActionPreference='Stop'; "
         f"$raw = Get-Content -LiteralPath '{SCRIPT}' -Raw; "
         "$fn = ($raw -split '(?m)^if \\(-not \\$RepoRoot\\)')[0]; "
+        "if ($fn -notmatch 'function Remove-BobiverseDeepWorktreeDirs') { "
+        "throw 'prelude missing Remove-BobiverseDeepWorktreeDirs' }; "
         "Invoke-Expression $fn; "
         f"Remove-BobiverseDeepWorktreeDirs -WorktreePath '{tree}'; "
         f"if (Test-Path -LiteralPath '{tree / 'cdk.out-fr136'}') {{ throw 'cdk.out still present' }}; "
@@ -75,3 +85,10 @@ def test_fr3717_pre_rmdir_removes_cdkout_before_git(tmp_path: Path):
     assert r.returncode == 0, out
     assert "cdkout-gone" in out
     assert not (tree / "cdk.out-fr136").exists()
+
+
+def test_fr6564_build_docs_cite_solo_pollution():
+    """Docs must warn that shared excerpt tracebacks can be solo-suite pollution."""
+    docs = (REPO / "docs" / "bobiverse-build.md").read_text(encoding="utf-8")
+    assert "FR #6561" in docs
+    assert "FR #6564" in docs
