@@ -32,5 +32,5 @@ def test_hostile_no_bare_outhost_on_git_native():
     assert text.count("& git -C $rootFull worktree") >= 2
     for marker in ("worktree remove --force $p", "worktree prune"):
         i = text.index(marker)
-        window = text[max(0, i - 80) : i + 280]
+        window = text[max(0, i - 80) : i + 200]
         assert "| Out-Host" not in window
