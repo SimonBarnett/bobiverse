@@ -9,11 +9,16 @@ import bob_worker as bw
 def test_mrb2809_start_turn_watcher_path_fn_returns_events_jsonl():
     src = Path(bw.__file__).read_text(encoding="utf-8")
     i = src.index("def _start_turn_watcher")
-    chunk = src[i : i + 1200]
+    # FR #6674: OpenCode branch grew the method past a fixed 1200-char window
+    # so def _on_started fell outside the slice. Bound to the next class-level def.
+    j = src.find("\n    def ", i + 1)
+    chunk = src[i:j] if j > i else src[i : i + 8000]
     path_fn = chunk[chunk.index("def _path") : chunk.index("def _on_started")]
     assert "grok_session_dir" in path_fn
     assert 'd / "events.jsonl"' in path_fn or "d / 'events.jsonl'" in path_fn
     assert "return grok_session_dir(cwd, sid or \"\")" not in path_fn
+    # OpenCode still uses run_dir / opencode-turns.jsonl (FR #6157).
+    assert "opencode-turns.jsonl" in chunk
 
 
 def test_mrb2809_grok_turn_watcher_requires_file_not_dir(tmp_path: Path):
