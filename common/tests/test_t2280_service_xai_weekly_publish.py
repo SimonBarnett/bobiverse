@@ -374,8 +374,10 @@ def test_config_report_host_is_not_rewritten(tmp_path: Path, monkeypatch):
     assert chosen["host"] == "bob.ntsa.uk"
     assert chosen["path"] == "/bob/v1/report"
     assert chosen["source"] == "config"
+    # FR #5272 / #6619: webhook reportUrl uses bob public host (not IRC host).
+    # Query refusal still exercises reportUrl?token= without a secret in dumps.
     (cfg / "bobiverse.json").write_text(
-        json.dumps({"reportUrl": "https://irc.ntsa.uk/bob/v1/report?token=secret"}),
+        json.dumps({"reportUrl": "https://bob.ntsa.uk/bob/v1/report?token=secret"}),
         encoding="utf-8",
     )
     refused = bobreport.resolve_fuel_report_target()
