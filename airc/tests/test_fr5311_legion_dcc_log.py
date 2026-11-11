@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import time
 
 import airc_console as ac
 import airc_dcc_bulk as dcc
@@ -77,10 +76,28 @@ def test_fr5311_dcc_fail_falls_back():
 
 
 def test_fr5311_console_wires_dcclisten():
+    """DCCLISTEN offer + legion_log_send are wired on LEGION (FR #5311 / #6650).
+
+    Use a sync ``legion_runner`` so ``on_done`` delivers before handle_raw
+    returns. The default async/isolated path can exceed a 1s poll under
+    build load (release-blocker ``assert sent`` empty).
+    """
     sent: list[bytes] = []
 
     def send(payload: bytes, offer, **_k):
         sent.append(payload)
+
+    def sync_runner(*, target="", whatif=False, job_id="", on_done=None, **_kw):
+        res = lg.LegionVerbResult(
+            True,
+            f"LEGION dry-run target={target}",
+            job_id=job_id or "",
+            status="dry-run",
+            failures=[{"host": target or "walrus", "error": "timeout"}],
+        )
+        if callable(on_done):
+            on_done(res)
+        return res
 
     auth = ops_auth("op", channel="#tm")
     core = ac.AircConsoleCore(
@@ -88,6 +105,7 @@ def test_fr5311_console_wires_dcclisten():
         auth=auth,
         nick="tm_console",
         shell_runner=ac.ShellJobRunner(on_reply=lambda *_a, **_k: None),
+        legion_runner=sync_runner,
     )
     core.shell_runner.note_dcclisten(
         "DCCLISTEN id=aabbccdd host=127.0.0.1 port=9 token=" + ("ab" * 16) + " tls=0"
@@ -96,10 +114,6 @@ def test_fr5311_console_wires_dcclisten():
     hr = core.handle_raw(":op!u@h PRIVMSG tm_console :id=aabbccdd LEGION walrus -WhatIf")
     assert hr is not None and hr.action == "legion"
     assert "LEGION" in (hr.reply or "")
-    for _ in range(50):
-        if sent:
-            break
-        time.sleep(0.02)
     assert sent
     assert "password=" not in (hr.reply or "").lower()
     assert "password=" not in sent[0].decode("utf-8").lower()
