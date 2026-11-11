@@ -47,12 +47,17 @@ def test_fr5032_digest_post_failures_are_logged():
 
 def test_fr5032_expand_weekly_rows_carry_lastseen_and_out_of_tokens():
     h = _txt(HOVER)
-    assert "out_of_tokens" in h
-    assert "lastSeen" in h[h.index("function Expand-BobReportDigestView") :]
+    expand = h[h.index("function Expand-BobReportDigestView") :]
+    assert "out_of_tokens" in expand
+    # lastSeen still fills seenBy for liveness; meter age is xai_weekly.fetched_at (FR #6285).
+    assert "lastSeen" in expand
+    assert "fetched_at" in expand
     assert "Format-BobTrayFuelStaleAge" in h
     assert "fuel_stale" in h
-    assert "fuelStaleAfter" in h
-    assert "digest-lastSeen-stale" in h
+    assert "fuelStaleAfter" in expand
+    # FR #6664: digest-lastSeen-stale retired when age moved to fetched_at/sampleStale.
+    assert "sampleStale" in expand
+    assert "$fuelStaleBy[$mac] = $true" in expand
     assert "FR #6100" in h
     assert "reportDigest.stale" in h
 
@@ -123,9 +128,16 @@ def test_fr5032_post_digest_out_of_fuel_logs_failure():
     assert any("digest POST failed" in m or "post_digest_out_of_fuel failed" in m for m in logs)
 
 def test_mrb5037_peer_weekly_without_lastseen_treated_stale():
-    """Hostile: missing lastSeen must not paint a confident live peer %."""
+    """Hostile: peer weekly without a fresh measurement must not paint live % (FR #6664/#6665).
+
+    Age is xai_weekly.fetched_at / age_s (FR #6285), not heartbeat lastSeen.
+    """
     h = _txt(HOVER)
     start = h.index("FR #5032: peer weekly older than the fuel-stale window")
     block = h[start : start + 3500]
-    assert "missing lastSeen must not paint" in block or "not $wr.lastSeen" in block
+    assert "fetched_at" in block
+    assert "measureAt" in block or "$measureAt" in block
+    # Peer without measureAt / aged measureAge marks sample stale.
+    assert "-not $measureAt" in block or "not $measureAt" in block
     assert "fuelStaleBy[$mac] = $true" in block
+    assert "$isPeer" in block or "isPeer" in block
