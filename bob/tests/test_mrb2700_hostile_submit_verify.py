@@ -105,8 +105,9 @@ def test_mrb2700_unified_probe_matches_pid_and_ts(tmp_path):
 def test_mrb2700_supervisor_inject_wiring_source():
     src = Path(bw.__file__).read_text(encoding="utf-8")
     i = src.index("def _inject_line")
-    # FR #2791 lengthens the stop_fn block; keep a window that still covers inject_with_submit_verify kwargs.
-    body = src[i : i + 4000]
+    # FR #6661: method-bounded slice (OpenCode checklist growth outgrew fixed windows).
+    j = src.find("\n    def ", i + 1)
+    body = src[i:j] if j > i else src[i : i + 8000]
     assert "since_wall = time.time()" in body
     assert "clock=time.monotonic" in body
     assert "sync=False" in body
