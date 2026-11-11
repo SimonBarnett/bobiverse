@@ -121,10 +121,9 @@ def test_offer_skips_marchhare_for_unstamped_jeeves_recycle(tmp_path, monkeypatc
             "done": [],
         },
     )
-    st, _job = gitclaim.offer_focus_top(home, "marchhare-35600", "#marchhare")
-    assert st == "empty"
-    st2, job2 = gitclaim.offer_focus_top(home, "ionos-1", "#ionos")
-    assert st2 == "ok" and job2["id"] == "#848"
+    # FR #4512 / #6512: bobiverse soft recycle cues do not pin -> ungated for marchhare.
+    st, job = gitclaim.offer_focus_top(home, "marchhare-35600", "#marchhare")
+    assert st == "ok" and job["id"] == "#848"
 
 
 def test_enqueue_stamps_ionos_from_recycle_jeeves(tmp_path, monkeypatch):
@@ -149,4 +148,5 @@ def test_enqueue_stamps_ionos_from_recycle_jeeves(tmp_path, monkeypatch):
     assert gitclaim.apply_queue_event(home, claim) in ("added", "updated", "duplicate")
     rows = gitclaim.load_unaccepted(home)
     assert len(rows) == 1
-    assert rows[0]["require_machine"] == "ionos"
+    # FR #4512 / #6512: bobiverse soft recycle cues no longer stamp require_machine.
+    assert rows[0].get("require_machine", "") in ("", "any")

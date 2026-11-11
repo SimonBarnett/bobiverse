@@ -7009,6 +7009,19 @@ def offer_to_idle_seats(
                 delivered = False
             if not delivered:
                 # Keep idle entry; stamp rate limit so we retry after IDLE_PUSH_MIN_INTERVAL_S.
+                # FR #2819 / #4089 / #6521: also unwind offered_to (and seat hold) so the
+                # failed chair-outbox enqueue does not leave bored_gate busy under FR #3192
+                # and clear_idle_after_empty on the next push tick.
+                with contextlib.suppress(Exception):
+                    clear_seat_offer(home, nick, job)
+                with contextlib.suppress(Exception):
+                    clear_seat_hold(
+                        home,
+                        nick,
+                        repo=str(job.get("repo") or ""),
+                        task=str(job.get("task") or ""),
+                        ident=str(job.get("id") or ""),
+                    )
                 try:
                     with _lock(home):
                         doc = _load_idle_after_empty(home)

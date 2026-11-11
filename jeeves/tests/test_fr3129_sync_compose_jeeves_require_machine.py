@@ -24,6 +24,7 @@ def test_fr3129_title_ionos_sync_compose_ircjeeves_pins():
 
 
 def test_fr3129_body_sync_bobiverse_from_repo_pins():
+    # FR #4512 / #6512: bobiverse soft body cues never pin.
     mid = gitclaim.infer_require_machine(
         title="intake allowlist drift",
         body=(
@@ -35,7 +36,7 @@ def test_fr3129_body_sync_bobiverse_from_repo_pins():
         repo="SimonBarnett/bobiverse",
         ident="#9999",
     )
-    assert mid == "ionos"
+    assert mid == ""
 
 
 def test_fr3129_hard_pin_issue_3122():
@@ -78,6 +79,7 @@ def test_fr3129_bare_sync_bobiverse_from_repo_does_not_pin():
 
 
 def test_fr3129_sync_bobiverse_near_jeeves_still_pins():
+    # FR #4512 / #6512: bobiverse soft Sync/compose cues never pin.
     mid = gitclaim.infer_require_machine(
         title="stale intake allowlist",
         body="Sync-BobiverseFromRepo then restart ircJeeves so compose picks up main.",
@@ -85,4 +87,4 @@ def test_fr3129_sync_bobiverse_near_jeeves_still_pins():
         repo="SimonBarnett/bobiverse",
         ident="#9996",
     )
-    assert mid == "ionos"
+    assert mid == ""

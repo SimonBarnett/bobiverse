@@ -24,7 +24,11 @@ def test_mrb2391_fr_done_clear_before_supersede_continue():
     # Clear stamp must be recorded before fr_is_superseded continue.
     clear = text.index("FR #2389 / #1201 / #1482: clear fr_done for every desired")
     supersede = text.index("fr_is_superseded(", clear)
-    continue_idx = text.index("continue  # FR #254: MRB / open implement PR supersedes FR enqueue", supersede)
+    # FR #4589 widened the continue comment (open Closes / ci-wait); order unchanged.
+    continue_idx = text.index(
+        "continue  # FR #254 / #4589: MRB / open Closes (incl. ci-wait) supersedes FR",
+        supersede,
+    )
     assert clear < supersede < continue_idx
 
 

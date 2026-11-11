@@ -41,13 +41,29 @@ def test_mrb3807_hostile_install_docs_skill_pin():
     assert "FR #3774" in post
     assert "presence_channels" in post
     skill = SKILL.read_text(encoding="utf-8")
-    assert "FR #3774" in skill
+    # FR #5190 (PR #5223) superseded the FR #3774 client default and rewrote this skill row.
+    assert (
+        "Client must not auto-join `#bobiverse`. "
+        "Control is registered `#{machine}` else `#wonderland`."
+    ) in skill
+    assert "FR #5190" in skill
     assert "presence_channels" in skill
     assert PIN.is_file()
     pin = PIN.read_text(encoding="utf-8")
     assert "FR #3774" in pin
     assert "silent_channel" in pin
     assert "resolve_presence_channels" in pin
+
+
+def test_mrb3807_hostile_post_install_presence_default_fr5190():
+    # FR #6545: post-install must not advertise FR #3774 default ["#bobiverse"] after FR #5190.
+    post = POST.read_text(encoding="utf-8")
+    assert "FR #3774" in post
+    assert "FR #5190" in post  # contiguous citation (not only '/ #5190')
+    assert "presence_channels" in post
+    assert 'default `["#bobiverse"]`' not in post
+    assert "Install-Airc client default `[]`" in post
+    assert "no auto-join `#bobiverse`" in post
 
 
 def test_mrb3807_hostile_product_pin_ascii_no_bom():

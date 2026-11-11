@@ -33,7 +33,11 @@ def test_job_worktrees_warn_contiguous_seat_disk_reclaim():
 
 def test_seat_disk_warn_after_reclaim_contiguous():
     text = SEAT.read_text(encoding="utf-8")
-    assert "FR #4192: FreeGB=" in text or "FR #4192: FreeGB={" in text
+    # Contiguous post-reclaim WARN (FR list grew; FreeGB= format-string remains).
+    assert (
+        "FR #4192 / FR #4212 / FR #4226 / FR #4864 / FR #4883 / FR #5154: FreeGB={"
+        in text
+    )
     # PS double-quoted WARN escapes backslashes as C:\\ai\\* in source.
     assert "do not hand-delete C:\\\\ai\\\\* wt trees (FR #2727)" in text
     assert "KeepTempHours" in text
@@ -49,4 +53,8 @@ def test_fr_skill_seat_disk_before_intake_contiguous():
 
 def test_worker_seat_skill_pins_fr4192_before_intake():
     text = WORKER_SEAT.read_text(encoding="utf-8")
-    assert "run SeatDisk -Reclaim **before** filing a disk-capacity intake (FR #4192)" in text
+    # Contiguous SeatDisk-before-intake order (FR #5154 KeepTempHoursLow cited too).
+    assert (
+        "run SeatDisk -Reclaim **before** filing a disk-capacity intake (FR #4192"
+        in text
+    )

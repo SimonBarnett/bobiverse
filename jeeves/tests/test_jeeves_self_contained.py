@@ -15,6 +15,9 @@ def _isolated_profiles(monkeypatch, tmp_path_factory):
     fake = tmp_path_factory.mktemp("profiles")
     monkeypatch.setattr(bob_home, "_profile", lambda: fake / "me")
     monkeypatch.setattr(bob_home, "_admin_profile", lambda: fake / "Administrator")
+    # FR #4315 / #6523: !build isolated_suite_env sets BOB_HOME_NO_MIGRATE=1; clear it
+    # so these tests can assert migrate / no-legacy behaviour.
+    monkeypatch.delenv("BOB_HOME_NO_MIGRATE", raising=False)
 
 
 from repo_layout import ROOT  # t773u: split repo; legacy flat paths resolve per service
@@ -33,7 +36,17 @@ def test_no_agentic_irc_env_or_home_names_in_jeeves_bob_code():
     for p in list(SCRIPTS.glob("*")) + list((ROOT / "tools").glob("*")):
         if not p.is_file() or p.suffix.lower() not in (".py", ".ps1", ".cmd") or AIRC_PRODUCT.search(p.name):
             continue
-        if p.name in ("bob_home.py", "bob_git_hook.py", "Assert-BobDigestWebhookLocal.ps1", "bob_worker.py"):
+        if p.name in (
+            "bob_home.py",
+            "bob_git_hook.py",
+            "Assert-BobDigestWebhookLocal.ps1",
+            "bob_worker.py",
+            # FR #6515: pack/isolation blank AGENTIC_IRC_PASSWORD and classify legacy
+            # admin .agentic-irc-* caches; not a packaged-Jeeves runtime dependency.
+            "bobiverse_build.py",
+            "Pack-BobiverseRelease.ps1",
+            "bobreport.py",
+        ):
             # Legacy-home compatibility readers / FR #2669 scrub lists intentionally name old homes;
             # they do not make the packaged Jeeves service depend on agentic_irc.
             continue
@@ -208,9 +221,16 @@ def test_callback_cmd_and_watchers_use_install_relative_config():
 
 def test_gh_token_candidates_include_install_config_env(monkeypatch, tmp_path):
     import gh_filer
+    from repo_layout import ROOT
     cfg = tmp_path / "cfg"
     cfg.mkdir()
     monkeypatch.setenv("BOB_CONFIG_DIR", str(cfg))
+    # FR #6523: empty iso BOB_CONFIG_DIR must not prepend ahead of install-root.
+    paths = gh_filer._token_candidate_paths()
+    assert paths[0] == (ROOT / "scripts").parent / "config" / "github.token"
+    assert (cfg / "github.token") in paths
+    # Existing override file still wins when present.
+    (cfg / "github.token").write_text("FAKE_TOKEN_FOR_TEST\n", encoding="utf-8")
     assert gh_filer._token_candidate_paths()[0] == cfg / "github.token"
 
 

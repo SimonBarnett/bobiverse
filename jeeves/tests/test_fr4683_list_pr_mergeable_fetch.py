@@ -74,15 +74,24 @@ def test_list_shaped_pr_triggers_detail_fetch_and_queues_fix(tmp_path: Path):
 
 
 def test_list_pr_with_mergeable_keys_skips_detail_fetch(tmp_path: Path):
+    """FR #4683: skip GET /pulls/N mergeability when keys already present.
+
+    FR #6359 may still hit GET /pulls/N/files for harvest-receipt path
+    classification; that is not a mergeability detail fetch.
+    """
     home = _home(tmp_path)
     pr = _list_shaped_pr(1466)
     pr["mergeable"] = "CONFLICTING"
     pr["mergeable_state"] = "DIRTY"
-    detail_hits: list[str] = []
+    merge_hits: list[str] = []
+    files_hits: list[str] = []
 
     def fetch_json(url: str):
+        if "/pulls/1466/files" in url:
+            files_hits.append(url)
+            return []
         if "/pulls/1466" in url and "state=" not in url:
-            detail_hits.append(url)
+            merge_hits.append(url)
             return {"number": 1466, "mergeable_state": "dirty"}
         if "/pulls" in url and "state=closed" not in url:
             return [pr]
@@ -95,7 +104,9 @@ def test_list_pr_with_mergeable_keys_skips_detail_fetch(tmp_path: Path):
     rows = list(q.get("unaccepted") or []) + list(q.get("accepted") or [])
     fix = [r for r in rows if str(r.get("task") or "").upper() == "FIX"]
     assert len(fix) == 1, rows
-    assert detail_hits == [], detail_hits
+    assert merge_hits == [], merge_hits
+    # FR #6514 / #6359: files fetch is allowed; mergeability GET /pulls/N is not.
+    assert all("/files" in u for u in files_hits), files_hits
 
 
 def test_list_pr_needs_mergeability_enrichment_helper():

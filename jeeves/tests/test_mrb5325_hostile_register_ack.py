@@ -23,11 +23,15 @@ def test_mrb5325_pins_wait_then_ack():
     assert "test_fr5274_register_does_not_ack_before_chanserv" in t
     assert "test_fr5274_register_no_ack_on_timeout" in t
     assert "test_fr5274_register_ack_and_announce_on_chanserv_ok" in t
-    # JOIN shop before REGISTER (ChanServ often requires presence)
+    # JOIN shop before REGISTER (ChanServ often requires presence; FR #5349).
     handle = irc[irc.find("def _handle_register_command") : irc.find("def _handle_unregister_command")]
+    send = irc[irc.find("def _send_chanserv_register") : irc.find("def _promote_register_join_wait")]
     assert "JOIN {shop}" in handle
-    assert "PRIVMSG ChanServ :REGISTER {shop}" in handle
-    assert handle.find("JOIN {shop}") < handle.find("PRIVMSG ChanServ :REGISTER {shop}")
+    # REGISTER wire lives in _send_chanserv_register (not inlined in the handler).
+    assert "_send_chanserv_register" in handle
+    assert "PRIVMSG ChanServ :REGISTER {shop}" in send
+    assert "PRIVMSG ChanServ :REGISTER {shop}" not in handle
+    assert handle.find("JOIN {shop}") < handle.find("_send_chanserv_register")
     # expire is invoked from the chair loop, not only tests
     assert "self._expire_register_waits()" in irc
     raw = IRC.read_bytes()
