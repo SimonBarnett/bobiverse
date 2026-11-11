@@ -19,7 +19,7 @@ import time
 import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Iterable, Optional
+from typing import Any, Callable, Iterable, NamedTuple, Optional
 
 try:
     import yaml  # type: ignore
@@ -2034,11 +2034,146 @@ def build_route_id(route: dict) -> str:
     return "h-" + hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
 
 
-def claim_build_route_marker(marker_dir: Path | str, route_id: str) -> bool:
-    """O_EXCL claim. First caller True; later callers on the same id False."""
-    rid = "".join(ch if ch.isalnum() or ch in "-._" else "_" for ch in str(route_id or "").strip())
-    if not rid:
-        rid = "unknown"
+def _sanitize_build_route_id(route_id: str) -> str:
+    rid = "".join(
+        ch if ch.isalnum() or ch in "-._" else "_" for ch in str(route_id or "").strip()
+    )
+    return rid or "unknown"
+
+
+class _ClaimOutcome(NamedTuple):
+    """FR #6558: private claim result (public APIs stay bool)."""
+
+    status: str  # claimed | duplicate | reclaimed | error
+    path: Path
+    age_s: float | None
+    error: str = ""
+
+
+def _build_route_marker_age_s(path: Path, *, now: float | None = None) -> float | None:
+    """Age of a ``.claimed`` marker: content integer timestamp, else st_mtime.
+
+    Negative ages clamp to 0. Unreadable content + missing mtime -> None (fail closed).
+    """
+    clock = float(now if now is not None else time.time())
+    content_ts: float | None = None
+    try:
+        text = path.read_text(encoding="ascii", errors="ignore").strip()
+        if text:
+            # first token must be an integer unix timestamp
+            token = text.split()[0]
+            content_ts = float(int(token))
+    except (OSError, ValueError, IndexError):
+        content_ts = None
+    if content_ts is not None:
+        return max(0.0, clock - content_ts)
+    try:
+        return max(0.0, clock - float(path.stat().st_mtime))
+    except OSError:
+        return None
+
+
+def _try_advisory_reclaim_lock(fh, timeout_s: float = 0.5) -> bool:
+    """Non-blocking reclaim lock with short retry (msvcrt / fcntl)."""
+    deadline = time.monotonic() + max(0.05, float(timeout_s))
+    while True:
+        try:
+            if os.name == "nt":
+                import msvcrt
+
+                fh.seek(0)
+                msvcrt.locking(fh.fileno(), msvcrt.LK_NBLCK, 1)
+            else:
+                import fcntl
+
+                fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return True
+        except OSError:
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(0.02)
+
+
+def _unlock_advisory_reclaim(fh) -> None:
+    try:
+        if os.name == "nt":
+            import msvcrt
+
+            fh.seek(0)
+            msvcrt.locking(fh.fileno(), msvcrt.LK_UNLCK, 1)
+        else:
+            import fcntl
+
+            fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+    except OSError:
+        pass
+
+
+def _reclaim_stale_build_route_marker(
+    path: Path,
+    *,
+    stale_after_s: float,
+    first_age_s: float | None,
+) -> _ClaimOutcome:
+    """Replace an expired id-less marker under a stable never-unlinked reclaim lock."""
+    if first_age_s is None:
+        return _ClaimOutcome("duplicate", path, None, "age=unknown")
+    if first_age_s <= float(stale_after_s):
+        return _ClaimOutcome("duplicate", path, first_age_s)
+
+    lock_path = path.parent / ".reclaim.lock"
+    try:
+        # Never unlink; create once so the lock path stays stable across reclaimers.
+        fd_lock = os.open(str(lock_path), os.O_CREAT | os.O_RDWR)
+    except OSError as exc:
+        return _ClaimOutcome("error", path, first_age_s, f"reclaim-lock-open: {exc}")
+    fh = None
+    tmp: Path | None = None
+    try:
+        fh = os.fdopen(fd_lock, "r+b", closefd=True)
+        fd_lock = -1  # owned by fh
+        if not _try_advisory_reclaim_lock(fh, timeout_s=0.5):
+            return _ClaimOutcome("error", path, first_age_s, "reclaim-lock-timeout")
+        age2 = _build_route_marker_age_s(path)
+        if age2 is None:
+            return _ClaimOutcome("duplicate", path, None, "age=unknown")
+        if age2 <= float(stale_after_s):
+            return _ClaimOutcome("duplicate", path, age2)
+        now_i = int(time.time())
+        tmp = path.parent / f".{path.name}.{os.getpid()}.{now_i}.tmp"
+        tmp.write_text(f"{now_i}\n", encoding="ascii")
+        os.replace(str(tmp), str(path))
+        tmp = None
+        return _ClaimOutcome("reclaimed", path, age2)
+    except OSError as exc:
+        return _ClaimOutcome("error", path, first_age_s, f"reclaim-replace: {exc}")
+    finally:
+        if tmp is not None:
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
+        if fh is not None:
+            _unlock_advisory_reclaim(fh)
+            try:
+                fh.close()
+            except OSError:
+                pass
+        elif fd_lock >= 0:
+            try:
+                os.close(fd_lock)
+            except OSError:
+                pass
+
+
+def _claim_build_route_marker_detail(
+    marker_dir: Path | str,
+    route_id: str,
+    *,
+    stale_after_s: float | None = None,
+) -> _ClaimOutcome:
+    """O_EXCL claim with optional id-less stale reclaim (FR #6558)."""
+    rid = _sanitize_build_route_id(route_id)
     d = Path(marker_dir)
     d.mkdir(parents=True, exist_ok=True)
     path = d / f"{rid}.claimed"
@@ -2046,14 +2181,37 @@ def claim_build_route_marker(marker_dir: Path | str, route_id: str) -> bool:
     try:
         fd = os.open(str(path), flags)
     except FileExistsError:
-        return False
-    except OSError:
-        return False
+        age = _build_route_marker_age_s(path)
+        ttl = float(stale_after_s) if stale_after_s is not None else None
+        if ttl is not None and ttl > 0 and age is not None and age > ttl:
+            return _reclaim_stale_build_route_marker(
+                path, stale_after_s=ttl, first_age_s=age
+            )
+        return _ClaimOutcome("duplicate", path, age)
+    except OSError as exc:
+        return _ClaimOutcome("error", path, None, str(exc))
     try:
         os.write(fd, f"{int(time.time())}\n".encode("ascii"))
     finally:
         os.close(fd)
-    return True
+    return _ClaimOutcome("claimed", path, 0.0)
+
+
+def claim_build_route_marker(
+    marker_dir: Path | str,
+    route_id: str,
+    *,
+    stale_after_s: float | None = None,
+) -> bool:
+    """O_EXCL claim. First caller True; later callers on the same id False.
+
+    FR #6558: optional ``stale_after_s`` reclaims an expired marker (strictly older
+    than the threshold). Default ``None`` keeps permanent exclusion (FR #5266).
+    """
+    outcome = _claim_build_route_marker_detail(
+        marker_dir, route_id, stale_after_s=stale_after_s
+    )
+    return outcome.status in ("claimed", "reclaimed")
 
 
 def consume_build_v1(
@@ -2063,12 +2221,17 @@ def consume_build_v1(
     *,
     queue_dir: Path | str | None = None,
     route_marker_dir: Path | str | None = None,
+    stale_claim_s: float | None = None,
+    log: Callable[[str], None] | None = None,
 ) -> bool:
     """Return True when this host should accept the BUILD v1 route (optionally enqueue).
 
     Does not pack/release in-process; writes a job JSON when ``queue_dir`` is set.
     FR #5266: when ``route_marker_dir`` is set, the first caller on this machine
     claims the route id with O_EXCL; later chair/ear copies return False.
+    FR #6558: id-less routes may reclaim a marker older than ``stale_claim_s``;
+    explicit ``id=`` claims stay permanent. Duplicate / error / reclaim each emit
+    one log line when ``log`` is set.
     """
     route = parse_build_v1_route(line)
     if not route:
@@ -2076,8 +2239,42 @@ def consume_build_v1(
     if not is_recipe_build_machine(recipe_machine, local_machine):
         return False
     if route_marker_dir is not None:
-        if not claim_build_route_marker(route_marker_dir, build_route_id(route)):
+        rid = build_route_id(route)
+        explicit_id = bool(str(route.get("id") or "").strip())
+        stale = None if explicit_id else stale_claim_s
+        outcome = _claim_build_route_marker_detail(
+            route_marker_dir, rid, stale_after_s=stale
+        )
+        if outcome.status == "duplicate":
+            if log is not None:
+                age_txt = (
+                    "unknown"
+                    if outcome.age_s is None
+                    else f"{outcome.age_s:.0f}"
+                )
+                thr = "never" if stale is None else f"{float(stale):.0f}"
+                log(
+                    f"BUILD v1 route dropped as duplicate id={rid} "
+                    f"marker={outcome.path} age={age_txt}s stale_after={thr}"
+                )
             return False
+        if outcome.status == "error":
+            if log is not None:
+                log(
+                    f"BUILD v1 route claim error id={rid} "
+                    f"marker={outcome.path}: {outcome.error}"
+                )
+            return False
+        if outcome.status == "reclaimed" and log is not None:
+            prev = (
+                "unknown"
+                if outcome.age_s is None
+                else f"{outcome.age_s:.0f}"
+            )
+            log(
+                f"BUILD v1 route claim reclaimed id={rid} "
+                f"marker={outcome.path} previous_age={prev}s"
+            )
     if queue_dir is not None:
         enqueue_build_job(
             route,
