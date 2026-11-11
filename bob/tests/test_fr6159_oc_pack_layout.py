@@ -30,6 +30,26 @@ WORKER = ROOT / "bob" / "scripts" / "bob_worker.py"
 
 FIXTURE = '{"costs": {"glm-5.3": 7.5}, "free_models": ["beam-free"]}'
 
+# FR #6670 / #6669: live seats may export BOB_OPENCODE_USAGE_URL; the helper then
+# clears go and reads provider limits. Fixture pins need a pure stats/fixture path.
+_OPENCODE_FUEL_SCRUB = (
+    "BOB_OPENCODE_USAGE_URL",
+    "OPENCODE_SERVER_PASSWORD",
+    "OPENCODE_SERVER_USERNAME",
+    "BOB_OPENCODE_FUEL_CACHE_FILE",
+    "BOB_INSTALL_ROOT",
+    "PYTHONPATH",
+)
+
+
+def _opencode_fuel_fixture_env() -> dict:
+    env = os.environ.copy()
+    for key in _OPENCODE_FUEL_SCRUB:
+        env.pop(key, None)
+    env["BOB_OPENCODE_FUEL_FIXTURE"] = FIXTURE
+    return env
+
+
 OPENCODE_LAYOUT_PATHS = (
     "scripts/opencode_fuel.py",
     "tools/Get-BobOpencodeFuel.ps1",
@@ -247,9 +267,7 @@ def test_fr6159_flat_install_agent_fuel_returns_opencode(tmp_path: Path):
         encoding="utf-8",
     )
 
-    env = os.environ.copy()
-    env["BOB_OPENCODE_FUEL_FIXTURE"] = FIXTURE
-    env.pop("PYTHONPATH", None)
+    env = _opencode_fuel_fixture_env()
     # Unrelated cwd so PSScriptRoot-relative resolution must walk to install root.
     work = tmp_path / "elsewhere"
     work.mkdir()
@@ -293,9 +311,7 @@ def test_fr6159_flat_opencode_fuel_helper_alone(tmp_path: Path):
     elsewhere.mkdir(parents=True)
     shutil.copy(OPENCODE_FUEL_PS1, tools / "Get-BobOpencodeFuel.ps1")
     shutil.copy(OPENCODE_FUEL_PY, scripts / "opencode_fuel.py")
-    env = os.environ.copy()
-    env["BOB_OPENCODE_FUEL_FIXTURE"] = FIXTURE
-    env.pop("PYTHONPATH", None)
+    env = _opencode_fuel_fixture_env()
     result = subprocess.run(
         [
             "powershell.exe",
@@ -315,6 +331,44 @@ def test_fr6159_flat_opencode_fuel_helper_alone(tmp_path: Path):
     parsed = json.loads(result.stdout.strip().splitlines()[-1])
     assert parsed["free"] == 100
     assert parsed["go"] == 50
+
+
+@pytest.mark.skipif(sys.platform != "win32" or not shutil.which("powershell"), reason="Windows PowerShell")
+@pytest.mark.skipif(not shutil.which("python"), reason="python.exe required")
+def test_fr6670_usage_url_without_scrub_nulls_go(tmp_path: Path, monkeypatch):
+    """Regression: inherited BOB_OPENCODE_USAGE_URL must be scrubbed for fixture pins."""
+    install = tmp_path / "bob"
+    tools = install / "tools"
+    scripts = install / "scripts"
+    elsewhere = tmp_path / "elsewhere"
+    tools.mkdir(parents=True)
+    scripts.mkdir(parents=True)
+    elsewhere.mkdir(parents=True)
+    shutil.copy(OPENCODE_FUEL_PS1, tools / "Get-BobOpencodeFuel.ps1")
+    shutil.copy(OPENCODE_FUEL_PY, scripts / "opencode_fuel.py")
+    env = os.environ.copy()
+    env["BOB_OPENCODE_FUEL_FIXTURE"] = FIXTURE
+    env["BOB_OPENCODE_USAGE_URL"] = "http://127.0.0.1:9/nope"
+    env.pop("PYTHONPATH", None)
+    result = subprocess.run(
+        [
+            "powershell.exe",
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(tools / "Get-BobOpencodeFuel.ps1"),
+        ],
+        capture_output=True,
+        text=True,
+        env=env,
+        cwd=str(elsewhere),
+        timeout=60,
+    )
+    assert result.returncode == 0, result.stderr + result.stdout
+    parsed = json.loads(result.stdout.strip().splitlines()[-1])
+    assert parsed.get("go") is None
+    assert parsed.get("provider") == "usage-limits"
 
 
 def test_fr6159_worker_source_has_flat_resolver_and_install_root_kw():

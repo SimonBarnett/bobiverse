@@ -570,6 +570,16 @@ def test_opencode_fuel_ps1_resolves_installed_layout(tmp_path: Path):
     fixture = '{"costs": {"glm-5.3": 7.5}, "free_models": ["beam-free"]}'
     env = os.environ.copy()
     env["BOB_OPENCODE_FUEL_FIXTURE"] = fixture
+    # FR #6670 / #6677: scrub provider URL so fixture pins keep go=50 (not usage-limits null).
+    for key in (
+        "BOB_OPENCODE_USAGE_URL",
+        "OPENCODE_SERVER_PASSWORD",
+        "OPENCODE_SERVER_USERNAME",
+        "BOB_OPENCODE_FUEL_CACHE_FILE",
+        "BOB_INSTALL_ROOT",
+        "PYTHONPATH",
+    ):
+        env.pop(key, None)
     result = subprocess.run(
         ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(script_dst)],
         capture_output=True,
