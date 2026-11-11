@@ -46,6 +46,10 @@ def _opencode_fuel_fixture_env() -> dict:
     env = os.environ.copy()
     for key in _OPENCODE_FUEL_SCRUB:
         env.pop(key, None)
+    env.pop("BOB_OPENCODE_FUEL_HELPER", None)
+    # FR #6669 / MRB #6691: prefer this interpreter over WindowsApps store aliases.
+    py_dir = str(Path(sys.executable).resolve().parent)
+    env["PATH"] = py_dir + os.pathsep + env.get("PATH", "")
     env["BOB_OPENCODE_FUEL_FIXTURE"] = FIXTURE
     return env
 

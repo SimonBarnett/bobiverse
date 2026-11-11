@@ -5,6 +5,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -580,6 +581,10 @@ def test_opencode_fuel_ps1_resolves_installed_layout(tmp_path: Path):
         "PYTHONPATH",
     ):
         env.pop(key, None)
+    env.pop("BOB_OPENCODE_FUEL_HELPER", None)
+    # FR #6669 / MRB #6691: prefer this interpreter over WindowsApps store aliases.
+    py_dir = str(Path(sys.executable).resolve().parent)
+    env["PATH"] = py_dir + os.pathsep + env.get("PATH", "")
     result = subprocess.run(
         ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(script_dst)],
         capture_output=True,
