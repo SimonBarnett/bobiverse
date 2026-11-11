@@ -112,13 +112,11 @@ def test_bobcallback_row_blocks_marchhare(tmp_path, monkeypatch):
     import bobreport
 
     bobreport._SEAT_ROSTER_CACHE["key"] = None
+    # FR #4512 / #6512: BobCallback soft cues do not pin on bobiverse -> ungated.
     st_mh, job_mh = gitclaim.offer_focus_top(home, "marchhare-41928", "#marchhare")
-    assert st_mh == "empty"
-    assert job_mh is None
-    st_io, job_io = gitclaim.offer_focus_top(home, "win-mpre8vi4u6u-15656", "#win-mpre8vi4u6u")
-    assert st_io == "ok"
-    assert job_io["id"] == "#1316"
-    assert gitclaim.row_require_machine(job_io) == "ionos"
+    assert st_mh == "ok"
+    assert job_mh["id"] == "#1316"
+    assert gitclaim.row_require_machine(job_mh) == ""
 
 
 def test_giveup_stamps_cooldown_until(tmp_path, monkeypatch):
