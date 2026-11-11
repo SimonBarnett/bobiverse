@@ -8440,13 +8440,81 @@ def seat_done_without_later_offer(
     return True
 
 
+def _sha_from_queue_row(row: dict) -> str:
+    """Best-effort head/pass SHA from a queue row (FR #6595)."""
+    if not isinstance(row, dict):
+        return ""
+    for key in ("head_sha", "pass_sha", "sha"):
+        raw = str(row.get(key) or "").strip().lower()
+        if len(raw) >= 7 and all(c in "0123456789abcdef" for c in raw):
+            return raw
+    blob = " ".join(
+        str(row.get(k) or "") for k in ("url", "line", "body", "title", "result")
+    )
+    try:
+        import mrb_merge_on_green
+
+        parsed = mrb_merge_on_green.parse_pass_sha_from_text(blob) or ""
+    except Exception:
+        parsed = ""
+    return str(parsed).strip().lower()
+
+
+def _done_mrb_pass_sha_in_doc(
+    doc: dict, nick: str, repo: str, ident: str, *, home: Path | None = None
+) -> str:
+    """PASS SHA for this nick's done[] MRB row, else merge-on-green ledger (FR #6595)."""
+    me = (canonical_worker_nick(nick) or nick or "").strip().lower()
+    if not me or not repo or not ident or not isinstance(doc, dict):
+        return ""
+    want = _norm_row_id(ident)
+    repo_c = canonical_queue_repo(repo)
+    for r in doc.get("done") or []:
+        if not isinstance(r, dict):
+            continue
+        if str(r.get("task") or "").upper() != "MRB":
+            continue
+        if canonical_queue_repo(str(r.get("repo") or "")) != repo_c:
+            continue
+        if _norm_row_id(str(r.get("id") or "")) != want:
+            continue
+        if str(r.get("result") or "").strip().upper() != "PASS":
+            continue
+        who = (
+            r.get("done_by")
+            or r.get("nick")
+            or r.get("accepted_by")
+            or r.get("offered_to")
+            or ""
+        )
+        who_c = (canonical_worker_nick(str(who)) or str(who)).strip().lower()
+        if who_c and who_c == me:
+            sha = _sha_from_queue_row(r)
+            if sha:
+                return sha
+            break
+    if home is not None:
+        try:
+            num = int(str(ident).lstrip("#"))
+        except (TypeError, ValueError):
+            num = 0
+        if num:
+            try:
+                return str(_merge_on_green_pass_sha(home, repo, num) or "").strip().lower()
+            except Exception:
+                return ""
+    return ""
+
+
 def release_duplicate_done_hold(home: Path, nick: str) -> str:
-    """FR #4642 / #4661 / #6565: drop an ack-missing/offer hold the seat already finished.
+    """FR #4642 / #4661 / #6565 / #6595: drop an ack-missing/offer hold the seat already finished.
 
     Returns `TASK repo#id` when a hold was cleared, else `''`.
     A later re-offer (offered stamp after done) keeps the hold.
     Finished when: seat ledger done stamp, or queue `done[]` MRB PASS by this
     nick (FR #6565 — no live GitHub required), or a PASS board on the held MRB pull.
+    FR #6595: when clearing, prune unaccepted MRB phantoms only when head SHA is
+    missing or matches the PASS SHA; keep a newer-head re-review row.
     """
     key = _seat_key(nick)
     if not key:
@@ -8498,9 +8566,16 @@ def release_duplicate_done_hold(home: Path, nick: str) -> str:
                 if not _nick_done_mrb_pass_in_doc(doc, nick, repo, ident):
                     pass
                 else:
+                    # FR #6595: prune same-SHA / unknown-SHA phantoms only; keep a
+                    # newer-head unaccepted MRB so tip-push re-review is not deleted.
                     want = _norm_row_id(ident)
                     repo_c = canonical_queue_repo(repo)
+                    pass_sha = _done_mrb_pass_sha_in_doc(
+                        doc, nick, repo, ident, home=home
+                    )
                     kept = []
+                    import mrb_merge_on_green as _mog_sha
+
                     for r in doc.get("unaccepted") or []:
                         if not isinstance(r, dict):
                             continue
@@ -8509,6 +8584,13 @@ def release_duplicate_done_hold(home: Path, nick: str) -> str:
                             and canonical_queue_repo(str(r.get("repo") or "")) == repo_c
                             and _norm_row_id(str(r.get("id") or "")) == want
                         ):
+                            row_sha = _sha_from_queue_row(r)
+                            if (
+                                pass_sha
+                                and row_sha
+                                and not _mog_sha.shas_match(pass_sha, row_sha)
+                            ):
+                                kept.append(r)
                             continue
                         kept.append(r)
                     if len(kept) != len(doc.get("unaccepted") or []):
