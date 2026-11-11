@@ -149,7 +149,16 @@ def test_offer_skips_fake_mrb_pull_and_offers_next(tmp_path, monkeypatch):
 
 
 def test_offer_skips_stale_pull_when_pr_exists_false(tmp_path, monkeypatch):
+    """Definitive-false ``pr_exists`` purges stale MRB #227 and offers #240.
+
+    Production ``!bored`` is zero-call (FR #3212 / #3929); unknown verdicts fail
+    open, so this pin opts in to ``BORED_GITHUB_CALL_BUDGET=2`` (same pattern as
+    FR #740 / #1313 / #2340) so the injected checker can return a definitive
+    false for #227. Do not write ``offer-precompute.json`` here — a matching
+    fingerprint forces the effective budget to zero.
+    """
     monkeypatch.setenv("BOB_DIGEST_HOME", str(tmp_path))
+    monkeypatch.setattr(gitclaim, "BORED_GITHUB_CALL_BUDGET", 2)
     gitclaim._write_queue(
         gitclaim.queue_path(tmp_path),
         {
@@ -178,7 +187,11 @@ def test_offer_skips_stale_pull_when_pr_exists_false(tmp_path, monkeypatch):
         },
     )
 
+    seen: list[str] = []
+
     def pr_exists(repo: str, num: str) -> bool:
+        del repo
+        seen.append(str(num))
         return num == "240"
 
     st, job = gitclaim.offer_focus_top(
@@ -187,6 +200,12 @@ def test_offer_skips_stale_pull_when_pr_exists_false(tmp_path, monkeypatch):
     assert st == "ok"
     assert job["id"] == "#240"
     assert "pull/240" in str(job.get("url") or "")
+    assert "227" in seen
+    left = gitclaim.load_unaccepted(tmp_path)
+    assert not any(str(r.get("id") or "") in ("#227", "227") for r in left)
+    kept = [r for r in left if str(r.get("id") or "") in ("#240", "240")]
+    assert len(kept) == 1
+    assert str(kept[0].get("offered_to") or "") == "marchhare-1"
 
 
 def test_offer_skips_mrb_pass_row_even_when_only_line_set(tmp_path, monkeypatch):
