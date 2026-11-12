@@ -519,6 +519,18 @@ class BuildLock:
             return None
         return str(ent.get("id") or ent)
 
+    def running(self) -> list[tuple[str, str]]:
+        """FR #6715: all held (repo, build_id) pairs, sorted by repo."""
+        data = self._read()
+        builds = data.get("builds") or {}
+        out: list[tuple[str, str]] = []
+        for repo, ent in sorted(builds.items()):
+            if not ent:
+                continue
+            rid = str(ent.get("id") or ent) if isinstance(ent, dict) else str(ent)
+            out.append((str(repo), rid))
+        return out
+
     def age_s(self, repo: str, *, now: float | None = None) -> float | None:
         """Seconds since lock start, or None when unlocked / missing started."""
         data = self._read()
@@ -607,6 +619,13 @@ class BuildDecision:
     route: str = ""  # wire / queue hint for build machine
 
 
+# FR #6715: reserved verbs are recognised before the args are read as a build request,
+# so a mistyped/unknown subcommand can never fall through to a runner start.
+BUILD_SUBCOMMANDS = frozenset(
+    ("status", "cancel", "dry-run", "dryrun", "dry", "preflight")
+)
+
+
 def parse_build(body: str) -> tuple[bool, str, str] | None:
     """Return (is_build, subcmd, rest) or None if not !build."""
     text = (body or "").strip()
@@ -617,7 +636,7 @@ def parse_build(body: str) -> tuple[bool, str, str] | None:
         return True, "", ""
     sub = parts[1].lower()
     rest = parts[2] if len(parts) > 2 else ""
-    if sub in ("status", "cancel", "dry-run", "dryrun", "dry", "preflight"):
+    if sub in BUILD_SUBCOMMANDS:
         return True, "dry-run" if sub in ("dry-run", "dryrun", "dry") else sub, rest
     # !build <repos> <version> [ref]
     return True, "run", text[len("!build") :].strip()
@@ -670,11 +689,40 @@ def decide_build(
 
     if sub == "cancel":
         repo = (rest or "").strip()
-        if not repo or not REPO_RE.match(repo):
-            return BuildDecision(False, "usage", ["build: usage !build cancel <owner/repo>"])
-        if lock:
-            lock.release(repo)
-        return BuildDecision(True, "cancel", [f"build: cancelled lock for {repo}"], [repo], cancel=True)
+        if repo:
+            if not REPO_RE.match(repo):
+                return BuildDecision(
+                    False, "usage", ["build: usage !build cancel [<owner/repo>]"]
+                )
+            rid = lock.running_id(repo) if lock else None
+            if not rid:
+                return BuildDecision(
+                    False,
+                    "nothing_running",
+                    [f"build: no build running for {repo}"],
+                    [repo],
+                    status_only=True,
+                )
+            if lock:
+                lock.release(repo)
+            return BuildDecision(
+                True, "cancel", [f"build: cancelled {repo} id={rid}"], [repo], cancel=True
+            )
+        # FR #6715: bare !build cancel frees whatever the chair is holding; never a run.
+        running = lock.running() if lock else []
+        if not running:
+            return BuildDecision(
+                False, "nothing_running", ["build: no build running"], status_only=True
+            )
+        for held_repo, _rid in running:
+            lock.release(held_repo)
+        return BuildDecision(
+            True,
+            "cancel",
+            [f"build: cancelled {r} id={rid}" for r, rid in running],
+            [r for r, _rid in running],
+            cancel=True,
+        )
 
     if sub == "preflight":
         # FR #6492: route a no-build environment check to the recipe machine.
@@ -733,20 +781,19 @@ def decide_build(
             dry_run=True,
         )
     tokens = arg.split()
+    usage_lines = [
+        "build: usage !build <owner/repo>[,owner/repo...] <version> [ref]",
+        "build: also !build status|cancel|dry-run|preflight ...",
+    ]
     if len(tokens) < 2:
-        return BuildDecision(
-            False,
-            "usage",
-            [
-                "build: usage !build <owner/repo>[,owner/repo...] <version> [ref]",
-                "build: also !build status|cancel|dry-run|preflight ...",
-            ],
-            dry_run=dry,
-        )
+        return BuildDecision(False, "usage", usage_lines, dry_run=dry)
     try:
         repos = parse_repos_csv(tokens[0])
     except ValueError as exc:
-        return BuildDecision(False, "bad_repo", [f"build: {exc}"], dry_run=dry)
+        # FR #6715: unknown subcommand/argument -> usage refusal (never a build request).
+        return BuildDecision(
+            False, "usage", usage_lines + [f"build: {exc}"], dry_run=dry
+        )
     version = tokens[1]
     ref = tokens[2] if len(tokens) > 2 else "HEAD"
     refusal = version_refusal(version)

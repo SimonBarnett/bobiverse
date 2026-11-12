@@ -59,7 +59,7 @@ Hard timeouts (FR #3965 class) via `run_command` kill + `timed_out` => `step_fai
 | `!build <repos> <version> [ref]` | Chair then recipe machine (version must be numeric x.y.z / x.y.z.w, else refused, #4186) | Chair announces wire `BUILD v1 repos=... version=... ref=... id=b-...` on `#bobiverse` (and PM reply lines). Recipe host `consume_build_v1` enqueues `home/build-queue/*.json`; `BuildRunner.run()` executes suites/pack/release. |
 | `!build status [owner/repo]` | Chair | Running lock id or none. |
 | `!build preflight <owner/repo>` | Chair then recipe machine | FR #6492: env check only; one line per item; exit non-zero on any missing. |
-| `!build cancel <owner/repo>` | Chair | Clear lock / cancel path. |
+| `!build cancel [owner/repo]` | Chair | FR #6715: bare cancels whatever is running (or "no build running"); never starts a runner. |
 
 Ops only (simon / bob-* ears). Workers never see `!build` in `!help`.
 
