@@ -1736,7 +1736,9 @@ def worker_prompt(worker_dir: str, home: str, machine: str, nick: str) -> str:
     return (
         f"You are a NEW Bobiverse worker agent (fresh session - never resume or continue an older one). "
         f"Your working folder is {worker_dir}. FIRST read {worker_dir}\\AGENTS.md and the process-local core stub "
-        f"(skill-dag-core). Do not list other skill-dag index nodes in this prompt; resolve per job. "
+        f"(skill-dag-core). Do not list other skill-dag index nodes in this prompt; resolve per job: call skill-dag MCP resolve then get_skill "
+        f"(do not read every skill in {worker_dir}\\.grok\\skills). "
+        f"(start with bobiverse-worker-seat, then bobiverse-bob-worker, harvest). "
         f"You are on IRC as {nick} in #{machine} only; this program keeps the connection. Messages from IRC arrive as typed input of the form "
         f"'FROM <nick> <target> <text>' - treat each as the task, answer by appending 'PRIVMSG #{machine} :<text>' to the seat outbox. "
         f"Outbox path: use $env:BOB_OUTBOX (set by bob-worker) or {outbox} - NEVER the ear's home\\outbox.txt. "
@@ -1929,7 +1931,14 @@ def rules_text(folder: str, kind: str) -> str:
         ),
     }.get(kind, "Worker seat: IRC is handled for you.")
     head = ("Maintenance session (resumed when a previous one exists, else new). " if kind == "maintenance" else "NEW session. ")
-    return (f"{head}Read the skills in {folder}\\.grok\\skills and {folder}\\AGENTS.md before doing anything. "
+    if kind in ("plan", "monitor", "maintenance"):
+        skill_line = f"Read the skills in {folder}\\.grok\\skills and {folder}\\AGENTS.md before doing anything. "
+    else:
+        skill_line = (
+            f"Read {folder}\\AGENTS.md. Per assigned job, call skill-dag MCP resolve then get_skill "
+            f"(do not read every skill in {folder}\\.grok\\skills). "
+        )
+    return (f"{head}{skill_line}"
             f"CAST IRON harvest rule: harvest skills and file every issue/FR/bug with Report-BobiverseIntakeIssue.ps1 (intake webhook) in the same turn. "
             f"One issue per issue: when MRB (or any worker) finds a twin/duplicate issue, close the later one and comment a reference to the first; never leave both open; done issues are closed too. "
             f"Skill-intake consolidation: when a worker takes an FR from skill intake (label:skill / harvest), it must close all open issues for that skill book (every harvest/skill issue targeting the same book), open one consolidated PR for them, and cite every issue it closes (Closes #N for each); no per-issue PRs for the same skill book; the worker closes the issues itself as part of DONE. "
@@ -1946,6 +1955,41 @@ class LaunchSpec:
     session_id: str
     files: dict = field(default_factory=dict)  # path -> text written before spawn (cursor launcher + prompt)
     env_extra: dict = field(default_factory=dict)
+    write_skill_dag_mcp: bool = False  # FR #6863: agent seats only
+
+
+def skill_dag_mcp_script_path(worker_cwd: str) -> Path:
+    """``<install>/common/scripts/skill_dag_mcp.py`` from worker cwd ``<install>/worker``."""
+    return Path(worker_cwd).resolve().parent / "common" / "scripts" / "skill_dag_mcp.py"
+
+
+def write_skill_dag_mcp_config(worker_cwd: str) -> Path:
+    """Write ``[mcp_servers.skill-dag]`` to the worker cwd ``.grok/config.toml`` only (FR #6863)."""
+    grok_dir = Path(worker_cwd) / ".grok"
+    grok_dir.mkdir(parents=True, exist_ok=True)
+    cfg = grok_dir / "config.toml"
+    script = skill_dag_mcp_script_path(worker_cwd)
+    block = (
+        "[mcp_servers.skill-dag]\n"
+        'command = "python"\n'
+        f'args = ["{script.as_posix()}"]\n'
+    )
+    if cfg.is_file():
+        text = cfg.read_text(encoding="utf-8")
+        if "[mcp_servers.skill-dag]" in text:
+            return cfg
+        if text and not text.endswith("\n"):
+            text += "\n"
+        cfg.write_text(text + block, encoding="utf-8")
+        return cfg
+    cfg.write_text(block, encoding="utf-8")
+    return cfg
+
+
+def write_skill_dag_mcp_config_if_agent(spec: LaunchSpec) -> None:
+    if not getattr(spec, "write_skill_dag_mcp", False):
+        return
+    write_skill_dag_mcp_config(spec.cwd)
 
 
 def assert_fresh(argv: list, files: Optional[dict] = None, allow_resume: bool = False) -> None:
@@ -2294,7 +2338,13 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
     else:
         raise ValueError(f"unknown agent kind {kind!r}")
     assert_fresh(argv, {k: v for k, v in files.items() if k.endswith(".ps1")}, allow_resume=bool(resume_session_id))
-    return LaunchSpec(argv=argv, cwd=cwd, session_id=sid, files=files)
+    return LaunchSpec(
+        argv=argv,
+        cwd=cwd,
+        session_id=sid,
+        files=files,
+        write_skill_dag_mcp=(str(mode).strip().lower() == "agent"),
+    )
 
 
 class ProcHandle:
@@ -2315,6 +2365,7 @@ def default_spawn(spec: LaunchSpec, env: dict) -> ProcHandle:
     for path, text in spec.files.items():
         Path(path).parent.mkdir(parents=True, exist_ok=True)
         Path(path).write_text(text, encoding="utf-8")
+    write_skill_dag_mcp_config_if_agent(spec)
     # t771u: ONE window. The agent INHERITS this exe's console (no CREATE_NEW_CONSOLE, no second console); a kill-on-close job object
     # makes the agent die with us even if we are killed. "New agent every time" is about the SESSION, not the window: the exe's
     # window IS the agent's window and a new click opens a new exe + window.
