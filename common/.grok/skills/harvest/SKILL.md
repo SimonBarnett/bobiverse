@@ -386,6 +386,7 @@ routes to bobiverse via the split rule.
 - Worker skill DAG: put depends_on in YAML after description; job-fr must list job-irc and must not list job-uat.
 - Skill-dag MCP is stdio-only: resolve FR includes job-irc ancestors and skips unattached UAT; skip over-budget bodies; refuse paths outside --root; no list-all tool.
 - On Windows, Path(www / '/jeeves') is drive-root; skip absolute same-host hrefs in static link resolvers and pin /jeeves as a live route.
+- When launch argv grows (--root packs), pin only args[0] exists; leave extra flags to the FR that added them.
 - Keep the stamped BOB_OUTBOX path: recreate that run dir on inject/drain; never glob the newest worker-* folder.
 
 ## Harvest digest (lessons audit 2026-10-06)

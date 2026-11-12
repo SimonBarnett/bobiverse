@@ -282,3 +282,4 @@ Generalised from 21 harvested lessons that never reached this book (audit for FR
 - skill-dag launch --root must list worker/.grok/skills, bob/.grok/skills, common/.grok/skills, and ~/.grok/skills; Grok FR #6891 bound cwd must get those install roots, not run_dir parent.
 - FIX fold LaunchSpec: keep write_opencode_skill_dag_mcp (FR #6898) and skill_dag_mcp_args plus skill_dag_job_worktree (FR #6899) together.
 - **FR #6928:** after rewriting grok/cursor skill-dag MCP files for `--job-worktree`, restart that seat's skill-dag stdio child (descendant of the agent, cmdline contains `skill_dag_mcp.py` plus a seat path). Do not kill a sibling seat's MCP. OpenCode already starts a per-job process.
+- On assign, rewrite grok bound config.toml and cursor .cursor/mcp.json with --job-worktree for that tree only; drop the flag at job end; never write user MCP configs.
