@@ -113,7 +113,8 @@ def render_setting_input(s: dict[str, Any]) -> str:
     if choices:
         cur = val
         opts = list(choices)
-        if cur and cur not in opts:
+        # Empty current value is outside the list too (FR #6753); keep it selected.
+        if cur not in opts:
             opts.append(cur)
         parts = []
         for c in opts:
@@ -170,6 +171,7 @@ async function save() {{
   for (const el of inputs) {{
     const key = el.name;
     let value = el.value;
+    if (el.type === 'checkbox') value = el.checked ? '1' : '0';
     if (el.dataset.secret === '1' && !value) continue;
     const r = await fetch('/api/settings/' + encodeURIComponent(key), {{
       method: 'PUT',
