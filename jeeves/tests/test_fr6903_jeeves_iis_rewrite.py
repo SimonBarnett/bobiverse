@@ -2,12 +2,18 @@
 from __future__ import annotations
 
 import re
+import shutil
 import subprocess
 from pathlib import Path
+
+import pytest
 
 from repo_layout import REPO
 
 SCRIPT = REPO / "jeeves" / "scripts" / "Install-BobWebhooks.ps1"
+# FR #6914: WinPS 5.1 seats have powershell.exe, not pwsh (same as test_webhooks_no_secret).
+PS = shutil.which("powershell") or shutil.which("pwsh")
+NEED_PS = pytest.mark.skipif(not PS, reason="powershell or pwsh required")
 
 _EXISTING = (
     "BobReportWebhook",
@@ -21,7 +27,7 @@ _EXISTING = (
 
 def _run_install(physical: Path, *, what_if: bool = False, backend: str = "http://127.0.0.1:7700") -> subprocess.CompletedProcess:
     args = [
-        "pwsh",
+        PS,
         "-NoProfile",
         "-File",
         str(SCRIPT),
@@ -45,6 +51,7 @@ def test_fr6903_script_pins_jeeves_rule_and_ascii():
     assert text.count("BobJeevesAppliance") >= 2  # fresh template + idempotent insert
 
 
+@NEED_PS
 def test_fr6903_generated_webconfig_idempotent(tmp_path: Path):
     site = tmp_path / "irc-ntsa"
     site.mkdir()
@@ -85,6 +92,7 @@ def test_fr6903_jeeves_rule_does_not_match_bob_v1_or_docs():
     assert not rx.match("docs/webhooks/index.html")
 
 
+@NEED_PS
 def test_fr6903_whatif_does_not_write(tmp_path: Path):
     site = tmp_path / "irc-ntsa-whatif"
     site.mkdir()
@@ -94,6 +102,7 @@ def test_fr6903_whatif_does_not_write(tmp_path: Path):
     assert not (site / "web.config").exists()
 
 
+@NEED_PS
 def test_fr6903_inserts_into_existing_six_rule_config(tmp_path: Path):
     """Idempotent insert when an older web.config lacks BobJeevesAppliance."""
     site = tmp_path / "irc-ntsa-old"
@@ -139,3 +148,10 @@ def test_fr6903_inserts_into_existing_six_rule_config(tmp_path: Path):
     assert body.count('name="BobJeevesAppliance"') == 1
     for name in _EXISTING:
         assert body.count(f'name="{name}"') == 1, name
+
+def test_fr6914_run_install_uses_which_powershell_not_bare_pwsh():
+    assert PS == (shutil.which("powershell") or shutil.which("pwsh"))
+    assert PS
+    helper = Path(__file__).read_text(encoding="utf-8").split("def _run_install", 1)[1]
+    helper = helper.split("def test_fr6903_script", 1)[0]
+    assert '"pwsh"' not in helper
