@@ -377,6 +377,7 @@ routes to bobiverse via the split rule.
 - Clipboard inject_console tests must monkeypatch.setenv BOB_WORKER_INJECT_PASTE=1; skip visible-console tray tests when ProcessIdToSessionId is 0 (FR #6729).
 - skip_unless_interactive_desktop must probe EnumWindows/OpenInputDesktop for sid>0; empty SESSIONNAME alone is not a skip (FR #6733).
 - Two shared distinctive tokens are not a harvest twin; require a phrase or >=5 tokens and print the covering PR url.
+- Non-empty SettingSpec.choices on a non-bool setting render a select; a value outside the list is an extra selected option; bools stay checkboxes; do not invent SCHEMA choices for paths URLs or seconds.
 
 ## Harvest digest (lessons audit 2026-10-06)
 
