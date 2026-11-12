@@ -1718,7 +1718,9 @@ def describe_agent_child_launch(
             import skill_dag_bound as _sdb
 
             mcp_script = skill_dag_mcp_script_path(folder)
-            bound = _sdb.prepare_bound_agent_cwd(rd, folder, mcp_script=mcp_script)
+            bound = _sdb.prepare_bound_agent_cwd(
+                rd, folder, mcp_script=mcp_script, mcp_roots=skill_dag_vision_roots(folder)
+            )
             grok_home = _sdb.prepare_seat_grok_home(rd, trust_paths=[bound])
             launch_folder = str(bound)
             bound_meta = {
@@ -2045,7 +2047,7 @@ def skill_dag_vision_roots(worker_cwd: str, *, home: Path | None = None) -> list
     user = Path(home) if home is not None else Path.home()
     return [
         cwd / ".grok" / "skills",
-        install / ".grok" / "skills",
+        install / "bob" / ".grok" / "skills",
         install / "common" / ".grok" / "skills",
         user / ".grok" / "skills",
     ]

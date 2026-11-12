@@ -14,7 +14,7 @@ def _tree(tmp_path: Path) -> dict[str, Path]:
     install = tmp_path / "install"
     worker = install / "worker"
     seat = worker / ".grok" / "skills"
-    bobpack = install / ".grok" / "skills"
+    bobpack = install / "bob" / ".grok" / "skills"
     harvest = install / "common" / ".grok" / "skills"
     scripts = install / "scripts"
     for p in (worker, seat, bobpack, harvest, scripts):
@@ -57,6 +57,7 @@ def test_fr6899_grok_and_cursor_mcp_args_include_seat_and_harvest_roots(tmp_path
         assert "skill_dag_mcp.py" in joined
         assert "--root" in args
         assert t["seat"].as_posix() in args
+        assert t["bobpack"].as_posix() in args
         assert t["harvest"].as_posix() in args
 
 
@@ -89,3 +90,22 @@ def test_fr6899_refresh_replaces_stale_skill_dag_args(tmp_path):
     assert "old.py" not in body
     assert "--root" in body
     assert "skill_dag_mcp.py" in body
+
+def test_fr6899_grok_bound_cwd_mcp_uses_install_vision_roots(tmp_path):
+    t = _tree(tmp_path)
+    run = tmp_path / "run" / "worker-x"
+    run.mkdir(parents=True)
+    child = bw.describe_agent_child_launch(
+        kind="grok",
+        mode="agent",
+        cwd=str(t["worker"]),
+        run_dir=run,
+        machine="flamingo",
+        nick="flamingo-1",
+        agent_exe=r"C:\\fake\\agent.exe",
+    )
+    cfg = Path(child["cwd"]) / ".grok" / "config.toml"
+    body = cfg.read_text(encoding="utf-8").replace("\\", "/")
+    assert t["harvest"].as_posix() in body
+    assert t["bobpack"].as_posix() in body
+    assert "--root" in body
