@@ -53,11 +53,14 @@ def test_agent_child_launch_includes_seat_env_and_skills(tmp_path):
     assert env["BOB_NICK"] == "win-mpre8vi4u6u-1"
     assert env["BOB_AGENT_NICK"] == "win-mpre8vi4u6u-1"
     assert env["BOB_MACHINE"] == "win-mpre8vi4u6u"
-    assert child["cwd"] == str(cwd)
-    assert str(cwd / ".grok" / "skills") in child["skills_dir"] or child["skills_dir"] == str(cwd / ".grok" / "skills")
+    # FR #6891: grok agent seats launch from run_dir/bound-cwd (catalog bound).
+    assert child["cwd"] == str(run_dir / "bound-cwd")
+    assert child["skills_dir"] == str(Path(child["cwd"]) / ".grok" / "skills")
+    assert child["env"].get("GROK_HOME") == str(run_dir / "grok-home")
     assert "AGENTS.md" in child["prompt"] or "bobiverse-worker-seat" in child["prompt"]
     assert child["argv"][0] == r"C:\fake\agent.exe"
-    assert "--cwd" in child["argv"] or any(str(cwd) == a for a in child["argv"])
+    assert "--cwd" in child["argv"]
+    assert str(run_dir / "bound-cwd") in child["argv"]
 
 
 def test_plan_child_launch_matches_agent_env_keys(tmp_path):
@@ -65,20 +68,27 @@ def test_plan_child_launch_matches_agent_env_keys(tmp_path):
     cwd = tmp_path / "plan"
     cwd.mkdir()
     (cwd / ".grok" / "skills").mkdir(parents=True)
+    worker = tmp_path / "worker"
+    worker.mkdir(exist_ok=True)
+    (worker / "AGENTS.md").write_text("x", encoding="utf-8")
+    (tmp_path / "common" / "scripts").mkdir(parents=True)
+    (tmp_path / "common" / "scripts" / "skill_dag_mcp.py").write_text("#\n", encoding="utf-8")
     run_dir = tmp_path / "run" / "plan-x"
     run_dir.mkdir(parents=True)
     agent = bw.describe_agent_child_launch(
-        kind="grok", mode="agent", cwd=str(tmp_path / "worker"), run_dir=run_dir,
+        kind="grok", mode="agent", cwd=str(worker), run_dir=run_dir,
         machine="m", nick="m-1", agent_exe=r"C:\a.exe",
     )
-    # use same run_dir shape for plan
     run2 = tmp_path / "run" / "plan-y"
     run2.mkdir()
-    (tmp_path / "worker").mkdir(exist_ok=True)
     plan = bw.describe_agent_child_launch(
         kind="grok", mode="plan", cwd=str(cwd), run_dir=run2,
         machine="m", nick="m-plan", agent_exe=r"C:\a.exe",
     )
-    assert set(agent["env"]) == set(plan["env"])
+    bob_keys = {k for k in agent["env"] if k.startswith("BOB_")}
+    assert bob_keys == {k for k in plan["env"] if k.startswith("BOB_")}
     for k in ("BOB_OUTBOX", "BOB_SHOP", "BOB_NICK", "BOB_AGENT_NICK", "BOB_MACHINE"):
         assert k in plan["env"]
+    # FR #6891: grok agent seats add GROK_HOME for catalog bound; plan does not.
+    assert "GROK_HOME" in agent["env"]
+    assert "GROK_HOME" not in plan["env"]
