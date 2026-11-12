@@ -66,6 +66,14 @@ _SCAN_ALLOW_MISSING = frozenset(
 
 
 @dataclass(frozen=True)
+class ApplianceGroupRow:
+    id: str
+    title: str
+    description: str
+    keys: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
 class SettingSpec:
     key: str
     type: str  # bool | int | float | str | secret
@@ -75,6 +83,95 @@ class SettingSpec:
     secret: bool = False
     description: str = ""
     choices: tuple[str, ...] = ()
+    group: str = ""
+    group_title: str = ""
+    group_description: str = ""
+
+
+# FR #6752: Groups table in jeeves/docs/feature-request-jeeves-appliance-ui-2026-11-12.md
+SETTING_GROUPS: tuple[ApplianceGroupRow, ...] = (
+    ApplianceGroupRow(
+        "fuel",
+        "Fuel and review waits",
+        "Which review fuels run, and how long CodeRabbit is given",
+    ),
+    ApplianceGroupRow(
+        "digest",
+        "Digest",
+        "Where the digest lives and when it counts as stale",
+    ),
+    ApplianceGroupRow(
+        "irc",
+        "IRC timing",
+        "Bored idle and IRC reconnect timing. Passwords are under Secrets",
+    ),
+    ApplianceGroupRow("homes", "Chair home", "Overrides for the chair home directory"),
+    ApplianceGroupRow(
+        "wake",
+        "Wake and ticket closure",
+        "How Jeeves wakes Bob when work closes or stalls",
+    ),
+    ApplianceGroupRow(
+        "probes",
+        "Webhook probes",
+        "Bases the chair uses to probe local and public webhooks",
+    ),
+    ApplianceGroupRow("resync", "Resync", "Which repos the chair resyncs"),
+    ApplianceGroupRow(
+        "secrets",
+        "Secrets",
+        "Write-only. The page shows set or unset, never the value",
+    ),
+)
+SETTING_GROUPS_BY_ID: dict[str, ApplianceGroupRow] = {g.id: g for g in SETTING_GROUPS}
+
+
+def load_appliance_groups_table(repo: Path) -> tuple[ApplianceGroupRow, ...]:
+    """Parse the Groups table (FR-04 assignment) from the appliance UI pack."""
+    path = (
+        Path(repo)
+        / "jeeves"
+        / "docs"
+        / "feature-request-jeeves-appliance-ui-2026-11-12.md"
+    )
+    rows: list[ApplianceGroupRow] = []
+    in_table = False
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if line.startswith("| group |"):
+            in_table = True
+            continue
+        if not in_table:
+            continue
+        if line.startswith("|---") or line.startswith("| ---"):
+            continue
+        if not line.startswith("|"):
+            break
+        parts = [p.strip() for p in line.strip().strip("|").split("|")]
+        if len(parts) < 4:
+            continue
+        keys = tuple(k.strip() for k in parts[3].split(",") if k.strip())
+        rows.append(
+            ApplianceGroupRow(
+                id=parts[0],
+                title=parts[1],
+                description=parts[2],
+                keys=keys,
+            )
+        )
+    return tuple(rows)
+
+
+def schema_group_gaps() -> list[str]:
+    """SCHEMA keys missing group, group title, or group description (FR #6752)."""
+    gaps: list[str] = []
+    for spec in SCHEMA:
+        if not (
+            str(spec.group or "").strip()
+            and str(spec.group_title or "").strip()
+            and str(spec.group_description or "").strip()
+        ):
+            gaps.append(spec.key)
+    return gaps
 
 
 def _spec(
@@ -87,7 +184,9 @@ def _spec(
     secret: bool = False,
     description: str = "",
     choices: tuple[str, ...] = (),
+    group: str = "",
 ) -> SettingSpec:
+    g = SETTING_GROUPS_BY_ID.get(group)
     return SettingSpec(
         key=key,
         type=typ,
@@ -97,6 +196,9 @@ def _spec(
         secret=secret or typ == "secret",
         description=description,
         choices=tuple(choices or ()),
+        group=group,
+        group_title=(g.title if g else ""),
+        group_description=(g.description if g else ""),
     )
 
 
@@ -107,72 +209,156 @@ SCHEMA: tuple[SettingSpec, ...] = (
         "BOB_FUEL_CODERABBIT",
         "bool",
         "0",
+        group="fuel",
         description="Hold MRB for CodeRabbit when 1/on/true (FR #5317/#5865).",
     ),
     _spec(
         "BOB_CODERABBIT_WAIT_MIN",
         "float",
         "12",
+        group="fuel",
         description="Minutes to wait for CodeRabbit before coderabbit=timeout.",
     ),
     _spec(
         "BOB_CODERABBIT_ABSENT_SEC",
         "float",
         "120",
+        group="fuel",
         description="Silence seconds before coderabbit=absent.",
     ),
     _spec(
         "BOB_FUEL_COPILOT",
         "bool",
         "0",
+        group="fuel",
         description="Optional Copilot fuel stage (never required for fleet offer).",
     ),
     _spec(
         "BOB_FUEL_FLEET",
         "bool",
         "0",
+        group="fuel",
         description="Optional fleet fuel stage (off by default).",
     ),
     _spec(
         "BOB_COPILOT_OBSERVE",
         "bool",
         "0",
+        group="fuel",
         description="Observe-only Copilot dispatch (no live agents/tasks POST).",
     ),
-    _spec("BOB_DIGEST_HOME", "str", "", description="Digest / report home directory."),
-    _spec("BOB_DIGEST_URL", "str", "", description="Public digest POST URL override."),
-    _spec("BOB_DIGEST_STALE_S", "float", "900", description="Digest stale threshold seconds."),
-    _spec("BOB_PUBLIC_BASE", "str", "", description="Public webhook base URL."),
-    _spec("BOB_BORED_IDLE_S", "float", "120", description="Idle seconds before !bored."),
-    _spec("BOB_IRC_IDLE_DEAD_S", "float", "", description="IRC idle dead timeout seconds."),
-    _spec("BOB_IRC_IDLE_PING_S", "float", "", description="IRC idle ping interval seconds."),
-    _spec("BOB_IRC_RECONNECT_MAX", "int", "", description="Max IRC reconnect attempts."),
-    _spec("BOB_IRC_RECV_TIMEOUT_S", "float", "", description="IRC recv timeout seconds."),
-    _spec("BOB_IRC_THROTTLE_BASE_S", "float", "", description="IRC throttle base seconds."),
-    _spec("JEEVES_HOME", "str", "", store="env", description="Chair home override."),
-    _spec("BOB_JEEVES_HOME", "str", "", store="env", description="Alias chair home override."),
+    _spec(
+        "BOB_DIGEST_HOME",
+        "str",
+        "",
+        group="digest",
+        description="Digest / report home directory.",
+    ),
+    _spec(
+        "BOB_DIGEST_URL",
+        "str",
+        "",
+        group="digest",
+        description="Public digest POST URL override.",
+    ),
+    _spec(
+        "BOB_DIGEST_STALE_S",
+        "float",
+        "900",
+        group="digest",
+        description="Digest stale threshold seconds.",
+    ),
+    _spec(
+        "BOB_PUBLIC_BASE",
+        "str",
+        "",
+        group="digest",
+        description="Public webhook base URL.",
+    ),
+    _spec(
+        "BOB_BORED_IDLE_S",
+        "float",
+        "120",
+        group="irc",
+        description="Idle seconds before !bored.",
+    ),
+    _spec(
+        "BOB_IRC_IDLE_DEAD_S",
+        "float",
+        "",
+        group="irc",
+        description="IRC idle dead timeout seconds.",
+    ),
+    _spec(
+        "BOB_IRC_IDLE_PING_S",
+        "float",
+        "",
+        group="irc",
+        description="IRC idle ping interval seconds.",
+    ),
+    _spec(
+        "BOB_IRC_RECONNECT_MAX",
+        "int",
+        "",
+        group="irc",
+        description="Max IRC reconnect attempts.",
+    ),
+    _spec(
+        "BOB_IRC_RECV_TIMEOUT_S",
+        "float",
+        "",
+        group="irc",
+        description="IRC recv timeout seconds.",
+    ),
+    _spec(
+        "BOB_IRC_THROTTLE_BASE_S",
+        "float",
+        "",
+        group="irc",
+        description="IRC throttle base seconds.",
+    ),
+    _spec(
+        "JEEVES_HOME",
+        "str",
+        "",
+        store="env",
+        group="homes",
+        description="Chair home override.",
+    ),
+    _spec(
+        "BOB_JEEVES_HOME",
+        "str",
+        "",
+        store="env",
+        group="homes",
+        description="Alias chair home override.",
+    ),
     _spec(
         "JEEVES_TICKET_CLOSURE_S",
         "float",
         "900",
+        group="wake",
         description="Ticket-closure backup poll interval seconds.",
     ),
     _spec(
         "JEEVES_TICKET_CLOSURE_WAKE",
         "bool",
         "0",
+        group="wake",
         description="Force legacy GrokBot wake when no wake URL.",
     ),
     _spec(
         "JEEVES_TICKET_CLOSURE_WAKE_URL",
         "str",
         "",
+        group="wake",
         description="HTTPS Bob wake URL (close + stall callbacks).",
     ),
     _spec(
         "JEEVES_BOB_WAKE_URL",
         "str",
         "",
+        group="wake",
         description="Alias for ticket-closure / Bob wake URL.",
     ),
     _spec(
@@ -181,6 +367,7 @@ SCHEMA: tuple[SettingSpec, ...] = (
         "",
         restart=True,
         secret=True,
+        group="secrets",
         description="Wake webhook Bearer secret (write-only).",
     ),
     _spec(
@@ -189,17 +376,37 @@ SCHEMA: tuple[SettingSpec, ...] = (
         "",
         restart=True,
         secret=True,
+        group="secrets",
         description="Alias wake webhook secret (write-only).",
     ),
-    _spec("JEEVES_PROBE_LOCAL", "str", "", description="Local webhook probe base URL."),
-    _spec("JEEVES_PROBE_PUBLIC", "str", "", description="Public webhook probe base URL."),
-    _spec("JEEVES_RESYNC_REPOS", "str", "", description="Override resync repo list."),
+    _spec(
+        "JEEVES_PROBE_LOCAL",
+        "str",
+        "",
+        group="probes",
+        description="Local webhook probe base URL.",
+    ),
+    _spec(
+        "JEEVES_PROBE_PUBLIC",
+        "str",
+        "",
+        group="probes",
+        description="Public webhook probe base URL.",
+    ),
+    _spec(
+        "JEEVES_RESYNC_REPOS",
+        "str",
+        "",
+        group="resync",
+        description="Override resync repo list.",
+    ),
     _spec(
         "GH_TOKEN",
         "secret",
         "",
         restart=True,
         secret=True,
+        group="secrets",
         description="GitHub token for chair API (write-only; file-backed, env overrides).",
     ),
     _spec(
@@ -208,6 +415,7 @@ SCHEMA: tuple[SettingSpec, ...] = (
         "",
         restart=True,
         secret=True,
+        group="secrets",
         description="Alternate GitHub token (write-only; file-backed, env overrides).",
     ),
     _spec(
@@ -216,6 +424,7 @@ SCHEMA: tuple[SettingSpec, ...] = (
         "",
         restart=True,
         secret=True,
+        group="secrets",
         description="Ergo connect password (write-only; file-backed, env overrides).",
     ),
     _spec(
@@ -224,6 +433,7 @@ SCHEMA: tuple[SettingSpec, ...] = (
         "",
         restart=True,
         secret=True,
+        group="secrets",
         description="SASL password (write-only; file-backed, env overrides).",
     ),
     _spec(
@@ -231,6 +441,7 @@ SCHEMA: tuple[SettingSpec, ...] = (
         "str",
         "",
         restart=True,
+        group="irc",
         description="SASL username (file-backed; env overrides).",
     ),
 )
@@ -385,6 +596,9 @@ def api_get_settings(home: Path, *, client_ip: str) -> dict[str, Any]:
                 "secret": bool(spec.secret),
                 "description": spec.description,
                 "choices": list(spec.choices),
+                "group": spec.group,
+                "group_title": spec.group_title,
+                "group_description": spec.group_description,
             }
         )
     return {"ok": True, "settings": rows}
