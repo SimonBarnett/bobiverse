@@ -62,6 +62,7 @@ def test_fr2412_lock_and_cooldown(tmp_path: Path):
         spawn_fn=fake_spawn,
         resolve_cwd=fake_cwd,
         resolve_exe=lambda _c: exe,
+        is_chair_host=True,
     )
     assert r1.action == "spawn"
     assert r1.pid == 4242
@@ -83,6 +84,7 @@ def test_fr2412_lock_and_cooldown(tmp_path: Path):
             spawn_fn=fake_spawn,
             resolve_cwd=fake_cwd,
             resolve_exe=lambda _c: exe,
+            is_chair_host=True,
         )
         assert r2.action == "skip"
         assert "already_live" in r2.reason
@@ -99,6 +101,7 @@ def test_fr2412_lock_and_cooldown(tmp_path: Path):
         spawn_fn=fake_spawn,
         resolve_cwd=fake_cwd,
         resolve_exe=lambda _c: exe,
+        is_chair_host=True,
     )
     assert r3.action == "skip"
     assert "cooldown" in r3.reason

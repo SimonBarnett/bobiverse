@@ -50,6 +50,8 @@ jeeves.exe --http-only --bind 127.0.0.1 --port 7700 --home <digest>
 
 FR #6947: `--chair` runs only on the configured chair host (default **walrus**; env `JEEVES_CHAIR_HOST` on that box, no `--chair-host` flag on seats). Elsewhere the process logs `CHAIR_HOST_REFUSED` and exits 4. A 433/432 on nick `Jeeves` logs `CHAIR_NICK_TAKEN` and exits; it never takes `Jeeves_l`. `Install-Jeeves` does not create or enable `ircJeeves` on a non-chair host; an existing service is stopped and disabled, not deleted.
 
+FR #6953: `--heal` / maintenance on a non-chair host logs `skip reason=not_chair_host` (never `dry-run reason=would_spawn`) and exits 0. Walrus still spawns the maintenance agent when heal is failing.
+
 Exit codes match `Invoke-JeevesMonitorCheck`: **0=ok, 1=finding, 2=error**.
 
 ### WP2 self-test / heal (landed)

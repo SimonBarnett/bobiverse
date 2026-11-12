@@ -53,6 +53,7 @@ def test_mrb2415_dead_lock_pid_clears_and_allows_spawn(tmp_path: Path):
             spawn_fn=lambda *_a: (spawned.append(1) or 5555),
             resolve_cwd=lambda: work,
             resolve_exe=lambda _c: exe,
+            is_chair_host=True,
         )
         assert r.action == "spawn" and r.pid == 5555
         assert spawned == [1]
@@ -73,6 +74,7 @@ def test_mrb2415_bob_worker_missing_skips(tmp_path: Path):
         cooldown_s=1.0,
         resolve_cwd=lambda: work,
         resolve_exe=lambda _c: None,
+        is_chair_host=True,
     )
     assert r.action == "skip" and r.reason == "bob_worker_missing"
     log = (jm.state_dir(home) / jm.LOG_NAME).read_text(encoding="utf-8")
@@ -97,6 +99,7 @@ def test_mrb2415_dry_run_would_spawn_without_lock_or_cooldown(tmp_path: Path):
         spawn_fn=lambda *a: spawned.append(a) or 1,
         resolve_cwd=lambda: work,
         resolve_exe=lambda _c: exe,
+        is_chair_host=True,
     )
     assert r.action == "dry-run" and r.reason == "would_spawn"
     assert spawned == []
@@ -124,6 +127,7 @@ def test_mrb2415_spawn_failed_logged(tmp_path: Path):
         spawn_fn=boom,
         resolve_cwd=lambda: work,
         resolve_exe=lambda _c: exe,
+        is_chair_host=True,
     )
     assert r.action == "skip" and "spawn_failed" in r.reason
     assert "RuntimeError" in r.reason

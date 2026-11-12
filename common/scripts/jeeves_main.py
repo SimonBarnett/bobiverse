@@ -633,6 +633,9 @@ def run_heal(
             notes.append(f"maintenance: {mr.action} {mr.reason}")
             if mr.action == "spawn":
                 actions.append(f"maintenance-agent pid={mr.pid} cwd={mr.cwd}")
+            # FR #6953: non-chair hosts skip chair spawn; heal is not a seat failure.
+            if mr.reason == "not_chair_host":
+                exit_code = 0
         except Exception as exc:  # noqa: BLE001 — heal must still return its exit
             maintenance = {"action": "skip", "reason": f"hook_error:{type(exc).__name__}"}
             notes.append(f"maintenance: hook_error:{type(exc).__name__}")

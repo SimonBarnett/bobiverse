@@ -281,6 +281,19 @@ def _spawn_bob_worker(exe: Path, bob_install: Path, work_root: Path, digest_home
     return int(proc.pid)
 
 
+def is_configured_chair_host(env: dict | None = None) -> bool:
+    """FR #6953 / #6947: maintenance spawn only on the configured chair host (default walrus)."""
+    try:
+        import jeeves_chair_host
+
+        return bool(jeeves_chair_host.chair_host_allowed(env=env))
+    except Exception:
+        e = os.environ if env is None else env
+        chair = (str(e.get("JEEVES_CHAIR_HOST") or "walrus")).strip().lower()
+        this = (str(e.get("BOB_MACHINE_ID") or e.get("COMPUTERNAME") or "")).strip().lower()
+        return bool(this) and this == chair
+
+
 def try_start_maintenance_agent(
     *,
     home: Path,
@@ -293,6 +306,7 @@ def try_start_maintenance_agent(
     resolve_cwd: Callable[[], Path] | None = None,
     resolve_exe: Callable[[Path], Path | None] | None = None,
     digest_home: Path | None = None,
+    is_chair_host: bool | None = None,
 ) -> MaintenanceResult:
     """If heal still failing, start one maintenance agent (or skip with logged reason).
 
@@ -303,6 +317,14 @@ def try_start_maintenance_agent(
     if int(heal_exit) == 0:
         r = MaintenanceResult("skip", "heal_ok")
         r.log_line = f"skip reason={r.reason}"
+        _append_log(home, r.log_line)
+        return r
+
+    chair_ok = bool(is_chair_host) if is_chair_host is not None else is_configured_chair_host()
+    if not chair_ok:
+        # FR #6953: seats must not log dry-run would_spawn / heal_exit=1 for a missing chair tree.
+        r = MaintenanceResult("skip", "not_chair_host")
+        r.log_line = "skip reason=not_chair_host"
         _append_log(home, r.log_line)
         return r
 

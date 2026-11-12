@@ -69,6 +69,7 @@ def test_fr2524_heal_maintenance_state_uses_chair_home(tmp_path):
         spawn_fn=fake_spawn,
         resolve_cwd=lambda: tmp_path / "ai" / "jeeves",
         resolve_exe=lambda _c: exe,
+        is_chair_host=True,
     )
     assert r.action == "spawn"
     st_path = jm.state_dir(chair) / jm.STATE_NAME
