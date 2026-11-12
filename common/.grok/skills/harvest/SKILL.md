@@ -387,6 +387,7 @@ routes to bobiverse via the split rule.
 - Skill-dag MCP is stdio-only: resolve FR includes job-irc ancestors and skips unattached UAT; skip over-budget bodies; refuse paths outside --root; no list-all tool.
 - On Windows, Path(www / '/jeeves') is drive-root; skip absolute same-host hrefs in static link resolvers and pin /jeeves as a live route.
 - Keep the stamped BOB_OUTBOX path: recreate that run dir on inject/drain; never glob the newest worker-* folder.
+- Rewriting MCP config files does not change a live stdio MCP argv; kill that agent tree's skill_dag_mcp.py child (seat-marker match) so the agent respawns.
 
 ## Harvest digest (lessons audit 2026-10-06)
 
