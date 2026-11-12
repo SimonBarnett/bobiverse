@@ -1,7 +1,9 @@
 """FR #6017: WINRUN form prepare must pass the named ENAME (not all pending)."""
 from __future__ import annotations
 
+import os
 import sys
+import time
 from pathlib import Path
 
 from repo_layout import ROOT
@@ -102,6 +104,11 @@ def test_fr6017_two_forms_only_named_prp_rewritten(tmp_path, monkeypatch):
     orders = prep / "d99.prp"
     customers.write_text("old-c", encoding="utf-8")
     orders.write_text("old-o", encoding="utf-8")
+    # FR #6966: Windows can keep the same st_mtime within one second under suite
+    # load; pin an older before-mtime so the prepare gate sees a real advance.
+    old_m = time.time() - 60
+    os.utime(customers, (old_m, old_m))
+    os.utime(orders, (old_m, old_m))
     monkeypatch.delenv("AIRC_PRIORITY_FORM_VIA_EFORM", raising=False)
     monkeypatch.delenv("AIRC_PRIORITY_FORM_VIA_EXEC", raising=False)
     monkeypatch.setenv(ac._WINRUN_ARGV_OPTIN, "1")
@@ -110,9 +117,14 @@ def test_fr6017_two_forms_only_named_prp_rewritten(tmp_path, monkeypatch):
         # Unscoped FORMPREP would rewrite every pending form; named ENAME must not.
         if "FORMPREP" in argv and "CUSTOMERS" in argv and "ORDERS" not in argv:
             customers.write_text("new-c", encoding="utf-8")
+            now = time.time()
+            os.utime(customers, (now, now))
         else:
             customers.write_text("new-c", encoding="utf-8")
             orders.write_text("new-o", encoding="utf-8")
+            now = time.time()
+            os.utime(customers, (now, now))
+            os.utime(orders, (now, now))
 
         class P:
             returncode = 0
@@ -154,6 +166,7 @@ def test_fr6017_two_forms_only_named_prp_rewritten(tmp_path, monkeypatch):
         else orders.stat().st_mtime,
         resolve_ename_types=types,
     )
-    assert r.get("ok") is True
+    assert r.get("ok") is True, r
+    assert r.get("reason") != "prp_unchanged", r
     assert customers.read_text(encoding="utf-8") == "new-c"
     assert orders.read_text(encoding="utf-8") == "old-o"
