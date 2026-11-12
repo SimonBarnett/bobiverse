@@ -95,6 +95,8 @@ No product UI. Validator requires three HTML files when Shape is LOCKED. They do
 
 ## UNKNOWN
 
-- Process-local way to drop unrelated skill descriptions from the Grok worker prompt (S7). User `[skills]` and `GROK_CONFIG` do not qualify. `GROK_CONFIG` allowlist drops `[skills]` and `[mcp_servers]`.
 - Cursor MCP config for the seat is project `.cursor/mcp.json` (same as the editor; CLI `--workspace` = seat cwd). There is no process-local Cursor skill catalog drop; do not rewrite `~/.cursor/skills`.
-- Whether a seat-local `GROK_HOME` can isolate skills without dropping login.
+
+## KNOWN (FR #6891)
+
+- S7 Grok lever: seat-local `GROK_HOME` (auth copy only; empty `skills.paths`; restore `bundled_skill_dirs`; never edit user `config.toml`) plus a bound agent cwd under the seat `run_dir` outside the trusted install tree, containing only `skill-dag-core` under `.grok/skills`. Measure with `grok inspect --json`. Bundled platform skills stay. `--add-dir` into the install is refused by the harness.

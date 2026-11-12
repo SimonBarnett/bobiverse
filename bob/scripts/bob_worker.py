@@ -1701,25 +1701,69 @@ def describe_agent_child_launch(
 
     Always includes ``seat_env_extra`` (BOB_OUTBOX / BOB_SHOP / BOB_NICK / BOB_AGENT_NICK / BOB_MACHINE)
     and the mode prompt that points at ``.grok/skills`` + AGENTS.md under ``cwd``.
+
+    FR #6891: grok **agent** seats use a bound cwd under ``run_dir`` (outside the install
+    tree) plus seat-local ``GROK_HOME`` so ``grok inspect`` lists only skill-dag-core
+    (+ bundled). Plan/monitor/cursor keep the caller's cwd.
     """
     mode_l = (mode or "agent").strip().lower()
     folder = str(cwd)
     rd = Path(run_dir)
+    kind_l = (kind or "").strip().lower()
+    launch_folder = folder
+    install_worker = folder
+    bound_meta: dict = {}
+    if kind_l == "grok" and mode_l == "agent":
+        try:
+            import skill_dag_bound as _sdb
+
+            mcp_script = skill_dag_mcp_script_path(folder)
+            bound = _sdb.prepare_bound_agent_cwd(rd, folder, mcp_script=mcp_script)
+            grok_home = _sdb.prepare_seat_grok_home(rd, trust_paths=[bound])
+            launch_folder = str(bound)
+            bound_meta = {
+                "bound_cwd": str(bound),
+                "grok_home": str(grok_home),
+                "install_worker": install_worker,
+            }
+        except Exception:
+            bound_meta = {}
     if prompt is None:
         if mode_l == "plan":
             prompt = plan_prompt(folder)
         elif mode_l == "monitor":
             prompt = monitor_prompt(folder)
         else:
-            prompt = worker_prompt(folder, str(rd), machine, nick)
+            # Prompt keeps install worker paths (outbox / AGENTS / harvest scripts).
+            prompt = worker_prompt(install_worker, str(rd), machine, nick)
+            if bound_meta.get("bound_cwd"):
+                prompt = (
+                    f"Harness cwd is {bound_meta['bound_cwd']} (FR #6891 skill catalog bound; "
+                    f"only skill-dag-core is listed). Install worker tree: {install_worker}. "
+                ) + prompt
     launch_mode = mode_l if mode_l in ("agent", "plan", "monitor") else "agent"
-    spec = build_launch(kind, launch_mode, folder, prompt, agent_exe, rd, session_id=session_id, install_root=install_root)
+    spec = build_launch(
+        kind, launch_mode, launch_folder, prompt, agent_exe, rd,
+        session_id=session_id, install_root=install_root,
+    )
     env = seat_env_extra(rd, machine, nick)
-    skills = str(Path(folder) / ".grok" / "skills")
-    return {
+    if bound_meta.get("grok_home"):
+        try:
+            import skill_dag_bound as _sdb
+
+            env = _sdb.apply_bound_env(env, grok_home=bound_meta["grok_home"])
+        except Exception:
+            env["GROK_HOME"] = str(bound_meta["grok_home"])
+            env["BOB_SKILL_DAG_BOUND"] = "skill-dag-core"
+            env.pop("GROK_CONFIG", None)
+    # Bound cwd already has MCP config with absolute install roots; skip rewrite from launch_folder.
+    if bound_meta.get("bound_cwd") and getattr(spec, "write_skill_dag_mcp", False):
+        spec.write_skill_dag_mcp = False
+    skills = str(Path(launch_folder) / ".grok" / "skills")
+    out = {
         "kind": kind,
         "mode": mode_l,
-        "cwd": folder,
+        "cwd": launch_folder,
         "run_dir": str(rd),
         "argv": list(spec.argv),
         "env": dict(env),
@@ -1729,6 +1773,8 @@ def describe_agent_child_launch(
         "files": dict(spec.files or {}),
         "spec": spec,
     }
+    out.update(bound_meta)
+    return out
 
 
 def worker_prompt(worker_dir: str, home: str, machine: str, nick: str) -> str:
@@ -1738,7 +1784,6 @@ def worker_prompt(worker_dir: str, home: str, machine: str, nick: str) -> str:
         f"Your working folder is {worker_dir}. FIRST read {worker_dir}\\AGENTS.md and the process-local core stub "
         f"(skill-dag-core). Do not list other skill-dag index nodes in this prompt; resolve per job: call skill-dag MCP resolve then get_skill "
         f"(do not read every skill in {worker_dir}\\.grok\\skills). "
-        f"(start with bobiverse-worker-seat, then bobiverse-bob-worker, harvest). "
         f"You are on IRC as {nick} in #{machine} only; this program keeps the connection. Messages from IRC arrive as typed input of the form "
         f"'FROM <nick> <target> <text>' - treat each as the task, answer by appending 'PRIVMSG #{machine} :<text>' to the seat outbox. "
         f"Outbox path: use $env:BOB_OUTBOX (set by bob-worker) or {outbox} - NEVER the ear's home\\outbox.txt. "
