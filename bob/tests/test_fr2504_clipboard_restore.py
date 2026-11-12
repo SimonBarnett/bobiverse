@@ -1,4 +1,8 @@
-"""FR #2504: inject paste must restore prior CF_UNICODETEXT clipboard after Ctrl+V."""
+"""FR #2504: inject paste must restore prior CF_UNICODETEXT clipboard after Ctrl+V.
+
+FR #6729: live inject_console nodes force BOB_WORKER_INJECT_PASTE=1 so a
+prior start_agent(cursor|opencode) leak cannot skip the clipboard path.
+"""
 from __future__ import annotations
 
 from pathlib import Path
@@ -60,6 +64,7 @@ def test_fr2504_source_has_get_and_restore():
 def test_fr2504_inject_restores_prior_after_paste(monkeypatch):
     if __import__("os").name != "nt":
         pytest.skip("windows")
+    monkeypatch.setenv("BOB_WORKER_INJECT_PASTE", "1")
 
     prior = "operator-prior-clip"
     sets: list[str] = []
@@ -107,6 +112,7 @@ def test_fr2504_inject_restores_prior_after_paste(monkeypatch):
 def test_fr2504_inject_restores_none_when_prior_empty(monkeypatch):
     if __import__("os").name != "nt":
         pytest.skip("windows")
+    monkeypatch.setenv("BOB_WORKER_INJECT_PASTE", "1")
 
     restores: list[object] = []
     monkeypatch.setattr(bw, "_clipboard_get_unicode", lambda log=None: None)
@@ -181,6 +187,7 @@ def test_mrb2506_restore_after_gap_before_enter(monkeypatch):
     """Hostile: restore runs after submit-gap sleep and before first Enter write."""
     if __import__("os").name != "nt":
         pytest.skip("windows")
+    monkeypatch.setenv("BOB_WORKER_INJECT_PASTE", "1")
 
     prior = "prior-clip-mrb"
     events: list[str] = []
@@ -222,6 +229,7 @@ def test_mrb2506_finally_restores_on_early_key_fail(monkeypatch):
     """Hostile: if KEY_EVENT fallback write fails after clipboard set, finally restores."""
     if __import__("os").name != "nt":
         pytest.skip("windows")
+    monkeypatch.setenv("BOB_WORKER_INJECT_PASTE", "1")
 
     prior = "early-fail-prior"
     restores: list[object] = []
