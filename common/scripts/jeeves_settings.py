@@ -1040,15 +1040,9 @@ def api_get_queue(
     try:
         import gitclaim
 
-        # Read the file, not load_unaccepted: coerce drops ``worker``.
-        path = gitclaim.queue_path(dig)
-        raw: dict[str, Any] = {}
-        if path.is_file():
-            parsed = json.loads(path.read_text(encoding="utf-8-sig"))
-            if isinstance(parsed, dict):
-                raw = parsed
-        unaccepted = list(raw.get("unaccepted") or [])
-        accepted = list(raw.get("accepted") or [])
+        # FR #6770: load_* keep stored worker (do not read queue.json raw).
+        unaccepted = list(gitclaim.load_unaccepted(dig) or [])
+        accepted = list(gitclaim.load_accepted(dig) or [])
     except Exception:
         pass
     out = {
