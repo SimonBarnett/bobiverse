@@ -45,8 +45,8 @@ Who talks to what. Readers take model ids and token fields only. They do not rea
 
 ```
 Grok usage.json modelUsage ----+
-Cursor local or fixture source -+--> worker measure_done_usage
-OpenCode opencode.db (already) -+         |  tokens=unknown if missing
+Cursor fixture or bound chat-dir -+--> worker measure_done_usage
+OpenCode opencode.db (already) -+         |  tokens=unknown if missing/zero
                                           v
                                     DONE stamp (existing)
                                           v
@@ -57,6 +57,11 @@ OpenCode opencode.db (already) -+         |  tokens=unknown if missing
           digest job_costs.by_model                    appliance /status
           (comparison rollup)                          inline SVG
                                                        home | empty | error
+
+Cursor (FR #6782 / S2): keep BOB_CURSOR_USAGE_PATH or run/cursor-usage.json;
+also live-read the seat chat directory the worker already binds when that
+directory has non-zero token fields. Missing or zero fields stamp
+tokens=unknown. No Cursor dashboard client and no new secret.
 
 Login entry: https://bob.ntsa.uk/jeeves on the existing bob.ntsa.uk front.
 Public GET of that page returns login HTML. Settings and status still
@@ -87,7 +92,7 @@ Login mocks are in `bob/docs/mocks/jeeves-login/`. The image is the existing `je
 
 - OpenCode reads `opencode.db` per job directory (FR #6420) and stamps DONE (FR #6387). Per-job delta is FR #6435.
 - Grok `read_grok_usage` prefers a single counted `modelUsage` entry over `primaryModelId` / session totals (FR #6781). Multi-entry `modelUsage` stays `tokens=unknown`.
-- Cursor stamps only `BOB_CURSOR_USAGE_PATH` or `run/cursor-usage.json`. No live store reader.
+- Cursor (FR #6782 / PR #6811): keeps `BOB_CURSOR_USAGE_PATH` or `run/cursor-usage.json`, and live-reads the bound seat chat directory when it has non-zero token fields. Missing or zero fields stamp `tokens=unknown`. No Cursor dashboard client.
 - Digest `job_costs` includes `by_model` + `unknown_jobs` (FR #6783) alongside the last 20 PRs.
 - Appliance `/status` lists version, uptime, queue, seats, and fuel names. No token graph.
 - `jeeves/VISION.md` still says chair companions are not a website. Shape stays service.
