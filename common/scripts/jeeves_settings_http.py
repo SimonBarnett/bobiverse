@@ -31,8 +31,10 @@ ENV_PORT = "JEEVES_SETTINGS_HTTP_PORT"
 ENV_FRONTDOOR = "JEEVES_SETTINGS_FRONTDOOR"
 SESSION_COOKIE_NAME = "jeeves_appliance_session"
 LOGO_HREF = "/assets/ntsa-gut-logo.png"
+BUTLER_HREF = "/assets/jeeves-butler.ico"
 _SCRIPTS_DIR = Path(__file__).resolve().parent
 _REPO_ROOT = _SCRIPTS_DIR.parent.parent
+_BUTLER_ICO = _REPO_ROOT / "jeeves" / "assets" / "jeeves-butler.ico"
 _TRAY_LOGO = _REPO_ROOT / "bob" / "tray" / "assets" / "ntsa-gut-logo.png"
 _PACK_LOGO = (
     _REPO_ROOT
@@ -483,7 +485,8 @@ button{{margin-top:1rem;padding:.4rem .8rem;}}
 </style></head><body>
 {header}
 <h1>Jeeves settings login</h1>
-<p class="note">LAN-only AD/Windows or CredMan (FR #6441 / #6451). Passwords are never logged.</p>
+<img src="{BUTLER_HREF}" alt="Jeeves the butler" width="96" height="96"/>
+<p class="note">Existing graphic jeeves/assets/jeeves-butler.ico (FR #6816). Passwords are never logged.</p>
 {note}
 <form id="f">
 <label>User name<input name="account" autocomplete="username" required placeholder="DOMAIN\\user or user@domain"/></label>
@@ -869,6 +872,12 @@ class _Handler(BaseHTTPRequestHandler):
         if path.rstrip("/") == "/jeeves":
             html = _render_login_html()
             self._send(200, html.encode("utf-8"), "text/html; charset=utf-8")
+            return
+        if path == BUTLER_HREF:
+            if not _BUTLER_ICO.is_file():
+                self._send_json(404, {"ok": False, "error": "not found"})
+                return
+            self._send(200, _BUTLER_ICO.read_bytes(), "image/x-icon")
             return
         if self._refuse_non_lan(ip):
             return
