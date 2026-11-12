@@ -9190,6 +9190,11 @@ class Supervisor:
         cursor_path = (os.environ.get("BOB_CURSOR_USAGE_PATH") or "").strip() or None
         oc_path = (os.environ.get("BOB_OPENCODE_USAGE_PATH") or "").strip() or None
         aider_path = (os.environ.get("BOB_AIDER_USAGE_PATH") or "").strip() or None
+        cursor_chat_dir = None
+        watcher = getattr(self, "_cursor_turn_watcher", None)
+        if watcher is not None:
+            with contextlib.suppress(Exception):
+                cursor_chat_dir = getattr(watcher, "chat_dir", None) or watcher._bind()
         if self.run_dir is not None:
             if not cursor_path:
                 cand = Path(self.run_dir) / "cursor-usage.json"
@@ -9213,6 +9218,7 @@ class Supervisor:
                     kind,
                     grok_usage_path=grok_path,
                     cursor_usage_path=cursor_path,
+                    cursor_chat_dir=cursor_chat_dir,
                     opencode_usage_path=oc_path,
                     aider_usage_path=aider_path,
                 )
