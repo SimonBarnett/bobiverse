@@ -140,6 +140,10 @@ def test_mrb6390_ear_handle_privmsg_consumes_recycle_wire(tmp_path, monkeypatch)
         def _maybe_consume_build_preflight_wire(self, *a, **k):
             return False
 
+        # FR #6719 / #6725: handle_privmsg touches chair lock on BUILD progress before recycle.
+        def _maybe_touch_chair_build_lock_on_progress(self, *a, **k):
+            return False
+
         def _maybe_release_chair_build_lock_on_result(self, *a, **k):
             return False
 
@@ -177,6 +181,7 @@ def test_mrb6390_dispatch_ear_binds_pin_unpin_and_build_preflight():
         "_maybe_unpin",
         "_maybe_pin",
         "_maybe_consume_build_preflight_wire",
+        "_maybe_touch_chair_build_lock_on_progress",
         "_maybe_release_chair_build_lock_on_result",
     ):
         assert needle in here
@@ -185,4 +190,5 @@ def test_mrb6390_dispatch_ear_binds_pin_unpin_and_build_preflight():
     assert '"_maybe_unpin"' in text or "'_maybe_unpin'" in text
     assert '"_maybe_pin"' in text or "'_maybe_pin'" in text
     assert "_maybe_consume_build_preflight_wire" in text
+    assert "_maybe_touch_chair_build_lock_on_progress" in text
     assert "_maybe_release_chair_build_lock_on_result" in text
