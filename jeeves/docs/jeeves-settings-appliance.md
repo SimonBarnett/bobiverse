@@ -4,6 +4,10 @@ Internal-only settings surface for the Ergo chair host. **Never** publish this
 on Cloudflare or public DNS. Do **not** front it via `bob.ntsa.uk` or
 `irc.ntsa.uk`.
 
+Operator URL: **https://jeeves.ntsa.uk/** (FR #6757 / FR #6758). The name is
+internal DNS only. TLS uses an operator-supplied certificate (store thumbprint
+on the chair host). Do **not** request a public ACME certificate. Do **not** create public DNS for this name.
+
 ## How to reach it
 
 1. On the internal DNS (LAN AD / router), create **A** record:
@@ -52,7 +56,7 @@ Off by default. On the chair host (walrus), set NSSM / process env and restart `
 | `JEEVES_SETTINGS_HTTP_PORT` | Backend TCP port (default **7701**; operators do not browse this port) |
 | `JEEVES_SETTINGS_FRONTDOOR=1` | FR #6757: force bind `127.0.0.1` behind the IIS TLS front door |
 
-Browse **https://jeeves.ntsa.uk/** from a LAN client (FR #6757). Internal DNS only. Do not publish public DNS or Cloudflare. The settings process listens on loopback `:7701` when the front door is enabled; login HTML does not mention that port. Install the front door with `jeeves/scripts/Install-JeevesApplianceFrontDoor.ps1 -Thumbprint <existing cert>` (operator-supplied store thumbprint; no public ACME). HTTP port 80 for that name redirects to HTTPS. The Python LAN check trusts `X-Forwarded-For` only from a loopback TCP peer.
+Browse **https://jeeves.ntsa.uk/** from a LAN client (FR #6757 / FR #6758). Internal DNS only. Do not publish public DNS or Cloudflare. Do not browse `:7701`. The settings process listens on loopback `:7701` when the front door is enabled; login HTML does not mention that port. Install the front door with `jeeves/scripts/Install-JeevesApplianceFrontDoor.ps1 -Thumbprint <existing cert>` (operator-supplied store thumbprint; no public ACME). HTTP port 80 for that name redirects to HTTPS. The Python LAN check trusts `X-Forwarded-For` only from a loopback TCP peer.
 JSON: `GET /api/settings`, `PUT /api/settings/<KEY>`, `POST /api/rollback`, `GET /api/schema`,
 `GET /api/status`, `GET /api/queue` (FR #6754), `POST /api/restart-when-idle`.
 HTML: `GET /` settings, `GET /status`, `GET /queue` (FR #6755 waiting / in-progress lists).
@@ -68,6 +72,19 @@ Socket-layer gate: the server binds only to LAN/loopback and `verify_request` dr
 
 Module: `common/scripts/jeeves_settings_http.py` (started from `ChairJobs` via `maybe_start_from_chair`).
 
+The settings page lists eight groups. Defaults and checkboxes are on that page.
+
+| Group | Heading |
+|-------|---------|
+| fuel | Fuel and review waits |
+| digest | Digest |
+| irc | IRC timing |
+| homes | Chair home |
+| wake | Wake and ticket closure |
+| probes | Webhook probes |
+| resync | Resync |
+| secrets | Secrets |
+
 Bool SCHEMA keys render as `input type=checkbox` with `value="1"` when truthy (FR #6750 / FR-02). Save posts `"1"` when ticked and `"0"` when cleared. Secret fields left blank are not PUT. `str` / `int` / `float` stay text inputs.
 
 `SettingSpec.choices` defaults to `()`. A non-empty list on a non-bool setting renders a `<select>` (FR #6753 / FR-05). The current value is selected; a value not in the list is added as an extra selected option so save does not silently change it. Bools stay checkboxes. Today's SCHEMA keys have empty choices (paths, URLs, and seconds stay text).
@@ -78,10 +95,9 @@ Bool SCHEMA keys render as `input type=checkbox` with `value="1"` when truthy (F
 Read-only status (LAN only):
 
 - HTML: `GET /status` (shared shell + NTSA logo, FR #6756)
-- HTML: GET /queue (FR #6755; same shell; waiting / in-progress lists (
-epo, 	ask, id, optional worker). Empty copy is exactly Nothing is waiting. / Nothing is in progress. Unauthenticated visitors get the login page.)
-- HTML: GET /pools — one overspend line when overage_gbp is greater than 0: the word overspend, the pound sign, and two decimals (FR #6762). Null, missing, or 0 omit the line. Once per page, not per machine.
-- Asset: GET /assets/ntsa-gut-logo.png — PNG bytes of ob/tray/assets/ntsa-gut-logo.png (LAN; no session)
+- HTML: `GET /queue` (FR #6755; same shell; waiting / in-progress lists (`repo`, `task`, `id`, optional `worker`). Empty copy is exactly `Nothing is waiting.` / `Nothing is in progress.` Unauthenticated visitors get the login page.) The queue is at `/queue`.
+- HTML: `GET /pools` --- machine pool percents, the Copilot line, and one overspend line when overage_gbp is greater than 0: the word overspend, the pound sign, and two decimals (FR #6762). Null, missing, or 0 omit the line. Once per page, not per machine. Same figures as the tray; Cursor spending-group bars stay off.
+- Asset: `GET /assets/ntsa-gut-logo.png` --- PNG bytes of `bob/tray/assets/ntsa-gut-logo.png` (LAN; no session)
 - JSON: `GET /api/status` — `version`, `source_commit`, `uptime_s`, `queue`, `seats`, `fuel` (no secrets)
 - JSON: `GET /api/queue` (FR #6754) — `ok`, `unaccepted`, `accepted`; each row is `repo`, `task`, `id`, optional `worker` (from stored `worker`, else `nick`). Other queue fields are dropped. Same secret-shape refusal as status.
 

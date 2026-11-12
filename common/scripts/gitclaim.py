@@ -4211,7 +4211,8 @@ def _coerce_row(row: dict) -> dict | None:
     # FR #265: implementer_seat + mrb_author_seat survive reload for UAT dual-seat block.
     # FR #180: title/labels/cooldown/needs_human must survive reload so offer/prune keep working.
     # accepted_by: ACC ownership for stale-busy heal (#2369 / MRB #2371) and ACC CLOSED purge (#2361).
-    for key in ("nick", "channel", "accepted_ts", "accepted_by", "offered_to", "offered_ts", "offered_channel",
+    for key in ("nick", "worker",  # FR #6770: stored worker must survive reload (distinct from nick)
+                "channel", "accepted_ts", "accepted_by", "offered_to", "offered_ts", "offered_channel",
                 "offered_via",  # FR #2811: giveup-push sticky window
                 "author_seat", "author_nick", "author", "implementer_seat", "mrb_author_seat", "mrb_fix_author_seat",
                 "author_seats", "url", "title", "body", "state",
