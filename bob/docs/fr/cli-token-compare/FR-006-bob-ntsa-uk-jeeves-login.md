@@ -1,6 +1,8 @@
 # FR-006 bob.ntsa.uk/jeeves login
 
-GitHub: #6798. Stays open for implementation. Docs park Refs this issue.
+GitHub: #6798. Closed as the bundle. Do not implement this issue.
+
+Successors: #6815 route, #6816 butler graphic, #6818 home link, #6819 session login, #6820 session cookie, #6821 appliance doc.
 
 #6757 landed https://jeeves.ntsa.uk/ in PR #6791 and is closed. Do not extend that hostname. Do not reopen #6757.
 

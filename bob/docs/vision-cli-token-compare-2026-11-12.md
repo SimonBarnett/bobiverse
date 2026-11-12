@@ -17,7 +17,7 @@ LOCKED
 | S2 | Cursor CLI tokens | A non-zero local or fixture source for that chat stamps the same three fields and `model=`. A missing source, or a store whose token fields are absent or zero, stamps `tokens=unknown`. | `pytest` with a counts fixture and a zero or missing fixture. | A zero local store becomes `tokens_in=0`, or a non-zero fixture is dropped. |
 | S3 | Model comparison | Two measured Grok rows, one measured Cursor row, and one unknown row roll up to two model buckets. Token sums match the measured rows. `unknown_jobs` is 1 and is not added into the token sums. | `pytest` on the ledger rollup in `common/scripts/job_cost_ledger.py`. | Models are merged into one bucket, or unknown jobs are counted as zero tokens. |
 | S4 | Appliance token graph | The status page renders three states: a by-model token series when rows exist, an empty state when no measured row exists, and an error state when the ledger cannot be read. | `pytest` renders the three HTML bodies. Mocks: `bob/docs/mocks/cli-token-compare/home.html`, `empty.html`, `error.html`. | `/status` still shows only fuel names, or the empty ledger draws a zero-valued series. |
-| S5 | Appliance login URL | GET https://bob.ntsa.uk/jeeves returns the login page. The page shows `jeeves/assets/jeeves-butler.ico`. `jeeves/www/irc-ntsa/index.html` links to `/jeeves`. | Rendered login HTML contains `jeeves-butler.ico` and a password field. `index.html` contains `href="/jeeves"`. A route test maps GET `/jeeves` to that HTML and the response is not 403. | The login page is only on `jeeves.ntsa.uk` or port 7701, the butler image is a new drawing, or the Bob home page has no `/jeeves` link. |
+| S5 | Appliance login URL | GET https://bob.ntsa.uk/jeeves returns the login page. The page shows `jeeves/assets/jeeves-butler.ico`. `jeeves/www/irc-ntsa/index.html` links to `/jeeves`. Settings and status still require the session cookie. | Rendered login HTML contains `jeeves-butler.ico` and a password field. `index.html` contains `href="/jeeves"`. A route test maps GET `/jeeves` to that HTML and the response is not 403. Settings and status without the session cookie are rejected. The appliance doc contains `https://bob.ntsa.uk/jeeves`. | The login page is only on `jeeves.ntsa.uk` or port 7701, the butler image is a new drawing, the Bob home page has no `/jeeves` link, settings or status open without the session cookie, or the appliance doc still tells the operator to browse `jeeves.ntsa.uk`. |
 
 LOCKED
 
@@ -122,7 +122,7 @@ Login mocks are in `bob/docs/mocks/jeeves-login/`. The image is the existing `je
 
 ## Issues
 
-Refs, not a closing keyword. Each stays open for implementation.
+Refs, not a closing keyword. Each open issue stays open for implementation. #6798 was the login bundle and is closed. Implement the six slices below.
 
 | id | issue | mirror |
 |----|-------|--------|
@@ -131,4 +131,9 @@ Refs, not a closing keyword. Each stays open for implementation.
 | S3 | #6783 | bob/docs/fr/cli-token-compare/FR-003-ledger-by-model.md |
 | S4 | #6784 | bob/docs/fr/cli-token-compare/FR-004-appliance-token-graph.md |
 | docs | #6785 | bob/docs/fr/cli-token-compare/FR-005-vision-hybrid-note.md |
-| S5 | #6798 | bob/docs/fr/cli-token-compare/FR-006-bob-ntsa-uk-jeeves-login.md |
+| S5 route | #6815 | bob/docs/fr/cli-token-compare/FR-007-jeeves-get-login.md |
+| S5 graphic | #6816 | bob/docs/fr/cli-token-compare/FR-008-butler-graphic.md |
+| S5 link | #6818 | bob/docs/fr/cli-token-compare/FR-009-home-link.md |
+| S5 sign-in | #6819 | bob/docs/fr/cli-token-compare/FR-010-session-login.md |
+| S5 cookie | #6820 | bob/docs/fr/cli-token-compare/FR-011-session-cookie.md |
+| S5 doc | #6821 | bob/docs/fr/cli-token-compare/FR-012-appliance-doc.md |
