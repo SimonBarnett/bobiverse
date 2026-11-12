@@ -487,6 +487,7 @@ button{{margin-top:1rem;padding:.4rem .8rem;}}
 {note}
 <form id="f">
 <label>User name<input name="account" autocomplete="username" required placeholder="DOMAIN\\user or user@domain"/></label>
+<label>Domain (optional)<input name="domain" autocomplete="organization"/></label>
 <label>Password<input name="password" type="password" autocomplete="current-password" required/></label>
 <button type="submit">Sign in</button>
 <span id="status"></span>
@@ -502,7 +503,8 @@ document.getElementById('f').onsubmit = async (ev) => {{
     credentials: 'same-origin',
     headers: {{'Content-Type': 'application/json'}},
     body: JSON.stringify({{
-      username: fd.get('account') || '',
+      username: fd.get('account') || fd.get('username') || '',
+      domain: fd.get('domain') || '',
       password: fd.get('password') || ''
     }})
   }});
