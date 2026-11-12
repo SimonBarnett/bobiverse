@@ -5043,13 +5043,16 @@ def format_from(
     *,
     outbox: str | Path | None = None,
 ) -> str:
-    """Build the agent-visible FROM line. FR #2380: optional ``[outbox: path]`` footer survives compaction."""
+    """Build the agent-visible FROM line. FR #2380: optional ``[outbox: path]`` footer survives compaction.
+
+    FR #6917: stamp the *assigned* live outbox (recreate parent+file). Never leave a
+    stale ``[outbox:]`` and never pick a newer sibling ``worker-*`` folder.
+    """
     body = one_line(text, maxlen)
     line = "FROM %s %s %s" % (nick, target, body)
     if outbox:
-        footer = "[outbox: %s]" % str(outbox)
-        if footer.lower() not in line.lower():
-            line = "%s %s" % (line, footer)
+        ensure_outbox(Path(outbox))
+        line = opencode_stamp_outbox_footer(line, outbox)
     return line
 
 
@@ -10726,6 +10729,8 @@ def ensure_outbox(path: Path) -> Path:
     missing between writes. Agents (and PowerShell ``Add-Content`` /
     ``Set-Content``) still need the parent run dir — and a present empty file is
     friendlier when tools probe the path. Never deletes the run dir.
+    FR #6917: if the whole run folder vanished mid-session, recreate *this*
+    assigned path only — never glob a newer ``worker-<machine>-*`` sibling.
     """
     p = Path(path)
     try:
@@ -10762,6 +10767,8 @@ def drain_outbox(
             time.sleep(0.02 * (_i + 1))
     if not replaced:
         return 0
+    # FR #6917: keep the assigned run-dir outbox creatable while .sending is in flight.
+    ensure_outbox(path)
     n = 0
     unsent: list[str] = []
     try:
