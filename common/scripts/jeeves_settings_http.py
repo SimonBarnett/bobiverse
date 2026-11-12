@@ -420,6 +420,36 @@ def _render_queue_list(rows: list[dict[str, Any]], empty_copy: str) -> str:
     return "<ul>" + "".join(items) + "</ul>"
 
 
+def format_overspend_line(overage_gbp: Any) -> str:
+    """Tray overspend copy: present only when GBP is greater than 0 (FR #6762)."""
+    if overage_gbp is None or overage_gbp is False:
+        return ""
+    if isinstance(overage_gbp, str) and overage_gbp.strip() == "":
+        return ""
+    try:
+        value = float(overage_gbp)
+    except (TypeError, ValueError):
+        return ""
+    if value <= 0:
+        return ""
+    return f"overspend \u00a3{value:.2f}"
+
+
+def _load_overage_gbp(digest_home: Path | None) -> Any:
+    if digest_home is None:
+        return None
+    path = Path(digest_home) / "digest.json"
+    try:
+        if not path.is_file():
+            return None
+        parsed = json.loads(path.read_text(encoding="utf-8-sig"))
+        if isinstance(parsed, dict):
+            return parsed.get("overage_gbp")
+    except Exception:
+        return None
+    return None
+
+
 def _render_queue_html(
     unaccepted: list[dict[str, Any]], accepted: list[dict[str, Any]]
 ) -> str:
@@ -465,10 +495,17 @@ def _format_pool_row_pct(row: dict[str, Any]) -> str:
     return "n/a"
 
 
-def _render_pools_html(doc: dict[str, Any]) -> str:
-    """Server-render machine Grok pool rows (no Cursor spending bars)."""
+def _render_pools_html(doc: Any) -> str:
+    """Server-render machine Grok pool rows + optional overspend (FR #6760 / #6762)."""
+    # Accept a float/int overage for unit tests; prefer a view dict from api_get_pools.
+    if isinstance(doc, dict):
+        view = doc
+        overage = view.get("overage_gbp")
+    else:
+        view = {"machines": []}
+        overage = doc
     header = _shell_header(current="pools", include_nav=True)
-    machines = doc.get("machines") if isinstance(doc.get("machines"), list) else []
+    machines = view.get("machines") if isinstance(view.get("machines"), list) else []
     if not machines:
         body = '<p class="empty">No pool readings.</p>'
     else:
@@ -486,15 +523,20 @@ def _render_pools_html(doc: dict[str, Any]) -> str:
             )
             items.append(f"<li><code>{mid}</code>: {pct}{reset_html}</li>")
         body = "<ul class=\"pools\">" + "".join(items) + "</ul>"
+    line = format_overspend_line(overage)
+    overspend = (
+        f'<p class="overage">{html.escape(line)}</p>' if line else ""
+    )
     return f"""<!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8"/>
 <title>Jeeves pools</title>
-<style>body{{font-family:system-ui,sans-serif;margin:1.5rem;}} {_shell_css()} code{{font-size:.9em;}} .empty{{color:#456;}} .reset{{color:#456;margin-left:.5rem;}}</style>
+<style>body{{font-family:system-ui,sans-serif;margin:1.5rem;}} {_shell_css()} code{{font-size:.9em;}} .empty{{color:#456;}} .reset{{color:#456;margin-left:.5rem;}} .overage{{margin-top:1rem;}}</style>
 </head><body>
 {header}
 <h1>Jeeves pools</h1>
 <p class="note">Grok remaining by machine (FR #6760). Machine rows only.</p>
 {body}
+{overspend}
 </body></html>
 """
 
@@ -822,6 +864,9 @@ class _Handler(BaseHTTPRequestHandler):
             if not view.get("ok"):
                 self._send_json(403, view)
                 return
+            if "overage_gbp" not in view:
+                view = dict(view)
+                view["overage_gbp"] = _load_overage_gbp(self.server.digest_home)
             page = _render_pools_html(view)
             self._send(200, page.encode("utf-8"), "text/html; charset=utf-8")
             return
