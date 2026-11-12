@@ -247,6 +247,7 @@ def test_fr6389_e2e_chair_routes_ear_recycles_once(ear_home, monkeypatch):
             "_maybe_consume_installtest_v1_wire",
             "_maybe_consume_build_v1_wire",
             "_maybe_consume_build_preflight_wire",  # FR #6491 / #6628
+            "_maybe_touch_chair_build_lock_on_progress",  # FR #6719 / #6725
             "_maybe_release_chair_build_lock_on_result",  # FR #6491 / #6628
         ):
             locals()[_n] = getattr(irc_agent.Client, _n)
