@@ -1948,6 +1948,7 @@ class LaunchSpec:
     files: dict = field(default_factory=dict)  # path -> text written before spawn (cursor launcher + prompt)
     env_extra: dict = field(default_factory=dict)
     write_skill_dag_mcp: bool = False  # FR #6863: agent seats only
+    write_cursor_skill_dag_mcp: bool = False  # FR #6865: cursor agent seats only
 
 
 def skill_dag_mcp_script_path(worker_cwd: str) -> Path:
@@ -1982,6 +1983,59 @@ def write_skill_dag_mcp_config_if_agent(spec: LaunchSpec) -> None:
     if not getattr(spec, "write_skill_dag_mcp", False):
         return
     write_skill_dag_mcp_config(spec.cwd)
+
+
+# FR #6865: Cursor CLI/agent reads project ``.cursor/mcp.json`` (same as the editor;
+# ``--workspace`` is the seat cwd). Global ``~/.cursor/mcp.json`` is user-wide: never write it.
+CURSOR_SKILL_DAG_MCP_RELPATH = ".cursor/mcp.json"
+
+
+def cursor_skill_catalog_process_local_drop() -> Optional[str]:
+    """Cursor loads ``~/.cursor/skills`` user-globally; there is no process-local catalog drop.
+
+    Project ``.cursor/skills`` is additive only. Do not empty or rewrite the user catalog.
+    """
+    return None
+
+
+def cursor_skill_dag_mcp_document(worker_cwd: str) -> dict:
+    script = skill_dag_mcp_script_path(worker_cwd)
+    return {
+        "mcpServers": {
+            "skill-dag": {
+                "command": "python",
+                "args": [script.as_posix()],
+            }
+        }
+    }
+
+
+def write_cursor_skill_dag_mcp_config(worker_cwd: str) -> Path:
+    """Write skill-dag into the seat cwd ``.cursor/mcp.json`` only (FR #6865)."""
+    cfg = Path(worker_cwd) / CURSOR_SKILL_DAG_MCP_RELPATH
+    cfg.parent.mkdir(parents=True, exist_ok=True)
+    incoming = cursor_skill_dag_mcp_document(worker_cwd)
+    data: dict = {"mcpServers": {}}
+    if cfg.is_file():
+        try:
+            existing = json.loads(cfg.read_text(encoding="utf-8"))
+            if isinstance(existing, dict):
+                data.update(existing)
+        except json.JSONDecodeError:
+            data = {"mcpServers": {}}
+    servers = data.get("mcpServers")
+    if not isinstance(servers, dict):
+        servers = {}
+    servers["skill-dag"] = incoming["mcpServers"]["skill-dag"]
+    data["mcpServers"] = servers
+    cfg.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    return cfg
+
+
+def write_cursor_skill_dag_mcp_config_if_agent(spec: LaunchSpec) -> None:
+    if not getattr(spec, "write_cursor_skill_dag_mcp", False):
+        return
+    write_cursor_skill_dag_mcp_config(spec.cwd)
 
 
 def assert_fresh(argv: list, files: Optional[dict] = None, allow_resume: bool = False) -> None:
@@ -2032,6 +2086,9 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
         files[pfile] = prompt
         files[lfile] = "\n".join(["$ErrorActionPreference = 'Stop'", f"$prompt = [IO.File]::ReadAllText('{esc(pfile)}')",
                                   f"Set-Location -LiteralPath '{esc(cwd)}'", agent_line, "exit $LASTEXITCODE"])
+        if str(mode).strip().lower() == "agent":
+            mcp_path = str(Path(cwd) / CURSOR_SKILL_DAG_MCP_RELPATH)
+            files[mcp_path] = json.dumps(cursor_skill_dag_mcp_document(cwd), indent=2) + "\n"
         argv = ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", lfile]
     elif kind == "opencode":
         # FR #6120: OpenCode is a headless CLI one-shot per prompt.  The wrapper runs the
@@ -2336,6 +2393,7 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
         session_id=sid,
         files=files,
         write_skill_dag_mcp=(str(mode).strip().lower() == "agent"),
+        write_cursor_skill_dag_mcp=(str(kind).strip().lower() == "cursor" and str(mode).strip().lower() == "agent"),
     )
 
 
@@ -2358,6 +2416,7 @@ def default_spawn(spec: LaunchSpec, env: dict) -> ProcHandle:
         Path(path).parent.mkdir(parents=True, exist_ok=True)
         Path(path).write_text(text, encoding="utf-8")
     write_skill_dag_mcp_config_if_agent(spec)
+    write_cursor_skill_dag_mcp_config_if_agent(spec)
     # t771u: ONE window. The agent INHERITS this exe's console (no CREATE_NEW_CONSOLE, no second console); a kill-on-close job object
     # makes the agent die with us even if we are killed. "New agent every time" is about the SESSION, not the window: the exe's
     # window IS the agent's window and a new click opens a new exe + window.
