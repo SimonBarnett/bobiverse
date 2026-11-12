@@ -532,15 +532,18 @@ def test_opencode_fuel_ps1_uses_models_plain_text_stats_for_each_window():
 def test_opencode_fuel_ps1_pipes_windowed_payload_via_stdin():
     text = OPENCODE_FUEL_PS1.read_text(encoding="utf-8-sig")
     assert "ConvertTo-Json -Compress" in text
-    assert "$payload | & $py -c $script" in text
+    assert "StandardInput" in text
     assert "sys.stdin.read()" in text
     assert "sys.argv[1]" not in text
-    # FR #6717: stats-stage stderr capture + PATHEXT .EXE ensure for isolated runners.
-    assert "2>$statsErrFile" in text
+    # FR #6717 / #6727: PATHEXT .EXE ensure + ProcessStartInfo stats child (no & $py).
     assert "python_exit" in text
     assert "stats_error" in text
     assert "PATHEXT" in text
     assert ".EXE" in text
+    assert "BOBIVERSE_PYTHON" in text
+    assert "ProcessStartInfo" in text
+    assert "bob-oc-stats-" in text
+    assert "$payload | & $py -c $script" not in text
 
 
 def test_opencode_fuel_ps1_pythonpath_resolves_common_scripts_in_work_tree():

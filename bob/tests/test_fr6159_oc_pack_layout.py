@@ -451,6 +451,35 @@ def test_fr6717_flat_helper_works_when_pathext_lacks_exe(tmp_path: Path):
     assert (parsed.get("models") or {}).get("glm-5.3") == 50
 
 
+@pytest.mark.skipif(sys.platform != "win32" or not shutil.which("powershell"), reason="Windows PowerShell")
+@pytest.mark.skipif(not shutil.which("python"), reason="python.exe required")
+def test_fr6727_flat_helper_uses_bobiverse_python_when_path_stripped(tmp_path: Path):
+    """FR #6727: flamingo/NSSM runners export BOBIVERSE_PYTHON; PATH may be System32-only.
+
+    ProcessStartInfo stats invoke must honour BOBIVERSE_PYTHON when BOB_OPENCODE_PYTHON
+    is absent, and must not depend on PATHEXT for starting the interpreter.
+    """
+    install = tmp_path / "bob"
+    tools = install / "tools"
+    scripts = install / "scripts"
+    elsewhere = tmp_path / "elsewhere"
+    tools.mkdir(parents=True)
+    scripts.mkdir(parents=True)
+    elsewhere.mkdir(parents=True)
+    shutil.copy(OPENCODE_FUEL_PS1, tools / "Get-BobOpencodeFuel.ps1")
+    shutil.copy(OPENCODE_FUEL_PY, scripts / "opencode_fuel.py")
+    env = _opencode_fuel_fixture_env()
+    env.pop("BOB_OPENCODE_PYTHON", None)
+    env["BOBIVERSE_PYTHON"] = sys.executable
+    env["PATHEXT"] = ".CPL"
+    env["PATH"] = os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), "System32")
+    parsed = _run_opencode_fuel_ps(
+        tools / "Get-BobOpencodeFuel.ps1", env=env, cwd=elsewhere
+    )
+    _assert_fuel_ok(parsed)
+    assert parsed.get("python_exit") == 0
+
+
 def test_fr6159_worker_source_has_flat_resolver_and_install_root_kw():
     src = WORKER.read_text(encoding="utf-8")
     assert 'root / "scripts" / "opencode_fuel.py"' in src
