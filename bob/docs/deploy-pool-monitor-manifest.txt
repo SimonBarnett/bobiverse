@@ -1,5 +1,7 @@
 # Pool-monitor deploy pin
-# Behavior source sha: 44ea47d36d1e7fbcd3bc2e527af61d8df981bf8f
+# Behavior source sha: 0db71bfa98b9b84e9f1ce76c81f0ee18c6324aea
+# Prior pin (FR #6672): 44ea47d36d1e7fbcd3bc2e527af61d8df981bf8f
+# FR #6722: repin after OpenCode PATHEXT (#6718) + stale build lock (#6720).
 # Prior pin (FR #6576): 22961fba20bcd8ce126670132a580c7232593c32
 # FR #6558 merge (PR #6575): 2da1eb06d0c99cd3384d6bf1bb21faa830526ba5
 # Prior pin (PR #6252): d563eca67adf1f73213628d8eb4b2dc2f308b73c
@@ -38,14 +40,14 @@
 # Deploy/restart remains owner/Slab gated (CAST IRON: FR seat does not Install or restart).
 #
 # sha256  bytes  path
-0d178c00d1309741b339f0c884d669213297f7541e15672f4fb0cb052487f7be  276890  common/scripts/bobreport.py
-d54e8b3c87a7d484972a93e88ee6bbb9a3f8a86791b8dd45a80abe0990c6782f  251220  common/scripts/irc_agent.py
+bf818613debb1d2c6b628a18213c7587b7ab47ce958ab2f95c305ad66c5364d0  277922  common/scripts/bobreport.py
+c8e4d93871406313ca130f317c59ce3c6de719e6269a59b8c887e163e74a12ca  252282  common/scripts/irc_agent.py
 9e770badb1a2bcb0fb2eea5a0071f16fbd2c1c7097573f7ddfdd64d6d58a6705  83180  common/scripts/opencode_fuel.py
-b9c9ab112502343c27683ab9d23384a8217f69c49838e11670dc93fc87daa82c  151434  common/scripts/bobiverse_build.py
+69b96cfee54cceabda774ff047bb949bc448a5a9a45c80216022cfd092b67ab3  157970  common/scripts/bobiverse_build.py
 a5bb5fc9cd58ca4bb4d0926077a2297a91cb68ba833f89949e9019f824566c31  185190  bob/tray/src/Public/Get-BobTrayHover.ps1
 4115f618af32cabe19b474c8de9bb9df52a97927dd8fa4ad6467ea45c72228d4  124609  bob/tray/src/Private/Get-BobIrc.ps1
 d5cd913fba2d77bbd61802af7b3b0d08ad08217d4ab5ab66fa2c97b4e50c9d71  177621  bob/tray/tools/Watch-BobTray.ps1
-e16688d64827ee17fe903206668428d22614b15336c8a210377830420bf444c2  16000  bob/tray/tools/Get-BobOpencodeFuel.ps1
+1996db843389647f901c226597b85feaacc67bba91e8eda590856cb828572d9c  19662  bob/tray/tools/Get-BobOpencodeFuel.ps1
 66d15e08212fde38c584a8655508ca6ed0313befa63af4c81cfbb17dec64be39  4132  bob/tray/src/BobBridge.psm1
 0f433f61e89b6da10f6fceacf7b65c5ce18712e9d5ccd9be58b405662124fbbc  6200  bob/scripts/Build-BobEar.ps1
 1e7cbfa19aba50183783341b58fb9ac5b024195a6751687da8a5368941366b2e  1985  bob/scripts/Install-BobEarExe.ps1
