@@ -2547,7 +2547,62 @@ function Get-BobTrayCursorHelpTooltip {
     return (Get-BobTrayCursorGroupHelpTooltip -GroupId '')
 }
 
+function Get-BobTrayDeployedSourceShortSha {
+    # FR #6924: prefer MANIFEST.json, else provenance.txt, else HOTPATCH/BUILD commit.
+    param([string]$Root = $RepoRoot)
+    function Get-BobTrayShortShaToken([string]$Raw) {
+        $s = ([string]$Raw).Trim()
+        if ($s -notmatch '^[0-9a-fA-F]{7,40}$') { return '' }
+        return $s.ToLowerInvariant().Substring(0, 7)
+    }
+    function Get-BobTrayShaFromJson([string]$Path) {
+        if (-not (Test-Path -LiteralPath $Path)) { return '' }
+        try {
+            $obj = Get-Content -LiteralPath $Path -Raw -ErrorAction Stop | ConvertFrom-Json
+            foreach ($k in @('source_commit', 'workflow_commit', 'commit', 'hotpatch_commit', 'sha')) {
+                $got = Get-BobTrayShortShaToken ([string]$obj.$k)
+                if ($got) { return $got }
+            }
+        }
+        catch { }
+        return ''
+    }
+    function Get-BobTrayShaFromProvenance([string]$Path) {
+        if (-not (Test-Path -LiteralPath $Path)) { return '' }
+        $source = ''; $workflow = ''; $commit = ''
+        try {
+            foreach ($line in @(Get-Content -LiteralPath $Path -ErrorAction Stop)) {
+                if (-not $line) { continue }
+                $eq = $line.IndexOf('=')
+                if ($eq -le 0) { continue }
+                $k = $line.Substring(0, $eq).Trim().ToLowerInvariant()
+                $tok = Get-BobTrayShortShaToken ($line.Substring($eq + 1))
+                if (-not $tok) { continue }
+                switch ($k) {
+                    'source_commit' { if (-not $source) { $source = $tok } }
+                    'workflow_commit' { if (-not $workflow) { $workflow = $tok } }
+                    'commit' { if (-not $commit) { $commit = $tok } }
+                }
+            }
+        }
+        catch { }
+        if ($source) { return $source }
+        if ($workflow) { return $workflow }
+        return $commit
+    }
+    $got = Get-BobTrayShaFromJson (Join-Path $Root 'MANIFEST.json')
+    if ($got) { return $got }
+    $got = Get-BobTrayShaFromProvenance (Join-Path $Root 'provenance.txt')
+    if ($got) { return $got }
+    $got = Get-BobTrayShaFromProvenance (Join-Path $Root 'tools\provenance.txt')
+    if ($got) { return $got }
+    $got = Get-BobTrayShaFromJson (Join-Path $Root 'HOTPATCH.json')
+    if ($got) { return $got }
+    return (Get-BobTrayShaFromJson (Join-Path $Root 'BUILD.json'))
+}
+
 function Get-BobTrayProductVersionLabel {
+    # FR #6924: MSI VERSION + optional deployed short SHA; re-read on every TipForm paint.
     $ver = [string]$env:BOBIVERSE_BOB_VERSION
     if (-not $ver.Trim()) {
         foreach ($cand in @(
@@ -2566,6 +2621,8 @@ function Get-BobTrayProductVersionLabel {
         }
     }
     if (-not $ver.Trim()) { $ver = 'unknown' }
+    $sha = Get-BobTrayDeployedSourceShortSha -Root $RepoRoot
+    if ($sha) { return ('bob {0} ({1})' -f $ver.Trim(), $sha) }
     return ('bob {0}' -f $ver.Trim())
 }
 

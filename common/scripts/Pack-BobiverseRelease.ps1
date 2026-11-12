@@ -146,11 +146,20 @@ function Stage-Product([string]$Name) {
     [IO.File]::WriteAllText((Join-Path $stage 'src\VERSION'), $verText, $verUtf8)
     # t797u: BUILD.json = what the tray About dialog shows as version / build date / commit for this install folder.
     $buildCommit = ''
+    $buildCommitFull = ''
     try { $buildCommit = [string](& git -C $RepoRoot rev-parse --short HEAD 2>$null | Select-Object -First 1) } catch { }
+    try { $buildCommitFull = [string](& git -C $RepoRoot rev-parse HEAD 2>$null | Select-Object -First 1) } catch { }
     ([ordered]@{ product = $Name; version = $msiVersion; release_version = $Version; built_utc = [datetime]::UtcNow.ToString('o'); commit = $buildCommit.Trim() } |
         ConvertTo-Json -Compress) | Set-Content -LiteralPath (Join-Path $stage 'BUILD.json') -Encoding ascii
     # FR #3686: pack fails closed if VERSION / BUILD.json / ProductVersion disagree.
     Assert-BobiverseStageVersionAligned -Stage $stage -ExpectedVersion $msiVersion -Product $Name
+    # FR #6924: MANIFEST.json + provenance for tray label (MSI VERSION stays; short SHA from source).
+    if ($Name -eq 'bob' -and $buildCommitFull -match '^[0-9a-fA-F]{7,40}$') {
+        $idWriter = Get-BobiverseRepoPath -Root $RepoRoot -Rel 'scripts\Write-BobTrayDeployedIdentity.ps1'
+        if (Test-Path -LiteralPath $idWriter) {
+            & $idWriter -InstallRoot $stage -Commit $buildCommitFull.Trim() -Builder 'Pack-BobiverseRelease.ps1' | Out-Null
+        }
+    }
 
     # Product AGENTS.md (repo AGENTS.<product>.md -> stage AGENTS.md)
     $agentsSrc = Get-BobiverseRepoPath -Root $RepoRoot -Rel "AGENTS.$Name.md"

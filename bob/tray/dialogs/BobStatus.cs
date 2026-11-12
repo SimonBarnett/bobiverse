@@ -294,6 +294,8 @@ namespace BobDialogs
                 if (card.CloseRect.Contains(e.Location)) { Close(); return; }
                 if (e.Button == MouseButtons.Left && e.Y < 34) { Native2.Drag(Handle); }
             };
+            // FR #6924: re-read MSI VERSION + deployed identity when Status is shown.
+            Shown += delegate { card.Footer = "bob " + Common.BobVersion(root); Invalidate(); };
             Reload(true);
             Resize2(true);
             poll.Interval = 2000; poll.Tick += delegate { Reload(false); }; poll.Start();
