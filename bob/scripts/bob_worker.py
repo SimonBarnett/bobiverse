@@ -1718,7 +1718,9 @@ def describe_agent_child_launch(
             import skill_dag_bound as _sdb
 
             mcp_script = skill_dag_mcp_script_path(folder)
-            bound = _sdb.prepare_bound_agent_cwd(rd, folder, mcp_script=mcp_script)
+            bound = _sdb.prepare_bound_agent_cwd(
+                rd, folder, mcp_script=mcp_script, mcp_roots=skill_dag_vision_roots(folder)
+            )
             grok_home = _sdb.prepare_seat_grok_home(rd, trust_paths=[bound])
             launch_folder = str(bound)
             bound_meta = {
@@ -2002,6 +2004,8 @@ class LaunchSpec:
     env_extra: dict = field(default_factory=dict)
     write_skill_dag_mcp: bool = False  # FR #6863: agent seats only
     write_cursor_skill_dag_mcp: bool = False  # FR #6865: cursor agent seats only
+    skill_dag_mcp_args: list = field(default_factory=list)  # FR #6899: python argv for skill-dag stdio
+    skill_dag_job_worktree: str | None = None
 
 
 def skill_dag_mcp_script_path(
@@ -2033,33 +2037,70 @@ def skill_dag_mcp_script_path(
     return candidates[0].resolve()
 
 
-def write_skill_dag_mcp_config(worker_cwd: str) -> Path:
-    """Write ``[mcp_servers.skill-dag]`` to the worker cwd ``.grok/config.toml`` only (FR #6863)."""
+def skill_dag_vision_roots(worker_cwd: str, *, home: Path | None = None) -> list[Path]:
+    """Vision skill packs for worker MCP (FR #6899). Seat, bob, harvest, user.
+
+    Does not include a job worktree (that is ``--job-worktree`` only).
+    """
+    cwd = Path(worker_cwd).resolve()
+    install = cwd.parent
+    user = Path(home) if home is not None else Path.home()
+    return [
+        cwd / ".grok" / "skills",
+        install / "bob" / ".grok" / "skills",
+        install / "common" / ".grok" / "skills",
+        user / ".grok" / "skills",
+    ]
+
+
+def skill_dag_mcp_launch_args(
+    worker_cwd: str,
+    *,
+    job_worktree: str | Path | None = None,
+) -> list[str]:
+    """stdio argv: script plus repeatable ``--root`` (and optional ``--job-worktree``)."""
+    args = [skill_dag_mcp_script_path(worker_cwd).as_posix()]
+    for root in skill_dag_vision_roots(worker_cwd):
+        args.extend(["--root", root.as_posix()])
+    wt = str(job_worktree or "").strip()
+    if wt:
+        args.extend(["--job-worktree", Path(wt).as_posix()])
+    return args
+
+
+def _skill_dag_toml_block(argv: list[str]) -> str:
+    inner = ", ".join(json.dumps(a) for a in argv)
+    return "[mcp_servers.skill-dag]\ncommand = \"python\"\n" f"args = [{inner}]\n"
+
+
+def _upsert_skill_dag_toml(text: str, block: str) -> str:
+    pat = re.compile(r"(?ms)^\[mcp_servers\.skill-dag\](?:\n(?!\[).*)*")
+    if text and pat.search(text):
+        return pat.sub(block.rstrip() + "\n", text, count=1)
+    out = text or ""
+    if out and not out.endswith("\n"):
+        out += "\n"
+    return out + block
+
+
+def write_skill_dag_mcp_config(
+    worker_cwd: str,
+    job_worktree: str | Path | None = None,
+) -> Path:
+    """Write ``[mcp_servers.skill-dag]`` to the worker cwd ``.grok/config.toml`` only (FR #6863/#6899)."""
     grok_dir = Path(worker_cwd) / ".grok"
     grok_dir.mkdir(parents=True, exist_ok=True)
     cfg = grok_dir / "config.toml"
-    script = skill_dag_mcp_script_path(worker_cwd)
-    block = (
-        "[mcp_servers.skill-dag]\n"
-        'command = "python"\n'
-        f'args = ["{script.as_posix()}"]\n'
-    )
-    if cfg.is_file():
-        text = cfg.read_text(encoding="utf-8")
-        if "[mcp_servers.skill-dag]" in text:
-            return cfg
-        if text and not text.endswith("\n"):
-            text += "\n"
-        cfg.write_text(text + block, encoding="utf-8")
-        return cfg
-    cfg.write_text(block, encoding="utf-8")
+    block = _skill_dag_toml_block(skill_dag_mcp_launch_args(worker_cwd, job_worktree=job_worktree))
+    text = cfg.read_text(encoding="utf-8") if cfg.is_file() else ""
+    cfg.write_text(_upsert_skill_dag_toml(text, block), encoding="utf-8")
     return cfg
 
 
 def write_skill_dag_mcp_config_if_agent(spec: LaunchSpec) -> None:
     if not getattr(spec, "write_skill_dag_mcp", False):
         return
-    write_skill_dag_mcp_config(spec.cwd)
+    write_skill_dag_mcp_config(spec.cwd, job_worktree=getattr(spec, "skill_dag_job_worktree", None))
 
 
 # FR #6865: Cursor CLI/agent reads project ``.cursor/mcp.json`` (same as the editor;
@@ -2075,23 +2116,28 @@ def cursor_skill_catalog_process_local_drop() -> Optional[str]:
     return None
 
 
-def cursor_skill_dag_mcp_document(worker_cwd: str) -> dict:
-    script = skill_dag_mcp_script_path(worker_cwd)
+def cursor_skill_dag_mcp_document(
+    worker_cwd: str,
+    job_worktree: str | Path | None = None,
+) -> dict:
     return {
         "mcpServers": {
             "skill-dag": {
                 "command": "python",
-                "args": [script.as_posix()],
+                "args": skill_dag_mcp_launch_args(worker_cwd, job_worktree=job_worktree),
             }
         }
     }
 
 
-def write_cursor_skill_dag_mcp_config(worker_cwd: str) -> Path:
+def write_cursor_skill_dag_mcp_config(
+    worker_cwd: str,
+    job_worktree: str | Path | None = None,
+) -> Path:
     """Write skill-dag into the seat cwd ``.cursor/mcp.json`` only (FR #6865)."""
     cfg = Path(worker_cwd) / CURSOR_SKILL_DAG_MCP_RELPATH
     cfg.parent.mkdir(parents=True, exist_ok=True)
-    incoming = cursor_skill_dag_mcp_document(worker_cwd)
+    incoming = cursor_skill_dag_mcp_document(worker_cwd, job_worktree=job_worktree)
     data: dict = {"mcpServers": {}}
     if cfg.is_file():
         try:
@@ -2112,7 +2158,7 @@ def write_cursor_skill_dag_mcp_config(worker_cwd: str) -> Path:
 def write_cursor_skill_dag_mcp_config_if_agent(spec: LaunchSpec) -> None:
     if not getattr(spec, "write_cursor_skill_dag_mcp", False):
         return
-    write_cursor_skill_dag_mcp_config(spec.cwd)
+    write_cursor_skill_dag_mcp_config(spec.cwd, job_worktree=getattr(spec, "skill_dag_job_worktree", None))
 
 
 def assert_fresh(argv: list, files: Optional[dict] = None, allow_resume: bool = False) -> None:
@@ -2140,6 +2186,10 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
     sid = resume_session_id or session_id or str(uuid.uuid4())
     rules = rules_text(cwd, mode)
     files: dict = {}
+    job_wt = (os.environ.get("BOB_JOB_WORKTREE") or "").strip() or None
+    mcp_args: list = []
+    if str(mode).strip().lower() == "agent" and str(kind).strip().lower() in ("grok", "cursor"):
+        mcp_args = skill_dag_mcp_launch_args(cwd, job_worktree=job_wt)
     if kind == "grok":
         # FR #2699: every grok seat (agent/plan/monitor/maintenance) shares the same
         # --no-auto-update + --no-alt-screen prefix so Plan cannot self-update mid-session.
@@ -2165,7 +2215,9 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
                                   f"Set-Location -LiteralPath '{esc(cwd)}'", agent_line, "exit $LASTEXITCODE"])
         if str(mode).strip().lower() == "agent":
             mcp_path = str(Path(cwd) / CURSOR_SKILL_DAG_MCP_RELPATH)
-            files[mcp_path] = json.dumps(cursor_skill_dag_mcp_document(cwd), indent=2) + "\n"
+            files[mcp_path] = json.dumps(
+                cursor_skill_dag_mcp_document(cwd, job_worktree=job_wt), indent=2
+            ) + "\n"
         argv = ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", lfile]
     elif kind == "opencode":
         # FR #6120: OpenCode is a headless CLI one-shot per prompt.  The wrapper runs the
@@ -2471,6 +2523,8 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
         files=files,
         write_skill_dag_mcp=(str(mode).strip().lower() == "agent"),
         write_cursor_skill_dag_mcp=(str(kind).strip().lower() == "cursor" and str(mode).strip().lower() == "agent"),
+        skill_dag_mcp_args=mcp_args,
+        skill_dag_job_worktree=job_wt,
     )
 
 
