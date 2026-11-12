@@ -277,3 +277,4 @@ Generalised from 21 harvested lessons that never reached this book (audit for FR
 - **FR #6378:** OpenCode finish: append DONE immediately after `gh pr create` (never `gh pr checks --watch` / CI poll); if an open PR exists and DONE was skipped, worker writes DONE (`pr_opened_by=model done_by=worker`); inject `[outbox:]` footer always from the *current* job worktree `.bob/outbox.txt` (never a prior job path).
 - CONFLICTING MRB: fold origin/main in the job worktree; keep both sibling skill-dag notes in bob-worker.md; process-local bound is BOB_SKILL_DAG_BOUND plus a prompt that does not interpolate the index.
 - FR #6860 durable index: cycle must exit 1 and leave the previous index bytes unchanged; rebuild when SKILL.md mtime is newer than the index.
+- Cursor worker MCP is project .cursor/mcp.json under --workspace (seat cwd); never write ~/.cursor/mcp.json; there is no process-local catalog drop.
