@@ -5,9 +5,49 @@ function Get-BobiverseConfigPath {
 }
 
 function Get-BobiverseConfig {
+    # FR #6773: merge untracked bobiverse.local.json over base (machine-local overrides; never block git ff).
     $p = Get-BobiverseConfigPath
     if (-not (Test-Path $p)) { return $null }
-    return (Read-JsonFile $p)
+    $cfg = Read-JsonFile $p
+    if (-not $cfg) { return $null }
+    $localPath = Join-Path (Split-Path -Parent $p) 'bobiverse.local.json'
+    if (-not (Test-Path -LiteralPath $localPath)) { return $cfg }
+    $overlay = Read-JsonFile $localPath
+    if (-not $overlay) { return $cfg }
+    try {
+        foreach ($prop in @($overlay.PSObject.Properties)) {
+            $cfg | Add-Member -MemberType NoteProperty -Name $prop.Name -Value $prop.Value -Force
+        }
+    } catch { }
+    return $cfg
+}
+
+function Get-BobiverseSyncDigestField {
+    # FR #6773: read sync-status stamp for digest merge (empty when ok / missing).
+    $mid = $null
+    try { $mid = [string](Get-ThisMachineId) } catch { }
+    if (-not $mid) { $mid = if ($env:COMPUTERNAME) { $env:COMPUTERNAME.ToLowerInvariant() } else { 'unknown' } }
+    $cands = New-Object System.Collections.Generic.List[string]
+    if ($env:BOB_SYNC_STATUS_DIR) { [void]$cands.Add((Join-Path $env:BOB_SYNC_STATUS_DIR ($mid + '.json'))) }
+    try {
+        $root = Get-ModuleRoot
+        if ($root) { [void]$cands.Add((Join-Path $root 'logs\sync-status.json')) }
+    } catch { }
+    if ($env:LOCALAPPDATA) {
+        [void]$cands.Add((Join-Path $env:LOCALAPPDATA ("Bobiverse\sync-status\" + $mid + '.json')))
+    }
+    foreach ($path in $cands) {
+        if (-not $path -or -not (Test-Path -LiteralPath $path)) { continue }
+        $doc = Read-JsonFile $path
+        if (-not $doc) { continue }
+        if ($doc.ok -eq $true) { return '' }
+        if ($doc.sync) { return [string]$doc.sync }
+        $behind = 0
+        try { $behind = [int]$doc.behind } catch { }
+        $why = if ($doc.reason) { [string]$doc.reason } else { 'ff-only not possible' }
+        return ("behind {0}, {1}" -f $behind, $why)
+    }
+    return ''
 }
 
 function Get-BobiverseMachineIds {
@@ -2259,6 +2299,15 @@ function Build-BobDigestWebhookMergePayload {
     # FR #356 (agentic_build): seat start reports pool|session-key|unknown (never the key)
     if ($Doc.fuel_mode) { $payload.fuel_mode = [string]$Doc.fuel_mode }
     if ($Doc.working_on) { $payload.working_on = [string]$Doc.working_on } else { $payload.working_on = $null }
+    # FR #6773: install sync stamp ("behind N, reason") — never secrets.
+    if ($Doc.sync) {
+        $payload.sync = [string]$Doc.sync
+    } else {
+        try {
+            $syncVal = Get-BobiverseSyncDigestField
+            if ($syncVal) { $payload.sync = [string]$syncVal } else { $payload.sync = $null }
+        } catch { $payload.sync = $null }
+    }
     if ($null -ne $Doc.running) { $payload.running = [int]$Doc.running }
     if ($null -ne $Doc.queued) { $payload.queued = [int]$Doc.queued }
     if ($Doc.jobs -and @($Doc.jobs).Count -gt 0) { $payload.jobs = @($Doc.jobs) }
