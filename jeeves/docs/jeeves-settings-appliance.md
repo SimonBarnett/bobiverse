@@ -53,16 +53,12 @@ Off by default. On the chair host (walrus), set NSSM / process env and restart `
 
 Browse `http://jeeves.ntsa.uk:7701/` from a LAN client (or `http://127.0.0.1:7701/` on the host).
 JSON: `GET /api/settings`, `PUT /api/settings/<KEY>`, `POST /api/rollback`, `GET /api/schema`,
-<<<<<<< HEAD
-`GET /api/status`, `POST /api/restart-when-idle`.
-HTML: `GET /` settings, `GET /status`, `GET /queue` (FR #6755 waiting / in-progress lists).
-=======
-`GET /api/status`, `GET /api/queue` (FR #6754), `POST /api/restart-when-idle`.
+GET /api/status, GET /api/queue (FR #6754), POST /api/restart-when-idle.
+HTML: GET / settings, GET /status, GET /queue (FR #6755 waiting / in-progress lists).
 
-`GET /api/settings` includes a `default` field per row (schema default; secrets return `""`).
+GET /api/settings includes a default field per row (schema default; secrets return "").
 The HTML settings table has a **Default** column for every non-secret key (FR #6751 / FR-03).
 The Value control keeps the current value; the default is shown beside it and is not written into the control unless it is already current.
->>>>>>> origin/main
 
 Socket-layer gate: the server binds only to LAN/loopback and `verify_request` drops non-RFC1918 peers before handlers run. Helpers also reject non-LAN `client_ip`.
 
