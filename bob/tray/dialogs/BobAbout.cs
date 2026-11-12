@@ -226,6 +226,7 @@ namespace BobDialogs
             Label by = new Label();
             by.Text = "by Simon Barnett"; by.Font = new Font("Segoe UI", 11f); by.AutoSize = true; by.Location = new Point(130, 52);
             Label ver = new Label();
+            // FR #6924: re-read VERSION + deployed identity when shown (not only at process start).
             ver.Text = "bob " + Common.BobVersion(root) + "    machine: " + Common.MachineId();
             ver.Font = new Font("Segoe UI", 9f); ver.AutoSize = true; ver.Location = new Point(130, 84);
             box = new TextBox();
@@ -236,7 +237,10 @@ namespace BobDialogs
             ok.Click += delegate { Close(); };
             Controls.AddRange(new Control[] { logo, title, by, ver, box, ok });
             AcceptButton = ok;
-            Shown += delegate { box.Select(0, 0); ok.Focus(); };
+            Shown += delegate {
+                ver.Text = "bob " + Common.BobVersion(root) + "    machine: " + Common.MachineId();
+                box.Select(0, 0); ok.Focus();
+            };
             string r = root;
             // Non-blocking data: the window is already up; the scan (services, BUILD.json, git only when needed) fills the box when done.
             ThreadPool.QueueUserWorkItem(delegate

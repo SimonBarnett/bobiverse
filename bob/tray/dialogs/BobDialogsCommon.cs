@@ -98,6 +98,8 @@ namespace BobDialogs
             return m.Length > 0 ? m : Environment.MachineName.ToLowerInvariant();
         }
 
+        // FR #6924: MSI VERSION (+ optional deployed short SHA). Identity order:
+        // MANIFEST.json > provenance.txt > tools\provenance.txt > HOTPATCH.json > BUILD.json.
         public static string BobVersion(string root)
         {
             string v = (Environment.GetEnvironmentVariable("BOBIVERSE_BOB_VERSION") ?? "").Trim();
@@ -113,7 +115,84 @@ namespace BobDialogs
                     if (t.Length > 0) { v = t; break; }
                 }
             }
-            return v.Length > 0 ? v : "unknown";
+            if (v.Length == 0) v = "unknown";
+            string sha = DeployedSourceShortSha(root);
+            return sha.Length > 0 ? (v + " (" + sha + ")") : v;
+        }
+
+        public static string DeployedSourceShortSha(string root)
+        {
+            if (string.IsNullOrEmpty(root)) return "";
+            string got = ShortShaFromJsonFile(Path.Combine(root, "MANIFEST.json"));
+            if (got.Length > 0) return got;
+            got = ShortShaFromProvenance(Path.Combine(root, "provenance.txt"));
+            if (got.Length > 0) return got;
+            got = ShortShaFromProvenance(Path.Combine(root, "tools\\provenance.txt"));
+            if (got.Length > 0) return got;
+            got = ShortShaFromJsonFile(Path.Combine(root, "HOTPATCH.json"));
+            if (got.Length > 0) return got;
+            return ShortShaFromJsonFile(Path.Combine(root, "BUILD.json"));
+        }
+
+        static string ShortShaToken(string raw)
+        {
+            if (string.IsNullOrEmpty(raw)) return "";
+            string s = raw.Trim();
+            if (s.Length < 7 || s.Length > 40) return "";
+            for (int i = 0; i < s.Length; i++)
+            {
+                char c = s[i];
+                bool ok = (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
+                if (!ok) return "";
+            }
+            return s.Substring(0, 7).ToLowerInvariant();
+        }
+
+        static string ShortShaFromJsonFile(string path)
+        {
+            try
+            {
+                if (!File.Exists(path)) return "";
+                string text = File.ReadAllText(path, Encoding.UTF8);
+                Dictionary<string, object> d = Dict(ParseJson(text));
+                if (d == null) return "";
+                string[] keys = new string[] { "source_commit", "workflow_commit", "commit", "hotpatch_commit", "sha" };
+                foreach (string k in keys)
+                {
+                    object o;
+                    if (!d.TryGetValue(k, out o) || o == null) continue;
+                    string got = ShortShaToken(Convert.ToString(o));
+                    if (got.Length > 0) return got;
+                }
+            }
+            catch { }
+            return "";
+        }
+
+        static string ShortShaFromProvenance(string path)
+        {
+            try
+            {
+                if (!File.Exists(path)) return "";
+                string[] lines = File.ReadAllLines(path, Encoding.UTF8);
+                string source = "", workflow = "", commit = "";
+                foreach (string line in lines)
+                {
+                    if (string.IsNullOrEmpty(line)) continue;
+                    int eq = line.IndexOf('=');
+                    if (eq <= 0) continue;
+                    string k = line.Substring(0, eq).Trim().ToLowerInvariant();
+                    string v = ShortShaToken(line.Substring(eq + 1));
+                    if (v.Length == 0) continue;
+                    if (k == "source_commit" && source.Length == 0) source = v;
+                    else if (k == "workflow_commit" && workflow.Length == 0) workflow = v;
+                    else if (k == "commit" && commit.Length == 0) commit = v;
+                }
+                if (source.Length > 0) return source;
+                if (workflow.Length > 0) return workflow;
+                return commit;
+            }
+            catch { return ""; }
         }
 
         public static string FirstLine(string path)

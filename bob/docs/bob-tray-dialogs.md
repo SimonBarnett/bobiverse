@@ -81,7 +81,16 @@ rows with workers `{irc nick}: {doing|idle}`, one Copilot pool tile, alert and v
 
 **FR #6314 (expired Grok CLI sign-in):** when digest `xai_weekly.error` is `grok-login-expired` (ear maps billing HTTP 401/403), TipForm/Status expands it to `Grok login expired: run Grok on <machine> to sign in again` while keeping last-good `%` + stale mark. Other errors (e.g. `provider-http-500`) stay raw. The ear never refreshes or rewrites `auth.json`; a later successful read clears the error without a restart.
 
-**FR #6285 CI (`build-bob-tray.yml`):** GitHub Actions on `windows-latest` compiles `bob-tray.exe` / `bob-status.exe` / `bob-about.exe` via `bob/scripts/Build-BobDialogs.ps1` whenever `bob/tray/**`, `bob/scripts/Build-BobDialogs.ps1`, `.github/workflows/build-bob-tray.yml`, or `bob/tests/test_fr6285_tray_build_ci.py` changes (plus `workflow_dispatch`). The job uploads the three exes plus `*.sha256` and `provenance.txt` (workflow commit + SHA-256). A smoke check fails if the PE lacks UTF-16LE `xAI weekly` or still embeds `Cursor / xAI weekly` (throw text includes `missing UTF-16LE heading` / `still embeds stale heading`). Source-only merges do not update a live `tools\bob-tray.exe`; Slab (or Pack/Sync) must deploy a built artifact / rebuild locally after C# heading changes.
+**FR #6285 CI (`build-bob-tray.yml`):** GitHub Actions on `windows-latest` compiles `bob-tray.exe` / `bob-status.exe` / `bob-about.exe` via `bob/scripts/Build-BobDialogs.ps1` whenever `bob/tray/**`, `bob/scripts/Build-BobDialogs.ps1`, `.github/workflows/build-bob-tray.yml`, or `bob/tests/test_fr6285_tray_build_ci.py` changes (plus `workflow_dispatch`). The job uploads the three exes plus `*.sha256`, `provenance.txt` (workflow commit + SHA-256), and `MANIFEST.json` (FR #6924). A smoke check fails if the PE lacks UTF-16LE `xAI weekly` or still embeds `Cursor / xAI weekly` (throw text includes `missing UTF-16LE heading` / `still embeds stale heading`). Source-only merges do not update a live `tools\bob-tray.exe`; Slab (or Pack/Sync) must deploy a built artifact / rebuild locally after C# heading changes.
+
+## Tray version label (FR #6924)
+
+TipForm, About, and Status show **`bob <MSI VERSION> (<shortsha>)`** when a deployed identity file is present, else **`bob <MSI VERSION>`**.
+
+- **Numeric part** comes only from install-root `VERSION` (or `BOBIVERSE_BOB_VERSION`). That file stays the MSI ProductVersion / ARP DisplayVersion (FR #1565 / #2948). Sync and hotpatches must **not** move `VERSION` off the MSI number.
+- **Short SHA** (7 hex) is read when the UI is shown (not cached once at process start). Preference order: install-root `MANIFEST.json` (`source_commit` / `workflow_commit` / `commit` / …) → `provenance.txt` / `tools\provenance.txt` (`source_commit=` / `workflow_commit=`) → `HOTPATCH.json` → `BUILD.json`.
+- **Writers:** `bob/scripts/Write-BobTrayDeployedIdentity.ps1` (also called from `Build-BobDialogs.ps1`, `Sync-BobiverseFromRepo.ps1` for bob, `Pack-BobiverseRelease.ps1`, and `build-bob-tray.yml`). Slab hotpatches that replace `tools\bob-tray.exe` or live engine scripts must deploy/update that identity file so the label moves without a new MSI.
+- Readers: `Common.BobVersion` (`BobDialogsCommon.cs`) and `Get-BobTrayProductVersionLabel` (`Watch-BobTray.ps1`) must agree. Offline pin: `bob/tests/test_fr6924_tray_version_label.py`.
 
 
 

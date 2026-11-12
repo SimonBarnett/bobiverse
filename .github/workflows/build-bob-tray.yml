@@ -10,14 +10,20 @@ on:
       - .github/workflows/build-bob-tray.yml
       - bob/tray/**
       - bob/scripts/Build-BobDialogs.ps1
+      - bob/scripts/Write-BobTrayDeployedIdentity.ps1
+      - bob/scripts/bob_tray_version.py
       - bob/tests/test_fr6285_tray_build_ci.py
+      - bob/tests/test_fr6924_tray_version_label.py
   push:
     branches: [main]
     paths:
       - .github/workflows/build-bob-tray.yml
       - bob/tray/**
       - bob/scripts/Build-BobDialogs.ps1
+      - bob/scripts/Write-BobTrayDeployedIdentity.ps1
+      - bob/scripts/bob_tray_version.py
       - bob/tests/test_fr6285_tray_build_ci.py
+      - bob/tests/test_fr6924_tray_version_label.py
 
 permissions:
   contents: read
@@ -73,17 +79,29 @@ jobs:
           $stage = Join-Path $env:RUNNER_TEMP "bob-tray-artifact"
           New-Item -ItemType Directory -Force -Path $stage | Out-Null
           $prov = New-Object System.Collections.Generic.List[string]
+          $prov.Add("source_commit=$($env:WORKFLOW_COMMIT)")
           $prov.Add("workflow_commit=$($env:WORKFLOW_COMMIT)")
           $prov.Add("builder=Build-BobDialogs.ps1")
           $prov.Add("fr=6285")
+          $exeHashes = @{}
           foreach ($name in @("bob-tray.exe", "bob-status.exe", "bob-about.exe")) {
             $exe = Join-Path $out $name
             Copy-Item -LiteralPath $exe -Destination (Join-Path $stage $name)
             $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $exe).Hash.ToLowerInvariant()
             Set-Content -Encoding ascii (Join-Path $stage "$name.sha256") "$hash  $name"
             $prov.Add(("exe_sha256_{0}={1}" -f ($name -replace '\.exe$',''), $hash))
+            $exeHashes[$name] = $hash
           }
           $prov | Set-Content -Encoding ascii (Join-Path $stage "provenance.txt")
+          # FR #6924: MANIFEST.json so Slab hotpatch updates tray label short SHA without a new MSI.
+          $writer = Join-Path $root "bob\scripts\Write-BobTrayDeployedIdentity.ps1"
+          & $writer -InstallRoot $stage -Commit $env:WORKFLOW_COMMIT -Builder "build-bob-tray.yml" -Fr "6924"
+          if ($LASTEXITCODE -ne 0) { throw "Write-BobTrayDeployedIdentity exit $LASTEXITCODE" }
+          $manPath = Join-Path $stage "MANIFEST.json"
+          if (-not (Test-Path -LiteralPath $manPath)) { throw "missing MANIFEST.json" }
+          $man = Get-Content -LiteralPath $manPath -Raw | ConvertFrom-Json
+          $man | Add-Member -NotePropertyName exe_sha256 -NotePropertyValue $exeHashes -Force
+          $man | ConvertTo-Json -Compress | Set-Content -Encoding utf8 -LiteralPath $manPath
 
       - uses: actions/upload-artifact@v4
         with:

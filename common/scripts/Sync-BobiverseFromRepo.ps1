@@ -427,10 +427,37 @@ if ($Product -eq 'bob') {
         }
         $bd = Join-Path $InstallRoot 'scripts\Build-BobDialogs.ps1'
         if ($needBuild -and $dlgNewest -and (Test-Path -LiteralPath $bd)) {
-            [void](& $bd -RepoRoot $InstallRoot -OutDir (Join-Path $InstallRoot 'tools') -SourceDir $dlgDir)
+            $syncSha = ''
+            try { $syncSha = [string](& git -C $clone rev-parse HEAD 2>$null | Select-Object -First 1) } catch { }
+            if (-not $syncSha) { try { $syncSha = [string](& git -C $InstallRoot rev-parse HEAD 2>$null | Select-Object -First 1) } catch { } }
+            if ($syncSha) {
+                [void](& $bd -RepoRoot $InstallRoot -OutDir (Join-Path $InstallRoot 'tools') -SourceDir $dlgDir -SourceCommit $syncSha.Trim())
+            } else {
+                [void](& $bd -RepoRoot $InstallRoot -OutDir (Join-Path $InstallRoot 'tools') -SourceDir $dlgDir)
+            }
             Write-Host 'INFO sync compiled bob-about.exe + bob-status.exe + bob-tray.exe'
         }
     } catch { Write-Host ("WARN sync dialogs not compiled: {0}" -f $_.Exception.Message) }
+}
+
+# FR #6924: always refresh deployed identity on bob Sync (script hotpatch without tray rebuild).
+if ($Product -eq 'bob') {
+    try {
+        $idSha = ''
+        try { $idSha = [string](& git -C $clone rev-parse HEAD 2>$null | Select-Object -First 1) } catch { }
+        if (-not $idSha) { try { $idSha = [string](& git -C $InstallRoot rev-parse HEAD 2>$null | Select-Object -First 1) } catch { } }
+        $idSha = $idSha.Trim()
+        if ($idSha -match '^[0-9a-fA-F]{7,40}$') {
+            $writer = Join-Path $InstallRoot 'scripts\Write-BobTrayDeployedIdentity.ps1'
+            if (-not (Test-Path -LiteralPath $writer)) { $writer = Join-Path $PSScriptRoot 'Write-BobTrayDeployedIdentity.ps1' }
+            if (-not (Test-Path -LiteralPath $writer)) {
+                $writer = Get-BobiverseRepoPath -Root $clone -Rel 'scripts\Write-BobTrayDeployedIdentity.ps1'
+            }
+            if (Test-Path -LiteralPath $writer) {
+                & $writer -InstallRoot $InstallRoot -Commit $idSha -Builder 'Sync-BobiverseFromRepo.ps1' | Out-Null
+            }
+        }
+    } catch { Write-Host ("WARN sync tray identity: {0}" -f $_.Exception.Message) }
 }
 
 # t794u: the tray no longer updates itself; drop the update scripts older installs still carry in tools\ (the sync never deletes).

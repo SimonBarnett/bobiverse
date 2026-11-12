@@ -15,7 +15,8 @@
 param(
     [string]$RepoRoot = '',
     [Parameter(Mandatory = $true)][string]$OutDir,
-    [string]$SourceDir = ''
+    [string]$SourceDir = '',
+    [string]$SourceCommit = ''   # FR #6924: optional; else WORKFLOW_COMMIT / git HEAD
 )
 $ErrorActionPreference = 'Stop'
 $cm = Join-Path $PSScriptRoot 'Bobiverse-Common.ps1'
@@ -79,4 +80,32 @@ foreach ($d in @(
     Write-Host ("INFO built {0} ({1:N0} KB)" -f $out, ((Get-Item -LiteralPath $out).Length / 1KB))
     $built += $out
 }
+
+# FR #6924: write MANIFEST.json + provenance next to the install (or OutDir) so the tray label can show short SHA.
+try {
+    $sha = ([string]$SourceCommit).Trim()
+    if (-not $sha) { $sha = ([string]$env:WORKFLOW_COMMIT).Trim() }
+    if (-not $sha) { $sha = ([string]$env:BOB_SOURCE_COMMIT).Trim() }
+    if (-not $sha -and $RepoRoot) {
+        try { $sha = [string](& git -C $RepoRoot rev-parse HEAD 2>$null | Select-Object -First 1) } catch { }
+    }
+    $sha = $sha.Trim()
+    if ($sha -match '^[0-9a-fA-F]{7,40}$') {
+        $identityRoot = [IO.Path]::GetFullPath($OutDir)
+        if ([string]::Equals([IO.Path]::GetFileName($identityRoot), 'tools', [StringComparison]::OrdinalIgnoreCase)) {
+            $parent = [IO.Path]::GetDirectoryName($identityRoot)
+            if ($parent) { $identityRoot = $parent }
+        }
+        $writer = Join-Path $PSScriptRoot 'Write-BobTrayDeployedIdentity.ps1'
+        if (-not (Test-Path -LiteralPath $writer)) {
+            $writer = Get-BobiverseRepoPath -Root $RepoRoot -Rel 'scripts\Write-BobTrayDeployedIdentity.ps1'
+        }
+        if (Test-Path -LiteralPath $writer) {
+            & $writer -InstallRoot $identityRoot -Commit $sha -Builder 'Build-BobDialogs.ps1' | Out-Null
+        }
+    }
+} catch {
+    Write-Host ("WARN tray deployed identity not written: {0}" -f $_.Exception.Message)
+}
+
 $built
