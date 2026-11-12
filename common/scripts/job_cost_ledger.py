@@ -140,12 +140,52 @@ def per_pr_totals(home: Path, pr: str) -> dict[str, Any]:
     }
 
 
-def summarize(rows: Iterable[dict] | None) -> dict[str, Any]:
-    """Digest-facing rollup: per-PR totals across FR + MRB + FIX (+ UAT)."""
-    by_pr: dict[str, list[dict]] = {}
+def by_model_rollup(rows: Iterable[dict] | None) -> dict[str, Any]:
+    """FR #6783: group measured ledger rows by model; unknowns stay out of sums.
+
+    Returns ``{"by_model": [...], "unknown_jobs": N}``. Each bucket has
+    ``model``, ``measured_jobs``, ``tokens_in``, ``tokens_out``, ``tokens_cached``.
+    """
+    buckets: dict[str, dict[str, Any]] = {}
+    unknown_jobs = 0
     for row in rows or []:
         if not isinstance(row, dict):
             continue
+        if row.get("tokens_unknown"):
+            unknown_jobs += 1
+            continue
+        model = str(row.get("model") or "").strip()
+        bucket = buckets.get(model)
+        if bucket is None:
+            bucket = {
+                "model": model,
+                "measured_jobs": 0,
+                "tokens_in": 0,
+                "tokens_out": 0,
+                "tokens_cached": 0,
+            }
+            buckets[model] = bucket
+        bucket["measured_jobs"] += 1
+        for key in ("tokens_in", "tokens_out", "tokens_cached"):
+            val = row.get(key)
+            if val is None:
+                continue
+            try:
+                bucket[key] = int(bucket[key]) + int(val)
+            except (TypeError, ValueError):
+                continue
+    by_model = [buckets[k] for k in sorted(buckets.keys())]
+    return {"by_model": by_model, "unknown_jobs": unknown_jobs}
+
+
+def summarize(rows: Iterable[dict] | None) -> dict[str, Any]:
+    """Digest-facing rollup: per-PR totals across FR + MRB + FIX (+ UAT)."""
+    by_pr: dict[str, list[dict]] = {}
+    all_rows: list[dict] = []
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+        all_rows.append(row)
         pr = str(row.get("pr") or "").strip()
         if not pr:
             continue
@@ -176,10 +216,13 @@ def summarize(rows: Iterable[dict] | None) -> dict[str, Any]:
                 ),
             }
         )
+    model_roll = by_model_rollup(all_rows)
     return {
         "pr_count": len(per_pr),
         "job_count": sum(int(p["jobs"]) for p in per_pr),
         "per_pr": per_pr[-100:],
+        "by_model": list(model_roll.get("by_model") or []),
+        "unknown_jobs": int(model_roll.get("unknown_jobs") or 0),
     }
 
 
@@ -244,11 +287,13 @@ def record_done(
 
 
 def digest_section(home: Path) -> dict[str, Any]:
-    """Compact digest payload: recent per-PR totals (no secrets)."""
+    """Compact digest payload: recent per-PR totals + by-model rollup (no secrets)."""
     rows = load_rows(home)
     summary = summarize(rows)
     return {
         "pr_count": int(summary.get("pr_count") or 0),
         "job_count": int(summary.get("job_count") or 0),
         "per_pr": list(summary.get("per_pr") or [])[-20:],
+        "by_model": list(summary.get("by_model") or []),
+        "unknown_jobs": int(summary.get("unknown_jobs") or 0),
     }
