@@ -81,24 +81,59 @@ def _json_bytes(doc: dict[str, Any]) -> bytes:
     return json.dumps(doc, sort_keys=True).encode("utf-8")
 
 
+def _truthy_setting(raw: Any) -> bool:
+    return str(raw or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def render_setting_input(s: dict[str, Any]) -> str:
+    """HTML control for one schema row (FR #6750: bool => checkbox)."""
+    key = str(s.get("key") or "")
+    typ = str(s.get("type") or "str")
+    val = s.get("value") or ""
+    secret = bool(s.get("secret")) or typ == "secret"
+    if secret:
+        return (
+            f'<input name="{key}" type="password" placeholder="{val}" '
+            f'autocomplete="off" data-secret="1"/>'
+        )
+    if typ == "bool":
+        checked = " checked" if _truthy_setting(val) else ""
+        return f'<input name="{key}" type="checkbox" value="1"{checked}/>'
+    safe = str(val).replace('"', "&quot;")
+    return f'<input name="{key}" type="text" value="{safe}"/>'
+
+
+def collect_save_puts(controls: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Mirror of the settings page save() loop (FR #6750).
+
+    Checkbox posts 1 when checked and 0 when not. Blank secrets are skipped.
+    """
+    puts: list[dict[str, Any]] = []
+    for el in controls:
+        key = str(el.get("name") or "")
+        if not key:
+            continue
+        kind = str(el.get("type") or "text").lower()
+        secret = bool(el.get("secret")) or str(el.get("datasetSecret") or "") == "1"
+        if kind == "checkbox":
+            value = "1" if el.get("checked") else "0"
+        else:
+            value = "" if el.get("value") is None else str(el.get("value"))
+        if secret and not value:
+            continue
+        puts.append({"key": key, "body": {"value": value}})
+    return puts
+
+
 def _render_html(settings: list[dict[str, Any]]) -> str:
     rows = []
     for s in settings:
         key = s.get("key") or ""
         typ = s.get("type") or "str"
-        val = s.get("value") or ""
         src = s.get("source") or ""
-        secret = bool(s.get("secret"))
         restart = " yes" if s.get("restart") else ""
         desc = (s.get("description") or "").replace("<", "&lt;")
-        if secret:
-            inp = (
-                f'<input name="{key}" type="password" placeholder="{val}" '
-                f'autocomplete="off" data-secret="1"/>'
-            )
-        else:
-            safe = str(val).replace('"', "&quot;")
-            inp = f'<input name="{key}" type="text" value="{safe}"/>'
+        inp = render_setting_input(s)
         rows.append(
             f"<tr><td><code>{key}</code></td><td>{typ}</td><td>{inp}</td>"
             f"<td>{src}</td><td>{restart}</td><td>{desc}</td></tr>"
@@ -136,6 +171,7 @@ async function save() {{
   for (const el of inputs) {{
     const key = el.name;
     let value = el.value;
+    if (el.type === 'checkbox') value = el.checked ? '1' : '0';
     if (el.dataset.secret === '1' && !value) continue;
     const r = await fetch('/api/settings/' + encodeURIComponent(key), {{
       method: 'PUT',
