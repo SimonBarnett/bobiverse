@@ -2,7 +2,7 @@
 <#
 .SYNOPSIS
   Idempotent IIS URL Rewrite rules for bobcallback on 127.0.0.1:7700
-  (report, digest, git, intake, jira, hours). Site default: irc-ntsa.
+  (report, digest, git, intake, jira, hours, jeeves appliance). Site default: irc-ntsa.
 #>
 [CmdletBinding()]
 param(
@@ -14,9 +14,9 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $appcmd = Join-Path $env:SystemRoot 'system32\inetsrv\appcmd.exe'
-if (-not (Test-Path -LiteralPath $appcmd)) {
-    Write-Host 'WARN appcmd.exe missing --- skip IIS webhook install'
-    return
+$hasAppcmd = Test-Path -LiteralPath $appcmd
+if (-not $hasAppcmd) {
+    Write-Host 'WARN appcmd.exe missing --- write web.config only; skip ARR enable'
 }
 
 $webConfig = Join-Path $PhysicalPath 'web.config'
@@ -30,7 +30,8 @@ $rules = @(
     @{ Name = 'BobGitWebhook'; Match = '^bob/v1/git$'; Url = "$Backend/bob/v1/git" },
     @{ Name = 'BobIntakeWebhook'; Match = '^bob/v1/intake'; Url = "$Backend/bob/v1/intake" },
     @{ Name = 'BobJiraWebhook'; Match = '^bob/v1/jira'; Url = "$Backend/bob/v1/jira" },
-    @{ Name = 'BobHoursWebhook'; Match = '^bob/v1/hours'; Url = "$Backend/bob/v1/hours" }
+    @{ Name = 'BobHoursWebhook'; Match = '^bob/v1/hours'; Url = "$Backend/bob/v1/hours" },
+    @{ Name = 'BobJeevesAppliance'; Match = '^jeeves(/.*)?$'; Url = "$Backend/jeeves" }
 )
 
 # Prefer editing web.config rewrite section if present; else write minimal config
@@ -63,6 +64,10 @@ $rewriteXml = @"
         <rule name="BobHoursWebhook" stopProcessing="true">
           <match url="^bob/v1/hours(.*)" ignoreCase="true" />
           <action type="Rewrite" url="$Backend/bob/v1/hours{R:1}" />
+        </rule>
+        <rule name="BobJeevesAppliance" stopProcessing="true">
+          <match url="^jeeves(/.*)?$" ignoreCase="true" />
+          <action type="Rewrite" url="$Backend/jeeves{R:1}" />
         </rule>
       </rules>
     </rewrite>
@@ -123,6 +128,16 @@ if (Test-Path -LiteralPath $webConfig) {
 "@
         $updated = $updated -replace '</rules>', ($hoursRule + '</rules>')
     }
+    if ($updated -notmatch 'BobJeevesAppliance' -and $updated -match '</rules>') {
+        # FR #6903: /jeeves appliance login -> bobcallback (FR #6815/6818).
+        $jeevesRule = @"
+        <rule name="BobJeevesAppliance" stopProcessing="true">
+          <match url="^jeeves(/.*)?$" ignoreCase="true" />
+          <action type="Rewrite" url="$Backend/jeeves{R:1}" />
+        </rule>
+"@
+        $updated = $updated -replace '</rules>', ($jeevesRule + '</rules>')
+    }
     [IO.File]::WriteAllText($webConfig, $updated, [Text.UTF8Encoding]::new($false))
     Write-Host "INFO updated $webConfig"
 } else {
@@ -130,11 +145,13 @@ if (Test-Path -LiteralPath $webConfig) {
     Write-Host "INFO created $webConfig"
 }
 
-# Ensure ARR proxy enabled (best-effort)
-try {
-    & $appcmd set config -section:system.webServer/proxy /enabled:true /commit:apphost | Out-Null
-} catch {
-    Write-Host "WARN could not enable ARR proxy: $($_.Exception.Message)"
+# Ensure ARR proxy enabled (best-effort; needs appcmd)
+if ($hasAppcmd) {
+    try {
+        & $appcmd set config -section:system.webServer/proxy /enabled:true /commit:apphost | Out-Null
+    } catch {
+        Write-Host "WARN could not enable ARR proxy: $($_.Exception.Message)"
+    }
 }
 Write-Host 'INFO Install-BobWebhooks done'
 
