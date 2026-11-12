@@ -875,14 +875,19 @@ def is_docs_mrb_pin_pr(
     head_ref: str = "",
     labels: tuple[str, ...] | list[str] = (),
 ) -> bool:
-    """True for a ``docs/mrb-*`` hostile pin PR (FR #4917 / #5500)."""
+    """True for a ``docs/mrb-*`` hostile pin PR (FR #4917 / #5500).
+
+    FR #6936: GitHub titles are often ``docs(mrb-N):`` (parens) while the branch
+    is ``docs/mrb-N``. Either shape is a pin.
+    """
     del labels  # reserved; pins are branch/title shaped
     if re.match(r"(?i)^docs/mrb-", (head_ref or "").strip()):
         return True
-    return bool(re.match(r"(?i)^docs/mrb-\d+", (title or "").strip()))
+    t = (title or "").strip()
+    return bool(re.match(r"(?i)^docs[/()]mrb-\d+", t))
 
 
-_DOCS_MRB_PARENT_RE = re.compile(r"(?i)^docs/mrb-(\d+)\b")
+_DOCS_MRB_PARENT_RE = re.compile(r"(?i)^docs[/()]mrb-(\d+)\b")
 
 
 def docs_mrb_pin_parent_pr_id(*, title: str = "", head_ref: str = "") -> str:
