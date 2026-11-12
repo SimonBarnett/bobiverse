@@ -1652,6 +1652,132 @@ function Invoke-BobiverseGit {
     }
 }
 
+function Get-BobiverseMachineLocalConfigRelPaths {
+    # FR #6773: tracked machine-local configs that must not block ff-only.
+    param([Parameter(Mandatory)][ValidateSet('bob', 'jeeves', 'airc')][string]$Product)
+    switch ($Product) {
+        'bob' { return @('bob/tray/config/bobiverse.json') }
+        default { return @() }
+    }
+}
+
+function Clear-BobiverseMachineLocalConfigForSync {
+    <#
+    .SYNOPSIS
+      FR #6773: park dirty tracked bobiverse.json into untracked bobiverse.local.json, restore tracked file, copy overlay to flat config\.
+      Never logs file contents (secrets). Uses git checkout -- path (no -f / stash / reset --hard).
+    #>
+    param(
+        [Parameter(Mandatory)][string]$InstallRoot,
+        [Parameter(Mandatory)][ValidateSet('bob', 'jeeves', 'airc')][string]$Product,
+        [Parameter(Mandatory)][string]$Git,
+        [Parameter(Mandatory)][string[]]$GitArgsBase,
+        [System.Collections.IList]$Log = $null
+    )
+    $parked = New-Object System.Collections.Generic.List[string]
+    foreach ($rel in @(Get-BobiverseMachineLocalConfigRelPaths -Product $Product)) {
+        $unix = ($rel -replace '\\', '/')
+        $full = Join-Path $InstallRoot ($unix -replace '/', [IO.Path]::DirectorySeparatorChar)
+        if (-not (Test-Path -LiteralPath $full -PathType Leaf)) { continue }
+        $st = Invoke-BobiverseGit -Git $Git -GitArgs ($GitArgsBase + @('status', '--porcelain', '--', $unix)) -TimeoutSec 20
+        $dirty = ($st.Code -eq 0 -and (@($st.Out | Where-Object { "$_".Trim() }).Count -gt 0))
+        if (-not $dirty) { continue }
+        try {
+            $raw = [IO.File]::ReadAllText($full)
+            $dir = Split-Path -Parent $full
+            $overlay = Join-Path $dir 'bobiverse.local.json'
+            [IO.File]::WriteAllText($overlay, $raw, (New-Object Text.UTF8Encoding($false)))
+            $flatDir = Join-Path $InstallRoot 'config'
+            New-Item -ItemType Directory -Force -Path $flatDir | Out-Null
+            $flatOverlay = Join-Path $flatDir 'bobiverse.local.json'
+            [IO.File]::WriteAllText($flatOverlay, $raw, (New-Object Text.UTF8Encoding($false)))
+            $co = Invoke-BobiverseGit -Git $Git -GitArgs ($GitArgsBase + @('checkout', '--', $unix)) -TimeoutSec 30
+            if ($co.Code -eq 0) {
+                [void]$parked.Add($unix)
+                if ($Log) { $Log.Add("INFO sync-park-local-config FR#6773 path=$unix -> bobiverse.local.json") }
+            } else {
+                if ($Log) { $Log.Add("WARN sync-park-local-config restore failed path=$unix exit=$($co.Code)") }
+            }
+        } catch {
+            if ($Log) { $Log.Add("WARN sync-park-local-config error path=$unix") }
+        }
+    }
+    return @($parked)
+}
+
+function Write-BobiverseSyncStatus {
+    # FR #6773: digest sync stamp (behind N, reason). Never writes secrets.
+    param(
+        [Parameter(Mandatory)][string]$InstallRoot,
+        [int]$Behind = 0,
+        [string]$Reason = '',
+        [switch]$Ok
+    )
+    $py = Join-Path $PSScriptRoot 'sync_ff_stall.py'
+    $python = $null
+    foreach ($c in @('python', 'py')) {
+        $cmd = Get-Command $c -ErrorAction SilentlyContinue
+        if ($cmd) { $python = $cmd.Source; break }
+    }
+    if ($python -and (Test-Path -LiteralPath $py)) {
+        try {
+            $code = @(
+                'import sys'
+                'sys.path.insert(0, r"""' + $PSScriptRoot + '""")'
+                'import sync_ff_stall'
+                'sync_ff_stall.write_sync_status(behind=int(sys.argv[1]), reason=sys.argv[2], ok=(sys.argv[3]=="1"), install_root=sys.argv[4])'
+            ) -join '; '
+            $okFlag = if ($Ok) { '1' } else { '0' }
+            & $python -c $code "$Behind" "$Reason" $okFlag $InstallRoot 2>&1 | Out-Null
+            return
+        } catch { }
+    }
+    # Fallback stamp without python
+    try {
+        $mid = if ($env:BOB_MACHINE_ID) { $env:BOB_MACHINE_ID.ToLowerInvariant() } elseif ($env:COMPUTERNAME) { $env:COMPUTERNAME.ToLowerInvariant() } else { 'unknown' }
+        $why = if ($Reason) { ($Reason -replace '(?i)(password|token|secret|api[_-]?key)\s*[:=]\s*\S+', '$1=***') } else { '' }
+        if ($why.Length -gt 160) { $why = $why.Substring(0, 157) + '...' }
+        $sync = if ($Ok) { '' } else { "behind $Behind, $(if ($why) { $why } else { 'ff-only not possible' })" }
+        $doc = @{ machine = $mid; ok = [bool]$Ok; behind = [int]$Behind; reason = $(if ($Ok) { '' } else { $why }); sync = $sync; at = [DateTime]::UtcNow.ToString('o') }
+        $dirs = @()
+        if ($env:BOB_SYNC_STATUS_DIR) { $dirs += $env:BOB_SYNC_STATUS_DIR }
+        $dirs += (Join-Path $InstallRoot 'logs')
+        foreach ($d in $dirs) {
+            New-Item -ItemType Directory -Force -Path $d | Out-Null
+            $name = if ($d -eq (Join-Path $InstallRoot 'logs')) { 'sync-status.json' } else { "$mid.json" }
+            $json = ($doc | ConvertTo-Json -Compress)
+            [IO.File]::WriteAllText((Join-Path $d $name), $json, (New-Object Text.UTF8Encoding($false)))
+        }
+    } catch { }
+}
+
+function Report-BobiverseSyncFfStall {
+    # FR #6773: one deduped stall intake; repeats comment. Never throws; never logs secrets.
+    param(
+        [Parameter(Mandatory)][string]$InstallRoot,
+        [int]$Behind = 0,
+        [string]$Reason = ''
+    )
+    Write-BobiverseSyncStatus -InstallRoot $InstallRoot -Behind $Behind -Reason $Reason
+    $py = Join-Path $PSScriptRoot 'sync_ff_stall.py'
+    $python = $null
+    foreach ($c in @('python', 'py')) {
+        $cmd = Get-Command $c -ErrorAction SilentlyContinue
+        if ($cmd) { $python = $cmd.Source; break }
+    }
+    if (-not $python -or -not (Test-Path -LiteralPath $py)) { return }
+    try {
+        $code = @(
+            'import sys'
+            'sys.path.insert(0, r"""' + $PSScriptRoot + '""")'
+            'import sync_ff_stall'
+            'r = sync_ff_stall.report(behind=int(sys.argv[1]), reason=sys.argv[2])'
+            'print(r.get("deduped"), r.get("sig"), r.get("ok"))'
+        ) -join '; '
+        & $python -c $code "$Behind" "$Reason" 2>&1 | Out-Null
+    } catch { }
+}
+
 function Sync-BobiverseWorkTree {
     <#
     .SYNOPSIS
@@ -1857,12 +1983,20 @@ function Sync-BobiverseWorkTree {
         if ($behindPre -gt 0) {
             $log.Add("INFO sync-behind-pre: HEAD behind origin/$Branch by $behindPre commit(s); attempting ff-only")
         }
+        # FR #6773: park dirty tracked bobiverse.json into untracked overlay so ff is not blocked by machine-local edits.
+        try {
+            [void](Clear-BobiverseMachineLocalConfigForSync -InstallRoot $root -Product $Product -Git $git -GitArgsBase $G -Log $log)
+        } catch { }
         $m = Invoke-BobiverseGit -Git $git -GitArgs ($G + @('merge', '--ff-only', '-q', "origin/$Branch")) -TimeoutSec 60
         if ($m.Code -ne 0) {
             foreach ($l in ($m.Out | Select-Object -First 3)) { $log.Add("  $l") }
             $behindFail = Get-BobiverseWorkTreeBehindCount -Git $git -GitArgsBase $G -Branch $Branch
             $behindMsg = if ($behindFail -gt 0) { "; HEAD behind origin/$Branch by $behindFail commit(s)" } else { '' }
             $log.Add("ALERT sync-ff-failed: ff-only not possible (local commits or edits in the way); live flat scripts may lag origin/$Branch until resolved$behindMsg")
+            # FR #6773: digest sync field + one deduped stall intake (no secrets).
+            try {
+                Report-BobiverseSyncFfStall -InstallRoot $root -Behind $(if ($behindFail -gt 0) { $behindFail } else { 0 }) -Reason 'ff-only not possible (local commits or edits in the way)'
+            } catch { }
             return (Done ("ff-only not possible (local commits or edits in the way); local work kept as is$behindMsg"))
         }
         $after = (Invoke-BobiverseGit -Git $git -GitArgs ($G + @('rev-parse', 'HEAD')) -TimeoutSec 20).Out | Select-Object -First 1
@@ -1871,8 +2005,12 @@ function Sync-BobiverseWorkTree {
         $behind = Get-BobiverseWorkTreeBehindCount -Git $git -GitArgsBase $G -Branch $Branch
         if ($behind -gt 0) {
             $log.Add("ALERT sync-behind: HEAD behind origin/$Branch by $behind commit(s) after ff-only; live common/scripts may lag tip (FR #2470)")
+            try {
+                Report-BobiverseSyncFfStall -InstallRoot $root -Behind $behind -Reason "still behind origin/$Branch after ff-only"
+            } catch { }
             return (Done "still behind origin/$Branch by $behind")
         }
+        try { Write-BobiverseSyncStatus -InstallRoot $root -Behind 0 -Reason '' -Ok } catch { }
         return (Done $(if ($res.Pulled) { "fast-forwarded origin/$Branch" } else { 'already up to date' }))
     } catch {
         $res.Reason = "work tree sync error: $($_.Exception.Message)"
@@ -2105,7 +2243,9 @@ function Get-BobiverseInstallGitExcludeText {
     return (
         "# bobiverse install work tree (t781u): runtime files are composed from <product>/ and common/`n" +
         "# FR worktrees sharing this git dir: sibling products un-ignored; else git add -f (FR #132)`n" +
-        "/*`n!/$Product/`n!/common/`n!/airc/`n!/jeeves/`n"
+        "/*`n!/$Product/`n!/common/`n!/airc/`n!/jeeves/`n" +
+        "# FR #6773: machine-local config overlay (never commit)`n" +
+        "bobiverse.local.json`n**/bobiverse.local.json`n"
     )
 }
 

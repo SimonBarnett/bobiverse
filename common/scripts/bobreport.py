@@ -254,6 +254,8 @@ _MERGE_PEER_FIELDS = (
     "usd_gbp_rate",
     # FR #6147: OpenCode Go rolling/weekly/monthly window records for digest paint.
     "opencode_windows",
+    # FR #6773: install sync health ("behind N, reason") when ff-only fails.
+    "sync",
     # xAI weekly meter identity. remaining stays on weekly / pcent.grok-build.
     # The object is the peer-visible row: provider, direction, source, fetched_at, period_end.
     "xai_weekly_used_pct",
@@ -346,6 +348,7 @@ _TRAY_MACHINE_EXPORT_KEYS = (
     "console_nicks",
     "cursor_known",
     "weekly_known",
+    "sync",
     "grok_account",
     "opencode_account",
     "opencode_windows",
