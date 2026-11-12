@@ -220,6 +220,7 @@ try:
         prepare_opencode_wire,
         frame_opencode_message,
         probe_gh_auth,
+        project_dir_for_assign,
     )
 except ImportError:  # package import (bob.scripts.bob_worker)
     from bob.scripts.opencode_seat_contract import (  # type: ignore  # noqa: E402
@@ -236,6 +237,7 @@ except ImportError:  # package import (bob.scripts.bob_worker)
         prepare_opencode_wire,
         frame_opencode_message,
         probe_gh_auth,
+        project_dir_for_assign,
     )
 
 
@@ -2087,12 +2089,19 @@ def _upsert_skill_dag_toml(text: str, block: str) -> str:
 def write_skill_dag_mcp_config(
     worker_cwd: str,
     job_worktree: str | Path | None = None,
+    *,
+    vision_cwd: str | Path | None = None,
 ) -> Path:
-    """Write ``[mcp_servers.skill-dag]`` to the worker cwd ``.grok/config.toml`` only (FR #6863/#6899)."""
+    """Write ``[mcp_servers.skill-dag]`` to the worker cwd ``.grok/config.toml`` only (FR #6863/#6899).
+
+    ``vision_cwd`` is the install worker tree used for ``--root`` packs. Bound grok
+    seats pass the install worker here so rewrite does not take roots from bound-cwd.
+    """
     grok_dir = Path(worker_cwd) / ".grok"
     grok_dir.mkdir(parents=True, exist_ok=True)
     cfg = grok_dir / "config.toml"
-    block = _skill_dag_toml_block(skill_dag_mcp_launch_args(worker_cwd, job_worktree=job_worktree))
+    roots_from = str(vision_cwd or worker_cwd)
+    block = _skill_dag_toml_block(skill_dag_mcp_launch_args(roots_from, job_worktree=job_worktree))
     text = cfg.read_text(encoding="utf-8") if cfg.is_file() else ""
     cfg.write_text(_upsert_skill_dag_toml(text, block), encoding="utf-8")
     return cfg
@@ -2160,6 +2169,29 @@ def write_cursor_skill_dag_mcp_config_if_agent(spec: LaunchSpec) -> None:
     if not getattr(spec, "write_cursor_skill_dag_mcp", False):
         return
     write_cursor_skill_dag_mcp_config(spec.cwd, job_worktree=getattr(spec, "skill_dag_job_worktree", None))
+
+
+def refresh_live_skill_dag_mcp_files(
+    *,
+    grok_bound_cwd: str | Path | None = None,
+    cursor_cwd: str | Path | None = None,
+    vision_cwd: str | Path | None = None,
+    job_worktree: str | Path | None = None,
+) -> None:
+    """FR #6918: rewrite live grok bound / cursor seat MCP for the assigned worktree.
+
+    ``job_worktree`` None/empty drops ``--job-worktree`` (job end). Never writes
+    user ``~/.cursor/mcp.json`` or user grok config.
+    """
+    wt = str(job_worktree or "").strip() or None
+    if grok_bound_cwd:
+        write_skill_dag_mcp_config(
+            str(grok_bound_cwd),
+            job_worktree=wt,
+            vision_cwd=str(vision_cwd or grok_bound_cwd),
+        )
+    if cursor_cwd:
+        write_cursor_skill_dag_mcp_config(str(cursor_cwd), job_worktree=wt)
 
 
 # FR #6898: OpenCode reads project ``opencode.json`` under seat cwd or ``--dir``.
@@ -8876,6 +8908,9 @@ class Supervisor:
             if (self.kind or "").strip().lower() == "opencode":
                 self.bored.opencode_finish_decide_fn = self._opencode_finish_decide
                 self.bored.job_end_cleanup_fn = self._opencode_job_end_cleanup
+            elif (self.kind or "").strip().lower() in ("grok", "cursor"):
+                # FR #6918: drop --job-worktree from live MCP configs when the job ends.
+                self.bored.job_end_cleanup_fn = self._live_skill_dag_job_end_cleanup
             # FR #4784: GIVEUP accepted row to Jeeves before !bored on done-miss / ack-stale.
             self.bored.seat_release_giveup_fn = self._release_seat_giveup_job
         # FR #2782: idle-only check before !bored; returns a reason when a newer install build exists.
@@ -10079,10 +10114,54 @@ class Supervisor:
         self._recovery = rec
         return rec
 
+    def _live_skill_dag_mcp_paths(self) -> tuple[str | None, str | None, str | None]:
+        """bound grok cwd, cursor/install worker cwd, vision cwd (FR #6918)."""
+        kind = (self.kind or "").strip().lower()
+        vision = str(self.cwd) if getattr(self, "cwd", None) else None
+        bound = None
+        cursor = None
+        if kind == "grok" and getattr(self, "run_dir", None):
+            try:
+                from skill_dag_bound import BOUND_CWD_NAME
+            except Exception:
+                BOUND_CWD_NAME = "bound-cwd"
+            cand = Path(self.run_dir) / BOUND_CWD_NAME
+            if cand.is_dir():
+                bound = str(cand)
+        if kind == "cursor":
+            cursor = vision
+        return bound, cursor, vision
+
+    def _refresh_live_skill_dag_mcp(self, job_worktree: str | Path | None) -> None:
+        bound, cursor, vision = self._live_skill_dag_mcp_paths()
+        if not bound and not cursor:
+            return
+        try:
+            refresh_live_skill_dag_mcp_files(
+                grok_bound_cwd=bound,
+                cursor_cwd=cursor,
+                vision_cwd=vision,
+                job_worktree=job_worktree,
+            )
+        except Exception as e:  # noqa: BLE001
+            self.log(f"skill-dag mcp job-worktree rewrite skipped {type(e).__name__}")
+
+    def _live_skill_dag_job_end_cleanup(self, job: Optional[str] = None) -> None:
+        del job
+        self._refresh_live_skill_dag_mcp(None)
+
     def _inject_line(self, proc, line: str, *, on_failed=None, force_verify: bool = False, sync: bool | None = None) -> bool:
         if proc.poll() is not None:
             return False
         wire = line
+        kind_l0 = (self.kind or "").strip().lower()
+        if kind_l0 in ("grok", "cursor") and assign_job_ref(line):
+            try:
+                wt = project_dir_for_assign(line, os.environ)
+            except Exception:
+                wt = ""
+            if wt:
+                self._refresh_live_skill_dag_mcp(wt)
         if (self.kind or "").strip().lower() == "opencode" and message_job_keys(line):
             keys = message_job_keys(line)
             if len(keys) != 1:
