@@ -27,7 +27,9 @@ and Authorization: Bearer <token>. Unauthenticated API calls return 401.
 
 1. **LAN first.** Non-RFC1918 sources are rejected before credential checks.
 2. **Windows / AD.** Win32 LogonUser network logon via authenticate_windows_logon.
-   Prefer DOMAIN\user or pass domain separately.
+   The login page has one account field (`DOMAIN\user` or `user@domain`; no domain
+   input). POST `/api/login` still accepts JSON `domain` from older clients.
+   CredMan is tried with the typed string and, when split, the SAM name.
 3. **CredMan fallback.** Generic credential target **`Jeeves/ApplianceAdmin`**
    (`CREDMAN_TARGET`). Username + password must match CredMan; missing target
    fails closed.
@@ -58,6 +60,8 @@ Socket-layer gate: the server binds only to LAN/loopback and `verify_request` dr
 **Never** put this behind Cloudflare, `bob.ntsa.uk`, or `irc.ntsa.uk`. Auth helpers are FR #6441; HTTP cookie/Bearer session wire is FR #6451; NSSM apply is FR #6442; restart-when-idle / status is FR #6443.
 
 Module: `common/scripts/jeeves_settings_http.py` (started from `ChairJobs` via `maybe_start_from_chair`).
+
+Bool SCHEMA keys render as `input type=checkbox` with `value="1"` when truthy (FR #6750 / FR-02). Save posts `"1"` when ticked and `"0"` when cleared. Secret fields left blank are not PUT. `str` / `int` / `float` stay text inputs.
 
 `SettingSpec.choices` defaults to `()`. A non-empty list on a non-bool setting renders a `<select>` (FR #6753 / FR-05). The current value is selected; a value not in the list is added as an extra selected option so save does not silently change it. Bools stay checkboxes. Today's SCHEMA keys have empty choices (paths, URLs, and seconds stay text).
 

@@ -95,7 +95,7 @@ def _opt_esc(raw: Any) -> str:
 
 
 def render_setting_input(s: dict[str, Any]) -> str:
-    """HTML control: bool checkbox; non-empty choices => select (FR #6753)."""
+    """HTML control: bool checkbox (FR #6750); non-empty choices => select (FR #6753)."""
     key = str(s.get("key") or "")
     typ = str(s.get("type") or "str")
     val = "" if s.get("value") is None else str(s.get("value"))
@@ -123,6 +123,28 @@ def render_setting_input(s: dict[str, Any]) -> str:
         return f'<select name="{key}">{"".join(parts)}</select>'
     safe = _opt_esc(val)
     return f'<input name="{key}" type="text" value="{safe}"/>'
+
+
+def collect_save_puts(controls: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Mirror of the settings page save() loop (FR #6750).
+
+    Checkbox posts 1 when checked and 0 when not. Blank secrets are skipped.
+    """
+    puts: list[dict[str, Any]] = []
+    for el in controls:
+        key = str(el.get("name") or "")
+        if not key:
+            continue
+        kind = str(el.get("type") or "text").lower()
+        secret = bool(el.get("secret")) or str(el.get("datasetSecret") or "") == "1"
+        if kind == "checkbox":
+            value = "1" if el.get("checked") else "0"
+        else:
+            value = "" if el.get("value") is None else str(el.get("value"))
+        if secret and not value:
+            continue
+        puts.append({"key": key, "body": {"value": value}})
+    return puts
 
 
 def _render_html(settings: list[dict[str, Any]]) -> str:
@@ -209,8 +231,7 @@ button{{margin-top:1rem;padding:.4rem .8rem;}}
 <p class="note">LAN-only AD/Windows or CredMan (FR #6441 / #6451). Passwords are never logged.</p>
 {note}
 <form id="f">
-<label>Username<input name="username" autocomplete="username" required/></label>
-<label>Domain (optional)<input name="domain" autocomplete="organization"/></label>
+<label>Account<input name="account" autocomplete="username" required placeholder="DOMAIN\\user or user@domain"/></label>
 <label>Password<input name="password" type="password" autocomplete="current-password" required/></label>
 <button type="submit">Sign in</button>
 <span id="status"></span>
@@ -226,9 +247,8 @@ document.getElementById('f').onsubmit = async (ev) => {{
     credentials: 'same-origin',
     headers: {{'Content-Type': 'application/json'}},
     body: JSON.stringify({{
-      username: fd.get('username') || '',
-      password: fd.get('password') || '',
-      domain: fd.get('domain') || ''
+      username: fd.get('account') || '',
+      password: fd.get('password') || ''
     }})
   }});
   const j = await r.json().catch(() => ({{}}));
@@ -527,7 +547,7 @@ class _Handler(BaseHTTPRequestHandler):
             result = auth.login(
                 self.server.home,
                 client_ip=ip,
-                username=str(doc.get("username") or ""),
+                username=str(doc.get("username") or doc.get("account") or ""),
                 password=str(doc.get("password") or ""),
                 domain=str(doc.get("domain") or ""),
                 authenticator=self.server.authenticator,
