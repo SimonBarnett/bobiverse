@@ -101,6 +101,21 @@ def _run_opencode_fuel_ps(
         raise AssertionError(f"non-JSON last stdout line: {lines[-1][:500]!r}\n{stage}") from exc
 
 
+def _assert_fuel_ok(parsed: dict, *, free: int = 100, go: int | None = 50) -> None:
+    """Value assert with full helper JSON context (FR #6717)."""
+    ctx = json.dumps(parsed, sort_keys=True)[:1200]
+    assert parsed.get("read_state") == "ok", (
+        f"read_state={parsed.get('read_state')!r} "
+        f"stats_error={parsed.get('stats_error')!r} "
+        f"python_exit={parsed.get('python_exit')!r} json={ctx}"
+    )
+    assert parsed.get("free") == free, f"free={parsed.get('free')!r} json={ctx}"
+    if go is None:
+        assert parsed.get("go") is None, f"go={parsed.get('go')!r} json={ctx}"
+    else:
+        assert parsed.get("go") == go, f"go={parsed.get('go')!r} json={ctx}"
+
+
 OPENCODE_LAYOUT_PATHS = (
     "scripts/opencode_fuel.py",
     "tools/Get-BobOpencodeFuel.ps1",
@@ -329,12 +344,13 @@ def test_fr6159_flat_install_agent_fuel_returns_opencode(tmp_path: Path):
         timeout=90,
         extra_args=("-InstallRoot", str(install)),
     )
-    assert doc.get("ok") is True
+    assert doc.get("ok") is True, json.dumps(doc, sort_keys=True)[:1200]
     oc = doc.get("opencode") or {}
-    assert oc.get("free") == 100
-    assert oc.get("go") == 50
+    ctx = json.dumps(oc, sort_keys=True)[:1200]
+    assert oc.get("free") == 100, f"free={oc.get('free')!r} json={ctx}"
+    assert oc.get("go") == 50, f"go={oc.get('go')!r} json={ctx}"
     models = oc.get("models") or {}
-    assert models.get("glm-5.3") == 50
+    assert models.get("glm-5.3") == 50, f"models={models!r} json={ctx}"
 
 
 @pytest.mark.skipif(sys.platform != "win32" or not shutil.which("powershell"), reason="Windows PowerShell")
@@ -353,9 +369,7 @@ def test_fr6159_flat_opencode_fuel_helper_alone(tmp_path: Path):
     parsed = _run_opencode_fuel_ps(
         tools / "Get-BobOpencodeFuel.ps1", env=env, cwd=elsewhere
     )
-    assert parsed.get("read_state") == "ok"
-    assert parsed["free"] == 100
-    assert parsed["go"] == 50
+    _assert_fuel_ok(parsed)
 
 
 @pytest.mark.skipif(sys.platform != "win32" or not shutil.which("powershell"), reason="Windows PowerShell")
@@ -378,9 +392,7 @@ def test_fr6701_flat_helper_uses_python_override_without_python_on_path(tmp_path
     parsed = _run_opencode_fuel_ps(
         tools / "Get-BobOpencodeFuel.ps1", env=env, cwd=elsewhere
     )
-    assert parsed.get("read_state") == "ok"
-    assert parsed.get("free") == 100
-    assert parsed.get("go") == 50
+    _assert_fuel_ok(parsed)
 
 
 @pytest.mark.skipif(sys.platform != "win32" or not shutil.which("powershell"), reason="Windows PowerShell")
@@ -404,13 +416,39 @@ def test_fr6670_usage_url_without_scrub_nulls_go(tmp_path: Path):
         tools / "Get-BobOpencodeFuel.ps1", env=env, cwd=elsewhere
     )
     # read_state=ok proves the stats stage completed before the provider gate.
-    assert parsed.get("read_state") == "ok"
-    assert parsed.get("free") == 100
+    _assert_fuel_ok(parsed, go=None)
     assert (parsed.get("models") or {}).get("glm-5.3") == 50
     assert parsed.get("provider_read") == "unavailable"
-    assert parsed.get("go") is None
     assert "go" in parsed
     assert parsed.get("provider") == "usage-limits"
+
+
+@pytest.mark.skipif(sys.platform != "win32" or not shutil.which("powershell"), reason="Windows PowerShell")
+@pytest.mark.skipif(not shutil.which("python"), reason="python.exe required")
+def test_fr6717_flat_helper_works_when_pathext_lacks_exe(tmp_path: Path):
+    """FR #6717: stripped PATHEXT (no .EXE) must not null fixture fuel under call operator.
+
+    Isolated / LocalSystem release runners can omit PATHEXT. Without .EXE,
+    PowerShell's & $py is a silent no-op -> stats_failed / free=go=null.
+    """
+    install = tmp_path / "bob"
+    tools = install / "tools"
+    scripts = install / "scripts"
+    elsewhere = tmp_path / "elsewhere"
+    tools.mkdir(parents=True)
+    scripts.mkdir(parents=True)
+    elsewhere.mkdir(parents=True)
+    shutil.copy(OPENCODE_FUEL_PS1, tools / "Get-BobOpencodeFuel.ps1")
+    shutil.copy(OPENCODE_FUEL_PY, scripts / "opencode_fuel.py")
+    env = _opencode_fuel_fixture_env()
+    # Counterexample without the helper PATHEXT ensure: only .CPL breaks & $py.
+    env["PATHEXT"] = ".CPL"
+    env["PATH"] = os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), "System32")
+    parsed = _run_opencode_fuel_ps(
+        tools / "Get-BobOpencodeFuel.ps1", env=env, cwd=elsewhere
+    )
+    _assert_fuel_ok(parsed)
+    assert (parsed.get("models") or {}).get("glm-5.3") == 50
 
 
 def test_fr6159_worker_source_has_flat_resolver_and_install_root_kw():

@@ -125,6 +125,17 @@ try {
         } else {
             $out.read_state = 'parser_missing'
         }
+        # FR #6717: isolated / LocalSystem runners may strip PATHEXT. Without .EXE
+        # in PATHEXT, PowerShell's call operator (& $py) is a silent no-op and the
+        # stats child prints nothing (read_state=stats_failed, free/go null).
+        $pe = [string]$env:PATHEXT
+        if ($pe -notmatch '(?i)\.EXE') {
+            if ($pe -and $pe.Trim().Length -gt 0) {
+                $env:PATHEXT = $pe.TrimEnd(';') + ';.EXE'
+            } else {
+                $env:PATHEXT = '.COM;.EXE;.BAT;.CMD;.VBS;.JS;.WS;.MSC'
+            }
+        }
         # FR #6701: an explicit interpreter override avoids PATH ambiguity under
         # LocalSystem / WindowsApps aliases. Tests set BOB_OPENCODE_PYTHON to the
         # interpreter already running pytest. Fall back to the PATH lookup.
@@ -170,7 +181,36 @@ else:
         # Pass stats text via stdin: Windows PowerShell 5.1 can strip embedded quotes when
         # they are passed as a native argument, which breaks parsing.
         $payload = (@{ models = $modelsOutput } + $statsByWindow) | ConvertTo-Json -Compress -Depth 3
-        $result = $payload | & $py -c $script
+        # FR #6717: capture stats-stage stderr + exit so a silent native invoke
+        # (missing PATHEXT .EXE, bad interpreter, import error) is named in JSON.
+        # Do not capture provider-stage stderr below.
+        $statsErrFile = $null
+        try {
+            $statsErrFile = [System.IO.Path]::Combine(
+                [System.IO.Path]::GetTempPath(),
+                ('bob-oc-stats-err-' + [Guid]::NewGuid().ToString('n') + '.txt')
+            )
+            $result = $payload | & $py -c $script 2>$statsErrFile
+            if ($null -ne $LASTEXITCODE -and [string]$LASTEXITCODE -ne '') {
+                $out.python_exit = [int]$LASTEXITCODE
+            } else {
+                $out.python_exit = -1
+            }
+            $errTail = ''
+            if ($statsErrFile -and (Test-Path -LiteralPath $statsErrFile -PathType Leaf)) {
+                try {
+                    $errTail = [string]([System.IO.File]::ReadAllText($statsErrFile))
+                } catch { $errTail = '' }
+            }
+            # Drop PS 5.1 ErrorRecord noise; keep native stderr text only.
+            if ($errTail) {
+                $errTail = ($errTail -replace '(?m)^.*ErrorRecord.*$', '').Trim()
+                if ($errTail.Length -gt 300) { $errTail = $errTail.Substring(0, 300) }
+                if ($errTail) { $out.stats_error = $errTail }
+            }
+        } finally {
+            if ($statsErrFile) { try { Remove-Item -LiteralPath $statsErrFile -Force -ErrorAction SilentlyContinue } catch { } }
+        }
         if ($result) {
             $parsed = $result | ConvertFrom-Json -ErrorAction Stop
             if ($parsed.'opencode-free' -ne $null) { $out.free = [int]$parsed.'opencode-free' }
@@ -264,9 +304,27 @@ print(json.dumps({'provider_read': read.get('kind'), 'windows': windows}))
             # Interpreter was found (PATH or BOB_OPENCODE_PYTHON) but the stats
             # child printed nothing. Name the stage instead of a generic miss.
             $out.read_state = 'stats_failed'
+            if (-not $out.stats_error) {
+                if ($null -eq $out.python_exit -or [int]$out.python_exit -eq -1) {
+                    $out.stats_error = 'stats child produced no output (native invoke failed; often missing PATHEXT .EXE)'
+                } else {
+                    $out.stats_error = ('stats child exit=' + [string]$out.python_exit + ' with empty stdout')
+                }
+            }
         }
     }
-} catch { }
+} catch {
+    # FR #6717: surface the outer failure without changing exit 0 / JSON contract.
+    if (-not $out.stats_error) {
+        $msg = [string]$_.Exception.Message
+        if ($msg.Length -gt 300) { $msg = $msg.Substring(0, 300) }
+        if ($msg) { $out.stats_error = $msg }
+    }
+    if ($out.read_state -eq 'unavailable' -or $out.read_state -eq 'ok') {
+        # Keep ok if mapping already succeeded; otherwise name the stage.
+        if ($out.read_state -eq 'unavailable') { $out.read_state = 'stats_failed' }
+    }
+}
 if (-not $out.windows) {
     # No stats document. Do not call rolling "Starts on first use" — that is only
     # honest after a completed stats read. opencode has no remaining-quota API

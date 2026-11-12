@@ -535,6 +535,12 @@ def test_opencode_fuel_ps1_pipes_windowed_payload_via_stdin():
     assert "$payload | & $py -c $script" in text
     assert "sys.stdin.read()" in text
     assert "sys.argv[1]" not in text
+    # FR #6717: stats-stage stderr capture + PATHEXT .EXE ensure for isolated runners.
+    assert "2>$statsErrFile" in text
+    assert "python_exit" in text
+    assert "stats_error" in text
+    assert "PATHEXT" in text
+    assert ".EXE" in text
 
 
 def test_opencode_fuel_ps1_pythonpath_resolves_common_scripts_in_work_tree():
