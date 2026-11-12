@@ -23,3 +23,10 @@ The appliance doc tells the operator to open https://bob.ntsa.uk/jeeves.
 ## Out of scope
 
 Route code (#6815), the butler graphic (#6816), the Bob home-page link (#6818), the sign-in POST (#6819), the cookie gate (#6820), and token graphs (#6784).
+
+## Implementation (MRB #6842)
+
+- Operator URL in jeeves/docs/jeeves-settings-appliance.md is https://bob.ntsa.uk/jeeves.
+- Operators are told not to browse jeeves.ntsa.uk.
+- The doc no longer forbids publishing the UI on bob.ntsa.uk (Cloudflare and irc.ntsa.uk remain refused).
+- Does not reopen #6757 / #6758.
