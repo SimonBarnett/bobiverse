@@ -1959,9 +1959,33 @@ class LaunchSpec:
     write_cursor_skill_dag_mcp: bool = False  # FR #6865: cursor agent seats only
 
 
-def skill_dag_mcp_script_path(worker_cwd: str) -> Path:
-    """``<install>/common/scripts/skill_dag_mcp.py`` from worker cwd ``<install>/worker``."""
-    return Path(worker_cwd).resolve().parent / "common" / "scripts" / "skill_dag_mcp.py"
+def skill_dag_mcp_script_path(
+    worker_cwd: str,
+    *,
+    source_file: str | Path | None = None,
+) -> Path:
+    """Locate ``skill_dag_mcp.py`` for Grok/Cursor MCP launch args (FR #6889).
+
+    The module lives at ``bob/scripts/skill_dag_mcp.py`` (docs + tree). Older code
+    pointed at ``<install>/common/scripts/skill_dag_mcp.py``, which is absent.
+    Order matches ``_resolve_opencode_fuel_helper_path``: first existing file wins.
+    Miss returns the preferred ``bob/scripts`` candidate under the worker parent.
+    """
+    source = Path(source_file).resolve() if source_file else Path(__file__).resolve()
+    here = source.parent
+    parent = Path(worker_cwd).resolve().parent
+    # Prefer paths under the worker parent (repo/install tree) so MCP args name a
+    # file next to the seat; then source-sibling; legacy common/ last.
+    candidates = [
+        parent / "bob" / "scripts" / "skill_dag_mcp.py",
+        parent / "scripts" / "skill_dag_mcp.py",
+        here / "skill_dag_mcp.py",
+        parent / "common" / "scripts" / "skill_dag_mcp.py",
+    ]
+    for cand in candidates:
+        if cand.is_file():
+            return cand.resolve()
+    return candidates[0].resolve()
 
 
 def write_skill_dag_mcp_config(worker_cwd: str) -> Path:
