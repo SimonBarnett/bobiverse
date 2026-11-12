@@ -26,6 +26,7 @@ DEFAULT_PORT = 7701
 ENV_ENABLE = ("JEEVES_SETTINGS_HTTP", "JEEVES_SETTINGS_UI")
 ENV_BIND = "JEEVES_SETTINGS_HTTP_BIND"
 ENV_PORT = "JEEVES_SETTINGS_HTTP_PORT"
+ENV_FRONTDOOR = "JEEVES_SETTINGS_FRONTDOOR"
 SESSION_COOKIE_NAME = "jeeves_appliance_session"
 LOGO_HREF = "/assets/ntsa-gut-logo.png"
 _SCRIPTS_DIR = Path(__file__).resolve().parent
@@ -97,7 +98,14 @@ def validate_bind_host(host: str) -> str | None:
     return None
 
 
+def front_door_enabled() -> bool:
+    raw = (os.environ.get(ENV_FRONTDOOR) or "").strip().lower()
+    return raw in ("1", "true", "yes", "on")
+
+
 def resolve_bind_host(explicit: str | None = None) -> str:
+    if front_door_enabled():
+        return "127.0.0.1"
     raw = (explicit if explicit is not None else os.environ.get(ENV_BIND) or "").strip()
     if not raw:
         return "127.0.0.1"
@@ -118,9 +126,11 @@ def resolve_port(explicit: int | None = None) -> int:
 
 def _client_ip(handler: BaseHTTPRequestHandler) -> str:
     try:
-        return str(handler.client_address[0] or "")
+        peer = str(handler.client_address[0] or "")
     except Exception:
-        return ""
+        peer = ""
+    xff = handler.headers.get("X-Forwarded-For") if getattr(handler, "headers", None) else None
+    return js.effective_client_ip(peer, xff)
 
 
 def _json_bytes(doc: dict[str, Any]) -> bytes:
@@ -573,8 +583,17 @@ class _Handler(BaseHTTPRequestHandler):
     def _clear_session_cookie_header(self) -> str:
         return f"{SESSION_COOKIE_NAME}=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0"
 
+    def _refuse_non_lan(self, ip: str) -> bool:
+        err = js.reject_non_lan(ip)
+        if err:
+            self._send_json(403, {"ok": False, "error": err})
+            return True
+        return False
+
     def do_GET(self) -> None:  # noqa: N802
         ip = _client_ip(self)
+        if self._refuse_non_lan(ip):
+            return
         path = urlparse(self.path).path
         home = self.server.home
         tok = self._session_token()
@@ -712,6 +731,8 @@ class _Handler(BaseHTTPRequestHandler):
 
     def do_PUT(self) -> None:  # noqa: N802
         ip = _client_ip(self)
+        if self._refuse_non_lan(ip):
+            return
         path = urlparse(self.path).path
         prefix = "/api/settings/"
         if not path.startswith(prefix):
@@ -731,6 +752,8 @@ class _Handler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:  # noqa: N802
         ip = _client_ip(self)
+        if self._refuse_non_lan(ip):
+            return
         path = urlparse(self.path).path
         doc = self._read_json()
         if path == "/api/login":
