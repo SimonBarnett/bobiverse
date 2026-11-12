@@ -392,6 +392,7 @@ routes to bobiverse via the split rule.
 - Load compact findings skills by exact id; do not add them as depends_on of the 53KiB MRB book (64KiB resolve cap).
 - GH_AUTH_STEPS must include pack whenever pack runs gh (release list / assets); isolation blanks GH_TOKEN for suites only.
 - When _inject_line gains an early assign_job_ref, keep method-bound pins for late ack/since_wall and repin ear provenance hashes in the same FR as the failing bob suite.
+- PowerShell functions: capture native stdout (npm ci) or it becomes extra return values; [string]$Stage joins https:// URLs and WiX heat.exe HEAT0001 path format is not supported.
 
 ## Harvest digest (lessons audit 2026-10-06)
 
