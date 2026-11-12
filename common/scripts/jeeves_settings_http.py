@@ -342,6 +342,7 @@ document.getElementById('f').onsubmit = async (ev) => {{
 
 
 def _queue_row_public(row: Any) -> dict[str, Any]:
+    """Whitelist queue fields for the HTML page (FR #6755; same as FR #6754 JSON)."""
     if not isinstance(row, dict):
         return {}
     out: dict[str, Any] = {}
@@ -404,6 +405,7 @@ body{{font-family:system-ui,sans-serif;margin:1.5rem;}}
 {_shell_css()}
 section{{margin-bottom:1.2rem;}}
 .empty{{color:#444;}}
+ul{{padding-left:1.2rem;}}
 </style></head><body>
 {header}
 <h1>Queue</h1>
