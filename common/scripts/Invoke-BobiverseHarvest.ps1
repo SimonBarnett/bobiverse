@@ -716,6 +716,7 @@ if (Test-HarvestClosedDuplicateLessonLoop -SummaryText $Summary -LessonLines $Le
 # FR #3824: if an open harvest-lesson PR already carries the same lesson text,
 # skip filing (intake also links open twins; this avoids a second POST).
 # FR #4953: any seat; also match title stem / distinctive tokens (a-search #4866-#4877).
+# FR #6741: distinctive overlap needs a 3-token phrase or >=5 shared tokens; skip cites PR url.
 # FR #4780: also dedup against open AND closed harvest-lesson PRs from the last 24h
 # (any seat) so MRB reviews of lessons cannot re-file the same playbook tip.
 function Get-HarvestLessonTitleStem([string]$Title) {
@@ -736,6 +737,8 @@ function Test-HarvestLessonTitleStemsMatch([string]$A, [string]$B) {
 }
 
 function Test-HarvestLessonDistinctiveOverlap([string]$ExistingBlob, [string]$NewLesson) {
+    # FR #6741: two shared tokens (fetch+cwd, plan+folder) is not a twin.
+    # Require a 3-token distinctive phrase, or >=5 shared distinctive tokens.
     $generic = [System.Collections.Generic.HashSet[string]]::new([string[]]@(
         'selftest','entry','require','must','gate','fixture','probes','probe','local',
         'provider','providers','checks','behind','unless','absent','skip','green','stay',
@@ -744,16 +747,36 @@ function Test-HarvestLessonDistinctiveOverlap([string]$ExistingBlob, [string]$Ne
         'invoke','intake','machine','source','book','seat','lesson','lessons','session',
         'summary','search','html','utf8','flamingo','ionos','marchhare'
     ))
+    $normWord = {
+        param($w)
+        $w = ([string]$w).Trim('_')
+        if ($w.EndsWith('able') -and $w.Length -gt 8) { $w = $w.Substring(0, $w.Length - 4) }
+        elseif ($w.EndsWith('ed') -and $w.Length -gt 6) { $w = $w.Substring(0, $w.Length - 2) }
+        return $w
+    }
+    $seq = {
+        param($text)
+        $list = New-Object 'System.Collections.Generic.List[string]'
+        foreach ($m in [regex]::Matches((([string]$text).ToLowerInvariant()), '[a-z0-9_]{4,}')) {
+            $w = & $normWord $m.Value
+            if ($w.Length -ge 4 -and -not $generic.Contains($w)) { $list.Add($w) }
+        }
+        return $list
+    }
     $tok = {
         param($text)
         $out = New-Object 'System.Collections.Generic.HashSet[string]'
-        foreach ($m in [regex]::Matches((([string]$text).ToLowerInvariant()), '[a-z0-9_]{4,}')) {
-            $w = $m.Value.Trim('_')
-            if ($w.EndsWith('able') -and $w.Length -gt 8) { $w = $w.Substring(0, $w.Length - 4) }
-            elseif ($w.EndsWith('ed') -and $w.Length -gt 6) { $w = $w.Substring(0, $w.Length - 2) }
-            if ($w.Length -ge 4 -and -not $generic.Contains($w)) { [void]$out.Add($w) }
-        }
+        foreach ($w in (& $seq $text)) { [void]$out.Add($w) }
         return $out
+    }
+    $aSeq = @( & $seq $ExistingBlob )
+    $bSeq = @( & $seq $NewLesson )
+    if ($bSeq.Count -ge 3 -and $aSeq.Count -ge 3) {
+        $hay = ($aSeq -join ' ')
+        for ($i = 0; $i -le ($bSeq.Count - 3); $i++) {
+            $phrase = '{0} {1} {2}' -f $bSeq[$i], $bSeq[$i + 1], $bSeq[$i + 2]
+            if ($hay.Contains($phrase)) { return $true }
+        }
     }
     $a = & $tok $ExistingBlob
     $b = & $tok $NewLesson
@@ -761,7 +784,7 @@ function Test-HarvestLessonDistinctiveOverlap([string]$ExistingBlob, [string]$Ne
     foreach ($w in $a) {
         if ($b.Contains($w)) { $shared++ }
     }
-    return ($shared -ge 2)
+    return ($shared -ge 5)
 }
 
 function Test-HarvestPrCoversLesson {
@@ -806,14 +829,14 @@ function Test-HarvestOpenLessonTwin {
             foreach ($pr in @($prs)) {
                 # FR #4953: any seat (seat arg kept for callers / logs).
                 if (Test-HarvestPrCoversLesson -PrTitle ([string]$pr.title) -PrBody ([string]$pr.body) -LessonLines $lessons) {
-                    return $true
+                    return [string]$pr.url
                 }
             }
         }
     } catch {
         # fall through
     }
-    return $false
+    return ''
 }
 
 function Test-HarvestRecentLessonDedup {
@@ -841,13 +864,13 @@ function Test-HarvestRecentLessonDedup {
             try { $created = [datetime]::Parse([string]$pr.createdAt).ToUniversalTime() } catch { continue }
             if ($created -lt $cutoff) { continue }
             if (Test-HarvestPrCoversLesson -PrTitle ([string]$pr.title) -PrBody ([string]$pr.body) -LessonLines $lessons) {
-                return $true
+                return [string]$pr.url
             }
         }
     } catch {
-        return $false
+        return ''
     }
-    return $false
+    return ''
 }
 
 # FR #4371 / #4099 / #4419: GitHub auto-links Closes #N / Fixes #N in PR bodies. Harvest tip
@@ -1010,12 +1033,14 @@ if ($env:BOB_NICK -and ([string]$env:BOB_NICK).Trim()) {
 if ($seatNick.Length -gt 64) { $seatNick = $seatNick.Substring(0, 64) }
 
 # FR #3824: client-side skip when an open tip from this seat already has the lesson.
-if (Test-HarvestOpenLessonTwin -RepoName $Repo -LessonLines $Lesson -Seat $seatNick) {
-    Write-Host "SKIPPED harvest open lesson twin (FR #3824/#4953): open harvest-lesson PR already covers this lesson (any seat; cite existing PR; lesson_already_covered)"
+$openTwinUrl = Test-HarvestOpenLessonTwin -RepoName $Repo -LessonLines $Lesson -Seat $seatNick
+if ($openTwinUrl) {
+    Write-Host "SKIPPED harvest open lesson twin (FR #3824/#4953/#6741): open harvest-lesson PR already covers this lesson $openTwinUrl (any seat; cite existing PR; lesson_already_covered)"
     return
 }
-if (Test-HarvestRecentLessonDedup -RepoName $Repo -LessonLines $Lesson) {
-    Write-Host "SKIPPED harvest recent lesson dedup (FR #4780): open/closed harvest-lesson PR in last 24h already carries this lesson"
+$recentTwinUrl = Test-HarvestRecentLessonDedup -RepoName $Repo -LessonLines $Lesson
+if ($recentTwinUrl) {
+    Write-Host "SKIPPED harvest recent lesson dedup (FR #4780/#6741): open/closed harvest-lesson PR in last 24h already carries this lesson $recentTwinUrl"
     return
 }
 
