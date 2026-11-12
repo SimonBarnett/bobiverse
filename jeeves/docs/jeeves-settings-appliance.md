@@ -94,7 +94,7 @@ Bool SCHEMA keys render as `input type=checkbox` with `value="1"` when truthy (F
 
 Read-only status (LAN only):
 
-- HTML: `GET /status` (shared shell + NTSA logo, FR #6756)
+- HTML: `GET /status` (shared shell + NTSA logo, FR #6756). Token comparison (FR #6784): inline SVG of measured `by_model` totals when the job-cost ledger has measured rows; empty copy and no series when none exist; error copy and no invented bars when the ledger cannot be read. `unknown_jobs` is text beside the chart, never a zero bar. Same session auth as `/status`. Does not add token fields to `GET /api/pools`.
 - HTML: `GET /queue` (FR #6755; same shell; waiting / in-progress lists (`repo`, `task`, `id`, optional `worker`). Empty copy is exactly `Nothing is waiting.` / `Nothing is in progress.` Unauthenticated visitors get the login page.) The queue is at `/queue`.
 - HTML: `GET /pools` (FR #6760 / FR-12) --- one row per machine from digest `machines.<id>.xai_weekly` via the same document as `GET /api/pools`. Row rules: `[stale]` hides the percent; `0` shows `0%` plus `out of tokens`; a number shows `<n>%`; null non-stale shows `n/a`; empty list shows `No pool readings`. `reset_label` when present. No Cursor spending-group bars. Unauthenticated HTML returns the login page (HTTP 200). Copilot line is sibling FR #6761. Overspend line (FR #6762): when overage_gbp is greater than 0 show the word overspend, the pound sign, and two decimals; null, missing, or 0 omit the line; once per page, not per machine.
 - Asset: `GET /assets/ntsa-gut-logo.png` --- PNG bytes of `bob/tray/assets/ntsa-gut-logo.png` (LAN; no session)
