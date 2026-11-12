@@ -36,4 +36,7 @@ def test_fr6889_written_configs_point_at_existing_script(tmp_path):
 
     doc = bw.cursor_skill_dag_mcp_document(str(worker))
     args = doc["mcpServers"]["skill-dag"]["args"]
-    assert args == [want]
+    # FR #6922: #6899 added --root packs after the script; this pin is path-exists only.
+    assert args, args
+    assert Path(args[0]).resolve() == script.resolve()
+    assert Path(args[0]).is_file()
