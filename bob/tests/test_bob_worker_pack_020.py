@@ -150,6 +150,7 @@ def test_tray_click_from_a_hidden_tray_opens_one_visible_console_window(tmp_path
 
     FR #6729: Session 0 (flamingo isolated SYSTEM suite) has no interactive desktop;
     EnumWindows will not see ConsoleWindowClass. Skip with a durable reason.
+    FR #6733: also skip sid>0 headless/agent seats with empty SESSIONNAME.
     """
     import os
     import time
