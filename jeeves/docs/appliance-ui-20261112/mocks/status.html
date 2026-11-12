@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<title>Jeeves status</title>
+<style>
+  body { margin: 0; font-family: "Segoe UI", system-ui, sans-serif; background: #f3f0e8; color: #1c2430; }
+  header { display: flex; align-items: center; gap: 1rem; padding: .8rem 1.4rem; background: #1c2430; color: #fff; }
+  header img { height: 36px; width: 36px; }
+  nav { margin-left: auto; display: flex; gap: 1rem; }
+  nav a { color: #f3f0e8; text-decoration: none; }
+  nav a[aria-current="page"] { border-bottom: 2px solid #e26a2c; }
+  main { max-width: 40rem; margin: 1.4rem auto; padding: 0 1rem 2rem; }
+  section { background: #fff; border: 1px solid #e2dcd0; border-radius: 10px; padding: 1rem 1.1rem; }
+  dl { display: grid; grid-template-columns: 10rem 1fr; gap: .35rem .8rem; margin: 0; }
+  dt { color: #5c564c; }
+  button { margin-top: 1rem; background: #1c2430; color: #fff; border: 0; border-radius: 6px; padding: .5rem .9rem; }
+</style>
+</head>
+<body>
+<header>
+  <img src="ntsa-gut-logo.png" alt="NTSA"/>
+  <strong>Jeeves</strong>
+  <nav>
+    <a href="home.html">Settings</a>
+    <a href="queue.html">Queue</a>
+    <a href="status.html" aria-current="page">Status</a>
+    <a href="login.html">Log out</a>
+  </nav>
+</header>
+<main>
+  <section>
+    <h1>Status</h1>
+    <dl>
+      <dt>Version</dt><dd>chair</dd>
+      <dt>Uptime</dt><dd>3 h</dd>
+      <dt>Waiting</dt><dd>1</dd>
+      <dt>In progress</dt><dd>1</dd>
+      <dt>Restart pending</dt><dd>no</dd>
+    </dl>
+    <button type="button">Restart ircJeeves when idle</button>
+  </section>
+</main>
+</body>
+</html>
