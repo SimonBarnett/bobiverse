@@ -645,6 +645,11 @@ class ChairJobs:
         # FR #4959: operator !resync must force-refresh (not ride stale issues ETags).
         self._force_refresh_resync = True
         self.next_resync = 0.0
+        # FR #6774: !resync clears bored-latency recycle-loop holds.
+        with contextlib.suppress(Exception):
+            import gitclaim as _gc
+
+            _gc.clear_bored_latency_recycle_holds(self.home)
 
     def _maybe_pull_resync_forward_after_skip(self, now: float) -> None:
         """FR #4422: after budget-backoff, schedule retry at rate-limit reset (not only +RESYNC_S)."""
