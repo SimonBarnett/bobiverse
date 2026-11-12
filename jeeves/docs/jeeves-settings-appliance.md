@@ -59,6 +59,8 @@ Socket-layer gate: the server binds only to LAN/loopback and `verify_request` dr
 
 Module: `common/scripts/jeeves_settings_http.py` (started from `ChairJobs` via `maybe_start_from_chair`).
 
+`SettingSpec.choices` defaults to `()`. A non-empty list on a non-bool setting renders a `<select>` (FR #6753 / FR-05). The current value is selected; a value not in the list is added as an extra selected option so save does not silently change it. Bools stay checkboxes. Today's SCHEMA keys have empty choices (paths, URLs, and seconds stay text).
+
 
 ## Restart-when-idle + status (FR #6443)
 

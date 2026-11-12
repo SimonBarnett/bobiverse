@@ -81,24 +81,58 @@ def _json_bytes(doc: dict[str, Any]) -> bytes:
     return json.dumps(doc, sort_keys=True).encode("utf-8")
 
 
+def _truthy_setting(raw: Any) -> bool:
+    return str(raw or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _opt_esc(raw: Any) -> str:
+    return (
+        str(raw)
+        .replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace('"', "&quot;")
+    )
+
+
+def render_setting_input(s: dict[str, Any]) -> str:
+    """HTML control: bool checkbox; non-empty choices => select (FR #6753)."""
+    key = str(s.get("key") or "")
+    typ = str(s.get("type") or "str")
+    val = "" if s.get("value") is None else str(s.get("value"))
+    secret = bool(s.get("secret")) or typ == "secret"
+    if secret:
+        return (
+            f'<input name="{key}" type="password" placeholder="{_opt_esc(val)}" '
+            f'autocomplete="off" data-secret="1"/>'
+        )
+    if typ == "bool":
+        checked = " checked" if _truthy_setting(val) else ""
+        return f'<input name="{key}" type="checkbox" value="1"{checked}/>'
+    raw_choices = s.get("choices") or ()
+    choices = [str(c) for c in raw_choices if str(c) != ""]
+    if choices:
+        cur = val
+        opts = list(choices)
+        if cur and cur not in opts:
+            opts.append(cur)
+        parts = []
+        for c in opts:
+            sel = " selected" if c == cur else ""
+            parts.append(f'<option value="{_opt_esc(c)}"{sel}>{_opt_esc(c)}</option>')
+        return f'<select name="{key}">{"".join(parts)}</select>'
+    safe = _opt_esc(val)
+    return f'<input name="{key}" type="text" value="{safe}"/>'
+
+
 def _render_html(settings: list[dict[str, Any]]) -> str:
     rows = []
     for s in settings:
         key = s.get("key") or ""
         typ = s.get("type") or "str"
-        val = s.get("value") or ""
         src = s.get("source") or ""
-        secret = bool(s.get("secret"))
         restart = " yes" if s.get("restart") else ""
         desc = (s.get("description") or "").replace("<", "&lt;")
-        if secret:
-            inp = (
-                f'<input name="{key}" type="password" placeholder="{val}" '
-                f'autocomplete="off" data-secret="1"/>'
-            )
-        else:
-            safe = str(val).replace('"', "&quot;")
-            inp = f'<input name="{key}" type="text" value="{safe}"/>'
+        inp = render_setting_input(s)
         rows.append(
             f"<tr><td><code>{key}</code></td><td>{typ}</td><td>{inp}</td>"
             f"<td>{src}</td><td>{restart}</td><td>{desc}</td></tr>"
@@ -131,7 +165,7 @@ Session cookie required. Never expose via bob.ntsa.uk.
 async function save() {{
   const status = document.getElementById('status');
   status.textContent = 'saving…';
-  const inputs = document.querySelectorAll('input[name]');
+  const inputs = document.querySelectorAll('input[name], select[name]');
   let ok = 0, fail = 0;
   for (const el of inputs) {{
     const key = el.name;
