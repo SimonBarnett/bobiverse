@@ -1538,6 +1538,13 @@ def seat_env_extra(
     job_wt = (os.environ.get("BOB_JOB_WORKTREE") or "").strip()
     if job_wt:
         out["BOB_JOB_WORKTREE"] = job_wt
+    # FR #6864: process-local skill catalog bound (never GROK_CONFIG / user [skills]).
+    try:
+        import skill_dag_bound as _sdb
+
+        out = _sdb.apply_bound_env(out)
+    except Exception:
+        out["BOB_SKILL_DAG_BOUND"] = "skill-dag-core"
     return out
 
 
@@ -1728,7 +1735,8 @@ def worker_prompt(worker_dir: str, home: str, machine: str, nick: str) -> str:
     outbox = str(outbox_path_for_run(home))
     return (
         f"You are a NEW Bobiverse worker agent (fresh session - never resume or continue an older one). "
-        f"Your working folder is {worker_dir}. Read {worker_dir}\\AGENTS.md. Per assigned job, call skill-dag MCP resolve then get_skill "
+        f"Your working folder is {worker_dir}. FIRST read {worker_dir}\\AGENTS.md and the process-local core stub "
+        f"(skill-dag-core). Do not list other skill-dag index nodes in this prompt; resolve per job: call skill-dag MCP resolve then get_skill "
         f"(do not read every skill in {worker_dir}\\.grok\\skills). "
         f"(start with bobiverse-worker-seat, then bobiverse-bob-worker, harvest). "
         f"You are on IRC as {nick} in #{machine} only; this program keeps the connection. Messages from IRC arrive as typed input of the form "
