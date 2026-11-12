@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Digest callback: report/git/intake/jira/hours; public GET digest (#174, #149).
 
-Public IIS front-door GET is **/bob/v1/report** only (FR #149 / FR #354). Local bobcallback
-also serves `/bob/v1/digest` and `/digest` with the same JSON body; those aliases are not
-published through the bob.ntsa.uk IIS rewrite today (GET https://bob.ntsa.uk/bob/v1/digest -> 404).
+Public IIS front-door GET is **/bob/v1/report** (FR #149 / FR #354) and **GET /jeeves**
+login HTML (FR #6815). Local bobcallback also serves `/bob/v1/digest` and `/digest`
+with the same JSON body; those aliases are not published through the bob.ntsa.uk IIS
+rewrite today (GET https://bob.ntsa.uk/bob/v1/digest -> 404).
 
 Durable POST envelopes go through webhook_queue; chair announces on #bobiverse.
 
