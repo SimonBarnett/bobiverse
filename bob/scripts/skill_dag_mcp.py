@@ -101,8 +101,23 @@ def _parse_frontmatter(text: str) -> dict[str, Any]:
     block = rest[:end]
     meta: dict[str, Any] = {}
     key = ""
+    folded_key = ""
+    folded_lines: list[str] = []
+
+    def flush_fold() -> None:
+        nonlocal folded_key, folded_lines
+        if folded_key:
+            meta[folded_key] = " ".join(x for x in folded_lines if x).strip()
+            folded_key = ""
+            folded_lines = []
+
     for raw in block.splitlines():
         line = raw.rstrip()
+        if folded_key:
+            if line.startswith((" ", "\t")):
+                folded_lines.append(line.strip())
+                continue
+            flush_fold()
         if not line.strip():
             continue
         if line.lstrip().startswith("- ") and key == "depends_on":
@@ -118,8 +133,12 @@ def _parse_frontmatter(text: str) -> dict[str, Any]:
                 if val and val not in ("[]",):
                     inner = val.strip("[]")
                     meta["depends_on"] = [p.strip().strip("\"'") for p in inner.split(",") if p.strip()]
+            elif val in (">", "|", ">-", "|-", ">+", "|+"):
+                folded_key = key
+                folded_lines = []
             else:
                 meta[key] = val
+    flush_fold()
     meta.setdefault("depends_on", [])
     return meta
 
@@ -211,9 +230,11 @@ class SkillDagServer:
 
     def _seed_id(self, seed: str) -> str:
         raw = str(seed or "").strip()
-        up = raw.upper()
-        if up in JOB_SEEDS:
-            return JOB_SEEDS[up]
+        if not raw:
+            return raw
+        first = raw.split(None, 1)[0].upper()
+        if first in JOB_SEEDS:
+            return JOB_SEEDS[first]
         return raw
 
     def _closure(self, seed_id: str) -> list[str]:
@@ -237,7 +258,10 @@ class SkillDagServer:
         matched: list[dict[str, Any]] = []
         skipped: list[dict[str, Any]] = []
         used = 64
-        for nid in self._closure(sid):
+        order = self._closure(sid)
+        if sid in order:
+            order = [sid] + [nid for nid in order if nid != sid]
+        for nid in order:
             node = self.nodes[nid]
             item = {
                 "id": node["id"],

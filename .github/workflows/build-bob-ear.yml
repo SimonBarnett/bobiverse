@@ -1,8 +1,8 @@
 # Isolated bob-ear.exe build. Not a release, MSI, install, or service start.
 # Build-BobEar.ps1 owns the PyInstaller command and the --help smoke check.
-# FR #6727: behavior_source_sha pins the pool-monitor + bobiverse_build files to
-# 523450ec4fbb3436f71568d65aa7a4e10fb36861 (OpenCode fuel ProcessStartInfo + BOBIVERSE_PYTHON).
-# History: 0db71bfa / FR #6722; 44ea47d3 / FR #6672; FR #6558 merge
+# FR #6894: behavior_source_sha pins the pool-monitor + bobiverse_build files to
+# 4ffaf3349f0e0125d0b901040f038f341c3abaaf (main tip; bobreport/irc_agent/Get-BobIrc drift).
+# History: 523450ec / FR #6727; 0db71bfa / FR #6722; 44ea47d3 / FR #6672; FR #6558 merge
 # 2da1eb06d0c99cd3384d6bf1bb21faa830526ba5 / PR #6575.
 name: build-bob-ear
 
@@ -38,13 +38,13 @@ jobs:
           . .\common\scripts\Bobiverse-Common.ps1
           Install-BobiversePythonDeps -Python (Get-Command python).Source
 
-      - name: Confirm behavior files match 523450ec (FR #6851 / #6745)
+      - name: Confirm behavior files match 4ffaf33 (FR #6894)
         env:
           WORKFLOW_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
           $head = (git rev-parse HEAD).Trim()
           if ($head -ne $env:WORKFLOW_COMMIT) { throw "checkout $head is not $env:WORKFLOW_COMMIT" }
-          $expected = "523450ec4fbb3436f71568d65aa7a4e10fb36861"
+          $expected = "4ffaf3349f0e0125d0b901040f038f341c3abaaf"
           git fetch --no-tags --depth=1 origin $expected
           git diff --exit-code $expected -- `
             common/scripts/bobreport.py `
@@ -75,7 +75,7 @@ jobs:
           Copy-Item -LiteralPath $exe -Destination (Join-Path $stage "bob-ear.exe")
           Copy-Item -LiteralPath "$root\bob\docs\deploy-pool-monitor-manifest.txt" -Destination (Join-Path $stage "deploy-pool-monitor-manifest.txt")
           @(
-            "behavior_source_sha=523450ec4fbb3436f71568d65aa7a4e10fb36861"
+            "behavior_source_sha=4ffaf3349f0e0125d0b901040f038f341c3abaaf"
             "workflow_commit=$($env:WORKFLOW_COMMIT)"
             "exe_name=bob-ear.exe"
             "exe_sha256=$hash"
