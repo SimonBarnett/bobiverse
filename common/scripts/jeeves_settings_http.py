@@ -173,8 +173,7 @@ button{{margin-top:1rem;padding:.4rem .8rem;}}
 <p class="note">LAN-only AD/Windows or CredMan (FR #6441 / #6451). Passwords are never logged.</p>
 {note}
 <form id="f">
-<label>Username<input name="username" autocomplete="username" required/></label>
-<label>Domain (optional)<input name="domain" autocomplete="organization"/></label>
+<label>Account<input name="account" autocomplete="username" required placeholder="DOMAIN\\user or user@domain"/></label>
 <label>Password<input name="password" type="password" autocomplete="current-password" required/></label>
 <button type="submit">Sign in</button>
 <span id="status"></span>
@@ -190,9 +189,8 @@ document.getElementById('f').onsubmit = async (ev) => {{
     credentials: 'same-origin',
     headers: {{'Content-Type': 'application/json'}},
     body: JSON.stringify({{
-      username: fd.get('username') || '',
-      password: fd.get('password') || '',
-      domain: fd.get('domain') || ''
+      username: fd.get('account') || '',
+      password: fd.get('password') || ''
     }})
   }});
   const j = await r.json().catch(() => ({{}}));
@@ -491,7 +489,7 @@ class _Handler(BaseHTTPRequestHandler):
             result = auth.login(
                 self.server.home,
                 client_ip=ip,
-                username=str(doc.get("username") or ""),
+                username=str(doc.get("username") or doc.get("account") or ""),
                 password=str(doc.get("password") or ""),
                 domain=str(doc.get("domain") or ""),
                 authenticator=self.server.authenticator,

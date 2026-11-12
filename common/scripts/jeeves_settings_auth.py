@@ -155,14 +155,31 @@ def authenticate_credman(
     return bool(user_ok and pw_ok)
 
 
-def authenticate_windows_logon(
-    username: str,
-    password: str,
-    domain: str = "",
-) -> bool:
-    """Validate via Win32 LogonUser (network logon). Returns False off-Windows / fail."""
-    user = str(username or "").strip()
-    if not user or password is None:
+def split_windows_account(username: str, domain: str = "") -> tuple[str, str, str]:
+    """Split DOMAIN\\user or user@domain. JSON domain used when username has no split.
+
+    Returns (sam, domain, typed_string).
+    """
+    typed = str(username or "").strip()
+    json_dom = str(domain or "").strip()
+    user = typed
+    dom = json_dom
+    if typed and "@" in typed and "\\" not in typed.split("@", 1)[0]:
+        left, _, right = typed.partition("@")
+        user = left.strip()
+        if right.strip():
+            dom = right.strip()
+    elif "\\" in typed:
+        left, _, right = typed.partition("\\")
+        if right.strip():
+            dom = left.strip()
+            user = right.strip()
+    return user, dom, typed
+
+
+def _call_logon_user(user: str, domain: str, password: str) -> bool:
+    """Win32 LogonUser network logon. Returns False off-Windows / fail."""
+    if not str(user or "").strip() or password is None:
         return False
     try:
         import ctypes
@@ -188,11 +205,8 @@ def authenticate_windows_logon(
     CloseHandle.restype = wintypes.BOOL
     handle = wintypes.HANDLE()
     dom = str(domain or "").strip() or None
-    # Split DOMAIN\\user if domain arg empty.
-    if dom is None and "\\" in user:
-        dom, _, user = user.partition("\\")
     ok = LogonUserW(
-        user,
+        str(user).strip(),
         dom,
         str(password),
         LOGON32_LOGON_NETWORK,
@@ -208,11 +222,31 @@ def authenticate_windows_logon(
             CloseHandle(handle)
 
 
+def authenticate_windows_logon(
+    username: str,
+    password: str,
+    domain: str = "",
+) -> bool:
+    """Validate via Win32 LogonUser (network logon). Returns False off-Windows / fail."""
+    sam, dom, _typed = split_windows_account(username, domain)
+    if not sam or password is None:
+        return False
+    return _call_logon_user(sam, dom, str(password))
+
+
 def default_authenticator(username: str, password: str, domain: str = "") -> bool:
-    """Try Windows/AD LogonUser first; fall back to CredMan ApplianceAdmin."""
+    """Try Windows/AD LogonUser first; fall back to CredMan ApplianceAdmin.
+
+    CredMan is tried with the typed string and, when split, with the SAM name.
+    """
+    _sam, _dom, typed = split_windows_account(username, domain)
     if authenticate_windows_logon(username, password, domain=domain):
         return True
-    return authenticate_credman(username, password)
+    if authenticate_credman(typed, password):
+        return True
+    if _sam and _sam != typed and authenticate_credman(_sam, password):
+        return True
+    return False
 
 
 def login(
