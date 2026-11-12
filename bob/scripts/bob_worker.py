@@ -2004,6 +2004,7 @@ class LaunchSpec:
     env_extra: dict = field(default_factory=dict)
     write_skill_dag_mcp: bool = False  # FR #6863: agent seats only
     write_cursor_skill_dag_mcp: bool = False  # FR #6865: cursor agent seats only
+    write_opencode_skill_dag_mcp: bool = False  # FR #6898: opencode agent seats only
     skill_dag_mcp_args: list = field(default_factory=list)  # FR #6899: python argv for skill-dag stdio
     skill_dag_job_worktree: str | None = None
 
@@ -2161,6 +2162,96 @@ def write_cursor_skill_dag_mcp_config_if_agent(spec: LaunchSpec) -> None:
     write_cursor_skill_dag_mcp_config(spec.cwd, job_worktree=getattr(spec, "skill_dag_job_worktree", None))
 
 
+# FR #6898: OpenCode reads project ``opencode.json`` under seat cwd or ``--dir``.
+# Never write user-global ``~/.config/opencode`` / ``%LOCALAPPDATA%\opencode``.
+OPENCODE_SKILL_DAG_MCP_RELPATH = "opencode.json"
+
+
+def skill_dag_mcp_argv(
+    worker_cwd: str,
+    *,
+    job_worktree: str | Path | None = None,
+    source_file: str | Path | None = None,
+) -> list[str]:
+    """``python`` + script + vision ``--root`` / optional ``--job-worktree`` (FR #6898)."""
+    script = skill_dag_mcp_script_path(worker_cwd, source_file=source_file)
+    argv = ["python", script.as_posix()]
+    cwd = Path(worker_cwd).resolve()
+    parent = cwd.parent
+    home_skills = Path.home() / ".grok" / "skills"
+    for root in (
+        cwd / ".grok" / "skills",
+        parent / "bob" / ".grok" / "skills",
+        parent / ".grok" / "skills",
+        parent / "common" / ".grok" / "skills",
+        home_skills,
+    ):
+        try:
+            if root.is_dir():
+                argv.extend(["--root", root.resolve().as_posix()])
+        except OSError:
+            continue
+    if job_worktree is not None:
+        wt = Path(job_worktree)
+        if wt.is_dir():
+            argv.extend(["--job-worktree", wt.resolve().as_posix()])
+    return argv
+
+
+def opencode_skill_dag_mcp_document(
+    worker_cwd: str,
+    *,
+    job_worktree: str | Path | None = None,
+) -> dict:
+    """Project ``opencode.json`` fragment with local skill-dag MCP (FR #6898)."""
+    return {
+        "$schema": "https://opencode.ai/config.json",
+        "mcp": {
+            "skill-dag": {
+                "type": "local",
+                "command": skill_dag_mcp_argv(worker_cwd, job_worktree=job_worktree),
+            }
+        },
+    }
+
+
+def write_opencode_skill_dag_mcp_config(
+    target_dir: str | Path,
+    *,
+    worker_cwd: str | None = None,
+    job_worktree: str | Path | None = None,
+) -> Path:
+    """Write/merge skill-dag into project ``opencode.json`` under ``target_dir`` only."""
+    root = Path(target_dir)
+    root.mkdir(parents=True, exist_ok=True)
+    cfg = root / OPENCODE_SKILL_DAG_MCP_RELPATH
+    seat = worker_cwd or str(root)
+    incoming = opencode_skill_dag_mcp_document(seat, job_worktree=job_worktree)
+    data: dict = {}
+    if cfg.is_file():
+        try:
+            existing = json.loads(cfg.read_text(encoding="utf-8"))
+            if isinstance(existing, dict):
+                data.update(existing)
+        except json.JSONDecodeError:
+            data = {}
+    mcp = data.get("mcp")
+    if not isinstance(mcp, dict):
+        mcp = {}
+    mcp["skill-dag"] = incoming["mcp"]["skill-dag"]
+    data["mcp"] = mcp
+    if "$schema" not in data:
+        data["$schema"] = incoming["$schema"]
+    cfg.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    return cfg
+
+
+def write_opencode_skill_dag_mcp_config_if_agent(spec: LaunchSpec) -> None:
+    if not getattr(spec, "write_opencode_skill_dag_mcp", False):
+        return
+    write_opencode_skill_dag_mcp_config(spec.cwd, worker_cwd=spec.cwd)
+
+
 def assert_fresh(argv: list, files: Optional[dict] = None, allow_resume: bool = False) -> None:
     """t765u: an agent is never resumed/continued/attached. Refuse any command line that says so.
     FR #2522: allow_resume=True is passed ONLY by maintenance builds; it permits exactly one --resume <uuid>."""
@@ -2237,6 +2328,9 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
         turns_log = str(Path(run_dir) / "opencode-turns.jsonl")
         esc = lambda s: str(s).replace("'", "''")  # noqa: E731
         files[pfile] = prompt
+        if str(mode).strip().lower() == "agent":
+            mcp_path = str(Path(cwd) / OPENCODE_SKILL_DAG_MCP_RELPATH)
+            files[mcp_path] = json.dumps(opencode_skill_dag_mcp_document(cwd), indent=2) + "\n"
         helper_path = _resolve_opencode_fuel_helper_path(cwd=cwd, install_root=install_root)
         # FR #6157: each opencode run emits turn_started / turn_ended into opencode-turns.jsonl
         # so BoredEmitter gets harvest-hold / done-miss / startup-ready parity with Grok.
@@ -2523,6 +2617,7 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
         files=files,
         write_skill_dag_mcp=(str(mode).strip().lower() == "agent"),
         write_cursor_skill_dag_mcp=(str(kind).strip().lower() == "cursor" and str(mode).strip().lower() == "agent"),
+        write_opencode_skill_dag_mcp=(str(kind).strip().lower() == "opencode" and str(mode).strip().lower() == "agent"),
         skill_dag_mcp_args=mcp_args,
         skill_dag_job_worktree=job_wt,
     )
@@ -2548,6 +2643,7 @@ def default_spawn(spec: LaunchSpec, env: dict) -> ProcHandle:
         Path(path).write_text(text, encoding="utf-8")
     write_skill_dag_mcp_config_if_agent(spec)
     write_cursor_skill_dag_mcp_config_if_agent(spec)
+    write_opencode_skill_dag_mcp_config_if_agent(spec)
     # t771u: ONE window. The agent INHERITS this exe's console (no CREATE_NEW_CONSOLE, no second console); a kill-on-close job object
     # makes the agent die with us even if we are killed. "New agent every time" is about the SESSION, not the window: the exe's
     # window IS the agent's window and a new click opens a new exe + window.
@@ -6919,6 +7015,8 @@ def opencode_job_finish_steps(
     return (
         f"FINISH {key}. Work so far is already in the worktree ({wt}). "
         "This is a NEW opencode run (no --resume/--continue). "
+        "Per job call skill-dag MCP resolve then get_skill; file what you learn with "
+        "Report-BobiverseIntakeIssue.ps1 (-Repo from the job id) on the intake webhook in the same turn. "
         "1) git status and git diff. 2) Finish remaining work. "
         f"3) Commit on branch {branch}. 4) git push -u origin HEAD. "
         f"5) Open the PR with gh pr create --base main --body \"Closes {closes_ref}\" "
@@ -10022,6 +10120,15 @@ class Supervisor:
                     self.log(f"opencode-ready: finish-steps append skipped {type(e).__name__}")
                 wire = prepared["wire"]
                 self.log(f"opencode-ready: job worktree {prepared['path']}")
+                # FR #6898: OpenCode --dir loads project opencode.json from the job worktree.
+                try:
+                    write_opencode_skill_dag_mcp_config(
+                        prepared["path"],
+                        worker_cwd=self.cwd if getattr(self, "cwd", None) else prepared["path"],
+                        job_worktree=prepared["path"],
+                    )
+                except Exception as e:  # noqa: BLE001
+                    self.log(f"opencode-ready: skill-dag mcp write skipped {type(e).__name__}")
                 # FR #6333: tail in-worktree .bob/outbox.txt; stamp FROM footer with that path.
                 try:
                     ob = ensure_opencode_bob_outbox(prepared["path"])
