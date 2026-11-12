@@ -244,12 +244,7 @@ button{{margin-top:1rem;padding:.4rem .8rem;}}
 <h1>Jeeves appliance settings</h1>
 <p class="note">LAN-only (FR #6440 / #6451). Secrets are write-only (set/unset).
 Session cookie required. Never expose via bob.ntsa.uk.
-<<<<<<< HEAD
-Defaults (FR #6751) are shown for non-secret keys; the Value control keeps the current value.
-<a href="/queue">Queue</a> · <a href="/status">Status</a> · <a href="/logout">Log out</a></p>
-=======
 Defaults (FR #6751) are shown for non-secret keys; the Value control keeps the current value.</p>
->>>>>>> origin/main
 <table>
 <thead><tr><th>Key</th><th>Type</th><th>Value</th><th>Default</th><th>Source</th><th>Restart</th><th>Description</th></tr></thead>
 <tbody>
@@ -337,10 +332,7 @@ document.getElementById('f').onsubmit = async (ev) => {{
 
 
 def _queue_row_public(row: Any) -> dict[str, Any]:
-<<<<<<< HEAD
     """Whitelist queue fields for the HTML page (FR #6755; same as FR #6754 JSON)."""
-=======
->>>>>>> origin/main
     if not isinstance(row, dict):
         return {}
     out: dict[str, Any] = {}
@@ -369,13 +361,7 @@ def _load_queue_public_lists(digest_home: Path) -> tuple[list[dict[str, Any]], l
             parsed = json.loads(path.read_text(encoding="utf-8-sig"))
             if isinstance(parsed, dict):
                 raw = parsed
-<<<<<<< HEAD
-        unaccepted = [
-            _queue_row_public(r) for r in (raw.get("unaccepted") or [])
-        ]
-=======
         unaccepted = [_queue_row_public(r) for r in (raw.get("unaccepted") or [])]
->>>>>>> origin/main
         accepted = [_queue_row_public(r) for r in (raw.get("accepted") or [])]
     except Exception:
         pass
@@ -387,15 +373,7 @@ def _render_queue_list(rows: list[dict[str, Any]], empty_copy: str) -> str:
         return f'<p class="empty">{html.escape(empty_copy)}</p>'
     items = []
     for row in rows:
-<<<<<<< HEAD
-        bits = [
-            html.escape(str(row[k]))
-            for k in ("repo", "task", "id")
-            if k in row
-        ]
-=======
         bits = [html.escape(str(row[k])) for k in ("repo", "task", "id") if k in row]
->>>>>>> origin/main
         line = " ".join(bits)
         if row.get("worker"):
             line = f"{line} · {html.escape(str(row['worker']))}"
@@ -408,31 +386,19 @@ def _render_queue_html(
 ) -> str:
     waiting = _render_queue_list(unaccepted, "Nothing is waiting.")
     progress = _render_queue_list(accepted, "Nothing is in progress.")
-<<<<<<< HEAD
-=======
     header = _shell_header(current="queue", include_nav=True)
->>>>>>> origin/main
     return f"""<!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8"/>
 <title>Jeeves queue</title>
 <style>
 body{{font-family:system-ui,sans-serif;margin:1.5rem;}}
-<<<<<<< HEAD
+{_shell_css()}
 section{{margin-bottom:1.2rem;}}
 .empty{{color:#444;}}
 ul{{padding-left:1.2rem;}}
 </style></head><body>
-<h1>Queue</h1>
-<p class="note"><a href="/">Settings</a> · <a href="/status">Status</a> ·
-<a href="/logout">Log out</a></p>
-=======
-{_shell_css()}
-section{{margin-bottom:1.2rem;}}
-.empty{{color:#444;}}
-</style></head><body>
 {header}
 <h1>Queue</h1>
->>>>>>> origin/main
 <section>
 <h2>Waiting</h2>
 {waiting}

@@ -53,13 +53,9 @@ Off by default. On the chair host (walrus), set NSSM / process env and restart `
 
 Browse `http://jeeves.ntsa.uk:7701/` from a LAN client (or `http://127.0.0.1:7701/` on the host).
 JSON: `GET /api/settings`, `PUT /api/settings/<KEY>`, `POST /api/rollback`, `GET /api/schema`,
-<<<<<<< HEAD
-GET /api/status, GET /api/queue (FR #6754), POST /api/restart-when-idle.
-HTML: GET / settings, GET /status, GET /queue (FR #6755 waiting / in-progress lists).
-=======
 `GET /api/status`, `GET /api/queue` (FR #6754), `POST /api/restart-when-idle`.
+HTML: `GET /` settings, `GET /status`, `GET /queue` (FR #6755 waiting / in-progress lists).
 HTML shell (FR #6756): login, settings, status, and queue share a header with `/assets/ntsa-gut-logo.png` (bytes of `bob/tray/assets/ntsa-gut-logo.png`). Authed pages link Settings, Queue, Status, Log out. Login omits Log out.
->>>>>>> origin/main
 
 GET /api/settings includes a default field per row (schema default; secrets return "").
 The HTML settings table has a **Default** column for every non-secret key (FR #6751 / FR-03).
@@ -80,14 +76,9 @@ Bool SCHEMA keys render as `input type=checkbox` with `value="1"` when truthy (F
 
 Read-only status (LAN only):
 
-<<<<<<< HEAD
-- HTML: `GET /status`
-- HTML: `GET /queue` (FR #6755) — waiting and in-progress lists (`repo`, `task`, `id`, optional `worker`). Empty copy is exactly `Nothing is waiting.` / `Nothing is in progress.` Unauthenticated visitors get the login page. Settings HTML links to `/queue`.
-=======
 - HTML: `GET /status` (shared shell + NTSA logo, FR #6756)
-- HTML: `GET /queue` (same shell; waiting / in-progress lists)
-- Asset: `GET /assets/ntsa-gut-logo.png` — PNG bytes of `bob/tray/assets/ntsa-gut-logo.png` (LAN; no session)
->>>>>>> origin/main
+- HTML: `GET /queue` (FR #6755; same shell; waiting / in-progress lists (`repo`, `task`, `id`, optional `worker`). Empty copy is exactly `Nothing is waiting.` / `Nothing is in progress.` Unauthenticated visitors get the login page.)
+- Asset: `GET /assets/ntsa-gut-logo.png` --- PNG bytes of `bob/tray/assets/ntsa-gut-logo.png` (LAN; no session)
 - JSON: `GET /api/status` — `version`, `source_commit`, `uptime_s`, `queue`, `seats`, `fuel` (no secrets)
 - JSON: `GET /api/queue` (FR #6754) — `ok`, `unaccepted`, `accepted`; each row is `repo`, `task`, `id`, optional `worker` (from stored `worker`, else `nick`). Other queue fields are dropped. Same secret-shape refusal as status.
 
