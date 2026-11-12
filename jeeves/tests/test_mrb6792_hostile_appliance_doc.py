@@ -15,7 +15,7 @@ def test_mrb6792_doc_utf8_no_bom():
 
 def test_mrb6792_no_browser_url_with_port_7701():
     text = DOC.read_text(encoding="utf-8")
-    assert "https://jeeves.ntsa.uk/" in text
+    assert "https://bob.ntsa.uk/jeeves" in text
     assert "https://jeeves.ntsa.uk:7701" not in text
     assert "http://jeeves.ntsa.uk:7701" not in text
     assert "http://127.0.0.1:7701/" not in text
@@ -27,9 +27,7 @@ def test_mrb6792_each_public_host_refused_on_its_own():
     text = DOC.read_text(encoding="utf-8").lower()
     assert "bob.ntsa.uk" in text
     assert "irc.ntsa.uk" in text
-    bob_ok = "do **not** front it via `bob.ntsa.uk`" in text or (
-        "never" in text and "bob.ntsa.uk" in text
-    )
+    bob_ok = "https://bob.ntsa.uk/jeeves" in text
     irc_ok = "do **not** front it via `irc.ntsa.uk`" in text or (
         "never" in text and "irc.ntsa.uk" in text
     )

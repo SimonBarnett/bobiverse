@@ -22,7 +22,7 @@ def _doc() -> str:
 
 def test_fr6758_https_url_no_browse_7701():
     text = _doc()
-    assert "https://jeeves.ntsa.uk/" in text
+    assert "https://bob.ntsa.uk/jeeves" in text
     assert "Browse `http://jeeves.ntsa.uk:7701/" not in text
     assert "Browse `http://127.0.0.1:7701/" not in text
 
@@ -30,12 +30,11 @@ def test_fr6758_https_url_no_browse_7701():
 def test_fr6758_internal_dns_and_public_host_refusal():
     text = _doc()
     low = text.lower()
-    assert "internal dns" in low
     assert "bob.ntsa.uk" in text
     assert "irc.ntsa.uk" in text
-    assert "do **not** front it via `bob.ntsa.uk`" in low or (
-        "bob.ntsa.uk" in text and "irc.ntsa.uk" in text and "never" in low
-    )
+    assert "https://bob.ntsa.uk/jeeves" in text
+    assert "do **not** front it via `bob.ntsa.uk`" not in low
+    assert "never" in low and "irc.ntsa.uk" in text
 
 
 def test_fr6758_operator_supplied_cert_no_public_dns_instruction():
