@@ -155,10 +155,28 @@ def _render_html(settings: list[dict[str, Any]]) -> str:
         src = s.get("source") or ""
         restart = " yes" if s.get("restart") else ""
         desc = (s.get("description") or "").replace("<", "&lt;")
+        secret = bool(s.get("secret"))
+        # FR #6751 / FR-03: show schema default next to the control. Secrets
+        # always render an empty default (never invent or echo a secret).
+        raw_default = "" if secret else str(s.get("default") or "")
+        safe_default_attr = (
+            raw_default.replace("&", "&amp;")
+            .replace('"', "&quot;")
+            .replace("<", "&lt;")
+        )
+        default_text = (
+            raw_default.replace("&", "&amp;")
+            .replace("<", "&lt;")
+            .replace(">", "&gt;")
+        )
+        default_cell = (
+            f'<td class="setting-default" data-default="{safe_default_attr}">'
+            f"{default_text}</td>"
+        )
         inp = render_setting_input(s)
         rows.append(
             f"<tr><td><code>{key}</code></td><td>{typ}</td><td>{inp}</td>"
-            f"<td>{src}</td><td>{restart}</td><td>{desc}</td></tr>"
+            f"{default_cell}<td>{src}</td><td>{restart}</td><td>{desc}</td></tr>"
         )
     body = "\n".join(rows)
     return f"""<!DOCTYPE html>
@@ -170,15 +188,17 @@ table{{border-collapse:collapse;width:100%;}}
 th,td{{border:1px solid #ccc;padding:.4rem;text-align:left;vertical-align:top;}}
 th{{background:#f4f4f4;}}
 code{{font-size:.9em;}}
+.setting-default{{color:#555;font-family:ui-monospace,monospace;font-size:.9em;}}
 .note{{color:#444;margin-bottom:1rem;}}
 button{{margin-top:1rem;padding:.4rem .8rem;}}
 </style></head><body>
 <h1>Jeeves appliance settings</h1>
 <p class="note">LAN-only (FR #6440 / #6451). Secrets are write-only (set/unset).
 Session cookie required. Never expose via bob.ntsa.uk.
+Defaults (FR #6751) are shown for non-secret keys; the Value control keeps the current value.
 <a href="/status">Status</a> · <a href="/logout">Log out</a></p>
 <table>
-<thead><tr><th>Key</th><th>Type</th><th>Value</th><th>Source</th><th>Restart</th><th>Description</th></tr></thead>
+<thead><tr><th>Key</th><th>Type</th><th>Value</th><th>Default</th><th>Source</th><th>Restart</th><th>Description</th></tr></thead>
 <tbody>
 {body}
 </tbody></table>
