@@ -27,6 +27,51 @@ ENV_ENABLE = ("JEEVES_SETTINGS_HTTP", "JEEVES_SETTINGS_UI")
 ENV_BIND = "JEEVES_SETTINGS_HTTP_BIND"
 ENV_PORT = "JEEVES_SETTINGS_HTTP_PORT"
 SESSION_COOKIE_NAME = "jeeves_appliance_session"
+LOGO_HREF = "/assets/ntsa-gut-logo.png"
+_SCRIPTS_DIR = Path(__file__).resolve().parent
+_REPO_ROOT = _SCRIPTS_DIR.parent.parent
+_TRAY_LOGO = _REPO_ROOT / "bob" / "tray" / "assets" / "ntsa-gut-logo.png"
+_PACK_LOGO = (
+    _REPO_ROOT
+    / "jeeves"
+    / "docs"
+    / "appliance-ui-20261112"
+    / "mocks"
+    / "ntsa-gut-logo.png"
+)
+
+
+def ntsa_gut_logo_path() -> Path:
+    """Git logo bytes: tray asset, else the docs pack copy (same file, no new art)."""
+    if _TRAY_LOGO.is_file():
+        return _TRAY_LOGO
+    return _PACK_LOGO
+
+
+def _shell_header(*, current: str, include_nav: bool) -> str:
+    img = f'<img src="{LOGO_HREF}" alt="NTSA"/>'
+    if not include_nav:
+        return f"<header>{img}<strong>Jeeves</strong></header>"
+    links = [
+        ("/", "Settings", "settings"),
+        ("/queue", "Queue", "queue"),
+        ("/status", "Status", "status"),
+        ("/logout", "Log out", "logout"),
+    ]
+    parts = []
+    for href, label, key in links:
+        cur = ' aria-current="page"' if current == key else ""
+        parts.append(f'<a href="{href}"{cur}>{label}</a>')
+    nav = "<nav>" + " · ".join(parts) + "</nav>"
+    return f"<header>{img}<strong>Jeeves</strong>{nav}</header>"
+
+
+def _shell_css() -> str:
+    return (
+        "header{display:flex;align-items:center;gap:1rem;margin-bottom:1rem;}"
+        "header img{height:36px;width:36px;}"
+        "nav{margin-left:auto;}"
+    )
 
 
 def settings_http_enabled() -> bool:
@@ -180,11 +225,13 @@ def _render_html(settings: list[dict[str, Any]]) -> str:
             f"{default_cell}<td>{src}</td><td>{restart}</td><td>{desc}</td></tr>"
         )
     body = "\n".join(rows)
+    header = _shell_header(current="settings", include_nav=True)
     return f"""<!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8"/>
 <title>Jeeves appliance settings</title>
 <style>
 body{{font-family:system-ui,sans-serif;margin:1.5rem;}}
+{_shell_css()}
 table{{border-collapse:collapse;width:100%;}}
 th,td{{border:1px solid #ccc;padding:.4rem;text-align:left;vertical-align:top;}}
 th{{background:#f4f4f4;}}
@@ -193,11 +240,16 @@ code{{font-size:.9em;}}
 .note{{color:#444;margin-bottom:1rem;}}
 button{{margin-top:1rem;padding:.4rem .8rem;}}
 </style></head><body>
+{header}
 <h1>Jeeves appliance settings</h1>
 <p class="note">LAN-only (FR #6440 / #6451). Secrets are write-only (set/unset).
 Session cookie required. Never expose via bob.ntsa.uk.
+<<<<<<< HEAD
 Defaults (FR #6751) are shown for non-secret keys; the Value control keeps the current value.
 <a href="/queue">Queue</a> · <a href="/status">Status</a> · <a href="/logout">Log out</a></p>
+=======
+Defaults (FR #6751) are shown for non-secret keys; the Value control keeps the current value.</p>
+>>>>>>> origin/main
 <table>
 <thead><tr><th>Key</th><th>Type</th><th>Value</th><th>Default</th><th>Source</th><th>Restart</th><th>Description</th></tr></thead>
 <tbody>
@@ -238,21 +290,24 @@ document.getElementById('save').onclick = save;
 def _render_login_html(error: str = "") -> str:
     err = (error or "").replace("<", "&lt;")
     note = f'<p class="note" style="color:#a00">{err}</p>' if err else ""
+    header = _shell_header(current="login", include_nav=False)
     return f"""<!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8"/>
 <title>Jeeves settings login</title>
 <style>
 body{{font-family:system-ui,sans-serif;margin:1.5rem;max-width:28rem;}}
+{_shell_css()}
 label{{display:block;margin:.6rem 0 .2rem;}}
 input{{width:100%;padding:.4rem;box-sizing:border-box;}}
 button{{margin-top:1rem;padding:.4rem .8rem;}}
 .note{{color:#444;}}
 </style></head><body>
+{header}
 <h1>Jeeves settings login</h1>
 <p class="note">LAN-only AD/Windows or CredMan (FR #6441 / #6451). Passwords are never logged.</p>
 {note}
 <form id="f">
-<label>Account<input name="account" autocomplete="username" required placeholder="DOMAIN\\user or user@domain"/></label>
+<label>User name<input name="account" autocomplete="username" required placeholder="DOMAIN\\user or user@domain"/></label>
 <label>Password<input name="password" type="password" autocomplete="current-password" required/></label>
 <button type="submit">Sign in</button>
 <span id="status"></span>
@@ -282,7 +337,10 @@ document.getElementById('f').onsubmit = async (ev) => {{
 
 
 def _queue_row_public(row: Any) -> dict[str, Any]:
+<<<<<<< HEAD
     """Whitelist queue fields for the HTML page (FR #6755; same as FR #6754 JSON)."""
+=======
+>>>>>>> origin/main
     if not isinstance(row, dict):
         return {}
     out: dict[str, Any] = {}
@@ -311,9 +369,13 @@ def _load_queue_public_lists(digest_home: Path) -> tuple[list[dict[str, Any]], l
             parsed = json.loads(path.read_text(encoding="utf-8-sig"))
             if isinstance(parsed, dict):
                 raw = parsed
+<<<<<<< HEAD
         unaccepted = [
             _queue_row_public(r) for r in (raw.get("unaccepted") or [])
         ]
+=======
+        unaccepted = [_queue_row_public(r) for r in (raw.get("unaccepted") or [])]
+>>>>>>> origin/main
         accepted = [_queue_row_public(r) for r in (raw.get("accepted") or [])]
     except Exception:
         pass
@@ -325,11 +387,15 @@ def _render_queue_list(rows: list[dict[str, Any]], empty_copy: str) -> str:
         return f'<p class="empty">{html.escape(empty_copy)}</p>'
     items = []
     for row in rows:
+<<<<<<< HEAD
         bits = [
             html.escape(str(row[k]))
             for k in ("repo", "task", "id")
             if k in row
         ]
+=======
+        bits = [html.escape(str(row[k])) for k in ("repo", "task", "id") if k in row]
+>>>>>>> origin/main
         line = " ".join(bits)
         if row.get("worker"):
             line = f"{line} · {html.escape(str(row['worker']))}"
@@ -342,11 +408,16 @@ def _render_queue_html(
 ) -> str:
     waiting = _render_queue_list(unaccepted, "Nothing is waiting.")
     progress = _render_queue_list(accepted, "Nothing is in progress.")
+<<<<<<< HEAD
+=======
+    header = _shell_header(current="queue", include_nav=True)
+>>>>>>> origin/main
     return f"""<!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8"/>
 <title>Jeeves queue</title>
 <style>
 body{{font-family:system-ui,sans-serif;margin:1.5rem;}}
+<<<<<<< HEAD
 section{{margin-bottom:1.2rem;}}
 .empty{{color:#444;}}
 ul{{padding-left:1.2rem;}}
@@ -354,6 +425,14 @@ ul{{padding-left:1.2rem;}}
 <h1>Queue</h1>
 <p class="note"><a href="/">Settings</a> · <a href="/status">Status</a> ·
 <a href="/logout">Log out</a></p>
+=======
+{_shell_css()}
+section{{margin-bottom:1.2rem;}}
+.empty{{color:#444;}}
+</style></head><body>
+{header}
+<h1>Queue</h1>
+>>>>>>> origin/main
 <section>
 <h2>Waiting</h2>
 {waiting}
@@ -371,13 +450,15 @@ def _render_status_html(status: dict[str, Any]) -> str:
     seats = status.get("seats") if isinstance(status.get("seats"), dict) else {}
     fuel = status.get("fuel") if isinstance(status.get("fuel"), dict) else {}
     pending = "yes" if status.get("restart_pending") else "no"
+    header = _shell_header(current="status", include_nav=True)
     return f"""<!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8"/>
 <title>Jeeves status</title>
-<style>body{{font-family:system-ui,sans-serif;margin:1.5rem;}} code{{font-size:.9em;}}</style>
+<style>body{{font-family:system-ui,sans-serif;margin:1.5rem;}} {_shell_css()} code{{font-size:.9em;}}</style>
 </head><body>
+{header}
 <h1>Jeeves status</h1>
-<p class="note">Read-only (FR #6443). No secrets. <a href="/">Settings</a></p>
+<p class="note">Read-only (FR #6443). No secrets.</p>
 <ul>
 <li>version: <code>{status.get("version") or ""}</code></li>
 <li>source_commit: <code>{status.get("source_commit") or ""}</code></li>
@@ -533,6 +614,13 @@ class _Handler(BaseHTTPRequestHandler):
         path = urlparse(self.path).path
         home = self.server.home
         tok = self._session_token()
+        if path == LOGO_HREF:
+            logo = ntsa_gut_logo_path()
+            if not logo.is_file():
+                self._send_json(404, {"ok": False, "error": "not found"})
+                return
+            self._send(200, logo.read_bytes(), "image/png")
+            return
         if path in ("/login", "/ui/login"):
             html = _render_login_html()
             self._send(200, html.encode("utf-8"), "text/html; charset=utf-8")
