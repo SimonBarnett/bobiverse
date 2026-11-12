@@ -4047,9 +4047,11 @@ class LiveStateTouched(RuntimeError):
     pass
 
 
-# #4188: steps that call ``gh`` against GitHub (post-release asset assert). Suites stay
-# token-less (#4183); only these named steps get the runner's GH_TOKEN back.
-GH_AUTH_STEPS = frozenset({"assert"})
+# #4188 / FR #6949: steps that call ``gh`` against GitHub. Suites stay token-less
+# (#4183); only these named steps get the runner's GH_TOKEN back.
+# ``pack`` needs gh for FR #6423 latest-published downgrade gate (gh release list).
+# ``assert`` needs gh for post-release asset checks.
+GH_AUTH_STEPS = frozenset({"assert", "pack"})
 
 # FR #4349: airc pack (FR #4216) must embed Ergo PASS. Isolation blanks AGENTIC/BOB_IRC and
 # remaps USERPROFILE, so inject AIRC_PACK_ERGO_PASSWORD for pack only (never for suites).
@@ -4155,7 +4157,7 @@ def guarded_run_command(work_dir: Path | str, live_homes: Iterable[Path | str], 
         merged = dict(env or {})
         # Isolation wins over suite.env for homes/URLs (FR #4315); blanks GH/IRC secrets.
         merged.update(iso)
-        # Re-inject after iso: assert needs GH (#4188); pack needs Ergo PASS for airc (#4349/#4216).
+        # Re-inject after iso: assert/pack need GH (#4188 / FR #6949); pack also Ergo PASS (#4349/#4216).
         if name in gh_steps:
             merged.update(gh_auth_env())
         if name in pack_secret_steps:
