@@ -29,8 +29,11 @@ def test_mrb6680_inject_line_method_bound_covers_markers_fixed_windows_miss():
     assert "assign_job_ref" in body
     assert "ack_job_ref" in body
     assert "since_wall = time.time()" in body
-    # Regression: OpenCode checklist growth pushed markers past fixed windows.
-    assert "assign_job_ref" not in src[i : i + 2200]
+    # FR #6963: skill-dag worktree refresh uses assign_job_ref at the top of _inject_line.
+    assert "_refresh_live_skill_dag_mcp" in src[i : i + 2200]
+    assert "assign_job_ref" in src[i : i + 2200]
+    # Recovery/verify markers stay late; a 2200/4000 window still misses them.
+    assert "ack_job_ref" not in src[i : i + 2200]
     assert "since_wall = time.time()" not in src[i : i + 4000]
     # Slice must stop at the next class-level def, not a nested body def.
     assert body.rstrip().endswith(":") or "def _inject_line" in body.splitlines()[0]
