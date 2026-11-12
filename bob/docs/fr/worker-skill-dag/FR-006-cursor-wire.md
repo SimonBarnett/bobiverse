@@ -19,4 +19,9 @@ The Cursor worker seat uses the same skill-dag MCP and the same per-job resolve 
 
 ## Out of scope
 
-Grok S7. Shipping the wire before the Cursor path is measured.
+Grok S7.
+
+## Recorded (MRB #6878)
+
+- MCP path: seat cwd `.cursor/mcp.json`.
+- Catalog drop: none (Cursor still loads `~/.cursor/skills`).
