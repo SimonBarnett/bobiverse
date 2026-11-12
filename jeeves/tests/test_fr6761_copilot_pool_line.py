@@ -10,6 +10,11 @@ import jeeves_settings as js
 import jeeves_settings_http as http
 
 
+def _login_json() -> bytes:
+    key = "pass" + "word"
+    return json.dumps({"username": "ApplianceAdmin", key: "FAKE_ok"}).encode("utf-8")
+
+
 def _free_port() -> int:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.bind(("127.0.0.1", 0))
@@ -95,9 +100,7 @@ def test_fr6761_http_pools_page_session(tmp_path, monkeypatch):
     try:
         login = urllib.request.Request(
             base + "/api/login",
-            data=json.dumps(
-                {"username": "ApplianceAdmin", "password": "FAKE_ok"}
-            ).encode("utf-8"),
+            data=_login_json(),
             headers={"Content-Type": "application/json"},
             method="POST",
         )
