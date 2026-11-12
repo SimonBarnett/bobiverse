@@ -80,7 +80,8 @@ def test_fr6756_four_pages_include_logo_path(tmp_path, monkeypatch):
         assert "Password" in login
         assert "Sign in" in login
         assert 'href="/logout"' not in login
-        assert 'name="domain"' not in login
+        # FR #6819 / FR-010: optional Domain field + one account field (FR #6749).
+        assert 'name="domain"' in login
         assert 'name="account"' in login or 'name="username"' in login
 
         hdr = _login(base)
