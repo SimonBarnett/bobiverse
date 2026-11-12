@@ -385,7 +385,7 @@ routes to bobiverse via the split rule.
 - When Get-BobOpencodeFuel changes, repin build-bob-ear.yml behavior_source_sha and CRLF manifest hashes; do not weaken the git-diff guard.
 - Worker skill DAG: put depends_on in YAML after description; job-fr must list job-irc and must not list job-uat.
 - Skill-dag MCP is stdio-only: resolve FR includes job-irc ancestors and skips unattached UAT; skip over-budget bodies; refuse paths outside --root; no list-all tool.
-- On Windows, Path(www / '/jeeves') is drive-root; skip absolute same-host hrefs in static link resolvers and pin /jeeves as a live route.
+- skill-dag resolve: fold YAML description: > into one line; seed from the first token of the job line; spend the byte budget on the job skill first and skip later ancestors.
 
 ## Harvest digest (lessons audit 2026-10-06)
 
