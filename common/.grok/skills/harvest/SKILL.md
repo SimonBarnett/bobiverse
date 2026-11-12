@@ -284,6 +284,7 @@ routes to bobiverse via the split rule.
 - enqueue_fix_ci must refuse cancelled-only rollups and shared-suite (test-and-synth) failures when main is also red --- bulk cancel / helper breakage must not flood per-tip FIX.
 - A merge-on-green 405 or DIRTY head must leave the retry list for that SHA and queue one conflict-fix job; do not keep the row pending or the sweep will PUT-merge forever.
 - A GIVEUP whose reason contains self-mrb does not increment giveup_count or stamp needs_human. The seat is added to author_seats so only that seat is blocked; a fresh seat is still offered the MRB.
+- Stray shop GIVEUP/NACK of a row already in done[] is already-done (no requeue, no ledger giveup, no idle); drop a stale accepted twin. Live GIVEUP of a different ACC row is unchanged.
 - When enqueue_from_done races !resync, fall back to done[] PASS + auto_merge tip as pass_sha for ci-wait; never re-offer that MRB to the same DONE nick.
 - bobiverse resync: an open fix(mrb-N) stays skipped only while parent N is in the open-PR set. When the parent is merged or closed, enqueue the fix as an ordinary MRB so author exclusion still applies. Mark the still-open-parent skip in skipped_open_pulls or a stray MRB row survives.
 - jeeves: when a FIX pull merges or closes, drop unaccepted FIX and finish accepted FIX (idle digest seat) so the seat is not stuck NAK busy; resync/purge_dead also prune FIX absent from open-pull set

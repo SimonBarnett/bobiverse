@@ -276,6 +276,9 @@ def format_shop_listen_info(result: dict, *, nick: str) -> str:
     if verb == "DONE" and status == "duplicate":
         # FR #5095: repeated DONE for an already-done row is a logged no-op.
         line = f"{line} note=duplicate-done-noop"
+    if verb in ("NACK", "GIVEUP") and status == "already-done":
+        # FR #6857: stray GIVEUP/NACK on a row already in done[] is a logged no-op.
+        line = f"{line} note=stray-giveup-done-noop"
     return line
 
 
@@ -398,6 +401,23 @@ def _find_accepted(doc: dict, repo: str, task: str, ident: str) -> int | None:
             and str(row.get("task") or "").upper() == task.upper()
             and str(row.get("id") or "") == ident
         ):
+            return i
+    return None
+
+
+def _find_done(doc: dict, repo: str, task: str, ident: str) -> int | None:
+    """Index of matching done[] row (FR #6857 stray GIVEUP/NACK)."""
+    want = str(ident or "").strip()
+    want_hash = want if want.startswith("#") else f"#{want}"
+    for i, row in enumerate(doc.get("done") or []):
+        if not isinstance(row, dict):
+            continue
+        if str(row.get("repo") or "") != repo:
+            continue
+        if str(row.get("task") or "").upper() != str(task or "").upper():
+            continue
+        got = str(row.get("id") or "").strip()
+        if got == want or got == want_hash or f"#{got.lstrip('#')}" == want_hash:
             return i
     return None
 
@@ -702,12 +722,26 @@ def return_job_to_unaccepted(
                 doc = gitclaim._load_queue_unlocked(home)
             except (OSError, ValueError):
                 return "error", None
+            di = _find_done(doc, repo, task, ident)
             ai = _find_accepted(doc, repo, task, ident)
             if ai is None:
                 for i, row in enumerate(doc.get("accepted") or []):
                     if str(row.get("repo")) == repo and str(row.get("id")) == ident:
                         ai = i
                         break
+            # FR #6857: a row already in done[] must not re-enter unaccepted.
+            # Drop a stale accepted twin (DONE race) without mutating PASS/FAIL.
+            if di is not None:
+                fin = dict(doc["done"][di])
+                if ai is not None:
+                    if expected_nick and str(doc["accepted"][ai].get("nick") or "").lower() != expected_nick.lower():
+                        return "already-done", fin
+                    doc["accepted"].pop(ai)
+                    try:
+                        gitclaim._write_queue(gitclaim.queue_path(home), doc)
+                    except OSError:
+                        return "error", None
+                return "already-done", fin
             if ai is None:
                 return "missing", None
             if expected_nick and str(doc["accepted"][ai].get("nick") or "").lower() != expected_nick.lower():
@@ -951,6 +985,10 @@ def handle_shop_worker_line(
         out["status"] = st
         out["job"] = job
         out["reason"] = reason
+        # FR #6857: stray GIVEUP/NACK on done[] must not ledger-giveup, wake Bob,
+        # or idle the seat (it may still hold another accepted job).
+        if st == "already-done":
+            return out
         try:  # t852u: remember who gave this up, forever (resync drops row stamps)
             gitclaim.ledger_note_event(home, nick, parsed.verb, parsed.task, parsed.repo, parsed.id, job if isinstance(job, dict) else None)
         except Exception:  # noqa: BLE001

@@ -111,7 +111,7 @@ NACK <TYPE> <owner/repo>#<N>
 GIVEUP <TYPE> <owner/repo>#<N>
 ```
 
-Same grammar, same effect: Jeeves returns the row to the unaccepted queue and marks you idle. Convention: `NACK` = you decline **before** doing any work (wrong repo,
+Same grammar, same effect: Jeeves returns the row to the unaccepted queue and marks you idle. **FR #6857:** a GIVEUP/NACK for a job already in `done[]` is ignored (`already-done`); it does not reopen PASS/FAIL. Emit GIVEUP only for the ACKed id you are handing back. Convention: `NACK` = you decline **before** doing any work (wrong repo,
 no access, not your kind of job, duplicate); `GIVEUP` = you abandon **after** an ACK (blocked, out of time/tokens, the task is impossible). Put the reason on a separate line or a GitHub comment, then harvest it
 (CAST IRON rule: file it). Never go silent on an ACKed job - a seat that ends is returned to the queue by Jeeves on QUIT, but a NACK/GIVEUP is faster and tells the next worker why.
 

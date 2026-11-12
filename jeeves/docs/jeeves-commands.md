@@ -38,6 +38,7 @@ Every reply is also appended to `<chair home>/cmd-trace.log` (bounded to ~256 KB
 | shop wire: `!bored`, `ACK`, `DONE`, `NACK`/`GIVEUP` | assign line / quiet | unchanged (`gitclaim`, `shop_listen`). A repeat `!bored` keeps the seat's place in the idle-offer line; see `empty-offer-playbook.md` (FR #6360) |
 
 * **GIVEUP `out-of-fuel` (FR #4181):** after a successful shop `GIVEUP … out-of-fuel`, the chair notes the nick in `seat-out-of-fuel.json` and **skips** FR #2811 `giveup-offer` (log `giveup-offer skipped … reason=out-of-fuel`). `offer_after_release` / `offer_focus_top` / `bored_gate` also refuse while marked. A fresh `!bored` clears the mark (worker only bores after fuel returns per bob-worker FR #3012) then offers normally. Other GIVEUP reasons keep giveup-offer.
+* **Stray GIVEUP on done[] (FR #6857):** `GIVEUP`/`NACK` for a row already in `done[]` is `status=already-done` (log `note=stray-giveup-done-noop`). The chair does not re-queue, unset PASS/FAIL, stamp ledger giveup, wake Bob, or idle the seat. A stale accepted twin of that done row is dropped. A live GIVEUP of a different still-accepted job is unchanged.
 
 ## Queue hygiene (FR #180 / #258 / #595)
 
