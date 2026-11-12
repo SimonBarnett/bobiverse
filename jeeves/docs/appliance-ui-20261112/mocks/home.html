@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<title>Jeeves settings</title>
+<style>
+  :root { color-scheme: light; }
+  body { margin: 0; font-family: "Segoe UI", system-ui, sans-serif; background: #f3f0e8; color: #1c2430; }
+  header { display: flex; align-items: center; gap: 1rem; padding: .8rem 1.4rem; background: #1c2430; color: #fff; }
+  header img { height: 36px; width: 36px; }
+  header strong { font-size: 1.15rem; letter-spacing: .02em; }
+  nav { margin-left: auto; display: flex; gap: 1rem; }
+  nav a { color: #f3f0e8; text-decoration: none; }
+  nav a[aria-current="page"] { border-bottom: 2px solid #e26a2c; }
+  main { max-width: 52rem; margin: 1.4rem auto; padding: 0 1rem 2rem; }
+  section { background: #fff; border: 1px solid #e2dcd0; border-radius: 10px; padding: 1rem 1.1rem; margin-bottom: 1rem; }
+  h2 { margin: 0 0 .25rem; font-size: 1.05rem; }
+  .desc { margin: 0 0 .8rem; color: #4d463c; }
+  .row { display: grid; grid-template-columns: 16rem 1fr auto; gap: .6rem; align-items: center; padding: .35rem 0; }
+  code { font-size: .85rem; }
+  .def { color: #5c564c; font-size: .85rem; }
+  input[type="text"], input[type="password"] { width: 100%; padding: .35rem .45rem; border: 1px solid #c9c2b4; border-radius: 4px; }
+  button { margin-top: .4rem; background: #1c2430; color: #fff; border: 0; border-radius: 6px; padding: .5rem .9rem; }
+</style>
+</head>
+<body>
+<header>
+  <img src="ntsa-gut-logo.png" alt="NTSA"/>
+  <strong>Jeeves</strong>
+  <nav>
+    <a href="home.html" aria-current="page">Settings</a>
+    <a href="queue.html">Queue</a>
+    <a href="status.html">Status</a>
+    <a href="login.html">Log out</a>
+  </nav>
+</header>
+<main>
+  <section>
+    <h2>Fuel and review waits</h2>
+    <p class="desc">Which review fuels run, and how long CodeRabbit is given</p>
+    <div class="row">
+      <code>BOB_FUEL_CODERABBIT</code>
+      <label><input type="checkbox" name="BOB_FUEL_CODERABBIT"/> On</label>
+      <span class="def">Default: 0</span>
+    </div>
+    <div class="row">
+      <code>BOB_CODERABBIT_WAIT_MIN</code>
+      <input type="text" value="12"/>
+      <span class="def">Default: 12</span>
+    </div>
+  </section>
+  <section>
+    <h2>Digest</h2>
+    <p class="desc">Where the digest lives and when it counts as stale</p>
+    <div class="row">
+      <code>BOB_DIGEST_STALE_S</code>
+      <input type="text" value="900"/>
+      <span class="def">Default: 900</span>
+    </div>
+  </section>
+  <section>
+    <h2>IRC timing</h2>
+    <p class="desc">Bored idle and IRC reconnect timing. Passwords are under Secrets</p>
+    <div class="row">
+      <code>BOB_BORED_IDLE_S</code>
+      <input type="text" value="120"/>
+      <span class="def">Default: 120</span>
+    </div>
+  </section>
+  <section>
+    <h2>Chair home</h2>
+    <p class="desc">Overrides for the chair home directory</p>
+    <div class="row">
+      <code>JEEVES_HOME</code>
+      <input type="text" value=""/>
+      <span class="def">Default: (empty)</span>
+    </div>
+  </section>
+  <section>
+    <h2>Wake and ticket closure</h2>
+    <p class="desc">How Jeeves wakes Bob when work closes or stalls</p>
+    <div class="row">
+      <code>JEEVES_TICKET_CLOSURE_WAKE</code>
+      <label><input type="checkbox" name="JEEVES_TICKET_CLOSURE_WAKE"/> On</label>
+      <span class="def">Default: 0</span>
+    </div>
+  </section>
+  <section>
+    <h2>Webhook probes</h2>
+    <p class="desc">Bases the chair uses to probe local and public webhooks</p>
+    <div class="row">
+      <code>JEEVES_PROBE_LOCAL</code>
+      <input type="text" value=""/>
+      <span class="def">Default: (empty)</span>
+    </div>
+  </section>
+  <section>
+    <h2>Resync</h2>
+    <p class="desc">Which repos the chair resyncs</p>
+    <div class="row">
+      <code>JEEVES_RESYNC_REPOS</code>
+      <input type="text" value=""/>
+      <span class="def">Default: (empty)</span>
+    </div>
+  </section>
+  <section>
+    <h2>Secrets</h2>
+    <p class="desc">Write-only. The page shows set or unset, never the value</p>
+    <div class="row">
+      <code>GH_TOKEN</code>
+      <input type="password" placeholder="set" autocomplete="off"/>
+      <span class="def">Default: (hidden)</span>
+    </div>
+  </section>
+  <button type="button">Save changed fields</button>
+</main>
+</body>
+</html>

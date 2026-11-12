@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<title>Jeeves sign in</title>
+<style>
+  body { margin: 0; min-height: 100vh; display: grid; place-items: center; font-family: "Segoe UI", system-ui, sans-serif; background: #1c2430; color: #1c2430; }
+  form { width: 22rem; background: #fff; border-radius: 12px; padding: 1.6rem 1.5rem 1.4rem; box-shadow: 0 12px 40px rgba(0,0,0,.28); }
+  img { height: 48px; width: 48px; display: block; margin: 0 auto .6rem; }
+  h1 { text-align: center; font-size: 1.25rem; margin: 0 0 .3rem; }
+  .sub { text-align: center; color: #5c564c; margin: 0 0 1rem; font-size: .92rem; }
+  .err { background: #fde8e4; color: #8a2418; border-radius: 6px; padding: .55rem .7rem; margin: 0 0 .8rem; }
+  label { display: block; font-size: .85rem; margin: .7rem 0 .2rem; }
+  input { width: 100%; box-sizing: border-box; padding: .5rem .55rem; border: 1px solid #c9c2b4; border-radius: 4px; }
+  button { width: 100%; margin-top: 1rem; background: #1c2430; color: #fff; border: 0; border-radius: 6px; padding: .55rem; }
+</style>
+</head>
+<body>
+<form>
+  <img src="ntsa-gut-logo.png" alt="NTSA"/>
+  <h1>Jeeves</h1>
+  <p class="sub">Sign in with your Windows account</p>
+  <p class="err">That account or password was not accepted.</p>
+  <label for="user">User name</label>
+  <input id="user" name="username" autocomplete="username" placeholder="DOMAIN\user or user@domain" value=""/>
+  <label for="pw">Password</label>
+  <input id="pw" name="password" type="password" autocomplete="current-password" value=""/>
+  <button type="submit">Sign in</button>
+</form>
+</body>
+</html>

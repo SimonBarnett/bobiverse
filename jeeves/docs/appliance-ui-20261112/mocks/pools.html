@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<title>Jeeves pools</title>
+<style>
+  body { margin: 0; font-family: "Segoe UI", system-ui, sans-serif; background: #f3f0e8; color: #1c2430; }
+  header { display: flex; align-items: center; gap: 1rem; padding: .8rem 1.4rem; background: #1c2430; color: #fff; }
+  header img { height: 36px; width: 36px; }
+  nav { margin-left: auto; display: flex; gap: 1rem; }
+  nav a { color: #f3f0e8; text-decoration: none; }
+  nav a[aria-current="page"] { border-bottom: 2px solid #e26a2c; }
+  main { max-width: 40rem; margin: 1.4rem auto; padding: 0 1rem 2rem; }
+  section { background: #fff; border: 1px solid #e2dcd0; border-radius: 10px; padding: 1rem 1.1rem; margin-bottom: 1rem; }
+  h1 { font-size: 1.3rem; }
+  .over { color: #8a2418; font-weight: 600; }
+  ul { list-style: none; margin: 0; padding: 0; }
+  li { padding: .45rem 0; border-top: 1px solid #eee; }
+  .bar { height: 8px; background: #e7e1d6; border-radius: 4px; margin-top: .3rem; }
+  .bar span { display: block; height: 8px; background: #2f6f4e; border-radius: 4px; }
+  .muted { color: #5c564c; }
+  .alert { color: #8a2418; }
+</style>
+</head>
+<body>
+<header>
+  <img src="ntsa-gut-logo.png" alt="NTSA"/>
+  <strong>Jeeves</strong>
+  <nav>
+    <a href="home.html">Settings</a>
+    <a href="queue.html">Queue</a>
+    <a href="pools.html" aria-current="page">Pools</a>
+    <a href="status.html">Status</a>
+    <a href="login.html">Log out</a>
+  </nav>
+</header>
+<main>
+  <h1>Pools</h1>
+  <section>
+    <p class="over">overspend £1.50</p>
+    <p>Copilot - 37% left</p>
+    <ul>
+      <li>
+        WALRUS (42%)
+        <div class="bar"><span style="width:42%"></span></div>
+      </li>
+      <li>MARCHHARE [stale] <span class="muted">percent hidden</span></li>
+      <li>FLAMINGO <span class="muted">n/a</span></li>
+      <li>IONOS (0%) <span class="alert">out of tokens</span></li>
+    </ul>
+  </section>
+</main>
+</body>
+</html>
