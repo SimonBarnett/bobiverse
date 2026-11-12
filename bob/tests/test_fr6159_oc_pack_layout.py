@@ -499,6 +499,38 @@ def test_fr6737_fixture_fuel_ok_when_stdin_would_have_utf8_bom(tmp_path: Path):
     _assert_fuel_ok(parsed)
 
 
+def test_fr6745_stats_child_imports_via_sys_path_not_only_pythonpath():
+    """Release-blocker: isolated ProcessStartInfo env can drop PYTHONPATH.
+
+    The stats child must insert the helper dir on sys.path so import
+    opencode_fuel still works when the child env is sparse.
+    """
+    src = OPENCODE_FUEL_PS1.read_text(encoding="utf-8-sig")
+    assert "sys.path.insert" in src
+    assert "GetEnvironmentVariables" in src
+
+
+@pytest.mark.skipif(sys.platform != "win32" or not shutil.which("powershell"), reason="Windows PowerShell")
+@pytest.mark.skipif(not shutil.which("python"), reason="python.exe required")
+def test_fr6745_flat_helper_ok_without_inherited_pythonpath(tmp_path: Path):
+    """Fixture fuel stays ok when the parent env has no PYTHONPATH (build runner)."""
+    install = tmp_path / "bob"
+    tools = install / "tools"
+    scripts = install / "scripts"
+    elsewhere = tmp_path / "elsewhere"
+    tools.mkdir(parents=True)
+    scripts.mkdir(parents=True)
+    elsewhere.mkdir(parents=True)
+    shutil.copy(OPENCODE_FUEL_PS1, tools / "Get-BobOpencodeFuel.ps1")
+    shutil.copy(OPENCODE_FUEL_PY, scripts / "opencode_fuel.py")
+    env = _opencode_fuel_fixture_env()
+    env.pop("PYTHONPATH", None)
+    parsed = _run_opencode_fuel_ps(
+        tools / "Get-BobOpencodeFuel.ps1", env=env, cwd=elsewhere
+    )
+    _assert_fuel_ok(parsed)
+
+
 def test_fr6159_worker_source_has_flat_resolver_and_install_root_kw():
     src = WORKER.read_text(encoding="utf-8")
     assert 'root / "scripts" / "opencode_fuel.py"' in src
