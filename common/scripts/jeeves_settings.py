@@ -261,6 +261,23 @@ def is_rfc1918(ip: str) -> bool:
     return any(addr in net for net in _LAN_NETS)
 
 
+def is_loopback(ip: str) -> bool:
+    try:
+        return ipaddress.ip_address(str(ip or "").strip()).is_loopback
+    except ValueError:
+        return False
+
+
+def effective_client_ip(peer: str, x_forwarded_for: str | None = None) -> str:
+    """LAN identity: trust X-Forwarded-For only when the TCP peer is loopback (FR #6757)."""
+    peer_s = str(peer or "").strip()
+    if is_loopback(peer_s):
+        first = str(x_forwarded_for or "").split(",")[0].strip()
+        if first:
+            return first
+    return peer_s
+
+
 def reject_non_lan(client_ip: str) -> str | None:
     """Return an error string when *client_ip* is not LAN/loopback."""
     if is_rfc1918(client_ip):
