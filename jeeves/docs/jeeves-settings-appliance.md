@@ -1,21 +1,16 @@
 # Jeeves appliance settings (FR #6436 foundation + FR #6440 LAN HTTP + FR #6441 auth)
 
-Internal-only settings surface for the Ergo chair host. **Never** publish this
-on Cloudflare or public DNS. Do **not** front it via `bob.ntsa.uk` or
-`irc.ntsa.uk`.
-
-Operator URL: **https://jeeves.ntsa.uk/** (FR #6757 / FR #6758). The name is
-internal DNS only. TLS uses an operator-supplied certificate (store thumbprint
-on the chair host). Do **not** request a public ACME certificate. Do **not** create public DNS for this name.
+Chair settings surface for the Ergo host. Operator URL:
+**https://bob.ntsa.uk/jeeves** (FR #6821 / FR-012). Open that login on the
+existing bob.ntsa.uk front. **Never** publish the UI on Cloudflare. Do **not**
+front the UI via `irc.ntsa.uk`. Do not reopen FR #6757 or #6758.
 
 ## How to reach it
 
-1. On the internal DNS (LAN AD / router), create **A** record:
-   - `jeeves.ntsa.uk` -> walrus (chair host) LAN IPv4
-2. Do **not** create a public DNS or Cloudflare record for `jeeves.ntsa.uk`.
-3. Browser / API clients must use a source IP in RFC1918 (`10/8`, `172.16/12`,
-   `192.168/16`) or loopback. The server rejects other sources even if DNS is
-   wrong.
+1. Open **https://bob.ntsa.uk/jeeves** in the browser (FR #6821).
+2. Do **not** tell operators to browse `jeeves.ntsa.uk` (FR #6758 used that internal DNS name; this slice replaces it).
+3. Browser / API clients for settings and status after login still use a source IP in RFC1918 (`10/8`, `172.16/12`,
+   `192.168/16`) or loopback except the public login GET.
 4. Foundation modules: `common/scripts/jeeves_settings.py` (schema, LAN gate,
    secret-safe GET/PUT, backup/audit/rollback) and
    `common/scripts/jeeves_settings_auth.py` (AD/CredMan + sessions).
@@ -56,7 +51,7 @@ Off by default. On the chair host (walrus), set NSSM / process env and restart `
 | `JEEVES_SETTINGS_HTTP_PORT` | Backend TCP port (default **7701**; operators do not browse this port) |
 | `JEEVES_SETTINGS_FRONTDOOR=1` | FR #6757: force bind `127.0.0.1` behind the IIS TLS front door |
 
-Browse **https://jeeves.ntsa.uk/** from a LAN client (FR #6757 / FR #6758). Internal DNS only. Do not publish public DNS or Cloudflare. Do not browse `:7701`. The settings process listens on loopback `:7701` when the front door is enabled; login HTML does not mention that port. Install the front door with `jeeves/scripts/Install-JeevesApplianceFrontDoor.ps1 -Thumbprint <existing cert>` (operator-supplied store thumbprint; no public ACME). HTTP port 80 for that name redirects to HTTPS. The Python LAN check trusts `X-Forwarded-For` only from a loopback TCP peer.
+Browse **https://bob.ntsa.uk/jeeves** (FR #6821). Do not browse `jeeves.ntsa.uk`. Do not browse `:7701`. The settings process listens on loopback `:7701` when `JEEVES_SETTINGS_FRONTDOOR=1` (FR #6757); login HTML does not mention that port. Install the loopback front door with `jeeves/scripts/Install-JeevesApplianceFrontDoor.ps1 -Thumbprint <existing cert>` (operator-supplied certificate store thumbprint; no public ACME). The Python LAN check trusts `X-Forwarded-For` only from a loopback TCP peer.
 JSON: `GET /api/settings`, `PUT /api/settings/<KEY>`, `POST /api/rollback`, `GET /api/schema`,
 `GET /api/status`, `GET /api/queue` (FR #6754), `GET /api/pools` (FR #6759), `POST /api/restart-when-idle`.
 HTML: `GET /` settings, `GET /status`, `GET /queue` (FR #6755 waiting / in-progress lists).
@@ -68,7 +63,7 @@ The Value control keeps the current value; the default is shown beside it and is
 
 Socket-layer gate: the server binds only to LAN/loopback and `verify_request` drops non-RFC1918 peers before handlers run. Helpers also reject non-LAN `client_ip`.
 
-**Never** put this behind Cloudflare, `bob.ntsa.uk`, or `irc.ntsa.uk`. Auth helpers are FR #6441; HTTP cookie/Bearer session wire is FR #6451; NSSM apply is FR #6442; restart-when-idle / status is FR #6443; show defaults is FR #6751.
+**Never** put this behind Cloudflare or `irc.ntsa.uk`. Login is **https://bob.ntsa.uk/jeeves**. Auth helpers are FR #6441; HTTP cookie/Bearer session wire is FR #6451; NSSM apply is FR #6442; restart-when-idle / status is FR #6443; show defaults is FR #6751.
 
 Module: `common/scripts/jeeves_settings_http.py` (started from `ChairJobs` via `maybe_start_from_chair`).
 
