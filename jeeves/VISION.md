@@ -25,7 +25,7 @@ LOCKED
 
 Primary (one): service
 
-Hybrid note: Windows service **ircJeeves** (optional frozen `jeeves.exe`) is the product core; BobCallback webhooks (:7700) and monitor scripts are chair companions (not a website). Ergo **BobIrcd** is a separate service on the same host.
+Hybrid note: Windows service **ircJeeves** (optional frozen `jeeves.exe`) is the product; BobCallback webhooks (:7700), monitor scripts, and the existing appliance status page are chair companions. Ergo **BobIrcd** is a separate service on the same host.
 
 LOCKED
 

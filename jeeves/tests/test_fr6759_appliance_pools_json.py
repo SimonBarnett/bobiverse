@@ -25,6 +25,7 @@ def _login_json() -> bytes:
     return json.dumps({"username": "ApplianceAdmin", key: "FAKE_ok"}).encode("utf-8")
 
 
+
 def _free_port() -> int:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.bind(("127.0.0.1", 0))

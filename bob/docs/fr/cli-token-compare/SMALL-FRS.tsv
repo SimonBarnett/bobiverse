@@ -4,3 +4,10 @@ FR-002	6782	Cursor CLI stamps measured tokens or tokens=unknown
 FR-003	6783	job cost ledger rolls up tokens by model
 FR-004	6784	Jeeves appliance status shows a token comparison graph
 FR-005	6785	jeeves VISION names the appliance status companion
+FR-006	6798	closed bundle: bob.ntsa.uk/jeeves login
+FR-007	6815	GET /jeeves returns the appliance login page
+FR-008	6816	Jeeves login page shows the existing butler graphic
+FR-009	6818	Bob home page links to /jeeves
+FR-010	6819	Jeeves login form uses the existing session login
+FR-011	6820	Jeeves settings and status stay behind the session cookie
+FR-012	6821	Appliance doc states bob.ntsa.uk/jeeves

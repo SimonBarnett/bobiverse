@@ -1,5 +1,7 @@
 """FR #6440 / #6451: LAN-bound HTTP listener + schema UI with session auth.
 
+FR #6760: ``/pools`` + ``/api/pools`` machine Grok rows.
+
 Off by default. Enable with ``JEEVES_SETTINGS_HTTP=1`` (or ``JEEVES_SETTINGS_UI=1``).
 Binds only to RFC1918 / loopback. Rejects non-LAN peers in ``verify_request``
 (socket layer). Settings/status mutating routes require FR #6441 sessions
@@ -29,8 +31,10 @@ ENV_PORT = "JEEVES_SETTINGS_HTTP_PORT"
 ENV_FRONTDOOR = "JEEVES_SETTINGS_FRONTDOOR"
 SESSION_COOKIE_NAME = "jeeves_appliance_session"
 LOGO_HREF = "/assets/ntsa-gut-logo.png"
+BUTLER_HREF = "/assets/jeeves-butler.ico"
 _SCRIPTS_DIR = Path(__file__).resolve().parent
 _REPO_ROOT = _SCRIPTS_DIR.parent.parent
+_BUTLER_ICO = _REPO_ROOT / "jeeves" / "assets" / "jeeves-butler.ico"
 _TRAY_LOGO = _REPO_ROOT / "bob" / "tray" / "assets" / "ntsa-gut-logo.png"
 _PACK_LOGO = (
     _REPO_ROOT
@@ -40,6 +44,151 @@ _PACK_LOGO = (
     / "mocks"
     / "ntsa-gut-logo.png"
 )
+
+
+def load_status_token_graph(digest_home: Path | None) -> dict[str, Any]:
+    """FR #6784: read-only token graph from job-cost-ledger.json (never writes).
+
+    Prefer ``summary.by_model`` from FR-003 when present; else roll up rows.
+    Missing file or no measured rows -> empty. Unreadable JSON -> error.
+    """
+    empty = {"state": "empty", "by_model": [], "unknown_jobs": 0}
+    err = {"state": "error", "by_model": [], "unknown_jobs": 0}
+    if digest_home is None:
+        return empty
+    path = Path(digest_home) / "job-cost-ledger.json"
+    if not path.is_file():
+        return empty
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return err
+    if not isinstance(data, dict) and not isinstance(data, list):
+        return err
+    rows: list[dict[str, Any]] = []
+    summary: dict[str, Any] = {}
+    if isinstance(data, dict):
+        summary = data.get("summary") if isinstance(data.get("summary"), dict) else {}
+        raw_rows = data.get("rows")
+        if isinstance(raw_rows, list):
+            rows = [r for r in raw_rows if isinstance(r, dict)]
+    else:
+        rows = [r for r in data if isinstance(r, dict)]
+    buckets: list[dict[str, Any]] = []
+    unknown = 0
+    canned = summary.get("by_model") if isinstance(summary, dict) else None
+    if isinstance(canned, list) and canned:
+        for item in canned:
+            if not isinstance(item, dict):
+                continue
+            model = str(item.get("model") or "").strip()
+            if not model:
+                continue
+            buckets.append(
+                {
+                    "model": model,
+                    "measured_jobs": int(item.get("measured_jobs") or 0),
+                    "tokens_in": int(item.get("tokens_in") or 0),
+                    "tokens_out": int(item.get("tokens_out") or 0),
+                    "tokens_cached": int(item.get("tokens_cached") or 0),
+                }
+            )
+        try:
+            unknown = int(summary.get("unknown_jobs") or 0)
+        except (TypeError, ValueError):
+            unknown = 0
+    else:
+        by: dict[str, dict[str, Any]] = {}
+        for row in rows:
+            if row.get("tokens_unknown"):
+                unknown += 1
+                continue
+            model = str(row.get("model") or "").strip()
+            if not model:
+                continue
+            b = by.setdefault(
+                model,
+                {
+                    "model": model,
+                    "measured_jobs": 0,
+                    "tokens_in": 0,
+                    "tokens_out": 0,
+                    "tokens_cached": 0,
+                },
+            )
+            b["measured_jobs"] += 1
+            for key in ("tokens_in", "tokens_out", "tokens_cached"):
+                try:
+                    b[key] += int(row.get(key) or 0)
+                except (TypeError, ValueError):
+                    continue
+        buckets = list(by.values())
+    if not buckets:
+        return {"state": "empty", "by_model": [], "unknown_jobs": unknown}
+    return {"state": "home", "by_model": buckets, "unknown_jobs": unknown}
+
+
+def _render_token_graph_html(graph: dict[str, Any] | None) -> str:
+    g = dict(graph or {})
+    state = str(g.get("state") or "empty")
+    if state == "error":
+        return (
+            '<div class="err" role="alert">'
+            "<p><strong>The token graph cannot be drawn.</strong></p>"
+            "<p>The job cost ledger could not be read. No series is invented.</p>"
+            "</div>"
+        )
+    if state != "home":
+        return (
+            '<div class="empty">'
+            "<p><strong>Nothing to compare yet.</strong></p>"
+            "<p>No measured token rows are in the ledger. This page does not draw a zero series.</p>"
+            "</div>"
+        )
+    buckets = [b for b in (g.get("by_model") or []) if isinstance(b, dict)]
+    if not buckets:
+        return (
+            '<div class="empty">'
+            "<p><strong>Nothing to compare yet.</strong></p>"
+            "<p>No measured token rows are in the ledger. This page does not draw a zero series.</p>"
+            "</div>"
+        )
+    totals = []
+    for b in buckets:
+        tot = int(b.get("tokens_in") or 0) + int(b.get("tokens_out") or 0)
+        totals.append(max(tot, 1))
+    max_t = max(totals) if totals else 1
+    fills = ("#2a6", "#36a", "#a63", "#6a3")
+    parts = [
+        '<p class="meta">Token comparison by model. Unknown jobs are counted beside the chart and are not drawn as zero.</p>',
+        '<svg width="420" height="'
+        + str(20 + 60 * len(buckets))
+        + '" role="img" aria-label="Token totals by model">',
+        "<title>Measured tokens by model</title>",
+    ]
+    y = 28
+    for i, b in enumerate(buckets):
+        model = html.escape(str(b.get("model") or ""))
+        tin = int(b.get("tokens_in") or 0)
+        tout = int(b.get("tokens_out") or 0)
+        tc = int(b.get("tokens_cached") or 0)
+        w = int(280 * (tin + tout) / max_t) if max_t else 1
+        if w < 1:
+            w = 1
+        fill = fills[i % len(fills)]
+        parts.append(
+            f'<text x="16" y="{y}">{model} - in {tin} / out {tout} / cached {tc}</text>'
+        )
+        parts.append(
+            f'<rect class="bar" x="16" y="{y + 8}" width="{w}" height="28" fill="{fill}"></rect>'
+        )
+        y += 60
+    parts.append("</svg>")
+    unk = int(g.get("unknown_jobs") or 0)
+    parts.append(
+        f'<p class="note">unknown_jobs: {unk} (not added into the bars)</p>'
+    )
+    return "\n".join(parts)
 
 
 def ntsa_gut_logo_path() -> Path:
@@ -204,38 +353,67 @@ def collect_save_puts(controls: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return puts
 
 
+def _render_setting_row(s: dict[str, Any]) -> str:
+    key = s.get("key") or ""
+    typ = s.get("type") or "str"
+    src = s.get("source") or ""
+    restart = " yes" if s.get("restart") else ""
+    desc = (s.get("description") or "").replace("<", "&lt;")
+    secret = bool(s.get("secret"))
+    # FR #6751 / FR-03: show schema default next to the control. Secrets
+    # always render an empty default (never invent or echo a secret).
+    raw_default = "" if secret else str(s.get("default") or "")
+    safe_default_attr = (
+        raw_default.replace("&", "&amp;")
+        .replace('"', "&quot;")
+        .replace("<", "&lt;")
+    )
+    default_text = (
+        raw_default.replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+    )
+    default_cell = (
+        f'<td class="setting-default" data-default="{safe_default_attr}">'
+        f"{default_text}</td>"
+    )
+    inp = render_setting_input(s)
+    return (
+        f"<tr><td><code>{key}</code></td><td>{typ}</td><td>{inp}</td>"
+        f"{default_cell}<td>{src}</td><td>{restart}</td><td>{desc}</td></tr>"
+    )
+
+
 def _render_html(settings: list[dict[str, Any]]) -> str:
-    rows = []
+    by_group: dict[str, list[dict[str, Any]]] = {}
+    extra: list[str] = []
     for s in settings:
-        key = s.get("key") or ""
-        typ = s.get("type") or "str"
-        src = s.get("source") or ""
-        restart = " yes" if s.get("restart") else ""
-        desc = (s.get("description") or "").replace("<", "&lt;")
-        secret = bool(s.get("secret"))
-        # FR #6751 / FR-03: show schema default next to the control. Secrets
-        # always render an empty default (never invent or echo a secret).
-        raw_default = "" if secret else str(s.get("default") or "")
-        safe_default_attr = (
-            raw_default.replace("&", "&amp;")
-            .replace('"', "&quot;")
-            .replace("<", "&lt;")
+        gid = str(s.get("group") or "")
+        if gid not in by_group:
+            extra.append(gid)
+            by_group[gid] = []
+        by_group[gid].append(s)
+    preferred = [g.id for g in js.SETTING_GROUPS]
+    order = [g for g in preferred if g in by_group] + [
+        g for g in extra if g not in preferred
+    ]
+    sections = []
+    thead = (
+        "<thead><tr><th>Key</th><th>Type</th><th>Value</th><th>Default</th>"
+        "<th>Source</th><th>Restart</th><th>Description</th></tr></thead>"
+    )
+    for gid in order:
+        items = by_group[gid]
+        title = str(items[0].get("group_title") or gid or "Settings")
+        gdesc = str(items[0].get("group_description") or "")
+        rows = "\n".join(_render_setting_row(s) for s in items)
+        sections.append(
+            f'<section data-group="{_opt_esc(gid)}">'
+            f"<h2>{_opt_esc(title)}</h2>"
+            f'<p class="group-desc">{_opt_esc(gdesc)}</p>'
+            f"<table>{thead}<tbody>\n{rows}\n</tbody></table></section>"
         )
-        default_text = (
-            raw_default.replace("&", "&amp;")
-            .replace("<", "&lt;")
-            .replace(">", "&gt;")
-        )
-        default_cell = (
-            f'<td class="setting-default" data-default="{safe_default_attr}">'
-            f"{default_text}</td>"
-        )
-        inp = render_setting_input(s)
-        rows.append(
-            f"<tr><td><code>{key}</code></td><td>{typ}</td><td>{inp}</td>"
-            f"{default_cell}<td>{src}</td><td>{restart}</td><td>{desc}</td></tr>"
-        )
-    body = "\n".join(rows)
+    body = "\n".join(sections)
     header = _shell_header(current="settings", include_nav=True)
     return f"""<!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8"/>
@@ -243,12 +421,13 @@ def _render_html(settings: list[dict[str, Any]]) -> str:
 <style>
 body{{font-family:system-ui,sans-serif;margin:1.5rem;}}
 {_shell_css()}
+section{{margin-bottom:1.5rem;}}
 table{{border-collapse:collapse;width:100%;}}
 th,td{{border:1px solid #ccc;padding:.4rem;text-align:left;vertical-align:top;}}
 th{{background:#f4f4f4;}}
 code{{font-size:.9em;}}
 .setting-default{{color:#555;font-family:ui-monospace,monospace;font-size:.9em;}}
-.note{{color:#444;margin-bottom:1rem;}}
+.note,.group-desc{{color:#444;margin-bottom:1rem;}}
 button{{margin-top:1rem;padding:.4rem .8rem;}}
 </style></head><body>
 {header}
@@ -256,11 +435,7 @@ button{{margin-top:1rem;padding:.4rem .8rem;}}
 <p class="note">LAN-only (FR #6440 / #6451). Secrets are write-only (set/unset).
 Session cookie required. Never expose via bob.ntsa.uk.
 Defaults (FR #6751) are shown for non-secret keys; the Value control keeps the current value.</p>
-<table>
-<thead><tr><th>Key</th><th>Type</th><th>Value</th><th>Default</th><th>Source</th><th>Restart</th><th>Description</th></tr></thead>
-<tbody>
 {body}
-</tbody></table>
 <p><button type="button" id="save">Save changed fields</button>
 <span id="status"></span></p>
 <script>
@@ -310,10 +485,12 @@ button{{margin-top:1rem;padding:.4rem .8rem;}}
 </style></head><body>
 {header}
 <h1>Jeeves settings login</h1>
-<p class="note">LAN-only AD/Windows or CredMan (FR #6441 / #6451). Passwords are never logged.</p>
+<img src="{BUTLER_HREF}" alt="Jeeves the butler" width="96" height="96"/>
+<p class="note">Existing graphic jeeves/assets/jeeves-butler.ico (FR #6816). Passwords are never logged.</p>
 {note}
 <form id="f">
 <label>User name<input name="account" autocomplete="username" required placeholder="DOMAIN\\user or user@domain"/></label>
+<label>Domain (optional)<input name="domain" autocomplete="organization"/></label>
 <label>Password<input name="password" type="password" autocomplete="current-password" required/></label>
 <button type="submit">Sign in</button>
 <span id="status"></span>
@@ -329,7 +506,8 @@ document.getElementById('f').onsubmit = async (ev) => {{
     credentials: 'same-origin',
     headers: {{'Content-Type': 'application/json'}},
     body: JSON.stringify({{
-      username: fd.get('account') || '',
+      username: fd.get('account') || fd.get('username') || '',
+      domain: fd.get('domain') || '',
       password: fd.get('password') || ''
     }})
   }});
@@ -343,6 +521,7 @@ document.getElementById('f').onsubmit = async (ev) => {{
 
 
 def _queue_row_public(row: Any) -> dict[str, Any]:
+    """Whitelist queue fields for the HTML page (FR #6755; same as FR #6754 JSON)."""
     if not isinstance(row, dict):
         return {}
     out: dict[str, Any] = {}
@@ -391,6 +570,36 @@ def _render_queue_list(rows: list[dict[str, Any]], empty_copy: str) -> str:
     return "<ul>" + "".join(items) + "</ul>"
 
 
+def format_overspend_line(overage_gbp: Any) -> str:
+    """Tray overspend copy: present only when GBP is greater than 0 (FR #6762)."""
+    if overage_gbp is None or overage_gbp is False:
+        return ""
+    if isinstance(overage_gbp, str) and overage_gbp.strip() == "":
+        return ""
+    try:
+        value = float(overage_gbp)
+    except (TypeError, ValueError):
+        return ""
+    if value <= 0:
+        return ""
+    return f"overspend \u00a3{value:.2f}"
+
+
+def _load_overage_gbp(digest_home: Path | None) -> Any:
+    if digest_home is None:
+        return None
+    path = Path(digest_home) / "digest.json"
+    try:
+        if not path.is_file():
+            return None
+        parsed = json.loads(path.read_text(encoding="utf-8-sig"))
+        if isinstance(parsed, dict):
+            return parsed.get("overage_gbp")
+    except Exception:
+        return None
+    return None
+
+
 def _render_queue_html(
     unaccepted: list[dict[str, Any]], accepted: list[dict[str, Any]]
 ) -> str:
@@ -405,6 +614,7 @@ body{{font-family:system-ui,sans-serif;margin:1.5rem;}}
 {_shell_css()}
 section{{margin-bottom:1.2rem;}}
 .empty{{color:#444;}}
+ul{{padding-left:1.2rem;}}
 </style></head><body>
 {header}
 <h1>Queue</h1>
@@ -465,77 +675,89 @@ def format_copilot_pool_line(pool: Any) -> str:
     return " ".join(bits)
 
 
-def _format_machine_pool_row(row: dict[str, Any]) -> str:
-    """One machine row for GET /pools (FR-12 shape; FR-13 sits under these)."""
-    mid = html.escape(str(row.get("id") or "").strip() or "?")
-    if bool(row.get("fuel_stale")):
-        return f"<li>{mid} [stale]</li>"
-    pct = row.get("remaining_pct")
-    if pct is None:
-        label = "n/a"
-    else:
-        try:
-            n = int(pct)
-        except (TypeError, ValueError):
-            label = "n/a"
-        else:
-            label = f"{n}%"
-            if n == 0:
-                label = f"{label} out of tokens"
-    reset = row.get("reset_label")
-    extra = f" · {html.escape(str(reset))}" if reset else ""
-    return f"<li>{mid} ({label}){extra}</li>"
+def _format_pool_row_pct(row: dict[str, Any]) -> str:
+    """FR #6760 row rules: stale -> [stale]; <=0 -> 0% + out of tokens; number -> n%; else n/a."""
+    if row.get("fuel_stale"):
+        return "[stale]"
+    rem = row.get("remaining_pct")
+    if isinstance(rem, bool) or rem is None:
+        return "n/a"
+    if isinstance(rem, (int, float)):
+        if float(rem) <= 0:
+            return "0% - out of tokens"
+        return f"{int(round(float(rem)))}%"
+    return "n/a"
 
 
-def _render_pools_html(view: dict[str, Any]) -> str:
-    """GET /pools: machine rows then one Copilot line (FR #6761)."""
-    machines = view.get("machines") if isinstance(view.get("machines"), list) else []
-    if machines:
-        rows_html = "<ul>" + "".join(
-            _format_machine_pool_row(r if isinstance(r, dict) else {})
-            for r in machines
-        ) + "</ul>"
+def _render_pools_html(doc: Any) -> str:
+    """Machine rows, one Copilot line, optional overspend (FR #6760 / #6761 / #6762)."""
+    if isinstance(doc, dict):
+        view = doc
+        overage = view.get("overage_gbp")
     else:
-        rows_html = '<p class="empty">No pool readings.</p>'
-    copilot = view.get("copilot") if "copilot" in view else None
-    copilot_line = html.escape(format_copilot_pool_line(copilot))
+        view = {"machines": []}
+        overage = doc
     header = _shell_header(current="pools", include_nav=True)
+    machines = view.get("machines") if isinstance(view.get("machines"), list) else []
+    if not machines:
+        body = '<p class="empty">No pool readings.</p>'
+    else:
+        items = []
+        for row in machines:
+            if not isinstance(row, dict):
+                continue
+            mid = html.escape(str(row.get("id") or ""))
+            pct = html.escape(_format_pool_row_pct(row))
+            reset = row.get("reset_label")
+            reset_html = (
+                f' <span class="reset">{html.escape(str(reset))}</span>'
+                if reset
+                else ""
+            )
+            items.append(f"<li><code>{mid}</code>: {pct}{reset_html}</li>")
+        body = "<ul class=\"pools\">" + "".join(items) + "</ul>"
+    copilot = view.get("copilot") if isinstance(view, dict) and "copilot" in view else None
+    copilot_line = html.escape(format_copilot_pool_line(copilot))
+    line = format_overspend_line(overage)
+    overspend = (
+        f'<p class="overage">{html.escape(line)}</p>' if line else ""
+    )
     return f"""<!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8"/>
 <title>Jeeves pools</title>
-<style>
-body{{font-family:system-ui,sans-serif;margin:1.5rem;}}
-{_shell_css()}
-section{{margin-bottom:1.2rem;}}
-.empty{{color:#444;}}
-ul{{list-style:none;padding:0;margin:0 0 1rem;}}
-li{{padding:.35rem 0;border-top:1px solid #eee;}}
-.copilot{{font-weight:600;margin-top:.8rem;}}
-</style></head><body>
+<style>body{{font-family:system-ui,sans-serif;margin:1.5rem;}} {_shell_css()} code{{font-size:.9em;}} .empty{{color:#456;}} .reset{{color:#456;margin-left:.5rem;}} .copilot{{font-weight:600;margin-top:.8rem;}} .overage{{margin-top:1rem;}}</style>
+</head><body>
 {header}
-<h1>Pools</h1>
-<section>
-{rows_html}
+<h1>Jeeves pools</h1>
+<p class="note">Grok remaining by machine (FR #6760) plus Copilot (FR #6761).</p>
+{body}
 <p class="copilot">{copilot_line}</p>
-</section>
+{overspend}
 </body></html>
 """
 
 
-def _render_status_html(status: dict[str, Any]) -> str:
+def _render_status_html(
+    status: dict[str, Any],
+    *,
+    token_graph: dict[str, Any] | None = None,
+) -> str:
+
     q = status.get("queue") if isinstance(status.get("queue"), dict) else {}
     seats = status.get("seats") if isinstance(status.get("seats"), dict) else {}
     fuel = status.get("fuel") if isinstance(status.get("fuel"), dict) else {}
     pending = "yes" if status.get("restart_pending") else "no"
     header = _shell_header(current="status", include_nav=True)
+    graph_html = _render_token_graph_html(token_graph)
     return f"""<!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8"/>
 <title>Jeeves status</title>
-<style>body{{font-family:system-ui,sans-serif;margin:1.5rem;}} {_shell_css()} code{{font-size:.9em;}}</style>
+<style>body{{font-family:system-ui,sans-serif;margin:1.5rem;}} {_shell_css()} code{{font-size:.9em;}} .err{{border:1px solid #a33;padding:1rem;max-width:28rem;}} .empty{{border:1px dashed #889;padding:1rem;max-width:28rem;}} svg{{background:#fff;border:1px solid #ccd;}}</style>
 </head><body>
 {header}
 <h1>Jeeves status</h1>
-<p class="note">Read-only (FR #6443). No secrets.</p>
+<p class="note">Read-only (FR #6443 / #6784). No secrets.</p>
+{graph_html}
 <ul>
 <li>version: <code>{status.get("version") or ""}</code></li>
 <li>source_commit: <code>{status.get("source_commit") or ""}</code></li>
@@ -695,9 +917,20 @@ class _Handler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:  # noqa: N802
         ip = _client_ip(self)
+        path = urlparse(self.path).path
+        # FR #6815: public GET /jeeves is login HTML; LAN reject must not 403 this page.
+        if path.rstrip("/") == "/jeeves":
+            html = _render_login_html()
+            self._send(200, html.encode("utf-8"), "text/html; charset=utf-8")
+            return
+        if path == BUTLER_HREF:
+            if not _BUTLER_ICO.is_file():
+                self._send_json(404, {"ok": False, "error": "not found"})
+                return
+            self._send(200, _BUTLER_ICO.read_bytes(), "image/x-icon")
+            return
         if self._refuse_non_lan(ip):
             return
-        path = urlparse(self.path).path
         home = self.server.home
         tok = self._session_token()
         if path == LOGO_HREF:
@@ -778,7 +1011,8 @@ class _Handler(BaseHTTPRequestHandler):
             if not view.get("ok"):
                 self._send_json(403, view)
                 return
-            html = _render_status_html(view)
+            graph = load_status_token_graph(self.server.digest_home)
+            html = _render_status_html(view, token_graph=graph)
             self._send(200, html.encode("utf-8"), "text/html; charset=utf-8")
             return
         if path in ("/queue", "/ui/queue"):
@@ -819,6 +1053,9 @@ class _Handler(BaseHTTPRequestHandler):
             if not view.get("ok"):
                 self._send_json(403, view)
                 return
+            if "overage_gbp" not in view:
+                view = dict(view)
+                view["overage_gbp"] = _load_overage_gbp(self.server.digest_home)
             html = _render_pools_html(view)
             self._send(200, html.encode("utf-8"), "text/html; charset=utf-8")
             return

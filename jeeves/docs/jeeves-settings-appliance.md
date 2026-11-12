@@ -1,17 +1,16 @@
 # Jeeves appliance settings (FR #6436 foundation + FR #6440 LAN HTTP + FR #6441 auth)
 
-Internal-only settings surface for the Ergo chair host. **Never** publish this
-on Cloudflare or public DNS. Do **not** front it via `bob.ntsa.uk` or
-`irc.ntsa.uk`.
+Chair settings surface for the Ergo host. Operator URL:
+**https://bob.ntsa.uk/jeeves** (FR #6821 / FR-012). Open that login on the
+existing bob.ntsa.uk front. **Never** publish the UI on Cloudflare. Do **not**
+front the UI via `irc.ntsa.uk`. Do not reopen FR #6757 or #6758.
 
 ## How to reach it
 
-1. On the internal DNS (LAN AD / router), create **A** record:
-   - `jeeves.ntsa.uk` -> walrus (chair host) LAN IPv4
-2. Do **not** create a public DNS or Cloudflare record for `jeeves.ntsa.uk`.
-3. Browser / API clients must use a source IP in RFC1918 (`10/8`, `172.16/12`,
-   `192.168/16`) or loopback. The server rejects other sources even if DNS is
-   wrong.
+1. Open **https://bob.ntsa.uk/jeeves** in the browser (FR #6821).
+2. Do **not** tell operators to browse `jeeves.ntsa.uk` (FR #6758 used that internal DNS name; this slice replaces it).
+3. Browser / API clients for settings and status after login still use a source IP in RFC1918 (`10/8`, `172.16/12`,
+   `192.168/16`) or loopback except the public login GET.
 4. Foundation modules: `common/scripts/jeeves_settings.py` (schema, LAN gate,
    secret-safe GET/PUT, backup/audit/rollback) and
    `common/scripts/jeeves_settings_auth.py` (AD/CredMan + sessions).
@@ -52,20 +51,34 @@ Off by default. On the chair host (walrus), set NSSM / process env and restart `
 | `JEEVES_SETTINGS_HTTP_PORT` | Backend TCP port (default **7701**; operators do not browse this port) |
 | `JEEVES_SETTINGS_FRONTDOOR=1` | FR #6757: force bind `127.0.0.1` behind the IIS TLS front door |
 
-Browse **https://jeeves.ntsa.uk/** from a LAN client (FR #6757). Internal DNS only. Do not publish public DNS or Cloudflare. The settings process listens on loopback `:7701` when the front door is enabled; login HTML does not mention that port. Install the front door with `jeeves/scripts/Install-JeevesApplianceFrontDoor.ps1 -Thumbprint <existing cert>` (operator-supplied store thumbprint; no public ACME). HTTP port 80 for that name redirects to HTTPS. The Python LAN check trusts `X-Forwarded-For` only from a loopback TCP peer.
+Browse **https://bob.ntsa.uk/jeeves** (FR #6821). Do not browse `jeeves.ntsa.uk`. Do not browse `:7701`. The settings process listens on loopback `:7701` when `JEEVES_SETTINGS_FRONTDOOR=1` (FR #6757); login HTML does not mention that port. Install the loopback front door with `jeeves/scripts/Install-JeevesApplianceFrontDoor.ps1 -Thumbprint <existing cert>` (operator-supplied certificate store thumbprint; no public ACME). The Python LAN check trusts `X-Forwarded-For` only from a loopback TCP peer.
 JSON: `GET /api/settings`, `PUT /api/settings/<KEY>`, `POST /api/rollback`, `GET /api/schema`,
 `GET /api/status`, `GET /api/queue` (FR #6754), `GET /api/pools` (FR #6759), `POST /api/restart-when-idle`.
-HTML shell (FR #6756): login, settings, status, and queue share a header with `/assets/ntsa-gut-logo.png` (bytes of `bob/tray/assets/ntsa-gut-logo.png`). Authed pages link Settings, Queue, Status, Log out. Login omits Log out.
+HTML: `GET /` settings, `GET /status`, `GET /queue` (FR #6755 waiting / in-progress lists).
+HTML shell (FR #6756): login, settings, status, queue, and pools share a header with `/assets/ntsa-gut-logo.png` (bytes of `bob/tray/assets/ntsa-gut-logo.png`). Authed pages link Settings, Queue, Pools, Status, Log out. Login omits Log out.
 
-`GET /api/settings` includes a `default` field per row (schema default; secrets return `""`).
+GET /api/settings includes a default field per row (schema default; secrets return "").
 The HTML settings table has a **Default** column for every non-secret key (FR #6751 / FR-03).
 The Value control keeps the current value; the default is shown beside it and is not written into the control unless it is already current.
 
 Socket-layer gate: the server binds only to LAN/loopback and `verify_request` drops non-RFC1918 peers before handlers run. Helpers also reject non-LAN `client_ip`.
 
-**Never** put this behind Cloudflare, `bob.ntsa.uk`, or `irc.ntsa.uk`. Auth helpers are FR #6441; HTTP cookie/Bearer session wire is FR #6451; NSSM apply is FR #6442; restart-when-idle / status is FR #6443; show defaults is FR #6751.
+**Never** put this behind Cloudflare or `irc.ntsa.uk`. Login is **https://bob.ntsa.uk/jeeves**. Auth helpers are FR #6441; HTTP cookie/Bearer session wire is FR #6451; NSSM apply is FR #6442; restart-when-idle / status is FR #6443; show defaults is FR #6751.
 
 Module: `common/scripts/jeeves_settings_http.py` (started from `ChairJobs` via `maybe_start_from_chair`).
+
+The settings page lists eight groups. Defaults and checkboxes are on that page.
+
+| Group | Heading |
+|-------|---------|
+| fuel | Fuel and review waits |
+| digest | Digest |
+| irc | IRC timing |
+| homes | Chair home |
+| wake | Wake and ticket closure |
+| probes | Webhook probes |
+| resync | Resync |
+| secrets | Secrets |
 
 Bool SCHEMA keys render as `input type=checkbox` with `value="1"` when truthy (FR #6750 / FR-02). Save posts `"1"` when ticked and `"0"` when cleared. Secret fields left blank are not PUT. `str` / `int` / `float` stay text inputs.
 
@@ -76,13 +89,13 @@ Bool SCHEMA keys render as `input type=checkbox` with `value="1"` when truthy (F
 
 Read-only status (LAN only):
 
-- HTML: `GET /status` (shared shell + NTSA logo, FR #6756)
-- HTML: `GET /queue` (same shell; waiting / in-progress lists)
-- HTML: `GET /pools` (same shell; machine rows then one account-wide Copilot line, FR #6761 / FR-13). Missing Copilot pool renders `Copilot - unknown`; a stale pool keeps `[stale]` and the last percent when the tray would.
-- Asset: `GET /assets/ntsa-gut-logo.png` — PNG bytes of `bob/tray/assets/ntsa-gut-logo.png` (LAN; no session)
+- HTML: `GET /status` (shared shell + NTSA logo, FR #6756). Token comparison (FR #6784): inline SVG of measured `by_model` totals when the job-cost ledger has measured rows; empty copy and no series when none exist; error copy and no invented bars when the ledger cannot be read. `unknown_jobs` is text beside the chart, never a zero bar. Same session auth as `/status`. Does not add token fields to `GET /api/pools`.
+- HTML: `GET /queue` (FR #6755; same shell; waiting / in-progress lists (`repo`, `task`, `id`, optional `worker`). Empty copy is exactly `Nothing is waiting.` / `Nothing is in progress.` Unauthenticated visitors get the login page.) The queue is at `/queue`.
+- HTML: `GET /pools` (FR #6760 / FR-12) --- one row per machine from digest `machines.<id>.xai_weekly` via the same document as `GET /api/pools`. Row rules: `[stale]` hides the percent; `0` shows `0%` plus `out of tokens`; a number shows `<n>%`; null non-stale shows `n/a`; empty list shows `No pool readings`. `reset_label` when present. No Cursor spending-group bars. Unauthenticated HTML returns the login page (HTTP 200). Copilot line (FR #6761 / FR-13): one account-wide `Copilot - N% left` under the machine rows; missing pool renders `Copilot - unknown`; stale keeps `[stale]` and the last percent when the tray would. Overspend line (FR #6762): when overage_gbp is greater than 0 show the word overspend, the pound sign, and two decimals; null, missing, or 0 omit the line; once per page, not per machine.
+- Asset: `GET /assets/ntsa-gut-logo.png` --- PNG bytes of `bob/tray/assets/ntsa-gut-logo.png` (LAN; no session)
 - JSON: `GET /api/status` — `version`, `source_commit`, `uptime_s`, `queue`, `seats`, `fuel` (no secrets)
 - JSON: `GET /api/queue` (FR #6754) — `ok`, `unaccepted`, `accepted`; each row is `repo`, `task`, `id`, optional `worker` (from stored `worker`, else `nick`). Other queue fields are dropped. Same secret-shape refusal as status.
-- JSON: `GET /api/pools` (FR #6759) — `ok`, `machines[]` (`id`, `remaining_pct`, `fuel_stale`, `reset_label`), optional `copilot` (`remaining`, `state`, `reset_at`, `fetched_at`, `unlimited`, `used`, `max_recorded_usage`), `overage_gbp`. `remaining_pct` 0 stays 0; null stays null. Tokens and seat email are dropped.
+- JSON: `GET /api/pools` (FR #6759) — `ok`, `machines[]` (`id`, `remaining_pct`, `fuel_stale`, `reset_label`), optional `copilot` (`remaining`, `state`, `reset_at`, `fetched_at`, `unlimited`, `used`, `max_recorded_usage`), `overage_gbp`. `remaining_pct` 0 stays 0; null stays null. Tokens and seat email are dropped. HTML machine rows remain FR #6760 `/pools`.
 
 Restart `ircJeeves` only when the accepted queue is empty (no review/job running):
 

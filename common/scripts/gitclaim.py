@@ -4211,7 +4211,8 @@ def _coerce_row(row: dict) -> dict | None:
     # FR #265: implementer_seat + mrb_author_seat survive reload for UAT dual-seat block.
     # FR #180: title/labels/cooldown/needs_human must survive reload so offer/prune keep working.
     # accepted_by: ACC ownership for stale-busy heal (#2369 / MRB #2371) and ACC CLOSED purge (#2361).
-    for key in ("nick", "channel", "accepted_ts", "accepted_by", "offered_to", "offered_ts", "offered_channel",
+    for key in ("nick", "worker",  # FR #6770: stored worker must survive reload (distinct from nick)
+                "channel", "accepted_ts", "accepted_by", "offered_to", "offered_ts", "offered_channel",
                 "offered_via",  # FR #2811: giveup-push sticky window
                 "author_seat", "author_nick", "author", "implementer_seat", "mrb_author_seat", "mrb_fix_author_seat",
                 "author_seats", "url", "title", "body", "state",
@@ -9857,6 +9858,9 @@ MRB_REVIEWER_DEADLOCK_STATE = "mrb-reviewer-deadlock.json"
 # FR #5756: same 900s per-nick cooldown shared with MRB deadlock !recycleseat IRC.
 BORED_LATENCY_HEAL_COOLDOWN_S = 900.0
 BORED_LATENCY_HEAL_STATE = "bored-latency-heal.json"
+# FR #6774: cap bored-latency !recycleseat per machine slot in a rolling window.
+BORED_LATENCY_RECYCLE_WINDOW_S = 3600.0
+BORED_LATENCY_RECYCLE_LIMIT = 2
 RECYCLESEAT_IRC_COOLDOWN_S = BORED_LATENCY_HEAL_COOLDOWN_S
 # FR #5889: outstanding !recycleseat per seat (ACK/NACK/timeout) + seat-keyed gate.
 RECYCLESEAT_ACK_WAIT_S = 180.0
@@ -10761,27 +10765,44 @@ def bored_latency_heal_state_path(home: Path) -> Path:
     return _root(home) / BORED_LATENCY_HEAL_STATE
 
 
+def _empty_bored_latency_heal_state() -> dict:
+    return {"nicks": {}, "recycles": {}, "holds": {}}
+
+
 def _load_bored_latency_heal_state(home: Path) -> dict:
+    empty = _empty_bored_latency_heal_state()
     path = bored_latency_heal_state_path(home)
     if not path.is_file():
-        return {"nicks": {}}
+        return empty
     try:
         raw = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError, ValueError):
-        return {"nicks": {}}
+        return empty
     if not isinstance(raw, dict):
-        return {"nicks": {}}
+        return empty
     nicks = raw.get("nicks")
     if not isinstance(nicks, dict):
         nicks = {}
-    return {"nicks": nicks}
+    recycles = raw.get("recycles")
+    if not isinstance(recycles, dict):
+        recycles = {}
+    holds = raw.get("holds")
+    if not isinstance(holds, dict):
+        holds = {}
+    return {"nicks": nicks, "recycles": recycles, "holds": holds}
 
 
 def _save_bored_latency_heal_state(home: Path, state: dict) -> None:
     path = bored_latency_heal_state_path(home)
     path.parent.mkdir(parents=True, exist_ok=True)
-    clean = {"nicks": {}}
-    for key, val in (state.get("nicks") or {}).items():
+    prev = _load_bored_latency_heal_state(home)
+    nicks_src = state.get("nicks") if isinstance(state.get("nicks"), dict) else prev.get("nicks")
+    rec_src = (
+        state.get("recycles") if isinstance(state.get("recycles"), dict) else prev.get("recycles")
+    )
+    hold_src = state.get("holds") if isinstance(state.get("holds"), dict) else prev.get("holds")
+    clean = _empty_bored_latency_heal_state()
+    for key, val in (nicks_src or {}).items():
         nick = (canonical_worker_nick(str(key)) or str(key or "")).strip()
         if not nick:
             continue
@@ -10789,7 +10810,131 @@ def _save_bored_latency_heal_state(home: Path, state: dict) -> None:
             clean["nicks"][nick] = float(val)
         except (TypeError, ValueError):
             continue
+    for key, val in (rec_src or {}).items():
+        mid = str(key or "").strip().lower()
+        if not mid:
+            continue
+        stamps = []
+        for ts in val if isinstance(val, list) else []:
+            try:
+                stamps.append(float(ts))
+            except (TypeError, ValueError):
+                continue
+        if stamps:
+            clean["recycles"][mid] = stamps
+    for key, val in (hold_src or {}).items():
+        mid = str(key or "").strip().lower()
+        if not mid or not isinstance(val, dict):
+            continue
+        try:
+            clean["holds"][mid] = {
+                "at": float(val.get("at") or 0),
+                "reason": str(val.get("reason") or "recycle-loop"),
+                "reported": bool(val.get("reported")),
+            }
+        except (TypeError, ValueError):
+            continue
     path.write_text(json.dumps(clean, indent=2) + "\n", encoding="utf-8")
+
+
+def _bored_latency_slot_id(nick: str) -> str:
+    """Machine slot for recycle-window / hold (FR #6774). PID must not be the key."""
+    import stall_detectors as _sd
+
+    return str(_sd._bored_latency_stable_key(nick) or "").strip().lower()
+
+
+def _prune_bored_latency_recycles(state: dict, now_f: float) -> None:
+    window = float(BORED_LATENCY_RECYCLE_WINDOW_S)
+    rec = state.get("recycles") if isinstance(state.get("recycles"), dict) else {}
+    pruned: dict[str, list[float]] = {}
+    for mid, stamps in rec.items():
+        keep = [
+            float(ts)
+            for ts in (stamps if isinstance(stamps, list) else [])
+            if (now_f - float(ts)) < window
+        ]
+        if keep:
+            pruned[str(mid)] = keep
+    state["recycles"] = pruned
+
+
+def clear_bored_latency_recycle_holds(
+    home: Path, machine: str | None = None
+) -> None:
+    """FR #6774: drop recycle-loop holds (all, or one machine). Used by !resync."""
+    state = _load_bored_latency_heal_state(home)
+    holds = state.get("holds") if isinstance(state.get("holds"), dict) else {}
+    rec = state.get("recycles") if isinstance(state.get("recycles"), dict) else {}
+    if machine:
+        mid = str(machine).strip().lower().lstrip("#")
+        holds.pop(mid, None)
+        rec.pop(mid, None)
+    else:
+        holds = {}
+        rec = {}
+    state["holds"] = holds
+    state["recycles"] = rec
+    _save_bored_latency_heal_state(home, state)
+
+
+def _clear_bored_latency_holds_on_healthy_seats(
+    state: dict,
+    *,
+    idle: set[str],
+    last_bored: dict,
+    last_activity: dict,
+    now_f: float,
+) -> None:
+    """Clear hold when a slot !bored on time, or a new seat shows recent activity."""
+    import stall_detectors as _sd
+
+    holds = state.get("holds") if isinstance(state.get("holds"), dict) else {}
+    if not holds:
+        return
+    thresh = float(_sd.BORED_LATENCY_S)
+    drop: list[str] = []
+    for nick in idle:
+        mid = _bored_latency_slot_id(nick)
+        if not mid or mid not in holds:
+            continue
+        bored_at = last_bored.get(nick)
+        act_at = last_activity.get(nick)
+        lag = None
+        if bored_at is not None:
+            lag = now_f - float(bored_at)
+        elif act_at is not None:
+            lag = now_f - float(act_at)
+        hold_at = float((holds.get(mid) or {}).get("at") or 0)
+        if lag is not None and lag < thresh:
+            drop.append(mid)
+        elif act_at is not None and float(act_at) > hold_at:
+            drop.append(mid)
+    rec = state.get("recycles") if isinstance(state.get("recycles"), dict) else {}
+    for mid in drop:
+        holds.pop(mid, None)
+        rec.pop(mid, None)
+    state["holds"] = holds
+    state["recycles"] = rec
+
+
+def _report_bored_latency_recycle_hold(home: Path, item: dict, now_f: float) -> None:
+    """One stall_filer intake per fingerprint (deduped)."""
+    import stall_filer as _sf
+    import stall_detectors as _sd
+
+    finding = dict(item)
+    if not finding.get("fingerprint"):
+        finding["fingerprint"] = _sd.fingerprint(
+            _sd.BORED_LATENCY_ID, str(finding.get("key") or "")
+        )
+    title = str(finding.get("title") or "bored-latency recycle-loop")
+    finding["title"] = f"{title} (held recycle-loop)"
+    ev = dict(finding.get("evidence") or {})
+    ev["held"] = "recycle-loop"
+    finding["evidence"] = ev
+    with contextlib.suppress(Exception):
+        _sf.apply_findings([finding], home=home, now=now_f)
 
 
 def heal_bored_latency(
@@ -10810,6 +10955,11 @@ def heal_bored_latency(
     ``!recycleseat <nick> <machine>`` on the seat shop only (never ``#bobiverse``).
     Rate-limited per nick (shared with MRB deadlock heal).
 
+    FR #6774: at most ``BORED_LATENCY_RECYCLE_LIMIT`` recycles per machine slot
+    in ``BORED_LATENCY_RECYCLE_WINDOW_S``. Past that, hold as stalled
+    (reason=recycle-loop) and file one stall_filer report. Hold clears on
+    on-time !bored, recent activity after the hold, or ``!resync``.
+
     ``unaccepted`` is the same queue snapshot ``detect_bored_latency`` uses for
     live-offer suppression (PR #5852). Omit it only when the caller has no
     offer rows; an empty list does not load the queue.
@@ -10825,28 +10975,59 @@ def heal_bored_latency(
         else float(RECYCLESEAT_IRC_COOLDOWN_S)
     )
     seats_idle = set(idle) if idle is not None else free_seat_nicks(home)
+    bored_map = dict(last_bored or {})
+    act_map = dict(last_activity or {})
+    state = _load_bored_latency_heal_state(home)
+    _prune_bored_latency_recycles(state, now_f)
+    _clear_bored_latency_holds_on_healthy_seats(
+        state,
+        idle=seats_idle,
+        last_bored=bored_map,
+        last_activity=act_map,
+        now_f=now_f,
+    )
     snap = {
         "now": now_f,
         "idle": seats_idle,
-        "last_bored": dict(last_bored or {}),
-        "last_activity": dict(last_activity or {}),
+        "last_bored": bored_map,
+        "last_activity": act_map,
         "accepted": list(accepted or []),
         "unaccepted": list(unaccepted or []),
     }
     findings = _sd.detect_bored_latency(snap)
-    if not findings:
-        return []
-
-    state = _load_bored_latency_heal_state(home)
     nick_ts = state.get("nicks") if isinstance(state.get("nicks"), dict) else {}
+    recycles = state.get("recycles") if isinstance(state.get("recycles"), dict) else {}
+    holds = state.get("holds") if isinstance(state.get("holds"), dict) else {}
     lines: list[str] = []
     root = resolve_recycleseat_install_root(home, install_root)
+    limit = int(BORED_LATENCY_RECYCLE_LIMIT)
 
     for item in findings:
         nick = str((item.get("evidence") or {}).get("nick") or item.get("key") or "").strip()
         if not nick:
             continue
         canon = (canonical_worker_nick(nick) or nick).strip()
+        slot = _bored_latency_slot_id(canon)
+        if slot and slot in holds:
+            if not (holds[slot] or {}).get("reported"):
+                _report_bored_latency_recycle_hold(home, item, now_f)
+                holds[slot]["reported"] = True
+            lines.append(
+                f"bored-latency held seat={canon} machine={slot} reason=recycle-loop"
+            )
+            continue
+        recent = list(recycles.get(slot) or []) if slot else []
+        if slot and len(recent) >= limit:
+            holds[slot] = {
+                "at": now_f,
+                "reason": "recycle-loop",
+                "reported": True,
+            }
+            _report_bored_latency_recycle_hold(home, item, now_f)
+            lines.append(
+                f"bored-latency held seat={canon} machine={slot} reason=recycle-loop"
+            )
+            continue
         # FR #5889: seat-keyed pending / ACK wait / busy / recent-ack / cooldown.
         blocked = recycleseat_send_blocked_reason(
             home, canon, now=now_f, cooldown_s=cool
@@ -10874,6 +11055,9 @@ def heal_bored_latency(
                 continue
             nick_ts[canon] = now_f
             _mark_recycleseat_sent(home, canon, now=now_f, rid=rid)
+            if slot:
+                recent.append(now_f)
+                recycles[slot] = recent
             lag = (item.get("evidence") or {}).get("lag_s")
             lines.append(
                 f"bored-latency recycleseat={canon} id={rid} lag_s={lag}"
@@ -10883,8 +11067,10 @@ def heal_bored_latency(
                 f"bored-latency recycle_failed:{canon}:{type(exc).__name__}"
             )
 
-    if lines:
-        _save_bored_latency_heal_state(home, {"nicks": nick_ts})
+    state["nicks"] = nick_ts
+    state["recycles"] = recycles
+    state["holds"] = holds
+    _save_bored_latency_heal_state(home, state)
     return lines
 
 

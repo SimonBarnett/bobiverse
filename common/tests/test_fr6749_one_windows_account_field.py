@@ -7,11 +7,11 @@ import jeeves_settings_auth as auth
 import jeeves_settings_http as http
 
 
-def test_fr6749_login_html_one_account_no_domain_input():
+def test_fr6749_login_html_one_account_field():
     html = http._render_login_html()
     assert 'name="account"' in html
     assert 'name="password"' in html
-    assert 'name="domain"' not in html
+    # FR #6819: optional domain is posted to the existing session login.
 
 
 def test_fr6749_logonuser_ntsa_slash_and_upn(monkeypatch):

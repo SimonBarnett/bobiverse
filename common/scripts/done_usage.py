@@ -263,14 +263,47 @@ def _load_json(path: Path | str | None) -> Any:
         return None
 
 
+def _grok_model_usage_map(doc: Mapping[str, Any], session: Mapping[str, Any]) -> dict[str, Any] | None:
+    """Return the ``modelUsage`` dict from session or document root, if present."""
+    for container in (session, doc):
+        raw = container.get("modelUsage")
+        if isinstance(raw, dict):
+            return raw
+    return None
+
+
+def _grok_counted_model_usage(model_usage: Mapping[str, Any]) -> list[tuple[str, dict[str, Any]]]:
+    """Entries with a non-empty model key and a dict body (FR #6781 counted rows)."""
+    out: list[tuple[str, dict[str, Any]]] = []
+    for key, entry in model_usage.items():
+        mid = str(key or "").strip()
+        if not mid or not isinstance(entry, dict):
+            continue
+        out.append((mid, entry))
+    return out
+
+
 def read_grok_usage(path: Path | str | None) -> dict[str, Any]:
-    """Read ``~/.grok/sessions/.../<uuid>/usage.json`` (usage only; no auth files)."""
+    """Read ``~/.grok/sessions/.../<uuid>/usage.json`` (usage only; no auth files).
+
+    FR #6781: when ``modelUsage`` has exactly one counted entry, that entry's
+    model id and token fields win over a different ``primaryModelId`` / session
+    totals. More than one counted entry stays ``tokens=unknown``.
+    """
     doc = _load_json(path)
     if not isinstance(doc, dict):
         return _empty(unknown=True)
     session = doc.get("session") if isinstance(doc.get("session"), dict) else doc
     if not isinstance(session, dict):
         return _empty(unknown=True)
+    model_usage = _grok_model_usage_map(doc, session)
+    if model_usage is not None:
+        counted = _grok_counted_model_usage(model_usage)
+        if len(counted) > 1:
+            return _empty(unknown=True)
+        if len(counted) == 1:
+            mid, entry = counted[0]
+            return _from_token_map(entry, model=mid, default_provider="xai")
     model = (
         session.get("primaryModelId")
         or doc.get("primaryModelId")
@@ -280,6 +313,39 @@ def read_grok_usage(path: Path | str | None) -> dict[str, Any]:
     return _from_token_map(session, model=str(model), default_provider="xai")
 
 
+_CURSOR_SECRET_NAMES = frozenset(
+    {
+        "identity.json",
+        "auth.json",
+        "github.token",
+        ".password",
+    }
+)
+
+
+def _cursor_usage_nonzero(usage: Mapping[str, Any] | None) -> bool:
+    u = dict(usage or {})
+    if bool(u.get("tokens_unknown")):
+        return False
+    for key in ("tokens_in", "tokens_out", "tokens_cached"):
+        n = _int_or_none(u.get(key))
+        if n is not None and int(n) != 0:
+            return True
+    return False
+
+
+def _finalize_cursor_usage(usage: Mapping[str, Any] | None) -> dict[str, Any]:
+    """FR #6782: zero or absent Cursor token fields become tokens=unknown (never tokens_in=0)."""
+    u = dict(usage or {})
+    if not _cursor_usage_nonzero(u):
+        out = _empty(unknown=True)
+        model = str(u.get("model") or "").strip()
+        if model:
+            out["model"] = model
+        return out
+    return u
+
+
 def read_cursor_usage(path: Path | str | None) -> dict[str, Any]:
     """Read a Cursor agent usage/export JSON fixture (no secrets)."""
     doc = _load_json(path)
@@ -287,7 +353,71 @@ def read_cursor_usage(path: Path | str | None) -> dict[str, Any]:
         return _empty(unknown=True)
     model = doc.get("model") or doc.get("modelId") or doc.get("primaryModelId") or ""
     usage = doc.get("usage") if isinstance(doc.get("usage"), dict) else doc
-    return _from_token_map(usage, model=str(model), default_provider="cursor")
+    return _finalize_cursor_usage(
+        _from_token_map(usage, model=str(model), default_provider="cursor")
+    )
+
+
+def _cursor_usage_from_obj(doc: Any) -> dict[str, Any]:
+    if not isinstance(doc, dict):
+        return _empty(unknown=True)
+    model = doc.get("model") or doc.get("modelId") or doc.get("primaryModelId") or ""
+    usage = doc.get("usage") if isinstance(doc.get("usage"), dict) else doc
+    return _finalize_cursor_usage(
+        _from_token_map(usage, model=str(model), default_provider="cursor")
+    )
+
+
+def _iter_cursor_chat_files(chat_dir: Path) -> list[Path]:
+    out: list[Path] = []
+    try:
+        for p in sorted(chat_dir.iterdir(), key=lambda x: x.name.lower()):
+            if not p.is_file():
+                continue
+            name = p.name.lower()
+            if name in _CURSOR_SECRET_NAMES or name.endswith(".password"):
+                continue
+            if name.endswith((".json", ".jsonl")):
+                out.append(p)
+    except OSError:
+        return []
+    return out
+
+
+def read_cursor_chat_dir(chat_dir: Path | str | None) -> dict[str, Any]:
+    """FR #6782: live read of the bound Cursor chat dir when it has non-zero token fields."""
+    if chat_dir is None:
+        return _empty(unknown=True)
+    root = Path(chat_dir)
+    if not root.is_dir():
+        return _empty(unknown=True)
+    for preferred in ("cursor-usage.json", "usage.json"):
+        cand = root / preferred
+        if cand.is_file():
+            u = read_cursor_usage(cand)
+            if _cursor_usage_nonzero(u):
+                return u
+    for path in _iter_cursor_chat_files(root):
+        if path.suffix.lower() == ".jsonl":
+            try:
+                for line in path.read_text(encoding="utf-8").splitlines():
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        doc = json.loads(line)
+                    except Exception:
+                        continue
+                    u = _cursor_usage_from_obj(doc)
+                    if _cursor_usage_nonzero(u):
+                        return u
+            except OSError:
+                continue
+            continue
+        u = read_cursor_usage(path)
+        if _cursor_usage_nonzero(u):
+            return u
+    return _empty(unknown=True)
 
 
 def read_opencode_usage(path: Path | str | None) -> dict[str, Any]:
@@ -561,6 +691,7 @@ def measure_seat_usage(
     *,
     grok_usage_path: Path | str | None = None,
     cursor_usage_path: Path | str | None = None,
+    cursor_chat_dir: Path | str | None = None,
     opencode_usage_path: Path | str | None = None,
     aider_usage_path: Path | str | None = None,
 ) -> dict[str, Any]:
@@ -569,7 +700,15 @@ def measure_seat_usage(
     if k == "grok":
         return read_grok_usage(grok_usage_path)
     if k in ("cursor", "cursor-agent", "agent"):
-        return read_cursor_usage(cursor_usage_path)
+        fixture = Path(cursor_usage_path) if cursor_usage_path else None
+        if fixture is not None and fixture.is_file():
+            return read_cursor_usage(fixture)
+        live = read_cursor_chat_dir(cursor_chat_dir)
+        if _cursor_usage_nonzero(live):
+            return live
+        if fixture is not None:
+            return read_cursor_usage(fixture)
+        return live if live else _empty(unknown=True)
     if k in ("opencode", "oc"):
         return read_opencode_usage(opencode_usage_path)
     if k == "aider":

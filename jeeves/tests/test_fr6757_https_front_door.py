@@ -83,7 +83,7 @@ def test_fr6757_docs_https_no_browse_7701():
     doc = (root / "jeeves" / "docs" / "jeeves-settings-appliance.md").read_text(
         encoding="utf-8"
     )
-    assert "https://jeeves.ntsa.uk/" in doc
+    assert "https://bob.ntsa.uk/jeeves" in doc
     assert "Browse `http://jeeves.ntsa.uk:7701/" not in doc
     assert "FR #6757" in doc
     assert "win-acme" not in doc.lower()
