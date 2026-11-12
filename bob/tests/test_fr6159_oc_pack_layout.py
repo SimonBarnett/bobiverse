@@ -480,6 +480,25 @@ def test_fr6727_flat_helper_uses_bobiverse_python_when_path_stripped(tmp_path: P
     assert parsed.get("python_exit") == 0
 
 
+@pytest.mark.skipif(sys.platform != "win32" or not shutil.which("powershell"), reason="Windows PowerShell")
+@pytest.mark.skipif(not shutil.which("python"), reason="python.exe required")
+def test_fr6737_fixture_fuel_ok_when_stdin_would_have_utf8_bom(tmp_path: Path):
+    """FR #6737: StreamWriter BOM on stats stdin must not stats_failed the fixture path."""
+    install = tmp_path / "bob"
+    tools = install / "tools"
+    scripts = install / "scripts"
+    elsewhere = tmp_path / "elsewhere"
+    tools.mkdir(parents=True)
+    scripts.mkdir(parents=True)
+    elsewhere.mkdir(parents=True)
+    shutil.copy(OPENCODE_FUEL_PS1, tools / "Get-BobOpencodeFuel.ps1")
+    shutil.copy(OPENCODE_FUEL_PY, scripts / "opencode_fuel.py")
+    parsed = _run_opencode_fuel_ps(
+        tools / "Get-BobOpencodeFuel.ps1", env=_opencode_fuel_fixture_env(), cwd=elsewhere
+    )
+    _assert_fuel_ok(parsed)
+
+
 def test_fr6159_worker_source_has_flat_resolver_and_install_root_kw():
     src = WORKER.read_text(encoding="utf-8")
     assert 'root / "scripts" / "opencode_fuel.py"' in src
