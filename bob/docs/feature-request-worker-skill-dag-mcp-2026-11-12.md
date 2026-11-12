@@ -34,6 +34,11 @@ See vision Success S1-S8. S7 mechanism stays UNKNOWN until a process-local lever
 - #6865 FR-006 Cursor seat wire
 - #6866 FR-007 assigned job-worktree skill root
 
+## Follow-up (Refs, not a closing keyword)
+
+- #6901 FR-008 resolve scores skill descriptions. Stays open.
+- #6918 job worktree after assign. Completed by #6919. Not reopened.
+
 ## Anti-omnibus
 
-One GitHub issue per small FR. This docs PR parks mirrors only. Implementation issues stay open.
+One GitHub issue per small FR. This docs PR parks mirrors only. Implementation issues stay open. The follow-up mirror uses the same rule.

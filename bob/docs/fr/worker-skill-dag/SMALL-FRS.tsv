@@ -6,3 +6,4 @@ FR-004	6863	Worker launch calls skill-dag resolve; MCP config stays on the worke
 FR-005	6864	Process-local bound so the worker prompt lists only the core skill stub
 FR-006	6865	Cursor worker seat uses the skill-dag MCP
 FR-007	6866	Skill-dag resolve reads only the assigned job worktree skills
+FR-008	6901	Skill-dag resolve scores skill descriptions
