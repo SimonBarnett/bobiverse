@@ -1,5 +1,7 @@
 # Pool-monitor deploy pin
-# Behavior source sha: 523450ec4fbb3436f71568d65aa7a4e10fb36861
+# Behavior source sha: 4ffaf3349f0e0125d0b901040f038f341c3abaaf
+# FR #6894: repin after bobreport.py / irc_agent.py / Get-BobIrc.ps1 drift from 523450e.
+# Prior pin: 523450ec4fbb3436f71568d65aa7a4e10fb36861
 # Prior pin (FR #6727): c85041e84c7a10e964a6e4bd4c18d89a0ec05d2c
 # FR #6851: repin after Get-BobOpencodeFuel FR #6745 (stats child sys.path + env).
 # Prior pin (FR #6722): 0db71bfa98b9b84e9f1ce76c81f0ee18c6324aea
@@ -44,12 +46,12 @@
 # Deploy/restart remains owner/Slab gated (CAST IRON: FR seat does not Install or restart).
 #
 # sha256  bytes  path
-bf818613debb1d2c6b628a18213c7587b7ab47ce958ab2f95c305ad66c5364d0  277922  common/scripts/bobreport.py
-c8e4d93871406313ca130f317c59ce3c6de719e6269a59b8c887e163e74a12ca  252282  common/scripts/irc_agent.py
+68eac904b0e2c8f0612900d38e27abb39ba504dca1d8eb1184c157e0e3c8e1d8  278026  common/scripts/bobreport.py
+89c731444c0cb0a3b7b053d96300e42aeb89e41a714bf92a6cce6e5d0c060da5  252641  common/scripts/irc_agent.py
 9e770badb1a2bcb0fb2eea5a0071f16fbd2c1c7097573f7ddfdd64d6d58a6705  83180  common/scripts/opencode_fuel.py
 69b96cfee54cceabda774ff047bb949bc448a5a9a45c80216022cfd092b67ab3  157970  common/scripts/bobiverse_build.py
 a5bb5fc9cd58ca4bb4d0926077a2297a91cb68ba833f89949e9019f824566c31  185190  bob/tray/src/Public/Get-BobTrayHover.ps1
-4115f618af32cabe19b474c8de9bb9df52a97927dd8fa4ad6467ea45c72228d4  124609  bob/tray/src/Private/Get-BobIrc.ps1
+fe20a00d53eb77faaa3a441896c0605cc8657be6cb5a549ac06d52855b945ce5  126863  bob/tray/src/Private/Get-BobIrc.ps1
 d5cd913fba2d77bbd61802af7b3b0d08ad08217d4ab5ab66fa2c97b4e50c9d71  177621  bob/tray/tools/Watch-BobTray.ps1
 020c4991dea448278e75a11f2a864644bfb63bbf417c4a87f5a0fdb218995770  22495  bob/tray/tools/Get-BobOpencodeFuel.ps1
 66d15e08212fde38c584a8655508ca6ed0313befa63af4c81cfbb17dec64be39  4132  bob/tray/src/BobBridge.psm1
