@@ -376,6 +376,7 @@ routes to bobiverse via the split rule.
 - OpenCode fuel under LocalSystem: PATH pin can still hit WindowsApps alias; set BOB_OPENCODE_PYTHON to a real interpreter and name empty-stats as stats_failed (not parser_missing).
 - Clipboard inject_console tests must monkeypatch.setenv BOB_WORKER_INJECT_PASTE=1; skip visible-console tray tests when ProcessIdToSessionId is 0 (FR #6729).
 - skip_unless_interactive_desktop must probe EnumWindows/OpenInputDesktop for sid>0; empty SESSIONNAME alone is not a skip (FR #6733).
+- Two shared distinctive tokens are not a harvest twin; require a phrase or >=5 tokens and print the covering PR url.
 
 ## Harvest digest (lessons audit 2026-10-06)
 
