@@ -390,6 +390,7 @@ routes to bobiverse via the split rule.
 - When launch argv grows (--root packs), pin only args[0] exists; leave extra flags to the FR that added them.
 - Keep the stamped BOB_OUTBOX path: recreate that run dir on inject/drain; never glob the newest worker-* folder.
 - Load compact findings skills by exact id; do not add them as depends_on of the 53KiB MRB book (64KiB resolve cap).
+- GH_AUTH_STEPS must include pack whenever pack runs gh (release list / assets); isolation blanks GH_TOKEN for suites only.
 
 ## Harvest digest (lessons audit 2026-10-06)
 
