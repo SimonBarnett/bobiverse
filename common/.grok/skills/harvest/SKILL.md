@@ -392,6 +392,7 @@ routes to bobiverse via the split rule.
 - Load compact findings skills by exact id; do not add them as depends_on of the 53KiB MRB book (64KiB resolve cap).
 - GH_AUTH_STEPS must include pack whenever pack runs gh (release list / assets); isolation blanks GH_TOKEN for suites only.
 - When _inject_line gains an early assign_job_ref, keep method-bound pins for late ack/since_wall and repin ear provenance hashes in the same FR as the failing bob suite.
+- FR #6017 named-prp tests on Windows: age fixture .prp files and os.utime after rewrite so the mtime gate cannot report prp_unchanged within the same second under suite load.
 
 ## Harvest digest (lessons audit 2026-10-06)
 
