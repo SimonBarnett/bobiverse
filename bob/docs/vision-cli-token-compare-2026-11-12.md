@@ -94,7 +94,7 @@ Login mocks are in `bob/docs/mocks/jeeves-login/`. The image is the existing `je
 - Grok `read_grok_usage` prefers a single counted `modelUsage` entry over `primaryModelId` / session totals (FR #6781). Multi-entry `modelUsage` stays `tokens=unknown`.
 - Cursor (FR #6782 / PR #6811): keeps `BOB_CURSOR_USAGE_PATH` or `run/cursor-usage.json`, and live-reads the bound seat chat directory when it has non-zero token fields. Missing or zero fields stamp `tokens=unknown`. No Cursor dashboard client.
 - Digest `job_costs` includes `by_model` + `unknown_jobs` (FR #6783) alongside the last 20 PRs.
-- Appliance `/status` lists version, uptime, queue, seats, and fuel names. No token graph.
+- Appliance `/status` lists version, uptime, queue, seats, and fuel names, plus the FR #6784 / S4 by-model token graph (home / empty / error; `unknown_jobs` as text).
 - `jeeves/VISION.md` still says chair companions are not a website. Shape stays service.
 - Open appliance pack #6751 and siblings paints pool remaining percent. FR #6759 drops token fields. That pack is not this comparison.
 - Public home is `jeeves/www/irc-ntsa/index.html` on bob.ntsa.uk. It has no `/jeeves` link yet.
