@@ -1113,50 +1113,6 @@ def _copilot_public(raw: Any) -> dict[str, Any] | None:
     return out or None
 
 
-def api_get_pools(
-    home: Path,
-    *,
-    client_ip: str,
-    digest_home: Path | None = None,
-) -> dict[str, Any]:
-    """Read-only pool JSON: tray percents, Copilot line, overage. No tokens."""
-    err = reject_non_lan(client_ip)
-    if err:
-        return {"ok": False, "error": err}
-    dig = Path(digest_home) if digest_home is not None else Path(home)
-    raw: dict[str, Any] = {}
-    path = dig / "digest.json"
-    try:
-        if path.is_file():
-            parsed = json.loads(path.read_text(encoding="utf-8-sig"))
-            if isinstance(parsed, dict):
-                raw = parsed
-    except Exception:
-        raw = {}
-    machines_out: list[dict[str, Any]] = []
-    machines = raw.get("machines")
-    if isinstance(machines, dict):
-        for mid, row in machines.items():
-            machines_out.append(_pool_machine_public(str(mid), row))
-    elif isinstance(machines, list):
-        for row in machines:
-            ident = ""
-            if isinstance(row, dict):
-                ident = str(row.get("id") or "")
-            machines_out.append(_pool_machine_public(ident, row))
-    out: dict[str, Any] = {
-        "ok": True,
-        "machines": machines_out,
-        "overage_gbp": _optional_number(raw.get("overage_gbp")),
-    }
-    copilot = _copilot_public(raw.get("copilot"))
-    if copilot is not None:
-        out["copilot"] = copilot
-    refuse = _appliance_secret_shape_error(out)
-    if refuse:
-        return refuse
-    return out
-
 
 def api_get_status(
     home: Path,
@@ -1376,7 +1332,7 @@ def api_get_pools(
     digest_home: Path | None = None,
     now: float | None = None,
 ) -> dict[str, Any]:
-    """FR #6760: per-machine Grok remaining_pct rows from digest xai_weekly."""
+    """FR #6759/#6760: pool JSON + machine rows. Copilot/overage optional; no tokens."""
     err = reject_non_lan(client_ip)
     if err:
         return {"ok": False, "error": err}
@@ -1385,17 +1341,35 @@ def api_get_pools(
     doc = _load_digest_json(dig)
     machines_doc = doc.get("machines") if isinstance(doc.get("machines"), dict) else {}
     rows: list[dict[str, Any]] = []
-    for mid in _pools_machine_ids(doc):
-        entry = machines_doc.get(mid)
-        if entry is None:
-            for k, v in machines_doc.items():
-                if str(k).strip().lower() == mid:
-                    entry = v
-                    break
-        meter = None
-        if isinstance(entry, dict):
-            meter = entry.get("xai_weekly")
-        if not isinstance(meter, dict):
+    # Prefer roster/xai_weekly path (FR #6760). Fall back to flat machine rows (FR #6759 fixtures).
+    ids = _pools_machine_ids(doc)
+    if ids:
+        for mid in ids:
+            entry = machines_doc.get(mid)
+            if entry is None:
+                for k, v in machines_doc.items():
+                    if str(k).strip().lower() == mid:
+                        entry = v
+                        break
+            meter = entry.get("xai_weekly") if isinstance(entry, dict) else None
+            if isinstance(meter, dict):
+                remaining = _pools_remaining_pct(meter.get("remaining_pct"))
+                stale = _pools_meter_stale(meter, now=now_f)
+                reset = _format_pools_reset_label(meter.get("period_end"), now=now_f)
+                rows.append(
+                    {
+                        "id": mid,
+                        "remaining_pct": remaining,
+                        "fuel_stale": bool(stale),
+                        "reset_label": reset,
+                    }
+                )
+                continue
+            if isinstance(entry, dict) and (
+                "remaining_pct" in entry or "fuel_stale" in entry or "reset_label" in entry
+            ):
+                rows.append(_pool_machine_public(mid, entry))
+                continue
             rows.append(
                 {
                     "id": mid,
@@ -1404,19 +1378,23 @@ def api_get_pools(
                     "reset_label": None,
                 }
             )
-            continue
-        remaining = _pools_remaining_pct(meter.get("remaining_pct"))
-        stale = _pools_meter_stale(meter, now=now_f)
-        reset = _format_pools_reset_label(meter.get("period_end"), now=now_f)
-        rows.append(
-            {
-                "id": mid,
-                "remaining_pct": remaining,
-                "fuel_stale": bool(stale),
-                "reset_label": reset,
-            }
-        )
-    out = {"ok": True, "machines": rows}
+    elif isinstance(machines_doc, dict) and machines_doc:
+        for mid, row in machines_doc.items():
+            rows.append(_pool_machine_public(str(mid), row))
+    elif isinstance(doc.get("machines"), list):
+        for row in doc.get("machines") or []:
+            ident = ""
+            if isinstance(row, dict):
+                ident = str(row.get("id") or "")
+            rows.append(_pool_machine_public(ident, row))
+    out: dict[str, Any] = {
+        "ok": True,
+        "machines": rows,
+        "overage_gbp": _optional_number(doc.get("overage_gbp")),
+    }
+    copilot = _copilot_public(doc.get("copilot"))
+    if copilot is not None:
+        out["copilot"] = copilot
     refuse = _appliance_secret_shape_error(out)
     if refuse:
         return refuse
