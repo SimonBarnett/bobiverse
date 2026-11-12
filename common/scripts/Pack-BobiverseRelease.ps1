@@ -486,7 +486,8 @@ function Stage-Product([string]$Name) {
             $nm = Join-Path $pwSrc 'node_modules\priority-web-sdk'
             # FR #6975: -SkipMsi is a skill-layer stage test, not a release MSI.
             # BUILD isolation may have no npm; do not fail agent-layer [airc].
-            if ($SkipMsi) {
+            $skipNpmCi = [bool]$SkipMsi
+            if ($skipNpmCi) {
                 Write-Host 'WARN airc pack: -SkipMsi skip npm ci (FR #6975 stage-only; release packs still npm ci)'
             } else {
                 $npmCmd = Get-Command npm -ErrorAction SilentlyContinue
@@ -528,6 +529,18 @@ function Stage-Product([string]$Name) {
                 } else {
                     Copy-Item -LiteralPath $_.FullName -Destination $pwDest -Recurse -Force
                 }
+            }
+            # FR #6978: SkipMsi may skip npm ci, but client allowlist / heat still need
+            # airc\priority-worker\node_modules\priority-web-sdk on the stage. Seed a
+            # stage-only stub (never mutate the repo tree). Release packs use real npm ci.
+            $nmDest = Join-Path $pwDest 'node_modules\priority-web-sdk'
+            if ($skipNpmCi -and -not (Test-Path -LiteralPath $nmDest)) {
+                New-Item -ItemType Directory -Force -Path $nmDest | Out-Null
+                $stubPkg = Join-Path $nmDest 'package.json'
+                Set-Content -LiteralPath $stubPkg -Value '{"name":"priority-web-sdk","private":true,"version":"0.0.0-skipmsi"}' -Encoding ascii
+                $stubIdx = Join-Path $nmDest 'index.js'
+                Set-Content -LiteralPath $stubIdx -Value 'module.exports = {}; // FR #6978 SkipMsi stub' -Encoding ascii
+                Write-Host 'WARN airc pack: -SkipMsi seeded stub node_modules/priority-web-sdk (FR #6978)'
             }
             Write-Host 'INFO airc staged airc\priority-worker (FR #5283/#5905)'
         } else {

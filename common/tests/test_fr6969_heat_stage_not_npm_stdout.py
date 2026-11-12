@@ -36,6 +36,21 @@ def test_fr6975_skipmsi_skips_npm_ci():
     assert pw < skip_at < npm_ci_at
 
 
+def test_fr6978_skipmsi_seeds_stub_priority_web_sdk():
+    """FR #6978: SkipMsi still stages node_modules/priority-web-sdk for client allowlist."""
+    p = PACK.read_text(encoding="utf-8")
+    assert "FR #6978" in p
+    assert "seeded stub node_modules/priority-web-sdk" in p
+    assert '0.0.0-skipmsi' in p
+    # Stub is stage-only under $pwDest, after the copy loop, never under repo $pwSrc.
+    seed_at = p.index("seeded stub node_modules/priority-web-sdk")
+    dest_at = p.index("$nmDest = Join-Path $pwDest")
+    copy_end = p.index("INFO airc staged airc\\priority-worker (FR #5283/#5905)")
+    assert dest_at < seed_at < copy_end
+    assert "Set-Content -LiteralPath $stubPkg" in p
+    assert "never mutate the repo tree" in p or "stage-only stub" in p
+
+
 def test_fr6969_ps_join_would_make_uri_path():
     """Document why [string]$Stage + npm stdout is HEAT0001."""
     leaked = [
