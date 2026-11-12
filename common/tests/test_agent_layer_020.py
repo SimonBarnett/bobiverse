@@ -150,6 +150,7 @@ def test_pack_stages_the_agent_layer_for_each_product(tmp_path, prod):
     supports so BUILD seats without PyInstaller still gate the staged skills.
     Named release-blocker was ``[airc]``; airc already had -SkipAircExe — keep
     hermetic for jeeves via -SkipJeevesExe too.
+    FR #6975: -SkipMsi airc stage must not require npm ci (BUILD isolation).
     """
     out = tmp_path / "dist"
     cmd = [

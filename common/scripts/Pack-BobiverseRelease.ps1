@@ -484,25 +484,31 @@ function Stage-Product([string]$Name) {
             # FR #5913: always npm ci so a stale/partial node_modules cannot ship
             # a priority-web-sdk that drifts from package-lock.json.
             $nm = Join-Path $pwSrc 'node_modules\priority-web-sdk'
-            $npmCmd = Get-Command npm -ErrorAction SilentlyContinue
-            if (-not $npmCmd) {
-                throw 'airc pack: npm not on PATH (required for priority-worker npm ci; FR #5905/#5913)'
-            }
-            Write-Host 'INFO airc priority-worker: npm ci --omit=dev (FR #5905/#5913)'
-            Push-Location -LiteralPath $pwSrc
-            try {
-                # FR #6969: capture npm stdout. Native stdout in Stage-Product becomes
-                # extra function output; [string]$Stage then joins "npm notice ... https://..."
-                # and heat.exe HEAT0001 "path format is not supported".
-                $npmOut = & npm ci --omit=dev --no-fund --no-audit 2>&1
-                $npmExit = $LASTEXITCODE
-                foreach ($line in @($npmOut)) { Write-Host ([string]$line) }
-                if ($npmExit -ne 0) { throw "npm ci failed exit=$npmExit (FR #5905/#5913)" }
-            } finally {
-                Pop-Location
-            }
-            if (-not (Test-Path -LiteralPath $nm)) {
-                throw 'airc pack: npm ci did not produce node_modules/priority-web-sdk (FR #5905/#5913)'
+            # FR #6975: -SkipMsi is a skill-layer stage test, not a release MSI.
+            # BUILD isolation may have no npm; do not fail agent-layer [airc].
+            if ($SkipMsi) {
+                Write-Host 'WARN airc pack: -SkipMsi skip npm ci (FR #6975 stage-only; release packs still npm ci)'
+            } else {
+                $npmCmd = Get-Command npm -ErrorAction SilentlyContinue
+                if (-not $npmCmd) {
+                    throw 'airc pack: npm not on PATH (required for priority-worker npm ci; FR #5905/#5913)'
+                }
+                Write-Host 'INFO airc priority-worker: npm ci --omit=dev (FR #5905/#5913)'
+                Push-Location -LiteralPath $pwSrc
+                try {
+                    # FR #6969: capture npm stdout. Native stdout in Stage-Product becomes
+                    # extra function output; [string]$Stage then joins "npm notice ... https://..."
+                    # and heat.exe HEAT0001 "path format is not supported".
+                    $npmOut = & npm ci --omit=dev --no-fund --no-audit 2>&1
+                    $npmExit = $LASTEXITCODE
+                    foreach ($line in @($npmOut)) { Write-Host ([string]$line) }
+                    if ($npmExit -ne 0) { throw "npm ci failed exit=$npmExit (FR #5905/#5913)" }
+                } finally {
+                    Pop-Location
+                }
+                if (-not (Test-Path -LiteralPath $nm)) {
+                    throw 'airc pack: npm ci did not produce node_modules/priority-web-sdk (FR #5905/#5913)'
+                }
             }
             $pwDest = Join-Path $aircExeDir 'priority-worker'
             New-Item -ItemType Directory -Force -Path $pwDest | Out-Null
