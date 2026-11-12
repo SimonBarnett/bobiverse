@@ -1,14 +1,32 @@
-# FR #6864 — process-local skill catalog bound
+# FR #6864 / #6891 — process-local skill catalog bound
 
-## Result
+## Result (corrected by FR #6891)
 
-The lever that works: **do not interpolate the skill-dag index into `worker_prompt` / `--rules`**. The captured prompt names only `skill-dag-core`. The agent child env sets `BOB_SKILL_DAG_BOUND=skill-dag-core`. `~/.grok/config.toml` is not opened.
+S7 is measured with **`grok inspect --json`** (or a running agent prompt), not by
+concatenating `worker_prompt` with a fixed sentence.
 
-## Levers not used
+**Lever that works:** seat-local `GROK_HOME` (copy `auth.json` only; empty
+`skills.paths`; restore `bundled_skill_dirs`) **plus** a **bound agent cwd** under
+the seat `run_dir` (outside the trusted install tree) that contains only
+`skill-dag-core` under `.grok/skills`. MCP config on that cwd uses absolute
+`--root` paths into the real install skill trees. User `~/.grok/config.toml` is
+never opened for `[skills]`. `GROK_CONFIG` is not set for skills/MCP.
 
-| Lever | Why not |
+Vision LOCKED: Grok **bundled** platform skills may remain on the harness.
+
+## Levers measured and rejected
+
+| Lever | Why not / result |
 |---|---|
 | User `[skills]` in `~/.grok/config.toml` | Forbidden (edits Plan-seat / human Grok). |
 | `GROK_CONFIG` overlay for `[skills]` or `[mcp_servers]` | Allowlist drops those tables. |
+| `BOB_SKILL_DAG_BOUND` alone | Harness does not read it. |
+| Project `.grok/config.toml` `disabled` / `ignore` | Does not suppress project skill discovery. |
+| Seat `GROK_HOME` with cwd under trusted `C:\ai\bob` | Drops user/configToml only; still loads every install `.grok/skills`. |
+| `--add-dir` to the install from a bound cwd | Harness refuses: session works only in its cwd. |
 
-S7: `bob/tests/test_fr6864_skill_dag_prompt_bound.py` — 100-node index, none of those ids appear in the captured prompt.
+## Tests
+
+- `bob/tests/test_fr6864_skill_dag_prompt_bound.py`
+  - unit: bound cwd / seat `GROK_HOME` / launch wiring
+  - S7: `grok inspect` on bound cwd with a 100-node fixture outside `.grok/skills`
