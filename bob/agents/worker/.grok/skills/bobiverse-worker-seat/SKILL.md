@@ -41,7 +41,7 @@ read it, do it, reply, stop. Several fast messages may be merged into `FROM (flo
 
 ## Replying
 
-Append lines to the **seat** `outbox.txt` (under `%LOCALAPPDATA%\Bobiverse\worker\run\worker-<nick>-...\outbox.txt`). Prefer `$env:BOB_OUTBOX` (bob-worker sets it for every agent child — FR #2380). Each injected `FROM` line also ends with `[outbox: <path>]` so compaction cannot lose it. **Never** write to the ear's `<ai root>\bob\home\outbox.txt`.
+Append lines to the **seat** `outbox.txt` (under `%LOCALAPPDATA%\Bobiverse\worker\run\worker-<nick>-...\outbox.txt`). Prefer `$env:BOB_OUTBOX` (bob-worker sets it for every agent child — FR #2380). Each injected `FROM` line also ends with `[outbox: <path>]` so compaction cannot lose it. **FR #6917:** if that assigned path vanished, recreate it (Add-BobiverseOutboxLine already mkdir); never glob a newer sibling `worker-*` folder. **Never** write to the ear's `<ai root>\bob\home\outbox.txt`.
 
 ```powershell
 $outbox = $env:BOB_OUTBOX

@@ -387,6 +387,8 @@ routes to bobiverse via the split rule.
 - Skill-dag MCP is stdio-only: resolve FR includes job-irc ancestors and skips unattached UAT; skip over-budget bodies; refuse paths outside --root; no list-all tool.
 - On Windows, Path(www / '/jeeves') is drive-root; skip absolute same-host hrefs in static link resolvers and pin /jeeves as a live route.
 - WinPS 5.1 pytest helpers must shutil.which powershell then pwsh; never hardcode pwsh (FileNotFoundError WinError 2).
+- When launch argv grows (--root packs), pin only args[0] exists; leave extra flags to the FR that added them.
+- Keep the stamped BOB_OUTBOX path: recreate that run dir on inject/drain; never glob the newest worker-* folder.
 
 ## Harvest digest (lessons audit 2026-10-06)
 

@@ -34,8 +34,8 @@ Everything about starting and running a **worker agent** from the bob install (`
 
 ## ALWAYS a NEW agent (CAST IRON, t765u)
 
-Every launch - tray click, command line, or the automatic restart after a hang - starts a **fresh agent**: new session id, new run folder, and (per click) its own single window. The exe never passes `--resume`, `--continue`, `-r` or `-c`, never attaches to or reuses an existing window or process
-(`assert_fresh()` refuses such a command line). A second click makes a second, independent agent with its own IRC nick.
+Every launch - tray click, command line, or the automatic restart after a hang - starts a **fresh agent**: new session id, and (per click) its own single window. Hang-restart **reuses** the same `run_dir` / `BOB_OUTBOX` (FR #6157 / FR #6917) so the FROM `[outbox:]` footer stays valid. A new tray click still gets a new pid uuid run folder. The exe never passes `--resume`, `--continue`, `-r` or `-c`, never attaches to or reuses an existing window or process
+(`assert_fresh()` refuses such a command line). A second click makes a second, independent agent with its own IRC nick. If the assigned outbox path vanished, recreate **that** path (ensure_outbox / Add-BobiverseOutboxLine); never pick a newer sibling `worker-*` folder.
 
 ## ONE window per worker (t771u)
 
@@ -93,7 +93,7 @@ An unknown **Grok** reading is available for seat start (FR #3997). An unknown *
 * **Liveness answered by the exe**: server `PING`->`PONG` at once, CTCP PING/VERSION, and the fleet `ping` / `ping <selector>` in `#<machine>` -> `pong` (selector matches the
   nick or the machine id; prefix/substring/`*`/`?`). Pings are never forwarded to the agent (no wake, no flood).
 * **Reply path (FR #2380)**: the agent appends `PRIVMSG #<machine> :text` (or plain text) lines to `$env:BOB_OUTBOX` (bob-worker sets it on every agent child) or the path in the first instruction / each injected `FROM ... [outbox: <path>]` footer
-  (`%LOCALAPPDATA%\Bobiverse\worker\run\worker-<machine>-<pid>-<id>\outbox.txt`). **Never** the ear's `home\outbox.txt`. Lines for any other target are refused.
+  (`%LOCALAPPDATA%\Bobiverse\worker\run\worker-<machine>-<pid>-<id>\outbox.txt`). Recreate that assigned path if it vanished (FR #6917). **Never** the ear's `home\outbox.txt`. Never glob the newest `worker-*` sibling. Lines for any other target are refused.
 
 ## If IRC is lost: reconnect with grace (FR #3456)
 
@@ -281,3 +281,4 @@ Generalised from 21 harvested lessons that never reached this book (audit for FR
 - skill-dag resolve: fold YAML description: > into one line; seed from the first token of the job line; spend the byte budget on the job skill first and skip later ancestors.
 - skill-dag launch --root must list worker/.grok/skills, bob/.grok/skills, common/.grok/skills, and ~/.grok/skills; Grok FR #6891 bound cwd must get those install roots, not run_dir parent.
 - FIX fold LaunchSpec: keep write_opencode_skill_dag_mcp (FR #6898) and skill_dag_mcp_args plus skill_dag_job_worktree (FR #6899) together.
+- On assign, rewrite grok bound config.toml and cursor .cursor/mcp.json with --job-worktree for that tree only; drop the flag at job end; never write user MCP configs.

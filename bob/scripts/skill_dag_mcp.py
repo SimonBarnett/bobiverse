@@ -170,31 +170,20 @@ class SkillDagServer:
         nodes: dict[str, dict[str, Any]] = {}
         err = ""
         try:
-            for root in self.roots:
-                if not root.is_dir():
-                    continue
-                for skill in root.rglob("SKILL.md"):
-                    if not skill.is_file():
-                        continue
-                    text = skill.read_text(encoding="utf-8")
-                    meta = _parse_frontmatter(text)
-                    sid = str(meta.get("name") or skill.parent.name).strip()
-                    if not sid:
-                        continue
-                    body = text
-                    if text.startswith("---"):
-                        rest = text[3:]
-                        cut = rest.find("\n---")
-                        if cut >= 0:
-                            body = rest[cut + 4 :]
-                    nodes[sid] = {
-                        "id": sid,
-                        "description": str(meta.get("description") or "").strip(),
-                        "depends_on": list(meta.get("depends_on") or []),
-                        "path": str(skill.resolve()),
-                        "bytes": len(text.encode("utf-8")),
-                        "body": body,
-                    }
+            from skill_dag_index import format_name_collisions, scan_skills_with_collisions
+
+            slim, collisions = scan_skills_with_collisions(self.roots)
+            for item in slim:
+                skill = Path(item["path"])
+                text = skill.read_text(encoding="utf-8") if skill.is_file() else ""
+                body = text
+                if text.startswith("---"):
+                    rest = text[3:]
+                    cut = rest.find("\n---")
+                    if cut >= 0:
+                        body = rest[cut + 4 :]
+                nodes[item["id"]] = {**item, "body": body}
+            err = format_name_collisions(collisions)
         except Exception as exc:  # noqa: BLE001
             err = type(exc).__name__
         self.nodes = nodes
