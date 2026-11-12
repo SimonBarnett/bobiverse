@@ -2194,6 +2194,90 @@ def refresh_live_skill_dag_mcp_files(
         write_cursor_skill_dag_mcp_config(str(cursor_cwd), job_worktree=wt)
 
 
+SKILL_DAG_MCP_CMDLINE_NEEDLE = "skill_dag_mcp.py"
+
+
+def _norm_cmdline_path(value: str | Path | None) -> str:
+    return str(value or "").replace("\\", "/").rstrip("/").lower()
+
+
+def skill_dag_mcp_stdio_cmdline_matches(
+    cmdline: str,
+    seat_markers: list[str | Path | None],
+) -> bool:
+    """True when this stdio MCP child belongs to this seat (FR #6928).
+
+    Requires the skill-dag script name plus at least one seat marker (bound cwd,
+    cursor workspace, or job worktree). Never match a sibling seat's child.
+    """
+    cl = _norm_cmdline_path(cmdline)
+    if SKILL_DAG_MCP_CMDLINE_NEEDLE not in cl:
+        return False
+    marks = [_norm_cmdline_path(m) for m in seat_markers if m]
+    return any(mark and mark in cl for mark in marks)
+
+
+def descendant_pids(root_pid: int, rows: list) -> set[int]:
+    """Pids whose parent chain reaches ``root_pid`` (not including root)."""
+    by_pp: dict[int, list[int]] = {}
+    for row in rows or []:
+        try:
+            pid, ppid = int(row[0]), int(row[1])
+        except (TypeError, ValueError, IndexError):
+            continue
+        by_pp.setdefault(ppid, []).append(pid)
+    out: set[int] = set()
+    stack = [int(root_pid)]
+    while stack:
+        cur = stack.pop()
+        for child in by_pp.get(cur, []):
+            if child not in out and child != int(root_pid):
+                out.add(child)
+                stack.append(child)
+    return out
+
+
+def restart_skill_dag_mcp_stdio_children(
+    agent_pid: int | None,
+    seat_markers: list[str | Path | None],
+    *,
+    snapshot: Optional[Callable[[], list]] = None,
+    cmdline_of: Optional[Callable[[int], str]] = None,
+    kill: Optional[Callable[[int], bool]] = None,
+    log: Optional[Callable[[str], None]] = None,
+) -> list[int]:
+    """Terminate this agent tree's skill-dag MCP so grok/cursor respawn with rewritten argv (FR #6928).
+
+    Does not kill the agent. Foreign seats' MCP children are left alone.
+    """
+    killed: list[int] = []
+    try:
+        root = int(agent_pid or 0)
+    except (TypeError, ValueError):
+        root = 0
+    if root <= 0:
+        return killed
+    rows = snapshot() if snapshot is not None else snapshot_procs()
+    describe = cmdline_of if cmdline_of is not None else (lambda pid: str(describe_process(pid)[2] or ""))
+    do_kill = kill if kill is not None else (lambda pid: kill_tree(pid))
+    for pid in sorted(descendant_pids(root, rows)):
+        try:
+            cmd = describe(pid) or ""
+        except Exception:
+            continue
+        if not skill_dag_mcp_stdio_cmdline_matches(cmd, seat_markers):
+            continue
+        try:
+            do_kill(pid)
+            killed.append(pid)
+            if log:
+                log(f"skill-dag mcp restart pid={pid}")
+        except Exception:
+            if log:
+                log(f"skill-dag mcp restart failed pid={pid}")
+    return killed
+
+
 # FR #6898: OpenCode reads project ``opencode.json`` under seat cwd or ``--dir``.
 # Never write user-global ``~/.config/opencode`` / ``%LOCALAPPDATA%\opencode``.
 OPENCODE_SKILL_DAG_MCP_RELPATH = "opencode.json"
@@ -10145,6 +10229,23 @@ class Supervisor:
             )
         except Exception as e:  # noqa: BLE001
             self.log(f"skill-dag mcp job-worktree rewrite skipped {type(e).__name__}")
+            return
+        # FR #6928: file rewrite does not change a live stdio MCP argv until respawn.
+        agent_pid = None
+        try:
+            proc = getattr(self, "proc", None)
+            if proc is not None and getattr(proc, "pid", None):
+                agent_pid = int(proc.pid)
+        except (TypeError, ValueError):
+            agent_pid = None
+        try:
+            restart_skill_dag_mcp_stdio_children(
+                agent_pid,
+                [bound, cursor, vision, job_worktree],
+                log=self.log,
+            )
+        except Exception as e:  # noqa: BLE001
+            self.log(f"skill-dag mcp restart skipped {type(e).__name__}")
 
     def _live_skill_dag_job_end_cleanup(self, job: Optional[str] = None) -> None:
         del job
