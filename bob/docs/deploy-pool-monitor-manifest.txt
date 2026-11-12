@@ -1,5 +1,7 @@
 # Pool-monitor deploy pin
-# Behavior source sha: c85041e84c7a10e964a6e4bd4c18d89a0ec05d2c
+# Behavior source sha: 523450ec4fbb3436f71568d65aa7a4e10fb36861
+# Prior pin (FR #6727): c85041e84c7a10e964a6e4bd4c18d89a0ec05d2c
+# FR #6851: repin after Get-BobOpencodeFuel FR #6745 (stats child sys.path + env).
 # Prior pin (FR #6722): 0db71bfa98b9b84e9f1ce76c81f0ee18c6324aea
 # FR #6727: ProcessStartInfo stats child + BOBIVERSE_PYTHON fallback.
 # Prior pin (FR #6672): 44ea47d36d1e7fbcd3bc2e527af61d8df981bf8f
@@ -49,7 +51,7 @@ c8e4d93871406313ca130f317c59ce3c6de719e6269a59b8c887e163e74a12ca  252282  common
 a5bb5fc9cd58ca4bb4d0926077a2297a91cb68ba833f89949e9019f824566c31  185190  bob/tray/src/Public/Get-BobTrayHover.ps1
 4115f618af32cabe19b474c8de9bb9df52a97927dd8fa4ad6467ea45c72228d4  124609  bob/tray/src/Private/Get-BobIrc.ps1
 d5cd913fba2d77bbd61802af7b3b0d08ad08217d4ab5ab66fa2c97b4e50c9d71  177621  bob/tray/tools/Watch-BobTray.ps1
-77d169f02204f957e82a5ce57e5ea25802c7b82081a76b0c60c7afb0adc6197e  21205  bob/tray/tools/Get-BobOpencodeFuel.ps1
+020c4991dea448278e75a11f2a864644bfb63bbf417c4a87f5a0fdb218995770  22495  bob/tray/tools/Get-BobOpencodeFuel.ps1
 66d15e08212fde38c584a8655508ca6ed0313befa63af4c81cfbb17dec64be39  4132  bob/tray/src/BobBridge.psm1
 0f433f61e89b6da10f6fceacf7b65c5ce18712e9d5ccd9be58b405662124fbbc  6200  bob/scripts/Build-BobEar.ps1
 1e7cbfa19aba50183783341b58fb9ac5b024195a6751687da8a5368941366b2e  1985  bob/scripts/Install-BobEarExe.ps1
