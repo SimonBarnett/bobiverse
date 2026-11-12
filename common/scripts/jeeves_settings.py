@@ -1113,7 +1113,6 @@ def _copilot_public(raw: Any) -> dict[str, Any] | None:
     return out or None
 
 
-
 def api_get_status(
     home: Path,
     *,

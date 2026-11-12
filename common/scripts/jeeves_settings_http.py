@@ -630,6 +630,50 @@ ul{{padding-left:1.2rem;}}
 """
 
 
+def format_copilot_pool_line(pool: Any) -> str:
+    """Tray sentence for the account-wide Copilot pool (FR #6761 / FR-13).
+
+    Matches Format-BobCopilotPoolLine for the appliance HTML line: ``Copilot - N% left``
+    with optional reset/updated labels and a ``[stale]`` marker when the tray would.
+    """
+    if not isinstance(pool, dict) or not pool:
+        return "Copilot - unknown"
+    left = None
+    unlimited = bool(pool.get("unlimited"))
+    state = str(pool.get("state") or "").strip().lower()
+    if unlimited:
+        left = None
+    elif state == "exhausted":
+        left = 0
+    else:
+        rem = pool.get("remaining")
+        if rem is not None and str(rem).strip() != "":
+            try:
+                left = int(rem)
+            except (TypeError, ValueError):
+                left = None
+    stale = bool(pool.get("fuel_stale")) or state == "stale"
+    if left is None:
+        bits = ["Copilot - unknown"]
+        if stale:
+            bits.append("[stale]")
+        return " ".join(bits)
+    mid = f"{int(left)}% left"
+    reset = pool.get("reset_label")
+    if reset is None:
+        reset = pool.get("reset_at")
+    if reset is not None and str(reset).strip():
+        mid = f"{mid} - {str(reset).strip()}"
+    updated = pool.get("updated_label")
+    if updated is None and pool.get("fetched_at"):
+        updated = str(pool.get("fetched_at")).strip()
+    if updated:
+        mid = f"{mid} - {updated}"
+    bits = [f"Copilot - {mid}"]
+    if stale:
+        bits.append("[stale]")
+    return " ".join(bits)
+
 
 def _format_pool_row_pct(row: dict[str, Any]) -> str:
     """FR #6760 row rules: stale -> [stale]; <=0 -> 0% + out of tokens; number -> n%; else n/a."""
@@ -646,8 +690,7 @@ def _format_pool_row_pct(row: dict[str, Any]) -> str:
 
 
 def _render_pools_html(doc: Any) -> str:
-    """Server-render machine Grok pool rows + optional overspend (FR #6760 / #6762)."""
-    # Accept a float/int overage for unit tests; prefer a view dict from api_get_pools.
+    """Machine rows, one Copilot line, optional overspend (FR #6760 / #6761 / #6762)."""
     if isinstance(doc, dict):
         view = doc
         overage = view.get("overage_gbp")
@@ -673,6 +716,8 @@ def _render_pools_html(doc: Any) -> str:
             )
             items.append(f"<li><code>{mid}</code>: {pct}{reset_html}</li>")
         body = "<ul class=\"pools\">" + "".join(items) + "</ul>"
+    copilot = view.get("copilot") if isinstance(view, dict) and "copilot" in view else None
+    copilot_line = html.escape(format_copilot_pool_line(copilot))
     line = format_overspend_line(overage)
     overspend = (
         f'<p class="overage">{html.escape(line)}</p>' if line else ""
@@ -680,21 +725,24 @@ def _render_pools_html(doc: Any) -> str:
     return f"""<!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8"/>
 <title>Jeeves pools</title>
-<style>body{{font-family:system-ui,sans-serif;margin:1.5rem;}} {_shell_css()} code{{font-size:.9em;}} .empty{{color:#456;}} .reset{{color:#456;margin-left:.5rem;}} .overage{{margin-top:1rem;}}</style>
+<style>body{{font-family:system-ui,sans-serif;margin:1.5rem;}} {_shell_css()} code{{font-size:.9em;}} .empty{{color:#456;}} .reset{{color:#456;margin-left:.5rem;}} .copilot{{font-weight:600;margin-top:.8rem;}} .overage{{margin-top:1rem;}}</style>
 </head><body>
 {header}
 <h1>Jeeves pools</h1>
-<p class="note">Grok remaining by machine (FR #6760). Machine rows only.</p>
+<p class="note">Grok remaining by machine (FR #6760) plus Copilot (FR #6761).</p>
 {body}
+<p class="copilot">{copilot_line}</p>
 {overspend}
 </body></html>
 """
+
 
 def _render_status_html(
     status: dict[str, Any],
     *,
     token_graph: dict[str, Any] | None = None,
 ) -> str:
+
     q = status.get("queue") if isinstance(status.get("queue"), dict) else {}
     seats = status.get("seats") if isinstance(status.get("seats"), dict) else {}
     fuel = status.get("fuel") if isinstance(status.get("fuel"), dict) else {}
@@ -985,6 +1033,32 @@ class _Handler(BaseHTTPRequestHandler):
             html = _render_queue_html(unaccepted, accepted)
             self._send(200, html.encode("utf-8"), "text/html; charset=utf-8")
             return
+        if path in ("/pools", "/ui/pools"):
+            gate = auth.require_session(
+                home, client_ip=ip, session_token=tok
+            )
+            if not gate.get("ok"):
+                html = _render_login_html(str(gate.get("error") or "Sign in required"))
+                self._send(200, html.encode("utf-8"), "text/html; charset=utf-8")
+                return
+            err = js.reject_non_lan(ip)
+            if err:
+                self._send_json(403, {"ok": False, "error": err})
+                return
+            view = js.api_get_pools(
+                home,
+                client_ip=ip,
+                digest_home=self.server.digest_home,
+            )
+            if not view.get("ok"):
+                self._send_json(403, view)
+                return
+            if "overage_gbp" not in view:
+                view = dict(view)
+                view["overage_gbp"] = _load_overage_gbp(self.server.digest_home)
+            html = _render_pools_html(view)
+            self._send(200, html.encode("utf-8"), "text/html; charset=utf-8")
+            return
         if path == "/api/status":
             gate = auth.require_session(
                 home, client_ip=ip, session_token=tok
@@ -1015,28 +1089,6 @@ class _Handler(BaseHTTPRequestHandler):
             )
             code = 200 if view.get("ok") else 403
             self._send_json(code, view)
-            return
-        if path in ("/pools", "/ui/pools"):
-            gate = auth.require_session(
-                home, client_ip=ip, session_token=tok
-            )
-            if not gate.get("ok"):
-                html = _render_login_html(str(gate.get("error") or "Sign in required"))
-                self._send(200, html.encode("utf-8"), "text/html; charset=utf-8")
-                return
-            view = js.api_get_pools(
-                home,
-                client_ip=ip,
-                digest_home=self.server.digest_home,
-            )
-            if not view.get("ok"):
-                self._send_json(403, view)
-                return
-            if "overage_gbp" not in view:
-                view = dict(view)
-                view["overage_gbp"] = _load_overage_gbp(self.server.digest_home)
-            page = _render_pools_html(view)
-            self._send(200, page.encode("utf-8"), "text/html; charset=utf-8")
             return
         if path == "/api/pools":
             gate = auth.require_session(
