@@ -13,7 +13,12 @@ A finished Grok or Cursor CLI job records the same measured token fields OpenCod
 2. Cursor. A non-zero local or fixture source stamps the same three fields and `model=`. A missing source, or token fields that are absent or zero, stamps `tokens=unknown`. Issue #6782.
 3. Comparison. The ledger rollup groups measured rows by `model`. Unknown rows increment `unknown_jobs` and do not add into token sums. Issue #6783.
 4. Status page. Inline SVG shows the rollup when measured rows exist. No measured rows: empty copy, no zero bars. Unreadable ledger: error copy, no invented series. Same auth as `/status`. Issue #6784. Mocks: `bob/docs/mocks/cli-token-compare/`.
-5. Login. GET https://bob.ntsa.uk/jeeves returns the login HTML. The page includes `jeeves/assets/jeeves-butler.ico`. `jeeves/www/irc-ntsa/index.html` links to `/jeeves`. A public GET is not a 403. Settings and status still require the existing session cookie. `/bob/v1/*` is unchanged. Issue #6798. Mocks: `bob/docs/mocks/jeeves-login/`.
+5. Login route. GET https://bob.ntsa.uk/jeeves returns the login HTML. A public GET is not a 403. `/bob/v1/*` is unchanged. Issue #6815. Mocks: `bob/docs/mocks/jeeves-login/`.
+6. Butler graphic. The login page includes `jeeves/assets/jeeves-butler.ico`. No new character image. Issue #6816.
+7. Home link. `jeeves/www/irc-ntsa/index.html` links to `/jeeves`. Issue #6818.
+8. Sign-in. The form posts username, optional domain, and password to the existing session login. Passwords are not logged. Issue #6819.
+9. Cookie. Settings and status still require the existing session cookie. Issue #6820.
+10. Doc. `jeeves/docs/jeeves-settings-appliance.md` states https://bob.ntsa.uk/jeeves and no longer tells the operator to browse jeeves.ntsa.uk. Issue #6821. Bundle #6798 is closed.
 
 ## Fail
 

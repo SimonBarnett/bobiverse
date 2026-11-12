@@ -22,7 +22,13 @@ See vision Success S1-S5. S5 is the login page at https://bob.ntsa.uk/jeeves. #6
 - #6783 FR-003 ledger `job_costs.by_model`
 - #6784 FR-004 appliance status token graph
 - #6785 FR-005 `jeeves/VISION.md` hybrid note (docs). Shape stays service.
-- #6798 FR-006 https://bob.ntsa.uk/jeeves login page, existing butler graphic, link from the Bob home page.
+- #6798 FR-006 was the login bundle. It is closed. Implement the six slices.
+- #6815 FR-007 GET /jeeves returns the login page and is not a 403
+- #6816 FR-008 login page shows jeeves/assets/jeeves-butler.ico
+- #6818 FR-009 Bob home page links to /jeeves
+- #6819 FR-010 login form uses the existing session login
+- #6820 FR-011 settings and status stay behind the session cookie
+- #6821 FR-012 appliance doc states https://bob.ntsa.uk/jeeves
 
 ## Anti-omnibus
 
