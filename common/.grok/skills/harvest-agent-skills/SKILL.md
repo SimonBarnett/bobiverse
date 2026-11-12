@@ -5,6 +5,8 @@ description: >
   Use when harvest skills, honesty box, CAST IRON harvest, or /harvest-agent-skills.
   Prefer deterministic scripts over LLM reasoning. Does not dispatch product builds.
 github: https://github.com/SimonBarnett/bobiverse
+depends_on:
+  - harvest
 ---
 
 # harvest-agent-skills (bobiverse)

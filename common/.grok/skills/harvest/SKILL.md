@@ -6,6 +6,7 @@ description: >
   report a gap/bug/FR, or /harvest. Also covers reporting back with no
   GitHub account via POST /bob/v1/intake.
 github: https://github.com/SimonBarnett/bobiverse
+depends_on: []
 ---
 
 # Harvest (honesty box) --- bobiverse
