@@ -389,6 +389,7 @@ routes to bobiverse via the split rule.
 - WinPS 5.1 pytest helpers must shutil.which powershell then pwsh; never hardcode pwsh (FileNotFoundError WinError 2).
 - When launch argv grows (--root packs), pin only args[0] exists; leave extra flags to the FR that added them.
 - Keep the stamped BOB_OUTBOX path: recreate that run dir on inject/drain; never glob the newest worker-* folder.
+- Load compact findings skills by exact id; do not add them as depends_on of the 53KiB MRB book (64KiB resolve cap).
 
 ## Harvest digest (lessons audit 2026-10-06)
 
