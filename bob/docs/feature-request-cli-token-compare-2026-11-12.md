@@ -4,12 +4,12 @@ Repo: `SimonBarnett/bobiverse`. Shape: service.
 
 Vision: `bob/docs/vision-cli-token-compare-2026-11-12.md`
 Spec: `bob/docs/functional-spec-cli-token-compare.md`
-Mocks: `bob/docs/mocks/cli-token-compare/`
+Mocks: `bob/docs/mocks/cli-token-compare/` and `bob/docs/mocks/jeeves-login/`
 FR mirrors: `bob/docs/fr/cli-token-compare/`
 
 ## Success
 
-See vision Success S1-S4.
+See vision Success S1-S5. S5 is the login page at https://bob.ntsa.uk/jeeves. #6757 (PR #6791) landed the old hostname and stays closed.
 
 ## Not the pool pack
 
@@ -22,6 +22,7 @@ See vision Success S1-S4.
 - #6783 FR-003 ledger `job_costs.by_model`
 - #6784 FR-004 appliance status token graph
 - #6785 FR-005 `jeeves/VISION.md` hybrid note (docs). Shape stays service.
+- #6798 FR-006 https://bob.ntsa.uk/jeeves login page, existing butler graphic, link from the Bob home page.
 
 ## Anti-omnibus
 
