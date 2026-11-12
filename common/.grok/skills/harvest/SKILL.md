@@ -380,6 +380,7 @@ routes to bobiverse via the split rule.
 - Appliance queue HTML must use the same repo/task/id/worker whitelist as queue JSON and read queue.json directly so stored worker survives gitclaim coerce.
 - FR-04 settings HTML groups: headings use _opt_esc which encodes less-than but not greater-than; assert no raw script tag, not a full gt entity.
 - FR-012 retarget 6758/6792 doc pins to bob.ntsa.uk/jeeves instead of reopening 6757/6758.
+- When Get-BobOpencodeFuel changes, repin build-bob-ear.yml behavior_source_sha and CRLF manifest hashes; do not weaken the git-diff guard.
 
 ## Harvest digest (lessons audit 2026-10-06)
 
