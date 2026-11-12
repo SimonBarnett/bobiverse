@@ -59,6 +59,8 @@ Socket-layer gate: the server binds only to LAN/loopback and `verify_request` dr
 
 Module: `common/scripts/jeeves_settings_http.py` (started from `ChairJobs` via `maybe_start_from_chair`).
 
+Bool SCHEMA keys render as `input type=checkbox` with `value="1"` when truthy (FR #6750 / FR-02). Save posts `"1"` when ticked and `"0"` when cleared. Secret fields left blank are not PUT. `str` / `int` / `float` stay text inputs.
+
 
 ## Restart-when-idle + status (FR #6443)
 
