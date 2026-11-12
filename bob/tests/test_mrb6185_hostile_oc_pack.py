@@ -12,7 +12,7 @@ from pathlib import Path
 import pytest
 
 from repo_layout import ROOT
-from test_fr6159_oc_pack_layout import _opencode_fuel_fixture_env, _run_opencode_fuel_ps
+from test_fr6159_oc_pack_layout import _assert_fuel_ok, _opencode_fuel_fixture_env, _run_opencode_fuel_ps
 
 OPENCODE_FUEL_PS1 = ROOT / "bob" / "tray" / "tools" / "Get-BobOpencodeFuel.ps1"
 OPENCODE_FUEL_PY = ROOT / "common" / "scripts" / "opencode_fuel.py"
@@ -67,6 +67,4 @@ def test_mrb6185_empty_common_scripts_dir_does_not_block_flat_helper(tmp_path: P
     parsed = _run_opencode_fuel_ps(
         tools / "Get-BobOpencodeFuel.ps1", env=env, cwd=elsewhere
     )
-    assert parsed.get("read_state") == "ok"
-    assert parsed["free"] == 100
-    assert parsed["go"] == 50
+    _assert_fuel_ok(parsed)
