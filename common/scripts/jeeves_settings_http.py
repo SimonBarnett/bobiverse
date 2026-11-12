@@ -206,38 +206,67 @@ def collect_save_puts(controls: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return puts
 
 
+def _render_setting_row(s: dict[str, Any]) -> str:
+    key = s.get("key") or ""
+    typ = s.get("type") or "str"
+    src = s.get("source") or ""
+    restart = " yes" if s.get("restart") else ""
+    desc = (s.get("description") or "").replace("<", "&lt;")
+    secret = bool(s.get("secret"))
+    # FR #6751 / FR-03: show schema default next to the control. Secrets
+    # always render an empty default (never invent or echo a secret).
+    raw_default = "" if secret else str(s.get("default") or "")
+    safe_default_attr = (
+        raw_default.replace("&", "&amp;")
+        .replace('"', "&quot;")
+        .replace("<", "&lt;")
+    )
+    default_text = (
+        raw_default.replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+    )
+    default_cell = (
+        f'<td class="setting-default" data-default="{safe_default_attr}">'
+        f"{default_text}</td>"
+    )
+    inp = render_setting_input(s)
+    return (
+        f"<tr><td><code>{key}</code></td><td>{typ}</td><td>{inp}</td>"
+        f"{default_cell}<td>{src}</td><td>{restart}</td><td>{desc}</td></tr>"
+    )
+
+
 def _render_html(settings: list[dict[str, Any]]) -> str:
-    rows = []
+    by_group: dict[str, list[dict[str, Any]]] = {}
+    extra: list[str] = []
     for s in settings:
-        key = s.get("key") or ""
-        typ = s.get("type") or "str"
-        src = s.get("source") or ""
-        restart = " yes" if s.get("restart") else ""
-        desc = (s.get("description") or "").replace("<", "&lt;")
-        secret = bool(s.get("secret"))
-        # FR #6751 / FR-03: show schema default next to the control. Secrets
-        # always render an empty default (never invent or echo a secret).
-        raw_default = "" if secret else str(s.get("default") or "")
-        safe_default_attr = (
-            raw_default.replace("&", "&amp;")
-            .replace('"', "&quot;")
-            .replace("<", "&lt;")
+        gid = str(s.get("group") or "")
+        if gid not in by_group:
+            extra.append(gid)
+            by_group[gid] = []
+        by_group[gid].append(s)
+    preferred = [g.id for g in js.SETTING_GROUPS]
+    order = [g for g in preferred if g in by_group] + [
+        g for g in extra if g not in preferred
+    ]
+    sections = []
+    thead = (
+        "<thead><tr><th>Key</th><th>Type</th><th>Value</th><th>Default</th>"
+        "<th>Source</th><th>Restart</th><th>Description</th></tr></thead>"
+    )
+    for gid in order:
+        items = by_group[gid]
+        title = str(items[0].get("group_title") or gid or "Settings")
+        gdesc = str(items[0].get("group_description") or "")
+        rows = "\n".join(_render_setting_row(s) for s in items)
+        sections.append(
+            f'<section data-group="{_opt_esc(gid)}">'
+            f"<h2>{_opt_esc(title)}</h2>"
+            f'<p class="group-desc">{_opt_esc(gdesc)}</p>'
+            f"<table>{thead}<tbody>\n{rows}\n</tbody></table></section>"
         )
-        default_text = (
-            raw_default.replace("&", "&amp;")
-            .replace("<", "&lt;")
-            .replace(">", "&gt;")
-        )
-        default_cell = (
-            f'<td class="setting-default" data-default="{safe_default_attr}">'
-            f"{default_text}</td>"
-        )
-        inp = render_setting_input(s)
-        rows.append(
-            f"<tr><td><code>{key}</code></td><td>{typ}</td><td>{inp}</td>"
-            f"{default_cell}<td>{src}</td><td>{restart}</td><td>{desc}</td></tr>"
-        )
-    body = "\n".join(rows)
+    body = "\n".join(sections)
     header = _shell_header(current="settings", include_nav=True)
     return f"""<!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8"/>
@@ -245,12 +274,13 @@ def _render_html(settings: list[dict[str, Any]]) -> str:
 <style>
 body{{font-family:system-ui,sans-serif;margin:1.5rem;}}
 {_shell_css()}
+section{{margin-bottom:1.5rem;}}
 table{{border-collapse:collapse;width:100%;}}
 th,td{{border:1px solid #ccc;padding:.4rem;text-align:left;vertical-align:top;}}
 th{{background:#f4f4f4;}}
 code{{font-size:.9em;}}
 .setting-default{{color:#555;font-family:ui-monospace,monospace;font-size:.9em;}}
-.note{{color:#444;margin-bottom:1rem;}}
+.note,.group-desc{{color:#444;margin-bottom:1rem;}}
 button{{margin-top:1rem;padding:.4rem .8rem;}}
 </style></head><body>
 {header}
@@ -258,11 +288,7 @@ button{{margin-top:1rem;padding:.4rem .8rem;}}
 <p class="note">LAN-only (FR #6440 / #6451). Secrets are write-only (set/unset).
 Session cookie required. Never expose via bob.ntsa.uk.
 Defaults (FR #6751) are shown for non-secret keys; the Value control keeps the current value.</p>
-<table>
-<thead><tr><th>Key</th><th>Type</th><th>Value</th><th>Default</th><th>Source</th><th>Restart</th><th>Description</th></tr></thead>
-<tbody>
 {body}
-</tbody></table>
 <p><button type="button" id="save">Save changed fields</button>
 <span id="status"></span></p>
 <script>
@@ -345,6 +371,7 @@ document.getElementById('f').onsubmit = async (ev) => {{
 
 
 def _queue_row_public(row: Any) -> dict[str, Any]:
+    """Whitelist queue fields for the HTML page (FR #6755; same as FR #6754 JSON)."""
     if not isinstance(row, dict):
         return {}
     out: dict[str, Any] = {}
@@ -407,6 +434,7 @@ body{{font-family:system-ui,sans-serif;margin:1.5rem;}}
 {_shell_css()}
 section{{margin-bottom:1.2rem;}}
 .empty{{color:#444;}}
+ul{{padding-left:1.2rem;}}
 </style></head><body>
 {header}
 <h1>Queue</h1>
