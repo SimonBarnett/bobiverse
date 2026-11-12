@@ -20,3 +20,10 @@ The login form on /jeeves posts username, optional domain, and password to the e
 ## Out of scope
 
 The public GET route (#6815), the butler graphic (#6816), the Bob home-page link (#6818), the settings and status cookie gate (#6820), the appliance doc (#6821), and token graphs (#6784).
+
+## Implementation (MRB #6838)
+
+- GET /login HTML has one account field (ame="account"\) plus optional Domain (ame="domain"\) and password.
+- The form JSON-posts username, domain, and password to POST /api/login (existing session login).
+- Password values are absent from the access log line for that POST.
+- FR #6749 one-account pin stays; older 6756/6763 "no name=domain" pins were updated on PR #6838 because FR-010 requires the optional domain field.
