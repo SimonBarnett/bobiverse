@@ -86,7 +86,7 @@ Login mocks are in `bob/docs/mocks/jeeves-login/`. The image is the existing `je
 ## Already on origin/main
 
 - OpenCode reads `opencode.db` per job directory (FR #6420) and stamps DONE (FR #6387). Per-job delta is FR #6435.
-- Grok `read_grok_usage` reads session totals and `primaryModelId`. It does not walk `modelUsage` (still true at `b429d9b1`).
+- Grok `read_grok_usage` prefers a single counted `modelUsage` entry over `primaryModelId` / session totals (FR #6781). Multi-entry `modelUsage` stays `tokens=unknown`.
 - Cursor stamps only `BOB_CURSOR_USAGE_PATH` or `run/cursor-usage.json`. No live store reader.
 - Digest `job_costs` is the last 20 PRs, not a by-model series.
 - Appliance `/status` lists version, uptime, queue, seats, and fuel names. No token graph.
