@@ -8,6 +8,7 @@ via bob.ntsa.uk / irc.ntsa.uk / Cloudflare.
 """
 from __future__ import annotations
 
+import html
 import json
 import time
 import os
@@ -26,6 +27,51 @@ ENV_ENABLE = ("JEEVES_SETTINGS_HTTP", "JEEVES_SETTINGS_UI")
 ENV_BIND = "JEEVES_SETTINGS_HTTP_BIND"
 ENV_PORT = "JEEVES_SETTINGS_HTTP_PORT"
 SESSION_COOKIE_NAME = "jeeves_appliance_session"
+LOGO_HREF = "/assets/ntsa-gut-logo.png"
+_SCRIPTS_DIR = Path(__file__).resolve().parent
+_REPO_ROOT = _SCRIPTS_DIR.parent.parent
+_TRAY_LOGO = _REPO_ROOT / "bob" / "tray" / "assets" / "ntsa-gut-logo.png"
+_PACK_LOGO = (
+    _REPO_ROOT
+    / "jeeves"
+    / "docs"
+    / "appliance-ui-20261112"
+    / "mocks"
+    / "ntsa-gut-logo.png"
+)
+
+
+def ntsa_gut_logo_path() -> Path:
+    """Git logo bytes: tray asset, else the docs pack copy (same file, no new art)."""
+    if _TRAY_LOGO.is_file():
+        return _TRAY_LOGO
+    return _PACK_LOGO
+
+
+def _shell_header(*, current: str, include_nav: bool) -> str:
+    img = f'<img src="{LOGO_HREF}" alt="NTSA"/>'
+    if not include_nav:
+        return f"<header>{img}<strong>Jeeves</strong></header>"
+    links = [
+        ("/", "Settings", "settings"),
+        ("/queue", "Queue", "queue"),
+        ("/status", "Status", "status"),
+        ("/logout", "Log out", "logout"),
+    ]
+    parts = []
+    for href, label, key in links:
+        cur = ' aria-current="page"' if current == key else ""
+        parts.append(f'<a href="{href}"{cur}>{label}</a>')
+    nav = "<nav>" + " · ".join(parts) + "</nav>"
+    return f"<header>{img}<strong>Jeeves</strong>{nav}</header>"
+
+
+def _shell_css() -> str:
+    return (
+        "header{display:flex;align-items:center;gap:1rem;margin-bottom:1rem;}"
+        "header img{height:36px;width:36px;}"
+        "nav{margin-left:auto;}"
+    )
 
 
 def settings_http_enabled() -> bool:
@@ -139,11 +185,13 @@ def _render_html(settings: list[dict[str, Any]]) -> str:
             f"<td>{src}</td><td>{restart}</td><td>{desc}</td></tr>"
         )
     body = "\n".join(rows)
+    header = _shell_header(current="settings", include_nav=True)
     return f"""<!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8"/>
 <title>Jeeves appliance settings</title>
 <style>
 body{{font-family:system-ui,sans-serif;margin:1.5rem;}}
+{_shell_css()}
 table{{border-collapse:collapse;width:100%;}}
 th,td{{border:1px solid #ccc;padding:.4rem;text-align:left;vertical-align:top;}}
 th{{background:#f4f4f4;}}
@@ -151,10 +199,10 @@ code{{font-size:.9em;}}
 .note{{color:#444;margin-bottom:1rem;}}
 button{{margin-top:1rem;padding:.4rem .8rem;}}
 </style></head><body>
+{header}
 <h1>Jeeves appliance settings</h1>
 <p class="note">LAN-only (FR #6440 / #6451). Secrets are write-only (set/unset).
-Session cookie required. Never expose via bob.ntsa.uk.
-<a href="/status">Status</a> · <a href="/logout">Log out</a></p>
+Session cookie required. Never expose via bob.ntsa.uk.</p>
 <table>
 <thead><tr><th>Key</th><th>Type</th><th>Value</th><th>Source</th><th>Restart</th><th>Description</th></tr></thead>
 <tbody>
@@ -195,21 +243,24 @@ document.getElementById('save').onclick = save;
 def _render_login_html(error: str = "") -> str:
     err = (error or "").replace("<", "&lt;")
     note = f'<p class="note" style="color:#a00">{err}</p>' if err else ""
+    header = _shell_header(current="login", include_nav=False)
     return f"""<!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8"/>
 <title>Jeeves settings login</title>
 <style>
 body{{font-family:system-ui,sans-serif;margin:1.5rem;max-width:28rem;}}
+{_shell_css()}
 label{{display:block;margin:.6rem 0 .2rem;}}
 input{{width:100%;padding:.4rem;box-sizing:border-box;}}
 button{{margin-top:1rem;padding:.4rem .8rem;}}
 .note{{color:#444;}}
 </style></head><body>
+{header}
 <h1>Jeeves settings login</h1>
 <p class="note">LAN-only AD/Windows or CredMan (FR #6441 / #6451). Passwords are never logged.</p>
 {note}
 <form id="f">
-<label>Account<input name="account" autocomplete="username" required placeholder="DOMAIN\\user or user@domain"/></label>
+<label>User name<input name="account" autocomplete="username" required placeholder="DOMAIN\\user or user@domain"/></label>
 <label>Password<input name="password" type="password" autocomplete="current-password" required/></label>
 <button type="submit">Sign in</button>
 <span id="status"></span>
@@ -238,18 +289,98 @@ document.getElementById('f').onsubmit = async (ev) => {{
 """
 
 
+def _queue_row_public(row: Any) -> dict[str, Any]:
+    if not isinstance(row, dict):
+        return {}
+    out: dict[str, Any] = {}
+    for key in ("repo", "task", "id"):
+        val = row.get(key)
+        if val is None or str(val).strip() == "":
+            continue
+        out[key] = val
+    worker = row.get("worker")
+    if worker is None or str(worker).strip() == "":
+        worker = row.get("nick")
+    if worker is not None and str(worker).strip() != "":
+        out["worker"] = str(worker)
+    return out
+
+
+def _load_queue_public_lists(digest_home: Path) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    unaccepted: list[dict[str, Any]] = []
+    accepted: list[dict[str, Any]] = []
+    try:
+        import gitclaim
+
+        path = gitclaim.queue_path(Path(digest_home))
+        raw: dict[str, Any] = {}
+        if path.is_file():
+            parsed = json.loads(path.read_text(encoding="utf-8-sig"))
+            if isinstance(parsed, dict):
+                raw = parsed
+        unaccepted = [_queue_row_public(r) for r in (raw.get("unaccepted") or [])]
+        accepted = [_queue_row_public(r) for r in (raw.get("accepted") or [])]
+    except Exception:
+        pass
+    return unaccepted, accepted
+
+
+def _render_queue_list(rows: list[dict[str, Any]], empty_copy: str) -> str:
+    if not rows:
+        return f'<p class="empty">{html.escape(empty_copy)}</p>'
+    items = []
+    for row in rows:
+        bits = [html.escape(str(row[k])) for k in ("repo", "task", "id") if k in row]
+        line = " ".join(bits)
+        if row.get("worker"):
+            line = f"{line} · {html.escape(str(row['worker']))}"
+        items.append(f"<li>{line}</li>")
+    return "<ul>" + "".join(items) + "</ul>"
+
+
+def _render_queue_html(
+    unaccepted: list[dict[str, Any]], accepted: list[dict[str, Any]]
+) -> str:
+    waiting = _render_queue_list(unaccepted, "Nothing is waiting.")
+    progress = _render_queue_list(accepted, "Nothing is in progress.")
+    header = _shell_header(current="queue", include_nav=True)
+    return f"""<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8"/>
+<title>Jeeves queue</title>
+<style>
+body{{font-family:system-ui,sans-serif;margin:1.5rem;}}
+{_shell_css()}
+section{{margin-bottom:1.2rem;}}
+.empty{{color:#444;}}
+</style></head><body>
+{header}
+<h1>Queue</h1>
+<section>
+<h2>Waiting</h2>
+{waiting}
+</section>
+<section>
+<h2>In progress</h2>
+{progress}
+</section>
+</body></html>
+"""
+
+
 def _render_status_html(status: dict[str, Any]) -> str:
     q = status.get("queue") if isinstance(status.get("queue"), dict) else {}
     seats = status.get("seats") if isinstance(status.get("seats"), dict) else {}
     fuel = status.get("fuel") if isinstance(status.get("fuel"), dict) else {}
     pending = "yes" if status.get("restart_pending") else "no"
+    header = _shell_header(current="status", include_nav=True)
     return f"""<!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8"/>
 <title>Jeeves status</title>
-<style>body{{font-family:system-ui,sans-serif;margin:1.5rem;}} code{{font-size:.9em;}}</style>
+<style>body{{font-family:system-ui,sans-serif;margin:1.5rem;}} {_shell_css()} code{{font-size:.9em;}}</style>
 </head><body>
+{header}
 <h1>Jeeves status</h1>
-<p class="note">Read-only (FR #6443). No secrets. <a href="/">Settings</a></p>
+<p class="note">Read-only (FR #6443). No secrets.</p>
 <ul>
 <li>version: <code>{status.get("version") or ""}</code></li>
 <li>source_commit: <code>{status.get("source_commit") or ""}</code></li>
@@ -405,6 +536,13 @@ class _Handler(BaseHTTPRequestHandler):
         path = urlparse(self.path).path
         home = self.server.home
         tok = self._session_token()
+        if path == LOGO_HREF:
+            logo = ntsa_gut_logo_path()
+            if not logo.is_file():
+                self._send_json(404, {"ok": False, "error": "not found"})
+                return
+            self._send(200, logo.read_bytes(), "image/png")
+            return
         if path in ("/login", "/ui/login"):
             html = _render_login_html()
             self._send(200, html.encode("utf-8"), "text/html; charset=utf-8")
@@ -477,6 +615,24 @@ class _Handler(BaseHTTPRequestHandler):
                 self._send_json(403, view)
                 return
             html = _render_status_html(view)
+            self._send(200, html.encode("utf-8"), "text/html; charset=utf-8")
+            return
+        if path in ("/queue", "/ui/queue"):
+            gate = auth.require_session(
+                home, client_ip=ip, session_token=tok
+            )
+            if not gate.get("ok"):
+                html = _render_login_html(str(gate.get("error") or "Sign in required"))
+                self._send(200, html.encode("utf-8"), "text/html; charset=utf-8")
+                return
+            err = js.reject_non_lan(ip)
+            if err:
+                self._send_json(403, {"ok": False, "error": err})
+                return
+            unaccepted, accepted = _load_queue_public_lists(
+                self.server.digest_home
+            )
+            html = _render_queue_html(unaccepted, accepted)
             self._send(200, html.encode("utf-8"), "text/html; charset=utf-8")
             return
         if path == "/api/status":

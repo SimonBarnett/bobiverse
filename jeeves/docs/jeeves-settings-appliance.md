@@ -54,6 +54,7 @@ Off by default. On the chair host (walrus), set NSSM / process env and restart `
 Browse `http://jeeves.ntsa.uk:7701/` from a LAN client (or `http://127.0.0.1:7701/` on the host).
 JSON: `GET /api/settings`, `PUT /api/settings/<KEY>`, `POST /api/rollback`, `GET /api/schema`,
 `GET /api/status`, `POST /api/restart-when-idle`.
+HTML shell (FR #6756): login, settings, status, and queue share a header with `/assets/ntsa-gut-logo.png` (bytes of `bob/tray/assets/ntsa-gut-logo.png`). Authed pages link Settings, Queue, Status, Log out. Login omits Log out.
 
 Socket-layer gate: the server binds only to LAN/loopback and `verify_request` drops non-RFC1918 peers before handlers run. Helpers also reject non-LAN `client_ip`.
 
@@ -68,7 +69,9 @@ Bool SCHEMA keys render as `input type=checkbox` with `value="1"` when truthy (F
 
 Read-only status (LAN only):
 
-- HTML: `GET /status`
+- HTML: `GET /status` (shared shell + NTSA logo, FR #6756)
+- HTML: `GET /queue` (same shell; waiting / in-progress lists)
+- Asset: `GET /assets/ntsa-gut-logo.png` — PNG bytes of `bob/tray/assets/ntsa-gut-logo.png` (LAN; no session)
 - JSON: `GET /api/status` — `version`, `source_commit`, `uptime_s`, `queue`, `seats`, `fuel` (no secrets)
 
 Restart `ircJeeves` only when the accepted queue is empty (no review/job running):
