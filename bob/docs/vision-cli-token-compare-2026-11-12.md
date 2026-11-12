@@ -97,7 +97,7 @@ Login mocks are in `bob/docs/mocks/jeeves-login/`. The image is the existing `je
 - Appliance `/status` lists version, uptime, queue, seats, and fuel names, plus the FR #6784 / S4 by-model token graph (home / empty / error; `unknown_jobs` as text).
 - `jeeves/VISION.md` still says chair companions are not a website. Shape stays service.
 - Open appliance pack #6751 and siblings paints pool remaining percent. FR #6759 drops token fields. That pack is not this comparison.
-- Public home is `jeeves/www/irc-ntsa/index.html` on bob.ntsa.uk. It has no `/jeeves` link yet.
+- Public home is `jeeves/www/irc-ntsa/index.html` on bob.ntsa.uk. FR #6818 / PR #6837 added `href="/jeeves"`.
 - Login HTML is `_render_login_html` in `common/scripts/jeeves_settings_http.py`. It has no butler image.
 - The butler graphic already exists at `jeeves/assets/jeeves-butler.ico`.
 - #6757 (PR #6791) added an internal `https://jeeves.ntsa.uk/` front door and left the non-RFC1918 reject in place. FR #6821 / PR #6842 set the appliance operator URL to `https://bob.ntsa.uk/jeeves`. Do not extend the old hostname.
