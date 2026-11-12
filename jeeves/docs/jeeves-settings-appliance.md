@@ -78,6 +78,7 @@ Read-only status (LAN only):
 
 - HTML: `GET /status` (shared shell + NTSA logo, FR #6756)
 - HTML: `GET /queue` (same shell; waiting / in-progress lists)
+- HTML: `GET /pools` — one overspend line when `overage_gbp` is greater than 0: the word overspend, the pound sign, and two decimals (FR #6762). Null, missing, or 0 omit the line. Once per page, not per machine.
 - Asset: `GET /assets/ntsa-gut-logo.png` — PNG bytes of `bob/tray/assets/ntsa-gut-logo.png` (LAN; no session)
 - JSON: `GET /api/status` — `version`, `source_commit`, `uptime_s`, `queue`, `seats`, `fuel` (no secrets)
 - JSON: `GET /api/queue` (FR #6754) — `ok`, `unaccepted`, `accepted`; each row is `repo`, `task`, `id`, optional `worker` (from stored `worker`, else `nick`). Other queue fields are dropped. Same secret-shape refusal as status.
