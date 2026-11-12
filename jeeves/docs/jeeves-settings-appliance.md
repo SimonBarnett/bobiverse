@@ -53,7 +53,7 @@ Off by default. On the chair host (walrus), set NSSM / process env and restart `
 
 Browse `http://jeeves.ntsa.uk:7701/` from a LAN client (or `http://127.0.0.1:7701/` on the host).
 JSON: `GET /api/settings`, `PUT /api/settings/<KEY>`, `POST /api/rollback`, `GET /api/schema`,
-`GET /api/status`, `GET /api/queue` (FR #6754), `POST /api/restart-when-idle`.
+`GET /api/status`, `GET /api/queue` (FR #6754), `GET /api/pools` (FR #6759), `POST /api/restart-when-idle`.
 HTML shell (FR #6756): login, settings, status, and queue share a header with `/assets/ntsa-gut-logo.png` (bytes of `bob/tray/assets/ntsa-gut-logo.png`). Authed pages link Settings, Queue, Status, Log out. Login omits Log out.
 
 `GET /api/settings` includes a `default` field per row (schema default; secrets return `""`).
@@ -80,6 +80,7 @@ Read-only status (LAN only):
 - Asset: `GET /assets/ntsa-gut-logo.png` — PNG bytes of `bob/tray/assets/ntsa-gut-logo.png` (LAN; no session)
 - JSON: `GET /api/status` — `version`, `source_commit`, `uptime_s`, `queue`, `seats`, `fuel` (no secrets)
 - JSON: `GET /api/queue` (FR #6754) — `ok`, `unaccepted`, `accepted`; each row is `repo`, `task`, `id`, optional `worker` (from stored `worker`, else `nick`). Other queue fields are dropped. Same secret-shape refusal as status.
+- JSON: `GET /api/pools` (FR #6759) — `ok`, `machines[]` (`id`, `remaining_pct`, `fuel_stale`, `reset_label`), optional `copilot` (`remaining`, `state`, `reset_at`, `fetched_at`, `unlimited`, `used`, `max_recorded_usage`), `overage_gbp`. `remaining_pct` 0 stays 0; null stays null. Tokens and seat email are dropped.
 
 Restart `ircJeeves` only when the accepted queue is empty (no review/job running):
 
