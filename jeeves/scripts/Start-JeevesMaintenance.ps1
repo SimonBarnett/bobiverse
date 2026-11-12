@@ -15,6 +15,19 @@ param(
     [switch]$DryRun
 )
 $ErrorActionPreference = 'Stop'
+$cmEarly = Join-Path $PSScriptRoot 'Bobiverse-Common.ps1'
+if (-not (Test-Path -LiteralPath $cmEarly)) {
+    $cmEarly = Join-Path (Split-Path -Parent (Split-Path -Parent $PSScriptRoot)) 'common\scripts\Bobiverse-Common.ps1'
+}
+if (Test-Path -LiteralPath $cmEarly) {
+    . $cmEarly
+    if (Get-Command Test-BobiverseIsChairHost -ErrorAction SilentlyContinue) {
+        if (-not (Test-BobiverseIsChairHost)) {
+            Write-Host 'skip reason=not_chair_host FR #6953'
+            exit 0
+        }
+    }
+}
 if (-not $InstallRoot) {
     $cm = Join-Path $PSScriptRoot 'Bobiverse-Common.ps1'
     if (-not (Test-Path -LiteralPath $cm)) {

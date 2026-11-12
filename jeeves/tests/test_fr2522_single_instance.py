@@ -26,10 +26,12 @@ def test_fr2522_two_concurrent_triggers_one_agent(tmp_path):
         r1 = jm.try_start_maintenance_agent(
             home=home, heal_exit=1, now=10_000.0, cooldown_s=1.0,
             spawn_fn=slow_spawn, resolve_cwd=lambda: work, resolve_exe=lambda _c: exe,
+            is_chair_host=True,
         )
         r2 = jm.try_start_maintenance_agent(
             home=home, heal_exit=1, now=10_000.1, cooldown_s=1.0,
             spawn_fn=slow_spawn, resolve_cwd=lambda: work, resolve_exe=lambda _c: exe,
+            is_chair_host=True,
         )
         assert r1.action == "spawn" and r1.pid == 9001
         assert r2.action == "skip" and "already_live" in r2.reason
