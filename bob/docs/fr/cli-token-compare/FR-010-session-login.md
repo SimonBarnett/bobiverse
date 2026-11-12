@@ -23,7 +23,7 @@ The public GET route (#6815), the butler graphic (#6816), the Bob home-page link
 
 ## Implementation (MRB #6838)
 
-- GET /login HTML has one account field (ame="account"\) plus optional Domain (ame="domain"\) and password.
+- Login HTML has one account field (name="account") plus optional Domain (name="domain") and password.
 - The form JSON-posts username, domain, and password to POST /api/login (existing session login).
 - Password values are absent from the access log line for that POST.
-- FR #6749 one-account pin stays; older 6756/6763 "no name=domain" pins were updated on PR #6838 because FR-010 requires the optional domain field.
+- FR #6749 one-account pin stays; the old no-name=domain HTML pin was updated on PR #6838 because FR-010 requires the optional domain field.
