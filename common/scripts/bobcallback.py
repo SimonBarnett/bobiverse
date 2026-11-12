@@ -31,6 +31,7 @@ import jira_webhook
 import webhook_queue
 
 REPORT_PATH = "/bob/v1/report"
+JEEVES_LOGIN_PATH = "/jeeves"
 GIT_WEBHOOK_PATH = "/bob/v1/git"
 INTAKE_PATH = "/bob/v1/intake"
 JIRA_PATH = "/bob/v1/jira"
@@ -45,7 +46,7 @@ DEFAULT_HEALTH_WATCHDOG_S = 30.0
 PUBLIC_DIGEST_PATH = REPORT_PATH
 CLI_DESCRIPTION = (
     "POST /bob/v1/report|/bob/v1/git|/bob/v1/intake|/bob/v1/jira|/bob/v1/hours; "
-    "front-door GET is /bob/v1/report (local bobcallback also serves /bob/v1/digest); "
+    "front-door GET is /bob/v1/report|/jeeves (local bobcallback also serves /bob/v1/digest); "
     "GET /bob/v1/jira; GET|POST /bob/v1/hours"
 )
 ALLOW_ENV = "BOB_REPORT_ALLOW"
@@ -661,6 +662,16 @@ def handle_request(
     """Pure request handler. No sockets, no secret, no ChanServ. Public GET digest; POST validated."""
     verb = (method or "").upper()
     route = (path or "").split("?", 1)[0]
+    jeeves_route = route.rstrip("/") or "/"
+    # FR #6815: public GET /jeeves on bob.ntsa.uk is the appliance login HTML (never 403).
+    if verb in ("GET", "HEAD") and jeeves_route == JEEVES_LOGIN_PATH:
+        import jeeves_settings_http as _jhttp
+
+        html = _jhttp._render_login_html()
+        payload = html.encode("utf-8")
+        if verb == "HEAD":
+            return 200, b""
+        return 200, payload
     # FR #1136: local health (lock age / digest writable); not the public IIS front-door.
     if verb in ("GET", "HEAD") and route == HEALTH_PATH:
         code, payload = handle_health_get(home)
@@ -854,7 +865,9 @@ def make_handler(
             if payload:
                 ctype = "application/json; charset=utf-8"
                 route = self.path.split("?", 1)[0]
-                if route == JIRA_PATH and method == "POST" and code == 400:
+                if (route.rstrip("/") or "/") == JEEVES_LOGIN_PATH:
+                    ctype = "text/html; charset=utf-8"
+                elif route == JIRA_PATH and method == "POST" and code == 400:
                     ctype = "text/plain; charset=utf-8"
                 elif (
                     route == HOURS_PATH + "/export"
