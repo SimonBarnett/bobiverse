@@ -96,11 +96,18 @@ def test_fr6453_front_page_keeps_acme_and_webhooks_section():
 def test_fr6453_front_page_links_resolve():
     index = WWW / "index.html"
     html = index.read_text(encoding="utf-8")
-    for href in _collect_hrefs(html):
+    hrefs = _collect_hrefs(html)
+    # FR #6818: appliance login is a live site path, not a static file under www/.
+    assert any(h.rstrip("/") == "/jeeves" for h in hrefs), "front page must link to /jeeves"
+    for href in hrefs:
         if href.startswith(("http://", "https://", "mailto:", "#")):
             continue
-        # Live API paths on the same host are not static files in www/.
-        if href.startswith("/bob/") or href == "/":
+        # Live site/API paths on the same host are not static files in www/.
+        # /jeeves is the appliance UI (FR #6818); /bob/* are webhook routes.
+        if href == "/" or href.startswith("/bob/") or href.rstrip("/") == "/jeeves":
+            continue
+        # Windows: Path(parent / "/abs") becomes drive-root absolute (e.g. D:\jeeves).
+        if href.startswith("/"):
             continue
         target = (index.parent / href).resolve()
         assert target.is_file(), f"broken front-page link {href} -> {target}"
