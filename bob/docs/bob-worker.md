@@ -4,6 +4,7 @@
 
 One compiled program, `<ai root>\bob\worker\bob-worker.exe` (`scripts/bob_worker.py`, built by `scripts/Build-BobWorker.ps1` with PyInstaller, 11 MB, built into the bob MSI by
 `Pack-BobiverseRelease.ps1`), starts ONE agent and - in agent mode - owns the IRC connection. Skills text for agents: `.grok/skills/bobiverse-bob-worker`, `-plan`, `-job-irc`, `-job-fr`, `-job-mrb`, `-job-uat`.
+FR #6862: local stdio MCP `bob/scripts/skill_dag_mcp.py` (`--root`, `--max-bytes`) exposes `resolve`, `get_skill`, and `status` only (no list-all, no listen port). Launch-prompt wiring is a later FR.
 
 ## Rules (all enforced in code and tests)
 
