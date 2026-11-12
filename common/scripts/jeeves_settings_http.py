@@ -713,9 +713,14 @@ class _Handler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:  # noqa: N802
         ip = _client_ip(self)
+        path = urlparse(self.path).path
+        # FR #6815: public GET /jeeves is login HTML; LAN reject must not 403 this page.
+        if path.rstrip("/") == "/jeeves":
+            html = _render_login_html()
+            self._send(200, html.encode("utf-8"), "text/html; charset=utf-8")
+            return
         if self._refuse_non_lan(ip):
             return
-        path = urlparse(self.path).path
         home = self.server.home
         tok = self._session_token()
         if path == LOGO_HREF:
