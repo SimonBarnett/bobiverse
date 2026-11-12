@@ -73,6 +73,7 @@ class SettingSpec:
     restart: bool
     secret: bool = False
     description: str = ""
+    choices: tuple[str, ...] = ()
 
 
 def _spec(
@@ -84,6 +85,7 @@ def _spec(
     restart: bool = False,
     secret: bool = False,
     description: str = "",
+    choices: tuple[str, ...] = (),
 ) -> SettingSpec:
     return SettingSpec(
         key=key,
@@ -93,6 +95,7 @@ def _spec(
         restart=restart,
         secret=secret or typ == "secret",
         description=description,
+        choices=tuple(choices or ()),
     )
 
 
@@ -363,6 +366,7 @@ def api_get_settings(home: Path, *, client_ip: str) -> dict[str, Any]:
                 "restart": bool(spec.restart),
                 "secret": bool(spec.secret),
                 "description": spec.description,
+                "choices": list(spec.choices),
             }
         )
     return {"ok": True, "settings": rows}

@@ -63,6 +63,8 @@ Module: `common/scripts/jeeves_settings_http.py` (started from `ChairJobs` via `
 
 Bool SCHEMA keys render as `input type=checkbox` with `value="1"` when truthy (FR #6750 / FR-02). Save posts `"1"` when ticked and `"0"` when cleared. Secret fields left blank are not PUT. `str` / `int` / `float` stay text inputs.
 
+`SettingSpec.choices` defaults to `()`. A non-empty list on a non-bool setting renders a `<select>` (FR #6753 / FR-05). The current value is selected; a value not in the list is added as an extra selected option so save does not silently change it. Bools stay checkboxes. Today's SCHEMA keys have empty choices (paths, URLs, and seconds stay text).
+
 
 ## Restart-when-idle + status (FR #6443)
 

@@ -85,21 +85,43 @@ def _truthy_setting(raw: Any) -> bool:
     return str(raw or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _opt_esc(raw: Any) -> str:
+    return (
+        str(raw)
+        .replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace('"', "&quot;")
+    )
+
+
 def render_setting_input(s: dict[str, Any]) -> str:
-    """HTML control for one schema row (FR #6750: bool => checkbox)."""
+    """HTML control: bool checkbox (FR #6750); non-empty choices => select (FR #6753)."""
     key = str(s.get("key") or "")
     typ = str(s.get("type") or "str")
-    val = s.get("value") or ""
+    val = "" if s.get("value") is None else str(s.get("value"))
     secret = bool(s.get("secret")) or typ == "secret"
     if secret:
         return (
-            f'<input name="{key}" type="password" placeholder="{val}" '
+            f'<input name="{key}" type="password" placeholder="{_opt_esc(val)}" '
             f'autocomplete="off" data-secret="1"/>'
         )
     if typ == "bool":
         checked = " checked" if _truthy_setting(val) else ""
         return f'<input name="{key}" type="checkbox" value="1"{checked}/>'
-    safe = str(val).replace('"', "&quot;")
+    raw_choices = s.get("choices") or ()
+    choices = [str(c) for c in raw_choices if str(c) != ""]
+    if choices:
+        cur = val
+        opts = list(choices)
+        # Empty current value is outside the list too (FR #6753); keep it selected.
+        if cur not in opts:
+            opts.append(cur)
+        parts = []
+        for c in opts:
+            sel = " selected" if c == cur else ""
+            parts.append(f'<option value="{_opt_esc(c)}"{sel}>{_opt_esc(c)}</option>')
+        return f'<select name="{key}">{"".join(parts)}</select>'
+    safe = _opt_esc(val)
     return f'<input name="{key}" type="text" value="{safe}"/>'
 
 
@@ -166,7 +188,7 @@ Session cookie required. Never expose via bob.ntsa.uk.
 async function save() {{
   const status = document.getElementById('status');
   status.textContent = 'saving…';
-  const inputs = document.querySelectorAll('input[name]');
+  const inputs = document.querySelectorAll('input[name], select[name]');
   let ok = 0, fail = 0;
   for (const el of inputs) {{
     const key = el.name;
