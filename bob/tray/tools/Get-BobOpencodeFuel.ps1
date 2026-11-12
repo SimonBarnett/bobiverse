@@ -160,8 +160,13 @@ try {
             $out.read_state = 'parser_missing'
             $py = 'python.exe'
         }
-        $script = @'
-import json, sys, opencode_fuel
+        # FR #6745: bake helper dir into the child. Isolated ProcessStartInfo env
+        # (release runner) may drop PYTHONPATH; sys.path.insert does not need it.
+        $pyDirJson = if ($pyDir) { ConvertTo-Json -Compress -InputObject ([string]$pyDir) } else { '""' }
+        $script = @"
+import json, sys
+sys.path.insert(0, $pyDirJson)
+import opencode_fuel
 # FR #6737: ProcessStartInfo StreamWriter may emit UTF-8 BOM; json.loads rejects U+FEFF.
 raw = sys.stdin.buffer.read().decode('utf-8-sig')
 windowed = json.loads(raw)
@@ -184,7 +189,7 @@ else:
         s['free_model_ids'] = list(dict.fromkeys(s.get('free_model_ids', []) + free_model_ids))
         parsed[k] = s
     print(json.dumps(opencode_fuel.fuel_from_windowed_stats(parsed)))
-'@
+"@
         # Pass stats text via stdin: Windows PowerShell 5.1 can strip embedded quotes when
         # they are passed as a native argument, which breaks parsing.
         $payload = (@{ models = $modelsOutput } + $statsByWindow) | ConvertTo-Json -Compress -Depth 3
@@ -209,6 +214,15 @@ else:
             $psi.RedirectStandardOutput = $true
             $psi.RedirectStandardError = $true
             $psi.CreateNoWindow = $true
+            # FR #6745: copy this process env onto the child. Accessing
+            # EnvironmentVariables on some hosts starts empty and would drop PATH
+            # / PYTHONPATH so python cannot import opencode_fuel.
+            try {
+                $envMap = [System.Environment]::GetEnvironmentVariables()
+                foreach ($k in @($envMap.Keys)) {
+                    try { $psi.EnvironmentVariables[[string]$k] = [string]$envMap[$k] } catch { }
+                }
+            } catch { }
             if ($pyDir) {
                 try {
                     $psi.EnvironmentVariables['PYTHONPATH'] = "$pyDir;$($psi.EnvironmentVariables['PYTHONPATH'])"
