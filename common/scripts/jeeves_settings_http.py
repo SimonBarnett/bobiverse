@@ -56,6 +56,7 @@ def _shell_header(*, current: str, include_nav: bool) -> str:
     links = [
         ("/", "Settings", "settings"),
         ("/queue", "Queue", "queue"),
+        ("/pools", "Pools", "pools"),
         ("/status", "Status", "status"),
         ("/logout", "Log out", "logout"),
     ]
@@ -419,6 +420,108 @@ section{{margin-bottom:1.2rem;}}
 """
 
 
+def format_copilot_pool_line(pool: Any) -> str:
+    """Tray sentence for the account-wide Copilot pool (FR #6761 / FR-13).
+
+    Matches Format-BobCopilotPoolLine for the appliance HTML line: ``Copilot - N% left``
+    with optional reset/updated labels and a ``[stale]`` marker when the tray would.
+    """
+    if not isinstance(pool, dict) or not pool:
+        return "Copilot - unknown"
+    left = None
+    unlimited = bool(pool.get("unlimited"))
+    state = str(pool.get("state") or "").strip().lower()
+    if unlimited:
+        left = None
+    elif state == "exhausted":
+        left = 0
+    else:
+        rem = pool.get("remaining")
+        if rem is not None and str(rem).strip() != "":
+            try:
+                left = int(rem)
+            except (TypeError, ValueError):
+                left = None
+    stale = bool(pool.get("fuel_stale")) or state == "stale"
+    if left is None:
+        bits = ["Copilot - unknown"]
+        if stale:
+            bits.append("[stale]")
+        return " ".join(bits)
+    mid = f"{int(left)}% left"
+    reset = pool.get("reset_label")
+    if reset is None:
+        reset = pool.get("reset_at")
+    if reset is not None and str(reset).strip():
+        mid = f"{mid} - {str(reset).strip()}"
+    updated = pool.get("updated_label")
+    if updated is None and pool.get("fetched_at"):
+        updated = str(pool.get("fetched_at")).strip()
+    if updated:
+        mid = f"{mid} - {updated}"
+    bits = [f"Copilot - {mid}"]
+    if stale:
+        bits.append("[stale]")
+    return " ".join(bits)
+
+
+def _format_machine_pool_row(row: dict[str, Any]) -> str:
+    """One machine row for GET /pools (FR-12 shape; FR-13 sits under these)."""
+    mid = html.escape(str(row.get("id") or "").strip() or "?")
+    if bool(row.get("fuel_stale")):
+        return f"<li>{mid} [stale]</li>"
+    pct = row.get("remaining_pct")
+    if pct is None:
+        label = "n/a"
+    else:
+        try:
+            n = int(pct)
+        except (TypeError, ValueError):
+            label = "n/a"
+        else:
+            label = f"{n}%"
+            if n == 0:
+                label = f"{label} out of tokens"
+    reset = row.get("reset_label")
+    extra = f" · {html.escape(str(reset))}" if reset else ""
+    return f"<li>{mid} ({label}){extra}</li>"
+
+
+def _render_pools_html(view: dict[str, Any]) -> str:
+    """GET /pools: machine rows then one Copilot line (FR #6761)."""
+    machines = view.get("machines") if isinstance(view.get("machines"), list) else []
+    if machines:
+        rows_html = "<ul>" + "".join(
+            _format_machine_pool_row(r if isinstance(r, dict) else {})
+            for r in machines
+        ) + "</ul>"
+    else:
+        rows_html = '<p class="empty">No pool readings.</p>'
+    copilot = view.get("copilot") if "copilot" in view else None
+    copilot_line = html.escape(format_copilot_pool_line(copilot))
+    header = _shell_header(current="pools", include_nav=True)
+    return f"""<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8"/>
+<title>Jeeves pools</title>
+<style>
+body{{font-family:system-ui,sans-serif;margin:1.5rem;}}
+{_shell_css()}
+section{{margin-bottom:1.2rem;}}
+.empty{{color:#444;}}
+ul{{list-style:none;padding:0;margin:0 0 1rem;}}
+li{{padding:.35rem 0;border-top:1px solid #eee;}}
+.copilot{{font-weight:600;margin-top:.8rem;}}
+</style></head><body>
+{header}
+<h1>Pools</h1>
+<section>
+{rows_html}
+<p class="copilot">{copilot_line}</p>
+</section>
+</body></html>
+"""
+
+
 def _render_status_html(status: dict[str, Any]) -> str:
     q = status.get("queue") if isinstance(status.get("queue"), dict) else {}
     seats = status.get("seats") if isinstance(status.get("seats"), dict) else {}
@@ -694,6 +797,29 @@ class _Handler(BaseHTTPRequestHandler):
                 self.server.digest_home
             )
             html = _render_queue_html(unaccepted, accepted)
+            self._send(200, html.encode("utf-8"), "text/html; charset=utf-8")
+            return
+        if path in ("/pools", "/ui/pools"):
+            gate = auth.require_session(
+                home, client_ip=ip, session_token=tok
+            )
+            if not gate.get("ok"):
+                html = _render_login_html(str(gate.get("error") or "Sign in required"))
+                self._send(200, html.encode("utf-8"), "text/html; charset=utf-8")
+                return
+            err = js.reject_non_lan(ip)
+            if err:
+                self._send_json(403, {"ok": False, "error": err})
+                return
+            view = js.api_get_pools(
+                home,
+                client_ip=ip,
+                digest_home=self.server.digest_home,
+            )
+            if not view.get("ok"):
+                self._send_json(403, view)
+                return
+            html = _render_pools_html(view)
             self._send(200, html.encode("utf-8"), "text/html; charset=utf-8")
             return
         if path == "/api/status":

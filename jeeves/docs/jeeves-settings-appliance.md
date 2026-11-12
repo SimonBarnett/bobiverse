@@ -78,6 +78,7 @@ Read-only status (LAN only):
 
 - HTML: `GET /status` (shared shell + NTSA logo, FR #6756)
 - HTML: `GET /queue` (same shell; waiting / in-progress lists)
+- HTML: `GET /pools` (same shell; machine rows then one account-wide Copilot line, FR #6761 / FR-13). Missing Copilot pool renders `Copilot - unknown`; a stale pool keeps `[stale]` and the last percent when the tray would.
 - Asset: `GET /assets/ntsa-gut-logo.png` — PNG bytes of `bob/tray/assets/ntsa-gut-logo.png` (LAN; no session)
 - JSON: `GET /api/status` — `version`, `source_commit`, `uptime_s`, `queue`, `seats`, `fuel` (no secrets)
 - JSON: `GET /api/queue` (FR #6754) — `ok`, `unaccepted`, `accepted`; each row is `repo`, `task`, `id`, optional `worker` (from stored `worker`, else `nick`). Other queue fields are dropped. Same secret-shape refusal as status.
