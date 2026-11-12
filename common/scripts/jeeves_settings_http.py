@@ -131,21 +131,43 @@ def _truthy_setting(raw: Any) -> bool:
     return str(raw or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _opt_esc(raw: Any) -> str:
+    return (
+        str(raw)
+        .replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace('"', "&quot;")
+    )
+
+
 def render_setting_input(s: dict[str, Any]) -> str:
-    """HTML control for one schema row (FR #6750: bool => checkbox)."""
+    """HTML control: bool checkbox (FR #6750); non-empty choices => select (FR #6753)."""
     key = str(s.get("key") or "")
     typ = str(s.get("type") or "str")
-    val = s.get("value") or ""
+    val = "" if s.get("value") is None else str(s.get("value"))
     secret = bool(s.get("secret")) or typ == "secret"
     if secret:
         return (
-            f'<input name="{key}" type="password" placeholder="{val}" '
+            f'<input name="{key}" type="password" placeholder="{_opt_esc(val)}" '
             f'autocomplete="off" data-secret="1"/>'
         )
     if typ == "bool":
         checked = " checked" if _truthy_setting(val) else ""
         return f'<input name="{key}" type="checkbox" value="1"{checked}/>'
-    safe = str(val).replace('"', "&quot;")
+    raw_choices = s.get("choices") or ()
+    choices = [str(c) for c in raw_choices if str(c) != ""]
+    if choices:
+        cur = val
+        opts = list(choices)
+        # Empty current value is outside the list too (FR #6753); keep it selected.
+        if cur not in opts:
+            opts.append(cur)
+        parts = []
+        for c in opts:
+            sel = " selected" if c == cur else ""
+            parts.append(f'<option value="{_opt_esc(c)}"{sel}>{_opt_esc(c)}</option>')
+        return f'<select name="{key}">{"".join(parts)}</select>'
+    safe = _opt_esc(val)
     return f'<input name="{key}" type="text" value="{safe}"/>'
 
 
@@ -179,10 +201,28 @@ def _render_html(settings: list[dict[str, Any]]) -> str:
         src = s.get("source") or ""
         restart = " yes" if s.get("restart") else ""
         desc = (s.get("description") or "").replace("<", "&lt;")
+        secret = bool(s.get("secret"))
+        # FR #6751 / FR-03: show schema default next to the control. Secrets
+        # always render an empty default (never invent or echo a secret).
+        raw_default = "" if secret else str(s.get("default") or "")
+        safe_default_attr = (
+            raw_default.replace("&", "&amp;")
+            .replace('"', "&quot;")
+            .replace("<", "&lt;")
+        )
+        default_text = (
+            raw_default.replace("&", "&amp;")
+            .replace("<", "&lt;")
+            .replace(">", "&gt;")
+        )
+        default_cell = (
+            f'<td class="setting-default" data-default="{safe_default_attr}">'
+            f"{default_text}</td>"
+        )
         inp = render_setting_input(s)
         rows.append(
             f"<tr><td><code>{key}</code></td><td>{typ}</td><td>{inp}</td>"
-            f"<td>{src}</td><td>{restart}</td><td>{desc}</td></tr>"
+            f"{default_cell}<td>{src}</td><td>{restart}</td><td>{desc}</td></tr>"
         )
     body = "\n".join(rows)
     header = _shell_header(current="settings", include_nav=True)
@@ -196,15 +236,17 @@ table{{border-collapse:collapse;width:100%;}}
 th,td{{border:1px solid #ccc;padding:.4rem;text-align:left;vertical-align:top;}}
 th{{background:#f4f4f4;}}
 code{{font-size:.9em;}}
+.setting-default{{color:#555;font-family:ui-monospace,monospace;font-size:.9em;}}
 .note{{color:#444;margin-bottom:1rem;}}
 button{{margin-top:1rem;padding:.4rem .8rem;}}
 </style></head><body>
 {header}
 <h1>Jeeves appliance settings</h1>
 <p class="note">LAN-only (FR #6440 / #6451). Secrets are write-only (set/unset).
-Session cookie required. Never expose via bob.ntsa.uk.</p>
+Session cookie required. Never expose via bob.ntsa.uk.
+Defaults (FR #6751) are shown for non-secret keys; the Value control keeps the current value.</p>
 <table>
-<thead><tr><th>Key</th><th>Type</th><th>Value</th><th>Source</th><th>Restart</th><th>Description</th></tr></thead>
+<thead><tr><th>Key</th><th>Type</th><th>Value</th><th>Default</th><th>Source</th><th>Restart</th><th>Description</th></tr></thead>
 <tbody>
 {body}
 </tbody></table>
@@ -214,7 +256,7 @@ Session cookie required. Never expose via bob.ntsa.uk.</p>
 async function save() {{
   const status = document.getElementById('status');
   status.textContent = 'saving…';
-  const inputs = document.querySelectorAll('input[name]');
+  const inputs = document.querySelectorAll('input[name], select[name]');
   let ok = 0, fail = 0;
   for (const el of inputs) {{
     const key = el.name;
@@ -647,6 +689,21 @@ class _Handler(BaseHTTPRequestHandler):
                 client_ip=ip,
                 digest_home=self.server.digest_home,
                 started=self.server.started,
+            )
+            code = 200 if view.get("ok") else 403
+            self._send_json(code, view)
+            return
+        if path == "/api/queue":
+            gate = auth.require_session(
+                home, client_ip=ip, session_token=tok
+            )
+            if not gate.get("ok"):
+                self._send_json(self._auth_code(gate), gate)
+                return
+            view = js.api_get_queue(
+                home,
+                client_ip=ip,
+                digest_home=self.server.digest_home,
             )
             code = 200 if view.get("ok") else 403
             self._send_json(code, view)
