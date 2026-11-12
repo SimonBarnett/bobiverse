@@ -8,6 +8,7 @@ via bob.ntsa.uk / irc.ntsa.uk / Cloudflare.
 """
 from __future__ import annotations
 
+import html
 import json
 import time
 import os
@@ -154,7 +155,7 @@ button{{margin-top:1rem;padding:.4rem .8rem;}}
 <h1>Jeeves appliance settings</h1>
 <p class="note">LAN-only (FR #6440 / #6451). Secrets are write-only (set/unset).
 Session cookie required. Never expose via bob.ntsa.uk.
-<a href="/status">Status</a> · <a href="/logout">Log out</a></p>
+<a href="/queue">Queue</a> · <a href="/status">Status</a> · <a href="/logout">Log out</a></p>
 <table>
 <thead><tr><th>Key</th><th>Type</th><th>Value</th><th>Source</th><th>Restart</th><th>Description</th></tr></thead>
 <tbody>
@@ -234,6 +235,91 @@ document.getElementById('f').onsubmit = async (ev) => {{
   status.textContent = j.error || ('HTTP ' + r.status);
 }};
 </script>
+</body></html>
+"""
+
+
+def _queue_row_public(row: Any) -> dict[str, Any]:
+    """Whitelist queue fields for the HTML page (FR #6755; same as FR #6754 JSON)."""
+    if not isinstance(row, dict):
+        return {}
+    out: dict[str, Any] = {}
+    for key in ("repo", "task", "id"):
+        val = row.get(key)
+        if val is None or str(val).strip() == "":
+            continue
+        out[key] = val
+    worker = row.get("worker")
+    if worker is None or str(worker).strip() == "":
+        worker = row.get("nick")
+    if worker is not None and str(worker).strip() != "":
+        out["worker"] = str(worker)
+    return out
+
+
+def _load_queue_public_lists(digest_home: Path) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    unaccepted: list[dict[str, Any]] = []
+    accepted: list[dict[str, Any]] = []
+    try:
+        import gitclaim
+
+        path = gitclaim.queue_path(Path(digest_home))
+        raw: dict[str, Any] = {}
+        if path.is_file():
+            parsed = json.loads(path.read_text(encoding="utf-8-sig"))
+            if isinstance(parsed, dict):
+                raw = parsed
+        unaccepted = [
+            _queue_row_public(r) for r in (raw.get("unaccepted") or [])
+        ]
+        accepted = [_queue_row_public(r) for r in (raw.get("accepted") or [])]
+    except Exception:
+        pass
+    return unaccepted, accepted
+
+
+def _render_queue_list(rows: list[dict[str, Any]], empty_copy: str) -> str:
+    if not rows:
+        return f'<p class="empty">{html.escape(empty_copy)}</p>'
+    items = []
+    for row in rows:
+        bits = [
+            html.escape(str(row[k]))
+            for k in ("repo", "task", "id")
+            if k in row
+        ]
+        line = " ".join(bits)
+        if row.get("worker"):
+            line = f"{line} · {html.escape(str(row['worker']))}"
+        items.append(f"<li>{line}</li>")
+    return "<ul>" + "".join(items) + "</ul>"
+
+
+def _render_queue_html(
+    unaccepted: list[dict[str, Any]], accepted: list[dict[str, Any]]
+) -> str:
+    waiting = _render_queue_list(unaccepted, "Nothing is waiting.")
+    progress = _render_queue_list(accepted, "Nothing is in progress.")
+    return f"""<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8"/>
+<title>Jeeves queue</title>
+<style>
+body{{font-family:system-ui,sans-serif;margin:1.5rem;}}
+section{{margin-bottom:1.2rem;}}
+.empty{{color:#444;}}
+ul{{padding-left:1.2rem;}}
+</style></head><body>
+<h1>Queue</h1>
+<p class="note"><a href="/">Settings</a> · <a href="/status">Status</a> ·
+<a href="/logout">Log out</a></p>
+<section>
+<h2>Waiting</h2>
+{waiting}
+</section>
+<section>
+<h2>In progress</h2>
+{progress}
+</section>
 </body></html>
 """
 
@@ -477,6 +563,24 @@ class _Handler(BaseHTTPRequestHandler):
                 self._send_json(403, view)
                 return
             html = _render_status_html(view)
+            self._send(200, html.encode("utf-8"), "text/html; charset=utf-8")
+            return
+        if path in ("/queue", "/ui/queue"):
+            gate = auth.require_session(
+                home, client_ip=ip, session_token=tok
+            )
+            if not gate.get("ok"):
+                html = _render_login_html(str(gate.get("error") or "Sign in required"))
+                self._send(200, html.encode("utf-8"), "text/html; charset=utf-8")
+                return
+            err = js.reject_non_lan(ip)
+            if err:
+                self._send_json(403, {"ok": False, "error": err})
+                return
+            unaccepted, accepted = _load_queue_public_lists(
+                self.server.digest_home
+            )
+            html = _render_queue_html(unaccepted, accepted)
             self._send(200, html.encode("utf-8"), "text/html; charset=utf-8")
             return
         if path == "/api/status":
