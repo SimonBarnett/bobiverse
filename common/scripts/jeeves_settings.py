@@ -4,6 +4,7 @@ Off by default: importing this module never starts a server.
 FR #6442: migrate NSSM/env inventory into appliance-settings.json and apply
 file-backed values into the process environment (env still overrides).
 FR #6443: restart-when-idle (ircJeeves only) + read-only status.
+FR #6754: read-only queue JSON (GET /api/queue).
 HTTP UI is FR #6440; Auth/sessions: jeeves_settings_auth (FR #6441).
 """
 
@@ -764,6 +765,72 @@ def tick_restart_when_idle(
     }
 
 
+def _appliance_secret_shape_error(doc: dict[str, Any]) -> dict[str, Any] | None:
+    """Belt-and-braces: refuse JSON that still looks like a secret (FR #6443 / #6754)."""
+    blob = json.dumps(doc)
+    lowered = blob.lower()
+    for bad in ("bearer ", "ghs_", "password=", "gh_token"):
+        if bad in lowered:
+            return {"ok": False, "error": "forbidden: secret-shaped payload"}
+    return None
+
+
+def _queue_row_public(row: Any) -> dict[str, Any]:
+    """Whitelist queue JSON fields: repo, task, id, worker (FR #6754)."""
+    if not isinstance(row, dict):
+        return {}
+    out: dict[str, Any] = {}
+    for key in ("repo", "task", "id"):
+        val = row.get(key)
+        if val is None or str(val).strip() == "":
+            continue
+        out[key] = val
+    worker = row.get("worker")
+    if worker is None or str(worker).strip() == "":
+        worker = row.get("nick")
+    if worker is not None and str(worker).strip() != "":
+        out["worker"] = str(worker)
+    return out
+
+
+def api_get_queue(
+    home: Path,
+    *,
+    client_ip: str,
+    digest_home: Path | None = None,
+) -> dict[str, Any]:
+    """Read-only queue JSON: unaccepted/accepted rows, whitelist only. No secrets."""
+    err = reject_non_lan(client_ip)
+    if err:
+        return {"ok": False, "error": err}
+    dig = Path(digest_home) if digest_home is not None else Path(home)
+    unaccepted: list[Any] = []
+    accepted: list[Any] = []
+    try:
+        import gitclaim
+
+        # Read the file, not load_unaccepted: coerce drops ``worker``.
+        path = gitclaim.queue_path(dig)
+        raw: dict[str, Any] = {}
+        if path.is_file():
+            parsed = json.loads(path.read_text(encoding="utf-8-sig"))
+            if isinstance(parsed, dict):
+                raw = parsed
+        unaccepted = list(raw.get("unaccepted") or [])
+        accepted = list(raw.get("accepted") or [])
+    except Exception:
+        pass
+    out = {
+        "ok": True,
+        "unaccepted": [_queue_row_public(r) for r in unaccepted],
+        "accepted": [_queue_row_public(r) for r in accepted],
+    }
+    refuse = _appliance_secret_shape_error(out)
+    if refuse:
+        return refuse
+    return out
+
+
 def api_get_status(
     home: Path,
     *,
@@ -844,11 +911,8 @@ def api_get_status(
         "restart_pending": bool(pending),
         "service": RESTART_SERVICE_NAME,
     }
-    # Belt-and-braces: never echo env secrets.
-    blob = json.dumps(out)
-    for bad in ("Bearer ", "ghs_", "password=", "GH_TOKEN"):
-        if bad.lower() in blob.lower() and bad != "GH_TOKEN":
-            # structural keys only; values must not contain token shapes
-            pass
+    refuse = _appliance_secret_shape_error(out)
+    if refuse:
+        return refuse
     return out
 

@@ -517,6 +517,21 @@ class _Handler(BaseHTTPRequestHandler):
             code = 200 if view.get("ok") else 403
             self._send_json(code, view)
             return
+        if path == "/api/queue":
+            gate = auth.require_session(
+                home, client_ip=ip, session_token=tok
+            )
+            if not gate.get("ok"):
+                self._send_json(self._auth_code(gate), gate)
+                return
+            view = js.api_get_queue(
+                home,
+                client_ip=ip,
+                digest_home=self.server.digest_home,
+            )
+            code = 200 if view.get("ok") else 403
+            self._send_json(code, view)
+            return
         self._send_json(404, {"ok": False, "error": "not found"})
 
     def do_PUT(self) -> None:  # noqa: N802

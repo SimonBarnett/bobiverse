@@ -53,7 +53,7 @@ Off by default. On the chair host (walrus), set NSSM / process env and restart `
 
 Browse `http://jeeves.ntsa.uk:7701/` from a LAN client (or `http://127.0.0.1:7701/` on the host).
 JSON: `GET /api/settings`, `PUT /api/settings/<KEY>`, `POST /api/rollback`, `GET /api/schema`,
-`GET /api/status`, `POST /api/restart-when-idle`.
+`GET /api/status`, `GET /api/queue` (FR #6754), `POST /api/restart-when-idle`.
 
 Socket-layer gate: the server binds only to LAN/loopback and `verify_request` drops non-RFC1918 peers before handlers run. Helpers also reject non-LAN `client_ip`.
 
@@ -66,12 +66,16 @@ Bool SCHEMA keys render as `input type=checkbox` with `value="1"` when truthy (F
 `SettingSpec.choices` defaults to `()`. A non-empty list on a non-bool setting renders a `<select>` (FR #6753 / FR-05). The current value is selected; a value not in the list is added as an extra selected option so save does not silently change it. Bools stay checkboxes. Today's SCHEMA keys have empty choices (paths, URLs, and seconds stay text).
 
 
+Bool SCHEMA keys render as `input type=checkbox` with `value="1"` when truthy (FR #6750 / FR-02). Save posts `"1"` when ticked and `"0"` when cleared. Secret fields left blank are not PUT. `str` / `int` / `float` stay text inputs.
+
+
 ## Restart-when-idle + status (FR #6443)
 
 Read-only status (LAN only):
 
 - HTML: `GET /status`
 - JSON: `GET /api/status` — `version`, `source_commit`, `uptime_s`, `queue`, `seats`, `fuel` (no secrets)
+- JSON: `GET /api/queue` (FR #6754) — `ok`, `unaccepted`, `accepted`; each row is `repo`, `task`, `id`, optional `worker` (from stored `worker`, else `nick`). Other queue fields are dropped. Same secret-shape refusal as status.
 
 Restart `ircJeeves` only when the accepted queue is empty (no review/job running):
 
