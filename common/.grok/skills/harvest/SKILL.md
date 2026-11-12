@@ -379,6 +379,7 @@ routes to bobiverse via the split rule.
 - Two shared distinctive tokens are not a harvest twin; require a phrase or >=5 tokens and print the covering PR url.
 - Appliance queue HTML must use the same repo/task/id/worker whitelist as queue JSON and read queue.json directly so stored worker survives gitclaim coerce.
 - FR-04 settings HTML groups: headings use _opt_esc which encodes less-than but not greater-than; assert no raw script tag, not a full gt entity.
+- Bored-latency heal must count !recycleseat by machine slot in a rolling window; a new seat PID must not reset the recycle budget or the chair will loop forever.
 
 ## Harvest digest (lessons audit 2026-10-06)
 
