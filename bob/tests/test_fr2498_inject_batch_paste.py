@@ -86,6 +86,9 @@ def test_inject_console_clipboard_path_few_writes(monkeypatch):
     FR #6703: inject_console now gates paste on clipboard_set_verified (FR #4115).
     Mocking only ``_clipboard_set_unicode`` leaves readback None → clipboard_fallback
     → 268 KEY_EVENT records for a typical FROM line. Echo get after set.
+
+    FR #6729: force paste=1. Earlier start_agent(cursor|opencode) tests leak
+    BOB_WORKER_INJECT_PASTE=0 into the process (batched KEY_EVENT, writes[0]=268).
     """
     writes = []
     held = {"t": None}
@@ -97,6 +100,7 @@ def test_inject_console_clipboard_path_few_writes(monkeypatch):
     def fake_get(log=None):
         return held["t"]
 
+    monkeypatch.setenv("BOB_WORKER_INJECT_PASTE", "1")
     monkeypatch.setattr(bw, "_clipboard_set_unicode", fake_set)
     monkeypatch.setattr(bw, "_clipboard_get_unicode", fake_get)
     monkeypatch.setattr(bw, "schedule_clipboard_restore", lambda *a, **k: None)

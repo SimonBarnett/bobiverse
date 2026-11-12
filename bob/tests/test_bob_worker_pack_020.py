@@ -146,12 +146,17 @@ def test_tray_second_click_starts_a_second_new_process_from_the_same_run_copy(tm
 @WIN
 def test_tray_click_from_a_hidden_tray_opens_one_visible_console_window(tmp_path):
     """t787u regression: the tray is a HIDDEN powershell; the worker exe must get its OWN visible console (it ran invisibly
-    inside the tray's hidden console before). cmd.exe stands in for the exe: it ignores the tray's flags and stays alive."""
+    inside the tray's hidden console before). cmd.exe stands in for the exe: it ignores the tray's flags and stays alive.
+
+    FR #6729: Session 0 (flamingo isolated SYSTEM suite) has no interactive desktop;
+    EnumWindows will not see ConsoleWindowClass. Skip with a durable reason.
+    """
     import os
     import time
 
-    if not os.environ.get("SESSIONNAME") and not os.environ.get("USERNAME"):
-        pytest.skip("needs an interactive session")
+    import win_interactive_desktop as wid
+
+    wid.skip_unless_interactive_desktop()
     fake = tmp_path / "inst"
     (fake / "worker").mkdir(parents=True)
     (fake / "plan").mkdir()
