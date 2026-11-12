@@ -1784,7 +1784,6 @@ def worker_prompt(worker_dir: str, home: str, machine: str, nick: str) -> str:
         f"Your working folder is {worker_dir}. FIRST read {worker_dir}\\AGENTS.md and the process-local core stub "
         f"(skill-dag-core). Do not list other skill-dag index nodes in this prompt; resolve per job: call skill-dag MCP resolve then get_skill "
         f"(do not read every skill in {worker_dir}\\.grok\\skills). "
-        f"(start with bobiverse-worker-seat, then bobiverse-bob-worker, harvest). "
         f"You are on IRC as {nick} in #{machine} only; this program keeps the connection. Messages from IRC arrive as typed input of the form "
         f"'FROM <nick> <target> <text>' - treat each as the task, answer by appending 'PRIVMSG #{machine} :<text>' to the seat outbox. "
         f"Outbox path: use $env:BOB_OUTBOX (set by bob-worker) or {outbox} - NEVER the ear's home\\outbox.txt. "
