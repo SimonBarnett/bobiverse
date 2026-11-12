@@ -13,9 +13,10 @@ if not HARVEST.is_file():
     HARVEST = ROOT / "scripts" / "Invoke-BobiverseHarvest.ps1"
 
 
-def test_four_shared_tokens_are_not_a_twin():
-    existing = "alpha bravo charlie delta extra"
-    new = "alpha bravo charlie delta foxtrot"
+def test_three_shared_tokens_without_a_phrase_are_not_a_twin():
+    # Shared alpha/bravo/delta but no 3 consecutive distinctive phrase.
+    existing = "alpha bravo zebra delta echo"
+    new = "alpha bravo charlie delta"
     assert not _ps_overlap(existing, new)
 
 
