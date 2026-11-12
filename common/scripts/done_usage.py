@@ -263,14 +263,47 @@ def _load_json(path: Path | str | None) -> Any:
         return None
 
 
+def _grok_model_usage_map(doc: Mapping[str, Any], session: Mapping[str, Any]) -> dict[str, Any] | None:
+    """Return the ``modelUsage`` dict from session or document root, if present."""
+    for container in (session, doc):
+        raw = container.get("modelUsage")
+        if isinstance(raw, dict):
+            return raw
+    return None
+
+
+def _grok_counted_model_usage(model_usage: Mapping[str, Any]) -> list[tuple[str, dict[str, Any]]]:
+    """Entries with a non-empty model key and a dict body (FR #6781 counted rows)."""
+    out: list[tuple[str, dict[str, Any]]] = []
+    for key, entry in model_usage.items():
+        mid = str(key or "").strip()
+        if not mid or not isinstance(entry, dict):
+            continue
+        out.append((mid, entry))
+    return out
+
+
 def read_grok_usage(path: Path | str | None) -> dict[str, Any]:
-    """Read ``~/.grok/sessions/.../<uuid>/usage.json`` (usage only; no auth files)."""
+    """Read ``~/.grok/sessions/.../<uuid>/usage.json`` (usage only; no auth files).
+
+    FR #6781: when ``modelUsage`` has exactly one counted entry, that entry's
+    model id and token fields win over a different ``primaryModelId`` / session
+    totals. More than one counted entry stays ``tokens=unknown``.
+    """
     doc = _load_json(path)
     if not isinstance(doc, dict):
         return _empty(unknown=True)
     session = doc.get("session") if isinstance(doc.get("session"), dict) else doc
     if not isinstance(session, dict):
         return _empty(unknown=True)
+    model_usage = _grok_model_usage_map(doc, session)
+    if model_usage is not None:
+        counted = _grok_counted_model_usage(model_usage)
+        if len(counted) > 1:
+            return _empty(unknown=True)
+        if len(counted) == 1:
+            mid, entry = counted[0]
+            return _from_token_map(entry, model=mid, default_provider="xai")
     model = (
         session.get("primaryModelId")
         or doc.get("primaryModelId")
