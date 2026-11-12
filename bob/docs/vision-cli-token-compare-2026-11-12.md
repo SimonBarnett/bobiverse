@@ -100,7 +100,7 @@ Login mocks are in `bob/docs/mocks/jeeves-login/`. The image is the existing `je
 - Public home is `jeeves/www/irc-ntsa/index.html` on bob.ntsa.uk. It has no `/jeeves` link yet.
 - Login HTML is `_render_login_html` in `common/scripts/jeeves_settings_http.py`. It has no butler image.
 - The butler graphic already exists at `jeeves/assets/jeeves-butler.ico`.
-- #6757 (PR #6791) added an internal `https://jeeves.ntsa.uk/` front door and left the non-RFC1918 reject in place. The appliance doc still says not to publish the UI on bob.ntsa.uk. S5 replaces that entry URL. Do not extend the old hostname.
+- #6757 (PR #6791) added an internal `https://jeeves.ntsa.uk/` front door and left the non-RFC1918 reject in place. FR #6821 / PR #6842 set the appliance operator URL to `https://bob.ntsa.uk/jeeves`. Do not extend the old hostname.
 
 ## Out of scope
 
