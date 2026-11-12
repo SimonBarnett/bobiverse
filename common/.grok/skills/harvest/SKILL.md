@@ -6,6 +6,7 @@ description: >
   report a gap/bug/FR, or /harvest. Also covers reporting back with no
   GitHub account via POST /bob/v1/intake.
 github: https://github.com/SimonBarnett/bobiverse
+depends_on: []
 ---
 
 # Harvest (honesty box) --- bobiverse
@@ -382,6 +383,7 @@ routes to bobiverse via the split rule.
 - FR-04 settings HTML groups: headings use _opt_esc which encodes less-than but not greater-than; assert no raw script tag, not a full gt entity.
 - FR-012 retarget 6758/6792 doc pins to bob.ntsa.uk/jeeves instead of reopening 6757/6758.
 - When Get-BobOpencodeFuel changes, repin build-bob-ear.yml behavior_source_sha and CRLF manifest hashes; do not weaken the git-diff guard.
+- Skill-dag MCP is stdio-only: resolve FR includes job-irc ancestors and skips unattached UAT; skip over-budget bodies; refuse paths outside --root; no list-all tool.
 
 ## Harvest digest (lessons audit 2026-10-06)
 
