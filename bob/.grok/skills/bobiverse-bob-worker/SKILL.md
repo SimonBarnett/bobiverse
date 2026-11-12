@@ -280,3 +280,4 @@ Generalised from 21 harvested lessons that never reached this book (audit for FR
 - Cursor worker MCP is project .cursor/mcp.json under --workspace (seat cwd); never write ~/.cursor/mcp.json; there is no process-local catalog drop.
 - skill-dag resolve: fold YAML description: > into one line; seed from the first token of the job line; spend the byte budget on the job skill first and skip later ancestors.
 - skill-dag launch --root must list worker/.grok/skills, bob/.grok/skills, common/.grok/skills, and ~/.grok/skills; Grok FR #6891 bound cwd must get those install roots, not run_dir parent.
+- FIX fold LaunchSpec: keep write_opencode_skill_dag_mcp (FR #6898) and skill_dag_mcp_args plus skill_dag_job_worktree (FR #6899) together.
