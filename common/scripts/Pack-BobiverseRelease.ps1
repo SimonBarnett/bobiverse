@@ -491,8 +491,13 @@ function Stage-Product([string]$Name) {
             Write-Host 'INFO airc priority-worker: npm ci --omit=dev (FR #5905/#5913)'
             Push-Location -LiteralPath $pwSrc
             try {
-                & npm ci --omit=dev --no-fund --no-audit
-                if ($LASTEXITCODE -ne 0) { throw "npm ci failed exit=$LASTEXITCODE (FR #5905/#5913)" }
+                # FR #6969: capture npm stdout. Native stdout in Stage-Product becomes
+                # extra function output; [string]$Stage then joins "npm notice ... https://..."
+                # and heat.exe HEAT0001 "path format is not supported".
+                $npmOut = & npm ci --omit=dev --no-fund --no-audit 2>&1
+                $npmExit = $LASTEXITCODE
+                foreach ($line in @($npmOut)) { Write-Host ([string]$line) }
+                if ($npmExit -ne 0) { throw "npm ci failed exit=$npmExit (FR #5905/#5913)" }
             } finally {
                 Pop-Location
             }
@@ -546,6 +551,21 @@ function Stage-Product([string]$Name) {
     return $stage
 }
 
+function Assert-BobiverseHeatStagePath([string]$Stage) {
+    # FR #6969: heat.exe DirectoryHarvester rejects URIs / "npm notice" blobs
+    # when Stage-Product leaked native stdout into $stage.
+    $t = [string]$Stage
+    if ([string]::IsNullOrWhiteSpace($t)) { throw 'FR #6969: heat stage path is empty' }
+    if ($t -match '://' -or $t -match '(?i)npm notice') {
+        throw 'FR #6969: heat stage path is not a directory (native command stdout leaked into Stage-Product; capture npm ci).'
+    }
+    if (-not (Test-Path -LiteralPath $t -PathType Container)) {
+        $shown = $t
+        if ($shown.Length -gt 180) { $shown = $shown.Substring(0, 180) }
+        throw "FR #6969: heat stage is not a directory: $shown"
+    }
+}
+
 function Build-Msi([string]$Name, [string]$Stage) {
     if ($SkipMsi) {
         Write-Host "INFO SkipMsi stage=$Stage"
@@ -568,6 +588,7 @@ function Build-Msi([string]$Name, [string]$Stage) {
     [IO.File]::WriteAllText($findAiFile, $findAiJs, [Text.UTF8Encoding]::new($false))
     $cg = "Bobiverse$($Name)Files"
     $harvested = Join-Path $wixWork 'HarvestedFiles.wxs'
+    Assert-BobiverseHeatStagePath -Stage $Stage
     & $heat dir $Stage -cg $cg -gg -sfrag -srd -sreg -scom -dr INSTALLDIR -var var.StageDir -out $harvested
     if ($LASTEXITCODE -ne 0) { throw "heat failed $LASTEXITCODE" }
 
