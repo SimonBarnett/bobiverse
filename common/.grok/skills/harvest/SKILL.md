@@ -391,6 +391,7 @@ routes to bobiverse via the split rule.
 - Keep the stamped BOB_OUTBOX path: recreate that run dir on inject/drain; never glob the newest worker-* folder.
 - Load compact findings skills by exact id; do not add them as depends_on of the 53KiB MRB book (64KiB resolve cap).
 - GH_AUTH_STEPS must include pack whenever pack runs gh (release list / assets); isolation blanks GH_TOKEN for suites only.
+- When _inject_line gains an early assign_job_ref, keep method-bound pins for late ack/since_wall and repin ear provenance hashes in the same FR as the failing bob suite.
 
 ## Harvest digest (lessons audit 2026-10-06)
 
