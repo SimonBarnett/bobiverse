@@ -10,5 +10,7 @@ def test_fr6470_install_bobwebhooks_bomless_ascii():
     raw = SCRIPT.read_bytes()
     assert not raw.startswith(b"\xef\xbb\xbf"), "Install-BobWebhooks.ps1 must be BOM-less"
     text = raw.decode("ascii")  # raises if non-ASCII
-    assert "appcmd.exe missing --- skip IIS webhook install" in text
+    # FR #6903: missing appcmd still writes web.config; only ARR enable is skipped.
+    assert "appcmd.exe missing" in text
     assert "\u2014" not in text
+    assert "BobJeevesAppliance" in text
