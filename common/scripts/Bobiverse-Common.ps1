@@ -1696,18 +1696,31 @@ function Invoke-BobiverseGit {
 }
 
 function Get-BobiverseMachineLocalConfigRelPaths {
-    # FR #6773: tracked machine-local configs that must not block ff-only.
+    # FR #6773 / #6970: tracked machine-local configs that must not block ff-only.
     param([Parameter(Mandatory)][ValidateSet('bob', 'jeeves', 'airc')][string]$Product)
     switch ($Product) {
-        'bob' { return @('bob/tray/config/bobiverse.json') }
+        # bobiverse.json: tray machine overlay. build.yml: BUILD host recipe edits (FR #6970 flamingo stall).
+        'bob' { return @('bob/tray/config/bobiverse.json', '.bobiverse/build.yml') }
         default { return @() }
     }
+}
+
+function Get-BobiverseMachineLocalOverlayName {
+    param([Parameter(Mandatory)][string]$UnixRel)
+    $unix = ($UnixRel -replace '\\', '/')
+    if ($unix -match '(?i)bobiverse\.json$') { return 'bobiverse.local.json' }
+    if ($unix -match '(?i)build\.yml$') { return 'build.local.yml' }
+    $leaf = Split-Path -Leaf $unix
+    $base = [IO.Path]::GetFileNameWithoutExtension($leaf)
+    $ext = [IO.Path]::GetExtension($leaf)
+    return ($base + '.local' + $ext)
 }
 
 function Clear-BobiverseMachineLocalConfigForSync {
     <#
     .SYNOPSIS
-      FR #6773: park dirty tracked bobiverse.json into untracked bobiverse.local.json, restore tracked file, copy overlay to flat config\.
+      FR #6773 / #6970: park dirty tracked machine-local configs into untracked *.local.* overlays,
+      restore tracked files, copy bobiverse overlay to flat config\.
       Never logs file contents (secrets). Uses git checkout -- path (no -f / stash / reset --hard).
     #>
     param(
@@ -1728,16 +1741,19 @@ function Clear-BobiverseMachineLocalConfigForSync {
         try {
             $raw = [IO.File]::ReadAllText($full)
             $dir = Split-Path -Parent $full
-            $overlay = Join-Path $dir 'bobiverse.local.json'
+            $overlayName = Get-BobiverseMachineLocalOverlayName -UnixRel $unix
+            $overlay = Join-Path $dir $overlayName
             [IO.File]::WriteAllText($overlay, $raw, (New-Object Text.UTF8Encoding($false)))
-            $flatDir = Join-Path $InstallRoot 'config'
-            New-Item -ItemType Directory -Force -Path $flatDir | Out-Null
-            $flatOverlay = Join-Path $flatDir 'bobiverse.local.json'
-            [IO.File]::WriteAllText($flatOverlay, $raw, (New-Object Text.UTF8Encoding($false)))
+            if ($overlayName -eq 'bobiverse.local.json') {
+                $flatDir = Join-Path $InstallRoot 'config'
+                New-Item -ItemType Directory -Force -Path $flatDir | Out-Null
+                $flatOverlay = Join-Path $flatDir 'bobiverse.local.json'
+                [IO.File]::WriteAllText($flatOverlay, $raw, (New-Object Text.UTF8Encoding($false)))
+            }
             $co = Invoke-BobiverseGit -Git $Git -GitArgs ($GitArgsBase + @('checkout', '--', $unix)) -TimeoutSec 30
             if ($co.Code -eq 0) {
                 [void]$parked.Add($unix)
-                if ($Log) { $Log.Add("INFO sync-park-local-config FR#6773 path=$unix -> bobiverse.local.json") }
+                if ($Log) { $Log.Add("INFO sync-park-local-config FR#6773/#6970 path=$unix -> $overlayName") }
             } else {
                 if ($Log) { $Log.Add("WARN sync-park-local-config restore failed path=$unix exit=$($co.Code)") }
             }
@@ -1746,6 +1762,33 @@ function Clear-BobiverseMachineLocalConfigForSync {
         }
     }
     return @($parked)
+}
+
+function Get-BobiverseSyncDirtyPathSummary {
+    # FR #6970: path names only for stall reason (never file contents / secrets).
+    param(
+        [Parameter(Mandatory)][string]$Git,
+        [Parameter(Mandatory)][string[]]$GitArgsBase,
+        [int]$MaxPaths = 5
+    )
+    $st = Invoke-BobiverseGit -Git $Git -GitArgs ($GitArgsBase + @('status', '--porcelain', '-uall')) -TimeoutSec 20
+    if ($st.Code -ne 0) { return '' }
+    $names = New-Object System.Collections.Generic.List[string]
+    foreach ($line in @($st.Out)) {
+        $raw = ("$line").TrimEnd()
+        if ([string]::IsNullOrWhiteSpace($raw) -or $raw.Length -lt 4) { continue }
+        # porcelain: XY PATH or XY ORIG -> PATH
+        $path = $raw.Substring(3).Trim()
+        if ($path -match ' -> ') { $path = ($path -split ' -> ', 2)[1].Trim() }
+        $path = $path.Trim('"')
+        if ([string]::IsNullOrWhiteSpace($path)) { continue }
+        # Drop obvious secret filenames from the summary (keep path class only).
+        if ($path -match '(?i)(password|token|secret|credential|\.pem$|\.key$)') { continue }
+        if (-not $names.Contains($path)) { [void]$names.Add($path) }
+        if ($names.Count -ge $MaxPaths) { break }
+    }
+    if ($names.Count -eq 0) { return '' }
+    return ('dirty: ' + ($names -join ', '))
 }
 
 function Write-BobiverseSyncStatus {
@@ -2035,12 +2078,17 @@ function Sync-BobiverseWorkTree {
             foreach ($l in ($m.Out | Select-Object -First 3)) { $log.Add("  $l") }
             $behindFail = Get-BobiverseWorkTreeBehindCount -Git $git -GitArgsBase $G -Branch $Branch
             $behindMsg = if ($behindFail -gt 0) { "; HEAD behind origin/$Branch by $behindFail commit(s)" } else { '' }
-            $log.Add("ALERT sync-ff-failed: ff-only not possible (local commits or edits in the way); live flat scripts may lag origin/$Branch until resolved$behindMsg")
+            # FR #6970: name dirty paths in the stall reason (path names only; never file bodies).
+            $dirtySummary = ''
+            try { $dirtySummary = Get-BobiverseSyncDirtyPathSummary -Git $git -GitArgsBase $G } catch { }
+            $whyFail = 'ff-only not possible (local commits or edits in the way)'
+            if ($dirtySummary) { $whyFail = "$whyFail; $dirtySummary" }
+            $log.Add("ALERT sync-ff-failed: $whyFail; live flat scripts may lag origin/$Branch until resolved$behindMsg")
             # FR #6773: digest sync field + one deduped stall intake (no secrets).
             try {
-                Report-BobiverseSyncFfStall -InstallRoot $root -Behind $(if ($behindFail -gt 0) { $behindFail } else { 0 }) -Reason 'ff-only not possible (local commits or edits in the way)'
+                Report-BobiverseSyncFfStall -InstallRoot $root -Behind $(if ($behindFail -gt 0) { $behindFail } else { 0 }) -Reason $whyFail
             } catch { }
-            return (Done ("ff-only not possible (local commits or edits in the way); local work kept as is$behindMsg"))
+            return (Done ("$whyFail; local work kept as is$behindMsg"))
         }
         $after = (Invoke-BobiverseGit -Git $git -GitArgs ($G + @('rev-parse', 'HEAD')) -TimeoutSec 20).Out | Select-Object -First 1
         $res.Pulled = ("$before" -ne "$after")
@@ -2287,8 +2335,9 @@ function Get-BobiverseInstallGitExcludeText {
         "# bobiverse install work tree (t781u): runtime files are composed from <product>/ and common/`n" +
         "# FR worktrees sharing this git dir: sibling products un-ignored; else git add -f (FR #132)`n" +
         "/*`n!/$Product/`n!/common/`n!/airc/`n!/jeeves/`n" +
-        "# FR #6773: machine-local config overlay (never commit)`n" +
-        "bobiverse.local.json`n**/bobiverse.local.json`n"
+        "# FR #6773 / #6970: machine-local config overlays (never commit)`n" +
+        "bobiverse.local.json`n**/bobiverse.local.json`n" +
+        "build.local.yml`n**/.bobiverse/build.local.yml`n"
     )
 }
 
