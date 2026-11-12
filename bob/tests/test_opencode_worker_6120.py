@@ -533,7 +533,10 @@ def test_opencode_fuel_ps1_pipes_windowed_payload_via_stdin():
     text = OPENCODE_FUEL_PS1.read_text(encoding="utf-8-sig")
     assert "ConvertTo-Json -Compress" in text
     assert "StandardInput" in text
-    assert "sys.stdin.read()" in text
+    assert "utf-8-sig" in text
+    assert "UTF8Encoding $false" in text
+    assert "BaseStream.Write" in text
+    assert "sys.stdin.read()" not in text
     assert "sys.argv[1]" not in text
     # FR #6717 / #6727: PATHEXT .EXE ensure + ProcessStartInfo stats child (no & $py).
     assert "python_exit" in text

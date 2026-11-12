@@ -162,7 +162,8 @@ try {
         }
         $script = @'
 import json, sys, opencode_fuel
-raw = sys.stdin.read()
+# FR #6737: ProcessStartInfo StreamWriter may emit UTF-8 BOM; json.loads rejects U+FEFF.
+raw = sys.stdin.buffer.read().decode('utf-8-sig')
 windowed = json.loads(raw)
 models_text = windowed.pop('models', None)
 available_free = opencode_fuel.parse_opencode_models_text(models_text)
@@ -218,7 +219,11 @@ else:
             $proc = $null
             try {
                 $proc = [System.Diagnostics.Process]::Start($psi)
-                $proc.StandardInput.Write($payload)
+                # FR #6737: default StreamWriter encoding prepends UTF-8 BOM; Python json.loads rejects it.
+                $utf8NoBom = New-Object System.Text.UTF8Encoding $false
+                $payloadBytes = $utf8NoBom.GetBytes([string]$payload)
+                $proc.StandardInput.BaseStream.Write($payloadBytes, 0, $payloadBytes.Length)
+                $proc.StandardInput.BaseStream.Flush()
                 $proc.StandardInput.Close()
                 $stdoutTask = $proc.StandardOutput.ReadToEndAsync()
                 $stderrTask = $proc.StandardError.ReadToEndAsync()
