@@ -1,0 +1,8 @@
+id	issue	title
+FR-001	6860	Skill DAG index builder from SKILL.md
+FR-002	6861	depends_on edges on the worker core skills
+FR-003	6862	Local stdio skill-dag MCP: resolve, get_skill, status
+FR-004	6863	Worker launch calls skill-dag resolve; MCP config stays on the worker cwd
+FR-005	6864	Process-local bound so the worker prompt lists only the core skill stub
+FR-006	6865	Cursor worker seat uses the skill-dag MCP
+FR-007	6866	Skill-dag resolve reads only the assigned job worktree skills
