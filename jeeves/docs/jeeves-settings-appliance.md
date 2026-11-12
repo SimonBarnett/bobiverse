@@ -4,6 +4,10 @@ Internal-only settings surface for the Ergo chair host. **Never** publish this
 on Cloudflare or public DNS. Do **not** front it via `bob.ntsa.uk` or
 `irc.ntsa.uk`.
 
+Operator URL: **https://jeeves.ntsa.uk/** (FR #6757 / FR #6758). The name is
+internal DNS only. TLS uses an operator-supplied certificate (store thumbprint
+on the chair host). Do **not** request a public ACME certificate. Do **not** create public DNS for this name.
+
 ## How to reach it
 
 1. On the internal DNS (LAN AD / router), create **A** record:
@@ -49,9 +53,9 @@ Off by default. On the chair host (walrus), set NSSM / process env and restart `
 |-----|---------|
 | `JEEVES_SETTINGS_HTTP=1` | Start the LAN listener (alias `JEEVES_SETTINGS_UI=1`) |
 | `JEEVES_SETTINGS_HTTP_BIND` | Bind IP (must be RFC1918 or loopback; default `127.0.0.1`) |
-| `JEEVES_SETTINGS_HTTP_PORT` | TCP port (default **7701**) |
+| `JEEVES_SETTINGS_HTTP_PORT` | Backend TCP port (default **7701**; operators do not browse this port) |
 
-Browse `http://jeeves.ntsa.uk:7701/` from a LAN client (or `http://127.0.0.1:7701/` on the host).
+Browse **https://jeeves.ntsa.uk/** from a LAN client. Do not browse `:7701`.
 JSON: `GET /api/settings`, `PUT /api/settings/<KEY>`, `POST /api/rollback`, `GET /api/schema`,
 `GET /api/status`, `GET /api/queue` (FR #6754), `POST /api/restart-when-idle`.
 HTML shell (FR #6756): login, settings, status, and queue share a header with `/assets/ntsa-gut-logo.png` (bytes of `bob/tray/assets/ntsa-gut-logo.png`). Authed pages link Settings, Queue, Status, Log out. Login omits Log out.
@@ -66,6 +70,19 @@ Socket-layer gate: the server binds only to LAN/loopback and `verify_request` dr
 
 Module: `common/scripts/jeeves_settings_http.py` (started from `ChairJobs` via `maybe_start_from_chair`).
 
+The settings page lists eight groups. Defaults and checkboxes are on that page.
+
+| Group | Heading |
+|-------|---------|
+| fuel | Fuel and review waits |
+| digest | Digest |
+| irc | IRC timing |
+| homes | Chair home |
+| wake | Wake and ticket closure |
+| probes | Webhook probes |
+| resync | Resync |
+| secrets | Secrets |
+
 Bool SCHEMA keys render as `input type=checkbox` with `value="1"` when truthy (FR #6750 / FR-02). Save posts `"1"` when ticked and `"0"` when cleared. Secret fields left blank are not PUT. `str` / `int` / `float` stay text inputs.
 
 `SettingSpec.choices` defaults to `()`. A non-empty list on a non-bool setting renders a `<select>` (FR #6753 / FR-05). The current value is selected; a value not in the list is added as an extra selected option so save does not silently change it. Bools stay checkboxes. Today's SCHEMA keys have empty choices (paths, URLs, and seconds stay text).
@@ -76,7 +93,8 @@ Bool SCHEMA keys render as `input type=checkbox` with `value="1"` when truthy (F
 Read-only status (LAN only):
 
 - HTML: `GET /status` (shared shell + NTSA logo, FR #6756)
-- HTML: `GET /queue` (same shell; waiting / in-progress lists)
+- HTML: `GET /queue` (same shell; waiting / in-progress lists). The queue is at `/queue`.
+- HTML: `GET /pools` — machine pool percents, the Copilot line, and the overspend line (same figures as the tray; Cursor spending-group bars stay off).
 - Asset: `GET /assets/ntsa-gut-logo.png` — PNG bytes of `bob/tray/assets/ntsa-gut-logo.png` (LAN; no session)
 - JSON: `GET /api/status` — `version`, `source_commit`, `uptime_s`, `queue`, `seats`, `fuel` (no secrets)
 - JSON: `GET /api/queue` (FR #6754) — `ok`, `unaccepted`, `accepted`; each row is `repo`, `task`, `id`, optional `worker` (from stored `worker`, else `nick`). Other queue fields are dropped. Same secret-shape refusal as status.
