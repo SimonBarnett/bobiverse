@@ -34,7 +34,7 @@ New regressions and step failures → one intake issue each (`feature-request` +
 !build <owner/repo>[,owner/repo...] <version> [ref]
 !build dry-run <owner/repo> <version> [ref]
 !build status [owner/repo]
-!build cancel <owner/repo>
+!build cancel [owner/repo]
 ```
 
 Ops only (simon / bob-* ears). No recipe → refuse. Same repo already building → refuse with running id.
