@@ -5171,9 +5171,18 @@ class Client:
                             )
                     if cmd in ("433", "432"):
                         if self.live_nick == self.original_nick:
+                            import jeeves_chair_host
+
+                            # FR #6947: chair must not sit on Jeeves_l waiting to steal the nick.
+                            if jeeves_chair_host.chair_nick_in_use_must_exit(
+                                bool(getattr(self.args, "chair", False))
+                            ):
+                                self._nickname_reserved = True
+                                self._no_reconnect = True
+                                info(jeeves_chair_host.chair_nick_taken_line(self.original_nick))
                             # Fleet Bob-* ears: do not silently fall back to _l when the
                             # reserved nick is owned by another NickServ account (issue #11).
-                            if (self.original_nick or "").lower().startswith("bob-"):
+                            elif (self.original_nick or "").lower().startswith("bob-"):
                                 self._nickname_reserved = True
                                 info(
                                     "INFO NICKNAME_RESERVED abort nick="
@@ -5435,12 +5444,16 @@ class Client:
                 time.sleep(1.0)
                 if self._nickname_reserved or (self.original_nick or "").lower().startswith("bob-"):
                     self._abort_gate("NICKNAME_RESERVED")
+                if self._nickname_reserved and getattr(self.args, "chair", False):
+                    self._abort_gate("CHAIR_NICK_TAKEN")
         else:
             self.send("NICK " + self.live_nick)
             self.send(f"USER {self.live_nick} 0 * :{self.args.realname}")
             self.sasl_plain()
         if self._nickname_reserved and (self.original_nick or "").lower().startswith("bob-"):
             self._abort_gate("NICKNAME_RESERVED")
+        if self._nickname_reserved and getattr(self.args, "chair", False):
+            self._abort_gate("CHAIR_NICK_TAKEN")
         if not self.ready.wait(30):
             self._abort_gate("NO 001")
         time.sleep(1)
@@ -5627,6 +5640,12 @@ def main() -> None:
     args = p.parse_args()
     args.nick = chan_privs.clean_nick(args.nick)          # a BOM from a config file must never reach NICK / MODE
     args.channel = chan_privs.clean(args.channel)
+    if args.chair:
+        import jeeves_chair_host
+
+        if not jeeves_chair_host.chair_host_allowed():
+            info(jeeves_chair_host.refuse_chair_host_line())
+            sys.exit(jeeves_chair_host.EXIT_WRONG_HOST)
     if not str(args.channel or "").strip():
         if args.chair:
             args.channel = "bobiverse"

@@ -63,6 +63,8 @@ _SCAN_ALLOW_MISSING = frozenset(
         "BOB_CHANSERV_SYNC_TTL_S",
         "BOB_CONSOLE_OUTBOX_FLOOD_S",
         "BOB_GITCLAIM_LOCK_S",
+        # FR #6947: chair-host pin is env on walrus NSSM, not an appliance UI knob.
+        "JEEVES_CHAIR_HOST",
     }
 )
 

@@ -13,6 +13,10 @@ param(
 $ErrorActionPreference = 'Stop'
 $scriptDir = if ($PSScriptRoot) { $PSScriptRoot } else { Split-Path -Parent $MyInvocation.MyCommand.Path }
 . (Join-Path $scriptDir 'Bobiverse-Common.ps1')
+if (-not (Test-BobiverseIsChairHost)) {
+    Write-Host ("INFO CHAIR_HOST_REFUSED this={0} chair={1} FR #6947" -f (Get-BobiverseThisMachineId), (Get-BobiverseChairHost))
+    exit 4
+}
 if (-not $RepoRoot) { $RepoRoot = Split-Path -Parent $scriptDir }
 if (-not $ChairHome) {
     if (Test-BobiverseIsLocalSystem) {
