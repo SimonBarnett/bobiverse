@@ -385,6 +385,7 @@ routes to bobiverse via the split rule.
 - When Get-BobOpencodeFuel changes, repin build-bob-ear.yml behavior_source_sha and CRLF manifest hashes; do not weaken the git-diff guard.
 - Worker skill DAG: put depends_on in YAML after description; job-fr must list job-irc and must not list job-uat.
 - Skill-dag MCP is stdio-only: resolve FR includes job-irc ancestors and skips unattached UAT; skip over-budget bodies; refuse paths outside --root; no list-all tool.
+- FIX fold of skill-dag worker_prompt: keep FR #6864 skill-dag-core bound and FR #6863 resolve/get_skill (do not keep FIRST read the skills in).
 
 ## Harvest digest (lessons audit 2026-10-06)
 
