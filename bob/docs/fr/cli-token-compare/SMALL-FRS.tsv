@@ -4,3 +4,4 @@ FR-002	6782	Cursor CLI stamps measured tokens or tokens=unknown
 FR-003	6783	job cost ledger rolls up tokens by model
 FR-004	6784	Jeeves appliance status shows a token comparison graph
 FR-005	6785	jeeves VISION names the appliance status companion
+FR-006	6798	bob.ntsa.uk/jeeves is the appliance login page
