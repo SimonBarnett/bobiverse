@@ -279,3 +279,4 @@ Generalised from 21 harvested lessons that never reached this book (audit for FR
 - FR #6860 durable index: cycle must exit 1 and leave the previous index bytes unchanged; rebuild when SKILL.md mtime is newer than the index.
 - Cursor worker MCP is project .cursor/mcp.json under --workspace (seat cwd); never write ~/.cursor/mcp.json; there is no process-local catalog drop.
 - skill-dag resolve: fold YAML description: > into one line; seed from the first token of the job line; spend the byte budget on the job skill first and skip later ancestors.
+- skill-dag launch --root must list worker/.grok/skills, bob/.grok/skills, common/.grok/skills, and ~/.grok/skills; Grok FR #6891 bound cwd must get those install roots, not run_dir parent.
