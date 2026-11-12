@@ -18,8 +18,77 @@ JOB_SEEDS = {
 }
 
 
+class JobSkillsRootRefused(ValueError):
+    """Raised when a proposed job skills root is not the assigned worktree .grok/skills."""
+
+
 def _utc_now() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def job_skills_dir(worktree: Path) -> Path:
+    """Assigned job worktree skill root (FR #6866)."""
+    return (Path(worktree) / ".grok" / "skills").resolve()
+
+
+def accept_job_skills_root(root: Path, *, assigned_worktree: Path) -> Path:
+    """Accept only ``assigned_worktree/.grok/skills``; refuse sibling repo paths."""
+    expected = job_skills_dir(assigned_worktree)
+    try:
+        got = Path(root).resolve()
+    except OSError as exc:
+        raise JobSkillsRootRefused(str(exc)) from exc
+    if got != expected:
+        raise JobSkillsRootRefused(f"refused {got}; expected {expected}")
+    return got
+
+
+def build_roots(
+    *,
+    base_roots: list[Path] | None = None,
+    job_worktree: Path | None = None,
+) -> tuple[list[Path], str]:
+    """Compose allowlisted roots. Optional job worktree adds only that ``.grok/skills``."""
+    roots = [Path(r) for r in (base_roots or [])]
+    err = ""
+    if job_worktree is not None:
+        skills = Path(job_worktree) / ".grok" / "skills"
+        if skills.is_dir():
+            try:
+                roots.append(accept_job_skills_root(skills, assigned_worktree=job_worktree))
+            except JobSkillsRootRefused as exc:
+                err = str(exc)
+        # Missing skills dir: skip (optional root only after the path exists).
+    # De-dupe while preserving order
+    seen: set[str] = set()
+    out: list[Path] = []
+    for r in roots:
+        key = str(r.resolve()) if r.exists() else str(r)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(r)
+    return out, err
+
+
+def roots_from_argv(argv: list[str] | None = None) -> list[Path]:
+    """Parse ``--root`` / ``--job-worktree`` the same way as ``main`` (no stdio serve)."""
+    p = argparse.ArgumentParser(add_help=False)
+    p.add_argument("--root", action="append", default=[])
+    p.add_argument("--job-worktree", default=None)
+    p.add_argument("--max-bytes", type=int, default=DEFAULT_MAX_BYTES)
+    args, _unknown = p.parse_known_args(argv)
+    base = [Path(r) for r in (args.root or [])]
+    if not base and not args.job_worktree:
+        here = Path(__file__).resolve()
+        pack = here.parents[1] / ".grok" / "skills"
+        if pack.is_dir():
+            base = [pack]
+    job_wt = Path(args.job_worktree) if args.job_worktree else None
+    roots, err = build_roots(base_roots=base, job_worktree=job_wt)
+    if err:
+        raise JobSkillsRootRefused(err)
+    return roots
 
 
 def _parse_frontmatter(text: str) -> dict[str, Any]:
@@ -270,16 +339,27 @@ def serve_stdio(server: SkillDagServer, inf, outf) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
-    p = argparse.ArgumentParser(description="FR #6862 stdio skill-dag MCP")
+    p = argparse.ArgumentParser(description="FR #6862/#6866 stdio skill-dag MCP")
     p.add_argument("--root", action="append", default=[], help="Allowlisted skill root (repeatable)")
+    p.add_argument(
+        "--job-worktree",
+        default=None,
+        help="Optional assigned job worktree; adds only <wt>/.grok/skills when it exists (FR #6866)",
+    )
     p.add_argument("--max-bytes", type=int, default=DEFAULT_MAX_BYTES)
     args = p.parse_args(argv)
-    roots = [Path(r) for r in (args.root or [])]
-    if not roots:
-        here = Path(__file__).resolve()
-        pack = here.parents[1] / ".grok" / "skills"
-        if pack.is_dir():
-            roots = [pack]
+    try:
+        roots = roots_from_argv(
+            [
+                *([f"--root={r}" for r in (args.root or [])]),
+                *(["--job-worktree", args.job_worktree] if args.job_worktree else []),
+                "--max-bytes",
+                str(args.max_bytes),
+            ]
+        )
+    except JobSkillsRootRefused as exc:
+        print(f"ERROR job-skills-root: {exc}", file=sys.stderr)
+        return 2
     server = SkillDagServer(roots=roots, max_bytes=args.max_bytes)
     serve_stdio(server, sys.stdin, sys.stdout)
     return 0
