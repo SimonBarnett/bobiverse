@@ -5,6 +5,7 @@ FR #6442: migrate NSSM/env inventory into appliance-settings.json and apply
 file-backed values into the process environment (env still overrides).
 FR #6443: restart-when-idle (ircJeeves only) + read-only status.
 FR #6754: read-only queue JSON (GET /api/queue).
+FR #6759: read-only pool JSON (GET /api/pools).
 HTTP UI is FR #6440; Auth/sessions: jeeves_settings_auth (FR #6441).
 """
 
@@ -842,6 +843,106 @@ def api_get_queue(
         "unaccepted": [_queue_row_public(r) for r in unaccepted],
         "accepted": [_queue_row_public(r) for r in accepted],
     }
+    refuse = _appliance_secret_shape_error(out)
+    if refuse:
+        return refuse
+    return out
+
+
+_COPILOT_PUBLIC_KEYS = (
+    "remaining",
+    "state",
+    "reset_at",
+    "fetched_at",
+    "unlimited",
+    "used",
+    "max_recorded_usage",
+)
+
+
+def _optional_number(val: Any) -> Any:
+    """Keep 0 as 0; missing/blank as None; never invent from a sibling."""
+    if val is None:
+        return None
+    if isinstance(val, bool):
+        return None
+    if isinstance(val, (int, float)):
+        return val
+    text = str(val).strip()
+    if text == "" or text.lower() == "null":
+        return None
+    try:
+        if "." in text:
+            return float(text)
+        return int(text)
+    except ValueError:
+        return None
+
+
+def _pool_machine_public(mid: str, row: Any) -> dict[str, Any]:
+    src = row if isinstance(row, dict) else {}
+    ident = str(src.get("id") or mid or "").strip()
+    label = src.get("reset_label")
+    if label is not None:
+        label = str(label) if str(label).strip() != "" else None
+    return {
+        "id": ident,
+        "remaining_pct": _optional_number(src.get("remaining_pct")),
+        "fuel_stale": bool(src.get("fuel_stale")),
+        "reset_label": label,
+    }
+
+
+def _copilot_public(raw: Any) -> dict[str, Any] | None:
+    if not isinstance(raw, dict) or not raw:
+        return None
+    out: dict[str, Any] = {}
+    for key in _COPILOT_PUBLIC_KEYS:
+        if key not in raw:
+            continue
+        out[key] = raw.get(key)
+    return out or None
+
+
+def api_get_pools(
+    home: Path,
+    *,
+    client_ip: str,
+    digest_home: Path | None = None,
+) -> dict[str, Any]:
+    """Read-only pool JSON: tray percents, Copilot line, overage. No tokens."""
+    err = reject_non_lan(client_ip)
+    if err:
+        return {"ok": False, "error": err}
+    dig = Path(digest_home) if digest_home is not None else Path(home)
+    raw: dict[str, Any] = {}
+    path = dig / "digest.json"
+    try:
+        if path.is_file():
+            parsed = json.loads(path.read_text(encoding="utf-8-sig"))
+            if isinstance(parsed, dict):
+                raw = parsed
+    except Exception:
+        raw = {}
+    machines_out: list[dict[str, Any]] = []
+    machines = raw.get("machines")
+    if isinstance(machines, dict):
+        for mid, row in machines.items():
+            machines_out.append(_pool_machine_public(str(mid), row))
+    elif isinstance(machines, list):
+        for row in machines:
+            ident = ""
+            if isinstance(row, dict):
+                ident = str(row.get("id") or "")
+            machines_out.append(_pool_machine_public(ident, row))
+    out: dict[str, Any] = {
+        "ok": True,
+        "machines": machines_out,
+        "overage_gbp": _optional_number(raw.get("overage_gbp")),
+    }
+    copilot = _copilot_public(raw.get("copilot"))
+    if copilot is not None:
+        out["copilot"] = copilot
     refuse = _appliance_secret_shape_error(out)
     if refuse:
         return refuse
