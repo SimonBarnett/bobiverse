@@ -2,6 +2,8 @@
 name: bobiverse-bob-job-uat
 description: >
   The single skill for UAT jobs - UAT is per REPO: Jeeves assigns ONE repo-level UAT only after every issue is closed and every PR merged; process diagram from assign through ACK, verifying the whole repo against the VISION and any specs, then either one FR per gap (no release) or, with no gaps, docs/READMEs updated and a release created, to the DONE line; evidence required, who owns what.
+depends_on:
+  - bobiverse-bob-job-irc
 ---
 
 # bobiverse bob - UAT job (acceptance)

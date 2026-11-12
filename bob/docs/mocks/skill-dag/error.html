@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Skill DAG resolve error</title>
+  <style>
+    body { font-family: Segoe UI, sans-serif; margin: 24px; color: #1a1a1a; background: #f6f7f8; }
+    h1 { font-size: 20px; }
+    .card { background: #fff; border: 1px solid #b00020; padding: 16px; max-width: 640px; }
+    dt { font-weight: 600; margin-top: 8px; }
+    dd { margin: 0 0 4px 0; }
+    .bad { color: #b00020; }
+  </style>
+</head>
+<body>
+  <h1>skill-dag status</h1>
+  <div class="card">
+    <dl>
+      <dt>Last error</dt>
+      <dd class="bad">depends_on cycle: skill-a -> skill-b -> skill-a. Index not replaced.</dd>
+      <dt>Budget skip</dt>
+      <dd class="bad">skill-fat skipped, 48000 bytes over cap 24000</dd>
+      <dt>Node count</dt>
+      <dd>unchanged</dd>
+    </dl>
+  </div>
+</body>
+</html>

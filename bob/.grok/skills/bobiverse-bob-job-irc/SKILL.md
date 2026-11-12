@@ -2,6 +2,8 @@
 name: bobiverse-bob-job-irc
 description: >
   Exact IRC wire contract for worker jobs - !bored, Jeeves assign in !focus order, ACK, DONE, NACK/GIVEUP formats, which channel, when to send each, who sends what (the program posts !bored and pong, you write ACK/DONE to the outbox). Use whenever you take, finish or hand back a job.
+depends_on:
+  - harvest
 ---
 
 # bobiverse bob - job wire: ACK, DONE, NACK, GIVEUP, !bored

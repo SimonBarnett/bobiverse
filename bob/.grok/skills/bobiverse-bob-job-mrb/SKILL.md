@@ -2,6 +2,8 @@
 name: bobiverse-bob-job-mrb
 description: >
   The single skill for MRB jobs - process diagram from Jeeves assign through ACK, vision-first tests-first hostile review and drift check, docs review, one docs or fix PR and merge to DONE; steps, evidence required, who owns what (the originating agent owns the hostile MRB).
+depends_on:
+  - bobiverse-bob-job-irc
 ---
 
 # bobiverse bob - MRB job (hostile review)

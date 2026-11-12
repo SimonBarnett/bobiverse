@@ -2,6 +2,9 @@
 name: bobiverse-worker-seat
 description: >
   Operating manual for a bob worker agent started by bob-worker.exe: how IRC messages arrive (FROM lines), how to reply via outbox.txt, what you may touch, what the program does when you hang or IRC drops.
+depends_on:
+  - bobiverse-bob-job-irc
+  - harvest
 ---
 
 # bobiverse worker seat

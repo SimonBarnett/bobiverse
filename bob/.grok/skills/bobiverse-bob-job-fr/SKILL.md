@@ -2,6 +2,8 @@
 name: bobiverse-bob-job-fr
 description: >
   The single skill for FR jobs - process diagram from Jeeves assign through ACK, tests-first implementation and evidence to the one PR and the DONE line; steps, evidence required, who owns what (implementer opens the PR and never merges; the originating agent owns MRB and UAT).
+depends_on:
+  - bobiverse-bob-job-irc
 ---
 
 # bobiverse bob - FR job (implement)
