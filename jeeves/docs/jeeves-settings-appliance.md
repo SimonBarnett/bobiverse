@@ -27,7 +27,9 @@ and Authorization: Bearer <token>. Unauthenticated API calls return 401.
 
 1. **LAN first.** Non-RFC1918 sources are rejected before credential checks.
 2. **Windows / AD.** Win32 LogonUser network logon via authenticate_windows_logon.
-   Prefer DOMAIN\user or pass domain separately.
+   The login page has one account field (`DOMAIN\user` or `user@domain`; no domain
+   input). POST `/api/login` still accepts JSON `domain` from older clients.
+   CredMan is tried with the typed string and, when split, the SAM name.
 3. **CredMan fallback.** Generic credential target **`Jeeves/ApplianceAdmin`**
    (`CREDMAN_TARGET`). Username + password must match CredMan; missing target
    fails closed.
