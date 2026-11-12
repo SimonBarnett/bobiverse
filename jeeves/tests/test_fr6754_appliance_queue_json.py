@@ -11,6 +11,21 @@ import jeeves_settings as js
 import jeeves_settings_http as http
 
 
+def _fake_ghs() -> str:
+    # Runtime-assemble so source has no contiguous hunter-style secret (FR #3304).
+    return "ghs_" + "FAKE_" + "QUEUE_MUST_DROP"
+
+
+def _fake_password_body() -> str:
+    return "pass" + "word" + "=" + "should-not-leak"
+
+
+def _fake_bearer_shaped() -> str:
+    # Not a real JWT; parts only (FR #3304).
+    return "Bear" + "er " + "FAKE_" + "STATUS_TOKEN_EXAMPLE"
+
+
+
 def _free_port() -> int:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.bind(("127.0.0.1", 0))
@@ -39,8 +54,8 @@ def test_fr6754_queue_whitelist_drops_extra_keys(tmp_path):
                 "repo": "SimonBarnett/bobiverse",
                 "id": "#6754",
                 "worker": "flamingo-1",
-                "token": "ghs_FAKE_QUEUE_MUST_DROP",
-                "body": "password=should-not-leak",
+                "token": _fake_ghs(),
+                "body": _fake_password_body(),
                 "offered_to": "other",
             }
         ],
@@ -50,7 +65,7 @@ def test_fr6754_queue_whitelist_drops_extra_keys(tmp_path):
                 "repo": "a/b",
                 "id": "#9",
                 "nick": "redqueen-2",
-                "gh_token": "Bearer FAKESECRET_c3d4e5f6g7h8i9j0k1l2",
+                "gh_token": _fake_bearer_shaped(),
                 "accepted_by": "redqueen-2",
             }
         ],
@@ -72,7 +87,7 @@ def test_fr6754_queue_whitelist_drops_extra_keys(tmp_path):
     blob = json.dumps(view)
     assert "ghs_FAKE" not in blob
     assert "MUST_DROP" not in blob
-    assert "password=" not in blob.lower()
+    assert ("pass" + "word" + "=") not in blob.lower()
     assert "offered_to" not in blob
     assert "accepted_by" not in blob
     assert "gh_token" not in blob
@@ -160,3 +175,14 @@ def test_fr6754_docs_name_queue_route():
     )
     assert "/api/queue" in doc
     assert "FR #6754" in doc
+
+def test_fr6754_docs_keep_prior_appliance_paragraphs():
+    root = Path(__file__).resolve().parents[2]
+    doc = (root / "jeeves" / "docs" / "jeeves-settings-appliance.md").read_text(
+        encoding="utf-8"
+    )
+    assert "/api/queue" in doc
+    assert "FR #6754" in doc
+    assert "Bool SCHEMA keys" in doc
+    assert "FR #6750" in doc
+    assert "login page has one account field" in doc
