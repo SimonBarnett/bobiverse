@@ -2716,6 +2716,25 @@ class Client:
         threading.Thread(target=_watch, name="build-preflight", daemon=True).start()
         return True
 
+    def _maybe_touch_chair_build_lock_on_progress(self, src: str, body: str) -> bool:
+        """FR #6719: refresh last_seen on BUILD progress so live runners stay locked."""
+        if not getattr(self.args, "chair", False):
+            return False
+        progress = bobiverse_build.parse_build_progress(body)
+        if progress is None:
+            return False
+        lock_path = Path(self.home) / "build-locks.json"
+        lock = bobiverse_build.BuildLock(lock_path, max_parallel=1)
+        touched = bobiverse_build.apply_build_progress_to_chair_lock(lock, progress)
+        if touched:
+            bid = str(progress.get("id") or "")
+            repo = str(progress.get("repo") or "")
+            info(
+                f"INFO FR #6719 build lock heartbeat repo={repo} id={bid or '-'} "
+                f"from={src or '-'}"
+            )
+        return True
+
     def _maybe_release_chair_build_lock_on_result(self, src: str, body: str) -> bool:
         """FR #6491: chair frees home build-locks.json when recipe machine reports terminal BUILD.
 
@@ -4724,6 +4743,9 @@ class Client:
         if self._maybe_consume_build_v1_wire(src, body):
             return
         if self._maybe_consume_build_preflight_wire(src, body):
+            return
+        # FR #6719: chair refreshes last_seen on BUILD progress (live heartbeat).
+        if self._maybe_touch_chair_build_lock_on_progress(src, body):
             return
         # FR #6491: chair listens for BUILD ok/fail on the fleet channel and frees
         # home/build-locks.json when the announce id matches the held lock.

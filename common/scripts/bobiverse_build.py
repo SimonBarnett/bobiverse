@@ -501,7 +501,8 @@ class BuildLock:
         active = [k for k, v in builds.items() if v]
         if len(active) >= int(self.max_parallel):
             return False, f"machine_busy parallel={len(active)}/{self.max_parallel}"
-        builds[repo] = {"id": build_id, "started": time.time()}
+        now = time.time()
+        builds[repo] = {"id": build_id, "started": now, "last_seen": now}
         self._write(data)
         return True, build_id
 
@@ -580,6 +581,65 @@ class BuildLock:
             return False, ""
         age = self.age_s(repo, now=now)
         if age is None or age <= limit:
+            return False, str(self.running_id(repo) or "")
+        old = str(self.running_id(repo) or "")
+        self.release(repo)
+        return True, old
+
+    def last_seen_age_s(self, repo: str, *, now: float | None = None) -> float | None:
+        # FR #6719: seconds since last progress heartbeat (falls back to started).
+        data = self._read()
+        ent = (data.get("builds") or {}).get(normalize_repo(repo))
+        if not ent or not isinstance(ent, dict):
+            return None
+        try:
+            seen = float(ent.get("last_seen") or ent.get("started") or 0)
+        except (TypeError, ValueError):
+            return None
+        if seen <= 0:
+            return None
+        return max(0.0, float(now if now is not None else time.time()) - seen)
+
+    def touch(
+        self,
+        repo: str,
+        build_id: str = "",
+        *,
+        now: float | None = None,
+    ) -> bool:
+        # FR #6719: refresh last_seen when a matching build still holds the lock.
+        repo = normalize_repo(repo)
+        want = str(build_id or "").strip()
+        data = self._read()
+        builds = data.setdefault("builds", {})
+        ent = builds.get(repo)
+        if not ent or not isinstance(ent, dict):
+            return False
+        held = str(ent.get("id") or "")
+        if want and held and held != want:
+            return False
+        ent["last_seen"] = float(now if now is not None else time.time())
+        builds[repo] = ent
+        self._write(data)
+        return True
+
+    def release_if_dead(
+        self,
+        repo: str,
+        max_idle_s: float,
+        *,
+        now: float | None = None,
+    ) -> tuple[bool, str]:
+        # FR #6719: release when last_seen age exceeds max_idle_s (dead runner).
+        repo = normalize_repo(repo)
+        try:
+            limit = float(max_idle_s)
+        except (TypeError, ValueError):
+            return False, ""
+        if limit <= 0:
+            return False, ""
+        idle = self.last_seen_age_s(repo, now=now)
+        if idle is None or idle <= limit:
             return False, str(self.running_id(repo) or "")
         old = str(self.running_id(repo) or "")
         self.release(repo)
@@ -668,6 +728,7 @@ def decide_build(
     ignored: Iterable[str] = (),
     new_build_id: Callable[[], str] | None = None,
     stale_max_age_s: float | None = None,
+    dead_max_age_s: float | None = None,
 ) -> BuildDecision | None:
     parsed = parse_build(body)
     if parsed is None:
@@ -823,20 +884,39 @@ def decide_build(
         if not dry and lock is not None:
             got, info = lock.try_acquire(repo, bid)
             if not got:
-                # FR #6491: stale chair lock backstop (recipe max run, or explicit override).
-                ttl = (
-                    float(stale_max_age_s)
-                    if stale_max_age_s is not None
-                    else recipe_max_run_s(recipe)
+                # FR #6719: dead-runner backstop (no progress/heartbeat) before the
+                # long recipe_max_run_s TTL — a failed build that never announced
+                # must not block !build for many hours.
+                dead_ttl = (
+                    float(dead_max_age_s)
+                    if dead_max_age_s is not None
+                    else float(DEFAULT_BUILD_LOCK_DEAD_S)
                 )
-                released, old = lock.release_if_stale(repo, ttl)
-                if released:
+                released_dead, old_dead = lock.release_if_dead(repo, dead_ttl)
+                if released_dead:
                     lines.append(
-                        f"build: {repo} released stale lock id={old} age>{int(ttl)}s"
+                        f"build: {repo} released stale lock id={old_dead} "
+                        f"reason=no-heartbeat age>{int(dead_ttl)}s"
                     )
                     got, info = lock.try_acquire(repo, bid)
                 if not got:
-                    lines.append(f"build: {repo} refused; running id={info}")
+                    # FR #6491: stale chair lock backstop (recipe max run, or override).
+                    ttl = (
+                        float(stale_max_age_s)
+                        if stale_max_age_s is not None
+                        else recipe_max_run_s(recipe)
+                    )
+                    released, old = lock.release_if_stale(repo, ttl)
+                    if released:
+                        lines.append(
+                            f"build: {repo} released stale lock id={old} "
+                            f"reason=max-run age>{int(ttl)}s"
+                        )
+                        got, info = lock.try_acquire(repo, bid)
+                if not got:
+                    lines.append(
+                        f"build: {repo} refused; running id={info} (live)"
+                    )
                     continue
         ok_repos.append(repo)
         if dry:
@@ -910,6 +990,13 @@ BUILD_RESULT_RE = re.compile(
 # Backstop when recipe max-run cannot be computed (env overrideable).
 DEFAULT_BUILD_LOCK_STALE_S = float(
     os.environ.get("BOBIVERSE_BUILD_LOCK_STALE_S") or (6 * 3600)
+)
+
+# FR #6719: when the chair sees no BUILD progress/heartbeat for this long, the
+# held lock is treated as a dead runner (recipe_max_run_s can be 17h+). Default
+# 30 minutes = 3x BuildProgressPoster.heartbeat_s (600).
+DEFAULT_BUILD_LOCK_DEAD_S = float(
+    os.environ.get("BOBIVERSE_BUILD_LOCK_DEAD_S") or (30 * 60)
 )
 
 INSTALLTEST_V1_RE = re.compile(
@@ -1414,6 +1501,46 @@ def apply_build_result_to_chair_lock(lock: BuildLock, result: dict | None) -> bo
     if not repo or not bid:
         return False
     return lock.release_if_id(repo, bid)
+
+
+BUILD_PROGRESS_RE = re.compile(
+    r"^BUILD\s+progress\s+(?P<repo>\S+)"
+    r"(?P<rest>.*?)"
+    r"(?:\s+id=(?P<id>\S+))?\s*$",
+    re.IGNORECASE,
+)
+
+
+def parse_build_progress(text: str) -> dict | None:
+    """FR #6719: parse BUILD progress <repo> ... [id=...] fleet heartbeat lines."""
+    raw = (text or "").strip()
+    if raw.startswith(":"):
+        raw = raw[1:].strip()
+    if not raw.upper().startswith("BUILD PROGRESS"):
+        return None
+    m = BUILD_PROGRESS_RE.match(raw)
+    if not m:
+        return None
+    rid = (m.group("id") or "").strip()
+    if not rid:
+        im = re.search(r"(?:^|\s)id=(\S+)\s*$", raw, re.IGNORECASE)
+        if im:
+            rid = im.group(1).strip()
+    return {
+        "repo": (m.group("repo") or "").strip(),
+        "id": rid,
+        "raw": raw,
+    }
+
+
+def apply_build_progress_to_chair_lock(lock: BuildLock, progress: dict | None) -> bool:
+    """FR #6719: refresh last_seen so a live runner is not cleared as dead."""
+    if not progress or lock is None:
+        return False
+    repo = str(progress.get("repo") or "").strip()
+    if not repo:
+        return False
+    return lock.touch(repo, str(progress.get("id") or ""))
 
 
 def recipe_max_run_s(recipe: BuildRecipe | None, *, cap: float | None = None) -> float:
