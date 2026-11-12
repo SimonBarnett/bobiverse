@@ -278,3 +278,4 @@ Generalised from 21 harvested lessons that never reached this book (audit for FR
 - CONFLICTING MRB: fold origin/main in the job worktree; keep both sibling skill-dag notes in bob-worker.md; process-local bound is BOB_SKILL_DAG_BOUND plus a prompt that does not interpolate the index.
 - FR #6860 durable index: cycle must exit 1 and leave the previous index bytes unchanged; rebuild when SKILL.md mtime is newer than the index.
 - Cursor worker MCP is project .cursor/mcp.json under --workspace (seat cwd); never write ~/.cursor/mcp.json; there is no process-local catalog drop.
+- skill-dag resolve: fold YAML description: > into one line; seed from the first token of the job line; spend the byte budget on the job skill first and skip later ancestors.
