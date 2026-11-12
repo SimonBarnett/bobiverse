@@ -2620,11 +2620,45 @@ function Compare-BobiverseVersion {
     return 0
 }
 
+function Import-BobiverseGhTokenEnv {
+    <#
+      FR #6949: load GH_TOKEN for gh.exe from env or config\github.token (never print the value).
+    #>
+    if (([string]$env:GH_TOKEN).Trim() -or ([string]$env:GITHUB_TOKEN).Trim()) {
+        if (-not ([string]$env:GH_TOKEN).Trim() -and ([string]$env:GITHUB_TOKEN).Trim()) {
+            $env:GH_TOKEN = $env:GITHUB_TOKEN.Trim()
+        }
+        return
+    }
+    $cands = New-Object System.Collections.Generic.List[string]
+    if (($env:BOB_CONFIG_DIR) -and (Test-Path -LiteralPath $env:BOB_CONFIG_DIR)) {
+        [void]$cands.Add((Join-Path $env:BOB_CONFIG_DIR 'github.token'))
+    }
+    try {
+        $ai = Get-BobiverseAiRoot
+        foreach ($prod in @('bob', 'jeeves', 'airc')) {
+            [void]$cands.Add((Join-Path $ai "$prod\config\github.token"))
+        }
+    } catch {}
+    foreach ($p in $cands) {
+        if (-not $p -or -not (Test-Path -LiteralPath $p)) { continue }
+        try {
+            $line = (Get-Content -LiteralPath $p -TotalCount 1 -ErrorAction Stop)
+            $tok = ([string]$line).Trim()
+            if ($tok) {
+                $env:GH_TOKEN = $tok
+                return
+            }
+        } catch {}
+    }
+}
+
 function Get-BobiverseLatestPublishedVersion {
     <#
       FR #6423: highest published GitHub release tag for Repo (strips leading v; folds 4-part).
       -LatestPublishedVersion overrides network (unit tests). Empty override uses gh release list.
       Fail-closed for callers that require a value: returns '' only when override empty and gh yields none.
+      FR #6949: Import-BobiverseGhTokenEnv so SYSTEM pack (no interactive gh auth) can list releases.
     #>
     param(
         [string]$Repo = 'SimonBarnett/bobiverse',
@@ -2634,6 +2668,7 @@ function Get-BobiverseLatestPublishedVersion {
     if ($override) {
         return (ConvertTo-BobiverseMsiProductVersion -Version $override)
     }
+    Import-BobiverseGhTokenEnv
     $gh = Get-Command gh -ErrorAction SilentlyContinue
     if (-not $gh) { return '' }
     # WinPS 5.1: capture as a single string via Out-String; ConvertFrom-Json -InputObject
