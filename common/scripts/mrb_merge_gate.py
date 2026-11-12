@@ -34,8 +34,17 @@ MRB_PASS_BOARD_RE = re.compile(
 # features must not trip owner-hold detection.
 # FR #4487: a ## MRB hand-back (self-MRB GIVEUP) is seat process too. It often
 # says "this seat must not merge" and must not become a permanent owner hold.
+# FR #6746: bare flamingo self-MRB hand-back (no ## header) with both
+# "self-MRB:" and "Hand back for a different seat" is the same skip class.
 MRB_BOARD_COMMENT_RE = re.compile(
     r"(?im)^\s*##\s*MRB\s+board\b|\*\*Verdict:\*\*|^\s*##\s*MRB\s+hand-back\b"
+)
+# Narrow bare hand-back: require BOTH phrases so "self-MRB: … Do not merge"
+# without an explicit hand-back still trips HOLD_TEXT_RE (owner hold).
+BARE_SELF_MRB_HANDBACK_RE = re.compile(
+    r"(?is)\bself-MRB\s*:"
+    r"[\s\S]{0,800}?"
+    r"\bHand\s+back\s+for\s+a\s+different\s+seat\b"
 )
 # FR #4500: a later comment that only restates the gate refusal is not a new
 # owner hold. It quotes the tripped phrase ("must not merge") inside
@@ -110,11 +119,15 @@ def _created(c: dict) -> str:
 
 
 def _is_mrb_board_comment(text: str) -> bool:
-    """True when comment is an MRB board or hand-back (FR #4041 / #4487).
+    """True when comment is an MRB board or hand-back (FR #4041 / #4487 / #6746).
 
     Ignored for the owner-hold scan. A hand-back does not clear an earlier real hold.
     """
-    return bool(MRB_BOARD_COMMENT_RE.search(text or ""))
+    body = text or ""
+    if MRB_BOARD_COMMENT_RE.search(body):
+        return True
+    # FR #6746: bare self-MRB + Hand back for a different seat (no ## header).
+    return bool(BARE_SELF_MRB_HANDBACK_RE.search(body))
 
 
 def _is_gate_refusal_echo(text: str) -> bool:
