@@ -450,27 +450,6 @@ def _load_overage_gbp(digest_home: Path | None) -> Any:
     return None
 
 
-def _render_pools_html(overage_gbp: Any) -> str:
-    header = _shell_header(current="pools", include_nav=True)
-    line = format_overspend_line(overage_gbp)
-    overspend = (
-        f'<p class="overage">{html.escape(line)}</p>' if line else ""
-    )
-    return f"""<!DOCTYPE html>
-<html lang="en"><head><meta charset="utf-8"/>
-<title>Jeeves pools</title>
-<style>
-body{{font-family:system-ui,sans-serif;margin:1.5rem;}}
-{_shell_css()}
-.overage{{margin-top:1rem;}}
-</style></head><body>
-{header}
-<h1>Pools</h1>
-{overspend}
-</body></html>
-"""
-
-
 def _render_queue_html(
     unaccepted: list[dict[str, Any]], accepted: list[dict[str, Any]]
 ) -> str:
@@ -516,10 +495,17 @@ def _format_pool_row_pct(row: dict[str, Any]) -> str:
     return "n/a"
 
 
-def _render_pools_html(doc: dict[str, Any]) -> str:
-    """Server-render machine Grok pool rows (no Cursor spending bars)."""
+def _render_pools_html(doc: Any) -> str:
+    """Server-render machine Grok pool rows + optional overspend (FR #6760 / #6762)."""
+    # Accept a float/int overage for unit tests; prefer a view dict from api_get_pools.
+    if isinstance(doc, dict):
+        view = doc
+        overage = view.get("overage_gbp")
+    else:
+        view = {"machines": []}
+        overage = doc
     header = _shell_header(current="pools", include_nav=True)
-    machines = doc.get("machines") if isinstance(doc.get("machines"), list) else []
+    machines = view.get("machines") if isinstance(view.get("machines"), list) else []
     if not machines:
         body = '<p class="empty">No pool readings.</p>'
     else:
@@ -537,15 +523,20 @@ def _render_pools_html(doc: dict[str, Any]) -> str:
             )
             items.append(f"<li><code>{mid}</code>: {pct}{reset_html}</li>")
         body = "<ul class=\"pools\">" + "".join(items) + "</ul>"
+    line = format_overspend_line(overage)
+    overspend = (
+        f'<p class="overage">{html.escape(line)}</p>' if line else ""
+    )
     return f"""<!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8"/>
 <title>Jeeves pools</title>
-<style>body{{font-family:system-ui,sans-serif;margin:1.5rem;}} {_shell_css()} code{{font-size:.9em;}} .empty{{color:#456;}} .reset{{color:#456;margin-left:.5rem;}}</style>
+<style>body{{font-family:system-ui,sans-serif;margin:1.5rem;}} {_shell_css()} code{{font-size:.9em;}} .empty{{color:#456;}} .reset{{color:#456;margin-left:.5rem;}} .overage{{margin-top:1rem;}}</style>
 </head><body>
 {header}
 <h1>Jeeves pools</h1>
 <p class="note">Grok remaining by machine (FR #6760). Machine rows only.</p>
 {body}
+{overspend}
 </body></html>
 """
 
@@ -826,21 +817,6 @@ class _Handler(BaseHTTPRequestHandler):
             html = _render_queue_html(unaccepted, accepted)
             self._send(200, html.encode("utf-8"), "text/html; charset=utf-8")
             return
-        if path in ("/pools", "/ui/pools"):
-            gate = auth.require_session(
-                home, client_ip=ip, session_token=tok
-            )
-            if not gate.get("ok"):
-                html = _render_login_html(str(gate.get("error") or "Sign in required"))
-                self._send(200, html.encode("utf-8"), "text/html; charset=utf-8")
-                return
-            err = js.reject_non_lan(ip)
-            if err:
-                self._send_json(403, {"ok": False, "error": err})
-                return
-            html = _render_pools_html(_load_overage_gbp(self.server.digest_home))
-            self._send(200, html.encode("utf-8"), "text/html; charset=utf-8")
-            return
         if path == "/api/status":
             gate = auth.require_session(
                 home, client_ip=ip, session_token=tok
@@ -888,6 +864,9 @@ class _Handler(BaseHTTPRequestHandler):
             if not view.get("ok"):
                 self._send_json(403, view)
                 return
+            if "overage_gbp" not in view:
+                view = dict(view)
+                view["overage_gbp"] = _load_overage_gbp(self.server.digest_home)
             page = _render_pools_html(view)
             self._send(200, page.encode("utf-8"), "text/html; charset=utf-8")
             return

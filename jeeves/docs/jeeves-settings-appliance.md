@@ -97,11 +97,7 @@ Read-only status (LAN only):
 
 - HTML: `GET /status` (shared shell + NTSA logo, FR #6756)
 - HTML: `GET /queue` (FR #6755; same shell; waiting / in-progress lists (`repo`, `task`, `id`, optional `worker`). Empty copy is exactly `Nothing is waiting.` / `Nothing is in progress.` Unauthenticated visitors get the login page.) The queue is at `/queue`.
-<<<<<<< HEAD
-- HTML: `GET /pools` --- machine pool percents, the Copilot line, and one overspend line when overage_gbp is greater than 0: the word overspend, the pound sign, and two decimals (FR #6762). Null, missing, or 0 omit the line. Once per page, not per machine. Same figures as the tray; Cursor spending-group bars stay off.
-=======
-- HTML: `GET /pools` (FR #6760 / FR-12) — one row per machine from digest `machines.<id>.xai_weekly` via the same document as `GET /api/pools`. Row rules: `[stale]` hides the percent; `0` shows `0%` plus `out of tokens`; a number shows `<n>%`; null non-stale shows `n/a`; empty list shows `No pool readings`. `reset_label` when present. No Cursor spending-group bars. Unauthenticated HTML returns the login page (HTTP 200). Copilot and overspend lines are sibling FRs #6761 / #6762.
->>>>>>> origin/main
+- HTML: `GET /pools` (FR #6760 / FR-12) --- one row per machine from digest `machines.<id>.xai_weekly` via the same document as `GET /api/pools`. Row rules: `[stale]` hides the percent; `0` shows `0%` plus `out of tokens`; a number shows `<n>%`; null non-stale shows `n/a`; empty list shows `No pool readings`. `reset_label` when present. No Cursor spending-group bars. Unauthenticated HTML returns the login page (HTTP 200). Copilot line is sibling FR #6761. Overspend line (FR #6762): when overage_gbp is greater than 0 show the word overspend, the pound sign, and two decimals; null, missing, or 0 omit the line; once per page, not per machine.
 - Asset: `GET /assets/ntsa-gut-logo.png` --- PNG bytes of `bob/tray/assets/ntsa-gut-logo.png` (LAN; no session)
 - JSON: `GET /api/status` — `version`, `source_commit`, `uptime_s`, `queue`, `seats`, `fuel` (no secrets)
 - JSON: `GET /api/queue` (FR #6754) — `ok`, `unaccepted`, `accepted`; each row is `repo`, `task`, `id`, optional `worker` (from stored `worker`, else `nick`). Other queue fields are dropped. Same secret-shape refusal as status.
