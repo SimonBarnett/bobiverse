@@ -59,9 +59,10 @@ Off by default. On the chair host (walrus), set NSSM / process env and restart `
 Browse **https://jeeves.ntsa.uk/** from a LAN client (FR #6757 / FR #6758). Internal DNS only. Do not publish public DNS or Cloudflare. Do not browse `:7701`. The settings process listens on loopback `:7701` when the front door is enabled; login HTML does not mention that port. Install the front door with `jeeves/scripts/Install-JeevesApplianceFrontDoor.ps1 -Thumbprint <existing cert>` (operator-supplied store thumbprint; no public ACME). HTTP port 80 for that name redirects to HTTPS. The Python LAN check trusts `X-Forwarded-For` only from a loopback TCP peer.
 JSON: `GET /api/settings`, `PUT /api/settings/<KEY>`, `POST /api/rollback`, `GET /api/schema`,
 `GET /api/status`, `GET /api/queue` (FR #6754), `POST /api/restart-when-idle`.
+HTML: `GET /` settings, `GET /status`, `GET /queue` (FR #6755 waiting / in-progress lists).
 HTML shell (FR #6756): login, settings, status, and queue share a header with `/assets/ntsa-gut-logo.png` (bytes of `bob/tray/assets/ntsa-gut-logo.png`). Authed pages link Settings, Queue, Status, Log out. Login omits Log out.
 
-`GET /api/settings` includes a `default` field per row (schema default; secrets return `""`).
+GET /api/settings includes a default field per row (schema default; secrets return "").
 The HTML settings table has a **Default** column for every non-secret key (FR #6751 / FR-03).
 The Value control keeps the current value; the default is shown beside it and is not written into the control unless it is already current.
 
@@ -94,9 +95,9 @@ Bool SCHEMA keys render as `input type=checkbox` with `value="1"` when truthy (F
 Read-only status (LAN only):
 
 - HTML: `GET /status` (shared shell + NTSA logo, FR #6756)
-- HTML: `GET /queue` (same shell; waiting / in-progress lists). The queue is at `/queue`.
-- HTML: `GET /pools` — machine pool percents, the Copilot line, and the overspend line (same figures as the tray; Cursor spending-group bars stay off).
-- Asset: `GET /assets/ntsa-gut-logo.png` — PNG bytes of `bob/tray/assets/ntsa-gut-logo.png` (LAN; no session)
+- HTML: `GET /queue` (FR #6755; same shell; waiting / in-progress lists (`repo`, `task`, `id`, optional `worker`). Empty copy is exactly `Nothing is waiting.` / `Nothing is in progress.` Unauthenticated visitors get the login page.) The queue is at `/queue`.
+- HTML: `GET /pools` --- machine pool percents, the Copilot line, and the overspend line (same figures as the tray; Cursor spending-group bars stay off).
+- Asset: `GET /assets/ntsa-gut-logo.png` --- PNG bytes of `bob/tray/assets/ntsa-gut-logo.png` (LAN; no session)
 - JSON: `GET /api/status` — `version`, `source_commit`, `uptime_s`, `queue`, `seats`, `fuel` (no secrets)
 - JSON: `GET /api/queue` (FR #6754) — `ok`, `unaccepted`, `accepted`; each row is `repo`, `task`, `id`, optional `worker` (from stored `worker`, else `nick`). Other queue fields are dropped. Same secret-shape refusal as status.
 
