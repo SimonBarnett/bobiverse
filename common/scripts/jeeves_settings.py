@@ -10,6 +10,7 @@ HTTP UI is FR #6440; Auth/sessions: jeeves_settings_auth (FR #6441).
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 import ipaddress
 import json
 import os
@@ -1141,3 +1142,181 @@ def api_get_status(
         return refuse
     return out
 
+
+# FR #6760 / FR-12: Grok weekly pool rows for the appliance (page + /api/pools).
+# FR #6759 may extend this envelope (copilot / overage); keep machine row fields stable.
+_POOLS_STALE_AFTER_S = 90  # max(90, 3 * default ear heartbeat 30)
+
+
+def _parse_utc_dt(value: Any):
+    if value is None:
+        return None
+    raw = str(value).strip()
+    if not raw:
+        return None
+    try:
+        if raw.isdigit():
+            n = int(raw)
+            if len(raw) >= 12:
+                return datetime.fromtimestamp(n / 1000.0, tz=timezone.utc)
+            if len(raw) == 10:
+                return datetime.fromtimestamp(n, tz=timezone.utc)
+        if raw.endswith("Z"):
+            raw = raw[:-1] + "+00:00"
+        dt = datetime.fromisoformat(raw)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc)
+    except Exception:
+        return None
+
+
+def _format_pools_reset_label(period_end: Any, *, now: float | None = None) -> str | None:
+    """Match Format-BobResetLabel unit strings (days/hours or hours/minutes)."""
+    dt = _parse_utc_dt(period_end)
+    if dt is None:
+        return None
+    now_dt = datetime.fromtimestamp(
+        float(now if now is not None else time.time()), tz=timezone.utc
+    )
+    span = dt - now_dt
+    if span.total_seconds() <= 0:
+        return None
+    days = int(span.days)
+    hours = int(span.seconds // 3600)
+    mins = int((span.seconds % 3600) // 60)
+    parts: list[str] = []
+
+    def part(value: int, singular: str, plural: str) -> str | None:
+        if value <= 0:
+            return None
+        return f"{value} {singular if value == 1 else plural}"
+
+    if days >= 1:
+        parts.append(part(days, "day", "days") or "")
+        h = part(hours, "hour", "hours")
+        if h:
+            parts.append(h)
+        return ", ".join(p for p in parts if p)
+    h = part(hours, "hour", "hours")
+    if h:
+        parts.append(h)
+    m = part(mins, "minute", "minutes")
+    if m:
+        parts.append(m)
+    if not parts:
+        return "0 minutes"
+    return ", ".join(parts)
+
+
+def _pools_remaining_pct(raw: Any) -> int | float | None:
+    if isinstance(raw, bool) or raw is None:
+        return None
+    if isinstance(raw, (int, float)):
+        return raw
+    return None
+
+
+def _pools_meter_stale(meter: dict[str, Any], *, now: float) -> bool:
+    if "fresh" in meter and meter.get("fresh") is False:
+        return True
+    age = None
+    try:
+        if meter.get("age_s") is not None and str(meter.get("age_s")) != "":
+            age = int(meter.get("age_s"))
+    except Exception:
+        age = None
+    if age is None:
+        fetched = _parse_utc_dt(meter.get("fetched_at"))
+        if fetched is not None:
+            age = int(max(0, now - fetched.timestamp()))
+    if age is None:
+        return True
+    return int(age) > int(_POOLS_STALE_AFTER_S)
+
+
+def _load_digest_json(digest_home: Path) -> dict[str, Any]:
+    path = Path(digest_home) / "digest.json"
+    try:
+        raw = path.read_text(encoding="utf-8")
+        doc = json.loads(raw)
+        return doc if isinstance(doc, dict) else {}
+    except Exception:
+        return {}
+
+
+def _pools_machine_ids(doc: dict[str, Any]) -> list[str]:
+    seen: set[str] = set()
+    out: list[str] = []
+    roster = doc.get("roster_machine_ids")
+    if isinstance(roster, (list, tuple)):
+        for item in roster:
+            mid = str(item or "").strip().lower()
+            if not mid or mid in seen:
+                continue
+            seen.add(mid)
+            out.append(mid)
+        return out
+    machines = doc.get("machines")
+    if isinstance(machines, dict):
+        for key in sorted(machines.keys(), key=lambda k: str(k).lower()):
+            mid = str(key or "").strip().lower()
+            if not mid or mid in seen:
+                continue
+            seen.add(mid)
+            out.append(mid)
+    return out
+
+
+def api_get_pools(
+    home: Path,
+    *,
+    client_ip: str,
+    digest_home: Path | None = None,
+    now: float | None = None,
+) -> dict[str, Any]:
+    """FR #6760: per-machine Grok remaining_pct rows from digest xai_weekly."""
+    err = reject_non_lan(client_ip)
+    if err:
+        return {"ok": False, "error": err}
+    dig = Path(digest_home) if digest_home is not None else Path(home)
+    now_f = float(now if now is not None else time.time())
+    doc = _load_digest_json(dig)
+    machines_doc = doc.get("machines") if isinstance(doc.get("machines"), dict) else {}
+    rows: list[dict[str, Any]] = []
+    for mid in _pools_machine_ids(doc):
+        entry = machines_doc.get(mid)
+        if entry is None:
+            for k, v in machines_doc.items():
+                if str(k).strip().lower() == mid:
+                    entry = v
+                    break
+        meter = None
+        if isinstance(entry, dict):
+            meter = entry.get("xai_weekly")
+        if not isinstance(meter, dict):
+            rows.append(
+                {
+                    "id": mid,
+                    "remaining_pct": None,
+                    "fuel_stale": False,
+                    "reset_label": None,
+                }
+            )
+            continue
+        remaining = _pools_remaining_pct(meter.get("remaining_pct"))
+        stale = _pools_meter_stale(meter, now=now_f)
+        reset = _format_pools_reset_label(meter.get("period_end"), now=now_f)
+        rows.append(
+            {
+                "id": mid,
+                "remaining_pct": remaining,
+                "fuel_stale": bool(stale),
+                "reset_label": reset,
+            }
+        )
+    out = {"ok": True, "machines": rows}
+    refuse = _appliance_secret_shape_error(out)
+    if refuse:
+        return refuse
+    return out

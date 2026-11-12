@@ -1,5 +1,7 @@
 """FR #6440 / #6451: LAN-bound HTTP listener + schema UI with session auth.
 
+FR #6760: ``/pools`` + ``/api/pools`` machine Grok rows.
+
 Off by default. Enable with ``JEEVES_SETTINGS_HTTP=1`` (or ``JEEVES_SETTINGS_UI=1``).
 Binds only to RFC1918 / loopback. Rejects non-LAN peers in ``verify_request``
 (socket layer). Settings/status mutating routes require FR #6441 sessions
@@ -56,6 +58,7 @@ def _shell_header(*, current: str, include_nav: bool) -> str:
     links = [
         ("/", "Settings", "settings"),
         ("/queue", "Queue", "queue"),
+        ("/pools", "Pools", "pools"),
         ("/status", "Status", "status"),
         ("/logout", "Log out", "logout"),
     ]
@@ -447,6 +450,54 @@ ul{{padding-left:1.2rem;}}
 """
 
 
+
+def _format_pool_row_pct(row: dict[str, Any]) -> str:
+    """FR #6760 row rules: stale -> [stale]; <=0 -> 0% + out of tokens; number -> n%; else n/a."""
+    if row.get("fuel_stale"):
+        return "[stale]"
+    rem = row.get("remaining_pct")
+    if isinstance(rem, bool) or rem is None:
+        return "n/a"
+    if isinstance(rem, (int, float)):
+        if float(rem) <= 0:
+            return "0% - out of tokens"
+        return f"{int(round(float(rem)))}%"
+    return "n/a"
+
+
+def _render_pools_html(doc: dict[str, Any]) -> str:
+    """Server-render machine Grok pool rows (no Cursor spending bars)."""
+    header = _shell_header(current="pools", include_nav=True)
+    machines = doc.get("machines") if isinstance(doc.get("machines"), list) else []
+    if not machines:
+        body = '<p class="empty">No pool readings.</p>'
+    else:
+        items = []
+        for row in machines:
+            if not isinstance(row, dict):
+                continue
+            mid = html.escape(str(row.get("id") or ""))
+            pct = html.escape(_format_pool_row_pct(row))
+            reset = row.get("reset_label")
+            reset_html = (
+                f' <span class="reset">{html.escape(str(reset))}</span>'
+                if reset
+                else ""
+            )
+            items.append(f"<li><code>{mid}</code>: {pct}{reset_html}</li>")
+        body = "<ul class=\"pools\">" + "".join(items) + "</ul>"
+    return f"""<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8"/>
+<title>Jeeves pools</title>
+<style>body{{font-family:system-ui,sans-serif;margin:1.5rem;}} {_shell_css()} code{{font-size:.9em;}} .empty{{color:#456;}} .reset{{color:#456;margin-left:.5rem;}}</style>
+</head><body>
+{header}
+<h1>Jeeves pools</h1>
+<p class="note">Grok remaining by machine (FR #6760). Machine rows only.</p>
+{body}
+</body></html>
+"""
+
 def _render_status_html(status: dict[str, Any]) -> str:
     q = status.get("queue") if isinstance(status.get("queue"), dict) else {}
     seats = status.get("seats") if isinstance(status.get("seats"), dict) else {}
@@ -748,6 +799,40 @@ class _Handler(BaseHTTPRequestHandler):
                 self._send_json(self._auth_code(gate), gate)
                 return
             view = js.api_get_queue(
+                home,
+                client_ip=ip,
+                digest_home=self.server.digest_home,
+            )
+            code = 200 if view.get("ok") else 403
+            self._send_json(code, view)
+            return
+        if path in ("/pools", "/ui/pools"):
+            gate = auth.require_session(
+                home, client_ip=ip, session_token=tok
+            )
+            if not gate.get("ok"):
+                html = _render_login_html(str(gate.get("error") or "Sign in required"))
+                self._send(200, html.encode("utf-8"), "text/html; charset=utf-8")
+                return
+            view = js.api_get_pools(
+                home,
+                client_ip=ip,
+                digest_home=self.server.digest_home,
+            )
+            if not view.get("ok"):
+                self._send_json(403, view)
+                return
+            page = _render_pools_html(view)
+            self._send(200, page.encode("utf-8"), "text/html; charset=utf-8")
+            return
+        if path == "/api/pools":
+            gate = auth.require_session(
+                home, client_ip=ip, session_token=tok
+            )
+            if not gate.get("ok"):
+                self._send_json(self._auth_code(gate), gate)
+                return
+            view = js.api_get_pools(
                 home,
                 client_ip=ip,
                 digest_home=self.server.digest_home,
