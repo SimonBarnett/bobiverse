@@ -1183,6 +1183,49 @@ function Wait-BobiverseServiceGone {
     return $false
 }
 
+function Get-BobiverseThisMachineId {
+    <#
+      FR #6947: sanitized host id (BOB_MACHINE_ID, else COMPUTERNAME).
+    #>
+    $mid = [string]$env:BOB_MACHINE_ID
+    if (-not $mid) { $mid = [string]$env:COMPUTERNAME }
+    $mid = ($mid.ToLowerInvariant() -replace '[^a-z0-9_-]', '-').Trim('-_')
+    if (-not $mid) { $mid = 'unknown' }
+    return $mid
+}
+
+function Get-BobiverseChairHost {
+    <#
+      FR #6947: configured chair host. Default walrus. Env JEEVES_CHAIR_HOST only
+      (no seat CLI --chair-host).
+    #>
+    $raw = [string]$env:JEEVES_CHAIR_HOST
+    $host = ($raw.ToLowerInvariant() -replace '[^a-z0-9_-]', '-').Trim('-_')
+    if (-not $host) { $host = 'walrus' }
+    return $host
+}
+
+function Test-BobiverseIsChairHost {
+    return ((Get-BobiverseThisMachineId) -eq (Get-BobiverseChairHost))
+}
+
+function Disable-BobiverseStrayChairService {
+    <#
+      FR #6947: on a non-chair host leave ircJeeves stopped+disabled, never delete.
+    #>
+    param(
+        [Parameter(Mandatory)][string]$Name
+    )
+    $svc = Get-Service -Name $Name -ErrorAction SilentlyContinue
+    if (-not $svc) {
+        Write-Host ("INFO FR #6947 service {0} absent (not created on this host)" -f $Name)
+        return
+    }
+    try { Stop-Service -Name $Name -Force -ErrorAction SilentlyContinue } catch {}
+    try { Set-Service -Name $Name -StartupType Disabled -ErrorAction SilentlyContinue } catch {}
+    Write-Host ("INFO FR #6947 left {0} stopped+disabled (not deleted)" -f $Name)
+}
+
 function Remove-BobiverseService {
     param(
         [Parameter(Mandatory)][string]$Nssm,

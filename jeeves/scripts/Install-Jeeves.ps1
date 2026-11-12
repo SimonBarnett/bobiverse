@@ -139,12 +139,21 @@ if ((Test-Path -LiteralPath $homeMigrate) -and $Python) {
 # FR #2564: CA log under ProgramData\Bobiverse\logs even when UI msiexec omitted /l*v.
 Write-BobiverseMsiInstallLog -Product jeeves -Message ("install-begin service=$ServiceName installRoot=$InstallRoot msiVer=$MsiProductVersion")
 $script:JeevesInstallOk = $false
+$script:InstallChairService = Test-BobiverseIsChairHost
+if (-not $script:InstallChairService) {
+    Write-Host ("INFO FR #6947 chair host is {0}; this host is {1} - will not create or enable ircJeeves" -f (Get-BobiverseChairHost), (Get-BobiverseThisMachineId))
+}
 try {
 
-# Clean prior ircJeeves + remove legacy gh-Jeeves chair (both fight for nick Jeeves)
-Remove-BobiverseService -Nssm $Nssm -Name $ServiceName
-Remove-BobiverseLegacyService -Name 'BobJeeves' -Nssm $Nssm
-Get-ScheduledTask -TaskName 'BobJeeves-chair' -ErrorAction SilentlyContinue | Unregister-ScheduledTask -Confirm:$false
+# FR #6947: only the chair host creates/enables ircJeeves. Seats disable a leftover, never delete.
+if ($script:InstallChairService) {
+    # Clean prior ircJeeves + remove legacy gh-Jeeves chair (both fight for nick Jeeves)
+    Remove-BobiverseService -Nssm $Nssm -Name $ServiceName
+    Remove-BobiverseLegacyService -Name 'BobJeeves' -Nssm $Nssm
+    Get-ScheduledTask -TaskName 'BobJeeves-chair' -ErrorAction SilentlyContinue | Unregister-ScheduledTask -Confirm:$false
+} else {
+    Disable-BobiverseStrayChairService -Name $ServiceName
+}
 # Lay tree: copy scripts + skills into InstallRoot (skip when MSI already staged - issue #2)
 New-Item -ItemType Directory -Force -Path (Join-Path $InstallRoot 'scripts'), (Join-Path $InstallRoot 'config') | Out-Null
 if (-not $SkipCopy) {
@@ -292,6 +301,11 @@ $user = Resolve-BobiverseServiceUser
 # FR #2301 / WP3: prefer one-file jeeves.exe (chair + in-proc HTTP). Legacy: powershell Start-Jeeves.ps1.
 $jeevesExe = Join-Path $InstallRoot 'jeeves\jeeves.exe'
 $useJeevesExe = Test-Path -LiteralPath $jeevesExe
+$objectOk = $true
+if (-not $script:InstallChairService) {
+    Write-Host 'INFO FR #6947 skip nssm install/enable of ircJeeves on non-chair host'
+    $useJeevesExe = $false
+} else {
 if ($useJeevesExe) {
     $appParams = "--chair --http 127.0.0.1:7700 --home `"$ChairHome`" --digest-home `"$digestHome`""
     [void](Invoke-BobiverseNssmChecked -Exe $Nssm -NssmArgs @('install', $ServiceName, $jeevesExe))
@@ -338,14 +352,16 @@ $doPrompt = $PromptServicePassword -or (
 $objectOk = Set-BobiverseServiceObjectName -Nssm $Nssm -ServiceName $ServiceName -User $user `
     -InstallRoot $InstallRoot -PromptIfMissing:$doPrompt -AllowLocalSystem
 
+$envLines = @("BOB_DIGEST_HOME=$digestHome", "BOB_HOME=$ChairHome", "BOB_CONFIG_DIR=$cfgDir")
+if ($env:BOB_IRC_PASSWORD) { $envLines += "BOB_IRC_PASSWORD=$($env:BOB_IRC_PASSWORD)" }
+[void](Invoke-BobiverseNssmChecked -Exe $Nssm -NssmArgs @('set', $ServiceName, 'AppEnvironmentExtra', ($envLines -join "`n")))
+}
+
 if ($OpAccounts.Trim()) {
     $opFile = Join-Path $cfgDir 'op-accounts.txt'
     Set-Content -LiteralPath $opFile -Value (($OpAccounts -split '[,;\s]+' | Where-Object { $_ }) -join "`r`n") -Encoding ASCII
     Write-Host "INFO op accounts written to $opFile"
 }
-$envLines = @("BOB_DIGEST_HOME=$digestHome", "BOB_HOME=$ChairHome", "BOB_CONFIG_DIR=$cfgDir")
-if ($env:BOB_IRC_PASSWORD) { $envLines += "BOB_IRC_PASSWORD=$($env:BOB_IRC_PASSWORD)" }
-[void](Invoke-BobiverseNssmChecked -Exe $Nssm -NssmArgs @('set', $ServiceName, 'AppEnvironmentExtra', ($envLines -join "`n")))
 
 if (-not $objectOk) {
     $logonPs1 = Join-Path $InstallRoot 'scripts\Complete-BobiverseServiceLogon.ps1'
@@ -392,7 +408,9 @@ if (Test-Path -LiteralPath $operPy) {
 }
 # Supervised BobCallback (ONSTART) - FR #1316: same account as digest home owner (not SYSTEM).
 # FR #2301 / WP3: when ircJeeves runs jeeves.exe (in-proc HTTP), do not register a second Python BobCallback owner.
-if ($useJeevesExe) {
+if (-not $script:InstallChairService) {
+    Write-Host 'INFO FR #6947 skip BobCallback task on non-chair host'
+} elseif ($useJeevesExe) {
     Write-Host 'INFO skipping Python BobCallback task (jeeves.exe owns :7700; FR #2301 WP3)'
     try {
         $existingCb = Get-ScheduledTask -TaskName 'BobCallback' -ErrorAction SilentlyContinue
@@ -472,7 +490,7 @@ if (-not $SkipErgo -and -not $NoStart) {
     }
 }
 
-if (-not $NoStart) {
+if ((-not $NoStart) -and $script:InstallChairService) {
     try {
         Start-Service $ServiceName -ErrorAction Stop
         Start-Sleep -Seconds 2

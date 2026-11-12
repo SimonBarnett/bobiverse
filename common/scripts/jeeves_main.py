@@ -795,6 +795,18 @@ def main(argv: list[str] | None = None) -> int:
         safe_print(msg, file=sys.stderr, flush=True)
         return 2
 
+    # FR #6947: refuse --chair on non-walrus before mutex / :7700 bind.
+    if args.chair:
+        import jeeves_chair_host
+
+        if not jeeves_chair_host.chair_host_allowed():
+            safe_print(
+                jeeves_chair_host.refuse_chair_host_line(),
+                file=sys.stderr,
+                flush=True,
+            )
+            return jeeves_chair_host.EXIT_WRONG_HOST
+
     if args.self_test:
         checks = args.check or None
         if checks:
