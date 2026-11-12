@@ -672,17 +672,21 @@ def test_outbox_sends_to_own_shop_only(ircd, tmp_path):
 @pytest.mark.skipif(sys.platform != "win32", reason="Windows console")
 def test_one_window_agent_shares_our_console_and_gets_injected_input(tmp_path):
     """t771u: the agent is spawned by default_spawn INSIDE the exe's console (one window, one console, no second console) and
-    inject_console types into that shared console. Run in a throw-away process with its own console so pytest's console is untouched."""
+    inject_console types into that shared console (FR #6739: force BOB_WORKER_INJECT_PASTE=0 — bare readline is not a TUI). Run in a throw-away process with its own console so pytest's console is untouched."""
     import json
     import subprocess
 
     got, res, host = tmp_path / "got.txt", tmp_path / "res.json", tmp_path / "host.py"
     line = 'FROM Jeeves #m run: a&b | c "q" 100%'
     child = "import sys; l=sys.stdin.readline(); open(%r,'w',encoding='utf-8').write(l)" % str(got)
+    # FR #6739: hermetic S2 measurement uses bare sys.stdin.readline (not a TUI).
+    # Default inject prefers clipboard+Ctrl+V; bare readline reads literal "v".
+    # Force keys path so VISION S2 stays green without ambient BOB_WORKER_INJECT_PASTE.
     host.write_text(
         "import sys, os, json, time, ctypes\n"
         "sys.path.insert(0, %r)\n"
         "import bob_worker as bw\n"
+        "os.environ['BOB_WORKER_INJECT_PASTE'] = '0'\n"
         "spec = bw.LaunchSpec(argv=[sys.executable, '-c', %r], cwd='.', session_id='x')\n"
         "proc = bw.default_spawn(spec, dict(os.environ))\n"
         "time.sleep(1.5)\n"
