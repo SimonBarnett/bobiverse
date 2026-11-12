@@ -393,6 +393,7 @@ routes to bobiverse via the split rule.
 - GH_AUTH_STEPS must include pack whenever pack runs gh (release list / assets); isolation blanks GH_TOKEN for suites only.
 - When _inject_line gains an early assign_job_ref, keep method-bound pins for late ack/since_wall and repin ear provenance hashes in the same FR as the failing bob suite.
 - PowerShell functions: capture native stdout (npm ci) or it becomes extra return values; [string]$Stage joins https:// URLs and WiX heat.exe HEAT0001 path format is not supported.
+- BUILD unit tests that assert work_dir/cache must monkeypatch.delenv BOBIVERSE_DOWNLOAD_CACHE; SkipMsi airc stage tests must not require npm ci.
 
 ## Harvest digest (lessons audit 2026-10-06)
 
