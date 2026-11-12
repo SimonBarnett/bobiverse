@@ -136,13 +136,19 @@ try {
                 $env:PATHEXT = '.COM;.EXE;.BAT;.CMD;.VBS;.JS;.WS;.MSC'
             }
         }
-        # FR #6701: an explicit interpreter override avoids PATH ambiguity under
-        # LocalSystem / WindowsApps aliases. Tests set BOB_OPENCODE_PYTHON to the
-        # interpreter already running pytest. Fall back to the PATH lookup.
+        # FR #6701 / #6727: explicit interpreter override avoids PATH ambiguity under
+        # LocalSystem / WindowsApps aliases. Prefer BOB_OPENCODE_PYTHON (tests), then
+        # BOBIVERSE_PYTHON (NSSM / flamingo build runner), then PATH lookup.
+        # Keep PATHEXT .EXE ensure above for any remaining call-operator paths (provider).
         $py = $null
-        $pyOverride = ([string]$env:BOB_OPENCODE_PYTHON).Trim()
-        if ($pyOverride -and (Test-Path -LiteralPath $pyOverride -PathType Leaf)) {
-            $py = $pyOverride
+        foreach ($cand in @(
+            ([string]$env:BOB_OPENCODE_PYTHON).Trim(),
+            ([string]$env:BOBIVERSE_PYTHON).Trim()
+        )) {
+            if ($cand -and (Test-Path -LiteralPath $cand -PathType Leaf)) {
+                $py = $cand
+                break
+            }
         }
         if (-not $py) {
             $py = (Get-Command python.exe -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source)
@@ -181,35 +187,61 @@ else:
         # Pass stats text via stdin: Windows PowerShell 5.1 can strip embedded quotes when
         # they are passed as a native argument, which breaks parsing.
         $payload = (@{ models = $modelsOutput } + $statsByWindow) | ConvertTo-Json -Compress -Depth 3
-        # FR #6717: capture stats-stage stderr + exit so a silent native invoke
-        # (missing PATHEXT .EXE, bad interpreter, import error) is named in JSON.
+        # FR #6727: ProcessStartInfo for the stats child (not & $py). Call-operator +
+        # stripped PATHEXT remains a footgun; Process bypasses PATHEXT (same pattern as
+        # Invoke-OpencodeTimed). Temp .py avoids -c quoting under Windows PowerShell 5.1.
+        # Capture stderr + exit so a bad interpreter / import error is named in JSON.
         # Do not capture provider-stage stderr below.
-        $statsErrFile = $null
+        $statsPyFile = $null
+        $result = $null
         try {
-            $statsErrFile = [System.IO.Path]::Combine(
+            $statsPyFile = [System.IO.Path]::Combine(
                 [System.IO.Path]::GetTempPath(),
-                ('bob-oc-stats-err-' + [Guid]::NewGuid().ToString('n') + '.txt')
+                ('bob-oc-stats-' + [Guid]::NewGuid().ToString('n') + '.py')
             )
-            $result = $payload | & $py -c $script 2>$statsErrFile
-            if ($null -ne $LASTEXITCODE -and [string]$LASTEXITCODE -ne '') {
-                $out.python_exit = [int]$LASTEXITCODE
-            } else {
-                $out.python_exit = -1
-            }
-            $errTail = ''
-            if ($statsErrFile -and (Test-Path -LiteralPath $statsErrFile -PathType Leaf)) {
+            [System.IO.File]::WriteAllText($statsPyFile, $script, (New-Object System.Text.UTF8Encoding $false))
+            $psi = New-Object System.Diagnostics.ProcessStartInfo
+            $psi.FileName = $py
+            $psi.Arguments = '"' + $statsPyFile + '"'
+            $psi.UseShellExecute = $false
+            $psi.RedirectStandardInput = $true
+            $psi.RedirectStandardOutput = $true
+            $psi.RedirectStandardError = $true
+            $psi.CreateNoWindow = $true
+            if ($pyDir) {
                 try {
-                    $errTail = [string]([System.IO.File]::ReadAllText($statsErrFile))
-                } catch { $errTail = '' }
+                    $psi.EnvironmentVariables['PYTHONPATH'] = "$pyDir;$($psi.EnvironmentVariables['PYTHONPATH'])"
+                } catch {
+                    try { $psi.EnvironmentVariables['PYTHONPATH'] = [string]$pyDir } catch { }
+                }
             }
-            # Drop PS 5.1 ErrorRecord noise; keep native stderr text only.
-            if ($errTail) {
-                $errTail = ($errTail -replace '(?m)^.*ErrorRecord.*$', '').Trim()
-                if ($errTail.Length -gt 300) { $errTail = $errTail.Substring(0, 300) }
-                if ($errTail) { $out.stats_error = $errTail }
+            $proc = $null
+            try {
+                $proc = [System.Diagnostics.Process]::Start($psi)
+                $proc.StandardInput.Write($payload)
+                $proc.StandardInput.Close()
+                $stdoutTask = $proc.StandardOutput.ReadToEndAsync()
+                $stderrTask = $proc.StandardError.ReadToEndAsync()
+                if (-not $proc.WaitForExit(60000)) {
+                    try { $proc.Kill() } catch { }
+                    $out.python_exit = -1
+                    $out.stats_error = 'stats child timed out after 60s'
+                    $result = $null
+                } else {
+                    $out.python_exit = [int]$proc.ExitCode
+                    $result = [string]($stdoutTask.Result)
+                    $errTail = [string]($stderrTask.Result)
+                    if ($errTail) {
+                        $errTail = $errTail.Trim()
+                        if ($errTail.Length -gt 300) { $errTail = $errTail.Substring(0, 300) }
+                        if ($errTail) { $out.stats_error = $errTail }
+                    }
+                }
+            } finally {
+                if ($proc) { try { $proc.Dispose() } catch { } }
             }
         } finally {
-            if ($statsErrFile) { try { Remove-Item -LiteralPath $statsErrFile -Force -ErrorAction SilentlyContinue } catch { } }
+            if ($statsPyFile) { try { Remove-Item -LiteralPath $statsPyFile -Force -ErrorAction SilentlyContinue } catch { } }
         }
         if ($result) {
             $parsed = $result | ConvertFrom-Json -ErrorAction Stop
