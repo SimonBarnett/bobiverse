@@ -44,6 +44,151 @@ _PACK_LOGO = (
 )
 
 
+def load_status_token_graph(digest_home: Path | None) -> dict[str, Any]:
+    """FR #6784: read-only token graph from job-cost-ledger.json (never writes).
+
+    Prefer ``summary.by_model`` from FR-003 when present; else roll up rows.
+    Missing file or no measured rows -> empty. Unreadable JSON -> error.
+    """
+    empty = {"state": "empty", "by_model": [], "unknown_jobs": 0}
+    err = {"state": "error", "by_model": [], "unknown_jobs": 0}
+    if digest_home is None:
+        return empty
+    path = Path(digest_home) / "job-cost-ledger.json"
+    if not path.is_file():
+        return empty
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return err
+    if not isinstance(data, dict) and not isinstance(data, list):
+        return err
+    rows: list[dict[str, Any]] = []
+    summary: dict[str, Any] = {}
+    if isinstance(data, dict):
+        summary = data.get("summary") if isinstance(data.get("summary"), dict) else {}
+        raw_rows = data.get("rows")
+        if isinstance(raw_rows, list):
+            rows = [r for r in raw_rows if isinstance(r, dict)]
+    else:
+        rows = [r for r in data if isinstance(r, dict)]
+    buckets: list[dict[str, Any]] = []
+    unknown = 0
+    canned = summary.get("by_model") if isinstance(summary, dict) else None
+    if isinstance(canned, list) and canned:
+        for item in canned:
+            if not isinstance(item, dict):
+                continue
+            model = str(item.get("model") or "").strip()
+            if not model:
+                continue
+            buckets.append(
+                {
+                    "model": model,
+                    "measured_jobs": int(item.get("measured_jobs") or 0),
+                    "tokens_in": int(item.get("tokens_in") or 0),
+                    "tokens_out": int(item.get("tokens_out") or 0),
+                    "tokens_cached": int(item.get("tokens_cached") or 0),
+                }
+            )
+        try:
+            unknown = int(summary.get("unknown_jobs") or 0)
+        except (TypeError, ValueError):
+            unknown = 0
+    else:
+        by: dict[str, dict[str, Any]] = {}
+        for row in rows:
+            if row.get("tokens_unknown"):
+                unknown += 1
+                continue
+            model = str(row.get("model") or "").strip()
+            if not model:
+                continue
+            b = by.setdefault(
+                model,
+                {
+                    "model": model,
+                    "measured_jobs": 0,
+                    "tokens_in": 0,
+                    "tokens_out": 0,
+                    "tokens_cached": 0,
+                },
+            )
+            b["measured_jobs"] += 1
+            for key in ("tokens_in", "tokens_out", "tokens_cached"):
+                try:
+                    b[key] += int(row.get(key) or 0)
+                except (TypeError, ValueError):
+                    continue
+        buckets = list(by.values())
+    if not buckets:
+        return {"state": "empty", "by_model": [], "unknown_jobs": unknown}
+    return {"state": "home", "by_model": buckets, "unknown_jobs": unknown}
+
+
+def _render_token_graph_html(graph: dict[str, Any] | None) -> str:
+    g = dict(graph or {})
+    state = str(g.get("state") or "empty")
+    if state == "error":
+        return (
+            '<div class="err" role="alert">'
+            "<p><strong>The token graph cannot be drawn.</strong></p>"
+            "<p>The job cost ledger could not be read. No series is invented.</p>"
+            "</div>"
+        )
+    if state != "home":
+        return (
+            '<div class="empty">'
+            "<p><strong>Nothing to compare yet.</strong></p>"
+            "<p>No measured token rows are in the ledger. This page does not draw a zero series.</p>"
+            "</div>"
+        )
+    buckets = [b for b in (g.get("by_model") or []) if isinstance(b, dict)]
+    if not buckets:
+        return (
+            '<div class="empty">'
+            "<p><strong>Nothing to compare yet.</strong></p>"
+            "<p>No measured token rows are in the ledger. This page does not draw a zero series.</p>"
+            "</div>"
+        )
+    totals = []
+    for b in buckets:
+        tot = int(b.get("tokens_in") or 0) + int(b.get("tokens_out") or 0)
+        totals.append(max(tot, 1))
+    max_t = max(totals) if totals else 1
+    fills = ("#2a6", "#36a", "#a63", "#6a3")
+    parts = [
+        '<p class="meta">Token comparison by model. Unknown jobs are counted beside the chart and are not drawn as zero.</p>',
+        '<svg width="420" height="'
+        + str(20 + 60 * len(buckets))
+        + '" role="img" aria-label="Token totals by model">',
+        "<title>Measured tokens by model</title>",
+    ]
+    y = 28
+    for i, b in enumerate(buckets):
+        model = html.escape(str(b.get("model") or ""))
+        tin = int(b.get("tokens_in") or 0)
+        tout = int(b.get("tokens_out") or 0)
+        tc = int(b.get("tokens_cached") or 0)
+        w = int(280 * (tin + tout) / max_t) if max_t else 1
+        if w < 1:
+            w = 1
+        fill = fills[i % len(fills)]
+        parts.append(
+            f'<text x="16" y="{y}">{model} - in {tin} / out {tout} / cached {tc}</text>'
+        )
+        parts.append(
+            f'<rect class="bar" x="16" y="{y + 8}" width="{w}" height="28" fill="{fill}"></rect>'
+        )
+        y += 60
+    parts.append("</svg>")
+    unk = int(g.get("unknown_jobs") or 0)
+    parts.append(
+        f'<p class="note">unknown_jobs: {unk} (not added into the bars)</p>'
+    )
+    return "\n".join(parts)
+
+
 def ntsa_gut_logo_path() -> Path:
     """Git logo bytes: tray asset, else the docs pack copy (same file, no new art)."""
     if _TRAY_LOGO.is_file():
@@ -540,20 +685,26 @@ def _render_pools_html(doc: Any) -> str:
 </body></html>
 """
 
-def _render_status_html(status: dict[str, Any]) -> str:
+def _render_status_html(
+    status: dict[str, Any],
+    *,
+    token_graph: dict[str, Any] | None = None,
+) -> str:
     q = status.get("queue") if isinstance(status.get("queue"), dict) else {}
     seats = status.get("seats") if isinstance(status.get("seats"), dict) else {}
     fuel = status.get("fuel") if isinstance(status.get("fuel"), dict) else {}
     pending = "yes" if status.get("restart_pending") else "no"
     header = _shell_header(current="status", include_nav=True)
+    graph_html = _render_token_graph_html(token_graph)
     return f"""<!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8"/>
 <title>Jeeves status</title>
-<style>body{{font-family:system-ui,sans-serif;margin:1.5rem;}} {_shell_css()} code{{font-size:.9em;}}</style>
+<style>body{{font-family:system-ui,sans-serif;margin:1.5rem;}} {_shell_css()} code{{font-size:.9em;}} .err{{border:1px solid #a33;padding:1rem;max-width:28rem;}} .empty{{border:1px dashed #889;padding:1rem;max-width:28rem;}} svg{{background:#fff;border:1px solid #ccd;}}</style>
 </head><body>
 {header}
 <h1>Jeeves status</h1>
-<p class="note">Read-only (FR #6443). No secrets.</p>
+<p class="note">Read-only (FR #6443 / #6784). No secrets.</p>
+{graph_html}
 <ul>
 <li>version: <code>{status.get("version") or ""}</code></li>
 <li>source_commit: <code>{status.get("source_commit") or ""}</code></li>
@@ -796,7 +947,8 @@ class _Handler(BaseHTTPRequestHandler):
             if not view.get("ok"):
                 self._send_json(403, view)
                 return
-            html = _render_status_html(view)
+            graph = load_status_token_graph(self.server.digest_home)
+            html = _render_status_html(view, token_graph=graph)
             self._send(200, html.encode("utf-8"), "text/html; charset=utf-8")
             return
         if path in ("/queue", "/ui/queue"):
