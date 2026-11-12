@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Jeeves status - token comparison</title>
+  <style>
+    body { font-family: sans-serif; margin: 2rem; color: #142; background: #f6f7f4; }
+    h1 { font-size: 1.4rem; }
+    .meta { color: #345; }
+    svg { background: #fff; border: 1px solid #ccd; }
+    .bar-g { fill: #2a6; }
+    .bar-c { fill: #36a; }
+    .note { margin-top: 1rem; }
+  </style>
+</head>
+<body>
+  <h1>Jeeves status</h1>
+  <p class="meta">Token comparison by model. Unknown jobs are counted beside the chart and are not drawn as zero.</p>
+  <svg width="420" height="180" role="img" aria-label="Token totals by model">
+    <title>Measured tokens by model</title>
+    <text x="16" y="28">grok-4.7 - in 100 / out 40 / cached 10</text>
+    <rect class="bar-g" x="16" y="40" width="280" height="28"></rect>
+    <text x="16" y="100">cursor/composer - in 50 / out 10 / cached 0</text>
+    <rect class="bar-c" x="16" y="112" width="140" height="28"></rect>
+  </svg>
+  <p class="note">unknown_jobs: 1 (not added into the bars)</p>
+  <p><a href="empty.html">Empty</a> · <a href="error.html">Error</a></p>
+</body>
+</html>
