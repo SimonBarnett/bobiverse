@@ -176,7 +176,10 @@ def test_fr4025_timeout_files_step_failure(tmp_path: Path):
     assert report.blockers_filed[0]["action"] == "created"
 
 
-def test_fr4025_green_path_pack_and_prerelease(tmp_path: Path):
+def test_fr4025_green_path_pack_and_prerelease(tmp_path: Path, monkeypatch):
+    # FR #6975: BUILD boxes set BOBIVERSE_DOWNLOAD_CACHE; this unit must still
+    # see recipe cache_dirs under work_dir/cache, not the live download cache.
+    monkeypatch.delenv("BOBIVERSE_DOWNLOAD_CACHE", raising=False)
     filer = bb.FakeGitHubFiler()
     pack_calls: list = []
     release_calls: list = []

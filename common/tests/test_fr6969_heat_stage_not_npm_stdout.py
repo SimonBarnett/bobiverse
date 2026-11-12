@@ -25,6 +25,17 @@ def test_fr6969_heat_asserts_stage_is_directory():
     assert "://" in p
 
 
+def test_fr6975_skipmsi_skips_npm_ci():
+    """FR #6975: stage-only airc pack must not require npm (agent-layer BUILD)."""
+    p = PACK.read_text(encoding="utf-8")
+    assert "FR #6975" in p
+    assert "-SkipMsi skip npm ci" in p
+    npm_ci_at = p.index("$npmOut = & npm ci --omit=dev")
+    skip_at = p.index("-SkipMsi skip npm ci")
+    pw = p.index("# FR #5283 / #5905")
+    assert pw < skip_at < npm_ci_at
+
+
 def test_fr6969_ps_join_would_make_uri_path():
     """Document why [string]$Stage + npm stdout is HEAT0001."""
     leaked = [

@@ -180,9 +180,10 @@ def test_fr5913_pack_always_runs_npm_ci():
     assert "node_modules missing and npm not on PATH" not in pack
     # npm ci is unconditional: Get-Command npm is not nested under Test-Path $nm.
     block_start = pack.index("# FR #5283 / #5905")
-    block = pack[block_start : block_start + 1800]
+    block = pack[block_start : block_start + 2800]
     npm_ci_at = block.index("npm ci --omit=dev")
-    # Any Test-Path of $nm before npm ci would be the old skip guard.
+    # Any Test-Path of $nm before npm ci would be the old skip-if-present guard.
+    # FR #6975 SkipMsi bypass is allowed; it is not a node_modules-present skip.
     before = block[:npm_ci_at]
     assert "Test-Path -LiteralPath $nm" not in before
 
