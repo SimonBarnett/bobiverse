@@ -68,17 +68,24 @@ def short_build_sha(commit: str | None = None) -> str:
 
 
 def resolve_seat_hello_model(kind: str, env: Optional[dict] = None) -> str:
-    """FR #6418: the configured model the seat's agent will launch with ('' when unreadable).
+    """FR #6418 / FR #7084: the configured model the seat's agent will launch with.
 
-    OpenCode: the launch model is ``BOB_OPENCODE_MODEL`` (``run_agent`` exports the
-    ``resolve_opencode_model`` pick there: operator env -> OpenCode config -> fuel),
-    then the OpenCode config's ``model``. Grok / Cursor (and any other kind) have no
-    model configuration the worker can already read, so the hello line reports
-    ``unknown`` for them. Local reads only: no network or provider calls, and never
-    credentials or auth files.
+    FR #7084: ``workerStartModels`` (JSON/env) is the per-CLI minimum start model.
+    OpenCode still honours ``BOB_OPENCODE_MODEL`` then OpenCode config. Empty config
+    stays empty (hello ``unknown``); never invent a premium id.
     """
     env = os.environ if env is None else env
-    if (kind or "").strip().lower() != "opencode":
+    k = (kind or "").strip().lower()
+    try:
+        import worker_start_model as wsm
+
+        cfg = wsm.load_worker_start_config(env=env)
+        picked = wsm.configured_start_model(k, cfg)
+        if picked:
+            return picked
+    except Exception:
+        pass
+    if k != "opencode":
         return ""
     m = str(env.get("BOB_OPENCODE_MODEL") or "").strip()
     if m:
@@ -254,6 +261,10 @@ ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
 FORBIDDEN_FLAGS = ("--resume", "-r", "--continue", "-c", "--resume-session", "--session", "--chat")
 CREATE_NEW_CONSOLE = 0x00000010
 CREATE_NO_WINDOW = 0x08000000
+# FR #7117: console QuickEdit freezes the seat until Enter (looks like a crash).
+ENABLE_QUICK_EDIT_MODE = 0x0040
+ENABLE_EXTENDED_FLAGS = 0x0080
+STD_INPUT_HANDLE = -10
 
 RULE_RESTART_MAX = 3
 RULE_RESTART_WINDOW_S = 1800.0
@@ -1776,6 +1787,14 @@ def describe_agent_child_launch(
         session_id=session_id, install_root=install_root,
     )
     env = seat_env_extra(rd, machine, nick)
+    try:
+        import worker_start_model as wsm
+
+        actual = wsm.actual_from_launch_spec(kind_l, spec, env=env)
+        if actual:
+            env[wsm.ENV_ACTUAL_MODEL] = actual
+    except Exception:
+        pass
     if bound_meta.get("grok_home"):
         try:
             import skill_dag_bound as _sdb
@@ -2457,6 +2476,13 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             argv = prefix + ["--resume", sid, "--rules", rules, prompt]
         else:
             argv = prefix + ["-s", sid, "--rules", rules, prompt]
+        try:
+            import worker_start_model as wsm
+
+            grok_model = wsm.configured_start_model("grok", wsm.load_worker_start_config())
+            argv = wsm.launch_argv_with_model("grok", argv, grok_model)
+        except Exception:
+            pass
     elif kind == "cursor":
         # The prompt goes through a FILE read by a fixed launcher: text never lands on a command line (no shell injection).
         pfile = str(Path(run_dir) / "prompt.txt")
@@ -2464,6 +2490,21 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
         esc = lambda s: str(s).replace("'", "''")  # noqa: E731
         agent_line = (f"& '{esc(exe)}' --plan --model auto --workspace '{esc(cwd)}' $prompt" if mode == "plan"
                       else f"& '{esc(exe)}' --trust --force --workspace '{esc(cwd)}' -- $prompt")
+        try:
+            import worker_start_model as wsm
+
+            cur_model = wsm.configured_start_model("cursor", wsm.load_worker_start_config())
+            if cur_model:
+                if "--model auto" in agent_line:
+                    agent_line = agent_line.replace("--model auto", f"--model {esc(cur_model)}", 1)
+                elif "--model" not in agent_line:
+                    agent_line = agent_line.replace(
+                        f"& '{esc(exe)}'",
+                        f"& '{esc(exe)}' --model '{esc(cur_model)}'",
+                        1,
+                    )
+        except Exception:
+            pass
         files[pfile] = prompt
         files[lfile] = "\n".join(["$ErrorActionPreference = 'Stop'", f"$prompt = [IO.File]::ReadAllText('{esc(pfile)}')",
                                   f"Set-Location -LiteralPath '{esc(cwd)}'", agent_line, "exit $LASTEXITCODE"])
@@ -2499,9 +2540,21 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
         # so BoredEmitter gets harvest-hold / done-miss / startup-ready parity with Grok.
         # FR #6240: no external_directory allow. Each injected assign carries its own
         # @@BOBJOB1 frame. The standing prompt is not a job and is not scanned.
+        oc_cfg_model = ""
+        try:
+            import worker_start_model as wsm
+
+            oc_cfg_model = wsm.configured_start_model("opencode", wsm.load_worker_start_config())
+        except Exception:
+            oc_cfg_model = ""
+        oc_fallback = (
+            f"if (-not $env:BOB_OPENCODE_MODEL) {{ $env:BOB_OPENCODE_MODEL = '{esc(oc_cfg_model)}' }}"
+            if oc_cfg_model
+            else r"if (-not $env:BOB_OPENCODE_MODEL) { throw 'BOB_OPENCODE_MODEL is required (no exhausted glm-5.3 fallback)' }"
+        )
         files[lfile] = "\n".join([
             r"$ErrorActionPreference = 'Stop'",
-            r"if (-not $env:BOB_OPENCODE_MODEL) { throw 'BOB_OPENCODE_MODEL is required (no exhausted glm-5.3 fallback)' }",
+            oc_fallback,
             r"$model = $env:BOB_OPENCODE_MODEL",
             f"$exe = '{esc(exe)}'",
             f"$prompt = [IO.File]::ReadAllText('{esc(pfile)}')",
@@ -2843,7 +2896,30 @@ def ensure_console(title: str = "") -> bool:
             return False
     if title:
         k32.SetConsoleTitleW(str(title)[:200])
+    disable_console_quick_edit(k32)
     return True
+
+
+def disable_console_quick_edit(k32=None) -> bool:
+    """Turn off QuickEdit so a click/select cannot freeze the worker until Enter (FR #7117)."""
+    if os.name != "nt":
+        return False
+    try:
+        k32 = k32 or ctypes.WinDLL("kernel32", use_last_error=True)
+        GetStdHandle = k32.GetStdHandle
+        GetConsoleMode = k32.GetConsoleMode
+        SetConsoleMode = k32.SetConsoleMode
+        GetStdHandle.restype = ctypes.c_void_p
+        h = GetStdHandle(STD_INPUT_HANDLE)
+        if not h or int(h) in (0, -1, 0xFFFFFFFF, 0xFFFFFFFFFFFFFFFF):
+            return False
+        mode = ctypes.c_uint(0)
+        if not GetConsoleMode(ctypes.c_void_p(int(h)), ctypes.byref(mode)):
+            return False
+        new_mode = (int(mode.value) | ENABLE_EXTENDED_FLAGS) & ~ENABLE_QUICK_EDIT_MODE
+        return bool(SetConsoleMode(ctypes.c_void_p(int(h)), new_mode))
+    except Exception:
+        return False
 
 
 def find_window_icon(install_root: Optional[Path] = None) -> Optional[Path]:
@@ -6738,6 +6814,9 @@ def post_digest_seat_kind(
     kind: str = "",
     agent: str = "",
     model: str = "",
+    configured_model: str = "",
+    model_mismatch: bool | None = None,
+    cost_tier: str = "",
     working_on: str = "",
     worker_build: str | None = None,
     url: str | None = None,
@@ -6773,6 +6852,16 @@ def post_digest_seat_kind(
     }
     if (model or "").strip():
         payload["model"] = str(model).strip()
+        payload["start_model"] = str(model).strip()
+    cfg_m = str(configured_model or "").strip()
+    if cfg_m:
+        payload["configured_model"] = cfg_m
+    if model_mismatch is not None:
+        payload["model_mismatch"] = bool(model_mismatch)
+    elif cfg_m and (model or "").strip():
+        payload["model_mismatch"] = str(model).strip().lower() != cfg_m.lower()
+    if (cost_tier or "").strip():
+        payload["cost_tier"] = str(cost_tier).strip()
     ok = bool(_http_post_json(report, payload, log=log))
     if not ok and log:
         try:
@@ -9965,6 +10054,7 @@ class Supervisor:
             spec = child["spec"]
             # FR #2380 / #2413 / #2669: seat env + path normalize + scrub agent-host vars.
             env = prepare_seat_child_env(self.base_env, child["env"])
+            self.last_child_env = dict(env)
             if self.secret is not None and self.kind == "grok":
                 env["XAI_API_KEY"] = self.secret.reveal()  # child env only
             try:
@@ -11654,9 +11744,24 @@ def run_agent(args, log: Log) -> int:
         return EXIT_IRC_FAIL
     # FR #6134: publish agent kind so the chair can skip OpenCode for MRB/UAT.
     # FR #6409: digest worker_build short SHA (or unknown); hello after start_agent (MRB #6411).
-    # FR #6418: one configured-model value shared by the digest payload and the hello line.
+    # FR #6418: hello ``model=`` stays the configured value. FR #7084 digest ``start_model`` is
+    # the launched process/session model (re-POSTed after start_agent).
     build = short_build_sha()
     seat_model = resolve_seat_hello_model(kind)
+    cfg_model = ""
+    cost_tier = ""
+    mismatch = None
+    try:
+        import worker_start_model as wsm
+
+        _cfg = wsm.load_worker_start_config()
+        cfg_model = wsm.configured_start_model(kind, _cfg)
+        mismatch = wsm.model_mismatch(seat_model, cfg_model)
+        cost_tier = wsm.model_cost_tier(seat_model or cfg_model, _cfg)
+        if not cfg_model:
+            log(f"worker: configured start model empty for kind={kind}; not inventing an id")
+    except Exception:
+        pass
     try:
         post_digest_seat_kind(
             machine=machine,
@@ -11664,6 +11769,9 @@ def run_agent(args, log: Log) -> int:
             nick=nick,
             kind=kind,
             model=seat_model,
+            configured_model=cfg_model,
+            model_mismatch=mismatch,
+            cost_tier=cost_tier,
             worker_build=build,
             log=log,
         )
@@ -11694,6 +11802,39 @@ def run_agent(args, log: Log) -> int:
     if not sup.start_agent():
         irc.close("launch failed")
         return EXIT_LAUNCH_FAIL
+    try:
+        import worker_start_model as wsm
+
+        child_env = getattr(sup, "last_child_env", None) or {}
+        actual = str(child_env.get(wsm.ENV_ACTUAL_MODEL) or "").strip()
+        if not actual:
+            actual = wsm.actual_start_model(env=child_env or os.environ)
+        _cfg = wsm.load_worker_start_config()
+        cfg_model = wsm.configured_start_model(kind, _cfg)
+        mismatch = wsm.model_mismatch(actual, cfg_model)
+        cost_tier = wsm.model_cost_tier(actual or cfg_model, _cfg)
+        if mismatch:
+            try:
+                irc.say(
+                    irc.shop,
+                    f"start model mismatch actual={actual or 'unknown'} configured={cfg_model or 'unset'}",
+                )
+            except Exception:
+                pass
+        post_digest_seat_kind(
+            machine=machine,
+            pid=pid,
+            nick=nick,
+            kind=kind,
+            model=actual or seat_model,
+            configured_model=cfg_model,
+            model_mismatch=mismatch,
+            cost_tier=cost_tier,
+            worker_build=build,
+            log=log,
+        )
+    except Exception as e:
+        log(f"worker: post-launch start_model digest failed {type(e).__name__}")
     # FR #6409 / MRB #6411: announce ready only after agent process starts (CodeRabbit).
     try:
         hello = worker_hello_line(kind, model=seat_model, build=build)

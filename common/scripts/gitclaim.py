@@ -7021,6 +7021,38 @@ def list_idle_after_empty(
     return rows
 
 
+def sort_idle_seats_cheapest_first(
+    idle_rows: list,
+    fields_by_nick: dict | None = None,
+    *,
+    home: Path | None = None,
+) -> list:
+    """FR #7084 / MRB #7089: prefer min cost_tier among idle seats (stable nick tie-break)."""
+    rows = list(idle_rows or [])
+    cache = dict(fields_by_nick or {})
+
+    def _key(ent: dict) -> tuple:
+        nick = str((ent or {}).get("nick") or "").strip()
+        fields = cache.get(nick)
+        if fields is None and home is not None:
+            try:
+                fields = _seat_digest_model_fields(home, nick)
+            except Exception:
+                fields = {}
+            cache[nick] = fields or {}
+        fields = fields or {}
+        try:
+            import worker_start_model as wsm
+
+            rank = wsm._tier_rank(str(fields.get("cost_tier") or wsm.DEFAULT_JOB_TIER))
+        except Exception:
+            rank = 0
+        return (rank, nick.lower())
+
+    rows.sort(key=_key)
+    return rows
+
+
 def offer_to_idle_seats(
     home: Path,
     *,
@@ -7043,6 +7075,10 @@ def offer_to_idle_seats(
     idle_rows = list_idle_after_empty(home, now=now_f, live=live)
     if not idle_rows:
         return 0
+    try:
+        idle_rows = sort_idle_seats_cheapest_first(idle_rows, home=home)
+    except Exception:
+        pass
     sent = 0
     for ent in idle_rows:
         nick = str(ent.get("nick") or "").strip()
@@ -8064,6 +8100,46 @@ def _save_seat_out_of_fuel_unlocked(home: Path, seats: dict) -> None:
 
 
 
+def _seat_digest_model_fields(home: Path, nick: str) -> dict:
+    """FR #7084: start_model / mismatch / cost_tier from digest workers or worker_list."""
+    me = (canonical_worker_nick(nick) or nick or "").strip()
+    parsed = bobreport.parse_seat_nick(me)
+    if not parsed:
+        return {}
+    mid, pid = parsed
+    try:
+        doc = bobreport.load_digest(_root(home))
+    except Exception:
+        return {}
+    ent = (doc.get("machines") or {}).get(mid) or {}
+    if not isinstance(ent, dict):
+        return {}
+    workers = ent.get("workers") if isinstance(ent.get("workers"), dict) else {}
+    w = workers.get(str(pid)) if isinstance(workers.get(str(pid)), dict) else {}
+    if w:
+        return dict(w)
+    for r in bobreport._coerce_worker_list(ent.get("worker_list")):
+        if str(r.get("nick") or "").strip().lower() == me.lower():
+            return dict(r)
+    return {}
+
+
+def _seat_model_allows_row(home: Path, nick: str, cand: dict) -> bool:
+    """FR #7084: unknown digest model does not block; mismatch / too-cheap does."""
+    fields = _seat_digest_model_fields(home, nick)
+    if not fields:
+        return True
+    if "model_mismatch" not in fields and not fields.get("start_model") and not fields.get("cost_tier"):
+        return True
+    try:
+        import worker_start_model as wsm
+
+        cfg = wsm.load_worker_start_config()
+        return wsm.seat_allows_job(fields, str((cand or {}).get("task") or ""), cfg)
+    except Exception:
+        return True
+
+
 def seat_agent_kind(home: Path, nick: str) -> str:
     """Digest agent kind for a seat nick (``grok`` / ``cursor`` / ``opencode`` / ...).
 
@@ -8962,6 +9038,9 @@ def offer_focus_top(
                 if repo_archived_for_queue(str(cand.get("repo") or "")):
                     return None
                 if row_machine_mismatch(cand, me) or row_gave_up_by(cand, me, live=live):
+                    return None
+                # FR #7084: skip model-mismatch seats; skip when actual tier is below job need.
+                if not _seat_model_allows_row(home, me, cand):
                     return None
                 # FR #4718: do not hand the same MRB head back to the seat that FAILed it.
                 if mrb_fail_same_head_for_seat(cand, me):
@@ -12203,6 +12282,10 @@ def assign_row(
                 return "refused", "repo is archived (FR #785)"
             if row_machine_mismatch(cand, me):
                 return "refused", f"row is pinned to another machine than {me}"
+            # FR #7084 / FIX #7089: !assign still requires model eligibility (needs_human stays the
+            # only manual exception, already gated above for FIX).
+            if not _seat_model_allows_row(home, me, cand):
+                return "refused", f"{me}: model mismatch or below jobRequiredModelTier (FR #7084)"
             # Exact-nick giveup only on !assign (FR #4336): recycle inherit is for
             # auto-offer. Ops may !assign needs_human to a recycled successor.
             if row_gave_up_by(cand, me):

@@ -406,6 +406,7 @@ routes to bobiverse via the split rule.
 - skill-dag resolve must score the full seed against skill ids as well as descriptions so spaced tokens still hit hyphenated book names
 - skill-dag status last_error must not fire for the same skill id copied into worker, bob, and ~/.grok packs; prefer the first configured root
 - Worker start models must come from config placeholders not hard-coded premium ids; digest actual vs configured mismatch must skip Jeeves offers
+- FR #7084 digest start_model must come from the launched argv/session (stamp BOB_WORKER_ACTUAL_MODEL, re-POST after start_agent); freeze worker_start_model as a PyInstaller hidden-import.
 
 ## Harvest digest (lessons audit 2026-10-06)
 

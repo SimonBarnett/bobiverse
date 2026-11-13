@@ -980,6 +980,17 @@ def _coerce_worker(mid: str, pid: str, raw: object) -> dict:
         out["agent"] = agent
     if model:
         out["model"] = model
+    start_model = str(ent.get("start_model") or model or "").strip()
+    configured_model = str(ent.get("configured_model") or "").strip()
+    if start_model:
+        out["start_model"] = start_model
+    if configured_model:
+        out["configured_model"] = configured_model
+    if "model_mismatch" in ent:
+        out["model_mismatch"] = bool(ent.get("model_mismatch"))
+    cost_tier = str(ent.get("cost_tier") or "").strip()
+    if cost_tier:
+        out["cost_tier"] = cost_tier
     # FR #4211: keep heartbeat so live_seat_nicks can skip stale legacy workers.
     updated = str(ent.get("updated") or ent.get("last_seen") or ent.get("lastSeen") or "").strip()
     if updated:
@@ -1082,9 +1093,22 @@ def _coerce_worker_list(raw: object, *, now: float | None = None) -> list[dict]:
                 state = "idle"
         # Keep work text for doing and offered (tray shows offered:<work>).
         work = clean_worker_work(ent.get("work")) if state in ("doing", "offered") else ""
-        out.append(
-            {"nick": nick, "state": state, "work": work, "updated": updated}
-        )
+        row = {"nick": nick, "state": state, "work": work, "updated": updated}
+        kind = str(ent.get("kind") or ent.get("agent") or "").strip()
+        if kind:
+            row["kind"] = kind
+        start_model = str(ent.get("start_model") or ent.get("model") or "").strip()
+        configured_model = str(ent.get("configured_model") or "").strip()
+        if start_model:
+            row["start_model"] = start_model
+        if configured_model:
+            row["configured_model"] = configured_model
+        if "model_mismatch" in ent:
+            row["model_mismatch"] = bool(ent.get("model_mismatch"))
+        cost_tier = str(ent.get("cost_tier") or "").strip()
+        if cost_tier:
+            row["cost_tier"] = cost_tier
+        out.append(row)
     return out[:WORKER_LIST_MAX]
 
 

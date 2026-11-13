@@ -79,7 +79,7 @@ $argList = @('-m', 'PyInstaller', '--noconfirm', '--clean', '--onefile', '--cons
     '--distpath', $dist, '--workpath', (Join-Path $work 'build'), '--specpath', $work)
 $argList += $pathArgs
 $argList += $icoArgs
-$argList += @('--hidden-import', 'bob_worker_build_meta')
+$argList += @('--hidden-import', 'bob_worker_build_meta', '--hidden-import', 'worker_start_model')
 $argList += @('--exclude-module', 'tkinter', '--exclude-module', 'numpy', '--exclude-module', 'pandas', '--exclude-module', 'matplotlib', $src)
 # PyInstaller's isolated child can fail when PowerShell captures a live pipeline; use files for both streams.
 $argText = (($argList | ForEach-Object {

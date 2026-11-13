@@ -140,8 +140,26 @@ if (-not $explicitRepo -and $Product) {
     $wtReason = [string]$wt.Reason
     Write-Host ("INFO sync-worktree ok={0} pulled={1} branch={2}: {3}" -f $wt.Ok, $wt.Pulled, $wt.Branch, $wtReason)
     # FR #1074 / #2470: surface stale fetch/ff/behind so operators notice offer gates may lag main.
-    if ($wtReason -match 'timed out|ff-only not possible|fetch failed|not main|detached HEAD|still behind|behind origin') {
+    if ($wtReason -match 'timed out|ff-only not possible|fetch failed|not main|detached HEAD|still behind|behind origin|dirty') {
         Write-Host ("ALERT sync-worktree-stale: {0}" -f $wtReason)
+    }
+    # FR #7117: refuse to hide dirty recycle scripts on the live worktree.
+    if ($git -and (Test-Path -LiteralPath (Join-Path $InstallRoot '.git'))) {
+        $recycleDirty = @()
+        foreach ($rel in @(
+                'bob/tray/tools/BobTrayRecycleSeat.ps1',
+                'common/scripts/recycleseat.py',
+                'common/scripts/gitclaim.py'
+            )) {
+            $st = & $git -C $InstallRoot status --porcelain -- $rel 2>$null
+            if ("$st".Trim()) { $recycleDirty += $rel }
+        }
+        if ($recycleDirty.Count -gt 0) {
+            $joined = ($recycleDirty -join ',')
+            $wtReason = if ($wtReason) { "$wtReason recycle-scripts-dirty:$joined" } else { "recycle-scripts-dirty:$joined" }
+            $env:BOB_SYNC_DIRTY_PATHS = $joined
+            Write-Host ("ALERT sync-worktree-stale: recycle-scripts-dirty {0}" -f $joined)
+        }
     }
     if ($wt.Ok -and (Test-Path -LiteralPath (Join-Path $InstallRoot "$Product\scripts"))) {
         $clone = $InstallRoot
