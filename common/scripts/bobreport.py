@@ -5985,8 +5985,9 @@ def read_local_opencode_fuel_doc(
 ) -> dict:
     """Read full local OpenCode fuel doc (pcent + windows + limiting; FR #6147).
 
-    Fixtures: ``BOB_OPENCODE_FUEL_FIXTURE`` (stats/rich JSON) and optional
-    ``BOB_OPENCODE_WINDOWS_FIXTURE`` (pure windows JSON). When
+    Fixtures: ``BOB_OPENCODE_GO_USAGE_FIXTURE``, then ``BOB_OPENCODE_FUEL_FIXTURE``
+    (stats/rich JSON) and optional ``BOB_OPENCODE_WINDOWS_FIXTURE`` (FR #7028:
+    those beat a live Go key). When
     ``BOB_OPENCODE_FUEL_HELPER`` points at an existing ``.ps1``, the PowerShell
     helper is started in the background and polled (MRB #6176 / FR #6632). The
     ear tick does not wait on ``opencode stats``. A helper that is still
@@ -6022,6 +6023,17 @@ def read_local_opencode_fuel_doc(
         except Exception:
             _stamp_opencode_acquisition(kind="unavailable", configured=True, key_source="fixture")
             return {}
+    # FR #7028: stats/windows fixtures must win over a live Go key (2.0.0 suite
+    # on a keyed box otherwise never sees BOB_OPENCODE_FUEL_FIXTURE).
+    fixture = (e.get("BOB_OPENCODE_FUEL_FIXTURE") or "").strip()
+    win_fixture = (e.get(OPENCODE_WINDOWS_FIXTURE_ENV) or "").strip()
+    if fixture:
+        doc = _read_opencode_fuel_doc_from_fixture(fixture)
+        if win_fixture:
+            doc = _apply_windows_fixture(doc, win_fixture)
+        return doc
+    if win_fixture:
+        return _apply_windows_fixture({}, win_fixture)
     sel = resolve_opencode_go_api_key_selection(e)
     api_key = str(sel.get("api_key") or "")
     key_source = str(sel.get("key_source") or "")
@@ -6133,15 +6145,6 @@ def read_local_opencode_fuel_doc(
                     out["opencode_account"] = account_label
                 return out
             return {}
-    fixture = (e.get("BOB_OPENCODE_FUEL_FIXTURE") or "").strip()
-    win_fixture = (e.get(OPENCODE_WINDOWS_FIXTURE_ENV) or "").strip()
-    if fixture:
-        doc = _read_opencode_fuel_doc_from_fixture(fixture)
-        if win_fixture:
-            doc = _apply_windows_fixture(doc, win_fixture)
-        return doc
-    if win_fixture:
-        return _apply_windows_fixture({}, win_fixture)
 
     # FR #6632 / MRB #6176: explicit BOB_OPENCODE_FUEL_HELPER only. Restore
     # TTL + background poll + disk cache. Do not auto-discover install tools
