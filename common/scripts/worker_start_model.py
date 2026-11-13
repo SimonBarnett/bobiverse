@@ -42,6 +42,30 @@ def load_worker_start_config(
     """Parse operator config. Missing keys stay empty; never invent model names."""
     e = os.environ if env is None else env
     data: dict[str, Any] = {}
+
+    def _merge_file(src: Path | None) -> None:
+        if src is None or not src.is_file():
+            return
+        try:
+            file_data = json.loads(src.read_text(encoding="utf-8"))
+            if isinstance(file_data, dict):
+                data.update(file_data)
+        except (OSError, json.JSONDecodeError, UnicodeError):
+            pass
+
+    # Defaults then LOCALAPPDATA tray-models.json (same order as BobTray FR #6429).
+    root = str((e or {}).get("BOB_INSTALL_ROOT") or (e or {}).get("BOBIVERSE_INSTALL_ROOT") or "").strip()
+    if root:
+        rp = Path(root)
+        for rel in (
+            Path("tray") / "config" / "default.json",
+            Path("bob") / "tray" / "config" / "default.json",
+            Path("config") / "default.json",
+        ):
+            _merge_file(rp / rel)
+    localapp = str((e or {}).get("LOCALAPPDATA") or "").strip()
+    if localapp:
+        _merge_file(Path(localapp) / "Bobiverse" / "tray-models.json")
     blob = str((e or {}).get(ENV_CONFIG_JSON) or "").strip()
     if blob:
         try:
@@ -55,13 +79,7 @@ def load_worker_start_config(
         p = str((e or {}).get(ENV_CONFIG_PATH) or "").strip()
         if p:
             src = Path(p)
-    if src is not None and src.is_file():
-        try:
-            file_data = json.loads(src.read_text(encoding="utf-8"))
-            if isinstance(file_data, dict):
-                data.update(file_data)
-        except (OSError, json.JSONDecodeError, UnicodeError):
-            pass
+    _merge_file(src)
     if isinstance(raw, dict):
         data.update(raw)
     models = data.get("workerStartModels")

@@ -2460,6 +2460,21 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
         esc = lambda s: str(s).replace("'", "''")  # noqa: E731
         agent_line = (f"& '{esc(exe)}' --plan --model auto --workspace '{esc(cwd)}' $prompt" if mode == "plan"
                       else f"& '{esc(exe)}' --trust --force --workspace '{esc(cwd)}' -- $prompt")
+        try:
+            import worker_start_model as wsm
+
+            cur_model = wsm.configured_start_model("cursor", wsm.load_worker_start_config())
+            if cur_model:
+                if "--model auto" in agent_line:
+                    agent_line = agent_line.replace("--model auto", f"--model {esc(cur_model)}", 1)
+                elif "--model" not in agent_line:
+                    agent_line = agent_line.replace(
+                        f"& '{esc(exe)}'",
+                        f"& '{esc(exe)}' --model '{esc(cur_model)}'",
+                        1,
+                    )
+        except Exception:
+            pass
         files[pfile] = prompt
         files[lfile] = "\n".join(["$ErrorActionPreference = 'Stop'", f"$prompt = [IO.File]::ReadAllText('{esc(pfile)}')",
                                   f"Set-Location -LiteralPath '{esc(cwd)}'", agent_line, "exit $LASTEXITCODE"])
@@ -2495,9 +2510,21 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
         # so BoredEmitter gets harvest-hold / done-miss / startup-ready parity with Grok.
         # FR #6240: no external_directory allow. Each injected assign carries its own
         # @@BOBJOB1 frame. The standing prompt is not a job and is not scanned.
+        oc_cfg_model = ""
+        try:
+            import worker_start_model as wsm
+
+            oc_cfg_model = wsm.configured_start_model("opencode", wsm.load_worker_start_config())
+        except Exception:
+            oc_cfg_model = ""
+        oc_fallback = (
+            f"if (-not $env:BOB_OPENCODE_MODEL) {{ $env:BOB_OPENCODE_MODEL = '{esc(oc_cfg_model)}' }}"
+            if oc_cfg_model
+            else r"if (-not $env:BOB_OPENCODE_MODEL) { throw 'BOB_OPENCODE_MODEL is required (no exhausted glm-5.3 fallback)' }"
+        )
         files[lfile] = "\n".join([
             r"$ErrorActionPreference = 'Stop'",
-            r"if (-not $env:BOB_OPENCODE_MODEL) { throw 'BOB_OPENCODE_MODEL is required (no exhausted glm-5.3 fallback)' }",
+            oc_fallback,
             r"$model = $env:BOB_OPENCODE_MODEL",
             f"$exe = '{esc(exe)}'",
             f"$prompt = [IO.File]::ReadAllText('{esc(pfile)}')",

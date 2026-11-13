@@ -39,7 +39,7 @@ def test_fr7084_config_parse_per_cli(tmp_path: Path):
 
 
 def test_fr7084_config_does_not_invent_ids():
-    cfg = wsm.load_worker_start_config({})
+    cfg = wsm.load_worker_start_config({}, env={})
     for cli in wsm.WORKER_CLIS:
         assert cfg["workerStartModels"][cli] == ""
 

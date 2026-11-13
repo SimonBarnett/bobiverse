@@ -7021,6 +7021,38 @@ def list_idle_after_empty(
     return rows
 
 
+def sort_idle_seats_cheapest_first(
+    idle_rows: list,
+    fields_by_nick: dict | None = None,
+    *,
+    home: Path | None = None,
+) -> list:
+    """FR #7084 / MRB #7089: prefer min cost_tier among idle seats (stable nick tie-break)."""
+    rows = list(idle_rows or [])
+    cache = dict(fields_by_nick or {})
+
+    def _key(ent: dict) -> tuple:
+        nick = str((ent or {}).get("nick") or "").strip()
+        fields = cache.get(nick)
+        if fields is None and home is not None:
+            try:
+                fields = _seat_digest_model_fields(home, nick)
+            except Exception:
+                fields = {}
+            cache[nick] = fields or {}
+        fields = fields or {}
+        try:
+            import worker_start_model as wsm
+
+            rank = wsm._tier_rank(str(fields.get("cost_tier") or wsm.DEFAULT_JOB_TIER))
+        except Exception:
+            rank = 0
+        return (rank, nick.lower())
+
+    rows.sort(key=_key)
+    return rows
+
+
 def offer_to_idle_seats(
     home: Path,
     *,
@@ -7043,6 +7075,10 @@ def offer_to_idle_seats(
     idle_rows = list_idle_after_empty(home, now=now_f, live=live)
     if not idle_rows:
         return 0
+    try:
+        idle_rows = sort_idle_seats_cheapest_first(idle_rows, home=home)
+    except Exception:
+        pass
     sent = 0
     for ent in idle_rows:
         nick = str(ent.get("nick") or "").strip()
