@@ -68,8 +68,12 @@ def test_done_fr_queues_mrb_on_pr_repo_and_supersedes_fr(tmp_path, monkeypatch):
     assert not any(r.get("task") == "FR" and r.get("id") == "#224" for r in rows)
     mrbs = [r for r in rows if r.get("task") == "MRB"]
     assert len(mrbs) == 1
-    assert mrbs[0]["repo"] == "SimonBarnett/gh-Jeeves"
+    # FR #785 / #7099: archived gh-Jeeves stores as live successor bobiverse.
+    # The implement PR URL still names gh-Jeeves; the queue row must be offerable.
+    assert gitclaim.canonical_queue_repo("SimonBarnett/gh-Jeeves") == "SimonBarnett/bobiverse"
+    assert mrbs[0]["repo"] == "SimonBarnett/bobiverse"
     assert mrbs[0]["id"] == "#227"
+    assert "/SimonBarnett/gh-Jeeves/pull/227" in str(mrbs[0].get("url") or "")
     assert "#224" in (mrbs[0].get("refs") or [])
     assert mrbs[0].get("supersedes") == "SimonBarnett/bobiverse#224"
     assert mrbs[0].get("author_seat") == "marchhare-41912"
