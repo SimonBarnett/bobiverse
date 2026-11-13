@@ -23,6 +23,7 @@
   FR #6154 / #6159: bob tray tools\ is also forced (no /XO) so Get-BobAgentFuel/Get-BobOpencodeFuel refresh; bob-setup-opencode skill syncs for Product=bob (install root + worker Shared).
   Git checkout mtimes are often older than a previous flat compose, so /XO left scripts/gitclaim.py stale after ff.
   Use -ComposeOnly after a manual git pull --ff-only to recompose without restarting the service.
+  FR #7161: park dirty paths that already equal origin tip (Clear-BobiverseMainEqualDirtyForSync) so tip-overlay of Common/Sync cannot block ff; tip-heal recycleseat.py when compose is skipped.
 .PARAMETER ComposeOnly
   Skip fetch/ff; only recompose flat runtime files from the current work tree / clone (FR #269 operator hook).
 .PARAMETER Product
@@ -380,6 +381,20 @@ if (-not $DryRun -and $git -and (Test-Path -LiteralPath (Join-Path $InstallRoot 
         }
     } catch {
         Write-Host ("WARN sync-gitclaim-from-tip error: {0}" -f $_.Exception.Message)
+    }
+    # FR #7161: tip-heal recycleseat.py when compose is skipped (e.g. MSI VERSION newer than
+    # clone stamp) so live flat scripts\ still get SYSTEM/dirty-recycle gates without a full ff compose.
+    try {
+        $rs = Sync-BobiverseScriptTipFromOrigin -InstallRoot $InstallRoot -Branch $Branch -GitExe $git `
+            -RelPath 'common/scripts/recycleseat.py' `
+            -ContentMustMatch 'dirty_recycle_script|FR #7117'
+        if ($rs.Ok) {
+            Write-Host ("INFO sync-recycleseat-from-tip ok bytes={0}: {1}" -f $rs.Bytes, $rs.Reason)
+        } else {
+            Write-Host ("WARN sync-recycleseat-from-tip skipped: {0}" -f $rs.Reason)
+        }
+    } catch {
+        Write-Host ("WARN sync-recycleseat-from-tip error: {0}" -f $_.Exception.Message)
     }
     # FR #4783: refuse to leave composed scripts\ with lf=0 .ps1 (collapsed hotpatch).
     try {
