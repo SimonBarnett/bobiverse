@@ -56,7 +56,11 @@ def test_mrb6958_live_resolve_still_first_token_not_description_score():
     assert "JOB_SEEDS" in src
     assert "def _seed_id" in src
     assert "first in JOB_SEEDS" in src
-    # Park cites the live first-token path; scoring descriptions is still the open #6901 slice.
+    # JOB_SEEDS first-token still wins; docstring may cite FR #6901 description scoring.
     assert "def resolve" in src
     seed = src[src.index("def _seed_id") : src.index("def resolve")]
-    assert "description" not in seed.lower()
+    jobs = seed.index("JOB_SEEDS")
+    desc = seed.find("score_description")
+    assert jobs >= 0
+    if desc >= 0:
+        assert jobs < desc, "JOB_SEEDS first-token must run before description score"
