@@ -428,6 +428,16 @@ def main(argv: list[str] | None = None) -> int:
         help="Optional assigned job worktree; adds only <wt>/.grok/skills when it exists (FR #6866)",
     )
     p.add_argument("--max-bytes", type=int, default=DEFAULT_MAX_BYTES)
+    # FR #7000: Cursor agent seats may lack a skill-dag MCP namespace in dynamic tools;
+    # one-shot resolve/get_skill/status prints JSON on stdout (no stdio serve).
+    p.add_argument(
+        "--once",
+        choices=("resolve", "get_skill", "status"),
+        default=None,
+        help="FR #7000: one-shot tool call (JSON on stdout) instead of MCP stdio",
+    )
+    p.add_argument("--seed", default="", help="With --once resolve: job seed (FR/MRB/UAT) or skill id")
+    p.add_argument("--path", default="", help="With --once get_skill: SKILL.md path under a --root")
     args = p.parse_args(argv)
     try:
         roots = roots_from_argv(
@@ -442,6 +452,16 @@ def main(argv: list[str] | None = None) -> int:
         print(f"ERROR job-skills-root: {exc}", file=sys.stderr)
         return 2
     server = SkillDagServer(roots=roots, max_bytes=args.max_bytes)
+    if args.once:
+        if args.once == "resolve":
+            result = server.resolve(str(args.seed or ""))
+        elif args.once == "get_skill":
+            result = server.get_skill(str(args.path or ""))
+        else:
+            result = server.status()
+        sys.stdout.write(json.dumps(result, ensure_ascii=False) + "\n")
+        sys.stdout.flush()
+        return 0
     serve_stdio(server, sys.stdin, sys.stdout)
     return 0
 
