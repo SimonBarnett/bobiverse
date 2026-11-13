@@ -406,6 +406,7 @@ routes to bobiverse via the split rule.
 - skill-dag resolve must score the full seed against skill ids as well as descriptions so spaced tokens still hit hyphenated book names
 - skill-dag status last_error must not fire for the same skill id copied into worker, bob, and ~/.grok packs; prefer the first configured root
 - Worker start models must come from config placeholders not hard-coded premium ids; digest actual vs configured mismatch must skip Jeeves offers
+- Jeeves live_seat_nicks fixtures must set worker_list and heartbeat updated, and pin BOB_MACHINE_ID away from fixture machines; COMPUTERNAME=flamingo under ircBob SYSTEM makes other-machine pid maps look like ghosts (FR #4211).
 
 ## Harvest digest (lessons audit 2026-10-06)
 
