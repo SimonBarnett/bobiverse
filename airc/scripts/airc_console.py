@@ -800,7 +800,7 @@ def _priority_winrun_formprep(
     """Named form prepare via Priority WINRUN (no priority-web-sdk).
 
     FR #6003: default ``PRIORITY prepare form`` must not import or login through
-    the web SDK (tabula cannot take an API Licence). Mirrors agentic_fomprep
+    the web SDK (tabula cannot take an API Licence). Mirrors priority-mcp
     `Invoke-CliFormPrep` plus the named ENAME (FR #6017):
     `WINRUN user pass prepDir company WINACTIV -P FORMPREP <ENAME>`.
     Unscoped `FORMPREP` can prepare every pending form; refuse if ENAME is

@@ -34,7 +34,7 @@ def test_mrb2684_giveup_count_string_coerces():
 
 
 def test_mrb2684_fomprep11_pin_and_label_both_skip():
-    assert ("simonbarnett/agentic_fomprep", "#11") in gitclaim._SKIP_FR_ISSUE_PINS
+    assert ("simonbarnett/priority-mcp", "#11") in gitclaim._SKIP_FR_ISSUE_PINS
     assert gitclaim.issue_skip_fr_reason(
         title="anything",
         labels=("mrb-fail", "via-intake"),

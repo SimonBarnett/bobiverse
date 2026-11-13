@@ -80,7 +80,7 @@ function Get-IntakeAllowRepos {
     $fallback = @(
         'SimonBarnett/bobiverse',
         'SimonBarnett/skills-visionary',
-        'SimonBarnett/agentic_fomprep',
+        'SimonBarnett/priority-mcp',
         'SimonBarnett/a-search',  # FR #3023
         'SimonBarnett/trutex',  # FR #3050
         'SimonBarnett/ce-priority'  # FR #4830
@@ -319,8 +319,8 @@ if (-not $Repo -or -not $Repo.Trim()) {
     $bobCue = ($ownerBlob -match '(?i)bob-worker|_release_gen|release_gen|done-miss|boredemitter|fleet-ops|hotpatch|\b(jeeves|ircjeeves|bob-tray|tipform|chair outbox|intake allowlist|gitclaim|airc)\b')
     if ($ownerBlob -match '(?i)\bSimonBarnett/a-search\b|\ba-search\b') {
         $Repo = 'SimonBarnett/a-search'
-    } elseif ($ownerBlob -match '(?i)\bagentic_fomprep\b') {
-        $Repo = 'SimonBarnett/agentic_fomprep'
+    } elseif ($ownerBlob -match '(?i)\bagentic_fomprep\b|\bpriority-mcp\b') {
+        $Repo = 'SimonBarnett/priority-mcp'
     } elseif ($ownerBlob -match '(?i)\bskills-visionary\b') {
         $Repo = 'SimonBarnett/skills-visionary'
     } elseif ($ownerBlob -match '(?i)\bce-priority\b|\bce-dayworks\b|\bdayworks-launcher\b') {
@@ -331,6 +331,11 @@ if (-not $Repo -or -not $Repo.Trim()) {
         throw "harvest repo unknown: pass -Repo <owner/repo of the job you worked> (e.g. -Repo SimonBarnett/a-search). Never default product lessons to SimonBarnett/bobiverse."
     }
     Write-Host "INFO harvest repo inferred: $Repo (pass -Repo to be explicit)"
+}
+
+# FR #7121
+if ($Repo -match '(?i)^(?:SimonBarnett/)?(?:agentic_fomprep|priority-mcp)$') {
+    $Repo = 'SimonBarnett/priority-mcp'
 }
 
 if (-not ($Repo -match '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$')) { throw "Repo must be owner/name (got '$Repo')" }
@@ -972,9 +977,9 @@ if ($bobTooling) {
 } elseif (-not $script:ExplicitBook -and $bookName -eq 'harvest' -and ($Repo -match '(?i)^SimonBarnett/skills-visionary$')) {
     $bookName = 'harvest-skills-visionary'
     Write-Host "INFO FR #3317 product default skill_book=harvest-skills-visionary for SimonBarnett/skills-visionary"
-} elseif (-not $script:ExplicitBook -and $bookName -eq 'harvest' -and ($Repo -match '(?i)^SimonBarnett/agentic_fomprep$')) {
+} elseif (-not $script:ExplicitBook -and $bookName -eq 'harvest' -and ($Repo -match '(?i)^SimonBarnett/(agentic_fomprep|priority-mcp)$')) {
     $bookName = 'harvest-agent-skills'
-    Write-Host "INFO FR #3318 product default skill_book=harvest-agent-skills for SimonBarnett/agentic_fomprep"
+    Write-Host "INFO FR #3318 product default skill_book=harvest-agent-skills for SimonBarnett/priority-mcp"
 } elseif (-not $script:ExplicitBook -and $bookName -eq 'harvest' -and ($Repo -match '(?i)^SimonBarnett/(euroflo|lynton|trutex|rees)$')) {
     # FR #4990 / euroflo#15: priority-customer topic peers share repo-root honesty box.
     $bookName = 'harvest-agent-skills'

@@ -53,13 +53,13 @@ def test_bobiverse_repo_allowed():
 
 
 def test_agentic_fomprep_repo_allowed():
-    """FR #94: Priority formprep harvests must intake to SimonBarnett/agentic_fomprep."""
-    assert "SimonBarnett/agentic_fomprep" in intake.DEFAULT_ALLOW_REPOS
+    """FR #94 / #7121: Priority formprep harvests intake to SimonBarnett/priority-mcp."""
+    assert "SimonBarnett/priority-mcp" in intake.DEFAULT_ALLOW_REPOS
     err, norm = intake.validate_payload(
         _base(repo="SimonBarnett/agentic_fomprep", kind="fr", title="VISION.md")
     )
     assert err is None
-    assert norm["repo"] == "SimonBarnett/agentic_fomprep"
+    assert norm["repo"] == "SimonBarnett/priority-mcp"
     assert norm["kind"] == "fr"
 
 

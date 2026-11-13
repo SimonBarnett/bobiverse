@@ -20,7 +20,7 @@ LIVE = frozenset(
     {
         "SimonBarnett/bobiverse",
         "SimonBarnett/skills-visionary",
-        "SimonBarnett/agentic_fomprep",
+        "SimonBarnett/priority-mcp",
         "SimonBarnett/a-search",  # FR #3023
         "SimonBarnett/trutex",  # FR #3050
     }
@@ -51,7 +51,7 @@ def test_intake_allows_archived_simonbarnett_under_fr3135_owner_gate():
 def test_harvest_fallback_mirrors_live_examples_only():
     text = (SCRIPTS / "Invoke-BobiverseHarvest.ps1").read_text(encoding="utf-8-sig")
     assert "'SimonBarnett/bobiverse'" in text
-    assert "'SimonBarnett/agentic_fomprep'" in text
+    assert "'SimonBarnett/priority-mcp'" in text
     for repo in ARCHIVED:
         assert f"'{repo}'" not in text, repo
 

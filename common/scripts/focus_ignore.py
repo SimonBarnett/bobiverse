@@ -87,7 +87,12 @@ def normalize_repo(token: str) -> str | None:
     s = s.strip().strip("/")
     if not s or _ITEM_TOKEN.match(s) or not _REPO_TOKEN.match(s):
         return None
-    return s
+    try:
+        import repo_alias
+
+        return repo_alias.canonicalize_repo(s)
+    except Exception:
+        return s
 
 
 def is_high_priority_repo(repo: str) -> bool:
@@ -136,7 +141,13 @@ def _short(repo: str) -> str:
 def repo_match(key: str, repo: str) -> bool:
     """Focus/ignore key vs a job repo: exact, or bare key == job short name,
     or full key vs bare job repo with the same short name."""
-    k, r = (key or "").strip().lower(), (repo or "").strip().lower()
+    try:
+        import repo_alias
+
+        k = repo_alias.canonicalize_repo(key or "").strip().lower()
+        r = repo_alias.canonicalize_repo(repo or "").strip().lower()
+    except Exception:
+        k, r = (key or "").strip().lower(), (repo or "").strip().lower()
     if not k or not r:
         return False
     if k == r:

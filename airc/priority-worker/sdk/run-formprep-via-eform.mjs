@@ -164,6 +164,11 @@ const sdkMod = await import('priority-web-sdk');
 const priority = sdkMod.default || sdkMod;
 const errors = [];
 const steps = [];
+/** FR #7121 GitHub skill-book repo (alias SimonBarnett/agentic_fomprep). */
+const PRIORITY_MCP_REPO = 'SimonBarnett/priority-mcp';
+const PRIORITY_MCP_REPO_ALIAS = 'SimonBarnett/agentic_fomprep';
+void PRIORITY_MCP_REPO;
+void PRIORITY_MCP_REPO_ALIAS;
 
 try {
   await priority.login({

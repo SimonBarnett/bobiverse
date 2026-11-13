@@ -5,8 +5,8 @@ import gitclaim
 from gitclaim import GitClaim, apply_queue_event, load_unaccepted, resync_from_github
 
 
-CANON = "SimonBarnett/agentic_fomprep"
-LOWER = "simonbarnett/agentic_fomprep"
+CANON = "SimonBarnett/priority-mcp"
+LOWER = "simonbarnett/priority-mcp"
 
 
 def _fr(repo: str, ident: str = "#177", *, line: str = "GIT issues opened", action: str = "opened"):

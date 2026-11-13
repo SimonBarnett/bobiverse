@@ -11,7 +11,7 @@ def test_default_resync_repos_includes_ce_priority():
     assert "SimonBarnett/ce-priority" in ch.DEFAULT_RESYNC_REPOS
     for name in (
         "SimonBarnett/a-search",
-        "SimonBarnett/agentic_fomprep",
+        "SimonBarnett/priority-mcp",
         "SimonBarnett/bobiverse",
         "SimonBarnett/xai-cookbook",
         "SimonBarnett/Club-Madeira",

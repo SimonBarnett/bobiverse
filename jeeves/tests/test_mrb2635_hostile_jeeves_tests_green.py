@@ -51,7 +51,7 @@ def test_mrb2635_fomprep_pin_set_includes_eleven():
     got = {
         int(ident.lstrip("#"))
         for (repo, ident) in gitclaim._SKIP_FR_ISSUE_PINS
-        if repo == "simonbarnett/agentic_fomprep"
+        if repo == "simonbarnett/priority-mcp"
     }
     assert got == {3, 7, 8, 9, 11, 20}
     assert 11 in got

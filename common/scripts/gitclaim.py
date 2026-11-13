@@ -24,11 +24,12 @@ import contextlib
 import copy
 import threading
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 
 import bobreport
+import repo_alias
 
 # FR #628: the per-seat "wait" NAK after DONE/GIVEUP is off by default (0 = never NAK a seat that
 # has work offerable). Set BOB_BORED_IDLE_S to restore a gate. Seat busy/cooldown rules still apply.
@@ -764,8 +765,8 @@ def _payload_number(event: str, payload: dict) -> str | None:
 
 
 def _repo_key(repo: str) -> str:
-    """FR #3817: case-folded owner/name for queue identity compares."""
-    return str(repo or "").strip().lower()
+    """FR #3817 / #7121: case-folded canonical owner/name for queue identity."""
+    return repo_alias.canonicalize_repo(str(repo or "").strip()).lower()
 
 
 def _prefer_repo_casing(a: str, b: str) -> str:
@@ -778,6 +779,8 @@ def _prefer_repo_casing(a: str, b: str) -> str:
         return left
     if _repo_key(left) != _repo_key(right):
         return left
+    if repo_alias.repos_equivalent(left, repo_alias.PRIORITY_MCP_CANONICAL):
+        return repo_alias.PRIORITY_MCP_CANONICAL
     if left != left.lower() and right == right.lower():
         return left
     if right != right.lower() and left == left.lower():
@@ -799,6 +802,9 @@ def canonical_queue_repo(repo: str) -> str:
     key = (repo or "").strip()
     if not key:
         return key
+    mapped = repo_alias.canonicalize_repo(key)
+    if mapped != key:
+        return mapped
     return ARCHIVED_REPO_SUCCESSORS.get(key.lower(), key)
 
 
@@ -1339,7 +1345,7 @@ def row_skip_fr_reason(row: dict) -> str | None:
     labels = row.get("labels") or ()
     if isinstance(labels, str):
         labels = [labels]
-    repo = str(row.get("repo") or "").strip().lower()
+    repo = _repo_key(row.get("repo") or "")
     ident = _norm_row_id(row.get("id"))
     if repo and ident and (repo, ident) in _NEEDS_HUMAN_ISSUE_PINS:
         return "needs_human_hold"
@@ -1984,12 +1990,12 @@ _NEEDS_HUMAN_ISSUE_PINS: set[tuple[str, str]] = {
 }
 
 _SKIP_FR_ISSUE_PINS: set[tuple[str, str]] = {
-    ("simonbarnett/agentic_fomprep", "#3"),
-    ("simonbarnett/agentic_fomprep", "#7"),
-    ("simonbarnett/agentic_fomprep", "#8"),
-    ("simonbarnett/agentic_fomprep", "#9"),
-    ("simonbarnett/agentic_fomprep", "#11"),
-    ("simonbarnett/agentic_fomprep", "#20"),
+    ("simonbarnett/priority-mcp", "#3"),
+    ("simonbarnett/priority-mcp", "#7"),
+    ("simonbarnett/priority-mcp", "#8"),
+    ("simonbarnett/priority-mcp", "#9"),
+    ("simonbarnett/priority-mcp", "#11"),
+    ("simonbarnett/priority-mcp", "#20"),
 }
 
 # Exact board phrase used by fomprep MRB-home intake issues (body). Title-only
@@ -3639,6 +3645,7 @@ def apply_queue_event(home: Path, claim: GitClaim) -> str:
     FR #1811: distinguish lock/read/write failures, spool on failure, skip noop rewrite,
     drain pending under the same lock.
     """
+    claim = replace(claim, repo=canonical_queue_repo(claim.repo))
     if claim.task not in TASK_KINDS and claim.action not in ("closed", "edited"):
         return "error"
     try:
@@ -4194,7 +4201,7 @@ def _empty_queue() -> dict:
 
 
 def _coerce_row(row: dict) -> dict | None:
-    repo = str(row.get("repo") or "").strip()
+    repo = repo_alias.canonicalize_repo(str(row.get("repo") or "").strip())
     task = str(row.get("task") or "").strip()
     ident = str(row.get("id") or "").strip()
     if not repo or task not in TASK_KINDS or not ID_RE.fullmatch(ident):
@@ -4409,8 +4416,23 @@ def _read_legacy_accepted(path: Path) -> list[dict]:
     return rows
 
 
+def _queue_needs_repo_alias_backup(doc: dict) -> bool:
+    for bucket in ("unaccepted", "accepted", "done"):
+        rows = doc.get(bucket)
+        if not isinstance(rows, list):
+            continue
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            raw = str(row.get("repo") or "").strip()
+            if raw and repo_alias.canonicalize_repo(raw) != raw:
+                return True
+    return False
+
+
 def _read_queue_file(path: Path) -> dict:
-    doc = json.loads(path.read_text(encoding="utf-8"))
+    raw_text = path.read_text(encoding="utf-8")
+    doc = json.loads(raw_text)
     if not isinstance(doc, dict):
         raise ValueError("queue")
     unaccepted = doc.get("unaccepted")
@@ -4420,6 +4442,10 @@ def _read_queue_file(path: Path) -> dict:
         raise ValueError("queue lists")
     if not isinstance(done, list):
         done = []
+    if _queue_needs_repo_alias_backup(doc):
+        bak = path.with_name(path.name + ".bak-fr7121")
+        if not bak.exists():
+            bak.write_text(raw_text, encoding="utf-8")
     out = {
         "v": 1,
         "unaccepted": [row for row in (_coerce_row(r) for r in unaccepted if isinstance(r, dict)) if row],
@@ -4433,6 +4459,8 @@ def _read_queue_file(path: Path) -> dict:
         out["stand_down"] = [n for n in notes if isinstance(n, dict)]
     # FR #6407: rewrite retired ce-priority-dev1 stamps to any on every load.
     out["_retired_pin_rewrites"] = _rewrite_retired_require_machine_rows(out)
+    # FR #7121: persist canonical repo names after alias rewrite.
+    out["_repo_alias_rewrites"] = 1 if _queue_needs_repo_alias_backup(doc) else 0
     return out
 
 
@@ -4470,6 +4498,7 @@ def _load_queue_unlocked(home: Path) -> dict:
     if path.exists():
         doc = _read_queue_file(path)
         n = int(doc.pop("_retired_pin_rewrites", 0) or 0)
+        n += int(doc.pop("_repo_alias_rewrites", 0) or 0)
         if n:
             try:
                 _write_queue(path, doc)
@@ -9439,7 +9468,7 @@ def ledger_path(home: Path) -> Path:
 
 def _lkey(repo: str, ident) -> str:
     num = str(ident or "").strip().lstrip("#")
-    return f"{(repo or '').strip().lower()}#{num}"
+    return f"{_repo_key(repo)}#{num}"
 
 
 def _ledger_empty() -> dict:
@@ -9457,6 +9486,18 @@ def ledger_load(home: Path) -> dict:
     doc.setdefault("giveup", {})
     doc.setdefault("uat_cycle", {})
     doc.setdefault("fr_done", {})
+    for bucket in ("touch", "giveup", "uat_cycle", "fr_done", "mrb_done"):
+        raw = doc.get(bucket)
+        if not isinstance(raw, dict):
+            continue
+        rewritten: dict = {}
+        for k, v in raw.items():
+            nk = _lkey(str(k).rsplit("#", 1)[0], str(k).rsplit("#", 1)[-1]) if "#" in str(k) else _repo_key(str(k))
+            if nk in rewritten and isinstance(rewritten[nk], dict) and isinstance(v, dict):
+                rewritten[nk].update(v)
+            else:
+                rewritten[nk] = v
+        doc[bucket] = rewritten
     return doc
 
 
@@ -11663,9 +11704,9 @@ def claim_from_github_issue(repo: str, issue: dict) -> GitClaim | None:
         )
     if issue_skip_fr_reason(title=title, body=body, labels=labels, state=state or "open"):
         return None
-    if (str(repo).lower(), _norm_row_id(f"#{num}")) in _SKIP_FR_ISSUE_PINS:
+    if (_repo_key(repo), _norm_row_id(f"#{num}")) in _SKIP_FR_ISSUE_PINS:
         return None
-    if (str(repo).lower(), _norm_row_id(f"#{num}")) in _NEEDS_HUMAN_ISSUE_PINS:
+    if (_repo_key(repo), _norm_row_id(f"#{num}")) in _NEEDS_HUMAN_ISSUE_PINS:
         return None
     return GitClaim(
         repo=canonical_queue_repo(repo),
@@ -13574,9 +13615,9 @@ def resync_from_github(
             state = str(iss.get("state") or "open")
             if issue_skip_fr_reason(title=title, body=body, labels=labels, state=state):
                 continue
-            if (str(repo).lower(), _norm_row_id(ident)) in _SKIP_FR_ISSUE_PINS:
+            if (_repo_key(repo), _norm_row_id(ident)) in _SKIP_FR_ISSUE_PINS:
                 continue  # FR #2480 hard-pin umbrella
-            if (str(repo).lower(), _norm_row_id(ident)) in _NEEDS_HUMAN_ISSUE_PINS:
+            if (_repo_key(repo), _norm_row_id(ident)) in _NEEDS_HUMAN_ISSUE_PINS:
                 continue  # FR #6027 WCF live hold
             desired.append(
                 GitClaim(
