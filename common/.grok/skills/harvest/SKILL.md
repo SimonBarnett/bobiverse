@@ -400,6 +400,7 @@ routes to bobiverse via the split rule.
 - FR #7008 Common overlay: home is `bobiverse-fleet-ops` (Sync-BobiverseWorkTree overlay + re-park + one ff retry). Do not claim first landing skips MSI.
 - FR #7017 OpenCode free paint: home is `bobiverse-bob` (never paint free row/bar/summary; Go windows only; fuel detection unchanged).
 - FR #7020: ircBob SYSTEM resolves python via BOBIVERSE_PYTHON, config/python.path, HKLM PythonCore, py -3, PATH (skip WindowsApps), then filesystem; spawn miss writes .result.json BUILD fail id= and releases the machine lock. Digest python=missing still needs publish from python-status.json.
+- BOB_OPENCODE_FUEL_FIXTURE and WINDOWS fixture must be applied before resolve_opencode_go_api_key_selection / live zen fetch, or a keyed box ignores pytest fixtures.
 
 ## Harvest digest (lessons audit 2026-10-06)
 
