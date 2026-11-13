@@ -24,6 +24,24 @@ function Get-BobTraySeatMarkerPid {
     } catch { return 0 }
 }
 
+function Get-BobTraySeatPidFromNick {
+    # FR #6986 / recycleseat.resolve_recycle_pid: nick suffix is the worker pid.
+    param([Parameter(Mandatory)][string]$Nick)
+    if ($Nick -match '-([1-9][0-9]*)$') {
+        return [int]$Matches[1]
+    }
+    return 0
+}
+
+function Resolve-BobTrayRecyclePid {
+    param(
+        [int]$MarkerPid,
+        [Parameter(Mandatory)][string]$Nick
+    )
+    if ($MarkerPid -gt 0) { return [int]$MarkerPid }
+    return [int](Get-BobTraySeatPidFromNick -Nick $Nick)
+}
+
 function Test-BobTrayPidAlive {
     param([int]$ProcessId)
     if ($ProcessId -le 0) { return $false }
@@ -102,7 +120,7 @@ function Invoke-BobTrayRecycleSeatQueue {
             if ($Now -gt $expires) { $reason = 'expired' }
             elseif (-not $seatNick) { $reason = 'bad-nick' }
             else {
-                $oldPid = [int](Get-BobTraySeatMarkerPid -Nick $seatNick)
+                $oldPid = Resolve-BobTrayRecyclePid -MarkerPid ([int](Get-BobTraySeatMarkerPid -Nick $seatNick)) -Nick $seatNick
                 $found = $oldPid -gt 0
                 if (-not $found) {
                     $reason = 'not-found'

@@ -346,6 +346,33 @@ def decide(
 
 # --------------------------------------------------------------------------- tray policy (pure; PS mirrors)
 
+def pid_from_seat_nick(nick: str) -> int:
+    """FR #6986: ``<machine>-<pid>`` seat nicks encode the worker pid.
+
+    Tray recycle used only ``%LOCALAPPDATA%\\...\\seats\\<nick>.irc.json``. When
+    that marker was missing, recycle was ``not-found`` and the live pid survived
+    (same nick, bored lag kept growing).
+    """
+    n = str(nick or "").strip()
+    if "-" not in n:
+        return 0
+    rest = n.rsplit("-", 1)[-1]
+    if rest.isdigit() and int(rest) > 0:
+        return int(rest)
+    return 0
+
+
+def resolve_recycle_pid(marker_pid: int, nick: str) -> int:
+    """Prefer the IRC seat marker pid; fall back to the nick suffix."""
+    try:
+        mp = int(marker_pid or 0)
+    except (TypeError, ValueError):
+        mp = 0
+    if mp > 0:
+        return mp
+    return pid_from_seat_nick(nick)
+
+
 def plan_recycle_action(
     *,
     stop_ok: bool,
