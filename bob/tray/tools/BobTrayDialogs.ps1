@@ -236,23 +236,41 @@ function Write-BobTrayStatusSnapshot {
 }
 
 function Format-BobTrayStatusWorkerLine {
-    # Same contract as Format-BobTrayWorkerLine / TipForm: "{irc nick}: {doing|offered|idle}".
-    param([string]$Nick, [string]$State, [string]$Work)
+    # Same contract as Format-BobTrayWorkerLine / TipForm (FR #7147 start_model).
+    param(
+        [string]$Nick,
+        [string]$State,
+        [string]$Work,
+        [string]$Kind = '',
+        [string]$StartModel = '',
+        [bool]$ModelMismatch = $false
+    )
     $n = ([string]$Nick).Trim()
     if (-not $n) { return $null }
     $st = ([string]$State).Trim().ToLowerInvariant()
     $text = 'idle'
     if ($st -eq 'doing') {
-        $w = ([string]$Work) -replace '[\r\n\t]+', ' '
+        $w = ([string]$Work) -replace '[
+
+	]+', ' '
         $w = $w.Trim()
         if (-not $w) { $w = 'working' }
         $text = $w
     }
     elseif ($st -eq 'offered') {
-        $w = ([string]$Work) -replace '[\r\n\t]+', ' '
+        $w = ([string]$Work) -replace '[
+
+	]+', ' '
         $w = $w.Trim()
         if ($w -and $w -ne 'offered') { $text = ('offered: {0}' -f $w) }
         else { $text = 'offered' }
+    }
+    $k = ([string]$Kind).Trim()
+    $sm = ([string]$StartModel).Trim()
+    if ($k -or $sm) {
+        $tag = if ($k -and $sm) { '{0}/{1}' -f $k, $sm } elseif ($sm) { $sm } else { $k }
+        if ($ModelMismatch -and $sm) { $tag = $tag + '!' }
+        $text = ('[{0}] {1}' -f $tag, $text)
     }
     return ('{0}: {1}' -f $n, $text)
 }
@@ -279,14 +297,19 @@ function Get-BobTrayDigestWorkerLinesForMachine {
             $nick = [string]$prop.Name
             if ($nick -notmatch '^[A-Za-z0-9_]+-\d+$') { continue }
             $val = $prop.Value
-            $state = 'idle'; $work = ''
+            $state = 'idle'; $work = ''; $kind = ''; $sm = ''; $mm = $false
             if ($val -is [pscustomobject] -or $val -is [System.Collections.IDictionary]) {
                 if ($val.state) { $state = [string]$val.state }
                 if ($val.work) { $work = [string]$val.work }
                 elseif ($val.job) { $work = [string]$val.job }
                 elseif ($val.working_on) { $work = [string]$val.working_on }
+                if ($val.kind) { $kind = [string]$val.kind }
+                elseif ($val.agent) { $kind = [string]$val.agent }
+                if ($val.start_model) { $sm = [string]$val.start_model }
+                elseif ($val.model) { $sm = [string]$val.model }
+                if ($val.PSObject.Properties.Name -contains 'model_mismatch') { $mm = [bool]$val.model_mismatch }
             }
-            $ln = Format-BobTrayStatusWorkerLine -Nick $nick -State $state -Work $work
+            $ln = Format-BobTrayStatusWorkerLine -Nick $nick -State $state -Work $work -Kind $kind -StartModel $sm -ModelMismatch:$mm
             if ($ln) { [void]$lines.Add($ln) }
         }
     }
@@ -296,13 +319,21 @@ function Get-BobTrayDigestWorkerLinesForMachine {
             $nick = ''
             $state = 'idle'
             $work = ''
+            $kind = ''
+            $sm = ''
+            $mm = $false
             if ($w -is [pscustomobject] -or $w -is [System.Collections.IDictionary]) {
                 if ($w.nick) { $nick = [string]$w.nick }
                 if ($w.state) { $state = [string]$w.state }
                 if ($w.work) { $work = [string]$w.work }
                 elseif ($w.job) { $work = [string]$w.job }
+                if ($w.kind) { $kind = [string]$w.kind }
+                elseif ($w.agent) { $kind = [string]$w.agent }
+                if ($w.start_model) { $sm = [string]$w.start_model }
+                elseif ($w.model) { $sm = [string]$w.model }
+                if ($w.PSObject.Properties.Name -contains 'model_mismatch') { $mm = [bool]$w.model_mismatch }
             }
-            $ln = Format-BobTrayStatusWorkerLine -Nick $nick -State $state -Work $work
+            $ln = Format-BobTrayStatusWorkerLine -Nick $nick -State $state -Work $work -Kind $kind -StartModel $sm -ModelMismatch:$mm
             if ($ln) { [void]$lines.Add($ln) }
         }
     }
