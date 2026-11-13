@@ -418,6 +418,7 @@ def run_priority_prepare(
     resolve_ename_types: Callable[..., list[dict]] | None = None,
     proc_type: str = "P",
     exec_type: str | None = None,
+    form_via_sdk: bool = False,
 ) -> dict[str, Any]:
     """Named Priority prepare with UPD=N + .prp advanced gates.
 
@@ -587,6 +588,7 @@ def run_priority_prepare(
         proc_type=wanted or proc_type,
         exec_type=wanted,
         exec_id=base.get("exec_id"),
+        form_via_sdk=bool(form_via_sdk),
     )
     if not isinstance(sdk, dict) or not sdk.get("ok"):
         base["reason"] = "sdk_not_ok"

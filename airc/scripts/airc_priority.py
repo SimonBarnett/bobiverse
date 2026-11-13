@@ -32,7 +32,7 @@ _PRIORITY_ANY_RE = re.compile(
     r"(?is)^(?:id=([0-9a-f]{8})\s+)?PRIORITY(?:\s+(\S+).*)?$"
 )
 _PRIORITY_KNOWN_SUB = frozenset(
-    {"connect", "status", "prepare", "formstart", "subform", "getrows", "wcf"}
+    {"connect", "status", "prepare", "prepare-form", "formstart", "subform", "getrows", "wcf"}
 )
 
 _REQUIRED_INSTANCE_KEYS = ("id", "url", "company", "user", "credentialTarget")
@@ -423,7 +423,7 @@ def parse_priority_usage(text: str) -> str | None:
     return (m.group(1) or "").lower()
 
 
-PRIORITY_USAGE_SUBVERBS = "connect|status|prepare|formStart|subform|getRows|wcf"
+PRIORITY_USAGE_SUBVERBS = "connect|status|prepare|prepare-form|formStart|subform|getRows|wcf"
 
 # FR #5616: must match airc_console.IRC_SAFE_PAYLOAD (no reverse import; cycle risk).
 PRIORITY_REPLY_MAX_BYTES = 350
