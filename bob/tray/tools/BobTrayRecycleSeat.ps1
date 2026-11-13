@@ -159,12 +159,18 @@ function Invoke-BobTrayRecycleSeatQueue {
                         $mayStart = $true
                     }
                     if ($mayStart) {
-                        try {
-                            $newPid = [int](@(& $Launch)[-1])
-                            if ($newPid -gt 0) { $ok = $true; $reason = 'ok' } else { $reason = 'launch-failed' }
-                        } catch {
-                            $reason = 'launch-error: ' + $_.Exception.Message
-                            Invoke-BobTrayRecycleSeatReportFailure -Root $Root -Site ('recycleseat.launch:' + $seatNick) -Exception $_.Exception
+                        # FR #7117: one retry if the first start returns no pid; never wait for a key.
+                        $tries = 0
+                        while ($tries -lt 2 -and -not $ok) {
+                            $tries++
+                            try {
+                                $newPid = [int](@(& $Launch)[-1])
+                                if ($newPid -gt 0) { $ok = $true; $reason = 'ok' } else { $reason = 'launch-failed' }
+                            } catch {
+                                $reason = 'launch-error: ' + $_.Exception.Message
+                                Invoke-BobTrayRecycleSeatReportFailure -Root $Root -Site ('recycleseat.launch:' + $seatNick) -Exception $_.Exception
+                                break
+                            }
                         }
                     }
                 }

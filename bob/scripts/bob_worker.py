@@ -261,6 +261,10 @@ ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
 FORBIDDEN_FLAGS = ("--resume", "-r", "--continue", "-c", "--resume-session", "--session", "--chat")
 CREATE_NEW_CONSOLE = 0x00000010
 CREATE_NO_WINDOW = 0x08000000
+# FR #7117: console QuickEdit freezes the seat until Enter (looks like a crash).
+ENABLE_QUICK_EDIT_MODE = 0x0040
+ENABLE_EXTENDED_FLAGS = 0x0080
+STD_INPUT_HANDLE = -10
 
 RULE_RESTART_MAX = 3
 RULE_RESTART_WINDOW_S = 1800.0
@@ -2874,7 +2878,30 @@ def ensure_console(title: str = "") -> bool:
             return False
     if title:
         k32.SetConsoleTitleW(str(title)[:200])
+    disable_console_quick_edit(k32)
     return True
+
+
+def disable_console_quick_edit(k32=None) -> bool:
+    """Turn off QuickEdit so a click/select cannot freeze the worker until Enter (FR #7117)."""
+    if os.name != "nt":
+        return False
+    try:
+        k32 = k32 or ctypes.WinDLL("kernel32", use_last_error=True)
+        GetStdHandle = k32.GetStdHandle
+        GetConsoleMode = k32.GetConsoleMode
+        SetConsoleMode = k32.SetConsoleMode
+        GetStdHandle.restype = ctypes.c_void_p
+        h = GetStdHandle(STD_INPUT_HANDLE)
+        if not h or int(h) in (0, -1, 0xFFFFFFFF, 0xFFFFFFFFFFFFFFFF):
+            return False
+        mode = ctypes.c_uint(0)
+        if not GetConsoleMode(ctypes.c_void_p(int(h)), ctypes.byref(mode)):
+            return False
+        new_mode = (int(mode.value) | ENABLE_EXTENDED_FLAGS) & ~ENABLE_QUICK_EDIT_MODE
+        return bool(SetConsoleMode(ctypes.c_void_p(int(h)), new_mode))
+    except Exception:
+        return False
 
 
 def find_window_icon(install_root: Optional[Path] = None) -> Optional[Path]:

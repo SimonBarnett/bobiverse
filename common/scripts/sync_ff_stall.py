@@ -294,6 +294,23 @@ def write_sync_status(
             "sync": sync_field,
             "at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         }
+        dirty_scripts = []
+        try:
+            import recycleseat as _rs
+
+            blob = " ".join(
+                str(x) for x in (reason, os.environ.get("BOB_SYNC_DIRTY_PATHS") or "")
+            )
+            dirty_scripts = _rs.dirty_recycle_script_paths(blob.replace(",", " ").split())
+        except Exception:
+            dirty_scripts = []
+        if dirty_scripts:
+            doc["recycle_scripts_dirty"] = dirty_scripts
+            extra = "recycle-scripts-dirty:" + ",".join(dirty_scripts)
+            if extra not in str(doc.get("sync") or ""):
+                doc["sync"] = (str(doc.get("sync") or "").strip() + " " + extra).strip()
+            if extra not in str(doc.get("reason") or ""):
+                doc["reason"] = (str(doc.get("reason") or "").strip() + " " + extra).strip()
         override = (os.environ.get("BOB_SYNC_STATUS_DIR") or "").strip()
         paths: list[Path] = []
         if override:
