@@ -403,6 +403,7 @@ routes to bobiverse via the split rule.
 - Digest OpenCode tests that set FUEL_FIXTURE must delenv zen usage/helper/key first; !build inherits ircBob NSSM OpenCode env.
 - Missing-key OpenCode pins under LocalSystem must delenv AUTH_PATH/seat homes and stub load_opencode_go_key_from_auth; contrast with explicit BOB_OPENCODE_AUTH_PATH.
 - 6120 helper-path tests must stub load_opencode_go_key_from_auth and drop GO_USAGE/FUEL/key env so LocalSystem !build hits Popen + disk cache
+- skill-dag resolve must score the full seed against skill ids as well as descriptions so spaced tokens still hit hyphenated book names
 
 ## Harvest digest (lessons audit 2026-10-06)
 
