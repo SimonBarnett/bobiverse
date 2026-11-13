@@ -29,7 +29,8 @@ def test_corrupt_transfer_leaves_no_file(tmp_path):
     assert not tmp.exists()
 
 
-def test_dcc_blocked_falls_back_to_irc_put(tmp_path):
+def test_dcc_blocked_fail_closed_no_irc_put(tmp_path):
+    """FR #7129: NAT/firewall DCC failure must not spray the body on IRC CHUNK."""
     store = jobs.JobStore(tmp_path)
     proto = jobs.JobProtocol(store)
 
@@ -50,19 +51,17 @@ def test_dcc_blocked_falls_back_to_irc_put(tmp_path):
             "via": "dcc",
         },
     )
-    assert any("falling back to IRC" in ln for ln in put)
-    assert any(ln.startswith("ok id=aabbccdd put ") for ln in put)
-    proto.handle(
+    assert any("code=dcc-unreachable" in ln for ln in put)
+    assert any(ln.startswith("DONE id=aabbccdd exit=1") for ln in put)
+    assert not any("falling back to IRC" in ln for ln in put)
+    dest = tmp_path / "drop" / "file.bin"
+    assert not dest.exists()
+    extra = proto.handle(
         "bob-tm",
         "CHUNK",
         {"id": "aabbccdd", "seq": "1", "data": __import__("base64").b64encode(payload).decode("ascii")},
     )
-    end = proto.handle(
-        "bob-tm", "PUTEND", {"id": "aabbccdd", "seqs": "1", "sha256": digest}
-    )
-    assert any("putend" in ln and digest in ln for ln in end)
-    dest = tmp_path / "drop" / "file.bin"
-    assert dest.read_bytes() == payload
+    assert any("code=state" in ln or "no receiving PUT" in ln for ln in extra)
 
 
 def test_put_path_checks_match_dcc_and_irc(tmp_path):
@@ -115,5 +114,6 @@ def test_skill_documents_dcc_output_and_upload():
     assert "DCCLISTEN" in skill
     assert "via=dcc" in skill
     assert "FR #5194" in skill
-    assert "falling back to IRC" in skill
+    assert "ForceIrcPut" in skill
+    assert "dcc-unreachable" in skill or "FR #7129" in skill
     assert "PUT path=" in skill
