@@ -11032,6 +11032,24 @@ class Supervisor:
             pass
         return paths
 
+    def _announce_hang_restart_limit(self, reason: str) -> None:
+        """FR #7150: shop + run_dir marker when exit=5 hang-restart-limit fires."""
+        detail = (
+            f"hang-restart-limit reason={reason} "
+            f"restarts={self.restart_max}/{int(self.restart_window_s)}s "
+            f"exit={EXIT_GAVE_UP}"
+        )
+        try:
+            marker = Path(self.run_dir) / "hang-restart-limit.txt"
+            marker.write_text(detail + "\n", encoding="utf-8")
+        except OSError as e:
+            self.log(f"agent: hang-restart-limit marker failed {type(e).__name__}")
+        try:
+            if self.irc is not None and getattr(self.irc, "shop", None):
+                self.irc.say(self.irc.shop, detail)
+        except Exception as e:
+            self.log(f"agent: hang-restart-limit shop announce failed {type(e).__name__}")
+
     def restart_agent(self, reason: str) -> None:
         # FR #4180: never respawn while out-of-fuel (402 / exhausted is not a hang).
         if self.bored and self.bored.out_of_fuel:
@@ -11068,6 +11086,10 @@ class Supervisor:
                 old = self.proc
                 self._expected_exit.add(old.pid)
         if give_up:
+            # FR #7150: surface hang-restart-limit on the shop channel and in run_dir so
+            # ear/Jeeves/operators can see why a seat vanished (class of redqueen 16:55
+            # 916/14100 -> 11952/8540; no Jeeves recycleseat log).
+            self._announce_hang_restart_limit(reason)
             self.shutdown("hang-restart-limit", EXIT_GAVE_UP)
             return
         self.log(f"agent: HUNG ({reason}); restart {n + 1}/{self.restart_max} after {delay:.0f}s backoff (old pid={old.pid}) - NEW agent, no resume")
