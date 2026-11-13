@@ -4272,6 +4272,62 @@ def digest_fuel_post_state_path(home: Path) -> Path:
     return Path(home) / "digest-fuel-post-state.json"
 
 
+# FR #7022: digest python tag is "missing" or a source tag (env:/stamp:/…); never a path body.
+_PYTHON_DIGEST_TAG_RE = re.compile(
+    r"^(?:missing|[a-z][a-z0-9_-]*(?::[A-Za-z0-9_.+-]+)?)$"
+)
+
+
+def sanitize_python_digest_tag(raw) -> str | None:
+    """Return a safe digest python tag, or None when absent/unsafe (FR #7020 / #7022)."""
+    if raw is None:
+        return None
+    text = str(raw).strip()
+    if not text or len(text) > 80:
+        return None
+    # Path bodies must never enter the digest (secrets / host layout).
+    if "\\" in text or "/" in text:
+        return None
+    if len(text) >= 2 and text[1] == ":" and text[0].isalpha():
+        return None
+    if text == "missing":
+        return "missing"
+    if _PYTHON_DIGEST_TAG_RE.match(text):
+        return text
+    return None
+
+
+def python_status_path(home: Path) -> Path:
+    """FR #7020 / #7022: ear stamp at ``<home>/run/python-status.json``."""
+    return Path(home) / "run" / "python-status.json"
+
+
+def read_python_status_field(home: Path) -> str | None:
+    """Read digest python tag from ``python-status.json`` (missing or source tag only)."""
+    path = python_status_path(home)
+    try:
+        if not path.is_file():
+            return None
+        doc = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, TypeError, ValueError):
+        return None
+    if not isinstance(doc, dict):
+        return None
+    return sanitize_python_digest_tag(doc.get("python"))
+
+
+def attach_peer_python_status(peer: dict, home: Path) -> dict:
+    """FR #7022: copy python-status.json into peer so merge payload carries it."""
+    if not isinstance(peer, dict):
+        return peer
+    tag = read_python_status_field(home)
+    if not tag:
+        return peer
+    out = dict(peer)
+    out["python"] = tag
+    return out
+
+
 def peer_fuel_fingerprint(peer: dict) -> str:
     """Stable fingerprint of fuel fields that must trigger a merge POST (FR #6141 / #6145).
 
@@ -4313,6 +4369,9 @@ def peer_fuel_fingerprint(peer: dict) -> str:
         "opencode_account",
         "running",
         "queued",
+        # FR #7022: python missing/source-tag flips must POST before heartbeat.
+        "python",
+        "sync",
     ):
         parts.append(f"{key}={peer.get(key)!s}")
     pcent = peer.get("pcent")
@@ -4396,7 +4455,13 @@ def build_peer_fuel_merge_payload(peer: dict, machine_id: str) -> dict | None:
         if key in ("weekly", "lastSeen", "online", "status"):
             continue
         if key in peer and peer.get(key) not in (None, ""):
-            payload[key] = peer.get(key)
+            val = peer.get(key)
+            # FR #7022: never forward a filesystem path as digest python.
+            if key == "python":
+                val = sanitize_python_digest_tag(val)
+                if not val:
+                    continue
+            payload[key] = val
     for key in _FUEL_PUBLISH_EXTRA_FIELDS:
         if key == "weekly_known":
             continue
@@ -7489,6 +7554,12 @@ def publish_local_peer_fuel(
                     peer["xai_weekly"] = meter
     except Exception:
         pass
+    # FR #7022: wire home/run/python-status.json into the merge payload
+    # (value "missing" or source tag only — never a path body).
+    try:
+        peer = attach_peer_python_status(peer, home)
+    except Exception:
+        pass
     payload = build_peer_fuel_merge_payload(peer, mid)
     if not payload:
         _last_fuel_publish_diag["skipped"] = "no-payload"
@@ -7496,6 +7567,8 @@ def publish_local_peer_fuel(
     pcent = payload.get("pcent") if isinstance(payload.get("pcent"), dict) else {}
     _last_fuel_publish_diag["pcent_keys"] = sorted(str(k) for k in pcent)
     _last_fuel_publish_diag["payload_keys"] = sorted(str(k) for k in payload)
+    if payload.get("python"):
+        _last_fuel_publish_diag["python"] = str(payload.get("python"))
     fp = peer_fuel_fingerprint(peer)
     state_path = digest_fuel_post_state_path(home)
     posted: dict = {}

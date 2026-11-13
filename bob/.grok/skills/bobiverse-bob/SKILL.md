@@ -56,6 +56,7 @@ Ear-owned fleet fuel merges POST to `https://bob.ntsa.uk/bob/v1/report` via `bob
 - **Copilot:** account-wide pool line on TipForm/Status; freshness from digest `fetched_at` / paint rules (park FR-008).
 - **Logos:** Bobiverse-owned badges under `bob/tray/assets/fuel-logos/` (`Get-BobTrayFuelLogoImage` / Status `FuelLogo`); text fallback `Cu` / `xAI` / `OC` / `Gh` when an asset is missing (FR #6149). See that folder `LICENSE.md`.
 - **cursor_known:** when a merge payload includes `cursor_known` (mirrors `weekly_known` on peers that set it), false clears Cursor label/pcent/pools (FR #6144). The Python ear `build_peer_fuel_merge_payload` path does not yet emit the flag; chair clearing applies when the flag is present.
+- **python (FR #7020 / #7022):** ear writes `<home>/run/python-status.json` on SYSTEM resolve miss; `publish_local_peer_fuel` attaches `python=missing` or a source tag into the merge payload (never a filesystem path).
 - Park anti-omnibus: `bob/docs/fr/digest-ear-publish/` (Refs to impl issues; docs PRs must not `Closes` sibling impl FRs).
 
 Refs SimonBarnett/bobiverse#6141 #6142 #6143 #6144 #6145 #6146 #6147 #6148 #6149 (impl). This skill section is FR #6150.
