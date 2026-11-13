@@ -94,7 +94,8 @@ def test_fr3554_n_log_writes_protect_at_most_once(tmp_path: Path):
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows only")
 def test_fr3554_env_root_redirects_away_from_live_programdata(tmp_path: Path):
-    pd = tmp_path / "pd-redirect"
+    # FR #7102: path contains ProgramData\Bobiverse like SYSTEM !build work dirs.
+    pd = tmp_path / "ProgramData" / "Bobiverse" / "build-work" / "pd-redirect"
     script = textwrap.dedent(
         f"""
         $ErrorActionPreference = 'Stop'
@@ -103,7 +104,13 @@ def test_fr3554_env_root_redirects_away_from_live_programdata(tmp_path: Path):
         $env:BOBIVERSE_PROGRAMDATA_ROOT = '{pd}'
         $dir = Get-BobiverseMsiLogDir
         if ($dir -notlike '{pd}*') {{ throw ("log dir not under tmp: " + $dir) }}
-        if ($dir -match '(?i)C:\\\\ProgramData\\\\Bobiverse') {{ throw 'must not use live ProgramData' }}
+        # FR #7102: SYSTEM !build tmp lives under ProgramData/Bobiverse/build-work.
+        # A substring match on that prefix false-fails a correct redirect.
+        $liveLogs = [IO.Path]::GetFullPath((Join-Path $env:SystemDrive 'ProgramData/Bobiverse/logs'))
+        $got = [IO.Path]::GetFullPath($dir)
+        if ($got.TrimEnd('\') -eq $liveLogs.TrimEnd('\')) {{
+          throw 'must not use live ProgramData logs'
+        }}
         Write-Output 'redirect-ok'
         """
     )
