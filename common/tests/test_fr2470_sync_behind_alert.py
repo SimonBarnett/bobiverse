@@ -303,6 +303,10 @@ def test_fr2470_ff_blocked_alerts_with_behind_count():
     out2 = sync()
     text = out2.stdout + out2.stderr
     assert out2.returncode == 0, text
+    # FR #7053 / #7024: dirty bob/scripts/b1.ps1 is not a park-allowlist hotpatch.
+    # Parking it (FR #6989-all-dirty) made ff succeed and dropped the ALERT.
+    assert (r / "bob/scripts/b1.ps1").read_text(encoding="utf-8") == "# LOCAL\n"
+    assert "skip-not-hotpatch" in text, text
     assert "ALERT" in text, text
     assert "ff-only not possible" in text or "sync-ff-failed" in text, text
     assert re.search(r"behind origin/\w+ by \d+", text, re.I), text
