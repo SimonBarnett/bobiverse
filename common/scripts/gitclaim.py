@@ -11022,6 +11022,15 @@ def heal_bored_latency(
             )
             continue
         recent = list(recycles.get(slot) or []) if slot else []
+        prior = nick_ts.get(canon)
+        lag_pre = (item.get("evidence") or {}).get("lag_s")
+        if prior:
+            # FR #6986: same nick still lagging after a prior recycleseat.
+            # Do not change recycle thresholds; log that the recycle had no effect.
+            attempts = len(recent) + 1
+            lines.append(
+                f"bored-latency recycle-no-effect seat={canon} attempts={attempts} lag_s={lag_pre}"
+            )
         if slot and len(recent) >= limit:
             holds[slot] = {
                 "at": now_f,
