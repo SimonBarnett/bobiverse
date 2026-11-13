@@ -2140,19 +2140,58 @@ function Sync-BobiverseWorkTree {
         $m = Invoke-BobiverseGit -Git $git -GitArgs ($G + @('merge', '--ff-only', '-q', "origin/$Branch")) -TimeoutSec 60
         if ($m.Code -ne 0) {
             foreach ($l in ($m.Out | Select-Object -First 3)) { $log.Add("  $l") }
-            $behindFail = Get-BobiverseWorkTreeBehindCount -Git $git -GitArgsBase $G -Branch $Branch
-            $behindMsg = if ($behindFail -gt 0) { "; HEAD behind origin/$Branch by $behindFail commit(s)" } else { '' }
-            # FR #6970: name dirty paths in the stall reason (path names only; never file bodies).
-            $dirtySummary = ''
-            try { $dirtySummary = Get-BobiverseSyncDirtyPathSummary -Git $git -GitArgsBase $G } catch { }
-            $whyFail = 'ff-only not possible (local commits or edits in the way)'
-            if ($dirtySummary) { $whyFail = "$whyFail; $dirtySummary" }
-            $log.Add("ALERT sync-ff-failed: $whyFail; live flat scripts may lag origin/$Branch until resolved$behindMsg")
-            # FR #6773: digest sync field + one deduped stall intake (no secrets).
+            # FR #7008: install may be behind the park tip so the already-loaded Common lacks
+            # Clear-BobiverseDirtyTrackedForSync (chicken-and-egg). Overlay Common from origin,
+            # re-dot, re-park, retry ff-only once. Never log parked file bodies.
+            $tipRetryOk = $false
             try {
-                Report-BobiverseSyncFfStall -InstallRoot $root -Behind $(if ($behindFail -gt 0) { $behindFail } else { 0 }) -Reason $whyFail
-            } catch { }
-            return (Done ("$whyFail; local work kept as is$behindMsg"))
+                $tipCommon = Sync-BobiverseScriptTipFromOrigin -InstallRoot $root -Branch $Branch -GitExe $git `
+                    -RelPath 'common/scripts/Bobiverse-Common.ps1' `
+                    -ContentMustMatch 'Clear-BobiverseDirtyTrackedForSync'
+                if ($tipCommon.Ok) {
+                    $commonPath = Join-Path $root 'common\scripts\Bobiverse-Common.ps1'
+                    if (-not (Test-Path -LiteralPath $commonPath -PathType Leaf)) {
+                        $commonPath = Join-Path $root 'scripts\Bobiverse-Common.ps1'
+                    }
+                    if (Test-Path -LiteralPath $commonPath -PathType Leaf) {
+                        . $commonPath
+                        $log.Add("INFO sync-tip-overlay-common FR#7008 $($tipCommon.Reason)")
+                        try {
+                            [void](Clear-BobiverseMachineLocalConfigForSync -InstallRoot $root -Product $Product -Git $git -GitArgsBase $G -Log $log)
+                        } catch { }
+                        try {
+                            [void](Clear-BobiverseDirtyTrackedForSync -InstallRoot $root -Git $git -GitArgsBase $G -Log $log)
+                        } catch { }
+                        $m2 = Invoke-BobiverseGit -Git $git -GitArgs ($G + @('merge', '--ff-only', '-q', "origin/$Branch")) -TimeoutSec 60
+                        if ($m2.Code -eq 0) {
+                            $tipRetryOk = $true
+                            $m = $m2
+                        } else {
+                            foreach ($l in ($m2.Out | Select-Object -First 3)) { $log.Add("  $l") }
+                            $log.Add("WARN sync-tip-overlay-common FR#7008 ff-retry still failed")
+                        }
+                    }
+                } else {
+                    $log.Add("WARN sync-tip-overlay-common FR#7008 $($tipCommon.Reason)")
+                }
+            } catch {
+                $log.Add("WARN sync-tip-overlay-common FR#7008 error")
+            }
+            if (-not $tipRetryOk) {
+                $behindFail = Get-BobiverseWorkTreeBehindCount -Git $git -GitArgsBase $G -Branch $Branch
+                $behindMsg = if ($behindFail -gt 0) { "; HEAD behind origin/$Branch by $behindFail commit(s)" } else { '' }
+                # FR #6970: name dirty paths in the stall reason (path names only; never file bodies).
+                $dirtySummary = ''
+                try { $dirtySummary = Get-BobiverseSyncDirtyPathSummary -Git $git -GitArgsBase $G } catch { }
+                $whyFail = 'ff-only not possible (local commits or edits in the way)'
+                if ($dirtySummary) { $whyFail = "$whyFail; $dirtySummary" }
+                $log.Add("ALERT sync-ff-failed: $whyFail; live flat scripts may lag origin/$Branch until resolved$behindMsg")
+                # FR #6773: digest sync field + one deduped stall intake (no secrets).
+                try {
+                    Report-BobiverseSyncFfStall -InstallRoot $root -Behind $(if ($behindFail -gt 0) { $behindFail } else { 0 }) -Reason $whyFail
+                } catch { }
+                return (Done ("$whyFail; local work kept as is$behindMsg"))
+            }
         }
         $after = (Invoke-BobiverseGit -Git $git -GitArgs ($G + @('rev-parse', 'HEAD')) -TimeoutSec 20).Out | Select-Object -First 1
         $res.Pulled = ("$before" -ne "$after")
