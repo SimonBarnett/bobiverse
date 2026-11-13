@@ -398,7 +398,7 @@ routes to bobiverse via the split rule.
 - Ear as SYSTEM must resolve interactive user WinGet Links and seat OpenCode auth.json (backup read, never log the key); missing exe+auth is not installed, exe without Go key is no key set.
 - Session 0 with empty CIM UserName is not system-profile-skipped if HKLM LastLoggedOnUser or the install interactive-user-home stamp points at Users\<seat>.
 - FR #7008 Common overlay: home is `bobiverse-fleet-ops` (Sync-BobiverseWorkTree overlay + re-park + one ff retry). Do not claim first landing skips MSI.
-- OpenCode free is catalogue availability not a quota --- never paint free on tray hover/TipForm/Status; keep Go rolling/weekly/monthly only.
+- FR #7017 OpenCode free paint: home is `bobiverse-bob` (never paint free row/bar/summary; Go windows only; fuel detection unchanged).
 
 ## Harvest digest (lessons audit 2026-10-06)
 
