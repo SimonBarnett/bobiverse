@@ -396,6 +396,7 @@ routes to bobiverse via the split rule.
 - BUILD unit tests that assert work_dir/cache must monkeypatch.delenv BOBIVERSE_DOWNLOAD_CACHE; SkipMsi airc stage tests must not require npm ci.
 - Stall-heal !recycleseat: if seats\nick.irc.json is missing, stop the pid encoded in the seat nick then start; Jeeves must log recycle-no-effect when the same nick still lags
 - Ear as SYSTEM must resolve interactive user WinGet Links and seat OpenCode auth.json (backup read, never log the key); missing exe+auth is not installed, exe without Go key is no key set.
+- When skill-dag MCP namespace is missing from Cursor dynamic tools, use python bob/scripts/skill_dag_mcp.py --once resolve|get_skill instead of forcing MCP into GetDynamicTools.
 
 ## Harvest digest (lessons audit 2026-10-06)
 
