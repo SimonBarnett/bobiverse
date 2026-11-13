@@ -419,8 +419,8 @@ def test_fr6989_secret_path_helper_pins():
     text = COMMON.read_text(encoding="utf-8")
     body = _fn_body(text, "Test-BobiverseSyncParkSecretPath")
     assert "FR #6989" in body or "FR #6989" in text
-    # Regex source uses github\\.token escaping.
-    assert "github" in body and "token" in body
-    assert "identity.json" in body
+    # Regex source uses github\\.token / identity\\.json escaping.
+    assert "github\\.token" in body
+    assert "identity\\.json" in body
     assert ".password" in body
     assert "nickserv" in body.lower()
