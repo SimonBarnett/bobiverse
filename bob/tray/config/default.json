@@ -10,6 +10,21 @@
                    "opencodeFree":  "opencode/deepseek-v4.1-flash-free",
                    "opencodePaid":  "opencode-go/deepseek-v4-pro"
                },
+    "workerStartModels":  {
+                              "grok":  "",
+                              "cursor":  "",
+                              "aider":  "",
+                              "opencode":  ""
+                          },
+    "workerModelCostTiers":  {
+                             },
+    "jobRequiredModelTier":  {
+                                 "FR":  "min",
+                                 "MRB":  "min",
+                                 "UAT":  "min",
+                                 "FIX":  "min",
+                                 "BUILD":  "min"
+                             },
     "repoPairModelTier":  {
                               "less":  "composer-2.5",
                               "medium":  "grok-4.6",
