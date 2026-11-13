@@ -948,13 +948,15 @@ def _priority_prepare_exec(
 ) -> dict:
     """Dispatch prepare runners. Default form = WINRUN (FR #6003).
 
-    FR #7130: ``PRIORITY prepare-form`` / ``form_via_sdk`` uses Web SDK + CredMan
+    FR #6108: no EFORM/EXEC SDK opt-in via AIRC_PRIORITY_FORM_VIA_EFORM env.
+    FR #7130: only ``PRIORITY prepare-form`` / ``form_via_sdk`` uses Web SDK + CredMan
     (no WINACTIV). Session 0 WINRUN is refused with ``session0_gui``.
     """
     proc_name = str(path or "").strip().upper() or "REPPREPDIRECT2"
     want_form = bool(form_prep) or proc_name == "FORMPREPDRCT2"
     if want_form:
-        via_sdk = bool(form_via_sdk) or _env_flag_true("AIRC_PRIORITY_FORM_VIA_EFORM")
+        # Explicit prepare-form verb only; env opt-in stays removed (FR #6108).
+        via_sdk = bool(form_via_sdk)
         if via_sdk:
             return _priority_sdk_formprep(
                 ename=ename,
