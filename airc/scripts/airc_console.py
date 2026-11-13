@@ -3839,6 +3839,7 @@ class AircConsoleCore:
         extension_runner: Callable[..., _extension.ExtensionVerbResult] | None = None,
         network_runner: Callable[..., _network.NetworkVerbResult] | None = None,
         legion_runner: Callable[..., _legion.LegionVerbResult] | None = None,
+        console_home: str | Path | None = None,
     ) -> None:
         self.machine = machine_id(machine)
         self.channel = shop_channel(self.machine)
@@ -3886,6 +3887,38 @@ class AircConsoleCore:
             for c in (presence_channels or [])
             if normalize_irc_channel(c)
         ]
+        # FR #7131: SEAL identity under ConsoleHome (frozen airc.exe; no python.exe).
+        self.console_home = Path(console_home) if console_home else None
+        self.seal_inbox = None
+        if self.console_home is not None:
+            try:
+                import airc_seal_file as _sf
+
+                self.seal_inbox = _sf.SealFileInbox(
+                    self.console_home, nick=self.nick, channel=self.channel
+                )
+            except Exception:
+                self.seal_inbox = None
+
+    def _handle_seal_file_wire(self, nick: str, target: str, text: str) -> HandleResult | None:
+        inbox = getattr(self, "seal_inbox", None)
+        if inbox is None:
+            return None
+        ch = target if is_channel_target(target) else (self.channel or "")
+        try:
+            handled, reply = inbox.consume(nick, text, channel=ch)
+        except Exception:
+            return None
+        if not handled:
+            return None
+        dest = ch if is_channel_target(ch) else (self.channel or target)
+        return HandleResult(
+            action="seal_file",
+            nick=nick,
+            target=dest,
+            text=text,
+            reply=reply,
+        )
 
     def _resolved_priority_allowlist_path(self) -> str | None:
         """Resolve the CRED allowlist using the same fallback as PRIORITY."""
@@ -4155,6 +4188,11 @@ class AircConsoleCore:
             # Direct ping that does not match us - ignore quietly.
             return HandleResult(action="ping_miss", nick=nick, target=target, text=text)
 
+        # FR #7131: AGPK / FILE v1 / SEAL v2 are wire, not shell — even on shop channel.
+        seal_hr = self._handle_seal_file_wire(nick, target, text)
+        if seal_hr is not None:
+            return seal_hr
+
         if is_channel_target(target):
             # Fleet / workstation: silent in channel (DM only). Client: accept commands
             # on the selected control channel only (FR #3401). Auth is the same live
@@ -4208,6 +4246,7 @@ class AircConsoleCore:
                     "psb64:<base64> EncodedCommand; "
                     "replies out/err id= seq= then DONE id= exit= (batch capture + FLOOD_S); "
                     "STATUS|VERSION|PUT|CHUNK|PUTEND|RUN|GET|GETCHUNK|JOB|CANCEL; "
+                    "FILE v1 / SEAL v2 tier S into ConsoleHome/files/complete (FR #7131); "
                     "PRIORITY prepare [form|report|procedure] <ENAME> [instance=] (FR #5286/#5946); "
                     "UPDATE airc|bob|jeeves [ver] schedules detached MSI update "
                     "(ops-gated remote; not auto self-update - FR #3764); "

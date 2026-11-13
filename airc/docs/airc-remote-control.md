@@ -84,7 +84,7 @@ PRIVMSG marchhare_console :id=aabbccdd PRIORITY connect example-dev
 
 - Short ops: **plain text** (readable in Halloy / irc.log).
 - Scripts / `$` / spaces: **base64** (`psb64` or PUT).
-- Secrets: **never** clear IRC ??? local files or agentic-file SEAL.
+- Secrets: **never** clear IRC — local files or agentic-file SEAL (FR #7131: console receives FILE v1 tier S into `ConsoleHome/files/complete/`; frozen `airc.exe` mints `identity.json` and announces `AGPK v1` after NAMES sync).
 - Large logs/MSI: HTTPS allowlist or path drop ??? IRC is control plane.
 
 ## CAST IRON ops notes
