@@ -6292,22 +6292,58 @@ def _system_drive_root() -> Path:
     return Path(raw)
 
 
-def _interactive_grok_user_home() -> Path | None:
-    """FR #6270: interactive console user home that owns ``.grok`` (usage log only; never auth.json).
+INTERACTIVE_HOME_STAMP_NAME = "interactive-user-home.txt"
+_SERVICE_ACCOUNT_LEAVES = frozenset({"SYSTEM", "LOCAL SERVICE", "NETWORK SERVICE"})
 
-    Honours ``BOB_GROK_WEEKLY_USER_HOME``. Otherwise resolves Win32 console user /
-    explorer owner and returns that Users\\<name> directory when it exists.
-    """
-    override = (os.environ.get("BOB_GROK_WEEKLY_USER_HOME") or "").strip().rstrip("\\/")
-    if override:
-        return Path(override)
+
+def interactive_user_home_stamp_path(
+    env: dict[str, str] | None = None,
+) -> Path | None:
+    """``<InstallRoot>\\run\\interactive-user-home.txt`` (path only; never secrets)."""
+    root = opencode_install_root(env)
+    if root is None:
+        return None
+    return Path(root) / "run" / INTERACTIVE_HOME_STAMP_NAME
+
+
+def _users_home_from_account(account: str | None) -> Path | None:
+    if not account or not str(account).strip():
+        return None
+    user = str(account).strip().split("\\")[-1].strip()
+    if not user or user.upper() in _SERVICE_ACCOUNT_LEAVES:
+        return None
+    cand = _system_drive_root() / "Users" / user
+    if cand.is_dir():
+        return cand
+    return None
+
+
+def _last_logged_on_account() -> str | None:
+    """HKLM LogonUI last interactive user. No secrets. Empty when no one has logged on."""
     if os.name != "nt":
         return None
-    account = None
     try:
-        import subprocess
+        import winreg
 
-        # Keep ASCII + short timeout for the ear tick (CIM console / explorer owner).
+        with winreg.OpenKey(
+            winreg.HKEY_LOCAL_MACHINE,
+            r"SOFTWARE\Microsoft\Windows\CurrentVersion\Authentication\LogonUI",
+        ) as key:
+            for name in ("LastLoggedOnSAMUser", "LastLoggedOnUser"):
+                try:
+                    val, _typ = winreg.QueryValueEx(key, name)
+                except OSError:
+                    continue
+                if isinstance(val, str) and val.strip():
+                    return val.strip()
+    except OSError:
+        return None
+    return None
+
+
+def _console_user_account() -> str | None:
+    """Win32 console / explorer owner. Empty when nobody is logged on."""
+    try:
         r = subprocess.run(
             [
                 "powershell",
@@ -6328,17 +6364,65 @@ def _interactive_grok_user_home() -> Path | None:
         )
         line = (r.stdout or "").strip().splitlines()
         if line:
-            account = line[-1].strip()
+            return line[-1].strip() or None
     except Exception:
-        account = None
-    if not account:
         return None
-    user = account.split("\\")[-1].strip()
-    if not user or user.upper() in ("SYSTEM", "LOCAL SERVICE", "NETWORK SERVICE"):
+    return None
+
+
+def _write_interactive_user_home_stamp(home: Path) -> None:
+    stamp = interactive_user_home_stamp_path()
+    if stamp is None:
+        return
+    try:
+        stamp.parent.mkdir(parents=True, exist_ok=True)
+        stamp.write_text(str(home) + "\n", encoding="utf-8")
+    except OSError:
+        return
+
+
+def _read_interactive_user_home_stamp() -> Path | None:
+    stamp = interactive_user_home_stamp_path()
+    if stamp is None or not stamp.is_file():
         return None
-    cand = _system_drive_root() / "Users" / user
-    if cand.is_dir():
-        return cand
+    try:
+        raw = (stamp.read_text(encoding="utf-8-sig") or "").strip().splitlines()
+    except OSError:
+        return None
+    if not raw:
+        return None
+    text = raw[0].strip().strip('"')
+    if not text:
+        return None
+    path = Path(text)
+    if _is_windows_system_profile(path):
+        return None
+    if path.is_dir():
+        return path
+    return None
+
+
+def _interactive_grok_user_home() -> Path | None:
+    """FR #6270 / #7006: interactive user home that owns ``.grok`` (never auth body).
+
+    Order: ``BOB_GROK_WEEKLY_USER_HOME``; live console/explorer user; HKLM
+    LastLoggedOnUser (works with nobody logged on); persisted
+    ``<InstallRoot>\\run\\interactive-user-home.txt``. Successful resolves are
+    stamped so a later session-0 tick without CIM still finds the seat.
+    """
+    override = (os.environ.get("BOB_GROK_WEEKLY_USER_HOME") or "").strip().rstrip("\\/")
+    if override:
+        return Path(override)
+    if os.name != "nt":
+        return None
+    for account in (_console_user_account(), _last_logged_on_account()):
+        home = _users_home_from_account(account)
+        if home is not None:
+            _write_interactive_user_home_stamp(home)
+            return home
+    stamped = _read_interactive_user_home_stamp()
+    if stamped is not None:
+        return stamped
     return None
 
 
