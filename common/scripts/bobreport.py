@@ -5389,6 +5389,7 @@ OPENCODE_KEY_SELECTED_NAME = "selected.txt"
 OPENCODE_KEY_SELECTED_LEGACY = "opencode-key-selected"
 OPENCODE_DEFAULT_LABEL = "default"
 OPENCODE_NO_KEY_STATE = "no key set"
+OPENCODE_NOT_INSTALLED_STATE = "not installed"
 _OPENCODE_LABEL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._@+-]{0,63}$")
 
 
@@ -5558,6 +5559,146 @@ def _read_opencode_selected_label(
     return None
 
 
+def _opencode_localappdata_from_home(home: Path) -> Path:
+    return Path(home) / "AppData" / "Local"
+
+
+def _opencode_winget_exe(localappdata: Path) -> Path:
+    return Path(localappdata) / "Microsoft" / "WinGet" / "Links" / "opencode.exe"
+
+
+def _opencode_portable_exe(localappdata: Path) -> Path:
+    return Path(localappdata) / "Programs" / "opencode" / "opencode.exe"
+
+
+def resolve_opencode_exe(env: dict[str, str] | None = None) -> tuple[str | None, str]:
+    """Locate opencode.exe for the service (FR #6996).
+
+    Order: ``BOB_OPENCODE_EXE``, process WinGet Links / portable (skipped when
+    LOCALAPPDATA is the system profile), interactive seat user WinGet Links
+    (``BOB_OPENCODE_SEAT_HOME`` / ``BOB_GROK_WEEKLY_USER_HOME`` / console user),
+    then PATH. Never logs secrets. Identity is a source tag only.
+    """
+    e = os.environ if env is None else env
+    explicit = (e.get("BOB_OPENCODE_EXE") or "").strip()
+    if explicit:
+        p = Path(explicit)
+        if p.is_file():
+            return str(p), "explicit"
+    la = (e.get("LOCALAPPDATA") or "").strip()
+    if la and not _is_windows_system_profile(Path(la)):
+        for ident, cand in (
+            ("process-winget", _opencode_winget_exe(Path(la))),
+            ("process-portable", _opencode_portable_exe(Path(la))),
+        ):
+            if cand.is_file():
+                return str(cand), ident
+    seat = (e.get("BOB_OPENCODE_SEAT_HOME") or "").strip().rstrip("\\/")
+    user_home = Path(seat) if seat else None
+    if user_home is None:
+        override = (e.get("BOB_GROK_WEEKLY_USER_HOME") or "").strip().rstrip("\\/")
+        if override:
+            user_home = Path(override)
+        elif _is_local_system_process() or (
+            la and _is_windows_system_profile(Path(la))
+        ):
+            user_home = _interactive_grok_user_home()
+    if user_home is not None:
+        ula = _opencode_localappdata_from_home(user_home)
+        for ident, cand in (
+            ("interactive-winget", _opencode_winget_exe(ula)),
+            ("interactive-portable", _opencode_portable_exe(ula)),
+        ):
+            if cand.is_file():
+                return str(cand), ident
+    which = shutil.which("opencode.exe") or shutil.which("opencode")
+    if which:
+        return which, "path"
+    return None, "missing"
+
+
+def opencode_user_auth_path(
+    env: dict[str, str] | None = None,
+) -> tuple[Path | None, str]:
+    """Path of the seat user's OpenCode ``auth.json`` (FR #6996). Body never logged."""
+    e = os.environ if env is None else env
+    raw = (e.get("BOB_OPENCODE_AUTH_PATH") or "").strip()
+    if raw:
+        return Path(raw), "explicit-auth"
+    seat = (e.get("BOB_OPENCODE_SEAT_HOME") or "").strip().rstrip("\\/")
+    home = Path(seat) if seat else None
+    if home is None:
+        override = (e.get("BOB_GROK_WEEKLY_USER_HOME") or "").strip().rstrip("\\/")
+        if override:
+            home = Path(override)
+        else:
+            proc = (e.get("USERPROFILE") or e.get("HOME") or "").strip()
+            # FR #6996: only auto-open the interactive user's auth.json from
+            # LocalSystem / systemprofile. A user-run pytest must not pick up
+            # the live ~/.local/share/opencode/auth.json.
+            if _is_local_system_process() or (
+                proc and _is_windows_system_profile(Path(proc))
+            ):
+                home = _interactive_grok_user_home()
+            elif proc and not _is_windows_system_profile(Path(proc)):
+                # Explicit seat home only; process-profile auth is not a
+                # service source (MSI SYSTEM is the bug).
+                home = None
+    if home is None:
+        return None, "no-profile"
+    return Path(home) / ".local" / "share" / "opencode" / "auth.json", "user-auth"
+
+
+def extract_opencode_go_key_from_auth_doc(doc: object) -> str:
+    """Pull the opencode-go API key from an auth.json object. Never logs the value."""
+    if not isinstance(doc, dict):
+        return ""
+    names = ("opencode-go", "opencode_go")
+    for name in names:
+        entry = doc.get(name)
+        if isinstance(entry, str) and entry.strip():
+            return entry.strip()
+        if isinstance(entry, dict):
+            for field in ("key", "apiKey", "api_key"):
+                val = entry.get(field)
+                if isinstance(val, str) and val.strip():
+                    return val.strip()
+    nested = doc.get("provider") or doc.get("providers")
+    if isinstance(nested, dict):
+        for name in names:
+            inner = nested.get(name)
+            if isinstance(inner, dict):
+                for field in ("key", "apiKey", "api_key"):
+                    val = inner.get(field)
+                    if isinstance(val, str) and val.strip():
+                        return val.strip()
+    return ""
+
+
+def load_opencode_go_key_from_auth(path: Path) -> tuple[str, str]:
+    """Read auth.json via backup semantics on Windows. Returns (key, error).
+
+    ``error`` is empty on success. Never logs key material.
+    """
+    path = Path(path)
+    raw = None
+    if os.name == "nt":
+        raw, _win_err = read_text_win32_backup(path)
+    if raw is None:
+        try:
+            raw = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeError):
+            return "", "auth-file-unreadable"
+    try:
+        doc = json.loads(raw)
+    except json.JSONDecodeError:
+        return "", "auth-file-bad-json"
+    key = extract_opencode_go_key_from_auth_doc(doc)
+    if not key:
+        return "", "auth-key-missing"
+    return key, ""
+
+
 def resolve_opencode_go_api_key(
     env: dict[str, str] | None = None,
     *,
@@ -5664,6 +5805,18 @@ def resolve_opencode_go_api_key_selection(
             chosen_key = labelled[chosen_label]
             key_source = "labelled-file"
 
+    # FR #6996: LocalSystem has no bob config key after MSI; use seat user auth.json.
+    if not chosen_key:
+        auth_path, _auth_ident = opencode_user_auth_path(e)
+        if auth_path is not None and auth_path.is_file():
+            user_key, _err = load_opencode_go_key_from_auth(auth_path)
+            if user_key:
+                chosen_key = user_key
+                key_source = "user-auth"
+                chosen_label = chosen_label or "opencode-go"
+                if "opencode-go" not in {k.lower() for k in labels}:
+                    labels = sorted(list(labels) + ["opencode-go"], key=lambda s: s.lower())
+
     # Fingerprint for cache bust (length + stable hash of key; never the key).
     fp = ""
     if chosen_key:
@@ -5710,8 +5863,13 @@ def _stamp_opencode_acquisition(**fields) -> None:
     _last_opencode_acquisition = dict(clean)
 
 
-def _no_key_opencode_fuel_doc(*, fetched_at: str | None = None) -> dict:
-    """Honest fuel doc when no Go key is configured (FR #6301 Part D)."""
+def _no_key_opencode_fuel_doc(
+    *,
+    fetched_at: str | None = None,
+    state: str | None = None,
+) -> dict:
+    """Honest fuel doc when no Go key is configured (FR #6301 Part D / FR #6996)."""
+    state = state or OPENCODE_NO_KEY_STATE
     fetched = fetched_at or time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     try:
         import opencode_fuel as of
@@ -5731,19 +5889,23 @@ def _no_key_opencode_fuel_doc(*, fetched_at: str | None = None) -> dict:
     for wid, rec in list(windows.items()):
         if isinstance(rec, dict):
             row = dict(rec)
-            row["error"] = OPENCODE_NO_KEY_STATE
+            row["error"] = state
             row["fetched_at"] = fetched
             row["reset_label"] = None
             row["resets_at"] = None
             windows[wid] = row
+    provider_read = (
+        "not_installed" if state == OPENCODE_NOT_INSTALLED_STATE else "missing_key"
+    )
+    source = "not-installed" if state == OPENCODE_NOT_INSTALLED_STATE else "no-key"
     return {
         "pcent": {},
         "windows": windows,
-        "source": "no-key",
+        "source": source,
         "fetched_at": fetched,
-        "provider_read": "missing_key",
+        "provider_read": provider_read,
         "opencode_account": None,
-        "opencode_state": OPENCODE_NO_KEY_STATE,
+        "opencode_state": state,
     }
 
 
@@ -5798,6 +5960,7 @@ def read_local_opencode_fuel_doc(
     account_label = str(sel.get("label") or "")
     key_fp = str(sel.get("key_fingerprint") or "")
     acl_tightened = list(sel.get("acl_tightened") or [])
+    exe_path, exe_source = resolve_opencode_exe(e)
     if api_key:
         # FR #6248 / MRB #6252: Bearer zen fetch must honour opencode_fuel_cache_s
         # (digest fuel ticks every ~5s). Keep last good go-zen doc on failure.
@@ -5829,6 +5992,7 @@ def read_local_opencode_fuel_doc(
                 label=account_label,
                 source=of.GO_ZEN_USAGE_SOURCE,
                 cache="hit",
+                exe_source=exe_source,
                 acl_tightened=acl_tightened or None,
                 labels=list(sel.get("labels") or []),
             )
@@ -5852,6 +6016,7 @@ def read_local_opencode_fuel_doc(
                 label=account_label,
                 source=of.GO_ZEN_USAGE_SOURCE,
                 schema=(read or {}).get("schema") if isinstance(read, dict) else None,
+                exe_source=exe_source,
                 acl_tightened=acl_tightened or None,
                 labels=list(sel.get("labels") or []),
             )
@@ -5960,19 +6125,34 @@ def read_local_opencode_fuel_doc(
             # empty document over the last reading, and do not block the tick.
             return dict(cached) if cached else {}
 
-    # FR #6301 Part D: no labelled keys and no legacy default -> "no key set".
-    # Do not fall through to install-path tray CLI helper for Go windows
-    # (FR #6285 digest-only).
+    # FR #6301 Part D / FR #6996: no Go key. Distinguish missing binary from
+    # installed-but-unkeyed. Do not fall through to the tray CLI helper
+    # (FR #6285 digest-only Go windows).
+    auth_path, _auth_ident = opencode_user_auth_path(e)
+    auth_present = bool(auth_path and auth_path.is_file())
+    if exe_path or auth_present:
+        _stamp_opencode_acquisition(
+            kind="missing_key",
+            configured=False,
+            key_source="",
+            label="",
+            exe_source=exe_source,
+            opencode_state=OPENCODE_NO_KEY_STATE,
+            acl_tightened=acl_tightened or None,
+            labels=list(sel.get("labels") or []),
+        )
+        return _no_key_opencode_fuel_doc()
     _stamp_opencode_acquisition(
-        kind="missing_key",
+        kind="not_installed",
         configured=False,
         key_source="",
         label="",
-        opencode_state=OPENCODE_NO_KEY_STATE,
+        exe_source=exe_source,
+        opencode_state=OPENCODE_NOT_INSTALLED_STATE,
         acl_tightened=acl_tightened or None,
         labels=list(sel.get("labels") or []),
     )
-    return _no_key_opencode_fuel_doc()
+    return _no_key_opencode_fuel_doc(state=OPENCODE_NOT_INSTALLED_STATE)
 
 
 def read_local_opencode_pcent(

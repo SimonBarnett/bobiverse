@@ -122,8 +122,14 @@ def test_fr6263_missing_key_distinct_from_provider_failure(monkeypatch):
     monkeypatch.setenv("BOB_INSTALL_ROOT", str(Path.cwd() / "no-such-install-root-6263"))
     bobreport._opencode_fuel_cache.clear()
     bobreport._opencode_fuel_cache.update({"at": 0.0, "doc": {}})
-    # Force helper miss
+    # Force helper miss. FR #6996: pretend OpenCode is installed so this
+    # pin stays "no key set" rather than "not installed".
     monkeypatch.setattr(bobreport, "_resolve_opencode_fuel_helper_ps1", lambda e: None)
+    monkeypatch.setattr(
+        bobreport,
+        "resolve_opencode_exe",
+        lambda env=None: (r"C:\fake\opencode.exe", "explicit"),
+    )
     doc = bobreport.read_local_opencode_fuel_doc(now=4000.0, force=True)
     acq = bobreport.last_opencode_acquisition()
     assert acq.get("kind") == "missing_key"
