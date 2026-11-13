@@ -1909,6 +1909,66 @@ function Clear-BobiverseDirtyTrackedForSync {
     return @($parked)
 }
 
+
+function Clear-BobiverseMainEqualDirtyForSync {
+    <#
+    .SYNOPSIS
+      FR #7161: park dirty tracked paths that already equal origin/<Branch> (tip overlay
+      / hotpatch already on tip) then git checkout -- so merge --ff-only is not blocked.
+      Tip overlay of Common/Sync (FR #7008) dirties the worktree vs HEAD even when bytes
+      match tip; without this, park-hotpatch alone cannot ff a behind install.
+      Never parks secrets; never parks paths that differ from tip. Never logs bodies.
+    #>
+    param(
+        [Parameter(Mandatory)][string]$InstallRoot,
+        [Parameter(Mandatory)][string]$Git,
+        [Parameter(Mandatory)][string[]]$GitArgsBase,
+        [string]$Branch = 'main',
+        [System.Collections.IList]$Log = $null
+    )
+    $st = Invoke-BobiverseGit -Git $Git -GitArgs ($GitArgsBase + @('status', '--porcelain', '-uall')) -TimeoutSec 30
+    if ($st.Code -ne 0) { return @() }
+    $stamp = [datetime]::UtcNow.ToString('yyyyMMdd-HHmmss')
+    $parkRoot = Join-Path $InstallRoot (Join-Path '.bobiverse-parked' ("maineq-$stamp"))
+    $parked = New-Object System.Collections.Generic.List[string]
+    foreach ($raw in @($st.Out)) {
+        $line = [string]$raw
+        if ($line.Length -lt 4) { continue }
+        $code = $line.Substring(0, 2)
+        if ($code -eq '??' -or $code -eq '!!') { continue }
+        $pathPart = $line.Substring(3).Trim()
+        if ($pathPart -match ' -> ') { $pathPart = ($pathPart -split ' -> ', 2)[-1] }
+        $unix = ($pathPart.Trim('"') -replace '\\', '/')
+        if (-not $unix) { continue }
+        if (Test-BobiverseSyncParkSecretPath -Rel $unix) {
+            if ($Log) { $Log.Add("INFO sync-park-maineq skip-secret FR#7161 path=$unix") }
+            continue
+        }
+        $dp = Invoke-BobiverseGit -Git $Git -GitArgs ($GitArgsBase + @('diff', '--quiet', "origin/$Branch", '--', $unix)) -TimeoutSec 20
+        if ($dp.Code -ne 0) {
+            if ($Log) { $Log.Add("INFO sync-park-maineq skip-differs-tip FR#7161 path=$unix") }
+            continue
+        }
+        $full = Join-Path $InstallRoot ($unix -replace '/', [IO.Path]::DirectorySeparatorChar)
+        if (-not (Test-Path -LiteralPath $full -PathType Leaf)) { continue }
+        try {
+            $dest = Join-Path $parkRoot ($unix -replace '/', [IO.Path]::DirectorySeparatorChar)
+            New-Item -ItemType Directory -Force -Path (Split-Path -Parent $dest) | Out-Null
+            [IO.File]::Copy($full, $dest, $true)
+            $co = Invoke-BobiverseGit -Git $Git -GitArgs ($GitArgsBase + @('checkout', '--', $unix)) -TimeoutSec 30
+            if ($co.Code -eq 0) {
+                [void]$parked.Add($unix)
+                if ($Log) { $Log.Add("INFO sync-park-maineq FR#7161 path=$unix") }
+            } else {
+                if ($Log) { $Log.Add("WARN sync-park-maineq restore failed path=$unix exit=$($co.Code)") }
+            }
+        } catch {
+            if ($Log) { $Log.Add("WARN sync-park-maineq error path=$unix") }
+        }
+    }
+    return @($parked)
+}
+
 function Get-BobiverseSyncDirtyPathSummary {
     # FR #6970: path names only for stall reason (never file contents / secrets).
     param(
@@ -2222,6 +2282,10 @@ function Sync-BobiverseWorkTree {
         try {
             [void](Clear-BobiverseDirtyTrackedForSync -InstallRoot $root -Git $git -GitArgsBase $G -Log $log)
         } catch { }
+        # FR #7161: park dirty paths that already equal origin tip (Common/Sync tip overlay).
+        try {
+            [void](Clear-BobiverseMainEqualDirtyForSync -InstallRoot $root -Git $git -GitArgsBase $G -Branch $Branch -Log $log)
+        } catch { }
         $m = Invoke-BobiverseGit -Git $git -GitArgs ($G + @('merge', '--ff-only', '-q', "origin/$Branch")) -TimeoutSec 60
         if ($m.Code -ne 0) {
             foreach ($l in ($m.Out | Select-Object -First 3)) { $log.Add("  $l") }
@@ -2246,6 +2310,9 @@ function Sync-BobiverseWorkTree {
                         } catch { }
                         try {
                             [void](Clear-BobiverseDirtyTrackedForSync -InstallRoot $root -Git $git -GitArgsBase $G -Log $log)
+                        } catch { }
+                        try {
+                            [void](Clear-BobiverseMainEqualDirtyForSync -InstallRoot $root -Git $git -GitArgsBase $G -Branch $Branch -Log $log)
                         } catch { }
                         $m2 = Invoke-BobiverseGit -Git $git -GitArgs ($G + @('merge', '--ff-only', '-q', "origin/$Branch")) -TimeoutSec 60
                         if ($m2.Code -eq 0) {
