@@ -63,8 +63,11 @@ skill-dag MCP (stdio, local)
 
 roots (read):
   worker .grok/skills
+  bob .grok/skills
+  common .grok/skills
   ~/.grok/skills
   optional: assigned job worktree .grok/skills after the path exists
+  same id in later roots is a harvest copy: keep the first root, do not set last_error (FR #7076)
 ```
 
 Trust: path allowlist on get. No network listener. No secrets in the index. Harvest remains the only writer of skill text.

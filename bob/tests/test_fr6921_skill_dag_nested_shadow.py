@@ -45,7 +45,8 @@ def test_fr6921_nested_book_is_skipped(tmp_path: Path):
     assert node["depends_on"] == ["harvest"]
 
 
-def test_fr6921_same_name_in_vision_roots_is_reported(tmp_path: Path):
+def test_fr6921_same_name_in_vision_roots_prefers_first_root(tmp_path: Path):
+    """FR #7076: harvest copies across roots are not status last_error collisions."""
     a = tmp_path / "root-a" / "dup-skill"
     b = tmp_path / "root-b" / "dup-skill"
     a.mkdir(parents=True)
@@ -59,10 +60,11 @@ def test_fr6921_same_name_in_vision_roots_is_reported(tmp_path: Path):
         encoding="utf-8",
     )
     nodes, collisions = idx.scan_skills_with_collisions([tmp_path / "root-a", tmp_path / "root-b"])
-    assert len(collisions) == 1
-    assert collisions[0]["id"] == "dup-skill"
-    assert len(collisions[0]["paths"]) == 2
+    assert collisions == []
     ids = [n["id"] for n in nodes]
     assert ids.count("dup-skill") == 1
+    node = next(n for n in nodes if n["id"] == "dup-skill")
+    assert Path(node["path"]).resolve() == (a / "SKILL.md").resolve()
     server = mcp.SkillDagServer(roots=[tmp_path / "root-a", tmp_path / "root-b"])
-    assert "dup-skill" in server.last_error or "collision" in server.last_error.lower()
+    assert server.last_error == ""
+    assert Path(server.nodes["dup-skill"]["path"]).resolve() == (a / "SKILL.md").resolve()

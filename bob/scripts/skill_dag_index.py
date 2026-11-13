@@ -53,9 +53,16 @@ def _node_from_skill(skill: Path) -> dict[str, Any] | None:
 
 
 def scan_skills_with_collisions(roots: list[Path]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    """Index canonical SKILL.md files; skip nested books; report name collisions (FR #6921)."""
-    by_id: dict[str, list[tuple[int, Path, dict[str, Any]]]] = {}
-    for root in roots:
+    """Index canonical SKILL.md files; skip nested books; report same-root name collisions.
+
+    FR #6921: nested ``.grok/skills`` copies inside a root are skipped.
+    FR #7076: the same id in later vision roots (bob / user harvest copies) is
+    a duplicate node, not ``status.last_error``. Keep the first configured root
+    (worker seat, then bob, then common, then user). Same-root extra paths stay
+    collisions.
+    """
+    by_id: dict[str, list[tuple[int, int, Path, dict[str, Any]]]] = {}
+    for root_rank, root in enumerate(roots):
         root = Path(root)
         if not root.is_dir():
             continue
@@ -66,28 +73,32 @@ def scan_skills_with_collisions(roots: list[Path]) -> tuple[list[dict[str, Any]]
             if node is None:
                 continue
             depth = _relative_depth(skill, root)
-            by_id.setdefault(node["id"], []).append((depth, skill.resolve(), node))
+            by_id.setdefault(node["id"], []).append(
+                (root_rank, depth, skill.resolve(), node)
+            )
 
     nodes: list[dict[str, Any]] = []
     collisions: list[dict[str, Any]] = []
     for sid, group in sorted(by_id.items()):
-        uniq_paths = []
+        uniq_paths: list[tuple[int, int, Path, dict[str, Any]]] = []
         seen_p: set[str] = set()
-        for _d, path, node in group:
+        for rank, depth, path, node in group:
             key = str(path)
             if key in seen_p:
                 continue
             seen_p.add(key)
-            uniq_paths.append(( _d, path, node))
-        uniq_paths.sort(key=lambda item: (item[0], str(item[1]).lower()))
-        nodes.append(uniq_paths[0][2])
-        if len(uniq_paths) > 1:
-            collisions.append(
-                {
-                    "id": sid,
-                    "paths": [str(p) for _d, p, _n in uniq_paths],
-                }
-            )
+            uniq_paths.append((rank, depth, path, node))
+        uniq_paths.sort(key=lambda item: (item[0], item[1], str(item[2]).lower()))
+        nodes.append(uniq_paths[0][3])
+        by_rank: dict[int, list[Path]] = {}
+        for rank, _d, path, _n in uniq_paths:
+            by_rank.setdefault(rank, []).append(path)
+        collide_paths: list[str] = []
+        for _rank, paths in sorted(by_rank.items()):
+            if len(paths) > 1:
+                collide_paths.extend(str(p) for p in paths)
+        if collide_paths:
+            collisions.append({"id": sid, "paths": collide_paths})
     return nodes, collisions
 
 
