@@ -283,3 +283,4 @@ Generalised from 21 harvested lessons that never reached this book (audit for FR
 - FIX fold LaunchSpec: keep write_opencode_skill_dag_mcp (FR #6898) and skill_dag_mcp_args plus skill_dag_job_worktree (FR #6899) together.
 - **FR #7120 / #6918:** assign refreshes a one-line `.grok/skill-dag-job-worktree` pointer; MCP argv keeps stable `--job-worktree-file` so Grok does not replace the stdio child mid-job. Live `tools/call` re-reads the pointer. Seat-marker helpers still isolate this agent's MCP (FR #6928 isolation); do not kill a sibling seat's MCP. OpenCode already starts a per-job process. Do not restart mid-job to pick up the worktree.
 - On assign, rewrite grok bound config.toml and cursor .cursor/mcp.json with --job-worktree for that tree only; drop the flag at job end; never write user MCP configs.
+- On stranded ACK recovery with no PR/board: GIVEUP immediately as its own outbox line; do not start the FR before clearing the open ACK
