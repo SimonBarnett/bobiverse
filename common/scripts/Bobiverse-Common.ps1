@@ -1845,10 +1845,19 @@ function Test-BobiverseSyncParkSecretPath {
     return $false
 }
 
+function Test-BobiverseSyncParkHotpatchPath {
+    # FR #6989 / #7024: park only known install hotpatches. Arbitrary dirty
+    # tracked files must keep blocking ff-only (VISION 020 / FR #1074).
+    param([Parameter(Mandatory)][string]$Rel)
+    $n = ([string]$Rel -replace '\\', '/').Trim().TrimStart('/')
+    return [bool]($n -match '(?i)^(bob/tray/tools/BobTrayRecycleSeat\.ps1|common/scripts/gitclaim\.py|common/scripts/recycleseat\.py)$')
+}
+
 function Clear-BobiverseDirtyTrackedForSync {
     <#
     .SYNOPSIS
-      FR #6989: park dirty tracked product files (not secrets) then git checkout -- path so ff-only can proceed.
+      FR #6989 / #7024: park dirty known hotpatches (not secrets, not arbitrary scripts)
+      then git checkout -- path so ff-only can proceed. VISION 020 overlapping edits stay.
       Copies to untracked .bobiverse-parked/<stamp>/... ; never logs file contents.
     #>
     param(
@@ -1874,6 +1883,10 @@ function Clear-BobiverseDirtyTrackedForSync {
         if ($unix -eq 'bob/tray/config/bobiverse.json') { continue }
         if (Test-BobiverseSyncParkSecretPath -Rel $unix) {
             if ($Log) { $Log.Add("INFO sync-park-dirty skip-secret FR#6989 path=$unix") }
+            continue
+        }
+        if (-not (Test-BobiverseSyncParkHotpatchPath -Rel $unix)) {
+            if ($Log) { $Log.Add("INFO sync-park-dirty skip-not-hotpatch FR#7024 path=$unix") }
             continue
         }
         $full = Join-Path $InstallRoot ($unix -replace '/', [IO.Path]::DirectorySeparatorChar)
