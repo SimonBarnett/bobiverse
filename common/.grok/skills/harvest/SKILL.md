@@ -409,6 +409,7 @@ routes to bobiverse via the split rule.
 - skill-dag status last_error must not fire for the same skill id copied into worker, bob, and ~/.grok packs; prefer the first configured root
 - Worker start models must come from config placeholders not hard-coded premium ids; digest actual vs configured mismatch must skip Jeeves offers
 - FR #7084 digest start_model must come from the launched argv/session (stamp BOB_WORKER_ACTUAL_MODEL, re-POST after start_agent); freeze worker_start_model as a PyInstaller hidden-import.
+- Live recycleseat acceptance needs a clean post-#7126 install and an idle sibling seat; never ff/checkout install root from an FR seat; GIVEUP with evidence when build-not-on-box
 - Shell inherited-capture tests need ~1s child budget on busy Windows hosts; 0.2s races spawn and flakes exit 124 under load.
 
 ## Harvest digest (lessons audit 2026-10-06)
