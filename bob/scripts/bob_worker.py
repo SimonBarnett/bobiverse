@@ -1936,8 +1936,26 @@ def maintenance_state_path() -> Path:
     return Path(base) / "Bobiverse" / "maintenance" / "last-session.json"
 
 
-def grok_sessions_root() -> Path:
-    return Path(os.environ.get("GROK_HOME") or (Path.home() / ".grok")) / "sessions"
+AGENT_GROK_HOME_DIR = "grok-home"
+
+
+def agent_grok_home(*, run_dir: Path | str | None = None, env: Optional[dict] = None) -> Path:
+    """GROK_HOME of the spawned agent (FR #7123).
+
+    When ``run_dir`` is set, always use ``<run_dir>/grok-home`` (the child env value).
+    Never fall back to ``~/.grok`` while a per-worker home is in play.
+    """
+    e = os.environ if env is None else env
+    if run_dir is not None:
+        return Path(run_dir) / AGENT_GROK_HOME_DIR
+    child = str((e or {}).get("GROK_HOME") or "").strip()
+    if child:
+        return Path(child)
+    return Path.home() / ".grok"
+
+
+def grok_sessions_root(*, run_dir: Path | str | None = None, env: Optional[dict] = None) -> Path:
+    return agent_grok_home(run_dir=run_dir, env=env) / "sessions"
 
 
 def grok_session_exists(session_id: str, cwd: str, sessions_root: Optional[Path] = None) -> bool:
@@ -3722,17 +3740,26 @@ def grok_session_dir(
     cwd: str,
     session_id: str,
     sessions_root: Optional[Path] = None,
+    run_dir: Path | str | None = None,
 ) -> Optional[Path]:
-    """Resolve ``~/.grok/sessions/<url-quoted cwd>/<uuid>`` when present (FR #2696)."""
+    """Resolve ``<agent GROK_HOME>/sessions/<url-quoted cwd>/<uuid>`` (FR #2696 / #7123)."""
     from urllib.parse import quote
 
     if not session_id or not re.fullmatch(r"[0-9a-fA-F-]{36}", str(session_id)):
         return None
-    root = Path(sessions_root) if sessions_root else grok_sessions_root()
+    root = Path(sessions_root) if sessions_root else grok_sessions_root(run_dir=run_dir)
+    sid = str(session_id)
     for key in (quote(str(cwd), safe=""), quote(str(cwd).rstrip("\\"), safe="")):
-        d = root / key / str(session_id)
+        d = root / key / sid
         if d.is_dir():
             return d
+    try:
+        if root.is_dir():
+            for d in root.glob("*/" + sid):
+                if d.is_dir():
+                    return d
+    except OSError:
+        pass
     return None
 
 
@@ -3765,7 +3792,7 @@ def probe_grok_session_submit(session_dir: Path | str, *, since_wall: float) -> 
 
 def probe_unified_prompt_enqueue(*, agent_pid: int, since_wall: float, log_path: Optional[Path] = None) -> bool:
     """True when unified.jsonl has grok-pager prompt.enqueue for agent_pid after since_wall."""
-    path = Path(log_path) if log_path else (Path(os.environ.get("GROK_HOME") or (Path.home() / ".grok")) / "logs" / "unified.jsonl")
+    path = Path(log_path) if log_path else default_unified_log_path()
     if not path.is_file() or int(agent_pid or 0) <= 0:
         return False
     try:
@@ -3842,12 +3869,19 @@ def make_submit_probe(
     t0 = float(time.time() if since_wall is None else since_wall)
 
     if k == "grok":
-        sdir = grok_session_dir(cwd, session_id or "", sessions_root=sessions_root) if session_id else None
+        sdir = (
+            grok_session_dir(cwd, session_id or "", sessions_root=sessions_root, run_dir=run_dir)
+            if session_id
+            else None
+        )
+        unified = default_unified_log_path(run_dir=run_dir)
 
         def _probe() -> bool:
             if sdir and probe_grok_session_submit(sdir, since_wall=t0):
                 return True
-            if agent_pid and probe_unified_prompt_enqueue(agent_pid=int(agent_pid), since_wall=t0):
+            if agent_pid and probe_unified_prompt_enqueue(
+                agent_pid=int(agent_pid), since_wall=t0, log_path=unified
+            ):
                 return True
             return False
 
@@ -4727,11 +4761,53 @@ def out_of_fuel_nack_line(job_key: str) -> str:
     return f"NACK {key} out-of-fuel"
 
 
-def default_unified_log_path() -> Path:
-    return Path(os.environ.get("GROK_HOME") or (Path.home() / ".grok")) / "logs" / "unified.jsonl"
+def default_unified_log_path(*, run_dir: Path | str | None = None, env: Optional[dict] = None) -> Path:
+    return agent_grok_home(run_dir=run_dir, env=env) / "logs" / "unified.jsonl"
 
 
-def default_out_of_fuel_log_path(kind: str, *, env: Optional[dict] = None) -> Optional[Path]:
+def grok_log_has_turn_activity(path: Path | str | None, *, since_wall: float) -> bool:
+    """True when events.jsonl / unified.jsonl has turn_started or turn_ended after since_wall."""
+    p = Path(path) if path else None
+    if p is None or not p.is_file():
+        return False
+    try:
+        data = p.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return False
+    cut = float(since_wall or 0.0)
+    for line in data.splitlines()[-400:]:
+        if '"turn_started"' not in line and '"turn_ended"' not in line:
+            continue
+        try:
+            obj = json.loads(line)
+        except Exception:
+            continue
+        if str(obj.get("type") or "") not in ("turn_started", "turn_ended"):
+            continue
+        ts = _parse_iso_ts(str(obj.get("ts") or ""))
+        if ts is None or ts > cut:
+            return True
+    return False
+
+
+def should_startup_hang_recycle(
+    *,
+    ack_open: bool,
+    activity_paths: list[Path | str] | None = None,
+    since_wall: float = 0.0,
+) -> bool:
+    """FR #7123: do not hang-recycle an ACKed job or a seat whose per-worker log has turns."""
+    if ack_open:
+        return False
+    for raw in activity_paths or []:
+        if grok_log_has_turn_activity(raw, since_wall=since_wall):
+            return False
+    return True
+
+
+def default_out_of_fuel_log_path(
+    kind: str, *, env: Optional[dict] = None, run_dir: Path | str | None = None
+) -> Optional[Path]:
     r"""Log path to tail for mid-job out-of-fuel (FR #3012 grok / FR #3019 cursor / FR #6120 opencode).
 
     Override with ``BOB_WORKER_OUT_OF_FUEL_LOG``. Grok defaults to ``unified.jsonl``.
@@ -4746,7 +4822,7 @@ def default_out_of_fuel_log_path(kind: str, *, env: Optional[dict] = None) -> Op
         return Path(override)
     k = (kind or "").strip().lower()
     if k == "grok":
-        return default_unified_log_path()
+        return default_unified_log_path(run_dir=run_dir, env=env)
     if k == "cursor":
         return None
     if k == "opencode":
@@ -9339,7 +9415,11 @@ class Supervisor:
         self._fuel_watch_stop = threading.Event()
         kind = (self.kind or "").strip().lower()
         path_fn = self._out_of_fuel_log_path_fn or (
-            lambda: default_out_of_fuel_log_path(kind, env=self.base_env if isinstance(self.base_env, dict) else None)
+            lambda: default_out_of_fuel_log_path(
+                kind,
+                env=self.base_env if isinstance(self.base_env, dict) else None,
+                run_dir=self.run_dir,
+            )
         )
 
         def _on_hit(text: str) -> None:
@@ -9506,8 +9586,8 @@ class Supervisor:
             if self.sessions:
                 sid = self.sessions[-1]
                 sid_box["sid"] = sid
-            d = grok_session_dir(cwd, sid or "")
-            # GrokTurnWatcher tails the events file (same as make_submit_probe / FR #2696).
+            d = grok_session_dir(cwd, sid or "", run_dir=run_dir)
+            # GrokTurnWatcher tails the events file (same as make_submit_probe / FR #2696 / #7123).
             return (d / "events.jsonl") if d is not None else None
 
         def _on_started(turn: Optional[int], wall: float) -> None:
@@ -10123,6 +10203,17 @@ class Supervisor:
             detail = "process dead or 0 CPU"
         else:
             detail = "first turn_ended never arrived (hard cap)"
+        ack_open = bool(self.bored and getattr(self.bored, "_ack_open", False))
+        since = float(getattr(self, "_agent_started_at", 0.0) or 0.0)
+        # _agent_started_at is monotonic; activity logs use wall clock — use 0 to accept any turn.
+        paths = self._startup_activity_paths()
+        if not should_startup_hang_recycle(ack_open=ack_open, activity_paths=paths, since_wall=0.0):
+            self.log(
+                f"agent: startup ready cap skip hang-recycle (FR #7123 ack_open={ack_open} "
+                f"saw_turn_started={saw_started}) - releasing hold"
+            )
+            self._ready_now(proc, reason="activity")
+            return
         self.log(
             f"agent: startup ready cap {_startup_ready_cap_s():.0f}s reached without turn_ended "
             f"({detail}; saw_turn_started={saw_started}) - hang-recycle (FR #4123)"
@@ -10493,7 +10584,9 @@ class Supervisor:
         sid = self.sessions[-1] if self.sessions else None
         if not sid:
             return None
-        d = grok_session_dir(str(self.cwd), sid, sessions_root=self.sessions_root)
+        d = grok_session_dir(
+            str(self.cwd), sid, sessions_root=self.sessions_root, run_dir=self.run_dir
+        )
         if d is None:
             return None
         return d / "events.jsonl"
@@ -10724,6 +10817,20 @@ class Supervisor:
             self.ack_miss.clear()
             self.restart_agent("no-ack-after-assign")
 
+    def _startup_activity_paths(self) -> list:
+        paths: list = []
+        try:
+            paths.append(default_unified_log_path(run_dir=self.run_dir))
+        except Exception:
+            pass
+        try:
+            ev = self._ask_user_events_path()
+            if ev is not None:
+                paths.append(ev)
+        except Exception:
+            pass
+        return paths
+
     def restart_agent(self, reason: str) -> None:
         # FR #4180: never respawn while out-of-fuel (402 / exhausted is not a hang).
         if self.bored and self.bored.out_of_fuel:
@@ -10732,6 +10839,12 @@ class Supervisor:
             )
             self._clear_watchdogs_for_out_of_fuel()
             return
+        # FR #7123: never silently drop an accepted job on hang-recycle.
+        if self.bored and getattr(self.bored, "_ack_open", False) and getattr(self.bored, "_ack_job_key", None):
+            try:
+                self._release_seat_giveup_job(str(self.bored._ack_job_key), "hang-recycle")
+            except Exception as e:
+                self.log(f"agent: hang-recycle GIVEUP failed {type(e).__name__}")
         with self._lock:
             if self._shutting or self.proc is None:
                 return
