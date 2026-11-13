@@ -185,6 +185,50 @@ def test_fr6147_exhausted_week_go_remaining_zero(tmp_path: Path, monkeypatch):
     assert lim == "week" and rem == 0
 
 
+def test_fr7028_fuel_fixture_beats_live_go_key(tmp_path: Path, monkeypatch):
+    """2.0.0 flamingo: live Go key must not skip BOB_OPENCODE_FUEL_FIXTURE."""
+    import bobstat
+
+    bobreport.clear_opencode_pcent_cache()
+    monkeypatch.setenv("BOB_OPENCODE_FUEL_FIXTURE", FIXTURE_EXHAUSTED_WEEK)
+    monkeypatch.setenv("BOB_OPENCODE_GO_API_KEY", "FAKE_GO_KEY_NOT_REAL")
+    monkeypatch.delenv("BOB_OPENCODE_GO_USAGE_FIXTURE", raising=False)
+    monkeypatch.delenv("BOB_OPENCODE_FUEL_HELPER", raising=False)
+    calls = {"n": 0}
+
+    def boom(*a, **k):
+        calls["n"] += 1
+        raise AssertionError("live zen fetch must not run when FUEL_FIXTURE is set")
+
+    monkeypatch.setattr(of, "fetch_go_zen_usage", boom)
+    home = tmp_path / "home"
+    home.mkdir()
+    mid = "flamingo"
+    bobstat.write_peer(
+        home,
+        {
+            "ok": True,
+            "id": mid,
+            "online": True,
+            "status": "operational",
+            "weekly": 80,
+            "weekly_known": True,
+            "pcent": {},
+            "lastSeen": "2026-11-13T11:00:00Z",
+        },
+    )
+    posted: list[dict] = []
+    with mock.patch("urllib.request.urlopen", _fake_urlopen(posted)):
+        code = bobreport.publish_local_peer_fuel(
+            home, mid, force=True, url="https://example.test/bob/v1/report"
+        )
+    assert code == 204
+    assert calls["n"] == 0
+    body = posted[0]
+    assert body["pcent"]["opencode-go"] == 0
+    assert body["opencode_windows"]["week"]["status"] == "exhausted"
+
+
 def test_fr6147_unknown_omits_pcent_zeros_windows_may_remain(monkeypatch):
     bobreport.clear_opencode_pcent_cache()
     monkeypatch.delenv("BOB_OPENCODE_FUEL_FIXTURE", raising=False)
