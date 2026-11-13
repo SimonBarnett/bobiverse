@@ -1,0 +1,63 @@
+# FR #7103 / follow-up to FR #7094 stage 4.
+# GitHub-hosted windows-latest job. Suites run as LocalSystem via a
+# scheduled task (not PsExec, not a self-hosted runner). Smoke on PR/push
+# of these files; full recipe suites via workflow_dispatch mode=full.
+# No secrets in the workflow. Does not publish a GitHub release.
+name: pytest-localsystem
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: smoke (identity + pin tests) or full recipe suites
+        type: choice
+        options:
+          - smoke
+          - full
+        default: smoke
+  pull_request:
+    paths:
+      - .github/workflows/pytest-localsystem.yml
+      - common/scripts/Invoke-BobiverseLocalSystemPytest.ps1
+      - common/scripts/bobiverse_localsystem_ci.py
+      - common/tests/test_fr7103_localsystem_ci.py
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/pytest-localsystem.yml
+      - common/scripts/Invoke-BobiverseLocalSystemPytest.ps1
+      - common/scripts/bobiverse_localsystem_ci.py
+      - common/tests/test_fr7103_localsystem_ci.py
+
+permissions:
+  contents: read
+
+jobs:
+  pytest-localsystem:
+    runs-on: windows-latest
+    timeout-minutes: 330
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install pytest
+        run: python -m pip install --upgrade pip pytest tzdata pyyaml
+
+      - name: Pytest as LocalSystem
+        env:
+          BOBIVERSE_LOCALSYSTEM_MODE: ${{ github.event.inputs.mode || 'smoke' }}
+        run: |
+          $mode = $env:BOBIVERSE_LOCALSYSTEM_MODE
+          if (-not $mode) { $mode = 'smoke' }
+          $mins = 20
+          if ($mode -eq 'full') { $mins = 320 }
+          & .\common\scripts\Invoke-BobiverseLocalSystemPytest.ps1 -Mode $mode -RepoRoot (Get-Location).Path -TimeoutMinutes $mins
+          if ($LASTEXITCODE -ne 0) { throw "Invoke-BobiverseLocalSystemPytest.ps1 exit $LASTEXITCODE" }
