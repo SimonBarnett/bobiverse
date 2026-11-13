@@ -2427,6 +2427,71 @@ class Client:
         """FR #4025: home/build-queue for accepted BUILD v1 jobs (spawn/pack is out of chair scope)."""
         return Path(self.home) / "build-queue"
 
+    def _note_python_missing_once(self, detail: str = "") -> None:
+        """FR #7020: one digest stamp + one intake when SYSTEM cannot resolve python."""
+        stamp = Path(self.home) / "run" / "python-missing.stamp"
+        try:
+            stamp.parent.mkdir(parents=True, exist_ok=True)
+            if stamp.is_file():
+                age = time.time() - stamp.stat().st_mtime
+                if age < 3600:
+                    return
+        except Exception:
+            pass
+        try:
+            stamp.write_text(
+                f"missing\n{str(detail or '')[:120]}\n",
+                encoding="utf-8",
+            )
+        except Exception:
+            pass
+        try:
+            status_dir = Path(self.home) / "run"
+            status_dir.mkdir(parents=True, exist_ok=True)
+            (status_dir / "python-status.json").write_text(
+                json.dumps(
+                    {
+                        "ok": False,
+                        "python": "missing",
+                        "detail": str(detail or "")[:120],
+                        "at": int(time.time()),
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+        except Exception:
+            pass
+        try:
+            mid = ""
+            try:
+                mid = self._local_machine_id() or ""
+            except Exception:
+                mid = ""
+            mid = (mid or "box").lower()
+            sig = f"python-missing:{mid}"
+            body = (
+                f"ircBob (SYSTEM) cannot resolve python.exe on {mid}. "
+                f"detail={str(detail or 'missing')[:120]}. "
+                "Set NSSM BOBIVERSE_PYTHON or config\\python.path. "
+                f"crash-sig:{sig}. No secrets."
+            )
+            import crash_report
+
+            crash_report._post_intake(
+                f"stall: python-missing {mid}"[:200],
+                body,
+                repo="SimonBarnett/bobiverse",
+                sig=sig,
+                exe="ircBob",
+            )
+        except Exception:
+            pass
+        try:
+            info("WARN FR #7020 python-missing noted for digest/intake")
+        except Exception:
+            pass
+
     def _maybe_start_build_runner(self, route_line: str, *, src_hint: str = "") -> bool:
         """FR #4025 WP2: accept BUILD v1 when local machine matches recipe.machine; enqueue only."""
         local = ""
@@ -2509,11 +2574,10 @@ class Client:
                 break
         if script is None:
             raise FileNotFoundError("run_bobiverse_build.py")
-        py = (
-            os.environ.get("BOBIVERSE_PYTHON")
-            or shutil.which("python")
-            or r"C:\Python\Python312\python.exe"
-        )
+        # FR #7020: resolve SYSTEM python (env / stamp / registry / py / PATH / FS).
+        import bobiverse_python
+
+        py, py_src = bobiverse_python.resolve_service_python()
         lock_path = bobiverse_build.default_machine_build_lock_path()
         result_path = Path(str(job_path) + ".result.json")
         log_path = Path(str(job_path) + ".runner.log")
@@ -2521,18 +2585,6 @@ class Client:
         work_dir = bobiverse_build.resolve_build_work_root() / f"{version}-{job_path.stem}"
         # FR #6585: runner appends progress JSONL; watcher posts to #bobiverse live.
         progress_path = work_dir / "progress.jsonl"
-        cmd = [
-            py, "-u", str(script), "--job", str(job_path), "--checkout",
-            "--lock-file", str(lock_path), "--result-file", str(result_path),
-            "--local-machine", local_machine,
-            "--work-dir", str(work_dir),
-            "--progress-file", str(progress_path),
-        ]
-        # FR #6586: line-buffered append so runner.log grows as the child prints.
-        logf = open(log_path, "a", encoding="utf-8", buffering=1)
-        flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
-        proc = subprocess.Popen(cmd, stdout=logf, stderr=subprocess.STDOUT, creationflags=flags)
-        info(f"INFO build runner pid={proc.pid} repo={repo} version={version} log={log_path}")
         chan = bobreport.FLEET_CHANNEL
 
         def _say(line: str, *, pace: bool = True) -> None:
@@ -2557,6 +2609,76 @@ class Client:
             except Exception:
                 pass
 
+        def _fail_spawn(why: str) -> None:
+            # FR #7020: write fail result, announce so chair releases lock, free machine lock.
+            detail = str(why or "python-missing")[:200]
+            info(f"WARN build runner spawn: {detail} python_src={py_src or 'missing'}")
+            try:
+                result_path.write_text(
+                    json.dumps(
+                        {
+                            "ok": False,
+                            "exit_code": 127,
+                            "error": "python-missing" if not py else "spawn-failed",
+                            "detail": detail,
+                            "python_src": py_src or "missing",
+                            "announce": [
+                                f"BUILD fail {repo}{id_bit} version={version} "
+                                f"error=python-missing detail={detail}"
+                            ],
+                        },
+                        indent=2,
+                    )
+                    + "\n",
+                    encoding="utf-8",
+                )
+            except Exception:
+                pass
+            try:
+                log_path.parent.mkdir(parents=True, exist_ok=True)
+                with open(log_path, "a", encoding="utf-8") as lf:
+                    lf.write(f"spawn-failed: {detail} src={py_src or 'missing'}\n")
+            except Exception:
+                pass
+            try:
+                bobiverse_build.BuildLock(lock_path, max_parallel=1).release(repo)
+            except Exception:
+                pass
+            _say(
+                f"BUILD fail {repo}{id_bit} version={version} "
+                f"error=python-missing detail={detail}"
+            )
+            try:
+                self._note_python_missing_once(detail)
+            except Exception:
+                pass
+
+        if not py:
+            _fail_spawn(
+                "python.exe not found (set BOBIVERSE_PYTHON or config\\python.path)"
+            )
+            return
+
+        cmd = [
+            py, "-u", str(script), "--job", str(job_path), "--checkout",
+            "--lock-file", str(lock_path), "--result-file", str(result_path),
+            "--local-machine", local_machine,
+            "--work-dir", str(work_dir),
+            "--progress-file", str(progress_path),
+        ]
+        # FR #6586: line-buffered append so runner.log grows as the child prints.
+        try:
+            logf = open(log_path, "a", encoding="utf-8", buffering=1)
+            flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+            proc = subprocess.Popen(cmd, stdout=logf, stderr=subprocess.STDOUT, creationflags=flags)
+        except Exception as exc:
+            _fail_spawn(f"{type(exc).__name__}: {exc}")
+            return
+
+        info(
+            f"INFO build runner pid={proc.pid} repo={repo} version={version} "
+            f"python={py_src} log={log_path}"
+        )
         _say(
             f"BUILD started {repo}{id_bit} version={version} pid={proc.pid} "
             f"(deterministic runner, no agent)"
@@ -2693,14 +2815,22 @@ class Client:
         if script is None:
             info("WARN FR #6492 build preflight: run_bobiverse_build.py missing")
             return True
-        py = (
-            os.environ.get("BOBIVERSE_PYTHON")
-            or shutil.which("python")
-            or r"C:\Python\Python312\python.exe"
-        )
+        import bobiverse_python
+
+        py, py_src = bobiverse_python.resolve_service_python()
         result_path = Path(self.home) / "build-queue" / f"preflight-{int(time.time())}.result.json"
         result_path.parent.mkdir(parents=True, exist_ok=True)
         log_path = Path(str(result_path) + ".log")
+        if not py:
+            info(
+                f"WARN FR #6492 BUILDPREFLIGHT python-missing src={py_src} "
+                f"repo={repo} machine={local}"
+            )
+            try:
+                self._note_python_missing_once("preflight")
+            except Exception:
+                pass
+            return False
         cmd = [
             py,
             "-u",
@@ -2716,12 +2846,20 @@ class Client:
             local or recipe_machine,
         ]
         # FR #6586: line-buffered append so preflight runner.log grows during the run.
-        logf = open(log_path, "a", encoding="utf-8", buffering=1)
-        flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
-        proc = subprocess.Popen(cmd, stdout=logf, stderr=subprocess.STDOUT, creationflags=flags)
+        try:
+            logf = open(log_path, "a", encoding="utf-8", buffering=1)
+            flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+            proc = subprocess.Popen(cmd, stdout=logf, stderr=subprocess.STDOUT, creationflags=flags)
+        except Exception as exc:
+            info(f"WARN FR #6492 BUILDPREFLIGHT spawn: {type(exc).__name__}: {exc}")
+            try:
+                self._note_python_missing_once(str(exc))
+            except Exception:
+                pass
+            return False
         info(
             f"INFO FR #6492 BUILDPREFLIGHT started pid={proc.pid} repo={repo} "
-            f"machine={local} from={src_hint or '-'}"
+            f"machine={local} python={py_src} from={src_hint or '-'}"
         )
         chan = bobreport.FLEET_CHANNEL
 

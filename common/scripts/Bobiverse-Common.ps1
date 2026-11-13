@@ -1311,18 +1311,90 @@ function Resolve-BobiverseNssm {
 }
 
 function Resolve-BobiversePython {
-    param([switch]$AllowMissing)
-    $py = Get-Command python.exe -ErrorAction SilentlyContinue
-    if ($py) { return $py.Source }
-    foreach ($c in @(
-            "$env:LOCALAPPDATA\Programs\Python\Python312\python.exe",
-            'C:\Python312\python.exe',
-            'C:\Program Files\Python312\python.exe'
-        )) {
-        if (Test-Path -LiteralPath $c) { return $c }
+    <#
+    .SYNOPSIS
+      FR #7020: resolve a real python.exe for services (SYSTEM-safe).
+      Order: BOBIVERSE_PYTHON/BOB_PYTHON; InstallRoot\config\python.path;
+      HKLM PythonCore InstallPath; py -3; PATH (skip WindowsApps); well-known paths.
+    #>
+    param(
+        [switch]$AllowMissing,
+        [string]$InstallRoot = ''
+    )
+    $cands = New-Object System.Collections.Generic.List[string]
+    foreach ($e in @($env:BOBIVERSE_PYTHON, $env:BOB_PYTHON)) {
+        if ($e -and "$e".Trim()) { [void]$cands.Add(("$e").Trim().Trim('"')) }
+    }
+    $root = $InstallRoot
+    if (-not $root) { $root = [string]$env:BOB_INSTALL_ROOT }
+    if ($root) {
+        $stamp = Join-Path $root 'config\python.path'
+        if (Test-Path -LiteralPath $stamp -PathType Leaf) {
+            try {
+                $line = (Get-Content -LiteralPath $stamp -TotalCount 1 -ErrorAction Stop)
+                if ($line -and "$line".Trim()) { [void]$cands.Add(("$line").Trim().Trim('"')) }
+            } catch { }
+        }
+    }
+    if ($env:OS -match 'Windows') {
+        foreach ($base in @(
+                'HKLM:\SOFTWARE\Python\PythonCore',
+                'HKLM:\SOFTWARE\WOW6432Node\Python\PythonCore'
+            )) {
+            if (-not (Test-Path -LiteralPath $base)) { continue }
+            try {
+                foreach ($ver in @(Get-ChildItem -LiteralPath $base -ErrorAction SilentlyContinue | Sort-Object Name -Descending)) {
+                    $ip = Join-Path $ver.PSPath 'InstallPath'
+                    if (-not (Test-Path -LiteralPath $ip)) { continue }
+                    try {
+                        $val = (Get-ItemProperty -LiteralPath $ip -ErrorAction Stop).'(default)'
+                        if ($val) { [void]$cands.Add((Join-Path "$val" 'python.exe')) }
+                    } catch { }
+                }
+            } catch { }
+        }
+    }
+    try {
+        $pyl = Get-Command py.exe -ErrorAction SilentlyContinue
+        if ($pyl) {
+            $exe = (& $pyl.Source -3 -c 'import sys;print(sys.executable)' 2>$null | Select-Object -First 1)
+            if ($exe) { [void]$cands.Add([string]$exe) }
+        }
+    } catch { }
+    try {
+        foreach ($cmd in @(Get-Command python.exe -All -ErrorAction SilentlyContinue)) {
+            if ($cmd.Source -and $cmd.Source -notmatch '\\WindowsApps\\') { [void]$cands.Add($cmd.Source) }
+        }
+    } catch { }
+    foreach ($ver in @('313', '312', '311', '310')) {
+        [void]$cands.Add("C:\Python\Python$ver\python.exe")
+        [void]$cands.Add("C:\Python$ver\python.exe")
+        if ($env:ProgramFiles) { [void]$cands.Add((Join-Path $env:ProgramFiles "Python$ver\python.exe")) }
+        if ($env:LOCALAPPDATA) {
+            [void]$cands.Add((Join-Path $env:LOCALAPPDATA "Programs\Python\Python$ver\python.exe"))
+        }
+    }
+    foreach ($c in $cands) {
+        if ($c -and (Test-Path -LiteralPath $c -PathType Leaf) -and ($c -notmatch '\\WindowsApps\\')) {
+            return (Resolve-Path -LiteralPath $c).Path
+        }
     }
     if ($AllowMissing) { return $null }
-    throw 'python.exe not found (run Install-BootstrapTools.ps1)'
+    throw 'python.exe not found (set BOBIVERSE_PYTHON or run Install-BootstrapTools.ps1)'
+}
+
+function Write-BobiversePythonStamp {
+    # FR #7020: path-only stamp so LocalSystem can resolve without PATH.
+    param(
+        [Parameter(Mandatory)][string]$InstallRoot,
+        [Parameter(Mandatory)][string]$PythonExe
+    )
+    if (-not (Test-Path -LiteralPath $PythonExe -PathType Leaf)) { return $false }
+    $dir = Join-Path $InstallRoot 'config'
+    New-Item -ItemType Directory -Force -Path $dir | Out-Null
+    $stamp = Join-Path $dir 'python.path'
+    [IO.File]::WriteAllText($stamp, ((Resolve-Path -LiteralPath $PythonExe).Path + "`n"), (New-Object Text.UTF8Encoding($false)))
+    return $true
 }
 
 function Install-BobiverseSkills {
