@@ -1380,7 +1380,7 @@ function Resolve-BobiversePython {
         }
     }
     if ($AllowMissing) { return $null }
-    throw 'python.exe not found (set BOBIVERSE_PYTHON or run Install-BootstrapTools.ps1)'
+    throw 'python.exe not found (run Install-BootstrapTools.ps1)'
 }
 
 function Write-BobiversePythonStamp {
