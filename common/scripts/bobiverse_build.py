@@ -1478,10 +1478,10 @@ def parse_build_result(text: str) -> dict | None:
     repo = (m.group("repo") or "").strip()
     if not repo or repo.lower().startswith("v1"):
         return None
-    # Trailing id= may sit inside rest when optional group missed (colon shapes).
+    # FR #6983: id= may be early (before long blocker= URLs) or trailing.
     rid = (m.group("id") or "").strip()
     if not rid:
-        im = re.search(r"(?:^|\s)id=(\S+)\s*$", raw, re.IGNORECASE)
+        im = re.search(r"(?:^|\s)id=(\S+)", raw, re.IGNORECASE)
         if im:
             rid = im.group(1).strip()
     return {
@@ -1492,15 +1492,32 @@ def parse_build_result(text: str) -> dict | None:
     }
 
 
+def build_result_id_early(build_id: str) -> str:
+    """FR #6983: `` id=<id>`` placed early so IRC line[:400] cannot drop it."""
+    bid = str(build_id or "").strip()
+    return f" id={bid}" if bid else ""
+
+
 def apply_build_result_to_chair_lock(lock: BuildLock, result: dict | None) -> bool:
-    """FR #6491: release chair lock when result id matches the held id."""
+    """FR #6491 / #6983: release chair lock on terminal BUILD ok|fail.
+
+    Prefer id match. When id is missing (truncated IRC announce), still release the
+    held lock for that repo so a failed build cannot block the next !build.
+    """
     if not result or lock is None:
         return False
     repo = str(result.get("repo") or "").strip()
-    bid = str(result.get("id") or "").strip()
-    if not repo or not bid:
+    if not repo:
         return False
-    return lock.release_if_id(repo, bid)
+    kind = str(result.get("kind") or "").strip().lower()
+    bid = str(result.get("id") or "").strip()
+    if bid:
+        return lock.release_if_id(repo, bid)
+    # FR #6983: terminal result without id= still frees the per-repo chair lock.
+    if kind in ("ok", "fail") and lock.running_id(repo):
+        lock.release(repo)
+        return True
+    return False
 
 
 BUILD_PROGRESS_RE = re.compile(
@@ -2537,8 +2554,8 @@ class BuildRunner:
                 f"not recipe machine recipe={self.recipe.machine} local={self.local_machine}"
             )
             report.announce_lines.append(
-                f"BUILD fail {self.repo} version={self.version}: wrong machine"
-                f"{self._id_suffix()}"
+                f"BUILD fail {self.repo}{build_result_id_early(self.build_id)} "
+                f"version={self.version}: wrong machine"
             )
             return report
         if dry_run:
@@ -2627,7 +2644,8 @@ class BuildRunner:
                     )
                     report.errors.append(msg)
                     report.announce_lines.append(
-                        f"BUILD fail {self.repo} version={self.version}: {msg}"
+                        f"BUILD fail {self.repo}{build_result_id_early(self.build_id)} "
+                        f"version={self.version}: {msg}"
                     )
                     blocking = True
                     break
@@ -3034,12 +3052,14 @@ class BuildRunner:
             str((self.recipe.release or {}).get("tag") or "v{{version}}"),
             version=self.version,
         )
+        # FR #6983: put id= immediately after repo so PRIVMSG [:400] keeps it
+        # when long blocker= URLs would otherwise truncate a trailing id=.
+        id_early = build_result_id_early(self.build_id)
         if report.ok:
             report.announce_lines.append(
-                f"BUILD ok {self.repo} version={self.version} ref={self.ref} "
+                f"BUILD ok {self.repo}{id_early} version={self.version} ref={self.ref} "
                 f"tag={tag_s} prerelease "
                 f"never_latest={bool((self.recipe.release or {}).get('never_latest'))}"
-                f"{self._id_suffix()}"
             )
         else:
             n = len(report.blockers_filed)
@@ -3050,9 +3070,9 @@ class BuildRunner:
             ]
             url_bit = (" blocker=" + " ".join(urls)) if urls else ""
             report.announce_lines.append(
-                f"BUILD fail {self.repo} version={self.version} ref={self.ref} "
+                f"BUILD fail {self.repo}{id_early} version={self.version} ref={self.ref} "
                 f"blockers={n} pack={report.pack_ok} release={report.release_ok}"
-                f"{url_bit}{self._id_suffix()}"
+                f"{url_bit}"
             )
         return report
 
