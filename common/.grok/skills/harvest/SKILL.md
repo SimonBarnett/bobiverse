@@ -406,6 +406,7 @@ routes to bobiverse via the split rule.
 - skill-dag resolve must score the full seed against skill ids as well as descriptions so spaced tokens still hit hyphenated book names
 - skill-dag status last_error must not fire for the same skill id copied into worker, bob, and ~/.grok packs; prefer the first configured root
 - Worker start models must come from config placeholders not hard-coded premium ids; digest actual vs configured mismatch must skip Jeeves offers
+- Bobiverse queue fixtures must not rely on persisted require_machine stamps; use a non-bobiverse pin repo or require_machine_operator (FR #4512).
 
 ## Harvest digest (lessons audit 2026-10-06)
 
