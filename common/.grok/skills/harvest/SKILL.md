@@ -406,6 +406,7 @@ routes to bobiverse via the split rule.
 - skill-dag resolve must score the full seed against skill ids as well as descriptions so spaced tokens still hit hyphenated book names
 - skill-dag status last_error must not fire for the same skill id copied into worker, bob, and ~/.grok packs; prefer the first configured root
 - Worker start models must come from config placeholders not hard-coded premium ids; digest actual vs configured mismatch must skip Jeeves offers
+- Grok turn/fuel/submit watchers must use agent_grok_home(run_dir) = <run_dir>/grok-home; never Path.home()/.grok when a per-worker home is set; do not hang-recycle an ACKed job.
 
 ## Harvest digest (lessons audit 2026-10-06)
 
