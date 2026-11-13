@@ -406,6 +406,7 @@ routes to bobiverse via the split rule.
 - skill-dag resolve must score the full seed against skill ids as well as descriptions so spaced tokens still hit hyphenated book names
 - skill-dag status last_error must not fire for the same skill id copied into worker, bob, and ~/.grok packs; prefer the first configured root
 - Worker start models must come from config placeholders not hard-coded premium ids; digest actual vs configured mismatch must skip Jeeves offers
+- FIX after MRB FAIL fast-forwards the assigned PR branch (git push origin HEAD:fr-N) and closes the companion mrb-N-fix PR; do not DONE only the companion.
 
 ## Harvest digest (lessons audit 2026-10-06)
 
