@@ -204,8 +204,10 @@ def main(argv: list[str] | None = None) -> int:
         result["gh_auth_source"] = gh_src.split(":", 1)[0]
         if why:
             result["errors"] = [why]
-            # FR #6491: terminal refuse announce carries id= so the chair can free its lock.
-            result["announce"] = [f"BUILD fail {repo} version={version}: {why}{id_bit}"]
+            # FR #6491 / #6983: id= early so IRC [:400] cannot drop it.
+            result["announce"] = [
+                f"BUILD fail {repo}{id_bit} version={version}: {why}"
+            ]
             print(json.dumps(result, indent=2, default=str))
             if args.result_file:
                 Path(args.result_file).write_text(json.dumps(result, indent=2, default=str), encoding="utf-8")
@@ -391,8 +393,11 @@ def main(argv: list[str] | None = None) -> int:
         # FR #4316: outer abort (e.g. LiveStateTouched escaping BuildRunner) must still
         # auto-file a release-blocker; suite-regression path alone left these untracked.
         result.setdefault("errors", []).append(f"{type(exc).__name__}: {exc}")
+        # FR #6983: id= immediately after repo (before long blocker= URLs / IRC cap).
+        id_early = bb.build_result_id_early(build_id)
         announce = (
-            f"BUILD fail {repo} version={version}: {type(exc).__name__}: {str(exc)[:200]}"
+            f"BUILD fail {repo}{id_early} version={version}: "
+            f"{type(exc).__name__}: {str(exc)[:200]}"
         )
         if filer is not None:
             try:
@@ -413,9 +418,6 @@ def main(argv: list[str] | None = None) -> int:
                 result.setdefault("errors", []).append(
                     f"blocker_file_failed: {type(file_exc).__name__}: {file_exc}"
                 )
-        # FR #6491: id= last so the chair release_if_id parser finds it.
-        if build_id and " id=" not in announce:
-            announce = f"{announce} id={build_id}"
         result["announce"] = [announce]
         rc = 1
     finally:

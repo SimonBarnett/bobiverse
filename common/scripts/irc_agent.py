@@ -2217,7 +2217,14 @@ class Client:
         return resolve_bob_install_root(explicit=explicit)
 
 
-    def _handle_build_command(self, asker: str, body: str) -> None:
+    def _handle_build_command(
+        self,
+        asker: str,
+        body: str,
+        *,
+        target: str = "",
+        to_channel: bool = False,
+    ) -> None:
         """FR #4006: ops !build — decide + PM; live suite/pack is WP2 on the recipe machine."""
         if not getattr(self.args, "chair", False):
             return
@@ -2287,7 +2294,30 @@ class Client:
             return
         if dec is None:
             return
-        self._cmd_reply(who_nick, "build", dec.pm_lines)
+        # FR #6983: refusal must never be silent — keep PM, and when !build was on a
+        # channel also address the sender there (ear PMs are easy to miss).
+        lines = list(dec.pm_lines or [])
+        if not dec.ok and not lines:
+            lines = [
+                f"build: refused reason={dec.reason or 'unknown'}"
+                + (
+                    f" running id={lock.running_id((dec.repos or [''])[0]) or '-'}"
+                    if lock is not None
+                    else ""
+                )
+            ]
+        self._cmd_reply(who_nick, "build", lines)
+        if to_channel and target and not dec.ok:
+            ch = bobreport.normalize_channel(target)
+            for ln in lines:
+                try:
+                    msg = f"{who_nick}: {ln}"
+                    if len(msg) > 400:
+                        msg = msg[:400]
+                    self.send(f"PRIVMSG {ch} :{msg}")
+                    time.sleep(FLOOD_S)
+                except Exception:
+                    info("WARN build channel refusal reply failed")
         info(
             f"INFO build nick={who_nick} kind={prin.kind} ok={dec.ok} reason={dec.reason} "
             f"repos={','.join(dec.repos) or '-'} dry={dec.dry_run}"
@@ -2506,16 +2536,30 @@ class Client:
         chan = bobreport.FLEET_CHANNEL
 
         def _say(line: str, *, pace: bool = True) -> None:
+            # FR #6983: when truncating to IRC 400, keep an id= token so the chair
+            # can release home/build-locks.json on BUILD fail/ok.
+            text = str(line or "")
+            if len(text) > 400:
+                m = re.search(r"(\s[Ii][Dd]=\S+)", text)
+                if m:
+                    id_keep = m.group(1)
+                    keep = 400 - len(id_keep)
+                    if keep > 48:
+                        text = text[:keep].rstrip() + id_keep
+                    else:
+                        text = text[:400]
+                else:
+                    text = text[:400]
             try:
-                self.send("PRIVMSG " + chan + " :" + line[:400])
+                self.send("PRIVMSG " + chan + " :" + text)
                 if pace:
                     time.sleep(FLOOD_S)
             except Exception:
                 pass
 
         _say(
-            f"BUILD started {repo} version={version} pid={proc.pid} "
-            f"(deterministic runner, no agent){id_bit}"
+            f"BUILD started {repo}{id_bit} version={version} pid={proc.pid} "
+            f"(deterministic runner, no agent)"
         )
 
         def _watch() -> None:
@@ -2579,10 +2623,10 @@ class Client:
                             f"BUILD blocker {b.get('action') or ''} #{b.get('number')} {b.get('url') or ''}".strip()
                         )
             except Exception:
-                # FR #6491: fallback fail announce still carries id= for chair release.
+                # FR #6491 / #6983: fallback fail announce keeps id= early for chair release.
                 lines = [
-                    f"BUILD fail {repo} version={version} runner rc={rc} "
-                    f"(no result file; see {log_path.name}){id_bit}"
+                    f"BUILD fail {repo}{id_bit} version={version} runner rc={rc} "
+                    f"(no result file; see {log_path.name})"
                 ]
             for ln in lines[:8]:
                 _say(ln)
@@ -4728,7 +4772,9 @@ class Client:
         if self._maybe_recycleseat(src, target, body, to_channel=bool(to_channel), to_me=to_me):
             return
         if body.strip().lower().startswith("!build"):
-            self._handle_build_command(src, body)
+            self._handle_build_command(
+                src, body, target=target, to_channel=bool(to_channel)
+            )
             return
         if body.strip().lower().startswith("!installtest"):
             self._handle_installtest_command(src, body)
