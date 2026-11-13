@@ -282,7 +282,7 @@ $script:BobiverseArpVersion = $arpVer
 $script:BobiverseSkipVersionCopyFromClone = $false
 # FR #1018: do not robocopy an older/stale clone over a newer MSI tree.
 # FR #7167: MSI DisplayVersion can legitimately exceed common\VERSION (redqueen 2.0.0 vs 1.0.8)
-# while the sparse worktree is already on origin tip — full-skip then starves flat scripts\.
+# while the sparse worktree is already on origin tip --- full-skip then starves flat scripts\.
 # Keep MSI VERSION as truth; compose only when tip is OK (or ComposeOnly operator hook).
 if ($installVer -and $cloneVerObj -and $installVer -gt $cloneVerObj) {
     $script:BobiverseSkipVersionCopyFromClone = $true
