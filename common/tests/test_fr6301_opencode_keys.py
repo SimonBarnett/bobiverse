@@ -91,6 +91,12 @@ def test_fr6301_missing_key_is_no_key_set(tmp_path, monkeypatch):
     monkeypatch.delenv("BOB_OPENCODE_FUEL_FIXTURE", raising=False)
     monkeypatch.delenv("BOB_OPENCODE_WINDOWS_FIXTURE", raising=False)
     monkeypatch.setattr(bobreport, "tighten_opencode_key_acl", lambda p: False)
+    # FR #6996: missing bob key with a present binary is "no key set", not "not installed".
+    monkeypatch.setattr(
+        bobreport,
+        "resolve_opencode_exe",
+        lambda env=None: (r"C:\fake\opencode.exe", "explicit"),
+    )
     _clear_cache()
 
     doc = bobreport.read_local_opencode_fuel_doc(now=9000.0, force=True)

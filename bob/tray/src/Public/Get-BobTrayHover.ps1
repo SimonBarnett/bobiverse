@@ -1502,7 +1502,9 @@ function Format-BobOpencodeWindowLines {
     # Missing windows still name Free and each Go window. A single "OpenCode n/a"
     # with an empty line list is what the MarchHare card painted.
     # FR #6301: when every window says "no key set", prefer that over n/a.
+    # FR #6996: "not installed" is distinct (SYSTEM missed WinGet Links).
     $noKey = $false
+    $notInstalled = $false
     if ($null -eq $limRem) {
         $errs = @()
         foreach ($id in $ids) {
@@ -1514,8 +1516,11 @@ function Format-BobOpencodeWindowLines {
         if ($errs.Count -gt 0 -and ($errs | Where-Object { $_ -eq 'no key set' }).Count -eq $errs.Count) {
             $noKey = $true
         }
+        if ($errs.Count -gt 0 -and ($errs | Where-Object { $_ -eq 'not installed' }).Count -eq $errs.Count) {
+            $notInstalled = $true
+        }
     }
-    $goBit = if ($null -ne $limRem) { ('est {0}%' -f [int]$limRem) } elseif ($noKey) { 'no key set' } else { 'n/a' }
+    $goBit = if ($null -ne $limRem) { ('est {0}%' -f [int]$limRem) } elseif ($noKey) { 'no key set' } elseif ($notInstalled) { 'not installed' } else { 'n/a' }
     if ($limId) {
         $limLabel = switch ($limId) { 'rolling' { 'rolling' } 'week' { 'weekly' } 'month' { 'monthly' } default { $limId } }
         $goBit = ('{0} {1}' -f $limLabel, $goBit)

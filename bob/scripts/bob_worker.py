@@ -1301,13 +1301,38 @@ def resolve_grok_exe(env: Optional[dict] = None, which: Callable = shutil.which)
 
 
 def resolve_opencode_cmd(env: Optional[dict] = None, which: Callable = shutil.which) -> Optional[str]:
-    """Find opencode.exe: WinGet Links first, then PATH."""
+    """Find opencode.exe: explicit, WinGet Links (process then seat user), PATH.
+
+    FR #6996: LocalSystem LOCALAPPDATA is the system profile; look at
+    ``BOB_OPENCODE_SEAT_HOME`` / interactive user WinGet Links too.
+    """
     env = os.environ if env is None else env
-    la = env.get("LOCALAPPDATA", "")
-    if la:
-        p = Path(la) / "Microsoft" / "WinGet" / "Links" / "opencode.exe"
+    explicit = str(env.get("BOB_OPENCODE_EXE") or "").strip()
+    if explicit and Path(explicit).is_file():
+        return explicit
+
+    def _winget(local: str) -> Optional[str]:
+        if not local:
+            return None
+        p = Path(local) / "Microsoft" / "WinGet" / "Links" / "opencode.exe"
         if p.is_file():
             return str(p)
+        p2 = Path(local) / "Programs" / "opencode" / "opencode.exe"
+        if p2.is_file():
+            return str(p2)
+        return None
+
+    la = str(env.get("LOCALAPPDATA") or "")
+    sysprof = "\\systemprofile\\" in la.replace("/", "\\").lower()
+    if la and not sysprof:
+        found = _winget(la)
+        if found:
+            return found
+    seat = str(env.get("BOB_OPENCODE_SEAT_HOME") or env.get("BOB_GROK_WEEKLY_USER_HOME") or "").strip()
+    if seat:
+        found = _winget(str(Path(seat) / "AppData" / "Local"))
+        if found:
+            return found
     w = which("opencode.exe")
     if w:
         return str(w)

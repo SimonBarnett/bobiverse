@@ -34,9 +34,39 @@ try {
         $statsByWindow = @{ month = $fixture }
     } else {
         $exe = $env:BOB_OPENCODE_EXE
+        function Test-BobOpencodeExeFile([string]$Path) {
+            if ($Path -and (Test-Path -LiteralPath $Path -PathType Leaf)) { return $Path }
+            return $null
+        }
+        function Resolve-BobOpencodeExeFromLocal([string]$LocalAppData) {
+            if (-not $LocalAppData) { return $null }
+            $hit = Test-BobOpencodeExeFile (Join-Path $LocalAppData 'Microsoft\WinGet\Links\opencode.exe')
+            if ($hit) { return $hit }
+            return Test-BobOpencodeExeFile (Join-Path $LocalAppData 'Programs\opencode\opencode.exe')
+        }
         if (-not $exe) {
-            $winget = Join-Path $env:LOCALAPPDATA 'Microsoft\WinGet\Links\opencode.exe'
-            if (Test-Path -LiteralPath $winget) { $exe = $winget }
+            $la = [string]$env:LOCALAPPDATA
+            $sysprof = $la -match '(?i)\\systemprofile(\\|$)'
+            if ($la -and -not $sysprof) { $exe = Resolve-BobOpencodeExeFromLocal $la }
+        }
+        if (-not $exe) {
+            $seatHome = ([string]$env:BOB_OPENCODE_SEAT_HOME).Trim()
+            if (-not $seatHome) { $seatHome = ([string]$env:BOB_GROK_WEEKLY_USER_HOME).Trim() }
+            if (-not $seatHome) {
+                try {
+                    $u = $null
+                    try { $u = (Get-CimInstance Win32_ComputerSystem -EA SilentlyContinue).UserName } catch { }
+                    if ($u) {
+                        $leaf = ($u -split '\\')[-1]
+                        $drive = ([string]$env:SystemDrive)
+                        if (-not $drive) { $drive = 'C:' }
+                        $seatHome = Join-Path $drive ('Users\' + $leaf)
+                    }
+                } catch { }
+            }
+            if ($seatHome) {
+                $exe = Resolve-BobOpencodeExeFromLocal (Join-Path $seatHome 'AppData\Local')
+            }
         }
         if (-not $exe) {
             $exe = (Get-Command opencode.exe -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source)
