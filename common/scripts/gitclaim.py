@@ -129,7 +129,8 @@ GIVEUP_COOLDOWN_S = 600.0
 GIVEUP_NEEDS_HUMAN_COUNT = 2
 SAFE_TO_CLOSE_RE = re.compile(r"(?i)\bsafe\s+to\s+close\b")
 HARVEST_TITLE_RE = re.compile(r"(?i)^(harvest|skill)\b")
-# FR #2650: intake harvest receipt PRs (GhCliFiler draft) must never become MRB.
+# FR #2650: intake harvest receipt PRs never become MRB via webhook.
+# FR #7118: !assign / !resync still enqueue open non-draft receipts as MRB.
 _INTAKE_HARVEST_FOOTER_RE = re.compile(r"(?i)Invoke-BobiverseHarvest|Session summary:")
 # FR #5685: Report-*IntakeIssue / GhCliFiler footers without a Lesson body are stubs.
 _VIA_INTAKE_ID_FOOTER_RE = re.compile(r"(?i)_via-intake\b")
@@ -11626,10 +11627,8 @@ def claim_from_github_issue(repo: str, issue: dict) -> GitClaim | None:
             title=title, body=body, labels=labels, files=_paths
         ):
             return None
-        if is_intake_harvest_receipt_pr(
-            title=title, body=body, labels=labels, files=_paths
-        ):
-            return None
+        # FR #7118: open non-draft PRs (including intake/ harvest receipts) are
+        # offerable MRB via !assign / enqueue. Webhook still skips receipts (FR #2650).
         # FR #6340: explicit !assign / enqueue must reach docs/mrb pins (never
         # refuse with docs_mrb_pin). Auto resync/webhook still skip parent-open
         # and pin-of-pin; stamp docs_mrb_orphan so the row is auditable.
@@ -11912,6 +11911,12 @@ def enqueue_open_github_item(
         return "refused", f"{repo}#{num}: not found on GitHub or no token"
     claim = claim_from_github_issue(repo, issue)
     if claim is None:
+        is_pr = (
+            issue.get("pull_request") is not None
+            or str(issue.get("html_url") or "").find("/pull/") >= 0
+        )
+        if task_u == "MRB" and is_pr and issue.get("draft") is True:
+            return "refused", f"{repo}#{num}: draft"
         return "refused", f"{repo}#{num}: not an open offerable {task_u}"
     if claim.task != task_u:
         return "refused", f"{repo}#{num}: GitHub item is {claim.task}, not {task_u}"
@@ -13084,21 +13089,9 @@ def resync_from_github(
                         flush=True,
                     )
                     continue
-            # FR #2650 / #6356: intake harvest receipt PRs (even non-draft) never become MRB.
+            # FR #7118: non-draft open PRs including intake/ harvest receipts
+            # enter the MRB queue on !resync (webhook still skips receipts, FR #2650).
             pr_labels = _label_names(pr.get("labels"))
-            if is_intake_harvest_receipt_pr(
-                title=title,
-                body=body,
-                labels=pr_labels,
-                files=resolve_intake_pr_changed_paths(pr, repo=repo, number=num, fetch_json=getter),
-            ):
-                skipped_draft += 1
-                skipped_open_pulls.add((repo, f"#{num}"))
-                print(
-                    f"resync skip harvest-receipt PR {repo}#{num}",
-                    flush=True,
-                )
-                continue
             # FR #5500: docs/mrb-* pins skip MRB while the original is still open
             # (resync used to store empty title so offer-time could not see pins).
             # FR #6044: DIRTY/CONFLICTING still fall through to FIX.
