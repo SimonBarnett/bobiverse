@@ -102,6 +102,9 @@ def test_fr6995_auth_skipped_when_users_dir_missing(monkeypatch, tmp_path: Path)
     monkeypatch.delenv("BOB_GROK_WEEKLY_USER_HOME", raising=False)
     monkeypatch.delenv("BOB_GROK_AUTH_PATH", raising=False)
     monkeypatch.setattr(bobreport, "_is_local_system_process", lambda: True)
+    monkeypatch.setattr(bobreport, "_last_logged_on_account", lambda: None)
+    monkeypatch.setattr(bobreport, "_read_interactive_user_home_stamp", lambda: None)
+    monkeypatch.setenv("BOB_INSTALL_ROOT", str(tmp_path / "bob-empty"))
 
     fake = mock.Mock(
         return_value=mock.Mock(
