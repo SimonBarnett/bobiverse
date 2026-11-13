@@ -2,6 +2,7 @@
 
 The worker (not the model) appends measured counters when it relays DONE.
 Never fabricate a zero: missing sources become ``tokens=unknown``.
+FR #7085: an all-zero ``tokens_in/out/cached`` stamp is unknown, not a measured job.
 """
 from __future__ import annotations
 
@@ -51,6 +52,29 @@ def _int_or_none(raw: Any) -> Optional[int]:
         return None
 
 
+def _usage_has_positive_tokens(usage: Mapping[str, Any] | None) -> bool:
+    """True when any token field is a non-zero int (FR #7085)."""
+    u = dict(usage or {})
+    for key in ("tokens_in", "tokens_out", "tokens_cached"):
+        n = _int_or_none(u.get(key))
+        if n is not None and int(n) != 0:
+            return True
+    return False
+
+
+def _finalize_measured_usage(usage: Mapping[str, Any] | None) -> dict[str, Any]:
+    """Keep model; all-zero or absent counts become ``tokens=unknown`` (FR #7085)."""
+    u = dict(usage or {})
+    model = str(u.get("model") or "").strip()
+    if bool(u.get("tokens_unknown")) or not _usage_has_positive_tokens(u):
+        out = _empty(unknown=True)
+        if model:
+            out["model"] = model
+        return out
+    u["tokens_unknown"] = False
+    return u
+
+
 def _normalize_model(raw: Any, *, default_provider: str = "") -> str:
     s = str(raw or "").strip()
     if not s:
@@ -86,13 +110,18 @@ def parse_done_usage(rest: str) -> dict[str, Any]:
         if leg:
             out["legacy_tokens"] = int(leg.group(1))
     measured = any(out[k] is not None for k in ("tokens_in", "tokens_out", "tokens_cached"))
-    if measured:
+    if measured and _usage_has_positive_tokens(out):
         out["tokens_unknown"] = False
         total = 0
         for k in ("tokens_in", "tokens_out"):
             if out[k] is not None:
                 total += int(out[k])
         out["tokens_total"] = total
+    elif measured:
+        # FR #7085: tokens_in=0 tokens_out=0 tokens_cached=0 is unknown, not a job of zero.
+        model = out.get("model") or ""
+        out = _empty(unknown=True)
+        out["model"] = str(model or "")
     elif out["legacy_tokens"] is not None:
         out["tokens_unknown"] = False
         out["tokens_total"] = int(out["legacy_tokens"])
@@ -121,8 +150,8 @@ def format_done_usage_suffix(
     tin = _int_or_none(u.get("tokens_in"))
     tout = _int_or_none(u.get("tokens_out"))
     tc = _int_or_none(u.get("tokens_cached"))
-    unknown = bool(u.get("tokens_unknown"))
-    measured = tin is not None or tout is not None or tc is not None
+    unknown = bool(u.get("tokens_unknown")) or not _usage_has_positive_tokens(u)
+    measured = (tin is not None or tout is not None or tc is not None) and not unknown
     parts: list[str] = []
     if model:
         parts.append(f"model={model}")
@@ -248,7 +277,7 @@ def _from_token_map(
     if tout is not None:
         total += tout
     out["tokens_total"] = total
-    return out
+    return _finalize_measured_usage(out)
 
 
 def _load_json(path: Path | str | None) -> Any:
@@ -324,26 +353,12 @@ _CURSOR_SECRET_NAMES = frozenset(
 
 
 def _cursor_usage_nonzero(usage: Mapping[str, Any] | None) -> bool:
-    u = dict(usage or {})
-    if bool(u.get("tokens_unknown")):
-        return False
-    for key in ("tokens_in", "tokens_out", "tokens_cached"):
-        n = _int_or_none(u.get(key))
-        if n is not None and int(n) != 0:
-            return True
-    return False
+    return _usage_has_positive_tokens(usage)
 
 
 def _finalize_cursor_usage(usage: Mapping[str, Any] | None) -> dict[str, Any]:
-    """FR #6782: zero or absent Cursor token fields become tokens=unknown (never tokens_in=0)."""
-    u = dict(usage or {})
-    if not _cursor_usage_nonzero(u):
-        out = _empty(unknown=True)
-        model = str(u.get("model") or "").strip()
-        if model:
-            out["model"] = model
-        return out
-    return u
+    """FR #6782 / #7085: zero or absent Cursor token fields become tokens=unknown."""
+    return _finalize_measured_usage(usage)
 
 
 def read_cursor_usage(path: Path | str | None) -> dict[str, Any]:
@@ -562,7 +577,7 @@ def read_opencode_sqlite_usage(
     out["tokens_cached"] = tc
     out["tokens_unknown"] = False
     out["tokens_total"] = tin + tout
-    return out
+    return _finalize_measured_usage(out)
 
 
 def read_aider_usage(path: Path | str | None) -> dict[str, Any]:
@@ -633,7 +648,7 @@ def usage_delta(
         out["tokens_total"] = total
     out["attempt"] = _int_or_none(cur.get("attempt")) or 1
     out["source"] = str(cur.get("source") or "done")
-    return out
+    return _finalize_measured_usage(out)
 
 
 def load_usage_baseline(path: Path | str | None) -> dict[str, Any]:
