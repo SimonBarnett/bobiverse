@@ -898,10 +898,10 @@ def format_opencode_paint_lines(
     *,
     stale: bool = False,
 ) -> dict:
-    """Build TipForm/Status OpenCode paint payload (FR #6147).
+    """Build TipForm/Status OpenCode paint payload (FR #6147 / FR #7017).
 
-    Returns summary line, free line, window lines, limiting window id, and
-    aggregate go remaining (most restrictive known window). Free stays distinct.
+    Returns summary line, window lines, limiting window id, and aggregate go
+    remaining (most restrictive known window). Free is never painted.
     """
     windows = normalize_go_windows(windows) if windows is not None else {
         wid: _window_record("unknown") for wid in GO_WINDOW_IDS
@@ -916,32 +916,19 @@ def format_opencode_paint_lines(
                     windows[wid]["remaining_pct"] = None
                     windows[wid]["reset_label"] = None
     lim_id, lim_rem = limiting_go_window(windows)
-    # Stale clears the painted percent. Free ``100`` is catalogue availability
-    # (a free model is listed). It is not a measured remaining quota, so it is
-    # not painted as ``100%``.
-    if stale or free_remaining is None:
-        free_bit = "n/a"
-    elif int(free_remaining) == 100:
-        free_bit = "catalogue"
-    else:
-        free_bit = f"{int(free_remaining)}%"
+    # FR #7017: free models have no measurable quota — never paint free row/bar/summary.
+    # Keep Go rolling/weekly/monthly window lines only (100, null, 0, or stale).
     window_lines = [format_go_window_line(wid, windows.get(wid)) for wid in GO_WINDOW_IDS]
-    # Missing upstream data still names Free and Go. Collapsing to one "OpenCode n/a"
-    # erased the pool rows on the tray (MarchHare snapshot windows=null).
     go_bit = f"est {int(lim_rem)}%" if lim_rem is not None else "n/a"
     if lim_id:
         go_bit = f"{GO_WINDOW_LABELS.get(lim_id, lim_id)} {go_bit}"
-    if free_bit == "catalogue":
-        summary = f"OpenCode  go {go_bit}"
-        free_heading = None
-    else:
-        summary = f"OpenCode  free {free_bit} | go {go_bit}"
-        free_heading = f"free  {free_bit}"
+    summary = f"OpenCode  go {go_bit}"
+    free_heading = None
     if stale:
         summary = f"{summary} [stale]"
     return {
         "summary": summary,
-        "free_line": f"OpenCode free  {free_bit}" if free_heading else "",
+        "free_line": "",
         "free_heading": free_heading,
         "window_lines": window_lines,
         "windows": windows,
@@ -1605,7 +1592,7 @@ def opencode_pool_bars(
     *,
     stale: bool = False,
 ) -> list[dict]:
-    """Status/TipForm bars for Free plus Go rolling/weekly/monthly.
+    """Status/TipForm bars for Go rolling/weekly/monthly (FR #7017: no free bar).
 
     ``known`` is false when the reading is missing. ``pct`` is remaining percent
     and is ignored by the renderer unless ``known`` is true — unknown is never
@@ -1613,26 +1600,7 @@ def opencode_pool_bars(
     ``opencode stats`` cannot supply the 5-hour window or a reset countdown.
     """
     paint = format_opencode_paint_lines(free_remaining, windows, stale=stale)
-    # Catalogue availability must not fill a remaining-quota bar.
-    free_known = (
-        free_remaining is not None and not stale and int(free_remaining) != 100
-    )
-    if stale or free_remaining is None:
-        free_bit = "n/a"
-    elif int(free_remaining) == 100:
-        free_bit = "catalogue"
-    else:
-        free_bit = f"{int(free_remaining)}%"
     bars: list[dict] = []
-    if free_bit != "catalogue":
-        bars.append(
-            {
-                "id": "free",
-                "heading": f"free  {free_bit}",
-                "known": free_known,
-                "pct": int(free_remaining) if free_known else 0,
-            }
-        )
     win_map = paint["windows"] if isinstance(paint.get("windows"), dict) else {}
     for wid, line in zip(GO_WINDOW_IDS, paint["window_lines"]):
         rec = win_map.get(wid) if isinstance(win_map.get(wid), dict) else {}

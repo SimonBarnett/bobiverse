@@ -1,8 +1,8 @@
 """Compiled OpenCode rows for the MarchHare null snapshot.
 
 The installed card painted ``OpenCode n/a`` and no tracks because
-``opencode_window_lines`` was empty. The renderer must still draw Free and the
-three Go windows, and must not turn unknown into a 100% fill.
+``opencode_window_lines`` was empty. FR #7017: draw the three Go windows only
+(never free), and must not turn unknown into a 100% fill.
 """
 from __future__ import annotations
 
@@ -28,33 +28,31 @@ class Driver
 
     static int Main()
     {
-        var failed = BobDialogs.OpencodePaint.Rows("OpenCode  n/a", new ArrayList(), null);
-        if (failed.Count != 4) return Fail(1, "expected 4 rows, got " + failed.Count);
-        string[] ids = new string[] { "free", "rolling", "week", "month" };
-        for (int i = 0; i < 4; i++)
+        var failed = BobDialogs.OpencodePaint.Rows("OpenCode  go n/a", new ArrayList(), null);
+        if (failed.Count != 3) return Fail(1, "expected 3 Go rows, got " + failed.Count);
+        string[] ids = new string[] { "rolling", "week", "month" };
+        for (int i = 0; i < 3; i++)
         {
             if (failed[i].Id != ids[i]) return Fail(2, "id " + failed[i].Id);
             if (failed[i].Known) return Fail(3, "unknown row marked known: " + failed[i].Heading);
             if (failed[i].Pct != 0) return Fail(4, "unknown pct " + failed[i].Pct);
             if (failed[i].Heading.IndexOf("100%") >= 0) return Fail(5, failed[i].Heading);
             if (failed[i].Heading.IndexOf("Starts on first use") >= 0) return Fail(6, failed[i].Heading);
+            if (failed[i].Heading.IndexOf("free") >= 0) return Fail(7, "free row leaked: " + failed[i].Heading);
         }
-        if (failed[0].Heading.IndexOf("free") < 0) return Fail(7, failed[0].Heading);
-        if (failed[1].Heading.IndexOf("rolling") < 0) return Fail(8, failed[1].Heading);
-        if (failed[2].Heading.IndexOf("weekly") < 0) return Fail(9, failed[2].Heading);
-        if (failed[3].Heading.IndexOf("monthly") < 0) return Fail(10, failed[3].Heading);
+        if (failed[0].Heading.IndexOf("rolling") < 0) return Fail(8, failed[0].Heading);
+        if (failed[1].Heading.IndexOf("weekly") < 0) return Fail(9, failed[1].Heading);
+        if (failed[2].Heading.IndexOf("monthly") < 0) return Fail(10, failed[2].Heading);
 
         var lines = new ArrayList();
-        lines.Add("free  n/a");
         lines.Add("go rolling  Starts on first use  (0% used)");
         lines.Add("go weekly  72% used · 28% rem  reset 1d 2h");
         lines.Add("go monthly  36% used · 64% rem  reset 26d 18h");
-        var fromLines = BobDialogs.OpencodePaint.Rows("OpenCode  free n/a | go weekly 28%", lines, null);
-        if (fromLines.Count != 4) return Fail(11, "lines");
-        if (fromLines[0].Known) return Fail(12, "free n/a known");
-        if (fromLines[1].Known) return Fail(13, "unstarted painted as a quota");
-        if (!fromLines[2].Known || fromLines[2].Pct != 28) return Fail(14, "week rem");
-        if (!fromLines[3].Known || fromLines[3].Pct != 64) return Fail(15, "month rem");
+        var fromLines = BobDialogs.OpencodePaint.Rows("OpenCode  go weekly 28%", lines, null);
+        if (fromLines.Count != 3) return Fail(11, "lines");
+        if (fromLines[0].Known) return Fail(13, "unstarted painted as a quota");
+        if (!fromLines[1].Known || fromLines[1].Pct != 28) return Fail(14, "week rem");
+        if (!fromLines[2].Known || fromLines[2].Pct != 64) return Fail(15, "month rem");
 
         var bars = new ArrayList();
         var week = new Hashtable();
@@ -64,8 +62,8 @@ class Driver
         week["pct"] = 0;
         bars.Add(week);
         var unk = new Hashtable();
-        unk["id"] = "free";
-        unk["heading"] = "free  n/a";
+        unk["id"] = "rolling";
+        unk["heading"] = "go rolling  n/a";
         unk["known"] = false;
         unk["pct"] = 100;
         bars.Add(unk);

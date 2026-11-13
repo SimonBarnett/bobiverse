@@ -40,7 +40,8 @@ def test_watch_and_status_carry_window_lines():
 def test_legacy_free_go_formatter_still_present():
     src = HOVER.read_text(encoding="utf-8-sig")
     assert "function Format-BobOpencodePoolLine" in src
-    assert "OpenCode  n/a" in src
+    # FR #7017: Go-only pool line (no free bit).
+    assert "OpenCode  go" in src
     assert "opencode-free" in src or "opencode_free" in src
 
 
