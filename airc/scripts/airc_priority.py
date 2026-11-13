@@ -409,6 +409,11 @@ def parse_priority_command(text: str) -> tuple[str | None, str, str | None] | No
     return m.group(1), m.group(2).lower(), m.group(3)
 
 
+def is_priority_line(text: str) -> bool:
+    """True when the operator line is a PRIORITY control-plane verb (FR #7132)."""
+    return bool(_PRIORITY_ANY_RE.match((text or "").strip()))
+
+
 def parse_priority_usage(text: str) -> str | None:
     """FR #5533: PRIORITY with no/unknown sub-verb. Returns job id or '' (not None).
 
@@ -788,6 +793,16 @@ def format_priority_usage(job_id: str) -> str:
     qid = (job_id or "").strip().lower() or "00000000"
     return (
         f"err id={qid} seq=1 code=usage PRIORITY {PRIORITY_USAGE_SUBVERBS}\n"
+        f"DONE id={qid} exit=2"
+    )
+
+
+def format_priority_not_configured(job_id: str, *, reason: str | None = None) -> str:
+    """FR #7132: missing allowlist is err+DONE exit=2, never a PowerShell CommandNotFound."""
+    qid = (job_id or "").strip().lower() or "00000000"
+    why = (reason or PRIORITY_NOT_INSTALLED).strip() or PRIORITY_NOT_INSTALLED
+    return (
+        f"err id={qid} seq=1 code=not-configured reason={why}\n"
         f"DONE id={qid} exit=2"
     )
 

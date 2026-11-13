@@ -31,7 +31,7 @@ param(
     [string]$MachineId = '',
 
     [Parameter(ParameterSetName = 'Remote')]
-    [ValidateSet('Command', 'Cmd', 'Psb64', 'Status', 'Put', 'Run', 'Job', 'Cancel', 'Update')]
+    [ValidateSet('Command', 'Cmd', 'Psb64', 'Status', 'Put', 'Run', 'Job', 'Cancel', 'Update', 'Priority')]
     [string]$Action = 'Command',
 
     [Parameter(ParameterSetName = 'Remote')]
@@ -125,7 +125,7 @@ function ConvertTo-AircPsb64 {
 
 function New-AircRemoteBody {
     param(
-        [Parameter(Mandatory)][ValidateSet('Command', 'Cmd', 'Psb64', 'Status', 'Put', 'Run', 'Job', 'Cancel', 'Update')]
+        [Parameter(Mandatory)][ValidateSet('Command', 'Cmd', 'Psb64', 'Status', 'Put', 'Run', 'Job', 'Cancel', 'Update', 'Priority')]
         [string]$Action,
         [string]$Text = '',
         [string]$Path = '',
@@ -146,6 +146,12 @@ function New-AircRemoteBody {
             return ('psb64:{0}' -f (ConvertTo-AircPsb64 -Script $Text))
         }
         'Status' { return 'STATUS' }
+        'Priority' {
+            # FR #7132: control-plane PRIORITY, never a PowerShell Command.
+            $t = if ($Text) { $Text.Trim() } else { 'status' }
+            if ($t -match '(?i)^PRIORITY\b') { return $t }
+            return ('PRIORITY {0}' -f $t)
+        }
         'Put' {
             if (-not $Path) { throw 'Put meta line requires -Path' }
             $id = if ($JobId) { $JobId } else { New-AircCorrelationId }
@@ -684,6 +690,8 @@ function Invoke-AircRemoteSelfTest {
 
     Assert-True ((New-AircRemoteBody -Action Status) -eq 'STATUS') 'STATUS verb'
     # FR #2570: remote entry pins id= before STATUS (see switch Status branch).
+    Assert-True ((New-AircRemoteBody -Action Priority) -eq 'PRIORITY status') 'FR7132 Priority default'
+    Assert-True ((New-AircRemoteBody -Action Priority -Text 'connect example-dev') -eq 'PRIORITY connect example-dev') 'FR7132 Priority text'
 
     $tmp = Join-Path $env:TEMP ('airc-put-' + [guid]::NewGuid().ToString('N'))
     New-Item -ItemType Directory -Path $tmp | Out-Null
@@ -1035,6 +1043,9 @@ function New-AircRemoteAttemptBodies {
             # FR #2570: pin id= so Wait matches DONE id= from STATUS (same as Command).
             $bodies = [string[]]@(('id={0} STATUS' -f $corrOut))
         }
+        'Priority' {
+            $bodies = [string[]]@(('id={0} {1}' -f $corrOut, (New-AircRemoteBody -Action Priority -Text $TextBody)))
+        }
         default {
             $bodies = [string[]]@((New-AircRemoteBody -Action $ActionName -Text $TextBody -Path $PathBody -JobId $corrOut))
         }
@@ -1052,7 +1063,7 @@ $parsed = $null
 $rawLines = @()
 
 # FR #2632: retry Command/Cmd/Psb64/Status when airc returns busy DONE (old fail-closed builds).
-$busyRetryActions = @('Command', 'Cmd', 'Psb64', 'Status')
+$busyRetryActions = @('Command', 'Cmd', 'Psb64', 'Status', 'Priority')
 
 while ($true) {
     $attempt++

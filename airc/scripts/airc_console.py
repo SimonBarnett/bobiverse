@@ -4330,13 +4330,9 @@ class AircConsoleCore:
         import uuid
 
         jid = (job_id or "").strip().lower() or uuid.uuid4().hex[:8]
-        body = {
-            "ok": False,
-            "action": action_name,
-            "reason": _priority.PRIORITY_NOT_INSTALLED,
-        }
-        out_line, exit_code = _priority.format_bounded_priority_out(jid, body, 1)
-        reply = f"{out_line}\nDONE id={jid} exit={exit_code}"
+        reply = _priority.format_priority_not_configured(
+            jid, reason=_priority.PRIORITY_NOT_INSTALLED
+        )
         self._clear_unused_dcclisten(jid, reason="priority")
         meta = self._allow_meta(nick, None)
         return HandleResult(
@@ -4604,14 +4600,7 @@ class AircConsoleCore:
             )
             if denied is not None:
                 return denied
-            if caps.shell_mode == "off":
-                return HandleResult(
-                    action="capability_deny",
-                    nick=nick,
-                    target=target,
-                    text=text,
-                    reply="DONE exit=126 shell-disabled",
-                )
+            # FR #7132: PRIORITY is control-plane (like STATUS), not a shell line.
             qid = (job_id or "").strip().lower() or uuid.uuid4().hex[:8]
             send_hook = getattr(self, "priority_reply_send", None)
             use_async = (
@@ -5549,6 +5538,34 @@ class AircConsoleCore:
             meta = self._allow_meta(nick, account)
             return HandleResult(
                 action="job", nick=nick, target=target, text=text, **meta
+            )
+
+        # FR #7132: leftover PRIORITY* must never become a PowerShell command.
+        if _priority.is_priority_line(cmd):
+            qid = (_priority.parse_priority_usage(cmd) or "").strip().lower() or uuid.uuid4().hex[:8]
+            if _priority.parse_priority_usage(cmd) is not None:
+                meta = self._allow_meta(nick, account)
+                return HandleResult(
+                    action="priority",
+                    nick=nick,
+                    target=target,
+                    text=text,
+                    reply=_priority.format_priority_usage(qid),
+                    **meta,
+                )
+            denied = self._priority_optional_denied(
+                nick=nick, target=target, text=text, action_name="status", job_id=qid
+            )
+            if denied is not None:
+                return denied
+            meta = self._allow_meta(nick, account)
+            return HandleResult(
+                action="priority",
+                nick=nick,
+                target=target,
+                text=text,
+                reply=_priority.format_priority_usage(qid or uuid.uuid4().hex[:8]),
+                **meta,
             )
 
         # FR #75: oneshot PowerShell / cmd: / psb64: with DONE framing.

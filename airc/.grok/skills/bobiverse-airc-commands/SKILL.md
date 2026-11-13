@@ -79,7 +79,7 @@ See `docs/airc-remote-control.md` and `bobiverse-airc-troubleshooting`.
 
 ## Priority Client (FR #5287)
 
-Bare `PRIORITY` (or an unknown sub-verb) is usage, not PowerShell (FR #5533): `err id= seq=1 code=usage PRIORITY connect|status|prepare|formStart|subform|getRows|wcf` then `DONE id= exit=2`.
+Bare `PRIORITY` (or an unknown sub-verb) is usage, not PowerShell (FR #5533): `err id= seq=1 code=usage PRIORITY connect|status|prepare|formStart|subform|getRows|wcf` then `DONE id= exit=2`. FR #7132: never `-Action Command` for PRIORITY (that is PowerShell on old consoles). Use `Invoke-AircRemote -Action Priority -Text 'status'`. Missing `config/priority-instances.json` is `err … code=not-configured reason=priority_not_installed` + `DONE exit=2` (not CommandNotFound). Works with `shell=off`.
 
 **FR #5614:** the same usage shape applies to unknown `NETWORK` / `EXTENSION` actions and unknown flags (including `LEGION … -Force`): `err … code=usage` or `code=usage unknown-flag=-Force` then `DONE exit=2`. CTCP-framed lines (e.g. `\x01VERSION\x01`) are ignored and never run as PowerShell.
 
