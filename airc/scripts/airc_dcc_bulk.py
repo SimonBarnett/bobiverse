@@ -18,9 +18,11 @@ import secrets
 import socket
 import ssl
 import struct
+import sys
 import threading
 import time
 from dataclasses import dataclass
+from pathlib import Path
 
 DCC_BULK_LINE_THRESHOLD = int(os.environ.get("AIRC_DCC_BULK_LINE_THRESHOLD", "48"))
 DCC_BULK_BYTE_THRESHOLD = int(os.environ.get("AIRC_DCC_BULK_BYTE_THRESHOLD", "12000"))
@@ -909,3 +911,53 @@ def send_offer_payload_bounded(
         raise ConnectionError("dcc failed: send timeout")
     if "exc" in box:
         raise box["exc"]
+
+
+def main(argv: list[str] | None = None) -> int:
+    """FR #7129: caller-side PUT serve (console dials DCCLISTEN, we write the frame)."""
+    import argparse
+
+    p = argparse.ArgumentParser(prog="airc_dcc_bulk")
+    sub = p.add_subparsers(dest="cmd", required=True)
+    s = sub.add_parser("serve-upload")
+    s.add_argument("--file", required=True)
+    s.add_argument("--token", required=True)
+    s.add_argument("--host", default="0.0.0.0")
+    s.add_argument("--port", type=int, default=0)
+    s.add_argument("--timeout", type=float, default=DCC_HANDSHAKE_TIMEOUT_S)
+    s.add_argument("--tls", type=int, default=0)
+    s.add_argument("--port-file", required=True)
+    args = p.parse_args(argv)
+    if args.cmd != "serve-upload":
+        return 2
+    payload = Path(args.file).read_bytes()
+    port_out: dict = {}
+    ready = threading.Event()
+
+    def _serve() -> None:
+        listen_and_send_upload(
+            payload,
+            host=args.host,
+            port=int(args.port),
+            token=args.token,
+            timeout_s=float(args.timeout),
+            tls=bool(args.tls),
+            ready=ready,
+            port_out=port_out,
+        )
+
+    t = threading.Thread(target=_serve, daemon=True)
+    t.start()
+    if not ready.wait(timeout=5.0):
+        print("listen not ready", file=sys.stderr)
+        return 1
+    Path(args.port_file).write_text(str(int(port_out["port"])) + "\n", encoding="ascii")
+    t.join(timeout=float(args.timeout) + 2.0)
+    if t.is_alive():
+        print("accept timeout", file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
