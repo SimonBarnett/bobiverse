@@ -31,10 +31,12 @@ New regressions and step failures → one intake issue each (`feature-request` +
 ## IRC
 
 ```
-!build <owner/repo>[,owner/repo...] <version> [ref]
+!build <owner/repo>[,owner/repo...] <version> [ref] [--tests-only]
+!build tests-only <owner/repo> <version> [ref]
 !build dry-run <owner/repo> <version> [ref]
 !build status [owner/repo]
 !build cancel [owner/repo]
+!build preflight <owner/repo>
 ```
 
 Ops only (simon / bob-* ears). No recipe → refuse. Same repo already building → refuse with running id.
@@ -64,6 +66,7 @@ Deterministic, injectable, **zero AI tokens**. Module: `common/scripts/bobiverse
    - **Pack and release only when there are no new_regression/step_failure blockers** (pre_existing / flaky do not block).
    - Pack renders `{{version}}` / `{{out_dir}}` / `{{ref}}`; verifies artifact names; optional assert cmd.
    - Release target `github-prerelease` with recipe `never_latest: true` => prerelease, never Latest. If `gh release create` reports the tag already exists, refresh assets with `gh release upload --clobber` when the existing release is still a pre-release (FR #7086); a full or Latest tag still fails `step:release`.
+   - FR #7094: `!build ... --tests-only` (or `!build tests-only ...`) runs suites + pack under the same BuildLock, then skips `gh release create` / upload / MSI publish and does not file `new_regression` blockers. A release preflight (explicit version, PATH `python`, existing tag vs clobber, `gh` token source for LocalSystem) runs at the start of every real build and tests-only run.
    - Zips `log_dir` to `build-logs-{version}.zip`; announce summary lines for `#bobiverse`.
 
 FR #6491: terminal `BUILD ok|fail ... id=` frees the chair lock by id; `!build cancel` / `!build status` unchanged; stale locks (older than recipe max run) clear on the next `!build`.

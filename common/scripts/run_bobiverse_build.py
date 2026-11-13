@@ -132,6 +132,11 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="FR #6492: recipe-machine env check only (no suite/pack/release)",
     )
+    p.add_argument(
+        "--tests-only",
+        action="store_true",
+        help="FR #7094: suites + pack only; no gh release create/upload, no new_regression filings",
+    )
     args = p.parse_args(argv)
 
     job = {}
@@ -183,6 +188,7 @@ def main(argv: list[str] | None = None) -> int:
     version = (args.version or job.get("version") or "").strip()
     ref = ((job.get("ref") if args.ref == "HEAD" else args.ref) or "HEAD").strip()
     build_id = str(job.get("id") or "").strip()
+    tests_only = bool(args.tests_only) or bool(job.get("tests_only"))
     if not version:
         print("build: need --version or job.version", file=sys.stderr)
         return 2
@@ -195,7 +201,7 @@ def main(argv: list[str] | None = None) -> int:
     except Exception:
         pass
 
-    result: dict = {"repo": repo, "version": version, "ref": ref, "id": build_id, "ok": False}
+    result: dict = {"repo": repo, "version": version, "ref": ref, "id": build_id, "ok": False, "tests_only": tests_only}
     id_bit = f" id={build_id}" if build_id else ""
     if not args.fake_filer and not args.dry_run:
         # #4188: fail at preflight, not 2h later at step:release.
@@ -208,6 +214,41 @@ def main(argv: list[str] | None = None) -> int:
             result["announce"] = [
                 f"BUILD fail {repo}{id_bit} version={version}: {why}"
             ]
+            print(json.dumps(result, indent=2, default=str))
+            if args.result_file:
+                Path(args.result_file).write_text(json.dumps(result, indent=2, default=str), encoding="utf-8")
+            if args.lock_file:
+                try:
+                    bb.BuildLock(Path(args.lock_file), max_parallel=1).release(repo)
+                except Exception:
+                    pass
+            if job_path is not None:
+                try:
+                    job_path.rename(job_path.with_suffix(".json.failed"))
+                except Exception:
+                    pass
+            return 4
+        # FR #7094: release preflight after GH auth, before suites/pack/release.
+        root_pf = Path(args.repo_root).resolve()
+        pf = bb.run_build_preflight(
+            repo=repo,
+            repo_root=root_pf,
+            version=version,
+            require_release=True,
+            replace_release=True,
+        )
+        result["release_preflight"] = [
+            {"name": i.name, "ok": i.ok, "detail": i.detail} for i in pf.items
+        ]
+        for ln in pf.lines:
+            if ln.startswith("build preflight:") and any(
+                n in ln for n in ("release_tag", "version_explicit", "python=", "gh_can_create")
+            ):
+                print(ln, flush=True)
+        if not pf.ok:
+            why = next((ln for ln in pf.lines if "=missing" in ln), "release preflight failed")
+            result["errors"] = [why]
+            result["announce"] = [f"BUILD fail {repo}{id_bit} version={version}: {why}"]
             print(json.dumps(result, indent=2, default=str))
             if args.result_file:
                 Path(args.result_file).write_text(json.dumps(result, indent=2, default=str), encoding="utf-8")
@@ -293,7 +334,7 @@ def main(argv: list[str] | None = None) -> int:
 
         filer = bb.FakeGitHubFiler() if args.fake_filer else bb.GitHubFiler()
         release_fn = None
-        if not args.fake_filer and not args.dry_run and sha:
+        if not tests_only and not args.fake_filer and not args.dry_run and sha:
             subprocess.run(
                 ["gh", "label", "create", bb.RELEASE_BLOCKER_LABEL, "--repo", repo,
                  "--color", "B60205", "--description", "Auto-filed by !build (FR #4006)", "--force"],
@@ -338,6 +379,7 @@ def main(argv: list[str] | None = None) -> int:
             baseline_resolver=(lambda *_a: tag or "baseline"),
             build_id=build_id,
             progress=progress,
+            tests_only=tests_only,
         )
         t0 = time.time()
         print("build: runner.run begin", flush=True)
@@ -365,7 +407,7 @@ def main(argv: list[str] | None = None) -> int:
             "duration_s": round(time.time() - t0),
         })
         tag_name = f"v{version}"
-        if report.release_ok and release_fn is not None:
+        if report.release_ok and release_fn is not None and not tests_only:
             lz = getattr(report, "log_zip", "")
             if lz and Path(lz).is_file():
                 subprocess.run(["gh", "release", "upload", tag_name, lz, "--repo", repo, "--clobber"],
