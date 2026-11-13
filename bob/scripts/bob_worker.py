@@ -68,17 +68,24 @@ def short_build_sha(commit: str | None = None) -> str:
 
 
 def resolve_seat_hello_model(kind: str, env: Optional[dict] = None) -> str:
-    """FR #6418: the configured model the seat's agent will launch with ('' when unreadable).
+    """FR #6418 / FR #7084: the configured model the seat's agent will launch with.
 
-    OpenCode: the launch model is ``BOB_OPENCODE_MODEL`` (``run_agent`` exports the
-    ``resolve_opencode_model`` pick there: operator env -> OpenCode config -> fuel),
-    then the OpenCode config's ``model``. Grok / Cursor (and any other kind) have no
-    model configuration the worker can already read, so the hello line reports
-    ``unknown`` for them. Local reads only: no network or provider calls, and never
-    credentials or auth files.
+    FR #7084: ``workerStartModels`` (JSON/env) is the per-CLI minimum start model.
+    OpenCode still honours ``BOB_OPENCODE_MODEL`` then OpenCode config. Empty config
+    stays empty (hello ``unknown``); never invent a premium id.
     """
     env = os.environ if env is None else env
-    if (kind or "").strip().lower() != "opencode":
+    k = (kind or "").strip().lower()
+    try:
+        import worker_start_model as wsm
+
+        cfg = wsm.load_worker_start_config(env=env)
+        picked = wsm.configured_start_model(k, cfg)
+        if picked:
+            return picked
+    except Exception:
+        pass
+    if k != "opencode":
         return ""
     m = str(env.get("BOB_OPENCODE_MODEL") or "").strip()
     if m:
@@ -2439,6 +2446,13 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             argv = prefix + ["--resume", sid, "--rules", rules, prompt]
         else:
             argv = prefix + ["-s", sid, "--rules", rules, prompt]
+        try:
+            import worker_start_model as wsm
+
+            grok_model = wsm.configured_start_model("grok", wsm.load_worker_start_config())
+            argv = wsm.launch_argv_with_model("grok", argv, grok_model)
+        except Exception:
+            pass
     elif kind == "cursor":
         # The prompt goes through a FILE read by a fixed launcher: text never lands on a command line (no shell injection).
         pfile = str(Path(run_dir) / "prompt.txt")
@@ -6662,6 +6676,9 @@ def post_digest_seat_kind(
     kind: str = "",
     agent: str = "",
     model: str = "",
+    configured_model: str = "",
+    model_mismatch: bool | None = None,
+    cost_tier: str = "",
     working_on: str = "",
     worker_build: str | None = None,
     url: str | None = None,
@@ -6697,6 +6714,16 @@ def post_digest_seat_kind(
     }
     if (model or "").strip():
         payload["model"] = str(model).strip()
+        payload["start_model"] = str(model).strip()
+    cfg_m = str(configured_model or "").strip()
+    if cfg_m:
+        payload["configured_model"] = cfg_m
+    if model_mismatch is not None:
+        payload["model_mismatch"] = bool(model_mismatch)
+    elif cfg_m and (model or "").strip():
+        payload["model_mismatch"] = str(model).strip().lower() != cfg_m.lower()
+    if (cost_tier or "").strip():
+        payload["cost_tier"] = str(cost_tier).strip()
     ok = bool(_http_post_json(report, payload, log=log))
     if not ok and log:
         try:
@@ -11544,6 +11571,18 @@ def run_agent(args, log: Log) -> int:
     # FR #6418: one configured-model value shared by the digest payload and the hello line.
     build = short_build_sha()
     seat_model = resolve_seat_hello_model(kind)
+    cfg_model = ""
+    cost_tier = ""
+    mismatch = None
+    try:
+        import worker_start_model as wsm
+
+        _cfg = wsm.load_worker_start_config()
+        cfg_model = wsm.configured_start_model(kind, _cfg)
+        mismatch = wsm.model_mismatch(seat_model, cfg_model)
+        cost_tier = wsm.model_cost_tier(seat_model or cfg_model, _cfg)
+    except Exception:
+        pass
     try:
         post_digest_seat_kind(
             machine=machine,
@@ -11551,6 +11590,9 @@ def run_agent(args, log: Log) -> int:
             nick=nick,
             kind=kind,
             model=seat_model,
+            configured_model=cfg_model,
+            model_mismatch=mismatch,
+            cost_tier=cost_tier,
             worker_build=build,
             log=log,
         )

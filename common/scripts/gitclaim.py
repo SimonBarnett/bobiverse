@@ -8062,6 +8062,46 @@ def _save_seat_out_of_fuel_unlocked(home: Path, seats: dict) -> None:
 
 
 
+def _seat_digest_model_fields(home: Path, nick: str) -> dict:
+    """FR #7084: start_model / mismatch / cost_tier from digest workers or worker_list."""
+    me = (canonical_worker_nick(nick) or nick or "").strip()
+    parsed = bobreport.parse_seat_nick(me)
+    if not parsed:
+        return {}
+    mid, pid = parsed
+    try:
+        doc = bobreport.load_digest(_root(home))
+    except Exception:
+        return {}
+    ent = (doc.get("machines") or {}).get(mid) or {}
+    if not isinstance(ent, dict):
+        return {}
+    workers = ent.get("workers") if isinstance(ent.get("workers"), dict) else {}
+    w = workers.get(str(pid)) if isinstance(workers.get(str(pid)), dict) else {}
+    if w:
+        return dict(w)
+    for r in bobreport._coerce_worker_list(ent.get("worker_list")):
+        if str(r.get("nick") or "").strip().lower() == me.lower():
+            return dict(r)
+    return {}
+
+
+def _seat_model_allows_row(home: Path, nick: str, cand: dict) -> bool:
+    """FR #7084: unknown digest model does not block; mismatch / too-cheap does."""
+    fields = _seat_digest_model_fields(home, nick)
+    if not fields:
+        return True
+    if "model_mismatch" not in fields and not fields.get("start_model") and not fields.get("cost_tier"):
+        return True
+    try:
+        import worker_start_model as wsm
+
+        cfg = wsm.load_worker_start_config()
+        return wsm.seat_allows_job(fields, str((cand or {}).get("task") or ""), cfg)
+    except Exception:
+        return True
+
+
 def seat_agent_kind(home: Path, nick: str) -> str:
     """Digest agent kind for a seat nick (``grok`` / ``cursor`` / ``opencode`` / ...).
 
@@ -8960,6 +9000,9 @@ def offer_focus_top(
                 if repo_archived_for_queue(str(cand.get("repo") or "")):
                     return None
                 if row_machine_mismatch(cand, me) or row_gave_up_by(cand, me, live=live):
+                    return None
+                # FR #7084: skip model-mismatch seats; skip when actual tier is below job need.
+                if not _seat_model_allows_row(home, me, cand):
                     return None
                 # FR #4718: do not hand the same MRB head back to the seat that FAILed it.
                 if mrb_fail_same_head_for_seat(cand, me):
