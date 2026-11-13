@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from pathlib import Path
 from typing import Any
 
@@ -154,20 +155,51 @@ def launch_argv_with_model(kind: str, argv: list[str], model: str) -> list[str]:
     return args
 
 
-def actual_start_model(*, env: dict[str, str] | None = None, argv: list[str] | None = None) -> str:
-    """Process/session actual model: env stamp, else last ``--model`` on the launch argv."""
+def _model_from_argv(args: list[str]) -> str:
+    if "--model" not in args:
+        return ""
+    i = args.index("--model")
+    if i + 1 >= len(args):
+        return ""
+    got = str(args[i + 1]).strip().strip("'\"")
+    if got and got.lower() != "auto":
+        return got
+    return ""
+
+
+def _model_from_script_text(text: str) -> str:
+    """Last ``--model <id>`` in a launcher script (Cursor PowerShell). Never treats ``auto`` as actual."""
+    found = ""
+    for m in re.finditer(r"--model(?:\s+|=)(?P<q>['\"]?)(?P<id>[^\s'\"]+)(?P=q)", str(text or "")):
+        got = str(m.group("id") or "").strip()
+        if got and got.lower() != "auto":
+            found = got
+    return found
+
+
+def actual_start_model(
+    *,
+    env: dict[str, str] | None = None,
+    argv: list[str] | None = None,
+    script_text: str = "",
+) -> str:
+    """Process/session actual model: env stamp, else launch argv / launcher script ``--model``."""
     e = os.environ if env is None else env
     stamped = str((e or {}).get(ENV_ACTUAL_MODEL) or "").strip()
     if stamped:
         return stamped
-    args = [str(a) for a in (argv or [])]
-    if "--model" in args:
-        i = args.index("--model")
-        if i + 1 < len(args):
-            got = str(args[i + 1]).strip()
-            if got and got.lower() != "auto":
-                return got
-    return ""
+    got = _model_from_argv([str(a) for a in (argv or [])])
+    if got:
+        return got
+    return _model_from_script_text(script_text)
+
+
+def actual_from_launch_spec(kind: str, spec: Any, *, env: dict[str, str] | None = None) -> str:
+    """Actual start model as launched (argv or Cursor/OpenCode script), not config-only."""
+    argv = list(getattr(spec, "argv", None) or [])
+    files = getattr(spec, "files", None) or {}
+    blob = "\n".join(str(v) for v in (files.values() if isinstance(files, dict) else []))
+    return actual_start_model(env=env if env is not None else {}, argv=argv, script_text=blob)
 
 
 def digest_seat_model_fields(

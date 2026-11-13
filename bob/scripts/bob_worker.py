@@ -1783,6 +1783,14 @@ def describe_agent_child_launch(
         session_id=session_id, install_root=install_root,
     )
     env = seat_env_extra(rd, machine, nick)
+    try:
+        import worker_start_model as wsm
+
+        actual = wsm.actual_from_launch_spec(kind_l, spec, env=env)
+        if actual:
+            env[wsm.ENV_ACTUAL_MODEL] = actual
+    except Exception:
+        pass
     if bound_meta.get("grok_home"):
         try:
             import skill_dag_bound as _sdb
@@ -9939,6 +9947,7 @@ class Supervisor:
             spec = child["spec"]
             # FR #2380 / #2413 / #2669: seat env + path normalize + scrub agent-host vars.
             env = prepare_seat_child_env(self.base_env, child["env"])
+            self.last_child_env = dict(env)
             if self.secret is not None and self.kind == "grok":
                 env["XAI_API_KEY"] = self.secret.reveal()  # child env only
             try:
@@ -11595,7 +11604,8 @@ def run_agent(args, log: Log) -> int:
         return EXIT_IRC_FAIL
     # FR #6134: publish agent kind so the chair can skip OpenCode for MRB/UAT.
     # FR #6409: digest worker_build short SHA (or unknown); hello after start_agent (MRB #6411).
-    # FR #6418: one configured-model value shared by the digest payload and the hello line.
+    # FR #6418: hello ``model=`` stays the configured value. FR #7084 digest ``start_model`` is
+    # the launched process/session model (re-POSTed after start_agent).
     build = short_build_sha()
     seat_model = resolve_seat_hello_model(kind)
     cfg_model = ""
@@ -11608,6 +11618,8 @@ def run_agent(args, log: Log) -> int:
         cfg_model = wsm.configured_start_model(kind, _cfg)
         mismatch = wsm.model_mismatch(seat_model, cfg_model)
         cost_tier = wsm.model_cost_tier(seat_model or cfg_model, _cfg)
+        if not cfg_model:
+            log(f"worker: configured start model empty for kind={kind}; not inventing an id")
     except Exception:
         pass
     try:
@@ -11650,6 +11662,39 @@ def run_agent(args, log: Log) -> int:
     if not sup.start_agent():
         irc.close("launch failed")
         return EXIT_LAUNCH_FAIL
+    try:
+        import worker_start_model as wsm
+
+        child_env = getattr(sup, "last_child_env", None) or {}
+        actual = str(child_env.get(wsm.ENV_ACTUAL_MODEL) or "").strip()
+        if not actual:
+            actual = wsm.actual_start_model(env=child_env or os.environ)
+        _cfg = wsm.load_worker_start_config()
+        cfg_model = wsm.configured_start_model(kind, _cfg)
+        mismatch = wsm.model_mismatch(actual, cfg_model)
+        cost_tier = wsm.model_cost_tier(actual or cfg_model, _cfg)
+        if mismatch:
+            try:
+                irc.say(
+                    irc.shop,
+                    f"start model mismatch actual={actual or 'unknown'} configured={cfg_model or 'unset'}",
+                )
+            except Exception:
+                pass
+        post_digest_seat_kind(
+            machine=machine,
+            pid=pid,
+            nick=nick,
+            kind=kind,
+            model=actual or seat_model,
+            configured_model=cfg_model,
+            model_mismatch=mismatch,
+            cost_tier=cost_tier,
+            worker_build=build,
+            log=log,
+        )
+    except Exception as e:
+        log(f"worker: post-launch start_model digest failed {type(e).__name__}")
     # FR #6409 / MRB #6411: announce ready only after agent process starts (CodeRabbit).
     try:
         hello = worker_hello_line(kind, model=seat_model, build=build)
