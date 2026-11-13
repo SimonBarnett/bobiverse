@@ -486,6 +486,10 @@ def test_uat_release_exception_is_stated_in_the_worker_rules_and_the_wire_skill_
     assert "ACK <TYPE> <owner/repo>#<N>" in irc and re.search(r"(?i)a FAIL means an FR per gap and NO release", irc)
     doc = (ROOT / "docs" / "bob-worker.md").read_text(encoding="utf-8-sig")
     assert "## UAT job flow" in doc and "no release" in doc.lower() and "`gh release create`" in doc
+    assert "uat_release.py" in doc
+    uat = (SK / "bobiverse-bob-job-uat" / "SKILL.md").read_text(encoding="utf-8-sig")
+    assert "uat_release.py" in uat
+    assert "Priority Agent vX.Y.Z" in uat
 # ---- t826u: a successful MRB / an FR PR closes the issue that created it -------------------------------------------------------
 def _skill(name: str) -> str:
     return (SK / f"bobiverse-bob-job-{name}" / "SKILL.md").read_text(encoding="utf-8-sig")
