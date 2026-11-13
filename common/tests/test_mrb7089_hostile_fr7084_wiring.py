@@ -156,3 +156,12 @@ def test_mrb7089_idle_seats_cheapest_first():
     }
     got = gc.sort_idle_seats_cheapest_first(rows, fields)
     assert [r["nick"] for r in got] == ["min-2", "max-1"]
+
+
+def test_mrb7089_assign_row_applies_model_gate():
+    src = Path(__file__).resolve().parents[2].joinpath("common", "scripts", "gitclaim.py").read_text(
+        encoding="utf-8"
+    )
+    chunk = src.split("def assign_row(", 1)[1].split("\ndef ", 1)[0]
+    assert "_seat_model_allows_row" in chunk
+    assert "jobRequiredModelTier" in chunk or "FR #7084" in chunk

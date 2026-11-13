@@ -12280,6 +12280,10 @@ def assign_row(
                 return "refused", "repo is archived (FR #785)"
             if row_machine_mismatch(cand, me):
                 return "refused", f"row is pinned to another machine than {me}"
+            # FR #7084 / FIX #7089: !assign still requires model eligibility (needs_human stays the
+            # only manual exception, already gated above for FIX).
+            if not _seat_model_allows_row(home, me, cand):
+                return "refused", f"{me}: model mismatch or below jobRequiredModelTier (FR #7084)"
             # Exact-nick giveup only on !assign (FR #4336): recycle inherit is for
             # auto-offer. Ops may !assign needs_human to a recycled successor.
             if row_gave_up_by(cand, me):
