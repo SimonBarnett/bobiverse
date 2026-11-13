@@ -144,10 +144,38 @@ def test_idle_seats_ok_when_only_row_is_offered_pending(tmp_path, monkeypatch):
     assert "offered_to" in notes and "1625" in notes
 
 
+def test_fr7097_bobiverse_raw_require_machine_stamp_is_not_a_gate():
+    """FR #4512 / #7097: persisted require_machine on bobiverse is re-inferred away."""
+    row = {
+        "repo": "SimonBarnett/bobiverse",
+        "task": "FR",
+        "id": "#1102",
+        "require_machine": "redqueen",
+        "title": "DEV1 pin",
+        "labels": ["feature-request"],
+        "line": "FR SimonBarnett/bobiverse#1102",
+    }
+    assert queue_flow._gate_bucket(row) == "ungated"
+    other = {
+        "repo": "SimonBarnett/agentic_fomprep",
+        "task": "FR",
+        "id": "#56",
+        "require_machine": "redqueen",
+        "title": "DEV1 pin",
+        "labels": ["feature-request"],
+        "line": "FR SimonBarnett/agentic_fomprep#56",
+    }
+    assert queue_flow._gate_bucket(other) == "require_machine"
+
+
 def test_queue_flow_ok_when_only_ungated_is_offered_pending(tmp_path, monkeypatch):
     chair = tmp_path / ".jeeves"
     digest = tmp_path / ".bobiverse"
     chair.mkdir()
+    # FR #7097: pin BOB_DIGEST_HOME before roster/digest writes so SYSTEM !build
+    # isolation (BOBIVERSE_BUILD_SUITE) cannot steal the fixture home.
+    monkeypatch.setenv("BOB_DIGEST_HOME", str(digest))
+    monkeypatch.setenv("BOB_HOME", str(chair))
     registered_machines.save_registered(digest, {"marchhare"})
     _write_digest_workers(
         digest,
@@ -157,20 +185,22 @@ def test_queue_flow_ok_when_only_ungated_is_offered_pending(tmp_path, monkeypatc
             {"nick": "w-mh-41912", "state": "idle", "pid": 41912},
         ],
     )
-    monkeypatch.setenv("BOB_DIGEST_HOME", str(digest))
     (digest / "queue.json").write_text(
         json.dumps(
             {
                 "v": 1,
                 "unaccepted": [
                     {
-                        "repo": "SimonBarnett/bobiverse",
+                        # FR #4512 / #7097: bobiverse drops raw require_machine stamps
+                        # (re-infer only). A real pin fixture must use another repo,
+                        # same as test_idle_seats_ok_when_only_row_is_offered_pending.
+                        "repo": "SimonBarnett/agentic_fomprep",
                         "task": "FR",
-                        "id": "#1102",
+                        "id": "#56",
                         "require_machine": "redqueen",
                         "title": "DEV1 pin",
                         "labels": ["feature-request"],
-                        "line": "FR SimonBarnett/bobiverse#1102",
+                        "line": "FR SimonBarnett/agentic_fomprep#56",
                     },
                     {
                         "repo": "SimonBarnett/bobiverse",
@@ -192,6 +222,9 @@ def test_queue_flow_ok_when_only_ungated_is_offered_pending(tmp_path, monkeypatc
     payload, code = queue_flow.check(_args(chair, digest))
     assert code == 0, payload
     assert payload["ok"] is True
+    gated = payload.get("gated_counts") or {}
+    assert int(gated.get("require_machine") or 0) == 1
+    assert int(gated.get("ungated") or 0) == 1
     assert int(payload.get("ungated_offerable_count") or 0) == 0
     assert int(payload.get("pending_offer_count") or 0) == 1
     # Ghosts must not inflate idle_seat_count for starve math.
