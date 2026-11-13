@@ -1891,7 +1891,7 @@ function Resolve-BobTrayLivePeriod {
 }
 
 function Format-BobTrayWorkerLine {
-    # "{irc nick}: {work|offered:<work>|idle}" - FR #663: offered is not doing.
+    # "{irc nick}: {[kind/start_model[!]] }{work|offered:<work>|idle}" - FR #663 / FR #7147.
     param($Worker)
     if (-not $Worker) { return $null }
     $nick = ([string]$Worker.nick).Trim()
@@ -1910,11 +1910,25 @@ function Format-BobTrayWorkerLine {
         if ($w -and $w -ne 'offered') { $text = ('offered: {0}' -f $w) }
         else { $text = 'offered' }
     }
+    $kind = ''
+    if ($Worker.PSObject.Properties.Name -contains 'kind') { $kind = ([string]$Worker.kind).Trim() }
+    elseif ($Worker.PSObject.Properties.Name -contains 'agent') { $kind = ([string]$Worker.agent).Trim() }
+    $sm = ''
+    if ($Worker.PSObject.Properties.Name -contains 'start_model') { $sm = ([string]$Worker.start_model).Trim() }
+    elseif ($Worker.PSObject.Properties.Name -contains 'model') { $sm = ([string]$Worker.model).Trim() }
+    $mismatch = $false
+    if ($Worker.PSObject.Properties.Name -contains 'model_mismatch') {
+        try { $mismatch = [bool]$Worker.model_mismatch } catch { $mismatch = $false }
+    }
+    if ($kind -or $sm) {
+        $tag = if ($kind -and $sm) { '{0}/{1}' -f $kind, $sm } elseif ($sm) { $sm } else { $kind }
+        if ($mismatch -and $sm) { $tag = $tag + '!' }
+        $text = ('[{0}] {1}' -f $tag, $text)
+    }
     return ('{0}: {1}' -f $nick, $text)
 }
-
 function Get-BobTrayDigestWorkers {
-    # Digest machines.<id>.workers = [{nick,state,work,updated}] (Jeeves-maintained) -> tile worker rows.
+    # Digest machines.<id>.workers -> tile worker rows (FR #7147 carries start_model).
     param($Digest, [string]$MachineId)
     if (-not $Digest -or -not $Digest.machines -or -not $MachineId) { return @() }
     $ent = $null
@@ -1922,16 +1936,55 @@ function Get-BobTrayDigestWorkers {
         if ([string]$p.Name -ieq $MachineId) { $ent = $p.Value; break }
     }
     if (-not $ent -or -not ($ent.PSObject.Properties.Name -contains 'workers')) { return @() }
-    $out = @()
-    foreach ($w in @($ent.workers)) {
-        if (-not $w -or -not ($w.PSObject.Properties.Name -contains 'nick')) { continue }
-        $st = ([string]$w.state).Trim().ToLowerInvariant()
-        if ($st -ne 'doing' -and $st -ne 'idle' -and $st -ne 'offered') { continue }
-        $out += ,[pscustomobject]@{ nick = [string]$w.nick; state = $st; work = [string]$w.work; updated = [string]$w.updated }
+    $node = $ent.workers
+    $isNickMap = $false
+    if ($node -is [pscustomobject] -or $node -is [System.Collections.IDictionary]) {
+        foreach ($prop in @($node.PSObject.Properties)) {
+            if ([string]$prop.Name -match '^[A-Za-z0-9_]+\-\d+$') { $isNickMap = $true; break }
+        }
     }
-    return @($out | Sort-Object -Property nick)
+    $rows = @()
+    if ($isNickMap) {
+        foreach ($prop in @($node.PSObject.Properties)) {
+            $nick = [string]$prop.Name
+            if ($nick -notmatch '^[A-Za-z0-9_]+\-\d+$') { continue }
+            $val = $prop.Value
+            $row = [ordered]@{ nick = $nick; state = 'idle'; work = ''; updated = '' }
+            if ($val -is [pscustomobject] -or $val -is [System.Collections.IDictionary]) {
+                if ($val.state) { $row.state = [string]$val.state }
+                if ($val.work) { $row.work = [string]$val.work }
+                elseif ($val.job) { $row.work = [string]$val.job }
+                elseif ($val.working_on) { $row.work = [string]$val.working_on }
+                if ($val.updated) { $row.updated = [string]$val.updated }
+                if ($val.kind) { $row.kind = [string]$val.kind }
+                elseif ($val.agent) { $row.kind = [string]$val.agent }
+                if ($val.start_model) { $row.start_model = [string]$val.start_model }
+                elseif ($val.model) { $row.start_model = [string]$val.model }
+                if ($val.PSObject.Properties.Name -contains 'model_mismatch') { $row.model_mismatch = [bool]$val.model_mismatch }
+                if ($val.configured_model) { $row.configured_model = [string]$val.configured_model }
+            }
+            $st = ([string]$row.state).Trim().ToLowerInvariant()
+            if ($st -ne 'doing' -and $st -ne 'idle' -and $st -ne 'offered') { continue }
+            $rows += ,[pscustomobject]$row
+        }
+    }
+    else {
+        foreach ($w in @($node)) {
+            if (-not $w -or -not ($w.PSObject.Properties.Name -contains 'nick')) { continue }
+            $st = ([string]$w.state).Trim().ToLowerInvariant()
+            if ($st -ne 'doing' -and $st -ne 'idle' -and $st -ne 'offered') { continue }
+            $row = [ordered]@{ nick = [string]$w.nick; state = $st; work = [string]$w.work; updated = [string]$w.updated }
+            if ($w.kind) { $row.kind = [string]$w.kind }
+            elseif ($w.agent) { $row.kind = [string]$w.agent }
+            if ($w.start_model) { $row.start_model = [string]$w.start_model }
+            elseif ($w.model) { $row.start_model = [string]$w.model }
+            if ($w.PSObject.Properties.Name -contains 'model_mismatch') { $row.model_mismatch = [bool]$w.model_mismatch }
+            if ($w.configured_model) { $row.configured_model = [string]$w.configured_model }
+            $rows += ,[pscustomobject]$row
+        }
+    }
+    return @($rows | Sort-Object -Property nick)
 }
-
 function Get-BobTrayTitle {
     param($MachineId)
     $mid = [string]$MachineId

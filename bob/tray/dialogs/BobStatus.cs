@@ -1,5 +1,5 @@
 // t828u: Status card as a fast compiled exe. Same content as the TipForm: Copilot pool + Grok account rows
-// (Cursor spending-group bars removed after account unification), workers as "{irc nick}: {doing|idle}" from the digest,
+// (Cursor spending-group bars removed after account unification), workers as "{irc nick}: {[kind/start_model[!]] }{doing|idle}" from the digest (FR #7147),
 // alert, version footer.
 // Data is the snapshot the tray writes after every poll (<root>\run\tray-status.json); this exe never touches the network, so it
 // opens instantly and re-reads the file every 2 s while open. Parked until X / Esc, like the old card.

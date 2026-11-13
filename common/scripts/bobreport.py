@@ -1196,17 +1196,70 @@ def _mirror_worker_list_to_legacy_workers(ent: dict, mid: str, nick: str) -> Non
     idle = state == "idle"
     # Legacy pid rows historically used ``running`` for active; keep ``idle`` as idle.
     legacy_state = "idle" if idle else ("running" if state in ("doing", "offered") else state)
-    workers[pid_s] = _coerce_worker(
-        mid,
-        pid_s,
-        {
-            **prev,
-            "state": legacy_state,
-            "working_on": "" if idle else work,
-            "nick": n,
-            "key": worker_key(mid, pid_s),
-        },
-    )
+    merged = {
+        **prev,
+        "state": legacy_state,
+        "working_on": "" if idle else work,
+        "nick": n,
+        "key": worker_key(mid, pid_s),
+    }
+    # FR #7147: mirror model fields from worker_list onto pid workers.
+    for _k, _v in _model_fields_from_payload(row, prev).items():
+        merged[_k] = _v
+    workers[pid_s] = _coerce_worker(mid, pid_s, merged)
+
+
+
+
+def _model_fields_from_payload(payload: dict, prev: dict | None = None) -> dict:
+    """FR #7147 / #7084: copy CLI + start_model fields without secrets."""
+    prev = prev or {}
+    out: dict = {}
+    kind = str(payload.get("kind") or payload.get("agent") or prev.get("kind") or "").strip()
+    if kind:
+        out["kind"] = kind
+    agent = str(payload.get("agent") or prev.get("agent") or "").strip()
+    if agent:
+        out["agent"] = agent
+    start_model = str(
+        payload.get("start_model") or payload.get("model") or prev.get("start_model") or prev.get("model") or ""
+    ).strip()
+    if start_model:
+        out["start_model"] = start_model
+        out["model"] = start_model
+    configured_model = str(
+        payload.get("configured_model") or prev.get("configured_model") or ""
+    ).strip()
+    if configured_model:
+        out["configured_model"] = configured_model
+    if "model_mismatch" in payload:
+        out["model_mismatch"] = bool(payload.get("model_mismatch"))
+    elif "model_mismatch" in prev:
+        out["model_mismatch"] = bool(prev.get("model_mismatch"))
+    cost_tier = str(payload.get("cost_tier") or prev.get("cost_tier") or "").strip()
+    if cost_tier:
+        out["cost_tier"] = cost_tier
+    return out
+
+
+def _apply_model_fields_to_worker_list(ent: dict, nick: str, fields: dict) -> None:
+    """Keep chair worker_list in sync so tray export shows start_model (FR #7147)."""
+    n = str(nick or "").strip()
+    if not n or not fields:
+        return
+    rows = list(ent.get("worker_list") or [])
+    idx = next((i for i, r in enumerate(rows) if str(r.get("nick") or "").lower() == n.lower()), -1)
+    if idx < 0:
+        row = {"nick": n, "state": "idle", "work": "", "updated": _utc_now_iso()}
+        rows.append(row)
+        idx = len(rows) - 1
+    else:
+        row = dict(rows[idx])
+    for key in ("kind", "start_model", "configured_model", "model_mismatch", "cost_tier", "agent", "model"):
+        if key in fields:
+            row[key] = fields[key]
+    rows[idx] = row
+    ent["worker_list"] = _coerce_worker_list(rows)
 
 
 def worker_list_for_export(ent: dict) -> list[dict]:
@@ -2296,18 +2349,36 @@ def _apply_merge_payload(doc: dict, mid: str, payload: dict) -> list[str]:
         actions.extend(_merge_worker_on_ent(ent, mid, pid_s, str(payload.get("working_on") or ""), kind=kind))
         workers = ent.setdefault("workers", {})
         current = workers.get(pid_s)
+        if not isinstance(current, dict):
+            # FR #7147: idle/empty working_on still creates a pid row for start_model.
+            nick = str(payload.get("nick") or "").strip() or worker_nick(mid, pid_s)
+            current = _coerce_worker(
+                mid,
+                pid_s,
+                {
+                    "kind": kind,
+                    "state": str(payload.get("state") or "idle") or "idle",
+                    "working_on": "",
+                    "nick": nick,
+                    "key": worker_key(mid, pid_s),
+                },
+            )
+            workers[pid_s] = current
         if isinstance(current, dict):
             if str(payload.get("state") or "").strip().lower() == "idle":
                 current["state"] = "idle"
                 current["working_on"] = ""
-                current.pop("agent", None)
-                current.pop("model", None)
                 _roll_working_on(ent)
             else:
                 if str(payload.get("agent") or "").strip():
                     current["agent"] = str(payload.get("agent")).strip()
                 if str(payload.get("model") or "").strip():
                     current["model"] = str(payload.get("model")).strip()
+            fields = _model_fields_from_payload(payload, current)
+            for _k, _v in fields.items():
+                current[_k] = _v
+            workers[pid_s] = _coerce_worker(mid, pid_s, current)
+            _apply_model_fields_to_worker_list(ent, str(current.get("nick") or ""), fields)
     if "online" in payload:
         ent["online"] = bool(payload["online"])
         ent["status"] = "I am online" if ent["online"] else "I am offline"
@@ -2371,15 +2442,16 @@ def _apply_merge_payload(doc: dict, mid: str, payload: dict) -> list[str]:
                 "working_on": "" if idle else (prev.get("working_on") or ""),
                 "nick": payload.get("nick") or prev.get("nick") or worker_nick(mid, pid_s),
             }
-            if idle:
-                merged["agent"] = ""
-                merged["model"] = ""
-            else:
+            if not idle:
                 if str(payload.get("agent") or "").strip():
                     merged["agent"] = str(payload.get("agent")).strip()
                 if str(payload.get("model") or "").strip():
                     merged["model"] = str(payload.get("model")).strip()
+            fields = _model_fields_from_payload(payload, merged)
+            for _k, _v in fields.items():
+                merged[_k] = _v
             workers[pid_s] = _coerce_worker(mid, pid_s, merged)
+            _apply_model_fields_to_worker_list(ent, str(merged.get("nick") or ""), fields)
             _roll_working_on(ent)
     elif "working_on" in payload and (pid_raw is None or str(pid_raw) == ""):
         # Empty machine-level heartbeat must not wipe chair worker-work activity.
@@ -2676,6 +2748,9 @@ def _apply_worker_op(home: Path, op: str, mid: str, payload: dict, briefer_nick:
                 row["work"] = "working" if row["state"] == "doing" else "offered"
         else:
             row["work"] = ""
+        # FR #7147: chair worker-upsert/work may carry digest model fields.
+        for _k, _v in _model_fields_from_payload(payload, row).items():
+            row[_k] = _v
         event = op
     after_rows = _coerce_worker_list(rows)
     if _sig(after_rows) == before:
