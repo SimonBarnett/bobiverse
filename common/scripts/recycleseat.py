@@ -191,7 +191,19 @@ def _digest_read_candidates(home, install_root=None) -> list[Path]:
     return cands
 
 
+def _worker_row_is_busy(worker: dict) -> bool:
+    """True when a digest worker row shows in-progress work (list or map shape)."""
+    if not isinstance(worker, dict):
+        return False
+    if str(worker.get("working_on") or "").strip():
+        return True
+    if str(worker.get("work") or "").strip():
+        return True
+    return str(worker.get("state") or "").lower() in ("doing", "busy", "accepted")
+
+
 def _work_from_doc(doc: dict, seat_nick: str) -> bool:
+    """FR #7149: accept list-shaped machines.<mid>.workers (live digest) as well as pid maps."""
     legacy = bobreport.parse_worker_nick(seat_nick.lower())
     mid, _, pid = seat_nick.lower().rpartition("-")
     if legacy:
@@ -202,18 +214,27 @@ def _work_from_doc(doc: dict, seat_nick: str) -> bool:
     ent = (doc.get("machines") or {}).get(mid) or {}
     if not isinstance(ent, dict):
         return False
-    row = (ent.get("workers") or {}).get(str(int(pid))) or {}
-    if isinstance(row, dict) and str(row.get("working_on") or "").strip():
-        return True
+    workers = ent.get("workers")
+    # Legacy / chair map: workers keyed by pid (or nick) -> {working_on,...}
+    if isinstance(workers, dict):
+        row = workers.get(str(int(pid))) or workers.get(seat_nick.lower()) or workers.get(seat_nick) or {}
+        if _worker_row_is_busy(row if isinstance(row, dict) else {}):
+            return True
+    # Live public digest: workers is a list of {nick,state,work} (FR #7149 / #7117 e).
+    elif isinstance(workers, list):
+        for worker in workers:
+            if not isinstance(worker, dict):
+                continue
+            if str(worker.get("nick") or "").strip().lower() != seat_nick.lower():
+                continue
+            if _worker_row_is_busy(worker):
+                return True
     for worker in ent.get("worker_list") or []:
         if not isinstance(worker, dict):
             continue
         if str(worker.get("nick") or "").strip().lower() != seat_nick.lower():
             continue
-        if (
-            str(worker.get("work") or "").strip()
-            or str(worker.get("state") or "").lower() in ("doing", "busy", "accepted")
-        ):
+        if _worker_row_is_busy(worker):
             return True
     return False
 
