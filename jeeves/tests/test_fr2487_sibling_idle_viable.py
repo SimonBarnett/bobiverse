@@ -6,6 +6,8 @@ machine is free). UAT keeps the sibling-when-other-free block.
 """
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 import bobreport
 import gitclaim
 import registered_machines
@@ -95,7 +97,13 @@ def test_fr2604_mrb_sibling_ok_when_free_none():
 
 
 def test_fr2487_free_seat_nicks_excludes_accepted(tmp_path, monkeypatch):
+    # FR #7098: flamingo ircBob SYSTEM has COMPUTERNAME=flamingo. Fixture seats
+    # are other machines. live_seat_nicks (FR #4211) treats legacy ``workers``
+    # without a heartbeat as ghosts, and local pids as live only if the OS pid
+    # exists. Isolate: pretend we are flamingo, feed worker_list (shop path).
     monkeypatch.setenv("BOB_DIGEST_HOME", str(tmp_path))
+    monkeypatch.setenv("BOB_MACHINE_ID", "flamingo")
+    monkeypatch.setenv("COMPUTERNAME", "flamingo")
     registered_machines.save_registered(tmp_path, {"marchhare", "win-mpre8vi4u6u"})
     bobreport._SEAT_ROSTER_CACHE["key"] = None
     gitclaim._write_queue(
@@ -118,11 +126,16 @@ def test_fr2487_free_seat_nicks_excludes_accepted(tmp_path, monkeypatch):
         },
     )
     doc = bobreport.empty_digest()
+    now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     for mid, pids in {"marchhare": ["40208"], "win-mpre8vi4u6u": ["7764", "14452"]}.items():
         doc["machines"][mid] = bobreport._empty_machine(mid)
         doc["machines"][mid]["workers"] = {
-            pid: {"state": "idle", "nick": f"{mid}-{pid}"} for pid in pids
+            pid: {"state": "idle", "nick": f"{mid}-{pid}", "updated": now_iso}
+            for pid in pids
         }
+        doc["machines"][mid]["worker_list"] = [
+            {"nick": f"{mid}-{pid}", "state": "idle", "updated": now_iso} for pid in pids
+        ]
     bobreport.save_digest(tmp_path, doc)
     live = gitclaim.live_seat_nicks(tmp_path)
     free = gitclaim.free_seat_nicks(tmp_path, live)
@@ -130,3 +143,21 @@ def test_fr2487_free_seat_nicks_excludes_accepted(tmp_path, monkeypatch):
     assert "marchhare-40208" in lows
     assert "win-mpre8vi4u6u-14452" in lows
     assert "win-mpre8vi4u6u-7764" not in lows  # accepted => busy
+
+
+def test_fr7098_legacy_workers_without_heartbeat_are_ghosts_on_flamingo_system(
+    tmp_path, monkeypatch
+):
+    """Product: SYSTEM flamingo must not treat other machines' stale pid maps as live."""
+    monkeypatch.setenv("BOB_DIGEST_HOME", str(tmp_path))
+    monkeypatch.setenv("BOB_MACHINE_ID", "flamingo")
+    monkeypatch.setenv("COMPUTERNAME", "flamingo")
+    registered_machines.save_registered(tmp_path, {"marchhare"})
+    bobreport._SEAT_ROSTER_CACHE["key"] = None
+    doc = bobreport.empty_digest()
+    doc["machines"]["marchhare"] = bobreport._empty_machine("marchhare")
+    doc["machines"]["marchhare"]["workers"] = {
+        "40208": {"state": "idle", "nick": "marchhare-40208"}
+    }
+    bobreport.save_digest(tmp_path, doc)
+    assert gitclaim.live_seat_nicks(tmp_path) == set()

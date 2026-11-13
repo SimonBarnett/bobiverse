@@ -7434,6 +7434,8 @@ def live_seat_nicks(home: Path, *, now: float | None = None) -> set[str]:
     live used to strand repo-UAT eligibility math (FR #1401) and UAT sibling
     gates (FR #4211). Fall back to ``workers`` only when ``worker_list`` is empty,
     and then only for entries that are locally alive or freshly heartbeated.
+    Tests must not rely on COMPUTERNAME/BOB_MACHINE_ID or live OS pids (FR #7098
+    SYSTEM ircBob): fixture ``worker_list`` plus a heartbeat ``updated``.
     """
     import time as _time
 
