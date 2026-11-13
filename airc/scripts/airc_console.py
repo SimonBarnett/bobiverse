@@ -2701,6 +2701,8 @@ class ShellRequest:
     body: str
     job_id: str = field(default_factory=lambda: uuid.uuid4().hex[:8])
     cancel_event: threading.Event | None = field(default=None, repr=False)
+    # FR #7119: shared dict so CANCEL can taskkill / TerminateJobObject while busy.
+    runtime: dict[str, Any] | None = field(default=None, repr=False)
 
 
 @dataclass
@@ -3043,8 +3045,87 @@ def _clip_bytes(data: bytes, limit: int = SHELL_OUTPUT_MAX_BYTES) -> tuple[str, 
     return chunk.decode("utf-8", errors="replace"), clipped
 
 
-def _stop_shell_process(proc: subprocess.Popen) -> None:
+class _WinJob:
+    """Windows job object wrapping one Cmd/PS tree (FR #7119). Nested-job fail -> None."""
+
+    def __init__(self) -> None:
+        self.handle = 0
+        if os.name != "nt":
+            return
+        import ctypes
+        from ctypes import wintypes
+
+        class _JOBOBJECT_BASIC_LIMIT_INFORMATION(ctypes.Structure):
+            _fields_ = [
+                ("PerProcessUserTimeLimit", ctypes.c_int64),
+                ("PerJobUserTimeLimit", ctypes.c_int64),
+                ("LimitFlags", wintypes.DWORD),
+                ("MinimumWorkingSetSize", ctypes.c_size_t),
+                ("MaximumWorkingSetSize", ctypes.c_size_t),
+                ("ActiveProcessLimit", wintypes.DWORD),
+                ("Affinity", ctypes.c_size_t),
+                ("PriorityClass", wintypes.DWORD),
+                ("SchedulingClass", wintypes.DWORD),
+            ]
+
+        class _IO_COUNTERS(ctypes.Structure):
+            _fields_ = [("bits", ctypes.c_uint64 * 6)]
+
+        class _JOBOBJECT_EXTENDED_LIMIT_INFORMATION(ctypes.Structure):
+            _fields_ = [
+                ("BasicLimitInformation", _JOBOBJECT_BASIC_LIMIT_INFORMATION),
+                ("IoInfo", _IO_COUNTERS),
+                ("ProcessMemoryLimit", ctypes.c_size_t),
+                ("JobMemoryLimit", ctypes.c_size_t),
+                ("PeakProcessMemoryUsed", ctypes.c_size_t),
+                ("PeakJobMemoryUsed", ctypes.c_size_t),
+            ]
+
+        k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        k32.CreateJobObjectW.restype = wintypes.HANDLE
+        handle = k32.CreateJobObjectW(None, None)
+        if not handle:
+            return
+        # Do not set KILL_ON_JOB_CLOSE: a clean parent exit must not reap
+        # inherited grandchildren (FR #5211 inherited-capture test).
+        self.handle = int(handle)
+        self._k32 = k32
+
+    def assign(self, pid: int) -> bool:
+        if not self.handle:
+            return False
+        import ctypes
+        PROCESS_ALL_ACCESS = 0x1F0FFF
+        hp = self._k32.OpenProcess(PROCESS_ALL_ACCESS, False, int(pid))
+        if not hp:
+            return False
+        ok = bool(self._k32.AssignProcessToJobObject(self.handle, hp))
+        self._k32.CloseHandle(hp)
+        return ok
+
+    def terminate(self) -> None:
+        if not self.handle:
+            return
+        try:
+            self._k32.TerminateJobObject(self.handle, 1)
+        except OSError:
+            pass
+
+    def close(self) -> None:
+        if not self.handle:
+            return
+        try:
+            self._k32.CloseHandle(self.handle)
+        except OSError:
+            pass
+        self.handle = 0
+
+
+def _stop_shell_process(proc: subprocess.Popen, job: _WinJob | None = None) -> None:
     """Stop only this shell's tree; never wait on inherited stdout pipe handles."""
+    win_job = job if job is not None else getattr(proc, "_airc_job", None)
+    if win_job is not None:
+        win_job.terminate()
     if os.name == "nt":
         try:
             subprocess.run(
@@ -3119,6 +3200,12 @@ def run_shell_request(
         proc = subprocess.Popen(
             args, stdin=subprocess.DEVNULL, stdout=out_h, stderr=err_h, cwd=cwd,
         )
+        job = _WinJob()
+        job.assign(int(proc.pid))
+        proc._airc_job = job  # type: ignore[attr-defined]
+        if req.runtime is not None:
+            req.runtime["proc"] = proc
+            req.runtime["job"] = job
         deadline = time.monotonic() + timeout_s
         reason = ""
         stopped = False
@@ -3128,13 +3215,14 @@ def run_shell_request(
                     reason = "cancelled"
                     break
                 if time.monotonic() >= deadline:
-                    reason = f"timeout after {timeout_s:.0f}s"
+                    reason = f"killed: timeout (timeout after {timeout_s:.0f}s)"
                     break
                 cancel.wait(min(0.05, max(0, deadline - time.monotonic())))
         finally:
             if proc.poll() is None:
                 _stop_shell_process(proc)
                 stopped = True
+            job.close()
         # FR #5676: deadline can fire in the same tick the direct child exits
         # (inherited capture / slow host). Prefer the real returncode over a
         # spurious 124 when we never had to stop the process.
@@ -3171,7 +3259,10 @@ def run_shell_request(
     if err_clip:
         err += "\n[clipped stderr]"
     if reason:
-        err = (err + ("\n" if err else "") + reason).strip()
+        extra = reason
+        if exit_code == 124 and not (out or "").strip() and "killed: timeout" in reason:
+            extra = extra + "\nkilled: no-output"
+        err = (err + ("\n" if err else "") + extra).strip()
     return ShellOutcome(
         job_id=req.job_id,
         exit_code=exit_code,
@@ -3399,6 +3490,7 @@ class _ShellPending:
     reply_lock: threading.RLock = field(default_factory=threading.RLock)
     abandoned: bool = False
     terminal_sent: bool = False
+    runtime: dict[str, Any] = field(default_factory=dict)
 
 
 class ShellJobRunner:
@@ -3614,6 +3706,7 @@ class ShellJobRunner:
                 return
             req.job_id = item.job_id
             req.cancel_event = item.cancelled
+            req.runtime = item.runtime
             jid = req.job_id
             with item.reply_lock:
                 if item.abandoned:
@@ -3705,21 +3798,32 @@ class ShellJobRunner:
             except UnicodeError:
                 return
 
+    def busy_job_id(self) -> str:
+        """FR #7119: first in-flight shell job id, or empty when idle."""
+        with self._lock:
+            for item in self._inflight_cmd.values():
+                return (item.job_id or "").strip().lower()
+        return ""
+
     def cancel(self, nick: str, job_id: str) -> bool:
         """Cancel an active or queued shell owned by this Query, not another nick."""
         key = nick.strip().lower()
         jid = job_id.strip().lower()
         removed: list[_ShellPending] = []
         found = False
+        kill_proc = None
+        kill_job = None
         with self._lock:
             active = self._inflight_cmd.get(key)
-            if active is not None and active.job_id == jid:
+            if active is not None and (active.job_id or "").strip().lower() == jid:
                 active.cancelled.set()
                 found = True
+                kill_proc = active.runtime.get("proc")
+                kill_job = active.runtime.get("job")
             q = self._pending.get(key)
             if q is not None:
                 for item in list(q):
-                    if item.job_id == jid:
+                    if (item.job_id or "").strip().lower() == jid:
                         item.cancelled.set()
                         q.remove(item)
                         removed.append(item)
@@ -3728,6 +3832,8 @@ class ShellJobRunner:
             self._resume_kind.pop((key, jid), None)
             if found:
                 self._dcc_listen.pop(jid, None)
+        if kill_proc is not None:
+            _stop_shell_process(kill_proc, job=kill_job)
         for item in removed:
             try:
                 self._emit(key, f"err id={jid} seq=1 cancelled")
@@ -3850,6 +3956,9 @@ class AircConsoleCore:
         self.update_scheduler = update_scheduler or schedule_fleet_update
         self.install_root = install_root
         self.job_protocol = job_protocol
+        if self.job_protocol is not None and self.shell_runner is not None:
+            if getattr(self.job_protocol, "shell_busy_fn", None) is None:
+                self.job_protocol.shell_busy_fn = self.shell_runner.busy_job_id
         # FR #5284: PRIORITY connect/status (injectable for SelfTest mocks).
         # FR #6012: remember injection so FR #5960 optional-absent does not
         # swallow a test/selftest runner before connect|status.

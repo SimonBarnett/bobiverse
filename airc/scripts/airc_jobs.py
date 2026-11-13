@@ -837,12 +837,23 @@ def format_version_lines(
     return [" ".join(bits)]
 
 
-def format_status_lines(*, airc_running: bool, versions: dict[str, str], machine: str) -> list[str]:
+def format_status_lines(
+    *,
+    airc_running: bool,
+    versions: dict[str, str],
+    machine: str,
+    shell_job: str = "",
+) -> list[str]:
     run = "Running" if airc_running else "Stopped"
-    return [
+    line = (
         f"STATUS machine={machine} airc={run} bob={versions.get('bob', '-')} "
         f"airc_ver={versions.get('airc', '-')} jeeves={versions.get('jeeves', '-')}"
-    ]
+    )
+    # FR #7119: STATUS stays independent of the shell queue but reports a busy Cmd.
+    jid = (shell_job or "").strip().lower()
+    if jid:
+        line += f" shell_busy=1 shell_job={jid}"
+    return [line]
 
 
 class JobProtocol:
@@ -861,10 +872,12 @@ class JobProtocol:
         run_timeout_s: float = DEFAULT_RUN_TIMEOUT_S,
         job_io_timeout_s: float = JOB_IO_TIMEOUT_S,
         inline_jobs: bool = True,
+        shell_busy_fn: Callable[[], str] | None = None,
     ) -> None:
         self.store = store
         self.verb_auth = verb_auth or VerbAuthPolicy()
         self.on_reply = on_reply
+        self.shell_busy_fn = shell_busy_fn
         self.run_file = run_file or _default_run_ps1
         self.ai_root = ai_root
         self.machine = machine
@@ -896,8 +909,17 @@ class JobProtocol:
             self.authorize(nick, verb)
             if verb == "STATUS":
                 vers = collect_status_versions(self.ai_root)
+                busy = ""
+                if self.shell_busy_fn:
+                    try:
+                        busy = self.shell_busy_fn() or ""
+                    except Exception:
+                        busy = ""
                 body = format_status_lines(
-                    airc_running=self.airc_running, versions=vers, machine=self.machine
+                    airc_running=self.airc_running,
+                    versions=vers,
+                    machine=self.machine,
+                    shell_job=busy,
                 )
                 # FR #2570: terminal DONE so Invoke-AircRemote -ReplyFile Wait matches id=.
                 # FR #2575: frame body as out id= seq= (same as format_shell_replies) so StdOut fills.
