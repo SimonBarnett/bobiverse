@@ -68,17 +68,24 @@ def short_build_sha(commit: str | None = None) -> str:
 
 
 def resolve_seat_hello_model(kind: str, env: Optional[dict] = None) -> str:
-    """FR #6418: the configured model the seat's agent will launch with ('' when unreadable).
+    """FR #6418 / FR #7084: the configured model the seat's agent will launch with.
 
-    OpenCode: the launch model is ``BOB_OPENCODE_MODEL`` (``run_agent`` exports the
-    ``resolve_opencode_model`` pick there: operator env -> OpenCode config -> fuel),
-    then the OpenCode config's ``model``. Grok / Cursor (and any other kind) have no
-    model configuration the worker can already read, so the hello line reports
-    ``unknown`` for them. Local reads only: no network or provider calls, and never
-    credentials or auth files.
+    FR #7084: ``workerStartModels`` (JSON/env) is the per-CLI minimum start model.
+    OpenCode still honours ``BOB_OPENCODE_MODEL`` then OpenCode config. Empty config
+    stays empty (hello ``unknown``); never invent a premium id.
     """
     env = os.environ if env is None else env
-    if (kind or "").strip().lower() != "opencode":
+    k = (kind or "").strip().lower()
+    try:
+        import worker_start_model as wsm
+
+        cfg = wsm.load_worker_start_config(env=env)
+        picked = wsm.configured_start_model(k, cfg)
+        if picked:
+            return picked
+    except Exception:
+        pass
+    if k != "opencode":
         return ""
     m = str(env.get("BOB_OPENCODE_MODEL") or "").strip()
     if m:
@@ -254,6 +261,10 @@ ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
 FORBIDDEN_FLAGS = ("--resume", "-r", "--continue", "-c", "--resume-session", "--session", "--chat")
 CREATE_NEW_CONSOLE = 0x00000010
 CREATE_NO_WINDOW = 0x08000000
+# FR #7117: console QuickEdit freezes the seat until Enter (looks like a crash).
+ENABLE_QUICK_EDIT_MODE = 0x0040
+ENABLE_EXTENDED_FLAGS = 0x0080
+STD_INPUT_HANDLE = -10
 
 RULE_RESTART_MAX = 3
 RULE_RESTART_WINDOW_S = 1800.0
@@ -1776,6 +1787,14 @@ def describe_agent_child_launch(
         session_id=session_id, install_root=install_root,
     )
     env = seat_env_extra(rd, machine, nick)
+    try:
+        import worker_start_model as wsm
+
+        actual = wsm.actual_from_launch_spec(kind_l, spec, env=env)
+        if actual:
+            env[wsm.ENV_ACTUAL_MODEL] = actual
+    except Exception:
+        pass
     if bound_meta.get("grok_home"):
         try:
             import skill_dag_bound as _sdb
@@ -1936,8 +1955,26 @@ def maintenance_state_path() -> Path:
     return Path(base) / "Bobiverse" / "maintenance" / "last-session.json"
 
 
-def grok_sessions_root() -> Path:
-    return Path(os.environ.get("GROK_HOME") or (Path.home() / ".grok")) / "sessions"
+AGENT_GROK_HOME_DIR = "grok-home"
+
+
+def agent_grok_home(*, run_dir: Path | str | None = None, env: Optional[dict] = None) -> Path:
+    """GROK_HOME of the spawned agent (FR #7123).
+
+    When ``run_dir`` is set, always use ``<run_dir>/grok-home`` (the child env value).
+    Never fall back to ``~/.grok`` while a per-worker home is in play.
+    """
+    e = os.environ if env is None else env
+    if run_dir is not None:
+        return Path(run_dir) / AGENT_GROK_HOME_DIR
+    child = str((e or {}).get("GROK_HOME") or "").strip()
+    if child:
+        return Path(child)
+    return Path.home() / ".grok"
+
+
+def grok_sessions_root(*, run_dir: Path | str | None = None, env: Optional[dict] = None) -> Path:
+    return agent_grok_home(run_dir=run_dir, env=env) / "sessions"
 
 
 def grok_session_exists(session_id: str, cwd: str, sessions_root: Optional[Path] = None) -> bool:
@@ -2085,18 +2122,46 @@ def skill_dag_vision_roots(worker_cwd: str, *, home: Path | None = None) -> list
     ]
 
 
+SKILL_DAG_JOB_WORKTREE_POINTER = "skill-dag-job-worktree"
+
+
+def skill_dag_job_worktree_pointer_path(worker_cwd: str | Path) -> Path:
+    """FR #7120: live one-line worktree pointer next to seat ``.grok/config.toml``."""
+    return Path(worker_cwd) / ".grok" / SKILL_DAG_JOB_WORKTREE_POINTER
+
+
+def write_skill_dag_job_worktree_pointer(
+    worker_cwd: str | Path,
+    job_worktree: str | Path | None = None,
+) -> Path:
+    """Write or clear the live job-worktree pointer (empty file = no assigned tree)."""
+    path = skill_dag_job_worktree_pointer_path(worker_cwd)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    wt = str(job_worktree or "").strip()
+    text = Path(wt).as_posix() + "\n" if wt else ""
+    path.write_text(text, encoding="utf-8")
+    return path
+
+
 def skill_dag_mcp_launch_args(
     worker_cwd: str,
     *,
     job_worktree: str | Path | None = None,
+    pointer_cwd: str | Path | None = None,
 ) -> list[str]:
-    """stdio argv: script plus repeatable ``--root`` (and optional ``--job-worktree``)."""
+    """stdio argv: script plus ``--root`` and a stable ``--job-worktree-file`` (FR #7120).
+
+    Assign refreshes the pointer file; argv stays the same so Grok does not
+    replace the stdio MCP child mid-job.
+    """
+    ptr_home = pointer_cwd if pointer_cwd is not None else worker_cwd
+    if job_worktree is not None:
+        write_skill_dag_job_worktree_pointer(ptr_home, job_worktree)
+    ptr = skill_dag_job_worktree_pointer_path(ptr_home)
     args = [skill_dag_mcp_script_path(worker_cwd).as_posix()]
     for root in skill_dag_vision_roots(worker_cwd):
         args.extend(["--root", root.as_posix()])
-    wt = str(job_worktree or "").strip()
-    if wt:
-        args.extend(["--job-worktree", Path(wt).as_posix()])
+    args.extend(["--job-worktree-file", ptr.as_posix()])
     return args
 
 
@@ -2130,9 +2195,14 @@ def write_skill_dag_mcp_config(
     grok_dir.mkdir(parents=True, exist_ok=True)
     cfg = grok_dir / "config.toml"
     roots_from = str(vision_cwd or worker_cwd)
-    block = _skill_dag_toml_block(skill_dag_mcp_launch_args(roots_from, job_worktree=job_worktree))
+    write_skill_dag_job_worktree_pointer(worker_cwd, job_worktree)
+    block = _skill_dag_toml_block(
+        skill_dag_mcp_launch_args(roots_from, job_worktree=None, pointer_cwd=worker_cwd)
+    )
     text = cfg.read_text(encoding="utf-8") if cfg.is_file() else ""
-    cfg.write_text(_upsert_skill_dag_toml(text, block), encoding="utf-8")
+    new = _upsert_skill_dag_toml(text, block)
+    if text != new:
+        cfg.write_text(new, encoding="utf-8")
     return cfg
 
 
@@ -2159,11 +2229,12 @@ def cursor_skill_dag_mcp_document(
     worker_cwd: str,
     job_worktree: str | Path | None = None,
 ) -> dict:
+    write_skill_dag_job_worktree_pointer(worker_cwd, job_worktree)
     return {
         "mcpServers": {
             "skill-dag": {
                 "command": "python",
-                "args": skill_dag_mcp_launch_args(worker_cwd, job_worktree=job_worktree),
+                "args": skill_dag_mcp_launch_args(worker_cwd, job_worktree=None),
             }
         }
     }
@@ -2190,7 +2261,9 @@ def write_cursor_skill_dag_mcp_config(
         servers = {}
     servers["skill-dag"] = incoming["mcpServers"]["skill-dag"]
     data["mcpServers"] = servers
-    cfg.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    new = json.dumps(data, indent=2) + "\n"
+    if not cfg.is_file() or cfg.read_text(encoding="utf-8") != new:
+        cfg.write_text(new, encoding="utf-8")
     return cfg
 
 
@@ -2207,10 +2280,11 @@ def refresh_live_skill_dag_mcp_files(
     vision_cwd: str | Path | None = None,
     job_worktree: str | Path | None = None,
 ) -> None:
-    """FR #6918: rewrite live grok bound / cursor seat MCP for the assigned worktree.
+    """FR #6918 / #7120: point the live MCP at the assigned worktree.
 
-    ``job_worktree`` None/empty drops ``--job-worktree`` (job end). Never writes
-    user ``~/.cursor/mcp.json`` or user grok config.
+    Writes the one-line pointer file. MCP argv (``--job-worktree-file``) stays
+    stable so Grok does not replace the stdio child. Empty ``job_worktree``
+    clears the pointer (job end). Never writes user ``~/.cursor/mcp.json``.
     """
     wt = str(job_worktree or "").strip() or None
     if grok_bound_cwd:
@@ -2264,6 +2338,78 @@ def descendant_pids(root_pid: int, rows: list) -> set[int]:
                 out.add(child)
                 stack.append(child)
     return out
+
+
+def skill_dag_mcp_descendant_pids(
+    agent_pid: int | None,
+    seat_markers: list[str | Path | None],
+    *,
+    snapshot: Optional[Callable[[], list]] = None,
+    cmdline_of: Optional[Callable[[int], str]] = None,
+) -> list[int]:
+    """This agent's live skill-dag stdio child pids (FR #7120)."""
+    try:
+        root = int(agent_pid or 0)
+    except (TypeError, ValueError):
+        root = 0
+    if root <= 0:
+        return []
+    rows = snapshot() if snapshot is not None else snapshot_procs()
+    describe = cmdline_of if cmdline_of is not None else (lambda pid: str(describe_process(pid)[2] or ""))
+    found: list[int] = []
+    for pid in sorted(descendant_pids(root, rows)):
+        try:
+            cmd = describe(pid) or ""
+        except Exception:
+            continue
+        if skill_dag_mcp_stdio_cmdline_matches(cmd, seat_markers):
+            found.append(pid)
+    return found
+
+
+def report_skill_dag_mcp_transport_drop(
+    *,
+    machine: str = "",
+    agent_pid: int | None = None,
+    filer_post: Optional[Callable[..., dict]] = None,
+) -> dict:
+    """FR #7120: one intake if the live stdio MCP child vanished. No secrets."""
+    if filer_post is None and os.environ.get("PYTEST_CURRENT_TEST"):
+        return {"ok": True, "skipped": True, "reason": "pytest"}
+    mid = re.sub(r"[^a-z0-9._-]+", "-", str(machine or "unknown").strip().lower()).strip("-") or "unknown"
+    try:
+        pid_s = str(int(agent_pid or 0))
+    except (TypeError, ValueError):
+        pid_s = "0"
+    key = f"skill-dag-mcp-drop|{mid}|{pid_s}"[:128]
+    title = "bug: skill-dag MCP stdio transport dropped mid-job (FR #7120)"
+    body = (
+        "The Grok/Cursor skill-dag stdio MCP child exited while the agent stayed up. "
+        "Seat should keep the same MCP process and refresh --job-worktree-file only. "
+        f"machine={mid} agent_pid={pid_s}"
+    )
+    payload = {
+        "kind": "issue",
+        "repo": "SimonBarnett/bobiverse",
+        "title": title,
+        "body": body,
+        "idempotency_key": key,
+        "dedupe_key": key,
+        "machine": mid,
+        "agent": "bob-worker",
+    }
+    if filer_post is not None:
+        try:
+            return filer_post(payload) or {"ok": True}
+        except Exception:
+            return {"ok": False}
+    try:
+        import crash_report
+
+        crash_report._post_intake(title, body, repo="SimonBarnett/bobiverse", sig=key, exe="bob-worker")
+        return {"ok": True, "key": key}
+    except Exception:
+        return {"ok": False, "key": key}
 
 
 def restart_skill_dag_mcp_stdio_children(
@@ -2439,6 +2585,13 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             argv = prefix + ["--resume", sid, "--rules", rules, prompt]
         else:
             argv = prefix + ["-s", sid, "--rules", rules, prompt]
+        try:
+            import worker_start_model as wsm
+
+            grok_model = wsm.configured_start_model("grok", wsm.load_worker_start_config())
+            argv = wsm.launch_argv_with_model("grok", argv, grok_model)
+        except Exception:
+            pass
     elif kind == "cursor":
         # The prompt goes through a FILE read by a fixed launcher: text never lands on a command line (no shell injection).
         pfile = str(Path(run_dir) / "prompt.txt")
@@ -2446,6 +2599,21 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
         esc = lambda s: str(s).replace("'", "''")  # noqa: E731
         agent_line = (f"& '{esc(exe)}' --plan --model auto --workspace '{esc(cwd)}' $prompt" if mode == "plan"
                       else f"& '{esc(exe)}' --trust --force --workspace '{esc(cwd)}' -- $prompt")
+        try:
+            import worker_start_model as wsm
+
+            cur_model = wsm.configured_start_model("cursor", wsm.load_worker_start_config())
+            if cur_model:
+                if "--model auto" in agent_line:
+                    agent_line = agent_line.replace("--model auto", f"--model {esc(cur_model)}", 1)
+                elif "--model" not in agent_line:
+                    agent_line = agent_line.replace(
+                        f"& '{esc(exe)}'",
+                        f"& '{esc(exe)}' --model '{esc(cur_model)}'",
+                        1,
+                    )
+        except Exception:
+            pass
         files[pfile] = prompt
         files[lfile] = "\n".join(["$ErrorActionPreference = 'Stop'", f"$prompt = [IO.File]::ReadAllText('{esc(pfile)}')",
                                   f"Set-Location -LiteralPath '{esc(cwd)}'", agent_line, "exit $LASTEXITCODE"])
@@ -2481,9 +2649,21 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
         # so BoredEmitter gets harvest-hold / done-miss / startup-ready parity with Grok.
         # FR #6240: no external_directory allow. Each injected assign carries its own
         # @@BOBJOB1 frame. The standing prompt is not a job and is not scanned.
+        oc_cfg_model = ""
+        try:
+            import worker_start_model as wsm
+
+            oc_cfg_model = wsm.configured_start_model("opencode", wsm.load_worker_start_config())
+        except Exception:
+            oc_cfg_model = ""
+        oc_fallback = (
+            f"if (-not $env:BOB_OPENCODE_MODEL) {{ $env:BOB_OPENCODE_MODEL = '{esc(oc_cfg_model)}' }}"
+            if oc_cfg_model
+            else r"if (-not $env:BOB_OPENCODE_MODEL) { throw 'BOB_OPENCODE_MODEL is required (no exhausted glm-5.3 fallback)' }"
+        )
         files[lfile] = "\n".join([
             r"$ErrorActionPreference = 'Stop'",
-            r"if (-not $env:BOB_OPENCODE_MODEL) { throw 'BOB_OPENCODE_MODEL is required (no exhausted glm-5.3 fallback)' }",
+            oc_fallback,
             r"$model = $env:BOB_OPENCODE_MODEL",
             f"$exe = '{esc(exe)}'",
             f"$prompt = [IO.File]::ReadAllText('{esc(pfile)}')",
@@ -2825,7 +3005,30 @@ def ensure_console(title: str = "") -> bool:
             return False
     if title:
         k32.SetConsoleTitleW(str(title)[:200])
+    disable_console_quick_edit(k32)
     return True
+
+
+def disable_console_quick_edit(k32=None) -> bool:
+    """Turn off QuickEdit so a click/select cannot freeze the worker until Enter (FR #7117)."""
+    if os.name != "nt":
+        return False
+    try:
+        k32 = k32 or ctypes.WinDLL("kernel32", use_last_error=True)
+        GetStdHandle = k32.GetStdHandle
+        GetConsoleMode = k32.GetConsoleMode
+        SetConsoleMode = k32.SetConsoleMode
+        GetStdHandle.restype = ctypes.c_void_p
+        h = GetStdHandle(STD_INPUT_HANDLE)
+        if not h or int(h) in (0, -1, 0xFFFFFFFF, 0xFFFFFFFFFFFFFFFF):
+            return False
+        mode = ctypes.c_uint(0)
+        if not GetConsoleMode(ctypes.c_void_p(int(h)), ctypes.byref(mode)):
+            return False
+        new_mode = (int(mode.value) | ENABLE_EXTENDED_FLAGS) & ~ENABLE_QUICK_EDIT_MODE
+        return bool(SetConsoleMode(ctypes.c_void_p(int(h)), new_mode))
+    except Exception:
+        return False
 
 
 def find_window_icon(install_root: Optional[Path] = None) -> Optional[Path]:
@@ -3722,17 +3925,26 @@ def grok_session_dir(
     cwd: str,
     session_id: str,
     sessions_root: Optional[Path] = None,
+    run_dir: Path | str | None = None,
 ) -> Optional[Path]:
-    """Resolve ``~/.grok/sessions/<url-quoted cwd>/<uuid>`` when present (FR #2696)."""
+    """Resolve ``<agent GROK_HOME>/sessions/<url-quoted cwd>/<uuid>`` (FR #2696 / #7123)."""
     from urllib.parse import quote
 
     if not session_id or not re.fullmatch(r"[0-9a-fA-F-]{36}", str(session_id)):
         return None
-    root = Path(sessions_root) if sessions_root else grok_sessions_root()
+    root = Path(sessions_root) if sessions_root else grok_sessions_root(run_dir=run_dir)
+    sid = str(session_id)
     for key in (quote(str(cwd), safe=""), quote(str(cwd).rstrip("\\"), safe="")):
-        d = root / key / str(session_id)
+        d = root / key / sid
         if d.is_dir():
             return d
+    try:
+        if root.is_dir():
+            for d in root.glob("*/" + sid):
+                if d.is_dir():
+                    return d
+    except OSError:
+        pass
     return None
 
 
@@ -3765,7 +3977,7 @@ def probe_grok_session_submit(session_dir: Path | str, *, since_wall: float) -> 
 
 def probe_unified_prompt_enqueue(*, agent_pid: int, since_wall: float, log_path: Optional[Path] = None) -> bool:
     """True when unified.jsonl has grok-pager prompt.enqueue for agent_pid after since_wall."""
-    path = Path(log_path) if log_path else (Path(os.environ.get("GROK_HOME") or (Path.home() / ".grok")) / "logs" / "unified.jsonl")
+    path = Path(log_path) if log_path else default_unified_log_path()
     if not path.is_file() or int(agent_pid or 0) <= 0:
         return False
     try:
@@ -3842,12 +4054,19 @@ def make_submit_probe(
     t0 = float(time.time() if since_wall is None else since_wall)
 
     if k == "grok":
-        sdir = grok_session_dir(cwd, session_id or "", sessions_root=sessions_root) if session_id else None
+        sdir = (
+            grok_session_dir(cwd, session_id or "", sessions_root=sessions_root, run_dir=run_dir)
+            if session_id
+            else None
+        )
+        unified = default_unified_log_path(run_dir=run_dir)
 
         def _probe() -> bool:
             if sdir and probe_grok_session_submit(sdir, since_wall=t0):
                 return True
-            if agent_pid and probe_unified_prompt_enqueue(agent_pid=int(agent_pid), since_wall=t0):
+            if agent_pid and probe_unified_prompt_enqueue(
+                agent_pid=int(agent_pid), since_wall=t0, log_path=unified
+            ):
                 return True
             return False
 
@@ -4727,11 +4946,53 @@ def out_of_fuel_nack_line(job_key: str) -> str:
     return f"NACK {key} out-of-fuel"
 
 
-def default_unified_log_path() -> Path:
-    return Path(os.environ.get("GROK_HOME") or (Path.home() / ".grok")) / "logs" / "unified.jsonl"
+def default_unified_log_path(*, run_dir: Path | str | None = None, env: Optional[dict] = None) -> Path:
+    return agent_grok_home(run_dir=run_dir, env=env) / "logs" / "unified.jsonl"
 
 
-def default_out_of_fuel_log_path(kind: str, *, env: Optional[dict] = None) -> Optional[Path]:
+def grok_log_has_turn_activity(path: Path | str | None, *, since_wall: float) -> bool:
+    """True when events.jsonl / unified.jsonl has turn_started or turn_ended after since_wall."""
+    p = Path(path) if path else None
+    if p is None or not p.is_file():
+        return False
+    try:
+        data = p.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return False
+    cut = float(since_wall or 0.0)
+    for line in data.splitlines()[-400:]:
+        if '"turn_started"' not in line and '"turn_ended"' not in line:
+            continue
+        try:
+            obj = json.loads(line)
+        except Exception:
+            continue
+        if str(obj.get("type") or "") not in ("turn_started", "turn_ended"):
+            continue
+        ts = _parse_iso_ts(str(obj.get("ts") or ""))
+        if ts is None or ts > cut:
+            return True
+    return False
+
+
+def should_startup_hang_recycle(
+    *,
+    ack_open: bool,
+    activity_paths: list[Path | str] | None = None,
+    since_wall: float = 0.0,
+) -> bool:
+    """FR #7123: do not hang-recycle an ACKed job or a seat whose per-worker log has turns."""
+    if ack_open:
+        return False
+    for raw in activity_paths or []:
+        if grok_log_has_turn_activity(raw, since_wall=since_wall):
+            return False
+    return True
+
+
+def default_out_of_fuel_log_path(
+    kind: str, *, env: Optional[dict] = None, run_dir: Path | str | None = None
+) -> Optional[Path]:
     r"""Log path to tail for mid-job out-of-fuel (FR #3012 grok / FR #3019 cursor / FR #6120 opencode).
 
     Override with ``BOB_WORKER_OUT_OF_FUEL_LOG``. Grok defaults to ``unified.jsonl``.
@@ -4746,7 +5007,7 @@ def default_out_of_fuel_log_path(kind: str, *, env: Optional[dict] = None) -> Op
         return Path(override)
     k = (kind or "").strip().lower()
     if k == "grok":
-        return default_unified_log_path()
+        return default_unified_log_path(run_dir=run_dir, env=env)
     if k == "cursor":
         return None
     if k == "opencode":
@@ -6662,6 +6923,9 @@ def post_digest_seat_kind(
     kind: str = "",
     agent: str = "",
     model: str = "",
+    configured_model: str = "",
+    model_mismatch: bool | None = None,
+    cost_tier: str = "",
     working_on: str = "",
     worker_build: str | None = None,
     url: str | None = None,
@@ -6697,6 +6961,16 @@ def post_digest_seat_kind(
     }
     if (model or "").strip():
         payload["model"] = str(model).strip()
+        payload["start_model"] = str(model).strip()
+    cfg_m = str(configured_model or "").strip()
+    if cfg_m:
+        payload["configured_model"] = cfg_m
+    if model_mismatch is not None:
+        payload["model_mismatch"] = bool(model_mismatch)
+    elif cfg_m and (model or "").strip():
+        payload["model_mismatch"] = str(model).strip().lower() != cfg_m.lower()
+    if (cost_tier or "").strip():
+        payload["cost_tier"] = str(cost_tier).strip()
     ok = bool(_http_post_json(report, payload, log=log))
     if not ok and log:
         try:
@@ -9339,7 +9613,11 @@ class Supervisor:
         self._fuel_watch_stop = threading.Event()
         kind = (self.kind or "").strip().lower()
         path_fn = self._out_of_fuel_log_path_fn or (
-            lambda: default_out_of_fuel_log_path(kind, env=self.base_env if isinstance(self.base_env, dict) else None)
+            lambda: default_out_of_fuel_log_path(
+                kind,
+                env=self.base_env if isinstance(self.base_env, dict) else None,
+                run_dir=self.run_dir,
+            )
         )
 
         def _on_hit(text: str) -> None:
@@ -9506,8 +9784,8 @@ class Supervisor:
             if self.sessions:
                 sid = self.sessions[-1]
                 sid_box["sid"] = sid
-            d = grok_session_dir(cwd, sid or "")
-            # GrokTurnWatcher tails the events file (same as make_submit_probe / FR #2696).
+            d = grok_session_dir(cwd, sid or "", run_dir=run_dir)
+            # GrokTurnWatcher tails the events file (same as make_submit_probe / FR #2696 / #7123).
             return (d / "events.jsonl") if d is not None else None
 
         def _on_started(turn: Optional[int], wall: float) -> None:
@@ -9885,6 +10163,7 @@ class Supervisor:
             spec = child["spec"]
             # FR #2380 / #2413 / #2669: seat env + path normalize + scrub agent-host vars.
             env = prepare_seat_child_env(self.base_env, child["env"])
+            self.last_child_env = dict(env)
             if self.secret is not None and self.kind == "grok":
                 env["XAI_API_KEY"] = self.secret.reveal()  # child env only
             try:
@@ -10123,6 +10402,17 @@ class Supervisor:
             detail = "process dead or 0 CPU"
         else:
             detail = "first turn_ended never arrived (hard cap)"
+        ack_open = bool(self.bored and getattr(self.bored, "_ack_open", False))
+        since = float(getattr(self, "_agent_started_at", 0.0) or 0.0)
+        # _agent_started_at is monotonic; activity logs use wall clock — use 0 to accept any turn.
+        paths = self._startup_activity_paths()
+        if not should_startup_hang_recycle(ack_open=ack_open, activity_paths=paths, since_wall=0.0):
+            self.log(
+                f"agent: startup ready cap skip hang-recycle (FR #7123 ack_open={ack_open} "
+                f"saw_turn_started={saw_started}) - releasing hold"
+            )
+            self._ready_now(proc, reason="activity")
+            return
         self.log(
             f"agent: startup ready cap {_startup_ready_cap_s():.0f}s reached without turn_ended "
             f"({detail}; saw_turn_started={saw_started}) - hang-recycle (FR #4123)"
@@ -10259,7 +10549,7 @@ class Supervisor:
         except Exception as e:  # noqa: BLE001
             self.log(f"skill-dag mcp job-worktree rewrite skipped {type(e).__name__}")
             return
-        # FR #6928: file rewrite does not change a live stdio MCP argv until respawn.
+        # FR #7120: keep the live stdio MCP; pointer file is enough.
         agent_pid = None
         try:
             proc = getattr(self, "proc", None)
@@ -10267,14 +10557,16 @@ class Supervisor:
                 agent_pid = int(proc.pid)
         except (TypeError, ValueError):
             agent_pid = None
-        try:
-            restart_skill_dag_mcp_stdio_children(
-                agent_pid,
-                [bound, cursor, vision, job_worktree],
-                log=self.log,
-            )
-        except Exception as e:  # noqa: BLE001
-            self.log(f"skill-dag mcp restart skipped {type(e).__name__}")
+        markers = [bound, cursor, vision, job_worktree]
+        before = skill_dag_mcp_descendant_pids(agent_pid, markers)
+        after = skill_dag_mcp_descendant_pids(agent_pid, markers)
+        if before and not after:
+            self.log("skill-dag mcp transport dropped")
+            try:
+                mid = str(getattr(self, "machine", "") or "")
+                report_skill_dag_mcp_transport_drop(machine=mid, agent_pid=agent_pid)
+            except Exception:
+                pass
 
     def _live_skill_dag_job_end_cleanup(self, job: Optional[str] = None) -> None:
         del job
@@ -10493,7 +10785,9 @@ class Supervisor:
         sid = self.sessions[-1] if self.sessions else None
         if not sid:
             return None
-        d = grok_session_dir(str(self.cwd), sid, sessions_root=self.sessions_root)
+        d = grok_session_dir(
+            str(self.cwd), sid, sessions_root=self.sessions_root, run_dir=self.run_dir
+        )
         if d is None:
             return None
         return d / "events.jsonl"
@@ -10724,6 +11018,20 @@ class Supervisor:
             self.ack_miss.clear()
             self.restart_agent("no-ack-after-assign")
 
+    def _startup_activity_paths(self) -> list:
+        paths: list = []
+        try:
+            paths.append(default_unified_log_path(run_dir=self.run_dir))
+        except Exception:
+            pass
+        try:
+            ev = self._ask_user_events_path()
+            if ev is not None:
+                paths.append(ev)
+        except Exception:
+            pass
+        return paths
+
     def restart_agent(self, reason: str) -> None:
         # FR #4180: never respawn while out-of-fuel (402 / exhausted is not a hang).
         if self.bored and self.bored.out_of_fuel:
@@ -10732,6 +11040,12 @@ class Supervisor:
             )
             self._clear_watchdogs_for_out_of_fuel()
             return
+        # FR #7123: never silently drop an accepted job on hang-recycle.
+        if self.bored and getattr(self.bored, "_ack_open", False) and getattr(self.bored, "_ack_job_key", None):
+            try:
+                self._release_seat_giveup_job(str(self.bored._ack_job_key), "hang-recycle")
+            except Exception as e:
+                self.log(f"agent: hang-recycle GIVEUP failed {type(e).__name__}")
         with self._lock:
             if self._shutting or self.proc is None:
                 return
@@ -11541,9 +11855,24 @@ def run_agent(args, log: Log) -> int:
         return EXIT_IRC_FAIL
     # FR #6134: publish agent kind so the chair can skip OpenCode for MRB/UAT.
     # FR #6409: digest worker_build short SHA (or unknown); hello after start_agent (MRB #6411).
-    # FR #6418: one configured-model value shared by the digest payload and the hello line.
+    # FR #6418: hello ``model=`` stays the configured value. FR #7084 digest ``start_model`` is
+    # the launched process/session model (re-POSTed after start_agent).
     build = short_build_sha()
     seat_model = resolve_seat_hello_model(kind)
+    cfg_model = ""
+    cost_tier = ""
+    mismatch = None
+    try:
+        import worker_start_model as wsm
+
+        _cfg = wsm.load_worker_start_config()
+        cfg_model = wsm.configured_start_model(kind, _cfg)
+        mismatch = wsm.model_mismatch(seat_model, cfg_model)
+        cost_tier = wsm.model_cost_tier(seat_model or cfg_model, _cfg)
+        if not cfg_model:
+            log(f"worker: configured start model empty for kind={kind}; not inventing an id")
+    except Exception:
+        pass
     try:
         post_digest_seat_kind(
             machine=machine,
@@ -11551,6 +11880,9 @@ def run_agent(args, log: Log) -> int:
             nick=nick,
             kind=kind,
             model=seat_model,
+            configured_model=cfg_model,
+            model_mismatch=mismatch,
+            cost_tier=cost_tier,
             worker_build=build,
             log=log,
         )
@@ -11581,6 +11913,39 @@ def run_agent(args, log: Log) -> int:
     if not sup.start_agent():
         irc.close("launch failed")
         return EXIT_LAUNCH_FAIL
+    try:
+        import worker_start_model as wsm
+
+        child_env = getattr(sup, "last_child_env", None) or {}
+        actual = str(child_env.get(wsm.ENV_ACTUAL_MODEL) or "").strip()
+        if not actual:
+            actual = wsm.actual_start_model(env=child_env or os.environ)
+        _cfg = wsm.load_worker_start_config()
+        cfg_model = wsm.configured_start_model(kind, _cfg)
+        mismatch = wsm.model_mismatch(actual, cfg_model)
+        cost_tier = wsm.model_cost_tier(actual or cfg_model, _cfg)
+        if mismatch:
+            try:
+                irc.say(
+                    irc.shop,
+                    f"start model mismatch actual={actual or 'unknown'} configured={cfg_model or 'unset'}",
+                )
+            except Exception:
+                pass
+        post_digest_seat_kind(
+            machine=machine,
+            pid=pid,
+            nick=nick,
+            kind=kind,
+            model=actual or seat_model,
+            configured_model=cfg_model,
+            model_mismatch=mismatch,
+            cost_tier=cost_tier,
+            worker_build=build,
+            log=log,
+        )
+    except Exception as e:
+        log(f"worker: post-launch start_model digest failed {type(e).__name__}")
     # FR #6409 / MRB #6411: announce ready only after agent process starts (CodeRabbit).
     try:
         hello = worker_hello_line(kind, model=seat_model, build=build)

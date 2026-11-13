@@ -65,7 +65,7 @@ def test_flush_drops_bad_title_without_post(tmp_path: Path):
 
 def test_agentic_fomprep_is_on_default_allowlist_after_pr99():
     # PR #99 is included in the combined release, so this target is now allowed.
-    assert "SimonBarnett/agentic_fomprep" in intake.DEFAULT_ALLOW_REPOS
+    assert "SimonBarnett/priority-mcp" in intake.DEFAULT_ALLOW_REPOS
 
 
 def test_flush_script_documents_drop_path():

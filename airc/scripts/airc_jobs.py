@@ -429,34 +429,33 @@ class JobStore:
             self._save(rec)
         if via == "dcc":
             recv = getattr(self, "dcc_receive", None)
-            if recv is None:
+
+            def _dcc_put_fail(code: str, msg: str, done_exit: int = 1) -> list[str]:
+                with self._lock:
+                    rec.state = "failed"
+                    rec.error = msg
+                    self._save(rec)
                 return [
-                    f"ok id={jid} put path={dest.name} bytes={nbytes}",
-                    f"err id={jid} dcc-put unavailable; falling back to IRC",
+                    f"err id={jid} code={code} msg={msg}",
+                    f"DONE id={jid} exit={done_exit}",
                 ]
+
+            if recv is None:
+                # FR #7129: never fall back to IRC CHUNK (would put secrets on the wire).
+                return _dcc_put_fail(
+                    "dcc-unreachable",
+                    "no DCCLISTEN; PUT via=dcc refuses IRC CHUNK",
+                )
             io_t = float(getattr(self, "job_io_timeout_s", JOB_IO_TIMEOUT_S) or JOB_IO_TIMEOUT_S)
             try:
                 pair = run_job_io(lambda: recv(jid), io_t, job_id=jid)
                 blob, dig = pair  # type: ignore[misc]
             except JobProtocolError as exc:
                 if exc.code == "timeout":
-                    with self._lock:
-                        rec.state = "failed"
-                        rec.error = "job I/O timeout"
-                        self._save(rec)
-                    return [
-                        f"err id={jid} code=timeout msg=job I/O timeout",
-                        f"DONE id={jid} exit=1",
-                    ]
-                return [
-                    f"ok id={jid} put path={dest.name} bytes={nbytes}",
-                    f"err id={jid} dcc failed: {exc.message}; falling back to IRC",
-                ]
+                    return _dcc_put_fail("timeout", "job I/O timeout")
+                return _dcc_put_fail("dcc-unreachable", exc.message)
             except Exception as exc:
-                return [
-                    f"ok id={jid} put path={dest.name} bytes={nbytes}",
-                    f"err id={jid} dcc failed: {exc}; falling back to IRC",
-                ]
+                return _dcc_put_fail("dcc-unreachable", str(exc))
             expect = sha or (dig or "").lower()
             try:
                 if len(blob) > put_max_bytes("dcc"):
@@ -490,7 +489,10 @@ class JobStore:
                 rec.sha256 = digest
                 self._chunks.pop(jid, None)
                 self._save(rec)
-            return [f"ok id={jid} putend bytes={len(blob)} sha256={digest} via=dcc"]
+            return [
+                f"ok id={jid} putend bytes={len(blob)} sha256={digest} via=dcc",
+                f"DONE id={jid} exit=0 bytes={len(blob)} sha256={digest} via=dcc",
+            ]
         return [f"ok id={jid} put path={dest.name} bytes={nbytes}"]
 
     def handle_chunk(self, nick: str, kv: dict[str, str]) -> list[str]:
@@ -837,12 +839,23 @@ def format_version_lines(
     return [" ".join(bits)]
 
 
-def format_status_lines(*, airc_running: bool, versions: dict[str, str], machine: str) -> list[str]:
+def format_status_lines(
+    *,
+    airc_running: bool,
+    versions: dict[str, str],
+    machine: str,
+    shell_job: str = "",
+) -> list[str]:
     run = "Running" if airc_running else "Stopped"
-    return [
+    line = (
         f"STATUS machine={machine} airc={run} bob={versions.get('bob', '-')} "
         f"airc_ver={versions.get('airc', '-')} jeeves={versions.get('jeeves', '-')}"
-    ]
+    )
+    # FR #7119: STATUS stays independent of the shell queue but reports a busy Cmd.
+    jid = (shell_job or "").strip().lower()
+    if jid:
+        line += f" shell_busy=1 shell_job={jid}"
+    return [line]
 
 
 class JobProtocol:
@@ -861,10 +874,12 @@ class JobProtocol:
         run_timeout_s: float = DEFAULT_RUN_TIMEOUT_S,
         job_io_timeout_s: float = JOB_IO_TIMEOUT_S,
         inline_jobs: bool = True,
+        shell_busy_fn: Callable[[], str] | None = None,
     ) -> None:
         self.store = store
         self.verb_auth = verb_auth or VerbAuthPolicy()
         self.on_reply = on_reply
+        self.shell_busy_fn = shell_busy_fn
         self.run_file = run_file or _default_run_ps1
         self.ai_root = ai_root
         self.machine = machine
@@ -896,8 +911,17 @@ class JobProtocol:
             self.authorize(nick, verb)
             if verb == "STATUS":
                 vers = collect_status_versions(self.ai_root)
+                busy = ""
+                if self.shell_busy_fn:
+                    try:
+                        busy = self.shell_busy_fn() or ""
+                    except Exception:
+                        busy = ""
                 body = format_status_lines(
-                    airc_running=self.airc_running, versions=vers, machine=self.machine
+                    airc_running=self.airc_running,
+                    versions=vers,
+                    machine=self.machine,
+                    shell_job=busy,
                 )
                 # FR #2570: terminal DONE so Invoke-AircRemote -ReplyFile Wait matches id=.
                 # FR #2575: frame body as out id= seq= (same as format_shell_replies) so StdOut fills.

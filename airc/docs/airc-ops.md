@@ -79,6 +79,10 @@ powershell -NoProfile -ExecutionPolicy Bypass -File <ai root>\airc\scripts\Invok
 
 PUT/RUN/JOB verbs are constructed by the helper (sandbox under `<ai root>\airc\drop` by default); server-side acceptance is FR #78.
 
+## Hung GUI / formprep over Cmd (FR #7119)
+
+Do **not** run `formprep.exe`, `WINACTIV -P FORMPREP`, or other interactive Priority GUI tools as a console `cmd:` / PowerShell line. Those processes can leave a message pump with no stdout; STATUS still reports Airc Running while `shell_busy=1 shell_job=<id>` is set. Use `CANCEL id=<id>` (case-insensitive) from the same Query --- the console TerminateJobObject + `taskkill /T /F`s that tree and replies `DONE exit=130`. A hung job hits `killed: timeout` (and `killed: no-output` when capture is empty) at 120s with `DONE exit=124`. `STATUS` / `UPDATE` / `VERSION` already bypass the shell queue; if the *client* Status/UPDATE wait times out while STATUS would say Running + `shell_busy=1`, recycle **only** Airc on that box (`Restart-Service Airc`). Prefer `PRIORITY prepare form <ENAME>` for form prep.
+
 ## Hung shell recovery (FR #5211)
 
 - If partial `out id=...` arrives without `DONE`, try `CANCEL id=<shell-id>` from the same authorized Query nick. It cancels that active or queued shell with `DONE ... exit=130`; other queued commands continue. PUT/RUN cancellation keeps its existing protocol.

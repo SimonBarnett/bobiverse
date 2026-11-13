@@ -237,7 +237,7 @@ def update_usage_job_id(text: str) -> str | None:
 
 
 _PRIORITY_PREPARE_RE = re.compile(
-    r"(?is)^(?:id=([0-9a-f]{8})\s+)?PRIORITY\s+prepare(?:\s+(.*))?$"
+    r"(?is)^(?:id=([0-9a-f]{8})\s+)?PRIORITY\s+(prepare-form|prepare)(?:\s+(.*))?$"
 )
 
 
@@ -270,7 +270,8 @@ def parse_priority_prepare_command(text: str) -> dict[str, str] | None:
     m = _PRIORITY_PREPARE_RE.match((text or "").strip())
     if not m:
         return None
-    rest = (m.group(2) or "").strip()
+    verb = (m.group(2) or "prepare").strip().lower()
+    rest = (m.group(3) or "").strip()
     kv = {k.lower(): v for k, v in re.findall(r"(\w+)=([^\s]+)", rest)}
     exec_type = ""
     raw_type = (kv.get("type") or kv.get("kind") or kv.get("exec_type") or "").strip()
@@ -293,6 +294,9 @@ def parse_priority_prepare_command(text: str) -> dict[str, str] | None:
         if not name and positionals:
             name = positionals[0]
     out = {"name": name, "instance": kv.get("instance") or ""}
+    if verb == "prepare-form":
+        exec_type = "F"
+        out["sdk_form"] = "1"
     if exec_type:
         out["exec_type"] = exec_type
     if m.group(1):
@@ -759,6 +763,33 @@ def _env_flag_true(name: str) -> bool:
     return str(os.environ.get(name) or "").strip().lower() in ("1", "true", "yes", "on")
 
 
+def windows_process_session_id() -> int | None:
+    """Terminal Services session id of this process, or None (FR #7130)."""
+    if os.name != "nt":
+        return None
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        k32.ProcessIdToSessionId.argtypes = [
+            wintypes.DWORD,
+            ctypes.POINTER(wintypes.DWORD),
+        ]
+        k32.ProcessIdToSessionId.restype = wintypes.BOOL
+        sid = wintypes.DWORD()
+        if not k32.ProcessIdToSessionId(os.getpid(), ctypes.byref(sid)):
+            return None
+        return int(sid.value)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def is_windows_session0() -> bool:
+    """True on LocalSystem Session 0 (no interactive desktop for WINACTIV)."""
+    return windows_process_session_id() == 0
+
+
 def _resolve_winrun_exe(instance: dict | None = None) -> Path | None:
     """Resolve Priority WINRUN.EXE for direct (non-SDK) form prepare (FR #6003)."""
     inst = instance or {}
@@ -800,7 +831,7 @@ def _priority_winrun_formprep(
     """Named form prepare via Priority WINRUN (no priority-web-sdk).
 
     FR #6003: default ``PRIORITY prepare form`` must not import or login through
-    the web SDK (tabula cannot take an API Licence). Mirrors agentic_fomprep
+    the web SDK (tabula cannot take an API Licence). Mirrors priority-mcp
     `Invoke-CliFormPrep` plus the named ENAME (FR #6017):
     `WINRUN user pass prepDir company WINACTIV -P FORMPREP <ENAME>`.
     Unscoped `FORMPREP` can prepare every pending form; refuse if ENAME is
@@ -815,6 +846,15 @@ def _priority_winrun_formprep(
     form = str(ename or "").strip()
     if not form:
         return {"ok": False, "path": proc_path, "reason": "ename_missing", "runner": "winrun"}
+    # FR #7130: WINACTIV/FORMPREP hang in Session 0; never spawn GUI there.
+    if is_windows_session0() and process_runner is None:
+        return {
+            "ok": False,
+            "path": proc_path,
+            "reason": "session0_gui",
+            "runner": "winrun",
+            "ename": form,
+        }
     inst = dict(instance or {})
     prep = str(inst.get("prepDir") or inst.get("prep_dir") or "").strip()
     company = str(inst.get("company") or "").strip()
@@ -903,14 +943,28 @@ def _priority_prepare_exec(
     cred_fetcher=None,
     node_runner=None,
     process_runner=None,
+    form_via_sdk: bool = False,
     **kw,
 ) -> dict:
-    """Dispatch prepare runners. Default form = WINRUN (FR #6003); no web SDK."""
+    """Dispatch prepare runners. Default form = WINRUN (FR #6003).
+
+    FR #6108: no EFORM/EXEC SDK opt-in via AIRC_PRIORITY_FORM_VIA_EFORM env.
+    FR #7130: only ``PRIORITY prepare-form`` / ``form_via_sdk`` uses Web SDK + CredMan
+    (no WINACTIV). Session 0 WINRUN is refused with ``session0_gui``.
+    """
     proc_name = str(path or "").strip().upper() or "REPPREPDIRECT2"
     want_form = bool(form_prep) or proc_name == "FORMPREPDRCT2"
     if want_form:
-        # FR #6108: no EFORM/EXEC SDK opt-in. Those paths ran FORMPREPDRCT2
-        # without an exactly-one equal-ENAME EFORM row. Form prepare is WINRUN.
+        # Explicit prepare-form verb only; env opt-in stays removed (FR #6108).
+        via_sdk = bool(form_via_sdk)
+        if via_sdk:
+            return _priority_sdk_formprep(
+                ename=ename,
+                instance=instance,
+                path="FORMPREPDRCT2",
+                cred_fetcher=cred_fetcher,
+                node_runner=node_runner,
+            )
         return _priority_winrun_formprep(
             ename=ename,
             instance=instance,
@@ -930,6 +984,115 @@ def _priority_prepare_exec(
     )
 
 
+def _priority_sdk_formprep(
+    *,
+    ename: str,
+    instance: dict,
+    path: str = "FORMPREPDRCT2",
+    cred_fetcher=None,
+    node_runner=None,
+    **_k,
+) -> dict:
+    """FR #7130: named form prepare via Web SDK + CredMan (no WINACTIV / Session 0 GUI)."""
+    form = str(ename or "").strip()
+    proc_path = str(path or "").strip().upper() or "FORMPREPDRCT2"
+    if not form:
+        return {"ok": False, "path": proc_path, "reason": "ename_missing", "runner": "sdk-eform"}
+    root = Path(os.environ.get("AIRC_INSTALL_ROOT") or r"C:\ai\airc")
+    pw = _priority.resolve_priority_worker_dir(root)
+    mjs_candidates = [
+        (pw / "sdk" / "run-formprep-via-eform.mjs") if pw else Path(),
+        root / "airc" / "priority-worker" / "sdk" / "run-formprep-via-eform.mjs",
+        root / "priority-worker" / "sdk" / "run-formprep-via-eform.mjs",
+        Path(os.environ.get("AIRC_PRIORITY_FORMPREP_MJS") or ""),
+    ]
+    mjs = next((c for c in mjs_candidates if c and c.is_file()), None)
+    node = os.environ.get("AIRC_PRIORITY_NODE") or os.environ.get("NODE_EXE") or "node"
+    target = str(instance.get("credentialTarget") or "").strip()
+    fetch = cred_fetcher or _priority.fetch_credman_password
+    try:
+        secret = fetch(target) if target else ""
+    except Exception:  # noqa: BLE001
+        return {"ok": False, "path": proc_path, "reason": "no_cred", "runner": "sdk-eform"}
+    if not secret:
+        return {"ok": False, "path": proc_path, "reason": "no_cred", "runner": "sdk-eform"}
+    if mjs is None:
+        return {"ok": False, "path": proc_path, "reason": "sdk_mjs_missing", "runner": "sdk-eform"}
+    node_s = str(node or "").strip() or "node"
+    node_path = node_s if os.path.isfile(node_s) else shutil.which(node_s)
+    if not node_path:
+        return {"ok": False, "path": proc_path, "reason": "node_missing", "runner": "sdk-eform"}
+    env = os.environ.copy()
+    env["PRIORITY_SDK_PASSWORD"] = secret
+    run = node_runner or subprocess.run
+    try:
+        proc = run(
+            [
+                node_path,
+                str(mjs),
+                "--name",
+                form,
+                "--company",
+                str(instance.get("company") or ""),
+                "--url",
+                str(instance.get("url") or ""),
+                "--user",
+                str(instance.get("user") or ""),
+                "--proc",
+                proc_path,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=300,
+            env=env,
+        )
+    except FileNotFoundError:
+        return {"ok": False, "path": proc_path, "reason": "node_missing", "runner": "sdk-eform"}
+    except Exception as e:  # noqa: BLE001
+        return {
+            "ok": False,
+            "path": proc_path,
+            "reason": f"sdk_exec_failed:{type(e).__name__}",
+            "runner": "sdk-eform",
+        }
+    finally:
+        env.pop("PRIORITY_SDK_PASSWORD", None)
+        secret = None  # noqa: F841
+    raw = (proc.stdout or "").strip().splitlines()
+    payload = None
+    for line in reversed(raw):
+        line = line.strip()
+        if line.startswith("{") and line.endswith("}"):
+            try:
+                payload = json.loads(line)
+                break
+            except json.JSONDecodeError:
+                continue
+    if not isinstance(payload, dict):
+        return {
+            "ok": False,
+            "path": proc_path,
+            "reason": "sdk_bad_json",
+            "runner": "sdk-eform",
+            "node_exit": getattr(proc, "returncode", None),
+        }
+    ok = bool(payload.get("ok"))
+    out: dict = {
+        "ok": ok,
+        "path": proc_path,
+        "runner": "sdk-eform",
+        "ename": form,
+        "sdk": {"ended": payload.get("ended"), "errors": payload.get("errors")},
+    }
+    if not ok:
+        sdk_reason = _priority_sdk_reason_from_payload(payload)
+        if sdk_reason:
+            out["reason"] = sdk_reason
+        elif payload.get("stage"):
+            out["reason"] = str(payload.get("stage"))
+    return out
+
+
 def _priority_sdk_repprep(
     *,
     ename: str,
@@ -943,12 +1106,18 @@ def _priority_sdk_repprep(
     """Run node mjs prepare walk. Password via env only; never logged.
 
     FR #5946 / #6003: report/procedure use ``run-repprep-via-exec.mjs``.
-    Form prepare is WINRUN only (FR #6108). This helper is reports/procedures.
+    Form prepare uses ``_priority_sdk_formprep`` (FR #7130); this helper is reports/procedures.
     """
     proc_name = str(path or "").strip().upper() or "REPPREPDIRECT2"
     want_form = bool(form_prep) or proc_name == "FORMPREPDRCT2"
     if want_form:
-        return {"ok": False, "path": path, "reason": "use_winrun_formprep"}
+        return _priority_sdk_formprep(
+            ename=ename,
+            instance=instance,
+            path="FORMPREPDRCT2",
+            cred_fetcher=cred_fetcher,
+            node_runner=node_runner,
+        )
     elif proc_name != "REPPREPDIRECT2":
         return {"ok": False, "path": path, "reason": "refused_non_repprep"}
     root = Path(os.environ.get("AIRC_INSTALL_ROOT") or r"C:\ai\airc")
@@ -2701,6 +2870,8 @@ class ShellRequest:
     body: str
     job_id: str = field(default_factory=lambda: uuid.uuid4().hex[:8])
     cancel_event: threading.Event | None = field(default=None, repr=False)
+    # FR #7119: shared dict so CANCEL can taskkill / TerminateJobObject while busy.
+    runtime: dict[str, Any] | None = field(default=None, repr=False)
 
 
 @dataclass
@@ -3043,8 +3214,87 @@ def _clip_bytes(data: bytes, limit: int = SHELL_OUTPUT_MAX_BYTES) -> tuple[str, 
     return chunk.decode("utf-8", errors="replace"), clipped
 
 
-def _stop_shell_process(proc: subprocess.Popen) -> None:
+class _WinJob:
+    """Windows job object wrapping one Cmd/PS tree (FR #7119). Nested-job fail -> None."""
+
+    def __init__(self) -> None:
+        self.handle = 0
+        if os.name != "nt":
+            return
+        import ctypes
+        from ctypes import wintypes
+
+        class _JOBOBJECT_BASIC_LIMIT_INFORMATION(ctypes.Structure):
+            _fields_ = [
+                ("PerProcessUserTimeLimit", ctypes.c_int64),
+                ("PerJobUserTimeLimit", ctypes.c_int64),
+                ("LimitFlags", wintypes.DWORD),
+                ("MinimumWorkingSetSize", ctypes.c_size_t),
+                ("MaximumWorkingSetSize", ctypes.c_size_t),
+                ("ActiveProcessLimit", wintypes.DWORD),
+                ("Affinity", ctypes.c_size_t),
+                ("PriorityClass", wintypes.DWORD),
+                ("SchedulingClass", wintypes.DWORD),
+            ]
+
+        class _IO_COUNTERS(ctypes.Structure):
+            _fields_ = [("bits", ctypes.c_uint64 * 6)]
+
+        class _JOBOBJECT_EXTENDED_LIMIT_INFORMATION(ctypes.Structure):
+            _fields_ = [
+                ("BasicLimitInformation", _JOBOBJECT_BASIC_LIMIT_INFORMATION),
+                ("IoInfo", _IO_COUNTERS),
+                ("ProcessMemoryLimit", ctypes.c_size_t),
+                ("JobMemoryLimit", ctypes.c_size_t),
+                ("PeakProcessMemoryUsed", ctypes.c_size_t),
+                ("PeakJobMemoryUsed", ctypes.c_size_t),
+            ]
+
+        k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        k32.CreateJobObjectW.restype = wintypes.HANDLE
+        handle = k32.CreateJobObjectW(None, None)
+        if not handle:
+            return
+        # Do not set KILL_ON_JOB_CLOSE: a clean parent exit must not reap
+        # inherited grandchildren (FR #5211 inherited-capture test).
+        self.handle = int(handle)
+        self._k32 = k32
+
+    def assign(self, pid: int) -> bool:
+        if not self.handle:
+            return False
+        import ctypes
+        PROCESS_ALL_ACCESS = 0x1F0FFF
+        hp = self._k32.OpenProcess(PROCESS_ALL_ACCESS, False, int(pid))
+        if not hp:
+            return False
+        ok = bool(self._k32.AssignProcessToJobObject(self.handle, hp))
+        self._k32.CloseHandle(hp)
+        return ok
+
+    def terminate(self) -> None:
+        if not self.handle:
+            return
+        try:
+            self._k32.TerminateJobObject(self.handle, 1)
+        except OSError:
+            pass
+
+    def close(self) -> None:
+        if not self.handle:
+            return
+        try:
+            self._k32.CloseHandle(self.handle)
+        except OSError:
+            pass
+        self.handle = 0
+
+
+def _stop_shell_process(proc: subprocess.Popen, job: _WinJob | None = None) -> None:
     """Stop only this shell's tree; never wait on inherited stdout pipe handles."""
+    win_job = job if job is not None else getattr(proc, "_airc_job", None)
+    if win_job is not None:
+        win_job.terminate()
     if os.name == "nt":
         try:
             subprocess.run(
@@ -3119,6 +3369,12 @@ def run_shell_request(
         proc = subprocess.Popen(
             args, stdin=subprocess.DEVNULL, stdout=out_h, stderr=err_h, cwd=cwd,
         )
+        job = _WinJob()
+        job.assign(int(proc.pid))
+        proc._airc_job = job  # type: ignore[attr-defined]
+        if req.runtime is not None:
+            req.runtime["proc"] = proc
+            req.runtime["job"] = job
         deadline = time.monotonic() + timeout_s
         reason = ""
         stopped = False
@@ -3128,13 +3384,14 @@ def run_shell_request(
                     reason = "cancelled"
                     break
                 if time.monotonic() >= deadline:
-                    reason = f"timeout after {timeout_s:.0f}s"
+                    reason = f"killed: timeout (timeout after {timeout_s:.0f}s)"
                     break
                 cancel.wait(min(0.05, max(0, deadline - time.monotonic())))
         finally:
             if proc.poll() is None:
                 _stop_shell_process(proc)
                 stopped = True
+            job.close()
         # FR #5676: deadline can fire in the same tick the direct child exits
         # (inherited capture / slow host). Prefer the real returncode over a
         # spurious 124 when we never had to stop the process.
@@ -3171,7 +3428,10 @@ def run_shell_request(
     if err_clip:
         err += "\n[clipped stderr]"
     if reason:
-        err = (err + ("\n" if err else "") + reason).strip()
+        extra = reason
+        if exit_code == 124 and not (out or "").strip() and "killed: timeout" in reason:
+            extra = extra + "\nkilled: no-output"
+        err = (err + ("\n" if err else "") + extra).strip()
     return ShellOutcome(
         job_id=req.job_id,
         exit_code=exit_code,
@@ -3399,6 +3659,7 @@ class _ShellPending:
     reply_lock: threading.RLock = field(default_factory=threading.RLock)
     abandoned: bool = False
     terminal_sent: bool = False
+    runtime: dict[str, Any] = field(default_factory=dict)
 
 
 class ShellJobRunner:
@@ -3614,6 +3875,7 @@ class ShellJobRunner:
                 return
             req.job_id = item.job_id
             req.cancel_event = item.cancelled
+            req.runtime = item.runtime
             jid = req.job_id
             with item.reply_lock:
                 if item.abandoned:
@@ -3705,21 +3967,32 @@ class ShellJobRunner:
             except UnicodeError:
                 return
 
+    def busy_job_id(self) -> str:
+        """FR #7119: first in-flight shell job id, or empty when idle."""
+        with self._lock:
+            for item in self._inflight_cmd.values():
+                return (item.job_id or "").strip().lower()
+        return ""
+
     def cancel(self, nick: str, job_id: str) -> bool:
         """Cancel an active or queued shell owned by this Query, not another nick."""
         key = nick.strip().lower()
         jid = job_id.strip().lower()
         removed: list[_ShellPending] = []
         found = False
+        kill_proc = None
+        kill_job = None
         with self._lock:
             active = self._inflight_cmd.get(key)
-            if active is not None and active.job_id == jid:
+            if active is not None and (active.job_id or "").strip().lower() == jid:
                 active.cancelled.set()
                 found = True
+                kill_proc = active.runtime.get("proc")
+                kill_job = active.runtime.get("job")
             q = self._pending.get(key)
             if q is not None:
                 for item in list(q):
-                    if item.job_id == jid:
+                    if (item.job_id or "").strip().lower() == jid:
                         item.cancelled.set()
                         q.remove(item)
                         removed.append(item)
@@ -3728,6 +4001,8 @@ class ShellJobRunner:
             self._resume_kind.pop((key, jid), None)
             if found:
                 self._dcc_listen.pop(jid, None)
+        if kill_proc is not None:
+            _stop_shell_process(kill_proc, job=kill_job)
         for item in removed:
             try:
                 self._emit(key, f"err id={jid} seq=1 cancelled")
@@ -3851,6 +4126,9 @@ class AircConsoleCore:
         self.update_scheduler = update_scheduler or schedule_fleet_update
         self.install_root = install_root
         self.job_protocol = job_protocol
+        if self.job_protocol is not None and self.shell_runner is not None:
+            if getattr(self.job_protocol, "shell_busy_fn", None) is None:
+                self.job_protocol.shell_busy_fn = self.shell_runner.busy_job_id
         # FR #5284: PRIORITY connect/status (injectable for SelfTest mocks).
         # FR #6012: remember injection so FR #5960 optional-absent does not
         # swallow a test/selftest runner before connect|status.
@@ -4087,13 +4365,9 @@ class AircConsoleCore:
         import uuid
 
         jid = (job_id or "").strip().lower() or uuid.uuid4().hex[:8]
-        body = {
-            "ok": False,
-            "action": action_name,
-            "reason": _priority.PRIORITY_NOT_INSTALLED,
-        }
-        out_line, exit_code = _priority.format_bounded_priority_out(jid, body, 1)
-        reply = f"{out_line}\nDONE id={jid} exit={exit_code}"
+        reply = _priority.format_priority_not_configured(
+            jid, reason=_priority.PRIORITY_NOT_INSTALLED
+        )
         self._clear_unused_dcclisten(jid, reason="priority")
         meta = self._allow_meta(nick, None)
         return HandleResult(
@@ -4367,14 +4641,7 @@ class AircConsoleCore:
             )
             if denied is not None:
                 return denied
-            if caps.shell_mode == "off":
-                return HandleResult(
-                    action="capability_deny",
-                    nick=nick,
-                    target=target,
-                    text=text,
-                    reply="DONE exit=126 shell-disabled",
-                )
+            # FR #7132: PRIORITY is control-plane (like STATUS), not a shell line.
             qid = (job_id or "").strip().lower() or uuid.uuid4().hex[:8]
             send_hook = getattr(self, "priority_reply_send", None)
             use_async = (
@@ -5207,6 +5474,7 @@ class AircConsoleCore:
                     instance_id=prep.get("instance") or "",
                     instances=insts,
                     exec_type=(prep.get("exec_type") or None),
+                    form_via_sdk=bool(prep.get("sdk_form")),
                     **hooks,
                 )
             else:
@@ -5311,6 +5579,34 @@ class AircConsoleCore:
             meta = self._allow_meta(nick, account)
             return HandleResult(
                 action="job", nick=nick, target=target, text=text, **meta
+            )
+
+        # FR #7132: leftover PRIORITY* must never become a PowerShell command.
+        if _priority.is_priority_line(cmd):
+            qid = (_priority.parse_priority_usage(cmd) or "").strip().lower() or uuid.uuid4().hex[:8]
+            if _priority.parse_priority_usage(cmd) is not None:
+                meta = self._allow_meta(nick, account)
+                return HandleResult(
+                    action="priority",
+                    nick=nick,
+                    target=target,
+                    text=text,
+                    reply=_priority.format_priority_usage(qid),
+                    **meta,
+                )
+            denied = self._priority_optional_denied(
+                nick=nick, target=target, text=text, action_name="status", job_id=qid
+            )
+            if denied is not None:
+                return denied
+            meta = self._allow_meta(nick, account)
+            return HandleResult(
+                action="priority",
+                nick=nick,
+                target=target,
+                text=text,
+                reply=_priority.format_priority_usage(qid or uuid.uuid4().hex[:8]),
+                **meta,
             )
 
         # FR #75: oneshot PowerShell / cmd: / psb64: with DONE framing.

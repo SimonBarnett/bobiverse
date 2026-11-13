@@ -21,9 +21,9 @@
   so sequential Commands do not stack under Ergo fakelag. Console token-bucket is FR #4790.
   FR #5008: New-AircDccListenOffer / Test-AircDccDoneSha256 build DCCLISTEN (tls=/relay=)
   and verify DONE sha256; reverse stream uses airc_dcc_bulk.py (TLS default on).
-  FR #5194: PUT defaults to via=dcc (console dials the caller listen and reads the
-  same framed blob); -ForceIrcPut keeps IRC CHUNK/PUTEND only. DCC failure falls
-  back to those chunks.
+  FR #5194 / #7129: PUT defaults to DCCLISTEN + PUT via=dcc (no IRC CHUNK).
+  -ForceIrcPut is the only CHUNK/PUTEND path. DCC failure is fail-closed
+  (err code=dcc-unreachable + DONE); never silent IRC fallback for secrets.
 #>
 [CmdletBinding(DefaultParameterSetName = 'Remote')]
 param(
@@ -31,7 +31,7 @@ param(
     [string]$MachineId = '',
 
     [Parameter(ParameterSetName = 'Remote')]
-    [ValidateSet('Command', 'Cmd', 'Psb64', 'Status', 'Put', 'Run', 'Job', 'Cancel', 'Update')]
+    [ValidateSet('Command', 'Cmd', 'Psb64', 'Status', 'Put', 'Run', 'Job', 'Cancel', 'Update', 'Priority')]
     [string]$Action = 'Command',
 
     [Parameter(ParameterSetName = 'Remote')]
@@ -80,6 +80,9 @@ param(
     [switch]$ForceIrcPut,
 
     [Parameter(ParameterSetName = 'Remote')]
+    [string]$DccListenHost = '',
+
+    [Parameter(ParameterSetName = 'Remote')]
     [switch]$WhatIf,
 
     [Parameter(ParameterSetName = 'SelfTest')]
@@ -122,7 +125,7 @@ function ConvertTo-AircPsb64 {
 
 function New-AircRemoteBody {
     param(
-        [Parameter(Mandatory)][ValidateSet('Command', 'Cmd', 'Psb64', 'Status', 'Put', 'Run', 'Job', 'Cancel', 'Update')]
+        [Parameter(Mandatory)][ValidateSet('Command', 'Cmd', 'Psb64', 'Status', 'Put', 'Run', 'Job', 'Cancel', 'Update', 'Priority')]
         [string]$Action,
         [string]$Text = '',
         [string]$Path = '',
@@ -143,6 +146,12 @@ function New-AircRemoteBody {
             return ('psb64:{0}' -f (ConvertTo-AircPsb64 -Script $Text))
         }
         'Status' { return 'STATUS' }
+        'Priority' {
+            # FR #7132: control-plane PRIORITY, never a PowerShell Command.
+            $t = if ($Text) { $Text.Trim() } else { 'status' }
+            if ($t -match '(?i)^PRIORITY\b') { return $t }
+            return ('PRIORITY {0}' -f $t)
+        }
         'Put' {
             if (-not $Path) { throw 'Put meta line requires -Path' }
             $id = if ($JobId) { $JobId } else { New-AircCorrelationId }
@@ -201,7 +210,18 @@ function New-AircPutChunks {
     $sha = [System.BitConverter]::ToString([System.Security.Cryptography.SHA256]::Create().ComputeHash($bytes)).Replace('-', '').ToLowerInvariant()
     $lines = New-Object System.Collections.Generic.List[string]
     $putLine = 'PUT path={0} id={1} bytes={2} sha256={3}' -f $RemotePath, $id, $bytes.Length, $sha
-    if (-not $ForceIrcPut) { $putLine = $putLine + ' via=dcc' }
+    if (-not $ForceIrcPut) {
+        $putLine = $putLine + ' via=dcc'
+        [void]$lines.Add($putLine)
+        return [pscustomobject]@{
+            JobId  = $id
+            Sha256 = $sha
+            Bytes  = $bytes.Length
+            Seqs   = 0
+            Lines  = $lines.ToArray()
+            Body   = $bytes
+        }
+    }
     [void]$lines.Add($putLine)
     $seq = 0
     $offset = 0
@@ -221,6 +241,7 @@ function New-AircPutChunks {
         Bytes  = $bytes.Length
         Seqs   = $seq
         Lines  = $lines.ToArray()
+        Body   = $bytes
     }
 }
 
@@ -254,6 +275,53 @@ function New-AircDccToken {
     $bytes = New-Object byte[] 16
     [System.Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($bytes)
     return ([BitConverter]::ToString($bytes) -replace '-', '').ToLowerInvariant()
+}
+
+function Start-AircDccUploadServe {
+    <#
+      FR #7129: bind + wait for console reverse connect; write framed PUT body off IRC.
+    #>
+    param(
+        [Parameter(Mandatory)][string]$LocalFile,
+        [Parameter(Mandatory)][string]$Token,
+        [int]$TimeoutSec = 45,
+        [switch]$Tls
+    )
+    $py = Join-Path $PSScriptRoot 'airc_dcc_bulk.py'
+    if (-not (Test-Path -LiteralPath $py)) { throw "airc_dcc_bulk.py missing next to Invoke-AircRemote.ps1" }
+    $python = $env:BOBIVERSE_PYTHON
+    if (-not $python) {
+        $cmd = Get-Command python -ErrorAction SilentlyContinue
+        if (-not $cmd) { $cmd = Get-Command py -ErrorAction SilentlyContinue }
+        if (-not $cmd) { throw 'python not on PATH; PUT via=dcc cannot start DCCLISTEN (refusing IRC CHUNK)' }
+        $python = $cmd.Source
+    }
+    $portFile = Join-Path $env:TEMP ('airc-dcc-port-' + [guid]::NewGuid().ToString('N') + '.txt')
+    $tlsBit = $(if ($Tls) { '1' } else { '0' })
+    $argList = @(
+        $py, 'serve-upload',
+        '--file', $LocalFile,
+        '--token', $Token,
+        '--host', '0.0.0.0',
+        '--timeout', ([string][Math]::Max(5, $TimeoutSec)),
+        '--tls', $tlsBit,
+        '--port-file', $portFile
+    )
+    $proc = Start-Process -FilePath $python -ArgumentList $argList -PassThru -WindowStyle Hidden
+    $deadline = [datetime]::UtcNow.AddSeconds(8)
+    $port = 0
+    while ([datetime]::UtcNow -lt $deadline) {
+        if (Test-Path -LiteralPath $portFile) {
+            $raw = (Get-Content -LiteralPath $portFile -ErrorAction SilentlyContinue | Select-Object -First 1)
+            if ($raw -match '^\d+$') { $port = [int]$raw; break }
+        }
+        Start-Sleep -Milliseconds 50
+    }
+    if ($port -lt 1) {
+        try { Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue } catch {}
+        throw 'DCCLISTEN bind failed (no port file); PUT refused IRC CHUNK'
+    }
+    return [pscustomobject]@{ Process = $proc; Port = $port; PortFile = $portFile }
 }
 
 function Test-AircDccDoneSha256 {
@@ -622,6 +690,8 @@ function Invoke-AircRemoteSelfTest {
 
     Assert-True ((New-AircRemoteBody -Action Status) -eq 'STATUS') 'STATUS verb'
     # FR #2570: remote entry pins id= before STATUS (see switch Status branch).
+    Assert-True ((New-AircRemoteBody -Action Priority) -eq 'PRIORITY status') 'FR7132 Priority default'
+    Assert-True ((New-AircRemoteBody -Action Priority -Text 'connect example-dev') -eq 'PRIORITY connect example-dev') 'FR7132 Priority text'
 
     $tmp = Join-Path $env:TEMP ('airc-put-' + [guid]::NewGuid().ToString('N'))
     New-Item -ItemType Directory -Path $tmp | Out-Null
@@ -631,16 +701,20 @@ function Invoke-AircRemoteSelfTest {
         [System.IO.File]::WriteAllBytes($file, $data)
         $remote = Join-Path $tmp 'drop\payload.bin'
         $put = New-AircPutChunks -LocalFile $file -RemotePath $remote -ChunkBytes 64 -SandboxRoot $tmp
-        Assert-True ($put.Seqs -eq 4) 'PUT chunk boundary count'
+        Assert-True ($put.Seqs -eq 0) 'FR #7129 default PUT has no IRC CHUNK seqs'
+        Assert-True ($put.Lines.Count -eq 1) 'FR #7129 default PUT is one via=dcc header'
         Assert-True ($put.Lines[0] -match '^PUT path=') 'PUT header'
         Assert-True ($put.Lines[0] -match 'via=dcc') 'PUT default via=dcc (FR #5194)'
+        Assert-True (($put.Lines -join "`n") -notmatch 'CHUNK') 'default PUT never emits CHUNK'
+        $dccLine = New-AircDccListenOffer -JobId $put.JobId -ListenHost '127.0.0.1' -Port 9 -Token ('ab' * 16) -Tls:$true
+        Assert-True ($dccLine.StartsWith('DCCLISTEN ')) 'DCCLISTEN-first PUT control line'
         $ircPut = New-AircPutChunks -LocalFile $file -RemotePath $remote -ChunkBytes 64 -SandboxRoot $tmp -ForceIrcPut
         Assert-True ($ircPut.Lines[0] -notmatch 'via=dcc') 'ForceIrcPut omits via=dcc'
-        Assert-True ($put.Lines[-1] -match '^PUTEND id=') 'PUTEND trailer'
+        Assert-True ($ircPut.Lines[-1] -match '^PUTEND id=') 'PUTEND trailer'
         Assert-True ($put.Sha256.Length -eq 64) 'sha256 length'
-        # reassemble
+        # reassemble IRC CHUNK path only
         $buf = New-Object System.Collections.Generic.List[byte]
-        foreach ($ln in $put.Lines) {
+        foreach ($ln in $ircPut.Lines) {
             if ($ln -match '^CHUNK id=.+ seq=\d+ data=(?<d>.+)$') {
                 $part = [Convert]::FromBase64String($Matches.d)
                 [void]$buf.AddRange($part)
@@ -919,7 +993,8 @@ function New-AircRemoteAttemptBodies {
         [string]$LocalFilePath,
         [int]$ChunkSize,
         [string]$Sandbox,
-        [switch]$IrcPut
+        [switch]$IrcPut,
+        [string]$ListenHost = ''
     )
     $bodies = [string[]]@()
     $corrOut = $CorrId
@@ -934,7 +1009,25 @@ function New-AircRemoteAttemptBodies {
             }
             $put = New-AircPutChunks -LocalFile $LocalFilePath -RemotePath $PathBody -ChunkBytes $ChunkSize -JobId $corrOut -SandboxRoot $root -ForceIrcPut:$IrcPut
             $corrOut = $put.JobId
-            $bodies = [string[]]@($put.Lines)
+            if (-not $IrcPut) {
+                $hostName = $ListenHost
+                if (-not $hostName) { $hostName = [string]$env:AIRC_DCC_LISTEN_HOST }
+                if (-not $hostName) { $hostName = '127.0.0.1' }
+                $tok = New-AircDccToken
+                $waitS = 45
+                if (Get-Variable -Name TimeoutSec -Scope Script -ErrorAction SilentlyContinue) {
+                    $waitS = [Math]::Max(30, [int]$script:TimeoutSec)
+                }
+                if ($WhatIf) {
+                    $dcc = New-AircDccListenOffer -JobId $corrOut -ListenHost $hostName -Port 9 -Token $tok -Tls:$true
+                } else {
+                    $serve = Start-AircDccUploadServe -LocalFile $LocalFilePath -Token $tok -TimeoutSec $waitS -Tls
+                    $dcc = New-AircDccListenOffer -JobId $corrOut -ListenHost $hostName -Port $serve.Port -Token $tok -Tls:$true
+                }
+                $bodies = [string[]]@($dcc) + [string[]]@($put.Lines)
+            } else {
+                $bodies = [string[]]@($put.Lines)
+            }
         }
         'Psb64' {
             # FR #1546: pin correlation id so ear jsonl + Wait can match DONE.
@@ -949,6 +1042,9 @@ function New-AircRemoteAttemptBodies {
         'Status' {
             # FR #2570: pin id= so Wait matches DONE id= from STATUS (same as Command).
             $bodies = [string[]]@(('id={0} STATUS' -f $corrOut))
+        }
+        'Priority' {
+            $bodies = [string[]]@(('id={0} {1}' -f $corrOut, (New-AircRemoteBody -Action Priority -Text $TextBody)))
         }
         default {
             $bodies = [string[]]@((New-AircRemoteBody -Action $ActionName -Text $TextBody -Path $PathBody -JobId $corrOut))
@@ -967,12 +1063,12 @@ $parsed = $null
 $rawLines = @()
 
 # FR #2632: retry Command/Cmd/Psb64/Status when airc returns busy DONE (old fail-closed builds).
-$busyRetryActions = @('Command', 'Cmd', 'Psb64', 'Status')
+$busyRetryActions = @('Command', 'Cmd', 'Psb64', 'Status', 'Priority')
 
 while ($true) {
     $attempt++
     $built = New-AircRemoteAttemptBodies -ActionName $Action -CorrId $corr -TextBody $Text -PathBody $Path `
-        -LocalFilePath $LocalFile -ChunkSize $ChunkBytes -Sandbox $SandboxRoot -IrcPut:$ForceIrcPut
+        -LocalFilePath $LocalFile -ChunkSize $ChunkBytes -Sandbox $SandboxRoot -IrcPut:$ForceIrcPut -ListenHost $DccListenHost
     $bodies = [string[]]@($built.Bodies)
     $corr = [string]$built.JobId
     $privmsgs = @(New-AircPrivmsgLines -MachineId $MachineId -Bodies $bodies)

@@ -30,12 +30,12 @@ PRIVMSG <machine>_console :psb64:<base64>
 
 - Default is **PowerShell 5.1** (`-NoProfile`); `cmd:` uses COMSPEC; `psb64:` is `-EncodedCommand` (UTF-16LE or UTF-8 payload).
 - **Job id frame (FR #5532 / #5678 / #5742):** optional leading `id=<8hex> ` pins DONE/out/err. A leading `id=` that is not exactly eight hex digits is `code=bad_id` / `DONE exit=2` (never PowerShell under a new id). Service `on_line` must send that reply (FR #5742); ear captures non-hex `id=` on err/DONE.
-- Replies are Query-only: `out id=… seq=…`, `err id=… seq=…`, then `DONE id=… exit=…`. Long lines are chunked (~350 chars).
+- Replies are Query-only: `out id=… seq=…`, `err id=… seq=…`, then `DONE id=… exit=…`. Long lines are chunked (~350 chars). Shell jobs are isolated in a Windows job object (FR #7119); timeout is 120s (`killed: timeout`, empty capture also `killed: no-output`, `DONE exit=124`). `CANCEL id=` is case-insensitive and kills the busy tree (`DONE exit=130`). STATUS may add `shell_busy=1 shell_job=`. **Never** run `formprep.exe` / `WINACTIV -P FORMPREP` as Cmd --- use `PRIORITY prepare form`.
 - Allowlist: nick must be in operators (installer seeds `bob-<machine>`); arbitrary `bob-*` is **not** auth (FR #3286). With `--require-account` / `--accounts`, SASL/NickServ account must match too.
 - PUT/RUN/JOB/UPDATE are separate FRs - see `docs/airc-remote-control.md`. **FR #5280:** bare `UPDATE airc` (no version) schedules Check against the **latest** GitHub Release airc MSI; `UPDATE airc x.y.z` pins a tag.
 - **VERSION (FR #5281):** same auth as STATUS (`+o/+h`+). `PRIVMSG {mid}_console :id=<8hex> VERSION` replies `out id= seq=1 VERSION machine=... airc_ver=... [commit=...] [built=...] [hotpatched=...] [hotpatch=1]` then `DONE id= exit=0` (FR #5534 / #5589). `built=` is BUILD.json `built_utc`; HOTPATCH overlays `commit` and adds `hotpatched=` from `hotpatched_utc` (never overwrites `built=`). Allowed when `shell=off` / `jobs=off` like STATUS. STATUS still returns the bob/airc/jeeves aggregate.
 - **DCC output (FR #5003 / #5008 / #5531 / #5612 / #5613 / #5654):** caller sends `DCCLISTEN id= host= port= token= [tls=1] [relay=]` (optional leading job `id=<job> ` is accepted; bare `DCCLISTEN` still works). Unused offers expire after 60 s and the table is capped at 32; VERSION/STATUS/PRIORITY/UPDATE clear the offer. Oversized shell replies: console dials out, sends framed bytes, waits for `ACK <sha256>` (FR #5612); no ack -> IRC fallback `dcc failed: no ack`. IRC `DONE ... via=dcc` only after ACK. Handshake fail -> IRC `CONT`/`RESUME` (`dcc failed ...; falling back to IRC`). FR #5654: DCC send is wall-clock bounded (separate from shell run timeout); a never-reading receiver must fall back without DONE exit=124.
-- **DCC upload (FR #5194 / #5536 / #5611):** same `DCCLISTEN`, then `PUT path= id= bytes= sha256= via=dcc`. Size cap is the DCC bulk cap (2 MiB); IRC PUT stays 256 KiB. Console dials out and **reads** the frame off the IRC thread (30s I/O timeout -> `err … code=timeout` + `DONE exit=1`), checks sha256, writes atomically under the drop sandbox (same path rules as IRC PUT, including FR #5610 reserved-device reject). Fail -> `err ... dcc failed ...; falling back to IRC` then `CHUNK`/`PUTEND`. Use `Invoke-AircRemote -Action Put` (default DCC) or `-ForceIrcPut`.
+- **DCC upload (FR #5194 / #5536 / #5611 / #7129):** `Invoke-AircRemote -Action Put` sends `DCCLISTEN` then `PUT path= id= bytes= sha256= via=dcc` with **no IRC CHUNK**. Size cap is the DCC bulk cap (2 MiB); `-ForceIrcPut` is the only IRC PUT (256 KiB). Console dials out and **reads** the frame off the IRC thread (timeout -> `err … code=dcc-unreachable|timeout` + `DONE exit=1`). NAT/firewall (console cannot dial the caller) **fail-closes** — never silent CHUNK fallback (secrets must not hit IRC; use DCC or SEAL). Writes atomically under the drop sandbox (FR #5610 reserved-device reject). Always emits DONE.
 - **SEAL file receive (FR #7131):** frozen `airc.exe` mints `ConsoleHome/identity.json` (no `python.exe` / `seal.py genkey`). After NAMES/366 it announces `AGPK v1` on the control channel. Channel `FILE v1 OFFER … S` is auto-ACCEPTed (cap / basename jail); payload is `SEAL v2` AIRC-FILE into `files/complete/<id>-<name>`. Clear CHUNK tier M/L is `REFUSE :tier`. From an ear with a pin for `{machine}_console`: `python common/scripts/filexfer.py offer --home <ear home> --channel #<machine> --from-nick <ear-nick> --to {machine}_console --tier S --in <file>` (after the console AGPK is TOFU-pinned). Never paste secrets on IRC.
 
 ## Safe diagnostic commands
@@ -65,11 +65,12 @@ PRIVMSG {mid}_console :id=c25bd00e VERSION
 
 ## PRIORITY prepare (FR #5286 / #5946)
 
-Typed prepare selects exact T$EXEC type: `prepare form|report|procedure <ENAME>` (or `type=F|R|P`). Form uses WINRUN `WINACTIV -P FORMPREP <ENAME>` (FR #6003 / #6017; never unscoped FORMPREP). Report/procedure use EXEC `REPPREPDIRECT2`. Never fall back to another type with the same ENAME. Untyped `prepare <ENAME>` stays procedure-only (FR #5933). Never SQL-fake `UPD`. Never form-prep for TYPE=P/R.
+Typed prepare selects exact T$EXEC type: `prepare form|report|procedure <ENAME>` (or `type=F|R|P`). **CAST IRON (FR #7130):** never run WINACTIV / formprep.exe / interactive FORMPREP from airc LocalSystem Session 0. `PRIORITY prepare-form <ENAME>` is the supported Session-0-safe path (Web SDK + CredMan). `PRIORITY prepare form` WINRUN is refused there with `reason=session0_gui`. Report/procedure use EXEC `REPPREPDIRECT2`. Never unscoped FORMPREP. Never SQL-fake `UPD`.
 
 ```text
 PRIVMSG {mid}_console :id=c25bd00e PRIORITY prepare procedure FOO instance=example-dev
 PRIVMSG {mid}_console :id=c25bd00e PRIORITY prepare form ORDERS instance=example-dev
+PRIVMSG {mid}_console :id=c25bd00e PRIORITY prepare-form TRANSORDER_T instance=example-dev
 PRIVMSG {mid}_console :id=c25bd00e PRIORITY prepare report CUSTOMERS instance=example-dev
 ```
 
@@ -79,7 +80,7 @@ See `docs/airc-remote-control.md` and `bobiverse-airc-troubleshooting`.
 
 ## Priority Client (FR #5287)
 
-Bare `PRIORITY` (or an unknown sub-verb) is usage, not PowerShell (FR #5533): `err id= seq=1 code=usage PRIORITY connect|status|prepare|formStart|subform|getRows|wcf` then `DONE id= exit=2`.
+Bare `PRIORITY` (or an unknown sub-verb) is usage, not PowerShell (FR #5533): `err id= seq=1 code=usage PRIORITY connect|status|prepare|formStart|subform|getRows|wcf` then `DONE id= exit=2`. FR #7132: never `-Action Command` for PRIORITY (that is PowerShell on old consoles). Use `Invoke-AircRemote -Action Priority -Text 'status'`. Missing `config/priority-instances.json` is `err … code=not-configured reason=priority_not_installed` + `DONE exit=2` (not CommandNotFound). Works with `shell=off`.
 
 **FR #5614:** the same usage shape applies to unknown `NETWORK` / `EXTENSION` actions and unknown flags (including `LEGION … -Force`): `err … code=usage` or `code=usage unknown-flag=-Force` then `DONE exit=2`. CTCP-framed lines (e.g. `\x01VERSION\x01`) are ignored and never run as PowerShell.
 

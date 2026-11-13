@@ -37,6 +37,16 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
+# FR #7121: one canonical Priority skill-book repo; agentic_fomprep is an alias.
+function ConvertTo-BobiverseCanonicalRepo {
+    param([string]$Name)
+    if ($Name -match '(?i)^(?:SimonBarnett/)?(?:agentic_fomprep|priority-mcp)$') {
+        return 'SimonBarnett/priority-mcp'
+    }
+    return $Name
+}
+$Repo = ConvertTo-BobiverseCanonicalRepo $Repo
+
 if (-not ($Repo -match '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$')) {
     throw "Repo must be owner/name (got '$Repo'). Intake requires an explicit target repo."
 }
@@ -166,7 +176,7 @@ function New-BobiverseIntakePayload {
         elseif ($Repo -match '(?i)^SimonBarnett/a-search$') {
             $bookName = 'harvest-agent-skills'
         }
-        elseif ($Repo -match '(?i)^SimonBarnett/agentic_fomprep$') {
+        elseif ($Repo -match '(?i)^SimonBarnett/(agentic_fomprep|priority-mcp)$') {
             $bookName = 'harvest-agent-skills'
         }
         else {

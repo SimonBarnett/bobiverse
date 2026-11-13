@@ -24,11 +24,12 @@ import contextlib
 import copy
 import threading
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 
 import bobreport
+import repo_alias
 
 # FR #628: the per-seat "wait" NAK after DONE/GIVEUP is off by default (0 = never NAK a seat that
 # has work offerable). Set BOB_BORED_IDLE_S to restore a gate. Seat busy/cooldown rules still apply.
@@ -129,7 +130,8 @@ GIVEUP_COOLDOWN_S = 600.0
 GIVEUP_NEEDS_HUMAN_COUNT = 2
 SAFE_TO_CLOSE_RE = re.compile(r"(?i)\bsafe\s+to\s+close\b")
 HARVEST_TITLE_RE = re.compile(r"(?i)^(harvest|skill)\b")
-# FR #2650: intake harvest receipt PRs (GhCliFiler draft) must never become MRB.
+# FR #2650: intake harvest receipt PRs never become MRB via webhook.
+# FR #7118: !assign / !resync still enqueue open non-draft receipts as MRB.
 _INTAKE_HARVEST_FOOTER_RE = re.compile(r"(?i)Invoke-BobiverseHarvest|Session summary:")
 # FR #5685: Report-*IntakeIssue / GhCliFiler footers without a Lesson body are stubs.
 _VIA_INTAKE_ID_FOOTER_RE = re.compile(r"(?i)_via-intake\b")
@@ -764,8 +766,8 @@ def _payload_number(event: str, payload: dict) -> str | None:
 
 
 def _repo_key(repo: str) -> str:
-    """FR #3817: case-folded owner/name for queue identity compares."""
-    return str(repo or "").strip().lower()
+    """FR #3817 / #7121: case-folded canonical owner/name for queue identity."""
+    return repo_alias.canonicalize_repo(str(repo or "").strip()).lower()
 
 
 def _prefer_repo_casing(a: str, b: str) -> str:
@@ -778,6 +780,8 @@ def _prefer_repo_casing(a: str, b: str) -> str:
         return left
     if _repo_key(left) != _repo_key(right):
         return left
+    if repo_alias.repos_equivalent(left, repo_alias.PRIORITY_MCP_CANONICAL):
+        return repo_alias.PRIORITY_MCP_CANONICAL
     if left != left.lower() and right == right.lower():
         return left
     if right != right.lower() and left == left.lower():
@@ -799,6 +803,9 @@ def canonical_queue_repo(repo: str) -> str:
     key = (repo or "").strip()
     if not key:
         return key
+    mapped = repo_alias.canonicalize_repo(key)
+    if mapped != key:
+        return mapped
     return ARCHIVED_REPO_SUCCESSORS.get(key.lower(), key)
 
 
@@ -1339,7 +1346,7 @@ def row_skip_fr_reason(row: dict) -> str | None:
     labels = row.get("labels") or ()
     if isinstance(labels, str):
         labels = [labels]
-    repo = str(row.get("repo") or "").strip().lower()
+    repo = _repo_key(row.get("repo") or "")
     ident = _norm_row_id(row.get("id"))
     if repo and ident and (repo, ident) in _NEEDS_HUMAN_ISSUE_PINS:
         return "needs_human_hold"
@@ -1984,12 +1991,12 @@ _NEEDS_HUMAN_ISSUE_PINS: set[tuple[str, str]] = {
 }
 
 _SKIP_FR_ISSUE_PINS: set[tuple[str, str]] = {
-    ("simonbarnett/agentic_fomprep", "#3"),
-    ("simonbarnett/agentic_fomprep", "#7"),
-    ("simonbarnett/agentic_fomprep", "#8"),
-    ("simonbarnett/agentic_fomprep", "#9"),
-    ("simonbarnett/agentic_fomprep", "#11"),
-    ("simonbarnett/agentic_fomprep", "#20"),
+    ("simonbarnett/priority-mcp", "#3"),
+    ("simonbarnett/priority-mcp", "#7"),
+    ("simonbarnett/priority-mcp", "#8"),
+    ("simonbarnett/priority-mcp", "#9"),
+    ("simonbarnett/priority-mcp", "#11"),
+    ("simonbarnett/priority-mcp", "#20"),
 }
 
 # Exact board phrase used by fomprep MRB-home intake issues (body). Title-only
@@ -3639,6 +3646,7 @@ def apply_queue_event(home: Path, claim: GitClaim) -> str:
     FR #1811: distinguish lock/read/write failures, spool on failure, skip noop rewrite,
     drain pending under the same lock.
     """
+    claim = replace(claim, repo=canonical_queue_repo(claim.repo))
     if claim.task not in TASK_KINDS and claim.action not in ("closed", "edited"):
         return "error"
     try:
@@ -4194,7 +4202,7 @@ def _empty_queue() -> dict:
 
 
 def _coerce_row(row: dict) -> dict | None:
-    repo = str(row.get("repo") or "").strip()
+    repo = repo_alias.canonicalize_repo(str(row.get("repo") or "").strip())
     task = str(row.get("task") or "").strip()
     ident = str(row.get("id") or "").strip()
     if not repo or task not in TASK_KINDS or not ID_RE.fullmatch(ident):
@@ -4409,8 +4417,23 @@ def _read_legacy_accepted(path: Path) -> list[dict]:
     return rows
 
 
+def _queue_needs_repo_alias_backup(doc: dict) -> bool:
+    for bucket in ("unaccepted", "accepted", "done"):
+        rows = doc.get(bucket)
+        if not isinstance(rows, list):
+            continue
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            raw = str(row.get("repo") or "").strip()
+            if raw and repo_alias.canonicalize_repo(raw) != raw:
+                return True
+    return False
+
+
 def _read_queue_file(path: Path) -> dict:
-    doc = json.loads(path.read_text(encoding="utf-8"))
+    raw_text = path.read_text(encoding="utf-8")
+    doc = json.loads(raw_text)
     if not isinstance(doc, dict):
         raise ValueError("queue")
     unaccepted = doc.get("unaccepted")
@@ -4420,6 +4443,10 @@ def _read_queue_file(path: Path) -> dict:
         raise ValueError("queue lists")
     if not isinstance(done, list):
         done = []
+    if _queue_needs_repo_alias_backup(doc):
+        bak = path.with_name(path.name + ".bak-fr7121")
+        if not bak.exists():
+            bak.write_text(raw_text, encoding="utf-8")
     out = {
         "v": 1,
         "unaccepted": [row for row in (_coerce_row(r) for r in unaccepted if isinstance(r, dict)) if row],
@@ -4433,6 +4460,8 @@ def _read_queue_file(path: Path) -> dict:
         out["stand_down"] = [n for n in notes if isinstance(n, dict)]
     # FR #6407: rewrite retired ce-priority-dev1 stamps to any on every load.
     out["_retired_pin_rewrites"] = _rewrite_retired_require_machine_rows(out)
+    # FR #7121: persist canonical repo names after alias rewrite.
+    out["_repo_alias_rewrites"] = 1 if _queue_needs_repo_alias_backup(doc) else 0
     return out
 
 
@@ -4470,6 +4499,7 @@ def _load_queue_unlocked(home: Path) -> dict:
     if path.exists():
         doc = _read_queue_file(path)
         n = int(doc.pop("_retired_pin_rewrites", 0) or 0)
+        n += int(doc.pop("_repo_alias_rewrites", 0) or 0)
         if n:
             try:
                 _write_queue(path, doc)
@@ -7021,6 +7051,38 @@ def list_idle_after_empty(
     return rows
 
 
+def sort_idle_seats_cheapest_first(
+    idle_rows: list,
+    fields_by_nick: dict | None = None,
+    *,
+    home: Path | None = None,
+) -> list:
+    """FR #7084 / MRB #7089: prefer min cost_tier among idle seats (stable nick tie-break)."""
+    rows = list(idle_rows or [])
+    cache = dict(fields_by_nick or {})
+
+    def _key(ent: dict) -> tuple:
+        nick = str((ent or {}).get("nick") or "").strip()
+        fields = cache.get(nick)
+        if fields is None and home is not None:
+            try:
+                fields = _seat_digest_model_fields(home, nick)
+            except Exception:
+                fields = {}
+            cache[nick] = fields or {}
+        fields = fields or {}
+        try:
+            import worker_start_model as wsm
+
+            rank = wsm._tier_rank(str(fields.get("cost_tier") or wsm.DEFAULT_JOB_TIER))
+        except Exception:
+            rank = 0
+        return (rank, nick.lower())
+
+    rows.sort(key=_key)
+    return rows
+
+
 def offer_to_idle_seats(
     home: Path,
     *,
@@ -7043,6 +7105,10 @@ def offer_to_idle_seats(
     idle_rows = list_idle_after_empty(home, now=now_f, live=live)
     if not idle_rows:
         return 0
+    try:
+        idle_rows = sort_idle_seats_cheapest_first(idle_rows, home=home)
+    except Exception:
+        pass
     sent = 0
     for ent in idle_rows:
         nick = str(ent.get("nick") or "").strip()
@@ -8064,6 +8130,46 @@ def _save_seat_out_of_fuel_unlocked(home: Path, seats: dict) -> None:
 
 
 
+def _seat_digest_model_fields(home: Path, nick: str) -> dict:
+    """FR #7084: start_model / mismatch / cost_tier from digest workers or worker_list."""
+    me = (canonical_worker_nick(nick) or nick or "").strip()
+    parsed = bobreport.parse_seat_nick(me)
+    if not parsed:
+        return {}
+    mid, pid = parsed
+    try:
+        doc = bobreport.load_digest(_root(home))
+    except Exception:
+        return {}
+    ent = (doc.get("machines") or {}).get(mid) or {}
+    if not isinstance(ent, dict):
+        return {}
+    workers = ent.get("workers") if isinstance(ent.get("workers"), dict) else {}
+    w = workers.get(str(pid)) if isinstance(workers.get(str(pid)), dict) else {}
+    if w:
+        return dict(w)
+    for r in bobreport._coerce_worker_list(ent.get("worker_list")):
+        if str(r.get("nick") or "").strip().lower() == me.lower():
+            return dict(r)
+    return {}
+
+
+def _seat_model_allows_row(home: Path, nick: str, cand: dict) -> bool:
+    """FR #7084: unknown digest model does not block; mismatch / too-cheap does."""
+    fields = _seat_digest_model_fields(home, nick)
+    if not fields:
+        return True
+    if "model_mismatch" not in fields and not fields.get("start_model") and not fields.get("cost_tier"):
+        return True
+    try:
+        import worker_start_model as wsm
+
+        cfg = wsm.load_worker_start_config()
+        return wsm.seat_allows_job(fields, str((cand or {}).get("task") or ""), cfg)
+    except Exception:
+        return True
+
+
 def seat_agent_kind(home: Path, nick: str) -> str:
     """Digest agent kind for a seat nick (``grok`` / ``cursor`` / ``opencode`` / ...).
 
@@ -8963,6 +9069,9 @@ def offer_focus_top(
                     return None
                 if row_machine_mismatch(cand, me) or row_gave_up_by(cand, me, live=live):
                     return None
+                # FR #7084: skip model-mismatch seats; skip when actual tier is below job need.
+                if not _seat_model_allows_row(home, me, cand):
+                    return None
                 # FR #4718: do not hand the same MRB head back to the seat that FAILed it.
                 if mrb_fail_same_head_for_seat(cand, me):
                     return None
@@ -9439,7 +9548,7 @@ def ledger_path(home: Path) -> Path:
 
 def _lkey(repo: str, ident) -> str:
     num = str(ident or "").strip().lstrip("#")
-    return f"{(repo or '').strip().lower()}#{num}"
+    return f"{_repo_key(repo)}#{num}"
 
 
 def _ledger_empty() -> dict:
@@ -9457,6 +9566,18 @@ def ledger_load(home: Path) -> dict:
     doc.setdefault("giveup", {})
     doc.setdefault("uat_cycle", {})
     doc.setdefault("fr_done", {})
+    for bucket in ("touch", "giveup", "uat_cycle", "fr_done", "mrb_done"):
+        raw = doc.get(bucket)
+        if not isinstance(raw, dict):
+            continue
+        rewritten: dict = {}
+        for k, v in raw.items():
+            nk = _lkey(str(k).rsplit("#", 1)[0], str(k).rsplit("#", 1)[-1]) if "#" in str(k) else _repo_key(str(k))
+            if nk in rewritten and isinstance(rewritten[nk], dict) and isinstance(v, dict):
+                rewritten[nk].update(v)
+            else:
+                rewritten[nk] = v
+        doc[bucket] = rewritten
     return doc
 
 
@@ -11626,10 +11747,8 @@ def claim_from_github_issue(repo: str, issue: dict) -> GitClaim | None:
             title=title, body=body, labels=labels, files=_paths
         ):
             return None
-        if is_intake_harvest_receipt_pr(
-            title=title, body=body, labels=labels, files=_paths
-        ):
-            return None
+        # FR #7118: open non-draft PRs (including intake/ harvest receipts) are
+        # offerable MRB via !assign / enqueue. Webhook still skips receipts (FR #2650).
         # FR #6340: explicit !assign / enqueue must reach docs/mrb pins (never
         # refuse with docs_mrb_pin). Auto resync/webhook still skip parent-open
         # and pin-of-pin; stamp docs_mrb_orphan so the row is auditable.
@@ -11663,9 +11782,9 @@ def claim_from_github_issue(repo: str, issue: dict) -> GitClaim | None:
         )
     if issue_skip_fr_reason(title=title, body=body, labels=labels, state=state or "open"):
         return None
-    if (str(repo).lower(), _norm_row_id(f"#{num}")) in _SKIP_FR_ISSUE_PINS:
+    if (_repo_key(repo), _norm_row_id(f"#{num}")) in _SKIP_FR_ISSUE_PINS:
         return None
-    if (str(repo).lower(), _norm_row_id(f"#{num}")) in _NEEDS_HUMAN_ISSUE_PINS:
+    if (_repo_key(repo), _norm_row_id(f"#{num}")) in _NEEDS_HUMAN_ISSUE_PINS:
         return None
     return GitClaim(
         repo=canonical_queue_repo(repo),
@@ -11912,6 +12031,12 @@ def enqueue_open_github_item(
         return "refused", f"{repo}#{num}: not found on GitHub or no token"
     claim = claim_from_github_issue(repo, issue)
     if claim is None:
+        is_pr = (
+            issue.get("pull_request") is not None
+            or str(issue.get("html_url") or "").find("/pull/") >= 0
+        )
+        if task_u == "MRB" and is_pr and issue.get("draft") is True:
+            return "refused", f"{repo}#{num}: draft"
         return "refused", f"{repo}#{num}: not an open offerable {task_u}"
     if claim.task != task_u:
         return "refused", f"{repo}#{num}: GitHub item is {claim.task}, not {task_u}"
@@ -12203,6 +12328,10 @@ def assign_row(
                 return "refused", "repo is archived (FR #785)"
             if row_machine_mismatch(cand, me):
                 return "refused", f"row is pinned to another machine than {me}"
+            # FR #7084 / FIX #7089: !assign still requires model eligibility (needs_human stays the
+            # only manual exception, already gated above for FIX).
+            if not _seat_model_allows_row(home, me, cand):
+                return "refused", f"{me}: model mismatch or below jobRequiredModelTier (FR #7084)"
             # Exact-nick giveup only on !assign (FR #4336): recycle inherit is for
             # auto-offer. Ops may !assign needs_human to a recycled successor.
             if row_gave_up_by(cand, me):
@@ -13084,21 +13213,9 @@ def resync_from_github(
                         flush=True,
                     )
                     continue
-            # FR #2650 / #6356: intake harvest receipt PRs (even non-draft) never become MRB.
+            # FR #7118: non-draft open PRs including intake/ harvest receipts
+            # enter the MRB queue on !resync (webhook still skips receipts, FR #2650).
             pr_labels = _label_names(pr.get("labels"))
-            if is_intake_harvest_receipt_pr(
-                title=title,
-                body=body,
-                labels=pr_labels,
-                files=resolve_intake_pr_changed_paths(pr, repo=repo, number=num, fetch_json=getter),
-            ):
-                skipped_draft += 1
-                skipped_open_pulls.add((repo, f"#{num}"))
-                print(
-                    f"resync skip harvest-receipt PR {repo}#{num}",
-                    flush=True,
-                )
-                continue
             # FR #5500: docs/mrb-* pins skip MRB while the original is still open
             # (resync used to store empty title so offer-time could not see pins).
             # FR #6044: DIRTY/CONFLICTING still fall through to FIX.
@@ -13574,9 +13691,9 @@ def resync_from_github(
             state = str(iss.get("state") or "open")
             if issue_skip_fr_reason(title=title, body=body, labels=labels, state=state):
                 continue
-            if (str(repo).lower(), _norm_row_id(ident)) in _SKIP_FR_ISSUE_PINS:
+            if (_repo_key(repo), _norm_row_id(ident)) in _SKIP_FR_ISSUE_PINS:
                 continue  # FR #2480 hard-pin umbrella
-            if (str(repo).lower(), _norm_row_id(ident)) in _NEEDS_HUMAN_ISSUE_PINS:
+            if (_repo_key(repo), _norm_row_id(ident)) in _NEEDS_HUMAN_ISSUE_PINS:
                 continue  # FR #6027 WCF live hold
             desired.append(
                 GitClaim(

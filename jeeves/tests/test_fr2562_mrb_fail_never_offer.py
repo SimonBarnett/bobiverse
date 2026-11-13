@@ -33,7 +33,7 @@ def test_mrb_verdict_title_skip_even_without_labels():
 
 def test_fomprep11_hard_pinned():
     pins = {(r, i) for r, i in gitclaim._SKIP_FR_ISSUE_PINS}
-    assert ("simonbarnett/agentic_fomprep", "#11") in pins
+    assert ("simonbarnett/priority-mcp", "#11") in pins
     assert (
         gitclaim.row_skip_fr_reason(
             {
@@ -168,7 +168,7 @@ def test_stale_unaccepted_mrb_fail_pruned_on_resync(tmp_path, monkeypatch):
         for r in (doc.get("unaccepted") or [])
         if str(r.get("task") or "").upper() == "FR"
     }
-    assert ("simonbarnett/agentic_fomprep", "#11") not in ids
+    assert ("simonbarnett/priority-mcp", "#11") not in ids
     assert ("simonbarnett/bobiverse", "#2562") in ids
     assert gitclaim.offer_focus_top(home, "marchhare-1", "#marchhare")[0] == "ok"
 

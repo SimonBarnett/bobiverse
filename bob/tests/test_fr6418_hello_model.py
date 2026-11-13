@@ -1,6 +1,7 @@
 """FR #6418: worker hello line reports the configured model (kind= model= build=)."""
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 from typing import Any
@@ -114,6 +115,34 @@ def test_fr6418_run_agent_shares_one_model_value():
     assert "seat_model = resolve_seat_hello_model(kind)" in chunk
     assert "model=seat_model" in chunk  # post_digest_seat_kind payload
     assert "worker_hello_line(kind, model=seat_model, build=build)" in chunk
+
+
+def test_fr7084_grok_build_launch_inserts_configured_model(tmp_path, monkeypatch):
+    monkeypatch.setenv(
+        "BOB_WORKER_START_MODEL_JSON",
+        json.dumps({"workerStartModels": {"grok": "EXAMPLE_GROK_MIN"}}),
+    )
+    rd = tmp_path / "run"
+    rd.mkdir()
+    spec = bw.build_launch(
+        "grok",
+        "agent",
+        str(tmp_path / "cwd"),
+        "prompt",
+        r"C:\fake\grok.exe",
+        rd,
+        session_id="aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+    )
+    assert "--model" in spec.argv
+    assert spec.argv[spec.argv.index("--model") + 1] == "EXAMPLE_GROK_MIN"
+
+
+def test_fr7084_resolve_seat_hello_uses_worker_start_models(monkeypatch):
+    monkeypatch.setenv(
+        "BOB_WORKER_START_MODEL_JSON",
+        json.dumps({"workerStartModels": {"cursor": "EXAMPLE_CURSOR_MIN"}}),
+    )
+    assert bw.resolve_seat_hello_model("cursor") == "EXAMPLE_CURSOR_MIN"
 
 
 def test_fr6418_docs_mention_hello_model():

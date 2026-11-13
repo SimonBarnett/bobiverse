@@ -101,7 +101,7 @@ curl -sS -X POST "https://bob.ntsa.uk/bob/v1/intake" \
 
 Use a **single** `/bob/v1/intake` for harvest; do not add `/bob/v1/harvest`.
 
-Intake `repo` must match `owner/name` and be under **`SimonBarnett/*`** (FR #3135) or the POST returns **403** `repo_not_allowed`. Non-SimonBarnett owners stay denied unless explicitly listed in `DEFAULT_ALLOW_REPOS` later. Known products (`bobiverse`, `skills-visionary`, `agentic_fomprep`, `a-search`, `trutex`) remain documented examples (FR #94; FR #3023; FR #3050). Private repos are eligible (visibility is not a gate). Queue behaviour uses `!ignore` / `!focus` — not a second hardcoded intake list.
+Intake `repo` must match `owner/name` and be under **`SimonBarnett/*`** (FR #3135) or the POST returns **403** `repo_not_allowed`. Non-SimonBarnett owners stay denied unless explicitly listed in `DEFAULT_ALLOW_REPOS` later. Known products (`bobiverse`, `skills-visionary`, `priority-mcp` — GitHub alias of the former `agentic_fomprep` name — `a-search`, `trutex`) remain documented examples (FR #94; FR #3023; FR #3050; FR #7121). Private repos are eligible (visibility is not a gate). Queue behaviour uses `!ignore` / `!focus` — not a second hardcoded intake list.
 
 After intake allow-rule changes merge to `main`, **Sync/compose (or restart) ircJeeves on ionos** so the live webhook picks it up — source-on-main alone does not update a stale install (FR #3117 / #3122 class). Monitor: `Test-JeevesMonitorIntakeAllowlist.ps1`.
 

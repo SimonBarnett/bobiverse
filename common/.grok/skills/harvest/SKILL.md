@@ -65,11 +65,12 @@ lessons here --- route those to their owning repos.
 **FR #4970 (customer vs general Priority):** a lesson that is true only for one
 customer or project goes in that customer's `SimonBarnett/*` repo tagged GitHub
 topic `priority-customer` (look the topic up; do not hard-code the names). Test:
-"would this be true for every Priority customer?" Yes -> `SimonBarnett/agentic_fomprep`.
+"would this be true for every Priority customer?" Yes -> `SimonBarnett/priority-mcp`
+(GitHub alias of the former `SimonBarnett/agentic_fomprep` name; FR #7121).
 No -> the customer repo. Example: Rees Machinery Priority instance / forms / data
--> `SimonBarnett/rees`, **not** `agentic_fomprep` harvest-agent-skills and **not**
+-> `SimonBarnett/rees`, **not** `priority-mcp` harvest-agent-skills and **not**
 bobiverse `harvest`. Generic Priority form-prep (true for any customer) still goes
-to `SimonBarnett/agentic_fomprep`. Shared lookup: `common/scripts/priority_customer.py`
+to `SimonBarnett/priority-mcp`. Shared lookup: `common/scripts/priority_customer.py`
 (same topic file as FR #4969).
 
 ## Report route (strict order)
@@ -381,6 +382,7 @@ routes to bobiverse via the split rule.
 - Two shared distinctive tokens are not a harvest twin; require a phrase or >=5 tokens and print the covering PR url.
 - Appliance queue HTML must use the same repo/task/id/worker whitelist as queue JSON and read queue.json directly so stored worker survives gitclaim coerce.
 - FR-04 settings HTML groups: headings use _opt_esc which encodes less-than but not greater-than; assert no raw script tag, not a full gt entity.
+- Jeeves appliance UI FR-04 Groups table lives at jeeves/docs/feature-request-jeeves-appliance-ui-*.md (## Groups). Sparse installs lack repo-root docs/; do not invent the table. Fetch/rebase onto origin/main first so sibling SettingSpec/_render_html land. git info/exclude /* blocks repo-root docs add without -f.
 - FR-012 retarget 6758/6792 doc pins to bob.ntsa.uk/jeeves instead of reopening 6757/6758.
 - When Get-BobOpencodeFuel changes, repin build-bob-ear.yml behavior_source_sha and CRLF manifest hashes; do not weaken the git-diff guard.
 - Worker skill DAG: put depends_on in YAML after description; job-fr must list job-irc and must not list job-uat.
@@ -406,6 +408,7 @@ routes to bobiverse via the split rule.
 - skill-dag resolve must score the full seed against skill ids as well as descriptions so spaced tokens still hit hyphenated book names
 - skill-dag status last_error must not fire for the same skill id copied into worker, bob, and ~/.grok packs; prefer the first configured root
 - Worker start models must come from config placeholders not hard-coded premium ids; digest actual vs configured mismatch must skip Jeeves offers
+- FR #7084 digest start_model must come from the launched argv/session (stamp BOB_WORKER_ACTUAL_MODEL, re-POST after start_agent); freeze worker_start_model as a PyInstaller hidden-import.
 
 ## Harvest digest (lessons audit 2026-10-06)
 

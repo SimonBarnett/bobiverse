@@ -9,9 +9,9 @@ import gitclaim as gc
 
 def test_fr2521_fomprep11_in_skip_pins_homes_remain():
     pins = {(r, i) for r, i in gc._SKIP_FR_ISSUE_PINS}
-    assert ("simonbarnett/agentic_fomprep", "#11") in pins
+    assert ("simonbarnett/priority-mcp", "#11") in pins
     for n in ("#3", "#7", "#8", "#9", "#20"):
-        assert ("simonbarnett/agentic_fomprep", n) in pins
+        assert ("simonbarnett/priority-mcp", n) in pins
 
 
 def test_fr2521_row_skip_11_is_hard_pin_like_homes():

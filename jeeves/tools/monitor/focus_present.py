@@ -12,7 +12,7 @@ REQUIRED_REPO = "simonbarnett/bobiverse"
 # Soft expectation for healthy multi-repo focus (reported, not hard-fail alone).
 EXPECTED_FALLBACKS = (
     "simonbarnett/xai-cookbook",
-    "simonbarnett/agentic_fomprep",
+    "simonbarnett/priority-mcp",
 )
 
 

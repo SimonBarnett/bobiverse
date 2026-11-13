@@ -24,7 +24,7 @@ DEFAULT_INTAKE_URL = "https://bob.ntsa.uk/bob/v1/intake"
 REQUIRED_ALLOW_REPOS = (
     "SimonBarnett/bobiverse",
     "SimonBarnett/skills-visionary",
-    "SimonBarnett/agentic_fomprep",
+    "SimonBarnett/priority-mcp",
     "SimonBarnett/a-search",
     "SimonBarnett/trutex",
 )
