@@ -31,6 +31,7 @@ FR #6862: local stdio MCP `bob/scripts/skill_dag_mcp.py` (`--root`, `--max-bytes
 * **`!bored`** (t770u): posted by the exe only, exactly like the agent watcher (`Watch-AgentHealth` FR #100): on ready, right after DONE, idle 120 s then every 180 s, never while an ACK is open (<45 min) or the agent is (re)starting; never after IRC loss; an agent-written `!bored` is refused.
   Jeeves then assigns in `!focus` order; ACK marks the seat doing, DONE marks it idle. Exact lines: `bobiverse-bob-job-irc`.
 * **Exit codes**: 0 ok / window closed, 2 IRC unreachable at start (no agent started), 3 IRC lost, 4 no agent or key cancelled, 5 restart limit, 6 launch failed, 64 usage.
+  **FR #7150:** exit 5 (`hang-restart-limit`) also PRIVMSGs the shop (`hang-restart-limit reason=... restarts=N/Ws exit=5`) and writes `run_dir/hang-restart-limit.txt` so ear/Jeeves can see why a seat vanished (redqueen 16:55 RCA: repeated FR #4123 `startup-no-first-turn`, not Jeeves recycleseat).
 
 ## CI artifact (FR #6349)
 

@@ -168,7 +168,7 @@ def test_restart_agent_refuses_while_out_of_fuel():
     assert sup.ack_miss.tick(clock["t"] + 999.0, ack_open=False) is None
 
 
-def test_restart_counter_monotonic_across_window():
+def test_restart_counter_monotonic_across_window(tmp_path: Path):
     """Sliding window must not drop an active restart incident before 3/3."""
     clock = {"t": 0.0}
     logs: list[str] = []
@@ -206,7 +206,7 @@ def test_restart_counter_monotonic_across_window():
         cwd=".",
         machine="marchhare",
         nick="marchhare-1",
-        run_dir=Path("."),
+        run_dir=tmp_path,
         irc=None,
         relay=FakeRelay(),
         log=logs.append,
