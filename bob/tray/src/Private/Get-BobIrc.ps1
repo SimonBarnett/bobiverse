@@ -2643,6 +2643,8 @@ function Write-BobIrcStatus {
     $overageGbp = $null
     $cw = $null
     try {
+        # FR #6997 / #6141: ear owns live Cursor gather+POST. Tray Write-BobIrcStatus
+        # uses cache/fixture only (no AllowLiveFetch) so a hung provider cannot stall.
         $cw = Get-BobCursorAgentWeeklyRemaining
         if ($cw) {
             # FR #6144: empty string must not cast to confident 0.
