@@ -449,6 +449,7 @@ class AircConsoleService:
             channel_commands=self.channel_commands,
             presence_channels=self.presence_channels,
             extension_runner=_airc_extension.service_extension_runner,
+            console_home=self.home,
         )
         self.core.channel = self.channel
         self.core.presence_channels = list(self.presence_channels)
@@ -1522,6 +1523,15 @@ class AircConsoleService:
                         f"INFO FR #3401 names-synced channel={self.channel} "
                         f"n={len(self.members._members)}"
                     )
+                    try:
+                        import airc_seal_file as _sf
+
+                        agpk = _sf.agpk_privmsg_body(self.core)
+                        if agpk:
+                            self.send_privmsg(self.channel, agpk, flood=False)
+                            info("INFO FR #7131 AGPK announced")
+                    except Exception as _agpk_exc:  # noqa: BLE001
+                        info(f"INFO FR #7131 AGPK skip {type(_agpk_exc).__name__}")
             elif cmd == "JOIN":
                 jnick = parse_prefix_nick(":" + prefix) if prefix else None
                 # channel may be args[0] or trailing
@@ -1593,6 +1603,12 @@ class AircConsoleService:
             # (Invoke-AircRemote / ReplyFile wait on DONE; never start a subprocess).
             self.send_privmsg(hr.nick, hr.reply)
             info(f"INFO capability-deny to={hr.nick} {hr.reply}")
+        elif hr.action == "seal_file":
+            # FR #7131: FILE ACCEPT/REFUSE is channel wire, not a Query shell reply.
+            if hr.reply:
+                dest = hr.target if (hr.target or "").startswith("#") else self.channel
+                self.send_privmsg(dest, hr.reply, flood=False)
+                info(f"INFO FR #7131 file-wire to={dest}")
         elif hr.action in {
             "help",
             "close",
