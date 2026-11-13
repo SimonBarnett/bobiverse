@@ -1,8 +1,13 @@
-"""FR #6862: local stdio skill-dag MCP (resolve, get_skill, status). No listen port."""
+"""FR #6862/#6901: local stdio skill-dag MCP (resolve, get_skill, status). No listen port.
+
+FR #6901: resolve scores the job line against skill descriptions when the first
+token is not FR/MRB/UAT/FIX and the line is not an exact skill id.
+"""
 from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -16,6 +21,54 @@ JOB_SEEDS = {
     "UAT": "bobiverse-bob-job-uat",
     "FIX": "bobiverse-bob-job-fr",
 }
+_TOKEN_RE = re.compile(r"[a-z0-9]+", re.IGNORECASE)
+_STOPWORDS = frozenset(
+    {
+        "a",
+        "an",
+        "the",
+        "and",
+        "or",
+        "to",
+        "of",
+        "for",
+        "in",
+        "on",
+        "is",
+        "are",
+        "be",
+        "with",
+        "from",
+        "by",
+        "at",
+        "as",
+        "it",
+        "this",
+        "that",
+        "do",
+        "does",
+        "please",
+        "run",
+        "via",
+    }
+)
+
+
+def _tokens(text: str) -> set[str]:
+    return {
+        t
+        for t in _TOKEN_RE.findall(str(text or "").lower())
+        if len(t) > 1 and t not in _STOPWORDS
+    }
+
+
+def score_description(job_line: str, description: str) -> int:
+    """Count overlapping content tokens between the job line and a skill description."""
+    job = _tokens(job_line)
+    desc = _tokens(description)
+    if not job or not desc:
+        return 0
+    return len(job & desc)
 
 
 class JobSkillsRootRefused(ValueError):
@@ -218,13 +271,26 @@ class SkillDagServer:
         ]
 
     def _seed_id(self, seed: str) -> str:
+        """Map FR/MRB/UAT/FIX, else exact node id, else description score winner (FR #6901)."""
         raw = str(seed or "").strip()
         if not raw:
             return raw
         first = raw.split(None, 1)[0].upper()
         if first in JOB_SEEDS:
             return JOB_SEEDS[first]
-        return raw
+        if raw in self.nodes:
+            return raw
+        first_raw = raw.split(None, 1)[0]
+        if first_raw in self.nodes:
+            return first_raw
+        best_id = ""
+        best_score = 0
+        for nid, node in self.nodes.items():
+            sc = score_description(raw, str(node.get("description") or ""))
+            if sc > best_score or (sc == best_score and sc > 0 and (not best_id or nid < best_id)):
+                best_score = sc
+                best_id = nid
+        return best_id if best_score > 0 else ""
 
     def _closure(self, seed_id: str) -> list[str]:
         seen: set[str] = set()
@@ -246,6 +312,8 @@ class SkillDagServer:
         sid = self._seed_id(seed)
         matched: list[dict[str, Any]] = []
         skipped: list[dict[str, Any]] = []
+        if not sid:
+            return {"matched": matched, "skipped": skipped}
         used = 64
         order = self._closure(sid)
         if sid in order:
