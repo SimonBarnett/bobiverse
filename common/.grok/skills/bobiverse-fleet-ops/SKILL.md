@@ -185,3 +185,4 @@ Generalised from 32 harvested lessons that never reached this book (audit for FR
 - PowerShell $t and $T are one variable; hotpatch verify must use distinct names. HSwap overlay must prune files removed from the pack (sdk\priority-web-sdk).
 - Tray C# heading changes need CI Build-BobDialogs.ps1 on windows-latest; source-only merge leaves live tools\bob-tray.exe stale --- assert UTF-16LE xAI weekly in the PE and upload sha256 provenance for Slab hotpatch
 - Heading-bound README pins must skip ATX detection inside fenced code; a # PowerShell comment is not a markdown heading.
+- A 2470 behind-count ALERT test must dirty a non-allowlist path; park-all-dirty makes ff succeed and drops the ALERT.
