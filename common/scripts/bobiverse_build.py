@@ -676,13 +676,14 @@ class BuildDecision:
     dry_run: bool = False
     status_only: bool = False
     cancel: bool = False
+    tests_only: bool = False
     route: str = ""  # wire / queue hint for build machine
 
 
 # FR #6715: reserved verbs are recognised before the args are read as a build request,
 # so a mistyped/unknown subcommand can never fall through to a runner start.
 BUILD_SUBCOMMANDS = frozenset(
-    ("status", "cancel", "dry-run", "dryrun", "dry", "preflight")
+    ("status", "cancel", "dry-run", "dryrun", "dry", "preflight", "tests-only")
 )
 
 
@@ -831,8 +832,10 @@ def decide_build(
         )
 
     dry = sub == "dry-run"
-    # run / dry-run: <repos> <version> [ref]
+    tests_only = sub == "tests-only" or "--tests-only" in (rest or "").split()
+    # run / dry-run / tests-only: <repos> <version> [ref]
     arg = rest if dry else rest
+    arg = " ".join(t for t in arg.split() if t.lower() != "--tests-only")
     if dry and not arg:
         # !build dry-run <repos> <version>
         return BuildDecision(
@@ -843,8 +846,8 @@ def decide_build(
         )
     tokens = arg.split()
     usage_lines = [
-        "build: usage !build <owner/repo>[,owner/repo...] <version> [ref]",
-        "build: also !build status|cancel|dry-run|preflight ...",
+        "build: usage !build <owner/repo>[,owner/repo...] <version> [ref] [--tests-only]",
+        "build: also !build status|cancel|dry-run|preflight|tests-only ...",
     ]
     if len(tokens) < 2:
         return BuildDecision(False, "usage", usage_lines, dry_run=dry)
@@ -930,9 +933,10 @@ def decide_build(
                 f"file release-blocker issues for new_regression/step_failure; nothing published"
             )
         else:
+            extra = " tests-only" if tests_only else ""
             lines.append(
                 f"build: queued {repo} version={version} ref={ref} "
-                f"machine={recipe.machine} id={bid}"
+                f"machine={recipe.machine} id={bid}{extra}"
             )
     if not ok_repos and not lines:
         lines.append("build: nothing started")
@@ -943,6 +947,8 @@ def decide_build(
             f"BUILD v1 repos={','.join(ok_repos)} version={version} "
             f"ref={ref} id={batch_id}"
         )
+        if tests_only:
+            route += " tests_only=1"
     return BuildDecision(
         bool(ok_repos) or dry and bool(lines),
         "dry_run" if dry else ("ok" if ok_repos else "refused"),
@@ -951,6 +957,7 @@ def decide_build(
         version,
         ref,
         dry,
+        tests_only=tests_only,
         route=route,
     )
 
@@ -970,7 +977,7 @@ def dry_run_plan(recipe: BuildRecipe, *, repo: str, version: str, ref: str) -> l
 
 BUILD_V1_RE = re.compile(
     r"^BUILD\s+v1\s+repos=(?P<repos>\S+)\s+version=(?P<version>\S+)\s+ref=(?P<ref>\S+)"
-    r"(?:\s+id=(?P<id>\S+))?\s*$",
+    r"(?:\s+id=(?P<id>\S+))?(?:\s+tests_only=(?P<tests_only>\S+))?\s*$",
     re.IGNORECASE,
 )
 
@@ -1040,6 +1047,7 @@ def parse_build_v1_route(text: str) -> dict | None:
         "version": m.group("version"),
         "ref": m.group("ref"),
         "id": (m.group("id") or "").strip(),
+        "tests_only": str(m.group("tests_only") or "").strip().lower() in ("1", "true", "yes"),
         "raw": raw,
     }
 
@@ -1111,6 +1119,20 @@ def _default_token_source() -> str:
             if (os.environ.get(name) or "").strip():
                 return f"env:{name}"
         return "none"
+
+
+def _default_tag_exists(repo: str, version: str) -> bool:
+    """True when ``gh release view v{version}`` finds a GitHub release (FR #7094)."""
+    import subprocess as _sp
+
+    tag = f"v{str(version).lstrip('v')}"
+    cp = _sp.run(
+        ["gh", "release", "view", tag, "--repo", normalize_repo(repo), "--json", "tagName"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return int(getattr(cp, "returncode", 1) or 1) == 0
 
 
 def _scrub_secret_fragments(text: str, env: dict | None = None) -> str:
@@ -1274,6 +1296,11 @@ def run_build_preflight(
     mkdir: Callable | None = None,
     free_gb: Callable[[Path], float] | None = None,
     pack_tools: tuple[str, ...] = ("powershell", "gh"),
+    version: str = "",
+    require_release: bool = False,
+    tag_exists_fn: Callable | None = None,
+    replace_release: bool | None = None,
+    identity_fn: Callable | None = None,
 ) -> PreflightReport:
     """FR #6492: recipe-machine environment check (no suite/pack/release).
 
@@ -1453,6 +1480,96 @@ def run_build_preflight(
                 "ok=" + ",".join(pack_tools),
             )
         )
+
+    # FR #7094: release preflight at the start of a real build / tests-only run.
+    if require_release:
+        ver = str(version or "").strip()
+        if ver:
+            items.append(PreflightItem("version_explicit", True, f"version={ver}"))
+        else:
+            items.append(
+                PreflightItem(
+                    "version_explicit",
+                    False,
+                    "need explicit numeric -Version / job.version (x.y.z)",
+                )
+            )
+        if suite_py:
+            items.append(PreflightItem("python", True, f"path={suite_py}"))
+        else:
+            items.append(
+                PreflightItem(
+                    "python",
+                    False,
+                    "python not on PATH for SYSTEM ircBob (FR #6490/#7094)",
+                )
+            )
+        replace = True if replace_release is None else bool(replace_release)
+        tag_name = f"v{ver}" if ver else ""
+        exists = False
+        if ver:
+            probe = tag_exists_fn or _default_tag_exists
+            try:
+                exists = bool(probe(repo, ver))
+            except Exception as exc:
+                items.append(
+                    PreflightItem(
+                        "release_tag",
+                        False,
+                        f"probe_err={type(exc).__name__}",
+                    )
+                )
+                exists = None  # type: ignore
+        if exists is not None:
+            if not ver:
+                items.append(
+                    PreflightItem("release_tag", False, "no version; cannot check tag")
+                )
+            elif exists and not replace:
+                items.append(
+                    PreflightItem(
+                        "release_tag",
+                        False,
+                        f"tag={tag_name} already exists; set replace/clobber (FR #7086) or bump version",
+                    )
+                )
+            elif exists and replace:
+                items.append(
+                    PreflightItem(
+                        "release_tag",
+                        True,
+                        f"tag={tag_name} exists replace=clobber",
+                    )
+                )
+            else:
+                items.append(
+                    PreflightItem("release_tag", True, f"tag={tag_name} absent")
+                )
+        src_low = str(src_tag or "none").lower()
+        ident = ""
+        if identity_fn is not None:
+            try:
+                ident = str(identity_fn() or "")
+            except Exception:
+                ident = ""
+        loginish = src_low.startswith("login") or src_low in ("interactive", "gh auth login")
+        if src_tag == "none" or auth_err or loginish:
+            items.append(
+                PreflightItem(
+                    "gh_can_create",
+                    False,
+                    f"source={src_tag} (need file:github.token or env:GH_TOKEN for LocalSystem; not interactive login)",
+                )
+            )
+        else:
+            who = ident or "service"
+            items.append(
+                PreflightItem(
+                    "gh_can_create",
+                    True,
+                    f"source={src_tag} identity={who}",
+                )
+            )
 
     lines: list[str] = []
     for it in items:
@@ -1774,6 +1891,16 @@ def file_blocker_or_dedupe(
     extra_labels: Iterable[str] | None = None,
 ) -> dict:
     """Create release-blocker FR or comment on an open duplicate (one issue per root cause)."""
+    if getattr(filer, "skip_blockers", False):
+        return {
+            "action": "skipped",
+            "number": 0,
+            "repo": normalize_repo(repo),
+            "kind": failure.kind,
+            "test_id": failure.test_id,
+            "url": "",
+            "labels": [FEATURE_REQUEST_LABEL, RELEASE_BLOCKER_LABEL],
+        }
     open_issues = filer.list_open_issues(repo)
     hit = find_open_duplicate(open_issues, test_id=failure.test_id)
     body = blocker_issue_body(
@@ -2440,6 +2567,7 @@ class BuildRunner:
         baseline_root: Path | str | None = None,
         build_id: str = "",
         progress: BuildProgressPoster | None = None,
+        tests_only: bool = False,
     ) -> None:
         self.repo_root = Path(repo_root)
         # Baseline suites run in their own checkout of the baseline tag; without one
@@ -2460,6 +2588,12 @@ class BuildRunner:
         self.build_id = str(build_id or "").strip()
         # FR #6585: optional live progress sink (ear tails JSONL -> #bobiverse).
         self.progress = progress
+        self.tests_only = bool(tests_only)
+        if self.tests_only:
+            try:
+                setattr(self.filer, "skip_blockers", True)
+            except Exception:
+                pass
 
     def _progress(self) -> BuildProgressPoster | None:
         return self.progress
@@ -2986,7 +3120,10 @@ class BuildRunner:
                 out_dir=str(out_dir),
                 ref=self.ref,
             )
-            if not blocking and report.pack_ok and target == "github-prerelease":
+            if self.tests_only:
+                # FR #7094: suites + pack only; never gh release create / upload / Latest.
+                report.release_ok = True
+            elif not blocking and report.pack_ok and target == "github-prerelease":
                 try:
                     if prog is not None:
                         with contextlib.suppress(Exception):
@@ -3109,6 +3246,7 @@ def enqueue_build_job(
         "recipe_machine": recipe_machine,
         "queued_at": ts,
         "status": "queued",
+        "tests_only": bool(route.get("tests_only")),
     }
     path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
     return path
