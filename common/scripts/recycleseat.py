@@ -141,10 +141,57 @@ def write_request(qdir, seat_nick: str, by: str, kind: str, now: float | None = 
     return rid
 
 
-def seat_is_working(home, seat_nick: str) -> bool:
-    """Read seat-specific work without healing or clearing any digest evidence."""
-    if home is None:
-        return False
+RECYCLE_LIVE_SCRIPTS = (
+    "bob/tray/tools/BobTrayRecycleSeat.ps1",
+    "common/scripts/recycleseat.py",
+    "common/scripts/gitclaim.py",
+)
+
+
+def dirty_recycle_script_paths(names) -> list[str]:
+    """Tracked paths that must not stay dirty on a live install (FR #7117)."""
+    want = {p.replace("\\", "/").lower() for p in RECYCLE_LIVE_SCRIPTS}
+    out: list[str] = []
+    for raw in names or []:
+        n = str(raw or "").replace("\\", "/").lstrip("./")
+        if n.lower() in want:
+            out.append(n.replace("\\", "/"))
+    return out
+
+
+def _digest_read_candidates(home, install_root=None) -> list[Path]:
+    """SYSTEM-readable digest homes: ear home, BOB_DIGEST_HOME, install home, ProgramData."""
+    seen: set[str] = set()
+    cands: list[Path] = []
+
+    def _add(p) -> None:
+        if p is None:
+            return
+        try:
+            key = str(Path(p).resolve())
+        except OSError:
+            key = str(p)
+        if key in seen:
+            return
+        seen.add(key)
+        cands.append(Path(p))
+
+    if home is not None:
+        _add(bobreport.fleet_digest_home(Path(home)))
+    envh = (os.environ.get("BOB_DIGEST_HOME") or "").strip()
+    if envh:
+        _add(envh)
+    if install_root:
+        ir = Path(install_root)
+        _add(ir / "home")
+        _add(ir)
+    pd = (os.environ.get("ProgramData") or "").strip()
+    if pd:
+        _add(Path(pd) / "bobiverse")
+    return cands
+
+
+def _work_from_doc(doc: dict, seat_nick: str) -> bool:
     legacy = bobreport.parse_worker_nick(seat_nick.lower())
     mid, _, pid = seat_nick.lower().rpartition("-")
     if legacy:
@@ -152,23 +199,64 @@ def seat_is_working(home, seat_nick: str) -> bool:
     if not mid or not pid.isdigit():
         return False
     mid = bobreport.fold_machine_id(mid)
-    # load_digest filters by the ChanServ roster; a missing roster must not hide work.
-    path = bobreport.digest_path(bobreport.fleet_digest_home(Path(home)))
-    try:
-        doc = json.loads(path.read_text(encoding="utf-8-sig"))
-    except FileNotFoundError:
-        return False
     ent = (doc.get("machines") or {}).get(mid) or {}
+    if not isinstance(ent, dict):
+        return False
     row = (ent.get("workers") or {}).get(str(int(pid))) or {}
-    if str(row.get("working_on") or "").strip():
+    if isinstance(row, dict) and str(row.get("working_on") or "").strip():
         return True
     for worker in ent.get("worker_list") or []:
+        if not isinstance(worker, dict):
+            continue
         if str(worker.get("nick") or "").strip().lower() != seat_nick.lower():
             continue
-        if (str(worker.get("work") or "").strip()
-                or str(worker.get("state") or "").lower() in ("doing", "busy", "accepted")):
+        if (
+            str(worker.get("work") or "").strip()
+            or str(worker.get("state") or "").lower() in ("doing", "busy", "accepted")
+        ):
             return True
     return False
+
+
+def inspect_seat_work(home, seat_nick: str, install_root=None) -> tuple[bool, bool, str]:
+    """(known, working, error). Never raises. FR #7117: retry SYSTEM-readable digest homes."""
+    if home is None and not install_root:
+        return True, False, ""
+    last_err = ""
+    any_path = False
+    for base in _digest_read_candidates(home, install_root):
+        path = bobreport.digest_path(base)
+        any_path = True
+        try:
+            raw = path.read_text(encoding="utf-8-sig")
+        except FileNotFoundError:
+            continue
+        except (OSError, UnicodeError) as e:
+            last_err = f"{type(e).__name__}"
+            continue
+        try:
+            doc = json.loads(raw)
+        except (json.JSONDecodeError, ValueError, TypeError) as e:
+            return False, False, type(e).__name__
+        if not isinstance(doc, dict):
+            return False, False, "TypeError"
+        try:
+            return True, bool(_work_from_doc(doc, seat_nick)), ""
+        except (OSError, ValueError, TypeError, AttributeError) as e:
+            return False, False, type(e).__name__
+    if last_err:
+        return False, False, last_err
+    if not any_path:
+        return True, False, ""
+    return True, False, ""
+
+
+def seat_is_working(home, seat_nick: str, install_root=None) -> bool:
+    """Read seat-specific work without healing or clearing any digest evidence."""
+    known, working, _err = inspect_seat_work(home, seat_nick, install_root)
+    if not known:
+        raise OSError(_err or "state_unavailable")
+    return working
 
 
 def ack_cooldown_left(qdir, seat_nick: str, now: float) -> float:
@@ -276,19 +364,19 @@ def decide(
             kind=kind,
             seat_nick=seat_nick,
         )
-    try:
-        working = seat_is_working(home, seat_nick)
-    except (OSError, ValueError, TypeError, AttributeError):
+    known, working, inspect_err = inspect_seat_work(home, seat_nick, install_root)
+    if not known:
+        why = inspect_err or "unknown"
         return nack(
             "state_unavailable",
-            f"cannot verify current working_on for {seat_nick}",
+            f"cannot verify current working_on for {seat_nick} ({why})",
             kind=kind,
             seat_nick=seat_nick,
         )
     if working:
         return nack(
             "busy",
-            f"busy {seat_nick}: current working_on",
+            f"busy {seat_nick}: current working_on; hand back (GIVEUP) before recycle",
             kind=kind,
             seat_nick=seat_nick,
         )
