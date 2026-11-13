@@ -11,6 +11,7 @@ A finished Grok or Cursor CLI job records the same measured token fields OpenCod
 
 1. Grok. When `usage.json` has one `modelUsage` entry, the DONE stamp uses that entry's model id and its `inputTokens`, `outputTokens`, and `cachedReadTokens`. A different `primaryModelId` does not win. The ledger row stores the same numbers. Issue #6781.
 2. Cursor. A non-zero local or fixture source stamps the same three fields and `model=`. A missing source, or token fields that are absent or zero, stamps `tokens=unknown`. Issue #6782.
+2b. Every CLI (Grok, Cursor, Aider, OpenCode): if usage is missing or all of `tokens_in`, `tokens_out`, and `tokens_cached` are zero, the DONE line is `tokens=unknown` (keep `model=` when known). Never emit `tokens_in=0 tokens_out=0 tokens_cached=0`. A real zero is allowed only beside a non-zero sibling field. Issue #7085.
 3. Comparison. The ledger rollup groups measured rows by `model`. Unknown rows increment `unknown_jobs` and do not add into token sums. Issue #6783.
 4. Status page. Inline SVG shows the rollup when measured rows exist. No measured rows: empty copy, no zero bars. Unreadable ledger: error copy, no invented series. Same auth as `/status`. Issue #6784. Mocks: `bob/docs/mocks/cli-token-compare/`.
 5. Login route. GET https://bob.ntsa.uk/jeeves returns the login HTML. A public GET is not a 403. `/bob/v1/*` is unchanged. Issue #6815. Mocks: `bob/docs/mocks/jeeves-login/`.
