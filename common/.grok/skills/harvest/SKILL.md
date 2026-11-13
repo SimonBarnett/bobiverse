@@ -381,6 +381,7 @@ routes to bobiverse via the split rule.
 - Two shared distinctive tokens are not a harvest twin; require a phrase or >=5 tokens and print the covering PR url.
 - Appliance queue HTML must use the same repo/task/id/worker whitelist as queue JSON and read queue.json directly so stored worker survives gitclaim coerce.
 - FR-04 settings HTML groups: headings use _opt_esc which encodes less-than but not greater-than; assert no raw script tag, not a full gt entity.
+- Jeeves appliance UI FR-04 Groups table lives at jeeves/docs/feature-request-jeeves-appliance-ui-*.md (## Groups). Sparse installs lack repo-root docs/; do not invent the table. Fetch/rebase onto origin/main first so sibling SettingSpec/_render_html land. git info/exclude /* blocks repo-root docs add without -f.
 - FR-012 retarget 6758/6792 doc pins to bob.ntsa.uk/jeeves instead of reopening 6757/6758.
 - When Get-BobOpencodeFuel changes, repin build-bob-ear.yml behavior_source_sha and CRLF manifest hashes; do not weaken the git-diff guard.
 - Worker skill DAG: put depends_on in YAML after description; job-fr must list job-irc and must not list job-uat.
