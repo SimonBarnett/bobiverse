@@ -52,6 +52,7 @@ Ear-owned fleet fuel merges POST to `https://bob.ntsa.uk/bob/v1/report` via `bob
 
 - **Host:** digest GET/docs default `https://bob.ntsa.uk/bob/v1/report` (FR #6142). IRC `--host` stays `irc.ntsa.uk`.
 - **OpenCode ids:** `opencode-free` / `opencode-go` on `machines.<id>.pcent` when local fuel is known (omit when unknown; never invent 0).
+- **FR #7017:** OpenCode free is catalogue availability, not a quota. Never paint the free row, bar, or summary bit on hover / TipForm / Status (100, null, 0, or stale). Keep Go rolling / weekly / monthly. Do not change fuel detection or `free_model_ids` (dispatch may still use free models).
 - **Copilot:** account-wide pool line on TipForm/Status; freshness from digest `fetched_at` / paint rules (park FR-008).
 - **Logos:** Bobiverse-owned badges under `bob/tray/assets/fuel-logos/` (`Get-BobTrayFuelLogoImage` / Status `FuelLogo`); text fallback `Cu` / `xAI` / `OC` / `Gh` when an asset is missing (FR #6149). See that folder `LICENSE.md`.
 - **cursor_known:** when a merge payload includes `cursor_known` (mirrors `weekly_known` on peers that set it), false clears Cursor label/pcent/pools (FR #6144). The Python ear `build_peer_fuel_merge_payload` path does not yet emit the flag; chair clearing applies when the flag is present.
