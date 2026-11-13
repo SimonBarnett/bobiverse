@@ -1764,6 +1764,66 @@ function Clear-BobiverseMachineLocalConfigForSync {
     return @($parked)
 }
 
+function Test-BobiverseSyncParkSecretPath {
+    # FR #6989: never copy secret-named tracked files into the parked overlay.
+    param([Parameter(Mandatory)][string]$Rel)
+    $n = [string]$Rel
+    if ($n -match '(?i)\.password(\.|$)') { return $true }
+    if ($n -match '(?i)(github\.token|identity\.json|nickserv)') { return $true }
+    return $false
+}
+
+function Clear-BobiverseDirtyTrackedForSync {
+    <#
+    .SYNOPSIS
+      FR #6989: park dirty tracked product files (not secrets) then git checkout -- path so ff-only can proceed.
+      Copies to untracked .bobiverse-parked/<stamp>/... ; never logs file contents.
+    #>
+    param(
+        [Parameter(Mandatory)][string]$InstallRoot,
+        [Parameter(Mandatory)][string]$Git,
+        [Parameter(Mandatory)][string[]]$GitArgsBase,
+        [System.Collections.IList]$Log = $null
+    )
+    $st = Invoke-BobiverseGit -Git $Git -GitArgs ($GitArgsBase + @('status', '--porcelain', '-uall')) -TimeoutSec 30
+    if ($st.Code -ne 0) { return @() }
+    $stamp = [datetime]::UtcNow.ToString('yyyyMMdd-HHmmss')
+    $parkRoot = Join-Path $InstallRoot (Join-Path '.bobiverse-parked' $stamp)
+    $parked = New-Object System.Collections.Generic.List[string]
+    foreach ($raw in @($st.Out)) {
+        $line = [string]$raw
+        if ($line.Length -lt 4) { continue }
+        $code = $line.Substring(0, 2)
+        if ($code -eq '??' -or $code -eq '!!') { continue }
+        $pathPart = $line.Substring(3).Trim()
+        if ($pathPart -match ' -> ') { $pathPart = ($pathPart -split ' -> ', 2)[-1] }
+        $unix = ($pathPart.Trim('"') -replace '\\', '/')
+        if (-not $unix) { continue }
+        if ($unix -eq 'bob/tray/config/bobiverse.json') { continue }
+        if (Test-BobiverseSyncParkSecretPath -Rel $unix) {
+            if ($Log) { $Log.Add("INFO sync-park-dirty skip-secret FR#6989 path=$unix") }
+            continue
+        }
+        $full = Join-Path $InstallRoot ($unix -replace '/', [IO.Path]::DirectorySeparatorChar)
+        if (-not (Test-Path -LiteralPath $full -PathType Leaf)) { continue }
+        try {
+            $dest = Join-Path $parkRoot ($unix -replace '/', [IO.Path]::DirectorySeparatorChar)
+            New-Item -ItemType Directory -Force -Path (Split-Path -Parent $dest) | Out-Null
+            [IO.File]::Copy($full, $dest, $true)
+            $co = Invoke-BobiverseGit -Git $Git -GitArgs ($GitArgsBase + @('checkout', '--', $unix)) -TimeoutSec 30
+            if ($co.Code -eq 0) {
+                [void]$parked.Add($unix)
+                if ($Log) { $Log.Add("INFO sync-park-dirty FR#6989 path=$unix") }
+            } else {
+                if ($Log) { $Log.Add("WARN sync-park-dirty restore failed path=$unix exit=$($co.Code)") }
+            }
+        } catch {
+            if ($Log) { $Log.Add("WARN sync-park-dirty error path=$unix") }
+        }
+    }
+    return @($parked)
+}
+
 function Get-BobiverseSyncDirtyPathSummary {
     # FR #6970: path names only for stall reason (never file contents / secrets).
     param(
@@ -2073,6 +2133,10 @@ function Sync-BobiverseWorkTree {
         try {
             [void](Clear-BobiverseMachineLocalConfigForSync -InstallRoot $root -Product $Product -Git $git -GitArgsBase $G -Log $log)
         } catch { }
+        # FR #6989: park remaining dirty tracked files (redqueen RecycleSeat/gitclaim/recycleseat hotpatches) so ff-only is not blocked.
+        try {
+            [void](Clear-BobiverseDirtyTrackedForSync -InstallRoot $root -Git $git -GitArgsBase $G -Log $log)
+        } catch { }
         $m = Invoke-BobiverseGit -Git $git -GitArgs ($G + @('merge', '--ff-only', '-q', "origin/$Branch")) -TimeoutSec 60
         if ($m.Code -ne 0) {
             foreach ($l in ($m.Out | Select-Object -First 3)) { $log.Add("  $l") }
@@ -2337,6 +2401,7 @@ function Get-BobiverseInstallGitExcludeText {
         "/*`n!/$Product/`n!/common/`n!/airc/`n!/jeeves/`n" +
         "# FR #6773 / #6970: machine-local config overlays (never commit)`n" +
         "bobiverse.local.json`n**/bobiverse.local.json`n" +
+        ".bobiverse-parked/`n**/.bobiverse-parked/`n" +
         "build.local.yml`n**/.bobiverse/build.local.yml`n"
     )
 }
