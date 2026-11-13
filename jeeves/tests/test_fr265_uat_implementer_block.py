@@ -1,10 +1,38 @@
 """FR #265: UAT must block both FR implementer and MRB author seats."""
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 import bobreport
 import gitclaim
 import registered_machines
 import shop_listen
+
+
+def _iso_now() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _digest_idle_seats(home, machines: dict[str, list[str]]) -> None:
+    """FR #7100 / #7098: worker_list + heartbeat so SYSTEM flamingo COMPUTERNAME does not ghost remotes."""
+    now_iso = _iso_now()
+    doc = bobreport.empty_digest()
+    for mid, pids in machines.items():
+        ent = bobreport._empty_machine(mid)
+        ent["workers"] = {
+            pid: {"state": "idle", "nick": f"{mid}-{pid}", "updated": now_iso} for pid in pids
+        }
+        ent["worker_list"] = [
+            {"nick": f"{mid}-{pid}", "state": "idle", "updated": now_iso} for pid in pids
+        ]
+        doc["machines"][mid] = ent
+    bobreport.save_digest(home, doc)
+
+
+def _pin_flamingo_system(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("BOB_DIGEST_HOME", str(tmp_path))
+    monkeypatch.setenv("BOB_MACHINE_ID", "flamingo")
+    monkeypatch.setenv("COMPUTERNAME", "flamingo")
 
 
 def _row(repo, task, num, seq, **kw):
@@ -43,17 +71,12 @@ def test_row_author_seats_collects_implementer_and_mrb(tmp_path, monkeypatch):
 
 def test_uat_blocks_implementer_even_when_mrb_author_differs(tmp_path, monkeypatch):
     """If MRB reviewer != FR implementer, both must be blocked while another machine is live."""
-    monkeypatch.setenv("BOB_DIGEST_HOME", str(tmp_path))
+    _pin_flamingo_system(monkeypatch, tmp_path)
     home = tmp_path
     registered_machines.save_registered(home, {"marchhare", "ionos", "flamingo"})
-    doc = bobreport.empty_digest()
-    doc["machines"]["marchhare"] = bobreport._empty_machine("marchhare")
-    doc["machines"]["marchhare"]["workers"] = {"1": {"state": "idle"}}
-    doc["machines"]["ionos"] = bobreport._empty_machine("ionos")
-    doc["machines"]["ionos"]["workers"] = {"2": {"state": "idle"}}
-    doc["machines"]["flamingo"] = bobreport._empty_machine("flamingo")
-    doc["machines"]["flamingo"]["workers"] = {"9": {"state": "idle"}}
-    bobreport.save_digest(home, doc)
+    _digest_idle_seats(
+        home, {"marchhare": ["1"], "ionos": ["2"], "flamingo": ["9"]}
+    )
 
     _queue(
         home,
@@ -234,17 +257,13 @@ def test_merged_pr_copies_both_seats_onto_uat(tmp_path, monkeypatch):
 
 def test_uat_blocks_same_machine_sibling_of_implementer(tmp_path, monkeypatch):
     """PASS-nits MRB #619: marchhare-2 must not UAT when implementer is marchhare-1 and another machine is live."""
-    monkeypatch.setenv("BOB_DIGEST_HOME", str(tmp_path))
+    _pin_flamingo_system(monkeypatch, tmp_path)
     home = tmp_path
     registered_machines.save_registered(home, {"marchhare", "ionos", "flamingo"})
-    doc = bobreport.empty_digest()
-    doc["machines"]["marchhare"] = bobreport._empty_machine("marchhare")
-    doc["machines"]["marchhare"]["workers"] = {"1": {"state": "idle"}, "2": {"state": "idle"}}
-    doc["machines"]["ionos"] = bobreport._empty_machine("ionos")
-    doc["machines"]["ionos"]["workers"] = {"2": {"state": "idle"}}
-    doc["machines"]["flamingo"] = bobreport._empty_machine("flamingo")
-    doc["machines"]["flamingo"]["workers"] = {"9": {"state": "idle"}}
-    bobreport.save_digest(home, doc)
+    _digest_idle_seats(
+        home,
+        {"marchhare": ["1", "2"], "ionos": ["2"], "flamingo": ["9"]},
+    )
     _queue(
         home,
         [
@@ -265,3 +284,18 @@ def test_uat_blocks_same_machine_sibling_of_implementer(tmp_path, monkeypatch):
     assert st == "empty"
     st2, job2 = gitclaim.offer_focus_top(home, "flamingo-9", "#flamingo")
     assert st2 == "ok" and job2["id"] == "#0" and job2.get("repo_uat") is True
+
+
+def test_fr7100_stale_pid_maps_are_ghosts_on_flamingo_system(tmp_path, monkeypatch):
+    """Product pin: without worker_list/heartbeat, SYSTEM flamingo must not invent remote live seats."""
+    _pin_flamingo_system(monkeypatch, tmp_path)
+    registered_machines.save_registered(tmp_path, {"marchhare", "ionos"})
+    bobreport._SEAT_ROSTER_CACHE["key"] = None
+    doc = bobreport.empty_digest()
+    doc["machines"]["marchhare"] = bobreport._empty_machine("marchhare")
+    doc["machines"]["marchhare"]["workers"] = {"1": {"state": "idle"}, "2": {"state": "idle"}}
+    doc["machines"]["ionos"] = bobreport._empty_machine("ionos")
+    doc["machines"]["ionos"]["workers"] = {"2": {"state": "idle"}}
+    bobreport.save_digest(tmp_path, doc)
+    assert gitclaim.live_seat_nicks(tmp_path) == set()
+
