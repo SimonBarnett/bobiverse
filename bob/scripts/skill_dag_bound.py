@@ -163,12 +163,16 @@ def prepare_bound_agent_cwd(
         ):
             if cand.is_dir():
                 roots.append(cand)
+    grok_dir = bound / ".grok"
+    grok_dir.mkdir(parents=True, exist_ok=True)
+    ptr = grok_dir / "skill-dag-job-worktree"
+    if not ptr.is_file():
+        ptr.write_text("", encoding="utf-8")
     args = [script.as_posix()]
     for r in roots:
         args.extend(["--root", Path(r).resolve().as_posix()])
+    args.extend(["--job-worktree-file", ptr.as_posix()])
     args_toml = ", ".join(json.dumps(a) for a in args)
-    grok_dir = bound / ".grok"
-    grok_dir.mkdir(parents=True, exist_ok=True)
     (grok_dir / "config.toml").write_text(
         "[mcp_servers.skill-dag]\n"
         'command = "python"\n'

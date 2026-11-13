@@ -2122,18 +2122,46 @@ def skill_dag_vision_roots(worker_cwd: str, *, home: Path | None = None) -> list
     ]
 
 
+SKILL_DAG_JOB_WORKTREE_POINTER = "skill-dag-job-worktree"
+
+
+def skill_dag_job_worktree_pointer_path(worker_cwd: str | Path) -> Path:
+    """FR #7120: live one-line worktree pointer next to seat ``.grok/config.toml``."""
+    return Path(worker_cwd) / ".grok" / SKILL_DAG_JOB_WORKTREE_POINTER
+
+
+def write_skill_dag_job_worktree_pointer(
+    worker_cwd: str | Path,
+    job_worktree: str | Path | None = None,
+) -> Path:
+    """Write or clear the live job-worktree pointer (empty file = no assigned tree)."""
+    path = skill_dag_job_worktree_pointer_path(worker_cwd)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    wt = str(job_worktree or "").strip()
+    text = Path(wt).as_posix() + "\n" if wt else ""
+    path.write_text(text, encoding="utf-8")
+    return path
+
+
 def skill_dag_mcp_launch_args(
     worker_cwd: str,
     *,
     job_worktree: str | Path | None = None,
+    pointer_cwd: str | Path | None = None,
 ) -> list[str]:
-    """stdio argv: script plus repeatable ``--root`` (and optional ``--job-worktree``)."""
+    """stdio argv: script plus ``--root`` and a stable ``--job-worktree-file`` (FR #7120).
+
+    Assign refreshes the pointer file; argv stays the same so Grok does not
+    replace the stdio MCP child mid-job.
+    """
+    ptr_home = pointer_cwd if pointer_cwd is not None else worker_cwd
+    if job_worktree is not None:
+        write_skill_dag_job_worktree_pointer(ptr_home, job_worktree)
+    ptr = skill_dag_job_worktree_pointer_path(ptr_home)
     args = [skill_dag_mcp_script_path(worker_cwd).as_posix()]
     for root in skill_dag_vision_roots(worker_cwd):
         args.extend(["--root", root.as_posix()])
-    wt = str(job_worktree or "").strip()
-    if wt:
-        args.extend(["--job-worktree", Path(wt).as_posix()])
+    args.extend(["--job-worktree-file", ptr.as_posix()])
     return args
 
 
@@ -2167,9 +2195,14 @@ def write_skill_dag_mcp_config(
     grok_dir.mkdir(parents=True, exist_ok=True)
     cfg = grok_dir / "config.toml"
     roots_from = str(vision_cwd or worker_cwd)
-    block = _skill_dag_toml_block(skill_dag_mcp_launch_args(roots_from, job_worktree=job_worktree))
+    write_skill_dag_job_worktree_pointer(worker_cwd, job_worktree)
+    block = _skill_dag_toml_block(
+        skill_dag_mcp_launch_args(roots_from, job_worktree=None, pointer_cwd=worker_cwd)
+    )
     text = cfg.read_text(encoding="utf-8") if cfg.is_file() else ""
-    cfg.write_text(_upsert_skill_dag_toml(text, block), encoding="utf-8")
+    new = _upsert_skill_dag_toml(text, block)
+    if text != new:
+        cfg.write_text(new, encoding="utf-8")
     return cfg
 
 
@@ -2196,11 +2229,12 @@ def cursor_skill_dag_mcp_document(
     worker_cwd: str,
     job_worktree: str | Path | None = None,
 ) -> dict:
+    write_skill_dag_job_worktree_pointer(worker_cwd, job_worktree)
     return {
         "mcpServers": {
             "skill-dag": {
                 "command": "python",
-                "args": skill_dag_mcp_launch_args(worker_cwd, job_worktree=job_worktree),
+                "args": skill_dag_mcp_launch_args(worker_cwd, job_worktree=None),
             }
         }
     }
@@ -2227,7 +2261,9 @@ def write_cursor_skill_dag_mcp_config(
         servers = {}
     servers["skill-dag"] = incoming["mcpServers"]["skill-dag"]
     data["mcpServers"] = servers
-    cfg.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    new = json.dumps(data, indent=2) + "\n"
+    if not cfg.is_file() or cfg.read_text(encoding="utf-8") != new:
+        cfg.write_text(new, encoding="utf-8")
     return cfg
 
 
@@ -2244,10 +2280,11 @@ def refresh_live_skill_dag_mcp_files(
     vision_cwd: str | Path | None = None,
     job_worktree: str | Path | None = None,
 ) -> None:
-    """FR #6918: rewrite live grok bound / cursor seat MCP for the assigned worktree.
+    """FR #6918 / #7120: point the live MCP at the assigned worktree.
 
-    ``job_worktree`` None/empty drops ``--job-worktree`` (job end). Never writes
-    user ``~/.cursor/mcp.json`` or user grok config.
+    Writes the one-line pointer file. MCP argv (``--job-worktree-file``) stays
+    stable so Grok does not replace the stdio child. Empty ``job_worktree``
+    clears the pointer (job end). Never writes user ``~/.cursor/mcp.json``.
     """
     wt = str(job_worktree or "").strip() or None
     if grok_bound_cwd:
@@ -2301,6 +2338,78 @@ def descendant_pids(root_pid: int, rows: list) -> set[int]:
                 out.add(child)
                 stack.append(child)
     return out
+
+
+def skill_dag_mcp_descendant_pids(
+    agent_pid: int | None,
+    seat_markers: list[str | Path | None],
+    *,
+    snapshot: Optional[Callable[[], list]] = None,
+    cmdline_of: Optional[Callable[[int], str]] = None,
+) -> list[int]:
+    """This agent's live skill-dag stdio child pids (FR #7120)."""
+    try:
+        root = int(agent_pid or 0)
+    except (TypeError, ValueError):
+        root = 0
+    if root <= 0:
+        return []
+    rows = snapshot() if snapshot is not None else snapshot_procs()
+    describe = cmdline_of if cmdline_of is not None else (lambda pid: str(describe_process(pid)[2] or ""))
+    found: list[int] = []
+    for pid in sorted(descendant_pids(root, rows)):
+        try:
+            cmd = describe(pid) or ""
+        except Exception:
+            continue
+        if skill_dag_mcp_stdio_cmdline_matches(cmd, seat_markers):
+            found.append(pid)
+    return found
+
+
+def report_skill_dag_mcp_transport_drop(
+    *,
+    machine: str = "",
+    agent_pid: int | None = None,
+    filer_post: Optional[Callable[..., dict]] = None,
+) -> dict:
+    """FR #7120: one intake if the live stdio MCP child vanished. No secrets."""
+    if filer_post is None and os.environ.get("PYTEST_CURRENT_TEST"):
+        return {"ok": True, "skipped": True, "reason": "pytest"}
+    mid = re.sub(r"[^a-z0-9._-]+", "-", str(machine or "unknown").strip().lower()).strip("-") or "unknown"
+    try:
+        pid_s = str(int(agent_pid or 0))
+    except (TypeError, ValueError):
+        pid_s = "0"
+    key = f"skill-dag-mcp-drop|{mid}|{pid_s}"[:128]
+    title = "bug: skill-dag MCP stdio transport dropped mid-job (FR #7120)"
+    body = (
+        "The Grok/Cursor skill-dag stdio MCP child exited while the agent stayed up. "
+        "Seat should keep the same MCP process and refresh --job-worktree-file only. "
+        f"machine={mid} agent_pid={pid_s}"
+    )
+    payload = {
+        "kind": "issue",
+        "repo": "SimonBarnett/bobiverse",
+        "title": title,
+        "body": body,
+        "idempotency_key": key,
+        "dedupe_key": key,
+        "machine": mid,
+        "agent": "bob-worker",
+    }
+    if filer_post is not None:
+        try:
+            return filer_post(payload) or {"ok": True}
+        except Exception:
+            return {"ok": False}
+    try:
+        import crash_report
+
+        crash_report._post_intake(title, body, repo="SimonBarnett/bobiverse", sig=key, exe="bob-worker")
+        return {"ok": True, "key": key}
+    except Exception:
+        return {"ok": False, "key": key}
 
 
 def restart_skill_dag_mcp_stdio_children(
@@ -10440,7 +10549,7 @@ class Supervisor:
         except Exception as e:  # noqa: BLE001
             self.log(f"skill-dag mcp job-worktree rewrite skipped {type(e).__name__}")
             return
-        # FR #6928: file rewrite does not change a live stdio MCP argv until respawn.
+        # FR #7120: keep the live stdio MCP; pointer file is enough.
         agent_pid = None
         try:
             proc = getattr(self, "proc", None)
@@ -10448,14 +10557,16 @@ class Supervisor:
                 agent_pid = int(proc.pid)
         except (TypeError, ValueError):
             agent_pid = None
-        try:
-            restart_skill_dag_mcp_stdio_children(
-                agent_pid,
-                [bound, cursor, vision, job_worktree],
-                log=self.log,
-            )
-        except Exception as e:  # noqa: BLE001
-            self.log(f"skill-dag mcp restart skipped {type(e).__name__}")
+        markers = [bound, cursor, vision, job_worktree]
+        before = skill_dag_mcp_descendant_pids(agent_pid, markers)
+        after = skill_dag_mcp_descendant_pids(agent_pid, markers)
+        if before and not after:
+            self.log("skill-dag mcp transport dropped")
+            try:
+                mid = str(getattr(self, "machine", "") or "")
+                report_skill_dag_mcp_transport_drop(machine=mid, agent_pid=agent_pid)
+            except Exception:
+                pass
 
     def _live_skill_dag_job_end_cleanup(self, job: Optional[str] = None) -> None:
         del job

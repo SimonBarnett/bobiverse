@@ -68,8 +68,7 @@ def test_fr6899_job_worktree_launch_adds_only_that_skills_root(tmp_path):
     sibling = tmp_path / "sibling-repo" / ".grok" / "skills"
     sibling.mkdir(parents=True)
     args = bw.skill_dag_mcp_launch_args(str(t["worker"]), job_worktree=job)
-    assert "--job-worktree" in args
-    assert Path(job).as_posix() in args or str(job) in args
+    assert "--job-worktree-file" in args
     parsed = mcp.roots_from_argv(args[1:])
     job_skills = (job / ".grok" / "skills").resolve()
     assert any(p.resolve() == job_skills for p in parsed)

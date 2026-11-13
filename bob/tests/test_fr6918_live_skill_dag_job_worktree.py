@@ -47,7 +47,8 @@ def test_fr6918_start_has_no_job_worktree_flag(tmp_path):
     grok_body = (Path(launched["child"]["cwd"]) / ".grok" / "config.toml").read_text(
         encoding="utf-8"
     )
-    assert "--job-worktree" not in grok_body
+    assert "--job-worktree-file" in grok_body
+    assert " --job-worktree " not in f" {grok_body} "
     t = launched["tree"]
     run = tmp_path / "run-c"
     run.mkdir()
@@ -62,7 +63,8 @@ def test_fr6918_start_has_no_job_worktree_flag(tmp_path):
     )
     bw.write_cursor_skill_dag_mcp_config_if_agent(cur)
     cur_body = (Path(t["worker"]) / ".cursor" / "mcp.json").read_text(encoding="utf-8")
-    assert "--job-worktree" not in cur_body
+    assert "--job-worktree-file" in cur_body
+    assert '"--job-worktree"' not in cur_body
     for pack in (t["seat"], t["bobpack"], t["harvest"]):
         assert pack.as_posix() in grok_body.replace("\\", "/")
         assert pack.as_posix() in cur_body.replace("\\", "/")
@@ -86,10 +88,13 @@ def test_fr6918_assign_rewrites_only_assigned_worktree(tmp_path):
     )
     grok_w = (bound / ".grok" / "config.toml").read_text(encoding="utf-8").replace("\\", "/")
     cur_w = (t["worker"] / ".cursor" / "mcp.json").read_text(encoding="utf-8").replace("\\", "/")
-    assert "--job-worktree" in grok_w and w.as_posix() in grok_w
-    assert "--job-worktree" in cur_w and w.as_posix() in cur_w
-    assert sibling.as_posix() not in grok_w
-    assert sibling.as_posix() not in cur_w
+    grok_ptr = (bound / ".grok" / "skill-dag-job-worktree").read_text(encoding="utf-8").replace("\\", "/")
+    cur_ptr = (t["worker"] / ".grok" / "skill-dag-job-worktree").read_text(encoding="utf-8").replace("\\", "/")
+    assert "--job-worktree-file" in grok_w
+    assert w.as_posix() in grok_ptr
+    assert w.as_posix() in cur_ptr
+    assert sibling.as_posix() not in grok_ptr
+    assert sibling.as_posix() not in cur_ptr
     assert t["harvest"].as_posix() in grok_w
     assert t["harvest"].as_posix() in cur_w
 
@@ -99,8 +104,8 @@ def test_fr6918_assign_rewrites_only_assigned_worktree(tmp_path):
         vision_cwd=t["worker"],
         job_worktree=v,
     )
-    grok_v = (bound / ".grok" / "config.toml").read_text(encoding="utf-8").replace("\\", "/")
-    cur_v = (t["worker"] / ".cursor" / "mcp.json").read_text(encoding="utf-8").replace("\\", "/")
+    grok_v = (bound / ".grok" / "skill-dag-job-worktree").read_text(encoding="utf-8").replace("\\", "/")
+    cur_v = (t["worker"] / ".grok" / "skill-dag-job-worktree").read_text(encoding="utf-8").replace("\\", "/")
     assert w.as_posix() not in grok_v and v.as_posix() in grok_v
     assert w.as_posix() not in cur_v and v.as_posix() in cur_v
 
@@ -110,11 +115,12 @@ def test_fr6918_assign_rewrites_only_assigned_worktree(tmp_path):
         vision_cwd=t["worker"],
         job_worktree=None,
     )
-    grok_end = (bound / ".grok" / "config.toml").read_text(encoding="utf-8")
-    cur_end = json.loads((t["worker"] / ".cursor" / "mcp.json").read_text(encoding="utf-8"))
-    assert "--job-worktree" not in grok_end
-    assert "--job-worktree" not in json.dumps(cur_end)
-    assert t["harvest"].as_posix() in grok_end.replace("\\", "/")
+    grok_end = (bound / ".grok" / "skill-dag-job-worktree").read_text(encoding="utf-8").strip()
+    cur_end = (t["worker"] / ".grok" / "skill-dag-job-worktree").read_text(encoding="utf-8").strip()
+    grok_toml = (bound / ".grok" / "config.toml").read_text(encoding="utf-8")
+    assert grok_end == ""
+    assert cur_end == ""
+    assert t["harvest"].as_posix() in grok_toml.replace("\\", "/")
 
 
 def test_fr6918_never_writes_user_cursor_mcp(tmp_path, monkeypatch):
