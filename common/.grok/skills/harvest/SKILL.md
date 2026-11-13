@@ -397,6 +397,7 @@ routes to bobiverse via the split rule.
 - Stall-heal !recycleseat: if seats\nick.irc.json is missing, stop the pid encoded in the seat nick then start; Jeeves must log recycle-no-effect when the same nick still lags
 - Ear as SYSTEM must resolve interactive user WinGet Links and seat OpenCode auth.json (backup read, never log the key); missing exe+auth is not installed, exe without Go key is no key set.
 - Session 0 with empty CIM UserName is not system-profile-skipped if HKLM LastLoggedOnUser or the install interactive-user-home stamp points at Users\<seat>.
+- FR #7008 Common overlay: home is obiverse-fleet-ops (Sync-BobiverseWorkTree overlay + re-park + one ff retry). Do not claim first landing skips MSI.
 
 ## Harvest digest (lessons audit 2026-10-06)
 
