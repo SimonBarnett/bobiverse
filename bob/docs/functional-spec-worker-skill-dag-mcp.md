@@ -16,8 +16,9 @@ Harvest keeps writing `SKILL.md` files. The worker must be able to use that libr
 
 ## Index
 
-- Input: configured roots. Default roots are the worker `.grok/skills` directory and `~/.grok/skills`.
-- One node per `SKILL.md`. Id is frontmatter `name`, else the directory name.
+- Input: configured roots. Default roots are the worker `.grok/skills` directory, the bob pack, common harvest pack, and `~/.grok/skills` (FR #6899).
+- One node per unique skill id. Id is frontmatter `name`, else the directory name.
+- Harvest copies of the same id across those roots keep the first configured root (worker, then bob, then common, then user). They are not `status.last_error` (FR #7076). Same-root extra paths remain collisions (FR #6921).
 - Edges: frontmatter `depends_on`, a list of skill ids. Absent or empty means no edges.
 - Record: id, one-line description, `depends_on`, path, byte size. No body text.
 - Rebuild when a source `SKILL.md` mtime is newer than the index (S8).
