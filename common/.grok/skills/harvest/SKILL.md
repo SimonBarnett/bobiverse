@@ -396,6 +396,7 @@ routes to bobiverse via the split rule.
 - BUILD unit tests that assert work_dir/cache must monkeypatch.delenv BOBIVERSE_DOWNLOAD_CACHE; SkipMsi airc stage tests must not require npm ci.
 - Stall-heal !recycleseat: if seats\nick.irc.json is missing, stop the pid encoded in the seat nick then start; Jeeves must log recycle-no-effect when the same nick still lags
 - Ear as SYSTEM must resolve interactive user WinGet Links and seat OpenCode auth.json (backup read, never log the key); missing exe+auth is not installed, exe without Go key is no key set.
+- sync-ff-failed stall twins after park (#6989) close as Duplicate of #6989 / fixed by PR #6990; behind boxes need MSI/self-update or one-shot checkout to escape pre-park code.
 
 ## Harvest digest (lessons audit 2026-10-06)
 
