@@ -237,7 +237,7 @@ def update_usage_job_id(text: str) -> str | None:
 
 
 _PRIORITY_PREPARE_RE = re.compile(
-    r"(?is)^(?:id=([0-9a-f]{8})\s+)?PRIORITY\s+prepare(?:\s+(.*))?$"
+    r"(?is)^(?:id=([0-9a-f]{8})\s+)?PRIORITY\s+(prepare-form|prepare)(?:\s+(.*))?$"
 )
 
 
@@ -270,7 +270,8 @@ def parse_priority_prepare_command(text: str) -> dict[str, str] | None:
     m = _PRIORITY_PREPARE_RE.match((text or "").strip())
     if not m:
         return None
-    rest = (m.group(2) or "").strip()
+    verb = (m.group(2) or "prepare").strip().lower()
+    rest = (m.group(3) or "").strip()
     kv = {k.lower(): v for k, v in re.findall(r"(\w+)=([^\s]+)", rest)}
     exec_type = ""
     raw_type = (kv.get("type") or kv.get("kind") or kv.get("exec_type") or "").strip()
@@ -293,6 +294,9 @@ def parse_priority_prepare_command(text: str) -> dict[str, str] | None:
         if not name and positionals:
             name = positionals[0]
     out = {"name": name, "instance": kv.get("instance") or ""}
+    if verb == "prepare-form":
+        exec_type = "F"
+        out["sdk_form"] = "1"
     if exec_type:
         out["exec_type"] = exec_type
     if m.group(1):
@@ -759,6 +763,33 @@ def _env_flag_true(name: str) -> bool:
     return str(os.environ.get(name) or "").strip().lower() in ("1", "true", "yes", "on")
 
 
+def windows_process_session_id() -> int | None:
+    """Terminal Services session id of this process, or None (FR #7130)."""
+    if os.name != "nt":
+        return None
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        k32.ProcessIdToSessionId.argtypes = [
+            wintypes.DWORD,
+            ctypes.POINTER(wintypes.DWORD),
+        ]
+        k32.ProcessIdToSessionId.restype = wintypes.BOOL
+        sid = wintypes.DWORD()
+        if not k32.ProcessIdToSessionId(os.getpid(), ctypes.byref(sid)):
+            return None
+        return int(sid.value)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def is_windows_session0() -> bool:
+    """True on LocalSystem Session 0 (no interactive desktop for WINACTIV)."""
+    return windows_process_session_id() == 0
+
+
 def _resolve_winrun_exe(instance: dict | None = None) -> Path | None:
     """Resolve Priority WINRUN.EXE for direct (non-SDK) form prepare (FR #6003)."""
     inst = instance or {}
@@ -815,6 +846,15 @@ def _priority_winrun_formprep(
     form = str(ename or "").strip()
     if not form:
         return {"ok": False, "path": proc_path, "reason": "ename_missing", "runner": "winrun"}
+    # FR #7130: WINACTIV/FORMPREP hang in Session 0; never spawn GUI there.
+    if is_windows_session0() and process_runner is None:
+        return {
+            "ok": False,
+            "path": proc_path,
+            "reason": "session0_gui",
+            "runner": "winrun",
+            "ename": form,
+        }
     inst = dict(instance or {})
     prep = str(inst.get("prepDir") or inst.get("prep_dir") or "").strip()
     company = str(inst.get("company") or "").strip()
@@ -903,14 +943,26 @@ def _priority_prepare_exec(
     cred_fetcher=None,
     node_runner=None,
     process_runner=None,
+    form_via_sdk: bool = False,
     **kw,
 ) -> dict:
-    """Dispatch prepare runners. Default form = WINRUN (FR #6003); no web SDK."""
+    """Dispatch prepare runners. Default form = WINRUN (FR #6003).
+
+    FR #7130: ``PRIORITY prepare-form`` / ``form_via_sdk`` uses Web SDK + CredMan
+    (no WINACTIV). Session 0 WINRUN is refused with ``session0_gui``.
+    """
     proc_name = str(path or "").strip().upper() or "REPPREPDIRECT2"
     want_form = bool(form_prep) or proc_name == "FORMPREPDRCT2"
     if want_form:
-        # FR #6108: no EFORM/EXEC SDK opt-in. Those paths ran FORMPREPDRCT2
-        # without an exactly-one equal-ENAME EFORM row. Form prepare is WINRUN.
+        via_sdk = bool(form_via_sdk) or _env_flag_true("AIRC_PRIORITY_FORM_VIA_EFORM")
+        if via_sdk:
+            return _priority_sdk_formprep(
+                ename=ename,
+                instance=instance,
+                path="FORMPREPDRCT2",
+                cred_fetcher=cred_fetcher,
+                node_runner=node_runner,
+            )
         return _priority_winrun_formprep(
             ename=ename,
             instance=instance,
@@ -930,6 +982,115 @@ def _priority_prepare_exec(
     )
 
 
+def _priority_sdk_formprep(
+    *,
+    ename: str,
+    instance: dict,
+    path: str = "FORMPREPDRCT2",
+    cred_fetcher=None,
+    node_runner=None,
+    **_k,
+) -> dict:
+    """FR #7130: named form prepare via Web SDK + CredMan (no WINACTIV / Session 0 GUI)."""
+    form = str(ename or "").strip()
+    proc_path = str(path or "").strip().upper() or "FORMPREPDRCT2"
+    if not form:
+        return {"ok": False, "path": proc_path, "reason": "ename_missing", "runner": "sdk-eform"}
+    root = Path(os.environ.get("AIRC_INSTALL_ROOT") or r"C:\ai\airc")
+    pw = _priority.resolve_priority_worker_dir(root)
+    mjs_candidates = [
+        (pw / "sdk" / "run-formprep-via-eform.mjs") if pw else Path(),
+        root / "airc" / "priority-worker" / "sdk" / "run-formprep-via-eform.mjs",
+        root / "priority-worker" / "sdk" / "run-formprep-via-eform.mjs",
+        Path(os.environ.get("AIRC_PRIORITY_FORMPREP_MJS") or ""),
+    ]
+    mjs = next((c for c in mjs_candidates if c and c.is_file()), None)
+    node = os.environ.get("AIRC_PRIORITY_NODE") or os.environ.get("NODE_EXE") or "node"
+    target = str(instance.get("credentialTarget") or "").strip()
+    fetch = cred_fetcher or _priority.fetch_credman_password
+    try:
+        secret = fetch(target) if target else ""
+    except Exception:  # noqa: BLE001
+        return {"ok": False, "path": proc_path, "reason": "no_cred", "runner": "sdk-eform"}
+    if not secret:
+        return {"ok": False, "path": proc_path, "reason": "no_cred", "runner": "sdk-eform"}
+    if mjs is None:
+        return {"ok": False, "path": proc_path, "reason": "sdk_mjs_missing", "runner": "sdk-eform"}
+    node_s = str(node or "").strip() or "node"
+    node_path = node_s if os.path.isfile(node_s) else shutil.which(node_s)
+    if not node_path:
+        return {"ok": False, "path": proc_path, "reason": "node_missing", "runner": "sdk-eform"}
+    env = os.environ.copy()
+    env["PRIORITY_SDK_PASSWORD"] = secret
+    run = node_runner or subprocess.run
+    try:
+        proc = run(
+            [
+                node_path,
+                str(mjs),
+                "--name",
+                form,
+                "--company",
+                str(instance.get("company") or ""),
+                "--url",
+                str(instance.get("url") or ""),
+                "--user",
+                str(instance.get("user") or ""),
+                "--proc",
+                proc_path,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=300,
+            env=env,
+        )
+    except FileNotFoundError:
+        return {"ok": False, "path": proc_path, "reason": "node_missing", "runner": "sdk-eform"}
+    except Exception as e:  # noqa: BLE001
+        return {
+            "ok": False,
+            "path": proc_path,
+            "reason": f"sdk_exec_failed:{type(e).__name__}",
+            "runner": "sdk-eform",
+        }
+    finally:
+        env.pop("PRIORITY_SDK_PASSWORD", None)
+        secret = None  # noqa: F841
+    raw = (proc.stdout or "").strip().splitlines()
+    payload = None
+    for line in reversed(raw):
+        line = line.strip()
+        if line.startswith("{") and line.endswith("}"):
+            try:
+                payload = json.loads(line)
+                break
+            except json.JSONDecodeError:
+                continue
+    if not isinstance(payload, dict):
+        return {
+            "ok": False,
+            "path": proc_path,
+            "reason": "sdk_bad_json",
+            "runner": "sdk-eform",
+            "node_exit": getattr(proc, "returncode", None),
+        }
+    ok = bool(payload.get("ok"))
+    out: dict = {
+        "ok": ok,
+        "path": proc_path,
+        "runner": "sdk-eform",
+        "ename": form,
+        "sdk": {"ended": payload.get("ended"), "errors": payload.get("errors")},
+    }
+    if not ok:
+        sdk_reason = _priority_sdk_reason_from_payload(payload)
+        if sdk_reason:
+            out["reason"] = sdk_reason
+        elif payload.get("stage"):
+            out["reason"] = str(payload.get("stage"))
+    return out
+
+
 def _priority_sdk_repprep(
     *,
     ename: str,
@@ -943,12 +1104,18 @@ def _priority_sdk_repprep(
     """Run node mjs prepare walk. Password via env only; never logged.
 
     FR #5946 / #6003: report/procedure use ``run-repprep-via-exec.mjs``.
-    Form prepare is WINRUN only (FR #6108). This helper is reports/procedures.
+    Form prepare uses ``_priority_sdk_formprep`` (FR #7130); this helper is reports/procedures.
     """
     proc_name = str(path or "").strip().upper() or "REPPREPDIRECT2"
     want_form = bool(form_prep) or proc_name == "FORMPREPDRCT2"
     if want_form:
-        return {"ok": False, "path": path, "reason": "use_winrun_formprep"}
+        return _priority_sdk_formprep(
+            ename=ename,
+            instance=instance,
+            path="FORMPREPDRCT2",
+            cred_fetcher=cred_fetcher,
+            node_runner=node_runner,
+        )
     elif proc_name != "REPPREPDIRECT2":
         return {"ok": False, "path": path, "reason": "refused_non_repprep"}
     root = Path(os.environ.get("AIRC_INSTALL_ROOT") or r"C:\ai\airc")
@@ -5277,6 +5444,7 @@ class AircConsoleCore:
                     instance_id=prep.get("instance") or "",
                     instances=insts,
                     exec_type=(prep.get("exec_type") or None),
+                    form_via_sdk=bool(prep.get("sdk_form")),
                     **hooks,
                 )
             else:

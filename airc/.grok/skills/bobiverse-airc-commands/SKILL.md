@@ -64,11 +64,12 @@ PRIVMSG {mid}_console :id=c25bd00e VERSION
 
 ## PRIORITY prepare (FR #5286 / #5946)
 
-Typed prepare selects exact T$EXEC type: `prepare form|report|procedure <ENAME>` (or `type=F|R|P`). Form uses WINRUN `WINACTIV -P FORMPREP <ENAME>` (FR #6003 / #6017; never unscoped FORMPREP). Report/procedure use EXEC `REPPREPDIRECT2`. Never fall back to another type with the same ENAME. Untyped `prepare <ENAME>` stays procedure-only (FR #5933). Never SQL-fake `UPD`. Never form-prep for TYPE=P/R.
+Typed prepare selects exact T$EXEC type: `prepare form|report|procedure <ENAME>` (or `type=F|R|P`). **CAST IRON (FR #7130):** never run WINACTIV / formprep.exe / interactive FORMPREP from airc LocalSystem Session 0. `PRIORITY prepare-form <ENAME>` is the supported Session-0-safe path (Web SDK + CredMan). `PRIORITY prepare form` WINRUN is refused there with `reason=session0_gui`. Report/procedure use EXEC `REPPREPDIRECT2`. Never unscoped FORMPREP. Never SQL-fake `UPD`.
 
 ```text
 PRIVMSG {mid}_console :id=c25bd00e PRIORITY prepare procedure FOO instance=example-dev
 PRIVMSG {mid}_console :id=c25bd00e PRIORITY prepare form ORDERS instance=example-dev
+PRIVMSG {mid}_console :id=c25bd00e PRIORITY prepare-form TRANSORDER_T instance=example-dev
 PRIVMSG {mid}_console :id=c25bd00e PRIORITY prepare report CUSTOMERS instance=example-dev
 ```
 
