@@ -395,6 +395,7 @@ routes to bobiverse via the split rule.
 - PowerShell functions: capture native stdout (npm ci) or it becomes extra return values; [string]$Stage joins https:// URLs and WiX heat.exe HEAT0001 path format is not supported.
 - BUILD unit tests that assert work_dir/cache must monkeypatch.delenv BOBIVERSE_DOWNLOAD_CACHE; SkipMsi airc stage tests must not require npm ci.
 - Stall-heal !recycleseat: if seats\nick.irc.json is missing, stop the pid encoded in the seat nick then start; Jeeves must log recycle-no-effect when the same nick still lags
+- On Windows, never Path(SystemDrive)/Users --- Path("C:") is drive-relative; use Path(SystemDrive + "") (or equivalent) before joining Users\<name>.
 
 ## Harvest digest (lessons audit 2026-10-06)
 
