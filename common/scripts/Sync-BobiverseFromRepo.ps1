@@ -24,6 +24,9 @@
   Git checkout mtimes are often older than a previous flat compose, so /XO left scripts/gitclaim.py stale after ff.
   Use -ComposeOnly after a manual git pull --ff-only to recompose without restarting the service.
   FR #7161: park dirty paths that already equal origin tip (Clear-BobiverseMainEqualDirtyForSync) so tip-overlay of Common/Sync cannot block ff; tip-heal recycleseat.py when compose is skipped.
+  FR #7167: when InstallRoot VERSION (MSI/ARP) is newer than clone common\VERSION but the sparse
+  worktree tip is OK (or -ComposeOnly), still compose flat scripts and keep MSI VERSION; only
+  full-skip robocopy when the tip is stale (FR #1018 older-clone rollback guard).
 .PARAMETER ComposeOnly
   Skip fetch/ff; only recompose flat runtime files from the current work tree / clone (FR #269 operator hook).
 .PARAMETER Product
@@ -275,13 +278,43 @@ if ($arpVer) {
 }
 $installVer = ConvertTo-BobiverseVersion $installVerText
 $cloneVerObj = ConvertTo-BobiverseVersion $cloneVer
-if ($installVer -and $cloneVerObj -and $installVer -gt $cloneVerObj) {
-    Write-Host "WARN sync-skip-newer-install install=$($installVer.ToString()) clone=$($cloneVerObj.ToString()) - refusing to overwrite MSI tree with older clone"
-    exit 0
-}
 # Remember ARP so the final VERSION copy can refuse a newer clone stamp.
 $script:BobiverseArpVersion = $arpVer
 $script:BobiverseSkipVersionCopyFromClone = $false
+# FR #1018: do not robocopy an older/stale clone over a newer MSI tree.
+# FR #7167: MSI DisplayVersion can legitimately exceed common\VERSION (redqueen 2.0.0 vs 1.0.8)
+# while the sparse worktree is already on origin tip --- full-skip then starves flat scripts\.
+# Keep MSI VERSION as truth; compose only when tip is OK (or ComposeOnly operator hook).
+if ($installVer -and $cloneVerObj -and $installVer -gt $cloneVerObj) {
+    $script:BobiverseSkipVersionCopyFromClone = $true
+    $tipOkForNewerInstallCompose = $false
+    if ($ComposeOnly) {
+        $tipOkForNewerInstallCompose = $true
+    } elseif ($viaWorkTree) {
+        $cleanAgentFetchedOnly = (
+            $wtReason -match 'fetched only, work tree untouched' -and
+            $wtReason -notmatch '\bdirty\b'
+        )
+        $staleTip = (
+            $wtReason -match '\bdirty\b|recycle-scripts-dirty|ff-only not possible|still behind|behind origin|fetch failed|timed out|not main|detached HEAD'
+        )
+        if (-not $staleTip) {
+            $tipOkForNewerInstallCompose = (
+                $wtReason -eq 'already up to date' -or
+                $wtReason -match '^fast-forwarded' -or
+                $wtReason -match '^bootstrapped' -or
+                $wtReason -match '^healed unborn' -or
+                $cleanAgentFetchedOnly -or
+                [bool]$pulled
+            )
+        }
+    }
+    if (-not $tipOkForNewerInstallCompose) {
+        Write-Host "WARN sync-skip-newer-install install=$($installVer.ToString()) clone=$($cloneVerObj.ToString()) - refusing to overwrite MSI tree with older clone"
+        exit 0
+    }
+    Write-Host ("WARN sync-newer-install-compose-tip-ok install={0} clone={1} - composing tip; keeping MSI VERSION (FR #7167)" -f $installVer.ToString(), $cloneVerObj.ToString())
+}
 if ($arpVer -and $cloneVerObj -and $arpVer -ne $cloneVerObj) {
     $script:BobiverseSkipVersionCopyFromClone = $true
     Write-Host ("WARN sync-skip-arp-version ARP={0} clone={1} - MSI VERSION is source of truth (FR #1565)" -f $arpVer.ToString(), $cloneVerObj.ToString())
