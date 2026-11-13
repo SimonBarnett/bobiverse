@@ -2659,6 +2659,12 @@ class Client:
             )
             return
 
+        # FR #7035: clear stale python-status.json so digest never keeps python=missing.
+        try:
+            bobreport.note_python_resolved(Path(self.home), py_src)
+        except Exception:
+            pass
+
         cmd = [
             py, "-u", str(script), "--job", str(job_path), "--checkout",
             "--lock-file", str(lock_path), "--result-file", str(result_path),
@@ -2831,6 +2837,11 @@ class Client:
             except Exception:
                 pass
             return False
+        # FR #7035: successful resolve must not leave digest python=missing.
+        try:
+            bobreport.note_python_resolved(Path(self.home), py_src)
+        except Exception:
+            pass
         cmd = [
             py,
             "-u",
