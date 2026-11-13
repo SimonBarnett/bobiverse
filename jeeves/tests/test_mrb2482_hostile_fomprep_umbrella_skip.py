@@ -13,7 +13,7 @@ def test_mrb2482_pin_set_exact_six():
     got = {
         int(ident.lstrip("#"))
         for (repo, ident) in gitclaim._SKIP_FR_ISSUE_PINS
-        if repo == "simonbarnett/agentic_fomprep"
+        if repo == "simonbarnett/priority-mcp"
     }
     assert got == PINS
     assert 11 in got

@@ -81,7 +81,7 @@ MAX_REPOS = 60
 # Ops may add more; ensure_resync_repos_file merges these without dropping extras.
 DEFAULT_RESYNC_REPOS = (
     "SimonBarnett/a-search",
-    "SimonBarnett/agentic_fomprep",
+    "SimonBarnett/priority-mcp",
     "SimonBarnett/bobiverse",
     "SimonBarnett/xai-cookbook",
     "SimonBarnett/Club-Madeira",

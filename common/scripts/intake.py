@@ -27,7 +27,7 @@ DEFAULT_ALLOW_REPOS = frozenset(
     {
         "SimonBarnett/bobiverse",
         "SimonBarnett/skills-visionary",
-        "SimonBarnett/agentic_fomprep",
+        "SimonBarnett/priority-mcp",  # FR #7121; alias SimonBarnett/agentic_fomprep
         "SimonBarnett/a-search",  # FR #3023: Plan product; intake Flush must not drop
         "SimonBarnett/trutex",  # FR #3050: private Plan product; allowlist ignores visibility
         "SimonBarnett/ce-priority",  # FR #4830: dayworks-launcher park; never invent-harvest
@@ -256,8 +256,8 @@ def lesson_owner_repo(
         return LessonOwner("SimonBarnett/a-search", missing=False)
     if re.search(r"(?i)\btrutex\b", low):
         return LessonOwner("SimonBarnett/trutex", missing=False)
-    if re.search(r"(?i)agentic_fomprep|priority\s+catalog|cat-t\d+", low):
-        return LessonOwner("SimonBarnett/agentic_fomprep", missing=False)
+    if re.search(r"(?i)agentic_fomprep|priority-mcp|priority\s+catalog|cat-t\d+", low):
+        return LessonOwner("SimonBarnett/priority-mcp", missing=False)
 
     # Bob fleet tooling stays in bobiverse.
     if re.search(
@@ -282,6 +282,10 @@ PRODUCT_DEFAULT_SKILL_BOOK: dict[str, tuple[str, str]] = {
         ".grok/skills/harvest-skills-visionary/SKILL.md",
     ),
     # FR #3318: Priority Agent / Plan product homes use repo-root honesty box.
+    "simonbarnett/priority-mcp": (
+        "harvest-agent-skills",
+        ".grok/skills/harvest-agent-skills/SKILL.md",
+    ),
     "simonbarnett/agentic_fomprep": (
         "harvest-agent-skills",
         ".grok/skills/harvest-agent-skills/SKILL.md",
@@ -529,6 +533,12 @@ def resolve_skill_book(
     FR #4976: when the topic set is empty, any non-bobiverse ``SimonBarnett/*`` repo
     still parks at repo-root harvest-agent-skills (euroflo#7).
     """
+    try:
+        import repo_alias
+
+        repo = repo_alias.canonicalize_repo(repo)
+    except Exception:
+        pass
     repo_l = str(repo or "").strip().lower()
     product = product_default_skill_book(repo_l, topic_repos=topic_repos, home=home)
 
@@ -1770,6 +1780,12 @@ def validate_payload(
         return "missing_repo", {}
     if not _REPO_RE.fullmatch(repo):
         return "bad_repo", {}
+    try:
+        import repo_alias
+
+        repo = repo_alias.canonicalize_repo(repo)
+    except Exception:
+        pass
     if not repo_allowed(repo, cfg.allow_repos):
         return "repo_not_allowed", {}
     title = str(payload.get("title") or "").strip()

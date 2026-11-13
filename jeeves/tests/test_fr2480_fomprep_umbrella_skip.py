@@ -26,11 +26,11 @@ def test_fr2521_fomprep_11_hard_pinned_with_homes():
         "labels": ["mrb", "mrb-fail", "feature-request"],
     }
     assert gitclaim.row_skip_fr_reason(row11) == "hard_pin_umbrella"
-    assert ("simonbarnett/agentic_fomprep", "#11") in gitclaim._SKIP_FR_ISSUE_PINS
+    assert ("simonbarnett/priority-mcp", "#11") in gitclaim._SKIP_FR_ISSUE_PINS
     for num in (8, 9):
         row = {"repo": REPO, "task": "FR", "id": f"#{num}", "title": "FR: home", "labels": []}
         assert gitclaim.row_skip_fr_reason(row) == "hard_pin_umbrella"
-        assert ("simonbarnett/agentic_fomprep", f"#{num}") in gitclaim._SKIP_FR_ISSUE_PINS
+        assert ("simonbarnett/priority-mcp", f"#{num}") in gitclaim._SKIP_FR_ISSUE_PINS
 
 
 def test_mrb_home_board_body_phrase_skips_without_labels():
@@ -105,4 +105,4 @@ def test_mrb2531_fomprep_11_empty_labels_hard_pinned():
     """FR #2562 / #2677: #11 is hard-pinned even with empty labels (verdict board)."""
     row = {"repo": REPO, "task": "FR", "id": "#11", "title": "MRB FAIL board", "labels": []}
     assert gitclaim.row_skip_fr_reason(row) == "hard_pin_umbrella"
-    assert ("simonbarnett/agentic_fomprep", "#11") in gitclaim._SKIP_FR_ISSUE_PINS
+    assert ("simonbarnett/priority-mcp", "#11") in gitclaim._SKIP_FR_ISSUE_PINS

@@ -7,8 +7,8 @@ import gitclaim
 from gitclaim import GitClaim, apply_queue_event, load_unaccepted
 
 
-CANON = "SimonBarnett/agentic_fomprep"
-LOWER = "simonbarnett/agentic_fomprep"
+CANON = "SimonBarnett/priority-mcp"
+LOWER = "simonbarnett/priority-mcp"
 
 
 def test_repo_key_and_prefer_casing_helpers():
