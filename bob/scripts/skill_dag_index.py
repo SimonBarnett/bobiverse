@@ -53,9 +53,14 @@ def _node_from_skill(skill: Path) -> dict[str, Any] | None:
 
 
 def scan_skills_with_collisions(roots: list[Path]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    """Index canonical SKILL.md files; skip nested books; report name collisions (FR #6921)."""
-    by_id: dict[str, list[tuple[int, Path, dict[str, Any]]]] = {}
-    for root in roots:
+    """Index canonical SKILL.md files; skip nested books; prefer earlier roots (FR #7077).
+
+    Cross-root copies of the same id are not last_error: the first configured
+    root wins (worker seat, then bob, then harvest, then ~/.grok). Same-root
+    extra paths still count as a name collision (FR #6921).
+    """
+    by_id: dict[str, list[tuple[int, int, Path, dict[str, Any]]]] = {}
+    for root_i, root in enumerate(roots):
         root = Path(root)
         if not root.is_dir():
             continue
@@ -66,26 +71,29 @@ def scan_skills_with_collisions(roots: list[Path]) -> tuple[list[dict[str, Any]]
             if node is None:
                 continue
             depth = _relative_depth(skill, root)
-            by_id.setdefault(node["id"], []).append((depth, skill.resolve(), node))
+            by_id.setdefault(node["id"], []).append(
+                (root_i, depth, skill.resolve(), node)
+            )
 
     nodes: list[dict[str, Any]] = []
     collisions: list[dict[str, Any]] = []
     for sid, group in sorted(by_id.items()):
-        uniq_paths = []
+        uniq_paths: list[tuple[int, int, Path, dict[str, Any]]] = []
         seen_p: set[str] = set()
-        for _d, path, node in group:
+        for root_i, depth, path, node in group:
             key = str(path)
             if key in seen_p:
                 continue
             seen_p.add(key)
-            uniq_paths.append(( _d, path, node))
-        uniq_paths.sort(key=lambda item: (item[0], str(item[1]).lower()))
-        nodes.append(uniq_paths[0][2])
-        if len(uniq_paths) > 1:
+            uniq_paths.append((root_i, depth, path, node))
+        uniq_paths.sort(key=lambda item: (item[0], item[1], str(item[2]).lower()))
+        nodes.append(uniq_paths[0][3])
+        same_root = [item for item in uniq_paths if item[0] == uniq_paths[0][0]]
+        if len(same_root) > 1:
             collisions.append(
                 {
                     "id": sid,
-                    "paths": [str(p) for _d, p, _n in uniq_paths],
+                    "paths": [str(p) for _ri, _d, p, _n in same_root],
                 }
             )
     return nodes, collisions
