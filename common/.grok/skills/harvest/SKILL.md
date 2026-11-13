@@ -405,6 +405,7 @@ routes to bobiverse via the split rule.
 - 6120 helper-path tests must stub load_opencode_go_key_from_auth and drop GO_USAGE/FUEL/key env so LocalSystem !build hits Popen + disk cache
 - skill-dag resolve must score the full seed against skill ids as well as descriptions so spaced tokens still hit hyphenated book names
 - skill-dag status last_error must not fire for the same skill id copied into worker, bob, and ~/.grok packs; prefer the first configured root
+- All-zero CLI token stamps are unknown, not a measured empty job; keep model= and emit tokens=unknown; a true zero is only valid next to a positive sibling field.
 
 ## Harvest digest (lessons audit 2026-10-06)
 
