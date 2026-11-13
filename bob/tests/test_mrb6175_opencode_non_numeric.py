@@ -52,8 +52,8 @@ foreach ($c in $cases) {{
     lines = [ln.strip() for ln in proc.stdout.splitlines() if ln.strip()]
     assert any("n/a" in ln for ln in lines[:3]), lines
     assert lines[-1] == "OpenCode  go est 50%", lines
-    # first case: free unknown -> n/a, go 50%
-    assert lines[0] == "OpenCode  free n/a | go est 50%", lines
+    # FR #7017: pool line is Go-only (free never painted).
+    assert lines[0] == "OpenCode  go est 50%", lines
     assert lines[1] == "OpenCode  go n/a", lines
-    assert lines[2] == "OpenCode  n/a", lines
-    assert lines[3] == "OpenCode  n/a", lines
+    assert lines[2] == "OpenCode  go n/a", lines
+    assert lines[3] == "OpenCode  go n/a", lines

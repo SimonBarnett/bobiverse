@@ -31,10 +31,10 @@ namespace BobDialogs
             return UnknownRows();
         }
 
+        // FR #7017: Go windows only — never paint an OpenCode free row.
         public static List<OpencodeBarRow> UnknownRows()
         {
             List<OpencodeBarRow> rows = new List<OpencodeBarRow>();
-            rows.Add(Row("free", "free  n/a"));
             rows.Add(Row("rolling", "go rolling  n/a"));
             rows.Add(Row("week", "go weekly  n/a"));
             rows.Add(Row("month", "go monthly  n/a"));

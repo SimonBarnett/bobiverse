@@ -16,12 +16,12 @@ CANON_KEYS = ("opencode-free", "opencode-go")
 def test_format_opencode_pool_line_exists_and_na():
     src = HOVER.read_text(encoding="utf-8-sig")
     assert "function Format-BobOpencodePoolLine" in src
-    assert "OpenCode  n/a" in src
+    # FR #7017: Go-only summary (free never painted on tray surfaces).
+    assert "OpenCode  go" in src
     assert "opencode-free" in src or "opencode_free" in src
     assert "opencode-go" in src or "opencode_go" in src
-    # Known values use free/go percent labels (mock: free 100% | go 50%).
-    assert "free" in src and "go" in src
-    assert "FR #6147" in src or "FR-007" in src
+    assert "go" in src
+    assert "FR #6147" in src or "FR-007" in src or "FR #7017" in src
 
 
 def test_hover_and_status_model_carry_opencode_line():

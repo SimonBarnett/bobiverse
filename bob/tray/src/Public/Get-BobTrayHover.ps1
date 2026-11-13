@@ -1474,7 +1474,7 @@ function Merge-BobOpencodePaintPreferDigest {
 function Format-BobOpencodeWindowLines {
     <#
     .SYNOPSIS
-      Free + Go rolling/weekly/monthly lines for TipForm/Status (FR #6147 clarification).
+      Go rolling/weekly/monthly lines for TipForm/Status (FR #6147 / FR #7017: never free).
     #>
     param(
         $FreePct = $null,
@@ -1482,12 +1482,8 @@ function Format-BobOpencodeWindowLines {
         [switch]$Stale
     )
     $FreePct = ConvertTo-BobTrayIntOrNull $FreePct
-    # Stale must not keep painting a previous value. 100 is catalogue availability
-    # from ``opencode models``, not a remaining-quota measurement, so it is not a fill.
-    $freeCatalogue = (-not $Stale) -and ($null -ne $FreePct) -and ([int]$FreePct -eq 100)
-    if ($Stale -or -not (Test-BobTrayRemainingKnown $FreePct)) { $freeBit = 'n/a' }
-    elseif ($freeCatalogue) { $freeBit = 'catalogue' }
-    else { $freeBit = ('{0}%' -f [int]$FreePct) }
+    # FR #7017: free models have no measurable quota — never paint a free row/bar/summary bit
+    # (100, null, 0, or stale). Keep Go rolling/weekly/monthly windows only.
     $ids = @('rolling', 'week', 'month')
     $winMap = @{}
     if ($Windows) {
@@ -1562,32 +1558,12 @@ function Format-BobOpencodeWindowLines {
         $limLabel = switch ($limId) { 'rolling' { 'rolling' } 'week' { 'weekly' } 'month' { 'monthly' } default { $limId } }
         $goBit = ('{0} {1}' -f $limLabel, $goBit)
     }
-    # Catalogue free (always 100 from the model list) is not a measured allowance row.
-    if ($freeCatalogue) {
-        $summary = ('OpenCode  go {0}' -f $goBit)
-        $freeHeading = $null
-    } else {
-        $summary = ('OpenCode  free {0} | go {1}' -f $freeBit, $goBit)
-        $freeHeading = ('free  {0}' -f $freeBit)
-    }
+    # FR #7017: never include free in the summary or bars (MarchHare already hid at 100%).
+    $summary = ('OpenCode  go {0}' -f $goBit)
+    $freeHeading = $null
     if ($Stale) { $summary = ('{0} [stale]' -f $summary) }
     $windowsOut = [ordered]@{}
     $bars = New-Object System.Collections.Generic.List[object]
-    if (-not $freeCatalogue) {
-        $freeKnown = (-not $Stale) -and (Test-BobTrayRemainingKnown $FreePct)
-        $freePctVal = $(if ($freeKnown) { [int]$FreePct } else { 0 })
-        $freeRgb = @{ r = 88; g = 166; b = 255 }
-        if ($freeKnown) { try { $freeRgb = Get-BobTrayBarFillRgb -Pct $freePctVal } catch { } }
-        $bars.Add([pscustomobject]@{
-            id = 'free'
-            heading = $freeHeading
-            known = [bool]$freeKnown
-            pct = $freePctVal
-            r = [int]$freeRgb.r
-            g = [int]$freeRgb.g
-            b = [int]$freeRgb.b
-        })
-    }
     foreach ($id in $ids) {
         $rec = $winMap[$id]
         if (-not $rec) {
@@ -1629,7 +1605,7 @@ function Format-BobOpencodeWindowLines {
     }
     return [pscustomobject]@{
         summary = $summary
-        free_line = ('OpenCode free  {0}' -f $freeBit)
+        free_line = ''
         free_heading = $freeHeading
         window_lines = @($windowLines)
         windows = [pscustomobject]$windowsOut
@@ -1684,18 +1660,11 @@ function Format-BobOpencodePoolLine {
         }
     }
     # MRB #6175 / CodeRabbit: non-numeric (unknown/n/a) must not throw on [int] cast.
-    $FreePct = ConvertTo-BobTrayIntOrNull $FreePct
+    # FR #7017: never paint free on the pool line — Go only.
     $GoPct = ConvertTo-BobTrayIntOrNull $GoPct
-    $freeKnown = Test-BobTrayRemainingKnown $FreePct
     $goKnown = Test-BobTrayRemainingKnown $GoPct
-    if (-not $freeKnown -and -not $goKnown) { return 'OpenCode  n/a' }
     $goBit = if ($goKnown) { ('est {0}%' -f [int]$GoPct) } else { 'n/a' }
-    if ($freeKnown -and [int]$FreePct -eq 100) {
-        return ('OpenCode  go {0}' -f $goBit)
-    }
-    if ($freeKnown) { $freeBit = ('{0}%' -f [int]$FreePct) }
-    else { $freeBit = 'n/a' }
-    return ('OpenCode  free {0} | go {1}' -f $freeBit, $goBit)
+    return ('OpenCode  go {0}' -f $goBit)
 }
 
 function Read-BobOpencodeLocalFuel {

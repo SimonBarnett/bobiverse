@@ -171,12 +171,11 @@ function New-BobTrayStatusModel {
         if ($null -eq $opencodeFree) { $opencodeFree = $pack.free }
     }
     # Exact failed snapshot: hover left free/go/windows null and window_lines empty.
-    # Still write the four pool rows. Unknown stays n/a — never 100%.
+    # FR #7017: Go windows only (never a free row). Unknown stays n/a — never 100%.
     if (@($opencodeWindowLines).Count -eq 0) {
-        $opencodeLine = 'OpenCode  free n/a | go n/a'
-        $opencodeWindowLines = @('free  n/a', 'go rolling  n/a', 'go weekly  n/a', 'go monthly  n/a')
+        $opencodeLine = 'OpenCode  go n/a'
+        $opencodeWindowLines = @('go rolling  n/a', 'go weekly  n/a', 'go monthly  n/a')
         $opencodeBars = @(
-            [pscustomobject]@{ id = 'free'; heading = 'free  n/a'; known = $false; pct = 0 },
             [pscustomobject]@{ id = 'rolling'; heading = 'go rolling  n/a'; known = $false; pct = 0 },
             [pscustomobject]@{ id = 'week'; heading = 'go weekly  n/a'; known = $false; pct = 0 },
             [pscustomobject]@{ id = 'month'; heading = 'go monthly  n/a'; known = $false; pct = 0 }
@@ -189,7 +188,7 @@ function New-BobTrayStatusModel {
             }
         }
     }
-    if (-not $opencodeLine) { $opencodeLine = 'OpenCode  free n/a | go n/a' }
+    if (-not $opencodeLine) { $opencodeLine = 'OpenCode  go n/a' }
     return [ordered]@{
         v         = 1
         ts        = [int64][DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
