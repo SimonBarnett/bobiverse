@@ -176,6 +176,10 @@ def test_fr6773_helpers_and_wiring_present():
     text = COMMON.read_text(encoding="utf-8")
     body = _fn_body(text, "Sync-BobiverseWorkTree")
     assert "Clear-BobiverseMachineLocalConfigForSync" in body or "bobiverse.local.json" in body
+    assert "Clear-BobiverseDirtyTrackedForSync" in text
+    assert "FR #6989" in text
+    excl = _fn_body(text, "Get-BobiverseInstallGitExcludeText")
+    assert ".bobiverse-parked" in excl
     assert "Report-BobiverseSyncFfStall" in body or "Write-BobiverseSyncStatus" in body
     assert "FR #6773" in body or "#6773" in body
     excl = _fn_body(text, "Get-BobiverseInstallGitExcludeText")
@@ -339,3 +343,60 @@ def test_fr6773_bobreport_exports_sync_field():
     mid = "fr6773box"
     ent = bobreport._coerce_machine(mid, {"online": True, "sync": "behind 12, ff-only not possible"})
     assert ent.get("sync") == "behind 12, ff-only not possible"
+
+
+def test_fr6989_dirty_tracked_product_files_ffs(world):
+    """Redqueen stall: dirty RecycleSeat/gitclaim/recycleseat must not block ff."""
+    r = world.root("bob")
+    write(r / "VERSION", "0.0.1\n")
+    write(r / "scripts/old.ps1", "# old\n")
+    assert world.sync().returncode == 0
+    world.upstream(
+        "bob/tray/tools/BobTrayRecycleSeat.ps1",
+        "# recycle v1\n",
+        msg="add recycle",
+    )
+    world.upstream(
+        "common/scripts/gitclaim.py",
+        "# gitclaim v1\n",
+        msg="add gitclaim",
+    )
+    world.upstream(
+        "common/scripts/recycleseat.py",
+        "# recycleseat v1\n",
+        msg="add recycleseat",
+    )
+    assert world.sync().returncode == 0
+    write(r / "bob/tray/tools/BobTrayRecycleSeat.ps1", "# LOCAL HOTPATCH FAKE_secret_should_not_leak\n")
+    write(r / "common/scripts/gitclaim.py", "# LOCAL gitclaim\n")
+    write(r / "common/scripts/recycleseat.py", "# LOCAL recycleseat\n")
+    world.upstream("common/scripts/c1.ps1", "# common tip 6989\n", msg="tip ahead")
+    out = world.sync()
+    text = out.text
+    assert out.returncode == 0, text
+    assert "sync-ff-failed" not in text, text
+    assert "FAKE_secret_should_not_leak" not in text, text
+    assert "sync-park-dirty" in text or "FR#6989" in text or "6989" in text
+    head = git(r, "rev-parse", "HEAD").stdout.strip()
+    tip = git(r, "rev-parse", "origin/main").stdout.strip()
+    assert head == tip, (head, tip, text)
+    assert (r / "bob/tray/tools/BobTrayRecycleSeat.ps1").read_text(encoding="utf-8").startswith("# recycle v1")
+    parks = list((r / ".bobiverse-parked").rglob("*.ps1")) if (r / ".bobiverse-parked").exists() else []
+    assert parks, text
+    st = git(r, "status", "--porcelain", "--", "bob/tray/tools/BobTrayRecycleSeat.ps1")
+    assert not st.stdout.strip(), st.stdout
+
+
+def test_fr6989_skip_secret_named_dirty_file(world):
+    r = world.root("bob")
+    write(r / "VERSION", "0.0.1\n")
+    write(r / "scripts/old.ps1", "# old\n")
+    assert world.sync().returncode == 0
+    world.upstream("bob/config/github.token", "FAKE_token_placeholder\n", msg="token tracked")
+    assert world.sync().returncode == 0
+    write(r / "bob/config/github.token", "FAKE_token_placeholder_dirty\n")
+    world.upstream("common/scripts/c1.ps1", "# common after token\n", msg="tip")
+    out = world.sync()
+    text = out.text
+    assert "FAKE_token_placeholder_dirty" not in text, text
+    assert "skip-secret" in text or "sync-ff-failed" in text or out.returncode == 0
