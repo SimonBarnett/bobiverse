@@ -1,6 +1,7 @@
 # Pool-monitor deploy pin
-# Behavior source sha: ebc60c211af405eee17a28ca90a44141c7d736ed
-# FR #7039: repin after 2.0.0 pool-monitor drift (bobreport/irc_agent/hover/opencode).
+# Behavior source sha: 4a7f54f6564c22d013d2b0fa577438f11034a537
+# FR #7065: repin after FR #7035 python-status clear (bobreport/irc_agent).
+# Prior pin: ebc60c211af405eee17a28ca90a44141c7d736ed (FR #7039).
 # FR #6963: repin after irc_agent.py / bobiverse_build.py / Watch-BobTray.ps1 drift from 4ffaf334.
 # Prior pin: f82ddbf52cd5f58900af36ee9344eea5b07b48af
 # FR #6894: repin after bobreport.py / irc_agent.py / Get-BobIrc.ps1 drift from 523450e.
@@ -50,8 +51,8 @@
 # Deploy/restart remains owner/Slab gated (CAST IRON: FR seat does not Install or restart).
 #
 # sha256  bytes  path
-dd17f30df08c14974b57f7d86c6b53eb64d8a75a8638f9efc3da046e6c3b7cdb  291562  common/scripts/bobreport.py
-2c5fced15b58c9a93b4deb075f1c3f66218909f4fa507360bd15e18c118e4618  260664  common/scripts/irc_agent.py
+a9b3a24d43573445066b1d31e62178dfa41fdc17923754cd1a5f058bd8bbce4b  292409  common/scripts/bobreport.py
+98d438650d854b1d1e31822fc6b34f9a9916456de3895c8edf1a82737a5c607f  261090  common/scripts/irc_agent.py
 890e852de2e95acae6ceb29b005de331db60d1d2b3aa829130aabbae85c1bc03  81965  common/scripts/opencode_fuel.py
 67814d69a33921cfa820fc9b042f1f013f1414c2e78d2115fe3d5902584a4363  159206  common/scripts/bobiverse_build.py
 1e42bfe11f08a05f235e7293d006ca86dd022df147d0d6d3fad10c9335e06523  186036  bob/tray/src/Public/Get-BobTrayHover.ps1
