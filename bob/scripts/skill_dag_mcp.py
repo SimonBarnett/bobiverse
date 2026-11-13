@@ -2,6 +2,8 @@
 
 FR #6901: resolve scores the job line against skill descriptions when the first
 token is not FR/MRB/UAT/FIX and the line is not an exact skill id.
+FR #7079: the same pass also scores hyphenated skill ids so spaced multi-word
+seeds (not job types) are not empty.
 """
 from __future__ import annotations
 
@@ -69,6 +71,14 @@ def score_description(job_line: str, description: str) -> int:
     if not job or not desc:
         return 0
     return len(job & desc)
+
+
+def score_seed(job_line: str, *, skill_id: str, description: str) -> int:
+    """FR #7079: score the full seed against description and hyphenated skill id."""
+    return max(
+        score_description(job_line, description),
+        score_description(job_line, skill_id),
+    )
 
 
 class JobSkillsRootRefused(ValueError):
@@ -286,7 +296,11 @@ class SkillDagServer:
         best_id = ""
         best_score = 0
         for nid, node in self.nodes.items():
-            sc = score_description(raw, str(node.get("description") or ""))
+            sc = score_seed(
+                raw,
+                skill_id=nid,
+                description=str(node.get("description") or ""),
+            )
             if sc > best_score or (sc == best_score and sc > 0 and (not best_id or nid < best_id)):
                 best_score = sc
                 best_id = nid
