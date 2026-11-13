@@ -3389,8 +3389,15 @@ def run_shell_request(
                 cancel.wait(min(0.05, max(0, deadline - time.monotonic())))
         finally:
             if proc.poll() is None:
-                _stop_shell_process(proc)
-                stopped = True
+                # FR #7157 / #5676: brief grace so a child that exits in the same
+                # tick as the deadline (busy host / inherited capture) is not
+                # stopped --- avoids spurious 124 and empty stdout after
+                # TerminateJobObject.
+                if reason.startswith("killed: timeout"):
+                    cancel.wait(0.05)
+                if proc.poll() is None:
+                    _stop_shell_process(proc)
+                    stopped = True
             job.close()
         # FR #5676: deadline can fire in the same tick the direct child exits
         # (inherited capture / slow host). Prefer the real returncode over a
