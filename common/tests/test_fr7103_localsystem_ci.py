@@ -39,6 +39,11 @@ def test_fr7103_ps1_registers_system_scheduled_task_not_psexec():
     assert "Invoke-Expression" not in text
     assert "gh release create" not in text
     assert "bobiverse_localsystem_ci.py" in text
+    # MRB #7114: SYSTEM PATH has no setup-python; wrapper must use resolved python.exe.
+    assert "(Get-Command python).Source" in text
+    assert "__PY__" in text
+    assert "& python " not in text
+    assert "UTF8Encoding" in text or "UTF8Encoding $false" in text or "new UTF8Encoding" in text.lower()
 
 
 def test_fr7103_python_helper_exports():

@@ -24,19 +24,23 @@ New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
 $py = (Get-Command python).Source
 $helper = Join-Path $RepoRoot 'common\scripts\bobiverse_localsystem_ci.py'
 if (-not (Test-Path -LiteralPath $helper)) { throw "missing $helper" }
+if (-not (Test-Path -LiteralPath $py)) { throw "python.exe not found" }
 
 $taskName = 'bobiverse-pytest-localsystem'
 $wrapper = Join-Path $OutDir 'run-as-system.ps1'
 $argLine = '-NoProfile -ExecutionPolicy Bypass -File "{0}"' -f $wrapper
-@'
+$pyDir = [IO.Path]::GetDirectoryName($py)
+$body = @'
 param()
 $ErrorActionPreference = "Stop"
 $envNames = @("GITHUB_TOKEN","GH_TOKEN","ACTIONS_RUNTIME_TOKEN","ACTIONS_ID_TOKEN_REQUEST_TOKEN")
 foreach ($n in $envNames) { Remove-Item "Env:$n" -ErrorAction SilentlyContinue }
-& python "__HELPER__" --mode __MODE__ --repo-root "__ROOT__" --out-dir "__OUT__"
+$env:PATH = "__PYDIR__;$env:PATH"
+& "__PY__" "__HELPER__" --mode __MODE__ --repo-root "__ROOT__" --out-dir "__OUT__"
 exit $LASTEXITCODE
-'@.Replace('__HELPER__', $helper).Replace('__MODE__', $Mode).Replace('__ROOT__', $RepoRoot).Replace('__OUT__', $OutDir) |
-    Set-Content -LiteralPath $wrapper -Encoding UTF8
+'@.Replace('__HELPER__', $helper).Replace('__MODE__', $Mode).Replace('__ROOT__', $RepoRoot).Replace('__OUT__', $OutDir).Replace('__PYDIR__', $pyDir).Replace('__PY__', $py)
+$utf8 = New-Object System.Text.UTF8Encoding $false
+[System.IO.File]::WriteAllText($wrapper, $body, $utf8)
 
 foreach ($n in @('GITHUB_TOKEN', 'GH_TOKEN', 'ACTIONS_RUNTIME_TOKEN')) {
     Remove-Item "Env:$n" -ErrorAction SilentlyContinue
