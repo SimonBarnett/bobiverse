@@ -33,7 +33,7 @@ Each repo that supports `!build` ships this file at the repo root.
 | `baseline` | Usually `last_release_tag` |
 | `suites[]` | `{name, cmd, cwd, env, timeout}` run at **ref** and **baseline** |
 | `pack` | Commands + artifact globs (+ `.sha256`); templates `{{version}}` / `{{out_dir}}` / `{{ref}}` |
-| `release` | `github-prerelease` with `never_latest: true` |
+| `release` | `github-prerelease` with `never_latest: true`. Re-running the same `VERSION` uploads onto the existing pre-release (`gh release upload --clobber`); it does not fail because the tag already exists (FR #7086). A full non-pre release or Latest tag is still refused. |
 | `install_test` | Optional follow-on (WP3 / FR #4026) |
 | `cache_dirs` | Persistent download caches under work_dir (or `BOBIVERSE_DOWNLOAD_CACHE`) |
 | `max_parallel_builds` | Machine cap (default 1) |
@@ -103,4 +103,4 @@ WP3 INSTALL-TEST (FR #4026), when present in the recipe, is a separate follow-on
 - Docs: `docs/bobiverse-build.md`
 - Chair help: `!help build` (ops) / skill `bobiverse-jeeves-commands` section `!build`
 - Parent FR: #4006 (living umbrella --- do not `Closes` it from docs-only PRs); WP2 #4025; this skill book #4038
-- Tests: `common/tests/test_fr4006_build_job.py`, WP2 runner tests, `jeeves/tests/test_fr4038_bobiverse_build_skill.py`, `common/tests/test_fr6491_chair_build_lock_release.py` (FR #6491 chair lock release)
+- Tests: `common/tests/test_fr4006_build_job.py`, WP2 runner tests, `jeeves/tests/test_fr4038_bobiverse_build_skill.py`, `common/tests/test_fr6491_chair_build_lock_release.py` (FR #6491 chair lock release), `common/tests/test_fr7086_release_tag_already_exists.py` (FR #7086 idempotent pre-release)

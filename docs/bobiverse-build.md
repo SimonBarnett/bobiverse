@@ -12,7 +12,7 @@ Agent playbook: `jeeves/.grok/skills/bobiverse-build/SKILL.md` (FR #4038) --- ho
 | `baseline` | Usually `last_release_tag` |
 | `suites[]` | `{name, cmd, cwd, env, timeout}` — run at ref and baseline |
 | `pack` | Commands + artifact globs (+ `.sha256`) |
-| `release` | `github-prerelease`, never Latest |
+| `release` | `github-prerelease`, never Latest; same-tag re-run uploads `--clobber` (FR #7086) |
 | `install_test` | Optional follow-on (WP3) |
 | `cache_dirs` | Persistent download caches |
 | `max_parallel_builds` | Machine cap (default 1) |
@@ -63,7 +63,7 @@ Deterministic, injectable, **zero AI tokens**. Module: `common/scripts/bobiverse
    - Files one intake issue per `new_regression` / `step_failure` with labels `feature-request` + `release-blocker` (`file_blocker_or_dedupe`; comment if open duplicate).
    - **Pack and release only when there are no new_regression/step_failure blockers** (pre_existing / flaky do not block).
    - Pack renders `{{version}}` / `{{out_dir}}` / `{{ref}}`; verifies artifact names; optional assert cmd.
-   - Release target `github-prerelease` with recipe `never_latest: true` => prerelease, never Latest.
+   - Release target `github-prerelease` with recipe `never_latest: true` => prerelease, never Latest. If `gh release create` reports the tag already exists, refresh assets with `gh release upload --clobber` when the existing release is still a pre-release (FR #7086); a full or Latest tag still fails `step:release`.
    - Zips `log_dir` to `build-logs-{version}.zip`; announce summary lines for `#bobiverse`.
 
 FR #6491: terminal `BUILD ok|fail ... id=` frees the chair lock by id; `!build cancel` / `!build status` unchanged; stale locks (older than recipe max run) clear on the next `!build`.

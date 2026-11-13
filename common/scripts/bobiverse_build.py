@@ -3910,7 +3910,12 @@ def make_github_prerelease_fn(
     notes: str,
     gh_runner: Callable | None = None,
 ) -> Callable:
-    """release_fn for BuildRunner: ``gh release create --prerelease --latest=false`` + verify."""
+    """release_fn for BuildRunner: ``gh release create --prerelease --latest=false`` + verify.
+
+    FR #7086: if that tag already exists as a pre-release, upload assets with
+    ``--clobber`` instead of failing ``step:release``. A full (non-pre) release
+    or a tag that became Latest is still refused.
+    """
     import subprocess as _sp
 
     runner = gh_runner or _sp.run
@@ -3924,16 +3929,11 @@ def make_github_prerelease_fn(
             )
         return getattr(cp, "stdout", "") or ""
 
-    def release_fn(*, tag: str, assets, prerelease: bool = True, latest=None) -> dict:
-        if not prerelease:
-            raise RuntimeError("refusing non-prerelease")
-        args = [
-            "release", "create", tag, "--repo", normalize_repo(repo),
-            "--target", target_sha, "--prerelease", "--latest=false",
-            "--title", title, "--notes", notes,
-        ]
-        args.extend(str(a) for a in (assets or []))
-        _gh(args)
+    def _tag_already_exists(msg: str) -> bool:
+        low = (msg or "").lower()
+        return "already exists" in low and "tag" in low
+
+    def _verify_prerelease_not_latest(tag: str) -> dict:
         view = json.loads(
             _gh(["release", "view", tag, "--repo", normalize_repo(repo), "--json", "isPrerelease,url"])
             or "{}"
@@ -3948,6 +3948,38 @@ def make_github_prerelease_fn(
             latest_tag = ""
         if latest_tag == tag:
             raise RuntimeError(f"release {tag} became Latest")
+        return view
+
+    def release_fn(*, tag: str, assets, prerelease: bool = True, latest=None) -> dict:
+        if not prerelease:
+            raise RuntimeError("refusing non-prerelease")
+        args = [
+            "release", "create", tag, "--repo", normalize_repo(repo),
+            "--target", target_sha, "--prerelease", "--latest=false",
+            "--title", title, "--notes", notes,
+        ]
+        args.extend(str(a) for a in (assets or []))
+        created = False
+        try:
+            _gh(args)
+            created = True
+        except RuntimeError as exc:
+            # FR #7086: a second !build of the same VERSION must refresh assets
+            # on the existing pre-release, not file a step:release blocker.
+            if not _tag_already_exists(str(exc)):
+                raise
+        if not created:
+            view = _verify_prerelease_not_latest(tag)
+            paths = [str(a) for a in (assets or []) if str(a).strip()]
+            if paths:
+                _gh(
+                    [
+                        "release", "upload", tag, "--repo", normalize_repo(repo),
+                        "--clobber", *paths,
+                    ]
+                )
+        else:
+            view = _verify_prerelease_not_latest(tag)
         return {"tag": tag, "url": view.get("url", "")}
 
     return release_fn
