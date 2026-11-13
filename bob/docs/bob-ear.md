@@ -47,7 +47,7 @@ Canonical digest: `GET https://bob.ntsa.uk/bob/v1/report`. The **ircBob ear** ow
 | Copilot | TipForm/Status account-wide Copilot pool line; treat stale fetched_at as not current |
 | Logos | `bob/tray/assets/fuel-logos/` (cursor, xai, opencode, copilot) + text fallback; see LICENSE.md |
 | cursor_known | false clears Cursor label/pcent/pools; Sand uses `sand_period_end` |
-| python (FR #7020 / #7022) | `publish_local_peer_fuel` reads `<home>/run/python-status.json` and posts `python=missing` or a source tag only (never a path body) |
+| python (FR #7020 / #7022 / #7035) | `publish_local_peer_fuel` reads `<home>/run/python-status.json` and posts `python=missing` or a source tag only (never a path body). On a later successful SYSTEM resolve the ear calls `note_python_resolved` (rewrite tag or unlink) so digest never keeps stale `python=missing`. |
 
 Park drafts: `bob/docs/fr/digest-ear-publish/` (Refs, not Closes, for impl FRs). Vision: `bob/docs/vision-digest-ear-publish.md`.
 

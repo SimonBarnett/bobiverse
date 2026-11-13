@@ -4316,6 +4316,31 @@ def read_python_status_field(home: Path) -> str | None:
     return sanitize_python_digest_tag(doc.get("python"))
 
 
+def note_python_resolved(home: Path, source_tag: str | None = None) -> bool:
+    """FR #7035: drop stale python=missing after a successful interpreter resolve.
+
+    Writes a source tag only (never a path). Unlinks the stamp when the tag is
+    absent or unsafe so digest publish omits python instead of posting missing.
+    """
+    path = python_status_path(home)
+    tag = sanitize_python_digest_tag(source_tag)
+    if tag == "missing":
+        tag = None
+    try:
+        if tag:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(
+                json.dumps({"ok": True, "python": tag}) + "\n",
+                encoding="utf-8",
+            )
+            return True
+        if path.is_file():
+            path.unlink()
+        return True
+    except OSError:
+        return False
+
+
 def attach_peer_python_status(peer: dict, home: Path) -> dict:
     """FR #7022: copy python-status.json into peer so merge payload carries it."""
     if not isinstance(peer, dict):
