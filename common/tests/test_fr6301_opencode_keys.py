@@ -86,10 +86,21 @@ def test_fr6301_missing_key_is_no_key_set(tmp_path, monkeypatch):
     install = tmp_path / "bob"
     (install / "config").mkdir(parents=True)
     monkeypatch.setenv("BOB_INSTALL_ROOT", str(install))
-    monkeypatch.delenv("BOB_OPENCODE_GO_API_KEY", raising=False)
-    monkeypatch.delenv("BOB_OPENCODE_GO_USAGE_FIXTURE", raising=False)
-    monkeypatch.delenv("BOB_OPENCODE_FUEL_FIXTURE", raising=False)
-    monkeypatch.delenv("BOB_OPENCODE_WINDOWS_FIXTURE", raising=False)
+    for key in (
+        "BOB_OPENCODE_GO_API_KEY",
+        "BOB_OPENCODE_GO_USAGE_FIXTURE",
+        "BOB_OPENCODE_FUEL_FIXTURE",
+        "BOB_OPENCODE_WINDOWS_FIXTURE",
+        "BOB_OPENCODE_AUTH_PATH",
+        "BOB_OPENCODE_SEAT_HOME",
+        "BOB_GROK_WEEKLY_USER_HOME",
+    ):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setattr(bobreport, "_is_local_system_process", lambda: False)
+    monkeypatch.setattr(bobreport, "_interactive_grok_user_home", lambda: None)
+    monkeypatch.setattr(
+        bobreport, "load_opencode_go_key_from_auth", lambda path: ("", "test-isolated")
+    )
     monkeypatch.setattr(bobreport, "tighten_opencode_key_acl", lambda p: False)
     # FR #6996: missing bob key with a present binary is "no key set", not "not installed".
     monkeypatch.setattr(

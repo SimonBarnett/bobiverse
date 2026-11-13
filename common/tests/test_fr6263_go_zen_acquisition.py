@@ -114,11 +114,31 @@ def test_fr6263_failed_read_stays_unknown_with_provider_read(monkeypatch):
     assert acq.get("configured") is True
 
 
+def _isolate_missing_opencode_key(monkeypatch) -> None:
+    """FR #7067: !build runs as LocalSystem and FR #6996 reads seat auth.json.
+
+    Isolate env + skip user-auth so missing-key pins stay missing_key.
+    """
+    for key in (
+        "BOB_OPENCODE_GO_API_KEY",
+        "BOB_OPENCODE_GO_USAGE_FIXTURE",
+        "BOB_OPENCODE_FUEL_FIXTURE",
+        "BOB_OPENCODE_WINDOWS_FIXTURE",
+        "BOB_OPENCODE_AUTH_PATH",
+        "BOB_OPENCODE_SEAT_HOME",
+        "BOB_OPENCODE_KEY_LABEL",
+        "BOB_GROK_WEEKLY_USER_HOME",
+    ):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setattr(bobreport, "_is_local_system_process", lambda: False)
+    monkeypatch.setattr(bobreport, "_interactive_grok_user_home", lambda: None)
+    monkeypatch.setattr(
+        bobreport, "load_opencode_go_key_from_auth", lambda path: ("", "test-isolated")
+    )
+
+
 def test_fr6263_missing_key_distinct_from_provider_failure(monkeypatch):
-    monkeypatch.delenv("BOB_OPENCODE_GO_API_KEY", raising=False)
-    monkeypatch.delenv("BOB_OPENCODE_GO_USAGE_FIXTURE", raising=False)
-    monkeypatch.delenv("BOB_OPENCODE_FUEL_FIXTURE", raising=False)
-    monkeypatch.delenv("BOB_OPENCODE_WINDOWS_FIXTURE", raising=False)
+    _isolate_missing_opencode_key(monkeypatch)
     monkeypatch.setenv("BOB_INSTALL_ROOT", str(Path.cwd() / "no-such-install-root-6263"))
     bobreport._opencode_fuel_cache.clear()
     bobreport._opencode_fuel_cache.update({"at": 0.0, "doc": {}})
@@ -139,6 +159,40 @@ def test_fr6263_missing_key_distinct_from_provider_failure(monkeypatch):
     assert doc.get("opencode_state") == bobreport.OPENCODE_NO_KEY_STATE or doc.get("source") == "no-key"
     week = (doc.get("windows") or {}).get("week") or {}
     assert week.get("error") == "no key set"
+
+
+def test_fr7067_user_auth_json_masks_missing_key_without_isolation(tmp_path, monkeypatch):
+    """Contrast: LocalSystem auth.json makes the 6263 pin look like a live key."""
+    auth = tmp_path / "auth.json"
+    auth.write_text(
+        json.dumps({"opencode-go": {"apiKey": "FAKE_AUTH_JSON_KEY_NOT_REAL"}}),
+        encoding="utf-8",
+    )
+    monkeypatch.delenv("BOB_OPENCODE_GO_API_KEY", raising=False)
+    monkeypatch.delenv("BOB_OPENCODE_GO_USAGE_FIXTURE", raising=False)
+    monkeypatch.delenv("BOB_OPENCODE_FUEL_FIXTURE", raising=False)
+    monkeypatch.setenv("BOB_OPENCODE_AUTH_PATH", str(auth))
+    monkeypatch.setenv("BOB_INSTALL_ROOT", str(tmp_path / "no-install-7067"))
+    bobreport._opencode_fuel_cache.clear()
+    bobreport._opencode_fuel_cache.update({"at": 0.0, "doc": {}})
+    monkeypatch.setattr(bobreport, "_resolve_opencode_fuel_helper_ps1", lambda e: None)
+    monkeypatch.setattr(
+        bobreport,
+        "resolve_opencode_exe",
+        lambda env=None: (r"C:\fake\opencode.exe", "explicit"),
+    )
+    monkeypatch.setattr(
+        opencode_fuel,
+        "fetch_go_zen_usage",
+        lambda *a, **k: opencode_fuel.interpret_go_zen_usage_response(
+            200, json.dumps(PINNED), now_ms=1_700_000_000_000
+        ),
+    )
+    doc = bobreport.read_local_opencode_fuel_doc(now=4100.0, force=True)
+    acq = bobreport.last_opencode_acquisition()
+    assert acq.get("kind") != "missing_key"
+    assert acq.get("key_source") == "user-auth"
+    assert doc.get("windows", {}).get("week", {}).get("used_pct") == 72
 
 
 def test_fr6263_config_file_key_without_logging_secret(tmp_path, monkeypatch):
