@@ -44,6 +44,7 @@ FIXTURE_FREE100_GO50 = '{"costs": {"glm-5.3": 7.5}, "free_models": ["beam-free"]
 
 def test_fr6146_read_local_opencode_pcent_from_fixture(monkeypatch):
     bobreport.clear_opencode_pcent_cache()
+    monkeypatch.delenv("BOB_OPENCODE_GO_USAGE_FIXTURE", raising=False)
     monkeypatch.setenv("BOB_OPENCODE_FUEL_FIXTURE", FIXTURE_FREE100_GO50)
     monkeypatch.delenv("BOB_OPENCODE_FUEL_HELPER", raising=False)
     got = bobreport.read_local_opencode_pcent()
@@ -55,7 +56,7 @@ def test_fr6146_read_local_opencode_pcent_from_fixture(monkeypatch):
 
 def test_fr6146_read_local_opencode_pcent_unknown_omits(monkeypatch):
     bobreport.clear_opencode_pcent_cache()
-    monkeypatch.delenv("BOB_OPENCODE_FUEL_FIXTURE", raising=False)
+    _isolate_live_opencode_key(monkeypatch)
     # Force helper miss so live CLI is not required
     monkeypatch.setenv("BOB_OPENCODE_FUEL_HELPER", str(Path("C:/no/such/Get-BobOpencodeFuel.ps1")))
     got = bobreport.read_local_opencode_pcent()
@@ -93,6 +94,7 @@ def test_fr6146_publish_round_trip_fixture(tmp_path: Path, monkeypatch):
 
     import bobstat
 
+    monkeypatch.delenv("BOB_OPENCODE_GO_USAGE_FIXTURE", raising=False)
     monkeypatch.setenv("BOB_OPENCODE_FUEL_FIXTURE", FIXTURE_FREE100_GO50)
     home = tmp_path / "home"
     home.mkdir()
@@ -148,7 +150,7 @@ def test_fr6146_publish_omits_opencode_when_unknown(tmp_path: Path, monkeypatch)
 
     import bobstat
 
-    monkeypatch.delenv("BOB_OPENCODE_FUEL_FIXTURE", raising=False)
+    _isolate_live_opencode_key(monkeypatch)
     monkeypatch.setenv("BOB_OPENCODE_FUEL_HELPER", str(Path("C:/no/such/Get-BobOpencodeFuel.ps1")))
     home = tmp_path / "home"
     home.mkdir()
@@ -238,19 +240,39 @@ def _popen_writer(payload: str, *, running: bool = False):
     return fake_popen
 
 
+def _isolate_live_opencode_key(monkeypatch) -> None:
+    """FR #7072 / #7067: !build as LocalSystem still loads seat auth.json / zen env.
+
+    Helper-path pins must not take GO_USAGE_FIXTURE, FUEL_FIXTURE, or a live Go key.
+    """
+    for key in (
+        "BOB_OPENCODE_GO_API_KEY",
+        "BOB_OPENCODE_GO_USAGE_FIXTURE",
+        "BOB_OPENCODE_FUEL_FIXTURE",
+        "BOB_OPENCODE_WINDOWS_FIXTURE",
+        "BOB_OPENCODE_AUTH_PATH",
+        "BOB_OPENCODE_SEAT_HOME",
+        "BOB_OPENCODE_KEY_LABEL",
+        "BOB_GROK_WEEKLY_USER_HOME",
+    ):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setattr(bobreport, "_is_local_system_process", lambda: False)
+    monkeypatch.setattr(bobreport, "_interactive_grok_user_home", lambda: None)
+    monkeypatch.setattr(
+        bobreport, "load_opencode_go_key_from_auth", lambda path: ("", "test-isolated")
+    )
+
+
 def _hermetic_opencode_helper_env(monkeypatch, tmp_path: Path) -> Path:
     """Isolate helper reads from install-root disk cache and Go-zen / fixture keys.
 
     FR #6710: release runners with a prior ``run/opencode-fuel.json`` (or a live
     Go key) made ``publish_local_peer_fuel`` re-publish cached free/go even when
     the stub helper returned ``opencode_missing`` nulls.
+    FR #7072: also stub auth.json so LocalSystem does not skip the helper.
     """
     bobreport.clear_opencode_pcent_cache()
-    monkeypatch.delenv("BOB_OPENCODE_FUEL_FIXTURE", raising=False)
-    monkeypatch.delenv("BOB_OPENCODE_WINDOWS_FIXTURE", raising=False)
-    monkeypatch.delenv("BOB_OPENCODE_GO_API_KEY", raising=False)
-    monkeypatch.delenv("BOB_OPENCODE_GO_USAGE_FIXTURE", raising=False)
-    monkeypatch.delenv("BOB_OPENCODE_KEY_LABEL", raising=False)
+    _isolate_live_opencode_key(monkeypatch)
     helper = tmp_path / "Get-BobOpencodeFuel.ps1"
     helper.write_text("# stub\n", encoding="utf-8")
     cache = tmp_path / "opencode-fuel.json"
@@ -263,8 +285,7 @@ def test_mrb6176_helper_cache_avoids_repeat_subprocess(monkeypatch, tmp_path: Pa
     """Within TTL, second read must not spawn PowerShell again."""
     from unittest import mock
 
-    bobreport.clear_opencode_pcent_cache()
-    monkeypatch.delenv("BOB_OPENCODE_FUEL_FIXTURE", raising=False)
+    _hermetic_opencode_helper_env(monkeypatch, tmp_path)
     helper = tmp_path / "Get-BobOpencodeFuel.ps1"
     helper.write_text("# stub\n", encoding="utf-8")
     monkeypatch.setenv("BOB_OPENCODE_FUEL_HELPER", str(helper))
@@ -287,8 +308,7 @@ def test_mrb6176_helper_timeout_returns_stale_cache(monkeypatch, tmp_path: Path)
     """A still-running helper must not wipe the last good reading or block."""
     from unittest import mock
 
-    bobreport.clear_opencode_pcent_cache()
-    monkeypatch.delenv("BOB_OPENCODE_FUEL_FIXTURE", raising=False)
+    _hermetic_opencode_helper_env(monkeypatch, tmp_path)
     helper = tmp_path / "Get-BobOpencodeFuel.ps1"
     helper.write_text("# stub\n", encoding="utf-8")
     monkeypatch.setenv("BOB_OPENCODE_FUEL_HELPER", str(helper))
@@ -465,14 +485,12 @@ def test_disk_cache_survives_restart_and_failed_reread_does_not_wipe(
     tmp_path: Path, monkeypatch
 ):
     """Tray and ear share run/opencode-fuel.json. A later opencode_missing must not erase week."""
-    bobreport.clear_opencode_pcent_cache()
-    monkeypatch.delenv("BOB_OPENCODE_FUEL_FIXTURE", raising=False)
+    _hermetic_opencode_helper_env(monkeypatch, tmp_path)
     cache = tmp_path / "run" / "opencode-fuel.json"
+    cache.parent.mkdir(parents=True, exist_ok=True)
     monkeypatch.setenv("BOB_OPENCODE_FUEL_CACHE_FILE", str(cache))
     monkeypatch.setenv("BOB_OPENCODE_FUEL_CACHE_S", "0")
     helper = tmp_path / "Get-BobOpencodeFuel.ps1"
-    helper.write_text("# stub\n", encoding="utf-8")
-    monkeypatch.setenv("BOB_OPENCODE_FUEL_HELPER", str(helper))
 
     with mock.patch("subprocess.Popen", _popen_writer(_LATER_HELPER_JSON)):
         first = bobreport.read_local_opencode_fuel_doc(now=4000.0, force=True)
