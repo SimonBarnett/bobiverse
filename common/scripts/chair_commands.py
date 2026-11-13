@@ -156,7 +156,7 @@ COMMANDS: tuple = (
                 "announces restarting then executes. Duplicates are cooldown-blocked.", ("help", "status")),
     CommandSpec(
         "build",
-        "!build <owner/repo>[,owner/repo...] <version> [ref] | !build status|cancel|dry-run|preflight ...",
+        "!build <owner/repo>[,owner/repo...] <version> [ref] [--tests-only] | !build status|cancel|dry-run|preflight|tests-only ...",
         "queue a deterministic repo BUILD (no agent); failures become release-blocker issues (FR #4006)",
         OPS_ROLES,
         "!build SimonBarnett/bobiverse 0.1.32",
