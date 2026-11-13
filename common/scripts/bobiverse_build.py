@@ -1074,9 +1074,17 @@ class PreflightReport:
 
 
 def _default_resolve_python(env: dict) -> str:
-    """Resolved interpreter for the SYSTEM runner (BOBIVERSE_PYTHON, else sys.executable)."""
+    """FR #7020: resolve SYSTEM python (env/stamp/registry/py/PATH/FS), else sys.executable."""
     import sys as _sys
 
+    try:
+        import bobiverse_python
+
+        path, _src = bobiverse_python.resolve_service_python(env or {})
+        if path:
+            return path
+    except Exception:
+        pass
     override = str((env or {}).get("BOBIVERSE_PYTHON") or "").strip()
     if override:
         return override

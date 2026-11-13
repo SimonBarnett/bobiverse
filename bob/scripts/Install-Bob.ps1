@@ -100,7 +100,14 @@ $Nssm = Resolve-BobiverseNssm -Preferred $Nssm -ScriptDir $here
 if (-not $Nssm) { throw 'nssm missing' }
 # FR #5150: MSI upgrade ships scripts\bob-ear.exe. Missing python (SYSTEM PATH
 # after soft-fail bootstrap) must not 1603 the CA when the frozen ear is present.
-if (-not $Python) { $Python = Resolve-BobiversePython -AllowMissing }
+# FR #7020: resolve with registry/py/PATH/stamp; warn clearly when missing under MSI.
+if (-not $Python) { $Python = Resolve-BobiversePython -AllowMissing -InstallRoot $InstallRoot }
+if ($Python) {
+    try { [void](Write-BobiversePythonStamp -InstallRoot $InstallRoot -PythonExe $Python) } catch { }
+    Write-Host ("INFO FR #7020 python=$Python")
+} else {
+    Write-Host 'WARN FR #7020 python.exe not resolvable as this principal - set BOBIVERSE_PYTHON after install or Install-BootstrapTools.ps1'
+}
 $user = Resolve-BobiverseServiceUser
 
 # FR #3904: read prior identity BEFORE Remove-BobiverseService (airc FR #1552 pattern).
@@ -332,6 +339,10 @@ if ($objectOk) {
 $envExtra = @(
     "BOB_MACHINE_ID=$MachineId"
 )
+if ($Python) {
+    # FR #7020: pin resolved interpreter for LocalSystem child spawns (!build runner).
+    $envExtra += "BOBIVERSE_PYTHON=$Python"
+}
 if ($env:BOB_IRC_PASSWORD) {
     # NSSM AppEnvironmentExtra multi-line: KEY=VAL each line
     $envExtra += "BOB_IRC_PASSWORD=$($env:BOB_IRC_PASSWORD)"

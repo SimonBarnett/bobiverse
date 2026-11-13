@@ -256,6 +256,8 @@ _MERGE_PEER_FIELDS = (
     "opencode_windows",
     # FR #6773: install sync health ("behind N, reason") when ff-only fails.
     "sync",
+    # FR #7020: SYSTEM python resolve — "missing" or source tag (never a secret path body).
+    "python",
     # xAI weekly meter identity. remaining stays on weekly / pcent.grok-build.
     # The object is the peer-visible row: provider, direction, source, fetched_at, period_end.
     "xai_weekly_used_pct",
@@ -349,6 +351,7 @@ _TRAY_MACHINE_EXPORT_KEYS = (
     "cursor_known",
     "weekly_known",
     "sync",
+    "python",
     "grok_account",
     "opencode_account",
     "opencode_windows",
