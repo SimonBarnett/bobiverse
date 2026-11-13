@@ -401,6 +401,7 @@ routes to bobiverse via the split rule.
 - FR #7017 OpenCode free paint: home is `bobiverse-bob` (never paint free row/bar/summary; Go windows only; fuel detection unchanged).
 - FR #7020: ircBob SYSTEM resolves python via BOBIVERSE_PYTHON, config/python.path, HKLM PythonCore, py -3, PATH (skip WindowsApps), then filesystem; spawn miss writes .result.json BUILD fail id= and releases the machine lock. Digest python=missing still needs publish from python-status.json.
 - Digest OpenCode tests that set FUEL_FIXTURE must delenv zen usage/helper/key first; !build inherits ircBob NSSM OpenCode env.
+- Ear build pin MRB: verify sha256 of CRLF-canonical behavior files against the manifest and git diff --stat the pin; do not fold merely-behind main when those blobs match.
 
 ## Harvest digest (lessons audit 2026-10-06)
 
