@@ -39,11 +39,12 @@ def test_mrb6919_job_end_clears_job_worktree(tmp_path: Path):
         vision_cwd=install,
         job_worktree=w,
     )
-    assert "--job-worktree" in (bound / ".grok" / "config.toml").read_text(encoding="utf-8")
+    ptr = bound / ".grok" / "skill-dag-job-worktree"
+    assert w.as_posix() in ptr.read_text(encoding="utf-8").replace("\\", "/")
     bw.refresh_live_skill_dag_mcp_files(
         grok_bound_cwd=bound,
         cursor_cwd=install,
         vision_cwd=install,
         job_worktree=None,
     )
-    assert "--job-worktree" not in (bound / ".grok" / "config.toml").read_text(encoding="utf-8")
+    assert ptr.read_text(encoding="utf-8").strip() == ""

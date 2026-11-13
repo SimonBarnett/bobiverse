@@ -134,20 +134,35 @@ def build_roots(
     return out, err
 
 
+def read_job_worktree_pointer(path: Path | str | None) -> Path | None:
+    """FR #7120: live pointer file, one worktree path (or empty)."""
+    if not path:
+        return None
+    try:
+        raw = Path(path).read_text(encoding="utf-8")
+    except OSError:
+        return None
+    line = raw.strip().splitlines()[0].strip() if raw.strip() else ""
+    return Path(line) if line else None
+
+
 def roots_from_argv(argv: list[str] | None = None) -> list[Path]:
-    """Parse ``--root`` / ``--job-worktree`` the same way as ``main`` (no stdio serve)."""
+    """Parse ``--root`` / ``--job-worktree`` / ``--job-worktree-file`` (no stdio serve)."""
     p = argparse.ArgumentParser(add_help=False)
     p.add_argument("--root", action="append", default=[])
     p.add_argument("--job-worktree", default=None)
+    p.add_argument("--job-worktree-file", default=None)
     p.add_argument("--max-bytes", type=int, default=DEFAULT_MAX_BYTES)
     args, _unknown = p.parse_known_args(argv)
     base = [Path(r) for r in (args.root or [])]
-    if not base and not args.job_worktree:
+    if not base and not args.job_worktree and not args.job_worktree_file:
         here = Path(__file__).resolve()
         pack = here.parents[1] / ".grok" / "skills"
         if pack.is_dir():
             base = [pack]
-    job_wt = Path(args.job_worktree) if args.job_worktree else None
+    job_wt = read_job_worktree_pointer(args.job_worktree_file)
+    if job_wt is None and args.job_worktree:
+        job_wt = Path(args.job_worktree)
     roots, err = build_roots(base_roots=base, job_worktree=job_wt)
     if err:
         raise JobSkillsRootRefused(err)
@@ -221,13 +236,40 @@ def _under_roots(path: Path, roots: list[Path]) -> bool:
 
 
 class SkillDagServer:
-    def __init__(self, *, roots: list[Path], max_bytes: int = DEFAULT_MAX_BYTES) -> None:
-        self.roots = [Path(r) for r in roots]
+    def __init__(
+        self,
+        *,
+        roots: list[Path],
+        max_bytes: int = DEFAULT_MAX_BYTES,
+        job_worktree_file: Path | str | None = None,
+        argv_job_worktree: Path | str | None = None,
+    ) -> None:
+        self.base_roots = [Path(r) for r in roots]
+        self.job_worktree_file = Path(job_worktree_file) if job_worktree_file else None
+        self.argv_job_worktree = Path(argv_job_worktree) if argv_job_worktree else None
+        self.job_worktree: Path | None = None
+        self.roots = list(self.base_roots)
         self.max_bytes = int(max_bytes or DEFAULT_MAX_BYTES)
         self.last_error = ""
         self.index_time = ""
         self.nodes: dict[str, dict[str, Any]] = {}
-        self.rebuild()
+        self.sync_job_worktree()
+
+    def sync_job_worktree(self) -> None:
+        """FR #7120: re-read the pointer without restarting stdio."""
+        wt = read_job_worktree_pointer(self.job_worktree_file)
+        if wt is None:
+            wt = self.argv_job_worktree
+        roots, err = build_roots(base_roots=self.base_roots, job_worktree=wt)
+        changed = [p.resolve() if p.exists() else p for p in roots] != [
+            p.resolve() if p.exists() else p for p in self.roots
+        ] or wt != self.job_worktree
+        self.job_worktree = wt
+        self.roots = roots
+        if changed or not self.nodes:
+            self.rebuild()
+        if err:
+            self.last_error = err
 
     def rebuild(self) -> None:
         nodes: dict[str, dict[str, Any]] = {}
@@ -370,6 +412,8 @@ class SkillDagServer:
             "index_time": self.index_time,
             "node_count": len(self.nodes),
             "last_error": self.last_error,
+            "job_worktree": str(self.job_worktree) if self.job_worktree else "",
+            "roots": [str(p) for p in self.roots],
         }
 
     def call_tool(self, name: str, arguments: dict[str, Any] | None) -> dict[str, Any]:
@@ -400,6 +444,7 @@ class SkillDagServer:
         if method == "tools/list":
             return {"jsonrpc": "2.0", "id": mid, "result": {"tools": self.tools_list()}}
         if method == "tools/call":
+            self.sync_job_worktree()
             params = msg.get("params") or {}
             name = str(params.get("name") or "")
             result = self.call_tool(name, params.get("arguments") or {})
@@ -441,6 +486,11 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help="Optional assigned job worktree; adds only <wt>/.grok/skills when it exists (FR #6866)",
     )
+    p.add_argument(
+        "--job-worktree-file",
+        default=None,
+        help="FR #7120: reread this one-line worktree path on each tools/call (no stdio restart)",
+    )
     p.add_argument("--max-bytes", type=int, default=DEFAULT_MAX_BYTES)
     # FR #7000: Cursor agent seats may lack a skill-dag MCP namespace in dynamic tools;
     # one-shot resolve/get_skill/status prints JSON on stdout (no stdio serve).
@@ -457,7 +507,6 @@ def main(argv: list[str] | None = None) -> int:
         roots = roots_from_argv(
             [
                 *([f"--root={r}" for r in (args.root or [])]),
-                *(["--job-worktree", args.job_worktree] if args.job_worktree else []),
                 "--max-bytes",
                 str(args.max_bytes),
             ]
@@ -465,7 +514,12 @@ def main(argv: list[str] | None = None) -> int:
     except JobSkillsRootRefused as exc:
         print(f"ERROR job-skills-root: {exc}", file=sys.stderr)
         return 2
-    server = SkillDagServer(roots=roots, max_bytes=args.max_bytes)
+    server = SkillDagServer(
+        roots=roots,
+        max_bytes=args.max_bytes,
+        job_worktree_file=args.job_worktree_file,
+        argv_job_worktree=args.job_worktree,
+    )
     if args.once:
         if args.once == "resolve":
             result = server.resolve(str(args.seed or ""))
