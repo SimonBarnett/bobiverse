@@ -399,4 +399,28 @@ def test_fr6989_skip_secret_named_dirty_file(world):
     out = world.sync()
     text = out.text
     assert "FAKE_token_placeholder_dirty" not in text, text
-    assert "skip-secret" in text or "sync-ff-failed" in text or out.returncode == 0
+    # docs/mrb-6990: require the skip log; do not accept bare returncode==0
+    # (that would green if a regression copied the secret into .bobiverse-parked).
+    assert "skip-secret" in text, text
+    park = r / ".bobiverse-parked"
+    if park.exists():
+        leaked = [
+            p for p in park.rglob("*")
+            if p.is_file() and "github.token" in str(p).replace("\\", "/")
+        ]
+        assert not leaked, leaked
+    # Dirty secret path must remain (not checkout --'d away).
+    dirty = (r / "bob/config/github.token").read_text(encoding="utf-8")
+    assert "FAKE_token_placeholder_dirty" in dirty
+
+
+def test_fr6989_secret_path_helper_pins():
+    """docs/mrb-6990: Test-BobiverseSyncParkSecretPath covers token/password/identity."""
+    text = COMMON.read_text(encoding="utf-8")
+    body = _fn_body(text, "Test-BobiverseSyncParkSecretPath")
+    assert "FR #6989" in body or "FR #6989" in text
+    # Regex source uses github\\.token escaping.
+    assert "github" in body and "token" in body
+    assert "identity.json" in body
+    assert ".password" in body
+    assert "nickserv" in body.lower()
