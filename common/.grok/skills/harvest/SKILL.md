@@ -394,6 +394,7 @@ routes to bobiverse via the split rule.
 - When _inject_line gains an early assign_job_ref, keep method-bound pins for late ack/since_wall and repin ear provenance hashes in the same FR as the failing bob suite.
 - PowerShell functions: capture native stdout (npm ci) or it becomes extra return values; [string]$Stage joins https:// URLs and WiX heat.exe HEAT0001 path format is not supported.
 - BUILD unit tests that assert work_dir/cache must monkeypatch.delenv BOBIVERSE_DOWNLOAD_CACHE; SkipMsi airc stage tests must not require npm ci.
+- WinPS 5.1: ErrorActionPreference Stop plus native 2>&1 turns stderr (npm notice) into terminating NativeCommandError; wrap EAP Continue and stringify before restoring Stop.
 
 ## Harvest digest (lessons audit 2026-10-06)
 
