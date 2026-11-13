@@ -889,7 +889,16 @@ function Get-BobCursorSpendingFromApiFixture {
 }
 
 function Get-BobCursorAgentWeeklyRemaining {
-    # Grok Bot / Cursor-agent account. Not Grok Build (xAI) unified.jsonl.
+    <#
+      Cursor-agent account usage (not Grok Build / xAI unified.jsonl).
+
+      FR #6997: TipForm / engine poll must not block on a live provider fetch.
+      Default is cache/fixture only. Pass -AllowLiveFetch for rare opt-in gatherers;
+      live python is hard-capped (BOB_CURSOR_USAGE_FETCH_TIMEOUT_S, default 8).
+    #>
+    param(
+        [switch]$AllowLiveFetch
+    )
     $fixturePath = [string]$env:BOB_CURSOR_AGENT_FIXTURE
     if ($fixturePath -and (Test-Path $fixturePath)) {
         $fromFix = Get-BobCursorSpendingFromApiFixture -Path $fixturePath
@@ -916,6 +925,9 @@ function Get-BobCursorAgentWeeklyRemaining {
         }
         catch { }
     }
+    # FR #6997 / Si 2026-11-13: tray paint reads digest; do not start a live provider
+    # fetch from the default path (engine poll / hover).
+    if (-not $AllowLiveFetch) { return $null }
     # #60: any machine. The fetcher ships with the tray (tools\Get-CursorAgentUsage.py) and python is
     # discovered (PATH, py launcher, Program Files, per-user, C:\Python*) - not just C:\Python\Python312.
     $py = Resolve-BobCursorPython
@@ -927,8 +939,36 @@ function Get-BobCursorAgentWeeklyRemaining {
         if ($errPath) { try { Write-JsonFile $errPath ([pscustomobject]@{ ok = $false; error = $why; at = [DateTime]::UtcNow.ToString('o') }) } catch { } }
         return $null
     }
+    $timeoutS = 8
     try {
-        $raw = (& $py $script 2>$null) -join "`n"
+        $rawTo = [string]$env:BOB_CURSOR_USAGE_FETCH_TIMEOUT_S
+        if ($rawTo -and $rawTo.Trim()) { $timeoutS = [Math]::Max(1, [Math]::Min(30, [int]$rawTo.Trim())) }
+    } catch { $timeoutS = 8 }
+    try {
+        # Hard wall clock: never let an unreachable provider stall the tray engine (>120s).
+        $psi = New-Object System.Diagnostics.ProcessStartInfo
+        $psi.FileName = [string]$py
+        $psi.Arguments = ('"{0}"' -f ([string]$script))
+        $psi.UseShellExecute = $false
+        $psi.RedirectStandardOutput = $true
+        $psi.RedirectStandardError = $true
+        $psi.CreateNoWindow = $true
+        $proc = [Diagnostics.Process]::Start($psi)
+        if (-not $proc) { return $null }
+        $ok = $proc.WaitForExit([int]($timeoutS * 1000))
+        if (-not $ok) {
+            try { $proc.Kill() } catch { }
+            if ($errPath) {
+                try {
+                    Write-JsonFile $errPath ([pscustomobject]@{
+                            ok = $false; error = 'fetch-timeout'; detail = ('{0}s' -f $timeoutS)
+                            at = [DateTime]::UtcNow.ToString('o')
+                        })
+                } catch { }
+            }
+            return $null
+        }
+        $raw = $proc.StandardOutput.ReadToEnd()
         $j = $raw | ConvertFrom-Json
         if ($j -and $j.ok -eq $false) {
             # Stage name only (token-missing, key-unprotect, cryptography-missing, http-401, network ...).
@@ -1112,11 +1152,8 @@ function Get-BobSeatForMachine {
 }
 
 function Get-BobCursorOverageGbp {
-    # CAST IRON (agentic_build #423 / AgentMonitor #150 / Simon 2026-09-27): TipForm
-    # Cursor overspend is LOCAL only. Read spendLimitUsage via
-    # Get-BobCursorAgentWeeklyRemaining / Get-CursorAgentUsage.py.
+    # FR #6997: TipForm overspend from cache/fixture only (no live provider fetch).
     # Never digest GET, never cursor_pools / seat-cache peer GBP labels.
-    # Digest may still *publish* overage_gbp for other seats; this getter must not consume it.
     # Never treat tip_cursor.json as pounds.
     try {
         $doc = Get-BobCursorAgentWeeklyRemaining
@@ -3208,6 +3245,8 @@ function Get-BobTrayHover {
             if ($weekFetchedBy.ContainsKey($machineId)) { $weekFetched = [string]$weekFetchedBy[$machineId] }
         }
     }
+    # FR #6997: hover/engine poll is digest-only for Cursor fuel — never start
+    # Get-CursorAgentUsage.py (unbounded provider I/O stalled engine.alive >120s).
     $cursorWeek = $null
     $cursorRemain = $null
     try { $cursorWeek = Get-BobCursorAgentWeeklyRemaining } catch { $cursorWeek = $null }
@@ -3236,6 +3275,12 @@ function Get-BobTrayHover {
     foreach ($mid in @($byMachine.Keys)) {
         if ($mid -eq $machineId) { continue }
         if (@($byMachine[$mid]).Count -gt 0) { continue }
+        # FR #6997: with a digest present, skip UNC/DNS peer peeks on the UI poll
+        # (fleet fuel/jobs already come from the report; peeks only stall the engine).
+        if ($digestPresent) {
+            $reachBy[$mid] = 'digest'
+            continue
+        }
         $spec = $null
         if ($specBy.ContainsKey($mid)) { $spec = $specBy[$mid] }
         else { $spec = [pscustomobject]@{ id = $mid } }
