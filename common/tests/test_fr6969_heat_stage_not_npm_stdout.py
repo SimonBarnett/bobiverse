@@ -9,9 +9,9 @@ PACK = ROOT / "common" / "scripts" / "Pack-BobiverseRelease.ps1"
 def test_fr6969_npm_ci_stdout_captured_not_leaked():
     p = PACK.read_text(encoding="utf-8")
     assert "FR #6969" in p
-    assert "$npmOut = & npm ci --omit=dev --no-fund --no-audit 2>&1" in p
+    assert "$npmOut = @(& npm ci --omit=dev --no-fund --no-audit 2>&1" in p
     assert "$npmExit = $LASTEXITCODE" in p
-    assert "foreach ($line in @($npmOut))" in p
+    assert "foreach ($line in $npmOut)" in p
     bare = "& npm ci --omit=dev --no-fund --no-audit\n"
     assert bare not in p.replace("\r\n", "\n")
 
@@ -30,7 +30,7 @@ def test_fr6975_skipmsi_skips_npm_ci():
     p = PACK.read_text(encoding="utf-8")
     assert "FR #6975" in p
     assert "-SkipMsi skip npm ci" in p
-    npm_ci_at = p.index("$npmOut = & npm ci --omit=dev")
+    npm_ci_at = p.index("$npmOut = @(& npm ci --omit=dev")
     skip_at = p.index("-SkipMsi skip npm ci")
     pw = p.index("# FR #5283 / #5905")
     assert pw < skip_at < npm_ci_at
@@ -49,6 +49,18 @@ def test_fr6978_skipmsi_seeds_stub_priority_web_sdk():
     assert dest_at < seed_at < copy_end
     assert "Set-Content -LiteralPath $stubPkg" in p
     assert "never mutate the repo tree" in p or "stage-only stub" in p
+
+
+def test_fr6980_npm_ci_stderr_does_not_stop():
+    """FR #6980: EAP Stop + npm notice on stderr must not NativeCommandError the pack."""
+    p = PACK.read_text(encoding="utf-8")
+    assert "FR #6980" in p
+    assert "NativeCommandError" in p
+    block = p[p.index("# FR #6980:") : p.index("$npmOut =") + 400]
+    assert "$ErrorActionPreference = 'Continue'" in block
+    npm_at = p.index("$npmOut = @(& npm ci --omit=dev")
+    eap_at = p.rfind("$ErrorActionPreference = 'Continue'", 0, npm_at)
+    assert 0 <= eap_at < npm_at
 
 
 def test_fr6969_ps_join_would_make_uri_path():

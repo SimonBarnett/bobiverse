@@ -500,9 +500,17 @@ function Stage-Product([string]$Name) {
                     # FR #6969: capture npm stdout. Native stdout in Stage-Product becomes
                     # extra function output; [string]$Stage then joins "npm notice ... https://..."
                     # and heat.exe HEAT0001 "path format is not supported".
-                    $npmOut = & npm ci --omit=dev --no-fund --no-audit 2>&1
-                    $npmExit = $LASTEXITCODE
-                    foreach ($line in @($npmOut)) { Write-Host ([string]$line) }
+                    # FR #6980: script EAP is Stop; npm writes "npm notice" on stderr.
+                    # 2>&1 then wraps that as NativeCommandError / RemoteException.
+                    $eapNpm = $ErrorActionPreference
+                    $ErrorActionPreference = 'Continue'
+                    try {
+                        $npmOut = @(& npm ci --omit=dev --no-fund --no-audit 2>&1 | ForEach-Object { [string]$_ })
+                        $npmExit = $LASTEXITCODE
+                    } finally {
+                        $ErrorActionPreference = $eapNpm
+                    }
+                    foreach ($line in $npmOut) { Write-Host $line }
                     if ($npmExit -ne 0) { throw "npm ci failed exit=$npmExit (FR #5905/#5913)" }
                 } finally {
                     Pop-Location
