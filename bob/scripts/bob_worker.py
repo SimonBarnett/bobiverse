@@ -2367,6 +2367,122 @@ def skill_dag_mcp_descendant_pids(
     return found
 
 
+
+def report_configured_start_model_unavailable(
+    *,
+    kind: str,
+    configured: str,
+    actual: str = "",
+    machine: str = "",
+    nick: str = "",
+    reason: str = "unavailable",
+    shop: str = "",
+    shop_say: Optional[Callable[..., bool]] = None,
+    log: Optional[Callable[[str], None]] = None,
+    filer_post: Optional[Callable[..., dict]] = None,
+) -> dict:
+    """FR #7148: configured min model unavailable / unused -> log, shop, intake.
+
+    Empty configured placeholder is skipped (operator unset). Never invents a
+    substitute / premium model id. No secrets in title/body/shop line.
+    """
+    cfg = str(configured or "").strip()
+    if not cfg:
+        return {"ok": True, "skipped": True, "reason": "empty-configured"}
+    if filer_post is None and os.environ.get("PYTEST_CURRENT_TEST") and shop_say is None:
+        # Allow unit tests to call with explicit filer_post; bare pytest without hooks skips network.
+        pass
+    mid = re.sub(r"[^a-z0-9._-]+", "-", str(machine or "unknown").strip().lower()).strip("-") or "unknown"
+    k = (kind or "").strip().lower() or "unknown"
+    act = str(actual or "").strip() or "unknown"
+    why = str(reason or "unavailable").strip().lower() or "unavailable"
+    nick_s = str(nick or "").strip() or "-"
+    key = f"start-model-unavailable|{mid}|{k}|{cfg}"[:128]
+    title = f"bug: configured worker start model unavailable ({k})"
+    body = (
+        "What: configured minimum start model was unavailable or not used at seat launch (FR #7148 / #7084).\n"
+        f"Where: bob-worker kind={k} machine={mid} nick={nick_s}\n"
+        f"Evidence: configured={cfg} actual={act} reason={why}\n"
+        f"Fix: set workerStartModels.{k} to a model available on this box; do not fall back to a more expensive model.\n"
+        "No secrets."
+    )
+    shop_msg = (
+        f"start model unavailable kind={k} configured={cfg} actual={act} "
+        f"reason={why}; no premium fallback (FR #7148)"
+    )
+    if log:
+        try:
+            log(f"worker: {shop_msg}")
+        except Exception:
+            pass
+    if shop_say is not None:
+        try:
+            shop_say(shop or mid, shop_msg)
+        except Exception:
+            pass
+    payload = {
+        "kind": "issue",
+        "repo": "SimonBarnett/bobiverse",
+        "title": title,
+        "body": body,
+        "idempotency_key": key,
+        "dedupe_key": key,
+        "machine": mid,
+        "agent": "bob-worker",
+    }
+    if filer_post is not None:
+        try:
+            return filer_post(payload) or {"ok": True, "key": key}
+        except Exception:
+            return {"ok": False, "key": key}
+    if os.environ.get("PYTEST_CURRENT_TEST"):
+        return {"ok": True, "skipped": True, "reason": "pytest", "key": key}
+    try:
+        import crash_report
+
+        crash_report._post_intake(title, body, repo="SimonBarnett/bobiverse", sig=key, exe="bob-worker")
+        return {"ok": True, "key": key}
+    except Exception:
+        return {"ok": False, "key": key}
+
+
+def notify_start_model_after_launch(
+    *,
+    kind: str,
+    configured: str,
+    actual: str,
+    machine: str = "",
+    nick: str = "",
+    shop: str = "",
+    shop_say: Optional[Callable[..., bool]] = None,
+    log: Optional[Callable[[str], None]] = None,
+    filer_post: Optional[Callable[..., dict]] = None,
+) -> dict:
+    """FR #7148: after agent start, report when configured model was not used."""
+    cfg = str(configured or "").strip()
+    act = str(actual or "").strip()
+    try:
+        import worker_start_model as wsm
+
+        mismatch = wsm.model_mismatch(act, cfg)
+    except Exception:
+        mismatch = bool(cfg) and (not act or act.lower() != cfg.lower())
+    if not cfg or not mismatch:
+        return {"ok": True, "skipped": True, "reason": "match-or-empty"}
+    return report_configured_start_model_unavailable(
+        kind=kind,
+        configured=cfg,
+        actual=act,
+        machine=machine,
+        nick=nick,
+        reason="mismatch" if act else "unavailable",
+        shop=shop,
+        shop_say=shop_say,
+        log=log,
+        filer_post=filer_post,
+    )
+
+
 def report_skill_dag_mcp_transport_drop(
     *,
     machine: str = "",
@@ -11948,12 +12064,18 @@ def run_agent(args, log: Log) -> int:
         cost_tier = wsm.model_cost_tier(actual or cfg_model, _cfg)
         if mismatch:
             try:
-                irc.say(
-                    irc.shop,
-                    f"start model mismatch actual={actual or 'unknown'} configured={cfg_model or 'unset'}",
+                notify_start_model_after_launch(
+                    kind=kind,
+                    configured=cfg_model,
+                    actual=actual,
+                    machine=machine,
+                    nick=nick,
+                    shop=irc.shop,
+                    shop_say=lambda _ch, msg: irc.say(irc.shop, msg),
+                    log=log,
                 )
-            except Exception:
-                pass
+            except Exception as e:
+                log(f"worker: start model unavailable report failed {type(e).__name__}")
         post_digest_seat_kind(
             machine=machine,
             pid=pid,
