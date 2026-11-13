@@ -51,7 +51,11 @@ def test_inherited_capture_handle_does_not_hold_timeout(monkeypatch):
     # FR #5671: Windows teardown can exceed the old 1.5s budget (~1.78s on
     # MarchHare). Keep max_wall_s under grandchild_sleep_s so a hang on the
     # sleeper still fails.
-    timeout_s = 0.2
+    # FR #7157: timeout_s=0.2 flakes under load (spawn+Popen >200ms -> exit 124
+    # before the direct child prints/exits; with job objects, TerminateJobObject
+    # can also empty stdout). Give the child ~1s; still prove we do not wait on
+    # the grandchild (3s). Assert FR #5676 prefer-returncode (no timeout stderr).
+    timeout_s = 1.0
     grandchild_sleep_s = 3.0
     max_wall_s = 2.5
     script = (
@@ -63,8 +67,9 @@ def test_inherited_capture_handle_does_not_hold_timeout(monkeypatch):
     result = ac.run_shell_request(ac.ShellRequest("ps", script), timeout_s=timeout_s)
     elapsed = time.monotonic() - start
     assert elapsed < max_wall_s, (elapsed, max_wall_s, grandchild_sleep_s)
-    assert result.exit_code == 0
+    assert result.exit_code == 0, (result.exit_code, result.stderr, elapsed)
     assert "partial" in result.stdout
+    assert "timeout" not in (result.stderr or "")
 
 
 def test_fr5676_deadline_after_child_exit_prefers_returncode(monkeypatch):
