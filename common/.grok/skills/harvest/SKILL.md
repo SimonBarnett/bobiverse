@@ -399,6 +399,7 @@ routes to bobiverse via the split rule.
 - Session 0 with empty CIM UserName is not system-profile-skipped if HKLM LastLoggedOnUser or the install interactive-user-home stamp points at Users\<seat>.
 - FR #7008 Common overlay: home is `bobiverse-fleet-ops` (Sync-BobiverseWorkTree overlay + re-park + one ff retry). Do not claim first landing skips MSI.
 - FR #7017 OpenCode free paint: home is `bobiverse-bob` (never paint free row/bar/summary; Go windows only; fuel detection unchanged).
+- FR #7020: ircBob SYSTEM resolves python via BOBIVERSE_PYTHON, config/python.path, HKLM PythonCore, py -3, PATH (skip WindowsApps), then filesystem; spawn miss writes .result.json BUILD fail id= and releases the machine lock. Digest python=missing still needs publish from python-status.json.
 
 ## Harvest digest (lessons audit 2026-10-06)
 
