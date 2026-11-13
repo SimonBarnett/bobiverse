@@ -6278,6 +6278,20 @@ def _is_local_system_process() -> bool:
     return False
 
 
+def _system_drive_root() -> Path:
+    """FR #6995: absolute root for ``%SystemDrive%\\Users\\...``.
+
+    ``Path("C:") / "Users"`` is drive-relative on Windows (``C:Users\\...``) and
+    ``is_dir()`` is False even when ``C:\\Users\\...`` exists. Root ``C:`` as
+    ``C:\\`` so LocalSystem interactive-home resolve works after MSI install
+    without ``BOB_GROK_WEEKLY_USER_HOME``.
+    """
+    raw = (os.environ.get("SystemDrive") or "C:").strip().rstrip("\\/")
+    if len(raw) == 2 and raw[1] == ":":
+        return Path(raw + "\\")
+    return Path(raw)
+
+
 def _interactive_grok_user_home() -> Path | None:
     """FR #6270: interactive console user home that owns ``.grok`` (usage log only; never auth.json).
 
@@ -6293,7 +6307,7 @@ def _interactive_grok_user_home() -> Path | None:
     try:
         import subprocess
 
-        # Avoid PowerShell; keep ASCII + short timeout for the ear tick.
+        # Keep ASCII + short timeout for the ear tick (CIM console / explorer owner).
         r = subprocess.run(
             [
                 "powershell",
@@ -6322,8 +6336,7 @@ def _interactive_grok_user_home() -> Path | None:
     user = account.split("\\")[-1].strip()
     if not user or user.upper() in ("SYSTEM", "LOCAL SERVICE", "NETWORK SERVICE"):
         return None
-    drive = (os.environ.get("SystemDrive") or "C:").rstrip("\\/")
-    cand = Path(drive) / "Users" / user
+    cand = _system_drive_root() / "Users" / user
     if cand.is_dir():
         return cand
     return None
