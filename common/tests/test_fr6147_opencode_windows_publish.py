@@ -61,6 +61,25 @@ WINDOWS_ONLY_UNKNOWN = json.dumps(
 )
 
 
+def _isolate_opencode_publish_env(monkeypatch) -> None:
+    """FR #7029: !build / ircBob NSSM may export live OpenCode env.
+
+    ``read_local_opencode_fuel_doc`` prefers ``BOB_OPENCODE_GO_USAGE_FIXTURE``
+    and a Bearer key over ``BOB_OPENCODE_FUEL_FIXTURE``. Clear live overrides
+    so the named publish tests see only the JSON fixture.
+    """
+    for key in (
+        "BOB_OPENCODE_GO_USAGE_FIXTURE",
+        "BOB_OPENCODE_GO_USAGE_URL",
+        "BOB_OPENCODE_GO_API_KEY",
+        "BOB_OPENCODE_WINDOWS_FIXTURE",
+        "BOB_OPENCODE_FUEL_HELPER",
+        "BOB_OPENCODE_AUTH_PATH",
+        "BOB_OPENCODE_KEY_LABEL",
+    ):
+        monkeypatch.delenv(key, raising=False)
+
+
 def _fake_urlopen(posted: list):
     def fake_urlopen(req, timeout=0):  # noqa: ARG001
         posted.append(json.loads(req.data.decode("utf-8")))
@@ -89,6 +108,7 @@ def test_fr6147_export_keys_include_opencode_windows():
 
 def test_fr6147_read_clarification_fixture_pcent_and_windows(monkeypatch):
     bobreport.clear_opencode_pcent_cache()
+    _isolate_opencode_publish_env(monkeypatch)
     monkeypatch.setenv("BOB_OPENCODE_FUEL_FIXTURE", FIXTURE_CLARIFICATION)
     monkeypatch.delenv("BOB_OPENCODE_WINDOWS_FIXTURE", raising=False)
     monkeypatch.delenv("BOB_OPENCODE_FUEL_HELPER", raising=False)
@@ -115,6 +135,7 @@ def test_fr6147_peer_merge_carries_pcent_and_windows(tmp_path: Path, monkeypatch
     import bobstat
 
     bobreport.clear_opencode_pcent_cache()
+    _isolate_opencode_publish_env(monkeypatch)
     monkeypatch.setenv("BOB_OPENCODE_FUEL_FIXTURE", FIXTURE_CLARIFICATION)
     home = tmp_path / "home"
     home.mkdir()
@@ -149,10 +170,46 @@ def test_fr6147_peer_merge_carries_pcent_and_windows(tmp_path: Path, monkeypatch
     assert wins["month"]["reset_label"] == "26d 18h"
 
 
+def test_fr7029_peer_merge_isolates_live_zen_env(tmp_path: Path, monkeypatch):
+    """Live GO_USAGE_FIXTURE on the !build host must not steal the 6147 fixture."""
+    import bobstat
+
+    bobreport.clear_opencode_pcent_cache()
+    monkeypatch.setenv("BOB_OPENCODE_GO_USAGE_FIXTURE", "{}")
+    monkeypatch.setenv("BOB_OPENCODE_FUEL_HELPER", str(Path("C:/no/such/Get-BobOpencodeFuel.ps1")))
+    _isolate_opencode_publish_env(monkeypatch)
+    monkeypatch.setenv("BOB_OPENCODE_FUEL_FIXTURE", FIXTURE_CLARIFICATION)
+    home = tmp_path / "home"
+    home.mkdir()
+    mid = "flamingo"
+    bobstat.write_peer(
+        home,
+        {
+            "ok": True,
+            "id": mid,
+            "online": True,
+            "status": "operational",
+            "weekly": 80,
+            "weekly_known": True,
+            "pcent": {"grok-chat": 42},
+            "lastSeen": "2026-11-13T12:00:00Z",
+        },
+    )
+    posted: list[dict] = []
+    with mock.patch("urllib.request.urlopen", _fake_urlopen(posted)):
+        code = bobreport.publish_local_peer_fuel(
+            home, mid, force=True, url="https://example.test/bob/v1/report"
+        )
+    assert code == 204
+    assert posted[0]["pcent"]["opencode-go"] == 28
+    assert posted[0]["opencode_windows"]["week"]["remaining_pct"] == 28
+
+
 def test_fr6147_exhausted_week_go_remaining_zero(tmp_path: Path, monkeypatch):
     import bobstat
 
     bobreport.clear_opencode_pcent_cache()
+    _isolate_opencode_publish_env(monkeypatch)
     monkeypatch.setenv("BOB_OPENCODE_FUEL_FIXTURE", FIXTURE_EXHAUSTED_WEEK)
     home = tmp_path / "home"
     home.mkdir()
@@ -187,6 +244,7 @@ def test_fr6147_exhausted_week_go_remaining_zero(tmp_path: Path, monkeypatch):
 
 def test_fr6147_unknown_omits_pcent_zeros_windows_may_remain(monkeypatch):
     bobreport.clear_opencode_pcent_cache()
+    _isolate_opencode_publish_env(monkeypatch)
     monkeypatch.delenv("BOB_OPENCODE_FUEL_FIXTURE", raising=False)
     monkeypatch.setenv("BOB_OPENCODE_WINDOWS_FIXTURE", WINDOWS_ONLY_UNKNOWN)
     monkeypatch.setenv(
