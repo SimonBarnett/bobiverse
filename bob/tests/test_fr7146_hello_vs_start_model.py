@@ -47,18 +47,17 @@ def test_fr7146_run_agent_pins_hello_configured_and_post_launch_actual():
     start = src.find("def run_agent(")
     assert start >= 0
     chunk = src[start:]
-    hello_at = chunk.find("worker_hello_line(kind, model=seat_model, build=build)")
+    hello_at = chunk.find("worker_hello_line(kind,")
     digest_at = chunk.find("model=actual or seat_model")
     assert hello_at > 0
     assert digest_at > 0
     assert digest_at < hello_at
-    assert "hello ``model=`` stays the configured value" in chunk
+    assert "hello_model" in chunk
 
 
 def test_fr7146_docs_do_not_call_hello_the_launch_actual():
     text = (ROOT / "bob" / "docs" / "bob-worker.md").read_text(encoding="utf-8")
     assert "is the model the seat actually starts with" not in text
     assert "reports the same value as `model=`" not in text
-    assert "hello line (FR #6418) is the configured start model" in text
+    assert "hello line (FR #6418 / FR #7187) is the launched actual" in text or "launched actual when known" in text
     assert "digest `start_model` (FR #7084) is the launched process model" in text
-    assert "can differ from hello `model=`" in text

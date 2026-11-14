@@ -83,6 +83,15 @@ def resolve_seat_hello_model(kind: str, env: Optional[dict] = None) -> str:
         picked = wsm.configured_start_model(k, cfg)
         if picked:
             return picked
+        if k == "opencode":
+            # FR #7187: never advertise a machine Go/paid default as the seat model.
+            m = str(env.get("BOB_OPENCODE_MODEL") or "").strip()
+            if m:
+                return m
+            cfg_m = read_opencode_config_model(env) or ""
+            if cfg_m and not wsm.opencode_is_go_or_paid(cfg_m):
+                return cfg_m
+            return wsm.default_opencode_free_model(cfg)
     except Exception:
         pass
     if k != "opencode":
@@ -966,7 +975,7 @@ def resolve_opencode_model(
     env: Optional[dict] = None,
     log_fn: Optional[Callable[[str], None]] = None,
 ) -> Optional[str]:
-    """Resolve OpenCode model: operator env -> config -> fuel (FR #6363).
+    """Resolve OpenCode model: env -> tray start -> config -> free default -> fuel (FR #6363 / #7187).
 
     Skips paused or known-capped candidates and falls through. Logs one grep-able
     line: ``opencode model=<id> source=env|config|fuel skipped=<...>``.
@@ -983,17 +992,65 @@ def resolve_opencode_model(
     skipped: list[str] = []
     candidates: list[tuple[str, str]] = []
 
+    try:
+        import worker_start_model as wsm
+
+        start_cfg = wsm.load_worker_start_config(env=env)
+        start_model = str((start_cfg.get("workerStartModels") or {}).get("opencode") or "").strip()
+        start_free = wsm.default_opencode_free_model(start_cfg)
+    except Exception:
+        start_cfg = {}
+        start_model = ""
+        start_free = "opencode/deepseek-v4.1-flash-free"
+
+    # FR #6363 / #7187: operator env at process start, then tray start model,
+    # then non-Go config, then free default, then fuel (never tray-before-env).
     env_model = (_OPENCODE_MODEL_ENV_AT_START or "").strip()
     if env_model:
         candidates.append(("env", env_model))
 
+    if start_model:
+        try:
+            import worker_start_model as wsm
+
+            skip_start = wsm.opencode_is_go_or_paid(start_model) and not env_model
+        except Exception:
+            skip_start = False
+        if skip_start:
+            skipped.append(f"start:{start_model}:go-or-paid")
+        else:
+            candidates.append(("tray", start_model))
+
     cfg_model = read_opencode_config_model(env)
     if cfg_model:
-        candidates.append(("config", cfg_model))
+        try:
+            import worker_start_model as wsm
+
+            skip_paid = wsm.opencode_is_go_or_paid(cfg_model) and not env_model
+        except Exception:
+            skip_paid = False
+        if skip_paid:
+            skipped.append(f"config:{cfg_model}:go-or-paid")
+        else:
+            candidates.append(("config", cfg_model))
+
+    if start_free:
+        candidates.append(("start", start_free))
 
     fuel_model = opencode_default_model(fuel, state_dir=state_dir, now=now)
     if fuel_model:
-        candidates.append(("fuel", fuel_model))
+        try:
+            import worker_start_model as wsm
+
+            skip_fuel = wsm.opencode_is_go_or_paid(fuel_model) and not (
+                _OPENCODE_MODEL_ENV_AT_START or ""
+            ).strip()
+        except Exception:
+            skip_fuel = False
+        if skip_fuel:
+            skipped.append(f"fuel:{fuel_model}:go-or-paid")
+        else:
+            candidates.append(("fuel", fuel_model))
 
     chosen: Optional[str] = None
     source = ""
@@ -1838,9 +1895,21 @@ def describe_agent_child_launch(
     try:
         import worker_start_model as wsm
 
+        _scfg = wsm.load_worker_start_config()
         actual = wsm.actual_from_launch_spec(kind_l, spec, env=env)
+        effort = wsm.configured_start_effort(kind_l, _scfg)
         if actual:
             env[wsm.ENV_ACTUAL_MODEL] = actual
+        env[wsm.ENV_ACTUAL_EFFORT] = effort
+        saved = wsm.normalize_effort((_scfg.get("workerStartEffort") or {}).get(kind_l))
+        if not saved and not os.environ.get("PYTEST_CURRENT_TEST"):
+            try:
+                wsm.save_worker_start_settings(effort={kind_l: effort})
+            except Exception:
+                pass
+        wsm.write_launch_record(
+            rd, kind=kind_l, model=actual, effort=effort, argv=list(spec.argv)
+        )
     except Exception:
         pass
     if bound_meta.get("grok_home"):
@@ -2758,8 +2827,12 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
         try:
             import worker_start_model as wsm
 
-            grok_model = wsm.configured_start_model("grok", wsm.load_worker_start_config())
+            _gcfg = wsm.load_worker_start_config()
+            grok_model = wsm.configured_start_model("grok", _gcfg)
             argv = wsm.launch_argv_with_model("grok", argv, grok_model)
+            argv = wsm.launch_argv_with_effort(
+                "grok", argv, wsm.configured_start_effort("grok", _gcfg)
+            )
         except Exception:
             pass
     elif kind == "cursor":
@@ -7190,6 +7263,7 @@ def post_digest_seat_kind(
     configured_model: str = "",
     model_mismatch: bool | None = None,
     cost_tier: str = "",
+    start_effort: str = "",
     working_on: str = "",
     worker_build: str | None = None,
     state: str | None = None,
@@ -7203,6 +7277,7 @@ def post_digest_seat_kind(
 
     FR #6409: payload always includes ``worker_build`` (short SHA or ``unknown``).
     FR #7180 / #7183: optional ``assignable`` / ``state=needs_sign_in``.
+    FR #7187: optional ``start_effort``.
     FR #7181: digest POST retries 403; persistent failure posts ``state=unhealthy``.
     """
     env = os.environ if env is None else env
@@ -7240,6 +7315,9 @@ def post_digest_seat_kind(
         payload["model_mismatch"] = str(model).strip().lower() != cfg_m.lower()
     if (cost_tier or "").strip():
         payload["cost_tier"] = str(cost_tier).strip()
+    eff = str(start_effort or "").strip().lower()
+    if eff:
+        payload["start_effort"] = eff
     if assignable is False:
         payload["assignable"] = False
         payload["error"] = "needs-sign-in"
@@ -12204,13 +12282,14 @@ def run_agent(args, log: Log) -> int:
         return EXIT_IRC_FAIL
     # FR #6134: publish agent kind so the chair can skip OpenCode for MRB/UAT.
     # FR #6409: digest worker_build short SHA (or unknown); hello after start_agent (MRB #6411).
-    # FR #6418: hello ``model=`` stays the configured value. FR #7084 digest ``start_model`` is
-    # the launched process/session model (re-POSTed after start_agent).
+    # FR #7187: hello ``model=`` is the launched actual when known (else configured).
+    # FR #7084 digest ``start_model`` is the launched process/session model.
     build = short_build_sha()
     seat_model = resolve_seat_hello_model(kind)
     cfg_model = ""
     cost_tier = ""
     mismatch = None
+    seat_effort = "low"
     try:
         import worker_start_model as wsm
 
@@ -12218,6 +12297,7 @@ def run_agent(args, log: Log) -> int:
         cfg_model = wsm.configured_start_model(kind, _cfg)
         mismatch = wsm.model_mismatch(seat_model, cfg_model)
         cost_tier = wsm.model_cost_tier(seat_model or cfg_model, _cfg)
+        seat_effort = wsm.configured_start_effort(kind, _cfg)
         if not cfg_model:
             log(f"worker: configured start model empty for kind={kind}; not inventing an id")
     except Exception:
@@ -12232,6 +12312,7 @@ def run_agent(args, log: Log) -> int:
             configured_model=cfg_model,
             model_mismatch=mismatch,
             cost_tier=cost_tier,
+            start_effort=seat_effort,
             worker_build=build,
             log=log,
         )
@@ -12262,6 +12343,7 @@ def run_agent(args, log: Log) -> int:
     if not sup.start_agent():
         irc.close("launch failed")
         return EXIT_LAUNCH_FAIL
+    actual = ""
     try:
         import worker_start_model as wsm
 
@@ -12269,10 +12351,13 @@ def run_agent(args, log: Log) -> int:
         actual = str(child_env.get(wsm.ENV_ACTUAL_MODEL) or "").strip()
         if not actual:
             actual = wsm.actual_start_model(env=child_env or os.environ)
+        actual_effort = str(child_env.get(wsm.ENV_ACTUAL_EFFORT) or "").strip()
         _cfg = wsm.load_worker_start_config()
         cfg_model = wsm.configured_start_model(kind, _cfg)
         mismatch = wsm.model_mismatch(actual, cfg_model)
         cost_tier = wsm.model_cost_tier(actual or cfg_model, _cfg)
+        if not actual_effort:
+            actual_effort = wsm.configured_start_effort(kind, _cfg)
         if mismatch:
             try:
                 notify_start_model_after_launch(
@@ -12304,6 +12389,7 @@ def run_agent(args, log: Log) -> int:
             configured_model=cfg_model,
             model_mismatch=mismatch,
             cost_tier=cost_tier,
+            start_effort=actual_effort,
             worker_build=build,
             state=None if grok_ok else "needs_sign_in",
             log=log,
@@ -12314,7 +12400,10 @@ def run_agent(args, log: Log) -> int:
     # FR #6409 / #7180: worker ready means assignable (signed in). Else needs sign-in.
     try:
         if getattr(sup, "_session_assignable", False):
-            hello = worker_hello_line(kind, model=seat_model, build=build)
+            hello_model = actual if (kind == "grok" or actual) else seat_model
+            if kind == "opencode" and actual:
+                hello_model = actual
+            hello = worker_hello_line(kind, model=hello_model or seat_model or actual, build=build)
             if irc.say(irc.shop, hello):
                 log(f"worker: hello {hello}")
             else:

@@ -495,6 +495,12 @@ namespace BobDialogs
             yield return local;
         }
 
+        // FR #7187: persist workerStartEffort next to workerStartModels in tray-models.json.
+        public static string TrayModelsJsonPath()
+        {
+            return Path.Combine(Environment.GetEnvironmentVariable("LOCALAPPDATA") ?? Path.GetTempPath(), "Bobiverse", "tray-models.json");
+        }
+
         public static void RememberOpencodeSlotLaunch(string slot, int pid, string model)
         {
             try

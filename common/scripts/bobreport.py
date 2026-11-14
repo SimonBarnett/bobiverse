@@ -996,6 +996,9 @@ def _coerce_worker(mid: str, pid: str, raw: object) -> dict:
     cost_tier = str(ent.get("cost_tier") or "").strip()
     if cost_tier:
         out["cost_tier"] = cost_tier
+    start_effort = str(ent.get("start_effort") or "").strip()
+    if start_effort:
+        out["start_effort"] = start_effort
     # FR #4211: keep heartbeat so live_seat_nicks can skip stale legacy workers.
     updated = str(ent.get("updated") or ent.get("last_seen") or ent.get("lastSeen") or "").strip()
     if updated:
@@ -1113,6 +1116,9 @@ def _coerce_worker_list(raw: object, *, now: float | None = None) -> list[dict]:
         cost_tier = str(ent.get("cost_tier") or "").strip()
         if cost_tier:
             row["cost_tier"] = cost_tier
+        start_effort = str(ent.get("start_effort") or "").strip()
+        if start_effort:
+            row["start_effort"] = start_effort
         out.append(row)
     return out[:WORKER_LIST_MAX]
 
@@ -1244,6 +1250,9 @@ def _model_fields_from_payload(payload: dict, prev: dict | None = None) -> dict:
     cost_tier = str(payload.get("cost_tier") or prev.get("cost_tier") or "").strip()
     if cost_tier:
         out["cost_tier"] = cost_tier
+    start_effort = str(payload.get("start_effort") or prev.get("start_effort") or "").strip()
+    if start_effort:
+        out["start_effort"] = start_effort
     return out
 
 
@@ -1260,7 +1269,7 @@ def _apply_model_fields_to_worker_list(ent: dict, nick: str, fields: dict) -> No
         idx = len(rows) - 1
     else:
         row = dict(rows[idx])
-    for key in ("kind", "start_model", "configured_model", "model_mismatch", "cost_tier", "agent", "model"):
+    for key in ("kind", "start_model", "configured_model", "model_mismatch", "cost_tier", "start_effort", "agent", "model"):
         if key in fields:
             row[key] = fields[key]
     rows[idx] = row
