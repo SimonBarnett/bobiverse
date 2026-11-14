@@ -2451,6 +2451,12 @@ def write_skill_dag_job_worktree_pointer(
     path.parent.mkdir(parents=True, exist_ok=True)
     wt = str(job_worktree or "").strip()
     text = Path(wt).as_posix() + "\n" if wt else ""
+    if path.is_file():
+        try:
+            if path.read_text(encoding="utf-8") == text:
+                return path
+        except OSError:
+            pass
     path.write_text(text, encoding="utf-8")
     return path
 
@@ -2592,21 +2598,29 @@ def refresh_live_skill_dag_mcp_files(
     vision_cwd: str | Path | None = None,
     job_worktree: str | Path | None = None,
 ) -> None:
-    """FR #6918 / #7120: point the live MCP at the assigned worktree.
+    """FR #6918 / #7120 / #7308: point the live MCP at the assigned worktree.
 
-    Writes the one-line pointer file. MCP argv (``--job-worktree-file``) stays
-    stable so Grok does not replace the stdio child. Empty ``job_worktree``
-    clears the pointer (job end). Never writes user ``~/.cursor/mcp.json``.
+    Writes the one-line pointer file only when config already exists. Rewriting
+    ``config.toml`` / ``.cursor/mcp.json`` on assign makes Grok/Cursor replace
+    the stdio child (FR #7308). Empty ``job_worktree`` clears the pointer.
+    Never writes user ``~/.cursor/mcp.json``.
     """
+    del vision_cwd  # launch-time --root only; assign must not rewrite argv
     wt = str(job_worktree or "").strip() or None
     if grok_bound_cwd:
-        write_skill_dag_mcp_config(
-            str(grok_bound_cwd),
-            job_worktree=wt,
-            vision_cwd=str(vision_cwd or grok_bound_cwd),
-        )
+        write_skill_dag_job_worktree_pointer(grok_bound_cwd, wt)
+        cfg = Path(grok_bound_cwd) / ".grok" / "config.toml"
+        if not cfg.is_file():
+            write_skill_dag_mcp_config(
+                str(grok_bound_cwd),
+                job_worktree=wt,
+                vision_cwd=str(grok_bound_cwd),
+            )
     if cursor_cwd:
-        write_cursor_skill_dag_mcp_config(str(cursor_cwd), job_worktree=wt)
+        write_skill_dag_job_worktree_pointer(cursor_cwd, wt)
+        cfg = Path(cursor_cwd) / CURSOR_SKILL_DAG_MCP_RELPATH
+        if not cfg.is_file():
+            write_cursor_skill_dag_mcp_config(str(cursor_cwd), job_worktree=wt)
 
 
 SKILL_DAG_MCP_CMDLINE_NEEDLE = "skill_dag_mcp.py"
@@ -11517,7 +11531,8 @@ class Supervisor:
         except Exception as e:  # noqa: BLE001
             self.log(f"skill-dag mcp job-worktree rewrite skipped {type(e).__name__}")
             return
-        # FR #7120: keep the live stdio MCP; pointer file is enough.
+        # FR #7120 / #7308: keep the live stdio MCP; pointer file is enough.
+        # Do not use job_worktree as a cmdline marker (--job-worktree-file argv).
         agent_pid = None
         try:
             proc = getattr(self, "proc", None)
@@ -11525,7 +11540,7 @@ class Supervisor:
                 agent_pid = int(proc.pid)
         except (TypeError, ValueError):
             agent_pid = None
-        markers = [bound, cursor, vision, job_worktree]
+        markers = [bound, cursor, vision]
         before = skill_dag_mcp_descendant_pids(agent_pid, markers)
         after = skill_dag_mcp_descendant_pids(agent_pid, markers)
         if before and not after:
