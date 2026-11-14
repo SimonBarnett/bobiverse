@@ -42,7 +42,9 @@ FR #6862: local stdio MCP `bob/scripts/skill_dag_mcp.py` (`--root`, `--max-bytes
 
 ## Build identity on the wire (FR #6409)
 
-**FR #7181:** worker digest POSTs send the same `User-Agent` as the ear (`Bobiverse-bobreport/1.0`) so Cloudflare WAF does not 403 a seat that the ear can POST. Transient `403` / `429` / `5xx` retry with backoff. Logs include HTTP status, responder (`cloudflare` / `iis` / `jeeves`) and `CF-Ray` (never the response body or secrets). After retries fail, one follow-up POST sets `state=unhealthy` and `error=digest-http-403` so the seat is unhealthy on the digest rather than silently missing.
+**FR #7181:** worker digest POSTs send the same `User-Agent` as the ear (`Bobiverse-bobreport/1.0`) so Cloudflare WAF does not 403 a seat that the ear can POST. Transient `403` / `429` / `5xx` retry with backoff. Logs include HTTP status, responder (`cloudflare` / `iis` / `jeeves`) and `CF-Ray`. After retries fail, one follow-up POST sets `state=unhealthy` and `error=digest-http-403` so the seat is unhealthy on the digest rather than silently missing.
+
+**FR #7347:** hub `/bob/v1/report` worker schema accepts `needs_sign_in` and `unhealthy` (hyphen form `needs-sign-in` is normalized). Start-up digest POSTs (idle or needs-sign-in, before any job/pool state) must return 2xx. On 4xx the worker logs a scrubbed response-body snippet (max 200 chars, no secrets) with status / responder / CF-Ray; the hub returns `{"error":"<why>"}` on schema reject.
 
 After IRC join and a successful agent launch the seat posts a hello line on `#<machine>` (MRB #6411: no ready claim when launch fails):
 

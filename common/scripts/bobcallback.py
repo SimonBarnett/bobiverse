@@ -406,10 +406,13 @@ def coerce_report_payload(payload: dict) -> dict:
     Fleet boxes historically POST machine + pcent/working_on with no ``op``, or use
     underscore aliases. Rejects still happen for empty/unknown bodies — those log
     ``op=`` + keys so we can find the client.
+    FR #7347: normalize ``needs-sign-in`` -> ``needs_sign_in`` before schema check.
     """
     if not isinstance(payload, dict):
         return payload
     out = dict(payload)
+    if "state" in out and out.get("state") not in (None, ""):
+        out["state"] = bobreport.normalize_worker_state(out.get("state"))
     raw = str(out.get("op") or "").strip().lower()
     if raw in _REPORT_OP_ALIASES:
         out["op"] = _REPORT_OP_ALIASES[raw]
@@ -471,7 +474,8 @@ def validate_report_payload(home: Path, payload: dict) -> tuple[int, str, str]:
         if not bobreport.is_worker_nick(str(payload.get("nick") or "")):
             return 400, "", "bad nick"
         st = payload.get("state")
-        if st not in (None, "") and str(st).strip().lower() not in bobreport.WORKER_STATES:
+        st_n = bobreport.normalize_worker_state(st) if st not in (None, "") else ""
+        if st_n and st_n not in bobreport.WORKER_STATES:
             return 400, "", "bad state"
         if op == "worker-work" and st in (None, ""):
             return 400, "", "state required"
@@ -506,10 +510,12 @@ def handle_report_post(
             keys = ",".join(sorted(str(k) for k in payload.keys())[:12])
         peer_hint = ""
         print(f"INFO report reject {code} {why} op={op_raw!r} keys={keys}{peer_hint}", flush=True)
-        return code, b""
+        # FR #7347: short error body (no secrets) so seats can log a truncated snippet.
+        err = str(why or "rejected").strip()[:80] or "rejected"
+        return code, json.dumps({"error": err}, separators=(",", ":")).encode("utf-8")
     if rate is not None and not rate.allow("report:" + mid):
         print(f"INFO report reject 429 rate machine={mid}", flush=True)
-        return 429, b""
+        return 429, json.dumps({"error": "rate limited"}, separators=(",", ":")).encode("utf-8")
     env = _enqueue_post(
         home,
         kind="report",

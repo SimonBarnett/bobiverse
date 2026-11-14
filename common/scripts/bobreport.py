@@ -1026,7 +1026,12 @@ def _coerce_workers(mid: str, raw: object) -> dict:
 # Stored as ``worker_list`` (list of {nick,state,work,updated}); the legacy pid-keyed ``workers``
 # dict (merge op / gitclaim seat lookup) is untouched. Export publishes the list as ``workers``.
 # FR #663: offer sets ``offered`` (not ``doing``); only ACK promotes to ``doing``.
-WORKER_STATES = ("doing", "idle", "offered")
+# FR #7347: seat start-up may POST needs_sign_in / unhealthy (worker digest); accept them.
+WORKER_STATES = ("doing", "idle", "offered", "needs_sign_in", "unhealthy")
+WORKER_STATE_ALIASES = {
+    "needs-sign-in": "needs_sign_in",
+    "needssignin": "needs_sign_in",
+}
 WORKER_WORK_MAX = 160
 WORKER_LIST_MAX = 32
 # Un-ACKed offers expire back to idle (digest export + worker-work path).
@@ -1036,6 +1041,14 @@ _NOT_WORKER_NICKS = frozenset(
     {"jeeves", "chanserv", "nickserv", "operserv", "hostserv", "memoserv", "botserv",
      "histserv", "global", "simon"}
 )
+
+
+def normalize_worker_state(raw: object) -> str:
+    """Canonical worker_list state; empty when blank. FR #7347 hyphen alias."""
+    s = str(raw or "").strip().lower()
+    if not s:
+        return ""
+    return WORKER_STATE_ALIASES.get(s, s)
 
 
 def is_worker_nick(nick: str) -> bool:
@@ -1094,7 +1107,7 @@ def _coerce_worker_list(raw: object, *, now: float | None = None) -> list[dict]:
         if not is_worker_nick(nick) or nick.lower() in seen:
             continue
         seen.add(nick.lower())
-        state = str(ent.get("state") or "idle").strip().lower()
+        state = normalize_worker_state(ent.get("state") or "idle") or "idle"
         if state not in WORKER_STATES:
             state = "idle"
         updated = str(ent.get("updated") or "")
@@ -2717,7 +2730,7 @@ def _apply_worker_op(home: Path, op: str, mid: str, payload: dict, briefer_nick:
     if not is_worker_nick(nick):
         return CallbackOutcome(ok=False, err="bad nick")
     state_raw = payload.get("state")
-    state = str(state_raw).strip().lower() if state_raw not in (None, "") else ""
+    state = normalize_worker_state(state_raw) if state_raw not in (None, "") else ""
     if state and state not in WORKER_STATES:
         return CallbackOutcome(ok=False, err="bad state")
     work_raw = payload.get("work")
