@@ -412,6 +412,7 @@ routes to bobiverse via the split rule.
 - Live recycleseat acceptance needs a clean post-#7126 install and an idle sibling seat; never ff/checkout install root from an FR seat; GIVEUP with evidence when build-not-on-box
 - Shell inherited-capture tests need ~1s child budget on busy Windows hosts; 0.2s races spawn and flakes exit 124 under load.
 - LocalSystem OpenCode Go fetch lessons belong in `bobiverse-bob` (frozen-exe install root, empty usage is failure, null fetched_at on no-key, preserve NSSM BOB_OPENCODE_GO_API_KEY). Do not park them under harvest/SKILL.md (class of #7177 / #7191).
+- An ACKed job whose agent turn ends in error must retry once then GIVEUP with a sanitized reason; never sit idle holding the accepted row.
 
 ## Harvest digest (lessons audit 2026-10-06)
 
