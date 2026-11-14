@@ -2590,15 +2590,21 @@ function Get-BobTrayDeployedSourceShortSha {
         if ($workflow) { return $workflow }
         return $commit
     }
-    $got = Get-BobTrayShaFromJson (Join-Path $Root 'MANIFEST.json')
-    if ($got) { return $got }
-    $got = Get-BobTrayShaFromProvenance (Join-Path $Root 'provenance.txt')
-    if ($got) { return $got }
-    $got = Get-BobTrayShaFromProvenance (Join-Path $Root 'tools\provenance.txt')
-    if ($got) { return $got }
-    $got = Get-BobTrayShaFromJson (Join-Path $Root 'HOTPATCH.json')
-    if ($got) { return $got }
-    return (Get-BobTrayShaFromJson (Join-Path $Root 'BUILD.json'))
+    $tools = Join-Path $Root 'tools'
+    try {
+        if ([IO.Path]::GetFileName($Root) -eq 'tools') { $tools = $Root }
+    } catch { }
+    $exe = Get-BobTrayShaFromJson (Join-Path $tools 'MANIFEST.json')
+    if (-not $exe) { $exe = Get-BobTrayShaFromProvenance (Join-Path $tools 'provenance.txt') }
+    $scripts = Get-BobTrayShaFromJson (Join-Path $Root 'MANIFEST.json')
+    if (-not $scripts) { $scripts = Get-BobTrayShaFromProvenance (Join-Path $Root 'provenance.txt') }
+    if (-not $scripts) { $scripts = Get-BobTrayShaFromJson (Join-Path $Root 'HOTPATCH.json') }
+    if (-not $scripts) { $scripts = Get-BobTrayShaFromJson (Join-Path $Root 'BUILD.json') }
+    if ($exe -and $scripts -and ($exe -ne $scripts)) {
+        return ('exe {0} / scripts {1}' -f $exe, $scripts)
+    }
+    if ($exe) { return $exe }
+    return $scripts
 }
 
 function Get-BobTrayProductVersionLabel {

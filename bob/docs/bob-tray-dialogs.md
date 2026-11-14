@@ -83,14 +83,17 @@ rows with workers `{irc nick}: {doing|idle}`, one Copilot pool tile, alert and v
 
 **FR #6285 / #7179 CI (`build-bob-tray.yml`):** GitHub Actions on `windows-latest` compiles `bob-tray.exe` / `bob-status.exe` / `bob-about.exe` via `bob/scripts/Build-BobDialogs.ps1` on `push` to `main` and on `pull_request` whenever `bob/tray/**`, `bob/scripts/Build-BobDialogs.ps1`, `.github/workflows/build-bob-tray.yml`, or `bob/tests/test_fr6285_tray_build_ci.py` changes (plus `workflow_dispatch`). The job uploads the three exes plus `*.sha256`, `provenance.txt` (workflow commit + SHA-256), and `MANIFEST.json` (FR #6924). A smoke check fails if the PE lacks UTF-16LE `xAI weekly` or still embeds `Cursor / xAI weekly` (throw text includes `missing UTF-16LE heading` / `still embeds stale heading`). Source-only merges do not update a live `tools\bob-tray.exe`; Slab (or Pack/Sync) must deploy a built artifact / rebuild locally after C# heading changes.
 
-## Tray version label (FR #6924)
+## Tray version label (FR #6924 / **FR #7247**)
 
-TipForm, About, and Status show **`bob <MSI VERSION> (<shortsha>)`** when a deployed identity file is present, else **`bob <MSI VERSION>`**.
+TipForm, About, and Status show **`bob <MSI VERSION> (<shortsha>)`** when a deployed identity file is present, else **`bob <MSI VERSION>`**. When the running **exe** and **scripts** come from different builds, the footer is **`bob <MSI> (exe <7hex> / scripts <7hex>)`**.
 
 - **Numeric part** comes only from install-root `VERSION` (or `BOBIVERSE_BOB_VERSION`). That file stays the MSI ProductVersion / ARP DisplayVersion (FR #1565 / #2948). Sync and hotpatches must **not** move `VERSION` off the MSI number.
-- **Short SHA** (7 hex) is read when the UI is shown (not cached once at process start). Preference order: install-root `MANIFEST.json` (`source_commit` / `workflow_commit` / `commit` / …) → `provenance.txt` / `tools\provenance.txt` (`source_commit=` / `workflow_commit=`) → `HOTPATCH.json` → `BUILD.json`.
-- **Writers:** `bob/scripts/Write-BobTrayDeployedIdentity.ps1` (also called from `Build-BobDialogs.ps1`, `Sync-BobiverseFromRepo.ps1` for bob, `Pack-BobiverseRelease.ps1`, and `build-bob-tray.yml`). Slab hotpatches that replace `tools\bob-tray.exe` or live engine scripts must deploy/update that identity file so the label moves without a new MSI.
-- Readers: `Common.BobVersion` (`BobDialogsCommon.cs`) and `Get-BobTrayProductVersionLabel` (`Watch-BobTray.ps1`) must agree. Offline pin: `bob/tests/test_fr6924_tray_version_label.py`.
+- **Exe short SHA** (what `tools\bob-tray.exe` was built from): `tools\MANIFEST.json` (`source_commit` / `workflow_commit` / `commit` / …) then `tools\provenance.txt`. This is the CI `bob-tray` artifact layout (exes + `MANIFEST.json` in one folder). Copying only the PE into `tools\` without that MANIFEST leaves the exe SHA unknown.
+- **Scripts short SHA** (Watch-BobTray / Sync tree): install-root `MANIFEST.json` → `provenance.txt` → `HOTPATCH.json` → `BUILD.json`.
+- The label is read when the UI is shown (not cached once at process start). Same SHA on both sides collapses to one 7-hex token (FR #6924).
+- **Writers:** `bob/scripts/Write-BobTrayDeployedIdentity.ps1` writes **both** install-root and `tools\` `MANIFEST.json` + `provenance.txt` (also called from `Build-BobDialogs.ps1`, `Sync-BobiverseFromRepo.ps1` for bob, `Pack-BobiverseRelease.ps1`, and `build-bob-tray.yml`).
+- **Slab CI tray hotpatch (no MSI):** download the `bob-tray` artifact for the desired main SHA. Copy `bob-tray.exe` (and status/about if replacing those) into `<install>\tools\`. Copy `MANIFEST.json` and `provenance.txt` into **`<install>\tools\`** (exe identity) **and** `<install>\` if the scripts tree matches that SHA. Restart the tray (`Start-BobFleetTray -ForceNew` / TipForm Restart). Footer must show that artifact's 7-hex (or `exe … / scripts …` when scripts were not updated). Hash-check the PE against `bob-tray.exe.sha256`.
+- Readers: `Common.BobVersion` (`BobDialogsCommon.cs`) and `Get-BobTrayProductVersionLabel` (`Watch-BobTray.ps1`) must agree. Offline pins: `bob/tests/test_fr6924_tray_version_label.py`, `bob/tests/test_fr7247_tray_footer_running_build.py`.
 
 
 

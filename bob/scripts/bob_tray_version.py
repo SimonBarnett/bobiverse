@@ -101,22 +101,64 @@ def _sha_from_provenance(path: Path) -> str:
     return ""
 
 
-def read_deployed_source_sha(root: Path | str) -> str:
-    """Prefer MANIFEST.json, else provenance.txt, else HOTPATCH/BUILD commit."""
-    root_p = Path(root)
-    for name in ("MANIFEST.json",):
-        got = _sha_from_json_file(root_p / name)
-        if got:
-            return got
-    for rel in ("provenance.txt", Path("tools") / "provenance.txt"):
-        got = _sha_from_provenance(root_p / rel)
-        if got:
-            return got
+def _sha_from_root_identity(root_p: Path) -> str:
+    """Install-root (or CI stage) identity: MANIFEST, provenance, HOTPATCH, BUILD."""
+    got = _sha_from_json_file(root_p / "MANIFEST.json")
+    if got:
+        return got
+    got = _sha_from_provenance(root_p / "provenance.txt")
+    if got:
+        return got
     for name in ("HOTPATCH.json", "BUILD.json"):
         got = _sha_from_json_file(root_p / name)
         if got:
             return got
     return ""
+
+
+def read_exe_source_sha(root: Path | str) -> str:
+    """SHA of the running tray binaries (FR #7247): tools\\MANIFEST first.
+
+    Slab copies the CI artifact next to ``tools\\bob-tray.exe``. Install-root
+    MANIFEST.json is the scripts / Sync identity and may be older.
+    """
+    root_p = Path(root)
+    tools = root_p / "tools"
+    if root_p.name.lower() == "tools":
+        tools = root_p
+    got = _sha_from_json_file(tools / "MANIFEST.json")
+    if got:
+        return got
+    got = _sha_from_provenance(tools / "provenance.txt")
+    if got:
+        return got
+    return ""
+
+
+def read_scripts_source_sha(root: Path | str) -> str:
+    """SHA of the running display/engine scripts (install-root identity)."""
+    root_p = Path(root)
+    if root_p.name.lower() == "tools":
+        parent = root_p.parent
+        if parent:
+            got = _sha_from_root_identity(parent)
+            if got:
+                return got
+    return _sha_from_root_identity(root_p)
+
+
+def format_running_build_sha(exe_sha: str, scripts_sha: str) -> str:
+    """One short SHA, or ``exe aaa / scripts bbb`` when the two builds differ."""
+    exe = (exe_sha or "").strip()
+    scripts = (scripts_sha or "").strip()
+    if exe and scripts and exe != scripts:
+        return f"exe {exe} / scripts {scripts}"
+    return exe or scripts
+
+
+def read_deployed_source_sha(root: Path | str) -> str:
+    """FR #6924 / #7247: running-build token for the footer (may be a pair)."""
+    return format_running_build_sha(read_exe_source_sha(root), read_scripts_source_sha(root))
 
 
 def product_version_label(root: Path | str, *, env: Optional[Mapping[str, str]] = None) -> str:

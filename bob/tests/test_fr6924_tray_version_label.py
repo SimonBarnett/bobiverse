@@ -132,6 +132,8 @@ def test_fr6924_writer_pins_manifest_and_provenance(tmp_path: Path):
     prov = (tmp_path / "provenance.txt").read_text(encoding="utf-8")
     assert f"workflow_commit={SHA_FULL}" in prov or f"source_commit={SHA_FULL}" in prov
     assert (tmp_path / "tools" / "provenance.txt").is_file()
+    tools_man = json.loads((tmp_path / "tools" / "MANIFEST.json").read_text(encoding="utf-8"))
+    assert tools_man["source_commit"] == SHA_FULL
     env = {k: v for k, v in os.environ.items() if k != "BOBIVERSE_BOB_VERSION"}
     assert m.product_version_label(tmp_path, env=env) == f"bob 2.0.0 ({SHA_SHORT})"
     assert (tmp_path / "VERSION").read_text(encoding="utf-8").strip() == "2.0.0"
