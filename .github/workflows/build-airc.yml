@@ -1,0 +1,143 @@
+# Isolated airc.exe build (FR #7276).
+# Not a release, MSI, install, or service restart. Build-Airc.ps1 owns PyInstaller
+# and the --selftest/--help smoke. Uploads SHA-256 provenance (MANIFEST.json) so
+# Slab can hotpatch one machine's airc from a known artifact.
+# Path filters: airc/** plus every frozen common/scripts import (see airc_ci_source_paths.py).
+name: build-airc
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - .github/workflows/build-airc.yml
+      - airc/**
+      - airc/scripts/Build-Airc.ps1
+      - airc/tests/airc_ci_source_paths.py
+      - airc/tests/test_fr7276_airc_build_ci.py
+      - common/requirements-freeze.txt
+      - common/scripts/Bobiverse-Common.ps1
+      - common/scripts/account_map.py
+      - common/scripts/bob_public_base.py
+      - common/scripts/chair_oper.py
+      - common/scripts/crash_report.py
+      - common/scripts/filexfer.py
+      - common/scripts/protect.py
+      - common/scripts/seal.py
+      - common/scripts/wire.py
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/build-airc.yml
+      - airc/**
+      - airc/scripts/Build-Airc.ps1
+      - airc/tests/airc_ci_source_paths.py
+      - airc/tests/test_fr7276_airc_build_ci.py
+      - common/requirements-freeze.txt
+      - common/scripts/Bobiverse-Common.ps1
+      - common/scripts/account_map.py
+      - common/scripts/bob_public_base.py
+      - common/scripts/chair_oper.py
+      - common/scripts/crash_report.py
+      - common/scripts/filexfer.py
+      - common/scripts/protect.py
+      - common/scripts/seal.py
+      - common/scripts/wire.py
+
+permissions:
+  contents: read
+
+jobs:
+  build-airc:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install PyInstaller and Bob Python deps
+        run: |
+          python -m pip install --upgrade pip pyinstaller
+          if ($LASTEXITCODE -ne 0) { throw "pip install pyinstaller failed: $LASTEXITCODE" }
+          . .\common\scripts\Bobiverse-Common.ps1
+          Install-BobiversePythonDeps -Python (Get-Command python).Source
+
+      - name: Build airc.exe with Build-Airc.ps1
+        env:
+          WORKFLOW_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          $root = (Get-Location).Path
+          $head = (git rev-parse HEAD).Trim()
+          if ($head -ne $env:WORKFLOW_COMMIT) { throw "checkout $head is not $env:WORKFLOW_COMMIT" }
+          $out = Join-Path $env:RUNNER_TEMP "airc-out"
+          New-Item -ItemType Directory -Force -Path $out | Out-Null
+          $py = (Get-Command python).Source
+          & "$root\airc\scripts\Build-Airc.ps1" -RepoRoot $root -OutDir $out -Python $py
+          if ($LASTEXITCODE -ne 0) { throw "Build-Airc.ps1 exit $LASTEXITCODE" }
+          $exe = Join-Path $out "airc-build\dist\airc.exe"
+          if (-not (Test-Path -LiteralPath $exe)) { throw "missing airc.exe" }
+          # Workflow-level --help smoke (Build-Airc also smokes --selftest/--help).
+          $prevEap = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
+          $help = & $exe --help 2>&1
+          $hcode = $LASTEXITCODE
+          $ErrorActionPreference = $prevEap
+          $helpText = ($help | Out-String)
+          if ($hcode -ne 0 -or ($helpText -notmatch 'selftest' -and $helpText -notmatch '--home')) {
+            throw "airc.exe --help failed (exit $hcode): $helpText"
+          }
+          $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $exe).Hash.ToLowerInvariant()
+          $size = (Get-Item -LiteralPath $exe).Length
+          $builtAt = [DateTime]::UtcNow.ToString("o")
+          $runId = [string]$env:GITHUB_RUN_ID
+          $stage = Join-Path $env:RUNNER_TEMP "airc-artifact"
+          New-Item -ItemType Directory -Force -Path $stage | Out-Null
+          Copy-Item -LiteralPath $exe -Destination (Join-Path $stage "airc.exe")
+          Set-Content -Encoding ascii (Join-Path $stage "airc.exe.sha256") "$hash  airc.exe"
+          $manifest = [ordered]@{
+            source_commit   = $env:WORKFLOW_COMMIT
+            workflow_commit = $env:WORKFLOW_COMMIT
+            exe_name        = "airc.exe"
+            exe_sha256      = $hash
+            exe_size_bytes  = $size
+            build_time_utc  = $builtAt
+            workflow_run_id = $runId
+            builder         = "Build-Airc.ps1"
+            fr              = "7276"
+            files           = @("airc.exe", "airc.exe.sha256", "MANIFEST.json", "provenance.txt")
+          }
+          ($manifest | ConvertTo-Json -Depth 5) | Set-Content -Encoding utf8 (Join-Path $stage "MANIFEST.json")
+          # Prove MANIFEST hash matches the staged exe (acceptance).
+          $doc = Get-Content -Raw -LiteralPath (Join-Path $stage "MANIFEST.json") | ConvertFrom-Json
+          $staged = Join-Path $stage "airc.exe"
+          $rehash = (Get-FileHash -Algorithm SHA256 -LiteralPath $staged).Hash.ToLowerInvariant()
+          if ($doc.exe_sha256.ToLowerInvariant() -ne $rehash) {
+            throw "MANIFEST.exe_sha256=$($doc.exe_sha256) != staged $rehash"
+          }
+          if ($doc.exe_sha256.ToLowerInvariant() -ne $hash) {
+            throw "MANIFEST.exe_sha256 drifted from build hash $hash"
+          }
+          @(
+            "source_commit=$($env:WORKFLOW_COMMIT)"
+            "workflow_commit=$($env:WORKFLOW_COMMIT)"
+            "exe_name=airc.exe"
+            "exe_sha256=$hash"
+            "exe_size_bytes=$size"
+            "build_time_utc=$builtAt"
+            "workflow_run_id=$runId"
+            "builder=Build-Airc.ps1"
+            "fr=7276"
+            "files=airc.exe,airc.exe.sha256,MANIFEST.json,provenance.txt"
+          ) | Set-Content -Encoding ascii (Join-Path $stage "provenance.txt")
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: airc
+          path: ${{ runner.temp }}/airc-artifact
+          if-no-files-found: error
