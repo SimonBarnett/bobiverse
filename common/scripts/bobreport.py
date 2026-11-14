@@ -7102,14 +7102,14 @@ XAI_GROK_LOGIN_EXPIRED = "grok-login-expired"
 
 
 def xai_weekly_auth_path() -> tuple[Path | None, str]:
-    """FR #6274 / #7176: auth.json for live weekly fetch (path identity only).
+    """FR #6274 / #7176 / #7235: auth.json for live weekly fetch (path identity only).
 
     Never logs or returns credential material. Order: ``BOB_GROK_AUTH_PATH``,
-    ``GROK_AUTH_PATH``; under systemprofile then stamped
-    ``<InstallRoot>/run/grok-auth-path.txt``, service home
-    ``<InstallRoot>/home/.grok/auth.json``, interactive user auth
-    (``BOB_GROK_WEEKLY_USER_HOME`` / live LocalSystem resolve). Non-system
-    profiles also honour ``$GROK_HOME/auth.json`` then ``~/.grok/auth.json``.
+    ``GROK_AUTH_PATH``; under systemprofile the **same machine store seats use**
+    (FR #7183 / #7235): interactive ``Users\\<seat>\\.grok\\auth.json`` first,
+    re-resolved every call (never a copied ``<InstallRoot>\\home\\.grok\\auth.json``
+    while that store exists). Then stamped path, then service-home last resort.
+    Non-system profiles honour ``$GROK_HOME/auth.json`` then ``~/.grok/auth.json``.
 
     Live LocalSystem never returns ``system-profile-skipped`` (FR #7176): missing
     credentials are ``auth-unresolved``. Skipping because of SYSTEM is not allowed.
@@ -7122,15 +7122,8 @@ def xai_weekly_auth_path() -> tuple[Path | None, str]:
             return path, ident
     home = (os.environ.get("USERPROFILE") or os.environ.get("HOME") or "").strip()
     if home and _is_windows_system_profile(Path(home)):
-        # Ambient GROK_HOME is ignored under systemprofile (agent tooling homes
-        # often set it; service auth is BOB_GROK_* / stamp / service home).
-        stamped = _read_grok_auth_path_stamp()
-        if stamped is not None:
-            return stamped, "stamped-auth"
-        svc = xai_weekly_service_auth_candidate()
-        if svc is not None and svc.is_file():
-            _write_grok_auth_path_stamp(svc)
-            return svc, "service-auth"
+        # Ambient GROK_HOME is ignored under systemprofile (seat grok-home has
+        # no auth.json after FR #7183). Machine store is interactive auth.
         allow_auto = _is_local_system_process() or bool(
             (os.environ.get("BOB_GROK_WEEKLY_USER_HOME") or "").strip()
         )
@@ -7140,6 +7133,13 @@ def xai_weekly_auth_path() -> tuple[Path | None, str]:
                 path = user_home / ".grok" / "auth.json"
                 _write_grok_auth_path_stamp(path)
                 return path, "interactive-auth"
+        stamped = _read_grok_auth_path_stamp()
+        if stamped is not None:
+            return stamped, "stamped-auth"
+        svc = xai_weekly_service_auth_candidate()
+        if svc is not None and svc.is_file():
+            _write_grok_auth_path_stamp(svc)
+            return svc, "service-auth"
         # FR #7176: live LocalSystem must attempt service-configured auth; never skip.
         if _is_local_system_process():
             return None, "auth-unresolved"
@@ -7538,12 +7538,14 @@ def fetch_live_xai_weekly(*, now: datetime | None = None) -> dict | None:
     import urllib.request
 
     path, identity = xai_weekly_auth_path()
+    auth_loc = str(path) if path is not None else ""
     if path is None:
         _last_xai_acquisition = {
             "identity": identity,
             "read": False,
             "live": False,
             "error": identity or "auth-missing",
+            "auth_path": auth_loc,
         }
         return None
     if not path.is_file():
@@ -7552,6 +7554,7 @@ def fetch_live_xai_weekly(*, now: datetime | None = None) -> dict | None:
             "read": False,
             "live": False,
             "error": "auth-file-missing",
+            "auth_path": auth_loc,
         }
         return None
     try:
@@ -7566,6 +7569,7 @@ def fetch_live_xai_weekly(*, now: datetime | None = None) -> dict | None:
             "error": auth_err or "auth-key-missing",
             "selected": True,
             "account": selected_label,
+            "auth_path": auth_loc,
         }
         return None
     try:
@@ -7599,6 +7603,7 @@ def fetch_live_xai_weekly(*, now: datetime | None = None) -> dict | None:
             "error": err,
             "selected": True,
             "account": selected_label,
+            "auth_path": auth_loc,
         }
         return None
     except Exception as e:
@@ -7609,6 +7614,7 @@ def fetch_live_xai_weekly(*, now: datetime | None = None) -> dict | None:
             "error": f"provider-{type(e).__name__}",
             "selected": True,
             "account": selected_label,
+            "auth_path": auth_loc,
         }
         return None
     try:
@@ -7621,6 +7627,7 @@ def fetch_live_xai_weekly(*, now: datetime | None = None) -> dict | None:
             "error": "provider-bad-json",
             "selected": True,
             "account": selected_label,
+            "auth_path": auth_loc,
         }
         return None
     reading = parse_xai_billing_credits_response(doc, now=now)
@@ -7632,6 +7639,7 @@ def fetch_live_xai_weekly(*, now: datetime | None = None) -> dict | None:
             "error": "provider-no-creditUsagePercent",
             "selected": True,
             "account": selected_label,
+            "auth_path": auth_loc,
         }
         return None
     reading["account"] = selected_label
@@ -7643,6 +7651,7 @@ def fetch_live_xai_weekly(*, now: datetime | None = None) -> dict | None:
         "auth_identity": identity,
         "selected": True,
         "account": selected_label,
+        "auth_path": auth_loc,
     }
     return reading
 
@@ -8042,6 +8051,9 @@ def publish_local_peer_fuel(
         _last_fuel_publish_diag["acquisition"] = acq
         if err:
             _last_fuel_publish_diag["xai_weekly_error"] = err
+        loc = _last_xai_acquisition.get("auth_path")
+        if loc:
+            _last_fuel_publish_diag["xai_weekly_auth_path"] = loc
         if xai and xai.get("weekly_known") and xai.get("fresh"):
             peer = enrich_peer_with_xai_weekly(peer, xai)
         else:
