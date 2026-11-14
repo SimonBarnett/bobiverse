@@ -18,8 +18,11 @@ def test_default_startup_grace_is_at_least_60():
 
 
 def test_grace_holds_inject_until_timer(tmp_path, monkeypatch):
-    # FR #4115: legacy grace-paste path (opt-out); default now waits for turn_ended.
+    # FR #7180: wait_ready=0 + signed-in ready immediately (no 60s grace).
     monkeypatch.setenv("BOB_WORKER_STARTUP_WAIT_READY", "0")
+    gh = tmp_path / "grok-home" / "auth.json"
+    gh.parent.mkdir(parents=True, exist_ok=True)
+    gh.write_text('{"k":"FAKE_955"}', encoding="utf-8")
     logs: list[str] = []
     clock = {"t": 0.0}
 
@@ -87,16 +90,12 @@ def test_grace_holds_inject_until_timer(tmp_path, monkeypatch):
         bored=FakeBored(),
     )
     assert sup.start_agent()
-    # During grace: deliver holds (no inject target).
-    assert relay.deliver("Jeeves", "#marchhare", "marchhare-1: MRB o/r#1 https://x/1") == "held"
-    assert injected == []
-    assert bored_fires == []
-    assert timers and timers[0].delay == 60.0
-    # Fire grace callback.
-    timers[0].fn()
     assert "ready" in bored_fires
-    assert relay.deliver("Jeeves", "#marchhare", "marchhare-1: ping") in ("injected", "held", "coalescing")
-    # Pending flush on set_target should have injected the held assign.
+    assert relay.deliver("Jeeves", "#marchhare", "marchhare-1: MRB o/r#1 https://x/1") in (
+        "injected",
+        "held",
+        "coalescing",
+    )
     assert any("MRB" in x or "FROM" in x for x in injected) or relay.injected >= 1
 
 
