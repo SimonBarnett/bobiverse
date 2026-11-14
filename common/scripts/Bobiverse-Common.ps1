@@ -2136,7 +2136,7 @@ function Sync-BobiverseWorkTree {
         }
         if ($DryRun) { $log.Add('INFO worktree-dry-run skip fetch/merge'); $res.Ok = $true; return (Done 'dry-run') }
 
-        # FR #7301: diverged/ff-failed already reported for this HEAD — do not fetch/ff in a loop.
+        # FR #7301: diverged/ff-failed already reported for this HEAD - do not fetch/ff in a loop.
         $divergedStamp = Join-Path $root 'logs\sync-diverged.json'
         if ($hasGit -and (Test-Path -LiteralPath $divergedStamp)) {
             $stampHead = ''
