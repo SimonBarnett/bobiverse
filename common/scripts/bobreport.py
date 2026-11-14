@@ -7874,10 +7874,30 @@ def fetch_live_xai_weekly(*, now: datetime | None = None) -> dict | None:
     return reading
 
 
+def _resolve_current_xai_account(current_account: object = None) -> str | None:
+    """FR #7400: auth.json / selected billing account for this cycle (no secrets)."""
+    if current_account is not None and str(current_account).strip():
+        return _sanitize_grok_account_label(current_account)
+    acq = _last_xai_acquisition if isinstance(_last_xai_acquisition, dict) else {}
+    lab = acq.get("account")
+    if lab:
+        return _sanitize_grok_account_label(lab)
+    return None
+
+
 def enrich_peer_keep_last_good_xai_weekly(
-    peer: dict, *, error: str, now: datetime | None = None, machine_id: str | None = None
+    peer: dict,
+    *,
+    error: str,
+    now: datetime | None = None,
+    machine_id: str | None = None,
+    current_account: object = None,
 ) -> dict:
-    """FR #6274: on live-fetch failure keep last-good with true age; never blank a knowable value."""
+    """FR #6274: on live-fetch failure keep last-good with true age; never blank a knowable value.
+
+    FR #7400: last-good % is bound to the cached account. A different auth.json
+    account must not inherit the previous remaining/used/reset.
+    """
     if not isinstance(peer, dict):
         return peer
     enriched = dict(peer)
@@ -7886,6 +7906,18 @@ def enrich_peer_keep_last_good_xai_weekly(
     last_rem = enriched.get("weekly")
     if last_rem is None:
         last_rem = meter.get("remaining_pct")
+    cur_acct = _resolve_current_xai_account(current_account)
+    cached_acct = _sanitize_grok_account_label(
+        meter.get("account") or enriched.get("grok_account")
+    )
+    account_mismatch = bool(
+        cur_acct and cached_acct and cur_acct != cached_acct
+    )
+    if account_mismatch:
+        last_rem = None
+        last_at = None
+        enriched.pop("xai_weekly_used_pct", None)
+        enriched.pop("period_end", None)
     age_s = None
     clock = now or datetime.now(timezone.utc)
     if clock.tzinfo is None:
@@ -7916,7 +7948,7 @@ def enrich_peer_keep_last_good_xai_weekly(
         or "last-good",
         "fetched_at": last_at,
         "period_end": enriched.get("period_end") or meter.get("period_end"),
-        "account": None,
+        "account": cur_acct or cached_acct,
         "fresh": False,
         "error": str(error or "live-fetch-failed"),
         "last_attempt_at": clock.astimezone(timezone.utc).strftime(
@@ -7924,6 +7956,14 @@ def enrich_peer_keep_last_good_xai_weekly(
         ),
         "age_s": age_s,
     }
+    if account_mismatch:
+        out_meter["used_pct"] = None
+        out_meter["period_end"] = None
+        out_meter["remaining_pct"] = None
+        out_meter["age_s"] = None
+        if cur_acct:
+            enriched["grok_account"] = cur_acct
+        rem_i = None
     if str(error or "") == XAI_GROK_LOGIN_EXPIRED:
         who = fold_machine_id(machine_id or "") or "this machine"
         out_meter["error_action"] = f"sign in once on {who}"
@@ -7942,6 +7982,52 @@ def enrich_peer_keep_last_good_xai_weekly(
     if out_meter.get("used_pct") is not None:
         enriched["xai_weekly_used_pct"] = out_meter.get("used_pct")
     return stamp_xai_auth(enriched)
+
+
+def stamp_peer_xai_account_from_acquisition(peer: dict) -> dict:
+    """FR #6248 / #6279 / #7400: attribute grok_account from this cycle's auth.
+
+    Never relabel a last-good remaining % onto a different account.
+    """
+    if not isinstance(peer, dict):
+        return peer
+    out = dict(peer)
+    acq = _last_xai_acquisition if isinstance(_last_xai_acquisition, dict) else {}
+    selected = bool(acq.get("selected"))
+    if selected:
+        label = _sanitize_grok_account_label(acq.get("account"))
+    else:
+        try:
+            _src, label = read_grok_account_label()
+        except Exception:
+            label = None
+    meter = out.get("xai_weekly") if isinstance(out.get("xai_weekly"), dict) else {}
+    cached = _sanitize_grok_account_label(meter.get("account") or out.get("grok_account"))
+    rem = meter.get("remaining_pct")
+    if rem is None:
+        rem = out.get("weekly")
+    if label and cached and label != cached and rem is not None:
+        err = acq.get("error") or "account-switched"
+        return enrich_peer_keep_last_good_xai_weekly(
+            out, error=str(err), current_account=label
+        )
+    if selected:
+        if isinstance(meter, dict) and meter:
+            m = dict(meter)
+            m["account"] = label
+            out["xai_weekly"] = m
+        if label:
+            out["grok_account"] = label
+        else:
+            out.pop("grok_account", None)
+        return out
+    if label:
+        out["grok_account"] = label
+        if isinstance(meter, dict) and meter:
+            m = dict(meter)
+            m["account"] = label
+            out["xai_weekly"] = m
+    return out
 
 
 def read_local_xai_weekly(*, now: datetime | None = None) -> dict | None:
@@ -8343,35 +8429,10 @@ def publish_local_peer_fuel(
         peer = enrich_peer_keep_last_good_xai_weekly(peer, error="read-failed")
     # FR #7255: Jeeves owns OpenCode fleet fetch. Ear must not hit the provider.
     _last_fuel_publish_diag["opencode_acquisition"] = "jeeves-fleet"
-    # FR #6248 / #6279: attach ear-owned grok_account.
-    # When this cycle selected an auth entry for live weekly, attribute from that
-    # entry only (never borrow a sibling label for the meter). Unlabeled selection
-    # stays unattributed. Independent read_grok_account_label is used only when
-    # no selection happened this cycle.
+    # FR #6248 / #6279 / #7400: attach ear-owned grok_account; never relabel
+    # another account's last-good remaining onto the new auth.json identity.
     try:
-        peer = dict(peer)
-        acq = _last_xai_acquisition if isinstance(_last_xai_acquisition, dict) else {}
-        selected = bool(acq.get("selected"))
-        if selected:
-            label = acq.get("account")
-            xai_meter = peer.get("xai_weekly")
-            if isinstance(xai_meter, dict):
-                meter = dict(xai_meter)
-                meter["account"] = label
-                peer["xai_weekly"] = meter
-            if label:
-                peer["grok_account"] = label
-            else:
-                peer.pop("grok_account", None)
-        else:
-            _src, label = read_grok_account_label()
-            if label:
-                peer["grok_account"] = label
-                xai_meter = peer.get("xai_weekly")
-                if isinstance(xai_meter, dict):
-                    meter = dict(xai_meter)
-                    meter["account"] = label
-                    peer["xai_weekly"] = meter
+        peer = stamp_peer_xai_account_from_acquisition(dict(peer))
     except Exception:
         pass
     # FR #7255: Jeeves owns Copilot fleet fetch. Ear must not GET copilot_internal/user.
