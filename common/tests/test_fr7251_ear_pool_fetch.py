@@ -70,8 +70,7 @@ def test_billing_fetched_at_is_clock_not_period_end():
 def test_two_ticks_60s_apart_new_fetched_at_per_pool(tmp_path, monkeypatch):
     """Two publish cycles 60s apart must advance fetched_at on ear-owned pools.
 
-    FR #7255: Copilot / OpenCode are Jeeves fleet_pools — ear payload must not
-    carry those providers.
+    FR #7255 / #7289: Copilot / OpenCode / Cursor are Jeeves fleet_pools.
     """
     home = tmp_path / "home"
     home.mkdir()
@@ -151,9 +150,9 @@ def test_two_ticks_60s_apart_new_fetched_at_per_pool(tmp_path, monkeypatch):
     assert len(posted) == 2
     a, b = posted[0], posted[1]
     assert a["xai_weekly"]["fetched_at"] != b["xai_weekly"]["fetched_at"]
-    assert a["remaining_fetched_at"] != b["remaining_fetched_at"]
     assert "2026-11-20T00:00:00Z" != b["xai_weekly"]["fetched_at"]
-    # FR #7255: ear must not publish Copilot / OpenCode (Jeeves fleet owns them).
+    # FR #7255 / #7289: ear must not publish Copilot / OpenCode / Cursor (Jeeves fleet).
     assert "copilot" not in a and "copilot" not in b
+    assert "remaining_fetched_at" not in a and "remaining_fetched_at" not in b
     assert a.get("opencode_fetched_at") in (None, "")
     assert b.get("opencode_fetched_at") in (None, "")

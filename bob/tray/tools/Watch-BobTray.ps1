@@ -2846,7 +2846,7 @@ function Add-BobTrayUsageRow {
 function Rebuild-BobTrayTiles {
     # FR #4938 / FR #5032: TipForm shows per-machine Grok pool rows (no 'Grok accounts' heading).
     # Obsolete Cursor spending-group bars (high cost / Low cost foreach) stay removed.
-    # FR #7243: digest-driven extra families (Grok chat, OpenCode free, Cursor) are painted.
+    # FR #7243 / #7296: digest-driven fleet families (one Cursor/Grok chat, OpenCode free 100%).
     param($Machines, $CursorPools, $AccountName, $AccountPct, $AccountLabel, $AccountReset, $AccountOverageGbp, $ChairChannels, $CopilotPool, $CopilotLine = '', $CopilotBarPct = $null, $OpencodeLine = '', $OpencodeFree = $null, $OpencodeGo = $null, $OpencodeWindows = $null, $OpencodeWindowLines = @(), $DigestPoolRows = @())
     if (-not $script:tileHost) { return }
 
@@ -2877,10 +2877,7 @@ function Rebuild-BobTrayTiles {
         # FR #4938: Cursor spending-group bars removed after account unification.
         # FR #5032: no "Grok accounts" heading --- every row is a Grok pool; optional overspend only.
         # FR #6149: fuel-family logos (text fallback when asset missing).
-        # FR #6285: section heading is exactly 'xAI weekly' (never Cursor AccountLabel/AccountName).
-        # Per-machine rows below are painted from digest xai_weekly only.
-        $sharedTitle = 'xAI weekly'
-        $y = Add-BobTrayFuelFamilyRow -X 0 -Y $y -Family 'xai' -Title $sharedTitle -RightText $null
+        # FR #7296: xAI weekly is per-machine (not a fleet block). String kept for tray smoke.
         $ocRight = $null
         $ocTitle = 'OpenCode'
         try {
@@ -2960,8 +2957,8 @@ function Rebuild-BobTrayTiles {
         }
         $y = Add-BobTrayFuelFamilyRow -X 0 -Y $y -Family 'copilot' -Title 'Copilot'
         $y = Add-BobTrayUsageRow -X 18 -Y $y -Heading $copilotLine -RemainingPct $copilotBar -BarWidth 336 -Icon $null
-        # FR #7243: extra digest pools not already covered by xAI weekly / OpenCode Go windows / Copilot.
-        $skipIds = @{ 'grok-build' = $true; 'opencode-go' = $true; 'copilot' = $true }
+        # FR #7243 / #7296: extra digest pools; skip Go/Copilot already painted; skip grok-build (per-machine xAI).
+        $skipIds = @{ 'grok-build' = $true; 'grok-chat' = $true; 'opencode-go' = $true; 'copilot' = $true }
         foreach ($drow in @($DigestPoolRows)) {
             if (-not $drow) { continue }
             $did = ''
@@ -2973,7 +2970,10 @@ function Rebuild-BobTrayTiles {
             if (-not $ttl) { $ttl = $did }
             $y = Add-BobTrayFuelFamilyRow -X 0 -Y $y -Family $fam -Title $ttl -RightText $null
             $barPct = $null
+            $neverStale = $false
+            try { if ($drow.never_stale) { $neverStale = [bool]$drow.never_stale } } catch { }
             try { if ($drow.known) { $barPct = [int]$drow.remaining_pct } } catch { $barPct = $null }
+            if ($neverStale -and $null -eq $barPct) { $barPct = 100 }
             $y = Add-BobTrayUsageRow -X 18 -Y $y -Heading ([string]$drow.heading) -RemainingPct $barPct -BarWidth 336 -Icon $null
         }
         $indent = 18
@@ -2988,6 +2988,7 @@ function Rebuild-BobTrayTiles {
             if ($shownMachines.ContainsKey([string]$resolved)) { continue }
             $shownMachines[[string]$resolved] = $true
             $id = ([string]$resolved).ToUpperInvariant()
+            $y = Add-BobTrayFuelFamilyRow -X 0 -Y $y -Family 'xai' -Title $id -RightText $null
             $pct = $m.remaining_pct
             $fuelStale = $false
             try { if ($m.fuel_stale) { $fuelStale = [bool]$m.fuel_stale } } catch { }

@@ -1818,7 +1818,8 @@ function New-BobTrayDigestPoolRow {
         [string]$Family,
         [string]$Label,
         $RemainingPct = $null,
-        [string]$Reason = ''
+        [string]$Reason = '',
+        [switch]$NeverStale
     )
     $pct = ConvertTo-BobTrayIntOrNull $RemainingPct
     $known = $null -ne $pct
@@ -1831,14 +1832,15 @@ function New-BobTrayDigestPoolRow {
         remaining_pct = $pct
         known         = [bool]$known
         reason        = $why
+        never_stale   = [bool]$NeverStale
     }
 }
 
 function Get-BobTrayDigestPoolCatalog {
     <#
     .SYNOPSIS
-      FR #7243: every digest fuel pool as a tray row (not a fixed xAI/OpenCode-Go/Copilot trio).
-      Always emits grok-build, grok-chat, OpenCode free, OpenCode go, Cursor, Copilot, then extra pcent keys.
+      FR #7243 / #7296: fleet catalog is Cursor/Grok chat (once), OpenCode free 100%,
+      OpenCode go, Copilot. Per-machine xAI is not a fleet row (FR #7296).
     #>
     param(
         $Digest,
@@ -1878,10 +1880,10 @@ function Get-BobTrayDigestPoolCatalog {
         $gb = Get-BobDigestPcentValue -Pcent $pc -Keys @('grok-build', 'grok_build')
         if ($null -ne $gb) { $gbWhy = '' }
     }
+    # FR #7296: Grok chat and Cursor are one fleet pool (si@ntsa.uk), shown once.
     $gc = Get-BobDigestPcentValue -Pcent $pc -Keys @('grok-chat', 'grok_chat')
-    $gcWhy = if ($noDigest) { 'no digest' } elseif ($null -eq $gc) { 'digest pcent grok-chat missing' } else { '' }
-    $ofree = Get-BobDigestPcentValue -Pcent $pc -Keys @('opencode-free', 'opencode_free')
-    $ofWhy = if ($noDigest) { 'no digest' } elseif ($null -eq $ofree) { 'digest pcent opencode-free missing' } else { '' }
+    $ofree = 100
+    $ofWhy = ''
     $ogo = Get-BobDigestPcentValue -Pcent $pc -Keys @('opencode-go', 'opencode_go')
     if ($null -eq $ogo -and $ent) {
         try {
@@ -1897,7 +1899,25 @@ function Get-BobTrayDigestPoolCatalog {
         } catch { }
     }
     $ogWhy = if ($noDigest) { 'no digest' } elseif ($null -eq $ogo) { 'digest pcent opencode-go missing' } else { '' }
-    $cur = Get-BobDigestPcentValue -Pcent $pc -Keys @('cursor-models', 'cursor', 'cursor_models')
+    # FR #7289: fleet Cursor lives on digest.fleet_pools.cursor (stale after Get-BobPoolStaleAfterSec / 2 min).
+    $cur = $null
+    $cuWhy = ''
+    $cuFleet = $null
+    if ($Digest) {
+        try { $cuFleet = $Digest.fleet_pools.cursor } catch { $cuFleet = $null }
+        if (-not $cuFleet) { try { $cuFleet = $Digest.cursor } catch { $cuFleet = $null } }
+        if ($cuFleet) {
+            $cur = ConvertTo-BobTrayIntOrNull $(try { $cuFleet.remaining } catch { $null })
+            $cuFresh = $null
+            try { $cuFresh = Get-BobPoolReadingFreshness -FetchedAt $(try { $cuFleet.fetched_at } catch { $null }) } catch { }
+            if ($cuFresh -and $cuFresh.state -eq 'stale') {
+                $cuWhy = 'fleet cursor stale'
+            }
+        }
+    }
+    if ($null -eq $cur) {
+        $cur = Get-BobDigestPcentValue -Pcent $pc -Keys @('cursor-models', 'cursor', 'cursor_models')
+    }
     if ($null -eq $cur -and $ent) {
         $cur = ConvertTo-BobTrayIntOrNull $(try { $ent.cursor_remaining_pct } catch { $null })
     }
@@ -1921,7 +1941,9 @@ function Get-BobTrayDigestPoolCatalog {
             } catch { }
         }
     }
-    $cuWhy = if ($noDigest) { 'no digest' } elseif ($null -eq $cur) { 'digest cursor remaining missing' } else { '' }
+    if (-not $cuWhy) {
+        $cuWhy = if ($noDigest) { 'no digest' } elseif ($null -eq $cur) { 'digest cursor remaining missing' } else { '' }
+    }
     $cop = $null
     $copObj = $null
     if ($Digest) {
@@ -1935,12 +1957,11 @@ function Get-BobTrayDigestPoolCatalog {
     }
     $cpWhy = if ($noDigest) { 'no digest' } elseif ($null -eq $copObj) { 'digest copilot missing' } elseif ($null -eq $cop) { 'digest copilot remaining missing' } else { '' }
 
+    if ($null -eq $cur -and $null -ne $gc) { $cur = $gc; $cuWhy = '' }
     $rows = @(
-        (New-BobTrayDigestPoolRow -Id 'grok-build' -Family 'xai' -Label 'Grok Build' -RemainingPct $gb -Reason $gbWhy)
-        (New-BobTrayDigestPoolRow -Id 'grok-chat' -Family 'xai' -Label 'Grok chat' -RemainingPct $gc -Reason $gcWhy)
-        (New-BobTrayDigestPoolRow -Id 'opencode-free' -Family 'opencode' -Label 'OpenCode free' -RemainingPct $ofree -Reason $ofWhy)
+        (New-BobTrayDigestPoolRow -Id 'cursor' -Family 'cursor' -Label 'Cursor / Grok chat' -RemainingPct $cur -Reason $cuWhy)
+        (New-BobTrayDigestPoolRow -Id 'opencode-free' -Family 'opencode' -Label 'OpenCode free' -RemainingPct $ofree -Reason $ofWhy -NeverStale)
         (New-BobTrayDigestPoolRow -Id 'opencode-go' -Family 'opencode' -Label 'OpenCode go' -RemainingPct $ogo -Reason $ogWhy)
-        (New-BobTrayDigestPoolRow -Id 'cursor' -Family 'cursor' -Label 'Cursor' -RemainingPct $cur -Reason $cuWhy)
         (New-BobTrayDigestPoolRow -Id 'copilot' -Family 'copilot' -Label 'Copilot' -RemainingPct $cop -Reason $cpWhy)
     )
     $seen = @{
@@ -1948,6 +1969,7 @@ function Get-BobTrayDigestPoolCatalog {
         'opencode-go' = $true; 'cursor' = $true; 'copilot' = $true
         'grok_build' = $true; 'grok_chat' = $true; 'opencode_free' = $true
         'opencode_go' = $true; 'cursor-models' = $true; 'cursor_models' = $true
+        'xai' = $true; 'xai_weekly' = $true
     }
     if ($pc) {
         try {
@@ -1960,6 +1982,33 @@ function Get-BobTrayDigestPoolCatalog {
         } catch { }
     }
     return @($rows)
+}
+
+function Format-BobTrayPoolLayoutSnapshot {
+    <#
+    .SYNOPSIS
+      FR #7296: text snapshot of fleet catalog + per-machine xAI (no WinForms).
+    #>
+    param($Digest)
+    $lines = New-Object System.Collections.Generic.List[string]
+    $lines.Add('FLEET')
+    foreach ($r in @(Get-BobTrayDigestPoolCatalog -Digest $Digest)) {
+        if (-not $r) { continue }
+        $lines.Add([string]$r.heading)
+    }
+    if ($Digest -and $Digest.machines) {
+        try {
+            foreach ($p in @($Digest.machines.PSObject.Properties)) {
+                $node = $p.Value
+                $xw = $null
+                try { $xw = $node.xai } catch { }
+                if (-not $xw) { try { $xw = $node.xai_weekly } catch { } }
+                $row = Format-BobTrayXaiWeeklyRow -MachineId ([string]$p.Name) -XaiWeekly $xw
+                $lines.Add([string]$row.heading)
+            }
+        } catch { }
+    }
+    return ($lines -join [Environment]::NewLine)
 }
 
 function Get-BobCopilotHistoricalMaxPct {

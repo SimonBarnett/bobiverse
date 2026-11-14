@@ -1736,6 +1736,14 @@ function Resolve-BobiverseGitExe {
     return $null
 }
 
+function Get-BobiverseGitSafeDirectory {
+    # FR #7301: scoped safe.directory for this checkout (never a star glob).
+    param([Parameter(Mandatory)][string]$Root)
+    $full = [IO.Path]::GetFullPath($Root)
+    if ($full.Length -gt 3) { $full = $full.TrimEnd('\', '/') }
+    return ($full -replace '\\', '/')
+}
+
 function Invoke-BobiverseGit {
     # Run git with a hard timeout and no prompts. Returns Code / Out / TimedOut. Never throws.
     param(
@@ -2104,7 +2112,8 @@ function Sync-BobiverseWorkTree {
         if (-not $Remote) { $Remote = $script:BobiverseDefaultRemote }
         $root = [IO.Path]::GetFullPath($InstallRoot)
         if (-not (Test-Path -LiteralPath $root -PathType Container)) { return (Done "install root missing: $root") }
-        $G = @('-c', 'safe.directory=*', '-c', 'core.autocrlf=false', '-C', $root)   # services run as another account than the repo owner
+        $safeDir = Get-BobiverseGitSafeDirectory -Root $root
+        $G = @('-c', ('safe.directory=' + $safeDir), '-c', 'core.autocrlf=false', '-C', $root)   # FR #7301: scoped; SYSTEM != repo owner
         $hasGit = Test-Path -LiteralPath (Join-Path $root '.git')
         $created = $false
         if (-not $hasGit) {
@@ -2126,6 +2135,23 @@ function Sync-BobiverseWorkTree {
             try { Write-BobiverseInstallGitExclude -InstallRoot $root -Product $Product } catch { }
         }
         if ($DryRun) { $log.Add('INFO worktree-dry-run skip fetch/merge'); $res.Ok = $true; return (Done 'dry-run') }
+
+        # FR #7301: diverged/ff-failed already reported for this HEAD - do not fetch/ff in a loop.
+        $divergedStamp = Join-Path $root 'logs\sync-diverged.json'
+        if ($hasGit -and (Test-Path -LiteralPath $divergedStamp)) {
+            $stampHead = ''
+            try {
+                $sj = ([IO.File]::ReadAllText($divergedStamp)) | ConvertFrom-Json
+                $stampHead = ([string]$sj.head).Trim()
+            } catch { $stampHead = '' }
+            $curHead = ((Invoke-BobiverseGit -Git $git -GitArgs ($G + @('rev-parse', 'HEAD')) -TimeoutSec 20).Out | Select-Object -First 1)
+            $curHead = ("$curHead").Trim()
+            if ($stampHead -and $curHead -and ($stampHead -eq $curHead)) {
+                $log.Add("INFO sync-skip-diverged FR#7301: already reported for $curHead; not retrying ff-only")
+                $res.Ok = $true
+                return (Done 'ff-only not possible (diverged; reported; not looping)')
+            }
+        }
 
         # a merge/rebase/cherry-pick/bisect in progress is somebody's work - leave it completely alone
         # FR #4444 / harvest: install roots are linked worktrees (.git is a file). Test-Path
@@ -2342,6 +2368,17 @@ function Sync-BobiverseWorkTree {
                 try {
                     Report-BobiverseSyncFfStall -InstallRoot $root -Behind $(if ($behindFail -gt 0) { $behindFail } else { 0 }) -Reason $whyFail
                 } catch { }
+                try {
+                    $logsDir = Join-Path $root 'logs'
+                    New-Item -ItemType Directory -Force -Path $logsDir | Out-Null
+                    $headNow = ("$before").Trim()
+                    if (-not $headNow) {
+                        $headNow = ((Invoke-BobiverseGit -Git $git -GitArgs ($G + @('rev-parse', 'HEAD')) -TimeoutSec 20).Out | Select-Object -First 1)
+                        $headNow = ("$headNow").Trim()
+                    }
+                    $stamp = @{ v = 1; head = $headNow; reason = $whyFail; at = [DateTime]::UtcNow.ToString('o') } | ConvertTo-Json -Compress
+                    [IO.File]::WriteAllText((Join-Path $logsDir 'sync-diverged.json'), $stamp, (New-Object Text.UTF8Encoding($false)))
+                } catch { }
                 return (Done ("$whyFail; local work kept as is$behindMsg"))
             }
         }
@@ -2357,6 +2394,10 @@ function Sync-BobiverseWorkTree {
             return (Done "still behind origin/$Branch by $behind")
         }
         try { Write-BobiverseSyncStatus -InstallRoot $root -Behind 0 -Reason '' -Ok } catch { }
+        try {
+            $gone = Join-Path $root 'logs\sync-diverged.json'
+            if (Test-Path -LiteralPath $gone) { Remove-Item -LiteralPath $gone -Force -ErrorAction SilentlyContinue }
+        } catch { }
         return (Done $(if ($res.Pulled) { "fast-forwarded origin/$Branch" } else { 'already up to date' }))
     } catch {
         $res.Reason = "work tree sync error: $($_.Exception.Message)"
