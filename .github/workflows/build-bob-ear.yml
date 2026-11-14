@@ -1,7 +1,9 @@
 # Isolated bob-ear.exe build. Not a release, MSI, install, or service start.
 # Build-BobEar.ps1 owns the PyInstaller command and the --help smoke check.
-# FR #7179 / #7202: build the checked-out commit on push to main and on PRs that
-# touch ear sources (frozen irc_agent import graph + Build-BobEar pins). Provenance records that commit SHA (no hard behavior pin).
+# FR #7179 / #7202 / #7390: build the checked-out commit on push to main and on PRs that
+# touch ear sources (frozen irc_agent import graph + Build-BobEar pins + ear launchers).
+# Provenance records that commit SHA (no hard behavior pin). Artifact also ships Start-Bob.ps1 +
+# Select-BobEarLaunch.ps1 with SHA-256 in the manifest.
 # Prior pin history (FR #7065 / #7039 / #6727 / #6722 / #6672 / #6558 merge
 # 2da1eb06d0c99cd3384d6bf1bb21faa830526ba5 / PR #6575) lives in
 # bob/docs/deploy-pool-monitor-manifest.txt for deploy notes only.
@@ -15,10 +17,13 @@ on:
       - bob/docs/deploy-pool-monitor-manifest.txt
       - bob/scripts/Build-BobEar.ps1
       - bob/scripts/Install-BobEarExe.ps1
+      - bob/scripts/Start-Bob.ps1
+      - bob/scripts/Select-BobEarLaunch.ps1
       - bob/tests/ear_ci_source_paths.py
       - bob/tests/test_fr6254_ear_build_provenance_align.py
       - bob/tests/test_fr7179_ear_tray_ci_main_push.py
       - bob/tests/test_fr7202_ear_ci_frozen_imports.py
+      - bob/tests/test_fr7390_ear_artifact_launchers.py
       - common/scripts/account_map.py
       - common/scripts/agent_control.py
       - common/scripts/ai_root.py
@@ -44,6 +49,7 @@ on:
       - common/scripts/done_usage.py
       - common/scripts/ergo_brief.py
       - common/scripts/filexfer.py
+      - common/scripts/fleet_pool_fetch.py
       - common/scripts/focus_ignore.py
       - common/scripts/fuel_chain.py
       - common/scripts/gh_filer.py
@@ -85,6 +91,7 @@ on:
       - common/scripts/stall_filer.py
       - common/scripts/startworker.py
       - common/scripts/stuck_job_sweep.py
+      - common/scripts/sync_install_skills.py
       - common/scripts/talk_seat_ghost.py
       - common/scripts/talk_seat_pid.py
       - common/scripts/unregister_cmd.py
@@ -99,10 +106,13 @@ on:
       - bob/docs/deploy-pool-monitor-manifest.txt
       - bob/scripts/Build-BobEar.ps1
       - bob/scripts/Install-BobEarExe.ps1
+      - bob/scripts/Start-Bob.ps1
+      - bob/scripts/Select-BobEarLaunch.ps1
       - bob/tests/ear_ci_source_paths.py
       - bob/tests/test_fr6254_ear_build_provenance_align.py
       - bob/tests/test_fr7179_ear_tray_ci_main_push.py
       - bob/tests/test_fr7202_ear_ci_frozen_imports.py
+      - bob/tests/test_fr7390_ear_artifact_launchers.py
       - common/scripts/account_map.py
       - common/scripts/agent_control.py
       - common/scripts/ai_root.py
@@ -128,6 +138,7 @@ on:
       - common/scripts/done_usage.py
       - common/scripts/ergo_brief.py
       - common/scripts/filexfer.py
+      - common/scripts/fleet_pool_fetch.py
       - common/scripts/focus_ignore.py
       - common/scripts/fuel_chain.py
       - common/scripts/gh_filer.py
@@ -169,6 +180,7 @@ on:
       - common/scripts/stall_filer.py
       - common/scripts/startworker.py
       - common/scripts/stuck_job_sweep.py
+      - common/scripts/sync_install_skills.py
       - common/scripts/talk_seat_ghost.py
       - common/scripts/talk_seat_pid.py
       - common/scripts/unregister_cmd.py
@@ -223,15 +235,28 @@ jobs:
           New-Item -ItemType Directory -Force -Path $stage | Out-Null
           Copy-Item -LiteralPath $exe -Destination (Join-Path $stage "bob-ear.exe")
           Copy-Item -LiteralPath "$root\bob\docs\deploy-pool-monitor-manifest.txt" -Destination (Join-Path $stage "deploy-pool-monitor-manifest.txt")
+          # FR #7390: ship ear launchers so installs do not keep stale Start-Bob / Select-BobEarLaunch.
+          $startBob = Join-Path $root "bob\scripts\Start-Bob.ps1"
+          $selectEar = Join-Path $root "bob\scripts\Select-BobEarLaunch.ps1"
+          if (-not (Test-Path -LiteralPath $startBob)) { throw "missing $startBob" }
+          if (-not (Test-Path -LiteralPath $selectEar)) { throw "missing $selectEar" }
+          Copy-Item -LiteralPath $startBob -Destination (Join-Path $stage "Start-Bob.ps1")
+          Copy-Item -LiteralPath $selectEar -Destination (Join-Path $stage "Select-BobEarLaunch.ps1")
+          $startHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $startBob).Hash.ToLowerInvariant()
+          $selectHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $selectEar).Hash.ToLowerInvariant()
+          Set-Content -Encoding ascii (Join-Path $stage "Start-Bob.ps1.sha256") "$startHash  Start-Bob.ps1"
+          Set-Content -Encoding ascii (Join-Path $stage "Select-BobEarLaunch.ps1.sha256") "$selectHash  Select-BobEarLaunch.ps1"
           @(
             "source_commit=$($env:WORKFLOW_COMMIT)"
             "workflow_commit=$($env:WORKFLOW_COMMIT)"
             "exe_name=bob-ear.exe"
             "exe_sha256=$hash"
             "exe_size_bytes=$size"
+            "start_bob_ps1_sha256=$startHash"
+            "select_bob_ear_launch_ps1_sha256=$selectHash"
             "build_time_utc=$builtAt"
             "builder=Build-BobEar.ps1"
-            "fr=7179"
+            "fr=7179,7390"
           ) | Set-Content -Encoding ascii (Join-Path $stage "provenance.txt")
           Set-Content -Encoding ascii (Join-Path $stage "bob-ear.exe.sha256") "$hash  bob-ear.exe"
           Copy-Item -LiteralPath (Join-Path $stage "provenance.txt") -Destination (Join-Path $stage "manifest.txt")

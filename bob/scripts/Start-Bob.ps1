@@ -108,8 +108,16 @@ if ($IrcHost -notmatch '^[A-Za-z0-9][A-Za-z0-9.-]*$') { throw "invalid -IrcHost 
 $env:BOB_INSTALL_ROOT = $InstallRoot
 $earArgs = @('--nick', $nick, '--home', $BobHome, '--channel', $channel, '--host', $IrcHost)
 if ($useEarExe) {
-    Write-Host ("INFO ear host={0} nick={1} channels={2} via=bob-ear.exe sha256={3} source={4} version={5} (FR #1481/#7233)" -f `
-        $IrcHost, $nick, $channel, $earPick.Sha256, $(if ([string]::IsNullOrWhiteSpace([string]$earPick.SourceCommit)) { 'unknown' } else { $earPick.SourceCommit }), $earPick.ProductVersion)
+    # FR #7390: log Select-BobEarLaunch.ps1 hash next to exe sha256 / source=.
+    $launcherSha = ''
+    try {
+        $selPath = Join-Path $scriptDir 'Select-BobEarLaunch.ps1'
+        if (Test-Path -LiteralPath $selPath -PathType Leaf) {
+            $launcherSha = [string](Get-FileHash -LiteralPath $selPath -Algorithm SHA256).Hash
+        }
+    } catch { }
+    Write-Host ("INFO ear host={0} nick={1} channels={2} via=bob-ear.exe sha256={3} launcher_sha256={4} source={5} version={6} (FR #1481/#7233/#7390)" -f `
+        $IrcHost, $nick, $channel, $earPick.Sha256, $(if ([string]::IsNullOrWhiteSpace($launcherSha)) { 'unknown' } else { $launcherSha }), $(if ([string]::IsNullOrWhiteSpace([string]$earPick.SourceCommit)) { 'unknown' } else { $earPick.SourceCommit }), $earPick.ProductVersion)
     & $earExe @earArgs
     exit $LASTEXITCODE
 }
