@@ -163,6 +163,71 @@ def test_fr7288_digest_source_tag_never_secret(monkeypatch, tmp_path: Path):
     assert f"credman:{fp.CREDMAN_GITHUB_TARGET}" in blob
 
 
+def test_fr7288_bob_install_root_does_not_steal_github_file(monkeypatch, tmp_path: Path):
+    """Without JEEVES_INSTALL_ROOT, BOB_INSTALL_ROOT (ear) must not win the file fallback."""
+    ear = tmp_path / "bob"
+    (ear / "config").mkdir(parents=True)
+    (ear / "config" / "github.token").write_text("FAKE_EAR_TOKEN\n", encoding="utf-8")
+    jeeves = tmp_path / "jeeves"
+    (jeeves / "config").mkdir(parents=True)
+    (jeeves / "config" / "github.token").write_text("FAKE_JEEVES_TOKEN\n", encoding="utf-8")
+    monkeypatch.delenv("JEEVES_INSTALL_ROOT", raising=False)
+    monkeypatch.setenv("BOB_INSTALL_ROOT", str(ear))
+    monkeypatch.delenv("GH_TOKEN", raising=False)
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+    monkeypatch.setattr(fp, "read_credman_secret", lambda _t: {})
+    import ai_root
+
+    monkeypatch.setattr(
+        ai_root,
+        "product_root",
+        lambda product, **k: str(jeeves) if product == "jeeves" else str(ear),
+    )
+    tok, src, _tried = fp.resolve_fleet_github_token()
+    assert tok == "FAKE_JEEVES_TOKEN"
+    assert src == "file:github.token"
+    root = fp.fleet_jeeves_install_root()
+    assert root is not None
+    assert root.resolve() == jeeves.resolve()
+
+
+def test_fr7288_opencode_file_uses_jeeves_not_ear(monkeypatch, tmp_path: Path):
+    ear = tmp_path / "bob"
+    (ear / "config").mkdir(parents=True)
+    (ear / "config" / "opencode-go.apikey").write_text("FAKE_EAR_GO\n", encoding="utf-8")
+    jeeves = tmp_path / "jeeves"
+    (jeeves / "config").mkdir(parents=True)
+    (jeeves / "config" / "opencode-go.apikey").write_text("FAKE_JEEVES_GO\n", encoding="utf-8")
+    monkeypatch.setenv("JEEVES_INSTALL_ROOT", str(jeeves))
+    monkeypatch.setenv("BOB_INSTALL_ROOT", str(ear))
+    monkeypatch.delenv("BOB_OPENCODE_GO_API_KEY", raising=False)
+    monkeypatch.setattr(fp, "read_credman_secret", lambda _t: {})
+    key, src, _tried = fp.resolve_fleet_opencode_go_key()
+    assert key == "FAKE_JEEVES_GO"
+    assert "file:" in src
+
+
+def test_fr7288_env_github_wins_after_credman_miss(monkeypatch, tmp_path: Path):
+    root = tmp_path / "jeeves"
+    (root / "config").mkdir(parents=True)
+    (root / "config" / "github.token").write_text("FAKE_FILE_SHOULD_LOSE\n", encoding="utf-8")
+    monkeypatch.setenv("JEEVES_INSTALL_ROOT", str(root))
+    monkeypatch.setenv("GH_TOKEN", "FAKE_ENV_GH")
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+    monkeypatch.setattr(fp, "read_credman_secret", lambda _t: {})
+    tok, src, _tried = fp.resolve_fleet_github_token()
+    assert tok == "FAKE_ENV_GH"
+    assert src == "env:GH_TOKEN"
+
+
+def test_fr7288_fetch_copilot_no_token_error(monkeypatch, tmp_path: Path):
+    monkeypatch.setattr(fp, "resolve_fleet_github_token", lambda: ("", "none:credman:x,env:GH_TOKEN", ["credman:x"]))
+    meter = fp.fetch_copilot_default(tmp_path, now=1_700_000_000.0)
+    assert meter.get("error") == "no_token"
+    assert str(meter.get("source") or "").startswith("none:")
+    assert meter.get("fresh") is False
+
+
 def test_fr7288_docs_list_targets_and_cmdkey():
     docs = (Path(__file__).resolve().parents[2] / "jeeves" / "docs" / "fleet-pools-credentials.md")
     assert docs.is_file()
@@ -172,3 +237,7 @@ def test_fr7288_docs_list_targets_and_cmdkey():
     assert "cmdkey" in text.lower() or "CredWrite" in text or "New-StoredCredential" in text
     assert "LocalSystem" in text or "SYSTEM" in text
     assert "never" in text.lower() and ("log" in text.lower() or "digest" in text.lower())
+    hooks = Path(__file__).resolve().parents[2] / "jeeves" / "docs" / "webhooks.md"
+    htxt = hooks.read_text(encoding="utf-8")
+    assert "fleet-pools-credentials.md" in htxt
+    assert "7288" in htxt

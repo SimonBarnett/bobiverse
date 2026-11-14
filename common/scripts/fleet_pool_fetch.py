@@ -44,9 +44,11 @@ def fleet_jeeves_install_root(
 ) -> Path | None:
     """Jeeves product install root for fleet credential file fallbacks (FR #7288).
 
-    Prefer ``JEEVES_INSTALL_ROOT``, then ``resolve_jeeves_install_root`` (frozen
-    ``<InstallRoot>\\jeeves\\jeeves.exe`` / env). Do not use ear
-    ``opencode_install_root`` (``scripts\\bob-ear.exe`` layout).
+    Prefer ``JEEVES_INSTALL_ROOT``, then the frozen ``jeeves.exe`` *product*
+    directory (``<InstallRoot>\\jeeves``), then ``ai_root.product_root("jeeves")``.
+    Never ``BOB_INSTALL_ROOT`` / ear ``scripts\\bob-ear.exe``: chair
+    ``resolve_jeeves_install_root`` treats ``BOB_INSTALL_ROOT`` as the MSI
+    install root and would steal ear ``config\\github.token``.
     """
     e = os.environ if env is None else env
     if explicit is not None and str(explicit).strip():
@@ -55,11 +57,15 @@ def fleet_jeeves_install_root(
     if override:
         return Path(override).resolve()
     try:
-        import chair_commands as cc
+        import sys
 
-        root = cc.resolve_jeeves_install_root(env=e)
-        if root is not None:
-            return Path(root).resolve()
+        is_frozen = bool(getattr(sys, "frozen", False) or hasattr(sys, "_MEIPASS"))
+        if is_frozen:
+            exe = Path(sys.executable).resolve()
+            if exe.parent.name.lower() == "jeeves":
+                return exe.parent
+            if exe.name.lower() in ("jeeves.exe", "jeeves"):
+                return exe.parent
     except Exception:
         pass
     try:
@@ -279,24 +285,23 @@ def fetch_copilot_default(home: Path, now: float) -> dict:
 
     token, src, tried = resolve_fleet_github_token()
     if not token:
-
-        def boom() -> dict:
-            raise RuntimeError("no_token")
-
-        fetch_user: Callable[[], dict] = boom
         cred_source = src if src.startswith("none:") else ("none:" + ",".join(tried))
-    else:
-        import bobreport
+        return empty_meter(
+            pool_id=POOL_COPILOT,
+            source=cred_source,
+            error="no_token",
+            now=now,
+        )
+    import bobreport
 
-        def fetch_user() -> dict:
-            return bobreport._github_get_copilot_user(token)
+    def fetch_user() -> dict:
+        return bobreport._github_get_copilot_user(token)
 
-        cred_source = src
+    cred_source = src
     try:
         cd.observe_quota(Path(home), fetch_user=fetch_user, now=now)
         pool = cd.ensure_public_pool(cd.pool_for_digest(Path(home)))
     except Exception as exc:  # noqa: BLE001
-        iso = iso_utc(now)
         return empty_meter(
             pool_id=POOL_COPILOT,
             source=cred_source,
@@ -307,9 +312,6 @@ def fetch_copilot_default(home: Path, now: float) -> dict:
     err = pool.get("last_error")
     ok = str(pool.get("state") or "") in ("ok", "exhausted")
     remaining = pool.get("remaining")
-    if not token:
-        ok = False
-        err = err or "no_token"
     return {
         "id": POOL_COPILOT,
         "remaining": remaining,
