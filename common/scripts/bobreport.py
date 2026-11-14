@@ -7924,6 +7924,55 @@ def read_local_xai_weekly(*, now: datetime | None = None) -> dict | None:
     return None
 
 
+def classify_xai_weekly_attempt(
+    xai: dict | None,
+    *,
+    err: object = None,
+    acq: object = None,
+    applied: bool = False,
+) -> str:
+    """FR #7365: diag ``xai_attempt`` — ``ok`` only when the reading was applied."""
+    if applied:
+        return "ok"
+    if not isinstance(xai, dict):
+        return str(err or acq or "live-fetch-failed")
+    if not xai.get("weekly_known"):
+        return "not-known"
+    if xai.get("fresh") is False:
+        return "not-fresh"
+    return str(err or acq or "not-applied")
+
+
+def xai_weekly_reading_applicable(xai: dict | None) -> bool:
+    """True when a live fetch result should update peer/digest (FR #7365 / #6274)."""
+    if not isinstance(xai, dict):
+        return False
+    if not xai.get("weekly_known"):
+        return False
+    if xai.get("fresh") is False:
+        return False
+    return True
+
+
+def apply_live_xai_weekly_reading(
+    peer: dict, reading: dict, *, now: datetime | None = None
+) -> dict:
+    """Apply a valid live reading and stamp ``fetched_at`` to this fetch (FR #7365).
+
+    Provider/cache timestamps must not leave the digest looking minutes stale
+    after a successful live pull. Never called for ``fresh=False`` readings.
+    """
+    if not isinstance(peer, dict) or not isinstance(reading, dict):
+        return peer
+    clock = now or datetime.now(timezone.utc)
+    if clock.tzinfo is None:
+        clock = clock.replace(tzinfo=timezone.utc)
+    stamped = dict(reading)
+    stamped["fetched_at"] = clock.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    stamped["fresh"] = True
+    return enrich_peer_with_xai_weekly(peer, stamped)
+
+
 def enrich_peer_with_xai_weekly(peer: dict, reading: dict | None) -> dict:
     """Put a measured xAI weekly into the peer as remaining percent.
 
@@ -8210,30 +8259,39 @@ def publish_local_peer_fuel(
             acq = _last_xai_acquisition.get("identity")
             err = _last_xai_acquisition.get("error")
             _last_fuel_publish_diag["acquisition"] = acq
-            _last_fuel_publish_diag["xai_attempt"] = "ok" if xai else str(err or acq or "live-fetch-failed")
             if err:
                 _last_fuel_publish_diag["xai_weekly_error"] = err
             # FR #7235: auth_path on diag (path only, never contents).
             loc = _last_xai_acquisition.get("auth_path")
             if loc:
                 _last_fuel_publish_diag["xai_weekly_auth_path"] = loc
-            ok = bool(xai and xai.get("weekly_known") and xai.get("fresh"))
+            # FR #7365: ok only when applied; stamp fetch-time fetched_at (never trust cache stamp).
+            ok = xai_weekly_reading_applicable(xai)
+            _last_fuel_publish_diag["xai_attempt"] = classify_xai_weekly_attempt(
+                xai, err=err, acq=acq, applied=ok
+            )
             rate = "429" in str(err or "") or "provider-http-429" in str(err or "")
             mark_pool_fetch(
                 "xai", now_f, ok=ok, error=None if ok else str(err or acq), rate_limited=rate
             )
             if ok:
-                peer = enrich_peer_with_xai_weekly(peer, xai)
+                peer = apply_live_xai_weekly_reading(peer, xai, now=clock)
+                with contextlib.suppress(Exception):
+                    bobstat.write_peer(home, peer)
             else:
+                keep_err = classify_xai_weekly_attempt(xai, err=err, acq=acq, applied=False)
+                if keep_err in ("ok", "not-applied"):
+                    keep_err = str(err or acq or "live-fetch-failed")
                 peer = enrich_peer_keep_last_good_xai_weekly(
                     peer,
-                    error=str(err or acq or "live-fetch-failed"),
+                    error=keep_err,
                     now=clock,
                     machine_id=mid,
                 )
         else:
             _last_fuel_publish_diag["acquisition"] = "cached"
-            _last_fuel_publish_diag["xai_attempt"] = "cached"
+            # FR #7365: pool interval skip is not a successful apply.
+            _last_fuel_publish_diag["xai_attempt"] = "cached-reading"
     except Exception as exc:
         _last_fuel_publish_diag["acquisition"] = "read-failed"
         _last_fuel_publish_diag["xai_weekly_error"] = type(exc).__name__

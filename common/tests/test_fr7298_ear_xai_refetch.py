@@ -128,4 +128,5 @@ def test_fr7298_diag_mentions_attempt_on_cached_skip():
         "xai_weekly_error": None,
     }
     line = bobreport.format_fuel_publish_diag(bobreport.last_fuel_publish_diag())
-    assert "xai_attempt=cached" in line
+    # FR #7365: pool-interval skip is cached-reading (not a successful apply).
+    assert "xai_attempt=cached" in line or "xai_attempt=cached-reading" in line
