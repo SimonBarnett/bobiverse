@@ -6,6 +6,7 @@ quota_reset_date (reset_at), or an explicit error — never omit the pool.
 """
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import bobreport
@@ -246,3 +247,41 @@ def test_fr7178_digest_never_omits_copilot_when_unread(monkeypatch, tmp_path: Pa
     assert "entitlement" in obj["copilot"]
     assert "reset_at" in obj["copilot"]
     assert obj["copilot"].get("state") in ("unknown", "ok", "exhausted")
+
+
+def test_fr7178_observe_ignores_chair_observe_off(monkeypatch, tmp_path: Path):
+    """Hostile: BOB_COPILOT_OBSERVE=0 must not skip the ear fetch (FR #7178)."""
+    install = tmp_path / "bob"
+    _system_env(monkeypatch, tmp_path, install=install)
+    monkeypatch.setenv("BOB_COPILOT_OBSERVE", "0")
+    (install / "config" / "github.token").write_text("FAKE_GH_TOKEN_7178", encoding="utf-8")
+    pool = bobreport.fetch_live_copilot_pool(
+        install / "home", now=2_000.0, fetch_user=lambda: SAMPLE_USER
+    )
+    assert pool["state"] == "ok"
+    assert pool["remaining"] == 40
+    assert pool["entitlement"] == 50
+
+
+def test_fr7178_http_403_explicit_error_never_omits(monkeypatch, tmp_path: Path):
+    install = tmp_path / "bob"
+    _system_env(monkeypatch, tmp_path, install=install)
+    (install / "config" / "github.token").write_text("FAKE_GH_TOKEN_7178", encoding="utf-8")
+
+    def boom():
+        return {"status": 403, "message": "forbidden"}
+
+    pool = bobreport.fetch_live_copilot_pool(install / "home", now=3_000.0, fetch_user=boom)
+    assert isinstance(pool, dict)
+    assert pool.get("last_error")
+    assert "remaining" in pool and "entitlement" in pool
+    assert "FAKE_GH_TOKEN_7178" not in json.dumps(pool)
+    line = bobreport.format_fuel_publish_diag(
+        {
+            "copilot_acquisition": "unread",
+            "copilot_source": "file:github.token",
+            "error": pool.get("last_error"),
+        }
+    )
+    assert "FAKE_GH_TOKEN_7178" not in line
+    assert "copilot_source=file:github.token" in line
