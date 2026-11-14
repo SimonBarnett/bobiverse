@@ -28,27 +28,18 @@ def test_fr6371_updated_only_when_no_reset():
     """Reading with fetched_at and no reset -> updated HH:MM, no countdown."""
     script = f"""
 . '{HOVER}'
-$now = [datetime]'2026-11-10T10:05:00Z'
+$now = [datetime]'2026-11-10T10:01:00Z'
 $rec = [pscustomobject]@{{
   status='known'; used_pct=0; remaining_pct=100; reset_label=$null
   fetched_at='2026-11-10T10:00:00Z'; error='reset unavailable'
 }}
 $line = Format-BobOpencodeWindowLine -WindowId week -Record $rec -Now $now
 Write-Output $line
-$lab = Format-BobPoolUpdatedLabel -FetchedAt $rec.fetched_at -Now $now
-Write-Output ($lab -replace '^updated ','')
 """
-    out_lines = _ps(script).splitlines()
-    line = out_lines[0]
-    expected_hhmm = out_lines[1]
+    line = _ps(script).splitlines()[0]
     assert line.startswith("go weekly - 100% left")
-    assert f"updated {expected_hhmm}" in line, (line, expected_hhmm)
+    assert "updated " not in line
     assert "reset unavailable" not in line
-    # No countdown segment: after "% left" comes updated (not Nd/Hh).
-    after = line.split("100% left", 1)[1]
-    assert "updated" in after
-    assert not __import__("re").search(r"-\s*\d+d\b", after)
-    assert not __import__("re").search(r"-\s*\d+h\b", after)
 
 
 @pytest.mark.skipif(os.name != "nt" or not PS, reason="Windows PowerShell")
@@ -56,7 +47,7 @@ def test_fr6371_reset_kept_and_updated_shown():
     """Reading with reset_label keeps countdown and also shows updated time."""
     script = f"""
 . '{HOVER}'
-$now = [datetime]'2026-11-10T10:05:00Z'
+$now = [datetime]'2026-11-10T10:01:00Z'
 $rec = [pscustomobject]@{{
   status='known'; used_pct=36; remaining_pct=64; reset_label='2d 5h'
   fetched_at='2026-11-10T10:00:00Z'
@@ -67,13 +58,12 @@ Write-Output $line
     line = _ps(script)
     assert "64% left" in line
     assert "2d 5h" in line
-    assert "updated " in line
-    assert __import__("re").search(r"updated \d{1,2}:\d{2}", line), line
+    assert "updated " not in line
 
 
 @pytest.mark.skipif(os.name != "nt" or not PS, reason="Windows PowerShell")
 def test_fr6371_stale_when_fetched_older_than_threshold():
-    """Fetched older than default 15m threshold paints stale."""
+    """Fetched older than default 2 min threshold paints stale (no live %)."""
     script = f"""
 . '{HOVER}'
 $now = [datetime]'2026-11-10T10:20:00Z'
@@ -89,8 +79,9 @@ Write-Output ('AGE=' + $fresh.age_s)
 """
     out = _ps(script).splitlines()
     line = out[0]
-    assert "updated " in line
-    assert "[stale" in line.lower() or " stale" in line.lower()
+    assert "updated " not in line
+    assert "stale" in line.lower()
+    assert "100% left" not in line
     assert any(x.startswith("STATE=stale") for x in out), out
     assert any(x.startswith("AGE=1200") for x in out), out
 
@@ -103,8 +94,7 @@ $lab = Format-BobPoolUpdatedLabel -FetchedAt '2026-11-10T15:30:00Z' -Now ([datet
 Write-Output $lab
 """
     lab = _ps(script)
-    assert lab.startswith("updated ")
-    assert __import__("re").match(r"updated \d{1,2}:\d{2}$", lab), lab
+    assert lab == "" or lab.lower() == "null" or not lab
 
 
 @pytest.mark.skipif(os.name != "nt" or not PS, reason="Windows PowerShell")
@@ -119,13 +109,13 @@ $line = Format-BobCopilotPoolLine -Pool $pool -Now ([datetime]'2099-01-01T12:00:
 Write-Output $line
 """
     line = _ps(script)
-    assert "updated " in line
-    assert "0% left" in line or "% left" in line
+    assert "updated " not in line
+    assert "0% left" in line or "% left" in line or "Copilot" in line
 
 
 def test_fr6371_docs_mention_updated_stamp():
     docs = (ROOT / "docs" / "bob-tray-dialogs.md").read_text(encoding="utf-8")
-    assert "FR #6371" in docs or "updated HH:MM" in docs or "updated HH:mm" in docs.lower()
+    assert "FR #6371" in docs or "FR #7250" in docs
     hover = HOVER.read_text(encoding="utf-8-sig")
     assert "Format-BobPoolUpdatedLabel" in hover
     assert "Get-BobPoolReadingFreshness" in hover
@@ -133,7 +123,7 @@ def test_fr6371_docs_mention_updated_stamp():
 
 @pytest.mark.skipif(os.name != "nt" or not PS, reason="Windows PowerShell")
 def test_fr6371_stale_threshold_env_override():
-    """BOB_TRAY_POOL_STALE_S overrides default 900s and clamps 60..86400."""
+    """BOB_TRAY_POOL_STALE_S overrides default 120s and clamps 60..86400."""
     script = f"""
 . '{HOVER}'
 $env:BOB_TRAY_POOL_STALE_S = '300'
@@ -153,4 +143,4 @@ Write-Output ('BACK=' + (Get-BobPoolStaleAfterSec))
     assert out.get("STATE300") == "stale"  # 360s age > 300s threshold
     assert out.get("CLAMP_LO") == "60"
     assert out.get("CLAMP_HI") == "86400"
-    assert out.get("BACK") == "900"
+    assert out.get("BACK") == "120"
