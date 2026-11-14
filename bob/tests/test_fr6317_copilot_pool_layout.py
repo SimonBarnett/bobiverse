@@ -107,10 +107,11 @@ def test_fr6317_format_known_zero_unknown(tmp_path: Path):
             }}
             $staleLine = Format-BobCopilotPoolLine -Pool $stalePool -Now ([datetime]'2099-01-01T12:00:00Z')
             if ($staleLine -notmatch 'stale') {{ throw ('stale line={{0}}' -f $staleLine) }}
-            if ($staleLine -match '% left') {{ throw ('stale must not look current={{0}}' -f $staleLine) }}
+            if ($staleLine -notmatch 'unlimited') {{ throw ('unlimited stale={{0}}' -f $staleLine) }}
+            if ($staleLine -match '0%') {{ throw ('unlimited must not show 0%={{0}}' -f $staleLine) }}
             $staleBar = Get-BobCopilotMeterBarPct -Pool $stalePool -Now ([datetime]'2099-01-01T12:00:00Z')
-            if ($null -eq $staleBar) {{ throw 'stale bar must keep remaining pct (0), not null' }}
-            if ([int]$staleBar -ne 0) {{ throw ('stale bar={{0}}' -f $staleBar) }}
+            if ($null -eq $staleBar) {{ throw 'unlimited bar must be 100, not null' }}
+            if ([int]$staleBar -ne 100) {{ throw ('unlimited stale bar={{0}} want 100' -f $staleBar) }}
 
             $unkBar = Get-BobCopilotMeterBarPct -Pool $null
             if ($null -ne $unkBar) {{ throw 'unknown bar must be null (neutral empty track)' }}

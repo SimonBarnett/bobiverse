@@ -2943,7 +2943,7 @@ function Rebuild-BobTrayTiles {
         }
         # FR #5172 / FR #6148 / FR #6149 / FR #6301 / FR #6317:
         # Copilot like OpenCode rows: family header (no RightText), then left-aligned
-        # 'Copilot - <text>' UsageRow + remaining bar. Stale is text, not red/right-aligned.
+        # 'Copilot - <text>' UsageRow + remaining bar. FR #7299: [stale] paints red.
         # Prefer hover-supplied line/bar (exported Get-BobTrayHover). Module-private
         # Format-BobCopilotPoolLine is invisible outside BobBridge (MRB #6321 FAIL).
         $copilotLine = [string]$CopilotLine
@@ -2956,7 +2956,12 @@ function Rebuild-BobTrayTiles {
             try { $copilotBar = Get-BobCopilotMeterBarPct -Pool $CopilotPool } catch { $copilotBar = $null }
         }
         $y = Add-BobTrayFuelFamilyRow -X 0 -Y $y -Family 'copilot' -Title 'Copilot'
-        $y = Add-BobTrayUsageRow -X 18 -Y $y -Heading $copilotLine -RemainingPct $copilotBar -BarWidth 336 -Icon $null
+        # FR #7299: stale label in red (exact [stale] / unlimited [stale]).
+        $copilotHeadingColor = $null
+        if ($copilotLine -match '\[stale\]') {
+            $copilotHeadingColor = [System.Drawing.Color]::FromArgb(248, 81, 73)
+        }
+        $y = Add-BobTrayUsageRow -X 18 -Y $y -Heading $copilotLine -RemainingPct $copilotBar -BarWidth 336 -Icon $null -HeadingColor $copilotHeadingColor
         # FR #7243 / #7296: extra digest pools; skip Go/Copilot already painted; skip grok-build (per-machine xAI).
         $skipIds = @{ 'grok-build' = $true; 'grok-chat' = $true; 'opencode-go' = $true; 'copilot' = $true }
         foreach ($drow in @($DigestPoolRows)) {
@@ -2974,7 +2979,15 @@ function Rebuild-BobTrayTiles {
             try { if ($drow.never_stale) { $neverStale = [bool]$drow.never_stale } } catch { }
             try { if ($drow.known) { $barPct = [int]$drow.remaining_pct } } catch { $barPct = $null }
             if ($neverStale -and $null -eq $barPct) { $barPct = 100 }
-            $y = Add-BobTrayUsageRow -X 18 -Y $y -Heading ([string]$drow.heading) -RemainingPct $barPct -BarWidth 336 -Icon $null
+            $rowStale = $false
+            try { if ($drow.stale) { $rowStale = [bool]$drow.stale } } catch { }
+            $heading = [string]$drow.heading
+            if ($rowStale -or ($heading -match '\[stale\]')) {
+                $staleColor = [System.Drawing.Color]::FromArgb(248, 81, 73)
+                $y = Add-BobTrayUsageRow -X 18 -Y $y -Heading $heading -RemainingPct $barPct -BarWidth 336 -Icon $null -HeadingColor $staleColor
+            } else {
+                $y = Add-BobTrayUsageRow -X 18 -Y $y -Heading $heading -RemainingPct $barPct -BarWidth 336 -Icon $null
+            }
         }
         $indent = 18
         $shownMachines = @{}
