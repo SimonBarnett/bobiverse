@@ -313,10 +313,6 @@ $nsResult = Ensure-BobiverseBobNickServPassword -BobHome $BobHome -InstallRoot $
     -LegacyHomes $legacyNs -FailIfMissing:$hadPriorInstall
 Write-Host ("INFO FR #3904 nickserv ok={0} migrated={1} reason={2}" -f $nsResult.Ok, $nsResult.Migrated, $nsResult.Reason)
 
-# FR #7234: provision config\github.token for LocalSystem ear Copilot (operator gh/env/profile).
-$ghTokResult = Ensure-BobiverseGithubToken -InstallRoot $InstallRoot
-Write-Host ("INFO FR #7234 github.token ok={0} migrated={1} source={2}" -f $ghTokResult.Ok, $ghTokResult.Migrated, $ghTokResult.Source)
-
 # Quote-safe NSSM: no -Python path in AppParameters (issue #3); Start-Bob resolves python.
 $launcher = Join-Path $InstallRoot 'scripts\Start-Bob.ps1'
 
