@@ -10,6 +10,7 @@ FR #6862: local stdio MCP `bob/scripts/skill_dag_mcp.py` (`--root`, `--max-bytes
 
 ## Rules (all enforced in code and tests)
 
+* **WinPS 5.1 PSModulePath (FR #7315):** `powershell.exe` children (pytest, `read_fuel`, seat `prepare_seat_child_env`) use `C:\Windows\System32\WindowsPowerShell\v1.0\Modules` only so pwsh 7 `PSModulePath` cannot hide `Get-FileHash`.
 * **Tray**: compiled `bob-tray.exe` (`BobTray.cs`) owns the icon. **Agents** is a submenu (Automatic, Grok, Cursor, OpenCode). **Plan** is one click. Automatic and Plan omit `--agent`. Grok, Cursor, and OpenCode pass `--agent` and refuse instead of starting a different agent. Each start runs `bob-worker.exe --mode agent|plan --install-root <root> --machine-id <id>` (a per-user run copy under `%LOCALAPPDATA%\Bobiverse\worker\bin`, so the installed exe is never locked by a seat). Rebuild the tray with `scripts\Build-BobDialogs.ps1` and the worker with `scripts\Build-BobWorker.ps1`. Keep `scripts\opencode_fuel.py` on the install.
 * **ALWAYS a NEW agent** (t765u): new session id every time; `--resume/--continue/-r/-c/--session/--chat` are refused (`assert_fresh`); a click never attaches to an existing agent/window/process.
 * **ONE window** (t771u): the exe's visible console IS the agent's window. The agent inherits that console (no `CREATE_NEW_CONSOLE`), IRC relay / `!bored` / health run as threads of the same exe. Ending the exe ends the agent (close handler + kill-on-close job object);

@@ -25,6 +25,15 @@ for _p in (
         sys.path.insert(0, str(_p))
 
 
+@pytest.fixture(autouse=True, scope="session")
+def _fr7315_winps51_psmodulepath():
+    """FR #7315: powershell.exe 5.1 children of pytest-under-pwsh7 keep Get-FileHash."""
+    import winps51
+
+    winps51.apply_winps51_module_path(os.environ)
+    yield
+
+
 @pytest.fixture(autouse=True)
 def _fr4315_isolate_digest_home(tmp_path_factory, monkeypatch):
     """Pin digest/chair homes away from the operator profile when unset."""
