@@ -109,3 +109,41 @@ def test_fr7334_under_five_minutes_does_not_recycle(tmp_path, monkeypatch):
     )
     assert lines == []
     assert "!recycleseat" not in _outbox(tmp_path)
+
+
+def test_fr7334_second_scan_does_not_recycle_another_author(tmp_path, monkeypatch):
+    """After one recycle, wait another 5 minutes; do not drain the fleet."""
+    _ready(tmp_path, monkeypatch)
+    monkeypatch.setattr(gitclaim, "mrb_has_eligible_reviewer", lambda *a, **k: False)
+    row = _row(NOW - 301)
+    _write(tmp_path, row)
+    install = tmp_path / "install"
+    install.mkdir()
+    first = gitclaim.maybe_recycle_stuck_no_eligible_reviewer(
+        tmp_path,
+        idle=set(SEATS),
+        live=set(SEATS),
+        now=NOW,
+        accepted=[],
+        install_root=install,
+    )
+    assert sum("recycleseat=flamingo-12296" in x for x in first) == 1, first
+    second = gitclaim.maybe_recycle_stuck_no_eligible_reviewer(
+        tmp_path,
+        idle=set(SEATS),
+        live=set(SEATS),
+        now=NOW + 60.0,
+        accepted=[],
+        install_root=install,
+    )
+    assert second == [], second
+    assert _outbox(tmp_path).count("!recycleseat") == 1
+
+
+def test_fr7334_chair_health_wires_helper():
+    from pathlib import Path
+
+    src = Path(__file__).resolve().parents[2] / "common" / "scripts" / "chair_health.py"
+    text = src.read_text(encoding="utf-8")
+    assert "maybe_recycle_stuck_no_eligible_reviewer" in text
+    assert "FR #7334" in text

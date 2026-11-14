@@ -10933,6 +10933,9 @@ def maybe_recycle_stuck_no_eligible_reviewer(
                 pick = _idle_author_least_commits(row, seats_idle, accepted)
                 if not pick:
                     continue
+                blocked = recycleseat_send_blocked_reason(home, pick, now=now_f)
+                if blocked:
+                    continue
                 target_row = row
                 target_nick = pick
                 break
@@ -10957,6 +10960,9 @@ def maybe_recycle_stuck_no_eligible_reviewer(
                 lines.append(f"no-eligible-reviewer {skip} seat={target_nick} id={rid}")
                 return lines
             _mark_recycleseat_sent(home, target_nick, now=now_f, rid=rid)
+            # Restart the 5-minute clock so stall scans do not recycle every author.
+            target_row["no_eligible_since"] = now_f
+            _write_queue(queue_path(home), doc)
             notice = (
                 f"recycled {target_nick} for no_eligible_reviewer "
                 f"{repo}{ident} (idle author, fewest commits)"
