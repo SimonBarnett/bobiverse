@@ -614,8 +614,75 @@ def _parse_fetched_epoch(doc: dict) -> float:
     return -1.0
 
 
+def empty_public_pool(*, error: str | None = "unread") -> dict:
+    """FR #7178: explicit unread/error pool — never omit the Copilot pool."""
+    out = {
+        "plan": "",
+        "used": None,
+        "remaining": None,
+        "entitlement": None,
+        "unlimited": False,
+        "percent_remaining": None,
+        "reset_at": "",
+        "source": "copilot_internal/user",
+        "fetched_at": "",
+        "attempted_at": "",
+        "state": "unknown",
+        "resume_at": "",
+        "resume_source": "",
+    }
+    if error:
+        out["last_error"] = str(error)
+    return out
+
+
+def ensure_public_pool(pool: dict | None, *, error: str | None = None) -> dict:
+    """Normalize a public Copilot pool; fill required keys (FR #7178 / #5515)."""
+    base = empty_public_pool(error=None)
+    if isinstance(pool, dict):
+        for key in base:
+            if key in pool:
+                base[key] = pool[key]
+        for key in ("max_recorded_usage", "last_error", "overage_permitted"):
+            if key in pool:
+                base[key] = pool[key]
+    if error and not base.get("last_error"):
+        base["last_error"] = str(error)
+    if not str(base.get("state") or "").strip():
+        base["state"] = "unknown"
+    if not str(base.get("source") or "").strip():
+        base["source"] = "copilot_internal/user"
+    # Prefer empty string over missing for stamps the tray freshness helpers read.
+    for stamp in ("fetched_at", "attempted_at", "reset_at", "resume_at", "resume_source", "plan"):
+        if base.get(stamp) is None:
+            base[stamp] = ""
+    return base
+
+
+def prefer_public_pool(a: dict | None, b: dict | None) -> dict:
+    """Pick the fresher successful pool; else the one with a state; never None."""
+    aa = ensure_public_pool(a if isinstance(a, dict) else None)
+    bb = ensure_public_pool(b if isinstance(b, dict) else None)
+    a_ep = _parse_fetched_epoch(aa)
+    b_ep = _parse_fetched_epoch(bb)
+    if b_ep > a_ep:
+        return bb
+    if a_ep > b_ep:
+        return aa
+    # Equal/missing success stamps: prefer a non-unknown state, then one with remaining.
+    a_ok = str(aa.get("state") or "") in ("ok", "exhausted")
+    b_ok = str(bb.get("state") or "") in ("ok", "exhausted")
+    if b_ok and not a_ok:
+        return bb
+    if a_ok and not b_ok:
+        return aa
+    if aa.get("remaining") is None and bb.get("remaining") is not None:
+        return bb
+    return aa
+
+
 def pool_for_digest(home: Path) -> dict:
-    """FR #5965 + FR #6148: prefer freshest observation; keep cooldown from allowance."""
+    """FR #5965 + FR #6148 + FR #7178: prefer freshest observation; never omit keys."""
     allow = load_allowance(home)
     obs = load_observation(home)
     # Quota fields from the source with the newer successful fetched_at.
@@ -627,6 +694,8 @@ def pool_for_digest(home: Path) -> dict:
         quota = allow
     else:
         quota = obs if obs else allow
+    if not quota:
+        return empty_public_pool(error="unread")
     state = str(quota.get("state") or "unknown")
     exhausted = bool(
         allow.get("exhausted")
@@ -654,6 +723,8 @@ def pool_for_digest(home: Path) -> dict:
         "plan": quota.get("plan") or "",
         "used": quota.get("used"),
         "remaining": quota.get("remaining"),
+        # FR #7178 / Jeeves #5515: entitlement + quota_reset_date (as reset_at).
+        "entitlement": quota.get("entitlement"),
         "unlimited": bool(quota.get("unlimited")) and not exhausted,
         "percent_remaining": quota.get("percent_remaining"),
         "reset_at": quota.get("reset_at") or "",
@@ -666,7 +737,12 @@ def pool_for_digest(home: Path) -> dict:
     }
     if max_rec is not None:
         out["max_recorded_usage"] = max_rec
-    return out
+    err = quota.get("last_error") or obs.get("last_error") or allow.get("last_error")
+    if err:
+        out["last_error"] = err
+    if "overage_permitted" in quota:
+        out["overage_permitted"] = bool(quota.get("overage_permitted"))
+    return ensure_public_pool(out)
 
 
 def _error_text(blob: object) -> str:

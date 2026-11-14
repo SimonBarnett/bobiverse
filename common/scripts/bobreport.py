@@ -18,6 +18,7 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Callable
 
 import bobstat
 import bobtalk
@@ -264,6 +265,8 @@ _MERGE_PEER_FIELDS = (
     "xai_weekly_source",
     "xai_weekly_fetched_at",
     "xai_weekly",
+    # FR #7178: ear-owned Copilot pool (remaining / entitlement / reset_at / fetched_at).
+    "copilot",
 )
 # FR #5690: when a merge payload carries these as null (or lists them in cleared[]),
 # pop the sticky chair value. Omit-null used to leave stale overage/repo forever.
@@ -359,6 +362,8 @@ _TRAY_MACHINE_EXPORT_KEYS = (
     "xai_weekly_source",
     "xai_weekly_fetched_at",
     "xai_weekly",
+    # FR #7178: per-machine Copilot pool contribution (tray also reads top-level).
+    "copilot",
 )
 WORKER_NICK_RE = re.compile(r"^w-([a-z0-9]+)-(\d+)_?$", re.I)
 
@@ -2497,6 +2502,17 @@ def _apply_merge_payload(doc: dict, mid: str, payload: dict) -> list[str]:
         cleaned = _sanitize_grok_account_label(val)
         if cleaned:
             ent[key] = cleaned
+    # FR #7178: sanitize machine copilot pool; promote fresher reading to digest top-level.
+    if "copilot" in payload and isinstance(payload.get("copilot"), dict):
+        try:
+            import copilot_dispatch as _cd7178
+
+            cleaned = _cd7178.ensure_public_pool(payload.get("copilot"))
+            ent["copilot"] = cleaned
+            prev_top = doc.get("copilot") if isinstance(doc.get("copilot"), dict) else None
+            doc["copilot"] = _cd7178.prefer_public_pool(prev_top, cleaned)
+        except Exception:  # noqa: BLE001
+            ent["copilot"] = payload.get("copilot")
     # FR #5690: unify GBP from USD with one rate after field writes.
     if "overage_usd" in payload and not _clearable_empty(payload.get("overage_usd")):
         _unify_overage_gbp_from_usd(ent, payload)
@@ -4008,13 +4024,37 @@ def _public_queue(home: Path) -> dict:
     }
 
 
-def _digest_copilot_pool(home: Path) -> dict:
+def _digest_copilot_pool(home: Path, doc: dict | None = None) -> dict:
+    """FR #6148 / #7178: public Copilot pool — never omit; prefer freshest source."""
     try:
-        import copilot_dispatch
+        import copilot_dispatch as cd
 
-        return copilot_dispatch.pool_for_digest(home)
+        best = cd.pool_for_digest(home)
+        if isinstance(doc, dict):
+            sticky = doc.get("copilot")
+            if isinstance(sticky, dict):
+                best = cd.prefer_public_pool(best, sticky)
+            machines = doc.get("machines")
+            if isinstance(machines, dict):
+                for ent in machines.values():
+                    if isinstance(ent, dict) and isinstance(ent.get("copilot"), dict):
+                        best = cd.prefer_public_pool(best, ent.get("copilot"))
+        return cd.ensure_public_pool(best)
     except Exception:  # noqa: BLE001
-        return {"state": "unknown", "source": "copilot_internal/user"}
+        try:
+            import copilot_dispatch as cd
+
+            return cd.empty_public_pool(error="unread")
+        except Exception:  # noqa: BLE001
+            return {
+                "state": "unknown",
+                "source": "copilot_internal/user",
+                "remaining": None,
+                "entitlement": None,
+                "reset_at": "",
+                "fetched_at": "",
+                "last_error": "unread",
+            }
 
 
 def _intake_outbox_public(home: Path) -> dict:
@@ -4090,7 +4130,7 @@ def build_digest_object(home: Path, briefer_nick: str, now: datetime | None = No
         "chair_channels": channels,
         "cursor_pools": build_cursor_pools(doc, exported, now),
         "queue": _public_queue(home),
-        "copilot": _digest_copilot_pool(home),
+        "copilot": _digest_copilot_pool(home, doc),
         "intake_outbox": _intake_outbox_public(home),
         # FR #5204 / #5947: live airc *_console nicks (shops + any chair channel).
         "airc_consoles": _airc_consoles_export(doc, exported),
@@ -4519,6 +4559,22 @@ def peer_fuel_fingerprint(peer: dict) -> str:
         parts.append("xai_weekly=" + json.dumps(meter, sort_keys=True, separators=(",", ":")))
     else:
         parts.append("xai_weekly=")
+    # FR #7178: Copilot remaining / entitlement / reset / fetched_at deltas must POST.
+    copilot = peer.get("copilot")
+    if isinstance(copilot, dict):
+        slim = {
+            "remaining": copilot.get("remaining"),
+            "entitlement": copilot.get("entitlement"),
+            "reset_at": copilot.get("reset_at"),
+            "fetched_at": copilot.get("fetched_at"),
+            "attempted_at": copilot.get("attempted_at"),
+            "state": copilot.get("state"),
+            "last_error": copilot.get("last_error"),
+            "unlimited": copilot.get("unlimited"),
+        }
+        parts.append("copilot=" + json.dumps(slim, sort_keys=True, separators=(",", ":")))
+    else:
+        parts.append("copilot=")
     pools = peer.get("cursor_pools")
     if isinstance(pools, list):
         slim = []
@@ -4733,6 +4789,7 @@ _last_post_outcome: dict = {}
 _last_fuel_publish_diag: dict = {}
 _last_xai_acquisition: dict = {}
 _last_opencode_acquisition: dict = {}
+_last_copilot_acquisition: dict = {}
 
 
 def last_fuel_publish_diag() -> dict:
@@ -4743,6 +4800,11 @@ def last_fuel_publish_diag() -> dict:
 def last_opencode_acquisition() -> dict:
     """Last OpenCode/Go zen acquisition attempt (FR #6263). No secrets."""
     return dict(_last_opencode_acquisition)
+
+
+def last_copilot_acquisition() -> dict:
+    """Last Copilot quota acquisition attempt (FR #7178). No secrets."""
+    return dict(_last_copilot_acquisition)
 
 
 def format_fuel_publish_diag(diag: dict | None) -> str:
@@ -4758,6 +4820,7 @@ def format_fuel_publish_diag(diag: dict | None) -> str:
         "http_status={status} ack={ack} error={error} reason={reason} "
         "pcent_keys={keys} provider_fields={prov} acquisition={acq} "
         "opencode_acquisition={oc_acq} opencode_source={oc_src} "
+        "copilot_acquisition={cp_acq} copilot_source={cp_src} "
         "machine={machine} skipped={skipped}"
     ).format(
         role=d.get("home_role") or "unlocalized",
@@ -4773,6 +4836,8 @@ def format_fuel_publish_diag(diag: dict | None) -> str:
         acq=d.get("acquisition") or "-",
         oc_acq=d.get("opencode_acquisition") or "-",
         oc_src=d.get("opencode_source") or "-",
+        cp_acq=d.get("copilot_acquisition") or "-",
+        cp_src=d.get("copilot_source") or "-",
         machine=d.get("machine") or "-",
         skipped=d.get("skipped") or "-",
     )
@@ -7532,6 +7597,155 @@ def enrich_peer_with_xai_weekly(peer: dict, reading: dict | None) -> dict:
     return enriched
 
 
+def resolve_github_token_for_ear(
+    env: dict[str, str] | None = None,
+) -> tuple[str, str]:
+    """Return ``(token, source_tag)`` for LocalSystem ear Copilot fetch (FR #7178).
+
+    Source tag never includes a secret. Prefer install ``config\\github.token``
+    (``BOB_INSTALL_ROOT`` / frozen ``bob-ear.exe`` root), then env, then
+    ``gh_filer`` candidates. Token value is never logged.
+    """
+    e = os.environ if env is None else env
+    for name in ("GH_TOKEN", "GITHUB_TOKEN"):
+        raw = (e.get(name) or "").strip()
+        if raw:
+            return raw, f"env:{name}"
+    paths: list[Path] = []
+    root = opencode_install_root(e)
+    if root is not None:
+        paths.append(Path(root) / "config" / "github.token")
+    cfg = (e.get("BOB_CONFIG_DIR") or "").strip()
+    if cfg:
+        paths.append(Path(cfg).expanduser() / "github.token")
+    for path in paths:
+        try:
+            if path.is_file():
+                tok = path.read_text(encoding="utf-8").strip()
+                if tok:
+                    return tok, "file:github.token"
+        except OSError:
+            continue
+    try:
+        import gh_filer
+
+        src = gh_filer.ensure_gh_token_env()
+        tok = (os.environ.get("GH_TOKEN") or "").strip()
+        if tok:
+            tag = "file:github.token" if str(src).startswith("file:") else str(src or "gh_filer")
+            return tok, tag
+    except Exception:  # noqa: BLE001
+        pass
+    return "", "none"
+
+
+def _github_get_copilot_user(token: str) -> dict:
+    """GET ``/copilot_internal/user`` with Bearer token. Raises on hard failure."""
+    import urllib.error
+    import urllib.request
+
+    req = urllib.request.Request(
+        "https://api.github.com/copilot_internal/user",
+        method="GET",
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/vnd.github+json",
+            "User-Agent": "bobiverse-bob-ear",
+            "X-GitHub-Api-Version": "2022-11-28",
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            text = resp.read().decode("utf-8") or "{}"
+            code = int(resp.status)
+            parsed = json.loads(text) if text else {}
+    except urllib.error.HTTPError as exc:
+        body = ""
+        with contextlib.suppress(Exception):
+            body = exc.read().decode("utf-8", errors="replace")
+        parsed: dict = {"status": int(exc.code), "message": body or str(exc)}
+        with contextlib.suppress(Exception):
+            maybe = json.loads(body) if body else None
+            if isinstance(maybe, dict):
+                parsed = maybe
+                parsed.setdefault("status", int(exc.code))
+        return parsed
+    if not isinstance(parsed, dict):
+        raise RuntimeError("parse")
+    if not (200 <= int(code) < 300):
+        parsed = dict(parsed)
+        parsed.setdefault("status", int(code))
+        return parsed
+    return parsed
+
+
+def fetch_live_copilot_pool(
+    home: Path,
+    *,
+    now: float | None = None,
+    fetch_user: Callable[[], dict] | None = None,
+) -> dict:
+    """FR #7178: ear always observes Copilot quota as SYSTEM; never omit the pool.
+
+    Independent of chair ``BOB_COPILOT_OBSERVE`` / dispatch gates. Missing token
+    or API failure still returns an explicit error pool (``last_error`` set).
+    """
+    global _last_copilot_acquisition
+    import copilot_dispatch as cd
+
+    now_f = time.time() if now is None else float(now)
+    acq: dict = {
+        "kind": None,
+        "source": None,
+        "error": None,
+        "fetched_at": None,
+        "remaining": None,
+        "entitlement": None,
+        "reset_at": None,
+    }
+    user_fn = fetch_user
+    if user_fn is None:
+        token, src = resolve_github_token_for_ear()
+        acq["source"] = src
+        if not token:
+
+            def user_fn() -> dict:
+                raise RuntimeError("no_token")
+
+            acq["kind"] = "missing_token"
+            acq["error"] = "no_token"
+        else:
+
+            def user_fn() -> dict:
+                return _github_get_copilot_user(token)
+
+    try:
+        cd.observe_quota(Path(home), fetch_user=user_fn, now=now_f)
+    except Exception as exc:  # noqa: BLE001
+        acq["kind"] = acq.get("kind") or "observe_failed"
+        acq["error"] = type(exc).__name__
+    pool = cd.ensure_public_pool(cd.pool_for_digest(Path(home)))
+    if pool.get("fetched_at"):
+        if acq.get("kind") in (None, "missing_token"):
+            # Successful stamp overrides a prior missing_token only when fetch worked.
+            if str(pool.get("state") or "") in ("ok", "exhausted"):
+                acq["kind"] = "ok"
+        if acq.get("kind") is None:
+            acq["kind"] = "ok" if str(pool.get("state") or "") in ("ok", "exhausted") else "unread"
+        acq["fetched_at"] = pool.get("fetched_at")
+    elif acq.get("kind") is None:
+        acq["kind"] = "unread"
+        acq["error"] = pool.get("last_error") or "unread"
+    if pool.get("last_error") and acq.get("kind") != "ok":
+        acq["error"] = pool.get("last_error")
+    acq["remaining"] = pool.get("remaining")
+    acq["entitlement"] = pool.get("entitlement")
+    acq["reset_at"] = pool.get("reset_at") or None
+    acq["state"] = pool.get("state")
+    _last_copilot_acquisition = {k: v for k, v in acq.items() if v is not None or k == "kind"}
+    return pool
+
+
 def publish_local_peer_fuel(
     home: Path,
     machine_id: str,
@@ -7540,12 +7754,13 @@ def publish_local_peer_fuel(
     url: str | None = None,
     now: float | None = None,
 ) -> int | None:
-    """POST local peer fuel merge when fingerprint changed or heartbeat due (FR #6141 / #6145 / #6146 / #6147).
+    """POST local peer fuel merge when fingerprint changed or heartbeat due (FR #6141 / #6145 / #6146 / #6147 / #7178).
 
     Fingerprint delta always POSTs (``force=True`` or fp change). Unchanged fingerprint
     skips until heartbeat. Max lag pin: ``DIGEST_FUEL_MAX_LAG_S`` (ear delta poll).
     FR #6146 / #6147: enrich with local OpenCode pcent + windows (TTL-cached helper)
     before fingerprint.
+    FR #7178: always attach Copilot pool (or explicit error); never omit.
 
 
     Returns HTTP status on successful 2xx POST, None when skipped or failed.
@@ -7565,6 +7780,8 @@ def publish_local_peer_fuel(
         "provider_fields": [],
         "opencode_acquisition": None,
         "opencode_source": None,
+        "copilot_acquisition": None,
+        "copilot_source": None,
         "target_host": None,
         "target_path": None,
         "url_source": None,
@@ -7681,6 +7898,41 @@ def publish_local_peer_fuel(
                     peer["xai_weekly"] = meter
     except Exception:
         pass
+    # FR #7178: ear always fetches Copilot as SYSTEM; publish pool or explicit error.
+    try:
+        peer = dict(peer)
+        pool = fetch_live_copilot_pool(Path(home), now=now)
+        peer["copilot"] = pool
+        acq = last_copilot_acquisition()
+        if acq.get("kind"):
+            _last_fuel_publish_diag["copilot_acquisition"] = str(acq.get("kind"))
+        if acq.get("source"):
+            _last_fuel_publish_diag["copilot_source"] = str(acq.get("source"))
+        if acq.get("error"):
+            _last_fuel_publish_diag["copilot_error"] = str(acq.get("error"))
+        if pool.get("state"):
+            _last_fuel_publish_diag["copilot_state"] = str(pool.get("state"))
+        if pool.get("fetched_at"):
+            _last_fuel_publish_diag["copilot_fetched_at"] = str(pool.get("fetched_at"))
+    except Exception as exc:  # noqa: BLE001
+        try:
+            import copilot_dispatch as _cd_pub
+
+            peer = dict(peer)
+            peer["copilot"] = _cd_pub.empty_public_pool(error=type(exc).__name__)
+        except Exception:  # noqa: BLE001
+            peer = dict(peer)
+            peer["copilot"] = {
+                "state": "unknown",
+                "source": "copilot_internal/user",
+                "remaining": None,
+                "entitlement": None,
+                "reset_at": "",
+                "fetched_at": "",
+                "last_error": type(exc).__name__,
+            }
+        _last_fuel_publish_diag["copilot_acquisition"] = "read-failed"
+        _last_fuel_publish_diag["copilot_error"] = type(exc).__name__
     # FR #7022: wire home/run/python-status.json into the merge payload
     # (value "missing" or source tag only — never a path body).
     try:
