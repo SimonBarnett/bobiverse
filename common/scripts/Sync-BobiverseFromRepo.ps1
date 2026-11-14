@@ -404,6 +404,23 @@ if (-not $DryRun -and $git -and (Test-Path -LiteralPath (Join-Path $InstallRoot 
     } catch {
         Write-Host ("WARN sync-harvest-from-tip error: {0}" -f $_.Exception.Message)
     }
+    # FR #7238: overlay origin .grok/skills even when ff is blocked / compose skipped.
+    try {
+        $py = $env:BOBIVERSE_PYTHON
+        if (-not $py) { $cmd = Get-Command python -ErrorAction SilentlyContinue; if ($cmd) { $py = $cmd.Source } }
+        $scriptsDir = Join-Path $InstallRoot 'common\scripts'
+        if (-not (Test-Path -LiteralPath (Join-Path $scriptsDir 'sync_install_skills.py'))) {
+            $scriptsDir = Join-Path $clone 'common\scripts'
+        }
+        if ($py -and (Test-Path -LiteralPath (Join-Path $scriptsDir 'sync_install_skills.py'))) {
+            $env:BOB_INSTALL_ROOT = $InstallRoot
+            $env:PYTHONPATH = $scriptsDir
+            $out = & $py -c "import os,json,sync_install_skills as s; print(json.dumps(s.sync_install_skills_from_origin(os.environ['BOB_INSTALL_ROOT'], job_busy=False)))" 2>&1 | Out-String
+            Write-Host ("INFO sync-skills-from-tip {0}" -f $out.Trim())
+        }
+    } catch {
+        Write-Host ("WARN sync-skills-from-tip error: {0}" -f $_.Exception.Message)
+    }
     # FR #4606: tip-heal gitclaim.py (MRB exact-seat; no dead-author inherit) for compose path.
     try {
         $gc = Sync-BobiverseGitclaimFromOrigin -InstallRoot $InstallRoot -Branch $Branch -GitExe $git
