@@ -250,6 +250,7 @@ Checks:
 
 ## Harvested MRB discipline
 
+- **WinPS Get-FileHash missing (FR #7355 / class of MRB #7311):** before FAILING a product PR, check process env `PSModuleAutoLoadingPreference=None`; clear Autoload or `Import-Module Microsoft.PowerShell.Utility`, file the seat env gap separately. Do not park this playbook under `bobiverse-fleet-ops` (moved from harvest tip #7357).
 - **FIX with stacked fix PR already open (MRB #6336 / flamingo harvest):** when FIX is offered for an MRB-FAIL tip that already has a stacked fix PR targeting the tip branch, merge that fix PR into the tip and DONE FIX with the assigned PR URL so chair requeues MRB. Do not park this playbook under `harvest/SKILL.md` (move/fold here).
 
 
