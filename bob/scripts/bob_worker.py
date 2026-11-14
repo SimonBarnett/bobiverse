@@ -5137,38 +5137,129 @@ def should_start_fuel_watcher(kind: str) -> bool:
     return (kind or "").strip().lower() in ("grok", "cursor", "opencode")
 
 
+DIGEST_HTTP_USER_AGENT = "Bobiverse-bobreport/1.0"  # FR #6144 / #7181: same UA as ear (WAF)
+_last_digest_http: dict = {}
+
+
+def classify_digest_http_failure(exc: BaseException) -> dict:
+    """Status, responder class, Cloudflare ray. Never includes body or secrets. FR #7181."""
+    status = getattr(exc, "code", None)
+    try:
+        status_i = int(status) if status is not None else None
+    except (TypeError, ValueError):
+        status_i = None
+    headers = getattr(exc, "headers", None)
+
+    def _hdr(name: str) -> str:
+        if headers is None:
+            return ""
+        try:
+            return str(headers.get(name) or "").strip()
+        except Exception:
+            return ""
+
+    ray = _hdr("CF-Ray") or _hdr("cf-ray")
+    server = _hdr("Server") or _hdr("server")
+    sl = server.lower()
+    if ray or "cloudflare" in sl:
+        responder = "cloudflare"
+    elif "iis" in sl or "microsoft" in sl:
+        responder = "iis"
+    elif "jeeves" in sl or "bobcallback" in sl:
+        responder = "jeeves"
+    elif sl:
+        responder = sl.split("/")[0][:40]
+    else:
+        responder = "unknown"
+    return {
+        "status": status_i,
+        "responder": responder,
+        "ray": ray,
+        "server": server[:80],
+        "exc": type(exc).__name__,
+    }
+
+
+def last_digest_http() -> dict:
+    """Last worker digest POST outcome (no secrets). FR #7181."""
+    return dict(_last_digest_http)
+
+
 def _http_post_json(
     url: str,
     payload: dict,
     timeout: float = 10.0,
     *,
     log: Optional[Callable[[str], None]] = None,
+    retries: int = 3,
+    sleep: Optional[Callable[[float], None]] = None,
 ) -> bool:
-    """Best-effort JSON POST (digest report). No secrets. Returns True on HTTP success."""
+    """Best-effort JSON POST (digest report). No secrets. Returns True on HTTP success.
+
+    FR #7181: retry 403/429/5xx with backoff; log status, responder, CF-Ray (never body).
+    """
+    global _last_digest_http
     raw = json.dumps(payload, ensure_ascii=True).encode("utf-8")
-    req = urllib.request.Request(
-        url,
-        data=raw,
-        headers={"Content-Type": "application/json"},
-        method="POST",
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=float(timeout)) as resp:
-            code = int(getattr(resp, "status", 0) or 0)
-            ok = 200 <= code < 300
-            if not ok and log:
+    headers = {
+        "Content-Type": "application/json",
+        "User-Agent": DIGEST_HTTP_USER_AGENT,
+        "Accept": "application/json",
+    }
+    wait = sleep if sleep is not None else time.sleep
+    attempts = max(1, int(retries))
+    last_meta: dict = {}
+    for attempt in range(1, attempts + 1):
+        req = urllib.request.Request(url, data=raw, headers=headers, method="POST")
+        try:
+            with urllib.request.urlopen(req, timeout=float(timeout)) as resp:
+                code = int(getattr(resp, "status", 0) or 0)
+                ok = 200 <= code < 300
+                last_meta = {"ok": ok, "status": code, "attempt": attempt}
+                _last_digest_http = dict(last_meta)
+                if not ok and log:
+                    try:
+                        log(f"digest POST HTTP {code} attempt={attempt}/{attempts} url={url[:80]}")
+                    except Exception:
+                        pass
+                if ok:
+                    return True
+                if code not in (403, 408, 429) and code < 500:
+                    return False
+        except urllib.error.HTTPError as exc:
+            last_meta = classify_digest_http_failure(exc)
+            last_meta["attempt"] = attempt
+            last_meta["ok"] = False
+            _last_digest_http = dict(last_meta)
+            if log:
                 try:
-                    log(f"digest POST HTTP {code} url={url[:80]}")
+                    log(
+                        "digest POST HTTP {st} responder={r} ray={ray} attempt={a}/{n}".format(
+                            st=last_meta.get("status") or "?",
+                            r=last_meta.get("responder") or "unknown",
+                            ray=last_meta.get("ray") or "-",
+                            a=attempt,
+                            n=attempts,
+                        )
+                    )
                 except Exception:
                     pass
-            return ok
-    except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, OSError, ValueError) as exc:
-        if log:
+            st = last_meta.get("status")
+            if st not in (403, 408, 429) and not (isinstance(st, int) and st >= 500):
+                return False
+        except (urllib.error.URLError, TimeoutError, OSError, ValueError) as exc:
+            last_meta = {"ok": False, "exc": type(exc).__name__, "attempt": attempt, "responder": "unknown"}
+            _last_digest_http = dict(last_meta)
+            if log:
+                try:
+                    log(f"digest POST failed: {type(exc).__name__} attempt={attempt}/{attempts}")
+                except Exception:
+                    pass
+        if attempt < attempts:
             try:
-                log(f"digest POST failed: {type(exc).__name__}: {exc}")
+                wait(min(8.0, 0.2 * (2 ** (attempt - 1))))
             except Exception:
                 pass
-        return False
+    return False
 
 
 def post_digest_out_of_fuel(
@@ -7047,10 +7138,12 @@ def post_digest_seat_kind(
     url: str | None = None,
     env: Optional[dict] = None,
     log: Optional[Callable[[str], None]] = None,
+    sleep: Optional[Callable[[float], None]] = None,
 ) -> bool:
     """POST digest worker kind so the chair can skip OpenCode for MRB/UAT (FR #6134).
 
     FR #6409: payload always includes ``worker_build`` (short SHA or ``unknown``).
+    FR #7181: digest POST retries 403; persistent failure posts ``state=unhealthy``.
     """
     env = os.environ if env is None else env
     report = (url or env.get("BOB_REPORT_URL") or env.get("BOB_DIGEST_URL") or DEFAULT_DIGEST_REPORT_URL).strip()
@@ -7087,13 +7180,30 @@ def post_digest_seat_kind(
         payload["model_mismatch"] = str(model).strip().lower() != cfg_m.lower()
     if (cost_tier or "").strip():
         payload["cost_tier"] = str(cost_tier).strip()
-    ok = bool(_http_post_json(report, payload, log=log))
-    if not ok and log:
+    post_kw: dict = {"log": log}
+    if sleep is not None:
+        post_kw["sleep"] = sleep
+    ok = bool(_http_post_json(report, payload, **post_kw))
+    if ok:
+        return True
+    meta = last_digest_http()
+    st = meta.get("status")
+    err = f"digest-http-{st}" if st else "digest-http-error"
+    payload = dict(payload)
+    payload["state"] = "unhealthy"
+    payload["error"] = err
+    if meta.get("responder"):
+        payload["digest_responder"] = str(meta.get("responder"))
+    if log:
         try:
-            log(f"post_digest_seat_kind failed mid={mid} kind={kind_s}")
+            log(
+                f"post_digest_seat_kind failed mid={mid} kind={kind_s} {err} "
+                f"responder={meta.get('responder') or '-'} ray={meta.get('ray') or '-'}"
+            )
         except Exception:
             pass
-    return ok
+    post_kw["retries"] = 1
+    return bool(_http_post_json(report, payload, **post_kw))
 
 
 
