@@ -464,7 +464,13 @@ function Format-BobTrayXaiWeeklyRow {
     if (-not (Test-BobTrayPoolHasRealRemaining -Remaining $pct -Error $errEarly -WeeklyKnown $wk)) {
         $pct = $null
     }
-    $fresh = $true
+    $hasFetchedAt = $false
+    try {
+        if ($XaiWeekly.fetched_at -and -not [string]::IsNullOrWhiteSpace([string]$XaiWeekly.fetched_at)) {
+            $hasFetchedAt = $true
+        }
+    } catch { $hasFetchedAt = $false }
+    $fresh = $null
     try {
         if ($null -ne $XaiWeekly.PSObject.Properties['fresh']) {
             $fresh = [bool]$XaiWeekly.fresh
@@ -518,8 +524,7 @@ function Format-BobTrayXaiWeeklyRow {
     }
     if ($acct) { $parts += [string]$acct }
     if (-not $fresh) {
-        # FR #7299 / #7326: token is exactly [stale], never "(older than 2 min)".
-        $parts += '[stale]'
+        $parts += (Format-BobTrayStaleToken)
         if ($errDisplay -and ($null -ne $pct)) { $parts += $errDisplay }
     }
     if ($resetLabel -and ($null -ne $pct -or -not $fresh)) {
@@ -1297,6 +1302,22 @@ function Get-BobPoolStaleAfterSec {
     } catch { return 120 }
 }
 
+function Format-BobTrayStaleToken {
+    <#
+    .SYNOPSIS
+      FR #7299: user-visible stale mark is exactly [stale] (no age / older-than-2-min suffix).
+    #>
+    return '[stale]'
+}
+
+function Get-BobTrayStaleForeColorArgb {
+    <#
+    .SYNOPSIS
+      FR #7299: stale label paints red (TipForm / UsageRow HeadingColor).
+    #>
+    return @(248, 81, 73)
+}
+
 function Format-BobPoolUpdatedLabel {
     <#
     .SYNOPSIS
@@ -1416,7 +1437,8 @@ function Format-BobOpencodeWindowLine {
     $isStale = ($status -eq 'stale') -or ($freshness.state -eq 'stale')
     if ($isStale) {
         $why = $err
-        return ('go {0} - [stale]' -f $label)
+        if (-not $why) { $why = 'stale' }
+        return ('go {0} - {1}' -f $label, (Format-BobTrayStaleToken))
     }
     return ('go {0} - {1}' -f $label, $mid)
 }
@@ -1799,15 +1821,23 @@ function Get-BobDigestPcentValue {
 function Format-BobTrayDigestPoolHeading {
     <#
     .SYNOPSIS
-      FR #7243 / FR #7242: known remaining is '<label> N%'; missing is '<label> unknown (reason)'.
+      FR #7243 / FR #7242 / FR #7299: known remaining is '<label> N%'; missing is
+      '<label> unknown (reason)'; stale known keeps last % with [stale] only.
     #>
     param(
         [string]$Label,
         $RemainingPct = $null,
-        [string]$Reason = ''
+        [string]$Reason = '',
+        [switch]$Stale
     )
     $lab = if ($Label) { [string]$Label } else { 'pool' }
     $pct = ConvertTo-BobTrayIntOrNull $RemainingPct
+    $mark = Format-BobTrayStaleToken
+    if ($Stale) {
+        if ($null -ne $pct) { return ('{0} {1}% {2}' -f $lab, [int]$pct, $mark) }
+        if ($Reason) { return ('{0} unknown ({1}) {2}' -f $lab, [string]$Reason, $mark) }
+        return ('{0} {1}' -f $lab, $mark)
+    }
     if ($null -ne $pct) { return ('{0} {1}%' -f $lab, [int]$pct) }
     $why = if ($Reason) { [string]$Reason } else { 'digest pcent missing' }
     return ('{0} unknown ({1})' -f $lab, $why)
@@ -1820,20 +1850,30 @@ function New-BobTrayDigestPoolRow {
         [string]$Label,
         $RemainingPct = $null,
         [string]$Reason = '',
-        [switch]$NeverStale
+        [switch]$NeverStale,
+        [switch]$Stale
     )
     $pct = ConvertTo-BobTrayIntOrNull $RemainingPct
+    # FR #7299: null remaining is never a known number (even if caller passed 0-ish junk via empty).
     $known = $null -ne $pct
-    $why = if ($known) { '' } else { $(if ($Reason) { $Reason } else { 'digest pcent missing' }) }
+    $isStale = [bool]$Stale -and -not [bool]$NeverStale
+    if ($isStale -and -not $known) {
+        $why = if ($Reason) { $Reason } else { 'missing fetched_at' }
+    } elseif ($known) {
+        $why = ''
+    } else {
+        $why = $(if ($Reason) { $Reason } else { 'digest pcent missing' })
+    }
     return [pscustomobject]@{
         id            = $Id
         family        = $Family
         label         = $Label
-        heading       = (Format-BobTrayDigestPoolHeading -Label $Label -RemainingPct $pct -Reason $why)
+        heading       = (Format-BobTrayDigestPoolHeading -Label $Label -RemainingPct $pct -Reason $why -Stale:$isStale)
         remaining_pct = $pct
         known         = [bool]$known
         reason        = $why
         never_stale   = [bool]$NeverStale
+        stale         = [bool]$isStale
     }
 }
 
@@ -1915,9 +1955,24 @@ function Get-BobTrayDigestPoolCatalog {
     }
     $cpWhy = if ($noDigest) { 'no digest' } elseif ($null -eq $copObj) { 'digest copilot missing' } elseif ($null -eq $cop) { 'digest copilot remaining missing' } else { '' }
 
+    $ogoStale = $false
+    if ($null -ne $ogo) {
+        $ogoFa = $null
+        try { if ($Digest.fleet_pools.'opencode-go'.fetched_at) { $ogoFa = [string]$Digest.fleet_pools.'opencode-go'.fetched_at } } catch { }
+        if (-not $ogoFa) { try { if ($Digest.opencode.fetched_at) { $ogoFa = [string]$Digest.opencode.fetched_at } } catch { } }
+        $ogoFr = Get-BobPoolReadingFreshness -FetchedAt $ogoFa
+        if ($ogoFr.state -ne 'fresh') { $ogoStale = $true }
+    }
+    $copStale = $false
+    if ($copObj) {
+        $cpf = Get-BobCopilotFreshness -Pool $copObj
+        if ($cpf.state -ne 'fresh') { $copStale = $true }
+    } elseif ($null -ne $cop) {
+        $copStale = $true
+    }
     $rows = @(
-        (New-BobTrayDigestPoolRow -Id 'opencode-go' -Family 'opencode' -Label 'OpenCode go' -RemainingPct $ogo -Reason $ogWhy)
-        (New-BobTrayDigestPoolRow -Id 'copilot' -Family 'copilot' -Label 'Copilot' -RemainingPct $cop -Reason $cpWhy)
+        (New-BobTrayDigestPoolRow -Id 'opencode-go' -Family 'opencode' -Label 'OpenCode go' -RemainingPct $ogo -Reason $ogWhy -Stale:$ogoStale)
+        (New-BobTrayDigestPoolRow -Id 'copilot' -Family 'copilot' -Label 'Copilot' -RemainingPct $cop -Reason $cpWhy -Stale:$copStale)
     )
     $seen = @{
         'grok-build' = $true; 'grok-chat' = $true; 'opencode-free' = $true
@@ -2005,7 +2060,7 @@ function Format-BobCopilotPoolLine {
     <#
     .SYNOPSIS
       FR #6301 / FR #6317: 'Copilot - <x>% left - <reset>' (OpenCode-style hyphen).
-      100% used => 0% left. No included-unlimited prose. Stale gets [stale] marker.
+      Unlimited => 'unlimited' (never 0%). Stale keeps last % with [stale] only (FR #7299).
     #>
     param($Pool, $Now = $null, [switch]$ForceStale)
     if (-not $Pool) { return 'Copilot - unknown' }
@@ -2023,16 +2078,7 @@ function Format-BobCopilotPoolLine {
             }
         } catch { }
     }
-    $staleLabel = ''
-    if ($isStale) {
-        if ($null -ne $freshness.age_s) {
-            try {
-                $ageLab = Format-BobTrayFuelStaleAge -AgeSec ([int]$freshness.age_s)
-                if ($ageLab -and $ageLab -ne 'stale') { $staleLabel = ('[{0}]' -f $ageLab) }
-                else { $staleLabel = '[stale]' }
-            } catch { $staleLabel = '[stale]' }
-        } else { $staleLabel = '[stale]' }
-    }
+    $staleMark = Format-BobTrayStaleToken
     $copilotErr = ''
     try { if ($Pool.last_error) { $copilotErr = [string]$Pool.last_error } } catch { }
     # FR #7242 before FR #7250 stale: skip-class states/errors are unknown(+reason), not stale %.
@@ -2052,30 +2098,30 @@ function Format-BobCopilotPoolLine {
         }
         return $unk
     }
-    if ($isStale) {
-        $why = ''
-        try { if ($Pool.error) { $why = ([string]$Pool.error).Trim() } } catch { }
-        if (-not $why) { $why = 'stale' }
-        return ('Copilot - [stale]')
-    }
     $left = $null
     $unlimited = $false
     try { if ($Pool.unlimited) { $unlimited = [bool]$Pool.unlimited } } catch { }
+    # FR #7299: unlimited never paints as 0%; prefer the word unlimited (or 100%).
     if ($unlimited) {
-        $pctStr = Get-BobCopilotHistoricalMaxPct -Used $used -MaxRecorded $(try { $Pool.max_recorded_usage } catch { $null })
-        if ($pctStr) {
-            try {
-                $usedPct = [int][math]::Round([double]$pctStr)
-                $left = [math]::Max(0, 100 - $usedPct)
-            } catch { $left = $null }
-        }
-    } elseif ($state -eq 'exhausted') {
+        if ($isStale) { return ('Copilot - unlimited {0}' -f $staleMark) }
+        return 'Copilot - unlimited'
+    }
+    if ($state -eq 'exhausted') {
         $left = 0
     } else {
         try { if ($null -ne $Pool.remaining -and [string]$Pool.remaining -ne '') { $left = [int]$Pool.remaining } } catch { }
     }
     if ($state -ne 'exhausted' -and -not (Test-BobTrayPoolHasRealRemaining -Remaining $left -Error $copilotErr -State $state)) {
         $left = $null
+    }
+    if ($isStale) {
+        # FR #7299: last value + [stale] only (no "older than 2 min").
+        if ($null -ne $left) {
+            $mid = ('{0}% left {1}' -f [int]$left, $staleMark)
+            if ($resetCompact) { $mid = ('{0}% left - {1} {2}' -f [int]$left, $resetCompact, $staleMark) }
+            return ('Copilot - {0}' -f $mid)
+        }
+        return ('Copilot - {0}' -f $staleMark)
     }
     if ($null -eq $left) {
         # FR #7242: unknown + reason. FR #7250: no updated HH:mm stamp.
@@ -2102,12 +2148,8 @@ function Get-BobCopilotMeterBarPct {
     $unlimited = $false
     try { if ($Pool.unlimited) { $unlimited = [bool]$Pool.unlimited } } catch { }
     if ($unlimited) {
-        $pctStr = Get-BobCopilotHistoricalMaxPct -Used $Pool.used -MaxRecorded $(try { $Pool.max_recorded_usage } catch { $null })
-        if (-not $pctStr) { return $null }
-        try {
-            $usedPct = [int][math]::Round([double]$pctStr)
-            return [int][math]::Max(0, 100 - $usedPct)
-        } catch { return $null }
+        # FR #7299: unlimited bar is 100% left (never 0% from historical-max math).
+        return 100
     }
     $state = ''
     try { $state = [string]$Pool.state } catch { }
