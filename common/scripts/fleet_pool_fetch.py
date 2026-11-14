@@ -18,6 +18,174 @@ POOL_COPILOT = "copilot"
 POOL_OC_FREE = "opencode-free"
 POOL_OC_GO = "opencode-go"
 
+# FR #7288: walrus CredMan targets (generic credentials; secret in password blob).
+CREDMAN_GITHUB_TARGET = "bobiverse/jeeves/github-token"
+CREDMAN_OPENCODE_GO_TARGET = "bobiverse/jeeves/opencode-go-key"
+
+
+def read_credman_secret(target: str) -> dict[str, str]:
+    """Read a CredMan generic credential. Never log the secret.
+
+    Returns {"username", "password"} or {}. Thin wrapper over
+    jeeves_settings_auth.read_credman_generic so tests can monkeypatch here.
+    """
+    try:
+        import jeeves_settings_auth as jsa
+
+        return dict(jsa.read_credman_generic(target) or {})
+    except Exception:
+        return {}
+
+
+def fleet_jeeves_install_root(
+    env: dict[str, str] | None = None,
+    *,
+    explicit: str | Path | None = None,
+) -> Path | None:
+    """Jeeves product install root for fleet credential file fallbacks (FR #7288).
+
+    Prefer ``JEEVES_INSTALL_ROOT``, then ``resolve_jeeves_install_root`` (frozen
+    ``<InstallRoot>\\jeeves\\jeeves.exe`` / env). Do not use ear
+    ``opencode_install_root`` (``scripts\\bob-ear.exe`` layout).
+    """
+    e = os.environ if env is None else env
+    if explicit is not None and str(explicit).strip():
+        return Path(str(explicit).strip()).resolve()
+    override = (e.get("JEEVES_INSTALL_ROOT") or "").strip()
+    if override:
+        return Path(override).resolve()
+    try:
+        import chair_commands as cc
+
+        root = cc.resolve_jeeves_install_root(env=e)
+        if root is not None:
+            return Path(root).resolve()
+    except Exception:
+        pass
+    try:
+        import ai_root
+
+        return Path(ai_root.product_root("jeeves")).resolve()
+    except Exception:
+        return None
+
+
+def _credman_blob(target: str) -> str:
+    cred = read_credman_secret(target) or {}
+    secret = str(cred.get("password") or "").strip()
+    if not secret:
+        secret = str(cred.get("username") or "").strip()
+    return secret
+
+
+def resolve_fleet_github_token(
+    env: dict[str, str] | None = None,
+    *,
+    install_root: str | Path | None = None,
+) -> tuple[str, str, list[str]]:
+    """Return ``(token, source_tag, tried)`` for Jeeves fleet Copilot (FR #7288).
+
+    Order: CredMan target, env ``GH_TOKEN``/``GITHUB_TOKEN``,
+    ``<jeeves_root>/config/github.token``, ``BOB_CONFIG_DIR/github.token``.
+    ``source_tag`` never includes the secret. On miss, source is
+    ``none:<tried comma list>``.
+    """
+    e = os.environ if env is None else env
+    tried: list[str] = []
+    tag = f"credman:{CREDMAN_GITHUB_TARGET}"
+    tried.append(tag)
+    secret = _credman_blob(CREDMAN_GITHUB_TARGET)
+    if secret:
+        return secret, tag, tried
+    for name in ("GH_TOKEN", "GITHUB_TOKEN"):
+        tag = f"env:{name}"
+        tried.append(tag)
+        raw = (e.get(name) or "").strip()
+        if raw:
+            return raw, tag, tried
+    root = fleet_jeeves_install_root(e, explicit=install_root)
+    if root is not None:
+        path = Path(root) / "config" / "github.token"
+        tag = "file:github.token"
+        tried.append(tag)
+        try:
+            if path.is_file():
+                tok = path.read_text(encoding="utf-8").strip()
+                if tok:
+                    return tok, tag, tried
+        except OSError:
+            pass
+    cfg = (e.get("BOB_CONFIG_DIR") or "").strip()
+    if cfg:
+        path = Path(cfg).expanduser() / "github.token"
+        tag = "file:BOB_CONFIG_DIR/github.token"
+        tried.append(tag)
+        try:
+            if path.is_file():
+                tok = path.read_text(encoding="utf-8").strip()
+                if tok:
+                    return tok, tag, tried
+        except OSError:
+            pass
+    return "", "none:" + ",".join(tried), tried
+
+
+def resolve_fleet_opencode_go_key(
+    env: dict[str, str] | None = None,
+    *,
+    install_root: str | Path | None = None,
+) -> tuple[str, str, list[str]]:
+    """Return ``(api_key, source_tag, tried)`` for Jeeves fleet OpenCode Go (FR #7288)."""
+    e = os.environ if env is None else env
+    tried: list[str] = []
+    tag = f"credman:{CREDMAN_OPENCODE_GO_TARGET}"
+    tried.append(tag)
+    secret = _credman_blob(CREDMAN_OPENCODE_GO_TARGET)
+    if secret:
+        return secret, tag, tried
+    tag = "env:BOB_OPENCODE_GO_API_KEY"
+    tried.append(tag)
+    env_key = (e.get("BOB_OPENCODE_GO_API_KEY") or "").strip()
+    if env_key:
+        return env_key, tag, tried
+    root = fleet_jeeves_install_root(e, explicit=install_root)
+    if root is not None:
+        try:
+            import bobreport
+
+            sel = bobreport.resolve_opencode_go_api_key_selection(
+                e, install_root=root, tighten_acl=False
+            )
+            key = str(sel.get("api_key") or "").strip()
+            src = str(sel.get("key_source") or "")
+            if src == "env":
+                tag = "env:BOB_OPENCODE_GO_API_KEY"
+            elif src == "config-file":
+                tag = "file:opencode-go.apikey"
+            elif src == "labelled-file":
+                tag = "file:opencode-keys"
+            elif src:
+                tag = f"file:{src}"
+            else:
+                tag = "file:opencode-go.apikey"
+            tried.append(tag)
+            if key:
+                return key, tag, tried
+        except Exception:
+            tag = "file:opencode-go.apikey"
+            tried.append(tag)
+            try:
+                path = Path(root) / "config" / "opencode-go.apikey"
+                if path.is_file():
+                    key = path.read_text(encoding="utf-8").strip()
+                    if key:
+                        return key, tag, tried
+            except OSError:
+                pass
+    else:
+        tried.append("file:opencode-go.apikey")
+    return "", "none:" + ",".join(tried), tried
+
 
 def iso_utc(now: float) -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(float(now)))
@@ -109,28 +277,39 @@ def _keep_last(prev: dict | None, *, error: str, now: float, pool_id: str, sourc
 def fetch_copilot_default(home: Path, now: float) -> dict:
     import copilot_dispatch as cd
 
-    def boom() -> dict:
-        raise RuntimeError("no_token")
+    token, src, tried = resolve_fleet_github_token()
+    if not token:
 
-    fetch_user: Callable[[], dict] = boom
-    try:
+        def boom() -> dict:
+            raise RuntimeError("no_token")
+
+        fetch_user: Callable[[], dict] = boom
+        cred_source = src if src.startswith("none:") else ("none:" + ",".join(tried))
+    else:
         import bobreport
 
-        token, src = bobreport.resolve_github_token_for_ear()
-        if token:
+        def fetch_user() -> dict:
+            return bobreport._github_get_copilot_user(token)
 
-            def fetch_user() -> dict:
-                return bobreport._github_get_copilot_user(token)
-
-            _ = src
-    except Exception:
-        fetch_user = boom
-    cd.observe_quota(Path(home), fetch_user=fetch_user, now=now)
-    pool = cd.ensure_public_pool(cd.pool_for_digest(Path(home)))
+        cred_source = src
+    try:
+        cd.observe_quota(Path(home), fetch_user=fetch_user, now=now)
+        pool = cd.ensure_public_pool(cd.pool_for_digest(Path(home)))
+    except Exception as exc:  # noqa: BLE001
+        iso = iso_utc(now)
+        return empty_meter(
+            pool_id=POOL_COPILOT,
+            source=cred_source,
+            error=type(exc).__name__,
+            now=now,
+        )
     iso = iso_utc(now)
     err = pool.get("last_error")
     ok = str(pool.get("state") or "") in ("ok", "exhausted")
     remaining = pool.get("remaining")
+    if not token:
+        ok = False
+        err = err or "no_token"
     return {
         "id": POOL_COPILOT,
         "remaining": remaining,
@@ -139,7 +318,7 @@ def fetch_copilot_default(home: Path, now: float) -> dict:
         "fetched_at": pool.get("fetched_at") if ok else (pool.get("fetched_at") or None),
         "last_attempt_at": pool.get("attempted_at") or iso,
         "error": None if ok else (err or "unread"),
-        "source": str(pool.get("source") or "copilot_internal/user"),
+        "source": cred_source,
         "fresh": bool(ok),
         "state": pool.get("state"),
         "unlimited": pool.get("unlimited"),
@@ -148,13 +327,10 @@ def fetch_copilot_default(home: Path, now: float) -> dict:
 
 def fetch_opencode_default(home: Path, now: float) -> dict:
     """Go zen usage with the service Go key. Free remaining only when the body has it."""
-    import bobreport
     import opencode_fuel as of
 
     iso = iso_utc(now)
-    sel = bobreport.resolve_opencode_go_api_key_selection(tighten_acl=False)
-    key = str(sel.get("api_key") or "").strip()
-    source_tag = str(sel.get("key_source") or "go-zen-usage")
+    key, source_tag, _tried = resolve_fleet_opencode_go_key()
     if not key:
         err = "no_key"
         return {
@@ -174,9 +350,10 @@ def fetch_opencode_default(home: Path, now: float) -> dict:
         "fetched_at": iso if go_ok else None,
         "last_attempt_at": iso,
         "error": None if go_ok else kind,
-        "source": of.GO_ZEN_USAGE_SOURCE,
+        "source": source_tag,
         "fresh": bool(go_ok),
         "windows": doc.get("windows") if go_ok else {},
+        "usage_source": of.GO_ZEN_USAGE_SOURCE,
     }
     if not go_ok:
         go["remaining"] = go_rem
@@ -188,8 +365,9 @@ def fetch_opencode_default(home: Path, now: float) -> dict:
         "fetched_at": iso if free_ok else (iso if go_ok else None),
         "last_attempt_at": iso,
         "error": None if (free_ok or go_ok) else kind,
-        "source": of.GO_ZEN_USAGE_SOURCE,
+        "source": source_tag,
         "fresh": bool(free_ok),
+        "usage_source": of.GO_ZEN_USAGE_SOURCE,
     }
     if go_ok and not free_ok:
         free["error"] = None
