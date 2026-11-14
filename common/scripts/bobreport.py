@@ -257,6 +257,8 @@ _MERGE_PEER_FIELDS = (
     "opencode_windows",
     # FR #6773: install sync health ("behind N, reason") when ff-only fails.
     "sync",
+    # FR #7238: origin SHA of overlayed install `.grok/skills` (path stamp only).
+    "skills_sha",
     # FR #7020: SYSTEM python resolve — "missing" or source tag (never a secret path body).
     "python",
     # xAI weekly meter identity. remaining stays on weekly / pcent.grok-build.
@@ -354,6 +356,7 @@ _TRAY_MACHINE_EXPORT_KEYS = (
     "cursor_known",
     "weekly_known",
     "sync",
+    "skills_sha",
     "python",
     "grok_account",
     "opencode_account",
@@ -4501,6 +4504,26 @@ def attach_peer_python_status(peer: dict, home: Path) -> dict:
     return out
 
 
+def attach_peer_skills_sha(peer: dict, install_root: Path | str | None = None) -> dict:
+    """FR #7238: publish overlayed skills origin SHA (never a secret)."""
+    if not isinstance(peer, dict):
+        return peer
+    root = Path(install_root) if install_root else opencode_install_root()
+    if root is None:
+        return peer
+    try:
+        import sync_install_skills as sis
+
+        sha = sis.read_skills_sha(root)
+    except Exception:
+        return peer
+    if not sha:
+        return peer
+    out = dict(peer)
+    out["skills_sha"] = sha
+    return out
+
+
 def peer_fuel_fingerprint(peer: dict) -> str:
     """Stable fingerprint of fuel fields that must trigger a merge POST (FR #6141 / #6145).
 
@@ -4545,6 +4568,7 @@ def peer_fuel_fingerprint(peer: dict) -> str:
         # FR #7022: python missing/source-tag flips must POST before heartbeat.
         "python",
         "sync",
+        "skills_sha",
     ):
         parts.append(f"{key}={peer.get(key)!s}")
     pcent = peer.get("pcent")
@@ -8137,6 +8161,10 @@ def publish_local_peer_fuel(
     # (value "missing" or source tag only — never a path body).
     try:
         peer = attach_peer_python_status(peer, home)
+    except Exception:
+        pass
+    try:
+        peer = attach_peer_skills_sha(peer)
     except Exception:
         pass
     payload = build_peer_fuel_merge_payload(peer, mid)
