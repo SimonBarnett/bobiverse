@@ -1317,9 +1317,32 @@ function Format-BobTrayStaleToken {
 function Get-BobTrayStaleForeColorArgb {
     <#
     .SYNOPSIS
-      FR #7299: stale label paints red (TipForm / UsageRow HeadingColor).
+      FR #7299 / #7378: only the [stale] token paints red (248,81,73).
     #>
     return @(248, 81, 73)
+}
+
+function Split-BobTrayStaleHeading {
+    <#
+    .SYNOPSIS
+      FR #7378: split a pool heading into prefix / [stale] / suffix for token-only red paint.
+    #>
+    param([string]$Heading)
+    $h = [string]$Heading
+    $tok = Format-BobTrayStaleToken
+    if (-not $h) {
+        return [pscustomobject]@{ Prefix = ''; HasStale = $false; Suffix = ''; Token = $tok }
+    }
+    $i = $h.IndexOf($tok, [System.StringComparison]::Ordinal)
+    if ($i -lt 0) {
+        return [pscustomobject]@{ Prefix = $h; HasStale = $false; Suffix = ''; Token = $tok }
+    }
+    return [pscustomobject]@{
+        Prefix   = $h.Substring(0, $i)
+        HasStale = $true
+        Suffix   = $h.Substring($i + $tok.Length)
+        Token    = $tok
+    }
 }
 
 function Format-BobPoolUpdatedLabel {

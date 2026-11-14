@@ -2788,17 +2788,71 @@ function Add-BobTrayUsageRow {
         $script:tileHost.Controls.Add($pic)
         $iconW = 20
     }
+    # FR #7378: paint only the [stale] token red; rest keeps normal fg (never whole-heading red).
+    $parts = $null
+    if (Get-Command Split-BobTrayStaleHeading -ErrorAction SilentlyContinue) {
+        $parts = Split-BobTrayStaleHeading -Heading $Heading
+    } else {
+        $tok = '[stale]'
+        $h = [string]$Heading
+        $i = $h.IndexOf($tok, [System.StringComparison]::Ordinal)
+        if ($i -lt 0) {
+            $parts = [pscustomobject]@{ Prefix = $h; HasStale = $false; Suffix = ''; Token = $tok }
+        } else {
+            $parts = [pscustomobject]@{
+                Prefix   = $h.Substring(0, $i)
+                HasStale = $true
+                Suffix   = $h.Substring($i + $tok.Length)
+                Token    = $tok
+            }
+        }
+    }
+    $staleColor = [System.Drawing.Color]::FromArgb(248, 81, 73)
+    try {
+        if (Get-Command Get-BobTrayStaleForeColorArgb -ErrorAction SilentlyContinue) {
+            $rgb = @(Get-BobTrayStaleForeColorArgb)
+            if ($rgb.Count -ge 3) {
+                $staleColor = [System.Drawing.Color]::FromArgb([int]$rgb[0], [int]$rgb[1], [int]$rgb[2])
+            }
+        }
+    } catch { }
+    # HeadingColor is ignored when [stale] is present (token-only red). Non-stale rows may still tint.
+    $baseFg = $fg
+    if (-not $parts.HasStale -and $null -ne $HeadingColor) { $baseFg = $HeadingColor }
+    $curX = $X + $iconW
     $nm = New-Object System.Windows.Forms.Label
     $nm.AutoSize = $true
     $nm.Font = $nameFont
-    if ($null -ne $HeadingColor) { $nm.ForeColor = $HeadingColor }
-    else { $nm.ForeColor = $fg }
+    $nm.ForeColor = $baseFg
     $nm.BackColor = [System.Drawing.Color]::Transparent
-    $nm.Text = $Heading
-    $nm.Location = New-Object System.Drawing.Point ($X + $iconW), $Y
+    $nm.Text = [string]$parts.Prefix
+    $nm.Location = New-Object System.Drawing.Point $curX, $Y
     $script:tileHost.Controls.Add($nm)
+    $curX = $curX + [Math]::Max(0, [int]$nm.PreferredWidth)
+    if ($parts.HasStale) {
+        $st = New-Object System.Windows.Forms.Label
+        $st.AutoSize = $true
+        $st.Font = $nameFont
+        $st.ForeColor = $staleColor
+        $st.BackColor = [System.Drawing.Color]::Transparent
+        $st.Text = [string]$parts.Token
+        $st.Location = New-Object System.Drawing.Point $curX, $Y
+        $script:tileHost.Controls.Add($st)
+        $curX = $curX + [Math]::Max(0, [int]$st.PreferredWidth)
+        if ($parts.Suffix) {
+            $suf = New-Object System.Windows.Forms.Label
+            $suf.AutoSize = $true
+            $suf.Font = $nameFont
+            $suf.ForeColor = $baseFg
+            $suf.BackColor = [System.Drawing.Color]::Transparent
+            $suf.Text = [string]$parts.Suffix
+            $suf.Location = New-Object System.Drawing.Point $curX, $Y
+            $script:tileHost.Controls.Add($suf)
+            $curX = $curX + [Math]::Max(0, [int]$suf.PreferredWidth)
+        }
+    }
     if ($HelpText) {
-        $helpX = ($X + $iconW) + $nm.PreferredWidth + 6
+        $helpX = $curX + 6
         $help = New-Object System.Windows.Forms.Label
         $help.AutoSize = $true
         $help.Text = '?'
