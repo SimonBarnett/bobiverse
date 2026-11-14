@@ -4033,6 +4033,26 @@ def _public_queue(home: Path) -> dict:
     }
 
 
+def _digest_fleet_pools(doc: dict | None) -> dict:
+    """FR #7255: top-level OpenCode + Copilot meters owned by Jeeves."""
+    if not isinstance(doc, dict):
+        return {}
+    raw = doc.get("fleet_pools")
+    if isinstance(raw, dict) and raw:
+        return raw
+    out: dict = {}
+    if isinstance(doc.get("copilot"), dict):
+        out["copilot"] = doc.get("copilot")
+    oc = doc.get("opencode")
+    if isinstance(oc, dict):
+        out["opencode"] = oc
+        if oc.get("opencode-free"):
+            out["opencode-free"] = oc.get("opencode-free")
+        if oc.get("opencode-go"):
+            out["opencode-go"] = oc.get("opencode-go")
+    return out
+
+
 def _digest_copilot_pool(home: Path, doc: dict | None = None) -> dict:
     """FR #6148 / #7178: public Copilot pool — never omit; prefer freshest source."""
     try:
@@ -4140,6 +4160,8 @@ def build_digest_object(home: Path, briefer_nick: str, now: datetime | None = No
         "cursor_pools": build_cursor_pools(doc, exported, now),
         "queue": _public_queue(home),
         "copilot": _digest_copilot_pool(home, doc),
+        "fleet_pools": _digest_fleet_pools(doc),
+        "opencode": doc.get("opencode") if isinstance(doc.get("opencode"), dict) else None,
         "intake_outbox": _intake_outbox_public(home),
         # FR #5204 / #5947: live airc *_console nicks (shops + any chair channel).
         "airc_consoles": _airc_consoles_export(doc, exported),
@@ -8052,48 +8074,8 @@ def publish_local_peer_fuel(
         _last_fuel_publish_diag["acquisition"] = "read-failed"
         _last_fuel_publish_diag["xai_weekly_error"] = type(exc).__name__
         peer = enrich_peer_keep_last_good_xai_weekly(peer, error="read-failed")
-    # FR #6146 / #6147 / #6248 / #6301: enrich with service-owned OpenCode windows + account label.
-    try:
-        peer = dict(peer)
-        oc_doc = read_local_opencode_fuel_doc()
-        oc = _pcent_from_opencode_fuel_doc(oc_doc)
-        wins = _windows_from_opencode_fuel_doc(oc_doc)
-        if oc or wins:
-            peer = enrich_peer_with_opencode_pcent(peer, oc, wins)
-        if isinstance(oc_doc, dict) and oc_doc.get("source"):
-            _last_fuel_publish_diag["opencode_source"] = str(oc_doc.get("source"))
-        acq = last_opencode_acquisition()
-        if acq.get("kind"):
-            _last_fuel_publish_diag["opencode_acquisition"] = str(acq.get("kind"))
-        if acq.get("source") and not _last_fuel_publish_diag.get("opencode_source"):
-            _last_fuel_publish_diag["opencode_source"] = str(acq.get("source"))
-        if acq.get("acl_tightened"):
-            _last_fuel_publish_diag["opencode_acl_tightened"] = True
-        # Account label is the selected key label string (never the key).
-        label = None
-        if isinstance(oc_doc, dict):
-            label = oc_doc.get("opencode_account") or acq.get("label")
-        else:
-            label = acq.get("label")
-        cleaned = _sanitize_grok_account_label(label) if label else None
-        if cleaned:
-            peer["opencode_account"] = cleaned
-            _last_fuel_publish_diag["opencode_account_set"] = True
-        elif acq.get("kind") == "missing_key" or (
-            isinstance(oc_doc, dict) and oc_doc.get("opencode_state") == OPENCODE_NO_KEY_STATE
-        ):
-            peer["opencode_account"] = None
-            if isinstance(peer.get("opencode_windows"), dict):
-                # Ensure paint surfaces "no key set" via window error fields.
-                wins2 = peer["opencode_windows"]
-                for wid, rec in list(wins2.items()):
-                    if isinstance(rec, dict) and not rec.get("error"):
-                        row = dict(rec)
-                        row["error"] = OPENCODE_NO_KEY_STATE
-                        wins2[wid] = row
-            _last_fuel_publish_diag["opencode_state"] = OPENCODE_NO_KEY_STATE
-    except Exception:
-        pass
+    # FR #7255: Jeeves owns OpenCode fleet fetch. Ear must not hit the provider.
+    _last_fuel_publish_diag["opencode_acquisition"] = "jeeves-fleet"
     # FR #6248 / #6279: attach ear-owned grok_account.
     # When this cycle selected an auth entry for live weekly, attribute from that
     # entry only (never borrow a sibling label for the meter). Unlabeled selection
@@ -8125,45 +8107,10 @@ def publish_local_peer_fuel(
                     peer["xai_weekly"] = meter
     except Exception:
         pass
-    # FR #7178: ear always fetches Copilot as SYSTEM; publish pool or explicit error.
-    try:
-        peer = dict(peer)
-        pool = fetch_live_copilot_pool(Path(home), now=now)
-        peer["copilot"] = pool
-        acq = last_copilot_acquisition()
-        if acq.get("kind"):
-            _last_fuel_publish_diag["copilot_acquisition"] = str(acq.get("kind"))
-        if acq.get("source"):
-            _last_fuel_publish_diag["copilot_source"] = str(acq.get("source"))
-        if acq.get("error"):
-            _last_fuel_publish_diag["copilot_error"] = str(acq.get("error"))
-        checked = acq.get("checked_sources") or []
-        if checked:
-            # FR #7234: names only so tray/log can say what is missing.
-            _last_fuel_publish_diag["copilot_checked"] = ",".join(str(x) for x in checked)
-        if pool.get("state"):
-            _last_fuel_publish_diag["copilot_state"] = str(pool.get("state"))
-        if pool.get("fetched_at"):
-            _last_fuel_publish_diag["copilot_fetched_at"] = str(pool.get("fetched_at"))
-    except Exception as exc:  # noqa: BLE001
-        try:
-            import copilot_dispatch as _cd_pub
-
-            peer = dict(peer)
-            peer["copilot"] = _cd_pub.empty_public_pool(error=type(exc).__name__)
-        except Exception:  # noqa: BLE001
-            peer = dict(peer)
-            peer["copilot"] = {
-                "state": "unknown",
-                "source": "copilot_internal/user",
-                "remaining": None,
-                "entitlement": None,
-                "reset_at": "",
-                "fetched_at": "",
-                "last_error": type(exc).__name__,
-            }
-        _last_fuel_publish_diag["copilot_acquisition"] = "read-failed"
-        _last_fuel_publish_diag["copilot_error"] = type(exc).__name__
+    # FR #7255: Jeeves owns Copilot fleet fetch. Ear must not GET copilot_internal/user.
+    _last_fuel_publish_diag["copilot_acquisition"] = "jeeves-fleet"
+    peer = dict(peer)
+    peer.pop("copilot", None)
     # FR #7022: wire home/run/python-status.json into the merge payload
     # (value "missing" or source tag only — never a path body).
     try:

@@ -1707,6 +1707,26 @@ function Get-BobOpencodePaintFromDigest {
     $free = $null
     $go = $null
     $windows = $null
+    # FR #7255: fleet OpenCode lives on the digest, not machines.*.
+    if ($Digest) {
+        $fp = $null
+        try { $fp = $Digest.fleet_pools } catch { $fp = $null }
+        if (-not $fp) { try { $fp = $Digest.opencode } catch { $fp = $null } }
+        if ($fp) {
+            try {
+                if ($fp.'opencode-free' -and $null -ne $fp.'opencode-free'.remaining) { $free = $fp.'opencode-free'.remaining }
+                elseif ($null -ne $fp.free) { $free = $fp.free }
+            } catch { }
+            try {
+                if ($fp.'opencode-go' -and $null -ne $fp.'opencode-go'.remaining) { $go = $fp.'opencode-go'.remaining }
+                elseif ($null -ne $fp.go) { $go = $fp.go }
+            } catch { }
+            try { if ($fp.windows) { $windows = $fp.windows } } catch { }
+            if ((Test-BobTrayRemainingKnown $free) -or (Test-BobTrayRemainingKnown $go) -or $windows) {
+                return [pscustomobject]@{ free = $free; go = $go; windows = $windows }
+            }
+        }
+    }
     if (-not $Digest -or -not $Digest.machines) {
         return [pscustomobject]@{ free = $null; go = $null; windows = $null }
     }
