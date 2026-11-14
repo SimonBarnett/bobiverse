@@ -275,12 +275,16 @@ class SkillDagServer:
         nodes: dict[str, dict[str, Any]] = {}
         err = ""
         try:
-            from skill_dag_index import format_name_collisions, scan_skills_with_collisions
+            from skill_dag_index import (
+                format_name_collisions,
+                read_skill_markdown,
+                scan_skills_with_collisions,
+            )
 
             slim, collisions = scan_skills_with_collisions(self.roots)
             for item in slim:
                 skill = Path(item["path"])
-                text = skill.read_text(encoding="utf-8") if skill.is_file() else ""
+                text = (read_skill_markdown(skill) or "") if skill.is_file() else ""
                 body = text
                 if text.startswith("---"):
                     rest = text[3:]
@@ -405,7 +409,13 @@ class SkillDagServer:
         raw = resolved.read_bytes()
         if len(raw) > self.max_bytes:
             return {"ok": False, "reason": "over_budget", "bytes": len(raw)}
-        return {"ok": True, "path": str(resolved), "body": raw.decode("utf-8")}
+        try:
+            from skill_dag_index import read_skill_markdown
+
+            body = read_skill_markdown(resolved) or ""
+        except Exception:
+            body = raw.decode("latin-1", errors="replace")
+        return {"ok": True, "path": str(resolved), "body": body}
 
     def status(self) -> dict[str, Any]:
         return {
