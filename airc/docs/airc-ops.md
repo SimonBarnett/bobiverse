@@ -29,7 +29,7 @@ Smoke: `airc-network-installer.exe --selftest` and `--help`. Pack test stages us
 
 `Pack-BobiverseRelease -Product airc` runs `airc/scripts/Build-Airc.ps1` (PyInstaller one-file) and stages `airc\airc.exe` in the MSI. `Install-AircConsole` prefers that exe as NSSM `Application` with argparse AppParameters; when the exe is missing it keeps the legacy `powershell.exe` + `Start-AircConsole.ps1` path. Smoke: `airc.exe --selftest` and `airc.exe --help`. Target boxes do not need system Python for the console service once the exe is installed.
 
-**CI (FR #7276):** .github/workflows/build-airc.yml builds irc.exe on GitHub-hosted Windows when irc/** or airc's frozen common/scripts imports change. Artifact irc carries irc.exe, irc.exe.sha256, MANIFEST.json, and provenance.txt (no MSI, install, or service restart). Path allowlist is pinned by irc/tests/airc_ci_source_paths.py.
+**CI (FR #7276):** .github/workflows/build-airc.yml builds airc.exe on GitHub-hosted Windows when airc/** or airc's frozen common/scripts imports change. Artifact airc carries airc.exe, airc.exe.sha256, MANIFEST.json, and provenance.txt (no MSI, install, or service restart). Path allowlist is pinned by airc/tests/airc_ci_source_paths.py.
 
 ## Antivirus exclusions before install (FR #4215)
 

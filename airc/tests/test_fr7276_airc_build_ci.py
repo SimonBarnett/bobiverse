@@ -103,3 +103,15 @@ def test_fr7276_build_script_owns_pyinstaller_and_smoke():
     assert "--help" in build
     assert "--selftest" in build
     assert "airc.exe" in build
+
+
+def test_fr7276_airc_ops_ci_note_has_no_bel():
+    """MRB #7284: docs used PowerShell `\\a` so `airc` became ASCII BEL."""
+    raw = (ROOT / "airc" / "docs" / "airc-ops.md").read_bytes()
+    assert raw[:3] != b"\xef\xbb\xbf"
+    text = raw.decode("utf-8")
+    assert "\x07" not in text
+    assert "FR #7276" in text
+    assert "build-airc.yml" in text
+    assert "airc.exe" in text
+    assert "MANIFEST.json" in text
