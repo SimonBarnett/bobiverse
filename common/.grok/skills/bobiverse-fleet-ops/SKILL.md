@@ -186,3 +186,4 @@ Generalised from 32 harvested lessons that never reached this book (audit for FR
 - Tray C# heading changes need CI Build-BobDialogs.ps1 on windows-latest; source-only merge leaves live tools\bob-tray.exe stale --- assert UTF-16LE xAI weekly in the PE and upload sha256 provenance for Slab hotpatch
 - Heading-bound README pins must skip ATX detection inside fenced code; a # PowerShell comment is not a markdown heading.
 - A 2470 behind-count ALERT test must dirty a non-allowlist path; park-all-dirty makes ff succeed and drops the ALERT.
+- CI tray hotpatch must drop MANIFEST.json next to tools\bob-tray.exe; the footer prefers that file over a stale install-root MANIFEST, and paints exe/scripts when they differ.
