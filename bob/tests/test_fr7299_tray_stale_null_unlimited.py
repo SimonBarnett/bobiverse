@@ -101,14 +101,14 @@ $d = [pscustomobject]@{{
   copilot = [pscustomobject]@{{ remaining = 10; state = 'ok'; fetched_at = $null }}
 }}
 $rows = @(Get-BobTrayDigestPoolCatalog -Digest $d)
-$cur = @($rows | Where-Object {{ $_.id -eq 'cursor' }})[0]
-$o = [ordered]@{{ heading=$cur.heading; stale=[bool]$cur.stale; known=[bool]$cur.known; pct=$cur.remaining_pct }}
+$go = @($rows | Where-Object {{ $_.id -eq 'opencode-go' }})[0]
+$o = [ordered]@{{ heading=$go.heading; stale=[bool]$go.stale; known=[bool]$go.known; pct=$go.remaining_pct }}
 $o | ConvertTo-Json -Compress
 """
     data = json.loads(_ps(script).splitlines()[-1])
     assert data["stale"] is True
     assert "[stale]" in data["heading"]
-    assert "61%" in data["heading"]
+    assert "40%" in data["heading"]
     assert "older than" not in data["heading"].lower()
 
 
