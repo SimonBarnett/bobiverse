@@ -41,11 +41,11 @@ cmdkey /generic:bobiverse/jeeves/opencode-go-key /user:opencode /pass:$GoKey
 ```
 
 Do not echo the secret into chair logs, IRC, or the digest. After setup, wait one
-dedicated fixed-rate 60s fleet timer (FR #7377; independent of chair busy) and confirm digest `fleet_pools.*.source` shows
+dedicated fixed-rate 60s fleet timer (FR #7377 / #7382; independent of chair busy and of outbox drain) and confirm digest `fleet_pools.*.source` shows
 `credman:bobiverse/jeeves/...` with a fresh `fetched_at`.
 
 ## Related
 
 - Code: `common/scripts/fleet_pool_fetch.py` (`resolve_fleet_github_token`,
   `resolve_fleet_opencode_go_key`).
-- Pins: `common/tests/test_fr7288_fleet_credman.py`, `test_fr7255_fleet_pool_fetch.py`, `test_fr7377_fleet_pool_fixed_rate.py`.
+- Pins: `common/tests/test_fr7288_fleet_credman.py`, `test_fr7255_fleet_pool_fetch.py`, `test_fr7377_fleet_pool_fixed_rate.py`, `test_fr7382_fleet_pool_watchdog.py`.

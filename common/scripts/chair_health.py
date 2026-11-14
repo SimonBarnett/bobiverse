@@ -41,6 +41,8 @@ COPILOT_TICK_S = 60.0
 FIRST_COPILOT_DELAY_S = 20.0
 FLEET_POOL_TICK_S = 60.0
 FIRST_FLEET_POOL_DELAY_S = 15.0
+# FR #7382: watchdog poke interval (not gated on outbox drain / ChairJobs.tick).
+FLEET_POOL_WATCH_S = 1.0
 # Per-fetch wall timeout well under the 60s slot (hung provider must not block next).
 FLEET_POOL_FETCH_TIMEOUT_S = 45.0
 WEBHOOK_ENSURE_S = 3600.0
@@ -640,6 +642,26 @@ class ChairJobs:
             )
         except Exception:  # noqa: BLE001
             self._settings_http = None
+        # FR #7382: poke fleet cadence even when the outbox loop is stuck in drain.
+        self._fleet_watchdog_stop = threading.Event()
+        self._fleet_watchdog_thread: threading.Thread | None = None
+        if self.spawn:
+            self._fleet_watchdog_thread = threading.Thread(
+                target=self._fleet_pool_watchdog_loop,
+                daemon=True,
+                name="fleet-pool-watch",
+            )
+            self._fleet_watchdog_thread.start()
+
+    def _fleet_pool_watchdog_loop(self) -> None:
+        """FR #7382: dedicated poke; Event.wait so tests can stop without busy-spin."""
+        while True:
+            try:
+                self._maybe_tick_fleet_pools()
+            except Exception as exc:  # noqa: BLE001
+                self.log(f"WARN fleet-pool-watch: {type(exc).__name__}: {exc}")
+            if self._fleet_watchdog_stop.wait(timeout=float(FLEET_POOL_WATCH_S)):
+                return
 
     def _announce(self, text: str) -> None:
         import bobreport
@@ -948,7 +970,8 @@ class ChairJobs:
 
         Independent of ``self.busy`` so a slow resync / merge-on-green / ticket-closure
         cannot stretch gaps past the tray 120s stale paint. Next slot is from the
-        schedule grid, not from completion time.
+        schedule grid, not from completion time. FR #7382: also poked by
+        ``_fleet_pool_watchdog_loop`` so a long ``drain_outbox_once`` cannot starve it.
         """
         now = float(self.clock())
         if now < float(self.next_fleet_pool):
