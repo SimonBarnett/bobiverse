@@ -4700,6 +4700,9 @@ class Client:
             doc = gitclaim.load_queue(self.home)
             rows = focus_ignore.sort_unaccepted_rows(self.home, doc.get("unaccepted") or [])[:25]
             gitclaim.ledger_refresh_authors(self.home, rows, fetch)
+            counter = gitclaim.github_pr_seat_commit_counter(home=self.home)
+            if counter is not None:
+                gitclaim.stamp_mrb_author_commit_counts(self.home, rows, counter)
         except Exception as exc:  # noqa: BLE001 - never block an offer on a lookup
             info(f"WARN ledger refresh error {type(exc).__name__}"[:120])
 
