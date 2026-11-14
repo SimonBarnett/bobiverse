@@ -24,14 +24,13 @@ def test_fr6314_pins_login_expired_message_in_format_helper():
     h = _txt(HOVER)
     assert "FR #6314" in h
     assert "grok-login-expired" in h
-    assert "Grok login expired: run Grok on" in h
-    assert "to sign in again" in h
+    assert "xAI sign-in expired, sign in once on" in h
 
 
 def test_fr6314_docs_mention_expired_login():
     d = _txt(DOCS)
     assert "FR #6314" in d or "grok-login-expired" in d
-    assert "Grok login expired" in d
+    assert "xAI sign-in expired" in d or "Grok login expired" in d
 
 
 @needs_ps
@@ -55,7 +54,7 @@ def test_fr6314_format_expands_login_expired(tmp_path: Path):
             if (-not $expired.fuel_stale) {{ throw 'must be stale' }}
             if ($expired.heading -notmatch '19% left') {{ throw ('pct missing={{0}}' -f $expired.heading) }}
             if ($expired.heading -notmatch 'stale') {{ throw ('stale mark missing={{0}}' -f $expired.heading) }}
-            if ($expired.heading -notmatch 'Grok login expired: run Grok on marchhare to sign in again') {{
+            if ($expired.heading -notmatch 'xAI sign-in expired, sign in once on marchhare') {{
                 throw ('human message missing={{0}}' -f $expired.heading)
             }}
             if ($expired.heading -match 'provider-http-401') {{ throw 'bare 401 must not appear' }}
@@ -69,7 +68,7 @@ def test_fr6314_format_expands_login_expired(tmp_path: Path):
                 age_s = 60
             }})
             if ($five.heading -notmatch 'provider-http-500') {{ throw ('500 must stay raw={{0}}' -f $five.heading) }}
-            if ($five.heading -match 'Grok login expired') {{ throw '500 must not look like login expired' }}
+            if ($five.heading -match 'xAI sign-in expired') {{ throw '500 must not look like login expired' }}
 
             Write-Output 'ok'
             """

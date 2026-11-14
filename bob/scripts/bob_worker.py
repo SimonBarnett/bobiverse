@@ -168,6 +168,7 @@ EXIT_GAVE_UP = 5  # hang-restart bound exceeded
 EXIT_LAUNCH_FAIL = 6
 EXIT_REFUSED = 7  # t815u: already the maximum number of workers running
 EXIT_STALE_BUILD = 8  # FR #2782 legacy; FR #3180 keeps the seat running and asks for a manual restart instead
+EXIT_XAI_AUTH_EXPIRED = 9  # FR #7345: Grok sign-in missing/expired; do not launch interactive auth
 
 def _default_install_root() -> str:
     """<drive>:\\ai\\bob on the fixed disk that really holds the fleet (t780u); never a hard-coded C:."""
@@ -1269,8 +1270,144 @@ def format_fuel_reading(f: Fuel, kind: str = "") -> str:
 
 @dataclass(frozen=True)
 class Decision:
-    kind: str  # cursor | grok | opencode | dialog | none
+    kind: str  # cursor | grok | opencode | dialog | none | refuse | xai-auth-expired
     reason: str
+
+
+XAI_SIGNIN_EXPIRED_ERRORS = frozenset(
+    {
+        "grok-login-expired",
+        "auth-missing",
+        "auth-file-missing",
+        "auth-key-missing",
+        "auth-file-unreadable",
+        "xai-auth-expired",
+    }
+)
+GROK_SIGNIN_PROMPT_WINDOW_S = 30.0
+GROK_SIGNIN_PROMPT_NEEDLES = (
+    "sign in",
+    "device code",
+    "device-code",
+    "visit https://",
+    "open the following url",
+    "authorize this device",
+    "login to grok",
+    "x.ai/activate",
+    "x.ai/authorize",
+)
+
+
+def classify_xai_signin_state(error: Optional[str]) -> str:
+    """Ear-aligned class: expired vs ok. Never reads auth file bodies."""
+    err = (error or "").strip().lower()
+    if err in XAI_SIGNIN_EXPIRED_ERRORS:
+        return "expired"
+    return "ok"
+
+
+def preflight_xai_signin(
+    *,
+    fetch_fn: Optional[Callable] = None,
+    last_acq: Optional[dict] = None,
+) -> str:
+    """Same live weekly source as the SYSTEM ear (FR #7251). Returns ok|expired.
+
+    Does not copy, print, or rewrite sign-in files. fetch_fn is inject-only.
+    """
+    acq = last_acq
+    if fetch_fn is not None:
+        try:
+            fetch_fn()
+        except Exception:
+            pass
+    elif last_acq is None:
+        try:
+            import bobreport as _br
+
+            _br.fetch_live_xai_weekly()
+            acq = getattr(_br, "_last_xai_acquisition", None)
+        except Exception:
+            return "ok"
+    err = ""
+    if isinstance(acq, dict):
+        err = str(acq.get("error") or "")
+    return classify_xai_signin_state(err)
+
+
+def grok_console_is_signin_prompt(text: str) -> bool:
+    blob = (text or "").lower()
+    return any(n in blob for n in GROK_SIGNIN_PROMPT_NEEDLES)
+
+
+class GrokSigninPromptGuard:
+    """FR #7345: first 30s of Grok console. Sign-in/device-code => trigger kill."""
+
+    def __init__(
+        self,
+        read_fn,
+        *,
+        timeout_s: float = GROK_SIGNIN_PROMPT_WINDOW_S,
+        clock=time.monotonic,
+        log: Optional[Callable] = None,
+    ):
+        self.read_fn = read_fn
+        self.timeout_s = float(timeout_s)
+        self.clock = clock
+        self.log = log or (lambda _s: None)
+        self._t0 = clock()
+        self.triggered = False
+        self.timed_out = False
+
+    def tick(self) -> bool:
+        if self.triggered:
+            return True
+        if self.timed_out:
+            return False
+        text = ""
+        with contextlib.suppress(Exception):
+            text = self.read_fn() or ""
+        if grok_console_is_signin_prompt(text):
+            self.triggered = True
+            self.log("grok: interactive sign-in prompt; not waiting")
+            return True
+        if (self.clock() - self._t0) >= self.timeout_s:
+            self.timed_out = True
+            return False
+        return False
+
+
+def apply_xai_signin_gate(
+    dec: Decision,
+    fuel: Fuel,
+    cursor_cmd: Optional[str],
+    grok_exe: Optional[str],
+    opencode_cmd: Optional[str],
+    *,
+    signin_ok: bool,
+) -> Decision:
+    """Expired sign-in never launches Grok. Cursor if fuel, else xai-auth-expired."""
+    if signin_ok:
+        return dec
+    fb = select_agent(fuel, cursor_cmd, None, opencode_cmd, xai_signin_ok=False)
+    if fb.kind in ("cursor", "opencode"):
+        return Decision(fb.kind, "xai-auth-expired; " + fb.reason)
+    return Decision("xai-auth-expired", "xai-auth-expired")
+
+
+def decision_after_grok_signin_prompt(
+    fuel: Fuel,
+    cursor_cmd: Optional[str],
+    opencode_cmd: Optional[str],
+) -> Decision:
+    return apply_xai_signin_gate(
+        Decision("grok", "signin-prompt"),
+        fuel,
+        cursor_cmd,
+        None,
+        opencode_cmd,
+        signin_ok=False,
+    )
 
 
 def opencode_auth_file_present(env: Optional[dict] = None) -> bool:
@@ -1537,15 +1674,23 @@ def resolve_seat_decision(
     opencode_cmd: Optional[str],
     *,
     auth_present: bool,
+    xai_signin_ok: bool = True,
 ) -> Decision:
     """Apply an explicit agent request, else the automatic Grok → Cursor → OpenCode order."""
     if normalize_explicit_agent(requested):
-        return explicit_agent_decision(
+        out = explicit_agent_decision(
             requested, fuel, cursor_cmd, grok_exe, opencode_cmd, auth_present=auth_present
         )
+        return apply_xai_signin_gate(
+            out, fuel, cursor_cmd, grok_exe, opencode_cmd, signin_ok=xai_signin_ok
+        )
     if opencode_cmd and dec.kind in ("dialog", "none"):
-        return select_agent(fuel, cursor_cmd, grok_exe, opencode_cmd)
-    return dec
+        dec = select_agent(
+            fuel, cursor_cmd, grok_exe, opencode_cmd, xai_signin_ok=xai_signin_ok
+        )
+    return apply_xai_signin_gate(
+        dec, fuel, cursor_cmd, grok_exe, opencode_cmd, signin_ok=xai_signin_ok
+    )
 
 
 def select_agent(
@@ -1553,9 +1698,11 @@ def select_agent(
     cursor_cmd: Optional[str],
     grok_exe: Optional[str],
     opencode_cmd: Optional[str] = None,
+    *,
+    xai_signin_ok: bool = True,
 ) -> Decision:
-    """grok -> cursor -> opencode -> dialog (session key). Pure; no I/O. FR #3997 / #6120."""
-    if grok_exe and grok_has_tokens(fuel):
+    """grok -> cursor -> opencode -> dialog (session key). Pure; no I/O. FR #3997 / #6120 / #7345."""
+    if grok_exe and grok_has_tokens(fuel) and xai_signin_ok:
         return Decision(
             "grok",
             f"grok (weekly pct={fuel.grok_pct} state={fuel.grok_state})",
@@ -11296,6 +11443,7 @@ class Supervisor:
             self._start_turn_watcher(spec.session_id)
             self._start_fuel_watcher(int(proc.pid or 0))
             self._start_prompt_watcher(proc)
+            self._start_grok_signin_guard(proc)
             self._arm_ready(proc)
             threading.Thread(target=self._wait_exit, args=(proc,), name="agent-wait", daemon=True).start()
             return True
@@ -11575,6 +11723,70 @@ class Supervisor:
                 time.sleep(5.0)
 
         threading.Thread(target=_run, name="prompt-retry-watch", daemon=True).start()
+
+    def _fallback_after_grok_signin_prompt(self, proc) -> None:
+        """FR #7345 / MRB #7348: kill prompt, then Cursor/OpenCode or exit xai-auth-expired.
+
+        Never leave the seat parked and never EXIT_OK (that would only recycle Grok).
+        """
+        with self._lock:
+            if self._shutting:
+                return
+            pid = int(getattr(proc, "pid", 0) or 0)
+            if pid:
+                self._expected_exit.add(pid)
+        self.log("grok: killing interactive sign-in prompt (FR #7345)")
+        with contextlib.suppress(Exception):
+            self.kill(int(getattr(proc, "pid", 0) or 0))
+        with self._lock:
+            if self.proc is proc:
+                self.proc = None
+        fuel = Fuel()
+        with contextlib.suppress(Exception):
+            fuel = read_fuel(self._install_root_for_fuel())
+        cursor_cmd = resolve_cursor_cmd()
+        opencode_cmd = resolve_opencode_cmd()
+        dec = decision_after_grok_signin_prompt(fuel, cursor_cmd, opencode_cmd)
+        if dec.kind in ("cursor", "opencode"):
+            exe = cursor_cmd if dec.kind == "cursor" else opencode_cmd
+            if exe:
+                self.log(f"grok: sign-in prompt; falling back to {dec.kind} ({dec.reason})")
+                self.kind = dec.kind
+                self.exe = exe
+                self.relay.set_target(None)
+                if self.bored:
+                    self.bored.set_ready(False)
+                if self.start_agent(note="(fallback after Grok sign-in prompt; FR #7345)"):
+                    return
+                self.log("grok: sign-in fallback launch failed; exiting xai-auth-expired")
+        else:
+            self.log(f"grok: sign-in prompt; no Cursor/OpenCode fuel ({dec.reason})")
+        self.shutdown("xai-auth-expired-prompt", EXIT_XAI_AUTH_EXPIRED)
+
+    def _start_grok_signin_guard(self, proc) -> None:
+        """FR #7345: kill Grok if an interactive sign-in/device-code prompt appears in 30s."""
+        if (self.kind or "").strip().lower() != "grok":
+            return
+        guard = GrokSigninPromptGuard(
+            read_fn=read_console_screen_text if os.name == "nt" else (lambda: ""),
+            timeout_s=GROK_SIGNIN_PROMPT_WINDOW_S,
+            clock=time.monotonic,
+            log=self.log,
+        )
+
+        def _run() -> None:
+            while not self._shutting and self.proc is proc and proc.poll() is None:
+                try:
+                    if guard.tick():
+                        self._fallback_after_grok_signin_prompt(proc)
+                        return
+                    if guard.timed_out:
+                        return
+                except Exception:
+                    return
+                time.sleep(1.0)
+
+        threading.Thread(target=_run, name="grok-signin-guard", daemon=True).start()
 
     def _inject_recovery(self) -> "InjectRecovery":
         """FR #4115: lazily build the re-paste / NACK recovery for lost assign pastes."""
@@ -12623,14 +12835,17 @@ def _new_run_dir(machine: str, mode: str) -> Path:
 def _choose(args, log: Log, folder: Path, mode: str):
     cursor_cmd, grok_exe = resolve_cursor_cmd(), resolve_grok_exe()
     fuel = read_fuel(Path(args.install_root))
-    dec = select_agent(fuel, cursor_cmd, grok_exe)
+    signin = preflight_xai_signin()
+    signin_ok = signin == "ok"
+    log(f"xai-auth[{mode}]: {signin}")
+    dec = select_agent(fuel, cursor_cmd, grok_exe, xai_signin_ok=signin_ok)
     log(f"select[{mode}]: {dec.kind} - {dec.reason}")
-    return dec, cursor_cmd, grok_exe, fuel
+    return dec, cursor_cmd, grok_exe, fuel, signin_ok
 
 
 def _explicit_refusal_exit(dec: Decision, log: Log, mode: str) -> Optional[int]:
     """Show an explicit refusal. Never starts another agent."""
-    if dec.kind != "refuse":
+    if dec.kind not in ("refuse", "xai-auth-expired"):
         return None
     log(f"select[{mode}]: refused - {dec.reason}")
     try:
@@ -12642,6 +12857,8 @@ def _explicit_refusal_exit(dec: Decision, log: Log, mode: str) -> Optional[int]:
             time.sleep(8)
     except Exception:
         pass
+    if dec.kind == "xai-auth-expired":
+        return EXIT_XAI_AUTH_EXPIRED
     return EXIT_NO_AGENT
 
 
@@ -12650,12 +12867,13 @@ def run_plan(args, log: Log) -> int:
     if not folder.is_dir():
         log(f"plan: folder missing {folder}")
         return EXIT_USAGE
-    dec, cursor_cmd, grok_exe, fuel = _choose(args, log, folder, "plan")
+    dec, cursor_cmd, grok_exe, fuel, signin_ok = _choose(args, log, folder, "plan")
     opencode_cmd = _resolve_opencode_cmd_for_seat(log)
     dec = resolve_seat_decision(
         getattr(args, "agent", ""),
         dec, fuel, cursor_cmd, grok_exe, opencode_cmd,
         auth_present=opencode_auth_file_present(),
+        xai_signin_ok=signin_ok,
     )
     stopped = _explicit_refusal_exit(dec, log, "plan")
     if stopped is not None:
@@ -12733,12 +12951,13 @@ def run_monitor(args, log: Log) -> int:
     if not (folder / "AGENTS.md").is_file():
         log(f"monitor: AGENTS.md missing in {folder}")
         return EXIT_USAGE
-    dec, cursor_cmd, grok_exe, fuel = _choose(args, log, folder, "monitor")
+    dec, cursor_cmd, grok_exe, fuel, signin_ok = _choose(args, log, folder, "monitor")
     opencode_cmd = _resolve_opencode_cmd_for_seat(log)
     dec = resolve_seat_decision(
         getattr(args, "agent", ""),
         dec, fuel, cursor_cmd, grok_exe, opencode_cmd,
         auth_present=opencode_auth_file_present(),
+        xai_signin_ok=signin_ok,
     )
     stopped = _explicit_refusal_exit(dec, log, "monitor")
     if stopped is not None:
@@ -12845,12 +13064,13 @@ def run_maintenance(args, log: Log, *, spawn: Optional[Callable] = None, poll_s:
     if not (folder / "AGENTS.md").is_file():
         log(f"maintenance: AGENTS.md missing in {folder}")
         return EXIT_USAGE
-    dec, cursor_cmd, grok_exe, fuel = _choose(args, log, folder, "maintenance")
+    dec, cursor_cmd, grok_exe, fuel, signin_ok = _choose(args, log, folder, "maintenance")
     opencode_cmd = _resolve_opencode_cmd_for_seat(log)
     dec = resolve_seat_decision(
         getattr(args, "agent", ""),
         dec, fuel, cursor_cmd, grok_exe, opencode_cmd,
         auth_present=opencode_auth_file_present(),
+        xai_signin_ok=signin_ok,
     )
     stopped = _explicit_refusal_exit(dec, log, "maintenance")
     if stopped is not None:
@@ -12953,12 +13173,13 @@ def run_agent(args, log: Log) -> int:
         log(f"skills-sync start sha={sk.get('sha')} reason={sk.get('reason')}")
     except Exception:
         pass
-    dec, cursor_cmd, grok_exe, fuel = _choose(args, log, folder, "agent")
+    dec, cursor_cmd, grok_exe, fuel, signin_ok = _choose(args, log, folder, "agent")
     opencode_cmd = _resolve_opencode_cmd_for_seat(log)
     dec = resolve_seat_decision(
         getattr(args, "agent", ""),
         dec, fuel, cursor_cmd, grok_exe, opencode_cmd,
         auth_present=opencode_auth_file_present(),
+        xai_signin_ok=signin_ok,
     )
     stopped = _explicit_refusal_exit(dec, log, "agent")
     if stopped is not None:
@@ -13575,9 +13796,10 @@ def main(argv: Optional[list] = None) -> int:
             }, sort_keys=True))
             return EXIT_OK
         fuel = read_fuel(Path(args.install_root))
-        dec = select_agent(fuel, cc, ge)
+        signin_ok = preflight_xai_signin() == "ok"
+        dec = select_agent(fuel, cc, ge, xai_signin_ok=signin_ok)
         dec = resolve_seat_decision(
-            args.agent, dec, fuel, cc, ge, oe, auth_present=auth_present
+            args.agent, dec, fuel, cc, ge, oe, auth_present=auth_present, xai_signin_ok=signin_ok
         )
         if args.mode == "plan":
             cwd = str(Path(args.install_root) / "plan")
