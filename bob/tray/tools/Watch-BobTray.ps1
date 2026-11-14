@@ -22,7 +22,7 @@
 [CmdletBinding()]
 param(
     # CAST IRON (Simon 2026-09-27): cursor + xAI usage POST to digest webhook every 30s.
-    [int]$PollSec = 30,
+    [int]$PollSec = 60,
     [int]$StallSec = 600,
     [int]$HeartbeatStaleSec = 90,
     [string]$RepoRoot

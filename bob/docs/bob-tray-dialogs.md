@@ -101,7 +101,7 @@ TipForm, About, and Status show **`bob <MSI VERSION> (<shortsha>)`** when a depl
 
 ## Copilot freshness (FR #6148) + historical-max % (FR #6215)
 
-- `Format-BobCopilotPoolLine` / `Get-BobCopilotFreshness` treat `fetched_at` older than **900 seconds** (or missing/unparseable/far-future) as stale.
+- `Format-BobCopilotPoolLine` / `Get-BobCopilotFreshness` treat `fetched_at` older than **120 seconds** (FR #7250; or missing/unparseable/far-future) as stale. No `updated HH:mm` stamp.
 - A future `resume_at` (dispatch cooldown) does **not** force fresh: age is always from `fetched_at`.
 - Stale paint: `Copilot - <value> [stale <age>]` (or `[stale]`). Stale is a text marker only --- TipForm/Status do **not** paint Copilot red or right-align the meter (FR #6317).
 - **FR #6215:** known `reset_at` still paints a countdown using the same `Format-BobResetLabel` convention as other pools (even when stale). Past/missing reset stays omitted.
@@ -111,11 +111,11 @@ TipForm, About, and Status show **`bob <MSI VERSION> (<shortsha>)`** when a depl
 
 ## FR #6371 pool tile updated time (and stale)
 
-Each TipForm/Status pool reading paints when it was taken: `updated HH:mm` in **local** time from that reading's own `fetched_at` (never the tray redraw clock). Helpers: `Format-BobPoolUpdatedLabel`, `Get-BobPoolReadingFreshness`, `Get-BobPoolStaleAfterSec` (default **900s** / 15 min; override `BOB_TRAY_POOL_STALE_S`). When a reset countdown exists it is kept **and** the updated stamp is shown; when there is no reset, only the updated stamp (do not invent a reset; do not paint `reset unavailable` as a countdown on a known rem%). If `fetched_at` is older than the stale threshold, append `[stale <age>]` so "unchanged" and "not updated" are distinct. Tray paint only --- no digest/provider schema change. Offline pin: `bob/tests/test_fr6371_tray_pool_updated.py`.
+**FR #7250:** TipForm/Status **do not** paint `updated HH:mm`. The tray re-reads service pool data every **`Get-BobTrayPoolPollSec` = 60** seconds. A reading older than **`Get-BobPoolStaleAfterSec` = 120** seconds (override `BOB_TRAY_POOL_STALE_S`) paints **stale** with the service reason when present — never a remaining % that looks current (FR #7242). Helpers: `Get-BobPoolReadingFreshness`, `Get-BobPoolStaleAfterSec`. Reset countdowns still paint on fresh rows. Tray paint only --- the ear/service stays the sole source of pool data. Offline pins: `bob/tests/test_fr7250_tray_pool_poll_stale.py`, `bob/tests/test_fr6371_tray_pool_updated.py`.
 
 ## FR #6301 tray fuel rows and agent starts
 
-OpenCode Go window lines and the Copilot meter use remaining percent: `<title> - <x>% left - <reset>` (OpenCode: `go <window> - <x>% left - <reset> - updated HH:mm`). Bars paint remaining % green to red. Copilot title is exactly `Copilot` (no included-unlimited prose). 100% used / exhausted paints `0% left`. Unlimited Copilot without a historical max paints `unknown`. Reset labels come from real digest/API data (`Nd Hh` above 24h, else `Hh Mm`); never invent rem-est text.
+OpenCode Go window lines and the Copilot meter use remaining percent: `<title> - <x>% left - <reset>` (OpenCode: `go <window> - <x>% left - <reset>`). Bars paint remaining % green to red. Copilot title is exactly `Copilot` (no included-unlimited prose). 100% used / exhausted paints `0% left`. Unlimited Copilot without a historical max paints `unknown`. Reset labels come from real digest/API data (`Nd Hh` above 24h, else `Hh Mm`); never invent rem-est text. Stale rows omit the remaining % (FR #7250).
 
 ## FR #6317 Copilot layout like OpenCode rows
 

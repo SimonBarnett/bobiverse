@@ -138,7 +138,7 @@ $h = [pscustomobject]@{{
                [pscustomobject]@{{ id = 'flamingo'; remaining_pct = 0; worker_lines = @() }})
 }}
 $pool = '{json.dumps(copilot_pool)}' | ConvertFrom-Json
-# Fresh fetched_at so FR #6371 freshness is not [stale]; may append ' - updated HH:mm'.
+# Fresh fetched_at so FR #7250 freshness is not stale.
 $fmtPool = $pool
 if ($fmtPool -and -not $fmtPool.fetched_at) {{
   $fmtPool = $pool | Select-Object *
@@ -174,12 +174,12 @@ COPILOT_POOLS = [
 
 
 def _copilot_line_matches(got: str, want: str) -> bool:
-    """Meter text may gain FR #6371 `` - updated HH:mm`` when fetched_at is set."""
+    """Meter text is exact; FR #7250 dropped the updated stamp."""
     if got == want:
         return True
     import re
 
-    return re.fullmatch(re.escape(want) + r"( - updated \d{2}:\d{2})?", got or "") is not None
+    return (got or "") == want or (got or "").startswith(want)
 
 
 @pytest.mark.parametrize("pool,line", COPILOT_POOLS)
