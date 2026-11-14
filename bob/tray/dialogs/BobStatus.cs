@@ -151,9 +151,39 @@ namespace BobDialogs
             p.CloseFigure(); return p;
         }
 
+        // FR #7378: only the exact [stale] token is red; the rest of the heading stays Fg.
+        // r.Red (whole-heading) is ignored for UsageRow paint so OpenCode/Copilot/xAI match TipForm.
+        int DrawHeadingWithStaleToken(Graphics g, string heading, Font font, int x, int y)
+        {
+            const string tok = "[stale]";
+            string h = heading ?? "";
+            int i = h.IndexOf(tok, StringComparison.Ordinal);
+            if (i < 0)
+            {
+                Draw(g, h, font, Fg, x, y);
+                return TextW(g, h, font);
+            }
+            string prefix = h.Substring(0, i);
+            string suffix = h.Substring(i + tok.Length);
+            int cur = x;
+            if (prefix.Length > 0)
+            {
+                Draw(g, prefix, font, Fg, cur, y);
+                cur += TextW(g, prefix, font);
+            }
+            Draw(g, tok, font, Red, cur, y);
+            cur += TextW(g, tok, font);
+            if (suffix.Length > 0)
+            {
+                Draw(g, suffix, font, Fg, cur, y);
+                cur += TextW(g, suffix, font);
+            }
+            return cur - x;
+        }
+
         int UsageRow(Graphics g, int x, int y, StatusRow r, int barW)
         {
-            Draw(g, r.Heading, fHead, r.Red ? Red : Fg, x, y);
+            DrawHeadingWithStaleToken(g, r.Heading, fHead, x, y);
             if (r.Help.Length > 0) helpRects.Add(new KeyValuePair<Rectangle, string>(new Rectangle(x, y, barW, 18), r.Help));
             int by = y + 20;
             g.SmoothingMode = SmoothingMode.AntiAlias;

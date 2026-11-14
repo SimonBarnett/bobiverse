@@ -114,10 +114,12 @@ $o | ConvertTo-Json -Compress
 
 def test_fr7299_watch_paints_stale_red():
     w = WATCH.read_text(encoding="utf-8-sig")
-    assert "FR #7299" in w
+    assert "FR #7299" in w or "FR #7378" in w
     assert "FromArgb(248, 81, 73)" in w
     assert "[stale]" in w or "\\[stale\\]" in w
     assert "Stale is text, not red" not in w
+    # FR #7378: token-only paint lives in Add-BobTrayUsageRow (not whole-heading only).
+    assert "HasStale" in w or "Split-BobTrayStaleHeading" in w
 
 
 def test_fr7299_hover_exports_stale_helpers():
