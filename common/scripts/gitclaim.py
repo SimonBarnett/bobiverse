@@ -643,14 +643,17 @@ def format_list_line(
     line_max: int = LIST_LINE_MAX,
     now: float | None = None,
 ) -> str:
-    """One PM line: ``#1 FR owner/repo#n 2h titleΓÇª`` (title truncated only)."""
+    """One PM line: ``#1 FR owner/repo#n 2h title`` (title truncated only)."""
+    import focus_ignore as _fi_list
+
     task = str(row.get("task") or "?")
     repo = str(row.get("repo") or "?")
     ident = str(row.get("id") or "?")
     age = _job_age(row, now=now)
     title = _job_title(row)
     # Fixed prefix must never be truncated away.
-    head = f"#{index} {task} {repo}{ident} {age}"
+    mark = "[critical] " if _fi_list.row_is_priority_critical(row) else ""
+    head = f"#{index} {mark}{task} {repo}{ident} {age}"
     budget = max(8, int(line_max) - len(head.encode("utf-8")) - 1)
     if title:
         t_bytes = title.encode("utf-8")
@@ -4887,7 +4890,8 @@ def offer_timeout_s(row: dict | None) -> float:
 
 def ordered_unaccepted(home: Path, rows: list[dict] | None = None) -> list[dict]:
     """Unaccepted rows in assignment order (#39 gap 2): ignored dropped, strict-focus filter,
-    item rank > repo priority > seq. Same order feeds !list and !bored."""
+    priority/critical first (FR #7204), then item rank > repo priority > seq.
+    Same order feeds !list and !bored."""
     import focus_ignore
 
     if rows is None:
@@ -12284,6 +12288,8 @@ def assign_row(
     never because they have not sent ``!bored``. If the named job is only
     on ``accepted`` under a departed nick, release it (prior ACK void) then offer.
     ``names_refresh(shop)`` (optional) is invoked once before a presence refuse.
+    If it returns ``\"wait\"``, this call returns ``(\"waiting\", shop)`` so the chair
+    can apply the 353/366 membership update off this stack (FR #7224; no reader deadlock).
 
     FR #4422 / #4652: when the named open FR/MRB/FIX is missing from the unaccepted queue, fetch it from
     GitHub and enqueue it, then offer (instead of refusing "not in the unaccepted queue").
@@ -12331,8 +12337,11 @@ def assign_row(
 
         shop_rows, nicks, members_at = _shop_presence()
         if shop_rows and me.lower() not in nicks and callable(names_refresh):
+            hint = None
             with contextlib.suppress(Exception):
-                names_refresh(shop)
+                hint = names_refresh(shop)
+            if str(hint or "").strip().lower() == "wait":
+                return "waiting", shop
             shop_rows, nicks, members_at = _shop_presence()
         if shop_rows and me.lower() not in nicks:
             snap = members_at or "unknown"

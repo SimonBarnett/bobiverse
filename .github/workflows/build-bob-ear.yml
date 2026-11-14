@@ -1,7 +1,7 @@
 # Isolated bob-ear.exe build. Not a release, MSI, install, or service start.
 # Build-BobEar.ps1 owns the PyInstaller command and the --help smoke check.
-# FR #7179: build the checked-out commit on push to main and on PRs that touch
-# ear sources. Provenance records that commit SHA (no hard behavior pin).
+# FR #7179 / #7202: build the checked-out commit on push to main and on PRs that
+# touch ear sources (frozen irc_agent import graph + Build-BobEar pins). Provenance records that commit SHA (no hard behavior pin).
 # Prior pin history (FR #7065 / #7039 / #6727 / #6722 / #6672 / #6558 merge
 # 2da1eb06d0c99cd3384d6bf1bb21faa830526ba5 / PR #6575) lives in
 # bob/docs/deploy-pool-monitor-manifest.txt for deploy notes only.
@@ -12,30 +12,170 @@ on:
   pull_request:
     paths:
       - .github/workflows/build-bob-ear.yml
+      - bob/docs/deploy-pool-monitor-manifest.txt
       - bob/scripts/Build-BobEar.ps1
       - bob/scripts/Install-BobEarExe.ps1
-      - common/scripts/irc_agent.py
-      - common/scripts/gitclaim.py
-      - common/scripts/bobreport.py
-      - common/scripts/opencode_fuel.py
-      - common/scripts/bobiverse_build.py
-      - bob/docs/deploy-pool-monitor-manifest.txt
+      - bob/tests/ear_ci_source_paths.py
       - bob/tests/test_fr6254_ear_build_provenance_align.py
       - bob/tests/test_fr7179_ear_tray_ci_main_push.py
+      - bob/tests/test_fr7202_ear_ci_frozen_imports.py
+      - common/scripts/account_map.py
+      - common/scripts/agent_control.py
+      - common/scripts/ai_root.py
+      - common/scripts/bob_home.py
+      - common/scripts/bob_public_base.py
+      - common/scripts/bob_recycle.py
+      - common/scripts/bobcallback.py
+      - common/scripts/bobhours.py
+      - common/scripts/bobiverse_build.py
+      - common/scripts/bobiverse_python.py
+      - common/scripts/bobreport.py
+      - common/scripts/bobstat.py
+      - common/scripts/bobtalk.py
+      - common/scripts/chair_commands.py
+      - common/scripts/chair_health.py
+      - common/scripts/chair_oper.py
+      - common/scripts/chan_privs.py
+      - common/scripts/chan_workers.py
+      - common/scripts/channel_only.py
+      - common/scripts/coderabbit_report.py
+      - common/scripts/copilot_dispatch.py
+      - common/scripts/crash_report.py
+      - common/scripts/done_usage.py
+      - common/scripts/ergo_brief.py
+      - common/scripts/filexfer.py
+      - common/scripts/focus_ignore.py
+      - common/scripts/fuel_chain.py
+      - common/scripts/gh_filer.py
+      - common/scripts/gitclaim.py
+      - common/scripts/github_api_budget.py
+      - common/scripts/grok_talk.py
+      - common/scripts/inbound_transcript.py
+      - common/scripts/intake.py
+      - common/scripts/irc_agent.py
+      - common/scripts/jeeves_build_meta.py
+      - common/scripts/jeeves_chair_host.py
+      - common/scripts/jeeves_checks.py
+      - common/scripts/jeeves_locks.py
+      - common/scripts/jeeves_main.py
+      - common/scripts/jeeves_maintenance.py
+      - common/scripts/jeeves_settings.py
+      - common/scripts/jeeves_settings_auth.py
+      - common/scripts/jeeves_settings_http.py
+      - common/scripts/jira_webhook.py
+      - common/scripts/job_cost_ledger.py
+      - common/scripts/live_tree_guard.py
+      - common/scripts/moot.py
+      - common/scripts/mrb_merge_gate.py
+      - common/scripts/mrb_merge_on_green.py
+      - common/scripts/opencode_fuel.py
+      - common/scripts/prior_irc.py
+      - common/scripts/priority_customer.py
+      - common/scripts/protect.py
+      - common/scripts/recycleseat.py
+      - common/scripts/registered_machines.py
+      - common/scripts/repo_alias.py
+      - common/scripts/runtime_failure.py
+      - common/scripts/seal.py
+      - common/scripts/shop_chanserv.py
+      - common/scripts/shop_listen.py
+      - common/scripts/shop_ops.py
+      - common/scripts/stall_callbacks.py
+      - common/scripts/stall_detectors.py
+      - common/scripts/stall_filer.py
+      - common/scripts/startworker.py
+      - common/scripts/stuck_job_sweep.py
+      - common/scripts/talk_seat_ghost.py
+      - common/scripts/talk_seat_pid.py
+      - common/scripts/unregister_cmd.py
+      - common/scripts/webhook_queue.py
+      - common/scripts/wire.py
+      - common/scripts/worker_irc_seats.py
+      - common/scripts/worker_start_model.py
   push:
     branches: [main]
     paths:
       - .github/workflows/build-bob-ear.yml
+      - bob/docs/deploy-pool-monitor-manifest.txt
       - bob/scripts/Build-BobEar.ps1
       - bob/scripts/Install-BobEarExe.ps1
-      - common/scripts/irc_agent.py
-      - common/scripts/gitclaim.py
-      - common/scripts/bobreport.py
-      - common/scripts/opencode_fuel.py
-      - common/scripts/bobiverse_build.py
-      - bob/docs/deploy-pool-monitor-manifest.txt
+      - bob/tests/ear_ci_source_paths.py
       - bob/tests/test_fr6254_ear_build_provenance_align.py
       - bob/tests/test_fr7179_ear_tray_ci_main_push.py
+      - bob/tests/test_fr7202_ear_ci_frozen_imports.py
+      - common/scripts/account_map.py
+      - common/scripts/agent_control.py
+      - common/scripts/ai_root.py
+      - common/scripts/bob_home.py
+      - common/scripts/bob_public_base.py
+      - common/scripts/bob_recycle.py
+      - common/scripts/bobcallback.py
+      - common/scripts/bobhours.py
+      - common/scripts/bobiverse_build.py
+      - common/scripts/bobiverse_python.py
+      - common/scripts/bobreport.py
+      - common/scripts/bobstat.py
+      - common/scripts/bobtalk.py
+      - common/scripts/chair_commands.py
+      - common/scripts/chair_health.py
+      - common/scripts/chair_oper.py
+      - common/scripts/chan_privs.py
+      - common/scripts/chan_workers.py
+      - common/scripts/channel_only.py
+      - common/scripts/coderabbit_report.py
+      - common/scripts/copilot_dispatch.py
+      - common/scripts/crash_report.py
+      - common/scripts/done_usage.py
+      - common/scripts/ergo_brief.py
+      - common/scripts/filexfer.py
+      - common/scripts/focus_ignore.py
+      - common/scripts/fuel_chain.py
+      - common/scripts/gh_filer.py
+      - common/scripts/gitclaim.py
+      - common/scripts/github_api_budget.py
+      - common/scripts/grok_talk.py
+      - common/scripts/inbound_transcript.py
+      - common/scripts/intake.py
+      - common/scripts/irc_agent.py
+      - common/scripts/jeeves_build_meta.py
+      - common/scripts/jeeves_chair_host.py
+      - common/scripts/jeeves_checks.py
+      - common/scripts/jeeves_locks.py
+      - common/scripts/jeeves_main.py
+      - common/scripts/jeeves_maintenance.py
+      - common/scripts/jeeves_settings.py
+      - common/scripts/jeeves_settings_auth.py
+      - common/scripts/jeeves_settings_http.py
+      - common/scripts/jira_webhook.py
+      - common/scripts/job_cost_ledger.py
+      - common/scripts/live_tree_guard.py
+      - common/scripts/moot.py
+      - common/scripts/mrb_merge_gate.py
+      - common/scripts/mrb_merge_on_green.py
+      - common/scripts/opencode_fuel.py
+      - common/scripts/prior_irc.py
+      - common/scripts/priority_customer.py
+      - common/scripts/protect.py
+      - common/scripts/recycleseat.py
+      - common/scripts/registered_machines.py
+      - common/scripts/repo_alias.py
+      - common/scripts/runtime_failure.py
+      - common/scripts/seal.py
+      - common/scripts/shop_chanserv.py
+      - common/scripts/shop_listen.py
+      - common/scripts/shop_ops.py
+      - common/scripts/stall_callbacks.py
+      - common/scripts/stall_detectors.py
+      - common/scripts/stall_filer.py
+      - common/scripts/startworker.py
+      - common/scripts/stuck_job_sweep.py
+      - common/scripts/talk_seat_ghost.py
+      - common/scripts/talk_seat_pid.py
+      - common/scripts/unregister_cmd.py
+      - common/scripts/webhook_queue.py
+      - common/scripts/wire.py
+      - common/scripts/worker_irc_seats.py
+      - common/scripts/worker_start_model.py
 
 permissions:
   contents: read

@@ -106,8 +106,8 @@ def test_fr6317_format_known_zero_unknown(tmp_path: Path):
                 reset_at='2099-01-15T12:00:00Z'; fetched_at='2099-01-01T00:00:00Z'
             }}
             $staleLine = Format-BobCopilotPoolLine -Pool $stalePool -Now ([datetime]'2099-01-01T12:00:00Z')
-            if ($staleLine -notmatch '^Copilot - 0% left') {{ throw ('stale line={{0}}' -f $staleLine) }}
-            if ($staleLine -notmatch '\\[stale') {{ throw ('stale mark missing={{0}}' -f $staleLine) }}
+            if ($staleLine -notmatch 'stale') {{ throw ('stale line={{0}}' -f $staleLine) }}
+            if ($staleLine -match '% left') {{ throw ('stale must not look current={{0}}' -f $staleLine) }}
             $staleBar = Get-BobCopilotMeterBarPct -Pool $stalePool -Now ([datetime]'2099-01-01T12:00:00Z')
             if ($null -eq $staleBar) {{ throw 'stale bar must keep remaining pct (0), not null' }}
             if ([int]$staleBar -ne 0) {{ throw ('stale bar={{0}}' -f $staleBar) }}

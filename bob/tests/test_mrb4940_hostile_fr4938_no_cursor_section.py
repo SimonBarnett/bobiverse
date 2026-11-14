@@ -20,7 +20,8 @@ def test_rebuild_first_section_header_is_grok_accounts_not_cursor():
     """TipForm: Cursor spending-group header gone; FR #5032 also drops 'Grok accounts'."""
     sec = _rebuild_body()
     assert "Title 'Grok accounts'" not in sec and 'Title "Grok accounts"' not in sec
-    assert "Title 'Cursor'" not in sec and 'Title "Cursor"' not in sec
+    assert "foreach ($pool in $pools)" not in sec
+    assert "Get-BobTrayCursorGroupHelpTooltip" not in sec
     # Overspend (if any) is an empty-title section, then per-machine Grok rows.
     assert "Format-BobTrayCursorOverspendLine" in sec
     assert "Add-BobTrayUsageRow" in sec
