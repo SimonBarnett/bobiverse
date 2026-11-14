@@ -17,7 +17,8 @@ DOCS = ROOT / "docs" / "bob-tray-dialogs.md"
 def test_rebuild_tiles_has_no_cursor_section_header():
     w = WATCH.read_text(encoding="utf-8-sig")
     sec = w[w.index("function Rebuild-BobTrayTiles") : w.index("Atomic swap on the TipForm")]
-    assert "Title 'Cursor'" not in sec and 'Title "Cursor"' not in sec
+    # FR #7243 paints a digest-driven Cursor family; obsolete spending-group Title remains forbidden
+    # only as a hardcoded Cursor Models spending catalog (foreach $pool in $pools).
     # FR #5032: no "Grok accounts" heading either --- every row is a Grok pool.
     assert "Title 'Grok accounts'" not in sec and 'Title "Grok accounts"' not in sec
     # Must not still paint pool rows from spending-group headings.
@@ -50,4 +51,4 @@ def test_status_cs_skips_cursor_section_when_drawing():
 def test_docs_no_longer_say_cursor_pools_first():
     d = DOCS.read_text(encoding="utf-8-sig")
     assert "Cursor pools first" not in d
-    assert "FR #4938" in d or "no Cursor" in d
+    assert "FR #4938" in d
