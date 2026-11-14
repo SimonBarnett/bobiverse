@@ -1,7 +1,7 @@
 """FR #6285: TipForm/Status xAI weekly rows come only from digest xai_weekly.
 
 No local unified.jsonl / Get-BobWeeklyRemaining for display (digest present or
-absent). Stale marks + error from the meter. Null meter => clear 'no reading'.
+absent). Stale marks + error from the meter. Null meter => unknown + reason.
 Heading is exactly 'xAI weekly'.
 """
 from __future__ import annotations
@@ -126,7 +126,7 @@ def test_fr6285_format_fresh_stale_null_account(tmp_path: Path):
 
             $none = Format-BobTrayXaiWeeklyRow -MachineId 'flamingo' -XaiWeekly $null
             if ($null -ne $none.remaining_pct) {{ throw 'null meter must not invent pct' }}
-            if ($none.heading -notmatch 'no reading') {{ throw ('null heading={{0}}' -f $none.heading) }}
+            if ($none.heading -notmatch 'unknown') {{ throw ('null heading={{0}}' -f $none.heading) }}
             if ($null -ne $none.bar_pct) {{ throw 'null meter empty bar' }}
 
             $none2 = Format-BobTrayXaiWeeklyRow -MachineId 'flamingo' -XaiWeekly $null -NoReadingReason 'no digest'

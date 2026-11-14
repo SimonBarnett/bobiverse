@@ -12288,6 +12288,8 @@ def assign_row(
     never because they have not sent ``!bored``. If the named job is only
     on ``accepted`` under a departed nick, release it (prior ACK void) then offer.
     ``names_refresh(shop)`` (optional) is invoked once before a presence refuse.
+    If it returns ``\"wait\"``, this call returns ``(\"waiting\", shop)`` so the chair
+    can apply the 353/366 membership update off this stack (FR #7224; no reader deadlock).
 
     FR #4422 / #4652: when the named open FR/MRB/FIX is missing from the unaccepted queue, fetch it from
     GitHub and enqueue it, then offer (instead of refusing "not in the unaccepted queue").
@@ -12335,8 +12337,11 @@ def assign_row(
 
         shop_rows, nicks, members_at = _shop_presence()
         if shop_rows and me.lower() not in nicks and callable(names_refresh):
+            hint = None
             with contextlib.suppress(Exception):
-                names_refresh(shop)
+                hint = names_refresh(shop)
+            if str(hint or "").strip().lower() == "wait":
+                return "waiting", shop
             shop_rows, nicks, members_at = _shop_presence()
         if shop_rows and me.lower() not in nicks:
             snap = members_at or "unknown"

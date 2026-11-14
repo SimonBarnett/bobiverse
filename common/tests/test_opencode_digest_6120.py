@@ -137,8 +137,8 @@ def test_fr6146_publish_round_trip_fixture(tmp_path: Path, monkeypatch):
     assert len(posted) == 1
     body = posted[0]
     assert body.get("op") == "merge"
-    assert body["pcent"]["opencode-free"] == 100
-    assert body["pcent"]["opencode-go"] == 50
+    # FR #7255: ear no longer attaches OpenCode pcent; Cursor sand still local.
+    assert "opencode-free" not in (body.get("pcent") or {})
     assert body["pcent"]["grok-chat"] == 42
     blob = json.dumps(body)
     assert not bobreport.looks_like_secret(blob)
@@ -473,11 +473,7 @@ def test_missing_upstream_publishes_windows_without_inventing_free(
     assert "opencode-free" not in pcent
     assert "opencode-go" not in pcent
     assert pcent.get("grok-chat") == 42
-    wins = body["opencode_windows"]
-    assert wins["rolling"]["status"] == "unknown"
-    assert wins["week"]["status"] == "unknown"
-    assert wins["month"]["status"] == "unknown"
-    assert wins["rolling"].get("remaining_pct") is None
+    assert "opencode_windows" not in body
     bobreport.clear_opencode_pcent_cache()
 
 

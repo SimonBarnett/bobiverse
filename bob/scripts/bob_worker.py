@@ -189,6 +189,26 @@ def resolve_install_root(raw: str | None = None) -> str:
     return _default_install_root()
 
 
+def maybe_sync_install_skills(*, install_root: str | None = None, job_busy: bool = False) -> dict:
+    """FR #7238: overlay origin `.grok/skills` between jobs (never mid-ACK)."""
+    root = str(install_root or os.environ.get("BOB_INSTALL_ROOT") or "").strip()
+    if not root:
+        return {"ok": False, "reason": "no-install", "sha": ""}
+    try:
+        import sync_install_skills as sis
+    except ImportError:
+        scripts = _common_scripts_dir()
+        sys.path.insert(0, str(scripts))
+        try:
+            import sync_install_skills as sis  # type: ignore
+        except ImportError:
+            return {"ok": False, "reason": "no-helper", "sha": ""}
+    try:
+        return sis.sync_install_skills_from_origin(root, job_busy=job_busy)
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "reason": type(exc).__name__, "sha": ""}
+
+
 def _common_scripts_dir() -> Path:
     """Resolve common/scripts beside bob/scripts (worktree or install layout)."""
     here = Path(__file__).resolve().parent
@@ -9898,6 +9918,13 @@ class BoredEmitter:
         # FR #4784: GIVEUP open ACK to Jeeves before !bored on done-miss / ack-stale.
         if reason in ("done-miss", "ack-stale"):
             self._fire_seat_release_giveup(reason)
+        # FR #7238: pull merged skills between jobs (this send is idle).
+        try:
+            sk = maybe_sync_install_skills(job_busy=False)
+            if sk.get("sha"):
+                self.log(f"skills-sync sha={sk.get('sha')} reason={sk.get('reason')}")
+        except Exception:
+            pass
         ok = False
         try:
             ok = bool(self.send())
@@ -12771,6 +12798,12 @@ def run_agent(args, log: Log) -> int:
     if not folder.is_dir():
         log(f"worker: folder missing {folder}")
         return EXIT_USAGE
+    try:
+        os.environ["BOB_INSTALL_ROOT"] = str(args.install_root)
+        sk = maybe_sync_install_skills(install_root=str(args.install_root), job_busy=False)
+        log(f"skills-sync start sha={sk.get('sha')} reason={sk.get('reason')}")
+    except Exception:
+        pass
     dec, cursor_cmd, grok_exe, fuel = _choose(args, log, folder, "agent")
     opencode_cmd = resolve_opencode_cmd()
     dec = resolve_seat_decision(
