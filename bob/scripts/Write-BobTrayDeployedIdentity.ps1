@@ -52,8 +52,11 @@ $provText = ($provLines -join [Environment]::NewLine) + [Environment]::NewLine
 $provPath = Join-Path $root 'provenance.txt'
 [IO.File]::WriteAllText($provPath, $provText, $utf8)
 $tools = Join-Path $root 'tools'
-if (Test-Path -LiteralPath $tools) {
-    [IO.File]::WriteAllText((Join-Path $tools 'provenance.txt'), $provText, $utf8)
+if (-not (Test-Path -LiteralPath $tools)) {
+    New-Item -ItemType Directory -Force -Path $tools | Out-Null
 }
+[IO.File]::WriteAllText((Join-Path $tools 'provenance.txt'), $provText, $utf8)
+# FR #7247: tray reads tools\MANIFEST.json for the running exe SHA (CI artifact sits here).
+[IO.File]::WriteAllText((Join-Path $tools 'MANIFEST.json'), (($manifest | ConvertTo-Json -Compress) + [Environment]::NewLine), $utf8)
 Write-Host ("INFO tray-deployed-identity root={0} short={1} manifest={2}" -f $root, $short, $manPath)
 return $manPath

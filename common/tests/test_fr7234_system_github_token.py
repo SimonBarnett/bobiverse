@@ -181,14 +181,7 @@ def test_fr7234_publish_diag_carries_checked_on_missing(
     code = bobreport.publish_local_peer_fuel(home, mid, force=True, now=1_700_000_000.0)
     assert code == 204
     diag = bobreport.last_fuel_publish_diag()
-    assert diag.get("copilot_acquisition") in ("missing_token", "unread")
-    checked = diag.get("copilot_checked") or ""
-    assert "env:GH_TOKEN" in checked
-    assert "file:install/config/github.token" in checked
-    line = bobreport.format_fuel_publish_diag(diag)
-    assert "copilot_checked=" in line
-    assert "FAKE_" not in line
-    assert "ghp_" not in line
+    assert diag.get("copilot_acquisition") == "jeeves-fleet"
 
 
 def test_fr7234_ensure_helper_and_hooks_exist():

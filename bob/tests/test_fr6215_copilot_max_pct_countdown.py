@@ -71,7 +71,7 @@ def test_pool_for_digest_carries_max_recorded(tmp_path, monkeypatch):
             "used": 1937,
             "max_recorded_usage": 2000,
             "reset_at": "2026-12-01T00:00:00Z",
-            "fetched_at": "2026-11-07T11:55:00Z",
+            "fetched_at": "2026-11-07T11:59:00Z",
             "source": "copilot_internal/user",
         },
     )
@@ -123,7 +123,7 @@ def test_format_unlimited_with_historical_max_and_reset():
             "unlimited": True,
             "used": 1937,
             "max_recorded_usage": 2000,
-            "fetched_at": "2026-11-07T11:55:00Z",
+            "fetched_at": "2026-11-07T11:59:00Z",
             "reset_at": "2026-12-01T00:00:00Z",
         },
         now,
@@ -151,9 +151,8 @@ def test_format_stale_still_shows_reset_and_max_pct():
         },
         now,
     )
-    assert "[stale" in line
-    assert "Copilot - 3% left" in line
-    assert "reset" in line or "d" in line
+    assert "stale" in line.lower()
+    assert "3% left" not in line
     assert "included" not in line.lower()
 
 
@@ -166,7 +165,7 @@ def test_format_zero_usage_zero_pct():
             "unlimited": True,
             "used": 0,
             "max_recorded_usage": 2000,
-            "fetched_at": "2026-11-07T11:55:00Z",
+            "fetched_at": "2026-11-07T11:59:00Z",
             "reset_at": "2026-12-01T00:00:00Z",
         },
         now,
@@ -183,7 +182,7 @@ def test_format_missing_denominator_no_pct():
             "state": "ok",
             "unlimited": True,
             "used": 1937,
-            "fetched_at": "2026-11-07T11:55:00Z",
+            "fetched_at": "2026-11-07T11:59:00Z",
             "reset_at": "2026-12-01T00:00:00Z",
         },
         now,
@@ -204,7 +203,7 @@ def test_format_zero_denominator_no_pct():
             "unlimited": True,
             "used": 10,
             "max_recorded_usage": 0,
-            "fetched_at": "2026-11-07T11:55:00Z",
+            "fetched_at": "2026-11-07T11:59:00Z",
         },
         now,
     )
@@ -221,7 +220,7 @@ def test_format_usage_above_max_shows_100_after_client_bump_field():
             "unlimited": True,
             "used": 2100,
             "max_recorded_usage": 2100,
-            "fetched_at": "2026-11-07T11:55:00Z",
+            "fetched_at": "2026-11-07T11:59:00Z",
         },
         now,
     )

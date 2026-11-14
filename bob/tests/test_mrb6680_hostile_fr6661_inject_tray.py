@@ -3,7 +3,7 @@
 Pins:
 - ``_inject_line`` source windows must be method-bounded (fixed 2200/4000 miss markers)
 - Tray Agents OpenCode free/paid defaults + ``[default]`` on free
-- Copilot meter tests accept optional FR #6371 `` - updated HH:mm``
+- Copilot meter tests do not require an updated HH:mm suffix (FR #7250)
 """
 from __future__ import annotations
 
@@ -67,9 +67,6 @@ def test_mrb6680_tray_opencode_free_paid_menu_defaults():
 def test_mrb6680_copilot_line_accepts_updated_suffix():
     t = T828.read_text(encoding="utf-8")
     assert "def _copilot_line_matches" in t
-    assert "updated" in t
     assert "fetched_at" in t
-    # Helper must allow exact match OR optional ' - updated HH:mm'.
-    assert r"( - updated \d{2}:\d{2})?" in t or "updated \\d{2}:\\d{2}" in t
     assert "Start free model (opencode/deepseek-v4.1-flash-free) [default]" in t
     assert "Start paid model (opencode-go/deepseek-v4-pro)" in t
