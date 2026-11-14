@@ -243,7 +243,8 @@ function Format-BobTrayStatusWorkerLine {
         [string]$Work,
         [string]$Kind = '',
         [string]$StartModel = '',
-        [bool]$ModelMismatch = $false
+        [bool]$ModelMismatch = $false,
+        [string]$StartEffort = ''
     )
     $n = ([string]$Nick).Trim()
     if (-not $n) { return $null }
@@ -269,6 +270,8 @@ function Format-BobTrayStatusWorkerLine {
     $sm = ([string]$StartModel).Trim()
     if ($k -or $sm) {
         $tag = if ($k -and $sm) { '{0}/{1}' -f $k, $sm } elseif ($sm) { $sm } else { $k }
+        $eff = ([string]$StartEffort).Trim()
+        if ($eff) { $tag = $tag + '/' + $eff }
         if ($ModelMismatch -and $sm) { $tag = $tag + '!' }
         $text = ('[{0}] {1}' -f $tag, $text)
     }

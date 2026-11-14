@@ -198,6 +198,7 @@ def prepare_seat_grok_home(
             [
                 "[cli]",
                 'installer = "internal"',
+                'reasoning_effort = "low"',
                 "[skills]",
                 "paths = []",
                 "ignore = []",

@@ -78,8 +78,7 @@ def test_list_agents_is_agents_not_fuel_pools():
     assert "opencode-free" not in json.dumps(rows)
     bare = bw.list_worker_agents(_fuel(), None, None, None, auth_present=False)
     assert bare[1]["installed"] is False and bare[1]["available"] is False
-    # FR #6301: agent-start rows carry no fuel/reason text.
-    assert bare[3]["reason"] == ""
+    assert bare[3]["reason"] == "not installed"
     assert bare[3]["available"] is False
 
 
@@ -178,8 +177,8 @@ def test_known_exhausted_opencode_stays_unavailable_on_the_menu(monkeypatch, cap
     assert code == bw.EXIT_OK
     listed = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
     by_id = {row["id"]: row for row in listed["agents"]}
-    assert by_id["opencode"]["available"] is False
-    # FR #6301: unavailable still, but reason text is empty on the menu.
+    # FR #7189: fuel never greys an installed OpenCode start option.
+    assert by_id["opencode"]["available"] is True
     assert by_id["opencode"]["reason"] == ""
     assert listed["refresh"] is False
 

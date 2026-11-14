@@ -495,6 +495,12 @@ namespace BobDialogs
             yield return local;
         }
 
+        // FR #7187: persist workerStartEffort next to workerStartModels in tray-models.json.
+        public static string TrayModelsJsonPath()
+        {
+            return Path.Combine(Environment.GetEnvironmentVariable("LOCALAPPDATA") ?? Path.GetTempPath(), "Bobiverse", "tray-models.json");
+        }
+
         public static void RememberOpencodeSlotLaunch(string slot, int pid, string model)
         {
             try
@@ -573,6 +579,55 @@ namespace BobDialogs
             return sb.ToString();
         }
 
+        // FR #7189: ClassifyAgentProbe. Timeout/error never means "old exe".
+        public const string RebuildListReason = "this bob-worker.exe has no --list-agents; rebuild to choose an agent";
+        public const string WorkerMissingReason = "bob-worker.exe not found";
+
+        public static string ClassifyAgentProbe(int exitCode, string stdout, string stderr, bool timedOut, bool startFailed, bool workerMissing)
+        {
+            if (workerMissing) return "WorkerMissing";
+            string err = (stderr ?? "").ToLowerInvariant();
+            if (exitCode == 2 && err.IndexOf("unrecognized arguments", StringComparison.Ordinal) >= 0 && err.IndexOf("--list-agents", StringComparison.Ordinal) >= 0)
+                return "Unsupported";
+            if (timedOut) return "Timeout";
+            if (startFailed) return "StartFailed";
+            if (exitCode != 0) return "Failed";
+            string payload = AgentListPayload(stdout);
+            if (payload.Length == 0) return "Malformed";
+            try
+            {
+                Dictionary<string, object> doc = Common.Dict(Common.ParseJson(payload));
+                if (doc == null || !doc.ContainsKey("agents")) return "Malformed";
+                IList raw = Common.List(doc["agents"]);
+                if (raw == null) return "Malformed";
+                bool hasAuto = false, hasGrok = false, hasCursor = false, hasOc = false;
+                foreach (object o in raw)
+                {
+                    Dictionary<string, object> row = Common.Dict(o);
+                    if (row == null) continue;
+                    string id = Common.Str(row, "id");
+                    if (id == "auto") hasAuto = true;
+                    else if (id == "grok") hasGrok = true;
+                    else if (id == "cursor") hasCursor = true;
+                    else if (id == "opencode") hasOc = true;
+                }
+                if (!(hasAuto && hasGrok && hasCursor && hasOc)) return "Malformed";
+            }
+            catch { return "Malformed"; }
+            return "Ok";
+        }
+
+        static string AgentListPayload(string json)
+        {
+            string payload = "";
+            foreach (string line in (json ?? "").Replace("\r", "").Split('\n'))
+            {
+                string t = line.Trim();
+                if (t.StartsWith("{") && t.IndexOf("\"agents\"") >= 0) payload = t;
+            }
+            return payload;
+        }
+
         // Menu probe. The UI thread never waits. A slow fuel read is not exhaustion:
         // lookup-timeout keeps the installed rows clickable and the launch path checks for real.
         public static string TryListAgents(string root, int timeoutMs, out string error)
@@ -584,7 +639,7 @@ namespace BobDialogs
         {
             error = "";
             string exe = Path.Combine(root ?? "", "worker\\bob-worker.exe");
-            if (!File.Exists(exe)) { error = "bob-worker.exe missing"; return ""; }
+            if (!File.Exists(exe)) { error = WorkerMissingReason; return ""; }
             try
             {
                 ProcessStartInfo psi = new ProcessStartInfo();
@@ -597,8 +652,12 @@ namespace BobDialogs
                 using (Process p = Process.Start(psi))
                 {
                     if (p == null) { error = "list-agents did not start"; return ""; }
-                    // Read after the wait. Reading stdout to EOF first blocks for the whole fuel read (up to 90s)
-                    // and the timeout never fires. A full pipe still unblocks when WaitForExit returns and we Kill.
+                    string stdout = "";
+                    string stderr = "";
+                    System.Threading.Thread tOut = new System.Threading.Thread(delegate() { try { stdout = p.StandardOutput.ReadToEnd(); } catch { } });
+                    System.Threading.Thread tErr = new System.Threading.Thread(delegate() { try { stderr = p.StandardError.ReadToEnd(); } catch { } });
+                    tOut.IsBackground = true; tErr.IsBackground = true;
+                    tOut.Start(); tErr.Start();
                     if (!p.WaitForExit(timeoutMs))
                     {
                         try { p.Kill(); } catch { }
@@ -606,21 +665,21 @@ namespace BobDialogs
                         error = "lookup-timeout";
                         return "";
                     }
-                    string json = "";
-                    try { json = p.StandardOutput.ReadToEnd(); } catch { }
-                    try { p.StandardError.ReadToEnd(); } catch { }
-                    string payload = "";
-                    foreach (string line in (json ?? "").Replace("\r", "").Split('\n'))
+                    try { tOut.Join(2000); } catch { }
+                    try { tErr.Join(2000); } catch { }
+                    string kind = ClassifyAgentProbe(p.ExitCode, stdout, stderr, false, false, false);
+                    if (kind == "Unsupported")
                     {
-                        string t = line.Trim();
-                        if (t.StartsWith("{") && t.IndexOf("\"agents\"") >= 0) payload = t;
-                    }
-                    if (p.ExitCode != 0 || payload.Length == 0)
-                    {
-                        error = "this bob-worker.exe has no --list-agents; rebuild to choose an agent";
+                        error = RebuildListReason;
                         return "";
                     }
-                    return payload;
+                    if (kind != "Ok")
+                    {
+                        error = kind == "Failed" ? "list-agents failed" : "lookup-timeout";
+                        if (kind == "Malformed") error = "list-agents failed";
+                        return "";
+                    }
+                    return AgentListPayload(stdout);
                 }
             }
             catch
@@ -1120,6 +1179,7 @@ namespace BobDialogs
         }
 
         int agentListBusy;
+        string lastGoodAgentJson = "";
 
         void BeginRefreshAgentChoices(ToolStripMenuItem parent)
         {
@@ -1131,12 +1191,19 @@ namespace BobDialogs
                 {
                     string err;
                     // Fast list (cache or unknown). One child. A second open while this runs is ignored.
-                    string json = WorkerLauncher.TryListAgents(rootCopy, 8000, false, out err);
+                    string json = WorkerLauncher.TryListAgents(rootCopy, 30000, false, out err);
                     PostAgentList(parent, json, err);
-                    if (json.IndexOf("\"refresh\": true") >= 0 || json.IndexOf("\"refresh\":true") >= 0)
+                    bool wantRefresh = false;
+                    try
+                    {
+                        Dictionary<string, object> doc = Common.Dict(Common.ParseJson(json));
+                        if (doc != null && Common.Bool(doc, "refresh")) wantRefresh = true;
+                    }
+                    catch { }
+                    if (wantRefresh)
                     {
                         string err2;
-                        string json2 = WorkerLauncher.TryListAgents(rootCopy, 24000, true, out err2);
+                        string json2 = WorkerLauncher.TryListAgents(rootCopy, 60000, true, out err2);
                         if (json2.Length > 0) PostAgentList(parent, json2, err2);
                     }
                 }
@@ -1159,17 +1226,23 @@ namespace BobDialogs
             List<Dictionary<string, object>> rows = ParseAgentRows(json);
             if (rows == null || rows.Count == 0)
             {
+                rows = ParseAgentRows(lastGoodAgentJson);
+            }
+            if (rows != null && rows.Count > 0)
+                lastGoodAgentJson = json != null && json.Length > 0 ? json : lastGoodAgentJson;
+            if (rows == null || rows.Count == 0)
+            {
                 parent.DropDownItems.Clear();
-                // FR #6301: no fuel text on start entries.
+                // FR #7189: timeout/error keeps rows enabled. Only Unsupported / missing exe greys.
                 AddAgentChoice(parent, "auto", "Automatic - Grok, then Cursor, then OpenCode", true, false);
-                bool lookupTimeout = err == "lookup-timeout";
-                bool enabled = lookupTimeout || err.Length == 0;
-                if (!lookupTimeout && err.Length > 0 && err.IndexOf("no --list-agents", StringComparison.OrdinalIgnoreCase) >= 0)
-                    enabled = false;
-                AddAgentChoice(parent, "grok", "Grok", enabled, false);
-                AddAgentChoice(parent, "cursor", "Cursor", enabled, false);
-                // FR #6429: OpenCode free/paid submenu (replaces flat OpenCode row from FR #6301).
-                AddOpencodeModelSubmenu(parent, enabled, false);
+                bool grey = (err ?? "").IndexOf("no --list-agents", StringComparison.OrdinalIgnoreCase) >= 0
+                    || (err ?? "").IndexOf("bob-worker.exe not found", StringComparison.OrdinalIgnoreCase) >= 0
+                    || (err ?? "") == WorkerLauncher.RebuildListReason
+                    || (err ?? "") == WorkerLauncher.WorkerMissingReason;
+                string reason = grey ? ((err ?? "").Length > 0 ? err : WorkerLauncher.RebuildListReason) : "";
+                AddAgentChoice(parent, "grok", grey ? "Grok - " + reason : "Grok", !grey, false);
+                AddAgentChoice(parent, "cursor", grey ? "Cursor - " + reason : "Cursor", !grey, false);
+                AddOpencodeModelSubmenu(parent, !grey, false);
                 return;
             }
             parent.DropDownItems.Clear();
@@ -1179,8 +1252,9 @@ namespace BobDialogs
                 string label = Common.Str(row, "label");
                 if (label.Length == 0) label = id;
                 bool available = Common.Bool(row, "available");
+                string reason = Common.Str(row, "reason");
+                if (!available && reason.Length > 0 && id != "auto") label = label + " - " + reason;
                 if (id.Length == 0) continue;
-                // FR #6429: OpenCode becomes the free/paid submenu; other agents stay single-entry.
                 if (string.Equals(id, "opencode", StringComparison.OrdinalIgnoreCase))
                 {
                     AddOpencodeModelSubmenu(parent, available, false);

@@ -83,6 +83,15 @@ def resolve_seat_hello_model(kind: str, env: Optional[dict] = None) -> str:
         picked = wsm.configured_start_model(k, cfg)
         if picked:
             return picked
+        if k == "opencode":
+            # FR #7187: never advertise a machine Go/paid default as the seat model.
+            m = str(env.get("BOB_OPENCODE_MODEL") or "").strip()
+            if m:
+                return m
+            cfg_m = read_opencode_config_model(env) or ""
+            if cfg_m and not wsm.opencode_is_go_or_paid(cfg_m):
+                return cfg_m
+            return wsm.default_opencode_free_model(cfg)
     except Exception:
         pass
     if k != "opencode":
@@ -170,7 +179,14 @@ def _default_install_root() -> str:
         return r"C:\ai\bob"
 
 
-DEFAULT_INSTALL_ROOT = _default_install_root()
+DEFAULT_INSTALL_ROOT = ""  # lazy: resolve_install_root() (FR #7189, no import-time drive scan)
+
+
+def resolve_install_root(raw: str | None = None) -> str:
+    s = str(raw or "").strip()
+    if s:
+        return s
+    return _default_install_root()
 
 
 def _common_scripts_dir() -> Path:
@@ -569,7 +585,11 @@ def read_fuel_bounded(install_root: Path, run: Callable = subprocess.run, per_pr
 
 AGENT_LIST_CACHE_NAME = "agent-list-fuel.json"
 AGENT_LIST_CACHE_MAX_AGE_S = 45.0
+AGENT_LIST_CACHE_MAX_BYTES = 65536
 UNKNOWN_MENU_REASON = "fuel unknown (not exhausted); start checks this agent"
+REBUILD_LIST_REASON = "this bob-worker.exe has no --list-agents; rebuild to choose an agent"
+WORKER_MISSING_REASON = "bob-worker.exe not found"
+NOT_INSTALLED_REASON = "not installed"
 
 
 def agent_list_cache_path(env: Optional[dict] = None) -> Path:
@@ -630,8 +650,12 @@ def load_fresh_agent_list_fuel(
 ) -> Optional[Fuel]:
     path = agent_list_cache_path(env)
     try:
+        if path.stat().st_size > AGENT_LIST_CACHE_MAX_BYTES:
+            return None
         doc = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+    except OSError:
+        return None
+    except ValueError:
         return None
     if not isinstance(doc, dict):
         return None
@@ -1030,7 +1054,7 @@ def resolve_opencode_model(
     env: Optional[dict] = None,
     log_fn: Optional[Callable[[str], None]] = None,
 ) -> Optional[str]:
-    """Resolve OpenCode model: operator env -> config -> fuel (FR #6363).
+    """Resolve OpenCode model: env -> tray start -> config -> free default -> fuel (FR #6363 / #7187).
 
     Skips paused or known-capped candidates and falls through. Logs one grep-able
     line: ``opencode model=<id> source=env|config|fuel skipped=<...>``.
@@ -1047,17 +1071,65 @@ def resolve_opencode_model(
     skipped: list[str] = []
     candidates: list[tuple[str, str]] = []
 
+    try:
+        import worker_start_model as wsm
+
+        start_cfg = wsm.load_worker_start_config(env=env)
+        start_model = str((start_cfg.get("workerStartModels") or {}).get("opencode") or "").strip()
+        start_free = wsm.default_opencode_free_model(start_cfg)
+    except Exception:
+        start_cfg = {}
+        start_model = ""
+        start_free = "opencode/deepseek-v4.1-flash-free"
+
+    # FR #6363 / #7187: operator env at process start, then tray start model,
+    # then non-Go config, then free default, then fuel (never tray-before-env).
     env_model = (_OPENCODE_MODEL_ENV_AT_START or "").strip()
     if env_model:
         candidates.append(("env", env_model))
 
+    if start_model:
+        try:
+            import worker_start_model as wsm
+
+            skip_start = wsm.opencode_is_go_or_paid(start_model) and not env_model
+        except Exception:
+            skip_start = False
+        if skip_start:
+            skipped.append(f"start:{start_model}:go-or-paid")
+        else:
+            candidates.append(("tray", start_model))
+
     cfg_model = read_opencode_config_model(env)
     if cfg_model:
-        candidates.append(("config", cfg_model))
+        try:
+            import worker_start_model as wsm
+
+            skip_paid = wsm.opencode_is_go_or_paid(cfg_model) and not env_model
+        except Exception:
+            skip_paid = False
+        if skip_paid:
+            skipped.append(f"config:{cfg_model}:go-or-paid")
+        else:
+            candidates.append(("config", cfg_model))
+
+    if start_free:
+        candidates.append(("start", start_free))
 
     fuel_model = opencode_default_model(fuel, state_dir=state_dir, now=now)
     if fuel_model:
-        candidates.append(("fuel", fuel_model))
+        try:
+            import worker_start_model as wsm
+
+            skip_fuel = wsm.opencode_is_go_or_paid(fuel_model) and not (
+                _OPENCODE_MODEL_ENV_AT_START or ""
+            ).strip()
+        except Exception:
+            skip_fuel = False
+        if skip_fuel:
+            skipped.append(f"fuel:{fuel_model}:go-or-paid")
+        else:
+            candidates.append(("fuel", fuel_model))
 
     chosen: Optional[str] = None
     source = ""
@@ -1290,9 +1362,9 @@ def list_worker_agents(
 ) -> list:
     """Systray Agents submenu. One row per agent, not per fuel pool.
 
-    Unknown fuel is not exhaustion. An installed agent stays clickable and the
-    launch path still reads fuel and refuses a real miss. A known exhausted
-    reading stays unavailable.
+    FR #7189: fuel never greys a start option. Installed agents stay clickable;
+    the launch path still reads fuel and refuses a real miss. Only a missing
+    command greys a row (reason ``not installed``).
     """
     rows = [
         {
@@ -1310,31 +1382,121 @@ def list_worker_agents(
     for agent_id, label in labels:
         present = installed[agent_id]
         known = bool(readings_known) and fuel_reading_known(fuel, agent_id)
-        if present and not known:
-            row = {
+        if not present:
+            rows.append(
+                {
+                    "id": agent_id,
+                    "label": label,
+                    "available": False,
+                    "installed": False,
+                    "fuel_state": "known" if known else "unknown",
+                    "reason": NOT_INSTALLED_REASON,
+                }
+            )
+            continue
+        rows.append(
+            {
                 "id": agent_id,
                 "label": label,
                 "available": True,
                 "installed": True,
-                "fuel_state": "unknown",
+                "fuel_state": "known" if known else "unknown",
                 "reason": "",
             }
-            # FR #6301: no tray-facing OpenCode models submenu (OpenCode has /model).
-            rows.append(row)
-            continue
-        dec = explicit_agent_decision(
-            agent_id, fuel, cursor_cmd, grok_exe, opencode_cmd, auth_present=auth_present
         )
-        row = {
-            "id": agent_id,
-            "label": label,
-            "available": dec.kind == agent_id,
-            "installed": present,
-            "fuel_state": "known",
-            "reason": "",
-        }
-        rows.append(row)
     return rows
+
+
+def unknown_agent_list_rows() -> list[dict]:
+    return [
+        {
+            "id": "auto",
+            "label": "Automatic",
+            "available": True,
+            "installed": True,
+            "reason": "Grok, then Cursor, then OpenCode",
+            "fuel_state": "known",
+        },
+        {"id": "grok", "label": "Grok", "available": True, "installed": True, "reason": "", "fuel_state": "unknown"},
+        {"id": "cursor", "label": "Cursor", "available": True, "installed": True, "reason": "", "fuel_state": "unknown"},
+        {"id": "opencode", "label": "OpenCode", "available": True, "installed": True, "reason": "", "fuel_state": "unknown"},
+    ]
+
+
+def _grey_explicit_rows(reason: str) -> list[dict]:
+    rows = unknown_agent_list_rows()
+    out = []
+    for row in rows:
+        item = dict(row)
+        if item["id"] != "auto":
+            item["available"] = False
+            item["installed"] = False
+            item["reason"] = reason
+            item["fuel_state"] = "known"
+        out.append(item)
+    return out
+
+
+def agent_list_rows_complete(rows: list | None) -> bool:
+    if not isinstance(rows, list) or len(rows) < 4:
+        return False
+    by_id = {str(r.get("id") or ""): r for r in rows if isinstance(r, dict)}
+    for ident in ("auto", "grok", "cursor", "opencode"):
+        if ident not in by_id:
+            return False
+        if not isinstance(by_id[ident].get("available"), bool):
+            return False
+    return True
+
+
+def _probe_unsupported(exit_code: int, stderr: str) -> bool:
+    err = str(stderr or "").lower()
+    return int(exit_code or 0) == 2 and "unrecognized arguments" in err and "--list-agents" in err
+
+
+def classify_agent_probe(
+    *,
+    exit_code: int = 0,
+    stdout: str = "",
+    stderr: str = "",
+    timed_out: bool = False,
+    start_failed: bool = False,
+    worker_missing: bool = False,
+    last_good: list | None = None,
+) -> tuple[list[dict], str]:
+    """FR #7189 tray policy. Transient failures never grey installed agents."""
+    if worker_missing:
+        return _grey_explicit_rows(WORKER_MISSING_REASON), "WorkerMissing"
+    if _probe_unsupported(exit_code, stderr):
+        return _grey_explicit_rows(REBUILD_LIST_REASON), "Unsupported"
+    kind = "Ok"
+    if timed_out:
+        kind = "Timeout"
+    elif start_failed:
+        kind = "StartFailed"
+    elif int(exit_code or 0) not in (0,):
+        kind = "Failed"
+    payload = None
+    if kind == "Ok":
+        text = str(stdout or "")
+        blob = ""
+        for line in text.replace("\r", "").split("\n"):
+            t = line.strip()
+            if t.startswith("{") and '"agents"' in t:
+                blob = t
+        if not blob and text.strip().startswith("{"):
+            blob = text.strip()
+        try:
+            payload = json.loads(blob) if blob else None
+        except ValueError:
+            payload = None
+        if not isinstance(payload, dict) or not agent_list_rows_complete(payload.get("agents")):
+            kind = "Malformed"
+    if kind != "Ok":
+        if last_good and agent_list_rows_complete(last_good):
+            return [dict(r) for r in last_good], kind
+        return unknown_agent_list_rows(), kind
+    return list(payload.get("agents") or []), kind
 
 
 def resolve_seat_decision(
@@ -1902,9 +2064,21 @@ def describe_agent_child_launch(
     try:
         import worker_start_model as wsm
 
+        _scfg = wsm.load_worker_start_config()
         actual = wsm.actual_from_launch_spec(kind_l, spec, env=env)
+        effort = wsm.configured_start_effort(kind_l, _scfg)
         if actual:
             env[wsm.ENV_ACTUAL_MODEL] = actual
+        env[wsm.ENV_ACTUAL_EFFORT] = effort
+        saved = wsm.normalize_effort((_scfg.get("workerStartEffort") or {}).get(kind_l))
+        if not saved and not os.environ.get("PYTEST_CURRENT_TEST"):
+            try:
+                wsm.save_worker_start_settings(effort={kind_l: effort})
+            except Exception:
+                pass
+        wsm.write_launch_record(
+            rd, kind=kind_l, model=actual, effort=effort, argv=list(spec.argv)
+        )
     except Exception:
         pass
     if bound_meta.get("grok_home"):
@@ -2858,8 +3032,12 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
         try:
             import worker_start_model as wsm
 
-            grok_model = wsm.configured_start_model("grok", wsm.load_worker_start_config())
+            _gcfg = wsm.load_worker_start_config()
+            grok_model = wsm.configured_start_model("grok", _gcfg)
             argv = wsm.launch_argv_with_model("grok", argv, grok_model)
+            argv = wsm.launch_argv_with_effort(
+                "grok", argv, wsm.configured_start_effort("grok", _gcfg)
+            )
         except Exception:
             pass
     elif kind == "cursor":
@@ -7298,6 +7476,7 @@ def post_digest_seat_kind(
     configured_model: str = "",
     model_mismatch: bool | None = None,
     cost_tier: str = "",
+    start_effort: str = "",
     working_on: str = "",
     worker_build: str | None = None,
     state: str | None = None,
@@ -7311,6 +7490,7 @@ def post_digest_seat_kind(
 
     FR #6409: payload always includes ``worker_build`` (short SHA or ``unknown``).
     FR #7180 / #7183: optional ``assignable`` / ``state=needs_sign_in``.
+    FR #7187: optional ``start_effort``.
     FR #7181: digest POST retries 403; persistent failure posts ``state=unhealthy``.
     """
     env = os.environ if env is None else env
@@ -7348,6 +7528,9 @@ def post_digest_seat_kind(
         payload["model_mismatch"] = str(model).strip().lower() != cfg_m.lower()
     if (cost_tier or "").strip():
         payload["cost_tier"] = str(cost_tier).strip()
+    eff = str(start_effort or "").strip().lower()
+    if eff:
+        payload["start_effort"] = eff
     if assignable is False:
         payload["assignable"] = False
         payload["error"] = "needs-sign-in"
@@ -9775,7 +9958,7 @@ class Supervisor:
             th.join(timeout=2.0)
 
     def _install_root_for_fuel(self) -> Path:
-        root = Path(DEFAULT_INSTALL_ROOT)
+        root = Path(resolve_install_root())
         env = self.base_env if isinstance(self.base_env, dict) else {}
         cand = (env.get("BOB_INSTALL_ROOT") or env.get("BOBIVERSE_INSTALL_ROOT") or "").strip()
         if cand:
@@ -12312,13 +12495,14 @@ def run_agent(args, log: Log) -> int:
         return EXIT_IRC_FAIL
     # FR #6134: publish agent kind so the chair can skip OpenCode for MRB/UAT.
     # FR #6409: digest worker_build short SHA (or unknown); hello after start_agent (MRB #6411).
-    # FR #6418: hello ``model=`` stays the configured value. FR #7084 digest ``start_model`` is
-    # the launched process/session model (re-POSTed after start_agent).
+    # FR #7187: hello ``model=`` is the launched actual when known (else configured).
+    # FR #7084 digest ``start_model`` is the launched process/session model.
     build = short_build_sha()
     seat_model = resolve_seat_hello_model(kind)
     cfg_model = ""
     cost_tier = ""
     mismatch = None
+    seat_effort = "low"
     try:
         import worker_start_model as wsm
 
@@ -12326,6 +12510,7 @@ def run_agent(args, log: Log) -> int:
         cfg_model = wsm.configured_start_model(kind, _cfg)
         mismatch = wsm.model_mismatch(seat_model, cfg_model)
         cost_tier = wsm.model_cost_tier(seat_model or cfg_model, _cfg)
+        seat_effort = wsm.configured_start_effort(kind, _cfg)
         if not cfg_model:
             log(f"worker: configured start model empty for kind={kind}; not inventing an id")
     except Exception:
@@ -12340,6 +12525,7 @@ def run_agent(args, log: Log) -> int:
             configured_model=cfg_model,
             model_mismatch=mismatch,
             cost_tier=cost_tier,
+            start_effort=seat_effort,
             worker_build=build,
             log=log,
         )
@@ -12370,6 +12556,7 @@ def run_agent(args, log: Log) -> int:
     if not sup.start_agent():
         irc.close("launch failed")
         return EXIT_LAUNCH_FAIL
+    actual = ""
     try:
         import worker_start_model as wsm
 
@@ -12377,10 +12564,13 @@ def run_agent(args, log: Log) -> int:
         actual = str(child_env.get(wsm.ENV_ACTUAL_MODEL) or "").strip()
         if not actual:
             actual = wsm.actual_start_model(env=child_env or os.environ)
+        actual_effort = str(child_env.get(wsm.ENV_ACTUAL_EFFORT) or "").strip()
         _cfg = wsm.load_worker_start_config()
         cfg_model = wsm.configured_start_model(kind, _cfg)
         mismatch = wsm.model_mismatch(actual, cfg_model)
         cost_tier = wsm.model_cost_tier(actual or cfg_model, _cfg)
+        if not actual_effort:
+            actual_effort = wsm.configured_start_effort(kind, _cfg)
         if mismatch:
             try:
                 notify_start_model_after_launch(
@@ -12412,6 +12602,7 @@ def run_agent(args, log: Log) -> int:
             configured_model=cfg_model,
             model_mismatch=mismatch,
             cost_tier=cost_tier,
+            start_effort=actual_effort,
             worker_build=build,
             state=None if grok_ok else "needs_sign_in",
             log=log,
@@ -12420,6 +12611,7 @@ def run_agent(args, log: Log) -> int:
     except Exception as e:
         log(f"worker: post-launch start_model digest failed {type(e).__name__}")
     # FR #6409 / #7180: worker ready means assignable (signed in). Else needs sign-in.
+    # FR #7196: OpenCode true provider/region miss -> needs model (never ready/ACK).
     try:
         oc_block = ""
         if kind == "opencode" and getattr(sup, "_session_assignable", False):
@@ -12443,7 +12635,12 @@ def run_agent(args, log: Log) -> int:
             else:
                 log("worker: needs-model say failed")
         elif getattr(sup, "_session_assignable", False):
-            hello = worker_hello_line(kind, model=seat_model, build=build)
+            hello_model = actual if (kind == "grok" or actual) else seat_model
+            if kind == "opencode" and actual:
+                hello_model = actual
+            hello = worker_hello_line(
+                kind, model=hello_model or seat_model or actual, build=build
+            )
             if irc.say(irc.shop, hello):
                 log(f"worker: hello {hello}")
             else:
@@ -12773,7 +12970,7 @@ def main(argv: Optional[list] = None) -> int:
         default="",
         help="explicit seat agent: grok, cursor, or opencode (omit for automatic Grok then Cursor then OpenCode)",
     )
-    p.add_argument("--install-root", default=DEFAULT_INSTALL_ROOT)
+    p.add_argument("--install-root", default="")
     p.add_argument(
         "--work-root",
         default="",
@@ -12808,6 +13005,7 @@ def main(argv: Optional[list] = None) -> int:
         except Exception:
             pass
         return EXIT_USAGE
+    args.install_root = resolve_install_root(args.install_root)
     if getattr(args, "describe_launch", False):
         try:
             plan = describe_worker_exe_launch(
@@ -12826,20 +13024,10 @@ def main(argv: Optional[list] = None) -> int:
             return EXIT_USAGE
         print(json.dumps(plan, sort_keys=True))
         return EXIT_OK
-    if args.startup_grace_s is None:
-        env_grace = os.environ.get("BOB_WORKER_STARTUP_GRACE_S", "").strip()
-        try:
-            args.startup_grace_s = float(env_grace) if env_grace else 60.0
-        except ValueError:
-            args.startup_grace_s = 60.0
-    log = Log(_state_root() / "logs" / f"bob-worker-{args.mode}.log", echo=args.echo)
     if args.list_agents or args.dry_run:
         cc, ge, oe = resolve_cursor_cmd(), resolve_grok_exe(), resolve_opencode_cmd()
         auth_present = opencode_auth_file_present()
         if args.list_agents:
-            # Menu listing must return without the 90s combined fuel read. A fresh
-            # cache is shown as known. Otherwise the rows stay clickable and unknown,
-            # and --refresh-fuel fills the cache one provider at a time.
             refresh = False
             readings_known = False
             if args.refresh_fuel:
@@ -12876,6 +13064,13 @@ def main(argv: Optional[list] = None) -> int:
                           "cursor_cmd": bool(cc), "grok_exe": bool(ge),
                           "opencode_cmd": bool(oe), "fuel": fuel.__dict__, "cwd": cwd, "mode": args.mode}))
         return EXIT_OK
+    if args.startup_grace_s is None:
+        env_grace = os.environ.get("BOB_WORKER_STARTUP_GRACE_S", "").strip()
+        try:
+            args.startup_grace_s = float(env_grace) if env_grace else 60.0
+        except ValueError:
+            args.startup_grace_s = 60.0
+    log = Log(_state_root() / "logs" / f"bob-worker-{args.mode}.log", echo=args.echo)
     # FR #2522 / Simon: ONLY mode=agent is capped. Plan + maintenance (+ monitor) start freely on top of 2 workers.
     if args.mode in CAPPED_MODES:
         refusal = worker_cap_refusal(snapshot_procs(), os.getpid(), for_mode=args.mode)

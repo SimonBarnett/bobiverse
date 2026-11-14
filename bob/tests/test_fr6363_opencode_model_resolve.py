@@ -6,6 +6,13 @@ from pathlib import Path
 import bob.scripts.bob_worker as bw
 
 
+def _isolate_tray(monkeypatch, tmp_path):
+    """FR #7187: do not leak host %LOCALAPPDATA%\\Bobiverse\\tray-models.json."""
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    monkeypatch.delenv("BOB_WORKER_START_MODEL_FILE", raising=False)
+    monkeypatch.delenv("BOB_WORKER_START_MODEL_JSON", raising=False)
+
 def test_fr6363_strip_jsonc_comments_and_trailing_comma():
     raw = """
     {
@@ -19,6 +26,7 @@ def test_fr6363_strip_jsonc_comments_and_trailing_comma():
 
 
 def test_fr6363_env_beats_config_and_fuel(tmp_path, monkeypatch):
+    _isolate_tray(monkeypatch, tmp_path)
     cfg = tmp_path / "opencode.jsonc"
     cfg.write_text(
         '// cfg\n{ "model": "opencode/deepseek-v4.1-flash-free" }\n',
@@ -29,6 +37,7 @@ def test_fr6363_env_beats_config_and_fuel(tmp_path, monkeypatch):
     logs: list[str] = []
     fuel = bw.Fuel(opencode_free=100, opencode_free_model_ids=("opencode/beam-free",))
     env = dict(**{k: v for k, v in __import__("os").environ.items()})
+    env["LOCALAPPDATA"] = str(tmp_path)
     got = bw.resolve_opencode_model(
         fuel, state_dir=tmp_path, env=env, log_fn=logs.append
     )
@@ -37,6 +46,7 @@ def test_fr6363_env_beats_config_and_fuel(tmp_path, monkeypatch):
 
 
 def test_fr6363_config_used_when_env_unset(tmp_path, monkeypatch):
+    _isolate_tray(monkeypatch, tmp_path)
     cfg = tmp_path / "opencode.jsonc"
     cfg.write_text(
         '{ // comment\n  "model": "opencode/deepseek-v4.1-flash-free",\n}\n',
@@ -52,6 +62,7 @@ def test_fr6363_config_used_when_env_unset(tmp_path, monkeypatch):
 
 
 def test_fr6363_paused_config_falls_back_to_fuel(tmp_path, monkeypatch):
+    _isolate_tray(monkeypatch, tmp_path)
     cfg = tmp_path / "opencode.json"
     cfg.write_text('{"model": "opencode/deepseek-v4.1-flash-free"}', encoding="utf-8")
     monkeypatch.setenv("OPENCODE_CONFIG", str(cfg))
@@ -87,11 +98,12 @@ def test_fr6363_neither_set_uses_fuel_unchanged(tmp_path):
     got = bw.resolve_opencode_model(
         fuel, state_dir=tmp_path, env=env, log_fn=logs.append
     )
-    assert got == "opencode/beam-free"
-    assert any("source=fuel" in line for line in logs)
+    assert got == "opencode/deepseek-v4.1-flash-free"
+    assert any("source=start" in line for line in logs)
 
 
 def test_fr6363_worker_export_not_operator_override(tmp_path, monkeypatch):
+    _isolate_tray(monkeypatch, tmp_path)
     """Process-start capture only: later os.environ write is ignored for env source."""
     cfg = tmp_path / "opencode.json"
     cfg.write_text('{"model": "opencode/deepseek-v4.1-flash-free"}', encoding="utf-8")

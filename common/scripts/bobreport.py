@@ -996,6 +996,9 @@ def _coerce_worker(mid: str, pid: str, raw: object) -> dict:
     cost_tier = str(ent.get("cost_tier") or "").strip()
     if cost_tier:
         out["cost_tier"] = cost_tier
+    start_effort = str(ent.get("start_effort") or "").strip()
+    if start_effort:
+        out["start_effort"] = start_effort
     # FR #4211: keep heartbeat so live_seat_nicks can skip stale legacy workers.
     updated = str(ent.get("updated") or ent.get("last_seen") or ent.get("lastSeen") or "").strip()
     if updated:
@@ -1113,6 +1116,9 @@ def _coerce_worker_list(raw: object, *, now: float | None = None) -> list[dict]:
         cost_tier = str(ent.get("cost_tier") or "").strip()
         if cost_tier:
             row["cost_tier"] = cost_tier
+        start_effort = str(ent.get("start_effort") or "").strip()
+        if start_effort:
+            row["start_effort"] = start_effort
         out.append(row)
     return out[:WORKER_LIST_MAX]
 
@@ -1244,6 +1250,9 @@ def _model_fields_from_payload(payload: dict, prev: dict | None = None) -> dict:
     cost_tier = str(payload.get("cost_tier") or prev.get("cost_tier") or "").strip()
     if cost_tier:
         out["cost_tier"] = cost_tier
+    start_effort = str(payload.get("start_effort") or prev.get("start_effort") or "").strip()
+    if start_effort:
+        out["start_effort"] = start_effort
     return out
 
 
@@ -1260,7 +1269,7 @@ def _apply_model_fields_to_worker_list(ent: dict, nick: str, fields: dict) -> No
         idx = len(rows) - 1
     else:
         row = dict(rows[idx])
-    for key in ("kind", "start_model", "configured_model", "model_mismatch", "cost_tier", "agent", "model"):
+    for key in ("kind", "start_model", "configured_model", "model_mismatch", "cost_tier", "start_effort", "agent", "model"):
         if key in fields:
             row[key] = fields[key]
     rows[idx] = row
@@ -4790,6 +4799,7 @@ _last_fuel_publish_diag: dict = {}
 _last_xai_acquisition: dict = {}
 _last_opencode_acquisition: dict = {}
 _last_copilot_acquisition: dict = {}
+_last_github_token_resolve: dict = {"source": "none", "checked": []}
 
 
 def last_fuel_publish_diag() -> dict:
@@ -4807,6 +4817,11 @@ def last_copilot_acquisition() -> dict:
     return dict(_last_copilot_acquisition)
 
 
+def last_github_token_resolve() -> dict:
+    """Last GitHub token resolve for ear Copilot (FR #7234). Names only, never values."""
+    return dict(_last_github_token_resolve)
+
+
 def format_fuel_publish_diag(diag: dict | None) -> str:
     """One stdout line. Ack is explicit; a POST word alone is not success."""
     d = diag if isinstance(diag, dict) else {}
@@ -4821,6 +4836,7 @@ def format_fuel_publish_diag(diag: dict | None) -> str:
         "pcent_keys={keys} provider_fields={prov} acquisition={acq} "
         "opencode_acquisition={oc_acq} opencode_source={oc_src} "
         "copilot_acquisition={cp_acq} copilot_source={cp_src} "
+        "copilot_checked={cp_chk} "
         "machine={machine} skipped={skipped}"
     ).format(
         role=d.get("home_role") or "unlocalized",
@@ -4838,6 +4854,7 @@ def format_fuel_publish_diag(diag: dict | None) -> str:
         oc_src=d.get("opencode_source") or "-",
         cp_acq=d.get("copilot_acquisition") or "-",
         cp_src=d.get("copilot_source") or "-",
+        cp_chk=d.get("copilot_checked") or "-",
         machine=d.get("machine") or "-",
         skipped=d.get("skipped") or "-",
     )
@@ -7791,32 +7808,45 @@ def enrich_peer_with_xai_weekly(peer: dict, reading: dict | None) -> dict:
 def resolve_github_token_for_ear(
     env: dict[str, str] | None = None,
 ) -> tuple[str, str]:
-    """Return ``(token, source_tag)`` for LocalSystem ear Copilot fetch (FR #7178).
+    """Return ``(token, source_tag)`` for LocalSystem ear Copilot fetch (FR #7178 / #7234).
 
-    Source tag never includes a secret. Prefer install ``config\\github.token``
-    (``BOB_INSTALL_ROOT`` / frozen ``bob-ear.exe`` root), then env, then
-    ``gh_filer`` candidates. Token value is never logged.
+    Source tag never includes a secret. Prefer env, then install
+    ``config\\github.token`` (``BOB_INSTALL_ROOT`` / frozen ``bob-ear.exe`` root),
+    then ``BOB_CONFIG_DIR``, then ``gh_filer`` candidates. Token value is never
+    logged. On miss, ``last_github_token_resolve()`` lists checked source names.
     """
+    global _last_github_token_resolve
     e = os.environ if env is None else env
+    checked: list[str] = []
+
+    def _stamp(source: str) -> None:
+        global _last_github_token_resolve
+        _last_github_token_resolve = {"source": source, "checked": list(checked)}
+
     for name in ("GH_TOKEN", "GITHUB_TOKEN"):
+        checked.append(f"env:{name}")
         raw = (e.get(name) or "").strip()
         if raw:
+            _stamp(f"env:{name}")
             return raw, f"env:{name}"
-    paths: list[Path] = []
+    paths: list[tuple[str, Path]] = []
     root = opencode_install_root(e)
     if root is not None:
-        paths.append(Path(root) / "config" / "github.token")
+        paths.append(("file:install/config/github.token", Path(root) / "config" / "github.token"))
     cfg = (e.get("BOB_CONFIG_DIR") or "").strip()
     if cfg:
-        paths.append(Path(cfg).expanduser() / "github.token")
-    for path in paths:
+        paths.append(("file:BOB_CONFIG_DIR/github.token", Path(cfg).expanduser() / "github.token"))
+    for tag, path in paths:
+        checked.append(tag)
         try:
             if path.is_file():
                 tok = path.read_text(encoding="utf-8").strip()
                 if tok:
+                    _stamp("file:github.token")
                     return tok, "file:github.token"
         except OSError:
             continue
+    checked.append("gh_filer")
     try:
         import gh_filer
 
@@ -7824,9 +7854,11 @@ def resolve_github_token_for_ear(
         tok = (os.environ.get("GH_TOKEN") or "").strip()
         if tok:
             tag = "file:github.token" if str(src).startswith("file:") else str(src or "gh_filer")
+            _stamp(tag)
             return tok, tag
     except Exception:  # noqa: BLE001
         pass
+    _stamp("none")
     return "", "none"
 
 
@@ -7893,11 +7925,15 @@ def fetch_live_copilot_pool(
         "remaining": None,
         "entitlement": None,
         "reset_at": None,
+        "checked_sources": None,
     }
     user_fn = fetch_user
     if user_fn is None:
         token, src = resolve_github_token_for_ear()
         acq["source"] = src
+        checked = list((last_github_token_resolve().get("checked") or []))
+        if checked:
+            acq["checked_sources"] = checked
         if not token:
 
             def user_fn() -> dict:
@@ -8101,6 +8137,10 @@ def publish_local_peer_fuel(
             _last_fuel_publish_diag["copilot_source"] = str(acq.get("source"))
         if acq.get("error"):
             _last_fuel_publish_diag["copilot_error"] = str(acq.get("error"))
+        checked = acq.get("checked_sources") or []
+        if checked:
+            # FR #7234: names only so tray/log can say what is missing.
+            _last_fuel_publish_diag["copilot_checked"] = ",".join(str(x) for x in checked)
         if pool.get("state"):
             _last_fuel_publish_diag["copilot_state"] = str(pool.get("state"))
         if pool.get("fetched_at"):

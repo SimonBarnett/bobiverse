@@ -37,8 +37,27 @@ def _relative_depth(skill: Path, root: Path) -> int:
         return 10**9
 
 
+def read_skill_markdown(path: Path) -> str | None:
+    """Read SKILL.md without failing the catalog on one non-UTF-8 file (FR #7193)."""
+    try:
+        raw = Path(path).read_bytes()
+    except OSError:
+        return None
+    for enc in ("utf-8-sig", "utf-8"):
+        try:
+            return raw.decode(enc)
+        except UnicodeDecodeError:
+            continue
+    try:
+        return raw.decode("cp1252")
+    except UnicodeDecodeError:
+        return raw.decode("latin-1", errors="replace")
+
+
 def _node_from_skill(skill: Path) -> dict[str, Any] | None:
-    text = skill.read_text(encoding="utf-8")
+    text = read_skill_markdown(skill)
+    if text is None:
+        return None
     meta = _parse_frontmatter(text)
     sid = str(meta.get("name") or skill.parent.name).strip()
     if not sid:
@@ -69,7 +88,10 @@ def scan_skills_with_collisions(roots: list[Path]) -> tuple[list[dict[str, Any]]
         for skill in sorted(root.rglob("SKILL.md")):
             if not skill.is_file() or is_nested_skill_book(skill, root):
                 continue
-            node = _node_from_skill(skill)
+            try:
+                node = _node_from_skill(skill)
+            except Exception:
+                continue
             if node is None:
                 continue
             depth = _relative_depth(skill, root)

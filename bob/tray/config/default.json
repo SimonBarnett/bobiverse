@@ -16,6 +16,12 @@
                               "aider":  "",
                               "opencode":  ""
                           },
+    "workerStartEffort":  {
+                              "grok":  "low",
+                              "cursor":  "low",
+                              "aider":  "low",
+                              "opencode":  "low"
+                          },
     "workerModelCostTiers":  {
                              },
     "jobRequiredModelTier":  {
