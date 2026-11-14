@@ -7663,36 +7663,56 @@ def _grok_auth_bearer_from_file(path: Path) -> str | None:
     return token
 
 
+def _xai_billing_config_keys(doc: object) -> list[str]:
+    """Field names only (no values) for reject diagnostics (FR #7399)."""
+    if not isinstance(doc, dict):
+        return []
+    keys = sorted(str(k) for k in doc.keys())
+    cfg = doc.get("config")
+    if isinstance(cfg, dict):
+        keys.extend("config." + str(k) for k in sorted(cfg.keys()))
+        cp = cfg.get("currentPeriod")
+        if isinstance(cp, dict):
+            keys.extend("config.currentPeriod." + str(k) for k in sorted(cp.keys()))
+    return keys
+
+
 def parse_xai_billing_credits_response(
     doc: object, *, now: datetime | None = None
 ) -> dict | None:
     """Parse CLI ``/v1/billing?format=credits`` into a weekly remaining reading.
 
     ``creditUsagePercent`` is used percent; remaining is ``100 - used``.
-    Absent percent is not a known weekly figure (do not invent 0).
+    FR #7399: when a weekly period/reset is present but ``creditUsagePercent`` is
+    omitted (protobuf-style JSON for an unused Premium account), treat used as 0
+    / remaining as 100. Still reject when there is no usable period.
     """
     if not isinstance(doc, dict):
         return None
     cfg = doc.get("config")
     if not isinstance(cfg, dict):
         return None
-    used_raw = cfg.get("creditUsagePercent")
-    if used_raw is None:
-        return None
-    try:
-        used_f = float(used_raw)
-    except (TypeError, ValueError):
-        return None
-    if not 0.0 <= used_f <= 100.0:
-        return None
-    used_i = int(round(used_f))
-    remaining = max(0, min(100, 100 - used_i))
     period_end = None
     cp = cfg.get("currentPeriod")
     if isinstance(cp, dict) and cp.get("end"):
         period_end = str(cp["end"])
     elif cfg.get("billingPeriodEnd"):
         period_end = str(cfg["billingPeriodEnd"])
+    if not period_end:
+        return None
+    used_raw = cfg.get("creditUsagePercent")
+    if used_raw is None:
+        # FR #7399: omitted zero fields => unused week.
+        used_i = 0
+    else:
+        try:
+            used_f = float(used_raw)
+        except (TypeError, ValueError):
+            return None
+        if not 0.0 <= used_f <= 100.0:
+            return None
+        used_i = int(round(used_f))
+    remaining = max(0, min(100, 100 - used_i))
     clock = now or datetime.now(timezone.utc)
     if clock.tzinfo is None:
         clock = clock.replace(tzinfo=timezone.utc)
@@ -7818,15 +7838,27 @@ def fetch_live_xai_weekly(*, now: datetime | None = None) -> dict | None:
         return None
     reading = parse_xai_billing_credits_response(doc, now=now)
     if not reading:
+        # FR #7399: log field names (never values) so the next shape change is diagnosable.
+        cfg_keys = _xai_billing_config_keys(doc)
         _last_xai_acquisition = {
             "identity": identity,
             "read": False,
             "live": False,
-            "error": "provider-no-creditUsagePercent",
+            "error": "provider-unusable-billing",
             "selected": True,
             "account": selected_label,
             "auth_path": auth_loc,
+            "config_keys": cfg_keys,
+            "response_keys": sorted(str(k) for k in doc.keys()) if isinstance(doc, dict) else [],
         }
+        try:
+            import logging
+
+            logging.getLogger("bobreport").warning(
+                "xai billing reject keys=%s", ",".join(cfg_keys) or "-"
+            )
+        except Exception:
+            pass
         return None
     reading["account"] = selected_label
     _last_xai_acquisition = {
