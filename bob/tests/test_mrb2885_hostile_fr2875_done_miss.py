@@ -17,7 +17,9 @@ def test_mrb2885_skill_fr2875_done_miss_contiguous():
         "**FR #2875:** `turn_ended` with the job ACKed but no DONE/NACK/GIVEUP arms done-miss "
         "(log `done-miss armed`); after `BOB_WORKER_DONE_MISS_GRACE_S` (default 20 s) inject one "
         "bob-worker reminder (do not check the drained outbox); if the reminder turn also ends with "
-        "ACK still open, clear ACK, post `GIVEUP <TYPE> owner/repo#N done-miss` (FR #4784) then "
+        "ACK still open, or `BOB_WORKER_DONE_MISS_REPLY_S` (default 180 s, FR #7352) elapses with no "
+        "DONE/NACK/GIVEUP (no second turn required), clear ACK, post "
+        "`GIVEUP <TYPE> owner/repo#N no-terminal-reply` (FR #4784) then "
         "`!bored` reason `done-miss` (never invent a DONE verdict; local ACK clear alone leaves "
         "Jeeves `nak busy`)."
     )
