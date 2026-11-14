@@ -518,8 +518,7 @@ function Format-BobTrayXaiWeeklyRow {
     }
     $parts = @()
     if ($id) { $parts += [string]$id }
-    # FR #7326: Grok and Cursor are the same per-machine pool on this line.
-    $parts += 'Grok / Cursor'
+    # FR #7372: machine, percent left, account, reset only (one xAI weekly pool).
     if ($null -ne $pct) {
         $parts += ('{0}% left' -f [int]$pct)
     } else {

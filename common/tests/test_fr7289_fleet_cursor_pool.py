@@ -228,7 +228,7 @@ def test_fr7289_tray_reads_fleet_cursor():
     assert "function Get-BobTrayDigestPoolCatalog" in text
     assert "FR #7326" in text
     assert "Cursor / Grok chat" not in text
-    assert "Grok / Cursor" in text
+    assert "Grok / Cursor" not in text
 
 
 def test_fr7289_cursor_remaining_from_period_auto():
