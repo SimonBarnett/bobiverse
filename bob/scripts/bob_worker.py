@@ -5752,11 +5752,43 @@ def should_start_fuel_watcher(kind: str) -> bool:
 
 
 DIGEST_HTTP_USER_AGENT = "Bobiverse-bobreport/1.0"  # FR #6144 / #7181: same UA as ear (WAF)
+DIGEST_HTTP_BODY_LOG_MAX = 200  # FR #7347: truncated 4xx body snippet
 _last_digest_http: dict = {}
 
 
+def _digest_http_body_snippet(exc: BaseException, *, limit: int = DIGEST_HTTP_BODY_LOG_MAX) -> str:
+    """Read HTTPError body, scrub secrets, truncate. Never raise. FR #7347."""
+    raw = b""
+    try:
+        read = getattr(exc, "read", None)
+        if callable(read):
+            got = read()
+            if isinstance(got, (bytes, bytearray)):
+                raw = bytes(got)
+            elif isinstance(got, str):
+                raw = got.encode("utf-8", "replace")
+    except Exception:
+        raw = b""
+    if not raw:
+        try:
+            fp = getattr(exc, "fp", None)
+            if fp is not None and hasattr(fp, "read"):
+                got = fp.read()
+                if isinstance(got, (bytes, bytearray)):
+                    raw = bytes(got)
+        except Exception:
+            raw = b""
+    text = raw.decode("utf-8", "replace") if raw else ""
+    text = " ".join(text.split())
+    text = _scrub(text)
+    lim = max(0, int(limit))
+    if len(text) > lim:
+        text = text[:lim]
+    return text
+
+
 def classify_digest_http_failure(exc: BaseException) -> dict:
-    """Status, responder class, Cloudflare ray. Never includes body or secrets. FR #7181."""
+    """Status, responder class, Cloudflare ray, truncated body. No secrets. FR #7181 / #7347."""
     status = getattr(exc, "code", None)
     try:
         status_i = int(status) if status is not None else None
@@ -5785,17 +5817,21 @@ def classify_digest_http_failure(exc: BaseException) -> dict:
         responder = sl.split("/")[0][:40]
     else:
         responder = "unknown"
-    return {
+    body = _digest_http_body_snippet(exc)
+    out = {
         "status": status_i,
         "responder": responder,
         "ray": ray,
         "server": server[:80],
         "exc": type(exc).__name__,
     }
+    if body:
+        out["body"] = body
+    return out
 
 
 def last_digest_http() -> dict:
-    """Last worker digest POST outcome (no secrets). FR #7181."""
+    """Last worker digest POST outcome (no secrets). FR #7181 / #7347."""
     return dict(_last_digest_http)
 
 
@@ -5810,7 +5846,8 @@ def _http_post_json(
 ) -> bool:
     """Best-effort JSON POST (digest report). No secrets. Returns True on HTTP success.
 
-    FR #7181: retry 403/429/5xx with backoff; log status, responder, CF-Ray (never body).
+    FR #7181: retry 403/429/5xx with backoff; log status, responder, CF-Ray.
+    FR #7347: on 4xx also log a scrubbed body snippet (max 200 chars).
     """
     global _last_digest_http
     raw = json.dumps(payload, ensure_ascii=True).encode("utf-8")
@@ -5846,13 +5883,16 @@ def _http_post_json(
             _last_digest_http = dict(last_meta)
             if log:
                 try:
+                    snippet = str(last_meta.get("body") or "").strip()
+                    extra = f" body={snippet}" if snippet else ""
                     log(
-                        "digest POST HTTP {st} responder={r} ray={ray} attempt={a}/{n}".format(
+                        "digest POST HTTP {st} responder={r} ray={ray} attempt={a}/{n}{extra}".format(
                             st=last_meta.get("status") or "?",
                             r=last_meta.get("responder") or "unknown",
                             ray=last_meta.get("ray") or "-",
                             a=attempt,
                             n=attempts,
+                            extra=extra,
                         )
                     )
                 except Exception:
@@ -7736,6 +7776,16 @@ def opencode_hostile_nack_line(line: str) -> Optional[str]:
     return f"NACK {key} opencode-skips-hostile (FR #6134)"
 
 
+def _normalize_digest_worker_state(raw: object) -> str:
+    """Canonical digest worker state for hub schema. FR #7347."""
+    s = str(raw or "").strip().lower()
+    if not s:
+        return ""
+    if s in ("needs-sign-in", "needssignin", "needs_sign_in"):
+        return "needs_sign_in"
+    return s
+
+
 def post_digest_seat_kind(
     *,
     machine: str,
@@ -7763,6 +7813,7 @@ def post_digest_seat_kind(
     FR #7180 / #7183: optional ``assignable`` / ``state=needs_sign_in``.
     FR #7187: optional ``start_effort``.
     FR #7181: digest POST retries 403; persistent failure posts ``state=unhealthy``.
+    FR #7347: hub WORKER_STATES includes needs_sign_in/unhealthy; hyphen alias normalized.
     """
     env = os.environ if env is None else env
     report = (url or env.get("BOB_REPORT_URL") or env.get("BOB_DIGEST_URL") or DEFAULT_DIGEST_REPORT_URL).strip()
@@ -7776,12 +7827,13 @@ def post_digest_seat_kind(
         return False
     agent_s = (agent or "").strip() or (kind_s if kind_s else "")
     build = short_build_sha(worker_build) if worker_build is not None else short_build_sha()
+    state_s = _normalize_digest_worker_state(state) or "idle"
     payload = {
         "online": True,
         "id": mid,
         "pid": pid_i,
         "kind": kind_s or "grok",
-        "state": (str(state).strip() if state else "") or "idle",
+        "state": state_s,
         "nick": (nick or "").strip() or seat_nick(mid, pid_i),
         "working_on": (working_on or "").strip(),
         "agent": agent_s,
@@ -7805,7 +7857,7 @@ def post_digest_seat_kind(
     if assignable is False:
         payload["assignable"] = False
         payload["error"] = "needs-sign-in"
-        payload["state"] = "needs-sign-in"
+        payload["state"] = "needs_sign_in"
     elif assignable is True:
         payload["assignable"] = True
     post_kw: dict = {"log": log}
@@ -7824,9 +7876,11 @@ def post_digest_seat_kind(
         payload["digest_responder"] = str(meta.get("responder"))
     if log:
         try:
+            snippet = str(meta.get("body") or "").strip()
+            extra = f" body={snippet}" if snippet else ""
             log(
                 f"post_digest_seat_kind failed mid={mid} kind={kind_s} {err} "
-                f"responder={meta.get('responder') or '-'} ray={meta.get('ray') or '-'}"
+                f"responder={meta.get('responder') or '-'} ray={meta.get('ray') or '-'}{extra}"
             )
         except Exception:
             pass

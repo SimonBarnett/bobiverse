@@ -180,7 +180,8 @@ def test_fr7180_digest_assignable_false(monkeypatch):
     assert ok is True
     assert payload_holder.get("assignable") is False
     assert payload_holder.get("error") == "needs-sign-in"
-    assert payload_holder.get("state") == "needs-sign-in"
+    # FR #7347: hub schema uses needs_sign_in (hyphen alias normalized).
+    assert payload_holder.get("state") == "needs_sign_in"
 
 
 def test_fr7180_system_profile_auth_ignored(tmp_path, monkeypatch):
