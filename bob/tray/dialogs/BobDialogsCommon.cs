@@ -274,7 +274,7 @@ namespace BobDialogs
         {
             string f = (family ?? "").Trim().ToLowerInvariant();
             if (f == "cursor" || f == "cu") return "Cu";
-            if (f == "xai" || f == "grok" || f == "x-ai") return "xAI";
+            if (f == "xai" || f == "grok" || f == "grok-chat" || f == "grok_chat" || f == "x-ai") return "xAI";
             if (f == "opencode" || f == "oc") return "OC";
             if (f == "copilot" || f == "gh" || f == "github") return "Gh";
             if (f.Length == 0) return "?";
@@ -286,7 +286,7 @@ namespace BobDialogs
             string key = null;
             string f = (family ?? "").Trim().ToLowerInvariant();
             if (f == "cursor" || f == "cu") key = "cursor";
-            else if (f == "xai" || f == "grok" || f == "x-ai") key = "xai";
+            else if (f == "xai" || f == "grok" || f == "grok-chat" || f == "grok_chat" || f == "x-ai") key = "xai";
             else if (f == "opencode" || f == "oc") key = "opencode";
             else if (f == "copilot" || f == "gh" || f == "github") key = "copilot";
             if (key == null) return null;

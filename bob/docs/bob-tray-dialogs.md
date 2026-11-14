@@ -21,7 +21,7 @@ Staged and installed trees stay flat. The old spellings (`third_party\bob-tray`,
 * **About**: ntsa badge (embedded), "by Simon Barnett", `bob <version>  machine: <id>`, then one block per install of bob / jeeves / airc / ergo
   (version, BUILD.json date, commit, path, service state - the same text as the old `Format-BobInstallInfo`). The window opens first; the install
   scan (services, BUILD.json, git only when BUILD.json has no commit) runs on a worker thread and fills the box.
-* **Status** (FR #4938 / #5179 / #6214 / #6285): one **xAI weekly** capacity heading (digest `machines.<m>.xai_weekly` only; Cursor not mixed into this title); Grok account rows (one grok/cursor account per machine; Cursor spending-group bars removed), each machine's
+* **Status** (FR #4938 / #5179 / #6214 / #6285 / **#7243**): one **xAI weekly** capacity heading (digest `machines.<m>.xai_weekly` only; Cursor not mixed into this title); Grok account rows (one grok/cursor account per machine; obsolete Cursor spending-group bars stay removed). FR #7243 paints **every digest pool** as its own family: Grok Build (xAI weekly), Grok chat, OpenCode free, OpenCode go windows, Cursor, Copilot, plus extra `pcent` keys. Missing readings use `unknown (reason)` (FR #7242), not a hidden row. Each machine's
   workers as `{irc nick}: {doing|idle}` from the digest, `alert: <kind>`, version footer. It paints from `<root>\run\tray-status.json`, which
   the tray writes (atomically) after every poll; the exe never touches the network and re-reads the file every 2 s. Parked until X / Esc; drag by the title.
   One account-wide Copilot tile uses `copilot_pool` / `copilot_line` from the snapshot, showing `unknown` when absent and
@@ -72,7 +72,7 @@ It runs the Status and About windows in-process (no second process to start).
 ### Status window shows the dashboard only (t832u)
 The plain-text block under the title (the old hover / tooltip `jobs_text`: fuel lines, "GitHub issue post: ready", "out of tokens, open with key")
 was drawn by mistake. It is gone from the exe and from the snapshot (`jobs_text` is no longer written): per-machine Grok pool
-rows with workers `{irc nick}: {doing|idle}`, one Copilot pool tile, alert and version (FR #4938: no Cursor pool section; FR #5032: no
+rows with workers `{irc nick}: {doing|idle}`, digest-driven extra pool families (FR #7243: Grok chat / OpenCode free / Cursor), one Copilot pool tile, alert and version (FR #4938: no obsolete Cursor spending-group section; FR #5032: no
 "Grok accounts" heading).
 
 **Digest-only fleet Cursor/xAI weekly (FR #6267, partly superseded by FR #6285).** When a public digest is present, **peer** machine rows take remaining % only from that machine's digest record. Peer peek, peCache, and seat-min sharing must not paint a non-digest value (class of MarchHare showing `ntsa (43%)` while digest was 74%). Account label prefers digest `cursor_pools.account` (or `nick`) over hardcoded `bob-seats.json` labels such as `ntsa`. Missing digest weekly on a peer paints unknown — never silent local/bridge fallback and never unknown-as-zero. Offline pin: `bob/tests/test_fr6267_tray_digest_only_weekly.py`.
