@@ -6640,6 +6640,11 @@ def _read_grok_auth_path_stamp() -> Path | None:
     path = Path(text)
     if _is_windows_system_profile(path) or _is_windows_system_profile(path.parent):
         return None
+    try:
+        if not path.is_file():
+            return None
+    except OSError:
+        return None
     return path
 
 

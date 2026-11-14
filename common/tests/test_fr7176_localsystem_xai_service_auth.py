@@ -90,6 +90,23 @@ def test_fr7176_service_home_auth_used_under_localsystem(monkeypatch, tmp_path: 
     assert "FAKE_" not in stamped
 
 
+def test_fr7176_stale_stamp_falls_through_to_service_auth(
+    monkeypatch, tmp_path: Path
+):
+    """Missing stamped path must not shadow service-home auth.json (MRB #7188)."""
+    install = tmp_path / "bob"
+    _system_env(monkeypatch, tmp_path, install=install)
+    stamp = install / "run" / bobreport.GROK_AUTH_PATH_STAMP_NAME
+    stamp.write_text(str(tmp_path / "gone" / "auth.json") + "\n", encoding="utf-8")
+    auth = install / "home" / ".grok" / "auth.json"
+    auth.parent.mkdir(parents=True)
+    auth.write_text(_auth_doc(), encoding="utf-8")
+
+    path, ident = bobreport.xai_weekly_auth_path()
+    assert ident == "service-auth"
+    assert path == auth
+
+
 def test_fr7176_stamped_auth_survives_without_interactive_home(
     monkeypatch, tmp_path: Path
 ):
