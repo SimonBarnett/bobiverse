@@ -87,8 +87,8 @@ def test_fr6363_neither_set_uses_fuel_unchanged(tmp_path):
     got = bw.resolve_opencode_model(
         fuel, state_dir=tmp_path, env=env, log_fn=logs.append
     )
-    assert got == "opencode/beam-free"
-    assert any("source=fuel" in line for line in logs)
+    assert got == "opencode/deepseek-v4.1-flash-free"
+    assert any("source=start" in line for line in logs)
 
 
 def test_fr6363_worker_export_not_operator_override(tmp_path, monkeypatch):

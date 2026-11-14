@@ -11,6 +11,10 @@ from pathlib import Path
 from typing import Any
 
 WORKER_CLIS = ("grok", "cursor", "aider", "opencode")
+DEFAULT_EFFORT = "low"
+VALID_EFFORTS = ("low", "medium", "high")
+DEFAULT_OPENCODE_FREE = "opencode/deepseek-v4.1-flash-free"
+ENV_ACTUAL_EFFORT = "BOB_WORKER_ACTUAL_EFFORT"
 TIER_RANK = {
     "min": 0,
     "minimum": 0,
@@ -92,8 +96,22 @@ def load_worker_start_config(
     jobs = data.get("jobRequiredModelTier")
     if not isinstance(jobs, dict):
         jobs = {}
+    efforts = data.get("workerStartEffort")
+    if not isinstance(efforts, dict):
+        efforts = {}
+    extra_models = data.get("models")
+    if not isinstance(extra_models, dict):
+        extra_models = {}
     return {
         "workerStartModels": {k: str(models.get(k) or "").strip() for k in WORKER_CLIS},
+        "workerStartEffort": {
+            k: normalize_effort(efforts.get(k) or efforts.get("default") or "")
+            for k in WORKER_CLIS
+        },
+        "models": {
+            "opencodeFree": str(extra_models.get("opencodeFree") or "").strip(),
+            "opencodePaid": str(extra_models.get("opencodePaid") or "").strip(),
+        },
         "workerModelCostTiers": {str(k).strip(): str(v).strip().lower() for k, v in tiers.items() if str(k).strip()},
         "jobRequiredModelTier": {
             str(k).strip().upper(): str(v).strip().lower() or DEFAULT_JOB_TIER
@@ -101,6 +119,107 @@ def load_worker_start_config(
             if str(k).strip()
         },
     }
+
+
+def normalize_effort(raw: object) -> str:
+    s = str(raw or "").strip().lower()
+    if s in VALID_EFFORTS:
+        return s
+    return ""
+
+
+def configured_start_effort(cli: str, cfg: dict[str, Any] | None) -> str:
+    """Saved effort for a CLI, else lowest (never high)."""
+    efforts = (cfg or {}).get("workerStartEffort") or {}
+    got = normalize_effort(efforts.get(_cli(cli)))
+    return got or DEFAULT_EFFORT
+
+
+def default_opencode_free_model(cfg: dict[str, Any] | None = None) -> str:
+    models = (cfg or {}).get("models") or {}
+    got = str(models.get("opencodeFree") or "").strip()
+    return got or DEFAULT_OPENCODE_FREE
+
+
+def opencode_is_go_or_paid(model: str) -> bool:
+    s = str(model or "").strip().lower()
+    if not s:
+        return False
+    if s.startswith("opencode-go/") or "/opencode-go/" in s:
+        return True
+    if "v4-pro" in s or s.endswith("-pro"):
+        return True
+    return False
+
+
+def tray_models_path(*, env: dict[str, str] | None = None) -> Path:
+    e = os.environ if env is None else env
+    local = str((e or {}).get("LOCALAPPDATA") or "").strip()
+    if not local:
+        local = str(Path.home() / "AppData" / "Local")
+    return Path(local) / "Bobiverse" / "tray-models.json"
+
+
+def save_worker_start_settings(
+    *,
+    env: dict[str, str] | None = None,
+    path: Path | None = None,
+    models: dict[str, str] | None = None,
+    effort: dict[str, str] | None = None,
+) -> Path:
+    """Merge into tray-models.json (FR #7187). Never wipe unrelated keys."""
+    p = Path(path) if path else tray_models_path(env=env)
+    data: dict[str, Any] = {}
+    if p.is_file():
+        try:
+            raw = json.loads(p.read_text(encoding="utf-8"))
+            if isinstance(raw, dict):
+                data = raw
+        except (OSError, json.JSONDecodeError, UnicodeError):
+            data = {}
+    if models:
+        cur = data.get("workerStartModels")
+        if not isinstance(cur, dict):
+            cur = {}
+        for k, v in models.items():
+            cli = _cli(k)
+            if cli in WORKER_CLIS:
+                cur[cli] = str(v or "").strip()
+        data["workerStartModels"] = cur
+    if effort:
+        cur_e = data.get("workerStartEffort")
+        if not isinstance(cur_e, dict):
+            cur_e = {}
+        for k, v in effort.items():
+            cli = _cli(k)
+            if cli in WORKER_CLIS:
+                cur_e[cli] = normalize_effort(v) or DEFAULT_EFFORT
+        data["workerStartEffort"] = cur_e
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    return p
+
+
+def write_launch_record(
+    run_dir: str | Path,
+    *,
+    kind: str,
+    model: str,
+    effort: str,
+    argv: list[str] | None = None,
+) -> Path:
+    """Seat launch record for the tray (model + effort actually passed)."""
+    rd = Path(run_dir)
+    rd.mkdir(parents=True, exist_ok=True)
+    rec = {
+        "kind": _cli(kind),
+        "model": str(model or "").strip(),
+        "effort": normalize_effort(effort) or DEFAULT_EFFORT,
+        "argv": [str(a) for a in (argv or [])][:24],
+    }
+    dest = rd / "launch-record.json"
+    dest.write_text(json.dumps(rec, indent=2) + "\n", encoding="utf-8")
+    return dest
 
 
 def configured_start_model(cli: str, cfg: dict[str, Any] | None) -> str:
@@ -152,6 +271,25 @@ def launch_argv_with_model(kind: str, argv: list[str], model: str) -> list[str]:
     # Cursor plan launcher may already pass --model auto in a PowerShell string; argv is ps1.
     args.insert(1, mid)
     args.insert(1, "--model")
+    return args
+
+
+def launch_argv_with_effort(kind: str, argv: list[str], effort: str | None = None) -> list[str]:
+    """Grok: pass ``--reasoning-effort`` (default low). Other CLIs unchanged."""
+    args = [str(a) for a in (argv or [])]
+    if _cli(kind) != "grok" or not args:
+        return args
+    level = normalize_effort(effort) or DEFAULT_EFFORT
+    flag = "--reasoning-effort"
+    if flag in args:
+        i = args.index(flag)
+        if i + 1 < len(args):
+            args[i + 1] = level
+        else:
+            args.append(level)
+        return args
+    args.insert(1, level)
+    args.insert(1, flag)
     return args
 
 
@@ -208,8 +346,9 @@ def digest_seat_model_fields(
     actual: str,
     cfg: dict[str, Any] | None,
     state: str = "idle",
+    effort: str = "",
 ) -> dict[str, Any]:
-    """Fields for held / starting / idle / busy seats (FR #7084)."""
+    """Fields for held / starting / idle / busy seats (FR #7084 / #7187)."""
     configured = configured_start_model(cli, cfg)
     act = str(actual or "").strip()
     mismatch = model_mismatch(act, configured)
@@ -219,6 +358,7 @@ def digest_seat_model_fields(
         "configured_model": configured,
         "model_mismatch": mismatch,
         "cost_tier": model_cost_tier(act or configured, cfg),
+        "start_effort": normalize_effort(effort) or configured_start_effort(cli, cfg),
         "state": str(state or "idle").strip().lower() or "idle",
     }
 

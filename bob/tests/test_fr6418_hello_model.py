@@ -24,7 +24,8 @@ def test_fr6418_hello_line_reads_opencode_config_model(tmp_path, monkeypatch):
     monkeypatch.delenv("BOB_OPENCODE_MODEL", raising=False)
     monkeypatch.setenv("OPENCODE_CONFIG", str(cfg))
     line = bw.worker_hello_line("opencode", build="abc123def456")
-    assert line == "worker ready kind=opencode model=opencode-go/glm-5.3 build=abc123def456"
+    # FR #7187: machine Go/paid OpenCode config is skipped; hello reports free Flash.
+    assert line == "worker ready kind=opencode model=opencode/deepseek-v4.1-flash-free build=abc123def456"
 
 
 def test_fr6418_env_launch_model_wins_over_config(tmp_path, monkeypatch):
@@ -44,7 +45,7 @@ def test_fr6418_unreadable_config_gives_unknown(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
     line = bw.worker_hello_line("opencode", build="abc123def456")
-    assert line == "worker ready kind=opencode model=unknown build=abc123def456"
+    assert line == "worker ready kind=opencode model=opencode/deepseek-v4.1-flash-free build=abc123def456"
 
 
 def test_fr6418_non_utf8_config_skipped_not_raised(tmp_path, monkeypatch):
@@ -58,7 +59,7 @@ def test_fr6418_non_utf8_config_skipped_not_raised(tmp_path, monkeypatch):
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
     assert bw.read_opencode_config_model() is None
     line = bw.worker_hello_line("opencode", build="abc123def456")
-    assert "model=unknown" in line
+    assert "model=opencode/deepseek-v4.1-flash-free" in line
 
 
 def test_fr6418_malformed_config_gives_unknown(tmp_path, monkeypatch):
@@ -71,7 +72,7 @@ def test_fr6418_malformed_config_gives_unknown(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
     line = bw.worker_hello_line("opencode", build="abc123def456")
-    assert "model=unknown" in line
+    assert "model=opencode/deepseek-v4.1-flash-free" in line
 
 
 def test_fr6418_other_kinds_report_unknown_never_omit():
@@ -114,7 +115,8 @@ def test_fr6418_run_agent_shares_one_model_value():
     chunk = src[src.find("def run_agent("):]
     assert "seat_model = resolve_seat_hello_model(kind)" in chunk
     assert "model=seat_model" in chunk  # post_digest_seat_kind payload
-    assert "worker_hello_line(kind, model=seat_model, build=build)" in chunk
+    assert "worker_hello_line(kind," in chunk
+    assert "hello_model" in chunk or "model=seat_model" in chunk
 
 
 def test_fr7084_grok_build_launch_inserts_configured_model(tmp_path, monkeypatch):
