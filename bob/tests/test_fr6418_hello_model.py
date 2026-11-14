@@ -13,12 +13,20 @@ sys.path.insert(0, str(ROOT / "common" / "scripts"))
 import bob_worker as bw  # noqa: E402
 
 
+def _isolate_start_cfg(monkeypatch, tmp_path):
+    """FR #7187: do not leak host tray-models.json into hello resolve."""
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+    monkeypatch.delenv("BOB_WORKER_START_MODEL_FILE", raising=False)
+    monkeypatch.delenv("BOB_WORKER_START_MODEL_JSON", raising=False)
+
+
 def test_fr6418_hello_line_field_order_kind_model_build():
     line = bw.worker_hello_line("opencode", model="opencode-go/glm-5.3", build="abc123def456")
     assert line == "worker ready kind=opencode model=opencode-go/glm-5.3 build=abc123def456"
 
 
 def test_fr6418_hello_line_reads_opencode_config_model(tmp_path, monkeypatch):
+    _isolate_start_cfg(monkeypatch, tmp_path)
     cfg = tmp_path / "opencode.jsonc"
     cfg.write_text('// glm trial\n{ "model": "opencode-go/glm-5.3" }\n', encoding="utf-8")
     monkeypatch.delenv("BOB_OPENCODE_MODEL", raising=False)
@@ -29,6 +37,7 @@ def test_fr6418_hello_line_reads_opencode_config_model(tmp_path, monkeypatch):
 
 
 def test_fr6418_env_launch_model_wins_over_config(tmp_path, monkeypatch):
+    _isolate_start_cfg(monkeypatch, tmp_path)
     cfg = tmp_path / "opencode.json"
     cfg.write_text('{"model": "opencode/beam-free"}', encoding="utf-8")
     monkeypatch.setenv("OPENCODE_CONFIG", str(cfg))
@@ -38,6 +47,7 @@ def test_fr6418_env_launch_model_wins_over_config(tmp_path, monkeypatch):
 
 
 def test_fr6418_unreadable_config_gives_unknown(tmp_path, monkeypatch):
+    _isolate_start_cfg(monkeypatch, tmp_path)
     monkeypatch.delenv("BOB_OPENCODE_MODEL", raising=False)
     monkeypatch.setenv("OPENCODE_CONFIG", str(tmp_path / "absent.jsonc"))
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
@@ -49,6 +59,7 @@ def test_fr6418_unreadable_config_gives_unknown(tmp_path, monkeypatch):
 
 
 def test_fr6418_non_utf8_config_skipped_not_raised(tmp_path, monkeypatch):
+    _isolate_start_cfg(monkeypatch, tmp_path)
     cfg = tmp_path / "opencode.jsonc"
     cfg.write_bytes(b'{\xff\xfe "model": "opencode-go/glm-5.3" }')
     monkeypatch.delenv("BOB_OPENCODE_MODEL", raising=False)
@@ -75,14 +86,16 @@ def test_fr6418_malformed_config_gives_unknown(tmp_path, monkeypatch):
     assert "model=opencode/deepseek-v4.1-flash-free" in line
 
 
-def test_fr6418_other_kinds_report_unknown_never_omit():
+def test_fr6418_other_kinds_report_unknown_never_omit(tmp_path, monkeypatch):
+    _isolate_start_cfg(monkeypatch, tmp_path)
     for kind in ("grok", "cursor", "aider", ""):
         line = bw.worker_hello_line(kind, build="abc123def456")
         assert line.endswith(" model=unknown build=abc123def456"), kind
         assert "model=" in line
 
 
-def test_fr6418_resolve_seat_hello_model_empty_for_non_opencode():
+def test_fr6418_resolve_seat_hello_model_empty_for_non_opencode(tmp_path, monkeypatch):
+    _isolate_start_cfg(monkeypatch, tmp_path)
     assert bw.resolve_seat_hello_model("grok") == ""
     assert bw.resolve_seat_hello_model("cursor") == ""
 

@@ -184,7 +184,7 @@ def test_ack_miss_reminder_generic_without_assign():
 
 # ---------------------------------------------------------------- 3. startup waits for session ready
 def test_startup_grace_does_not_release_grok_before_turn_ended(tmp_path, monkeypatch):
-    monkeypatch.delenv("BOB_WORKER_STARTUP_WAIT_READY", raising=False)
+    monkeypatch.setenv("BOB_WORKER_STARTUP_WAIT_READY", "1")
     monkeypatch.setenv("BOB_WORKER_STARTUP_READY_CAP_S", "900")
     sup, logs, clock, injected, relay = _sup(tmp_path, monkeypatch)
     assert sup.start_agent()
@@ -205,7 +205,7 @@ def test_startup_grace_does_not_release_grok_before_turn_ended(tmp_path, monkeyp
 
 def test_startup_cap_hangs_when_turn_never_ends(tmp_path, monkeypatch):
     """FR #4123: ready-cap without turn_ended hang-recycles (never enables inject/!bored)."""
-    monkeypatch.delenv("BOB_WORKER_STARTUP_WAIT_READY", raising=False)
+    monkeypatch.setenv("BOB_WORKER_STARTUP_WAIT_READY", "1")
     monkeypatch.setenv("BOB_WORKER_STARTUP_READY_CAP_S", "600")
     restarts = []
 

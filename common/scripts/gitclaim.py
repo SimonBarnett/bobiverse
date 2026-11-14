@@ -6672,6 +6672,8 @@ def summarize_empty_offer(home: Path, nick: str = "") -> dict:
         # FR #6211: CodeRabbit current-head hold (not opaque blocked_other).
         "coderabbit_hold": 0,
         "coderabbit_hold_row": "",
+        # FR #7182: per-job skip reasons for an idle seat (focus, ledger, pin, ...).
+        "skips": [],
     }
     try:
         path = queue_path(home)
@@ -6713,6 +6715,19 @@ def summarize_empty_offer(home: Path, nick: str = "") -> dict:
         stamp_giveup = 0
         coderabbit_hold = 0
         coderabbit_hold_row = ""
+        skip_log: list[dict] = []
+
+        def _job_key(row: dict) -> str:
+            task = str(row.get("task") or "FR").strip().upper() or "FR"
+            repo_s = str(row.get("repo") or "").strip()
+            ident = str(row.get("id") or "").strip()
+            if ident and not ident.startswith("#"):
+                ident = "#" + ident
+            return f"{task} {repo_s}{ident}".strip()
+
+        def _record_empty_skip(row: dict, reason: str) -> None:
+            skip_log.append({"key": _job_key(row), "reason": str(reason)})
+
         for r in rows:
             repo = str(r.get("repo") or "")
             if strict and focused:
@@ -6722,6 +6737,7 @@ def summarize_empty_offer(home: Path, nick: str = "") -> dict:
                 )
                 if not in_focus:
                     out_of_focus += 1
+                    _record_empty_skip(r, "focus")
                     continue
             row = dict(r)
             _stamp_require_machine(row)
@@ -6729,6 +6745,7 @@ def summarize_empty_offer(home: Path, nick: str = "") -> dict:
             if rm and rm.lower() not in ("*", "any", "none", "-", ""):
                 if not me or row_blocked_for_machine(row, me):
                     req_machine += 1
+                    _record_empty_skip(r, "pin")
                     continue
             to = str(row.get("offered_to") or "").strip()
             sticky_pin = False
@@ -6756,8 +6773,10 @@ def summarize_empty_offer(home: Path, nick: str = "") -> dict:
                     # MRB exact-author stays self_mrb.
                     if is_repo_uat(cand) or _canon_task(cand) == "UAT":
                         self_uat += 1
+                        _record_empty_skip(r, "self-uat")
                     else:
                         self_mrb += 1
+                        _record_empty_skip(r, "self-mrb")
                         kind = classify_mrb_author_stamp(cand, me)
                         if kind == "implementer":
                             stamp_implementer += 1
@@ -6768,15 +6787,19 @@ def summarize_empty_offer(home: Path, nick: str = "") -> dict:
                 if why:
                     if is_repo_uat(cand) and ledger_why_is_self_uat(why):
                         self_uat += 1
+                        _record_empty_skip(r, "self-uat")
                     else:
                         ledger_n += 1
+                        _record_empty_skip(r, "ledger")
                     continue
                 if row_gave_up_by(cand, me, live=live):
                     stamp_giveup += 1
                     ledger_n += 1
+                    _record_empty_skip(r, "giveup")
                     continue
                 if row_needs_human(cand, me):
                     ledger_n += 1
+                    _record_empty_skip(r, "needs-human")
                     continue
                 skips = {
                     (canonical_worker_nick(x) or str(x)).strip().lower()
@@ -6784,6 +6807,7 @@ def summarize_empty_offer(home: Path, nick: str = "") -> dict:
                     if str(x).strip()
                 }
                 if me.lower() in skips:
+                    _record_empty_skip(r, "cooldown")
                     continue
             else:
                 cand = row
@@ -6808,6 +6832,7 @@ def summarize_empty_offer(home: Path, nick: str = "") -> dict:
                                     coderabbit_hold_row = (
                                         f"{repo}#{rid}" if rid else repo
                                     )
+                                _record_empty_skip(r, "coderabbit")
                                 continue
                 except Exception as exc:  # noqa: BLE001
                     print(
@@ -6818,8 +6843,10 @@ def summarize_empty_offer(home: Path, nick: str = "") -> dict:
                 to_c = (canonical_worker_nick(to) or to).strip().lower()
                 me_l = me.lower()
                 if me and to_c and to_c != me_l:
+                    _record_empty_skip(r, "sticky")
                     continue  # pinned to someone else
             offerable += 1
+        out["skips"] = skip_log
         out["out_of_focus"] = out_of_focus
         out["require_machine"] = req_machine
         out["offerable"] = offerable
@@ -7077,10 +7104,62 @@ def sort_idle_seats_cheapest_first(
             rank = wsm._tier_rank(str(fields.get("cost_tier") or wsm.DEFAULT_JOB_TIER))
         except Exception:
             rank = 0
-        return (rank, nick.lower())
+        try:
+            told = float((ent or {}).get("told_at") or 0.0)
+        except (TypeError, ValueError):
+            told = 0.0
+        return (rank, told, nick.lower())
 
     rows.sort(key=_key)
     return rows
+
+
+def digest_idle_ready_seats(
+    home: Path, *, now: float | None = None, live: set[str] | None = None
+) -> list[dict]:
+    """Digest ``worker_list`` idle/ready seats with a shop channel (FR #7182).
+
+    Complements ``list_idle_after_empty``: a seat that posted ``worker ready`` / is
+    idle on the digest must be offerable even if Jeeves never said ``nothing queued``.
+    """
+    import time as _time
+
+    now_f = _time.time() if now is None else float(now)
+    live_set = set(live) if live is not None else live_seat_nicks(home, now=now_f)
+    live_l = {
+        (canonical_worker_nick(x) or x).strip().lower() for x in live_set if str(x).strip()
+    }
+    out: list[dict] = []
+    try:
+        doc = bobreport.load_digest(_root(home))
+    except Exception:
+        return out
+    for _mid, ent in (doc.get("machines") or {}).items():
+        if not isinstance(ent, dict):
+            continue
+        for row in bobreport._coerce_worker_list(ent.get("worker_list")):
+            nick = str(row.get("nick") or "").strip()
+            nick_c = (canonical_worker_nick(nick) or nick).strip()
+            if not nick_c or nick_c.lower() not in live_l:
+                continue
+            state = str(row.get("state") or "idle").strip().lower()
+            if state not in ("idle", "ready", ""):
+                continue
+            if worker_working_on(home, nick_c):
+                continue
+            chan = worker_shop_channel(nick_c) or ""
+            if not chan:
+                continue
+            out.append(
+                {
+                    "nick": nick_c,
+                    "channel": chan,
+                    "told_at": now_f,
+                    "last_push_at": 0.0,
+                    "via": "digest-idle",
+                }
+            )
+    return out
 
 
 def offer_to_idle_seats(
@@ -7098,11 +7177,22 @@ def offer_to_idle_seats(
 
     ``say(channel, text)`` delivers the assign line (IRC or chair-outbox). Returns offers sent.
     FR #2899: optional ``log(msg)`` records every successful offer (parity with bored offered).
+    FR #7182: also offer to digest-idle ready seats (not only nothing-queued).
     """
     import time as _time
 
     now_f = _time.time() if now is None else float(now)
     idle_rows = list_idle_after_empty(home, now=now_f, live=live)
+    seen = {
+        str(ent.get("nick") or "").strip().lower()
+        for ent in idle_rows
+        if str(ent.get("nick") or "").strip()
+    }
+    for extra in digest_idle_ready_seats(home, now=now_f, live=live):
+        nick_l = str(extra.get("nick") or "").strip().lower()
+        if nick_l and nick_l not in seen:
+            idle_rows.append(extra)
+            seen.add(nick_l)
     if not idle_rows:
         return 0
     try:
@@ -7404,6 +7494,16 @@ def format_empty_offer_detail(nick: str, stats: dict | None = None) -> str:
             extra.append(f"coderabbit_hold={coderabbit_hold}")
     if blocked_other:
         extra.append(f"blocked_other={blocked_other}")
+    skip_bits = []
+    for item in (stats.get("skips") or [])[:8]:
+        if not isinstance(item, dict):
+            continue
+        key = str(item.get("key") or "").strip()
+        reason = str(item.get("reason") or "").strip()
+        if key and reason:
+            skip_bits.append(f"{key}:{reason}")
+    if skip_bits:
+        extra.append("skips=" + ";".join(skip_bits))
     base = (
         f"{nick}: {offerable} offerable for you under focus "
         f"({unaccepted} unaccepted, {out_of_focus} out-of-focus, "
@@ -12168,6 +12268,7 @@ def assign_row(
     fetch_issue=None,
     fetch_pr=None,
     coderabbit_lookup=None,
+    names_refresh=None,
 ) -> tuple[str, dict | str]:
     """Chair-driven manual assign (t849u): stamp ``offered_to`` on one named unaccepted row.
 
@@ -12179,8 +12280,10 @@ def assign_row(
     CodeRabbit current-head hold. Intentional exception (FR #4336): ordinary ``!assign`` may
     still hand out ``needs_human`` FR/MRB rows that auto-offer blocks.
 
-    FR #3400: refuse assign to a nick not in the shop (not a live seat). If the named job is only
+    FR #3400 / #7186: refuse assign to a nick not in #{machine} membership (JOIN/NAMES/PART),
+    never because they have not sent ``!bored``. If the named job is only
     on ``accepted`` under a departed nick, release it (prior ACK void) then offer.
+    ``names_refresh(shop)`` (optional) is invoked once before a presence refuse.
 
     FR #4422 / #4652: when the named open FR/MRB/FIX is missing from the unaccepted queue, fetch it from
     GitHub and enqueue it, then offer (instead of refusing "not in the unaccepted queue").
@@ -12204,19 +12307,39 @@ def assign_row(
     num = str(ident or "").strip().lstrip("#")
     live = live_seat_nicks(home)
     live_l = {n.lower() for n in live}
-    # FR #3400: refuse assign to a nick absent from the machine's worker_list when that
-    # list is non-empty (reconcile/PART already dropped them). Empty list = unknown
-    # presence (tests / cold digest) — do not block.
+    # FR #3400 / #7186: refuse assign to a nick absent from shop membership
+    # (worker_list filled by JOIN/NAMES, not !bored). Empty list = unknown
+    # presence (tests / cold digest) — do not block. Refresh NAMES once first.
     seat_mid = bobreport.parse_seat_nick(me)
     if seat_mid:
-        try:
-            dig = bobreport.load_digest(_root(home))
-            ent = (dig.get("machines") or {}).get(seat_mid[0]) or {}
-            shop_rows = bobreport._coerce_worker_list(ent.get("worker_list"))
-        except Exception:
-            shop_rows = []
-        if shop_rows and me.lower() not in {str(r.get("nick") or "").lower() for r in shop_rows}:
-            return "refused", f"{me}: not in the shop channel (not a live seat)"
+        def _shop_presence():
+            try:
+                dig = bobreport.load_digest(_root(home))
+                ent = (dig.get("machines") or {}).get(seat_mid[0]) or {}
+                shop_rows = bobreport._coerce_worker_list(ent.get("worker_list"))
+                members_at = str(ent.get("shop_members_ts") or "")
+                if not members_at:
+                    for r in shop_rows:
+                        ts = str((r or {}).get("updated") or "")
+                        if ts:
+                            members_at = ts
+                            break
+            except Exception:
+                shop_rows, members_at = [], ""
+            nicks = {str(r.get("nick") or "").lower() for r in shop_rows}
+            return shop_rows, nicks, members_at
+
+        shop_rows, nicks, members_at = _shop_presence()
+        if shop_rows and me.lower() not in nicks and callable(names_refresh):
+            with contextlib.suppress(Exception):
+                names_refresh(shop)
+            shop_rows, nicks, members_at = _shop_presence()
+        if shop_rows and me.lower() not in nicks:
+            snap = members_at or "unknown"
+            return (
+                "refused",
+                f"{me}: not in the shop channel (not a live seat; members_at={snap})",
+            )
     # FR #6134: refuse hostile review/UAT to OpenCode seats (chair !assign path).
     try:
         _kind = seat_agent_kind(home, me)

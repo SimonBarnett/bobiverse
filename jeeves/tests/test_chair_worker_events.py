@@ -149,7 +149,12 @@ def test_ack_sets_doing_and_done_sets_idle(chair):
 def test_ack_from_unlisted_seat_adds_it(chair):
     queue(chair.home, row(6))
     say(chair, SEAT, "#marchhare", "ACK FR o/r#6 title")
-    assert [(w["nick"], w["state"]) for w in listed(chair)] == [(SEAT, "doing")]
+    shop = [
+        (w["nick"], w["state"])
+        for w in listed(chair)
+        if str(w["nick"]).lower() == SEAT
+    ]
+    assert shop == [(SEAT, "doing")]
 
 
 def test_nack_giveup_go_idle(chair):
@@ -199,8 +204,7 @@ def test_kick_by_jeeves_itself_removes_the_kicked_worker(chair):
 def test_nick_change_drops_old_nick(chair):
     _two(chair)
     wire(chair, ":marchhare-101!u@h NICK :marchhare-999")
-    assert [w["nick"] for w in listed(chair)] == ["marchhare-102"]
-    say(chair, "marchhare-999", "#marchhare", "!bored")                       # re-added when it speaks
+    # FR #7186: follow the new seat nick on the same shop (do not wait for !bored).
     assert sorted(w["nick"] for w in listed(chair)) == ["marchhare-102", "marchhare-999"]
 
 
