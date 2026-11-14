@@ -3240,6 +3240,7 @@ function Get-BobTrayWorkerAgentChoices {
     #>
     param([string]$InstallRoot = $RepoRoot, [switch]$Refresh)
     $fallbackReason = 'this bob-worker.exe has no --list-agents; rebuild to choose an agent'
+    $missingReason = 'bob-worker.exe not found'
     # FR #6301: start entries carry no fuel/quota prose (empty reason).
     $unknownReason = ''
     $fallback = @(
@@ -3248,6 +3249,12 @@ function Get-BobTrayWorkerAgentChoices {
         [ordered]@{ id = 'cursor'; label = 'Cursor'; available = $false; installed = $false; reason = $fallbackReason; fuel_state = 'known' }
         [ordered]@{ id = 'opencode'; label = 'OpenCode'; available = $false; installed = $false; reason = $fallbackReason; fuel_state = 'known' }
     )
+    $missing = @(
+        [ordered]@{ id = 'auto'; label = 'Automatic'; available = $true; installed = $true; reason = 'Grok, then Cursor, then OpenCode'; fuel_state = 'known' }
+        [ordered]@{ id = 'grok'; label = 'Grok'; available = $false; installed = $false; reason = $missingReason; fuel_state = 'known' }
+        [ordered]@{ id = 'cursor'; label = 'Cursor'; available = $false; installed = $false; reason = $missingReason; fuel_state = 'known' }
+        [ordered]@{ id = 'opencode'; label = 'OpenCode'; available = $false; installed = $false; reason = $missingReason; fuel_state = 'known' }
+    )
     $unknown = @(
         [ordered]@{ id = 'auto'; label = 'Automatic'; available = $true; installed = $true; reason = 'Grok, then Cursor, then OpenCode'; fuel_state = 'known' }
         [ordered]@{ id = 'grok'; label = 'Grok'; available = $true; installed = $true; reason = $unknownReason; fuel_state = 'unknown' }
@@ -3255,16 +3262,19 @@ function Get-BobTrayWorkerAgentChoices {
         [ordered]@{ id = 'opencode'; label = 'OpenCode'; available = $true; installed = $true; reason = $unknownReason; fuel_state = 'unknown' }
     )
     $exe = Join-Path $InstallRoot 'worker\bob-worker.exe'
-    if (-not (Test-Path -LiteralPath $exe)) { return $fallback }
+    if (-not (Test-Path -LiteralPath $exe)) {
+        if ($Refresh) { return $null }
+        return $missing
+    }
     $outFile = Join-Path $env:TEMP ('bob-list-agents-' + [guid]::NewGuid().ToString('n') + '.txt')
     $errFile = $outFile + '.err'
     $p = $null
     try {
         # File redirect, then WaitForExit. The call operator would block the runspace for the whole fuel read.
-        $argList = @('--list-agents', '--install-root', $InstallRoot)
+        $argList = @('--list-agents', '--install-root', ('"{0}"' -f $InstallRoot))
         if ($Refresh) { $argList += '--refresh-fuel' }
-        $waitMs = 8000
-        if ($Refresh) { $waitMs = 24000 }
+        $waitMs = 30000
+        if ($Refresh) { $waitMs = 60000 }
         $p = Start-Process -FilePath $exe -ArgumentList $argList -PassThru -WindowStyle Hidden -RedirectStandardOutput $outFile -RedirectStandardError $errFile
         if (-not $p.WaitForExit($waitMs)) {
             try { $p.Kill() } catch { }
@@ -3275,10 +3285,18 @@ function Get-BobTrayWorkerAgentChoices {
         }
         $raw = ''
         if (Test-Path -LiteralPath $outFile) { $raw = [string](Get-Content -LiteralPath $outFile -Raw -ErrorAction SilentlyContinue) }
+        $errText = ''
+        if (Test-Path -LiteralPath $errFile) { $errText = [string](Get-Content -LiteralPath $errFile -Raw -ErrorAction SilentlyContinue) }
+        $exitCode = 0
+        try { $exitCode = [int]$p.ExitCode } catch { $exitCode = 0 }
+        if ($exitCode -eq 2 -and ($errText -match 'unrecognized arguments') -and ($errText -match '--list-agents')) {
+            if ($Refresh) { return $null }
+            return $fallback
+        }
         $line = ($raw -split "`r?`n" | Where-Object { $_.Trim().StartsWith('{') } | Select-Object -Last 1)
-        if (-not $line) { if ($Refresh) { return $null }; return $fallback }
+        if (-not $line) { if ($Refresh) { return $null }; return $unknown }
         $obj = $line | ConvertFrom-Json
-        if (-not $obj.agents) { if ($Refresh) { return $null }; return $fallback }
+        if (-not $obj.agents) { if ($Refresh) { return $null }; return $unknown }
         if (-not $Refresh -and $obj.refresh) {
             # MRB #6231: a killed refresh returns $null. A synthetic all-unknown
             # list would mark missing and exhausted agents clickable. Keep the
@@ -3304,7 +3322,7 @@ function Get-BobTrayWorkerAgentChoices {
         # Malformed JSON or a Start-Process throw on refresh must not replace
         # the first list with the disabled rebuild rows. Timeout already returns $null.
         if ($Refresh) { return $null }
-        return $fallback
+        return $unknown
     }
     finally {
         if ($p) { try { $p.Dispose() } catch { } }
