@@ -556,7 +556,16 @@ def read_fuel(install_root: Path, run: Callable = subprocess.run, timeout: float
     if provider:
         cmd.extend(["-Provider", provider])
     try:
-        r = run(cmd, capture_output=True, text=True, timeout=timeout, creationflags=CREATE_NO_WINDOW if os.name == "nt" else 0)
+        from winps51 import env_for_powershell_exe
+
+        r = run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            creationflags=CREATE_NO_WINDOW if os.name == "nt" else 0,
+            env=env_for_powershell_exe(),
+        )
         return parse_fuel(r.stdout or "")
     except Exception:
         return Fuel()
@@ -1994,7 +2003,13 @@ def prepare_seat_child_env(base_env: dict | None, extra: dict | None = None) -> 
     env = dict(base_env or {})
     if extra:
         env.update(extra)
-    return scrub_agent_host_env(normalize_bob_path_envs(env))
+    out = scrub_agent_host_env(normalize_bob_path_envs(env))
+    try:
+        from winps51 import apply_winps51_module_path
+        apply_winps51_module_path(out)
+    except Exception:
+        out["PSModulePath"] = r"C:\Windows\System32\WindowsPowerShell\v1.0\Modules"
+    return out
 
 
 _WORKER_EXE_MODES = ("agent", "plan", "monitor", "maintenance")
