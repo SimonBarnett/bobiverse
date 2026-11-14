@@ -443,7 +443,7 @@ function Format-BobTrayXaiWeeklyRow {
     if ($null -eq $XaiWeekly) {
         $why = if ($NoReadingReason) { [string]$NoReadingReason } else { 'digest xai_weekly null' }
         return [pscustomobject]@{
-            heading       = ('{0}  no reading  ({1})' -f $id, $why)
+            heading       = ('{0}  unknown  ({1})' -f $id, $why)
             remaining_pct = $null
             fuel_stale    = $false
             bar_pct       = $null
@@ -455,6 +455,15 @@ function Format-BobTrayXaiWeeklyRow {
         }
     }
     $pct = ConvertTo-BobTrayIntOrNull $XaiWeekly.remaining_pct
+    $wk = $null
+    try {
+        if ($null -ne $XaiWeekly.PSObject.Properties['weekly_known']) { $wk = $XaiWeekly.weekly_known }
+    } catch { $wk = $null }
+    $errEarly = ''
+    try { if ($XaiWeekly.error) { $errEarly = [string]$XaiWeekly.error } } catch { }
+    if (-not (Test-BobTrayPoolHasRealRemaining -Remaining $pct -Error $errEarly -WeeklyKnown $wk)) {
+        $pct = $null
+    }
     $fresh = $true
     try {
         if ($null -ne $XaiWeekly.PSObject.Properties['fresh']) {
@@ -497,8 +506,9 @@ function Format-BobTrayXaiWeeklyRow {
     if ($null -ne $pct) {
         $parts += ('{0}% left' -f [int]$pct)
     } else {
-        $parts += 'no reading'
+        $parts += 'unknown'
         if ($errDisplay) { $parts += ('({0})' -f $errDisplay) }
+        elseif ($NoReadingReason) { $parts += ('({0})' -f [string]$NoReadingReason) }
     }
     if ($acct) { $parts += [string]$acct }
     if (-not $fresh) {
@@ -1821,8 +1831,17 @@ function Format-BobCopilotPoolLine {
     } else {
         try { if ($null -ne $Pool.remaining -and [string]$Pool.remaining -ne '') { $left = [int]$Pool.remaining } } catch { }
     }
+    $copilotErr = ''
+    try { if ($Pool.last_error) { $copilotErr = [string]$Pool.last_error } } catch { }
+    if ($state -ne 'exhausted' -and -not (Test-BobTrayPoolHasRealRemaining -Remaining $left -Error $copilotErr -State $state)) {
+        $left = $null
+    }
     if ($null -eq $left) {
         $unk = 'Copilot - unknown'
+        if ($copilotErr) { $unk = ('Copilot - unknown ({0})' -f $copilotErr) }
+        elseif ($state -and $state -notin @('ok', 'exhausted', '')) {
+            $unk = ('Copilot - unknown ({0})' -f $state)
+        }
         $updatedUnk = Format-BobPoolUpdatedLabel -FetchedAt $(try { [string]$Pool.fetched_at } catch { $null }) -Now $Now
         if ($updatedUnk) { $unk = ('{0} - {1}' -f $unk, $updatedUnk) }
         $bits = @($unk)
@@ -1860,6 +1879,11 @@ function Get-BobCopilotMeterBarPct {
     $state = ''
     try { $state = [string]$Pool.state } catch { }
     if ($state -eq 'exhausted') { return 0 }
+    $err = ''
+    try { if ($Pool.last_error) { $err = [string]$Pool.last_error } } catch { }
+    if (-not (Test-BobTrayPoolHasRealRemaining -Remaining $Pool.remaining -Error $err -State $state)) {
+        return $null
+    }
     if ($null -eq $Pool.remaining -or [string]$Pool.remaining -eq '') { return $null }
     try { return [int]$Pool.remaining } catch { return $null }
 }
@@ -2194,6 +2218,34 @@ function ConvertTo-BobTrayIntOrNull {
     if ($null -eq $Value) { return $null }
     if (($Value -is [string]) -and [string]::IsNullOrWhiteSpace([string]$Value)) { return $null }
     try { return [int]$Value } catch { return $null }
+}
+
+function Test-BobTrayPoolHasRealRemaining {
+    <#
+    .SYNOPSIS
+      FR #7242: 0% is a real reading only when the provider reported remaining.
+      Skip-class errors (system-profile-skipped, no_token, ...) are unknown even if remaining_pct is 0.
+    #>
+    param(
+        $Remaining = $null,
+        $Error = '',
+        $WeeklyKnown = $null,
+        $State = ''
+    )
+    $st = ([string]$State).Trim().ToLowerInvariant()
+    if ($st -in @('no_token', 'no-token')) { return $false }
+    if ($null -ne $WeeklyKnown -and [string]$WeeklyKnown -ne '') {
+        try {
+            if ([bool]$WeeklyKnown -eq $false -or [string]$WeeklyKnown -eq 'false') { return $false }
+        } catch { }
+    }
+    $err = ([string]$Error).Trim().ToLowerInvariant()
+    $skip = @(
+        'system-profile-skipped', 'auth-unresolved', 'auth-file-missing',
+        'no_token', 'no-token', 'missing_key', 'not installed', 'not-installed'
+    )
+    if ($err -and ($skip -contains $err)) { return $false }
+    return ($null -ne (ConvertTo-BobTrayIntOrNull $Remaining))
 }
 
 function Get-BobCursorSpendingGroupCatalog {
