@@ -5,7 +5,8 @@
 S7 is measured with **`grok inspect --json`** (or a running agent prompt), not by
 concatenating `worker_prompt` with a fixed sentence.
 
-**Lever that works:** seat-local `GROK_HOME` (copy `auth.json` only; empty
+**Lever that works:** seat-local `GROK_HOME` (no credential copy; `GROK_AUTH_PATH`
+is the one machine `auth.json` — FR #7183; empty
 `skills.paths`; restore `bundled_skill_dirs`) **plus** a **bound agent cwd** under
 the seat `run_dir` (outside the trusted install tree) that contains only
 `skill-dag-core` under `.grok/skills`. MCP config on that cwd uses absolute

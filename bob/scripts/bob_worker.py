@@ -105,6 +105,13 @@ def worker_hello_line(kind: str, *, model: str | None = None, build: str | None 
     b = short_build_sha(build) if build is not None else short_build_sha()
     return f"worker ready kind={k} model={m} build={b}"
 
+
+def worker_needs_signin_line(kind: str, *, build: str | None = None) -> str:
+    """FR #7183: shop line when Grok has no valid machine sign-in (never 'ready')."""
+    k = (kind or "").strip().lower() or "grok"
+    b = short_build_sha(build) if build is not None else short_build_sha()
+    return f"worker needs sign-in kind={k} build={b}"
+
 EXIT_USAGE = 64
 EXIT_IRC_FAIL = 2  # could not connect / register: no agent was started
 EXIT_IRC_LOST = 3  # IRC lost for good (grace 0 immediate, or reconnect grace exhausted): agent tree killed
@@ -1760,10 +1767,12 @@ def describe_agent_child_launch(
                 rd, folder, mcp_script=mcp_script, mcp_roots=skill_dag_vision_roots(folder)
             )
             grok_home = _sdb.prepare_seat_grok_home(rd, trust_paths=[bound])
+            grok_auth = _sdb.machine_grok_auth_path()
             launch_folder = str(bound)
             bound_meta = {
                 "bound_cwd": str(bound),
                 "grok_home": str(grok_home),
+                "grok_auth_path": str(grok_auth),
                 "install_worker": install_worker,
             }
         except Exception:
@@ -1799,11 +1808,17 @@ def describe_agent_child_launch(
         try:
             import skill_dag_bound as _sdb
 
-            env = _sdb.apply_bound_env(env, grok_home=bound_meta["grok_home"])
+            env = _sdb.apply_bound_env(
+                env,
+                grok_home=bound_meta["grok_home"],
+                grok_auth_path=bound_meta.get("grok_auth_path"),
+            )
         except Exception:
             env["GROK_HOME"] = str(bound_meta["grok_home"])
             env["BOB_SKILL_DAG_BOUND"] = "skill-dag-core"
             env.pop("GROK_CONFIG", None)
+            if bound_meta.get("grok_auth_path"):
+                env["GROK_AUTH_PATH"] = str(bound_meta["grok_auth_path"])
     # Bound cwd already has MCP config with absolute install roots; skip rewrite from launch_folder.
     if bound_meta.get("bound_cwd") and getattr(spec, "write_skill_dag_mcp", False):
         spec.write_skill_dag_mcp = False
@@ -7044,6 +7059,7 @@ def post_digest_seat_kind(
     cost_tier: str = "",
     working_on: str = "",
     worker_build: str | None = None,
+    state: str | None = None,
     url: str | None = None,
     env: Optional[dict] = None,
     log: Optional[Callable[[str], None]] = None,
@@ -7069,7 +7085,7 @@ def post_digest_seat_kind(
         "id": mid,
         "pid": pid_i,
         "kind": kind_s or "grok",
-        "state": "idle",
+        "state": (str(state).strip() if state else "") or "idle",
         "nick": (nick or "").strip() or seat_nick(mid, pid_i),
         "working_on": (working_on or "").strip(),
         "agent": agent_s,
@@ -8172,6 +8188,7 @@ class BoredEmitter:
         self._opencode_finish_attempt: int = 0
         # FR #3012 / #3019: out-of-fuel hold (suppress !bored; GIVEUP via out_of_fuel_release_fn).
         self._out_of_fuel = False
+        self._needs_signin = False
         self._out_of_fuel_at: Optional[float] = None
         # FR #4858: hard 402 hold — optimistic pct=3 available must not clear within min hold.
         self._out_of_fuel_hard_402 = False
@@ -8539,6 +8556,12 @@ class BoredEmitter:
             if not ready:
                 self._inject_pending = False
                 self._inject_at = None
+            self._cv.notify_all()
+
+    def note_needs_signin(self) -> None:
+        """FR #7183: no machine Grok sign-in — never !bored, never claim ready."""
+        with self._cv:
+            self._needs_signin = True
             self._cv.notify_all()
 
     def activity(self, mark_work: bool = True) -> None:
@@ -8918,6 +8941,9 @@ class BoredEmitter:
     # ---- decision
     def _busy(self, now: float) -> bool:
         if not self._ready:
+            return True
+        # FR #7183: unsigned Grok seat must not look idle/ready to Jeeves.
+        if self._needs_signin:
             return True
         # FR #3012: out-of-fuel holds the seat quiet (no !bored) until clear_out_of_fuel.
         if self._out_of_fuel:
@@ -12076,6 +12102,14 @@ def run_agent(args, log: Log) -> int:
                 )
             except Exception as e:
                 log(f"worker: start model unavailable report failed {type(e).__name__}")
+        grok_ok = True
+        if kind == "grok":
+            try:
+                import skill_dag_bound as _sdb
+
+                grok_ok = bool(_sdb.grok_session_usable())
+            except Exception:
+                grok_ok = False
         post_digest_seat_kind(
             machine=machine,
             pid=pid,
@@ -12086,13 +12120,27 @@ def run_agent(args, log: Log) -> int:
             model_mismatch=mismatch,
             cost_tier=cost_tier,
             worker_build=build,
+            state=None if grok_ok else "needs_sign_in",
             log=log,
         )
     except Exception as e:
         log(f"worker: post-launch start_model digest failed {type(e).__name__}")
     # FR #6409 / MRB #6411: announce ready only after agent process starts (CodeRabbit).
     try:
-        hello = worker_hello_line(kind, model=seat_model, build=build)
+        grok_ok = True
+        if kind == "grok":
+            try:
+                import skill_dag_bound as _sdb
+
+                grok_ok = bool(_sdb.grok_session_usable())
+            except Exception:
+                grok_ok = False
+        if grok_ok:
+            hello = worker_hello_line(kind, model=seat_model, build=build)
+        else:
+            hello = worker_needs_signin_line(kind, build=build)
+            if getattr(sup, "bored", None) is not None:
+                sup.bored.note_needs_signin()
         if irc.say(irc.shop, hello):
             log(f"worker: hello {hello}")
         else:
