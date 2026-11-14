@@ -24,6 +24,13 @@ namespace BobDialogs
         public List<string> Lines = new List<string>();
     }
 
+    internal class DigestPoolPaint
+    {
+        public string Id = "", Family = "", Label = "", Heading = "";
+        public bool Known;
+        public int Pct;
+    }
+
     internal class StatusModel
     {
         public string Title = "bob", Alert = "none", Version = "", Overspend = "", Note = "";
@@ -38,6 +45,8 @@ namespace BobDialogs
         public List<string> OpencodeWindowLines = new List<string>();
         public List<OpencodeBarRow> OpencodeBars = new List<OpencodeBarRow>();
         public List<StatusRow> Cursor = new List<StatusRow>(), Grok = new List<StatusRow>();
+        // FR #7243: digest-driven extra pools (Grok chat, OpenCode free, Cursor, …).
+        public List<DigestPoolPaint> DigestPools = new List<DigestPoolPaint>();
 
         static StatusRow ParseRow(Dictionary<string, object> d)
         {
@@ -85,6 +94,25 @@ namespace BobDialogs
             if (c != null) foreach (object o in c) { Dictionary<string, object> rd = Common.Dict(o); if (rd != null && Common.Str(rd, "heading").Length > 0) m.Cursor.Add(ParseRow(rd)); }
             IList g = Common.List(d.ContainsKey("grok") ? d["grok"] : null);
             if (g != null) foreach (object o in g) { Dictionary<string, object> rd = Common.Dict(o); if (rd != null && Common.Str(rd, "heading").Length > 0) m.Grok.Add(ParseRow(rd)); }
+            IList dp = Common.List(d.ContainsKey("digest_pools") ? d["digest_pools"] : null);
+            if (dp != null)
+            {
+                foreach (object o in dp)
+                {
+                    Dictionary<string, object> rd = Common.Dict(o);
+                    if (rd == null) continue;
+                    DigestPoolPaint p = new DigestPoolPaint();
+                    p.Id = Common.Str(rd, "id");
+                    p.Family = Common.Str(rd, "family");
+                    p.Label = Common.Str(rd, "label");
+                    p.Heading = Common.Str(rd, "heading");
+                    p.Known = Common.Bool(rd, "known");
+                    p.Pct = Math.Max(0, Math.Min(100, Common.Int(rd, "remaining_pct", 0)));
+                    if (p.Label.Length == 0) p.Label = p.Id;
+                    if (p.Heading.Length == 0) p.Heading = p.Label;
+                    m.DigestPools.Add(p);
+                }
+            }
             return m;
         }
     }
@@ -240,6 +268,22 @@ namespace BobDialogs
             string paintCopilot = SelectCopilotLine(m, DateTime.UtcNow);
             if (paintCopilot.StartsWith("Copilot  ", StringComparison.Ordinal))
                 paintCopilot = "Copilot - " + paintCopilot.Substring("Copilot  ".Length).Trim();
+            // FR #7243: digest pools that are not the xAI weekly / OpenCode Go / Copilot sections.
+            foreach (DigestPoolPaint p in m.DigestPools)
+            {
+                if (p == null) continue;
+                string pid = (p.Id ?? "").Trim().ToLowerInvariant();
+                if (pid == "grok-build" || pid == "opencode-go" || pid == "copilot") continue;
+                string fam = string.IsNullOrEmpty(p.Family) ? "xai" : p.Family;
+                string ttl = string.IsNullOrEmpty(p.Label) ? pid : p.Label;
+                y = Section(g, y, ttl, "", fam);
+                StatusRow extra = new StatusRow();
+                extra.Heading = p.Heading ?? ttl;
+                extra.Bar.Known = p.Known;
+                extra.Bar.Pct = p.Known ? Math.Max(0, Math.Min(100, p.Pct)) : 0;
+                extra.Bar.R = 88; extra.Bar.G = 166; extra.Bar.B = 255;
+                y = UsageRow(g, 32, y, extra, 354);
+            }
             y = Section(g, y, "Copilot", "", "copilot");
             StatusRow copilotRow = new StatusRow();
             copilotRow.Heading = paintCopilot;
@@ -391,6 +435,11 @@ namespace BobDialogs
                 sb.AppendLine(m.OpencodeLine);
                 foreach (OpencodeBarRow b in OpencodePaint.Rows(m.OpencodeLine, m.OpencodeWindowLines, m.OpencodeBars))
                     sb.AppendLine((b.Known ? "OB " : "OU ") + b.Heading + " pct=" + b.Pct.ToString());
+                foreach (DigestPoolPaint p in m.DigestPools)
+                {
+                    if (p == null || string.IsNullOrEmpty(p.Heading)) continue;
+                    sb.AppendLine("P " + p.Heading);
+                }
                 sb.AppendLine(m.CopilotLine);
                 if (outFile.Length > 0) File.WriteAllText(outFile, sb.ToString(), new UTF8Encoding(false)); else Console.Write(sb.ToString());
                 return 0;

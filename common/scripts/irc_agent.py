@@ -1623,6 +1623,8 @@ class Client:
             self._workers().reconcile(chan, present)
         except Exception as exc:  # never kill the reader over the worker list
             info(f"WARN workers reconcile error {type(exc).__name__}")
+        with contextlib.suppress(Exception):
+            self._resume_assign_after_names(chan)
 
     def _clear_channel_console_presence(self, channel: str) -> None:
         """FR #5961: drop airc_console_presence rows when the chair leaves a channel.
@@ -1689,6 +1691,8 @@ class Client:
             raise
         except Exception as exc:  # noqa: BLE001 - never kill the outbox loop over the reconcile
             info(f"WARN chan-privs tick error {type(exc).__name__}: {exc}"[:200])
+        with contextlib.suppress(Exception):
+            self._expire_pending_names_assign()
 
     def _ensure_chan_ops(self) -> None:
         """Chair must hold +o in #bobiverse and every machine channel (SAMODE as oper; else ChanServ OP)."""
@@ -4253,8 +4257,35 @@ class Client:
             return True
         wnick, repo, task, ident = parsed
         self._refresh_ledger()
-        # FR #3188: shared TTL caches (same as !bored) — never a fresh per-call dict.
-        status, res = gitclaim.assign_row(
+        status, res = self._assign_row_named(
+            wnick, repo, task, ident, names_refresh=self._names_refresh_for_assign
+        )
+        if status == "waiting":
+            shop_ch = str(res or "")
+            wait_s = float(os.environ.get("BOB_ASSIGN_NAMES_WAIT_S") or 2.0)
+            pend = getattr(self, "_pending_names_assign", None)
+            if not isinstance(pend, dict):
+                pend = {}
+                self._pending_names_assign = pend
+            pend[shop_ch.lower()] = {
+                "src": src,
+                "wnick": wnick,
+                "repo": repo,
+                "task": task,
+                "ident": ident,
+                "deadline": time.time() + max(0.2, min(8.0, wait_s)),
+            }
+            return True
+        self._finish_assign_result(src, wnick, repo, task, ident, status, res)
+        return True
+
+    def _names_refresh_for_assign(self, shop_ch: str):
+        """FR #7224: send NAMES; return wait so assign_row does not refuse on this stack."""
+        self.send(f"NAMES {shop_ch}")
+        return "wait"
+
+    def _assign_row_named(self, wnick, repo, task, ident, *, names_refresh=None):
+        return gitclaim.assign_row(
             self.home,
             wnick,
             repo,
@@ -4269,8 +4300,10 @@ class Client:
             issue_open=gitclaim.github_issue_open_checker(
                 home=self.home, cache=gitclaim.ISSUE_OPEN_SHARED_CACHE
             ),
-            names_refresh=lambda shop_ch: self.send(f"NAMES {shop_ch}"),
+            names_refresh=names_refresh,
         )
+
+    def _finish_assign_result(self, src, wnick, repo, task, ident, status, res) -> None:
         if status != "ok" or not isinstance(res, dict):
             self._cmd_reply(src, "assign", [f"assign: refused - {res}"])
             info(
@@ -4283,18 +4316,51 @@ class Client:
                     reason=res,
                 )
             )
-            return True
+            return
         shop = bobreport.normalize_channel(str(res.get("offered_channel") or ""))
         line = gitclaim.format_assign_line(res.get("offered_to") or wnick, res)
         self._git_say(shop, line)
         gitclaim.note_worker_activity(self.home, str(res.get("offered_to") or wnick), time.time())
-        try:  # show the assignment in the digest at once, like !bored (ACK keeps it; DONE/NACK/GIVEUP clear it)
+        try:
             self._workers().on_ack(str(res.get("offered_to") or wnick), shop, shop_listen.activity_description(res))
         except Exception as exc:  # noqa: BLE001
             info(f"WARN workers assign error {type(exc).__name__}")
         self._cmd_reply(src, "assign", [f"assign: sent {line}"])
-        info(f"INFO git-assign sent {line} by={src} kind={who.kind}")
-        return True
+        info(f"INFO git-assign sent {line} by={src}")
+
+    def _resume_assign_after_names(self, chan: str) -> None:
+        """FR #7224: after 366 reconcile, finish a parked !assign for that shop."""
+        pend = getattr(self, "_pending_names_assign", None)
+        if not isinstance(pend, dict):
+            return
+        job = pend.pop(str(chan or "").lower(), None)
+        if not job:
+            return
+        status, res = self._assign_row_named(
+            job["wnick"], job["repo"], job["task"], job["ident"], names_refresh=None
+        )
+        self._finish_assign_result(
+            job["src"], job["wnick"], job["repo"], job["task"], job["ident"], status, res
+        )
+
+    def _expire_pending_names_assign(self) -> None:
+        pend = getattr(self, "_pending_names_assign", None)
+        if not isinstance(pend, dict):
+            return
+        now = time.time()
+        for shop, job in list(pend.items()):
+            if now < float(job.get("deadline") or 0.0):
+                continue
+            pend.pop(shop, None)
+            self._finish_assign_result(
+                job["src"],
+                job["wnick"],
+                job["repo"],
+                job["task"],
+                job["ident"],
+                "refused",
+                "NAMES timeout (seat still not in shop)",
+            )
 
     def _maybe_cleargiveup(self, src: str, target: str, body: str, *, to_channel: bool) -> bool:
         """Chair only (FR #5135): ``!cleargiveup owner/repo#N [seat]`` ops PM/channel, reply PM."""

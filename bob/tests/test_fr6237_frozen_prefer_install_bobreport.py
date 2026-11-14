@@ -179,14 +179,17 @@ def test_fr6237_assert_digest_pull_ok_helper_fails_without_ok(tmp_path):
     assert r["ok"] is False
 
 
-def test_fr6237_start_bob_prefers_python_when_bobreport_newer_than_ear():
-    """Hotpatch bridge: Start-Bob must skip bob-ear.exe when bobreport.py is newer."""
+def test_fr6237_start_bob_does_not_skip_exe_on_bobreport_mtime():
+    """FR #7233: Start-Bob must not skip bob-ear.exe because bobreport.py is newer.
+
+    Hotpatched bobreport still applies inside a rebuilt/frozen ear via
+    prefer_install_scripts_path (the rest of this module).
+    """
     t = START.read_text(encoding="utf-8-sig")
-    assert "FR #6237" in t
-    assert "bobreport.py newer than bob-ear.exe" in t
-    assert "using python irc_agent.py" in t
-    i_bridge = t.find("bobreport.py newer than bob-ear.exe")
+    assert "bobreport.py newer than bob-ear.exe" not in t
+    assert "Select-BobEarLaunch" in t
+    i_env = t.lower().find("bob_install_root")
     i_launch = t.find("& $earExe")
     if i_launch < 0:
         i_launch = t.find("via=bob-ear.exe")
-    assert i_bridge > 0 and i_launch > i_bridge
+    assert i_env > 0 and i_launch > 0 and i_env < i_launch

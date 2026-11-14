@@ -16,11 +16,13 @@ def _turn_ended_error_line(msg: str = "Connection stalled repeatedly") -> str:
 
 
 def test_cursor_turn_ended_status_error_arms_done_miss(tmp_path: Path):
-    """Fail-when 1: ACK open + transcript turn_ended status=error → done-miss armed."""
+    """FR #7201: ACK open + transcript turn_ended status=error → one retry (not idle done-miss)."""
     clock = FakeClock(time.time())
     e, sent, logs = _emitter(clock, harvest_hold_s=90.0, done_miss_grace_s=5.0, ack_stale_s=2700.0)
     reminds: list[str] = []
+    retries: list[str] = []
     e.done_miss_remind_fn = lambda key: reminds.append(key)
+    e.failed_turn_retry_fn = lambda key: retries.append(key)
     e.on_outbox("ACK MRB SimonBarnett/bobiverse#4746")
 
     t0 = clock()
@@ -35,7 +37,7 @@ def test_cursor_turn_ended_status_error_arms_done_miss(tmp_path: Path):
         quiet_s=20.0,
         clock=clock,
         on_turn_started=lambda n, t: e.turn_started(at=t, turn=n),
-        on_turn_ended=lambda n, t: e.turn_ended(at=t, turn=n),
+        on_turn_ended=lambda n, t, **kw: e.turn_ended(at=t, turn=n, **kw),
     )
     assert w.tick() == "started"
 
@@ -48,12 +50,16 @@ def test_cursor_turn_ended_status_error_arms_done_miss(tmp_path: Path):
     os.utime(path, (clock(), clock()))
     _touch(d, clock())
     assert w.tick() == "ended", "error turn_ended must end the cursor turn"
-    assert any("done-miss armed" in m for m in logs), logs
+    assert retries == ["MRB SimonBarnett/bobiverse#4746"], retries
     assert e.ack_open is True
-    clock.advance(6.0)
-    assert _wait(lambda: len(reminds) == 1, clock), reminds
-    e.turn_ended(at=clock())  # second end after reminder → release
-    assert _wait(lambda: any(r == "done-miss" for _, r in e.sent), clock), e.sent
+    assert not any("done-miss armed" in m for m in logs), logs
+    e.turn_ended(
+        at=clock(),
+        error=True,
+        error_class="turn_ended",
+        error_line="Connection stalled repeatedly",
+    )
+    assert e.ack_open is False
     e.stop()
 
 

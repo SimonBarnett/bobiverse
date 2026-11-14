@@ -14,6 +14,9 @@ on:
       - bob/scripts/bob_tray_version.py
       - bob/tests/test_fr6285_tray_build_ci.py
       - bob/tests/test_fr6924_tray_version_label.py
+      - bob/scripts/Stage-BobTrayHotpatchArtifact.ps1
+      - bob/scripts/Install-BobTrayHotpatch.ps1
+      - bob/tests/test_fr7248_tray_ci_ships_display_scripts.py
   push:
     branches: [main]
     paths:
@@ -24,6 +27,9 @@ on:
       - bob/scripts/bob_tray_version.py
       - bob/tests/test_fr6285_tray_build_ci.py
       - bob/tests/test_fr6924_tray_version_label.py
+      - bob/scripts/Stage-BobTrayHotpatchArtifact.ps1
+      - bob/scripts/Install-BobTrayHotpatch.ps1
+      - bob/tests/test_fr7248_tray_ci_ships_display_scripts.py
 
 permissions:
   contents: read
@@ -77,31 +83,28 @@ jobs:
             throw "bob-tray.exe still embeds stale heading 'Cursor / xAI weekly' (FR #6285)"
           }
           $stage = Join-Path $env:RUNNER_TEMP "bob-tray-artifact"
-          New-Item -ItemType Directory -Force -Path $stage | Out-Null
-          $prov = New-Object System.Collections.Generic.List[string]
-          $prov.Add("source_commit=$($env:WORKFLOW_COMMIT)")
-          $prov.Add("workflow_commit=$($env:WORKFLOW_COMMIT)")
-          $prov.Add("builder=Build-BobDialogs.ps1")
-          $prov.Add("fr=6285")
-          $exeHashes = @{}
+          # FR #7248: exes + tray display scripts (src/tools/assets) with per-file SHA-256 in MANIFEST.
+          & "$root\bob\scripts\Stage-BobTrayHotpatchArtifact.ps1" -RepoRoot $root -StageDir $stage -ExeDir $out -Commit $env:WORKFLOW_COMMIT
+          if ($LASTEXITCODE -ne 0) { throw "Stage-BobTrayHotpatchArtifact exit $LASTEXITCODE" }
+          $hover = Join-Path $stage "src\Public\Get-BobTrayHover.ps1"
+          if (-not (Test-Path -LiteralPath $hover)) { throw "artifact missing Get-BobTrayHover.ps1" }
+          $watch = Join-Path $stage "tools\Watch-BobTray.ps1"
+          if (-not (Test-Path -LiteralPath $watch)) { throw "artifact missing Watch-BobTray.ps1" }
+          $provPath = Join-Path $stage "provenance.txt"
+          if (-not (Test-Path -LiteralPath $provPath)) { throw "missing provenance.txt" }
           foreach ($name in @("bob-tray.exe", "bob-status.exe", "bob-about.exe")) {
-            $exe = Join-Path $out $name
-            Copy-Item -LiteralPath $exe -Destination (Join-Path $stage $name)
+            $exe = Join-Path $stage $name
+            if (-not (Test-Path -LiteralPath $exe)) { throw "missing $name in artifact" }
             $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $exe).Hash.ToLowerInvariant()
             Set-Content -Encoding ascii (Join-Path $stage "$name.sha256") "$hash  $name"
-            $prov.Add(("exe_sha256_{0}={1}" -f ($name -replace '\.exe$',''), $hash))
-            $exeHashes[$name] = $hash
           }
-          $prov | Set-Content -Encoding ascii (Join-Path $stage "provenance.txt")
-          # FR #6924: MANIFEST.json so Slab hotpatch updates tray label short SHA without a new MSI.
-          $writer = Join-Path $root "bob\scripts\Write-BobTrayDeployedIdentity.ps1"
-          & $writer -InstallRoot $stage -Commit $env:WORKFLOW_COMMIT -Builder "build-bob-tray.yml" -Fr "6924"
-          if ($LASTEXITCODE -ne 0) { throw "Write-BobTrayDeployedIdentity exit $LASTEXITCODE" }
           $manPath = Join-Path $stage "MANIFEST.json"
           if (-not (Test-Path -LiteralPath $manPath)) { throw "missing MANIFEST.json" }
           $man = Get-Content -LiteralPath $manPath -Raw | ConvertFrom-Json
-          $man | Add-Member -NotePropertyName exe_sha256 -NotePropertyValue $exeHashes -Force
-          $man | ConvertTo-Json -Compress | Set-Content -Encoding utf8 -LiteralPath $manPath
+          $files = $man.files
+          if (-not $files) { throw "MANIFEST.json missing files hashes (FR #7248)" }
+          $hoverKey = "src/Public/Get-BobTrayHover.ps1"
+          if (-not $files.$hoverKey) { throw "MANIFEST.json missing $hoverKey" }
 
       - uses: actions/upload-artifact@v4
         with:
