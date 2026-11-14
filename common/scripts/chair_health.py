@@ -35,9 +35,14 @@ RESYNC_S = 3600.0
 MERGE_ON_GREEN_S = 60.0
 FIRST_MERGE_ON_GREEN_DELAY_S = 15.0
 # FR #5170: Copilot virtual-seat poll + webhook ensure (not a resync).
-# FR #7255: fleet OpenCode + Copilot fetch once per minute (dispatch still in this tick).
+# FR #7255 / #7377: fleet OpenCode Go + Copilot on a dedicated fixed-rate 60s timer
+# (independent of chair busy / resync / merge-on-green / dispatch).
 COPILOT_TICK_S = 60.0
 FIRST_COPILOT_DELAY_S = 20.0
+FLEET_POOL_TICK_S = 60.0
+FIRST_FLEET_POOL_DELAY_S = 15.0
+# Per-fetch wall timeout well under the 60s slot (hung provider must not block next).
+FLEET_POOL_FETCH_TIMEOUT_S = 45.0
 WEBHOOK_ENSURE_S = 3600.0
 FIRST_WEBHOOK_ENSURE_DELAY_S = 8.0
 STALL_S = 180.0
@@ -588,6 +593,9 @@ class ChairJobs:
         self.next_ticket_closure = t0 + FIRST_TICKET_CLOSURE_DELAY_S
         self.resync_fail_streak = 0
         self.busy = threading.Lock()
+        # FR #7377: fleet pool cadence never waits on self.busy.
+        self.next_fleet_pool = t0 + FIRST_FLEET_POOL_DELAY_S
+        self._fleet_pool_busy = threading.Lock()
         self.token_source = ""            # set at first resync
         self._token_logged = False
         self.last_resync: dict = {}
@@ -678,6 +686,8 @@ class ChairJobs:
             )
 
     def tick(self) -> bool:
+        # FR #7377: fleet pools first — fixed-rate, never gated by chair busy.
+        self._maybe_tick_fleet_pools()
         now = self.clock()
         # FR #3212: gap in webhook delivery pulls reconcile forward (still one-at-a-time via busy lock).
         if now < self.next_resync and gab.webhook_gap_due(
@@ -932,17 +942,92 @@ class ChairJobs:
                 parsed.setdefault("status", int(exc.code))
             return parsed, int(exc.code)
 
+
+    def _maybe_tick_fleet_pools(self) -> None:
+        """FR #7377: dedicated fixed-rate fleet OpenCode Go + Copilot fetch.
+
+        Independent of ``self.busy`` so a slow resync / merge-on-green / ticket-closure
+        cannot stretch gaps past the tray 120s stale paint. Next slot is from the
+        schedule grid, not from completion time.
+        """
+        now = float(self.clock())
+        if now < float(self.next_fleet_pool):
+            return
+        if not self._fleet_pool_busy.acquire(blocking=False):
+            return
+        slot = float(self.next_fleet_pool)
+        nxt = slot + float(FLEET_POOL_TICK_S)
+        while nxt <= now:
+            nxt += float(FLEET_POOL_TICK_S)
+        self.next_fleet_pool = nxt
+        if self.spawn:
+            threading.Thread(
+                target=self._fleet_pool_thread_main,
+                daemon=True,
+                name="fleet-pools",
+            ).start()
+            return
+        try:
+            self._run_fleet_pools()
+        finally:
+            self._fleet_pool_busy.release()
+
+    def _fleet_pool_thread_main(self) -> None:
+        try:
+            self._run_fleet_pools()
+        finally:
+            self._fleet_pool_busy.release()
+
+    def _run_fleet_pools(self) -> None:
+        """Run ``tick_fleet_pools`` with a short timeout; log duration (no secrets).
+
+        Uses a daemon worker so a hung provider cannot hold the next 60s slot
+        (``ThreadPoolExecutor.__exit__`` would wait out the hang).
+        """
+        import fleet_pool_fetch
+
+        now_f = float(self.clock())
+        t0 = time.perf_counter()
+        timeout_s = float(FLEET_POOL_FETCH_TIMEOUT_S)
+        box: dict = {}
+
+        def worker() -> None:
+            try:
+                box["out"] = fleet_pool_fetch.tick_fleet_pools(
+                    self.digest_home, now=now_f, force=True
+                )
+                box["ok"] = True
+            except Exception as exc:  # noqa: BLE001
+                box["err"] = exc
+                box["ok"] = False
+
+        th = threading.Thread(target=worker, daemon=True, name="fleet-pools-fetch")
+        th.start()
+        th.join(timeout=timeout_s)
+        dur_ms = int((time.perf_counter() - t0) * 1000)
+        if th.is_alive():
+            self.log(
+                f"WARN fleet-pools fetch duration_ms={dur_ms} ok=0 error=timeout"
+            )
+            return
+        if box.get("ok"):
+            self.log(f"INFO fleet-pools fetch duration_ms={dur_ms} ok=1")
+            return
+        err = box.get("err")
+        name = type(err).__name__ if err is not None else "error"
+        self.log(f"WARN fleet-pools fetch duration_ms={dur_ms} ok=0 error={name}")
+
     def _copilot_tick(self) -> None:
         """FR #5174: always pass fetch_user + tasks POST into copilot_dispatch.tick.
 
         FR #5267: release stranded accepts before any Copilot API call, including
         when there is no token (dispatch stays off).
 
-        FR #6148 + FR #6204: dispatch still gated. FR #7255: fleet Copilot + OpenCode
-        pools are fetched every COPILOT_TICK_S even with no seats and with dispatch off.
+        FR #6148 + FR #6204: dispatch still gated. FR #7255 / #7377: fleet Copilot +
+        OpenCode Go pools are fetched on the dedicated fixed-rate timer
+        (``_maybe_tick_fleet_pools``), not inside this dispatch tick.
         """
         import copilot_dispatch
-        import fleet_pool_fetch
 
         swept = copilot_dispatch.settle_stuck_accepted(self.digest_home, now=self.clock())
         if swept.get("dropped") or swept.get("released"):
@@ -972,10 +1057,6 @@ class ChairJobs:
                 copilot_dispatch.observe_quota(
                     self.digest_home, fetch_user=_no_token, now=now_f
                 )
-            try:
-                fleet_pool_fetch.tick_fleet_pools(self.digest_home, now=now_f)
-            except Exception as exc:  # noqa: BLE001
-                self.log(f"WARN fleet-pools: {type(exc).__name__}")
             self.log("WARN copilot-dispatch skipped: no token")
             return
 
@@ -983,10 +1064,6 @@ class ChairJobs:
             copilot_dispatch.observe_quota(
                 self.digest_home, fetch_user=fetch_user, now=now_f
             )
-        try:
-            fleet_pool_fetch.tick_fleet_pools(self.digest_home, now=now_f)
-        except Exception as exc:  # noqa: BLE001
-            self.log(f"WARN fleet-pools: {type(exc).__name__}")
 
         def post(path: str, body: dict) -> dict:
             url = path if str(path).startswith("http") else (
