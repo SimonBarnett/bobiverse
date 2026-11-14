@@ -40,7 +40,10 @@ class FakeTimer:
 def _sup(tmp_path, monkeypatch, *, startup_grace_s=60.0, startup_min_s=10.0, dead=False):
     FakeTimer.instances.clear()
     monkeypatch.setattr(bw.threading, "Timer", FakeTimer)
-    monkeypatch.delenv("BOB_WORKER_STARTUP_WAIT_READY", raising=False)
+    monkeypatch.setenv("BOB_WORKER_STARTUP_WAIT_READY", "1")
+    gh = tmp_path / "grok-home" / "auth.json"
+    gh.parent.mkdir(parents=True, exist_ok=True)
+    gh.write_text('{"k":"FAKE_4123"}', encoding="utf-8")
     logs: list[str] = []
     clock = {"t": 0.0}
     injected: list[str] = []
@@ -202,8 +205,11 @@ def test_fr4123_cap_without_turn_hangs_when_process_idle(tmp_path, monkeypatch):
 
 
 def test_fr4123_legacy_grace_defers_bored_while_turn_open(tmp_path, monkeypatch):
-    """wait_ready=0 grace release mid-turn: inject ok, !bored deferred until turn_ended."""
+    """wait_ready=0 + signed-in (FR #7180): ready immediately, no first-turn wait."""
     monkeypatch.setenv("BOB_WORKER_STARTUP_WAIT_READY", "0")
+    gh = tmp_path / "grok-home" / "auth.json"
+    gh.parent.mkdir(parents=True)
+    gh.write_text('{"k":"FAKE_7180"}', encoding="utf-8")
     FakeTimer.instances.clear()
     monkeypatch.setattr(bw.threading, "Timer", FakeTimer)
     logs: list[str] = []
@@ -268,16 +274,6 @@ def test_fr4123_legacy_grace_defers_bored_while_turn_open(tmp_path, monkeypatch)
         bored=bored,
     )
     assert sup.start_agent()
-    sid = sup.sessions[-1]
-    clock["t"] = 5.0
-    sup._note_startup_turn_started(sid)
-    clock["t"] = 60.0
-    FakeTimer.instances[0].fn()
-    # inject path armed but !bored deferred while turn 0 open
-    assert "ready" not in bored.fires
-    assert any("deferring !bored" in m for m in logs)
-    assert getattr(sup, "_startup_defer_start_bored", False) is True
-    clock["t"] = 90.0
-    sup._release_deferred_startup_bored()
     assert bored.ready is True
     assert "ready" in bored.fires
+    assert any("signed in" in m for m in logs)

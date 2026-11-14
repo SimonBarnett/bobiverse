@@ -52,6 +52,12 @@ function Set-SystemAdminsAcl([string]$Path) {
     }
 }
 
+# FR #7177: reject reader-reserved labels (bobreport._sanitize_opencode_key_label).
+$reserved = @('selected', 'selected.txt', 'readme', 'readme.txt')
+if ($reserved -contains $Label.ToLowerInvariant()) {
+    throw ("label '{0}' is reserved; choose another stem" -f $Label)
+}
+
 $root = Get-BobInstallRoot $InstallRoot
 $keysDir = Join-Path (Join-Path $root 'config') 'opencode-keys'
 if (-not (Test-Path -LiteralPath $keysDir -PathType Container)) {
