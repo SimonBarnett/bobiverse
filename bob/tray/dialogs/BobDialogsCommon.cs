@@ -120,18 +120,38 @@ namespace BobDialogs
             return sha.Length > 0 ? (v + " (" + sha + ")") : v;
         }
 
-        public static string DeployedSourceShortSha(string root)
+        public static string ExeSourceShortSha(string root)
+        {
+            if (string.IsNullOrEmpty(root)) return "";
+            string tools = Path.Combine(root, "tools");
+            if (string.Equals(Path.GetFileName(root), "tools", StringComparison.OrdinalIgnoreCase))
+                tools = root;
+            string got = ShortShaFromJsonFile(Path.Combine(tools, "MANIFEST.json"));
+            if (got.Length > 0) return got;
+            return ShortShaFromProvenance(Path.Combine(tools, "provenance.txt"));
+        }
+
+        public static string ScriptsSourceShortSha(string root)
         {
             if (string.IsNullOrEmpty(root)) return "";
             string got = ShortShaFromJsonFile(Path.Combine(root, "MANIFEST.json"));
             if (got.Length > 0) return got;
             got = ShortShaFromProvenance(Path.Combine(root, "provenance.txt"));
             if (got.Length > 0) return got;
-            got = ShortShaFromProvenance(Path.Combine(root, "tools\\provenance.txt"));
-            if (got.Length > 0) return got;
             got = ShortShaFromJsonFile(Path.Combine(root, "HOTPATCH.json"));
             if (got.Length > 0) return got;
             return ShortShaFromJsonFile(Path.Combine(root, "BUILD.json"));
+        }
+
+        // FR #7247: tools\\MANIFEST is the running exe; install-root MANIFEST is scripts.
+        // Same SHA => one token; mismatch => "exe aaa / scripts bbb".
+        public static string DeployedSourceShortSha(string root)
+        {
+            string exe = ExeSourceShortSha(root);
+            string scripts = ScriptsSourceShortSha(root);
+            if (exe.Length > 0 && scripts.Length > 0 && !string.Equals(exe, scripts, StringComparison.OrdinalIgnoreCase))
+                return "exe " + exe + " / scripts " + scripts;
+            return exe.Length > 0 ? exe : scripts;
         }
 
         static string ShortShaToken(string raw)
