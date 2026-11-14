@@ -103,7 +103,7 @@ TipForm, About, and Status show **`bob <MSI VERSION> (<shortsha>)`** when a depl
 
 - `Format-BobCopilotPoolLine` / `Get-BobCopilotFreshness` treat `fetched_at` older than **120 seconds** (FR #7250; or missing/unparseable/far-future) as stale. No `updated HH:mm` stamp.
 - A future `resume_at` (dispatch cooldown) does **not** force fresh: age is always from `fetched_at`.
-- Stale paint: `Copilot - <value> [stale]` only (never `older than 2 min`). **FR #7299:** heading colour RGB 248,81,73; keep last remaining %; missing/unparseable `fetched_at` is stale. Unlimited Copilot never paints `0%`. Meter stays left-aligned (FR #6317).
+- Stale paint: `Copilot - <value> [stale]` only (never `older than 2 min`). **FR #7299:** heading colour RGB 248,81,73; keep last remaining %; missing/unparseable `fetched_at` is stale. Unlimited Copilot never paints `0%`. **FR #7371:** GitHub `unlimited=true` + `percent_remaining=100` with `remaining=0` and `overage_permitted=false` is used-up (paint `0% left` / empty bar), not unlimited. Meter stays left-aligned (FR #6317).
 - **FR #6215:** known `reset_at` still paints a countdown using the same `Format-BobResetLabel` convention as other pools (even when stale). Past/missing reset stays omitted.
 - **FR #6215:** when `used` and `max_recorded_usage` are known, remaining % is derived from historical max (high-water mark bumped when usage exceeds it --- **not** a contractual quota). Missing/zero denominator paints `unknown`.
 - Snapshot fields: `copilot_line`, `copilot_stale_line`, `copilot_fresh_until` (unix seconds), `copilot_bar` (`known`/`pct`/`r`/`g`/`b`), plus digest `max_recorded_usage`. Native Status re-ages an open window at the deadline without waiting for a new poll.
