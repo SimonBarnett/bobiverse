@@ -48,6 +48,7 @@ def test_fr7242_skip_error_zero_is_unknown(tmp_path: Path) -> None:
             $realZero = Format-BobTrayXaiWeeklyRow -MachineId 'ionos' -XaiWeekly ([pscustomobject]@{{
                 remaining_pct = 0
                 weekly_known = $true
+                fetched_at = '2026-11-14T14:36:00Z'
                 fresh = $true
                 error = $null
             }})

@@ -475,9 +475,11 @@ function Format-BobTrayXaiWeeklyRow {
         if ($null -ne $XaiWeekly.PSObject.Properties['fresh']) {
             $fresh = [bool]$XaiWeekly.fresh
         }
-    } catch { $fresh = $null }
-    # FR #7299: missing fetched_at is stale (last % + [stale]); explicit fresh=$true still wins for tests.
-    if ($null -eq $fresh) { $fresh = $hasFetchedAt }
+    } catch { $fresh = $true }
+    # FR #7299 / #7326: missing fetched_at is stale (never default fresh=true).
+    $fetchedAt = ''
+    try { if ($XaiWeekly.fetched_at) { $fetchedAt = [string]$XaiWeekly.fetched_at } } catch { }
+    if (-not $fetchedAt) { $fresh = $false }
     $err = ''
     try { if ($XaiWeekly.error) { $err = [string]$XaiWeekly.error } } catch { }
     # FR #6314: expand grok-login-expired for TipForm/Status heading; keep class in .error.
@@ -511,6 +513,8 @@ function Format-BobTrayXaiWeeklyRow {
     }
     $parts = @()
     if ($id) { $parts += [string]$id }
+    # FR #7326: Grok and Cursor are the same per-machine pool on this line.
+    $parts += 'Grok / Cursor'
     if ($null -ne $pct) {
         $parts += ('{0}% left' -f [int]$pct)
     } else {
@@ -520,8 +524,7 @@ function Format-BobTrayXaiWeeklyRow {
     }
     if ($acct) { $parts += [string]$acct }
     if (-not $fresh) {
-        $stale = Format-BobTrayStaleToken
-        $parts += $stale
+        $parts += (Format-BobTrayStaleToken)
         if ($errDisplay -and ($null -ne $pct)) { $parts += $errDisplay }
     }
     if ($resetLabel -and ($null -ne $pct -or -not $fresh)) {
@@ -1877,8 +1880,8 @@ function New-BobTrayDigestPoolRow {
 function Get-BobTrayDigestPoolCatalog {
     <#
     .SYNOPSIS
-      FR #7243 / #7296: fleet catalog is Cursor/Grok chat (once), OpenCode free 100%,
-      OpenCode go, Copilot. Per-machine xAI is not a fleet row (FR #7296).
+      FR #7326: fleet catalog is OpenCode go + Copilot only. No Cursor, Grok chat,
+      or OpenCode free meter. Per-machine xAI weekly is a separate block.
     #>
     param(
         $Digest,
@@ -1918,11 +1921,13 @@ function Get-BobTrayDigestPoolCatalog {
         $gb = Get-BobDigestPcentValue -Pcent $pc -Keys @('grok-build', 'grok_build')
         if ($null -ne $gb) { $gbWhy = '' }
     }
-    # FR #7296: Grok chat and Cursor are one fleet pool (si@ntsa.uk), shown once.
-    $gc = Get-BobDigestPcentValue -Pcent $pc -Keys @('grok-chat', 'grok_chat')
-    $ofree = 100
-    $ofWhy = ''
     $ogo = Get-BobDigestPcentValue -Pcent $pc -Keys @('opencode-go', 'opencode_go')
+    if ($null -eq $ogo -and $Digest) {
+        try {
+            $goFleet = $Digest.fleet_pools.'opencode-go'
+            if ($goFleet) { $ogo = ConvertTo-BobTrayIntOrNull $(try { $goFleet.remaining } catch { $null }) }
+        } catch { }
+    }
     if ($null -eq $ogo -and $ent) {
         try {
             $wins = $ent.opencode_windows
@@ -1937,51 +1942,6 @@ function Get-BobTrayDigestPoolCatalog {
         } catch { }
     }
     $ogWhy = if ($noDigest) { 'no digest' } elseif ($null -eq $ogo) { 'digest pcent opencode-go missing' } else { '' }
-    # FR #7289: fleet Cursor lives on digest.fleet_pools.cursor (stale after Get-BobPoolStaleAfterSec / 2 min).
-    $cur = $null
-    $cuWhy = ''
-    $cuFleet = $null
-    if ($Digest) {
-        try { $cuFleet = $Digest.fleet_pools.cursor } catch { $cuFleet = $null }
-        if (-not $cuFleet) { try { $cuFleet = $Digest.cursor } catch { $cuFleet = $null } }
-        if ($cuFleet) {
-            $cur = ConvertTo-BobTrayIntOrNull $(try { $cuFleet.remaining } catch { $null })
-            $cuFresh = $null
-            try { $cuFresh = Get-BobPoolReadingFreshness -FetchedAt $(try { $cuFleet.fetched_at } catch { $null }) } catch { }
-            if ($cuFresh -and $cuFresh.state -eq 'stale') {
-                $cuWhy = 'fleet cursor stale'
-            }
-        }
-    }
-    if ($null -eq $cur) {
-        $cur = Get-BobDigestPcentValue -Pcent $pc -Keys @('cursor-models', 'cursor', 'cursor_models')
-    }
-    if ($null -eq $cur -and $ent) {
-        $cur = ConvertTo-BobTrayIntOrNull $(try { $ent.cursor_remaining_pct } catch { $null })
-    }
-    if ($null -eq $cur -and $Digest) {
-        try {
-            foreach ($row in @($Digest.cursor_pools)) {
-                if (-not $row) { continue }
-                $gid = ''
-                try { $gid = [string]$row.group_id } catch { }
-                if ($gid -and $gid -notin @('auto', 'low-cost-models', 'cursor-models', 'cursor')) { continue }
-                $rem = ConvertTo-BobTrayIntOrNull $(try { $row.remaining_pct } catch { $null })
-                if ($null -ne $rem) { $cur = $rem; break }
-            }
-        } catch { }
-        if ($null -eq $cur) {
-            try {
-                foreach ($row in @($Digest.cursor_pools)) {
-                    $rem = ConvertTo-BobTrayIntOrNull $(try { $row.remaining_pct } catch { $null })
-                    if ($null -ne $rem) { $cur = $rem; break }
-                }
-            } catch { }
-        }
-    }
-    if (-not $cuWhy) {
-        $cuWhy = if ($noDigest) { 'no digest' } elseif ($null -eq $cur) { 'digest cursor remaining missing' } else { '' }
-    }
     $cop = $null
     $copObj = $null
     if ($Digest) {
@@ -1995,15 +1955,6 @@ function Get-BobTrayDigestPoolCatalog {
     }
     $cpWhy = if ($noDigest) { 'no digest' } elseif ($null -eq $copObj) { 'digest copilot missing' } elseif ($null -eq $cop) { 'digest copilot remaining missing' } else { '' }
 
-    if ($null -eq $cur -and $null -ne $gc) { $cur = $gc; $cuWhy = '' }
-    # FR #7299: missing fetched_at or aged reading => stale (last % + [stale]); null => unknown.
-    $curStale = $false
-    if ($cuFresh) {
-        if ($cuFresh.state -eq 'stale' -or $cuFresh.state -eq 'none') { $curStale = $true }
-    } elseif ($null -ne $cur) {
-        $curStale = $true
-        if (-not $cuWhy) { $cuWhy = 'missing fetched_at' }
-    }
     $ogoStale = $false
     if ($null -ne $ogo) {
         $ogoFa = $null
@@ -2020,8 +1971,6 @@ function Get-BobTrayDigestPoolCatalog {
         $copStale = $true
     }
     $rows = @(
-        (New-BobTrayDigestPoolRow -Id 'cursor' -Family 'cursor' -Label 'Cursor / Grok chat' -RemainingPct $cur -Reason $cuWhy -Stale:$curStale)
-        (New-BobTrayDigestPoolRow -Id 'opencode-free' -Family 'opencode' -Label 'OpenCode free' -RemainingPct $ofree -Reason $ofWhy -NeverStale)
         (New-BobTrayDigestPoolRow -Id 'opencode-go' -Family 'opencode' -Label 'OpenCode go' -RemainingPct $ogo -Reason $ogWhy -Stale:$ogoStale)
         (New-BobTrayDigestPoolRow -Id 'copilot' -Family 'copilot' -Label 'Copilot' -RemainingPct $cop -Reason $cpWhy -Stale:$copStale)
     )
@@ -2048,15 +1997,11 @@ function Get-BobTrayDigestPoolCatalog {
 function Format-BobTrayPoolLayoutSnapshot {
     <#
     .SYNOPSIS
-      FR #7296: text snapshot of fleet catalog + per-machine xAI (no WinForms).
+      FR #7326: xAI weekly block (channel lines + workers) then fleet Go/Copilot.
     #>
     param($Digest)
     $lines = New-Object System.Collections.Generic.List[string]
-    $lines.Add('FLEET')
-    foreach ($r in @(Get-BobTrayDigestPoolCatalog -Digest $Digest)) {
-        if (-not $r) { continue }
-        $lines.Add([string]$r.heading)
-    }
+    $lines.Add('xAI weekly')
     if ($Digest -and $Digest.machines) {
         try {
             foreach ($p in @($Digest.machines.PSObject.Properties)) {
@@ -2066,8 +2011,23 @@ function Format-BobTrayPoolLayoutSnapshot {
                 if (-not $xw) { try { $xw = $node.xai_weekly } catch { } }
                 $row = Format-BobTrayXaiWeeklyRow -MachineId ([string]$p.Name) -XaiWeekly $xw
                 $lines.Add([string]$row.heading)
+                $wlist = @()
+                try { $wlist = @($node.workers) } catch { }
+                if (-not $wlist -or $wlist.Count -eq 0) {
+                    try { $wlist = @($node.worker_lines) } catch { }
+                }
+                foreach ($w in @($wlist)) {
+                    if ($w) { $lines.Add(('  {0}' -f [string]$w)) }
+                }
             }
         } catch { }
+    }
+    foreach ($r in @(Get-BobTrayDigestPoolCatalog -Digest $Digest)) {
+        if (-not $r) { continue }
+        $did = ''
+        try { $did = [string]$r.id } catch { }
+        if ($did -in @('cursor', 'grok-chat', 'opencode-free')) { continue }
+        $lines.Add([string]$r.heading)
     }
     return ($lines -join [Environment]::NewLine)
 }

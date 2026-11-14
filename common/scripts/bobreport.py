@@ -4039,25 +4039,10 @@ def _public_queue(home: Path) -> dict:
     }
 
 
-def _fixed_opencode_free_meter() -> dict:
-    """FR #7296: OpenCode Free is not fetched; always 100% and never stale."""
-    return {
-        "id": "opencode-free",
-        "remaining": 100,
-        "fetched_at": None,
-        "last_attempt_at": None,
-        "error": None,
-        "source": "fixed-free",
-        "fresh": True,
-        "never_stale": True,
-    }
-
-
 def _digest_fleet_pools(doc: dict | None) -> dict:
-    """FR #7255 / #7289 / #7296: Jeeves fleet meters (Cursor once; OpenCode Free fixed)."""
+    """FR #7255 / #7326: Jeeves fleet meters are OpenCode Go and Copilot only."""
     if not isinstance(doc, dict):
-        out = {"opencode-free": _fixed_opencode_free_meter()}
-        return out
+        return {}
     raw = doc.get("fleet_pools")
     out: dict = dict(raw) if isinstance(raw, dict) and raw else {}
     if not out:
@@ -4068,29 +4053,20 @@ def _digest_fleet_pools(doc: dict | None) -> dict:
             out["opencode"] = oc
             if oc.get("opencode-go"):
                 out["opencode-go"] = oc.get("opencode-go")
-        if isinstance(doc.get("cursor"), dict):
-            out["cursor"] = doc.get("cursor")
-    cursor = out.get("cursor")
-    if isinstance(cursor, dict):
-        out["cursor"] = cursor
-        out.setdefault("grok-chat", cursor)
-    out["opencode-free"] = _fixed_opencode_free_meter()
+    out.pop("cursor", None)
+    out.pop("grok-chat", None)
+    out.pop("opencode-free", None)
     return out
 
 
 def _digest_fleet_layout(doc: dict | None) -> dict:
-    """FR #7296 public ``fleet``: cursor (alias grok-chat) once, go, copilot, fixed free."""
+    """FR #7326 public ``fleet``: OpenCode Go and Copilot. No cursor / grok-chat / free."""
     pools = _digest_fleet_pools(doc)
     fleet: dict = {}
-    cur = pools.get("cursor")
-    if isinstance(cur, dict):
-        fleet["cursor"] = cur
-        fleet["grok-chat"] = cur
     if isinstance(pools.get("copilot"), dict):
         fleet["copilot"] = pools.get("copilot")
     if isinstance(pools.get("opencode-go"), dict):
         fleet["opencode-go"] = pools.get("opencode-go")
-    fleet["opencode-free"] = _fixed_opencode_free_meter()
     return fleet
 
 
