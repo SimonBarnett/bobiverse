@@ -163,5 +163,7 @@ The fleet ear publishes `machines.<id>.grok_account` --- the signed-in xAI/Grok 
 **FR #6314 expired Grok sign-in:** billing HTTP 401/403 maps to meter/diag error ``grok-login-expired`` (distinct from ``provider-http-N`` / network / parse / 5xx). Last-good remaining + ``fetched_at`` stay, ``fresh=false``. Tray expands the class to ``Grok login expired: run Grok on <machine> to sign in again``. Ear never refreshes, rewrites, or copies auth.json and never logs tokens; one read per fuel interval; hub passes ``error`` through. Next successful read clears the error without a restart. Offline pins: ``common/tests/test_fr6314_grok_login_expired.py``, ``bob/tests/test_fr6314_tray_grok_login_expired.py``. Live MarchHare expired-then-re-sign-in proof remains Slab.
 
 
+**FR #7251 ear pool fetch 60s:** `EAR_POOL_FETCH_S` (60). SYSTEM ear live-fetches xAI weekly, OpenCode free/Go, Copilot, and Cursor remaining every 60 seconds and stamps each pool with its own `fetched_at` (provider read time). `period_end` is never freshness. On rate-limit or error the pool keeps last-good remaining, stamps `last_attempt_at` plus error, and backs off; it does not re-post an old remaining as a fresh reading. Copilot `CACHE_S` and OpenCode `DEFAULT_OPENCODE_FUEL_CACHE_S` share that 60s constant. Offline pin: `common/tests/test_fr7251_ear_pool_fetch.py`.
+
 **Rejected sources:** `settings_cache.json` (no identity), `bob-seats.json` (configured attribution), ACP auth/info (not used here).
 
