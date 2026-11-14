@@ -384,7 +384,7 @@ routes to bobiverse via the split rule.
 - FR-04 settings HTML groups: headings use _opt_esc which encodes less-than but not greater-than; assert no raw script tag, not a full gt entity.
 - Jeeves appliance UI FR-04 Groups table lives at jeeves/docs/feature-request-jeeves-appliance-ui-*.md (## Groups). Sparse installs lack repo-root docs/; do not invent the table. Fetch/rebase onto origin/main first so sibling SettingSpec/_render_html land. git info/exclude /* blocks repo-root docs add without -f.
 - FR-012 retarget 6758/6792 doc pins to bob.ntsa.uk/jeeves instead of reopening 6757/6758.
-- When Get-BobOpencodeFuel changes, repin build-bob-ear.yml behavior_source_sha and CRLF manifest hashes; do not weaken the git-diff guard.
+- Ear/tray CI pin lessons belong in `bobiverse-bob` (build the checkout tip; provenance `source_commit`; no hard `behavior_source_sha` gate). Do not park them under harvest/SKILL.md (class of #7179 / #7185).
 - Worker skill DAG: put depends_on in YAML after description; job-fr must list job-irc and must not list job-uat.
 - Skill-dag MCP is stdio-only: resolve FR includes job-irc ancestors and skips unattached UAT; skip over-budget bodies; refuse paths outside --root; no list-all tool.
 - On Windows, Path(www / '/jeeves') is drive-root; skip absolute same-host hrefs in static link resolvers and pin /jeeves as a live route.
@@ -411,7 +411,6 @@ routes to bobiverse via the split rule.
 - FR #7084 digest start_model must come from the launched argv/session (stamp BOB_WORKER_ACTUAL_MODEL, re-POST after start_agent); freeze worker_start_model as a PyInstaller hidden-import.
 - Live recycleseat acceptance needs a clean post-#7126 install and an idle sibling seat; never ff/checkout install root from an FR seat; GIVEUP with evidence when build-not-on-box
 - Shell inherited-capture tests need ~1s child budget on busy Windows hosts; 0.2s races spawn and flakes exit 124 under load.
-- Ear/tray CI: build the checkout tip on push to main and PR path filters; never hard-pin behavior_source_sha in the workflow --- record source_commit in provenance instead (class of #7179 / failed Confirm-behavior on 3fbdacf8).
 
 ## Harvest digest (lessons audit 2026-10-06)
 
