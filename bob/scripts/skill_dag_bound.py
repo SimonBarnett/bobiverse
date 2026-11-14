@@ -268,7 +268,8 @@ def prepare_bound_agent_cwd(
                 roots.append(cand)
     grok_dir = bound / ".grok"
     grok_dir.mkdir(parents=True, exist_ok=True)
-    ptr = grok_dir / "skill-dag-job-worktree"
+    # FR #7361: keep the pointer outside ``.grok`` so assign writes do not drop stdio MCP.
+    ptr = bound / "skill-dag-job-worktree"
     if not ptr.is_file():
         ptr.write_text("", encoding="utf-8")
     args = [script.as_posix()]
