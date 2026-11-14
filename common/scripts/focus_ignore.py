@@ -9,6 +9,7 @@ Behaviour and on-disk formats follow gh-Jeeves (read-only reference @ 8d76d9a) s
   ignored.json {"v":1,"repos":[...],"updated":ts}
 
 Order used by !list and !bored:
+  0. ``priority/critical`` labelled rows first (oldest ts, then lowest number; FR #7204),
   1. item-focused rows by rank, 2. repo-focused rows by priority, 3. queue seq.
 Strict mode keeps only focused rows. Ignored repos are dropped everywhere.
 
@@ -387,15 +388,41 @@ def _task_order(row: dict) -> int:
     return _TASK_ORDER.get(str(row.get("task") or "").strip().upper(), 3)
 
 
-def _release_blocker_rank(row: dict) -> int:
-    """0 = release-blocker (offer first); 1 = everything else (FR #4373)."""
+def _label_names(row: dict) -> list[str]:
     labels = row.get("labels") or []
     if isinstance(labels, str):
         labels = [labels]
+    names: list[str] = []
     for lab in labels:
-        if str(lab or "").strip().lower() == "release-blocker":
-            return 0
+        if isinstance(lab, dict):
+            names.append(str(lab.get("name") or "").strip().lower())
+        else:
+            names.append(str(lab or "").strip().lower())
+    return names
+
+
+def _release_blocker_rank(row: dict) -> int:
+    """0 = release-blocker (offer first); 1 = everything else (FR #4373)."""
+    if "release-blocker" in _label_names(row):
+        return 0
     return 1
+
+
+PRIORITY_CRITICAL_LABEL = "priority/critical"
+
+
+def row_is_priority_critical(row: dict) -> bool:
+    """True when the queue row carries GitHub label ``priority/critical`` (FR #7204)."""
+    return PRIORITY_CRITICAL_LABEL in _label_names(row)
+
+
+def _priority_critical_rank(row: dict) -> int:
+    """0 = critical (offer first); 1 = everything else (FR #7204)."""
+    return 0 if row_is_priority_critical(row) else 1
+
+
+def _oldest_offer_ts(row: dict) -> str:
+    return str(row.get("ts") or row.get("created_at") or "")
 
 
 def _repo_entry(doc: dict, repo: str) -> tuple[int, str] | None:
@@ -440,8 +467,9 @@ def row_offer_number(row: dict) -> int:
 
 
 def offer_sort_key(home: Path, row: dict, *, doc: dict | None = None) -> tuple:
-    """FR #3205 offer order key.
+    """FR #3205 / #7204 offer order key.
 
+    0. ``priority/critical`` first; among those, oldest ``ts`` then lowest number
     1. Per-item focus rank (if any)
     2. Repo focus priority (lower wins); unfocused last
     3. FR #4969: same-priority customer topic lags non-customer; unfocused customer
@@ -456,11 +484,20 @@ def offer_sort_key(home: Path, row: dict, *, doc: dict | None = None) -> tuple:
     import priority_customer as _pc
 
     repo = str(row.get("repo") or "")
+    crit = _priority_critical_rank(row)
+    if crit == 0:
+        return (
+            0,
+            _oldest_offer_ts(row),
+            row_offer_number(row),
+            repo.lower(),
+        )
     customer = _pc.is_priority_customer(home, repo)
     blocker = _release_blocker_rank(row)
     ir = item_rank(doc, row)
     if ir is not None:
         return (
+            1,
             0,
             ir,
             0,
@@ -475,6 +512,7 @@ def offer_sort_key(home: Path, row: dict, *, doc: dict | None = None) -> tuple:
         pri = CUSTOMER_UNFOCUSED_RANK if customer else UNFOCUSED_RANK
         return (
             1,
+            1,
             pri,
             lag,
             _task_order(row),
@@ -483,6 +521,7 @@ def offer_sort_key(home: Path, row: dict, *, doc: dict | None = None) -> tuple:
             repo.lower(),
         )
     return (
+        1,
         1,
         int(ent[0]),
         lag,
@@ -496,7 +535,8 @@ def offer_sort_key(home: Path, row: dict, *, doc: dict | None = None) -> tuple:
 def sort_unaccepted_rows(home: Path, rows: list[dict]) -> list[dict]:
     """Drop ignored rows; strict drops unfocused rows; then FR #3205 offer order.
 
-    Item rank > repo priority > MRB/UAT/FR > lowest number > repo name.
+    priority/critical first (FR #7204), then item rank > repo priority > MRB/UAT/FR >
+    lowest number > repo name.
     A repo-level focus admits every real offerable row of that repo (FR #628).
     """
     ignored = ignored_list(home)

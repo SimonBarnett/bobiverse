@@ -2261,7 +2261,7 @@ function Update-Hover {
             # FR #6317 / MRB #6321: pass hover-formatted Copilot line + bar (Format-BobCopilotPoolLine is module-private).
             $copilotBarPct = $null
             try { if ($h.copilot_bar -and $h.copilot_bar.known) { $copilotBarPct = [int]$h.copilot_bar.pct } } catch { $copilotBarPct = $null }
-            Rebuild-BobTrayTiles -Machines @($h.machines) -CursorPools @($h.cursor_pools) -AccountName $h.account_name -AccountPct $h.account_remaining_pct -AccountLabel $h.account_label -AccountReset $h.account_reset_label -AccountOverageGbp $h.account_overage_gbp -ChairChannels @($h.chair_channels) -CopilotPool $h.copilot_pool -CopilotLine ([string]$h.copilot_line) -CopilotBarPct $copilotBarPct -OpencodeLine $h.opencode_line -OpencodeFree $h.opencode_free -OpencodeGo $h.opencode_go -OpencodeWindows $h.opencode_windows -OpencodeWindowLines @($h.opencode_window_lines)
+            Rebuild-BobTrayTiles -Machines @($h.machines) -CursorPools @($h.cursor_pools) -AccountName $h.account_name -AccountPct $h.account_remaining_pct -AccountLabel $h.account_label -AccountReset $h.account_reset_label -AccountOverageGbp $h.account_overage_gbp -ChairChannels @($h.chair_channels) -CopilotPool $h.copilot_pool -CopilotLine ([string]$h.copilot_line) -CopilotBarPct $copilotBarPct -OpencodeLine $h.opencode_line -OpencodeFree $h.opencode_free -OpencodeGo $h.opencode_go -OpencodeWindows $h.opencode_windows -OpencodeWindowLines @($h.opencode_window_lines) -DigestPoolRows @($h.digest_pools)
             if ($script:alertLabel) {
                 $script:alertLabel.Text = ('alert: {0}' -f $script:alertKind)
                 $yAlert = 40
@@ -2351,7 +2351,7 @@ function Get-BobTrayFuelLogoFallbackText {
     param([Parameter(Mandatory)][string]$Family)
     switch -Regex ([string]$Family.ToLowerInvariant()) {
         '^(cursor|cu)$' { return 'Cu' }
-        '^(xai|grok|x-?ai)$' { return 'xAI' }
+        '^(xai|grok|grok-chat|grok_chat|x-?ai)$' { return 'xAI' }
         '^(opencode|oc)$' { return 'OC' }
         '^(copilot|gh|github)$' { return 'Gh' }
         default { return ([string]$Family).Substring(0, [Math]::Min(3, ([string]$Family).Length)) }
@@ -2362,7 +2362,7 @@ function Get-BobTrayFuelLogoPath {
     param([Parameter(Mandatory)][string]$Family)
     $key = switch -Regex ([string]$Family.ToLowerInvariant()) {
         '^(cursor|cu)$' { 'cursor' }
-        '^(xai|grok|x-?ai)$' { 'xai' }
+        '^(xai|grok|grok-chat|grok_chat|x-?ai)$' { 'xai' }
         '^(opencode|oc)$' { 'opencode' }
         '^(copilot|gh|github)$' { 'copilot' }
         default { return $null }
@@ -2590,15 +2590,21 @@ function Get-BobTrayDeployedSourceShortSha {
         if ($workflow) { return $workflow }
         return $commit
     }
-    $got = Get-BobTrayShaFromJson (Join-Path $Root 'MANIFEST.json')
-    if ($got) { return $got }
-    $got = Get-BobTrayShaFromProvenance (Join-Path $Root 'provenance.txt')
-    if ($got) { return $got }
-    $got = Get-BobTrayShaFromProvenance (Join-Path $Root 'tools\provenance.txt')
-    if ($got) { return $got }
-    $got = Get-BobTrayShaFromJson (Join-Path $Root 'HOTPATCH.json')
-    if ($got) { return $got }
-    return (Get-BobTrayShaFromJson (Join-Path $Root 'BUILD.json'))
+    $tools = Join-Path $Root 'tools'
+    try {
+        if ([IO.Path]::GetFileName($Root) -eq 'tools') { $tools = $Root }
+    } catch { }
+    $exe = Get-BobTrayShaFromJson (Join-Path $tools 'MANIFEST.json')
+    if (-not $exe) { $exe = Get-BobTrayShaFromProvenance (Join-Path $tools 'provenance.txt') }
+    $scripts = Get-BobTrayShaFromJson (Join-Path $Root 'MANIFEST.json')
+    if (-not $scripts) { $scripts = Get-BobTrayShaFromProvenance (Join-Path $Root 'provenance.txt') }
+    if (-not $scripts) { $scripts = Get-BobTrayShaFromJson (Join-Path $Root 'HOTPATCH.json') }
+    if (-not $scripts) { $scripts = Get-BobTrayShaFromJson (Join-Path $Root 'BUILD.json') }
+    if ($exe -and $scripts -and ($exe -ne $scripts)) {
+        return ('exe {0} / scripts {1}' -f $exe, $scripts)
+    }
+    if ($exe) { return $exe }
+    return $scripts
 }
 
 function Get-BobTrayProductVersionLabel {
@@ -2839,9 +2845,9 @@ function Add-BobTrayUsageRow {
 
 function Rebuild-BobTrayTiles {
     # FR #4938 / FR #5032: TipForm shows per-machine Grok pool rows (no 'Grok accounts' heading).
-    # Cursor spending-group bars (grok chat / high cost / Low cost) are removed from the card.
-    # Fuel still reads local Cursor/Grok elsewhere; this is display-only.
-    param($Machines, $CursorPools, $AccountName, $AccountPct, $AccountLabel, $AccountReset, $AccountOverageGbp, $ChairChannels, $CopilotPool, $CopilotLine = '', $CopilotBarPct = $null, $OpencodeLine = '', $OpencodeFree = $null, $OpencodeGo = $null, $OpencodeWindows = $null, $OpencodeWindowLines = @())
+    # Obsolete Cursor spending-group bars (high cost / Low cost foreach) stay removed.
+    # FR #7243: digest-driven extra families (Grok chat, OpenCode free, Cursor) are painted.
+    param($Machines, $CursorPools, $AccountName, $AccountPct, $AccountLabel, $AccountReset, $AccountOverageGbp, $ChairChannels, $CopilotPool, $CopilotLine = '', $CopilotBarPct = $null, $OpencodeLine = '', $OpencodeFree = $null, $OpencodeGo = $null, $OpencodeWindows = $null, $OpencodeWindowLines = @(), $DigestPoolRows = @())
     if (-not $script:tileHost) { return }
 
     # Format everything first so a throw never leaves a cleared host.
@@ -2954,6 +2960,22 @@ function Rebuild-BobTrayTiles {
         }
         $y = Add-BobTrayFuelFamilyRow -X 0 -Y $y -Family 'copilot' -Title 'Copilot'
         $y = Add-BobTrayUsageRow -X 18 -Y $y -Heading $copilotLine -RemainingPct $copilotBar -BarWidth 336 -Icon $null
+        # FR #7243: extra digest pools not already covered by xAI weekly / OpenCode Go windows / Copilot.
+        $skipIds = @{ 'grok-build' = $true; 'opencode-go' = $true; 'copilot' = $true }
+        foreach ($drow in @($DigestPoolRows)) {
+            if (-not $drow) { continue }
+            $did = ''
+            try { $did = [string]$drow.id } catch { }
+            if ($did -and $skipIds.ContainsKey($did)) { continue }
+            $fam = 'xai'
+            try { if ($drow.family) { $fam = [string]$drow.family } } catch { }
+            $ttl = [string]$drow.label
+            if (-not $ttl) { $ttl = $did }
+            $y = Add-BobTrayFuelFamilyRow -X 0 -Y $y -Family $fam -Title $ttl -RightText $null
+            $barPct = $null
+            try { if ($drow.known) { $barPct = [int]$drow.remaining_pct } } catch { $barPct = $null }
+            $y = Add-BobTrayUsageRow -X 18 -Y $y -Heading ([string]$drow.heading) -RemainingPct $barPct -BarWidth 336 -Icon $null
+        }
         $indent = 18
         $shownMachines = @{}
         foreach ($m in @($Machines)) {
