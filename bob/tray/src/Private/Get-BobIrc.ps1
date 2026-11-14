@@ -2440,7 +2440,7 @@ function Invoke-BobDigestWebhookMergePost {
 function Get-BobDigestWebhookHeartbeatSec {
     # Change-only POSTs never advance report lastSeen while a peer is idle and in
     # sync. Re-POST at most this often (0 disables). Env: BOB_DIGEST_WEBHOOK_HEARTBEAT_SEC.
-    # #41: every bob reports its Grok + Cursor pools about every 30 s (tray PollSec = 30);
+    # #41: ear still posts Grok + Cursor pools about every 30 s; tray PollSec = 60 (FR #7250).
     # the digest merge is idempotent (fingerprint compare) so an unchanged re-POST is a no-op.
     $raw = [string]$env:BOB_DIGEST_WEBHOOK_HEARTBEAT_SEC
     if ($raw.Trim()) {

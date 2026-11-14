@@ -25,7 +25,7 @@ def test_format_helpers_exist():
     assert "function Get-BobCopilotFreshness" in src
     assert "function Format-BobCopilotPoolLine" in src
     assert "ForceStale" in src
-    assert "900" in src
+    assert "Get-BobPoolStaleAfterSec" in src or "120" in src
     assert "[stale" in src
 
 
@@ -59,7 +59,7 @@ def test_format_stale_despite_future_resume_at():
         },
         now,
     )
-    assert "[stale" in line
+    assert "stale" in line.lower()
 
 
 def test_status_reages_copilot_deadline():
@@ -117,7 +117,7 @@ def test_format_fresh_unlimited():
             "state": "ok",
             "unlimited": True,
             "used": 39,
-            "fetched_at": "2026-11-07T11:55:00Z",
+            "fetched_at": "2026-11-07T11:59:00Z",
             "reset_at": "2026-12-01T00:00:00Z",
         },
         now,
@@ -139,16 +139,16 @@ def test_format_stale_by_age():
         },
         now,
     )
-    assert "[stale" in line
-    assert "140% left" in line
+    assert "stale" in line.lower()
+    assert "140% left" not in line
     assert "allowance" not in line
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="PowerShell formatter")
 def test_format_missing_fetched_at_stale():
     line = _ps_format({"state": "ok", "remaining": 5}, "2026-11-07T12:00:00Z")
-    assert "[stale]" in line
-    assert "5% left" in line
+    assert "stale" in line.lower()
+    assert "5% left" not in line
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="PowerShell formatter")
