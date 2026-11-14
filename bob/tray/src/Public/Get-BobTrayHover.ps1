@@ -464,12 +464,20 @@ function Format-BobTrayXaiWeeklyRow {
     if (-not (Test-BobTrayPoolHasRealRemaining -Remaining $pct -Error $errEarly -WeeklyKnown $wk)) {
         $pct = $null
     }
-    $fresh = $true
+    $hasFetchedAt = $false
+    try {
+        if ($XaiWeekly.fetched_at -and -not [string]::IsNullOrWhiteSpace([string]$XaiWeekly.fetched_at)) {
+            $hasFetchedAt = $true
+        }
+    } catch { $hasFetchedAt = $false }
+    $fresh = $null
     try {
         if ($null -ne $XaiWeekly.PSObject.Properties['fresh']) {
             $fresh = [bool]$XaiWeekly.fresh
         }
-    } catch { $fresh = $true }
+    } catch { $fresh = $null }
+    # FR #7299: missing fetched_at is stale (last % + [stale]); explicit fresh=$true still wins for tests.
+    if ($null -eq $fresh) { $fresh = $hasFetchedAt }
     $err = ''
     try { if ($XaiWeekly.error) { $err = [string]$XaiWeekly.error } } catch { }
     # FR #6314: expand grok-login-expired for TipForm/Status heading; keep class in .error.
@@ -512,11 +520,7 @@ function Format-BobTrayXaiWeeklyRow {
     }
     if ($acct) { $parts += [string]$acct }
     if (-not $fresh) {
-        $stale = 'stale'
-        if ($null -ne $age -and [int]$age -ge 0) {
-            try { $stale = Format-BobTrayFuelStaleAge -AgeSec ([int]$age) } catch { $stale = 'stale' }
-        }
-        if ($stale -notmatch '^\[') { $stale = ('[{0}]' -f $stale) }
+        $stale = Format-BobTrayStaleToken
         $parts += $stale
         if ($errDisplay -and ($null -ne $pct)) { $parts += $errDisplay }
     }

@@ -126,3 +126,35 @@ def test_fr7299_hover_exports_stale_helpers():
     assert "function Get-BobTrayStaleForeColorArgb" in h
     assert "if (-not $why) { $why = 'older than 2 min' }" not in h
     assert "$why = 'older than 2 min'" not in h
+
+
+@pytest.mark.skipif(os.name != "nt" or not PS, reason="Windows PowerShell")
+def test_fr7299_xai_missing_fetched_at_keeps_last_value_stale():
+    """Grok Build / xAI weekly: last % with [stale] when fetched_at is missing (FR #7299)."""
+    script = f"""
+. '{HOVER}'
+$row = Format-BobTrayXaiWeeklyRow -MachineId 'flamingo' -XaiWeekly ([pscustomobject]@{{
+  remaining_pct = 28
+  weekly_known = $true
+  error = 'grok-login-expired'
+}})
+$tok = Format-BobTrayStaleToken
+$o = [ordered]@{{ heading=$row.heading; stale=[bool]$row.fuel_stale; pct=$row.remaining_pct; tok=$tok }}
+$o | ConvertTo-Json -Compress
+"""
+    data = json.loads(_ps(script).splitlines()[-1])
+    assert data["stale"] is True
+    assert data["pct"] == 28
+    assert "28% left" in data["heading"]
+    assert data["tok"] == "[stale]"
+    assert "[stale]" in data["heading"]
+    assert "older than" not in data["heading"].lower()
+
+
+def test_fr7299_watch_xai_machine_row_stale_red():
+    w = WATCH.read_text(encoding="utf-8-sig")
+    assert "HeadingColor" in w
+    assert "fuel_stale" in w
+    # Per-machine xAI row must pass stale heading colour, not only fleet copilot/digest rows.
+    assert "Add-BobTrayUsageRow -X $indent -Y $y -Heading $machHeading" in w
+    assert "-HeadingColor" in w.split("Heading $machHeading")[1][:400]

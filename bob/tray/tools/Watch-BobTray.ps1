@@ -3048,8 +3048,12 @@ function Rebuild-BobTrayTiles {
                 if ($null -ne $m.PSObject.Properties['bar_pct']) { $rowPct = $m.bar_pct }
                 else { $rowPct = if ($fuelStale) { $null } else { $pct } }
             } catch { $rowPct = if ($fuelStale) { $null } else { $pct } }
+            $xaiHeadingColor = $null
+            if ($fuelStale -or ([string]$machHeading -match '\[stale\]')) {
+                $xaiHeadingColor = [System.Drawing.Color]::FromArgb(248, 81, 73)
+            }
             $y = Add-BobTrayUsageRow -X $indent -Y $y -Heading $machHeading `
-                -RemainingPct $rowPct -BarWidth 354 -Icon $null
+                -RemainingPct $rowPct -BarWidth 354 -Icon $null -HeadingColor $xaiHeadingColor
             if ($null -ne $pct -and -not $fuelStale -and [int]$pct -le 0) {
                 # FR #5032: exhausted pool -> red alert cue on the TipForm row.
                 try {
