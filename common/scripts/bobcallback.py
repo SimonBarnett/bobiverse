@@ -24,6 +24,8 @@ import os
 import time
 from pathlib import Path
 from typing import Any, Callable
+from urllib.error import HTTPError, URLError
+from urllib.request import Request, urlopen
 
 import bobhours
 import bobreport
@@ -642,6 +644,83 @@ def handle_jira_get(home: Path, headers: dict[str, str]) -> tuple[int, bytes]:
     return 200, body
 
 
+# FR #7274: bobcallback HTTP layer only returns (code, body); stash hop-by-hop
+# response headers (Set-Cookie, Content-Type) so public /jeeves login sessions work.
+_RESPONSE_EXTRA_HEADERS: list[tuple[str, str]] = []
+
+
+def stash_response_headers(headers: list[tuple[str, str]] | None) -> None:
+    """Replace the per-request extra header stash (cleared by pop)."""
+    global _RESPONSE_EXTRA_HEADERS
+    _RESPONSE_EXTRA_HEADERS = list(headers or [])
+
+
+def pop_response_headers() -> list[tuple[str, str]]:
+    """Return and clear stashed response headers for the HTTP _reply path."""
+    global _RESPONSE_EXTRA_HEADERS
+    out = list(_RESPONSE_EXTRA_HEADERS)
+    _RESPONSE_EXTRA_HEADERS = []
+    return out
+
+
+def _headers_from_urlopen(resp: Any) -> list[tuple[str, str]]:
+    """Copy Set-Cookie (multi) + Content-Type from an urlopen / HTTPError response."""
+    out: list[tuple[str, str]] = []
+    raw = getattr(resp, "headers", None)
+    if raw is None:
+        return out
+    get_all = getattr(raw, "get_all", None)
+    if callable(get_all):
+        for cookie in get_all("Set-Cookie") or []:
+            out.append(("Set-Cookie", str(cookie)))
+    else:
+        one = raw.get("Set-Cookie")
+        if one:
+            out.append(("Set-Cookie", str(one)))
+    ctype = raw.get("Content-Type")
+    if ctype:
+        out.append(("Content-Type", str(ctype)))
+    return out
+
+
+def _proxy_jeeves_settings(
+    method: str,
+    route: str,
+    headers: dict[str, str],
+    body: bytes | str,
+) -> tuple[int, bytes] | None:
+    """FR #7274: forward /jeeves* to the LAN settings server (default 127.0.0.1:7701).
+
+    Stashes upstream Set-Cookie + Content-Type via stash_response_headers so the
+    bobcallback HTTP _reply can emit them (handle_request stays (code, body)).
+    """
+    base = (os.environ.get("JEEVES_SETTINGS_UPSTREAM") or "http://127.0.0.1:7701").rstrip("/")
+    url = base + route
+    raw = body if isinstance(body, (bytes, bytearray)) else str(body or "").encode("utf-8")
+    hdrs = {}
+    for key, val in (headers or {}).items():
+        lk = str(key or "").lower()
+        if lk in ("host", "content-length"):
+            continue
+        if lk in ("cookie", "content-type", "authorization", "x-forwarded-for", "x-forwarded-proto"):
+            hdrs[key] = val
+    req = Request(url, data=raw if method.upper() not in ("GET", "HEAD") else None, method=method.upper(), headers=hdrs)
+    try:
+        with urlopen(req, timeout=8) as resp:
+            payload = resp.read() if method.upper() != "HEAD" else b""
+            stash_response_headers(_headers_from_urlopen(resp))
+            return int(getattr(resp, "status", 200) or 200), payload
+    except HTTPError as exc:
+        try:
+            payload = exc.read() if method.upper() != "HEAD" else b""
+        except Exception:
+            payload = b""
+        stash_response_headers(_headers_from_urlopen(exc))
+        return int(exc.code or 502), payload
+    except (URLError, TimeoutError, OSError):
+        return None
+
+
 def handle_intake_status_get(home: Path, intake_id: str) -> tuple[int, bytes]:
     code, obj = intake.get_intake_status(home, intake_id)
     return code, json.dumps(obj, separators=(",", ":")).encode("utf-8")
@@ -661,18 +740,47 @@ def handle_request(
     report_rate: intake.RateLimiter | None = None,
 ) -> tuple[int, bytes]:
     """Pure request handler. No sockets, no secret, no ChanServ. Public GET digest; POST validated."""
+    stash_response_headers([])
     verb = (method or "").upper()
     route = (path or "").split("?", 1)[0]
-    jeeves_route = route.rstrip("/") or "/"
-    # FR #6815: public GET /jeeves on bob.ntsa.uk is the appliance login HTML (never 403).
-    if verb in ("GET", "HEAD") and jeeves_route == JEEVES_LOGIN_PATH:
+    # FR #6815 / #7274: public /jeeves* on bob.ntsa.uk (IIS rewrite to this process).
+    if route == JEEVES_LOGIN_PATH or route.startswith(JEEVES_LOGIN_PATH + "/"):
         import jeeves_settings_http as _jhttp
 
-        html = _jhttp._render_login_html()
-        payload = html.encode("utf-8")
-        if verb == "HEAD":
-            return 200, b""
-        return 200, payload
+        if verb in ("GET", "HEAD"):
+            prefix, inner = _jhttp.split_ui_path(route)
+            if inner in ("/login",) or route == JEEVES_LOGIN_PATH:
+                html = _jhttp._render_login_html(prefix="/jeeves")
+                payload = html.encode("utf-8")
+                stash_response_headers([("Content-Type", "text/html; charset=utf-8")])
+                if verb == "HEAD":
+                    return 200, b""
+                return 200, payload
+            if inner == _jhttp.BUTLER_HREF:
+                p = _jhttp._BUTLER_ICO
+                if p.is_file():
+                    data = p.read_bytes()
+                    stash_response_headers([("Content-Type", "image/x-icon")])
+                    return (200, b"") if verb == "HEAD" else (200, data)
+                return 404, b""
+            if inner == _jhttp.LOGO_HREF:
+                p = _jhttp.ntsa_gut_logo_path()
+                if p.is_file():
+                    data = p.read_bytes()
+                    stash_response_headers([("Content-Type", "image/png")])
+                    return (200, b"") if verb == "HEAD" else (200, data)
+                return 404, b""
+        proxied = _proxy_jeeves_settings(verb, route, headers, body)
+        if proxied is not None:
+            return proxied
+        if verb in ("GET", "HEAD") and (route == JEEVES_LOGIN_PATH or route.rstrip("/") == JEEVES_LOGIN_PATH):
+            import jeeves_settings_http as _jhttp2
+
+            html = _jhttp2._render_login_html(prefix="/jeeves")
+            payload = html.encode("utf-8")
+            stash_response_headers([("Content-Type", "text/html; charset=utf-8")])
+            return (200, b"") if verb == "HEAD" else (200, payload)
+        return 404, b""
     # FR #1136: local health (lock age / digest writable); not the public IIS front-door.
     if verb in ("GET", "HEAD") and route == HEALTH_PATH:
         code, payload = handle_health_get(home)
@@ -863,19 +971,27 @@ def make_handler(
 
         def _reply(self, code: int, payload: bytes, method: str = "GET") -> None:
             self.send_response(code)
-            if payload:
-                ctype = "application/json; charset=utf-8"
-                route = self.path.split("?", 1)[0]
-                if (route.rstrip("/") or "/") == JEEVES_LOGIN_PATH:
-                    ctype = "text/html; charset=utf-8"
-                elif route == JIRA_PATH and method == "POST" and code == 400:
-                    ctype = "text/plain; charset=utf-8"
-                elif (
-                    route == HOURS_PATH + "/export"
-                    and "format=csv" in (self.path or "").lower()
-                    and code == 200
-                ):
-                    ctype = "text/csv; charset=utf-8"
+            extra = pop_response_headers()
+            ctype_from_extra = ""
+            for hk, hv in extra:
+                if str(hk).lower() == "content-type":
+                    ctype_from_extra = str(hv)
+                    continue
+                self.send_header(hk, hv)
+            if payload or ctype_from_extra:
+                ctype = ctype_from_extra or "application/json; charset=utf-8"
+                if not ctype_from_extra:
+                    route = self.path.split("?", 1)[0]
+                    if (route.rstrip("/") or "/") == JEEVES_LOGIN_PATH:
+                        ctype = "text/html; charset=utf-8"
+                    elif route == JIRA_PATH and method == "POST" and code == 400:
+                        ctype = "text/plain; charset=utf-8"
+                    elif (
+                        route == HOURS_PATH + "/export"
+                        and "format=csv" in (self.path or "").lower()
+                        and code == 200
+                    ):
+                        ctype = "text/csv; charset=utf-8"
                 self.send_header("Content-Type", ctype)
             self.send_header("Content-Length", str(len(payload)))
             self.end_headers()

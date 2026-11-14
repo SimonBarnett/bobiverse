@@ -9,8 +9,12 @@ front the UI via `irc.ntsa.uk`. Do not reopen FR #6757 or #6758.
 
 1. Open **https://bob.ntsa.uk/jeeves** in the browser (FR #6821).
 2. Do **not** tell operators to browse `jeeves.ntsa.uk` (FR #6758 used that internal DNS name; this slice replaces it).
-3. Browser / API clients for settings and status after login still use a source IP in RFC1918 (`10/8`, `172.16/12`,
-   `192.168/16`) or loopback except the public login GET.
+3. FR #7274: IIS rewrites `/jeeves` to bobcallback, which serves login/assets and
+   proxies the rest to loopback `:7701`. HTML URLs are prefix-aware (`/jeeves/api/login`
+   on the public mount, `/api/login` on the LAN root). Session cookie is
+   `HttpOnly; SameSite=Strict; Path=/jeeves` (plus `Secure` on the public HTTPS mount).
+   The header links back to Bob at `https://bob.ntsa.uk/bob/v1/report`. There is no
+   Domain field. Failed logins are rate-limited.
 4. Foundation modules: `common/scripts/jeeves_settings.py` (schema, LAN gate,
    secret-safe GET/PUT, backup/audit/rollback) and
    `common/scripts/jeeves_settings_auth.py` (AD/CredMan + sessions).
@@ -21,8 +25,10 @@ front the UI via `irc.ntsa.uk`. Do not reopen FR #6757 or #6758.
 ## Auth (FR #6441)
 
 Settings API/UI require login (authed helpers). FR #6451 wires LAN HTTP to
-api_*_authed with POST /api/login, HttpOnly cookie jeeves_appliance_session,
-and Authorization: Bearer <token>. Unauthenticated API calls return 401.
+api_*_authed with POST /api/login (or `/jeeves/api/login` on bob.ntsa.uk),
+HttpOnly cookie jeeves_appliance_session (Path=/jeeves on the public mount),
+and Authorization: Bearer <token>. Unauthenticated API calls return 401. Bad
+passwords return 401 JSON, not 404.
 
 1. **LAN first.** Non-RFC1918 sources are rejected before credential checks.
 2. **Windows / AD.** Win32 LogonUser network logon via authenticate_windows_logon.

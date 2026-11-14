@@ -57,10 +57,9 @@ def test_mrb6763_windows_success_skips_credman(monkeypatch):
 def test_mrb6763_login_html_js_omits_domain_key():
     html = http._render_login_html()
     assert "fd.get('account')" in html
-    # FR #6819 / FR-010: optional domain is posted; FR #6749 still one account field.
+    # FR #7274: Domain field removed; user@domain or DOMAIN\user in the account box.
     assert 'name="account"' in html
-    assert 'name="domain"' in html
-    assert "domain:" in html
+    assert 'name="domain"' not in html
 
 
 def test_mrb6763_http_login_accepts_account_and_legacy_domain(tmp_path, monkeypatch):
