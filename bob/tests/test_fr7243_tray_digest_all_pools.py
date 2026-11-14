@@ -17,8 +17,6 @@ DOCS = ROOT / "docs" / "bob-tray-dialogs.md"
 PS = os.environ.get("BOB_TEST_POWERSHELL") or "powershell.exe"
 
 CANON = (
-    "cursor",
-    "opencode-free",
     "opencode-go",
     "copilot",
 )
@@ -37,7 +35,7 @@ def _ps(script: str) -> str:
 
 @pytest.mark.skipif(os.name != "nt" or not PS, reason="Windows PowerShell")
 def test_fr7243_six_pool_digest_fixture_headings():
-    """Acceptance: fleet catalog is Cursor/Grok chat once, free, go, Copilot (FR #7296)."""
+    """Acceptance: fleet catalog is OpenCode go + Copilot (FR #7326)."""
     script = f"""
 . '{HOVER}'
 $d = ConvertFrom-Json @'
@@ -70,10 +68,12 @@ $o | ConvertTo-Json -Compress
         assert need in ids, (need, ids)
     joined = "\n".join(data["headings"])
     assert "Grok Build" not in joined
-    assert "Cursor / Grok chat" in joined
-    assert "OpenCode free 100%" in joined
+    assert "Cursor / Grok chat" not in joined
+    assert "OpenCode free" not in joined
     assert "OpenCode go 55%" in joined
     assert "Copilot 33%" in joined
+    assert "cursor" not in ids
+    assert "opencode-free" not in ids
 
 
 @pytest.mark.skipif(os.name != "nt" or not PS, reason="Windows PowerShell")
@@ -85,9 +85,9 @@ $rows = @(Get-BobTrayDigestPoolCatalog -Digest $null)
 """
     headings = json.loads(_ps(script).splitlines()[-1])
     text = "\n".join(headings)
-    assert "unknown" in text or "OpenCode free 100%" in text
-    assert "Cursor / Grok chat" in text
-    assert "OpenCode free 100%" in text
+    assert "unknown" in text or "OpenCode go" in text
+    assert "Cursor / Grok chat" not in text
+    assert "OpenCode free" not in text
 
 
 def test_fr7243_watch_paints_digest_extra_families():

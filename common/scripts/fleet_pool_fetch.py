@@ -1,7 +1,8 @@
-"""FR #7255 / #7289: Jeeves fetches fleet-wide OpenCode, Copilot, and Cursor pools.
+"""FR #7255 / #7288 / #7326: Jeeves fetches fleet OpenCode Go and Copilot only.
 
-Deterministic chair code. Credentials stay on the Jeeves box (token / Go key /
-CredMan Cursor access). Digest names the source tag only. Per-pool backoff.
+Deterministic chair code. Credentials stay on the Jeeves box (token / Go key).
+Digest names the source tag only. Per-pool backoff. Cursor / Grok chat is a
+per-machine ear pool on the xAI weekly line (FR #7326), not a fleet meter.
 """
 from __future__ import annotations
 
@@ -480,15 +481,10 @@ def apply_fleet_pools_to_digest(home: Path, fleet: dict) -> None:
     copilot = fleet.get(POOL_COPILOT)
     if isinstance(copilot, dict):
         doc["copilot"] = copilot
-    cursor = fleet.get(POOL_CURSOR)
-    if isinstance(cursor, dict):
-        doc["cursor"] = cursor
     oc = {
-        "free": 100,
         "go": (fleet.get(POOL_OC_GO) or {}).get("remaining"),
         "windows": fleet.get("windows") or (fleet.get(POOL_OC_GO) or {}).get("windows"),
         "fetched_at": (fleet.get(POOL_OC_GO) or {}).get("fetched_at"),
-        POOL_OC_FREE: fleet.get(POOL_OC_FREE),
         POOL_OC_GO: fleet.get(POOL_OC_GO),
     }
     doc["opencode"] = oc
@@ -499,7 +495,7 @@ def public_fleet_section(fleet: dict | None) -> dict:
     if not isinstance(fleet, dict):
         return {}
     out = {}
-    for key in (POOL_COPILOT, POOL_OC_FREE, POOL_OC_GO, POOL_CURSOR):
+    for key in (POOL_COPILOT, POOL_OC_GO):
         row = fleet.get(key)
         if isinstance(row, dict):
             out[key] = row
@@ -517,7 +513,7 @@ def tick_fleet_pools(
     fetch_opencode: Callable[[Path, float], dict] | None = None,
     fetch_cursor: Callable[[Path, float], dict] | None = None,
 ) -> dict:
-    """Fetch due OpenCode/Copilot/Cursor pools; persist digest fleet_pools. No secrets."""
+    """Fetch due OpenCode Go / Copilot; persist digest fleet_pools. No secrets."""
     now_f = time.time() if now is None else float(now)
     home_p = Path(home)
     state = _load_state(home_p)
@@ -600,50 +596,10 @@ def tick_fleet_pools(
                 source="go-zen-usage",
             )
             mark_attempt(state, POOL_OC_GO, now_f, ok=False, error=type(exc).__name__)
-    # FR #7296: OpenCode Free is never fetched.
-    fleet[POOL_OC_FREE] = {
-        "id": POOL_OC_FREE,
-        "remaining": 100,
-        "fetched_at": None,
-        "last_attempt_at": None,
-        "error": None,
-        "source": "fixed-free",
-        "fresh": True,
-        "never_stale": True,
-    }
-
-    if pool_due(state, POOL_CURSOR, now_f, force=force):
-        try:
-            row = cursor_fn(home_p, now_f)
-            if not isinstance(row, dict):
-                raise RuntimeError("parse")
-            ok = bool(row.get("fresh")) and not row.get("error")
-            err = str(row.get("error") or "") or None
-            rate = "429" in str(err or "") or "rate" in str(err or "").lower()
-            if ok:
-                fleet[POOL_CURSOR] = row
-            else:
-                fleet[POOL_CURSOR] = _keep_last(
-                    prev.get(POOL_CURSOR),
-                    error=err or "unread",
-                    now=now_f,
-                    pool_id=POOL_CURSOR,
-                    source=str(row.get("source") or ("credman:" + CURSOR_CREDMAN_TARGET)),
-                )
-                if row.get("remaining") is not None and fleet[POOL_CURSOR].get("remaining") is None:
-                    fleet[POOL_CURSOR]["remaining"] = row.get("remaining")
-                if row.get("fetched_at"):
-                    fleet[POOL_CURSOR]["fetched_at"] = row.get("fetched_at")
-            mark_attempt(state, POOL_CURSOR, now_f, ok=ok, error=err, rate_limited=rate)
-        except Exception as exc:  # noqa: BLE001
-            fleet[POOL_CURSOR] = _keep_last(
-                prev.get(POOL_CURSOR),
-                error=type(exc).__name__,
-                now=now_f,
-                pool_id=POOL_CURSOR,
-                source="credman:" + CURSOR_CREDMAN_TARGET,
-            )
-            mark_attempt(state, POOL_CURSOR, now_f, ok=False, error=type(exc).__name__)
+    # FR #7326: no OpenCode Free meter; no fleet Cursor fetch.
+    fleet.pop(POOL_OC_FREE, None)
+    fleet.pop(POOL_CURSOR, None)
+    _ = cursor_fn
 
     _save_state(home_p, state)
     apply_fleet_pools_to_digest(home_p, fleet)

@@ -97,6 +97,7 @@ def test_fr6285_format_fresh_stale_null_account(tmp_path: Path):
             $fresh = Format-BobTrayXaiWeeklyRow -MachineId 'marchhare' -XaiWeekly ([pscustomobject]@{{
                 remaining_pct = 14
                 period_end = '2026-11-14T12:58:59Z'
+                fetched_at = '2026-11-14T12:48:59Z'
                 fresh = $true
                 account = 'bob-marchhare'
                 error = $null

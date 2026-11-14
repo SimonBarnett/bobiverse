@@ -21,7 +21,7 @@ Staged and installed trees stay flat. The old spellings (`third_party\bob-tray`,
 * **About**: ntsa badge (embedded), "by Simon Barnett", `bob <version>  machine: <id>`, then one block per install of bob / jeeves / airc / ergo
   (version, BUILD.json date, commit, path, service state - the same text as the old `Format-BobInstallInfo`). The window opens first; the install
   scan (services, BUILD.json, git only when BUILD.json has no commit) runs on a worker thread and fills the box.
-* **Status** (FR #4938 / #5179 / #6214 / #6285 / **#7243** / **#7296**): **xAI weekly** is per machine (`machines.<m>.xai` / `xai_weekly`), not a fleet block. Fleet paints **one Cursor / Grok chat** meter, OpenCode Go windows, Copilot, and OpenCode Free as a fixed 100% (never fetched, never stale). Missing fetched readings use `unknown (reason)` (FR #7242). Each machine's
+* **Status** (FR #4938 / #5179 / #6214 / #6285 / **#7243** / **#7326**): **xAI weekly** is one line per IRC shop channel (`machines.<m>.xai` / `xai_weekly`) with that machine's Grok/Cursor pool and its workers under it. Fleet paints OpenCode Go and Copilot only (Jeeves). There is no fleet Cursor, Grok chat, or OpenCode Free meter. Stale is `[stale]` (FR #7299), never "(older than 2 min)". Missing fetched readings use `unknown (reason)` (FR #7242). Each machine's
   workers as `{irc nick}: {doing|idle}` from the digest, `alert: <kind>`, version footer. It paints from `<root>\run\tray-status.json`, which
   the tray writes (atomically) after every poll; the exe never touches the network and re-reads the file every 2 s. Parked until X / Esc; drag by the title.
   One account-wide Copilot tile uses `copilot_pool` / `copilot_line` from the snapshot, showing `unknown` when absent and

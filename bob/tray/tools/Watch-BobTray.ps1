@@ -2846,7 +2846,7 @@ function Add-BobTrayUsageRow {
 function Rebuild-BobTrayTiles {
     # FR #4938 / FR #5032: TipForm shows per-machine Grok pool rows (no 'Grok accounts' heading).
     # Obsolete Cursor spending-group bars (high cost / Low cost foreach) stay removed.
-    # FR #7243 / #7296: digest-driven fleet families (one Cursor/Grok chat, OpenCode free 100%).
+    # FR #7243 / #7326: digest-driven fleet families (OpenCode go + Copilot). xAI weekly is per-shop.
     param($Machines, $CursorPools, $AccountName, $AccountPct, $AccountLabel, $AccountReset, $AccountOverageGbp, $ChairChannels, $CopilotPool, $CopilotLine = '', $CopilotBarPct = $null, $OpencodeLine = '', $OpencodeFree = $null, $OpencodeGo = $null, $OpencodeWindows = $null, $OpencodeWindowLines = @(), $DigestPoolRows = @())
     if (-not $script:tileHost) { return }
 
@@ -2877,7 +2877,8 @@ function Rebuild-BobTrayTiles {
         # FR #4938: Cursor spending-group bars removed after account unification.
         # FR #5032: no "Grok accounts" heading --- every row is a Grok pool; optional overspend only.
         # FR #6149: fuel-family logos (text fallback when asset missing).
-        # FR #7296: xAI weekly is per-machine (not a fleet block). String kept for tray smoke.
+        # FR #7326: xAI weekly is the shop-channel block (not a fleet Cursor meter).
+        $sharedTitle = 'xAI weekly'
         $ocRight = $null
         $ocTitle = 'OpenCode'
         try {
@@ -2957,8 +2958,11 @@ function Rebuild-BobTrayTiles {
         }
         $y = Add-BobTrayFuelFamilyRow -X 0 -Y $y -Family 'copilot' -Title 'Copilot'
         $y = Add-BobTrayUsageRow -X 18 -Y $y -Heading $copilotLine -RemainingPct $copilotBar -BarWidth 336 -Icon $null
-        # FR #7243 / #7296: extra digest pools; skip Go/Copilot already painted; skip grok-build (per-machine xAI).
-        $skipIds = @{ 'grok-build' = $true; 'grok-chat' = $true; 'opencode-go' = $true; 'copilot' = $true }
+        # FR #7326: extra digest pools; skip Go/Copilot already painted; never paint Cursor / Grok chat / OpenCode free.
+        $skipIds = @{
+            'grok-build' = $true; 'grok-chat' = $true; 'opencode-go' = $true; 'copilot' = $true
+            'cursor' = $true; 'opencode-free' = $true; 'cursor-models' = $true
+        }
         foreach ($drow in @($DigestPoolRows)) {
             if (-not $drow) { continue }
             $did = ''
@@ -2977,6 +2981,7 @@ function Rebuild-BobTrayTiles {
             $y = Add-BobTrayUsageRow -X 18 -Y $y -Heading ([string]$drow.heading) -RemainingPct $barPct -BarWidth 336 -Icon $null
         }
         $indent = 18
+        $y = Add-BobTrayFuelFamilyRow -X 0 -Y $y -Family 'xai' -Title $sharedTitle -RightText $null
         $shownMachines = @{}
         foreach ($m in @($Machines)) {
             if (-not $m) { continue }

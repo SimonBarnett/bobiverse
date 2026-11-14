@@ -1,4 +1,4 @@
-"""FR #7289: Jeeves fleet Cursor pool; ears stop fetching Cursor."""
+"""FR #7289 / #7326: ears do not fetch Cursor API; Jeeves does not publish a fleet cursor meter."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -10,7 +10,9 @@ import fleet_pool_fetch as fp
 def test_fr7289_cursor_pool_id_and_60s():
     assert fp.POOL_CURSOR == "cursor"
     assert fp.FLEET_POOL_FETCH_S == 60.0
-    assert "cursor" in fp.public_fleet_section({fp.POOL_CURSOR: {"id": "cursor", "remaining": 1}})
+    # FR #7326: even if a cursor row is present, public fleet omits it.
+    assert "cursor" not in fp.public_fleet_section({fp.POOL_CURSOR: {"id": "cursor", "remaining": 1}})
+    assert "copilot" in fp.public_fleet_section({fp.POOL_COPILOT: {"id": "copilot", "remaining": 1}})
 
 
 def test_fr7289_success_stamps_fetched_at(tmp_path: Path):
@@ -77,10 +79,11 @@ def test_fr7289_success_stamps_fetched_at(tmp_path: Path):
         fetch_opencode=oc,
         fetch_cursor=cursor,
     )
-    assert a["cursor"]["fetched_at"] != b["cursor"]["fetched_at"]
-    assert a["cursor"]["remaining"] == 44
+    assert "cursor" not in a
+    assert "cursor" not in b
     pub = bobreport.build_digest_object(home, "jeeves")
-    assert pub["fleet_pools"]["cursor"]["fetched_at"] == b["cursor"]["fetched_at"]
+    assert "cursor" not in (pub.get("fleet_pools") or {})
+    assert (pub.get("fleet") or {}).get("cursor") is None
     blob = str(pub)
     assert "Bearer" not in blob
     assert "FAKESECRET" not in blob.upper()
@@ -154,11 +157,7 @@ def test_fr7289_failure_keeps_last_value(tmp_path: Path):
         fetch_opencode=oc,
         fetch_cursor=cursor_fail,
     )
-    assert out["cursor"]["fetched_at"] == good
-    assert out["cursor"]["remaining"] == 9
-    assert out["cursor"]["fresh"] is False
-    assert out["cursor"]["error"]
-    assert out["cursor"]["last_attempt_at"] == fp.iso_utc(t0 + 60.0)
+    assert "cursor" not in out
 
 
 def test_fr7289_ear_does_not_fetch_cursor(monkeypatch, tmp_path: Path):
@@ -226,10 +225,10 @@ def test_fr7289_no_key_source_is_credman_tag_not_secret():
 def test_fr7289_tray_reads_fleet_cursor():
     hover = Path(__file__).resolve().parents[2] / "bob" / "tray" / "src" / "Public" / "Get-BobTrayHover.ps1"
     text = hover.read_text(encoding="utf-8")
-    assert "fleet_pools" in text
-    assert "cursor" in text.lower()
-    assert "Get-BobPoolStaleAfterSec" in text
-    assert "FR #7289" in text or "fleet_pools.cursor" in text or "fleet cursor" in text.lower()
+    assert "function Get-BobTrayDigestPoolCatalog" in text
+    assert "FR #7326" in text
+    assert "Cursor / Grok chat" not in text
+    assert "Grok / Cursor" in text
 
 
 def test_fr7289_cursor_remaining_from_period_auto():
