@@ -2155,7 +2155,9 @@ def prepare_seat_child_env(base_env: dict | None, extra: dict | None = None) -> 
         from winps51 import apply_winps51_module_path
         apply_winps51_module_path(out)
     except Exception:
+        # FR #7315 / #7355: same defaults when winps51 import fails.
         out["PSModulePath"] = r"C:\Windows\System32\WindowsPowerShell\v1.0\Modules"
+        out["PSModuleAutoLoadingPreference"] = "All"
     return out
 
 
