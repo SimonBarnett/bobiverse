@@ -3,7 +3,8 @@
 Deterministic and token-less. Jeeves (the chair) hears the machine channel ``#<machine>`` and keeps
 ``machines.<id>.workers = [{nick, state: doing|idle, work, updated}]`` current:
 
-* ``!bored`` from a nick in ``#<machine>``  -> worker-upsert (idle)
+* JOIN / NAMES (FR #7186) from a seat nick in ``#<machine>`` -> worker-upsert (present; idle unless already doing)
+* ``!bored`` from a nick in ``#<machine>``  -> worker-upsert (idle; wanting work)
 * assign / offer (FR #663)                   -> worker-work  (offered + description)
 * ACK                                        -> worker-work  (doing + description)
 * DONE / NACK / GIVEUP                       -> worker-work  (idle)
@@ -107,6 +108,15 @@ class WorkerTracker:
         return out
 
     # -- events -----------------------------------------------------------------------
+    def on_join(self, nick: str, channel: str) -> int | None:
+        """FR #7186: shop presence from JOIN, not !bored."""
+        mid = speaker_machine(self.home, nick, channel)
+        if not mid:
+            return None
+        code = self.post(payload_for("worker-upsert", mid, nick))
+        self._stamp_shop_members(mid)
+        return code
+
     def on_bored(self, nick: str, channel: str) -> int | None:
         mid = speaker_machine(self.home, nick, channel)
         if not mid:
@@ -160,12 +170,21 @@ class WorkerTracker:
         return codes
 
     def on_nick(self, old: str, new: str) -> list[int]:
-        """The old nick is gone from the channel; the new one is re-added when it next speaks."""
-        del new
-        return self.on_quit(old)
+        """FR #7186: follow the seat nick on the shops it was listed in."""
+        mids = list(self._machines_with(old))
+        codes = self.on_quit(old)
+        new_n = str(new or "").strip()
+        seat = bobreport.parse_seat_nick(new_n)
+        if not seat or not new_n:
+            return codes
+        new_mid = bobreport.fold_machine_id(seat[0])
+        for mid in mids:
+            if mid == new_mid:
+                codes.append(self.post(payload_for("worker-upsert", mid, new_n)))
+        return codes
 
     def reconcile(self, channel: str, present: set[str]) -> list[str]:
-        """NAMES reconcile: drop every listed worker that is not in the channel. Returns removed nicks."""
+        """NAMES: drop absentees and upsert seats that are in the channel (FR #7186)."""
         mid = machine_for_channel(self.home, channel)
         consoles = bobreport.console_nicks_from_present(present)
         # FR #5947: record *_console nicks from every chair channel (shops + customer).
@@ -180,6 +199,30 @@ class WorkerTracker:
             self.post(payload_for("worker-remove", mid, n))
         if gone:
             self.log(f"INFO workers reconcile {channel}: removed {','.join(gone)} (not in channel)")
+        added = []
+        for raw in present:
+            nick = str(raw or "").lstrip("@+%&~").strip()
+            if not nick or not bobreport.is_worker_nick(nick):
+                continue
+            if speaker_machine(self.home, nick, channel) != mid:
+                continue
+            if nick.lower() not in {n.lower() for n in self.listed(mid)}:
+                self.post(payload_for("worker-upsert", mid, nick))
+                added.append(nick)
+        if added:
+            self.log(f"INFO workers reconcile {channel}: added {','.join(added)} (in channel)")
+        self._stamp_shop_members(mid)
         # FR #5204: persist live *_console nicks for the public digest roster.
         bobreport.set_machine_console_nicks(self.home, mid, consoles)
         return gone
+
+    def _stamp_shop_members(self, machine: str) -> None:
+        try:
+            doc = bobreport.load_digest(self.home)
+            ent = (doc.get("machines") or {}).get(machine)
+            if not isinstance(ent, dict):
+                return
+            ent["shop_members_ts"] = bobreport._utc_now_iso()
+            bobreport.save_digest(self.home, doc)
+        except Exception:
+            pass

@@ -1655,7 +1655,10 @@ class Client:
                 return
             if not who or (who.lower() in self._mine_nicks() and cmd != "KICK"):
                 return        # own QUIT/NICK; but a KICK *by* Jeeves still removes the kicked worker
-            if cmd in ("PART", "KICK"):
+            if cmd == "JOIN":
+                chan = parts[1].lstrip(":") if len(parts) > 1 else trailing
+                self._workers().on_join(who, chan)
+            elif cmd in ("PART", "KICK"):
                 chan = parts[1].lstrip(":") if len(parts) > 1 else trailing
                 gone = (parts[2].lstrip(":") if cmd == "KICK" and len(parts) > 2 else who)
                 # FR #5961: KICK of the chair clears presence; chair is not a worker/console.
@@ -4266,6 +4269,7 @@ class Client:
             issue_open=gitclaim.github_issue_open_checker(
                 home=self.home, cache=gitclaim.ISSUE_OPEN_SHARED_CACHE
             ),
+            names_refresh=lambda shop_ch: self.send(f"NAMES {shop_ch}"),
         )
         if status != "ok" or not isinstance(res, dict):
             self._cmd_reply(src, "assign", [f"assign: refused - {res}"])
