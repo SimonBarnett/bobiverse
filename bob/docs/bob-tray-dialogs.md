@@ -87,7 +87,7 @@ rows with workers `{irc nick}: {doing|idle}`, digest-driven extra pool families 
 
 ## Tray version label (FR #6924 / **FR #7247**)
 
-TipForm, About, and Status show **`bob <MSI VERSION> (<shortsha>)`** when a deployed identity file is present, else **`bob <MSI VERSION>`**. When the running **exe** and **scripts** come from different builds, the footer is **`bob <MSI> (exe <7hex> / scripts <7hex>)`**.
+TipForm, About, and Status show **`bob <MSI VERSION> (<shortsha>)`** when a deployed identity file is present, else **`bob <MSI VERSION>`**. **FR #7300:** the short SHA is the tray component (`tools\MANIFEST.json`); the footer does not paint a differing install-root MANIFEST next to it.
 
 - **Numeric part** comes only from install-root `VERSION` (or `BOBIVERSE_BOB_VERSION`). That file stays the MSI ProductVersion / ARP DisplayVersion (FR #1565 / #2948). Sync and hotpatches must **not** move `VERSION` off the MSI number.
 - **Exe short SHA** (what `tools\bob-tray.exe` was built from): `tools\MANIFEST.json` (`source_commit` / `workflow_commit` / `commit` / …) then `tools\provenance.txt`. This is the CI `bob-tray` artifact layout (exes + `MANIFEST.json` in one folder). Copying only the PE into `tools\` without that MANIFEST leaves the exe SHA unknown.
