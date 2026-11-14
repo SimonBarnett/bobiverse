@@ -1171,6 +1171,17 @@ class ChairJobs:
             )
         if healed:
             self.log("INFO stall-heal " + "; ".join(healed))
+        # FR #7334: idle author with the fewest commits, after 5 minutes stuck.
+        with contextlib.suppress(Exception):
+            recycled = gitclaim.maybe_recycle_stuck_no_eligible_reviewer(
+                self.digest_home,
+                idle=idle,
+                live=live,
+                now=self.clock(),
+                accepted=list(doc.get("accepted") or []),
+            )
+            if recycled:
+                self.log("INFO stall-heal " + "; ".join(recycled))
         last_bored = gitclaim.merge_last_bored(self.home, self.digest_home)
         digest_ts = ""
         digest_last_seen = []
