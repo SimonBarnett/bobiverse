@@ -189,6 +189,26 @@ def resolve_install_root(raw: str | None = None) -> str:
     return _default_install_root()
 
 
+def maybe_sync_install_skills(*, install_root: str | None = None, job_busy: bool = False) -> dict:
+    """FR #7238: overlay origin `.grok/skills` between jobs (never mid-ACK)."""
+    root = str(install_root or os.environ.get("BOB_INSTALL_ROOT") or "").strip()
+    if not root:
+        return {"ok": False, "reason": "no-install", "sha": ""}
+    try:
+        import sync_install_skills as sis
+    except ImportError:
+        scripts = _common_scripts_dir()
+        sys.path.insert(0, str(scripts))
+        try:
+            import sync_install_skills as sis  # type: ignore
+        except ImportError:
+            return {"ok": False, "reason": "no-helper", "sha": ""}
+    try:
+        return sis.sync_install_skills_from_origin(root, job_busy=job_busy)
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "reason": type(exc).__name__, "sha": ""}
+
+
 def _common_scripts_dir() -> Path:
     """Resolve common/scripts beside bob/scripts (worktree or install layout)."""
     here = Path(__file__).resolve().parent
@@ -809,28 +829,47 @@ def capture_opencode_model_env_at_start(env: Optional[dict] = None) -> Optional[
     return _OPENCODE_MODEL_ENV_AT_START
 
 
+# FR #7196: provider/region cues only. Bare "model unavailable" matches job/skill/prompt
+# text and the wrapper's own message; permission/tool rejects are not model misses.
+_OPENCODE_UNAVAIL_CUES = (
+    "not available in your region",
+    "unavailable in your region",
+    "provider_model_not_found",
+    "model not found",
+    "no such model",
+)
+_OPENCODE_UNAVAIL_NOISE = (
+    "permission requested",
+    "external_directory",
+    "rejected permission",
+    "this specific tool call",
+    "the user rejected",
+)
+_OPENCODE_UNAVAIL_PROVIDER = (
+    "not available in your region",
+    "unavailable in your region",
+    "provider_model_not_found",
+)
+
+
 def format_opencode_model_unavailable_error(
     text: str,
     *,
     model: str = "",
 ) -> Optional[str]:
-    """FR #6429: clear region/model-unavailable message; never invent a substitute model.
+    """FR #6429 / #7196: clear region/model-unavailable message; never invent a substitute model.
 
     Returns a human-facing error string when *text* looks like a missing/region-blocked
-    model, else ``None`` (caller keeps the original failure text).
+    model, else ``None`` (caller keeps the original failure text). Job, skill, and
+    permission/tool-call text must not trip this (FR #7196).
     """
     raw = str(text or "")
     low = raw.lower()
-    cues = (
-        "not available in your region",
-        "unavailable in your region",
-        "model not found",
-        "model unavailable",
-        "unknown model",
-        "provider_model_not_found",
-        "no such model",
-    )
-    if not any(c in low for c in cues):
+    if any(n in low for n in _OPENCODE_UNAVAIL_NOISE) and not any(
+        c in low for c in _OPENCODE_UNAVAIL_PROVIDER
+    ):
+        return None
+    if not any(c in low for c in _OPENCODE_UNAVAIL_CUES):
         return None
     mid = str(model or "").strip() or "(configured OpenCode model)"
     if "region" in low and ("unavailable" in low or "not available" in low):
@@ -842,6 +881,51 @@ def format_opencode_model_unavailable_error(
     return (
         "OpenCode model unavailable: %s. No substitute model was selected."
     ) % mid
+
+
+def opencode_needs_model_line(model: str, reason: str) -> str:
+    """FR #7196: shop/digest line; never 'worker ready' / ACK."""
+    mid = str(model or "").strip() or "(configured OpenCode model)"
+    why = str(reason or "unavailable").strip() or "unavailable"
+    return "needs model: %s unavailable (%s)" % (mid, why)
+
+
+def probe_opencode_model_listing_unavailable(model: str, listing: str) -> str:
+    """Return a short reason when *listing* is a true provider miss; else '' (unknown/ok)."""
+    msg = format_opencode_model_unavailable_error(listing or "", model=model)
+    if not msg:
+        return ""
+    if "region" in msg.lower():
+        return "not available in your region"
+    return "unavailable"
+
+
+def probe_opencode_models_listing(
+    exe: str | None = None,
+    *,
+    listing: str | None = None,
+    timeout: float = 8.0,
+) -> str:
+    """Cheap ``opencode models`` stdout+stderr; empty on timeout/fail (do not block ready)."""
+    if listing is not None:
+        return str(listing)
+    env_list = os.environ.get("BOB_OPENCODE_PROBE_LISTING")
+    if env_list is not None:
+        return env_list
+    cmd = str(exe or "").strip()
+    if not cmd:
+        return ""
+    try:
+        p = subprocess.run(
+            [cmd, "models"],
+            capture_output=True,
+            text=True,
+            timeout=float(timeout),
+            check=False,
+        )
+        return ((p.stdout or "") + "\n" + (p.stderr or "")).strip()
+    except Exception:
+        return ""
 
 
 
@@ -2802,18 +2886,12 @@ def restart_skill_dag_mcp_stdio_children(
 OPENCODE_SKILL_DAG_MCP_RELPATH = "opencode.json"
 
 
-def skill_dag_mcp_argv(
-    worker_cwd: str,
-    *,
-    job_worktree: str | Path | None = None,
-    source_file: str | Path | None = None,
-) -> list[str]:
-    """``python`` + script + vision ``--root`` / optional ``--job-worktree`` (FR #6898)."""
-    script = skill_dag_mcp_script_path(worker_cwd, source_file=source_file)
-    argv = ["python", script.as_posix()]
+def skill_dag_mcp_skill_roots(worker_cwd: str) -> list[Path]:
+    """Existing skill-dag roots the seat may read (FR #6898 / #7196)."""
     cwd = Path(worker_cwd).resolve()
     parent = cwd.parent
     home_skills = Path.home() / ".grok" / "skills"
+    found: list[Path] = []
     for root in (
         cwd / ".grok" / "skills",
         parent / "bob" / ".grok" / "skills",
@@ -2823,9 +2901,23 @@ def skill_dag_mcp_argv(
     ):
         try:
             if root.is_dir():
-                argv.extend(["--root", root.resolve().as_posix()])
+                found.append(root.resolve())
         except OSError:
             continue
+    return found
+
+
+def skill_dag_mcp_argv(
+    worker_cwd: str,
+    *,
+    job_worktree: str | Path | None = None,
+    source_file: str | Path | None = None,
+) -> list[str]:
+    """``python`` + script + vision ``--root`` / optional ``--job-worktree`` (FR #6898)."""
+    script = skill_dag_mcp_script_path(worker_cwd, source_file=source_file)
+    argv = ["python", script.as_posix()]
+    for root in skill_dag_mcp_skill_roots(worker_cwd):
+        argv.extend(["--root", root.as_posix()])
     if job_worktree is not None:
         wt = Path(job_worktree)
         if wt.is_dir():
@@ -2833,12 +2925,24 @@ def skill_dag_mcp_argv(
     return argv
 
 
+def opencode_skill_read_permission_block(worker_cwd: str) -> dict:
+    """Read-only ``external_directory`` allow for skill-dag roots only (FR #7196)."""
+    allow: dict[str, str] = {}
+    edit: dict[str, str] = {}
+    for root in skill_dag_mcp_skill_roots(worker_cwd):
+        key = str(root)
+        allow[key] = "allow"
+        edit[key] = "deny"
+    return {"external_directory": allow, "edit": edit}
+
+
 def opencode_skill_dag_mcp_document(
     worker_cwd: str,
     *,
     job_worktree: str | Path | None = None,
 ) -> dict:
-    """Project ``opencode.json`` fragment with local skill-dag MCP (FR #6898)."""
+    """Project ``opencode.json`` fragment with local skill-dag MCP (FR #6898 / #7196)."""
+    perm = opencode_skill_read_permission_block(worker_cwd)
     return {
         "$schema": "https://opencode.ai/config.json",
         "mcp": {
@@ -2847,6 +2951,7 @@ def opencode_skill_dag_mcp_document(
                 "command": skill_dag_mcp_argv(worker_cwd, job_worktree=job_worktree),
             }
         },
+        "permission": perm,
     }
 
 
@@ -2875,6 +2980,21 @@ def write_opencode_skill_dag_mcp_config(
         mcp = {}
     mcp["skill-dag"] = incoming["mcp"]["skill-dag"]
     data["mcp"] = mcp
+    incoming_perm = incoming.get("permission")
+    if isinstance(incoming_perm, dict):
+        perm = data.get("permission")
+        if not isinstance(perm, dict):
+            perm = {}
+        for key, block in incoming_perm.items():
+            if isinstance(block, dict):
+                cur = perm.get(key)
+                if not isinstance(cur, dict):
+                    cur = {}
+                cur.update(block)
+                perm[key] = cur
+            else:
+                perm[key] = block
+        data["permission"] = perm
     if "$schema" not in data:
         data["$schema"] = incoming["$schema"]
     cfg.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
@@ -3023,10 +3143,18 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             r"New-Item -ItemType Directory -Force -Path (Split-Path -Parent $fuelLog) | Out-Null",
             r"New-Item -ItemType Directory -Force -Path $pauseStateDir | Out-Null",
             r"New-Item -ItemType Directory -Force -Path (Split-Path -Parent $turnsLog) | Out-Null",
-            r"function Write-OpencodeTurnMarker([string]$Type, [int]$TurnNumber) {",
-            r"    # FR #6157: durable turn markers for BoredEmitter / Supervisor",
-            r"    $entry = @{ type = $Type; ts = (Get-Date -Format o); turn_number = $TurnNumber } | ConvertTo-Json -Compress",
-            r"    Add-Content -LiteralPath $turnsLog -Value $entry -ErrorAction SilentlyContinue",
+            r"function Write-OpencodeTurnMarker([string]$Type, [int]$TurnNumber, [string]$Status, [string]$Err) {",
+            r"    # FR #6157 / #7201: durable turn markers; error status trips failed-turn retry/GIVEUP",
+            r"    $entry = @{ type = $Type; ts = (Get-Date -Format o); turn_number = $TurnNumber }",
+            r"    if ($Status) { $entry.status = $Status }",
+            r"    if ($Err) { $entry.error = $Err }",
+            r"    Add-Content -LiteralPath $turnsLog -Value ($entry | ConvertTo-Json -Compress) -ErrorAction SilentlyContinue",
+            r"}",
+            r"function Write-OpencodeJobGiveup([string]$JobKey, [string]$Reason) {",
+            r"    if (-not $JobKey) { return }",
+            r"    $g = 'GIVEUP ' + $JobKey + ' ' + $Reason",
+            r"    if ($env:BOB_OUTBOX) { Add-Content -LiteralPath $env:BOB_OUTBOX -Value $g -ErrorAction SilentlyContinue }",
+            r"    Write-Output $g",
             r"}",
             r"function Write-OpencodeJobNack([string]$JobKey, [string]$Reason) {",
             r"    if (-not $JobKey) { return }",
@@ -3211,16 +3339,22 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             r"        }",
             r"    }",
             # FR #6429: clear region/model-unavailable (no silent fail, no substitute model).
-            r"    $regionCue = 'not available in your region|unavailable in your region|model not found|model unavailable|unknown model|provider_model_not_found|no such model'",
-            r"    if ($exitCode -ne 0 -and -not $hitLimit -and -not $timedOut -and ($scan -match $regionCue)) {",
+            r"    $regionCue = 'not available in your region|unavailable in your region|provider_model_not_found|model not found|no such model'",
+            r"    $permNoise = 'permission requested|external_directory|rejected permission|this specific tool call|The user rejected'",
+            r"    if ($exitCode -ne 0 -and -not $hitLimit -and -not $timedOut -and ($scan -notmatch $permNoise) -and ($scan -match $regionCue)) {",
             r"        $availMsg = ('OpenCode model unavailable: ' + $model + ' (set OpenCode console region to Global for paid V4 Pro, or pick a model available in this region). No substitute model was selected.')",
             r"        Write-Output $availMsg",
             r"        [Console]::Error.WriteLine($availMsg)",
             r"        $availEntry = @{ pid = $PID; ts = (Get-Date -Format o); model = $model; text = $availMsg } | ConvertTo-Json -Compress",
             r"        Add-Content -Path $fuelLog -Value $availEntry -ErrorAction SilentlyContinue",
+            r"        if ($jobKey) { Write-OpencodeJobGiveup $jobKey ('model unavailable (' + $model + ')') }",
             r"    }",
             r"    if ($proc) { try { $proc.Dispose() } catch { } }",
-            r"    } finally { Write-OpencodeTurnMarker 'turn_ended' $turnN }",
+            r"    } finally {",
+            r"        $teStatus = ''; $teErr = ''",
+            r"        if ($exitCode -ne 0) { $teStatus = 'error'; $teErr = ('exit ' + $exitCode) }",
+            r"        Write-OpencodeTurnMarker 'turn_ended' $turnN $teStatus $teErr",
+            r"    }",
             r"}",
             r"function Split-OpencodeFrame([string]$raw) {",
             r"    $prefix = '@@BOBJOB1|'",
@@ -4967,9 +5101,17 @@ class CursorTurnWatcher:
         if self._active and self._transcript_turn_ended_count(d) > self._te_count_at_start:
             self._active = False
             fired = "ended"
-            if self._on_ended:
-                with contextlib.suppress(Exception):
-                    self._on_ended(self._turn, now)
+            kw = {}
+            tp = self._transcript_file(d)
+            te = cursor_transcript_last_turn_ended(tp) if tp else None
+            if te is not None and str(te.get("status") or "").lower() == "error":
+                kw = {
+                    "error": True,
+                    "error_class": "turn_ended",
+                    "error_line": str(te.get("error") or "status=error")[:200],
+                }
+            with contextlib.suppress(Exception):
+                _notify_turn_ended_cb(self._on_ended, self._turn, now, **kw)
             return fired
         if self._active and now - self._last_mtime >= self.quiet_s:
             # FR #4670: a quiet store.db during a tool call is not the end of the turn.
@@ -4977,9 +5119,8 @@ class CursorTurnWatcher:
                 return None
             self._active = False
             fired = "ended"
-            if self._on_ended:
-                with contextlib.suppress(Exception):
-                    self._on_ended(self._turn, now)
+            with contextlib.suppress(Exception):
+                _notify_turn_ended_cb(self._on_ended, self._turn, now)
         return fired
 
     def run(self) -> None:
@@ -5044,8 +5185,17 @@ class GrokTurnWatcher:
             except Exception:
                 pass
         elif typ == "turn_ended" and self._on_ended:
+            st = str(obj.get("status") or "").lower()
+            err_txt = str(obj.get("error") or "")
+            kw = {}
+            if st == "error" or err_txt:
+                kw = {
+                    "error": True,
+                    "error_class": str(obj.get("error_class") or "turn_ended"),
+                    "error_line": (err_txt or st or "status=error")[:200],
+                }
             try:
-                self._on_ended(turn_i, float(wall))
+                _notify_turn_ended_cb(self._on_ended, turn_i, float(wall), **kw)
             except Exception:
                 pass
 
@@ -5287,6 +5437,44 @@ def seat_release_giveup_line(job_key: str, reason: str) -> str:
     if key.lower() == "job":
         return f"GIVEUP job {why}"
     return f"GIVEUP {key} {why}"
+
+
+FAILED_TURN_RETRY_MAX = 1
+_FAILED_TURN_SECRET_RX = re.compile(
+    r"(?i)(?:ghp_|github_pat_|gho_|sk-|Bearer\s+)\S+"
+)
+
+
+def sanitize_failed_turn_reason(error_class: str, first_line: str) -> str:
+    """FR #7201: one-line GIVEUP reason (class + first line, no secrets)."""
+    cls = re.sub(r"[^\w.-]+", "", str(error_class or "error").strip())[:48] or "error"
+    line = " ".join(str(first_line or "").split())
+    line = _FAILED_TURN_SECRET_RX.sub("<redacted>", line)[:160]
+    if not line:
+        return cls
+    return "%s: %s" % (cls, line)
+
+
+def failed_turn_next_action(retry_count: int, *, max_retries: int = FAILED_TURN_RETRY_MAX) -> str:
+    """``retry`` until the bound, then ``giveup`` (FR #7201)."""
+    if int(retry_count) < int(max_retries):
+        return "retry"
+    return "giveup"
+
+
+def failed_turn_giveup_line(job_key: str, error_class: str, first_line: str) -> str:
+    why = "failed-turn " + sanitize_failed_turn_reason(error_class, first_line)
+    return seat_release_giveup_line(job_key, why)
+
+
+def _notify_turn_ended_cb(cb, turn, wall, **kw) -> None:
+    """Call turn-ended callback with optional error kwargs (FR #7201)."""
+    if cb is None:
+        return
+    try:
+        cb(turn, wall, **kw)
+    except TypeError:
+        cb(turn, wall)
 
 
 def out_of_fuel_nack_line(job_key: str) -> str:
@@ -8410,9 +8598,10 @@ class BoredEmitter:
       * FR #4784: before ``!bored`` reason ``done-miss`` or ``ack-stale``, post
         ``GIVEUP <TYPE> owner/repo#N done-miss|ack-stale`` so Jeeves frees the accepted row
         (local ACK clear alone leaves ``nak busy`` forever while the PR stays open);
-      * FR #4753: cursor transcript ``turn_ended`` with ``status=error`` counts as turn end (done-miss);
-        an open ACK with no activity past ``ack_stale_s`` clears ACK and ``!bored`` reason ``ack-stale``
-        even when ``release_gen`` was bumped by a turn that never closed;
+      * FR #4753 / #7201: cursor/grok/opencode ``turn_ended`` with ``status=error`` (or an error
+        field) while ACK is open retries the turn once, then ``GIVEUP … failed-turn <class>: <line>``
+        so Jeeves can re-offer; it never sits idle holding the ACK. Quiet turn-end without error
+        still uses done-miss. An open ACK with no activity past ``ack_stale_s`` still ``ack-stale``;
       * FR #2996: done-miss release sets ``_release_gen = _turn_gen`` (same as normal turn-end) so later
         ``nak``/``idle`` are not gated forever; ``_run`` clamps past-due waits to 0.5s (no ``wait(0)`` spin);
       * FR #3012: agent 402 / usage-exhausted is **out-of-fuel** — immediate ``GIVEUP … out-of-fuel``,
@@ -8522,6 +8711,9 @@ class BoredEmitter:
         self._done_miss_reminded = False
         self._done_miss_release_pending = False
         self.done_miss_remind_fn: Optional[Callable[[str], None]] = None
+        # FR #7201: error turn while ACK open — retry once then GIVEUP.
+        self._failed_turn_retries: dict[str, int] = {}
+        self.failed_turn_retry_fn: Optional[Callable[[str], None]] = None
         # FR #4784: job key for GIVEUP before !bored on done-miss / ack-stale release.
         self._release_giveup_key: Optional[str] = None
         self.seat_release_giveup_fn: Optional[Callable[[str, str], None]] = None
@@ -9002,6 +9194,9 @@ class BoredEmitter:
         *,
         turn: int | None = None,
         sid: str | None = None,
+        error: bool = False,
+        error_class: str = "",
+        error_line: str = "",
     ) -> None:
         """FR #2802: grok turn_ended — release harvest hold when at/after DONE, or idle reason=turn."""
         clear_hard_fuel = False
@@ -9024,6 +9219,53 @@ class BoredEmitter:
                 # FR #4827: arm even past ack_stale_s — the turn ending is the release signal.
                 if self._ack_open and self._ack_at is not None:
                     key = self._ack_job_key or "job"
+                    if error:
+                        n = int(self._failed_turn_retries.get(key, 0))
+                        if failed_turn_next_action(n) == "retry":
+                            self._failed_turn_retries[key] = n + 1
+                            self.log(
+                                "failed-turn: retry %s/1 for %s"
+                                % (self._failed_turn_retries[key], key)
+                            )
+                            fn = self.failed_turn_retry_fn or self.done_miss_remind_fn
+                            if fn is not None:
+                                try:
+                                    self._cv.release()
+                                    try:
+                                        fn(key)
+                                    finally:
+                                        self._cv.acquire()
+                                except Exception as e:  # noqa: BLE001
+                                    self.log(
+                                        "failed-turn: retry inject failed %s"
+                                        % type(e).__name__
+                                    )
+                            self._cv.notify_all()
+                            return
+                        why = "failed-turn " + sanitize_failed_turn_reason(
+                            error_class, error_line
+                        )
+                        self._ack_open = False
+                        self._ack_job_key = None
+                        self._clear_done_miss()
+                        self._failed_turn_retries.pop(key, None)
+                        self._release_giveup_key = key
+                        self._fast_done_miss_streak = 0
+                        self._done_miss_release_pending = False
+                        self.log("failed-turn: GIVEUP %s reason=%s" % (key, why))
+                        try:
+                            self._cv.release()
+                            try:
+                                self._fire_seat_release_giveup(why)
+                            finally:
+                                self._cv.acquire()
+                        except Exception as e:  # noqa: BLE001
+                            self.log(
+                                "failed-turn: GIVEUP failed %s" % type(e).__name__
+                            )
+                        self._begin_harvest_hold(now)
+                        self._cv.notify_all()
+                        return
                     if self._done_miss_reminded:
                         # FR #6366 / #6370 MRB: decide() runs git/gh — schedule outside _cv.
                         decide = self.opencode_finish_decide_fn
@@ -9187,6 +9429,8 @@ class BoredEmitter:
                 else:
                     self._ack_open, self._ack_at, self._idle_since = True, now, None
                     self._ack_job_key = job
+                    if job:
+                        self._failed_turn_retries.pop(job, None)
                     # FR #3189: persist offered repo so Invoke-BobiverseHarvest targets the product.
                     if self.run_dir is not None and self._ack_job_key:
                         try:
@@ -9543,6 +9787,13 @@ class BoredEmitter:
         # FR #4784: GIVEUP open ACK to Jeeves before !bored on done-miss / ack-stale.
         if reason in ("done-miss", "ack-stale"):
             self._fire_seat_release_giveup(reason)
+        # FR #7238: pull merged skills between jobs (this send is idle).
+        try:
+            sk = maybe_sync_install_skills(job_busy=False)
+            if sk.get("sha"):
+                self.log(f"skills-sync sha={sk.get('sha')} reason={sk.get('reason')}")
+        except Exception:
+            pass
         ok = False
         try:
             ok = bool(self.send())
@@ -9777,6 +10028,7 @@ class Supervisor:
         # FR #2875: turn_ended with ACK open and no DONE → remind via run-dir inject, then release.
         if self.bored is not None:
             self.bored.done_miss_remind_fn = self._inject_done_miss_reminder
+            self.bored.failed_turn_retry_fn = self._inject_failed_turn_retry
             if (self.kind or "").strip().lower() == "opencode":
                 self.bored.opencode_finish_decide_fn = self._opencode_finish_decide
                 self.bored.job_end_cleanup_fn = self._opencode_job_end_cleanup
@@ -10217,9 +10469,15 @@ class Supervisor:
             except Exception as e:  # noqa: BLE001
                 self.log(f"relay: stale-replay check failed {type(e).__name__}")
 
-        def _on_ended(turn: Optional[int], wall: float) -> None:
+        def _on_ended(turn: Optional[int], wall: float, error: bool = False, error_class: str = "", error_line: str = "", **_k) -> None:
             if self.bored:
-                self.bored.turn_ended(turn=turn, sid=None)
+                self.bored.turn_ended(
+                    turn=turn,
+                    sid=None,
+                    error=bool(error),
+                    error_class=error_class,
+                    error_line=error_line,
+                )
             try:
                 n = self.relay.release_held_assigns()
                 if n and self.bored:
@@ -10283,7 +10541,7 @@ class Supervisor:
             if self.bored:
                 self.bored.turn_started(turn=turn, sid=sid)
 
-        def _on_ended(turn: Optional[int], wall: float) -> None:
+        def _on_ended(turn: Optional[int], wall: float, error: bool = False, error_class: str = "", error_line: str = "", **_k) -> None:
             sid = sid_box.get("sid")
             with contextlib.suppress(Exception):
                 pw = getattr(self, "_prompt_watch", None)
@@ -10291,7 +10549,13 @@ class Supervisor:
                     pw.note_activity()
             if self.bored:
                 # Use emitter clock for hold release; wall is only for logging/stale via hold_started mono.
-                self.bored.turn_ended(turn=turn, sid=sid)
+                self.bored.turn_ended(
+                    turn=turn,
+                    sid=sid,
+                    error=bool(error),
+                    error_class=error_class,
+                    error_line=error_line,
+                )
             # FR #2884: first turn_ended after spawn can end the startup inject/!bored hold.
             try:
                 self._maybe_ready_on_first_turn_ended(sid)
@@ -11353,6 +11617,26 @@ class Supervisor:
             # FR #2383: agent still alive/turning but never ACK'd via run-dir outbox.
             self._check_ack_miss(proc)
 
+    def _inject_failed_turn_retry(self, job_key: str) -> None:
+        """FR #7201: re-inject the last assign once after an error turn (bounded)."""
+        line = ""
+        with contextlib.suppress(Exception):
+            line = str(getattr(self.relay, "last_line", None) or getattr(self.relay, "last_unacked", None) or "")
+        key = (job_key or "").strip()
+        if line and key and (assign_job_key(line) or "").lower() == key.lower():
+            with self._lock:
+                proc = self.proc
+            if proc is None or proc.poll() is not None:
+                self.log(f"failed-turn: no live agent to retry {job_key}")
+                return
+            try:
+                self._inject_line(proc, line, sync=False)
+                self.log(f"failed-turn: re-injected assign for {job_key}")
+                return
+            except Exception as e:
+                self.log(f"failed-turn: re-inject failed {type(e).__name__}")
+        self._inject_done_miss_reminder(job_key)
+
     def _inject_done_miss_reminder(self, job_key: str) -> None:
         """FR #2875 / #6366: inject done-miss reminder (OpenCode: full finish frame)."""
         outbox = outbox_path_for_run(self.run_dir)
@@ -12320,6 +12604,12 @@ def run_agent(args, log: Log) -> int:
     if not folder.is_dir():
         log(f"worker: folder missing {folder}")
         return EXIT_USAGE
+    try:
+        os.environ["BOB_INSTALL_ROOT"] = str(args.install_root)
+        sk = maybe_sync_install_skills(install_root=str(args.install_root), job_busy=False)
+        log(f"skills-sync start sha={sk.get('sha')} reason={sk.get('reason')}")
+    except Exception:
+        pass
     dec, cursor_cmd, grok_exe, fuel = _choose(args, log, folder, "agent")
     opencode_cmd = resolve_opencode_cmd()
     dec = resolve_seat_decision(
@@ -12503,12 +12793,36 @@ def run_agent(args, log: Log) -> int:
     except Exception as e:
         log(f"worker: post-launch start_model digest failed {type(e).__name__}")
     # FR #6409 / #7180: worker ready means assignable (signed in). Else needs sign-in.
+    # FR #7196: OpenCode true provider/region miss -> needs model (never ready/ACK).
     try:
-        if getattr(sup, "_session_assignable", False):
+        oc_block = ""
+        if kind == "opencode" and getattr(sup, "_session_assignable", False):
+            oc_block = probe_opencode_model_listing_unavailable(
+                seat_model,
+                probe_opencode_models_listing(exe),
+            )
+        if oc_block:
+            hello = opencode_needs_model_line(seat_model, oc_block)
+            try:
+                sup._session_assignable = False
+            except Exception:
+                pass
+            if getattr(sup, "bored", None) is not None:
+                try:
+                    sup.bored.note_needs_signin()
+                except Exception:
+                    pass
+            if irc.say(irc.shop, hello):
+                log(f"worker: hello {hello}")
+            else:
+                log("worker: needs-model say failed")
+        elif getattr(sup, "_session_assignable", False):
             hello_model = actual if (kind == "grok" or actual) else seat_model
             if kind == "opencode" and actual:
                 hello_model = actual
-            hello = worker_hello_line(kind, model=hello_model or seat_model or actual, build=build)
+            hello = worker_hello_line(
+                kind, model=hello_model or seat_model or actual, build=build
+            )
             if irc.say(irc.shop, hello):
                 log(f"worker: hello {hello}")
             else:

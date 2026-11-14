@@ -2963,7 +2963,7 @@ function Ensure-BobiverseGithubToken {
       FR #7234: provision <InstallRoot>\config\github.token for LocalSystem bob-ear Copilot.
       Sources (first hit wins; names only in logs): env GH_TOKEN/GITHUB_TOKEN, profile
       .grok\bob\github.token, sibling product config\github.token, gh auth token (operator
-      session only — never under LocalSystem). ACL: SYSTEM + Administrators. Never prints
+      session only -- never under LocalSystem). ACL: SYSTEM + Administrators. Never prints
       the token value. Idempotent when the dest already has content.
     #>
     param(

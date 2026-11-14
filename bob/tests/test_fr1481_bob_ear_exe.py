@@ -41,7 +41,9 @@ def test_fr1481_start_bob_prefers_ear_exe():
     # MRB #1488: resolve exe after sync/self-update so a just-staged binary is preferred.
     i_sync = t.find("Sync-BobiverseFromRepo.ps1")
     i_upd = t.find("Update-BobiverseService.ps1")
-    i_use = t.find("$useEarExe = Test-Path -LiteralPath $earExe")
+    i_use = t.find("Select-BobEarLaunch")
+    if i_use < 0:
+        i_use = t.find("$useEarExe")
     assert i_sync > 0 and i_upd > 0 and i_use > i_upd
 
 
