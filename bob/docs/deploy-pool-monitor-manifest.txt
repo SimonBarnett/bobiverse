@@ -1,5 +1,6 @@
-# Pool-monitor deploy pin
+# Pool-monitor deploy pin (deploy note --- not a CI gate; FR #7179)
 # Behavior source sha: 4a7f54f6564c22d013d2b0fa577438f11034a537
+# FR #7179: build-bob-ear.yml builds the checked-out tip; provenance uses source_commit.
 # FR #7065: repin after FR #7035 python-status clear (bobreport/irc_agent).
 # Prior pin: ebc60c211af405eee17a28ca90a44141c7d736ed (FR #7039).
 # FR #6963: repin after irc_agent.py / bobiverse_build.py / Watch-BobTray.ps1 drift from 4ffaf334.
