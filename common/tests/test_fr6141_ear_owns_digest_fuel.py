@@ -61,10 +61,17 @@ def test_fr6141_ear_tick_calls_publish_local_peer_fuel():
     assert "_maybe_publish_digest_fuel" in src
 
 
-def test_fr6141_publish_posts_on_remaining_change(tmp_path: Path):
+def test_fr6141_publish_posts_on_remaining_change(tmp_path: Path, monkeypatch):
     home = tmp_path / "home"
     home.mkdir()
     mid = "redqueen"
+    # FR #7289: ear does not fetch Cursor; isolate fingerprint from live xAI
+    # keep-last-good stamps (remaining_last_attempt_at) so skip vs change is peer-only.
+    monkeypatch.setattr(bobreport, "fetch_live_xai_weekly", lambda: None)
+    monkeypatch.setattr(
+        bobreport, "enrich_peer_keep_last_good_xai_weekly", lambda peer, error=None: peer
+    )
+    monkeypatch.setattr(bobreport, "pool_fetch_due", lambda *a, **k: False)
     peer = {
         "ok": True,
         "id": mid,

@@ -1897,7 +1897,25 @@ function Get-BobTrayDigestPoolCatalog {
         } catch { }
     }
     $ogWhy = if ($noDigest) { 'no digest' } elseif ($null -eq $ogo) { 'digest pcent opencode-go missing' } else { '' }
-    $cur = Get-BobDigestPcentValue -Pcent $pc -Keys @('cursor-models', 'cursor', 'cursor_models')
+    # FR #7289: fleet Cursor lives on digest.fleet_pools.cursor (stale after Get-BobPoolStaleAfterSec / 2 min).
+    $cur = $null
+    $cuWhy = ''
+    $cuFleet = $null
+    if ($Digest) {
+        try { $cuFleet = $Digest.fleet_pools.cursor } catch { $cuFleet = $null }
+        if (-not $cuFleet) { try { $cuFleet = $Digest.cursor } catch { $cuFleet = $null } }
+        if ($cuFleet) {
+            $cur = ConvertTo-BobTrayIntOrNull $(try { $cuFleet.remaining } catch { $null })
+            $cuFresh = $null
+            try { $cuFresh = Get-BobPoolReadingFreshness -FetchedAt $(try { $cuFleet.fetched_at } catch { $null }) } catch { }
+            if ($cuFresh -and $cuFresh.state -eq 'stale') {
+                $cuWhy = 'fleet cursor stale'
+            }
+        }
+    }
+    if ($null -eq $cur) {
+        $cur = Get-BobDigestPcentValue -Pcent $pc -Keys @('cursor-models', 'cursor', 'cursor_models')
+    }
     if ($null -eq $cur -and $ent) {
         $cur = ConvertTo-BobTrayIntOrNull $(try { $ent.cursor_remaining_pct } catch { $null })
     }
@@ -1921,7 +1939,9 @@ function Get-BobTrayDigestPoolCatalog {
             } catch { }
         }
     }
-    $cuWhy = if ($noDigest) { 'no digest' } elseif ($null -eq $cur) { 'digest cursor remaining missing' } else { '' }
+    if (-not $cuWhy) {
+        $cuWhy = if ($noDigest) { 'no digest' } elseif ($null -eq $cur) { 'digest cursor remaining missing' } else { '' }
+    }
     $cop = $null
     $copObj = $null
     if ($Digest) {

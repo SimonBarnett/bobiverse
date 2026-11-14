@@ -1,7 +1,7 @@
-"""FR #7255: Jeeves fetches fleet-wide OpenCode + Copilot pools once per minute.
+"""FR #7255 / #7289: Jeeves fetches fleet-wide OpenCode, Copilot, and Cursor pools.
 
-Deterministic chair code. Credentials stay on the Jeeves box (token / Go key);
-digest names the source tag only. Per-pool backoff on rate-limit/error.
+Deterministic chair code. Credentials stay on the Jeeves box (token / Go key /
+CredMan Cursor access). Digest names the source tag only. Per-pool backoff.
 """
 from __future__ import annotations
 
@@ -17,6 +17,8 @@ STATE_NAME = "fleet-pools-state.json"
 POOL_COPILOT = "copilot"
 POOL_OC_FREE = "opencode-free"
 POOL_OC_GO = "opencode-go"
+POOL_CURSOR = "cursor"
+CURSOR_CREDMAN_TARGET = "Bobiverse/CursorAccess"
 
 
 def iso_utc(now: float) -> str:
@@ -198,6 +200,98 @@ def fetch_opencode_default(home: Path, now: float) -> dict:
     return {POOL_OC_FREE: free, POOL_OC_GO: go, "windows": doc.get("windows") or {}}
 
 
+def cursor_remaining_from_period(period: dict | None) -> int | None:
+    """Low-cost / auto pool remaining percent from Cursor period JSON."""
+    if not isinstance(period, dict):
+        return None
+    pu = period.get("planUsage") if isinstance(period.get("planUsage"), dict) else {}
+    raw = pu.get("autoPercentUsed")
+    if raw is None or raw == "":
+        raw = period.get("autoPercentUsed")
+    if raw is None or raw == "":
+        return None
+    try:
+        used = float(raw)
+    except (TypeError, ValueError):
+        return None
+    remain = int(round(100.0 - used))
+    if remain < 0:
+        return 0
+    if remain > 100:
+        return 100
+    return remain
+
+
+def resolve_cursor_token() -> tuple[str, str]:
+    """Walrus CredMan first, then env. Never log or return the value in *source*."""
+    target = (os.environ.get("BOB_CURSOR_CREDMAN_TARGET") or CURSOR_CREDMAN_TARGET).strip()
+    source = "credman:" + target
+    try:
+        import jeeves_settings_auth as ja
+
+        cred = ja.read_credman_generic(target)
+        pw = str((cred or {}).get("password") or "").strip()
+        if pw:
+            return pw, source
+    except Exception:
+        pass
+    env = (os.environ.get("BOB_CURSOR_ACCESS_TOKEN") or "").strip()
+    if env:
+        return env, "env:BOB_CURSOR_ACCESS_TOKEN"
+    return "", source
+
+
+def fetch_cursor_period(token: str) -> dict:
+    """POST Cursor dashboard GetCurrentPeriodUsage. Token never in errors."""
+    import urllib.error
+    import urllib.request
+
+    req = urllib.request.Request(
+        "https://api2.cursor.sh/aiserver.v1.DashboardService/GetCurrentPeriodUsage",
+        data=b"{}",
+        method="POST",
+        headers={
+            "Authorization": "Bearer " + token,
+            "Content-Type": "application/json",
+            "Connect-Protocol-Version": "1",
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            body = json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        raise RuntimeError("http-%s" % int(exc.code)) from None
+    except (urllib.error.URLError, OSError, ValueError, json.JSONDecodeError) as exc:
+        raise RuntimeError(type(exc).__name__) from None
+    if not isinstance(body, dict):
+        raise RuntimeError("parse")
+    return body
+
+
+def fetch_cursor_default(home: Path, now: float) -> dict:
+    iso = iso_utc(now)
+    token, source = resolve_cursor_token()
+    if not token:
+        return empty_meter(pool_id=POOL_CURSOR, source=source, error="no_key", now=now)
+    try:
+        period = fetch_cursor_period(token)
+    except Exception as exc:  # noqa: BLE001
+        return empty_meter(
+            pool_id=POOL_CURSOR, source=source, error=str(exc) or type(exc).__name__, now=now
+        )
+    rem = cursor_remaining_from_period(period)
+    ok = rem is not None
+    return {
+        "id": POOL_CURSOR,
+        "remaining": rem,
+        "fetched_at": iso if ok else None,
+        "last_attempt_at": iso,
+        "error": None if ok else "no-usage-data",
+        "source": source,
+        "fresh": bool(ok),
+    }
+
+
 def apply_fleet_pools_to_digest(home: Path, fleet: dict) -> None:
     import bobreport
 
@@ -206,6 +300,9 @@ def apply_fleet_pools_to_digest(home: Path, fleet: dict) -> None:
     copilot = fleet.get(POOL_COPILOT)
     if isinstance(copilot, dict):
         doc["copilot"] = copilot
+    cursor = fleet.get(POOL_CURSOR)
+    if isinstance(cursor, dict):
+        doc["cursor"] = cursor
     oc = {
         "free": (fleet.get(POOL_OC_FREE) or {}).get("remaining"),
         "go": (fleet.get(POOL_OC_GO) or {}).get("remaining"),
@@ -223,7 +320,7 @@ def public_fleet_section(fleet: dict | None) -> dict:
     if not isinstance(fleet, dict):
         return {}
     out = {}
-    for key in (POOL_COPILOT, POOL_OC_FREE, POOL_OC_GO):
+    for key in (POOL_COPILOT, POOL_OC_FREE, POOL_OC_GO, POOL_CURSOR):
         row = fleet.get(key)
         if isinstance(row, dict):
             out[key] = row
@@ -239,8 +336,9 @@ def tick_fleet_pools(
     force: bool = False,
     fetch_copilot: Callable[[Path, float], dict] | None = None,
     fetch_opencode: Callable[[Path, float], dict] | None = None,
+    fetch_cursor: Callable[[Path, float], dict] | None = None,
 ) -> dict:
-    """Fetch due OpenCode/Copilot pools; persist digest fleet_pools. No secrets in return."""
+    """Fetch due OpenCode/Copilot/Cursor pools; persist digest fleet_pools. No secrets."""
     now_f = time.time() if now is None else float(now)
     home_p = Path(home)
     state = _load_state(home_p)
@@ -255,6 +353,7 @@ def tick_fleet_pools(
     fleet = dict(prev)
     copilot_fn = fetch_copilot or fetch_copilot_default
     oc_fn = fetch_opencode or fetch_opencode_default
+    cursor_fn = fetch_cursor or fetch_cursor_default
 
     if pool_due(state, POOL_COPILOT, now_f, force=force):
         try:
@@ -326,6 +425,39 @@ def tick_fleet_pools(
                     source="go-zen-usage",
                 )
                 mark_attempt(state, pid, now_f, ok=False, error=type(exc).__name__)
+
+    if pool_due(state, POOL_CURSOR, now_f, force=force):
+        try:
+            row = cursor_fn(home_p, now_f)
+            if not isinstance(row, dict):
+                raise RuntimeError("parse")
+            ok = bool(row.get("fresh")) and not row.get("error")
+            err = str(row.get("error") or "") or None
+            rate = "429" in str(err or "") or "rate" in str(err or "").lower()
+            if ok:
+                fleet[POOL_CURSOR] = row
+            else:
+                fleet[POOL_CURSOR] = _keep_last(
+                    prev.get(POOL_CURSOR),
+                    error=err or "unread",
+                    now=now_f,
+                    pool_id=POOL_CURSOR,
+                    source=str(row.get("source") or ("credman:" + CURSOR_CREDMAN_TARGET)),
+                )
+                if row.get("remaining") is not None and fleet[POOL_CURSOR].get("remaining") is None:
+                    fleet[POOL_CURSOR]["remaining"] = row.get("remaining")
+                if row.get("fetched_at"):
+                    fleet[POOL_CURSOR]["fetched_at"] = row.get("fetched_at")
+            mark_attempt(state, POOL_CURSOR, now_f, ok=ok, error=err, rate_limited=rate)
+        except Exception as exc:  # noqa: BLE001
+            fleet[POOL_CURSOR] = _keep_last(
+                prev.get(POOL_CURSOR),
+                error=type(exc).__name__,
+                now=now_f,
+                pool_id=POOL_CURSOR,
+                source="credman:" + CURSOR_CREDMAN_TARGET,
+            )
+            mark_attempt(state, POOL_CURSOR, now_f, ok=False, error=type(exc).__name__)
 
     _save_state(home_p, state)
     apply_fleet_pools_to_digest(home_p, fleet)
