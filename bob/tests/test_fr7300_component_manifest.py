@@ -17,6 +17,7 @@ INSTALL = SCRIPTS / "Install-BobTrayHotpatch.ps1"
 EAR_SEL = SCRIPTS / "Select-BobEarLaunch.ps1"
 WATCH = REPO / "bob" / "tray" / "tools" / "Watch-BobTray.ps1"
 DOCS = REPO / "bob" / "docs" / "bob-tray-dialogs.md"
+COMMON_CS = REPO / "bob" / "tray" / "dialogs" / "BobDialogsCommon.cs"
 PS = os.environ.get("BOB_TEST_POWERSHELL") or shutil.which("powershell.exe") or "powershell.exe"
 
 ROOT_FULL = "47465810123456789abcdef0123456789abcde"
@@ -133,3 +134,7 @@ def test_fr7300_pins_in_scripts_and_docs():
     assert "FR #7300" in docs
     ear = EAR_SEL.read_text(encoding="utf-8")
     assert "FR #7300" in ear
+    cs = COMMON_CS.read_text(encoding="utf-8-sig")
+    assert "FR #7300" in cs
+    assert 'return "exe " + exe + " / scripts " + scripts;' not in cs
+    assert "exe \u2026 / scripts" not in docs and "exe ... / scripts" not in docs
