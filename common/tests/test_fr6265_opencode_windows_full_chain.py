@@ -92,14 +92,15 @@ def test_fr6265_serialized_payload_survives_receiver_digest_and_tray_export(
     }
     payload = bobreport.build_peer_fuel_merge_payload(peer, MID)
     assert payload is not None
-    assert "opencode_windows" in payload
-    assert payload["pcent"]["opencode-go"] == 28
+    assert "opencode_windows" not in payload
+    assert "opencode-go" not in (payload.get("pcent") or {})
+    assert payload["pcent"]["grok-chat"] == 74
 
     # Actual serialized emitter body (not a hand-built dict bypass).
     wire = json.dumps(payload, separators=(",", ":"), default=str).encode("utf-8")
     parsed = bobcallback._parse_json_body(wire, scan_secret=True)
     assert isinstance(parsed, dict)
-    assert "opencode_windows" in parsed
+    assert "opencode_windows" not in parsed
 
     code, _body = bobcallback.handle_report_post(
         {"Content-Type": "application/json"},
@@ -112,14 +113,15 @@ def test_fr6265_serialized_payload_survives_receiver_digest_and_tray_export(
     digest = bobreport.build_digest_object(tmp_path, "Jeeves")
     machines = digest.get("machines") or {}
     exported = machines.get(MID) or {}
-    assert exported.get("pcent", {}).get("opencode-go") == 28
-    _assert_slab_windows(exported["opencode_windows"])
+    # FR #7366: fleet OpenCode is not echoed per machine.
+    assert "opencode-go" not in (exported.get("pcent") or {})
+    assert "opencode_windows" not in exported
+    assert (exported.get("pcent") or {}).get("grok-chat") == 74
 
-    # Digest-only tray consumption boundary (export_machine_for_tray keys).
     ent = (bobreport.load_digest(tmp_path).get("machines") or {}).get(MID) or {}
     tray = bobreport.export_machine_for_tray(tmp_path, MID, ent)
-    assert tray.get("pcent", {}).get("opencode-go") == 28
-    _assert_slab_windows(tray["opencode_windows"])
+    assert "opencode-go" not in (tray.get("pcent") or {})
+    assert "opencode_windows" not in tray
 
 
 def test_fr6265_unknown_window_never_becomes_zero_through_chain(
@@ -155,44 +157,25 @@ def test_fr6265_unknown_window_never_becomes_zero_through_chain(
     exported = (bobreport.build_digest_object(tmp_path, "Jeeves").get("machines") or {}).get(
         MID
     ) or {}
-    wins = exported["opencode_windows"]
-    for wid in ("rolling", "week", "month"):
-        assert wins[wid]["status"] == "unknown"
-        assert wins[wid].get("used_pct") is None
-        assert wins[wid].get("remaining_pct") is None
+    assert "opencode_windows" not in exported
     assert "opencode-go" not in (exported.get("pcent") or {})
 
 
 def test_fr6265_pre_6147_merge_field_list_drops_windows_pin():
-    """Pin the deployed-hub class: without opencode_windows in MERGE fields, pcent
-    survives and windows vanish (5f0ac20a / PR #6212 vs a40d3bbe / FR #6147)."""
-    assert "opencode_windows" in bobreport._MERGE_PEER_FIELDS
-    assert "opencode_windows" in bobreport._TRAY_MACHINE_EXPORT_KEYS
+    """FR #7366: machine merge never retains fleet OpenCode windows or pcent.opencode-go."""
+    assert "opencode_windows" not in bobreport._MERGE_PEER_FIELDS
+    assert "opencode_windows" not in bobreport._TRAY_MACHINE_EXPORT_KEYS
 
-    doc = {"v": 1, "machines": {}}
-    stale_fields = tuple(
-        k for k in bobreport._MERGE_PEER_FIELDS if k != "opencode_windows"
-    )
     payload = {
         "op": "merge",
         "machine": MID,
-        "pcent": {"opencode-go": 28},
+        "pcent": {"opencode-go": 28, "grok-chat": 10},
         "opencode_windows": SLAB_WINDOWS,
         "lastSeen": FETCHED,
     }
-    # Simulate pre-6147 hub: temporarily drop the field from the allowlist.
-    original = bobreport._MERGE_PEER_FIELDS
-    try:
-        bobreport._MERGE_PEER_FIELDS = stale_fields
-        bobreport._apply_merge_payload(doc, MID, payload)
-    finally:
-        bobreport._MERGE_PEER_FIELDS = original
-    ent = doc["machines"][MID]
-    assert ent["pcent"]["opencode-go"] == 28
-    assert "opencode_windows" not in ent
-
-    # Current allowlist retains windows (control).
     doc2 = {"v": 1, "machines": {}}
     bobreport._apply_merge_payload(doc2, MID, payload)
-    assert "opencode_windows" in doc2["machines"][MID]
-    _assert_slab_windows(doc2["machines"][MID]["opencode_windows"])
+    ent = doc2["machines"][MID]
+    assert "opencode_windows" not in ent
+    assert "opencode-go" not in (ent.get("pcent") or {})
+    assert ent["pcent"]["grok-chat"] == 10

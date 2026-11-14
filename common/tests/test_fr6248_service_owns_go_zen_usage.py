@@ -91,7 +91,7 @@ def test_service_enrich_publish_fingerprint_includes_windows(monkeypatch):
     fp = bobreport.peer_fuel_fingerprint(peer)
     assert "opencode_windows=" in fp
     body = bobreport.build_peer_fuel_merge_payload(peer, "marchhare")
-    assert body["opencode_windows"]["week"]["source"] == opencode_fuel.GO_ZEN_USAGE_SOURCE
+    assert "opencode_windows" not in body
 
 
 def test_digest_merge_retains_three_windows():
@@ -110,10 +110,8 @@ def test_digest_merge_retains_three_windows():
         },
     )
     ent = doc["machines"]["marchhare"]
-    assert ent["opencode_windows"]["rolling"]["used_pct"] == 0
-    assert ent["opencode_windows"]["week"]["used_pct"] == 72
-    assert ent["opencode_windows"]["month"]["used_pct"] == 36
-    assert ent["opencode_windows"]["week"]["remaining_pct"] == 28
+    assert "opencode_windows" not in ent
+    assert "opencode-go" not in (ent.get("pcent") or {})
 
 
 def test_tray_save_handoff_is_noop_source_pin():

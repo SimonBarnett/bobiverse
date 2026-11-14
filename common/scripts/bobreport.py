@@ -253,8 +253,7 @@ _MERGE_PEER_FIELDS = (
     # FR #5690: FX age + rate so tray can show freshness; server can unify GBP.
     "overage_fetched_at",
     "usd_gbp_rate",
-    # FR #6147: OpenCode Go rolling/weekly/monthly window records for digest paint.
-    "opencode_windows",
+    # FR #7366: opencode_windows is fleet-owned (Jeeves fleet_pools), not a machine merge field.
     # FR #6773: install sync health ("behind N, reason") when ff-only fails.
     "sync",
     # FR #7238: origin SHA of overlayed install `.grok/skills` (path stamp only).
@@ -361,15 +360,34 @@ _TRAY_MACHINE_EXPORT_KEYS = (
     "python",
     "grok_account",
     "opencode_account",
-    "opencode_windows",
     "xai_weekly_used_pct",
     "xai_weekly_source",
     "xai_weekly_fetched_at",
     "xai_weekly",
     "xai_auth",
-    # FR #7178: per-machine Copilot pool contribution (tray also reads top-level).
-    "copilot",
 )
+# FR #7366: Jeeves fleet meters must not stick on machines.* (stale ear copies).
+_FLEET_OWNED_MACHINE_KEYS = frozenset({"opencode_windows", "copilot", "opencode_fetched_at"})
+_FLEET_OWNED_PCENT_KEYS = frozenset({"opencode-go", "opencode-free", "opencode_go", "opencode_free"})
+
+
+def strip_fleet_owned_from_machine(ent: dict | None) -> dict:
+    """Drop fleet OpenCode / Copilot copies from a machine row (FR #7366)."""
+    if not isinstance(ent, dict):
+        return {}
+    for key in _FLEET_OWNED_MACHINE_KEYS:
+        ent.pop(key, None)
+    pc = ent.get("pcent")
+    if isinstance(pc, dict):
+        for key in list(pc):
+            folded = str(key or "").strip().lower().replace("_", "-")
+            if folded in ("opencode-go", "opencode-free"):
+                pc.pop(key, None)
+        if not pc:
+            ent.pop("pcent", None)
+    return ent
+
+
 WORKER_NICK_RE = re.compile(r"^w-([a-z0-9]+)-(\d+)_?$", re.I)
 
 HELP_TEXT = (
@@ -2499,6 +2517,8 @@ def _apply_merge_payload(doc: dict, mid: str, payload: dict) -> list[str]:
     for key in _MERGE_PEER_FIELDS:
         if key not in payload:
             continue
+        if key in _FLEET_OWNED_MACHINE_KEYS:
+            continue
         val = payload[key]
         # Explicit null / blank for clearable keys already popped above.
         if _clearable_empty(val) and key in _CLEARABLE_MERGE_FIELDS:
@@ -2529,17 +2549,8 @@ def _apply_merge_payload(doc: dict, mid: str, payload: dict) -> list[str]:
         cleaned = _sanitize_grok_account_label(val)
         if cleaned:
             ent[key] = cleaned
-    # FR #7178: sanitize machine copilot pool; promote fresher reading to digest top-level.
-    if "copilot" in payload and isinstance(payload.get("copilot"), dict):
-        try:
-            import copilot_dispatch as _cd7178
-
-            cleaned = _cd7178.ensure_public_pool(payload.get("copilot"))
-            ent["copilot"] = cleaned
-            prev_top = doc.get("copilot") if isinstance(doc.get("copilot"), dict) else None
-            doc["copilot"] = _cd7178.prefer_public_pool(prev_top, cleaned)
-        except Exception:  # noqa: BLE001
-            ent["copilot"] = payload.get("copilot")
+    # FR #7366: ignore machine Copilot / OpenCode posts; Jeeves fleet_pools owns them.
+    strip_fleet_owned_from_machine(ent)
     # FR #5690: unify GBP from USD with one rate after field writes.
     if "overage_usd" in payload and not _clearable_empty(payload.get("overage_usd")):
         _unify_overage_gbp_from_usd(ent, payload)
@@ -3718,6 +3729,7 @@ def export_machine_for_tray(
     # FR #7296: machines.<id>.xai aliases xai_weekly (per-machine ear meter).
     if "xai_weekly" in out and "xai" not in out:
         out["xai"] = out.get("xai_weekly")
+    strip_fleet_owned_from_machine(out)
     return out
 
 
@@ -4092,14 +4104,13 @@ def _digest_copilot_pool(home: Path, doc: dict | None = None) -> dict:
 
         best = cd.pool_for_digest(home)
         if isinstance(doc, dict):
+            fp = doc.get("fleet_pools")
+            fleet_copilot = fp.get("copilot") if isinstance(fp, dict) else None
             sticky = doc.get("copilot")
-            if isinstance(sticky, dict):
+            if isinstance(fleet_copilot, dict):
+                best = cd.prefer_public_pool(best, fleet_copilot)
+            elif isinstance(sticky, dict):
                 best = cd.prefer_public_pool(best, sticky)
-            machines = doc.get("machines")
-            if isinstance(machines, dict):
-                for ent in machines.values():
-                    if isinstance(ent, dict) and isinstance(ent.get("copilot"), dict):
-                        best = cd.prefer_public_pool(best, ent.get("copilot"))
         return cd.ensure_public_pool(best)
     except Exception:  # noqa: BLE001
         try:
@@ -4817,6 +4828,7 @@ def build_peer_fuel_merge_payload(peer: dict, machine_id: str) -> dict | None:
             payload[key] = cleaned
     if isinstance(peer.get("cursor_pools"), list):
         payload["cursor_pools"] = _coerce_cursor_pools(peer.get("cursor_pools"), machine_id=mid)
+    strip_fleet_owned_from_machine(payload)
     blob = json.dumps(payload, separators=(",", ":"), default=str)
     if looks_like_secret(blob):
         return None

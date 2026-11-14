@@ -159,11 +159,7 @@ def test_fr6312_hub_merge_roundtrip_opencode_account_and_window_reset(tmp_path: 
     exported = (digest.get("machines") or {}).get(MID) or {}
     assert exported.get("opencode_account") == "default"
     assert "password=" not in json.dumps(exported)
-    out_wins = exported.get("opencode_windows") or {}
-    assert out_wins["rolling"].get("resets_at")
-    assert out_wins["rolling"].get("reset_label") == "2h 0m"
-    assert out_wins["week"].get("error") == "reset unavailable"
-    assert out_wins["week"].get("resets_at") in (None, "")
+    assert "opencode_windows" not in exported
 
     # Null clear via cleared[] (same semantics as grok_account).
     clear_payload = {
@@ -185,8 +181,7 @@ def test_fr6312_hub_merge_roundtrip_opencode_account_and_window_reset(tmp_path: 
         MID
     ) or {}
     assert after.get("opencode_account") in (None, "")
-    # Windows must not be dropped by the account clear.
-    assert isinstance(after.get("opencode_windows"), dict)
+    assert "opencode_windows" not in after
 
 
 def test_fr6312_webhooks_doc_names_opencode_account():
