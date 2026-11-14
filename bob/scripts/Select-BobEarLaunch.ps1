@@ -35,8 +35,15 @@ function Select-BobEarLaunch {
         try {
             $row.Sha256 = [string](Get-FileHash -LiteralPath $earExe -Algorithm SHA256).Hash
         } catch { }
-        $man = Join-Path $InstallRoot 'MANIFEST.json'
-        if (Test-Path -LiteralPath $man -PathType Leaf) {
+        # FR #7300: ear source= reads the ear component MANIFEST (next to bob-ear.exe), not root.
+        $manCandidates = @(
+            (Join-Path $ScriptDir 'MANIFEST.json'),
+            (Join-Path $ScriptDir 'bob-ear.MANIFEST.json'),
+            (Join-Path $InstallRoot 'scripts\MANIFEST.json'),
+            (Join-Path $InstallRoot 'MANIFEST.json')
+        )
+        foreach ($man in $manCandidates) {
+            if (-not (Test-Path -LiteralPath $man -PathType Leaf)) { continue }
             try {
                 $j = Get-Content -LiteralPath $man -Raw -Encoding UTF8 | ConvertFrom-Json
                 foreach ($k in @('source_commit', 'workflow_commit', 'commit')) {
@@ -44,6 +51,7 @@ function Select-BobEarLaunch {
                     if ($v.Trim()) { $row.SourceCommit = $v.Trim(); break }
                 }
             } catch { }
+            if ($row.SourceCommit) { break }
         }
         $verFile = Join-Path $InstallRoot 'VERSION'
         if (Test-Path -LiteralPath $verFile -PathType Leaf) {
