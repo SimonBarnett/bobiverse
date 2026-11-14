@@ -12168,6 +12168,7 @@ def assign_row(
     fetch_issue=None,
     fetch_pr=None,
     coderabbit_lookup=None,
+    names_refresh=None,
 ) -> tuple[str, dict | str]:
     """Chair-driven manual assign (t849u): stamp ``offered_to`` on one named unaccepted row.
 
@@ -12179,8 +12180,10 @@ def assign_row(
     CodeRabbit current-head hold. Intentional exception (FR #4336): ordinary ``!assign`` may
     still hand out ``needs_human`` FR/MRB rows that auto-offer blocks.
 
-    FR #3400: refuse assign to a nick not in the shop (not a live seat). If the named job is only
+    FR #3400 / #7186: refuse assign to a nick not in #{machine} membership (JOIN/NAMES/PART),
+    never because they have not sent ``!bored``. If the named job is only
     on ``accepted`` under a departed nick, release it (prior ACK void) then offer.
+    ``names_refresh(shop)`` (optional) is invoked once before a presence refuse.
 
     FR #4422 / #4652: when the named open FR/MRB/FIX is missing from the unaccepted queue, fetch it from
     GitHub and enqueue it, then offer (instead of refusing "not in the unaccepted queue").
@@ -12204,19 +12207,39 @@ def assign_row(
     num = str(ident or "").strip().lstrip("#")
     live = live_seat_nicks(home)
     live_l = {n.lower() for n in live}
-    # FR #3400: refuse assign to a nick absent from the machine's worker_list when that
-    # list is non-empty (reconcile/PART already dropped them). Empty list = unknown
-    # presence (tests / cold digest) — do not block.
+    # FR #3400 / #7186: refuse assign to a nick absent from shop membership
+    # (worker_list filled by JOIN/NAMES, not !bored). Empty list = unknown
+    # presence (tests / cold digest) — do not block. Refresh NAMES once first.
     seat_mid = bobreport.parse_seat_nick(me)
     if seat_mid:
-        try:
-            dig = bobreport.load_digest(_root(home))
-            ent = (dig.get("machines") or {}).get(seat_mid[0]) or {}
-            shop_rows = bobreport._coerce_worker_list(ent.get("worker_list"))
-        except Exception:
-            shop_rows = []
-        if shop_rows and me.lower() not in {str(r.get("nick") or "").lower() for r in shop_rows}:
-            return "refused", f"{me}: not in the shop channel (not a live seat)"
+        def _shop_presence():
+            try:
+                dig = bobreport.load_digest(_root(home))
+                ent = (dig.get("machines") or {}).get(seat_mid[0]) or {}
+                shop_rows = bobreport._coerce_worker_list(ent.get("worker_list"))
+                members_at = str(ent.get("shop_members_ts") or "")
+                if not members_at:
+                    for r in shop_rows:
+                        ts = str((r or {}).get("updated") or "")
+                        if ts:
+                            members_at = ts
+                            break
+            except Exception:
+                shop_rows, members_at = [], ""
+            nicks = {str(r.get("nick") or "").lower() for r in shop_rows}
+            return shop_rows, nicks, members_at
+
+        shop_rows, nicks, members_at = _shop_presence()
+        if shop_rows and me.lower() not in nicks and callable(names_refresh):
+            with contextlib.suppress(Exception):
+                names_refresh(shop)
+            shop_rows, nicks, members_at = _shop_presence()
+        if shop_rows and me.lower() not in nicks:
+            snap = members_at or "unknown"
+            return (
+                "refused",
+                f"{me}: not in the shop channel (not a live seat; members_at={snap})",
+            )
     # FR #6134: refuse hostile review/UAT to OpenCode seats (chair !assign path).
     try:
         _kind = seat_agent_kind(home, me)
