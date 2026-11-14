@@ -411,6 +411,7 @@ routes to bobiverse via the split rule.
 - FR #7084 digest start_model must come from the launched argv/session (stamp BOB_WORKER_ACTUAL_MODEL, re-POST after start_agent); freeze worker_start_model as a PyInstaller hidden-import.
 - Live recycleseat acceptance needs a clean post-#7126 install and an idle sibling seat; never ff/checkout install root from an FR seat; GIVEUP with evidence when build-not-on-box
 - Shell inherited-capture tests need ~1s child budget on busy Windows hosts; 0.2s races spawn and flakes exit 124 under load.
+- LocalSystem OpenCode Go: resolve install root from frozen ear when BOB_INSTALL_ROOT unset; empty usage is kind empty (failure); unknown/no-key windows use null fetched_at; preserve NSSM BOB_OPENCODE_GO_API_KEY across Install-Bob (class of #7177).
 
 ## Harvest digest (lessons audit 2026-10-06)
 
