@@ -105,6 +105,47 @@ def worker_hello_line(kind: str, *, model: str | None = None, build: str | None 
     b = short_build_sha(build) if build is not None else short_build_sha()
     return f"worker ready kind={k} model={m} build={b}"
 
+
+def worker_needs_signin_line(kind: str) -> str:
+    """FR #7180: shop line when the agent process started but is not signed in."""
+    k = (kind or "").strip().lower() or "grok"
+    return f"worker needs sign-in kind={k}"
+
+
+def grok_agent_signed_in(*, run_dir: Path | str | None = None, env: Optional[dict] = None) -> bool:
+    """True when seat GROK_HOME has a non-empty auth.json (body never logged). FR #7180."""
+    home = agent_grok_home(run_dir=run_dir, env=env)
+    path = Path(home) / "auth.json"
+    try:
+        if not path.is_file():
+            return False
+        raw = path.read_text(encoding="utf-8")
+        if not (raw or "").strip():
+            return False
+        json.loads(raw)
+        return True
+    except Exception:
+        return False
+
+
+def agent_session_signed_in(
+    kind: str,
+    *,
+    run_dir: Path | str | None = None,
+    env: Optional[dict] = None,
+) -> bool:
+    """FR #7180: signed-in session that may announce ready / !bored (no first-turn wait)."""
+    k = (kind or "").strip().lower()
+    if k == "grok":
+        return grok_agent_signed_in(run_dir=run_dir, env=env)
+    if k == "opencode":
+        e = os.environ if env is None else env
+        home = str((e or {}).get("HOME") or (e or {}).get("USERPROFILE") or "").strip()
+        if home and (Path(home) / ".local" / "share" / "opencode" / "auth.json").is_file():
+            return True
+        return False
+    return True
+
 EXIT_USAGE = 64
 EXIT_IRC_FAIL = 2  # could not connect / register: no agent was started
 EXIT_IRC_LOST = 3  # IRC lost for good (grace 0 immediate, or reconnect grace exhausted): agent tree killed
@@ -3581,9 +3622,12 @@ def _clipboard_restore_delay_s() -> float:
 
 
 def _startup_wait_ready_enabled() -> bool:
-    """FR #4115: BOB_WORKER_STARTUP_WAIT_READY=0 restores the old 60 s grace-paste behaviour."""
-    raw = (os.environ.get("BOB_WORKER_STARTUP_WAIT_READY") or "1").strip().lower()
-    return raw not in ("0", "false", "no", "off")
+    """FR #7180: default off --- signed-in seats !bored without waiting for a first turn.
+
+    BOB_WORKER_STARTUP_WAIT_READY=1 restores FR #4115/#4123 hold-until-turn_ended.
+    """
+    raw = (os.environ.get("BOB_WORKER_STARTUP_WAIT_READY") or "0").strip().lower()
+    return raw in ("1", "true", "yes", "on")
 
 
 def _startup_ready_cap_s() -> float:
@@ -7047,6 +7091,7 @@ def post_digest_seat_kind(
     url: str | None = None,
     env: Optional[dict] = None,
     log: Optional[Callable[[str], None]] = None,
+    assignable: bool | None = None,
 ) -> bool:
     """POST digest worker kind so the chair can skip OpenCode for MRB/UAT (FR #6134).
 
@@ -7087,6 +7132,12 @@ def post_digest_seat_kind(
         payload["model_mismatch"] = str(model).strip().lower() != cfg_m.lower()
     if (cost_tier or "").strip():
         payload["cost_tier"] = str(cost_tier).strip()
+    if assignable is False:
+        payload["assignable"] = False
+        payload["error"] = "needs-sign-in"
+        payload["state"] = "needs-sign-in"
+    elif assignable is True:
+        payload["assignable"] = True
     ok = bool(_http_post_json(report, payload, log=log))
     if not ok and log:
         try:
@@ -10311,7 +10362,7 @@ class Supervisor:
                 self.log(f"install-root: guard error {type(e).__name__}")
             # FR #4464: keys default at seat start, including when the cursor turn watcher stays off.
             apply_cursor_inject_keys_default(self.kind, log=self.log)
-            if self.startup_grace_s > 0:
+            if self.startup_grace_s > 0 and _startup_wait_ready_enabled():
                 self.log(
                     f"agent: holding inject/!bored for startup_grace_s={self.startup_grace_s:.0f}s "
                     f"(FR #955/#2884: first turn_ended ends hold; grace is fallback)"
@@ -10427,6 +10478,11 @@ class Supervisor:
                 f"agent: ready (startup ready cap {_startup_ready_cap_s():.0f}s reached without "
                 f"turn_ended); inject + !bored enabled"
             )
+        elif reason == "signed-in":
+            self.log(
+                "agent: ready (signed in, model loaded; !bored without waiting for a first turn) "
+                "(FR #7180)"
+            )
         else:
             self.log(
                 f"agent: ready (startup_grace_s={self.startup_grace_s:.0f} fallback); "
@@ -10434,8 +10490,12 @@ class Supervisor:
             )
 
     def _arm_ready(self, proc) -> None:
-        """FR #955 / #2884: arm grace fallback; grok first turn_ended may release earlier."""
+        """FR #955 / #2884 / #7180: signed-in seats ready immediately; unsigned never ready."""
+        signed = agent_session_signed_in(
+            self.kind, run_dir=self.run_dir, env=self.last_child_env
+        )
         with self._lock:
+            self._session_assignable = bool(signed)
             self._startup_hold_armed = True
             self._startup_ready_proc = None
             self._startup_session_id = self.sessions[-1] if self.sessions else None
@@ -10443,7 +10503,18 @@ class Supervisor:
             self._startup_defer_start_bored = False
             # FR #6157: grok OR opencode turn watchers enable startup wait_ready / first-turn release.
             self._startup_turn_release_enabled = startup_turn_release_enabled(self.kind)
+        if not signed:
+            with self._lock:
+                self._startup_hold_armed = False
+            self.log(
+                "agent: needs sign-in - not ready, no worker ready / !bored (FR #7180)"
+            )
+            return
+        if not _startup_wait_ready_enabled():
+            self._ready_now(proc, reason="signed-in")
+            return
 
+        with self._lock:
             if self._min_ready_timer is not None:
                 try:
                     self._min_ready_timer.cancel()
@@ -12087,16 +12158,24 @@ def run_agent(args, log: Log) -> int:
             cost_tier=cost_tier,
             worker_build=build,
             log=log,
+            assignable=bool(getattr(sup, "_session_assignable", False)),
         )
     except Exception as e:
         log(f"worker: post-launch start_model digest failed {type(e).__name__}")
-    # FR #6409 / MRB #6411: announce ready only after agent process starts (CodeRabbit).
+    # FR #6409 / #7180: worker ready means assignable (signed in). Else needs sign-in.
     try:
-        hello = worker_hello_line(kind, model=seat_model, build=build)
-        if irc.say(irc.shop, hello):
-            log(f"worker: hello {hello}")
+        if getattr(sup, "_session_assignable", False):
+            hello = worker_hello_line(kind, model=seat_model, build=build)
+            if irc.say(irc.shop, hello):
+                log(f"worker: hello {hello}")
+            else:
+                log("worker: hello say failed")
         else:
-            log("worker: hello say failed")
+            line = worker_needs_signin_line(kind)
+            if irc.say(irc.shop, line):
+                log(f"worker: hello {line}")
+            else:
+                log("worker: needs-sign-in say failed")
     except Exception as e:
         log(f"worker: hello failed {type(e).__name__}")
     threading.Thread(
