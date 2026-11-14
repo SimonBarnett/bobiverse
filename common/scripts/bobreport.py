@@ -6488,6 +6488,7 @@ def _system_drive_root() -> Path:
 
 
 INTERACTIVE_HOME_STAMP_NAME = "interactive-user-home.txt"
+GROK_AUTH_PATH_STAMP_NAME = "grok-auth-path.txt"
 _SERVICE_ACCOUNT_LEAVES = frozenset({"SYSTEM", "LOCAL SERVICE", "NETWORK SERVICE"})
 
 
@@ -6597,6 +6598,64 @@ def _read_interactive_user_home_stamp() -> Path | None:
     return None
 
 
+
+def grok_auth_path_stamp_path(
+    env: dict[str, str] | None = None,
+) -> Path | None:
+    """``<InstallRoot>\\run\\grok-auth-path.txt`` (path only; never secrets). FR #7176."""
+    root = opencode_install_root(env)
+    if root is None:
+        return None
+    return Path(root) / "run" / GROK_AUTH_PATH_STAMP_NAME
+
+
+def _write_grok_auth_path_stamp(auth_path: Path) -> None:
+    """Persist auth.json location for LocalSystem ticks. Never writes file contents."""
+    stamp = grok_auth_path_stamp_path()
+    if stamp is None:
+        return
+    try:
+        p = Path(auth_path)
+        if _is_windows_system_profile(p) or _is_windows_system_profile(p.parent):
+            return
+        stamp.parent.mkdir(parents=True, exist_ok=True)
+        stamp.write_text(str(p) + "\n", encoding="utf-8")
+    except OSError:
+        return
+
+
+def _read_grok_auth_path_stamp() -> Path | None:
+    stamp = grok_auth_path_stamp_path()
+    if stamp is None or not stamp.is_file():
+        return None
+    try:
+        raw = (stamp.read_text(encoding="utf-8-sig") or "").strip().splitlines()
+    except OSError:
+        return None
+    if not raw:
+        return None
+    text = raw[0].strip().strip('"')
+    if not text:
+        return None
+    path = Path(text)
+    if _is_windows_system_profile(path) or _is_windows_system_profile(path.parent):
+        return None
+    try:
+        if not path.is_file():
+            return None
+    except OSError:
+        return None
+    return path
+
+
+def xai_weekly_service_auth_candidate() -> Path | None:
+    """FR #7176: ``<service home>/.grok/auth.json`` configured for the service."""
+    home = service_publish_home_candidate()
+    if home is None:
+        return None
+    return Path(home) / ".grok" / "auth.json"
+
+
 def _interactive_grok_user_home() -> Path | None:
     """FR #6270 / #7006: interactive user home that owns ``.grok`` (never auth body).
 
@@ -6656,6 +6715,9 @@ def xai_weekly_log_candidate() -> tuple[Path | None, str]:
             log = user_home / ".grok" / "logs" / "unified.jsonl"
             if log.is_file():
                 return log, "interactive-profile"
+        # FR #7176: live LocalSystem does not skip; report unresolved instead.
+        if _is_local_system_process():
+            return None, "auth-unresolved"
         return None, "system-profile-skipped"
     return Path(home) / ".grok" / "logs" / "unified.jsonl", "process-profile"
 
@@ -6856,25 +6918,52 @@ XAI_GROK_LOGIN_EXPIRED = "grok-login-expired"
 
 
 def xai_weekly_auth_path() -> tuple[Path | None, str]:
-    """FR #6274: auth.json for the interactive/process Grok session (usage fetch only).
+    """FR #6274 / #7176: auth.json for live weekly fetch (path identity only).
 
-    Never logs or returns credential material - path identity only.
-    Honours ``BOB_GROK_AUTH_PATH``, then interactive home (``BOB_GROK_WEEKLY_USER_HOME`` /
-    live LocalSystem resolve), else the process profile when it is not systemprofile.
+    Never logs or returns credential material. Order: ``BOB_GROK_AUTH_PATH``,
+    ``GROK_AUTH_PATH``; under systemprofile then stamped
+    ``<InstallRoot>/run/grok-auth-path.txt``, service home
+    ``<InstallRoot>/home/.grok/auth.json``, interactive user auth
+    (``BOB_GROK_WEEKLY_USER_HOME`` / live LocalSystem resolve). Non-system
+    profiles also honour ``$GROK_HOME/auth.json`` then ``~/.grok/auth.json``.
+
+    Live LocalSystem never returns ``system-profile-skipped`` (FR #7176): missing
+    credentials are ``auth-unresolved``. Skipping because of SYSTEM is not allowed.
     """
-    raw = (os.environ.get("BOB_GROK_AUTH_PATH") or "").strip()
-    if raw:
-        return Path(raw), "explicit-auth"
+    for key, ident in (("BOB_GROK_AUTH_PATH", "explicit-auth"), ("GROK_AUTH_PATH", "explicit-auth")):
+        raw = (os.environ.get(key) or "").strip()
+        if raw:
+            path = Path(raw)
+            _write_grok_auth_path_stamp(path)
+            return path, ident
     home = (os.environ.get("USERPROFILE") or os.environ.get("HOME") or "").strip()
     if home and _is_windows_system_profile(Path(home)):
+        # Ambient GROK_HOME is ignored under systemprofile (agent tooling homes
+        # often set it; service auth is BOB_GROK_* / stamp / service home).
+        stamped = _read_grok_auth_path_stamp()
+        if stamped is not None:
+            return stamped, "stamped-auth"
+        svc = xai_weekly_service_auth_candidate()
+        if svc is not None and svc.is_file():
+            _write_grok_auth_path_stamp(svc)
+            return svc, "service-auth"
         allow_auto = _is_local_system_process() or bool(
             (os.environ.get("BOB_GROK_WEEKLY_USER_HOME") or "").strip()
         )
         if allow_auto:
             user_home = _interactive_grok_user_home()
             if user_home is not None:
-                return user_home / ".grok" / "auth.json", "interactive-auth"
+                path = user_home / ".grok" / "auth.json"
+                _write_grok_auth_path_stamp(path)
+                return path, "interactive-auth"
+        # FR #7176: live LocalSystem must attempt service-configured auth; never skip.
+        if _is_local_system_process():
+            return None, "auth-unresolved"
         return None, "system-profile-skipped"
+    grok_home = (os.environ.get("GROK_HOME") or "").strip()
+    if grok_home:
+        path = Path(grok_home) / "auth.json"
+        return path, "grok-home-auth"
     if home:
         return Path(home) / ".grok" / "auth.json", "process-auth"
     return None, "no-profile"
