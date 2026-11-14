@@ -292,3 +292,4 @@ Generalised from 21 harvested lessons that never reached this book (audit for FR
 - On stranded ACK recovery with no PR/board: GIVEUP immediately as its own outbox line; do not start the FR before clearing the open ACK
 - FR #7302: resolve_opencode_cmd catches WinError 448 (untrusted WinGet Links reparse); use Programs\opencode\opencode.exe or return None with a logged readiness miss; never abort the worker. (moved from harvest tip #7321)
 - Skill-intake bullet drift vs product docs is a one-line harvest fix plus a pin test; merge before the next same-book PR when both touch bobiverse-bob-worker SKILL.md.
+- After ACK with no terminal reply: one done-miss reminder, then GIVEUP no-terminal-reply (BOB_WORKER_DONE_MISS_REPLY_S) even if no second turn_ended; never fake DONE; write DONE to outbox before the turn ends.
