@@ -1,5 +1,6 @@
-# Pool-monitor deploy pin
+# Pool-monitor deploy pin (deploy note --- not a CI gate; FR #7179)
 # Behavior source sha: 4a7f54f6564c22d013d2b0fa577438f11034a537
+# FR #7179: build-bob-ear.yml builds the checked-out tip; provenance uses source_commit.
 # FR #7065: repin after FR #7035 python-status clear (bobreport/irc_agent).
 # Prior pin: ebc60c211af405eee17a28ca90a44141c7d736ed (FR #7039).
 # FR #6963: repin after irc_agent.py / bobiverse_build.py / Watch-BobTray.ps1 drift from 4ffaf334.
@@ -41,9 +42,10 @@
 # embed also carries FR #6558 claim expiry (assert_build_claim_embed.py).
 #
 # Sanctioned build (Windows runner or Windows host with PyInstaller):
-#   1) Ensure tip behavior files match behavior_source_sha (workflow guard).
+#   1) Checkout the tip to build (CI no longer diffs behavior files against
+#      behavior_source_sha; that SHA is a deploy-note baseline only).
 #   2) gh workflow run build-bob-ear.yml --ref <this-branch-or-main>
-#      or open/update a PR that touches this workflow/manifest (pull_request trigger).
+#      or open/update a PR that touches ear sources (pull_request trigger).
 #   3) Download Actions artifact name: bob-ear
 #      Contents: bob-ear.exe, bob-ear.exe.sha256, provenance.txt, deploy-pool-monitor-manifest.txt
 # Local smoke (not a deploy):

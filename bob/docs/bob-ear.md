@@ -5,6 +5,8 @@ Companion: TipForm systray (`scripts\Start-BobTray.ps1` -> `tools\Start-BobFleet
 
 Build/pack: `scripts\Build-BobEar.ps1` (PyInstaller) -> staged by `Pack-BobiverseRelease` into the bob MSI. Safe swap: `scripts\Install-BobEarExe.ps1` (keeps `bob-ear.exe.bak`, restores on smoke failure).
 
+**FR #7179 CI (`build-bob-ear.yml`):** GitHub Actions on `windows-latest` compiles `bob-ear.exe` via `bob/scripts/Build-BobEar.ps1` on `push` to `main` and on `pull_request` whenever ear sources change (`Build-BobEar.ps1`, `Install-BobEarExe.ps1`, `irc_agent.py`, `gitclaim.py`, `bobreport.py`, `opencode_fuel.py`, `bobiverse_build.py`, the workflow, `deploy-pool-monitor-manifest.txt`, or `bob/tests/test_fr7179_ear_tray_ci_main_push.py` / `test_fr6254_ear_build_provenance_align.py`), plus `workflow_dispatch`. The job uploads artifact `bob-ear` with the exe, `bob-ear.exe.sha256`, `provenance.txt` / `manifest.txt` (`source_commit` / `workflow_commit` = the built tip SHA, exe SHA256, size, build time), and a copy of `deploy-pool-monitor-manifest.txt`. No hard behavior pin --- CI builds the checked-out commit (same shape as `build-bob-worker.yml` / `build-bob-tray.yml`). Not a release, MSI, or fleet install.
+
 ## Channels and homes
 
 - JOIN `#bobiverse` + `#wonderland` + `#{MachineId}` (identical `Start-Bob` `--channel #bobiverse,#wonderland,#<machine>` on every box â€” Ionos host, MarchHare, Flamingo, â€¦; FR #3834)

@@ -1,10 +1,10 @@
 # Isolated bob-ear.exe build. Not a release, MSI, install, or service start.
 # Build-BobEar.ps1 owns the PyInstaller command and the --help smoke check.
-# FR #7065: behavior_source_sha pins the pool-monitor + bobiverse_build files to
-# 4a7f54f6564c22d013d2b0fa577438f11034a537 (FR #7035 python-status clear; bobreport/irc_agent).
-# Prior pin: ebc60c211af405eee17a28ca90a44141c7d736ed (FR #7039).
-# History: 523450ec / FR #6727; 0db71bfa / FR #6722; 44ea47d3 / FR #6672; FR #6558 merge
-# 2da1eb06d0c99cd3384d6bf1bb21faa830526ba5 / PR #6575.
+# FR #7179: build the checked-out commit on push to main and on PRs that touch
+# ear sources. Provenance records that commit SHA (no hard behavior pin).
+# Prior pin history (FR #7065 / #7039 / #6727 / #6722 / #6672 / #6558 merge
+# 2da1eb06d0c99cd3384d6bf1bb21faa830526ba5 / PR #6575) lives in
+# bob/docs/deploy-pool-monitor-manifest.txt for deploy notes only.
 name: build-bob-ear
 
 on:
@@ -12,7 +12,30 @@ on:
   pull_request:
     paths:
       - .github/workflows/build-bob-ear.yml
+      - bob/scripts/Build-BobEar.ps1
+      - bob/scripts/Install-BobEarExe.ps1
+      - common/scripts/irc_agent.py
+      - common/scripts/gitclaim.py
+      - common/scripts/bobreport.py
+      - common/scripts/opencode_fuel.py
+      - common/scripts/bobiverse_build.py
       - bob/docs/deploy-pool-monitor-manifest.txt
+      - bob/tests/test_fr6254_ear_build_provenance_align.py
+      - bob/tests/test_fr7179_ear_tray_ci_main_push.py
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/build-bob-ear.yml
+      - bob/scripts/Build-BobEar.ps1
+      - bob/scripts/Install-BobEarExe.ps1
+      - common/scripts/irc_agent.py
+      - common/scripts/gitclaim.py
+      - common/scripts/bobreport.py
+      - common/scripts/opencode_fuel.py
+      - common/scripts/bobiverse_build.py
+      - bob/docs/deploy-pool-monitor-manifest.txt
+      - bob/tests/test_fr6254_ear_build_provenance_align.py
+      - bob/tests/test_fr7179_ear_tray_ci_main_push.py
 
 permissions:
   contents: read
@@ -39,30 +62,13 @@ jobs:
           . .\common\scripts\Bobiverse-Common.ps1
           Install-BobiversePythonDeps -Python (Get-Command python).Source
 
-      - name: Confirm behavior files match 4a7f54f6 (FR #7065)
-        env:
-          WORKFLOW_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
-        run: |
-          $head = (git rev-parse HEAD).Trim()
-          if ($head -ne $env:WORKFLOW_COMMIT) { throw "checkout $head is not $env:WORKFLOW_COMMIT" }
-          $expected = "4a7f54f6564c22d013d2b0fa577438f11034a537"
-          git fetch --no-tags --depth=1 origin $expected
-          git diff --exit-code $expected -- `
-            common/scripts/bobreport.py `
-            common/scripts/irc_agent.py `
-            common/scripts/opencode_fuel.py `
-            common/scripts/bobiverse_build.py `
-            bob/tray/src/Public/Get-BobTrayHover.ps1 `
-            bob/tray/src/Private/Get-BobIrc.ps1 `
-            bob/tray/tools/Watch-BobTray.ps1 `
-            bob/tray/tools/Get-BobOpencodeFuel.ps1 `
-            bob/tray/src/BobBridge.psm1
-
       - name: Build with Build-BobEar.ps1
         env:
           WORKFLOW_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
           $root = (Get-Location).Path
+          $head = (git rev-parse HEAD).Trim()
+          if ($head -ne $env:WORKFLOW_COMMIT) { throw "checkout $head is not $env:WORKFLOW_COMMIT" }
           $out = Join-Path $env:RUNNER_TEMP "bob-ear-out"
           New-Item -ItemType Directory -Force -Path $out | Out-Null
           $py = (Get-Command python).Source
@@ -71,17 +77,24 @@ jobs:
           $exe = Join-Path $out "ear-build\dist\bob-ear.exe"
           if (-not (Test-Path -LiteralPath $exe)) { throw "Build-BobEar.ps1 did not leave bob-ear.exe" }
           $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $exe).Hash.ToLowerInvariant()
+          $size = (Get-Item -LiteralPath $exe).Length
+          $builtAt = [DateTime]::UtcNow.ToString("o")
           $stage = Join-Path $env:RUNNER_TEMP "bob-ear-artifact"
           New-Item -ItemType Directory -Force -Path $stage | Out-Null
           Copy-Item -LiteralPath $exe -Destination (Join-Path $stage "bob-ear.exe")
           Copy-Item -LiteralPath "$root\bob\docs\deploy-pool-monitor-manifest.txt" -Destination (Join-Path $stage "deploy-pool-monitor-manifest.txt")
           @(
-            "behavior_source_sha=4a7f54f6564c22d013d2b0fa577438f11034a537"
+            "source_commit=$($env:WORKFLOW_COMMIT)"
             "workflow_commit=$($env:WORKFLOW_COMMIT)"
             "exe_name=bob-ear.exe"
             "exe_sha256=$hash"
+            "exe_size_bytes=$size"
+            "build_time_utc=$builtAt"
+            "builder=Build-BobEar.ps1"
+            "fr=7179"
           ) | Set-Content -Encoding ascii (Join-Path $stage "provenance.txt")
           Set-Content -Encoding ascii (Join-Path $stage "bob-ear.exe.sha256") "$hash  bob-ear.exe"
+          Copy-Item -LiteralPath (Join-Path $stage "provenance.txt") -Destination (Join-Path $stage "manifest.txt")
 
       - uses: actions/upload-artifact@v4
         with:

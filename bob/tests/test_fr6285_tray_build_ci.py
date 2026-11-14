@@ -46,6 +46,8 @@ def test_fr6285_tray_ci_workflow_pins():
     assert "missing UTF-16LE heading" in text
     assert "still embeds stale heading" in text
     assert "workflow_dispatch" in text
+    assert "push:" in text
+    assert "branches: [main]" in text
     assert BUILD.is_file()
 
 
