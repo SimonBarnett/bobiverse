@@ -25,6 +25,8 @@ Foundation: `bobiverse-fleet-ops` (shared ops/hotpatch/health) and `harvest` -> 
 `ircBob` runs `Start-Bob.ps1` -> prefer `scripts\bob-ear.exe` (FR #1481 self-contained ear) else `python -u irc_agent.py` with `--nick Bob-<machine> --home <home> --channel #bobiverse,#wonderland,#<machine> --host <irc host>` (FR #3834). Pack builds the exe via `Build-BobEar.ps1`; `Install-BobEarExe.ps1` swaps it with `.bak` rollback.
 
 **CI artifacts (FR #7179 / harvest #7185):** `build-bob-ear.yml` and `build-bob-tray.yml` build the checked-out tip on `push` to `main` and on PRs that touch ear/tray sources (path filters, same shape as `build-bob-worker.yml`). Do not hard-pin `behavior_source_sha` in the workflow; provenance records `source_commit` / `workflow_commit`. Include `common/scripts/gitclaim.py` in ear path filters (`irc_agent` imports it). Deploy-pool-monitor hashes are a deploy note, not a CI gate.
+
+**OpenCode Go as SYSTEM (FR #7177 / harvest #7191):** under LocalSystem, resolve the Go key from `BOB_OPENCODE_GO_API_KEY` and `<InstallRoot>\config\opencode-keys` using `BOB_INSTALL_ROOT` or frozen `scripts\bob-ear.exe` parent when env is unset. Empty recognised usage is kind `empty` (failure). Unknown / no-key windows use null `fetched_at`. Preserve NSSM `BOB_OPENCODE_GO_API_KEY` across Install-Bob recreate (never echo). An unreadable `*.apikey` is `key_unreadable`, not `missing_key`.
 (NSSM). The ear is the box's presence on IRC: it keeps the shop channel, reports status to the digest, executes `!recycle`
 for its own machine, drains `home\outbox.txt`, and hosts the talk seats. The **TipForm tray** is an interactive companion
 (not a service, not a `BobFleet-*` task). Digest POSTs need no secret (roster-gated by Jeeves).
