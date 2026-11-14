@@ -83,8 +83,9 @@ def _fake_urlopen(posted: list):
 
 
 def test_fr6147_export_keys_include_opencode_windows():
-    assert "opencode_windows" in bobreport._MERGE_PEER_FIELDS
-    assert "opencode_windows" in bobreport._TRAY_MACHINE_EXPORT_KEYS
+    # FR #7366: fleet OpenCode is not a per-machine merge/export field.
+    assert "opencode_windows" not in bobreport._MERGE_PEER_FIELDS
+    assert "opencode_windows" not in bobreport._TRAY_MACHINE_EXPORT_KEYS
 
 
 def test_fr6147_read_clarification_fixture_pcent_and_windows(monkeypatch):
@@ -139,14 +140,9 @@ def test_fr6147_peer_merge_carries_pcent_and_windows(tmp_path: Path, monkeypatch
         )
     assert code == 204
     body = posted[0]
-    assert body["pcent"]["opencode-free"] == 100
-    assert body["pcent"]["opencode-go"] == 28
-    wins = body["opencode_windows"]
-    assert wins["rolling"]["status"] == "unstarted"
-    assert wins["week"]["remaining_pct"] == 28
-    assert wins["week"]["reset_label"] == "1d 2h"
-    assert wins["month"]["remaining_pct"] == 64
-    assert wins["month"]["reset_label"] == "26d 18h"
+    assert "opencode-free" not in (body.get("pcent") or {})
+    assert "opencode-go" not in (body.get("pcent") or {})
+    assert "opencode_windows" not in body
 
 
 def test_fr6147_exhausted_week_go_remaining_zero(tmp_path: Path, monkeypatch):
@@ -177,12 +173,8 @@ def test_fr6147_exhausted_week_go_remaining_zero(tmp_path: Path, monkeypatch):
         )
     assert code == 204
     body = posted[0]
-    assert body["pcent"]["opencode-free"] == 100
-    assert body["pcent"]["opencode-go"] == 0
-    assert body["opencode_windows"]["week"]["status"] == "exhausted"
-    assert body["opencode_windows"]["week"]["remaining_pct"] == 0
-    lim, rem = of.limiting_go_window(body["opencode_windows"])
-    assert lim == "week" and rem == 0
+    assert "opencode-go" not in (body.get("pcent") or {})
+    assert "opencode_windows" not in body
 
 
 def test_fr7028_fuel_fixture_beats_live_go_key(tmp_path: Path, monkeypatch):
@@ -225,8 +217,8 @@ def test_fr7028_fuel_fixture_beats_live_go_key(tmp_path: Path, monkeypatch):
     assert code == 204
     assert calls["n"] == 0
     body = posted[0]
-    assert body["pcent"]["opencode-go"] == 0
-    assert body["opencode_windows"]["week"]["status"] == "exhausted"
+    assert "opencode-go" not in (body.get("pcent") or {})
+    assert "opencode_windows" not in body
 
 
 def test_fr6147_unknown_omits_pcent_zeros_windows_may_remain(monkeypatch):
@@ -273,8 +265,8 @@ def test_fr6147_export_machine_for_tray_keeps_opencode_windows(tmp_path: Path):
     exported = bobreport.export_machine_for_tray(
         home, "marchhare", doc["machines"]["marchhare"]
     )
-    assert exported["pcent"]["opencode-go"] == 28
-    assert exported["opencode_windows"]["week"]["remaining_pct"] == 28
+    assert "opencode-go" not in (exported.get("pcent") or {})
+    assert "opencode_windows" not in exported
 
 
 def test_mrb6232_peer_fuel_fingerprint_includes_opencode_windows():

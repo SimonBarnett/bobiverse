@@ -33,8 +33,8 @@ def test_export_machine_for_tray_keeps_opencode_pcent(tmp_path: Path):
     }
     bobreport.save_digest(home, doc)
     exported = bobreport.export_machine_for_tray(home, "marchhare", doc["machines"]["marchhare"])
-    assert exported["pcent"]["opencode-free"] == 100
-    assert exported["pcent"]["opencode-go"] == 50
+    assert "opencode-free" not in (exported.get("pcent") or {})
+    assert "opencode-go" not in (exported.get("pcent") or {})
 
 
 # --- FR #6146: ear publish includes OpenCode pcent when known ---

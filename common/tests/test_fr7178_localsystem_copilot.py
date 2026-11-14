@@ -220,17 +220,11 @@ def test_fr7178_merge_promotes_fresher_copilot_to_digest_top_level(
             },
         },
     )
-    assert doc["machines"]["marchhare"]["copilot"]["remaining"] == 9
-    assert doc["copilot"]["remaining"] == 9
-    assert doc["copilot"]["entitlement"] == 50
+    # FR #7366: machine Copilot posts are ignored (Jeeves fleet_pools owns the meter).
+    assert "copilot" not in doc["machines"]["marchhare"]
     bobreport.save_digest(home, doc)
-    # Sticky top-level survives load even when ChanServ roster strips machines.
-    loaded = bobreport.load_digest(home)
-    assert loaded["copilot"]["remaining"] == 9
     obj = bobreport.build_digest_object(home, "Jeeves")
-    assert obj["copilot"]["remaining"] == 9
-    assert obj["copilot"]["entitlement"] == 50
-    assert "2026-12-01" in str(obj["copilot"]["reset_at"])
+    assert "copilot" not in ((obj.get("machines") or {}).get("marchhare") or {})
 
 
 def test_fr7178_digest_never_omits_copilot_when_unread(monkeypatch, tmp_path: Path):

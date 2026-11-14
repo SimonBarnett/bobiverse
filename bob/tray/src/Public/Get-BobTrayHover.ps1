@@ -1730,7 +1730,7 @@ function Read-BobOpencodeLocalFuel {
 function Get-BobOpencodePaintFromDigest {
     <#
     .SYNOPSIS
-      Read machines.<id>.pcent opencode-free/go and opencode_windows from a report digest (FR #6147).
+      Read fleet OpenCode Go from digest.fleet_pools (FR #7255 / FR #7366). Never machines.*.
     #>
     param(
         $Digest,
@@ -1739,64 +1739,22 @@ function Get-BobOpencodePaintFromDigest {
     $free = $null
     $go = $null
     $windows = $null
-    # FR #7255: fleet OpenCode lives on the digest, not machines.*.
+    # FR #7366: fleet OpenCode lives only on the digest fleet section.
     if ($Digest) {
         $fp = $null
         try { $fp = $Digest.fleet_pools } catch { $fp = $null }
+        if (-not $fp) { try { $fp = $Digest.fleet } catch { $fp = $null } }
         if (-not $fp) { try { $fp = $Digest.opencode } catch { $fp = $null } }
         if ($fp) {
-            try {
-                if ($fp.'opencode-free' -and $null -ne $fp.'opencode-free'.remaining) { $free = $fp.'opencode-free'.remaining }
-                elseif ($null -ne $fp.free) { $free = $fp.free }
-            } catch { }
             try {
                 if ($fp.'opencode-go' -and $null -ne $fp.'opencode-go'.remaining) { $go = $fp.'opencode-go'.remaining }
                 elseif ($null -ne $fp.go) { $go = $fp.go }
             } catch { }
-            try { if ($fp.windows) { $windows = $fp.windows } } catch { }
-            if ((Test-BobTrayRemainingKnown $free) -or (Test-BobTrayRemainingKnown $go) -or $windows) {
-                return [pscustomobject]@{ free = $free; go = $go; windows = $windows }
-            }
-        }
-    }
-    if (-not $Digest -or -not $Digest.machines) {
-        return [pscustomobject]@{ free = $null; go = $null; windows = $null }
-    }
-    $mids = @()
-    if ($MachineId) { $mids += ,([string]$MachineId.Trim().ToLowerInvariant()) }
-    try {
-        foreach ($p in @($Digest.machines.PSObject.Properties)) {
-            $n = [string]$p.Name
-            if ($n) { $mids += ,($n.Trim().ToLowerInvariant()) }
-        }
-    } catch { }
-    $seen = @{}
-    foreach ($mid in $mids) {
-        if (-not $mid -or $seen.ContainsKey($mid)) { continue }
-        $seen[$mid] = $true
-        $ent = $null
-        try { $ent = $Digest.machines.$mid } catch { $ent = $null }
-        if (-not $ent) {
             try {
-                foreach ($p in @($Digest.machines.PSObject.Properties)) {
-                    if ([string]$p.Name.Trim().ToLowerInvariant() -eq $mid) { $ent = $p.Value; break }
-                }
+                if ($fp.windows) { $windows = $fp.windows }
+                elseif ($fp.'opencode-go' -and $fp.'opencode-go'.windows) { $windows = $fp.'opencode-go'.windows }
             } catch { }
         }
-        if (-not $ent -or -not $ent.pcent) { continue }
-        $pc = $ent.pcent
-        try {
-            if ($null -ne $pc.'opencode-free' -and [string]$pc.'opencode-free' -ne '') { $free = $pc.'opencode-free' }
-            elseif ($null -ne $pc.opencode_free -and [string]$pc.opencode_free -ne '') { $free = $pc.opencode_free }
-        } catch { }
-        try {
-            if ($null -ne $pc.'opencode-go' -and [string]$pc.'opencode-go' -ne '') { $go = $pc.'opencode-go' }
-            elseif ($null -ne $pc.opencode_go -and [string]$pc.opencode_go -ne '') { $go = $pc.opencode_go }
-        } catch { }
-        try {
-            if ($ent.opencode_windows) { $windows = $ent.opencode_windows }
-        } catch { }
-        if ((Test-BobTrayRemainingKnown $free) -or (Test-BobTrayRemainingKnown $go) -or $windows) { break }
     }
     return [pscustomobject]@{ free = $free; go = $go; windows = $windows }
 }
