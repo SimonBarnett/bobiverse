@@ -68,7 +68,11 @@ def test_billing_fetched_at_is_clock_not_period_end():
 
 
 def test_two_ticks_60s_apart_new_fetched_at_per_pool(tmp_path, monkeypatch):
-    """Two publish cycles 60s apart must advance fetched_at on each pool."""
+    """Two publish cycles 60s apart must advance fetched_at on ear-owned pools.
+
+    FR #7255: Copilot / OpenCode are Jeeves fleet_pools — ear payload must not
+    carry those providers.
+    """
     home = tmp_path / "home"
     home.mkdir()
     mid = "flamingo"
@@ -124,31 +128,7 @@ def test_two_ticks_60s_apart_new_fetched_at_per_pool(tmp_path, monkeypatch):
             "fresh": True,
         }
 
-    def fake_copilot(home_path, *, now=None, fetch_user=None):
-        iso = bobreport.iso_utc_from_epoch(float(now or t0))
-        bobreport._last_copilot_acquisition = {"kind": "ok", "fetched_at": iso}
-        return {
-            "state": "ok",
-            "remaining": 80,
-            "entitlement": 300,
-            "fetched_at": iso,
-            "attempted_at": iso,
-            "source": "copilot_internal/user",
-        }
-
-    def fake_oc(*, env=None, now=None, force=False):
-        iso = bobreport.iso_utc_from_epoch(t0 + clock["n"] * 60.0)
-        return {
-            "opencode-free": 90,
-            "opencode-go": 70,
-            "fetched_at": iso,
-            "source": "go-zen-usage",
-            "windows": {},
-        }
-
     monkeypatch.setattr(bobreport, "fetch_live_xai_weekly", fake_xai)
-    monkeypatch.setattr(bobreport, "fetch_live_copilot_pool", fake_copilot)
-    monkeypatch.setattr(bobreport, "read_local_opencode_fuel_doc", fake_oc)
     monkeypatch.setattr(bobstat, "load_cursor_usage_doc", lambda: {"ok": True, "remaining_pct": 40})
     monkeypatch.setattr(bobreport, "post_report_json", fake_post)
     monkeypatch.setattr(
@@ -171,7 +151,9 @@ def test_two_ticks_60s_apart_new_fetched_at_per_pool(tmp_path, monkeypatch):
     assert len(posted) == 2
     a, b = posted[0], posted[1]
     assert a["xai_weekly"]["fetched_at"] != b["xai_weekly"]["fetched_at"]
-    assert a["copilot"]["fetched_at"] != b["copilot"]["fetched_at"]
     assert a["remaining_fetched_at"] != b["remaining_fetched_at"]
-    assert a.get("opencode_fetched_at") != b.get("opencode_fetched_at")
     assert "2026-11-20T00:00:00Z" != b["xai_weekly"]["fetched_at"]
+    # FR #7255: ear must not publish Copilot / OpenCode (Jeeves fleet owns them).
+    assert "copilot" not in a and "copilot" not in b
+    assert a.get("opencode_fetched_at") in (None, "")
+    assert b.get("opencode_fetched_at") in (None, "")

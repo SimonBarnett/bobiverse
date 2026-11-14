@@ -42,7 +42,7 @@ OBSERVATION_NAME = "copilot-observation.json"
 JOBS_NAME = "copilot-jobs.json"
 MRB_BACKOFF_NAME = "copilot-mrb-backoff.json"
 TASK_TIMEOUT_S = 4 * 3600.0
-# FR #7251: same cadence as EAR_POOL_FETCH_S (was 300s; tray stale at 120s).
+# FR #7251 / #7255: same 60s cadence as EAR_POOL_FETCH_S / FLEET_POOL_FETCH_S.
 CACHE_S = float(bobreport.EAR_POOL_FETCH_S)
 COPILOT_COOLDOWN_S = 7 * 86400.0
 MRB_FAST_GIVEUP_S = 120.0

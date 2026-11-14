@@ -140,9 +140,9 @@ def test_observe_cache_and_recovery(tmp_path):
         return UNLIMITED
 
     cd.observe_quota(tmp_path, fetch_user=fetch, now=NOW)
-    cd.observe_quota(tmp_path, fetch_user=fetch, now=NOW + 100)
+    cd.observe_quota(tmp_path, fetch_user=fetch, now=NOW + 30)
     assert calls["n"] == 1
-    cd.observe_quota(tmp_path, fetch_user=fetch, now=NOW + 301)
+    cd.observe_quota(tmp_path, fetch_user=fetch, now=NOW + 61)
     assert calls["n"] == 2
 
 
@@ -313,8 +313,9 @@ def test_chair_tick_skips_observe_when_dispatch_disabled(tmp_path, monkeypatch):
     assert cd.dispatch_enabled(tmp_path) is False
     assert cd.should_observe_quota(tmp_path) is False
     j._copilot_tick()
-    assert not cd.observation_path(tmp_path).is_file()
-    assert calls["n"] == 0
+    # FR #7255: fleet Copilot fetch runs even with dispatch off.
+    assert cd.observation_path(tmp_path).is_file()
+    assert calls["n"] >= 1
 
 
 def test_chair_tick_observes_when_opt_in_and_dispatch_disabled(tmp_path, monkeypatch):
@@ -411,4 +412,6 @@ def test_chair_tick_no_token_skips_observe_by_default(tmp_path, monkeypatch):
         owners={"SimonBarnett"},
     )
     j._copilot_tick()
-    assert not cd.observation_path(tmp_path).is_file()
+    # FR #7255: still stamp a no_token observation so the fleet pool has a reason.
+    assert cd.observation_path(tmp_path).is_file()
+    assert cd.load_observation(tmp_path).get("last_error") == "no_token"
