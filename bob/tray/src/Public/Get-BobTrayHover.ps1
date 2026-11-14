@@ -431,8 +431,9 @@ function Format-BobTrayXaiWeeklyRow {
       remaining_pct is the digest meter value (never recomputed from used, never local log).
       fresh=false => stale mark (age_s / fetched_at) + error when present; last % only with that mark.
       null meter => clear 'no reading' (never empty bar, never another source).
-      FR #6314: error grok-login-expired expands to 'Grok login expired: run Grok on <m> to sign in again'
-      in the heading; .error stays the class string for diagnostics.
+      FR #6314 / FR #7345: grok-login-expired or xai_auth=expired expands to
+      'xAI sign-in expired, sign in once on <m>' (channel xAI weekly row, red [stale]).
+      .error stays the class string for diagnostics.
     #>
     param(
         [string]$MachineId,
@@ -482,13 +483,17 @@ function Format-BobTrayXaiWeeklyRow {
     if (-not $fetchedAt) { $fresh = $false }
     $err = ''
     try { if ($XaiWeekly.error) { $err = [string]$XaiWeekly.error } } catch { }
-    # FR #6314: expand grok-login-expired for TipForm/Status heading; keep class in .error.
+    # FR #6314 / #7345: expand login-expired on the channel xAI weekly row (not a per-seat alert).
     $errDisplay = $err
     $midLower = ([string]$MachineId).ToLowerInvariant()
     if (-not $midLower) { $midLower = ([string]$id).ToLowerInvariant() }
-    if ($err -eq 'grok-login-expired') {
+    $xaiAuth = ''
+    try { if ($XaiWeekly.xai_auth) { $xaiAuth = [string]$XaiWeekly.xai_auth } } catch { }
+    $expiredSignin = ($err -eq 'grok-login-expired') -or ($xaiAuth -eq 'expired')
+    if ($expiredSignin) {
         $who = if ($midLower) { $midLower } else { 'this machine' }
-        $errDisplay = ('Grok login expired: run Grok on {0} to sign in again' -f $who)
+        $errDisplay = ('xAI sign-in expired, sign in once on {0}' -f $who)
+        $fresh = $false
     }
     $age = $null
     try {

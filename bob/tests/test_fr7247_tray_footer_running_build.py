@@ -43,9 +43,9 @@ def test_fr7247_ci_tools_manifest_beats_stale_root(tmp_path: Path):
     env = {k: v for k, v in os.environ.items() if k != "BOBIVERSE_BOB_VERSION"}
     assert m.read_exe_source_sha(tmp_path) == EXE_SHORT
     assert m.read_scripts_source_sha(tmp_path) == SCR_SHORT
-    assert m.product_version_label(tmp_path, env=env) == (
-        f"bob 2.0.0 (exe {EXE_SHORT} / scripts {SCR_SHORT})"
-    )
+    # FR #7300: footer prefers tray tools\MANIFEST when root differs.
+    assert m.product_version_label(tmp_path, env=env) == f"bob 2.0.0 ({EXE_SHORT})"
+    assert m.read_deployed_source_sha(tmp_path) == EXE_SHORT
 
 
 def test_fr7247_matching_shas_collapse(tmp_path: Path):
@@ -89,7 +89,7 @@ def test_fr7247_readers_and_docs_name_tools_manifest():
     assert "ScriptsSourceShortSha" in cs
     assert 'Path.Combine(tools, "MANIFEST.json")' in cs
     watch = WATCH.read_text(encoding="utf-8-sig")
-    assert "exe {0} / scripts {1}" in watch or "exe {0} / scripts" in watch
+    assert "Get-BobTrayShaFromJson" in watch and "tools" in watch
     writer = WRITE.read_text(encoding="utf-8")
     assert "tools" in writer and "MANIFEST.json" in writer
     docs = DOCS.read_text(encoding="utf-8")

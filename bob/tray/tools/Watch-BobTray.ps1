@@ -2594,16 +2594,14 @@ function Get-BobTrayDeployedSourceShortSha {
     try {
         if ([IO.Path]::GetFileName($Root) -eq 'tools') { $tools = $Root }
     } catch { }
+    # FR #7300: tray footer reads the tray component MANIFEST (tools\), never a differing root MANIFEST.
     $exe = Get-BobTrayShaFromJson (Join-Path $tools 'MANIFEST.json')
     if (-not $exe) { $exe = Get-BobTrayShaFromProvenance (Join-Path $tools 'provenance.txt') }
+    if ($exe) { return $exe }
     $scripts = Get-BobTrayShaFromJson (Join-Path $Root 'MANIFEST.json')
     if (-not $scripts) { $scripts = Get-BobTrayShaFromProvenance (Join-Path $Root 'provenance.txt') }
     if (-not $scripts) { $scripts = Get-BobTrayShaFromJson (Join-Path $Root 'HOTPATCH.json') }
     if (-not $scripts) { $scripts = Get-BobTrayShaFromJson (Join-Path $Root 'BUILD.json') }
-    if ($exe -and $scripts -and ($exe -ne $scripts)) {
-        return ('exe {0} / scripts {1}' -f $exe, $scripts)
-    }
-    if ($exe) { return $exe }
     return $scripts
 }
 
