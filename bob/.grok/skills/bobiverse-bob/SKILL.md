@@ -55,6 +55,7 @@ Assert: `Assert-BobDigestWebhookLocal.ps1 -ExpectedReportUrl https://bob.ntsa.uk
 Ear-owned fleet fuel merges POST to `https://bob.ntsa.uk/bob/v1/report` via `bobreport.publish_local_peer_fuel` (fingerprint change or heartbeat). TipForm/Status **paint only** (Watch-BobTray does not POST fuel unless capture / `-PostDigestWebhook`).
 
 - **Host:** digest GET/docs default `https://bob.ntsa.uk/bob/v1/report` (FR #6142). IRC `--host` stays `irc.ntsa.uk`.
+- **FR #7365:** log `xai_attempt=ok` only after applying a live weekly reading; stamp `fetched_at` to the fetch clock and write the peer in the same publish. Do not park this playbook under `harvest/SKILL.md` (moved from harvest tip #7368).
 - **OpenCode ids:** `opencode-free` / `opencode-go` on `machines.<id>.pcent` when local fuel is known (omit when unknown; never invent 0).
 - **FR #7017:** OpenCode free is catalogue availability, not a quota. Never paint the free row, bar, or summary bit on hover / TipForm / Status (100, null, 0, or stale). Keep Go rolling / weekly / monthly. Do not change fuel detection or `free_model_ids` (dispatch may still use free models).
 - **Copilot (FR #7178):** ear `publish_local_peer_fuel` fetches `GET /copilot_internal/user` as SYSTEM (install `config\github.token` / `GH_TOKEN`). Always publish remaining / entitlement / `reset_at` / `fetched_at` or an explicit `last_error`; never omit the pool. Independent of chair `BOB_COPILOT_OBSERVE`. Tray/Status paint digest `fetched_at` only (park FR-008). Do not park this playbook under `harvest/SKILL.md` (move/fold here).

@@ -417,7 +417,6 @@ routes to bobiverse via the split rule.
 - Never write \airc in PowerShell double-quoted strings: \a is BEL (U+0007) and ships as \x07irc.exe in markdown.
 - Fleet Cursor pool: CredMan Bobiverse/CursorAccess (or BOB_CURSOR_CREDMAN_TARGET), ear skips Get-CursorAgentUsage with cursor_acquisition=jeeves-fleet, tray reads fleet_pools.cursor with Get-BobPoolStaleAfterSec 120s
 - Keep the live skill-dag job-worktree pointer beside the seat cwd, never under .grok; Grok watches that dir and replaces the stdio MCP child.
-- xai_attempt=ok only after applying a live weekly reading; stamp fetched_at to the fetch clock and write the peer in the same publish.
 
 ## Harvest digest (lessons audit 2026-10-06)
 
