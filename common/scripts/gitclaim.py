@@ -643,14 +643,17 @@ def format_list_line(
     line_max: int = LIST_LINE_MAX,
     now: float | None = None,
 ) -> str:
-    """One PM line: ``#1 FR owner/repo#n 2h titleΓÇª`` (title truncated only)."""
+    """One PM line: ``#1 FR owner/repo#n 2h title`` (title truncated only)."""
+    import focus_ignore as _fi_list
+
     task = str(row.get("task") or "?")
     repo = str(row.get("repo") or "?")
     ident = str(row.get("id") or "?")
     age = _job_age(row, now=now)
     title = _job_title(row)
     # Fixed prefix must never be truncated away.
-    head = f"#{index} {task} {repo}{ident} {age}"
+    mark = "[critical] " if _fi_list.row_is_priority_critical(row) else ""
+    head = f"#{index} {mark}{task} {repo}{ident} {age}"
     budget = max(8, int(line_max) - len(head.encode("utf-8")) - 1)
     if title:
         t_bytes = title.encode("utf-8")
@@ -4887,7 +4890,8 @@ def offer_timeout_s(row: dict | None) -> float:
 
 def ordered_unaccepted(home: Path, rows: list[dict] | None = None) -> list[dict]:
     """Unaccepted rows in assignment order (#39 gap 2): ignored dropped, strict-focus filter,
-    item rank > repo priority > seq. Same order feeds !list and !bored."""
+    priority/critical first (FR #7204), then item rank > repo priority > seq.
+    Same order feeds !list and !bored."""
     import focus_ignore
 
     if rows is None:

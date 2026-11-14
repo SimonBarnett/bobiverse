@@ -65,7 +65,8 @@ COMMANDS: tuple = (
                 ("list", "status")),
     CommandSpec("list", "!list [all|<repo>|fr|mrb|uat]", "queue by PM: one line per job (type in channel; reply is PM)",
                 ALL_ROLES, "!list SimonBarnett/bobiverse",
-                "In-channel or PM. !list all includes the whole queue; !list <repo> / fr / mrb / uat filter it.",
+                "In-channel or PM. !list all includes the whole queue; !list <repo> / fr / mrb / uat filter it. "
+                "priority/critical rows sort first and show [critical] (FR #7204).",
                 ("filter", "help", "status", "resync")),
     CommandSpec("filter", "!filter [all|<repo>|fr|mrb|uat]", "alias of !list with a filter (PM reply)", ALL_ROLES,
                 "!filter fr", "Same as !list <filter>: replies by PM, honours focus order and the ignore list.",
