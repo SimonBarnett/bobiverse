@@ -45,6 +45,15 @@ if (-not $env:BOB_IRC_PASSWORD) {
     Write-Host 'WARN BOB_IRC_PASSWORD unset - TLS to irc.ntsa.uk will fail without config\ergo.password'
 }
 
+# FR #7234: ensure SYSTEM-readable config\github.token for ear Copilot (from env/profile/sibling/gh).
+# Under LocalSystem, gh auth token is skipped; Install-Bob as operator is the primary provision path.
+try {
+    $ghTokResult = Ensure-BobiverseGithubToken -InstallRoot $InstallRoot
+    Write-Host ("INFO FR #7234 github.token ok={0} migrated={1} source={2}" -f $ghTokResult.Ok, $ghTokResult.Migrated, $ghTokResult.Source)
+} catch {
+    Write-Host ("WARN FR #7234 Ensure-BobiverseGithubToken: {0}" -f $_.Exception.Message)
+}
+
 # Issue #8: SASL as bob-{machine} so reserved Bob-* nicks get 001 (NickServ account owns the nick).
 $nsFile = Join-Path $BobHome 'nickserv.password'
 $env:BOB_IRC_SASL_USER = 'bob-' + $MachineId
