@@ -115,5 +115,22 @@ $probe = & $exe --dry-run --install-root $work 2>&1
 $pcode = $LASTEXITCODE
 $ErrorActionPreference = $prevEap
 if ($pcode -ne 0 -or -not (($probe | Out-String) -match '"decision"')) { throw "bob-worker.exe smoke test failed (exit $pcode): $($probe | Out-String)" }
+$pauseDir = Join-Path $work 'oc-pause-empty'
+New-Item -ItemType Directory -Force -Path $pauseDir | Out-Null
+$env:BOB_OPENCODE_PAUSE_STATE_DIR = $pauseDir
+foreach ($n in 1, 2) {
+    $sw = [Diagnostics.Stopwatch]::StartNew()
+    $prevEap2 = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
+    $listOut = & $exe --list-agents --install-root $work 2>&1
+    $lcode = $LASTEXITCODE
+    $ErrorActionPreference = $prevEap2
+    $sw.Stop()
+    Write-Host ("INFO list-agents smoke {0}: {1:N0} ms" -f $n, $sw.ElapsedMilliseconds)
+    if ($sw.ElapsedMilliseconds -ge 1000) { Write-Host ("WARN list-agents smoke {0} took {1:N0} ms (>= 1s)" -f $n, $sw.ElapsedMilliseconds) }
+    $blob = ($listOut | Out-String)
+    if ($lcode -ne 0 -or $blob -notmatch '"agents"' -or $blob -notmatch '"refresh"') {
+        throw "bob-worker.exe --list-agents smoke failed (exit $lcode): $blob"
+    }
+}
 Write-Host ("INFO built {0} ({1:N1} MB)" -f $exe, ((Get-Item -LiteralPath $exe).Length / 1MB))
 $exe
