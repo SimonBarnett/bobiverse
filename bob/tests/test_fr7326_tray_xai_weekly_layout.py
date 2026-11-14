@@ -100,7 +100,7 @@ Format-BobTrayPoolLayoutSnapshot -Digest $d
     assert "81%" in text
     assert "55%" in text
     assert "40%" in text
-    assert "Grok / Cursor" in text
+    assert "Grok / Cursor" not in text
     assert "marchhare-111" in text
     assert "flamingo-222" in text
     assert "redqueen-333" in text
