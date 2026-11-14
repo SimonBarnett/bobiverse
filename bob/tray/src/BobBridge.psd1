@@ -44,6 +44,8 @@
         'Export-BobTranscript',
         'Get-BobStallAlerts',
         'Get-BobTrayHover',
+        'Get-BobTrayDigestPoolCatalog',
+        'Format-BobTrayDigestPoolHeading',
         'Resolve-BobCursorXaiSharedPools',
         'Get-BobSharedCursorXaiAggregateRemaining',
         'Format-BobCursorXaiSharedPoolTitle',

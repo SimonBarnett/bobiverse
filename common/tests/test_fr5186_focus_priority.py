@@ -51,7 +51,10 @@ def test_loaded_legacy_or_invalid_focus_cannot_make_other_repo_high(tmp_path):
         assert doc["repos"]
         assert fi.repo_priority(doc, "SimonBarnett/trutex") == expected_priority
         assert fi._repo_entry(doc, "SimonBarnett/trutex")[0] == expected_priority
-        assert fi.offer_sort_key(tmp_path, _row("SimonBarnett/trutex"))[1] == expected_priority
+        # FR #7204: offer_sort_key[0] is critical-rank (1=non-critical); repo priority is [2].
+        key = fi.offer_sort_key(tmp_path, _row("SimonBarnett/trutex"))
+        assert key[0] == 1
+        assert key[2] == expected_priority
         assert not cd.is_high_priority(tmp_path, _row("SimonBarnett/trutex"))
 
     for raw, expected_repo in (
@@ -77,9 +80,10 @@ def test_item_focus_only_makes_allowed_repositories_copilot_eligible(tmp_path):
     fi.handle_focus_cmd(tmp_path, "SimonBarnett/ce-priority#39")
     fi.handle_focus_cmd(tmp_path, "SimonBarnett/trutex#33")
 
-    assert fi.offer_sort_key(tmp_path, _row("SimonBarnett/agentic_fomprep", "#237"))[1] == 1
-    assert fi.offer_sort_key(tmp_path, _row("SimonBarnett/ce-priority", "#39"))[1] == 2
-    assert fi.offer_sort_key(tmp_path, _row("SimonBarnett/trutex", "#33"))[1] == 3
+    # FR #7204: [0]=non-critical, [1]=0 item-focus path, [2]=item rank.
+    assert fi.offer_sort_key(tmp_path, _row("SimonBarnett/agentic_fomprep", "#237"))[2] == 1
+    assert fi.offer_sort_key(tmp_path, _row("SimonBarnett/ce-priority", "#39"))[2] == 2
+    assert fi.offer_sort_key(tmp_path, _row("SimonBarnett/trutex", "#33"))[2] == 3
     assert not cd.is_high_priority(tmp_path, _row("SimonBarnett/ce-priority", "#39"))
     assert not cd.is_high_priority(tmp_path, _row("SimonBarnett/trutex", "#33"))
     assert not cd.is_high_priority(tmp_path, _row("SimonBarnett/agentic_fomprep", "#237"))

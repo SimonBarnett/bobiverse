@@ -61,7 +61,8 @@ function New-BobTrayStatusModel {
             $over = ('overspend {0}{1}' -f $pound, $v.ToString('N2', [Globalization.CultureInfo]::InvariantCulture))
         }
     }
-    # FR #4938: cursor[] stays empty so Status / TipForm never paint obsolete pool bars.
+    # FR #4938: cursor[] stays empty (obsolete spending-group bars).
+    # FR #7243: digest_pools carries every digest fuel family for Status / TipForm.
     $cursor = New-Object System.Collections.Generic.List[object]
     $grok = New-Object System.Collections.Generic.List[object]
     $shown = @{}
@@ -189,6 +190,13 @@ function New-BobTrayStatusModel {
         }
     }
     if (-not $opencodeLine) { $opencodeLine = 'OpenCode  go n/a' }
+    $digestPools = @()
+    if ($h) {
+        try { if ($h.digest_pools) { $digestPools = @($h.digest_pools) } } catch { }
+    }
+    if ($digestPools.Count -eq 0 -and (Get-Command Get-BobTrayDigestPoolCatalog -ErrorAction SilentlyContinue)) {
+        try { $digestPools = @(Get-BobTrayDigestPoolCatalog -Digest $null) } catch { }
+    }
     return [ordered]@{
         v         = 1
         ts        = [int64][DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
@@ -212,6 +220,7 @@ function New-BobTrayStatusModel {
         copilot_stale_line = $copilotStaleLine
         copilot_fresh_until = $copilotFreshUntil
         copilot_bar = $copilotBar
+        digest_pools = @($digestPools)
         alert     = $(if ($AlertKind) { $AlertKind } else { 'none' })
         alerts    = @($Alerts | Where-Object { $_ })
         version   = $Version

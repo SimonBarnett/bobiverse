@@ -9,6 +9,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+from ear_ci_source_paths import ear_ci_source_paths
 from repo_layout import ROOT
 
 EAR_WF = ROOT / ".github" / "workflows" / "build-bob-ear.yml"
@@ -18,19 +19,7 @@ EAR_BUILD = ROOT / "bob" / "scripts" / "Build-BobEar.ps1"
 EAR_DOCS = ROOT / "bob" / "docs" / "bob-ear.md"
 TRAY_DOCS = ROOT / "bob" / "docs" / "bob-tray-dialogs.md"
 
-EAR_SOURCE_PATHS = [
-    ".github/workflows/build-bob-ear.yml",
-    "bob/scripts/Build-BobEar.ps1",
-    "bob/scripts/Install-BobEarExe.ps1",
-    "common/scripts/irc_agent.py",
-    "common/scripts/gitclaim.py",
-    "common/scripts/bobreport.py",
-    "common/scripts/opencode_fuel.py",
-    "common/scripts/bobiverse_build.py",
-    "bob/docs/deploy-pool-monitor-manifest.txt",
-    "bob/tests/test_fr6254_ear_build_provenance_align.py",
-    "bob/tests/test_fr7179_ear_tray_ci_main_push.py",
-]
+EAR_SOURCE_PATHS = ear_ci_source_paths()
 
 
 def _text(path: Path) -> str:
