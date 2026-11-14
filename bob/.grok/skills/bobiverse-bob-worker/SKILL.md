@@ -227,6 +227,7 @@ Generalised from 21 harvested lessons that never reached this book (audit for FR
 - **FR #7181:** worker digest POSTs use User-Agent Bobiverse-bobreport/1.0 (same as ear); retry 403/429/5xx with backoff; log status/responder/CF-Ray (never body); persistent failure posts state=unhealthy error=digest-http-403 (PR #7208).
 - **FR #7180:** signed-in seats announce worker ready / !bored without a first turn; unsigned Grok posts worker needs sign-in and digest assignable=false; BOB_WORKER_STARTUP_WAIT_READY=1 keeps hang-recycle hold (PR #7203).
 - FR #6409/#6418: after IRC join post worker ready kind= model=<configured|unknown> build=<12|unknown> (model from the same configuration the agent launches with: OpenCode BOB_OPENCODE_MODEL -> config model; local reads only, no network/credentials); enrich_done_payload and post_digest_seat_kind always carry worker_build= from get_source_commit(); never omit the keys
+- FR #7183: one Grok `auth.json` per machine (`GROK_AUTH_PATH`); seat `GROK_HOME` must not copy credentials. Refresh writes that file under a cross-process lock. No sign-in -> shop `worker needs sign-in`, digest `needs_sign_in`, never ready/`!bored`. Never log tokens.
 - bob-worker: FR #6119 --- Cursor on-demand spend limit (used_cents >= limit_cents / overspend_state=at-limit) is out-of-fuel even when high/low pool remain % looks non-zero; Get-BobAgentFuel surfaces on_demand_*; two fast done-miss releases under BOB_WORKER_FAST_DONE_MISS_S (default 60s) enter the same hold (no !bored / NACK out-of-fuel).
 
 

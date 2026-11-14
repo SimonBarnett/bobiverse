@@ -81,7 +81,7 @@ def test_prepare_seat_grok_home_does_not_touch_user_config(tmp_path):
     trust.mkdir()
     home = bound.prepare_seat_grok_home(run_dir, trust_paths=[trust], user_grok_home=user)
     assert home == run_dir / bound.GROK_HOME_NAME
-    assert (home / "auth.json").is_file()
+    assert not (home / "auth.json").exists()
     assert (user / "config.toml").read_bytes() == before
     seat_cfg = (home / "config.toml").read_text(encoding="utf-8")
     assert "paths = []" in seat_cfg

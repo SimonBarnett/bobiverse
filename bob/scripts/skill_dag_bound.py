@@ -13,7 +13,7 @@ remain (vision LOCKED).
 | Edit user ``~/.grok/config.toml`` ``[skills]`` | Forbidden (Plan / human Grok). |
 | ``GROK_CONFIG`` overlay for ``[skills]`` / ``[mcp_servers]`` | Allowlist drops those tables. |
 | Project ``.grok/config.toml`` ``[skills] disabled/ignore`` | Does **not** suppress project skill discovery. |
-| Seat-local ``GROK_HOME`` (copy ``auth.json``; empty ``skills.paths``; restore ``bundled_skill_dirs``) | Drops user + configToml skills; login works; **does not** drop project skills when cwd is under a trusted install tree (e.g. ``C:\\ai\\bob``). |
+| Seat-local ``GROK_HOME`` (no ``auth.json`` copy; ``GROK_AUTH_PATH`` = machine store; empty ``skills.paths``; restore ``bundled_skill_dirs``) | Drops user + configToml skills; login is the one machine store (FR #7183); **does not** drop project skills when cwd is under a trusted install tree (e.g. ``C:\\ai\\bob``). |
 | Seat cwd under the trusted install tree with only ``skill-dag-core`` | Still loads every ``.grok/skills`` under the install project root. |
 | Seat cwd **outside** the install tree + seat ``GROK_HOME`` + only ``skill-dag-core`` under that cwd's ``.grok/skills`` + trust that cwd | **Works.** ``grok inspect`` lists ``skill-dag-core`` (+ bundled). Index fixtures outside ``.grok/skills`` stay out. ``--add-dir`` to the install is refused by the harness. |
 
@@ -23,13 +23,14 @@ cwd. MCP keeps absolute ``--root`` paths into the real install skill trees.
 """
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import shutil
 import subprocess
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 CORE_STUB_ID = "skill-dag-core"
 CORE_STUB_LINE = (
@@ -55,18 +56,120 @@ def catalog_prompt_bound(index_nodes: list[dict] | None) -> str:
     return CORE_STUB_LINE
 
 
-def apply_bound_env(env: dict | None, *, grok_home: str | Path | None = None) -> dict:
-    """Process-local env: bound marker, no GROK_CONFIG skills overlay, optional GROK_HOME."""
+def apply_bound_env(
+    env: dict | None,
+    *,
+    grok_home: str | Path | None = None,
+    grok_auth_path: str | Path | None = None,
+) -> dict:
+    """Process-local env: bound marker, no GROK_CONFIG skills overlay, optional GROK_HOME.
+
+    FR #7183: ``GROK_AUTH_PATH`` points at the one machine credential file. Seat
+    ``GROK_HOME`` is sessions/logs/config only — never a copied ``auth.json``.
+    """
     out = dict(env or {})
     out["BOB_SKILL_DAG_BOUND"] = CORE_STUB_ID
     out.pop("GROK_CONFIG", None)
     if grok_home is not None:
         out["GROK_HOME"] = str(grok_home)
+    if grok_auth_path is not None:
+        out["GROK_AUTH_PATH"] = str(grok_auth_path)
     return out
 
 
-def default_user_grok_home() -> Path:
-    return Path(os.environ.get("GROK_HOME") or (Path.home() / ".grok"))
+def default_user_grok_home(*, env: dict | None = None) -> Path:
+    e = os.environ if env is None else env
+    raw = (e.get("GROK_HOME") or "").strip()
+    if raw and Path(raw).name != GROK_HOME_NAME:
+        return Path(raw)
+    return Path.home() / ".grok"
+
+
+def machine_grok_auth_path(
+    *, env: dict | None = None, user_grok_home: str | Path | None = None
+) -> Path:
+    """Single machine Grok credential file (FR #7183). Never a per-seat copy."""
+    e = os.environ if env is None else env
+    bob = (e.get("BOB_GROK_AUTH_PATH") or "").strip()
+    if bob:
+        return Path(bob)
+    src = Path(user_grok_home) if user_grok_home else default_user_grok_home(env=e)
+    return src / "auth.json"
+
+
+def grok_session_usable(*, auth_path: str | Path | None = None, env: dict | None = None) -> bool:
+    """True when the machine store exists and has at least one account object.
+
+    Reads JSON structure only. Never logs or returns token values.
+    """
+    path = Path(auth_path) if auth_path else machine_grok_auth_path(env=env)
+    try:
+        if not path.is_file():
+            return False
+        obj = json.loads(path.read_text(encoding="utf-8-sig"))
+    except (OSError, json.JSONDecodeError, UnicodeError, TypeError, ValueError):
+        return False
+    return isinstance(obj, dict) and any(obj)
+
+
+def _try_auth_lock(fh, timeout_s: float) -> bool:
+    deadline = time.monotonic() + max(0.05, float(timeout_s))
+    while True:
+        try:
+            if os.name == "nt":
+                import msvcrt
+
+                fh.seek(0)
+                msvcrt.locking(fh.fileno(), msvcrt.LK_NBLCK, 1)
+            else:
+                import fcntl
+
+                fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return True
+        except OSError:
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(0.02)
+
+
+def _unlock_auth(fh) -> None:
+    with contextlib.suppress(OSError):
+        if os.name == "nt":
+            import msvcrt
+
+            fh.seek(0)
+            msvcrt.locking(fh.fileno(), msvcrt.LK_UNLCK, 1)
+        else:
+            import fcntl
+
+            fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+
+
+@contextlib.contextmanager
+def grok_machine_auth_lock(
+    auth_path: str | Path, *, timeout_s: float = 8.0
+) -> Iterator[None]:
+    """Cross-process lock beside the machine auth file (FR #7183 refresh race)."""
+    lock_path = Path(str(auth_path) + ".lock")
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    fh = open(lock_path, "a+b")
+    try:
+        if not _try_auth_lock(fh, timeout_s):
+            raise TimeoutError("grok auth lock")
+        yield
+    finally:
+        _unlock_auth(fh)
+        fh.close()
+
+
+def commit_refreshed_auth(auth_path: str | Path, body: str, *, timeout_s: float = 8.0) -> None:
+    """Atomically replace the machine auth file under the cross-process lock."""
+    path = Path(auth_path)
+    text = str(body)
+    tmp = path.with_name(path.name + ".tmp")
+    with grok_machine_auth_lock(path, timeout_s=timeout_s):
+        tmp.write_text(text, encoding="utf-8")
+        os.replace(tmp, path)
 
 
 def prepare_seat_grok_home(
@@ -75,16 +178,15 @@ def prepare_seat_grok_home(
     trust_paths: list[str | Path] | None = None,
     user_grok_home: str | Path | None = None,
 ) -> Path:
-    """Create ``<run_dir>/grok-home`` for the child process (never writes user config.toml)."""
+    """Create ``<run_dir>/grok-home`` for sessions/logs/config (never copies auth.json)."""
     run = Path(run_dir)
     home = run / GROK_HOME_NAME
     home.mkdir(parents=True, exist_ok=True)
     src = Path(user_grok_home) if user_grok_home else default_user_grok_home()
-    # Login: copy auth material only. Do not copy user config.toml (skills tables).
-    for name in ("auth.json", "version.json"):
-        s = src / name
-        if s.is_file():
-            shutil.copy2(s, home / name)
+    # FR #7183: never copy auth.json. version.json is not a credential.
+    s_ver = src / "version.json"
+    if s_ver.is_file():
+        shutil.copy2(s_ver, home / "version.json")
     bundled = src / "bundled" / "skills"
     bundled_lit = json.dumps(bundled.as_posix()) if bundled.is_dir() else "[]"
     if bundled.is_dir():
@@ -220,6 +322,7 @@ def capture_inspect_skills(
     env = os.environ.copy()
     if grok_home is not None:
         env["GROK_HOME"] = str(grok_home)
+        env["GROK_AUTH_PATH"] = str(machine_grok_auth_path(env=env))
     else:
         env.pop("GROK_HOME", None)
     env.pop("GROK_CONFIG", None)

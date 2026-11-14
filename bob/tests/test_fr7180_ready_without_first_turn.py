@@ -77,16 +77,26 @@ class FakeBored:
         return False
 
 
-def _plant_grok_auth(tmp_path: Path) -> None:
-    p = tmp_path / "grok-home" / "auth.json"
+def _plant_grok_auth(tmp_path: Path) -> Path:
+    """FR #7183: plant the one machine auth store (not seat grok-home)."""
+    p = tmp_path / "machine-grok" / "auth.json"
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(json.dumps({"issuer::client": {"key": "FAKE_7180"}}), encoding="utf-8")
+    return p
 
 
 def _sup(tmp_path, monkeypatch, *, plant_auth: bool):
     FakeTimer.instances.clear()
     monkeypatch.setattr(bw.threading, "Timer", FakeTimer)
     monkeypatch.delenv("BOB_WORKER_STARTUP_WAIT_READY", raising=False)
+    # Isolate from the live host GROK auth (FR #7183 machine store).
+    if plant_auth:
+        auth = _plant_grok_auth(tmp_path)
+        monkeypatch.setenv("BOB_GROK_AUTH_PATH", str(auth))
+    else:
+        empty = tmp_path / "empty-machine-auth.json"
+        monkeypatch.setenv("BOB_GROK_AUTH_PATH", str(empty))
+    monkeypatch.delenv("GROK_AUTH_PATH", raising=False)
     logs: list[str] = []
     clock = {"t": 0.0}
     injected: list[str] = []
@@ -94,9 +104,9 @@ def _sup(tmp_path, monkeypatch, *, plant_auth: bool):
     monkeypatch.setattr(bw.Supervisor, "_start_turn_watcher", lambda self, sid: None)
     monkeypatch.setattr(bw.Supervisor, "_start_fuel_watcher", lambda self, pid: None)
     monkeypatch.setattr(bw.Supervisor, "_start_prompt_watcher", lambda self, proc: None)
-    if plant_auth:
-        _plant_grok_auth(tmp_path)
     bored = FakeBored()
+    # FR #7183 BoredEmitter hook used when unsigned.
+    bored.note_needs_signin = lambda: setattr(bored, "_needs_signin", True)
     sup = bw.Supervisor(
         kind="grok",
         exe=r"C:\x\agent.exe",
@@ -131,11 +141,6 @@ def test_fr7180_signed_in_ready_without_first_turn(tmp_path, monkeypatch):
 
 
 def test_fr7180_unsigned_never_ready(tmp_path, monkeypatch):
-    empty = tmp_path / "empty-user-grok"
-    empty.mkdir()
-    import skill_dag_bound as sdb
-
-    monkeypatch.setattr(sdb, "default_user_grok_home", lambda: empty)
     sup, logs, clock, injected, relay, bored = _sup(tmp_path, monkeypatch, plant_auth=False)
     assert sup.start_agent()
     assert bored.ready is False
@@ -148,7 +153,10 @@ def test_fr7180_unsigned_never_ready(tmp_path, monkeypatch):
 
 
 def test_fr7180_hello_lines():
-    assert bw.worker_needs_signin_line("grok") == "worker needs sign-in kind=grok"
+    line_need = bw.worker_needs_signin_line("grok")
+    assert line_need.startswith("worker needs sign-in kind=grok")
+    assert "ready" not in line_need
+    assert "build=" in line_need  # FR #7183
     line = bw.worker_hello_line("grok", model="grok-4.5", build="abc123def456")
     assert line.startswith("worker ready ")
     assert "kind=grok" in line
@@ -175,12 +183,15 @@ def test_fr7180_digest_assignable_false(monkeypatch):
     assert payload_holder.get("state") == "needs-sign-in"
 
 
-def test_fr7180_system_profile_auth_ignored(tmp_path):
-    """Seat uses run_dir/grok-home, not SYSTEM ~/.grok (FR #7180)."""
+def test_fr7180_system_profile_auth_ignored(tmp_path, monkeypatch):
+    """Seat GROK_HOME is sessions only; signed-in uses machine GROK_AUTH_PATH (FR #7180 / #7183)."""
     assert bw.agent_grok_home(run_dir=tmp_path) == tmp_path / "grok-home"
-    assert bw.grok_agent_signed_in(run_dir=tmp_path) is False
-    _plant_grok_auth(tmp_path)
-    assert bw.grok_agent_signed_in(run_dir=tmp_path) is True
+    missing = tmp_path / "missing-auth.json"
+    monkeypatch.setenv("BOB_GROK_AUTH_PATH", str(missing))
+    assert bw.grok_agent_signed_in(run_dir=tmp_path, env={"BOB_GROK_AUTH_PATH": str(missing)}) is False
+    auth = _plant_grok_auth(tmp_path)
+    env = {"BOB_GROK_AUTH_PATH": str(auth), "GROK_AUTH_PATH": str(auth)}
+    assert bw.grok_agent_signed_in(run_dir=tmp_path, env=env) is True
 
 
 def test_fr7180_docs_and_wait_ready_default(monkeypatch):
