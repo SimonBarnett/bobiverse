@@ -416,7 +416,6 @@ routes to bobiverse via the split rule.
 - MRB fleet pools: Jeeves FLEET_POOL_FETCH_S=60 owns OpenCode/Copilot; ear publish must pop those providers; fold CONFLICTING keep fleet ownership over ear fetch
 - Never write \airc in PowerShell double-quoted strings: \a is BEL (U+0007) and ships as \x07irc.exe in markdown.
 - Fleet Cursor pool: CredMan Bobiverse/CursorAccess (or BOB_CURSOR_CREDMAN_TARGET), ear skips Get-CursorAgentUsage with cursor_acquisition=jeeves-fleet, tray reads fleet_pools.cursor with Get-BobPoolStaleAfterSec 120s
-- WinPS children need both PSModulePath=5.1 Modules and PSModuleAutoLoadingPreference=All; import-fail fallbacks must set both.
 
 ## Harvest digest (lessons audit 2026-10-06)
 
