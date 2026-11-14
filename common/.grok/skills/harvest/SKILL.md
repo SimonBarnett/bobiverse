@@ -420,6 +420,7 @@ routes to bobiverse via the split rule.
 - xAI weekly tray rows are one pool per machine: heading is machine, percent left, account, reset --- never append a Grok/Cursor product-pair label.
 - Fleet Copilot/OpenCode 60s fetch needs a ChairJobs daemon watchdog (spawn=True); tick after drain_outbox_once is not enough when drain blocks.
 - Jeeves SYSTEM state files must write under BOB_HOME/.jeeves, not BOB_DIGEST_HOME; atomic tmp+replace and digest health on Access denied.
+- Ear CI artifacts must ship Start-Bob.ps1 and Select-BobEarLaunch.ps1 with manifest SHA-256; Install-BobEarExe copies them beside the exe or machines keep stale mtime launchers.
 
 ## Harvest digest (lessons audit 2026-10-06)
 
