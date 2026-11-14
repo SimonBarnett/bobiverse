@@ -189,6 +189,26 @@ def resolve_install_root(raw: str | None = None) -> str:
     return _default_install_root()
 
 
+def maybe_sync_install_skills(*, install_root: str | None = None, job_busy: bool = False) -> dict:
+    """FR #7238: overlay origin `.grok/skills` between jobs (never mid-ACK)."""
+    root = str(install_root or os.environ.get("BOB_INSTALL_ROOT") or "").strip()
+    if not root:
+        return {"ok": False, "reason": "no-install", "sha": ""}
+    try:
+        import sync_install_skills as sis
+    except ImportError:
+        scripts = _common_scripts_dir()
+        sys.path.insert(0, str(scripts))
+        try:
+            import sync_install_skills as sis  # type: ignore
+        except ImportError:
+            return {"ok": False, "reason": "no-helper", "sha": ""}
+    try:
+        return sis.sync_install_skills_from_origin(root, job_busy=job_busy)
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "reason": type(exc).__name__, "sha": ""}
+
+
 def _common_scripts_dir() -> Path:
     """Resolve common/scripts beside bob/scripts (worktree or install layout)."""
     here = Path(__file__).resolve().parent
@@ -4666,6 +4686,103 @@ def should_start_cursor_turn_watcher(kind: str) -> bool:
     return raw not in ("0", "false", "no", "off")
 
 
+def should_start_aider_turn_watcher(kind: str) -> bool:
+    """FR #7265: Aider seats infer turn end from process idle (BOB_WORKER_AIDER_TURN_WATCH=0 disables)."""
+    if (kind or "").strip().lower() != "aider" or not bored_on_turn_end_enabled():
+        return False
+    raw = (os.environ.get("BOB_WORKER_AIDER_TURN_WATCH") or "1").strip().lower()
+    return raw not in ("0", "false", "no", "off")
+
+
+def _aider_turn_quiet_s(default: float = 5.0) -> float:
+    raw = (os.environ.get("BOB_WORKER_AIDER_TURN_QUIET_S") or "").strip()
+    try:
+        v = float(raw) if raw else float(default)
+    except ValueError:
+        v = float(default)
+    return max(1.0, min(60.0, v))
+
+
+class ProcIdleTurnWatcher:
+    """FR #7265: turn_started on process activity; turn_ended after quiet_s with no CPU/IO."""
+
+    def __init__(
+        self,
+        *,
+        probe: Callable[[], object],
+        quiet_s: float | None = None,
+        clock: Callable[[], float] = time.time,
+        on_turn_started: Optional[Callable[[Optional[int], float], None]] = None,
+        on_turn_ended: Optional[Callable[[Optional[int], float], None]] = None,
+        stop_event: Optional[threading.Event] = None,
+        log: Optional[Callable[[str], None]] = None,
+        interval_s: float = 0.5,
+    ) -> None:
+        self.probe = probe
+        self.quiet_s = float(_aider_turn_quiet_s() if quiet_s is None else quiet_s)
+        self.clock = clock
+        self._on_started = on_turn_started
+        self._on_ended = on_turn_ended
+        self._stop = stop_event
+        self.log = log or (lambda _m: None)
+        self.interval_s = max(0.2, float(interval_s))
+        self._active = False
+        self._quiet_since: Optional[float] = None
+        self._turn = 0
+
+    def _busy(self) -> bool:
+        try:
+            sample = self.probe()
+        except Exception:
+            return False
+        try:
+            return int(getattr(sample, "activity", 0) or 0) > 0
+        except Exception:
+            return False
+
+    def tick(self) -> Optional[str]:
+        now = float(self.clock())
+        busy = self._busy()
+        if busy:
+            self._quiet_since = None
+            if not self._active:
+                self._active = True
+                self._turn += 1
+                if self._on_started:
+                    try:
+                        self._on_started(self._turn, now)
+                    except Exception:
+                        pass
+                return "started"
+            return None
+        if not self._active:
+            return None
+        if self._quiet_since is None:
+            self._quiet_since = now
+            return None
+        if (now - self._quiet_since) < self.quiet_s:
+            return None
+        self._active = False
+        self._quiet_since = None
+        if self._on_ended:
+            try:
+                self._on_ended(self._turn, now)
+            except Exception:
+                pass
+        return "ended"
+
+    def run(self) -> None:
+        while self._stop is None or not self._stop.is_set():
+            try:
+                self.tick()
+            except Exception:
+                pass
+            if self._stop is not None:
+                self._stop.wait(self.interval_s)
+            else:
+                time.sleep(self.interval_s)
+
+
 def apply_cursor_inject_keys_default(kind: str, log: Optional[Callable[[str], None]] = None) -> bool:
     """FR #4464 / #6158: Cursor and OpenCode seats default to batched KEY_EVENT at seat start.
 
@@ -8568,9 +8685,10 @@ class BoredEmitter:
     """t770u / FR #1611 / FR #2802 / FR #2834: the EXE (never the model) posts `PRIVMSG #<machine> :!bored`:
       * on seat start (agent ready), after DONE/NACK/GIVEUP **once the harvest hold ends**, and while idle
         (first idle after idle_s, then every repeat_s);
-      * FR #2802 / #6157: grok ``events.jsonl`` or OpenCode ``opencode-turns.jsonl`` ``turn_ended``
-        releases the harvest hold early (and idle turn end -> reason ``turn``);
-        ``harvest_hold_s`` remains the fallback when no turn-end signal arrives;
+        * FR #2802 / #6157 / #7265: grok ``events.jsonl``, OpenCode ``opencode-turns.jsonl``,
+        Cursor chat-store, or Aider process-idle ``turn_ended`` releases (or skips) the harvest
+        hold; idle turn end -> reason ``turn``. ``harvest_hold_s`` is fallback only when
+        turn end cannot be seen (log ``bored: fallback timer, no turn_ended seen``);
       * FR #2834: when a turn is open (watcher saw ``turn_started``, no ``turn_ended`` yet), keep holding
         past ``harvest_hold_s`` until ``turn_ended`` or ``turn_hold_max_s`` (default 600 s);
       * FR #2875: ``turn_ended`` with ACK open and no DONE/NACK/GIVEUP arms done-miss (remind after
@@ -8606,6 +8724,7 @@ class BoredEmitter:
                  turn_hold_max_s: float | None = None, done_miss_grace_s: float | None = None,
                  ack_quiet_s: float | None = None, held_assign_watchdog_s: float | None = None):
         self.send, self.log, self.clock = send, log, clock
+        self.kind = ""  # FR #7265: seat kind on turn-end !bored logs
         self.idle_s, self.repeat_s, self.ack_stale_s, self.retry_s = idle_s, repeat_s, ack_stale_s, retry_s
         # FR #4827: past ack_stale_s, keep the ACK while the turn is open or agent I/O
         # is newer than this quiet window. Idle (no I/O, turn ended) still frees at ack_stale_s.
@@ -8683,6 +8802,8 @@ class BoredEmitter:
         self._turn_open = False
         self._turn_watcher_armed = False
         self._turn_hold_cap_logged = False
+        self._harvest_saw_turn_ended = False
+        self._harvest_used_fallback = False
         # FR #2811: assign parked in Relay during harvest — blocks !bored, not turn_ended release.
         self._held_assign = False
         # FR #2875: turn_ended with ACK open and no DONE/NACK/GIVEUP.
@@ -9136,7 +9257,11 @@ class BoredEmitter:
             self._cv.notify_all()
 
     def _begin_harvest_hold(self, now: float) -> None:
-        """FR #1611: after DONE/NACK/GIVEUP, hold !bored so the agent can harvest skills/FRs first."""
+        """FR #1611 / #7265: after DONE/NACK/GIVEUP, hold !bored only while a turn is still open.
+
+        Harvest belongs inside the agent turn. If the watcher already saw ``turn_ended``,
+        skip the clock. ``harvest_hold_s`` remains the fallback when no turn end is seen.
+        """
         self._inject_pending = False
         self._inject_at = None
         self._idle_since = None
@@ -9144,9 +9269,26 @@ class BoredEmitter:
         self._release_gen = None
         self._turn_idle_pending = False
         self._turn_hold_cap_logged = False
+        self._harvest_saw_turn_ended = False
+        self._harvest_used_fallback = False
+        skip_clock = (
+            bored_on_turn_end_enabled()
+            and self._turn_watcher_armed
+            and (not self._turn_open)
+            and self._turn_gen > 0
+        )
+        if skip_clock:
+            self._harvest_until = None
+            self._idle_since = now
+            self._release_gen = self._turn_gen
+            self._harvest_saw_turn_ended = True
+            self.log("bored: skip harvest hold (turn already ended)")
+            return
         if self.harvest_hold_s > 0:
             self._harvest_until = now + self.harvest_hold_s
-            self.log(f"bored: harvest hold {self.harvest_hold_s:.0f}s before next !bored")
+            self.log(
+                f"bored: harvest hold {self.harvest_hold_s:.0f}s fallback until turn_ended"
+            )
         else:
             self._harvest_until = None
             self._idle_since = now
@@ -9352,6 +9494,7 @@ class BoredEmitter:
                     self._harvest_until = None
                     self._idle_since = now
                     self._release_gen = self._turn_gen
+                    self._harvest_saw_turn_ended = True
                     self._arm_skip = True
                     self._hold_release_at = now
                     self.log(
@@ -9621,7 +9764,15 @@ class BoredEmitter:
         # FR #4259 / FR #5505: when harvest wait expires with no open turn, flush held
         # assigns *before* the busy check (even if free/done !bored is still pending).
         if self._harvest_until is not None and now >= self._harvest_until:
+            pending = self._pending_harvest_fire()
             self._harvest_until = None
+            if (
+                pending
+                and bored_on_turn_end_enabled()
+                and not self._harvest_saw_turn_ended
+            ):
+                self._harvest_used_fallback = True
+                self.log("bored: fallback timer, no turn_ended seen")
             self._flush_held_on_harvest_expiry(now, why="harvest expired")
         # FR #5505: ACKed-on-receipt hold never injected — watchdog injects after deadline.
         self._flush_held_assign_watchdog(now)
@@ -9767,6 +9918,13 @@ class BoredEmitter:
         # FR #4784: GIVEUP open ACK to Jeeves before !bored on done-miss / ack-stale.
         if reason in ("done-miss", "ack-stale"):
             self._fire_seat_release_giveup(reason)
+        # FR #7238: pull merged skills between jobs (this send is idle).
+        try:
+            sk = maybe_sync_install_skills(job_busy=False)
+            if sk.get("sha"):
+                self.log(f"skills-sync sha={sk.get('sha')} reason={sk.get('reason')}")
+        except Exception:
+            pass
         ok = False
         try:
             ok = bool(self.send())
@@ -9795,7 +9953,14 @@ class BoredEmitter:
             # ACK already cleared in _reason; keep idle clock for the next cycle.
             self._idle_since = now
         self.sent.append((now, reason))
-        self.log(f"bored -> shop reason={reason}")
+        kind = (self.kind or "").strip().lower() or "unknown"
+        if reason in ("done", "free", "turn") and self._harvest_saw_turn_ended:
+            trigger = "turn_ended"
+        elif reason in ("done", "free") and self._harvest_used_fallback:
+            trigger = "fallback-timer"
+        else:
+            trigger = reason
+        self.log(f"bored -> shop reason={reason} kind={kind} trigger={trigger}")
 
     def _run(self) -> None:
         with self._cv:
@@ -9996,6 +10161,8 @@ class Supervisor:
         self._reconnect_thread: Optional[threading.Thread] = None
         if self.bored is not None and getattr(self.bored, "run_dir", None) is None:
             self.bored.run_dir = self.run_dir  # FR #3189 job-repo.txt for harvest
+        if self.bored is not None:
+            self.bored.kind = (self.kind or "").strip().lower()
         # FR #2383: assign injected + no run-dir ACK while agent keeps turning → remind then recycle.
         self.ack_miss = AssignAckMiss()
         # FR #2875: turn_ended with ACK open and no DONE → remind via run-dir inject, then release.
@@ -10475,11 +10642,65 @@ class Supervisor:
         # FR #4462 / #4464: same keys default as start_agent. Explicit BOB_WORKER_INJECT_PASTE wins.
         apply_cursor_inject_keys_default("cursor", log=self.log)
 
+    def _start_aider_turn_watcher(self) -> None:
+        """FR #7265: Aider process-idle → turn_started / turn_ended."""
+        self._turn_watch_stop = threading.Event()
+
+        def _on_started(turn: Optional[int], wall: float) -> None:
+            with contextlib.suppress(Exception):
+                pw = getattr(self, "_prompt_watch", None)
+                if pw is not None:
+                    pw.note_activity()
+            if self.bored:
+                self.bored.turn_started(turn=turn, sid=None)
+
+        def _on_ended(turn: Optional[int], wall: float, **_k) -> None:
+            if self.bored:
+                self.bored.turn_ended(turn=turn, sid=None)
+            try:
+                n = self.relay.release_held_assigns()
+                if n and self.bored:
+                    self.bored.activity(mark_work=True)
+                if self.bored:
+                    self.bored.clear_held_assign()
+            except Exception:
+                pass
+
+        def _probe() -> object:
+            pid = 0
+            p = getattr(self, "proc", None)
+            if p is not None:
+                try:
+                    pid = int(getattr(p, "pid", 0) or 0)
+                except Exception:
+                    pid = 0
+            if pid <= 0:
+                return Sample(alive=False, responding=None, activity=0)
+            try:
+                return sample_tree(pid)
+            except Exception:
+                return Sample(alive=False, responding=None, activity=0)
+
+        watcher = ProcIdleTurnWatcher(
+            probe=_probe,
+            on_turn_started=_on_started,
+            on_turn_ended=_on_ended,
+            stop_event=self._turn_watch_stop,
+            log=self.log,
+        )
+        th = threading.Thread(target=watcher.run, name="aider-turn-watch", daemon=True)
+        self._turn_watch_thread = th
+        th.start()
+        self.log(f"bored: aider turn watcher started (quiet_s={watcher.quiet_s:.0f})")
+
     def _start_turn_watcher(self, session_id: str) -> None:
-        """FR #2802 / #6157: follow grok events.jsonl or opencode-turns.jsonl for turn_ended → early !bored."""
+        """FR #2802 / #6157 / #7265: grok, opencode, cursor, or aider turn_ended → early !bored."""
         self._stop_turn_watcher()
         if self.bored and should_start_cursor_turn_watcher(self.kind):
             self._start_cursor_turn_watcher()
+            return
+        if self.bored and should_start_aider_turn_watcher(self.kind):
+            self._start_aider_turn_watcher()
             return
         use_grok = bool(self.bored and should_start_turn_watcher(self.kind))
         use_opencode = bool(self.bored and should_start_opencode_turn_watcher(self.kind))
@@ -12577,6 +12798,12 @@ def run_agent(args, log: Log) -> int:
     if not folder.is_dir():
         log(f"worker: folder missing {folder}")
         return EXIT_USAGE
+    try:
+        os.environ["BOB_INSTALL_ROOT"] = str(args.install_root)
+        sk = maybe_sync_install_skills(install_root=str(args.install_root), job_busy=False)
+        log(f"skills-sync start sha={sk.get('sha')} reason={sk.get('reason')}")
+    except Exception:
+        pass
     dec, cursor_cmd, grok_exe, fuel = _choose(args, log, folder, "agent")
     opencode_cmd = resolve_opencode_cmd()
     dec = resolve_seat_decision(

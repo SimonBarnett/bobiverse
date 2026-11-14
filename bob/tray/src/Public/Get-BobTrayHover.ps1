@@ -443,7 +443,7 @@ function Format-BobTrayXaiWeeklyRow {
     if ($null -eq $XaiWeekly) {
         $why = if ($NoReadingReason) { [string]$NoReadingReason } else { 'digest xai_weekly null' }
         return [pscustomobject]@{
-            heading       = ('{0}  no reading  ({1})' -f $id, $why)
+            heading       = ('{0}  unknown  ({1})' -f $id, $why)
             remaining_pct = $null
             fuel_stale    = $false
             bar_pct       = $null
@@ -455,6 +455,15 @@ function Format-BobTrayXaiWeeklyRow {
         }
     }
     $pct = ConvertTo-BobTrayIntOrNull $XaiWeekly.remaining_pct
+    $wk = $null
+    try {
+        if ($null -ne $XaiWeekly.PSObject.Properties['weekly_known']) { $wk = $XaiWeekly.weekly_known }
+    } catch { $wk = $null }
+    $errEarly = ''
+    try { if ($XaiWeekly.error) { $errEarly = [string]$XaiWeekly.error } } catch { }
+    if (-not (Test-BobTrayPoolHasRealRemaining -Remaining $pct -Error $errEarly -WeeklyKnown $wk)) {
+        $pct = $null
+    }
     $fresh = $true
     try {
         if ($null -ne $XaiWeekly.PSObject.Properties['fresh']) {
@@ -497,8 +506,9 @@ function Format-BobTrayXaiWeeklyRow {
     if ($null -ne $pct) {
         $parts += ('{0}% left' -f [int]$pct)
     } else {
-        $parts += 'no reading'
+        $parts += 'unknown'
         if ($errDisplay) { $parts += ('({0})' -f $errDisplay) }
+        elseif ($NoReadingReason) { $parts += ('({0})' -f [string]$NoReadingReason) }
     }
     if ($acct) { $parts += [string]$acct }
     if (-not $fresh) {
@@ -1260,44 +1270,45 @@ function Format-BobResetLabel {
     catch { return $null }
 }
 
+function Get-BobTrayPoolPollSec {
+    <#
+    .SYNOPSIS
+      FR #7250: tray re-reads service pool data this often (seconds). Named constant.
+    #>
+    return 60
+}
+
 function Get-BobPoolStaleAfterSec {
     <#
     .SYNOPSIS
-      FR #6371: pool-tile stale threshold seconds (default 900 / 15 min).
+      FR #7250: pool reading is stale when older than this many seconds (default 120 / 2 min).
       Override: BOB_TRAY_POOL_STALE_S (clamped 60..86400).
     #>
     $raw = $null
     try { $raw = ($env:BOB_TRAY_POOL_STALE_S) } catch { }
-    if (-not $raw -or [string]::IsNullOrWhiteSpace([string]$raw)) { return 900 }
+    if (-not $raw -or [string]::IsNullOrWhiteSpace([string]$raw)) { return 120 }
     try {
         $n = [int]$raw
         if ($n -lt 60) { return 60 }
         if ($n -gt 86400) { return 86400 }
         return $n
-    } catch { return 900 }
+    } catch { return 120 }
 }
 
 function Format-BobPoolUpdatedLabel {
     <#
     .SYNOPSIS
-      FR #6371: 'updated HH:mm' in local time from the reading's fetched_at.
-      Never uses tray redraw time. Missing/unparseable => $null.
+      FR #7250: tray must not paint an 'updated HH:mm' stamp. Always $null.
     #>
     param($FetchedAt, $Now = $null)
-    if (-not $FetchedAt -or [string]::IsNullOrWhiteSpace([string]$FetchedAt)) { return $null }
-    $fetched = ConvertTo-BobUtcDateTime $FetchedAt
-    if (-not $fetched) { return $null }
-    try {
-        $local = $fetched.ToLocalTime()
-        return ('updated {0:HH:mm}' -f $local)
-    } catch { return $null }
+    return $null
 }
 
 function Get-BobPoolReadingFreshness {
     <#
     .SYNOPSIS
       FR #6371: fresh/stale/none for any pool reading's fetched_at.
-      Default threshold Get-BobPoolStaleAfterSec (15 min). Allows 120s future skew.
+      Default threshold Get-BobPoolStaleAfterSec (2 min). Allows 120s future skew.
     #>
     param($FetchedAt = $null, $Now = $null, $StaleAfterSec = $null)
     $threshold = if ($null -ne $StaleAfterSec -and [string]$StaleAfterSec -ne '') {
@@ -1332,10 +1343,10 @@ function Get-BobPoolReadingFreshness {
 function Get-BobCopilotFreshness {
     <#
     .SYNOPSIS
-      FR #6148: fresh/stale/none for report.copilot.fetched_at (900s threshold).
+      FR #6148 / FR #7250: fresh/stale/none for report.copilot.fetched_at (2 min).
       Never uses snapshot ts or file mtime. Allows up to 120s future skew.
       Future resume_at (cooldown) does not force fresh: age by fetched_at still.
-      FR #6371: delegates age math to Get-BobPoolReadingFreshness (same default 900s).
+      Delegates age math to Get-BobPoolReadingFreshness.
     #>
     param($Pool, $Now = $null)
     if (-not $Pool) {
@@ -1347,14 +1358,14 @@ function Get-BobCopilotFreshness {
     if (-not $fa -or [string]::IsNullOrWhiteSpace($fa)) {
         return [pscustomobject]@{ state = 'stale'; age_s = $null; fresh_until = 0 }
     }
-    return Get-BobPoolReadingFreshness -FetchedAt $fa -Now $Now -StaleAfterSec 900
+    return Get-BobPoolReadingFreshness -FetchedAt $fa -Now $Now -StaleAfterSec (Get-BobPoolStaleAfterSec)
 }
 
 function Format-BobOpencodeWindowLine {
     <#
     .SYNOPSIS
       One Go window line (rolling/weekly/monthly). FR #6301: go window - x% left - reset.
-      FR #6371: append reading updated HH:mm (local) from fetched_at; stale when aged.
+      FR #7250: no updated stamp; stale readings omit a live-looking remaining %.
       No rem est. Missing windows use the digest error field when present.
       'reset unavailable' is not painted as a countdown when rem% is known.
     #>
@@ -1399,19 +1410,12 @@ function Format-BobOpencodeWindowLine {
     }
     $fetchedAt = $null
     try { if ($Record.fetched_at) { $fetchedAt = ([string]$Record.fetched_at).Trim() } } catch { }
-    $updated = Format-BobPoolUpdatedLabel -FetchedAt $fetchedAt -Now $Now
-    if ($updated) { $mid = ('{0} - {1}' -f $mid, $updated) }
     $freshness = Get-BobPoolReadingFreshness -FetchedAt $fetchedAt -Now $Now
     $isStale = ($status -eq 'stale') -or ($freshness.state -eq 'stale')
     if ($isStale) {
-        $staleLabel = '[stale]'
-        if ($null -ne $freshness.age_s) {
-            try {
-                $ageLab = Format-BobTrayFuelStaleAge -AgeSec ([int]$freshness.age_s)
-                if ($ageLab -and $ageLab -ne 'stale') { $staleLabel = ('[{0}]' -f $ageLab) }
-            } catch { }
-        }
-        $mid = ('{0} {1}' -f $mid, $staleLabel)
+        $why = $err
+        if (-not $why) { $why = 'older than 2 min' }
+        return ('go {0} - stale ({1})' -f $label, $why)
     }
     return ('go {0} - {1}' -f $label, $mid)
 }
@@ -1707,6 +1711,26 @@ function Get-BobOpencodePaintFromDigest {
     $free = $null
     $go = $null
     $windows = $null
+    # FR #7255: fleet OpenCode lives on the digest, not machines.*.
+    if ($Digest) {
+        $fp = $null
+        try { $fp = $Digest.fleet_pools } catch { $fp = $null }
+        if (-not $fp) { try { $fp = $Digest.opencode } catch { $fp = $null } }
+        if ($fp) {
+            try {
+                if ($fp.'opencode-free' -and $null -ne $fp.'opencode-free'.remaining) { $free = $fp.'opencode-free'.remaining }
+                elseif ($null -ne $fp.free) { $free = $fp.free }
+            } catch { }
+            try {
+                if ($fp.'opencode-go' -and $null -ne $fp.'opencode-go'.remaining) { $go = $fp.'opencode-go'.remaining }
+                elseif ($null -ne $fp.go) { $go = $fp.go }
+            } catch { }
+            try { if ($fp.windows) { $windows = $fp.windows } } catch { }
+            if ((Test-BobTrayRemainingKnown $free) -or (Test-BobTrayRemainingKnown $go) -or $windows) {
+                return [pscustomobject]@{ free = $free; go = $go; windows = $windows }
+            }
+        }
+    }
     if (-not $Digest -or -not $Digest.machines) {
         return [pscustomobject]@{ free = $null; go = $null; windows = $null }
     }
@@ -1747,6 +1771,195 @@ function Get-BobOpencodePaintFromDigest {
         if ((Test-BobTrayRemainingKnown $free) -or (Test-BobTrayRemainingKnown $go) -or $windows) { break }
     }
     return [pscustomobject]@{ free = $free; go = $go; windows = $windows }
+}
+
+function Get-BobDigestPcentValue {
+    <#
+    .SYNOPSIS
+      Read a hyphenated pcent key from a digest machine.pcent object (FR #7243).
+    #>
+    param($Pcent, [string[]]$Keys)
+    if (-not $Pcent -or -not $Keys) { return $null }
+    foreach ($k in @($Keys)) {
+        if (-not $k) { continue }
+        try {
+            $v = $Pcent.$k
+            if ($null -ne $v -and [string]$v -ne '') { return $v }
+        } catch { }
+        try {
+            foreach ($p in @($Pcent.PSObject.Properties)) {
+                if ([string]$p.Name -eq $k -and $null -ne $p.Value -and [string]$p.Value -ne '') { return $p.Value }
+            }
+        } catch { }
+    }
+    return $null
+}
+
+function Format-BobTrayDigestPoolHeading {
+    <#
+    .SYNOPSIS
+      FR #7243 / FR #7242: known remaining is '<label> N%'; missing is '<label> unknown (reason)'.
+    #>
+    param(
+        [string]$Label,
+        $RemainingPct = $null,
+        [string]$Reason = ''
+    )
+    $lab = if ($Label) { [string]$Label } else { 'pool' }
+    $pct = ConvertTo-BobTrayIntOrNull $RemainingPct
+    if ($null -ne $pct) { return ('{0} {1}%' -f $lab, [int]$pct) }
+    $why = if ($Reason) { [string]$Reason } else { 'digest pcent missing' }
+    return ('{0} unknown ({1})' -f $lab, $why)
+}
+
+function New-BobTrayDigestPoolRow {
+    param(
+        [string]$Id,
+        [string]$Family,
+        [string]$Label,
+        $RemainingPct = $null,
+        [string]$Reason = ''
+    )
+    $pct = ConvertTo-BobTrayIntOrNull $RemainingPct
+    $known = $null -ne $pct
+    $why = if ($known) { '' } else { $(if ($Reason) { $Reason } else { 'digest pcent missing' }) }
+    return [pscustomobject]@{
+        id            = $Id
+        family        = $Family
+        label         = $Label
+        heading       = (Format-BobTrayDigestPoolHeading -Label $Label -RemainingPct $pct -Reason $why)
+        remaining_pct = $pct
+        known         = [bool]$known
+        reason        = $why
+    }
+}
+
+function Get-BobTrayDigestPoolCatalog {
+    <#
+    .SYNOPSIS
+      FR #7243: every digest fuel pool as a tray row (not a fixed xAI/OpenCode-Go/Copilot trio).
+      Always emits grok-build, grok-chat, OpenCode free, OpenCode go, Cursor, Copilot, then extra pcent keys.
+    #>
+    param(
+        $Digest,
+        [string]$MachineId = ''
+    )
+    $ent = $null
+    $pc = $null
+    if ($Digest -and $Digest.machines) {
+        $want = ''
+        if ($MachineId) { $want = [string]$MachineId.Trim().ToLowerInvariant() }
+        try {
+            foreach ($p in @($Digest.machines.PSObject.Properties)) {
+                $n = ([string]$p.Name).Trim().ToLowerInvariant()
+                if ($want -and $n -ne $want) { continue }
+                $ent = $p.Value
+                if ($ent) { break }
+            }
+        } catch { }
+        if (-not $ent -and $want) {
+            try { $ent = $Digest.machines.$want } catch { }
+        }
+        if ($ent) {
+            try { $pc = $ent.pcent } catch { $pc = $null }
+        }
+    }
+    $noDigest = -not $Digest
+    $gb = $null
+    $gbWhy = 'digest xai_weekly / pcent grok-build missing'
+    if ($noDigest) { $gbWhy = 'no digest' }
+    try {
+        if ($ent -and $ent.xai_weekly -and $null -ne $ent.xai_weekly.remaining_pct -and [string]$ent.xai_weekly.remaining_pct -ne '') {
+            $gb = $ent.xai_weekly.remaining_pct
+            $gbWhy = ''
+        }
+    } catch { }
+    if ($null -eq $gb) {
+        $gb = Get-BobDigestPcentValue -Pcent $pc -Keys @('grok-build', 'grok_build')
+        if ($null -ne $gb) { $gbWhy = '' }
+    }
+    $gc = Get-BobDigestPcentValue -Pcent $pc -Keys @('grok-chat', 'grok_chat')
+    $gcWhy = if ($noDigest) { 'no digest' } elseif ($null -eq $gc) { 'digest pcent grok-chat missing' } else { '' }
+    $ofree = Get-BobDigestPcentValue -Pcent $pc -Keys @('opencode-free', 'opencode_free')
+    $ofWhy = if ($noDigest) { 'no digest' } elseif ($null -eq $ofree) { 'digest pcent opencode-free missing' } else { '' }
+    $ogo = Get-BobDigestPcentValue -Pcent $pc -Keys @('opencode-go', 'opencode_go')
+    if ($null -eq $ogo -and $ent) {
+        try {
+            $wins = $ent.opencode_windows
+            if ($wins) {
+                foreach ($wid in @('rolling', 'week', 'month')) {
+                    $rec = $null
+                    try { $rec = $wins.$wid } catch { }
+                    $rem = ConvertTo-BobTrayIntOrNull $(try { $rec.remaining_pct } catch { $null })
+                    if ($null -ne $rem -and ($null -eq $ogo -or [int]$rem -lt [int]$ogo)) { $ogo = $rem }
+                }
+            }
+        } catch { }
+    }
+    $ogWhy = if ($noDigest) { 'no digest' } elseif ($null -eq $ogo) { 'digest pcent opencode-go missing' } else { '' }
+    $cur = Get-BobDigestPcentValue -Pcent $pc -Keys @('cursor-models', 'cursor', 'cursor_models')
+    if ($null -eq $cur -and $ent) {
+        $cur = ConvertTo-BobTrayIntOrNull $(try { $ent.cursor_remaining_pct } catch { $null })
+    }
+    if ($null -eq $cur -and $Digest) {
+        try {
+            foreach ($row in @($Digest.cursor_pools)) {
+                if (-not $row) { continue }
+                $gid = ''
+                try { $gid = [string]$row.group_id } catch { }
+                if ($gid -and $gid -notin @('auto', 'low-cost-models', 'cursor-models', 'cursor')) { continue }
+                $rem = ConvertTo-BobTrayIntOrNull $(try { $row.remaining_pct } catch { $null })
+                if ($null -ne $rem) { $cur = $rem; break }
+            }
+        } catch { }
+        if ($null -eq $cur) {
+            try {
+                foreach ($row in @($Digest.cursor_pools)) {
+                    $rem = ConvertTo-BobTrayIntOrNull $(try { $row.remaining_pct } catch { $null })
+                    if ($null -ne $rem) { $cur = $rem; break }
+                }
+            } catch { }
+        }
+    }
+    $cuWhy = if ($noDigest) { 'no digest' } elseif ($null -eq $cur) { 'digest cursor remaining missing' } else { '' }
+    $cop = $null
+    $copObj = $null
+    if ($Digest) {
+        try { $copObj = $Digest.copilot } catch { }
+    }
+    if (Get-Command Get-BobCopilotMeterBarPct -ErrorAction SilentlyContinue) {
+        try { $cop = Get-BobCopilotMeterBarPct -Pool $copObj } catch { $cop = $null }
+    }
+    if ($null -eq $cop -and $copObj) {
+        $cop = ConvertTo-BobTrayIntOrNull $(try { $copObj.remaining } catch { $null })
+    }
+    $cpWhy = if ($noDigest) { 'no digest' } elseif ($null -eq $copObj) { 'digest copilot missing' } elseif ($null -eq $cop) { 'digest copilot remaining missing' } else { '' }
+
+    $rows = @(
+        (New-BobTrayDigestPoolRow -Id 'grok-build' -Family 'xai' -Label 'Grok Build' -RemainingPct $gb -Reason $gbWhy)
+        (New-BobTrayDigestPoolRow -Id 'grok-chat' -Family 'xai' -Label 'Grok chat' -RemainingPct $gc -Reason $gcWhy)
+        (New-BobTrayDigestPoolRow -Id 'opencode-free' -Family 'opencode' -Label 'OpenCode free' -RemainingPct $ofree -Reason $ofWhy)
+        (New-BobTrayDigestPoolRow -Id 'opencode-go' -Family 'opencode' -Label 'OpenCode go' -RemainingPct $ogo -Reason $ogWhy)
+        (New-BobTrayDigestPoolRow -Id 'cursor' -Family 'cursor' -Label 'Cursor' -RemainingPct $cur -Reason $cuWhy)
+        (New-BobTrayDigestPoolRow -Id 'copilot' -Family 'copilot' -Label 'Copilot' -RemainingPct $cop -Reason $cpWhy)
+    )
+    $seen = @{
+        'grok-build' = $true; 'grok-chat' = $true; 'opencode-free' = $true
+        'opencode-go' = $true; 'cursor' = $true; 'copilot' = $true
+        'grok_build' = $true; 'grok_chat' = $true; 'opencode_free' = $true
+        'opencode_go' = $true; 'cursor-models' = $true; 'cursor_models' = $true
+    }
+    if ($pc) {
+        try {
+            foreach ($p in @($pc.PSObject.Properties)) {
+                $n = [string]$p.Name
+                if (-not $n -or $seen.ContainsKey($n.ToLowerInvariant())) { continue }
+                $seen[$n.ToLowerInvariant()] = $true
+                $rows += ,(New-BobTrayDigestPoolRow -Id $n -Family 'xai' -Label $n -RemainingPct $p.Value -Reason 'digest pcent extra')
+            }
+        } catch { }
+    }
+    return @($rows)
 }
 
 function Get-BobCopilotHistoricalMaxPct {
@@ -1805,6 +2018,31 @@ function Format-BobCopilotPoolLine {
             } catch { $staleLabel = '[stale]' }
         } else { $staleLabel = '[stale]' }
     }
+    $copilotErr = ''
+    try { if ($Pool.last_error) { $copilotErr = [string]$Pool.last_error } } catch { }
+    # FR #7242 before FR #7250 stale: skip-class states/errors are unknown(+reason), not stale %.
+    # Unlimited pools often have null remaining - do not treat that as skip-class.
+    $stLow = ([string]$state).Trim().ToLowerInvariant()
+    $errLow = ([string]$copilotErr).Trim().ToLowerInvariant()
+    $skipStates = @('no_token', 'no-token')
+    $skipErrs = @(
+        'system-profile-skipped', 'auth-unresolved', 'auth-file-missing',
+        'no_token', 'no-token', 'missing_key', 'not installed', 'not-installed'
+    )
+    if (($stLow -in $skipStates) -or ($errLow -and ($skipErrs -contains $errLow))) {
+        $unk = 'Copilot - unknown'
+        if ($copilotErr) { $unk = ('Copilot - unknown ({0})' -f $copilotErr) }
+        elseif ($state -and $state -notin @('ok', 'exhausted', '')) {
+            $unk = ('Copilot - unknown ({0})' -f $state)
+        }
+        return $unk
+    }
+    if ($isStale) {
+        $why = ''
+        try { if ($Pool.error) { $why = ([string]$Pool.error).Trim() } } catch { }
+        if (-not $why) { $why = 'older than 2 min' }
+        return ('Copilot - stale ({0})' -f $why)
+    }
     $left = $null
     $unlimited = $false
     try { if ($Pool.unlimited) { $unlimited = [bool]$Pool.unlimited } } catch { }
@@ -1821,22 +2059,21 @@ function Format-BobCopilotPoolLine {
     } else {
         try { if ($null -ne $Pool.remaining -and [string]$Pool.remaining -ne '') { $left = [int]$Pool.remaining } } catch { }
     }
+    if ($state -ne 'exhausted' -and -not (Test-BobTrayPoolHasRealRemaining -Remaining $left -Error $copilotErr -State $state)) {
+        $left = $null
+    }
     if ($null -eq $left) {
+        # FR #7242: unknown + reason. FR #7250: no updated HH:mm stamp.
         $unk = 'Copilot - unknown'
-        $updatedUnk = Format-BobPoolUpdatedLabel -FetchedAt $(try { [string]$Pool.fetched_at } catch { $null }) -Now $Now
-        if ($updatedUnk) { $unk = ('{0} - {1}' -f $unk, $updatedUnk) }
-        $bits = @($unk)
-        if ($staleLabel) { $bits += $staleLabel }
-        return ($bits -join ' ')
+        if ($copilotErr) { $unk = ('Copilot - unknown ({0})' -f $copilotErr) }
+        elseif ($state -and $state -notin @('ok', 'exhausted', '')) {
+            $unk = ('Copilot - unknown ({0})' -f $state)
+        }
+        return $unk
     }
     $mid = ('{0}% left' -f [int]$left)
     if ($resetCompact) { $mid = ('{0} - {1}' -f $mid, $resetCompact) }
-    # FR #6371: reading updated time from fetched_at (local HH:mm).
-    $updated = Format-BobPoolUpdatedLabel -FetchedAt $(try { [string]$Pool.fetched_at } catch { $null }) -Now $Now
-    if ($updated) { $mid = ('{0} - {1}' -f $mid, $updated) }
-    $bits = @(('Copilot - {0}' -f $mid))
-    if ($staleLabel) { $bits += $staleLabel }
-    return ($bits -join ' ')
+    return ('Copilot - {0}' -f $mid)
 }
 
 function Get-BobCopilotMeterBarPct {
@@ -1860,6 +2097,11 @@ function Get-BobCopilotMeterBarPct {
     $state = ''
     try { $state = [string]$Pool.state } catch { }
     if ($state -eq 'exhausted') { return 0 }
+    $err = ''
+    try { if ($Pool.last_error) { $err = [string]$Pool.last_error } } catch { }
+    if (-not (Test-BobTrayPoolHasRealRemaining -Remaining $Pool.remaining -Error $err -State $state)) {
+        return $null
+    }
     if ($null -eq $Pool.remaining -or [string]$Pool.remaining -eq '') { return $null }
     try { return [int]$Pool.remaining } catch { return $null }
 }
@@ -2194,6 +2436,34 @@ function ConvertTo-BobTrayIntOrNull {
     if ($null -eq $Value) { return $null }
     if (($Value -is [string]) -and [string]::IsNullOrWhiteSpace([string]$Value)) { return $null }
     try { return [int]$Value } catch { return $null }
+}
+
+function Test-BobTrayPoolHasRealRemaining {
+    <#
+    .SYNOPSIS
+      FR #7242: 0% is a real reading only when the provider reported remaining.
+      Skip-class errors (system-profile-skipped, no_token, ...) are unknown even if remaining_pct is 0.
+    #>
+    param(
+        $Remaining = $null,
+        $Error = '',
+        $WeeklyKnown = $null,
+        $State = ''
+    )
+    $st = ([string]$State).Trim().ToLowerInvariant()
+    if ($st -in @('no_token', 'no-token')) { return $false }
+    if ($null -ne $WeeklyKnown -and [string]$WeeklyKnown -ne '') {
+        try {
+            if ([bool]$WeeklyKnown -eq $false -or [string]$WeeklyKnown -eq 'false') { return $false }
+        } catch { }
+    }
+    $err = ([string]$Error).Trim().ToLowerInvariant()
+    $skip = @(
+        'system-profile-skipped', 'auth-unresolved', 'auth-file-missing',
+        'no_token', 'no-token', 'missing_key', 'not installed', 'not-installed'
+    )
+    if ($err -and ($skip -contains $err)) { return $false }
+    return ($null -ne (ConvertTo-BobTrayIntOrNull $Remaining))
 }
 
 function Get-BobCursorSpendingGroupCatalog {
@@ -3953,6 +4223,14 @@ function Get-BobTrayHover {
         $copilotBar = [pscustomobject]@{ known = $false; pct = 0; r = 88; g = 166; b = 255 }
     }
     if ($copilotLine) { $jobLines = @(('  {0}' -f $copilotLine)) + $jobLines }
+    # FR #7243: hover lists every digest pool (six canonical + extra pcent keys).
+    $digestPoolCatalog = @()
+    try { $digestPoolCatalog = @(Get-BobTrayDigestPoolCatalog -Digest $reportDigest -MachineId $machineId) } catch { $digestPoolCatalog = @() }
+    $catBlock = @()
+    foreach ($row in @($digestPoolCatalog)) {
+        if ($row -and $row.heading) { $catBlock += (('  {0}' -f [string]$row.heading)) }
+    }
+    if ($catBlock.Count -gt 0) { $jobLines = $catBlock + $jobLines }
     $jobsText = (($poolLines + $jobLines) -join "`n")
     if ($ghLine) { $jobsText = $jobsText + "`n" + $ghLine }
 
@@ -4011,6 +4289,7 @@ function Get-BobTrayHover {
         copilot_freshness   = $copilotFresh
         copilot_fresh_until = $(if ($copilotFresh -and $null -ne $copilotFresh.fresh_until) { [int64]$copilotFresh.fresh_until } else { [int64]0 })
         copilot_bar         = $copilotBar
+        digest_pools        = @($digestPoolCatalog)
         chair_channels      = $(
             if ($reportDigest -and $reportDigest.chair_channels) {
                 @($reportDigest.chair_channels | ForEach-Object { [string]$_ })

@@ -45,6 +45,8 @@ Export-ModuleMember -Function @(
     'Export-BobTranscript',
     'Get-BobStallAlerts',
     'Get-BobTrayHover',
+    'Get-BobTrayDigestPoolCatalog',
+    'Format-BobTrayDigestPoolHeading',
     'Format-BobPeerPoolHeading',
         'Resolve-BobCursorXaiSharedPools',
         'Get-BobSharedCursorXaiAggregateRemaining',

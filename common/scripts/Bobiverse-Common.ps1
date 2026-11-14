@@ -2958,6 +2958,61 @@ function Import-BobiverseGhTokenEnv {
     }
 }
 
+
+function Get-BobiverseInteractiveUserHome {
+    <#
+      FR #7006 / #7256: interactive console home that owns .grok (path only; never secrets).
+      Order: BOB_GROK_WEEKLY_USER_HOME; live console/explorer user; HKLM LastLoggedOnUser
+      (works with nobody logged on); <InstallRoot>\run\interactive-user-home.txt stamp.
+      BOBIVERSE_SKIP_LIVE_INTERACTIVE_HOME=1 skips CIM/registry (tests).
+    #>
+    param([string]$InstallRoot = '')
+    $override = ([string]$env:BOB_GROK_WEEKLY_USER_HOME).Trim().TrimEnd('\')
+    if ($override -and (Test-Path -LiteralPath $override)) { return $override }
+
+    $serviceLeaves = @('SYSTEM', 'LOCAL SERVICE', 'NETWORK SERVICE', 'systemprofile', 'DefaultAccount')
+    function Get-BobiverseUsersHomeFromAccount([string]$Account) {
+        if (-not $Account) { return $null }
+        $user = ($Account.Trim() -split '\\')[-1].Trim()
+        if (-not $user) { return $null }
+        foreach ($leaf in $serviceLeaves) {
+            if ($user -ieq $leaf) { return $null }
+        }
+        $drive = if ($env:SystemDrive) { $env:SystemDrive } else { 'C:' }
+        $cand = Join-Path $drive (Join-Path 'Users' $user)
+        if (Test-Path -LiteralPath $cand) { return $cand }
+        return $null
+    }
+
+    $skipLive = (([string]$env:BOBIVERSE_SKIP_LIVE_INTERACTIVE_HOME).Trim() -eq '1')
+    if (-not $skipLive) {
+        try {
+            $u = $null
+            try { $u = (Get-CimInstance Win32_ComputerSystem -ErrorAction Stop).UserName } catch { }
+            $h = Get-BobiverseUsersHomeFromAccount $u
+            if ($h) { return $h }
+        } catch { }
+        try {
+            $key = Get-ItemProperty -LiteralPath 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Authentication\LogonUI' -ErrorAction SilentlyContinue
+            if ($key) {
+                foreach ($n in @('LastLoggedOnSAMUser', 'LastLoggedOnUser')) {
+                    $val = [string]$key.$n
+                    $h = Get-BobiverseUsersHomeFromAccount $val
+                    if ($h) { return $h }
+                }
+            }
+        } catch { }
+    }
+    if ($InstallRoot) {
+        $stamp = Join-Path $InstallRoot 'run\interactive-user-home.txt'
+        if (Test-Path -LiteralPath $stamp) {
+            $line = ([string](Get-Content -LiteralPath $stamp -TotalCount 1 -ErrorAction SilentlyContinue)).Trim().Trim('"')
+            if ($line -and (Test-Path -LiteralPath $line)) { return $line }
+        }
+    }
+    return $null
+}
+
 function Get-BobiverseLatestPublishedVersion {
     <#
       FR #6423: highest published GitHub release tag for Repo (strips leading v; folds 4-part).
