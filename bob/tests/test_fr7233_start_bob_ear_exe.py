@@ -44,8 +44,12 @@ def test_fr7233_older_exe_wins_over_newer_bobreport(tmp_path: Path) -> None:
     (scripts / "bobreport.py").write_text("# newer than exe by mtime\n", encoding="utf-8")
     (scripts / "irc_agent.py").write_text("# agent\n", encoding="utf-8")
     (install / "VERSION").write_text("0.9.test\n", encoding="utf-8")
+    # FR #7300 / mrb-7311-fix: ear source= comes from sidecar next to exe, not root MANIFEST.
+    (scripts / "provenance.txt").write_text(
+        "source_commit=abcdef1234567890\n", encoding="utf-8"
+    )
     (install / "MANIFEST.json").write_text(
-        '{"source_commit":"abcdef1234567890"}\n', encoding="utf-8"
+        '{"source_commit":"47465810123456789abcdef0123456789abcde"}\n', encoding="utf-8"
     )
     os.utime(exe, (1_000_000_000, 1_000_000_000))
     os.utime(scripts / "bobreport.py", (2_000_000_000, 2_000_000_000))

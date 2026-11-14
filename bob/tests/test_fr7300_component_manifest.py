@@ -122,6 +122,61 @@ Write-Output $r.SourceCommit
     assert ROOT_FULL not in out
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows PowerShell")
+def test_fr7300_ear_ci_provenance_beats_root_manifest(tmp_path: Path):
+    """CI bob-ear artifact ships provenance.txt (key=value), not MANIFEST.json."""
+    scripts = tmp_path / "scripts"
+    scripts.mkdir()
+    (scripts / "bob-ear.exe").write_bytes(b"MZ")
+    (scripts / "provenance.txt").write_text(
+        f"source_commit={EAR_FULL}\nworkflow_commit={EAR_FULL}\n", encoding="utf-8"
+    )
+    (tmp_path / "MANIFEST.json").write_text(
+        json.dumps({"source_commit": ROOT_FULL}) + "\n", encoding="utf-8"
+    )
+    script = f"""
+. '{EAR_SEL}'
+$r = Select-BobEarLaunch -ScriptDir '{scripts}' -InstallRoot '{tmp_path}'
+Write-Output ('SRC=' + $r.SourceCommit)
+"""
+    r = subprocess.run(
+        [PS, "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert r.returncode == 0, (r.stdout or "") + (r.stderr or "")
+    out = (r.stdout or "").strip()
+    assert f"SRC={EAR_FULL}" in out
+    assert ROOT_FULL not in out
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows PowerShell")
+def test_fr7300_ear_ignores_root_manifest_without_sidecar(tmp_path: Path):
+    """Without an ear sidecar, source= must stay empty (not root 4746581)."""
+    scripts = tmp_path / "scripts"
+    scripts.mkdir()
+    (scripts / "bob-ear.exe").write_bytes(b"MZ")
+    (tmp_path / "MANIFEST.json").write_text(
+        json.dumps({"source_commit": ROOT_FULL}) + "\n", encoding="utf-8"
+    )
+    script = f"""
+. '{EAR_SEL}'
+$r = Select-BobEarLaunch -ScriptDir '{scripts}' -InstallRoot '{tmp_path}'
+Write-Output ('SRC=[' + $r.SourceCommit + ']')
+"""
+    r = subprocess.run(
+        [PS, "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert r.returncode == 0, (r.stdout or "") + (r.stderr or "")
+    out = (r.stdout or "").strip()
+    assert "SRC=[]" in out
+    assert ROOT_FULL not in out
+
+
 def test_fr7300_pins_in_scripts_and_docs():
     inst = INSTALL.read_text(encoding="utf-8")
     assert "FR #7300" in inst
@@ -134,6 +189,11 @@ def test_fr7300_pins_in_scripts_and_docs():
     assert "FR #7300" in docs
     ear = EAR_SEL.read_text(encoding="utf-8")
     assert "FR #7300" in ear
+    assert "provenance.txt" in ear
+    assert "InstallRoot 'MANIFEST.json'" not in ear and 'InstallRoot "MANIFEST.json"' not in ear
+    assert "Join-Path $InstallRoot 'MANIFEST.json'" not in ear
+    install_ear = (SCRIPTS / "Install-BobEarExe.ps1").read_text(encoding="utf-8")
+    assert "ProvenancePath" in install_ear
     cs = COMMON_CS.read_text(encoding="utf-8-sig")
     assert "FR #7300" in cs
     assert 'return "exe " + exe + " / scripts " + scripts;' not in cs

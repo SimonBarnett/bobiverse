@@ -109,7 +109,7 @@ $env:BOB_INSTALL_ROOT = $InstallRoot
 $earArgs = @('--nick', $nick, '--home', $BobHome, '--channel', $channel, '--host', $IrcHost)
 if ($useEarExe) {
     Write-Host ("INFO ear host={0} nick={1} channels={2} via=bob-ear.exe sha256={3} source={4} version={5} (FR #1481/#7233)" -f `
-        $IrcHost, $nick, $channel, $earPick.Sha256, $earPick.SourceCommit, $earPick.ProductVersion)
+        $IrcHost, $nick, $channel, $earPick.Sha256, $(if ([string]::IsNullOrWhiteSpace([string]$earPick.SourceCommit)) { 'unknown' } else { $earPick.SourceCommit }), $earPick.ProductVersion)
     & $earExe @earArgs
     exit $LASTEXITCODE
 }
