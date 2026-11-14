@@ -97,7 +97,7 @@ def test_cursor_unknown_merge_keeps_xai_meter_and_drops_sand(tmp_path: Path):
             "cursor_known": False,
             "weekly": 72,
             "weekly_known": True,
-            "period_end": "2026-11-14T12:00:00Z",
+            "period_end": "2027-11-14T12:00:00Z",
             "pcent": {"grok-build": 72, "grok-chat": 98, "opencode-free": 100},
             "xai_weekly": {
                 "provider": "xai",
@@ -106,7 +106,7 @@ def test_cursor_unknown_merge_keeps_xai_meter_and_drops_sand(tmp_path: Path):
                 "used_pct": 28,
                 "source": "unified.jsonl:billing:creditUsagePercent",
                 "fetched_at": "2026-11-08T15:10:00Z",
-                "period_end": "2026-11-14T12:00:00Z",
+                "period_end": "2027-11-14T12:00:00Z",
                 "account": None,
             },
         },
@@ -114,7 +114,8 @@ def test_cursor_unknown_merge_keeps_xai_meter_and_drops_sand(tmp_path: Path):
     ent = doc["machines"]["marchhare"]
     assert ent["cursor_known"] is False
     assert ent["pcent"]["grok-build"] == 72
-    assert ent["pcent"]["opencode-free"] == 100
+    # FR #7366 / #7402: ear merge must not keep fleet OpenCode pcent keys.
+    assert "opencode-free" not in ent["pcent"]
     assert "grok-chat" not in ent["pcent"]
     assert not ent.get("cursor_pools")
     assert ent["xai_weekly"]["source"].startswith("unified.jsonl")
@@ -124,7 +125,7 @@ def test_cursor_unknown_merge_keeps_xai_meter_and_drops_sand(tmp_path: Path):
     assert exported["pcent"]["grok-build"] == 72
     assert "grok-chat" not in exported.get("pcent", {})
     assert exported["xai_weekly"]["fetched_at"] == "2026-11-08T15:10:00Z"
-    assert exported["xai_weekly"]["period_end"] == "2026-11-14T12:00:00Z"
+    assert exported["xai_weekly"]["period_end"] == "2027-11-14T12:00:00Z"
 
 
 def test_legacy_admin_home_is_not_posted_or_cleared(tmp_path: Path):
