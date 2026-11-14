@@ -1,4 +1,4 @@
-# Jeeves fleet pool credentials (FR #7255 / #7288)
+# Jeeves fleet pool credentials (FR #7255 / #7288 / #7377)
 
 Jeeves on walrus fetches Copilot and OpenCode free/Go once per minute into digest
 `fleet_pools`. Credentials stay on the Jeeves service account. The digest and logs
@@ -41,11 +41,11 @@ cmdkey /generic:bobiverse/jeeves/opencode-go-key /user:opencode /pass:$GoKey
 ```
 
 Do not echo the secret into chair logs, IRC, or the digest. After setup, wait one
-fleet tick (~60s) and confirm digest `fleet_pools.*.source` shows
+dedicated fixed-rate 60s fleet timer (FR #7377; independent of chair busy) and confirm digest `fleet_pools.*.source` shows
 `credman:bobiverse/jeeves/...` with a fresh `fetched_at`.
 
 ## Related
 
 - Code: `common/scripts/fleet_pool_fetch.py` (`resolve_fleet_github_token`,
   `resolve_fleet_opencode_go_key`).
-- Pins: `common/tests/test_fr7288_fleet_credman.py`, `test_fr7255_fleet_pool_fetch.py`.
+- Pins: `common/tests/test_fr7288_fleet_credman.py`, `test_fr7255_fleet_pool_fetch.py`, `test_fr7377_fleet_pool_fixed_rate.py`.

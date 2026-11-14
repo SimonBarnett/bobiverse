@@ -11,6 +11,8 @@ import fleet_pool_fetch as fp
 def test_fleet_pool_fetch_constant_is_60():
     assert fp.FLEET_POOL_FETCH_S == 60.0
     assert chair_health.COPILOT_TICK_S == 60.0
+    assert chair_health.FLEET_POOL_TICK_S == 60.0
+    assert chair_health.FLEET_POOL_FETCH_TIMEOUT_S < 60.0
 
 
 def test_two_ticks_60s_apart_new_fetched_at(tmp_path: Path):
