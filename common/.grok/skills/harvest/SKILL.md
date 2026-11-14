@@ -422,6 +422,7 @@ routes to bobiverse via the split rule.
 - Jeeves SYSTEM state files must write under BOB_HOME/.jeeves, not BOB_DIGEST_HOME; atomic tmp+replace and digest health on Access denied.
 - Ear CI artifacts must ship Start-Bob.ps1 and Select-BobEarLaunch.ps1 with manifest SHA-256; Install-BobEarExe copies them beside the exe or machines keep stale mtime launchers.
 - Cached xAI weekly remaining must not be relabelled onto a new auth.json grok_account; discard last-good % until a successful fetch for the new account.
+- After FR #7366 strips fleet OpenCode from machine rows, tests must assert opencode-free absent --- not still equal to 100.
 
 ## Harvest digest (lessons audit 2026-10-06)
 
