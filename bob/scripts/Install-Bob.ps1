@@ -141,7 +141,7 @@ $script:BobInstallOk = $false
 try {
 
 # FR #7177: preserve SYSTEM-readable OpenCode Go key from prior NSSM env before remove.
-# Never echo or transcript the value — capture the line only.
+# Never echo or transcript the value - capture the line only.
 $priorOpencodeGoApiKeyLine = $null
 try {
     $priorEnvRaw = & $Nssm get $ServiceName AppEnvironmentExtra 2>$null

@@ -5697,7 +5697,7 @@ def _list_labelled_opencode_keys(
     keys_dir: Path,
     *,
     tighten: bool = True,
-) -> tuple[dict[str, str], list[str]]:
+) -> tuple[dict[str, str], list[str], str]:
     """Return ({label: key}, labels_whose_acl_were_tightened, unread_err). Keys never logged."""
     out: dict[str, str] = {}
     tightened: list[str] = []
