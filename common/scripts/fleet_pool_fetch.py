@@ -304,11 +304,10 @@ def apply_fleet_pools_to_digest(home: Path, fleet: dict) -> None:
     if isinstance(cursor, dict):
         doc["cursor"] = cursor
     oc = {
-        "free": (fleet.get(POOL_OC_FREE) or {}).get("remaining"),
+        "free": 100,
         "go": (fleet.get(POOL_OC_GO) or {}).get("remaining"),
         "windows": fleet.get("windows") or (fleet.get(POOL_OC_GO) or {}).get("windows"),
-        "fetched_at": (fleet.get(POOL_OC_GO) or {}).get("fetched_at")
-        or (fleet.get(POOL_OC_FREE) or {}).get("fetched_at"),
+        "fetched_at": (fleet.get(POOL_OC_GO) or {}).get("fetched_at"),
         POOL_OC_FREE: fleet.get(POOL_OC_FREE),
         POOL_OC_GO: fleet.get(POOL_OC_GO),
     }
@@ -388,17 +387,14 @@ def tick_fleet_pools(
             )
             mark_attempt(state, POOL_COPILOT, now_f, ok=False, error=type(exc).__name__)
 
-    if pool_due(state, POOL_OC_GO, now_f, force=force) or pool_due(
-        state, POOL_OC_FREE, now_f, force=force
-    ):
+    if pool_due(state, POOL_OC_GO, now_f, force=force):
         try:
             pack = oc_fn(home_p, now_f)
             if not isinstance(pack, dict):
                 raise RuntimeError("parse")
-            for pid in (POOL_OC_FREE, POOL_OC_GO):
-                row = pack.get(pid) if isinstance(pack.get(pid), dict) else None
-                if row is None:
-                    continue
+            pid = POOL_OC_GO
+            row = pack.get(pid) if isinstance(pack.get(pid), dict) else None
+            if row is not None:
                 ok = bool(row.get("fresh")) and not row.get("error")
                 err = str(row.get("error") or "") or None
                 rate = "429" in str(err or "") or str(err or "") in ("unavailable",)
@@ -416,15 +412,25 @@ def tick_fleet_pools(
             if pack.get("windows"):
                 fleet["windows"] = pack.get("windows")
         except Exception as exc:  # noqa: BLE001
-            for pid in (POOL_OC_FREE, POOL_OC_GO):
-                fleet[pid] = _keep_last(
-                    prev.get(pid),
-                    error=type(exc).__name__,
-                    now=now_f,
-                    pool_id=pid,
-                    source="go-zen-usage",
-                )
-                mark_attempt(state, pid, now_f, ok=False, error=type(exc).__name__)
+            fleet[POOL_OC_GO] = _keep_last(
+                prev.get(POOL_OC_GO),
+                error=type(exc).__name__,
+                now=now_f,
+                pool_id=POOL_OC_GO,
+                source="go-zen-usage",
+            )
+            mark_attempt(state, POOL_OC_GO, now_f, ok=False, error=type(exc).__name__)
+    # FR #7296: OpenCode Free is never fetched.
+    fleet[POOL_OC_FREE] = {
+        "id": POOL_OC_FREE,
+        "remaining": 100,
+        "fetched_at": None,
+        "last_attempt_at": None,
+        "error": None,
+        "source": "fixed-free",
+        "fresh": True,
+        "never_stale": True,
+    }
 
     if pool_due(state, POOL_CURSOR, now_f, force=force):
         try:

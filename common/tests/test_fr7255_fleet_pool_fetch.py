@@ -64,7 +64,8 @@ def test_two_ticks_60s_apart_new_fetched_at(tmp_path: Path):
         home, now=t0 + 60.0, force=True, fetch_copilot=copilot, fetch_opencode=opencode
     )
     assert a["copilot"]["fetched_at"] != b["copilot"]["fetched_at"]
-    assert a["opencode-free"]["fetched_at"] != b["opencode-free"]["fetched_at"]
+    assert a["opencode-free"]["remaining"] == 100
+    assert a["opencode-free"].get("fetched_at") in (None, "")
     assert a["opencode-go"]["fetched_at"] != b["opencode-go"]["fetched_at"]
     doc = bobreport.load_digest(home)
     pub = bobreport.build_digest_object(home, "jeeves")

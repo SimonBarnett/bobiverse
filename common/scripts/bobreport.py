@@ -3700,6 +3700,9 @@ def export_machine_for_tray(
     out.setdefault("running", 0)
     out.setdefault("queued", 0)
     out.setdefault("jobs", [])
+    # FR #7296: machines.<id>.xai aliases xai_weekly (per-machine ear meter).
+    if "xai_weekly" in out and "xai" not in out:
+        out["xai"] = out.get("xai_weekly")
     return out
 
 
@@ -4036,24 +4039,59 @@ def _public_queue(home: Path) -> dict:
     }
 
 
+def _fixed_opencode_free_meter() -> dict:
+    """FR #7296: OpenCode Free is not fetched; always 100% and never stale."""
+    return {
+        "id": "opencode-free",
+        "remaining": 100,
+        "fetched_at": None,
+        "last_attempt_at": None,
+        "error": None,
+        "source": "fixed-free",
+        "fresh": True,
+        "never_stale": True,
+    }
+
+
 def _digest_fleet_pools(doc: dict | None) -> dict:
-    """FR #7255 / #7289: top-level OpenCode + Copilot + Cursor meters owned by Jeeves."""
+    """FR #7255 / #7289 / #7296: Jeeves fleet meters (Cursor once; OpenCode Free fixed)."""
     if not isinstance(doc, dict):
-        return {}
+        out = {"opencode-free": _fixed_opencode_free_meter()}
+        return out
     raw = doc.get("fleet_pools")
-    if isinstance(raw, dict) and raw:
-        return raw
-    out: dict = {}
-    if isinstance(doc.get("copilot"), dict):
-        out["copilot"] = doc.get("copilot")
-    oc = doc.get("opencode")
-    if isinstance(oc, dict):
-        out["opencode"] = oc
-        if oc.get("opencode-free"):
-            out["opencode-free"] = oc.get("opencode-free")
-        if oc.get("opencode-go"):
-            out["opencode-go"] = oc.get("opencode-go")
+    out: dict = dict(raw) if isinstance(raw, dict) and raw else {}
+    if not out:
+        if isinstance(doc.get("copilot"), dict):
+            out["copilot"] = doc.get("copilot")
+        oc = doc.get("opencode")
+        if isinstance(oc, dict):
+            out["opencode"] = oc
+            if oc.get("opencode-go"):
+                out["opencode-go"] = oc.get("opencode-go")
+        if isinstance(doc.get("cursor"), dict):
+            out["cursor"] = doc.get("cursor")
+    cursor = out.get("cursor")
+    if isinstance(cursor, dict):
+        out["cursor"] = cursor
+        out.setdefault("grok-chat", cursor)
+    out["opencode-free"] = _fixed_opencode_free_meter()
     return out
+
+
+def _digest_fleet_layout(doc: dict | None) -> dict:
+    """FR #7296 public ``fleet``: cursor (alias grok-chat) once, go, copilot, fixed free."""
+    pools = _digest_fleet_pools(doc)
+    fleet: dict = {}
+    cur = pools.get("cursor")
+    if isinstance(cur, dict):
+        fleet["cursor"] = cur
+        fleet["grok-chat"] = cur
+    if isinstance(pools.get("copilot"), dict):
+        fleet["copilot"] = pools.get("copilot")
+    if isinstance(pools.get("opencode-go"), dict):
+        fleet["opencode-go"] = pools.get("opencode-go")
+    fleet["opencode-free"] = _fixed_opencode_free_meter()
+    return fleet
 
 
 def _digest_copilot_pool(home: Path, doc: dict | None = None) -> dict:
@@ -4164,6 +4202,7 @@ def build_digest_object(home: Path, briefer_nick: str, now: datetime | None = No
         "queue": _public_queue(home),
         "copilot": _digest_copilot_pool(home, doc),
         "fleet_pools": _digest_fleet_pools(doc),
+        "fleet": _digest_fleet_layout(doc),
         "opencode": doc.get("opencode") if isinstance(doc.get("opencode"), dict) else None,
         "intake_outbox": _intake_outbox_public(home),
         # FR #5204 / #5947: live airc *_console nicks (shops + any chair channel).
