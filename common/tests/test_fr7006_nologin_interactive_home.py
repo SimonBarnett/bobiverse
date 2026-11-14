@@ -78,7 +78,7 @@ def test_fr7006_persisted_stamp_when_cim_and_logon_empty(monkeypatch, tmp_path: 
     assert path == home / ".grok" / "auth.json"
 
 
-def test_fr7006_still_skips_when_no_logon_no_stamp(monkeypatch, tmp_path: Path):
+def test_fr7006_auth_unresolved_when_no_logon_no_stamp(monkeypatch, tmp_path: Path):
     monkeypatch.setenv("SystemDrive", str(tmp_path))
     monkeypatch.setenv("USERPROFILE", str(tmp_path / "systemprofile"))
     (tmp_path / "systemprofile").mkdir(exist_ok=True)
@@ -98,4 +98,4 @@ def test_fr7006_still_skips_when_no_logon_no_stamp(monkeypatch, tmp_path: Path):
     assert bobreport._interactive_grok_user_home() is None
     path, ident = bobreport.xai_weekly_auth_path()
     assert path is None
-    assert ident == "system-profile-skipped"
+    assert ident == "auth-unresolved"  # FR #7176: LocalSystem never system-profile-skipped

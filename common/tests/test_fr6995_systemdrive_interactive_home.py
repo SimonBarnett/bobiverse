@@ -3,7 +3,7 @@
 After MSI 2.0.0, ircBob runs as LocalSystem without BOB_GROK_WEEKLY_USER_HOME.
 Auto-resolve finds the console/explorer user but Path(SystemDrive)/Users/<user>
 with SystemDrive=C: builds a drive-relative path (C:Users\\...) that is_dir()=False,
-so acquisition stays system-profile-skipped and digest pools stay fresh=false.
+so acquisition stayed unresolved and digest pools stayed fresh=false (FR #7176: LocalSystem never system-profile-skipped).
 """
 from __future__ import annotations
 
@@ -116,4 +116,4 @@ def test_fr6995_auth_skipped_when_users_dir_missing(monkeypatch, tmp_path: Path)
     assert bobreport._interactive_grok_user_home() is None
     path, identity = bobreport.xai_weekly_auth_path()
     assert path is None
-    assert identity == "system-profile-skipped"
+    assert identity == "auth-unresolved"  # FR #7176
