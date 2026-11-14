@@ -35,14 +35,21 @@ try {
     } else {
         $exe = $env:BOB_OPENCODE_EXE
         function Test-BobOpencodeExeFile([string]$Path) {
-            if ($Path -and (Test-Path -LiteralPath $Path -PathType Leaf)) { return $Path }
+            # FR #7302: WinError 448 on WinGet Links reparse must not crash the fuel helper.
+            if (-not $Path) { return $null }
+            try {
+                if (Test-Path -LiteralPath $Path -PathType Leaf) { return $Path }
+            } catch {
+                if ("$_" -match '448|untrusted mount') { return $null }
+                throw
+            }
             return $null
         }
         function Resolve-BobOpencodeExeFromLocal([string]$LocalAppData) {
             if (-not $LocalAppData) { return $null }
-            $hit = Test-BobOpencodeExeFile (Join-Path $LocalAppData 'Microsoft\WinGet\Links\opencode.exe')
-            if ($hit) { return $hit }
-            return Test-BobOpencodeExeFile (Join-Path $LocalAppData 'Programs\opencode\opencode.exe')
+            $pkg = Test-BobOpencodeExeFile (Join-Path $LocalAppData 'Programs\opencode\opencode.exe')
+            if ($pkg) { return $pkg }
+            return Test-BobOpencodeExeFile (Join-Path $LocalAppData 'Microsoft\WinGet\Links\opencode.exe')
         }
         if (-not $exe) {
             $la = [string]$env:LOCALAPPDATA
