@@ -39,7 +39,7 @@ def test_mrb6919_job_end_clears_job_worktree(tmp_path: Path):
         vision_cwd=install,
         job_worktree=w,
     )
-    ptr = bound / ".grok" / "skill-dag-job-worktree"
+    ptr = bound / "skill-dag-job-worktree"
     assert w.as_posix() in ptr.read_text(encoding="utf-8").replace("\\", "/")
     bw.refresh_live_skill_dag_mcp_files(
         grok_bound_cwd=bound,

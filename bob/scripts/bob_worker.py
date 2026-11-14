@@ -2667,8 +2667,8 @@ SKILL_DAG_JOB_WORKTREE_POINTER = "skill-dag-job-worktree"
 
 
 def skill_dag_job_worktree_pointer_path(worker_cwd: str | Path) -> Path:
-    """FR #7120: live one-line worktree pointer next to seat ``.grok/config.toml``."""
-    return Path(worker_cwd) / ".grok" / SKILL_DAG_JOB_WORKTREE_POINTER
+    """FR #7361: pointer beside the seat cwd, not under ``.grok`` (Grok watches that dir)."""
+    return Path(worker_cwd) / SKILL_DAG_JOB_WORKTREE_POINTER
 
 
 def write_skill_dag_job_worktree_pointer(
@@ -2829,9 +2829,10 @@ def refresh_live_skill_dag_mcp_files(
 ) -> None:
     """FR #6918 / #7120 / #7308: point the live MCP at the assigned worktree.
 
-    Writes the one-line pointer file only when config already exists. Rewriting
-    ``config.toml`` / ``.cursor/mcp.json`` on assign makes Grok/Cursor replace
-    the stdio child (FR #7308). Empty ``job_worktree`` clears the pointer.
+    Writes the one-line pointer file only (beside the seat cwd, not under
+    ``.grok`` — FR #7361). Rewriting ``config.toml`` / ``.cursor/mcp.json`` on
+    assign makes Grok/Cursor replace the stdio child (FR #7308). Empty
+    ``job_worktree`` clears the pointer.
     Never writes user ``~/.cursor/mcp.json``.
     """
     del vision_cwd  # launch-time --root only; assign must not rewrite argv
