@@ -267,6 +267,7 @@ _MERGE_PEER_FIELDS = (
     "xai_weekly_source",
     "xai_weekly_fetched_at",
     "xai_weekly",
+    "xai_auth",
     # FR #7178: ear-owned Copilot pool (remaining / entitlement / reset_at / fetched_at).
     "copilot",
 )
@@ -365,6 +366,7 @@ _TRAY_MACHINE_EXPORT_KEYS = (
     "xai_weekly_source",
     "xai_weekly_fetched_at",
     "xai_weekly",
+    "xai_auth",
     # FR #7178: per-machine Copilot pool contribution (tray also reads top-level).
     "copilot",
 )
@@ -7222,6 +7224,42 @@ XAI_BILLING_CREDITS_URL = "https://cli-chat-proxy.grok.com/v1/billing?format=cre
 XAI_BILLING_SOURCE = "cli-chat-proxy:/v1/billing?format=credits"
 # FR #6314: billing 401/403 with Grok CLI auth.json => expired sign-in (not network/5xx).
 XAI_GROK_LOGIN_EXPIRED = "grok-login-expired"
+XAI_AUTH_EXPIRED_ERRORS = frozenset(
+    {
+        XAI_GROK_LOGIN_EXPIRED,
+        "auth-missing",
+        "auth-file-missing",
+        "auth-key-missing",
+        "auth-file-unreadable",
+        "xai-auth-expired",
+    }
+)
+
+
+def classify_xai_auth(error: str | None) -> str:
+    """ok | expired. Sign-in missing/401 class only (not 5xx / 429)."""
+    err = (error or "").strip().lower()
+    if err in XAI_AUTH_EXPIRED_ERRORS:
+        return "expired"
+    return "ok"
+
+
+def stamp_xai_auth(peer: dict) -> dict:
+    """FR #7345: machines.<id>.xai_auth from the live weekly error class. Self-heals on ok."""
+    if not isinstance(peer, dict):
+        return peer
+    out = dict(peer)
+    meter = out.get("xai_weekly") if isinstance(out.get("xai_weekly"), dict) else {}
+    err = None
+    if meter:
+        err = meter.get("error")
+    status = classify_xai_auth(str(err) if err else None)
+    out["xai_auth"] = status
+    if meter:
+        stamped = dict(meter)
+        stamped["xai_auth"] = status
+        out["xai_weekly"] = stamped
+    return out
 
 
 def xai_weekly_auth_path() -> tuple[Path | None, str]:
@@ -7846,7 +7884,7 @@ def enrich_peer_keep_last_good_xai_weekly(
     enriched["xai_weekly_source"] = out_meter.get("source")
     if out_meter.get("used_pct") is not None:
         enriched["xai_weekly_used_pct"] = out_meter.get("used_pct")
-    return enriched
+    return stamp_xai_auth(enriched)
 
 
 def read_local_xai_weekly(*, now: datetime | None = None) -> dict | None:
@@ -7940,7 +7978,7 @@ def enrich_peer_with_xai_weekly(peer: dict, reading: dict | None) -> dict:
             "error": reading.get("error"),
         }
     enriched["pcent"] = pcent
-    return enriched
+    return stamp_xai_auth(enriched)
 
 
 def resolve_github_token_for_ear(
