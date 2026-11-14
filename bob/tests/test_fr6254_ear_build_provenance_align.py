@@ -79,6 +79,7 @@ def test_manifest_lists_behavior_paths():
         assert rel in text or rel.replace("/", "\\") in text, f"manifest missing {rel}"
     # FR #7179: manifest notes that CI no longer gates on the pin.
     assert "7179" in text or "not a CI gate" in text.lower() or "deploy note" in text.lower()
+    assert "workflow guard" not in text.lower()
 
 
 def test_manifest_sha_rows_are_well_formed():

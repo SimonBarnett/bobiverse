@@ -15,6 +15,7 @@ on:
       - bob/scripts/Build-BobEar.ps1
       - bob/scripts/Install-BobEarExe.ps1
       - common/scripts/irc_agent.py
+      - common/scripts/gitclaim.py
       - common/scripts/bobreport.py
       - common/scripts/opencode_fuel.py
       - common/scripts/bobiverse_build.py
@@ -28,6 +29,7 @@ on:
       - bob/scripts/Build-BobEar.ps1
       - bob/scripts/Install-BobEarExe.ps1
       - common/scripts/irc_agent.py
+      - common/scripts/gitclaim.py
       - common/scripts/bobreport.py
       - common/scripts/opencode_fuel.py
       - common/scripts/bobiverse_build.py

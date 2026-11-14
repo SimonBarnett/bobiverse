@@ -42,9 +42,10 @@
 # embed also carries FR #6558 claim expiry (assert_build_claim_embed.py).
 #
 # Sanctioned build (Windows runner or Windows host with PyInstaller):
-#   1) Ensure tip behavior files match behavior_source_sha (workflow guard).
+#   1) Checkout the tip to build (CI no longer diffs behavior files against
+#      behavior_source_sha; that SHA is a deploy-note baseline only).
 #   2) gh workflow run build-bob-ear.yml --ref <this-branch-or-main>
-#      or open/update a PR that touches this workflow/manifest (pull_request trigger).
+#      or open/update a PR that touches ear sources (pull_request trigger).
 #   3) Download Actions artifact name: bob-ear
 #      Contents: bob-ear.exe, bob-ear.exe.sha256, provenance.txt, deploy-pool-monitor-manifest.txt
 # Local smoke (not a deploy):

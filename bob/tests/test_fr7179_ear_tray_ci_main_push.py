@@ -21,11 +21,14 @@ TRAY_DOCS = ROOT / "bob" / "docs" / "bob-tray-dialogs.md"
 EAR_SOURCE_PATHS = [
     ".github/workflows/build-bob-ear.yml",
     "bob/scripts/Build-BobEar.ps1",
+    "bob/scripts/Install-BobEarExe.ps1",
     "common/scripts/irc_agent.py",
+    "common/scripts/gitclaim.py",
     "common/scripts/bobreport.py",
     "common/scripts/opencode_fuel.py",
     "common/scripts/bobiverse_build.py",
     "bob/docs/deploy-pool-monitor-manifest.txt",
+    "bob/tests/test_fr6254_ear_build_provenance_align.py",
     "bob/tests/test_fr7179_ear_tray_ci_main_push.py",
 ]
 
@@ -40,6 +43,16 @@ def _on_block(text: str) -> str:
     return m.group(1)
 
 
+def _event_block(on: str, event: str) -> str:
+    """One top-level on: event (pull_request / push), not the sibling block."""
+    m = re.search(
+        rf"(?ms)^  {re.escape(event)}:\n(.*?)(?=^  [a-z_]+:|\Z)",
+        on,
+    )
+    assert m, f"on: missing {event} block"
+    return m.group(1)
+
+
 def test_fr7179_ear_workflow_push_main_and_pr_paths():
     assert EAR_WF.is_file()
     text = _text(EAR_WF)
@@ -48,8 +61,11 @@ def test_fr7179_ear_workflow_push_main_and_pr_paths():
     assert "pull_request:" in on
     assert "push:" in on
     assert "branches: [main]" in on
+    pr_paths = _event_block(on, "pull_request")
+    push_paths = _event_block(on, "push")
     for rel in EAR_SOURCE_PATHS:
-        assert rel in on, f"ear path filter missing {rel}"
+        assert rel in pr_paths, f"ear pull_request path filter missing {rel}"
+        assert rel in push_paths, f"ear push path filter missing {rel}"
     assert "runs-on: windows-latest" in text
     assert "Build-BobEar.ps1" in text
     assert "upload-artifact@v4" in text
@@ -61,6 +77,14 @@ def test_fr7179_ear_workflow_push_main_and_pr_paths():
     assert "Get-FileHash -Algorithm SHA256" in text
     assert "persist-credentials: false" in text
     assert EAR_BUILD.is_file()
+
+
+def test_fr7179_ear_path_filters_include_gitclaim():
+    """irc_agent imports gitclaim; a gitclaim-only PR must still rebuild the ear."""
+    on = _on_block(_text(EAR_WF))
+    for event in ("pull_request", "push"):
+        block = _event_block(on, event)
+        assert "common/scripts/gitclaim.py" in block, f"{event} missing gitclaim.py"
 
 
 def test_fr7179_ear_no_hard_behavior_pin():
