@@ -24,6 +24,8 @@ import os
 import time
 from pathlib import Path
 from typing import Any, Callable
+from urllib.error import HTTPError, URLError
+from urllib.request import Request, urlopen
 
 import bobhours
 import bobreport
@@ -642,6 +644,38 @@ def handle_jira_get(home: Path, headers: dict[str, str]) -> tuple[int, bytes]:
     return 200, body
 
 
+def _proxy_jeeves_settings(
+    method: str,
+    route: str,
+    headers: dict[str, str],
+    body: bytes | str,
+) -> tuple[int, bytes] | None:
+    """FR #7274: forward /jeeves* to the LAN settings server (default 127.0.0.1:7701)."""
+    base = (os.environ.get("JEEVES_SETTINGS_UPSTREAM") or "http://127.0.0.1:7701").rstrip("/")
+    url = base + route
+    raw = body if isinstance(body, (bytes, bytearray)) else str(body or "").encode("utf-8")
+    hdrs = {}
+    for key, val in (headers or {}).items():
+        lk = str(key or "").lower()
+        if lk in ("host", "content-length"):
+            continue
+        if lk in ("cookie", "content-type", "authorization", "x-forwarded-for", "x-forwarded-proto"):
+            hdrs[key] = val
+    req = Request(url, data=raw if method.upper() not in ("GET", "HEAD") else None, method=method.upper(), headers=hdrs)
+    try:
+        with urlopen(req, timeout=8) as resp:
+            payload = resp.read() if method.upper() != "HEAD" else b""
+            return int(getattr(resp, "status", 200) or 200), payload
+    except HTTPError as exc:
+        try:
+            payload = exc.read() if method.upper() != "HEAD" else b""
+        except Exception:
+            payload = b""
+        return int(exc.code or 502), payload
+    except (URLError, TimeoutError, OSError):
+        return None
+
+
 def handle_intake_status_get(home: Path, intake_id: str) -> tuple[int, bytes]:
     code, obj = intake.get_intake_status(home, intake_id)
     return code, json.dumps(obj, separators=(",", ":")).encode("utf-8")
@@ -663,16 +697,40 @@ def handle_request(
     """Pure request handler. No sockets, no secret, no ChanServ. Public GET digest; POST validated."""
     verb = (method or "").upper()
     route = (path or "").split("?", 1)[0]
-    jeeves_route = route.rstrip("/") or "/"
-    # FR #6815: public GET /jeeves on bob.ntsa.uk is the appliance login HTML (never 403).
-    if verb in ("GET", "HEAD") and jeeves_route == JEEVES_LOGIN_PATH:
+    # FR #6815 / #7274: public /jeeves* on bob.ntsa.uk (IIS rewrite to this process).
+    if route == JEEVES_LOGIN_PATH or route.startswith(JEEVES_LOGIN_PATH + "/"):
         import jeeves_settings_http as _jhttp
 
-        html = _jhttp._render_login_html()
-        payload = html.encode("utf-8")
-        if verb == "HEAD":
-            return 200, b""
-        return 200, payload
+        if verb in ("GET", "HEAD"):
+            prefix, inner = _jhttp.split_ui_path(route)
+            if inner in ("/login",) or route == JEEVES_LOGIN_PATH:
+                html = _jhttp._render_login_html(prefix="/jeeves")
+                payload = html.encode("utf-8")
+                if verb == "HEAD":
+                    return 200, b""
+                return 200, payload
+            if inner == _jhttp.BUTLER_HREF:
+                p = _jhttp._BUTLER_ICO
+                if p.is_file():
+                    data = p.read_bytes()
+                    return (200, b"") if verb == "HEAD" else (200, data)
+                return 404, b""
+            if inner == _jhttp.LOGO_HREF:
+                p = _jhttp.ntsa_gut_logo_path()
+                if p.is_file():
+                    data = p.read_bytes()
+                    return (200, b"") if verb == "HEAD" else (200, data)
+                return 404, b""
+        proxied = _proxy_jeeves_settings(verb, route, headers, body)
+        if proxied is not None:
+            return proxied
+        if verb in ("GET", "HEAD") and (route == JEEVES_LOGIN_PATH or route.rstrip("/") == JEEVES_LOGIN_PATH):
+            import jeeves_settings_http as _jhttp2
+
+            html = _jhttp2._render_login_html(prefix="/jeeves")
+            payload = html.encode("utf-8")
+            return (200, b"") if verb == "HEAD" else (200, payload)
+        return 404, b""
     # FR #1136: local health (lock age / digest writable); not the public IIS front-door.
     if verb in ("GET", "HEAD") and route == HEALTH_PATH:
         code, payload = handle_health_get(home)

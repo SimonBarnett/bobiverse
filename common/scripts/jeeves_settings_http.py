@@ -4,9 +4,9 @@ FR #6760: ``/pools`` + ``/api/pools`` machine Grok rows.
 
 Off by default. Enable with ``JEEVES_SETTINGS_HTTP=1`` (or ``JEEVES_SETTINGS_UI=1``).
 Binds only to RFC1918 / loopback. Rejects non-LAN peers in ``verify_request``
-(socket layer). Settings/status mutating routes require FR #6441 sessions
-(cookie ``jeeves_appliance_session`` or ``Authorization: Bearer``). Never fronts
-via bob.ntsa.uk / irc.ntsa.uk / Cloudflare.
+(socket layer) except the public ``/jeeves`` mount (FR #7274) proxied from
+bob.ntsa.uk. Settings/status mutating routes require FR #6441 sessions
+(cookie ``jeeves_appliance_session`` or ``Authorization: Bearer``).
 """
 from __future__ import annotations
 
@@ -30,8 +30,15 @@ ENV_BIND = "JEEVES_SETTINGS_HTTP_BIND"
 ENV_PORT = "JEEVES_SETTINGS_HTTP_PORT"
 ENV_FRONTDOOR = "JEEVES_SETTINGS_FRONTDOOR"
 SESSION_COOKIE_NAME = "jeeves_appliance_session"
+PUBLIC_MOUNT = "/jeeves"
+BOB_HOME_HREF = "https://bob.ntsa.uk/bob/v1/report"
 LOGO_HREF = "/assets/ntsa-gut-logo.png"
 BUTLER_HREF = "/assets/jeeves-butler.ico"
+_LOGIN_FAIL: dict[str, list[float]] = {}
+_LOGIN_FAIL_LOCK = threading.Lock()
+_LOGIN_FAIL_WINDOW_S = 300.0
+_LOGIN_FAIL_MAX = 8
+_LOGIN_LOCK_S = 300.0
 _SCRIPTS_DIR = Path(__file__).resolve().parent
 _REPO_ROOT = _SCRIPTS_DIR.parent.parent
 _BUTLER_ICO = _REPO_ROOT / "jeeves" / "assets" / "jeeves-butler.ico"
@@ -191,6 +198,115 @@ def _render_token_graph_html(graph: dict[str, Any] | None) -> str:
     return "\n".join(parts)
 
 
+def ui_href(prefix: str, path: str) -> str:
+    """Join LAN root or public /jeeves prefix with a rooted path."""
+    p = path if str(path).startswith("/") else "/" + str(path)
+    pre = str(prefix or "").rstrip("/")
+    if not pre:
+        return p
+    if p == "/":
+        return pre + "/"
+    return pre + p
+
+
+def split_ui_path(path: str) -> tuple[str, str]:
+    """Return (prefix, inner). GET /jeeves (no slash) is the login page."""
+    raw = str(path or "/")
+    if raw == PUBLIC_MOUNT:
+        return PUBLIC_MOUNT, "/login"
+    mount = PUBLIC_MOUNT + "/"
+    if raw.startswith(mount):
+        inner = raw[len(PUBLIC_MOUNT) :] or "/"
+        return PUBLIC_MOUNT, inner
+    return "", raw
+
+
+def parse_account(username: str, domain: str = "") -> tuple[str, str]:
+    """Split DOMAIN\\user or user@domain; explicit domain wins."""
+    d = str(domain or "").strip()
+    u = str(username or "").strip()
+    if d:
+        return u, d
+    if "\\" in u:
+        left, right = u.split("\\", 1)
+        return right.strip(), left.strip()
+    if "@" in u:
+        left, right = u.rsplit("@", 1)
+        return left.strip(), right.strip()
+    return u, ""
+
+
+def session_cookie_header(
+    token: str,
+    *,
+    max_age: int,
+    prefix: str = "",
+    secure: bool = False,
+) -> str:
+    path = prefix.rstrip("/") if prefix else "/"
+    if not path:
+        path = "/"
+    parts = [
+        f"{SESSION_COOKIE_NAME}={token}",
+        f"Path={path}",
+        "HttpOnly",
+        "SameSite=Strict",
+        f"Max-Age={int(max_age)}",
+    ]
+    if secure:
+        parts.append("Secure")
+    return "; ".join(parts)
+
+
+def clear_session_cookie_header(*, prefix: str = "", secure: bool = False) -> str:
+    path = prefix.rstrip("/") if prefix else "/"
+    if not path:
+        path = "/"
+    parts = [
+        f"{SESSION_COOKIE_NAME}=",
+        f"Path={path}",
+        "HttpOnly",
+        "SameSite=Strict",
+        "Max-Age=0",
+    ]
+    if secure:
+        parts.append("Secure")
+    return "; ".join(parts)
+
+
+def public_jeeves_routes() -> list[str]:
+    """FR #7274: public mount table (bob.ntsa.uk/jeeves)."""
+    return [
+        "/jeeves",
+        "/jeeves/",
+        "/jeeves/login",
+        "/jeeves/logout",
+        "/jeeves/queue",
+        "/jeeves/pools",
+        "/jeeves/status",
+        "/jeeves/api/login",
+        "/jeeves/api/logout",
+        "/jeeves/assets/ntsa-gut-logo.png",
+        "/jeeves/assets/jeeves-butler.ico",
+    ]
+
+
+def login_fail_locked(ip: str, *, now: float | None = None) -> bool:
+    t = float(now if now is not None else time.time())
+    with _LOGIN_FAIL_LOCK:
+        hits = [h for h in _LOGIN_FAIL.get(ip, []) if t - h < _LOGIN_FAIL_WINDOW_S]
+        _LOGIN_FAIL[ip] = hits
+        return len(hits) >= _LOGIN_FAIL_MAX
+
+
+def note_login_fail(ip: str, *, now: float | None = None) -> None:
+    t = float(now if now is not None else time.time())
+    with _LOGIN_FAIL_LOCK:
+        hits = [h for h in _LOGIN_FAIL.get(ip, []) if t - h < _LOGIN_FAIL_WINDOW_S]
+        hits.append(t)
+        _LOGIN_FAIL[ip] = hits
+
+
 def ntsa_gut_logo_path() -> Path:
     """Git logo bytes: tray asset, else the docs pack copy (same file, no new art)."""
     if _TRAY_LOGO.is_file():
@@ -198,10 +314,11 @@ def ntsa_gut_logo_path() -> Path:
     return _PACK_LOGO
 
 
-def _shell_header(*, current: str, include_nav: bool) -> str:
-    img = f'<img src="{LOGO_HREF}" alt="NTSA"/>'
+def _shell_header(*, current: str, include_nav: bool, prefix: str = "") -> str:
+    img = f'<img src="{ui_href(prefix, LOGO_HREF)}" alt="NTSA"/>'
+    bob = f'<a href="{BOB_HOME_HREF}">Bob</a>'
     if not include_nav:
-        return f"<header>{img}<strong>Jeeves</strong></header>"
+        return f"<header>{img}<strong>Jeeves</strong>{bob}</header>"
     links = [
         ("/", "Settings", "settings"),
         ("/queue", "Queue", "queue"),
@@ -212,8 +329,8 @@ def _shell_header(*, current: str, include_nav: bool) -> str:
     parts = []
     for href, label, key in links:
         cur = ' aria-current="page"' if current == key else ""
-        parts.append(f'<a href="{href}"{cur}>{label}</a>')
-    nav = "<nav>" + " · ".join(parts) + "</nav>"
+        parts.append(f'<a href="{ui_href(prefix, href)}"{cur}>{label}</a>')
+    nav = "<nav>" + " · ".join(parts) + " · " + bob + "</nav>"
     return f"<header>{img}<strong>Jeeves</strong>{nav}</header>"
 
 
@@ -384,7 +501,7 @@ def _render_setting_row(s: dict[str, Any]) -> str:
     )
 
 
-def _render_html(settings: list[dict[str, Any]]) -> str:
+def _render_html(settings: list[dict[str, Any]], *, prefix: str = "") -> str:
     by_group: dict[str, list[dict[str, Any]]] = {}
     extra: list[str] = []
     for s in settings:
@@ -414,7 +531,7 @@ def _render_html(settings: list[dict[str, Any]]) -> str:
             f"<table>{thead}<tbody>\n{rows}\n</tbody></table></section>"
         )
     body = "\n".join(sections)
-    header = _shell_header(current="settings", include_nav=True)
+    header = _shell_header(current="settings", include_nav=True, prefix=prefix)
     return f"""<!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8"/>
 <title>Jeeves appliance settings</title>
@@ -432,8 +549,8 @@ button{{margin-top:1rem;padding:.4rem .8rem;}}
 </style></head><body>
 {header}
 <h1>Jeeves appliance settings</h1>
-<p class="note">LAN-only (FR #6440 / #6451). Secrets are write-only (set/unset).
-Session cookie required. Never expose via bob.ntsa.uk.
+<p class="note">Jeeves settings (FR #6440 / #6451 / #7274). Secrets are write-only (set/unset).
+Session cookie required. Public mount is https://bob.ntsa.uk/jeeves (same HTML on the LAN root).
 Defaults (FR #6751) are shown for non-secret keys; the Value control keeps the current value.</p>
 {body}
 <p><button type="button" id="save">Save changed fields</button>
@@ -449,13 +566,13 @@ async function save() {{
     let value = el.value;
     if (el.type === 'checkbox') value = el.checked ? '1' : '0';
     if (el.dataset.secret === '1' && !value) continue;
-    const r = await fetch('/api/settings/' + encodeURIComponent(key), {{
+    const r = await fetch('{ui_href(prefix, "/api/settings/")}' + encodeURIComponent(key), {{
       method: 'PUT',
       credentials: 'same-origin',
       headers: {{'Content-Type': 'application/json'}},
       body: JSON.stringify({{value}})
     }});
-    if (r.status === 401 || r.status === 403) {{ location.href = '/login'; return; }}
+    if (r.status === 401 || r.status === 403) {{ location.href = '{ui_href(prefix, "/login")}'; return; }}
     const j = await r.json().catch(() => ({{}}));
     if (j.ok) ok++; else fail++;
   }}
@@ -468,10 +585,13 @@ document.getElementById('save').onclick = save;
 """
 
 
-def _render_login_html(error: str = "") -> str:
+def _render_login_html(error: str = "", *, prefix: str = "") -> str:
     err = (error or "").replace("<", "&lt;")
     note = f'<p class="note" style="color:#a00">{err}</p>' if err else ""
-    header = _shell_header(current="login", include_nav=False)
+    header = _shell_header(current="login", include_nav=False, prefix=prefix)
+    login_api = ui_href(prefix, "/api/login")
+    after = ui_href(prefix, "/")
+    butler = ui_href(prefix, BUTLER_HREF)
     return f"""<!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8"/>
 <title>Jeeves settings login</title>
@@ -485,12 +605,11 @@ button{{margin-top:1rem;padding:.4rem .8rem;}}
 </style></head><body>
 {header}
 <h1>Jeeves settings login</h1>
-<img src="{BUTLER_HREF}" alt="Jeeves the butler" width="96" height="96"/>
+<img src="{butler}" alt="Jeeves the butler" width="96" height="96"/>
 <p class="note">Existing graphic jeeves/assets/jeeves-butler.ico (FR #6816). Passwords are never logged.</p>
 {note}
 <form id="f">
-<label>User name<input name="account" autocomplete="username" required placeholder="DOMAIN\\user or user@domain"/></label>
-<label>Domain (optional)<input name="domain" autocomplete="organization"/></label>
+<label>User name<input name="account" autocomplete="username" required placeholder="user@domain or DOMAIN\\user"/></label>
 <label>Password<input name="password" type="password" autocomplete="current-password" required/></label>
 <button type="submit">Sign in</button>
 <span id="status"></span>
@@ -501,18 +620,17 @@ document.getElementById('f').onsubmit = async (ev) => {{
   const fd = new FormData(ev.target);
   const status = document.getElementById('status');
   status.textContent = '…';
-  const r = await fetch('/api/login', {{
+  const r = await fetch('{login_api}', {{
     method: 'POST',
     credentials: 'same-origin',
     headers: {{'Content-Type': 'application/json'}},
     body: JSON.stringify({{
       username: fd.get('account') || fd.get('username') || '',
-      domain: fd.get('domain') || '',
       password: fd.get('password') || ''
     }})
   }});
   const j = await r.json().catch(() => ({{}}));
-  if (j.ok) {{ location.href = '/'; return; }}
+  if (j.ok) {{ location.href = '{after}'; return; }}
   status.textContent = j.error || ('HTTP ' + r.status);
 }};
 </script>
@@ -601,11 +719,11 @@ def _load_overage_gbp(digest_home: Path | None) -> Any:
 
 
 def _render_queue_html(
-    unaccepted: list[dict[str, Any]], accepted: list[dict[str, Any]]
+    unaccepted: list[dict[str, Any]], accepted: list[dict[str, Any]], *, prefix: str = ""
 ) -> str:
     waiting = _render_queue_list(unaccepted, "Nothing is waiting.")
     progress = _render_queue_list(accepted, "Nothing is in progress.")
-    header = _shell_header(current="queue", include_nav=True)
+    header = _shell_header(current="queue", include_nav=True, prefix=prefix)
     return f"""<!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8"/>
 <title>Jeeves queue</title>
@@ -689,7 +807,7 @@ def _format_pool_row_pct(row: dict[str, Any]) -> str:
     return "n/a"
 
 
-def _render_pools_html(doc: Any) -> str:
+def _render_pools_html(doc: Any, *, prefix: str = "") -> str:
     """Machine rows, one Copilot line, optional overspend (FR #6760 / #6761 / #6762)."""
     if isinstance(doc, dict):
         view = doc
@@ -697,7 +815,7 @@ def _render_pools_html(doc: Any) -> str:
     else:
         view = {"machines": []}
         overage = doc
-    header = _shell_header(current="pools", include_nav=True)
+    header = _shell_header(current="pools", include_nav=True, prefix=prefix)
     machines = view.get("machines") if isinstance(view.get("machines"), list) else []
     if not machines:
         body = '<p class="empty">No pool readings.</p>'
@@ -741,13 +859,14 @@ def _render_status_html(
     status: dict[str, Any],
     *,
     token_graph: dict[str, Any] | None = None,
+    prefix: str = "",
 ) -> str:
 
     q = status.get("queue") if isinstance(status.get("queue"), dict) else {}
     seats = status.get("seats") if isinstance(status.get("seats"), dict) else {}
     fuel = status.get("fuel") if isinstance(status.get("fuel"), dict) else {}
     pending = "yes" if status.get("restart_pending") else "no"
-    header = _shell_header(current="status", include_nav=True)
+    header = _shell_header(current="status", include_nav=True, prefix=prefix)
     graph_html = _render_token_graph_html(token_graph)
     return f"""<!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8"/>
@@ -773,13 +892,13 @@ def _render_status_html(
 document.getElementById('restart').onclick = async () => {{
   const el = document.getElementById('rstatus');
   el.textContent = 'requesting…';
-  const r = await fetch('/api/restart-when-idle', {{
+  const r = await fetch('{ui_href(prefix, "/api/restart-when-idle")}', {{
     method: 'POST',
     credentials: 'same-origin',
     headers: {{'Content-Type': 'application/json'}},
     body: JSON.stringify({{}})
   }});
-  if (r.status === 401 || r.status === 403) {{ location.href = '/login'; return; }}
+  if (r.status === 401 || r.status === 403) {{ location.href = '{ui_href(prefix, "/login")}'; return; }}
   const j = await r.json().catch(() => ({{}}));
   el.textContent = JSON.stringify(j);
 }};
@@ -898,15 +1017,13 @@ class _Handler(BaseHTTPRequestHandler):
             return 403
         return 400
 
-    def _session_cookie_header(self, token: str, *, max_age: int) -> str:
-        # LAN HTTP may be plain http://; omit Secure. HttpOnly + SameSite=Strict.
-        return (
-            f"{SESSION_COOKIE_NAME}={token}; Path=/; HttpOnly; SameSite=Strict; "
-            f"Max-Age={int(max_age)}"
-        )
+    def _session_cookie_header(self, token: str, *, max_age: int, prefix: str = "") -> str:
+        secure = bool(prefix) or (self.headers.get("X-Forwarded-Proto") or "").strip().lower() == "https"
+        return session_cookie_header(token, max_age=max_age, prefix=prefix, secure=secure)
 
-    def _clear_session_cookie_header(self) -> str:
-        return f"{SESSION_COOKIE_NAME}=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0"
+    def _clear_session_cookie_header(self, prefix: str = "") -> str:
+        secure = bool(prefix) or (self.headers.get("X-Forwarded-Proto") or "").strip().lower() == "https"
+        return clear_session_cookie_header(prefix=prefix, secure=secure)
 
     def _refuse_non_lan(self, ip: str) -> bool:
         err = js.reject_non_lan(ip)
@@ -917,22 +1034,16 @@ class _Handler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:  # noqa: N802
         ip = _client_ip(self)
-        path = urlparse(self.path).path
-        # FR #6815: public GET /jeeves is login HTML; LAN reject must not 403 this page.
-        if path.rstrip("/") == "/jeeves":
-            html = _render_login_html()
-            self._send(200, html.encode("utf-8"), "text/html; charset=utf-8")
-            return
+        prefix, path = split_ui_path(urlparse(self.path).path)
+        public = bool(prefix)
+        auth_ip = "127.0.0.1" if public else ip
+        # Public /jeeves mount and assets skip LAN reject (FR #6815 / #7274).
         if path == BUTLER_HREF:
             if not _BUTLER_ICO.is_file():
                 self._send_json(404, {"ok": False, "error": "not found"})
                 return
             self._send(200, _BUTLER_ICO.read_bytes(), "image/x-icon")
             return
-        if self._refuse_non_lan(ip):
-            return
-        home = self.server.home
-        tok = self._session_token()
         if path == LOGO_HREF:
             logo = ntsa_gut_logo_path()
             if not logo.is_file():
@@ -941,17 +1052,24 @@ class _Handler(BaseHTTPRequestHandler):
             self._send(200, logo.read_bytes(), "image/png")
             return
         if path in ("/login", "/ui/login"):
-            html = _render_login_html()
+            if not public and self._refuse_non_lan(ip):
+                return
+            html = _render_login_html(prefix=prefix)
             self._send(200, html.encode("utf-8"), "text/html; charset=utf-8")
             return
+        if not public and self._refuse_non_lan(ip):
+            return
+        home = self.server.home
+        tok = self._session_token()
+        ip = auth_ip
         if path in ("/logout", "/ui/logout"):
             auth.logout(home, client_ip=ip, session_token=tok)
-            html = _render_login_html("Signed out.")
+            html = _render_login_html("Signed out.", prefix=prefix)
             self._send(
                 200,
                 html.encode("utf-8"),
                 "text/html; charset=utf-8",
-                extra_headers=[("Set-Cookie", self._clear_session_cookie_header())],
+                extra_headers=[("Set-Cookie", self._clear_session_cookie_header(prefix=prefix))],
             )
             return
         if path in ("/", "/index.html", "/ui"):
@@ -959,10 +1077,10 @@ class _Handler(BaseHTTPRequestHandler):
                 home, client_ip=ip, session_token=tok
             )
             if not view.get("ok"):
-                html = _render_login_html(str(view.get("error") or "Sign in required"))
+                html = _render_login_html(str(view.get("error") or "Sign in required"), prefix=prefix)
                 self._send(200, html.encode("utf-8"), "text/html; charset=utf-8")
                 return
-            html = _render_html(list(view.get("settings") or []))
+            html = _render_html(list(view.get("settings") or []), prefix=prefix)
             self._send(200, html.encode("utf-8"), "text/html; charset=utf-8")
             return
         if path == "/api/settings":
@@ -999,7 +1117,7 @@ class _Handler(BaseHTTPRequestHandler):
                 home, client_ip=ip, session_token=tok
             )
             if not gate.get("ok"):
-                html = _render_login_html(str(gate.get("error") or "Sign in required"))
+                html = _render_login_html(str(gate.get("error") or "Sign in required"), prefix=prefix)
                 self._send(200, html.encode("utf-8"), "text/html; charset=utf-8")
                 return
             view = js.api_get_status(
@@ -1012,7 +1130,7 @@ class _Handler(BaseHTTPRequestHandler):
                 self._send_json(403, view)
                 return
             graph = load_status_token_graph(self.server.digest_home)
-            html = _render_status_html(view, token_graph=graph)
+            html = _render_status_html(view, token_graph=graph, prefix=prefix)
             self._send(200, html.encode("utf-8"), "text/html; charset=utf-8")
             return
         if path in ("/queue", "/ui/queue"):
@@ -1020,7 +1138,7 @@ class _Handler(BaseHTTPRequestHandler):
                 home, client_ip=ip, session_token=tok
             )
             if not gate.get("ok"):
-                html = _render_login_html(str(gate.get("error") or "Sign in required"))
+                html = _render_login_html(str(gate.get("error") or "Sign in required"), prefix=prefix)
                 self._send(200, html.encode("utf-8"), "text/html; charset=utf-8")
                 return
             err = js.reject_non_lan(ip)
@@ -1030,7 +1148,7 @@ class _Handler(BaseHTTPRequestHandler):
             unaccepted, accepted = _load_queue_public_lists(
                 self.server.digest_home
             )
-            html = _render_queue_html(unaccepted, accepted)
+            html = _render_queue_html(unaccepted, accepted, prefix=prefix)
             self._send(200, html.encode("utf-8"), "text/html; charset=utf-8")
             return
         if path in ("/pools", "/ui/pools"):
@@ -1038,7 +1156,7 @@ class _Handler(BaseHTTPRequestHandler):
                 home, client_ip=ip, session_token=tok
             )
             if not gate.get("ok"):
-                html = _render_login_html(str(gate.get("error") or "Sign in required"))
+                html = _render_login_html(str(gate.get("error") or "Sign in required"), prefix=prefix)
                 self._send(200, html.encode("utf-8"), "text/html; charset=utf-8")
                 return
             err = js.reject_non_lan(ip)
@@ -1056,7 +1174,7 @@ class _Handler(BaseHTTPRequestHandler):
             if "overage_gbp" not in view:
                 view = dict(view)
                 view["overage_gbp"] = _load_overage_gbp(self.server.digest_home)
-            html = _render_pools_html(view)
+            html = _render_pools_html(view, prefix=prefix)
             self._send(200, html.encode("utf-8"), "text/html; charset=utf-8")
             return
         if path == "/api/status":
@@ -1109,18 +1227,20 @@ class _Handler(BaseHTTPRequestHandler):
 
     def do_PUT(self) -> None:  # noqa: N802
         ip = _client_ip(self)
-        if self._refuse_non_lan(ip):
+        mount, path = split_ui_path(urlparse(self.path).path)
+        public = bool(mount)
+        if not public and self._refuse_non_lan(ip):
             return
-        path = urlparse(self.path).path
-        prefix = "/api/settings/"
-        if not path.startswith(prefix):
+        auth_ip = "127.0.0.1" if public else ip
+        api_prefix = "/api/settings/"
+        if not path.startswith(api_prefix):
             self._send_json(404, {"ok": False, "error": "not found"})
             return
-        key = unquote(path[len(prefix) :]).strip()
+        key = unquote(path[len(api_prefix) :]).strip()
         doc = self._read_json()
         result = auth.api_put_setting_authed(
             self.server.home,
-            client_ip=ip,
+            client_ip=auth_ip,
             session_token=self._session_token(),
             key=key,
             value=doc.get("value"),
@@ -1130,25 +1250,31 @@ class _Handler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:  # noqa: N802
         ip = _client_ip(self)
-        if self._refuse_non_lan(ip):
+        mount, path = split_ui_path(urlparse(self.path).path)
+        public = bool(mount)
+        if not public and self._refuse_non_lan(ip):
             return
-        path = urlparse(self.path).path
+        auth_ip = "127.0.0.1" if public else ip
         doc = self._read_json()
         if path == "/api/login":
-            # Never echo password fields back.
+            if login_fail_locked(ip):
+                self._send_json(429, {"ok": False, "error": "unauthorized: locked out"})
+                return
+            user, domain = parse_account(
+                str(doc.get("username") or doc.get("account") or ""),
+                str(doc.get("domain") or ""),
+            )
             result = auth.login(
                 self.server.home,
-                client_ip=ip,
-                username=str(doc.get("username") or doc.get("account") or ""),
+                client_ip=auth_ip,
+                username=user,
                 password=str(doc.get("password") or ""),
-                domain=str(doc.get("domain") or ""),
+                domain=domain,
                 authenticator=self.server.authenticator,
             )
             if result.get("ok"):
                 tok = str(result.get("session_token") or "")
                 max_age = int(result.get("expires_in") or auth.SESSION_TTL_S)
-                # Response body still includes session_token for bearer clients;
-                # cookie is for browsers. Password keys are never present.
                 safe = {
                     k: v
                     for k, v in result.items()
@@ -1158,28 +1284,34 @@ class _Handler(BaseHTTPRequestHandler):
                     200,
                     safe,
                     extra_headers=[
-                        ("Set-Cookie", self._session_cookie_header(tok, max_age=max_age))
+                        (
+                            "Set-Cookie",
+                            self._session_cookie_header(
+                                tok, max_age=max_age, prefix=mount
+                            ),
+                        )
                     ],
                 )
                 return
+            note_login_fail(ip)
             self._send_json(self._auth_code(result), result)
             return
         if path == "/api/logout":
             result = auth.logout(
                 self.server.home,
-                client_ip=ip,
+                client_ip=auth_ip,
                 session_token=self._session_token(),
             )
             self._send_json(
                 200 if result.get("ok") else self._auth_code(result),
                 result,
-                extra_headers=[("Set-Cookie", self._clear_session_cookie_header())],
+                extra_headers=[("Set-Cookie", self._clear_session_cookie_header(prefix=mount))],
             )
             return
         if path == "/api/rollback":
             result = auth.api_rollback_authed(
                 self.server.home,
-                client_ip=ip,
+                client_ip=auth_ip,
                 session_token=self._session_token(),
                 backup_id=str(doc.get("backup_id") or ""),
             )
@@ -1189,7 +1321,7 @@ class _Handler(BaseHTTPRequestHandler):
         if path == "/api/restart-when-idle":
             gate = auth.require_session(
                 self.server.home,
-                client_ip=ip,
+                client_ip=auth_ip,
                 session_token=self._session_token(),
             )
             if not gate.get("ok"):
@@ -1197,7 +1329,7 @@ class _Handler(BaseHTTPRequestHandler):
                 return
             result = js.request_restart_when_idle(
                 self.server.home,
-                client_ip=ip,
+                client_ip=auth_ip,
                 digest_home=self.server.digest_home,
                 actor=str(gate.get("actor") or "http")[:80],
             )

@@ -14,14 +14,13 @@ def _port() -> int:
         return int(s.getsockname()[1])
 
 
-def test_fr6819_form_posts_three_fields_to_api_login():
+def test_fr6819_form_posts_username_password_to_api_login():
     html = http._render_login_html()
     assert "/api/login" in html
     assert 'name="password"' in html
     assert 'name="account"' in html or 'name="username"' in html
-    assert 'name="domain"' in html
-    assert "domain:" in html
-    assert "fd.get('domain')" in html or 'fd.get("domain")' in html
+    assert 'name="domain"' not in html
+    assert "Domain (optional)" not in html
 
 
 def test_fr6819_post_accepts_username_domain_password(tmp_path, monkeypatch):
