@@ -42,7 +42,8 @@ OBSERVATION_NAME = "copilot-observation.json"
 JOBS_NAME = "copilot-jobs.json"
 MRB_BACKOFF_NAME = "copilot-mrb-backoff.json"
 TASK_TIMEOUT_S = 4 * 3600.0
-CACHE_S = 300.0
+# FR #7251 / #7255: same 60s cadence as EAR_POOL_FETCH_S / FLEET_POOL_FETCH_S.
+CACHE_S = float(bobreport.EAR_POOL_FETCH_S)
 COPILOT_COOLDOWN_S = 7 * 86400.0
 MRB_FAST_GIVEUP_S = 120.0
 MRB_FAST_GIVEUP_LIMIT = 3
@@ -531,7 +532,7 @@ def refresh_allowance(
     fetch_user: Callable[[], dict] | None = None,
     now: float | None = None,
 ) -> dict:
-    """Read GET /copilot_internal/user (5 min cache). Parse failure -> unknown."""
+    """Read GET /copilot_internal/user (EAR_POOL_FETCH_S cache). Parse failure -> unknown."""
     now_f = time.time() if now is None else float(now)
     if cooldown_active(home, now=now_f):
         return load_allowance(home)

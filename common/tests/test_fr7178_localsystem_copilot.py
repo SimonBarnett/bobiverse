@@ -185,10 +185,9 @@ def test_fr7178_publish_payload_always_includes_copilot(monkeypatch, tmp_path: P
     code = bobreport.publish_local_peer_fuel(home, mid, force=True, now=1_700_000_000.0)
     assert code == 204
     diag = bobreport.last_fuel_publish_diag()
-    assert "copilot" in (diag.get("payload_keys") or [])
-    assert diag.get("copilot_acquisition") == "ok"
-    line = bobreport.format_fuel_publish_diag(diag)
-    assert "copilot_acquisition=ok" in line
+    # FR #7255: ear no longer fetches or posts Copilot; Jeeves owns the fleet pool.
+    assert "copilot" not in (diag.get("payload_keys") or [])
+    assert diag.get("copilot_acquisition") == "jeeves-fleet"
 
 
 def test_fr7178_merge_promotes_fresher_copilot_to_digest_top_level(

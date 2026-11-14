@@ -163,4 +163,4 @@ def test_bob_reports_pools_every_30s_by_default():
     body = c[i:i + 700]
     assert "return 30" in body and "return 300" not in body
     w = _t("tools/Watch-BobTray.ps1")
-    assert "[int]$PollSec = 30" in w
+    assert "[int]$PollSec = 60" in w

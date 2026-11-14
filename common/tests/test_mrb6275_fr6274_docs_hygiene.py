@@ -34,9 +34,11 @@ def test_mrb6275_publish_prefers_live_billing_not_passive_log():
 
     src = Path(bobreport.__file__).read_text(encoding="utf-8")
     # publish_local_peer_fuel must call fetch_live_xai_weekly for the fresh path
-    assert "fetch_live_xai_weekly()" in src
+    assert "fetch_live_xai_weekly(" in src
     assert "enrich_peer_keep_last_good_xai_weekly" in src
-    fn = src[src.find("def publish_local_peer_fuel") : src.find("def publish_local_peer_fuel") + 2500]
-    assert "fetch_live_xai_weekly()" in fn
+    start = src.find("def publish_local_peer_fuel")
+    nxt = src.find("\ndef ", start + len("def publish_local_peer_fuel"))
+    fn = src[start : nxt if nxt > start else start + 12000]
+    assert "fetch_live_xai_weekly(" in fn
     # must not treat read_local_xai_weekly as the fresh publish path
     assert "xai = read_local_xai_weekly()" not in fn

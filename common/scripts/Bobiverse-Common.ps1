@@ -2958,147 +2958,59 @@ function Import-BobiverseGhTokenEnv {
     }
 }
 
-function Ensure-BobiverseGithubToken {
+
+function Get-BobiverseInteractiveUserHome {
     <#
-      FR #7234: provision <InstallRoot>\config\github.token for LocalSystem bob-ear Copilot.
-      Sources (first hit wins; names only in logs): env GH_TOKEN/GITHUB_TOKEN, profile
-      .grok\bob\github.token, sibling product config\github.token, gh auth token (operator
-      session only — never under LocalSystem). ACL: SYSTEM + Administrators. Never prints
-      the token value. Idempotent when the dest already has content.
+      FR #7006 / #7256: interactive console home that owns .grok (path only; never secrets).
+      Order: BOB_GROK_WEEKLY_USER_HOME; live console/explorer user; HKLM LastLoggedOnUser
+      (works with nobody logged on); <InstallRoot>\run\interactive-user-home.txt stamp.
+      BOBIVERSE_SKIP_LIVE_INTERACTIVE_HOME=1 skips CIM/registry (tests).
     #>
-    param(
-        [Parameter(Mandatory)][string]$InstallRoot
-    )
-    # FR #3967: New-Object List (PS 4.0 airc path; no ::new).
-    $checked = New-Object 'System.Collections.Generic.List[string]'
-    $cfgDir = Join-Path $InstallRoot 'config'
-    $dest = Join-Path $cfgDir 'github.token'
-    $existing = ''
-    if (Test-Path -LiteralPath $dest) {
-        $existing = ([string](Get-Content -LiteralPath $dest -Raw -ErrorAction SilentlyContinue)).Trim()
-    }
-    if ($existing) {
-        [void]$checked.Add('file:install/config/github.token')
-        try { Protect-BobiverseSecretPath -Path $dest } catch { }
-        return [pscustomobject]@{
-            Ok = $true
-            Migrated = $false
-            Source = 'file:install/config/github.token'
-            Checked = @($checked)
-            Path = $dest
+    param([string]$InstallRoot = '')
+    $override = ([string]$env:BOB_GROK_WEEKLY_USER_HOME).Trim().TrimEnd('\')
+    if ($override -and (Test-Path -LiteralPath $override)) { return $override }
+
+    $serviceLeaves = @('SYSTEM', 'LOCAL SERVICE', 'NETWORK SERVICE', 'systemprofile', 'DefaultAccount')
+    function Get-BobiverseUsersHomeFromAccount([string]$Account) {
+        if (-not $Account) { return $null }
+        $user = ($Account.Trim() -split '\\')[-1].Trim()
+        if (-not $user) { return $null }
+        foreach ($leaf in $serviceLeaves) {
+            if ($user -ieq $leaf) { return $null }
         }
+        $drive = if ($env:SystemDrive) { $env:SystemDrive } else { 'C:' }
+        $cand = Join-Path $drive (Join-Path 'Users' $user)
+        if (Test-Path -LiteralPath $cand) { return $cand }
+        return $null
     }
 
-    $token = ''
-    $source = ''
-
-    [void]$checked.Add('env:GH_TOKEN')
-    $envTok = ([string]$env:GH_TOKEN).Trim()
-    if ($envTok) {
-        $token = $envTok
-        $source = 'env:GH_TOKEN'
-    }
-    if (-not $token) {
-        [void]$checked.Add('env:GITHUB_TOKEN')
-        $envTok2 = ([string]$env:GITHUB_TOKEN).Trim()
-        if ($envTok2) {
-            $token = $envTok2
-            $source = 'env:GITHUB_TOKEN'
-        }
-    }
-
-    if (-not $token) {
-        $profCands = New-Object 'System.Collections.Generic.List[string]'
-        if ($env:USERPROFILE) {
-            [void]$profCands.Add((Join-Path $env:USERPROFILE '.grok\bob\github.token'))
-        }
-        if ($env:SystemDrive) {
-            $adminProf = Join-Path $env:SystemDrive 'Users\Administrator\.grok\bob\github.token'
-            if ($adminProf -notin @($profCands)) { [void]$profCands.Add($adminProf) }
-        }
-        foreach ($p in $profCands) {
-            $tag = 'file:profile/.grok/bob/github.token'
-            if ($tag -notin @($checked)) { [void]$checked.Add($tag) }
-            if (-not $p -or -not (Test-Path -LiteralPath $p)) { continue }
-            try {
-                if ([IO.Path]::GetFullPath($p) -ieq [IO.Path]::GetFullPath($dest)) { continue }
-            } catch { }
-            $raw = ([string](Get-Content -LiteralPath $p -Raw -ErrorAction SilentlyContinue)).Trim()
-            if ($raw) {
-                $token = $raw
-                $source = $tag
-                break
-            }
-        }
-    }
-
-    if (-not $token) {
+    $skipLive = (([string]$env:BOBIVERSE_SKIP_LIVE_INTERACTIVE_HOME).Trim() -eq '1')
+    if (-not $skipLive) {
         try {
-            $ai = Get-BobiverseAiRoot
-            foreach ($prod in @('jeeves', 'airc', 'bob')) {
-                $p = Join-Path $ai "$prod\config\github.token"
-                $tag = "file:sibling/$prod/config/github.token"
-                [void]$checked.Add($tag)
-                if (-not (Test-Path -LiteralPath $p)) { continue }
-                try {
-                    if ([IO.Path]::GetFullPath($p) -ieq [IO.Path]::GetFullPath($dest)) { continue }
-                } catch { }
-                $raw = ([string](Get-Content -LiteralPath $p -Raw -ErrorAction SilentlyContinue)).Trim()
-                if ($raw) {
-                    $token = $raw
-                    $source = $tag
-                    break
+            $u = $null
+            try { $u = (Get-CimInstance Win32_ComputerSystem -ErrorAction Stop).UserName } catch { }
+            $h = Get-BobiverseUsersHomeFromAccount $u
+            if ($h) { return $h }
+        } catch { }
+        try {
+            $key = Get-ItemProperty -LiteralPath 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Authentication\LogonUI' -ErrorAction SilentlyContinue
+            if ($key) {
+                foreach ($n in @('LastLoggedOnSAMUser', 'LastLoggedOnUser')) {
+                    $val = [string]$key.$n
+                    $h = Get-BobiverseUsersHomeFromAccount $val
+                    if ($h) { return $h }
                 }
             }
         } catch { }
     }
-
-    [void]$checked.Add('gh:auth-token')
-    $isSystem = $false
-    try { $isSystem = [bool](Test-BobiverseIsLocalSystem) } catch { $isSystem = $false }
-    if (-not $token -and -not $isSystem) {
-        $gh = Get-Command gh -ErrorAction SilentlyContinue
-        if ($gh) {
-            try {
-                $prevEap = $ErrorActionPreference
-                $ErrorActionPreference = 'Continue'
-                $rawOut = (& gh auth token 2>$null | Out-String)
-                $ErrorActionPreference = $prevEap
-                $line = ([string]$rawOut).Trim()
-                if ($line) {
-                    $first = (($line -split "(`r`n|`n)")[0]).Trim()
-                    if ($first -and ($first -notmatch '(?i)^(error|not logged|no oauth)')) {
-                        $token = $first
-                        $source = 'gh:auth-token'
-                    }
-                }
-            } catch { }
+    if ($InstallRoot) {
+        $stamp = Join-Path $InstallRoot 'run\interactive-user-home.txt'
+        if (Test-Path -LiteralPath $stamp) {
+            $line = ([string](Get-Content -LiteralPath $stamp -TotalCount 1 -ErrorAction SilentlyContinue)).Trim().Trim('"')
+            if ($line -and (Test-Path -LiteralPath $line)) { return $line }
         }
     }
-
-    if (-not $token) {
-        Write-Host ("WARN FR #7234 github.token missing under {0}; checked={1}" -f $dest, ($checked -join ','))
-        return [pscustomobject]@{
-            Ok = $false
-            Migrated = $false
-            Source = 'none'
-            Checked = @($checked)
-            Path = $dest
-        }
-    }
-
-    New-Item -ItemType Directory -Force -Path $cfgDir | Out-Null
-    [IO.File]::WriteAllText($dest, $token + "`n", (New-Object System.Text.UTF8Encoding $false))
-    $token = $null
-    try { Protect-BobiverseSecretPath -Path $dest } catch { }
-    Write-Host ("INFO FR #7234 provisioned config\github.token source={0} (value not logged)" -f $source)
-    return [pscustomobject]@{
-        Ok = $true
-        Migrated = $true
-        Source = $source
-        Checked = @($checked)
-        Path = $dest
-    }
+    return $null
 }
 
 function Get-BobiverseLatestPublishedVersion {

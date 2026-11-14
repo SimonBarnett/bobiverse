@@ -35,7 +35,8 @@ RESYNC_S = 3600.0
 MERGE_ON_GREEN_S = 60.0
 FIRST_MERGE_ON_GREEN_DELAY_S = 15.0
 # FR #5170: Copilot virtual-seat poll + webhook ensure (not a resync).
-COPILOT_TICK_S = 45.0
+# FR #7255: fleet OpenCode + Copilot fetch once per minute (dispatch still in this tick).
+COPILOT_TICK_S = 60.0
 FIRST_COPILOT_DELAY_S = 20.0
 WEBHOOK_ENSURE_S = 3600.0
 FIRST_WEBHOOK_ENSURE_DELAY_S = 8.0
@@ -937,12 +938,11 @@ class ChairJobs:
         FR #5267: release stranded accepts before any Copilot API call, including
         when there is no token (dispatch stays off).
 
-        FR #6148 + FR #6204: read-only observe_quota runs when dispatch is enabled
-        or when observation is explicitly opted in (``BOB_COPILOT_OBSERVE`` /
-        allowance ``observe``). Default with dispatch off is zero quota GETs and
-        no observation file write.
+        FR #6148 + FR #6204: dispatch still gated. FR #7255: fleet Copilot + OpenCode
+        pools are fetched every COPILOT_TICK_S even with no seats and with dispatch off.
         """
         import copilot_dispatch
+        import fleet_pool_fetch
 
         swept = copilot_dispatch.settle_stuck_accepted(self.digest_home, now=self.clock())
         if swept.get("dropped") or swept.get("released"):
@@ -952,7 +952,7 @@ class ChairJobs:
             )
         token, _src = self.token_loader()
         now_f = self.clock()
-        observe = copilot_dispatch.should_observe_quota(self.digest_home)
+        observe = True
 
         def fetch_user() -> dict:
             data, code = self._github_json(
@@ -972,6 +972,10 @@ class ChairJobs:
                 copilot_dispatch.observe_quota(
                     self.digest_home, fetch_user=_no_token, now=now_f
                 )
+            try:
+                fleet_pool_fetch.tick_fleet_pools(self.digest_home, now=now_f)
+            except Exception as exc:  # noqa: BLE001
+                self.log(f"WARN fleet-pools: {type(exc).__name__}")
             self.log("WARN copilot-dispatch skipped: no token")
             return
 
@@ -979,6 +983,10 @@ class ChairJobs:
             copilot_dispatch.observe_quota(
                 self.digest_home, fetch_user=fetch_user, now=now_f
             )
+        try:
+            fleet_pool_fetch.tick_fleet_pools(self.digest_home, now=now_f)
+        except Exception as exc:  # noqa: BLE001
+            self.log(f"WARN fleet-pools: {type(exc).__name__}")
 
         def post(path: str, body: dict) -> dict:
             url = path if str(path).startswith("http") else (

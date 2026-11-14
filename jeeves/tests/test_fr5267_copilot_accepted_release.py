@@ -85,7 +85,19 @@ def _chair(home, clock, *, fetch=None, token=("", "none")):
 
     def _github_json(method, url, body=None):
         calls.append(str(url))
-        raise AssertionError(f"Copilot API must not be called: {method} {url}")
+        # FR #7255: fleet observe may GET /copilot_internal/user; dispatch POSTs must not.
+        if "copilot_internal/user" in str(url):
+            return {
+                "quota_snapshots": {
+                    "premium_interactions": {
+                        "entitlement": -1,
+                        "remaining": -1,
+                        "unlimited": True,
+                        "percent_remaining": 100,
+                    }
+                }
+            }, 200
+        raise AssertionError(f"Copilot dispatch API must not be called: {method} {url}")
 
     j._github_json = _github_json
     return j, logs, calls
@@ -165,7 +177,8 @@ def test_disabled_allowance_releases_copilot_rows_to_seats(tmp_path, monkeypatch
         j, _logs, calls = _chair(home, clk, token=("local-test", "test"))
         j.next_copilot = clk.t
         assert j.tick() is True
-        assert calls == []
+        assert all("copilot_internal/user" in c for c in calls)
+        assert not any("/tasks" in c for c in calls)
         assert cd.dispatch_enabled(home) is False
         doc = gitclaim.load_queue(home)
         assert _ids(doc.get("accepted")) == []
@@ -220,7 +233,7 @@ def test_no_live_task_releases_and_live_task_stays(tmp_path, monkeypatch):
         j, _logs, calls = _chair(home, clk, token=("", "none"))
         j.next_copilot = clk.t
         assert j.tick() is True
-        assert calls == []
+        assert not any("/tasks" in c for c in calls)
         doc = gitclaim.load_queue(home)
         if live:
             assert _ids(doc.get("accepted")) == ["#12"]
@@ -261,7 +274,8 @@ def test_open_copilot_pr_not_duplicated(tmp_path, monkeypatch):
     j, _logs, calls = _chair(tmp_path, clk, token=("local-test", "test"))
     j.next_copilot = clk.t
     assert j.tick() is True
-    assert calls == []
+    assert all("copilot_internal/user" in c for c in calls)
+    assert not any("/tasks" in c for c in calls)
 
     def _counts():
         doc = gitclaim.load_queue(tmp_path)
@@ -289,4 +303,4 @@ def test_open_copilot_pr_not_duplicated(tmp_path, monkeypatch):
     assert fr2 == []
     assert len(mrb2) == 1
     assert len(done2) == 1
-    assert calls == []
+    assert not any("/tasks" in c for c in calls)

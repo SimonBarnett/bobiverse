@@ -4036,6 +4036,26 @@ def _public_queue(home: Path) -> dict:
     }
 
 
+def _digest_fleet_pools(doc: dict | None) -> dict:
+    """FR #7255: top-level OpenCode + Copilot meters owned by Jeeves."""
+    if not isinstance(doc, dict):
+        return {}
+    raw = doc.get("fleet_pools")
+    if isinstance(raw, dict) and raw:
+        return raw
+    out: dict = {}
+    if isinstance(doc.get("copilot"), dict):
+        out["copilot"] = doc.get("copilot")
+    oc = doc.get("opencode")
+    if isinstance(oc, dict):
+        out["opencode"] = oc
+        if oc.get("opencode-free"):
+            out["opencode-free"] = oc.get("opencode-free")
+        if oc.get("opencode-go"):
+            out["opencode-go"] = oc.get("opencode-go")
+    return out
+
+
 def _digest_copilot_pool(home: Path, doc: dict | None = None) -> dict:
     """FR #6148 / #7178: public Copilot pool — never omit; prefer freshest source."""
     try:
@@ -4143,6 +4163,8 @@ def build_digest_object(home: Path, briefer_nick: str, now: datetime | None = No
         "cursor_pools": build_cursor_pools(doc, exported, now),
         "queue": _public_queue(home),
         "copilot": _digest_copilot_pool(home, doc),
+        "fleet_pools": _digest_fleet_pools(doc),
+        "opencode": doc.get("opencode") if isinstance(doc.get("opencode"), dict) else None,
         "intake_outbox": _intake_outbox_public(home),
         # FR #5204 / #5947: live airc *_console nicks (shops + any chair channel).
         "airc_consoles": _airc_consoles_export(doc, exported),
@@ -4356,6 +4378,60 @@ DEFAULT_DIGEST_FUEL_HEARTBEAT_S = 30.0
 DIGEST_FUEL_DELTA_ENV = "BOB_EAR_DIGEST_FUEL_DELTA_S"
 DEFAULT_DIGEST_FUEL_DELTA_S = 5.0
 DIGEST_FUEL_MAX_LAG_S = DEFAULT_DIGEST_FUEL_DELTA_S
+# FR #7251: SYSTEM ear live-fetches every provider pool on this cadence.
+# Tray poll (60s) / stale (120s) is useless unless this stamp advances.
+EAR_POOL_FETCH_S = 60.0
+EAR_POOL_BACKOFF_CAP_S = 600.0
+_pool_fetch_state: dict[str, dict] = {}
+
+
+def reset_pool_fetch_state() -> None:
+    """Tests / forced refresh: clear per-pool fetch clocks and backoffs."""
+    _pool_fetch_state.clear()
+
+
+def pool_fetch_due(name: str, now: float) -> bool:
+    """True when this pool should hit the provider (60s, or after backoff)."""
+    st = _pool_fetch_state.get(name) or {}
+    backoff_until = float(st.get("backoff_until") or 0.0)
+    if now < backoff_until:
+        return False
+    last = float(st.get("last_attempt") or 0.0)
+    if last <= 0.0:
+        return True
+    return (now - last) >= EAR_POOL_FETCH_S
+
+
+def mark_pool_fetch(
+    name: str,
+    now: float,
+    *,
+    ok: bool,
+    error: str | None = None,
+    rate_limited: bool = False,
+) -> None:
+    """Record a provider attempt. Failures back off; success clears backoff."""
+    st = dict(_pool_fetch_state.get(name) or {})
+    st["last_attempt"] = float(now)
+    st["error"] = error
+    if ok:
+        st["last_ok"] = float(now)
+        st["fail_streak"] = 0
+        st["backoff_until"] = 0.0
+    else:
+        streak = int(st.get("fail_streak") or 0) + 1
+        st["fail_streak"] = streak
+        if rate_limited or error:
+            delay = min(
+                EAR_POOL_BACKOFF_CAP_S,
+                EAR_POOL_FETCH_S * (2 ** min(streak, 4)),
+            )
+            st["backoff_until"] = float(now) + delay
+    _pool_fetch_state[name] = st
+
+
+def iso_utc_from_epoch(now: float) -> str:
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(float(now)))
 _FALSE_LIKE_VALUES = (0, "false", "False", "0", "")
 
 
@@ -4387,6 +4463,10 @@ _FUEL_PUBLISH_EXTRA_FIELDS = (
     "weekly_known",
     "remaining_pct",
     "overage_fetched_at",
+    "remaining_fetched_at",
+    "remaining_last_attempt_at",
+    "remaining_error",
+    "opencode_fetched_at",
     "account_remaining_pct",
     "cursor_remaining_pct",
     "cursor_pools",
@@ -4557,6 +4637,10 @@ def peer_fuel_fingerprint(peer: dict) -> str:
         "overage_gbp",
         "overage_usd",
         "overage_fetched_at",
+        "remaining_fetched_at",
+        "remaining_last_attempt_at",
+        "remaining_error",
+        "opencode_fetched_at",
         "overspend_state",
         "on_demand_used_cents",
         "on_demand_limit_cents",
@@ -4619,6 +4703,7 @@ def peer_fuel_fingerprint(peer: dict) -> str:
                     "group_id": row.get("group_id"),
                     "remaining_pct": row.get("remaining_pct"),
                     "period_end": row.get("period_end"),
+                    "fetched_at": row.get("fetched_at"),
                     "machine_id": row.get("machine_id"),
                 }
             )
@@ -4823,7 +4908,6 @@ _last_fuel_publish_diag: dict = {}
 _last_xai_acquisition: dict = {}
 _last_opencode_acquisition: dict = {}
 _last_copilot_acquisition: dict = {}
-_last_github_token_resolve: dict = {"source": "none", "checked": []}
 
 
 def last_fuel_publish_diag() -> dict:
@@ -4841,11 +4925,6 @@ def last_copilot_acquisition() -> dict:
     return dict(_last_copilot_acquisition)
 
 
-def last_github_token_resolve() -> dict:
-    """Last GitHub token resolve for ear Copilot (FR #7234). Names only, never values."""
-    return dict(_last_github_token_resolve)
-
-
 def format_fuel_publish_diag(diag: dict | None) -> str:
     """One stdout line. Ack is explicit; a POST word alone is not success."""
     d = diag if isinstance(diag, dict) else {}
@@ -4860,7 +4939,6 @@ def format_fuel_publish_diag(diag: dict | None) -> str:
         "pcent_keys={keys} provider_fields={prov} acquisition={acq} "
         "opencode_acquisition={oc_acq} opencode_source={oc_src} "
         "copilot_acquisition={cp_acq} copilot_source={cp_src} "
-        "copilot_checked={cp_chk} "
         "machine={machine} skipped={skipped}"
     ).format(
         role=d.get("home_role") or "unlocalized",
@@ -4878,7 +4956,6 @@ def format_fuel_publish_diag(diag: dict | None) -> str:
         oc_src=d.get("opencode_source") or "-",
         cp_acq=d.get("copilot_acquisition") or "-",
         cp_src=d.get("copilot_source") or "-",
-        cp_chk=d.get("copilot_checked") or "-",
         machine=d.get("machine") or "-",
         skipped=d.get("skipped") or "-",
     )
@@ -5115,7 +5192,7 @@ def _clamp_opencode_pcent_value(raw: object) -> int | None:
 # Process-level TTL cache + short helper timeout; stale cache returned on miss/timeout.
 # FR #6147: cache the full helper/fixture fuel doc (pcent + windows + limiting).
 OPENCODE_FUEL_CACHE_ENV = "BOB_OPENCODE_FUEL_CACHE_S"
-DEFAULT_OPENCODE_FUEL_CACHE_S = 30.0
+DEFAULT_OPENCODE_FUEL_CACHE_S = EAR_POOL_FETCH_S
 OPENCODE_FUEL_HELPER_TIMEOUT_ENV = "BOB_OPENCODE_FUEL_HELPER_TIMEOUT_S"
 DEFAULT_OPENCODE_FUEL_HELPER_TIMEOUT_S = 5.0
 # The ear fuel tick must not block. The helper itself runs ``opencode models``
@@ -6388,6 +6465,8 @@ def read_local_opencode_fuel_doc(
                 labels=list(sel.get("labels") or []),
             )
             if kind == "json" and isinstance(doc, dict) and doc:
+                if not doc.get("fetched_at"):
+                    doc["fetched_at"] = iso_utc_from_epoch(ts)
                 _opencode_fuel_cache["at"] = ts
                 _opencode_fuel_cache["doc"] = dict(doc)
                 _opencode_fuel_cache["value"] = _pcent_from_opencode_fuel_doc(doc)
@@ -6574,7 +6653,7 @@ def read_local_opencode_pcent(
 
     Helper path uses a short timeout (``BOB_OPENCODE_FUEL_HELPER_TIMEOUT_S``,
     default 5s) and a process TTL cache (``BOB_OPENCODE_FUEL_CACHE_S``, default
-    30s) so the ear 5s fuel tick cannot stall the outbox loop on a slow
+    EAR_POOL_FETCH_S / 60s, FR #7251) so the ear 5s fuel tick cannot stall the outbox loop on a slow
     ``opencode stats`` (CodeRabbit Major on PR #6176).
     """
     doc = read_local_opencode_fuel_doc(env, now=now, force=force)
@@ -7725,6 +7804,9 @@ def enrich_peer_keep_last_good_xai_weekly(
         "account": None,
         "fresh": False,
         "error": str(error or "live-fetch-failed"),
+        "last_attempt_at": clock.astimezone(timezone.utc).strftime(
+            "%Y-%m-%dT%H:%M:%SZ"
+        ),
         "age_s": age_s,
     }
     if rem_i is not None:
@@ -7841,45 +7923,32 @@ def enrich_peer_with_xai_weekly(peer: dict, reading: dict | None) -> dict:
 def resolve_github_token_for_ear(
     env: dict[str, str] | None = None,
 ) -> tuple[str, str]:
-    """Return ``(token, source_tag)`` for LocalSystem ear Copilot fetch (FR #7178 / #7234).
+    """Return ``(token, source_tag)`` for LocalSystem ear Copilot fetch (FR #7178).
 
-    Source tag never includes a secret. Prefer env, then install
-    ``config\\github.token`` (``BOB_INSTALL_ROOT`` / frozen ``bob-ear.exe`` root),
-    then ``BOB_CONFIG_DIR``, then ``gh_filer`` candidates. Token value is never
-    logged. On miss, ``last_github_token_resolve()`` lists checked source names.
+    Source tag never includes a secret. Prefer install ``config\\github.token``
+    (``BOB_INSTALL_ROOT`` / frozen ``bob-ear.exe`` root), then env, then
+    ``gh_filer`` candidates. Token value is never logged.
     """
-    global _last_github_token_resolve
     e = os.environ if env is None else env
-    checked: list[str] = []
-
-    def _stamp(source: str) -> None:
-        global _last_github_token_resolve
-        _last_github_token_resolve = {"source": source, "checked": list(checked)}
-
     for name in ("GH_TOKEN", "GITHUB_TOKEN"):
-        checked.append(f"env:{name}")
         raw = (e.get(name) or "").strip()
         if raw:
-            _stamp(f"env:{name}")
             return raw, f"env:{name}"
-    paths: list[tuple[str, Path]] = []
+    paths: list[Path] = []
     root = opencode_install_root(e)
     if root is not None:
-        paths.append(("file:install/config/github.token", Path(root) / "config" / "github.token"))
+        paths.append(Path(root) / "config" / "github.token")
     cfg = (e.get("BOB_CONFIG_DIR") or "").strip()
     if cfg:
-        paths.append(("file:BOB_CONFIG_DIR/github.token", Path(cfg).expanduser() / "github.token"))
-    for tag, path in paths:
-        checked.append(tag)
+        paths.append(Path(cfg).expanduser() / "github.token")
+    for path in paths:
         try:
             if path.is_file():
                 tok = path.read_text(encoding="utf-8").strip()
                 if tok:
-                    _stamp("file:github.token")
                     return tok, "file:github.token"
         except OSError:
             continue
-    checked.append("gh_filer")
     try:
         import gh_filer
 
@@ -7887,11 +7956,9 @@ def resolve_github_token_for_ear(
         tok = (os.environ.get("GH_TOKEN") or "").strip()
         if tok:
             tag = "file:github.token" if str(src).startswith("file:") else str(src or "gh_filer")
-            _stamp(tag)
             return tok, tag
     except Exception:  # noqa: BLE001
         pass
-    _stamp("none")
     return "", "none"
 
 
@@ -7958,15 +8025,11 @@ def fetch_live_copilot_pool(
         "remaining": None,
         "entitlement": None,
         "reset_at": None,
-        "checked_sources": None,
     }
     user_fn = fetch_user
     if user_fn is None:
         token, src = resolve_github_token_for_ear()
         acq["source"] = src
-        checked = list((last_github_token_resolve().get("checked") or []))
-        if checked:
-            acq["checked_sources"] = checked
         if not token:
 
             def user_fn() -> dict:
@@ -8059,77 +8122,90 @@ def publish_local_peer_fuel(
     peer = bobstat.read_peer(home, mid)
     if not peer:
         return None
+    now_f = time.time() if now is None else float(now)
     # Refresh Cursor remaining when peer lacks numeric fuel (#70 / FR #6141 gather assist).
     try:
         bobstat.refresh_peer_cursor_remaining(home, mid)
         peer = bobstat.read_peer(home, mid) or peer
     except OSError:
         pass
-    # FR #6274: live xAI weekly via CLI billing endpoint (signed-in session key
-    # in-memory only). Passive unified.jsonl is never a fresh reading. On failure
-    # keep last-good with true age + explicit error (do not blank a knowable value).
+    # FR #7251: Cursor remaining fetch stamp every EAR_POOL_FETCH_S; never use period_end.
+    if force or pool_fetch_due("cursor", now_f):
+        try:
+            usage = bobstat.load_cursor_usage_doc()
+            ok = isinstance(usage, dict) and bool(usage.get("ok"))
+            peer = dict(peer)
+            if ok:
+                rem = usage.get("remaining_pct")
+                try:
+                    rem_i = int(rem) if rem not in (None, "") else None
+                except (TypeError, ValueError):
+                    rem_i = None
+                if rem_i is not None:
+                    peer["remaining_pct"] = rem_i
+                    peer["cursor_remaining_pct"] = rem_i
+                iso = iso_utc_from_epoch(now_f)
+                peer["remaining_fetched_at"] = iso
+                peer.pop("remaining_last_attempt_at", None)
+                peer.pop("remaining_error", None)
+                pools = peer.get("cursor_pools")
+                if isinstance(pools, list):
+                    stamped = []
+                    for row in pools:
+                        if isinstance(row, dict):
+                            r = dict(row)
+                            r["fetched_at"] = iso
+                            stamped.append(r)
+                        else:
+                            stamped.append(row)
+                    peer["cursor_pools"] = stamped
+                mark_pool_fetch("cursor", now_f, ok=True)
+            else:
+                peer["remaining_last_attempt_at"] = iso_utc_from_epoch(now_f)
+                peer["remaining_error"] = "cursor-usage-unread"
+                mark_pool_fetch(
+                    "cursor", now_f, ok=False, error="cursor-usage-unread"
+                )
+        except Exception as exc:  # noqa: BLE001
+            peer = dict(peer)
+            peer["remaining_last_attempt_at"] = iso_utc_from_epoch(now_f)
+            peer["remaining_error"] = type(exc).__name__
+            mark_pool_fetch("cursor", now_f, ok=False, error=type(exc).__name__)
+    # FR #6274 / #7251: live xAI weekly at EAR_POOL_FETCH_S (not every 5s poll).
+    # Passive unified.jsonl is never a fresh reading. On failure keep last-good
+    # with true age + last_attempt_at + error (do not re-stamp fetched_at).
     try:
-        xai = fetch_live_xai_weekly()
-        acq = _last_xai_acquisition.get("identity")
-        err = _last_xai_acquisition.get("error")
-        _last_fuel_publish_diag["acquisition"] = acq
-        if err:
-            _last_fuel_publish_diag["xai_weekly_error"] = err
-        loc = _last_xai_acquisition.get("auth_path")
-        if loc:
-            _last_fuel_publish_diag["xai_weekly_auth_path"] = loc
-        if xai and xai.get("weekly_known") and xai.get("fresh"):
-            peer = enrich_peer_with_xai_weekly(peer, xai)
-        else:
-            peer = enrich_peer_keep_last_good_xai_weekly(
-                peer, error=str(err or acq or "live-fetch-failed")
+        if force or pool_fetch_due("xai", now_f):
+            xai = fetch_live_xai_weekly()
+            acq = _last_xai_acquisition.get("identity")
+            err = _last_xai_acquisition.get("error")
+            _last_fuel_publish_diag["acquisition"] = acq
+            if err:
+                _last_fuel_publish_diag["xai_weekly_error"] = err
+            # FR #7235: auth_path on diag (path only, never contents).
+            loc = _last_xai_acquisition.get("auth_path")
+            if loc:
+                _last_fuel_publish_diag["xai_weekly_auth_path"] = loc
+            ok = bool(xai and xai.get("weekly_known") and xai.get("fresh"))
+            rate = "429" in str(err or "") or "provider-http-429" in str(err or "")
+            mark_pool_fetch(
+                "xai", now_f, ok=ok, error=None if ok else str(err or acq), rate_limited=rate
             )
+            if ok:
+                peer = enrich_peer_with_xai_weekly(peer, xai)
+            else:
+                peer = enrich_peer_keep_last_good_xai_weekly(
+                    peer, error=str(err or acq or "live-fetch-failed")
+                )
+        else:
+            _last_fuel_publish_diag["acquisition"] = "cached"
     except Exception as exc:
         _last_fuel_publish_diag["acquisition"] = "read-failed"
         _last_fuel_publish_diag["xai_weekly_error"] = type(exc).__name__
+        mark_pool_fetch("xai", now_f, ok=False, error=type(exc).__name__)
         peer = enrich_peer_keep_last_good_xai_weekly(peer, error="read-failed")
-    # FR #6146 / #6147 / #6248 / #6301: enrich with service-owned OpenCode windows + account label.
-    try:
-        peer = dict(peer)
-        oc_doc = read_local_opencode_fuel_doc()
-        oc = _pcent_from_opencode_fuel_doc(oc_doc)
-        wins = _windows_from_opencode_fuel_doc(oc_doc)
-        if oc or wins:
-            peer = enrich_peer_with_opencode_pcent(peer, oc, wins)
-        if isinstance(oc_doc, dict) and oc_doc.get("source"):
-            _last_fuel_publish_diag["opencode_source"] = str(oc_doc.get("source"))
-        acq = last_opencode_acquisition()
-        if acq.get("kind"):
-            _last_fuel_publish_diag["opencode_acquisition"] = str(acq.get("kind"))
-        if acq.get("source") and not _last_fuel_publish_diag.get("opencode_source"):
-            _last_fuel_publish_diag["opencode_source"] = str(acq.get("source"))
-        if acq.get("acl_tightened"):
-            _last_fuel_publish_diag["opencode_acl_tightened"] = True
-        # Account label is the selected key label string (never the key).
-        label = None
-        if isinstance(oc_doc, dict):
-            label = oc_doc.get("opencode_account") or acq.get("label")
-        else:
-            label = acq.get("label")
-        cleaned = _sanitize_grok_account_label(label) if label else None
-        if cleaned:
-            peer["opencode_account"] = cleaned
-            _last_fuel_publish_diag["opencode_account_set"] = True
-        elif acq.get("kind") == "missing_key" or (
-            isinstance(oc_doc, dict) and oc_doc.get("opencode_state") == OPENCODE_NO_KEY_STATE
-        ):
-            peer["opencode_account"] = None
-            if isinstance(peer.get("opencode_windows"), dict):
-                # Ensure paint surfaces "no key set" via window error fields.
-                wins2 = peer["opencode_windows"]
-                for wid, rec in list(wins2.items()):
-                    if isinstance(rec, dict) and not rec.get("error"):
-                        row = dict(rec)
-                        row["error"] = OPENCODE_NO_KEY_STATE
-                        wins2[wid] = row
-            _last_fuel_publish_diag["opencode_state"] = OPENCODE_NO_KEY_STATE
-    except Exception:
-        pass
+    # FR #7255: Jeeves owns OpenCode fleet fetch. Ear must not hit the provider.
+    _last_fuel_publish_diag["opencode_acquisition"] = "jeeves-fleet"
     # FR #6248 / #6279: attach ear-owned grok_account.
     # When this cycle selected an auth entry for live weekly, attribute from that
     # entry only (never borrow a sibling label for the meter). Unlabeled selection
@@ -8161,45 +8237,10 @@ def publish_local_peer_fuel(
                     peer["xai_weekly"] = meter
     except Exception:
         pass
-    # FR #7178: ear always fetches Copilot as SYSTEM; publish pool or explicit error.
-    try:
-        peer = dict(peer)
-        pool = fetch_live_copilot_pool(Path(home), now=now)
-        peer["copilot"] = pool
-        acq = last_copilot_acquisition()
-        if acq.get("kind"):
-            _last_fuel_publish_diag["copilot_acquisition"] = str(acq.get("kind"))
-        if acq.get("source"):
-            _last_fuel_publish_diag["copilot_source"] = str(acq.get("source"))
-        if acq.get("error"):
-            _last_fuel_publish_diag["copilot_error"] = str(acq.get("error"))
-        checked = acq.get("checked_sources") or []
-        if checked:
-            # FR #7234: names only so tray/log can say what is missing.
-            _last_fuel_publish_diag["copilot_checked"] = ",".join(str(x) for x in checked)
-        if pool.get("state"):
-            _last_fuel_publish_diag["copilot_state"] = str(pool.get("state"))
-        if pool.get("fetched_at"):
-            _last_fuel_publish_diag["copilot_fetched_at"] = str(pool.get("fetched_at"))
-    except Exception as exc:  # noqa: BLE001
-        try:
-            import copilot_dispatch as _cd_pub
-
-            peer = dict(peer)
-            peer["copilot"] = _cd_pub.empty_public_pool(error=type(exc).__name__)
-        except Exception:  # noqa: BLE001
-            peer = dict(peer)
-            peer["copilot"] = {
-                "state": "unknown",
-                "source": "copilot_internal/user",
-                "remaining": None,
-                "entitlement": None,
-                "reset_at": "",
-                "fetched_at": "",
-                "last_error": type(exc).__name__,
-            }
-        _last_fuel_publish_diag["copilot_acquisition"] = "read-failed"
-        _last_fuel_publish_diag["copilot_error"] = type(exc).__name__
+    # FR #7255: Jeeves owns Copilot fleet fetch. Ear must not GET copilot_internal/user.
+    _last_fuel_publish_diag["copilot_acquisition"] = "jeeves-fleet"
+    peer = dict(peer)
+    peer.pop("copilot", None)
     # FR #7022: wire home/run/python-status.json into the merge payload
     # (value "missing" or source tag only — never a path body).
     try:
