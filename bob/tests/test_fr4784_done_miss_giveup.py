@@ -54,9 +54,9 @@ def test_done_miss_release_posts_giveup_before_bored():
     e.turn_ended(at=clock())  # second end after reminder -> release
     assert _wait(lambda: any(r == "done-miss" for _, r in e.sent), clock), e.sent
 
-    assert giveups == [("MRB SimonBarnett/ce-priority#32", "done-miss")], giveups
-    assert "giveup:done-miss" in order and "bored" in order, order
-    assert order.index("giveup:done-miss") < order.index("bored"), order
+    assert giveups == [("MRB SimonBarnett/ce-priority#32", "no-terminal-reply")], giveups
+    assert "giveup:no-terminal-reply" in order and "bored" in order, order
+    assert order.index("giveup:no-terminal-reply") < order.index("bored"), order
     assert any("seat-release: GIVEUP posted" in m for m in logs), logs
     # Local ACK already cleared; shop GIVEUP is what frees Jeeves.
     assert e.ack_open is False

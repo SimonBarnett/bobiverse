@@ -5620,7 +5620,7 @@ def out_of_fuel_giveup_line(job_key: str) -> str:
 def seat_release_giveup_line(job_key: str, reason: str) -> str:
     """Shop wire: ``GIVEUP <TYPE> owner/repo#N <reason>`` before !bored (FR #4784).
 
-    ``reason`` is ``done-miss`` or ``ack-stale``. Without this line Jeeves keeps the
+    ``reason`` is ``done-miss``, ``no-terminal-reply``, or ``ack-stale``. Without this line Jeeves keeps the
     accepted row and answers every later ``!bored`` with ``nak busy``.
     """
     key = (job_key or "").strip() or "job"
@@ -8870,6 +8870,7 @@ class BoredEmitter:
                  ack_stale_s: float = 2700.0, retry_s: float = 5.0, clock: Callable[[], float] = time.monotonic,
                  nak_s: float = 120.0, harvest_hold_s: float | None = None, assign_grace_s: float | None = None,
                  turn_hold_max_s: float | None = None, done_miss_grace_s: float | None = None,
+                 done_miss_reply_s: float | None = None,
                  ack_quiet_s: float | None = None, held_assign_watchdog_s: float | None = None):
         self.send, self.log, self.clock = send, log, clock
         self.kind = ""  # FR #7265: seat kind on turn-end !bored logs
@@ -8899,6 +8900,13 @@ class BoredEmitter:
         self.done_miss_grace_s = (
             float(done_miss_grace_s) if done_miss_grace_s is not None
             else _env_float("BOB_WORKER_DONE_MISS_GRACE_S", 20.0, 5.0, 600.0)
+        )
+        # FR #7352: after the one reminder, wait this long for DONE/NACK/GIVEUP (or a
+        # second turn_ended). Then GIVEUP no-terminal-reply even if the agent never
+        # starts another turn. Default 180s so grace+reply stays under 5 minutes.
+        self.done_miss_reply_s = (
+            float(done_miss_reply_s) if done_miss_reply_s is not None
+            else _env_float("BOB_WORKER_DONE_MISS_REPLY_S", 180.0, 10.0, 300.0)
         )
         # FR #6119: repeated short done-miss releases => out-of-fuel hold (stop !bored churn).
         self.fast_done_miss_s = _env_float("BOB_WORKER_FAST_DONE_MISS_S", 60.0, 5.0, 600.0)
@@ -8958,6 +8966,7 @@ class BoredEmitter:
         self._done_miss_armed_at: Optional[float] = None
         self._done_miss_key: Optional[str] = None
         self._done_miss_reminded = False
+        self._done_miss_reply_until: Optional[float] = None
         self._done_miss_release_pending = False
         self.done_miss_remind_fn: Optional[Callable[[str], None]] = None
         # FR #7201: error turn while ACK open — retry once then GIVEUP.
@@ -9158,6 +9167,7 @@ class BoredEmitter:
         self._done_miss_armed_at = None
         self._done_miss_key = None
         self._done_miss_reminded = False
+        self._done_miss_reply_until = None
         self._done_miss_release_pending = False
 
     def _fire_seat_release_giveup(self, reason: str) -> None:
@@ -9181,6 +9191,7 @@ class BoredEmitter:
             return
         key = self._done_miss_key or (self._ack_job_key or "job")
         self._done_miss_reminded = True
+        self._done_miss_reply_until = now + float(self.done_miss_reply_s)
         self._opencode_finish_attempt = int(getattr(self, "_opencode_finish_attempt", 0) or 0) + 1
         if getattr(self, "opencode_finish_decide_fn", None) is not None:
             self.log(
@@ -9194,6 +9205,32 @@ class BoredEmitter:
                 fn(key)
             except Exception as e:
                 self.log(f"done-miss: remind inject failed {type(e).__name__}")
+
+    def _arm_done_miss_release(self, now: float, key: str) -> None:
+        """FR #2875 / #7352: reminder already sent; free the ACK so !bored can fire."""
+        self._ack_open = False
+        self._ack_job_key = None
+        self._done_miss_armed_at = None
+        self._done_miss_key = None
+        self._done_miss_reminded = False
+        self._done_miss_reply_until = None
+        self._done_miss_release_pending = True
+        self._release_giveup_key = key
+        self._idle_since = now
+        self._release_gen = self._turn_gen
+        self._arm_skip = True
+        self._hold_release_at = now
+        self.log(f"done-miss: still no DONE for {key} after reminder - releasing seat")
+
+    def _maybe_expire_done_miss_reply(self, now: float) -> None:
+        """FR #7352: no second turn_ended — still GIVEUP no-terminal-reply after reply_s."""
+        if not self._ack_open or not self._done_miss_reminded:
+            return
+        until = self._done_miss_reply_until
+        if until is None or now < float(until):
+            return
+        key = self._done_miss_key or (self._ack_job_key or "job")
+        self._arm_done_miss_release(now, key)
 
     def _ack_held(self, now: float) -> bool:
         """ACK still owns the seat (FR #4827).
@@ -9603,23 +9640,8 @@ class BoredEmitter:
                             )
                             # keep ACK open so note_out_of_fuel can GIVEUP it after the lock
                         else:
-                            self._ack_open = False
-                            self._ack_job_key = None
-                            self._done_miss_armed_at = None
-                            self._done_miss_key = None
-                            self._done_miss_reminded = False
-                            self._done_miss_release_pending = True
-                            # FR #4784: keep key for GIVEUP before !bored (Jeeves accepted-row free).
-                            self._release_giveup_key = key
-                            self._idle_since = now
-                            # FR #2996: match normal turn-end release — keep _release_gen == _turn_gen
-                            # so post-done-miss nak/idle are not gated forever (stale gen + wait(0) spin).
-                            self._release_gen = self._turn_gen
-                            self._arm_skip = True
-                            self._hold_release_at = now
-                            self.log(
-                                f"done-miss: still no DONE for {key} after reminder - releasing seat"
-                            )
+                            # FR #4784 / #7352: GIVEUP no-terminal-reply before !bored.
+                            self._arm_done_miss_release(now, key)
                     else:
                         self._done_miss_armed_at = now
                         self._done_miss_key = key
@@ -10004,6 +10026,14 @@ class BoredEmitter:
             and not self._done_miss_release_pending
         ):
             wakes.append(float(self._done_miss_armed_at) + float(self.done_miss_grace_s))
+        # FR #7352: wake when the reminder reply window expires (no second turn needed).
+        if (
+            self._ack_open
+            and self._done_miss_reminded
+            and self._done_miss_reply_until is not None
+            and not self._done_miss_release_pending
+        ):
+            wakes.append(float(self._done_miss_reply_until))
         if self._harvest_until is not None and now < self._harvest_until:
             wakes.append(self._harvest_until)
         # FR #5505: wake when held-assign watchdog is due.
@@ -10064,7 +10094,9 @@ class BoredEmitter:
             self.log(f"bored: skip {reason} - became busy before send")
             return
         # FR #4784: GIVEUP open ACK to Jeeves before !bored on done-miss / ack-stale.
-        if reason in ("done-miss", "ack-stale"):
+        if reason == "done-miss":
+            self._fire_seat_release_giveup("no-terminal-reply")
+        elif reason == "ack-stale":
             self._fire_seat_release_giveup(reason)
         # FR #7238: pull merged skills between jobs (this send is idle).
         try:
@@ -10171,8 +10203,10 @@ class BoredEmitter:
                                 )
                             self._fuel_lost_streak = 0
                 # FR #2875: grace expiry injects reminder while ACK stays open (still busy).
+                # FR #7352: if the reminder turn never starts, expire the reply window.
                 if not self._out_of_fuel:
                     self._fire_done_miss_remind(now)
+                    self._maybe_expire_done_miss_reply(now)
                 r = self._reason(now)
                 if r:
                     self._fire(r, now)
