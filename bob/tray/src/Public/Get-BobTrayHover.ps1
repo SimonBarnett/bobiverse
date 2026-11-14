@@ -2064,6 +2064,20 @@ function Format-BobCopilotPoolLine {
     $left = $null
     $unlimited = $false
     try { if ($Pool.unlimited) { $unlimited = [bool]$Pool.unlimited } } catch { }
+    # FR #7371: do not paint unlimited when remaining is 0 and overage is not permitted
+    # (GitHub used-up business quota). Genuine unlimited keeps overage_permitted=true.
+    $remProbe = $null
+    try { if ($null -ne $Pool.remaining -and [string]$Pool.remaining -ne '') { $remProbe = [int]$Pool.remaining } } catch { }
+    $overageOk = $true
+    try {
+        if ($null -ne $Pool.overage_permitted -and [string]$Pool.overage_permitted -ne '') {
+            $overageOk = [bool]$Pool.overage_permitted
+        }
+    } catch { }
+    if ($unlimited -and $null -ne $remProbe -and $remProbe -le 0 -and -not $overageOk) {
+        $unlimited = $false
+        if ($stLow -in @('ok', '')) { $state = 'exhausted'; $stLow = 'exhausted' }
+    }
     # FR #7299: unlimited never paints as 0%; prefer the word unlimited (or 100%).
     if ($unlimited) {
         if ($isStale) { return ('Copilot - unlimited {0}' -f $staleMark) }
@@ -2110,13 +2124,25 @@ function Get-BobCopilotMeterBarPct {
     if (-not $Pool) { return $null }
     $unlimited = $false
     try { if ($Pool.unlimited) { $unlimited = [bool]$Pool.unlimited } } catch { }
+    $remProbe = $null
+    try { if ($null -ne $Pool.remaining -and [string]$Pool.remaining -ne '') { $remProbe = [int]$Pool.remaining } } catch { }
+    $overageOk = $true
+    try {
+        if ($null -ne $Pool.overage_permitted -and [string]$Pool.overage_permitted -ne '') {
+            $overageOk = [bool]$Pool.overage_permitted
+        }
+    } catch { }
+    # FR #7371: used-up quota must not draw a full green unlimited bar.
+    if ($unlimited -and $null -ne $remProbe -and $remProbe -le 0 -and -not $overageOk) {
+        $unlimited = $false
+    }
     if ($unlimited) {
         # FR #7299: unlimited bar is 100% left (never 0% from historical-max math).
         return 100
     }
     $state = ''
     try { $state = [string]$Pool.state } catch { }
-    if ($state -eq 'exhausted') { return 0 }
+    if ($state -eq 'exhausted' -or ($null -ne $remProbe -and $remProbe -le 0 -and -not $overageOk)) { return 0 }
     $err = ''
     try { if ($Pool.last_error) { $err = [string]$Pool.last_error } } catch { }
     if (-not (Test-BobTrayPoolHasRealRemaining -Remaining $Pool.remaining -Error $err -State $state)) {
