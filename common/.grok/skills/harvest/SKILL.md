@@ -411,6 +411,7 @@ routes to bobiverse via the split rule.
 - FR #7084 digest start_model must come from the launched argv/session (stamp BOB_WORKER_ACTUAL_MODEL, re-POST after start_agent); freeze worker_start_model as a PyInstaller hidden-import.
 - Live recycleseat acceptance needs a clean post-#7126 install and an idle sibling seat; never ff/checkout install root from an FR seat; GIVEUP with evidence when build-not-on-box
 - Shell inherited-capture tests need ~1s child budget on busy Windows hosts; 0.2s races spawn and flakes exit 124 under load.
+- Ear/tray CI: build the checkout tip on push to main and PR path filters; never hard-pin behavior_source_sha in the workflow --- record source_commit in provenance instead (class of #7179 / failed Confirm-behavior on 3fbdacf8).
 
 ## Harvest digest (lessons audit 2026-10-06)
 
