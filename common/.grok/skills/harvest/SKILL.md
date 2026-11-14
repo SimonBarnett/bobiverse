@@ -418,6 +418,7 @@ routes to bobiverse via the split rule.
 - Fleet Cursor pool: CredMan Bobiverse/CursorAccess (or BOB_CURSOR_CREDMAN_TARGET), ear skips Get-CursorAgentUsage with cursor_acquisition=jeeves-fleet, tray reads fleet_pools.cursor with Get-BobPoolStaleAfterSec 120s
 - Keep the live skill-dag job-worktree pointer beside the seat cwd, never under .grok; Grok watches that dir and replaces the stdio MCP child.
 - xAI weekly tray rows are one pool per machine: heading is machine, percent left, account, reset --- never append a Grok/Cursor product-pair label.
+- Fleet Copilot/OpenCode 60s fetch needs a ChairJobs daemon watchdog (spawn=True); tick after drain_outbox_once is not enough when drain blocks.
 
 ## Harvest digest (lessons audit 2026-10-06)
 
