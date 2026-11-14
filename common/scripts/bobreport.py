@@ -4421,7 +4421,9 @@ def mark_pool_fetch(
     else:
         streak = int(st.get("fail_streak") or 0) + 1
         st["fail_streak"] = streak
-        if rate_limited or error:
+        # FR #7298: only HTTP 429 backs off. grok-login-expired and other
+        # errors still retry every EAR_POOL_FETCH_S (60s).
+        if rate_limited:
             delay = min(
                 EAR_POOL_BACKOFF_CAP_S,
                 EAR_POOL_FETCH_S * (2 ** min(streak, 4)),
@@ -4939,6 +4941,7 @@ def format_fuel_publish_diag(diag: dict | None) -> str:
         "pcent_keys={keys} provider_fields={prov} acquisition={acq} "
         "opencode_acquisition={oc_acq} opencode_source={oc_src} "
         "copilot_acquisition={cp_acq} copilot_source={cp_src} "
+        "xai_attempt={xai_att} xai_weekly_error={xai_err} "
         "machine={machine} skipped={skipped}"
     ).format(
         role=d.get("home_role") or "unlocalized",
@@ -4956,6 +4959,8 @@ def format_fuel_publish_diag(diag: dict | None) -> str:
         oc_src=d.get("opencode_source") or "-",
         cp_acq=d.get("copilot_acquisition") or "-",
         cp_src=d.get("copilot_source") or "-",
+        xai_att=d.get("xai_attempt") or "-",
+        xai_err=str(d.get("xai_weekly_error") or "-").replace(" ", "_")[:80],
         machine=d.get("machine") or "-",
         skipped=d.get("skipped") or "-",
     )
@@ -7760,7 +7765,7 @@ def fetch_live_xai_weekly(*, now: datetime | None = None) -> dict | None:
 
 
 def enrich_peer_keep_last_good_xai_weekly(
-    peer: dict, *, error: str, now: datetime | None = None
+    peer: dict, *, error: str, now: datetime | None = None, machine_id: str | None = None
 ) -> dict:
     """FR #6274: on live-fetch failure keep last-good with true age; never blank a knowable value."""
     if not isinstance(peer, dict):
@@ -7809,6 +7814,9 @@ def enrich_peer_keep_last_good_xai_weekly(
         ),
         "age_s": age_s,
     }
+    if str(error or "") == XAI_GROK_LOGIN_EXPIRED:
+        who = fold_machine_id(machine_id or "") or "this machine"
+        out_meter["error_action"] = f"sign in once on {who}"
     if rem_i is not None:
         enriched["weekly"] = rem_i
         enriched["weekly_known"] = True
@@ -8131,10 +8139,12 @@ def publish_local_peer_fuel(
     # with true age + last_attempt_at + error (do not re-stamp fetched_at).
     try:
         if force or pool_fetch_due("xai", now_f):
-            xai = fetch_live_xai_weekly()
+            clock = datetime.fromtimestamp(now_f, timezone.utc)
+            xai = fetch_live_xai_weekly(now=clock)
             acq = _last_xai_acquisition.get("identity")
             err = _last_xai_acquisition.get("error")
             _last_fuel_publish_diag["acquisition"] = acq
+            _last_fuel_publish_diag["xai_attempt"] = "ok" if xai else str(err or acq or "live-fetch-failed")
             if err:
                 _last_fuel_publish_diag["xai_weekly_error"] = err
             # FR #7235: auth_path on diag (path only, never contents).
@@ -8150,10 +8160,14 @@ def publish_local_peer_fuel(
                 peer = enrich_peer_with_xai_weekly(peer, xai)
             else:
                 peer = enrich_peer_keep_last_good_xai_weekly(
-                    peer, error=str(err or acq or "live-fetch-failed")
+                    peer,
+                    error=str(err or acq or "live-fetch-failed"),
+                    now=clock,
+                    machine_id=mid,
                 )
         else:
             _last_fuel_publish_diag["acquisition"] = "cached"
+            _last_fuel_publish_diag["xai_attempt"] = "cached"
     except Exception as exc:
         _last_fuel_publish_diag["acquisition"] = "read-failed"
         _last_fuel_publish_diag["xai_weekly_error"] = type(exc).__name__
