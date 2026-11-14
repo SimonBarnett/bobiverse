@@ -384,7 +384,7 @@ routes to bobiverse via the split rule.
 - FR-04 settings HTML groups: headings use _opt_esc which encodes less-than but not greater-than; assert no raw script tag, not a full gt entity.
 - Jeeves appliance UI FR-04 Groups table lives at jeeves/docs/feature-request-jeeves-appliance-ui-*.md (## Groups). Sparse installs lack repo-root docs/; do not invent the table. Fetch/rebase onto origin/main first so sibling SettingSpec/_render_html land. git info/exclude /* blocks repo-root docs add without -f.
 - FR-012 retarget 6758/6792 doc pins to bob.ntsa.uk/jeeves instead of reopening 6757/6758.
-- When Get-BobOpencodeFuel changes, repin build-bob-ear.yml behavior_source_sha and CRLF manifest hashes; do not weaken the git-diff guard.
+- Ear/tray CI pin lessons belong in `bobiverse-bob` (build the checkout tip; provenance `source_commit`; no hard `behavior_source_sha` gate). Do not park them under harvest/SKILL.md (class of #7179 / #7185).
 - Worker skill DAG: put depends_on in YAML after description; job-fr must list job-irc and must not list job-uat.
 - Skill-dag MCP is stdio-only: resolve FR includes job-irc ancestors and skips unattached UAT; skip over-budget bodies; refuse paths outside --root; no list-all tool.
 - On Windows, Path(www / '/jeeves') is drive-root; skip absolute same-host hrefs in static link resolvers and pin /jeeves as a live route.
