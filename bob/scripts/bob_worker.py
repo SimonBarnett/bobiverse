@@ -11670,6 +11670,45 @@ class Supervisor:
 
         threading.Thread(target=_run, name="prompt-retry-watch", daemon=True).start()
 
+    def _fallback_after_grok_signin_prompt(self, proc) -> None:
+        """FR #7345 / MRB #7348: kill prompt, then Cursor/OpenCode or exit xai-auth-expired.
+
+        Never leave the seat parked and never EXIT_OK (that would only recycle Grok).
+        """
+        with self._lock:
+            if self._shutting:
+                return
+            pid = int(getattr(proc, "pid", 0) or 0)
+            if pid:
+                self._expected_exit.add(pid)
+        self.log("grok: killing interactive sign-in prompt (FR #7345)")
+        with contextlib.suppress(Exception):
+            self.kill(int(getattr(proc, "pid", 0) or 0))
+        with self._lock:
+            if self.proc is proc:
+                self.proc = None
+        fuel = Fuel()
+        with contextlib.suppress(Exception):
+            fuel = read_fuel(self._install_root_for_fuel())
+        cursor_cmd = resolve_cursor_cmd()
+        opencode_cmd = resolve_opencode_cmd()
+        dec = decision_after_grok_signin_prompt(fuel, cursor_cmd, opencode_cmd)
+        if dec.kind in ("cursor", "opencode"):
+            exe = cursor_cmd if dec.kind == "cursor" else opencode_cmd
+            if exe:
+                self.log(f"grok: sign-in prompt; falling back to {dec.kind} ({dec.reason})")
+                self.kind = dec.kind
+                self.exe = exe
+                self.relay.set_target(None)
+                if self.bored:
+                    self.bored.set_ready(False)
+                if self.start_agent(note="(fallback after Grok sign-in prompt; FR #7345)"):
+                    return
+                self.log("grok: sign-in fallback launch failed; exiting xai-auth-expired")
+        else:
+            self.log(f"grok: sign-in prompt; no Cursor/OpenCode fuel ({dec.reason})")
+        self.shutdown("xai-auth-expired-prompt", EXIT_XAI_AUTH_EXPIRED)
+
     def _start_grok_signin_guard(self, proc) -> None:
         """FR #7345: kill Grok if an interactive sign-in/device-code prompt appears in 30s."""
         if (self.kind or "").strip().lower() != "grok":
@@ -11685,9 +11724,7 @@ class Supervisor:
             while not self._shutting and self.proc is proc and proc.poll() is None:
                 try:
                     if guard.tick():
-                        self.log("grok: killing interactive sign-in prompt (FR #7345)")
-                        with contextlib.suppress(Exception):
-                            kill_tree(int(proc.pid or 0))
+                        self._fallback_after_grok_signin_prompt(proc)
                         return
                     if guard.timed_out:
                         return
