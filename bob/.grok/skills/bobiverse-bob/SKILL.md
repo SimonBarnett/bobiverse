@@ -22,7 +22,7 @@ Foundation: `bobiverse-fleet-ops` (shared ops/hotpatch/health) and `harvest` -> 
 
 ## Architecture
 
-`ircBob` runs `Start-Bob.ps1` -> prefer `scripts\bob-ear.exe` (FR #1481 self-contained ear) else `python -u irc_agent.py` with `--nick Bob-<machine> --home <home> --channel #bobiverse,#wonderland,#<machine> --host <irc host>` (FR #3834). Pack builds the exe via `Build-BobEar.ps1`; `Install-BobEarExe.ps1` swaps it with `.bak` rollback.
+`ircBob` runs `Start-Bob.ps1` -> prefer `scripts\bob-ear.exe` (FR #1481 self-contained ear; **FR #7233** always the installed exe when present, never file-mtime vs `bobreport.py`; log `sha256=` / MANIFEST source / VERSION; python only if the exe is missing or `BOB_EAR_PYTHON=1`) else `python -u irc_agent.py` with `--nick Bob-<machine> --home <home> --channel #bobiverse,#wonderland,#<machine> --host <irc host>` (FR #3834). Pack builds the exe via `Build-BobEar.ps1`; `Install-BobEarExe.ps1` swaps it with `.bak` rollback. Frozen ears still load install `bobreport.py` via `prefer_install_scripts_path` (FR #6237).
 
 **CI artifacts (FR #7179 / harvest #7185):** `build-bob-ear.yml` and `build-bob-tray.yml` build the checked-out tip on `push` to `main` and on PRs that touch ear/tray sources (path filters, same shape as `build-bob-worker.yml`). Do not hard-pin `behavior_source_sha` in the workflow; provenance records `source_commit` / `workflow_commit`. Include `common/scripts/gitclaim.py` in ear path filters (`irc_agent` imports it). Deploy-pool-monitor hashes are a deploy note, not a CI gate.
 

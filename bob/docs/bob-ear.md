@@ -1,6 +1,6 @@
 # Bob ear (fleet box)
 
-Service **ircBob** -> `Start-Bob.ps1` -> **`scripts\bob-ear.exe`** (FR #1481, self-contained frozen `irc_agent`) or, on repo/dev trees without the exe, `python -u irc_agent.py`. Nick **`Bob-{MachineId}`**.
+Service **ircBob** -> `Start-Bob.ps1` -> **`scripts\bob-ear.exe`** (FR #1481, self-contained frozen `irc_agent`; FR #7233 always this file when present — mtime vs `bobreport.py` is not used; start log includes sha256 / MANIFEST source / VERSION. Python only when the exe is missing or `BOB_EAR_PYTHON=1`) or, on repo/dev trees without the exe, `python -u irc_agent.py`. Nick **`Bob-{MachineId}`**.
 Companion: TipForm systray (`scripts\Start-BobTray.ps1` -> `tools\Start-BobFleetTray.ps1`).
 
 Build/pack: `scripts\Build-BobEar.ps1` (PyInstaller) -> staged by `Pack-BobiverseRelease` into the bob MSI. Safe swap: `scripts\Install-BobEarExe.ps1` (keeps `bob-ear.exe.bak`, restores on smoke failure).

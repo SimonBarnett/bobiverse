@@ -6,6 +6,7 @@
   Issue #3: use --channel (not --channels); load Ergo PASS from MSI config\ergo.password.
   Do not pass -Python via NSSM AppParameters (spaces break quoting) - resolve here.
   FR #1481: prefer scripts\bob-ear.exe (self-contained); fall back to python -u irc_agent.py for repo/dev trees.
+  FR #7233: exe vs python is not chosen by file mtime; BOB_EAR_PYTHON=1 forces python.
 #>
 [CmdletBinding()]
 param(
@@ -85,30 +86,14 @@ if ($noUpdateReason) {
 }
 
 # FR #1481 / MRB #1488: prefer bob-ear.exe *after* sync/self-update so a just-staged exe is seen.
+# FR #7233: never compare bob-ear.exe vs bobreport.py mtimes (CI overlay can leave the
+# installed exe older). Frozen ears still load install scripts via prefer_install_scripts_path
+# (FR #6237). Dev/hotpatch python path: BOB_EAR_PYTHON=1.
+. (Join-Path $scriptDir 'Select-BobEarLaunch.ps1')
+$earPick = Select-BobEarLaunch -ScriptDir $scriptDir -InstallRoot $InstallRoot
 $earExe = Join-Path $scriptDir 'bob-ear.exe'
-$useEarExe = Test-Path -LiteralPath $earExe -PathType Leaf
+$useEarExe = [bool]$earPick.UseExe
 $agent = Join-Path $scriptDir 'irc_agent.py'
-# FR #6237: when python is available and on-disk bobreport.py is newer than bob-ear.exe,
-# prefer python irc_agent.py so a hotpatched digest User-Agent applies without waiting for
-# the next bob-ear.exe rebuild. MSI boxes without python still use the frozen ear.
-$bobreportPy = Join-Path $scriptDir 'bobreport.py'
-if ($useEarExe -and (Test-Path -LiteralPath $bobreportPy -PathType Leaf)) {
-    try {
-        if (-not $Python) {
-            try { $Python = Resolve-BobiversePython } catch { $Python = '' }
-        }
-        if ($Python -and (Test-Path -LiteralPath $Python -PathType Leaf)) {
-            $brTime = (Get-Item -LiteralPath $bobreportPy).LastWriteTimeUtc
-            $earTime = (Get-Item -LiteralPath $earExe).LastWriteTimeUtc
-            if ($brTime -gt $earTime) {
-                Write-Host 'INFO FR #6237 bobreport.py newer than bob-ear.exe; using python irc_agent.py so hotpatch applies'
-                $useEarExe = $false
-            }
-        }
-    } catch {
-        Write-Host ("WARN FR #6237 prefer-scripts check failed: {0}" -f $_.Exception.Message)
-    }
-}
 $shop = "#$MachineId"
 # FR #3834: Bob ears also JOIN #wonderland (airc client fallback; Jeeves grants +o).
 $channel = "#bobiverse,#wonderland,$shop"
@@ -123,7 +108,8 @@ if ($IrcHost -notmatch '^[A-Za-z0-9][A-Za-z0-9.-]*$') { throw "invalid -IrcHost 
 $env:BOB_INSTALL_ROOT = $InstallRoot
 $earArgs = @('--nick', $nick, '--home', $BobHome, '--channel', $channel, '--host', $IrcHost)
 if ($useEarExe) {
-    Write-Host "INFO ear host=$IrcHost nick=$nick channels=$channel via=bob-ear.exe (FR #1481)"
+    Write-Host ("INFO ear host={0} nick={1} channels={2} via=bob-ear.exe sha256={3} source={4} version={5} (FR #1481/#7233)" -f `
+        $IrcHost, $nick, $channel, $earPick.Sha256, $earPick.SourceCommit, $earPick.ProductVersion)
     & $earExe @earArgs
     exit $LASTEXITCODE
 }
