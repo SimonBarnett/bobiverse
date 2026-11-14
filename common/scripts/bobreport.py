@@ -5698,15 +5698,16 @@ def _list_labelled_opencode_keys(
     *,
     tighten: bool = True,
 ) -> tuple[dict[str, str], list[str]]:
-    """Return ({label: key}, labels_whose_acl_were_tightened). Keys never logged."""
+    """Return ({label: key}, labels_whose_acl_were_tightened, unread_err). Keys never logged."""
     out: dict[str, str] = {}
     tightened: list[str] = []
+    unread_err = ""
     if not keys_dir.is_dir():
-        return out, tightened
+        return out, tightened, unread_err
     try:
         entries = sorted(keys_dir.iterdir(), key=lambda p: p.name.lower())
     except OSError:
-        return out, tightened
+        return out, tightened, "key-file-unreadable"
     for path in entries:
         if not path.is_file():
             continue
@@ -5716,15 +5717,18 @@ def _list_labelled_opencode_keys(
         label = _sanitize_opencode_key_label(name[: -len(".apikey")])
         if not label:
             continue
-        key = _read_opencode_key_file(path)
-        if not key:
-            continue
+        # Tighten before read so SYSTEM can grant itself then load the key (FR #7177).
         if tighten and tighten_opencode_key_acl(path):
             tightened.append(label)
+        key, err = _read_opencode_key_file_ex(path)
+        if not key:
+            if err == "key-file-unreadable":
+                unread_err = err
+            continue
         # First wins on case-insensitive collision.
         if label.lower() not in {k.lower() for k in out}:
             out[label] = key
-    return out, tightened
+    return out, tightened, unread_err
 
 
 def _read_opencode_selected_label(
@@ -5943,16 +5947,20 @@ def resolve_opencode_go_api_key_selection(
     keys_dir = opencode_keys_dir(root or None, e) if root else None
     labelled: dict[str, str] = {}
     tightened: list[str] = []
+    labelled_unread = ""
     if keys_dir is not None:
-        labelled, tightened = _list_labelled_opencode_keys(keys_dir, tighten=tighten_acl)
+        labelled, tightened, labelled_unread = _list_labelled_opencode_keys(
+            keys_dir, tighten=tighten_acl
+        )
 
     env_key = (e.get("BOB_OPENCODE_GO_API_KEY") or "").strip()
     file_key = ""
+    legacy_unread = ""
     legacy_path = Path(root) / "config" / "opencode-go.apikey" if root else None
     if legacy_path is not None:
-        file_key = _read_opencode_key_file(legacy_path)
-        if file_key and tighten_acl and tighten_opencode_key_acl(legacy_path):
+        if tighten_acl and tighten_opencode_key_acl(legacy_path):
             tightened.append(OPENCODE_DEFAULT_LABEL)
+        file_key, legacy_unread = _read_opencode_key_file_ex(legacy_path)
 
     # Legacy sources collapse to one "default" entry (same key reported once).
     default_key = ""
@@ -6016,6 +6024,8 @@ def resolve_opencode_go_api_key_selection(
 
     # FR #6996: LocalSystem has no bob config key after MSI; use seat user auth.json.
     key_error = ""
+    if not chosen_key and (labelled_unread or legacy_unread):
+        key_error = labelled_unread or legacy_unread
     if not chosen_key:
         auth_path, _auth_ident = opencode_user_auth_path(e)
         if auth_path is not None and auth_path.is_file():

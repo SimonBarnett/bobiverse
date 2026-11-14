@@ -165,6 +165,49 @@ def test_fr7177_localsystem_live_fetch_advances_fetched_at(
     assert (d2.get("pcent") or {}).get("opencode-go") is not None
 
 
+def test_fr7177_unreadable_labelled_key_is_key_unreadable_not_missing_key(
+    monkeypatch, tmp_path: Path
+):
+    """SYSTEM must not collapse an unreadable *.apikey into missing_key (MRB #7190)."""
+    install = tmp_path / "bob"
+    _system_env(monkeypatch, tmp_path, install=install)
+    keys = install / "config" / "opencode-keys"
+    keys.mkdir(parents=True)
+    path = keys / "default.apikey"
+    path.write_text(FAKE_KEY, encoding="utf-8")
+
+    monkeypatch.setattr(bobreport, "tighten_opencode_key_acl", lambda p: False)
+    monkeypatch.setattr(
+        bobreport,
+        "_read_opencode_key_file_ex",
+        lambda p: ("", "key-file-unreadable"),
+    )
+    monkeypatch.setattr(
+        bobreport,
+        "resolve_opencode_exe",
+        lambda env=None: (str(install / "opencode.exe"), "explicit"),
+    )
+    bobreport._opencode_fuel_cache.clear()
+    sel = bobreport.resolve_opencode_go_api_key_selection(tighten_acl=False)
+    assert not sel.get("api_key")
+    assert sel.get("key_error") == "key-file-unreadable"
+    doc = bobreport.read_local_opencode_fuel_doc(force=True)
+    assert bobreport.last_opencode_acquisition().get("kind") == "key_unreadable"
+    assert bobreport.last_opencode_acquisition().get("kind") != "missing_key"
+    wins = doc.get("windows") or {}
+    for wid in ("rolling", "week", "month"):
+        assert (wins.get(wid) or {}).get("fetched_at") is None
+
+
+def test_fr7177_install_bob_preserves_nssm_go_key_without_echo():
+    from repo_layout import ROOT
+
+    text = (ROOT / "bob" / "scripts" / "Install-Bob.ps1").read_text(encoding="utf-8")
+    assert "priorOpencodeGoApiKeyLine" in text
+    assert "BOB_OPENCODE_GO_API_KEY=" in text
+    assert "Write-Host $priorOpencodeGoApiKeyLine" not in text
+
+
 def test_fr7177_interpret_empty_vs_malformed():
     empty = of.interpret_go_zen_usage_response(200, json.dumps({"usage": {}}))
     assert empty["kind"] == "empty"
