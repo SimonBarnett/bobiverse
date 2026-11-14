@@ -4243,6 +4243,7 @@ def _coerce_row(row: dict) -> dict | None:
                 "docs_mrb_orphan"):
         if row.get(key):
             out[key] = str(row.get(key))
+    # FR #7334: least-commit pick and the 5-minute stuck clock must survive reload.
     # FR #7338: per-seat commit counts for the fewest-commits recycle pick.
     counts = row.get("author_commit_counts")
     if isinstance(counts, dict):
@@ -4257,6 +4258,12 @@ def _coerce_row(row: dict) -> dict | None:
                 continue
         if clean_counts:
             out["author_commit_counts"] = clean_counts
+    try:
+        since = float(row.get("no_eligible_since") or 0)
+    except (TypeError, ValueError):
+        since = 0.0
+    if since > 0:
+        out["no_eligible_since"] = since
     if row.get("refs"):
         refs = row.get("refs")
         if isinstance(refs, list):
@@ -10829,6 +10836,158 @@ def maybe_recycle_author_only_idle_seat(
         lines.append(f"idle-recovery recycle_failed:{pick}:{type(exc).__name__}")
     return lines
 
+
+
+# FR #7334: recycle one idle author when no eligible reviewer has lasted 5 minutes.
+NO_ELIGIBLE_RECYCLE_AFTER_S = 300.0
+
+
+def author_touch_count(row: dict, nick: str) -> int:
+    """Commits attributed to ``nick`` on this MRB. Missing counts sort last."""
+    counts = row.get("author_commit_counts")
+    if not isinstance(counts, dict):
+        return 1
+    want = (canonical_worker_nick(nick) or nick or "").strip().lower()
+    for key, val in counts.items():
+        got = (canonical_worker_nick(str(key)) or str(key) or "").strip().lower()
+        if got == want:
+            try:
+                return int(val)
+            except (TypeError, ValueError):
+                return 1
+    return 1
+
+
+def mrb_offer_nick(row: dict, candidates, live: set[str]) -> str:
+    """First candidate that is not an exact author seat (fresh recycled ids qualify)."""
+    live_set = set(live or set())
+    for raw in candidates or []:
+        nick = (canonical_worker_nick(str(raw)) or str(raw) or "").strip()
+        if not nick:
+            continue
+        if review_blocked_for_author(row, nick, live_set | {nick}):
+            continue
+        return nick
+    return ""
+
+
+def _idle_author_least_commits(row: dict, idle: set[str], accepted: list | None) -> str:
+    busy = set()
+    for acc in accepted or []:
+        if not isinstance(acc, dict):
+            continue
+        holder = str(acc.get("accepted_by") or acc.get("nick") or "").strip()
+        canon = (canonical_worker_nick(holder) or holder).strip().lower()
+        if canon:
+            busy.add(canon)
+    idle_l = {
+        (canonical_worker_nick(n) or n or "").strip().lower()
+        for n in idle
+        if (canonical_worker_nick(n) or n or "").strip()
+    }
+    cands = []
+    for author in row_author_seats(row):
+        key = author.lower()
+        if key not in idle_l or key in busy:
+            continue
+        cands.append(author)
+    if not cands:
+        return ""
+    cands.sort(key=lambda n: (author_touch_count(row, n), n.lower()))
+    return cands[0]
+
+
+def maybe_recycle_stuck_no_eligible_reviewer(
+    home: Path,
+    *,
+    idle: set[str] | None = None,
+    live: set[str] | None = None,
+    now: float | None = None,
+    accepted: list | None = None,
+    install_root=None,
+    ledger: dict | None = None,
+) -> list[str]:
+    """FR #7334: one !recycleseat for the least-touched idle author.
+
+    Fires when an offerable MRB has had no eligible reviewer for more than
+    five minutes. Busy seats are never recycled. One #bobiverse line names
+    the seat. A later fresh seat id is not an author, so the offer path can
+    hand it the MRB.
+    """
+    import time as _time
+
+    now_f = _time.time() if now is None else float(now)
+    seats_live = set(live) if live is not None else live_seat_nicks(home)
+    seats_idle = set(idle) if idle is not None else free_seat_nicks(home, seats_live)
+    led = ledger if ledger is not None else ledger_load(home)
+    lines: list[str] = []
+    try:
+        with _lock(home):
+            doc = _load_queue_unlocked(home)
+            changed = False
+            target_row = None
+            target_nick = ""
+            for row in doc.get("unaccepted") or []:
+                if not isinstance(row, dict) or _canon_task(row) != "MRB":
+                    continue
+                if not mrb_row_offerable(row):
+                    continue
+                if mrb_has_eligible_reviewer(home, row, seats_live, ledger=led, now=now_f):
+                    if row.pop("no_eligible_since", None) is not None:
+                        changed = True
+                    continue
+                try:
+                    since = float(row.get("no_eligible_since") or 0)
+                except (TypeError, ValueError):
+                    since = 0.0
+                if since <= 0:
+                    row["no_eligible_since"] = now_f
+                    changed = True
+                    continue
+                if (now_f - since) < float(NO_ELIGIBLE_RECYCLE_AFTER_S):
+                    continue
+                pick = _idle_author_least_commits(row, seats_idle, accepted)
+                if not pick:
+                    continue
+                blocked = recycleseat_send_blocked_reason(home, pick, now=now_f)
+                if blocked:
+                    continue
+                target_row = row
+                target_nick = pick
+                break
+            if changed:
+                _write_queue(queue_path(home), doc)
+            if not target_row or not target_nick:
+                return lines
+            root = resolve_recycleseat_install_root(home, install_root)
+            import recycleseat as _rs
+
+            rid = _rs.write_request(
+                _rs.queue_dir(root),
+                target_nick,
+                "jeeves",
+                "no-eligible-reviewer",
+                now=now_f,
+            )
+            skip = enqueue_recycleseat_shop_only(home, target_nick)
+            repo = str(target_row.get("repo") or "")
+            ident = _norm_row_id(target_row.get("id"))
+            if skip:
+                lines.append(f"no-eligible-reviewer {skip} seat={target_nick} id={rid}")
+                return lines
+            _mark_recycleseat_sent(home, target_nick, now=now_f, rid=rid)
+            # Restart the 5-minute clock so stall scans do not recycle every author.
+            target_row["no_eligible_since"] = now_f
+            _write_queue(queue_path(home), doc)
+            notice = (
+                f"recycled {target_nick} for no_eligible_reviewer "
+                f"{repo}{ident} (idle author, fewest commits)"
+            )
+            bobreport.enqueue_chair_fleet_privmsg(home, notice, channel="#bobiverse")
+            lines.append(f"no-eligible-reviewer recycleseat={target_nick} id={rid}")
+    except (TimeoutError, OSError, ValueError, json.JSONDecodeError):
+        return lines
+    return lines
 
 
 def heal_mrb_reviewer_deadlock(
