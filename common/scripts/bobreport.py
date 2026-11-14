@@ -5611,12 +5611,18 @@ def opencode_keys_dir(install_root: str | Path | None, env: dict[str, str] | Non
 
 def _read_opencode_key_file(path: Path) -> str:
     """Read and trim one apikey file. Never logs the value."""
+    key, _err = _read_opencode_key_file_ex(path)
+    return key
+
+
+def _read_opencode_key_file_ex(path: Path) -> tuple[str, str]:
+    """Return (key, error). error is key-file-unreadable or empty."""
     try:
         if not path.is_file():
-            return ""
-        return (path.read_text(encoding="utf-8-sig") or "").strip()
+            return "", ""
+        return (path.read_text(encoding="utf-8-sig") or "").strip(), ""
     except OSError:
-        return ""
+        return "", "key-file-unreadable"
 
 
 def _opencode_key_acl_is_system_admins_only(path: Path) -> bool | None:
@@ -5911,15 +5917,29 @@ def resolve_opencode_go_api_key_selection(
     install_root: str | Path | None = None,
     tighten_acl: bool = True,
 ) -> dict:
-    """FR #6301 Part D: labelled store + legacy default sources.
+    """FR #6301 Part D / #7177: labelled store + legacy default sources.
 
-    Returns dict with api_key, key_source, label, labels, acl_tightened, key_fingerprint.
-    ``key_fingerprint`` is a short non-reversible token for cache invalidation only.
-    Never includes raw key material in logs/digest fields beyond api_key for the caller.
-    Same key in env + legacy file is reported once as label ``default``.
+    Returns dict with api_key, key_source, label, labels, acl_tightened, key_fingerprint,
+    root_origin, key_error. ``key_fingerprint`` is a short non-reversible token for
+    cache invalidation only. Never includes raw key material in logs/digest fields
+    beyond api_key for the caller. Same key in env + legacy file is reported once
+    as label ``default``.
+
+    Root order (FR #7177): explicit ``install_root`` arg, ``BOB_INSTALL_ROOT``,
+    then ``opencode_install_root()`` (frozen ear without env).
     """
     e = os.environ if env is None else env
-    root = (str(install_root) if install_root else (e.get("BOB_INSTALL_ROOT") or "")).strip()
+    root_origin = ""
+    if install_root is not None and str(install_root).strip():
+        root = str(install_root).strip()
+        root_origin = "arg"
+    elif (e.get("BOB_INSTALL_ROOT") or "").strip():
+        root = (e.get("BOB_INSTALL_ROOT") or "").strip()
+        root_origin = "env"
+    else:
+        auto = opencode_install_root(e)
+        root = str(auto) if auto is not None else ""
+        root_origin = "exe" if root else ""
     keys_dir = opencode_keys_dir(root or None, e) if root else None
     labelled: dict[str, str] = {}
     tightened: list[str] = []
@@ -5970,13 +5990,10 @@ def resolve_opencode_go_api_key_selection(
             if lab.lower() == selected.lower():
                 chosen_label = lab
                 chosen_key = val
-                key_source = (
-                    default_source
-                    if lab.lower() == OPENCODE_DEFAULT_LABEL and default_key == val
-                    else "labelled-file"
-                )
-                if lab.lower() == OPENCODE_DEFAULT_LABEL and default_source:
+                if lab.lower() == OPENCODE_DEFAULT_LABEL and default_key == val and default_source:
                     key_source = default_source
+                else:
+                    key_source = "labelled-file"
                 break
     if not chosen_key and labelled:
         # No/invalid selection: prefer explicit default, else first label.
@@ -5998,16 +6015,21 @@ def resolve_opencode_go_api_key_selection(
             key_source = "labelled-file"
 
     # FR #6996: LocalSystem has no bob config key after MSI; use seat user auth.json.
+    key_error = ""
     if not chosen_key:
         auth_path, _auth_ident = opencode_user_auth_path(e)
         if auth_path is not None and auth_path.is_file():
-            user_key, _err = load_opencode_go_key_from_auth(auth_path)
+            user_key, err = load_opencode_go_key_from_auth(auth_path)
             if user_key:
                 chosen_key = user_key
                 key_source = "user-auth"
                 chosen_label = chosen_label or "opencode-go"
                 if "opencode-go" not in {k.lower() for k in labels}:
                     labels = sorted(list(labels) + ["opencode-go"], key=lambda s: s.lower())
+            elif err:
+                key_error = err
+        elif auth_path is not None:
+            key_error = key_error or "auth-file-missing"
 
     # Fingerprint for cache bust (length + stable hash of key; never the key).
     fp = ""
@@ -6017,6 +6039,16 @@ def resolve_opencode_go_api_key_selection(
         except Exception:
             fp = str(len(chosen_key))
 
+    # FR #7177: labelled default that differs from env/legacy reports labelled-file.
+    if (
+        chosen_key
+        and chosen_label
+        and chosen_label.lower() == OPENCODE_DEFAULT_LABEL
+        and default_key
+        and chosen_key != default_key
+    ):
+        key_source = "labelled-file"
+
     return {
         "api_key": chosen_key,
         "key_source": key_source if chosen_key else "",
@@ -6025,6 +6057,8 @@ def resolve_opencode_go_api_key_selection(
         "acl_tightened": list(tightened),
         "key_fingerprint": fp,
         "configured": bool(chosen_key),
+        "root_origin": root_origin,
+        "key_error": key_error if not chosen_key else "",
     }
 
 
@@ -6049,6 +6083,9 @@ def _stamp_opencode_acquisition(**fields) -> None:
             "key_fingerprint",
             "missing_key",
             "labelled_keys",
+            "key_error",
+            "root_origin",
+            "key_unreadable",
         }:
             if isinstance(clean.get(bad), str) and len(str(clean.get(bad))) > 32:
                 clean.pop(bad, None)
@@ -6059,10 +6096,16 @@ def _no_key_opencode_fuel_doc(
     *,
     fetched_at: str | None = None,
     state: str | None = None,
+    provider_read: str | None = None,
 ) -> dict:
-    """Honest fuel doc when no Go key is configured (FR #6301 Part D / FR #6996)."""
+    """Honest fuel doc when no Go key is configured (FR #6301 / #6996 / #7177).
+
+    FR #7177: unknown windows carry null ``fetched_at`` (attempt time is acquisition
+    diag only). An advancing timestamp without numbers is a failure, not fresh.
+    """
     state = state or OPENCODE_NO_KEY_STATE
-    fetched = fetched_at or time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    # Explicit fetched_at=None means null on windows; omit arg still null (FR #7177).
+    fetched = fetched_at
     try:
         import opencode_fuel as of
 
@@ -6074,7 +6117,7 @@ def _no_key_opencode_fuel_doc(
                 "used_pct": None,
                 "remaining_pct": None,
                 "reset_label": None,
-                "fetched_at": fetched,
+                "fetched_at": None,
             }
             for wid in ("rolling", "week", "month")
         }
@@ -6086,10 +6129,13 @@ def _no_key_opencode_fuel_doc(
             row["reset_label"] = None
             row["resets_at"] = None
             windows[wid] = row
-    provider_read = (
-        "not_installed" if state == OPENCODE_NOT_INSTALLED_STATE else "missing_key"
-    )
+    if provider_read is None:
+        provider_read = (
+            "not_installed" if state == OPENCODE_NOT_INSTALLED_STATE else "missing_key"
+        )
     source = "not-installed" if state == OPENCODE_NOT_INSTALLED_STATE else "no-key"
+    if provider_read == "key_unreadable":
+        source = "key-unreadable"
     return {
         "pcent": {},
         "windows": windows,
@@ -6164,6 +6210,7 @@ def read_local_opencode_fuel_doc(
     account_label = str(sel.get("label") or "")
     key_fp = str(sel.get("key_fingerprint") or "")
     acl_tightened = list(sel.get("acl_tightened") or [])
+    root_origin_sel = str(sel.get("root_origin") or "")
     exe_path, exe_source = resolve_opencode_exe(e)
     if api_key:
         # FR #6248 / MRB #6252: Bearer zen fetch must honour opencode_fuel_cache_s
@@ -6231,29 +6278,37 @@ def read_local_opencode_fuel_doc(
                 _opencode_fuel_cache["key_fingerprint"] = key_fp
                 _opencode_fuel_cache["label"] = account_label
                 return dict(doc)
-            # Failed provider read: keep last good when present; else return honest unknown doc.
-            if (
-                same_key
-                and str(cached.get("source") or "") == of.GO_ZEN_USAGE_SOURCE
-                and cached.get("provider_read") == "json"
-            ):
-                out = dict(cached)
-                if account_label:
-                    out["opencode_account"] = account_label
-                return out
+            # FR #7177: empty / non-json is a failure. Keep last-good timestamps with
+            # error; else unknown windows with null fetched_at (never advance on empty).
+            fail_kind = str(kind or "unavailable")
             if same_key and str(cached.get("source") or "") == of.GO_ZEN_USAGE_SOURCE:
-                # Prefer last good windows if any known meter exists.
                 wins = cached.get("windows") if isinstance(cached.get("windows"), dict) else {}
                 known = any(
-                    isinstance(wins.get(w), dict) and wins[w].get("status") in ("known", "exhausted")
+                    isinstance(wins.get(w), dict)
+                    and wins[w].get("status") in ("known", "exhausted")
                     for w in ("rolling", "week", "month")
                 )
-                if known:
+                if known or cached.get("provider_read") == "json":
                     out = dict(cached)
+                    out_wins = dict(wins)
+                    for wid, rec in list(out_wins.items()):
+                        if isinstance(rec, dict):
+                            row = dict(rec)
+                            row["error"] = fail_kind
+                            out_wins[wid] = row
+                    out["windows"] = out_wins
+                    out["provider_read"] = fail_kind
                     if account_label:
                         out["opencode_account"] = account_label
                     return out
-            return dict(doc) if isinstance(doc, dict) else {}
+            fail_doc = _no_key_opencode_fuel_doc(
+                state=fail_kind,
+                provider_read=fail_kind,
+            )
+            fail_doc["source"] = of.GO_ZEN_USAGE_SOURCE
+            if account_label:
+                fail_doc["opencode_account"] = account_label
+            return fail_doc
         except Exception:
             _stamp_opencode_acquisition(
                 kind="unavailable",
@@ -6262,13 +6317,29 @@ def read_local_opencode_fuel_doc(
                 label=account_label,
                 source=of.GO_ZEN_USAGE_SOURCE,
                 acl_tightened=acl_tightened or None,
+                root_origin=root_origin_sel or None,
             )
             if same_key and str(cached.get("source") or "") == of.GO_ZEN_USAGE_SOURCE:
                 out = dict(cached)
+                wins = dict(out.get("windows") or {})
+                for wid, rec in list(wins.items()):
+                    if isinstance(rec, dict):
+                        row = dict(rec)
+                        row["error"] = "unavailable"
+                        wins[wid] = row
+                out["windows"] = wins
+                out["provider_read"] = "unavailable"
                 if account_label:
                     out["opencode_account"] = account_label
                 return out
-            return {}
+            fail_doc = _no_key_opencode_fuel_doc(
+                state="unavailable",
+                provider_read="unavailable",
+            )
+            fail_doc["source"] = of.GO_ZEN_USAGE_SOURCE
+            if account_label:
+                fail_doc["opencode_account"] = account_label
+            return fail_doc
 
     # FR #6632 / MRB #6176: explicit BOB_OPENCODE_FUEL_HELPER only. Restore
     # TTL + background poll + disk cache. Do not auto-discover install tools
@@ -6320,11 +6391,29 @@ def read_local_opencode_fuel_doc(
             # empty document over the last reading, and do not block the tick.
             return dict(cached) if cached else {}
 
-    # FR #6301 Part D / FR #6996: no Go key. Distinguish missing binary from
-    # installed-but-unkeyed. Do not fall through to the tray CLI helper
-    # (FR #6285 digest-only Go windows).
+    # FR #6301 Part D / FR #6996 / #7177: no Go key. Distinguish missing binary,
+    # unreadable credential, and installed-but-unkeyed.
     auth_path, _auth_ident = opencode_user_auth_path(e)
     auth_present = bool(auth_path and auth_path.is_file())
+    key_err = str(sel.get("key_error") or "")
+    root_origin = str(sel.get("root_origin") or "")
+    unreadable = bool(key_err and key_err not in ("", "auth-file-missing"))
+    if unreadable:
+        _stamp_opencode_acquisition(
+            kind="key_unreadable",
+            configured=False,
+            key_source="",
+            label="",
+            exe_source=exe_source,
+            opencode_state="key unreadable",
+            acl_tightened=acl_tightened or None,
+            labels=list(sel.get("labels") or []),
+            key_error=key_err,
+            root_origin=root_origin or None,
+        )
+        return _no_key_opencode_fuel_doc(
+            state="key unreadable", provider_read="key_unreadable"
+        )
     if exe_path or auth_present:
         _stamp_opencode_acquisition(
             kind="missing_key",
@@ -6335,6 +6424,8 @@ def read_local_opencode_fuel_doc(
             opencode_state=OPENCODE_NO_KEY_STATE,
             acl_tightened=acl_tightened or None,
             labels=list(sel.get("labels") or []),
+            key_error=key_err or None,
+            root_origin=root_origin or None,
         )
         return _no_key_opencode_fuel_doc()
     _stamp_opencode_acquisition(
@@ -6346,6 +6437,7 @@ def read_local_opencode_fuel_doc(
         opencode_state=OPENCODE_NOT_INSTALLED_STATE,
         acl_tightened=acl_tightened or None,
         labels=list(sel.get("labels") or []),
+        root_origin=root_origin or None,
     )
     return _no_key_opencode_fuel_doc(state=OPENCODE_NOT_INSTALLED_STATE)
 

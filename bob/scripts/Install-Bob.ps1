@@ -140,6 +140,24 @@ Write-BobiverseMsiInstallLog -Product bob -Message ("install-begin service=$Serv
 $script:BobInstallOk = $false
 try {
 
+# FR #7177: preserve SYSTEM-readable OpenCode Go key from prior NSSM env before remove.
+# Never echo or transcript the value — capture the line only.
+$priorOpencodeGoApiKeyLine = $null
+try {
+    $priorEnvRaw = & $Nssm get $ServiceName AppEnvironmentExtra 2>$null
+    if ($priorEnvRaw) {
+        foreach ($line in @($priorEnvRaw)) {
+            $t = [string]$line
+            if ($t.StartsWith('BOB_OPENCODE_GO_API_KEY=')) {
+                $priorOpencodeGoApiKeyLine = $t.TrimEnd()
+                break
+            }
+        }
+    }
+} catch {
+    $priorOpencodeGoApiKeyLine = $null
+}
+
 # Stop ear service; TipForm tray is restarted after icons (companion, not BobFleet task)
 Remove-BobiverseService -Nssm $Nssm -Name $ServiceName
 
@@ -346,6 +364,10 @@ if ($Python) {
 if ($env:BOB_IRC_PASSWORD) {
     # NSSM AppEnvironmentExtra multi-line: KEY=VAL each line
     $envExtra += "BOB_IRC_PASSWORD=$($env:BOB_IRC_PASSWORD)"
+}
+# FR #7177: re-apply prior BOB_OPENCODE_GO_API_KEY when present (never print value).
+if ($priorOpencodeGoApiKeyLine -and $priorOpencodeGoApiKeyLine.StartsWith('BOB_OPENCODE_GO_API_KEY=')) {
+    $envExtra += $priorOpencodeGoApiKeyLine
 }
 [void](Invoke-BobiverseNssmChecked -Exe $Nssm -NssmArgs @('set', $ServiceName, 'AppEnvironmentExtra', ($envExtra -join "`n")))
 # t794u: the systray (interactive user) stops ircBob on Exit and restarts it on Start Systray.

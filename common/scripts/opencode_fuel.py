@@ -1296,12 +1296,15 @@ def _epoch_ms_to_iso_z(epoch_ms: object) -> Optional[str]:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(ms / 1000.0))
 
 
-def _go_zen_meter_to_window(meter: object, *, now_ms: int, fetched_at: str) -> dict:
-    """Map one zen usage meter to a paint window. percent is USED (dashboard)."""
+def _go_zen_meter_to_window(meter: object, *, now_ms: int, fetched_at: str | None) -> dict:
+    """Map one zen usage meter to a paint window. percent is USED (dashboard).
+
+    FR #7177: unknown meters get null ``fetched_at`` (no measurement).
+    """
     if not isinstance(meter, dict):
         rec = _window_record(
             "unknown",
-            fetched_at=fetched_at,
+            fetched_at=None,
             error="meter missing",
         )
         rec["source"] = GO_ZEN_USAGE_SOURCE
@@ -1312,7 +1315,7 @@ def _go_zen_meter_to_window(meter: object, *, now_ms: int, fetched_at: str) -> d
     if used is None:
         rec = _window_record(
             "unknown",
-            fetched_at=fetched_at,
+            fetched_at=None,
             error="usage percent missing",
         )
         rec["source"] = GO_ZEN_USAGE_SOURCE
@@ -1356,6 +1359,23 @@ def _go_zen_meter_to_window(meter: object, *, now_ms: int, fetched_at: str) -> d
     return rec
 
 
+
+def _go_zen_windows_have_measurement(windows: dict | None) -> bool:
+    """True when at least one window has a usable numeric remaining/used percent."""
+    if not isinstance(windows, dict):
+        return False
+    for wid in GO_WINDOW_IDS:
+        rec = windows.get(wid)
+        if not isinstance(rec, dict):
+            continue
+        if rec.get("status") in ("known", "exhausted"):
+            return True
+        if rec.get("remaining_pct") is not None or rec.get("used_pct") is not None:
+            if rec.get("status") != "unknown":
+                return True
+    return False
+
+
 def interpret_go_zen_usage_response(
     status: int | None,
     body: str | None,
@@ -1365,8 +1385,9 @@ def interpret_go_zen_usage_response(
 ) -> dict:
     """Classify a zen/go/v1/usage response without inventing quota.
 
-    Returns ``kind`` in {json, auth_error, entitlement_error, unavailable, malformed}
-    and ``windows`` when kind is json (rolling/week/month).
+    Returns ``kind`` in {json, empty, auth_error, entitlement_error, unavailable, malformed}
+    and ``windows`` when kind is json/empty (rolling/week/month).
+    FR #7177: recognised layout with no usable percent is ``empty`` (failure).
     """
     clock_ms = int(time.time() * 1000) if now_ms is None else int(now_ms)
     fetched = fetched_at or time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(clock_ms / 1000.0))
@@ -1432,6 +1453,8 @@ def interpret_go_zen_usage_response(
             wid: _go_zen_meter_to_window(meter, now_ms=clock_ms, fetched_at=fetched)
             for wid, meter in mapping
         }
+        if not _go_zen_windows_have_measurement(windows):
+            return {"kind": "empty", "doc": parsed, "windows": windows, "schema": "usagePercent"}
         return {"kind": "json", "doc": parsed, "windows": windows, "schema": "usagePercent"}
 
     # Schema B: usage.{rolling,weekly,monthly} with percent/status/resetsAt
@@ -1446,6 +1469,8 @@ def interpret_go_zen_usage_response(
             wid: _go_zen_meter_to_window(meter, now_ms=clock_ms, fetched_at=fetched)
             for wid, meter in mapping
         }
+        if not _go_zen_windows_have_measurement(windows):
+            return {"kind": "empty", "doc": parsed, "windows": windows, "schema": "usage-nested"}
         return {"kind": "json", "doc": parsed, "windows": windows, "schema": "usage-nested"}
 
     # Schema C: same shape as experimental limits (go.rolling/weekly/monthly.percent)
@@ -1457,12 +1482,22 @@ def interpret_go_zen_usage_response(
             for wid, rec in mapped.items():
                 if isinstance(rec, dict):
                     rec["source"] = GO_ZEN_USAGE_SOURCE
-                    rec["fetched_at"] = fetched
+                    # FR #7177: only measured windows keep fetched_at.
+                    measured = rec.get("status") in ("known", "exhausted") or (
+                        rec.get("status") != "unknown"
+                        and (
+                            rec.get("remaining_pct") is not None
+                            or rec.get("used_pct") is not None
+                        )
+                    )
+                    rec["fetched_at"] = fetched if measured else None
                     if rec.get("used_pct") is not None and rec.get("remaining_pct") is None:
                         try:
                             rec["remaining_pct"] = max(0, 100 - int(rec["used_pct"]))
                         except (TypeError, ValueError):
                             pass
+            if not _go_zen_windows_have_measurement(mapped):
+                return {"kind": "empty", "doc": parsed, "windows": mapped, "schema": "go-limits"}
             return {"kind": "json", "doc": parsed, "windows": mapped, "schema": "go-limits"}
 
     return {"kind": "malformed", "doc": parsed, "windows": _unknown_provider_windows()}
