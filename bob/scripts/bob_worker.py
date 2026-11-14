@@ -2628,18 +2628,12 @@ def restart_skill_dag_mcp_stdio_children(
 OPENCODE_SKILL_DAG_MCP_RELPATH = "opencode.json"
 
 
-def skill_dag_mcp_argv(
-    worker_cwd: str,
-    *,
-    job_worktree: str | Path | None = None,
-    source_file: str | Path | None = None,
-) -> list[str]:
-    """``python`` + script + vision ``--root`` / optional ``--job-worktree`` (FR #6898)."""
-    script = skill_dag_mcp_script_path(worker_cwd, source_file=source_file)
-    argv = ["python", script.as_posix()]
+def skill_dag_mcp_skill_roots(worker_cwd: str) -> list[Path]:
+    """Existing skill-dag roots the seat may read (FR #6898 / #7200)."""
     cwd = Path(worker_cwd).resolve()
     parent = cwd.parent
     home_skills = Path.home() / ".grok" / "skills"
+    found: list[Path] = []
     for root in (
         cwd / ".grok" / "skills",
         parent / "bob" / ".grok" / "skills",
@@ -2649,9 +2643,23 @@ def skill_dag_mcp_argv(
     ):
         try:
             if root.is_dir():
-                argv.extend(["--root", root.resolve().as_posix()])
+                found.append(root.resolve())
         except OSError:
             continue
+    return found
+
+
+def skill_dag_mcp_argv(
+    worker_cwd: str,
+    *,
+    job_worktree: str | Path | None = None,
+    source_file: str | Path | None = None,
+) -> list[str]:
+    """``python`` + script + vision ``--root`` / optional ``--job-worktree`` (FR #6898)."""
+    script = skill_dag_mcp_script_path(worker_cwd, source_file=source_file)
+    argv = ["python", script.as_posix()]
+    for root in skill_dag_mcp_skill_roots(worker_cwd):
+        argv.extend(["--root", root.as_posix()])
     if job_worktree is not None:
         wt = Path(job_worktree)
         if wt.is_dir():
@@ -2659,12 +2667,24 @@ def skill_dag_mcp_argv(
     return argv
 
 
+def opencode_skill_read_permission_block(worker_cwd: str) -> dict:
+    """Read-only ``external_directory`` allow for skill-dag roots only (FR #7200)."""
+    allow: dict[str, str] = {}
+    edit: dict[str, str] = {}
+    for root in skill_dag_mcp_skill_roots(worker_cwd):
+        key = str(root)
+        allow[key] = "allow"
+        edit[key] = "deny"
+    return {"external_directory": allow, "edit": edit}
+
+
 def opencode_skill_dag_mcp_document(
     worker_cwd: str,
     *,
     job_worktree: str | Path | None = None,
 ) -> dict:
-    """Project ``opencode.json`` fragment with local skill-dag MCP (FR #6898)."""
+    """Project ``opencode.json`` with skill-dag MCP and read-only skill roots (FR #6898 / #7200)."""
+    perm = opencode_skill_read_permission_block(worker_cwd)
     return {
         "$schema": "https://opencode.ai/config.json",
         "mcp": {
@@ -2673,6 +2693,7 @@ def opencode_skill_dag_mcp_document(
                 "command": skill_dag_mcp_argv(worker_cwd, job_worktree=job_worktree),
             }
         },
+        "permission": perm,
     }
 
 
@@ -2701,6 +2722,21 @@ def write_opencode_skill_dag_mcp_config(
         mcp = {}
     mcp["skill-dag"] = incoming["mcp"]["skill-dag"]
     data["mcp"] = mcp
+    incoming_perm = incoming.get("permission")
+    if isinstance(incoming_perm, dict):
+        perm = data.get("permission")
+        if not isinstance(perm, dict):
+            perm = {}
+        for key, block in incoming_perm.items():
+            if isinstance(block, dict):
+                cur = perm.get(key)
+                if not isinstance(cur, dict):
+                    cur = {}
+                cur.update(block)
+                perm[key] = cur
+            else:
+                perm[key] = block
+        data["permission"] = perm
     if "$schema" not in data:
         data["$schema"] = incoming["$schema"]
     cfg.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
