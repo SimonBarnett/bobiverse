@@ -4244,6 +4244,7 @@ def _coerce_row(row: dict) -> dict | None:
         if row.get(key):
             out[key] = str(row.get(key))
     # FR #7334: least-commit pick and the 5-minute stuck clock must survive reload.
+    # FR #7338: per-seat commit counts for the fewest-commits recycle pick.
     counts = row.get("author_commit_counts")
     if isinstance(counts, dict):
         clean_counts = {}
@@ -4706,6 +4707,21 @@ def enqueue_unaccepted(home: Path, claim: GitClaim) -> str:
         if out == "added" and result in ("added", "updated"):
             with contextlib.suppress(Exception):
                 push_idle_offers_via_chair_outbox(home)
+            if str(claim.task or "").upper() == "MRB":
+                with contextlib.suppress(Exception):
+                    counter = github_pr_seat_commit_counter(home=home)
+                    if counter is not None:
+                        stamp_mrb_author_commit_counts(
+                            home,
+                            [{
+                                "task": "MRB",
+                                "repo": claim.repo,
+                                "id": claim.id,
+                                "url": "",
+                            }],
+                            counter,
+                            limit=1,
+                        )
         return out
     return "error"
 
@@ -11758,45 +11774,132 @@ def ledger_note_event(home: Path, nick: str, verb: str, task: str, repo: str, id
             ledger_touch(home, nick, parsed[0], "FRW", [_lkey(parsed[0], parsed[1])])
 
 
+def seat_commit_counts_from_payload(data) -> dict[str, int]:
+    """Count commits whose git author or committer name is a seat nick (FR #7338).
+
+    One commit counts once per seat even when author and committer are the same nick.
+    """
+    counts: dict[str, int] = {}
+    for commit in data if isinstance(data, list) else []:
+        seen: set[str] = set()
+        blob = commit.get("commit") if isinstance(commit, dict) else {}
+        blob = blob if isinstance(blob, dict) else {}
+        for who in (blob.get("author") or {}, blob.get("committer") or {}):
+            if not isinstance(who, dict):
+                continue
+            name = str(who.get("name") or "").strip().lower()
+            if not name or name in seen or not bobreport.parse_seat_nick(name):
+                continue
+            seen.add(name)
+            counts[name] = counts.get(name, 0) + 1
+    return counts
+
+
+def _github_pr_commits(token: str, repo: str, num: str):
+    api = f"https://api.github.com/repos/{repo}/pulls/{str(num).lstrip('#')}/commits?per_page=100"
+    req = urllib.request.Request(api, headers={
+        "Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json",
+        "User-Agent": "bobiverse-gitclaim"}, method="GET")
+    try:
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            data = json.loads(resp.read().decode("utf-8", "replace"))
+    except urllib.error.HTTPError as e:
+        return [] if int(getattr(e, "code", 0) or 0) in (404, 410, 422) else None
+    except Exception:
+        return None
+    return data
+
+
+def _github_token_for_home(home: Path | None) -> str:
+    try:
+        import gh_filer
+    except Exception:
+        return ""
+    with _scoped_digest_home(home):
+        src = gh_filer.ensure_gh_token_env()
+    if src == "none":
+        return ""
+    return (os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN") or "").strip()
+
+
 def github_pr_seat_fetcher(*, home: Path | None = None):
     """Return ``fetch(repo, num) -> set[str] | None`` of seat nicks that authored commits on a PR.
 
     Seats commit as their nick (``marchhare-41928``), so the PR's commit authors are the ground truth for
     "who wrote this" - independent of queue history. ``set()`` = not a PR / no seat commits; ``None`` =
     could not tell (offline / no token / transient error; not cached)."""
-    try:
-        import gh_filer
-    except Exception:
-        return None
-    with _scoped_digest_home(home):
-        src = gh_filer.ensure_gh_token_env()
-    if src == "none":
-        return None
-    token = (os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN") or "").strip()
+    token = _github_token_for_home(home)
     if not token:
         return None
 
     def _fetch(repo: str, num: str):
-        api = f"https://api.github.com/repos/{repo}/pulls/{str(num).lstrip('#')}/commits?per_page=100"
-        req = urllib.request.Request(api, headers={
-            "Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json",
-            "User-Agent": "bobiverse-gitclaim"}, method="GET")
-        try:
-            with urllib.request.urlopen(req, timeout=8) as resp:
-                data = json.loads(resp.read().decode("utf-8", "replace"))
-        except urllib.error.HTTPError as e:
-            return set() if int(getattr(e, "code", 0) or 0) in (404, 410, 422) else None
-        except Exception:
+        data = _github_pr_commits(token, repo, num)
+        if data is None:
             return None
-        out: set[str] = set()
-        for c in data if isinstance(data, list) else []:
-            for who in ((c.get("commit") or {}).get("author") or {}, (c.get("commit") or {}).get("committer") or {}):
-                name = str(who.get("name") or "").strip().lower()
-                if name and bobreport.parse_seat_nick(name):
-                    out.add(name)
-        return out
+        return set(seat_commit_counts_from_payload(data))
 
     return _fetch
+
+
+def github_pr_seat_commit_counter(*, home: Path | None = None):
+    """Return ``fetch(repo, num) -> dict[str, int] | None`` of seat commit counts (FR #7338)."""
+    token = _github_token_for_home(home)
+    if not token:
+        return None
+
+    def _fetch(repo: str, num: str):
+        data = _github_pr_commits(token, repo, num)
+        if data is None:
+            return None
+        return seat_commit_counts_from_payload(data)
+
+    return _fetch
+
+
+def stamp_mrb_author_commit_counts(home: Path, rows, fetch, *, limit: int = 8) -> int:
+    """Write ``author_commit_counts`` onto MRB rows from a commit-count fetch (FR #7338)."""
+    if fetch is None:
+        return 0
+    updates: dict[tuple[str, str], dict[str, int]] = {}
+    done = 0
+    for row in rows or []:
+        if done >= int(limit):
+            break
+        if not isinstance(row, dict) or _canon_task(row) != "MRB":
+            continue
+        repo = str(row.get("repo") or "").strip()
+        ident = _norm_row_id(row.get("id"))
+        if not repo or not ident:
+            continue
+        try:
+            counts = fetch(repo, ident.lstrip("#"))
+        except Exception:
+            counts = None
+        if counts is None:
+            continue
+        done += 1
+        if isinstance(counts, dict) and counts:
+            updates[(_repo_key(repo), ident)] = {str(k): int(v) for k, v in counts.items()}
+    if not updates:
+        return done
+    try:
+        with _lock(home):
+            doc = _load_queue_unlocked(home)
+            changed = False
+            for bucket in ("unaccepted", "accepted"):
+                for row in doc.get(bucket) or []:
+                    if not isinstance(row, dict):
+                        continue
+                    key = (_repo_key(str(row.get("repo") or "")), _norm_row_id(row.get("id")))
+                    if key not in updates:
+                        continue
+                    row["author_commit_counts"] = updates[key]
+                    changed = True
+            if changed:
+                _write_queue(queue_path(home), doc)
+    except (TimeoutError, OSError, ValueError, json.JSONDecodeError):
+        return done
+    return done
 
 
 def ledger_refresh_authors(home: Path, rows, fetch, *, limit: int = 8, ttl_s: float = 6 * 3600.0) -> int:

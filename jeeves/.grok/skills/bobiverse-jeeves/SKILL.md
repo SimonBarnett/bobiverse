@@ -126,3 +126,5 @@ Hotpatch = back up `<ai root>\jeeves`, copy changed `scripts\*`, `Restart-Servic
 - **FR #6395:** Jeeves freeze CI mirrors build-bob-worker: Build-Jeeves.ps1 -SourceCommit overwrites jeeves_build_meta stub then restores; artifact MANIFEST.json carries source SHA/hash/size/run id for Slab hash-check install (moved from wrong-book tip #6398; product PR #6397).
 - Jeeves --chair must exit on the wrong host and on 433; never sit on Jeeves_l; Install-Jeeves must not create ircJeeves off walrus. (FR #6947)
 - Public Jeeves UI on bob.ntsa.uk uses /jeeves-prefixed URLs (not site-root /assets or /api/login); GET /jeeves is login, GET /jeeves/ is settings after session cookie Path=/jeeves. bobcallback must forward upstream Set-Cookie + Content-Type when proxying the rest to :7701 (FR #7274 / PR #7277; moved from wrong-book harvest tip #7278).
+
+- FR #7338: author_commit_counts counts a GitHub commit once per seat nick even when author and committer are the same; ignore names that are not seat nicks (parse_seat_nick). Do not park under harvest/SKILL.md (moved from tip #7340; product #7339).
