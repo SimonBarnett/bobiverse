@@ -785,28 +785,47 @@ def capture_opencode_model_env_at_start(env: Optional[dict] = None) -> Optional[
     return _OPENCODE_MODEL_ENV_AT_START
 
 
+# FR #7196: provider/region cues only. Bare "model unavailable" matches job/skill/prompt
+# text and the wrapper's own message; permission/tool rejects are not model misses.
+_OPENCODE_UNAVAIL_CUES = (
+    "not available in your region",
+    "unavailable in your region",
+    "provider_model_not_found",
+    "model not found",
+    "no such model",
+)
+_OPENCODE_UNAVAIL_NOISE = (
+    "permission requested",
+    "external_directory",
+    "rejected permission",
+    "this specific tool call",
+    "the user rejected",
+)
+_OPENCODE_UNAVAIL_PROVIDER = (
+    "not available in your region",
+    "unavailable in your region",
+    "provider_model_not_found",
+)
+
+
 def format_opencode_model_unavailable_error(
     text: str,
     *,
     model: str = "",
 ) -> Optional[str]:
-    """FR #6429: clear region/model-unavailable message; never invent a substitute model.
+    """FR #6429 / #7196: clear region/model-unavailable message; never invent a substitute model.
 
     Returns a human-facing error string when *text* looks like a missing/region-blocked
-    model, else ``None`` (caller keeps the original failure text).
+    model, else ``None`` (caller keeps the original failure text). Job, skill, and
+    permission/tool-call text must not trip this (FR #7196).
     """
     raw = str(text or "")
     low = raw.lower()
-    cues = (
-        "not available in your region",
-        "unavailable in your region",
-        "model not found",
-        "model unavailable",
-        "unknown model",
-        "provider_model_not_found",
-        "no such model",
-    )
-    if not any(c in low for c in cues):
+    if any(n in low for n in _OPENCODE_UNAVAIL_NOISE) and not any(
+        c in low for c in _OPENCODE_UNAVAIL_PROVIDER
+    ):
+        return None
+    if not any(c in low for c in _OPENCODE_UNAVAIL_CUES):
         return None
     mid = str(model or "").strip() or "(configured OpenCode model)"
     if "region" in low and ("unavailable" in low or "not available" in low):
@@ -818,6 +837,51 @@ def format_opencode_model_unavailable_error(
     return (
         "OpenCode model unavailable: %s. No substitute model was selected."
     ) % mid
+
+
+def opencode_needs_model_line(model: str, reason: str) -> str:
+    """FR #7196: shop/digest line; never 'worker ready' / ACK."""
+    mid = str(model or "").strip() or "(configured OpenCode model)"
+    why = str(reason or "unavailable").strip() or "unavailable"
+    return "needs model: %s unavailable (%s)" % (mid, why)
+
+
+def probe_opencode_model_listing_unavailable(model: str, listing: str) -> str:
+    """Return a short reason when *listing* is a true provider miss; else '' (unknown/ok)."""
+    msg = format_opencode_model_unavailable_error(listing or "", model=model)
+    if not msg:
+        return ""
+    if "region" in msg.lower():
+        return "not available in your region"
+    return "unavailable"
+
+
+def probe_opencode_models_listing(
+    exe: str | None = None,
+    *,
+    listing: str | None = None,
+    timeout: float = 8.0,
+) -> str:
+    """Cheap ``opencode models`` stdout+stderr; empty on timeout/fail (do not block ready)."""
+    if listing is not None:
+        return str(listing)
+    env_list = os.environ.get("BOB_OPENCODE_PROBE_LISTING")
+    if env_list is not None:
+        return env_list
+    cmd = str(exe or "").strip()
+    if not cmd:
+        return ""
+    try:
+        p = subprocess.run(
+            [cmd, "models"],
+            capture_output=True,
+            text=True,
+            timeout=float(timeout),
+            check=False,
+        )
+        return ((p.stdout or "") + "\n" + (p.stderr or "")).strip()
+    except Exception:
+        return ""
 
 
 
@@ -2628,18 +2692,12 @@ def restart_skill_dag_mcp_stdio_children(
 OPENCODE_SKILL_DAG_MCP_RELPATH = "opencode.json"
 
 
-def skill_dag_mcp_argv(
-    worker_cwd: str,
-    *,
-    job_worktree: str | Path | None = None,
-    source_file: str | Path | None = None,
-) -> list[str]:
-    """``python`` + script + vision ``--root`` / optional ``--job-worktree`` (FR #6898)."""
-    script = skill_dag_mcp_script_path(worker_cwd, source_file=source_file)
-    argv = ["python", script.as_posix()]
+def skill_dag_mcp_skill_roots(worker_cwd: str) -> list[Path]:
+    """Existing skill-dag roots the seat may read (FR #6898 / #7196)."""
     cwd = Path(worker_cwd).resolve()
     parent = cwd.parent
     home_skills = Path.home() / ".grok" / "skills"
+    found: list[Path] = []
     for root in (
         cwd / ".grok" / "skills",
         parent / "bob" / ".grok" / "skills",
@@ -2649,9 +2707,23 @@ def skill_dag_mcp_argv(
     ):
         try:
             if root.is_dir():
-                argv.extend(["--root", root.resolve().as_posix()])
+                found.append(root.resolve())
         except OSError:
             continue
+    return found
+
+
+def skill_dag_mcp_argv(
+    worker_cwd: str,
+    *,
+    job_worktree: str | Path | None = None,
+    source_file: str | Path | None = None,
+) -> list[str]:
+    """``python`` + script + vision ``--root`` / optional ``--job-worktree`` (FR #6898)."""
+    script = skill_dag_mcp_script_path(worker_cwd, source_file=source_file)
+    argv = ["python", script.as_posix()]
+    for root in skill_dag_mcp_skill_roots(worker_cwd):
+        argv.extend(["--root", root.as_posix()])
     if job_worktree is not None:
         wt = Path(job_worktree)
         if wt.is_dir():
@@ -2659,12 +2731,24 @@ def skill_dag_mcp_argv(
     return argv
 
 
+def opencode_skill_read_permission_block(worker_cwd: str) -> dict:
+    """Read-only ``external_directory`` allow for skill-dag roots only (FR #7196)."""
+    allow: dict[str, str] = {}
+    edit: dict[str, str] = {}
+    for root in skill_dag_mcp_skill_roots(worker_cwd):
+        key = str(root)
+        allow[key] = "allow"
+        edit[key] = "deny"
+    return {"external_directory": allow, "edit": edit}
+
+
 def opencode_skill_dag_mcp_document(
     worker_cwd: str,
     *,
     job_worktree: str | Path | None = None,
 ) -> dict:
-    """Project ``opencode.json`` fragment with local skill-dag MCP (FR #6898)."""
+    """Project ``opencode.json`` fragment with local skill-dag MCP (FR #6898 / #7196)."""
+    perm = opencode_skill_read_permission_block(worker_cwd)
     return {
         "$schema": "https://opencode.ai/config.json",
         "mcp": {
@@ -2673,6 +2757,7 @@ def opencode_skill_dag_mcp_document(
                 "command": skill_dag_mcp_argv(worker_cwd, job_worktree=job_worktree),
             }
         },
+        "permission": perm,
     }
 
 
@@ -2701,6 +2786,21 @@ def write_opencode_skill_dag_mcp_config(
         mcp = {}
     mcp["skill-dag"] = incoming["mcp"]["skill-dag"]
     data["mcp"] = mcp
+    incoming_perm = incoming.get("permission")
+    if isinstance(incoming_perm, dict):
+        perm = data.get("permission")
+        if not isinstance(perm, dict):
+            perm = {}
+        for key, block in incoming_perm.items():
+            if isinstance(block, dict):
+                cur = perm.get(key)
+                if not isinstance(cur, dict):
+                    cur = {}
+                cur.update(block)
+                perm[key] = cur
+            else:
+                perm[key] = block
+        data["permission"] = perm
     if "$schema" not in data:
         data["$schema"] = incoming["$schema"]
     cfg.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
@@ -2849,6 +2949,12 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             r"    # FR #6157: durable turn markers for BoredEmitter / Supervisor",
             r"    $entry = @{ type = $Type; ts = (Get-Date -Format o); turn_number = $TurnNumber } | ConvertTo-Json -Compress",
             r"    Add-Content -LiteralPath $turnsLog -Value $entry -ErrorAction SilentlyContinue",
+            r"}",
+            r"function Write-OpencodeJobGiveup([string]$JobKey, [string]$Reason) {",
+            r"    if (-not $JobKey) { return }",
+            r"    $g = 'GIVEUP ' + $JobKey + ' ' + $Reason",
+            r"    if ($env:BOB_OUTBOX) { Add-Content -LiteralPath $env:BOB_OUTBOX -Value $g -ErrorAction SilentlyContinue }",
+            r"    Write-Output $g",
             r"}",
             r"function Write-OpencodeJobNack([string]$JobKey, [string]$Reason) {",
             r"    if (-not $JobKey) { return }",
@@ -3033,13 +3139,15 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             r"        }",
             r"    }",
             # FR #6429: clear region/model-unavailable (no silent fail, no substitute model).
-            r"    $regionCue = 'not available in your region|unavailable in your region|model not found|model unavailable|unknown model|provider_model_not_found|no such model'",
-            r"    if ($exitCode -ne 0 -and -not $hitLimit -and -not $timedOut -and ($scan -match $regionCue)) {",
+            r"    $regionCue = 'not available in your region|unavailable in your region|provider_model_not_found|model not found|no such model'",
+            r"    $permNoise = 'permission requested|external_directory|rejected permission|this specific tool call|The user rejected'",
+            r"    if ($exitCode -ne 0 -and -not $hitLimit -and -not $timedOut -and ($scan -notmatch $permNoise) -and ($scan -match $regionCue)) {",
             r"        $availMsg = ('OpenCode model unavailable: ' + $model + ' (set OpenCode console region to Global for paid V4 Pro, or pick a model available in this region). No substitute model was selected.')",
             r"        Write-Output $availMsg",
             r"        [Console]::Error.WriteLine($availMsg)",
             r"        $availEntry = @{ pid = $PID; ts = (Get-Date -Format o); model = $model; text = $availMsg } | ConvertTo-Json -Compress",
             r"        Add-Content -Path $fuelLog -Value $availEntry -ErrorAction SilentlyContinue",
+            r"        if ($jobKey) { Write-OpencodeJobGiveup $jobKey ('model unavailable (' + $model + ')') }",
             r"    }",
             r"    if ($proc) { try { $proc.Dispose() } catch { } }",
             r"    } finally { Write-OpencodeTurnMarker 'turn_ended' $turnN }",
@@ -12313,7 +12421,28 @@ def run_agent(args, log: Log) -> int:
         log(f"worker: post-launch start_model digest failed {type(e).__name__}")
     # FR #6409 / #7180: worker ready means assignable (signed in). Else needs sign-in.
     try:
-        if getattr(sup, "_session_assignable", False):
+        oc_block = ""
+        if kind == "opencode" and getattr(sup, "_session_assignable", False):
+            oc_block = probe_opencode_model_listing_unavailable(
+                seat_model,
+                probe_opencode_models_listing(exe),
+            )
+        if oc_block:
+            hello = opencode_needs_model_line(seat_model, oc_block)
+            try:
+                sup._session_assignable = False
+            except Exception:
+                pass
+            if getattr(sup, "bored", None) is not None:
+                try:
+                    sup.bored.note_needs_signin()
+                except Exception:
+                    pass
+            if irc.say(irc.shop, hello):
+                log(f"worker: hello {hello}")
+            else:
+                log("worker: needs-model say failed")
+        elif getattr(sup, "_session_assignable", False):
             hello = worker_hello_line(kind, model=seat_model, build=build)
             if irc.say(irc.shop, hello):
                 log(f"worker: hello {hello}")
