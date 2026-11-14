@@ -4908,7 +4908,6 @@ _last_fuel_publish_diag: dict = {}
 _last_xai_acquisition: dict = {}
 _last_opencode_acquisition: dict = {}
 _last_copilot_acquisition: dict = {}
-_last_github_token_resolve: dict = {"source": "none", "checked": []}
 
 
 def last_fuel_publish_diag() -> dict:
@@ -4926,11 +4925,6 @@ def last_copilot_acquisition() -> dict:
     return dict(_last_copilot_acquisition)
 
 
-def last_github_token_resolve() -> dict:
-    """Last GitHub token resolve for ear Copilot (FR #7234). Names only, never values."""
-    return dict(_last_github_token_resolve)
-
-
 def format_fuel_publish_diag(diag: dict | None) -> str:
     """One stdout line. Ack is explicit; a POST word alone is not success."""
     d = diag if isinstance(diag, dict) else {}
@@ -4945,7 +4939,6 @@ def format_fuel_publish_diag(diag: dict | None) -> str:
         "pcent_keys={keys} provider_fields={prov} acquisition={acq} "
         "opencode_acquisition={oc_acq} opencode_source={oc_src} "
         "copilot_acquisition={cp_acq} copilot_source={cp_src} "
-        "copilot_checked={cp_chk} "
         "machine={machine} skipped={skipped}"
     ).format(
         role=d.get("home_role") or "unlocalized",
@@ -4963,7 +4956,6 @@ def format_fuel_publish_diag(diag: dict | None) -> str:
         oc_src=d.get("opencode_source") or "-",
         cp_acq=d.get("copilot_acquisition") or "-",
         cp_src=d.get("copilot_source") or "-",
-        cp_chk=d.get("copilot_checked") or "-",
         machine=d.get("machine") or "-",
         skipped=d.get("skipped") or "-",
     )
@@ -7931,45 +7923,32 @@ def enrich_peer_with_xai_weekly(peer: dict, reading: dict | None) -> dict:
 def resolve_github_token_for_ear(
     env: dict[str, str] | None = None,
 ) -> tuple[str, str]:
-    """Return ``(token, source_tag)`` for LocalSystem ear Copilot fetch (FR #7178 / #7234).
+    """Return ``(token, source_tag)`` for LocalSystem ear Copilot fetch (FR #7178).
 
-    Source tag never includes a secret. Prefer env, then install
-    ``config\\github.token`` (``BOB_INSTALL_ROOT`` / frozen ``bob-ear.exe`` root),
-    then ``BOB_CONFIG_DIR``, then ``gh_filer`` candidates. Token value is never
-    logged. On miss, ``last_github_token_resolve()`` lists checked source names.
+    Source tag never includes a secret. Prefer install ``config\\github.token``
+    (``BOB_INSTALL_ROOT`` / frozen ``bob-ear.exe`` root), then env, then
+    ``gh_filer`` candidates. Token value is never logged.
     """
-    global _last_github_token_resolve
     e = os.environ if env is None else env
-    checked: list[str] = []
-
-    def _stamp(source: str) -> None:
-        global _last_github_token_resolve
-        _last_github_token_resolve = {"source": source, "checked": list(checked)}
-
     for name in ("GH_TOKEN", "GITHUB_TOKEN"):
-        checked.append(f"env:{name}")
         raw = (e.get(name) or "").strip()
         if raw:
-            _stamp(f"env:{name}")
             return raw, f"env:{name}"
-    paths: list[tuple[str, Path]] = []
+    paths: list[Path] = []
     root = opencode_install_root(e)
     if root is not None:
-        paths.append(("file:install/config/github.token", Path(root) / "config" / "github.token"))
+        paths.append(Path(root) / "config" / "github.token")
     cfg = (e.get("BOB_CONFIG_DIR") or "").strip()
     if cfg:
-        paths.append(("file:BOB_CONFIG_DIR/github.token", Path(cfg).expanduser() / "github.token"))
-    for tag, path in paths:
-        checked.append(tag)
+        paths.append(Path(cfg).expanduser() / "github.token")
+    for path in paths:
         try:
             if path.is_file():
                 tok = path.read_text(encoding="utf-8").strip()
                 if tok:
-                    _stamp("file:github.token")
                     return tok, "file:github.token"
         except OSError:
             continue
-    checked.append("gh_filer")
     try:
         import gh_filer
 
@@ -7977,11 +7956,9 @@ def resolve_github_token_for_ear(
         tok = (os.environ.get("GH_TOKEN") or "").strip()
         if tok:
             tag = "file:github.token" if str(src).startswith("file:") else str(src or "gh_filer")
-            _stamp(tag)
             return tok, tag
     except Exception:  # noqa: BLE001
         pass
-    _stamp("none")
     return "", "none"
 
 
@@ -8048,15 +8025,11 @@ def fetch_live_copilot_pool(
         "remaining": None,
         "entitlement": None,
         "reset_at": None,
-        "checked_sources": None,
     }
     user_fn = fetch_user
     if user_fn is None:
         token, src = resolve_github_token_for_ear()
         acq["source"] = src
-        checked = list((last_github_token_resolve().get("checked") or []))
-        if checked:
-            acq["checked_sources"] = checked
         if not token:
 
             def user_fn() -> dict:
