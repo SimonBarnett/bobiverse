@@ -195,6 +195,7 @@ def test_fr7234_ensure_helper_and_hooks_exist():
     text = COMMON_PS1.read_text(encoding="utf-8-sig")
     assert "function Ensure-BobiverseGithubToken" in text
     assert "FR #7234" in text
+    assert "Get-BobiverseInteractiveUserHome" in text
     assert "Protect-BobiverseSecretPath" in text
     assert "gh auth token" in text
     # Never echo the token variable.
