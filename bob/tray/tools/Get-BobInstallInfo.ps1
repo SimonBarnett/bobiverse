@@ -56,7 +56,8 @@ function Invoke-BobInfoGit {
         if (-not $git) { return '' }
         $psi = New-Object System.Diagnostics.ProcessStartInfo
         $psi.FileName = $git
-        $psi.Arguments = ('-c safe.directory=* -C "{0}" {1}' -f $Dir, ($GitArgs -join ' '))
+        $safe = ([IO.Path]::GetFullPath($Dir).TrimEnd('\','/') -replace '\\', '/')
+        $psi.Arguments = ('-c safe.directory={0} -C "{1}" {2}' -f $safe, $Dir, ($GitArgs -join ' '))
         $psi.UseShellExecute = $false; $psi.CreateNoWindow = $true
         $psi.RedirectStandardOutput = $true; $psi.RedirectStandardError = $true
         $p = [Diagnostics.Process]::Start($psi)

@@ -184,6 +184,16 @@ def test_overlapping_local_edit_blocks_ff_but_never_start_or_work(world):
     assert "ff-only not possible" in out.text
 
 
+def test_fr7301_safe_directory_is_scoped_not_star():
+    c = _t("common/scripts/Bobiverse-Common.ps1")
+    assert "function Get-BobiverseGitSafeDirectory" in c
+    assert "-c', 'safe.directory=*'" not in c
+    assert "FR #7301" in c
+    info = _t("bob/tray/tools/Get-BobInstallInfo.ps1")
+    assert "safe.directory=*" not in info
+    assert "safe.directory=" in info
+
+
 def test_diverged_local_commit_is_kept(world):
     r = world.root("bob")
     assert world.sync("bob").returncode == 0
@@ -197,6 +207,13 @@ def test_diverged_local_commit_is_kept(world):
     assert git(r, "rev-parse", "HEAD").stdout == mine           # no merge, no reset
     assert (r / "bob/scripts/b2.ps1").read_text() == "# local commit\n"
     assert git(r, "log", "-1", "--format=%s").stdout.strip() == "local work"
+    stamp = r / "logs" / "sync-diverged.json"
+    assert stamp.is_file(), out.text
+    second = world.sync("bob")
+    assert second.returncode == 0, second.text
+    assert "sync-skip-diverged" in second.text
+    assert "fetch --prune" not in second.text or "sync-skip-diverged" in second.text
+    assert git(r, "rev-parse", "HEAD").stdout == mine
 
 
 def test_agent_branch_is_left_alone_but_origin_is_fetched(world):
