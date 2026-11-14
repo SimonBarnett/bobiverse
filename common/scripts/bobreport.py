@@ -4037,7 +4037,7 @@ def _public_queue(home: Path) -> dict:
 
 
 def _digest_fleet_pools(doc: dict | None) -> dict:
-    """FR #7255: top-level OpenCode + Copilot meters owned by Jeeves."""
+    """FR #7255 / #7289: top-level OpenCode + Copilot + Cursor meters owned by Jeeves."""
     if not isinstance(doc, dict):
         return {}
     raw = doc.get("fleet_pools")
@@ -8105,6 +8105,7 @@ def publish_local_peer_fuel(
         "opencode_source": None,
         "copilot_acquisition": None,
         "copilot_source": None,
+        "cursor_acquisition": None,
         "target_host": None,
         "target_path": None,
         "url_source": None,
@@ -8123,54 +8124,8 @@ def publish_local_peer_fuel(
     if not peer:
         return None
     now_f = time.time() if now is None else float(now)
-    # Refresh Cursor remaining when peer lacks numeric fuel (#70 / FR #6141 gather assist).
-    try:
-        bobstat.refresh_peer_cursor_remaining(home, mid)
-        peer = bobstat.read_peer(home, mid) or peer
-    except OSError:
-        pass
-    # FR #7251: Cursor remaining fetch stamp every EAR_POOL_FETCH_S; never use period_end.
-    if force or pool_fetch_due("cursor", now_f):
-        try:
-            usage = bobstat.load_cursor_usage_doc()
-            ok = isinstance(usage, dict) and bool(usage.get("ok"))
-            peer = dict(peer)
-            if ok:
-                rem = usage.get("remaining_pct")
-                try:
-                    rem_i = int(rem) if rem not in (None, "") else None
-                except (TypeError, ValueError):
-                    rem_i = None
-                if rem_i is not None:
-                    peer["remaining_pct"] = rem_i
-                    peer["cursor_remaining_pct"] = rem_i
-                iso = iso_utc_from_epoch(now_f)
-                peer["remaining_fetched_at"] = iso
-                peer.pop("remaining_last_attempt_at", None)
-                peer.pop("remaining_error", None)
-                pools = peer.get("cursor_pools")
-                if isinstance(pools, list):
-                    stamped = []
-                    for row in pools:
-                        if isinstance(row, dict):
-                            r = dict(row)
-                            r["fetched_at"] = iso
-                            stamped.append(r)
-                        else:
-                            stamped.append(row)
-                    peer["cursor_pools"] = stamped
-                mark_pool_fetch("cursor", now_f, ok=True)
-            else:
-                peer["remaining_last_attempt_at"] = iso_utc_from_epoch(now_f)
-                peer["remaining_error"] = "cursor-usage-unread"
-                mark_pool_fetch(
-                    "cursor", now_f, ok=False, error="cursor-usage-unread"
-                )
-        except Exception as exc:  # noqa: BLE001
-            peer = dict(peer)
-            peer["remaining_last_attempt_at"] = iso_utc_from_epoch(now_f)
-            peer["remaining_error"] = type(exc).__name__
-            mark_pool_fetch("cursor", now_f, ok=False, error=type(exc).__name__)
+    # FR #7289: Jeeves owns the fleet Cursor pool. Ear must not run Get-CursorAgentUsage.
+    _last_fuel_publish_diag["cursor_acquisition"] = "jeeves-fleet"
     # FR #6274 / #7251: live xAI weekly at EAR_POOL_FETCH_S (not every 5s poll).
     # Passive unified.jsonl is never a fresh reading. On failure keep last-good
     # with true age + last_attempt_at + error (do not re-stamp fetched_at).

@@ -46,7 +46,7 @@ Canonical digest: `GET https://bob.ntsa.uk/bob/v1/report`. The **ircBob ear** ow
 | Surface | Notes |
 |--------|--------|
 | OpenCode | `pcent.opencode-free` / `pcent.opencode-go` when local fuel known; omit unknown; never invent 0 |
-| Copilot | TipForm/Status account-wide Copilot pool line; treat stale fetched_at as not current. **FR #7255:** Jeeves (walrus) fetches Copilot and OpenCode free/Go once per minute into digest `fleet_pools` / top-level `copilot` + `opencode`. Machine ears do not GET those providers. Credentials stay on the Jeeves service account. |
+| Copilot | TipForm/Status account-wide Copilot pool line; treat stale fetched_at as not current. **FR #7255 / #7289:** Jeeves (walrus) fetches Copilot, OpenCode free/Go, and Cursor once per minute into digest `fleet_pools`. Machine ears do not GET those providers (xAI stays per ear). Cursor token is CredMan `Bobiverse/CursorAccess` on walrus. |
 | Logos | `bob/tray/assets/fuel-logos/` (cursor, xai, opencode, copilot) + text fallback; see LICENSE.md |
 | cursor_known | false clears Cursor label/pcent/pools; Sand uses `sand_period_end` |
 | python (FR #7020 / #7022 / #7035) | `publish_local_peer_fuel` reads `<home>/run/python-status.json` and posts `python=missing` or a source tag only (never a path body). On a later successful SYSTEM resolve the ear calls `note_python_resolved` (rewrite tag or unlink) so digest never keeps stale `python=missing`. |
