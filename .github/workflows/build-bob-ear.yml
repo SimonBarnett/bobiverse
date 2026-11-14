@@ -3,7 +3,7 @@
 # FR #7179 / #7202 / #7390: build the checked-out commit on push to main and on PRs that
 # touch ear sources (frozen irc_agent import graph + Build-BobEar pins + ear launchers).
 # Provenance records that commit SHA (no hard behavior pin). Artifact also ships Start-Bob.ps1 +
-# Select-BobEarLaunch.ps1 with SHA-256 in the manifest.
+# Select-BobEarLaunch.ps1 + Bobiverse-Common.ps1 (FR #7390 / #7394) with SHA-256 in the manifest.
 # Prior pin history (FR #7065 / #7039 / #6727 / #6722 / #6672 / #6558 merge
 # 2da1eb06d0c99cd3384d6bf1bb21faa830526ba5 / PR #6575) lives in
 # bob/docs/deploy-pool-monitor-manifest.txt for deploy notes only.
@@ -19,11 +19,13 @@ on:
       - bob/scripts/Install-BobEarExe.ps1
       - bob/scripts/Start-Bob.ps1
       - bob/scripts/Select-BobEarLaunch.ps1
+      - common/scripts/Bobiverse-Common.ps1
       - bob/tests/ear_ci_source_paths.py
       - bob/tests/test_fr6254_ear_build_provenance_align.py
       - bob/tests/test_fr7179_ear_tray_ci_main_push.py
       - bob/tests/test_fr7202_ear_ci_frozen_imports.py
       - bob/tests/test_fr7390_ear_artifact_launchers.py
+      - bob/tests/test_fr7394_ear_artifact_common.py
       - common/scripts/account_map.py
       - common/scripts/agent_control.py
       - common/scripts/ai_root.py
@@ -108,11 +110,13 @@ on:
       - bob/scripts/Install-BobEarExe.ps1
       - bob/scripts/Start-Bob.ps1
       - bob/scripts/Select-BobEarLaunch.ps1
+      - common/scripts/Bobiverse-Common.ps1
       - bob/tests/ear_ci_source_paths.py
       - bob/tests/test_fr6254_ear_build_provenance_align.py
       - bob/tests/test_fr7179_ear_tray_ci_main_push.py
       - bob/tests/test_fr7202_ear_ci_frozen_imports.py
       - bob/tests/test_fr7390_ear_artifact_launchers.py
+      - bob/tests/test_fr7394_ear_artifact_common.py
       - common/scripts/account_map.py
       - common/scripts/agent_control.py
       - common/scripts/ai_root.py
@@ -242,10 +246,15 @@ jobs:
           if (-not (Test-Path -LiteralPath $selectEar)) { throw "missing $selectEar" }
           Copy-Item -LiteralPath $startBob -Destination (Join-Path $stage "Start-Bob.ps1")
           Copy-Item -LiteralPath $selectEar -Destination (Join-Path $stage "Select-BobEarLaunch.ps1")
+          $commonPs1 = Join-Path $root "common\scripts\Bobiverse-Common.ps1"
+          if (-not (Test-Path -LiteralPath $commonPs1)) { throw "missing $commonPs1" }
+          Copy-Item -LiteralPath $commonPs1 -Destination (Join-Path $stage "Bobiverse-Common.ps1")
           $startHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $startBob).Hash.ToLowerInvariant()
           $selectHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $selectEar).Hash.ToLowerInvariant()
+          $commonHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $commonPs1).Hash.ToLowerInvariant()
           Set-Content -Encoding ascii (Join-Path $stage "Start-Bob.ps1.sha256") "$startHash  Start-Bob.ps1"
           Set-Content -Encoding ascii (Join-Path $stage "Select-BobEarLaunch.ps1.sha256") "$selectHash  Select-BobEarLaunch.ps1"
+          Set-Content -Encoding ascii (Join-Path $stage "Bobiverse-Common.ps1.sha256") "$commonHash  Bobiverse-Common.ps1"
           @(
             "source_commit=$($env:WORKFLOW_COMMIT)"
             "workflow_commit=$($env:WORKFLOW_COMMIT)"
@@ -254,9 +263,10 @@ jobs:
             "exe_size_bytes=$size"
             "start_bob_ps1_sha256=$startHash"
             "select_bob_ear_launch_ps1_sha256=$selectHash"
+            "bobiverse_common_ps1_sha256=$commonHash"
             "build_time_utc=$builtAt"
             "builder=Build-BobEar.ps1"
-            "fr=7179,7390"
+            "fr=7179,7390,7394"
           ) | Set-Content -Encoding ascii (Join-Path $stage "provenance.txt")
           Set-Content -Encoding ascii (Join-Path $stage "bob-ear.exe.sha256") "$hash  bob-ear.exe"
           Copy-Item -LiteralPath (Join-Path $stage "provenance.txt") -Destination (Join-Path $stage "manifest.txt")

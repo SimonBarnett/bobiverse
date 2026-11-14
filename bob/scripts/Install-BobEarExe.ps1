@@ -1,16 +1,16 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-  FR #1481 / #7390: install or replace scripts\bob-ear.exe (+ ear launchers) with rollback on failure.
+  FR #1481 / #7390 / #7394: install or replace scripts\bob-ear.exe (+ ear launchers) with rollback on failure.
 .DESCRIPTION
   Copies a built bob-ear.exe into InstallRoot\scripts\, keeping bob-ear.exe.bak for rollback.
   Does not start or stop ircBob (caller owns service lifecycle). Fails closed: on copy/smoke
   failure the previous exe (if any) is restored from .bak.
   FR #7300 / mrb-7311-fix: optional -ProvenancePath copies CI provenance.txt next to the
   exe so Select-BobEarLaunch source= reads the ear component (never install-root MANIFEST).
-  FR #7390: when Start-Bob.ps1 / Select-BobEarLaunch.ps1 sit beside SourceExe (CI artifact),
-  copy them into scripts\ too, verify SHA-256 against provenance keys when present, and
-  roll them back with the exe on failure.
+  FR #7390 / #7394: when Start-Bob.ps1 / Select-BobEarLaunch.ps1 / Bobiverse-Common.ps1
+  sit beside SourceExe (CI artifact), copy them into scripts\ too, verify SHA-256 against
+  provenance keys when present, and roll them back with the exe on failure.
 #>
 [CmdletBinding()]
 param(
@@ -32,10 +32,11 @@ $hadProv = Test-Path -LiteralPath $provDest -PathType Leaf
 $wroteProv = $false
 $srcDir = Split-Path -Parent $SourceExe
 
-# FR #7390: launcher names in the CI artifact (siblings of bob-ear.exe).
+# FR #7390 / #7394: launcher names in the CI artifact (siblings of bob-ear.exe).
 $launcherSpecs = @(
     @{ Name = 'Start-Bob.ps1'; ProvKey = 'start_bob_ps1_sha256' },
-    @{ Name = 'Select-BobEarLaunch.ps1'; ProvKey = 'select_bob_ear_launch_ps1_sha256' }
+    @{ Name = 'Select-BobEarLaunch.ps1'; ProvKey = 'select_bob_ear_launch_ps1_sha256' },
+    @{ Name = 'Bobiverse-Common.ps1'; ProvKey = 'bobiverse_common_ps1_sha256' }
 )
 
 function Get-ProvHashMap {

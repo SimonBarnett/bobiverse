@@ -119,6 +119,7 @@ def test_fr7179_ear_matches_worker_artifact_shape():
     # FR #7390: ear-only launcher hashes (not on worker artifact).
     assert "start_bob_ps1_sha256=" in ear
     assert "select_bob_ear_launch_ps1_sha256=" in ear
+    assert "bobiverse_common_ps1_sha256=" in ear
 
 
 def test_fr7179_docs_list_ci_triggers():
