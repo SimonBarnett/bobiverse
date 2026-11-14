@@ -177,11 +177,13 @@ def test_digest_includes_copilot(tmp_path, monkeypatch):
     assert obj["copilot"]["unlimited"] is True
     # FR #6148: public field allowlist + observation precedence
     allowed = {
-        "plan", "used", "remaining", "unlimited", "percent_remaining",
+        "plan", "used", "remaining", "entitlement", "unlimited", "percent_remaining",
         "reset_at", "source", "fetched_at", "attempted_at", "state",
         "resume_at", "resume_source",
         # FR #6215: historical high-water mark for display % (not a quota).
         "max_recorded_usage",
+        # FR #7178: explicit unread/error; never omit the pool.
+        "last_error", "overage_permitted",
     }
     assert set(obj["copilot"].keys()) <= allowed
     cd.observe_quota(
