@@ -2958,11 +2958,66 @@ function Import-BobiverseGhTokenEnv {
     }
 }
 
+function Get-BobiverseInteractiveUserHome {
+    <#
+      FR #7006 / #7256: interactive console home that owns .grok (path only; never secrets).
+      Order: BOB_GROK_WEEKLY_USER_HOME; live console/explorer user; HKLM LastLoggedOnUser
+      (works with nobody logged on); <InstallRoot>\run\interactive-user-home.txt stamp.
+      BOBIVERSE_SKIP_LIVE_INTERACTIVE_HOME=1 skips CIM/registry (tests).
+    #>
+    param([string]$InstallRoot = '')
+    $override = ([string]$env:BOB_GROK_WEEKLY_USER_HOME).Trim().TrimEnd('\')
+    if ($override -and (Test-Path -LiteralPath $override)) { return $override }
+
+    $serviceLeaves = @('SYSTEM', 'LOCAL SERVICE', 'NETWORK SERVICE', 'systemprofile', 'DefaultAccount')
+    function Get-BobiverseUsersHomeFromAccount([string]$Account) {
+        if (-not $Account) { return $null }
+        $user = ($Account.Trim() -split '\\')[-1].Trim()
+        if (-not $user) { return $null }
+        foreach ($leaf in $serviceLeaves) {
+            if ($user -ieq $leaf) { return $null }
+        }
+        $drive = if ($env:SystemDrive) { $env:SystemDrive } else { 'C:' }
+        $cand = Join-Path $drive (Join-Path 'Users' $user)
+        if (Test-Path -LiteralPath $cand) { return $cand }
+        return $null
+    }
+
+    $skipLive = (([string]$env:BOBIVERSE_SKIP_LIVE_INTERACTIVE_HOME).Trim() -eq '1')
+    if (-not $skipLive) {
+        try {
+            $u = $null
+            try { $u = (Get-CimInstance Win32_ComputerSystem -ErrorAction Stop).UserName } catch { }
+            $h = Get-BobiverseUsersHomeFromAccount $u
+            if ($h) { return $h }
+        } catch { }
+        try {
+            $key = Get-ItemProperty -LiteralPath 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Authentication\LogonUI' -ErrorAction SilentlyContinue
+            if ($key) {
+                foreach ($n in @('LastLoggedOnSAMUser', 'LastLoggedOnUser')) {
+                    $val = [string]$key.$n
+                    $h = Get-BobiverseUsersHomeFromAccount $val
+                    if ($h) { return $h }
+                }
+            }
+        } catch { }
+    }
+    if ($InstallRoot) {
+        $stamp = Join-Path $InstallRoot 'run\interactive-user-home.txt'
+        if (Test-Path -LiteralPath $stamp) {
+            $line = ([string](Get-Content -LiteralPath $stamp -TotalCount 1 -ErrorAction SilentlyContinue)).Trim().Trim('"')
+            if ($line -and (Test-Path -LiteralPath $line)) { return $line }
+        }
+    }
+    return $null
+}
+
 function Ensure-BobiverseGithubToken {
     <#
-      FR #7234: provision <InstallRoot>\config\github.token for LocalSystem bob-ear Copilot.
+      FR #7234 / #7256: provision <InstallRoot>\config\github.token for LocalSystem bob-ear Copilot.
       Sources (first hit wins; names only in logs): env GH_TOKEN/GITHUB_TOKEN, profile
-      .grok\bob\github.token, sibling product config\github.token, gh auth token (operator
+      .grok\bob\github.token (USERPROFILE, Users\Administrator, then interactive LastLoggedOn/
+      console home - FR #7256), sibling product config\github.token, gh auth token (operator
       session only -- never under LocalSystem). ACL: SYSTEM + Administrators. Never prints
       the token value. Idempotent when the dest already has content.
     #>
@@ -3028,6 +3083,32 @@ function Ensure-BobiverseGithubToken {
                 $token = $raw
                 $source = $tag
                 break
+            }
+        }
+    }
+
+    if (-not $token) {
+        $ih = $null
+        try { $ih = Get-BobiverseInteractiveUserHome -InstallRoot $InstallRoot } catch { $ih = $null }
+        $tag = 'file:interactive/.grok/bob/github.token'
+        if ($tag -notin @($checked)) { [void]$checked.Add($tag) }
+        if ($ih) {
+            $p = Join-Path $ih '.grok\bob\github.token'
+            if (Test-Path -LiteralPath $p) {
+                try {
+                    if (-not ([IO.Path]::GetFullPath($p) -ieq [IO.Path]::GetFullPath($dest))) {
+                        $raw = ([string](Get-Content -LiteralPath $p -Raw -ErrorAction SilentlyContinue)).Trim()
+                        if ($raw) {
+                            $token = $raw
+                            $source = $tag
+                            try {
+                                $stampDir = Join-Path $InstallRoot 'run'
+                                New-Item -ItemType Directory -Force -Path $stampDir | Out-Null
+                                [IO.File]::WriteAllText((Join-Path $stampDir 'interactive-user-home.txt'), ($ih.Trim() + "`n"), (New-Object System.Text.UTF8Encoding $false))
+                            } catch { }
+                        }
+                    }
+                } catch { }
             }
         }
     }
