@@ -1603,25 +1603,67 @@ def resolve_grok_exe(env: Optional[dict] = None, which: Callable = shutil.which)
     return str(w) if w else None
 
 
-def resolve_opencode_cmd(env: Optional[dict] = None, which: Callable = shutil.which) -> Optional[str]:
+def _is_untrusted_mount_oserror(exc: BaseException) -> bool:
+    """FR #7302: WinError 448 / untrusted reparse (WinGet Links under SYSTEM)."""
+    if not isinstance(exc, OSError):
+        return False
+    if getattr(exc, "winerror", None) == 448:
+        return True
+    msg = str(exc).lower()
+    return "untrusted mount" in msg or "winerror 448" in msg
+
+
+def _opencode_exe_exists(path: Path, reasons: Optional[list] = None) -> bool:
+    try:
+        return path.is_file()
+    except OSError as exc:
+        if _is_untrusted_mount_oserror(exc):
+            if reasons is not None:
+                reasons.append(
+                    "WinError 448 untrusted mount point while resolving %s" % path
+                )
+            return False
+        raise
+
+
+def resolve_opencode_cmd(
+    env: Optional[dict] = None,
+    which: Callable = shutil.which,
+    reasons: Optional[list] = None,
+) -> Optional[str]:
     """Find opencode.exe: explicit, WinGet Links (process then seat user), PATH.
 
     FR #6996: LocalSystem LOCALAPPDATA is the system profile; look at
     ``BOB_OPENCODE_SEAT_HOME`` / interactive user WinGet Links too.
+    FR #7302: never follow an untrusted WinGet Links reparse (WinError 448);
+    use ``Programs\\opencode\\opencode.exe`` or return None (readiness miss).
     """
     env = os.environ if env is None else env
     explicit = str(env.get("BOB_OPENCODE_EXE") or "").strip()
-    if explicit and Path(explicit).is_file():
+    if explicit and _opencode_exe_exists(Path(explicit), reasons):
         return explicit
 
     def _winget(local: str) -> Optional[str]:
         if not local:
             return None
-        p = Path(local) / "Microsoft" / "WinGet" / "Links" / "opencode.exe"
-        if p.is_file():
-            return str(p)
         p2 = Path(local) / "Programs" / "opencode" / "opencode.exe"
-        if p2.is_file():
+        p = Path(local) / "Microsoft" / "WinGet" / "Links" / "opencode.exe"
+        link_ok = False
+        try:
+            link_ok = p.is_file()
+        except OSError as exc:
+            if not _is_untrusted_mount_oserror(exc):
+                raise
+            if reasons is not None:
+                reasons.append(
+                    "WinError 448 untrusted mount point on WinGet Links; trying package path"
+                )
+            if _opencode_exe_exists(p2, reasons):
+                return str(p2)
+            return None
+        if link_ok:
+            return str(p)
+        if _opencode_exe_exists(p2, reasons):
             return str(p2)
         return None
 
@@ -1636,11 +1678,34 @@ def resolve_opencode_cmd(env: Optional[dict] = None, which: Callable = shutil.wh
         found = _winget(str(Path(seat) / "AppData" / "Local"))
         if found:
             return found
-    w = which("opencode.exe")
+
+    def _which_safe(name: str) -> Optional[str]:
+        try:
+            w = which(name)
+            return str(w) if w else None
+        except OSError as exc:
+            if _is_untrusted_mount_oserror(exc):
+                if reasons is not None:
+                    reasons.append(
+                        "WinError 448 untrusted mount point from PATH lookup %s" % name
+                    )
+                return None
+            raise
+
+    w = _which_safe("opencode.exe")
     if w:
-        return str(w)
-    w = which("opencode")
-    return str(w) if w else None
+        return w
+    return _which_safe("opencode")
+
+
+def _resolve_opencode_cmd_for_seat(log: "Log") -> Optional[str]:
+    reasons: list = []
+    found = resolve_opencode_cmd(reasons=reasons)
+    for r in reasons:
+        log("opencode: " + r)
+    if not found and reasons:
+        log("opencode: readiness miss (untrusted WinGet Links or not installed)")
+    return found
 
 
 def ask_session_key(prompt: str, title: str = "Grok session key") -> Optional[str]:
@@ -12502,7 +12567,7 @@ def run_plan(args, log: Log) -> int:
         log(f"plan: folder missing {folder}")
         return EXIT_USAGE
     dec, cursor_cmd, grok_exe, fuel = _choose(args, log, folder, "plan")
-    opencode_cmd = resolve_opencode_cmd()
+    opencode_cmd = _resolve_opencode_cmd_for_seat(log)
     dec = resolve_seat_decision(
         getattr(args, "agent", ""),
         dec, fuel, cursor_cmd, grok_exe, opencode_cmd,
@@ -12585,7 +12650,7 @@ def run_monitor(args, log: Log) -> int:
         log(f"monitor: AGENTS.md missing in {folder}")
         return EXIT_USAGE
     dec, cursor_cmd, grok_exe, fuel = _choose(args, log, folder, "monitor")
-    opencode_cmd = resolve_opencode_cmd()
+    opencode_cmd = _resolve_opencode_cmd_for_seat(log)
     dec = resolve_seat_decision(
         getattr(args, "agent", ""),
         dec, fuel, cursor_cmd, grok_exe, opencode_cmd,
@@ -12697,7 +12762,7 @@ def run_maintenance(args, log: Log, *, spawn: Optional[Callable] = None, poll_s:
         log(f"maintenance: AGENTS.md missing in {folder}")
         return EXIT_USAGE
     dec, cursor_cmd, grok_exe, fuel = _choose(args, log, folder, "maintenance")
-    opencode_cmd = resolve_opencode_cmd()
+    opencode_cmd = _resolve_opencode_cmd_for_seat(log)
     dec = resolve_seat_decision(
         getattr(args, "agent", ""),
         dec, fuel, cursor_cmd, grok_exe, opencode_cmd,
@@ -12805,7 +12870,7 @@ def run_agent(args, log: Log) -> int:
     except Exception:
         pass
     dec, cursor_cmd, grok_exe, fuel = _choose(args, log, folder, "agent")
-    opencode_cmd = resolve_opencode_cmd()
+    opencode_cmd = _resolve_opencode_cmd_for_seat(log)
     dec = resolve_seat_decision(
         getattr(args, "agent", ""),
         dec, fuel, cursor_cmd, grok_exe, opencode_cmd,
