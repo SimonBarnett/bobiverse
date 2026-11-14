@@ -47,8 +47,22 @@ def _wait_bored(irc, timeout=2.0):
 
 
 
+def _plant_auth(tmp_path):
+    p = tmp_path / "grok-home" / "auth.json"
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text('{"k":"FAKE_2884"}', encoding="utf-8")
+
+
+def _hold_first_turn(tmp_path, monkeypatch):
+    _plant_auth(tmp_path)
+    monkeypatch.setenv("BOB_WORKER_STARTUP_WAIT_READY", "1")
+
+
 def _sup(tmp_path, monkeypatch, *, kind="grok", startup_grace_s=60.0, startup_min_s=10.0, irc=None, bored=None):
     FakeTimer.instances.clear()
+    if "BOB_WORKER_STARTUP_WAIT_READY" not in __import__("os").environ:
+        monkeypatch.setenv("BOB_WORKER_STARTUP_WAIT_READY", "1")
+    _plant_auth(tmp_path)
     monkeypatch.setattr(bw.threading, "Timer", FakeTimer)
     logs: list[str] = []
     clock = {"t": 0.0}
@@ -143,6 +157,7 @@ class _Irc:
 def test_first_turn_ended_releases_startup_hold_and_fires_start(tmp_path, monkeypatch):
     irc = _Irc()
     FakeTimer.instances.clear()
+    _hold_first_turn(tmp_path, monkeypatch)
     monkeypatch.setattr(bw.threading, "Timer", FakeTimer)
     logs: list[str] = []
     clock = {"t": 0.0}
@@ -204,20 +219,18 @@ def test_first_turn_ended_releases_startup_hold_and_fires_start(tmp_path, monkey
 
 
 def test_grace_fallback_when_no_turn_ended(tmp_path, monkeypatch):
-    # FR #4115: legacy grace-paste path (opt-out); default now waits for turn_ended.
+    # FR #7180: wait_ready=0 + signed-in ready immediately (no 60s grace).
     monkeypatch.setenv("BOB_WORKER_STARTUP_WAIT_READY", "0")
     sup, logs, clock, injected, relay = _sup(tmp_path, monkeypatch)
     assert sup.start_agent()
-    assert FakeTimer.instances[0].delay == 60.0
-    clock["t"] = 60.0
-    FakeTimer.instances[0].fn()
-    assert any("startup_grace_s=60 fallback" in m or "startup_grace_s=60" in m for m in logs)
-    assert "ready" in getattr(sup.bored, "fires", [])
+    assert getattr(sup.bored, "ready", False) is True
+    assert any("signed in" in m for m in logs)
 
 
 def test_grace_timer_after_turn_release_is_noop(tmp_path, monkeypatch):
     irc = _Irc()
     FakeTimer.instances.clear()
+    _hold_first_turn(tmp_path, monkeypatch)
     monkeypatch.setattr(bw.threading, "Timer", FakeTimer)
     logs: list[str] = []
     clock = {"t": 0.0}
@@ -274,6 +287,7 @@ def test_turn_ended_from_other_session_ignored(tmp_path, monkeypatch):
 
 def test_startup_min_floor(tmp_path, monkeypatch):
     FakeTimer.instances.clear()
+    _hold_first_turn(tmp_path, monkeypatch)
     monkeypatch.setattr(bw.threading, "Timer", FakeTimer)
     logs: list[str] = []
     clock = {"t": 0.0}
@@ -345,6 +359,7 @@ def test_no_inject_before_release(tmp_path, monkeypatch):
 def test_stale_build_check_runs_at_turn_release(tmp_path, monkeypatch):
     irc = _Irc()
     FakeTimer.instances.clear()
+    _hold_first_turn(tmp_path, monkeypatch)
     monkeypatch.setattr(bw.threading, "Timer", FakeTimer)
     logs: list[str] = []
     clock = {"t": 0.0}
@@ -392,6 +407,7 @@ def test_stale_build_check_runs_at_turn_release(tmp_path, monkeypatch):
 
 def test_restart_rearms_hold(tmp_path, monkeypatch):
     FakeTimer.instances.clear()
+    _hold_first_turn(tmp_path, monkeypatch)
     monkeypatch.setattr(bw.threading, "Timer", FakeTimer)
     logs: list[str] = []
     clock = {"t": 0.0}
@@ -477,6 +493,7 @@ def test_restart_rearms_hold(tmp_path, monkeypatch):
 def test_non_grok_kind_keeps_timer(tmp_path, monkeypatch):
     # cursor kind: no turn watcher path used; only grace timer
     FakeTimer.instances.clear()
+    monkeypatch.setenv("BOB_WORKER_STARTUP_WAIT_READY", "1")
     monkeypatch.setattr(bw.threading, "Timer", FakeTimer)
     logs: list[str] = []
     clock = {"t": 0.0}
@@ -535,6 +552,7 @@ def test_replay_42052_timeline(tmp_path, monkeypatch):
     """spawn 18:37:43, turn_ended 18:38:04 → reason=start at +21s, not +60s."""
     irc = _Irc()
     FakeTimer.instances.clear()
+    _hold_first_turn(tmp_path, monkeypatch)
     monkeypatch.setattr(bw.threading, "Timer", FakeTimer)
     logs: list[str] = []
     clock = {"t": 0.0}

@@ -37,9 +37,13 @@ FR #6862: local stdio MCP `bob/scripts/skill_dag_mcp.py` (`--root`, `--max-bytes
 
 ## Build identity on the wire (FR #6409)
 
+**FR #7181:** worker digest POSTs send the same `User-Agent` as the ear (`Bobiverse-bobreport/1.0`) so Cloudflare WAF does not 403 a seat that the ear can POST. Transient `403` / `429` / `5xx` retry with backoff. Logs include HTTP status, responder (`cloudflare` / `iis` / `jeeves`) and `CF-Ray` (never the response body or secrets). After retries fail, one follow-up POST sets `state=unhealthy` and `error=digest-http-403` so the seat is unhealthy on the digest rather than silently missing.
+
 After IRC join and a successful agent launch the seat posts a hello line on `#<machine>` (MRB #6411: no ready claim when launch fails):
 
 `worker ready kind=<grok|cursor|opencode> model=<configured model> build=<short sha>`
+
+**FR #7180:** `worker ready` means the seat is assignable: signed in with its model loaded. It sends `!bored` at once (bob-git-accept: on join and every 2 min idle). It must not wait for a first agent turn (that deadlocks: a turn starts only after a job, and a job arrives only after `!bored`). A Grok seat without `GROK_HOME/auth.json` posts `worker needs sign-in kind=grok` and never `ready` / `!bored`. Digest `post_digest_seat_kind` sets `assignable=false` / `error=needs-sign-in` so Jeeves live-seat agrees. Opt-in `BOB_WORKER_STARTUP_WAIT_READY=1` restores the old hold-until-first-`turn_ended` (FR #4115 / #4123). Hang-recycle of a dead first turn remains that opt-in path.
 
 `<short sha>` is the first 12 characters of the freeze-time source commit (`bob-worker.exe --version` / FR #6349). When `bob_worker_build_meta` is missing or unset, the field is `unknown` (never omitted).
 

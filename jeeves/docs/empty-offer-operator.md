@@ -8,6 +8,8 @@ Seats may hear `nothing queued` on the shop while `queue.json` still has **unacc
 
 Built by `gitclaim.summarize_empty_offer` / `format_empty_offer_detail` (shop reply stays `format_nothing_queued` → `{nick}: nothing queued`).
 
+**FR #7182:** idle `worker_list` seats (ready / idle on the digest) are offered within one `offer_to_idle_seats` tick even if Jeeves never said `nothing queued`. Empty-offer logs include per-job `skips=FR owner/repo#N:focus|ledger|pin|...` so "0 offerable" is explainable.
+
 ## When only require_machine pins remain
 
 Typical pattern (incident 2026-10-05):
