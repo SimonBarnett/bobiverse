@@ -1,9 +1,9 @@
-﻿#Requires -Version 5.1
+#Requires -Version 5.1
 <#
 .SYNOPSIS
   FR #7248: stage a CI tray hotpatch tree (exes + display scripts) with per-file SHA-256.
 .DESCRIPTION
-  Layout matches a live bob install: tools\ (exes + Watch-BobTray.ps1 …), src\ (BobBridge),
+  Layout matches a live bob install: tools\ (exes + Watch-BobTray.ps1 ...), src\ (BobBridge),
   assets\. Does not copy tray\config (live bobiverse.json / seats stay on the box).
 #>
 [CmdletBinding()]
