@@ -49,14 +49,13 @@ foreach ($leaf in @('tools', 'src', 'assets')) {
     New-Item -ItemType Directory -Force -Path $to | Out-Null
     Copy-Item -Path (Join-Path $from '*') -Destination $to -Recurse -Force
 }
+# FR #7300: tray identity lives under tools\ only. Never overwrite install-root MANIFEST.json.
 foreach ($leaf in @('MANIFEST.json', 'provenance.txt')) {
     $from = Join-Path $art $leaf
     if (Test-Path -LiteralPath $from) {
-        Copy-Item -LiteralPath $from -Destination (Join-Path $root $leaf) -Force
         $tools = Join-Path $root 'tools'
-        if (Test-Path -LiteralPath $tools) {
-            Copy-Item -LiteralPath $from -Destination (Join-Path $tools $leaf) -Force
-        }
+        New-Item -ItemType Directory -Force -Path $tools | Out-Null
+        Copy-Item -LiteralPath $from -Destination (Join-Path $tools $leaf) -Force
     }
 }
 Write-Output ("INFO tray-hotpatch backup={0} install={1}" -f $BackupDir, $root)

@@ -143,15 +143,13 @@ namespace BobDialogs
             return ShortShaFromJsonFile(Path.Combine(root, "BUILD.json"));
         }
 
-        // FR #7247: tools\\MANIFEST is the running exe; install-root MANIFEST is scripts.
-        // Same SHA => one token; mismatch => "exe aaa / scripts bbb".
+        // FR #7300: tray footer is the tray component SHA (tools\\MANIFEST).
+        // Do not paint a differing install-root MANIFEST next to it.
         public static string DeployedSourceShortSha(string root)
         {
             string exe = ExeSourceShortSha(root);
-            string scripts = ScriptsSourceShortSha(root);
-            if (exe.Length > 0 && scripts.Length > 0 && !string.Equals(exe, scripts, StringComparison.OrdinalIgnoreCase))
-                return "exe " + exe + " / scripts " + scripts;
-            return exe.Length > 0 ? exe : scripts;
+            if (exe.Length > 0) return exe;
+            return ScriptsSourceShortSha(root);
         }
 
         static string ShortShaToken(string raw)

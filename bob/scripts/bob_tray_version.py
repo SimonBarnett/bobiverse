@@ -117,9 +117,9 @@ def _sha_from_root_identity(root_p: Path) -> str:
 
 
 def read_exe_source_sha(root: Path | str) -> str:
-    """SHA of the running tray binaries (FR #7247): tools\\MANIFEST first.
+    """SHA of the running tray binaries (FR #7247): tools/MANIFEST first.
 
-    Slab copies the CI artifact next to ``tools\\bob-tray.exe``. Install-root
+    Slab copies the CI artifact next to ``tools/bob-tray.exe``. Install-root
     MANIFEST.json is the scripts / Sync identity and may be older.
     """
     root_p = Path(root)
@@ -148,16 +148,21 @@ def read_scripts_source_sha(root: Path | str) -> str:
 
 
 def format_running_build_sha(exe_sha: str, scripts_sha: str) -> str:
-    """One short SHA, or ``exe aaa / scripts bbb`` when the two builds differ."""
+    """FR #7300: prefer the tray component SHA (tools/MANIFEST).
+
+    When tools/MANIFEST is present, return that SHA only — do not paint a
+    differing install-root MANIFEST next to it (Slab saw root 4746581 while the
+    tray artifact was newer). Fall back to scripts/root only when tools is empty.
+    """
     exe = (exe_sha or "").strip()
     scripts = (scripts_sha or "").strip()
-    if exe and scripts and exe != scripts:
-        return f"exe {exe} / scripts {scripts}"
-    return exe or scripts
+    if exe:
+        return exe
+    return scripts
 
 
 def read_deployed_source_sha(root: Path | str) -> str:
-    """FR #6924 / #7247: running-build token for the footer (may be a pair)."""
+    """FR #6924 / #7247 / #7300: tray footer SHA from the tray component MANIFEST."""
     return format_running_build_sha(read_exe_source_sha(root), read_scripts_source_sha(root))
 
 
