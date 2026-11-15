@@ -4628,6 +4628,11 @@ function Get-BobTrayHover {
             seat_id              = $(if ($seatInfo) { [string]$seatInfo.id } else { $null })
             seat_label           = $(if ($digestSeatLabel) { [string]$digestSeatLabel } else { $null })
             seat_email           = $(if ($seatInfo) { [string]$seatInfo.email } else { $null })
+            seat_target          = $(
+                if ($digestEnt -and $null -ne $digestEnt.seat_target -and [string]$digestEnt.seat_target -ne '') {
+                    try { [int]$digestEnt.seat_target } catch { $null }
+                } else { $null }
+            )
             weekly_source        = $weeklySource
         }
         $tiles += ,$tile
