@@ -62,6 +62,8 @@ jobs:
           WORKFLOW_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
           # FR #4216 / #7426: Pack reads AIRC_PACK_ERGO_PASSWORD (value never echoed).
           AIRC_PACK_ERGO_PASSWORD: ${{ secrets.AIRC_PACK_ERGO_PASSWORD }}
+          # FR #6423 / #6949: Pack-BobiverseRelease downgrade gate calls gh release list.
+          GH_TOKEN: ${{ github.token }}
         run: |
           $ErrorActionPreference = 'Stop'
           $root = (Get-Location).Path
@@ -76,20 +78,18 @@ jobs:
 
           . "$root\common\scripts\Bobiverse-Common.ps1"
 
-          # Three-part MSI ProductVersion that rises per CI run (FR #4389; max 65535).
-          $verFile = Join-Path $root "src\VERSION"
-          if (-not (Test-Path -LiteralPath $verFile)) { $verFile = Join-Path $root "common\VERSION" }
-          $base = (Get-Content -LiteralPath $verFile -Raw).Trim().TrimStart('v', 'V')
-          if ($base -notmatch '^(\d+)\.(\d+)\.(\d+)') {
-            throw "VERSION '$base' must start with x.y.z"
-          }
-          $major = [int]$Matches[1]; $minor = [int]$Matches[2]
+          # Three-part MSI ProductVersion that rises per CI run and stays >= latest
+          # published release (FR #4389 / #6423; MSI build field max 65535).
+          $latest = Get-BobiverseLatestPublishedVersion -Repo 'SimonBarnett/bobiverse'
+          if (-not $latest) { throw "FR #7426 cannot resolve latest published version for CI bump" }
+          $lv = [version]$latest
           $run = [int]$env:GITHUB_RUN_NUMBER
           if ($run -lt 1) { $run = 1 }
-          if ($run -gt 65535) { $run = 65535 }
-          $msiVersion = "{0}.{1}.{2}" -f $major, $minor, $run
+          $build = [int]$lv.Build + $run
+          if ($build -gt 65535) { $build = 65535 }
+          $msiVersion = "{0}.{1}.{2}" -f $lv.Major, $lv.Minor, $build
           $msiVersion = ConvertTo-BobiverseMsiProductVersion -Version $msiVersion
-          Write-Host "INFO FR #7426 CI MSI version=$msiVersion (run=$($env:GITHUB_RUN_NUMBER))"
+          Write-Host "INFO FR #7426 CI MSI version=$msiVersion (latestPublished=$latest run=$($env:GITHUB_RUN_NUMBER))"
 
           $out = Join-Path $env:RUNNER_TEMP "airc-msi-out"
           New-Item -ItemType Directory -Force -Path $out | Out-Null

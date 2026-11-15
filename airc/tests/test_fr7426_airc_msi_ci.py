@@ -68,3 +68,7 @@ def test_fr7426_workflow_version_is_three_part_upgrade_safe():
     assert "GITHUB_RUN_NUMBER" in text or "github.run_number" in text
     assert "ConvertTo-BobiverseMsiProductVersion" in text or "msi_version" in text
     assert "65535" in text
+    # Pack downgrade gate needs gh auth in Actions (FR #6423 / #6949).
+    assert "GH_TOKEN" in text
+    assert "github.token" in text
+    assert "Get-BobiverseLatestPublishedVersion" in text
