@@ -197,6 +197,11 @@ def test_fr5059_tray_ps1_stop_before_start_and_intake():
     )
     assert "Report-BobRuntimeFailure" in t or "Invoke-BobMustReportFailure" in t
     assert "Write-TrayLog" in t or "recycleseat" in t.lower()
+    # FR #7688: still-alive is a planned refuse, not a crash intake.
+    i = t.index("FR #7688")
+    alive = t[i : i + 450]
+    assert "still-alive" in alive
+    assert "Invoke-BobTrayRecycleSeatReportFailure" not in alive
 
 
 def test_mrb5060_recycle_failure_loads_helpers_from_install_root():

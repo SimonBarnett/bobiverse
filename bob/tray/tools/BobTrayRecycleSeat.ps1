@@ -160,9 +160,11 @@ function Invoke-BobTrayRecycleSeatQueue {
                         $mayStart = $false
                         if (-not $reason) { $reason = 'stop-failed' }
                     } elseif ($still) {
+                        # FR #7688: still-alive is the planned refuse (plan_recycle_action).
+                        # The seat did not die inside the verify window. Log reason=still-alive.
+                        # Do not file a tray RuntimeError; that opened a crash issue for a live worker.
                         $mayStart = $false
                         $reason = 'still-alive'
-                        Invoke-BobTrayRecycleSeatReportFailure -Root $Root -Site ('recycleseat.still-alive:' + $seatNick) -Exception ('pid=' + $oldPid)
                     } else {
                         $mayStart = $true
                     }
