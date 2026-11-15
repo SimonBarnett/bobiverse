@@ -481,6 +481,7 @@ routes to bobiverse via the split rule.
 - A clean refusal before the seat is ready is still an exception. Report it with a machine-plus-reason dedupe key and a numeric fuel snapshot, and do not report a start that proceeds.
 - A harvest twin check must compare lesson bullets, not the session summary. Five shared tokens in the summary are not the same playbook.
 - When auto-merge is refused because the pull request is unstable, comment merge-on-green pending with the head SHA and finish. Do not poll the checks.
+- A new keyword at a call site must be a name that function assigns. Copy the plan and agent pattern, and pin that the assignment is above the call.
 
 ## Harvest digest (lessons audit 2026-10-06)
 
