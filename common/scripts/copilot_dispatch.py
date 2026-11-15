@@ -2188,6 +2188,23 @@ def file_webhook_stall(home: Path, *, repo: str, kind: str = "webhook-ensure", e
         log.warning("stall-file webhook-ensure failed repo=%s", repo)
 
 
+def _git_hook_secret() -> str | None:
+    """FR #7467: include secret on create/PATCH when file exists (never log value)."""
+    override = (os.environ.get("BOB_GIT_WEBHOOK_SECRET_FILE") or "").strip()
+    path = Path(override) if override else None
+    if path is None:
+        cfg = (os.environ.get("BOB_CONFIG_DIR") or "").strip()
+        if cfg:
+            path = Path(cfg) / "github-webhook.secret"
+    if path is None or not path.is_file():
+        return None
+    try:
+        val = path.read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    return val or None
+
+
 def ensure_repo_webhook(
     repo: str,
     *,
@@ -2212,11 +2229,19 @@ def ensure_repo_webhook(
         if str(cfg.get("url") or "").rstrip("/") == GIT_HOOK_URL.rstrip("/"):
             match = h
             break
+    secret = _git_hook_secret()
+    cfg_body: dict[str, Any] = {
+        "url": GIT_HOOK_URL,
+        "content_type": "json",
+        "insecure_ssl": "0",
+    }
+    if secret:
+        cfg_body["secret"] = secret
     body = {
         "name": "web",
         "active": True,
         "events": list(REQUIRED_HOOK_EVENTS),
-        "config": {"url": GIT_HOOK_URL, "content_type": "json", "insecure_ssl": "0"},
+        "config": cfg_body,
     }
     if match is None:
         create(body)
@@ -2224,7 +2249,10 @@ def ensure_repo_webhook(
         return {"action": "create", "repo": repo}
     events = {str(e) for e in (match.get("events") or [])}
     active = bool(match.get("active", True))
-    if want <= events and active:
+    match_cfg = match.get("config") if isinstance(match.get("config"), dict) else {}
+    # GitHub masks secrets as ********; absence of any secret marker is drift when we have one.
+    secret_missing = bool(secret) and not bool(match_cfg.get("secret"))
+    if want <= events and active and not secret_missing:
         return {"action": "ok", "repo": repo}
     hid = match.get("id")
     patch(hid, body)

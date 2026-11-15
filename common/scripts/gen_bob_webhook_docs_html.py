@@ -154,7 +154,42 @@ def main() -> None:
         page("Webhooks & API", hub_body, crumbs_html="Webhooks &amp; API"),
     )
     print("wrote docs/webhooks/index.html")
-    # FR #7478: do not overwrite the redesigned home (jeeves/www/irc-ntsa/index.html).
+
+    index_body = """
+<p><strong>bobiverse acme</strong></p>
+<p>Public HTTP front door for Bobiverse fleet webhooks (IIS + Cloudflare).
+API JSON lives under <code>/bob/v1/*</code>.</p>
+<h2>Webhooks &amp; API</h2>
+<p>Read-only documentation for each inbound and outbound webhook:</p>
+<ul>
+<li><a href="docs/webhooks/index.html">Webhooks &amp; API index</a></li>
+<li><a href="docs/webhooks/report.html">Report / digest</a> — <code>GET|POST /bob/v1/report</code></li>
+<li><a href="docs/webhooks/git.html">GitHub git</a> — <code>POST /bob/v1/git</code></li>
+<li><a href="docs/webhooks/intake.html">Intake / harvest</a> — <code>POST /bob/v1/intake</code></li>
+<li><a href="docs/webhooks/jira.html">Jira</a> — <code>GET|POST /bob/v1/jira</code></li>
+<li><a href="docs/webhooks/hours.html">Hours</a> — <code>GET|POST /bob/v1/hours</code></li>
+<li><a href="docs/webhooks/outbound-stall-wake.html">Outbound stall / ticket-closure wake</a> (FR #6391 / #6439)</li>
+<li><a href="docs/webhooks/digest-local.html">Local digest alias</a> · <a href="docs/webhooks/health-local.html">Local /health</a></li>
+</ul>
+<p class="meta">Live digest JSON: <a href="/bob/v1/report"><code>/bob/v1/report</code></a></p>
+"""
+    # FR #7467: do not clobber the rich public front door (site.css / /jeeves).
+    # Only seed a stub index when none exists yet.
+    site_index = www / "index.html"
+    if site_index.is_file() and (
+        "site.css" in site_index.read_text(encoding="utf-8")
+        or 'href="/jeeves"' in site_index.read_text(encoding="utf-8")
+    ):
+        print("kept existing front-page index.html")
+        text = site_index.read_text(encoding="utf-8")
+        if "bobiverse acme" not in text.lower():
+            raise SystemExit("index missing bobiverse acme marker")
+    else:
+        site_index.write_text(page("bobiverse acme", index_body), encoding="utf-8")
+        print("wrote index.html")
+        text = site_index.read_text(encoding="utf-8")
+        if "bobiverse acme" not in text.lower():
+            raise SystemExit("index missing bobiverse acme marker")
     print("ok", www)
 
 

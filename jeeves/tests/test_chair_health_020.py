@@ -115,7 +115,9 @@ def test_first_run_down_announces_once(tmp_path):
     assert cycle(tmp_path, h, 1800)["announce"] == []
 
 
-def test_probe_ping_is_quiet_on_the_receiver(tmp_path):
+def test_probe_ping_is_quiet_on_the_receiver(tmp_path, monkeypatch):
+    monkeypatch.delenv("BOB_GIT_WEBHOOK_SECRET_FILE", raising=False)
+    monkeypatch.delenv("BOB_CONFIG_DIR", raising=False)
     body = json.dumps({"zen": ch.PROBE_ZEN, "repository": {"full_name": ch.PROBE_REPO}}).encode()
     code, _ = bobcallback.handle_git_webhook({"X-GitHub-Event": "ping"}, body, tmp_path)
     assert code == 204
@@ -127,6 +129,34 @@ def test_probe_ping_is_quiet_on_the_receiver(tmp_path):
     assert (tmp_path / "chair-outbox.txt").exists()
     evil = json.dumps({"zen": ch.PROBE_ZEN, "repository": {"full_name": "evil/x"}}).encode()
     assert bobcallback.handle_git_webhook({"X-GitHub-Event": "ping"}, evil, tmp_path)[0] == 403
+
+
+def test_fr7467_probe_signs_when_secret_exists(tmp_path, monkeypatch):
+    cfg = tmp_path / "cfg"
+    cfg.mkdir()
+    sec = cfg / "github-webhook.secret"
+    sec.write_text("FAKE_chair_health_probe_secret_7467\n", encoding="utf-8")
+    monkeypatch.setenv("BOB_CONFIG_DIR", str(cfg))
+    seen = {}
+
+    def fake_http(method, url, body, headers):
+        seen["headers"] = dict(headers or {})
+        seen["body"] = body
+        return 204
+
+    codes = ch.probe_target("http://127.0.0.1:9", http=fake_http)
+    assert codes.get("git") == 204
+    assert (seen["headers"].get("X-Hub-Signature-256") or "").startswith("sha256=")
+    # Unsigned path under enforcement returns 401 from receiver.
+    code, body = bobcallback.handle_git_webhook(
+        {"X-GitHub-Event": "ping"},
+        seen["body"],
+        tmp_path,
+    )
+    assert code == 401
+    signed = dict(seen["headers"])
+    code, _ = bobcallback.handle_git_webhook(signed, seen["body"], tmp_path)
+    assert code == 204
 
 
 # ---------------------------------------------------------------- resync_from_github (merge, authenticated)

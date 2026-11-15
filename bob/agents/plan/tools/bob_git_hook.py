@@ -7,9 +7,9 @@ Skill: plan-bob-webhooks (orchestrator plan-git-from-plan).
     python tools/bob_git_hook.py SimonBarnett/<name> --replay-missed
 
 Steps (exit 0 only when all pass):
-1. Hook matches the fleet config exactly (create if absent, PATCH if it drifts):
+1. Hook matches the fleet config (create if absent, PATCH if it drifts):
    url https://bob.ntsa.uk/bob/v1/git, content_type json, insecure_ssl 0,
-   events issues+pull_request+push, active. Other hooks are left alone.
+   events = chair REQUIRED_HOOK_EVENTS (8), active. Supersets are accepted.
 2. A ``ping`` delivery returned 2xx (sends one if none is recorded).
 3. Issues / PRs opened BEFORE the hook existed never reached Jeeves (GitHub
    does not backfill). They are replayed to the receiver as ``opened``
@@ -18,13 +18,15 @@ Steps (exit 0 only when all pass):
 4. Jeeves' ``GIT ...`` line for the repo is seen in a local #bobiverse
    irc.log, or (replays) the item is in the digest unaccepted queue.
 
-Secrets: fleet hooks carry NO secret (the receiver does not check HMAC).
-``--secret-file`` exists for a future signed receiver; the value is read
-from the file and never printed. Never type a secret on the command line.
+Secrets: optional ``--secret-file`` (FR #7467) sets the GitHub hook secret and
+signs replay POSTs with ``X-Hub-Signature-256``. Value is read from the file
+and never printed. Never type a secret on the command line.
 """
 from __future__ import annotations
 
 import argparse
+import hashlib
+import hmac
 import json
 import os
 import subprocess
@@ -38,8 +40,17 @@ from typing import Callable, Iterable
 
 HOOK_URL = "https://bob.ntsa.uk/bob/v1/git"
 DIGEST_URL = "https://bob.ntsa.uk/bob/v1/report"
-# FR #4711: issue_comment so owner unblock comments clear needs_human.
-EVENTS = ("issues", "pull_request", "push", "issue_comment")
+# FR #5170 / #7467: match chair copilot_dispatch.REQUIRED_HOOK_EVENTS.
+EVENTS = (
+    "issues",
+    "issue_comment",
+    "pull_request",
+    "pull_request_review",
+    "push",
+    "check_suite",
+    "check_run",
+    "workflow_run",
+)
 CONTENT_TYPE = "json"
 INSECURE_SSL = "0"
 
@@ -73,7 +84,10 @@ def gh_json(gh: GhRunner, args: list, stdin: str | None = None):
 
 
 def hook_drift(hook: dict, url: str = HOOK_URL, want_secret: bool = False) -> list:
-    """Fields where ``hook`` differs from the fleet config. Empty list = matches."""
+    """Fields where ``hook`` differs from the fleet config. Empty list = matches.
+
+    Event supersets are accepted (chair may add more); missing required events drift.
+    """
     cfg = hook.get("config") or {}
     drift = []
     if cfg.get("url") != url:
@@ -82,7 +96,8 @@ def hook_drift(hook: dict, url: str = HOOK_URL, want_secret: bool = False) -> li
         drift.append("content_type")
     if str(cfg.get("insecure_ssl", "0")) != INSECURE_SSL:
         drift.append("insecure_ssl")
-    if sorted(hook.get("events") or []) != sorted(EVENTS):
+    have = {str(e) for e in (hook.get("events") or [])}
+    if not set(EVENTS) <= have:
         drift.append("events")
     if not hook.get("active", False):
         drift.append("active")
@@ -177,14 +192,24 @@ def default_post(url: str, body: bytes, headers: dict) -> int:
         return e.code
 
 
-def post_replay(event: str, payload: dict, url: str = HOOK_URL, post: Poster = default_post) -> int:
+def post_replay(
+    event: str,
+    payload: dict,
+    url: str = HOOK_URL,
+    post: Poster = default_post,
+    secret: str | None = None,
+) -> int:
+    body = json.dumps(payload, separators=(",", ":")).encode("utf-8")
     headers = {
         "Content-Type": "application/json",
         "User-Agent": "GitHub-Hookshot/bob-git-hook-replay",
         "X-GitHub-Event": event,
         "X-GitHub-Delivery": f"replay-{uuid.uuid4()}",
     }
-    return post(url, json.dumps(payload, separators=(",", ":")).encode("utf-8"), headers)
+    if secret:
+        dig = hmac.new(secret.encode("utf-8"), body, hashlib.sha256).hexdigest()
+        headers["X-Hub-Signature-256"] = f"sha256={dig}"
+    return post(url, body, headers)
 
 
 def announce_needle(event: str, repo: str, number=None, action: str = "opened") -> str:
@@ -196,16 +221,14 @@ def announce_needle(event: str, repo: str, number=None, action: str = "opened") 
 def default_log_paths() -> list:
     """Candidate #bobiverse irc.log paths (exist-check happens later).
 
-    FR #88: the legacy ``~/.agentic-irc-bobiverse`` home often loops
-    ``NICKNAME_RESERVED`` for ``bob-<machine>`` when ircBob already holds
-    that NickServ account. Also consider the dedicated git-announce home
-    and optional ``BOB_HOME`` / install ear logs (when ``BOB_IRC_DEBUG``).
+    FR #88: include dedicated git-announce home and optional ear homes; legacy
+    ``~/.agentic-irc-bobiverse`` often loops NICKNAME_RESERVED under ircBob.
     """
     home = Path(os.environ.get("USERPROFILE") or Path.home())
     paths = [
-        home / ".agentic-irc-bobiverse" / "irc.log",
-        home / ".agentic-irc-gitannounce" / "irc.log",
         home / ".bobiverse" / "irc.log",
+        home / ".agentic-irc-gitannounce" / "irc.log",
+        home / ".agentic-irc-bobiverse" / "irc.log",
     ]
     bob_home = (os.environ.get("BOB_HOME") or "").strip()
     if bob_home:
@@ -240,11 +263,7 @@ def announce_seen(needle: str, log_paths: Iterable) -> str | None:
 
 
 def diagnose_listener_logs(log_paths: Iterable, sample: int = 200) -> str | None:
-    """Return a short diagnosis when logs show a dead nick loop (FR #88).
-
-    Does **not** relax the announce gate — callers still exit 2 until a
-    real ``:Jeeves! ... PRIVMSG #bobiverse :GIT ...`` line appears.
-    """
+    """Return a short diagnosis when logs show a dead nick loop (FR #88)."""
     reserved_hits = 0
     reserved_nicks: set[str] = set()
     jeeves_privmsg = 0
@@ -355,7 +374,7 @@ def main(argv=None, gh: GhRunner = default_gh, post: Poster = default_post) -> i
             if it.get("pull_request") is not None:
                 pull = gh_json(gh, [f"repos/{repo}/pulls/{it['number']}"])
             event, payload = build_replay(it, repository, pull)
-            code = post_replay(event, payload, post=post)
+            code = post_replay(event, payload, post=post, secret=secret)
             print(f"{'OK' if 200 <= code < 300 else 'FAIL'} replay {event} opened #{it['number']} -> {code}")
             if not 200 <= code < 300:
                 return 1
