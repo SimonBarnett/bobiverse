@@ -448,7 +448,37 @@ namespace BobDialogs
                 if (envBlock != IntPtr.Zero) Marshal.FreeHGlobal(envBlock);
             }
             CloseHandle(pi.hThread); CloseHandle(pi.hProcess);
+            RememberClickedSeat(root, machine, pi.dwProcessId, agent);
             return pi.dwProcessId;
+        }
+
+        // FR #7692: a named tray click is the seat identity. Automatic is not recorded.
+        public static void RememberClickedSeat(string root, string machine, int pid, string agent)
+        {
+            try
+            {
+                if (pid <= 0 || string.IsNullOrEmpty(root) || string.IsNullOrEmpty(machine)) return;
+                if (!IsExplicitAgent(agent)) return;
+                string kind = agent.Trim().ToLowerInvariant();
+                string mid = machine.Trim().ToLowerInvariant();
+                string nick = mid + "-" + pid.ToString();
+                string path = Path.Combine(root, "run", "clicked-seats.txt");
+                Directory.CreateDirectory(Path.GetDirectoryName(path));
+                List<string> keep = new List<string>();
+                if (File.Exists(path))
+                {
+                    foreach (string line in File.ReadAllLines(path))
+                    {
+                        string[] parts = (line ?? "").Split('\t');
+                        if (parts.Length < 2) continue;
+                        if (string.Equals(parts[0].Trim(), nick, StringComparison.OrdinalIgnoreCase)) continue;
+                        keep.Add(line);
+                    }
+                }
+                keep.Add(nick + "\t" + kind + "\t" + mid);
+                File.WriteAllLines(path, keep.ToArray(), new UTF8Encoding(false));
+            }
+            catch { }
         }
 
         // FR #6429: Unicode environment block for CreateProcessW (inherit + overrides; child-only).
