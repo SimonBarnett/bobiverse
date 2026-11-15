@@ -307,10 +307,27 @@ def note_login_fail(ip: str, *, now: float | None = None) -> None:
         _LOGIN_FAIL[ip] = hits
 
 
+def butler_ico_path() -> Path:
+    """FR #7411: repo jeeves/assets, else packed install assets/jeeves-butler.ico."""
+    cands = (
+        _REPO_ROOT / "jeeves" / "assets" / "jeeves-butler.ico",
+        _REPO_ROOT / "assets" / "jeeves-butler.ico",
+        _SCRIPTS_DIR.parent / "assets" / "jeeves-butler.ico",
+        _BUTLER_ICO,
+    )
+    for p in cands:
+        if p.is_file():
+            return p
+    return cands[0]
+
+
 def ntsa_gut_logo_path() -> Path:
     """Git logo bytes: tray asset, else the docs pack copy (same file, no new art)."""
     if _TRAY_LOGO.is_file():
         return _TRAY_LOGO
+    packed = _REPO_ROOT / "assets" / "ntsa-gut-logo.png"
+    if packed.is_file():
+        return packed
     return _PACK_LOGO
 
 
@@ -1039,10 +1056,11 @@ class _Handler(BaseHTTPRequestHandler):
         auth_ip = "127.0.0.1" if public else ip
         # Public /jeeves mount and assets skip LAN reject (FR #6815 / #7274).
         if path == BUTLER_HREF:
-            if not _BUTLER_ICO.is_file():
+            ico = butler_ico_path()
+            if not ico.is_file():
                 self._send_json(404, {"ok": False, "error": "not found"})
                 return
-            self._send(200, _BUTLER_ICO.read_bytes(), "image/x-icon")
+            self._send(200, ico.read_bytes(), "image/x-icon")
             return
         if path == LOGO_HREF:
             logo = ntsa_gut_logo_path()
