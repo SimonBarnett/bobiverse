@@ -38,7 +38,7 @@ def _work(tmp_path: Path) -> Path:
 
 def _harness(tmp_path, monkeypatch, proc, *, kind="grok", state=None, sessions=None):
     folder = _work(tmp_path)
-    monkeypatch.setattr(bw, "_choose", lambda *_a, **_k: (SimpleNamespace(kind=kind), "agent.cmd", "grok.exe", None))
+    monkeypatch.setattr(bw, "_choose", lambda *_a, **_k: (SimpleNamespace(kind=kind), "agent.cmd", "grok.exe", None, True))
     monkeypatch.setattr(bw, "install_ctrl_handler", lambda _cb: True)
     rec = {"titles": [], "icons": [], "spawned": [], "killed": [], "log": []}
 
@@ -139,14 +139,27 @@ def test_fr2522_build_launch_resume_only_for_grok_maintenance(tmp_path):
 
 def test_fr2522_run_maintenance_resumes_and_records(tmp_path, monkeypatch):
     proc = FakeProc(exit_after=0)
+    # Short absolute cwd: URL-quoted pytest tmp paths exceed Win MAX_PATH under sessions/.
+    # run_maintenance uses args.work_root as the session cwd key.
+    short = Path(r"C:\tmp\j7562")
+    short.mkdir(parents=True, exist_ok=True)
+    (short / "assets").mkdir(exist_ok=True)
+    (short / "AGENTS.md").write_text("# jeeves", encoding="utf-8")
+    (short / "assets" / "jeeves-butler.ico").write_bytes(b"\x00\x00\x01\x00")
     folder, _rd, args, log, kw, rec = _harness(tmp_path, monkeypatch, proc)
-    kw["state_path"] = _state(tmp_path, folder)
-    kw["sessions_root"] = _session_dir(tmp_path, folder)
-    bw.run_maintenance(args, log, **kw)
-    argv = rec["spawned"][0].argv
-    assert "--resume" in argv and SID in argv
-    assert "RESUMES" in argv[-1]
-    assert json.loads(kw["state_path"].read_text(encoding="utf-8"))["session_id"] == SID
+    args.work_root = str(short)
+    cwd = str(short)
+    kw["state_path"] = _state(tmp_path, cwd)
+    kw["sessions_root"] = _session_dir(tmp_path, cwd)
+    try:
+        bw.run_maintenance(args, log, **kw)
+        argv = rec["spawned"][0].argv
+        assert "--resume" in argv and SID in argv
+        assert "RESUMES" in argv[-1]
+        assert json.loads(kw["state_path"].read_text(encoding="utf-8"))["session_id"] == SID
+    finally:
+        import shutil
+        shutil.rmtree(short, ignore_errors=True)
 
 
 def test_fr2522_run_maintenance_new_records_session(tmp_path, monkeypatch):

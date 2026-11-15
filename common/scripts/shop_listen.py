@@ -25,6 +25,7 @@ from typing import Callable
 
 import bobreport
 import gitclaim
+import repo_alias
 import talk_seat_pid
 
 # FR #1701: keep chair stdout / cmd-trace readable; reason is diagnostic only.
@@ -383,10 +384,16 @@ def post_activity(
     return 400
 
 
+
+def _same_repo(a: object, b: object) -> bool:
+    """FR #7562: alias-aware repo identity (priority-mcp / agentic_fomprep)."""
+    return repo_alias.repos_equivalent(str(a or ""), str(b or ""))
+
+
 def _find_unaccepted(doc: dict, repo: str, task: str, ident: str) -> int | None:
     for i, row in enumerate(doc.get("unaccepted") or []):
         if (
-            str(row.get("repo") or "") == repo
+            _same_repo(row.get("repo"), repo)
             and str(row.get("task") or "").upper() == task.upper()
             and str(row.get("id") or "") == ident
         ):
@@ -397,7 +404,7 @@ def _find_unaccepted(doc: dict, repo: str, task: str, ident: str) -> int | None:
 def _find_accepted(doc: dict, repo: str, task: str, ident: str) -> int | None:
     for i, row in enumerate(doc.get("accepted") or []):
         if (
-            str(row.get("repo") or "") == repo
+            _same_repo(row.get("repo"), repo)
             and str(row.get("task") or "").upper() == task.upper()
             and str(row.get("id") or "") == ident
         ):
@@ -406,13 +413,13 @@ def _find_accepted(doc: dict, repo: str, task: str, ident: str) -> int | None:
 
 
 def _find_done(doc: dict, repo: str, task: str, ident: str) -> int | None:
-    """Index of matching done[] row (FR #6857 stray GIVEUP/NACK)."""
+    """Index of matching done[] row (FR #6857 stray GIVEUP/NACK). FR #7562: alias-aware."""
     want = str(ident or "").strip()
     want_hash = want if want.startswith("#") else f"#{want}"
     for i, row in enumerate(doc.get("done") or []):
         if not isinstance(row, dict):
             continue
-        if str(row.get("repo") or "") != repo:
+        if not _same_repo(row.get("repo"), repo):
             continue
         if str(row.get("task") or "").upper() != str(task or "").upper():
             continue
@@ -492,7 +499,7 @@ def accept_job_by_ref(
             # already accepted by this nick?
             for row in doc.get("accepted") or []:
                 if (
-                    str(row.get("repo")) == repo
+                    _same_repo(row.get("repo"), repo)
                     and str(row.get("id")) == ident
                     and str(row.get("task") or "").upper() == task.upper()
                     and str(row.get("nick") or "") == nick
@@ -502,7 +509,7 @@ def accept_job_by_ref(
             if idx is None:
                 # try any task kind same repo#id
                 for i, row in enumerate(doc.get("unaccepted") or []):
-                    if str(row.get("repo")) == repo and str(row.get("id")) == ident:
+                    if _same_repo(row.get("repo"), repo) and str(row.get("id")) == ident:
                         idx = i
                         break
             if idx is None:
@@ -532,10 +539,10 @@ def accept_job_by_ref(
 
 
 def _find_done(doc: dict, repo: str, task: str, ident: str) -> int | None:
-    """FR #5095: locate done[] by repo+id+task (never repo+id alone)."""
+    """FR #5095: locate done[] by repo+id+task (never repo+id alone). FR #7562: alias-aware repo."""
     for i, row in enumerate(doc.get("done") or []):
         if (
-            str(row.get("repo") or "") == repo
+            _same_repo(row.get("repo"), repo)
             and str(row.get("task") or "").upper() == task.upper()
             and str(row.get("id") or "") == ident
         ):
@@ -726,7 +733,7 @@ def return_job_to_unaccepted(
             ai = _find_accepted(doc, repo, task, ident)
             if ai is None:
                 for i, row in enumerate(doc.get("accepted") or []):
-                    if str(row.get("repo")) == repo and str(row.get("id")) == ident:
+                    if _same_repo(row.get("repo"), repo) and str(row.get("id")) == ident:
                         ai = i
                         break
             # FR #6857: a row already in done[] must not re-enter unaccepted.
