@@ -480,6 +480,7 @@ routes to bobiverse via the split rule.
 - A seat-behavior acceptance is not met by a helper that only the new test imports. Wire the decision into the seat, and do not reuse JSON-RPC -32000 for an exception the server handled.
 - A clean refusal before the seat is ready is still an exception. Report it with a machine-plus-reason dedupe key and a numeric fuel snapshot, and do not report a start that proceeds.
 - A harvest twin check must compare lesson bullets, not the session summary. Five shared tokens in the summary are not the same playbook.
+- When auto-merge is refused because the pull request is unstable, comment merge-on-green pending with the head SHA and finish. Do not poll the checks.
 
 ## Harvest digest (lessons audit 2026-10-06)
 
