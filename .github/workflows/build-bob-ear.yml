@@ -26,6 +26,7 @@ on:
       - bob/tests/test_fr7202_ear_ci_frozen_imports.py
       - bob/tests/test_fr7390_ear_artifact_launchers.py
       - bob/tests/test_fr7394_ear_artifact_common.py
+      - bob/tests/test_fr7586_ear_provenance_fr_list.py
       - common/scripts/account_map.py
       - common/scripts/agent_control.py
       - common/scripts/ai_root.py
@@ -117,6 +118,7 @@ on:
       - bob/tests/test_fr7202_ear_ci_frozen_imports.py
       - bob/tests/test_fr7390_ear_artifact_launchers.py
       - bob/tests/test_fr7394_ear_artifact_common.py
+      - bob/tests/test_fr7586_ear_provenance_fr_list.py
       - common/scripts/account_map.py
       - common/scripts/agent_control.py
       - common/scripts/ai_root.py
@@ -278,7 +280,7 @@ jobs:
             "runtime_opencode_fuel_py_sha256=$($runtimeHashes['opencode_fuel.py'])"
             "build_time_utc=$builtAt"
             "builder=Build-BobEar.ps1"
-            "fr=7179,7390,7394,7548"
+            "fr=7179,7390,7394,7548,7549"
           ) | Set-Content -Encoding ascii (Join-Path $stage "provenance.txt")
           Set-Content -Encoding ascii (Join-Path $stage "bob-ear.exe.sha256") "$hash  bob-ear.exe"
           Copy-Item -LiteralPath (Join-Path $stage "provenance.txt") -Destination (Join-Path $stage "manifest.txt")
