@@ -142,10 +142,12 @@ def test_fr5286_console_prepare_framing_no_password():
     assert hr.action == "priority"
     lines = (hr.reply or "").splitlines()
     assert len(lines) == 2, hr.reply
-    assert lines[0].startswith("out id=c25bd00e seq=1 {")
+    # FR #7132 / #7731: no live allowlist is err + DONE exit=2, not a JSON out line.
+    assert lines[0].startswith("err id=c25bd00e seq=1 code=not-configured")
+    assert "priority_not_installed" in lines[0]
     assert "PRIORITY prepare" not in lines[0]
     assert "DONE" not in lines[0]
-    assert lines[1] == "DONE id=c25bd00e exit=1"
+    assert lines[1] == "DONE id=c25bd00e exit=2"
     assert re.match(r"^DONE id=[0-9a-f]{8} exit=\d+$", lines[1])
     text = (hr.reply or "") + " " + (hr.text or "")
     assert "password=" not in text.lower()
@@ -171,7 +173,7 @@ def test_fr5525_prepare_minted_id_matches_both_lines():
     out_id = lines[0].split()[1].removeprefix("id=")
     done_id = lines[1].split()[1].removeprefix("id=")
     assert len(out_id) == 8 and out_id == done_id
-    assert lines[1] == f"DONE id={done_id} exit=1"
+    assert lines[1] == f"DONE id={done_id} exit=2"
 
 
 def test_fr5525_prepare_large_body_keeps_done_intact():
@@ -197,6 +199,8 @@ def test_fr5525_prepare_large_body_keeps_done_intact():
         nick="tm_console",
         job_protocol=MagicMock(),
     )
+    # FR #7731: the absent-allowlist gate would return before the oversized body.
+    core._priority_optional_denied = lambda **_kw: None
     # Force worker path with oversized body via monkeypatched loader.
     import airc_console as mod
 
