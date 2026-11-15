@@ -66,11 +66,19 @@ class FakeChair:
                "_maybe_cleargiveup",  # FR #5135
                "_maybe_unpin",  # FR #6407
                "_maybe_pin",  # FR #6407
+               # FR #7560: !assign calls these after Client gained the named-row path (FR #7224).
+               "_assign_row_named", "_finish_assign_result",
+               "_resume_assign_after_names", "_expire_pending_names_assign",
                "_cc", "_ear_machine", "_account_of",
                "_principal", "_jobs", "_jobs_status_lines", "_whois_hint", "_cmd_trace", "_cmd_reply", "_privs", "_privs_skip_whois",
                "_on_channel_names", "_workers"):
         locals()[_n] = getattr(irc_agent.Client, _n)
     del _n
+
+    def _names_refresh_for_assign(self, shop_ch: str):
+        # FR #7560: unit FakeChair has no live NAMES/366; do not park !assign as waiting.
+        self.send(f"NAMES {shop_ch}")
+        return None
 
     def to(self, nick):
         return [m for n, m in self.pms if n.lower() == nick.lower()]
