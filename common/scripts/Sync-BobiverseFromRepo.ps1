@@ -376,6 +376,23 @@ foreach ($d in @('scripts', 'third_party')) {
 }
 } # end -not $skipStaleCompose (scripts/third_party)
 
+# FR #7455: compose jeeves/www -> InstallRoot\www so Install-BobWebhooks.ps1 finds ..\www\irc-ntsa from scripts\.
+if (-not $skipStaleCompose) {
+    $wwwTracked = Join-Path $clone 'jeeves\www'
+    if (Test-Path -LiteralPath $wwwTracked) {
+        $wwwDest = Join-Path $InstallRoot 'www'
+        $null = New-Item -ItemType Directory -Force -Path $wwwDest
+        $roboWww = @($wwwTracked, $wwwDest, '/E', '/NFL', '/NDL', '/NJH', '/NJS', '/nc', '/ns', '/np')
+        & robocopy.exe @roboWww | Out-Null
+        $rcWww = $LASTEXITCODE
+        if ($rcWww -ge 8) {
+            Write-Host "WARN sync-robocopy www exit=$rcWww"
+        } else {
+            Write-Host 'INFO sync-robocopy www ok (jeeves\www -> www; FR #7455)'
+        }
+    }
+}
+
 # FR #2581: when ff is blocked by dirty hotpatches, the robocopy above still
 # copies a stale Update-BobiverseService.ps1. Overlay origin/<Branch> tip so
 # #2563 soft-fail / ForceCheck escape reaches flat scripts\ without a clean ff.
