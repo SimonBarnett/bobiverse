@@ -44,15 +44,11 @@ def test_fr7456_airc_card_has_snippet_and_copy_button():
 def test_fr7456_snippet_msi_url_matches_download_link():
     html = PAGE.read_text(encoding="utf-8")
     card = _airc_card(html)
-    msi = re.search(
-        r'data-role="msi"\s+href="([^"]+\.msi)"',
-        card,
-        re.IGNORECASE,
-    )
-    assert msi, "airc download MSI link missing"
-    url = msi.group(1)
-    assert f"$msiUrl = '{url}'" in card or f'$msiUrl = "{url}"' in card
-    assert "airc" in url.lower() and url.lower().endswith(".msi")
+    assert 'data-role="msi"' in card
+    assert "$msiUrl = ''" in card or '$msiUrl = ""' in card
+    # Runtime fill copies the resolved MSI href into the snippet (FR #7530).
+    assert "syncAircInstallSnippet" in html
+    assert "$msiUrl = '" in html
 
 
 def test_fr7456_snippet_has_no_secret_looking_values():

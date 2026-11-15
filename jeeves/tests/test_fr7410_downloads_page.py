@@ -31,29 +31,19 @@ def test_fr7410_downloads_index_exists_and_has_three_tiles():
     assert "Jeeves" in text
     assert "airc" in text
     assert 'href="/downloads"' in text or 'aria-current="page"' in text
-    # Primary download anchors for each product
+    # FR #7530: names come from the latest-release API, not a stamped version.
+    assert "releases/latest" in text
+    assert "/downloads/error.html" in text
     for product in ("bob", "jeeves", "airc"):
-        assert re.search(
-            rf'href="https://github.com/SimonBarnett/bobiverse/releases/latest/download/{product}-[^"/]+\.msi"',
-            text,
-        ), f"missing latest/download link for {product}"
+        assert f'data-product="{product}"' in text
 
 
 def test_fr7410_download_link_patterns_match_asset_policy():
     text = (DOWNLOADS / "index.html").read_text(encoding="utf-8")
-    hrefs = re.findall(
-        r'href="(https://github.com/SimonBarnett/bobiverse/releases/latest/download/[^"]+)"',
-        text,
-    )
-    msi_hrefs = [h for h in hrefs if h.lower().endswith(".msi")]
-    assert len(msi_hrefs) >= 3
-    names = [h.rsplit("/", 1)[-1] for h in msi_hrefs]
+    assert "releases/latest/download/" in text
+    assert "-latest.msi" in text
     for product in ("bob", "jeeves", "airc"):
-        assert any(
-            n.lower() == f"{product}-latest.msi"
-            or re.match(rf"^{product}-\d+\.\d+\.\d+\.msi$", n, re.I)
-            for n in names
-        ), f"no bob/jeeves/airc MSI pattern for {product}: {names}"
+        assert product + "-latest.msi" in text or f"'{product}'" in text or f'"{product}"' in text
 
 
 def test_fr7410_site_css_tokens_present():
