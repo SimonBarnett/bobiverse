@@ -185,14 +185,10 @@ def test_fr6502_pop_pending_does_not_drop_concurrent_spool(tmp_path: Path):
         gitclaim._spool_pending(home, _fr(i))
 
     seen: set[str] = set()
-    stop = threading.Event()
 
     def spammer() -> None:
         for i in range(100, 300):
-            if stop.is_set():
-                break
             gitclaim._spool_pending(home, _fr(i))
-            time.sleep(0.0005)
 
     t = threading.Thread(target=spammer)
     t.start()
@@ -200,7 +196,6 @@ def test_fr6502_pop_pending_does_not_drop_concurrent_spool(tmp_path: Path):
         for c in gitclaim._pop_all_pending(home):
             seen.add(c.id)
         time.sleep(0.001)
-    stop.set()
     t.join()
     for c in gitclaim._pop_all_pending(home):
         seen.add(c.id)

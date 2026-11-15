@@ -31,6 +31,8 @@ def test_fr7547_build_jeeves_runs_pytest_before_build():
     assert pytest_i < build_i, (names, pytest_i, build_i)
     # Failing suite must fail the job (no soft-skip).
     assert "throw" in text and "pytest exit" in text
+    # FR #7639: a red run must name the failed tests in the log.
+    assert "-rfE" in text
     assert "test_fr7547_build_jeeves_pytest.py" in text
 
 

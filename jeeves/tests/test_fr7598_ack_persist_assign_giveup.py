@@ -170,14 +170,14 @@ def test_giveup_missing_does_not_ledger_block(tmp_path, monkeypatch):
     assert result.get("webhook") is None
 
 def test_fr7598_irc_agent_skips_on_done_for_missing_giveup():
-    """Chair must not WorkerTracker.on_done when shop-listen status is missing."""
+    """Missing GIVEUP/NACK idles only when the seat holds no other accepted job."""
     root = Path(__file__).resolve().parents[2]
     src = (root / "common" / "scripts" / "irc_agent.py").read_text(encoding="utf-8")
     # FR #7598 branch sits with the FR #6857 already-done guard.
     assert "missing-giveup-no-idle" in src
     assert 'status == "missing"' in src
     start = src.index("elif verb in (\"DONE\", \"NACK\", \"GIVEUP\"):")
-    chunk = src[start : start + 900]
+    chunk = src[start : start + 1600]
     assert "already-done" in chunk
     assert 'status == "missing"' in chunk
     assert "on_done" in chunk

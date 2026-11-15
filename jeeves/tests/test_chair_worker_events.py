@@ -141,7 +141,7 @@ def test_ack_sets_doing_and_done_sets_idle(chair):
     say(chair, SEAT, "#marchhare", "ACK FR o/r#5 fix the thing")
     w = listed(chair)[0]
     assert w["state"] == "doing" and w["work"] == "r FR #5"
-    say(chair, SEAT, "#marchhare", "DONE FR o/r#5 PASS merged")
+    say(chair, SEAT, "#marchhare", "DONE FR o/r#5 https://github.com/o/r/pull/5")
     w = listed(chair)[0]
     assert w["state"] == "idle" and w["work"] == ""
 
@@ -255,7 +255,7 @@ def test_assign_sets_doing_with_short_status_before_ack(chair):
     assert (w["nick"], w["state"], w["work"]) == (SEAT, "offered", "r FR #68")   # FR #663: offered until the ACK
     say(chair, SEAT, "#marchhare", "ACK FR o/r#68 long title that must not be in the status")
     assert listed(chair)[0]["work"] == "r FR #68"
-    say(chair, SEAT, "#marchhare", "DONE FR o/r#68 PASS merged")
+    say(chair, SEAT, "#marchhare", "DONE FR o/r#68 https://github.com/o/r/pull/68")
     assert listed(chair)[0]["state"] == "idle"
 
 
