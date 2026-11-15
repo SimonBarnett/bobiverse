@@ -1,0 +1,34 @@
+"""FR #7681: Windows 0xffffffff with empty stderr is an external kill, not an intake."""
+from __future__ import annotations
+
+import bob_worker as bw
+
+
+def test_fr7681_ffffffff_without_stderr_does_not_file():
+    posts = []
+    out = bw.report_agent_cli_nonzero_exit(
+        exit_code=0xFFFFFFFF,
+        raw_code=-1,
+        job_key="MRB SimonBarnett/bobiverse#7678",
+        machine="marchhare",
+        nick="marchhare-24160",
+        kind="grok",
+        agent_pid=31488,
+        stderr_tail="",
+        filer_post=lambda p: posts.append(p) or {"ok": True},
+    )
+    assert out.get("skipped") is True
+    assert out.get("reason") == "external-kill"
+    assert posts == []
+
+
+def test_fr7681_exit_one_without_stderr_still_files():
+    posts = []
+    bw.report_agent_cli_nonzero_exit(
+        exit_code=1,
+        job_key="FR owner/repo#1",
+        machine="box",
+        stderr_tail="",
+        filer_post=lambda p: posts.append(p) or {"ok": True},
+    )
+    assert len(posts) == 1
