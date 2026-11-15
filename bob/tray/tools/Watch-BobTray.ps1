@@ -322,7 +322,7 @@ function Write-TrayLog([string]$m) {
 }
 
 # t794u/t797u/t798u helpers: Exit ordering + detached service stop/restart, and the install inventory for the About dialog.
-foreach ($helper in @('BobTrayLifecycle.ps1', 'Get-BobInstallInfo.ps1', 'BobTrayStartWorker.ps1', 'BobTrayRecycleSeat.ps1', 'BobTrayDialogs.ps1')) {
+foreach ($helper in @('BobTrayLifecycle.ps1', 'Get-BobInstallInfo.ps1', 'BobTrayClickedSeats.ps1', 'BobTrayStartWorker.ps1', 'BobTrayRecycleSeat.ps1', 'BobTrayDialogs.ps1')) {
     $helperPath = Join-Path $RepoRoot ('tools\' + $helper)
     if (Test-Path -LiteralPath $helperPath) { . $helperPath } else { Write-TrayLog ('missing helper ' + $helperPath) }
 }
@@ -2108,6 +2108,10 @@ function Start-BobTrayWorkerExe {
             if (-not $seatForLog) { $seatForLog = 'unknown' }
             $trigForLog = if ($Trigger) { [string]$Trigger } else { 'other' }
             Write-BobTraySeatStart -Log { param($m) Write-TrayLog $m } -SeatId $seatForLog -WorkerPid ([int]$childPid) -Trigger $trigForLog
+            # FR #7692: a named click is the seat identity. Automatic has no kind and is not recorded.
+            if ($trigForLog -eq 'menu' -and $explicit -and $explicit -ne 'auto' -and $mid) {
+                Add-BobTrayClickedSeat -Root $RepoRoot -Nick ('{0}-{1}' -f $mid.ToLowerInvariant(), [int]$childPid) -Kind $explicit -Machine $mid
+            }
         }
         return [int]$childPid   # t810u: the remote !startworker path reports it
     }
@@ -4196,7 +4200,7 @@ $startWorkerTimer.Add_Tick({
                     if (Get-Command Invoke-BobTrayRecycleSeatQueue -ErrorAction SilentlyContinue) {
                         $rsDir = Get-BobTrayRecycleSeatDir -Root $RepoRoot
                         [void](Invoke-BobTrayRecycleSeatQueue -Root $RepoRoot -Dir $rsDir `
-                                -Launch { param($seatNick) Start-BobTrayWorkerExe -Mode 'agent' -Quiet -Trigger 'restore-after-recycle' -SeatId $seatNick } `
+                                -Launch { param($seatNick, $kind) Start-BobTrayWorkerExe -Mode 'agent' -Agent $kind -Quiet -Trigger 'restore-after-recycle' -SeatId $seatNick } `
                                 -Log { param($m) Write-TrayLog $m })
                     }
                     if (Test-BobTrayEngineMode) {
