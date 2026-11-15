@@ -17,6 +17,8 @@ def test_mrb4326_is_stale_ignores_stamp_before_engine_start():
     chunk = t[i : i + 1800]
     assert "engineStartedUtc" in chunk
     assert "m < engineStartedUtc" in chunk
+    # Within ColdStartGraceSeconds leftover is ignored (FR #4317); after grace it is stale (FR #7508).
+    assert "ColdStartGraceSeconds" in chunk
     assert "return false" in chunk
 
 

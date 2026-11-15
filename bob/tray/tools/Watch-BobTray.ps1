@@ -1027,10 +1027,12 @@ function Get-BobTrayDigestReportUrl {
     return 'https://bob.ntsa.uk/bob/v1/report'
 }
 
-function Get-BobTrayMachineGrokChatPcent {
+function Get-BobTrayMachineXaiWeekly {
     <#
-      FR #356: read machines.<id>.pcent["grok-chat"] from the digest once at start.
-      Returns [int] when present (including 0); $null when blank/missing/unreachable.
+      FR #7498: read machines.<id>.xai_weekly from the digest (remaining_pct, account,
+      period_end, fetched_at). Never pcent.grok-chat / cursor_pools / bare weekly ---
+      those are Cursor Sand leftovers, not the xAI weekly meter.
+      Returns a pscustomobject when the meter exists; $null when blank/missing/unreachable.
     #>
     param(
         [string]$MachineId,
@@ -1043,7 +1045,7 @@ function Get-BobTrayMachineGrokChatPcent {
     $mid = $mid.Trim().ToLowerInvariant()
     $doc = $Digest
     if (-not $doc) {
-        # Prefer hover cache when it already carries pcent (avoids a second GET on every paint).
+        # Prefer hover cache when it already carries digest machines (avoids a second GET).
         if ($script:lastFuelSnapshot -and $script:lastFuelSnapshot.digest_machines) {
             $doc = [pscustomobject]@{ machines = $script:lastFuelSnapshot.digest_machines }
         }
@@ -1059,7 +1061,7 @@ function Get-BobTrayMachineGrokChatPcent {
             $doc = [System.Text.Encoding]::UTF8.GetString($buf) | ConvertFrom-Json
         }
         catch {
-            Write-TrayLog ('agents: digest fuel read failed: ' + $_.Exception.Message)
+            Write-TrayLog ('agents: digest xai_weekly read failed: ' + $_.Exception.Message)
             return $null
         }
     }
@@ -1078,22 +1080,53 @@ function Get-BobTrayMachineGrokChatPcent {
             }
         }
     }
-    if (-not $ent -or -not $ent.pcent) { return $null }
-    $raw = $null
-    try { $raw = $ent.pcent.'grok-chat' } catch { $raw = $null }
-    if ($null -eq $raw) {
-        try { $raw = $ent.pcent.psobject.Properties['grok-chat'].Value } catch { $raw = $null }
+    if (-not $ent) { return $null }
+    $xw = $null
+    try {
+        $names = @($ent.PSObject.Properties.Name)
+        if ($names -contains 'xai_weekly') { $xw = $ent.xai_weekly }
+    } catch { $xw = $null }
+    if ($null -eq $xw) { return $null }
+    $remain = $null
+    try {
+        if ($null -ne $xw.remaining_pct -and [string]$xw.remaining_pct -ne '') {
+            $remain = [int]$xw.remaining_pct
+        }
+    } catch { $remain = $null }
+    $acct = $null
+    try { if ($xw.account) { $acct = [string]$xw.account } } catch { }
+    $periodEnd = $null
+    try { if ($xw.period_end) { $periodEnd = [string]$xw.period_end } } catch { }
+    $fetchedAt = $null
+    try { if ($xw.fetched_at) { $fetchedAt = [string]$xw.fetched_at } } catch { }
+    $fresh = $null
+    try {
+        if ($null -ne $xw.PSObject.Properties['fresh']) { $fresh = [bool]$xw.fresh }
+    } catch { $fresh = $null }
+    $age = $null
+    try {
+        if ($null -ne $xw.age_s -and [string]$xw.age_s -ne '') { $age = [int]$xw.age_s }
+    } catch { $age = $null }
+    $err = $null
+    try { if ($xw.error) { $err = [string]$xw.error } } catch { }
+    return [pscustomobject]@{
+        remaining_pct = $remain
+        account       = $acct
+        period_end    = $periodEnd
+        fetched_at    = $fetchedAt
+        fresh         = $fresh
+        age_s         = $age
+        error         = $err
+        source        = 'digest-xai_weekly'
     }
-    if ($null -eq $raw -or [string]$raw -eq '') { return $null }
-    try { return [int]$raw } catch { return $null }
 }
 
 function Resolve-BobTrayGrokFuelAtStart {
     <#
-      Grok watch-seat start fuel gate (CAST IRON Simon 2026-09-27 + FR #430):
+      Grok watch-seat start fuel gate (CAST IRON Simon 2026-09-27 + FR #430 + FR #7498):
       Local weekly remaining first (TipForm machine tile / Get-BobWeeklyRemaining).
-      Digest pcent.grok-chat is Cursor Sand - never use it when a local weekly doc exists
-      (Grok 1.0.41 n/a included). Legacy digest fill only when no local unified.jsonl.
+      Digest fill uses machines.<id>.xai_weekly only (never pcent.grok-chat / cursor_pools /
+      bare weekly --- those are Cursor Sand leftovers). Fill only when no local unified.jsonl.
       - remaining > 0  => pool
       - remaining = 0  => session-key (dialog) - confirmed exhaustion only
       - remaining blank: Get-BobGrokAvailability - verified local auth+period => pool;
@@ -1108,11 +1141,17 @@ function Resolve-BobTrayGrokFuelAtStart {
     if (Get-Command Get-BobWeeklyRemaining -ErrorAction SilentlyContinue) {
         try { $week = Get-BobWeeklyRemaining } catch { $week = $null }
     }
-    # Digest pcent.grok-chat is Cursor Sand (Write-BobIrcStatus), not xAI weekly.
-    # Only use it as a legacy fill when this host has NO local unified.jsonl reading
-    # (hermetic / peer-only FR #356 cases). Local n/a => Get-BobGrokAvailability.
+    $remainReason = 'local-remaining-pct'
+    # FR #7498: digest fill from xai_weekly only when this host has NO local unified.jsonl.
+    # Local n/a => Get-BobGrokAvailability.
     if ($null -eq $remain -and -not $week -and $Digest) {
-        $remain = Get-BobTrayMachineGrokChatPcent -MachineId $MachineId -Digest $Digest
+        $xw = Get-BobTrayMachineXaiWeekly -MachineId $MachineId -Digest $Digest
+        if ($xw -and $null -ne $xw.remaining_pct -and [string]$xw.remaining_pct -ne '') {
+            try {
+                $remain = [int]$xw.remaining_pct
+                $remainReason = 'digest-xai_weekly'
+            } catch { $remain = $null }
+        }
     }
     if ($null -ne $remain) {
         if ([int]$remain -gt 0) {
@@ -1121,7 +1160,7 @@ function Resolve-BobTrayGrokFuelAtStart {
                 fuel_mode    = 'pool'
                 action       = 'start-pool'
                 availability = 'available'
-                reason       = 'legacy-remaining-pct'
+                reason       = $remainReason
             }
         }
         return [pscustomobject]@{
@@ -1129,7 +1168,7 @@ function Resolve-BobTrayGrokFuelAtStart {
             fuel_mode    = 'session-key'
             action       = 'prompt-session'
             availability = 'exhausted'
-            reason       = 'legacy-remaining-pct-zero'
+            reason       = ($remainReason + '-zero')
         }
     }
     $auth = $null
@@ -1369,7 +1408,7 @@ function Start-BobTrayAgentWatch {
     $kind = ([string]$Agent.kind).ToLowerInvariant()
     $sessionEnv = $null
     if ($kind -eq 'grok') {
-        # Local weekly first (CAST IRON); digest pcent only fills nulls.
+        # Local weekly first (CAST IRON); digest xai_weekly only fills nulls (FR #7498).
         $fuel = Resolve-BobTrayGrokFuelAtStart
         if ($fuel.action -eq 'stop-unknown') {
             $why = if ($fuel.reason) { [string]$fuel.reason } else { 'unknown' }

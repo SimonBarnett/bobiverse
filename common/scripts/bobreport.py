@@ -8810,6 +8810,24 @@ def publish_local_peer_fuel(
         _last_fuel_publish_diag["xai_weekly_error"] = type(exc).__name__
         mark_pool_fetch("xai", now_f, ok=False, error=type(exc).__name__)
         peer = enrich_peer_keep_last_good_xai_weekly(peer, error="read-failed")
+    # FR #7503: stale xAI reading (>2 min without a live fetch) is an exception.
+    try:
+        import ear_pool_stale_report as _epsr
+
+        _meter = peer.get("xai_weekly") if isinstance(peer.get("xai_weekly"), dict) else {}
+        _fa = _meter.get("fetched_at") or peer.get("xai_weekly_fetched_at")
+        _err = _meter.get("error") or (_pool_fetch_state.get("xai") or {}).get("error")
+        _last_ok = (_pool_fetch_state.get("xai") or {}).get("last_ok")
+        _epsr.evaluate_and_report_xai_pool_stale(
+            machine_id=mid,
+            fetched_at=_fa,
+            last_error=_err,
+            now=now_f,
+            last_ok_epoch=_last_ok,
+            pool="xai_weekly",
+        )
+    except Exception:
+        pass
     # FR #7255: Jeeves owns OpenCode fleet fetch. Ear must not hit the provider.
     _last_fuel_publish_diag["opencode_acquisition"] = "jeeves-fleet"
     # FR #6248 / #6279 / #7400: attach ear-owned grok_account; never relabel
