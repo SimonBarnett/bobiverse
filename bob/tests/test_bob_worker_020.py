@@ -748,7 +748,7 @@ def test_plan_mode_is_hosted_in_this_console_and_ends_with_its_agent(tmp_path, m
 
     monkeypatch.setattr(bw, "default_spawn", spawn)
     dec = bw.select_agent(bw.Fuel(5, 5, 5, "available"), CUR, GRK)
-    monkeypatch.setattr(bw, "_choose", lambda a, l, f, m: (dec, CUR, GRK, bw.Fuel(5, 5, 5, "available")))
+    monkeypatch.setattr(bw, "_choose", lambda a, l, f, m: (dec, CUR, GRK, bw.Fuel(5, 5, 5, "available"), True))
     hooks: list = []
     monkeypatch.setattr(bw, "install_ctrl_handler", lambda f: hooks.append(f) or True)
     out: list = []
