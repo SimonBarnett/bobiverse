@@ -390,6 +390,34 @@ function Write-BobTrayEngineAliveStamp {
     } catch { return $false }
 }
 
+function Write-BobTrayStartupWatchdogSeed {
+    <#
+      FR #7601: write engine.alive + tray-status.json before the first hover/digest fetch
+      so HealEngine / Ensure-BobTrayRunning never see a silent startup hang as a dead engine.
+    #>
+    param(
+        [string]$Dir,
+        [string]$Root
+    )
+    $d = if ($Dir) { [string]$Dir } else { [string]$script:startWorkerDir }
+    $r = if ($Root) { [string]$Root } else { [string]$RepoRoot }
+    try {
+        if (Get-Command Write-BobTrayAlive -ErrorAction SilentlyContinue -and $d) {
+            [void](Write-BobTrayAlive -Dir $d)
+        }
+    } catch { }
+    [void](Write-BobTrayEngineAliveStamp -Dir $d)
+    try {
+        if ($r -and (Get-Command Write-BobTrayStatusSnapshot -ErrorAction SilentlyContinue) -and (Get-Command New-BobTrayStatusModel -ErrorAction SilentlyContinue)) {
+            $mid = [string]$env:BOB_MACHINE_ID
+            $model = New-BobTrayStatusModel -Hover $null -AlertKind 'none' -Alerts @() -Version '' `
+                -Machine $mid -Title 'starting' -Short 'starting' -Attention $false -AttentionSeq 0 -Pulse $false
+            [void](Write-BobTrayStatusSnapshot -Root $r -Model $model)
+        }
+    } catch { }
+    return $true
+}
+
 function Invoke-BobTrayEngineReportTimeout {
     param(
         [Parameter(Mandatory)][string]$StepName,
@@ -511,6 +539,40 @@ function Invoke-BobTrayEngineSelfTest {
     if ($alive2.LastWriteTimeUtc -le $t1) { throw 'alive stamp did not advance after hung step' }
     $log2 = Get-Content -LiteralPath (Get-BobTrayEngineCycleLogPath -Root $root) -Encoding ascii -Raw
     if ($log2 -notmatch 'step-timeout name=hung') { throw 'hung step not named in log' }
+    # FR #7601: startup seed writes engine.alive + tray-status.json before a hung first hover;
+    # alive stamp must keep advancing while that hung fetch is in flight.
+    if (Get-Command Write-BobTrayStartupWatchdogSeed -ErrorAction SilentlyContinue) {
+        function script:New-BobTrayStatusModel {
+            param($Hover, [string]$AlertKind = 'none', [string[]]$Alerts = @(), [string]$Version = '', [string]$Machine = '', [string]$Title = '',
+                [string]$Short = '', [bool]$Attention = $false, [int64]$AttentionSeq = 0, [bool]$Pulse = $false)
+            return [ordered]@{ v = 1; title = $Title; short = $Short; machine = $Machine; alert = $AlertKind }
+        }
+        function script:Write-BobTrayStatusSnapshot {
+            param([string]$Root, $Model)
+            $dir = Join-Path $Root 'run'
+            if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Force -Path $dir | Out-Null }
+            $path = Join-Path $dir 'tray-status.json'
+            [IO.File]::WriteAllText($path, '{"v":1,"title":"starting"}', (New-Object System.Text.UTF8Encoding $false))
+            return $path
+        }
+        function script:Write-BobTrayAlive {
+            param([string]$Dir)
+            if (-not (Test-Path -LiteralPath $Dir)) { New-Item -ItemType Directory -Force -Path $Dir | Out-Null }
+            Set-Content -LiteralPath (Join-Path $Dir 'tray.alive') -Value ('{0} pid={1}' -f [datetime]::UtcNow.ToString('o'), $PID) -Encoding ASCII
+            return $true
+        }
+        Remove-Item -LiteralPath (Join-Path $script:startWorkerDir 'engine.alive') -Force -ErrorAction SilentlyContinue
+        [void](Write-BobTrayStartupWatchdogSeed -Dir $script:startWorkerDir -Root $root)
+        if (-not (Test-Path -LiteralPath (Join-Path $script:startWorkerDir 'engine.alive'))) { throw 'FR7601 seed missing engine.alive' }
+        if (-not (Test-Path -LiteralPath (Join-Path $root 'run\tray-status.json'))) { throw 'FR7601 seed missing tray-status.json' }
+        $tSeed = (Get-Item -LiteralPath (Join-Path $script:startWorkerDir 'engine.alive')).LastWriteTimeUtc
+        $hungStart = Invoke-BobTrayEngineStep -Name 'startup-update-hover' -Root $root -TimeoutSec 2 -Body { Start-Sleep -Seconds 600 }
+        if (-not $hungStart.timedOut) { throw 'FR7601 startup hover did not time out' }
+        Start-Sleep -Milliseconds 1100
+        Write-BobTrayEngineAliveStamp -Dir $script:startWorkerDir | Out-Null
+        $tAfter = (Get-Item -LiteralPath (Join-Path $script:startWorkerDir 'engine.alive')).LastWriteTimeUtc
+        if ($tAfter -le $tSeed) { throw 'FR7601 alive stamp did not advance during hung startup hover' }
+    }
     Write-Output 'FR7579_SELFTEST_OK'
 }
 
@@ -4069,19 +4131,28 @@ $script:trayAliveMsg = [pscustomobject]@{
 $script:trayAliveSub = Register-ObjectEvent -InputObject $script:trayAliveTimer -EventName Elapsed -Action {
     # FR #5145 / #5346: share-safe write via Write-BobTrayAlive (races with bob-tray.exe).
     # Do not Set-Content here. Sharing miss is not a crash — never must-report / intake.
+    # FR #7579: advance engine.alive on ThreadPool too (poll UI hang must not freeze HealEngine).
+    # FR #7601: always write engine.alive here with raw File I/O --- event runspaces often
+    # lack script helpers, and a hung first hover must not freeze HealEngine's stamp.
     try {
         $msg = $Event.MessageData
         $dir = if ($msg -and $msg.Dir) { [string]$msg.Dir } else { [string]$msg }
         if (-not $dir) { return }
+        if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Force -Path $dir | Out-Null }
+        try {
+            $ef = Join-Path $dir 'engine.alive'
+            $ebytes = [Text.Encoding]::ASCII.GetBytes(('{0} pid={1}' -f [datetime]::UtcNow.ToString('o'), $PID))
+            $efs = [IO.File]::Open($ef, [IO.FileMode]::OpenOrCreate, [IO.FileAccess]::Write,
+                [IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete)
+            try { $efs.SetLength(0); $efs.Write($ebytes, 0, $ebytes.Length); $efs.Flush() } finally { $efs.Dispose() }
+        } catch { }
         if (Get-Command Write-BobTrayAlive -ErrorAction SilentlyContinue) {
             [void](Write-BobTrayAlive -Dir $dir)
-            # FR #7579: advance engine.alive on ThreadPool too (poll UI hang must not freeze HealEngine).
             if (Get-Command Write-BobTrayEngineAliveStamp -ErrorAction SilentlyContinue) {
                 [void](Write-BobTrayEngineAliveStamp -Dir $dir)
             }
             return
         }
-        if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Force -Path $dir | Out-Null }
         $f = Join-Path $dir 'tray.alive'
         $bytes = [Text.Encoding]::ASCII.GetBytes(('{0} pid={1}' -f [datetime]::UtcNow.ToString('o'), $PID))
         $fs = [IO.File]::Open($f, [IO.FileMode]::OpenOrCreate, [IO.FileAccess]::Write,
@@ -4121,10 +4192,29 @@ $pulse.Add_Tick({
 # Exception hooks registered at script start (before Controls). Do not call
 # SetUnhandledExceptionMode again here - it fails after NotifyIcon/TipForm exist.
 
+# FR #7601 / #4317 / #7579: seed engine.alive + tray-status.json BEFORE the first hover/digest
+# fetch. A hung Invoke-WebRequest on startup must not leave HealEngine with a stale stamp.
+[void](Write-BobTrayStartupWatchdogSeed -Dir $script:startWorkerDir -Root $RepoRoot)
+
 try { Clear-BobTrayGrokSessionDirs } catch { }
 Start-JobsWatcher
 try { Start-IrcWatcher } catch { Write-TrayLog ('irc watcher: ' + $_.Exception.Message) }
-Update-Hover
+# FR #7601: first hover under timed step (same as poll) so a hung digest cannot block tray-up.
+# Data/snapshot in a job; TipForm paint stays on this thread after the step returns or times out.
+[void](Invoke-BobTrayEngineStep -Name 'startup-update-hover' -Root $RepoRoot -TimeoutSec ([int]$script:BobTrayEngineStepTimeoutSec) -ArgumentList @($RepoRoot, $PSScriptRoot) -Body {
+    param($Root, $Tools)
+    $dialogs = Join-Path $Tools 'BobTrayDialogs.ps1'
+    if (Test-Path -LiteralPath $dialogs) { . $dialogs }
+    $psd1 = Join-Path $Root 'src\BobBridge.psd1'
+    if (Test-Path -LiteralPath $psd1) { Import-Module $psd1 -Force }
+    $h = Get-BobTrayHover
+    if (Get-Command Write-BobTrayStatusSnapshot -ErrorAction SilentlyContinue -and $h) {
+        $model = New-BobTrayStatusModel -Hover $h -AlertKind 'none' -Alerts @() -Version '' -Machine ([string]$env:BOB_MACHINE_ID) -Title ([string]$h.title) -Short ([string]$h.short) -Attention $false -AttentionSeq 0 -Pulse $false
+        [void](Write-BobTrayStatusSnapshot -Root $Root -Model $model)
+    }
+})
+# Do not call bare Update-Hover here: Get-BobTrayHover can hang past TimeoutSec under PS 5.1
+# (FR #7601). Poll's timed update-hover step refreshes TipForm/snapshot after tray-up.
 # First digest heartbeat immediately (then every PollSec).
 try {
     if (Get-Command Write-BobIrcStatus -ErrorAction SilentlyContinue) { Write-BobIrcStatus | Out-Null }
@@ -4139,10 +4229,9 @@ if (-not (Test-BobTrayEngineMode)) {
     $pulse.Start()
 }
 $poll.Start()
-[void](Write-BobTrayAlive -Dir $script:startWorkerDir)   # seed immediately; trayAliveTimer keeps it fresh (FR #2697)
-# FR #4317: seed engine.alive at tray-up so HealEngine sees a post-start stamp before the first tick
-# (covers cold start and deploy skew where an old leftover stamp would otherwise look eternally stale).
-# FR #7579 / #4317: seed engine.alive at tray-up.
+# FR #2697: seed immediately; trayAliveTimer keeps tray.alive fresh.
+[void](Write-BobTrayAlive -Dir $script:startWorkerDir)
+# FR #4317 / #7579 / #7601: refresh engine.alive at tray-up (primary seed already ran before first hover).
 [void](Write-BobTrayEngineAliveStamp -Dir $script:startWorkerDir)
 $startWorkerTimer.Start()
 Write-TrayLog 'tray up'
