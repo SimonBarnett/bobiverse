@@ -466,6 +466,7 @@ routes to bobiverse via the split rule.
 - Log the tray seat-start trigger at the launch call site; Write-TrayLog already supplies the timestamp.
 - Chair resync drops a FIX row when the pull is not in the open set, and enqueue_conflict_fix plus enqueue_mrb_fail_fix return skipped when the pull is merged or closed.
 - stall-alerts job must import BobBridge without -Force and use a 90s step budget so a cold Start-Job can finish Get-BobStallAlerts.
+- When the agent CLI dies, quote its last stderr lines in the intake Evidence and dedupe on that line, not on the job id.
 
 ## Harvest digest (lessons audit 2026-10-06)
 
