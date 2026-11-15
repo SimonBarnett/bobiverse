@@ -49,6 +49,9 @@ def test_fr6395_jeeves_ci_workflow_pins():
     assert "setup-python@v5" in text
     assert "python-version: \"3.12\"" in text or "python-version: '3.12'" in text
     assert "pyinstaller" in text.lower()
+    # FR #7547: suite before freeze (detailed pin in test_fr7547_build_jeeves_pytest.py).
+    assert "python -m pytest" in text
+    assert "jeeves/tests" in text or r"jeeves\tests" in text
     assert "workflow_run_id" in text or "github.run_id" in text
     assert "build_time" in text or "built_at" in text or "build_time_utc" in text
     assert BUILD.is_file()
