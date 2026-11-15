@@ -436,6 +436,7 @@ routes to bobiverse via the split rule.
 - Public /jeeves Set-Cookie is Secure; plain-HTTP pytest must use Bearer session_token, not CookieJar
 - /downloads airc card: PowerShell snippet must use the same MSI href as data-role=msi and include elevated msiexec AIRC_PROFILE=client /qn with no secrets
 - Plan Agent FR: derive plan host from MCP anchor domain (no hostname literals in tests); ban plan skills/visionary in visible HTML text; retire old-label pins that required visionary wording.
+- Explicit --agent FR: resolve_seat_decision must not apply xai fallthrough to refuse/cursor/opencode; expired explicit grok returns xai-auth-expired; log select[agent]: explicit X -> kind.
 
 ## Harvest digest (lessons audit 2026-10-06)
 
