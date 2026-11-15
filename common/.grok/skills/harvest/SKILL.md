@@ -476,6 +476,7 @@ routes to bobiverse via the split rule.
 - A long-lived PowerShell runspace must clear Streams.Error before the next command. Otherwise a non-terminating error from one step fails the next step.
 - recycleseat JSON kind is the authorizer (chair/op), not the agent. The tray click ledger is the only source for the relaunch agent. Missing kind refuses before stop.
 - A PowerShell $name in a launcher script is not a model id. Shop activity must omit kind when it does not know the agent, or it overwrites the seat --agent on the digest.
+- A provider 502/503/504 may shorten the next pool poll. A 429 must stay on the normal cadence and must not stretch past it.
 
 ## Harvest digest (lessons audit 2026-10-06)
 
