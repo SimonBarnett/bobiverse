@@ -174,4 +174,4 @@ When public /bob/v1/intake returns IIS **502.3**, BobCallback is not listening o
 
 ## Front-page HTML docs (FR #6453)
 
-Static pages under `jeeves/www/irc-ntsa/` are copied to the IIS site physical path by `Install-BobWebhooks.ps1`. Browse `https://bob.ntsa.uk/` (keeps the `bobiverse acme` marker) and `https://bob.ntsa.uk/docs/webhooks/`. Registry: `common/scripts/bob_webhook_docs.py` (tests fail if a BobCallback route lacks a doc entry).
+Static pages under `jeeves/www/irc-ntsa/` are copied to the IIS site physical path by `Install-BobWebhooks.ps1`. Browse `https://bob.ntsa.uk/` (keeps the `bobiverse acme` marker) and `https://bob.ntsa.uk/docs/webhooks/`. FR #7410 adds `/downloads` (Bob ear / Jeeves / airc latest MSI tiles) plus `site.css`; `Install-BobWebhooks.ps1` syncs the `downloads/` tree. Registry: `common/scripts/bob_webhook_docs.py` (tests fail if a BobCallback route lacks a doc entry).

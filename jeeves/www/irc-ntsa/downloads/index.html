@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>Downloads --- bob.ntsa.uk</title>
+  <link rel="stylesheet" href="/site.css"/>
+</head>
+<body>
+  <div class="shell">
+    <header class="site-header">
+      <a class="brand" href="/">
+        <span class="brand-mark" aria-hidden="true">B</span>
+        <span class="brand-text"><strong>bob.ntsa.uk</strong><span>Downloads</span></span>
+      </a>
+      <nav class="nav" aria-label="Primary">
+        <a href="/">Home</a>
+        <a href="/downloads" aria-current="page">Downloads</a>
+        <a href="/jeeves">Jeeves</a>
+        <a href="https://mcp.ntsa.uk">MCP</a>
+        <a href="https://github.com/SimonBarnett/bobiverse">GitHub</a>
+      </nav>
+    </header>
+
+    <div class="section-title">
+      <h2>Latest builds</h2>
+      <span>GitHub Releases ·  MSI · v1.0.7</span>
+    </div>
+
+    <div class="grid" id="download-grid">
+      <article class="card" data-product="bob">
+        <span class="pill">Bob ear</span>
+        <h3>Bob ear</h3>
+        <p>Fleet ear + tray companion MSI for each machine shop.</p>
+        <a class="btn btn-gold" data-role="msi" href="https://github.com/SimonBarnett/bobiverse/releases/latest/download/bob-1.0.7.msi">Download Bob ear</a>
+        <a class="btn btn-ghost" href="https://github.com/SimonBarnett/bobiverse/releases/latest/download/bob-1.0.7.msi.sha256">sha256</a>
+        <a class="btn btn-ghost" href="https://github.com/SimonBarnett/bobiverse/releases/latest">Release notes</a>
+      </article>
+      <article class="card" data-product="jeeves">
+        <span class="pill">Jeeves</span>
+        <h3>Jeeves</h3>
+        <p>Chair service MSI --- queue, webhooks, appliance behind <code>/jeeves</code>.</p>
+        <a class="btn btn-gold" data-role="msi" href="https://github.com/SimonBarnett/bobiverse/releases/latest/download/jeeves-1.0.7.msi">Download Jeeves</a>
+        <a class="btn btn-ghost" href="https://github.com/SimonBarnett/bobiverse/releases/latest/download/jeeves-1.0.7.msi.sha256">sha256</a>
+        <a class="btn btn-ghost" href="https://github.com/SimonBarnett/bobiverse/releases/latest">Release notes</a>
+      </article>
+      <article class="card" data-product="airc">
+        <span class="pill">airc</span>
+        <h3>airc</h3>
+        <p>Remote console / network installer MSI for fleet boxes.</p>
+        <a class="btn btn-gold" data-role="msi" href="https://github.com/SimonBarnett/bobiverse/releases/latest/download/airc-1.0.7.msi">Download airc</a>
+        <a class="btn btn-ghost" href="https://github.com/SimonBarnett/bobiverse/releases/latest/download/airc-1.0.7.msi.sha256">sha256</a>
+        <a class="btn btn-ghost" href="https://github.com/SimonBarnett/bobiverse/releases/latest">Release notes</a>
+      </article>
+    </div>
+
+    <p style="margin-top:1.25rem;color:var(--ink-soft);font-size:0.92rem">
+      Asset policy: prefer <code>{product}-latest.msi</code> on the latest release when present;
+      otherwise <code>{product}-X.Y.Z.msi</code> (Bob ear / Jeeves / airc). Optional <code>.sha256</code> companions.
+      URLs use <code>/releases/latest/download/&lt;asset&gt;</code>.
+    </p>
+
+    <footer class="site-footer">
+      <span><a href="/">← Home</a> · FR #7410</span>
+      <span><a href="https://github.com/SimonBarnett/bobiverse/releases">All releases</a></span>
+    </footer>
+  </div>
+  <script>
+  /* Optional live refresh: keep stamped hrefs if API blocked. */
+  (function () {
+    var products = ['bob', 'jeeves', 'airc'];
+    fetch('https://api.github.com/repos/SimonBarnett/bobiverse/releases/latest', {
+      headers: { 'Accept': 'application/vnd.github+json' }
+    }).then(function (r) { return r.ok ? r.json() : Promise.reject(r.status); })
+      .then(function (payload) {
+        var assets = (payload.assets || []).map(function (a) { return a.name; });
+        var lower = {};
+        assets.forEach(function (n) { lower[n.toLowerCase()] = n; });
+        products.forEach(function (product) {
+          var card = document.querySelector('[data-product="' + product + '"]');
+          if (!card) return;
+          var alias = product + '-latest.msi';
+          var msi = lower[alias] || null;
+          if (!msi) {
+            var best = null, bestVer = [-1,-1,-1];
+            var re = new RegExp('^' + product + '-(\\d+)\\.(\\d+)\\.(\\d+)\\.msi$', 'i');
+            assets.forEach(function (n) {
+              var m = n.match(re);
+              if (!m) return;
+              var ver = [+m[1], +m[2], +m[3]];
+              if (ver[0] > bestVer[0] || (ver[0] === bestVer[0] && ver[1] > bestVer[1]) ||
+                  (ver[0] === bestVer[0] && ver[1] === bestVer[1] && ver[2] > bestVer[2])) {
+                bestVer = ver; best = n;
+              }
+            });
+            msi = best;
+          }
+          if (!msi) return;
+          var base = 'https://github.com/SimonBarnett/bobiverse/releases/latest/download/';
+          var a = card.querySelector('[data-role="msi"]');
+          if (a) a.href = base + msi;
+          var sha = lower[(msi + '.sha256').toLowerCase()];
+          if (sha) {
+            var existing = card.querySelector('a[href$=".sha256"]');
+            if (existing) existing.href = base + sha;
+          }
+        });
+      }).catch(function () { /* keep stamped links */ });
+  })();
+  </script>
+</body>
+</html>
