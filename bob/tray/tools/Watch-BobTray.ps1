@@ -322,7 +322,7 @@ function Write-TrayLog([string]$m) {
 }
 
 # t794u/t797u/t798u helpers: Exit ordering + detached service stop/restart, and the install inventory for the About dialog.
-foreach ($helper in @('BobTrayLifecycle.ps1', 'Get-BobInstallInfo.ps1', 'BobTrayStartWorker.ps1', 'BobTrayRecycleSeat.ps1', 'BobTrayDialogs.ps1')) {
+foreach ($helper in @('BobTrayLifecycle.ps1', 'Get-BobInstallInfo.ps1', 'BobTrayStartWorker.ps1', 'BobTrayRecycleSeat.ps1', 'BobTrayDialogs.ps1', 'BobTrayWarmStep.ps1')) {
     $helperPath = Join-Path $RepoRoot ('tools\' + $helper)
     if (Test-Path -LiteralPath $helperPath) { . $helperPath } else { Write-TrayLog ('missing helper ' + $helperPath) }
 }
@@ -3942,11 +3942,10 @@ $poll.Add_Tick({
                     } catch { }
                 }
                 $alerts = @()
-                # FR #7660: a cold job plus Import-Module -Force exceeded the 45s stall-alerts budget.
-                $sa = Invoke-BobTrayEngineStep -Name 'stall-alerts' -Root $RepoRoot -TimeoutSec 90 -ArgumentList @($RepoRoot, $seen, [int]$StallSec, [int]$HeartbeatStaleSec) -Body {
+                # FR #7660: warm runspace, 45s budget. BobBridge is imported once, not per poll.
+                [void](Get-BobTrayWarmEngineShell -Root $RepoRoot)
+                $sa = Invoke-BobTrayWarmEngineStep -Name 'stall-alerts' -Root $RepoRoot -TimeoutSec ([int]$script:BobTrayEngineStepTimeoutSec) -ArgumentList @($RepoRoot, $seen, [int]$StallSec, [int]$HeartbeatStaleSec) -Body {
                     param($Root, $Seen, $StallSecArg, $HeartbeatStaleSecArg)
-                    $psd1 = Join-Path $Root 'src\BobBridge.psd1'
-                    if (Test-Path -LiteralPath $psd1) { Import-Module $psd1 }
                     $list = @(Get-BobStallAlerts -Seen $Seen -StallSec ([int]$StallSecArg) -HeartbeatStaleSec ([int]$HeartbeatStaleSecArg))
                     return [pscustomobject]@{ Alerts = $list; Seen = $Seen }
                 }
@@ -3990,12 +3989,9 @@ $poll.Add_Tick({
                 }
                 else {
                     # FR #4142 / #7579: data-only hover/snapshot for bob-tray.exe with timeout.
-                    # FR #7659: do not dot dialogs or Import-Module -Force inside the job.
-                    # A cold Start-Job plus a forced reload of BobBridge exceeded the 45s step budget.
-                    [void](Invoke-BobTrayEngineStep -Name 'update-hover-engine' -Root $RepoRoot -TimeoutSec 90 -ArgumentList @($RepoRoot) -Body {
+                    # FR #7660: same warm runspace as stall-alerts, still the 45s budget.
+                    [void](Invoke-BobTrayWarmEngineStep -Name 'update-hover-engine' -Root $RepoRoot -TimeoutSec ([int]$script:BobTrayEngineStepTimeoutSec) -ArgumentList @($RepoRoot) -Body {
                         param($Root)
-                        $psd1 = Join-Path $Root 'src\BobBridge.psd1'
-                        if (Test-Path -LiteralPath $psd1) { Import-Module $psd1 }
                         $h = Get-BobTrayHover
                         if (Get-Command Write-BobTrayStatusSnapshot -ErrorAction SilentlyContinue -and $h) {
                             $model = New-BobTrayStatusModel -Hover $h -AlertKind 'none' -Alerts @() -Version '' -Machine ([string]$env:BOB_MACHINE_ID) -Title ([string]$h.title) -Short ([string]$h.short) -Attention $false -AttentionSeq 0 -Pulse $false
