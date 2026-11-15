@@ -27,7 +27,7 @@ def test_explicit_opencode_starts_when_free_fuel_is_real():
 
 
 def test_explicit_opencode_refuses_without_fuel_and_does_not_pick_grok():
-    fuel = _fuel(grok_pct=99, grok_state="available")
+    fuel = _fuel(grok_pct=99, grok_state="available", opencode_free=0, opencode_go=0)
     dec = bw.explicit_agent_decision("opencode", fuel, CUR, GRK, OP, auth_present=True)
     assert dec.kind == "refuse"
     assert dec.reason.startswith("explicit opencode: no usable fuel")
@@ -102,7 +102,9 @@ def test_dry_run_explicit_opencode_refuses_instead_of_grok(monkeypatch, capsys, 
     monkeypatch.setattr(bw, "resolve_grok_exe", lambda *a, **k: GRK)
     monkeypatch.setattr(bw, "resolve_cursor_cmd", lambda *a, **k: CUR)
     monkeypatch.setattr(bw, "resolve_opencode_cmd", lambda *a, **k: OP)
-    monkeypatch.setattr(bw, "read_fuel", lambda *a, **k: _fuel(grok_pct=99, grok_state="available"))
+    monkeypatch.setattr(
+        bw, "read_fuel", lambda *a, **k: _fuel(grok_pct=99, grok_state="available", opencode_free=0, opencode_go=0)
+    )
     monkeypatch.setattr(bw, "opencode_auth_file_present", lambda env=None: True)
     code = bw.main(["--dry-run", "--install-root", str(tmp_path), "--agent", "opencode"])
     assert code == bw.EXIT_OK

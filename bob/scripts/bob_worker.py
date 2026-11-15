@@ -1456,6 +1456,14 @@ def explicit_opencode_decision(
     """
     if not opencode_cmd:
         return Decision("refuse", "explicit opencode: opencode.exe missing")
+    # FR #7714: unknown is not exhausted. A clicked OpenCode seat starts.
+    # Refuse only a known empty reading. Never fall through to another kind.
+    if not fuel_reading_known(fuel, "opencode"):
+        return Decision(
+            "opencode",
+            "explicit opencode: fuel unknown, starting (free=%s go=%s)"
+            % (fuel.opencode_free, fuel.opencode_go),
+        )
     if not opencode_has_tokens(fuel):
         return Decision(
             "refuse",
@@ -13206,6 +13214,31 @@ def _new_run_dir(machine: str, mode: str) -> Path:
     return _state_root() / "run" / f"{mode}-{machine}-{os.getpid()}-{uuid.uuid4().hex[:8]}"
 
 
+def reread_explicit_opencode_fuel(
+    read_fn: Callable[[], Fuel],
+    log: Callable[[str], None],
+    *,
+    tries: int = 3,
+    gap_s: float = 10.0,
+    sleep_fn: Callable[[float], None] = time.sleep,
+) -> Fuel:
+    """FR #7714: retry an unknown OpenCode reading, then return the last fuel.
+
+    Three tries about 10s apart (~30s). The caller still starts when the last
+    reading is unknown. Known fuel returns immediately.
+    """
+    fuel = read_fn()
+    attempt = 1
+    while attempt < tries and not fuel_reading_known(fuel, "opencode"):
+        log("explicit opencode: fuel unknown, retry %s/%s" % (attempt, tries))
+        sleep_fn(gap_s)
+        fuel = read_fn()
+        attempt += 1
+    if not fuel_reading_known(fuel, "opencode"):
+        log("explicit opencode: fuel unknown, starting")
+    return fuel
+
+
 def _choose(args, log: Log, folder: Path, mode: str):
     cursor_cmd, grok_exe = resolve_cursor_cmd(), resolve_grok_exe()
     fuel = read_fuel(Path(args.install_root))
@@ -13551,6 +13584,12 @@ def run_agent(args, log: Log) -> int:
     except Exception:
         pass
     dec, cursor_cmd, grok_exe, fuel, signin_ok = _choose(args, log, folder, "agent")
+    if normalize_explicit_agent(getattr(args, "agent", "") or "") == "opencode":
+        if not fuel_reading_known(fuel, "opencode"):
+            fuel = reread_explicit_opencode_fuel(
+                lambda: read_fuel(Path(args.install_root)),
+                log,
+            )
     opencode_cmd = _resolve_opencode_cmd_for_seat(log)
     requested = getattr(args, "agent", "") or ""
     dec = resolve_seat_decision(
