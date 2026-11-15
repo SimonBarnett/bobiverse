@@ -293,24 +293,31 @@ def launch_argv_with_effort(kind: str, argv: list[str], effort: str | None = Non
     return args
 
 
+def concrete_model_id(raw: object) -> str:
+    """A resolved model id. PowerShell templates such as ``$model`` are not ids."""
+    got = str(raw or "").strip().strip("'\"")
+    if not got or got.lower() in ("auto", "unknown", "none", "null"):
+        return ""
+    if "$" in got:
+        return ""
+    return got
+
+
 def _model_from_argv(args: list[str]) -> str:
     if "--model" not in args:
         return ""
     i = args.index("--model")
     if i + 1 >= len(args):
         return ""
-    got = str(args[i + 1]).strip().strip("'\"")
-    if got and got.lower() != "auto":
-        return got
-    return ""
+    return concrete_model_id(args[i + 1])
 
 
 def _model_from_script_text(text: str) -> str:
-    """Last ``--model <id>`` in a launcher script (Cursor PowerShell). Never treats ``auto`` as actual."""
+    """Last concrete ``--model <id>`` in a launcher script. Skips ``auto`` and ``$model``."""
     found = ""
     for m in re.finditer(r"--model(?:\s+|=)(?P<q>['\"]?)(?P<id>[^\s'\"]+)(?P=q)", str(text or "")):
-        got = str(m.group("id") or "").strip()
-        if got and got.lower() != "auto":
+        got = concrete_model_id(m.group("id"))
+        if got:
             found = got
     return found
 

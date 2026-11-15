@@ -2484,7 +2484,8 @@ def _apply_merge_payload(doc: dict, mid: str, payload: dict) -> list[str]:
             pid_s = str(int(str(pid_raw)))
         except ValueError:
             return []
-        kind = str(payload.get("kind") or "grok")
+        # FR #7706: omit kind to keep the seat's published agent. Never invent grok.
+        kind = str(payload.get("kind") or "").strip()
         actions.extend(_merge_worker_on_ent(ent, mid, pid_s, str(payload.get("working_on") or ""), kind=kind))
         workers = ent.setdefault("workers", {})
         current = workers.get(pid_s)

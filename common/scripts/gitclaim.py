@@ -8370,6 +8370,27 @@ def seat_skips_hostile_review(kind: str) -> bool:
     return (kind or "").strip().lower() == "opencode"
 
 
+def seat_is_free_fuel(home: Path, nick: str) -> bool:
+    """True for an OpenCode or other free-fuel seat (FR #7706).
+
+    A mislabeled digest kind does not make a free model eligible for MRB/UAT.
+    An unresolved ``$model`` template is also not a paid seat.
+    """
+    if seat_skips_hostile_review(seat_agent_kind(home, nick)):
+        return True
+    fields = _seat_digest_model_fields(home, nick)
+    model = str(fields.get("start_model") or fields.get("model") or "").strip()
+    if "$" in model:
+        return True
+    low = model.lower()
+    if low.startswith("opencode/") and "opencode-go/" not in low:
+        return True
+    tier = str(fields.get("cost_tier") or "").strip().lower()
+    if tier in ("free", "opencode-free"):
+        return True
+    return False
+
+
 def row_blocked_for_opencode_seat(
     row: dict,
     nick: str,
@@ -8377,16 +8398,18 @@ def row_blocked_for_opencode_seat(
     *,
     kind: str | None = None,
 ) -> bool:
-    """True when an OpenCode seat must not be offered this MRB/UAT row (FR #6134)."""
+    """True when an OpenCode or free-fuel seat must not be offered this MRB/UAT row."""
     task = str((row or {}).get("task") or "").upper()
     if task not in ("MRB", "UAT"):
         return False
     k = kind
-    if k is None:
-        if home is None:
-            return False
+    if k is None and home is not None:
         k = seat_agent_kind(home, nick)
-    return seat_skips_hostile_review(k)
+    if seat_skips_hostile_review(k or ""):
+        return True
+    if home is None:
+        return False
+    return seat_is_free_fuel(home, nick)
 
 
 def seat_is_out_of_fuel(home: Path, nick: str, now: float | None = None) -> bool:
