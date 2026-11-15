@@ -30,10 +30,12 @@ def test_fr7446_refresh_does_not_touch_bound_cwd_tree(tmp_path: Path):
     run = tmp_path / "run"
     grok_bound = run / "bound-cwd"
     grok_bound.mkdir(parents=True)
-    # Seed a legacy in-workspace pointer (pre-#7446) that assign must clear.
+    # Launch still clears a pre-#7446 in-workspace pointer. Assign refresh must not.
     legacy = grok_bound / "skill-dag-job-worktree"
     legacy.write_text("old\n", encoding="utf-8")
     bw.write_skill_dag_mcp_config(str(grok_bound), job_worktree=None, vision_cwd=str(worker))
+    assert not legacy.exists()
+    legacy.write_text("stale-while-agent-up\n", encoding="utf-8")
     cfg = grok_bound / ".grok" / "config.toml"
     cfg_text = cfg.read_text(encoding="utf-8")
     cfg_mtime = cfg.stat().st_mtime_ns
@@ -47,8 +49,8 @@ def test_fr7446_refresh_does_not_touch_bound_cwd_tree(tmp_path: Path):
     )
     assert cfg.read_text(encoding="utf-8") == cfg_text
     assert cfg.stat().st_mtime_ns == cfg_mtime
-    assert not legacy.exists(), "legacy in-workspace pointer must be removed"
-    assert "skill-dag-job-worktree" not in {p.name for p in grok_bound.iterdir()}
+    assert legacy.is_file(), "assign refresh must not delete inside bound-cwd (FR #7664)"
+    assert legacy.read_text(encoding="utf-8") == "stale-while-agent-up\n"
     ptr = run / "skill-dag-job-worktree"
     assert job.as_posix() in ptr.read_text(encoding="utf-8").replace("\\", "/")
     assert "--seat-cwd" in cfg_text

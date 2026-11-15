@@ -2703,18 +2703,25 @@ def skill_dag_job_worktree_pointer_path(worker_cwd: str | Path) -> Path:
 def write_skill_dag_job_worktree_pointer(
     worker_cwd: str | Path,
     job_worktree: str | Path | None = None,
+    *,
+    clear_legacy: bool = True,
 ) -> Path:
-    """Write or clear the live job-worktree pointer (empty file = no assigned tree)."""
+    """Write or clear the live job-worktree pointer (empty file = no assigned tree).
+
+    ``clear_legacy`` is for launch only (FR #7446). A live assign must pass
+    False: unlinking ``bound-cwd/skill-dag-job-worktree`` is a workspace change
+    and Grok/Cursor drops the stdio child (FR #7664).
+    """
     cwd = Path(worker_cwd)
     path = skill_dag_job_worktree_pointer_path(cwd)
     path.parent.mkdir(parents=True, exist_ok=True)
-    # FR #7446: drop the legacy in-workspace pointer so assign no longer touches bound-cwd.
-    legacy = cwd / SKILL_DAG_JOB_WORKTREE_POINTER
-    if legacy != path and legacy.is_file():
-        try:
-            legacy.unlink()
-        except OSError:
-            pass
+    if clear_legacy:
+        legacy = cwd / SKILL_DAG_JOB_WORKTREE_POINTER
+        if legacy != path and legacy.is_file():
+            try:
+                legacy.unlink()
+            except OSError:
+                pass
     wt = str(job_worktree or "").strip()
     text = Path(wt).as_posix() + "\n" if wt else ""
     if path.is_file():
@@ -2880,7 +2887,8 @@ def refresh_live_skill_dag_mcp_files(
     del vision_cwd  # launch-time --root only; assign must not rewrite argv
     wt = str(job_worktree or "").strip() or None
     if grok_bound_cwd:
-        write_skill_dag_job_worktree_pointer(grok_bound_cwd, wt)
+        # FR #7664: pointer file only. Do not unlink or rewrite anything inside the workspace.
+        write_skill_dag_job_worktree_pointer(grok_bound_cwd, wt, clear_legacy=False)
         cfg = Path(grok_bound_cwd) / ".grok" / "config.toml"
         if not cfg.is_file():
             write_skill_dag_mcp_config(
@@ -2889,7 +2897,7 @@ def refresh_live_skill_dag_mcp_files(
                 vision_cwd=str(grok_bound_cwd),
             )
     if cursor_cwd:
-        write_skill_dag_job_worktree_pointer(cursor_cwd, wt)
+        write_skill_dag_job_worktree_pointer(cursor_cwd, wt, clear_legacy=False)
         cfg = Path(cursor_cwd) / CURSOR_SKILL_DAG_MCP_RELPATH
         if not cfg.is_file():
             write_cursor_skill_dag_mcp_config(str(cursor_cwd), job_worktree=wt)
@@ -2913,6 +2921,9 @@ def skill_dag_mcp_stdio_cmdline_matches(
     """
     cl = _norm_cmdline_path(cmdline)
     if SKILL_DAG_MCP_CMDLINE_NEEDLE not in cl:
+        return False
+    # FR #7664: one-shot ``--once`` exits on its own and is not the live stdio child.
+    if "--once" in cl.split():
         return False
     marks = [_norm_cmdline_path(m) for m in seat_markers if m]
     return any(mark and mark in cl for mark in marks)
