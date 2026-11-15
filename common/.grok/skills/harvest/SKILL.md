@@ -446,6 +446,7 @@ routes to bobiverse via the split rule.
 - Tray pool paint: bob-tray.exe polls digest every 60s into run/tray-digest-pools.json and Status LoadMerged prefers that file over tray-status pool fields so TipForm survives a dead PS engine.
 - MRB FR #7522-class tips: if shared rule lands without ear/Jeeves callers, tip-fix wire should_report_pool_stale_exception before PASS --- FR acceptance includes raises no exception, not tray-only.
 - MRB login/auth test tips: if GitGuardian fails on FAKE_ password literals, tip-fix assemble from parts (FR #3304) before PASS/merge.
+- FR tray Copilot fixture tips: when Format-BobCopilotPoolLine paints unlimited (FR #7299), align COPILOT_POOLS expected lines --- do not restore unknown for unlimited=true.
 
 ## Harvest digest (lessons audit 2026-10-06)
 
