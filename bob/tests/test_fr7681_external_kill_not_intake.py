@@ -1,4 +1,4 @@
-"""FR #7681: Windows 0xffffffff with empty stderr is an external kill, not an intake."""
+"""FR #7681 / #7724: 0xffffffff with empty stderr is an external kill and is still filed."""
 from __future__ import annotations
 
 import bob_worker as bw
@@ -17,9 +17,11 @@ def test_fr7681_ffffffff_without_stderr_does_not_file():
         stderr_tail="",
         filer_post=lambda p: posts.append(p) or {"ok": True},
     )
-    assert out.get("skipped") is True
-    assert out.get("reason") == "external-kill"
-    assert posts == []
+    assert out.get("skipped") is not True
+    assert len(posts) == 1
+    assert "end=external-kill" in posts[0]["body"]
+    assert "nick=marchhare-24160" in posts[0]["body"]
+    assert "stderr=(empty)" in posts[0]["body"]
 
 
 def test_fr7681_exit_one_without_stderr_still_files():
@@ -51,7 +53,7 @@ def test_fr7681_mrb_ffffffff_with_stderr_still_files():
 
 
 def test_fr7681_mrb_signed_minus_one_empty_is_external_kill():
-    """Hostile: signed -1 masks to 0xffffffff and skips when stderr empty."""
+    """Hostile: signed -1 masks to 0xffffffff and is filed as an external kill."""
     posts = []
     out = bw.report_agent_cli_nonzero_exit(
         exit_code=-1,
@@ -60,6 +62,23 @@ def test_fr7681_mrb_signed_minus_one_empty_is_external_kill():
         stderr_tail="   \n",
         filer_post=lambda p: posts.append(p) or {"ok": True},
     )
-    assert out.get("reason") == "external-kill"
-    assert posts == []
+    assert out.get("skipped") is not True
+    assert len(posts) == 1
+    assert "end=external-kill" in posts[0]["body"]
+
+
+def test_fr7724_recycle_parent_is_labelled_recycle():
+    posts = []
+    bw.report_agent_cli_nonzero_exit(
+        exit_code=-1,
+        machine="redqueen",
+        nick="redqueen-8940",
+        kind="opencode",
+        stderr_tail="",
+        parent_cmd="powershell -File BobTrayRecycleSeat.ps1",
+        filer_post=lambda p: posts.append(p) or {"ok": True},
+    )
+    assert "end=recycle" in posts[0]["body"]
+    assert "nick=redqueen-8940" in posts[0]["body"]
+    assert "exit_code=" in posts[0]["body"]
 

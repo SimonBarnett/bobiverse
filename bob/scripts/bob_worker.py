@@ -3272,6 +3272,7 @@ def report_agent_cli_nonzero_exit(
     agent_pid: int | None = None,
     raw_code=None,
     stderr_tail: str = "",
+    parent_cmd: str = "",
     log: Optional[Callable[[str], None]] = None,
     filer_post: Optional[Callable[..., dict]] = None,
 ) -> dict:
@@ -3292,26 +3293,39 @@ def report_agent_cli_nonzero_exit(
     except (TypeError, ValueError):
         pid_s = "0"
     evidence = agent_stderr_evidence(stderr_tail)
-    # FR #7681: 0xffffffff with no CLI stderr is an external kill (taskkill / seat stop),
-    # not an agent-CLI bug. Do not open an intake. A real CLI failure still has stderr.
-    if u == 0xFFFFFFFF and not str(evidence or "").strip():
-        if log:
-            try:
-                log(f"worker: agent-cli-nonzero-exit skipped external-kill job={job} (FR #7681)")
-            except Exception:
-                pass
-        return {"ok": True, "skipped": True, "reason": "external-kill", "key": ""}
+    parent = " ".join(str(parent_cmd or "").split())[:240]
+    # FR #7724: a silent 0xffffffff used to skip intake (FR #7681). That hid seat deaths
+    # such as a Flash nick disappearing with no issue. Still classify recycle vs kill.
+    silent = u == 0xFFFFFFFF and not str(evidence or "").strip()
+    parent_l = parent.lower()
+    if "recycleseat" in parent_l or "bobtrayrecycleseat" in parent_l:
+        end = "recycle"
+    elif silent:
+        end = "external-kill"
+    else:
+        end = "cli-failure"
     err_key = agent_stderr_dedupe_line(evidence)
-    # Same crash on the same seat is one issue, whatever the job was (FR #7671).
-    key = f"agent-cli-nonzero-exit|{mid}|{u}|{err_key}"[:128]
-    title = "bug: agent CLI nonzero exit (FR #7593)"
+    if silent or end == "recycle":
+        key = f"seat-silent-end|{mid}|{nick_s}|{end}"[:128]
+        title = "bug: seat ended with no CLI stderr (FR #7724)"
+        what = (
+            "What: the seat process ended and there was no CLI stderr. "
+            "This records the nick, exit code, and whether it looks like a recycle or an external kill.\n"
+        )
+    else:
+        # Same crash on the same seat is one issue, whatever the job was (FR #7671).
+        key = f"agent-cli-nonzero-exit|{mid}|{u}|{err_key}"[:128]
+        title = "bug: agent CLI nonzero exit (FR #7593)"
+        what = (
+            "What: the agent CLI process exited non-zero; the worker wrapper reported it and "
+            "recycled the seat (FR #7593).\n"
+        )
     body = (
-        "What: the agent CLI process exited non-zero; the worker wrapper reported it and "
-        "recycled the seat (FR #7593).\n"
-        f"Where: bob-worker kind={k} machine={mid} nick={nick_s} agent_pid={pid_s}\n"
-        f"Evidence: exit_code={label} job={job} stderr={evidence}\n"
-        "Fix: inspect the agent session / exit cause; accepted jobs are GIVEUP'd (no fake DONE).\n"
-        "No secrets."
+        what
+        + f"Where: bob-worker kind={k} machine={mid} nick={nick_s} agent_pid={pid_s}\n"
+        + f"Evidence: end={end} exit_code={label} job={job} stderr={evidence or '(empty)'} parent_cmd={parent or '-'}\n"
+        + "Fix: inspect the agent session / exit cause; accepted jobs are GIVEUP'd (no fake DONE).\n"
+        + "No secrets."
     )
     if log:
         try:
@@ -12463,6 +12477,7 @@ class Supervisor:
                 kind=self.kind,
                 agent_pid=int(getattr(proc, "pid", 0) or 0),
                 stderr_tail=tail,
+                parent_cmd=parent_cmd,
                 log=self.log,
             )
         except Exception as e:
