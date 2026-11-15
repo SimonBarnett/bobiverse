@@ -427,6 +427,7 @@ routes to bobiverse via the split rule.
 - FR-E quiet :7701 removal PASS when front-door mode defaults on, LAN-root returns 404, /jeeves still serves, and docs scrub preferred 7701 how-tos without a deprecation brochure; keeping loopback bind as ARR upstream is ACCEPTABLE.
 - MRB tiny CLI escape fix: confirm source uses real \n not double-escaped \\n, run pin+sibling downloads tests, merge-gate --auto, DONE without CI poll
 - airc MSI CI cannot PASS/merge while AIRC_PACK_ERGO_PASSWORD Actions secret is unset; tip-fix GH auth + latest.Build version bump first, FAIL with ops intake, do not arm auto-merge.
+- Ops FRs that require gh secret set of Ergo/IRC passwords: NACK immediately with Si recipe comment; never read password files or secret set from a worker seat.
 
 ## Harvest digest (lessons audit 2026-10-06)
 
