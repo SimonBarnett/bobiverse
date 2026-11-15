@@ -763,7 +763,7 @@ def handle_request(
                     return 200, b""
                 return 200, payload
             if inner == _jhttp.BUTLER_HREF:
-                p = _jhttp._BUTLER_ICO
+                p = _jhttp.butler_ico_path()
                 if p.is_file():
                     data = p.read_bytes()
                     stash_response_headers([("Content-Type", "image/x-icon")])
