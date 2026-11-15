@@ -38,10 +38,11 @@ def test_fr7308_refresh_does_not_rewrite_toml_or_mcp_json(tmp_path: Path):
     assert mcp.read_text(encoding="utf-8") == mcp_text
     assert toml.stat().st_mtime_ns == toml_mtime
     assert mcp.stat().st_mtime_ns == mcp_mtime
-    grok_ptr = (bound / "skill-dag-job-worktree").read_text(encoding="utf-8")
+    grok_ptr = (bound.parent / "skill-dag-job-worktree").read_text(encoding="utf-8")
     cur_ptr = (worker / "skill-dag-job-worktree").read_text(encoding="utf-8")
     assert job.as_posix() in grok_ptr.replace("\\", "/")
     assert job.as_posix() in cur_ptr.replace("\\", "/")
+    assert not (bound / "skill-dag-job-worktree").exists()
 
 
 def test_fr7308_pointer_write_skips_identical(tmp_path: Path):

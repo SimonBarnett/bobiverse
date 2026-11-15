@@ -88,7 +88,7 @@ def test_fr6918_assign_rewrites_only_assigned_worktree(tmp_path):
     )
     grok_w = (bound / ".grok" / "config.toml").read_text(encoding="utf-8").replace("\\", "/")
     cur_w = (t["worker"] / ".cursor" / "mcp.json").read_text(encoding="utf-8").replace("\\", "/")
-    grok_ptr = (bound / "skill-dag-job-worktree").read_text(encoding="utf-8").replace("\\", "/")
+    grok_ptr = (bound.parent / "skill-dag-job-worktree").read_text(encoding="utf-8").replace("\\", "/")
     cur_ptr = (t["worker"] / "skill-dag-job-worktree").read_text(encoding="utf-8").replace("\\", "/")
     assert "--job-worktree-file" in grok_w
     assert w.as_posix() in grok_ptr
@@ -97,6 +97,7 @@ def test_fr6918_assign_rewrites_only_assigned_worktree(tmp_path):
     assert sibling.as_posix() not in cur_ptr
     assert t["harvest"].as_posix() in grok_w
     assert t["harvest"].as_posix() in cur_w
+    assert not (bound / "skill-dag-job-worktree").exists()
 
     bw.refresh_live_skill_dag_mcp_files(
         grok_bound_cwd=bound,
@@ -104,7 +105,7 @@ def test_fr6918_assign_rewrites_only_assigned_worktree(tmp_path):
         vision_cwd=t["worker"],
         job_worktree=v,
     )
-    grok_v = (bound / "skill-dag-job-worktree").read_text(encoding="utf-8").replace("\\", "/")
+    grok_v = (bound.parent / "skill-dag-job-worktree").read_text(encoding="utf-8").replace("\\", "/")
     cur_v = (t["worker"] / "skill-dag-job-worktree").read_text(encoding="utf-8").replace("\\", "/")
     assert w.as_posix() not in grok_v and v.as_posix() in grok_v
     assert w.as_posix() not in cur_v and v.as_posix() in cur_v
@@ -115,7 +116,7 @@ def test_fr6918_assign_rewrites_only_assigned_worktree(tmp_path):
         vision_cwd=t["worker"],
         job_worktree=None,
     )
-    grok_end = (bound / "skill-dag-job-worktree").read_text(encoding="utf-8").strip()
+    grok_end = (bound.parent / "skill-dag-job-worktree").read_text(encoding="utf-8").strip()
     cur_end = (t["worker"] / "skill-dag-job-worktree").read_text(encoding="utf-8").strip()
     grok_toml = (bound / ".grok" / "config.toml").read_text(encoding="utf-8")
     assert grok_end == ""

@@ -10,8 +10,10 @@ import skill_dag_bound as bound
 def test_fr7361_pointer_path_is_not_under_grok():
     cwd = Path("C:/seat/bound-cwd")
     p = bw.skill_dag_job_worktree_pointer_path(cwd)
-    assert p == cwd / "skill-dag-job-worktree"
+    # FR #7446: also outside bound-cwd itself (Grok watches the workspace root).
+    assert p == cwd.parent / "skill-dag-job-worktree"
     assert ".grok" not in p.parts
+    assert p.parent == cwd.parent
 
 
 def test_fr7361_refresh_does_not_touch_grok_dir(tmp_path: Path):
@@ -46,7 +48,8 @@ def test_fr7361_refresh_does_not_touch_grok_dir(tmp_path: Path):
     assert grok.stat().st_mtime_ns == grok_mtime
     assert sorted(p.name for p in grok.iterdir()) == names_before
     assert not (grok / "skill-dag-job-worktree").exists()
-    ptr = grok_bound / "skill-dag-job-worktree"
+    assert not (grok_bound / "skill-dag-job-worktree").exists()
+    ptr = grok_bound.parent / "skill-dag-job-worktree"
     assert job.as_posix() in ptr.read_text(encoding="utf-8").replace("\\", "/")
     assert "--job-worktree-file" in cfg_text
     assert ptr.as_posix() in cfg_text.replace("\\", "/")
@@ -62,10 +65,12 @@ def test_fr7361_bound_prepare_pointer_outside_grok(tmp_path: Path):
     grok = b / ".grok"
     assert (grok / "config.toml").is_file()
     assert not (grok / "skill-dag-job-worktree").exists()
-    ptr = b / "skill-dag-job-worktree"
+    assert not (b / "skill-dag-job-worktree").exists()
+    ptr = b.parent / "skill-dag-job-worktree"
     assert ptr.is_file()
     toml = (grok / "config.toml").read_text(encoding="utf-8")
     assert ptr.as_posix() in toml.replace("\\", "/")
+    assert "--seat-cwd" in toml
     grok_mtime = grok.stat().st_mtime_ns
     cfg_mtime = (grok / "config.toml").stat().st_mtime_ns
     job = tmp_path / "wt"
@@ -73,3 +78,5 @@ def test_fr7361_bound_prepare_pointer_outside_grok(tmp_path: Path):
     bw.write_skill_dag_job_worktree_pointer(b, job)
     assert grok.stat().st_mtime_ns == grok_mtime
     assert (grok / "config.toml").stat().st_mtime_ns == cfg_mtime
+    assert not (b / "skill-dag-job-worktree").exists()
+    assert job.as_posix() in ptr.read_text(encoding="utf-8").replace("\\", "/")

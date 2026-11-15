@@ -2666,9 +2666,25 @@ def skill_dag_vision_roots(worker_cwd: str, *, home: Path | None = None) -> list
 SKILL_DAG_JOB_WORKTREE_POINTER = "skill-dag-job-worktree"
 
 
+def _skill_dag_bound_cwd_name() -> str:
+    try:
+        from skill_dag_bound import BOUND_CWD_NAME
+
+        return str(BOUND_CWD_NAME)
+    except Exception:
+        return "bound-cwd"
+
+
 def skill_dag_job_worktree_pointer_path(worker_cwd: str | Path) -> Path:
-    """FR #7361: pointer beside the seat cwd, not under ``.grok`` (Grok watches that dir)."""
-    return Path(worker_cwd) / SKILL_DAG_JOB_WORKTREE_POINTER
+    """FR #7361 / #7446: pointer outside ``.grok`` and outside Grok ``bound-cwd``.
+
+    Grok watches the whole bound workspace; writing the pointer *inside* bound-cwd
+    on assign still drops the stdio MCP child (recurrence of FR #7120).
+    """
+    cwd = Path(worker_cwd)
+    if cwd.name.casefold() == _skill_dag_bound_cwd_name().casefold():
+        return cwd.parent / SKILL_DAG_JOB_WORKTREE_POINTER
+    return cwd / SKILL_DAG_JOB_WORKTREE_POINTER
 
 
 def write_skill_dag_job_worktree_pointer(
@@ -2676,8 +2692,16 @@ def write_skill_dag_job_worktree_pointer(
     job_worktree: str | Path | None = None,
 ) -> Path:
     """Write or clear the live job-worktree pointer (empty file = no assigned tree)."""
-    path = skill_dag_job_worktree_pointer_path(worker_cwd)
+    cwd = Path(worker_cwd)
+    path = skill_dag_job_worktree_pointer_path(cwd)
     path.parent.mkdir(parents=True, exist_ok=True)
+    # FR #7446: drop the legacy in-workspace pointer so assign no longer touches bound-cwd.
+    legacy = cwd / SKILL_DAG_JOB_WORKTREE_POINTER
+    if legacy != path and legacy.is_file():
+        try:
+            legacy.unlink()
+        except OSError:
+            pass
     wt = str(job_worktree or "").strip()
     text = Path(wt).as_posix() + "\n" if wt else ""
     if path.is_file():
@@ -2709,6 +2733,11 @@ def skill_dag_mcp_launch_args(
     for root in skill_dag_vision_roots(worker_cwd):
         args.extend(["--root", root.as_posix()])
     args.extend(["--job-worktree-file", ptr.as_posix()])
+    # FR #7446: keep bound-cwd on argv for seat-marker matching when the pointer
+    # lives in the run_dir (outside the watched workspace).
+    ptr_home_path = Path(ptr_home)
+    if ptr_home_path.name.casefold() == _skill_dag_bound_cwd_name().casefold():
+        args.extend(["--seat-cwd", ptr_home_path.as_posix()])
     return args
 
 
@@ -2827,11 +2856,11 @@ def refresh_live_skill_dag_mcp_files(
     vision_cwd: str | Path | None = None,
     job_worktree: str | Path | None = None,
 ) -> None:
-    """FR #6918 / #7120 / #7308: point the live MCP at the assigned worktree.
+    """FR #6918 / #7120 / #7308 / #7446: point the live MCP at the assigned worktree.
 
-    Writes the one-line pointer file only (beside the seat cwd, not under
-    ``.grok`` — FR #7361). Rewriting ``config.toml`` / ``.cursor/mcp.json`` on
-    assign makes Grok/Cursor replace the stdio child (FR #7308). Empty
+    Writes the one-line pointer file only (outside ``.grok`` and outside Grok
+    ``bound-cwd`` --- FR #7361 / #7446). Rewriting ``config.toml`` / ``.cursor/mcp.json``
+    on assign makes Grok/Cursor replace the stdio child (FR #7308). Empty
     ``job_worktree`` clears the pointer.
     Never writes user ``~/.cursor/mcp.json``.
     """
@@ -11904,17 +11933,8 @@ class Supervisor:
         bound, cursor, vision = self._live_skill_dag_mcp_paths()
         if not bound and not cursor:
             return
-        try:
-            refresh_live_skill_dag_mcp_files(
-                grok_bound_cwd=bound,
-                cursor_cwd=cursor,
-                vision_cwd=vision,
-                job_worktree=job_worktree,
-            )
-        except Exception as e:  # noqa: BLE001
-            self.log(f"skill-dag mcp job-worktree rewrite skipped {type(e).__name__}")
-            return
-        # FR #7120 / #7308: keep the live stdio MCP; pointer file is enough.
+        # FR #7120 / #7308 / #7446: keep the live stdio MCP; pointer file is enough.
+        # Snapshot before refresh so a drop caused by the write is visible.
         # Do not use job_worktree as a cmdline marker (--job-worktree-file argv).
         agent_pid = None
         try:
@@ -11925,6 +11945,16 @@ class Supervisor:
             agent_pid = None
         markers = [bound, cursor, vision]
         before = skill_dag_mcp_descendant_pids(agent_pid, markers)
+        try:
+            refresh_live_skill_dag_mcp_files(
+                grok_bound_cwd=bound,
+                cursor_cwd=cursor,
+                vision_cwd=vision,
+                job_worktree=job_worktree,
+            )
+        except Exception as e:  # noqa: BLE001
+            self.log(f"skill-dag mcp job-worktree rewrite skipped {type(e).__name__}")
+            return
         after = skill_dag_mcp_descendant_pids(agent_pid, markers)
         if before and not after:
             self.log("skill-dag mcp transport dropped")
