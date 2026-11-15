@@ -273,8 +273,23 @@ if ($freeNow -lt $MinFreeGB -and (Test-Path -LiteralPath $binRoot)) {
         $agentItem = Get-Item -LiteralPath $agentPath
         $grokItem = Get-Item -LiteralPath $grokPath
         if ($agentItem.Length -gt 0 -and $agentItem.Length -eq $grokItem.Length) {
-            $ha = (Get-FileHash -LiteralPath $agentPath -Algorithm SHA256).Hash
-            $hg = (Get-FileHash -LiteralPath $grokPath -Algorithm SHA256).Hash
+            # FR #7355 / FIX #7550: Autoload=None seats may lack Get-FileHash even after
+            # Import-Module Utility; hash via .NET so hardlink-dedupe still works in GHA.
+            $hashOne = {
+                param([string]$p)
+                if (Get-Command Get-FileHash -ErrorAction SilentlyContinue) {
+                    return (Get-FileHash -LiteralPath $p -Algorithm SHA256).Hash.ToLowerInvariant()
+                }
+                $sha = [System.Security.Cryptography.SHA256]::Create()
+                try {
+                    $fs = [System.IO.File]::OpenRead(([System.IO.Path]::GetFullPath($p)))
+                    try {
+                        return ([BitConverter]::ToString($sha.ComputeHash($fs)) -replace '-', '').ToLowerInvariant()
+                    } finally { $fs.Dispose() }
+                } finally { $sha.Dispose() }
+            }
+            $ha = & $hashOne $agentPath
+            $hg = & $hashOne $grokPath
             if ($ha -eq $hg) {
                 $alreadyLinked = $false
                 try {

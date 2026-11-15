@@ -1,5 +1,6 @@
-# Isolated jeeves.exe build (FR #6395).
+# Isolated jeeves.exe build (FR #6395 / #7547).
 # Not a release, MSI, install, or service restart. Build-Jeeves.ps1 owns PyInstaller.
+# FR #7547: pytest jeeves/tests before PyInstaller so a red suite never ships an artifact.
 # Uploads SHA-256 provenance (MANIFEST.json) so Slab can install from a known artifact.
 name: build-jeeves
 
@@ -15,6 +16,7 @@ on:
       - common/scripts/jeeves_main.py
       - common/scripts/jeeves_build_meta.py
       - common/tests/test_fr6395_jeeves_build_ci.py
+      - jeeves/tests/test_fr7547_build_jeeves_pytest.py
       - common/requirements-freeze.txt
       - common/scripts/assert_jeeves_yaml_embed.py
   push:
@@ -28,6 +30,7 @@ on:
       - common/scripts/jeeves_main.py
       - common/scripts/jeeves_build_meta.py
       - common/tests/test_fr6395_jeeves_build_ci.py
+      - jeeves/tests/test_fr7547_build_jeeves_pytest.py
       - common/requirements-freeze.txt
       - common/scripts/assert_jeeves_yaml_embed.py
 
@@ -50,13 +53,35 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install PyInstaller and Bob Python deps
+      - name: Install PyInstaller, pytest, and Bob Python deps
         run: |
           # FR #6553: Install-BobiversePythonDeps also pip -r common/requirements-freeze.txt (PyYAML).
-          python -m pip install --upgrade pip pyinstaller
-          if ($LASTEXITCODE -ne 0) { throw "pip install pyinstaller failed: $LASTEXITCODE" }
+          # FR #7547: pytest must be present before the suite step (failing tests block the build).
+          python -m pip install --upgrade pip pyinstaller pytest
+          if ($LASTEXITCODE -ne 0) { throw "pip install pyinstaller/pytest failed: $LASTEXITCODE" }
           . .\common\scripts\Bobiverse-Common.ps1
           Install-BobiversePythonDeps -Python (Get-Command python).Source
+
+      - name: Pytest jeeves/tests (FR #7547)
+        env:
+          WORKFLOW_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
+          PYTHONPATH: ${{ github.workspace }}/jeeves/scripts;${{ github.workspace }}/common/scripts;${{ github.workspace }}/common/tests;${{ github.workspace }}/jeeves/tests
+          # FR #7355 / MRB #7550: never leave Get-FileHash missing under Autoload=None.
+          PSModuleAutoLoadingPreference: All
+        run: |
+          $root = (Get-Location).Path
+          $head = (git rev-parse HEAD).Trim()
+          if ($head -ne $env:WORKFLOW_COMMIT) { throw "checkout $head is not $env:WORKFLOW_COMMIT" }
+          # CI bootstrap: Utility cmdlets + git identity for allow-empty fixture commits (MRB #7550).
+          Import-Module Microsoft.PowerShell.Utility -ErrorAction Stop
+          if (-not (Get-Command Get-FileHash -ErrorAction SilentlyContinue)) {
+            throw 'Get-FileHash missing after Import-Module Microsoft.PowerShell.Utility'
+          }
+          git config --global user.email 'ci-bobiverse@users.noreply.github.com'
+          git config --global user.name 'bobiverse-ci'
+          # -q prints the collected/passed count in the log (acceptance: count visible on main).
+          python -m pytest "$root\jeeves\tests" -q --tb=short -p no:cacheprovider
+          if ($LASTEXITCODE -ne 0) { throw "jeeves pytest exit $LASTEXITCODE" }
 
       - name: Build jeeves.exe with Build-Jeeves.ps1
         env:
