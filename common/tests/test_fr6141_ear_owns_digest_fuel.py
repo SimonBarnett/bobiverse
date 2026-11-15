@@ -7,6 +7,7 @@ fingerprint change / heartbeat. Worker out-of-fuel POST still works.
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest import mock
 
@@ -108,9 +109,12 @@ def test_fr6141_publish_posts_on_remaining_change(tmp_path: Path, monkeypatch):
 
         return Resp()
 
+    # FR #7748: the fixture fetched_at is 2026-11-07. Wall-clock now makes
+    # FR #7503 file a stale-pool issue beside the fuel merge.
+    fresh = datetime(2026, 11, 7, 12, 0, 5, tzinfo=timezone.utc).timestamp()
     with mock.patch("urllib.request.urlopen", fake_urlopen):
         code = bobreport.publish_local_peer_fuel(
-            home, mid, force=True, url="https://example.test/bob/v1/report"
+            home, mid, force=True, url="https://example.test/bob/v1/report", now=fresh
         )
     assert code == 204
     assert len(posted) == 1
@@ -126,7 +130,7 @@ def test_fr6141_publish_posts_on_remaining_change(tmp_path: Path, monkeypatch):
 
     with mock.patch("urllib.request.urlopen", fake_urlopen):
         code2 = bobreport.publish_local_peer_fuel(
-            home, mid, force=False, url="https://example.test/bob/v1/report", now=1.0
+            home, mid, force=False, url="https://example.test/bob/v1/report", now=fresh + 1.0
         )
     assert code2 is None
     assert len(posted) == 1
@@ -137,7 +141,7 @@ def test_fr6141_publish_posts_on_remaining_change(tmp_path: Path, monkeypatch):
     bobstat.write_peer(home, peer2)
     with mock.patch("urllib.request.urlopen", fake_urlopen):
         code3 = bobreport.publish_local_peer_fuel(
-            home, mid, force=False, url="https://example.test/bob/v1/report", now=2.0
+            home, mid, force=False, url="https://example.test/bob/v1/report", now=fresh + 2.0
         )
     assert code3 == 204
     assert len(posted) == 2
