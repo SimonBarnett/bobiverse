@@ -1,6 +1,8 @@
 """MRB #6806: LAN gate, stale hides zero percent, login page not JSON."""
 from __future__ import annotations
 
+import re
+
 import jeeves_settings as js
 import jeeves_settings_http as http
 
@@ -26,5 +28,7 @@ def test_mrb6806_stale_zero_does_not_say_out_of_tokens():
         }
     )
     assert "[stale]" in html
-    assert "0%" not in html
-    assert "out of tokens" not in html.lower()
+    # CSS width:100% contains the digits 0%. Judge the pool text, not the stylesheet.
+    visible = re.sub(r"<style[\s\S]*?</style>", "", html, flags=re.I)
+    assert "0%" not in visible
+    assert "out of tokens" not in visible.lower()

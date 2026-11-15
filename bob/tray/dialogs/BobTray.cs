@@ -770,6 +770,7 @@ namespace BobDialogs
         Process engine;
         int engineStarts; DateTime engineWindow = DateTime.Now;
         DateTime engineStartedUtc = DateTime.MinValue;  // FR #4136: grace before engine.alive required
+        DateTime lastDigestFetchFailReportUtc = DateTime.MinValue; // FR #7580: one CrashHook per failure window
         int lastSeatCount = -1;   // FR #3180: observe drops; never auto-launch
         StatusForm statusForm; AboutForm aboutForm;
         public readonly List<string> MenuItems = new List<string>();
@@ -1535,7 +1536,9 @@ namespace BobDialogs
             ExitThread();
         }
 
-        // FR #7510: host-owned digest pool refresh (powershell -File); never requires the PS engine.
+        // FR #7510 / #7580: host-owned digest pool refresh (powershell -File); never requires the PS engine.
+        // On digest fetch failure the helper keeps last rows and writes tray-digest-fetch-fail.json;
+        // CrashHook.Report once per 30 min (ties FR #7505).
         void RefreshDigestPools()
         {
             try
@@ -1550,7 +1553,55 @@ namespace BobDialogs
                 string ps = Path.Combine(Environment.GetEnvironmentVariable("SystemRoot") ?? "C:\\Windows", "System32\\WindowsPowerShell\\v1.0\\powershell.exe");
                 ProcessStartInfo psi = new ProcessStartInfo(ps, "-NoProfile -ExecutionPolicy Bypass -File \"" + script + "\" -Root \"" + root + "\"");
                 psi.UseShellExecute = false; psi.CreateNoWindow = true; psi.WorkingDirectory = root;
-                using (Process p = Process.Start(psi)) { }
+                using (Process p = Process.Start(psi))
+                {
+                    if (p != null)
+                    {
+                        if (!p.WaitForExit(25000))
+                        {
+                            try { p.Kill(); } catch { }
+                        }
+                    }
+                }
+                MaybeReportDigestFetchFail();
+            }
+            catch { }
+        }
+
+        void MaybeReportDigestFetchFail()
+        {
+            try
+            {
+                string failPath = Path.Combine(runDir, "tray-digest-fetch-fail.json");
+                string poolsPath = Path.Combine(runDir, "tray-digest-pools.json");
+                bool failed = File.Exists(failPath);
+                if (!failed && File.Exists(poolsPath))
+                {
+                    try
+                    {
+                        string raw = File.ReadAllText(poolsPath);
+                        if (raw.IndexOf("\"digest_ok\":false", StringComparison.OrdinalIgnoreCase) >= 0
+                            || raw.IndexOf("\"digest_ok\": false", StringComparison.OrdinalIgnoreCase) >= 0)
+                            failed = true;
+                    }
+                    catch { }
+                }
+                if (!failed) return;
+                if ((DateTime.UtcNow - lastDigestFetchFailReportUtc).TotalMinutes < 30) return;
+                lastDigestFetchFailReportUtc = DateTime.UtcNow;
+                string detail = "digest-fetch-failed";
+                try
+                {
+                    if (File.Exists(failPath))
+                    {
+                        string fr = File.ReadAllText(failPath);
+                        if (fr.Length > 180) fr = fr.Substring(0, 180);
+                        detail = "digest-fetch-failed " + fr.Replace("\r", " ").Replace("\n", " ");
+                    }
+                }
+                catch { }
+                CrashHook.Report("bob-tray", new InvalidOperationException(detail));
+                TrayLifecycle.Write("digest-fetch-failed");
             }
             catch { }
         }

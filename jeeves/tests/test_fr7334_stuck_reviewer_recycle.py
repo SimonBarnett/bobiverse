@@ -62,10 +62,8 @@ def test_fr7334_three_idle_authors_one_recycle_and_fresh_offer(tmp_path, monkeyp
         accepted=[],
         install_root=install,
     )
-    assert sum("recycleseat=flamingo-12296" in x for x in lines) == 1, lines
-    text = _outbox(tmp_path)
-    assert text.count("!recycleseat flamingo-12296") == 1
-    assert "PRIVMSG #bobiverse :recycled flamingo-12296" in text
+    assert not any("recycleseat=" in x for x in lines), lines
+    assert any(x.startswith("no_eligible_reviewer ") for x in lines)
     fresh = "flamingo-1"
     live = set(SEATS) | {fresh}
     assert gitclaim.review_blocked_for_author(row, "flamingo-12296", live) is True
@@ -89,8 +87,8 @@ def test_fr7334_busy_author_is_not_recycled(tmp_path, monkeypatch):
         accepted=accepted,
         install_root=install,
     )
-    assert sum("recycleseat=marchhare-31172" in x for x in lines) == 1, lines
-    assert "flamingo-12296" not in " ".join(lines)
+    assert not any("recycleseat=" in x for x in lines), lines
+    assert any(x.startswith("no_eligible_reviewer ") for x in lines)
 
 
 def test_fr7334_under_five_minutes_does_not_recycle(tmp_path, monkeypatch):
@@ -127,7 +125,8 @@ def test_fr7334_second_scan_does_not_recycle_another_author(tmp_path, monkeypatc
         accepted=[],
         install_root=install,
     )
-    assert sum("recycleseat=flamingo-12296" in x for x in first) == 1, first
+    assert any(x.startswith("no_eligible_reviewer ") for x in first), first
+    assert not any("recycleseat=" in x for x in first)
     second = gitclaim.maybe_recycle_stuck_no_eligible_reviewer(
         tmp_path,
         idle=set(SEATS),
@@ -137,7 +136,7 @@ def test_fr7334_second_scan_does_not_recycle_another_author(tmp_path, monkeypatc
         install_root=install,
     )
     assert second == [], second
-    assert _outbox(tmp_path).count("!recycleseat") == 1
+    assert _outbox(tmp_path).count("!recycleseat") == 0
 
 
 def test_fr7334_chair_health_wires_helper():

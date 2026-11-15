@@ -1,10 +1,11 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-  FR #7510: poll the bob digest and write run\tray-digest-pools.json for TipForm/Status.
+  FR #7510 / #7580: poll the bob digest and write run\tray-digest-pools.json for TipForm/Status.
 .DESCRIPTION
   Invoked by bob-tray.exe on a 60s timer (engine alive or not). Pool % for Status/TipForm
-  comes only from this file. UTF-8 no BOM. Never prints secrets.
+  comes only from this file, painted as the digest publishes (no local age stale). UTF-8 no BOM.
+  Fetch failure keeps last rows and writes tray-digest-fetch-fail.json for CrashHook. Never prints secrets.
 .PARAMETER Root
   Install root (contains run\).
 .PARAMETER Url
