@@ -82,6 +82,20 @@ a:focus-visible, button:focus-visible {
   .site-header { border-radius: 18px; }
 }
 
+/* FR #7409: narrow phones — wrap nav, no horizontal overflow */
+@media (max-width: 400px) {
+  html, body { overflow-x: hidden; }
+  .shell { padding-left: 0.85rem; padding-right: 0.85rem; }
+  .site-header {
+    flex-direction: column; align-items: flex-start;
+    border-radius: 16px; padding: 0.75rem 0.9rem;
+  }
+  .nav { width: 100%; gap: 0.35rem 0.65rem; }
+  .nav a { font-size: 0.88rem; }
+  .hero-copy, .hero-panel { padding: 1.2rem 1rem; }
+  .actions .btn { width: 100%; }
+}
+
 .hero-copy {
   background: var(--paper-card);
   border: 1px solid var(--line);
