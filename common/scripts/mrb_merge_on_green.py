@@ -409,6 +409,17 @@ def harvest_fail_disposition_board(comments: list[dict] | None) -> bool:
     return False
 
 
+def pr_state_merged_or_closed(state: dict[str, Any] | None) -> bool:
+    """FR #7653: a merged or closed pull must not be offered FIX."""
+    if not isinstance(state, dict):
+        return False
+    if state.get("merged") in (True, "true", "1", 1):
+        return True
+    if state.get("closed") in (True, "true", "1", 1):
+        return True
+    return str(state.get("state") or "").strip().lower() in ("closed", "merged")
+
+
 def skip_mrb_fail_fix_for_harvest(
     *,
     title: str = "",
@@ -1569,6 +1580,8 @@ def enqueue_mrb_fail_fix(
             state = fetch_pr_state(repo_c, num)
         except Exception:  # noqa: BLE001
             state = None
+    if pr_state_merged_or_closed(state if isinstance(state, dict) else None):
+        return "skipped"
     if isinstance(state, dict) and skip_mrb_fail_fix_for_harvest(
         title=str(state.get("title") or ""),
         labels=tuple(state.get("labels") or ()),
@@ -2155,6 +2168,8 @@ def enqueue_conflict_fix(
             state = fetch_pr_state(repo_c, num)
         except Exception:  # noqa: BLE001
             state = None
+    if pr_state_merged_or_closed(state if isinstance(state, dict) else None):
+        return "skipped"
     if isinstance(state, dict) and skip_mrb_fail_fix_for_harvest(
         title=str(state.get("title") or ""),
         labels=tuple(state.get("labels") or ()),
