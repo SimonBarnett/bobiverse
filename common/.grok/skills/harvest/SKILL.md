@@ -435,6 +435,7 @@ routes to bobiverse via the split rule.
 - When /jeeves home FR conflicts with site-chrome tip: resolve _shell_header to keep site.css classes and set appliance nav Home(/)+Settings(/settings); fold CONFLICTING tips (FR #4649); LAN-root session tests need ALLOW_LAN_ROOT under front-door default.
 - Public /jeeves Set-Cookie is Secure; plain-HTTP pytest must use Bearer session_token, not CookieJar
 - /downloads airc card: PowerShell snippet must use the same MSI href as data-role=msi and include elevated msiexec AIRC_PROFILE=client /qn with no secrets
+- Plan Agent FR: derive plan host from MCP anchor domain (no hostname literals in tests); ban plan skills/visionary in visible HTML text; retire old-label pins that required visionary wording.
 
 ## Harvest digest (lessons audit 2026-10-06)
 
