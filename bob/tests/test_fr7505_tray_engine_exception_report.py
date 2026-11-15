@@ -65,3 +65,10 @@ def test_fr7505_fix7519_ensure_treats_stale_snap_as_dead_while_process_present()
     assert "-Kind 'status-stale'" in e or '-Kind "status-stale"' in e or "Kind 'status-stale'" in e
     assert "$frozen" in e
     assert "why={1}" in e or "why =" in e or "relaunchWhy" in e
+
+
+def test_mrb7519_ensure_bob_tray_running_is_bomless_ascii():
+    """MRB #7519 hostile: WinPS 5.1 watched scripts must be BOM-less ASCII (pytest-ascii-bom / FR #3975)."""
+    raw = ENSURE.read_bytes()
+    assert not raw.startswith(b"\xef\xbb\xbf"), "UTF-8 BOM forbidden"
+    assert all(b < 128 for b in raw), "non-ASCII in Ensure-BobTrayRunning.ps1"
