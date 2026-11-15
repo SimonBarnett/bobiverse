@@ -1227,13 +1227,25 @@ function Get-BobTrayMachineXaiWeekly {
     }
     if (-not $doc) {
         try {
-            # UTF-8 explicitly (PS 5.1 would decode a charset-less body as Latin-1: "A-circumflex + dot").
-            $resp = Invoke-WebRequest -Uri (Get-BobTrayDigestReportUrl) -UseBasicParsing -TimeoutSec 8 -Headers @{ Accept = 'application/json' }
-            $ms = $resp.RawContentStream
-            $ms.Position = 0
-            $buf = New-Object byte[] ([int]$ms.Length)
-            [void]$ms.Read($buf, 0, $buf.Length)
-            $doc = [System.Text.Encoding]::UTF8.GetString($buf) | ConvertFrom-Json
+            # FR #7615 / #7602: HttpWebRequest Timeout + ReadWriteTimeout (PS 5.1 IWR hang).
+            if (-not (Get-Command Invoke-BobDigestHttpGet -ErrorAction SilentlyContinue)) {
+                $helperCands = @(
+                    (Join-Path $RepoRoot 'src\Private\Invoke-BobDigestHttpGet.ps1'),
+                    (Join-Path $PSScriptRoot '..\src\Private\Invoke-BobDigestHttpGet.ps1')
+                )
+                foreach ($hc in $helperCands) {
+                    if (Test-Path -LiteralPath $hc -PathType Leaf) { . $hc; break }
+                }
+            }
+            if (-not (Get-Command Invoke-BobDigestHttpGet -ErrorAction SilentlyContinue)) {
+                throw 'Invoke-BobDigestHttpGet missing'
+            }
+            $got = Invoke-BobDigestHttpGet -Uri (Get-BobTrayDigestReportUrl) -TimeoutSec 8
+            if (-not $got -or [int]$got.StatusCode -lt 200 -or [int]$got.StatusCode -ge 300) {
+                throw ('digest HTTP status {0}' -f $(if ($got) { $got.StatusCode } else { 'null' }))
+            }
+            # UTF-8 body already decoded by Invoke-BobDigestHttpGet (PS 5.1 Latin-1 trap avoided).
+            $doc = [string]$got.Text | ConvertFrom-Json
         }
         catch {
             Write-TrayLog ('agents: digest xai_weekly read failed: ' + $_.Exception.Message)
