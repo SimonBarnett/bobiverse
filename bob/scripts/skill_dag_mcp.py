@@ -408,7 +408,10 @@ class SkillDagServer:
             return {"ok": False, "reason": "not_found"}
         if not _under_roots(resolved, self.roots):
             return {"ok": False, "reason": "path_refused"}
-        raw = resolved.read_bytes()
+        try:
+            raw = resolved.read_bytes()
+        except OSError:
+            return {"ok": False, "reason": "not_found"}
         if len(raw) > self.max_bytes:
             return {"ok": False, "reason": "over_budget", "bytes": len(raw)}
         try:
@@ -484,7 +487,18 @@ def serve_stdio(server: SkillDagServer, inf, outf) -> None:
             msg = json.loads(line)
         except json.JSONDecodeError:
             continue
-        reply = server.handle_rpc(msg)
+        try:
+            reply = server.handle_rpc(msg)
+        except Exception as exc:
+            # FR #7705: one bad tools/call must not close stdio. The client
+            # otherwise sees MCP -32000 Connection closed and the seat loops.
+            if msg.get("id") is None:
+                continue
+            reply = {
+                "jsonrpc": "2.0",
+                "id": msg.get("id"),
+                "error": {"code": -32000, "message": type(exc).__name__},
+            }
         if reply is not None:
             outf.write(json.dumps(reply, ensure_ascii=False) + "\n")
             outf.flush()
