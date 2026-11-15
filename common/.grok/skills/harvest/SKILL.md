@@ -450,6 +450,7 @@ routes to bobiverse via the split rule.
 - FR tray Copilot fixture tips: when Format-BobCopilotPoolLine paints unlimited (FR #7299), align COPILOT_POOLS expected lines --- do not restore unknown for unlimited=true.
 - MRB downloads tips: keep airc last via DOM marker comment + HTML order pins, not CSS order; #download-grid 1fr scoped so shared .grid stays multi-column elsewhere.
 - build-jeeves must run jeeves/tests pytest before PyInstaller so a red suite never ships an artifact; pin step order in workflow YAML
+- When Client gains helpers that FakeChair copies via getattr list, add the new method names to the FakeChair binding list in the same FR; unit chairs must not return wait from names_refresh without a 366 path
 
 ## Harvest digest (lessons audit 2026-10-06)
 
