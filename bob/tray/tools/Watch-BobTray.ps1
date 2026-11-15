@@ -3931,10 +3931,11 @@ $poll.Add_Tick({
                     } catch { }
                 }
                 $alerts = @()
-                $sa = Invoke-BobTrayEngineStep -Name 'stall-alerts' -Root $RepoRoot -TimeoutSec ([int]$script:BobTrayEngineStepTimeoutSec) -ArgumentList @($RepoRoot, $seen, [int]$StallSec, [int]$HeartbeatStaleSec) -Body {
+                # FR #7660: a cold job plus Import-Module -Force exceeded the 45s stall-alerts budget.
+                $sa = Invoke-BobTrayEngineStep -Name 'stall-alerts' -Root $RepoRoot -TimeoutSec 90 -ArgumentList @($RepoRoot, $seen, [int]$StallSec, [int]$HeartbeatStaleSec) -Body {
                     param($Root, $Seen, $StallSecArg, $HeartbeatStaleSecArg)
                     $psd1 = Join-Path $Root 'src\BobBridge.psd1'
-                    if (Test-Path -LiteralPath $psd1) { Import-Module $psd1 -Force }
+                    if (Test-Path -LiteralPath $psd1) { Import-Module $psd1 }
                     $list = @(Get-BobStallAlerts -Seen $Seen -StallSec ([int]$StallSecArg) -HeartbeatStaleSec ([int]$HeartbeatStaleSecArg))
                     return [pscustomobject]@{ Alerts = $list; Seen = $Seen }
                 }
