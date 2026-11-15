@@ -13,9 +13,10 @@ function Invoke-BobTimed {
         }
         $h = $run.BeginInvoke()
         if (-not $h.AsyncWaitHandle.WaitOne($ms)) {
-            try { $run.Stop() } catch { }
-            # Timed-out Dns.GetHostAddresses / UNC ignores Stop(); Dispose would
-            # wait it out and freeze the idle tray card. Leak this instance.
+            # FR #7603: Stop() blocks until a hung pipeline (WinHTTP / CloseWait)
+            # actually ends, so the caller never gets the timeout back. BeginStop
+            # only signals cancel. Dispose would wait the same way, so leak it.
+            try { [void]$run.BeginStop($null, $null) } catch { }
             $run = $null
             return [pscustomobject]@{ ok = $false; timedOut = $true; value = $null; error = 'timeout' }
         }
