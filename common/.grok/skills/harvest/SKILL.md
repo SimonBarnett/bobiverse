@@ -459,6 +459,7 @@ routes to bobiverse via the split rule.
 - In bob_worker _wait_exit: nonzero agent exit -> report_agent_cli_nonzero_exit + GIVEUP accepted job + restart_agent; zero exit keeps shutdown EXIT_OK with no report/release
 - Digest worker_list: never apply idle from a heartbeat while the nick still holds an accepted queue row --- keep doing + work text (post_digest_seat_kind defaults state=idle).
 - Tray poll steps that can hang (jobs-watcher, stall-alerts) must use Invoke-BobTrayEngineStep with TimeoutSec and capture Receive-Job output for script-scope state.
+- PS 5.1 digest GETs: use HttpWebRequest Timeout and ReadWriteTimeout (Invoke-BobDigestHttpGet); do not rely on Invoke-WebRequest -TimeoutSec against hung or half-closed sockets.
 
 ## Harvest digest (lessons audit 2026-10-06)
 
