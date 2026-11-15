@@ -454,6 +454,7 @@ routes to bobiverse via the split rule.
 - Tray engine UI-thread hangs: stamp engine.alive before blocking poll steps and on the ThreadPool tray.alive timer; run Get-BobTrayHover/snapshot under a job timeout and log step names to logs/tray-engine-cycle.log.
 - Fleet-pool-stale: evaluate shared last_ok age/recovery before FR #7552 auth-skip so digest no_token noise cannot override a fresh fetcher last_ok.
 - Install-BobEarExe: stage exe + companions + provenance before --help smoke; refuse smoke if a planned companion is missing; keep .bak rollback for companions
+- In bob_worker _wait_exit: nonzero agent exit -> report_agent_cli_nonzero_exit + GIVEUP accepted job + restart_agent; zero exit keeps shutdown EXIT_OK with no report/release
 
 ## Harvest digest (lessons audit 2026-10-06)
 
