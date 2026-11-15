@@ -57,15 +57,24 @@ def test_fr7345_expired_no_fuel_exits_named_reason():
 
 
 def test_fr7345_explicit_grok_expired_does_not_launch_grok():
+    """FR #7485: explicit grok + expired xAI refuses; never falls through to Cursor."""
     fuel = bw.Fuel(40, 10, 50, "available")
     d = bw.explicit_agent_decision(
         "grok", fuel, r"C:\c\agent.cmd", r"C:\g\agent.exe", None, auth_present=False
     )
     assert d.kind == "grok"
-    d = bw.apply_xai_signin_gate(
-        d, fuel, r"C:\c\agent.cmd", r"C:\g\agent.exe", None, signin_ok=False
+    d = bw.resolve_seat_decision(
+        "grok",
+        d,
+        fuel,
+        r"C:\c\agent.cmd",
+        r"C:\g\agent.exe",
+        None,
+        auth_present=False,
+        xai_signin_ok=False,
     )
-    assert d.kind == "cursor"
+    assert d.kind == "xai-auth-expired"
+    assert d.kind != "cursor"
 
 
 def test_fr7345_preflight_uses_ear_error_class():

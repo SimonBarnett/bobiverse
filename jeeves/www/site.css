@@ -46,22 +46,22 @@ body {
 }
 .brand {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   gap: 0.55rem;
   text-decoration: none;
   color: inherit;
 }
+.brand-logo {
+  display: block;
+  width: 36px;
+  height: 36px;
+  border-radius: 8px;
+  object-fit: contain;
+  flex: 0 0 auto;
+}
 .brand-mark {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 2rem;
-  height: 2rem;
-  border-radius: 999px;
-  background: var(--gold);
-  color: var(--charcoal);
-  font-weight: 700;
-  font-size: 0.95rem;
+  /* FR #7453: letter marks retired; keep rule inert for old caches. */
+  display: none;
 }
 .brand-name { font-weight: 650; letter-spacing: 0.02em; font-size: 1.15rem; }
 .brand-tag { color: var(--gold-bright); font-size: 0.85rem; }
@@ -197,3 +197,16 @@ table.cmd th { color: var(--charcoal); font-size: 0.85rem; }
   .hero { padding: 1rem; }
   .site-main { padding: 1rem 0.85rem 2rem; }
 }
+
+/* FR #7456: airc PowerShell install snippet on /downloads */
+.install-block { margin-top: 0.35rem; display: flex; flex-direction: column; gap: 0.45rem; }
+.install-block-head { display: flex; flex-wrap: wrap; align-items: center; gap: 0.45rem 0.75rem; }
+.install-block-head .install-note { color: var(--muted, #5c6570); font-size: 0.8rem; flex: 1; }
+.install-snippet {
+  margin: 0; padding: 0.75rem 0.85rem; overflow: auto;
+  background: #161b22; color: #f4efe6; border-radius: 10px;
+  border: 1px solid rgba(201, 162, 39, 0.35);
+  font-family: ui-monospace, Consolas, monospace; font-size: 0.78rem; line-height: 1.45;
+  white-space: pre-wrap;
+}
+.install-snippet code { font-family: inherit; background: transparent; color: inherit; padding: 0; }

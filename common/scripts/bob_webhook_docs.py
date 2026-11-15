@@ -93,11 +93,29 @@ def _inbound() -> list[DocEntry]:
             method="POST",
             path=bobcallback.GIT_WEBHOOK_PATH,
             direction="in",
-            purpose="GitHub delivery into the digest job queue (issues, PRs, checks, comments).",
+            purpose=(
+                "GitHub delivery into the digest job queue. Handled: ping, push, issues, "
+                "issue_comment, pull_request, pull_request_review, check_run, check_suite. "
+                "Ignored with 204 (no enqueue): workflow_run and other unhandled events "
+                "(CI state comes from check_run + resync)."
+            ),
             callers="GitHub repository webhooks (allow-listed owners).",
-            auth="None shared secret. Owner allow-list via BOB_GIT_OWNERS (default SimonBarnett). Event must be accepted.",
-            request_schema="GitHub webhook JSON + X-GitHub-Event / X-GitHub-Delivery headers.",
-            response_schema="204/202 accepted; 403 owner/event; 429 rate.",
+            auth=(
+                "Optional HMAC-SHA256 via X-Hub-Signature-256 when "
+                "BOB_GIT_WEBHOOK_SECRET_FILE or <BOB_CONFIG_DIR>/github-webhook.secret exists. "
+                "No secret file = unsigned owner-gated contract. "
+                "BOB_GIT_ALLOW_UNSIGNED=1 allows missing signatures only (invalid still 401). "
+                "Owner allow-list via BOB_GIT_OWNERS (default SimonBarnett)."
+            ),
+            request_schema=(
+                "GitHub webhook JSON + X-GitHub-Event / X-GitHub-Delivery; "
+                "optional X-Hub-Signature-256=sha256=<hex>."
+            ),
+            response_schema=(
+                "204 empty on accept/ignore; 4xx compact JSON "
+                '{"ok":false,"error":"<fixed reason>"}; '
+                '503 {"error":"processing deferred"} + Retry-After.'
+            ),
             example_request=(
                 "POST https://bob.ntsa.uk/bob/v1/git\n"
                 "Content-Type: application/json\n"
@@ -105,12 +123,20 @@ def _inbound() -> list[DocEntry]:
                 '{"action":"opened","repository":{"full_name":"SimonBarnett/example"},'
                 '"issue":{"number":1,"title":"example"}}'
             ),
-            status_codes="202/204 accepted; 400 bad JSON; 403 owner/event; 413; 429.",
-            retry_idempotency="GitHub retries deliveries; chair also !resync / hourly github-resync fallback.",
-            rate_limits=f"{bobcallback.GIT_RATE_PER_MIN}/min per repository.",
+            status_codes=(
+                "204 accepted or ignored; 400 missing event/malformed JSON/missing repository; "
+                "401 missing/invalid signature (when secret configured); 403 owner not allowed; "
+                "413 body too large; 429 rate limited; 503 processing deferred."
+            ),
+            retry_idempotency=(
+                "GitHub does not auto-retry failed deliveries (manual/API redelivery within ~3 days). "
+                "503 keeps the envelope pending for drain; chair !resync / hourly github-resync is the "
+                "state fallback. IIS may return 502.3 while BobCallback is unbound during restart."
+            ),
+            rate_limits=f"{bobcallback.GIT_RATE_PER_MIN}/min per repository (ignored events do not consume budget).",
             reachability="Public Cloudflare. Never post git events to /bob/v1/report.",
-            source="common/scripts/bobcallback.py, gitclaim.py",
-            fr="FR #5170 / #4711 / #4955",
+            source="common/scripts/bobcallback.py, gitclaim.py, copilot_dispatch.py",
+            fr="FR #5170 / #4711 / #4955 / #7467",
             html_rel="docs/webhooks/git.html",
         ),
         DocEntry(

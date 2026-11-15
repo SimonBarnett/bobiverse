@@ -1,0 +1,58 @@
+# FR #7465: site kit for the IIS www bundle. Not a service executable build and not a service restart.
+name: build-jeeves-webhooks
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - .github/workflows/build-jeeves-webhooks.yml
+      - jeeves/www/**
+      - jeeves/scripts/Install-BobWebhooks.ps1
+      - jeeves/scripts/jeeves_webhooks_ci.py
+      - jeeves/tests/test_fr7465_webhooks_ci.py
+      - jeeves/tests/test_fr7460_webconfig_staticcontent.py
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/build-jeeves-webhooks.yml
+      - jeeves/www/**
+      - jeeves/scripts/Install-BobWebhooks.ps1
+      - jeeves/scripts/jeeves_webhooks_ci.py
+      - jeeves/tests/test_fr7465_webhooks_ci.py
+      - jeeves/tests/test_fr7460_webconfig_staticcontent.py
+
+permissions:
+  contents: read
+
+jobs:
+  build-jeeves-webhooks:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Check site kit and write the versioned artifact
+        env:
+          WORKFLOW_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          $root = (Get-Location).Path
+          $out = Join-Path $env:RUNNER_TEMP "jeeves-webhooks-artifact"
+          $published = Join-Path $env:RUNNER_TEMP "jeeves-webhooks-published"
+          python "$root\jeeves\scripts\jeeves_webhooks_ci.py" --repo-root $root --physical $published --out $out --commit $env:WORKFLOW_COMMIT
+          if ($LASTEXITCODE -ne 0) { throw "jeeves_webhooks_ci.py exit $LASTEXITCODE" }
+          if (-not (Test-Path -LiteralPath (Join-Path $out "MANIFEST.json"))) { throw "missing MANIFEST.json" }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: jeeves-webhooks
+          path: ${{ runner.temp }}/jeeves-webhooks-artifact
+          if-no-files-found: error

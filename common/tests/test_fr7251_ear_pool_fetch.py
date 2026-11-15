@@ -26,10 +26,11 @@ def test_pool_fetch_due_every_60s_not_sooner():
 
 
 def test_rate_limit_backoff_skips_until_later():
+    # FR #7471: 429 must not stretch past 60s (supersedes earlier backoff).
     now = 1_700_000_000.0
     bobreport.mark_pool_fetch("xai", now, ok=False, error="provider-http-429", rate_limited=True)
     assert bobreport.pool_fetch_due("xai", now + 1.0) is False
-    assert bobreport.pool_fetch_due("xai", now + bobreport.EAR_POOL_FETCH_S * 2 + 1.0) is True
+    assert bobreport.pool_fetch_due("xai", now + bobreport.EAR_POOL_FETCH_S) is True
 
 
 def test_xai_failure_stamps_last_attempt_keeps_fetched_at():

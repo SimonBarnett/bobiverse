@@ -3,6 +3,7 @@
 <head>
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <!-- bobiverse acme: FR #6453 pin; keep when regenerating webhook docs -->
   <title>bob.ntsa.uk — Bobiverse</title>
   <link rel="icon" href="/favicon.ico" type="image/x-icon"/>
   <link rel="stylesheet" href="site.css"/>
@@ -11,7 +12,7 @@
   <div class="shell">
     <header class="site-header">
       <a class="brand" href="/">
-        <span class="brand-mark" aria-hidden="true">B</span>
+        <img class="brand-logo" src="/jeeves/assets/ntsa-gut-logo.png" alt="NTSA" width="36" height="36"/>
         <span class="brand-text"><strong>bob.ntsa.uk</strong><span>Bobiverse public front door</span></span>
       </a>
       <nav class="nav" aria-label="Primary">
@@ -19,8 +20,8 @@
         <a href="/downloads">Downloads</a>
         <a href="/jeeves/commands">Commands</a>
         <a href="/jeeves">Jeeves</a>
-        <a href="https://mcp.ntsa.uk">MCP</a>
-        <a href="https://plan.ntsa.uk">Plan skills (visionary)</a>
+        <a href="https://mcp.ntsa.uk">Priority MCP</a>
+        <a href="https://plan.ntsa.uk">Plan Agent</a>
         <a href="https://github.com/SimonBarnett/bobiverse">GitHub</a>
       </nav>
     </header>
@@ -32,12 +33,12 @@
         <p>
           Webhooks under <code>/bob/v1/*</code>, a polished downloads shelf for the latest
           MSIs, Jeeves settings and command docs at <code>/jeeves</code>, and a clear door
-          into the Priority skill catalog on mcp.ntsa.uk.
+          into Priority MCP.
         </p>
         <div class="actions">
           <a class="btn btn-gold" href="/downloads">Get latest builds</a>
           <a class="btn btn-primary" href="/jeeves">Open Jeeves</a>
-          <a class="btn btn-ghost" href="https://mcp.ntsa.uk">Open MCP catalog</a>
+          <a class="btn btn-ghost" href="https://mcp.ntsa.uk">Priority MCP</a>
         </div>
       </div>
       <aside class="hero-panel" aria-label="Quick links">
@@ -69,10 +70,10 @@
         <a class="btn btn-ghost" href="/jeeves">Settings login</a>
       </article>
       <article class="card">
-        <span class="pill">MCP</span>
-        <h3>Priority skills</h3>
-        <p>Grab catalog skills on mcp.ntsa.uk, then run them on instances you allowlist.</p>
-        <a class="btn btn-primary" href="https://mcp.ntsa.uk">Visit mcp.ntsa.uk</a>
+        <span class="pill">Priority MCP</span>
+        <h3>Priority MCP</h3>
+        <p>Grab skills from Priority MCP, then run them on instances you allowlist.</p>
+        <a class="btn btn-primary" href="https://mcp.ntsa.uk">Priority MCP</a>
       </article>
     </div>
 
@@ -99,22 +100,37 @@
         <p><code>POST /bob/v1/intake</code> — file issues, FRs, and harvest lessons.</p>
         <a class="btn btn-primary" href="docs/webhooks/intake.html">Intake docs</a>
       </article>
+      <article class="card">
+        <span class="pill">Jira</span>
+        <h3>Jira</h3>
+        <p><code>GET|POST /bob/v1/jira</code> — customer Jira webhooks into fleet intake.</p>
+        <a class="btn btn-primary" href="docs/webhooks/jira.html">Jira docs</a>
+      </article>
+      <article class="card">
+        <span class="pill">Hours</span>
+        <h3>Hours</h3>
+        <p><code>GET|POST /bob/v1/hours</code> — hours create, list, summary, and export.</p>
+        <a class="btn btn-primary" href="docs/webhooks/hours.html">Hours docs</a>
+      </article>
+      <article class="card">
+        <span class="pill">Health</span>
+        <h3>Health</h3>
+        <p><code>GET /health</code> — BobCallback liveness (local; not on the public front door).</p>
+        <a class="btn btn-primary" href="docs/webhooks/health-local.html">Health docs</a>
+      </article>
     </div>
     <p class="meta" style="margin-top:1rem;color:var(--ink-soft);font-size:0.92rem">
       Also:
       <a href="docs/webhooks/git.html">GitHub git</a> ·
-      <a href="docs/webhooks/jira.html">Jira</a> ·
-      <a href="docs/webhooks/hours.html">Hours</a> ·
       <a href="docs/webhooks/outbound-stall-wake.html">Outbound stall / wake</a> ·
       <a href="docs/webhooks/digest-local.html">Local digest</a> ·
-      <a href="docs/webhooks/health-local.html">Local health</a> ·
       live <a href="/bob/v1/report"><code>/bob/v1/report</code></a>
     </p>
 
     <footer class="site-footer">
       <span>bob.ntsa.uk · public docs only · no secrets</span>
       <span>
-        <a href="https://mcp.ntsa.uk">mcp.ntsa.uk</a> ·
+        <a href="https://mcp.ntsa.uk">Priority MCP</a> ·
         <a href="https://github.com/SimonBarnett/bobiverse">GitHub</a> ·
         <a href="docs/webhooks/index.html">Webhooks</a>
       </span>

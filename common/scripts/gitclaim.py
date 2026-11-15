@@ -1491,6 +1491,12 @@ def stamp_coderabbit_from_webhook(home: Path, event: str, payload: dict) -> dict
     checks: list = []
 
     if ev == "pull_request_review":
+        # FR #7467: dismissed reviews must not stamp ready/light.
+        action = str(payload.get("action") or "").strip().lower()
+        if action == "dismissed":
+            out["reason"] = "dismissed"
+            print("INFO coderabbit stamp skip reason=dismissed", flush=True)
+            return out
         review = payload.get("review") if isinstance(payload.get("review"), dict) else {}
         pr = payload.get("pull_request") if isinstance(payload.get("pull_request"), dict) else {}
         try:
