@@ -94,7 +94,10 @@ def test_fr6270_publish_skips_do_not_carry_stale_weekly(monkeypatch, tmp_path: P
     )
     monkeypatch.delenv("BOB_WEEKLY_LOG", raising=False)
     monkeypatch.delenv("BOB_GROK_WEEKLY_USER_HOME", raising=False)
+    # FR #7753: ambient GROK_AUTH_PATH is explicit-auth and hides the skip.
     monkeypatch.delenv("BOB_GROK_AUTH_PATH", raising=False)
+    monkeypatch.delenv("GROK_AUTH_PATH", raising=False)
+    monkeypatch.setattr(bobreport, "_read_grok_auth_path_stamp", lambda: None)
     monkeypatch.setenv("USERPROFILE", str(tmp_path / "systemprofile"))
     (tmp_path / "systemprofile").mkdir(exist_ok=True)
     monkeypatch.setenv("USERNAME", "tester")
