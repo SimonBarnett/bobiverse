@@ -335,6 +335,26 @@ namespace BobDialogs
             catch { return false; }
         }
 
+        // FR #7669: bridge config.json seat_target 0. Read on each call (no tray restart).
+        public static bool SeatsOff()
+        {
+            try
+            {
+                string home = Environment.GetEnvironmentVariable("BOB_BRIDGE_HOME");
+                if (string.IsNullOrWhiteSpace(home))
+                {
+                    string profile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+                    home = Path.Combine(profile, ".grok", "bob-bridge");
+                }
+                string cfg = Path.Combine(home, "config.json");
+                if (!File.Exists(cfg)) return false;
+                string text = File.ReadAllText(cfg);
+                return System.Text.RegularExpressions.Regex.IsMatch(
+                    text, "\"seat_target\"\\s*:\\s*0(\\D|$)");
+            }
+            catch { return false; }
+        }
+
         // Same contract as Start-BobTrayWorkerExe: fresh agent every click, run-copy of the exe so a seat never locks the install,
         // its own visible console (CREATE_NEW_CONSOLE). Returns the pid, or 0 with `error` set.
         public static int Launch(string root, string mode, string machine, out string error)
@@ -351,8 +371,13 @@ namespace BobDialogs
         // FR #6429: childEnv is applied only to the new seat process (never the tray / tray-env.json).
         public static int Launch(string root, string mode, string machine, string agent, IDictionary childEnv, out string error)
         {
-            LaunchCalls++;
             error = "";
+            if (string.Equals(mode, "agent", StringComparison.OrdinalIgnoreCase) && SeatsOff())
+            {
+                error = "Seats are off on this machine (seat target 0).";
+                return 0;
+            }
+            LaunchCalls++;
             string refusal = CapRefusal(mode);
             if (refusal.Length > 0) { error = refusal; return 0; }
             string exe = Path.Combine(root, "worker\\bob-worker.exe");
@@ -797,6 +822,15 @@ namespace BobDialogs
             miAgents.DropDownOpening += delegate { BeginRefreshAgentChoices(miAgents); };
             menu.Items.Add(miAgents);
             Item("Plan", delegate { StartWorker("plan", ""); });
+            // FR #7669: show the live seat target. The value is bridge config.json; no tray restart.
+            ToolStripMenuItem miSeats = new ToolStripMenuItem("Seats: on");
+            miSeats.Enabled = false;
+            menu.Items.Add(miSeats);
+            MenuItems.Add("Seats: on");
+            menu.Opening += delegate
+            {
+                miSeats.Text = WorkerLauncher.SeatsOff() ? "Seats: off (seat target 0)" : "Seats: on";
+            };
             Item("Acknowledge", delegate { Acknowledge(); ShowAbout(); });
             Item("Open log", delegate { OpenLog(); });
             // FR #6309: TipForm masked OpenCode key set/select/remove.

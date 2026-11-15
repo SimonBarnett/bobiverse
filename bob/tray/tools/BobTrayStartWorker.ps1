@@ -13,6 +13,29 @@ function Get-BobTrayStartWorkerDir {
     return (Join-Path (Join-Path $Root 'run') 'startworker')
 }
 
+function Get-BobTraySeatTarget {
+    <#
+    FR #7669: per-machine seat target in the bridge config.json (read every call).
+    Missing key means the normal target. 0 means seats are off on this machine.
+    #>
+    $bridgeHome = $env:BOB_BRIDGE_HOME
+    if (-not $bridgeHome -or -not $bridgeHome.Trim()) {
+        $bridgeHome = Join-Path $env:USERPROFILE '.grok\bob-bridge'
+    }
+    $cfg = Join-Path $bridgeHome 'config.json'
+    if (-not (Test-Path -LiteralPath $cfg)) { return $null }
+    try {
+        $j = Get-Content -LiteralPath $cfg -Raw -ErrorAction Stop | ConvertFrom-Json
+        if ($j.PSObject.Properties.Name -notcontains 'seat_target') { return $null }
+        return [int]$j.seat_target
+    } catch { return $null }
+}
+
+function Test-BobTraySeatsOff {
+    $t = Get-BobTraySeatTarget
+    return ($null -ne $t -and [int]$t -eq 0)
+}
+
 function Write-BobTrayAlive {
     <#
     .SYNOPSIS
@@ -114,6 +137,7 @@ function Invoke-BobTrayStartWorkerQueue {
             if ($mode -notin @('agent', 'plan')) { $reason = 'bad-mode' }
             elseif ($agent -and $agent -notin @('auto', 'grok', 'cursor', 'opencode')) { $reason = 'bad-agent' }
             elseif ($Now -gt $expires) { $reason = 'expired' }
+            elseif ($mode -eq 'agent' -and (Test-BobTraySeatsOff)) { $reason = 'seats-off' }
             elseif ((Get-BobTrayWorkerCapRefusal -Mode $mode)) { $reason = 'cap' }
             else {
                 try {

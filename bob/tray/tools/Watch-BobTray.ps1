@@ -2028,6 +2028,13 @@ function Start-BobTrayWorkerExe {
         [switch]$Quiet
     )
     try {
+        # FR #7669: seat target 0 refuses every start path. Running seats are not stopped here.
+        if ($Mode -eq 'agent' -and (Test-BobTraySeatsOff)) {
+            $offMsg = 'Seats are off on this machine (seat target 0).'
+            Write-TrayLog ('{0}: refused: {1} trigger={2}' -f $Mode, $offMsg, $Trigger)
+            if (-not $Quiet) { try { [void][System.Windows.Forms.MessageBox]::Show($offMsg, 'Bobiverse', 'OK', 'Information') } catch { } }
+            return 0
+        }
         # t815u / FR #2667: hard cap of 2 AGENT seats only (plan is uncapped; same as startworker / bob_worker)
         $capRefusal = Get-BobTrayWorkerCapRefusal -Mode $Mode
         if ($capRefusal) {
@@ -3362,7 +3369,11 @@ function Rebuild-BobTrayTiles {
             if ($shownMachines.ContainsKey([string]$resolved)) { continue }
             $shownMachines[[string]$resolved] = $true
             $id = ([string]$resolved).ToUpperInvariant()
-            $y = Add-BobTrayFuelFamilyRow -X 0 -Y $y -Family 'xai' -Title $id -RightText $null
+            $title = $id
+            try {
+                if ($null -ne $m.seat_target -and [int]$m.seat_target -eq 0) { $title = ('{0} - seats off' -f $id) }
+            } catch { }
+            $y = Add-BobTrayFuelFamilyRow -X 0 -Y $y -Family 'xai' -Title $title -RightText $null
             $pct = $m.remaining_pct
             $fuelStale = $false
             try { if ($m.fuel_stale) { $fuelStale = [bool]$m.fuel_stale } } catch { }

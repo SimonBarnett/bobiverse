@@ -26,6 +26,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import base64
+from collections import deque
 import hashlib
 import ctypes
 import datetime as _dt
@@ -3154,6 +3155,101 @@ def format_agent_exit_code_label(code) -> str:
     return str(u)
 
 
+class AgentStderrRing:
+    """FR #7671: bounded line ring of the agent CLI stderr."""
+
+    def __init__(self, limit: int = 32) -> None:
+        self._lines: deque = deque(maxlen=max(5, int(limit)))
+        self._buf = ""
+        self._lock = threading.Lock()
+
+    def feed(self, text: str) -> None:
+        if not text:
+            return
+        with self._lock:
+            self._buf += text
+            parts = self._buf.splitlines(keepends=True)
+            self._buf = ""
+            for part in parts:
+                if part.endswith(("\n", "\r")):
+                    self._lines.append(part.strip("\r\n"))
+                else:
+                    self._buf = part
+
+    def finish(self) -> None:
+        with self._lock:
+            if self._buf.strip():
+                self._lines.append(self._buf.strip())
+            self._buf = ""
+
+    def tail_text(self) -> str:
+        with self._lock:
+            lines = [ln for ln in self._lines if str(ln).strip()]
+        return "\n".join(lines[-5:])
+
+
+def _tee_agent_stderr(pipe, ring: AgentStderrRing) -> None:
+    """Copy the agent stderr pipe to the console and into the ring."""
+    try:
+        while True:
+            chunk = pipe.read(256)
+            if not chunk:
+                break
+            if isinstance(chunk, bytes):
+                try:
+                    sys.__stderr__.buffer.write(chunk)
+                    sys.__stderr__.buffer.flush()
+                except Exception:
+                    pass
+                text = chunk.decode("utf-8", "replace")
+            else:
+                try:
+                    sys.__stderr__.write(chunk)
+                    sys.__stderr__.flush()
+                except Exception:
+                    pass
+                text = str(chunk)
+            ring.feed(text)
+    except Exception:
+        pass
+    finally:
+        ring.finish()
+        try:
+            pipe.close()
+        except Exception:
+            pass
+
+
+def start_agent_stderr_capture(pipe) -> tuple[AgentStderrRing, threading.Thread]:
+    ring = AgentStderrRing()
+    thread = threading.Thread(target=_tee_agent_stderr, args=(pipe, ring), daemon=True)
+    thread.start()
+    return ring, thread
+
+
+def agent_stderr_evidence(text: str) -> str:
+    """Last 5 nonempty lines, 500 chars, secrets redacted (FR #7671)."""
+    lines = [ln.strip() for ln in str(text or "").splitlines() if ln.strip()]
+    tail = "\n".join(lines[-5:])
+    if len(tail) > 500:
+        tail = tail[-500:]
+    try:
+        import crash_report
+
+        return crash_report.redact(tail)
+    except Exception:
+        return tail
+
+
+def agent_stderr_dedupe_line(text: str) -> str:
+    """Normalised first nonempty stderr line for the intake key (FR #7671)."""
+    lines = [ln.strip() for ln in str(text or "").splitlines() if ln.strip()]
+    first = lines[0] if lines else ""
+    norm = re.sub(r"\s+", " ", first).strip().lower()
+    norm = re.sub(r"[^a-z0-9 .:_-]+", "", norm)[:80]
+    return norm or "none"
+
+
 def report_agent_cli_nonzero_exit(
     *,
     exit_code: int,
@@ -3163,10 +3259,11 @@ def report_agent_cli_nonzero_exit(
     kind: str = "",
     agent_pid: int | None = None,
     raw_code=None,
+    stderr_tail: str = "",
     log: Optional[Callable[[str], None]] = None,
     filer_post: Optional[Callable[..., dict]] = None,
 ) -> dict:
-    """FR #7593: agent CLI nonzero exit → one intake (exit code + job). No secrets."""
+    """FR #7593 / #7671: agent CLI nonzero exit, with the last stderr lines. No secrets."""
     if filer_post is None and os.environ.get("PYTEST_CURRENT_TEST"):
         return {"ok": True, "skipped": True, "reason": "pytest"}
     mid = re.sub(r"[^a-z0-9._-]+", "-", str(machine or "unknown").strip().lower()).strip("-") or "unknown"
@@ -3182,14 +3279,16 @@ def report_agent_cli_nonzero_exit(
         pid_s = str(int(agent_pid or 0))
     except (TypeError, ValueError):
         pid_s = "0"
-    # Dedupe per machine + exit + job so a flapping seat comments the same report.
-    key = f"agent-cli-nonzero-exit|{mid}|{u}|{job}"[:128]
+    evidence = agent_stderr_evidence(stderr_tail)
+    err_key = agent_stderr_dedupe_line(evidence)
+    # Same crash on the same seat is one issue, whatever the job was (FR #7671).
+    key = f"agent-cli-nonzero-exit|{mid}|{u}|{err_key}"[:128]
     title = "bug: agent CLI nonzero exit (FR #7593)"
     body = (
         "What: the agent CLI process exited non-zero; the worker wrapper reported it and "
         "recycled the seat (FR #7593).\n"
         f"Where: bob-worker kind={k} machine={mid} nick={nick_s} agent_pid={pid_s}\n"
-        f"Evidence: exit_code={label} job={job}\n"
+        f"Evidence: exit_code={label} job={job} stderr={evidence}\n"
         "Fix: inspect the agent session / exit cause; accepted jobs are GIVEUP'd (no fake DONE).\n"
         "No secrets."
     )
@@ -3815,15 +3914,25 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
 class ProcHandle:
     """Thin wrapper so tests can fake processes."""
 
-    def __init__(self, popen: subprocess.Popen):
+    def __init__(self, popen: subprocess.Popen, stderr_ring: AgentStderrRing | None = None, stderr_thread: threading.Thread | None = None):
         self._p = popen
         self.pid = popen.pid
+        self._stderr_ring = stderr_ring
+        self._stderr_thread = stderr_thread
 
     def poll(self):
         return self._p.poll()
 
     def wait(self, timeout=None):
-        return self._p.wait(timeout)
+        code = self._p.wait(timeout)
+        if self._stderr_thread is not None:
+            self._stderr_thread.join(timeout=2)
+        return code
+
+    def stderr_tail(self) -> str:
+        if self._stderr_ring is None:
+            return ""
+        return self._stderr_ring.tail_text()
 
 
 def default_spawn(spec: LaunchSpec, env: dict) -> ProcHandle:
@@ -3836,12 +3945,20 @@ def default_spawn(spec: LaunchSpec, env: dict) -> ProcHandle:
     # t771u: ONE window. The agent INHERITS this exe's console (no CREATE_NEW_CONSOLE, no second console); a kill-on-close job object
     # makes the agent die with us even if we are killed. "New agent every time" is about the SESSION, not the window: the exe's
     # window IS the agent's window and a new click opens a new exe + window.
-    popen = subprocess.Popen(spec.argv, cwd=spec.cwd, env=env, creationflags=0, close_fds=True)
+    # FR #7671: tee stderr so the console still shows it and the exit report can quote it.
+    # stdout stays inherited (the agent TUI).
+    popen = subprocess.Popen(
+        spec.argv, cwd=spec.cwd, env=env, creationflags=0, close_fds=True, stderr=subprocess.PIPE,
+    )
+    ring = None
+    thread = None
+    if getattr(popen, "stderr", None) is not None:
+        ring, thread = start_agent_stderr_capture(popen.stderr)
     try:
         owned_job().assign(popen)
     except Exception:
         pass
-    return ProcHandle(popen)
+    return ProcHandle(popen, ring, thread)
 
 
 def kill_tree(pid: int, run: Callable = subprocess.run) -> bool:
@@ -12297,6 +12414,11 @@ class Supervisor:
         except Exception:
             job_key = ""
         try:
+            tail = ""
+            try:
+                tail = str(proc.stderr_tail() or "")
+            except Exception:
+                tail = ""
             report_agent_cli_nonzero_exit(
                 exit_code=exit_u,
                 raw_code=code,
@@ -12305,6 +12427,7 @@ class Supervisor:
                 nick=self.nick,
                 kind=self.kind,
                 agent_pid=int(getattr(proc, "pid", 0) or 0),
+                stderr_tail=tail,
                 log=self.log,
             )
         except Exception as e:
