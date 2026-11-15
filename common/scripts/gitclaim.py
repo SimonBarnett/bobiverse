@@ -4270,6 +4270,9 @@ def _coerce_row(row: dict) -> dict | None:
         since = 0.0
     if since > 0:
         out["no_eligible_since"] = since
+    # FR #7574: one no_eligible_reviewer report must survive queue reload.
+    if row.get("no_eligible_reported"):
+        out["no_eligible_reported"] = True
     if row.get("refs"):
         refs = row.get("refs")
         if isinstance(refs, list):
@@ -10903,6 +10906,30 @@ def _idle_author_least_commits(row: dict, idle: set[str], accepted: list | None)
     return cands[0]
 
 
+def _live_eligible_idle_reviewer(
+    row: dict,
+    idle: set[str],
+    live: set[str],
+    ledger: dict | None,
+) -> str:
+    """FR #7574: a live idle seat that would be eligible. Stale, author, and give-up seats are out."""
+    live_l = {
+        (canonical_worker_nick(n) or n or "").strip().lower()
+        for n in (live or set())
+        if (canonical_worker_nick(n) or n or "").strip()
+    }
+    found: list[str] = []
+    for raw in idle or set():
+        nick = (canonical_worker_nick(str(raw)) or str(raw) or "").strip()
+        if not nick or nick.lower() not in live_l:
+            continue
+        if _mrb_idle_block_reason(row, nick, set(live), ledger):
+            continue
+        found.append(nick)
+    found.sort(key=lambda n: n.lower())
+    return found[0] if found else ""
+
+
 def maybe_recycle_stuck_no_eligible_reviewer(
     home: Path,
     *,
@@ -10939,7 +10966,9 @@ def maybe_recycle_stuck_no_eligible_reviewer(
                 if not mrb_row_offerable(row):
                     continue
                 if mrb_has_eligible_reviewer(home, row, seats_live, ledger=led, now=now_f):
-                    if row.pop("no_eligible_since", None) is not None:
+                    popped = row.pop("no_eligible_since", None) is not None
+                    popped = row.pop("no_eligible_reported", None) is not None or popped
+                    if popped:
                         changed = True
                     continue
                 try:
@@ -10952,8 +10981,14 @@ def maybe_recycle_stuck_no_eligible_reviewer(
                     continue
                 if (now_f - since) < float(NO_ELIGIBLE_RECYCLE_AFTER_S):
                     continue
-                pick = _idle_author_least_commits(row, seats_idle, accepted)
+                pick = _live_eligible_idle_reviewer(row, seats_idle, seats_live, led)
                 if not pick:
+                    if not row.get("no_eligible_reported"):
+                        row["no_eligible_reported"] = True
+                        changed = True
+                        repo = str(row.get("repo") or "")
+                        ident = _norm_row_id(row.get("id"))
+                        lines.append(f"no_eligible_reviewer {repo}{ident}")
                     continue
                 blocked = recycleseat_send_blocked_reason(home, pick, now=now_f)
                 if blocked:
