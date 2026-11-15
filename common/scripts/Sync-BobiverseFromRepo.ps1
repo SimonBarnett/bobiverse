@@ -150,13 +150,22 @@ if (-not $explicitRepo -and $Product) {
     # FR #7117: refuse to hide dirty recycle scripts on the live worktree.
     if ($git -and (Test-Path -LiteralPath (Join-Path $InstallRoot '.git'))) {
         $recycleDirty = @()
-        foreach ($rel in @(
-                'bob/tray/tools/BobTrayRecycleSeat.ps1',
-                'common/scripts/recycleseat.py',
-                'common/scripts/gitclaim.py'
-            )) {
-            $st = & $git -C $InstallRoot status --porcelain -- $rel 2>$null
-            if ("$st".Trim()) { $recycleDirty += $rel }
+        # FR #7745: a missing path makes git warn on stderr. Under Stop that
+        # warning aborts the sync before the ff-blocked ALERT (FR #1074).
+        $prevEap = $ErrorActionPreference
+        $ErrorActionPreference = 'Continue'
+        try {
+            foreach ($rel in @(
+                    'bob/tray/tools/BobTrayRecycleSeat.ps1',
+                    'common/scripts/recycleseat.py',
+                    'common/scripts/gitclaim.py'
+                )) {
+                $st = & $git -C $InstallRoot status --porcelain -- $rel 2>&1
+                $stText = (@($st) | Where-Object { $_ -is [string] }) -join "`n"
+                if ($LASTEXITCODE -eq 0 -and "$stText".Trim()) { $recycleDirty += $rel }
+            }
+        } finally {
+            $ErrorActionPreference = $prevEap
         }
         if ($recycleDirty.Count -gt 0) {
             $joined = ($recycleDirty -join ',')
