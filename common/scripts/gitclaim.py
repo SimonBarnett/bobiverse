@@ -6475,9 +6475,16 @@ def _fix_is_dead(
     ident = _fix_row_pr_num(row)
     if not repo or not ident:
         return False
-    fetched = {str(x) for x in (fetched_repos or ())}
-    if open_pulls is not None and repo in fetched:
-        return ident not in (open_pulls.get(repo) or set())
+    # FR #7653: match repo case the same way MRB purge does (FR #3817). A
+    # merged PR left off the open-pull set must still drop the FIX row.
+    fetched_keys = {_repo_key(x) for x in (fetched_repos or ())}
+    repo_key = _repo_key(repo)
+    if open_pulls is not None and repo_key in fetched_keys:
+        open_ids: set[str] = set()
+        for name, nums in open_pulls.items():
+            if _repo_key(str(name)) == repo_key:
+                open_ids.update(nums or ())
+        return ident not in open_ids
     if pr_exists is None:
         return False
     try:
@@ -14266,6 +14273,17 @@ def resync_from_github(
                         continue
                     # FR #1323 / #2458: drop MERGED/closed even when offered_to is set
                     dropped_detail.append(f"{_row_drop_label(row)} not_in_want")
+                    continue
+                # FR #7653: a FIX row for a PR that is no longer open (merged or
+                # closed) must not stay offerable. Main-red FIX has no PR number.
+                if (
+                    task_u == "FIX"
+                    and not _is_main_red_fix_row_local(row)
+                    and _row_fetched(repo_s)
+                    and ident_n
+                    and ident_n not in _row_open_pulls(repo_s)
+                ):
+                    dropped_detail.append(f"{_row_drop_label(row)} fix_pr_not_open")
                     continue
                 # FR #1323 / #1585: drop ledger-held MRB only when GitHub no longer wants it.
                 # Open pulls in ``want`` must survive keep so offered_to/seq are preserved;
