@@ -79,6 +79,10 @@ def test_fr6820_session_cookie_opens_settings_and_status(tmp_path, monkeypatch):
         assert http.SESSION_COOKIE_NAME in (resp.headers.get("Set-Cookie") or "")
 
         with opener.open(base + "/", timeout=5) as resp:
+            home_html = resp.read().decode("utf-8")
+        assert "Jeeves home" in home_html
+        assert "Jeeves appliance settings" not in home_html
+        with opener.open(base + "/settings", timeout=5) as resp:
             settings_html = resp.read().decode("utf-8")
         assert "Jeeves appliance settings" in settings_html
         assert 'name="password"' not in settings_html

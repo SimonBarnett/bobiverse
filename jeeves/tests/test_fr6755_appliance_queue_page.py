@@ -117,7 +117,7 @@ def test_fr6755_queue_page_one_waiting_zero_accepted(tmp_path, monkeypatch):
         assert "ghs_FAKE" not in html
         assert "MUST" not in html or "QUEUE_PAGE_DROP" not in html
         assert "password=" not in html.lower()
-        req = urllib.request.Request(base + "/", headers=hdr, method="GET")
+        req = urllib.request.Request(base + "/settings", headers=hdr, method="GET")
         with urllib.request.urlopen(req, timeout=5) as resp:
             settings = resp.read().decode("utf-8")
         assert 'href="/queue"' in settings
