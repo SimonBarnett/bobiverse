@@ -482,6 +482,7 @@ routes to bobiverse via the split rule.
 - A harvest twin check must compare lesson bullets, not the session summary. Five shared tokens in the summary are not the same playbook.
 - When auto-merge is refused because the pull request is unstable, comment merge-on-green pending with the head SHA and finish. Do not poll the checks.
 - A new keyword at a call site must be a name that function assigns. Copy the plan and agent pattern, and pin that the assignment is above the call.
+- Airc PUT pacing tests must pass ForceIrcPut. The default path is two DCC lines and does not exercise the outbox pace.
 - When a later FR changes a wire to err plus DONE exit=2, update the older framing pins. Do not put the absent-allowlist gate in front of a test that must exercise the worker body.
 - Airc skill books stay ASCII. Write a hyphen, not an em dash, in SKILL.md.
 - When wiring an optional hook onto an injected runner, use getattr and callable. A test stub that only implements start() must still build the console.
