@@ -73,3 +73,40 @@ def test_fr7615_no_iwr_digest_get_in_tray_tools():
             line = m.group(0)
             assert "bob/v1/report" not in line.lower()
             assert "Get-BobTrayDigestReportUrl" not in line
+
+
+def _fn_body(path: Path, needle: str) -> str:
+    src = _txt(path)
+    start = src.index(needle)
+    end = src.index("\nfunction ", start + 10)
+    return src[start:end]
+
+
+def test_fr7615_watch_passes_timeout_and_checks_status():
+    """MRB hostile: xai_weekly path must budget TimeoutSec and reject non-2xx."""
+    body = _fn_body(WATCH, "function Get-BobTrayMachineXaiWeekly")
+    assert "Invoke-BobDigestHttpGet -Uri (Get-BobTrayDigestReportUrl) -TimeoutSec 8" in body
+    assert "StatusCode" in body
+    assert "got.Text" in body
+    assert "RawContentStream" not in body
+
+
+def test_fr7615_dialogs_passes_timeout_and_checks_status():
+    """MRB hostile: TipForm worker sync must budget TimeoutSec and reject non-2xx."""
+    body = _fn_body(DIALOGS, "function Sync-BobTrayStatusWorkersFromDigest")
+    assert re.search(r"Invoke-BobDigestHttpGet\s+-Uri\s+\$url\s+-TimeoutSec\s+\$sec", body)
+    assert "StatusCode" in body
+    assert "got.Text" in body
+    assert "RawContentStream" not in body
+
+
+def test_fr7615_both_sites_dot_source_helper_when_missing():
+    """MRB hostile: call sites must load Private helper when command is absent."""
+    for path, needle in (
+        (WATCH, "function Get-BobTrayMachineXaiWeekly"),
+        (DIALOGS, "function Sync-BobTrayStatusWorkersFromDigest"),
+    ):
+        body = _fn_body(path, needle)
+        assert "Invoke-BobDigestHttpGet.ps1" in body
+        assert "Get-Command Invoke-BobDigestHttpGet" in body
+        assert "throw 'Invoke-BobDigestHttpGet missing'" in body
