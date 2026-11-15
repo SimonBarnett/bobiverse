@@ -769,6 +769,8 @@ namespace BobDialogs
         Process engine;
         int engineStarts; DateTime engineWindow = DateTime.Now;
         DateTime engineStartedUtc = DateTime.MinValue;  // FR #4136: grace before engine.alive required
+        bool engineFailureArmed;  // FR #7505: one open exception report per machine until recovery
+        string lastEngineExitCode = "";
         int lastSeatCount = -1;   // FR #3180: observe drops; never auto-launch
         StatusForm statusForm; AboutForm aboutForm;
         public readonly List<string> MenuItems = new List<string>();
@@ -852,25 +854,50 @@ namespace BobDialogs
         }
 
         // ---- engine (hidden PowerShell: all slow data work) ----
+        // FR #7505: log every relaunch attempt + result; report fail via tray_engine_report.
         void StartEngine()
         {
             try
             {
                 // FR #5177: commands belong to the previous engine, not its replacement.
-                File.Delete(cmdFile);
+                try { File.Delete(cmdFile); } catch { }
                 string wrap = Path.Combine(root, "tools\\_Watch-BobTray-" + machine + ".ps1");
                 string script = File.Exists(wrap) ? wrap : Path.Combine(root, "tools\\Watch-BobTray.ps1");
-                if (!File.Exists(script)) return;
+                if (!File.Exists(script))
+                {
+                    TrayLifecycle.Write("engine-launch-miss", "script", script ?? "", "via", "bob-tray");
+                    engine = null; engineStartedUtc = DateTime.MinValue; lastEngineExitCode = "miss";
+                    TrayEngineFailure.Report(root, "relaunch-fail", machine, snapFile, lastEngineExitCode, "missing engine script");
+                    engineFailureArmed = true;
+                    return;
+                }
                 string ps = Path.Combine(Environment.GetEnvironmentVariable("SystemRoot") ?? "C:\\Windows", "System32\\WindowsPowerShell\\v1.0\\powershell.exe");
                 ProcessStartInfo psi = new ProcessStartInfo(ps, "-NoProfile -STA -WindowStyle Hidden -ExecutionPolicy Bypass -File \"" + script + "\"");
                 psi.UseShellExecute = false; psi.CreateNoWindow = true; psi.WorkingDirectory = root;
                 psi.EnvironmentVariables["BOB_TRAY_ENGINE"] = "1";
                 psi.EnvironmentVariables["BOB_TRAY_EXE_PID"] = Process.GetCurrentProcess().Id.ToString();
                 if (machine.Length > 0) psi.EnvironmentVariables["BOB_MACHINE_ID"] = machine;
+                TrayLifecycle.Write("engine-launch", "script", script, "via", "bob-tray");
                 engine = Process.Start(psi);
+                if (engine == null)
+                {
+                    TrayLifecycle.Write("engine-launch-fail", "why", "Process.Start returned null", "script", script);
+                    engineStartedUtc = DateTime.MinValue; lastEngineExitCode = "null";
+                    TrayEngineFailure.Report(root, "relaunch-fail", machine, snapFile, lastEngineExitCode, "Process.Start returned null");
+                    engineFailureArmed = true;
+                    return;
+                }
                 engineStartedUtc = DateTime.UtcNow;
+                lastEngineExitCode = "";
+                TrayLifecycle.Write("engine-launch-ok", "pid", engine.Id.ToString(), "script", script);
             }
-            catch { engine = null; engineStartedUtc = DateTime.MinValue; }
+            catch (Exception ex)
+            {
+                engine = null; engineStartedUtc = DateTime.MinValue; lastEngineExitCode = "error";
+                TrayLifecycle.Write("engine-launch-error", "err", ex.GetType().Name + ": " + ex.Message);
+                TrayEngineFailure.Report(root, "relaunch-fail", machine, snapFile, lastEngineExitCode, ex.GetType().Name + ": " + ex.Message);
+                engineFailureArmed = true;
+            }
         }
 
         // FR #3180: public for headless --watchdog-ticks harness (tests).
@@ -938,27 +965,62 @@ namespace BobDialogs
             // (hung UI thread still owns the queue; tray.alive is written by this exe and stays fresh).
             // FR #4317: IsStale ignores pre-start leftover stamps so a healthy engine with a frozen
             // leftover file is not kill-looped every engineStarts window (~5 min).
+            // FR #7505: report engine exit / tray-status stale >= 120s / failed relaunch to bobiverse.
             bool exited = true;
             try { exited = engine == null || engine.HasExited; } catch { exited = true; }
+            if (exited)
+            {
+                try
+                {
+                    if (engine != null && engine.HasExited) lastEngineExitCode = engine.ExitCode.ToString();
+                }
+                catch { lastEngineExitCode = "exited"; }
+            }
             bool stale = false;
             double ageS = -1;
             if (!exited)
             {
                 stale = EngineAliveStamp.IsStale(aliveDir, DateTime.UtcNow, EngineAliveStamp.MaxAgeSeconds, engineStartedUtc, out ageS);
-                if (!stale) return;
             }
+            bool statusStale = TrayStatusAge.IsStale(snapFile, engineStartedUtc, TrayEngineFailure.StatusStaleSeconds);
+            if (!exited && !stale && !statusStale)
+            {
+                if (engineFailureArmed)
+                {
+                    TrayEngineFailure.Report(root, "recovery", machine, snapFile, "", "");
+                    engineFailureArmed = false;
+                    TrayLifecycle.Write("engine-recovery", "via", "bob-tray-watchdog");
+                }
+                return;
+            }
+            if (exited)
+                TrayEngineFailure.Report(root, "dead", machine, snapFile, lastEngineExitCode, "engine process exited");
+            else if (statusStale)
+                TrayEngineFailure.Report(root, "status-stale", machine, snapFile, lastEngineExitCode, "tray-status.json stale >= 120s");
+            else
+                TrayEngineFailure.Report(root, "dead", machine, snapFile, lastEngineExitCode, "engine.alive stale");
+            engineFailureArmed = true;
             if ((DateTime.Now - engineWindow).TotalMinutes > 5) { engineWindow = DateTime.Now; engineStarts = 0; }
             if (++engineStarts > 3)
             {
-                if (stale) TrayLifecycle.Write("engine-restart-storm", "age", ageS.ToString("0.0"), "max", EngineAliveStamp.MaxAgeSeconds.ToString("0"), "pid", SafeEnginePid());
+                if (stale || exited || statusStale)
+                    TrayLifecycle.Write("engine-restart-storm", "age", ageS.ToString("0.0"), "max", EngineAliveStamp.MaxAgeSeconds.ToString("0"), "pid", SafeEnginePid());
+                TrayLifecycle.Write("engine-relaunch", "result", "storm-limit", "via", "bob-tray-watchdog");
                 return;       // no restart storm
             }
-            if (stale)
+            if (stale || statusStale)
             {
-                TrayLifecycle.Write("engine-stale", "age", ageS.ToString("0.0"), "max", EngineAliveStamp.MaxAgeSeconds.ToString("0"), "pid", SafeEnginePid());
+                if (stale)
+                    TrayLifecycle.Write("engine-stale", "age", ageS.ToString("0.0"), "max", EngineAliveStamp.MaxAgeSeconds.ToString("0"), "pid", SafeEnginePid());
                 KillEngineTree();
             }
+            TrayLifecycle.Write("engine-relaunch", "result", "attempt", "exited", exited ? "1" : "0", "statusStale", statusStale ? "1" : "0", "via", "bob-tray-watchdog");
             StartEngine();
+            bool up = false;
+            try { up = engine != null && !engine.HasExited; } catch { up = false; }
+            TrayLifecycle.Write("engine-relaunch", "result", up ? "ok" : "fail", "pid", SafeEnginePid(), "via", "bob-tray-watchdog");
+            if (!up)
+                TrayEngineFailure.Report(root, "relaunch-fail", machine, snapFile, lastEngineExitCode, "StartEngine left engine down");
         }
 
         string SafeEnginePid()
@@ -1932,6 +1994,101 @@ namespace BobDialogs
         }
     }
 
+
+    // FR #7505: tray-status.json age (2 minutes) for exception reporting + heal.
+    internal static class TrayStatusAge
+    {
+        public static bool IsStale(string snapFile, DateTime engineStartedUtc, double staleSeconds)
+        {
+            try
+            {
+                if (string.IsNullOrEmpty(snapFile) || !File.Exists(snapFile))
+                {
+                    if (engineStartedUtc == DateTime.MinValue) return false;
+                    return (DateTime.UtcNow - engineStartedUtc).TotalSeconds >= staleSeconds;
+                }
+                double age = (DateTime.UtcNow - File.GetLastWriteTimeUtc(snapFile)).TotalSeconds;
+                return age >= staleSeconds;
+            }
+            catch { return false; }
+        }
+    }
+
+    // FR #7505: shell tray_engine_report.py (dedupe one open issue per machine + comments).
+    internal static class TrayEngineFailure
+    {
+        public const double StatusStaleSeconds = 120;
+
+        public static void Report(string root, string kind, string machine, string snapFile, string exitCode, string error)
+        {
+            try
+            {
+                string script = FindScript(root);
+                if (script == null) return;
+                string py = FindPython();
+                if (py == null) return;
+                StringBuilder args = new StringBuilder();
+                args.Append("\"").Append(script).Append("\" ").Append(kind ?? "dead");
+                if (!string.IsNullOrEmpty(machine)) args.Append(" --machine \"").Append(machine.Replace("\"", "")).Append("\"");
+                if (!string.IsNullOrEmpty(snapFile)) args.Append(" --snap \"").Append(snapFile.Replace("\"", "")).Append("\"");
+                if (!string.IsNullOrEmpty(exitCode)) args.Append(" --exit-code \"").Append(exitCode.Replace("\"", "")).Append("\"");
+                if (!string.IsNullOrEmpty(error))
+                {
+                    string e = error.Replace("\"", "'");
+                    if (e.Length > 200) e = e.Substring(0, 200);
+                    args.Append(" --error \"").Append(e).Append("\"");
+                }
+                ProcessStartInfo psi = new ProcessStartInfo(py, args.ToString());
+                psi.UseShellExecute = false; psi.CreateNoWindow = true;
+                psi.WorkingDirectory = Path.GetDirectoryName(script) ?? root;
+                Process.Start(psi);
+            }
+            catch { }
+        }
+
+        static string FindScript(string root)
+        {
+            try
+            {
+                string[] cands = new string[] {
+                    Path.Combine(root ?? "", "common", "scripts", "tray_engine_report.py"),
+                    Path.Combine(root ?? "", "scripts", "tray_engine_report.py"),
+                    Path.Combine(Path.GetDirectoryName((root ?? "").TrimEnd('\\')) ?? "", "common", "scripts", "tray_engine_report.py")
+                };
+                foreach (string c in cands) if (!string.IsNullOrEmpty(c) && File.Exists(c)) return c;
+            }
+            catch { }
+            return null;
+        }
+
+        static string FindPython()
+        {
+            try
+            {
+                foreach (string name in new string[] { "python.exe", "py.exe" })
+                {
+                    try
+                    {
+                        ProcessStartInfo wh = new ProcessStartInfo(
+                            Path.Combine(Environment.GetEnvironmentVariable("SystemRoot") ?? "C:\\Windows", "System32\\where.exe"),
+                            name);
+                        wh.UseShellExecute = false; wh.CreateNoWindow = true;
+                        wh.RedirectStandardOutput = true;
+                        using (Process p = Process.Start(wh))
+                        {
+                            if (p == null) continue;
+                            string line = (p.StandardOutput.ReadLine() ?? "").Trim();
+                            p.WaitForExit(3000);
+                            if (line.Length > 0 && File.Exists(line)) return line;
+                        }
+                    }
+                    catch { }
+                }
+            }
+            catch { }
+            return null;
+        }
+    }
 
     // FR #1642: append JSON lines to %LOCALAPPDATA%\Bobiverse\tray-lifecycle.log; suppress intentional Exit.
     internal static class TrayLifecycle

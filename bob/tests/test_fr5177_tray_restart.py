@@ -107,18 +107,28 @@ def test_engine_start_discards_leftover_restart(tmp_path: Path):
     source = CS.read_text(encoding="utf-8-sig")
     start = source[source.index("void StartEngine()"):source.index("// FR #3180: public")]
     assert start.index("File.Delete(cmdFile)") < start.index("Process.Start(psi)")
+    # FR #7505: StartEngine logs + TrayEngineFailure; stub those for Add-Type probe.
     _ps(tmp_path, """
 Add-Type -TypeDefinition @'
 using System;
 using System.IO;
 using System.Diagnostics;
+public static class TrayLifecycle {
+    public static void Write(string ev, params string[] kv) { }
+}
+public static class TrayEngineFailure {
+    public static void Report(string root, string kind, string machine, string snapFile, string exitCode, string error) { }
+}
 public class EngineStartupProbe {
-    public string root, cmdFile, machine = "";
+    public string root, cmdFile, machine = "", snapFile = "";
     public Process engine;
     public DateTime engineStartedUtc;
+    public string lastEngineExitCode = "";
+    public bool engineFailureArmed;
     public EngineStartupProbe(string path) {
         root = path;
         cmdFile = Path.Combine(root, "run", "tray-cmd.txt");
+        snapFile = Path.Combine(root, "run", "tray-status.json");
         StartEngine();
     }
 """ + start + """

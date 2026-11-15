@@ -90,11 +90,13 @@ if (-not (Test-Path -LiteralPath $start)) {
     exit 2
 }
 
+# FR #7505: log every relaunch attempt with its result; report failed relaunch to bobiverse.
 Write-BobTrayLifecycleEvent -Event 'watchdog-relaunch' -Fields @{
     installRoot = $InstallRoot
     machineId   = $MachineId
     forceNew    = $true
     skipTidy    = $true
+    result      = 'attempt'
 }
 Write-Host ("INFO tray watchdog: relaunch Start-BobTray -ForceNew -SkipTidy machine={0}" -f $MachineId)
 if ($WhatIf) {
@@ -104,5 +106,54 @@ if ($WhatIf) {
 $ps = (Get-Command powershell.exe).Source
 # Detached so the scheduled-task instance returns quickly (IgnoreNew + minute watch).
 $arg = '-NoProfile -STA -WindowStyle Hidden -ExecutionPolicy Bypass -File "{0}" -InstallRoot "{1}" -MachineId {2} -ForceNew -SkipTidy' -f $start, $InstallRoot, $MachineId
-Start-Process -FilePath $ps -ArgumentList $arg -WindowStyle Hidden | Out-Null
-exit 0
+try {
+    Start-Process -FilePath $ps -ArgumentList $arg -WindowStyle Hidden -ErrorAction Stop | Out-Null
+} catch {
+    Write-BobTrayLifecycleEvent -Event 'watchdog-relaunch' -Fields @{
+        installRoot = $InstallRoot
+        machineId   = $MachineId
+        result      = 'fail'
+        error       = $_.Exception.Message
+    }
+    $reportPy = Join-Path $InstallRoot 'common\scripts\tray_engine_report.py'
+    if (-not (Test-Path -LiteralPath $reportPy)) {
+        $reportPy = Join-Path (Split-Path $InstallRoot -Parent) 'common\scripts\tray_engine_report.py'
+    }
+    if (Test-Path -LiteralPath $reportPy) {
+        $py = (Get-Command python.exe -ErrorAction SilentlyContinue)
+        if (-not $py) { $py = Get-Command py.exe -ErrorAction SilentlyContinue }
+        if ($py) {
+            & $py.Source $reportPy 'relaunch-fail' --machine $MachineId --error ("Ensure-BobTrayRunning: " + $_.Exception.Message) | Out-Null
+        }
+    }
+    exit 2
+}
+Start-Sleep -Seconds 8
+if (Test-BobTrayProcessPresent -InstallRoot $InstallRoot) {
+    Write-BobTrayLifecycleEvent -Event 'watchdog-relaunch' -Fields @{
+        installRoot = $InstallRoot
+        machineId   = $MachineId
+        result      = 'ok'
+    }
+    Write-Host 'INFO tray watchdog: relaunch ok'
+    exit 0
+}
+Write-BobTrayLifecycleEvent -Event 'watchdog-relaunch' -Fields @{
+    installRoot = $InstallRoot
+    machineId   = $MachineId
+    result      = 'fail'
+    error       = 'tray still absent after Start-BobTray'
+}
+Write-Host 'WARN tray watchdog: relaunch fail (tray still absent)'
+$reportPy = Join-Path $InstallRoot 'common\scripts\tray_engine_report.py'
+if (-not (Test-Path -LiteralPath $reportPy)) {
+    $reportPy = Join-Path (Split-Path $InstallRoot -Parent) 'common\scripts\tray_engine_report.py'
+}
+if (Test-Path -LiteralPath $reportPy) {
+    $py = (Get-Command python.exe -ErrorAction SilentlyContinue)
+    if (-not $py) { $py = Get-Command py.exe -ErrorAction SilentlyContinue }
+    if ($py) {
+        & $py.Source $reportPy 'relaunch-fail' --machine $MachineId --error 'Ensure-BobTrayRunning: tray still absent after Start-BobTray' | Out-Null
+    }
+}
+exit 1
