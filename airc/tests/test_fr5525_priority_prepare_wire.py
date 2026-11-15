@@ -16,6 +16,7 @@ def _service(tmp_path, monkeypatch):
     # FR #3639: live channel +o auth (operators list is ignored).
     service.core.auth = ops_auth("op", channel="#tm")
     service.core.channel = "#tm"
+    service.core._priority_runner_injected = True
     sent: list[tuple[str, str]] = []
     service.send_privmsg = lambda nick, text, **kw: sent.append((nick, text))
     return service, sent
@@ -42,6 +43,7 @@ def test_fr5525_socket_bytes_two_crlf_privmsgs(tmp_path, monkeypatch):
     service = svc.AircConsoleService(args)
     service.core.auth = ops_auth("op", channel="#tm")
     service.core.channel = "#tm"
+    service.core._priority_runner_injected = True
 
     class _RecordingSock:
         def __init__(self) -> None:
