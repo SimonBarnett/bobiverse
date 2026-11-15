@@ -485,6 +485,7 @@ routes to bobiverse via the split rule.
 - When a later FR changes a wire to err plus DONE exit=2, update the older framing pins. Do not put the absent-allowlist gate in front of a test that must exercise the worker body.
 - Airc skill books stay ASCII. Write a hyphen, not an em dash, in SKILL.md.
 - When wiring an optional hook onto an injected runner, use getattr and callable. A test stub that only implements start() must still build the console.
+- When folding the warm-runspace tip, keep both BobTrayClickedSeats.ps1 and BobTrayWarmStep.ps1 in the Watch-BobTray helper list.
 
 ## Harvest digest (lessons audit 2026-10-06)
 
