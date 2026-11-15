@@ -183,7 +183,7 @@ def test_fr5526_shell_off_never_calls_runner(tmp_path):
 
     def runner(*a, **k):
         called["n"] += 1
-        raise AssertionError("runner must not run")
+        return ap.PriorityVerbResult(True, 0, "eeeeeeee", {"ok": True})
 
     from airc_console import ConsoleCapabilities
 
@@ -196,9 +196,9 @@ def test_fr5526_shell_off_never_calls_runner(tmp_path):
     hr = core.handle_raw(
         ":bob-marchhare!u@h PRIVMSG marchhare_console :id=eeeeeeee PRIORITY connect dev1"
     )
-    assert hr and hr.action == "capability_deny"
-    assert "126" in (hr.reply or "")
-    assert called["n"] == 0
+    # FR #7132: PRIORITY is control-plane, so shell=off does not deny it.
+    assert hr and hr.action == "priority"
+    assert called["n"] == 1
 
 
 def test_fr5526_stop_flush_and_suppress_late(tmp_path, monkeypatch):
