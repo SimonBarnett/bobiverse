@@ -4134,8 +4134,12 @@ class AircConsoleCore:
         self.install_root = install_root
         self.job_protocol = job_protocol
         if self.job_protocol is not None and self.shell_runner is not None:
+            # FR #7727: tests and older stubs pass a runner with start() only.
+            # A missing busy_job_id must not stop console construction.
             if getattr(self.job_protocol, "shell_busy_fn", None) is None:
-                self.job_protocol.shell_busy_fn = self.shell_runner.busy_job_id
+                busy = getattr(self.shell_runner, "busy_job_id", None)
+                if callable(busy):
+                    self.job_protocol.shell_busy_fn = busy
         # FR #5284: PRIORITY connect/status (injectable for SelfTest mocks).
         # FR #6012: remember injection so FR #5960 optional-absent does not
         # swallow a test/selftest runner before connect|status.
