@@ -460,6 +460,7 @@ routes to bobiverse via the split rule.
 - Digest worker_list: never apply idle from a heartbeat while the nick still holds an accepted queue row --- keep doing + work text (post_digest_seat_kind defaults state=idle).
 - Tray poll steps that can hang (jobs-watcher, stall-alerts) must use Invoke-BobTrayEngineStep with TimeoutSec and capture Receive-Job output for script-scope state.
 - PS 5.1 digest GETs: use HttpWebRequest Timeout and ReadWriteTimeout (Invoke-BobDigestHttpGet); do not rely on Invoke-WebRequest -TimeoutSec against hung or half-closed sockets.
+- On FIX for an MRB FAIL, if a companion fix(mrb-N) commit is a descendant of the assigned tip, fast-forward that tip to the companion SHA and close the companion. Do not add a third commit.
 
 ## Harvest digest (lessons audit 2026-10-06)
 
