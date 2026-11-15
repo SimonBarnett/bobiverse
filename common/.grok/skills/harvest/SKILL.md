@@ -438,6 +438,7 @@ routes to bobiverse via the split rule.
 - Plan Agent FR: derive plan host from MCP anchor domain (no hostname literals in tests); ban plan skills/visionary in visible HTML text; retire old-label pins that required visionary wording.
 - Explicit --agent FR: resolve_seat_decision must not apply xai fallthrough to refuse/cursor/opencode; expired explicit grok returns xai-auth-expired; log select[agent]: explicit X -> kind.
 - Home Webhooks card FRs: match Digest/Intake pill+primary docs links, trim Also meta duplicates, pin relative hrefs + doc file existence; PASS without folding merely-behind tips.
+- Stale home pin FR: when redesign drops marketing copy, update the test to forbid the old string and keep section/link discoverability --- never reintroduce obsolete copy just to satisfy a pin.
 
 ## Harvest digest (lessons audit 2026-10-06)
 
