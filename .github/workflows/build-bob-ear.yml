@@ -50,6 +50,7 @@ on:
       - common/scripts/copilot_dispatch.py
       - common/scripts/crash_report.py
       - common/scripts/done_usage.py
+      - common/scripts/ear_pool_stale_report.py
       - common/scripts/ergo_brief.py
       - common/scripts/filexfer.py
       - common/scripts/fleet_pool_fetch.py
@@ -142,6 +143,7 @@ on:
       - common/scripts/copilot_dispatch.py
       - common/scripts/crash_report.py
       - common/scripts/done_usage.py
+      - common/scripts/ear_pool_stale_report.py
       - common/scripts/ergo_brief.py
       - common/scripts/filexfer.py
       - common/scripts/fleet_pool_fetch.py
