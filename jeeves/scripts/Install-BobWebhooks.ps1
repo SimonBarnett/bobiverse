@@ -137,7 +137,13 @@ function Ensure-IcoStaticContent {
     return ($Cfg2 + $block)
 }
 
-$wwwSrcDefault = Join-Path $PSScriptRoot '..\www\irc-ntsa'
+# FR #7517: extracted kits ship www/ beside the installer; checkouts keep ..\www\irc-ntsa.
+$kitWww = Join-Path $PSScriptRoot 'www'
+$wwwSrcDefault = if ((-not $WwwSource) -and (Test-Path -LiteralPath (Join-Path $kitWww 'index.html'))) {
+    $kitWww
+} else {
+    Join-Path $PSScriptRoot '..\www\irc-ntsa'
+}
 $wwwSrc = if ($WwwSource) { $WwwSource } else { $wwwSrcDefault }
 if ($WhatIf) {
     Write-Host "WhatIf would write rewrite rules to $webConfig backend=$Backend"
@@ -301,12 +307,17 @@ if (Test-Path -LiteralPath $wwwSrc) {
         (Join-Path $PSScriptRoot '..\www\favicon.ico'),
         (Join-Path $PSScriptRoot '..\..\bob\tray\assets\bob-systray.ico')
     )
+    $faviconStaged = $false
     foreach ($fav in $faviconCands) {
         if (Test-Path -LiteralPath $fav) {
             Copy-Item -LiteralPath $fav -Destination (Join-Path $PhysicalPath 'favicon.ico') -Force
             Write-Host "INFO FR #7442 staged favicon.ico from $fav"
+            $faviconStaged = $true
             break
         }
+    }
+    if (-not $faviconStaged) {
+        Write-Warning 'FR #7517 favicon.ico source not found'
     }
     $docsSrc = Join-Path $wwwSrc 'docs'
     if (Test-Path -LiteralPath $docsSrc) {
@@ -342,28 +353,41 @@ if (Test-Path -LiteralPath $wwwSrc) {
 # FR #7411: IIS static map /jeeves/assets/* (rewrite skips this prefix).
 $assetDst = Join-Path $PhysicalPath 'jeeves\assets'
 $null = New-Item -ItemType Directory -Force -Path $assetDst
+# FR #7517: kit-local assets\ first so an extracted kit does not pick stray ..\assets.
 $butlerCands = @(
+    (Join-Path $PSScriptRoot 'assets\jeeves-butler.ico'),
     (Join-Path $PSScriptRoot '..\assets\jeeves-butler.ico'),
     (Join-Path $PSScriptRoot '..\..\jeeves\assets\jeeves-butler.ico')
 )
 $logoCands = @(
+    (Join-Path $PSScriptRoot 'assets\ntsa-gut-logo.png'),
     (Join-Path $PSScriptRoot '..\assets\ntsa-gut-logo.png'),
     (Join-Path $PSScriptRoot '..\..\bob\tray\assets\ntsa-gut-logo.png'),
     (Join-Path $PSScriptRoot '..\docs\appliance-ui-20261112\mocks\ntsa-gut-logo.png')
 )
+$butlerStaged = $false
 foreach ($src in $butlerCands) {
     if (Test-Path -LiteralPath $src) {
         Copy-Item -LiteralPath $src -Destination (Join-Path $assetDst 'jeeves-butler.ico') -Force
         Write-Host "INFO FR #7411 staged jeeves\assets\jeeves-butler.ico"
+        $butlerStaged = $true
         break
     }
 }
+if (-not $butlerStaged) {
+    Write-Warning 'FR #7517 jeeves-butler.ico source not found'
+}
+$logoStaged = $false
 foreach ($src in $logoCands) {
     if (Test-Path -LiteralPath $src) {
         Copy-Item -LiteralPath $src -Destination (Join-Path $assetDst 'ntsa-gut-logo.png') -Force
         Write-Host "INFO FR #7411 staged jeeves\assets\ntsa-gut-logo.png"
+        $logoStaged = $true
         break
     }
+}
+if (-not $logoStaged) {
+    Write-Warning 'FR #7517 ntsa-gut-logo.png source not found'
 }
 
 Write-Host 'INFO Install-BobWebhooks done'

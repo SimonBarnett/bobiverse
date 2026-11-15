@@ -11,6 +11,7 @@ import contextlib
 import json
 import logging
 import os
+import time
 import uuid
 from pathlib import Path
 from typing import Callable
@@ -151,8 +152,68 @@ def publish_topics_health_warning(home: Path, status: dict | None = None) -> Non
         pass
 
 
+_REPLACE_ATTEMPTS = 5
+_REPLACE_BACKOFF_S = 0.05
+
+
+def _locked_replace(exc: BaseException) -> bool:
+    """Windows access-denied / sharing violation, or POSIX EACCES/EPERM."""
+    win = getattr(exc, "winerror", None)
+    if win in (5, 32, 33):
+        return True
+    return getattr(exc, "errno", None) in (13, 1)
+
+
+def _cleanup_stale_topic_tmps(dest: Path, keep: Path | None = None) -> None:
+    """Drop leftover ``<file>.*.tmp`` from a crashed writer. Never touches ``dest``."""
+    try:
+        parent = dest.parent
+        prefix = dest.name + "."
+        for old in parent.glob(prefix + "*.tmp"):
+            if keep is not None and old == keep:
+                continue
+            with contextlib.suppress(OSError):
+                old.unlink()
+    except OSError:
+        return
+
+
+def _replace_retry(tmp: Path, dest: Path) -> None:
+    """FR #7518: retry os.replace when the destination is briefly locked."""
+    last: OSError | None = None
+    for attempt in range(_REPLACE_ATTEMPTS):
+        try:
+            os.replace(tmp, dest)
+            return
+        except OSError as exc:
+            last = exc
+            if not _locked_replace(exc) or attempt + 1 >= _REPLACE_ATTEMPTS:
+                raise
+            time.sleep(_REPLACE_BACKOFF_S * (attempt + 1))
+    if last is not None:
+        raise last
+
+
+def _report_topics_replace_failure(dest: Path, exc: BaseException) -> None:
+    """One exception report. Never include file contents."""
+    try:
+        import crash_report
+
+        crash_report.report_exception(
+            "priority-customer-topics",
+            type(exc),
+            exc,
+            None,
+        )
+    except Exception:
+        log.warning(
+            "priority-customer topics replace report failed path=%s",
+            dest,
+        )
+
+
 def save_topic_repos(home: Path, repos) -> None:
-    """Atomic write under chair state dir. Cleans up ``.tmp`` on failure. FR #7391."""
+    """Atomic write under chair state dir. Cleans up ``.tmp`` on failure. FR #7391 / #7518."""
     names = []
     seen: set[str] = set()
     for r in repos or []:
@@ -175,11 +236,12 @@ def save_topic_repos(home: Path, repos) -> None:
             exc,
         )
         raise
+    _cleanup_stale_topic_tmps(dest)
     tmp = dest.with_name(f"{dest.name}.{os.getpid()}.{uuid.uuid4().hex[:8]}.tmp")
     payload = json.dumps({"v": 1, "repos": names}, indent=1, sort_keys=True) + "\n"
     try:
         tmp.write_text(payload, encoding="utf-8")
-        os.replace(tmp, dest)
+        _replace_retry(tmp, dest)
     except OSError as exc:
         with contextlib.suppress(OSError):
             tmp.unlink(missing_ok=True)
@@ -189,6 +251,7 @@ def save_topic_repos(home: Path, repos) -> None:
             dest,
             exc,
         )
+        _report_topics_replace_failure(dest, exc)
         raise
     else:
         with contextlib.suppress(OSError):

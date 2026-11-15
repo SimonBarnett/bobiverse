@@ -1169,6 +1169,20 @@ class _Handler(BaseHTTPRequestHandler):
         tok = str(morsel.value or "").strip()
         return tok or None
 
+    def _report_login_exception(self, exc: BaseException) -> None:
+        """FR #7527: file the authenticator fault. Never include the password."""
+        try:
+            import crash_report
+
+            crash_report.report_exception(
+                "jeeves-settings-login",
+                type(exc),
+                exc,
+                None,
+            )
+        except Exception:
+            return
+
     def _auth_code(self, result: dict[str, Any]) -> int:
         err = str(result.get("error") or "")
         if err.startswith("unauthorized"):
@@ -1463,14 +1477,28 @@ class _Handler(BaseHTTPRequestHandler):
                 str(doc.get("username") or doc.get("account") or ""),
                 str(doc.get("domain") or ""),
             )
-            result = auth.login(
-                self.server.home,
-                client_ip=auth_ip,
-                username=user,
-                password=str(doc.get("password") or ""),
-                domain=domain,
-                authenticator=self.server.authenticator,
-            )
+            try:
+                result = auth.login(
+                    self.server.home,
+                    client_ip=auth_ip,
+                    username=user,
+                    password=str(doc.get("password") or ""),
+                    domain=domain,
+                    authenticator=self.server.authenticator,
+                )
+            except Exception as exc:
+                self._report_login_exception(exc)
+                self._send_json(500, {"ok": False, "error": "internal: login failed"})
+                return
+            if str(result.get("error") or "").startswith("internal"):
+                self._report_login_exception(
+                    RuntimeError(str(result.get("exception_type") or "authenticator"))
+                )
+                self._send_json(
+                    500,
+                    {"ok": False, "error": "internal: authenticator failed"},
+                )
+                return
             if result.get("ok"):
                 tok = str(result.get("session_token") or "")
                 max_age = int(result.get("expires_in") or auth.SESSION_TTL_S)

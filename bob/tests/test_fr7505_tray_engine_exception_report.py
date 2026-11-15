@@ -49,3 +49,19 @@ def test_fr7505_ensure_watchdog_logs_relaunch_result():
     assert "result" in e
     assert "tray_engine_report" in e
     assert "relaunch-fail" in e
+
+
+def test_fr7505_fix7519_ensure_treats_stale_snap_as_dead_while_process_present():
+    """FIX #7519: frozen TipForm (process present, tray-status.json >= 120s) must report + relaunch."""
+    e = ENSURE.read_text(encoding="utf-8")
+    assert "TrayStatusStaleSeconds" in e or "120" in e
+    assert "Get-BobTrayStatusAgeSeconds" in e
+    assert "watchdog-status-stale" in e
+    assert "Stop-BobTrayProcesses" in e
+    assert "FIX #7519" in e or "frozen TipForm" in e
+    assert "statusAge" in e or "statusAgeS" in e
+    # Frozen path reports status-stale and still relaunches (not early watchdog-ok only).
+    assert "Invoke-BobTrayEngineReport" in e
+    assert "-Kind 'status-stale'" in e or '-Kind "status-stale"' in e or "Kind 'status-stale'" in e
+    assert "$frozen" in e
+    assert "why={1}" in e or "why =" in e or "relaunchWhy" in e

@@ -65,7 +65,10 @@ param(
     [int]$MaxExtraJobTrees = 0,
     # FR #3641: hours after which a dead-pid .bobiverse-seat no longer protects.
     [double]$StaleSeatHours = 48,
-    [switch]$Force
+    [switch]$Force,
+    # FR #7479: unit tests set this so a huge MinFreeGB does not reclaim live seat caches.
+    [switch]$SkipSeatDisk,
+    [string]$SeatDiskScript = ''
 )
 
 Set-StrictMode -Version Latest
@@ -565,6 +568,22 @@ if ($removed -gt 0 -or $Force) {
 
 $freeAfter = Get-FreeGB $rootFull
 Write-Host ("Done removed={0} FreeGB_now={1} skipped_protected={2}" -f $removed, $freeAfter, $skippedProtected)
+# FR #7479: protected job trees stay. Reclaim seat caches before any disk-capacity intake.
+if (($freeAfter -lt $MinFreeGB) -and (-not $WhatIfPreference) -and (-not $SkipSeatDisk)) {
+    $seatDisk = $SeatDiskScript
+    if (-not $seatDisk) {
+        $seatDisk = Join-Path $PSScriptRoot 'Clear-BobiverseSeatDisk.ps1'
+    }
+    if (Test-Path -LiteralPath $seatDisk) {
+        Write-Host ("FR #7479: FreeGB={0} still below MinFreeGB={1}; running Clear-BobiverseSeatDisk -Reclaim (protected worktrees stay)" -f $freeAfter, $MinFreeGB)
+        & $seatDisk -Reclaim -MinFreeGB $MinFreeGB
+        if (-not $?) {
+            Write-Warning 'FR #7479: Clear-BobiverseSeatDisk -Reclaim failed'
+        }
+        $freeAfter = Get-FreeGB $rootFull
+        Write-Host ("FR #7479 SeatDisk FreeGB_now={0}" -f $freeAfter)
+    }
+}
 # FR #3698: job trees on another volume cannot raise RepoRoot FreeGB (C: vs D:).
 if ($freeAfter -lt $MinFreeGB) {
     $rootDrive = [System.IO.Path]::GetPathRoot($rootFull).TrimEnd('\').TrimEnd(':')

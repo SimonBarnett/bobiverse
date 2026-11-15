@@ -1,8 +1,9 @@
-/* FR #7455: page-time latest Priority Agent release (priority-mcp). Isolated from Bobiverse MSI refresh. */
+/* FR #7455 / #7528: page-time latest Priority Agent release (priority-mcp). Isolated from Bobiverse MSI refresh. */
 (function (root) {
   var OWNER_REPO = 'SimonBarnett/priority-mcp';
   var API = 'https://api.github.com/repos/' + OWNER_REPO + '/releases?per_page=100';
   var DOWNLOAD_PREFIX = 'https://github.com/' + OWNER_REPO + '/releases/download/';
+  var NOTES_FALLBACK = 'https://github.com/' + OWNER_REPO + '/releases';
   var TITLE_RE = /^Priority Agent v(\d+)\.(\d+)\.(\d+)$/;
 
   function cmpVer(a, b) {
@@ -32,19 +33,33 @@
     return DOWNLOAD_PREFIX + encodeURIComponent(tag) + '/' + encodeURIComponent(name);
   }
 
+  function notesHref(tag) {
+    var t = String(tag || '');
+    if (!t) return NOTES_FALLBACK;
+    return 'https://github.com/' + OWNER_REPO + '/releases/tag/' + encodeURIComponent(t);
+  }
+
+  function setNotes(card, tag) {
+    var notes = card.querySelector('[data-role="release-notes"]');
+    if (!notes) return;
+    notes.href = notesHref(tag);
+  }
+
   function render(card, rel) {
     var versionEl = card.querySelector('[data-role="version"]');
     var assetsEl = card.querySelector('[data-role="assets"]');
     if (!rel) {
       if (versionEl) versionEl.textContent = 'No matching Priority Agent release';
+      setNotes(card, '');
       return;
     }
     var title = String(rel.name || '');
     if (versionEl) versionEl.textContent = title;
+    var tag = String(rel.tag_name || '');
+    setNotes(card, tag);
     if (!assetsEl) return;
     while (assetsEl.firstChild) assetsEl.removeChild(assetsEl.firstChild);
     var assets = rel.assets || [];
-    var tag = String(rel.tag_name || '');
     assets.forEach(function (a) {
       var name = a && a.name ? String(a.name) : '';
       if (!name) return;
@@ -68,6 +83,7 @@
     }).catch(function () {
       var versionEl = card.querySelector('[data-role="version"]');
       if (versionEl) versionEl.textContent = 'Could not refresh Priority Agent releases';
+      setNotes(card, '');
     });
   }
 
@@ -75,6 +91,8 @@
     pickLatest: pickLatest,
     render: render,
     refresh: refresh,
+    notesHref: notesHref,
+    NOTES_FALLBACK: NOTES_FALLBACK,
     API: API
   };
 

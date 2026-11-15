@@ -21,9 +21,8 @@ Staged and installed trees stay flat. The old spellings (`third_party\bob-tray`,
 * **About**: ntsa badge (embedded), "by Simon Barnett", `bob <version>  machine: <id>`, then one block per install of bob / jeeves / airc / ergo
   (version, BUILD.json date, commit, path, service state - the same text as the old `Format-BobInstallInfo`). The window opens first; the install
   scan (services, BUILD.json, git only when BUILD.json has no commit) runs on a worker thread and fills the box.
-* **Status** (FR #4938 / #5179 / #6214 / #6285 / **#7243** / **#7326**): **xAI weekly** is one line per IRC shop channel (`machines.<m>.xai` / `xai_weekly`) with that machine's Grok/Cursor pool and its workers under it. Fleet paints OpenCode Go and Copilot only (Jeeves). There is no fleet Cursor, Grok chat, or OpenCode Free meter. Stale is `[stale]` (FR #7299), never "(older than 2 min)". Missing fetched readings use `unknown (reason)` (FR #7242). Each machine's
-  workers as `{irc nick}: {doing|idle}` from the digest, `alert: <kind>`, version footer. It paints from `<root>\run\tray-status.json`, which
-  the tray writes (atomically) after every poll; the exe never touches the network and re-reads the file every 2 s. Parked until X / Esc; drag by the title.
+* **Status** (FR #4938 / #5179 / #6214 / #6285 / **#7243** / **#7326** / **#7510**): **xAI weekly** is one line per IRC shop channel (`machines.<m>.xai` / `xai_weekly`) with that machine's Grok/Cursor pool and its workers under it. Fleet paints OpenCode Go and Copilot only (Jeeves). There is no fleet Cursor, Grok chat, or OpenCode Free meter. Stale is `[stale]` (FR #7299), never "(older than 2 min)". Missing fetched readings use `unknown (reason)` (FR #7242). Each machine's
+  workers as `{irc nick}: {doing|idle}` from the digest, `alert: <kind>`, version footer. Non-pool fields come from `<root>\run\tray-status.json`; **pool %** (grok / OpenCode / Copilot / `digest_pools`) prefer `<root>\run\tray-digest-pools.json` (FR #7510), which `bob-tray.exe` refreshes every 60s from `https://bob.ntsa.uk/bob/v1/report` via `tools\Update-BobTrayDigestPools.ps1` whether the PS engine is alive or not. The Status exe never touches the network and re-reads both files every 2 s. Parked until X / Esc; drag by the title.
   One account-wide Copilot tile uses `copilot_pool` / `copilot_line` from the snapshot, showing `unknown` when absent and
   `unlimited` when reported as such (never as zero/exhausted). Live values require the #5173 `bobreport.py` deployment on
   the digest host (`https://bob.ntsa.uk/bob/v1/report`); that deployment is separate and needs Simon's go.
@@ -115,7 +114,7 @@ TipForm, About, and Status show **`bob <MSI VERSION> (<shortsha>)`** when a depl
 
 ## FR #6301 tray fuel rows and agent starts
 
-OpenCode Go window lines and the Copilot meter use remaining percent: `<title> - <x>% left - <reset>` (OpenCode: `go <window> - <x>% left - <reset>`). Bars paint remaining % green to red. Copilot title is exactly `Copilot` (no included-unlimited prose). 100% used / exhausted paints `0% left`. Unlimited Copilot without a historical max paints `unknown`. Reset labels come from real digest/API data (`Nd Hh` above 24h, else `Hh Mm`); never invent rem-est text. Stale rows omit the remaining % (FR #7250).
+OpenCode Go window lines and the Copilot meter use remaining percent: `<title> - <x>% left - <reset>` (OpenCode: `go <window> - <x>% left - <reset>`). Bars paint remaining % green to red. Copilot title is exactly `Copilot` (no included-unlimited prose). 100% used / exhausted paints `0% left`. **FR #7299:** `unlimited=true` paints `Copilot - unlimited` (never `0%` and never `unknown` for that flag). **FR #7371:** demote to used-up / `0% left` only when `remaining=0` and `overage_permitted=false`. Missing historical-max denominator (FR #6215) can still paint `unknown` when the pool is not flagged unlimited. Reset labels come from real digest/API data (`Nd Hh` above 24h, else `Hh Mm`); never invent rem-est text. Stale rows omit the remaining % (FR #7250).
 
 ## FR #6317 Copilot layout like OpenCode rows
 

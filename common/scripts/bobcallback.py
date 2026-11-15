@@ -878,8 +878,12 @@ def _proxy_jeeves_settings(
         if lk in ("cookie", "content-type", "authorization", "x-forwarded-for", "x-forwarded-proto"):
             hdrs[key] = val
     req = Request(url, data=raw if method.upper() not in ("GET", "HEAD") else None, method=method.upper(), headers=hdrs)
+    # FR #7527: a real AD logon can take longer than the 8s webhook proxy budget.
+    # A timeout used to fall through to a bare 404 with no JSON error.
+    login_post = method.upper() == "POST" and route.rstrip("/").endswith("/api/login")
+    timeout = 30 if login_post else 8
     try:
-        with urlopen(req, timeout=8) as resp:
+        with urlopen(req, timeout=timeout) as resp:
             payload = resp.read() if method.upper() != "HEAD" else b""
             stash_response_headers(_headers_from_urlopen(resp))
             return int(getattr(resp, "status", 200) or 200), payload
@@ -890,8 +894,16 @@ def _proxy_jeeves_settings(
             payload = b""
         stash_response_headers(_headers_from_urlopen(exc))
         return int(exc.code or 502), payload
-    except (URLError, TimeoutError, OSError):
-        return None
+    except (URLError, TimeoutError, OSError) as exc:
+        if method.upper() in ("GET", "HEAD"):
+            return None
+        err = type(exc).__name__
+        payload = json.dumps(
+            {"ok": False, "error": f"settings upstream unavailable: {err}"},
+            separators=(",", ":"),
+        ).encode("utf-8")
+        stash_response_headers([("Content-Type", "application/json; charset=utf-8")])
+        return 502, payload
 
 
 def handle_intake_status_get(home: Path, intake_id: str) -> tuple[int, bytes]:

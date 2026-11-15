@@ -760,6 +760,7 @@ namespace BobDialogs
             alertB = RobotIcon.Make(Color.FromArgb(255, 180, 0)), context = RobotIcon.Make(Color.FromArgb(210, 153, 34));
         readonly System.Windows.Forms.Timer flash = new System.Windows.Forms.Timer(), poll = new System.Windows.Forms.Timer(), watchdog = new System.Windows.Forms.Timer();
         System.Threading.Timer aliveTimer;
+        System.Threading.Timer digestPoolsTimer; // FR #7510: digest pool refresh independent of engine
         readonly string aliveDir, aliveFile;
         TrayState state = new TrayState();
         DateTime lastWrite = DateTime.MinValue; long lastLen = -1;
@@ -822,6 +823,9 @@ namespace BobDialogs
             if (!noEngine) StartEngine();
             WriteTrayAlive();
             aliveTimer = new System.Threading.Timer(delegate { WriteTrayAlive(); }, null, 2000, 2000);
+            // FR #7510: poll digest every 60s into run\tray-digest-pools.json whether the engine is alive or not.
+            RefreshDigestPools();
+            digestPoolsTimer = new System.Threading.Timer(delegate { RefreshDigestPools(); }, null, 60000, 60000);
             flash.Start(); poll.Start(); watchdog.Start();
 
             string timing = Common.Arg(args, "--timing-out");
@@ -855,6 +859,7 @@ namespace BobDialogs
 
         // ---- engine (hidden PowerShell: all slow data work) ----
         // FR #7505: log every relaunch attempt + result; report fail via tray_engine_report.
+        // FR #7508: log every launch attempt / miss / fail; never silent-return.
         void StartEngine()
         {
             try
@@ -877,7 +882,7 @@ namespace BobDialogs
                 psi.EnvironmentVariables["BOB_TRAY_ENGINE"] = "1";
                 psi.EnvironmentVariables["BOB_TRAY_EXE_PID"] = Process.GetCurrentProcess().Id.ToString();
                 if (machine.Length > 0) psi.EnvironmentVariables["BOB_MACHINE_ID"] = machine;
-                TrayLifecycle.Write("engine-launch", "script", script, "via", "bob-tray");
+                TrayLifecycle.Write("engine-launch", "script", script, "ps", ps, "via", "bob-tray");
                 engine = Process.Start(psi);
                 if (engine == null)
                 {
@@ -889,6 +894,12 @@ namespace BobDialogs
                 }
                 engineStartedUtc = DateTime.UtcNow;
                 lastEngineExitCode = "";
+                // FR #7508: drop any tip painted from a pre-start tray-status.json (frozen pools).
+                if (lastWrite < engineStartedUtc)
+                {
+                    lastWrite = DateTime.MinValue; lastLen = -1;
+                    state = new TrayState();
+                }
                 TrayLifecycle.Write("engine-launch-ok", "pid", engine.Id.ToString(), "script", script);
             }
             catch (Exception ex)
@@ -963,8 +974,8 @@ namespace BobDialogs
         {
             // FR #4136: also restart when the process is alive but the engine.alive stamp is stale
             // (hung UI thread still owns the queue; tray.alive is written by this exe and stays fresh).
-            // FR #4317: IsStale ignores pre-start leftover stamps so a healthy engine with a frozen
-            // leftover file is not kill-looped every engineStarts window (~5 min).
+            // FR #4317 + FR #7508: IsStale ignores pre-start leftover stamps only within
+            // ColdStartGraceSeconds (60); after that leftover/missing stamps are stale so HealEngine retries.
             // FR #7505: report engine exit / tray-status stale >= 120s / failed relaunch to bobiverse.
             bool exited = true;
             try { exited = engine == null || engine.HasExited; } catch { exited = true; }
@@ -1081,6 +1092,7 @@ namespace BobDialogs
         }
 
         // ---- state from the snapshot ----
+        // FR #7508: never paint tray-status.json written before this engine start; tip "Bob: engine down" when no fresh snap.
         void Reload()
         {
             try
@@ -1093,7 +1105,9 @@ namespace BobDialogs
                 if (File.Exists(snapFile))
                 {
                     FileInfo fi = new FileInfo(snapFile);
-                    if (fi.LastWriteTimeUtc != lastWrite || fi.Length != lastLen)
+                    // Ignore pre-start snapshots (frozen pool numbers from a prior engine).
+                    bool preStart = engineStartedUtc != DateTime.MinValue && fi.LastWriteTimeUtc < engineStartedUtc;
+                    if (!preStart && (fi.LastWriteTimeUtc != lastWrite || fi.Length != lastLen))
                     {
                         string json;
                         using (FileStream fs = new FileStream(snapFile, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete))
@@ -1101,6 +1115,31 @@ namespace BobDialogs
                         TrayState s = TrayState.Parse(json);
                         if (s.AttentionSeq != state.AttentionSeq) acked = false;
                         lastWrite = fi.LastWriteTimeUtc; lastLen = fi.Length; state = s;
+                    }
+                }
+            }
+            catch { }
+            try
+            {
+                if (!noEngine)
+                {
+                    bool haveFresh = lastWrite != DateTime.MinValue
+                        && (engineStartedUtc == DateTime.MinValue || lastWrite >= engineStartedUtc);
+                    if (!haveFresh)
+                    {
+                        bool engineLive = false;
+                        try { engineLive = engine != null && !engine.HasExited; } catch { engineLive = false; }
+                        double since = engineStartedUtc == DateTime.MinValue
+                            ? double.MaxValue
+                            : (DateTime.UtcNow - engineStartedUtc).TotalSeconds;
+                        if (!engineLive || since > EngineAliveStamp.ColdStartGraceSeconds)
+                        {
+                            if (state.Short != "Bob: engine down")
+                            {
+                                state = new TrayState();
+                                state.Short = "Bob: engine down";
+                            }
+                        }
                     }
                 }
             }
@@ -1517,8 +1556,34 @@ namespace BobDialogs
         {
             flash.Stop(); poll.Stop(); watchdog.Stop();
             StopAliveTimer();
+            StopDigestPoolsTimer();
             ThreadPoolWait(waitMs);
             ExitThread();
+        }
+
+        // FR #7510: host-owned digest pool refresh (powershell -File); never requires the PS engine.
+        void RefreshDigestPools()
+        {
+            try
+            {
+                string script = Path.Combine(root, "tools\\Update-BobTrayDigestPools.ps1");
+                if (!File.Exists(script))
+                {
+                    string alt = Path.Combine(root, "tray\\tools\\Update-BobTrayDigestPools.ps1");
+                    if (File.Exists(alt)) script = alt;
+                    else return;
+                }
+                string ps = Path.Combine(Environment.GetEnvironmentVariable("SystemRoot") ?? "C:\\Windows", "System32\\WindowsPowerShell\\v1.0\\powershell.exe");
+                ProcessStartInfo psi = new ProcessStartInfo(ps, "-NoProfile -ExecutionPolicy Bypass -File \"" + script + "\" -Root \"" + root + "\"");
+                psi.UseShellExecute = false; psi.CreateNoWindow = true; psi.WorkingDirectory = root;
+                using (Process p = Process.Start(psi)) { }
+            }
+            catch { }
+        }
+
+        void StopDigestPoolsTimer()
+        {
+            try { if (digestPoolsTimer != null) { digestPoolsTimer.Dispose(); digestPoolsTimer = null; } } catch { }
         }
 
         void ThreadPoolWait(int ms)
@@ -1578,6 +1643,7 @@ namespace BobDialogs
         protected override void ExitThreadCore()
         {
             StopAliveTimer();
+            StopDigestPoolsTimer();
             try { notify.Visible = false; notify.Dispose(); } catch { }
             base.ExitThreadCore();
         }
@@ -1588,6 +1654,8 @@ namespace BobDialogs
     internal static class EngineAliveStamp
     {
         public const double MaxAgeSeconds = 120;   // ~3x 30s refresh; watchdog ticks every 15s
+        // FR #7508: cold-start / leftover grace before HealEngine treats missing or pre-start stamp as stale.
+        public const double ColdStartGraceSeconds = 60;
         public const string FileName = "engine.alive";
 
         public static string PathFor(string startworkerDir)
@@ -1624,20 +1692,22 @@ namespace BobDialogs
                     // FR #4317: a stamp older than this engine start is a leftover (prior instance or
                     // PS without the writer). Treating it as live age caused HealEngine kill storms
                     // every storm-window reset (~5 min) while the stamp stayed frozen.
+                    // FR #7508: within ColdStartGraceSeconds still ignore leftover; after grace treat
+                    // as stale so a never-writing engine is retried (leftover forever was a silent hang).
                     if (engineStartedUtc != DateTime.MinValue && m < engineStartedUtc)
                     {
                         ageSeconds = (utcNow - engineStartedUtc).TotalSeconds;
-                        return false;
+                        return ageSeconds > ColdStartGraceSeconds;
                     }
                     ageSeconds = (utcNow - m).TotalSeconds;
                     return ageSeconds > maxAgeS;
                 }
             }
             catch { }
-            // No stamp yet: grace until the engine has been up longer than maxAge (cold start / first tick).
+            // No stamp yet: grace until cold-start window elapses (FR #7508: 60s), then stale for retry.
             if (engineStartedUtc == DateTime.MinValue) return false;
             ageSeconds = (utcNow - engineStartedUtc).TotalSeconds;
-            return ageSeconds > maxAgeS;
+            return ageSeconds > ColdStartGraceSeconds;
         }
     }
 

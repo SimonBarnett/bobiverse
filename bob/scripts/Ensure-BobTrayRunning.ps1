@@ -6,10 +6,11 @@
   Watchdog probe for scheduled task BobiverseTrayWatchdog. Always relaunches with -SkipTidy
   (never the TipForm Restart tidy path). Honours tray-watchdog.suppress after intentional
   TipForm Exit. Opt out: BOBIVERSE_TRAY_WATCHDOG=0.
-  FR #2585: duplicate bob-tray.exe exits log process-exit reason=already-running (not unexpected);
-  this probe only relaunches when no tray process is present, so already-running never triggers a relaunch.
+  FR #2585: duplicate bob-tray.exe exits log process-exit reason=already-running (not unexpected).
   FR #3909: prefer Get-Process bob-tray before Win32_Process CIM (CIM can take ~1 min and the
   Interactive scheduled-task host used to flash a blank console for that whole time).
+  FR #7505 / FIX #7519: when bob-tray is present but run/tray-status.json is older than 120s
+  (frozen TipForm / dead engine), treat as dead — report status-stale, kill, relaunch, log result.
 #>
 [CmdletBinding()]
 param(
@@ -19,6 +20,7 @@ param(
 )
 
 $ErrorActionPreference = 'Continue'
+$script:TrayStatusStaleSeconds = 120
 if (([string]$env:BOBIVERSE_TRAY_WATCHDOG).Trim() -eq '0') {
     Write-Host 'INFO tray watchdog disabled (BOBIVERSE_TRAY_WATCHDOG=0)'
     exit 0
@@ -64,8 +66,73 @@ if (-not (Get-Command Test-BobTrayWatchdogSuppressed -ErrorAction SilentlyContin
     function Test-BobTrayWatchdogSuppressed { return $false }
 }
 
-if (Test-BobTrayProcessPresent -InstallRoot $InstallRoot) {
-    Write-BobTrayLifecycleEvent -Event 'watchdog-ok' -Fields @{ installRoot = $InstallRoot }
+function Get-BobTrayStatusSnapPath {
+    param([string]$Root)
+    return (Join-Path $Root 'run\tray-status.json')
+}
+
+function Get-BobTrayStatusAgeSeconds {
+    param([string]$Root, [datetime]$Now = [datetime]::UtcNow)
+    $snap = Get-BobTrayStatusSnapPath -Root $Root
+    if (-not (Test-Path -LiteralPath $snap)) { return [double]::PositiveInfinity }
+    try {
+        $mtime = (Get-Item -LiteralPath $snap).LastWriteTimeUtc
+        return [Math]::Max(0.0, ($Now - $mtime).TotalSeconds)
+    } catch {
+        return [double]::PositiveInfinity
+    }
+}
+
+function Invoke-BobTrayEngineReport {
+    param(
+        [string]$Root,
+        [string]$Kind,
+        [string]$Machine,
+        [string]$ErrorText = '',
+        [string]$SnapPath = ''
+    )
+    $reportPy = Join-Path $Root 'common\scripts\tray_engine_report.py'
+    if (-not (Test-Path -LiteralPath $reportPy)) {
+        $reportPy = Join-Path (Split-Path $Root -Parent) 'common\scripts\tray_engine_report.py'
+    }
+    if (-not (Test-Path -LiteralPath $reportPy)) { return }
+    $py = (Get-Command python.exe -ErrorAction SilentlyContinue)
+    if (-not $py) { $py = Get-Command py.exe -ErrorAction SilentlyContinue }
+    if (-not $py) { return }
+    $args = @($reportPy, $Kind, '--machine', $Machine)
+    if ($SnapPath) { $args += @('--snap', $SnapPath) }
+    if ($ErrorText) { $args += @('--error', $ErrorText) }
+    try {
+        & $py.Source @args | Out-Null
+    } catch { }
+}
+
+function Stop-BobTrayProcesses {
+    param([string]$Root)
+    try {
+        Get-Process -Name 'bob-tray' -ErrorAction SilentlyContinue | ForEach-Object {
+            try { Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue } catch { }
+        }
+    } catch { }
+}
+
+if (-not $MachineId) {
+    $MachineId = ([string]$env:BOB_MACHINE_ID).Trim()
+}
+if (-not $MachineId) {
+    $MachineId = ($env:COMPUTERNAME -replace '[^A-Za-z0-9_-]+', '-').Trim('-_').ToLowerInvariant()
+}
+
+$snapPath = Get-BobTrayStatusSnapPath -Root $InstallRoot
+$statusAge = Get-BobTrayStatusAgeSeconds -Root $InstallRoot
+$present = Test-BobTrayProcessPresent -InstallRoot $InstallRoot
+$frozen = $present -and ($statusAge -ge [double]$script:TrayStatusStaleSeconds)
+
+if ($present -and -not $frozen) {
+    Write-BobTrayLifecycleEvent -Event 'watchdog-ok' -Fields @{
+        installRoot = $InstallRoot
+        statusAgeS  = [int][Math]::Round($statusAge)
+    }
     Write-Host 'INFO tray watchdog: tray present'
     exit 0
 }
@@ -76,13 +143,6 @@ if (Test-BobTrayWatchdogSuppressed) {
     exit 0
 }
 
-if (-not $MachineId) {
-    $MachineId = ([string]$env:BOB_MACHINE_ID).Trim()
-}
-if (-not $MachineId) {
-    $MachineId = ($env:COMPUTERNAME -replace '[^A-Za-z0-9_-]+', '-').Trim('-_').ToLowerInvariant()
-}
-
 $start = Join-Path $InstallRoot 'scripts\Start-BobTray.ps1'
 if (-not (Test-Path -LiteralPath $start)) {
     Write-BobTrayLifecycleEvent -Event 'watchdog-error' -Fields @{ reason = 'missing-Start-BobTray'; installRoot = $InstallRoot }
@@ -90,15 +150,33 @@ if (-not (Test-Path -LiteralPath $start)) {
     exit 2
 }
 
-# FR #7505: log every relaunch attempt with its result; report failed relaunch to bobiverse.
+# FR #7505 / FIX #7519: relaunch when absent OR when present with stale tray-status.json.
+$relaunchWhy = if ($frozen) { 'status-stale' } else { 'absent' }
+if ($frozen) {
+    Write-BobTrayLifecycleEvent -Event 'watchdog-status-stale' -Fields @{
+        installRoot = $InstallRoot
+        machineId   = $MachineId
+        statusAgeS  = [int][Math]::Round($statusAge)
+        snap        = $snapPath
+        thresholdS  = $script:TrayStatusStaleSeconds
+    }
+    Write-Host ("WARN tray watchdog: tray present but tray-status.json stale age={0}s (threshold={1}s)" -f [int][Math]::Round($statusAge), $script:TrayStatusStaleSeconds)
+    Invoke-BobTrayEngineReport -Root $InstallRoot -Kind 'status-stale' -Machine $MachineId -SnapPath $snapPath -ErrorText ("Ensure-BobTrayRunning: tray-status.json age {0}s" -f [int][Math]::Round($statusAge))
+    if (-not $WhatIf) {
+        Stop-BobTrayProcesses -Root $InstallRoot
+        Start-Sleep -Seconds 2
+    }
+}
+
 Write-BobTrayLifecycleEvent -Event 'watchdog-relaunch' -Fields @{
     installRoot = $InstallRoot
     machineId   = $MachineId
     forceNew    = $true
     skipTidy    = $true
     result      = 'attempt'
+    why         = $relaunchWhy
 }
-Write-Host ("INFO tray watchdog: relaunch Start-BobTray -ForceNew -SkipTidy machine={0}" -f $MachineId)
+Write-Host ("INFO tray watchdog: relaunch Start-BobTray -ForceNew -SkipTidy machine={0} why={1}" -f $MachineId, $relaunchWhy)
 if ($WhatIf) {
     Write-Host 'INFO WhatIf: would Start-BobTray -ForceNew -SkipTidy'
     exit 0
@@ -113,27 +191,21 @@ try {
         installRoot = $InstallRoot
         machineId   = $MachineId
         result      = 'fail'
+        why         = $relaunchWhy
         error       = $_.Exception.Message
     }
-    $reportPy = Join-Path $InstallRoot 'common\scripts\tray_engine_report.py'
-    if (-not (Test-Path -LiteralPath $reportPy)) {
-        $reportPy = Join-Path (Split-Path $InstallRoot -Parent) 'common\scripts\tray_engine_report.py'
-    }
-    if (Test-Path -LiteralPath $reportPy) {
-        $py = (Get-Command python.exe -ErrorAction SilentlyContinue)
-        if (-not $py) { $py = Get-Command py.exe -ErrorAction SilentlyContinue }
-        if ($py) {
-            & $py.Source $reportPy 'relaunch-fail' --machine $MachineId --error ("Ensure-BobTrayRunning: " + $_.Exception.Message) | Out-Null
-        }
-    }
+    Invoke-BobTrayEngineReport -Root $InstallRoot -Kind 'relaunch-fail' -Machine $MachineId -SnapPath $snapPath -ErrorText ("Ensure-BobTrayRunning: " + $_.Exception.Message)
     exit 2
 }
 Start-Sleep -Seconds 8
 if (Test-BobTrayProcessPresent -InstallRoot $InstallRoot) {
+    $newAge = Get-BobTrayStatusAgeSeconds -Root $InstallRoot
     Write-BobTrayLifecycleEvent -Event 'watchdog-relaunch' -Fields @{
         installRoot = $InstallRoot
         machineId   = $MachineId
         result      = 'ok'
+        why         = $relaunchWhy
+        statusAgeS  = [int][Math]::Round($newAge)
     }
     Write-Host 'INFO tray watchdog: relaunch ok'
     exit 0
@@ -142,18 +214,9 @@ Write-BobTrayLifecycleEvent -Event 'watchdog-relaunch' -Fields @{
     installRoot = $InstallRoot
     machineId   = $MachineId
     result      = 'fail'
+    why         = $relaunchWhy
     error       = 'tray still absent after Start-BobTray'
 }
 Write-Host 'WARN tray watchdog: relaunch fail (tray still absent)'
-$reportPy = Join-Path $InstallRoot 'common\scripts\tray_engine_report.py'
-if (-not (Test-Path -LiteralPath $reportPy)) {
-    $reportPy = Join-Path (Split-Path $InstallRoot -Parent) 'common\scripts\tray_engine_report.py'
-}
-if (Test-Path -LiteralPath $reportPy) {
-    $py = (Get-Command python.exe -ErrorAction SilentlyContinue)
-    if (-not $py) { $py = Get-Command py.exe -ErrorAction SilentlyContinue }
-    if ($py) {
-        & $py.Source $reportPy 'relaunch-fail' --machine $MachineId --error 'Ensure-BobTrayRunning: tray still absent after Start-BobTray' | Out-Null
-    }
-}
+Invoke-BobTrayEngineReport -Root $InstallRoot -Kind 'relaunch-fail' -Machine $MachineId -SnapPath $snapPath -ErrorText 'Ensure-BobTrayRunning: tray still absent after Start-BobTray'
 exit 1
