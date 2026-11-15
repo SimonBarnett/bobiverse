@@ -487,6 +487,7 @@ routes to bobiverse via the split rule.
 - Airc skill books stay ASCII. Write a hyphen, not an em dash, in SKILL.md.
 - When wiring an optional hook onto an injected runner, use getattr and callable. A test stub that only implements start() must still build the console.
 - When an OpenCode watchdog stops a dead job, write GIVEUP for that job key before returning to ReadLine. Killing the child leaves the accepted row, so !bored is nak busy. Read GIVEUP from a PRIVMSG outbox payload.
+- When git status runs under ErrorActionPreference Stop, a missing sparse directory warning aborts the script. Skip a recycle path whose parent is absent, and run that status under Continue.
 
 ## Harvest digest (lessons audit 2026-10-06)
 
