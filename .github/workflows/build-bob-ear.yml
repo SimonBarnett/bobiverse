@@ -249,6 +249,16 @@ jobs:
           $commonPs1 = Join-Path $root "common\scripts\Bobiverse-Common.ps1"
           if (-not (Test-Path -LiteralPath $commonPs1)) { throw "missing $commonPs1" }
           Copy-Item -LiteralPath $commonPs1 -Destination (Join-Path $stage "Bobiverse-Common.ps1")
+          # FR #7548: ship the scripts the frozen ear loads from disk, at this commit.
+          $runtimeScripts = @('bobreport.py', 'opencode_fuel.py')
+          $runtimeHashes = @{}
+          foreach ($name in $runtimeScripts) {
+            $srcPy = Join-Path $root "common\scripts\$name"
+            if (-not (Test-Path -LiteralPath $srcPy)) { throw "missing $srcPy" }
+            Copy-Item -LiteralPath $srcPy -Destination (Join-Path $stage $name)
+            $runtimeHashes[$name] = (Get-FileHash -Algorithm SHA256 -LiteralPath $srcPy).Hash.ToLowerInvariant()
+            Set-Content -Encoding ascii (Join-Path $stage "$name.sha256") "$($runtimeHashes[$name])  $name"
+          }
           $startHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $startBob).Hash.ToLowerInvariant()
           $selectHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $selectEar).Hash.ToLowerInvariant()
           $commonHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $commonPs1).Hash.ToLowerInvariant()
@@ -264,9 +274,11 @@ jobs:
             "start_bob_ps1_sha256=$startHash"
             "select_bob_ear_launch_ps1_sha256=$selectHash"
             "bobiverse_common_ps1_sha256=$commonHash"
+            "runtime_bobreport_py_sha256=$($runtimeHashes['bobreport.py'])"
+            "runtime_opencode_fuel_py_sha256=$($runtimeHashes['opencode_fuel.py'])"
             "build_time_utc=$builtAt"
             "builder=Build-BobEar.ps1"
-            "fr=7179,7390,7394"
+            "fr=7179,7390,7394,7548"
           ) | Set-Content -Encoding ascii (Join-Path $stage "provenance.txt")
           Set-Content -Encoding ascii (Join-Path $stage "bob-ear.exe.sha256") "$hash  bob-ear.exe"
           Copy-Item -LiteralPath (Join-Path $stage "provenance.txt") -Destination (Join-Path $stage "manifest.txt")
