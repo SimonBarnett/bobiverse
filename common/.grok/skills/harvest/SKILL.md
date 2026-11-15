@@ -423,6 +423,7 @@ routes to bobiverse via the split rule.
 - Ear CI artifacts must ship Start-Bob.ps1 and Select-BobEarLaunch.ps1 with manifest SHA-256; Install-BobEarExe copies them beside the exe or machines keep stale mtime launchers.
 - Cached xAI weekly remaining must not be relabelled onto a new auth.json grok_account; discard last-good % until a successful fetch for the new account.
 - Public bob.ntsa.uk chrome starts as shared charcoal/paper/gold site.css + HTML mocks validated by validate-vision-pack; live IIS is a later FR.
+- FR-E quiet :7701 removal PASS when front-door mode defaults on, LAN-root returns 404, /jeeves still serves, and docs scrub preferred 7701 how-tos without a deprecation brochure; keeping loopback bind as ARR upstream is ACCEPTABLE.
 
 ## Harvest digest (lessons audit 2026-10-06)
 
