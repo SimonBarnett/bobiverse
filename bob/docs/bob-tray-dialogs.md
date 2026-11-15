@@ -114,7 +114,7 @@ TipForm, About, and Status show **`bob <MSI VERSION> (<shortsha>)`** when a depl
 
 ## FR #6301 tray fuel rows and agent starts
 
-OpenCode Go window lines and the Copilot meter use remaining percent: `<title> - <x>% left - <reset>` (OpenCode: `go <window> - <x>% left - <reset>`). Bars paint remaining % green to red. Copilot title is exactly `Copilot` (no included-unlimited prose). 100% used / exhausted paints `0% left`. Unlimited Copilot without a historical max paints `unknown`. Reset labels come from real digest/API data (`Nd Hh` above 24h, else `Hh Mm`); never invent rem-est text. Stale rows omit the remaining % (FR #7250).
+OpenCode Go window lines and the Copilot meter use remaining percent: `<title> - <x>% left - <reset>` (OpenCode: `go <window> - <x>% left - <reset>`). Bars paint remaining % green to red. Copilot title is exactly `Copilot` (no included-unlimited prose). 100% used / exhausted paints `0% left`. **FR #7299:** `unlimited=true` paints `Copilot - unlimited` (never `0%` and never `unknown` for that flag). **FR #7371:** demote to used-up / `0% left` only when `remaining=0` and `overage_permitted=false`. Missing historical-max denominator (FR #6215) can still paint `unknown` when the pool is not flagged unlimited. Reset labels come from real digest/API data (`Nd Hh` above 24h, else `Hh Mm`); never invent rem-est text. Stale rows omit the remaining % (FR #7250).
 
 ## FR #6317 Copilot layout like OpenCode rows
 
