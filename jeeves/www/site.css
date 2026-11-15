@@ -46,22 +46,22 @@ body {
 }
 .brand {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   gap: 0.55rem;
   text-decoration: none;
   color: inherit;
 }
+.brand-logo {
+  display: block;
+  width: 36px;
+  height: 36px;
+  border-radius: 8px;
+  object-fit: contain;
+  flex: 0 0 auto;
+}
 .brand-mark {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 2rem;
-  height: 2rem;
-  border-radius: 999px;
-  background: var(--gold);
-  color: var(--charcoal);
-  font-weight: 700;
-  font-size: 0.95rem;
+  /* FR #7453: letter marks retired; keep rule inert for old caches. */
+  display: none;
 }
 .brand-name { font-weight: 650; letter-spacing: 0.02em; font-size: 1.15rem; }
 .brand-tag { color: var(--gold-bright); font-size: 0.85rem; }

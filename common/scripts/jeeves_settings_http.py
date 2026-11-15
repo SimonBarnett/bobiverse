@@ -339,7 +339,11 @@ def ntsa_gut_logo_path() -> Path:
 
 def _shell_header(*, current: str, include_nav: bool, prefix: str = "") -> str:
     """FR #7451 site-header chrome; FR #7452 Home landing, Settings at /settings."""
-    img = f'<img src="{ui_href(prefix, LOGO_HREF)}" alt="NTSA" width="36" height="36"/>'
+    # FR #7453: NTSA logo (never letter mark); brand always links to site home `/`.
+    img = (
+        f'<img class="brand-logo" src="{ui_href(prefix, LOGO_HREF)}" '
+        f'alt="NTSA" width="36" height="36"/>'
+    )
     brand = (
         f'<a class="brand" href="/">{img}'
         f'<span class="brand-text"><strong>Jeeves</strong>'
