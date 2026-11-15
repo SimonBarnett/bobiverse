@@ -161,15 +161,16 @@ Write-Output $p
 
 
 COPILOT_POOLS = [
-    # FR #6301: meter is "<x>% left" (optional reset); unlimited without max => unknown.
+    # FR #6301: meter is "<x>% left" (optional reset).
+    # FR #7299 / #7520: unlimited flag paints "unlimited" (never 0% / never "unknown").
     (None, "Copilot - unknown"),
     ({"state": "unknown"}, "Copilot - unknown"),
     ({"state": "ok", "remaining": 42}, "Copilot - 42% left"),
     ({"state": "ok", "remaining": 0}, "Copilot - 0% left"),
     ({"state": "exhausted", "remaining": 0}, "Copilot - 0% left"),
-    ({"unlimited": True, "used": 12, "remaining": 0}, "Copilot - unknown"),
-    ({"state": "exhausted", "unlimited": True, "used": 12, "remaining": 0}, "Copilot - unknown"),
-    ({"state": "unknown", "unlimited": True}, "Copilot - unknown"),
+    ({"unlimited": True, "used": 12, "remaining": 0}, "Copilot - unlimited"),
+    ({"state": "exhausted", "unlimited": True, "used": 12, "remaining": 0}, "Copilot - unlimited"),
+    ({"state": "unknown", "unlimited": True}, "Copilot - unlimited"),
 ]
 
 
