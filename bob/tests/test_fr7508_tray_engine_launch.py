@@ -44,6 +44,11 @@ def test_fr7508_cold_start_grace_sixty_seconds():
 
 def test_fr7508_heal_retries_when_engine_never_up():
     t = _cs()
-    heal = t[t.find("void HealEngine()") : t.find("void HealEngine()") + 3500]
+    # HealEngine grew with FR #7505 reporting; keep a wide window through StartEngine().
+    start = t.find("void HealEngine()")
+    end = t.find("string SafeEnginePid()", start)
+    if end < 0:
+        end = start + 4500
+    heal = t[start:end]
     assert "StartEngine()" in heal
     assert "engine-stale" in heal or "engine-launch" in t
