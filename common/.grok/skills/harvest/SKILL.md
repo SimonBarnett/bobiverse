@@ -453,6 +453,7 @@ routes to bobiverse via the split rule.
 - Front-door FR #7412 404 is for operator UI paths only; exempt /api/* (and static assets) so unauth settings calls stay 401/403 for CI and clients.
 - Fleet-pool-stale: evaluate shared last_ok age/recovery before FR #7552 auth-skip so digest no_token noise cannot override a fresh fetcher last_ok.
 - Install-BobEarExe: stage exe + companions + provenance before --help smoke; refuse smoke if a planned companion is missing; keep .bak rollback for companions
+- PS 5.1 digest GETs: use HttpWebRequest Timeout and ReadWriteTimeout (Invoke-BobDigestHttpGet); do not rely on Invoke-WebRequest -TimeoutSec against hung or half-closed sockets.
 
 ## Harvest digest (lessons audit 2026-10-06)
 
