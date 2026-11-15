@@ -434,6 +434,8 @@ routes to bobiverse via the split rule.
 - Ear must refresh Grok CLI access via auth.x.ai/oauth2/token when refresh_token present; never treat access TTL alone as sign-in expired
 - When /jeeves home FR conflicts with site-chrome tip: resolve _shell_header to keep site.css classes and set appliance nav Home(/)+Settings(/settings); fold CONFLICTING tips (FR #4649); LAN-root session tests need ALLOW_LAN_ROOT under front-door default.
 - Public /jeeves Set-Cookie is Secure; plain-HTTP pytest must use Bearer session_token, not CookieJar
+- When C: stays under 2GB after Clear-BobiverseJobWorktrees because protected trees remain, add a detached MRB worktree on D:\ai\worktrees\<repo>\mrb-N and do not delete those protected trees.
+
 ## Harvest digest (lessons audit 2026-10-06)
 
 Generalised from 81 harvested lessons that never reached this book (audit for FR #2705). The per-lesson table is in `common/docs/harvest-lessons-audit-2026-10-06.md`.
