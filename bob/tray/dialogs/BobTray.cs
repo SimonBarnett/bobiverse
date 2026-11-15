@@ -1,4 +1,4 @@
-﻿// t832u: the systray as a compiled exe (bob-tray.exe). Icon, context menu, click handling, hover text, flashing and the Status / About
+// t832u: the systray as a compiled exe (bob-tray.exe). Icon, context menu, click handling, hover text, flashing and the Status / About
 // windows (hosted in-process) all run natively, so the menu opens at once and nothing waits on PowerShell.
 // The slow DATA work (digest webhook, Cursor/Grok usage, stall alerts, IRC watcher, !startworker queue) stays in the existing
 // PowerShell tray script, started HIDDEN by this exe in "engine" mode (BOB_TRAY_ENGINE=1: it owns no icon and no window). It publishes
@@ -964,8 +964,10 @@ namespace BobDialogs
         {
             // FR #4136: also restart when the process is alive but the engine.alive stamp is stale
             // (hung UI thread still owns the queue; tray.alive is written by this exe and stays fresh).
-            // FR #4317 + FR #7508: IsStale ignores pre-start leftover stamps only within
-            // ColdStartGraceSeconds (60); after that leftover/missing stamps are stale so HealEngine retries.
+            // FR #4317 + FR #7508 + FR #7564: IsStale ignores pre-start leftover / missing stamps only
+            // within ColdStartGraceSeconds (== MaxAgeSeconds, 120) measured from this engine launch;
+            // after that leftover/missing stamps are stale so HealEngine can restart once. Judge age
+            // from the new engine's own heartbeat only (never the prior leftover mtime as live age).
             bool exited = true;
             try { exited = engine == null || engine.HasExited; } catch { exited = true; }
             bool stale = false;
@@ -978,7 +980,24 @@ namespace BobDialogs
             if ((DateTime.Now - engineWindow).TotalMinutes > 5) { engineWindow = DateTime.Now; engineStarts = 0; }
             if (++engineStarts > 3)
             {
-                if (stale) TrayLifecycle.Write("engine-restart-storm", "age", ageS.ToString("0.0"), "max", EngineAliveStamp.MaxAgeSeconds.ToString("0"), "pid", SafeEnginePid());
+                // FR #7564: stop relaunching and report once per storm window (ties #7505).
+                if (stale)
+                {
+                    TrayLifecycle.Write("engine-restart-storm", "age", ageS.ToString("0.0"), "max", EngineAliveStamp.MaxAgeSeconds.ToString("0"), "pid", SafeEnginePid());
+                    if (engineStarts == 4)
+                    {
+                        try
+                        {
+                            CrashHook.Report(
+                                "bob-tray",
+                                new InvalidOperationException(
+                                    "engine-restart-storm age=" + ageS.ToString("0.0")
+                                    + " max=" + EngineAliveStamp.MaxAgeSeconds.ToString("0")
+                                    + " pid=" + SafeEnginePid()));
+                        }
+                        catch { }
+                    }
+                }
                 return;       // no restart storm
             }
             if (stale)
@@ -1609,8 +1628,9 @@ namespace BobDialogs
     internal static class EngineAliveStamp
     {
         public const double MaxAgeSeconds = 120;   // ~3x 30s refresh; watchdog ticks every 15s
-        // FR #7508: cold-start / leftover grace before HealEngine treats missing or pre-start stamp as stale.
-        public const double ColdStartGraceSeconds = 60;
+        // FR #7508 / FR #7564: cold-start grace == MaxAgeSeconds so a busy machine can write its
+        // first engine.alive heartbeat before HealEngine judges missing/leftover stamps stale.
+        public const double ColdStartGraceSeconds = MaxAgeSeconds;
         public const string FileName = "engine.alive";
 
         public static string PathFor(string startworkerDir)
@@ -1647,8 +1667,8 @@ namespace BobDialogs
                     // FR #4317: a stamp older than this engine start is a leftover (prior instance or
                     // PS without the writer). Treating it as live age caused HealEngine kill storms
                     // every storm-window reset (~5 min) while the stamp stayed frozen.
-                    // FR #7508: within ColdStartGraceSeconds still ignore leftover; after grace treat
-                    // as stale so a never-writing engine is retried (leftover forever was a silent hang).
+                    // FR #7508 / #7564: within ColdStartGraceSeconds (== MaxAgeSeconds) ignore leftover;
+                    // after grace treat as stale so a never-writing engine is retried once.
                     if (engineStartedUtc != DateTime.MinValue && m < engineStartedUtc)
                     {
                         ageSeconds = (utcNow - engineStartedUtc).TotalSeconds;
@@ -1659,7 +1679,7 @@ namespace BobDialogs
                 }
             }
             catch { }
-            // No stamp yet: grace until cold-start window elapses (FR #7508: 60s), then stale for retry.
+            // No stamp yet: grace until cold-start window elapses (FR #7564: == MaxAgeSeconds), then stale.
             if (engineStartedUtc == DateTime.MinValue) return false;
             ageSeconds = (utcNow - engineStartedUtc).TotalSeconds;
             return ageSeconds > ColdStartGraceSeconds;
