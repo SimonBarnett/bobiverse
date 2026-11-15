@@ -1890,6 +1890,22 @@ namespace BobDialogs
                 else Console.Write(body);
                 return stale ? 2 : 0;
             }
+            // FR #7676: leftover tray-status.json must not look stale during the start grace.
+            if (Common.Flag(args, "--status-age-eval"))
+            {
+                string snap = Path.Combine(root, "run", "tray-status.json");
+                DateTime started = DateTime.UtcNow;
+                string startedArg = Common.Arg(args, "--engine-started-ago-s");
+                double ago;
+                if (startedArg.Length > 0 && double.TryParse(startedArg, out ago))
+                    started = DateTime.UtcNow.AddSeconds(-ago);
+                bool statusStale = TrayStatusAge.IsStale(snap, started, TrayEngineFailure.StatusStaleSeconds);
+                string tout = Common.Arg(args, "--text-out");
+                string body = "statusStale=" + (statusStale ? "1" : "0") + " max=" + TrayEngineFailure.StatusStaleSeconds.ToString("0") + "\r\n";
+                if (tout.Length > 0) File.WriteAllText(tout, body, new UTF8Encoding(false));
+                else Console.Write(body);
+                return statusStale ? 2 : 0;
+            }
                         if (Common.Flag(args, "--seats")) { File.WriteAllText(Common.Arg(args, "--text-out"), WorkerLauncher.Seats().ToString() + "\r\n" + WorkerLauncher.CapRefusal(), new UTF8Encoding(false)); return 0; }
             // FR #3180: headless watchdog harness — N ticks must launch 0 seats (manual-only).
             string ticksArg = Common.Arg(args, "--watchdog-ticks");
@@ -2181,7 +2197,13 @@ namespace BobDialogs
                     if (engineStartedUtc == DateTime.MinValue) return false;
                     return (DateTime.UtcNow - engineStartedUtc).TotalSeconds >= staleSeconds;
                 }
-                double age = (DateTime.UtcNow - File.GetLastWriteTimeUtc(snapFile)).TotalSeconds;
+                DateTime written = File.GetLastWriteTimeUtc(snapFile);
+                // FR #7676: a tray-status.json from before this engine start is a leftover.
+                // Treating it as live age killed a heartbeating engine (alive age 14.8s, max 120)
+                // on every watchdog tick and filed engine-restart-storm.
+                if (engineStartedUtc != DateTime.MinValue && written < engineStartedUtc)
+                    return (DateTime.UtcNow - engineStartedUtc).TotalSeconds >= staleSeconds;
+                double age = (DateTime.UtcNow - written).TotalSeconds;
                 return age >= staleSeconds;
             }
             catch { return false; }
