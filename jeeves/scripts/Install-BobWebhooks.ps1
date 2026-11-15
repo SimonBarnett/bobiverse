@@ -86,6 +86,11 @@ $rewriteXml = @"
         <hiddenSegments><clear /></hiddenSegments>
       </requestFiltering>
     </security>
+    <!-- FR #7442: serve site-root favicon without proxying to Jeeves -->
+    <staticContent>
+      <remove fileExtension=".ico" />
+      <mimeMap fileExtension=".ico" mimeType="image/x-icon" />
+    </staticContent>
   </system.webServer>
 </configuration>
 "@
@@ -94,7 +99,7 @@ $wwwSrcDefault = Join-Path $PSScriptRoot '..\www\irc-ntsa'
 $wwwSrc = if ($WwwSource) { $WwwSource } else { $wwwSrcDefault }
 if ($WhatIf) {
     Write-Host "WhatIf would write rewrite rules to $webConfig backend=$Backend"
-    Write-Host "WhatIf FR #7414 www publish from $wwwSrc -> $PhysicalPath : site.css, downloads/, jeeves/commands/, docs/, index.html"
+    Write-Host "WhatIf FR #7414/#7442 www publish from $wwwSrc -> $PhysicalPath : site.css, favicon.ico, downloads/, jeeves/commands/, docs/, index.html"
     return
 }
 
@@ -182,6 +187,18 @@ if (Test-Path -LiteralPath $webConfig) {
                 ("<fileExtensions allowUnlisted=`"true`">$icoAllow")
         }
     }
+    # FR #7442: ensure .ico MIME is image/x-icon (site-root favicon.ico).
+    if ($updated -notmatch 'mimeType="image/x-icon"') {
+        $icoMime = @"
+    <staticContent>
+      <remove fileExtension=".ico" />
+      <mimeMap fileExtension=".ico" mimeType="image/x-icon" />
+    </staticContent>
+"@
+        if ($updated -match '</system\.webServer>') {
+            $updated = $updated -replace '</system\.webServer>', ($icoMime + '  </system.webServer>')
+        }
+    }
     [IO.File]::WriteAllText($webConfig, $updated, [Text.UTF8Encoding]::new($false))
     Write-Host "INFO updated $webConfig"
 } else {
@@ -197,7 +214,7 @@ if ($hasAppcmd) {
         Write-Host "WARN could not enable ARR proxy: $($_.Exception.Message)"
     }
 }
-# FR #6453 / #7410 / #7414: sync static www (CSS, downloads, commands, docs) into IIS physical path.
+# FR #6453 / #7410 / #7414 / #7442: sync static www (CSS, favicon, downloads, commands, docs) into IIS physical path.
 # Operators: re-run Install-BobWebhooks.ps1 (or compose/sync) after git pull to refresh bob.ntsa.uk www.
 if (Test-Path -LiteralPath $wwwSrc) {
     $null = New-Item -ItemType Directory -Force -Path $PhysicalPath
@@ -208,6 +225,20 @@ if (Test-Path -LiteralPath $wwwSrc) {
     $siteCss = Join-Path $wwwSrc 'site.css'
     if (Test-Path -LiteralPath $siteCss) {
         Copy-Item -LiteralPath $siteCss -Destination (Join-Path $PhysicalPath 'site.css') -Force
+    }
+    # FR #7442: site-root favicon (Bob tray icon). Prefer checked-in jeeves/www/favicon.ico beside irc-ntsa.
+    $faviconCands = @(
+        (Join-Path $wwwSrc 'favicon.ico'),
+        (Join-Path $wwwSrc '..\favicon.ico'),
+        (Join-Path $PSScriptRoot '..\www\favicon.ico'),
+        (Join-Path $PSScriptRoot '..\..\bob\tray\assets\bob-systray.ico')
+    )
+    foreach ($fav in $faviconCands) {
+        if (Test-Path -LiteralPath $fav) {
+            Copy-Item -LiteralPath $fav -Destination (Join-Path $PhysicalPath 'favicon.ico') -Force
+            Write-Host "INFO FR #7442 staged favicon.ico from $fav"
+            break
+        }
     }
     $docsSrc = Join-Path $wwwSrc 'docs'
     if (Test-Path -LiteralPath $docsSrc) {
@@ -235,7 +266,7 @@ if (Test-Path -LiteralPath $wwwSrc) {
         $null = New-Item -ItemType Directory -Force -Path (Split-Path -Parent $commandsDst)
         Copy-Item -LiteralPath $commandsSrc -Destination $commandsDst -Recurse -Force
     }
-    Write-Host "INFO synced FR #6453/#7410/#7413/#7414 www (site.css, downloads, jeeves/commands, docs) from $wwwSrc -> $PhysicalPath"
+    Write-Host "INFO synced FR #6453/#7410/#7413/#7414/#7442 www (site.css, favicon.ico, downloads, jeeves/commands, docs) from $wwwSrc -> $PhysicalPath"
 } else {
     Write-Host "WARN FR #7414 www source missing: $wwwSrc"
 }
