@@ -70,6 +70,9 @@ def opencode_turn_stop_reason(issue_state: str, outbox_text: str, job_key: str) 
         return ""
     for raw in (outbox_text or "").splitlines():
         line = raw.strip()
+        # Seat outbox lines are PRIVMSG #shop :GIVEUP FR owner/repo#N
+        if line.upper().startswith("PRIVMSG ") and " :" in line:
+            line = line.split(" :", 1)[1].strip()
         up = line.upper()
         if up.startswith("GIVEUP ") and key in line:
             return "giveup"

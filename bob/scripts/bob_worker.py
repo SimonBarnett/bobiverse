@@ -3813,6 +3813,9 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             r"                    $timedOut = $true",
             r"                    $killReason = ('job-ended ' + $stopLine)",
             r"                    try { & taskkill /T /F /PID $proc.Id 2>$null | Out-Null } catch { }",
+            # FR #7739: killing the child is not enough. The chair still holds the
+            # accepted row, so !bored is nak busy until this GIVEUP is drained.
+            r"                    Write-OpencodeJobGiveup $jobKey $killReason",
             r"                    break",
             r"                }",
             r"            }",

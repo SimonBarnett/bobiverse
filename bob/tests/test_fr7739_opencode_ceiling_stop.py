@@ -37,6 +37,8 @@ def test_fr7739_stop_reason_closed_giveup_reassign():
     assert g.opencode_turn_stop_reason("OPEN", f"CANCEL {job}\n", job) == "giveup"
     assert g.opencode_turn_stop_reason("OPEN", "ASSIGN FR SimonBarnett/bobiverse#7726\n", job) == "reassigned"
     assert g.opencode_turn_stop_reason("OPEN", f"ACK {job}\n", job) == ""
+    priv = f"PRIVMSG #flamingo :GIVEUP {job} jeeves\n"
+    assert g.opencode_turn_stop_reason("OPEN", priv, job) == "giveup"
 
 
 def test_fr7739_watchdog_polls_under_60s(tmp_path: Path):
@@ -45,6 +47,7 @@ def test_fr7739_watchdog_polls_under_60s(tmp_path: Path):
     assert "$ocJobPoll % 50" in text or "($ocJobPoll % 50)" in text
     assert "Start-Sleep -Milliseconds 100" in text
     assert "job-ended" in text
+    assert "Write-OpencodeJobGiveup $jobKey $killReason" in text
     assert "ceiling" in text
     assert "opencode_turn_guard.py" in text
     # 50 polls * 100ms = 5s, inside the 60s acceptance window.
