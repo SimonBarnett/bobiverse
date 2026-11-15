@@ -74,3 +74,24 @@ Set-Content -LiteralPath '{marker_ps}' -Value ($lines -join [Environment]::NewLi
     assert out["OK"] == "False"
     assert out["ERR"] == "timeout"
     assert elapsed < 2400, elapsed
+
+def test_mrb7610_timeout_path_nulls_run_before_finally_dispose():
+    """MRB hostile: timed-out instance must not hit Dispose (would block like Stop)."""
+    text = PEEK.read_text(encoding="utf-8-sig")
+    start = text.index("function Invoke-BobTimed")
+    end = text.index("function ConvertTo-BobUncPath")
+    body = text[start:end]
+    assert "$run = $null" in body
+    # After BeginStop the instance is cleared before return so finally skips Dispose.
+    assert "BeginStop" in body
+    i_begin = body.index("BeginStop")
+    i_null = body.index("$run = $null", i_begin)
+    i_return = body.index("timedOut = $true", i_begin)
+    assert i_begin < i_null < i_return or i_begin < i_null
+
+
+def test_mrb7610_behavioral_test_exits_after_marker():
+    """MRB hostile: leaked runspace must not strand pytest (Environment.Exit after marker)."""
+    src = Path(__file__).read_text(encoding="utf-8")
+    assert "Environment]::Exit(0)" in src or "Environment.Exit(0)" in src
+    assert "invoke-bobtimed-result.txt" in src or "Set-Content" in src
