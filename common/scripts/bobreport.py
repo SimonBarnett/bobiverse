@@ -4422,7 +4422,7 @@ DIGEST_FUEL_MAX_LAG_S = DEFAULT_DIGEST_FUEL_DELTA_S
 # FR #7251: SYSTEM ear live-fetches every provider pool on this cadence.
 # Tray poll (60s) / stale (120s) is useless unless this stamp advances.
 EAR_POOL_FETCH_S = 60.0
-EAR_POOL_BACKOFF_CAP_S = 600.0
+EAR_POOL_BACKOFF_CAP_S = 600.0  # retained unused (FR #7471: no stretch past 60s)
 _pool_fetch_state: dict[str, dict] = {}
 
 
@@ -4432,11 +4432,12 @@ def reset_pool_fetch_state() -> None:
 
 
 def pool_fetch_due(name: str, now: float) -> bool:
-    """True when this pool should hit the provider (60s, or after backoff)."""
+    """True when this pool should hit the provider on the fixed 60s cadence (FR #7471).
+
+    Legacy ``backoff_until`` is ignored — provider Retry-After / 429 never stretches
+    the interval past ``EAR_POOL_FETCH_S``.
+    """
     st = _pool_fetch_state.get(name) or {}
-    backoff_until = float(st.get("backoff_until") or 0.0)
-    if now < backoff_until:
-        return False
     last = float(st.get("last_attempt") or 0.0)
     if last <= 0.0:
         return True
@@ -4451,26 +4452,55 @@ def mark_pool_fetch(
     error: str | None = None,
     rate_limited: bool = False,
 ) -> None:
-    """Record a provider attempt. Failures back off; success clears backoff."""
+    """Record a provider attempt on the fixed 60s cadence (FR #7471).
+
+    ``rate_limited`` is retained for diag only — it must never schedule a longer wait.
+    """
     st = dict(_pool_fetch_state.get(name) or {})
     st["last_attempt"] = float(now)
     st["error"] = error
+    st["rate_limited"] = bool(rate_limited)
+    # FR #7471: never stretch past EAR_POOL_FETCH_S (supersedes FR #7298 429 backoff).
+    st["backoff_until"] = 0.0
     if ok:
         st["last_ok"] = float(now)
         st["fail_streak"] = 0
-        st["backoff_until"] = 0.0
     else:
-        streak = int(st.get("fail_streak") or 0) + 1
-        st["fail_streak"] = streak
-        # FR #7298: only HTTP 429 backs off. grok-login-expired and other
-        # errors still retry every EAR_POOL_FETCH_S (60s).
-        if rate_limited:
-            delay = min(
-                EAR_POOL_BACKOFF_CAP_S,
-                EAR_POOL_FETCH_S * (2 ** min(streak, 4)),
-            )
-            st["backoff_until"] = float(now) + delay
+        st["fail_streak"] = int(st.get("fail_streak") or 0) + 1
     _pool_fetch_state[name] = st
+
+
+_auth_watch_state: dict[str, dict] = {}
+
+
+def reset_auth_watch_state() -> None:
+    """Tests: clear auth.json mtime / account watch (FR #7471)."""
+    _auth_watch_state.clear()
+
+
+def auth_watch_force_fetch(path: Path | None) -> bool:
+    """Return True when auth.json mtime changed since last watch (FR #7471).
+
+    First sighting returns True so a cold start still fetches. Missing path → False.
+    Account identity changes typically rewrite the file (new mtime); we key on mtime_ns.
+    """
+    if path is None:
+        return False
+    try:
+        p = Path(path)
+        if not p.is_file():
+            return False
+        st = p.stat()
+        mtime_ns = int(getattr(st, "st_mtime_ns", int(st.st_mtime * 1_000_000_000)))
+        key = str(p.resolve())
+    except OSError:
+        return False
+    prev = _auth_watch_state.get(key)
+    _auth_watch_state[key] = {"mtime_ns": mtime_ns}
+    if prev is None:
+        return True
+    return int(prev.get("mtime_ns") or 0) != mtime_ns
+
 
 
 def iso_utc_from_epoch(now: float) -> str:
@@ -8656,7 +8686,11 @@ def publish_local_peer_fuel(
     # Passive unified.jsonl is never a fresh reading. On failure keep last-good
     # with true age + last_attempt_at + error (do not re-stamp fetched_at).
     try:
-        if force or pool_fetch_due("xai", now_f):
+        auth_path = resolve_grok_auth_path()
+        force_auth = auth_watch_force_fetch(auth_path)
+        if force or force_auth or pool_fetch_due("xai", now_f):
+            if force_auth:
+                _last_fuel_publish_diag["auth_watch"] = "changed"
             clock = datetime.fromtimestamp(now_f, timezone.utc)
             xai = fetch_live_xai_weekly(now=clock)
             acq = _last_xai_acquisition.get("identity")
@@ -8674,8 +8708,14 @@ def publish_local_peer_fuel(
                 xai, err=err, acq=acq, applied=ok
             )
             rate = "429" in str(err or "") or "provider-http-429" in str(err or "")
+            # FR #7471: surface rate-limit as the row error; never apply silent backoff.
+            keep_err = None if ok else str(err or acq or "")
+            if (not ok) and rate and keep_err and "429" not in keep_err:
+                keep_err = f"{keep_err};rate-limited"
+            elif (not ok) and rate and not keep_err:
+                keep_err = "provider-http-429"
             mark_pool_fetch(
-                "xai", now_f, ok=ok, error=None if ok else str(err or acq), rate_limited=rate
+                "xai", now_f, ok=ok, error=keep_err, rate_limited=rate
             )
             if ok:
                 peer = apply_live_xai_weekly_reading(peer, xai, now=clock)
