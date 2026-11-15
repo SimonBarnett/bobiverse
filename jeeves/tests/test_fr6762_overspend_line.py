@@ -32,6 +32,8 @@ def test_fr6762_format_overspend_line():
 
 def _start(tmp_path, monkeypatch, digest_doc):
     monkeypatch.setenv("JEEVES_SETTINGS_HTTP", "1")
+    # FR #7412: front-door default hides LAN-root /pools; hatch for these HTTP tests.
+    monkeypatch.setenv("JEEVES_SETTINGS_ALLOW_LAN_ROOT", "1")
     chair = tmp_path / "chair"
     digest = tmp_path / "digest"
     chair.mkdir(exist_ok=True)
