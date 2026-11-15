@@ -4895,15 +4895,22 @@ class Client:
             elif verb in ("DONE", "NACK", "GIVEUP"):
                 # FR #6857: stray GIVEUP/NACK of an already-DONE row must not idle
                 # a seat that still holds a different accepted job (stray-giveup-done).
+                # FR #7598: missing lookup (accept never stored / row gone) must not
+                # idle the seat either — it may still hold another accepted job.
                 if status == "already-done":
                     info(f"INFO shop-listen stray-giveup-done nick={src}")
+                elif status == "missing":
+                    info(f"INFO shop-listen missing-giveup-no-idle nick={src}")
                 else:
                     self._workers().on_done(src, target)
                     with contextlib.suppress(Exception):
                         gitclaim.clear_idle_after_empty(self.home, src)  # FR #2803
         except Exception as exc:  # noqa: BLE001
             info(f"WARN workers {verb} error {type(exc).__name__}")
-            if verb in ("DONE", "NACK", "GIVEUP") and status != "already-done":
+            if (
+                verb in ("DONE", "NACK", "GIVEUP")
+                and status not in ("already-done", "missing")
+            ):
                 try:
                     self._workers().on_done(src, target)
                 except Exception as clear_exc:  # noqa: BLE001
