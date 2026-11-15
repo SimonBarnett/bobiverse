@@ -431,6 +431,7 @@ routes to bobiverse via the split rule.
 - Ops FRs that require gh secret set of Ergo/IRC passwords: NACK immediately with Si recipe comment; never read password files or secret set from a worker seat.
 - Favicon FR MRB: pin SHA256 parity tray↔www/favicon.ico, every www HTML icon link, Install publish+MIME; site-root /favicon.ico needs no rewrite exclude when rules only match bob/v1 and jeeves paths.
 - When adding seat-marker argv flags to skill-dag MCP launch (--seat-cwd), teach skill_dag_mcp argparse (or parse_known_args) in the same tip; repro with --once status before MRB PASS.
+- Public /jeeves Set-Cookie is Secure; plain-HTTP pytest must use Bearer session_token, not CookieJar
 
 ## Harvest digest (lessons audit 2026-10-06)
 
