@@ -221,7 +221,7 @@ def test_fr6443_http_status_and_restart_endpoints(tmp_path, monkeypatch):
         assert "uptime_s" in body
         assert "queue" in body
 
-        req = urllib.request.Request(base + "/status", headers=hdr, method="GET")
+        req = urllib.request.Request(base + "/jeeves/status", headers=hdr, method="GET")
         with urllib.request.urlopen(req, timeout=5) as resp:
             html = resp.read().decode("utf-8")
         assert "uptime" in html.lower() or "queue" in html.lower()

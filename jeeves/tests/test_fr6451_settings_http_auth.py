@@ -143,7 +143,7 @@ def test_fr6451_login_page_and_html_gate(tmp_path, monkeypatch):
     assert srv is not None
     base = f"http://127.0.0.1:{port}"
     try:
-        with urllib.request.urlopen(base + "/", timeout=5) as resp:
+        with urllib.request.urlopen(base + "/jeeves/", timeout=5) as resp:
             html = resp.read().decode("utf-8")
             assert resp.status == 200
         assert "login" in html.lower()

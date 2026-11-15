@@ -61,7 +61,7 @@ def _login(base: str) -> dict[str, str]:
 def test_fr6755_queue_page_unauth_is_login(tmp_path, monkeypatch):
     srv, base = _start(tmp_path, monkeypatch)
     try:
-        req = urllib.request.Request(base + "/queue", method="GET")
+        req = urllib.request.Request(base + "/jeeves/queue", method="GET")
         with urllib.request.urlopen(req, timeout=5) as resp:
             assert resp.status == 200
             html = resp.read().decode("utf-8")
@@ -76,7 +76,7 @@ def test_fr6755_queue_page_empty_copy(tmp_path, monkeypatch):
     srv, base = _start(tmp_path, monkeypatch, unaccepted=[], accepted=[])
     try:
         hdr = _login(base)
-        req = urllib.request.Request(base + "/queue", headers=hdr, method="GET")
+        req = urllib.request.Request(base + "/jeeves/queue", headers=hdr, method="GET")
         with urllib.request.urlopen(req, timeout=5) as resp:
             assert resp.status == 200
             html = resp.read().decode("utf-8")
@@ -104,7 +104,7 @@ def test_fr6755_queue_page_one_waiting_zero_accepted(tmp_path, monkeypatch):
     )
     try:
         hdr = _login(base)
-        req = urllib.request.Request(base + "/queue", headers=hdr, method="GET")
+        req = urllib.request.Request(base + "/jeeves/queue", headers=hdr, method="GET")
         with urllib.request.urlopen(req, timeout=5) as resp:
             assert resp.status == 200
             html = resp.read().decode("utf-8")
@@ -117,10 +117,10 @@ def test_fr6755_queue_page_one_waiting_zero_accepted(tmp_path, monkeypatch):
         assert "ghs_FAKE" not in html
         assert "MUST" not in html or "QUEUE_PAGE_DROP" not in html
         assert "password=" not in html.lower()
-        req = urllib.request.Request(base + "/settings", headers=hdr, method="GET")
+        req = urllib.request.Request(base + "/jeeves/settings", headers=hdr, method="GET")
         with urllib.request.urlopen(req, timeout=5) as resp:
             settings = resp.read().decode("utf-8")
-        assert 'href="/queue"' in settings
+        assert 'href="/jeeves/queue"' in settings or 'href="/queue"' in settings
     finally:
         http.stop_settings_http(srv)
 
