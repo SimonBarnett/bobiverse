@@ -11,12 +11,17 @@ param(
     [string]$Backend = 'http://127.0.0.1:7700',
     # FR #7414: override www source (tests / alternate trees). Default: jeeves/www/irc-ntsa beside this script.
     [string]$WwwSource = '',
-    [switch]$WhatIf
+    [switch]$WhatIf,
+    # FR #7465: publish the site kit only. Do not call appcmd and do not touch the Jeeves service.
+    [switch]$SiteKit
 )
 
 $ErrorActionPreference = 'Stop'
 $appcmd = Join-Path $env:SystemRoot 'system32\inetsrv\appcmd.exe'
 $hasAppcmd = Test-Path -LiteralPath $appcmd
+if ($SiteKit) {
+    $hasAppcmd = $false
+}
 if (-not $hasAppcmd) {
     Write-Host 'WARN appcmd.exe missing --- write web.config only; skip ARR enable'
 }
@@ -138,6 +143,21 @@ if ($WhatIf) {
     Write-Host "WhatIf would write rewrite rules to $webConfig backend=$Backend"
     Write-Host "WhatIf FR #7414/#7442 www publish from $wwwSrc -> $PhysicalPath : site.css, favicon.ico, downloads/, jeeves/commands/, docs/, index.html"
     return
+}
+
+# FR #7465: backup the published tree before this run so a failed site-kit deploy can roll back.
+$siteKitBak = Join-Path (Split-Path -Parent $PhysicalPath) ((Split-Path -Leaf $PhysicalPath) + '.site-kit-bak')
+if (Test-Path -LiteralPath $siteKitBak) {
+    Remove-Item -LiteralPath $siteKitBak -Recurse -Force
+}
+if (Test-Path -LiteralPath $PhysicalPath) {
+    Copy-Item -LiteralPath $PhysicalPath -Destination $siteKitBak -Recurse -Force
+} else {
+    New-Item -ItemType Directory -Force -Path $siteKitBak | Out-Null
+}
+try {
+if ($env:BOB_WEBHOOKS_FAIL_AFTER_BACKUP -eq '1') {
+    throw 'FR #7465 forced site-kit failure'
 }
 
 if (Test-Path -LiteralPath $webConfig) {
@@ -347,3 +367,13 @@ foreach ($src in $logoCands) {
 }
 
 Write-Host 'INFO Install-BobWebhooks done'
+} catch {
+    if (Test-Path -LiteralPath $siteKitBak) {
+        if (Test-Path -LiteralPath $PhysicalPath) {
+            Remove-Item -LiteralPath $PhysicalPath -Recurse -Force
+        }
+        Copy-Item -LiteralPath $siteKitBak -Destination $PhysicalPath -Recurse -Force
+        Write-Host "WARN FR #7465 rolled back site kit from $siteKitBak : $($_.Exception.Message)"
+    }
+    throw
+}
