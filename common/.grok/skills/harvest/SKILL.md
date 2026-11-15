@@ -472,6 +472,7 @@ routes to bobiverse via the split rule.
 - Windows exit 0xffffffff with empty agent stderr is an external kill. Do not open an intake for it.
 - A daemon health probe that os._exits must stop when the server it watches has shut down, or any test that binds and shuts the listener will kill the suite a minute later with no failure line.
 - Do not type a PowerShell parameter as System.Drawing.Color when callers omit it. Null fails conversion before the function body. Resolve null to the default colour and report only unexpected hover exceptions.
+- A long-lived PowerShell runspace must clear Streams.Error before the next command. Otherwise a non-terminating error from one step fails the next step.
 
 ## Harvest digest (lessons audit 2026-10-06)
 
