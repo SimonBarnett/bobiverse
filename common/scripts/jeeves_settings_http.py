@@ -289,6 +289,7 @@ def public_jeeves_routes() -> list[str]:
         "/jeeves/queue",
         "/jeeves/pools",
         "/jeeves/status",
+        "/jeeves/settings",
         "/jeeves/api/login",
         "/jeeves/api/logout",
         "/jeeves/assets/ntsa-gut-logo.png",
@@ -337,14 +338,13 @@ def ntsa_gut_logo_path() -> Path:
 
 
 def _shell_header(*, current: str, include_nav: bool, prefix: str = "") -> str:
-    """FR #7451: shared site-header chrome (same classes as jeeves/www site.css)."""
+    """FR #7451 site-header chrome; FR #7452 Home landing, Settings at /settings."""
     img = f'<img src="{ui_href(prefix, LOGO_HREF)}" alt="NTSA" width="36" height="36"/>'
     brand = (
         f'<a class="brand" href="/">{img}'
         f'<span class="brand-text"><strong>Jeeves</strong>'
         f'<span>Appliance</span></span></a>'
     )
-    # Public site nav (paths only; no hostnames). Appliance links when signed in.
     site = [
         ("/", "Home", "home"),
         ("/downloads", "Downloads", "downloads"),
@@ -357,10 +357,11 @@ def _shell_header(*, current: str, include_nav: bool, prefix: str = "") -> str:
         parts.append(f'<a href="{href}"{cur}>{label}</a>')
     if include_nav:
         app = [
-            ("/", "Settings", "settings"),
+            ("/", "Home", "home"),
             ("/queue", "Queue", "queue"),
             ("/pools", "Pools", "pools"),
             ("/status", "Status", "status"),
+            ("/settings", "Settings", "settings"),
             ("/logout", "Log out", "logout"),
         ]
         for href, label, key in app:
@@ -685,10 +686,59 @@ document.getElementById('save').onclick = save;
     )
 
 
+def _render_home_html(*, prefix: str = "") -> str:
+    """FR #7452: post-login landing — hero + cards (not Settings)."""
+    cards = [
+        ("Queue", "Unaccepted and accepted shop work.", "/queue", "Open queue"),
+        ("Pools", "Agent pool fuel and overage.", "/pools", "Open pools"),
+        ("Status", "Appliance status and token graph.", "/status", "Open status"),
+        ("Commands", "Public chair command reference.", "/jeeves/commands", "Open commands"),
+        ("Settings", "Appliance schema and secrets (set/unset).", "/settings", "Open settings"),
+    ]
+    parts = []
+    for title, blurb, href, cta in cards:
+        link = href if href.startswith("/jeeves/") else ui_href(prefix, href)
+        parts.append(
+            '<article class="card">'
+            f"<h2>{html.escape(title)}</h2>"
+            f"<p>{html.escape(blurb)}</p>"
+            f'<a class="btn" href="{html.escape(link)}">{html.escape(cta)}</a>'
+            "</article>"
+        )
+    grid = "\n".join(parts)
+    body = (
+        '<section class="hero">'
+        "<h1>Jeeves appliance</h1>"
+        "<p>Queue, pools, status, commands, and settings — "
+        "Settings is never the landing page (FR #7452).</p>"
+        "</section>"
+        f'<div class="grid">{grid}</div>'
+        "<style>"
+        ".hero{margin:1.25rem 0 1.5rem;}"
+        ".hero h1{margin:0 0 .4rem;font-size:1.6rem;}"
+        ".grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(14rem,1fr));gap:1rem;}"
+        ".card{border:1px solid #ddd;border-radius:8px;padding:1rem;background:#fafafa;}"
+        ".card h2{margin:0 0 .4rem;font-size:1.1rem;}"
+        ".card p{color:#444;margin:0 0 .8rem;font-size:.95rem;}"
+        ".btn{display:inline-block;padding:.35rem .7rem;border:1px solid #333;"
+        "border-radius:4px;text-decoration:none;color:#111;background:#fff;}"
+        "</style>"
+    )
+    return _page_document(
+        title="Jeeves home",
+        body=body,
+        current="home",
+        include_nav=True,
+        prefix=prefix,
+    )
+
+
+
 def _render_login_html(error: str = "", *, prefix: str = "") -> str:
     err = (error or "").replace("<", "&lt;")
     note = f'<p class="note" style="color:#a00">{err}</p>' if err else ""
     login_api = ui_href(prefix, "/api/login")
+    # FR #7452: after login land on home (/), not Settings.
     after = ui_href(prefix, "/")
     butler = ui_href(prefix, BUTLER_HREF)
     body = f"""<h1>Jeeves settings login</h1>
@@ -1170,7 +1220,19 @@ class _Handler(BaseHTTPRequestHandler):
                 extra_headers=[("Set-Cookie", self._clear_session_cookie_header(prefix=prefix))],
             )
             return
-        if path in ("/", "/index.html", "/ui"):
+        if path in ("/", "/index.html", "/ui", "/home"):
+            # FR #7452: authenticated landing is Jeeves home (not Settings).
+            gate = auth.require_session(
+                home, client_ip=ip, session_token=tok
+            )
+            if not gate.get("ok"):
+                html = _render_login_html(str(gate.get("error") or "Sign in required"), prefix=prefix)
+                self._send(200, html.encode("utf-8"), "text/html; charset=utf-8")
+                return
+            html = _render_home_html(prefix=prefix)
+            self._send(200, html.encode("utf-8"), "text/html; charset=utf-8")
+            return
+        if path in ("/settings", "/ui/settings"):
             view = auth.api_get_settings_authed(
                 home, client_ip=ip, session_token=tok
             )

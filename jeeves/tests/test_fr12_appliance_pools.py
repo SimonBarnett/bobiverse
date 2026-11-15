@@ -335,7 +335,7 @@ def test_fr6760_http_login_and_authed_pools(tmp_path, monkeypatch):
             api
         )
 
-        with opener.open(base + "/", timeout=5) as resp:
+        with opener.open(base + "/settings", timeout=5) as resp:
             settings = resp.read().decode("utf-8")
         with opener.open(base + "/status", timeout=5) as resp:
             status = resp.read().decode("utf-8")
