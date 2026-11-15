@@ -87,6 +87,25 @@ def test_five_shared_tokens_are_a_twin():
     assert _ps_overlap(FIVE_TOKEN_BLOB, FIVE_TOKEN_LESSON)
 
 
+# priority-mcp#626: download tip and training-explainer tip share the home keywords
+# plus node/test/home, and must not collapse.
+DOWNLOAD_BLOB = (
+    "lesson(harvest-agent-skills): mcp.ntsa.uk Priority Agent download: "
+    "resolve GitHub releases newest-first including prereleases for exact asset "
+    "PriorityAgent.exe; UI label Priority Agent never launcher; show version+sha256; "
+    "pin with node:test\n"
+    "FR #607: mcp.ntsa.uk home Priority Agent download from newest GitHub PriorityAgent.exe"
+)
+TRAINING_LESSON = (
+    "mcp.ntsa.uk Priority Agent home: trained-on catalog-scope prose sits above Skills; "
+    "pin with node:test"
+)
+
+
+def test_priority_agent_home_keywords_are_not_a_twin():
+    assert not _ps_overlap(DOWNLOAD_BLOB, TRAINING_LESSON)
+
+
 def test_skip_line_cites_covering_pr_url():
     text = HARVEST.read_text(encoding="utf-8-sig")
     assert "FR #6741" in text
