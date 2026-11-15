@@ -79,11 +79,11 @@ def test_fr6141_publish_posts_on_remaining_change(tmp_path: Path, monkeypatch):
         "status": "operational",
         "weekly": 80,
         "weekly_known": True,
-        "remaining_pct": 42,
-        "pcent": {"grok-chat": 42, "cursor-models": 10},
+        "pcent": {"grok-build": 80, "grok-chat": 42, "cursor-models": 10},
         "cursor_pools": [
             {"group_id": "grok-chat", "remaining_pct": 42, "machine_id": mid},
         ],
+        "xai_weekly": {"remaining_pct": 80, "fetched_at": "2026-11-07T12:00:00Z"},
         "lastSeen": "2026-11-07T12:00:00Z",
     }
     bobstat.write_peer(home, peer)
@@ -118,11 +118,11 @@ def test_fr6141_publish_posts_on_remaining_change(tmp_path: Path, monkeypatch):
     assert body.get("op") == "merge"
     assert body.get("machine") == mid
     assert body.get("weekly") == 80
-    assert body.get("pcent", {}).get("grok-chat") == 42
-    assert isinstance(body.get("cursor_pools"), list)
-    row0 = body["cursor_pools"][0]
-    rem = row0.get("remaining_pct", row0.get("remaining"))
-    assert rem == 42
+    # FR #7497: legacy Cursor-bridge fields are stripped; xai_weekly is the one pool.
+    assert "grok-chat" not in (body.get("pcent") or {})
+    assert "cursor_pools" not in body
+    assert body.get("xai_weekly", {}).get("remaining_pct") == 80
+    assert body.get("pcent", {}).get("grok-build") == 80
 
     with mock.patch("urllib.request.urlopen", fake_urlopen):
         code2 = bobreport.publish_local_peer_fuel(
@@ -132,8 +132,8 @@ def test_fr6141_publish_posts_on_remaining_change(tmp_path: Path, monkeypatch):
     assert len(posted) == 1
 
     peer2 = dict(peer)
-    peer2["remaining_pct"] = 41
-    peer2["pcent"] = {"grok-chat": 41, "cursor-models": 10}
+    peer2["xai_weekly"] = {"remaining_pct": 79, "fetched_at": "2026-11-07T12:00:01Z"}
+    peer2["pcent"] = {"grok-build": 79, "grok-chat": 41, "cursor-models": 10}
     bobstat.write_peer(home, peer2)
     with mock.patch("urllib.request.urlopen", fake_urlopen):
         code3 = bobreport.publish_local_peer_fuel(
@@ -141,7 +141,8 @@ def test_fr6141_publish_posts_on_remaining_change(tmp_path: Path, monkeypatch):
         )
     assert code3 == 204
     assert len(posted) == 2
-    assert posted[1]["pcent"]["grok-chat"] == 41
+    assert posted[1]["xai_weekly"]["remaining_pct"] == 79
+    assert "grok-chat" not in (posted[1].get("pcent") or {})
 
 
 def test_fr6141_out_of_fuel_worker_post_still_works():
