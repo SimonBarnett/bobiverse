@@ -19,7 +19,7 @@ def test_fr7409_home_has_primary_nav_hrefs():
     assert ">Home<" in text
     assert ">Downloads<" in text
     assert ">Jeeves<" in text
-    assert ">MCP<" in text or ">GitHub<" in text
+    assert ">Priority MCP<" in text
     assert ">GitHub<" in text
 
 
