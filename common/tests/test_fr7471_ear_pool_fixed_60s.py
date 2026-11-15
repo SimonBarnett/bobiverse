@@ -128,3 +128,38 @@ def test_fr7471_publish_runs_check_within_5s_on_auth_change(tmp_path, monkeypatc
     auth.write_text('{"x":1}', encoding="utf-8")
     bobreport.publish_local_peer_fuel(home, mid, force=False, now=t0 + 12.0)
     assert calls["n"] == 2
+
+
+def test_fr7471_auth_watch_uses_xai_weekly_path_under_localsystem(
+    tmp_path: Path, monkeypatch
+):
+    """SYSTEM ear must watch interactive auth.json, not systemprofile home."""
+    interactive = tmp_path / "Users" / "Operator" / ".grok" / "auth.json"
+    interactive.parent.mkdir(parents=True)
+    interactive.write_text("{}", encoding="utf-8")
+    sys_home = tmp_path / "systemprofile"
+    sys_home.mkdir()
+    monkeypatch.setenv("USERPROFILE", str(sys_home))
+    monkeypatch.setenv("USERNAME", "SYSTEM")
+    monkeypatch.delenv("BOB_GROK_AUTH_PATH", raising=False)
+    monkeypatch.delenv("GROK_AUTH_PATH", raising=False)
+    monkeypatch.delenv("GROK_HOME", raising=False)
+    monkeypatch.setattr(bobreport, "_is_local_system_process", lambda: True)
+    monkeypatch.setattr(
+        bobreport, "_interactive_grok_user_home", lambda: interactive.parents[1]
+    )
+    bobreport.reset_auth_watch_state()
+    path, ident = bobreport.xai_weekly_auth_path()
+    assert path == interactive
+    assert ident == "interactive-auth"
+    # resolve_grok_auth_path alone would watch systemprofile — wrong for SYSTEM ear.
+    resolved = bobreport.resolve_grok_auth_path()
+    assert resolved is not None
+    assert resolved != interactive
+    assert bobreport.auth_watch_force_fetch(path) is True
+    assert bobreport.auth_watch_force_fetch(path) is False
+    import time
+
+    time.sleep(0.05)
+    interactive.write_text('{"y":1}', encoding="utf-8")
+    assert bobreport.auth_watch_force_fetch(path) is True

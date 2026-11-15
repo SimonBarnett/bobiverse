@@ -8686,7 +8686,9 @@ def publish_local_peer_fuel(
     # Passive unified.jsonl is never a fresh reading. On failure keep last-good
     # with true age + last_attempt_at + error (do not re-stamp fetched_at).
     try:
-        auth_path = resolve_grok_auth_path()
+        # FR #7471 / MRB #7474: watch the same path live weekly fetch uses
+        # (interactive auth under LocalSystem), not resolve_grok_auth_path alone.
+        auth_path, _auth_ident = xai_weekly_auth_path()
         force_auth = auth_watch_force_fetch(auth_path)
         if force or force_auth or pool_fetch_due("xai", now_f):
             if force_auth:
