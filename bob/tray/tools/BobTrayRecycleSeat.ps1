@@ -120,6 +120,14 @@ function Invoke-BobTrayRecycleSeatQueue {
             if ($Now -gt $expires) { $reason = 'expired' }
             elseif (-not $seatNick) { $reason = 'bad-nick' }
             else {
+                $seatsOffCmd = Get-Command Test-BobTraySeatsOff -ErrorAction SilentlyContinue
+                $seatsOff = $false
+                if ($seatsOffCmd) { $seatsOff = [bool](Test-BobTraySeatsOff) }
+                if ($seatsOff) {
+                    # FR #7669: do not stop a live seat and do not start a replacement.
+                    $reason = 'seats-off'
+                }
+                else {
                 $oldPid = Resolve-BobTrayRecyclePid -MarkerPid ([int](Get-BobTraySeatMarkerPid -Nick $seatNick)) -Nick $seatNick
                 $found = $oldPid -gt 0
                 if (-not $found) {
@@ -173,6 +181,7 @@ function Invoke-BobTrayRecycleSeatQueue {
                             }
                         }
                     }
+                }
                 }
             }
         }

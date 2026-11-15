@@ -2779,6 +2779,19 @@ function Write-BobIrcStatus {
         home_role              = $(if ($weeklyAcq) { [string]$weeklyAcq.home_role } else { $null })
         acquisition            = $(if ($weeklyAcq) { [string]$weeklyAcq.acquisition } else { $null })
         grok_account           = $(if ($weeklyAcq -and $weeklyAcq.account) { [string]$weeklyAcq.account } else { $null })
+        # FR #7669: bridge config.json seat_target (0 = seats off). Read each digest post.
+        seat_target            = $(
+            $bridgeHome = $env:BOB_BRIDGE_HOME
+            if (-not $bridgeHome -or -not $bridgeHome.Trim()) { $bridgeHome = Join-Path $env:USERPROFILE '.grok\bob-bridge' }
+            $cfgPath = Join-Path $bridgeHome 'config.json'
+            if (-not (Test-Path -LiteralPath $cfgPath)) { $null }
+            else {
+                try {
+                    $seatCfg = Get-Content -LiteralPath $cfgPath -Raw -ErrorAction Stop | ConvertFrom-Json
+                    if ($seatCfg.PSObject.Properties.Name -contains 'seat_target') { [int]$seatCfg.seat_target } else { $null }
+                } catch { $null }
+            }
+        )
         xai_weekly_fetched_at  = $(if ($w -and $w.fetched_at) { [string]$w.fetched_at } else { $null })
         xai_weekly_source      = $(if ($w -and $w.source) { [string]$w.source } else { $null })
     }
