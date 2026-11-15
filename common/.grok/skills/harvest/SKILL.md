@@ -467,6 +467,7 @@ routes to bobiverse via the split rule.
 - Chair resync drops a FIX row when the pull is not in the open set, and enqueue_conflict_fix plus enqueue_mrb_fail_fix return skipped when the pull is merged or closed.
 - stall-alerts job must import BobBridge without -Force and use a 90s step budget so a cold Start-Job can finish Get-BobStallAlerts.
 - A per-machine seat pause belongs in bridge config.json seat_target, read on each engine tick. Never use the PowerShell automatic variable HOME for that path.
+- When an assigned FR is already closed as a receipt of an earlier fix, NACK with the covering issue and PR and do not open another PR.
 
 ## Harvest digest (lessons audit 2026-10-06)
 
