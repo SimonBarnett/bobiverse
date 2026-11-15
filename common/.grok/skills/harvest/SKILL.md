@@ -454,6 +454,7 @@ routes to bobiverse via the split rule.
 - Tray engine UI-thread hangs: stamp engine.alive before blocking poll steps and on the ThreadPool tray.alive timer; run Get-BobTrayHover/snapshot under a job timeout and log step names to logs/tray-engine-cycle.log.
 - Fleet-pool-stale: evaluate shared last_ok age/recovery before FR #7552 auth-skip so digest no_token noise cannot override a fresh fetcher last_ok.
 - Install-BobEarExe: stage exe + companions + provenance before --help smoke; refuse smoke if a planned companion is missing; keep .bak rollback for companions
+- MRB tray stale-marker tips: assert exact string order (% left [stale] then account then reset) and that OpenCode stale windows keep remaining_pct+reset_label; header age must come from digest_ts not tray-status mtime.
 
 ## Harvest digest (lessons audit 2026-10-06)
 
