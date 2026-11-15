@@ -256,7 +256,11 @@ def lesson_owner_repo(
         return LessonOwner("SimonBarnett/a-search", missing=False)
     if re.search(r"(?i)\btrutex\b", low):
         return LessonOwner("SimonBarnett/trutex", missing=False)
-    if re.search(r"(?i)agentic_fomprep|priority-mcp|priority\s+catalog|cat-t\d+", low):
+    # FR #7747: a lesson that names agentic_fomprep still owns that repo.
+    # FR #7121: a bare priority catalog / cat-t cue stays priority-mcp.
+    if re.search(r"(?i)agentic_fomprep", low):
+        return LessonOwner("SimonBarnett/agentic_fomprep", missing=False)
+    if re.search(r"(?i)priority-mcp|priority\s+catalog|cat-t\d+", low):
         return LessonOwner("SimonBarnett/priority-mcp", missing=False)
 
     # Bob fleet tooling stays in bobiverse.
