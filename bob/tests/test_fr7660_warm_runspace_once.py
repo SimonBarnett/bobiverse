@@ -44,3 +44,31 @@ def test_fr7660_module_imports_once_and_second_step_is_fast(tmp_path: Path):
     assert n1.strip() == "1"
     assert n2.strip() == "1"
     assert int(sec) < 45
+
+
+def test_fr7697_prior_error_does_not_fail_the_next_step(tmp_path: Path):
+    script = tmp_path / "run.ps1"
+    script.write_text(
+        "\n".join(
+            [
+                f". '{HELPER}'",
+                f"$bad = Invoke-BobTrayWarmEngineStep -Name 'bad' -Root '{tmp_path}' -TimeoutSec 20 -Body {{ Write-Error 'boom' }}",
+                f"$good = Invoke-BobTrayWarmEngineStep -Name 'good' -Root '{tmp_path}' -TimeoutSec 20 -Body {{ 'second-ok' }}",
+                "Write-Output ($bad.ok.ToString() + '|' + $good.ok.ToString() + '|' + [string]$good.output)",
+            ]
+        ),
+        encoding="ascii",
+    )
+    r = subprocess.run(
+        ["powershell", "-NoProfile", "-File", str(script)],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+    assert r.returncode == 0, r.stdout + r.stderr
+    line = [ln for ln in r.stdout.splitlines() if "|" in ln][-1]
+    bad, good, text = line.split("|", 2)
+    assert bad == "False"
+    assert good == "True"
+    assert "second-ok" in text

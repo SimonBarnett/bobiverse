@@ -47,6 +47,11 @@ function Invoke-BobTrayWarmEngineStep {
     $sw = [System.Diagnostics.Stopwatch]::StartNew()
     $ps = Get-BobTrayWarmEngineShell -Root $root
     $ps.Commands.Clear()
+    # FR #7697: a reused runspace keeps the last step's error records. A later
+    # step then fails with that old message even when its own command succeeded.
+    foreach ($streamName in @('Error', 'Warning', 'Information', 'Verbose', 'Debug')) {
+        try { $ps.Streams.$streamName.Clear() } catch { }
+    }
     $sb = [scriptblock]::Create($Body.ToString())
     [void]$ps.AddScript($sb)
     foreach ($a in @($ArgumentList)) { [void]$ps.AddArgument($a) }
