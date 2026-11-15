@@ -20,6 +20,7 @@ def _free_port() -> int:
 
 def _start(tmp_path, monkeypatch):
     monkeypatch.setenv("JEEVES_SETTINGS_HTTP", "1")
+    monkeypatch.setenv("JEEVES_SETTINGS_ALLOW_LAN_ROOT", "1")
     chair = tmp_path / "chair"
     digest = tmp_path / "digest"
     chair.mkdir()

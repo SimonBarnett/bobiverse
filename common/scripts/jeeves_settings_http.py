@@ -337,30 +337,99 @@ def ntsa_gut_logo_path() -> Path:
 
 
 def _shell_header(*, current: str, include_nav: bool, prefix: str = "") -> str:
-    img = f'<img src="{ui_href(prefix, LOGO_HREF)}" alt="NTSA"/>'
-    bob = f'<a href="{BOB_HOME_HREF}">Bob</a>'
-    if not include_nav:
-        return f"<header>{img}<strong>Jeeves</strong>{bob}</header>"
-    links = [
-        ("/", "Settings", "settings"),
-        ("/queue", "Queue", "queue"),
-        ("/pools", "Pools", "pools"),
-        ("/status", "Status", "status"),
-        ("/logout", "Log out", "logout"),
+    """FR #7451: shared site-header chrome (same classes as jeeves/www site.css)."""
+    img = f'<img src="{ui_href(prefix, LOGO_HREF)}" alt="NTSA" width="36" height="36"/>'
+    brand = (
+        f'<a class="brand" href="/">{img}'
+        f'<span class="brand-text"><strong>Jeeves</strong>'
+        f'<span>Appliance</span></span></a>'
+    )
+    # Public site nav (paths only; no hostnames). Appliance links when signed in.
+    site = [
+        ("/", "Home", "home"),
+        ("/downloads", "Downloads", "downloads"),
+        ("/jeeves/commands", "Commands", "commands"),
+        ("/jeeves", "Jeeves", "jeeves"),
     ]
-    parts = []
-    for href, label, key in links:
+    parts: list[str] = []
+    for href, label, key in site:
         cur = ' aria-current="page"' if current == key else ""
-        parts.append(f'<a href="{ui_href(prefix, href)}"{cur}>{label}</a>')
-    nav = "<nav>" + " · ".join(parts) + " · " + bob + "</nav>"
-    return f"<header>{img}<strong>Jeeves</strong>{nav}</header>"
+        parts.append(f'<a href="{href}"{cur}>{label}</a>')
+    if include_nav:
+        app = [
+            ("/", "Settings", "settings"),
+            ("/queue", "Queue", "queue"),
+            ("/pools", "Pools", "pools"),
+            ("/status", "Status", "status"),
+            ("/logout", "Log out", "logout"),
+        ]
+        for href, label, key in app:
+            cur = ' aria-current="page"' if current == key else ""
+            parts.append(f'<a href="{ui_href(prefix, href)}"{cur}>{label}</a>')
+    else:
+        parts.append(f'<a href="{BOB_HOME_HREF}">Bob</a>')
+    nav = '<nav class="nav" aria-label="Primary">' + "".join(parts) + "</nav>"
+    return f'<header class="site-header">{brand}{nav}</header>'
+
+
+def _shell_footer() -> str:
+    """FR #7451: shared site-footer (one stylesheet world; no forked CSS)."""
+    return (
+        '<footer class="site-footer">'
+        "<span>Bobiverse · public docs only · no secrets</span>"
+        "<span>"
+        '<a href="/">Home</a> · '
+        '<a href="/downloads">Downloads</a> · '
+        '<a href="/jeeves/commands">Commands</a>'
+        "</span>"
+        "</footer>"
+    )
 
 
 def _shell_css() -> str:
+    # Page-local extras only; chrome comes from /site.css (FR #7451).
     return (
-        "header{display:flex;align-items:center;gap:1rem;margin-bottom:1rem;}"
-        "header img{height:36px;width:36px;}"
-        "nav{margin-left:auto;}"
+        ".appliance-main{margin-top:1rem;}"
+        "table{border-collapse:collapse;width:100%;}"
+        "th,td{border:1px solid #ccc;padding:.4rem;text-align:left;vertical-align:top;}"
+        "th{background:#f4f4f4;}"
+        "code{font-size:.9em;}"
+        ".setting-default{color:#555;font-family:ui-monospace,monospace;font-size:.9em;}"
+        ".note,.group-desc,.empty{color:var(--ink-soft,#444);}"
+        "button{margin-top:1rem;padding:.4rem .8rem;}"
+        "label{display:block;margin:.6rem 0 .2rem;}"
+        "input{width:100%;max-width:28rem;padding:.4rem;box-sizing:border-box;}"
+        ".reset{color:#456;margin-left:.5rem;}"
+        ".copilot{font-weight:600;margin-top:.8rem;}"
+        ".overage{margin-top:1rem;}"
+        ".err{border:1px solid #a33;padding:1rem;max-width:28rem;}"
+        "svg{background:#fff;border:1px solid #ccd;}"
+    )
+
+
+def _page_document(
+    *,
+    title: str,
+    body: str,
+    current: str,
+    include_nav: bool,
+    prefix: str = "",
+) -> str:
+    """Wrap appliance body in shared site shell + single /site.css link."""
+    header = _shell_header(current=current, include_nav=include_nav, prefix=prefix)
+    footer = _shell_footer()
+    return (
+        "<!DOCTYPE html>\n"
+        '<html lang="en"><head><meta charset="utf-8"/>\n'
+        f"<title>{title}</title>\n"
+        '<link rel="icon" href="/favicon.ico" type="image/x-icon"/>\n'
+        '<link rel="stylesheet" href="/site.css"/>\n'
+        f"<style>\n{_shell_css()}\n</style></head><body>\n"
+        '<div class="shell">\n'
+        f"{header}\n"
+        f'<div class="appliance-main">\n{body}\n</div>\n'
+        f"{footer}\n"
+        "</div>\n</body></html>\n"
     )
 
 
@@ -573,24 +642,7 @@ def _render_html(settings: list[dict[str, Any]], *, prefix: str = "") -> str:
             f"<table>{thead}<tbody>\n{rows}\n</tbody></table></section>"
         )
     body = "\n".join(sections)
-    header = _shell_header(current="settings", include_nav=True, prefix=prefix)
-    return f"""<!DOCTYPE html>
-<html lang="en"><head><meta charset="utf-8"/>
-<title>Jeeves appliance settings</title>
-<style>
-body{{font-family:system-ui,sans-serif;margin:1.5rem;}}
-{_shell_css()}
-section{{margin-bottom:1.5rem;}}
-table{{border-collapse:collapse;width:100%;}}
-th,td{{border:1px solid #ccc;padding:.4rem;text-align:left;vertical-align:top;}}
-th{{background:#f4f4f4;}}
-code{{font-size:.9em;}}
-.setting-default{{color:#555;font-family:ui-monospace,monospace;font-size:.9em;}}
-.note,.group-desc{{color:#444;margin-bottom:1rem;}}
-button{{margin-top:1rem;padding:.4rem .8rem;}}
-</style></head><body>
-{header}
-<h1>Jeeves appliance settings</h1>
+    inner = f"""<h1>Jeeves appliance settings</h1>
 <p class="note">Jeeves settings (FR #6440 / #6451 / #7274). Secrets are write-only (set/unset).
 Session cookie required. Public mount is https://bob.ntsa.uk/jeeves (same HTML on the LAN root).
 Defaults (FR #6751) are shown for non-secret keys; the Value control keeps the current value.</p>
@@ -623,30 +675,23 @@ async function save() {{
 }}
 document.getElementById('save').onclick = save;
 </script>
-</body></html>
 """
+    return _page_document(
+        title="Jeeves appliance settings",
+        body=inner,
+        current="settings",
+        include_nav=True,
+        prefix=prefix,
+    )
 
 
 def _render_login_html(error: str = "", *, prefix: str = "") -> str:
     err = (error or "").replace("<", "&lt;")
     note = f'<p class="note" style="color:#a00">{err}</p>' if err else ""
-    header = _shell_header(current="login", include_nav=False, prefix=prefix)
     login_api = ui_href(prefix, "/api/login")
     after = ui_href(prefix, "/")
     butler = ui_href(prefix, BUTLER_HREF)
-    return f"""<!DOCTYPE html>
-<html lang="en"><head><meta charset="utf-8"/>
-<title>Jeeves settings login</title>
-<style>
-body{{font-family:system-ui,sans-serif;margin:1.5rem;max-width:28rem;}}
-{_shell_css()}
-label{{display:block;margin:.6rem 0 .2rem;}}
-input{{width:100%;padding:.4rem;box-sizing:border-box;}}
-button{{margin-top:1rem;padding:.4rem .8rem;}}
-.note{{color:#444;}}
-</style></head><body>
-{header}
-<h1>Jeeves settings login</h1>
+    body = f"""<h1>Jeeves settings login</h1>
 <img src="{butler}" alt="Jeeves the butler" width="96" height="96"/>
 <p class="note">Existing graphic jeeves/assets/jeeves-butler.ico (FR #6816). Passwords are never logged.</p>
 {note}
@@ -675,9 +720,15 @@ document.getElementById('f').onsubmit = async (ev) => {{
   if (j.ok) {{ location.href = '{after}'; return; }}
   status.textContent = j.error || ('HTTP ' + r.status);
 }};
-</script>
-</body></html>
-"""
+</script>"""
+    return _page_document(
+        title="Jeeves settings login",
+        body=body,
+        current="login",
+        include_nav=False,
+        prefix=prefix,
+    )
+
 
 
 def _queue_row_public(row: Any) -> dict[str, Any]:
@@ -765,19 +816,7 @@ def _render_queue_html(
 ) -> str:
     waiting = _render_queue_list(unaccepted, "Nothing is waiting.")
     progress = _render_queue_list(accepted, "Nothing is in progress.")
-    header = _shell_header(current="queue", include_nav=True, prefix=prefix)
-    return f"""<!DOCTYPE html>
-<html lang="en"><head><meta charset="utf-8"/>
-<title>Jeeves queue</title>
-<style>
-body{{font-family:system-ui,sans-serif;margin:1.5rem;}}
-{_shell_css()}
-section{{margin-bottom:1.2rem;}}
-.empty{{color:#444;}}
-ul{{padding-left:1.2rem;}}
-</style></head><body>
-{header}
-<h1>Queue</h1>
+    inner = f"""<h1>Queue</h1>
 <section>
 <h2>Waiting</h2>
 {waiting}
@@ -786,8 +825,14 @@ ul{{padding-left:1.2rem;}}
 <h2>In progress</h2>
 {progress}
 </section>
-</body></html>
 """
+    return _page_document(
+        title="Jeeves queue",
+        body=inner,
+        current="queue",
+        include_nav=True,
+        prefix=prefix,
+    )
 
 
 def format_copilot_pool_line(pool: Any) -> str:
@@ -857,7 +902,6 @@ def _render_pools_html(doc: Any, *, prefix: str = "") -> str:
     else:
         view = {"machines": []}
         overage = doc
-    header = _shell_header(current="pools", include_nav=True, prefix=prefix)
     machines = view.get("machines") if isinstance(view.get("machines"), list) else []
     if not machines:
         body = '<p class="empty">No pool readings.</p>'
@@ -882,19 +926,19 @@ def _render_pools_html(doc: Any, *, prefix: str = "") -> str:
     overspend = (
         f'<p class="overage">{html.escape(line)}</p>' if line else ""
     )
-    return f"""<!DOCTYPE html>
-<html lang="en"><head><meta charset="utf-8"/>
-<title>Jeeves pools</title>
-<style>body{{font-family:system-ui,sans-serif;margin:1.5rem;}} {_shell_css()} code{{font-size:.9em;}} .empty{{color:#456;}} .reset{{color:#456;margin-left:.5rem;}} .copilot{{font-weight:600;margin-top:.8rem;}} .overage{{margin-top:1rem;}}</style>
-</head><body>
-{header}
-<h1>Jeeves pools</h1>
+    inner = f"""<h1>Jeeves pools</h1>
 <p class="note">Grok remaining by machine (FR #6760) plus Copilot (FR #6761).</p>
 {body}
 <p class="copilot">{copilot_line}</p>
 {overspend}
-</body></html>
 """
+    return _page_document(
+        title="Jeeves pools",
+        body=inner,
+        current="pools",
+        include_nav=True,
+        prefix=prefix,
+    )
 
 
 def _render_status_html(
@@ -908,15 +952,8 @@ def _render_status_html(
     seats = status.get("seats") if isinstance(status.get("seats"), dict) else {}
     fuel = status.get("fuel") if isinstance(status.get("fuel"), dict) else {}
     pending = "yes" if status.get("restart_pending") else "no"
-    header = _shell_header(current="status", include_nav=True, prefix=prefix)
     graph_html = _render_token_graph_html(token_graph)
-    return f"""<!DOCTYPE html>
-<html lang="en"><head><meta charset="utf-8"/>
-<title>Jeeves status</title>
-<style>body{{font-family:system-ui,sans-serif;margin:1.5rem;}} {_shell_css()} code{{font-size:.9em;}} .err{{border:1px solid #a33;padding:1rem;max-width:28rem;}} .empty{{border:1px dashed #889;padding:1rem;max-width:28rem;}} svg{{background:#fff;border:1px solid #ccd;}}</style>
-</head><body>
-{header}
-<h1>Jeeves status</h1>
+    inner = f"""<h1>Jeeves status</h1>
 <p class="note">Read-only (FR #6443 / #6784). No secrets.</p>
 {graph_html}
 <ul>
@@ -945,8 +982,14 @@ document.getElementById('restart').onclick = async () => {{
   el.textContent = JSON.stringify(j);
 }};
 </script>
-</body></html>
 """
+    return _page_document(
+        title="Jeeves status",
+        body=inner,
+        current="status",
+        include_nav=True,
+        prefix=prefix,
+    )
 
 
 class SettingsHTTPServer(ThreadingHTTPServer):

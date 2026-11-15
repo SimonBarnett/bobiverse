@@ -29,6 +29,7 @@ def test_fr6440_disabled_no_listener(monkeypatch):
 
 def test_fr6440_refuse_non_lan_bind(monkeypatch):
     monkeypatch.setenv("JEEVES_SETTINGS_HTTP", "1")
+    monkeypatch.setenv("JEEVES_SETTINGS_ALLOW_LAN_ROOT", "1")
     err = http.validate_bind_host("8.8.8.8")
     assert err is not None
     assert "LAN" in err or "RFC" in err or "forbidden" in err.lower()
@@ -39,6 +40,7 @@ def test_fr6440_refuse_non_lan_bind(monkeypatch):
 def test_fr6440_non_lan_connect_refused(tmp_path, monkeypatch):
     """verify_request rejects non-RFC1918 client addresses at the socket layer."""
     monkeypatch.setenv("JEEVES_SETTINGS_HTTP", "1")
+    monkeypatch.setenv("JEEVES_SETTINGS_ALLOW_LAN_ROOT", "1")
     home = tmp_path / "home"
     home.mkdir()
     port = _free_port()
@@ -68,6 +70,7 @@ def _login_bearer(base: str, *, username: str = "ApplianceAdmin", password: str 
 
 def test_fr6440_get_put_round_trip(tmp_path, monkeypatch):
     monkeypatch.setenv("JEEVES_SETTINGS_HTTP", "1")
+    monkeypatch.setenv("JEEVES_SETTINGS_ALLOW_LAN_ROOT", "1")
     home = tmp_path / "home"
     home.mkdir()
     port = _free_port()
@@ -116,6 +119,7 @@ def test_fr6440_get_put_round_trip(tmp_path, monkeypatch):
 
 def test_fr6440_put_invalid_rejected(tmp_path, monkeypatch):
     monkeypatch.setenv("JEEVES_SETTINGS_HTTP", "1")
+    monkeypatch.setenv("JEEVES_SETTINGS_ALLOW_LAN_ROOT", "1")
     home = tmp_path / "home"
     home.mkdir()
     port = _free_port()
