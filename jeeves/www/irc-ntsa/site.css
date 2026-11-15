@@ -189,6 +189,25 @@ a:focus-visible, button:focus-visible {
 .banner.empty { border-color: #e0d2a8; background: #fff8e8; }
 .banner.error { border-color: #e2b4b4; background: #fff1f1; color: #5c1d1d; }
 
+/* FR #7456: airc PowerShell install snippet on /downloads */
+.install-block {
+  margin-top: 0.35rem; display: flex; flex-direction: column; gap: 0.45rem;
+}
+.install-block-head {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 0.45rem 0.75rem;
+}
+.install-block-head .install-note {
+  color: var(--ink-soft); font-size: 0.8rem; flex: 1;
+}
+.install-snippet {
+  margin: 0; padding: 0.75rem 0.85rem; overflow: auto;
+  background: #1a1405; color: #f4efe6; border-radius: 10px;
+  border: 1px solid rgba(201, 162, 39, 0.35);
+  font-family: var(--mono); font-size: 0.78rem; line-height: 1.45;
+  white-space: pre-wrap;
+}
+.install-snippet code { font-family: inherit; background: transparent; color: inherit; padding: 0; }
+
 .cmd-table { width: 100%; border-collapse: collapse; background: var(--paper-card);
   border-radius: var(--radius); overflow: hidden; border: 1px solid var(--line); }
 .cmd-table th, .cmd-table td { text-align: left; padding: 0.7rem 0.85rem; border-bottom: 1px solid var(--line); vertical-align: top; }

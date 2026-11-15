@@ -52,6 +52,27 @@
         <a class="btn btn-gold" data-role="msi" href="https://github.com/SimonBarnett/bobiverse/releases/latest/download/airc-1.0.7.msi">Download airc</a>
         <a class="btn btn-ghost" href="https://github.com/SimonBarnett/bobiverse/releases/latest/download/airc-1.0.7.msi.sha256">sha256</a>
         <a class="btn btn-ghost" href="https://github.com/SimonBarnett/bobiverse/releases/latest">Release notes</a>
+        <!-- FR #7456: copy-paste PowerShell install (elevated); MSI URL tracks data-role=msi. -->
+        <div class="install-block" data-role="airc-install">
+          <div class="install-block-head">
+            <strong>PowerShell install</strong>
+            <span class="install-note">Elevated prompt · no passwords in this snippet</span>
+            <button type="button" class="btn btn-ghost" data-role="copy-install">Copy</button>
+          </div>
+          <pre class="install-snippet" data-role="install-snippet"><code># Run from an elevated PowerShell prompt.
+$msiUrl = 'https://github.com/SimonBarnett/bobiverse/releases/latest/download/airc-1.0.7.msi'
+$msi = Join-Path $env:TEMP 'airc-install.msi'
+Invoke-WebRequest -Uri $msiUrl -OutFile $msi
+msiexec /i $msi AIRC_PROFILE=client /qn
+Get-Service Airc</code></pre>
+        </div>
+      </article>
+      <article class="card" data-product="priority-agent">
+        <span class="pill">Priority Agent</span>
+        <h3>Priority Agent</h3>
+        <p>Latest full GitHub release from SimonBarnett/priority-mcp (title match only).</p>
+        <p data-role="version">Resolving latest release...</p>
+        <div data-role="assets"></div>
       </article>
     </div>
 
@@ -62,13 +83,46 @@
     </p>
 
     <footer class="site-footer">
-      <span><a href="/">← Home</a> · FR #7410</span>
+      <span><a href="/">← Home</a> · FR #7410 · FR #7455</span>
       <span><a href="https://github.com/SimonBarnett/bobiverse/releases">All releases</a></span>
     </footer>
   </div>
   <script>
   /* Optional live refresh: keep stamped hrefs if API blocked. */
   (function () {
+    function syncAircInstallSnippet() {
+      var card = document.querySelector('[data-product="airc"]');
+      if (!card) return;
+      var a = card.querySelector('[data-role="msi"]');
+      var pre = card.querySelector('[data-role="install-snippet"] code') ||
+                card.querySelector('[data-role="install-snippet"]');
+      if (!a || !pre) return;
+      var url = a.getAttribute('href') || '';
+      var text = pre.textContent || '';
+      var next = text.replace(/\$msiUrl\s*=\s*'[^']*'/, "$msiUrl = '" + url + "'");
+      if (next !== text) pre.textContent = next;
+    }
+    function wireCopy() {
+      var card = document.querySelector('[data-product="airc"]');
+      if (!card) return;
+      var btn = card.querySelector('[data-role="copy-install"]');
+      var pre = card.querySelector('[data-role="install-snippet"]');
+      if (!btn || !pre) return;
+      btn.addEventListener('click', function () {
+        var text = pre.textContent || '';
+        var done = function () {
+          btn.textContent = 'Copied';
+          setTimeout(function () { btn.textContent = 'Copy'; }, 1500);
+        };
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(text).then(done).catch(function () {
+            /* ignore */
+          });
+        }
+      });
+    }
+    syncAircInstallSnippet();
+    wireCopy();
     var products = ['bob', 'jeeves', 'airc'];
     fetch('https://api.github.com/repos/SimonBarnett/bobiverse/releases/latest', {
       headers: { 'Accept': 'application/vnd.github+json' }
@@ -106,8 +160,10 @@
             if (existing) existing.href = base + sha;
           }
         });
+        syncAircInstallSnippet();
       }).catch(function () { /* keep stamped links */ });
   })();
   </script>
+  <script src="/downloads/priority-agent.js"></script>
 </body>
 </html>
