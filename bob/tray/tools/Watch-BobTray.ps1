@@ -525,10 +525,11 @@ function Invoke-BobTrayEngineSelfTest {
     [void](Invoke-BobTrayEngineStep -Name 'alpha' -Root $root -TimeoutSec 5 -Body { Start-Sleep -Milliseconds 20 })
     [void](Invoke-BobTrayEngineStep -Name 'bravo' -Root $root -TimeoutSec 5 -Body { Start-Sleep -Milliseconds 20 })
     Write-BobTrayEngineCycleLog -Root $root -Message 'cycle-end'
-    $log1 = Get-Content -LiteralPath (Get-BobTrayEngineCycleLogPath -Root $root) -Encoding ascii
+    # FIX #7608: wrap Get-Content in @() so a 1-line scalar cannot -join by character
+    $log1 = @(Get-Content -LiteralPath (Get-BobTrayEngineCycleLogPath -Root $root) -Encoding ascii -ErrorAction Stop)
     $joined = ($log1 -join "`n")
     if ($joined -notmatch 'step-start name=alpha' -or $joined -notmatch 'step-end name=alpha' -or $joined -notmatch 'step-start name=bravo') {
-        throw 'normal cycle log order failed'
+        throw ('normal cycle log order failed log={0}' -f $joined)
     }
     $alive1 = Get-Item -LiteralPath (Join-Path $script:startWorkerDir 'engine.alive')
     $t1 = $alive1.LastWriteTimeUtc
