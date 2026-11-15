@@ -747,6 +747,42 @@ def maybe_report_fleet_pool_staleness(
         except (TypeError, ValueError):
             issue_n = None
         open_flag = bool(st.get("stale_open"))
+        # FR #7522: 0% with known future reset is not a stale exception.
+        rem = row.get("remaining") if isinstance(row, dict) else None
+        reset = None
+        if isinstance(row, dict):
+            reset = row.get("reset_at") or row.get("period_end")
+        try:
+            import pool_reading_stale as prs
+
+            reportable = prs.should_report_pool_stale_exception(
+                fetched_at=fetched_at,
+                remaining_pct=rem,
+                reset_at=reset,
+                period_end=reset,
+                now=now_f,
+                stale_after_s=float(FLEET_POOL_STALE_S),
+            )
+        except Exception:
+            reportable = True
+        if not reportable:
+            if open_flag and issue_n:
+                body = (
+                    f"<!-- {fleet_pool_stale_sig(pool)} -->\n"
+                    f"Fleet pool `{pool}` held: exhausted until known reset "
+                    f"(remaining=`{_safe_text(rem)}` reset_at=`{_safe_text(reset or '')}`).\n"
+                    "Leaving issue open (no auto-close; FR #7522).\n"
+                )
+                comment_fleet_pool_stale_issue(number=issue_n, body=body, repo=repo)
+                st["stale_open"] = False
+                st["stale_recovered"] = True
+                st["stale_recovered_at"] = float(now_f)
+                state[pool] = st
+                changed = True
+                out[pool] = {"action": "held-exhausted", "number": issue_n}
+            else:
+                out[pool] = {"action": "ok"}
+            continue
         if age is None or age < float(FLEET_POOL_STALE_S):
             # recovery path
             if open_flag and issue_n:

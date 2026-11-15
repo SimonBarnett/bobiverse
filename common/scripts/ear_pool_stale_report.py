@@ -115,11 +115,38 @@ def reading_is_stale(
     tracking_since: float | None = None,
     now: float,
     max_age_s: float = EAR_XAI_POOL_STALE_AFTER_S,
+    remaining_pct: object = None,
+    period_end: object = None,
+    reset_at: object = None,
 ) -> bool:
-    """True when no real live fetch is younger than ``max_age_s``."""
-    fa = _parse_iso_epoch(fetched_at)
-    if fa is not None:
-        return (float(now) - fa) > float(max_age_s)
+    """True when the pool should raise a stale exception.
+
+    FR #7522: 0% with a known future reset/period_end is never stale.
+    """
+    try:
+        import pool_reading_stale as prs
+
+        fa: object = fetched_at
+        if fa in (None, ""):
+            if last_ok_epoch is not None:
+                fa = float(last_ok_epoch)
+            elif tracking_since is not None:
+                fa = float(tracking_since)
+        return bool(
+            prs.should_report_pool_stale_exception(
+                fetched_at=fa,
+                remaining_pct=remaining_pct,
+                period_end=period_end,
+                reset_at=reset_at,
+                now=float(now),
+                stale_after_s=float(max_age_s),
+            )
+        )
+    except Exception:
+        pass
+    fa_epoch = _parse_iso_epoch(fetched_at)
+    if fa_epoch is not None:
+        return (float(now) - fa_epoch) > float(max_age_s)
     if last_ok_epoch is not None:
         try:
             return (float(now) - float(last_ok_epoch)) > float(max_age_s)
@@ -192,6 +219,9 @@ def evaluate_and_report_xai_pool_stale(
     version: str | None = None,
     pool: str = DEFAULT_POOL,
     last_ok_epoch: float | None = None,
+    remaining_pct: object = None,
+    period_end: object = None,
+    reset_at: object = None,
     filer_post: Callable[..., dict[str, Any]] | None = None,
     comment_fn: Callable[[str, int, str], bool] | None = None,
     comment_min_s: float | None = None,
@@ -222,6 +252,9 @@ def evaluate_and_report_xai_pool_stale(
             tracking_since=float(tracking_since),
             now=now_f,
             max_age_s=max_age_s,
+            remaining_pct=remaining_pct,
+            period_end=period_end,
+            reset_at=reset_at,
         )
 
         def _log(msg: str) -> None:
