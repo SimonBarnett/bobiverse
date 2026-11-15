@@ -138,7 +138,14 @@ def assert_ear_runtime_scripts(scripts: Path, provenance: Path) -> None:
 
 
 def enforce_ear_runtime_scripts(scripts: Path, provenance: Path) -> None:
-    """Report then exit when the runtime scripts do not match the manifest."""
+    """Report then exit when the runtime scripts do not match the manifest.
+
+    FR #7548 / MRB #7554: skip when provenance is absent so Build-BobEar smoke
+    (fresh dist\\bob-ear.exe before the artifact stages provenance.txt) can
+    probe --help. Installed ears always ship provenance beside the scripts.
+    """
+    if not Path(provenance).is_file():
+        return
     try:
         assert_ear_runtime_scripts(scripts, provenance)
     except RuntimeError as exc:

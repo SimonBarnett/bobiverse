@@ -55,6 +55,13 @@ def test_fr7548_hash_mismatch_and_missing_are_refused(tmp_path: Path):
 def test_fr7548_enforce_reports_and_exits(tmp_path: Path, monkeypatch):
     scripts = tmp_path / "scripts"
     scripts.mkdir()
+    # Provenance present but scripts missing -> refuse (install layout).
+    prov = scripts / "provenance.txt"
+    lines = [
+        f"{irc_agent.runtime_script_provenance_key(n)}=deadbeef"
+        for n in irc_agent.EAR_RUNTIME_DISK_SCRIPTS
+    ]
+    prov.write_text("\n".join(lines) + "\n", encoding="utf-8")
     seen: list[str] = []
 
     def _report(exe, exc_type, exc_value, tb, **kwargs):
@@ -66,8 +73,23 @@ def test_fr7548_enforce_reports_and_exits(tmp_path: Path, monkeypatch):
 
     monkeypatch.setattr(crash_report, "report_exception", _report)
     try:
-        irc_agent.enforce_ear_runtime_scripts(scripts, scripts / "provenance.txt")
+        irc_agent.enforce_ear_runtime_scripts(scripts, prov)
         raise AssertionError("must exit")
     except SystemExit as exc:
         assert exc.code == 2
     assert seen == ["bob-ear"]
+
+
+def test_fr7548_enforce_skips_when_provenance_absent(tmp_path: Path, monkeypatch):
+    """Build smoke has no provenance beside dist\\bob-ear.exe yet (MRB #7554)."""
+    scripts = tmp_path / "scripts"
+    scripts.mkdir()
+
+    def _boom(*_a, **_k):
+        raise AssertionError("must not report when provenance missing")
+
+    import crash_report
+
+    monkeypatch.setattr(crash_report, "report_exception", _boom)
+    # Must return without SystemExit.
+    irc_agent.enforce_ear_runtime_scripts(scripts, scripts / "provenance.txt")
