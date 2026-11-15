@@ -45,10 +45,12 @@ def test_fr7242_skip_error_zero_is_unknown(tmp_path: Path) -> None:
             if ($null -ne $skip.bar_pct) {{ throw 'unknown bar must be null' }}
             if ($null -ne $skip.remaining_pct) {{ throw 'remaining must be null' }}
 
+            # FR #7510: age from fetched_at (>2 min => stale); keep this case fresh.
+            $freshAt = [datetime]::UtcNow.AddSeconds(-15).ToString('yyyy-MM-ddTHH:mm:ssZ')
             $realZero = Format-BobTrayXaiWeeklyRow -MachineId 'ionos' -XaiWeekly ([pscustomobject]@{{
                 remaining_pct = 0
                 weekly_known = $true
-                fetched_at = '2026-11-14T14:36:00Z'
+                fetched_at = $freshAt
                 fresh = $true
                 error = $null
             }})

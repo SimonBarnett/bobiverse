@@ -760,6 +760,7 @@ namespace BobDialogs
             alertB = RobotIcon.Make(Color.FromArgb(255, 180, 0)), context = RobotIcon.Make(Color.FromArgb(210, 153, 34));
         readonly System.Windows.Forms.Timer flash = new System.Windows.Forms.Timer(), poll = new System.Windows.Forms.Timer(), watchdog = new System.Windows.Forms.Timer();
         System.Threading.Timer aliveTimer;
+        System.Threading.Timer digestPoolsTimer; // FR #7510: digest pool refresh independent of engine
         readonly string aliveDir, aliveFile;
         TrayState state = new TrayState();
         DateTime lastWrite = DateTime.MinValue; long lastLen = -1;
@@ -820,6 +821,9 @@ namespace BobDialogs
             if (!noEngine) StartEngine();
             WriteTrayAlive();
             aliveTimer = new System.Threading.Timer(delegate { WriteTrayAlive(); }, null, 2000, 2000);
+            // FR #7510: poll digest every 60s into run\tray-digest-pools.json whether the engine is alive or not.
+            RefreshDigestPools();
+            digestPoolsTimer = new System.Threading.Timer(delegate { RefreshDigestPools(); }, null, 60000, 60000);
             flash.Start(); poll.Start(); watchdog.Start();
 
             string timing = Common.Arg(args, "--timing-out");
@@ -1507,8 +1511,34 @@ namespace BobDialogs
         {
             flash.Stop(); poll.Stop(); watchdog.Stop();
             StopAliveTimer();
+            StopDigestPoolsTimer();
             ThreadPoolWait(waitMs);
             ExitThread();
+        }
+
+        // FR #7510: host-owned digest pool refresh (powershell -File); never requires the PS engine.
+        void RefreshDigestPools()
+        {
+            try
+            {
+                string script = Path.Combine(root, "tools\\Update-BobTrayDigestPools.ps1");
+                if (!File.Exists(script))
+                {
+                    string alt = Path.Combine(root, "tray\\tools\\Update-BobTrayDigestPools.ps1");
+                    if (File.Exists(alt)) script = alt;
+                    else return;
+                }
+                string ps = Path.Combine(Environment.GetEnvironmentVariable("SystemRoot") ?? "C:\\Windows", "System32\\WindowsPowerShell\\v1.0\\powershell.exe");
+                ProcessStartInfo psi = new ProcessStartInfo(ps, "-NoProfile -ExecutionPolicy Bypass -File \"" + script + "\" -Root \"" + root + "\"");
+                psi.UseShellExecute = false; psi.CreateNoWindow = true; psi.WorkingDirectory = root;
+                using (Process p = Process.Start(psi)) { }
+            }
+            catch { }
+        }
+
+        void StopDigestPoolsTimer()
+        {
+            try { if (digestPoolsTimer != null) { digestPoolsTimer.Dispose(); digestPoolsTimer = null; } } catch { }
         }
 
         void ThreadPoolWait(int ms)
@@ -1568,6 +1598,7 @@ namespace BobDialogs
         protected override void ExitThreadCore()
         {
             StopAliveTimer();
+            StopDigestPoolsTimer();
             try { notify.Visible = false; notify.Dispose(); } catch { }
             base.ExitThreadCore();
         }

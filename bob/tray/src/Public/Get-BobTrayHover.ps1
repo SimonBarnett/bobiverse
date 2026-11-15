@@ -479,9 +479,16 @@ function Format-BobTrayXaiWeeklyRow {
         }
     } catch { $fresh = $true }
     # FR #7299 / #7326: missing fetched_at is stale (never default fresh=true).
+    # FR #7510: fetched_at older than Get-BobPoolStaleAfterSec (2 min) is stale even when fresh=true.
     $fetchedAt = ''
     try { if ($XaiWeekly.fetched_at) { $fetchedAt = [string]$XaiWeekly.fetched_at } } catch { }
     if (-not $fetchedAt) { $fresh = $false }
+    elseif (Get-Command Get-BobPoolReadingFreshness -ErrorAction SilentlyContinue) {
+        try {
+            $frAge = Get-BobPoolReadingFreshness -FetchedAt $fetchedAt
+            if ($frAge -and [string]$frAge.state -ne 'fresh') { $fresh = $false }
+        } catch { }
+    }
     $err = ''
     try { if ($XaiWeekly.error) { $err = [string]$XaiWeekly.error } } catch { }
     # FR #6314 / #7345: expand login-expired on the channel xAI weekly row (not a per-seat alert).
@@ -2021,6 +2028,266 @@ function Format-BobTrayPoolLayoutSnapshot {
         $lines.Add([string]$r.heading)
     }
     return ($lines -join [Environment]::NewLine)
+}
+
+function Update-BobTrayDigestPools {
+    <#
+    .SYNOPSIS
+      FR #7510: GET digest and write run\tray-digest-pools.json for TipForm/Status pool paint.
+    .NOTES
+      Pool numbers for Status/TipForm come only from this file (never tray-status.json pool
+      fields, local weekly, Cursor CLI, or opencode-fuel.json). UTF-8 no BOM; atomic replace.
+      On fetch failure writes digest_ok=false + note (no secrets). Optional #7505 hook later.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$Root,
+        [string]$Url = '',
+        [string]$DigestPath = '',
+        $Digest = $null
+    )
+    $run = Join-Path $Root 'run'
+    if (-not (Test-Path -LiteralPath $run)) {
+        try { New-Item -ItemType Directory -Force -Path $run | Out-Null } catch { }
+    }
+    $outPath = Join-Path $run 'tray-digest-pools.json'
+    $digestOk = $false
+    $digestErr = ''
+    $note = ''
+    $doc = $null
+    try {
+        if ($null -ne $Digest) {
+            $doc = $Digest
+        }
+        elseif ($DigestPath) {
+            if (-not (Test-Path -LiteralPath $DigestPath -PathType Leaf)) {
+                throw ("digest fixture missing: {0}" -f $DigestPath)
+            }
+            $rawFix = [IO.File]::ReadAllText($DigestPath, (New-Object System.Text.UTF8Encoding $false))
+            $doc = $rawFix | ConvertFrom-Json
+        }
+        else {
+            $u = ([string]$Url).Trim()
+            if (-not $u) {
+                if (Get-Command Get-BobTrayDigestReportUrl -ErrorAction SilentlyContinue) {
+                    try { $u = [string](Get-BobTrayDigestReportUrl) } catch { $u = '' }
+                }
+            }
+            if (-not $u) { $u = 'https://bob.ntsa.uk/bob/v1/report' }
+            # UTF-8 explicitly (PS 5.1 Latin-1 trap on charset-less body).
+            $resp = Invoke-WebRequest -Uri $u -UseBasicParsing -TimeoutSec 8 -Headers @{ Accept = 'application/json' }
+            $ms = $resp.RawContentStream
+            $ms.Position = 0
+            $buf = New-Object byte[] ([int]$ms.Length)
+            [void]$ms.Read($buf, 0, $buf.Length)
+            $doc = [System.Text.Encoding]::UTF8.GetString($buf) | ConvertFrom-Json
+        }
+        if (-not $doc) { throw 'digest empty' }
+        $digestOk = $true
+    }
+    catch {
+        $digestOk = $false
+        $digestErr = ([string]$_.Exception.Message)
+        if ($digestErr.Length -gt 240) { $digestErr = $digestErr.Substring(0, 240) }
+        # Strip anything that looks like a bearer/token fragment from the note.
+        $digestErr = ($digestErr -replace '(?i)(bearer\s+)\S+', '$1***' -replace '(?i)(token[=:]\s*)\S+', '$1***')
+        $note = ('digest unreachable: {0}' -f $digestErr)
+        # Optional FR #7505 exception-reporting hook (do not block here).
+    }
+
+    $grok = New-Object System.Collections.Generic.List[object]
+    $digestPools = @()
+    $copilotPool = $null
+    $copilotLine = 'Copilot - unknown'
+    $copilotStaleLine = 'Copilot - [stale] unknown'
+    $copilotFreshUntil = [int64]0
+    $copilotBar = [pscustomobject]@{ known = $false; pct = 0; r = 88; g = 166; b = 255 }
+    $opencodeLine = 'OpenCode  go n/a'
+    $opencodeFree = $null
+    $opencodeGo = $null
+    $opencodeWindows = $null
+    $opencodeWindowLines = @()
+    $opencodeBars = @()
+
+    if ($digestOk -and $doc) {
+        if ($doc.machines) {
+            try {
+                foreach ($p in @($doc.machines.PSObject.Properties)) {
+                    $mid = [string]$p.Name
+                    if (-not $mid) { continue }
+                    $node = $p.Value
+                    $xw = Select-BobTrayXaiWeeklyFromDigestNode -Node $node
+                    if (-not $xw) {
+                        try { if ($node.xai) { $xw = $node.xai } } catch { }
+                    }
+                    # Force age-based stale before Format (also applied inside Format-BobTrayXaiWeeklyRow).
+                    if ($xw) {
+                        $fa = ''
+                        try { if ($xw.fetched_at) { $fa = [string]$xw.fetched_at } } catch { }
+                        $needStale = $false
+                        if (-not $fa) { $needStale = $true }
+                        elseif (Get-Command Get-BobPoolReadingFreshness -ErrorAction SilentlyContinue) {
+                            try {
+                                $fr = Get-BobPoolReadingFreshness -FetchedAt $fa
+                                if ($fr -and [string]$fr.state -ne 'fresh') { $needStale = $true }
+                            } catch { }
+                        }
+                        if ($needStale) {
+                            try {
+                                $force = [ordered]@{}
+                                foreach ($prop in @($xw.PSObject.Properties)) { $force[$prop.Name] = $prop.Value }
+                                $force['fresh'] = $false
+                                $xw = [pscustomobject]$force
+                            } catch { }
+                        }
+                    }
+                    $xaiRow = Format-BobTrayXaiWeeklyRow -MachineId $mid -XaiWeekly $xw -NoReadingReason $(if ($null -eq $xw) { 'digest xai_weekly null' } else { '' })
+                    $barPct = $xaiRow.bar_pct
+                    $bar = $null
+                    if (Get-Command ConvertTo-BobTrayStatusBar -ErrorAction SilentlyContinue) {
+                        try { $bar = ConvertTo-BobTrayStatusBar -RemainingPct $barPct } catch { $bar = $null }
+                    }
+                    if (-not $bar) {
+                        $bar = [ordered]@{ known = $false; pct = 0; r = 88; g = 166; b = 255 }
+                        if ($null -ne $barPct -and [string]$barPct -ne '') {
+                            $bar.known = $true
+                            $bar.pct = [Math]::Max(0, [Math]::Min(100, [int]$barPct))
+                        }
+                    }
+                    $workers = @()
+                    if (Get-Command Get-BobTrayDigestWorkers -ErrorAction SilentlyContinue) {
+                        try {
+                            $workers = @(
+                                Get-BobTrayDigestWorkers -Digest $doc -MachineId $mid |
+                                    ForEach-Object { Format-BobTrayWorkerLine -Worker $_ } |
+                                    Where-Object { $_ }
+                            )
+                        } catch { $workers = @() }
+                    }
+                    if ($workers.Count -eq 0) {
+                        try {
+                            foreach ($w in @($node.workers)) {
+                                if (-not $w) { continue }
+                                if ($w -is [string]) { $workers += ,([string]$w); continue }
+                                $nick = ''
+                                try { $nick = [string]$w.nick } catch { }
+                                if (-not $nick) { try { $nick = [string]$w.name } catch { } }
+                                $st = 'idle'
+                                try { if ($w.state) { $st = [string]$w.state } } catch { }
+                                if ($nick) { $workers += ,('{0}: {1}' -f $nick, $st) }
+                            }
+                        } catch { }
+                    }
+                    $row = [ordered]@{}
+                    foreach ($k in @($bar.Keys)) { $row[$k] = $bar[$k] }
+                    $row['heading'] = [string]$xaiRow.heading
+                    $row['red'] = [bool]$xaiRow.fuel_stale
+                    $row['help'] = ''
+                    $row['workers'] = @($workers)
+                    $row['fuel_stale'] = [bool]$xaiRow.fuel_stale
+                    $row['remaining_pct'] = $xaiRow.remaining_pct
+                    $grok.Add([pscustomobject]$row)
+                }
+            } catch { }
+        }
+
+        try { $digestPools = @(Get-BobTrayDigestPoolCatalog -Digest $doc) } catch { $digestPools = @() }
+
+        $copilotPool = $null
+        try { $copilotPool = $doc.copilot } catch { }
+        if (Get-Command Format-BobCopilotPoolLine -ErrorAction SilentlyContinue) {
+            try { $copilotLine = Format-BobCopilotPoolLine -Pool $copilotPool } catch { }
+            try { $copilotStaleLine = Format-BobCopilotPoolLine -Pool $copilotPool -ForceStale } catch { }
+        }
+        if (-not $copilotLine) { $copilotLine = 'Copilot - unknown' }
+        if (-not $copilotStaleLine) { $copilotStaleLine = 'Copilot - [stale] unknown' }
+        if (Get-Command Get-BobCopilotFreshness -ErrorAction SilentlyContinue) {
+            try {
+                $cfr = Get-BobCopilotFreshness -Pool $copilotPool
+                if ($cfr -and $null -ne $cfr.fresh_until) { $copilotFreshUntil = [int64]$cfr.fresh_until }
+            } catch { }
+        }
+        $cPct = $null
+        if (Get-Command Get-BobCopilotMeterBarPct -ErrorAction SilentlyContinue) {
+            try { $cPct = Get-BobCopilotMeterBarPct -Pool $copilotPool } catch { $cPct = $null }
+        }
+        if ($null -ne $cPct) {
+            $rgb = $null
+            try {
+                if (Get-Command Get-BobTrayBarFillRgb -ErrorAction SilentlyContinue) {
+                    $rgb = Get-BobTrayBarFillRgb -Pct ([int]$cPct)
+                }
+            } catch { }
+            $copilotBar = [pscustomobject]@{
+                known = $true
+                pct   = [int]$cPct
+                r     = $(if ($rgb) { [int]$rgb.r } else { 88 })
+                g     = $(if ($rgb) { [int]$rgb.g } else { 166 })
+                b     = $(if ($rgb) { [int]$rgb.b } else { 255 })
+            }
+        }
+
+        $ocPaint = Get-BobOpencodePaintFromDigest -Digest $doc
+        $ocStale = $false
+        try { if ($doc.stale) { $ocStale = $true } } catch { }
+        $ocPack = $null
+        if (Get-Command Format-BobOpencodeWindowLines -ErrorAction SilentlyContinue) {
+            try {
+                $ocPack = Format-BobOpencodeWindowLines -FreePct $ocPaint.free -Windows $ocPaint.windows -Stale:$ocStale
+            } catch { $ocPack = $null }
+        }
+        if ($ocPack) {
+            $opencodeLine = [string]$ocPack.summary
+            if ($ocPack.free_heading) { $opencodeWindowLines += [string]$ocPack.free_heading }
+            if ($ocPack.window_lines) { $opencodeWindowLines += @($ocPack.window_lines) }
+            if ($ocPack.bars) { $opencodeBars = @($ocPack.bars) }
+            $opencodeFree = $ocPack.free
+            if ($null -ne $ocPack.go_remaining) { $opencodeGo = $ocPack.go_remaining } else { $opencodeGo = $ocPaint.go }
+            if ($ocPack.windows) { $opencodeWindows = $ocPack.windows } elseif ($ocPaint.windows) { $opencodeWindows = $ocPaint.windows }
+        } else {
+            $opencodeGo = $ocPaint.go
+            $opencodeFree = $ocPaint.free
+            $opencodeWindows = $ocPaint.windows
+            if ($null -ne $opencodeGo) { $opencodeLine = ('OpenCode  go {0}%' -f [int]$opencodeGo) }
+        }
+        if (-not $opencodeLine) { $opencodeLine = 'OpenCode  go n/a' }
+    }
+
+    $model = [ordered]@{
+        v                   = 1
+        ts                  = [int64][DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
+        digest_ok           = [bool]$digestOk
+        digest_error        = $(if ($digestErr) { $digestErr } else { $null })
+        note                = $(if ($note) { $note } else { '' })
+        grok                = @($grok.ToArray())
+        opencode_free       = $opencodeFree
+        opencode_go         = $opencodeGo
+        opencode_line       = $opencodeLine
+        opencode_windows    = $opencodeWindows
+        opencode_window_lines = @($opencodeWindowLines)
+        opencode_bars       = @($opencodeBars)
+        copilot_pool        = $copilotPool
+        copilot_line        = $copilotLine
+        copilot_stale_line  = $copilotStaleLine
+        copilot_fresh_until = $copilotFreshUntil
+        copilot_bar         = $copilotBar
+        digest_pools        = @($digestPools)
+    }
+
+    try {
+        $tmp = $outPath + '.tmp'
+        $json = ConvertTo-Json -InputObject $model -Depth 10 -Compress
+        [IO.File]::WriteAllText($tmp, $json, (New-Object System.Text.UTF8Encoding $false))
+        if (Test-Path -LiteralPath $outPath) {
+            [IO.File]::Replace($tmp, $outPath, [NullString]::Value)
+        } else {
+            [IO.File]::Move($tmp, $outPath)
+        }
+        return $outPath
+    }
+    catch {
+        return $null
+    }
 }
 
 function Get-BobCopilotHistoricalMaxPct {
