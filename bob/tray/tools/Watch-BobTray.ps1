@@ -427,6 +427,13 @@ function Invoke-BobTrayEngineReportTimeout {
     $msg = 'engine step timeout name={0} timeoutSec={1}' -f $StepName, $TimeoutSec
     try { Write-TrayLog $msg } catch { }
     Write-BobTrayEngineCycleLog -Root $Root -Message $msg
+    # FR #7659: one intake per step name per process hour. The cycle log still records every timeout.
+    if (-not $script:BobTrayEngineTimeoutReportedAt) {
+        $script:BobTrayEngineTimeoutReportedAt = @{}
+    }
+    $prev = $script:BobTrayEngineTimeoutReportedAt[$StepName]
+    if ($prev -and (([datetime]::UtcNow) - [datetime]$prev).TotalMinutes -lt 60) { return }
+    $script:BobTrayEngineTimeoutReportedAt[$StepName] = [datetime]::UtcNow
     try {
         if (Get-Command Report-BobDeterministicException -ErrorAction SilentlyContinue) {
             $ex = New-Object System.TimeoutException $msg
@@ -3971,12 +3978,12 @@ $poll.Add_Tick({
                 }
                 else {
                     # FR #4142 / #7579: data-only hover/snapshot for bob-tray.exe with timeout.
-                    [void](Invoke-BobTrayEngineStep -Name 'update-hover-engine' -Root $RepoRoot -TimeoutSec ([int]$script:BobTrayEngineStepTimeoutSec) -ArgumentList @($RepoRoot, $PSScriptRoot) -Body {
-                        param($Root, $Tools)
-                        $dialogs = Join-Path $Tools 'BobTrayDialogs.ps1'
-                        if (Test-Path -LiteralPath $dialogs) { . $dialogs }
+                    # FR #7659: do not dot dialogs or Import-Module -Force inside the job.
+                    # A cold Start-Job plus a forced reload of BobBridge exceeded the 45s step budget.
+                    [void](Invoke-BobTrayEngineStep -Name 'update-hover-engine' -Root $RepoRoot -TimeoutSec 90 -ArgumentList @($RepoRoot) -Body {
+                        param($Root)
                         $psd1 = Join-Path $Root 'src\BobBridge.psd1'
-                        if (Test-Path -LiteralPath $psd1) { Import-Module $psd1 -Force }
+                        if (Test-Path -LiteralPath $psd1) { Import-Module $psd1 }
                         $h = Get-BobTrayHover
                         if (Get-Command Write-BobTrayStatusSnapshot -ErrorAction SilentlyContinue -and $h) {
                             $model = New-BobTrayStatusModel -Hover $h -AlertKind 'none' -Alerts @() -Version '' -Machine ([string]$env:BOB_MACHINE_ID) -Title ([string]$h.title) -Short ([string]$h.short) -Attention $false -AttentionSeq 0 -Pulse $false
