@@ -47,6 +47,7 @@
         'Get-BobTrayDigestPoolCatalog',
         'Format-BobTrayDigestPoolHeading',
         'Update-BobTrayDigestPools',
+        'Invoke-BobDigestHttpGet',
         'Format-BobTrayXaiWeeklyRow',
         'Select-BobTrayXaiWeeklyFromDigestNode',
         'Resolve-BobCursorXaiSharedPools',

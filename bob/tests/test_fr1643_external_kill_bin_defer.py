@@ -56,17 +56,21 @@ def test_fr1643_wait_exit_logs_parent_on_unexpected(monkeypatch, tmp_path):
 
     monkeypatch.setattr(bw, "describe_process", lambda pid: (pid, "killer.exe", "killer.exe --force"))
     monkeypatch.setattr(bw, "parent_of", lambda pid: 99)
+    restarts: list[str] = []
     sup = bw.Supervisor(
         kind="grok", exe="x", cwd=str(tmp_path), machine="m", nick="m-1",
         run_dir=tmp_path, irc=FakeIrc(), relay=FakeRelay(), log=logs.append,
-        bored=None, startup_grace_s=0.0,
+        bored=None, startup_grace_s=0.0, kill=lambda pid: True, backoff=(0.0,),
     )
+    # FR #7593: nonzero exit recycles via restart_agent (stub so unit test stays offline).
+    sup.restart_agent = lambda reason: restarts.append(reason)  # type: ignore[method-assign]
     sup.proc = FakeProc()
     sup._agent_started_at = bw.time.monotonic() - 120.0
     sup._wait_exit(FakeProc())
     joined = "\n".join(logs)
     assert "external" in joined.lower() or "parent" in joined.lower()
     assert "4242" in joined or "agent:" in joined
+    assert restarts == ["agent-cli-nonzero-exit"]
 
 
 def test_fr1643_ps1_defers_locked_bin_delete():
@@ -127,11 +131,14 @@ def test_fr1643_spawn_cached_parent_used_when_live_lookup_empty(monkeypatch, tmp
     # Live lookup empty (post-wait); spawn cache must supply parent.
     monkeypatch.setattr(bw, "parent_of", lambda pid: 0)
     monkeypatch.setattr(bw, "describe_process", lambda pid: (pid, "", ""))
+    restarts: list[str] = []
     sup = bw.Supervisor(
         kind="grok", exe="x", cwd=str(tmp_path), machine="m", nick="m-1",
         run_dir=tmp_path, irc=FakeIrc(), relay=FakeRelay(), log=logs.append,
-        bored=None, startup_grace_s=0.0,
+        bored=None, startup_grace_s=0.0, kill=lambda pid: True, backoff=(0.0,),
     )
+    # FR #7593: nonzero exit recycles via restart_agent (stub so unit test stays offline).
+    sup.restart_agent = lambda reason: restarts.append(reason)  # type: ignore[method-assign]
     sup.proc = FakeProc()
     sup._agent_started_at = bw.time.monotonic() - 120.0
     sup._agent_parent_pid = 77
@@ -142,3 +149,4 @@ def test_fr1643_spawn_cached_parent_used_when_live_lookup_empty(monkeypatch, tmp
     assert "terminated-by-external-kill" in joined
     assert "parent_pid=77" in joined
     assert "bob-worker.exe" in joined
+    assert restarts == ["agent-cli-nonzero-exit"]
