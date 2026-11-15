@@ -32,3 +32,34 @@ def test_fr7681_exit_one_without_stderr_still_files():
         filer_post=lambda p: posts.append(p) or {"ok": True},
     )
     assert len(posts) == 1
+
+
+def test_fr7681_mrb_ffffffff_with_stderr_still_files():
+    """Hostile: external-kill skip only when stderr evidence is empty."""
+    posts = []
+    out = bw.report_agent_cli_nonzero_exit(
+        exit_code=-1,
+        raw_code=-1,
+        job_key="FR owner/repo#9",
+        machine="box",
+        stderr_tail="failed to start the acp-agent-worker runtime\n",
+        filer_post=lambda p: posts.append(p) or {"ok": True},
+    )
+    assert out.get("skipped") is not True
+    assert len(posts) == 1
+    assert "acp-agent-worker" in posts[0]["body"]
+
+
+def test_fr7681_mrb_signed_minus_one_empty_is_external_kill():
+    """Hostile: signed -1 masks to 0xffffffff and skips when stderr empty."""
+    posts = []
+    out = bw.report_agent_cli_nonzero_exit(
+        exit_code=-1,
+        job_key="MRB owner/repo#1",
+        machine="box",
+        stderr_tail="   \n",
+        filer_post=lambda p: posts.append(p) or {"ok": True},
+    )
+    assert out.get("reason") == "external-kill"
+    assert posts == []
+
