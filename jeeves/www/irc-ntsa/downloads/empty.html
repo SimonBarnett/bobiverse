@@ -28,19 +28,25 @@
       The downloads shelf is ready; publish a bobiverse GitHub Release with bob / jeeves / airc MSIs.
     </div>
 
-    <div class="grid">
-      <article class="card">
+    <div class="grid" id="download-grid">
+      <article class="card" data-product="bob">
         <span class="pill warn">Waiting</span>
         <h3>Bob ear</h3>
         <p>Latest MSI will appear here when the release publish path is green.</p>
         <a class="btn btn-ghost" href="https://github.com/SimonBarnett/bobiverse/releases">Check releases</a>
       </article>
-      <article class="card">
+      <article class="card" data-product="jeeves">
         <span class="pill warn">Waiting</span>
         <h3>Jeeves</h3>
         <p>Same shelf --- empty state keeps layout stable.</p>
       </article>
-      <article class="card">
+      <article class="card" data-product="priority-agent">
+        <span class="pill warn">Waiting</span>
+        <h3>Priority Agent</h3>
+        <p>Latest Priority Agent release will appear here when priority-mcp publishes a matching title.</p>
+      </article>
+      <!-- airc must stay the last card; insert new cards above this line. -->
+      <article class="card" data-product="airc">
         <span class="pill warn">Waiting</span>
         <h3>airc</h3>
         <p>Same shelf --- empty state keeps layout stable.</p>
