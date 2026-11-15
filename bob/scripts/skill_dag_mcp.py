@@ -490,14 +490,14 @@ def serve_stdio(server: SkillDagServer, inf, outf) -> None:
         try:
             reply = server.handle_rpc(msg)
         except Exception as exc:
-            # FR #7705: one bad tools/call must not close stdio. The client
-            # otherwise sees MCP -32000 Connection closed and the seat loops.
+            # FR #7705: one bad tools/call must not close stdio. Do not use
+            # -32000: OpenCode treats that code as Connection closed and loops.
             if msg.get("id") is None:
                 continue
             reply = {
                 "jsonrpc": "2.0",
                 "id": msg.get("id"),
-                "error": {"code": -32000, "message": type(exc).__name__},
+                "error": {"code": -32603, "message": type(exc).__name__},
             }
         if reply is not None:
             outf.write(json.dumps(reply, ensure_ascii=False) + "\n")

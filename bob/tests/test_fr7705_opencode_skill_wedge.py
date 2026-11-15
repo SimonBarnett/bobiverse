@@ -8,6 +8,7 @@ import skill_dag_mcp as mcp
 from opencode_tool_wedge import (
     after_skill_dag_drop,
     note_identical_tool_call,
+    observe_output,
     recovery_keeps_seat_kind,
     report_wedge,
 )
@@ -46,7 +47,7 @@ def test_fr7705_stdio_survives_a_tool_exception():
     out = io.StringIO()
     mcp.serve_stdio(server, inf, out)
     lines = [json.loads(ln) for ln in out.getvalue().splitlines() if ln.strip()]
-    assert lines[0]["error"]["code"] == -32000
+    assert lines[0]["error"]["code"] == -32603
     assert "result" in lines[1]
     assert lines[1]["id"] == 2
 
@@ -89,3 +90,27 @@ def test_fr7705_wedge_report_keeps_opencode_kind():
     assert body["seat_kind"] == "opencode"
     assert recovery_keeps_seat_kind("OpenCode") == "opencode"
     assert body["action"] == "giveup"
+
+
+def test_fr7705_transcript_reconnects_once_then_gives_up():
+    drop = 'skill-dag_get_skill failed: Error: MCP error -32000: Connection closed'
+    first = observe_output(drop, retries_left=1)
+    assert first["action"] == "reconnect"
+    assert first["loop"] is False
+    second = observe_output(drop, retries_left=0)
+    assert second["action"] == "giveup"
+    assert second["report"] is True
+    loop = "\n".join(['Skill "customize-opencode"'] * 3)
+    wedge = observe_output(loop, retries_left=1)
+    assert wedge["action"] == "report-and-giveup"
+    assert wedge["loop"] is False
+
+
+def test_fr7705_worker_launcher_calls_the_wedge_helper():
+    from pathlib import Path
+
+    src = Path(__file__).resolve().parents[1].joinpath("scripts", "bob_worker.py").read_text(encoding="utf-8")
+    assert "opencode_tool_wedge.py" in src
+    assert "peek $outFile" in src
+    assert "skill-dag wedge" in src
+    assert "--agent grok" not in src[src.find("$wedgePy"):src.find("$wedgePy") + 800]
