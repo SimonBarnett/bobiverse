@@ -510,6 +510,12 @@ function Format-BobTrayXaiWeeklyRow {
     try { if ($XaiWeekly.account) { $acct = [string]$XaiWeekly.account } } catch { }
     $periodEnd = ''
     try { if ($XaiWeekly.period_end) { $periodEnd = [string]$XaiWeekly.period_end } } catch { }
+    # FR #7522: recompute freshness with remaining + period_end (0% + future reset is not stale).
+    try {
+        $fr = Get-BobPoolReadingFreshness -FetchedAt $fetchedAt -RemainingPct $pct -PeriodEnd $periodEnd
+        if ($fr -and $fr.state -eq 'fresh') { $fresh = $true }
+        elseif ($fr -and $fr.state -eq 'stale') { $fresh = $false }
+    } catch { }
     $resetLabel = $null
     if ($periodEnd) {
         try {
@@ -1354,13 +1360,49 @@ function Format-BobPoolUpdatedLabel {
     return $null
 }
 
+function Test-BobPoolExhaustedUntilReset {
+    <#
+    .SYNOPSIS
+      FR #7522: remaining 0% with a known future reset/period_end is not stale.
+    #>
+    param($RemainingPct = $null, $PeriodEnd = $null, $Now = $null)
+    $rem = $null
+    try {
+        if ($null -ne $RemainingPct -and [string]$RemainingPct -ne '') {
+            $rem = [double]$RemainingPct
+        }
+    } catch { $rem = $null }
+    if ($null -eq $rem -or $rem -gt 0) { return $false }
+    $endRaw = $PeriodEnd
+    if (-not $endRaw -or [string]::IsNullOrWhiteSpace([string]$endRaw)) { return $false }
+    $endUtc = $null
+    try { $endUtc = ConvertTo-BobUtcDateTime $endRaw } catch { $endUtc = $null }
+    if (-not $endUtc) { return $false }
+    $nowUtc = $null
+    if ($null -ne $Now) {
+        try { $nowUtc = ConvertTo-BobUtcDateTime $Now } catch { $nowUtc = $null }
+    }
+    if (-not $nowUtc) { $nowUtc = [DateTime]::UtcNow }
+    return ($endUtc -gt $nowUtc)
+}
+
 function Get-BobPoolReadingFreshness {
     <#
     .SYNOPSIS
       FR #6371: fresh/stale/none for any pool reading's fetched_at.
       Default threshold Get-BobPoolStaleAfterSec (2 min). Allows 120s future skew.
+      FR #7522: 0% remaining with a known future PeriodEnd/ResetAt stays fresh
+      even when fetched_at is older than the threshold (Si: not stale at 0% when
+      we know when it comes back).
     #>
-    param($FetchedAt = $null, $Now = $null, $StaleAfterSec = $null)
+    param(
+        $FetchedAt = $null,
+        $Now = $null,
+        $StaleAfterSec = $null,
+        $RemainingPct = $null,
+        $PeriodEnd = $null,
+        $ResetAt = $null
+    )
     $threshold = if ($null -ne $StaleAfterSec -and [string]$StaleAfterSec -ne '') {
         try { [int]$StaleAfterSec } catch { Get-BobPoolStaleAfterSec }
     } else { Get-BobPoolStaleAfterSec }
@@ -1371,6 +1413,12 @@ function Get-BobPoolReadingFreshness {
         try { $nowUtc = ConvertTo-BobUtcDateTime $Now } catch { $nowUtc = $null }
     }
     if (-not $nowUtc) { $nowUtc = [DateTime]::UtcNow }
+    $resetRaw = $PeriodEnd
+    if (-not $resetRaw -or [string]::IsNullOrWhiteSpace([string]$resetRaw)) { $resetRaw = $ResetAt }
+    # FR #7522: exhausted-until-reset wins even when fetched_at is missing/old.
+    if (Test-BobPoolExhaustedUntilReset -RemainingPct $RemainingPct -PeriodEnd $resetRaw -Now $nowUtc) {
+        return [pscustomobject]@{ state = 'fresh'; age_s = $null; fresh_until = 0; exhausted_held = $true }
+    }
     if (-not $FetchedAt -or [string]::IsNullOrWhiteSpace([string]$FetchedAt)) {
         return [pscustomobject]@{ state = 'none'; age_s = $null; fresh_until = 0 }
     }
@@ -1397,6 +1445,7 @@ function Get-BobCopilotFreshness {
       Never uses snapshot ts or file mtime. Allows up to 120s future skew.
       Future resume_at (cooldown) does not force fresh: age by fetched_at still.
       Delegates age math to Get-BobPoolReadingFreshness.
+      FR #7522: passes remaining + reset_at so 0% with known future reset is not stale.
     #>
     param($Pool, $Now = $null)
     if (-not $Pool) {
@@ -1404,11 +1453,30 @@ function Get-BobCopilotFreshness {
     }
     $fa = $null
     try { $fa = [string]$Pool.fetched_at } catch { }
-    # Missing fetched_at stays 'stale' (FR #6148), not 'none'.
+    $rem = $null
+    try {
+        if ($null -ne $Pool.remaining -and [string]$Pool.remaining -ne '') { $rem = [int]$Pool.remaining }
+    } catch { $rem = $null }
+    try {
+        if ($null -eq $rem -and $null -ne $Pool.remaining_pct -and [string]$Pool.remaining_pct -ne '') {
+            $rem = [int]$Pool.remaining_pct
+        }
+    } catch { }
+    $st = ''
+    try { $st = ([string]$Pool.state).Trim().ToLowerInvariant() } catch { }
+    if ($st -eq 'exhausted' -and $null -eq $rem) { $rem = 0 }
+    $reset = $null
+    try { if ($Pool.reset_at) { $reset = [string]$Pool.reset_at } } catch { }
+    try { if (-not $reset -and $Pool.period_end) { $reset = [string]$Pool.period_end } } catch { }
+    # Missing fetched_at stays 'stale' (FR #6148), not 'none' — unless FR #7522 holds.
     if (-not $fa -or [string]::IsNullOrWhiteSpace($fa)) {
+        if (Test-BobPoolExhaustedUntilReset -RemainingPct $rem -PeriodEnd $reset -Now $Now) {
+            return [pscustomobject]@{ state = 'fresh'; age_s = $null; fresh_until = 0; exhausted_held = $true }
+        }
         return [pscustomobject]@{ state = 'stale'; age_s = $null; fresh_until = 0 }
     }
-    return Get-BobPoolReadingFreshness -FetchedAt $fa -Now $Now -StaleAfterSec (Get-BobPoolStaleAfterSec)
+    return Get-BobPoolReadingFreshness -FetchedAt $fa -Now $Now -StaleAfterSec (Get-BobPoolStaleAfterSec) `
+        -RemainingPct $rem -PeriodEnd $reset
 }
 
 function Format-BobOpencodeWindowLine {
@@ -1460,8 +1528,15 @@ function Format-BobOpencodeWindowLine {
     }
     $fetchedAt = $null
     try { if ($Record.fetched_at) { $fetchedAt = ([string]$Record.fetched_at).Trim() } } catch { }
-    $freshness = Get-BobPoolReadingFreshness -FetchedAt $fetchedAt -Now $Now
+    $periodEnd = $null
+    try { if ($Record.period_end) { $periodEnd = ([string]$Record.period_end).Trim() } } catch { }
+    try { if (-not $periodEnd -and $Record.reset_at) { $periodEnd = ([string]$Record.reset_at).Trim() } } catch { }
+    # FR #7522: pass remaining + period_end so 0% with future reset is not stale.
+    $freshness = Get-BobPoolReadingFreshness -FetchedAt $fetchedAt -Now $Now -RemainingPct $rem -PeriodEnd $periodEnd
     $isStale = ($status -eq 'stale') -or ($freshness.state -eq 'stale')
+    if ($isStale -and (Test-BobPoolExhaustedUntilReset -RemainingPct $rem -PeriodEnd $periodEnd -Now $Now)) {
+        $isStale = $false
+    }
     if ($isStale) {
         $why = $err
         if (-not $why) { $why = 'stale' }
