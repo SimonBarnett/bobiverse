@@ -2626,11 +2626,13 @@ function Sync-BobiverseGitclaimFromOrigin {
 
 function Get-BobiverseInstallGitExcludeText {
     # Shared by install bootstrap and sync refresh (FR #132). Linked FR worktrees use this exclude.
+    # FR #7432: also un-ignore /.github/ so workflow FRs do not need git add -f for CI yml.
     param([Parameter(Mandatory)][string]$Product)
     return (
         "# bobiverse install work tree (t781u): runtime files are composed from <product>/ and common/`n" +
-        "# FR worktrees sharing this git dir: sibling products un-ignored; else git add -f (FR #132)`n" +
+        "# FR worktrees sharing this git dir: sibling products + .github un-ignored; else git add -f (FR #132 / #7432)`n" +
         "/*`n!/$Product/`n!/common/`n!/airc/`n!/jeeves/`n" +
+        "!/.github/`n!/.github/**`n" +
         "# FR #6773 / #6970: machine-local config overlays (never commit)`n" +
         "bobiverse.local.json`n**/bobiverse.local.json`n" +
         ".bobiverse-parked/`n**/.bobiverse-parked/`n" +

@@ -118,7 +118,7 @@ def main(argv: list[str] | None = None) -> int:
         payload = fetch_latest_release()
     resolved = resolve_latest_assets(payload)
     text = json.dumps(resolved, indent=2 if args.pretty else None, sort_keys=True)
-    sys.stdout.write(text + ("\\n" if not text.endswith("\\n") else ""))
+    sys.stdout.write(text + ("\n" if not text.endswith("\n") else ""))
     return 0
 
 

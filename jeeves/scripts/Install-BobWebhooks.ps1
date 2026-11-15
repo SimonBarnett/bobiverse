@@ -225,7 +225,7 @@ if (Test-Path -LiteralPath $wwwSrc) {
         }
         Copy-Item -LiteralPath $downloadsSrc -Destination $downloadsDst -Recurse -Force
     }
-    # FR #7414 / #7413: public /jeeves/commands (rewrite skips this prefix).
+    # FR #7414 / #7413: public /jeeves/commands (rewrite skips this prefix; not behind settings cookie).
     $commandsSrc = Join-Path $wwwSrc 'jeeves\commands'
     if (Test-Path -LiteralPath $commandsSrc) {
         $commandsDst = Join-Path $PhysicalPath 'jeeves\commands'
@@ -235,7 +235,7 @@ if (Test-Path -LiteralPath $wwwSrc) {
         $null = New-Item -ItemType Directory -Force -Path (Split-Path -Parent $commandsDst)
         Copy-Item -LiteralPath $commandsSrc -Destination $commandsDst -Recurse -Force
     }
-    Write-Host "INFO synced FR #6453/#7410/#7414 www (site.css, downloads, jeeves/commands, docs) from $wwwSrc -> $PhysicalPath"
+    Write-Host "INFO synced FR #6453/#7410/#7413/#7414 www (site.css, downloads, jeeves/commands, docs) from $wwwSrc -> $PhysicalPath"
 } else {
     Write-Host "WARN FR #7414 www source missing: $wwwSrc"
 }
