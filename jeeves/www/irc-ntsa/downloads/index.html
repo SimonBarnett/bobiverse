@@ -25,7 +25,7 @@
 
     <div class="section-title">
       <h2>Latest builds</h2>
-      <span>GitHub Releases ·  MSI · v1.0.7</span>
+      <span id="release-tag">GitHub Releases · MSI</span>
     </div>
 
         <div class="grid" id="download-grid">
@@ -33,16 +33,16 @@
         <span class="pill">Bob ear</span>
         <h3>Bob ear</h3>
         <p>Fleet ear + tray companion MSI for each machine shop.</p>
-        <a class="btn btn-gold" data-role="msi" href="https://github.com/SimonBarnett/bobiverse/releases/latest/download/bob-1.0.7.msi">Download Bob ear</a>
-        <a class="btn btn-ghost" href="https://github.com/SimonBarnett/bobiverse/releases/latest/download/bob-1.0.7.msi.sha256">sha256</a>
+        <a class="btn btn-gold" data-role="msi" href="#">Download Bob ear</a>
+        <a class="btn btn-ghost" data-role="sha256" href="#">sha256</a>
         <a class="btn btn-ghost" href="https://github.com/SimonBarnett/bobiverse/releases/latest">Release notes</a>
       </article>
 <article class="card" data-product="jeeves">
         <span class="pill">Jeeves</span>
         <h3>Jeeves</h3>
         <p>Chair service MSI --- queue, webhooks, appliance behind <code>/jeeves</code>.</p>
-        <a class="btn btn-gold" data-role="msi" href="https://github.com/SimonBarnett/bobiverse/releases/latest/download/jeeves-1.0.7.msi">Download Jeeves</a>
-        <a class="btn btn-ghost" href="https://github.com/SimonBarnett/bobiverse/releases/latest/download/jeeves-1.0.7.msi.sha256">sha256</a>
+        <a class="btn btn-gold" data-role="msi" href="#">Download Jeeves</a>
+        <a class="btn btn-ghost" data-role="sha256" href="#">sha256</a>
         <a class="btn btn-ghost" href="https://github.com/SimonBarnett/bobiverse/releases/latest">Release notes</a>
       </article>
 <article class="card" data-product="priority-agent">
@@ -58,8 +58,8 @@
         <span class="pill">airc</span>
         <h3>airc</h3>
         <p>Remote console / network installer MSI for fleet boxes.</p>
-        <a class="btn btn-gold" data-role="msi" href="https://github.com/SimonBarnett/bobiverse/releases/latest/download/airc-1.0.7.msi">Download airc</a>
-        <a class="btn btn-ghost" href="https://github.com/SimonBarnett/bobiverse/releases/latest/download/airc-1.0.7.msi.sha256">sha256</a>
+        <a class="btn btn-gold" data-role="msi" href="#">Download airc</a>
+        <a class="btn btn-ghost" data-role="sha256" href="#">sha256</a>
         <a class="btn btn-ghost" href="https://github.com/SimonBarnett/bobiverse/releases/latest">Release notes</a>
         <!-- FR #7456: copy-paste PowerShell install (elevated); MSI URL tracks data-role=msi. -->
         <div class="install-block" data-role="airc-install">
@@ -69,7 +69,7 @@
             <button type="button" class="btn btn-ghost" data-role="copy-install">Copy</button>
           </div>
           <pre class="install-snippet" data-role="install-snippet"><code># Run from an elevated PowerShell prompt.
-$msiUrl = 'https://github.com/SimonBarnett/bobiverse/releases/latest/download/airc-1.0.7.msi'
+$msiUrl = ''
 $msi = Join-Path $env:TEMP 'airc-install.msi'
 Invoke-WebRequest -Uri $msiUrl -OutFile $msi
 msiexec /i $msi AIRC_PROFILE=client /qn
@@ -133,9 +133,11 @@ Get-Service Airc</code></pre>
         var assets = (payload.assets || []).map(function (a) { return a.name; });
         var lower = {};
         assets.forEach(function (n) { lower[n.toLowerCase()] = n; });
+        var missing = false;
+        var base = 'https://github.com/SimonBarnett/bobiverse/releases/latest/download/';
         products.forEach(function (product) {
           var card = document.querySelector('[data-product="' + product + '"]');
-          if (!card) return;
+          if (!card) { missing = true; return; }
           var alias = product + '-latest.msi';
           var msi = lower[alias] || null;
           if (!msi) {
@@ -152,18 +154,18 @@ Get-Service Airc</code></pre>
             });
             msi = best;
           }
-          if (!msi) return;
-          var base = 'https://github.com/SimonBarnett/bobiverse/releases/latest/download/';
+          if (!msi) { missing = true; return; }
           var a = card.querySelector('[data-role="msi"]');
           if (a) a.href = base + msi;
           var sha = lower[(msi + '.sha256').toLowerCase()];
-          if (sha) {
-            var existing = card.querySelector('a[href$=".sha256"]');
-            if (existing) existing.href = base + sha;
-          }
+          var existing = card.querySelector('[data-role="sha256"]');
+          if (existing && sha) existing.href = base + sha;
         });
+        if (missing) { window.location.href = '/downloads/error.html'; return; }
+        var tag = document.getElementById('release-tag');
+        if (tag) tag.textContent = 'GitHub Releases · MSI · ' + (payload.tag_name || 'latest');
         syncAircInstallSnippet();
-      }).catch(function () { /* keep stamped links */ });
+      }).catch(function () { window.location.href = '/downloads/error.html'; });
   })();
   </script>
   <script src="/downloads/priority-agent.js"></script>
