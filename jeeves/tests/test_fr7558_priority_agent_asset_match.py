@@ -141,7 +141,8 @@ def test_fr7558_fixture_titles_match_by_installer_asset(tmp_path: Path):
     assert out["notesHref"].endswith("/releases/tag/launcher-v1.0.74")
 
 
-def test_fr7558_skips_prereleases(tmp_path: Path):
+def test_fr7558_prefers_full_release_over_newer_prerelease(tmp_path: Path):
+    """When a non-prerelease has the installer, prefer it over a newer prerelease."""
     releases = [
         {
             "name": "Priority Agent launcher v1.0.74",
@@ -171,13 +172,14 @@ def test_fr7558_skips_prereleases(tmp_path: Path):
 
 
 def test_fr7558_no_asset_shows_empty_and_reports_intake(tmp_path: Path):
+    """Empty only when no non-draft release (full or prerelease) has the installer."""
     releases = [
         {
             "name": "Priority Agent launcher v1.0.74",
             "tag_name": "launcher-v1.0.74",
             "draft": False,
             "prerelease": True,
-            "assets": [{"name": "PriorityAgent.exe"}],
+            "assets": [{"name": "readme.txt"}],
         },
         {
             "name": "Priority Agent (2026-11-06 cycle)",
@@ -190,7 +192,7 @@ def test_fr7558_no_asset_shows_empty_and_reports_intake(tmp_path: Path):
     out = _node_refresh(tmp_path, releases)
     assert "No matching Priority Agent release" in out["version"]
     assert out["hrefs"] == []
-    assert out["intakePosts"], "must POST intake when no non-prerelease has the installer"
+    assert out["intakePosts"], "must POST intake when no release has the installer"
     body = out["intakePosts"][0]["body"]
     assert "SimonBarnett/bobiverse" in body
     assert "Priority Agent" in body

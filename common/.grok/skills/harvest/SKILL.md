@@ -462,6 +462,7 @@ routes to bobiverse via the split rule.
 - PS 5.1 digest GETs: use HttpWebRequest Timeout and ReadWriteTimeout (Invoke-BobDigestHttpGet); do not rely on Invoke-WebRequest -TimeoutSec against hung or half-closed sockets.
 - Harvest twin overlap: ntsa, priority, and priorityagent are home keywords, not a lesson identity; a catalog-scope prose tip must not skip as the PriorityAgent.exe download tip.
 - Priority Agent /downloads: prefer non-prerelease with PriorityAgent.exe else newest non-draft prerelease; stamp concrete tag hrefs in Install-BobWebhooks; never return @array from PS 5.1 helpers when collecting releases
+- When a downloads template drops a placeholder, check the visible sentence for a double space and pin that on index, empty, and error together.
 - Log the tray seat-start trigger at the launch call site; Write-TrayLog already supplies the timestamp.
 
 ## Harvest digest (lessons audit 2026-10-06)

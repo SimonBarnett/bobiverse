@@ -334,6 +334,16 @@ if (Test-Path -LiteralPath $wwwSrc) {
             Remove-Item -LiteralPath $downloadsDst -Recurse -Force
         }
         Copy-Item -LiteralPath $downloadsSrc -Destination $downloadsDst -Recurse -Force
+        # FR #7643: stamp concrete PriorityAgent.exe hrefs (prerelease OK when that is where the installer is).
+        $stamp = Join-Path $PSScriptRoot 'Stamp-PriorityAgentDownloads.ps1'
+        $paHtml = Join-Path $downloadsDst 'index.html'
+        if ((Test-Path -LiteralPath $stamp) -and (Test-Path -LiteralPath $paHtml)) {
+            try {
+                & $stamp -HtmlPath $paHtml
+            } catch {
+                Write-Warning ("FR #7643 stamp Priority Agent downloads failed: " + $_.Exception.Message)
+            }
+        }
     }
     # FR #7414 / #7413: public /jeeves/commands (rewrite skips this prefix; not behind settings cookie).
     $commandsSrc = Join-Path $wwwSrc 'jeeves\commands'
