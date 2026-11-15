@@ -13449,8 +13449,9 @@ def run_monitor(args, log: Log) -> int:
         return EXIT_USAGE
     dec, cursor_cmd, grok_exe, fuel, signin_ok = _choose(args, log, folder, "monitor")
     opencode_cmd = _resolve_opencode_cmd_for_seat(log)
+    requested = getattr(args, "agent", "") or ""
     dec = resolve_seat_decision(
-        getattr(args, "agent", ""),
+        requested,
         dec, fuel, cursor_cmd, grok_exe, opencode_cmd,
         auth_present=opencode_auth_file_present(),
         xai_signin_ok=signin_ok,
@@ -13575,8 +13576,9 @@ def run_maintenance(args, log: Log, *, spawn: Optional[Callable] = None, poll_s:
         return EXIT_USAGE
     dec, cursor_cmd, grok_exe, fuel, signin_ok = _choose(args, log, folder, "maintenance")
     opencode_cmd = _resolve_opencode_cmd_for_seat(log)
+    requested = getattr(args, "agent", "") or ""
     dec = resolve_seat_decision(
-        getattr(args, "agent", ""),
+        requested,
         dec, fuel, cursor_cmd, grok_exe, opencode_cmd,
         auth_present=opencode_auth_file_present(),
         xai_signin_ok=signin_ok,

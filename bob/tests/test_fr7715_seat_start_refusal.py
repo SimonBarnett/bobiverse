@@ -1,6 +1,8 @@
 """FR #7715: a seat-start refusal is one deduped intake report. A start is not."""
 from __future__ import annotations
 
+from pathlib import Path
+
 import bob_worker as bw
 
 
@@ -74,6 +76,14 @@ def test_fr7715_normal_start_does_not_report():
     )
     assert stopped is None
     assert posts == []
+
+
+def test_fr7715_monitor_and_maintenance_bind_requested():
+    """FR #7718: kind=requested must not NameError on a start that should succeed."""
+    src = (Path(__file__).resolve().parents[1] / "scripts" / "bob_worker.py").read_text(encoding="utf-8")
+    for name in ("def run_monitor", "def run_maintenance"):
+        body = src.split(name, 1)[1].split("\ndef ", 1)[0]
+        assert body.index("requested = getattr") < body.index("kind=requested")
 
 
 def test_fr7715_secret_in_reason_is_redacted():
