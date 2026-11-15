@@ -424,6 +424,7 @@ routes to bobiverse via the split rule.
 - Cached xAI weekly remaining must not be relabelled onto a new auth.json grok_account; discard last-good % until a successful fetch for the new account.
 - Public bob.ntsa.uk chrome starts as shared charcoal/paper/gold site.css + HTML mocks validated by validate-vision-pack; live IIS is a later FR.
 - MRB commands page: verify unauthenticated HTML has core verbs and no password form, Install rewrite skips /jeeves/commands, closing-keyword #7413, note live 404 until Install; merge-gate --auto without CI poll
+- FR-E quiet :7701 removal PASS when front-door mode defaults on, LAN-root returns 404, /jeeves still serves, and docs scrub preferred 7701 how-tos without a deprecation brochure; keeping loopback bind as ARR upstream is ACCEPTABLE.
 
 ## Harvest digest (lessons audit 2026-10-06)
 
