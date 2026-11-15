@@ -483,6 +483,8 @@ routes to bobiverse via the split rule.
 - When auto-merge is refused because the pull request is unstable, comment merge-on-green pending with the head SHA and finish. Do not poll the checks.
 - A new keyword at a call site must be a name that function assigns. Copy the plan and agent pattern, and pin that the assignment is above the call.
 - When a later FR changes a wire to err plus DONE exit=2, update the older framing pins. Do not put the absent-allowlist gate in front of a test that must exercise the worker body.
+- Airc skill books stay ASCII. Write a hyphen, not an em dash, in SKILL.md.
+- When wiring an optional hook onto an injected runner, use getattr and callable. A test stub that only implements start() must still build the console.
 
 ## Harvest digest (lessons audit 2026-10-06)
 

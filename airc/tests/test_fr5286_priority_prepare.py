@@ -137,6 +137,8 @@ def test_fr5286_console_prepare_framing_no_password():
         nick="tm_console",
         job_protocol=MagicMock(),
     )
+    # Framing test: skip the absent-allowlist gate (FR #5960) and exercise out+DONE.
+    core._priority_runner_injected = True
     hr = core.handle_raw(":op!u@h PRIVMSG tm_console :id=c25bd00e PRIORITY prepare")
     assert hr is not None
     assert hr.action == "priority"
@@ -164,6 +166,7 @@ def test_fr5525_prepare_minted_id_matches_both_lines():
         nick="tm_console",
         job_protocol=MagicMock(),
     )
+    core._priority_runner_injected = True
     hr = core.handle_raw(":op!u@h PRIVMSG tm_console :PRIORITY prepare")
     assert hr and hr.action == "priority"
     lines = (hr.reply or "").splitlines()
@@ -197,6 +200,7 @@ def test_fr5525_prepare_large_body_keeps_done_intact():
         nick="tm_console",
         job_protocol=MagicMock(),
     )
+    core._priority_runner_injected = True
     # Force worker path with oversized body via monkeypatched loader.
     import airc_console as mod
 
