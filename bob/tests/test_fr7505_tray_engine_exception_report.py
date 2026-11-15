@@ -65,3 +65,26 @@ def test_fr7505_fix7519_ensure_treats_stale_snap_as_dead_while_process_present()
     assert "-Kind 'status-stale'" in e or '-Kind "status-stale"' in e or "Kind 'status-stale'" in e
     assert "$frozen" in e
     assert "why={1}" in e or "why =" in e or "relaunchWhy" in e
+
+def test_mrb7519_ensure_is_bomless_ascii_no_emdash():
+    """MRB hostile: Ensure-BobTrayRunning.ps1 must stay pytest-ascii-bom clean (FR #3975)."""
+    raw = ENSURE.read_bytes()
+    assert not raw.startswith(b"\xef\xbb\xbf"), "UTF-8 BOM forbidden"
+    text = raw.decode("utf-8")
+    assert "\u2014" not in text and "\u2013" not in text
+    assert "treat as dead - report status-stale" in text
+
+
+def test_mrb7519_ensure_absent_path_still_reports_relaunch_fail():
+    """MRB hostile: absent tray path must still invoke relaunch-fail reporter."""
+    e = ENSURE.read_text(encoding="utf-8")
+    assert "-Kind 'relaunch-fail'" in e or '-Kind "relaunch-fail"' in e
+    assert "tray still absent after Start-BobTray" in e
+
+
+def test_mrb7519_reporter_redacts_lifecycle_and_rate_limits():
+    """MRB hostile: reporter must redact lifecycle and rate-limit repeat comments."""
+    r = REPORT.read_text(encoding="utf-8")
+    assert "crash_report.redact" in r
+    assert "COMMENT_RATE_S" in r
+    assert "STATUS_STALE_SECONDS = 120" in r
