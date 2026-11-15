@@ -39,6 +39,9 @@ def test_fr6757_login_html_has_no_port_7701():
 
 def test_fr6757_http_xff_from_loopback(tmp_path, monkeypatch):
     monkeypatch.setenv("JEEVES_SETTINGS_HTTP", "1")
+    # FR #7412: LAN-root XFF gate still covered via explicit escape hatch.
+    monkeypatch.setenv("JEEVES_SETTINGS_ALLOW_LAN_ROOT", "1")
+    monkeypatch.delenv("JEEVES_SETTINGS_FRONTDOOR", raising=False)
     chair = tmp_path / "c"
     chair.mkdir()
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
