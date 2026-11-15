@@ -48,6 +48,12 @@ HEALTH_PROBE_ZEN = "jeeves-health-probe"
 DIGEST_ALIAS = "/digest"
 HEALTH_WATCHDOG_ENV = "BOB_CALLBACK_HEALTH_S"
 DEFAULT_HEALTH_WATCHDOG_S = 30.0
+# FR #7618: local GET must succeed within this budget or the self-probe counts a fail.
+LISTENER_PROBE_ENV = "BOB_CALLBACK_LISTENER_PROBE_S"
+DEFAULT_LISTENER_PROBE_S = 10.0
+LISTENER_PROBE_FAILS_ENV = "BOB_CALLBACK_LISTENER_PROBE_FAILS"
+DEFAULT_LISTENER_PROBE_FAILS = 2
+LISTENER_EXIT_CODE = 1
 # Public readers (IIS / browsers / UAT): use reportUrl. Local bobcallback still answers DIGEST_*.
 PUBLIC_DIGEST_PATH = REPORT_PATH
 CLI_DESCRIPTION = (
@@ -1226,6 +1232,190 @@ def _health_watchdog_s() -> float:
         return DEFAULT_HEALTH_WATCHDOG_S
 
 
+def _listener_probe_s() -> float:
+    """FR #7618: seconds allowed for a local GET before the probe counts a failure."""
+    try:
+        return max(1.0, float(os.environ.get(LISTENER_PROBE_ENV) or DEFAULT_LISTENER_PROBE_S))
+    except ValueError:
+        return DEFAULT_LISTENER_PROBE_S
+
+
+def _listener_probe_max_fails() -> int:
+    try:
+        return max(1, int(os.environ.get(LISTENER_PROBE_FAILS_ENV) or DEFAULT_LISTENER_PROBE_FAILS))
+    except ValueError:
+        return DEFAULT_LISTENER_PROBE_FAILS
+
+
+def probe_listener_local_get(url: str, timeout_s: float) -> dict[str, Any]:
+    """FR #7618: one loopback GET; raises on timeout / transport failure."""
+    import urllib.request
+
+    req = urllib.request.Request(url, method="GET")
+    with urllib.request.urlopen(req, timeout=float(timeout_s)) as resp:
+        raw = resp.read()
+    doc = json.loads(raw.decode("utf-8") or "{}")
+    if not isinstance(doc, dict):
+        raise RuntimeError("listener probe: non-object JSON")
+    return doc
+
+
+def report_http_listener_fault(
+    *,
+    why: str,
+    detail: str = "",
+    host: str = "",
+    port: int = 0,
+    exc: BaseException | None = None,
+    report_fn: Callable[..., dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """FR #7618: one intake/crash report for accept/serve or self-probe failure. No secrets."""
+    if report_fn is not None:
+        return report_fn(
+            why=why,
+            detail=detail,
+            host=host,
+            port=port,
+            exc_type=type(exc).__name__ if exc else "",
+        )
+    title = "bug: Jeeves HTTP listener fault (FR #7618)"
+    exc_name = type(exc).__name__ if exc else ""
+    body = (
+        "What: the HTTP accept/serve loop or local self-probe failed; the process "
+        "exits non-zero so the service manager can restart (FR #7618).\n"
+        f"Where: bobcallback/jeeves-http host={host or '-'} port={port or 0}\n"
+        f"Evidence: why={why} exc={exc_name} detail={str(detail or '')[:400]}\n"
+        "Fix: inspect memory pressure / accept path; do not leave the port bound but dead.\n"
+        "No secrets."
+    )
+    if os.environ.get("PYTEST_CURRENT_TEST") and report_fn is None:
+        return {"ok": True, "skipped": True, "reason": "pytest"}
+    try:
+        import crash_report
+
+        if exc is not None:
+            return crash_report.report_exception(
+                "jeeves",
+                type(exc),
+                exc,
+                exc.__traceback__,
+                repo="SimonBarnett/bobiverse",
+            )
+        return crash_report._post_intake(
+            title,
+            body,
+            repo="SimonBarnett/bobiverse",
+            sig=f"http-listener-fault|{why}|{host}|{port}"[:128],
+            exe="jeeves",
+        )
+    except Exception:
+        return {"ok": False, "why": why}
+
+
+def listener_self_probe_tick(
+    *,
+    host: str,
+    port: int,
+    timeout_s: float,
+    fail_streak: int,
+    max_fails: int,
+    report_fn: Callable[..., dict[str, Any]] | None = None,
+    exit_fn: Callable[[int], None] | None = None,
+    path: str = HEALTH_PATH,
+) -> int:
+    """FR #7618: one self-probe tick. Returns updated fail streak; may call exit_fn(nonzero)."""
+    url = f"http://{host}:{int(port)}{path}"
+    try:
+        doc = probe_listener_local_get(url, float(timeout_s))
+        if not doc.get("ok", True):
+            raise RuntimeError(f"listener probe not-ok body_keys={list(doc)[:8]}")
+        return 0
+    except Exception as exc:  # noqa: BLE001 — probe failure is the signal
+        streak = int(fail_streak) + 1
+        print(
+            f"WARN listener-self-probe fail streak={streak}/{max_fails} "
+            f"err={type(exc).__name__}: {exc}",
+            flush=True,
+        )
+        if streak < max(1, int(max_fails)):
+            return streak
+        try:
+            report_http_listener_fault(
+                why="self-probe",
+                detail=str(exc)[:400],
+                host=host,
+                port=int(port),
+                exc=exc,
+                report_fn=report_fn,
+            )
+        except Exception:
+            pass
+        print(
+            f"ERROR listener-self-probe giving up after {streak} fails; "
+            f"exit={LISTENER_EXIT_CODE} (FR #7618)",
+            flush=True,
+        )
+        if exit_fn is not None:
+            exit_fn(LISTENER_EXIT_CODE)
+        else:
+            os._exit(LISTENER_EXIT_CODE)
+        return streak
+
+
+def serve_forever_guarded(
+    httpd,
+    *,
+    report_fn: Callable[[BaseException], None] | None = None,
+    exit_fn: Callable[[int], None] | None = None,
+) -> None:
+    """FR #7618: wrap serve_forever so accept/serve fatals never leave a silent dead listener.
+
+    On MemoryError or any unexpected exception leaving serve_forever: report, close the
+    socket, and exit non-zero so NSSM / Task Scheduler restarts the process. Clean
+    shutdown (shutdown_request / KeyboardInterrupt) returns normally.
+    """
+
+    def _report(exc: BaseException) -> None:
+        if report_fn is not None:
+            report_fn(exc)
+            return
+        report_http_listener_fault(
+            why="accept-serve",
+            detail=str(exc)[:400],
+            host=str(getattr(httpd, "server_address", ("", 0))[0] or ""),
+            port=int(getattr(httpd, "server_address", ("", 0))[1] or 0),
+            exc=exc,
+        )
+
+    def _exit(code: int) -> None:
+        if exit_fn is not None:
+            exit_fn(int(code))
+            return
+        os._exit(int(code))
+
+    while True:
+        try:
+            httpd.serve_forever()
+            return
+        except KeyboardInterrupt:
+            return
+        except SystemExit:
+            raise
+        except BaseException as exc:  # noqa: BLE001 — MemoryError must not kill only the thread
+            print(
+                f"ERROR http accept/serve fatal {type(exc).__name__}: {exc} (FR #7618)",
+                flush=True,
+            )
+            try:
+                _report(exc)
+            except Exception:
+                pass
+            with contextlib.suppress(Exception):
+                httpd.server_close()
+            _exit(LISTENER_EXIT_CODE)
+            return
+
+
 def _watchdog_try_break(home: Path, *, why: str) -> None:
     """FR #2902: break only when break_stale actually unlinks; log the real outcome."""
     holder = bobreport.digest_lock_holder_pid(home)
@@ -1255,30 +1445,34 @@ def _watchdog_try_break(home: Path, *, why: str) -> None:
 
 
 def _start_health_watchdog(home: Path, host: str, port: int) -> None:
-    """FR #1136 / #2902: periodic loopback /health; break stale/foreign lock on failure."""
+    """FR #1136 / #2902 / #7618: loopback /health; break stale lock; exit if probe stays dead."""
     import threading
-    import urllib.request
 
     interval = _health_watchdog_s()
+    probe_budget = _listener_probe_s()
+    max_fails = _listener_probe_max_fails()
 
     def _loop() -> None:
-        url = f"http://{host}:{port}{HEALTH_PATH}"
+        fail_streak = 0
         while True:
             try:
                 time.sleep(interval)
             except Exception:
                 return
-            try:
+            with contextlib.suppress(Exception):
                 bobreport.break_stale_digest_lock(home)
-                req = urllib.request.Request(url, method="GET")
-                with urllib.request.urlopen(req, timeout=5.0) as resp:
-                    raw = resp.read()
-                doc = json.loads(raw.decode("utf-8") or "{}")
-                if not doc.get("ok"):
-                    print(f"WARN health-watchdog not-ok body={raw[:200]!r}", flush=True)
-                    _watchdog_try_break(home, why="not-ok")
-            except Exception as exc:  # noqa: BLE001 — heal and keep looping
-                _watchdog_try_break(home, why=f"err={exc}")
+            # FR #7618: self-probe with explicit budget; consecutive fails → report + exit.
+            fail_streak = listener_self_probe_tick(
+                host=host,
+                port=int(port),
+                timeout_s=probe_budget,
+                fail_streak=fail_streak,
+                max_fails=max_fails,
+            )
+            if fail_streak == 0:
+                continue
+            # Still below max_fails: keep digest.lock heal behaviour from FR #1136.
+            _watchdog_try_break(home, why=f"probe-fail-streak={fail_streak}")
 
     threading.Thread(target=_loop, name="bobcallback-health-watchdog", daemon=True).start()
 
@@ -1391,7 +1585,8 @@ def main() -> None:
         flush=True,
     )
     try:
-        httpd.serve_forever()
+        # FR #7618: never leave :port bound but dead after accept/serve MemoryError.
+        serve_forever_guarded(httpd)
     except KeyboardInterrupt:
         return
 

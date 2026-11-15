@@ -684,13 +684,19 @@ def start_http_thread(
     port: int,
     briefer_nick: str = "Jeeves",
 ) -> tuple[threading.Thread, object]:
-    """Bind bobcallback and serve_forever on a daemon thread. Returns (thread, httpd)."""
+    """Bind bobcallback and serve_forever_guarded on a daemon thread. Returns (thread, httpd).
+
+    FR #7618: accept/serve MemoryError (or any fatal leaving serve_forever) reports and
+    exits the process non-zero so NSSM restarts — never leave :port bound but dead while
+    the chair IRC side still looks alive.
+    """
     import bobcallback
 
     bobcallback.assert_home_usable(home)
     httpd = bobcallback.serve(home, host=host, port=port, briefer_nick=briefer_nick)
     t = threading.Thread(
-        target=httpd.serve_forever,
+        target=bobcallback.serve_forever_guarded,
+        args=(httpd,),
         name="jeeves-http",
         daemon=True,
     )
