@@ -28,19 +28,25 @@
       GitHub latest lookup failed or an expected MSI name was missing. Use the releases page meanwhile.
     </div>
 
-    <div class="grid">
-      <article class="card">
+    <div class="grid" id="download-grid">
+      <article class="card" data-product="bob">
         <span class="pill err">Unavailable</span>
         <h3>Bob ear</h3>
         <p>Direct latest link is temporarily broken.</p>
         <a class="btn btn-primary" href="https://github.com/SimonBarnett/bobiverse/releases">Open GitHub Releases</a>
       </article>
-      <article class="card">
+      <article class="card" data-product="jeeves">
         <span class="pill err">Unavailable</span>
         <h3>Jeeves</h3>
         <p>Fallback: pick the newest jeeves MSI on GitHub.</p>
       </article>
-      <article class="card">
+      <article class="card" data-product="priority-agent">
+        <span class="pill err">Unavailable</span>
+        <h3>Priority Agent</h3>
+        <p>Fallback: open SimonBarnett/priority-mcp releases on GitHub.</p>
+      </article>
+      <!-- airc must stay the last card; insert new cards above this line. -->
+      <article class="card" data-product="airc">
         <span class="pill err">Unavailable</span>
         <h3>airc</h3>
         <p>Fallback: pick the newest airc MSI on GitHub.</p>

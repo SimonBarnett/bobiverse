@@ -24,6 +24,8 @@ def test_fr7455_page_has_priority_card_and_external_script():
     assert 'data-product="priority-agent"' in html
     assert "Priority Agent" in html
     assert 'src="/downloads/priority-agent.js"' in html
+    assert 'data-role="release-notes"' in html
+    assert "priority-mcp/releases" in html
     assert not HARDCODED_VER.search(html), "page must not hardcode a Priority Agent version"
 
 
@@ -107,6 +109,7 @@ const path = process.argv[2];
 const payload = JSON.parse(process.argv[3]);
 const js = fs.readFileSync(path, 'utf8');
 const versionEl = { textContent: '' };
+const notesEl = { href: 'https://github.com/SimonBarnett/priority-mcp/releases' };
 const assetsEl = {
   children: [],
   firstChild: null,
@@ -126,6 +129,7 @@ const card = {
   querySelector(sel) {
     if (sel.indexOf('version') !== -1) return versionEl;
     if (sel.indexOf('assets') !== -1) return assetsEl;
+    if (sel.indexOf('release-notes') !== -1) return notesEl;
     return null;
   }
 };
@@ -148,6 +152,7 @@ if (!api) { console.error('missing export'); process.exit(2); }
 api.refresh(card, ctx.fetch).then(function () {
   const out = {
     version: versionEl.textContent,
+    notesHref: notesEl.href,
     hrefs: assetsEl.children.map(function (c) { return c.href; }),
     labels: assetsEl.children.map(function (c) { return c.textContent; }),
     classes: assetsEl.children.map(function (c) { return c.className; })
@@ -175,3 +180,66 @@ api.refresh(card, ctx.fetch).then(function () {
     assert "browser_download_url" not in hrefs
     assert any("btn-gold" in c for c in out["classes"])
     assert any("btn-ghost" in c for c in out["classes"])
+    assert out["notesHref"].endswith("/releases/tag/v1.2.0")
+    assert "html_url" not in out["notesHref"]
+
+
+def test_fr7455_notes_fallback_on_fetch_failure_and_no_match(tmp_path: Path):
+    node = shutil.which("node")
+    if not node:
+        return
+    runner = tmp_path / "run_pa_fail.js"
+    runner.write_text(
+        """
+const fs = require('fs');
+const vm = require('vm');
+const path = process.argv[2];
+const mode = process.argv[3];
+const js = fs.readFileSync(path, 'utf8');
+const versionEl = { textContent: '' };
+const notesEl = { href: 'stale-should-reset' };
+const assetsEl = {
+  children: [], firstChild: null,
+  appendChild(c) { this.children.push(c); this.firstChild = this.children[0]; return c; },
+  removeChild(c) { this.children = this.children.filter(function (x) { return x !== c; }); this.firstChild = this.children[0] || null; return c; }
+};
+const card = {
+  querySelector(sel) {
+    if (sel.indexOf('version') !== -1) return versionEl;
+    if (sel.indexOf('assets') !== -1) return assetsEl;
+    if (sel.indexOf('release-notes') !== -1) return notesEl;
+    return null;
+  }
+};
+function el(tag) { return { tagName: tag, className: '', href: '', textContent: '', setAttribute() {} }; }
+const ctx = {
+  console: console,
+  document: { createElement: el, querySelector() { return card; } },
+  fetch() {
+    if (mode === 'fail') return Promise.resolve({ ok: false, json() { return Promise.resolve([]); } });
+    return Promise.resolve({ ok: true, json() { return Promise.resolve([{ name: 'Other v1', tag_name: 'v1', draft: false, prerelease: false, assets: [] }]); } });
+  },
+  globalThis: null
+};
+ctx.globalThis = ctx;
+vm.createContext(ctx);
+vm.runInContext(js, ctx);
+const api = ctx.BobiversePriorityAgentDownloads;
+api.refresh(card, ctx.fetch).then(function () {
+  process.stdout.write(JSON.stringify({ notesHref: notesEl.href, version: versionEl.textContent, fallback: api.NOTES_FALLBACK }));
+}).catch(function (e) { console.error(e); process.exit(1); });
+""",
+        encoding="utf-8",
+    )
+    for mode in ("fail", "nomatch"):
+        r = subprocess.run(
+            [node, str(runner), str(SCRIPT), mode],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+        assert r.returncode == 0, r.stdout + r.stderr
+        out = json.loads(r.stdout.strip().splitlines()[-1])
+        assert out["notesHref"] == out["fallback"]
+        assert out["notesHref"].endswith("/priority-mcp/releases")

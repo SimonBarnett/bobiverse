@@ -108,6 +108,10 @@ body {
   gap: 1rem;
   grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr));
 }
+/* FR #7528: downloads mock is one full-width card per row. */
+#download-grid {
+  grid-template-columns: 1fr;
+}
 .card {
   background: var(--paper-card);
   border: 1px solid var(--line);
