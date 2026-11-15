@@ -69,6 +69,7 @@ $rewriteXml = @"
           <match url="^jeeves(/.*)?$" ignoreCase="true" />
           <conditions>
             <add input="{REQUEST_URI}" pattern="/jeeves/assets/" negate="true" />
+            <add input="{REQUEST_URI}" pattern="/jeeves/commands" negate="true" />
           </conditions>
           <action type="Rewrite" url="$Backend/jeeves{R:1}" />
         </rule>
@@ -136,23 +137,26 @@ if (Test-Path -LiteralPath $webConfig) {
     }
     if ($updated -notmatch 'BobJeevesAppliance' -and $updated -match '</rules>') {
         # FR #6903: /jeeves appliance login -> bobcallback (FR #6815/6818).
+        # FR #7413: also skip /jeeves/commands (static public HTML).
         $jeevesRule = @"
         <rule name="BobJeevesAppliance" stopProcessing="true">
           <match url="^jeeves(/.*)?$" ignoreCase="true" />
           <conditions>
             <add input="{REQUEST_URI}" pattern="/jeeves/assets/" negate="true" />
+            <add input="{REQUEST_URI}" pattern="/jeeves/commands" negate="true" />
           </conditions>
           <action type="Rewrite" url="$Backend/jeeves{R:1}" />
         </rule>
 "@
         $updated = $updated -replace '</rules>', ($jeevesRule + '</rules>')
     }
-    if ($updated -match 'BobJeevesAppliance' -and $updated -notmatch 'jeeves/assets/') {
+    if ($updated -match 'BobJeevesAppliance' -and ($updated -notmatch 'jeeves/assets/' -or $updated -notmatch 'jeeves/commands')) {
         $jeevesRuleUp = @"
         <rule name="BobJeevesAppliance" stopProcessing="true">
           <match url="^jeeves(/.*)?$" ignoreCase="true" />
           <conditions>
             <add input="{REQUEST_URI}" pattern="/jeeves/assets/" negate="true" />
+            <add input="{REQUEST_URI}" pattern="/jeeves/commands" negate="true" />
           </conditions>
           <action type="Rewrite" url="$Backend/jeeves{R:1}" />
         </rule>
@@ -215,7 +219,17 @@ if (Test-Path -LiteralPath $wwwSrc) {
         }
         Copy-Item -LiteralPath $downloadsSrc -Destination $downloadsDst -Recurse -Force
     }
-    Write-Host "INFO synced FR #6453/#7410 www docs from $wwwSrc -> $PhysicalPath"
+    # FR #7413: public /jeeves/commands (rewrite skips this prefix; not behind settings cookie).
+    $commandsSrc = Join-Path $wwwSrc 'jeeves\commands'
+    if (Test-Path -LiteralPath $commandsSrc) {
+        $commandsDst = Join-Path $PhysicalPath 'jeeves\commands'
+        if (Test-Path -LiteralPath $commandsDst) {
+            Remove-Item -LiteralPath $commandsDst -Recurse -Force
+        }
+        $null = New-Item -ItemType Directory -Force -Path (Split-Path -Parent $commandsDst)
+        Copy-Item -LiteralPath $commandsSrc -Destination $commandsDst -Recurse -Force
+    }
+    Write-Host "INFO synced FR #6453/#7410/#7413 www docs from $wwwSrc -> $PhysicalPath"
 } else {
     Write-Host "WARN FR #6453 www source missing: $wwwSrc"
 }
