@@ -978,15 +978,19 @@ function Get-BobGitShortSha {
 function Get-BobIrcModelFromJob {
     param($Job)
     if (-not $Job) { return $null }
+    # FR #7549: prefer live seat/CLI model; never invent fuel-pool label "Cursor Models".
+    if ($Job.model) {
+        $m = [string]$Job.model
+        if ($m -and $m -ne 'Cursor Models') { return $m }
+    }
     $fuel = [string]$Job.fuel
     switch ($fuel) {
-        'cursor-models' { return 'Cursor Models' }
         'copilot' { return 'Copilot' }
         'grok-bot' { return 'Grok Bot' }
         'grok-build' { return 'grok.exe' }
         'on-demand' { return 'grok.exe' }
+        # cursor-models is a fuel pool id, not a model name (FR #7549).
     }
-    if ($Job.model) { return [string]$Job.model }
     return $null
 }
 
@@ -2289,7 +2293,13 @@ function Build-BobDigestWebhookMergePayload {
         if ($Doc.sand_period_end) { $payload.sand_period_end = [string]$Doc.sand_period_end }
     }
     if ($Doc.period_end) { $payload.period_end = [string]$Doc.period_end }
-    if ($Doc.model) { $payload.model = [string]$Doc.model }
+    # FR #7549: always publish model (null clears sticky); never the fuel label "Cursor Models".
+    $modelPub = $null
+    if ($Doc.model) {
+        $m = [string]$Doc.model
+        if ($m -and $m -ne 'Cursor Models') { $modelPub = $m }
+    }
+    $payload.model = $modelPub
     if ($Doc.kind) { $payload.kind = [string]$Doc.kind }
     # FR #5690: always publish clearable string fields (explicit null) so chair can drop sticky values.
     if ($Doc.repo) { $payload.repo = [string]$Doc.repo } else { $payload.repo = $null }
@@ -2668,8 +2678,8 @@ function Write-BobIrcStatus {
             }
         }
     } catch { }
+    # FR #7549: model from live seat/CLI only; never invent from cursor_label (fuel display).
     $model = Get-BobIrcModelFromJob $primary
-    if (-not $model -and $cursorLabel -and $cursorLabel -ne 'empty') { $model = 'Cursor Models' }
     $kind = Get-BobIrcKindFromJob $primary
     $topRepo = $null
     if ($primary) { $topRepo = Get-BobJobRepoStamp $primary }
