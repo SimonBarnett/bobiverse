@@ -2016,6 +2016,8 @@ function Start-BobTrayWorkerExe {
     param(
         [ValidateSet('agent', 'plan')][string]$Mode,
         [ValidateSet('', 'auto', 'grok', 'cursor', 'opencode')][string]$Agent = '',
+        [string]$SeatId = '',
+        [string]$Trigger = 'other',
         [switch]$Quiet
     )
     try {
@@ -2087,6 +2089,12 @@ function Start-BobTrayWorkerExe {
         $childPid = @(Start-BobTrayVisibleProcessWithSessionEnv -FilePath $run -ArgumentList $argv -WorkingDirectory $wd -Title $title)[-1]
         $picked = if ($explicit) { $explicit } else { 'auto' }
         Write-TrayLog ('{0}: started bob-worker.exe pid={1} mode={2} agent={3} own visible console (NEW agent every click; explicit agent never substitutes)' -f $Mode, $childPid, $Mode, $picked)
+        if ([int]$childPid -gt 0) {
+            $seatForLog = if ($SeatId) { [string]$SeatId } else { [string]$mid }
+            if (-not $seatForLog) { $seatForLog = 'unknown' }
+            $trigForLog = if ($Trigger) { [string]$Trigger } else { 'other' }
+            Write-BobTraySeatStart -Log { param($m) Write-TrayLog $m } -SeatId $seatForLog -WorkerPid ([int]$childPid) -Trigger $trigForLog
+        }
         return [int]$childPid   # t810u: the remote !startworker path reports it
     }
     catch {
@@ -3741,10 +3749,10 @@ function Update-BobTrayWorkerAgentsMenu {
                     return
                 }
                 if ($picked -eq 'auto') {
-                    Start-BobTrayWorkerExe -Mode 'agent' -Agent ''
+                    Start-BobTrayWorkerExe -Mode 'agent' -Agent '' -Trigger 'menu'
                 }
                 else {
-                    Start-BobTrayWorkerExe -Mode 'agent' -Agent $picked
+                    Start-BobTrayWorkerExe -Mode 'agent' -Agent $picked -Trigger 'menu'
                 }
             })
         [void]$MenuItem.DropDownItems.Add($item)
@@ -3813,7 +3821,7 @@ $miAgents.Add_DropDownOpening({
         Start-BobTrayWorkerAgentsRefresh $miAgents
     })
 $miPlan = $menu.Items.Add('Plan')
-$miPlan.Add_Click({ Start-BobTrayWorkerExe -Mode 'plan' })
+$miPlan.Add_Click({ Start-BobTrayWorkerExe -Mode 'plan' -Trigger 'menu' })
 $miAck = $menu.Items.Add('Acknowledge')
 $miLog = $menu.Items.Add('Open log')
 [void]$menu.Items.Add('-')
@@ -4147,13 +4155,13 @@ $startWorkerTimer.Add_Tick({
                     # FR #7579: shared helper (also used at poll start + ThreadPool heartbeat).
                     [void](Write-BobTrayEngineAliveStamp -Dir $script:startWorkerDir)
                     [void](Invoke-BobTrayStartWorkerQueue -Dir $script:startWorkerDir `
-                            -Launch { param($mode, $agent) Start-BobTrayWorkerExe -Mode $mode -Agent $agent -Quiet } `
+                            -Launch { param($mode, $agent) Start-BobTrayWorkerExe -Mode $mode -Agent $agent -Quiet -Trigger 'auto-start' } `
                             -Log { param($m) Write-TrayLog $m })
                     # FR #5059: elevated recycle of a named seat (stop+verify, then start)
                     if (Get-Command Invoke-BobTrayRecycleSeatQueue -ErrorAction SilentlyContinue) {
                         $rsDir = Get-BobTrayRecycleSeatDir -Root $RepoRoot
                         [void](Invoke-BobTrayRecycleSeatQueue -Root $RepoRoot -Dir $rsDir `
-                                -Launch { Start-BobTrayWorkerExe -Mode 'agent' -Quiet } `
+                                -Launch { param($seatNick) Start-BobTrayWorkerExe -Mode 'agent' -Quiet -Trigger 'restore-after-recycle' -SeatId $seatNick } `
                                 -Log { param($m) Write-TrayLog $m })
                     }
                     if (Test-BobTrayEngineMode) {

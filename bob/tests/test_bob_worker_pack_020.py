@@ -85,7 +85,7 @@ def test_tray_agents_menu_lists_choices_and_plan_stays_one_click():
     assert "$menu.Items.Add('Agents')" in block and "$menu.Items.Add('Plan')" in block
     assert "Update-BobTrayWorkerAgentsMenu" in block
     assert "DropDownOpening" in block
-    assert "$miPlan.Add_Click({ Start-BobTrayWorkerExe -Mode 'plan' })" in block
+    assert "$miPlan.Add_Click({ Start-BobTrayWorkerExe -Mode 'plan' -Trigger 'menu' })" in block
     assert "Get-BobTrayWorkerAgentChoices" in t
     assert "--list-agents" in t
     assert "Start-BobTrayWorkerExe -Mode 'agent' -Agent" in t
