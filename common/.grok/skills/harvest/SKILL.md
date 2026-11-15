@@ -490,6 +490,7 @@ routes to bobiverse via the split rule.
 - When git status runs under ErrorActionPreference Stop, a missing sparse directory warning aborts the script. Skip a recycle path whose parent is absent, and run that status under Continue.
 - A fuel-publish test must pass now next to the fixture fetched_at. Wall-clock now and epoch now both look stale to the pool reporter.
 - overage_fetched_at is the Copilot refresh stamp. Do not put it in the Cursor-bridge strip set or cleared list. A fuel delta must still carry the new stamp on the wire.
+- A systemprofile skip test must clear GROK_AUTH_PATH as well as BOB_GROK_AUTH_PATH, and stub the auth-path stamp. Otherwise the weekly publish reports explicit-auth.
 
 ## Harvest digest (lessons audit 2026-10-06)
 
