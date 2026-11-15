@@ -20,3 +20,11 @@ def test_fr7631_comment_drops_idle_author_fewest_commits():
     low = chunk.lower()
     for name in banned:
         assert name not in low
+
+def test_mrb7632_comment_cites_live_eligible_fr_chain():
+    """MRB hostile: call-site comment must cite the live-eligible FR chain."""
+    src = CHAIR.read_text(encoding="utf-8")
+    idx = src.index("maybe_recycle_stuck_no_eligible_reviewer")
+    chunk = src[max(0, idx - 200) : idx]
+    assert "#7574" in chunk or "#7616" in chunk or "#7631" in chunk
+    assert "FR #7334" in chunk
