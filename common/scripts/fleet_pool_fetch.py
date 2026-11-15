@@ -14,11 +14,16 @@ from typing import Callable
 
 FLEET_POOL_FETCH_S = 60.0
 FLEET_POOL_BACKOFF_CAP_S = 600.0
+# FR #7504: no real live fetch for this long -> exception report (Si: stale is a bug).
+FLEET_POOL_STALE_S = 120.0
+FLEET_POOL_STALE_COMMENT_S = 600.0
+FLEET_POOL_STALE_REPO = "SimonBarnett/bobiverse"
 STATE_NAME = "fleet-pools-state.json"
 POOL_COPILOT = "copilot"
 POOL_OC_FREE = "opencode-free"
 POOL_OC_GO = "opencode-go"
 POOL_CURSOR = "cursor"
+STALE_REPORT_POOLS = (POOL_COPILOT, POOL_OC_GO)
 CURSOR_CREDMAN_TARGET = "Bobiverse/CursorAccess"
 
 # FR #7288: walrus CredMan targets (generic credentials; secret in password blob).
@@ -255,6 +260,8 @@ def mark_attempt(
     rate_limited: bool = False,
 ) -> None:
     st = dict(state.get(name) if isinstance(state.get(name), dict) else {})
+    if not st.get("first_attempt"):
+        st["first_attempt"] = float(now)
     st["last_attempt"] = float(now)
     st["error"] = error
     if ok:
@@ -603,4 +610,215 @@ def tick_fleet_pools(
 
     _save_state(home_p, state)
     apply_fleet_pools_to_digest(home_p, fleet)
+    try:
+        maybe_report_fleet_pool_staleness(home_p, now=now_f)
+    except Exception:
+        pass
     return public_fleet_section(fleet)
+
+
+def fleet_pool_stale_sig(pool: str) -> str:
+    return f"fleet-pool-stale:{pool}"
+
+
+def pool_seconds_without_live_fetch(state_row: dict | None, now: float) -> float | None:
+    """Seconds since last successful live fetch, or since first attempt if never ok."""
+    if not isinstance(state_row, dict):
+        return None
+    last_ok = float(state_row.get("last_ok") or 0.0)
+    if last_ok > 0.0:
+        return float(now) - last_ok
+    first = float(state_row.get("first_attempt") or state_row.get("last_attempt") or 0.0)
+    if first <= 0.0:
+        return None
+    return float(now) - first
+
+
+def _safe_text(value: object, *, limit: int = 240) -> str:
+    try:
+        import crash_report as cr
+
+        text = cr.redact(str(value if value is not None else ""))
+    except Exception:
+        text = str(value if value is not None else "")
+    text = text.replace("\r", " ").replace("\n", " ").strip()
+    return text[:limit]
+
+
+def build_fleet_pool_stale_report(
+    pool: str,
+    *,
+    fetched_at: str | None,
+    error: str | None,
+    age_s: float,
+    version: str | None = None,
+) -> tuple[str, str, str]:
+    """Title, body, sig for a stale fleet pool. Never includes secrets."""
+    try:
+        import crash_report as cr
+
+        ver = (version or cr.read_version() or "unknown").strip()[:64]
+    except Exception:
+        ver = (version or "unknown").strip()[:64]
+    sig = fleet_pool_stale_sig(pool)
+    title = f"Jeeves fleet pool stale: {pool} (FR #7504)"
+    last_good = _safe_text(fetched_at or "(none)")
+    err = _safe_text(error or "(none)")
+    body = (
+        f"<!-- {sig} -->\n"
+        f"## Stale fleet pool\n\n"
+        f"- pool: `{_safe_text(pool, limit=64)}`\n"
+        f"- age_without_live_fetch_s: {int(age_s)}\n"
+        f"- last_good_fetched_at: `{last_good}`\n"
+        f"- last_fetch_error: `{err}`\n"
+        f"- jeeves_version: `{_safe_text(ver, limit=64)}`\n\n"
+        "Si rule: stale is a bug — report like any other exception. "
+        "No auto-close; comment on recovery.\n"
+    )
+    return title, body, sig
+
+
+def file_fleet_pool_stale_exception(
+    *,
+    pool: str,
+    title: str,
+    body: str,
+    sig: str,
+    repo: str = FLEET_POOL_STALE_REPO,
+) -> dict:
+    """File via intake (same path as crash_report). Injectable in tests."""
+    import crash_report as cr
+
+    result = cr._post_intake(title, body, repo=repo, sig=sig, exe="jeeves")
+    number = None
+    if isinstance(result, dict):
+        number = result.get("number") or (result.get("issue") or {}).get("number")
+        if number is None and result.get("url"):
+            # best-effort parse .../issues/N
+            try:
+                number = int(str(result.get("url")).rstrip("/").rsplit("/", 1)[-1])
+            except (TypeError, ValueError):
+                number = None
+    if number is None:
+        number = cr._gh_search_open_sig(repo, sig)
+    return {"ok": True, "deduped": False, "number": number, "result": result, "pool": pool, "body": body}
+
+
+def comment_fleet_pool_stale_issue(
+    *,
+    number: int,
+    body: str,
+    repo: str = FLEET_POOL_STALE_REPO,
+) -> bool:
+    import crash_report as cr
+
+    return bool(cr._gh_comment(repo, int(number), body))
+
+
+def maybe_report_fleet_pool_staleness(
+    home: Path,
+    *,
+    now: float | None = None,
+    repo: str = FLEET_POOL_STALE_REPO,
+) -> dict:
+    """FR #7504: one open report per stale fleet pool; comment on prolong/recovery."""
+    now_f = time.time() if now is None else float(now)
+    home_p = Path(home)
+    state = _load_state(home_p)
+    fleet: dict = {}
+    try:
+        import bobreport
+
+        digest = bobreport.load_digest(home_p)
+        fleet = digest.get("fleet_pools") if isinstance(digest.get("fleet_pools"), dict) else {}
+    except Exception:
+        fleet = {}
+    out: dict = {}
+    changed = False
+    for pool in STALE_REPORT_POOLS:
+        st = dict(state.get(pool) if isinstance(state.get(pool), dict) else {})
+        age = pool_seconds_without_live_fetch(st, now_f)
+        row = fleet.get(pool) if isinstance(fleet.get(pool), dict) else {}
+        fetched_at = row.get("fetched_at") if isinstance(row, dict) else None
+        err = st.get("error") or (row.get("error") if isinstance(row, dict) else None)
+        issue_n = st.get("stale_issue")
+        try:
+            issue_n = int(issue_n) if issue_n not in (None, "") else None
+        except (TypeError, ValueError):
+            issue_n = None
+        open_flag = bool(st.get("stale_open"))
+        if age is None or age < float(FLEET_POOL_STALE_S):
+            # recovery path
+            if open_flag and issue_n:
+                body = (
+                    f"<!-- {fleet_pool_stale_sig(pool)} -->\n"
+                    f"Fleet pool `{pool}` recovered live fetch "
+                    f"(age_s={0 if age is None else int(age)}; "
+                    f"fetched_at=`{_safe_text(fetched_at or '')}`).\n"
+                    "Leaving issue open (no auto-close).\n"
+                )
+                comment_fleet_pool_stale_issue(number=issue_n, body=body, repo=repo)
+                st["stale_open"] = False
+                st["stale_recovered"] = True
+                st["stale_recovered_at"] = float(now_f)
+                state[pool] = st
+                changed = True
+                out[pool] = {"action": "recovered", "number": issue_n}
+            else:
+                out[pool] = {"action": "ok"}
+            continue
+        # stale
+        title, body, sig = build_fleet_pool_stale_report(
+            pool, fetched_at=str(fetched_at) if fetched_at else None, error=str(err) if err else None, age_s=age
+        )
+        if issue_n and open_flag:
+            last_c = float(st.get("stale_comment_at") or 0.0)
+            if (now_f - last_c) >= float(FLEET_POOL_STALE_COMMENT_S):
+                prolong = (
+                    f"<!-- {sig} -->\n"
+                    f"Still stale: pool=`{pool}` age_s={int(age)} "
+                    f"last_good_fetched_at=`{_safe_text(fetched_at or '(none)')}` "
+                    f"last_fetch_error=`{_safe_text(err or '(none)')}`\n"
+                )
+                comment_fleet_pool_stale_issue(number=issue_n, body=prolong, repo=repo)
+                st["stale_comment_at"] = float(now_f)
+                state[pool] = st
+                changed = True
+                out[pool] = {"action": "commented", "number": issue_n}
+            else:
+                out[pool] = {"action": "deduped", "number": issue_n}
+            continue
+        # find existing open or file new
+        existing = None
+        try:
+            import crash_report as cr
+
+            existing = cr._gh_search_open_sig(repo, sig)
+        except Exception:
+            existing = None
+        if existing:
+            st["stale_issue"] = int(existing)
+            st["stale_open"] = True
+            st["stale_comment_at"] = float(now_f)
+            state[pool] = st
+            changed = True
+            comment_fleet_pool_stale_issue(number=int(existing), body=body, repo=repo)
+            out[pool] = {"action": "deduped", "number": int(existing)}
+            continue
+        filed = file_fleet_pool_stale_exception(
+            pool=pool, title=title, body=body, sig=sig, repo=repo
+        )
+        num = filed.get("number")
+        if num is not None:
+            st["stale_issue"] = int(num)
+            st["stale_open"] = True
+            st["stale_comment_at"] = float(now_f)
+            st["stale_recovered"] = False
+            state[pool] = st
+            changed = True
+            out[pool] = {"action": "filed", "number": int(num)}
+        else:
+            out[pool] = {"action": "filed", "number": None, "spooled": True}
+    if changed:
+        _save_state(home_p, state)
+    return out
