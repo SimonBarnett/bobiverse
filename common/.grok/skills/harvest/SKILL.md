@@ -441,6 +441,7 @@ routes to bobiverse via the split rule.
 - Git webhook allowlist must cover every subscribed event or return 204 ignore after owner gate --- never empty 400 for authentic deliveries; optional HMAC via BOB_CONFIG_DIR/github-webhook.secret with hmac.compare_digest; do not let gen_bob_webhook_docs_html clobber the rich front-page index.html
 - Ear pool FR: never stretch past EAR_POOL_FETCH_S=60 --- drop rate_limited exponential backoff; surface 429 as row error; auth.json mtime watch forces immediate fetch.
 - /jeeves/commands must be served static (bobcallback + settings /commands) before settings proxy; never require login
+- Ear publish: strip cursor_label/cursor_pools/cursor_known/overage_*/pcent.grok-chat+cursor-models in build_peer_fuel_merge_payload; always cleared[] + empty-or-nonlegacy pcent replace so sticky digest leftovers drop; keep companion digest-reader FR separate.
 
 ## Harvest digest (lessons audit 2026-10-06)
 
