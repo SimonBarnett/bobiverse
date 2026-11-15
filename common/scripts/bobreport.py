@@ -2597,7 +2597,11 @@ def _apply_merge_payload(doc: dict, mid: str, payload: dict) -> list[str]:
             ent["working_on"] = text
         else:
             _roll_working_on(ent)
-    # FR #7549: fuel-pool label "Cursor Models" is not a model — force clear.
+    # FR #7549 / #7585: poison or omitted model clears the sticky digest label.
+    if "model" not in payload:
+        cleared = payload.setdefault("cleared", [])
+        if isinstance(cleared, list) and "model" not in cleared:
+            cleared.append("model")
     if "model" in payload:
         cleaned = _sanitize_digest_model(payload.get("model"))
         if cleaned is None:
@@ -5010,7 +5014,8 @@ def strip_legacy_cursor_bridge_from_fuel_payload(payload: dict | None) -> dict:
     for key in sorted(_LEGACY_CURSOR_BRIDGE_TOP_KEYS):
         if key not in cleared:
             cleared.append(key)
-    # FR #7549: never forward fuel-pool label as digest model; clear sticky poison only.
+    # FR #7549 / #7585: a missing model must clear the sticky label. An upgraded
+    # ear omits model; the chair used to keep "Cursor Models" forever.
     if "model" in payload:
         cleaned_model = _sanitize_digest_model(payload.get("model"))
         if cleaned_model is None:
@@ -5019,6 +5024,8 @@ def strip_legacy_cursor_bridge_from_fuel_payload(payload: dict | None) -> dict:
                 cleared.append("model")
         else:
             payload["model"] = cleaned_model
+    elif "model" not in cleared:
+        cleared.append("model")
     return payload
 
 
