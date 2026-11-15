@@ -471,6 +471,7 @@ routes to bobiverse via the split rule.
 - When an assigned FR is already closed as a receipt of an earlier fix, NACK with the covering issue and PR and do not open another PR.
 - Windows exit 0xffffffff with empty agent stderr is an external kill. Do not open an intake for it.
 - A daemon health probe that os._exits must stop when the server it watches has shut down, or any test that binds and shuts the listener will kill the suite a minute later with no failure line.
+- When a later FR says a catch must not intake, update the older must-report pin instead of adding the reporter back. A comment that names the helper is not a call.
 
 ## Harvest digest (lessons audit 2026-10-06)
 
