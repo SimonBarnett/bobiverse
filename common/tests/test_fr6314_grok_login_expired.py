@@ -1,6 +1,8 @@
 """FR #6314: xAI billing 401/403 -> grok-login-expired (keep last-good stale).
 
-Other HTTP failures keep provider-http-N. Ear never rewrites auth.json.
+Other HTTP failures keep provider-http-N. FR #7464: when a refresh_token is
+present the ear attempts OAuth refresh first; these fixtures reject refresh so
+the expired class still applies (rewrite only on a successful refresh).
 """
 from __future__ import annotations
 
@@ -120,6 +122,10 @@ def test_fr6314_publish_keeps_last_good_with_login_expired(monkeypatch, tmp_path
 
     def fake_urlopen(req, timeout=0):  # noqa: ARG001
         url = req.get_full_url()
+        # FR #7464: ear tries OAuth refresh after billing 401; reject it so
+        # the expired class still applies.
+        if "oauth2/token" in url:
+            raise _http_error(url, 400)
         if "billing" in url:
             raise _http_error(url, 401)
         posted.append(json.loads(req.data.decode("utf-8")))

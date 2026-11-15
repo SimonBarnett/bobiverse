@@ -16,7 +16,7 @@ import threading
 import time
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable
 
@@ -7247,7 +7247,13 @@ def _read_xai_log_file(path: Path, *, now: datetime | None) -> dict | None:
 
 XAI_BILLING_CREDITS_URL = "https://cli-chat-proxy.grok.com/v1/billing?format=credits"
 XAI_BILLING_SOURCE = "cli-chat-proxy:/v1/billing?format=credits"
+# FR #7464: Grok CLI OAuth refresh (public client; same as official grok login).
+XAI_OAUTH_TOKEN_URL = "https://auth.x.ai/oauth2/token"
+XAI_OAUTH_CLIENT_ID = "b1a00492-073a-47ea-816f-4c329264a828"
+# Refresh when access token is expired or under this many seconds remain.
+XAI_ACCESS_REFRESH_LEAD_S = 10 * 60
 # FR #6314: billing 401/403 with Grok CLI auth.json => expired sign-in (not network/5xx).
+# FR #7464: only after refresh is rejected (or no refresh_token remains).
 XAI_GROK_LOGIN_EXPIRED = "grok-login-expired"
 XAI_AUTH_EXPIRED_ERRORS = frozenset(
     {
@@ -7663,6 +7669,246 @@ def _grok_auth_bearer_from_file(path: Path) -> str | None:
     return token
 
 
+def _read_grok_auth_doc(path: Path) -> tuple[dict | None, str | None]:
+    """Load auth.json object. Never logs credential values."""
+    raw = None
+    win_err: int | None = None
+    if os.name == "nt":
+        raw, win_err = read_text_win32_backup(path)
+        if raw is None and win_err is None:
+            return None, "auth-file-bad-json"
+    if raw is None:
+        try:
+            raw = path.read_text(encoding="utf-8")
+        except OSError:
+            if win_err:
+                return None, f"auth-file-unreadable:win32-{int(win_err)}"
+            return None, "auth-file-unreadable"
+        except UnicodeError:
+            return None, "auth-file-bad-json"
+    try:
+        doc = json.loads(raw)
+    except json.JSONDecodeError:
+        return None, "auth-file-bad-json"
+    if not isinstance(doc, dict) or not doc:
+        return None, "auth-key-missing"
+    return doc, None
+
+
+def _pick_grok_session_slot(
+    doc: dict, *, now: datetime | None = None
+) -> tuple[str | None, dict | None, str | None, str | None]:
+    """Return (slot, entry, token, label) for the preferred interactive session."""
+    clock = now or datetime.now(timezone.utc)
+    if clock.tzinfo is None:
+        clock = clock.replace(tzinfo=timezone.utc)
+    candidates: list[tuple[int, str, dict, str, str | None]] = []
+    for slot, entry in doc.items():
+        if not isinstance(entry, dict):
+            continue
+        if _auth_slot_is_api_key(slot):
+            continue
+        token = _auth_entry_bearer(entry)
+        if not token:
+            continue
+        exp = _parse_auth_expires_at(entry.get("expires_at"))
+        rank = 0
+        if exp is not None and exp <= clock:
+            rank = 1
+        label = _label_from_grok_profile(entry)
+        candidates.append((rank, str(slot), entry, token, label))
+    if not candidates:
+        return None, None, None, None
+    candidates.sort(key=lambda t: t[0])
+    _rank, slot, entry, token, label = candidates[0]
+    return slot, entry, token, label
+
+
+def _auth_entry_refresh_token(entry: dict) -> str | None:
+    val = entry.get("refresh_token")
+    if isinstance(val, str) and val.strip():
+        return val.strip()
+    return None
+
+
+def _auth_entry_needs_refresh(entry: dict, *, now: datetime | None = None) -> bool:
+    """True when access is expired or under the FR #7464 lead window."""
+    if not _auth_entry_refresh_token(entry):
+        return False
+    clock = now or datetime.now(timezone.utc)
+    if clock.tzinfo is None:
+        clock = clock.replace(tzinfo=timezone.utc)
+    exp = _parse_auth_expires_at(entry.get("expires_at"))
+    if exp is None:
+        return False
+    remain = (exp - clock).total_seconds()
+    return remain <= float(XAI_ACCESS_REFRESH_LEAD_S)
+
+
+def _oauth_client_id_for_slot(slot: str, entry: dict) -> str:
+    raw = entry.get("oidc_client_id")
+    if isinstance(raw, str) and raw.strip():
+        return raw.strip()
+    parts = str(slot or "").split("::", 1)
+    if len(parts) == 2 and parts[1].strip():
+        return parts[1].strip()
+    return XAI_OAUTH_CLIENT_ID
+
+
+def _format_auth_expires_at(dt: datetime) -> str:
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _atomic_write_grok_auth_json(path: Path, doc: dict) -> str | None:
+    """Write auth.json atomically (tmp + replace). Never logs contents."""
+    text = json.dumps(doc, indent=2, sort_keys=True) + "\n"
+    tmp = path.with_name(path.name + ".bob-refresh.tmp")
+    try:
+        _write_text_with_retry(tmp, text)
+        _replace_with_retry(tmp, path)
+        return None
+    except OSError:
+        try:
+            if tmp.is_file():
+                tmp.unlink()
+        except OSError:
+            pass
+        return "auth-write-failed"
+
+
+def refresh_grok_oauth_access_token(
+    refresh_token: str,
+    *,
+    client_id: str | None = None,
+    timeout: float = 8.0,
+) -> tuple[dict | None, str | None]:
+    """POST refresh_token grant to auth.x.ai. Returns (token_payload, error).
+
+    Never logs token values. ``error`` is ``refresh-rejected`` / ``refresh-bad-json`` /
+    ``refresh-network`` / ``refresh-missing-access`` (no secrets).
+    """
+    import urllib.error
+    import urllib.parse
+    import urllib.request
+
+    rt = (refresh_token or "").strip()
+    if not rt:
+        return None, "refresh-missing"
+    cid = (client_id or XAI_OAUTH_CLIENT_ID).strip() or XAI_OAUTH_CLIENT_ID
+    body = urllib.parse.urlencode(
+        {
+            "grant_type": "refresh_token",
+            "client_id": cid,
+            "refresh_token": rt,
+        }
+    ).encode("utf-8")
+    req = urllib.request.Request(XAI_OAUTH_TOKEN_URL, data=body, method="POST")
+    req.add_header("Content-Type", "application/x-www-form-urlencoded")
+    req.add_header("Accept", "application/json")
+    req.add_header("User-Agent", "xai-grok-cli")
+    try:
+        with urllib.request.urlopen(req, timeout=max(1.0, min(float(timeout), 30.0))) as resp:
+            raw = resp.read().decode("utf-8", errors="replace")
+    except urllib.error.HTTPError:
+        return None, "refresh-rejected"
+    except Exception:
+        return None, "refresh-network"
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError:
+        return None, "refresh-bad-json"
+    if not isinstance(payload, dict):
+        return None, "refresh-bad-json"
+    access = payload.get("access_token")
+    if not isinstance(access, str) or not access.strip():
+        return None, "refresh-missing-access"
+    return payload, None
+
+
+def _apply_oauth_refresh_to_entry(
+    entry: dict, payload: dict, *, now: datetime | None = None
+) -> dict:
+    """Return a copy of entry with rotated access (and optional refresh) tokens."""
+    out = dict(entry)
+    access = str(payload.get("access_token") or "").strip()
+    out["key"] = access
+    if "access_token" in entry or not entry.get("key"):
+        out["access_token"] = access
+    new_rt = payload.get("refresh_token")
+    if isinstance(new_rt, str) and new_rt.strip():
+        out["refresh_token"] = new_rt.strip()
+    clock = now or datetime.now(timezone.utc)
+    if clock.tzinfo is None:
+        clock = clock.replace(tzinfo=timezone.utc)
+    expires_in = payload.get("expires_in")
+    try:
+        ttl = int(expires_in) if expires_in is not None else None
+    except (TypeError, ValueError):
+        ttl = None
+    if ttl is not None and ttl > 0:
+        out["expires_at"] = _format_auth_expires_at(
+            clock + timedelta(seconds=ttl)
+        )
+    return out
+
+
+def ensure_grok_auth_access_token(
+    path: Path,
+    *,
+    now: datetime | None = None,
+    force: bool = False,
+) -> tuple[str | None, str | None, str | None, bool]:
+    """FR #7464: refresh near/expired access tokens via refresh_token, then return bearer.
+
+    Returns ``(token, error, account_label, did_refresh)``. Writes auth.json
+    atomically on success. Reports ``grok-login-expired`` only when refresh is
+    rejected (or no refresh_token while access is already unusable). Never logs
+    token values.
+    """
+    clock = now or datetime.now(timezone.utc)
+    if clock.tzinfo is None:
+        clock = clock.replace(tzinfo=timezone.utc)
+    doc, err = _read_grok_auth_doc(path)
+    if doc is None:
+        return None, err or "auth-file-unreadable", None, False
+    slot, entry, token, label = _pick_grok_session_slot(doc, now=clock)
+    if entry is None or not token:
+        return None, "auth-key-missing", None, False
+    need = force or _auth_entry_needs_refresh(entry, now=clock)
+    if not need:
+        return token, None, label, False
+    rt = _auth_entry_refresh_token(entry)
+    if not rt:
+        # Access already past lead window with no refresh material.
+        exp = _parse_auth_expires_at(entry.get("expires_at"))
+        if exp is not None and exp <= clock:
+            return None, XAI_GROK_LOGIN_EXPIRED, label, False
+        return token, None, label, False
+    try:
+        timeout = float(os.environ.get("BOB_XAI_WEEKLY_FETCH_TIMEOUT_S") or "8")
+    except ValueError:
+        timeout = 8.0
+    payload, rerr = refresh_grok_oauth_access_token(
+        rt,
+        client_id=_oauth_client_id_for_slot(slot or "", entry),
+        timeout=timeout,
+    )
+    if payload is None:
+        # Refresh rejected => sign-in expired class (FR #7464).
+        return None, XAI_GROK_LOGIN_EXPIRED if rerr == "refresh-rejected" else (rerr or "refresh-rejected"), label, False
+    updated = _apply_oauth_refresh_to_entry(entry, payload, now=clock)
+    new_doc = dict(doc)
+    new_doc[slot] = updated
+    werr = _atomic_write_grok_auth_json(path, new_doc)
+    new_token = _auth_entry_bearer(updated) or token
+    # Even if disk write fails, return the fresh bearer for this cycle.
+    if werr:
+        return new_token, None, label, True
+    return new_token, None, label, True
+
+
 def _xai_billing_config_keys(doc: object) -> list[str]:
     """Field names only (no values) for reject diagnostics (FR #7399)."""
     if not isinstance(doc, dict):
@@ -7734,9 +7980,12 @@ def parse_xai_billing_credits_response(
 
 
 def fetch_live_xai_weekly(*, now: datetime | None = None) -> dict | None:
-    """FR #6274: live weekly via CLI billing endpoint using the signed-in session.
+    """FR #6274 / #7464: live weekly via CLI billing endpoint using the signed-in session.
 
-    Uses auth.json ``key`` in-process only (never copied, printed, or moved).
+    Uses auth.json session bearer in-process only (never printed). FR #7464:
+    when access is expired or under the lead window and a refresh_token is
+    present, refresh via auth.x.ai and rewrite auth.json atomically before
+    billing. ``grok-login-expired`` only when refresh itself is rejected.
     Passive unified.jsonl is never treated as a fresh reading.
     """
     global _last_xai_acquisition
@@ -7763,10 +8012,21 @@ def fetch_live_xai_weekly(*, now: datetime | None = None) -> dict | None:
             "auth_path": auth_loc,
         }
         return None
+    clock = now or datetime.now(timezone.utc)
+    if clock.tzinfo is None:
+        clock = clock.replace(tzinfo=timezone.utc)
+    did_refresh = False
     try:
-        token, auth_err, selected_label = load_grok_auth_session(path)
+        token, auth_err, selected_label, did_refresh = ensure_grok_auth_access_token(
+            path, now=clock
+        )
     except OSError:
-        token, auth_err, selected_label = None, "auth-file-unreadable", None
+        token, auth_err, selected_label, did_refresh = (
+            None,
+            "auth-file-unreadable",
+            None,
+            False,
+        )
     if not token:
         _last_xai_acquisition = {
             "identity": identity,
@@ -7776,6 +8036,7 @@ def fetch_live_xai_weekly(*, now: datetime | None = None) -> dict | None:
             "selected": True,
             "account": selected_label,
             "auth_path": auth_loc,
+            "refreshed": bool(did_refresh),
         }
         return None
     try:
@@ -7783,44 +8044,53 @@ def fetch_live_xai_weekly(*, now: datetime | None = None) -> dict | None:
     except ValueError:
         timeout = 8.0
     timeout = max(1.0, min(timeout, 30.0))
-    req = urllib.request.Request(XAI_BILLING_CREDITS_URL, method="GET")
-    req.add_header("Authorization", "Bearer " + token)
-    req.add_header("Accept", "application/json")
-    req.add_header("User-Agent", "xai-grok-cli")
-    req.add_header("x-xai-token-auth", "xai-grok-cli")
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            raw = resp.read().decode("utf-8", errors="replace")
-    except urllib.error.HTTPError as e:
-        # FR #6279: bearer was selected; keep provenance so publish does not
-        # fall back to sibling read_grok_account_label on provider failure.
-        # FR #6314: 401/403 with session auth => grok-login-expired (distinct
-        # from network/parse/5xx). Never refresh/rewrite auth.json here.
-        code = int(getattr(e, "code", 0) or 0)
-        err = (
-            XAI_GROK_LOGIN_EXPIRED
-            if code in (401, 403)
-            else f"provider-http-{code}"
+
+    def _billing_get(bearer: str) -> tuple[str | None, str | None]:
+        req = urllib.request.Request(XAI_BILLING_CREDITS_URL, method="GET")
+        req.add_header("Authorization", "Bearer " + bearer)
+        req.add_header("Accept", "application/json")
+        req.add_header("User-Agent", "xai-grok-cli")
+        req.add_header("x-xai-token-auth", "xai-grok-cli")
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                return resp.read().decode("utf-8", errors="replace"), None
+        except urllib.error.HTTPError as e:
+            code = int(getattr(e, "code", 0) or 0)
+            if code in (401, 403):
+                return None, XAI_GROK_LOGIN_EXPIRED
+            return None, f"provider-http-{code}"
+        except Exception as e:
+            return None, f"provider-{type(e).__name__}"
+
+    raw, bill_err = _billing_get(token)
+    # FR #7464: if billing says expired and we have not just refreshed, force one refresh then retry.
+    if bill_err == XAI_GROK_LOGIN_EXPIRED and not did_refresh:
+        token2, auth_err2, selected_label2, did_refresh2 = ensure_grok_auth_access_token(
+            path, now=clock, force=True
         )
+        if selected_label2:
+            selected_label = selected_label2
+        if token2 and did_refresh2:
+            did_refresh = True
+            token = token2
+            raw, bill_err = _billing_get(token)
+        elif auth_err2:
+            bill_err = auth_err2
+            raw = None
+        else:
+            # force refresh declined (no refresh_token) — keep expired class
+            raw = None
+
+    if bill_err or raw is None:
         _last_xai_acquisition = {
             "identity": identity,
             "read": False,
             "live": False,
-            "error": err,
+            "error": bill_err or "provider-empty",
             "selected": True,
             "account": selected_label,
             "auth_path": auth_loc,
-        }
-        return None
-    except Exception as e:
-        _last_xai_acquisition = {
-            "identity": identity,
-            "read": False,
-            "live": False,
-            "error": f"provider-{type(e).__name__}",
-            "selected": True,
-            "account": selected_label,
-            "auth_path": auth_loc,
+            "refreshed": bool(did_refresh),
         }
         return None
     try:
@@ -7834,9 +8104,10 @@ def fetch_live_xai_weekly(*, now: datetime | None = None) -> dict | None:
             "selected": True,
             "account": selected_label,
             "auth_path": auth_loc,
+            "refreshed": bool(did_refresh),
         }
         return None
-    reading = parse_xai_billing_credits_response(doc, now=now)
+    reading = parse_xai_billing_credits_response(doc, now=clock)
     if not reading:
         # FR #7399: log field names (never values) so the next shape change is diagnosable.
         cfg_keys = _xai_billing_config_keys(doc)
@@ -7850,6 +8121,7 @@ def fetch_live_xai_weekly(*, now: datetime | None = None) -> dict | None:
             "auth_path": auth_loc,
             "config_keys": cfg_keys,
             "response_keys": sorted(str(k) for k in doc.keys()) if isinstance(doc, dict) else [],
+            "refreshed": bool(did_refresh),
         }
         try:
             import logging
@@ -7870,6 +8142,7 @@ def fetch_live_xai_weekly(*, now: datetime | None = None) -> dict | None:
         "selected": True,
         "account": selected_label,
         "auth_path": auth_loc,
+        "refreshed": bool(did_refresh),
     }
     return reading
 
