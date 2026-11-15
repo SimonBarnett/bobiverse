@@ -451,6 +451,7 @@ routes to bobiverse via the split rule.
 - MRB downloads tips: keep airc last via DOM marker comment + HTML order pins, not CSS order; #download-grid 1fr scoped so shared .grid stays multi-column elsewhere.
 - build-jeeves must run jeeves/tests pytest before PyInstaller so a red suite never ships an artifact; pin step order in workflow YAML
 - Front-door FR #7412 404 is for operator UI paths only; exempt /api/* (and static assets) so unauth settings calls stay 401/403 for CI and clients.
+- shop_listen finders must use repo_alias.repos_equivalent; _choose doubles return five (signin_ok); grok session dirs URL-quote cwd so use short absolute cwd in Windows tests
 
 ## Harvest digest (lessons audit 2026-10-06)
 
