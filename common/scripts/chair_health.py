@@ -1301,7 +1301,7 @@ class ChairJobs:
             )
         if healed:
             self.log("INFO stall-heal " + "; ".join(healed))
-        # FR #7334: idle author with the fewest commits, after 5 minutes stuck.
+        # FR #7334 / #7574 / #7616 / #7631: live eligible idle seat after 5 minutes stuck.
         with contextlib.suppress(Exception):
             recycled = gitclaim.maybe_recycle_stuck_no_eligible_reviewer(
                 self.digest_home,

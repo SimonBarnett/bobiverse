@@ -445,8 +445,9 @@ function Invoke-BobTrayEngineReportTimeout {
 
 function Invoke-BobTrayEngineStep {
     <#
-      FR #7579: log step start/end; run Body with TimeoutSec. On timeout: log, report once, continue.
+      FR #7579 / #7594: log step start/end; run Body with TimeoutSec. On timeout: log, report once, continue.
       Body runs in a background job so a hung CLI/network call cannot freeze the cycle forever.
+      Returns @{ ok; timedOut; name; seconds; output } (FR #7594 captures Receive-Job output).
     #>
     param(
         [Parameter(Mandatory)][string]$Name,
@@ -463,6 +464,7 @@ function Invoke-BobTrayEngineStep {
     $job = $null
     $timedOut = $false
     $failed = $null
+    $output = $null
     try {
         if ($null -ne $ArgumentList -and @($ArgumentList).Count -gt 0) {
             $job = Start-Job -ScriptBlock $Body -ArgumentList $ArgumentList
@@ -474,7 +476,8 @@ function Invoke-BobTrayEngineStep {
             $timedOut = $true
             try { Stop-Job -Job $job -ErrorAction SilentlyContinue } catch { }
         } else {
-            try { Receive-Job -Job $job -ErrorAction Stop | Out-Null } catch { $failed = $_.Exception }
+            # FR #7594: capture job output (e.g. stall-alerts list / jobs-watcher state).
+            try { $output = Receive-Job -Job $job -ErrorAction Stop } catch { $failed = $_.Exception }
             if ($job.State -eq 'Failed' -and -not $failed) {
                 try { $failed = $job.ChildJobs[0].JobStateInfo.Reason } catch { $failed = New-Object System.Exception 'job failed' }
             }
@@ -488,7 +491,7 @@ function Invoke-BobTrayEngineStep {
     if ($timedOut) {
         Write-BobTrayEngineCycleLog -Root $root -Message ('step-timeout name={0} sec={1:n2} limit={2}' -f $Name, $sw.Elapsed.TotalSeconds, $TimeoutSec)
         Invoke-BobTrayEngineReportTimeout -StepName $Name -TimeoutSec $TimeoutSec -Root $root
-        return @{ ok = $false; timedOut = $true; name = $Name; seconds = $sw.Elapsed.TotalSeconds }
+        return @{ ok = $false; timedOut = $true; name = $Name; seconds = $sw.Elapsed.TotalSeconds; output = $null }
     }
     if ($failed) {
         Write-BobTrayEngineCycleLog -Root $root -Message ('step-error name={0} sec={1:n2} err={2}' -f $Name, $sw.Elapsed.TotalSeconds, $failed.Message)
@@ -497,10 +500,10 @@ function Invoke-BobTrayEngineStep {
                 Report-BobDeterministicException -Site ('Watch-BobTray.engine-step.' + $Name) -Exception $failed -ScriptPath $PSCommandPath | Out-Null
             }
         } catch { }
-        return @{ ok = $false; timedOut = $false; name = $Name; seconds = $sw.Elapsed.TotalSeconds; error = $failed }
+        return @{ ok = $false; timedOut = $false; name = $Name; seconds = $sw.Elapsed.TotalSeconds; error = $failed; output = $null }
     }
     Write-BobTrayEngineCycleLog -Root $root -Message ('step-end name={0} sec={1:n2}' -f $Name, $sw.Elapsed.TotalSeconds)
-    return @{ ok = $true; timedOut = $false; name = $Name; seconds = $sw.Elapsed.TotalSeconds }
+    return @{ ok = $true; timedOut = $false; name = $Name; seconds = $sw.Elapsed.TotalSeconds; output = $output }
 }
 
 function Invoke-BobTrayEngineSelfTest {
@@ -1286,13 +1289,25 @@ function Get-BobTrayMachineXaiWeekly {
     }
     if (-not $doc) {
         try {
-            # UTF-8 explicitly (PS 5.1 would decode a charset-less body as Latin-1: "A-circumflex + dot").
-            $resp = Invoke-WebRequest -Uri (Get-BobTrayDigestReportUrl) -UseBasicParsing -TimeoutSec 8 -Headers @{ Accept = 'application/json' }
-            $ms = $resp.RawContentStream
-            $ms.Position = 0
-            $buf = New-Object byte[] ([int]$ms.Length)
-            [void]$ms.Read($buf, 0, $buf.Length)
-            $doc = [System.Text.Encoding]::UTF8.GetString($buf) | ConvertFrom-Json
+            # FR #7615 / #7602: HttpWebRequest Timeout + ReadWriteTimeout (PS 5.1 IWR hang).
+            if (-not (Get-Command Invoke-BobDigestHttpGet -ErrorAction SilentlyContinue)) {
+                $helperCands = @(
+                    (Join-Path $RepoRoot 'src\Private\Invoke-BobDigestHttpGet.ps1'),
+                    (Join-Path $PSScriptRoot '..\src\Private\Invoke-BobDigestHttpGet.ps1')
+                )
+                foreach ($hc in $helperCands) {
+                    if (Test-Path -LiteralPath $hc -PathType Leaf) { . $hc; break }
+                }
+            }
+            if (-not (Get-Command Invoke-BobDigestHttpGet -ErrorAction SilentlyContinue)) {
+                throw 'Invoke-BobDigestHttpGet missing'
+            }
+            $got = Invoke-BobDigestHttpGet -Uri (Get-BobTrayDigestReportUrl) -TimeoutSec 8
+            if (-not $got -or [int]$got.StatusCode -lt 200 -or [int]$got.StatusCode -ge 300) {
+                throw ('digest HTTP status {0}' -f $(if ($got) { $got.StatusCode } else { 'null' }))
+            }
+            # UTF-8 body already decoded by Invoke-BobDigestHttpGet (PS 5.1 Latin-1 trap avoided).
+            $doc = [string]$got.Text | ConvertFrom-Json
         }
         catch {
             Write-TrayLog ('agents: digest xai_weekly read failed: ' + $_.Exception.Message)
@@ -3858,22 +3873,59 @@ $poll.Add_Tick({
                     $swS.Stop()
                     Write-BobTrayEngineCycleLog -Root $RepoRoot -Message ('step-end name=clear-grok-session sec={0:n2}' -f $swS.Elapsed.TotalSeconds)
                 }
-                Write-BobTrayEngineCycleLog -Root $RepoRoot -Message 'step-start name=jobs-watcher'
-                $swJ = [System.Diagnostics.Stopwatch]::StartNew()
-                try { Start-JobsWatcher } catch { Write-TrayLog ('jobs-watcher: ' + $_.Exception.Message) }
-                $swJ.Stop()
-                Write-BobTrayEngineCycleLog -Root $RepoRoot -Message ('step-end name=jobs-watcher sec={0:n2}' -f $swJ.Elapsed.TotalSeconds)
-                $alerts = @()
-                Write-BobTrayEngineCycleLog -Root $RepoRoot -Message 'step-start name=stall-alerts'
-                $swA = [System.Diagnostics.Stopwatch]::StartNew()
-                try {
-                    $alerts = @(Get-BobStallAlerts -Seen $seen -StallSec $StallSec -HeartbeatStaleSec $HeartbeatStaleSec)
-                } catch {
-                    Write-BobTrayEngineCycleLog -Root $RepoRoot -Message ('step-error name=stall-alerts err={0}' -f $_.Exception.Message)
-                    $alerts = @()
+                # FR #7594: jobs-watcher / stall-alerts under Invoke-BobTrayEngineStep (same timeout/report as update-hover).
+                $jw = Invoke-BobTrayEngineStep -Name 'jobs-watcher' -Root $RepoRoot -TimeoutSec ([int]$script:BobTrayEngineStepTimeoutSec) -ArgumentList @($RepoRoot, $watchJobs) -Body {
+                    param($Root, $WatchJobsPath)
+                    $hits = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
+                        Where-Object {
+                            $_.CommandLine -and
+                            $_.CommandLine -match 'Watch-BobJobs\.ps1' -and
+                            $_.CommandLine -notmatch '(?i)-Once\b'
+                        })
+                    if ($hits.Count -gt 0) {
+                        $keep = $hits[0]
+                        try {
+                            if ($hits.Count -gt 1) {
+                                for ($i = 1; $i -lt $hits.Count; $i++) {
+                                    try { Stop-Process -Id ([int]$hits[$i].ProcessId) -Force -ErrorAction SilentlyContinue } catch { }
+                                }
+                            }
+                        } catch { }
+                        return [pscustomobject]@{ pid = [int]$keep.ProcessId; owned = $false; action = 'existing' }
+                    }
+                    if (-not (Test-Path -LiteralPath $WatchJobsPath)) {
+                        return [pscustomobject]@{ pid = 0; owned = $false; action = 'missing' }
+                    }
+                    $p = Start-Process -FilePath (Get-Command powershell.exe).Source `
+                        -ArgumentList @('-NoProfile', '-WindowStyle', 'Hidden', '-ExecutionPolicy', 'Bypass', '-File', $WatchJobsPath) `
+                        -WorkingDirectory $Root -WindowStyle Hidden -PassThru
+                    return [pscustomobject]@{ pid = [int]$p.Id; owned = $true; action = 'started' }
                 }
-                $swA.Stop()
-                Write-BobTrayEngineCycleLog -Root $RepoRoot -Message ('step-end name=stall-alerts sec={0:n2}' -f $swA.Elapsed.TotalSeconds)
+                if ($jw.ok -and $jw.output) {
+                    try {
+                        if ([int]$jw.output.pid -gt 0) { $script:jobsPid = [int]$jw.output.pid }
+                        $script:jobsOwned = [bool]$jw.output.owned
+                        if ([string]$jw.output.action -eq 'missing' -and -not $script:jobsMissingLogged) {
+                            Write-TrayLog ("Watch-BobJobs.ps1 not installed ($watchJobs); not starting it")
+                            $script:jobsMissingLogged = $true
+                        }
+                        elseif ([string]$jw.output.action -eq 'started') {
+                            Write-TrayLog ("started Watch-BobJobs pid=$($jw.output.pid)")
+                        }
+                    } catch { }
+                }
+                $alerts = @()
+                $sa = Invoke-BobTrayEngineStep -Name 'stall-alerts' -Root $RepoRoot -TimeoutSec ([int]$script:BobTrayEngineStepTimeoutSec) -ArgumentList @($RepoRoot, $seen, [int]$StallSec, [int]$HeartbeatStaleSec) -Body {
+                    param($Root, $Seen, $StallSecArg, $HeartbeatStaleSecArg)
+                    $psd1 = Join-Path $Root 'src\BobBridge.psd1'
+                    if (Test-Path -LiteralPath $psd1) { Import-Module $psd1 -Force }
+                    $list = @(Get-BobStallAlerts -Seen $Seen -StallSec ([int]$StallSecArg) -HeartbeatStaleSec ([int]$HeartbeatStaleSecArg))
+                    return [pscustomobject]@{ Alerts = $list; Seen = $Seen }
+                }
+                if ($sa.ok -and $sa.output) {
+                    try { $alerts = @($sa.output.Alerts) } catch { $alerts = @() }
+                    try { if ($sa.output.Seen) { $seen = $sa.output.Seen } } catch { }
+                }
                 if ($alerts.Count -gt 0 -and -not $engine) { Set-Attention $alerts }
                 elseif ($alerts.Count -gt 0 -and $engine) {
                     # Exe owns the icon; still record alerts in log / lastAlerts without NotifyIcon flash.
