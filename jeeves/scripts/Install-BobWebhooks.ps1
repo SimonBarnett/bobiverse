@@ -9,6 +9,8 @@ param(
     [string]$SiteName = 'irc-ntsa',
     [string]$PhysicalPath = 'C:\inetpub\irc-ntsa',
     [string]$Backend = 'http://127.0.0.1:7700',
+    # FR #7414: override www source (tests / alternate trees). Default: jeeves/www/irc-ntsa beside this script.
+    [string]$WwwSource = '',
     [switch]$WhatIf
 )
 
@@ -88,8 +90,11 @@ $rewriteXml = @"
 </configuration>
 "@
 
+$wwwSrcDefault = Join-Path $PSScriptRoot '..\www\irc-ntsa'
+$wwwSrc = if ($WwwSource) { $WwwSource } else { $wwwSrcDefault }
 if ($WhatIf) {
     Write-Host "WhatIf would write rewrite rules to $webConfig backend=$Backend"
+    Write-Host "WhatIf FR #7414 www publish from $wwwSrc -> $PhysicalPath : site.css, downloads/, jeeves/commands/, docs/, index.html"
     return
 }
 
@@ -137,7 +142,7 @@ if (Test-Path -LiteralPath $webConfig) {
     }
     if ($updated -notmatch 'BobJeevesAppliance' -and $updated -match '</rules>') {
         # FR #6903: /jeeves appliance login -> bobcallback (FR #6815/6818).
-        # FR #7413: also skip /jeeves/commands (static public HTML).
+        # FR #7414 / #7413: skip static /jeeves/commands (and assets) for IIS.
         $jeevesRule = @"
         <rule name="BobJeevesAppliance" stopProcessing="true">
           <match url="^jeeves(/.*)?$" ignoreCase="true" />
@@ -192,13 +197,14 @@ if ($hasAppcmd) {
         Write-Host "WARN could not enable ARR proxy: $($_.Exception.Message)"
     }
 }
-Write-Host 'INFO Install-BobWebhooks done'
-
-# FR #6453 / FR #7410: sync static front-page, webhook docs, site.css, /downloads into IIS physical path.
-$wwwSrc = Join-Path $PSScriptRoot '..\www\irc-ntsa'
+# FR #6453 / #7410 / #7414: sync static www (CSS, downloads, commands, docs) into IIS physical path.
+# Operators: re-run Install-BobWebhooks.ps1 (or compose/sync) after git pull to refresh bob.ntsa.uk www.
 if (Test-Path -LiteralPath $wwwSrc) {
     $null = New-Item -ItemType Directory -Force -Path $PhysicalPath
-    Copy-Item -LiteralPath (Join-Path $wwwSrc 'index.html') -Destination (Join-Path $PhysicalPath 'index.html') -Force
+    $indexSrc = Join-Path $wwwSrc 'index.html'
+    if (Test-Path -LiteralPath $indexSrc) {
+        Copy-Item -LiteralPath $indexSrc -Destination (Join-Path $PhysicalPath 'index.html') -Force
+    }
     $siteCss = Join-Path $wwwSrc 'site.css'
     if (Test-Path -LiteralPath $siteCss) {
         Copy-Item -LiteralPath $siteCss -Destination (Join-Path $PhysicalPath 'site.css') -Force
@@ -219,7 +225,7 @@ if (Test-Path -LiteralPath $wwwSrc) {
         }
         Copy-Item -LiteralPath $downloadsSrc -Destination $downloadsDst -Recurse -Force
     }
-    # FR #7413: public /jeeves/commands (rewrite skips this prefix; not behind settings cookie).
+    # FR #7414 / #7413: public /jeeves/commands (rewrite skips this prefix; not behind settings cookie).
     $commandsSrc = Join-Path $wwwSrc 'jeeves\commands'
     if (Test-Path -LiteralPath $commandsSrc) {
         $commandsDst = Join-Path $PhysicalPath 'jeeves\commands'
@@ -229,9 +235,9 @@ if (Test-Path -LiteralPath $wwwSrc) {
         $null = New-Item -ItemType Directory -Force -Path (Split-Path -Parent $commandsDst)
         Copy-Item -LiteralPath $commandsSrc -Destination $commandsDst -Recurse -Force
     }
-    Write-Host "INFO synced FR #6453/#7410/#7413 www docs from $wwwSrc -> $PhysicalPath"
+    Write-Host "INFO synced FR #6453/#7410/#7413/#7414 www (site.css, downloads, jeeves/commands, docs) from $wwwSrc -> $PhysicalPath"
 } else {
-    Write-Host "WARN FR #6453 www source missing: $wwwSrc"
+    Write-Host "WARN FR #7414 www source missing: $wwwSrc"
 }
 
 # FR #7411: IIS static map /jeeves/assets/* (rewrite skips this prefix).
@@ -260,3 +266,5 @@ foreach ($src in $logoCands) {
         break
     }
 }
+
+Write-Host 'INFO Install-BobWebhooks done'
