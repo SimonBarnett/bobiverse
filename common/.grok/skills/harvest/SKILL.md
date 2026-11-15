@@ -464,6 +464,7 @@ routes to bobiverse via the split rule.
 - Priority Agent /downloads: prefer non-prerelease with PriorityAgent.exe else newest non-draft prerelease; stamp concrete tag hrefs in Install-BobWebhooks; never return @array from PS 5.1 helpers when collecting releases
 - When a downloads template drops a placeholder, check the visible sentence for a double space and pin that on index, empty, and error together.
 - Log the tray seat-start trigger at the launch call site; Write-TrayLog already supplies the timestamp.
+- Chair resync drops a FIX row when the pull is not in the open set, and enqueue_conflict_fix plus enqueue_mrb_fail_fix return skipped when the pull is merged or closed.
 
 ## Harvest digest (lessons audit 2026-10-06)
 
