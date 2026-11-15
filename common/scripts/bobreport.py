@@ -8825,6 +8825,9 @@ def publish_local_peer_fuel(
             now=now_f,
             last_ok_epoch=_last_ok,
             pool="xai_weekly",
+            remaining_pct=_meter.get("remaining_pct"),
+            period_end=_meter.get("period_end") or _meter.get("reset_at"),
+            reset_at=_meter.get("reset_at") or _meter.get("period_end"),
         )
     except Exception:
         pass
