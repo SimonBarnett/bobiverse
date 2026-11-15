@@ -8,17 +8,20 @@ rewrite today (GET https://bob.ntsa.uk/bob/v1/digest -> 404).
 
 Durable POST envelopes go through webhook_queue; chair announces on #bobiverse.
 
-NO PASSWORD / SHARED SECRET anywhere (v0.1.16, Simon): no route checks ``X-Bob-Secret`` (a stray
-header is ignored and never stored). Abuse protection instead of a secret, all enforced here:
+Report/intake/jira/hours stay open (no shared password header). Abuse protection:
 body size caps (413), strict JSON-object + op/event schema validation, per-machine rate limiting
-(429), GitHub hooks only for allow-listed owners/events, and POSTs on /bob/v1/report only from
-machine ids on the roster that **Jeeves publishes** in ``registered-machines.json``. The receiver
-only READS that file (``bobreport.roster_machine_ids``); it never talks to ChanServ or IRC - the
-chair is the only ChanServ client.
+(429), GitHub hooks only for allow-listed owners, and POSTs on /bob/v1/report only from
+machine ids on the roster that **Jeeves publishes** in ``registered-machines.json``.
+
+FR #7467: when ``BOB_GIT_WEBHOOK_SECRET_FILE`` or ``<BOB_CONFIG_DIR>/github-webhook.secret``
+exists, ``POST /bob/v1/git`` verifies ``X-Hub-Signature-256`` (HMAC-SHA256). With no secret file
+the unsigned owner-gated contract is unchanged. Legacy CLI ``--secret-file`` stays ignored.
 """
 from __future__ import annotations
 
 import contextlib
+import hashlib
+import hmac
 import json
 import os
 import time
@@ -57,8 +60,7 @@ DEFAULT_PORT = 7700
 # Public read paths (GET/HEAD). REPORT_PATH is also the write URL (POST).
 DIGEST_GET_PATHS = frozenset({DIGEST_PATH, DIGEST_ALIAS, REPORT_PATH})
 POST_ROUTES = frozenset({REPORT_PATH, GIT_WEBHOOK_PATH, INTAKE_PATH, JIRA_PATH, HOURS_PATH})
-# v0.1.16: NO route needs a password/secret. Every POST route is open and protected by input
-# validation, size limits, per-machine rate limiting and the Jeeves-published roster instead.
+# Report/intake/jira stay open (no shared password). Git may optionally verify HMAC (FR #7467).
 MAX_BODY_BYTES = 1024 * 1024          # hard cap for any POST body (413 above)
 MAX_REPORT_BYTES = 256 * 1024         # /bob/v1/report bodies are tiny status docs
 REPORT_RATE_ENV = "BOB_REPORT_RATE_PER_MIN"
@@ -66,9 +68,38 @@ DEFAULT_REPORT_RATE_PER_MIN = 120     # per machine id (tray posts ~2/min, worke
 GIT_OWNERS_ENV = "BOB_GIT_OWNERS"     # comma list of GitHub owners whose hooks we accept
 DEFAULT_GIT_OWNERS = ("SimonBarnett",)
 GIT_RATE_PER_MIN = 120                # per repository
-# FR #4711: issue_comment clears needs_human on owner unblock comments.
+GIT_WEBHOOK_SECRET_FILE_ENV = "BOB_GIT_WEBHOOK_SECRET_FILE"
+GIT_ALLOW_UNSIGNED_ENV = "BOB_GIT_ALLOW_UNSIGNED"
+GIT_WEBHOOK_SECRET_NAME = "github-webhook.secret"
+GIT_PROCESSING_RETRY_AFTER_S = "5"
+# FR #4711 / #5170 / #7467: handled events (enqueue + apply). Others → 204 ignore after gates.
 GIT_EVENTS = frozenset(
-    {"ping", "push", "issues", "pull_request", "issue_comment", "check_run", "check_suite"}
+    {
+        "ping",
+        "push",
+        "issues",
+        "pull_request",
+        "pull_request_review",
+        "issue_comment",
+        "check_run",
+        "check_suite",
+    }
+)
+# Subscribed but not applied (CI state comes from check_run + resync).
+GIT_IGNORED_EVENTS = frozenset({"workflow_run"})
+GIT_ERROR_REASONS = frozenset(
+    {
+        "missing signature",
+        "invalid signature",
+        "missing event header",
+        "malformed JSON",
+        "payload must be a JSON object",
+        "missing repository",
+        "owner not allowed",
+        "body too large",
+        "rate limited",
+        "invalid content-length",
+    }
 )
 
 
@@ -122,6 +153,70 @@ def git_owners() -> set[str]:
     raw = (os.environ.get(GIT_OWNERS_ENV) or "").strip()
     names = [x.strip() for x in raw.split(",") if x.strip()] or list(DEFAULT_GIT_OWNERS)
     return {n.lower() for n in names}
+
+
+def git_webhook_secret_path() -> Path | None:
+    """Prefer BOB_GIT_WEBHOOK_SECRET_FILE, else <BOB_CONFIG_DIR>/github-webhook.secret."""
+    override = (os.environ.get(GIT_WEBHOOK_SECRET_FILE_ENV) or "").strip()
+    if override:
+        return Path(override)
+    cfg = (os.environ.get("BOB_CONFIG_DIR") or "").strip()
+    if cfg:
+        return Path(cfg) / GIT_WEBHOOK_SECRET_NAME
+    return None
+
+
+def load_git_webhook_secret() -> str | None:
+    """Return stripped secret bytes-as-str, or None when no file / empty. Never log the value."""
+    path = git_webhook_secret_path()
+    if path is None:
+        return None
+    try:
+        if not path.is_file():
+            return None
+        val = path.read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    return val or None
+
+
+def git_allow_unsigned() -> bool:
+    return (os.environ.get(GIT_ALLOW_UNSIGNED_ENV) or "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
+
+
+def _git_error(reason: str, code: int = 400) -> tuple[int, bytes]:
+    """Compact JSON 4xx for /bob/v1/git. Fixed vocabulary only; never echo secrets."""
+    msg = reason if reason in GIT_ERROR_REASONS else "malformed JSON"
+    body = json.dumps({"ok": False, "error": msg}, separators=(",", ":")).encode("utf-8")
+    return code, body
+
+
+def _git_deferred() -> tuple[int, bytes]:
+    stash_response_headers([("Retry-After", GIT_PROCESSING_RETRY_AFTER_S)])
+    return 503, json.dumps({"error": "processing deferred"}, separators=(",", ":")).encode("utf-8")
+
+
+def verify_git_signature(body: bytes | str, headers: dict[str, str], secret: str) -> str | None:
+    """Return None when OK, else a fixed reason: missing signature | invalid signature."""
+    hdrs = {str(k).lower(): str(v) for k, v in (headers or {}).items()}
+    raw_sig = (hdrs.get("x-hub-signature-256") or "").strip()
+    if not raw_sig:
+        return "missing signature"
+    if not raw_sig.lower().startswith("sha256="):
+        return "invalid signature"
+    got = raw_sig.split("=", 1)[1].strip().lower()
+    if len(got) != 64 or any(c not in "0123456789abcdef" for c in got):
+        return "invalid signature"
+    raw = body if isinstance(body, (bytes, bytearray)) else str(body or "").encode("utf-8")
+    expect = hmac.new(secret.encode("utf-8"), bytes(raw), hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(expect, got):
+        return "invalid signature"
+    return None
 
 
 def _announce(home: Path, text: str) -> bool:
@@ -186,19 +281,27 @@ def _parse_json_body(body: bytes | str, *, scan_secret: bool = True) -> dict | N
     Git webhooks must use scan_secret=False (FR #206): issue bodies may *mention*
     marker strings without being secrets; only the announce line is checked later.
     """
+    payload, _err = _parse_json_body_reason(body, scan_secret=scan_secret)
+    return payload
+
+
+def _parse_json_body_reason(
+    body: bytes | str, *, scan_secret: bool = True
+) -> tuple[dict | None, str | None]:
+    """Like _parse_json_body but returns a fixed reason when parsing fails."""
     if isinstance(body, bytes):
         raw = body.decode("utf-8", "replace")
     else:
         raw = body or ""
     if scan_secret and bobreport.looks_like_secret(raw):
-        return None
+        return None, "malformed JSON"
     try:
         payload = json.loads(raw or "{}")
     except json.JSONDecodeError:
-        return None
+        return None, "malformed JSON"
     if not isinstance(payload, dict):
-        return None
-    return payload
+        return None, "payload must be a JSON object"
+    return payload, None
 
 
 def _log_git_reject(
@@ -208,6 +311,7 @@ def _log_git_reject(
     repo: str = "",
     number: str = "",
     marker: str = "",
+    delivery: str = "",
 ) -> None:
     """One-line reject reason; marker *name* only, never a secret value."""
     bits = [f"reason={reason}"]
@@ -217,16 +321,42 @@ def _log_git_reject(
         bits.append(f"repo={repo}")
     if number:
         bits.append(f"number={number}")
+    if delivery:
+        bits.append(f"delivery={delivery}")
     if marker:
         bits.append(f"marker={marker}")
     print("INFO git webhook reject " + " ".join(bits), flush=True)
 
 
+def _log_git_ignore(
+    reason: str,
+    *,
+    event: str = "",
+    repo: str = "",
+    delivery: str = "",
+) -> None:
+    bits = [f"reason={reason}"]
+    if event:
+        bits.append(f"event={event}")
+    if repo:
+        bits.append(f"repo={repo}")
+    if delivery:
+        bits.append(f"delivery={delivery}")
+    print("INFO git webhook ignore " + " ".join(bits), flush=True)
+
+
 def _safe_headers(headers: dict[str, str] | None) -> dict[str, str]:
     out: dict[str, str] = {}
+    drop = {
+        "x-bob-secret",
+        "x-bob-intake-key",
+        "authorization",
+        "x-hub-signature",
+        "x-hub-signature-256",
+    }
     for k, v in (headers or {}).items():
         name = str(k)
-        if name.lower() in ("x-bob-secret", "x-bob-intake-key", "authorization"):
+        if name.lower() in drop:
             continue
         out[name] = str(v)[:256]
     return out
@@ -312,72 +442,109 @@ def handle_git_webhook(
     envelope_id: str | None = None,
     rate: intake.RateLimiter | None = None,
 ) -> tuple[int, bytes]:
+    """FR #7467: HMAC (when secret provisioned), 8 handled events, ignore+204 others."""
+    stash_response_headers([])
     hdrs = {str(k).lower(): str(v) for k, v in (headers or {}).items()}
+    delivery = (hdrs.get("x-github-delivery") or "").strip()[:80]
+    raw = body if isinstance(body, (bytes, bytearray)) else str(body or "").encode("utf-8")
+    if len(raw) > MAX_BODY_BYTES:
+        _log_git_reject("body too large", delivery=delivery)
+        return _git_error("body too large", 413)
+
+    secret = load_git_webhook_secret()
+    if secret:
+        sig_err = verify_git_signature(raw, headers, secret)
+        if sig_err == "missing signature" and git_allow_unsigned():
+            _log_git_reject("unsigned accepted", delivery=delivery)
+        elif sig_err:
+            _log_git_reject(sig_err, delivery=delivery)
+            return _git_error(sig_err, 401)
+
     event = (hdrs.get("x-github-event") or "").strip()
     if not event:
-        _log_git_reject("no event")
-        return 400, b""
-    if len(body or b"") > MAX_BODY_BYTES:
-        _log_git_reject("too large", event=event)
-        return 413, b""
-    if event.lower() not in GIT_EVENTS:
-        _log_git_reject("unsupported event", event=event)
-        return 400, b""
-    # Do not secret-scan the full JSON (FR #206).
-    payload = _parse_json_body(body, scan_secret=False)
+        _log_git_reject("missing event header", delivery=delivery)
+        return _git_error("missing event header", 400)
+
+    payload, parse_err = _parse_json_body_reason(raw, scan_secret=False)
     if payload is None:
-        _log_git_reject("invalid json", event=event)
-        return 400, b""
-    # No HMAC secret: accept only hooks for allow-listed GitHub owners (BOB_GIT_OWNERS).
+        _log_git_reject(parse_err or "malformed JSON", event=event, delivery=delivery)
+        return _git_error(parse_err or "malformed JSON", 400)
+
     full = bobreport._github_repo_name(payload)  # noqa: SLF001
     owner, _, name = full.partition("/")
-    if not owner or not name or owner.lower() not in git_owners():
-        _log_git_reject("repo not allowed", event=event, repo=full[:80])
-        return 403, b""
-    if event.lower() == "ping" and str(payload.get("zen") or "") == HEALTH_PROBE_ZEN:
-        # Jeeves' own 30-min webhook health probe (chair_health.py): proves the route + owner gate end to end,
-        # but must not enqueue a job or announce on #bobiverse.
+    if not owner or not name:
+        _log_git_reject("missing repository", event=event, delivery=delivery)
+        return _git_error("missing repository", 400)
+    if owner.lower() not in git_owners():
+        _log_git_reject("owner not allowed", event=event, repo=full[:80], delivery=delivery)
+        return _git_error("owner not allowed", 403)
+
+    ev = event.lower()
+    if ev == "ping" and str(payload.get("zen") or "") == HEALTH_PROBE_ZEN:
         return 204, b""
+
+    if ev not in GIT_EVENTS:
+        reason = "ignored event"
+        if ev in GIT_IGNORED_EVENTS:
+            reason = "ignored workflow_run" if ev == "workflow_run" else f"ignored {ev}"
+        _log_git_ignore(reason, event=event, repo=full[:80], delivery=delivery)
+        return 204, b""
+
     if rate is not None and not rate.allow("git:" + full.lower()):
-        _log_git_reject("rate limited", event=event, repo=full[:80])
-        return 429, b""
-    env = _enqueue_post(
-        home,
-        kind="git",
-        payload=payload,
-        headers=headers,
-        meta={"event": event, "envelope_id": envelope_id or ""},
-    )
-    eid = str(env.get("id") or "")
-    out = bobreport.apply_git_webhook(home, event, payload)
-    if not out.ok:
-        repo = ""
-        number = ""
-        if isinstance(payload, dict):
-            repo = bobreport._github_repo_name(payload)
+        _log_git_reject("rate limited", event=event, repo=full[:80], delivery=delivery)
+        return _git_error("rate limited", 429)
+
+    eid = ""
+    try:
+        env = _enqueue_post(
+            home,
+            kind="git",
+            payload=payload,
+            headers=headers,
+            meta={"event": event, "envelope_id": envelope_id or ""},
+        )
+        eid = str(env.get("id") or "")
+        out = bobreport.apply_git_webhook(home, event, payload)
+        if not out.ok:
+            number = ""
             issue = payload.get("issue") if isinstance(payload.get("issue"), dict) else None
             pr = payload.get("pull_request") if isinstance(payload.get("pull_request"), dict) else None
             ent = issue or pr
             if isinstance(ent, dict) and ent.get("number") is not None:
                 number = str(ent.get("number"))
-        _log_git_reject(out.err or "error", event=event, repo=repo, number=number)
-        # 400 only for malformed request shape; other failures are server-side.
-        if out.err in ("no event", "malformed", "announce"):
-            if eid:
-                webhook_queue.mark_done(home, eid, result={"ok": False, "err": out.err})
-            return 400, b""
-        _announce(home, f"GIT fail event={event} err={out.err or 'error'}")
-        return 500, b""
-    if eid:
-        webhook_queue.mark_done(home, eid, result={"ok": True})
-    # FR #6405: close notices from issues/PR closed|merged webhooks (deduped with poller).
-    if event.lower() in {"issues", "pull_request"}:
+            _log_git_reject(out.err or "error", event=event, repo=full[:80], number=number, delivery=delivery)
+            if out.err in ("no event", "malformed"):
+                if eid:
+                    webhook_queue.mark_done(home, eid, result={"ok": False, "err": out.err})
+                return _git_error("malformed JSON" if out.err == "malformed" else "missing event header", 400)
+            # State may already be written; announce-line refusal is not a client error.
+            if out.err == "announce":
+                if eid:
+                    webhook_queue.mark_done(home, eid, result={"ok": True, "announce": False})
+                _log_git_ignore("announce skipped", event=event, repo=full[:80], delivery=delivery)
+                return 204, b""
+            _announce(home, f"GIT fail event={event} err={out.err or 'error'}")
+            return _git_deferred()
+        if eid:
+            webhook_queue.mark_done(home, eid, result={"ok": True})
+    except Exception as exc:  # noqa: BLE001 - keep envelope pending for drain
+        _log_git_reject(
+            f"processing exception type={type(exc).__name__}",
+            event=event,
+            repo=full[:80],
+            delivery=delivery,
+        )
+        with contextlib.suppress(Exception):
+            _announce(home, f"GIT fail event={event} err=processing deferred")
+        return _git_deferred()
+
+    if ev in {"issues", "pull_request"}:
         try:
             _ticket_closure_from_git(
                 home,
                 event,
                 payload,
-                delivery_id=str(hdrs.get("x-github-delivery") or ""),
+                delivery_id=delivery,
             )
         except Exception:  # noqa: BLE001
             pass
@@ -762,6 +929,13 @@ def handle_request(
                 if verb == "HEAD":
                     return 200, b""
                 return 200, payload
+            # FR #7454: commands reference is public — never proxy behind settings login.
+            if inner in ("/commands", "/commands/"):
+                data = _jhttp.load_jeeves_commands_html()
+                if data is None:
+                    return 404, b""
+                stash_response_headers([("Content-Type", "text/html; charset=utf-8")])
+                return (200, b"") if verb == "HEAD" else (200, data)
             if inner == _jhttp.BUTLER_HREF:
                 p = _jhttp.butler_ico_path()
                 if p.is_file():
@@ -947,15 +1121,22 @@ def make_handler(
 
     class _Handler(BaseHTTPRequestHandler):
         def _run(self, method: str) -> None:
+            route = (self.path or "").split("?", 1)[0]
             try:
                 length = int(self.headers.get("Content-Length") or 0)
             except ValueError:
                 length = -1
             if length < 0:
-                self._reply(400, b"")
+                if route == GIT_WEBHOOK_PATH:
+                    self._reply(400, _git_error("invalid content-length", 400)[1])
+                else:
+                    self._reply(400, b"")
                 return
             if length > MAX_BODY_BYTES:  # never read an oversized body into memory
-                self._reply(413, b"")
+                if route == GIT_WEBHOOK_PATH:
+                    self._reply(413, _git_error("body too large", 413)[1])
+                else:
+                    self._reply(413, b"")
                 self.close_connection = True
                 return
             body = self.rfile.read(length) if length > 0 else b""

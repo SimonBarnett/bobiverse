@@ -88,8 +88,14 @@ def enqueue(
     safe_headers: dict[str, str] = {}
     for hk, hv in (headers or {}).items():
         name = str(hk)
-        # Never persist shared secrets in the durable queue.
-        if name.lower() in ("x-bob-secret", "x-bob-intake-key", "authorization"):
+        # Never persist shared secrets / HMAC signatures in the durable queue.
+        if name.lower() in (
+            "x-bob-secret",
+            "x-bob-intake-key",
+            "authorization",
+            "x-hub-signature",
+            "x-hub-signature-256",
+        ):
             continue
         safe_headers[name] = str(hv)[:256]
 

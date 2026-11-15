@@ -17,7 +17,8 @@ Everything network/clock/disk is injectable so tests use fakes.
 from __future__ import annotations
 
 import contextlib
-
+import hashlib
+import hmac
 import json
 import os
 import threading
@@ -186,13 +187,42 @@ def _ping_body() -> bytes:
     return json.dumps({"zen": PROBE_ZEN, "repository": {"full_name": PROBE_REPO}}).encode("utf-8")
 
 
+def _git_probe_secret() -> str | None:
+    """FR #7467: same secret file as bobcallback (never log the value)."""
+    override = (os.environ.get("BOB_GIT_WEBHOOK_SECRET_FILE") or "").strip()
+    path = Path(override) if override else None
+    if path is None:
+        cfg = (os.environ.get("BOB_CONFIG_DIR") or "").strip()
+        if cfg:
+            path = Path(cfg) / "github-webhook.secret"
+    if path is None or not path.is_file():
+        return None
+    try:
+        val = path.read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    return val or None
+
+
+def _sign_git_body(body: bytes, secret: str) -> str:
+    dig = hmac.new(secret.encode("utf-8"), body, hashlib.sha256).hexdigest()
+    return f"sha256={dig}"
+
+
 def probe_target(base: str, http=default_http) -> dict[str, int]:
     out: dict[str, int] = {}
     for name, method, path, _ok in CHECKS:
         if method == "POST":
-            out[name] = http(method, base + path, _ping_body(),
-                             {"Content-Type": "application/json", "X-GitHub-Event": "ping",
-                              "User-Agent": "bobiverse-jeeves-health"})
+            body = _ping_body()
+            headers = {
+                "Content-Type": "application/json",
+                "X-GitHub-Event": "ping",
+                "User-Agent": "bobiverse-jeeves-health",
+            }
+            secret = _git_probe_secret()
+            if secret:
+                headers["X-Hub-Signature-256"] = _sign_git_body(body, secret)
+            out[name] = http(method, base + path, body, headers)
         else:
             out[name] = http(method, base + path, None, {"User-Agent": "bobiverse-jeeves-health"})
     return out

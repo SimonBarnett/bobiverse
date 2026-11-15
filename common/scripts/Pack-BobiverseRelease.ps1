@@ -365,6 +365,13 @@ function Stage-Product([string]$Name) {
         New-Item -ItemType Directory -Force -Path $defaultsDest | Out-Null
         Copy-Item -LiteralPath $resyncSrc -Destination (Join-Path $defaultsDest 'resync-repos.txt') -Force
         Write-Host 'INFO jeeves staged defaults\resync-repos.txt (FR #4725)'
+        # FR #7455: publish jeeves/www beside flat scripts so Install-BobWebhooks ..\www\irc-ntsa works from MSI layout.
+        $wwwSrc = Get-BobiverseRepoPath -Root $RepoRoot -Rel 'jeeves\www'
+        if (-not (Test-Path -LiteralPath $wwwSrc)) { throw 'jeeves pack requires jeeves\www (FR #7455)' }
+        $wwwDest = Join-Path $stage 'www'
+        New-Item -ItemType Directory -Force -Path $wwwDest | Out-Null
+        Copy-Item -Path (Join-Path $wwwSrc '*') -Destination $wwwDest -Recurse -Force
+        Write-Host 'INFO jeeves staged www from jeeves\www (FR #7455)'
         # FR #2301 / WP3: one-file jeeves.exe (chair + in-proc HTTP)
         $jeevesExeDir = Join-Path $stage 'jeeves'
         New-Item -ItemType Directory -Force -Path $jeevesExeDir | Out-Null

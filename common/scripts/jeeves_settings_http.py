@@ -290,11 +290,28 @@ def public_jeeves_routes() -> list[str]:
         "/jeeves/pools",
         "/jeeves/status",
         "/jeeves/settings",
+        "/jeeves/commands",
         "/jeeves/api/login",
         "/jeeves/api/logout",
         "/jeeves/assets/ntsa-gut-logo.png",
         "/jeeves/assets/jeeves-butler.ico",
     ]
+
+
+def jeeves_commands_html_path() -> Path:
+    """FR #7454 / #7413: static public commands page under jeeves/www/irc-ntsa."""
+    return _REPO_ROOT / "jeeves" / "www" / "irc-ntsa" / "jeeves" / "commands" / "index.html"
+
+
+def load_jeeves_commands_html() -> bytes | None:
+    """Return commands page bytes, or None if missing. Never logs path secrets."""
+    path = jeeves_commands_html_path()
+    try:
+        if path.is_file():
+            return path.read_bytes()
+    except OSError:
+        return None
+    return None
 
 
 def login_fail_locked(ip: str, *, now: float | None = None) -> bool:
@@ -339,7 +356,11 @@ def ntsa_gut_logo_path() -> Path:
 
 def _shell_header(*, current: str, include_nav: bool, prefix: str = "") -> str:
     """FR #7451 site-header chrome; FR #7452 Home landing, Settings at /settings."""
-    img = f'<img src="{ui_href(prefix, LOGO_HREF)}" alt="NTSA" width="36" height="36"/>'
+    # FR #7453: NTSA logo (never letter mark); brand always links to site home `/`.
+    img = (
+        f'<img class="brand-logo" src="{ui_href(prefix, LOGO_HREF)}" '
+        f'alt="NTSA" width="36" height="36"/>'
+    )
     brand = (
         f'<a class="brand" href="/">{img}'
         f'<span class="brand-text"><strong>Jeeves</strong>'
@@ -350,6 +371,7 @@ def _shell_header(*, current: str, include_nav: bool, prefix: str = "") -> str:
         ("/downloads", "Downloads", "downloads"),
         ("/jeeves/commands", "Commands", "commands"),
         ("/jeeves", "Jeeves", "jeeves"),
+        ("https://mcp.ntsa.uk", "Priority MCP", "mcp"),
     ]
     parts: list[str] = []
     for href, label, key in site:
@@ -381,7 +403,8 @@ def _shell_footer() -> str:
         "<span>"
         '<a href="/">Home</a> · '
         '<a href="/downloads">Downloads</a> · '
-        '<a href="/jeeves/commands">Commands</a>'
+        '<a href="/jeeves/commands">Commands</a> · '
+        '<a href="https://mcp.ntsa.uk">Priority MCP</a>'
         "</span>"
         "</footer>"
     )
@@ -741,9 +764,11 @@ def _render_login_html(error: str = "", *, prefix: str = "") -> str:
     # FR #7452: after login land on home (/), not Settings.
     after = ui_href(prefix, "/")
     butler = ui_href(prefix, BUTLER_HREF)
+    commands_href = "/jeeves/commands"
     body = f"""<h1>Jeeves settings login</h1>
 <img src="{butler}" alt="Jeeves the butler" width="96" height="96"/>
 <p class="note">Existing graphic jeeves/assets/jeeves-butler.ico (FR #6816). Passwords are never logged.</p>
+<p class="note">Public command reference (no login): <a href="{commands_href}">/jeeves/commands</a>.</p>
 {note}
 <form id="f">
 <label>User name<input name="account" autocomplete="username" required placeholder="user@domain or DOMAIN\\user"/></label>
@@ -1204,6 +1229,16 @@ class _Handler(BaseHTTPRequestHandler):
                 return
             html = _render_login_html(prefix=prefix)
             self._send(200, html.encode("utf-8"), "text/html; charset=utf-8")
+            return
+        # FR #7454: /commands is public (no session); same static page as IIS /jeeves/commands.
+        if path in ("/commands", "/commands/"):
+            if not public and self._refuse_non_lan(ip):
+                return
+            raw = load_jeeves_commands_html()
+            if raw is None:
+                self._send_json(404, {"ok": False, "error": "not found"})
+                return
+            self._send(200, raw, "text/html; charset=utf-8")
             return
         if not public and self._refuse_non_lan(ip):
             return

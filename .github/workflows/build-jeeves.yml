@@ -9,6 +9,7 @@ on:
     paths:
       - .github/workflows/build-jeeves.yml
       - jeeves/**
+      - '!jeeves/www/**'
       - jeeves/scripts/Build-Jeeves.ps1
       - common/**
       - common/scripts/jeeves_main.py
@@ -21,6 +22,7 @@ on:
     paths:
       - .github/workflows/build-jeeves.yml
       - jeeves/**
+      - '!jeeves/www/**'
       - jeeves/scripts/Build-Jeeves.ps1
       - common/**
       - common/scripts/jeeves_main.py

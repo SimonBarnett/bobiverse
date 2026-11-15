@@ -21,11 +21,14 @@ def test_fr7298_login_expired_retries_every_60s_not_backoff():
 
 
 def test_fr7298_429_still_backs_off():
+    # FR #7471: rename retained; 429 no longer backs off past 60s.
     now = 1_700_000_000.0
     bobreport.mark_pool_fetch(
         "xai", now, ok=False, error="provider-http-429", rate_limited=True
     )
-    assert bobreport.pool_fetch_due("xai", now + 60.0) is False
+    assert bobreport.pool_fetch_due("xai", now + 1.0) is False
+    assert bobreport.pool_fetch_due("xai", now + 60.0) is True
+
 
 
 def test_fr7298_expired_login_keeps_fetched_at_advances_last_attempt():

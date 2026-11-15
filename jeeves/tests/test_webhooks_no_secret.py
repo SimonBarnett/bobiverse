@@ -58,8 +58,11 @@ def test_stray_secret_header_is_ignored_and_never_stored(home):
 
 def test_no_secret_machinery_left_in_receiver_or_clients():
     cb = (SCRIPTS / "bobcallback.py").read_text(encoding="utf-8-sig")
-    for gone in ("find_secret", "load_secret", "secret_candidates", "_secret_matches", "SECRET_ENV", "401"):
+    # Legacy X-Bob-Secret machinery stays gone; FR #7467 adds optional Git HMAC (401).
+    for gone in ("find_secret", "load_secret", "secret_candidates", "_secret_matches", "SECRET_ENV"):
         assert gone not in cb, gone
+    assert "X-Bob-Secret" not in cb
+    assert "verify_git_signature" in cb and "X-Hub-Signature-256" in cb
     assert not (ROOT / "tests" / "test_bobcallback_secret_source.py").exists()
     for rel in ("third_party/bob-tray/src/Private/Get-BobIrc.ps1",
                 "third_party/bob-tray/src/Private/Invoke-BobDigestWebhook.ps1",
@@ -83,9 +86,11 @@ def test_installer_generates_nothing_and_tells_no_one_to_copy_a_secret():
 
 def test_docs_no_longer_require_a_secret():
     w = (ROOT / "docs" / "webhooks.md").read_text(encoding="utf-8-sig")
-    assert "-H \"X-Bob-Secret" not in w and "secret required" not in w and "needs header" not in w
-    assert "none. No route needs a password" in w
+    assert "-H \"X-Bob-Secret" not in w and "needs header" not in w
+    # report/intake/jira/hours stay password-free; optional Git HMAC is FR #7467.
+    assert "report / intake / jira / hours need no password" in w or "No route needs a password" in w
     assert "roster" in w.lower()
+    assert "X-Hub-Signature-256" in w and "7467" in w
     pi = (ROOT / "docs" / "post-install.md").read_text(encoding="utf-8-sig")
     assert "report.secret" not in pi
 
@@ -171,10 +176,17 @@ def test_github_webhook_without_hmac_but_allow_listed(home):
     ok = {"ref": "refs/heads/main", "repository": {"full_name": "SimonBarnett/bobiverse"}, "commits": []}
     assert post(home, "/bob/v1/git", ok, headers=ev)[0] == 204
     foreign = {"ref": "refs/heads/main", "repository": {"full_name": "attacker/repo"}}
-    assert post(home, "/bob/v1/git", foreign, headers=ev)[0] == 403
-    assert post(home, "/bob/v1/git", ok, headers={"X-GitHub-Event": "delete"})[0] == 400
-    assert post(home, "/bob/v1/git", {"zen": "x"}, headers={"X-GitHub-Event": "ping"})[0] == 403  # no repo
-    assert post(home, "/bob/v1/git", ok, headers={})[0] == 400
+    code, body = post(home, "/bob/v1/git", foreign, headers=ev)
+    assert code == 403
+    assert json.loads(body.decode()).get("error") == "owner not allowed"
+    # FR #7467: unknown/ignored events ack 204 (do not 400 authentic deliveries).
+    assert post(home, "/bob/v1/git", ok, headers={"X-GitHub-Event": "delete"})[0] == 204
+    code, body = post(home, "/bob/v1/git", {"zen": "x"}, headers={"X-GitHub-Event": "ping"})
+    assert code == 400  # no repository
+    assert json.loads(body.decode()).get("error") == "missing repository"
+    code, body = post(home, "/bob/v1/git", ok, headers={})
+    assert code == 400
+    assert json.loads(body.decode()).get("error") == "missing event header"
     rate = intake.RateLimiter(per_min=2)
     got = [post(home, "/bob/v1/git", ok, headers=ev, rate=rate)[0] for _ in range(4)]
     assert got.count(429) == 2

@@ -1386,8 +1386,16 @@ def apply_xai_signin_gate(
     *,
     signin_ok: bool,
 ) -> Decision:
-    """Expired sign-in never launches Grok. Cursor if fuel, else xai-auth-expired."""
+    """Expired sign-in never launches Grok. Cursor/OpenCode if fuel, else expire.
+
+    FR #7485: never rewrite ``refuse`` / ``cursor`` / ``opencode`` /
+    ``xai-auth-expired``. Explicit ``--agent`` decisions must not silently
+    fall through to another agent. Automatic ``grok`` / ``dialog`` / ``none``
+    may still fall through to Cursor/OpenCode or ``xai-auth-expired``.
+    """
     if signin_ok:
+        return dec
+    if dec.kind in ("refuse", "cursor", "opencode", "xai-auth-expired"):
         return dec
     fb = select_agent(fuel, cursor_cmd, None, opencode_cmd, xai_signin_ok=False)
     if fb.kind in ("cursor", "opencode"):
@@ -1676,14 +1684,19 @@ def resolve_seat_decision(
     auth_present: bool,
     xai_signin_ok: bool = True,
 ) -> Decision:
-    """Apply an explicit agent request, else the automatic Grok → Cursor → OpenCode order."""
+    """Apply an explicit agent request, else the automatic Grok → Cursor → OpenCode order.
+
+    FR #7485: an explicit ``--agent`` either starts that agent or refuses /
+    xai-auth-expired. It never falls through to a different agent (including
+    when xAI sign-in is expired and Cursor still has fuel).
+    """
     if normalize_explicit_agent(requested):
         out = explicit_agent_decision(
             requested, fuel, cursor_cmd, grok_exe, opencode_cmd, auth_present=auth_present
         )
-        return apply_xai_signin_gate(
-            out, fuel, cursor_cmd, grok_exe, opencode_cmd, signin_ok=xai_signin_ok
-        )
+        if out.kind == "grok" and not xai_signin_ok:
+            return Decision("xai-auth-expired", "explicit grok: xai-auth-expired")
+        return out
     if opencode_cmd and dec.kind in ("dialog", "none"):
         dec = select_agent(
             fuel, cursor_cmd, grok_exe, opencode_cmd, xai_signin_ok=xai_signin_ok
@@ -12936,12 +12949,15 @@ def run_plan(args, log: Log) -> int:
         return EXIT_USAGE
     dec, cursor_cmd, grok_exe, fuel, signin_ok = _choose(args, log, folder, "plan")
     opencode_cmd = _resolve_opencode_cmd_for_seat(log)
+    requested = getattr(args, "agent", "") or ""
     dec = resolve_seat_decision(
-        getattr(args, "agent", ""),
+        requested,
         dec, fuel, cursor_cmd, grok_exe, opencode_cmd,
         auth_present=opencode_auth_file_present(),
         xai_signin_ok=signin_ok,
     )
+    if normalize_explicit_agent(requested):
+        log(f"select[plan]: explicit {normalize_explicit_agent(requested)} -> {dec.kind} - {dec.reason}")
     stopped = _explicit_refusal_exit(dec, log, "plan")
     if stopped is not None:
         return stopped
@@ -13242,12 +13258,16 @@ def run_agent(args, log: Log) -> int:
         pass
     dec, cursor_cmd, grok_exe, fuel, signin_ok = _choose(args, log, folder, "agent")
     opencode_cmd = _resolve_opencode_cmd_for_seat(log)
+    requested = getattr(args, "agent", "") or ""
     dec = resolve_seat_decision(
-        getattr(args, "agent", ""),
+        requested,
         dec, fuel, cursor_cmd, grok_exe, opencode_cmd,
         auth_present=opencode_auth_file_present(),
         xai_signin_ok=signin_ok,
     )
+    # FR #7485: always log the seat decision after explicit override (auto already logged in _choose).
+    if normalize_explicit_agent(requested):
+        log(f"select[agent]: explicit {normalize_explicit_agent(requested)} -> {dec.kind} - {dec.reason}")
     stopped = _explicit_refusal_exit(dec, log, "agent")
     if stopped is not None:
         return stopped
