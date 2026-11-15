@@ -2115,16 +2115,75 @@ function Format-BobTrayPoolLayoutSnapshot {
     return ($lines -join [Environment]::NewLine)
 }
 
+function Get-BobTrayDigestReportUrl {
+    # FR #6142 / #7604: standalone URL for Update-BobTrayDigestPools (not Watch-BobTray-only).
+    # Trim before blank check so whitespace-only env falls back to canonical.
+    $u = ([string]$env:BOB_DIGEST_REPORT_URL).Trim()
+    if ($u) { return $u }
+    return 'https://bob.ntsa.uk/bob/v1/report'
+}
+
+function Write-BobTrayDigestFetchFailFile {
+    <#
+      FR #7604: always leave tray-digest-fetch-fail.json with reason + timestamp (no secrets).
+      Also report once via Report-BobDeterministicException when available.
+    #>
+    param(
+        [Parameter(Mandatory)][string]$Root,
+        [string]$Reason = 'digest fetch failed',
+        [string]$ErrorText = '',
+        [switch]$Report
+    )
+    $run = Join-Path $Root 'run'
+    try {
+        if (-not (Test-Path -LiteralPath $run)) { New-Item -ItemType Directory -Force -Path $run | Out-Null }
+    } catch { }
+    $reason = ([string]$Reason).Trim()
+    if (-not $reason) { $reason = 'digest fetch failed' }
+    $err = ([string]$ErrorText).Trim()
+    $err = ($err -replace '(?i)(bearer\s+)\S+', '$1***' -replace '(?i)(token[=:]\s*)\S+', '$1***' -replace '(?i)(password[=:]\s*)\S+', '$1***')
+    if ($err.Length -gt 240) { $err = $err.Substring(0, 240) }
+    if ($reason.Length -gt 240) { $reason = $reason.Substring(0, 240) }
+    $failFlag = Join-Path $run 'tray-digest-fetch-fail.json'
+    $failDoc = [ordered]@{
+        v      = 1
+        ts     = [int64][DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
+        reason = $reason
+        note   = $reason
+        error  = $(if ($err) { $err } else { $reason })
+    }
+    try {
+        $failTmp = $failFlag + '.tmp'
+        [IO.File]::WriteAllText($failTmp, (ConvertTo-Json -InputObject $failDoc -Compress), (New-Object System.Text.UTF8Encoding $false))
+        if (Test-Path -LiteralPath $failFlag) {
+            [IO.File]::Replace($failTmp, $failFlag, [NullString]::Value)
+        } else {
+            [IO.File]::Move($failTmp, $failFlag)
+        }
+    } catch { }
+    if ($Report) {
+        try {
+            if (Get-Command Report-BobDeterministicException -ErrorAction SilentlyContinue) {
+                $ex = New-Object System.InvalidOperationException ($reason + $(if ($err) { ': ' + $err } else { '' }))
+                Report-BobDeterministicException -Site 'Update-BobTrayDigestPools' -Exception $ex -ScriptPath $PSCommandPath -Repo 'SimonBarnett/bobiverse' | Out-Null
+            }
+        } catch { }
+    }
+    return $failFlag
+}
+
 function Update-BobTrayDigestPools {
     <#
     .SYNOPSIS
-      FR #7510 / #7580: GET digest and write run\tray-digest-pools.json for TipForm/Status pool paint.
+      FR #7510 / #7580 / #7604: GET digest and write run\tray-digest-pools.json for TipForm/Status pool paint.
     .NOTES
       Pool numbers for Status/TipForm come only from this file (never tray-status.json pool
       fields, local weekly, Cursor CLI, or opencode-fuel.json). UTF-8 no BOM; atomic replace.
       FR #7580: paint values and [stale] exactly as the digest publishes (Format -AsPublished);
       no local age override. On fetch failure keep last rows, set digest_ok=false + note;
       bob-tray.exe CrashHook.Reports once (FR #7505).
+      FR #7604: resolve URL via Get-BobTrayDigestReportUrl in this module (standalone); every
+      run writes pools and/or tray-digest-fetch-fail.json; empty URL / exceptions report.
     #>
     [CmdletBinding()]
     param(
@@ -2142,6 +2201,7 @@ function Update-BobTrayDigestPools {
     $digestErr = ''
     $note = ''
     $doc = $null
+    $wroteFail = $false
     try {
         if ($null -ne $Digest) {
             $doc = $Digest
@@ -2157,20 +2217,31 @@ function Update-BobTrayDigestPools {
             $u = ([string]$Url).Trim()
             if (-not $u) {
                 if (Get-Command Get-BobTrayDigestReportUrl -ErrorAction SilentlyContinue) {
-                    try { $u = [string](Get-BobTrayDigestReportUrl) } catch { $u = '' }
+                    try { $u = ([string](Get-BobTrayDigestReportUrl)).Trim() } catch { $u = '' }
                 }
             }
-            if (-not $u) { $u = 'https://bob.ntsa.uk/bob/v1/report' }
-            # UTF-8 explicitly (PS 5.1 Latin-1 trap on charset-less body).
-            $resp = Invoke-WebRequest -Uri $u -UseBasicParsing -TimeoutSec 8 -Headers @{ Accept = 'application/json' }
-            $ms = $resp.RawContentStream
-            $ms.Position = 0
-            $buf = New-Object byte[] ([int]$ms.Length)
-            [void]$ms.Read($buf, 0, $buf.Length)
-            $doc = [System.Text.Encoding]::UTF8.GetString($buf) | ConvertFrom-Json
+            # FR #7604: empty URL after standalone resolve -> fail file + report (no quiet exit).
+            if (-not $u) {
+                $digestOk = $false
+                $digestErr = 'empty digest URL'
+                $note = 'digest unreachable: empty digest URL'
+                [void](Write-BobTrayDigestFetchFailFile -Root $Root -Reason $note -ErrorText $digestErr -Report)
+                $wroteFail = $true
+            }
+            else {
+                # UTF-8 explicitly (PS 5.1 Latin-1 trap on charset-less body).
+                $resp = Invoke-WebRequest -Uri $u -UseBasicParsing -TimeoutSec 8 -Headers @{ Accept = 'application/json' }
+                $ms = $resp.RawContentStream
+                $ms.Position = 0
+                $buf = New-Object byte[] ([int]$ms.Length)
+                [void]$ms.Read($buf, 0, $buf.Length)
+                $doc = [System.Text.Encoding]::UTF8.GetString($buf) | ConvertFrom-Json
+            }
         }
-        if (-not $doc) { throw 'digest empty' }
-        $digestOk = $true
+        if (-not $wroteFail) {
+            if (-not $doc) { throw 'digest empty' }
+            $digestOk = $true
+        }
     }
     catch {
         $digestOk = $false
@@ -2179,6 +2250,8 @@ function Update-BobTrayDigestPools {
         # Strip anything that looks like a bearer/token fragment from the note.
         $digestErr = ($digestErr -replace '(?i)(bearer\s+)\S+', '$1***' -replace '(?i)(token[=:]\s*)\S+', '$1***')
         $note = ('digest unreachable: {0}' -f $digestErr)
+        [void](Write-BobTrayDigestFetchFailFile -Root $Root -Reason $note -ErrorText $digestErr -Report)
+        $wroteFail = $true
     }
 
     $grok = New-Object System.Collections.Generic.List[object]
@@ -2350,23 +2423,11 @@ function Update-BobTrayDigestPools {
             try { $opencodeWindowLines = @($prev.opencode_window_lines) } catch { $opencodeWindowLines = @() }
             try { $opencodeBars = @($prev.opencode_bars) } catch { $opencodeBars = @() }
         }
-        # Marker for bob-tray.exe CrashHook (one report per failure window).
-        try {
-            $failFlag = Join-Path $run 'tray-digest-fetch-fail.json'
-            $failDoc = [ordered]@{
-                v      = 1
-                ts     = [int64][DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
-                note   = $note
-                error  = $digestErr
-            }
-            $failTmp = $failFlag + '.tmp'
-            [IO.File]::WriteAllText($failTmp, (ConvertTo-Json -InputObject $failDoc -Compress), (New-Object System.Text.UTF8Encoding $false))
-            if (Test-Path -LiteralPath $failFlag) {
-                [IO.File]::Replace($failTmp, $failFlag, [NullString]::Value)
-            } else {
-                [IO.File]::Move($failTmp, $failFlag)
-            }
-        } catch { }
+        # Marker for bob-tray.exe CrashHook (one report per failure window). FR #7604 helper.
+        if (-not $wroteFail) {
+            [void](Write-BobTrayDigestFetchFailFile -Root $Root -Reason $(if ($note) { $note } else { 'digest unreachable' }) -ErrorText $digestErr -Report)
+            $wroteFail = $true
+        }
     }
 
     $model = [ordered]@{
@@ -2402,6 +2463,11 @@ function Update-BobTrayDigestPools {
         return $outPath
     }
     catch {
+        # FR #7604: pools write failed --- still leave a fail file (reason + ts) and report.
+        if (-not $wroteFail) {
+            $werr = ([string]$_.Exception.Message)
+            [void](Write-BobTrayDigestFetchFailFile -Root $Root -Reason ('digest pools write failed: {0}' -f $werr) -ErrorText $werr -Report)
+        }
         return $null
     }
 }
