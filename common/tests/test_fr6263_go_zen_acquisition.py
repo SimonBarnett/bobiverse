@@ -241,7 +241,10 @@ def test_fr6263_publish_diag_surfaces_opencode_acquisition(tmp_path, monkeypatch
     bobreport._opencode_fuel_cache.clear()
     bobreport._opencode_fuel_cache.update({"at": 0.0, "doc": {}})
 
+    calls = {"n": 0}
+
     def fake_fetch(api_key, *, url=None):
+        calls["n"] += 1
         return opencode_fuel.interpret_go_zen_usage_response(
             403, '{"error":1010,"message":"browser_signature_banned"}'
         )
@@ -262,12 +265,13 @@ def test_fr6263_publish_diag_surfaces_opencode_acquisition(tmp_path, monkeypatch
     monkeypatch.setattr(bobreport, "classify_publish_home", lambda h: "service")
     code = bobreport.publish_local_peer_fuel(home, mid, force=True, now=6000.0)
     assert code == 204
+    # FR #7751 / #7255: the ear publish path must not hit Go Zen.
+    # blocked_1010 stays on read_local_opencode_fuel_doc. Publish diag is the fleet owner.
+    assert calls["n"] == 0
     diag = bobreport.last_fuel_publish_diag()
-    assert diag.get("opencode_acquisition") == "blocked_1010"
-    assert diag.get("opencode_source") == opencode_fuel.GO_ZEN_USAGE_SOURCE
+    assert diag.get("opencode_acquisition") == "jeeves-fleet"
     line = bobreport.format_fuel_publish_diag(diag)
-    assert "opencode_acquisition=blocked_1010" in line
-    assert "opencode_source=go-zen-usage" in line
+    assert "opencode_acquisition=jeeves-fleet" in line
 
 
 def test_fr6263_frozen_overlay_allowlists_opencode_fuel():
