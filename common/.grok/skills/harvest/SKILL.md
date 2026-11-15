@@ -423,6 +423,7 @@ routes to bobiverse via the split rule.
 - Ear CI artifacts must ship Start-Bob.ps1 and Select-BobEarLaunch.ps1 with manifest SHA-256; Install-BobEarExe copies them beside the exe or machines keep stale mtime launchers.
 - Cached xAI weekly remaining must not be relabelled onto a new auth.json grok_account; discard last-good % until a successful fetch for the new account.
 - Public bob.ntsa.uk chrome starts as shared charcoal/paper/gold site.css + HTML mocks validated by validate-vision-pack; live IIS is a later FR.
+- MRB commands page: verify unauthenticated HTML has core verbs and no password form, Install rewrite skips /jeeves/commands, closing-keyword #7413, note live 404 until Install; merge-gate --auto without CI poll
 
 ## Harvest digest (lessons audit 2026-10-06)
 
