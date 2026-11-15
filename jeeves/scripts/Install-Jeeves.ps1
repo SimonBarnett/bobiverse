@@ -462,7 +462,7 @@ try {
         }
     }
     # v0.1.16 / FR #7467: report/intake/jira need no password. Optional Git HMAC file
-    # (<BOB_CONFIG_DIR>\github-webhook.secret) is preserved across upgrades — never generated here.
+    # (<BOB_CONFIG_DIR>\github-webhook.secret) is preserved across upgrades  -  never generated here.
     $gitWhSec = Join-Path $cfgDir 'github-webhook.secret'
     if (Test-Path -LiteralPath $gitWhSec) {
         Write-Host "INFO git webhook secret present (preserved): $gitWhSec"
