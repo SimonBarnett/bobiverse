@@ -30,6 +30,8 @@ def test_mrb7550_fetch_helpers_ensure_filehash_command():
     assert "function Ensure-BobiverseFileHashCommand" in text
     assert "Microsoft.PowerShell.Utility" in text
     assert "FR #7355" in text or "7355" in text
-    # Assert-BobiverseSha256 must call the ensure helper before Get-FileHash.
+    # FIX #7550: .NET SHA256 fallback when Get-FileHash stays missing after Import-Module.
+    assert "function Get-BobiverseFileSha256" in text
+    assert "System.Security.Cryptography.SHA256" in text
     fn = text[text.index("function Assert-BobiverseSha256") :]
-    assert "Ensure-BobiverseFileHashCommand" in fn
+    assert "Get-BobiverseFileSha256" in fn

@@ -140,13 +140,14 @@ function Expand-BobiverseZip {
 }
 
 function Ensure-BobiverseFileHashCommand {
-    # FR #7355 / MRB #7550: GHA/seat shells with PSModuleAutoLoadingPreference=None
-    # leave Get-FileHash missing; load Microsoft.PowerShell.Utility explicitly.
+    # FR #7355 / MRB #7550 / FIX #7550: GHA/seat shells with PSModuleAutoLoadingPreference=None
+    # often leave Get-FileHash missing. Best-effort Import-Module; callers use
+    # Get-BobiverseFileSha256 which falls back to System.Security.Cryptography.SHA256.
     if (Get-Command Get-FileHash -ErrorAction SilentlyContinue) { return }
     $prev = $env:PSModuleAutoLoadingPreference
     try {
         $env:PSModuleAutoLoadingPreference = 'All'
-        Import-Module Microsoft.PowerShell.Utility -ErrorAction Stop
+        Import-Module Microsoft.PowerShell.Utility -ErrorAction SilentlyContinue | Out-Null
     } finally {
         if ($null -eq $prev -or $prev -eq '') {
             Remove-Item Env:\PSModuleAutoLoadingPreference -ErrorAction SilentlyContinue
@@ -154,8 +155,33 @@ function Ensure-BobiverseFileHashCommand {
             $env:PSModuleAutoLoadingPreference = $prev
         }
     }
-    if (-not (Get-Command Get-FileHash -ErrorAction SilentlyContinue)) {
-        throw 'Get-FileHash missing after Import-Module Microsoft.PowerShell.Utility (FR #7355)'
+}
+
+function Get-BobiverseFileSha256 {
+    param(
+        [Parameter(Mandatory)]
+        [string]$Path
+    )
+    Ensure-BobiverseFileHashCommand
+    if (Get-Command Get-FileHash -ErrorAction SilentlyContinue) {
+        return (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant()
+    }
+    # .NET fallback when Utility still does not export Get-FileHash (GHA Autoload=None).
+    $full = [System.IO.Path]::GetFullPath($Path)
+    if (-not [System.IO.File]::Exists($full)) {
+        throw "Get-BobiverseFileSha256: missing path=$Path"
+    }
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        $fs = [System.IO.File]::OpenRead($full)
+        try {
+            $hash = $sha.ComputeHash($fs)
+            return ([BitConverter]::ToString($hash) -replace '-', '').ToLowerInvariant()
+        } finally {
+            $fs.Dispose()
+        }
+    } finally {
+        $sha.Dispose()
     }
 }
 
@@ -168,8 +194,7 @@ function Assert-BobiverseSha256 {
     )
     $want = $Expected.Trim().ToLowerInvariant()
     if (-not $want) { throw 'Assert-BobiverseSha256: empty Expected' }
-    Ensure-BobiverseFileHashCommand
-    $got = (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant()
+    $got = Get-BobiverseFileSha256 -Path $Path
     if ($got -ne $want) {
         throw "sha256-mismatch path=$Path got=$got want=$want"
     }
