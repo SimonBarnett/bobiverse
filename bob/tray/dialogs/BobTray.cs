@@ -852,25 +852,49 @@ namespace BobDialogs
         }
 
         // ---- engine (hidden PowerShell: all slow data work) ----
+        // FR #7508: log every launch attempt / miss / fail; never silent-return.
         void StartEngine()
         {
             try
             {
                 // FR #5177: commands belong to the previous engine, not its replacement.
-                File.Delete(cmdFile);
+                try { File.Delete(cmdFile); } catch { }
                 string wrap = Path.Combine(root, "tools\\_Watch-BobTray-" + machine + ".ps1");
                 string script = File.Exists(wrap) ? wrap : Path.Combine(root, "tools\\Watch-BobTray.ps1");
-                if (!File.Exists(script)) return;
+                if (!File.Exists(script))
+                {
+                    TrayLifecycle.Write("engine-launch-miss", "script", script ?? "", "via", "bob-tray");
+                    engine = null; engineStartedUtc = DateTime.MinValue;
+                    return;
+                }
                 string ps = Path.Combine(Environment.GetEnvironmentVariable("SystemRoot") ?? "C:\\Windows", "System32\\WindowsPowerShell\\v1.0\\powershell.exe");
                 ProcessStartInfo psi = new ProcessStartInfo(ps, "-NoProfile -STA -WindowStyle Hidden -ExecutionPolicy Bypass -File \"" + script + "\"");
                 psi.UseShellExecute = false; psi.CreateNoWindow = true; psi.WorkingDirectory = root;
                 psi.EnvironmentVariables["BOB_TRAY_ENGINE"] = "1";
                 psi.EnvironmentVariables["BOB_TRAY_EXE_PID"] = Process.GetCurrentProcess().Id.ToString();
                 if (machine.Length > 0) psi.EnvironmentVariables["BOB_MACHINE_ID"] = machine;
+                TrayLifecycle.Write("engine-launch", "script", script, "ps", ps, "via", "bob-tray");
                 engine = Process.Start(psi);
+                if (engine == null)
+                {
+                    TrayLifecycle.Write("engine-launch-fail", "why", "Process.Start returned null", "script", script);
+                    engineStartedUtc = DateTime.MinValue;
+                    return;
+                }
                 engineStartedUtc = DateTime.UtcNow;
+                // FR #7508: drop any tip painted from a pre-start tray-status.json (frozen pools).
+                if (lastWrite < engineStartedUtc)
+                {
+                    lastWrite = DateTime.MinValue; lastLen = -1;
+                    state = new TrayState();
+                }
+                TrayLifecycle.Write("engine-launch-ok", "pid", engine.Id.ToString(), "script", script);
             }
-            catch { engine = null; engineStartedUtc = DateTime.MinValue; }
+            catch (Exception ex)
+            {
+                engine = null; engineStartedUtc = DateTime.MinValue;
+                TrayLifecycle.Write("engine-launch-error", "err", ex.GetType().Name + ": " + ex.Message);
+            }
         }
 
         // FR #3180: public for headless --watchdog-ticks harness (tests).
@@ -936,8 +960,8 @@ namespace BobDialogs
         {
             // FR #4136: also restart when the process is alive but the engine.alive stamp is stale
             // (hung UI thread still owns the queue; tray.alive is written by this exe and stays fresh).
-            // FR #4317: IsStale ignores pre-start leftover stamps so a healthy engine with a frozen
-            // leftover file is not kill-looped every engineStarts window (~5 min).
+            // FR #4317 + FR #7508: IsStale ignores pre-start leftover stamps only within
+            // ColdStartGraceSeconds (60); after that leftover/missing stamps are stale so HealEngine retries.
             bool exited = true;
             try { exited = engine == null || engine.HasExited; } catch { exited = true; }
             bool stale = false;
@@ -1019,6 +1043,7 @@ namespace BobDialogs
         }
 
         // ---- state from the snapshot ----
+        // FR #7508: never paint tray-status.json written before this engine start; tip "Bob: engine down" when no fresh snap.
         void Reload()
         {
             try
@@ -1031,7 +1056,9 @@ namespace BobDialogs
                 if (File.Exists(snapFile))
                 {
                     FileInfo fi = new FileInfo(snapFile);
-                    if (fi.LastWriteTimeUtc != lastWrite || fi.Length != lastLen)
+                    // Ignore pre-start snapshots (frozen pool numbers from a prior engine).
+                    bool preStart = engineStartedUtc != DateTime.MinValue && fi.LastWriteTimeUtc < engineStartedUtc;
+                    if (!preStart && (fi.LastWriteTimeUtc != lastWrite || fi.Length != lastLen))
                     {
                         string json;
                         using (FileStream fs = new FileStream(snapFile, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete))
@@ -1039,6 +1066,31 @@ namespace BobDialogs
                         TrayState s = TrayState.Parse(json);
                         if (s.AttentionSeq != state.AttentionSeq) acked = false;
                         lastWrite = fi.LastWriteTimeUtc; lastLen = fi.Length; state = s;
+                    }
+                }
+            }
+            catch { }
+            try
+            {
+                if (!noEngine)
+                {
+                    bool haveFresh = lastWrite != DateTime.MinValue
+                        && (engineStartedUtc == DateTime.MinValue || lastWrite >= engineStartedUtc);
+                    if (!haveFresh)
+                    {
+                        bool engineLive = false;
+                        try { engineLive = engine != null && !engine.HasExited; } catch { engineLive = false; }
+                        double since = engineStartedUtc == DateTime.MinValue
+                            ? double.MaxValue
+                            : (DateTime.UtcNow - engineStartedUtc).TotalSeconds;
+                        if (!engineLive || since > EngineAliveStamp.ColdStartGraceSeconds)
+                        {
+                            if (state.Short != "Bob: engine down")
+                            {
+                                state = new TrayState();
+                                state.Short = "Bob: engine down";
+                            }
+                        }
                     }
                 }
             }
@@ -1526,6 +1578,8 @@ namespace BobDialogs
     internal static class EngineAliveStamp
     {
         public const double MaxAgeSeconds = 120;   // ~3x 30s refresh; watchdog ticks every 15s
+        // FR #7508: cold-start / leftover grace before HealEngine treats missing or pre-start stamp as stale.
+        public const double ColdStartGraceSeconds = 60;
         public const string FileName = "engine.alive";
 
         public static string PathFor(string startworkerDir)
@@ -1562,20 +1616,22 @@ namespace BobDialogs
                     // FR #4317: a stamp older than this engine start is a leftover (prior instance or
                     // PS without the writer). Treating it as live age caused HealEngine kill storms
                     // every storm-window reset (~5 min) while the stamp stayed frozen.
+                    // FR #7508: within ColdStartGraceSeconds still ignore leftover; after grace treat
+                    // as stale so a never-writing engine is retried (leftover forever was a silent hang).
                     if (engineStartedUtc != DateTime.MinValue && m < engineStartedUtc)
                     {
                         ageSeconds = (utcNow - engineStartedUtc).TotalSeconds;
-                        return false;
+                        return ageSeconds > ColdStartGraceSeconds;
                     }
                     ageSeconds = (utcNow - m).TotalSeconds;
                     return ageSeconds > maxAgeS;
                 }
             }
             catch { }
-            // No stamp yet: grace until the engine has been up longer than maxAge (cold start / first tick).
+            // No stamp yet: grace until cold-start window elapses (FR #7508: 60s), then stale for retry.
             if (engineStartedUtc == DateTime.MinValue) return false;
             ageSeconds = (utcNow - engineStartedUtc).TotalSeconds;
-            return ageSeconds > maxAgeS;
+            return ageSeconds > ColdStartGraceSeconds;
         }
     }
 
