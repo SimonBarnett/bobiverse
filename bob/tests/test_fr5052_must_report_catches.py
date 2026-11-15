@@ -58,11 +58,18 @@ def test_fr5052_best_effort_hover_parse_still_allowed():
 
 
 def test_mrb5054_worker_and_alive_empty_only_after_helper():
-    """Hostile: worker-sync / alive Action empty catch only after must-report helper."""
+    """Hostile: worker-sync empty catch only after must-report helper.
+
+    FR #7695 / #5346: the tray.alive timer empty catch is a share miss. It must
+    not call Invoke-BobMustReportFailure. That pin lives in test_fr5346.
+    """
     t = WATCH.read_text(encoding="utf-8-sig")
+    alive = t[t.index("$script:trayAliveSub = Register-ObjectEvent") : t.index("$script:trayAliveSub = Register-ObjectEvent") + 2200]
+    assert "FR #5346" in alive
+    assert "Invoke-BobMustReportFailure -Component" not in alive
+    assert "Report-BobRuntimeFailure" not in alive
     for mark in (
         "$script:trayWorkerSyncSub = Register-ObjectEvent",
-        "$script:trayAliveSub = Register-ObjectEvent",
     ):
         win = _window_after(t, mark, 6000)
         action = win[win.index("-Action") :]

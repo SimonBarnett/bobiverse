@@ -2592,6 +2592,13 @@ function Update-Hover {
     }
     catch {
         Write-TrayLog ("hover error: " + $_.Exception.Message)
+        # FR #7693: a null colour is handled before this catch. Anything else still reports.
+        try {
+            if (Get-Command Invoke-BobMustReportFailure -ErrorAction SilentlyContinue) {
+                Invoke-BobMustReportFailure -Component 'tray' -Site 'tray.hover' -Exception $_.Exception | Out-Null
+            }
+        }
+        catch { }
     }
 }
 
@@ -2712,6 +2719,12 @@ function Get-BobTrayFuelLogoImage {
     return $img
 }
 
+# FR #7693: loaded once so a missing TitleColor never hits a typed Color parameter.
+if (-not (Get-Command Resolve-BobTrayDrawingColor -ErrorAction SilentlyContinue)) {
+    $bobTrayColorHelper = Join-Path $PSScriptRoot 'BobTrayDrawingColor.ps1'
+    if (Test-Path -LiteralPath $bobTrayColorHelper) { . $bobTrayColorHelper }
+}
+
 function Add-BobTrayFuelFamilyRow {
     param(
         [int]$X,
@@ -2719,7 +2732,7 @@ function Add-BobTrayFuelFamilyRow {
         [Parameter(Mandatory)][string]$Family,
         [string]$Title,
         [string]$RightText,
-        [System.Drawing.Color]$TitleColor
+        $TitleColor
     )
     $icon = $null
     try { $icon = Get-BobTrayFuelLogoImage -Family $Family } catch { $icon = $null }
@@ -2974,8 +2987,8 @@ function Add-BobTraySectionHeader {
         [switch]$WithHelp,
         $Agent,
         [string]$RightText,
-        [System.Drawing.Color]$RightColor,
-        [System.Drawing.Color]$TitleColor
+        $RightColor,
+        $TitleColor
     )
     $iconW = 0
     if ($Icon) {
@@ -2996,7 +3009,9 @@ function Add-BobTraySectionHeader {
     $nm = New-Object System.Windows.Forms.Label
     $nm.AutoSize = $true
     $nm.Font = New-Object System.Drawing.Font 'Segoe UI Semibold', 9.5
-    if ($null -ne $TitleColor -and $TitleColor.A -gt 0) { $nm.ForeColor = $TitleColor }
+    # FR #7693: null or missing TitleColor keeps $fg. A real colour is applied as given.
+    $titlePaint = Resolve-BobTrayDrawingColor -Color $TitleColor
+    if ($null -ne $titlePaint) { $nm.ForeColor = $titlePaint }
     else { $nm.ForeColor = $fg }
     $nm.BackColor = [System.Drawing.Color]::Transparent
     $nm.Text = $Title
@@ -3024,7 +3039,8 @@ function Add-BobTraySectionHeader {
         $rt = New-Object System.Windows.Forms.Label
         $rt.AutoSize = $true
         $rt.Font = New-Object System.Drawing.Font 'Segoe UI Semibold', 9
-        if ($null -ne $RightColor -and $RightColor.A -gt 0) { $rt.ForeColor = $RightColor }
+        $rightPaint = Resolve-BobTrayDrawingColor -Color $RightColor
+        if ($null -ne $rightPaint) { $rt.ForeColor = $rightPaint }
         else { $rt.ForeColor = [System.Drawing.Color]::FromArgb(248, 81, 73) }
         $rt.BackColor = [System.Drawing.Color]::Transparent
         $rt.Text = $RightText
