@@ -10847,7 +10847,8 @@ def maybe_recycle_author_only_idle_seat(
 
 
 
-# FR #7334: recycle one idle author when no eligible reviewer has lasted 5 minutes.
+# FR #7334 / #7574 / #7616: recycle one live eligible idle seat when no eligible
+# reviewer has lasted 5 minutes (not "idle author / fewest commits").
 NO_ELIGIBLE_RECYCLE_AFTER_S = 300.0
 
 
@@ -10940,12 +10941,13 @@ def maybe_recycle_stuck_no_eligible_reviewer(
     install_root=None,
     ledger: dict | None = None,
 ) -> list[str]:
-    """FR #7334: one !recycleseat for the least-touched idle author.
+    """FR #7334 / #7574 / #7616: one !recycleseat for a live eligible idle seat.
 
     Fires when an offerable MRB has had no eligible reviewer for more than
-    five minutes. Busy seats are never recycled. One #bobiverse line names
-    the seat. A later fresh seat id is not an author, so the offer path can
-    hand it the MRB.
+    five minutes. Pick is ``_live_eligible_idle_reviewer`` (live, idle, not
+    author/committer/give-up). Busy seats are never recycled. One #bobiverse
+    line names the seat. A later fresh seat id is not an author, so the offer
+    path can hand it the MRB.
     """
     import time as _time
 
@@ -11022,7 +11024,7 @@ def maybe_recycle_stuck_no_eligible_reviewer(
             _write_queue(queue_path(home), doc)
             notice = (
                 f"recycled {target_nick} for no_eligible_reviewer "
-                f"{repo}{ident} (idle author, fewest commits)"
+                f"{repo}{ident} (live eligible idle seat)"
             )
             bobreport.enqueue_chair_fleet_privmsg(home, notice, channel="#bobiverse")
             lines.append(f"no-eligible-reviewer recycleseat={target_nick} id={rid}")
