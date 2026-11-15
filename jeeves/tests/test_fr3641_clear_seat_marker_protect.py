@@ -162,6 +162,7 @@ def test_fr3641_force_reclaims_stale_seat_marker(tmp_path: Path, monkeypatch):
             "-Force",
             "-MinFreeGB",
             "999",
+            "-SkipSeatDisk",
             "-StaleSeatHours",
             "0",
         )
