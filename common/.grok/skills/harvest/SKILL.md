@@ -458,6 +458,7 @@ routes to bobiverse via the split rule.
 - build-bob-ear provenance fr= must include every tracked FR marker present in shipped runtime sources (bobreport/opencode_fuel/irc_agent); keep workflow path filters in sync with frozen_common_script_paths
 - In bob_worker _wait_exit: nonzero agent exit -> report_agent_cli_nonzero_exit + GIVEUP accepted job + restart_agent; zero exit keeps shutdown EXIT_OK with no report/release
 - Digest worker_list: never apply idle from a heartbeat while the nick still holds an accepted queue row --- keep doing + work text (post_digest_seat_kind defaults state=idle).
+- Tray poll steps that can hang (jobs-watcher, stall-alerts) must use Invoke-BobTrayEngineStep with TimeoutSec and capture Receive-Job output for script-scope state.
 
 ## Harvest digest (lessons audit 2026-10-06)
 
