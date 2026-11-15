@@ -84,13 +84,19 @@ def test_fr6453_docs_contain_no_secretish_strings():
         assert m is None, f"secret-like string in {path.relative_to(WWW)}: {m.group(0)[:40]}"
 
 
-def test_fr6453_front_page_keeps_acme_and_webhooks_section():
+def test_fr6453_front_page_keeps_webhooks_section():
+    """FR #7488: redesigned home (FR #7409) dropped 'bobiverse acme' marketing copy.
+
+    Keep webhook-section discoverability; do not reintroduce obsolete acme text.
+    """
     index = (WWW / "index.html").read_text(encoding="utf-8")
-    assert "bobiverse acme" in index.lower()
+    assert "bobiverse acme" not in index.lower()
     assert "Webhooks &amp; API" in index or "Webhooks & API" in index
     hrefs = _collect_hrefs(index)
     webhook_links = [h for h in hrefs if "docs/webhooks" in h.replace("\\", "/")]
     assert webhook_links, "front page must link into docs/webhooks/"
+    # Hub + at least one inbound doc remain reachable from home.
+    assert any("docs/webhooks/index.html" in h.replace("\\", "/") for h in webhook_links)
 
 
 def test_fr6453_front_page_links_resolve():

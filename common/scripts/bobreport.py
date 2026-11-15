@@ -287,9 +287,45 @@ _CLEARABLE_MERGE_FIELDS = frozenset({
     "usd_gbp_rate",
     # FR #6144: omit/unknown Cursor must clear sticky label (not leave foreign 0%).
     "cursor_label",
+    # FR #7497: ear no longer publishes Cursor-bridge leftovers; cleared[] must pop them.
+    "cursor_pools",
+    "cursor_period_end",
+    "sand_period_end",
+    "cursor_known",
     "xai_weekly_used_pct",
     "xai_weekly_source",
     "xai_weekly_fetched_at",
+})
+# FR #7497: Grok / Grok chat / Cursor are one xAI pool (xai_weekly only). Ear publish
+# must never emit these Cursor-bridge leftovers, even when peer cache still has them.
+_LEGACY_CURSOR_BRIDGE_TOP_KEYS = frozenset({
+    "cursor_label",
+    "cursor_pools",
+    "cursor_period_end",
+    "sand_period_end",
+    "cursor_known",
+    "overage_gbp",
+    "overage_usd",
+    "overspend_state",
+    "on_demand_used_cents",
+    "on_demand_limit_cents",
+    "on_demand_remaining_pct",
+    "overage_fetched_at",
+    "usd_gbp_rate",
+    "cur",
+    "remaining_pct",
+    "account_remaining_pct",
+    "cursor_remaining_pct",
+})
+_LEGACY_CURSOR_BRIDGE_PCENT_KEYS = frozenset({
+    "grok-chat",
+    "grok_chat",
+    "cursor-models",
+    "cursor_models",
+    "cursor-auto",
+    "high-cost-models",
+    "on-demand",
+    "on_demand",
 })
 # FR #6144 / MRB #6169: one Cursor-group key set for clear / merge-skip / peer-block.
 _CURSOR_GROUP_KEYS = frozenset({
@@ -4859,9 +4895,41 @@ def build_peer_fuel_merge_payload(peer: dict, machine_id: str) -> dict | None:
     if isinstance(peer.get("cursor_pools"), list):
         payload["cursor_pools"] = _coerce_cursor_pools(peer.get("cursor_pools"), machine_id=mid)
     strip_fleet_owned_from_machine(payload)
+    strip_legacy_cursor_bridge_from_fuel_payload(payload)
     blob = json.dumps(payload, separators=(",", ":"), default=str)
     if looks_like_secret(blob):
         return None
+    return payload
+
+
+def strip_legacy_cursor_bridge_from_fuel_payload(payload: dict | None) -> dict:
+    """FR #7497: drop Cursor-bridge leftovers; keep xai_weekly as the one xAI pool.
+
+    Always lists sticky keys in cleared[] so the chair pops stale digest fields.
+    Generic: no machine names, accounts, or per-host branches.
+    """
+    if not isinstance(payload, dict):
+        return {}
+    for key in list(payload.keys()):
+        if key in _LEGACY_CURSOR_BRIDGE_TOP_KEYS:
+            payload.pop(key, None)
+    pcent = payload.get("pcent")
+    if isinstance(pcent, dict):
+        for key in list(pcent.keys()):
+            if str(key) in _LEGACY_CURSOR_BRIDGE_PCENT_KEYS:
+                pcent.pop(key, None)
+        # Always publish pcent (possibly empty) so replace-latest drops sticky
+        # grok-chat / cursor-models on the chair.
+        payload["pcent"] = pcent
+    else:
+        payload["pcent"] = {}
+    cleared = payload.setdefault("cleared", [])
+    if not isinstance(cleared, list):
+        cleared = []
+        payload["cleared"] = cleared
+    for key in sorted(_LEGACY_CURSOR_BRIDGE_TOP_KEYS):
+        if key not in cleared:
+            cleared.append(key)
     return payload
 
 

@@ -426,10 +426,11 @@ function Format-BobPeerPoolHeading {
 function Format-BobTrayXaiWeeklyRow {
     <#
     .SYNOPSIS
-      FR #6285: one TipForm/Status xAI weekly row from digest machines.<m>.xai_weekly only.
+      FR #6285 / #7498: one TipForm/Status xAI weekly row from digest machines.<m>.xai_weekly only.
     .NOTES
       remaining_pct is the digest meter value (never recomputed from used, never local log).
       fresh=false => stale mark (age_s / fetched_at) + error when present; last % only with that mark.
+      FR #7498: age_s > 120 or fetched_at older than 2 minutes forces stale even if meter.fresh.
       null meter => clear 'no reading' (never empty bar, never another source).
       FR #6314 / FR #7345: grok-login-expired or xai_auth=expired expands to
       'xAI sign-in expired, sign in once on <m>' (channel xAI weekly row, red [stale]).
@@ -505,6 +506,11 @@ function Format-BobTrayXaiWeeklyRow {
         try {
             $age = Get-BobLastSeenAgeSec -Record ([pscustomobject]@{ lastSeen = [string]$XaiWeekly.fetched_at })
         } catch { $age = $null }
+    }
+    # FR #7498: age_s > 120 or fetched_at older than 2 minutes (UTC) => force stale
+    # even when meter.fresh was true (display must not treat aged remaining as live).
+    if ($null -ne $age -and [int]$age -gt 120) {
+        $fresh = $false
     }
     $acct = ''
     try { if ($XaiWeekly.account) { $acct = [string]$XaiWeekly.account } } catch { }

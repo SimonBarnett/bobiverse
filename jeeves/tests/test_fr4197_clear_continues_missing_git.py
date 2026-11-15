@@ -81,6 +81,7 @@ def test_fr4197_clear_continues_after_missing_git_worktree(tmp_path: Path):
             "-Force",
             "-MinFreeGB",
             "1000",
+            "-SkipSeatDisk",
             "-MaxExtraJobTrees",
             "0",
         ],

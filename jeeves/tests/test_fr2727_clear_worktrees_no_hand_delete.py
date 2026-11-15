@@ -112,6 +112,7 @@ def test_fr2727_clear_never_selects_wt_bob_main_or_airc(tmp_path: Path):
         "-Force",
         "-MinFreeGB",
         "999",
+        "-SkipSeatDisk",
     )
     assert r.returncode == 0, r.stdout + "\n" + r.stderr
     out = (r.stdout or "") + (r.stderr or "")
@@ -144,6 +145,7 @@ def test_fr2727_live_seat_marker_skipped_even_with_force(tmp_path: Path):
         "-Force",
         "-MinFreeGB",
         "999",
+        "-SkipSeatDisk",
     )
     assert r.returncode == 0, r.stdout + "\n" + r.stderr
     assert live.is_dir(), "live seat marker must skip removal even with -Force"

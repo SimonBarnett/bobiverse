@@ -439,6 +439,9 @@ routes to bobiverse via the split rule.
 - Explicit --agent FR: resolve_seat_decision must not apply xai fallthrough to refuse/cursor/opencode; expired explicit grok returns xai-auth-expired; log select[agent]: explicit X -> kind.
 - Home Webhooks card FRs: match Digest/Intake pill+primary docs links, trim Also meta duplicates, pin relative hrefs + doc file existence; PASS without folding merely-behind tips.
 - Git webhook allowlist must cover every subscribed event or return 204 ignore after owner gate --- never empty 400 for authentic deliveries; optional HMAC via BOB_CONFIG_DIR/github-webhook.secret with hmac.compare_digest; do not let gen_bob_webhook_docs_html clobber the rich front-page index.html
+- Ear pool FR: never stretch past EAR_POOL_FETCH_S=60 --- drop rate_limited exponential backoff; surface 429 as row error; auth.json mtime watch forces immediate fetch.
+- /jeeves/commands must be served static (bobcallback + settings /commands) before settings proxy; never require login
+- Ear publish: strip cursor_label/cursor_pools/cursor_known/overage_*/pcent.grok-chat+cursor-models in build_peer_fuel_merge_payload; always cleared[] + empty-or-nonlegacy pcent replace so sticky digest leftovers drop; keep companion digest-reader FR separate.
 - When git push of fr-N is rejected because origin/fr-N already exists, fetch it; if that tip already has an open PR that Closes the assigned issue, DONE with that URL and do not force-push.
 
 ## Harvest digest (lessons audit 2026-10-06)
