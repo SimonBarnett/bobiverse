@@ -155,7 +155,15 @@ if (-not $explicitRepo -and $Product) {
                 'common/scripts/recycleseat.py',
                 'common/scripts/gitclaim.py'
             )) {
+            # FR #7746: a sparse tree has no bob/tray/tools. git status warns on
+            # stderr, and Stop turns that warning into a failed sync (exit 1).
+            $relWin = $rel -replace '/', '\'
+            $parent = Split-Path -Parent (Join-Path $InstallRoot $relWin)
+            if (-not (Test-Path -LiteralPath $parent)) { continue }
+            $prevEap = $ErrorActionPreference
+            $ErrorActionPreference = 'Continue'
             $st = & $git -C $InstallRoot status --porcelain -- $rel 2>$null
+            $ErrorActionPreference = $prevEap
             if ("$st".Trim()) { $recycleDirty += $rel }
         }
         if ($recycleDirty.Count -gt 0) {
