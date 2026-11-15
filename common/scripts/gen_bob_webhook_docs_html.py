@@ -1,4 +1,8 @@
-"""Generate jeeves/www/irc-ntsa static HTML from bob_webhook_docs registry (FR #6453)."""
+"""Generate jeeves/www/irc-ntsa static HTML from bob_webhook_docs registry (FR #6453).
+
+FR #7478: webhook docs pages emit the NTSA logo brand anchor (href=/) and favicon.
+Does not overwrite the redesigned home (jeeves/www/irc-ntsa/index.html).
+"""
 from __future__ import annotations
 
 from html import escape
@@ -8,8 +12,8 @@ import bob_webhook_docs as d
 
 CSS = """
 body{font-family:system-ui,Segoe UI,sans-serif;margin:2rem;max-width:52rem;line-height:1.45;color:#122}
-header{margin-bottom:1.5rem}
-h1{font-size:1.6rem;margin:0 0 .4rem}
+header{margin-bottom:1.5rem;display:flex;flex-wrap:wrap;align-items:center;gap:.75rem 1rem}
+h1{font-size:1.6rem;margin:0 0 .4rem;flex:1 1 100%}
 h2{font-size:1.2rem;margin-top:1.6rem;border-bottom:1px solid #ccd;padding-bottom:.2rem}
 a{color:#0645ad}
 .meta{color:#456;font-size:.95rem}
@@ -18,18 +22,41 @@ table{border-collapse:collapse;width:100%}
 td,th{border:1px solid #ccd;padding:.4rem .55rem;text-align:left;vertical-align:top}
 .nav{margin:.8rem 0 1.2rem}
 .badge{display:inline-block;background:#e8eef7;border:1px solid #b9c7dd;border-radius:4px;padding:0 .35rem;font-size:.85rem}
+a.brand{display:inline-flex;align-items:center;gap:.55rem;text-decoration:none;color:inherit}
+a.brand:focus{outline:2px solid #0645ad;outline-offset:2px}
+.brand-logo{display:block;flex:0 0 auto}
+.brand-text{display:flex;flex-direction:column;line-height:1.2;font-size:.92rem}
+.brand-text strong{font-size:1rem}
+@media (max-width:400px){header{gap:.5rem}.brand-text{font-size:.85rem}}
 """
 
 
+def _write_utf8_lf(path: Path, text: str) -> None:
+    """UTF-8 without BOM, LF newlines (checked-in pages are LF)."""
+    data = text.replace("\r\n", "\n").replace("\r", "\n")
+    if not data.endswith("\n"):
+        data += "\n"
+    path.write_bytes(data.encode("utf-8"))
+
+
 def page(title: str, body: str, *, crumbs_html: str = "") -> str:
-    crumb = f" · {crumbs_html}" if crumbs_html else ""
+    crumb = f' <span class="meta">· {crumbs_html}</span>' if crumbs_html else ""
+    brand = (
+        '<a class="brand" href="/">'
+        '<img class="brand-logo" src="/jeeves/assets/ntsa-gut-logo.png" '
+        'alt="NTSA" width="36" height="36"/>'
+        '<span class="brand-text"><strong>bob.ntsa.uk</strong>'
+        "<span>Webhooks</span></span>"
+        f"</a>{crumb}"
+    )
     return (
         "<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n"
         "<meta charset=\"utf-8\"/>\n"
         "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"/>\n"
         f"<title>{escape(title)} — bob.ntsa.uk</title>\n"
+        '<link rel="icon" href="/favicon.ico" type="image/x-icon"/>\n'
         f"<style>{CSS}</style>\n</head>\n<body>\n<header>\n"
-        f"<p class=\"meta\"><a href=\"/\">bob.ntsa.uk</a>{crumb}</p>\n"
+        f"{brand}\n"
         f"<h1>{escape(title)}</h1>\n</header>\n{body}\n"
         "<footer class=\"meta\" style=\"margin-top:2.5rem\">"
         "FR #6453 · static read-only docs · no secrets</footer>\n"
@@ -87,13 +114,13 @@ def main() -> None:
         )
         path = www / rel
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(
+        _write_utf8_lf(
+            path,
             page(
                 title,
                 body,
                 crumbs_html='<a href="index.html">Webhooks</a> · ' + escape(title),
             ),
-            encoding="utf-8",
         )
         print("wrote", rel)
 
@@ -122,35 +149,12 @@ def main() -> None:
         "<p>Operator markdown twin: <code>jeeves/docs/webhooks.md</code> in the "
         "bobiverse repo.</p>\n"
     )
-    (www / "docs" / "webhooks" / "index.html").write_text(
+    _write_utf8_lf(
+        www / "docs" / "webhooks" / "index.html",
         page("Webhooks & API", hub_body, crumbs_html="Webhooks &amp; API"),
-        encoding="utf-8",
     )
     print("wrote docs/webhooks/index.html")
-
-    index_body = """
-<p><strong>bobiverse acme</strong></p>
-<p>Public HTTP front door for Bobiverse fleet webhooks (IIS + Cloudflare).
-API JSON lives under <code>/bob/v1/*</code>.</p>
-<h2>Webhooks &amp; API</h2>
-<p>Read-only documentation for each inbound and outbound webhook:</p>
-<ul>
-<li><a href="docs/webhooks/index.html">Webhooks &amp; API index</a></li>
-<li><a href="docs/webhooks/report.html">Report / digest</a> — <code>GET|POST /bob/v1/report</code></li>
-<li><a href="docs/webhooks/git.html">GitHub git</a> — <code>POST /bob/v1/git</code></li>
-<li><a href="docs/webhooks/intake.html">Intake / harvest</a> — <code>POST /bob/v1/intake</code></li>
-<li><a href="docs/webhooks/jira.html">Jira</a> — <code>GET|POST /bob/v1/jira</code></li>
-<li><a href="docs/webhooks/hours.html">Hours</a> — <code>GET|POST /bob/v1/hours</code></li>
-<li><a href="docs/webhooks/outbound-stall-wake.html">Outbound stall / ticket-closure wake</a> (FR #6391 / #6439)</li>
-<li><a href="docs/webhooks/digest-local.html">Local digest alias</a> · <a href="docs/webhooks/health-local.html">Local /health</a></li>
-</ul>
-<p class="meta">Live digest JSON: <a href="/bob/v1/report"><code>/bob/v1/report</code></a></p>
-"""
-    (www / "index.html").write_text(page("bobiverse acme", index_body), encoding="utf-8")
-    print("wrote index.html")
-    text = (www / "index.html").read_text(encoding="utf-8")
-    if "bobiverse acme" not in text.lower():
-        raise SystemExit("index missing bobiverse acme marker")
+    # FR #7478: do not overwrite the redesigned home (jeeves/www/irc-ntsa/index.html).
     print("ok", www)
 
 

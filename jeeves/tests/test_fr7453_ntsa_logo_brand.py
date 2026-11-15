@@ -21,19 +21,14 @@ LETTER_MARK_RE = re.compile(
 )
 
 
-def _chrome_html_files() -> list[Path]:
-    """Site pages that render the shared site-header chrome."""
-    out: list[Path] = []
-    for p in WWW.rglob("*.html"):
-        text = p.read_text(encoding="utf-8")
-        if 'class="site-header"' in text or "class='site-header'" in text:
-            out.append(p)
-    return sorted(out)
+def _served_html_files() -> list[Path]:
+    """Every served static HTML under irc-ntsa (FR #7453 / #7478; no site-header filter)."""
+    return sorted(WWW.rglob("*.html"))
 
 
 def test_fr7453_site_chrome_pages_use_logo_inside_home_anchor():
-    files = _chrome_html_files()
-    assert files, "expected at least one site-header HTML under irc-ntsa"
+    files = _served_html_files()
+    assert files, "expected HTML under irc-ntsa"
     for path in files:
         html = path.read_text(encoding="utf-8")
         assert not LETTER_MARK_RE.search(html), f"{path.name} still has letter brand-mark"
