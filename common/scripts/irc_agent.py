@@ -4900,7 +4900,16 @@ class Client:
                 if status == "already-done":
                     info(f"INFO shop-listen stray-giveup-done nick={src}")
                 elif status == "missing":
-                    info(f"INFO shop-listen missing-giveup-no-idle nick={src}")
+                    # FR #7598: do not idle a seat that still holds a different
+                    # accepted job. FR #7639: a NACK/GIVEUP of an offer that was
+                    # never accepted (nothing else held) must still go idle.
+                    _held = ""
+                    with contextlib.suppress(Exception):
+                        _held = bobreport.accepted_work_for_nick(self._digest_home(), src) or ""
+                    if _held:
+                        info(f"INFO shop-listen missing-giveup-no-idle nick={src}")
+                    else:
+                        self._workers().on_done(src, target)
                 else:
                     self._workers().on_done(src, target)
                     with contextlib.suppress(Exception):

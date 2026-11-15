@@ -255,6 +255,9 @@ def test_fr6760_provider_stale_missing_age_and_empty_digest(tmp_path):
 
 def test_fr6760_http_login_and_authed_pools(tmp_path, monkeypatch):
     monkeypatch.setenv("JEEVES_SETTINGS_HTTP", "1")
+    # FR #7412: front-door is the default once settings HTTP is on. This test
+    # hits the LAN-root /pools and /api/login routes, so allow that hatch.
+    monkeypatch.setenv("JEEVES_SETTINGS_ALLOW_LAN_ROOT", "1")
     chair = tmp_path / "chair"
     digest = tmp_path / "digest"
     chair.mkdir()

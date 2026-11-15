@@ -80,7 +80,7 @@ jobs:
           git config --global user.email 'ci-bobiverse@users.noreply.github.com'
           git config --global user.name 'bobiverse-ci'
           # -q prints the collected/passed count in the log (acceptance: count visible on main).
-          python -m pytest "$root\jeeves\tests" -q --tb=short -p no:cacheprovider
+          python -m pytest "$root\jeeves\tests" -q --tb=short -rfE -p no:cacheprovider
           if ($LASTEXITCODE -ne 0) { throw "jeeves pytest exit $LASTEXITCODE" }
 
       - name: Build jeeves.exe with Build-Jeeves.ps1

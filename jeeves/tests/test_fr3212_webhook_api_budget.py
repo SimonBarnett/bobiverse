@@ -290,6 +290,10 @@ def test_gap_detection_triggers_one_reconcile(tmp_path: Path, monkeypatch):
         seen.append(url)
         return []
 
+    def gap_calls() -> list[str]:
+        # Copilot observe uses the same fetch hook and is not a git reconcile.
+        return [u for u in seen if "/copilot_internal/" not in u]
+
     clk = Clock()
     # Recent webhook: no gap reconcile before hourly cadence.
     gab.stamp_git_webhook(tmp_path, now=clk.t - 60)
@@ -304,23 +308,23 @@ def test_gap_detection_triggers_one_reconcile(tmp_path: Path, monkeypatch):
     # First delayed resync still runs once at FIRST_RESYNC_DELAY (startup).
     clk.t += ch.FIRST_RESYNC_DELAY_S + 1
     j.tick()
-    n_after_startup = len(seen)
+    n_after_startup = len(gap_calls())
     assert n_after_startup >= 1
     # Advance less than RESYNC_S with fresh webhook stamps: no extra reconcile.
     gab.stamp_git_webhook(tmp_path, now=clk.t)
     clk.t += min(ch.WEBHOOK_GAP_S, ch.RESYNC_S) / 2
     j.tick()
-    assert len(seen) == n_after_startup
+    assert len(gap_calls()) == n_after_startup
     # Age the webhook past the gap while still inside the hourly window: exactly one gap reconcile.
     gab.stamp_git_webhook(tmp_path, now=clk.t - ch.WEBHOOK_GAP_S - 5)
     clk.t += 1
     j.tick()
-    assert len(seen) > n_after_startup
-    n_after_gap = len(seen)
+    assert len(gap_calls()) > n_after_startup
+    n_after_gap = len(gap_calls())
     # Immediate re-tick with fresh stamp must not fire again.
     gab.stamp_git_webhook(tmp_path, now=clk.t)
     j.tick()
-    assert len(seen) == n_after_gap
+    assert len(gap_calls()) == n_after_gap
 
 
 def test_resync_interval_is_hourly_not_15m():
