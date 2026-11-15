@@ -4580,6 +4580,9 @@ DIGEST_FUEL_MAX_LAG_S = DEFAULT_DIGEST_FUEL_DELTA_S
 # FR #7251: SYSTEM ear live-fetches every provider pool on this cadence.
 # Tray poll (60s) / stale (120s) is useless unless this stamp advances.
 EAR_POOL_FETCH_S = 60.0
+# FR #7700: a provider 502/503/504 is retried sooner than the normal minute so a
+# short outage can land a live reading before the 120s stale exception.
+EAR_POOL_FETCH_5XX_S = 15.0
 EAR_POOL_BACKOFF_CAP_S = 600.0  # retained unused (FR #7471: no stretch past 60s)
 _pool_fetch_state: dict[str, dict] = {}
 
@@ -4599,7 +4602,11 @@ def pool_fetch_due(name: str, now: float) -> bool:
     last = float(st.get("last_attempt") or 0.0)
     if last <= 0.0:
         return True
-    return (now - last) >= EAR_POOL_FETCH_S
+    err = str(st.get("error") or "")
+    interval = EAR_POOL_FETCH_S
+    if any(code in err for code in ("provider-http-502", "provider-http-503", "provider-http-504")):
+        interval = EAR_POOL_FETCH_5XX_S
+    return (now - last) >= interval
 
 
 def mark_pool_fetch(
@@ -8305,7 +8312,11 @@ def fetch_live_xai_weekly(*, now: datetime | None = None) -> dict | None:
         except Exception as e:
             return None, f"provider-{type(e).__name__}"
 
+    # FR #7700: one immediate retry on 502/503/504. A single gateway blip must
+    # not be the only sample in a 60s slot (that is what went stale on xai_weekly).
     raw, bill_err = _billing_get(token)
+    if bill_err in ("provider-http-502", "provider-http-503", "provider-http-504"):
+        raw, bill_err = _billing_get(token)
     # FR #7464: if billing says expired and we have not just refreshed, force one refresh then retry.
     if bill_err == XAI_GROK_LOGIN_EXPIRED and not did_refresh:
         token2, auth_err2, selected_label2, did_refresh2 = ensure_grok_auth_access_token(
