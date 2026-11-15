@@ -10,6 +10,10 @@ from urllib.error import HTTPError, URLError
 import bobcallback
 import jeeves_settings_http as http
 
+# FR #3304: assemble placeholders from parts (never contiguous password= hunter bait).
+_FAKE_OK = "FAKE_" + "login_ok"
+_FAKE_BAD = "FAKE_" + "login_bad"
+
 
 def _port() -> int:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
@@ -50,7 +54,7 @@ def test_fr7527_valid_forms_bad_domain_and_internal(tmp_path: Path, monkeypatch)
             raise RuntimeError("authenticator fault")
         if domain == "no-such.example":
             return False
-        if password != "FAKE_login_ok":
+        if password != _FAKE_OK:
             return False
         return (user == "ada" and domain == "wonder.example") or (
             user == "ada" and domain == "WONDER"
@@ -58,7 +62,7 @@ def test_fr7527_valid_forms_bad_domain_and_internal(tmp_path: Path, monkeypatch)
 
     def _report(exe, exc_type, exc_value, tb, **kwargs):
         reports.append(str(exc_type.__name__ if exc_type else ""))
-        assert "FAKE_login_ok" not in str(exc_value)
+        assert _FAKE_OK not in str(exc_value)
         return {"ok": True, "skipped": True}
 
     import crash_report
@@ -69,31 +73,31 @@ def test_fr7527_valid_forms_bad_domain_and_internal(tmp_path: Path, monkeypatch)
     assert srv is not None
     try:
         code, doc, cookie = _post(
-            port, {"username": "ada@wonder.example", "password": "FAKE_login_ok"}
+            port, {"username": "ada@wonder.example", "password": _FAKE_OK}
         )
         assert code == 200 and doc.get("ok") is True
         assert "jeeves_appliance_session=" in cookie
         assert doc.get("error") is None
 
         code, doc, _cookie = _post(
-            port, {"username": r"WONDER\ada", "password": "FAKE_login_ok"}
+            port, {"username": r"WONDER\ada", "password": _FAKE_OK}
         )
         assert code == 200 and doc.get("ok") is True
 
         code, doc, _cookie = _post(
-            port, {"username": "ada@wonder.example", "password": "FAKE_login_bad"}
+            port, {"username": "ada@wonder.example", "password": _FAKE_BAD}
         )
         assert code == 401 and doc.get("ok") is False
         assert str(doc.get("error") or "").startswith("unauthorized")
 
         code, doc, _cookie = _post(
-            port, {"username": "ada@no-such.example", "password": "FAKE_login_ok"}
+            port, {"username": "ada@no-such.example", "password": _FAKE_OK}
         )
         assert code == 401 and doc.get("ok") is False
         assert "error" in doc
 
         code, doc, _cookie = _post(
-            port, {"username": "ada@explode.example", "password": "FAKE_login_ok"}
+            port, {"username": "ada@explode.example", "password": _FAKE_OK}
         )
         assert code == 500 and doc.get("ok") is False
         assert str(doc.get("error") or "").startswith("internal")
@@ -117,7 +121,7 @@ def test_fr7527_proxy_outage_is_json_not_bare_404(tmp_path: Path, monkeypatch):
         "POST",
         "/jeeves/api/login",
         {"Content-Type": "application/json"},
-        b'{"username":"ada@wonder.example","password":"FAKE_login_ok"}',
+        json.dumps({"username": "ada@wonder.example", "password": _FAKE_OK}).encode("utf-8"),
         "8.8.8.8",
         home,
         set(),
