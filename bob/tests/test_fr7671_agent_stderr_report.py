@@ -58,3 +58,42 @@ def test_fr7671_identical_crashes_share_one_dedupe_key():
     assert keys[0] == keys[1]
     assert "repo#1" not in keys[0]
     assert "acp-agent-worker" in keys[0]
+
+
+def test_fr7671_mrb_empty_stderr_dedupe_and_trim():
+    """Hostile: empty stderr uses none key; evidence caps at 500 chars."""
+    keys = []
+    bw.report_agent_cli_nonzero_exit(
+        exit_code=7,
+        job_key="FR owner/repo#3",
+        machine="box",
+        stderr_tail="",
+        filer_post=lambda p: keys.append(p["idempotency_key"]) or {"ok": True},
+    )
+    assert "|none" in keys[0]
+    long = ("noise line\n" * 3) + ("Y" * 600)
+    ev = bw.agent_stderr_evidence(long)
+    assert len(ev) <= 500
+    assert "EXAMPLESECRET" not in bw.agent_stderr_evidence("token password=EXAMPLESECRET end")
+
+
+def test_fr7671_mrb_default_spawn_keeps_one_console_and_pipes_stderr(monkeypatch):
+    """Hostile: still no CREATE_NEW_CONSOLE; stderr is PIPE for the ring."""
+    from pathlib import Path as _P
+
+    seen = {}
+
+    class FakePopen:
+        def __init__(self, *a, **kw):
+            seen.update(kw)
+            self.pid = 4242
+            self.stderr = None
+
+    monkeypatch.setattr(bw.subprocess, "Popen", FakePopen)
+    monkeypatch.setattr(bw, "owned_job", lambda: type("J", (), {"assign": lambda self, p: None})())
+    spec = bw.build_launch("grok", "agent", r"C:\w", "p", r"C:\g\agent.exe", _P("."), "sid")
+    handle = bw.default_spawn(spec, {})
+    assert seen.get("creationflags", 0) & getattr(bw, "CREATE_NEW_CONSOLE", 0x10) == 0
+    assert seen.get("stderr") is bw.subprocess.PIPE
+    assert isinstance(handle, bw.ProcHandle)
+
