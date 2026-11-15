@@ -175,7 +175,10 @@ def test_build_launch_opencode_creates_wrapper(tmp_path: Path):
     assert "$ErrorActionPreference = 'Continue'" in script
     assert "$recordExit = $LASTEXITCODE" in script
     assert "record-pause helper failed" in script
-    assert "BOB_OPENCODE_MODEL is required" in script
+    # FR #7492: when worker_start_config has an OpenCode model, wrapper defaults the env
+    # instead of throw 'BOB_OPENCODE_MODEL is required'.
+    assert "$env:BOB_OPENCODE_MODEL =" in script
+    assert "else { 'opencode-go/glm-5.3' }" not in script
     assert "Do work." in spec.files[prompt_key]
     # Every OpenCode launch must pass the fresh-session guard (no --continue/--session).
     ps1_files = {k: v for k, v in spec.files.items() if k.endswith(".ps1")}
@@ -665,8 +668,22 @@ def test_opencode_has_tokens_ignores_aggregate_when_per_model_exhausted():
     assert bw.select_agent(fuel, None, None, OP).kind == "none"
 
 
-def test_build_launch_opencode_wrapper_requires_model_env(tmp_path: Path):
-    """Wrapper must require BOB_OPENCODE_MODEL; never hard-code exhausted glm-5.3."""
+def test_build_launch_opencode_wrapper_defaults_configured_model(tmp_path: Path):
+    """FR #7492: wrapper defaults BOB_OPENCODE_MODEL from start config; never hard-code glm-5.3."""
+    spec = bw.build_launch("opencode", "agent", r"C:\ai\bob\worker", "Do work.", OP, tmp_path)
+    script = next(v for k, v in spec.files.items() if k.endswith("launch-opencode.ps1"))
+    assert "$env:BOB_OPENCODE_MODEL =" in script
+    assert "if (-not $env:BOB_OPENCODE_MODEL)" in script
+    assert "else { 'opencode-go/glm-5.3' }" not in script
+    assert "opencode/deepseek" in script or "BOB_OPENCODE_MODEL =" in script
+
+
+def test_build_launch_opencode_wrapper_requires_model_when_config_empty(tmp_path: Path, monkeypatch):
+    """When configured_start_model returns empty, wrapper still fail-closes with required throw."""
+    import worker_start_model as wsm
+
+    monkeypatch.setattr(wsm, "configured_start_model", lambda kind, cfg=None: "")
+    monkeypatch.setattr(wsm, "load_worker_start_config", lambda: {})
     spec = bw.build_launch("opencode", "agent", r"C:\ai\bob\worker", "Do work.", OP, tmp_path)
     script = next(v for k, v in spec.files.items() if k.endswith("launch-opencode.ps1"))
     assert "BOB_OPENCODE_MODEL is required" in script

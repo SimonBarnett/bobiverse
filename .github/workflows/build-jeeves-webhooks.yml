@@ -1,4 +1,4 @@
-# FR #7465: site kit for the IIS www bundle. Not a service executable build and not a service restart.
+# FR #7465 / #7517: site kit for the IIS www bundle. Not a service executable build and not a service restart.
 name: build-jeeves-webhooks
 
 on:
@@ -7,19 +7,27 @@ on:
     paths:
       - .github/workflows/build-jeeves-webhooks.yml
       - jeeves/www/**
+      - jeeves/assets/**
+      - bob/tray/assets/ntsa-gut-logo.png
+      - bob/tray/assets/bob-systray.ico
       - jeeves/scripts/Install-BobWebhooks.ps1
       - jeeves/scripts/jeeves_webhooks_ci.py
       - jeeves/tests/test_fr7465_webhooks_ci.py
       - jeeves/tests/test_fr7460_webconfig_staticcontent.py
+      - jeeves/tests/test_fr7517_webhooks_kit_assets.py
   push:
     branches: [main]
     paths:
       - .github/workflows/build-jeeves-webhooks.yml
       - jeeves/www/**
+      - jeeves/assets/**
+      - bob/tray/assets/ntsa-gut-logo.png
+      - bob/tray/assets/bob-systray.ico
       - jeeves/scripts/Install-BobWebhooks.ps1
       - jeeves/scripts/jeeves_webhooks_ci.py
       - jeeves/tests/test_fr7465_webhooks_ci.py
       - jeeves/tests/test_fr7460_webconfig_staticcontent.py
+      - jeeves/tests/test_fr7517_webhooks_kit_assets.py
 
 permissions:
   contents: read
@@ -39,6 +47,13 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+
+      - name: Pytest kit asset gates (FR #7517)
+        run: |
+          python -m pip install -q pytest
+          $env:PYTHONPATH = "jeeves/scripts;common/scripts;common/tests"
+          python -m pytest -q -p no:cacheprovider jeeves/tests/test_fr7517_webhooks_kit_assets.py
+          if ($LASTEXITCODE -ne 0) { throw "pytest exit $LASTEXITCODE" }
 
       - name: Check site kit and write the versioned artifact
         env:

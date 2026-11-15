@@ -249,6 +249,15 @@ def default_authenticator(username: str, password: str, domain: str = "") -> boo
     return False
 
 
+def _login_internal(exc: BaseException) -> dict[str, Any]:
+    """Authenticator fault. Name only — never the password or the message if it might echo it."""
+    return {
+        "ok": False,
+        "error": "internal: authenticator failed",
+        "exception_type": type(exc).__name__,
+    }
+
+
 def login(
     home: Path,
     *,
@@ -271,9 +280,13 @@ def login(
         ok = bool(auth_fn(user, str(password or ""), str(domain or "")))
     except TypeError:
         # Allow 2-arg test lambdas.
-        ok = bool(auth_fn(user, str(password or "")))  # type: ignore[call-arg, misc]
-    except Exception:
-        ok = False
+        try:
+            ok = bool(auth_fn(user, str(password or "")))  # type: ignore[call-arg, misc]
+        except Exception as exc:
+            return _login_internal(exc)
+    except Exception as exc:
+        # FR #7527: an authenticator fault is 500 JSON, not a bare 404 or a fake 401.
+        return _login_internal(exc)
     if not ok:
         return {"ok": False, "error": "unauthorized: bad credentials"}
     now_f = float(now if now is not None else time.time())

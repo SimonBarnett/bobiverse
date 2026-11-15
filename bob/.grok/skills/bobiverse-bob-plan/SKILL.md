@@ -52,3 +52,5 @@ harvest, harvest-agent-skills), `docs\templates\vision.md`, `tools\` (vision-pac
 * Plan CAST IRON still shows `-Repo SimonBarnett/bobiverse` examples (FR #3667 / twin of #3506): install `plan\` is stale vs tip. Heal with `Sync-BobiverseFromRepo -Product bob` / `Sync-BobiverseAgentFolders` (preserves `plan\work`). Sync emits `WARN FR #3667` when dest AGENTS is still pre-#3510. Do not re-land #3510 source text.
 
 File every problem you find: CAST IRON rule at the top.
+
+- **FR #7524:** isolated CI is `.github/workflows/build-bob-plan.yml` (pytest + PSScriptAnalyzer + SKILL front matter + `bob-plan` artifact). Do not park under `harvest/SKILL.md` (MRB #7542).
