@@ -36,7 +36,9 @@ $srcDir = Split-Path -Parent $SourceExe
 $launcherSpecs = @(
     @{ Name = 'Start-Bob.ps1'; ProvKey = 'start_bob_ps1_sha256' },
     @{ Name = 'Select-BobEarLaunch.ps1'; ProvKey = 'select_bob_ear_launch_ps1_sha256' },
-    @{ Name = 'Bobiverse-Common.ps1'; ProvKey = 'bobiverse_common_ps1_sha256' }
+    @{ Name = 'Bobiverse-Common.ps1'; ProvKey = 'bobiverse_common_ps1_sha256' },
+    @{ Name = 'bobreport.py'; ProvKey = 'runtime_bobreport_py_sha256' },
+    @{ Name = 'opencode_fuel.py'; ProvKey = 'runtime_opencode_fuel_py_sha256' }
 )
 
 function Get-ProvHashMap {

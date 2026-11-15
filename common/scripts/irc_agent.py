@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import base64
 import contextlib
+import hashlib
 import json
 import os
 import random
@@ -28,6 +29,8 @@ from pathlib import Path
 # whatever old file was still on disk (reader AttributeError on
 # shop_line_resets_bored_clock). Other modules stay in the frozen embed.
 FROZEN_SCRIPT_OVERLAY = ("bobreport", "opencode_fuel")
+# FR #7548: these files ship in the ear artifact and must match provenance.
+EAR_RUNTIME_DISK_SCRIPTS = ("bobreport.py", "opencode_fuel.py")
 BOBREPORT_OVERLAY_MARKER = "def opencode_install_root"
 OPENCODE_FUEL_OVERLAY_MARKER = "GO_ZEN_USAGE_USER_AGENT"  # FR #6263
 
@@ -106,6 +109,55 @@ def _install_script_overlay(scripts: Path) -> None:
     sys.meta_path.insert(0, _InstallScriptOverlay(scripts))
 
 
+def runtime_script_provenance_key(name: str) -> str:
+    stem = name[:-3] if name.endswith(".py") else name
+    return "runtime_" + stem + "_py_sha256"
+
+
+def assert_ear_runtime_scripts(scripts: Path, provenance: Path) -> None:
+    """Refuse when a disk script is missing or does not match the ear manifest.
+
+    FR #7548. No silent fallback to an older copy.
+    """
+    if not provenance.is_file():
+        raise RuntimeError("FR #7548 ear runtime manifest missing")
+    keys: dict[str, str] = {}
+    for line in provenance.read_text(encoding="utf-8").splitlines():
+        if "=" not in line:
+            continue
+        key, val = line.split("=", 1)
+        keys[key.strip()] = val.strip().lower()
+    for name in EAR_RUNTIME_DISK_SCRIPTS:
+        want = keys.get(runtime_script_provenance_key(name), "")
+        path = Path(scripts) / name
+        if not want or not path.is_file():
+            raise RuntimeError("FR #7548 runtime script missing or unlisted: " + name)
+        got = hashlib.sha256(path.read_bytes()).hexdigest()
+        if got != want:
+            raise RuntimeError("FR #7548 runtime script hash mismatch: " + name)
+
+
+def enforce_ear_runtime_scripts(scripts: Path, provenance: Path) -> None:
+    """Report then exit when the runtime scripts do not match the manifest.
+
+    FR #7548 / MRB #7554: skip when provenance is absent so Build-BobEar smoke
+    (fresh dist\\bob-ear.exe before the artifact stages provenance.txt) can
+    probe --help. Installed ears always ship provenance beside the scripts.
+    """
+    if not Path(provenance).is_file():
+        return
+    try:
+        assert_ear_runtime_scripts(scripts, provenance)
+    except RuntimeError as exc:
+        try:
+            import crash_report
+
+            crash_report.report_exception("bob-ear", RuntimeError, exc, None)
+        except Exception:
+            pass
+        raise SystemExit(2) from exc
+
+
 def prefer_install_scripts_path(
     *,
     env: dict | None = None,
@@ -147,6 +199,14 @@ def prefer_install_scripts_path(
 # bobreport (e.g. DIGEST_HTTP_USER_AGENT) wins without rebuilding bob-ear.exe.
 _mei_scripts = str(Path(__file__).resolve().parent)
 _install_scripts = prefer_install_scripts_path()
+if bool(getattr(sys, "frozen", False)) or hasattr(sys, "_MEIPASS"):
+    if _install_scripts:
+        _runtime_scripts = Path(_install_scripts)
+    else:
+        _exe = Path(sys.executable).resolve()
+        _root = _exe.parent.parent if _exe.parent.name.lower() == "scripts" else _exe.parent
+        _runtime_scripts = _root / "scripts"
+    enforce_ear_runtime_scripts(_runtime_scripts, _runtime_scripts / "provenance.txt")
 if _install_scripts:
     if _mei_scripts not in sys.path:
         sys.path.append(_mei_scripts)
