@@ -242,5 +242,9 @@ api.refresh(card, ctx.fetch).then(function () {
         )
         assert r.returncode == 0, r.stdout + r.stderr
         out = json.loads(r.stdout.strip().splitlines()[-1])
-        assert out["notesHref"] == out["fallback"]
-        assert out["notesHref"].endswith("/priority-mcp/releases")
+        if mode == "fail":
+            # FR #7643: a failed releases fetch must not wipe a stamped notes href.
+            assert out["notesHref"] == "stale-should-reset"
+        else:
+            assert out["notesHref"] == out["fallback"]
+            assert out["notesHref"].endswith("/priority-mcp/releases")
