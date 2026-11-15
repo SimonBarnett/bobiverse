@@ -504,6 +504,12 @@ def accept_job_by_ref(
                     and str(row.get("task") or "").upper() == task.upper()
                     and str(row.get("nick") or "") == nick
                 ):
+                    # FR #7598: a real ACK on a LOST_ACK_RESTART phantom must clear
+                    # the stamp so !bored cannot demote with requeue:LOST_ACK_NO_ACK.
+                    if str(row.get("reconcile") or "") == "LOST_ACK_RESTART":
+                        row.pop("reconcile", None)
+                        with contextlib.suppress(OSError):
+                            gitclaim._write_queue(gitclaim.queue_path(home), doc)
                     return "duplicate", dict(row)
             idx = _find_unaccepted(doc, repo, task, ident)
             if idx is None:
@@ -995,6 +1001,18 @@ def handle_shop_worker_line(
         # FR #6857: stray GIVEUP/NACK on done[] must not ledger-giveup, wake Bob,
         # or idle the seat (it may still hold another accepted job).
         if st == "already-done":
+            return out
+        # FR #7598: missing lookup must not write a ledger giveup block, wake Bob,
+        # or idle the seat (accept was never stored / row already gone).
+        if st == "missing":
+            with contextlib.suppress(Exception):
+                gitclaim.clear_seat_hold(
+                    home,
+                    nick,
+                    repo=parsed.repo,
+                    task=parsed.task,
+                    ident=parsed.id,
+                )
             return out
         try:  # t852u: remember who gave this up, forever (resync drops row stamps)
             gitclaim.ledger_note_event(home, nick, parsed.verb, parsed.task, parsed.repo, parsed.id, job if isinstance(job, dict) else None)

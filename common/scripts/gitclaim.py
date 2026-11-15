@@ -14875,6 +14875,9 @@ def release_unacked_lost_ack(home: Path, nick: str, *, log=None) -> bool:
 
     Returns True when the row was put back on unaccepted. A real ACK (any other
     reconcile) or seat-reported ``working_on`` stays accepted (FR #3867).
+
+    FR #7598: when the shop wire already recorded an ACK (ledger touch for this
+    seat+job), never demote with ``requeue:LOST_ACK_NO_ACK``.
     """
     me = (canonical_worker_nick(nick) or nick or "").strip().lower()
     if not me:
@@ -14883,6 +14886,16 @@ def release_unacked_lost_ack(home: Path, nick: str, *, log=None) -> bool:
     def _owner(r: dict) -> str:
         raw = str(r.get("nick") or r.get("accepted_by") or r.get("offered_to") or "").strip()
         return (canonical_worker_nick(raw) or raw).strip().lower()
+
+    def _ledger_acked(r: dict) -> bool:
+        """True when ledger touch shows this seat already ACKed the job (FR #7598)."""
+        try:
+            led = ledger_load(home)
+            key = _lkey(str(r.get("repo") or ""), str(r.get("id") or ""))
+            roles = ((led.get("touch") or {}).get(key) or {}).get(me) or []
+            return bool(roles)
+        except Exception:  # noqa: BLE001
+            return False
 
     try:
         with _lock(home):
@@ -14894,6 +14907,9 @@ def release_unacked_lost_ack(home: Path, nick: str, *, log=None) -> bool:
             if any(str(r.get("reconcile") or "") != "LOST_ACK_RESTART" for r in mine):
                 return False
             if any(_seat_reports_row(home, nick, r) for r in mine):
+                return False
+            # FR #7598: a received ACK (ledger touch) must not become LOST_ACK_NO_ACK.
+            if any(_ledger_acked(r) for r in mine):
                 return False
             unacc = doc.setdefault("unaccepted", [])
             done = doc.setdefault("done", [])
