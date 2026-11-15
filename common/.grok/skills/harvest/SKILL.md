@@ -479,6 +479,7 @@ routes to bobiverse via the split rule.
 - A provider 502/503/504 may shorten the next pool poll. A 429 must stay on the normal cadence and must not stretch past it.
 - A seat-behavior acceptance is not met by a helper that only the new test imports. Wire the decision into the seat, and do not reuse JSON-RPC -32000 for an exception the server handled.
 - A harvest twin check must compare lesson bullets, not the session summary. Five shared tokens in the summary are not the same playbook.
+- A new keyword at a call site must be a name that function assigns. Copy the plan and agent pattern, and pin that the assignment is above the call.
 
 ## Harvest digest (lessons audit 2026-10-06)
 
