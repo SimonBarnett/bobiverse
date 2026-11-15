@@ -295,7 +295,11 @@ _CLEARABLE_MERGE_FIELDS = frozenset({
     "xai_weekly_used_pct",
     "xai_weekly_source",
     "xai_weekly_fetched_at",
+    # FR #7549: null / poison "Cursor Models" clears sticky digest model.
+    "model",
 })
+# FR #7549: fuel-pool display label left over as digest model; never store or forward.
+_POISON_DIGEST_MODEL = "Cursor Models"
 # FR #7497: Grok / Grok chat / Cursor are one xAI pool (xai_weekly only). Ear publish
 # must never emit these Cursor-bridge leftovers, even when peer cache still has them.
 _LEGACY_CURSOR_BRIDGE_TOP_KEYS = frozenset({
@@ -2593,6 +2597,16 @@ def _apply_merge_payload(doc: dict, mid: str, payload: dict) -> list[str]:
             ent["working_on"] = text
         else:
             _roll_working_on(ent)
+    # FR #7549: fuel-pool label "Cursor Models" is not a model — force clear.
+    if "model" in payload:
+        cleaned = _sanitize_digest_model(payload.get("model"))
+        if cleaned is None:
+            payload["model"] = None
+            cleared = payload.setdefault("cleared", [])
+            if isinstance(cleared, list) and "model" not in cleared:
+                cleared.append("model")
+        else:
+            payload["model"] = cleaned
     # FR #5690: apply clears before writes so sticky overage/repo cannot linger.
     _apply_cleared_merge_fields(ent, payload)
     for key in _MERGE_PEER_FIELDS:
@@ -4957,11 +4971,22 @@ def build_peer_fuel_merge_payload(peer: dict, machine_id: str) -> dict | None:
     return payload
 
 
+def _sanitize_digest_model(val: object) -> str | None:
+    """FR #7549: keep live seat/CLI model; drop fuel-pool label 'Cursor Models'."""
+    if val is None:
+        return None
+    s = str(val).strip()
+    if not s or s == _POISON_DIGEST_MODEL:
+        return None
+    return s
+
+
 def strip_legacy_cursor_bridge_from_fuel_payload(payload: dict | None) -> dict:
     """FR #7497: drop Cursor-bridge leftovers; keep xai_weekly as the one xAI pool.
 
     Always lists sticky keys in cleared[] so the chair pops stale digest fields.
     Generic: no machine names, accounts, or per-host branches.
+    FR #7549: also drop poison model='Cursor Models' and clear sticky model.
     """
     if not isinstance(payload, dict):
         return {}
@@ -4985,6 +5010,15 @@ def strip_legacy_cursor_bridge_from_fuel_payload(payload: dict | None) -> dict:
     for key in sorted(_LEGACY_CURSOR_BRIDGE_TOP_KEYS):
         if key not in cleared:
             cleared.append(key)
+    # FR #7549: never forward fuel-pool label as digest model; clear sticky poison only.
+    if "model" in payload:
+        cleaned_model = _sanitize_digest_model(payload.get("model"))
+        if cleaned_model is None:
+            payload["model"] = None
+            if "model" not in cleared:
+                cleared.append("model")
+        else:
+            payload["model"] = cleaned_model
     return payload
 
 
