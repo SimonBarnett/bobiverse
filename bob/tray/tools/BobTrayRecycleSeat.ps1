@@ -128,6 +128,19 @@ function Invoke-BobTrayRecycleSeatQueue {
                     $reason = 'seats-off'
                 }
                 else {
+                # FR #7692: req.kind is who asked (chair/op), not the seat. Use the click record.
+                $clickedKind = ''
+                if (Get-Command Get-BobTrayClickedSeatKind -ErrorAction SilentlyContinue) {
+                    $clickedKind = [string](Get-BobTrayClickedSeatKind -Root $Root -Nick $seatNick)
+                }
+                if (@('grok', 'cursor', 'opencode') -notcontains $clickedKind) {
+                    $reason = 'kind-unknown'
+                    try {
+                        $exKind = New-Object System.InvalidOperationException ('recycle refused trigger=restore-after-recycle nick=' + $seatNick + ' kind missing')
+                        Invoke-BobTrayRecycleSeatReportFailure -Root $Root -Site ('recycleseat.kind:' + $seatNick) -Exception $exKind
+                    } catch { }
+                }
+                else {
                 $oldPid = Resolve-BobTrayRecyclePid -MarkerPid ([int](Get-BobTraySeatMarkerPid -Nick $seatNick)) -Nick $seatNick
                 $found = $oldPid -gt 0
                 if (-not $found) {
@@ -174,7 +187,7 @@ function Invoke-BobTrayRecycleSeatQueue {
                         while ($tries -lt 2 -and -not $ok) {
                             $tries++
                             try {
-                                $newPid = [int](@(& $Launch $seatNick)[-1])
+                                $newPid = [int](@(& $Launch $seatNick $clickedKind)[-1])
                                 if ($newPid -gt 0) { $ok = $true; $reason = 'ok' } else { $reason = 'launch-failed' }
                             } catch {
                                 $reason = 'launch-error: ' + $_.Exception.Message
@@ -185,10 +198,11 @@ function Invoke-BobTrayRecycleSeatQueue {
                     }
                 }
                 }
+                }
             }
         }
         try {
-            & $Log ('recycleseat {0}: ok={1} nick={2} old={3} new={4} reason={5} by={6}' -f $id, $ok, $seatNick, $oldPid, $newPid, $reason, $(if ($req) { [string]$req.by } else { '-' }))
+            & $Log ('recycleseat {0}: ok={1} nick={2} old={3} new={4} reason={5} by={6} trigger=restore-after-recycle' -f $id, $ok, $seatNick, $oldPid, $newPid, $reason, $(if ($req) { [string]$req.by } else { '-' }))
         } catch { }
         try {
             $res = [ordered]@{ id = $id; ok = $ok; reason = $reason; nick = $seatNick; old_pid = $oldPid; new_pid = $newPid }
