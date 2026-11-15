@@ -555,11 +555,23 @@ function Format-BobTrayXaiWeeklyRow {
         if ($errDisplay) { $parts += ('({0})' -f $errDisplay) }
         elseif ($NoReadingReason) { $parts += ('({0})' -f [string]$NoReadingReason) }
     }
-    if ($acct) { $parts += [string]$acct }
-    if (-not $fresh) {
-        $parts += (Format-BobTrayStaleToken)
-        if ($errDisplay -and ($null -ne $pct)) { $parts += $errDisplay }
+    # FR #7595: [stale] sits immediately after the %, then account, then the timer.
+    # A 0% pool with a known future reset is never stale. The bar keeps the last %.
+    if (-not $fresh -and $null -ne $pct) {
+        if (Test-BobPoolExhaustedUntilReset -RemainingPct $pct -PeriodEnd $periodEnd) { $fresh = $true }
     }
+    if ($null -ne $pct) {
+        $pctBit = ('{0}% left' -f [int]$pct)
+        if (-not $fresh) { $pctBit = ('{0} {1}' -f $pctBit, (Format-BobTrayStaleToken)) }
+        # Replace the percent part already pushed above.
+        if ($parts.Count -gt 0 -and [string]$parts[-1] -like '*% left') { $parts[-1] = $pctBit }
+        else { $parts += $pctBit }
+    } elseif (-not $fresh) {
+        $parts += (Format-BobTrayStaleToken)
+        if ($errDisplay) { $parts += $errDisplay }
+    }
+    if ($acct) { $parts += [string]$acct }
+    if (-not $fresh -and $errDisplay -and ($null -ne $pct)) { $parts += $errDisplay }
     if ($resetLabel -and ($null -ne $pct -or -not $fresh)) {
         $parts += [string]$resetLabel
     }
@@ -567,7 +579,7 @@ function Format-BobTrayXaiWeeklyRow {
         heading       = ($parts -join '  ')
         remaining_pct = $pct
         fuel_stale    = (-not $fresh)
-        bar_pct       = $(if ($fresh -and $null -ne $pct) { $pct } else { $null })
+        bar_pct       = $(if ($null -ne $pct) { $pct } else { $null })
         account       = $(if ($acct) { $acct } else { $null })
         period_end    = $(if ($periodEnd) { $periodEnd } else { $null })
         reset_label   = $resetLabel
@@ -1554,16 +1566,35 @@ function Format-BobOpencodeWindowLine {
     $periodEnd = $null
     try { if ($Record.period_end) { $periodEnd = ([string]$Record.period_end).Trim() } } catch { }
     try { if (-not $periodEnd -and $Record.reset_at) { $periodEnd = ([string]$Record.reset_at).Trim() } } catch { }
-    # FR #7522: pass remaining + period_end so 0% with future reset is not stale.
-    $freshness = Get-BobPoolReadingFreshness -FetchedAt $fetchedAt -Now $Now -RemainingPct $rem -PeriodEnd $periodEnd
-    $isStale = ($status -eq 'stale') -or ($freshness.state -eq 'stale')
+    # FR #7595: [stale] comes from the digest fresh/stale field when published.
+    # Local fetched_at age is used only when the digest did not say fresh or stale.
+    $publishedFresh = $null
+    try {
+        if ($null -ne $Record.PSObject.Properties['fresh']) { $publishedFresh = [bool]$Record.fresh }
+    } catch { $publishedFresh = $null }
+    $publishedStale = $false
+    try {
+        if ($null -ne $Record.PSObject.Properties['stale']) { $publishedStale = [bool]$Record.stale }
+    } catch { $publishedStale = $false }
+    if ($null -ne $publishedFresh) {
+        $isStale = (-not $publishedFresh) -or $publishedStale -or ($status -eq 'stale')
+    } elseif ($publishedStale -or ($status -eq 'stale')) {
+        $isStale = $true
+    } else {
+        $freshness = Get-BobPoolReadingFreshness -FetchedAt $fetchedAt -Now $Now -RemainingPct $rem -PeriodEnd $periodEnd
+        $isStale = ($freshness.state -eq 'stale')
+    }
+    # FR #7522 / #7595: 0% with a known future reset is never stale.
     if ($isStale -and (Test-BobPoolExhaustedUntilReset -RemainingPct $rem -PeriodEnd $periodEnd -Now $Now)) {
         $isStale = $false
     }
+    # FR #7595: keep last % and the reset. [stale] goes immediately after the %.
     if ($isStale) {
-        $why = $err
-        if (-not $why) { $why = 'stale' }
-        return ('go {0} - {1}' -f $label, (Format-BobTrayStaleToken))
+        $mid = ('{0}% left {1}' -f [int]$rem, (Format-BobTrayStaleToken))
+        if ($reset) { $mid = ('{0} - {1}' -f $mid, $reset) }
+        elseif ($err -and $err -ne 'reset unavailable' -and $err -ne 'stale') {
+            $mid = ('{0} - {1}' -f $mid, $err)
+        }
     }
     return ('go {0} - {1}' -f $label, $mid)
 }
@@ -1652,12 +1683,32 @@ function Format-BobOpencodeWindowLines {
             if ($Stale -and $rec) {
                 $st = ''
                 try { $st = [string]$rec.status } catch { }
-                if ($st -and $st -ne 'unstarted') {
+                $pubFresh = $null
+                try {
+                    if ($null -ne $rec.PSObject.Properties['fresh']) { $pubFresh = [bool]$rec.fresh }
+                } catch { $pubFresh = $null }
+                # FR #7595: a window the digest marks fresh stays fresh. A stale
+                # window keeps remaining_pct and reset_label (never a bare [stale]).
+                if ($st -and $st -ne 'unstarted' -and $pubFresh -ne $true) {
+                    $keepRem = $null
+                    $keepUsed = $null
+                    $keepReset = $null
+                    $keepEnd = $null
+                    $keepErr = $null
+                    try { $keepRem = $rec.remaining_pct } catch { }
+                    try { $keepUsed = $rec.used_pct } catch { }
+                    try { $keepReset = $rec.reset_label } catch { }
+                    try { $keepEnd = $rec.period_end } catch { }
+                    try { if (-not $keepEnd) { $keepEnd = $rec.reset_at } } catch { }
+                    try { $keepErr = $rec.error } catch { }
                     $rec = [pscustomobject]@{
                         status = 'stale'
-                        used_pct = $null
-                        remaining_pct = $null
-                        reset_label = $null
+                        fresh = $false
+                        used_pct = $keepUsed
+                        remaining_pct = $keepRem
+                        reset_label = $keepReset
+                        period_end = $keepEnd
+                        error = $keepErr
                     }
                 }
             }
@@ -2369,9 +2420,19 @@ function Update-BobTrayDigestPools {
         } catch { }
     }
 
+    $digestTs = $null
+    if ($digestOk -and $doc) {
+        try {
+            if ($null -ne $doc.ts -and [string]$doc.ts -ne '') {
+                $dto = ConvertTo-BobUtcDateTime $doc.ts
+                if ($dto) { $digestTs = [int64]([DateTimeOffset]::new($dto)).ToUnixTimeSeconds() }
+            }
+        } catch { $digestTs = $null }
+    }
     $model = [ordered]@{
         v                   = 1
         ts                  = [int64][DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
+        digest_ts           = $digestTs
         digest_ok           = [bool]$digestOk
         digest_error        = $(if ($digestErr) { $digestErr } else { $null })
         note                = $(if ($note) { $note } else { '' })
@@ -2519,11 +2580,15 @@ function Format-BobCopilotPoolLine {
     if ($state -ne 'exhausted' -and -not (Test-BobTrayPoolHasRealRemaining -Remaining $left -Error $copilotErr -State $state)) {
         $left = $null
     }
+    # FR #7595: 0% with a known future reset is never stale.
+    if ($isStale -and $null -ne $left -and (Test-BobPoolExhaustedUntilReset -RemainingPct $left -PeriodEnd $reset -Now $Now)) {
+        $isStale = $false
+    }
     if ($isStale) {
-        # FR #7299: last value + [stale] only (no "older than 2 min").
+        # FR #7299 / #7595: last % stays. [stale] is immediately after the %, then the timer.
         if ($null -ne $left) {
             $mid = ('{0}% left {1}' -f [int]$left, $staleMark)
-            if ($resetCompact) { $mid = ('{0}% left - {1} {2}' -f [int]$left, $resetCompact, $staleMark) }
+            if ($resetCompact) { $mid = ('{0} - {1}' -f $mid, $resetCompact) }
             return ('Copilot - {0}' -f $mid)
         }
         return ('Copilot - {0}' -f $staleMark)
