@@ -449,6 +449,7 @@ routes to bobiverse via the split rule.
 - MRB login/auth test tips: if GitGuardian fails on FAKE_ password literals, tip-fix assemble from parts (FR #3304) before PASS/merge.
 - FR tray Copilot fixture tips: when Format-BobCopilotPoolLine paints unlimited (FR #7299), align COPILOT_POOLS expected lines --- do not restore unknown for unlimited=true.
 - MRB downloads tips: keep airc last via DOM marker comment + HTML order pins, not CSS order; #download-grid 1fr scoped so shared .grid stays multi-column elsewhere.
+- build-jeeves must run jeeves/tests pytest before PyInstaller so a red suite never ships an artifact; pin step order in workflow YAML
 
 ## Harvest digest (lessons audit 2026-10-06)
 
