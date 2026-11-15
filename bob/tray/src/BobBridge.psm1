@@ -48,6 +48,7 @@ Export-ModuleMember -Function @(
     'Get-BobTrayDigestPoolCatalog',
     'Format-BobTrayDigestPoolHeading',
     'Update-BobTrayDigestPools',
+    'Invoke-BobDigestHttpGet',
     'Format-BobTrayXaiWeeklyRow',
     'Select-BobTrayXaiWeeklyFromDigestNode',
     'Format-BobPeerPoolHeading',
