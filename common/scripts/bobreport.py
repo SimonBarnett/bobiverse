@@ -317,7 +317,7 @@ _LEGACY_CURSOR_BRIDGE_TOP_KEYS = frozenset({
     # FR #7749: overage_fetched_at stays on the wire (Copilot stamp, FR #6145).
     "usd_gbp_rate",
     "cur",
-    "remaining_pct",
+    # FR #7750: remaining_pct is the fuel delta (FR #6145), not a Cursor leftover.
     "account_remaining_pct",
     "cursor_remaining_pct",
 })
