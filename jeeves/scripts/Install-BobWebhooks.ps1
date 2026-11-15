@@ -95,6 +95,43 @@ $rewriteXml = @"
 </configuration>
 "@
 
+function Ensure-IcoStaticContent {
+    # FR #7460: exactly one <staticContent>; merge .ico remove+mimeMap; never append a second section.
+    param([Parameter(Mandatory = $true)][string]$Cfg)
+    $count = ([regex]::Matches($Cfg, '(?i)<staticContent\b')).Count
+    $hasIcoMap = $Cfg -match '(?i)<mimeMap\b[^>]*fileExtension="\.ico"[^>]*mimeType="image/x-icon"|(?i)<mimeMap\b[^>]*mimeType="image/x-icon"[^>]*fileExtension="\.ico"'
+    $hasIcoRemove = $Cfg -match '(?i)<remove\s+fileExtension="\.ico"'
+    if ($count -eq 1 -and $hasIcoMap -and $hasIcoRemove) {
+        return $Cfg
+    }
+    $preserved = New-Object System.Collections.Generic.List[string]
+    $Cfg2 = [regex]::Replace(
+        $Cfg,
+        '(?is)\s*<staticContent\b[^>]*>(.*?)</staticContent>',
+        {
+            param($m)
+            $inner = $m.Groups[1].Value
+            foreach ($line in ($inner -split "`r?`n")) {
+                $t = $line.Trim()
+                if (-not $t) { continue }
+                if ($t -match '(?i)fileExtension="\.ico"') { continue }
+                if (-not $preserved.Contains($t)) { [void]$preserved.Add($t) }
+            }
+            return ''
+        }
+    )
+    $kids = New-Object System.Collections.Generic.List[string]
+    foreach ($p in $preserved) { [void]$kids.Add(('      ' + $p)) }
+    [void]$kids.Add('      <remove fileExtension=".ico" />')
+    [void]$kids.Add('      <mimeMap fileExtension=".ico" mimeType="image/x-icon" />')
+    $nl = [Environment]::NewLine
+    $block = '    <staticContent>' + $nl + [string]::Join($nl, $kids.ToArray()) + $nl + '    </staticContent>' + $nl
+    if ($Cfg2 -match '</system\.webServer>') {
+        return [regex]::Replace($Cfg2, '</system\.webServer>', ($block + '  </system.webServer>'), 1)
+    }
+    return ($Cfg2 + $block)
+}
+
 $wwwSrcDefault = Join-Path $PSScriptRoot '..\www\irc-ntsa'
 $wwwSrc = if ($WwwSource) { $WwwSource } else { $wwwSrcDefault }
 if ($WhatIf) {
@@ -187,20 +224,31 @@ if (Test-Path -LiteralPath $webConfig) {
                 ("<fileExtensions allowUnlisted=`"true`">$icoAllow")
         }
     }
-    # FR #7442: ensure .ico MIME is image/x-icon (site-root favicon.ico).
-    if ($updated -notmatch 'mimeType="image/x-icon"') {
-        $icoMime = @"
-    <staticContent>
-      <remove fileExtension=".ico" />
-      <mimeMap fileExtension=".ico" mimeType="image/x-icon" />
-    </staticContent>
-"@
-        if ($updated -match '</system\.webServer>') {
-            $updated = $updated -replace '</system\.webServer>', ($icoMime + '  </system.webServer>')
+    # FR #7442 / #7460: .ico MIME via a single <staticContent> (merge; never append a second).
+    $backup = "$webConfig.fr7460.bak"
+    Copy-Item -LiteralPath $webConfig -Destination $backup -Force
+    try {
+        $updated = Ensure-IcoStaticContent -Cfg $updated
+        $probe = New-Object System.Xml.XmlDocument
+        $probe.XmlResolver = $null
+        $probe.LoadXml($updated)
+        $sc = $probe.SelectNodes('//*[local-name()="staticContent"]')
+        if ($sc.Count -gt 1) {
+            throw "FR #7460 validation failed: $($sc.Count) staticContent sections"
         }
+        $icoMaps = $probe.SelectNodes('//*[local-name()="mimeMap" and @fileExtension=".ico"]')
+        if ($icoMaps.Count -gt 1) {
+            throw "FR #7460 validation failed: $($icoMaps.Count) .ico mimeMap entries"
+        }
+        [IO.File]::WriteAllText($webConfig, $updated, [Text.UTF8Encoding]::new($false))
+        Write-Host "INFO updated $webConfig"
+    } catch {
+        if (Test-Path -LiteralPath $backup) {
+            Copy-Item -LiteralPath $backup -Destination $webConfig -Force
+            Write-Host "WARN FR #7460 rolled back web.config from backup: $($_.Exception.Message)"
+        }
+        throw
     }
-    [IO.File]::WriteAllText($webConfig, $updated, [Text.UTF8Encoding]::new($false))
-    Write-Host "INFO updated $webConfig"
 } else {
     [IO.File]::WriteAllText($webConfig, $rewriteXml, [Text.UTF8Encoding]::new($false))
     Write-Host "INFO created $webConfig"
