@@ -3126,6 +3126,91 @@ def report_skill_dag_mcp_transport_drop(
         return {"ok": False, "key": key}
 
 
+def normalize_agent_exit_code(code) -> int:
+    """Map ``proc.wait()`` to unsigned 32-bit (Windows ``0xffffffff`` → 4294967295)."""
+    try:
+        c = int(code)
+    except (TypeError, ValueError):
+        return 0xFFFFFFFF
+    return c & 0xFFFFFFFF
+
+
+def format_agent_exit_code_label(code) -> str:
+    """Human label for intake/logs; shows ``0xffffffff`` when that is the u32 value."""
+    u = normalize_agent_exit_code(code)
+    if u == 0xFFFFFFFF:
+        return f"{u} (0xffffffff)"
+    return str(u)
+
+
+def report_agent_cli_nonzero_exit(
+    *,
+    exit_code: int,
+    job_key: str = "",
+    machine: str = "",
+    nick: str = "",
+    kind: str = "",
+    agent_pid: int | None = None,
+    raw_code=None,
+    log: Optional[Callable[[str], None]] = None,
+    filer_post: Optional[Callable[..., dict]] = None,
+) -> dict:
+    """FR #7593: agent CLI nonzero exit → one intake (exit code + job). No secrets."""
+    if filer_post is None and os.environ.get("PYTEST_CURRENT_TEST"):
+        return {"ok": True, "skipped": True, "reason": "pytest"}
+    mid = re.sub(r"[^a-z0-9._-]+", "-", str(machine or "unknown").strip().lower()).strip("-") or "unknown"
+    nick_s = re.sub(r"[^a-z0-9._-]+", "-", str(nick or "-").strip().lower()).strip("-") or "-"
+    k = (kind or "").strip().lower() or "unknown"
+    try:
+        u = int(exit_code) & 0xFFFFFFFF
+    except (TypeError, ValueError):
+        u = normalize_agent_exit_code(raw_code)
+    label = format_agent_exit_code_label(u if raw_code is None else raw_code)
+    job = " ".join(str(job_key or "").split())[:120] or "(none)"
+    try:
+        pid_s = str(int(agent_pid or 0))
+    except (TypeError, ValueError):
+        pid_s = "0"
+    # Dedupe per machine + exit + job so a flapping seat comments the same report.
+    key = f"agent-cli-nonzero-exit|{mid}|{u}|{job}"[:128]
+    title = "bug: agent CLI nonzero exit (FR #7593)"
+    body = (
+        "What: the agent CLI process exited non-zero; the worker wrapper reported it and "
+        "recycled the seat (FR #7593).\n"
+        f"Where: bob-worker kind={k} machine={mid} nick={nick_s} agent_pid={pid_s}\n"
+        f"Evidence: exit_code={label} job={job}\n"
+        "Fix: inspect the agent session / exit cause; accepted jobs are GIVEUP'd (no fake DONE).\n"
+        "No secrets."
+    )
+    if log:
+        try:
+            log(f"worker: agent-cli-nonzero-exit exit={label} job={job} (FR #7593)")
+        except Exception:
+            pass
+    payload = {
+        "kind": "issue",
+        "repo": "SimonBarnett/bobiverse",
+        "title": title,
+        "body": body,
+        "idempotency_key": key,
+        "dedupe_key": key,
+        "machine": mid,
+        "agent": "bob-worker",
+    }
+    if filer_post is not None:
+        try:
+            return filer_post(payload) or {"ok": True, "key": key}
+        except Exception:
+            return {"ok": False, "key": key}
+    try:
+        import crash_report
+
+        crash_report._post_intake(title, body, repo="SimonBarnett/bobiverse", sig=key, exe="bob-worker")
+        return {"ok": True, "key": key}
+    except Exception:
+        return {"ok": False, "key": key}
+
+
 def restart_skill_dag_mcp_stdio_children(
     agent_pid: int | None,
     seat_markers: list[str | Path | None],
@@ -12177,14 +12262,62 @@ class Supervisor:
             parent_image=parent_image,
             parent_cmd=parent_cmd,
         )
+        exit_u = normalize_agent_exit_code(code)
+        exit_label = format_agent_exit_code_label(code)
         if age is not None and age < max(30.0, float(self.startup_grace_s) + 15.0):
             self.log(
-                f"agent: early exit code={code} after {age:.1f}s "
+                f"agent: early exit code={code} (u32={exit_label}) after {age:.1f}s "
                 f"(startup_grace_s={self.startup_grace_s:.0f}); last_injected={last[:200]!r}; {kill_line}"
             )
         else:
-            self.log(f"agent: exited by itself code={code}; {kill_line}; leaving (a closed agent ends the seat)")
-        self.shutdown("agent-exited", EXIT_OK)
+            self.log(
+                f"agent: exited by itself code={code} (u32={exit_label}); {kill_line}"
+            )
+        # FR #7593: zero exit ends the seat (unchanged). Nonzero → report, GIVEUP accepted
+        # job (no fake DONE), restart the supported way so the replacement !bored's.
+        if exit_u == 0:
+            self.log("agent: zero exit; leaving (a closed agent ends the seat)")
+            self.shutdown("agent-exited", EXIT_OK)
+            return
+        job_key = ""
+        try:
+            if self.bored and getattr(self.bored, "_ack_open", False):
+                job_key = str(getattr(self.bored, "_ack_job_key", None) or "").strip()
+        except Exception:
+            job_key = ""
+        try:
+            report_agent_cli_nonzero_exit(
+                exit_code=exit_u,
+                raw_code=code,
+                job_key=job_key,
+                machine=self.machine,
+                nick=self.nick,
+                kind=self.kind,
+                agent_pid=int(getattr(proc, "pid", 0) or 0),
+                log=self.log,
+            )
+        except Exception as e:
+            self.log(f"agent: nonzero-exit report failed {type(e).__name__}")
+        if job_key:
+            # Clear ack before restart_agent so hang-recycle does not double-GIVEUP.
+            try:
+                if self.bored is not None:
+                    self.bored._ack_open = False
+                    self.bored._ack_job_key = None
+            except Exception:
+                pass
+            try:
+                self._release_seat_giveup_job(job_key, "agent-cli-nonzero-exit")
+            except Exception as e:
+                self.log(f"agent: nonzero-exit GIVEUP failed {type(e).__name__}")
+        self.log(
+            f"agent: nonzero exit {exit_label}; recycling seat via restart_agent (FR #7593)"
+        )
+        try:
+            self.restart_agent("agent-cli-nonzero-exit")
+        except Exception as e:
+            self.log(f"agent: nonzero-exit restart failed {type(e).__name__}")
+            self.shutdown("agent-nonzero-restart-failed", EXIT_GAVE_UP)
 
     # ---- health
     def _ask_user_events_path(self) -> Optional[Path]:
