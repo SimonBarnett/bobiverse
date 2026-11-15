@@ -16,6 +16,11 @@ REPO = "SimonBarnett/agentic_fomprep"
 NICK = "flamingo-6524"
 SHOP = "#flamingo"
 
+def _stub_wake(monkeypatch):
+    import stall_callbacks
+    wakes: list = []
+    monkeypatch.setattr(stall_callbacks, "emit_giveup", lambda home, **kw: wakes.append({"home": str(home), **kw}) or True)
+    return wakes
 
 def _seed_roster(home: Path) -> None:
     registered_machines.save_registered(home, {"flamingo", "marchhare"})
@@ -45,6 +50,7 @@ def _done_pass(num: int, nick: str = "flamingo-1") -> dict:
 
 def test_giveup_on_done_pass_is_already_done_noop(tmp_path, monkeypatch):
     monkeypatch.setenv("BOB_DIGEST_HOME", str(tmp_path))
+    wakes = _stub_wake(monkeypatch)
     _seed_roster(tmp_path)
     held = _mrb(464, nick=NICK, accepted_ts="2026-11-12T14:01:00Z")
     finished = _done_pass(463)
@@ -75,9 +81,10 @@ def test_giveup_on_done_pass_is_already_done_noop(tmp_path, monkeypatch):
     assert len(done) == 1
     assert done[0]["id"] == "#463"
     assert done[0]["result"] == "PASS"
+    assert wakes == []
     led = gitclaim.ledger_load(tmp_path)
-    gu = (led.get("giveup") or {}).get(f"{REPO.lower()}#463") or {}
-    assert NICK.lower() not in {str(k).lower() for k in gu}
+    gu = (led.get("giveup") or {}).get(gitclaim._lkey(REPO, "#463")) or {}
+    assert not gu or NICK.lower() not in {str(k).lower() for k in gu}
 
 
 def test_nack_on_done_does_not_requeue(tmp_path, monkeypatch):
@@ -134,6 +141,7 @@ def test_giveup_drops_stale_accepted_twin_of_done_pass(tmp_path, monkeypatch):
 
 def test_live_giveup_of_accepted_not_in_done_still_returns(tmp_path, monkeypatch):
     monkeypatch.setenv("BOB_DIGEST_HOME", str(tmp_path))
+    wakes = _stub_wake(monkeypatch)
     _seed_roster(tmp_path)
     gitclaim._write_queue(
         gitclaim.queue_path(tmp_path),
@@ -156,6 +164,7 @@ def test_live_giveup_of_accepted_not_in_done_still_returns(tmp_path, monkeypatch
     ids_u = [r.get("id") for r in (q.get("unaccepted") or [])]
     assert "#464" in ids_u
     assert (q.get("done") or [])[0]["id"] == "#463"
+    assert len(wakes) == 1
 
 
 def test_format_shop_listen_info_notes_already_done():
