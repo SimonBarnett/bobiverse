@@ -94,7 +94,7 @@ def test_fr4317_watchdog_eval_pre_start_stamp_not_stale(tmp_path):
     assert "stale=0" in body, body
     assert p.returncode == 0
 
-    # FR #7508: same leftover after ColdStartGraceSeconds (60) with no post-start write -> stale
+    # FR #7508 / #7564: same leftover after ColdStartGraceSeconds (== MaxAgeSeconds) with no post-start write -> stale
     # so HealEngine retries (leftover forever was a silent hang).
     text_out2 = tmp_path / "eval_pre2.txt"
     p2 = subprocess.run(
