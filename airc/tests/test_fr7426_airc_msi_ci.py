@@ -47,10 +47,12 @@ def test_fr7426_airc_msi_workflow_exists_and_pins():
     assert "python-version: \"3.12\"" in text or "python-version: '3.12'" in text
     assert "test_fr7426_airc_msi_ci.py" in text
     assert "airc.exe" in text
-    # FR #4216: secret via env, fail closed, never echo value into MANIFEST.
+    # FR #4216: secret via env, fail closed on push/dispatch, soft-skip on PR, never echo into MANIFEST.
     assert "AIRC_PACK_ERGO_PASSWORD" in text
     assert "secrets.AIRC_PACK_ERGO_PASSWORD" in text
     assert "fail-closed" in text or "fail closed" in text.lower() or "missing or empty" in text
+    assert "pull_request" in text and "soft-skip" in text
+    assert "SKIP.json" in text
     assert "value not printed" in text.lower() or "never printed" in text.lower() or "not printed" in text
     assert "MANIFEST would contain Ergo PASS" in text or "refuse: MANIFEST" in text
     assert PACK.is_file()

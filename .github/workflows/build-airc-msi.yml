@@ -70,8 +70,26 @@ jobs:
           $head = (git rev-parse HEAD).Trim()
           if ($head -ne $env:WORKFLOW_COMMIT) { throw "checkout $head is not $env:WORKFLOW_COMMIT" }
 
-          # Fail closed: airc MSI requires Ergo PASS (FR #4216). Do not print the value.
+          # FR #4216 / #7426: airc MSI requires Ergo PASS. Do not print the value.
+          # PR without secret: soft-skip (workflow YAML still validated by pytest); push/main
+          # and workflow_dispatch stay fail-closed until Si sets AIRC_PACK_ERGO_PASSWORD (#7438).
+          $artifact = Join-Path $env:RUNNER_TEMP "airc-msi-artifact"
+          New-Item -ItemType Directory -Force -Path $artifact | Out-Null
           if (-not $env:AIRC_PACK_ERGO_PASSWORD -or -not $env:AIRC_PACK_ERGO_PASSWORD.Trim()) {
+            $evt = [string]$env:GITHUB_EVENT_NAME
+            if ($evt -eq 'pull_request') {
+              Write-Host "WARN FR #7426 soft-skip: AIRC_PACK_ERGO_PASSWORD missing on pull_request (ops: set repo secret; see #7438)"
+              $skip = [ordered]@{
+                skipped         = $true
+                reason          = "AIRC_PACK_ERGO_PASSWORD missing"
+                event_name      = $evt
+                source_commit   = $env:WORKFLOW_COMMIT
+                fr              = "7426"
+                ops_issue       = 7438
+              }
+              ($skip | ConvertTo-Json -Depth 4) | Set-Content -Encoding utf8 (Join-Path $artifact "SKIP.json")
+              exit 0
+            }
             throw "FR #7426 fail-closed: repo secret AIRC_PACK_ERGO_PASSWORD is missing or empty (airc MSI embeds config/ergo.password)"
           }
           Write-Host ("INFO FR #7426 Ergo PASS present (len={0}; value not printed)" -f $env:AIRC_PACK_ERGO_PASSWORD.Length)
@@ -128,8 +146,7 @@ jobs:
           $hit = @($embedded.Keys | Where-Object { $_ -like "*airc.exe" -and $_ -notlike "*network-installer*" })
           if ($hit.Count -lt 1) { throw "missing embedded airc.exe in stage" }
 
-          $artifact = Join-Path $env:RUNNER_TEMP "airc-msi-artifact"
-          New-Item -ItemType Directory -Force -Path $artifact | Out-Null
+          # $artifact directory created above (before secret check).
           Copy-Item -LiteralPath $msi.FullName -Destination (Join-Path $artifact $msi.Name) -Force
           $shaSide = $msi.FullName + ".sha256"
           if (Test-Path -LiteralPath $shaSide) {
