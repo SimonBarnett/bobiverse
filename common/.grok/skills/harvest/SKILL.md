@@ -443,6 +443,7 @@ routes to bobiverse via the split rule.
 - /jeeves/commands must be served static (bobcallback + settings /commands) before settings proxy; never require login
 - Ear publish: strip cursor_label/cursor_pools/cursor_known/overage_*/pcent.grok-chat+cursor-models in build_peer_fuel_merge_payload; always cleared[] + empty-or-nonlegacy pcent replace so sticky digest leftovers drop; keep companion digest-reader FR separate.
 - When git push of fr-N is rejected because origin/fr-N already exists, fetch it; if that tip already has an open PR that Closes the assigned issue, DONE with that URL and do not force-push.
+- Tray pool paint: bob-tray.exe polls digest every 60s into run/tray-digest-pools.json and Status LoadMerged prefers that file over tray-status pool fields so TipForm survives a dead PS engine.
 
 ## Harvest digest (lessons audit 2026-10-06)
 
