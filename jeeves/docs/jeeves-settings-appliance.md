@@ -9,16 +9,17 @@ front the UI via `irc.ntsa.uk`. Do not reopen FR #6757 or #6758.
 
 1. Open **https://bob.ntsa.uk/jeeves** in the browser (FR #6821).
 2. Do **not** tell operators to browse `jeeves.ntsa.uk` (FR #6758 used that internal DNS name; this slice replaces it).
-3. FR #7274: IIS rewrites `/jeeves` to bobcallback, which serves login/assets and
-   proxies the rest to loopback `:7701`. HTML URLs are prefix-aware (`/jeeves/api/login`
-   on the public mount, `/api/login` on the LAN root). Session cookie is
+3. FR #7274 / FR #7412: IIS rewrites `/jeeves` to bobcallback, which serves login/assets and
+   proxies the rest to the loopback settings upstream. HTML URLs are prefix-aware
+   (`/jeeves/api/login` on the public mount). Session cookie is
    `HttpOnly; SameSite=Strict; Path=/jeeves` (plus `Secure` on the public HTTPS mount).
    The header links back to Bob at `https://bob.ntsa.uk/bob/v1/report`. There is no
-   Domain field. Failed logins are rate-limited.
+   Domain field. Failed logins are rate-limited. **Do not browse `:7701`** — it is not
+   an operator URL (FR #7412 quiet remove; no deprecation brochure).
 4. Foundation modules: `common/scripts/jeeves_settings.py` (schema, LAN gate,
    secret-safe GET/PUT, backup/audit/rollback) and
    `common/scripts/jeeves_settings_auth.py` (AD/CredMan + sessions).
-5. LAN HTTP UI: see **Enable the LAN HTTP UI (FR #6440)** below.
+5. Settings HTTP process (chair-only upstream): see **Enable the settings HTTP upstream (FR #6440 / #7412)** below.
 6. NSSM env migrate/apply is FR #6442 (see **Migrate NSSM env** below).
    Auth is FR #6441 (see **Auth** below). Restart-when-idle + status is FR #6443 (see below).
 
@@ -46,18 +47,25 @@ passwords return 401 JSON, not 404.
    comes from the session (not a caller-supplied spoof). Secret settings still
    return only `set` / `unset`.
 
-## Enable the LAN HTTP UI (FR #6440)
+## Enable the settings HTTP upstream (FR #6440 / #7412)
 
-Off by default. On the chair host (walrus), set NSSM / process env and restart `ircJeeves`:
+Off by default. On the chair host (walrus), set NSSM / process env and restart `ircJeeves` so
+**https://bob.ntsa.uk/jeeves** can proxy API/HTML. Operators open only that URL.
 
 | Env | Purpose |
 |-----|---------|
-| `JEEVES_SETTINGS_HTTP=1` | Start the LAN listener (alias `JEEVES_SETTINGS_UI=1`) |
+| `JEEVES_SETTINGS_HTTP=1` | Start the loopback upstream (alias `JEEVES_SETTINGS_UI=1`) |
 | `JEEVES_SETTINGS_HTTP_BIND` | Bind IP (must be RFC1918 or loopback; default `127.0.0.1`) |
-| `JEEVES_SETTINGS_HTTP_PORT` | Backend TCP port (default **7701**; operators do not browse this port) |
-| `JEEVES_SETTINGS_FRONTDOOR=1` | FR #6757: force bind `127.0.0.1` behind the IIS TLS front door |
+| `JEEVES_SETTINGS_HTTP_PORT` | Internal upstream TCP port (default **7701**; **not an operator URL**) |
+| `JEEVES_SETTINGS_FRONTDOOR=1` | FR #6757: force bind `127.0.0.1` (also the default whenever HTTP is enabled; FR #7412) |
+| `JEEVES_SETTINGS_ALLOW_LAN_ROOT=1` | Escape hatch only: allow LAN-root UI on the upstream port (not for operators) |
 
-Browse **https://bob.ntsa.uk/jeeves** (FR #6821). Do not browse `jeeves.ntsa.uk`. Do not browse `:7701`. The settings process listens on loopback `:7701` when `JEEVES_SETTINGS_FRONTDOOR=1` (FR #6757); login HTML does not mention that port. Install the loopback front door with `jeeves/scripts/Install-JeevesApplianceFrontDoor.ps1 -Thumbprint <existing cert>` (operator-supplied certificate store thumbprint; no public ACME). The Python LAN check trusts `X-Forwarded-For` only from a loopback TCP peer.
+Browse **https://bob.ntsa.uk/jeeves** (FR #6821 / FR #7412). Do not browse `jeeves.ntsa.uk`.
+Do not browse `:7701` — a direct probe of the upstream LAN-root paths returns 404 when
+front-door mode is on (default). Login HTML does not mention that port. Install the
+loopback front door with `jeeves/scripts/Install-JeevesApplianceFrontDoor.ps1 -Thumbprint <existing cert>`
+(operator-supplied certificate store thumbprint; no public ACME). The Python LAN check
+trusts `X-Forwarded-For` only from a loopback TCP peer.
 JSON: `GET /api/settings`, `PUT /api/settings/<KEY>`, `POST /api/rollback`, `GET /api/schema`,
 `GET /api/status`, `GET /api/queue` (FR #6754), `GET /api/pools` (FR #6759), `POST /api/restart-when-idle`.
 HTML: `GET /` settings, `GET /status`, `GET /queue` (FR #6755 waiting / in-progress lists).

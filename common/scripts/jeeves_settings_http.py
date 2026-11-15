@@ -1,6 +1,9 @@
 """FR #6440 / #6451: LAN-bound HTTP listener + schema UI with session auth.
 
 FR #6760: ``/pools`` + ``/api/pools`` machine Grok rows.
+FR #7412: operator UI is only ``https://bob.ntsa.uk/jeeves``. Front-door mode
+is the default when the listener is enabled; LAN-root paths on ``:7701`` return
+404 unless ``JEEVES_SETTINGS_ALLOW_LAN_ROOT=1``. No deprecation brochure.
 
 Off by default. Enable with ``JEEVES_SETTINGS_HTTP=1`` (or ``JEEVES_SETTINGS_UI=1``).
 Binds only to RFC1918 / loopback. Rejects non-LAN peers in ``verify_request``
@@ -29,6 +32,8 @@ ENV_ENABLE = ("JEEVES_SETTINGS_HTTP", "JEEVES_SETTINGS_UI")
 ENV_BIND = "JEEVES_SETTINGS_HTTP_BIND"
 ENV_PORT = "JEEVES_SETTINGS_HTTP_PORT"
 ENV_FRONTDOOR = "JEEVES_SETTINGS_FRONTDOOR"
+# FR #7412: opt-in escape hatch to keep LAN-root UI on :7701 (not the operator path).
+ENV_ALLOW_LAN_ROOT = "JEEVES_SETTINGS_ALLOW_LAN_ROOT"
 SESSION_COOKIE_NAME = "jeeves_appliance_session"
 PUBLIC_MOUNT = "/jeeves"
 BOB_HOME_HREF = "https://bob.ntsa.uk/bob/v1/report"
@@ -382,9 +387,29 @@ def validate_bind_host(host: str) -> str | None:
     return None
 
 
-def front_door_enabled() -> bool:
-    raw = (os.environ.get(ENV_FRONTDOOR) or "").strip().lower()
+def _env_truthy(name: str) -> bool:
+    raw = (os.environ.get(name) or "").strip().lower()
     return raw in ("1", "true", "yes", "on")
+
+
+def allow_lan_root() -> bool:
+    """FR #7412: explicit escape hatch for LAN-root UI (not the operator surface)."""
+    return _env_truthy(ENV_ALLOW_LAN_ROOT)
+
+
+def front_door_enabled() -> bool:
+    """FR #6757 / #7412: public entry is bob.ntsa.uk/jeeves; :7701 is upstream only.
+
+    When settings HTTP is enabled, front-door mode is the default unless
+    ``JEEVES_SETTINGS_ALLOW_LAN_ROOT=1``. Explicit ``JEEVES_SETTINGS_FRONTDOOR=1``
+    still forces front-door mode.
+    """
+    if _env_truthy(ENV_FRONTDOOR):
+        return True
+    if allow_lan_root():
+        return False
+    # Default on whenever the listener is enabled (FR #7412 quiet remove).
+    return settings_http_enabled()
 
 
 def resolve_bind_host(explicit: str | None = None) -> str:
@@ -1049,9 +1074,21 @@ class _Handler(BaseHTTPRequestHandler):
             return True
         return False
 
+    def _refuse_lan_root_front_door(self, prefix: str) -> bool:
+        """FR #7412: probe of :7701 LAN-root must not serve the settings UI."""
+        if front_door_enabled() and not prefix:
+            self._send_json(
+                404,
+                {"ok": False, "error": "not found: use https://bob.ntsa.uk/jeeves"},
+            )
+            return True
+        return False
+
     def do_GET(self) -> None:  # noqa: N802
         ip = _client_ip(self)
         prefix, path = split_ui_path(urlparse(self.path).path)
+        if self._refuse_lan_root_front_door(prefix):
+            return
         public = bool(prefix)
         auth_ip = "127.0.0.1" if public else ip
         # Public /jeeves mount and assets skip LAN reject (FR #6815 / #7274).
@@ -1246,6 +1283,8 @@ class _Handler(BaseHTTPRequestHandler):
     def do_PUT(self) -> None:  # noqa: N802
         ip = _client_ip(self)
         mount, path = split_ui_path(urlparse(self.path).path)
+        if self._refuse_lan_root_front_door(mount):
+            return
         public = bool(mount)
         if not public and self._refuse_non_lan(ip):
             return
@@ -1269,6 +1308,8 @@ class _Handler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:  # noqa: N802
         ip = _client_ip(self)
         mount, path = split_ui_path(urlparse(self.path).path)
+        if self._refuse_lan_root_front_door(mount):
+            return
         public = bool(mount)
         if not public and self._refuse_non_lan(ip):
             return
@@ -1424,7 +1465,10 @@ def maybe_start_from_chair(
                 log("WARN settings-http enabled but failed to bind (check LAN bind/port)")
             else:
                 host, port = srv.server_address[:2]
-                log(f"INFO settings-http listening on {host}:{port} (FR #6440)")
+                log(
+                    f"INFO settings-http upstream on {host}:{port} "
+                    f"(FR #6440 / #7412; operator URL https://bob.ntsa.uk/jeeves)"
+                )
         return srv
     except Exception as e:  # noqa: BLE001
         if log:

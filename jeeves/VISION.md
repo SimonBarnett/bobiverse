@@ -66,7 +66,7 @@ BobCallback (:7700)
 Appliance settings (FR #6436 + #6440 HTTP + #6441 auth + #6442 migrate + #6443 restart/status)
   ├─ common/scripts/jeeves_settings.py --- schema, LAN, migrate/apply, restart-when-idle, status
   ├─ common/scripts/jeeves_settings_auth.py --- AD/CredMan + sessions; api_*_authed
-  └─ common/scripts/jeeves_settings_http.py --- LAN bind :7701 UI/API/status; off by default
+  └─ common/scripts/jeeves_settings_http.py --- loopback upstream for /jeeves (FR #7412); off by default
 
 MONITORING agent (jeeves CWD)
   └─ Invoke-JeevesMonitorCheck* --- report via intake; never act as chair
@@ -78,7 +78,7 @@ LOCKED
 
 ## Screens
 
-Operator surfaces today: IRC commands, chair logs, webhook health, and the MONITORING agent. FR #6436 locks an **internal-only appliance settings foundation** (schema + LAN gate + secret-safe API helpers + docs for jeeves.ntsa.uk); FR #6440 binds the LAN HTTP schema UI (off by default); FR #6441 locks AD/CredMan auth + sessions; FR #6451 wires LAN HTTP login/cookie/Bearer; FR #6442 migrates NSSM env into appliance-settings.json and applies file settings on start; FR #6443 adds restart-when-idle (ircJeeves only) + read-only status. FR #6453 locks **static** webhook/API docs on the public IIS front-door bob.ntsa.uk (`jeeves/www/irc-ntsa`, linked from the bobiverse acme home page; not a product website). FR #7274 mounts a controlled public settings front door at https://bob.ntsa.uk/jeeves (cookie Path=/jeeves). The settings process stays on LAN/loopback :7701; secrets stay set/unset only. Do not put the settings process itself on Cloudflare or irc.ntsa.uk.
+Operator surfaces today: IRC commands, chair logs, webhook health, and the MONITORING agent. FR #6436 locks an **internal-only appliance settings foundation** (schema + LAN gate + secret-safe API helpers + docs for jeeves.ntsa.uk); FR #6440 binds the LAN HTTP schema UI (off by default); FR #6441 locks AD/CredMan auth + sessions; FR #6451 wires LAN HTTP login/cookie/Bearer; FR #6442 migrates NSSM env into appliance-settings.json and applies file settings on start; FR #6443 adds restart-when-idle (ircJeeves only) + read-only status. FR #6453 locks **static** webhook/API docs on the public IIS front-door bob.ntsa.uk (`jeeves/www/irc-ntsa`, linked from the bobiverse acme home page; not a product website). FR #7274 mounts a controlled public settings front door at https://bob.ntsa.uk/jeeves (cookie Path=/jeeves). FR #7412 makes that the sole operator UI: the settings process is a loopback upstream only (default front-door mode; LAN-root on :7701 returns 404); secrets stay set/unset only. Do not put the settings process itself on Cloudflare or irc.ntsa.uk. No deprecation brochure.
 
 | id | file | state |
 |----|------|-------|
@@ -95,7 +95,8 @@ Operator surfaces today: IRC commands, chair logs, webhook health, and the MONIT
 - MONITORING agent reports via intake and never `!assign` / queue edits
 - FR #6453 bob.ntsa.uk static webhook/API docs: IIS www under `jeeves/www/irc-ntsa` (Install-BobWebhooks sync); read-only HTML; no new write endpoints; not a product website
 - FR #6436 appliance settings foundation: schema covers inventoried Jeeves-read settings (gap test); reject non-RFC1918 sources; secrets return only set/unset; validate + backup + audit + rollback; unused = no behaviour change (no server on import)
-- FR #7274 public /jeeves front door: operator URL https://bob.ntsa.uk/jeeves vs LAN/loopback settings process :7701; cookie Path=/jeeves; secrets stay set/unset; no Cloudflare for the settings process (IIS prefix only)
+- FR #7274 public /jeeves front door: operator URL https://bob.ntsa.uk/jeeves vs LAN/loopback settings upstream; cookie Path=/jeeves; secrets stay set/unset; no Cloudflare for the settings process (IIS prefix only)
+- FR #7412 sole UI https://bob.ntsa.uk/jeeves: front-door mode default when settings HTTP is enabled; direct :7701 LAN-root probes get 404; no deprecation brochure; optional `JEEVES_SETTINGS_ALLOW_LAN_ROOT=1` escape hatch only
 - FR #6441 appliance auth: LAN + Windows/AD LogonUser or CredMan `Jeeves/ApplianceAdmin`; session token hashes only; authed get/put/rollback; never log/return passwords; unused = no server on import
 - FR #6440 LAN HTTP settings UI: off by default; bind RFC1918/loopback only; schema-driven JSON/HTML via `jeeves_settings_http.py`
 - FR #6442 NSSM migrate/apply: SCHEMA file-backed settings; `migrate_nssm_env_to_file` + `apply_file_settings` on `jeeves_main` start; env still overrides; secrets audited set/unset only
