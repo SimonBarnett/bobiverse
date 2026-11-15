@@ -139,6 +139,26 @@ function Expand-BobiverseZip {
     }
 }
 
+function Ensure-BobiverseFileHashCommand {
+    # FR #7355 / MRB #7550: GHA/seat shells with PSModuleAutoLoadingPreference=None
+    # leave Get-FileHash missing; load Microsoft.PowerShell.Utility explicitly.
+    if (Get-Command Get-FileHash -ErrorAction SilentlyContinue) { return }
+    $prev = $env:PSModuleAutoLoadingPreference
+    try {
+        $env:PSModuleAutoLoadingPreference = 'All'
+        Import-Module Microsoft.PowerShell.Utility -ErrorAction Stop
+    } finally {
+        if ($null -eq $prev -or $prev -eq '') {
+            Remove-Item Env:\PSModuleAutoLoadingPreference -ErrorAction SilentlyContinue
+        } else {
+            $env:PSModuleAutoLoadingPreference = $prev
+        }
+    }
+    if (-not (Get-Command Get-FileHash -ErrorAction SilentlyContinue)) {
+        throw 'Get-FileHash missing after Import-Module Microsoft.PowerShell.Utility (FR #7355)'
+    }
+}
+
 function Assert-BobiverseSha256 {
     param(
         [Parameter(Mandatory)]
@@ -148,6 +168,7 @@ function Assert-BobiverseSha256 {
     )
     $want = $Expected.Trim().ToLowerInvariant()
     if (-not $want) { throw 'Assert-BobiverseSha256: empty Expected' }
+    Ensure-BobiverseFileHashCommand
     $got = (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant()
     if ($got -ne $want) {
         throw "sha256-mismatch path=$Path got=$got want=$want"

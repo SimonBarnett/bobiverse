@@ -273,6 +273,10 @@ if ($freeNow -lt $MinFreeGB -and (Test-Path -LiteralPath $binRoot)) {
         $agentItem = Get-Item -LiteralPath $agentPath
         $grokItem = Get-Item -LiteralPath $grokPath
         if ($agentItem.Length -gt 0 -and $agentItem.Length -eq $grokItem.Length) {
+            # FR #7355 / MRB #7550: Autoload=None seats lack Get-FileHash until Utility loads.
+            if (-not (Get-Command Get-FileHash -ErrorAction SilentlyContinue)) {
+                Import-Module Microsoft.PowerShell.Utility -ErrorAction Stop
+            }
             $ha = (Get-FileHash -LiteralPath $agentPath -Algorithm SHA256).Hash
             $hg = (Get-FileHash -LiteralPath $grokPath -Algorithm SHA256).Hash
             if ($ha -eq $hg) {

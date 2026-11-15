@@ -66,10 +66,19 @@ jobs:
         env:
           WORKFLOW_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
           PYTHONPATH: ${{ github.workspace }}/jeeves/scripts;${{ github.workspace }}/common/scripts;${{ github.workspace }}/common/tests;${{ github.workspace }}/jeeves/tests
+          # FR #7355 / MRB #7550: never leave Get-FileHash missing under Autoload=None.
+          PSModuleAutoLoadingPreference: All
         run: |
           $root = (Get-Location).Path
           $head = (git rev-parse HEAD).Trim()
           if ($head -ne $env:WORKFLOW_COMMIT) { throw "checkout $head is not $env:WORKFLOW_COMMIT" }
+          # CI bootstrap: Utility cmdlets + git identity for allow-empty fixture commits (MRB #7550).
+          Import-Module Microsoft.PowerShell.Utility -ErrorAction Stop
+          if (-not (Get-Command Get-FileHash -ErrorAction SilentlyContinue)) {
+            throw 'Get-FileHash missing after Import-Module Microsoft.PowerShell.Utility'
+          }
+          git config --global user.email 'ci-bobiverse@users.noreply.github.com'
+          git config --global user.name 'bobiverse-ci'
           # -q prints the collected/passed count in the log (acceptance: count visible on main).
           python -m pytest "$root\jeeves\tests" -q --tb=short -p no:cacheprovider
           if ($LASTEXITCODE -ne 0) { throw "jeeves pytest exit $LASTEXITCODE" }
