@@ -30,7 +30,12 @@ def test_fr4317_is_stale_ignores_pre_start_stamp():
     stale_fn = t[t.find("public static bool IsStale") : t.find("public static bool IsStale") + 1600]
     assert "m < engineStartedUtc" in stale_fn or "m < engineStartedUtc".replace(" ", "") in stale_fn.replace(" ", "")
     assert "return false" in stale_fn
-    heal = t[t.find("void HealEngine()") : t.find("void HealEngine()") + 1600]
+    # HealEngine grew with FR #7505 reporting + statusStale; pin through SafeEnginePid.
+    start = t.find("void HealEngine()")
+    end = t.find("string SafeEnginePid()", start)
+    if end < 0:
+        end = start + 4500
+    heal = t[start:end]
     assert "engine-restart-storm" in heal
     assert "FR #4317" in heal or "FR #4317" in t
 
@@ -94,7 +99,7 @@ def test_fr4317_watchdog_eval_pre_start_stamp_not_stale(tmp_path):
     assert "stale=0" in body, body
     assert p.returncode == 0
 
-    # FR #7508: same leftover after ColdStartGraceSeconds (60) with no post-start write -> stale
+    # FR #7508 / #7564: same leftover after ColdStartGraceSeconds (== MaxAgeSeconds) with no post-start write -> stale
     # so HealEngine retries (leftover forever was a silent hang).
     text_out2 = tmp_path / "eval_pre2.txt"
     p2 = subprocess.run(

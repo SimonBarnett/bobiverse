@@ -6,6 +6,7 @@
   Copies a built bob-ear.exe into InstallRoot\scripts\, keeping bob-ear.exe.bak for rollback.
   Does not start or stop ircBob (caller owns service lifecycle). Fails closed: on copy/smoke
   failure the previous exe (if any) is restored from .bak.
+  FR #7584: copy companion artifact files before smoke; never smoke the exe alone.
   FR #7300 / mrb-7311-fix: optional -ProvenancePath copies CI provenance.txt next to the
   exe so Select-BobEarLaunch source= reads the ear component (never install-root MANIFEST).
   FR #7390 / #7394: when Start-Bob.ps1 / Select-BobEarLaunch.ps1 / Bobiverse-Common.ps1
@@ -36,7 +37,9 @@ $srcDir = Split-Path -Parent $SourceExe
 $launcherSpecs = @(
     @{ Name = 'Start-Bob.ps1'; ProvKey = 'start_bob_ps1_sha256' },
     @{ Name = 'Select-BobEarLaunch.ps1'; ProvKey = 'select_bob_ear_launch_ps1_sha256' },
-    @{ Name = 'Bobiverse-Common.ps1'; ProvKey = 'bobiverse_common_ps1_sha256' }
+    @{ Name = 'Bobiverse-Common.ps1'; ProvKey = 'bobiverse_common_ps1_sha256' },
+    @{ Name = 'bobreport.py'; ProvKey = 'runtime_bobreport_py_sha256' },
+    @{ Name = 'opencode_fuel.py'; ProvKey = 'runtime_opencode_fuel_py_sha256' }
 )
 
 function Get-ProvHashMap {
@@ -92,17 +95,8 @@ foreach ($row in $launcherPlan) {
 }
 
 try {
+    # FR #7584: stage exe + all companion artifacts first; smoke only when the layout is complete.
     Copy-Item -LiteralPath $SourceExe -Destination $dest -Force
-    if (-not $SkipSmoke) {
-        $prevEap = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
-        $probe = & $dest --help 2>&1
-        $code = $LASTEXITCODE
-        $ErrorActionPreference = $prevEap
-        $text = ($probe | Out-String)
-        if ($code -ne 0 -or ($text -notmatch 'nick' -and $text -notmatch '--host')) {
-            throw "bob-ear.exe smoke failed after install (exit $code): $text"
-        }
-    }
     foreach ($row in $launcherPlan) {
         Copy-Item -LiteralPath $row.Source -Destination $row.Dest -Force
         Assert-FileSha256 -Path $row.Dest -Expected $row.WantSha -Label $row.Name
@@ -112,6 +106,21 @@ try {
     if ($ProvenancePath -and (Test-Path -LiteralPath $ProvenancePath -PathType Leaf)) {
         Copy-Item -LiteralPath $ProvenancePath -Destination $provDest -Force
         $wroteProv = $true
+    }
+    if (-not $SkipSmoke) {
+        foreach ($row in $launcherPlan) {
+            if (-not (Test-Path -LiteralPath $row.Dest -PathType Leaf)) {
+                throw ("bob-ear.exe smoke refused: missing companion {0}" -f $row.Name)
+            }
+        }
+        $prevEap = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
+        $probe = & $dest --help 2>&1
+        $code = $LASTEXITCODE
+        $ErrorActionPreference = $prevEap
+        $text = ($probe | Out-String)
+        if ($code -ne 0 -or ($text -notmatch 'nick' -and $text -notmatch '--host')) {
+            throw "bob-ear.exe smoke failed after install (exit $code): $text"
+        }
     }
     Write-Host ("INFO installed bob-ear.exe -> {0}" -f $dest)
     if ($wroteProv) { Write-Host ("INFO installed ear provenance -> {0}" -f $provDest) }

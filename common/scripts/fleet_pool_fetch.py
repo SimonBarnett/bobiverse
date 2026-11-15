@@ -24,6 +24,24 @@ POOL_OC_FREE = "opencode-free"
 POOL_OC_GO = "opencode-go"
 POOL_CURSOR = "cursor"
 STALE_REPORT_POOLS = (POOL_COPILOT, POOL_OC_GO)
+# FR #7552 / #7553: auth/skip-class errors are not "stale live fetch" (tray skip-class).
+# Never-ok no_token / no_key must not file fleet-pool-stale exceptions.
+FLEET_POOL_AUTH_SKIP_ERRORS = frozenset(
+    {
+        "no_token",
+        "no-token",
+        "no_key",
+        "no-key",
+        "missing_key",
+        "missing-key",
+        "not installed",
+        "not-installed",
+        "not_installed",
+        "auth-unresolved",
+        "auth-file-missing",
+        "system-profile-skipped",
+    }
+)
 CURSOR_CREDMAN_TARGET = "Bobiverse/CursorAccess"
 
 # FR #7288: walrus CredMan targets (generic credentials; secret in password blob).
@@ -621,6 +639,17 @@ def fleet_pool_stale_sig(pool: str) -> str:
     return f"fleet-pool-stale:{pool}"
 
 
+def is_fleet_pool_auth_skip_error(error: object) -> bool:
+    """True when the pool cannot fetch because credentials/tooling are absent (FR #7552)."""
+    msg = str(error or "").strip().lower()
+    if not msg:
+        return False
+    if msg in FLEET_POOL_AUTH_SKIP_ERRORS:
+        return True
+    # Tolerate longer messages that embed the skip token.
+    return any(tok in msg for tok in ("no_token", "no_key", "missing_key", "not installed", "not-installed"))
+
+
 def pool_seconds_without_live_fetch(state_row: dict | None, now: float) -> float | None:
     """Seconds since last successful live fetch, or since first attempt if never ok."""
     if not isinstance(state_row, dict):
@@ -782,6 +811,26 @@ def maybe_report_fleet_pool_staleness(
                 out[pool] = {"action": "held-exhausted", "number": issue_n}
             else:
                 out[pool] = {"action": "ok"}
+            continue
+        # FR #7552 / #7553: missing token/key is auth skip-class, not a stalled live fetch.
+        if is_fleet_pool_auth_skip_error(err):
+            if open_flag and issue_n:
+                body = (
+                    f"<!-- {fleet_pool_stale_sig(pool)} -->\n"
+                    f"Fleet pool `{pool}` held: auth/skip-class error "
+                    f"`{_safe_text(err)}` (no fleet-pool-stale filing; FR #7552).\n"
+                    "Configure the Jeeves Copilot token / OpenCode Go key on the chair. "
+                    "Leaving issue open (no auto-close).\n"
+                )
+                comment_fleet_pool_stale_issue(number=issue_n, body=body, repo=repo)
+                st["stale_open"] = False
+                st["stale_recovered"] = True
+                st["stale_recovered_at"] = float(now_f)
+                state[pool] = st
+                changed = True
+                out[pool] = {"action": "held-auth", "number": issue_n}
+            else:
+                out[pool] = {"action": "skipped-auth"}
             continue
         if age is None or age < float(FLEET_POOL_STALE_S):
             # recovery path

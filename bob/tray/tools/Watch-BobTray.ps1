@@ -353,6 +353,181 @@ function Invoke-BobTrayTimedTick {
     }
 }
 
+# --- FR #7579: engine cycle alive-first, step log, timed-out blocking steps ---
+$script:BobTrayEngineStepTimeoutSec = 45
+$script:BobTrayEngineCycleLogName = 'tray-engine-cycle.log'
+
+function Get-BobTrayEngineCycleLogPath {
+    param([string]$Root)
+    $root = if ($Root) { $Root } else { $RepoRoot }
+    $logDir = Join-Path $root 'logs'
+    if (-not (Test-Path -LiteralPath $logDir)) {
+        New-Item -ItemType Directory -Force -Path $logDir | Out-Null
+    }
+    return (Join-Path $logDir $script:BobTrayEngineCycleLogName)
+}
+
+function Write-BobTrayEngineCycleLog {
+    param(
+        [Parameter(Mandatory)][string]$Message,
+        [string]$Root
+    )
+    try {
+        $clean = ([string]$Message).Replace([char]13, ' ').Replace([char]10, ' ')
+        $line = '{0:o} {1}' -f [datetime]::UtcNow, $clean
+        Add-Content -LiteralPath (Get-BobTrayEngineCycleLogPath -Root $Root) -Value $line -Encoding ascii -ErrorAction SilentlyContinue
+    } catch { }
+}
+
+function Write-BobTrayEngineAliveStamp {
+    param([string]$Dir)
+    try {
+        $d = if ($Dir) { [string]$Dir } else { [string]$script:startWorkerDir }
+        if (-not $d) { return $false }
+        if (-not (Test-Path -LiteralPath $d)) { New-Item -ItemType Directory -Force -Path $d | Out-Null }
+        Set-Content -LiteralPath (Join-Path $d 'engine.alive') -Value ('{0} pid={1}' -f [datetime]::UtcNow.ToString('o'), $PID) -Encoding ASCII
+        return $true
+    } catch { return $false }
+}
+
+function Invoke-BobTrayEngineReportTimeout {
+    param(
+        [Parameter(Mandatory)][string]$StepName,
+        [int]$TimeoutSec,
+        [string]$Root
+    )
+    $msg = 'engine step timeout name={0} timeoutSec={1}' -f $StepName, $TimeoutSec
+    try { Write-TrayLog $msg } catch { }
+    Write-BobTrayEngineCycleLog -Root $Root -Message $msg
+    try {
+        if (Get-Command Report-BobDeterministicException -ErrorAction SilentlyContinue) {
+            $ex = New-Object System.TimeoutException $msg
+            Report-BobDeterministicException -Site ('Watch-BobTray.engine-step.' + $StepName) -Exception $ex -ScriptPath $PSCommandPath | Out-Null
+            return
+        }
+    } catch { }
+    try {
+        $hf = Join-Path $Root 'src\Private\Invoke-BobMustReportFailure.ps1'
+        if (Test-Path -LiteralPath $hf) { . $hf }
+        if (Get-Command Invoke-BobMustReportFailure -ErrorAction SilentlyContinue) {
+            Invoke-BobMustReportFailure -Component 'tray' -Site ('Watch-BobTray.engine-step.' + $StepName) -Exception (New-Object System.TimeoutException $msg) | Out-Null
+        }
+    } catch { }
+}
+
+function Invoke-BobTrayEngineStep {
+    <#
+      FR #7579 / #7594: log step start/end; run Body with TimeoutSec. On timeout: log, report once, continue.
+      Body runs in a background job so a hung CLI/network call cannot freeze the cycle forever.
+      Returns @{ ok; timedOut; name; seconds; output } (FR #7594 captures Receive-Job output).
+    #>
+    param(
+        [Parameter(Mandatory)][string]$Name,
+        [Parameter(Mandatory)][scriptblock]$Body,
+        [int]$TimeoutSec = -1,
+        [string]$Root,
+        [object[]]$ArgumentList
+    )
+    $root = if ($Root) { $Root } else { $RepoRoot }
+    if ($TimeoutSec -lt 0) { $TimeoutSec = [int]$script:BobTrayEngineStepTimeoutSec }
+    if ($TimeoutSec -lt 1) { $TimeoutSec = 1 }
+    Write-BobTrayEngineCycleLog -Root $root -Message ('step-start name={0}' -f $Name)
+    $sw = [System.Diagnostics.Stopwatch]::StartNew()
+    $job = $null
+    $timedOut = $false
+    $failed = $null
+    $output = $null
+    try {
+        if ($null -ne $ArgumentList -and @($ArgumentList).Count -gt 0) {
+            $job = Start-Job -ScriptBlock $Body -ArgumentList $ArgumentList
+        } else {
+            $job = Start-Job -ScriptBlock $Body
+        }
+        $ok = Wait-Job -Job $job -Timeout $TimeoutSec
+        if (-not $ok) {
+            $timedOut = $true
+            try { Stop-Job -Job $job -ErrorAction SilentlyContinue } catch { }
+        } else {
+            # FR #7594: capture job output (e.g. stall-alerts list / jobs-watcher state).
+            try { $output = Receive-Job -Job $job -ErrorAction Stop } catch { $failed = $_.Exception }
+            if ($job.State -eq 'Failed' -and -not $failed) {
+                try { $failed = $job.ChildJobs[0].JobStateInfo.Reason } catch { $failed = New-Object System.Exception 'job failed' }
+            }
+        }
+    } catch {
+        $failed = $_.Exception
+    } finally {
+        try { if ($job) { Remove-Job -Job $job -Force -ErrorAction SilentlyContinue } } catch { }
+        $sw.Stop()
+    }
+    if ($timedOut) {
+        Write-BobTrayEngineCycleLog -Root $root -Message ('step-timeout name={0} sec={1:n2} limit={2}' -f $Name, $sw.Elapsed.TotalSeconds, $TimeoutSec)
+        Invoke-BobTrayEngineReportTimeout -StepName $Name -TimeoutSec $TimeoutSec -Root $root
+        return @{ ok = $false; timedOut = $true; name = $Name; seconds = $sw.Elapsed.TotalSeconds; output = $null }
+    }
+    if ($failed) {
+        Write-BobTrayEngineCycleLog -Root $root -Message ('step-error name={0} sec={1:n2} err={2}' -f $Name, $sw.Elapsed.TotalSeconds, $failed.Message)
+        try {
+            if (Get-Command Report-BobDeterministicException -ErrorAction SilentlyContinue) {
+                Report-BobDeterministicException -Site ('Watch-BobTray.engine-step.' + $Name) -Exception $failed -ScriptPath $PSCommandPath | Out-Null
+            }
+        } catch { }
+        return @{ ok = $false; timedOut = $false; name = $Name; seconds = $sw.Elapsed.TotalSeconds; error = $failed; output = $null }
+    }
+    Write-BobTrayEngineCycleLog -Root $root -Message ('step-end name={0} sec={1:n2}' -f $Name, $sw.Elapsed.TotalSeconds)
+    return @{ ok = $true; timedOut = $false; name = $Name; seconds = $sw.Elapsed.TotalSeconds; output = $output }
+}
+
+function Invoke-BobTrayEngineSelfTest {
+    # FR #7579 offline acceptance (BOB_TRAY_ENGINE_SELFTEST=1). No machine names.
+    param([string]$Root)
+    $root = if ($Root) { $Root } else { Join-Path $env:TEMP ('bob-tray-engine-selftest-' + [guid]::NewGuid().ToString('n')) }
+    New-Item -ItemType Directory -Force -Path (Join-Path $root 'run\startworker') | Out-Null
+    New-Item -ItemType Directory -Force -Path (Join-Path $root 'logs') | Out-Null
+    $script:startWorkerDir = Join-Path $root 'run\startworker'
+    $RepoRoot = $root
+    function script:Write-TrayLog([string]$m) { Write-BobTrayEngineCycleLog -Root $root -Message ('traylog ' + $m) }
+    $script:BobTrayEngineSelfTestReported = [System.Collections.ArrayList]::new()
+    function script:Report-BobDeterministicException {
+        param($Site, $Exception, $ScriptPath)
+        [void]$script:BobTrayEngineSelfTestReported.Add([string]$Site)
+    }
+    Write-BobTrayEngineAliveStamp -Dir $script:startWorkerDir | Out-Null
+    Write-BobTrayEngineCycleLog -Root $root -Message 'cycle-start'
+    [void](Invoke-BobTrayEngineStep -Name 'alpha' -Root $root -TimeoutSec 5 -Body { Start-Sleep -Milliseconds 20 })
+    [void](Invoke-BobTrayEngineStep -Name 'bravo' -Root $root -TimeoutSec 5 -Body { Start-Sleep -Milliseconds 20 })
+    Write-BobTrayEngineCycleLog -Root $root -Message 'cycle-end'
+    $log1 = Get-Content -LiteralPath (Get-BobTrayEngineCycleLogPath -Root $root) -Encoding ascii
+    $joined = ($log1 -join "`n")
+    if ($joined -notmatch 'step-start name=alpha' -or $joined -notmatch 'step-end name=alpha' -or $joined -notmatch 'step-start name=bravo') {
+        throw 'normal cycle log order failed'
+    }
+    $alive1 = Get-Item -LiteralPath (Join-Path $script:startWorkerDir 'engine.alive')
+    $t1 = $alive1.LastWriteTimeUtc
+    Start-Sleep -Milliseconds 1100
+    Write-BobTrayEngineAliveStamp -Dir $script:startWorkerDir | Out-Null
+    $hung = Invoke-BobTrayEngineStep -Name 'hung' -Root $root -TimeoutSec 2 -Body { Start-Sleep -Seconds 600 }
+    if (-not $hung.timedOut) { throw 'hung step did not time out' }
+    if ($script:BobTrayEngineSelfTestReported.Count -lt 1) { throw 'timeout did not report exception' }
+    Write-BobTrayEngineAliveStamp -Dir $script:startWorkerDir | Out-Null
+    $alive2 = Get-Item -LiteralPath (Join-Path $script:startWorkerDir 'engine.alive')
+    if ($alive2.LastWriteTimeUtc -le $t1) { throw 'alive stamp did not advance after hung step' }
+    $log2 = Get-Content -LiteralPath (Get-BobTrayEngineCycleLogPath -Root $root) -Encoding ascii -Raw
+    if ($log2 -notmatch 'step-timeout name=hung') { throw 'hung step not named in log' }
+    Write-Output 'FR7579_SELFTEST_OK'
+}
+
+if ($env:BOB_TRAY_ENGINE_SELFTEST -eq '1') {
+    try {
+        Invoke-BobTrayEngineSelfTest -Root $env:BOB_TRAY_ENGINE_SELFTEST_ROOT
+        exit 0
+    } catch {
+        Write-Error $_
+        exit 1
+    }
+}
+
+
 function Test-BobTrayTipAlive {
     try {
         return ($null -ne $script:tip -and -not $script:tip.IsDisposed)
@@ -1052,13 +1227,25 @@ function Get-BobTrayMachineXaiWeekly {
     }
     if (-not $doc) {
         try {
-            # UTF-8 explicitly (PS 5.1 would decode a charset-less body as Latin-1: "A-circumflex + dot").
-            $resp = Invoke-WebRequest -Uri (Get-BobTrayDigestReportUrl) -UseBasicParsing -TimeoutSec 8 -Headers @{ Accept = 'application/json' }
-            $ms = $resp.RawContentStream
-            $ms.Position = 0
-            $buf = New-Object byte[] ([int]$ms.Length)
-            [void]$ms.Read($buf, 0, $buf.Length)
-            $doc = [System.Text.Encoding]::UTF8.GetString($buf) | ConvertFrom-Json
+            # FR #7615 / #7602: HttpWebRequest Timeout + ReadWriteTimeout (PS 5.1 IWR hang).
+            if (-not (Get-Command Invoke-BobDigestHttpGet -ErrorAction SilentlyContinue)) {
+                $helperCands = @(
+                    (Join-Path $RepoRoot 'src\Private\Invoke-BobDigestHttpGet.ps1'),
+                    (Join-Path $PSScriptRoot '..\src\Private\Invoke-BobDigestHttpGet.ps1')
+                )
+                foreach ($hc in $helperCands) {
+                    if (Test-Path -LiteralPath $hc -PathType Leaf) { . $hc; break }
+                }
+            }
+            if (-not (Get-Command Invoke-BobDigestHttpGet -ErrorAction SilentlyContinue)) {
+                throw 'Invoke-BobDigestHttpGet missing'
+            }
+            $got = Invoke-BobDigestHttpGet -Uri (Get-BobTrayDigestReportUrl) -TimeoutSec 8
+            if (-not $got -or [int]$got.StatusCode -lt 200 -or [int]$got.StatusCode -ge 300) {
+                throw ('digest HTTP status {0}' -f $(if ($got) { $got.StatusCode } else { 'null' }))
+            }
+            # UTF-8 body already decoded by Invoke-BobDigestHttpGet (PS 5.1 Latin-1 trap avoided).
+            $doc = [string]$got.Text | ConvertFrom-Json
         }
         catch {
             Write-TrayLog ('agents: digest xai_weekly read failed: ' + $_.Exception.Message)
@@ -3613,12 +3800,70 @@ $poll.Add_Tick({
         try { $poll.Stop() } catch { }
         try {
             Invoke-BobTrayTimedTick -Name 'poll' -Body {
+                # FR #7579: stamp engine.alive before any step that can block; log each step.
+                Write-BobTrayEngineCycleLog -Root $RepoRoot -Message 'cycle-start name=poll'
+                [void](Write-BobTrayEngineAliveStamp -Dir $script:startWorkerDir)
                 $engine = [bool](Test-BobTrayEngineMode)
                 if (-not $engine) {
+                    Write-BobTrayEngineCycleLog -Root $RepoRoot -Message 'step-start name=clear-grok-session'
+                    $swS = [System.Diagnostics.Stopwatch]::StartNew()
                     try { Clear-BobTrayGrokSessionDirs } catch { }
+                    $swS.Stop()
+                    Write-BobTrayEngineCycleLog -Root $RepoRoot -Message ('step-end name=clear-grok-session sec={0:n2}' -f $swS.Elapsed.TotalSeconds)
                 }
-                Start-JobsWatcher
-                $alerts = @(Get-BobStallAlerts -Seen $seen -StallSec $StallSec -HeartbeatStaleSec $HeartbeatStaleSec)
+                # FR #7594: jobs-watcher / stall-alerts under Invoke-BobTrayEngineStep (same timeout/report as update-hover).
+                $jw = Invoke-BobTrayEngineStep -Name 'jobs-watcher' -Root $RepoRoot -TimeoutSec ([int]$script:BobTrayEngineStepTimeoutSec) -ArgumentList @($RepoRoot, $watchJobs) -Body {
+                    param($Root, $WatchJobsPath)
+                    $hits = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
+                        Where-Object {
+                            $_.CommandLine -and
+                            $_.CommandLine -match 'Watch-BobJobs\.ps1' -and
+                            $_.CommandLine -notmatch '(?i)-Once\b'
+                        })
+                    if ($hits.Count -gt 0) {
+                        $keep = $hits[0]
+                        try {
+                            if ($hits.Count -gt 1) {
+                                for ($i = 1; $i -lt $hits.Count; $i++) {
+                                    try { Stop-Process -Id ([int]$hits[$i].ProcessId) -Force -ErrorAction SilentlyContinue } catch { }
+                                }
+                            }
+                        } catch { }
+                        return [pscustomobject]@{ pid = [int]$keep.ProcessId; owned = $false; action = 'existing' }
+                    }
+                    if (-not (Test-Path -LiteralPath $WatchJobsPath)) {
+                        return [pscustomobject]@{ pid = 0; owned = $false; action = 'missing' }
+                    }
+                    $p = Start-Process -FilePath (Get-Command powershell.exe).Source `
+                        -ArgumentList @('-NoProfile', '-WindowStyle', 'Hidden', '-ExecutionPolicy', 'Bypass', '-File', $WatchJobsPath) `
+                        -WorkingDirectory $Root -WindowStyle Hidden -PassThru
+                    return [pscustomobject]@{ pid = [int]$p.Id; owned = $true; action = 'started' }
+                }
+                if ($jw.ok -and $jw.output) {
+                    try {
+                        if ([int]$jw.output.pid -gt 0) { $script:jobsPid = [int]$jw.output.pid }
+                        $script:jobsOwned = [bool]$jw.output.owned
+                        if ([string]$jw.output.action -eq 'missing' -and -not $script:jobsMissingLogged) {
+                            Write-TrayLog ("Watch-BobJobs.ps1 not installed ($watchJobs); not starting it")
+                            $script:jobsMissingLogged = $true
+                        }
+                        elseif ([string]$jw.output.action -eq 'started') {
+                            Write-TrayLog ("started Watch-BobJobs pid=$($jw.output.pid)")
+                        }
+                    } catch { }
+                }
+                $alerts = @()
+                $sa = Invoke-BobTrayEngineStep -Name 'stall-alerts' -Root $RepoRoot -TimeoutSec ([int]$script:BobTrayEngineStepTimeoutSec) -ArgumentList @($RepoRoot, $seen, [int]$StallSec, [int]$HeartbeatStaleSec) -Body {
+                    param($Root, $Seen, $StallSecArg, $HeartbeatStaleSecArg)
+                    $psd1 = Join-Path $Root 'src\BobBridge.psd1'
+                    if (Test-Path -LiteralPath $psd1) { Import-Module $psd1 -Force }
+                    $list = @(Get-BobStallAlerts -Seen $Seen -StallSec ([int]$StallSecArg) -HeartbeatStaleSec ([int]$HeartbeatStaleSecArg))
+                    return [pscustomobject]@{ Alerts = $list; Seen = $Seen }
+                }
+                if ($sa.ok -and $sa.output) {
+                    try { $alerts = @($sa.output.Alerts) } catch { $alerts = @() }
+                    try { if ($sa.output.Seen) { $seen = $sa.output.Seen } } catch { }
+                }
                 if ($alerts.Count -gt 0 -and -not $engine) { Set-Attention $alerts }
                 elseif ($alerts.Count -gt 0 -and $engine) {
                     # Exe owns the icon; still record alerts in log / lastAlerts without NotifyIcon flash.
@@ -3628,17 +3873,45 @@ $poll.Add_Tick({
                 # FR #1553: ThreadPool already syncs workers. On the UI poll, only do Sync when
                 # not in engine mode (engine relies on the non-UI timer to avoid double HTTP).
                 if (-not $engine) {
+                    Write-BobTrayEngineCycleLog -Root $RepoRoot -Message 'step-start name=worker-sync'
+                    $swW = [System.Diagnostics.Stopwatch]::StartNew()
                     try {
                         if (Get-Command Sync-BobTrayStatusWorkersFromDigest -ErrorAction SilentlyContinue) {
                             [void](Sync-BobTrayStatusWorkersFromDigest -Root $RepoRoot -TimeoutSec 8)
                         }
-                    }
-                    catch { Write-TrayLog ('tray worker sync: ' + $_.Exception.Message) }
-                    Update-Hover
+                    } catch { Write-TrayLog ('tray worker sync: ' + $_.Exception.Message) }
+                    $swW.Stop()
+                    Write-BobTrayEngineCycleLog -Root $RepoRoot -Message ('step-end name=worker-sync sec={0:n2}' -f $swW.Elapsed.TotalSeconds)
+                    # FR #7579: Update-Hover (incl. Get-BobTrayHover) under timeout so a hang cannot freeze the UI thread.
+                    [void](Invoke-BobTrayEngineStep -Name 'update-hover' -Root $RepoRoot -TimeoutSec ([int]$script:BobTrayEngineStepTimeoutSec) -ArgumentList @($RepoRoot, $PSScriptRoot) -Body {
+                        param($Root, $Tools)
+                        $dialogs = Join-Path $Tools 'BobTrayDialogs.ps1'
+                        if (Test-Path -LiteralPath $dialogs) { . $dialogs }
+                        $psd1 = Join-Path $Root 'src\BobBridge.psd1'
+                        if (Test-Path -LiteralPath $psd1) { Import-Module $psd1 -Force }
+                        $h = Get-BobTrayHover
+                        if (Get-Command Write-BobTrayStatusSnapshot -ErrorAction SilentlyContinue -and $h) {
+                            $model = New-BobTrayStatusModel -Hover $h -AlertKind 'none' -Alerts @() -Version '' -Machine ([string]$env:BOB_MACHINE_ID) -Title ([string]$h.title) -Short ([string]$h.short) -Attention $false -AttentionSeq 0 -Pulse $false
+                            [void](Write-BobTrayStatusSnapshot -Root $Root -Model $model)
+                        }
+                    })
+                    # TipForm paint on UI thread after snapshot job (best-effort; alive already stamped).
+                    try { Update-Hover } catch { Write-TrayLog ('update-hover paint: ' + $_.Exception.Message) }
                 }
                 else {
-                    # FR #4142: data-only hover/snapshot for bob-tray.exe; no TipForm paint.
-                    Update-Hover -SkipUi
+                    # FR #4142 / #7579: data-only hover/snapshot for bob-tray.exe with timeout.
+                    [void](Invoke-BobTrayEngineStep -Name 'update-hover-engine' -Root $RepoRoot -TimeoutSec ([int]$script:BobTrayEngineStepTimeoutSec) -ArgumentList @($RepoRoot, $PSScriptRoot) -Body {
+                        param($Root, $Tools)
+                        $dialogs = Join-Path $Tools 'BobTrayDialogs.ps1'
+                        if (Test-Path -LiteralPath $dialogs) { . $dialogs }
+                        $psd1 = Join-Path $Root 'src\BobBridge.psd1'
+                        if (Test-Path -LiteralPath $psd1) { Import-Module $psd1 -Force }
+                        $h = Get-BobTrayHover
+                        if (Get-Command Write-BobTrayStatusSnapshot -ErrorAction SilentlyContinue -and $h) {
+                            $model = New-BobTrayStatusModel -Hover $h -AlertKind 'none' -Alerts @() -Version '' -Machine ([string]$env:BOB_MACHINE_ID) -Title ([string]$h.title) -Short ([string]$h.short) -Attention $false -AttentionSeq 0 -Pulse $false
+                            [void](Write-BobTrayStatusSnapshot -Root $Root -Model $model)
+                        }
+                    })
                 }
                 # CAST IRON: local Cursor (pcent + overspend) + xAI weekly -> digest webhook.
                 # FR #4142: in engine mode Write-BobIrcStatus runs on trayDigestTimer (non-UI).
@@ -3654,6 +3927,7 @@ $poll.Add_Tick({
                         catch { }
                     }
                 }
+                Write-BobTrayEngineCycleLog -Root $RepoRoot -Message 'cycle-end name=poll'
             }
         }
         catch [System.Management.Automation.PipelineStoppedException] { return }
@@ -3807,13 +4081,8 @@ $startWorkerTimer.Add_Tick({
                     # restarts after MaxAge. Writing only after the queue left a hung queue looking dead
                     # forever when the post-queue line never ran (and leftover pre-start stamps caused
                     # false kill storms — see EngineAliveStamp.IsStale FR #4317).
-                    try {
-                        $dir = [string]$script:startWorkerDir
-                        if ($dir) {
-                            if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Force -Path $dir | Out-Null }
-                            Set-Content -LiteralPath (Join-Path $dir 'engine.alive') -Value ('{0} pid={1}' -f [datetime]::UtcNow.ToString('o'), $PID) -Encoding ASCII
-                        }
-                    } catch { }
+                    # FR #7579: shared helper (also used at poll start + ThreadPool heartbeat).
+                    [void](Write-BobTrayEngineAliveStamp -Dir $script:startWorkerDir)
                     [void](Invoke-BobTrayStartWorkerQueue -Dir $script:startWorkerDir `
                             -Launch { param($mode, $agent) Start-BobTrayWorkerExe -Mode $mode -Agent $agent -Quiet } `
                             -Log { param($m) Write-TrayLog $m })
@@ -3858,6 +4127,10 @@ $script:trayAliveSub = Register-ObjectEvent -InputObject $script:trayAliveTimer 
         if (-not $dir) { return }
         if (Get-Command Write-BobTrayAlive -ErrorAction SilentlyContinue) {
             [void](Write-BobTrayAlive -Dir $dir)
+            # FR #7579: advance engine.alive on ThreadPool too (poll UI hang must not freeze HealEngine).
+            if (Get-Command Write-BobTrayEngineAliveStamp -ErrorAction SilentlyContinue) {
+                [void](Write-BobTrayEngineAliveStamp -Dir $dir)
+            }
             return
         }
         if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Force -Path $dir | Out-Null }
@@ -3921,13 +4194,8 @@ $poll.Start()
 [void](Write-BobTrayAlive -Dir $script:startWorkerDir)   # seed immediately; trayAliveTimer keeps it fresh (FR #2697)
 # FR #4317: seed engine.alive at tray-up so HealEngine sees a post-start stamp before the first tick
 # (covers cold start and deploy skew where an old leftover stamp would otherwise look eternally stale).
-try {
-    $dir = [string]$script:startWorkerDir
-    if ($dir) {
-        if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Force -Path $dir | Out-Null }
-        Set-Content -LiteralPath (Join-Path $dir 'engine.alive') -Value ('{0} pid={1}' -f [datetime]::UtcNow.ToString('o'), $PID) -Encoding ASCII
-    }
-} catch { }
+# FR #7579 / #4317: seed engine.alive at tray-up.
+[void](Write-BobTrayEngineAliveStamp -Dir $script:startWorkerDir)
 $startWorkerTimer.Start()
 Write-TrayLog 'tray up'
 try {

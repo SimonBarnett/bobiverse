@@ -14,7 +14,9 @@ def test_mrb3470_commands_assign_documents_orphan_release_and_absent_refuse():
     t = COMMANDS.read_text(encoding="utf-8")
     assert "FR #3400" in t
     assert "prior ACK void" in t
-    assert "not in the shop channel" in t
+    # Current presence rule (FR #7186 / #7224), not the retired "not in the shop channel" line.
+    assert "waits for 366" in t
+    assert "presence refuse" in t
     assert "Never steal from a live accepted holder" in t
     # Contiguous !assign cell still mentions departed-nick release.
     assert "accepted only under a departed nick" in t

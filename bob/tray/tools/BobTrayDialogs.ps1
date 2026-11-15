@@ -375,12 +375,26 @@ function Sync-BobTrayStatusWorkersFromDigest {
             if (-not $url) { $url = ([string]$env:BOB_DIGEST_REPORT_URL).Trim() }
             if (-not $url) { $url = 'https://bob.ntsa.uk/bob/v1/report' }
             $sec = [Math]::Max(2, [int]$TimeoutSec)
-            $resp = Invoke-WebRequest -Uri $url -UseBasicParsing -TimeoutSec $sec -Headers @{ Accept = 'application/json' }
-            $ms = $resp.RawContentStream
-            $ms.Position = 0
-            $buf = New-Object byte[] ([int]$ms.Length)
-            [void]$ms.Read($buf, 0, $buf.Length)
-            $digest = [System.Text.Encoding]::UTF8.GetString($buf) | ConvertFrom-Json
+            # FR #7615 / #7602: HttpWebRequest Timeout + ReadWriteTimeout (PS 5.1 IWR hang).
+            if (-not (Get-Command Invoke-BobDigestHttpGet -ErrorAction SilentlyContinue)) {
+                $helperCands = @(
+                    (Join-Path $Root 'src\Private\Invoke-BobDigestHttpGet.ps1'),
+                    (Join-Path $PSScriptRoot '..\src\Private\Invoke-BobDigestHttpGet.ps1'),
+                    (Join-Path (Split-Path $PSScriptRoot -Parent) 'src\Private\Invoke-BobDigestHttpGet.ps1')
+                )
+                foreach ($hc in $helperCands) {
+                    if (Test-Path -LiteralPath $hc -PathType Leaf) { . $hc; break }
+                }
+            }
+            if (-not (Get-Command Invoke-BobDigestHttpGet -ErrorAction SilentlyContinue)) {
+                throw 'Invoke-BobDigestHttpGet missing'
+            }
+            $got = Invoke-BobDigestHttpGet -Uri $url -TimeoutSec $sec
+            if (-not $got -or [int]$got.StatusCode -lt 200 -or [int]$got.StatusCode -ge 300) {
+                throw ('digest HTTP status {0}' -f $(if ($got) { $got.StatusCode } else { 'null' }))
+            }
+            # UTF-8 body already decoded by Invoke-BobDigestHttpGet (PS 5.1 Latin-1 trap avoided).
+            $digest = [string]$got.Text | ConvertFrom-Json
         }
         if (-not $digest -or -not $digest.machines) { return $null }
         $raw = [IO.File]::ReadAllText($path, (New-Object System.Text.UTF8Encoding $false))

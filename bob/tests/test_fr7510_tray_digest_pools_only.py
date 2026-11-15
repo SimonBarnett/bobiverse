@@ -157,8 +157,16 @@ Get-Content -LiteralPath $p -Raw -Encoding UTF8
 
 @needs_ps
 def test_fr7510_stale_fetched_at_marks_heading(tmp_path: Path):
+    """FR #7580: TipForm digest paint trusts published fresh; old fetched_at alone is not [stale].
+
+    Local age override lived here under FR #7510; Si's digest-only rule (#7580) removed it
+    from Update-BobTrayDigestPools. Digest fresh=false still paints [stale] with last %.
+    """
     fa = _stale_iso(300)
     digest = _fixture_digest(fa)
+    # Explicit published stale (not age invention).
+    for mid, node in digest["machines"].items():
+        node["xai_weekly"]["fresh"] = False
     dig_path = tmp_path / "digest.json"
     dig_path.write_text(json.dumps(digest), encoding="utf-8")
     root = tmp_path / "install"

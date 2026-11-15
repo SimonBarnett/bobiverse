@@ -431,6 +431,7 @@ function Format-BobTrayXaiWeeklyRow {
       remaining_pct is the digest meter value (never recomputed from used, never local log).
       fresh=false => stale mark (age_s / fetched_at) + error when present; last % only with that mark.
       FR #7498: age_s > 120 or fetched_at older than 2 minutes forces stale even if meter.fresh.
+      FR #7580 -AsPublished: TipForm/Status digest paint trusts meter.fresh as published (no local age).
       null meter => clear 'no reading' (never empty bar, never another source).
       FR #6314 / FR #7345: grok-login-expired or xai_auth=expired expands to
       'xAI sign-in expired, sign in once on <m>' (channel xAI weekly row, red [stale]).
@@ -439,7 +440,8 @@ function Format-BobTrayXaiWeeklyRow {
     param(
         [string]$MachineId,
         $XaiWeekly = $null,
-        [string]$NoReadingReason = ''
+        [string]$NoReadingReason = '',
+        [switch]$AsPublished
     )
     $id = ([string]$MachineId).ToUpperInvariant()
     if ($null -eq $XaiWeekly) {
@@ -478,16 +480,22 @@ function Format-BobTrayXaiWeeklyRow {
             $fresh = [bool]$XaiWeekly.fresh
         }
     } catch { $fresh = $true }
-    # FR #7299 / #7326: missing fetched_at is stale (never default fresh=true).
-    # FR #7510: fetched_at older than Get-BobPoolStaleAfterSec (2 min) is stale even when fresh=true.
     $fetchedAt = ''
     try { if ($XaiWeekly.fetched_at) { $fetchedAt = [string]$XaiWeekly.fetched_at } } catch { }
-    if (-not $fetchedAt) { $fresh = $false }
-    elseif (Get-Command Get-BobPoolReadingFreshness -ErrorAction SilentlyContinue) {
-        try {
-            $frAge = Get-BobPoolReadingFreshness -FetchedAt $fetchedAt
-            if ($frAge -and [string]$frAge.state -ne 'fresh') { $fresh = $false }
-        } catch { }
+    if (-not $AsPublished) {
+        # FR #7299 / #7326: missing fetched_at is stale (never default fresh=true).
+        # FR #7510: fetched_at older than Get-BobPoolStaleAfterSec (2 min) is stale even when fresh=true.
+        if (-not $fetchedAt) { $fresh = $false }
+        elseif (Get-Command Get-BobPoolReadingFreshness -ErrorAction SilentlyContinue) {
+            try {
+                $frAge = Get-BobPoolReadingFreshness -FetchedAt $fetchedAt
+                if ($frAge -and [string]$frAge.state -ne 'fresh') { $fresh = $false }
+            } catch { }
+        }
+    }
+    elseif ($null -eq $fresh) {
+        # FR #7580: digest omitted fresh — do not invent local age stale.
+        $fresh = $true
     }
     $err = ''
     try { if ($XaiWeekly.error) { $err = [string]$XaiWeekly.error } } catch { }
@@ -514,21 +522,23 @@ function Format-BobTrayXaiWeeklyRow {
             $age = Get-BobLastSeenAgeSec -Record ([pscustomobject]@{ lastSeen = [string]$XaiWeekly.fetched_at })
         } catch { $age = $null }
     }
-    # FR #7498: age_s > 120 or fetched_at older than 2 minutes (UTC) => force stale
-    # even when meter.fresh was true (display must not treat aged remaining as live).
-    if ($null -ne $age -and [int]$age -gt 120) {
-        $fresh = $false
-    }
     $acct = ''
     try { if ($XaiWeekly.account) { $acct = [string]$XaiWeekly.account } } catch { }
     $periodEnd = ''
     try { if ($XaiWeekly.period_end) { $periodEnd = [string]$XaiWeekly.period_end } } catch { }
-    # FR #7522: recompute freshness with remaining + period_end (0% + future reset is not stale).
-    try {
-        $fr = Get-BobPoolReadingFreshness -FetchedAt $fetchedAt -RemainingPct $pct -PeriodEnd $periodEnd
-        if ($fr -and $fr.state -eq 'fresh') { $fresh = $true }
-        elseif ($fr -and $fr.state -eq 'stale') { $fresh = $false }
-    } catch { }
+    if (-not $AsPublished) {
+        # FR #7498: age_s > 120 or fetched_at older than 2 minutes (UTC) => force stale
+        # even when meter.fresh was true (display must not treat aged remaining as live).
+        if ($null -ne $age -and [int]$age -gt 120) {
+            $fresh = $false
+        }
+        # FR #7522: recompute freshness with remaining + period_end (0% + future reset is not stale).
+        try {
+            $fr = Get-BobPoolReadingFreshness -FetchedAt $fetchedAt -RemainingPct $pct -PeriodEnd $periodEnd
+            if ($fr -and $fr.state -eq 'fresh') { $fresh = $true }
+            elseif ($fr -and $fr.state -eq 'stale') { $fresh = $false }
+        } catch { }
+    }
     $resetLabel = $null
     if ($periodEnd) {
         try {
@@ -545,11 +555,23 @@ function Format-BobTrayXaiWeeklyRow {
         if ($errDisplay) { $parts += ('({0})' -f $errDisplay) }
         elseif ($NoReadingReason) { $parts += ('({0})' -f [string]$NoReadingReason) }
     }
-    if ($acct) { $parts += [string]$acct }
-    if (-not $fresh) {
-        $parts += (Format-BobTrayStaleToken)
-        if ($errDisplay -and ($null -ne $pct)) { $parts += $errDisplay }
+    # FR #7595: [stale] sits immediately after the %, then account, then the timer.
+    # A 0% pool with a known future reset is never stale. The bar keeps the last %.
+    if (-not $fresh -and $null -ne $pct) {
+        if (Test-BobPoolExhaustedUntilReset -RemainingPct $pct -PeriodEnd $periodEnd) { $fresh = $true }
     }
+    if ($null -ne $pct) {
+        $pctBit = ('{0}% left' -f [int]$pct)
+        if (-not $fresh) { $pctBit = ('{0} {1}' -f $pctBit, (Format-BobTrayStaleToken)) }
+        # Replace the percent part already pushed above.
+        if ($parts.Count -gt 0 -and [string]$parts[-1] -like '*% left') { $parts[-1] = $pctBit }
+        else { $parts += $pctBit }
+    } elseif (-not $fresh) {
+        $parts += (Format-BobTrayStaleToken)
+        if ($errDisplay) { $parts += $errDisplay }
+    }
+    if ($acct) { $parts += [string]$acct }
+    if (-not $fresh -and $errDisplay -and ($null -ne $pct)) { $parts += $errDisplay }
     if ($resetLabel -and ($null -ne $pct -or -not $fresh)) {
         $parts += [string]$resetLabel
     }
@@ -557,7 +579,7 @@ function Format-BobTrayXaiWeeklyRow {
         heading       = ($parts -join '  ')
         remaining_pct = $pct
         fuel_stale    = (-not $fresh)
-        bar_pct       = $(if ($fresh -and $null -ne $pct) { $pct } else { $null })
+        bar_pct       = $(if ($null -ne $pct) { $pct } else { $null })
         account       = $(if ($acct) { $acct } else { $null })
         period_end    = $(if ($periodEnd) { $periodEnd } else { $null })
         reset_label   = $resetLabel
@@ -1544,16 +1566,35 @@ function Format-BobOpencodeWindowLine {
     $periodEnd = $null
     try { if ($Record.period_end) { $periodEnd = ([string]$Record.period_end).Trim() } } catch { }
     try { if (-not $periodEnd -and $Record.reset_at) { $periodEnd = ([string]$Record.reset_at).Trim() } } catch { }
-    # FR #7522: pass remaining + period_end so 0% with future reset is not stale.
-    $freshness = Get-BobPoolReadingFreshness -FetchedAt $fetchedAt -Now $Now -RemainingPct $rem -PeriodEnd $periodEnd
-    $isStale = ($status -eq 'stale') -or ($freshness.state -eq 'stale')
+    # FR #7595: [stale] comes from the digest fresh/stale field when published.
+    # Local fetched_at age is used only when the digest did not say fresh or stale.
+    $publishedFresh = $null
+    try {
+        if ($null -ne $Record.PSObject.Properties['fresh']) { $publishedFresh = [bool]$Record.fresh }
+    } catch { $publishedFresh = $null }
+    $publishedStale = $false
+    try {
+        if ($null -ne $Record.PSObject.Properties['stale']) { $publishedStale = [bool]$Record.stale }
+    } catch { $publishedStale = $false }
+    if ($null -ne $publishedFresh) {
+        $isStale = (-not $publishedFresh) -or $publishedStale -or ($status -eq 'stale')
+    } elseif ($publishedStale -or ($status -eq 'stale')) {
+        $isStale = $true
+    } else {
+        $freshness = Get-BobPoolReadingFreshness -FetchedAt $fetchedAt -Now $Now -RemainingPct $rem -PeriodEnd $periodEnd
+        $isStale = ($freshness.state -eq 'stale')
+    }
+    # FR #7522 / #7595: 0% with a known future reset is never stale.
     if ($isStale -and (Test-BobPoolExhaustedUntilReset -RemainingPct $rem -PeriodEnd $periodEnd -Now $Now)) {
         $isStale = $false
     }
+    # FR #7595: keep last % and the reset. [stale] goes immediately after the %.
     if ($isStale) {
-        $why = $err
-        if (-not $why) { $why = 'stale' }
-        return ('go {0} - {1}' -f $label, (Format-BobTrayStaleToken))
+        $mid = ('{0}% left {1}' -f [int]$rem, (Format-BobTrayStaleToken))
+        if ($reset) { $mid = ('{0} - {1}' -f $mid, $reset) }
+        elseif ($err -and $err -ne 'reset unavailable' -and $err -ne 'stale') {
+            $mid = ('{0} - {1}' -f $mid, $err)
+        }
     }
     return ('go {0} - {1}' -f $label, $mid)
 }
@@ -1642,12 +1683,32 @@ function Format-BobOpencodeWindowLines {
             if ($Stale -and $rec) {
                 $st = ''
                 try { $st = [string]$rec.status } catch { }
-                if ($st -and $st -ne 'unstarted') {
+                $pubFresh = $null
+                try {
+                    if ($null -ne $rec.PSObject.Properties['fresh']) { $pubFresh = [bool]$rec.fresh }
+                } catch { $pubFresh = $null }
+                # FR #7595: a window the digest marks fresh stays fresh. A stale
+                # window keeps remaining_pct and reset_label (never a bare [stale]).
+                if ($st -and $st -ne 'unstarted' -and $pubFresh -ne $true) {
+                    $keepRem = $null
+                    $keepUsed = $null
+                    $keepReset = $null
+                    $keepEnd = $null
+                    $keepErr = $null
+                    try { $keepRem = $rec.remaining_pct } catch { }
+                    try { $keepUsed = $rec.used_pct } catch { }
+                    try { $keepReset = $rec.reset_label } catch { }
+                    try { $keepEnd = $rec.period_end } catch { }
+                    try { if (-not $keepEnd) { $keepEnd = $rec.reset_at } } catch { }
+                    try { $keepErr = $rec.error } catch { }
                     $rec = [pscustomobject]@{
                         status = 'stale'
-                        used_pct = $null
-                        remaining_pct = $null
-                        reset_label = $null
+                        fresh = $false
+                        used_pct = $keepUsed
+                        remaining_pct = $keepRem
+                        reset_label = $keepReset
+                        period_end = $keepEnd
+                        error = $keepErr
                     }
                 }
             }
@@ -2105,14 +2166,75 @@ function Format-BobTrayPoolLayoutSnapshot {
     return ($lines -join [Environment]::NewLine)
 }
 
+function Get-BobTrayDigestReportUrl {
+    # FR #6142 / #7604: standalone URL for Update-BobTrayDigestPools (not Watch-BobTray-only).
+    # Trim before blank check so whitespace-only env falls back to canonical.
+    $u = ([string]$env:BOB_DIGEST_REPORT_URL).Trim()
+    if ($u) { return $u }
+    return 'https://bob.ntsa.uk/bob/v1/report'
+}
+
+function Write-BobTrayDigestFetchFailFile {
+    <#
+      FR #7604: always leave tray-digest-fetch-fail.json with reason + timestamp (no secrets).
+      Also report once via Report-BobDeterministicException when available.
+    #>
+    param(
+        [Parameter(Mandatory)][string]$Root,
+        [string]$Reason = 'digest fetch failed',
+        [string]$ErrorText = '',
+        [switch]$Report
+    )
+    $run = Join-Path $Root 'run'
+    try {
+        if (-not (Test-Path -LiteralPath $run)) { New-Item -ItemType Directory -Force -Path $run | Out-Null }
+    } catch { }
+    $reason = ([string]$Reason).Trim()
+    if (-not $reason) { $reason = 'digest fetch failed' }
+    $err = ([string]$ErrorText).Trim()
+    $err = ($err -replace '(?i)(bearer\s+)\S+', '$1***' -replace '(?i)(token[=:]\s*)\S+', '$1***' -replace '(?i)(password[=:]\s*)\S+', '$1***')
+    if ($err.Length -gt 240) { $err = $err.Substring(0, 240) }
+    if ($reason.Length -gt 240) { $reason = $reason.Substring(0, 240) }
+    $failFlag = Join-Path $run 'tray-digest-fetch-fail.json'
+    $failDoc = [ordered]@{
+        v      = 1
+        ts     = [int64][DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
+        reason = $reason
+        note   = $reason
+        error  = $(if ($err) { $err } else { $reason })
+    }
+    try {
+        $failTmp = $failFlag + '.tmp'
+        [IO.File]::WriteAllText($failTmp, (ConvertTo-Json -InputObject $failDoc -Compress), (New-Object System.Text.UTF8Encoding $false))
+        if (Test-Path -LiteralPath $failFlag) {
+            [IO.File]::Replace($failTmp, $failFlag, [NullString]::Value)
+        } else {
+            [IO.File]::Move($failTmp, $failFlag)
+        }
+    } catch { }
+    if ($Report) {
+        try {
+            if (Get-Command Report-BobDeterministicException -ErrorAction SilentlyContinue) {
+                $ex = New-Object System.InvalidOperationException ($reason + $(if ($err) { ': ' + $err } else { '' }))
+                Report-BobDeterministicException -Site 'Update-BobTrayDigestPools' -Exception $ex -ScriptPath $PSCommandPath -Repo 'SimonBarnett/bobiverse' | Out-Null
+            }
+        } catch { }
+    }
+    return $failFlag
+}
+
 function Update-BobTrayDigestPools {
     <#
     .SYNOPSIS
-      FR #7510: GET digest and write run\tray-digest-pools.json for TipForm/Status pool paint.
+      FR #7510 / #7580 / #7604: GET digest and write run\tray-digest-pools.json for TipForm/Status pool paint.
     .NOTES
       Pool numbers for Status/TipForm come only from this file (never tray-status.json pool
       fields, local weekly, Cursor CLI, or opencode-fuel.json). UTF-8 no BOM; atomic replace.
-      On fetch failure writes digest_ok=false + note (no secrets). Optional #7505 hook later.
+      FR #7580: paint values and [stale] exactly as the digest publishes (Format -AsPublished);
+      no local age override. On fetch failure keep last rows, set digest_ok=false + note;
+      bob-tray.exe CrashHook.Reports once (FR #7505).
+      FR #7604: resolve URL via Get-BobTrayDigestReportUrl in this module (standalone); every
+      run writes pools and/or tray-digest-fetch-fail.json; empty URL / exceptions report.
     #>
     [CmdletBinding()]
     param(
@@ -2130,6 +2252,7 @@ function Update-BobTrayDigestPools {
     $digestErr = ''
     $note = ''
     $doc = $null
+    $wroteFail = $false
     try {
         if ($null -ne $Digest) {
             $doc = $Digest
@@ -2145,20 +2268,42 @@ function Update-BobTrayDigestPools {
             $u = ([string]$Url).Trim()
             if (-not $u) {
                 if (Get-Command Get-BobTrayDigestReportUrl -ErrorAction SilentlyContinue) {
-                    try { $u = [string](Get-BobTrayDigestReportUrl) } catch { $u = '' }
+                    try { $u = ([string](Get-BobTrayDigestReportUrl)).Trim() } catch { $u = '' }
                 }
             }
-            if (-not $u) { $u = 'https://bob.ntsa.uk/bob/v1/report' }
-            # UTF-8 explicitly (PS 5.1 Latin-1 trap on charset-less body).
-            $resp = Invoke-WebRequest -Uri $u -UseBasicParsing -TimeoutSec 8 -Headers @{ Accept = 'application/json' }
-            $ms = $resp.RawContentStream
-            $ms.Position = 0
-            $buf = New-Object byte[] ([int]$ms.Length)
-            [void]$ms.Read($buf, 0, $buf.Length)
-            $doc = [System.Text.Encoding]::UTF8.GetString($buf) | ConvertFrom-Json
+            # FR #7604: empty URL after standalone resolve -> fail file + report (no quiet exit).
+            if (-not $u) {
+                $digestOk = $false
+                $digestErr = 'empty digest URL'
+                $note = 'digest unreachable: empty digest URL'
+                [void](Write-BobTrayDigestFetchFailFile -Root $Root -Reason $note -ErrorText $digestErr -Report)
+                $wroteFail = $true
+            }
+            else {
+                # FR #7602: HttpWebRequest Timeout + ReadWriteTimeout (PS 5.1 IWR hang).
+                if (-not (Get-Command Invoke-BobDigestHttpGet -ErrorAction SilentlyContinue)) {
+                    $helperCands = @(
+                        (Join-Path $PSScriptRoot '..\Private\Invoke-BobDigestHttpGet.ps1'),
+                        (Join-Path (Split-Path $PSScriptRoot -Parent) 'Private\Invoke-BobDigestHttpGet.ps1')
+                    )
+                    foreach ($hc in $helperCands) {
+                        if (Test-Path -LiteralPath $hc -PathType Leaf) { . $hc; break }
+                    }
+                }
+                if (-not (Get-Command Invoke-BobDigestHttpGet -ErrorAction SilentlyContinue)) {
+                    throw 'Invoke-BobDigestHttpGet missing'
+                }
+                $got = Invoke-BobDigestHttpGet -Uri $u -TimeoutSec 8
+                if (-not $got -or [int]$got.StatusCode -lt 200 -or [int]$got.StatusCode -ge 300) {
+                    throw ('digest HTTP status {0}' -f $(if ($got) { $got.StatusCode } else { 'null' }))
+                }
+                $doc = [string]$got.Text | ConvertFrom-Json
+            }
         }
-        if (-not $doc) { throw 'digest empty' }
-        $digestOk = $true
+        if (-not $wroteFail) {
+            if (-not $doc) { throw 'digest empty' }
+            $digestOk = $true
+        }
     }
     catch {
         $digestOk = $false
@@ -2167,7 +2312,8 @@ function Update-BobTrayDigestPools {
         # Strip anything that looks like a bearer/token fragment from the note.
         $digestErr = ($digestErr -replace '(?i)(bearer\s+)\S+', '$1***' -replace '(?i)(token[=:]\s*)\S+', '$1***')
         $note = ('digest unreachable: {0}' -f $digestErr)
-        # Optional FR #7505 exception-reporting hook (do not block here).
+        [void](Write-BobTrayDigestFetchFailFile -Root $Root -Reason $note -ErrorText $digestErr -Report)
+        $wroteFail = $true
     }
 
     $grok = New-Object System.Collections.Generic.List[object]
@@ -2195,28 +2341,8 @@ function Update-BobTrayDigestPools {
                     if (-not $xw) {
                         try { if ($node.xai) { $xw = $node.xai } } catch { }
                     }
-                    # Force age-based stale before Format (also applied inside Format-BobTrayXaiWeeklyRow).
-                    if ($xw) {
-                        $fa = ''
-                        try { if ($xw.fetched_at) { $fa = [string]$xw.fetched_at } } catch { }
-                        $needStale = $false
-                        if (-not $fa) { $needStale = $true }
-                        elseif (Get-Command Get-BobPoolReadingFreshness -ErrorAction SilentlyContinue) {
-                            try {
-                                $fr = Get-BobPoolReadingFreshness -FetchedAt $fa
-                                if ($fr -and [string]$fr.state -ne 'fresh') { $needStale = $true }
-                            } catch { }
-                        }
-                        if ($needStale) {
-                            try {
-                                $force = [ordered]@{}
-                                foreach ($prop in @($xw.PSObject.Properties)) { $force[$prop.Name] = $prop.Value }
-                                $force['fresh'] = $false
-                                $xw = [pscustomobject]$force
-                            } catch { }
-                        }
-                    }
-                    $xaiRow = Format-BobTrayXaiWeeklyRow -MachineId $mid -XaiWeekly $xw -NoReadingReason $(if ($null -eq $xw) { 'digest xai_weekly null' } else { '' })
+                    # FR #7580: pass digest meter as published (no local age force).
+                    $xaiRow = Format-BobTrayXaiWeeklyRow -MachineId $mid -XaiWeekly $xw -AsPublished -NoReadingReason $(if ($null -eq $xw) { 'digest xai_weekly null' } else { '' })
                     $barPct = $xaiRow.bar_pct
                     $bar = $null
                     if (Get-Command ConvertTo-BobTrayStatusBar -ErrorAction SilentlyContinue) {
@@ -2271,8 +2397,9 @@ function Update-BobTrayDigestPools {
         $copilotPool = $null
         try { $copilotPool = $doc.copilot } catch { }
         if (Get-Command Format-BobCopilotPoolLine -ErrorAction SilentlyContinue) {
-            try { $copilotLine = Format-BobCopilotPoolLine -Pool $copilotPool } catch { }
-            try { $copilotStaleLine = Format-BobCopilotPoolLine -Pool $copilotPool -ForceStale } catch { }
+            # FR #7580: Copilot line trusts digest fresh as published (no local age).
+            try { $copilotLine = Format-BobCopilotPoolLine -Pool $copilotPool -AsPublished } catch { }
+            try { $copilotStaleLine = Format-BobCopilotPoolLine -Pool $copilotPool -ForceStale -AsPublished } catch { }
         }
         if (-not $copilotLine) { $copilotLine = 'Copilot - unknown' }
         if (-not $copilotStaleLine) { $copilotStaleLine = 'Copilot - [stale] unknown' }
@@ -2326,11 +2453,58 @@ function Update-BobTrayDigestPools {
             if ($null -ne $opencodeGo) { $opencodeLine = ('OpenCode  go {0}%' -f [int]$opencodeGo) }
         }
         if (-not $opencodeLine) { $opencodeLine = 'OpenCode  go n/a' }
+        # FR #7580: clear prior fetch-fail marker after a successful digest paint.
+        try {
+            $okFlag = Join-Path $run 'tray-digest-fetch-fail.json'
+            if (Test-Path -LiteralPath $okFlag) { Remove-Item -LiteralPath $okFlag -Force -ErrorAction SilentlyContinue }
+        } catch { }
+    }
+    elseif (-not $digestOk) {
+        # FR #7580: keep last successful paint; only flip digest_ok + note/error.
+        $prev = $null
+        if (Test-Path -LiteralPath $outPath -PathType Leaf) {
+            try {
+                $prevRaw = [IO.File]::ReadAllText($outPath, (New-Object System.Text.UTF8Encoding $false))
+                $prev = $prevRaw | ConvertFrom-Json
+            } catch { $prev = $null }
+        }
+        if ($prev) {
+            try {
+                foreach ($row in @($prev.grok)) { if ($row) { [void]$grok.Add($row) } }
+            } catch { }
+            try { $digestPools = @($prev.digest_pools) } catch { $digestPools = @() }
+            try { if ($prev.copilot_pool) { $copilotPool = $prev.copilot_pool } } catch { }
+            try { if ($prev.copilot_line) { $copilotLine = [string]$prev.copilot_line } } catch { }
+            try { if ($prev.copilot_stale_line) { $copilotStaleLine = [string]$prev.copilot_stale_line } } catch { }
+            try { if ($null -ne $prev.copilot_fresh_until) { $copilotFreshUntil = [int64]$prev.copilot_fresh_until } } catch { }
+            try { if ($prev.copilot_bar) { $copilotBar = $prev.copilot_bar } } catch { }
+            try { if ($prev.opencode_line) { $opencodeLine = [string]$prev.opencode_line } } catch { }
+            try { $opencodeFree = $prev.opencode_free } catch { }
+            try { $opencodeGo = $prev.opencode_go } catch { }
+            try { $opencodeWindows = $prev.opencode_windows } catch { }
+            try { $opencodeWindowLines = @($prev.opencode_window_lines) } catch { $opencodeWindowLines = @() }
+            try { $opencodeBars = @($prev.opencode_bars) } catch { $opencodeBars = @() }
+        }
+        # Marker for bob-tray.exe CrashHook (one report per failure window). FR #7604 helper.
+        if (-not $wroteFail) {
+            [void](Write-BobTrayDigestFetchFailFile -Root $Root -Reason $(if ($note) { $note } else { 'digest unreachable' }) -ErrorText $digestErr -Report)
+            $wroteFail = $true
+        }
     }
 
+    $digestTs = $null
+    if ($digestOk -and $doc) {
+        try {
+            if ($null -ne $doc.ts -and [string]$doc.ts -ne '') {
+                $dto = ConvertTo-BobUtcDateTime $doc.ts
+                if ($dto) { $digestTs = [int64]([DateTimeOffset]::new($dto)).ToUnixTimeSeconds() }
+            }
+        } catch { $digestTs = $null }
+    }
     $model = [ordered]@{
         v                   = 1
         ts                  = [int64][DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
+        digest_ts           = $digestTs
         digest_ok           = [bool]$digestOk
         digest_error        = $(if ($digestErr) { $digestErr } else { $null })
         note                = $(if ($note) { $note } else { '' })
@@ -2361,6 +2535,11 @@ function Update-BobTrayDigestPools {
         return $outPath
     }
     catch {
+        # FR #7604: pools write failed --- still leave a fail file (reason + ts) and report.
+        if (-not $wroteFail) {
+            $werr = ([string]$_.Exception.Message)
+            [void](Write-BobTrayDigestFetchFailFile -Root $Root -Reason ('digest pools write failed: {0}' -f $werr) -ErrorText $werr -Report)
+        }
         return $null
     }
 }
@@ -2394,14 +2573,31 @@ function Format-BobCopilotPoolLine {
     .SYNOPSIS
       FR #6301 / FR #6317: 'Copilot - <x>% left - <reset>' (OpenCode-style hyphen).
       Unlimited => 'unlimited' (never 0%). Stale keeps last % with [stale] only (FR #7299).
+      FR #7580 -AsPublished: trust Pool.fresh (or omit age) for TipForm digest paint.
     #>
-    param($Pool, $Now = $null, [switch]$ForceStale)
+    param($Pool, $Now = $null, [switch]$ForceStale, [switch]$AsPublished)
     if (-not $Pool) { return 'Copilot - unknown' }
     $state = [string]$Pool.state
     $used = $Pool.used
     $reset = [string]$Pool.reset_at
-    $freshness = Get-BobCopilotFreshness -Pool $Pool -Now $Now
-    $isStale = $ForceStale -or ($freshness.state -eq 'stale')
+    $isStale = $false
+    if ($AsPublished) {
+        if ($ForceStale) {
+            $isStale = $true
+        }
+        else {
+            $pubFresh = $null
+            try {
+                if ($null -ne $Pool.PSObject.Properties['fresh']) { $pubFresh = [bool]$Pool.fresh }
+            } catch { $pubFresh = $null }
+            if ($null -ne $pubFresh) { $isStale = -not $pubFresh }
+            else { $isStale = $false }
+        }
+    }
+    else {
+        $freshness = Get-BobCopilotFreshness -Pool $Pool -Now $Now
+        $isStale = $ForceStale -or ($freshness.state -eq 'stale')
+    }
     $resetCompact = $null
     if ($reset -and -not [string]::IsNullOrWhiteSpace($reset)) {
         try {
@@ -2461,11 +2657,15 @@ function Format-BobCopilotPoolLine {
     if ($state -ne 'exhausted' -and -not (Test-BobTrayPoolHasRealRemaining -Remaining $left -Error $copilotErr -State $state)) {
         $left = $null
     }
+    # FR #7595: 0% with a known future reset is never stale.
+    if ($isStale -and $null -ne $left -and (Test-BobPoolExhaustedUntilReset -RemainingPct $left -PeriodEnd $reset -Now $Now)) {
+        $isStale = $false
+    }
     if ($isStale) {
-        # FR #7299: last value + [stale] only (no "older than 2 min").
+        # FR #7299 / #7595: last % stays. [stale] is immediately after the %, then the timer.
         if ($null -ne $left) {
             $mid = ('{0}% left {1}' -f [int]$left, $staleMark)
-            if ($resetCompact) { $mid = ('{0}% left - {1} {2}' -f [int]$left, $resetCompact, $staleMark) }
+            if ($resetCompact) { $mid = ('{0} - {1}' -f $mid, $resetCompact) }
             return ('Copilot - {0}' -f $mid)
         }
         return ('Copilot - {0}' -f $staleMark)

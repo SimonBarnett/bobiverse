@@ -183,14 +183,18 @@ def effective_repo(peer: dict, job: dict | None = None) -> str | None:
 
 
 def _infer_model(peer: dict) -> str | None:
+    """Seat/CLI model only. Never invent fuel-pool label 'Cursor Models' (FR #7549)."""
     model = peer.get("model")
     if model:
-        return str(model)
-    cur = peer.get("cursor_label")
-    if cur and str(cur) not in ("", "-", "empty"):
-        return "Cursor Models"
+        s = str(model).strip()
+        if s and s != "Cursor Models":
+            return s
+    # cursor_label is fuel/pool display only — not a model name.
     job = _running_job(peer)
     if job:
+        job_model = str(job.get("model") or "").strip()
+        if job_model and job_model != "Cursor Models":
+            return job_model
         repo = str(job.get("repo") or "")
         if repo == "grok.exe":
             return "grok.exe"

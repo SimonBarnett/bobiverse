@@ -1206,9 +1206,15 @@ class _Handler(BaseHTTPRequestHandler):
             return True
         return False
 
-    def _refuse_lan_root_front_door(self, prefix: str) -> bool:
-        """FR #7412: probe of :7701 LAN-root must not serve the settings UI."""
+    def _refuse_lan_root_front_door(self, prefix: str, path: str = "") -> bool:
+        """FR #7412: probe of :7701 LAN-root must not serve the settings UI.
+
+        FR #7561: /api/* still answers so unauthenticated calls are 401/403,
+        not a bare front-door 404.
+        """
         if front_door_enabled() and not prefix:
+            if path.startswith("/api/") or path in (BUTLER_HREF, LOGO_HREF):
+                return False
             self._send_json(
                 404,
                 {"ok": False, "error": "not found: use https://bob.ntsa.uk/jeeves"},
@@ -1219,9 +1225,17 @@ class _Handler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:  # noqa: N802
         ip = _client_ip(self)
         prefix, path = split_ui_path(urlparse(self.path).path)
-        if self._refuse_lan_root_front_door(prefix):
-            return
         public = bool(prefix)
+        # FR #7561: a public XFF on a LAN-only page is 403, not the front-door 404.
+        if (
+            not public
+            and not path.startswith("/api/")
+            and path not in (BUTLER_HREF, LOGO_HREF)
+            and self._refuse_non_lan(ip)
+        ):
+            return
+        if self._refuse_lan_root_front_door(prefix, path):
+            return
         auth_ip = "127.0.0.1" if public else ip
         # Public /jeeves mount and assets skip LAN reject (FR #6815 / #7274).
         if path == BUTLER_HREF:
@@ -1437,7 +1451,7 @@ class _Handler(BaseHTTPRequestHandler):
     def do_PUT(self) -> None:  # noqa: N802
         ip = _client_ip(self)
         mount, path = split_ui_path(urlparse(self.path).path)
-        if self._refuse_lan_root_front_door(mount):
+        if self._refuse_lan_root_front_door(mount, path):
             return
         public = bool(mount)
         if not public and self._refuse_non_lan(ip):
@@ -1462,7 +1476,7 @@ class _Handler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:  # noqa: N802
         ip = _client_ip(self)
         mount, path = split_ui_path(urlparse(self.path).path)
-        if self._refuse_lan_root_front_door(mount):
+        if self._refuse_lan_root_front_door(mount, path):
             return
         public = bool(mount)
         if not public and self._refuse_non_lan(ip):

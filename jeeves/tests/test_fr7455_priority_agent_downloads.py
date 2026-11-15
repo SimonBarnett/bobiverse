@@ -57,17 +57,8 @@ def test_fr7455_node_fake_releases_picks_numeric_latest(tmp_path: Path):
     if not node:
         # Static gates above already fail before the change; Node proves the resolver.
         return
+    # Newest-first like GitHub /releases (FR #7558 asset walk).
     releases = [
-        {
-            "name": "Priority Agent v1.0.0",
-            "tag_name": "v1.0.0",
-            "draft": False,
-            "prerelease": False,
-            "assets": [
-                {"name": "PriorityAgent-1.0.0.exe"},
-                {"name": "PriorityAgent-1.0.0.exe.sha256"},
-            ],
-        },
         {
             "name": "Priority Agent v1.2.0",
             "tag_name": "v1.2.0",
@@ -76,6 +67,16 @@ def test_fr7455_node_fake_releases_picks_numeric_latest(tmp_path: Path):
             "assets": [
                 {"name": "PriorityAgent-1.2.0.exe"},
                 {"name": "PriorityAgent-1.2.0.exe.sha256"},
+            ],
+        },
+        {
+            "name": "Priority Agent v1.0.0",
+            "tag_name": "v1.0.0",
+            "draft": False,
+            "prerelease": False,
+            "assets": [
+                {"name": "PriorityAgent-1.0.0.exe"},
+                {"name": "PriorityAgent-1.0.0.exe.sha256"},
             ],
         },
         {
