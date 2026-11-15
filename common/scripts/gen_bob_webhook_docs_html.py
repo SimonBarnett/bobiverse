@@ -146,11 +146,23 @@ API JSON lives under <code>/bob/v1/*</code>.</p>
 </ul>
 <p class="meta">Live digest JSON: <a href="/bob/v1/report"><code>/bob/v1/report</code></a></p>
 """
-    (www / "index.html").write_text(page("bobiverse acme", index_body), encoding="utf-8")
-    print("wrote index.html")
-    text = (www / "index.html").read_text(encoding="utf-8")
-    if "bobiverse acme" not in text.lower():
-        raise SystemExit("index missing bobiverse acme marker")
+    # FR #7467: do not clobber the rich public front door (site.css / /jeeves).
+    # Only seed a stub index when none exists yet.
+    site_index = www / "index.html"
+    if site_index.is_file() and (
+        "site.css" in site_index.read_text(encoding="utf-8")
+        or 'href="/jeeves"' in site_index.read_text(encoding="utf-8")
+    ):
+        print("kept existing front-page index.html")
+        text = site_index.read_text(encoding="utf-8")
+        if "bobiverse acme" not in text.lower():
+            raise SystemExit("index missing bobiverse acme marker")
+    else:
+        site_index.write_text(page("bobiverse acme", index_body), encoding="utf-8")
+        print("wrote index.html")
+        text = site_index.read_text(encoding="utf-8")
+        if "bobiverse acme" not in text.lower():
+            raise SystemExit("index missing bobiverse acme marker")
     print("ok", www)
 
 

@@ -461,9 +461,14 @@ try {
             schtasks /Run /TN BobCallback 2>&1 | Out-Null
         }
     }
-    # v0.1.16: webhooks need NO password/secret (no shared secret is generated or copied). The digest
-    # accepts POSTs from machine ids on the roster this Jeeves publishes (registered-machines.json).
-    Write-Host 'INFO webhooks: no password/secret required (roster-gated by the machine list Jeeves publishes)'
+    # v0.1.16 / FR #7467: report/intake/jira need no password. Optional Git HMAC file
+    # (<BOB_CONFIG_DIR>\github-webhook.secret) is preserved across upgrades — never generated here.
+    $gitWhSec = Join-Path $cfgDir 'github-webhook.secret'
+    if (Test-Path -LiteralPath $gitWhSec) {
+        Write-Host "INFO git webhook secret present (preserved): $gitWhSec"
+    } else {
+        Write-Host 'INFO webhooks: no password/secret required (roster-gated by the machine list Jeeves publishes); optional github-webhook.secret not set'
+    }
     $ghTok = Join-Path $cfgDir 'github.token'
     if (-not (Test-Path -LiteralPath $ghTok)) {
         # OPTIONAL. Receiving GitHub/Jira/bob webhooks needs no token; it is only used to FILE issues from

@@ -237,6 +237,59 @@ def test_fr6434_webhook_review_stamps_queue_row(tmp_path, monkeypatch):
     assert row["review"] == "light"
 
 
+def test_fr7467_dismissed_review_does_not_stamp(tmp_path, monkeypatch):
+    monkeypatch.setenv("BOB_FUEL_CODERABBIT", "1")
+    home = tmp_path / "chair"
+    home.mkdir()
+    sha = "cccccccccccccccccccccccccccccccccccccccc"
+    gitclaim._write_queue(
+        gitclaim.queue_path(home),
+        {
+            "v": 1,
+            "unaccepted": [
+                {
+                    "repo": "SimonBarnett/bobiverse",
+                    "task": "MRB",
+                    "id": "#7467",
+                    "url": "https://github.com/SimonBarnett/bobiverse/pull/7467",
+                    "title": "pr",
+                    "line": "MRB #7467",
+                    "seq": 1,
+                    "state": "open",
+                    "head_sha": sha,
+                    "coderabbit": "pending",
+                    "coderabbit_wait_since": 1.0,
+                    "coderabbit_head_sha": sha,
+                }
+            ],
+            "accepted": [],
+            "done": [],
+            "workers": {},
+        },
+    )
+    payload = {
+        "action": "dismissed",
+        "review": {
+            "user": {"login": "coderabbitai[bot]"},
+            "commit_id": sha,
+            "state": "commented",
+            "body": "<!-- coderabbit-ai-generated:v1 -->\n\n**Actionable comments posted: 0**\n",
+        },
+        "pull_request": {
+            "number": 7467,
+            "html_url": "https://github.com/SimonBarnett/bobiverse/pull/7467",
+            "head": {"sha": sha},
+            "base": {"ref": "main"},
+        },
+        "repository": {"full_name": "SimonBarnett/bobiverse"},
+    }
+    out = gitclaim.stamp_coderabbit_from_webhook(home, "pull_request_review", payload)
+    assert not out.get("stamped")
+    assert out.get("reason") == "dismissed"
+    row = gitclaim._load_queue_unlocked(home)["unaccepted"][0]
+    assert row.get("coderabbit") == "pending"
+
+
 def test_fr6434_webhook_skip_comment_stamps_skipped(tmp_path, monkeypatch):
     monkeypatch.setenv("BOB_FUEL_CODERABBIT", "1")
     home = tmp_path / "chair"

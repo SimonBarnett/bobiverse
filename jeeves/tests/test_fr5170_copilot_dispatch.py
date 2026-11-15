@@ -167,6 +167,42 @@ def test_ensure_webhook_create_repair_ok_noperm(tmp_path):
     assert stalls
 
 
+def test_fr7467_ensure_webhook_includes_secret_and_secret_drift(tmp_path, monkeypatch):
+    sec = tmp_path / "FAKE_hook.secret"
+    sec.write_text("FAKE_copilot_dispatch_hook_secret_7467\n", encoding="utf-8")
+    monkeypatch.setenv("BOB_GIT_WEBHOOK_SECRET_FILE", str(sec))
+    created = []
+    patched = []
+
+    def list_missing(_repo):
+        return []
+
+    r = cd.ensure_repo_webhook(
+        REPO, list_hooks=list_missing, create=lambda h: created.append(h) or {"id": 9}, patch=patched.append
+    )
+    assert r["action"] == "create"
+    assert created[-1]["config"].get("secret") == "FAKE_copilot_dispatch_hook_secret_7467"
+
+    def list_no_secret(_repo):
+        return [
+            {
+                "id": 11,
+                "active": True,
+                "events": list(cd.REQUIRED_HOOK_EVENTS),
+                "config": {"url": cd.GIT_HOOK_URL},
+            }
+        ]
+
+    r = cd.ensure_repo_webhook(
+        REPO,
+        list_hooks=list_no_secret,
+        create=created.append,
+        patch=lambda hid, body: patched.append((hid, body)),
+    )
+    assert r["action"] == "repair"
+    assert patched[-1][1]["config"].get("secret") == "FAKE_copilot_dispatch_hook_secret_7467"
+
+
 def test_queue_from_webhooks_no_resync(tmp_path, monkeypatch):
     monkeypatch.setenv("BOB_DIGEST_HOME", str(tmp_path))
     resync_calls = []
