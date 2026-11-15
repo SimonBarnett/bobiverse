@@ -53,6 +53,7 @@ def test_fr5687_export_empty_worker_list_clears_jobs_and_running(tmp_path, monke
 
 
 def test_fr5687_refresh_syncs_running_queued_from_jobs():
+    # FR #7499: jobs/running rebuild from doing seats (stale queued job rows drop).
     ent = {
         "running": 9,
         "queued": 9,
@@ -70,9 +71,12 @@ def test_fr5687_refresh_syncs_running_queued_from_jobs():
         ],
     }
     bobreport._refresh_machine_activity_from_worker_list(ent)
-    assert len(ent.get("jobs") or []) == 2
+    assert len(ent.get("jobs") or []) == 1
+    assert ent["jobs"][0].get("nick") == "marchhare-1"
+    assert ent["jobs"][0].get("repo") == "SimonBarnett/a"
+    assert ent["jobs"][0].get("issue") == "1"
     assert ent["running"] == 1
-    assert ent["queued"] == 1
+    assert ent["queued"] == 0
 
 
 def test_fr5687_sync_helper_empty_jobs_zeros_counts():

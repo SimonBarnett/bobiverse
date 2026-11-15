@@ -1218,15 +1218,59 @@ def _sync_running_queued_from_jobs(ent: dict) -> None:
     ent["queued"] = queued
 
 
+def _parse_work_repo_issue(work: object) -> tuple[str, str]:
+    """Best-effort repo + issue from a seat work string (e.g. ``bobiverse FR #7465``)."""
+    text = clean_worker_work(work)
+    if not text:
+        return "", ""
+    issue = ""
+    m_iss = re.search(r"(?i)\bFR\s*#\s*(\d+)\b|\b#(\d+)\b", text)
+    if m_iss:
+        issue = m_iss.group(1) or m_iss.group(2) or ""
+    repo = ""
+    m_repo = re.search(r"\b([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)\b", text)
+    if m_repo:
+        repo = m_repo.group(1)
+    else:
+        # Bare repo name before FR #N (e.g. ``bobiverse FR #7465``).
+        m_bare = re.match(r"(?i)^\s*([A-Za-z0-9_.-]+)\s+FR\s*#", text)
+        if m_bare:
+            bare = m_bare.group(1)
+            if bare.lower() not in ("fr", "issue", "pr"):
+                repo = bare
+    return repo, issue
+
+
+def _job_entry_from_doing_worker(row: dict) -> dict:
+    """FR #7499: one jobs[] row per worker_list seat in state doing."""
+    work = clean_worker_work(row.get("work"))
+    repo, issue = _parse_work_repo_issue(work)
+    entry = {
+        "nick": str(row.get("nick") or "").strip(),
+        "repo": repo,
+        "issue": issue,
+        "updated": str(row.get("updated") or "").strip(),
+        "state": "running",
+        "description": work,
+        "sha": "",
+        "model": "",
+        "run_time": "",
+    }
+    return entry
+
+
 def _refresh_machine_activity_from_worker_list(ent: dict) -> None:
-    """FR #663: machines.<id>.working_on / jobs follow worker_list; clear when none doing."""
+    """FR #663 / #7499: working_on, jobs, running follow worker_list doing seats."""
     rows = _coerce_worker_list(ent.get("worker_list"))
+    doing: list[dict] = []
     best = ""
     best_ts = ""
     for r in rows:
         if str(r.get("state") or "") != "doing":
             continue
         work = clean_worker_work(r.get("work"))
+        # Count every doing seat for running/jobs; working_on still prefers non-empty work.
+        doing.append(r)
         if not work:
             continue
         upd = str(r.get("updated") or "")
@@ -1234,16 +1278,17 @@ def _refresh_machine_activity_from_worker_list(ent: dict) -> None:
             best = work
             best_ts = upd
     ent["working_on"] = best
-    if not best:
+    if not doing:
         # Drop stale machine-level jobs when every seat is idle/offered.
-        jobs = ent.get("jobs")
-        if isinstance(jobs, list) and jobs:
-            ent["jobs"] = []
+        ent["jobs"] = []
         # FR #5698 / #5704 / #5724: idle export must not keep sticky repo/sha
         # (peer false-publish left marchhare repo=hrsmith after jobs=[]).
         for key in ("repo", "sha", "started_at"):
             ent[key] = ""
-    # FR #5687: keep running/queued aligned with (possibly cleared) jobs.
+    else:
+        # FR #7499: rebuild jobs from doing seats (nick, repo, issue, updated).
+        ent["jobs"] = [_job_entry_from_doing_worker(r) for r in doing]
+    # FR #5687 / #7499: running = count of doing (via jobs); idle => 0.
     _sync_running_queued_from_jobs(ent)
 
 
@@ -3457,6 +3502,16 @@ def _normalize_job_entry(raw: object) -> dict | None:
         "state": state,
         "run_time": str(raw.get("run_time") or raw.get("runtime") or "").strip(),
     }
+    # FR #7499: keep seat identity fields from doing-worker rebuild.
+    nick = str(raw.get("nick") or "").strip()
+    if nick:
+        entry["nick"] = nick
+    issue = str(raw.get("issue") or "").strip()
+    if issue:
+        entry["issue"] = issue
+    updated = str(raw.get("updated") or "").strip()
+    if updated:
+        entry["updated"] = updated
     blob = json.dumps(entry, separators=(",", ":"))
     if looks_like_secret(blob):
         return None
