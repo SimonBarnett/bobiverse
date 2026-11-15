@@ -25,7 +25,7 @@ def test_mrb6780_pack_logo_fallback_when_tray_missing(tmp_path, monkeypatch):
 def test_mrb6780_login_shell_omits_nav_links():
     html = http._render_login_html()
     assert "/assets/ntsa-gut-logo.png" in html
-    assert "<header>" in html
+    assert "site-header" in html or "<header" in html
     assert 'href="/logout"' not in html
     assert "User name" in html
     assert 'name="account"' in html

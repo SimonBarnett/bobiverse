@@ -69,7 +69,7 @@ trusts `X-Forwarded-For` only from a loopback TCP peer.
 JSON: `GET /api/settings`, `PUT /api/settings/<KEY>`, `POST /api/rollback`, `GET /api/schema`,
 `GET /api/status`, `GET /api/queue` (FR #6754), `GET /api/pools` (FR #6759), `POST /api/restart-when-idle`.
 HTML: `GET /` settings, `GET /status`, `GET /queue` (FR #6755 waiting / in-progress lists).
-HTML shell (FR #6756): login, settings, status, queue, and pools share a header with `/assets/ntsa-gut-logo.png` (bytes of `bob/tray/assets/ntsa-gut-logo.png`). Authed pages link Settings, Queue, Pools, Status, Log out. Login omits Log out.
+HTML shell (FR #6756 / #7451): login, settings, status, queue, and pools share a header with `/assets/ntsa-gut-logo.png` (bytes of `bob/tray/assets/ntsa-gut-logo.png`). Authed pages link Settings, Queue, Pools, Status, Log out. Login omits Log out.
 
 GET /api/settings includes a default field per row (schema default; secrets return "").
 The HTML settings table has a **Default** column for every non-secret key (FR #6751 / FR-03).
@@ -171,3 +171,7 @@ migration.
 - jeeves_main applies file-backed settings on start (FR #6442); env still overrides.
 - Restart-required keys are flagged in the schema; use **Restart-when-idle** (FR #6443)
   so ircJeeves restarts only when accepted work is clear.
+
+## Site chrome (FR #7451)
+
+Appliance HTML under /jeeves links the shared /site.css and renders site-header / site-footer (same classes as jeeves/www). Page-local CSS stays minimal; do not fork a second stylesheet.
