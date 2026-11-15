@@ -67,13 +67,20 @@ $rewriteXml = @"
         </rule>
         <rule name="BobJeevesAppliance" stopProcessing="true">
           <match url="^jeeves(/.*)?$" ignoreCase="true" />
+          <conditions>
+            <add input="{REQUEST_URI}" pattern="/jeeves/assets/" negate="true" />
+            <add input="{REQUEST_URI}" pattern="/jeeves/commands" negate="true" />
+          </conditions>
           <action type="Rewrite" url="$Backend/jeeves{R:1}" />
         </rule>
       </rules>
     </rewrite>
     <security>
       <requestFiltering allowDoubleEscaping="true">
-        <fileExtensions allowUnlisted="true" />
+        <fileExtensions allowUnlisted="true">
+          <add fileExtension=".ico" allowed="true" />
+          <add fileExtension=".png" allowed="true" />
+        </fileExtensions>
         <hiddenSegments><clear /></hiddenSegments>
       </requestFiltering>
     </security>
@@ -130,13 +137,45 @@ if (Test-Path -LiteralPath $webConfig) {
     }
     if ($updated -notmatch 'BobJeevesAppliance' -and $updated -match '</rules>') {
         # FR #6903: /jeeves appliance login -> bobcallback (FR #6815/6818).
+        # FR #7413: also skip /jeeves/commands (static public HTML).
         $jeevesRule = @"
         <rule name="BobJeevesAppliance" stopProcessing="true">
           <match url="^jeeves(/.*)?$" ignoreCase="true" />
+          <conditions>
+            <add input="{REQUEST_URI}" pattern="/jeeves/assets/" negate="true" />
+            <add input="{REQUEST_URI}" pattern="/jeeves/commands" negate="true" />
+          </conditions>
           <action type="Rewrite" url="$Backend/jeeves{R:1}" />
         </rule>
 "@
         $updated = $updated -replace '</rules>', ($jeevesRule + '</rules>')
+    }
+    if ($updated -match 'BobJeevesAppliance' -and ($updated -notmatch 'jeeves/assets/' -or $updated -notmatch 'jeeves/commands')) {
+        $jeevesRuleUp = @"
+        <rule name="BobJeevesAppliance" stopProcessing="true">
+          <match url="^jeeves(/.*)?$" ignoreCase="true" />
+          <conditions>
+            <add input="{REQUEST_URI}" pattern="/jeeves/assets/" negate="true" />
+            <add input="{REQUEST_URI}" pattern="/jeeves/commands" negate="true" />
+          </conditions>
+          <action type="Rewrite" url="$Backend/jeeves{R:1}" />
+        </rule>
+"@
+        $updated = [regex]::Replace(
+            $updated,
+            '(?s)<rule name="BobJeevesAppliance".*?</rule>',
+            $jeevesRuleUp.TrimEnd()
+        )
+    }
+    if ($updated -notmatch 'fileExtension="\.ico"') {
+        $icoAllow = '<add fileExtension=".ico" allowed="true" />'
+        if ($updated -match '<fileExtensions allowUnlisted="true"\s*/>') {
+            $updated = $updated -replace '<fileExtensions allowUnlisted="true"\s*/>',
+                ("<fileExtensions allowUnlisted=`"true`">$icoAllow<add fileExtension=`".png`" allowed=`"true`" /></fileExtensions>")
+        } elseif ($updated -match '<fileExtensions allowUnlisted="true">') {
+            $updated = $updated -replace '<fileExtensions allowUnlisted="true">',
+                ("<fileExtensions allowUnlisted=`"true`">$icoAllow")
+        }
     }
     [IO.File]::WriteAllText($webConfig, $updated, [Text.UTF8Encoding]::new($false))
     Write-Host "INFO updated $webConfig"
@@ -155,11 +194,15 @@ if ($hasAppcmd) {
 }
 Write-Host 'INFO Install-BobWebhooks done'
 
-# FR #6453: sync static front-page + webhook docs into IIS physical path (read-only HTML).
+# FR #6453 / FR #7410: sync static front-page, webhook docs, site.css, /downloads into IIS physical path.
 $wwwSrc = Join-Path $PSScriptRoot '..\www\irc-ntsa'
 if (Test-Path -LiteralPath $wwwSrc) {
     $null = New-Item -ItemType Directory -Force -Path $PhysicalPath
     Copy-Item -LiteralPath (Join-Path $wwwSrc 'index.html') -Destination (Join-Path $PhysicalPath 'index.html') -Force
+    $siteCss = Join-Path $wwwSrc 'site.css'
+    if (Test-Path -LiteralPath $siteCss) {
+        Copy-Item -LiteralPath $siteCss -Destination (Join-Path $PhysicalPath 'site.css') -Force
+    }
     $docsSrc = Join-Path $wwwSrc 'docs'
     if (Test-Path -LiteralPath $docsSrc) {
         $docsDst = Join-Path $PhysicalPath 'docs'
@@ -168,7 +211,52 @@ if (Test-Path -LiteralPath $wwwSrc) {
         }
         Copy-Item -LiteralPath $docsSrc -Destination $docsDst -Recurse -Force
     }
-    Write-Host "INFO synced FR #6453 www docs from $wwwSrc -> $PhysicalPath"
+    $downloadsSrc = Join-Path $wwwSrc 'downloads'
+    if (Test-Path -LiteralPath $downloadsSrc) {
+        $downloadsDst = Join-Path $PhysicalPath 'downloads'
+        if (Test-Path -LiteralPath $downloadsDst) {
+            Remove-Item -LiteralPath $downloadsDst -Recurse -Force
+        }
+        Copy-Item -LiteralPath $downloadsSrc -Destination $downloadsDst -Recurse -Force
+    }
+    # FR #7413: public /jeeves/commands (rewrite skips this prefix; not behind settings cookie).
+    $commandsSrc = Join-Path $wwwSrc 'jeeves\commands'
+    if (Test-Path -LiteralPath $commandsSrc) {
+        $commandsDst = Join-Path $PhysicalPath 'jeeves\commands'
+        if (Test-Path -LiteralPath $commandsDst) {
+            Remove-Item -LiteralPath $commandsDst -Recurse -Force
+        }
+        $null = New-Item -ItemType Directory -Force -Path (Split-Path -Parent $commandsDst)
+        Copy-Item -LiteralPath $commandsSrc -Destination $commandsDst -Recurse -Force
+    }
+    Write-Host "INFO synced FR #6453/#7410/#7413 www docs from $wwwSrc -> $PhysicalPath"
 } else {
     Write-Host "WARN FR #6453 www source missing: $wwwSrc"
+}
+
+# FR #7411: IIS static map /jeeves/assets/* (rewrite skips this prefix).
+$assetDst = Join-Path $PhysicalPath 'jeeves\assets'
+$null = New-Item -ItemType Directory -Force -Path $assetDst
+$butlerCands = @(
+    (Join-Path $PSScriptRoot '..\assets\jeeves-butler.ico'),
+    (Join-Path $PSScriptRoot '..\..\jeeves\assets\jeeves-butler.ico')
+)
+$logoCands = @(
+    (Join-Path $PSScriptRoot '..\assets\ntsa-gut-logo.png'),
+    (Join-Path $PSScriptRoot '..\..\bob\tray\assets\ntsa-gut-logo.png'),
+    (Join-Path $PSScriptRoot '..\docs\appliance-ui-20261112\mocks\ntsa-gut-logo.png')
+)
+foreach ($src in $butlerCands) {
+    if (Test-Path -LiteralPath $src) {
+        Copy-Item -LiteralPath $src -Destination (Join-Path $assetDst 'jeeves-butler.ico') -Force
+        Write-Host "INFO FR #7411 staged jeeves\assets\jeeves-butler.ico"
+        break
+    }
+}
+foreach ($src in $logoCands) {
+    if (Test-Path -LiteralPath $src) {
+        Copy-Item -LiteralPath $src -Destination (Join-Path $assetDst 'ntsa-gut-logo.png') -Force
+        Write-Host "INFO FR #7411 staged jeeves\assets\ntsa-gut-logo.png"
+        break
+    }
 }
