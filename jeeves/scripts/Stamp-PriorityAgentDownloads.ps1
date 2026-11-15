@@ -92,7 +92,7 @@ if (-not $versionRx.IsMatch($html)) { throw 'FR #7643: version element missing o
 $html = $versionRx.Replace($html, { param($m) $m.Groups[1].Value + $title + $m.Groups[3].Value }, 1)
 
 $assetsRx = [regex]'(?s)(<div data-role="assets">)(.*?)(</div>)'
-# Only the first assets div after priority-agent — page has one priority-agent card.
+# Only the first assets div after priority-agent - page has one priority-agent card.
 $paStart = $html.IndexOf('data-product="priority-agent"')
 if ($paStart -lt 0) { throw 'FR #7643: priority-agent card missing' }
 $before = $html.Substring(0, $paStart)
