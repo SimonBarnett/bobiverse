@@ -473,6 +473,7 @@ routes to bobiverse via the split rule.
 - A daemon health probe that os._exits must stop when the server it watches has shut down, or any test that binds and shuts the listener will kill the suite a minute later with no failure line.
 - When a later FR says a catch must not intake, update the older must-report pin instead of adding the reporter back. A comment that names the helper is not a call.
 - Do not type a PowerShell parameter as System.Drawing.Color when callers omit it. Null fails conversion before the function body. Resolve null to the default colour and report only unexpected hover exceptions.
+- A long-lived PowerShell runspace must clear Streams.Error before the next command. Otherwise a non-terminating error from one step fails the next step.
 - recycleseat JSON kind is the authorizer (chair/op), not the agent. The tray click ledger is the only source for the relaunch agent. Missing kind refuses before stop.
 
 ## Harvest digest (lessons audit 2026-10-06)
