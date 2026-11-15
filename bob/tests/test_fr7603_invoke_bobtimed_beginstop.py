@@ -3,6 +3,10 @@
 A blocking Stop() on hung work keeps the caller stuck. BeginStop signals
 cancel and returns. The hung block must hand control back within the
 timeout plus 2 seconds. Generic fixture only.
+
+BeginStop intentionally leaks the timed-out runspace (Dispose would block).
+The PS child therefore writes a marker and Environment.Exit(0) so the
+leaked Thread.Sleep cannot keep the process alive past the assertion.
 """
 from __future__ import annotations
 
@@ -29,20 +33,28 @@ def test_fr7603_source_uses_beginstop_not_blocking_stop():
 
 
 @needs_ps
-def test_fr7603_hung_block_returns_within_timeout_plus_2s():
+def test_fr7603_hung_block_returns_within_timeout_plus_2s(tmp_path: Path):
+    marker = tmp_path / "invoke-bobtimed-result.txt"
+    marker_ps = str(marker).replace("'", "''")
+    peek_ps = str(PEEK).replace("'", "''")
     script = f"""
 $ErrorActionPreference = 'Stop'
-. '{PEEK}'
+. '{peek_ps}'
 $sw = [Diagnostics.Stopwatch]::StartNew()
 $r = Invoke-BobTimed -TimeoutMs 400 -Action {{
     [System.Threading.Thread]::Sleep(20000)
     'finished'
 }}
 $sw.Stop()
-Write-Output ('ELAPSED=' + [int]$sw.ElapsedMilliseconds)
-Write-Output ('TIMEDOUT=' + [bool]$r.timedOut)
-Write-Output ('OK=' + [bool]$r.ok)
-Write-Output ('ERR=' + [string]$r.error)
+$lines = @(
+  ('ELAPSED=' + [int]$sw.ElapsedMilliseconds),
+  ('TIMEDOUT=' + [bool]$r.timedOut),
+  ('OK=' + [bool]$r.ok),
+  ('ERR=' + [string]$r.error)
+)
+Set-Content -LiteralPath '{marker_ps}' -Value ($lines -join [Environment]::NewLine) -Encoding ascii
+# FR #7603: leaked timed-out runspace still sleeps; exit so pytest is not stranded.
+[Environment]::Exit(0)
 """
     proc = subprocess.run(
         [PS, "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script],
@@ -51,8 +63,9 @@ Write-Output ('ERR=' + [string]$r.error)
         timeout=15,
     )
     assert proc.returncode == 0, (proc.stdout or "") + "\n" + (proc.stderr or "")
+    assert marker.is_file(), "Invoke-BobTimed did not write the result marker"
     out = {}
-    for ln in (proc.stdout or "").splitlines():
+    for ln in marker.read_text(encoding="ascii").splitlines():
         if "=" in ln:
             k, v = ln.split("=", 1)
             out[k] = v
