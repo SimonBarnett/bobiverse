@@ -18,6 +18,7 @@ def _port() -> int:
 
 def _start(home, monkeypatch):
     monkeypatch.setenv("JEEVES_SETTINGS_HTTP", "1")
+    monkeypatch.setenv("JEEVES_SETTINGS_ALLOW_LAN_ROOT", "1")
     port = _port()
     srv = http.start_settings_http(
         home,
