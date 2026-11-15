@@ -99,15 +99,30 @@
         <p><code>POST /bob/v1/intake</code> — file issues, FRs, and harvest lessons.</p>
         <a class="btn btn-primary" href="docs/webhooks/intake.html">Intake docs</a>
       </article>
+      <article class="card">
+        <span class="pill">Jira</span>
+        <h3>Jira</h3>
+        <p><code>GET|POST /bob/v1/jira</code> — customer Jira webhooks into fleet intake.</p>
+        <a class="btn btn-primary" href="docs/webhooks/jira.html">Jira docs</a>
+      </article>
+      <article class="card">
+        <span class="pill">Hours</span>
+        <h3>Hours</h3>
+        <p><code>GET|POST /bob/v1/hours</code> — hours create, list, summary, and export.</p>
+        <a class="btn btn-primary" href="docs/webhooks/hours.html">Hours docs</a>
+      </article>
+      <article class="card">
+        <span class="pill">Health</span>
+        <h3>Health</h3>
+        <p><code>GET /health</code> — BobCallback liveness (local; not on the public front door).</p>
+        <a class="btn btn-primary" href="docs/webhooks/health-local.html">Health docs</a>
+      </article>
     </div>
     <p class="meta" style="margin-top:1rem;color:var(--ink-soft);font-size:0.92rem">
       Also:
       <a href="docs/webhooks/git.html">GitHub git</a> ·
-      <a href="docs/webhooks/jira.html">Jira</a> ·
-      <a href="docs/webhooks/hours.html">Hours</a> ·
       <a href="docs/webhooks/outbound-stall-wake.html">Outbound stall / wake</a> ·
       <a href="docs/webhooks/digest-local.html">Local digest</a> ·
-      <a href="docs/webhooks/health-local.html">Local health</a> ·
       live <a href="/bob/v1/report"><code>/bob/v1/report</code></a>
     </p>
 
