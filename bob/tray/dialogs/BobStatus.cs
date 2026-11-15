@@ -1,8 +1,9 @@
 // t828u: Status card as a fast compiled exe. Same content as the TipForm: Copilot pool + Grok account rows
 // (Cursor spending-group bars removed after account unification), workers as "{irc nick}: {[kind/start_model[!]] }{doing|idle}" from the digest (FR #7147),
 // alert, version footer.
-// Data is the snapshot the tray writes after every poll (<root>\run\tray-status.json); this exe never touches the network, so it
-// opens instantly and re-reads the file every 2 s while open. Parked until X / Esc, like the old card.
+// Non-pool fields come from <root>\run\tray-status.json (alerts/title/attention). FR #7510: pool paint
+// (grok / OpenCode / Copilot / digest_pools) prefers <root>\run\tray-digest-pools.json so TipForm/Status
+// keep updating when the PS engine is dead. This exe never touches the network; re-reads every 2 s.
 using System;
 using System.Collections;
 using System.Collections.Generic;
@@ -67,6 +68,7 @@ namespace BobDialogs
             if (d == null) { m.Note = "snapshot is not an object"; return m; }
             string t = Common.Str(d, "title"); if (t.Length > 0) m.Title = t;
             m.Version = Common.Str(d, "version"); m.Overspend = Common.Str(d, "overspend");
+            string note = Common.Str(d, "note"); if (note.Length > 0) m.Note = note;
             string oc = Common.Str(d, "opencode_line"); if (oc.Length > 0) m.OpencodeLine = oc;
             IList ocw = Common.List(d.ContainsKey("opencode_window_lines") ? d["opencode_window_lines"] : null);
             if (ocw != null) foreach (object o in ocw) { string s = Convert.ToString(o); if (!string.IsNullOrEmpty(s)) m.OpencodeWindowLines.Add(s); }
@@ -114,6 +116,36 @@ namespace BobDialogs
                 }
             }
             return m;
+        }
+
+        // FR #7510: replace pool paint fields from tray-digest-pools.json; keep title/alert/version from tray-status.
+        public void OverlayDigestPools(StatusModel pools, bool digestOk, string digestNote)
+        {
+            if (pools == null) return;
+            Grok = pools.Grok ?? new List<StatusRow>();
+            DigestPools = pools.DigestPools ?? new List<DigestPoolPaint>();
+            if (!string.IsNullOrEmpty(pools.OpencodeLine)) OpencodeLine = pools.OpencodeLine;
+            OpencodeWindowLines = pools.OpencodeWindowLines ?? new List<string>();
+            OpencodeBars = pools.OpencodeBars ?? new List<OpencodeBarRow>();
+            if (!string.IsNullOrEmpty(pools.CopilotLine)) CopilotLine = pools.CopilotLine;
+            if (!string.IsNullOrEmpty(pools.CopilotStaleLine)) CopilotStaleLine = pools.CopilotStaleLine;
+            CopilotFreshUntil = pools.CopilotFreshUntil;
+            CopilotBarKnown = pools.CopilotBarKnown;
+            CopilotBarPct = pools.CopilotBarPct;
+            CopilotBarR = pools.CopilotBarR;
+            CopilotBarG = pools.CopilotBarG;
+            CopilotBarB = pools.CopilotBarB;
+            if (!digestOk)
+            {
+                string n = digestNote;
+                if (string.IsNullOrEmpty(n)) n = "digest unreachable";
+                if (string.IsNullOrEmpty(Note)) Note = n;
+                else if (Note.IndexOf("digest", StringComparison.OrdinalIgnoreCase) < 0) Note = Note + "; " + n;
+            }
+            else if (!string.IsNullOrEmpty(pools.Note) && string.IsNullOrEmpty(Note))
+            {
+                Note = pools.Note;
+            }
         }
     }
 
@@ -346,14 +378,18 @@ namespace BobDialogs
     {
         readonly CardView card = new CardView();
         readonly string file;
+        readonly string digestPoolsFile;
         DateTime lastWrite = DateTime.MinValue;
         long lastLen = -1;
+        DateTime lastDigestWrite = DateTime.MinValue;
+        long lastDigestLen = -1;
         readonly System.Windows.Forms.Timer poll = new System.Windows.Forms.Timer();
         string lastPaintedCopilot = "";
 
         public StatusForm(string root)
         {
             file = Path.Combine(root, "run\\tray-status.json");
+            digestPoolsFile = Path.Combine(root, "run\\tray-digest-pools.json");
             card.AssetsRoot = root ?? "";
             Text = "Bobiverse status";
             FormBorderStyle = FormBorderStyle.None; ShowInTaskbar = false; TopMost = true; StartPosition = FormStartPosition.Manual;
@@ -392,18 +428,72 @@ namespace BobDialogs
             }
         }
 
+        static string ReadAllUtf8Shared(string path)
+        {
+            using (FileStream fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete))
+            using (StreamReader sr = new StreamReader(fs, Encoding.UTF8, true))
+                return sr.ReadToEnd();
+        }
+
+        // FR #7510: merge tray-status (non-pool) with tray-digest-pools (pool paint). Shared by Reload and --check.
+        internal static StatusModel LoadMerged(string statusPath, string digestPoolsPath)
+        {
+            StatusModel m = null;
+            if (!string.IsNullOrEmpty(statusPath) && File.Exists(statusPath))
+            {
+                m = StatusModel.Parse(ReadAllUtf8Shared(statusPath));
+                try
+                {
+                    FileInfo fi = new FileInfo(statusPath);
+                    double ageMin = (DateTime.UtcNow - fi.LastWriteTimeUtc).TotalMinutes;
+                    if (ageMin > 10 && string.IsNullOrEmpty(m.Note))
+                        m.Note = "snapshot is " + (int)ageMin + " min old (tray not polling?)";
+                }
+                catch { }
+            }
+            if (m == null) m = new StatusModel();
+
+            if (string.IsNullOrEmpty(digestPoolsPath) || !File.Exists(digestPoolsPath))
+            {
+                if (string.IsNullOrEmpty(m.Note))
+                    m.Note = "digest unreachable (tray-digest-pools.json missing)";
+                else if (m.Note.IndexOf("digest", StringComparison.OrdinalIgnoreCase) < 0)
+                    m.Note = m.Note + "; digest unreachable (tray-digest-pools.json missing)";
+                return m;
+            }
+
+            string djson = ReadAllUtf8Shared(digestPoolsPath);
+            StatusModel pools = StatusModel.Parse(djson);
+            Dictionary<string, object> raw = Common.Dict(Common.ParseJson(djson));
+            bool digestOk = true;
+            string digestNote = "";
+            if (raw != null)
+            {
+                if (raw.ContainsKey("digest_ok")) digestOk = Common.Bool(raw, "digest_ok");
+                digestNote = Common.Str(raw, "note");
+                if (string.IsNullOrEmpty(digestNote)) digestNote = Common.Str(raw, "digest_error");
+                if (!digestOk && string.IsNullOrEmpty(digestNote)) digestNote = "digest unreachable";
+            }
+            m.OverlayDigestPools(pools, digestOk, digestNote);
+            return m;
+        }
+
         void Reload(bool first)
         {
             try
             {
-                if (!File.Exists(file))
+                bool statusExists = File.Exists(file);
+                bool digestExists = File.Exists(digestPoolsFile);
+                if (!statusExists && !digestExists)
                 {
                     if (first) { card.Model = new StatusModel(); card.Model.Note = "waiting for the tray to write its first poll..."; }
                     return;
                 }
-                FileInfo fi = new FileInfo(file);
-                bool unchanged = (!first && fi.LastWriteTimeUtc == lastWrite && fi.Length == lastLen);
-                if (unchanged)
+                FileInfo fi = statusExists ? new FileInfo(file) : null;
+                FileInfo di = digestExists ? new FileInfo(digestPoolsFile) : null;
+                bool statusUnchanged = (!statusExists) || (!first && fi.LastWriteTimeUtc == lastWrite && fi.Length == lastLen);
+                bool digestUnchanged = (!digestExists) || (!first && di.LastWriteTimeUtc == lastDigestWrite && di.Length == lastDigestLen);
+                if (!first && statusUnchanged && digestUnchanged)
                 {
                     // FR #6148: re-age Copilot line while the window stays open even if snapshot bytes are unchanged.
                     string after = CardView.SelectCopilotLine(card.Model, DateTime.UtcNow);
@@ -414,13 +504,9 @@ namespace BobDialogs
                     }
                     return;
                 }
-                string json;
-                using (FileStream fs = new FileStream(file, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete))
-                using (StreamReader sr = new StreamReader(fs, Encoding.UTF8, true)) json = sr.ReadToEnd();
-                StatusModel m = StatusModel.Parse(json);
-                double ageMin = (DateTime.UtcNow - fi.LastWriteTimeUtc).TotalMinutes;
-                if (ageMin > 10) m.Note = "snapshot is " + (int)ageMin + " min old (tray not polling?)";
-                lastWrite = fi.LastWriteTimeUtc; lastLen = fi.Length;
+                StatusModel m = LoadMerged(statusExists ? file : null, digestExists ? digestPoolsFile : null);
+                if (fi != null) { lastWrite = fi.LastWriteTimeUtc; lastLen = fi.Length; }
+                if (di != null) { lastDigestWrite = di.LastWriteTimeUtc; lastDigestLen = di.Length; }
                 lastPaintedCopilot = CardView.SelectCopilotLine(m, DateTime.UtcNow);
                 card.Model = m;
                 if (!first) { Resize2(false); }
@@ -456,10 +542,26 @@ namespace BobDialogs
             string check = Common.Arg(args, "--check");
             if (check.Length > 0)
             {
-                StatusModel m = StatusModel.Parse(File.ReadAllText(check, Encoding.UTF8));
+                // FR #7510: optional --digest-pools, else sibling tray-digest-pools.json next to --check.
+                string digestPools = Common.Arg(args, "--digest-pools");
+                if (digestPools.Length == 0)
+                {
+                    try
+                    {
+                        string sib = Path.Combine(Path.GetDirectoryName(Path.GetFullPath(check)) ?? "", "tray-digest-pools.json");
+                        if (File.Exists(sib)) digestPools = sib;
+                    }
+                    catch { digestPools = ""; }
+                }
+                StatusModel m;
+                if (digestPools.Length > 0 && File.Exists(digestPools))
+                    m = StatusForm.LoadMerged(check, digestPools);
+                else
+                    m = StatusModel.Parse(File.ReadAllText(check, Encoding.UTF8));
                 string outFile = Common.Arg(args, "--text-out");
                 StringBuilder sb = new StringBuilder();
                 sb.AppendLine(m.Title); sb.AppendLine("cursor=" + m.Cursor.Count + " grok=" + m.Grok.Count + " alert=" + m.Alert);
+                if (m.Note != null && m.Note.Length > 0) sb.AppendLine("note=" + m.Note);
                 foreach (StatusRow r in m.Cursor) sb.AppendLine("C " + r.Heading);
                 foreach (StatusRow r in m.Grok) { sb.AppendLine("G " + r.Heading); foreach (string l in r.Lines) sb.AppendLine("W " + l); }
                 sb.AppendLine(m.OpencodeLine);

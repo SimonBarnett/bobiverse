@@ -94,10 +94,12 @@ def test_fr6285_format_fresh_stale_null_account(tmp_path: Path):
             f"""
             $ErrorActionPreference = 'Stop'
             . '{HOVER}'
+            # FR #7510: fetched_at older than 2 min forces stale — use a recent stamp for the fresh case.
+            $freshAt = [datetime]::UtcNow.AddSeconds(-10).ToString('yyyy-MM-ddTHH:mm:ssZ')
             $fresh = Format-BobTrayXaiWeeklyRow -MachineId 'marchhare' -XaiWeekly ([pscustomobject]@{{
                 remaining_pct = 14
                 period_end = '2026-11-14T12:58:59Z'
-                fetched_at = '2026-11-14T12:48:59Z'
+                fetched_at = $freshAt
                 fresh = $true
                 account = 'bob-marchhare'
                 error = $null
