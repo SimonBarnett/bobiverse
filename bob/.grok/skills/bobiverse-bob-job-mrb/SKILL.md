@@ -254,7 +254,7 @@ Checks:
 
 - **Locked Windows atomic replace (class of FR #7518 / MRB #7536):** tip needs retry+backoff on WinError 5/32 plus one crash_report and keep-last-set; unique tmp + stale `*.tmp` cleanup. Do not park this playbook under `harvest/SKILL.md` (moved from harvest tip #7539).
 
-- **WinPS Get-FileHash missing (FR #7355 / class of MRB #7311):** before FAILING a product PR, check process env `PSModuleAutoLoadingPreference=None`; clear Autoload or `Import-Module Microsoft.PowerShell.Utility`, file the seat env gap separately. Do not park this playbook under `bobiverse-fleet-ops` (moved from harvest tip #7357).
+- **WinPS Get-FileHash missing (FR #7355 / class of MRB #7311):** before FAILING a product PR, check process env `PSModuleAutoLoadingPreference=None`; `Import-Module Microsoft.PowerShell.Utility` can still leave `Get-FileHash` missing. Hash with `Get-BobiverseFileSha256` (`System.Security.Cryptography.SHA256`) and the same fallback on the SeatDisk hardlink path (FR #7550). Do not park a second copy under `harvest/SKILL.md` or `bobiverse-fleet-ops` (moved from harvest tip #7357; harvest tip #7636).
 - **FIX with stacked fix PR already open (MRB #6336 / flamingo harvest):** when FIX is offered for an MRB-FAIL tip that already has a stacked fix PR targeting the tip branch, merge that fix PR into the tip and DONE FIX with the assigned PR URL so chair requeues MRB. Do not park this playbook under `harvest/SKILL.md` (move/fold here).
 
 
