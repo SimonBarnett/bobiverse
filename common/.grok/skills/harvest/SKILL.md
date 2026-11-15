@@ -438,6 +438,7 @@ routes to bobiverse via the split rule.
 - Plan Agent FR: derive plan host from MCP anchor domain (no hostname literals in tests); ban plan skills/visionary in visible HTML text; retire old-label pins that required visionary wording.
 - Explicit --agent FR: resolve_seat_decision must not apply xai fallthrough to refuse/cursor/opencode; expired explicit grok returns xai-auth-expired; log select[agent]: explicit X -> kind.
 - Home Webhooks card FRs: match Digest/Intake pill+primary docs links, trim Also meta duplicates, pin relative hrefs + doc file existence; PASS without folding merely-behind tips.
+- Stale home pin FR: when redesign drops marketing copy, update the test to forbid the old string and keep section/link discoverability --- never reintroduce obsolete copy just to satisfy a pin.
 - Git webhook allowlist must cover every subscribed event or return 204 ignore after owner gate --- never empty 400 for authentic deliveries; optional HMAC via BOB_CONFIG_DIR/github-webhook.secret with hmac.compare_digest; do not let gen_bob_webhook_docs_html clobber the rich front-page index.html
 - Ear pool FR: never stretch past EAR_POOL_FETCH_S=60 --- drop rate_limited exponential backoff; surface 429 as row error; auth.json mtime watch forces immediate fetch.
 - /jeeves/commands must be served static (bobcallback + settings /commands) before settings proxy; never require login
@@ -447,6 +448,17 @@ routes to bobiverse via the split rule.
 - MRB FR #7522-class tips: if shared rule lands without ear/Jeeves callers, tip-fix wire should_report_pool_stale_exception before PASS --- FR acceptance includes raises no exception, not tray-only.
 - MRB login/auth test tips: if GitGuardian fails on FAKE_ password literals, tip-fix assemble from parts (FR #3304) before PASS/merge.
 - FR tray Copilot fixture tips: when Format-BobCopilotPoolLine paints unlimited (FR #7299), align COPILOT_POOLS expected lines --- do not restore unknown for unlimited=true.
+- MRB downloads tips: keep airc last via DOM marker comment + HTML order pins, not CSS order; #download-grid 1fr scoped so shared .grid stays multi-column elsewhere.
+- build-jeeves must run jeeves/tests pytest before PyInstaller so a red suite never ships an artifact; pin step order in workflow YAML
+- Front-door FR #7412 404 is for operator UI paths only; exempt /api/* (and static assets) so unauth settings calls stay 401/403 for CI and clients.
+- shop_listen finders must use repo_alias.repos_equivalent; _choose doubles return five (signin_ok); grok session dirs URL-quote cwd so use short absolute cwd in Windows tests
+- Tray engine UI-thread hangs: stamp engine.alive before blocking poll steps and on the ThreadPool tray.alive timer; run Get-BobTrayHover/snapshot under a job timeout and log step names to logs/tray-engine-cycle.log.
+- Fleet-pool-stale: evaluate shared last_ok age/recovery before FR #7552 auth-skip so digest no_token noise cannot override a fresh fetcher last_ok.
+- Install-BobEarExe: stage exe + companions + provenance before --help smoke; refuse smoke if a planned companion is missing; keep .bak rollback for companions
+- build-bob-ear provenance fr= must include every tracked FR marker present in shipped runtime sources (bobreport/opencode_fuel/irc_agent); keep workflow path filters in sync with frozen_common_script_paths
+- In bob_worker _wait_exit: nonzero agent exit -> report_agent_cli_nonzero_exit + GIVEUP accepted job + restart_agent; zero exit keeps shutdown EXIT_OK with no report/release
+- Digest worker_list: never apply idle from a heartbeat while the nick still holds an accepted queue row --- keep doing + work text (post_digest_seat_kind defaults state=idle).
+- Tray poll steps that can hang (jobs-watcher, stall-alerts) must use Invoke-BobTrayEngineStep with TimeoutSec and capture Receive-Job output for script-scope state.
 
 ## Harvest digest (lessons audit 2026-10-06)
 

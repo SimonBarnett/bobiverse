@@ -34,7 +34,9 @@ def test_fr7508_reload_ignores_pre_start_snapshot():
 def test_fr7508_cold_start_grace_sixty_seconds():
     t = _cs()
     stamp = t[t.find("internal static class EngineAliveStamp") : t.find("internal static class EngineAliveStamp") + 2500]
-    assert "ColdStartGraceSeconds" in stamp or "60" in stamp
+    assert "ColdStartGraceSeconds" in stamp
+    # FR #7564: grace is MaxAgeSeconds (120), not the old 60s window.
+    assert "ColdStartGraceSeconds = MaxAgeSeconds" in stamp or "ColdStartGraceSeconds = 120" in stamp
     stale = stamp[stamp.find("IsStale") : stamp.find("IsStale") + 1200]
     # leftover pre-start stamp must become stale after grace (not return false forever)
     assert "ColdStartGraceSeconds" in stale or "ageSeconds >" in stale

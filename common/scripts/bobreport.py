@@ -295,7 +295,11 @@ _CLEARABLE_MERGE_FIELDS = frozenset({
     "xai_weekly_used_pct",
     "xai_weekly_source",
     "xai_weekly_fetched_at",
+    # FR #7549: null / poison "Cursor Models" clears sticky digest model.
+    "model",
 })
+# FR #7549: fuel-pool display label left over as digest model; never store or forward.
+_POISON_DIGEST_MODEL = "Cursor Models"
 # FR #7497: Grok / Grok chat / Cursor are one xAI pool (xai_weekly only). Ear publish
 # must never emit these Cursor-bridge leftovers, even when peer cache still has them.
 _LEGACY_CURSOR_BRIDGE_TOP_KEYS = frozenset({
@@ -1219,12 +1223,16 @@ def _sync_running_queued_from_jobs(ent: dict) -> None:
 
 
 def _parse_work_repo_issue(work: object) -> tuple[str, str]:
-    """Best-effort repo + issue from a seat work string (e.g. ``bobiverse FR #7465``)."""
+    """Best-effort repo + issue from a seat work string (e.g. ``bobiverse FR #7465``).
+
+    FR #7596: also accept ``MRB`` / ``UAT`` tokens (idle-heartbeat preserve path lists
+    accepted MRB jobs the same way as FR).
+    """
     text = clean_worker_work(work)
     if not text:
         return "", ""
     issue = ""
-    m_iss = re.search(r"(?i)\bFR\s*#\s*(\d+)\b|\b#(\d+)\b", text)
+    m_iss = re.search(r"(?i)\b(?:FR|MRB|UAT)\s*#\s*(\d+)\b|(?<![A-Za-z0-9_])#(\d+)\b", text)
     if m_iss:
         issue = m_iss.group(1) or m_iss.group(2) or ""
     repo = ""
@@ -1232,11 +1240,11 @@ def _parse_work_repo_issue(work: object) -> tuple[str, str]:
     if m_repo:
         repo = m_repo.group(1)
     else:
-        # Bare repo name before FR #N (e.g. ``bobiverse FR #7465``).
-        m_bare = re.match(r"(?i)^\s*([A-Za-z0-9_.-]+)\s+FR\s*#", text)
+        # Bare repo name before FR|MRB|UAT #N (e.g. ``bobiverse MRB #7581``).
+        m_bare = re.match(r"(?i)^\s*([A-Za-z0-9_.-]+)\s+(?:FR|MRB|UAT)\s*#", text)
         if m_bare:
             bare = m_bare.group(1)
-            if bare.lower() not in ("fr", "issue", "pr"):
+            if bare.lower() not in ("fr", "mrb", "uat", "issue", "pr"):
                 repo = bare
     return repo, issue
 
@@ -2593,6 +2601,20 @@ def _apply_merge_payload(doc: dict, mid: str, payload: dict) -> list[str]:
             ent["working_on"] = text
         else:
             _roll_working_on(ent)
+    # FR #7549 / #7585: poison or omitted model clears the sticky digest label.
+    if "model" not in payload:
+        cleared = payload.setdefault("cleared", [])
+        if isinstance(cleared, list) and "model" not in cleared:
+            cleared.append("model")
+    if "model" in payload:
+        cleaned = _sanitize_digest_model(payload.get("model"))
+        if cleaned is None:
+            payload["model"] = None
+            cleared = payload.setdefault("cleared", [])
+            if isinstance(cleared, list) and "model" not in cleared:
+                cleared.append("model")
+        else:
+            payload["model"] = cleaned
     # FR #5690: apply clears before writes so sticky overage/repo cannot linger.
     _apply_cleared_merge_fields(ent, payload)
     for key in _MERGE_PEER_FIELDS:
@@ -2818,6 +2840,43 @@ def delete_worker(home: Path, machine_id: str, pid: int | str, briefer_nick: str
     return PresenceOutcome(ok=True, deleted_pid=pid_s, machine_id=mid)
 
 
+def accepted_work_for_nick(home: Path, nick: str) -> str:
+    """FR #7596: short work text when ``nick`` still holds an accepted queue job.
+
+    Empty when the seat has no accepted row (DONE/NACK/GIVEUP already cleared it).
+    Used so an idle heartbeat cannot blank a mid-ACK worker_list entry.
+    """
+    n = (nick or "").strip().lower()
+    if not n:
+        return ""
+    try:
+        import gitclaim as _gitclaim
+        import shop_listen as _shop_listen
+    except Exception:
+        return ""
+    try:
+        rows = _gitclaim.load_accepted(home)
+    except Exception:
+        return ""
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        try:
+            holder = _gitclaim._accepted_holder_nick(row)
+        except Exception:
+            holder = str(row.get("nick") or row.get("accepted_by") or "").strip()
+        if (holder or "").strip().lower() != n:
+            continue
+        try:
+            return str(_shop_listen.activity_description(row) or "").strip()
+        except Exception:
+            task = str(row.get("task") or "").strip().upper()
+            repo = str(row.get("repo") or "").strip().rsplit("/", 1)[-1]
+            num = str(row.get("id") or "").strip().lstrip("#")
+            return " ".join(p for p in (repo, task, f"#{num}" if num else "") if p)
+    return ""
+
+
 def _apply_worker_op(home: Path, op: str, mid: str, payload: dict, briefer_nick: str = "") -> CallbackOutcome:
     """worker-upsert / worker-remove / worker-work (chair-side, roster machines only)."""
     nick = str(payload.get("nick") or "").strip()
@@ -2834,6 +2893,13 @@ def _apply_worker_op(home: Path, op: str, mid: str, payload: dict, briefer_nick:
         return CallbackOutcome(ok=False, err="secret")
     if op == "worker-work" and not state:
         return CallbackOutcome(ok=False, err="state required")
+    # FR #7596: idle (or blanking) heartbeats must not clear a seat that still holds ACK.
+    if state == "idle":
+        kept = accepted_work_for_nick(home, nick)
+        if kept:
+            state = "doing"
+            if work_raw is None or not str(work_raw).strip():
+                work_raw = kept
     doc = load_digest(home)
     ent = _machine_entry(doc, mid)
     rows = list(ent.get("worker_list") or [])
@@ -4957,11 +5023,22 @@ def build_peer_fuel_merge_payload(peer: dict, machine_id: str) -> dict | None:
     return payload
 
 
+def _sanitize_digest_model(val: object) -> str | None:
+    """FR #7549: keep live seat/CLI model; drop fuel-pool label 'Cursor Models'."""
+    if val is None:
+        return None
+    s = str(val).strip()
+    if not s or s == _POISON_DIGEST_MODEL:
+        return None
+    return s
+
+
 def strip_legacy_cursor_bridge_from_fuel_payload(payload: dict | None) -> dict:
     """FR #7497: drop Cursor-bridge leftovers; keep xai_weekly as the one xAI pool.
 
     Always lists sticky keys in cleared[] so the chair pops stale digest fields.
     Generic: no machine names, accounts, or per-host branches.
+    FR #7549: also drop poison model='Cursor Models' and clear sticky model.
     """
     if not isinstance(payload, dict):
         return {}
@@ -4985,6 +5062,18 @@ def strip_legacy_cursor_bridge_from_fuel_payload(payload: dict | None) -> dict:
     for key in sorted(_LEGACY_CURSOR_BRIDGE_TOP_KEYS):
         if key not in cleared:
             cleared.append(key)
+    # FR #7549 / #7585: a missing model must clear the sticky label. An upgraded
+    # ear omits model; the chair used to keep "Cursor Models" forever.
+    if "model" in payload:
+        cleaned_model = _sanitize_digest_model(payload.get("model"))
+        if cleaned_model is None:
+            payload["model"] = None
+            if "model" not in cleared:
+                cleared.append("model")
+        else:
+            payload["model"] = cleaned_model
+    elif "model" not in cleared:
+        cleared.append("model")
     return payload
 
 

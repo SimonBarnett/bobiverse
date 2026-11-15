@@ -1,4 +1,4 @@
-﻿// t832u: the systray as a compiled exe (bob-tray.exe). Icon, context menu, click handling, hover text, flashing and the Status / About
+// t832u: the systray as a compiled exe (bob-tray.exe). Icon, context menu, click handling, hover text, flashing and the Status / About
 // windows (hosted in-process) all run natively, so the menu opens at once and nothing waits on PowerShell.
 // The slow DATA work (digest webhook, Cursor/Grok usage, stall alerts, IRC watcher, !startworker queue) stays in the existing
 // PowerShell tray script, started HIDDEN by this exe in "engine" mode (BOB_TRAY_ENGINE=1: it owns no icon and no window). It publishes
@@ -772,6 +772,7 @@ namespace BobDialogs
         DateTime engineStartedUtc = DateTime.MinValue;  // FR #4136: grace before engine.alive required
         bool engineFailureArmed;  // FR #7505: one open exception report per machine until recovery
         string lastEngineExitCode = "";
+        DateTime lastDigestFetchFailReportUtc = DateTime.MinValue; // FR #7580: one CrashHook per failure window
         int lastSeatCount = -1;   // FR #3180: observe drops; never auto-launch
         StatusForm statusForm; AboutForm aboutForm;
         public readonly List<string> MenuItems = new List<string>();
@@ -974,8 +975,10 @@ namespace BobDialogs
         {
             // FR #4136: also restart when the process is alive but the engine.alive stamp is stale
             // (hung UI thread still owns the queue; tray.alive is written by this exe and stays fresh).
-            // FR #4317 + FR #7508: IsStale ignores pre-start leftover stamps only within
-            // ColdStartGraceSeconds (60); after that leftover/missing stamps are stale so HealEngine retries.
+            // FR #4317 + FR #7508 + FR #7564: IsStale ignores pre-start leftover / missing stamps only
+            // within ColdStartGraceSeconds (== MaxAgeSeconds, 120) measured from this engine launch;
+            // after that leftover/missing stamps are stale so HealEngine can restart once. Judge age
+            // from the new engine's own heartbeat only (never the prior leftover mtime as live age).
             // FR #7505: report engine exit / tray-status stale >= 120s / failed relaunch to bobiverse.
             bool exited = true;
             try { exited = engine == null || engine.HasExited; } catch { exited = true; }
@@ -1014,9 +1017,25 @@ namespace BobDialogs
             if ((DateTime.Now - engineWindow).TotalMinutes > 5) { engineWindow = DateTime.Now; engineStarts = 0; }
             if (++engineStarts > 3)
             {
+                // FR #7564 / #7505: stop relaunching and report once per storm window.
                 if (stale || exited || statusStale)
+                {
                     TrayLifecycle.Write("engine-restart-storm", "age", ageS.ToString("0.0"), "max", EngineAliveStamp.MaxAgeSeconds.ToString("0"), "pid", SafeEnginePid());
-                TrayLifecycle.Write("engine-relaunch", "result", "storm-limit", "via", "bob-tray-watchdog");
+                    TrayLifecycle.Write("engine-relaunch", "result", "storm-limit", "via", "bob-tray-watchdog");
+                    if (engineStarts == 4)
+                    {
+                        try
+                        {
+                            CrashHook.Report(
+                                "bob-tray",
+                                new InvalidOperationException(
+                                    "engine-restart-storm age=" + ageS.ToString("0.0")
+                                    + " max=" + EngineAliveStamp.MaxAgeSeconds.ToString("0")
+                                    + " pid=" + SafeEnginePid()));
+                        }
+                        catch { }
+                    }
+                }
                 return;       // no restart storm
             }
             if (stale || statusStale)
@@ -1561,7 +1580,9 @@ namespace BobDialogs
             ExitThread();
         }
 
-        // FR #7510: host-owned digest pool refresh (powershell -File); never requires the PS engine.
+        // FR #7510 / #7580: host-owned digest pool refresh (powershell -File); never requires the PS engine.
+        // On digest fetch failure the helper keeps last rows and writes tray-digest-fetch-fail.json;
+        // CrashHook.Report once per 30 min (ties FR #7505).
         void RefreshDigestPools()
         {
             try
@@ -1576,7 +1597,55 @@ namespace BobDialogs
                 string ps = Path.Combine(Environment.GetEnvironmentVariable("SystemRoot") ?? "C:\\Windows", "System32\\WindowsPowerShell\\v1.0\\powershell.exe");
                 ProcessStartInfo psi = new ProcessStartInfo(ps, "-NoProfile -ExecutionPolicy Bypass -File \"" + script + "\" -Root \"" + root + "\"");
                 psi.UseShellExecute = false; psi.CreateNoWindow = true; psi.WorkingDirectory = root;
-                using (Process p = Process.Start(psi)) { }
+                using (Process p = Process.Start(psi))
+                {
+                    if (p != null)
+                    {
+                        if (!p.WaitForExit(25000))
+                        {
+                            try { p.Kill(); } catch { }
+                        }
+                    }
+                }
+                MaybeReportDigestFetchFail();
+            }
+            catch { }
+        }
+
+        void MaybeReportDigestFetchFail()
+        {
+            try
+            {
+                string failPath = Path.Combine(runDir, "tray-digest-fetch-fail.json");
+                string poolsPath = Path.Combine(runDir, "tray-digest-pools.json");
+                bool failed = File.Exists(failPath);
+                if (!failed && File.Exists(poolsPath))
+                {
+                    try
+                    {
+                        string raw = File.ReadAllText(poolsPath);
+                        if (raw.IndexOf("\"digest_ok\":false", StringComparison.OrdinalIgnoreCase) >= 0
+                            || raw.IndexOf("\"digest_ok\": false", StringComparison.OrdinalIgnoreCase) >= 0)
+                            failed = true;
+                    }
+                    catch { }
+                }
+                if (!failed) return;
+                if ((DateTime.UtcNow - lastDigestFetchFailReportUtc).TotalMinutes < 30) return;
+                lastDigestFetchFailReportUtc = DateTime.UtcNow;
+                string detail = "digest-fetch-failed";
+                try
+                {
+                    if (File.Exists(failPath))
+                    {
+                        string fr = File.ReadAllText(failPath);
+                        if (fr.Length > 180) fr = fr.Substring(0, 180);
+                        detail = "digest-fetch-failed " + fr.Replace("\r", " ").Replace("\n", " ");
+                    }
+                }
+                catch { }
+                CrashHook.Report("bob-tray", new InvalidOperationException(detail));
+                TrayLifecycle.Write("digest-fetch-failed");
             }
             catch { }
         }
@@ -1654,8 +1723,9 @@ namespace BobDialogs
     internal static class EngineAliveStamp
     {
         public const double MaxAgeSeconds = 120;   // ~3x 30s refresh; watchdog ticks every 15s
-        // FR #7508: cold-start / leftover grace before HealEngine treats missing or pre-start stamp as stale.
-        public const double ColdStartGraceSeconds = 60;
+        // FR #7508 / FR #7564: cold-start grace == MaxAgeSeconds so a busy machine can write its
+        // first engine.alive heartbeat before HealEngine judges missing/leftover stamps stale.
+        public const double ColdStartGraceSeconds = MaxAgeSeconds;
         public const string FileName = "engine.alive";
 
         public static string PathFor(string startworkerDir)
@@ -1692,8 +1762,8 @@ namespace BobDialogs
                     // FR #4317: a stamp older than this engine start is a leftover (prior instance or
                     // PS without the writer). Treating it as live age caused HealEngine kill storms
                     // every storm-window reset (~5 min) while the stamp stayed frozen.
-                    // FR #7508: within ColdStartGraceSeconds still ignore leftover; after grace treat
-                    // as stale so a never-writing engine is retried (leftover forever was a silent hang).
+                    // FR #7508 / #7564: within ColdStartGraceSeconds (== MaxAgeSeconds) ignore leftover;
+                    // after grace treat as stale so a never-writing engine is retried once.
                     if (engineStartedUtc != DateTime.MinValue && m < engineStartedUtc)
                     {
                         ageSeconds = (utcNow - engineStartedUtc).TotalSeconds;
@@ -1704,7 +1774,7 @@ namespace BobDialogs
                 }
             }
             catch { }
-            // No stamp yet: grace until cold-start window elapses (FR #7508: 60s), then stale for retry.
+            // No stamp yet: grace until cold-start window elapses (FR #7564: == MaxAgeSeconds), then stale.
             if (engineStartedUtc == DateTime.MinValue) return false;
             ageSeconds = (utcNow - engineStartedUtc).TotalSeconds;
             return ageSeconds > ColdStartGraceSeconds;

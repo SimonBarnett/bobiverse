@@ -10,7 +10,7 @@
   FR #3909: prefer Get-Process bob-tray before Win32_Process CIM (CIM can take ~1 min and the
   Interactive scheduled-task host used to flash a blank console for that whole time).
   FR #7505 / FIX #7519: when bob-tray is present but run/tray-status.json is older than 120s
-  (frozen TipForm / dead engine), treat as dead — report status-stale, kill, relaunch, log result.
+  (frozen TipForm / dead engine), treat as dead - report status-stale, kill, relaunch, log result.
 #>
 [CmdletBinding()]
 param(

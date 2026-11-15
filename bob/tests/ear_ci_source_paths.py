@@ -18,6 +18,7 @@ EAR_CI_STATIC_PATHS = [
     "bob/tests/test_fr6254_ear_build_provenance_align.py",
     "bob/tests/test_fr7179_ear_tray_ci_main_push.py",
     "bob/tests/test_fr7202_ear_ci_frozen_imports.py",
+    "bob/tests/test_fr7586_ear_provenance_fr_list.py",
     "bob/tests/ear_ci_source_paths.py",
 ]
 

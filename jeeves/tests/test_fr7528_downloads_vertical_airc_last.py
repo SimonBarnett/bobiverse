@@ -133,7 +133,8 @@ def test_fr7528_index_cards_keep_controls():
         assert "Release notes" in card or 'data-role="release-notes"' in card, product
         if product != "priority-agent":
             assert 'data-role="msi"' in card
-            assert ".sha256" in card
+            # FR #7530: sha256 href filled at runtime; static pin is data-role.
+            assert 'data-role="sha256"' in card or ".sha256" in card
         else:
             assert 'data-role="assets"' in card
             assert 'data-role="release-notes"' in card

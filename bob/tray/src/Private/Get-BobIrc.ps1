@@ -530,6 +530,7 @@ function Read-BobReportDigestHttp {
     <#
       Public GET digest (#174 / agentic_irc#179). Cache 60s so tray can poll
       every minute without hammering the callback host.
+      FR #7602: HttpWebRequest Timeout + ReadWriteTimeout (PS 5.1 IWR hang).
     #>
     $now = [datetime]::UtcNow
     if ($script:BobDigestHttpCache -and $script:BobDigestHttpCacheAt) {
@@ -540,11 +541,15 @@ function Read-BobReportDigestHttp {
     }
     $url = Get-BobDigestUrl
     try {
-        $resp = Invoke-WebRequest -Uri $url -Method GET -UseBasicParsing -TimeoutSec 15 -Headers @{ Accept = 'application/json' }
-        if (-not $resp -or [int]$resp.StatusCode -lt 200 -or [int]$resp.StatusCode -ge 300) { return $null }
-        # v0.1.18: decode the body as UTF-8 explicitly. Windows PowerShell 5.1 decodes .Content as
-        # ISO-8859-1 when the response lacks a charset, which turned U+00B7 into "A-circumflex + dot".
-        $j = ConvertFrom-BobUtf8Json -Response $resp
+        if (-not (Get-Command Invoke-BobDigestHttpGet -ErrorAction SilentlyContinue)) {
+            throw 'Invoke-BobDigestHttpGet missing'
+        }
+        $got = Invoke-BobDigestHttpGet -Uri $url -TimeoutSec 15
+        if (-not $got -or [int]$got.StatusCode -lt 200 -or [int]$got.StatusCode -ge 300) { return $null }
+        # UTF-8 body already decoded by Invoke-BobDigestHttpGet (PS 5.1 Latin-1 trap avoided).
+        $text = [string]$got.Text
+        if ([string]::IsNullOrWhiteSpace($text)) { return $null }
+        $j = $text | ConvertFrom-Json
         if (-not $j) { return $null }
         $script:BobDigestHttpCache = $j
         $script:BobDigestHttpCacheAt = $now
@@ -978,15 +983,19 @@ function Get-BobGitShortSha {
 function Get-BobIrcModelFromJob {
     param($Job)
     if (-not $Job) { return $null }
+    # FR #7549: prefer live seat/CLI model; never invent fuel-pool label "Cursor Models".
+    if ($Job.model) {
+        $m = [string]$Job.model
+        if ($m -and $m -ne 'Cursor Models') { return $m }
+    }
     $fuel = [string]$Job.fuel
     switch ($fuel) {
-        'cursor-models' { return 'Cursor Models' }
         'copilot' { return 'Copilot' }
         'grok-bot' { return 'Grok Bot' }
         'grok-build' { return 'grok.exe' }
         'on-demand' { return 'grok.exe' }
+        # cursor-models is a fuel pool id, not a model name (FR #7549).
     }
-    if ($Job.model) { return [string]$Job.model }
     return $null
 }
 
@@ -2289,7 +2298,13 @@ function Build-BobDigestWebhookMergePayload {
         if ($Doc.sand_period_end) { $payload.sand_period_end = [string]$Doc.sand_period_end }
     }
     if ($Doc.period_end) { $payload.period_end = [string]$Doc.period_end }
-    if ($Doc.model) { $payload.model = [string]$Doc.model }
+    # FR #7549: always publish model (null clears sticky); never the fuel label "Cursor Models".
+    $modelPub = $null
+    if ($Doc.model) {
+        $m = [string]$Doc.model
+        if ($m -and $m -ne 'Cursor Models') { $modelPub = $m }
+    }
+    $payload.model = $modelPub
     if ($Doc.kind) { $payload.kind = [string]$Doc.kind }
     # FR #5690: always publish clearable string fields (explicit null) so chair can drop sticky values.
     if ($Doc.repo) { $payload.repo = [string]$Doc.repo } else { $payload.repo = $null }
@@ -2668,8 +2683,8 @@ function Write-BobIrcStatus {
             }
         }
     } catch { }
+    # FR #7549: model from live seat/CLI only; never invent from cursor_label (fuel display).
     $model = Get-BobIrcModelFromJob $primary
-    if (-not $model -and $cursorLabel -and $cursorLabel -ne 'empty') { $model = 'Cursor Models' }
     $kind = Get-BobIrcKindFromJob $primary
     $topRepo = $null
     if ($primary) { $topRepo = Get-BobJobRepoStamp $primary }

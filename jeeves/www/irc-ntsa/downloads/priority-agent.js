@@ -1,32 +1,43 @@
-/* FR #7455 / #7528: page-time latest Priority Agent release (priority-mcp). Isolated from Bobiverse MSI refresh. */
+/* FR #7455 / #7528 / #7558: page-time Priority Agent download (priority-mcp). Match installer asset, not exact title. */
 (function (root) {
   var OWNER_REPO = 'SimonBarnett/priority-mcp';
   var API = 'https://api.github.com/repos/' + OWNER_REPO + '/releases?per_page=100';
   var DOWNLOAD_PREFIX = 'https://github.com/' + OWNER_REPO + '/releases/download/';
   var NOTES_FALLBACK = 'https://github.com/' + OWNER_REPO + '/releases';
-  var TITLE_RE = /^Priority Agent v(\d+)\.(\d+)\.(\d+)$/;
+  var INTAKE_URL = 'https://bob.ntsa.uk/bob/v1/intake';
+  // Installer: PriorityAgent.exe or PriorityAgent-<digits>.<digits>.<digits>.exe (no stamped versions in source).
+  var INSTALLER_RE = /^PriorityAgent(-\d+\.\d+\.\d+)?\.exe$/i;
+  var SHA_RE = /^PriorityAgent(-\d+\.\d+\.\d+)?\.exe\.sha256$/i;
+  var INTAKE_DEDUP_KEY = 'bobiverse-pa-downloads-missing-v1';
 
-  function cmpVer(a, b) {
-    for (var i = 0; i < 3; i++) {
-      if (a[i] !== b[i]) return a[i] - b[i];
+  function assetNames(rel) {
+    var out = [];
+    var assets = (rel && rel.assets) || [];
+    for (var i = 0; i < assets.length; i++) {
+      var a = assets[i];
+      var name = a && a.name ? String(a.name) : '';
+      if (name) out.push(name);
     }
-    return 0;
+    return out;
+  }
+
+  function hasInstaller(rel) {
+    var names = assetNames(rel);
+    for (var i = 0; i < names.length; i++) {
+      if (INSTALLER_RE.test(names[i])) return true;
+    }
+    return false;
   }
 
   function pickLatest(releases) {
-    var best = null;
-    var bestVer = [-1, -1, -1];
-    (releases || []).forEach(function (rel) {
-      if (!rel || rel.draft || rel.prerelease) return;
-      var m = String(rel.name || '').match(TITLE_RE);
-      if (!m) return;
-      var ver = [+m[1], +m[2], +m[3]];
-      if (cmpVer(ver, bestVer) > 0) {
-        bestVer = ver;
-        best = rel;
-      }
-    });
-    return best;
+    // GitHub /releases returns newest first. First non-draft, non-prerelease with installer wins (FR #7558).
+    var list = releases || [];
+    for (var i = 0; i < list.length; i++) {
+      var rel = list[i];
+      if (!rel || rel.draft || rel.prerelease) continue;
+      if (hasInstaller(rel)) return rel;
+    }
+    return null;
   }
 
   function assetHref(tag, name) {
@@ -45,6 +56,35 @@
     notes.href = notesHref(tag);
   }
 
+  function reportMissing(fetchImpl) {
+    var fn = fetchImpl || fetch;
+    try {
+      if (typeof sessionStorage !== 'undefined' && sessionStorage.getItem(INTAKE_DEDUP_KEY)) {
+        return;
+      }
+      if (typeof sessionStorage !== 'undefined') {
+        sessionStorage.setItem(INTAKE_DEDUP_KEY, '1');
+      }
+    } catch (e) { /* private mode */ }
+    var body = JSON.stringify({
+      kind: 'issue',
+      repo: 'SimonBarnett/bobiverse',
+      title: 'downloads: no Priority Agent installer on a non-prerelease',
+      body: [
+        'bob.ntsa.uk /downloads Priority Agent card found no non-prerelease',
+        'SimonBarnett/priority-mcp release with a PriorityAgent.exe (or PriorityAgent-X.Y.Z.exe) asset.',
+        'Empty state shown. FR #7558.'
+      ].join(' ')
+    });
+    try {
+      fn(INTAKE_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+        body: body
+      }).catch(function () { /* ignore */ });
+    } catch (e2) { /* ignore */ }
+  }
+
   function render(card, rel) {
     var versionEl = card.querySelector('[data-role="version"]');
     var assetsEl = card.querySelector('[data-role="assets"]');
@@ -53,7 +93,7 @@
       setNotes(card, '');
       return;
     }
-    var title = String(rel.name || '');
+    var title = String(rel.name || rel.tag_name || 'Priority Agent');
     if (versionEl) versionEl.textContent = title;
     var tag = String(rel.tag_name || '');
     setNotes(card, tag);
@@ -63,9 +103,10 @@
     assets.forEach(function (a) {
       var name = a && a.name ? String(a.name) : '';
       if (!name) return;
+      if (!INSTALLER_RE.test(name) && !SHA_RE.test(name)) return;
       var link = document.createElement('a');
       link.href = assetHref(tag, name);
-      var isSha = /\.sha256$/i.test(name);
+      var isSha = SHA_RE.test(name);
       link.className = isSha ? 'btn btn-ghost' : 'btn btn-gold';
       link.textContent = isSha ? 'sha256' : name;
       assetsEl.appendChild(link);
@@ -79,7 +120,9 @@
       return r.json();
     }).then(function (payload) {
       var list = Array.isArray(payload) ? payload : [];
-      render(card, pickLatest(list));
+      var picked = pickLatest(list);
+      render(card, picked);
+      if (!picked) reportMissing(fn);
     }).catch(function () {
       var versionEl = card.querySelector('[data-role="version"]');
       if (versionEl) versionEl.textContent = 'Could not refresh Priority Agent releases';
@@ -89,11 +132,13 @@
 
   root.BobiversePriorityAgentDownloads = {
     pickLatest: pickLatest,
+    hasInstaller: hasInstaller,
     render: render,
     refresh: refresh,
     notesHref: notesHref,
     NOTES_FALLBACK: NOTES_FALLBACK,
-    API: API
+    API: API,
+    INTAKE_URL: INTAKE_URL
   };
 
   if (typeof document !== 'undefined' && document.querySelector) {
