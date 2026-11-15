@@ -106,6 +106,62 @@ def test_priority_agent_home_keywords_are_not_a_twin():
     assert not _ps_overlap(DOWNLOAD_BLOB, TRAINING_LESSON)
 
 
+FUEL_LESSON = (
+    "Unknown OpenCode fuel is not exhausted. Retry the read, then start the clicked kind. "
+    "Refuse only a known empty reading."
+)
+MODEL_PR_BODY = """
+Lessons:
+- A PowerShell name in a launcher script is not a model id. Shop activity must omit kind when it does not know the agent.
+
+Session summary:
+Digest showed an OpenCode seat as kind grok with start model unknown. The launcher contains a fuel helper.
+Publish only a concrete model id else unknown. Free-fuel and opencode seats stay opencode.
+"""
+
+
+def _ps_covers(title: str, body: str, lesson: str) -> bool:
+    fn = _extract_fn("Get-HarvestPrLessonBlob", "Test-HarvestOpenLessonTwin")
+    # Covers calls overlap and stem helpers, which sit above the extracted slice.
+    head = _extract_fn("Get-HarvestLessonTitleStem", "Test-HarvestOpenLessonTwin")
+    script = (
+        head
+        + "\n$r = Test-HarvestPrCoversLesson -PrTitle $env:PTITLE -PrBody $env:PBODY -LessonLines @($env:NEWL)\n"
+        + "if ($r) { 'TRUE' } else { 'FALSE' }\n"
+    )
+    env = dict(**{k: v for k, v in __import__("os").environ.items()})
+    env["PTITLE"] = title
+    env["PBODY"] = body
+    env["NEWL"] = lesson
+    proc = subprocess.run(
+        ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        env=env,
+    )
+    out = (proc.stdout or "").strip().splitlines()
+    assert proc.returncode == 0, proc.stderr
+    assert out, proc.stderr
+    return out[-1].strip().upper() == "TRUE"
+
+
+def test_fr7717_session_summary_tokens_are_not_a_twin():
+    assert not _ps_covers(
+        "lesson(harvest): A PowerShell name in a launcher script is not a model id",
+        MODEL_PR_BODY,
+        FUEL_LESSON,
+    )
+
+
+def test_fr7717_same_lesson_bullet_is_a_twin():
+    assert _ps_covers(
+        "lesson(harvest): unknown fuel",
+        "Lessons:\n- " + FUEL_LESSON + "\n",
+        FUEL_LESSON,
+    )
+
+
 def test_skip_line_cites_covering_pr_url():
     text = HARVEST.read_text(encoding="utf-8-sig")
     assert "FR #6741" in text

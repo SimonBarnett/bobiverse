@@ -794,22 +794,36 @@ function Test-HarvestLessonDistinctiveOverlap([string]$ExistingBlob, [string]$Ne
     return ($shared -ge 5)
 }
 
+function Get-HarvestPrLessonBlob([string]$Title, [string]$Body) {
+    # FR #7717: twin checks use the lesson bullets, not the session summary.
+    # A summary can share five tokens with an unrelated lesson.
+    $parts = New-Object System.Collections.Generic.List[string]
+    if ($Title) { [void]$parts.Add([string]$Title) }
+    foreach ($line in ([string]$Body -split '\r?\n')) {
+        $t = $line.Trim()
+        if ($t -match '^[-*]\s+(.+)$') { [void]$parts.Add($Matches[1]) }
+    }
+    return ((($parts -join ' ').ToLowerInvariant()) -replace '\s+', ' ')
+}
+
 function Test-HarvestPrCoversLesson {
     param(
         [string]$PrTitle,
         [string]$PrBody,
         [string[]]$LessonLines
     )
-    $blob = ((([string]$PrTitle) + "`n" + ([string]$PrBody)).ToLowerInvariant() -replace '\s+', ' ')
+    $full = ((([string]$PrTitle) + "`n" + ([string]$PrBody)).ToLowerInvariant() -replace '\s+', ' ')
+    $lessonBlob = Get-HarvestPrLessonBlob -Title $PrTitle -Body $PrBody
     foreach ($L in @($LessonLines)) {
         $key = (($L.ToLowerInvariant()) -replace '\s+', ' ').Trim()
         if (-not $key -or $key -eq '(no new playbook line)') { continue }
-        if ($blob.Contains($key)) { return $true }
+        # The whole lesson sentence anywhere in the PR is a real copy.
+        if ($full.Contains($key)) { return $true }
         $short = $key.Substring(0, [Math]::Min(80, $key.Length))
-        if ($short.Length -ge 40 -and $blob.Contains($short)) { return $true }
+        if ($short.Length -ge 40 -and $lessonBlob.Contains($short)) { return $true }
         if (Test-HarvestLessonTitleStemsMatch -A $PrTitle -B $L) { return $true }
         if (Test-HarvestLessonTitleStemsMatch -A $PrTitle -B $key) { return $true }
-        if (Test-HarvestLessonDistinctiveOverlap -ExistingBlob $blob -NewLesson $key) { return $true }
+        if (Test-HarvestLessonDistinctiveOverlap -ExistingBlob $lessonBlob -NewLesson $key) { return $true }
     }
     return $false
 }
