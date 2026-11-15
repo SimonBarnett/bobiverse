@@ -851,9 +851,30 @@ def maybe_report_fleet_pool_staleness(
         except (TypeError, ValueError):
             issue_n = None
         open_flag = bool(st.get("stale_open"))
-        # FR #7570: first minute / never-fetched — do not invent stale from empty views.
+        # FR #7570: first minute / never-fetched --- do not invent stale from empty views.
         if in_fleet_pool_startup_grace(st, now=now_f):
             out[pool] = {"action": "startup-grace"}
+            continue
+        # Shared last_ok age first (FR #7570): fresh fetcher state always wins over digest noise.
+        if age is None or age < float(FLEET_POOL_STALE_S):
+            if open_flag and issue_n:
+                body = (
+                    f"<!-- {fleet_pool_stale_sig(pool)} -->\n"
+                    f"Fleet pool {pool} recovered live fetch "
+                    f"(age_s={0 if age is None else int(age)}; "
+                    f"last_ok={_safe_text(snap.get('last_ok_iso') or '')}; "
+                    f"fetched_at={_safe_text(fetched_at or '')}).\n"
+                    "Leaving issue open (no auto-close).\n"
+                )
+                comment_fleet_pool_stale_issue(number=issue_n, body=body, repo=repo)
+                st["stale_open"] = False
+                st["stale_recovered"] = True
+                st["stale_recovered_at"] = float(now_f)
+                state[pool] = st
+                changed = True
+                out[pool] = {"action": "recovered", "number": issue_n}
+            else:
+                out[pool] = {"action": "ok"}
             continue
         # FR #7552 / #7553: missing token/key is auth skip-class, not a stalled live fetch.
         if is_fleet_pool_auth_skip_error(err):
@@ -874,27 +895,6 @@ def maybe_report_fleet_pool_staleness(
                 out[pool] = {"action": "held-auth", "number": issue_n}
             else:
                 out[pool] = {"action": "skipped-auth"}
-            continue
-        # Shared last_ok age first (FR #7570): fresh fetcher state is never a stale filing.
-        if age is None or age < float(FLEET_POOL_STALE_S):
-            if open_flag and issue_n:
-                body = (
-                    f"<!-- {fleet_pool_stale_sig(pool)} -->\n"
-                    f"Fleet pool {pool} recovered live fetch "
-                    f"(age_s={0 if age is None else int(age)}; "
-                    f"last_ok={_safe_text(snap.get('last_ok_iso') or '')}; "
-                    f"fetched_at={_safe_text(fetched_at or '')}).\n"
-                    "Leaving issue open (no auto-close).\n"
-                )
-                comment_fleet_pool_stale_issue(number=issue_n, body=body, repo=repo)
-                st["stale_open"] = False
-                st["stale_recovered"] = True
-                st["stale_recovered_at"] = float(now_f)
-                state[pool] = st
-                changed = True
-                out[pool] = {"action": "recovered", "number": issue_n}
-            else:
-                out[pool] = {"action": "ok"}
             continue
         # FR #7522: 0% with known future reset is not a stale exception (even when aged).
         try:
