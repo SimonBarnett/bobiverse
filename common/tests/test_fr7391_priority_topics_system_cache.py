@@ -59,6 +59,9 @@ def test_fr7391_write_denied_keeps_last_and_health(tmp_path: Path, monkeypatch, 
         return real_write(self, *a, **k)
 
     monkeypatch.setattr(Path, "write_text", boom)
+    import crash_report
+
+    monkeypatch.setattr(crash_report, "report_exception", lambda *a, **k: {"ok": True, "skipped": True})
     caplog.set_level(logging.WARNING)
     kept = pc.refresh_topic_repos(
         chair,
