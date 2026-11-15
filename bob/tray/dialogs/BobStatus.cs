@@ -442,15 +442,8 @@ namespace BobDialogs
             if (!string.IsNullOrEmpty(statusPath) && File.Exists(statusPath))
             {
                 m = StatusModel.Parse(ReadAllUtf8Shared(statusPath));
-                try
-                {
-                    FileInfo fi = new FileInfo(statusPath);
-                    double ageMin = (DateTime.UtcNow - fi.LastWriteTimeUtc).TotalMinutes;
-                    if (ageMin > 10 && string.IsNullOrEmpty(m.Note))
-                        m.Note = "snapshot is " + (int)ageMin + " min old (tray not polling?)";
-                }
-                catch { }
             }
+            // FR #7595: header age comes from the digest ts, never tray-status.json mtime.
             if (m == null) m = new StatusModel();
 
             if (string.IsNullOrEmpty(digestPoolsPath) || !File.Exists(digestPoolsPath))
@@ -475,7 +468,40 @@ namespace BobDialogs
                 if (!digestOk && string.IsNullOrEmpty(digestNote)) digestNote = "digest unreachable";
             }
             m.OverlayDigestPools(pools, digestOk, digestNote);
+            // FR #7595: a fresh digest clears an engine snapshot-age note.
+            ApplyDigestHeaderAge(m, raw, digestOk);
             return m;
+        }
+
+        // Header age is the digest document ts (unix seconds). A fresh digest clears
+        // any engine snapshot-age note. An old digest says how old the digest is.
+        internal static void ApplyDigestHeaderAge(StatusModel m, Dictionary<string, object> raw, bool digestOk)
+        {
+            if (m == null || !digestOk) return;
+            long ts = 0;
+            if (raw != null && raw.ContainsKey("digest_ts")) ts = Common.Long(raw, "digest_ts", 0);
+            bool fresh = true;
+            int ageMin = 0;
+            if (ts > 0)
+            {
+                if (ts > 100000000000L) ts = ts / 1000L;
+                long now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+                long age = now - ts;
+                if (age < 0) age = 0;
+                ageMin = (int)(age / 60L);
+                fresh = age <= 600;
+            }
+            bool bad = !string.IsNullOrEmpty(m.Note)
+                && (m.Note.IndexOf("snapshot is", StringComparison.OrdinalIgnoreCase) >= 0
+                    || m.Note.IndexOf("not polling", StringComparison.OrdinalIgnoreCase) >= 0);
+            if (fresh)
+            {
+                if (bad) m.Note = "";
+            }
+            else if (string.IsNullOrEmpty(m.Note) || bad)
+            {
+                m.Note = "digest is " + ageMin + " min old";
+            }
         }
 
         void Reload(bool first)

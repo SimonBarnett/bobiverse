@@ -530,6 +530,7 @@ function Read-BobReportDigestHttp {
     <#
       Public GET digest (#174 / agentic_irc#179). Cache 60s so tray can poll
       every minute without hammering the callback host.
+      FR #7602: HttpWebRequest Timeout + ReadWriteTimeout (PS 5.1 IWR hang).
     #>
     $now = [datetime]::UtcNow
     if ($script:BobDigestHttpCache -and $script:BobDigestHttpCacheAt) {
@@ -540,11 +541,15 @@ function Read-BobReportDigestHttp {
     }
     $url = Get-BobDigestUrl
     try {
-        $resp = Invoke-WebRequest -Uri $url -Method GET -UseBasicParsing -TimeoutSec 15 -Headers @{ Accept = 'application/json' }
-        if (-not $resp -or [int]$resp.StatusCode -lt 200 -or [int]$resp.StatusCode -ge 300) { return $null }
-        # v0.1.18: decode the body as UTF-8 explicitly. Windows PowerShell 5.1 decodes .Content as
-        # ISO-8859-1 when the response lacks a charset, which turned U+00B7 into "A-circumflex + dot".
-        $j = ConvertFrom-BobUtf8Json -Response $resp
+        if (-not (Get-Command Invoke-BobDigestHttpGet -ErrorAction SilentlyContinue)) {
+            throw 'Invoke-BobDigestHttpGet missing'
+        }
+        $got = Invoke-BobDigestHttpGet -Uri $url -TimeoutSec 15
+        if (-not $got -or [int]$got.StatusCode -lt 200 -or [int]$got.StatusCode -ge 300) { return $null }
+        # UTF-8 body already decoded by Invoke-BobDigestHttpGet (PS 5.1 Latin-1 trap avoided).
+        $text = [string]$got.Text
+        if ([string]::IsNullOrWhiteSpace($text)) { return $null }
+        $j = $text | ConvertFrom-Json
         if (-not $j) { return $null }
         $script:BobDigestHttpCache = $j
         $script:BobDigestHttpCacheAt = $now
