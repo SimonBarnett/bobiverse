@@ -2328,10 +2328,14 @@ def describe_agent_child_launch(
         import worker_start_model as wsm
 
         _scfg = wsm.load_worker_start_config()
-        actual = wsm.actual_from_launch_spec(kind_l, spec, env=env)
+        actual = wsm.concrete_model_id(wsm.actual_from_launch_spec(kind_l, spec, env=env))
+        if not actual and kind_l == "opencode":
+            actual = wsm.concrete_model_id(os.environ.get("BOB_OPENCODE_MODEL"))
         effort = wsm.configured_start_effort(kind_l, _scfg)
         if actual:
             env[wsm.ENV_ACTUAL_MODEL] = actual
+        elif kind_l == "opencode":
+            env.pop(wsm.ENV_ACTUAL_MODEL, None)
         env[wsm.ENV_ACTUAL_EFFORT] = effort
         saved = wsm.normalize_effort((_scfg.get("workerStartEffort") or {}).get(kind_l))
         if not saved and not os.environ.get("PYTEST_CURRENT_TEST"):
@@ -8242,20 +8246,34 @@ def post_digest_seat_kind(
     agent_s = (agent or "").strip() or (kind_s if kind_s else "")
     build = short_build_sha(worker_build) if worker_build is not None else short_build_sha()
     state_s = _normalize_digest_worker_state(state) or "idle"
+    # FR #7706: kind is the launched --agent. Never relabel an empty kind as grok.
+    published_kind = kind_s or (agent_s.strip().lower() if agent_s else "") or "unknown"
+    try:
+        import worker_start_model as wsm
+
+        published_model = wsm.concrete_model_id(model)
+    except Exception:
+        published_model = str(model or "").strip()
+        if "$" in published_model:
+            published_model = ""
+    if str(model or "").strip() and not published_model:
+        published_model = "unknown"
+    elif kind_s == "opencode" and not published_model:
+        published_model = "unknown"
     payload = {
         "online": True,
         "id": mid,
         "pid": pid_i,
-        "kind": kind_s or "grok",
+        "kind": published_kind,
         "state": state_s,
         "nick": (nick or "").strip() or seat_nick(mid, pid_i),
         "working_on": (working_on or "").strip(),
-        "agent": agent_s,
+        "agent": agent_s or published_kind,
         "worker_build": build,
     }
-    if (model or "").strip():
-        payload["model"] = str(model).strip()
-        payload["start_model"] = str(model).strip()
+    if published_model:
+        payload["model"] = published_model
+        payload["start_model"] = published_model
     cfg_m = str(configured_model or "").strip()
     if cfg_m:
         payload["configured_model"] = cfg_m
@@ -13608,6 +13626,27 @@ def run_agent(args, log: Log) -> int:
     # FR #7084 digest ``start_model`` is the launched process/session model.
     build = short_build_sha()
     seat_model = resolve_seat_hello_model(kind)
+    try:
+        import worker_start_model as wsm
+
+        seat_model = wsm.concrete_model_id(seat_model)
+    except Exception:
+        if "$" in str(seat_model or ""):
+            seat_model = ""
+    if kind == "opencode" and not seat_model:
+        seat_model = "unknown"
+        try:
+            report_configured_start_model_unavailable(
+                kind=kind,
+                configured="unresolved-template",
+                actual="unknown",
+                machine=machine,
+                nick=nick,
+                reason="model-template-unresolved",
+                log=log,
+            )
+        except Exception:
+            log("worker: opencode model unresolved; digest model=unknown")
     cfg_model = ""
     cost_tier = ""
     mismatch = None
@@ -13670,9 +13709,9 @@ def run_agent(args, log: Log) -> int:
         import worker_start_model as wsm
 
         child_env = getattr(sup, "last_child_env", None) or {}
-        actual = str(child_env.get(wsm.ENV_ACTUAL_MODEL) or "").strip()
+        actual = wsm.concrete_model_id(child_env.get(wsm.ENV_ACTUAL_MODEL))
         if not actual:
-            actual = wsm.actual_start_model(env=child_env or os.environ)
+            actual = wsm.concrete_model_id(wsm.actual_start_model(env=child_env or os.environ))
         actual_effort = str(child_env.get(wsm.ENV_ACTUAL_EFFORT) or "").strip()
         _cfg = wsm.load_worker_start_config()
         cfg_model = wsm.configured_start_model(kind, _cfg)
