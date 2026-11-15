@@ -64,3 +64,14 @@ def test_fr7676_leftover_status_not_stale_at_15s(tmp_path):
     body2 = text_out2.read_text(encoding="utf-8")
     assert "statusStale=1" in body2, body2
     assert p2.returncode == 2
+
+
+def test_fr7676_mrb_fresh_status_age_path_and_heal_wiring():
+    """Hostile: post-start mtime path + HealEngine still consults TrayStatusAge."""
+    t = CS.read_text(encoding="utf-8-sig")
+    assert "DateTime written = File.GetLastWriteTimeUtc(snapFile);" in t
+    assert "double age = (DateTime.UtcNow - written).TotalSeconds;" in t
+    assert "bool statusStale = TrayStatusAge.IsStale(snapFile, engineStartedUtc" in t
+    body = t[t.find("internal static class TrayStatusAge") : t.find("internal static class TrayStatusAge") + 1600]
+    assert body.index("written < engineStartedUtc") < body.index("double age =")
+
