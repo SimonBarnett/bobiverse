@@ -1,4 +1,7 @@
-/* FR #7455 / #7528 / #7558: page-time Priority Agent download (priority-mcp). Match installer asset, not exact title. */
+/* FR #7455 / #7528 / #7558 / #7643: Priority Agent download (priority-mcp).
+ * Pick newest non-draft release with PriorityAgent.exe; include prereleases when
+ * that is where the installer is. Stamped hrefs at www install stay if API fails.
+ */
 (function (root) {
   var OWNER_REPO = 'SimonBarnett/priority-mcp';
   var API = 'https://api.github.com/repos/' + OWNER_REPO + '/releases?per_page=100';
@@ -30,11 +33,19 @@
   }
 
   function pickLatest(releases) {
-    // GitHub /releases returns newest first. First non-draft, non-prerelease with installer wins (FR #7558).
+    // GitHub /releases returns newest first.
+    // Pass 1: non-draft non-prerelease with installer.
+    // Pass 2: non-draft prerelease with installer (FR #7643 — today's launcher-v* layout).
     var list = releases || [];
-    for (var i = 0; i < list.length; i++) {
-      var rel = list[i];
+    var i, rel;
+    for (i = 0; i < list.length; i++) {
+      rel = list[i];
       if (!rel || rel.draft || rel.prerelease) continue;
+      if (hasInstaller(rel)) return rel;
+    }
+    for (i = 0; i < list.length; i++) {
+      rel = list[i];
+      if (!rel || rel.draft) continue;
       if (hasInstaller(rel)) return rel;
     }
     return null;
@@ -69,11 +80,11 @@
     var body = JSON.stringify({
       kind: 'issue',
       repo: 'SimonBarnett/bobiverse',
-      title: 'downloads: no Priority Agent installer on a non-prerelease',
+      title: 'downloads: no Priority Agent installer on any non-draft release',
       body: [
-        'bob.ntsa.uk /downloads Priority Agent card found no non-prerelease',
-        'SimonBarnett/priority-mcp release with a PriorityAgent.exe (or PriorityAgent-X.Y.Z.exe) asset.',
-        'Empty state shown. FR #7558.'
+        'bob.ntsa.uk /downloads Priority Agent card found no non-draft',
+        'SimonBarnett/priority-mcp release (full or prerelease) with a PriorityAgent.exe',
+        '(or PriorityAgent-X.Y.Z.exe) asset. Empty state shown. FR #7643.'
       ].join(' ')
     });
     try {
@@ -91,6 +102,9 @@
     if (!rel) {
       if (versionEl) versionEl.textContent = 'No matching Priority Agent release';
       setNotes(card, '');
+      if (assetsEl) {
+        while (assetsEl.firstChild) assetsEl.removeChild(assetsEl.firstChild);
+      }
       return;
     }
     var title = String(rel.name || rel.tag_name || 'Priority Agent');
@@ -108,6 +122,7 @@
       link.href = assetHref(tag, name);
       var isSha = SHA_RE.test(name);
       link.className = isSha ? 'btn btn-ghost' : 'btn btn-gold';
+      link.setAttribute('data-role', isSha ? 'sha256' : 'installer');
       link.textContent = isSha ? 'sha256' : name;
       assetsEl.appendChild(link);
     });
@@ -124,9 +139,7 @@
       render(card, picked);
       if (!picked) reportMissing(fn);
     }).catch(function () {
-      var versionEl = card.querySelector('[data-role="version"]');
-      if (versionEl) versionEl.textContent = 'Could not refresh Priority Agent releases';
-      setNotes(card, '');
+      // FR #7643: keep stamped download / sha256 links when the API is blocked or fails.
     });
   }
 
