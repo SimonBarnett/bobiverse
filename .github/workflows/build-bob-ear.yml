@@ -79,6 +79,7 @@ on:
       - common/scripts/mrb_merge_gate.py
       - common/scripts/mrb_merge_on_green.py
       - common/scripts/opencode_fuel.py
+      - common/scripts/pool_reading_stale.py
       - common/scripts/prior_irc.py
       - common/scripts/priority_customer.py
       - common/scripts/protect.py
@@ -172,6 +173,7 @@ on:
       - common/scripts/mrb_merge_gate.py
       - common/scripts/mrb_merge_on_green.py
       - common/scripts/opencode_fuel.py
+      - common/scripts/pool_reading_stale.py
       - common/scripts/prior_irc.py
       - common/scripts/priority_customer.py
       - common/scripts/protect.py
