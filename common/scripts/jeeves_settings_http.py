@@ -371,6 +371,7 @@ def _shell_header(*, current: str, include_nav: bool, prefix: str = "") -> str:
         ("/downloads", "Downloads", "downloads"),
         ("/jeeves/commands", "Commands", "commands"),
         ("/jeeves", "Jeeves", "jeeves"),
+        ("https://mcp.ntsa.uk", "Priority MCP", "mcp"),
     ]
     parts: list[str] = []
     for href, label, key in site:
@@ -402,7 +403,8 @@ def _shell_footer() -> str:
         "<span>"
         '<a href="/">Home</a> · '
         '<a href="/downloads">Downloads</a> · '
-        '<a href="/jeeves/commands">Commands</a>'
+        '<a href="/jeeves/commands">Commands</a> · '
+        '<a href="https://mcp.ntsa.uk">Priority MCP</a>'
         "</span>"
         "</footer>"
     )
