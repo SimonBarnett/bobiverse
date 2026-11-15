@@ -22,7 +22,7 @@ import jeeves_settings_http as http  # noqa: E402
 WWW = ROOT / "jeeves" / "www" / "irc-ntsa"
 HOME = WWW / "index.html"
 PLAN_LABEL = "Plan Agent"
-MCP_LABEL = "MCP"
+MCP_LABEL = "Priority MCP"  # FR #7457 catalogue name
 # Assemble service labels so this module never embeds a full hostname.
 _PLAN_LABEL_HOST = "plan"
 _LEGACY_LABEL_HOST = "-".join(("skills", "visionary"))
