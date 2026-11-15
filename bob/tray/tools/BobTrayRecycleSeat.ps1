@@ -164,7 +164,7 @@ function Invoke-BobTrayRecycleSeatQueue {
                         while ($tries -lt 2 -and -not $ok) {
                             $tries++
                             try {
-                                $newPid = [int](@(& $Launch)[-1])
+                                $newPid = [int](@(& $Launch $seatNick)[-1])
                                 if ($newPid -gt 0) { $ok = $true; $reason = 'ok' } else { $reason = 'launch-failed' }
                             } catch {
                                 $reason = 'launch-error: ' + $_.Exception.Message

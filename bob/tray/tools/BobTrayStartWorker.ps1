@@ -60,6 +60,26 @@ function Write-BobTrayAlive {
     catch { return $false }
 }
 
+function Write-BobTraySeatStart {
+    <#
+    FR #7652: one tray-engine log line for every seat start. Timestamp is added by Write-TrayLog.
+    Seat id and trigger are restricted to a safe token so the line cannot carry a secret.
+    #>
+    param(
+        [Parameter(Mandatory)][scriptblock]$Log,
+        [string]$SeatId = 'unknown',
+        [int]$WorkerPid = 0,
+        [Parameter(Mandatory)][string]$Trigger
+    )
+    $seat = [string]$SeatId
+    if ($seat -match '(?i)token|password|secret|bearer') { $seat = 'redacted' }
+    $seat = ($seat -replace '[^A-Za-z0-9._-]', '')
+    if (-not $seat) { $seat = 'unknown' }
+    $trig = ([string]$Trigger -replace '[^A-Za-z0-9._-]', '')
+    if (-not $trig) { $trig = 'other' }
+    & $Log ('seat-start seat={0} pid={1} trigger={2}' -f $seat, $WorkerPid, $trig)
+}
+
 function Invoke-BobTrayStartWorkerQueue {
     <#
     .SYNOPSIS
