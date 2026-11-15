@@ -1,0 +1,151 @@
+# FR #7425: isolated jeeves MSI build.
+# Not a GitHub Release. Sibling FRs own bob/airc MSIs (#7424 / #7426).
+# Reuses Pack-BobiverseRelease.ps1 -Product jeeves + Fetch-Wix.ps1 (no WiX source fork).
+name: build-jeeves-msi
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - .github/workflows/build-jeeves-msi.yml
+      - jeeves/**
+      - common/scripts/Pack-BobiverseRelease.ps1
+      - common/scripts/Fetch-Wix.ps1
+      - common/scripts/Bobiverse-Common.ps1
+      - common/scripts/jeeves_main.py
+      - common/scripts/jeeves_build_meta.py
+      - jeeves/scripts/Build-Jeeves.ps1
+      - common/tests/test_fr7425_jeeves_msi_ci.py
+      - src/VERSION
+      - common/VERSION
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/build-jeeves-msi.yml
+      - jeeves/**
+      - common/scripts/Pack-BobiverseRelease.ps1
+      - common/scripts/Fetch-Wix.ps1
+      - common/scripts/Bobiverse-Common.ps1
+      - common/scripts/jeeves_main.py
+      - common/scripts/jeeves_build_meta.py
+      - jeeves/scripts/Build-Jeeves.ps1
+      - common/tests/test_fr7425_jeeves_msi_ci.py
+      - src/VERSION
+      - common/VERSION
+
+permissions:
+  contents: read
+
+jobs:
+  build-jeeves-msi:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install PyInstaller and Bob Python deps
+        run: |
+          python -m pip install --upgrade pip pyinstaller
+          if ($LASTEXITCODE -ne 0) { throw "pip install pyinstaller failed: $LASTEXITCODE" }
+          . .\common\scripts\Bobiverse-Common.ps1
+          Install-BobiversePythonDeps -Python (Get-Command python).Source
+
+      - name: Pack jeeves MSI only (same-commit exes)
+        env:
+          WORKFLOW_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
+          # FR #6423 / #6949: Pack-BobiverseRelease downgrade gate calls gh release list.
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $root = (Get-Location).Path
+          $head = (git rev-parse HEAD).Trim()
+          if ($head -ne $env:WORKFLOW_COMMIT) { throw "checkout $head is not $env:WORKFLOW_COMMIT" }
+
+          . "$root\common\scripts\Bobiverse-Common.ps1"
+
+          # Three-part MSI ProductVersion that rises per CI run and stays >= latest
+          # published release (FR #4389 / #6423; MSI build field max 65535).
+          $latest = Get-BobiverseLatestPublishedVersion -Repo 'SimonBarnett/bobiverse'
+          if (-not $latest) { throw "FR #7425 cannot resolve latest published version for CI bump" }
+          $lv = [version]$latest
+          $run = [int]$env:GITHUB_RUN_NUMBER
+          if ($run -lt 1) { $run = 1 }
+          $build = [int]$lv.Build + $run
+          if ($build -gt 65535) { $build = 65535 }
+          $msiVersion = "{0}.{1}.{2}" -f $lv.Major, $lv.Minor, $build
+          $msiVersion = ConvertTo-BobiverseMsiProductVersion -Version $msiVersion
+          Write-Host "INFO FR #7425 CI MSI version=$msiVersion (latestPublished=$latest run=$($env:GITHUB_RUN_NUMBER))"
+
+          $out = Join-Path $env:RUNNER_TEMP "jeeves-msi-out"
+          New-Item -ItemType Directory -Force -Path $out | Out-Null
+
+          # Do NOT pass -EmbedErgoPassword (issue #4): public CI MSI must not embed PASS.
+          & "$root\common\scripts\Pack-BobiverseRelease.ps1" `
+            -Product jeeves `
+            -RepoRoot $root `
+            -OutDir $out `
+            -Version $msiVersion `
+            -KeepStage
+          if ($LASTEXITCODE -ne 0) { throw "Pack-BobiverseRelease.ps1 exit $LASTEXITCODE" }
+
+          $msi = Get-ChildItem -LiteralPath $out -Filter "jeeves-*.msi" -File | Select-Object -First 1
+          if (-not $msi) { throw "no jeeves-*.msi under $out" }
+          $others = @(Get-ChildItem -LiteralPath $out -Filter "*.msi" -File | Where-Object { $_.Name -notmatch '^jeeves-' })
+          if ($others.Count -gt 0) {
+            throw ("unexpected non-jeeves MSI(s): {0}" -f (($others | ForEach-Object Name) -join ', '))
+          }
+
+          $msiHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $msi.FullName).Hash.ToLowerInvariant()
+          $stage = Get-ChildItem -LiteralPath $out -Directory | Where-Object { $_.Name -like "jeeves-*" } | Select-Object -First 1
+          if (-not $stage) { throw "KeepStage expected jeeves-* stage under $out" }
+
+          $embedded = [ordered]@{}
+          Get-ChildItem -LiteralPath $stage.FullName -Recurse -Filter "*.exe" -File | ForEach-Object {
+            $rel = $_.FullName.Substring($stage.FullName.Length).TrimStart('\', '/').Replace('\', '/')
+            $embedded[$rel] = (Get-FileHash -Algorithm SHA256 -LiteralPath $_.FullName).Hash.ToLowerInvariant()
+          }
+          if ($embedded.Count -lt 1) { throw "no embedded exes hashed under stage" }
+          $hit = @($embedded.Keys | Where-Object { $_ -like "*jeeves.exe" })
+          if ($hit.Count -lt 1) { throw "missing embedded jeeves.exe in stage" }
+
+          $artifact = Join-Path $env:RUNNER_TEMP "jeeves-msi-artifact"
+          New-Item -ItemType Directory -Force -Path $artifact | Out-Null
+          Copy-Item -LiteralPath $msi.FullName -Destination (Join-Path $artifact $msi.Name) -Force
+          $shaSide = $msi.FullName + ".sha256"
+          if (Test-Path -LiteralPath $shaSide) {
+            Copy-Item -LiteralPath $shaSide -Destination (Join-Path $artifact ($msi.Name + ".sha256")) -Force
+          } else {
+            Set-Content -Encoding ascii (Join-Path $artifact ($msi.Name + ".sha256")) "$msiHash  $($msi.Name)"
+          }
+
+          $builtAt = [DateTime]::UtcNow.ToString("o")
+          $manifest = [ordered]@{
+            source_commit   = $env:WORKFLOW_COMMIT
+            workflow_commit = $env:WORKFLOW_COMMIT
+            product         = "jeeves"
+            msi_name        = $msi.Name
+            msi_version     = $msiVersion
+            msi_sha256      = $msiHash
+            msi_size_bytes  = $msi.Length
+            embedded        = $embedded
+            build_time_utc  = $builtAt
+            workflow_run_id = [string]$env:GITHUB_RUN_ID
+            builder         = "Pack-BobiverseRelease.ps1 -Product jeeves"
+            fr              = "7425"
+          }
+          ($manifest | ConvertTo-Json -Depth 6) | Set-Content -Encoding utf8 (Join-Path $artifact "MANIFEST.json")
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: jeeves-msi
+          path: ${{ runner.temp }}/jeeves-msi-artifact
+          if-no-files-found: error
