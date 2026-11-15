@@ -179,3 +179,33 @@ def test_done_mrb_does_not_match_accepted_fix_same_id(tmp_path, monkeypatch):
     assert len(acc) == 1
     assert acc[0]["task"] == "FIX"
     assert acc[0]["id"] == "#700"
+
+
+@pytest.mark.parametrize("stored,wire", [
+    (PRIORITY_MCP_CANONICAL, PRIORITY_MCP_ALIAS),
+    (PRIORITY_MCP_ALIAS, PRIORITY_MCP_CANONICAL),
+])
+def test_mrb7581_nack_already_done_across_alias(tmp_path, monkeypatch, stored, wire):
+    """MRB #7581 hostile: NACK on done row is already-done under alias spelling."""
+    monkeypatch.setenv("BOB_DIGEST_HOME", str(tmp_path))
+    _seed_roster(tmp_path)
+    gitclaim._write_queue(
+        gitclaim.queue_path(tmp_path),
+        {
+            "v": 1,
+            "unaccepted": [],
+            "accepted": [],
+            "done": [_done_pass(stored, 463)],
+        },
+    )
+    result = shop_listen.handle_shop_worker_line(
+        tmp_path,
+        nick=NICK,
+        channel=SHOP,
+        body=f"NACK MRB {wire}#463",
+        post_fn=lambda _p: 204,
+    )
+    assert result["status"] == "already-done"
+    q = gitclaim.load_queue(tmp_path)
+    assert not (q.get("unaccepted") or [])
+
