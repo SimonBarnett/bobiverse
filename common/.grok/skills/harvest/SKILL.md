@@ -469,6 +469,7 @@ routes to bobiverse via the split rule.
 - A per-machine seat pause belongs in bridge config.json seat_target, read on each engine tick. Never use the PowerShell automatic variable HOME for that path.
 - When the agent CLI dies, quote its last stderr lines in the intake Evidence and dedupe on that line, not on the job id.
 - When an assigned FR is already closed as a receipt of an earlier fix, NACK with the covering issue and PR and do not open another PR.
+- Windows exit 0xffffffff with empty agent stderr is an external kill. Do not open an intake for it.
 
 ## Harvest digest (lessons audit 2026-10-06)
 
