@@ -13250,11 +13250,117 @@ def _choose(args, log: Log, folder: Path, mode: str):
     return dec, cursor_cmd, grok_exe, fuel, signin_ok
 
 
-def _explicit_refusal_exit(dec: Decision, log: Log, mode: str) -> Optional[int]:
+def fuel_snapshot_public(fuel) -> str:
+    """Numeric fuel fields only. Never model maps, paths, or tokens (FR #7715)."""
+    if fuel is None:
+        return "none"
+    names = (
+        "grok_pct",
+        "grok_state",
+        "cursor_high",
+        "cursor_low",
+        "opencode_free",
+        "opencode_go",
+        "on_demand_remaining_pct",
+        "overspend_state",
+    )
+    return " ".join(f"{name}={getattr(fuel, name, None)}" for name in names)
+
+
+def report_seat_start_refusal(
+    *,
+    machine: str = "",
+    kind: str = "",
+    model: str = "",
+    reason: str = "",
+    fuel=None,
+    tray_restarted: bool = False,
+    log: Optional[Callable[[str], None]] = None,
+    filer_post: Optional[Callable[..., dict]] = None,
+) -> dict:
+    """FR #7715: a seat that never becomes ready is an intake issue, not only a log line."""
+    if filer_post is None and os.environ.get("PYTEST_CURRENT_TEST"):
+        return {"ok": True, "skipped": True, "reason": "pytest"}
+    mid = re.sub(r"[^a-z0-9._-]+", "-", str(machine or "unknown").strip().lower()).strip("-") or "unknown"
+    k = (kind or "").strip().lower() or "unknown"
+    model_s = " ".join(str(model or "unknown").split())[:120] or "unknown"
+    reason_s = " ".join(str(reason or "refused").split())[:300]
+    snap = fuel_snapshot_public(fuel)
+    restarted = "true" if tray_restarted else "false"
+    try:
+        import crash_report
+
+        reason_s = crash_report.redact(reason_s)
+        snap = crash_report.redact(snap)
+        model_s = crash_report.redact(model_s)
+    except Exception:
+        pass
+    norm = re.sub(r"\s+", " ", reason_s).strip().lower()
+    norm = re.sub(r"[^a-z0-9 .:_=-]+", "", norm)[:80] or "refused"
+    key = f"seat-start-refusal|{mid}|{norm}"[:128]
+    title = "bug: seat start refused (FR #7715)"
+    body = (
+        "What: bob-worker refused to start the seat before it became ready.\n"
+        f"Where: machine={mid} kind={k} model={model_s}\n"
+        f"Reason: {reason_s}\n"
+        f"Fuel: {snap}\n"
+        f"tray_restarted={restarted}\n"
+        "No secrets."
+    )
+    if log:
+        try:
+            log(f"worker: seat-start-refusal kind={k} tray_restarted={restarted} (FR #7715)")
+        except Exception:
+            pass
+    payload = {
+        "kind": "issue",
+        "repo": "SimonBarnett/bobiverse",
+        "title": title,
+        "body": body,
+        "idempotency_key": key,
+        "dedupe_key": key,
+        "machine": mid,
+        "agent": "bob-worker",
+    }
+    if filer_post is not None:
+        try:
+            return filer_post(payload) or {"ok": True, "key": key}
+        except Exception:
+            return {"ok": False, "key": key}
+    try:
+        import crash_report
+
+        crash_report._post_intake(title, body, repo="SimonBarnett/bobiverse", sig=key, exe="bob-worker")
+        return {"ok": True, "key": key}
+    except Exception:
+        return {"ok": False, "key": key}
+
+
+def _explicit_refusal_exit(
+    dec: Decision,
+    log: Log,
+    mode: str,
+    *,
+    machine: str = "",
+    kind: str = "",
+    model: str = "",
+    fuel=None,
+    filer_post: Optional[Callable[..., dict]] = None,
+) -> Optional[int]:
     """Show an explicit refusal. Never starts another agent."""
     if dec.kind not in ("refuse", "xai-auth-expired"):
         return None
     log(f"select[{mode}]: refused - {dec.reason}")
+    report_seat_start_refusal(
+        machine=machine,
+        kind=kind or dec.kind,
+        model=model,
+        reason=dec.reason,
+        fuel=fuel,
+        tray_restarted=False,
+        log=log,
+        filer_post=filer_post,
+    )
     try:
         sys.stdout = sys.__stdout__
         sys.stderr = sys.__stderr__
@@ -13285,7 +13391,11 @@ def run_plan(args, log: Log) -> int:
     )
     if normalize_explicit_agent(requested):
         log(f"select[plan]: explicit {normalize_explicit_agent(requested)} -> {dec.kind} - {dec.reason}")
-    stopped = _explicit_refusal_exit(dec, log, "plan")
+    stopped = _explicit_refusal_exit(
+        dec, log, "plan",
+        machine=getattr(args, "machine_id", "") or "",
+        kind=requested, model="", fuel=fuel,
+    )
     if stopped is not None:
         return stopped
     secret = None
@@ -13305,6 +13415,15 @@ def run_plan(args, log: Log) -> int:
         oc_model = resolve_opencode_model(fuel, log_fn=log)
         if not oc_model:
             log("opencode: no usable model (capped/paused) - not starting")
+            report_seat_start_refusal(
+                machine=getattr(args, "machine_id", "") or "",
+                kind="opencode",
+                model="",
+                reason="opencode: no usable model (capped/paused)",
+                fuel=fuel,
+                tray_restarted=False,
+                log=log,
+            )
             return EXIT_NO_AGENT
         os.environ["BOB_OPENCODE_MODEL"] = oc_model
     else:
@@ -13363,13 +13482,18 @@ def run_monitor(args, log: Log) -> int:
         return EXIT_USAGE
     dec, cursor_cmd, grok_exe, fuel, signin_ok = _choose(args, log, folder, "monitor")
     opencode_cmd = _resolve_opencode_cmd_for_seat(log)
+    requested = getattr(args, "agent", "") or ""
     dec = resolve_seat_decision(
-        getattr(args, "agent", ""),
+        requested,
         dec, fuel, cursor_cmd, grok_exe, opencode_cmd,
         auth_present=opencode_auth_file_present(),
         xai_signin_ok=signin_ok,
     )
-    stopped = _explicit_refusal_exit(dec, log, "monitor")
+    stopped = _explicit_refusal_exit(
+        dec, log, "monitor",
+        machine=getattr(args, "machine_id", "") or "",
+        kind=requested, model="", fuel=fuel,
+    )
     if stopped is not None:
         return stopped
     secret = None
@@ -13392,6 +13516,15 @@ def run_monitor(args, log: Log) -> int:
         oc_model = resolve_opencode_model(fuel, log_fn=log)
         if not oc_model:
             log("opencode: no usable model (capped/paused) - not starting")
+            report_seat_start_refusal(
+                machine=getattr(args, "machine_id", "") or "",
+                kind="opencode",
+                model="",
+                reason="opencode: no usable model (capped/paused)",
+                fuel=fuel,
+                tray_restarted=False,
+                log=log,
+            )
             return EXIT_NO_AGENT
         os.environ["BOB_OPENCODE_MODEL"] = oc_model
     else:
@@ -13476,13 +13609,18 @@ def run_maintenance(args, log: Log, *, spawn: Optional[Callable] = None, poll_s:
         return EXIT_USAGE
     dec, cursor_cmd, grok_exe, fuel, signin_ok = _choose(args, log, folder, "maintenance")
     opencode_cmd = _resolve_opencode_cmd_for_seat(log)
+    requested = getattr(args, "agent", "") or ""
     dec = resolve_seat_decision(
-        getattr(args, "agent", ""),
+        requested,
         dec, fuel, cursor_cmd, grok_exe, opencode_cmd,
         auth_present=opencode_auth_file_present(),
         xai_signin_ok=signin_ok,
     )
-    stopped = _explicit_refusal_exit(dec, log, "maintenance")
+    stopped = _explicit_refusal_exit(
+        dec, log, "maintenance",
+        machine=getattr(args, "machine_id", "") or "",
+        kind=requested, model="", fuel=fuel,
+    )
     if stopped is not None:
         return stopped
     secret = None
@@ -13505,6 +13643,15 @@ def run_maintenance(args, log: Log, *, spawn: Optional[Callable] = None, poll_s:
         oc_model = resolve_opencode_model(fuel, log_fn=log)
         if not oc_model:
             log("opencode: no usable model (capped/paused) - not starting")
+            report_seat_start_refusal(
+                machine=getattr(args, "machine_id", "") or "",
+                kind="opencode",
+                model="",
+                reason="opencode: no usable model (capped/paused)",
+                fuel=fuel,
+                tray_restarted=False,
+                log=log,
+            )
             return EXIT_NO_AGENT
         os.environ["BOB_OPENCODE_MODEL"] = oc_model
     else:
@@ -13601,7 +13748,11 @@ def run_agent(args, log: Log) -> int:
     # FR #7485: always log the seat decision after explicit override (auto already logged in _choose).
     if normalize_explicit_agent(requested):
         log(f"select[agent]: explicit {normalize_explicit_agent(requested)} -> {dec.kind} - {dec.reason}")
-    stopped = _explicit_refusal_exit(dec, log, "agent")
+    stopped = _explicit_refusal_exit(
+        dec, log, "agent",
+        machine=machine,
+        kind=requested, model="", fuel=fuel,
+    )
     if stopped is not None:
         return stopped
     secret = None
@@ -13621,6 +13772,15 @@ def run_agent(args, log: Log) -> int:
         oc_model = resolve_opencode_model(fuel, log_fn=log)
         if not oc_model:
             log("opencode: no usable model (capped/paused) - not starting")
+            report_seat_start_refusal(
+                machine=getattr(args, "machine_id", "") or "",
+                kind="opencode",
+                model="",
+                reason="opencode: no usable model (capped/paused)",
+                fuel=fuel,
+                tray_restarted=False,
+                log=log,
+            )
             return EXIT_NO_AGENT
         os.environ["BOB_OPENCODE_MODEL"] = oc_model
     else:
@@ -14264,6 +14424,15 @@ def main(argv: Optional[list] = None) -> int:
         refusal = worker_cap_refusal(snapshot_procs(), os.getpid(), for_mode=args.mode)
         if refusal:
             log("refused: " + refusal)
+            report_seat_start_refusal(
+                machine=getattr(args, "machine_id", "") or "",
+                kind=getattr(args, "agent", "") or "",
+                model="",
+                reason=refusal,
+                fuel=None,
+                tray_restarted=False,
+                log=log,
+            )
             try:
                 ensure_console("Bob worker - refused")
                 print("\nBob worker: " + refusal + ".\nClose a running worker window first.\n")
