@@ -422,6 +422,7 @@ routes to bobiverse via the split rule.
 - Jeeves SYSTEM state files must write under BOB_HOME/.jeeves, not BOB_DIGEST_HOME; atomic tmp+replace and digest health on Access denied.
 - Ear CI artifacts must ship Start-Bob.ps1 and Select-BobEarLaunch.ps1 with manifest SHA-256; Install-BobEarExe copies them beside the exe or machines keep stale mtime launchers.
 - Cached xAI weekly remaining must not be relabelled onto a new auth.json grok_account; discard last-good % until a successful fetch for the new account.
+- GitHub /releases/latest/download requires exact asset names: prefer product-latest.msi alias, else stamp product-X.Y.Z.msi from latest release (bob-latest.msi 404s today); sync downloads/ + site.css in Install-BobWebhooks so IIS gets /downloads.
 - Public bob.ntsa.uk chrome starts as shared charcoal/paper/gold site.css + HTML mocks validated by validate-vision-pack; live IIS is a later FR.
 - MRB commands page: verify unauthenticated HTML has core verbs and no password form, Install rewrite skips /jeeves/commands, closing-keyword #7413, note live 404 until Install; merge-gate --auto without CI poll
 - FR-E quiet :7701 removal PASS when front-door mode defaults on, LAN-root returns 404, /jeeves still serves, and docs scrub preferred 7701 how-tos without a deprecation brochure; keeping loopback bind as ARR upstream is ACCEPTABLE.
