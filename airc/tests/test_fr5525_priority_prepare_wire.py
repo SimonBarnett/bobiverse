@@ -26,10 +26,11 @@ def test_fr5525_on_line_prepare_two_privmsgs(tmp_path, monkeypatch):
     service.on_line(":op!u@h PRIVMSG tm_console :id=c25bd00e PRIORITY prepare")
     bodies = [t for nick, t in sent if nick == "op"]
     assert len(bodies) == 2, sent
-    assert bodies[0].startswith("out id=c25bd00e seq=1 {")
+    assert bodies[0].startswith("err id=c25bd00e seq=1 code=not-configured")
+    assert "priority_not_installed" in bodies[0]
     assert "PRIORITY prepare" not in bodies[0]
     assert "DONE" not in bodies[0]
-    assert bodies[1] == "DONE id=c25bd00e exit=1"
+    assert bodies[1] == "DONE id=c25bd00e exit=2"
     assert re.match(r"^DONE id=[0-9a-f]{8} exit=\d+$", bodies[1])
 
 
@@ -59,6 +60,6 @@ def test_fr5525_socket_bytes_two_crlf_privmsgs(tmp_path, monkeypatch):
     assert len(priv) == 2, frames
     b0 = priv[0].split(":", 1)[1]
     b1 = priv[1].split(":", 1)[1]
-    assert b0.startswith("out id=c25bd00e seq=1 {")
-    assert b1 == "DONE id=c25bd00e exit=1"
+    assert b0.startswith("err id=c25bd00e seq=1 code=not-configured")
+    assert b1 == "DONE id=c25bd00e exit=2"
     assert re.match(r"^DONE id=[0-9a-f]{8} exit=\d+$", b1)

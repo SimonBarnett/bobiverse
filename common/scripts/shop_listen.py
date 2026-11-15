@@ -346,16 +346,19 @@ def format_activity_payload(
     working_on: str,
     state: str = "running",
 ) -> dict:
-    return {
+    payload = {
         "op": "merge",
         "machine": machine,
         "pid": int(pid),
         "nick": nick,
-        "kind": kind or "grok",
         "state": state,
         "online": True,
         "working_on": working_on if state != "idle" else "",
     }
+    kind_s = str(kind or "").strip().lower()
+    if kind_s:
+        payload["kind"] = kind_s
+    return payload
 
 
 def apply_activity_local(home: Path, payload: dict, briefer: str = "Jeeves"):
@@ -887,11 +890,15 @@ def handle_shop_worker_line(
     nick: str,
     channel: str,
     body: str,
-    kind: str = "grok",
+    kind: str = "",
     post_fn: Callable[[dict], int] | None = None,
     briefer: str = "Jeeves",
 ) -> dict:
-    """Chair path: parse line, update queue, fire activity webhook. No channel reply."""
+    """Chair path: parse line, update queue, fire activity webhook. No channel reply.
+
+    FR #7706: an empty kind must not be published as grok. The seat's digest
+    kind stays whatever ``--agent`` already posted.
+    """
     out: dict = {"handled": False, "status": "", "verb": ""}
     if not is_shop_worker_nick(nick, channel):
         return out
@@ -1143,7 +1150,7 @@ def handle_shop_worker_quit(
     home: Path,
     *,
     nick: str,
-    kind: str = "grok",
+    kind: str = "",
     post_fn: Callable[[dict], int] | None = None,
     briefer: str = "Jeeves",
 ) -> dict:

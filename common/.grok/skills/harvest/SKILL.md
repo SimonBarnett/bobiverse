@@ -471,6 +471,20 @@ routes to bobiverse via the split rule.
 - When an assigned FR is already closed as a receipt of an earlier fix, NACK with the covering issue and PR and do not open another PR.
 - Windows exit 0xffffffff with empty agent stderr is an external kill. Do not open an intake for it.
 - A daemon health probe that os._exits must stop when the server it watches has shut down, or any test that binds and shuts the listener will kill the suite a minute later with no failure line.
+- When a later FR says a catch must not intake, update the older must-report pin instead of adding the reporter back. A comment that names the helper is not a call.
+- Do not type a PowerShell parameter as System.Drawing.Color when callers omit it. Null fails conversion before the function body. Resolve null to the default colour and report only unexpected hover exceptions.
+- A long-lived PowerShell runspace must clear Streams.Error before the next command. Otherwise a non-terminating error from one step fails the next step.
+- recycleseat JSON kind is the authorizer (chair/op), not the agent. The tray click ledger is the only source for the relaunch agent. Missing kind refuses before stop.
+- A PowerShell $name in a launcher script is not a model id. Shop activity must omit kind when it does not know the agent, or it overwrites the seat --agent on the digest.
+- A provider 502/503/504 may shorten the next pool poll. A 429 must stay on the normal cadence and must not stretch past it.
+- A seat-behavior acceptance is not met by a helper that only the new test imports. Wire the decision into the seat, and do not reuse JSON-RPC -32000 for an exception the server handled.
+- A clean refusal before the seat is ready is still an exception. Report it with a machine-plus-reason dedupe key and a numeric fuel snapshot, and do not report a start that proceeds.
+- A harvest twin check must compare lesson bullets, not the session summary. Five shared tokens in the summary are not the same playbook.
+- When auto-merge is refused because the pull request is unstable, comment merge-on-green pending with the head SHA and finish. Do not poll the checks.
+- A new keyword at a call site must be a name that function assigns. Copy the plan and agent pattern, and pin that the assignment is above the call.
+- When a later FR changes a wire to err plus DONE exit=2, update the older framing pins. Do not put the absent-allowlist gate in front of a test that must exercise the worker body.
+- Airc skill books stay ASCII. Write a hyphen, not an em dash, in SKILL.md.
+- When wiring an optional hook onto an injected runner, use getattr and callable. A test stub that only implements start() must still build the console.
 
 ## Harvest digest (lessons audit 2026-10-06)
 

@@ -1456,6 +1456,14 @@ def explicit_opencode_decision(
     """
     if not opencode_cmd:
         return Decision("refuse", "explicit opencode: opencode.exe missing")
+    # FR #7714: unknown is not exhausted. A clicked OpenCode seat starts.
+    # Refuse only a known empty reading. Never fall through to another kind.
+    if not fuel_reading_known(fuel, "opencode"):
+        return Decision(
+            "opencode",
+            "explicit opencode: fuel unknown, starting (free=%s go=%s)"
+            % (fuel.opencode_free, fuel.opencode_go),
+        )
     if not opencode_has_tokens(fuel):
         return Decision(
             "refuse",
@@ -2328,10 +2336,14 @@ def describe_agent_child_launch(
         import worker_start_model as wsm
 
         _scfg = wsm.load_worker_start_config()
-        actual = wsm.actual_from_launch_spec(kind_l, spec, env=env)
+        actual = wsm.concrete_model_id(wsm.actual_from_launch_spec(kind_l, spec, env=env))
+        if not actual and kind_l == "opencode":
+            actual = wsm.concrete_model_id(os.environ.get("BOB_OPENCODE_MODEL"))
         effort = wsm.configured_start_effort(kind_l, _scfg)
         if actual:
             env[wsm.ENV_ACTUAL_MODEL] = actual
+        elif kind_l == "opencode":
+            env.pop(wsm.ENV_ACTUAL_MODEL, None)
         env[wsm.ENV_ACTUAL_EFFORT] = effort
         saved = wsm.normalize_effort((_scfg.get("workerStartEffort") or {}).get(kind_l))
         if not saved and not os.environ.get("PYTEST_CURRENT_TEST"):
@@ -3260,6 +3272,7 @@ def report_agent_cli_nonzero_exit(
     agent_pid: int | None = None,
     raw_code=None,
     stderr_tail: str = "",
+    parent_cmd: str = "",
     log: Optional[Callable[[str], None]] = None,
     filer_post: Optional[Callable[..., dict]] = None,
 ) -> dict:
@@ -3280,26 +3293,39 @@ def report_agent_cli_nonzero_exit(
     except (TypeError, ValueError):
         pid_s = "0"
     evidence = agent_stderr_evidence(stderr_tail)
-    # FR #7681: 0xffffffff with no CLI stderr is an external kill (taskkill / seat stop),
-    # not an agent-CLI bug. Do not open an intake. A real CLI failure still has stderr.
-    if u == 0xFFFFFFFF and not str(evidence or "").strip():
-        if log:
-            try:
-                log(f"worker: agent-cli-nonzero-exit skipped external-kill job={job} (FR #7681)")
-            except Exception:
-                pass
-        return {"ok": True, "skipped": True, "reason": "external-kill", "key": ""}
+    parent = " ".join(str(parent_cmd or "").split())[:240]
+    # FR #7724: a silent 0xffffffff used to skip intake (FR #7681). That hid seat deaths
+    # such as a Flash nick disappearing with no issue. Still classify recycle vs kill.
+    silent = u == 0xFFFFFFFF and not str(evidence or "").strip()
+    parent_l = parent.lower()
+    if "recycleseat" in parent_l or "bobtrayrecycleseat" in parent_l:
+        end = "recycle"
+    elif silent:
+        end = "external-kill"
+    else:
+        end = "cli-failure"
     err_key = agent_stderr_dedupe_line(evidence)
-    # Same crash on the same seat is one issue, whatever the job was (FR #7671).
-    key = f"agent-cli-nonzero-exit|{mid}|{u}|{err_key}"[:128]
-    title = "bug: agent CLI nonzero exit (FR #7593)"
+    if silent or end == "recycle":
+        key = f"seat-silent-end|{mid}|{nick_s}|{end}"[:128]
+        title = "bug: seat ended with no CLI stderr (FR #7724)"
+        what = (
+            "What: the seat process ended and there was no CLI stderr. "
+            "This records the nick, exit code, and whether it looks like a recycle or an external kill.\n"
+        )
+    else:
+        # Same crash on the same seat is one issue, whatever the job was (FR #7671).
+        key = f"agent-cli-nonzero-exit|{mid}|{u}|{err_key}"[:128]
+        title = "bug: agent CLI nonzero exit (FR #7593)"
+        what = (
+            "What: the agent CLI process exited non-zero; the worker wrapper reported it and "
+            "recycled the seat (FR #7593).\n"
+        )
     body = (
-        "What: the agent CLI process exited non-zero; the worker wrapper reported it and "
-        "recycled the seat (FR #7593).\n"
-        f"Where: bob-worker kind={k} machine={mid} nick={nick_s} agent_pid={pid_s}\n"
-        f"Evidence: exit_code={label} job={job} stderr={evidence}\n"
-        "Fix: inspect the agent session / exit cause; accepted jobs are GIVEUP'd (no fake DONE).\n"
-        "No secrets."
+        what
+        + f"Where: bob-worker kind={k} machine={mid} nick={nick_s} agent_pid={pid_s}\n"
+        + f"Evidence: end={end} exit_code={label} job={job} stderr={evidence or '(empty)'} parent_cmd={parent or '-'}\n"
+        + "Fix: inspect the agent session / exit cause; accepted jobs are GIVEUP'd (no fake DONE).\n"
+        + "No secrets."
     )
     if log:
         try:
@@ -8242,20 +8268,34 @@ def post_digest_seat_kind(
     agent_s = (agent or "").strip() or (kind_s if kind_s else "")
     build = short_build_sha(worker_build) if worker_build is not None else short_build_sha()
     state_s = _normalize_digest_worker_state(state) or "idle"
+    # FR #7706: kind is the launched --agent. Never relabel an empty kind as grok.
+    published_kind = kind_s or (agent_s.strip().lower() if agent_s else "") or "unknown"
+    try:
+        import worker_start_model as wsm
+
+        published_model = wsm.concrete_model_id(model)
+    except Exception:
+        published_model = str(model or "").strip()
+        if "$" in published_model:
+            published_model = ""
+    if str(model or "").strip() and not published_model:
+        published_model = "unknown"
+    elif kind_s == "opencode" and not published_model:
+        published_model = "unknown"
     payload = {
         "online": True,
         "id": mid,
         "pid": pid_i,
-        "kind": kind_s or "grok",
+        "kind": published_kind,
         "state": state_s,
         "nick": (nick or "").strip() or seat_nick(mid, pid_i),
         "working_on": (working_on or "").strip(),
-        "agent": agent_s,
+        "agent": agent_s or published_kind,
         "worker_build": build,
     }
-    if (model or "").strip():
-        payload["model"] = str(model).strip()
-        payload["start_model"] = str(model).strip()
+    if published_model:
+        payload["model"] = published_model
+        payload["start_model"] = published_model
     cfg_m = str(configured_model or "").strip()
     if cfg_m:
         payload["configured_model"] = cfg_m
@@ -12437,6 +12477,7 @@ class Supervisor:
                 kind=self.kind,
                 agent_pid=int(getattr(proc, "pid", 0) or 0),
                 stderr_tail=tail,
+                parent_cmd=parent_cmd,
                 log=self.log,
             )
         except Exception as e:
@@ -13188,6 +13229,31 @@ def _new_run_dir(machine: str, mode: str) -> Path:
     return _state_root() / "run" / f"{mode}-{machine}-{os.getpid()}-{uuid.uuid4().hex[:8]}"
 
 
+def reread_explicit_opencode_fuel(
+    read_fn: Callable[[], Fuel],
+    log: Callable[[str], None],
+    *,
+    tries: int = 3,
+    gap_s: float = 10.0,
+    sleep_fn: Callable[[float], None] = time.sleep,
+) -> Fuel:
+    """FR #7714: retry an unknown OpenCode reading, then return the last fuel.
+
+    Three tries about 10s apart (~30s). The caller still starts when the last
+    reading is unknown. Known fuel returns immediately.
+    """
+    fuel = read_fn()
+    attempt = 1
+    while attempt < tries and not fuel_reading_known(fuel, "opencode"):
+        log("explicit opencode: fuel unknown, retry %s/%s" % (attempt, tries))
+        sleep_fn(gap_s)
+        fuel = read_fn()
+        attempt += 1
+    if not fuel_reading_known(fuel, "opencode"):
+        log("explicit opencode: fuel unknown, starting")
+    return fuel
+
+
 def _choose(args, log: Log, folder: Path, mode: str):
     cursor_cmd, grok_exe = resolve_cursor_cmd(), resolve_grok_exe()
     fuel = read_fuel(Path(args.install_root))
@@ -13199,11 +13265,117 @@ def _choose(args, log: Log, folder: Path, mode: str):
     return dec, cursor_cmd, grok_exe, fuel, signin_ok
 
 
-def _explicit_refusal_exit(dec: Decision, log: Log, mode: str) -> Optional[int]:
+def fuel_snapshot_public(fuel) -> str:
+    """Numeric fuel fields only. Never model maps, paths, or tokens (FR #7715)."""
+    if fuel is None:
+        return "none"
+    names = (
+        "grok_pct",
+        "grok_state",
+        "cursor_high",
+        "cursor_low",
+        "opencode_free",
+        "opencode_go",
+        "on_demand_remaining_pct",
+        "overspend_state",
+    )
+    return " ".join(f"{name}={getattr(fuel, name, None)}" for name in names)
+
+
+def report_seat_start_refusal(
+    *,
+    machine: str = "",
+    kind: str = "",
+    model: str = "",
+    reason: str = "",
+    fuel=None,
+    tray_restarted: bool = False,
+    log: Optional[Callable[[str], None]] = None,
+    filer_post: Optional[Callable[..., dict]] = None,
+) -> dict:
+    """FR #7715: a seat that never becomes ready is an intake issue, not only a log line."""
+    if filer_post is None and os.environ.get("PYTEST_CURRENT_TEST"):
+        return {"ok": True, "skipped": True, "reason": "pytest"}
+    mid = re.sub(r"[^a-z0-9._-]+", "-", str(machine or "unknown").strip().lower()).strip("-") or "unknown"
+    k = (kind or "").strip().lower() or "unknown"
+    model_s = " ".join(str(model or "unknown").split())[:120] or "unknown"
+    reason_s = " ".join(str(reason or "refused").split())[:300]
+    snap = fuel_snapshot_public(fuel)
+    restarted = "true" if tray_restarted else "false"
+    try:
+        import crash_report
+
+        reason_s = crash_report.redact(reason_s)
+        snap = crash_report.redact(snap)
+        model_s = crash_report.redact(model_s)
+    except Exception:
+        pass
+    norm = re.sub(r"\s+", " ", reason_s).strip().lower()
+    norm = re.sub(r"[^a-z0-9 .:_=-]+", "", norm)[:80] or "refused"
+    key = f"seat-start-refusal|{mid}|{norm}"[:128]
+    title = "bug: seat start refused (FR #7715)"
+    body = (
+        "What: bob-worker refused to start the seat before it became ready.\n"
+        f"Where: machine={mid} kind={k} model={model_s}\n"
+        f"Reason: {reason_s}\n"
+        f"Fuel: {snap}\n"
+        f"tray_restarted={restarted}\n"
+        "No secrets."
+    )
+    if log:
+        try:
+            log(f"worker: seat-start-refusal kind={k} tray_restarted={restarted} (FR #7715)")
+        except Exception:
+            pass
+    payload = {
+        "kind": "issue",
+        "repo": "SimonBarnett/bobiverse",
+        "title": title,
+        "body": body,
+        "idempotency_key": key,
+        "dedupe_key": key,
+        "machine": mid,
+        "agent": "bob-worker",
+    }
+    if filer_post is not None:
+        try:
+            return filer_post(payload) or {"ok": True, "key": key}
+        except Exception:
+            return {"ok": False, "key": key}
+    try:
+        import crash_report
+
+        crash_report._post_intake(title, body, repo="SimonBarnett/bobiverse", sig=key, exe="bob-worker")
+        return {"ok": True, "key": key}
+    except Exception:
+        return {"ok": False, "key": key}
+
+
+def _explicit_refusal_exit(
+    dec: Decision,
+    log: Log,
+    mode: str,
+    *,
+    machine: str = "",
+    kind: str = "",
+    model: str = "",
+    fuel=None,
+    filer_post: Optional[Callable[..., dict]] = None,
+) -> Optional[int]:
     """Show an explicit refusal. Never starts another agent."""
     if dec.kind not in ("refuse", "xai-auth-expired"):
         return None
     log(f"select[{mode}]: refused - {dec.reason}")
+    report_seat_start_refusal(
+        machine=machine,
+        kind=kind or dec.kind,
+        model=model,
+        reason=dec.reason,
+        fuel=fuel,
+        tray_restarted=False,
+        log=log,
+        filer_post=filer_post,
+    )
     try:
         sys.stdout = sys.__stdout__
         sys.stderr = sys.__stderr__
@@ -13234,7 +13406,11 @@ def run_plan(args, log: Log) -> int:
     )
     if normalize_explicit_agent(requested):
         log(f"select[plan]: explicit {normalize_explicit_agent(requested)} -> {dec.kind} - {dec.reason}")
-    stopped = _explicit_refusal_exit(dec, log, "plan")
+    stopped = _explicit_refusal_exit(
+        dec, log, "plan",
+        machine=getattr(args, "machine_id", "") or "",
+        kind=requested, model="", fuel=fuel,
+    )
     if stopped is not None:
         return stopped
     secret = None
@@ -13254,6 +13430,15 @@ def run_plan(args, log: Log) -> int:
         oc_model = resolve_opencode_model(fuel, log_fn=log)
         if not oc_model:
             log("opencode: no usable model (capped/paused) - not starting")
+            report_seat_start_refusal(
+                machine=getattr(args, "machine_id", "") or "",
+                kind="opencode",
+                model="",
+                reason="opencode: no usable model (capped/paused)",
+                fuel=fuel,
+                tray_restarted=False,
+                log=log,
+            )
             return EXIT_NO_AGENT
         os.environ["BOB_OPENCODE_MODEL"] = oc_model
     else:
@@ -13312,13 +13497,18 @@ def run_monitor(args, log: Log) -> int:
         return EXIT_USAGE
     dec, cursor_cmd, grok_exe, fuel, signin_ok = _choose(args, log, folder, "monitor")
     opencode_cmd = _resolve_opencode_cmd_for_seat(log)
+    requested = getattr(args, "agent", "") or ""
     dec = resolve_seat_decision(
-        getattr(args, "agent", ""),
+        requested,
         dec, fuel, cursor_cmd, grok_exe, opencode_cmd,
         auth_present=opencode_auth_file_present(),
         xai_signin_ok=signin_ok,
     )
-    stopped = _explicit_refusal_exit(dec, log, "monitor")
+    stopped = _explicit_refusal_exit(
+        dec, log, "monitor",
+        machine=getattr(args, "machine_id", "") or "",
+        kind=requested, model="", fuel=fuel,
+    )
     if stopped is not None:
         return stopped
     secret = None
@@ -13341,6 +13531,15 @@ def run_monitor(args, log: Log) -> int:
         oc_model = resolve_opencode_model(fuel, log_fn=log)
         if not oc_model:
             log("opencode: no usable model (capped/paused) - not starting")
+            report_seat_start_refusal(
+                machine=getattr(args, "machine_id", "") or "",
+                kind="opencode",
+                model="",
+                reason="opencode: no usable model (capped/paused)",
+                fuel=fuel,
+                tray_restarted=False,
+                log=log,
+            )
             return EXIT_NO_AGENT
         os.environ["BOB_OPENCODE_MODEL"] = oc_model
     else:
@@ -13425,13 +13624,18 @@ def run_maintenance(args, log: Log, *, spawn: Optional[Callable] = None, poll_s:
         return EXIT_USAGE
     dec, cursor_cmd, grok_exe, fuel, signin_ok = _choose(args, log, folder, "maintenance")
     opencode_cmd = _resolve_opencode_cmd_for_seat(log)
+    requested = getattr(args, "agent", "") or ""
     dec = resolve_seat_decision(
-        getattr(args, "agent", ""),
+        requested,
         dec, fuel, cursor_cmd, grok_exe, opencode_cmd,
         auth_present=opencode_auth_file_present(),
         xai_signin_ok=signin_ok,
     )
-    stopped = _explicit_refusal_exit(dec, log, "maintenance")
+    stopped = _explicit_refusal_exit(
+        dec, log, "maintenance",
+        machine=getattr(args, "machine_id", "") or "",
+        kind=requested, model="", fuel=fuel,
+    )
     if stopped is not None:
         return stopped
     secret = None
@@ -13454,6 +13658,15 @@ def run_maintenance(args, log: Log, *, spawn: Optional[Callable] = None, poll_s:
         oc_model = resolve_opencode_model(fuel, log_fn=log)
         if not oc_model:
             log("opencode: no usable model (capped/paused) - not starting")
+            report_seat_start_refusal(
+                machine=getattr(args, "machine_id", "") or "",
+                kind="opencode",
+                model="",
+                reason="opencode: no usable model (capped/paused)",
+                fuel=fuel,
+                tray_restarted=False,
+                log=log,
+            )
             return EXIT_NO_AGENT
         os.environ["BOB_OPENCODE_MODEL"] = oc_model
     else:
@@ -13533,6 +13746,12 @@ def run_agent(args, log: Log) -> int:
     except Exception:
         pass
     dec, cursor_cmd, grok_exe, fuel, signin_ok = _choose(args, log, folder, "agent")
+    if normalize_explicit_agent(getattr(args, "agent", "") or "") == "opencode":
+        if not fuel_reading_known(fuel, "opencode"):
+            fuel = reread_explicit_opencode_fuel(
+                lambda: read_fuel(Path(args.install_root)),
+                log,
+            )
     opencode_cmd = _resolve_opencode_cmd_for_seat(log)
     requested = getattr(args, "agent", "") or ""
     dec = resolve_seat_decision(
@@ -13544,7 +13763,11 @@ def run_agent(args, log: Log) -> int:
     # FR #7485: always log the seat decision after explicit override (auto already logged in _choose).
     if normalize_explicit_agent(requested):
         log(f"select[agent]: explicit {normalize_explicit_agent(requested)} -> {dec.kind} - {dec.reason}")
-    stopped = _explicit_refusal_exit(dec, log, "agent")
+    stopped = _explicit_refusal_exit(
+        dec, log, "agent",
+        machine=machine,
+        kind=requested, model="", fuel=fuel,
+    )
     if stopped is not None:
         return stopped
     secret = None
@@ -13564,6 +13787,15 @@ def run_agent(args, log: Log) -> int:
         oc_model = resolve_opencode_model(fuel, log_fn=log)
         if not oc_model:
             log("opencode: no usable model (capped/paused) - not starting")
+            report_seat_start_refusal(
+                machine=getattr(args, "machine_id", "") or "",
+                kind="opencode",
+                model="",
+                reason="opencode: no usable model (capped/paused)",
+                fuel=fuel,
+                tray_restarted=False,
+                log=log,
+            )
             return EXIT_NO_AGENT
         os.environ["BOB_OPENCODE_MODEL"] = oc_model
     else:
@@ -13608,6 +13840,27 @@ def run_agent(args, log: Log) -> int:
     # FR #7084 digest ``start_model`` is the launched process/session model.
     build = short_build_sha()
     seat_model = resolve_seat_hello_model(kind)
+    try:
+        import worker_start_model as wsm
+
+        seat_model = wsm.concrete_model_id(seat_model)
+    except Exception:
+        if "$" in str(seat_model or ""):
+            seat_model = ""
+    if kind == "opencode" and not seat_model:
+        seat_model = "unknown"
+        try:
+            report_configured_start_model_unavailable(
+                kind=kind,
+                configured="unresolved-template",
+                actual="unknown",
+                machine=machine,
+                nick=nick,
+                reason="model-template-unresolved",
+                log=log,
+            )
+        except Exception:
+            log("worker: opencode model unresolved; digest model=unknown")
     cfg_model = ""
     cost_tier = ""
     mismatch = None
@@ -13670,9 +13923,9 @@ def run_agent(args, log: Log) -> int:
         import worker_start_model as wsm
 
         child_env = getattr(sup, "last_child_env", None) or {}
-        actual = str(child_env.get(wsm.ENV_ACTUAL_MODEL) or "").strip()
+        actual = wsm.concrete_model_id(child_env.get(wsm.ENV_ACTUAL_MODEL))
         if not actual:
-            actual = wsm.actual_start_model(env=child_env or os.environ)
+            actual = wsm.concrete_model_id(wsm.actual_start_model(env=child_env or os.environ))
         actual_effort = str(child_env.get(wsm.ENV_ACTUAL_EFFORT) or "").strip()
         _cfg = wsm.load_worker_start_config()
         cfg_model = wsm.configured_start_model(kind, _cfg)
@@ -14186,6 +14439,15 @@ def main(argv: Optional[list] = None) -> int:
         refusal = worker_cap_refusal(snapshot_procs(), os.getpid(), for_mode=args.mode)
         if refusal:
             log("refused: " + refusal)
+            report_seat_start_refusal(
+                machine=getattr(args, "machine_id", "") or "",
+                kind=getattr(args, "agent", "") or "",
+                model="",
+                reason=refusal,
+                fuel=None,
+                tray_restarted=False,
+                log=log,
+            )
             try:
                 ensure_console("Bob worker - refused")
                 print("\nBob worker: " + refusal + ".\nClose a running worker window first.\n")

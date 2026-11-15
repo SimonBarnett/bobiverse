@@ -79,6 +79,7 @@ def test_fr4796_outbox_pace_delays_multi_line_put(tmp_path: Path):
         "200",
         "-ChunkBytes",
         "64",
+        "-ForceIrcPut",
     )
     elapsed = time.perf_counter() - t0
     assert r.returncode == 0, r.stdout + "\n" + r.stderr

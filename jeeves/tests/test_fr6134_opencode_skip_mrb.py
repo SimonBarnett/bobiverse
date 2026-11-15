@@ -108,6 +108,57 @@ def test_assign_row_refuses_mrb_to_opencode(_home):
     assert "OpenCode" in str(detail) or "opencode" in str(detail).lower() or "6134" in str(detail)
 
 
+def test_free_model_skips_mrb_even_when_kind_says_grok(_home):
+    """FR #7706: a free OpenCode model is not offered MRB when the digest kind is wrong."""
+    _queue(
+        _home,
+        [
+            _row("SimonBarnett/bobiverse", "MRB", 7706, 1),
+            _row("SimonBarnett/bobiverse", "FR", 7706, 2),
+        ],
+    )
+    fi.handle_focus_cmd(_home, "hi bobiverse")
+    doc = bobreport.empty_digest()
+    doc["machines"]["marchhare"] = bobreport._empty_machine("marchhare")
+    nick = "marchhare-28996"
+    doc["machines"]["marchhare"]["workers"] = {
+        "28996": {
+            "state": "idle",
+            "nick": nick,
+            "kind": "grok",
+            "start_model": "opencode/deepseek-v4.1-flash-free",
+            "model": "opencode/deepseek-v4.1-flash-free",
+        }
+    }
+    doc["machines"]["marchhare"]["worker_list"] = [
+        {
+            "nick": nick,
+            "state": "idle",
+            "work": "",
+            "updated": "2026-11-15T22:31:00Z",
+            "kind": "grok",
+            "start_model": "opencode/deepseek-v4.1-flash-free",
+        }
+    ]
+    bobreport.save_digest(_home, doc)
+    st, job = gitclaim.offer_focus_top(_home, nick, "#marchhare")
+    assert st == "ok"
+    assert job is not None
+    assert str(job.get("task")).upper() == "FR"
+
+
+def test_unresolved_model_template_skips_mrb(_home):
+    _queue(_home, [_row("SimonBarnett/bobiverse", "MRB", 7706, 1)])
+    fi.handle_focus_cmd(_home, "hi bobiverse")
+    _seed_kind(_home, "marchhare", "28996", "grok")
+    doc = bobreport.load_digest(_home)
+    doc["machines"]["marchhare"]["workers"]["28996"]["start_model"] = "$model"
+    bobreport.save_digest(_home, doc)
+    st, job = gitclaim.offer_focus_top(_home, "marchhare-28996", "#marchhare")
+    assert job is None or str((job or {}).get("task")).upper() != "MRB"
+    assert st != "ok" or job is None
+
+
 def test_unknown_kind_does_not_block_mrb(_home):
     """Missing digest kind must not strand stronger seats that forgot to publish kind."""
     _queue(_home, [_row("SimonBarnett/bobiverse", "MRB", 6121, 1)])

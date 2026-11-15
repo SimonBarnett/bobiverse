@@ -322,7 +322,7 @@ function Write-TrayLog([string]$m) {
 }
 
 # t794u/t797u/t798u helpers: Exit ordering + detached service stop/restart, and the install inventory for the About dialog.
-foreach ($helper in @('BobTrayLifecycle.ps1', 'Get-BobInstallInfo.ps1', 'BobTrayStartWorker.ps1', 'BobTrayRecycleSeat.ps1', 'BobTrayDialogs.ps1', 'BobTrayWarmStep.ps1')) {
+foreach ($helper in @('BobTrayLifecycle.ps1', 'Get-BobInstallInfo.ps1', 'BobTrayClickedSeats.ps1', 'BobTrayStartWorker.ps1', 'BobTrayRecycleSeat.ps1', 'BobTrayDialogs.ps1', 'BobTrayWarmStep.ps1')) {
     $helperPath = Join-Path $RepoRoot ('tools\' + $helper)
     if (Test-Path -LiteralPath $helperPath) { . $helperPath } else { Write-TrayLog ('missing helper ' + $helperPath) }
 }
@@ -2108,6 +2108,10 @@ function Start-BobTrayWorkerExe {
             if (-not $seatForLog) { $seatForLog = 'unknown' }
             $trigForLog = if ($Trigger) { [string]$Trigger } else { 'other' }
             Write-BobTraySeatStart -Log { param($m) Write-TrayLog $m } -SeatId $seatForLog -WorkerPid ([int]$childPid) -Trigger $trigForLog
+            # FR #7692: a named click is the seat identity. Automatic has no kind and is not recorded.
+            if ($trigForLog -eq 'menu' -and $explicit -and $explicit -ne 'auto' -and $mid) {
+                Add-BobTrayClickedSeat -Root $RepoRoot -Nick ('{0}-{1}' -f $mid.ToLowerInvariant(), [int]$childPid) -Kind $explicit -Machine $mid
+            }
         }
         return [int]$childPid   # t810u: the remote !startworker path reports it
     }
@@ -2592,6 +2596,13 @@ function Update-Hover {
     }
     catch {
         Write-TrayLog ("hover error: " + $_.Exception.Message)
+        # FR #7693: a null colour is handled before this catch. Anything else still reports.
+        try {
+            if (Get-Command Invoke-BobMustReportFailure -ErrorAction SilentlyContinue) {
+                Invoke-BobMustReportFailure -Component 'tray' -Site 'tray.hover' -Exception $_.Exception | Out-Null
+            }
+        }
+        catch { }
     }
 }
 
@@ -2712,6 +2723,12 @@ function Get-BobTrayFuelLogoImage {
     return $img
 }
 
+# FR #7693: loaded once so a missing TitleColor never hits a typed Color parameter.
+if (-not (Get-Command Resolve-BobTrayDrawingColor -ErrorAction SilentlyContinue)) {
+    $bobTrayColorHelper = Join-Path $PSScriptRoot 'BobTrayDrawingColor.ps1'
+    if (Test-Path -LiteralPath $bobTrayColorHelper) { . $bobTrayColorHelper }
+}
+
 function Add-BobTrayFuelFamilyRow {
     param(
         [int]$X,
@@ -2719,7 +2736,7 @@ function Add-BobTrayFuelFamilyRow {
         [Parameter(Mandatory)][string]$Family,
         [string]$Title,
         [string]$RightText,
-        [System.Drawing.Color]$TitleColor
+        $TitleColor
     )
     $icon = $null
     try { $icon = Get-BobTrayFuelLogoImage -Family $Family } catch { $icon = $null }
@@ -2974,8 +2991,8 @@ function Add-BobTraySectionHeader {
         [switch]$WithHelp,
         $Agent,
         [string]$RightText,
-        [System.Drawing.Color]$RightColor,
-        [System.Drawing.Color]$TitleColor
+        $RightColor,
+        $TitleColor
     )
     $iconW = 0
     if ($Icon) {
@@ -2996,7 +3013,9 @@ function Add-BobTraySectionHeader {
     $nm = New-Object System.Windows.Forms.Label
     $nm.AutoSize = $true
     $nm.Font = New-Object System.Drawing.Font 'Segoe UI Semibold', 9.5
-    if ($null -ne $TitleColor -and $TitleColor.A -gt 0) { $nm.ForeColor = $TitleColor }
+    # FR #7693: null or missing TitleColor keeps $fg. A real colour is applied as given.
+    $titlePaint = Resolve-BobTrayDrawingColor -Color $TitleColor
+    if ($null -ne $titlePaint) { $nm.ForeColor = $titlePaint }
     else { $nm.ForeColor = $fg }
     $nm.BackColor = [System.Drawing.Color]::Transparent
     $nm.Text = $Title
@@ -3024,7 +3043,8 @@ function Add-BobTraySectionHeader {
         $rt = New-Object System.Windows.Forms.Label
         $rt.AutoSize = $true
         $rt.Font = New-Object System.Drawing.Font 'Segoe UI Semibold', 9
-        if ($null -ne $RightColor -and $RightColor.A -gt 0) { $rt.ForeColor = $RightColor }
+        $rightPaint = Resolve-BobTrayDrawingColor -Color $RightColor
+        if ($null -ne $rightPaint) { $rt.ForeColor = $rightPaint }
         else { $rt.ForeColor = [System.Drawing.Color]::FromArgb(248, 81, 73) }
         $rt.BackColor = [System.Drawing.Color]::Transparent
         $rt.Text = $RightText
@@ -4176,7 +4196,7 @@ $startWorkerTimer.Add_Tick({
                     if (Get-Command Invoke-BobTrayRecycleSeatQueue -ErrorAction SilentlyContinue) {
                         $rsDir = Get-BobTrayRecycleSeatDir -Root $RepoRoot
                         [void](Invoke-BobTrayRecycleSeatQueue -Root $RepoRoot -Dir $rsDir `
-                                -Launch { param($seatNick) Start-BobTrayWorkerExe -Mode 'agent' -Quiet -Trigger 'restore-after-recycle' -SeatId $seatNick } `
+                                -Launch { param($seatNick, $kind) Start-BobTrayWorkerExe -Mode 'agent' -Agent $kind -Quiet -Trigger 'restore-after-recycle' -SeatId $seatNick } `
                                 -Log { param($m) Write-TrayLog $m })
                     }
                     if (Test-BobTrayEngineMode) {
