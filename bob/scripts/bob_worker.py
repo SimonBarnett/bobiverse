@@ -3280,6 +3280,15 @@ def report_agent_cli_nonzero_exit(
     except (TypeError, ValueError):
         pid_s = "0"
     evidence = agent_stderr_evidence(stderr_tail)
+    # FR #7681: 0xffffffff with no CLI stderr is an external kill (taskkill / seat stop),
+    # not an agent-CLI bug. Do not open an intake. A real CLI failure still has stderr.
+    if u == 0xFFFFFFFF and not str(evidence or "").strip():
+        if log:
+            try:
+                log(f"worker: agent-cli-nonzero-exit skipped external-kill job={job} (FR #7681)")
+            except Exception:
+                pass
+        return {"ok": True, "skipped": True, "reason": "external-kill", "key": ""}
     err_key = agent_stderr_dedupe_line(evidence)
     # Same crash on the same seat is one issue, whatever the job was (FR #7671).
     key = f"agent-cli-nonzero-exit|{mid}|{u}|{err_key}"[:128]

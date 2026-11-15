@@ -27,6 +27,7 @@ def test_report_agent_cli_nonzero_exit_files_exit_and_job():
         nick="testhost-1",
         kind="grok",
         agent_pid=1488,
+        stderr_tail="agent cli failed to start\n",
         filer_post=lambda p: posts.append(p) or {"ok": True},
     )
     assert out.get("ok") is True
