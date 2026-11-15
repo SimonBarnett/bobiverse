@@ -250,6 +250,8 @@ Checks:
 
 ## Harvested MRB discipline
 
+- **Per-component CI (FR #7276 / FR #7524 / MRB #7540):** new `build-bob-plan` owns `bob/agents/plan/**` and `bobiverse-bob-plan` alone — pin exactly one workflow owner; `git add -f` `.github/workflows/*` when the job worktree `.git/info/exclude` ignores `.github/*`. Do not park this playbook under `harvest/SKILL.md` (moved from harvest tip #7542).
+
 - **Locked Windows atomic replace (class of FR #7518 / MRB #7536):** tip needs retry+backoff on WinError 5/32 plus one crash_report and keep-last-set; unique tmp + stale `*.tmp` cleanup. Do not park this playbook under `harvest/SKILL.md` (moved from harvest tip #7539).
 
 - **WinPS Get-FileHash missing (FR #7355 / class of MRB #7311):** before FAILING a product PR, check process env `PSModuleAutoLoadingPreference=None`; clear Autoload or `Import-Module Microsoft.PowerShell.Utility`, file the seat env gap separately. Do not park this playbook under `bobiverse-fleet-ops` (moved from harvest tip #7357).
