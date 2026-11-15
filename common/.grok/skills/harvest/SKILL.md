@@ -470,6 +470,7 @@ routes to bobiverse via the split rule.
 - When the agent CLI dies, quote its last stderr lines in the intake Evidence and dedupe on that line, not on the job id.
 - When an assigned FR is already closed as a receipt of an earlier fix, NACK with the covering issue and PR and do not open another PR.
 - Windows exit 0xffffffff with empty agent stderr is an external kill. Do not open an intake for it.
+- A daemon health probe that os._exits must stop when the server it watches has shut down, or any test that binds and shuts the listener will kill the suite a minute later with no failure line.
 
 ## Harvest digest (lessons audit 2026-10-06)
 
