@@ -762,6 +762,13 @@ def handle_request(
                 if verb == "HEAD":
                     return 200, b""
                 return 200, payload
+            # FR #7454: commands reference is public — never proxy behind settings login.
+            if inner in ("/commands", "/commands/"):
+                data = _jhttp.load_jeeves_commands_html()
+                if data is None:
+                    return 404, b""
+                stash_response_headers([("Content-Type", "text/html; charset=utf-8")])
+                return (200, b"") if verb == "HEAD" else (200, data)
             if inner == _jhttp.BUTLER_HREF:
                 p = _jhttp.butler_ico_path()
                 if p.is_file():
