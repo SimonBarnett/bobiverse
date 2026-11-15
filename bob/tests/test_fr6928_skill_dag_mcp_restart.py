@@ -65,8 +65,8 @@ def test_fr6928_refresh_then_restart_sees_new_job_worktree_in_planned_argv(tmp_p
     )
     args = bw.skill_dag_mcp_launch_args(str(worker), job_worktree=job)
     assert "--job-worktree-file" in args
-    ptr = bound / "skill-dag-job-worktree"
-    # Pointer lives next to grok bound config; launch_args wrote worker cwd unless pointer_cwd.
+    ptr = bound.parent / "skill-dag-job-worktree"
+    # FR #7446: pointer lives in run_dir (parent of bound-cwd), not inside the workspace.
     killed: list[int] = []
     bw.restart_skill_dag_mcp_stdio_children(
         99,

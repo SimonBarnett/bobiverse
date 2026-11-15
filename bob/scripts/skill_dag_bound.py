@@ -268,14 +268,22 @@ def prepare_bound_agent_cwd(
                 roots.append(cand)
     grok_dir = bound / ".grok"
     grok_dir.mkdir(parents=True, exist_ok=True)
-    # FR #7361: keep the pointer outside ``.grok`` so assign writes do not drop stdio MCP.
-    ptr = bound / "skill-dag-job-worktree"
+    # FR #7361 / #7446: pointer outside ``.grok`` and outside bound-cwd (Grok watches
+    # the whole workspace; in-tree pointer writes drop stdio MCP on assign).
+    ptr = bound.parent / "skill-dag-job-worktree"
     if not ptr.is_file():
         ptr.write_text("", encoding="utf-8")
+    legacy = bound / "skill-dag-job-worktree"
+    if legacy.is_file():
+        try:
+            legacy.unlink()
+        except OSError:
+            pass
     args = [script.as_posix()]
     for r in roots:
         args.extend(["--root", Path(r).resolve().as_posix()])
     args.extend(["--job-worktree-file", ptr.as_posix()])
+    args.extend(["--seat-cwd", bound.as_posix()])
     args_toml = ", ".join(json.dumps(a) for a in args)
     (grok_dir / "config.toml").write_text(
         "[mcp_servers.skill-dag]\n"

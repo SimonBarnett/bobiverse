@@ -153,6 +153,8 @@ def roots_from_argv(argv: list[str] | None = None) -> list[Path]:
     p.add_argument("--job-worktree", default=None)
     p.add_argument("--job-worktree-file", default=None)
     p.add_argument("--max-bytes", type=int, default=DEFAULT_MAX_BYTES)
+    # FR #7449 / #7446: ignored seat marker for FR #6928 cmdline matching (bob_worker).
+    p.add_argument("--seat-cwd", default=None)
     args, _unknown = p.parse_known_args(argv)
     base = [Path(r) for r in (args.root or [])]
     if not base and not args.job_worktree and not args.job_worktree_file:
@@ -501,6 +503,11 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help="FR #7120: reread this one-line worktree path on each tools/call (no stdio restart)",
     )
+    p.add_argument(
+        "--seat-cwd",
+        default=None,
+        help="FR #7449 / #7446: ignored seat marker for FR #6928 cmdline matching (bob_worker)",
+    )
     p.add_argument("--max-bytes", type=int, default=DEFAULT_MAX_BYTES)
     # FR #7000: Cursor agent seats may lack a skill-dag MCP namespace in dynamic tools;
     # one-shot resolve/get_skill/status prints JSON on stdout (no stdio serve).
@@ -513,6 +520,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--seed", default="", help="With --once resolve: job seed (FR/MRB/UAT) or skill id")
     p.add_argument("--path", default="", help="With --once get_skill: SKILL.md path under a --root")
     args = p.parse_args(argv)
+    _ = args.seat_cwd  # marker only; never used for roots
     try:
         roots = roots_from_argv(
             [
