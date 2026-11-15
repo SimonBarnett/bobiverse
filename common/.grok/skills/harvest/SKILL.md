@@ -444,6 +444,7 @@ routes to bobiverse via the split rule.
 - Ear publish: strip cursor_label/cursor_pools/cursor_known/overage_*/pcent.grok-chat+cursor-models in build_peer_fuel_merge_payload; always cleared[] + empty-or-nonlegacy pcent replace so sticky digest leftovers drop; keep companion digest-reader FR separate.
 - When git push of fr-N is rejected because origin/fr-N already exists, fetch it; if that tip already has an open PR that Closes the assigned issue, DONE with that URL and do not force-push.
 - Tray pool paint: bob-tray.exe polls digest every 60s into run/tray-digest-pools.json and Status LoadMerged prefers that file over tray-status pool fields so TipForm survives a dead PS engine.
+- MRB FR #7522-class tips: if shared rule lands without ear/Jeeves callers, tip-fix wire should_report_pool_stale_exception before PASS --- FR acceptance includes raises no exception, not tray-only.
 
 ## Harvest digest (lessons audit 2026-10-06)
 
