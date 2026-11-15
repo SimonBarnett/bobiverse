@@ -750,7 +750,9 @@ function Test-HarvestLessonDistinctiveOverlap([string]$ExistingBlob, [string]$Ne
         'without','deps','typeof','function','config','box','the','and','for','with',
         'that','this','from','when','into','secrets','harvest','agent','skills','skill',
         'invoke','intake','machine','source','book','seat','lesson','lessons','session',
-        'summary','search','html','utf8','flamingo','ionos','marchhare'
+        'summary','search','html','utf8','flamingo','ionos','marchhare',
+        # FR #626: mcp.ntsa.uk + Priority Agent is the product home, not a lesson identity.
+        'ntsa','priority','priorityagent'
     ))
     $normWord = {
         param($w)
