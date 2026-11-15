@@ -453,6 +453,7 @@ routes to bobiverse via the split rule.
 - Front-door FR #7412 404 is for operator UI paths only; exempt /api/* (and static assets) so unauth settings calls stay 401/403 for CI and clients.
 - Fleet-pool-stale: evaluate shared last_ok age/recovery before FR #7552 auth-skip so digest no_token noise cannot override a fresh fetcher last_ok.
 - Install-BobEarExe: stage exe + companions + provenance before --help smoke; refuse smoke if a planned companion is missing; keep .bak rollback for companions
+- no_eligible_reviewer recycle: pick only live idle seats that pass _mrb_idle_block_reason; if none, set no_eligible_reported once and do not recycleseat authors/stale nicks
 
 ## Harvest digest (lessons audit 2026-10-06)
 
