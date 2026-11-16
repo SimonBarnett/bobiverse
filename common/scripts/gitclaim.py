@@ -15293,6 +15293,139 @@ def reconcile_lost_ack_from_digest(home: Path, *, log=None) -> int:
         return 0
 
 
+def holder_bored_limit() -> int:
+    """FR #7912: consecutive !bored from the holder before the job is released."""
+    raw = str(os.environ.get("BOB_HOLDER_BORED_N", "2") or "2").strip()
+    try:
+        n = int(raw)
+    except ValueError:
+        n = 2
+    return n if n >= 1 else 2
+
+
+def _holder_bored_path(home: Path) -> Path:
+    return Path(home) / "holder-bored.json"
+
+
+def _load_holder_bored(home: Path) -> dict:
+    path = _holder_bored_path(home)
+    try:
+        doc = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, ValueError):
+        return {"seats": {}}
+    if not isinstance(doc, dict):
+        return {"seats": {}}
+    seats = doc.get("seats")
+    if not isinstance(seats, dict):
+        doc["seats"] = {}
+    return doc
+
+
+def _save_holder_bored(home: Path, doc: dict) -> None:
+    path = _holder_bored_path(home)
+    path.write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8")
+
+
+def reset_holder_bored(home: Path, nick: str) -> None:
+    """FR #7912: ACK, DONE, or other progress clears the holder's !bored streak."""
+    key = (_seat_key(nick) or "").strip().lower()
+    if not key:
+        return
+    try:
+        with _lock(home):
+            doc = _load_holder_bored(home)
+            seats = doc.setdefault("seats", {})
+            if key not in seats:
+                return
+            seats.pop(key, None)
+            _save_holder_bored(home, doc)
+    except (TimeoutError, OSError):
+        return
+
+
+def _report_holder_bored(nick: str, job: str) -> None:
+    import runtime_failure
+
+    runtime_failure.report_message(
+        "jeeves",
+        "holder_bored nick=%s job=%s" % (nick, job),
+        site="holder-bored",
+    )
+
+
+_HOLDER_OPEN_RX = re.compile(
+    r"^(accepted|held)\s+(\S+)\s+(.+)(#\d+)\s*$",
+    re.IGNORECASE,
+)
+
+
+def release_holder_on_bored(home: Path, nick: str, now: float | None = None) -> str:
+    """FR #7912: N consecutive !bored from the holding seat releases that seat's job.
+
+    Returns the open-job text when this call released it, else ''. A different
+    seat's !bored never touches this nick's row. Offered-but-not-accepted pins
+    stay on the existing busy path. ACK/DONE/progress must call
+    ``reset_holder_bored`` or the streak keeps counting.
+    """
+    import time as _time
+
+    now_f = _time.time() if now is None else float(now)
+    open_job = seat_open_job(home, nick, now_f)
+    match = _HOLDER_OPEN_RX.match(str(open_job or "").strip())
+    if not match:
+        reset_holder_bored(home, nick)
+        return ""
+    key = (_seat_key(nick) or "").strip().lower()
+    if not key:
+        return ""
+    limit = holder_bored_limit()
+    count = 1
+    try:
+        with _lock(home):
+            doc = _load_holder_bored(home)
+            seats = doc.setdefault("seats", {})
+            prev = seats.get(key) if isinstance(seats.get(key), dict) else {}
+            if str(prev.get("job") or "") == open_job:
+                try:
+                    count = int(prev.get("count") or 0) + 1
+                except (TypeError, ValueError):
+                    count = 1
+            seats[key] = {"job": open_job, "count": count}
+            _save_holder_bored(home, doc)
+    except (TimeoutError, OSError):
+        return ""
+    if count < limit:
+        return ""
+    _kind, task, repo, ident = match.groups()
+    task_u = task.upper()
+    try:
+        import shop_listen
+
+        shop_listen.return_job_to_unaccepted(
+            home,
+            repo=repo,
+            task=task_u,
+            ident=ident,
+            now=now_f,
+            reason="holder_bored",
+            expected_nick=nick,
+        )
+    except Exception:
+        pass
+    with contextlib.suppress(Exception):
+        clear_seat_hold(home, nick, repo=repo, task=task_u, ident=ident, clear_pins=True)
+    with contextlib.suppress(Exception):
+        ledger_note_event(home, nick, "GIVEUP", task_u, repo, ident, None)
+    with contextlib.suppress(Exception):
+        import bobreport
+
+        bobreport.clear_seat_doing(home, nick, only_if_work_contains=ident.lstrip("#"))
+    with contextlib.suppress(Exception):
+        _report_holder_bored(nick, open_job)
+    reset_holder_bored(home, nick)
+    return open_job
+
+
 def bored_gate(
     home: Path,
     nick: str,
