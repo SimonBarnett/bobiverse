@@ -9299,9 +9299,11 @@ class BoredEmitter:
         past ``harvest_hold_s`` until ``turn_ended`` or ``turn_hold_max_s`` (default 600 s);
       * FR #2875: ``turn_ended`` with ACK open and no DONE/NACK/GIVEUP arms done-miss (remind after
         ``done_miss_grace_s``, then ``!bored`` reason ``done-miss`` if still open after the reminder turn);
-      * FR #4784: before ``!bored`` reason ``done-miss`` or ``ack-stale``, post
-        ``GIVEUP <TYPE> owner/repo#N done-miss|ack-stale`` so Jeeves frees the accepted row
-        (local ACK clear alone leaves ``nak busy`` forever while the PR stays open);
+      * FR #4784 / #7352: before ``!bored`` reason ``done-miss`` or ``ack-stale``, post
+        ``GIVEUP <TYPE> owner/repo#N no-terminal-reply|ack-stale`` so Jeeves frees the accepted
+        row (local ACK clear alone leaves ``nak busy`` forever while the PR stays open). The
+        wire reason for done-miss is ``no-terminal-reply``; ``done-miss`` stays the internal
+        ``!bored`` reason, and ``ack-stale`` covers a stale ACK;
       * FR #4753 / #7201: cursor/grok/opencode ``turn_ended`` with ``status=error`` (or an error
         field) while ACK is open retries the turn once, then ``GIVEUP … failed-turn <class>: <line>``
         so Jeeves can re-offer; it never sits idle holding the ACK. Quiet turn-end without error
