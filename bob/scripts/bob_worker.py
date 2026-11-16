@@ -4302,7 +4302,8 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             r"    $codePattern = '(HTTP|status( code)?)\D{0,3}(402|429)'",
             # FR #6366: watchdog timeout kills the run but must NOT record a model pause
             # (done-miss finish-runs looked like out-of-fuel). Only real 402/429/limit text pauses.
-            r"    $hitLimit = ($exitCode -ne 0 -and (($scan -match $limitPattern) -or ($scan -match $codePattern)))",
+            # FR #7951: a hard ceiling or watchdog kill is not out of fuel.
+            r"    $hitLimit = (-not $timedOut -and $exitCode -ne 0 -and (($scan -match $limitPattern) -or ($scan -match $codePattern)))",
             r"    if ($timedOut) {",
             r"        if ($proc -and -not $proc.HasExited) { try { & taskkill /T /F /PID $proc.Id 2>$null | Out-Null } catch { } }",
             r"        if (-not $killReason) { $killReason = 'watchdog timeout (no output)' }",
@@ -6451,7 +6452,10 @@ def provider_fuel_scan_text(text: str) -> str:
 
 def is_out_of_fuel_text(text: str) -> bool:
     """True when agent/log text is a provider fuel/quota/auth exhaustion (FR #3012 / #3019)."""
-    return bool(_OUT_OF_FUEL_RX.search(provider_fuel_scan_text(text)))
+    scanned = provider_fuel_scan_text(text)
+    if opencode_fuel is not None and opencode_fuel.is_turn_timeout_text(scanned):
+        return False
+    return bool(_OUT_OF_FUEL_RX.search(scanned))
 
 
 # FR #4858: hard API 402 / usage-balance-exhausted (not mid-job reading, not NEEDS_AUTH).

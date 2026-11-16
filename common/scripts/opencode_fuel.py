@@ -2086,6 +2086,18 @@ def save_opencode_pauses(state_dir: str | Path, pauses: dict[str, float]) -> boo
         return False
 
 
+_TURN_TIMEOUT_RX = re.compile(
+    r"(?i)\b(?:hard[-\s]?ceiling|watchdog timeout|turn timeout)\b"
+)
+
+
+def is_turn_timeout_text(text: str | None) -> bool:
+    """True when the text is a turn timeout or hard ceiling, not a provider quota."""
+    if not text or not isinstance(text, str):
+        return False
+    return _TURN_TIMEOUT_RX.search(text) is not None
+
+
 def record_opencode_pause(
     state_dir: str | Path,
     model_id: str,
@@ -2102,9 +2114,14 @@ def record_opencode_pause(
     a process-scoped lock so concurrent seats sharing ``state_dir`` cannot
     overwrite one another's updates. Returns the reset timestamp, or ``None``
     when the pause could not be persisted (including lock timeout).
+
+    FR #7951: a hard ceiling, watchdog, or turn timeout never writes a pause,
+    even when the same blob also contains a quoted provider phrase.
     """
     now = now if now is not None else time.time()
     if not model_id:
+        return None
+    if is_turn_timeout_text(output_text):
         return None
     reset_ts = parse_reset_time(output_text, now=now)
     if reset_ts is None:
