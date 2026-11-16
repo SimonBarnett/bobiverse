@@ -264,6 +264,13 @@ def _resolve_installed_worker_script(
     install_root: str | Path | None = None,
 ) -> Optional[Path]:
     """Locate a worker ``.py`` handed to external python. Never prefer a PyInstaller ``_MEI`` extract."""
+    # FR #7910: a frozen exe writes bundled helpers beside itself before the search.
+    try:
+        import worker_shipped_scripts as _shipped_scripts
+
+        _shipped_scripts.extract_bundled_scripts()
+    except Exception:
+        pass
     source = Path(source_file).resolve() if source_file else Path(__file__).resolve()
     here = source.parent
     candidates: list[Path] = []
