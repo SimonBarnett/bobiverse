@@ -505,6 +505,7 @@ routes to bobiverse via the split rule.
 - A FIX or MRB OpenCode worktree checks out gh pr view headRefName after fetch. Do not invent fix-N from main, and do not NACK worktree-absent before create.
 - Do not put time.time_ns() alone in a spool filename on Windows. A tight loop repeats the stamp and os.replace clobbers the unread file.
 - Copilot draft ready belongs on the stuck-job sweep: require a non-plan commit, quiet seconds, and completed non-failing checks before gh pr ready, and record the head SHA so the same SHA is not announced twice.
+- When a frozen worker resolver claims to prefer the exe bundle, list exe_dir/scripts before the install checkout bob/scripts. A monkeypatched resolver test does not prove that order.
 
 ## Harvest digest (lessons audit 2026-10-06)
 
