@@ -734,6 +734,42 @@ def _branch_exists(run, clone: str, branch: str) -> bool:
         return False
 
 
+def _safe_git_branch(name: str) -> bool:
+    text = (name or "").strip()
+    if not text or text.startswith("-") or ".." in text or text.endswith("/") or text.endswith(".lock"):
+        return False
+    return re.match(r"^[A-Za-z0-9._/-]+$", text) is not None
+
+
+def _pr_head_branch(run, repo: str, number: str) -> tuple[str, str]:
+    """Return ``(head_branch, error_class)`` for a FIX/MRB pull request.
+
+    Empty branch with an error class when ``gh`` cannot name the head.
+    """
+    try:
+        proc = _git_run(
+            run,
+            ["gh", "pr", "view", str(number), "--repo", repo, "--json", "headRefName"],
+            timeout=WORKTREE_FETCH_TIMEOUT_S,
+        )
+    except Exception as exc:
+        if _is_timeout_exc(exc):
+            return "", "timeout"
+        return "", "pr-head"
+    if int(getattr(proc, "returncode", 1)) != 0:
+        return "", "pr-head"
+    try:
+        import json as _json
+
+        doc = _json.loads(getattr(proc, "stdout", "") or "{}")
+        head = str((doc or {}).get("headRefName") or "").strip()
+    except Exception:
+        return "", "pr-head"
+    if not _safe_git_branch(head):
+        return "", "pr-head"
+    return head, ""
+
+
 def create_job_worktree(
     path: str,
     key: str,
@@ -768,7 +804,20 @@ def create_job_worktree(
         return False, "no-clone"
     if dir_is_forbidden(clone):
         return False, "forbidden"
-    branch = _job_branch_from_key(key)
+    parsed = re.match(r"(?i)^(FR|MRB|UAT|FIX)\s+(\S+)#(\d+)$", (key or "").strip())
+    kind = parsed.group(1).upper() if parsed else ""
+    repo = parsed.group(2) if parsed else ""
+    number = parsed.group(3) if parsed else ""
+    # FR #7946: FIX and MRB edit an existing PR. Check out its head branch.
+    # Never invent fix-N / mrb-N from main.
+    pr_head = ""
+    if kind in ("FIX", "MRB"):
+        pr_head, head_err = _pr_head_branch(run, repo, number)
+        if not pr_head:
+            return False, head_err or "pr-head"
+        branch = pr_head
+    else:
+        branch = _job_branch_from_key(key)
     if not branch:
         return False, "malformed"
     try:
@@ -776,14 +825,19 @@ def create_job_worktree(
     except OSError:
         return False, "disk"
     # Best-effort tip fetch; failure alone does not block if a local tip exists.
+    fetch_ref = branch if pr_head else "main"
+    fetch_ok = False
     try:
-        _git_run(
+        fetch_proc = _git_run(
             run,
-            ["git", "-C", clone, "fetch", "origin", "main"],
+            ["git", "-C", clone, "fetch", "origin", fetch_ref],
             timeout=WORKTREE_FETCH_TIMEOUT_S,
         )
-    except Exception:
-        pass
+        fetch_ok = int(getattr(fetch_proc, "returncode", 1)) == 0
+    except Exception as exc:
+        if pr_head and _is_timeout_exc(exc):
+            return False, "timeout"
+        fetch_ok = False
 
     def _ref_ok(ref: str) -> bool:
         try:
@@ -797,7 +851,27 @@ def create_job_worktree(
             return False
 
     try:
-        if _branch_exists(run, clone, branch):
+        if pr_head:
+            local = _branch_exists(run, clone, branch)
+            remote = _ref_ok(f"origin/{branch}")
+            if not local and not remote:
+                return False, "fetch" if not fetch_ok else "pr-head"
+            if local:
+                proc = _git_run(
+                    run,
+                    ["git", "-C", clone, "worktree", "add", str(folder), branch],
+                    timeout=WORKTREE_ADD_TIMEOUT_S,
+                )
+            else:
+                proc = _git_run(
+                    run,
+                    [
+                        "git", "-C", clone, "worktree", "add", "--track",
+                        "-b", branch, str(folder), f"origin/{branch}",
+                    ],
+                    timeout=WORKTREE_ADD_TIMEOUT_S,
+                )
+        elif _branch_exists(run, clone, branch):
             proc = _git_run(
                 run,
                 ["git", "-C", clone, "worktree", "add", str(folder), branch],
