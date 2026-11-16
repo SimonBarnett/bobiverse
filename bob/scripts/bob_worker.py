@@ -3159,11 +3159,17 @@ def normalize_agent_exit_code(code) -> int:
     return c & 0xFFFFFFFF
 
 
+# STATUS_CONTROL_C_EXIT: console closed or Ctrl+C. Not an agent CLI crash.
+CONSOLE_CLOSE_EXIT = 0xC000013A
+
+
 def format_agent_exit_code_label(code) -> str:
     """Human label for intake/logs; shows ``0xffffffff`` when that is the u32 value."""
     u = normalize_agent_exit_code(code)
     if u == 0xFFFFFFFF:
         return f"{u} (0xffffffff)"
+    if u == CONSOLE_CLOSE_EXIT:
+        return f"{u} (0xc000013a STATUS_CONTROL_C_EXIT)"
     return str(u)
 
 
@@ -3298,20 +3304,30 @@ def report_agent_cli_nonzero_exit(
     # such as a Flash nick disappearing with no issue. Still classify recycle vs kill.
     silent = u == 0xFFFFFFFF and not str(evidence or "").strip()
     parent_l = parent.lower()
-    if "recycleseat" in parent_l or "bobtrayrecycleseat" in parent_l:
+    if u == CONSOLE_CLOSE_EXIT:
+        # FR #7881: OpenCode 3221225786 is the console closing, not a CLI bug.
+        end = "console-close"
+    elif "recycleseat" in parent_l or "bobtrayrecycleseat" in parent_l:
         end = "recycle"
     elif silent:
         end = "external-kill"
     else:
         end = "cli-failure"
     err_key = agent_stderr_dedupe_line(evidence)
-    if silent or end == "recycle":
+    if silent or end in ("recycle", "console-close"):
         key = f"seat-silent-end|{mid}|{nick_s}|{end}"[:128]
-        title = "bug: seat ended with no CLI stderr (FR #7724)"
-        what = (
-            "What: the seat process ended and there was no CLI stderr. "
-            "This records the nick, exit code, and whether it looks like a recycle or an external kill.\n"
-        )
+        if end == "console-close":
+            title = "bug: agent console closed (FR #7881)"
+            what = (
+                "What: the agent console was closed (STATUS_CONTROL_C_EXIT). "
+                "This is not a CLI crash. Accepted jobs are still GIVEUP'd. No fake DONE.\n"
+            )
+        else:
+            title = "bug: seat ended with no CLI stderr (FR #7724)"
+            what = (
+                "What: the seat process ended and there was no CLI stderr. "
+                "This records the nick, exit code, and whether it looks like a recycle or an external kill.\n"
+            )
     else:
         # Same crash on the same seat is one issue, whatever the job was (FR #7671).
         key = f"agent-cli-nonzero-exit|{mid}|{u}|{err_key}"[:128]
