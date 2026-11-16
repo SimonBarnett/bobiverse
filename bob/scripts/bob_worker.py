@@ -3570,10 +3570,14 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
 
             _gcfg = wsm.load_worker_start_config()
             grok_model = wsm.configured_start_model("grok", _gcfg)
-            argv = wsm.launch_argv_with_model("grok", argv, grok_model)
-            argv = wsm.launch_argv_with_effort(
-                "grok", argv, wsm.configured_start_effort("grok", _gcfg)
+            # FR #2699 / MRB #2710: the shared --no-auto-update/--no-alt-screen/--cwd
+            # prefix stays first; model/effort flags go right after it.
+            tail = [exe] + argv[len(prefix):]
+            tail = wsm.launch_argv_with_model("grok", tail, grok_model)
+            tail = wsm.launch_argv_with_effort(
+                "grok", tail, wsm.configured_start_effort("grok", _gcfg)
             )
+            argv = prefix + tail[1:]
         except Exception:
             pass
     elif kind == "cursor":
@@ -3658,6 +3662,10 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             r"$pauseStateDir = Join-Path $env:LOCALAPPDATA 'Bobiverse\worker\state'",
             f"$pyHelper = '{esc(str(helper_path))}'",
             f"$guardPy = '{esc(str(guard_path))}'",
+            f"$wedgePy = '{esc(str(Path(__file__).resolve().with_name('opencode_tool_wedge.py')))}'",
+            r"$script:ocDagRetries = 1",
+            r"$script:ocWedgeTicks = 0",
+            r"$script:ocWedgeAction = ''",
             r"New-Item -ItemType Directory -Force -Path (Split-Path -Parent $fuelLog) | Out-Null",
             r"New-Item -ItemType Directory -Force -Path $pauseStateDir | Out-Null",
             r"New-Item -ItemType Directory -Force -Path (Split-Path -Parent $turnsLog) | Out-Null",
@@ -3825,6 +3833,24 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             r"                try { & taskkill /T /F /PID $proc.Id 2>$null | Out-Null } catch { }",
             r"                break",
             r"            }",
+            r"            $script:ocWedgeTicks = [int]$script:ocWedgeTicks + 1",
+            r"            if (($script:ocWedgeTicks % 10) -eq 0 -and $outFile -and (Test-Path -LiteralPath $outFile) -and $wedgePy) {",
+            r"                $py = (Get-Command python.exe -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source)",
+            r"                if (-not $py) { $py = 'python.exe' }",
+            r"                $wedgeLine = & $py $wedgePy peek $outFile $script:ocDagRetries 2>$null",
+            "                if ($wedgeLine -match 'report-and-giveup' -or $wedgeLine -match '\"action\": \"giveup\"') {",
+            r"                    $script:ocWedgeAction = 'giveup'",
+            r"                    try { & taskkill /T /F /PID $proc.Id 2>$null | Out-Null } catch { }",
+            r"                    if ($jobKey) { Write-OpencodeJobGiveup $jobKey 'skill-dag wedge' }",
+            r"                    break",
+            r"                }",
+            "                if ($wedgeLine -match '\"action\": \"reconnect\"' -and [int]$script:ocDagRetries -gt 0) {",
+            r"                    $script:ocDagRetries = 0",
+            r"                    $script:ocWedgeAction = 'reconnect'",
+            r"                    try { & taskkill /T /F /PID $proc.Id 2>$null | Out-Null } catch { }",
+            r"                    break",
+            r"                }",
+            r"            }",
             r"            Start-Sleep -Milliseconds 100",
             r"        }",
             r"        try { $proc.WaitForExit(2000) | Out-Null } catch { }",
@@ -3895,6 +3921,10 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             r"        $teStatus = ''; $teErr = ''",
             r"        if ($exitCode -ne 0) { $teStatus = 'error'; $teErr = ('exit ' + $exitCode) }",
             r"        Write-OpencodeTurnMarker 'turn_ended' $turnN $teStatus $teErr",
+            r"    }",
+            r"    if ($script:ocWedgeAction -eq 'reconnect') {",
+            r"        $script:ocWedgeAction = ''",
+            r"        Invoke-OpencodeRun $line $jobKey $ocDir",
             r"    }",
             r"}",
             r"function Split-OpencodeFrame([string]$raw) {",

@@ -24,7 +24,6 @@ LEGACY_TOP = (
     "on_demand_used_cents",
     "on_demand_limit_cents",
     "on_demand_remaining_pct",
-    "overage_fetched_at",
     "usd_gbp_rate",
 )
 LEGACY_PCENT = ("grok-chat", "cursor-models", "cursor_models", "grok_chat")
@@ -100,7 +99,6 @@ def test_fr7497_builder_strips_legacy_even_when_peer_cache_has_them():
         "overage_gbp",
         "overage_usd",
         "overspend_state",
-        "overage_fetched_at",
     ):
         assert key in cleared, f"missing cleared[] for {key}"
 

@@ -8915,10 +8915,14 @@ def _lost_done_github_result(row: dict) -> str | None:
         num = str(row.get("id") or "").lstrip("#").strip()
         if not repo or not num:
             return None
-        url = str(row.get("url") or "").strip() or f"https://github.com/{repo}/pull/{num}"
+        given = str(row.get("url") or "").strip()
         task = str(row.get("task") or "").upper()
-        if task != "MRB" and "/pull/" not in url:
+        # FR #7657: the pull URL fallback must not make every FR/FIX id look like a
+        # pull. A live MRB PASS on that number (issue id reused as a pull) cleared
+        # ack-missing holds and let !bored through (test_ack_missing_hold_still_blocks).
+        if task != "MRB" and "/pull/" not in given:
             return None
+        url = given or f"https://github.com/{repo}/pull/{num}"
         comments = mrb_merge_gate.fetch_issue_comments(repo, num)
         for c in comments or []:
             body = mrb_merge_gate._body(c)

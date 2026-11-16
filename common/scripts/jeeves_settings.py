@@ -65,6 +65,10 @@ _SCAN_ALLOW_MISSING = frozenset(
         "BOB_GITCLAIM_LOCK_S",
         # FR #6947: chair-host pin is env on walrus NSSM, not an appliance UI knob.
         "JEEVES_CHAIR_HOST",
+        # FR #7754: path and a short assign wait. Not appliance UI knobs.
+        "BOB_ASSIGN_NAMES_WAIT_S",
+        "BOB_CONFIG_DIR",
+        "BOB_GIT_WEBHOOK_SECRET_FILE",
     }
 )
 

@@ -150,13 +150,26 @@ if (-not $explicitRepo -and $Product) {
     # FR #7117: refuse to hide dirty recycle scripts on the live worktree.
     if ($git -and (Test-Path -LiteralPath (Join-Path $InstallRoot '.git'))) {
         $recycleDirty = @()
-        foreach ($rel in @(
-                'bob/tray/tools/BobTrayRecycleSeat.ps1',
-                'common/scripts/recycleseat.py',
-                'common/scripts/gitclaim.py'
-            )) {
-            $st = & $git -C $InstallRoot status --porcelain -- $rel 2>$null
-            if ("$st".Trim()) { $recycleDirty += $rel }
+        # FR #7745 / #7746: a missing sparse directory makes git warn on stderr.
+        # Under Stop that warning aborts the sync. Skip an absent parent, and
+        # keep only string porcelain from a zero exit.
+        $prevEap = $ErrorActionPreference
+        $ErrorActionPreference = 'Continue'
+        try {
+            foreach ($rel in @(
+                    'bob/tray/tools/BobTrayRecycleSeat.ps1',
+                    'common/scripts/recycleseat.py',
+                    'common/scripts/gitclaim.py'
+                )) {
+                $relWin = $rel -replace '/', '\'
+                $parent = Split-Path -Parent (Join-Path $InstallRoot $relWin)
+                if (-not (Test-Path -LiteralPath $parent)) { continue }
+                $st = & $git -C $InstallRoot status --porcelain -- $rel 2>&1
+                $stText = (@($st) | Where-Object { $_ -is [string] }) -join "`n"
+                if ($LASTEXITCODE -eq 0 -and "$stText".Trim()) { $recycleDirty += $rel }
+            }
+        } finally {
+            $ErrorActionPreference = $prevEap
         }
         if ($recycleDirty.Count -gt 0) {
             $joined = ($recycleDirty -join ',')

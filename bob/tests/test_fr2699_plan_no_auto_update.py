@@ -25,7 +25,9 @@ def test_grok_build_launch_always_has_no_auto_update_and_no_alt_screen(tmp_path,
     assert "--no-alt-screen" in spec.argv
     # Common prefix: exe, both flags, then --cwd (FR #2699).
     assert spec.argv[0] == r"C:\g\agent.exe"
-    assert spec.argv[1:4] == ["--no-auto-update", "--no-alt-screen", "--cwd"]
+    # FR #7777 / #7187: --reasoning-effort sits before the no-update pair.
+    i = spec.argv.index("--no-auto-update")
+    assert spec.argv[i : i + 3] == ["--no-auto-update", "--no-alt-screen", "--cwd"]
     if mode == "plan":
         assert "--permission-mode" in spec.argv
         assert "plan" in spec.argv
@@ -50,7 +52,8 @@ def test_grok_plan_describe_child_includes_no_auto_update(tmp_path):
     )
     assert "--no-auto-update" in child["argv"]
     assert "--no-alt-screen" in child["argv"]
-    assert child["argv"][1:4] == ["--no-auto-update", "--no-alt-screen", "--cwd"]
+    j = child["argv"].index("--no-auto-update")
+    assert child["argv"][j : j + 3] == ["--no-auto-update", "--no-alt-screen", "--cwd"]
 
 
 def test_hostile_build_launch_is_only_grok_seat_argv_builder():

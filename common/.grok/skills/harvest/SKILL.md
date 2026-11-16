@@ -482,9 +482,22 @@ routes to bobiverse via the split rule.
 - A harvest twin check must compare lesson bullets, not the session summary. Five shared tokens in the summary are not the same playbook.
 - When auto-merge is refused because the pull request is unstable, comment merge-on-green pending with the head SHA and finish. Do not poll the checks.
 - A new keyword at a call site must be a name that function assigns. Copy the plan and agent pattern, and pin that the assignment is above the call.
+- Airc PUT pacing tests must pass ForceIrcPut. The default path is two DCC lines and does not exercise the outbox pace.
 - When a later FR changes a wire to err plus DONE exit=2, update the older framing pins. Do not put the absent-allowlist gate in front of a test that must exercise the worker body.
 - Airc skill books stay ASCII. Write a hyphen, not an em dash, in SKILL.md.
 - When wiring an optional hook onto an injected runner, use getattr and callable. A test stub that only implements start() must still build the console.
+- When an OpenCode watchdog stops a dead job, write GIVEUP for that job key before returning to ReadLine. Killing the child leaves the accepted row, so !bored is nak busy. Read GIVEUP from a PRIVMSG outbox payload.
+- When git status runs under ErrorActionPreference Stop, a missing sparse directory warning aborts the script. Skip a recycle path whose parent is absent, and run that status under Continue.
+- A fuel-publish test must pass now next to the fixture fetched_at. Wall-clock now and epoch now both look stale to the pool reporter.
+- overage_fetched_at is the Copilot refresh stamp. Do not put it in the Cursor-bridge strip set or cleared list. A fuel delta must still carry the new stamp on the wire.
+- A systemprofile skip test must clear GROK_AUTH_PATH as well as BOB_GROK_AUTH_PATH, and stub the auth-path stamp. Otherwise the weekly publish reports explicit-auth.
+- After Jeeves owns the OpenCode fetch, the ear publish diag is jeeves-fleet and the publish test must assert the provider was not called. blocked_1010 stays on the local reader.
+- A harness that extracts Start-BobTrayWorkerExe must stub Test-BobTraySeatsOff and Write-BobTraySeatStart. The live tray defines those by dotsourcing BobTrayStartWorker.ps1.
+- A test of the startup message hold must set BOB_WORKER_STARTUP_WAIT_READY=1. Without that flag a signed-in seat injects at once.
+- When the settings scan finds a new BOB_ environ.get key, add it to the schema if it is a UI knob. A host path, a secret-file path, or a short wait goes on the scan allowlist.
+- A source pin of a PowerShell function must read until the next function. A fixed character window misses a call that the function still makes.
+- When prepare form gains a Session 0 fail-close and a prepare-form SDK path, update the doc pin to those sentences. Do not restore WINRUN only.
+- A grok launch pin must find --no-auto-update --no-alt-screen --cwd as a triple. --reasoning-effort may sit before that triple.
 
 ## Harvest digest (lessons audit 2026-10-06)
 

@@ -1444,13 +1444,35 @@ def _watchdog_try_break(home: Path, *, why: str) -> None:
     )
 
 
-def _start_health_watchdog(home: Path, host: str, port: int) -> None:
-    """FR #1136 / #2902 / #7618: loopback /health; break stale lock; exit if probe stays dead."""
+def _httpd_shut_down(httpd) -> bool:
+    """True after BaseServer.serve_forever has left (shutdown or socket close).
+
+    The private event is created on the first serve_forever and set in its
+    finally. Before that call it does not exist, so a live process that has
+    not started accept yet is not treated as stopped.
+    """
+    ev = getattr(httpd, "_BaseServer__is_shut_down", None)
+    return ev is not None and ev.is_set()
+
+
+def _start_health_watchdog(home: Path, host: str, port: int, httpd) -> None:
+    """FR #1136 / #2902 / #7618: loopback /health; break stale lock; exit if probe stays dead.
+
+    FR #7657: once the caller has shut the server down, leave the process
+    alone. Tests (and any embed) call serve() then shutdown(); the old loop
+    kept probing the dead port and os._exit'd the whole interpreter, so
+    pytest died with no failure summary.
+    """
     import threading
 
     interval = _health_watchdog_s()
     probe_budget = _listener_probe_s()
     max_fails = _listener_probe_max_fails()
+
+    def _exit_unless_stopped(code: int) -> None:
+        if _httpd_shut_down(httpd):
+            return
+        os._exit(int(code))
 
     def _loop() -> None:
         fail_streak = 0
@@ -1458,6 +1480,8 @@ def _start_health_watchdog(home: Path, host: str, port: int) -> None:
             try:
                 time.sleep(interval)
             except Exception:
+                return
+            if _httpd_shut_down(httpd):
                 return
             with contextlib.suppress(Exception):
                 bobreport.break_stale_digest_lock(home)
@@ -1468,7 +1492,10 @@ def _start_health_watchdog(home: Path, host: str, port: int) -> None:
                 timeout_s=probe_budget,
                 fail_streak=fail_streak,
                 max_fails=max_fails,
+                exit_fn=_exit_unless_stopped,
             )
+            if _httpd_shut_down(httpd):
+                return
             if fail_streak == 0:
                 continue
             # Still below max_fails: keep digest.lock heal behaviour from FR #1136.
@@ -1517,7 +1544,7 @@ def serve(
     # GitHub) can block for seconds while chair holds digest.lock — historically left
     # bobcallback.py alive with no LISTEN (SYN_SENT clients).
     httpd = ThreadingHTTPServer((host, listen_port), handler)
-    _start_health_watchdog(home, host, listen_port)
+    _start_health_watchdog(home, host, listen_port, httpd)
 
     def _bg_drain() -> None:
         try:
