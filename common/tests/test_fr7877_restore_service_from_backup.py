@@ -95,3 +95,28 @@ Write-Output 'NO-BACKUP'
     assert run.returncode == 0, run.stdout + run.stderr
     assert "NO-BACKUP" in run.stdout
     assert "absent" in reported.read_text(encoding="ascii").lower() or "no updater backup" in reported.read_text(encoding="ascii")
+
+
+def test_shop_notice_uses_ear_home_when_outbox_unset(tmp_path):
+    """FR #7877: rollback/updater have no worker BOB_OUTBOX; the ear home is the shop sink."""
+    ear = tmp_path / "ear-home"
+    ear.mkdir()
+    ps = r"""
+$ErrorActionPreference = 'Stop'
+. '{common}'
+Remove-Item Env:BOB_OUTBOX -ErrorAction SilentlyContinue
+$env:BOB_EAR_HOME = '{ear}'
+$env:BOB_MACHINE_ID = 'joker'
+$ok = Publish-BobiverseShopNotice -Text 'airc update failed to start Airc: Cannot start service Airc (1053)'
+if (-not $ok) {{ throw 'shop notice was not published' }}
+Write-Output 'SHOP-OK'
+""".format(
+        common=str(COMMON / "Bobiverse-Common.ps1"),
+        ear=str(ear),
+    )
+    run = _ps(ps)
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert "SHOP-OK" in run.stdout
+    shop = (ear / "outbox.txt").read_text(encoding="utf-8")
+    assert shop.startswith("PRIVMSG #joker :")
+    assert "1053" in shop

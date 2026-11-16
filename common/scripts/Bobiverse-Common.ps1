@@ -3217,6 +3217,15 @@ function Publish-BobiverseShopNotice {
         [string]$ShopChannel = '',
         [Parameter(Mandatory)][string]$Text
     )
+    # FR #7877: MSI rollback and the updater do not run inside a worker seat, so they
+    # have no BOB_OUTBOX. Fall back to that env, then the ear home the ircBob service drains.
+    if (-not $ShopOutbox) { $ShopOutbox = ([string]$env:BOB_OUTBOX).Trim() }
+    if (-not $ShopOutbox) {
+        try {
+            $earHome = Get-BobiverseEarServiceHome
+            if ($earHome) { $ShopOutbox = Join-Path $earHome 'outbox.txt' }
+        } catch { }
+    }
     if (-not $ShopOutbox) { return $false }
     $chan = ([string]$ShopChannel).Trim()
     if (-not $chan) {
