@@ -126,7 +126,10 @@ if (Test-Path -LiteralPath $avEx) {
         (Join-Path $InstallRoot 'airc'),
         (Split-Path -Parent $InstallRoot)
     )
-    & $avEx -Paths $avPaths -Processes @('airc.exe') -Product airc
+    $avUpdateLog = Join-Path $(if ($env:ProgramData) { $env:ProgramData } else { 'C:\ProgramData' }) 'bobiverse\update\airc\update.log'
+    $avShop = @{}
+    if ($env:BOB_OUTBOX) { $avShop.ShopOutbox = $env:BOB_OUTBOX }
+    & $avEx -Paths $avPaths -Processes @('airc.exe') -Product airc -UpdateLog $avUpdateLog @avShop
 } else {
     Write-Warning 'FR #4215 Register-BobiverseAvExclusions.ps1 missing beside installer; continuing without AV exclusions'
 }
@@ -785,7 +788,16 @@ if (-not $NoStart) {
     $svc = Get-Service -Name 'Airc' -ErrorAction SilentlyContinue
     if ($svc -and $svc.Status -ne 'Running') { $svcErr = 'Cannot start service Airc' }
     if (Test-Path -LiteralPath $avEx) {
-        & $avEx -Paths $avPaths -Processes @('airc.exe') -Product airc -AssertExePath $aircExe -AssertServiceError $svcErr
+        # powershell -File so the script's exit 2 does not end this installer (nested exit kills the caller).
+        $avArgs = @(
+            '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', $avEx,
+            '-Product', 'airc', '-UpdateLog', $avUpdateLog,
+            '-AssertExePath', $aircExe, '-AssertServiceError', $svcErr
+        )
+        foreach ($p in @($avPaths)) { $avArgs += @('-Paths', [string]$p) }
+        $avArgs += @('-Processes', 'airc.exe')
+        if ($env:BOB_OUTBOX) { $avArgs += @('-ShopOutbox', $env:BOB_OUTBOX) }
+        & powershell.exe @avArgs
         if ($LASTEXITCODE -eq 2) {
             throw 'FR #7878 airc.exe missing or Airc did not start while a third-party antivirus is present'
         }

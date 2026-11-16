@@ -812,7 +812,8 @@ function Build-Msi([string]$Name, [string]$Stage) {
         # FR #4215: Defender exclusions BEFORE InstallFiles so Avast/Defender cannot block laying airc.exe.
         # Inline powershell (script not on disk yet). Return=ignore: AV CA must not fail the MSI.
         # Full Avast/AVG registry pass still runs from Install-Airc.ps1 after files land.
-        $uninstallCaDecls = @"
+        # FR #7878: literal here-string. An expandable @" would eat $av / $_ / $n at pack time.
+        $uninstallCaDecls = @'
     <!-- FR #4215: AV exclusions before InstallFiles (Defender path/process for airc.exe). -->
     <CustomAction Id="SetAvExcludeCmd" Property="RunAvExclude" Value="&quot;[System64Folder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoProfile -ExecutionPolicy Bypass -Command &quot;try { Add-MpPreference -ExclusionPath '[INSTALLDIR]' -ErrorAction SilentlyContinue; Add-MpPreference -ExclusionPath '[INSTALLDIR]airc' -ErrorAction SilentlyContinue; Add-MpPreference -ExclusionProcess 'airc.exe' -ErrorAction SilentlyContinue } catch { }; try { $av = @(Get-CimInstance -Namespace root/SecurityCenter2 -ClassName AntiVirusProduct -ErrorAction Stop | Where-Object { $_.displayName -notmatch 'Defender' }); if ($av.Count -gt 0) { $n = ($av | ForEach-Object { $_.displayName }) -join ', '; Write-Warning ('FR #7878 third-party antivirus: ' + $n + '. Add an exception for [INSTALLDIR], [INSTALLDIR]airc, and airc.exe') } } catch { }; Write-Host 'FR4215 MSI AvExclude done'" Execute="immediate" />
     <CustomAction Id="RunAvExclude" BinaryKey="WixCA" DllEntry="CAQuietExec64" Execute="deferred" Impersonate="no" Return="ignore" />
@@ -825,7 +826,7 @@ function Build-Msi([string]$Name, [string]$Stage) {
     <!-- Immediate CAQuietExec64 reads QtExec64CmdLine (not a property named after the CA). -->
     <CustomAction Id="SetStopAircValidateCmd" Property="QtExec64CmdLine" Value="&quot;[System64Folder]net.exe&quot; stop Airc" Execute="immediate" />
     <CustomAction Id="StopAircBeforeValidate" BinaryKey="WixCA" DllEntry="CAQuietExec64" Execute="immediate" Return="ignore" />
-"@
+'@
         $uninstallCaSeq = @"
       <Custom Action="SetAvExcludeCmd" Before="RunAvExclude">NOT REMOVE~="ALL"</Custom>
       <Custom Action="RunAvExclude" Before="InstallFiles">NOT REMOVE~="ALL"</Custom>
