@@ -267,7 +267,7 @@ $procList = @($Processes | Where-Object { $_ } | ForEach-Object { [string]$_ })
 $tpNames = @(Get-BobiverseThirdPartyAntivirus -ProductsJson $AntivirusProductsJson)
 if ($tpNames.Count -gt 0) {
     $warn = Write-BobiverseThirdPartyAvWarning -Names $tpNames -PathList $pathList -LogPath $UpdateLog -OutboxPath $ShopOutbox
-    # MRB #7885: SkipFailReportedFlag — a third-party AV warn must not set
+    # MRB #7885: SkipFailReportedFlag  -  a third-party AV warn must not set
     # install-airc-fail-reported.flag (FR #3685) or a later real install failure
     # loses the outer Report-AircInstallCmdFailure intake.
     if (Get-Command Send-BobiverseAircInstallFailureIntake -ErrorAction SilentlyContinue) {
