@@ -4165,13 +4165,27 @@ def _clock_age_s(raw: object, now: datetime | None) -> float | None:
 
 
 def report_stale_ear_publish(machine_id: str, age_s: float, *, why: str) -> None:
-    """FR #7839: one intake issue when an ear or its pool has gone quiet. Never raises."""
+    """FR #7839: one intake when this ear's own publish has just gone quiet.
+
+    FR #7892: a remote machine that is already offline, or any row quiet for
+    longer than the pool window, is marked stale by the caller and is not filed
+    as a bob-ear RuntimeError. The message omits the changing age so the
+    failure signature stays stable. Never raises.
+    """
     try:
+        if float(age_s) > POOL_STALE_AFTER_S:
+            return
+        mid = str(machine_id or "").strip().lower()
+        local = (
+            os.environ.get("BOB_MACHINE_ID") or os.environ.get("COMPUTERNAME") or ""
+        ).strip().lower()
+        if local and mid and mid != local:
+            return
         import runtime_failure
 
         runtime_failure.report_message(
             "bob-ear",
-            f"digest publish stale machine={machine_id} why={why} age_s={int(age_s)}",
+            f"digest publish stale machine={mid or machine_id} why={why}",
             site="ear-publish-stale",
         )
     except Exception:
@@ -4215,10 +4229,16 @@ def apply_ear_publish_staleness(
             ent["xai"] = weekly
     age = None
     why = ""
-    if seen_age is not None and seen_age > EAR_PUBLISH_STALE_S:
+    # FR #7892: an age past the pool window still marks the row stale above, but
+    # it must not replace an in-window stall or suppress that stall's report.
+    if seen_age is not None and EAR_PUBLISH_STALE_S < seen_age <= POOL_STALE_AFTER_S:
         age = seen_age
         why = "lastSeen"
-    if pool_age is not None and pool_age > EAR_PUBLISH_STALE_S and (age is None or pool_age > age):
+    if (
+        pool_age is not None
+        and EAR_PUBLISH_STALE_S < pool_age <= POOL_STALE_AFTER_S
+        and (age is None or pool_age > age)
+    ):
         age = pool_age
         why = "fetched_at" if not why else why + "+fetched_at"
     if age is not None and report:
