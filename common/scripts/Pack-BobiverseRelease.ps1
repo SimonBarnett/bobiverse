@@ -101,7 +101,13 @@ function Stage-BobAgentFolders([string]$Stage) {
         $exe = (& $buildWorker -RepoRoot $RepoRoot -OutDir $OutDir | Select-Object -Last 1)
         if (-not $exe -or -not (Test-Path -LiteralPath $exe)) { throw 'Build-BobWorker.ps1 did not produce bob-worker.exe' }
         Copy-Item -LiteralPath $exe -Destination (Join-Path $Stage 'worker\bob-worker.exe') -Force
-        Write-Host 'INFO bob staged worker\bob-worker.exe'
+        # FR #7910: frozen resolver reads <exe dir>\scripts, never the _MEI extract.
+        $shipDir = Join-Path (Split-Path -Parent $exe) 'scripts'
+        if (-not (Test-Path -LiteralPath $shipDir)) { throw 'bob pack missing worker\scripts from Build-BobWorker.ps1' }
+        $shipDest = Join-Path $Stage 'worker\scripts'
+        New-Item -ItemType Directory -Force -Path $shipDest | Out-Null
+        Copy-Item -Path (Join-Path $shipDir '*') -Destination $shipDest -Force
+        Write-Host 'INFO bob staged worker\bob-worker.exe and worker\scripts'
     }
     if ($SkipEarExe) {
         Write-Host 'WARN bob pack: -SkipEarExe (test stage; no bob-ear.exe)'

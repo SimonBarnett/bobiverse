@@ -90,17 +90,17 @@ def test_default_spawn_preserves_grok_console_handles(monkeypatch, tmp_path, kin
         def __init__(self, *a, **kw):
             seen.update(kw)
             self.pid = 4242
-            self.stderr = None
+            self.stderr = kw.get("stderr")
+            self.stdout = kw.get("stdout")
 
     monkeypatch.setattr(bw.subprocess, "Popen", FakePopen)
     monkeypatch.setattr(bw, "owned_job", lambda: type("J", (), {"assign": lambda self, p: None})())
-    monkeypatch.setattr(bw, "start_agent_stderr_capture", lambda _p: pytest.fail("unexpected stderr capture"))
     spec = bw.build_launch(kind, mode, str(tmp_path), "p", r"C:\g\agent.exe", tmp_path, "sid")
     handle = bw.default_spawn(spec, {})
     assert seen.get("creationflags", 0) & getattr(bw, "CREATE_NEW_CONSOLE", 0x10) == 0
     assert seen.get("creationflags", 0) & getattr(bw, "CREATE_NO_WINDOW", 0x08000000) == 0
     assert seen.get("stdin") is None
-    assert seen.get("stdout") is None
+    assert seen.get("stdout") is (bw.subprocess.PIPE if kind == "opencode" else None)
     assert seen.get("stderr") is (None if kind == "grok" else bw.subprocess.PIPE)
     if kind == "grok":
         assert "--no-alt-screen" in spec.argv

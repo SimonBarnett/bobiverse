@@ -794,15 +794,32 @@ function Test-HarvestLessonDistinctiveOverlap([string]$ExistingBlob, [string]$Ne
     return ($shared -ge 5)
 }
 
-function Get-HarvestPrLessonBlob([string]$Title, [string]$Body) {
-    # FR #7717: twin checks use the lesson bullets, not the session summary.
-    # A summary can share five tokens with an unrelated lesson.
-    $parts = New-Object System.Collections.Generic.List[string]
-    if ($Title) { [void]$parts.Add([string]$Title) }
+function Get-HarvestPrLessonSentences([string]$Title, [string]$Body) {
+    # FR #7717: ignore the session summary.
+    # FR #7903: ignore every other dash bullet too. A harvest-lesson body pastes
+    # the skill book, and joining those bullets made any open tip look like a twin.
+    $out = New-Object System.Collections.Generic.List[string]
+    $title = [regex]::Replace(([string]$Title), '(?i)^lesson\([^)]+\):\s*', '').Trim()
+    if ($title) { [void]$out.Add($title) }
+    $inLessons = $false
     foreach ($line in ([string]$Body -split '\r?\n')) {
         $t = $line.Trim()
-        if ($t -match '^[-*]\s+(.+)$') { [void]$parts.Add($Matches[1]) }
+        if ($t -match '^(?i)Lessons:\s*$') { $inLessons = $true; continue }
+        if (-not $inLessons) { continue }
+        if ($t -match '^(?i)(Session summary:|Existing PR:|---)') { break }
+        if ($t -match '^[-*]\s+(.+)$') {
+            $sentence = $Matches[1].Trim()
+            if ($sentence -and $sentence -ne '(no new playbook line)') { [void]$out.Add($sentence) }
+            continue
+        }
+        if ($t) { break }
     }
+    return @($out)
+}
+
+function Get-HarvestPrLessonBlob([string]$Title, [string]$Body) {
+    # Kept for callers that want one string. It is the lesson sentences only.
+    $parts = @(Get-HarvestPrLessonSentences -Title $Title -Body $Body)
     return ((($parts -join ' ').ToLowerInvariant()) -replace '\s+', ' ')
 }
 
@@ -812,18 +829,20 @@ function Test-HarvestPrCoversLesson {
         [string]$PrBody,
         [string[]]$LessonLines
     )
-    $full = ((([string]$PrTitle) + "`n" + ([string]$PrBody)).ToLowerInvariant() -replace '\s+', ' ')
-    $lessonBlob = Get-HarvestPrLessonBlob -Title $PrTitle -Body $PrBody
+    $sentences = @(Get-HarvestPrLessonSentences -Title $PrTitle -Body $PrBody)
     foreach ($L in @($LessonLines)) {
         $key = (($L.ToLowerInvariant()) -replace '\s+', ' ').Trim()
         if (-not $key -or $key -eq '(no new playbook line)') { continue }
-        # The whole lesson sentence anywhere in the PR is a real copy.
-        if ($full.Contains($key)) { return $true }
-        $short = $key.Substring(0, [Math]::Min(80, $key.Length))
-        if ($short.Length -ge 40 -and $lessonBlob.Contains($short)) { return $true }
-        if (Test-HarvestLessonTitleStemsMatch -A $PrTitle -B $L) { return $true }
-        if (Test-HarvestLessonTitleStemsMatch -A $PrTitle -B $key) { return $true }
-        if (Test-HarvestLessonDistinctiveOverlap -ExistingBlob $lessonBlob -NewLesson $key) { return $true }
+        foreach ($sentence in @($sentences)) {
+            $blob = (([string]$sentence).ToLowerInvariant() -replace '\s+', ' ').Trim()
+            if (-not $blob) { continue }
+            if ($blob.Contains($key) -or ($blob.Length -ge 40 -and $key.Contains($blob))) { return $true }
+            $short = $key.Substring(0, [Math]::Min(80, $key.Length))
+            if ($short.Length -ge 40 -and $blob.Contains($short)) { return $true }
+            if (Test-HarvestLessonTitleStemsMatch -A $sentence -B $L) { return $true }
+            if (Test-HarvestLessonTitleStemsMatch -A $sentence -B $key) { return $true }
+            if (Test-HarvestLessonDistinctiveOverlap -ExistingBlob $blob -NewLesson $key) { return $true }
+        }
     }
     return $false
 }

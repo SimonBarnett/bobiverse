@@ -1022,6 +1022,22 @@ def empty_digest() -> dict:
     }
 
 
+def coerce_last_exit(raw: object) -> dict | None:
+    """Keep only bounded, redacted seat-exit diagnostics on the public digest."""
+    if not isinstance(raw, dict):
+        return None
+    from crash_report import redact
+
+    out = {}
+    for key, limit in (("at", 64), ("reason", 160), ("output", 8192)):
+        if key in raw:
+            out[key] = redact(str(raw[key] or ""))[:limit]
+    for key in ("exit_code", "pid"):
+        value = raw.get(key)
+        out[key] = value if isinstance(value, int) and not isinstance(value, bool) else None
+    return out
+
+
 def _coerce_worker(mid: str, pid: str, raw: object) -> dict:
     ent = raw if isinstance(raw, dict) else {}
     try:
@@ -1062,6 +1078,8 @@ def _coerce_worker(mid: str, pid: str, raw: object) -> dict:
     start_effort = str(ent.get("start_effort") or "").strip()
     if start_effort:
         out["start_effort"] = start_effort
+    if isinstance(ent.get("last_exit"), dict):
+        out["last_exit"] = coerce_last_exit(ent["last_exit"])
     paused = str(ent.get("fuel_paused_until") or "").strip()
     if paused:
         out["fuel_paused_until"] = paused
@@ -1199,6 +1217,8 @@ def _coerce_worker_list(raw: object, *, now: float | None = None) -> list[dict]:
         start_effort = str(ent.get("start_effort") or "").strip()
         if start_effort:
             row["start_effort"] = start_effort
+        if isinstance(ent.get("last_exit"), dict):
+            row["last_exit"] = coerce_last_exit(ent["last_exit"])
         out.append(row)
     return out[:WORKER_LIST_MAX]
 
@@ -1382,6 +1402,9 @@ def _model_fields_from_payload(payload: dict, prev: dict | None = None) -> dict:
     start_effort = str(payload.get("start_effort") or prev.get("start_effort") or "").strip()
     if start_effort:
         out["start_effort"] = start_effort
+    last_exit = payload.get("last_exit", prev.get("last_exit"))
+    if isinstance(last_exit, dict):
+        out["last_exit"] = coerce_last_exit(last_exit)
     return out
 
 
@@ -1398,7 +1421,7 @@ def _apply_model_fields_to_worker_list(ent: dict, nick: str, fields: dict) -> No
         idx = len(rows) - 1
     else:
         row = dict(rows[idx])
-    for key in ("kind", "start_model", "configured_model", "model_mismatch", "cost_tier", "start_effort", "agent", "model"):
+    for key in ("kind", "start_model", "configured_model", "model_mismatch", "cost_tier", "start_effort", "agent", "model", "last_exit"):
         if key in fields:
             row[key] = fields[key]
     rows[idx] = row
@@ -1514,6 +1537,13 @@ def _coerce_machine(mid: str, raw: object) -> dict:
         base["cursor_pools"] = _coerce_cursor_pools(raw["cursor_pools"], machine_id=mid)
     if raw.get("uptime_since"):
         base["uptime_since"] = str(raw["uptime_since"])
+    # FR #7906: JOIN/heartbeat clock and the offline spell survive reload.
+    if raw.get("presence_at"):
+        base["presence_at"] = str(raw["presence_at"])
+    if raw.get("offline_at"):
+        base["offline_at"] = str(raw["offline_at"])
+    if raw.get("online_stuck_reported"):
+        base["online_stuck_reported"] = True
     for key in _MERGE_PEER_FIELDS:
         if key in raw and raw[key] is not None:
             base[key] = raw[key]
@@ -2149,6 +2179,67 @@ def _set_online(ent: dict, online: bool) -> None:
         ent["working_on"] = ""
         ent["workers"] = {}
         ent["worker_list"] = []
+        ent["offline_at"] = _utc_now_iso()
+        ent.pop("online_stuck_reported", None)
+    else:
+        ent.pop("offline_at", None)
+
+
+def _fresh_clock_age(ent: dict, now: datetime | None = None) -> float | None:
+    """Age of the newest JOIN or heartbeat clock, or None when neither is set."""
+    ages = []
+    for key in ("presence_at", "lastSeen"):
+        age = _clock_age_s(ent.get(key), now)
+        if age is not None:
+            ages.append(age)
+    if not ages:
+        return None
+    return min(ages)
+
+
+def _quit_is_older_than_presence(ent: dict, event_at: str | None, now: datetime | None = None) -> bool:
+    """FR #7906: a late QUIT/PART must not flip a machine that has since joined or posted."""
+    if event_at:
+        ev = _parse_iso_ts(event_at)
+        pres = _parse_iso_ts(ent.get("presence_at") or ent.get("lastSeen"))
+        if ev is not None and pres is not None:
+            if ev.tzinfo is None:
+                ev = ev.replace(tzinfo=timezone.utc)
+            if pres.tzinfo is None:
+                pres = pres.replace(tzinfo=timezone.utc)
+            if ev < pres:
+                return True
+        return False
+    age = _fresh_clock_age(ent, now)
+    return age is not None and age <= EAR_PUBLISH_STALE_S
+
+
+def report_digest_online_stuck(machine_id: str) -> None:
+    """FR #7906: fresh lastSeen with online=false for the staleness window. Never raises."""
+    try:
+        import runtime_failure
+
+        runtime_failure.report_message(
+            "bob-ear",
+            "digest online stuck false with fresh lastSeen machine=" + str(machine_id),
+            site="digest-online-stuck",
+        )
+    except Exception:
+        return
+
+
+def _mark_online_from_fresh_seen(ent: dict, seen: object, *, machine_id: str, now: datetime | None = None) -> None:
+    """A fresh heartbeat or pool post means the ear is up."""
+    age = _clock_age_s(seen, now)
+    if age is None or age > EAR_PUBLISH_STALE_S:
+        return
+    if not ent.get("online"):
+        off = _clock_age_s(ent.get("offline_at"), now)
+        if off is not None and off > EAR_PUBLISH_STALE_S and not ent.get("online_stuck_reported"):
+            ent["online_stuck_reported"] = True
+            report_digest_online_stuck(machine_id)
+        _set_online(ent, True)
+    ent["presence_at"] = str(seen)
 
 
 @dataclass
@@ -2647,6 +2738,8 @@ def _apply_merge_payload(doc: dict, mid: str, payload: dict) -> list[str]:
             ent[key] = val
             continue
         ent[key] = val
+    if payload.get("lastSeen"):
+        _mark_online_from_fresh_seen(ent, payload.get("lastSeen"), machine_id=mid)
     # FR #6143: ear-owned grok_account (omit = keep; null/blank already cleared above).
     for key in _EAR_IDENTITY_FIELDS:
         if key not in payload:
@@ -2981,7 +3074,7 @@ def _apply_worker_op(home: Path, op: str, mid: str, payload: dict, briefer_nick:
 
 
 @_digest_locked
-def shop_down(home: Path, machine_id: str, briefer_nick: str = "") -> PresenceOutcome:
+def shop_down(home: Path, machine_id: str, briefer_nick: str = "", event_at: str | None = None) -> PresenceOutcome:
     mid = normalize_machine_id(machine_id)
     if not mid:
         return PresenceOutcome(ok=False, err="bad machine")
@@ -2992,6 +3085,8 @@ def shop_down(home: Path, machine_id: str, briefer_nick: str = "") -> PresenceOu
     ent = _machine_entry(doc, mid)
     nick = str(ent.get("nick") or nick_for_machine({}, mid))
     shop = ent.get("shop") or shop_channel(mid)
+    if _quit_is_older_than_presence(ent, event_at):
+        return PresenceOutcome(ok=True, machine_id=mid)
     _set_online(ent, False)
     _note_event(doc, "shop-down", machine=mid)
     save_digest(home, doc)
@@ -3034,6 +3129,8 @@ def apply_join(home: Path, nick: str, channel: str, briefer_nick: str = "") -> P
     was_offline = not ent.get("online")
     ent["online"] = True
     ent["status"] = "I am online"
+    ent["presence_at"] = doc["ts"]
+    ent.pop("offline_at", None)
     if was_offline:
         ent["working_on"] = ""
         _note_event(doc, "machine-join", machine=mid)
@@ -3042,7 +3139,7 @@ def apply_join(home: Path, nick: str, channel: str, briefer_nick: str = "") -> P
 
 
 @_digest_locked
-def apply_part(home: Path, nick: str, channel: str, briefer_nick: str = "") -> PresenceOutcome:
+def apply_part(home: Path, nick: str, channel: str, briefer_nick: str = "", event_at: str | None = None) -> PresenceOutcome:
     ch = normalize_channel(channel)
     worker = parse_worker_nick(nick)
     if worker:
@@ -3052,19 +3149,19 @@ def apply_part(home: Path, nick: str, channel: str, briefer_nick: str = "") -> P
         return PresenceOutcome(ok=True, machine_id=mid)
     mid = machine_from_nick(nick)
     if mid and ch.lower() == shop_channel(mid).lower():
-        return shop_down(home, mid, briefer_nick)
+        return shop_down(home, mid, briefer_nick, event_at=event_at)
     return PresenceOutcome(ok=True, machine_id=mid)
 
 
 @_digest_locked
-def apply_quit(home: Path, nick: str, briefer_nick: str = "") -> PresenceOutcome:
+def apply_quit(home: Path, nick: str, briefer_nick: str = "", event_at: str | None = None) -> PresenceOutcome:
     worker = parse_worker_nick(nick)
     if worker:
         mid, pid = worker
         return delete_worker(home, mid, pid, briefer_nick)
     mid = machine_from_nick(nick)
     if mid:
-        return shop_down(home, mid, briefer_nick)
+        return shop_down(home, mid, briefer_nick, event_at=event_at)
     return PresenceOutcome(ok=True)
 
 

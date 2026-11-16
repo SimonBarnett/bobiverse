@@ -23,7 +23,7 @@ DIR_FORBIDDEN_RX = re.compile(
 # Same assign shape as the worker: TYPE + non-space ref ending in #digits.
 # Repo may be owner/name or a leaf. A drive-root or ".." ref is refused later.
 _ASSIGN_RX = re.compile(r"(?i)\b(FR|MRB|UAT)\s+(\S+)#(\d+)\b")
-_JOB_KEY_RX = re.compile(r"(?i)\b(FR|MRB|UAT)\s+(\S+#\d+)\b")
+_JOB_KEY_RX = re.compile(r"(?i)\b(FR|MRB|UAT|FIX)\s+(\S+#\d+)\b")
 _TOKEN_RX = re.compile(
     r"(?i)(github_pat_[A-Za-z0-9_]+|ghp_[A-Za-z0-9]+|gho_[A-Za-z0-9]+|"
     r"ghu_[A-Za-z0-9]+|ghs_[A-Za-z0-9]+|ghr_[A-Za-z0-9]+)"
@@ -291,7 +291,7 @@ def _repo_leaf(repo: str) -> str:
 
 
 FRAME_MARK = "@@BOBJOB1"
-_FRAME_KEY_RX = re.compile(r"(?i)^(FR|MRB|UAT)\s+\S+#\d+$")
+_FRAME_KEY_RX = re.compile(r"(?i)^(FR|MRB|UAT|FIX)\s+\S+#\d+$")
 
 
 def console_text(text: str, maxlen: int = 600) -> str:
@@ -345,7 +345,7 @@ def _project_dir_for_key(
     disks: list | None = None,
     system_drive: str = "",
 ) -> str:
-    match = re.match(r"(?i)^(FR|MRB|UAT)\s+(\S+)#(\d+)$", (key or "").strip())
+    match = re.match(r"(?i)^(FR|MRB|UAT|FIX)\s+(\S+)#(\d+)$", (key or "").strip())
     if not match:
         return ""
     base = job_worktree_base(env, disks=disks, system_drive=system_drive)
@@ -697,7 +697,7 @@ def resolve_repo_clone(
 
 
 def _job_branch_from_key(key: str) -> str:
-    match = re.match(r"(?i)^(FR|MRB|UAT)\s+(\S+)#(\d+)$", (key or "").strip())
+    match = re.match(r"(?i)^(FR|MRB|UAT|FIX)\s+(\S+)#(\d+)$", (key or "").strip())
     if not match:
         return ""
     return f"{match.group(1).lower()}-{match.group(3)}"
@@ -842,7 +842,7 @@ def create_job_worktree(
     # Soft-cap seat marker (FR #3641). Best-effort; never fail the create.
     try:
         marker = {"nick": nick or "opencode", "pid": int(os.getpid()), "issue": 0, "repo": ""}
-        m = re.match(r"(?i)^(FR|MRB|UAT)\s+(\S+)#(\d+)$", (key or "").strip())
+        m = re.match(r"(?i)^(FR|MRB|UAT|FIX)\s+(\S+)#(\d+)$", (key or "").strip())
         if m:
             marker["issue"] = int(m.group(3))
             marker["repo"] = m.group(2)
@@ -974,6 +974,18 @@ def ensure_opencode_bob_outbox(worktree: str | Path) -> Path:
     return path
 
 
+def outbox_is_writable(path: str | Path) -> bool:
+    """FR #7911: the seat can append to this outbox."""
+    target = Path(path)
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        with target.open("a", encoding="utf-8"):
+            pass
+        return True
+    except OSError:
+        return False
+
+
 def opencode_outbox_job_key(payload: str) -> str:
     """Typed ``FR owner/repo#N`` from a shop wire / PRIVMSG payload, else ``''``."""
     m = _OUT_JOB_WIRE_RX.match((payload or "").strip())
@@ -1050,7 +1062,7 @@ def ensure_opencode_job_worktree(
         return decision
     key = decision.get("key") or ""
     path = decision.get("path") or ""
-    match = re.match(r"(?i)^(FR|MRB|UAT)\s+(\S+)#(\d+)$", key.strip()) if key else None
+    match = re.match(r"(?i)^(FR|MRB|UAT|FIX)\s+(\S+)#(\d+)$", key.strip()) if key else None
     repo = match.group(2) if match else ""
     clone = resolve_repo_clone(repo, env, install_root=install_root)
     ok, err_class = create_job_worktree(
