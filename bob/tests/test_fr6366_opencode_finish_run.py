@@ -147,60 +147,68 @@ def test_fr6366_wrapper_sets_workingdirectory_and_no_pause_on_watchdog(tmp_path:
     )
 
 
-def test_fr6366_bored_emitter_opencode_retries_then_giveup():
+def test_fr6366_bored_emitter_opencode_retries_then_giveup(monkeypatch):
     from test_fr2802_bored_on_turn_end import FakeClock, _emitter, _wait
+
+    # Isolate the emitter from ambient build-runner environment.
+    monkeypatch.setenv("BOB_OPENCODE_FINISH_RUN_MAX", "3")
+    monkeypatch.delenv("BOB_INSTALL_ROOT", raising=False)
+    monkeypatch.delenv("BOB_WORKER_DONE_MISS_REPLY_S", raising=False)
 
     clock = FakeClock(0.0)
     e, _sent, logs = _emitter(
         clock, harvest_hold_s=90.0, done_miss_grace_s=5.0, ack_stale_s=2700.0
     )
-    attempts: list[str] = []
-    progress_flags = [True, True, False]  # progress twice then none
+    try:
+        attempts: list[str] = []
+        progress_flags = [True, True, False]  # progress twice then none
 
-    def _remind(key: str) -> None:
-        attempts.append(key)
+        def _remind(key: str) -> None:
+            attempts.append(key)
 
-    def _decide(key: str) -> str:
-        # Called on turn_ended after a remind. Consume progress_flags.
-        if not progress_flags:
+        def _decide(key: str) -> str:
+            # Called on turn_ended after a remind. Consume progress_flags.
+            if not progress_flags:
+                return "giveup"
+            prog = progress_flags.pop(0)
+            n = len(attempts)
+            e.log(
+                f"opencode finish-run key={key} attempt={n}/{bw.opencode_finish_run_max()} "
+                f"progress={'yes' if prog else 'no'}"
+            )
+            if prog and n < bw.opencode_finish_run_max():
+                return "retry"
             return "giveup"
-        prog = progress_flags.pop(0)
-        n = len(attempts)
-        e.log(
-            f"opencode finish-run key={key} attempt={n}/{bw.opencode_finish_run_max()} "
-            f"progress={'yes' if prog else 'no'}"
-        )
-        if prog and n < bw.opencode_finish_run_max():
-            return "retry"
-        return "giveup"
 
-    e.done_miss_remind_fn = _remind
-    e.opencode_finish_decide_fn = _decide
-    giveups: list[tuple[str, str]] = []
-    e.seat_release_giveup_fn = lambda k, r: giveups.append((k, r))
+        e.done_miss_remind_fn = _remind
+        e.opencode_finish_decide_fn = _decide
+        giveups: list[tuple[str, str]] = []
+        e.seat_release_giveup_fn = lambda k, r: giveups.append((k, r))
 
-    e.on_outbox("ACK FR SimonBarnett/bobiverse#6360")
-    e.turn_ended(at=clock())
-    clock.advance(6.0)
-    assert _wait(lambda: e._done_miss_reminded, clock)  # noqa: SLF001
-    assert len(attempts) == 1
+        e.on_outbox("ACK FR SimonBarnett/bobiverse#6360")
+        e.turn_ended(at=clock())
+        clock.advance(6.0)
+        # Wait on the callback result, not the flag set before it runs.
+        assert _wait(lambda: len(attempts) >= 1, clock)
+        assert len(attempts) == 1
 
-    # End after remind #1 with progress -> retry (re-arm)
-    e.turn_ended(at=clock())
-    clock.advance(6.0)
-    assert _wait(lambda: len(attempts) >= 2, clock)
+        # End after remind #1 with progress -> retry (re-arm)
+        e.turn_ended(at=clock())
+        clock.advance(6.0)
+        assert _wait(lambda: len(attempts) >= 2, clock)
 
-    # End after remind #2 with progress -> retry
-    e.turn_ended(at=clock())
-    clock.advance(6.0)
-    assert _wait(lambda: len(attempts) >= 3, clock)
+        # End after remind #2 with progress -> retry
+        e.turn_ended(at=clock())
+        clock.advance(6.0)
+        assert _wait(lambda: len(attempts) >= 3, clock)
 
-    # End after remind #3 with no progress -> GIVEUP
-    e.turn_ended(at=clock())
-    assert _wait(lambda: any(r == "done-miss" for _, r in e.sent), clock), e.sent
-    assert giveups and giveups[0][1] == "done-miss"
-    assert any("opencode finish-run" in m for m in logs), logs
-    e.stop()
+        # End after remind #3 with no progress -> GIVEUP no-terminal-reply + !bored done-miss
+        e.turn_ended(at=clock())
+        assert _wait(lambda: any(r == "done-miss" for _, r in e.sent), clock), e.sent
+        assert giveups == [("FR SimonBarnett/bobiverse#6360", "no-terminal-reply")], giveups
+        assert any("opencode finish-run" in m for m in logs), logs
+    finally:
+        e.stop()
 
 
 def test_fr6366_pause_file_untouched_by_done_miss_helpers(tmp_path: Path, monkeypatch):
