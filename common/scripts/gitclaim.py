@@ -4018,6 +4018,19 @@ def _claim_from_pending_dict(d: dict) -> GitClaim | None:
     )
 
 
+_spool_seq = 0
+_spool_seq_lock = threading.Lock()
+
+
+def _next_spool_token() -> str:
+    """Process-unique sidecar token. time_ns repeats under a tight Windows loop."""
+    global _spool_seq
+    with _spool_seq_lock:
+        _spool_seq += 1
+        n = _spool_seq
+    return f"{os.getpid()}-{n}-{threading.get_ident()}"
+
+
 def _spool_pending(home: Path, claim: GitClaim) -> None:
     """Durable spool so lock/write failures do not drop webhook claims (FR #1811).
 
@@ -4028,26 +4041,37 @@ def _spool_pending(home: Path, claim: GitClaim) -> None:
     """
     path = pending_path(home)
     line = json.dumps(_claim_to_pending_dict(claim), separators=(",", ":")) + "\n"
+    payload = line.encode("utf-8")
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
     except OSError:
         pass
-    for attempt in range(5):
-        side = path.with_name(
-            f"{path.name}.side-{os.getpid()}-{time.time_ns()}-{threading.get_ident()}-{attempt}"
-        )
+    # FR #7942: publish the side name only after the bytes are closed. A pop
+    # that lists ``.side-*`` during os.open/write used to read an empty file
+    # and unlink it. time.time_ns() also repeats on Windows, so a later
+    # os.replace reused the same side name and erased an unread claim.
+    for attempt in range(40):
+        token = _next_spool_token()
+        partial = path.with_name(f"{path.name}.partial-{token}")
+        side = path.with_name(f"{path.name}.side-{token}")
+        fd: int | None = None
         try:
-            # O_CREAT|O_EXCL so two threads never share a sidecar path.
-            fd = os.open(str(side), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-            try:
-                os.write(fd, line.encode("utf-8"))
-            finally:
-                os.close(fd)
+            fd = os.open(str(partial), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            os.write(fd, payload)
+            os.close(fd)
+            fd = None
+            os.replace(str(partial), str(side))
             return
         except FileExistsError:
             continue
         except OSError:
+            if fd is not None:
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
             time.sleep(0.01 * (attempt + 1))
+    raise OSError("pending sidecar was not published")
 
 
 def _pending_sidecar_paths(home: Path) -> list[Path]:
@@ -4131,27 +4155,34 @@ def _pop_all_pending(home: Path) -> list[GitClaim]:
                 c = _claim_from_pending_dict(d)
                 if c is not None:
                     out.append(c)
-    # FR #6502: also drain any sidecar files from failed append retries.
+    # FR #6502 / #7942: drain published sidecars. Leave an empty or torn
+    # file in place so a writer that has not closed yet is not unlinked.
     for side in _pending_sidecar_paths(home):
         try:
             raw = side.read_text(encoding="utf-8")
         except OSError:
             continue
+        lines = [ln.strip() for ln in raw.splitlines() if ln.strip()]
+        if not lines:
+            continue
+        parsed: list[GitClaim] = []
+        torn = False
+        for line in lines:
+            try:
+                d = json.loads(line)
+            except json.JSONDecodeError:
+                torn = True
+                break
+            c = _claim_from_pending_dict(d)
+            if c is not None:
+                parsed.append(c)
+        if torn:
+            continue
         try:
             side.unlink()
         except OSError:
             pass
-        for line in raw.splitlines():
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                d = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            c = _claim_from_pending_dict(d)
-            if c is not None:
-                out.append(c)
+        out.extend(parsed)
     return out
 
 
@@ -8394,6 +8425,19 @@ def is_out_of_fuel_reason(reason: str) -> bool:
     return token == "out-of-fuel" or token.startswith("out-of-fuel-")
 
 
+def is_skill_dag_down_reason(reason: str) -> bool:
+    """True when a GIVEUP reason is OpenCode skill-dag preflight down (FR #7963).
+
+    Seat fault, not job fault: ``skill_dag_down`` or ``skill_dag_down:exit-1``.
+    """
+    text = (reason or "").strip().lower()
+    if not text:
+        return False
+    norm = text.replace("_", "-").replace(" ", "-")
+    token = norm.split(",", 1)[0].strip()
+    return token == "skill-dag-down" or token.startswith("skill-dag-down:")
+
+
 def _seat_out_of_fuel_path(home: Path) -> Path:
     return _root(home) / SEAT_OUT_OF_FUEL_NAME
 
@@ -8522,6 +8566,11 @@ def seat_skips_hostile_review(kind: str) -> bool:
     return (kind or "").strip().lower() == "opencode"
 
 
+def _start_model_from_fields(fields: dict | None) -> str:
+    f = fields or {}
+    return str(f.get("start_model") or f.get("model") or "").strip()
+
+
 def seat_started_on_free_model(home: Path, nick: str) -> bool:
     """FR #7926: the model the seat started on, not the configured model.
 
@@ -8625,24 +8674,60 @@ def fr_reserved_for_idle_free_seat(
 
 
 def seat_is_free_fuel(home: Path, nick: str) -> bool:
-    """True for an OpenCode or other free-fuel seat (FR #7706).
+    """True when this seat must stay on FR/FIX (FR #7706 / #7888).
 
-    A mislabeled digest kind does not make a free model eligible for MRB/UAT.
-    An unresolved ``$model`` template is also not a paid seat.
+    Eligibility follows the launched ``start_model``, not ``configured_model``
+    and not a free published ``cost_tier``. A paid OpenCode Go / pro id is not
+    free fuel even when kind is ``opencode`` or the configured model is free.
+    Missing, empty, or ``$model`` on an OpenCode seat fails safe to free.
+    A free model id is free even when the digest kind says grok.
     """
-    if seat_skips_hostile_review(seat_agent_kind(home, nick)):
-        return True
     fields = _seat_digest_model_fields(home, nick)
-    model = str(fields.get("start_model") or fields.get("model") or "").strip()
-    if "$" in model:
+    model = _start_model_from_fields(fields)
+    try:
+        import worker_start_model as wsm
+
+        klass = wsm.start_model_review_class(model)
+    except Exception:
+        klass = "unknown" if (not model or "$" in model) else "other"
+    if klass == "paid":
+        return False
+    if klass == "free":
         return True
-    low = model.lower()
-    if low.startswith("opencode/") and "opencode-go/" not in low:
+    if "$" in model or model.lower() == "unknown":
+        return True
+    if klass == "unknown" and seat_skips_hostile_review(seat_agent_kind(home, nick)):
         return True
     tier = str(fields.get("cost_tier") or "").strip().lower()
     if tier in ("free", "opencode-free"):
         return True
     return False
+
+
+def mrb_eligibility_reason(home: Path, nick: str) -> str:
+    """One line for the offer log: why this seat may or may not take MRB (FR #7888)."""
+    fields = _seat_digest_model_fields(home, nick)
+    model = _start_model_from_fields(fields)
+    try:
+        import worker_start_model as wsm
+
+        klass = wsm.start_model_review_class(model)
+    except Exception:
+        klass = "unknown"
+    shown = model or "missing"
+    if len(shown) > 80:
+        shown = shown[:80]
+    if klass == "paid":
+        return f"paid start_model {shown}"
+    if "$" in model:
+        return f"unknown start_model {shown}"
+    if klass == "free":
+        return f"free start_model {shown}"
+    if klass == "unknown" and seat_skips_hostile_review(seat_agent_kind(home, nick)):
+        return "unknown start_model on opencode (fail safe FR-only)"
+    if seat_is_free_fuel(home, nick):
+        return f"free-fuel start_model {shown}"
+    return f"mrb-eligible start_model {shown}"
 
 
 def row_blocked_for_opencode_seat(
@@ -8652,18 +8737,19 @@ def row_blocked_for_opencode_seat(
     *,
     kind: str | None = None,
 ) -> bool:
-    """True when an OpenCode or free-fuel seat must not be offered this MRB/UAT row."""
+    """True when a free or unknown start_model must not be offered this MRB/UAT row.
+
+    FR #6134 blocked every OpenCode seat. FR #7888 keeps that for a free or
+    missing start_model and allows a paid start_model (OpenCode Go / pro).
+    Without a digest (``home is None``), kind ``opencode`` still fails safe.
+    """
     task = str((row or {}).get("task") or "").upper()
     if task not in ("MRB", "UAT"):
         return False
-    k = kind
-    if k is None and home is not None:
-        k = seat_agent_kind(home, nick)
-    if seat_skips_hostile_review(k or ""):
-        return True
-    if home is None:
-        return False
-    return seat_is_free_fuel(home, nick)
+    if home is not None:
+        return seat_is_free_fuel(home, nick)
+    k = kind if kind is not None else ""
+    return seat_skips_hostile_review(k or "")
 
 
 def seat_is_out_of_fuel(home: Path, nick: str, now: float | None = None) -> bool:
@@ -9648,6 +9734,13 @@ def offer_focus_top(
                         return None
                 cand_eff = enrich_review_author_fields(doc, cand)
                 if review_blocked_for_author(cand_eff, me, live, ledger=ledger, free=free):
+                    if str(cand.get("task") or "").upper() in ("MRB", "UAT"):
+                        with contextlib.suppress(Exception):
+                            _log_queue_purge(
+                                "INFO mrb-eligibility skip"
+                                f" seat={me} task={str(cand.get('task') or '').upper()}"
+                                f" id={cand.get('id') or ''} reason=author"
+                            )
                     if is_repo_uat(cand):
                         with contextlib.suppress(Exception):
                             if maybe_escalate_repo_uat_all_self_uat(
@@ -9663,8 +9756,20 @@ def offer_focus_top(
                 _stamp_require_machine(cand_eff)
                 if row_blocked_for_machine(cand_eff, me):
                     return None
-                # FR #6134: OpenCode seats take FR/FIX/docs/harvest only — skip MRB/UAT.
-                if row_blocked_for_opencode_seat(cand_eff, me, home):
+                # FR #6134 / #7888: free or unknown start_model stays FR-only.
+                # A paid start_model may take MRB/UAT. Log the reason either way.
+                if str(cand_eff.get("task") or "").upper() in ("MRB", "UAT"):
+                    reason = mrb_eligibility_reason(home, me)
+                    if row_blocked_for_opencode_seat(cand_eff, me, home):
+                        with contextlib.suppress(Exception):
+                            _log_queue_purge(
+                                "INFO mrb-eligibility skip"
+                                f" seat={me} task={str(cand_eff.get('task') or '').upper()}"
+                                f" id={cand_eff.get('id') or ''} reason={reason}"
+                            )
+                        return None
+                    cand_eff["mrb_eligibility"] = reason
+                elif row_blocked_for_opencode_seat(cand_eff, me, home):
                     return None
                 # FR #7926: an idle eligible free-model seat takes FR/FIX first.
                 if fr_reserved_for_idle_free_seat(
@@ -9763,6 +9868,15 @@ def offer_focus_top(
                     resolved = resolve_assign_url(job)
                     if resolved:
                         job["url"] = resolved
+                    if str(job.get("task") or "").upper() in ("MRB", "UAT"):
+                        why = str(job.get("mrb_eligibility") or mrb_eligibility_reason(home, me))
+                        job["mrb_eligibility"] = why
+                        with contextlib.suppress(Exception):
+                            _log_queue_purge(
+                                "INFO mrb-eligibility offer"
+                                f" seat={me} task={str(job.get('task') or '').upper()}"
+                                f" id={job.get('id') or ''} reason={why}"
+                            )
                     doc["unaccepted"][i] = job
                     break
             else:
@@ -12964,13 +13078,14 @@ def assign_row(
                 "refused",
                 f"{me}: not in the shop channel (not a live seat; members_at={snap})",
             )
-    # FR #6134: refuse hostile review/UAT to OpenCode seats (chair !assign path).
+    # FR #6134 / #7888: refuse MRB/UAT when start_model is free or unknown.
+    # A paid start_model is assignable. OpenCode with no start_model fails safe.
     try:
-        _kind = seat_agent_kind(home, me)
-        if seat_skips_hostile_review(_kind) and task_u in ("MRB", "UAT"):
+        if task_u in ("MRB", "UAT") and seat_is_free_fuel(home, me):
+            why = mrb_eligibility_reason(home, me)
             return (
                 "refused",
-                f"{me}: OpenCode seats skip {task_u} (FR #6134; use Grok/Cursor)",
+                f"{me}: OpenCode or free start_model skips {task_u} ({why}; FR #6134 / #7888)",
             )
     except Exception:
         pass

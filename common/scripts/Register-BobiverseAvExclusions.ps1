@@ -33,6 +33,13 @@ param(
     [string[]]$Paths = @(),
     [string[]]$Processes = @(),
     [string]$Product = 'bobiverse',
+    [string]$AntivirusProductsJson = '',
+    [string]$UpdateLog = '',
+    [string]$ShopOutbox = '',
+    [string]$AssertExePath = '',
+    [string]$AssertServiceError = '',
+    [string]$InstallRoot = '',
+    [string]$ScriptsDir = '',
     [switch]$WhatIf
 )
 
@@ -177,14 +184,117 @@ function Register-BobiverseAvastFamilyExclusions {
     return $n
 }
 
+function Get-BobiverseThirdPartyAntivirus {
+    param([string]$ProductsJson = '')
+    $rows = @()
+    if ($ProductsJson -ne '') {
+        try { $rows = @($ProductsJson | ConvertFrom-Json) } catch { $rows = @() }
+    } else {
+        try {
+            $rows = @(Get-CimInstance -Namespace root/SecurityCenter2 -ClassName AntiVirusProduct -ErrorAction Stop)
+        } catch {
+            return @()
+        }
+    }
+    $names = New-Object System.Collections.Generic.List[string]
+    foreach ($row in @($rows)) {
+        $n = ''
+        $props = @()
+        try { $props = @($row.PSObject.Properties.Name) } catch { $props = @() }
+        if ($props -contains 'displayName') { $n = [string]$row.displayName }
+        else { $n = [string]$row }
+        $n = $n.Trim()
+        if (-not $n) { continue }
+        if ($n -match 'Windows Defender|Microsoft Defender') { continue }
+        if (-not $names.Contains($n)) { [void]$names.Add($n) }
+    }
+    return , $names.ToArray()
+}
+
+function Get-BobiverseAircAvStartError {
+    param(
+        [string]$ExePath,
+        [string]$ServiceError = '',
+        [string[]]$AntivirusNames = @()
+    )
+    $names = @($AntivirusNames | Where-Object { $_ -and ($_ -notmatch 'Windows Defender|Microsoft Defender') })
+    if ($names.Count -eq 0) { return $null }
+    $missing = [bool]($ExePath -and -not (Test-Path -LiteralPath $ExePath))
+    if (-not $missing -and -not $ServiceError) { return $null }
+    $why = if ($missing) { 'airc.exe is missing after install' } else { $ServiceError }
+    return ('ERROR FR #7878 {0}. Probable cause: {1}. Add an exception for the install paths and airc.exe.' -f $why, ($names -join ', '))
+}
+
+function Write-BobiverseThirdPartyAvWarning {
+    param(
+        [string[]]$Names,
+        [string[]]$PathList,
+        [string]$LogPath = '',
+        [string]$OutboxPath = ''
+    )
+    $who = (@($Names) | Where-Object { $_ }) -join ', '
+    $where = (@($PathList) | Where-Object { $_ }) -join ', '
+    if (-not $who) { return '' }
+    $msg = ('WARN FR #7878 third-party antivirus: {0}. Add an exception for: {1} and airc.exe.' -f $who, $where)
+    Write-Warning $msg
+    Write-Host $msg
+    if ($LogPath) {
+        try {
+            $dir = Split-Path -Parent $LogPath
+            if ($dir -and -not (Test-Path -LiteralPath $dir)) {
+                New-Item -ItemType Directory -Force -Path $dir | Out-Null
+            }
+            $line = '{0:o} {1}' -f [datetime]::UtcNow, ($msg -replace '[\r\n]+', ' ')
+            $utf8 = New-Object System.Text.UTF8Encoding $false
+            [IO.File]::AppendAllText($LogPath, $line + [Environment]::NewLine, $utf8)
+        } catch { }
+    }
+    if ($OutboxPath) {
+        try {
+            $note = ('PRIVMSG #shop :{0}' -f ($msg -replace '[\r\n]+', ' '))
+            Add-Content -LiteralPath $OutboxPath -Value $note -Encoding ascii
+        } catch { }
+    }
+    return $msg
+}
+
 # --- main ---
+$pathList = @(Get-BobiverseAvNormalizedPaths $Paths)
+$procList = @($Processes | Where-Object { $_ } | ForEach-Object { [string]$_ })
+
+# FR #7878: warn before install when Security Center lists a non-Defender AV.
+# Defender-only stays quiet. This does not change Add-MpPreference.
+$tpNames = @(Get-BobiverseThirdPartyAntivirus -ProductsJson $AntivirusProductsJson)
+if ($tpNames.Count -gt 0) {
+    $warn = Write-BobiverseThirdPartyAvWarning -Names $tpNames -PathList $pathList -LogPath $UpdateLog -OutboxPath $ShopOutbox
+    # MRB #7885: SkipFailReportedFlag  -  a third-party AV warn must not set
+    # install-airc-fail-reported.flag (FR #3685) or a later real install failure
+    # loses the outer Report-AircInstallCmdFailure intake.
+    if (Get-Command Send-BobiverseAircInstallFailureIntake -ErrorAction SilentlyContinue) {
+        try {
+            $intakeSplat = @{
+                Title               = 'airc install: third-party antivirus'
+                Body                = $warn
+                SkipFailReportedFlag = $true
+            }
+            if ($InstallRoot) { $intakeSplat.InstallRoot = $InstallRoot }
+            if ($ScriptsDir) { $intakeSplat.ScriptsDir = $ScriptsDir }
+            [void](Send-BobiverseAircInstallFailureIntake @intakeSplat)
+        } catch { }
+    }
+}
+if ($AssertExePath) {
+    $avErr = Get-BobiverseAircAvStartError -ExePath $AssertExePath -ServiceError $AssertServiceError -AntivirusNames $tpNames
+    if ($avErr) {
+        Write-Host $avErr
+        exit 2
+    }
+}
+
 if (-not (Test-BobiverseAvAdmin)) {
     Write-Warning 'FR #4215 AV exclusions require elevation; skipped (caller should UAC first)'
     return
 }
-
-$pathList = @(Get-BobiverseAvNormalizedPaths $Paths)
-$procList = @($Processes | Where-Object { $_ } | ForEach-Object { [string]$_ })
 
 if ($pathList.Count -eq 0 -and $procList.Count -eq 0) {
     Write-Host 'INFO FR #4215 no Paths/Processes supplied; nothing to register'

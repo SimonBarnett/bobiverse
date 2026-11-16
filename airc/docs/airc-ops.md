@@ -36,7 +36,11 @@ Smoke: `airc-network-installer.exe --selftest` and `--help`. Pack test stages us
 Consumer AV (Windows Defender, Avast, AVG, ...) can refuse creating unsigned `airc.exe` on disk. Install registers exclusions **before** the exe is laid:
 
 1. **MSI:** deferred `RunAvExclude` CA (Defender `ExclusionPath` / `ExclusionProcess`) scheduled **Before=`InstallFiles`**.
-2. **`Install-Airc.ps1` / standalone `Install-AircConsole.ps1`:** `common/scripts/Register-BobiverseAvExclusions.ps1` — Defender path/process (+ Controlled Folder Access allow) and best-effort Avast/AVG FileShield registry lists. Failures are WARN-only; install continues.
+2. **`Install-Airc.ps1` / standalone `Install-AircConsole.ps1`:** `common/scripts/Register-BobiverseAvExclusions.ps1` — Defender path/process (+ Controlled Folder Access allow) and best-effort Avast/AVG FileShield registry lists. Failures of the Defender/Avast exclusion registration are WARN-only; install continues.
+
+A non-Defender product from Security Center `AntiVirusProduct` writes `WARN FR #7878` (product name and exception paths) to the console, `update.log`, and the shop outbox, and reports through install intake with `-SkipFailReportedFlag` so `install-airc-fail-reported.flag` is not set (FR #3685). Defender-only stays quiet. `Add-MpPreference` is unchanged.
+
+After the service start, a missing `airc.exe` or an Airc service that is not running, while that third-party antivirus is listed, makes `Register-BobiverseAvExclusions.ps1` exit 2. `Install-Airc.ps1` then throws. The warn itself does not stop install.
 
 If Avast still blocks, add a manual File/Folder exception for `<ai root>\airc` (and `airc.exe`) in the Avast UI.
 

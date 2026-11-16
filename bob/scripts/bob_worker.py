@@ -283,14 +283,18 @@ def _resolve_installed_worker_script(
         candidates.append(root / "common" / "scripts" / name)
     if not _path_is_mei_extract(here):
         candidates.append(here / name)
+    # FR #7963: a frozen bob-worker must use the bundle beside the exe before a
+    # stale install checkout (cwd parent bob/scripts, often C:\ai\bob).
+    if getattr(sys, "frozen", False):
+        exe_dir = Path(sys.executable).resolve().parent
+        candidates.append(exe_dir / "scripts" / name)
+        candidates.append(exe_dir.parent / "scripts" / name)
     if cwd is not None:
         parent = Path(cwd).resolve().parent
         candidates.append(parent / "scripts" / name)
         candidates.append(parent / "bob" / "scripts" / name)
     if getattr(sys, "frozen", False):
         exe_dir = Path(sys.executable).resolve().parent
-        candidates.append(exe_dir / "scripts" / name)
-        candidates.append(exe_dir.parent / "scripts" / name)
         candidates.append(exe_dir.parent / "bob" / "scripts" / name)
     for cand in candidates:
         if _path_is_mei_extract(cand):
@@ -1248,6 +1252,85 @@ def resolve_opencode_model(
         except Exception:  # noqa: BLE001
             pass
     return chosen
+
+
+def stamp_opencode_pause_fallback(env: dict, chosen: str, *, now: Optional[float] = None) -> bool:
+    """Mark a launch that fell back because the configured model was paused.
+
+    An operator ``BOB_OPENCODE_MODEL`` captured at process start is a chosen
+    model and is not a fallback (FR #7952). Returns True when the stamp is set.
+    """
+    if (_OPENCODE_MODEL_ENV_AT_START or "").strip():
+        env.pop("BOB_OPENCODE_PAUSE_FALLBACK", None)
+        env.pop("BOB_OPENCODE_CONFIGURED_MODEL", None)
+        return False
+    cfg = ""
+    try:
+        import worker_start_model as wsm
+
+        cfg = wsm.configured_start_model("opencode", wsm.load_worker_start_config(env=env))
+    except Exception:
+        cfg = ""
+    if not cfg:
+        cfg = read_opencode_config_model(env) or ""
+    picked = str(chosen or "").strip()
+    paused = False
+    if cfg and picked and cfg.lower() != picked.lower() and opencode_fuel is not None:
+        paused = opencode_fuel.is_opencode_model_paused(
+            cfg, opencode_pauses_state_dir(env), now=now
+        )
+    if not paused:
+        env.pop("BOB_OPENCODE_PAUSE_FALLBACK", None)
+        env.pop("BOB_OPENCODE_CONFIGURED_MODEL", None)
+        return False
+    env["BOB_OPENCODE_CONFIGURED_MODEL"] = cfg
+    env["BOB_OPENCODE_PAUSE_FALLBACK"] = "1"
+    env["BOB_OPENCODE_SEAT_PID"] = str(os.getpid())
+    return True
+
+
+def resume_opencode_pause_fallback(
+    *,
+    current: str,
+    configured: str,
+    state_dir: Path,
+    pause_fallback: bool,
+    now: Optional[float] = None,
+    machine: str = "",
+    nick: str = "",
+    pid: int | str = 0,
+    publish=None,
+) -> str:
+    """Model for the next job. Does not change a model while a turn is in progress.
+
+    When ``pause_fallback`` is set and the configured model's pause has expired,
+    return that model and ask ``publish(model, mismatch)`` once.
+    """
+    if opencode_fuel is None:
+        return str(current or "").strip()
+    nxt = opencode_fuel.next_job_model(
+        current,
+        configured,
+        state_dir,
+        now=now,
+        pause_fallback=pause_fallback,
+    )
+    cur = str(current or "").strip()
+    if nxt != cur and publish is not None:
+        mismatch = nxt.lower() != str(configured or "").strip().lower()
+        publish(nxt, mismatch)
+    elif nxt != cur and machine and pid:
+        post_digest_seat_kind(
+            machine=machine,
+            pid=pid,
+            nick=nick,
+            kind="opencode",
+            model=nxt,
+            configured_model=configured,
+            model_mismatch=nxt.lower() != str(configured or "").strip().lower(),
+            log=None,
+        )
+    return nxt
 
 def grok_has_tokens(f: Fuel) -> bool:
     """True when seat start may pick Grok (FR #3997).
@@ -2775,18 +2858,21 @@ def skill_dag_mcp_script_path(
     *,
     source_file: str | Path | None = None,
 ) -> Path:
-    """Locate ``skill_dag_mcp.py`` for Grok/Cursor MCP launch args (FR #6889).
+    """Locate ``skill_dag_mcp.py`` for Grok/Cursor MCP launch args (FR #6889 / #7963).
 
-    The module lives at ``bob/scripts/skill_dag_mcp.py`` (docs + tree). Older code
-    pointed at ``<install>/common/scripts/skill_dag_mcp.py``, which is absent.
-    Order matches ``_resolve_opencode_fuel_helper_path``: first existing file wins.
-    Miss returns the preferred ``bob/scripts`` candidate under the worker parent.
+    FR #7963: prefer the worker-shipped copy via ``_resolve_installed_worker_script``
+    so a frozen bob-worker.exe cannot keep probing a stale ``C:\\ai\\bob`` checkout.
+    Then fall back to install/repo paths. Miss returns the preferred ``bob/scripts``
+    candidate under the worker parent.
     """
+    shipped = _resolve_installed_worker_script(
+        "skill_dag_mcp.py", cwd=worker_cwd, source_file=source_file
+    )
+    if shipped is not None and shipped.is_file():
+        return shipped.resolve()
     source = Path(source_file).resolve() if source_file else Path(__file__).resolve()
     here = source.parent
     parent = Path(worker_cwd).resolve().parent
-    # Prefer paths under the worker parent (repo/install tree) so MCP args name a
-    # file next to the seat; then source-sibling; legacy common/ last.
     candidates = [
         parent / "bob" / "scripts" / "skill_dag_mcp.py",
         parent / "scripts" / "skill_dag_mcp.py",
@@ -3606,6 +3692,45 @@ def skill_dag_mcp_argv(
     return argv
 
 
+def opencode_skill_root_read_patterns(root: Path) -> list[str]:
+    """Path forms OpenCode asks for under one skill root (FR #7200 / #7909).
+
+    A bare directory key does not match ``<root>\\<book>\\*``. Headless
+    ``opencode run --dir`` loads these keys from that directory's ``opencode.json``.
+    """
+    patterns: list[str] = []
+    seen: set[str] = set()
+
+    def add(value: str) -> None:
+        text = str(value or "").strip()
+        if not text or text in seen:
+            return
+        seen.add(text)
+        patterns.append(text)
+
+    resolved = str(root)
+    posix = root.as_posix()
+    for base in (resolved.rstrip("\\/"), posix.rstrip("/")):
+        add(base)
+        add(base + "\\*")
+        add(base + "/*")
+        add(base + "\\**")
+        add(base + "/**")
+        add(base + "\\*\\*")
+        add(base + "/*/*")
+    try:
+        children = [p for p in root.iterdir() if p.is_dir()]
+    except OSError:
+        children = []
+    for child in children:
+        for base in (str(child).rstrip("\\/"), child.as_posix().rstrip("/")):
+            add(base)
+            add(base + "\\*")
+            add(base + "/*")
+            add(base + "\\**")
+            add(base + "/**")
+    return patterns
+
 # FR #7908: worker health-checks skill-dag before handing a job to the model.
 SKILL_DAG_PREFLIGHT_TIMEOUT_S = 20.0
 JOB_SKILL_BY_TYPE = {
@@ -3727,10 +3852,36 @@ def skill_dag_preflight(
     return {"action": "giveup", "restarted": True, "reason": "skill_dag_down"}
 
 
-def skill_dag_down_giveup_line(job_key: str) -> str:
-    """Shop wire ``GIVEUP <TYPE> owner/repo#N skill_dag_down`` (FR #7908)."""
+def skill_dag_down_detail_token(probe_reason: str = "", skill_path: str | Path | None = None) -> str:
+    """Wire token after GIVEUP job key (FR #7963): ``skill_dag_down`` or ``skill_dag_down:exit-1``."""
+    reason = "skill_dag_down"
+    detail = " ".join(str(probe_reason or "").split()).strip()
+    if detail and detail.lower() not in ("skill_dag_down", "skill-dag-down"):
+        # Keep one wire token: colons ok, spaces become dashes, cap length.
+        safe = re.sub(r"[^A-Za-z0-9._:=+/-]+", "-", detail).strip("-")[:80]
+        if safe:
+            reason = f"skill_dag_down:{safe}"
+    if skill_path:
+        try:
+            name = Path(skill_path).name
+        except (TypeError, ValueError):
+            name = ""
+        name = " ".join(str(name).split()).strip()
+        if name:
+            reason = f"{reason}:skill={name}"
+    return reason
+
+
+def skill_dag_down_giveup_line(
+    job_key: str,
+    *,
+    probe_reason: str = "",
+    skill_path: str | Path | None = None,
+) -> str:
+    """Shop wire ``GIVEUP <TYPE> owner/repo#N skill_dag_down[:detail]`` (FR #7908 / #7963)."""
     key = " ".join(str(job_key or "").split()).strip()
-    return f"GIVEUP {key} skill_dag_down" if key else "GIVEUP job skill_dag_down"
+    token = skill_dag_down_detail_token(probe_reason, skill_path)
+    return f"GIVEUP {key} {token}" if key else f"GIVEUP job {token}"
 
 
 def opencode_skill_read_permission_block(worker_cwd: str) -> dict:
@@ -3738,11 +3889,43 @@ def opencode_skill_read_permission_block(worker_cwd: str) -> dict:
     allow: dict[str, str] = {}
     edit: dict[str, str] = {}
     for root in skill_dag_mcp_skill_roots(worker_cwd):
-        key = str(root)
-        allow[key] = "allow"
-        edit[key] = "deny"
+        for key in opencode_skill_root_read_patterns(root):
+            allow[key] = "allow"
+            edit[key] = "deny"
     return {"external_directory": allow, "edit": edit}
 
+
+def opencode_skill_read_allow_gaps(config_path: str | Path, worker_cwd: str) -> list[str]:
+    """Skill-root read patterns missing from the ``opencode.json`` ``--dir`` loads."""
+    expected = opencode_skill_read_permission_block(worker_cwd).get("external_directory") or {}
+    try:
+        data = json.loads(Path(config_path).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, TypeError):
+        return sorted(str(k) for k in expected)
+    perm = data.get("permission") if isinstance(data, dict) else None
+    allow = {}
+    if isinstance(perm, dict) and isinstance(perm.get("external_directory"), dict):
+        allow = perm["external_directory"]
+    missing = [str(key) for key in expected if allow.get(key) != "allow"]
+    return missing
+
+
+def report_opencode_skill_read_gaps(config_path: str | Path, worker_cwd: str) -> list[str]:
+    """FR #7909: auto-report when the effective config does not grant skill-root reads."""
+    missing = opencode_skill_read_allow_gaps(config_path, worker_cwd)
+    if not missing:
+        return []
+    try:
+        import runtime_failure
+
+        runtime_failure.report_message(
+            "bob-worker",
+            "opencode skill-root read allow missing count=%s" % len(missing),
+            site="opencode-skill-read-allow",
+        )
+    except Exception:
+        return missing
+    return missing
 
 def opencode_job_worktree_read_patterns(worktree: str | Path) -> list[str]:
     """FR #7911: the job tree and its ``.bob`` folder are not external."""
@@ -3837,6 +4020,7 @@ def write_opencode_skill_dag_mcp_config(
     if "$schema" not in data:
         data["$schema"] = incoming["$schema"]
     cfg.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    report_opencode_skill_read_gaps(cfg, seat)
     return cfg
 
 
@@ -4086,6 +4270,19 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             r"    }",
             r"    if ($argList -contains '--auto') { throw 'opencode --auto is forbidden' }",
             r"    $script:ocTurnN++",
+            # FR #7952: once per job, before the run. Never changes $model mid-turn.
+            r"    if ($env:BOB_OPENCODE_PAUSE_FALLBACK -eq '1' -and $env:BOB_OPENCODE_CONFIGURED_MODEL) {",
+            r"        $pyResume = (Get-Command python.exe -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source)",
+            r"        if (-not $pyResume) { $pyResume = 'python.exe' }",
+            r"        $nextModel = ''",
+            r"        try { $nextModel = (& $pyResume $pyHelper next-model --dir $pauseStateDir --configured $env:BOB_OPENCODE_CONFIGURED_MODEL --current $model 2>$null | Select-Object -Last 1) } catch { $nextModel = '' }",
+            r"        $nextModel = ([string]$nextModel).Trim()",
+            r"        if ($nextModel -and $nextModel -ne $model) {",
+            r"            $model = $nextModel",
+            r"            $env:BOB_OPENCODE_MODEL = $model",
+            r"            $env:BOB_OPENCODE_PAUSE_FALLBACK = '0'",
+            r"        }",
+            r"    }",
             r"    $turnN = $script:ocTurnN",
             r"    Write-OpencodeTurnMarker 'turn_started' $turnN",
             r"    try {",
@@ -4230,7 +4427,8 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             r"    $codePattern = '(HTTP|status( code)?)\D{0,3}(402|429)'",
             # FR #6366: watchdog timeout kills the run but must NOT record a model pause
             # (done-miss finish-runs looked like out-of-fuel). Only real 402/429/limit text pauses.
-            r"    $hitLimit = ($exitCode -ne 0 -and (($scan -match $limitPattern) -or ($scan -match $codePattern)))",
+            # FR #7951: a hard ceiling or watchdog kill is not out of fuel.
+            r"    $hitLimit = (-not $timedOut -and $exitCode -ne 0 -and (($scan -match $limitPattern) -or ($scan -match $codePattern)))",
             r"    if ($timedOut) {",
             r"        if ($proc -and -not $proc.HasExited) { try { & taskkill /T /F /PID $proc.Id 2>$null | Out-Null } catch { } }",
             r"        if (-not $killReason) { $killReason = 'watchdog timeout (no output)' }",
@@ -6379,7 +6577,10 @@ def provider_fuel_scan_text(text: str) -> str:
 
 def is_out_of_fuel_text(text: str) -> bool:
     """True when agent/log text is a provider fuel/quota/auth exhaustion (FR #3012 / #3019)."""
-    return bool(_OUT_OF_FUEL_RX.search(provider_fuel_scan_text(text)))
+    scanned = provider_fuel_scan_text(text)
+    if opencode_fuel is not None and opencode_fuel.is_turn_timeout_text(scanned):
+        return False
+    return bool(_OUT_OF_FUEL_RX.search(scanned))
 
 
 # FR #4858: hard API 402 / usage-balance-exhausted (not mid-job reading, not NEEDS_AUTH).
@@ -8528,11 +8729,11 @@ _OUT_JOB_KEY_RX = re.compile(
 
 
 # FR #2383: Jeeves assign body still visible inside a FROM line after compaction footers.
-_JOB_ASSIGN_RX = re.compile(r"(?i)\b(FR|MRB|UAT)\s+\S+#\d+\b")
-# FR #2791: capture owner/repo#N from an assign (or outbox ACK key) for submit-verify stop match.
-_ASSIGN_JOB_REF_RX = re.compile(r"(?i)\b(?:FR|MRB|UAT)\s+(\S+#\d+)\b")
+_JOB_ASSIGN_RX = re.compile(r"(?i)\b(FR|MRB|UAT|FIX)\s+\S+#\d+\b")
+# FR #2791 / #7946: capture owner/repo#N from an assign (or outbox ACK key) for submit-verify stop match.
+_ASSIGN_JOB_REF_RX = re.compile(r"(?i)\b(?:FR|MRB|UAT|FIX)\s+(\S+#\d+)\b")
 # FR #4180: capture TYPE + owner/repo#N for NACK out-of-fuel lines.
-_ASSIGN_TYPE_KEY_RX = re.compile(r"(?i)\b(FR|MRB|UAT)\s+(\S+#\d+)\b")
+_ASSIGN_TYPE_KEY_RX = re.compile(r"(?i)\b(FR|MRB|UAT|FIX)\s+(\S+#\d+)\b")
 
 
 def assign_job_ref(line: str) -> Optional[str]:
@@ -8624,12 +8825,44 @@ def ack_on_receipt_line(line: str) -> Optional[str]:
     return f"ACK {key}"
 
 
-def opencode_skips_hostile_assign(kind: str, line: str) -> bool:
-    """FR #6134: OpenCode seats must not take MRB/UAT assigns (hostile / repo UAT)."""
+def opencode_skips_hostile_assign(kind: str, line: str, start_model: str = "") -> bool:
+    """FR #6134: free OpenCode seats must not take MRB/UAT.
+
+    FR #7888: a paid start_model (OpenCode Go / pro) accepts the assign.
+    Missing or ``$model`` still NACKs (fail safe).
+    """
     if (kind or "").strip().lower() != "opencode":
         return False
     key = (assign_job_key(line) or "").upper()
-    return key.startswith("MRB ") or key.startswith("UAT ")
+    if not (key.startswith("MRB ") or key.startswith("UAT ")):
+        return False
+    try:
+        import worker_start_model as wsm
+
+        if wsm.start_model_review_class(start_model) == "paid":
+            return False
+    except Exception:
+        pass
+    return True
+
+
+def launched_hostile_start_model(kind: str, child_env: Optional[dict] = None) -> str:
+    """FR #7888: the model the seat launched, not the configured hello id.
+
+    ``resolve_seat_hello_model`` returns ``workerStartModels`` first. A paid
+    OpenCode Go launch with a free configured id must not NACK MRB.
+    Missing actual fails safe to the hello model (often free or empty).
+    """
+    try:
+        import worker_start_model as wsm
+
+        env = child_env or {}
+        actual = wsm.concrete_model_id(env.get(wsm.ENV_ACTUAL_MODEL))
+        if actual:
+            return actual
+    except Exception:
+        pass
+    return resolve_seat_hello_model(kind)
 
 
 def opencode_hostile_nack_line(line: str) -> Optional[str]:
@@ -11335,7 +11568,13 @@ class Supervisor:
         )
         # FR #4180: refuse (NACK out-of-fuel) assigns while the seat is in out-of-fuel hold.
         relay.refuse_assign_while = lambda: bool(self.bored and self.bored.out_of_fuel)
-        relay.skips_hostile_assign = lambda line: opencode_skips_hostile_assign(self.kind, line)
+        relay.skips_hostile_assign = lambda line: opencode_skips_hostile_assign(
+            self.kind,
+            line,
+            start_model=launched_hostile_start_model(
+                self.kind, getattr(self, "last_child_env", None)
+            ),
+        )
         # FR #6240 / #6328: OpenCode-only. Classify on read thread; ensure off-thread.
         # Grok/Cursor must keep flood coalesce + multi-key ACK (callbacks stay None).
         if (self.kind or "").strip().lower() == "opencode":
@@ -12856,26 +13095,37 @@ class Supervisor:
 
     def _skill_dag_preflight_for_opencode(
         self, job_worktree: str | Path | None, job_key: str = ""
-    ) -> bool:
-        """FR #7908: probe skill-dag before the job; restart once; else GIVEUP skill_dag_down."""
+    ) -> str:
+        """FR #7908 / #7963: probe skill-dag; restart once; else return giveup detail.
+
+        Returns ``""`` when healthy. On giveup returns a probe reason token such as
+        ``exit-1`` or ``bad-json`` (empty string falls back to bare ``skill_dag_down``).
+        Stores the last skill path on ``self._skill_dag_preflight_skill`` for the wire.
+        """
+        self._skill_dag_preflight_skill = ""
         if (self.kind or "").strip().lower() != "opencode":
-            return True
+            return ""
         if (os.environ.get("BOB_SKIP_SKILL_DAG_PREFLIGHT") or "").strip() == "1":
-            return True
+            return ""
         if os.environ.get("PYTEST_CURRENT_TEST") and (
             os.environ.get("BOB_SKILL_DAG_PREFLIGHT_TEST") or ""
         ).strip() != "1":
-            return True
+            return ""
         cwd = str(getattr(self, "cwd", "") or "")
         if not cwd:
-            return True
+            return ""
+
+        last: dict = {}
 
         def probe() -> bool:
-            return bool(
-                probe_skill_dag_mcp_cli(
-                    cwd, job_worktree=job_worktree, job_key=job_key
-                ).get("ok")
+            nonlocal last
+            last = probe_skill_dag_mcp_cli(
+                cwd, job_worktree=job_worktree, job_key=job_key
             )
+            skill = skill_dag_job_skill_md(cwd, job_key)
+            if skill is not None:
+                self._skill_dag_preflight_skill = str(skill)
+            return bool(last.get("ok"))
 
         def restart() -> None:
             agent_pid = None
@@ -12891,13 +13141,15 @@ class Supervisor:
 
         decision = skill_dag_preflight(probe, restart)
         if decision.get("action") == "giveup":
+            detail = str(last.get("reason") or decision.get("reason") or "skill_dag_down")
             self.log(
-                f"skill-dag preflight: {decision.get('reason')} job={job_key}"
+                f"skill-dag preflight: {detail} job={job_key}"
+                + (f" skill={self._skill_dag_preflight_skill}" if self._skill_dag_preflight_skill else "")
             )
-            return False
+            return detail
         if decision.get("restarted"):
             self.log("skill-dag preflight: restarted the MCP child once")
-        return True
+        return ""
 
     def _refresh_live_skill_dag_mcp(self, job_worktree: str | Path | None) -> None:
         bound, cursor, vision = self._live_skill_dag_mcp_paths()
@@ -13000,11 +13252,16 @@ class Supervisor:
                 except Exception as e:  # noqa: BLE001
                     self.log(f"opencode-ready: skill-dag mcp write skipped {type(e).__name__}")
                 # FR #7908: do not hand the job over when skill-dag is down.
-                if not self._skill_dag_preflight_for_opencode(
+                _sd_detail = self._skill_dag_preflight_for_opencode(
                     prepared.get("path"), str(prepared.get("key") or "")
-                ):
+                )
+                if _sd_detail:
                     raise JobContextRefused(
-                        skill_dag_down_giveup_line(str(prepared.get("key") or ""))
+                        skill_dag_down_giveup_line(
+                            str(prepared.get("key") or ""),
+                            probe_reason=_sd_detail,
+                            skill_path=getattr(self, "_skill_dag_preflight_skill", "") or None,
+                        )
                     )
                 # FR #6333: tail in-worktree .bob/outbox.txt; stamp FROM footer with that path.
                 try:
@@ -14170,6 +14427,7 @@ def run_plan(args, log: Log) -> int:
             )
             return EXIT_NO_AGENT
         os.environ["BOB_OPENCODE_MODEL"] = oc_model
+        stamp_opencode_pause_fallback(os.environ, oc_model)
     else:
         exe = grok_exe
     run_dir = _new_run_dir("plan", "plan")
@@ -14271,6 +14529,7 @@ def run_monitor(args, log: Log) -> int:
             )
             return EXIT_NO_AGENT
         os.environ["BOB_OPENCODE_MODEL"] = oc_model
+        stamp_opencode_pause_fallback(os.environ, oc_model)
     else:
         exe = grok_exe
     run_dir = _new_run_dir("monitor", "monitor")
@@ -14398,6 +14657,7 @@ def run_maintenance(args, log: Log, *, spawn: Optional[Callable] = None, poll_s:
             )
             return EXIT_NO_AGENT
         os.environ["BOB_OPENCODE_MODEL"] = oc_model
+        stamp_opencode_pause_fallback(os.environ, oc_model)
     else:
         exe = grok_exe
     rd = Path(run_dir) if run_dir else _new_run_dir("maintenance", "maintenance")
@@ -14527,6 +14787,7 @@ def run_agent(args, log: Log) -> int:
             )
             return EXIT_NO_AGENT
         os.environ["BOB_OPENCODE_MODEL"] = oc_model
+        stamp_opencode_pause_fallback(os.environ, oc_model)
     else:
         exe = grok_exe
     pid = os.getpid()
