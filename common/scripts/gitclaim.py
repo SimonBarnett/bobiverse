@@ -7413,6 +7413,8 @@ def offer_after_release(
     # FR #4181: out-of-fuel seats stay quiet (no giveup/done push) until !bored clears.
     if seat_is_out_of_fuel(home, nick, now):
         return 0, None
+    if seat_fuel_pause_reason(home, nick, now):
+        return 0, None
     # FR #4089: never push to a seat that still has an open job (accepted / offered / held).
     if seat_open_job(home, nick, now):
         return 0, None
@@ -8239,6 +8241,147 @@ SEAT_OUT_OF_FUEL_MAX_S = 7 * 24 * 3600.0  # weekly Grok period ceiling
 
 def _seat_key(nick: str) -> str:
     return (canonical_worker_nick(nick or "") or nick or "").strip().lower()
+
+
+# FR #7837: pause offers while a fresh digest pool is exactly 0% until its reset.
+FUEL_PAUSE_REASON = "pool-0-until-reset"
+FUEL_FRESH_MAX_S = 120.0
+
+
+def _fuel_clock(now: float | None) -> float:
+    import time as _time
+
+    return _time.time() if now is None else float(now)
+
+
+def _fuel_epoch(raw: object) -> float | None:
+    text = str(raw or "").strip()
+    if not text:
+        return None
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        from datetime import datetime, timezone
+
+        dt = datetime.fromisoformat(text)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.timestamp()
+    except ValueError:
+        return None
+
+
+def _pool_reading_fresh(pool: dict, now_f: float) -> bool:
+    fresh = pool.get("fresh")
+    if fresh is True:
+        return True
+    if fresh is False:
+        return False
+    fetched = _fuel_epoch(pool.get("fetched_at"))
+    if fetched is None:
+        return False
+    age = now_f - fetched
+    return 0.0 <= age <= FUEL_FRESH_MAX_S
+
+
+def _pool_remaining_exact_zero(pool: dict) -> bool:
+    for key in ("remaining", "remaining_pct"):
+        if key not in pool or pool.get(key) is None:
+            continue
+        try:
+            return float(pool.get(key)) == 0.0
+        except (TypeError, ValueError):
+            return False
+    return False
+
+
+def _pool_future_reset(pool: dict, now_f: float) -> str:
+    for key in ("period_end", "reset_at", "quota_reset_date"):
+        raw = pool.get(key)
+        ts = _fuel_epoch(raw)
+        if ts is not None and ts > now_f:
+            return str(raw).strip()
+    return ""
+
+
+def _machine_pool_for_kind(ent: dict, kind: str) -> dict | None:
+    k = (kind or "").strip().lower()
+    if k in ("grok", "grok-build", "xai"):
+        pool = ent.get("xai_weekly") if isinstance(ent.get("xai_weekly"), dict) else ent.get("xai")
+    elif k == "cursor":
+        pool = ent.get("copilot") if isinstance(ent.get("copilot"), dict) else ent.get("copilot_pool")
+    elif k == "opencode":
+        pool = ent.get("opencode")
+    else:
+        return None
+    return pool if isinstance(pool, dict) else None
+
+
+def _raw_digest_machine(home: Path, mid: str) -> dict:
+    path = bobreport.digest_path(_root(home))
+    try:
+        doc = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    ent = (doc.get("machines") or {}).get(mid) if isinstance(doc, dict) else None
+    return ent if isinstance(ent, dict) else {}
+
+
+def _stamp_worker_fuel_pause(home: Path, mid: str, pid: str, until: str, reason: str) -> None:
+    try:
+        doc = bobreport.load_digest(_root(home))
+    except Exception:
+        return
+    machines = doc.get("machines") if isinstance(doc.get("machines"), dict) else None
+    ent = machines.get(mid) if isinstance(machines, dict) else None
+    if not isinstance(ent, dict):
+        return
+    workers = ent.get("workers") if isinstance(ent.get("workers"), dict) else None
+    if not isinstance(workers, dict):
+        return
+    row = workers.get(str(pid))
+    if not isinstance(row, dict):
+        return
+    changed = False
+    if reason and until:
+        if str(row.get("fuel_paused_until") or "") != until or str(row.get("fuel_pause_reason") or "") != reason:
+            row["fuel_paused_until"] = until
+            row["fuel_pause_reason"] = reason
+            changed = True
+    elif row.get("fuel_paused_until") or row.get("fuel_pause_reason"):
+        row.pop("fuel_paused_until", None)
+        row.pop("fuel_pause_reason", None)
+        changed = True
+    if changed:
+        try:
+            bobreport.save_digest(_root(home), doc)
+        except OSError:
+            return
+
+
+def seat_fuel_pause_reason(home: Path, nick: str, now: float | None = None) -> str:
+    """FR #7837: ``pool-0-until-reset`` when a fresh pool is 0% before its reset.
+
+    Unknown agent kinds do not pause. A stale or ``fresh is False`` 0% does not
+    pause. The worker row is stamped (or cleared) so the digest shows the pause.
+    """
+    now_f = _fuel_clock(now)
+    me = (canonical_worker_nick(nick) or nick or "").strip()
+    parsed = bobreport.parse_seat_nick(me)
+    if not parsed:
+        return ""
+    mid, pid = parsed
+    kind = seat_agent_kind(home, me)
+    ent = _raw_digest_machine(home, mid)
+    pool = _machine_pool_for_kind(ent, kind)
+    until = ""
+    reason = ""
+    if pool and _pool_reading_fresh(pool, now_f) and _pool_remaining_exact_zero(pool):
+        until = _pool_future_reset(pool, now_f)
+        if until:
+            reason = FUEL_PAUSE_REASON
+    _stamp_worker_fuel_pause(home, mid, pid, until, reason)
+    return reason
 
 
 def is_out_of_fuel_reason(reason: str) -> bool:
@@ -9112,6 +9255,8 @@ def offer_focus_top(
     now_f = _time.time() if now is None else float(now)
     # FR #4181: never stamp an offer onto a seat still marked out-of-fuel.
     if seat_is_out_of_fuel(home, nick, now_f):
+        return "empty", None
+    if seat_fuel_pause_reason(home, nick, now_f):
         return "empty", None
     live = live_seat_nicks(home)
     free = free_seat_nicks(home, live)
@@ -12825,6 +12970,8 @@ def assign_row(
             # only manual exception, already gated above for FIX).
             if not _seat_model_allows_row(home, me, cand):
                 return "refused", f"{me}: model mismatch or below jobRequiredModelTier (FR #7084)"
+            if seat_fuel_pause_reason(home, me, now_f):
+                return "refused", f"{me}: fuel paused until reset (FR #7837)"
             # Exact-nick giveup only on !assign (FR #4336): recycle inherit is for
             # auto-offer. Ops may !assign needs_human to a recycled successor.
             if row_gave_up_by(cand, me):
@@ -15171,6 +15318,8 @@ def bored_gate(
         return "wait"
     # FR #4181: out-of-fuel mark blocks !bored offers until clear_seat_out_of_fuel.
     if seat_is_out_of_fuel(home, nick, now):
+        return "busy"
+    if seat_fuel_pause_reason(home, nick, now):
         return "busy"
     # FR #3192: outstanding offered_to (pending ACK / undelivered assign) is busy —
     # never re-offer the same row and never treat it as stale digest doing.

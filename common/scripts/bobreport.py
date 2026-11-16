@@ -1062,6 +1062,10 @@ def _coerce_worker(mid: str, pid: str, raw: object) -> dict:
     start_effort = str(ent.get("start_effort") or "").strip()
     if start_effort:
         out["start_effort"] = start_effort
+    paused = str(ent.get("fuel_paused_until") or "").strip()
+    if paused:
+        out["fuel_paused_until"] = paused
+        out["fuel_pause_reason"] = str(ent.get("fuel_pause_reason") or "pool-0-until-reset")
     # FR #4211: keep heartbeat so live_seat_nicks can skip stale legacy workers.
     updated = str(ent.get("updated") or ent.get("last_seen") or ent.get("lastSeen") or "").strip()
     if updated:

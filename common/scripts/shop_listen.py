@@ -819,7 +819,11 @@ def return_job_to_unaccepted(
             # FR #4881: out-of-fuel is about the seat (FR #4181 mark), not the job.
             # Do not burn giveup_count, giveup_seats, cooldown, or needs_human ---
             # empty giveup_seats + cooldown_until would block every seat.
-            out_of_fuel_giveup = gitclaim.is_out_of_fuel_reason(reason)
+            fuel_pause_giveup = False
+            if gave_up_by:
+                with contextlib.suppress(Exception):
+                    fuel_pause_giveup = bool(gitclaim.seat_fuel_pause_reason(home, gave_up_by, now_f))
+            out_of_fuel_giveup = gitclaim.is_out_of_fuel_reason(reason) or fuel_pause_giveup
             seat_not_job_giveup = self_mrb_giveup or out_of_fuel_giveup
             for k in ("nick", "accepted_ts", "offered_to", "offered_ts", "offered_channel", "channel"):
                 job.pop(k, None)
