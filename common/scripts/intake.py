@@ -1128,6 +1128,24 @@ _HARVEST_GENERIC_TOKENS = frozenset(
         "searched",
         "parent",
         "container",
+        # FR #7962: OpenCode pause/fuel words are not a lesson identity.
+        "opencode",
+        "pause",
+        "pauses",
+        "model",
+        "fuel",
+        "record",
+        "turn",
+        "call",
+        "fallback",
+        "configur",
+        "next",
+        "job",
+        "json",
+        "text",
+        "return",
+        "returns",
+        "write",
     }
 )
 
