@@ -1378,6 +1378,61 @@ class GrokSigninPromptGuard:
         return False
 
 
+# FR #7868: a started Grok console that stays black (no letters) is wedged.
+# Report once. Do not kill or recycle until that same-kind recycle is approved.
+GROK_BLANK_TUI_WINDOW_S = 120.0
+
+
+def grok_blank_tui_watch_enabled() -> bool:
+    raw = (os.environ.get("BOB_WORKER_BLANK_TUI") or "1").strip().lower()
+    return raw not in ("0", "false", "no", "off")
+
+
+def grok_console_has_tui_chrome(text: str) -> bool:
+    """True when the console shows letters or digits, not only a box-border fragment."""
+    return any(ch.isalnum() for ch in (text or ""))
+
+
+class GrokBlankTuiGuard:
+    """FR #7868: after window_s of a blank console, report once. Never kills the seat."""
+
+    def __init__(
+        self,
+        read_fn,
+        *,
+        window_s: float = GROK_BLANK_TUI_WINDOW_S,
+        clock=time.monotonic,
+        report: Optional[Callable] = None,
+        log: Optional[Callable] = None,
+    ):
+        self.read_fn = read_fn
+        self.window_s = float(window_s)
+        self.clock = clock
+        self.report = report
+        self.log = log or (lambda _s: None)
+        self._t0 = clock()
+        self.rendered = False
+        self.reported = False
+
+    def tick(self) -> bool:
+        if self.reported or self.rendered:
+            return self.reported
+        text = ""
+        with contextlib.suppress(Exception):
+            text = self.read_fn() or ""
+        if grok_console_has_tui_chrome(text):
+            self.rendered = True
+            return False
+        if (self.clock() - self._t0) < self.window_s:
+            return False
+        self.reported = True
+        self.log("grok: blank TUI after 120s; reported; not recycling")
+        if self.report is not None:
+            with contextlib.suppress(Exception):
+                self.report()
+        return True
+
+
 def apply_xai_signin_gate(
     dec: Decision,
     fuel: Fuel,
@@ -11921,6 +11976,7 @@ class Supervisor:
             self._start_fuel_watcher(int(proc.pid or 0))
             self._start_prompt_watcher(proc)
             self._start_grok_signin_guard(proc)
+            self._start_grok_blank_tui_guard(proc)
             self._arm_ready(proc)
             threading.Thread(target=self._wait_exit, args=(proc,), name="agent-wait", daemon=True).start()
             return True
@@ -12264,6 +12320,41 @@ class Supervisor:
                 time.sleep(1.0)
 
         threading.Thread(target=_run, name="grok-signin-guard", daemon=True).start()
+
+    def _start_grok_blank_tui_guard(self, proc) -> None:
+        """FR #7868: report a black Grok console after 120s. Do not kill or recycle."""
+        if os.name != "nt" or (self.kind or "").strip().lower() != "grok" or not grok_blank_tui_watch_enabled():
+            return
+
+        def _report() -> None:
+            import runtime_failure
+
+            runtime_failure.report_message(
+                "bob-worker",
+                "Grok console still blank after 120s (no TUI chrome). Same-kind recycle is not automatic.",
+                site="grok-blank-tui",
+            )
+
+        guard = GrokBlankTuiGuard(
+            read_fn=read_console_screen_text if os.name == "nt" else (lambda: ""),
+            window_s=GROK_BLANK_TUI_WINDOW_S,
+            clock=time.monotonic,
+            report=_report,
+            log=self.log,
+        )
+
+        def _run() -> None:
+            while not self._shutting and self.proc is proc and proc.poll() is None:
+                try:
+                    if guard.tick():
+                        return
+                    if guard.rendered:
+                        return
+                except Exception:
+                    return
+                time.sleep(5.0)
+
+        threading.Thread(target=_run, name="grok-blank-tui", daemon=True).start()
 
     def _inject_recovery(self) -> "InjectRecovery":
         """FR #4115: lazily build the re-paste / NACK recovery for lost assign pastes."""
