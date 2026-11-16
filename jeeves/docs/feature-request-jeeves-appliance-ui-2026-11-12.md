@@ -81,7 +81,7 @@ HTML mocks in docs/mocks/. No generated PNGs. The logo file is a copy of bob/tra
 |-------|---------|-------------|------|
 | fuel | Fuel and review waits | Which review fuels run, and how long CodeRabbit is given | BOB_FUEL_CODERABBIT, BOB_CODERABBIT_WAIT_MIN, BOB_CODERABBIT_ABSENT_SEC, BOB_FUEL_COPILOT, BOB_FUEL_FLEET, BOB_COPILOT_OBSERVE |
 | digest | Digest | Where the digest lives and when it counts as stale | BOB_DIGEST_HOME, BOB_DIGEST_URL, BOB_DIGEST_STALE_S, BOB_PUBLIC_BASE |
-| irc | IRC timing | Bored idle and IRC reconnect timing. Passwords are under Secrets | BOB_BORED_IDLE_S, BOB_IRC_IDLE_DEAD_S, BOB_IRC_IDLE_PING_S, BOB_IRC_RECONNECT_MAX, BOB_IRC_RECV_TIMEOUT_S, BOB_IRC_THROTTLE_BASE_S, BOB_IRC_SASL_USER |
+| irc | IRC timing | Bored idle and IRC reconnect timing. Passwords are under Secrets | BOB_BORED_IDLE_S, BOB_HOLDER_BORED_N, BOB_IRC_IDLE_DEAD_S, BOB_IRC_IDLE_PING_S, BOB_IRC_RECONNECT_MAX, BOB_IRC_RECV_TIMEOUT_S, BOB_IRC_THROTTLE_BASE_S, BOB_IRC_SASL_USER |
 | homes | Chair home | Overrides for the chair home directory | JEEVES_HOME, BOB_JEEVES_HOME |
 | wake | Wake and ticket closure | How Jeeves wakes Bob when work closes or stalls | JEEVES_TICKET_CLOSURE_S, JEEVES_TICKET_CLOSURE_WAKE, JEEVES_TICKET_CLOSURE_WAKE_URL, JEEVES_BOB_WAKE_URL |
 | probes | Webhook probes | Bases the chair uses to probe local and public webhooks | JEEVES_PROBE_LOCAL, JEEVES_PROBE_PUBLIC |

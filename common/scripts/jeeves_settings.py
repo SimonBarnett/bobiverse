@@ -291,6 +291,13 @@ SCHEMA: tuple[SettingSpec, ...] = (
         description="Idle seconds before !bored.",
     ),
     _spec(
+        "BOB_HOLDER_BORED_N",
+        "int",
+        "2",
+        group="irc",
+        description="Consecutive !bored from a job holder before Jeeves releases that job (FR #7912).",
+    ),
+    _spec(
         "BOB_IRC_IDLE_DEAD_S",
         "float",
         "",
