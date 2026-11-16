@@ -1432,7 +1432,7 @@ class GrokSigninPromptGuard:
         return False
 
 
-# FR #7868: a started Grok console that stays black (no letters) is wedged.
+# FR #7868: a started Grok console without an input frame and prompt is blank.
 # Report once. Do not kill or recycle until that same-kind recycle is approved.
 GROK_BLANK_TUI_WINDOW_S = 120.0
 
@@ -1443,8 +1443,11 @@ def grok_blank_tui_watch_enabled() -> bool:
 
 
 def grok_console_has_tui_chrome(text: str) -> bool:
-    """True when the console shows letters or digits, not only a box-border fragment."""
-    return any(ch.isalnum() for ch in (text or ""))
+    """Require an input frame and prompt; a cwd header and empty border are not enough."""
+    text = text or ""
+    frame = re.search(r"(?m)^[ \t]*[╭┌╔+][─━═-]{2,}[╮┐╗+][ \t]*$", text)
+    prompt = re.search(r"(?m)^[ \t]*(?:[│┃║|][ \t]*)?[>❯›](?:[ \t]|$)", text)
+    return bool(frame and prompt)
 
 
 class GrokBlankTuiGuard:
@@ -2751,6 +2754,7 @@ class LaunchSpec:
     write_opencode_skill_dag_mcp: bool = False  # FR #6898: opencode agent seats only
     skill_dag_mcp_args: list = field(default_factory=list)  # FR #6899: python argv for skill-dag stdio
     skill_dag_job_worktree: str | None = None
+    inherit_console: bool = False
 
 
 def skill_dag_mcp_script_path(
@@ -4259,6 +4263,7 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
         write_opencode_skill_dag_mcp=(str(kind).strip().lower() == "opencode" and str(mode).strip().lower() == "agent"),
         skill_dag_mcp_args=mcp_args,
         skill_dag_job_worktree=job_wt,
+        inherit_console=(kind == "grok"),
     )
 
 
@@ -4296,10 +4301,11 @@ def default_spawn(spec: LaunchSpec, env: dict) -> ProcHandle:
     # t771u: ONE window. The agent INHERITS this exe's console (no CREATE_NEW_CONSOLE, no second console); a kill-on-close job object
     # makes the agent die with us even if we are killed. "New agent every time" is about the SESSION, not the window: the exe's
     # window IS the agent's window and a new click opens a new exe + window.
-    # FR #7671: tee stderr so the console still shows it and the exit report can quote it.
-    # stdout stays inherited (the agent TUI).
+    # FR #7916: Grok renders on stderr only when it is a console. A tee breaks TTY
+    # detection; use Grok's per-seat logs instead. Other agents keep FR #7671 capture.
     popen = subprocess.Popen(
-        spec.argv, cwd=spec.cwd, env=env, creationflags=0, close_fds=True, stderr=subprocess.PIPE,
+        spec.argv, cwd=spec.cwd, env=env, creationflags=0, close_fds=True,
+        stdin=None, stdout=None, stderr=None if spec.inherit_console else subprocess.PIPE,
     )
     ring = None
     thread = None

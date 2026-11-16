@@ -4,8 +4,11 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+import textwrap
+from pathlib import Path
 
 import bob_worker as bw
+import pytest
 
 
 def test_fr7671_fake_cli_stderr_is_in_the_report():
@@ -77,10 +80,10 @@ def test_fr7671_mrb_empty_stderr_dedupe_and_trim():
     assert "EXAMPLESECRET" not in bw.agent_stderr_evidence("token password=EXAMPLESECRET end")
 
 
-def test_fr7671_mrb_default_spawn_keeps_one_console_and_pipes_stderr(monkeypatch):
-    """Hostile: still no CREATE_NEW_CONSOLE; stderr is PIPE for the ring."""
-    from pathlib import Path as _P
-
+@pytest.mark.parametrize("kind", ["grok", "cursor", "opencode"])
+@pytest.mark.parametrize("mode", ["agent", "plan", "monitor", "maintenance"])
+def test_default_spawn_preserves_grok_console_handles(monkeypatch, tmp_path, kind, mode):
+    """Grok needs all three console handles; other agents keep stderr capture."""
     seen = {}
 
     class FakePopen:
@@ -91,9 +94,68 @@ def test_fr7671_mrb_default_spawn_keeps_one_console_and_pipes_stderr(monkeypatch
 
     monkeypatch.setattr(bw.subprocess, "Popen", FakePopen)
     monkeypatch.setattr(bw, "owned_job", lambda: type("J", (), {"assign": lambda self, p: None})())
-    spec = bw.build_launch("grok", "agent", r"C:\w", "p", r"C:\g\agent.exe", _P("."), "sid")
+    monkeypatch.setattr(bw, "start_agent_stderr_capture", lambda _p: pytest.fail("unexpected stderr capture"))
+    spec = bw.build_launch(kind, mode, str(tmp_path), "p", r"C:\g\agent.exe", tmp_path, "sid")
     handle = bw.default_spawn(spec, {})
     assert seen.get("creationflags", 0) & getattr(bw, "CREATE_NEW_CONSOLE", 0x10) == 0
-    assert seen.get("stderr") is bw.subprocess.PIPE
+    assert seen.get("creationflags", 0) & getattr(bw, "CREATE_NO_WINDOW", 0x08000000) == 0
+    assert seen.get("stdin") is None
+    assert seen.get("stdout") is None
+    assert seen.get("stderr") is (None if kind == "grok" else bw.subprocess.PIPE)
+    if kind == "grok":
+        assert "--no-alt-screen" in spec.argv
+        assert handle.stderr_tail() == ""
     assert isinstance(handle, bw.ProcHandle)
 
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows console handles and buffer")
+def test_grok_console_child_renders_after_first_prompt(tmp_path):
+    """Exercise the worker spawn in an isolated console, without Grok auth/network."""
+    ready = tmp_path / "ready"
+    result = tmp_path / "result.json"
+    host = tmp_path / "host.py"
+    child = textwrap.dedent(f"""
+        import ctypes, sys
+        from ctypes import wintypes as W
+        from pathlib import Path
+        k = ctypes.WinDLL("kernel32", use_last_error=True)
+        k.GetStdHandle.argtypes = [W.DWORD]
+        k.GetStdHandle.restype = W.HANDLE
+        k.GetConsoleMode.argtypes = [W.HANDLE, ctypes.POINTER(W.DWORD)]
+        for stream in (-10, -11, -12):
+            mode = W.DWORD()
+            assert k.GetConsoleMode(k.GetStdHandle(stream), ctypes.byref(mode))
+        Path({str(ready)!r}).touch()
+        assert sys.stdin.readline().strip() == "first prompt"
+        sys.stderr.write("Tool output: first prompt accepted\\n+----------------+\\n| >              |\\n+----------------+\\n")
+        sys.stderr.flush()
+    """)
+    host.write_text(textwrap.dedent(f"""
+        import json, os, sys, time
+        from pathlib import Path
+        sys.path.insert(0, {str(Path(bw.__file__).parent)!r})
+        import bob_worker as bw
+        os.environ["BOB_WORKER_INJECT_PASTE"] = "0"
+        spec = bw.build_launch("grok", "agent", {str(tmp_path)!r}, "p", sys.executable, Path({str(tmp_path)!r}), "sid")
+        spec.argv = [sys.executable, "-c", {child!r}]
+        proc = bw.default_spawn(spec, dict(os.environ))
+        deadline = time.monotonic() + 10
+        while not Path({str(ready)!r}).exists() and proc.poll() is None and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert Path({str(ready)!r}).exists(), "child did not receive console handles"
+        assert bw.inject_console(proc.pid, "first prompt")
+        code = proc.wait(timeout=10)
+        screen = bw.read_console_screen_text(max_lines=100) or ""
+        Path({str(result)!r}).write_text(json.dumps({{"code": code, "screen": screen}}), encoding="utf-8")
+    """), encoding="utf-8")
+    proc = subprocess.Popen([sys.executable, str(host)], creationflags=bw.CREATE_NEW_CONSOLE)
+    try:
+        assert proc.wait(timeout=30) == 0
+        data = json.loads(result.read_text(encoding="utf-8"))
+        assert data["code"] == 0
+        assert "Tool output: first prompt accepted" in data["screen"]
+        assert bw.grok_console_has_tui_chrome(data["screen"])
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait(timeout=5)

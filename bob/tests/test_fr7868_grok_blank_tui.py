@@ -3,12 +3,31 @@
 from __future__ import annotations
 
 import bob_worker as bw
+import pytest
 
 
-def test_fr7868_border_fragment_is_blank_and_chrome_is_not():
-    assert bw.grok_console_has_tui_chrome("") is False
-    assert bw.grok_console_has_tui_chrome("+--+") is False
-    assert bw.grok_console_has_tui_chrome("grok >") is True
+TUI = "C:\\worker\\bound-cwd\n╭────────────────╮\n│ ❯              │\n╰────────────────╯\nGrok 4.7 (low) · always-approve"
+
+
+@pytest.mark.parametrize("screen", [
+    "",
+    "+--+",
+    "C:\\worker-flamingo-7344\\bound-cwd\n╭────────────────╮\n│                │\n╰────────────────╯",
+    "You are Grok",
+    "grok >",
+    "C:\\worker\\bound-cwd\n│ ❯              │",
+])
+def test_fr7868_header_or_border_without_tui_prompt_is_blank(screen):
+    assert bw.grok_console_has_tui_chrome(screen) is False
+
+
+@pytest.mark.parametrize("screen", [
+    TUI,
+    "C:\\worker\\bound-cwd\n+----------------+\n| >              |\n+----------------+",
+    "C:\\worker\\bound-cwd\n╭────────────────╮\n╰────────────────╯\n❯",
+])
+def test_fr7868_frame_and_prompt_is_rendered(screen):
+    assert bw.grok_console_has_tui_chrome(screen) is True
 
 
 def test_fr7868_blank_for_120s_reports_once_and_does_not_kill():
@@ -20,7 +39,7 @@ def test_fr7868_blank_for_120s_reports_once_and_does_not_kill():
         return now["t"]
 
     guard = bw.GrokBlankTuiGuard(
-        lambda: "+--+",
+        lambda: "C:\\worker\\bound-cwd\n+--+\n|  |\n+--+",
         window_s=120.0,
         clock=clock,
         report=lambda: reports.append("grok-blank-tui"),
@@ -48,7 +67,7 @@ def test_fr7868_chrome_before_window_does_not_report():
         clock=lambda: now["t"],
         report=lambda: reports.append("x"),
     )
-    screen["t"] = "You are Grok"
+    screen["t"] = TUI
     now["t"] = 200.0
     assert guard.tick() is False
     assert guard.rendered is True
