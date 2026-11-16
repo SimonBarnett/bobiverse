@@ -3606,6 +3606,45 @@ def skill_dag_mcp_argv(
     return argv
 
 
+def opencode_skill_root_read_patterns(root: Path) -> list[str]:
+    """Path forms OpenCode asks for under one skill root (FR #7200 / #7909).
+
+    A bare directory key does not match ``<root>\\<book>\\*``. Headless
+    ``opencode run --dir`` loads these keys from that directory's ``opencode.json``.
+    """
+    patterns: list[str] = []
+    seen: set[str] = set()
+
+    def add(value: str) -> None:
+        text = str(value or "").strip()
+        if not text or text in seen:
+            return
+        seen.add(text)
+        patterns.append(text)
+
+    resolved = str(root)
+    posix = root.as_posix()
+    for base in (resolved.rstrip("\\/"), posix.rstrip("/")):
+        add(base)
+        add(base + "\\*")
+        add(base + "/*")
+        add(base + "\\**")
+        add(base + "/**")
+        add(base + "\\*\\*")
+        add(base + "/*/*")
+    try:
+        children = [p for p in root.iterdir() if p.is_dir()]
+    except OSError:
+        children = []
+    for child in children:
+        for base in (str(child).rstrip("\\/"), child.as_posix().rstrip("/")):
+            add(base)
+            add(base + "\\*")
+            add(base + "/*")
+            add(base + "\\**")
+            add(base + "/**")
+    return patterns
+
 # FR #7908: worker health-checks skill-dag before handing a job to the model.
 SKILL_DAG_PREFLIGHT_TIMEOUT_S = 20.0
 JOB_SKILL_BY_TYPE = {
@@ -3738,11 +3777,43 @@ def opencode_skill_read_permission_block(worker_cwd: str) -> dict:
     allow: dict[str, str] = {}
     edit: dict[str, str] = {}
     for root in skill_dag_mcp_skill_roots(worker_cwd):
-        key = str(root)
-        allow[key] = "allow"
-        edit[key] = "deny"
+        for key in opencode_skill_root_read_patterns(root):
+            allow[key] = "allow"
+            edit[key] = "deny"
     return {"external_directory": allow, "edit": edit}
 
+
+def opencode_skill_read_allow_gaps(config_path: str | Path, worker_cwd: str) -> list[str]:
+    """Skill-root read patterns missing from the ``opencode.json`` ``--dir`` loads."""
+    expected = opencode_skill_read_permission_block(worker_cwd).get("external_directory") or {}
+    try:
+        data = json.loads(Path(config_path).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, TypeError):
+        return sorted(str(k) for k in expected)
+    perm = data.get("permission") if isinstance(data, dict) else None
+    allow = {}
+    if isinstance(perm, dict) and isinstance(perm.get("external_directory"), dict):
+        allow = perm["external_directory"]
+    missing = [str(key) for key in expected if allow.get(key) != "allow"]
+    return missing
+
+
+def report_opencode_skill_read_gaps(config_path: str | Path, worker_cwd: str) -> list[str]:
+    """FR #7909: auto-report when the effective config does not grant skill-root reads."""
+    missing = opencode_skill_read_allow_gaps(config_path, worker_cwd)
+    if not missing:
+        return []
+    try:
+        import runtime_failure
+
+        runtime_failure.report_message(
+            "bob-worker",
+            "opencode skill-root read allow missing count=%s" % len(missing),
+            site="opencode-skill-read-allow",
+        )
+    except Exception:
+        return missing
+    return missing
 
 def opencode_job_worktree_read_patterns(worktree: str | Path) -> list[str]:
     """FR #7911: the job tree and its ``.bob`` folder are not external."""
@@ -3837,6 +3908,7 @@ def write_opencode_skill_dag_mcp_config(
     if "$schema" not in data:
         data["$schema"] = incoming["$schema"]
     cfg.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    report_opencode_skill_read_gaps(cfg, seat)
     return cfg
 
 
@@ -8528,11 +8600,11 @@ _OUT_JOB_KEY_RX = re.compile(
 
 
 # FR #2383: Jeeves assign body still visible inside a FROM line after compaction footers.
-_JOB_ASSIGN_RX = re.compile(r"(?i)\b(FR|MRB|UAT)\s+\S+#\d+\b")
-# FR #2791: capture owner/repo#N from an assign (or outbox ACK key) for submit-verify stop match.
-_ASSIGN_JOB_REF_RX = re.compile(r"(?i)\b(?:FR|MRB|UAT)\s+(\S+#\d+)\b")
+_JOB_ASSIGN_RX = re.compile(r"(?i)\b(FR|MRB|UAT|FIX)\s+\S+#\d+\b")
+# FR #2791 / #7946: capture owner/repo#N from an assign (or outbox ACK key) for submit-verify stop match.
+_ASSIGN_JOB_REF_RX = re.compile(r"(?i)\b(?:FR|MRB|UAT|FIX)\s+(\S+#\d+)\b")
 # FR #4180: capture TYPE + owner/repo#N for NACK out-of-fuel lines.
-_ASSIGN_TYPE_KEY_RX = re.compile(r"(?i)\b(FR|MRB|UAT)\s+(\S+#\d+)\b")
+_ASSIGN_TYPE_KEY_RX = re.compile(r"(?i)\b(FR|MRB|UAT|FIX)\s+(\S+#\d+)\b")
 
 
 def assign_job_ref(line: str) -> Optional[str]:
@@ -8624,12 +8696,44 @@ def ack_on_receipt_line(line: str) -> Optional[str]:
     return f"ACK {key}"
 
 
-def opencode_skips_hostile_assign(kind: str, line: str) -> bool:
-    """FR #6134: OpenCode seats must not take MRB/UAT assigns (hostile / repo UAT)."""
+def opencode_skips_hostile_assign(kind: str, line: str, start_model: str = "") -> bool:
+    """FR #6134: free OpenCode seats must not take MRB/UAT.
+
+    FR #7888: a paid start_model (OpenCode Go / pro) accepts the assign.
+    Missing or ``$model`` still NACKs (fail safe).
+    """
     if (kind or "").strip().lower() != "opencode":
         return False
     key = (assign_job_key(line) or "").upper()
-    return key.startswith("MRB ") or key.startswith("UAT ")
+    if not (key.startswith("MRB ") or key.startswith("UAT ")):
+        return False
+    try:
+        import worker_start_model as wsm
+
+        if wsm.start_model_review_class(start_model) == "paid":
+            return False
+    except Exception:
+        pass
+    return True
+
+
+def launched_hostile_start_model(kind: str, child_env: Optional[dict] = None) -> str:
+    """FR #7888: the model the seat launched, not the configured hello id.
+
+    ``resolve_seat_hello_model`` returns ``workerStartModels`` first. A paid
+    OpenCode Go launch with a free configured id must not NACK MRB.
+    Missing actual fails safe to the hello model (often free or empty).
+    """
+    try:
+        import worker_start_model as wsm
+
+        env = child_env or {}
+        actual = wsm.concrete_model_id(env.get(wsm.ENV_ACTUAL_MODEL))
+        if actual:
+            return actual
+    except Exception:
+        pass
+    return resolve_seat_hello_model(kind)
 
 
 def opencode_hostile_nack_line(line: str) -> Optional[str]:
@@ -11335,7 +11439,13 @@ class Supervisor:
         )
         # FR #4180: refuse (NACK out-of-fuel) assigns while the seat is in out-of-fuel hold.
         relay.refuse_assign_while = lambda: bool(self.bored and self.bored.out_of_fuel)
-        relay.skips_hostile_assign = lambda line: opencode_skips_hostile_assign(self.kind, line)
+        relay.skips_hostile_assign = lambda line: opencode_skips_hostile_assign(
+            self.kind,
+            line,
+            start_model=launched_hostile_start_model(
+                self.kind, getattr(self, "last_child_env", None)
+            ),
+        )
         # FR #6240 / #6328: OpenCode-only. Classify on read thread; ensure off-thread.
         # Grok/Cursor must keep flood coalesce + multi-key ACK (callbacks stay None).
         if (self.kind or "").strip().lower() == "opencode":

@@ -1714,8 +1714,52 @@ def _cleanup_stale_digest_tmp(path: Path, max_age_s: float | None = None) -> int
     return removed
 
 
-_DIGEST_THREAD_LOCK = threading.RLock()
+class _DigestThreadGate:
+    """In-process digest lock that a dead holder thread does not keep forever (FR #7896)."""
+
+    def __init__(self) -> None:
+        self._cond = threading.Condition()
+        self._holder: int | None = None
+        self._count = 0
+
+    def _drop_dead_locked(self) -> None:
+        if self._holder is None:
+            return
+        alive = {t.ident for t in threading.enumerate() if t.is_alive()}
+        if self._holder not in alive:
+            self._holder = None
+            self._count = 0
+            self._cond.notify_all()
+
+    def acquire(self, timeout: float) -> bool:
+        deadline = time.monotonic() + max(0.05, float(timeout))
+        with self._cond:
+            while True:
+                self._drop_dead_locked()
+                me = threading.get_ident()
+                if self._holder is None or self._holder == me:
+                    self._holder = me
+                    self._count += 1
+                    return True
+                remain = deadline - time.monotonic()
+                if remain <= 0:
+                    return False
+                self._cond.wait(timeout=remain)
+
+    def release(self) -> None:
+        with self._cond:
+            if self._holder != threading.get_ident():
+                return
+            self._count -= 1
+            if self._count <= 0:
+                self._holder = None
+                self._count = 0
+                self._cond.notify_all()
+
+
+_DIGEST_THREAD_LOCK = _DigestThreadGate()
 _LOCK_STATE = threading.local()
+_OPEN_DIGEST_LOCK: dict[str, object] = {"fh": None, "ident": None}
 
 DIGEST_LOCK_STALE_ENV = "BOB_DIGEST_LOCK_STALE_S"
 DEFAULT_DIGEST_LOCK_STALE_S = 30.0
@@ -1821,8 +1865,13 @@ def break_stale_digest_lock(home: Path, max_age_s: float | None = None) -> dict 
     reason = None
     me = os.getpid()
     own_live = pid is not None and int(pid) == int(me) and _pid_alive(pid)
+    holder_ident = _lock_thread_ident(lock_path)
+    dead_thread = bool(own_live and holder_ident is not None and not _thread_ident_alive(holder_ident))
     if size == 0:
         reason = "empty"
+    elif dead_thread:
+        # FR #7896: the ear process is alive, but the thread that took the lock is gone.
+        reason = "dead-thread"
     elif age >= max_age:
         # Never unlink a lock still held by *this* live process - health-watchdog
         # GET timeouts used to break our own 30s+ holder (mtime not refreshed) and
@@ -1903,8 +1952,63 @@ def _try_advisory_lock(fh, timeout_s: float) -> bool:
             time.sleep(0.02)
 
 
+def _lock_thread_ident(lock_path: Path) -> int | None:
+    """Third line of digest.lock is the holder thread ident (FR #7896)."""
+    try:
+        lines = [
+            ln.strip()
+            for ln in lock_path.read_text(encoding="utf-8", errors="replace").splitlines()
+            if ln.strip()
+        ]
+    except OSError:
+        return None
+    if len(lines) >= 3 and lines[2].isdigit():
+        return int(lines[2])
+    return None
+
+
+def _thread_ident_alive(ident: int | None) -> bool:
+    if not ident:
+        return False
+    return any(t.ident == ident and t.is_alive() for t in threading.enumerate())
+
+
+def abandon_digest_lock_for_tests(home: Path) -> None:
+    """Take digest.lock and return without releasing. The caller thread must then exit.
+
+    Tests use this to stand in for a publish thread killed while the lock was held.
+    """
+    root = Path(home)
+    if not _DIGEST_THREAD_LOCK.acquire(2.0):
+        raise DigestLockBusy("abandon could not take the thread gate")
+    lock_path = digest_lock_path(root)
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    fh = open(lock_path, "a+b")
+    if not _try_advisory_lock(fh, 2.0):
+        raise DigestLockBusy("abandon could not take the file lock")
+    _write_lock_holder(fh)
+    _OPEN_DIGEST_LOCK["fh"] = fh
+    _OPEN_DIGEST_LOCK["ident"] = threading.get_ident()
+
+
+def reclaim_orphaned_digest_lock(home: Path) -> dict | None:
+    """Close a digest.lock file handle left by a thread that has exited (FR #7896)."""
+    fh = _OPEN_DIGEST_LOCK.get("fh")
+    ident = _OPEN_DIGEST_LOCK.get("ident")
+    if fh is None or _thread_ident_alive(ident if isinstance(ident, int) else None):
+        return break_stale_digest_lock(home)
+    with contextlib.suppress(OSError):
+        _unlock_advisory(fh)
+    with contextlib.suppress(OSError):
+        fh.close()
+    _OPEN_DIGEST_LOCK["fh"] = None
+    _OPEN_DIGEST_LOCK["ident"] = None
+    info = break_stale_digest_lock(home)
+    return info or {"reason": "dead-thread", "pid": os.getpid(), "age": 0}
+
+
 def _write_lock_holder(fh) -> None:
-    payload = f"{os.getpid()}\n{time.time():.3f}\n".encode("utf-8")
+    payload = f"{os.getpid()}\n{time.time():.3f}\n{threading.get_ident()}\n".encode("utf-8")
     with contextlib.suppress(OSError):
         fh.seek(0)
         fh.truncate(0)
@@ -1949,11 +2053,12 @@ def digest_lock(
 
     wait_s = DEFAULT_DIGEST_LOCK_TIMEOUT_S if timeout_s is None else float(timeout_s)
     root = Path(home)
-    break_stale_digest_lock(root)
+    reclaim_orphaned_digest_lock(root)
 
     fh = None
     locked = False
-    _DIGEST_THREAD_LOCK.acquire()
+    if not _DIGEST_THREAD_LOCK.acquire(wait_s + 5.0):
+        raise DigestLockBusy("digest.lock thread gate busy after dead-holder reclaim")
     try:
         try:
             lock_path = digest_lock_path(root)
@@ -1971,13 +2076,16 @@ def digest_lock(
                     break_stale_digest_lock(root)
                     time.sleep(0.05)
                 finally:
-                    _DIGEST_THREAD_LOCK.acquire()
+                    if not _DIGEST_THREAD_LOCK.acquire(wait_s + 5.0):
+                        raise DigestLockBusy("digest.lock thread gate busy after retry")
                 lock_path = digest_lock_path(root)
                 lock_path.parent.mkdir(parents=True, exist_ok=True)
                 fh = open(lock_path, "a+b")
                 locked = _try_advisory_lock(fh, wait_s)
             if locked:
                 _write_lock_holder(fh)
+                _OPEN_DIGEST_LOCK["fh"] = fh
+                _OPEN_DIGEST_LOCK["ident"] = threading.get_ident()
             elif raise_busy:
                 with contextlib.suppress(OSError):
                     if fh is not None:
@@ -2018,6 +2126,16 @@ def digest_lock(
             hb_thread.start()
         try:
             yield
+        except OSError as exc:
+            # FR #7896: disk full must be reported. The finally below still releases the lock.
+            err_no = getattr(exc, "errno", None)
+            winerror = getattr(exc, "winerror", None)
+            if err_no in (28,) or winerror in (112, 39) or "space" in str(exc).lower():
+                with contextlib.suppress(Exception):
+                    import runtime_failure
+
+                    runtime_failure.report("bob-ear", exc, site="digest-publish-enospc")
+            raise
         finally:
             stop_hb.set()
             _LOCK_STATE.depth = 0
@@ -2026,6 +2144,9 @@ def digest_lock(
                     _unlock_advisory(fh)
                 with contextlib.suppress(OSError):
                     fh.close()
+                if _OPEN_DIGEST_LOCK.get("fh") is fh:
+                    _OPEN_DIGEST_LOCK["fh"] = None
+                    _OPEN_DIGEST_LOCK["ident"] = None
     finally:
         with contextlib.suppress(RuntimeError):
             _DIGEST_THREAD_LOCK.release()
@@ -4165,13 +4286,27 @@ def _clock_age_s(raw: object, now: datetime | None) -> float | None:
 
 
 def report_stale_ear_publish(machine_id: str, age_s: float, *, why: str) -> None:
-    """FR #7839: one intake issue when an ear or its pool has gone quiet. Never raises."""
+    """FR #7839: one intake when this ear's own publish has just gone quiet.
+
+    FR #7892: a remote machine that is already offline, or any row quiet for
+    longer than the pool window, is marked stale by the caller and is not filed
+    as a bob-ear RuntimeError. The message omits the changing age so the
+    failure signature stays stable. Never raises.
+    """
     try:
+        if float(age_s) > POOL_STALE_AFTER_S:
+            return
+        mid = str(machine_id or "").strip().lower()
+        local = (
+            os.environ.get("BOB_MACHINE_ID") or os.environ.get("COMPUTERNAME") or ""
+        ).strip().lower()
+        if local and mid and mid != local:
+            return
         import runtime_failure
 
         runtime_failure.report_message(
             "bob-ear",
-            f"digest publish stale machine={machine_id} why={why} age_s={int(age_s)}",
+            f"digest publish stale machine={mid or machine_id} why={why}",
             site="ear-publish-stale",
         )
     except Exception:
@@ -4215,10 +4350,16 @@ def apply_ear_publish_staleness(
             ent["xai"] = weekly
     age = None
     why = ""
-    if seen_age is not None and seen_age > EAR_PUBLISH_STALE_S:
+    # FR #7892: an age past the pool window still marks the row stale above, but
+    # it must not replace an in-window stall or suppress that stall's report.
+    if seen_age is not None and EAR_PUBLISH_STALE_S < seen_age <= POOL_STALE_AFTER_S:
         age = seen_age
         why = "lastSeen"
-    if pool_age is not None and pool_age > EAR_PUBLISH_STALE_S and (age is None or pool_age > age):
+    if (
+        pool_age is not None
+        and EAR_PUBLISH_STALE_S < pool_age <= POOL_STALE_AFTER_S
+        and (age is None or pool_age > age)
+    ):
         age = pool_age
         why = "fetched_at" if not why else why + "+fetched_at"
     if age is not None and report:
