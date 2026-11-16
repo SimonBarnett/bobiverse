@@ -3384,6 +3384,40 @@ class Client:
         info(f"INFO depart-request handled reason={reason}")
 
 
+    def watch_publish_loop(self) -> bool:
+        """FR #7896: reclaim a dead holder's digest.lock and restart a dead outbox loop.
+
+        Returns True when a stopped loop was started again. One intake per quiet spell.
+        """
+        try:
+            bobreport.reclaim_orphaned_digest_lock(Path(self.home))
+        except Exception:
+            pass
+        irc_up = self.sock is not None and not self.dead.is_set() and not self.stop.is_set()
+        thread = getattr(self, "_outbox_thread", None)
+        if not irc_up or thread is None or thread.is_alive():
+            return False
+        if not getattr(self, "_publish_loop_reported", False):
+            self._publish_loop_reported = True
+            info("ERROR digest publish loop stopped while IRC is up")
+            try:
+                import runtime_failure
+
+                runtime_failure.report_message(
+                    "bob-ear",
+                    "digest publish loop stopped while IRC is up",
+                    site="digest-publish-loop-dead",
+                )
+            except Exception:
+                pass
+        self._outbox_gen += 1
+        gen = self._outbox_gen
+        self._outbox_thread = threading.Thread(
+            target=self.outbox_loop, args=(gen,), daemon=True, name="outbox-loop"
+        )
+        self._outbox_thread.start()
+        return True
+
     def _maybe_publish_digest_fuel(self) -> None:
         """FR #6141 / #6145: fleet bob-ear posts local peer fuel merges; tray no longer POSTs fuel.
 
@@ -3404,6 +3438,10 @@ class Client:
         now = time.time()
         if now - self._digest_fuel_last < interval:
             return
+        try:
+            bobreport.reclaim_orphaned_digest_lock(Path(self.home))
+        except Exception:
+            pass
         worker = getattr(self, "_fuel_worker", None)
         if worker is not None and worker.is_alive():
             # FR #7839: a hung fetch/POST must not freeze later heartbeats.
@@ -3745,6 +3783,7 @@ class Client:
                 info("INFO seat PONG overdue; QUIT")
                 self.request_shutdown(":pong timeout")
                 return
+            self.watch_publish_loop()
             if self._seat_recv_stale():
                 info("INFO seat server idle; reconnect in place (no PART)")
                 self.recv_idle_reconnect()
@@ -5797,6 +5836,7 @@ class Client:
                 info(f"WARN seat-reconcile lost-ack error {type(exc).__name__}")
         self._outbox_gen += 1
         gen = self._outbox_gen
+        self._publish_loop_reported = False
         info(
             f"INFO session start {self.args.host}:{self.args.port} "
             f"nick={self.live_nick} home={self.home}"
@@ -5807,7 +5847,8 @@ class Client:
         )
         self.sock = self.connect()
         threading.Thread(target=self.reader, daemon=True).start()
-        threading.Thread(target=self.outbox_loop, args=(gen,), daemon=True).start()
+        self._outbox_thread = threading.Thread(target=self.outbox_loop, args=(gen,), daemon=True)
+        self._outbox_thread.start()
         if self._seat_liveness_enabled():
             threading.Thread(target=self.seat_liveness_loop, daemon=True).start()
         pw = (self.args.password or os.environ.get("BOB_IRC_PASSWORD") or "").strip()
