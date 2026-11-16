@@ -1443,7 +1443,7 @@ class GrokSigninPromptGuard:
         return False
 
 
-# FR #7868: a started Grok console that stays black (no letters) is wedged.
+# FR #7868: a started Grok console without an input frame and prompt is blank.
 # Report once. Do not kill or recycle until that same-kind recycle is approved.
 GROK_BLANK_TUI_WINDOW_S = 120.0
 
@@ -1454,8 +1454,11 @@ def grok_blank_tui_watch_enabled() -> bool:
 
 
 def grok_console_has_tui_chrome(text: str) -> bool:
-    """True when the console shows letters or digits, not only a box-border fragment."""
-    return any(ch.isalnum() for ch in (text or ""))
+    """Require an input frame and prompt; a cwd header and empty border are not enough."""
+    text = text or ""
+    frame = re.search(r"(?m)^[ \t]*[╭┌╔+][─━═-]{2,}[╮┐╗+][ \t]*$", text)
+    prompt = re.search(r"(?m)^[ \t]*(?:[│┃║|][ \t]*)?[>❯›](?:[ \t]|$)", text)
+    return bool(frame and prompt)
 
 
 class GrokBlankTuiGuard:
@@ -2764,6 +2767,7 @@ class LaunchSpec:
     skill_dag_job_worktree: str | None = None
     kind: str = ""
     session_log: Optional[SeatSessionLog] = None
+    inherit_console: bool = False
 
 
 def skill_dag_mcp_script_path(
@@ -4350,6 +4354,7 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
         write_opencode_skill_dag_mcp=(str(kind).strip().lower() == "opencode" and str(mode).strip().lower() == "agent"),
         skill_dag_mcp_args=mcp_args,
         skill_dag_job_worktree=job_wt,
+        inherit_console=(kind == "grok"),
     )
 
 
@@ -4390,9 +4395,10 @@ def default_spawn(spec: LaunchSpec, env: dict) -> ProcHandle:
     # t771u: ONE window. The agent INHERITS this exe's console (no CREATE_NEW_CONSOLE, no second console); a kill-on-close job object
     # makes the agent die with us even if we are killed. "New agent every time" is about the SESSION, not the window: the exe's
     # window IS the agent's window and a new click opens a new exe + window.
-    # Grok requires real console handles, including stderr, to render its TUI.
+    # FR #7916: Grok renders on stderr only when it is a console. A tee breaks TTY
+    # detection; use Grok's per-seat logs instead. Other agents keep FR #7671 capture.
     # OpenCode's headless wrapper can be teed; interactive stdout stays inherited.
-    capture = {} if spec.kind == "grok" else {"stderr": subprocess.PIPE}
+    capture = {} if spec.kind == "grok" or spec.inherit_console else {"stderr": subprocess.PIPE}
     if spec.kind == "opencode":
         capture["stdout"] = subprocess.PIPE
     popen = subprocess.Popen(
