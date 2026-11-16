@@ -5919,6 +5919,9 @@ class Client:
         while not self.stop.is_set() and not self.dead.wait(timeout=1):
             if self._consume_control_quit():
                 break
+            # FR #7896: bob-* ears do not run seat_liveness_loop. Reclaim and
+            # restart a dead publish loop from the session idle tick.
+            self.watch_publish_loop()
 
     def _surface_nickname_reserved(self, gate: str) -> None:
         """FR #3904 / #5352: reserved nick is a credential stall, not a crash.
