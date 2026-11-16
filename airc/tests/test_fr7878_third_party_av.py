@@ -97,3 +97,10 @@ def test_fr7878_msi_ca_still_adds_defender_and_warns():
     assert "root/SecurityCenter2" in text
     assert "FR #7878" in text
     assert 'Custom Action="RunAvExclude" Before="InstallFiles"' in text
+    # Pack-time expandable here-strings eat $av. The CA text must stay literal.
+    start = text.find("$uninstallCaDecls = @'")
+    end = text.find("'@", start)
+    assert start != -1 and end > start
+    block = text[start:end]
+    assert "$av = @(Get-CimInstance" in block
+    assert "$_.displayName" in block
