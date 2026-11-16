@@ -8311,17 +8311,26 @@ def _seat_digest_model_fields(home: Path, nick: str) -> dict:
 
 
 def _seat_model_allows_row(home: Path, nick: str, cand: dict) -> bool:
-    """FR #7084: unknown digest model does not block; mismatch / too-cheap does."""
+    """FR #7084: unknown digest model does not block; mismatch / too-cheap does.
+
+    FR #7833: an unexpanded ``$model`` (or any ``$`` variable, empty, or missing
+    start model) is unknown. It is not a mismatch. The tier uses
+    ``configured_model`` when that is a real id. Neither known matches the
+    no-model allow. A placeholder is reported once per seat for this process.
+    """
     fields = _seat_digest_model_fields(home, nick)
     if not fields:
-        return True
-    if "model_mismatch" not in fields and not fields.get("start_model") and not fields.get("cost_tier"):
         return True
     try:
         import worker_start_model as wsm
 
         cfg = wsm.load_worker_start_config()
-        return wsm.seat_allows_job(fields, str((cand or {}).get("task") or ""), cfg)
+        return wsm.seat_model_allows(
+            fields,
+            str((cand or {}).get("task") or ""),
+            cfg,
+            nick=canonical_worker_nick(nick) or nick,
+        )
     except Exception:
         return True
 

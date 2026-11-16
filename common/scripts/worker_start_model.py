@@ -370,6 +370,96 @@ def digest_seat_model_fields(
     }
 
 
+def start_model_is_unknown(raw: object) -> bool:
+    """FR #7833: empty, missing, or an unexpanded ``$`` variable is not a model id."""
+    s = str(raw or "").strip().strip("'\"")
+    if not s:
+        return True
+    return "$" in s
+
+
+_placeholder_reported: set[str] = set()
+
+
+def note_placeholder_start_model(nick: str, shown: str, *, report=None) -> bool:
+    """Report one placeholder ``start_model`` per seat for this process. No secret values."""
+    key = str(nick or "").strip().lower()
+    if not key or key in _placeholder_reported:
+        return False
+    _placeholder_reported.add(key)
+    text = str(shown or "missing").strip()
+    if len(text) > 80:
+        text = text[:80]
+    if report is not None:
+        report(key, text)
+        return True
+    try:
+        import crash_report
+
+        crash_report.report_exception(
+            "jeeves",
+            RuntimeError,
+            RuntimeError(f"placeholder start_model seat={key} value={text}"),
+            None,
+            repo="SimonBarnett/bobiverse",
+        )
+    except Exception:
+        pass
+    return True
+
+
+def normalize_placeholder_start_model(
+    fields: dict[str, Any] | None,
+    cfg: dict[str, Any] | None,
+) -> tuple[dict[str, Any], str | None]:
+    """Drop a placeholder ``start_model``. Tier follows ``configured_model``.
+
+    Returns the fields for the tier gate and a note when the published start
+    model was a placeholder (empty/missing is unknown but not filed).
+    """
+    f = dict(fields or {})
+    raw = f.get("start_model", f.get("model"))
+    published = "start_model" in f or "model" in f
+    if published and not start_model_is_unknown(raw):
+        return f, None
+    configured = str(f.get("configured_model") or "").strip()
+    placeholder = published and raw is not None and str(raw).strip() != "" and start_model_is_unknown(raw)
+    f["model_mismatch"] = False
+    if configured and not start_model_is_unknown(configured):
+        f["start_model"] = configured
+        f["cost_tier"] = model_cost_tier(configured, cfg)
+    else:
+        f.pop("start_model", None)
+        f.pop("model", None)
+        f.pop("cost_tier", None)
+        f.pop("model_mismatch", None)
+    return f, (str(raw).strip() if placeholder else None)
+
+
+def seat_model_allows(
+    fields: dict[str, Any] | None,
+    job_task: str,
+    cfg: dict[str, Any] | None,
+    *,
+    nick: str = "",
+    report=None,
+) -> bool:
+    """FR #7084 gate after FR #7833: a placeholder start model is not a mismatch."""
+    f = fields or {}
+    if not f:
+        return True
+    normalized, note = normalize_placeholder_start_model(f, cfg)
+    if note:
+        note_placeholder_start_model(nick, note, report=report)
+    if (
+        "model_mismatch" not in normalized
+        and not normalized.get("start_model")
+        and not normalized.get("cost_tier")
+    ):
+        return True
+    return seat_allows_job(normalized, job_task, cfg)
+
+
 def seat_allows_job(fields: dict[str, Any] | None, job_task: str, cfg: dict[str, Any] | None) -> bool:
     """False when mismatch or the running model tier is below the job requirement."""
     f = fields or {}
