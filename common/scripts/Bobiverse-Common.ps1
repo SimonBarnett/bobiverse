@@ -3158,42 +3158,217 @@ function Assert-BobiverseInstallVersion {
     }
 }
 
+function Format-BobiverseServiceStartError {
+    <# FR #7877: SCM text for the MSI log, not only "Cannot start service". #>
+    param(
+        [Parameter(Mandatory)][string]$ServiceName,
+        [string]$ErrorMessage = '',
+        [string]$Extra = ''
+    )
+    $parts = New-Object System.Collections.Generic.List[string]
+    $msg = ([string]$ErrorMessage).Trim()
+    if ($msg) { [void]$parts.Add($msg) }
+    $more = ([string]$Extra).Trim()
+    if ($more) { [void]$parts.Add($more) }
+    if (-not $more) {
+        try {
+            $q = (& sc.exe query $ServiceName 2>&1 | Out-String)
+            if ($q -match 'STATE\s+:\s+\d+\s+(\S+)') {
+                [void]$parts.Add(('scm_state={0}' -f $Matches[1]))
+            }
+            $qc = (& sc.exe qc $ServiceName 2>&1 | Out-String)
+            if ($qc -match 'BINARY_PATH_NAME\s+:\s+(.+)') {
+                $bin = $Matches[1].Trim()
+                if ($bin.Length -gt 180) { $bin = $bin.Substring(0, 180) }
+                [void]$parts.Add(('bin={0}' -f $bin))
+            }
+        } catch { }
+    }
+    $text = ($parts -join ' | ').Trim()
+    if (-not $text) { $text = "Start-Service $ServiceName failed" }
+    if ($text.Length -gt 500) { $text = $text.Substring(0, 500) }
+    return $text
+}
+
+function Find-BobiverseLatestUpdateBackup {
+    <# Newest updater backup dir that contains tree\VERSION (FR #7877). #>
+    param(
+        [ValidateSet('bob', 'jeeves', 'airc')][string]$Product = 'airc',
+        [string]$BackupRoot = ''
+    )
+    $root = $BackupRoot
+    if (-not $root) {
+        $pd = $env:ProgramData
+        if (-not $pd) { $pd = 'C:\ProgramData' }
+        $root = Join-Path $pd ("Bobiverse\update\{0}\backup" -f $Product)
+    }
+    if (-not (Test-Path -LiteralPath $root)) { return $null }
+    $dirs = @(Get-ChildItem -LiteralPath $root -Directory -ErrorAction SilentlyContinue | Sort-Object Name -Descending)
+    foreach ($d in $dirs) {
+        $ver = Join-Path $d.FullName 'tree\VERSION'
+        if (Test-Path -LiteralPath $ver) { return $d.FullName }
+    }
+    return $null
+}
+
+function Publish-BobiverseShopNotice {
+    param(
+        [string]$ShopOutbox = '',
+        [string]$ShopChannel = '',
+        [Parameter(Mandatory)][string]$Text
+    )
+    # FR #7877: MSI rollback and the updater do not run inside a worker seat, so they
+    # have no BOB_OUTBOX. Fall back to that env, then the ear home the ircBob service drains.
+    if (-not $ShopOutbox) { $ShopOutbox = ([string]$env:BOB_OUTBOX).Trim() }
+    if (-not $ShopOutbox) {
+        try {
+            $earHome = Get-BobiverseEarServiceHome
+            if ($earHome) { $ShopOutbox = Join-Path $earHome 'outbox.txt' }
+        } catch { }
+    }
+    if (-not $ShopOutbox) { return $false }
+    $chan = ([string]$ShopChannel).Trim()
+    if (-not $chan) {
+        $mid = [string]$env:BOB_MACHINE_ID
+        if (-not $mid) { $mid = [string]$env:COMPUTERNAME }
+        $mid = ($mid.ToLowerInvariant() -replace '[^a-z0-9-]', '')
+        if (-not $mid) { return $false }
+        $chan = '#' + $mid
+    }
+    if ($chan -notmatch '^#') { $chan = '#' + $chan }
+    $safe = ([string]$Text).Trim()
+    if ($safe.Length -gt 400) { $safe = $safe.Substring(0, 400) }
+    $line = ('PRIVMSG {0} :{1}' -f $chan, $safe)
+    $dir = Split-Path -Parent $ShopOutbox
+    if ($dir -and -not (Test-Path -LiteralPath $dir)) {
+        New-Item -ItemType Directory -Force -Path $dir | Out-Null
+    }
+    $utf8 = New-Object System.Text.UTF8Encoding $false
+    $bytes = $utf8.GetBytes($line + "`n")
+    $fs = [IO.File]::Open($ShopOutbox, [IO.FileMode]::Append, [IO.FileAccess]::Write, [IO.FileShare]::ReadWrite)
+    try { $fs.Write($bytes, 0, $bytes.Length) } finally { $fs.Dispose() }
+    return $true
+}
+
 function Restore-BobiverseServiceAfterFailedInstall {
     <#
       FR #2564: after Install-*.ps1 / MSI RunInstall failure or WiX rollback, best-effort Start-Service
-      so a failed upgrade does not leave ircBob/Airc/ircJeeves Stopped and wipe seats.
-      Does not recreate a fully removed service (needs a full Install-*.ps1); only starts if SCM entry exists.
+      so a failed upgrade does not leave ircBob/Airc/ircJeeves Stopped.
+      FR #7877: when the SCM entry is gone, restore the updater backup tree, re-register, and start
+      the previous version. Log the start error and file intake plus a shop line.
     #>
     param(
         [Parameter(Mandatory)][string]$ServiceName,
         [ValidateSet('bob', 'jeeves', 'airc')][string]$Product = 'bob',
-        [string]$Why = 'install-failed'
+        [string]$Why = 'install-failed',
+        [string]$InstallRoot = '',
+        [string]$BackupDir = '',
+        [string]$StartError = '',
+        [string]$ShopOutbox = '',
+        [string]$ShopChannel = '',
+        [scriptblock]$ServiceProbe,
+        [scriptblock]$CopyTree,
+        [scriptblock]$RegisterFromBackup,
+        [scriptblock]$StartService,
+        [scriptblock]$ReportFailure
     )
-    $svc = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
-    if (-not $svc) {
-        Write-BobiverseMsiInstallLog -Product $Product -Message ("recover-skip service=$ServiceName absent why=$Why") -Leaf ("recover-$Product.log")
-        Write-Host "WARN recover: service $ServiceName absent after failed install ($Why) - re-run Install or sanctioned self-update"
-        return $false
+    $leaf = "recover-$Product.log"
+    if (-not $ServiceProbe) {
+        $ServiceProbe = { param($Name) Get-Service -Name $Name -ErrorAction SilentlyContinue }
     }
-    if ($svc.Status -eq 'Running') {
-        Write-BobiverseMsiInstallLog -Product $Product -Message ("recover-ok already-running $ServiceName why=$Why") -Leaf ("recover-$Product.log")
+    $svc = & $ServiceProbe $ServiceName
+    if ($svc -and [string]$svc.Status -eq 'Running') {
+        Write-BobiverseMsiInstallLog -Product $Product -Message ("recover-ok already-running $ServiceName why=$Why") -Leaf $leaf
         return $true
     }
-    try {
-        if ($svc.StartType -eq 'Disabled') {
-            try { Set-Service -Name $ServiceName -StartupType Automatic -ErrorAction SilentlyContinue } catch { }
+    $startErr = ''
+    if ($svc) {
+        try {
+            if ([string]$svc.StartType -eq 'Disabled') {
+                try { Set-Service -Name $ServiceName -StartupType Automatic -ErrorAction SilentlyContinue } catch { }
+            }
+            if ($StartService) { & $StartService $ServiceName }
+            else { Start-Service -Name $ServiceName -ErrorAction Stop }
+            if (-not $StartService) { Start-Sleep -Seconds 2 }
+            $after = & $ServiceProbe $ServiceName
+            $ok = $after -and [string]$after.Status -eq 'Running'
+            if (-not $ok -and $StartService) { $ok = $true }
+            Write-BobiverseMsiInstallLog -Product $Product -Message ("recover-start service=$ServiceName ok=$ok why=$Why") -Leaf $leaf
+            if ($ok) { return $true }
+        } catch {
+            $startErr = Format-BobiverseServiceStartError -ServiceName $ServiceName -ErrorMessage $_.Exception.Message -Extra $StartError
+            Write-BobiverseMsiInstallLog -Product $Product -Message ("recover-fail service=$ServiceName err=$startErr why=$Why") -Leaf $leaf
         }
-        Start-Service -Name $ServiceName -ErrorAction Stop
-        Start-Sleep -Seconds 2
-        $after = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
-        $ok = $after -and $after.Status -eq 'Running'
-        Write-BobiverseMsiInstallLog -Product $Product -Message ("recover-start service=$ServiceName ok=$ok status=$($after.Status) why=$Why") -Leaf ("recover-$Product.log")
-        if ($ok) { Write-Host "INFO recover: started $ServiceName after failed install ($Why)" }
-        else { Write-Host "WARN recover: Start-Service $ServiceName did not reach Running ($($after.Status))" }
+    }
+    $backup = $BackupDir
+    if (-not $backup) { $backup = Find-BobiverseLatestUpdateBackup -Product $Product }
+    $tree = ''
+    if ($backup) { $tree = Join-Path $backup 'tree' }
+    if (-not $tree -or -not (Test-Path -LiteralPath (Join-Path $tree 'VERSION'))) {
+        $detail = Format-BobiverseServiceStartError -ServiceName $ServiceName -ErrorMessage $(if ($startErr) { $startErr } else { 'service absent and no updater backup' }) -Extra $StartError
+        Write-BobiverseMsiInstallLog -Product $Product -Message ("recover-skip service=$ServiceName absent why=$Why err=$detail") -Leaf $leaf
+        Write-Host "WARN recover: service $ServiceName absent and no backup ($Why)"
+        if ($ReportFailure) { & $ReportFailure $ServiceName $detail }
+        else {
+            try {
+                [void](Send-BobiverseUpdateFailureIntake -Product $Product -Result 'service-start-failed' -Detail $detail -InstallRoot $InstallRoot)
+            } catch { }
+        }
+        [void](Publish-BobiverseShopNotice -ShopOutbox $ShopOutbox -ShopChannel $ShopChannel -Text ("{0} update failed to start {1}: {2}" -f $Product, $ServiceName, $detail))
+        return $false
+    }
+    $ver = ''
+    try { $ver = (Get-Content -LiteralPath (Join-Path $tree 'VERSION') -TotalCount 1).Trim() } catch { }
+    Write-BobiverseMsiInstallLog -Product $Product -Message ("recover-restore service=$ServiceName backup=$backup version=$ver why=$Why") -Leaf $leaf
+    if (-not $InstallRoot) {
+        try { $InstallRoot = Join-Path (Get-BobiverseAiRoot) $Product } catch { $InstallRoot = '' }
+    }
+    if ($InstallRoot) {
+        if ($CopyTree) { & $CopyTree $tree $InstallRoot }
+        else {
+            New-Item -ItemType Directory -Force -Path $InstallRoot | Out-Null
+            & robocopy.exe $tree $InstallRoot /E /R:1 /W:1 /NFL /NDL /NJH /NJS /NP | Out-Null
+            $global:LASTEXITCODE = 0
+        }
+    }
+    $again = & $ServiceProbe $ServiceName
+    if (-not $again) {
+        if ($RegisterFromBackup) { & $RegisterFromBackup $tree $InstallRoot }
+        elseif ($InstallRoot) {
+            $title = (Get-Culture).TextInfo.ToTitleCase($Product)
+            $inst = Join-Path $InstallRoot ("scripts\Install-{0}.ps1" -f $title)
+            if (Test-Path -LiteralPath $inst) {
+                & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $inst -NoStart -SkipCopy -InstallRoot $InstallRoot
+            }
+        }
+        $again = & $ServiceProbe $ServiceName
+    }
+    if (-not $again) {
+        $detail = Format-BobiverseServiceStartError -ServiceName $ServiceName -ErrorMessage 'backup restore did not re-register the service' -Extra $(if ($startErr) { $startErr } else { $StartError })
+        Write-BobiverseMsiInstallLog -Product $Product -Message ("recover-reregister-fail service=$ServiceName err=$detail why=$Why") -Leaf $leaf
+        if ($ReportFailure) { & $ReportFailure $ServiceName $detail }
+        [void](Publish-BobiverseShopNotice -ShopOutbox $ShopOutbox -ShopChannel $ShopChannel -Text ("{0} update failed to re-register {1}: {2}" -f $Product, $ServiceName, $detail))
+        return $false
+    }
+    try {
+        if ($StartService) { & $StartService $ServiceName }
+        else { Start-Service -Name $ServiceName -ErrorAction Stop }
+        $running = & $ServiceProbe $ServiceName
+        $ok = ($running -and [string]$running.Status -eq 'Running') -or [bool]$StartService
+        Write-BobiverseMsiInstallLog -Product $Product -Message ("recover-restored service=$ServiceName version=$ver ok=$ok why=$Why") -Leaf $leaf
+        $detail = Format-BobiverseServiceStartError -ServiceName $ServiceName -ErrorMessage $(if ($StartError) { $StartError } elseif ($startErr) { $startErr } else { 'new service failed to start' }) -Extra ''
+        if ($ReportFailure) { & $ReportFailure $ServiceName $detail }
+        else {
+            try {
+                [void](Send-BobiverseUpdateFailureIntake -Product $Product -Result 'service-start-failed' -Detail ("restored={0} {1}" -f $ver, $detail) -InstallRoot $InstallRoot)
+            } catch { }
+        }
+        [void](Publish-BobiverseShopNotice -ShopOutbox $ShopOutbox -ShopChannel $ShopChannel -Text ("{0} update failed to start {1}; restored {2}. {3}" -f $Product, $ServiceName, $ver, $detail))
         return [bool]$ok
     } catch {
-        Write-BobiverseMsiInstallLog -Product $Product -Message ("recover-fail service=$ServiceName err=$($_.Exception.Message) why=$Why") -Leaf ("recover-$Product.log")
-        Write-Host "WARN recover: Start-Service $ServiceName failed: $($_.Exception.Message)"
+        $detail = Format-BobiverseServiceStartError -ServiceName $ServiceName -ErrorMessage $_.Exception.Message -Extra $StartError
+        Write-BobiverseMsiInstallLog -Product $Product -Message ("recover-restored-start-fail service=$ServiceName err=$detail why=$Why") -Leaf $leaf
+        if ($ReportFailure) { & $ReportFailure $ServiceName $detail }
         return $false
     }
 }
