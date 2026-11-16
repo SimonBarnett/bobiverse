@@ -3566,6 +3566,133 @@ def skill_dag_mcp_argv(
     return argv
 
 
+# FR #7908: worker health-checks skill-dag before handing a job to the model.
+SKILL_DAG_PREFLIGHT_TIMEOUT_S = 20.0
+JOB_SKILL_BY_TYPE = {
+    "FR": "bobiverse-bob-job-fr",
+    "MRB": "bobiverse-bob-job-mrb",
+    "UAT": "bobiverse-bob-job-uat",
+    "FIX": "bobiverse-bob-job-fr",
+}
+
+
+def skill_dag_job_skill_id(job_key: str) -> str:
+    """Job line ``FR owner/repo#N`` -> the job skill that must load (FR #7908)."""
+    m = re.match(r"(?i)^\s*(FR|MRB|UAT|FIX)\b", str(job_key or ""))
+    if not m:
+        return "bobiverse-bob-job-fr"
+    return JOB_SKILL_BY_TYPE.get(m.group(1).upper(), "bobiverse-bob-job-fr")
+
+
+def skill_dag_job_skill_md(worker_cwd: str, job_key: str = "") -> Path | None:
+    """First ``<root>/<job-skill>/SKILL.md`` the seat can read, or None."""
+    sid = skill_dag_job_skill_id(job_key)
+    for root in skill_dag_mcp_skill_roots(worker_cwd):
+        try:
+            cand = Path(root) / sid / "SKILL.md"
+            if cand.is_file():
+                return cand
+        except OSError:
+            continue
+    return None
+
+
+def probe_skill_dag_mcp_cli(
+    worker_cwd: str,
+    *,
+    job_worktree: str | Path | None = None,
+    job_key: str = "",
+    runner: Optional[Callable[..., object]] = None,
+    timeout_s: float = SKILL_DAG_PREFLIGHT_TIMEOUT_S,
+) -> dict:
+    """Run the seat's skill-dag one-shot and load the job skill (FR #7908).
+
+    Same script + roots + ``--job-worktree`` OpenCode launches. ``get_skill`` is the
+    path that used to kill the stdio server on non-code-page glyphs; a status probe
+    is the fallback when no job SKILL.md exists.
+    """
+    try:
+        script = skill_dag_mcp_script_path(worker_cwd)
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "reason": f"script-{type(exc).__name__}"}
+    if not script.is_file():
+        return {"ok": False, "reason": "script-missing"}
+    argv = ["python", script.as_posix()]
+    for root in skill_dag_mcp_skill_roots(worker_cwd):
+        argv.extend(["--root", Path(root).as_posix()])
+    if job_worktree:
+        try:
+            wt = Path(job_worktree)
+            if wt.is_dir():
+                argv.extend(["--job-worktree", wt.resolve().as_posix()])
+        except OSError:
+            pass
+    skill = skill_dag_job_skill_md(worker_cwd, job_key)
+    if skill is not None:
+        argv.extend(["--once", "get_skill", "--path", str(skill)])
+    else:
+        argv.extend(["--once", "status"])
+    run = runner or subprocess.run
+    try:
+        proc = run(
+            argv,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=timeout_s,
+        )
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "reason": f"run-{type(exc).__name__}"}
+    rc_raw = getattr(proc, "returncode", 1)
+    rc = 1 if rc_raw is None else int(rc_raw)
+    out = str(getattr(proc, "stdout", "") or "").strip()
+    err = str(getattr(proc, "stderr", "") or "").strip()
+    if rc != 0:
+        return {"ok": False, "reason": f"exit-{rc}", "stderr": err[-500:]}
+    try:
+        data = json.loads(out.splitlines()[-1]) if out else {}
+    except (json.JSONDecodeError, IndexError):
+        return {"ok": False, "reason": "bad-json", "stdout": out[-300:]}
+    if not isinstance(data, dict):
+        return {"ok": False, "reason": "bad-json", "stdout": out[-300:]}
+    if skill is not None:
+        ok = bool(data.get("ok"))
+    else:
+        ok = "node_count" in data
+    return {"ok": ok, "reason": "" if ok else str(data.get("reason") or "unhealthy")}
+
+
+def skill_dag_preflight(
+    probe: Callable[[], object],
+    restart: Callable[[], object],
+) -> dict:
+    """FR #7908: probe, restart once, probe again; give up cleanly with skill_dag_down."""
+    try:
+        first = bool(probe())
+    except Exception:  # noqa: BLE001
+        first = False
+    if first:
+        return {"action": "continue", "restarted": False, "reason": ""}
+    try:
+        restart()
+    except Exception:  # noqa: BLE001 - a failed restart is just still down
+        pass
+    try:
+        second = bool(probe())
+    except Exception:  # noqa: BLE001
+        second = False
+    if second:
+        return {"action": "continue", "restarted": True, "reason": ""}
+    return {"action": "giveup", "restarted": True, "reason": "skill_dag_down"}
+
+
+def skill_dag_down_giveup_line(job_key: str) -> str:
+    """Shop wire ``GIVEUP <TYPE> owner/repo#N skill_dag_down`` (FR #7908)."""
+    key = " ".join(str(job_key or "").split()).strip()
+    return f"GIVEUP {key} skill_dag_down" if key else "GIVEUP job skill_dag_down"
+
+
 def opencode_skill_read_permission_block(worker_cwd: str) -> dict:
     """Read-only ``external_directory`` allow for skill-dag roots only (FR #7196)."""
     allow: dict[str, str] = {}
@@ -12510,6 +12637,51 @@ class Supervisor:
             cursor = vision
         return bound, cursor, vision
 
+    def _skill_dag_preflight_for_opencode(
+        self, job_worktree: str | Path | None, job_key: str = ""
+    ) -> bool:
+        """FR #7908: probe skill-dag before the job; restart once; else GIVEUP skill_dag_down."""
+        if (self.kind or "").strip().lower() != "opencode":
+            return True
+        if (os.environ.get("BOB_SKIP_SKILL_DAG_PREFLIGHT") or "").strip() == "1":
+            return True
+        if os.environ.get("PYTEST_CURRENT_TEST") and (
+            os.environ.get("BOB_SKILL_DAG_PREFLIGHT_TEST") or ""
+        ).strip() != "1":
+            return True
+        cwd = str(getattr(self, "cwd", "") or "")
+        if not cwd:
+            return True
+
+        def probe() -> bool:
+            return bool(
+                probe_skill_dag_mcp_cli(
+                    cwd, job_worktree=job_worktree, job_key=job_key
+                ).get("ok")
+            )
+
+        def restart() -> None:
+            agent_pid = None
+            try:
+                proc = getattr(self, "proc", None)
+                if proc is not None and getattr(proc, "pid", None):
+                    agent_pid = int(proc.pid)
+            except (TypeError, ValueError):
+                agent_pid = None
+            restart_skill_dag_mcp_stdio_children(
+                agent_pid, [cwd, job_worktree], log=self.log
+            )
+
+        decision = skill_dag_preflight(probe, restart)
+        if decision.get("action") == "giveup":
+            self.log(
+                f"skill-dag preflight: {decision.get('reason')} job={job_key}"
+            )
+            return False
+        if decision.get("restarted"):
+            self.log("skill-dag preflight: restarted the MCP child once")
+        return True
+
     def _refresh_live_skill_dag_mcp(self, job_worktree: str | Path | None) -> None:
         bound, cursor, vision = self._live_skill_dag_mcp_paths()
         if not bound and not cursor:
@@ -12610,6 +12782,13 @@ class Supervisor:
                     )
                 except Exception as e:  # noqa: BLE001
                     self.log(f"opencode-ready: skill-dag mcp write skipped {type(e).__name__}")
+                # FR #7908: do not hand the job over when skill-dag is down.
+                if not self._skill_dag_preflight_for_opencode(
+                    prepared.get("path"), str(prepared.get("key") or "")
+                ):
+                    raise JobContextRefused(
+                        skill_dag_down_giveup_line(str(prepared.get("key") or ""))
+                    )
                 # FR #6333: tail in-worktree .bob/outbox.txt; stamp FROM footer with that path.
                 try:
                     ob = ensure_opencode_bob_outbox(prepared["path"])
