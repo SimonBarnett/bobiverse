@@ -262,3 +262,23 @@ def test_fr7942_concurrent_spool_200_rounds(tmp_path: Path):
     """Windows CI gate: 200 tight rounds, no sleep."""
     for n in range(200):
         _concurrent_spool_round(_home(tmp_path / f"r{n}"), range(20))
+
+
+def test_mrb7947_partial_not_listed_as_sidecar(tmp_path: Path):
+    """MRB #7947: .partial-* must not appear in _pending_sidecar_paths."""
+    home = _home(tmp_path)
+    path = gitclaim.pending_path(home)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    partial = path.with_name(path.name + ".partial-alive")
+    partial.write_text(
+        json.dumps(gitclaim._claim_to_pending_dict(_fr(1)), separators=(",", ":")) + "\n",
+        encoding="utf-8",
+    )
+    gitclaim._spool_pending(home, _fr(2))
+    names = [p.name for p in gitclaim._pending_sidecar_paths(home)]
+    assert partial.name not in names
+    assert any(n.startswith(path.name + ".side-") for n in names)
+    # Pop drains published sides and leaves the unpublished partial alone.
+    got = gitclaim._pop_all_pending(home)
+    assert {c.id for c in got} == {"#2"}
+    assert partial.is_file()
