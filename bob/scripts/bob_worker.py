@@ -8301,6 +8301,7 @@ def post_digest_seat_kind(
     log: Optional[Callable[[str], None]] = None,
     sleep: Optional[Callable[[float], None]] = None,
     assignable: bool | None = None,
+    stale_build: dict | None = None,
 ) -> bool:
     """POST digest worker kind so the chair can skip OpenCode for MRB/UAT (FR #6134).
 
@@ -8369,6 +8370,12 @@ def post_digest_seat_kind(
         payload["state"] = "needs_sign_in"
     elif assignable is True:
         payload["assignable"] = True
+    if isinstance(stale_build, dict) and stale_build.get("running"):
+        payload["stale_build"] = {
+            "running": str(stale_build.get("running") or ""),
+            "installed": str(stale_build.get("installed") or ""),
+            "since": stale_build.get("since"),
+        }
     post_kw: dict = {"log": log}
     if sleep is not None:
         post_kw["sleep"] = sleep
@@ -10766,8 +10773,9 @@ def stale_build_reason(run_exe: str | Path, install_root: str | Path, *, now: fl
     replaces the install exe, but a running seat keeps its old run copy until it exits, so fixes such as the FR #2696
     submit-verify never reach it. When the install exe now hashes differently (and has settled for
     ``STALE_BUILD_SETTLE_S``), the seat is stale. Returns None for dev runs (python / un-hashed exe name), a missing
-    install exe, or opt-out ``BOB_WORKER_STALE_BUILD_RECYCLE=0``. FR #3180: seat-heal is gone; detection still runs
-    so the seat can announce and skip ``!bored`` without exiting.
+    install exe, or opt-out ``BOB_WORKER_STALE_BUILD_RECYCLE=0``. FR #3180: seat-heal is gone.
+    FR #7834: detection still runs. The seat keeps sending ``!bored`` and taking work.
+    It publishes ``stale_build`` and reports once. It does not exit.
     """
     e = os.environ if env is None else env
     if str(e.get("BOB_WORKER_STALE_BUILD_RECYCLE") or "1").strip().lower() in ("0", "false", "no", "off"):
@@ -10796,6 +10804,44 @@ def stale_build_reason(run_exe: str | Path, install_root: str | Path, *, now: fl
     if d == run_d:
         return None
     return f"run={run_d} install={d}"
+
+
+_STALE_SHA = re.compile(r"(?i)\b(run|install)=([0-9a-f]{12})\b")
+_stale_build_reported: set[str] = set()
+
+
+def stale_build_public(why: str, *, since: float) -> dict:
+    """Digest ``stale_build`` object: running sha12, installed sha12, and since (unix)."""
+    found = {k.lower(): v.lower() for k, v in _STALE_SHA.findall(why or "")}
+    return {
+        "running": found.get("run") or "",
+        "installed": found.get("install") or "",
+        "since": float(since),
+    }
+
+
+def note_stale_build(nick: str, why: str, *, report=None) -> bool:
+    """One exception per seat and build reason for this process. No secret values."""
+    key = f"{str(nick or '').strip().lower()}|{str(why or '').strip()}"
+    if not key.strip("|") or key in _stale_build_reported:
+        return False
+    _stale_build_reported.add(key)
+    if report is not None:
+        report(str(nick or "").strip(), str(why or "").strip())
+        return True
+    try:
+        import crash_report
+
+        crash_report.report_exception(
+            "bob-worker",
+            RuntimeError,
+            RuntimeError(f"stale build seat={nick} {why}"),
+            None,
+            repo="SimonBarnett/bobiverse",
+        )
+    except Exception:
+        pass
+    return True
 
 
 # --------------------------------------------------------------------------------------------- supervisor
@@ -11754,8 +11800,8 @@ class Supervisor:
                 return False
         except Exception:
             pass
-        # FR #2782 / #3180: !bored is only sent when idle. A stale build must not take new work, but seat starts
-        # are manual only — keep running, log, and tell the operator to restart (never EXIT_STALE_BUILD).
+        # FR #7834: a stale build still sends !bored and takes work. Announce, publish, and
+        # report once. Seat starts stay manual (FR #3180). Never exit EXIT_STALE_BUILD.
         why = None
         if self.stale_build_check is not None:
             try:
@@ -11764,14 +11810,33 @@ class Supervisor:
                 why = None
         if why:
             prev = getattr(self, "_stale_build_announced", None)
-            self.log(f"worker: stale build ({why}) - keep running; restart me manually (FR #3180)")
             if prev != why:
                 self._stale_build_announced = why
+                self._stale_build_since = float(self.clock())
+                self.log(
+                    f"worker: stale build ({why}) - keep running and taking work; "
+                    "restart me manually (FR #3180 / #7834)"
+                )
                 try:
                     self.irc.say(self.irc.shop, f"stale build ({why}) - restart me manually")
                 except Exception:
                     pass
-            return False
+                note_stale_build(
+                    self.nick,
+                    why,
+                    report=getattr(self, "stale_build_reporter", None),
+                )
+            self.stale_build_status = stale_build_public(
+                why, since=float(getattr(self, "_stale_build_since", self.clock()))
+            )
+            pub = getattr(self, "publish_stale_digest", None)
+            if pub is not None and prev != why:
+                try:
+                    pub(self.stale_build_status)
+                except Exception:
+                    pass
+        else:
+            self.stale_build_status = None
         return bool(self.irc.say(self.irc.shop, "!bored"))
 
     # ---- agent
@@ -13986,6 +14051,24 @@ def run_agent(args, log: Log) -> int:
     )
     # FR #2782: a hotpatched install exe must reach this seat at its next idle point.
     sup.stale_build_check = lambda: stale_build_reason(sys.executable, _install_root)
+
+    def _publish_stale(status: dict) -> None:
+        post_digest_seat_kind(
+            machine=machine,
+            pid=pid,
+            nick=nick,
+            kind=kind,
+            model=seat_model,
+            configured_model=cfg_model,
+            model_mismatch=mismatch,
+            cost_tier=cost_tier,
+            start_effort=seat_effort,
+            worker_build=build,
+            stale_build=status,
+            log=log,
+        )
+
+    sup.publish_stale_digest = _publish_stale
     if not sup.start_agent():
         irc.close("launch failed")
         return EXIT_LAUNCH_FAIL
