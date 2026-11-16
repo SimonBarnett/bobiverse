@@ -501,6 +501,7 @@ routes to bobiverse via the split rule.
 - When an upgrade service is absent after a failed start, restore the updater backup and re-register. Log the SCM error.
 - A FIX assign is a job key. Resolve it to <base>\<repo>\fix-N and rewrite the inject footer to that tree .bob\outbox.txt. Allow that worktree and .bob recursively in opencode.json. If the outbox cannot be appended, GIVEUP outbox_unreachable instead of injecting.
 - If the holding seat sends !bored BOB_HOLDER_BORED_N times (default 2) with no ACK, DONE, or shop progress between them, release that seat's accepted or held job as GIVEUP holder_bored, count the give-up cooldown, and offer on the next !bored. Another seat's !bored must not release it.
+- Copilot draft ready belongs on the stuck-job sweep: require a non-plan commit, quiet seconds, and completed non-failing checks before gh pr ready, and record the head SHA so the same SHA is not announced twice.
 
 ## Harvest digest (lessons audit 2026-10-06)
 
