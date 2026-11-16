@@ -4018,6 +4018,19 @@ def _claim_from_pending_dict(d: dict) -> GitClaim | None:
     )
 
 
+_spool_seq = 0
+_spool_seq_lock = threading.Lock()
+
+
+def _next_spool_token() -> str:
+    """Process-unique sidecar token. time_ns repeats under a tight Windows loop."""
+    global _spool_seq
+    with _spool_seq_lock:
+        _spool_seq += 1
+        n = _spool_seq
+    return f"{os.getpid()}-{n}-{threading.get_ident()}"
+
+
 def _spool_pending(home: Path, claim: GitClaim) -> None:
     """Durable spool so lock/write failures do not drop webhook claims (FR #1811).
 
@@ -4028,26 +4041,37 @@ def _spool_pending(home: Path, claim: GitClaim) -> None:
     """
     path = pending_path(home)
     line = json.dumps(_claim_to_pending_dict(claim), separators=(",", ":")) + "\n"
+    payload = line.encode("utf-8")
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
     except OSError:
         pass
-    for attempt in range(5):
-        side = path.with_name(
-            f"{path.name}.side-{os.getpid()}-{time.time_ns()}-{threading.get_ident()}-{attempt}"
-        )
+    # FR #7942: publish the side name only after the bytes are closed. A pop
+    # that lists ``.side-*`` during os.open/write used to read an empty file
+    # and unlink it. time.time_ns() also repeats on Windows, so a later
+    # os.replace reused the same side name and erased an unread claim.
+    for attempt in range(40):
+        token = _next_spool_token()
+        partial = path.with_name(f"{path.name}.partial-{token}")
+        side = path.with_name(f"{path.name}.side-{token}")
+        fd: int | None = None
         try:
-            # O_CREAT|O_EXCL so two threads never share a sidecar path.
-            fd = os.open(str(side), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-            try:
-                os.write(fd, line.encode("utf-8"))
-            finally:
-                os.close(fd)
+            fd = os.open(str(partial), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            os.write(fd, payload)
+            os.close(fd)
+            fd = None
+            os.replace(str(partial), str(side))
             return
         except FileExistsError:
             continue
         except OSError:
+            if fd is not None:
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
             time.sleep(0.01 * (attempt + 1))
+    raise OSError("pending sidecar was not published")
 
 
 def _pending_sidecar_paths(home: Path) -> list[Path]:
@@ -4131,27 +4155,34 @@ def _pop_all_pending(home: Path) -> list[GitClaim]:
                 c = _claim_from_pending_dict(d)
                 if c is not None:
                     out.append(c)
-    # FR #6502: also drain any sidecar files from failed append retries.
+    # FR #6502 / #7942: drain published sidecars. Leave an empty or torn
+    # file in place so a writer that has not closed yet is not unlinked.
     for side in _pending_sidecar_paths(home):
         try:
             raw = side.read_text(encoding="utf-8")
         except OSError:
             continue
+        lines = [ln.strip() for ln in raw.splitlines() if ln.strip()]
+        if not lines:
+            continue
+        parsed: list[GitClaim] = []
+        torn = False
+        for line in lines:
+            try:
+                d = json.loads(line)
+            except json.JSONDecodeError:
+                torn = True
+                break
+            c = _claim_from_pending_dict(d)
+            if c is not None:
+                parsed.append(c)
+        if torn:
+            continue
         try:
             side.unlink()
         except OSError:
             pass
-        for line in raw.splitlines():
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                d = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            c = _claim_from_pending_dict(d)
-            if c is not None:
-                out.append(c)
+        out.extend(parsed)
     return out
 
 
