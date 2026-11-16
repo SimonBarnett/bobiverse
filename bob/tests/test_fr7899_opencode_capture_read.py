@@ -14,7 +14,7 @@ def _launch_text(tmp_path: Path) -> str:
 
 
 def _ceiling_block(text: str) -> str:
-    start = text.index("if ($runMs -ge $hardCeilingMs)")
+    start = text.index("if ($stallMs -ge $hardCeilingMs)")
     end = text.index("if (($ocJobPoll % 50) -eq 0", start)
     return text[start:end]
 
