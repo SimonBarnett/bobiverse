@@ -1481,6 +1481,7 @@ function Get-BobCopilotFreshness {
       Future resume_at (cooldown) does not force fresh: age by fetched_at still.
       Delegates age math to Get-BobPoolReadingFreshness.
       FR #7522: passes remaining + reset_at so 0% with known future reset is not stale.
+      FR #6317: a genuine unlimited pool is not exhausted. Age it by fetched_at.
     #>
     param($Pool, $Now = $null)
     if (-not $Pool) {
@@ -1500,6 +1501,18 @@ function Get-BobCopilotFreshness {
     $st = ''
     try { $st = ([string]$Pool.state).Trim().ToLowerInvariant() } catch { }
     if ($st -eq 'exhausted' -and $null -eq $rem) { $rem = 0 }
+    # FR #6317: unlimited is not a 0% hold. Do not let remaining 0 plus a future
+    # reset paint an old fetched_at as fresh. Used-up quota (overage off) stays a hold.
+    $unlimited = $false
+    try { if ($Pool.unlimited) { $unlimited = [bool]$Pool.unlimited } } catch { }
+    $overageOk = $true
+    try {
+        if ($null -ne $Pool.overage_permitted -and [string]$Pool.overage_permitted -ne '') {
+            $overageOk = [bool]$Pool.overage_permitted
+        }
+    } catch { }
+    $usedUp = ($unlimited -and $null -ne $rem -and $rem -le 0 -and -not $overageOk)
+    if ($unlimited -and -not $usedUp) { $rem = $null }
     $reset = $null
     try { if ($Pool.reset_at) { $reset = [string]$Pool.reset_at } } catch { }
     try { if (-not $reset -and $Pool.period_end) { $reset = [string]$Pool.period_end } } catch { }
