@@ -499,7 +499,9 @@ def test_relay_has_no_poll_loop_in_the_inbound_path():
     assert "sleep" not in read_loop and "s.recv(4096)" in read_loop
 
 
-def test_messages_during_agent_start_are_held_then_flushed_immediately(tmp_path):
+def test_messages_during_agent_start_are_held_then_flushed_immediately(tmp_path, monkeypatch):
+    # FR #7771 / #7180: grace hold is off unless this flag is set. The pin is the hold.
+    monkeypatch.setenv("BOB_WORKER_STARTUP_WAIT_READY", "1")
     rig = Rig(tmp_path, startup_grace_s=0.3)
     assert rig.sup.start_agent()
     assert rig.relay.deliver("Jeeves", "#marchhare", "early one") == "held"
