@@ -752,7 +752,11 @@ function Test-HarvestLessonDistinctiveOverlap([string]$ExistingBlob, [string]$Ne
         'invoke','intake','machine','source','book','seat','lesson','lessons','session',
         'summary','search','html','utf8','flamingo','ionos','marchhare',
         # FR #626: mcp.ntsa.uk + Priority Agent is the product home, not a lesson identity.
-        'ntsa','priority','priorityagent'
+        'ntsa','priority','priorityagent',
+        # FR #7962: OpenCode pause/fuel words are shared by unrelated lessons
+        # (pause fallback #7952 vs hard-ceiling record-pause #7954).
+        'opencode','pause','pauses','model','fuel','record','turn','call',
+        'fallback','configur','next','job','json','text','return','returns','write'
     ))
     $normWord = {
         param($w)
@@ -788,8 +792,11 @@ function Test-HarvestLessonDistinctiveOverlap([string]$ExistingBlob, [string]$Ne
     $a = & $tok $ExistingBlob
     $b = & $tok $NewLesson
     $shared = 0
-    foreach ($w in $a) {
-        if ($b.Contains($w)) { $shared++ }
+    # FR #7962: an all-generic lesson tokenizes to $null, not an empty set.
+    if ($a -and $b) {
+        foreach ($w in $a) {
+            if ($b.Contains($w)) { $shared++ }
+        }
     }
     return ($shared -ge 5)
 }
