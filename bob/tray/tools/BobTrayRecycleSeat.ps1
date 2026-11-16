@@ -134,11 +134,10 @@ function Invoke-BobTrayRecycleSeatQueue {
                     $clickedKind = [string](Get-BobTrayClickedSeatKind -Root $Root -Nick $seatNick)
                 }
                 if (@('grok', 'cursor', 'opencode') -notcontains $clickedKind) {
+                    # FR #7835: kind-unknown is the planned refuse (no click record).
+                    # Do not file a tray RuntimeError. That opened a crash issue for a seat
+                    # the tray correctly will not restart as a different kind.
                     $reason = 'kind-unknown'
-                    try {
-                        $exKind = New-Object System.InvalidOperationException ('recycle refused trigger=restore-after-recycle nick=' + $seatNick + ' kind missing')
-                        Invoke-BobTrayRecycleSeatReportFailure -Root $Root -Site ('recycleseat.kind:' + $seatNick) -Exception $exKind
-                    } catch { }
                 }
                 else {
                 $oldPid = Resolve-BobTrayRecyclePid -MarkerPid ([int](Get-BobTraySeatMarkerPid -Nick $seatNick)) -Nick $seatNick

@@ -62,6 +62,7 @@ def test_fr7692_recycle_restarts_opencode_and_refuses_unknown(tmp_path: Path):
                 "function Get-BobTraySeatMarkerPid { param($Nick) 0 }",
                 "function Get-BobTraySeatPidFromNick { param($Nick) if ($Nick -eq 'marchhare-4242') { 4242 } else { 0 } }",
                 "function Invoke-BobTrayRecycleSeatReportFailure { param($Root,$Site,$Exception) $script:reported = $Site }",
+                "$script:reported = ''",
                 f"Add-BobTrayClickedSeat -Root '{root}' -Nick 'marchhare-4242' -Kind 'opencode' -Machine 'marchhare'",
                 "$script:kinds = New-Object System.Collections.Generic.List[string]",
                 "$launch = { param($seatNick, $kind) $script:kinds.Add([string]$kind); return 5050 }",
@@ -69,6 +70,7 @@ def test_fr7692_recycle_restarts_opencode_and_refuses_unknown(tmp_path: Path):
                 "$a = @($rows | Where-Object { $_.id -eq 'a' })[0]",
                 "$b = @($rows | Where-Object { $_.id -eq 'b' })[0]",
                 "$kind = @($script:kinds) -join ','",
+                "if (-not $script:reported) { $script:reported = '-' }",
                 "$line = ([string]$a.reason) + '|' + ([string]$a.ok) + '|' + $kind + '|' + ([string]$b.reason) + '|' + ([string]$script:reported)",
                 f"Set-Content -LiteralPath '{log}' -Value $line -Encoding ascii",
             ]
@@ -77,4 +79,4 @@ def test_fr7692_recycle_restarts_opencode_and_refuses_unknown(tmp_path: Path):
     )
     proc = _ps(script)
     assert proc.returncode == 0, proc.stdout + proc.stderr
-    assert log.read_text(encoding="ascii").strip() == "ok|True|opencode|kind-unknown|recycleseat.kind:marchhare-777"
+    assert log.read_text(encoding="ascii").strip() == "ok|True|opencode|kind-unknown|-"
