@@ -48,6 +48,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Optional
 
+from seat_session_log import SeatSessionLog, console_startup_state, redact_session_text
+
 EXIT_OK = 0
 
 
@@ -252,6 +254,67 @@ def _resolve_opencode_fuel_helper_path(
     return candidates[0].resolve()
 
 
+def _path_is_mei_extract(path: Path) -> bool:
+    return any(part.startswith("_MEI") for part in Path(path).parts)
+
+
+def _resolve_installed_worker_script(
+    name: str,
+    *,
+    cwd: str | Path | None = None,
+    source_file: str | Path | None = None,
+    install_root: str | Path | None = None,
+) -> Optional[Path]:
+    """Locate a worker ``.py`` handed to external python. Never prefer a PyInstaller ``_MEI`` extract."""
+    # FR #7910: a frozen exe writes bundled helpers beside itself before the search.
+    try:
+        import worker_shipped_scripts as _shipped_scripts
+
+        _shipped_scripts.extract_bundled_scripts()
+    except Exception:
+        pass
+    source = Path(source_file).resolve() if source_file else Path(__file__).resolve()
+    here = source.parent
+    candidates: list[Path] = []
+    if install_root is not None:
+        root = Path(install_root)
+        candidates.append(root / "scripts" / name)
+        candidates.append(root / "bob" / "scripts" / name)
+        candidates.append(root / "common" / "scripts" / name)
+    if not _path_is_mei_extract(here):
+        candidates.append(here / name)
+    if cwd is not None:
+        parent = Path(cwd).resolve().parent
+        candidates.append(parent / "scripts" / name)
+        candidates.append(parent / "bob" / "scripts" / name)
+    if getattr(sys, "frozen", False):
+        exe_dir = Path(sys.executable).resolve().parent
+        candidates.append(exe_dir / "scripts" / name)
+        candidates.append(exe_dir.parent / "scripts" / name)
+        candidates.append(exe_dir.parent / "bob" / "scripts" / name)
+    for cand in candidates:
+        if _path_is_mei_extract(cand):
+            continue
+        if cand.is_file():
+            return cand.resolve()
+    return None
+
+
+def _report_missing_worker_script(name: str) -> None:
+    """FR #7884: a missing helper is an exception. The seat still starts."""
+    try:
+        import runtime_failure
+
+        runtime_failure.report_message(
+            "bob-worker",
+            "%s is missing from the installed worker scripts. The OpenCode seat still starts and that check is off."
+            % name,
+            site="opencode-helper-missing",
+        )
+    except Exception:
+        pass
+
+
 def log_install_root_guard(install_root: str | Path, log: Callable[[str], None] = print, *, run=subprocess.run) -> Optional[str]:
     """FR #4843: at seat start, surface when the live install checkout is off main."""
     try:
@@ -308,6 +371,7 @@ try:
         opencode_outbox_refuse_reason,
         opencode_outbox_path,
         ensure_opencode_bob_outbox,
+        outbox_is_writable,
         prepare_opencode_wire,
         frame_opencode_message,
         probe_gh_auth,
@@ -325,6 +389,7 @@ except ImportError:  # package import (bob.scripts.bob_worker)
         opencode_outbox_refuse_reason,
         opencode_outbox_path,
         ensure_opencode_bob_outbox,
+        outbox_is_writable,
         prepare_opencode_wire,
         frame_opencode_message,
         probe_gh_auth,
@@ -421,7 +486,7 @@ class _LogStream:
     def write(self, s):
         t = str(s).strip()
         if t:
-            self.log("stderr: " + t[:300])
+            self.log("stderr: " + _scrub(t)[:300])
         return len(str(s))
 
     def flush(self):
@@ -451,7 +516,7 @@ _SECRET_RX = re.compile(r"(?i)(xai_api_key|cursor_api_key|password|passwd|secret
 
 
 def _scrub(s: str) -> str:
-    return _SECRET_RX.sub(lambda m: m.group(1) + "=<redacted>", s)
+    return redact_session_text(_SECRET_RX.sub(lambda m: m.group(1) + "=<redacted>", s))
 
 
 class SecretStr:
@@ -1376,6 +1441,64 @@ class GrokSigninPromptGuard:
             self.timed_out = True
             return False
         return False
+
+
+# FR #7868: a started Grok console without an input frame and prompt is blank.
+# Report once. Do not kill or recycle until that same-kind recycle is approved.
+GROK_BLANK_TUI_WINDOW_S = 120.0
+
+
+def grok_blank_tui_watch_enabled() -> bool:
+    raw = (os.environ.get("BOB_WORKER_BLANK_TUI") or "1").strip().lower()
+    return raw not in ("0", "false", "no", "off")
+
+
+def grok_console_has_tui_chrome(text: str) -> bool:
+    """Require an input frame and prompt; a cwd header and empty border are not enough."""
+    text = text or ""
+    frame = re.search(r"(?m)^[ \t]*[╭┌╔+][─━═-]{2,}[╮┐╗+][ \t]*$", text)
+    prompt = re.search(r"(?m)^[ \t]*(?:[│┃║|][ \t]*)?[>❯›](?:[ \t]|$)", text)
+    return bool(frame and prompt)
+
+
+class GrokBlankTuiGuard:
+    """FR #7868: after window_s of a blank console, report once. Never kills the seat."""
+
+    def __init__(
+        self,
+        read_fn,
+        *,
+        window_s: float = GROK_BLANK_TUI_WINDOW_S,
+        clock=time.monotonic,
+        report: Optional[Callable] = None,
+        log: Optional[Callable] = None,
+    ):
+        self.read_fn = read_fn
+        self.window_s = float(window_s)
+        self.clock = clock
+        self.report = report
+        self.log = log or (lambda _s: None)
+        self._t0 = clock()
+        self.rendered = False
+        self.reported = False
+
+    def tick(self) -> bool:
+        if self.reported or self.rendered:
+            return self.reported
+        text = ""
+        with contextlib.suppress(Exception):
+            text = self.read_fn() or ""
+        if grok_console_has_tui_chrome(text):
+            self.rendered = True
+            return False
+        if (self.clock() - self._t0) < self.window_s:
+            return False
+        self.reported = True
+        self.log("grok: blank TUI after 120s; reported; not recycling")
+        if self.report is not None:
+            with contextlib.suppress(Exception):
+                self.report()
+        return True
 
 
 def apply_xai_signin_gate(
@@ -2642,6 +2765,9 @@ class LaunchSpec:
     write_opencode_skill_dag_mcp: bool = False  # FR #6898: opencode agent seats only
     skill_dag_mcp_args: list = field(default_factory=list)  # FR #6899: python argv for skill-dag stdio
     skill_dag_job_worktree: str | None = None
+    kind: str = ""
+    session_log: Optional[SeatSessionLog] = None
+    inherit_console: bool = False
 
 
 def skill_dag_mcp_script_path(
@@ -3159,21 +3285,35 @@ def normalize_agent_exit_code(code) -> int:
     return c & 0xFFFFFFFF
 
 
+# STATUS_CONTROL_C_EXIT: console closed or Ctrl+C. Not an agent CLI crash.
+CONSOLE_CLOSE_EXIT = 0xC000013A
+
+
 def format_agent_exit_code_label(code) -> str:
     """Human label for intake/logs; shows ``0xffffffff`` when that is the u32 value."""
     u = normalize_agent_exit_code(code)
     if u == 0xFFFFFFFF:
         return f"{u} (0xffffffff)"
+    if u == CONSOLE_CLOSE_EXIT:
+        return f"{u} (0xc000013a STATUS_CONTROL_C_EXIT)"
     return str(u)
 
 
 class AgentStderrRing:
     """FR #7671: bounded line ring of the agent CLI stderr."""
 
-    def __init__(self, limit: int = 32) -> None:
+    def __init__(self, limit: int = 32, on_line=None) -> None:
         self._lines: deque = deque(maxlen=max(5, int(limit)))
         self._buf = ""
         self._lock = threading.Lock()
+        self._on_line = on_line
+        self._dropping = False
+
+    def _append(self, text: str) -> None:
+        safe = _scrub(text)
+        self._lines.append(safe[:8192])
+        if self._on_line is not None:
+            self._on_line(safe)
 
     def feed(self, text: str) -> None:
         if not text:
@@ -3184,14 +3324,19 @@ class AgentStderrRing:
             self._buf = ""
             for part in parts:
                 if part.endswith(("\n", "\r")):
-                    self._lines.append(part.strip("\r\n"))
+                    if not self._dropping:
+                        self._append(part.strip("\r\n"))
+                    self._dropping = False
                 else:
                     self._buf = part
+            if len(self._buf) > 65536:
+                self._buf = ""
+                self._dropping = True
 
     def finish(self) -> None:
         with self._lock:
-            if self._buf.strip():
-                self._lines.append(self._buf.strip())
+            if self._buf.strip() and not self._dropping:
+                self._append(self._buf.strip())
             self._buf = ""
 
     def tail_text(self) -> str:
@@ -3200,24 +3345,25 @@ class AgentStderrRing:
         return "\n".join(lines[-5:])
 
 
-def _tee_agent_stderr(pipe, ring: AgentStderrRing) -> None:
+def _tee_agent_stderr(pipe, ring: AgentStderrRing, output=None) -> None:
     """Copy the agent stderr pipe to the console and into the ring."""
     try:
+        output = output or sys.__stderr__
         while True:
-            chunk = pipe.read(256)
+            chunk = pipe.read1(4096) if hasattr(pipe, "read1") else pipe.read(256)
             if not chunk:
                 break
             if isinstance(chunk, bytes):
                 try:
-                    sys.__stderr__.buffer.write(chunk)
-                    sys.__stderr__.buffer.flush()
+                    output.buffer.write(chunk)
+                    output.buffer.flush()
                 except Exception:
                     pass
                 text = chunk.decode("utf-8", "replace")
             else:
                 try:
-                    sys.__stderr__.write(chunk)
-                    sys.__stderr__.flush()
+                    output.write(chunk)
+                    output.flush()
                 except Exception:
                     pass
                 text = str(chunk)
@@ -3232,16 +3378,16 @@ def _tee_agent_stderr(pipe, ring: AgentStderrRing) -> None:
             pass
 
 
-def start_agent_stderr_capture(pipe) -> tuple[AgentStderrRing, threading.Thread]:
-    ring = AgentStderrRing()
-    thread = threading.Thread(target=_tee_agent_stderr, args=(pipe, ring), daemon=True)
+def start_agent_stderr_capture(pipe, on_line=None, output=None) -> tuple[AgentStderrRing, threading.Thread]:
+    ring = AgentStderrRing(on_line=on_line)
+    thread = threading.Thread(target=_tee_agent_stderr, args=(pipe, ring, output), daemon=True)
     thread.start()
     return ring, thread
 
 
 def agent_stderr_evidence(text: str) -> str:
     """Last 5 nonempty lines, 500 chars, secrets redacted (FR #7671)."""
-    lines = [ln.strip() for ln in str(text or "").splitlines() if ln.strip()]
+    lines = [ln.strip() for ln in _scrub(str(text or "")).splitlines() if ln.strip()]
     tail = "\n".join(lines[-5:])
     if len(tail) > 500:
         tail = tail[-500:]
@@ -3250,7 +3396,7 @@ def agent_stderr_evidence(text: str) -> str:
 
         return crash_report.redact(tail)
     except Exception:
-        return tail
+        return "(evidence unavailable)"
 
 
 def agent_stderr_dedupe_line(text: str) -> str:
@@ -3264,7 +3410,7 @@ def agent_stderr_dedupe_line(text: str) -> str:
 
 def report_agent_cli_nonzero_exit(
     *,
-    exit_code: int,
+    exit_code: int | None,
     job_key: str = "",
     machine: str = "",
     nick: str = "",
@@ -3275,6 +3421,7 @@ def report_agent_cli_nonzero_exit(
     parent_cmd: str = "",
     log: Optional[Callable[[str], None]] = None,
     filer_post: Optional[Callable[..., dict]] = None,
+    reason: str = "",
 ) -> dict:
     """FR #7593 / #7671: agent CLI nonzero exit, with the last stderr lines. No secrets."""
     if filer_post is None and os.environ.get("PYTEST_CURRENT_TEST"):
@@ -3287,31 +3434,43 @@ def report_agent_cli_nonzero_exit(
     except (TypeError, ValueError):
         u = normalize_agent_exit_code(raw_code)
     label = format_agent_exit_code_label(u if raw_code is None else raw_code)
-    job = " ".join(str(job_key or "").split())[:120] or "(none)"
+    if exit_code is None:
+        label = "unknown (process still running)"
+    job = " ".join(_scrub(str(job_key or "")).split())[:120] or "(none)"
     try:
         pid_s = str(int(agent_pid or 0))
     except (TypeError, ValueError):
         pid_s = "0"
     evidence = agent_stderr_evidence(stderr_tail)
-    parent = " ".join(str(parent_cmd or "").split())[:240]
+    parent = " ".join(_scrub(str(parent_cmd or "")).split())[:240]
     # FR #7724: a silent 0xffffffff used to skip intake (FR #7681). That hid seat deaths
     # such as a Flash nick disappearing with no issue. Still classify recycle vs kill.
     silent = u == 0xFFFFFFFF and not str(evidence or "").strip()
     parent_l = parent.lower()
-    if "recycleseat" in parent_l or "bobtrayrecycleseat" in parent_l:
+    if u == CONSOLE_CLOSE_EXIT:
+        # FR #7881: OpenCode 3221225786 is the console closing, not a CLI bug.
+        end = "console-close"
+    elif "recycleseat" in parent_l or "bobtrayrecycleseat" in parent_l:
         end = "recycle"
     elif silent:
         end = "external-kill"
     else:
         end = "cli-failure"
     err_key = agent_stderr_dedupe_line(evidence)
-    if silent or end == "recycle":
+    if silent or end in ("recycle", "console-close"):
         key = f"seat-silent-end|{mid}|{nick_s}|{end}"[:128]
-        title = "bug: seat ended with no CLI stderr (FR #7724)"
-        what = (
-            "What: the seat process ended and there was no CLI stderr. "
-            "This records the nick, exit code, and whether it looks like a recycle or an external kill.\n"
-        )
+        if end == "console-close":
+            title = "bug: agent console closed (FR #7881)"
+            what = (
+                "What: the agent console was closed (STATUS_CONTROL_C_EXIT). "
+                "This is not a CLI crash. Accepted jobs are still GIVEUP'd. No fake DONE.\n"
+            )
+        else:
+            title = "bug: seat ended with no CLI stderr (FR #7724)"
+            what = (
+                "What: the seat process ended and there was no CLI stderr. "
+                "This records the nick, exit code, and whether it looks like a recycle or an external kill.\n"
+            )
     else:
         # Same crash on the same seat is one issue, whatever the job was (FR #7671).
         key = f"agent-cli-nonzero-exit|{mid}|{u}|{err_key}"[:128]
@@ -3320,6 +3479,12 @@ def report_agent_cli_nonzero_exit(
             "What: the agent CLI process exited non-zero; the worker wrapper reported it and "
             "recycled the seat (FR #7593).\n"
         )
+    if reason:
+        reason = _scrub(reason)[:160]
+        what += f"Reason: {reason}\n"
+        if reason != "agent-exited":
+            title = "bug: seat stopped making progress"
+            key = f"seat-no-progress|{mid}|{nick_s}|{agent_stderr_dedupe_line(reason)}"[:128]
     body = (
         what
         + f"Where: bob-worker kind={k} machine={mid} nick={nick_s} agent_pid={pid_s}\n"
@@ -3441,6 +3606,133 @@ def skill_dag_mcp_argv(
     return argv
 
 
+# FR #7908: worker health-checks skill-dag before handing a job to the model.
+SKILL_DAG_PREFLIGHT_TIMEOUT_S = 20.0
+JOB_SKILL_BY_TYPE = {
+    "FR": "bobiverse-bob-job-fr",
+    "MRB": "bobiverse-bob-job-mrb",
+    "UAT": "bobiverse-bob-job-uat",
+    "FIX": "bobiverse-bob-job-fr",
+}
+
+
+def skill_dag_job_skill_id(job_key: str) -> str:
+    """Job line ``FR owner/repo#N`` -> the job skill that must load (FR #7908)."""
+    m = re.match(r"(?i)^\s*(FR|MRB|UAT|FIX)\b", str(job_key or ""))
+    if not m:
+        return "bobiverse-bob-job-fr"
+    return JOB_SKILL_BY_TYPE.get(m.group(1).upper(), "bobiverse-bob-job-fr")
+
+
+def skill_dag_job_skill_md(worker_cwd: str, job_key: str = "") -> Path | None:
+    """First ``<root>/<job-skill>/SKILL.md`` the seat can read, or None."""
+    sid = skill_dag_job_skill_id(job_key)
+    for root in skill_dag_mcp_skill_roots(worker_cwd):
+        try:
+            cand = Path(root) / sid / "SKILL.md"
+            if cand.is_file():
+                return cand
+        except OSError:
+            continue
+    return None
+
+
+def probe_skill_dag_mcp_cli(
+    worker_cwd: str,
+    *,
+    job_worktree: str | Path | None = None,
+    job_key: str = "",
+    runner: Optional[Callable[..., object]] = None,
+    timeout_s: float = SKILL_DAG_PREFLIGHT_TIMEOUT_S,
+) -> dict:
+    """Run the seat's skill-dag one-shot and load the job skill (FR #7908).
+
+    Same script + roots + ``--job-worktree`` OpenCode launches. ``get_skill`` is the
+    path that used to kill the stdio server on non-code-page glyphs; a status probe
+    is the fallback when no job SKILL.md exists.
+    """
+    try:
+        script = skill_dag_mcp_script_path(worker_cwd)
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "reason": f"script-{type(exc).__name__}"}
+    if not script.is_file():
+        return {"ok": False, "reason": "script-missing"}
+    argv = ["python", script.as_posix()]
+    for root in skill_dag_mcp_skill_roots(worker_cwd):
+        argv.extend(["--root", Path(root).as_posix()])
+    if job_worktree:
+        try:
+            wt = Path(job_worktree)
+            if wt.is_dir():
+                argv.extend(["--job-worktree", wt.resolve().as_posix()])
+        except OSError:
+            pass
+    skill = skill_dag_job_skill_md(worker_cwd, job_key)
+    if skill is not None:
+        argv.extend(["--once", "get_skill", "--path", str(skill)])
+    else:
+        argv.extend(["--once", "status"])
+    run = runner or subprocess.run
+    try:
+        proc = run(
+            argv,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=timeout_s,
+        )
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "reason": f"run-{type(exc).__name__}"}
+    rc_raw = getattr(proc, "returncode", 1)
+    rc = 1 if rc_raw is None else int(rc_raw)
+    out = str(getattr(proc, "stdout", "") or "").strip()
+    err = str(getattr(proc, "stderr", "") or "").strip()
+    if rc != 0:
+        return {"ok": False, "reason": f"exit-{rc}", "stderr": err[-500:]}
+    try:
+        data = json.loads(out.splitlines()[-1]) if out else {}
+    except (json.JSONDecodeError, IndexError):
+        return {"ok": False, "reason": "bad-json", "stdout": out[-300:]}
+    if not isinstance(data, dict):
+        return {"ok": False, "reason": "bad-json", "stdout": out[-300:]}
+    if skill is not None:
+        ok = bool(data.get("ok"))
+    else:
+        ok = "node_count" in data
+    return {"ok": ok, "reason": "" if ok else str(data.get("reason") or "unhealthy")}
+
+
+def skill_dag_preflight(
+    probe: Callable[[], object],
+    restart: Callable[[], object],
+) -> dict:
+    """FR #7908: probe, restart once, probe again; give up cleanly with skill_dag_down."""
+    try:
+        first = bool(probe())
+    except Exception:  # noqa: BLE001
+        first = False
+    if first:
+        return {"action": "continue", "restarted": False, "reason": ""}
+    try:
+        restart()
+    except Exception:  # noqa: BLE001 - a failed restart is just still down
+        pass
+    try:
+        second = bool(probe())
+    except Exception:  # noqa: BLE001
+        second = False
+    if second:
+        return {"action": "continue", "restarted": True, "reason": ""}
+    return {"action": "giveup", "restarted": True, "reason": "skill_dag_down"}
+
+
+def skill_dag_down_giveup_line(job_key: str) -> str:
+    """Shop wire ``GIVEUP <TYPE> owner/repo#N skill_dag_down`` (FR #7908)."""
+    key = " ".join(str(job_key or "").split()).strip()
+    return f"GIVEUP {key} skill_dag_down" if key else "GIVEUP job skill_dag_down"
+
+
 def opencode_skill_read_permission_block(worker_cwd: str) -> dict:
     """Read-only ``external_directory`` allow for skill-dag roots only (FR #7196)."""
     allow: dict[str, str] = {}
@@ -3452,6 +3744,33 @@ def opencode_skill_read_permission_block(worker_cwd: str) -> dict:
     return {"external_directory": allow, "edit": edit}
 
 
+def opencode_job_worktree_read_patterns(worktree: str | Path) -> list[str]:
+    """FR #7911: the job tree and its ``.bob`` folder are not external."""
+    root = Path(worktree)
+    try:
+        root = root.resolve()
+    except OSError:
+        pass
+    patterns: list[str] = []
+    seen: set[str] = set()
+
+    def add(value: str) -> None:
+        text = str(value or "").strip()
+        if not text or text in seen:
+            return
+        seen.add(text)
+        patterns.append(text)
+
+    for folder in (root, root / ".bob"):
+        for base in (str(folder).rstrip("\\/"), folder.as_posix().rstrip("/")):
+            add(base)
+            add(base + "/**")
+            add(base + "\\**")
+            add(base + "/*")
+            add(base + "\\*")
+    return patterns
+
+
 def opencode_skill_dag_mcp_document(
     worker_cwd: str,
     *,
@@ -3459,6 +3778,10 @@ def opencode_skill_dag_mcp_document(
 ) -> dict:
     """Project ``opencode.json`` fragment with local skill-dag MCP (FR #6898 / #7196)."""
     perm = opencode_skill_read_permission_block(worker_cwd)
+    if job_worktree:
+        allow = perm.setdefault("external_directory", {})
+        for key in opencode_job_worktree_read_patterns(job_worktree):
+            allow[key] = "allow"
     return {
         "$schema": "https://opencode.ai/config.json",
         "mcp": {
@@ -3633,7 +3956,16 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             mcp_path = str(Path(cwd) / OPENCODE_SKILL_DAG_MCP_RELPATH)
             files[mcp_path] = json.dumps(opencode_skill_dag_mcp_document(cwd), indent=2) + "\n"
         helper_path = _resolve_opencode_fuel_helper_path(cwd=cwd, install_root=install_root)
-        guard_path = Path(__file__).resolve().parent / "opencode_turn_guard.py"
+        guard_resolved = _resolve_installed_worker_script(
+            "opencode_turn_guard.py", cwd=cwd, install_root=install_root
+        )
+        guard_path = guard_resolved or (Path(__file__).resolve().parent / "opencode_turn_guard.py")
+        wedge_resolved = _resolve_installed_worker_script(
+            "opencode_tool_wedge.py", cwd=cwd, install_root=install_root
+        )
+        if wedge_resolved is None:
+            _report_missing_worker_script("opencode_tool_wedge.py")
+        wedge_text = str(wedge_resolved or "")
         # FR #6157: each opencode run emits turn_started / turn_ended into opencode-turns.jsonl
         # so BoredEmitter gets harvest-hold / done-miss / startup-ready parity with Grok.
         # FR #6240: no external_directory allow. Each injected assign carries its own
@@ -3662,7 +3994,7 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             r"$pauseStateDir = Join-Path $env:LOCALAPPDATA 'Bobiverse\worker\state'",
             f"$pyHelper = '{esc(str(helper_path))}'",
             f"$guardPy = '{esc(str(guard_path))}'",
-            f"$wedgePy = '{esc(str(Path(__file__).resolve().with_name('opencode_tool_wedge.py')))}'",
+            f"$wedgePy = '{esc(wedge_text)}'",
             r"$script:ocDagRetries = 1",
             r"$script:ocWedgeTicks = 0",
             r"$script:ocWedgeAction = ''",
@@ -3681,6 +4013,27 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             r"    $g = 'GIVEUP ' + $JobKey + ' ' + $Reason",
             r"    if ($env:BOB_OUTBOX) { Add-Content -LiteralPath $env:BOB_OUTBOX -Value $g -ErrorAction SilentlyContinue }",
             r"    Write-Output $g",
+            r"}",
+            # FR #7899: ReadAllText throws when OpenCode still holds bob-oc-out exclusive.
+            r"function Read-OpencodeCapture([string]$Path) {",
+            r"    if (-not $Path -or -not (Test-Path -LiteralPath $Path)) { return '' }",
+            r"    try {",
+            r"        $fs = New-Object System.IO.FileStream($Path, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)",
+            r"        try {",
+            r"            $reader = New-Object System.IO.StreamReader($fs)",
+            r"            try { return $reader.ReadToEnd() } finally { $reader.Dispose() }",
+            r"        } finally { $fs.Dispose() }",
+            r"    } catch {",
+            r"        if (-not $script:ocCaptureLogged) {",
+            r"            $script:ocCaptureLogged = $true",
+            r"            $capMsg = 'opencode-capture: read failed once'",
+            r"            Write-Output $capMsg",
+            r"            $pyCap = (Get-Command python.exe -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source)",
+            r"            if (-not $pyCap) { $pyCap = 'python.exe' }",
+            r"            try { & $pyCap $guardPy capture-failed --message $capMsg 2>$null | Out-Null } catch { }",
+            r"        }",
+            r"        return ''",
+            r"    }",
             r"}",
             r"function Write-OpencodeJobNack([string]$JobKey, [string]$Reason) {",
             r"    if (-not $JobKey) { return }",
@@ -3808,6 +4161,8 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             r"                if (-not $pyCeil) { $pyCeil = 'python.exe' }",
             r"                $mach = if ($env:BOB_MACHINE_ID) { $env:BOB_MACHINE_ID } else { $env:COMPUTERNAME }",
             r"                try { & $pyCeil $guardPy ceiling --machine $mach --nick $env:BOB_NICK --job $jobKey --elapsed-ms ([int]$runMs) --reason $killReason 2>$null | Out-Null } catch { }",
+            # FR #7899: a ceiling kill must reach the outbox or the chair re-offers a silent job.
+            r"                if ($jobKey) { Write-OpencodeJobGiveup $jobKey $killReason }",
             r"                break",
             r"            }",
             # FR #7739: every 50 x 100ms (5s, under 60s) ask if the job was closed, given up, or reassigned.
@@ -3837,7 +4192,7 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             r"            if (($script:ocWedgeTicks % 10) -eq 0 -and $outFile -and (Test-Path -LiteralPath $outFile) -and $wedgePy) {",
             r"                $py = (Get-Command python.exe -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source)",
             r"                if (-not $py) { $py = 'python.exe' }",
-            r"                $wedgeLine = & $py $wedgePy peek $outFile $script:ocDagRetries 2>$null",
+            r"                try { $wedgeLine = & $py $wedgePy peek $outFile $script:ocDagRetries 2>$null } catch { $wedgeLine = '' }",
             "                if ($wedgeLine -match 'report-and-giveup' -or $wedgeLine -match '\"action\": \"giveup\"') {",
             r"                    $script:ocWedgeAction = 'giveup'",
             r"                    try { & taskkill /T /F /PID $proc.Id 2>$null | Out-Null } catch { }",
@@ -3854,8 +4209,8 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             r"            Start-Sleep -Milliseconds 100",
             r"        }",
             r"        try { $proc.WaitForExit(2000) | Out-Null } catch { }",
-            r"        if (Test-Path -LiteralPath $outFile) { $stdout = [IO.File]::ReadAllText($outFile) } else { $stdout = '' }",
-            r"        if (Test-Path -LiteralPath $errFile) { $stderr = [IO.File]::ReadAllText($errFile) } else { $stderr = '' }",
+            r"        $stdout = Read-OpencodeCapture $outFile",
+            r"        $stderr = Read-OpencodeCapture $errFile",
             r"        $exitCode = if ($proc.HasExited) { $proc.ExitCode } else { -1 }",
             r"    } catch {",
             r"        $stdout = ''",
@@ -3939,14 +4294,14 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             r"    $dir = $rest.Substring($keyEnd + 1, $dirEnd - $keyEnd - 1)",
             r"    $line = $rest.Substring($dirEnd + 1)",
             r"    if (-not $dir -or -not $line.StartsWith('FROM ')) { return $null }",
-            r"    if ($key -notmatch '^(?i)(FR|MRB|UAT) \S+#\d+$') { return $null }",
+            r"    if ($key -notmatch '^(?i)(FR|MRB|UAT|FIX) \S+#\d+$') { return $null }",
             r"    return @{ key = $key; dir = $dir; line = $line }",
             r"}",
             r"function Get-OpencodeFromJobKeys([string]$raw) {",
             r"    if ($raw -notmatch '^(?i)FROM\s+\S+\s+\S+\s+(.*)$') { return @() }",
             r"    $body = $Matches[1]",
             r"    $keys = @()",
-            r"    foreach ($m in [regex]::Matches($body, '(?i)(FR|MRB|UAT)\s+(\S+#\d+)')) {",
+            r"    foreach ($m in [regex]::Matches($body, '(?i)(FR|MRB|UAT|FIX)\s+(\S+#\d+)')) {",
             r"        $keys += ($m.Groups[1].Value.ToUpper() + ' ' + $m.Groups[2].Value)",
             r"    }",
             r"    return $keys",
@@ -3960,7 +4315,7 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             r"    if ($raw.StartsWith('@@BOBJOB1')) {",
             r"        $key = ''",
             r"        $tail = $raw.Substring(9).TrimStart('| ')",
-            r"        $km = [regex]::Match($tail, '^(?i)((?:FR|MRB|UAT)\s+\S+#\d+)')",
+            r"        $km = [regex]::Match($tail, '^(?i)((?:FR|MRB|UAT|FIX)\s+\S+#\d+)')",
             r"        if ($km.Success) {",
             r"            $rawKey = $km.Groups[1].Value",
             r"            $spaceAt = $rawKey.IndexOf(' ')",
@@ -3989,6 +4344,7 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
         raise ValueError(f"unknown agent kind {kind!r}")
     assert_fresh(argv, {k: v for k, v in files.items() if k.endswith(".ps1")}, allow_resume=bool(resume_session_id))
     return LaunchSpec(
+        kind=kind,
         argv=argv,
         cwd=cwd,
         session_id=sid,
@@ -3998,17 +4354,19 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
         write_opencode_skill_dag_mcp=(str(kind).strip().lower() == "opencode" and str(mode).strip().lower() == "agent"),
         skill_dag_mcp_args=mcp_args,
         skill_dag_job_worktree=job_wt,
+        inherit_console=(kind == "grok"),
     )
 
 
 class ProcHandle:
     """Thin wrapper so tests can fake processes."""
 
-    def __init__(self, popen: subprocess.Popen, stderr_ring: AgentStderrRing | None = None, stderr_thread: threading.Thread | None = None):
+    def __init__(self, popen: subprocess.Popen, stderr_ring: AgentStderrRing | None = None, stderr_thread: threading.Thread | None = None, stdout_thread=None):
         self._p = popen
         self.pid = popen.pid
         self._stderr_ring = stderr_ring
         self._stderr_thread = stderr_thread
+        self._stdout_thread = stdout_thread
 
     def poll(self):
         return self._p.poll()
@@ -4017,6 +4375,8 @@ class ProcHandle:
         code = self._p.wait(timeout)
         if self._stderr_thread is not None:
             self._stderr_thread.join(timeout=2)
+        if self._stdout_thread is not None:
+            self._stdout_thread.join(timeout=2)
         return code
 
     def stderr_tail(self) -> str:
@@ -4035,20 +4395,29 @@ def default_spawn(spec: LaunchSpec, env: dict) -> ProcHandle:
     # t771u: ONE window. The agent INHERITS this exe's console (no CREATE_NEW_CONSOLE, no second console); a kill-on-close job object
     # makes the agent die with us even if we are killed. "New agent every time" is about the SESSION, not the window: the exe's
     # window IS the agent's window and a new click opens a new exe + window.
-    # FR #7671: tee stderr so the console still shows it and the exit report can quote it.
-    # stdout stays inherited (the agent TUI).
+    # FR #7916: Grok renders on stderr only when it is a console. A tee breaks TTY
+    # detection; use Grok's per-seat logs instead. Other agents keep FR #7671 capture.
+    # OpenCode's headless wrapper can be teed; interactive stdout stays inherited.
+    capture = {} if spec.kind == "grok" or spec.inherit_console else {"stderr": subprocess.PIPE}
+    if spec.kind == "opencode":
+        capture["stdout"] = subprocess.PIPE
     popen = subprocess.Popen(
-        spec.argv, cwd=spec.cwd, env=env, creationflags=0, close_fds=True, stderr=subprocess.PIPE,
+        spec.argv, cwd=spec.cwd, env=env, creationflags=0, close_fds=True, **capture,
     )
     ring = None
     thread = None
     if getattr(popen, "stderr", None) is not None:
-        ring, thread = start_agent_stderr_capture(popen.stderr)
+        callback = (lambda text: spec.session_log.write("stderr", text)) if spec.session_log else None
+        ring, thread = start_agent_stderr_capture(popen.stderr, on_line=callback)
+    stdout_thread = None
+    if spec.kind == "opencode" and getattr(popen, "stdout", None) is not None:
+        callback = (lambda text: spec.session_log.write("stdout", text)) if spec.session_log else None
+        _, stdout_thread = start_agent_stderr_capture(popen.stdout, on_line=callback, output=sys.__stdout__)
     try:
         owned_job().assign(popen)
     except Exception:
         pass
-    return ProcHandle(popen, ring, thread)
+    return ProcHandle(popen, ring, thread, stdout_thread)
 
 
 def kill_tree(pid: int, run: Callable = subprocess.run) -> bool:
@@ -8255,12 +8624,44 @@ def ack_on_receipt_line(line: str) -> Optional[str]:
     return f"ACK {key}"
 
 
-def opencode_skips_hostile_assign(kind: str, line: str) -> bool:
-    """FR #6134: OpenCode seats must not take MRB/UAT assigns (hostile / repo UAT)."""
+def opencode_skips_hostile_assign(kind: str, line: str, start_model: str = "") -> bool:
+    """FR #6134: free OpenCode seats must not take MRB/UAT.
+
+    FR #7888: a paid start_model (OpenCode Go / pro) accepts the assign.
+    Missing or ``$model`` still NACKs (fail safe).
+    """
     if (kind or "").strip().lower() != "opencode":
         return False
     key = (assign_job_key(line) or "").upper()
-    return key.startswith("MRB ") or key.startswith("UAT ")
+    if not (key.startswith("MRB ") or key.startswith("UAT ")):
+        return False
+    try:
+        import worker_start_model as wsm
+
+        if wsm.start_model_review_class(start_model) == "paid":
+            return False
+    except Exception:
+        pass
+    return True
+
+
+def launched_hostile_start_model(kind: str, child_env: Optional[dict] = None) -> str:
+    """FR #7888: the model the seat launched, not the configured hello id.
+
+    ``resolve_seat_hello_model`` returns ``workerStartModels`` first. A paid
+    OpenCode Go launch with a free configured id must not NACK MRB.
+    Missing actual fails safe to the hello model (often free or empty).
+    """
+    try:
+        import worker_start_model as wsm
+
+        env = child_env or {}
+        actual = wsm.concrete_model_id(env.get(wsm.ENV_ACTUAL_MODEL))
+        if actual:
+            return actual
+    except Exception:
+        pass
+    return resolve_seat_hello_model(kind)
 
 
 def opencode_hostile_nack_line(line: str) -> Optional[str]:
@@ -8302,6 +8703,7 @@ def post_digest_seat_kind(
     sleep: Optional[Callable[[float], None]] = None,
     assignable: bool | None = None,
     stale_build: dict | None = None,
+    last_exit: dict | None = None,
 ) -> bool:
     """POST digest worker kind so the chair can skip OpenCode for MRB/UAT (FR #6134).
 
@@ -8376,6 +8778,10 @@ def post_digest_seat_kind(
             "installed": str(stale_build.get("installed") or ""),
             "since": stale_build.get("since"),
         }
+    if isinstance(last_exit, dict):
+        from bobreport import coerce_last_exit
+
+        payload["last_exit"] = coerce_last_exit(last_exit)
     post_kw: dict = {"log": log}
     if sleep is not None:
         post_kw["sleep"] = sleep
@@ -10860,10 +11266,19 @@ class Supervisor:
                  send_enter: Optional[Callable[[int], bool]] = None,
                  ask_user_watch: Optional["AskUserPendingWatch"] = None,
                  sessions_root: Optional[Path] = None,
-                 install_root: str | Path | None = None):
+                 install_root: str | Path | None = None,
+                 session_log_path: Path | None = None):
         self.kind, self.exe, self.cwd, self.machine, self.nick = kind, exe, cwd, machine, nick
         self.install_root = str(install_root) if install_root else None
         self.run_dir, self.irc, self.relay, self.log = Path(run_dir), irc, relay, log
+        self.session_log = SeatSessionLog(session_log_path or (self.run_dir / "session.log"))
+        self.last_exit: dict | None = None
+        self.publish_exit_digest = None
+        self._session_log_stop = threading.Event()
+        self._session_log_thread = None
+        self._session_screen = None
+        self._session_cursor = None
+        self._exit_recorded_pid = None
         self.secret = env_secret
         self.spawn, self.kill, self.probe, self.inject = spawn, kill, probe, inject
         self.detector = detector or HangDetector()
@@ -10952,7 +11367,13 @@ class Supervisor:
         )
         # FR #4180: refuse (NACK out-of-fuel) assigns while the seat is in out-of-fuel hold.
         relay.refuse_assign_while = lambda: bool(self.bored and self.bored.out_of_fuel)
-        relay.skips_hostile_assign = lambda line: opencode_skips_hostile_assign(self.kind, line)
+        relay.skips_hostile_assign = lambda line: opencode_skips_hostile_assign(
+            self.kind,
+            line,
+            start_model=launched_hostile_start_model(
+                self.kind, getattr(self, "last_child_env", None)
+            ),
+        )
         # FR #6240 / #6328: OpenCode-only. Classify on read thread; ensure off-thread.
         # Grok/Cursor must keep flood coalesce + multi-key ACK (callbacks stay None).
         if (self.kind or "").strip().lower() == "opencode":
@@ -10987,6 +11408,91 @@ class Supervisor:
         if th is not None and th.is_alive():
             th.join(timeout=2.0)
 
+    def _session_log_paths(self) -> list:
+        paths = []
+        if self.kind == "grok" and self.sessions:
+            directory = grok_session_dir(
+                self.cwd, self.sessions[-1], sessions_root=self.sessions_root, run_dir=self.run_dir
+            )
+            if directory is not None:
+                paths.extend(directory / name for name in ("events.jsonl", "messages.jsonl"))
+            paths.append(default_unified_log_path(run_dir=self.run_dir))
+        elif self.kind == "cursor" and self._session_cursor is not None:
+            directory = self._session_cursor._bind()
+            if directory is not None:
+                transcript = self._session_cursor._transcript_file(directory)
+                if transcript is not None:
+                    paths.append(transcript)
+        elif self.kind == "opencode":
+            paths.append(self.run_dir / "opencode-turns.jsonl")
+        return paths
+
+    def _collect_session_log(self, *, final: bool = False) -> None:
+        self.session_log.collect(self._session_log_paths(), final=final)
+        screen = read_console_screen_text(max_lines=32)
+        if screen and screen != self._session_screen:
+            self.session_log.write("console", screen)
+            self._session_screen = screen
+
+    def _stop_session_log(self) -> None:
+        self._session_log_stop.set()
+        thread = self._session_log_thread
+        if thread is not None and thread is not threading.current_thread():
+            thread.join(timeout=2)
+        self._session_log_thread = None
+
+    def _start_session_log(self) -> None:
+        self._session_log_stop = threading.Event()
+        stop = self._session_log_stop
+
+        def watch():
+            while not stop.wait(0.5):
+                try:
+                    self._collect_session_log()
+                except Exception:
+                    self.log("session-log: snapshot unavailable")
+
+        self._session_log_thread = threading.Thread(target=watch, name="seat-session-log", daemon=True)
+        self._session_log_thread.start()
+
+    def _record_exit(self, proc, reason: str, code=None, *, report: bool = False) -> None:
+        with self._lock:
+            if self._exit_recorded_pid == proc.pid:
+                return
+            self._exit_recorded_pid = proc.pid
+        self._stop_session_log()
+        with contextlib.suppress(Exception):
+            self._collect_session_log(final=True)
+        with contextlib.suppress(Exception):
+            self.session_log.write("stderr-tail", proc.stderr_tail())
+        self.last_exit = {
+            "at": _dt.datetime.now(_dt.timezone.utc).isoformat(),
+            "reason": _scrub(reason)[:160],
+            "exit_code": code,
+            "pid": proc.pid,
+            "output": self.session_log.tail()[-8192:],
+        }
+        self._persist_last_exit()
+        if report:
+            report_agent_cli_nonzero_exit(
+                exit_code=normalize_agent_exit_code(code) if code is not None else None,
+                raw_code=code, reason=reason,
+                machine=self.machine, nick=self.nick, kind=self.kind, agent_pid=proc.pid,
+                stderr_tail=self.last_exit["output"], log=self.log,
+            )
+
+    def _persist_last_exit(self) -> None:
+        text = json.dumps(self.last_exit)
+        self.session_log.write("last_exit", text)
+        try:
+            self.run_dir.mkdir(parents=True, exist_ok=True)
+            (self.run_dir / "last-exit.json").write_text(text + "\n", encoding="utf-8")
+        except OSError:
+            pass
+        self.log(f"agent: last_exit reason={self.last_exit['reason']} exit_code={self.last_exit['exit_code']} session_log={self.session_log.path}")
+        if self.publish_exit_digest is not None:
+            with contextlib.suppress(Exception):
+                self.publish_exit_digest(self.last_exit)
     def _stop_fuel_watcher(self) -> None:
         self._fuel_watch_stop.set()
         th = self._fuel_watch_thread
@@ -11876,6 +12382,15 @@ class Supervisor:
                 install_root=self.install_root,
             )
             spec = child["spec"]
+            self._stop_session_log()
+            self.session_log.reset_sources()
+            self._session_screen = None
+            self._exit_recorded_pid = None
+            self._session_cursor = CursorTurnWatcher(since_wall=time.time()) if self.kind == "cursor" else None
+            spec.session_log = self.session_log
+            self.session_log.write("start", f"kind={self.kind} session={spec.session_id}")
+            self.session_log.write("console-start", json.dumps(console_startup_state()))
+            self.session_log.write("prompt", self._prompt() + (" " + note if note else ""))
             # FR #2380 / #2413 / #2669: seat env + path normalize + scrub agent-host vars.
             env = prepare_seat_child_env(self.base_env, child["env"])
             self.last_child_env = dict(env)
@@ -11889,6 +12404,7 @@ class Supervisor:
             self.proc = proc
             self._owned.add(proc.pid)
             self.sessions.append(spec.session_id)
+            self._start_session_log()
             self._agent_started_at = self.clock()
             # FR #1643 / MRB #1658: snapshot create-parent now; after wait() the agent PID is usually gone from Toolhelp.
             try:
@@ -11921,6 +12437,7 @@ class Supervisor:
             self._start_fuel_watcher(int(proc.pid or 0))
             self._start_prompt_watcher(proc)
             self._start_grok_signin_guard(proc)
+            self._start_grok_blank_tui_guard(proc)
             self._arm_ready(proc)
             threading.Thread(target=self._wait_exit, args=(proc,), name="agent-wait", daemon=True).start()
             return True
@@ -12265,6 +12782,41 @@ class Supervisor:
 
         threading.Thread(target=_run, name="grok-signin-guard", daemon=True).start()
 
+    def _start_grok_blank_tui_guard(self, proc) -> None:
+        """FR #7868: report a black Grok console after 120s. Do not kill or recycle."""
+        if os.name != "nt" or (self.kind or "").strip().lower() != "grok" or not grok_blank_tui_watch_enabled():
+            return
+
+        def _report() -> None:
+            import runtime_failure
+
+            runtime_failure.report_message(
+                "bob-worker",
+                "Grok console still blank after 120s (no TUI chrome). Same-kind recycle is not automatic.",
+                site="grok-blank-tui",
+            )
+
+        guard = GrokBlankTuiGuard(
+            read_fn=read_console_screen_text if os.name == "nt" else (lambda: ""),
+            window_s=GROK_BLANK_TUI_WINDOW_S,
+            clock=time.monotonic,
+            report=_report,
+            log=self.log,
+        )
+
+        def _run() -> None:
+            while not self._shutting and self.proc is proc and proc.poll() is None:
+                try:
+                    if guard.tick():
+                        return
+                    if guard.rendered:
+                        return
+                except Exception:
+                    return
+                time.sleep(5.0)
+
+        threading.Thread(target=_run, name="grok-blank-tui", daemon=True).start()
+
     def _inject_recovery(self) -> "InjectRecovery":
         """FR #4115: lazily build the re-paste / NACK recovery for lost assign pastes."""
         rec = getattr(self, "_recovery", None)
@@ -12339,6 +12891,51 @@ class Supervisor:
         if kind == "cursor":
             cursor = vision
         return bound, cursor, vision
+
+    def _skill_dag_preflight_for_opencode(
+        self, job_worktree: str | Path | None, job_key: str = ""
+    ) -> bool:
+        """FR #7908: probe skill-dag before the job; restart once; else GIVEUP skill_dag_down."""
+        if (self.kind or "").strip().lower() != "opencode":
+            return True
+        if (os.environ.get("BOB_SKIP_SKILL_DAG_PREFLIGHT") or "").strip() == "1":
+            return True
+        if os.environ.get("PYTEST_CURRENT_TEST") and (
+            os.environ.get("BOB_SKILL_DAG_PREFLIGHT_TEST") or ""
+        ).strip() != "1":
+            return True
+        cwd = str(getattr(self, "cwd", "") or "")
+        if not cwd:
+            return True
+
+        def probe() -> bool:
+            return bool(
+                probe_skill_dag_mcp_cli(
+                    cwd, job_worktree=job_worktree, job_key=job_key
+                ).get("ok")
+            )
+
+        def restart() -> None:
+            agent_pid = None
+            try:
+                proc = getattr(self, "proc", None)
+                if proc is not None and getattr(proc, "pid", None):
+                    agent_pid = int(proc.pid)
+            except (TypeError, ValueError):
+                agent_pid = None
+            restart_skill_dag_mcp_stdio_children(
+                agent_pid, [cwd, job_worktree], log=self.log
+            )
+
+        decision = skill_dag_preflight(probe, restart)
+        if decision.get("action") == "giveup":
+            self.log(
+                f"skill-dag preflight: {decision.get('reason')} job={job_key}"
+            )
+            return False
+        if decision.get("restarted"):
+            self.log("skill-dag preflight: restarted the MCP child once")
+        return True
 
     def _refresh_live_skill_dag_mcp(self, job_worktree: str | Path | None) -> None:
         bound, cursor, vision = self._live_skill_dag_mcp_paths()
@@ -12440,9 +13037,18 @@ class Supervisor:
                     )
                 except Exception as e:  # noqa: BLE001
                     self.log(f"opencode-ready: skill-dag mcp write skipped {type(e).__name__}")
+                # FR #7908: do not hand the job over when skill-dag is down.
+                if not self._skill_dag_preflight_for_opencode(
+                    prepared.get("path"), str(prepared.get("key") or "")
+                ):
+                    raise JobContextRefused(
+                        skill_dag_down_giveup_line(str(prepared.get("key") or ""))
+                    )
                 # FR #6333: tail in-worktree .bob/outbox.txt; stamp FROM footer with that path.
                 try:
                     ob = ensure_opencode_bob_outbox(prepared["path"])
+                    if not outbox_is_writable(ob):
+                        raise OSError("outbox not writable")
                     # FR #6378: always rewrite footer to *this* job worktree outbox
                     # (never leave a prior job's cached [outbox: ...] path).
                     wire = opencode_stamp_outbox_footer(wire, ob)
@@ -12454,8 +13060,23 @@ class Supervisor:
                         pass
                     if getattr(self, "relay", None) is not None:
                         self.relay.outbox_path = Path(ob)
+                except OSError as e:
+                    self.log(f"opencode-ready: outbox unreachable {type(e).__name__}")
+                    key = str(prepared.get("key") or "")
+                    try:
+                        import runtime_failure
+
+                        runtime_failure.report_message(
+                            "bob-worker",
+                            "job outbox unreachable key=%s" % key,
+                            site="outbox-unreachable",
+                        )
+                    except Exception:
+                        pass
+                    raise JobContextRefused("GIVEUP %s outbox_unreachable" % key) from e
                 except Exception as e:  # noqa: BLE001
                     self.log(f"opencode-ready: bob outbox setup failed {type(e).__name__}")
+        self.session_log.write("prompt", wire)
         if on_failed is None and assign_job_ref(line):
             on_failed = lambda l=line: self._inject_recovery().on_failed(l, attempt=1)
         kind_l = (self.kind or "").strip().lower()
@@ -12543,6 +13164,10 @@ class Supervisor:
             )
             started = getattr(self, "_agent_started_at", None)
         if expected or not current:
+            with self._lock:
+                if expected and self.last_exit and self.last_exit.get("pid") == proc.pid:
+                    self.last_exit = {**self.last_exit, "exit_code": code}
+                    self._persist_last_exit()
             return
         # FR #955: when the TUI dies seconds after an early inject, log the cause.
         age = (self.clock() - started) if started is not None else None
@@ -12577,6 +13202,7 @@ class Supervisor:
         )
         exit_u = normalize_agent_exit_code(code)
         exit_label = format_agent_exit_code_label(code)
+        self._record_exit(proc, "agent-exited" if exit_u == 0 else "agent-cli-nonzero-exit", code)
         if age is not None and age < max(30.0, float(self.startup_grace_s) + 15.0):
             self.log(
                 f"agent: early exit code={code} (u32={exit_label}) after {age:.1f}s "
@@ -12612,7 +13238,7 @@ class Supervisor:
                 nick=self.nick,
                 kind=self.kind,
                 agent_pid=int(getattr(proc, "pid", 0) or 0),
-                stderr_tail=tail,
+                stderr_tail=tail or (self.last_exit or {}).get("output", ""),
                 parent_cmd=parent_cmd,
                 log=self.log,
             )
@@ -12949,6 +13575,8 @@ class Supervisor:
         with self._lock:
             if self._shutting or self.proc is None:
                 return
+            if reason != "agent-cli-nonzero-exit":
+                self._record_exit(self.proc, reason, self.proc.poll(), report=True)
             now = self.clock()
             # FR #4180: restart counter is monotonic per incident. Only clear the list when the
             # last restart is older than the window (incident ended); never drop mid-incident
@@ -13113,6 +13741,9 @@ class Supervisor:
             if proc is not None:
                 self._expected_exit.add(proc.pid)
         self.log(f"worker: shutting down ({reason}) exit={code}")
+        if proc is not None and self._exit_recorded_pid != proc.pid:
+            self._record_exit(proc, reason, proc.poll(), report=code != EXIT_OK)
+        self._stop_session_log()
         self.stop.set()
         self._stop_turn_watcher()
         self._stop_fuel_watcher()
@@ -14048,6 +14679,11 @@ def run_agent(args, log: Log) -> int:
         env_secret=secret,
         startup_grace_s=grace,
         install_root=_install_root,
+        session_log_path=_state_root() / "logs" / f"seat-{nick}.log",
+    )
+    sup.publish_exit_digest = lambda last_exit: post_digest_seat_kind(
+        machine=machine, pid=pid, nick=nick, kind=kind, model=seat_model,
+        last_exit=last_exit, log=log,
     )
     # FR #2782: a hotpatched install exe must reach this seat at its next idle point.
     sup.stale_build_check = lambda: stale_build_reason(sys.executable, _install_root)
@@ -14065,6 +14701,7 @@ def run_agent(args, log: Log) -> int:
             start_effort=seat_effort,
             worker_build=build,
             stale_build=status,
+            last_exit=sup.last_exit,
             log=log,
         )
 
@@ -14123,6 +14760,7 @@ def run_agent(args, log: Log) -> int:
             state=None if grok_ok else "needs_sign_in",
             log=log,
             assignable=bool(getattr(sup, "_session_assignable", False)),
+            last_exit=sup.last_exit,
         )
     except Exception as e:
         log(f"worker: post-launch start_model digest failed {type(e).__name__}")

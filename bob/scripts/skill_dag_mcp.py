@@ -9,14 +9,85 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 PROTOCOL = "2024-11-05"
 DEFAULT_MAX_BYTES = 65536
+
+# FR #7908: test hook for the auto-report path (set to a callable in unit tests).
+_AUTO_REPORT: Callable[[BaseException], Any] | None = None
+
+
+def configure_stdio_utf8() -> None:
+    """FR #7908: JSON-RPC stdio is UTF-8 even when the pipe encoding is cp1252.
+
+    OpenCode launches this as a child with piped stdin/stdout; Python then uses
+    the locale code page (cp1252) for ``sys.stdout``. A SKILL.md body containing
+    ``>=``/``<->`` glyphs raised ``UnicodeEncodeError`` inside the write and the
+    process exited, which the seat saw as ``MCP error -32000: Connection closed``.
+    """
+    for name in ("stdin", "stdout", "stderr"):
+        stream = getattr(sys, name, None)
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is None:
+            continue
+        try:
+            if name == "stdin":
+                reconfigure(encoding="utf-8")
+            else:
+                reconfigure(encoding="utf-8", errors="backslashreplace")
+        except Exception:  # noqa: BLE001 - never fail startup on a stdio tweak
+            continue
+
+
+def _report_exception(exc: BaseException) -> None:
+    """FR #7908: log to stderr and the crash-report auto-report path. Never raises."""
+    try:
+        sys.stderr.write(f"skill-dag-mcp: {type(exc).__name__}: {exc}\n")
+        sys.stderr.flush()
+    except Exception:  # noqa: BLE001
+        pass
+    if _AUTO_REPORT is not None:
+        try:
+            _AUTO_REPORT(exc)
+        except Exception:  # noqa: BLE001
+            pass
+        return
+    if os.environ.get("PYTEST_CURRENT_TEST"):
+        return
+    try:
+        here = Path(__file__).resolve()
+        common = here.parent.parent.parent / "common" / "scripts"
+        if common.is_dir() and str(common) not in sys.path:
+            sys.path.insert(0, str(common))
+        import crash_report
+
+        crash_report.report_exception(
+            "skill-dag-mcp", type(exc), exc, exc.__traceback__
+        )
+    except Exception:  # noqa: BLE001 - reporting must never break the server
+        pass
+
+
+def write_json_line(outf, obj: Any) -> None:
+    """Write one JSON-RPC line, ASCII-safe on a non-UTF-8 pipe. Never crashes on encode.
+
+    FR #7908: prefer raw UTF-8 so skill bodies stay readable; fall back to
+    ``ensure_ascii`` so a code-page stdout cannot raise ``UnicodeEncodeError``.
+    """
+    try:
+        text = json.dumps(obj, ensure_ascii=False) + "\n"
+        outf.write(text)
+    except UnicodeError:
+        outf.write(json.dumps(obj, ensure_ascii=True) + "\n")
+    outf.flush()
+
+
 JOB_SEEDS = {
     "FR": "bobiverse-bob-job-fr",
     "MRB": "bobiverse-bob-job-mrb",
@@ -492,6 +563,8 @@ def serve_stdio(server: SkillDagServer, inf, outf) -> None:
         except Exception as exc:
             # FR #7705: one bad tools/call must not close stdio. Do not use
             # -32000: OpenCode treats that code as Connection closed and loops.
+            # FR #7908: log the exception to the auto-report path.
+            _report_exception(exc)
             if msg.get("id") is None:
                 continue
             reply = {
@@ -499,12 +572,29 @@ def serve_stdio(server: SkillDagServer, inf, outf) -> None:
                 "id": msg.get("id"),
                 "error": {"code": -32603, "message": type(exc).__name__},
             }
-        if reply is not None:
-            outf.write(json.dumps(reply, ensure_ascii=False) + "\n")
-            outf.flush()
+        if reply is None:
+            continue
+        try:
+            write_json_line(outf, reply)
+        except Exception as exc:  # noqa: BLE001 - never let one write kill stdio
+            _report_exception(exc)
+            if msg.get("id") is None:
+                continue
+            try:
+                write_json_line(
+                    outf,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": msg.get("id"),
+                        "error": {"code": -32603, "message": type(exc).__name__},
+                    },
+                )
+            except Exception:  # noqa: BLE001 - stdout is gone; nothing left to do
+                break
 
 
 def main(argv: list[str] | None = None) -> int:
+    configure_stdio_utf8()
     p = argparse.ArgumentParser(description="FR #6862/#6866 stdio skill-dag MCP")
     p.add_argument("--root", action="append", default=[], help="Allowlisted skill root (repeatable)")
     p.add_argument(
@@ -559,8 +649,7 @@ def main(argv: list[str] | None = None) -> int:
             result = server.get_skill(str(args.path or ""))
         else:
             result = server.status()
-        sys.stdout.write(json.dumps(result, ensure_ascii=False) + "\n")
-        sys.stdout.flush()
+        write_json_line(sys.stdout, result)
         return 0
     serve_stdio(server, sys.stdin, sys.stdout)
     return 0

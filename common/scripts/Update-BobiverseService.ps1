@@ -478,7 +478,14 @@ function Ensure-ServiceRunning {
     # FR #2563 / FR #5277: after any Apply abort/skip/timeout/ok leave the service Running.
     param([string]$Why = 'apply-abort')
     $svc = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
-    if (-not $svc) { Write-UpdLog "ensure-running-skip missing=$ServiceName why=$Why"; return }
+    if (-not $svc) {
+        Write-UpdLog "ensure-running-skip missing=$ServiceName why=$Why"
+        # FR #7877: a missing service after a failed start is restored from the updater backup.
+        if (Get-Command Restore-BobiverseServiceAfterFailedInstall -ErrorAction SilentlyContinue) {
+            [void](Restore-BobiverseServiceAfterFailedInstall -ServiceName $ServiceName -Product $Product -Why $Why -InstallRoot $InstallRoot)
+        }
+        return
+    }
     if ($svc.Status -eq 'Running') { Write-UpdLog "ensure-running already=$ServiceName why=$Why"; return }
     try {
         Start-Service -Name $ServiceName -ErrorAction Stop
@@ -877,9 +884,18 @@ function Invoke-Rollback {
         }
         Restore-AircUpdateState -BackupDir $BackupDir -AppParameters $AppParameters -What 'rollback'
         if (Get-Service -Name $ServiceName -ErrorAction SilentlyContinue) {
-            try { Start-Service -Name $ServiceName -ErrorAction Stop } catch { Write-UpdLog "rollback-warn start failed $($_.Exception.GetType().Name)" }
+            try { Start-Service -Name $ServiceName -ErrorAction Stop } catch {
+                $detail = $_.Exception.Message
+                if (Get-Command Format-BobiverseServiceStartError -ErrorAction SilentlyContinue) {
+                    $detail = Format-BobiverseServiceStartError -ServiceName $ServiceName -ErrorMessage $detail
+                }
+                Write-UpdLog "rollback-warn start failed $detail"
+            }
         }
         $ok = (Get-Service -Name $ServiceName -ErrorAction SilentlyContinue).Status -eq 'Running'
+        if (-not $ok -and (Get-Command Restore-BobiverseServiceAfterFailedInstall -ErrorAction SilentlyContinue)) {
+            $ok = [bool](Restore-BobiverseServiceAfterFailedInstall -ServiceName $ServiceName -Product $Product -Why $Why -InstallRoot $InstallRoot -BackupDir $BackupDir -StartError $detail)
+        }
         Write-UpdLog "rollback-done service_running=$ok"
     } catch {
         Write-UpdLog "rollback-error $($_.Exception.GetType().Name): $($_.Exception.Message)"

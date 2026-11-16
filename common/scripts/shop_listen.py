@@ -920,6 +920,8 @@ def handle_shop_worker_line(
         return out
 
     if parsed.verb == "ACK":
+        with contextlib.suppress(Exception):
+            gitclaim.reset_holder_bored(home, nick)
         st, job = accept_job_by_ref(
             home,
             nick=nick,
@@ -1050,6 +1052,8 @@ def handle_shop_worker_line(
         return out
 
     if parsed.verb == "DONE":
+        with contextlib.suppress(Exception):
+            gitclaim.reset_holder_bored(home, nick)
         st, job = complete_job_by_ref(
             home,
             nick=nick,

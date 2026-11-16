@@ -4679,6 +4679,8 @@ class Client:
                 gitclaim.record_last_bored(self.home, src, now)
             except Exception as exc:  # noqa: BLE001
                 info(f"WARN last-bored stamp {type(exc).__name__}")
+            with contextlib.suppress(Exception):
+                gitclaim.reset_holder_bored(self.home, src)
             return True
         if safe_shop_line_resets_bored_clock(body):
             try:
@@ -4689,6 +4691,7 @@ class Client:
         if shop and bobreport.normalize_channel(target).lower() == shop:
             try:
                 gitclaim.note_worker_activity(self.home, src, now)
+                gitclaim.reset_holder_bored(self.home, src)
             except Exception as exc:  # noqa: BLE001 - FR #6282 never kill reader
                 info(
                     f"WARN git-claim activity {type(exc).__name__}: {exc}"
@@ -4748,15 +4751,27 @@ class Client:
             info(f"INFO git-claim bored nak wait nick={src}")
             return
         if gate == "busy":
-            gitclaim.note_worker_activity(self.home, src, now)
-            # FR #4415: name seat + held/offered job so operators see why (not silent busy).
-            _why = ""
-            with contextlib.suppress(Exception):
-                _why = gitclaim.seat_open_job(self.home, src, now) or ""
-            _nak = gitclaim.format_bored_busy_nak(src, _why)
-            self._git_say(target, _nak)
-            info(f"INFO git-claim bored nak busy nick={src} why={_why or '-'}")
-            return
+            # FR #7912: the holder's own !bored streak releases the job. A NAK loop
+            # on that holder is not a steady state.
+            _released = ""
+            try:
+                _released = gitclaim.release_holder_on_bored(self.home, src, now) or ""
+            except Exception as exc:  # noqa: BLE001
+                info(f"WARN git-claim holder-bored {type(exc).__name__}")
+            if _released:
+                info(f"INFO git-claim holder-bored release nick={src} job={_released}")
+                with contextlib.suppress(Exception):
+                    self._workers().on_done(src, target)
+            else:
+                gitclaim.note_worker_activity(self.home, src, now)
+                # FR #4415: name seat + held/offered job so operators see why (not silent busy).
+                _why = ""
+                with contextlib.suppress(Exception):
+                    _why = gitclaim.seat_open_job(self.home, src, now) or ""
+                _nak = gitclaim.format_bored_busy_nak(src, _why)
+                self._git_say(target, _nak)
+                info(f"INFO git-claim bored nak busy nick={src} why={_why or '-'}")
+                return
         self._refresh_ledger()
         # #39 gap 2: focus-ordered, one wire line "<nick>: FR|MRB|UAT owner/repo#N url".
         # Acceptance is still the seat's ACK (FR #207).

@@ -8522,25 +8522,168 @@ def seat_skips_hostile_review(kind: str) -> bool:
     return (kind or "").strip().lower() == "opencode"
 
 
-def seat_is_free_fuel(home: Path, nick: str) -> bool:
-    """True for an OpenCode or other free-fuel seat (FR #7706).
+def _start_model_from_fields(fields: dict | None) -> str:
+    f = fields or {}
+    return str(f.get("start_model") or f.get("model") or "").strip()
 
-    A mislabeled digest kind does not make a free model eligible for MRB/UAT.
-    An unresolved ``$model`` template is also not a paid seat.
+
+def seat_started_on_free_model(home: Path, nick: str) -> bool:
+    """FR #7926: the model the seat started on, not the configured model.
+
+    ``opencode/deepseek-v4.1-flash-free`` is free. Grok and
+    ``opencode-go/deepseek-v4-pro`` are not. An empty or ``$model`` start
+    model is not free.
     """
-    if seat_skips_hostile_review(seat_agent_kind(home, nick)):
-        return True
     fields = _seat_digest_model_fields(home, nick)
-    model = str(fields.get("start_model") or fields.get("model") or "").strip()
-    if "$" in model:
-        return True
+    model = str(fields.get("start_model") or "").strip()
+    if not model or "$" in model:
+        return False
+    try:
+        import worker_start_model as wsm
+
+        if wsm.opencode_is_go_or_paid(model):
+            return False
+    except Exception:
+        low_paid = model.lower()
+        if low_paid.startswith("opencode-go/") or low_paid.endswith("-pro"):
+            return False
     low = model.lower()
-    if low.startswith("opencode/") and "opencode-go/" not in low:
+    if low.endswith("-free") or low.startswith("opencode/"):
+        return True
+    tier = str(fields.get("cost_tier") or "").strip().lower()
+    return tier in ("free", "opencode-free")
+
+
+def idle_free_model_nicks(home: Path, *, now: float | None = None, live: set[str] | None = None) -> set[str]:
+    """Idle seats whose start_model is a free model (FR #7926)."""
+    found: set[str] = set()
+    rows = []
+    try:
+        rows.extend(digest_idle_ready_seats(home, now=now, live=live))
+    except Exception:
+        rows = []
+    try:
+        for extra in list_idle_after_empty(home, now=now, live=live):
+            rows.append(extra)
+    except Exception:
+        pass
+    for ent in rows:
+        nick = str((ent or {}).get("nick") or "").strip()
+        if not nick or worker_working_on(home, nick):
+            continue
+        if seat_started_on_free_model(home, nick):
+            found.add((canonical_worker_nick(nick) or nick).strip().lower())
+    return found
+
+
+def _free_seat_can_take_row(
+    home: Path,
+    cand: dict,
+    nick: str,
+    now: float,
+    live: set[str],
+    ledger: dict | None,
+) -> bool:
+    """Local eligibility for reserving an FR/FIX for this free seat."""
+    if row_on_cooldown(cand, now, nick, live=live):
+        return False
+    if row_needs_human(cand, nick):
+        return False
+    if row_machine_mismatch(cand, nick) or row_gave_up_by(cand, nick, live=live):
+        return False
+    if row_blocked_for_machine(cand, nick):
+        return False
+    if not _seat_model_allows_row(home, nick, cand):
+        return False
+    try:
+        if ledger_blocks(ledger, cand, nick, live):
+            return False
+    except Exception:
+        return False
+    return True
+
+
+def fr_reserved_for_idle_free_seat(
+    home: Path,
+    cand: dict,
+    nick: str,
+    now: float,
+    live: set[str],
+    ledger: dict | None,
+    free_idle: set[str],
+) -> bool:
+    """True when a paid seat must leave this FR/FIX for an idle free seat."""
+    task = str((cand or {}).get("task") or "").upper()
+    if task not in ("FR", "FIX"):
+        return False
+    me = (canonical_worker_nick(nick) or nick or "").strip().lower()
+    if me and me in free_idle:
+        return False
+    if seat_started_on_free_model(home, nick):
+        return False
+    for other in free_idle:
+        if other == me:
+            continue
+        if _free_seat_can_take_row(home, cand, other, now, live, ledger):
+            return True
+    return False
+
+
+def seat_is_free_fuel(home: Path, nick: str) -> bool:
+    """True when this seat must stay on FR/FIX (FR #7706 / #7888).
+
+    Eligibility follows the launched ``start_model``, not ``configured_model``
+    and not a free published ``cost_tier``. A paid OpenCode Go / pro id is not
+    free fuel even when kind is ``opencode`` or the configured model is free.
+    Missing, empty, or ``$model`` on an OpenCode seat fails safe to free.
+    A free model id is free even when the digest kind says grok.
+    """
+    fields = _seat_digest_model_fields(home, nick)
+    model = _start_model_from_fields(fields)
+    try:
+        import worker_start_model as wsm
+
+        klass = wsm.start_model_review_class(model)
+    except Exception:
+        klass = "unknown" if (not model or "$" in model) else "other"
+    if klass == "paid":
+        return False
+    if klass == "free":
+        return True
+    if "$" in model or model.lower() == "unknown":
+        return True
+    if klass == "unknown" and seat_skips_hostile_review(seat_agent_kind(home, nick)):
         return True
     tier = str(fields.get("cost_tier") or "").strip().lower()
     if tier in ("free", "opencode-free"):
         return True
     return False
+
+
+def mrb_eligibility_reason(home: Path, nick: str) -> str:
+    """One line for the offer log: why this seat may or may not take MRB (FR #7888)."""
+    fields = _seat_digest_model_fields(home, nick)
+    model = _start_model_from_fields(fields)
+    try:
+        import worker_start_model as wsm
+
+        klass = wsm.start_model_review_class(model)
+    except Exception:
+        klass = "unknown"
+    shown = model or "missing"
+    if len(shown) > 80:
+        shown = shown[:80]
+    if klass == "paid":
+        return f"paid start_model {shown}"
+    if "$" in model:
+        return f"unknown start_model {shown}"
+    if klass == "free":
+        return f"free start_model {shown}"
+    if klass == "unknown" and seat_skips_hostile_review(seat_agent_kind(home, nick)):
+        return "unknown start_model on opencode (fail safe FR-only)"
+    if seat_is_free_fuel(home, nick):
+        return f"free-fuel start_model {shown}"
+    return f"mrb-eligible start_model {shown}"
 
 
 def row_blocked_for_opencode_seat(
@@ -8550,18 +8693,19 @@ def row_blocked_for_opencode_seat(
     *,
     kind: str | None = None,
 ) -> bool:
-    """True when an OpenCode or free-fuel seat must not be offered this MRB/UAT row."""
+    """True when a free or unknown start_model must not be offered this MRB/UAT row.
+
+    FR #6134 blocked every OpenCode seat. FR #7888 keeps that for a free or
+    missing start_model and allows a paid start_model (OpenCode Go / pro).
+    Without a digest (``home is None``), kind ``opencode`` still fails safe.
+    """
     task = str((row or {}).get("task") or "").upper()
     if task not in ("MRB", "UAT"):
         return False
-    k = kind
-    if k is None and home is not None:
-        k = seat_agent_kind(home, nick)
-    if seat_skips_hostile_review(k or ""):
-        return True
-    if home is None:
-        return False
-    return seat_is_free_fuel(home, nick)
+    if home is not None:
+        return seat_is_free_fuel(home, nick)
+    k = kind if kind is not None else ""
+    return seat_skips_hostile_review(k or "")
 
 
 def seat_is_out_of_fuel(home: Path, nick: str, now: float | None = None) -> bool:
@@ -9267,6 +9411,8 @@ def offer_focus_top(
     me_raw = (nick or "").strip()
     me = (canonical_worker_nick(me_raw) or me_raw).strip()
     ledger = ledger_load(home)
+    # FR #7926: computed before the queue lock so digest reads do not nest it.
+    free_idle = idle_free_model_nicks(home, now=now_f, live=live)
     # FR #3205 / #3212 / #6581: when an on-disk precompute fingerprint matches the queue,
     # !bored uses zero GitHub calls (local eligibility only). Otherwise use
     # BORED_GITHUB_CALL_BUDGET (production 0 — local-state only; FR #3188's budget-of-one
@@ -9544,6 +9690,13 @@ def offer_focus_top(
                         return None
                 cand_eff = enrich_review_author_fields(doc, cand)
                 if review_blocked_for_author(cand_eff, me, live, ledger=ledger, free=free):
+                    if str(cand.get("task") or "").upper() in ("MRB", "UAT"):
+                        with contextlib.suppress(Exception):
+                            _log_queue_purge(
+                                "INFO mrb-eligibility skip"
+                                f" seat={me} task={str(cand.get('task') or '').upper()}"
+                                f" id={cand.get('id') or ''} reason=author"
+                            )
                     if is_repo_uat(cand):
                         with contextlib.suppress(Exception):
                             if maybe_escalate_repo_uat_all_self_uat(
@@ -9559,8 +9712,25 @@ def offer_focus_top(
                 _stamp_require_machine(cand_eff)
                 if row_blocked_for_machine(cand_eff, me):
                     return None
-                # FR #6134: OpenCode seats take FR/FIX/docs/harvest only — skip MRB/UAT.
-                if row_blocked_for_opencode_seat(cand_eff, me, home):
+                # FR #6134 / #7888: free or unknown start_model stays FR-only.
+                # A paid start_model may take MRB/UAT. Log the reason either way.
+                if str(cand_eff.get("task") or "").upper() in ("MRB", "UAT"):
+                    reason = mrb_eligibility_reason(home, me)
+                    if row_blocked_for_opencode_seat(cand_eff, me, home):
+                        with contextlib.suppress(Exception):
+                            _log_queue_purge(
+                                "INFO mrb-eligibility skip"
+                                f" seat={me} task={str(cand_eff.get('task') or '').upper()}"
+                                f" id={cand_eff.get('id') or ''} reason={reason}"
+                            )
+                        return None
+                    cand_eff["mrb_eligibility"] = reason
+                elif row_blocked_for_opencode_seat(cand_eff, me, home):
+                    return None
+                # FR #7926: an idle eligible free-model seat takes FR/FIX first.
+                if fr_reserved_for_idle_free_seat(
+                    home, cand_eff, me, now_f, live, ledger, free_idle
+                ):
                     return None
                 return cand_eff
 
@@ -9654,6 +9824,15 @@ def offer_focus_top(
                     resolved = resolve_assign_url(job)
                     if resolved:
                         job["url"] = resolved
+                    if str(job.get("task") or "").upper() in ("MRB", "UAT"):
+                        why = str(job.get("mrb_eligibility") or mrb_eligibility_reason(home, me))
+                        job["mrb_eligibility"] = why
+                        with contextlib.suppress(Exception):
+                            _log_queue_purge(
+                                "INFO mrb-eligibility offer"
+                                f" seat={me} task={str(job.get('task') or '').upper()}"
+                                f" id={job.get('id') or ''} reason={why}"
+                            )
                     doc["unaccepted"][i] = job
                     break
             else:
@@ -12855,13 +13034,14 @@ def assign_row(
                 "refused",
                 f"{me}: not in the shop channel (not a live seat; members_at={snap})",
             )
-    # FR #6134: refuse hostile review/UAT to OpenCode seats (chair !assign path).
+    # FR #6134 / #7888: refuse MRB/UAT when start_model is free or unknown.
+    # A paid start_model is assignable. OpenCode with no start_model fails safe.
     try:
-        _kind = seat_agent_kind(home, me)
-        if seat_skips_hostile_review(_kind) and task_u in ("MRB", "UAT"):
+        if task_u in ("MRB", "UAT") and seat_is_free_fuel(home, me):
+            why = mrb_eligibility_reason(home, me)
             return (
                 "refused",
-                f"{me}: OpenCode seats skip {task_u} (FR #6134; use Grok/Cursor)",
+                f"{me}: OpenCode or free start_model skips {task_u} ({why}; FR #6134 / #7888)",
             )
     except Exception:
         pass
@@ -15291,6 +15471,139 @@ def reconcile_lost_ack_from_digest(home: Path, *, log=None) -> int:
             return n
     except (TimeoutError, OSError):
         return 0
+
+
+def holder_bored_limit() -> int:
+    """FR #7912: consecutive !bored from the holder before the job is released."""
+    raw = str(os.environ.get("BOB_HOLDER_BORED_N", "2") or "2").strip()
+    try:
+        n = int(raw)
+    except ValueError:
+        n = 2
+    return n if n >= 1 else 2
+
+
+def _holder_bored_path(home: Path) -> Path:
+    return Path(home) / "holder-bored.json"
+
+
+def _load_holder_bored(home: Path) -> dict:
+    path = _holder_bored_path(home)
+    try:
+        doc = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, ValueError):
+        return {"seats": {}}
+    if not isinstance(doc, dict):
+        return {"seats": {}}
+    seats = doc.get("seats")
+    if not isinstance(seats, dict):
+        doc["seats"] = {}
+    return doc
+
+
+def _save_holder_bored(home: Path, doc: dict) -> None:
+    path = _holder_bored_path(home)
+    path.write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8")
+
+
+def reset_holder_bored(home: Path, nick: str) -> None:
+    """FR #7912: ACK, DONE, or other progress clears the holder's !bored streak."""
+    key = (_seat_key(nick) or "").strip().lower()
+    if not key:
+        return
+    try:
+        with _lock(home):
+            doc = _load_holder_bored(home)
+            seats = doc.setdefault("seats", {})
+            if key not in seats:
+                return
+            seats.pop(key, None)
+            _save_holder_bored(home, doc)
+    except (TimeoutError, OSError):
+        return
+
+
+def _report_holder_bored(nick: str, job: str) -> None:
+    import runtime_failure
+
+    runtime_failure.report_message(
+        "jeeves",
+        "holder_bored nick=%s job=%s" % (nick, job),
+        site="holder-bored",
+    )
+
+
+_HOLDER_OPEN_RX = re.compile(
+    r"^(accepted|held)\s+(\S+)\s+(.+)(#\d+)\s*$",
+    re.IGNORECASE,
+)
+
+
+def release_holder_on_bored(home: Path, nick: str, now: float | None = None) -> str:
+    """FR #7912: N consecutive !bored from the holding seat releases that seat's job.
+
+    Returns the open-job text when this call released it, else ''. A different
+    seat's !bored never touches this nick's row. Offered-but-not-accepted pins
+    stay on the existing busy path. ACK/DONE/progress must call
+    ``reset_holder_bored`` or the streak keeps counting.
+    """
+    import time as _time
+
+    now_f = _time.time() if now is None else float(now)
+    open_job = seat_open_job(home, nick, now_f)
+    match = _HOLDER_OPEN_RX.match(str(open_job or "").strip())
+    if not match:
+        reset_holder_bored(home, nick)
+        return ""
+    key = (_seat_key(nick) or "").strip().lower()
+    if not key:
+        return ""
+    limit = holder_bored_limit()
+    count = 1
+    try:
+        with _lock(home):
+            doc = _load_holder_bored(home)
+            seats = doc.setdefault("seats", {})
+            prev = seats.get(key) if isinstance(seats.get(key), dict) else {}
+            if str(prev.get("job") or "") == open_job:
+                try:
+                    count = int(prev.get("count") or 0) + 1
+                except (TypeError, ValueError):
+                    count = 1
+            seats[key] = {"job": open_job, "count": count}
+            _save_holder_bored(home, doc)
+    except (TimeoutError, OSError):
+        return ""
+    if count < limit:
+        return ""
+    _kind, task, repo, ident = match.groups()
+    task_u = task.upper()
+    try:
+        import shop_listen
+
+        shop_listen.return_job_to_unaccepted(
+            home,
+            repo=repo,
+            task=task_u,
+            ident=ident,
+            now=now_f,
+            reason="holder_bored",
+            expected_nick=nick,
+        )
+    except Exception:
+        pass
+    with contextlib.suppress(Exception):
+        clear_seat_hold(home, nick, repo=repo, task=task_u, ident=ident, clear_pins=True)
+    with contextlib.suppress(Exception):
+        ledger_note_event(home, nick, "GIVEUP", task_u, repo, ident, None)
+    with contextlib.suppress(Exception):
+        import bobreport
+
+        bobreport.clear_seat_doing(home, nick, only_if_work_contains=ident.lstrip("#"))
+    with contextlib.suppress(Exception):
+        _report_holder_bored(nick, open_job)
+    reset_holder_bored(home, nick)
+    return open_job
 
 
 def bored_gate(
