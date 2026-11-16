@@ -9690,9 +9690,9 @@ def offer_focus_top(
                     cand.pop("offered_channel", None)
                     cand.pop("offered_via", None)
                     purged = True
-                    # FR #4089: seat-holds.json intentionally survives the row offer
-                    # window so this seat stays blocked until DONE/NACK/GIVEUP/QUIT,
-                    # re-offer to another nick (FR #4260), or SEAT_HOLD_MAX_S.
+                    # FR #7966: observing the timeout clears the seat hold. The seat
+                    # is no longer blocked, and the row can go to this caller or
+                    # another seat (FR #4260). Three silences still refuse the seat.
 
             # FR #4089 (supersedes the FR #3192 time-boxed holding_live check): a seat with
             # an accepted job, any offer pinned to it (no age window) or a remembered offer
