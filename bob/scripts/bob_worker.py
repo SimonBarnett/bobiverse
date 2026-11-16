@@ -3633,6 +3633,7 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             mcp_path = str(Path(cwd) / OPENCODE_SKILL_DAG_MCP_RELPATH)
             files[mcp_path] = json.dumps(opencode_skill_dag_mcp_document(cwd), indent=2) + "\n"
         helper_path = _resolve_opencode_fuel_helper_path(cwd=cwd, install_root=install_root)
+        guard_path = Path(__file__).resolve().parent / "opencode_turn_guard.py"
         # FR #6157: each opencode run emits turn_started / turn_ended into opencode-turns.jsonl
         # so BoredEmitter gets harvest-hold / done-miss / startup-ready parity with Grok.
         # FR #6240: no external_directory allow. Each injected assign carries its own
@@ -3660,6 +3661,7 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             r"$fuelLog = Join-Path $env:LOCALAPPDATA 'Bobiverse\worker\logs\opencode-out-of-fuel.log'",
             r"$pauseStateDir = Join-Path $env:LOCALAPPDATA 'Bobiverse\worker\state'",
             f"$pyHelper = '{esc(str(helper_path))}'",
+            f"$guardPy = '{esc(str(guard_path))}'",
             f"$wedgePy = '{esc(str(Path(__file__).resolve().with_name('opencode_tool_wedge.py')))}'",
             r"$script:ocDagRetries = 1",
             r"$script:ocWedgeTicks = 0",
@@ -3752,6 +3754,7 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             r"        if ($ocDir) { $proc = Start-Process -FilePath $exe -ArgumentList $argStr -WorkingDirectory $ocDir -NoNewWindow -PassThru -RedirectStandardOutput $outFile -RedirectStandardError $errFile } else { $proc = Start-Process -FilePath $exe -ArgumentList $argStr -NoNewWindow -PassThru -RedirectStandardOutput $outFile -RedirectStandardError $errFile }",
             r"        $timedOut = $false",
             r"        $killReason = ''",
+            r"        $ocJobPoll = 0",
             r"        $lastLen = 0",
             r"        $lastCpu = -1.0",
             r"        $lastWtStamp = $null",
@@ -3800,7 +3803,29 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             r"                $timedOut = $true",
             r"                $killReason = ('hard ceiling ' + [int]$hardCeilingMs + 'ms')",
             r"                try { & taskkill /T /F /PID $proc.Id 2>$null | Out-Null } catch { }",
+            # FR #7739: one intake report (machine, seat, job, elapsed, reason). Dedupe is in the helper.
+            r"                $pyCeil = (Get-Command python.exe -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source)",
+            r"                if (-not $pyCeil) { $pyCeil = 'python.exe' }",
+            r"                $mach = if ($env:BOB_MACHINE_ID) { $env:BOB_MACHINE_ID } else { $env:COMPUTERNAME }",
+            r"                try { & $pyCeil $guardPy ceiling --machine $mach --nick $env:BOB_NICK --job $jobKey --elapsed-ms ([int]$runMs) --reason $killReason 2>$null | Out-Null } catch { }",
             r"                break",
+            r"            }",
+            # FR #7739: every 50 x 100ms (5s, under 60s) ask if the job was closed, given up, or reassigned.
+            r"            $ocJobPoll++",
+            r"            if (($ocJobPoll % 50) -eq 0 -and $jobKey) {",
+            r"                $pyStop = (Get-Command python.exe -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source)",
+            r"                if (-not $pyStop) { $pyStop = 'python.exe' }",
+            r"                $stopLine = ''",
+            r"                try { $stopLine = (& $pyStop $guardPy stop --job $jobKey --outbox $env:BOB_OUTBOX 2>$null | Out-String).Trim() } catch { $stopLine = '' }",
+            r"                if ($stopLine -like 'stop*') {",
+            r"                    $timedOut = $true",
+            r"                    $killReason = ('job-ended ' + $stopLine)",
+            r"                    try { & taskkill /T /F /PID $proc.Id 2>$null | Out-Null } catch { }",
+            # FR #7739: killing the child is not enough. The chair still holds the
+            # accepted row, so !bored is nak busy until this GIVEUP is drained.
+            r"                    Write-OpencodeJobGiveup $jobKey $killReason",
+            r"                    break",
+            r"                }",
             r"            }",
             r"            if ($idleMs -ge $watchdogMs) {",
             r"                $timedOut = $true",
@@ -8835,6 +8860,7 @@ def opencode_job_finish_steps(
         f"3) Commit on branch {branch}. 4) git push -u origin HEAD. "
         f"5) Open the PR with gh pr create --base main --body \"Closes {closes_ref}\" "
         f"(or --body-file pointing at a markdown file inside this worktree, e.g. .bob/pr-body.md). "
+        "If gh issue view shows the issue CLOSED, do not run gh pr create. "
         "Keep scratch files and base comparisons inside this job worktree or the worker run folder --- "
         "never under %TEMP%. Do not request external_directory and do not pass --auto. "
         f"6) Immediately append DONE for {key} with the PR URL to $env:BOB_OUTBOX ({ob}) "
@@ -9132,6 +9158,13 @@ def opencode_finish_auto_pr(
         root, base=f"origin/{base}", run=run
     )
     if not ahead or not branch:
+        return ""
+    # FR #7739: a branch for a closed or duplicate issue is not a PR.
+    try:
+        from opencode_turn_guard import opencode_issue_is_open
+    except ImportError:
+        opencode_issue_is_open = None  # type: ignore
+    if opencode_issue_is_open is not None and not opencode_issue_is_open(repo, issue_n, run=run):
         return ""
     body = (
         f"Closes {repo}#{issue_n}\n\n"
