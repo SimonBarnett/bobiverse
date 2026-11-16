@@ -94,7 +94,8 @@ def test_fr6265_serialized_payload_survives_receiver_digest_and_tray_export(
     assert payload is not None
     assert "opencode_windows" not in payload
     assert "opencode-go" not in (payload.get("pcent") or {})
-    assert payload["pcent"]["grok-chat"] == 74
+    # FR #7752 / #7497: grok-chat is a Cursor-bridge pcent key and is not published.
+    assert "grok-chat" not in (payload.get("pcent") or {})
 
     # Actual serialized emitter body (not a hand-built dict bypass).
     wire = json.dumps(payload, separators=(",", ":"), default=str).encode("utf-8")
@@ -116,7 +117,7 @@ def test_fr6265_serialized_payload_survives_receiver_digest_and_tray_export(
     # FR #7366: fleet OpenCode is not echoed per machine.
     assert "opencode-go" not in (exported.get("pcent") or {})
     assert "opencode_windows" not in exported
-    assert (exported.get("pcent") or {}).get("grok-chat") == 74
+    assert "grok-chat" not in (exported.get("pcent") or {})
 
     ent = (bobreport.load_digest(tmp_path).get("machines") or {}).get(MID) or {}
     tray = bobreport.export_machine_for_tray(tmp_path, MID, ent)
