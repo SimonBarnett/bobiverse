@@ -27,13 +27,13 @@ def test_fr7594_poll_wraps_jobs_watcher_and_stall_alerts():
     assert "FR #7594" in w
     i_cycle = w.index("cycle-start name=poll")
     i_jw = w.index("Invoke-BobTrayEngineStep -Name 'jobs-watcher'", i_cycle)
-    i_sa = w.index("Invoke-BobTrayEngineStep -Name 'stall-alerts'", i_cycle)
+    i_sa = w.index("Invoke-BobTrayWarmEngineStep -Name 'stall-alerts'", i_cycle)
     i_hover = w.index("update-hover", i_jw)
     assert i_cycle < i_jw < i_sa < i_hover
     # Direct try/catch Start-JobsWatcher / Get-BobStallAlerts must not remain in the poll body.
     poll = w[i_cycle : w.index("cycle-end name=poll", i_cycle)]
     assert "try { Start-JobsWatcher }" not in poll
-    assert "Get-BobStallAlerts -Seen $seen" not in poll or "Invoke-BobTrayEngineStep -Name 'stall-alerts'" in poll
+    assert "Get-BobStallAlerts -Seen $seen" not in poll or "Invoke-BobTrayWarmEngineStep -Name 'stall-alerts'" in poll
     # Stall alerts body still calls Get-BobStallAlerts inside the timed job.
     assert "Get-BobStallAlerts" in w[i_sa : i_sa + 1200]
 
