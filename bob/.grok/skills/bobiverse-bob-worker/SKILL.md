@@ -131,6 +131,7 @@ A `!bored` written by the agent into `outbox.txt` is refused. Jeeves answers by 
 ## Logs
 
 * `%LOCALAPPDATA%\Bobiverse\worker\logs\bob-worker-agent.log` (start-up selection) and `...\run\worker-<machine>-<pid>-<id>\worker.log` (everything the seat did: IRC, injections, restarts).
+* **Grok console (FR #7916):** stdin, stdout and stderr must inherit the seat console. Piping or teeing stderr prevents Grok's TUI from rendering. Keep `--no-alt-screen`; use the per-seat `grok-home\logs\unified.jsonl` and session `events.jsonl` for existing diagnostics, not stderr redirection. The blank-TUI guard requires an input frame and prompt, not just letters in the cwd header.
 * The tray log (`Open log`) records `worker: started ...` / `plan: started ...`.
 * Never paste a key; the logs never contain one. Crash/spool redact (FR #2411 / FR #2668 / FR #2679) covers `password=`/`token=`/`XAI_API_KEY=`, Bearer/Basic, NickServ IDENTIFY/REGISTER, IRC PASS, URL userinfo, and quoted JSON keys/values (including multi-word `"password": "a b c"`) — keep fake values only in tests.
 * **Test fixtures (FR #3304):** never write realistic secret literals in tests (contiguous JWT headers, `Bearer` + JWT, `password=` hunter-style values). Build secret-shaped strings at runtime from parts (a-search: `tests/fixtures/fakeSecrets.js`) or use obvious placeholders (`FAKE_`, `EXAMPLE`, `xxxx`, AWS doc `AKIA…EXAMPLE`). Prefer fixing fixtures over force-pushing history to clear GitGuardian false positives.
