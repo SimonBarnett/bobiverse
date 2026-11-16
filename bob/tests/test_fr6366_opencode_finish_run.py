@@ -142,9 +142,9 @@ def test_fr6366_wrapper_sets_workingdirectory_and_no_pause_on_watchdog(tmp_path:
     # Explicit: hitLimit from limit patterns, not timedOut alone
     idx = script.find("$hitLimit")
     region = script[idx : idx + 400]
-    assert "timedOut" not in region.split("=")[1].split("\n")[0] or (
-        "Payment Required" in region and "$timedOut -or" not in region
-    )
+    assign = region.split("=", 1)[1].split("\n")[0]
+    assert "-not $timedOut" in assign
+    assert "$timedOut -or" not in assign
 
 
 def test_fr6366_bored_emitter_opencode_retries_then_giveup(monkeypatch):
