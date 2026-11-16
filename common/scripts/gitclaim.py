@@ -5016,6 +5016,24 @@ def seat_offer_refused(row: dict, nick: str) -> bool:
     return False
 
 
+def live_seat_can_take_unanswered(row: dict, live: set[str] | None) -> bool:
+    """True when some live seat is not refused and has not given up (FR #7966).
+
+    no_eligible_since means nobody live can take the row. A sibling seat that
+    is still eligible must not look stalled.
+    """
+    if not isinstance(row, dict):
+        return False
+    for raw in live or ():
+        nick = str(raw or "").strip()
+        if not nick:
+            continue
+        if seat_offer_refused(row, nick) or row_gave_up_by(row, nick):
+            continue
+        return True
+    return False
+
+
 def note_offer_outcome(row: dict, seat: str, outcome: str, reason: str = "") -> None:
     """Append one per-seat offer result (timeout / nack / giveup) for the digest (FR #7966)."""
     canon = (canonical_worker_nick(seat) or seat or "").strip()
@@ -9942,13 +9960,15 @@ def offer_focus_top(
                     if pick is not None:
                         break
             if pick is None:
-                # FR #7966: a starved row with only refused seats publishes no_eligible_since.
+                # FR #7966: stamp no_eligible_since only when every live seat is refused.
                 for cand in doc.get("unaccepted") or []:
                     if not isinstance(cand, dict):
                         continue
                     if not cand.get("offer_refused_by"):
                         continue
-                    if cand.get("offered_to"):
+                    if cand.get("offered_to") or live_seat_can_take_unanswered(cand, live):
+                        if cand.pop("no_eligible_since", None) is not None:
+                            purged = True
                         continue
                     try:
                         since = float(cand.get("no_eligible_since") or 0)
@@ -9979,6 +9999,8 @@ def offer_focus_top(
                         prev_count = 0
                     same = bool(prev_to) and _same_seat(prev_to, me)
                     job["offered_to"] = me
+                    # A live offer means someone is eligible (FR #7966).
+                    job.pop("no_eligible_since", None)
                     # FR #2309: rebroadcast keeps original offered_ts so OFFER_TIMEOUT can free the row.
                     if same and prev_ts:
                         job["offered_ts"] = prev_ts

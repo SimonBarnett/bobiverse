@@ -103,6 +103,31 @@ def test_fr7966_nack_records_giveup_seat_and_reason(tmp_path, monkeypatch):
     assert outcomes[-1]["reason"] == "worktree-absent"
 
 
+def test_fr7966_other_live_seat_is_not_stamped_no_eligible(tmp_path, monkeypatch):
+    """MRB #7972: no_eligible_since waits until every live seat is refused."""
+    home = _home(tmp_path, monkeypatch)
+    digest = bobreport.load_digest(home)
+    digest["machines"]["redqueen"]["worker_list"] = [{"nick": SEAT, "state": "idle"}]
+    digest["machines"]["flamingo"] = bobreport._empty_machine("flamingo")
+    digest["machines"]["flamingo"]["worker_list"] = [{"nick": "flamingo-1", "state": "idle"}]
+    bobreport.save_digest(home, digest)
+    _queue(home, _row())
+    now = time.time()
+    for _i in range(gitclaim.OFFER_UNANSWERED_MAX):
+        st, job = _offer(home, now)
+        assert st == "ok" and job["offered_to"] == SEAT
+        now += gitclaim.OFFER_TIMEOUT_S + 5
+    st2, job2 = _offer(home, now)
+    assert st2 == "empty" and job2 is None
+    held = gitclaim.load_unaccepted(home)[0]
+    assert SEAT in held["offer_refused_by"]
+    assert not held.get("no_eligible_since")
+    st3, job3 = gitclaim.offer_focus_top(home, "flamingo-1", "#flamingo", now=now + 1)
+    assert st3 == "ok" and job3["offered_to"] == "flamingo-1"
+    offered = gitclaim.load_unaccepted(home)[0]
+    assert not offered.get("no_eligible_since")
+
+
 def test_fr7966_digest_snapshot_includes_offer_outcomes(tmp_path, monkeypatch):
     home = _home(tmp_path, monkeypatch)
     row = _row()
