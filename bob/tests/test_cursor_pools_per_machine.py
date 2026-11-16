@@ -220,7 +220,9 @@ def test_write_bob_irc_status_stamps_pool_identity_fields():
     assert "account" in convert_body
     assert "channel" in convert_body
     # Write-BobIrcStatus passes MachineId into ConvertTo for the slim digest rows.
+    # FR #7773: the function grew past a fixed 12000-character window.
     write_idx = t.index("function Write-BobIrcStatus")
-    write_body = t[write_idx : write_idx + 12000]
+    next_fn = t.find("\nfunction ", write_idx + 1)
+    write_body = t[write_idx: next_fn if next_fn > 0 else None]
     assert "ConvertTo-BobDigestCursorPoolRows" in write_body
     assert "-MachineId" in write_body or "MachineId" in write_body
