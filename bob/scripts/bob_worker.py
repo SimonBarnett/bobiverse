@@ -362,6 +362,7 @@ try:
         opencode_outbox_refuse_reason,
         opencode_outbox_path,
         ensure_opencode_bob_outbox,
+        outbox_is_writable,
         prepare_opencode_wire,
         frame_opencode_message,
         probe_gh_auth,
@@ -379,6 +380,7 @@ except ImportError:  # package import (bob.scripts.bob_worker)
         opencode_outbox_refuse_reason,
         opencode_outbox_path,
         ensure_opencode_bob_outbox,
+        outbox_is_writable,
         prepare_opencode_wire,
         frame_opencode_message,
         probe_gh_auth,
@@ -3577,6 +3579,33 @@ def opencode_skill_read_permission_block(worker_cwd: str) -> dict:
     return {"external_directory": allow, "edit": edit}
 
 
+def opencode_job_worktree_read_patterns(worktree: str | Path) -> list[str]:
+    """FR #7911: the job tree and its ``.bob`` folder are not external."""
+    root = Path(worktree)
+    try:
+        root = root.resolve()
+    except OSError:
+        pass
+    patterns: list[str] = []
+    seen: set[str] = set()
+
+    def add(value: str) -> None:
+        text = str(value or "").strip()
+        if not text or text in seen:
+            return
+        seen.add(text)
+        patterns.append(text)
+
+    for folder in (root, root / ".bob"):
+        for base in (str(folder).rstrip("\\/"), folder.as_posix().rstrip("/")):
+            add(base)
+            add(base + "/**")
+            add(base + "\\**")
+            add(base + "/*")
+            add(base + "\\*")
+    return patterns
+
+
 def opencode_skill_dag_mcp_document(
     worker_cwd: str,
     *,
@@ -3584,6 +3613,10 @@ def opencode_skill_dag_mcp_document(
 ) -> dict:
     """Project ``opencode.json`` fragment with local skill-dag MCP (FR #6898 / #7196)."""
     perm = opencode_skill_read_permission_block(worker_cwd)
+    if job_worktree:
+        allow = perm.setdefault("external_directory", {})
+        for key in opencode_job_worktree_read_patterns(job_worktree):
+            allow[key] = "allow"
     return {
         "$schema": "https://opencode.ai/config.json",
         "mcp": {
@@ -4073,14 +4106,14 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             r"    $dir = $rest.Substring($keyEnd + 1, $dirEnd - $keyEnd - 1)",
             r"    $line = $rest.Substring($dirEnd + 1)",
             r"    if (-not $dir -or -not $line.StartsWith('FROM ')) { return $null }",
-            r"    if ($key -notmatch '^(?i)(FR|MRB|UAT) \S+#\d+$') { return $null }",
+            r"    if ($key -notmatch '^(?i)(FR|MRB|UAT|FIX) \S+#\d+$') { return $null }",
             r"    return @{ key = $key; dir = $dir; line = $line }",
             r"}",
             r"function Get-OpencodeFromJobKeys([string]$raw) {",
             r"    if ($raw -notmatch '^(?i)FROM\s+\S+\s+\S+\s+(.*)$') { return @() }",
             r"    $body = $Matches[1]",
             r"    $keys = @()",
-            r"    foreach ($m in [regex]::Matches($body, '(?i)(FR|MRB|UAT)\s+(\S+#\d+)')) {",
+            r"    foreach ($m in [regex]::Matches($body, '(?i)(FR|MRB|UAT|FIX)\s+(\S+#\d+)')) {",
             r"        $keys += ($m.Groups[1].Value.ToUpper() + ' ' + $m.Groups[2].Value)",
             r"    }",
             r"    return $keys",
@@ -4094,7 +4127,7 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             r"    if ($raw.StartsWith('@@BOBJOB1')) {",
             r"        $key = ''",
             r"        $tail = $raw.Substring(9).TrimStart('| ')",
-            r"        $km = [regex]::Match($tail, '^(?i)((?:FR|MRB|UAT)\s+\S+#\d+)')",
+            r"        $km = [regex]::Match($tail, '^(?i)((?:FR|MRB|UAT|FIX)\s+\S+#\d+)')",
             r"        if ($km.Success) {",
             r"            $rawKey = $km.Groups[1].Value",
             r"            $spaceAt = $rawKey.IndexOf(' ')",
@@ -12613,6 +12646,8 @@ class Supervisor:
                 # FR #6333: tail in-worktree .bob/outbox.txt; stamp FROM footer with that path.
                 try:
                     ob = ensure_opencode_bob_outbox(prepared["path"])
+                    if not outbox_is_writable(ob):
+                        raise OSError("outbox not writable")
                     # FR #6378: always rewrite footer to *this* job worktree outbox
                     # (never leave a prior job's cached [outbox: ...] path).
                     wire = opencode_stamp_outbox_footer(wire, ob)
@@ -12624,6 +12659,20 @@ class Supervisor:
                         pass
                     if getattr(self, "relay", None) is not None:
                         self.relay.outbox_path = Path(ob)
+                except OSError as e:
+                    self.log(f"opencode-ready: outbox unreachable {type(e).__name__}")
+                    key = str(prepared.get("key") or "")
+                    try:
+                        import runtime_failure
+
+                        runtime_failure.report_message(
+                            "bob-worker",
+                            "job outbox unreachable key=%s" % key,
+                            site="outbox-unreachable",
+                        )
+                    except Exception:
+                        pass
+                    raise JobContextRefused("GIVEUP %s outbox_unreachable" % key) from e
                 except Exception as e:  # noqa: BLE001
                     self.log(f"opencode-ready: bob outbox setup failed {type(e).__name__}")
         if on_failed is None and assign_job_ref(line):
