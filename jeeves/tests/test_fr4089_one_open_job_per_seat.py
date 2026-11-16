@@ -4,7 +4,8 @@
 A seat that holds an accepted (not-yet-DONE) row, any offer pinned to it (no age
 window) or a remembered offer in seat-holds.json is never offered or pushed a second
 job — not on !bored, not after DONE (incl. repeat / status=missing DONE), not after
-NACK/GIVEUP. Rows still time back to the queue for *other* seats.
+NACK/GIVEUP. An observed offer timeout clears that hold (FR #7966) and the
+row can go to this seat again or to another seat.
 """
 from __future__ import annotations
 
@@ -159,9 +160,15 @@ def test_free_seat_gets_one_offer_after_done(home: Path):
 
 # --- the old-offer case (window expired, seat still holding the assign) -------------
 
-def test_old_offer_still_blocks_seat_but_frees_row_for_others(home: Path):
-    """Offer made 10 min ago (> 180 s push window) and never ACKed: the seat is still
-    blocked; the row times back to the queue for another seat as before."""
+def test_old_offer_stays_busy_until_timeout_then_frees_row(home: Path):
+    """Offer made 10 min ago and never ACKed.
+
+    FR #4089: until the offer loop observes the timeout, the seat hold still
+    blocks a second job. FR #7966: that observation clears the hold and the
+    pin. Another seat can take the freed row (FR #4260). The old expectation
+    that offer_focus_top(ME) stays empty is dropped: ME would be handed the
+    row again, which is the second of three silences, not a permanent block.
+    """
     _queue(home, [_row("FR", 10), _row("FR", 11)])
     sent, say = _say_sink()
     n, job = gitclaim.offer_after_done(home, ME, SHOP, say=say)
@@ -182,17 +189,33 @@ def test_old_offer_still_blocks_seat_but_frees_row_for_others(home: Path):
     assert gitclaim.bored_gate(home, ME, SHOP, now + 10_000) == "busy"
     assert gitclaim.offer_after_done(home, ME, SHOP, say=say) == (0, None)
     assert gitclaim.offer_after_giveup(home, ME, SHOP, say=say) == (0, None)
-    st, _ = gitclaim.offer_focus_top(home, ME, SHOP)
-    assert st == "empty"
-    # The other seat can take the expired row.
+    # OTHER observes the timeout, so the row is not pinned back onto ME.
     st2, job2 = gitclaim.offer_focus_top(home, OTHER, SHOP)
     assert st2 == "ok" and job2["id"] == "#10"
-    # FR #4260: re-offer to OTHER clears ME's hold for that job so ME is not stuck
-    # busy (held ...) forever; ME can take the next queued row (#11).
     assert gitclaim.seat_open_job(home, ME) == ""
     st3, job3 = gitclaim.offer_focus_top(home, ME, SHOP)
     assert st3 == "ok" and job3["id"] == "#11"
     assert len(sent) == 1
+
+
+def test_old_offer_observed_by_same_seat_is_offered_again(home: Path):
+    """FR #7966 / #7981: the seat that observes its own timeout is not left empty."""
+    _queue(home, [_row("FR", 10)])
+    gitclaim.offer_after_done(home, ME, SHOP, say=_say_sink()[1])
+    with gitclaim._lock(home):
+        doc = gitclaim._load_queue_unlocked(home)
+        for r in doc["unaccepted"]:
+            if r.get("offered_to"):
+                r["offered_ts"] = _ts(600)
+        gitclaim._write_queue(gitclaim.queue_path(home), doc)
+        holds = gitclaim._load_seat_holds_unlocked(home)
+        holds[ME]["ts"] = _ts(600)
+        gitclaim._save_seat_holds_unlocked(home, holds)
+    st, job = gitclaim.offer_focus_top(home, ME, SHOP)
+    assert st == "ok" and job["id"] == "#10"
+    counts = job.get("offer_unanswered") or {}
+    assert int(counts.get(ME.lower()) or 0) == 1
+    assert ME not in (job.get("offer_refused_by") or [])
 
 
 # --- what clears an open job ------------------------------------------------------
