@@ -49,6 +49,7 @@ Assert: `Assert-BobDigestWebhookLocal.ps1 -ExpectedReportUrl https://bob.ntsa.uk
 | Start Menu | ONE all-users folder `Bobiverse`: Bobiverse Tray, Restart ircBob (ear-only via `Restart-BobEar.ps1`), Bob Services, Logs, Skill books, Agent guide (all systray icon) |
 
 - **MSI Install-Bob tray (FR #3987 / PR #3993):** during RunInstall, Start-Service ircBob (WaitForStatus 60s soft-fail) runs **before** live TipForm launch; Install-Bob sets `BOBIVERSE_NO_SERVICE_RESTART=1` and interactive `Start-BobTray -SkipServiceRestart` so `Restart-BobTrayService` cannot race the CA. `Invoke-BobTrayServiceControl` skips `START_PENDING`/`STOP_PENDING`. Persistent Startup/HKCU shortcuts may still restart ircBob on logon (intentional).
+- **Invoke-Grok temp (FR #7840):** delete the `bob-grok-<guid>` stdout directory in `finally`, including when the process start throws. On the next call, prune empty `bob-grok-<32 hex>` directories older than one hour. Leave `bob-grok-session` and any directory that still has files. Do not park this under harvest/SKILL.md (moved from tip #7862).
 
 ## Digest fuel publish (FR #6141..#6150 / FR-010)
 
