@@ -498,6 +498,7 @@ routes to bobiverse via the split rule.
 - A source pin of a PowerShell function must read until the next function. A fixed character window misses a call that the function still makes.
 - When prepare form gains a Session 0 fail-close and a prepare-form SDK path, update the doc pin to those sentences. Do not restore WINRUN only.
 - A grok launch pin must find --no-auto-update --no-alt-screen --cwd as a triple. --reasoning-effort may sit before that triple.
+- A blank Grok console (no letters or digits) for 120 seconds is a wedge. Report grok-blank-tui once. Do not kill the seat and do not start another kind until same-kind recycle is approved.
 
 ## Harvest digest (lessons audit 2026-10-06)
 
