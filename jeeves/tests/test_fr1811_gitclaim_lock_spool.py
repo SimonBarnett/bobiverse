@@ -178,28 +178,8 @@ def test_fr1811_concurrent_applies_lose_no_rows(tmp_path: Path):
     assert not missing, missing
 
 
-def test_fr6502_pop_pending_does_not_drop_concurrent_spool(tmp_path: Path):
-    """FR #6502: rename-aside drain must not unlink lines appended during pop."""
-    home = _home(tmp_path)
-    for i in range(5):
-        gitclaim._spool_pending(home, _fr(i))
-
+def _collect_pending_ids(home: Path) -> set[str]:
     seen: set[str] = set()
-
-    def spammer() -> None:
-        for i in range(100, 300):
-            gitclaim._spool_pending(home, _fr(i))
-
-    t = threading.Thread(target=spammer)
-    t.start()
-    for _ in range(80):
-        for c in gitclaim._pop_all_pending(home):
-            seen.add(c.id)
-        time.sleep(0.001)
-    t.join()
-    for c in gitclaim._pop_all_pending(home):
-        seen.add(c.id)
-    # Leftover primary spool + sidecars.
     pp = gitclaim.pending_path(home)
     if pp.exists():
         for line in pp.read_text(encoding="utf-8").splitlines():
@@ -209,6 +189,96 @@ def test_fr6502_pop_pending_does_not_drop_concurrent_spool(tmp_path: Path):
         for line in side.read_text(encoding="utf-8").splitlines():
             if line.strip():
                 seen.add(str(json.loads(line).get("id") or ""))
-    expect = {f"#{i}" for i in list(range(5)) + list(range(100, 300))}
+    return seen
+
+
+def _concurrent_spool_round(home: Path, extra: range) -> None:
+    for i in range(5):
+        gitclaim._spool_pending(home, _fr(i))
+    seen: set[str] = set()
+
+    def spammer() -> None:
+        for i in extra:
+            gitclaim._spool_pending(home, _fr(i))
+
+    t = threading.Thread(target=spammer)
+    t.start()
+    while t.is_alive():
+        for c in gitclaim._pop_all_pending(home):
+            seen.add(c.id)
+    t.join()
+    for c in gitclaim._pop_all_pending(home):
+        seen.add(c.id)
+    seen |= _collect_pending_ids(home)
+    expect = {f"#{i}" for i in list(range(5)) + list(extra)}
     missing = sorted(expect - seen)
     assert not missing, missing
+
+
+def test_fr6502_pop_pending_does_not_drop_concurrent_spool(tmp_path: Path):
+    """FR #6502: a pop during spool must not unlink an unpublished sidecar."""
+    _concurrent_spool_round(_home(tmp_path), range(100, 300))
+
+
+def test_fr7942_pop_leaves_empty_sidecar(tmp_path: Path):
+    """An empty side name is not a published claim and must survive pop."""
+    home = _home(tmp_path)
+    path = gitclaim.pending_path(home)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    side = path.with_name(path.name + ".side-empty")
+    side.write_text("", encoding="utf-8")
+    assert gitclaim._pop_all_pending(home) == []
+    assert side.is_file()
+
+
+def test_fr7942_partial_invisible_until_replace(tmp_path: Path):
+    """Pop during os.replace must not see or delete the unpublished partial."""
+    home = _home(tmp_path)
+    entered = threading.Event()
+    release = threading.Event()
+    real_replace = os.replace
+
+    def hold(src, dst):
+        entered.set()
+        assert release.wait(5)
+        return real_replace(src, dst)
+
+    with mock.patch("gitclaim.os.replace", hold):
+        t = threading.Thread(target=lambda: gitclaim._spool_pending(home, _fr(7942)))
+        t.start()
+        assert entered.wait(5)
+        assert gitclaim._pop_all_pending(home) == []
+        partials = list(gitclaim.pending_path(home).parent.glob("*.partial-*"))
+        assert partials
+        assert all(p.is_file() for p in partials)
+        release.set()
+        t.join(5)
+    assert not t.is_alive()
+    got = gitclaim._pop_all_pending(home)
+    assert [c.id for c in got] == ["#7942"]
+
+
+def test_fr7942_concurrent_spool_200_rounds(tmp_path: Path):
+    """Windows CI gate: 200 tight rounds, no sleep."""
+    for n in range(200):
+        _concurrent_spool_round(_home(tmp_path / f"r{n}"), range(20))
+
+
+def test_mrb7947_partial_not_listed_as_sidecar(tmp_path: Path):
+    """MRB #7947: .partial-* must not appear in _pending_sidecar_paths."""
+    home = _home(tmp_path)
+    path = gitclaim.pending_path(home)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    partial = path.with_name(path.name + ".partial-alive")
+    partial.write_text(
+        json.dumps(gitclaim._claim_to_pending_dict(_fr(1)), separators=(",", ":")) + "\n",
+        encoding="utf-8",
+    )
+    gitclaim._spool_pending(home, _fr(2))
+    names = [p.name for p in gitclaim._pending_sidecar_paths(home)]
+    assert partial.name not in names
+    assert any(n.startswith(path.name + ".side-") for n in names)
+    # Pop drains published sides and leaves the unpublished partial alone.
+    got = gitclaim._pop_all_pending(home)
+    assert {c.id for c in got} == {"#2"}
+    assert partial.is_file()

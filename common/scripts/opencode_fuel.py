@@ -2086,6 +2086,18 @@ def save_opencode_pauses(state_dir: str | Path, pauses: dict[str, float]) -> boo
         return False
 
 
+_TURN_TIMEOUT_RX = re.compile(
+    r"(?i)\b(?:hard[-\s]?ceiling|watchdog timeout|turn timeout)\b"
+)
+
+
+def is_turn_timeout_text(text: str | None) -> bool:
+    """True when the text is a turn timeout or hard ceiling, not a provider quota."""
+    if not text or not isinstance(text, str):
+        return False
+    return _TURN_TIMEOUT_RX.search(text) is not None
+
+
 def record_opencode_pause(
     state_dir: str | Path,
     model_id: str,
@@ -2102,9 +2114,14 @@ def record_opencode_pause(
     a process-scoped lock so concurrent seats sharing ``state_dir`` cannot
     overwrite one another's updates. Returns the reset timestamp, or ``None``
     when the pause could not be persisted (including lock timeout).
+
+    FR #7951: a hard ceiling, watchdog, or turn timeout never writes a pause,
+    even when the same blob also contains a quoted provider phrase.
     """
     now = now if now is not None else time.time()
     if not model_id:
+        return None
+    if is_turn_timeout_text(output_text):
         return None
     reset_ts = parse_reset_time(output_text, now=now)
     if reset_ts is None:
@@ -2126,6 +2143,29 @@ def record_opencode_pause(
         _release_process_lock(fd, lock_path)
 
 
+def next_job_model(
+    current: str,
+    configured: str,
+    state_dir: str | Path,
+    *,
+    now: Optional[float] = None,
+    pause_fallback: bool = True,
+) -> str:
+    """Model for the next job.
+
+    A pause fallback returns to ``configured`` once that pause has expired.
+    An operator-chosen model (``pause_fallback`` false) is never switched.
+    Callers invoke this once per job, not while a turn is running.
+    """
+    cur = str(current or "").strip()
+    cfg = str(configured or "").strip()
+    if not pause_fallback or not cfg:
+        return cur
+    if is_opencode_model_paused(cfg, state_dir, now=now):
+        return cur
+    return cfg
+
+
 def is_opencode_model_paused(
     model_id: str | None, state_dir: str | Path, now: Optional[float] = None
 ) -> bool:
@@ -2145,6 +2185,33 @@ def opencode_pauses_state_dir(env: Optional[dict] = None) -> Path:
     return Path(base) / "Bobiverse" / "worker" / "state"
 
 
+def _notify_resumed_model(model: str, configured: str) -> None:
+    """Best-effort digest update when a pause fallback returns to configured."""
+    machine = str(os.environ.get("BOB_MACHINE") or os.environ.get("BOB_MACHINE_ID") or "").strip()
+    nick = str(os.environ.get("BOB_NICK") or "").strip()
+    pid = str(os.environ.get("BOB_OPENCODE_SEAT_PID") or "").strip()
+    if not machine or not pid:
+        return
+    try:
+        root = Path(__file__).resolve().parents[2]
+        scripts = root / "bob" / "scripts"
+        if scripts.is_dir() and str(scripts) not in sys.path:
+            sys.path.insert(0, str(scripts))
+        import bob_worker
+
+        bob_worker.post_digest_seat_kind(
+            machine=machine,
+            pid=pid,
+            nick=nick,
+            kind="opencode",
+            model=model,
+            configured_model=configured,
+            model_mismatch=str(model).lower() != str(configured or "").strip().lower(),
+        )
+    except Exception:
+        return
+
+
 def _cli(argv: list[str] | None = None) -> int:
     """Command-line entry point used by the worker wrapper."""
     import argparse
@@ -2154,7 +2221,17 @@ def _cli(argv: list[str] | None = None) -> int:
     record = subs.add_parser("record-pause", help="Record a model pause from output on stdin")
     record.add_argument("--dir", required=True, help="Pause-state directory")
     record.add_argument("--model", required=True, help="Model id that hit the limit")
+    nxt = subs.add_parser("next-model", help="Model id for the next job after a pause fallback")
+    nxt.add_argument("--dir", required=True)
+    nxt.add_argument("--configured", required=True)
+    nxt.add_argument("--current", required=True)
     args = parser.parse_args(argv)
+    if args.command == "next-model":
+        chosen = next_job_model(args.current, args.configured, args.dir)
+        sys.stdout.write(chosen + "\n")
+        if chosen != str(args.current or "").strip():
+            _notify_resumed_model(chosen, args.configured)
+        return 0
     if args.command == "record-pause":
         output_text = sys.stdin.buffer.read().decode("utf-8", errors="replace")
         reset_ts = record_opencode_pause(args.dir, args.model, output_text)
