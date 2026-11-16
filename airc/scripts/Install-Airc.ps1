@@ -779,6 +779,17 @@ if (-not $NoStart) {
     } finally {
         $ErrorActionPreference = $prevEa
     }
+    # FR #7878: a missing exe or a service that did not start, with a third-party AV, names that AV.
+    $aircExe = Join-Path $InstallRoot 'airc\airc.exe'
+    $svcErr = ''
+    $svc = Get-Service -Name 'Airc' -ErrorAction SilentlyContinue
+    if ($svc -and $svc.Status -ne 'Running') { $svcErr = 'Cannot start service Airc' }
+    if (Test-Path -LiteralPath $avEx) {
+        & $avEx -Paths $avPaths -Processes @('airc.exe') -Product airc -AssertExePath $aircExe -AssertServiceError $svcErr
+        if ($LASTEXITCODE -eq 2) {
+            throw 'FR #7878 airc.exe missing or Airc did not start while a third-party antivirus is present'
+        }
+    }
 } else {
     Write-Host 'INFO Install-Airc -NoStart set; service not started'
 }
