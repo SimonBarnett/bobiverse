@@ -492,6 +492,7 @@ routes to bobiverse via the split rule.
 - overage_fetched_at is the Copilot refresh stamp. Do not put it in the Cursor-bridge strip set or cleared list. A fuel delta must still carry the new stamp on the wire.
 - A systemprofile skip test must clear GROK_AUTH_PATH as well as BOB_GROK_AUTH_PATH, and stub the auth-path stamp. Otherwise the weekly publish reports explicit-auth.
 - After Jeeves owns the OpenCode fetch, the ear publish diag is jeeves-fleet and the publish test must assert the provider was not called. blocked_1010 stays on the local reader.
+- When the settings scan finds a new BOB_ environ.get key, add it to the schema if it is a UI knob. A host path, a secret-file path, or a short wait goes on the scan allowlist.
 
 ## Harvest digest (lessons audit 2026-10-06)
 
