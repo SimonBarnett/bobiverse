@@ -3888,6 +3888,7 @@ def export_machine_for_tray(
     if "xai_weekly" in out and "xai" not in out:
         out["xai"] = out.get("xai_weekly")
     strip_fleet_owned_from_machine(out)
+    apply_ear_publish_staleness(out, now, machine_id=mid)
     return out
 
 
@@ -4005,6 +4006,7 @@ def _merge_pcent_lesser(existing: object, incoming: dict, *, replace: bool = Fal
 
 POOL_STALE_AFTER_S = 6 * 3600.0     # #80: a machine not heard from for this long no longer speaks for the pool
 DEFAULT_DIGEST_STALE_S = 900.0      # FR #6100: public digest ts / lastSeen older than this is stale
+EAR_PUBLISH_STALE_S = 120.0         # FR #7839: ear lastSeen / pool fetched_at older than this is not fresh
 
 
 def digest_stale_s() -> float:
@@ -4047,6 +4049,81 @@ def digest_age_s(doc: dict | None, now: datetime | None = None) -> float | None:
     if ref.tzinfo is None:
         ref = ref.replace(tzinfo=timezone.utc)
     return max(0.0, (ref - clock).total_seconds())
+
+
+def _clock_age_s(raw: object, now: datetime | None) -> float | None:
+    parsed = _parse_iso_ts(raw)
+    if parsed is None:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    ref = now or datetime.now(timezone.utc)
+    if ref.tzinfo is None:
+        ref = ref.replace(tzinfo=timezone.utc)
+    return max(0.0, (ref - parsed).total_seconds())
+
+
+def report_stale_ear_publish(machine_id: str, age_s: float, *, why: str) -> None:
+    """FR #7839: one intake issue when an ear or its pool has gone quiet. Never raises."""
+    try:
+        import runtime_failure
+
+        runtime_failure.report_message(
+            "bob-ear",
+            f"digest publish stale machine={machine_id} why={why} age_s={int(age_s)}",
+            site="ear-publish-stale",
+        )
+    except Exception:
+        return
+
+
+def apply_ear_publish_staleness(
+    ent: dict,
+    now: datetime | None = None,
+    *,
+    machine_id: str = "",
+    report: bool | None = None,
+) -> bool:
+    """FR #7839: lastSeen or pool fetched_at older than 2 min is not fresh.
+
+    Keeps the last remaining percent and period end. A quiet ear is not online.
+    A quiet pool is ``fresh: false``. Returns True when the row was marked stale.
+    """
+    if not isinstance(ent, dict):
+        return False
+    if report is None:
+        report = not os.environ.get("PYTEST_CURRENT_TEST")
+    changed = False
+    seen_age = _clock_age_s(ent.get("lastSeen"), now)
+    if seen_age is not None and seen_age > EAR_PUBLISH_STALE_S:
+        if ent.get("online") is not False:
+            ent["online"] = False
+            ent["status"] = "I am offline"
+            changed = True
+        ent["ear_fresh"] = False
+    weekly = ent.get("xai_weekly")
+    pool_age = None
+    if isinstance(weekly, dict):
+        pool_age = _clock_age_s(weekly.get("fetched_at"), now)
+        if pool_age is not None and pool_age > EAR_PUBLISH_STALE_S:
+            weekly = dict(weekly)
+            if weekly.get("fresh") is not False:
+                weekly["fresh"] = False
+                changed = True
+            ent["xai_weekly"] = weekly
+            ent["xai"] = weekly
+    age = None
+    why = ""
+    if seen_age is not None and seen_age > EAR_PUBLISH_STALE_S:
+        age = seen_age
+        why = "lastSeen"
+    if pool_age is not None and pool_age > EAR_PUBLISH_STALE_S and (age is None or pool_age > age):
+        age = pool_age
+        why = "fetched_at" if not why else why + "+fetched_at"
+    if age is not None and report:
+        report_stale_ear_publish(machine_id or str(ent.get("id") or ""), age, why=why or "stale")
+        changed = True
+    return changed
 
 
 def digest_is_stale(doc: dict | None, now: datetime | None = None) -> bool:

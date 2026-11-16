@@ -1159,6 +1159,9 @@ class Client:
         self._bobiverse_last_tray: dict[str, float] = {}
         self._bobiverse_pull_last = 0.0
         self._digest_fuel_last = 0.0  # FR #6141 ear fuel publish tick
+        self._fuel_worker = None  # FR #7839 in-flight publish; a hang must not stop the loop
+        self._fuel_worker_started = 0.0
+        self._fuel_stall_reported = False
         # FR #6143: last successfully POSTed grok_account (str or None); chair row for compare.
         self._grok_account_last = 0.0
         self._grok_account_delivered = _GROK_ACCOUNT_UNSET
@@ -3401,19 +3404,50 @@ class Client:
         now = time.time()
         if now - self._digest_fuel_last < interval:
             return
-        self._digest_fuel_last = now
-        try:
-            code = bobreport.publish_local_peer_fuel(self.home, mid)
-        except Exception as exc:  # noqa: BLE001 — never break outbox on fuel publish
-            info(f"INFO digest-fuel publish skip: {type(exc).__name__}")
+        worker = getattr(self, "_fuel_worker", None)
+        if worker is not None and worker.is_alive():
+            # FR #7839: a hung fetch/POST must not freeze later heartbeats.
+            started = float(getattr(self, "_fuel_worker_started", 0.0) or 0.0)
+            if started and (now - started) >= bobreport.EAR_PUBLISH_STALE_S and not getattr(
+                self, "_fuel_stall_reported", False
+            ):
+                self._fuel_stall_reported = True
+                info("ERROR digest-fuel publish stalled")
+                try:
+                    import runtime_failure
+
+                    runtime_failure.report_message(
+                        "bob-ear",
+                        "digest fuel publish still running past 2 min",
+                        site="digest-fuel-stall",
+                    )
+                except Exception:
+                    pass
             return
-        # Ack is a field. A POST word in this line is not by itself an HTTP success,
-        # and a URLError is not proof the digest is missing.
-        info(
-            "INFO digest-fuel "
-            + bobreport.format_fuel_publish_diag(bobreport.last_fuel_publish_diag())
-            + f" code={code}"
-        )
+        self._digest_fuel_last = now
+        self._fuel_stall_reported = False
+
+        def _run() -> None:
+            try:
+                code = bobreport.publish_local_peer_fuel(self.home, mid)
+            except Exception as exc:  # noqa: BLE001 — never break outbox on fuel publish
+                info(f"INFO digest-fuel publish skip: {type(exc).__name__}")
+                try:
+                    import runtime_failure
+
+                    runtime_failure.report("bob-ear", exc, site="digest-fuel-publish")
+                except Exception:
+                    pass
+                return
+            info(
+                "INFO digest-fuel "
+                + bobreport.format_fuel_publish_diag(bobreport.last_fuel_publish_diag())
+                + f" code={code}"
+            )
+
+        self._fuel_worker_started = now
+        self._fuel_worker = threading.Thread(target=_run, name="digest-fuel", daemon=True)
+        self._fuel_worker.start()
 
     def _maybe_publish_grok_account(self) -> None:
         """FR #6143: fleet bob-ear POSTs grok_account label-only merge (no secrets)."""
@@ -5725,10 +5759,14 @@ class Client:
                 self._chair_jobs_tick()
                 self._maybe_depart_request()
                 self._maybe_prune_talk_seat_ghosts()
-            except OSError:
-                return
-            except Exception as exc:  # noqa: BLE001 -- FR #5157: one line must not kill the thread
+            except Exception as exc:  # noqa: BLE001 -- FR #5157 / #7839: one tick must not kill fuel
                 info(f"ERROR outbox-loop {type(exc).__name__}: {exc}"[:220])
+                try:
+                    import runtime_failure
+
+                    runtime_failure.report("bob-ear", exc, site="outbox-loop")
+                except Exception:
+                    pass
             time.sleep(1)
 
     def _abort_gate(self, gate: str) -> None:
