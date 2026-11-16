@@ -86,7 +86,7 @@ ear receives nothing. Talk-seat liveness does not cover `Bob-*` ears. The ear:
 
 Workaround until this tip is deployed: `Restart-Service ircBob`.
 
-**FR #7839:** the outbox tick keeps running after an exception (including the old `OSError` return that stopped fuel while the reader stayed up). A fuel POST runs on its own thread; if that thread is still in flight after 2 minutes the ear logs and reports `digest-fuel-stall` and later ticks continue. On `GET /bob/v1/report`, a machine whose `lastSeen` is older than 2 minutes is offline, and an `xai_weekly.fetched_at` older than 2 minutes keeps the last percent and period end with `fresh: false`. That stale row files `ear-publish-stale` (deduped).
+**FR #7839:** the outbox tick keeps running after an exception (including the old `OSError` return that stopped fuel while the reader stayed up). A fuel POST runs on its own thread; if that thread is still in flight after 2 minutes the ear logs and reports `digest-fuel-stall` and later ticks continue. On `GET /bob/v1/report`, a machine whose `lastSeen` is older than 2 minutes is offline, and an `xai_weekly.fetched_at` older than 2 minutes keeps the last percent and period end with `fresh: false`. That stale row files `ear-publish-stale` (deduped) only for this ear, and only when the reported age is still inside the six-hour pool window. A remote machine, or a timestamp older than that window, is still marked stale and is not filed. An in-window `lastSeen` stall is still filed when `fetched_at` is already past the window. The filed message omits the changing age (FR #7892).
 
 ## Absent / stale ear recovery
 

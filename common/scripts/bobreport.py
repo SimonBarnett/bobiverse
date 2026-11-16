@@ -4132,10 +4132,16 @@ def apply_ear_publish_staleness(
             ent["xai"] = weekly
     age = None
     why = ""
-    if seen_age is not None and seen_age > EAR_PUBLISH_STALE_S:
+    # FR #7892: an age past the pool window still marks the row stale above, but
+    # it must not replace an in-window stall or suppress that stall's report.
+    if seen_age is not None and EAR_PUBLISH_STALE_S < seen_age <= POOL_STALE_AFTER_S:
         age = seen_age
         why = "lastSeen"
-    if pool_age is not None and pool_age > EAR_PUBLISH_STALE_S and (age is None or pool_age > age):
+    if (
+        pool_age is not None
+        and EAR_PUBLISH_STALE_S < pool_age <= POOL_STALE_AFTER_S
+        and (age is None or pool_age > age)
+    ):
         age = pool_age
         why = "fetched_at" if not why else why + "+fetched_at"
     if age is not None and report:
