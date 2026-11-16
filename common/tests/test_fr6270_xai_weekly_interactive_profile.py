@@ -69,6 +69,7 @@ def test_fr6270_publish_skips_do_not_carry_stale_weekly(monkeypatch, tmp_path: P
     system-profile-skipped (no auth) -> keep 19, fresh=false, explicit error.
     """
     import json
+    from datetime import datetime, timezone
     from unittest import mock
 
     import bobstat
@@ -94,7 +95,10 @@ def test_fr6270_publish_skips_do_not_carry_stale_weekly(monkeypatch, tmp_path: P
     )
     monkeypatch.delenv("BOB_WEEKLY_LOG", raising=False)
     monkeypatch.delenv("BOB_GROK_WEEKLY_USER_HOME", raising=False)
+    # FR #7753: ambient GROK_AUTH_PATH is explicit-auth and hides the skip.
     monkeypatch.delenv("BOB_GROK_AUTH_PATH", raising=False)
+    monkeypatch.delenv("GROK_AUTH_PATH", raising=False)
+    monkeypatch.setattr(bobreport, "_read_grok_auth_path_stamp", lambda: None)
     monkeypatch.setenv("USERPROFILE", str(tmp_path / "systemprofile"))
     (tmp_path / "systemprofile").mkdir(exist_ok=True)
     monkeypatch.setenv("USERNAME", "tester")
@@ -118,9 +122,12 @@ def test_fr6270_publish_skips_do_not_carry_stale_weekly(monkeypatch, tmp_path: P
 
         return Resp()
 
+    # FR #7503: wall-clock now against fetched_at 2026-11-09 posts a stale-pool
+    # issue before the fuel merge (len(posted) becomes 2). Pin now to the stamp.
+    now = datetime(2026, 11, 9, 6, 0, 5, tzinfo=timezone.utc).timestamp()
     with mock.patch("urllib.request.urlopen", fake_urlopen):
         code = bobreport.publish_local_peer_fuel(
-            home, mid, force=True, url="https://example.test/bob/v1/report"
+            home, mid, force=True, url="https://example.test/bob/v1/report", now=now
         )
     assert code == 204
     assert len(posted) == 1
