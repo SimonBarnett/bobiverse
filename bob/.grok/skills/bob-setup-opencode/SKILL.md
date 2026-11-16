@@ -31,11 +31,11 @@ Fuel ids: `opencode-free`, `opencode-go`.
 ## Why OpenCode
 
 Low-cost CLI coding agent for routine FR/fix PRs, docs PRs and harvest work when
-Cursor Models / Grok seats are thin or capped. Hostile MRB stays on a stronger
-seat (Grok first, then Cursor). Chair gate (FR #6134): when digest `kind=opencode`,
-Jeeves skips offering MRB/UAT to that seat (`!bored` and `!assign` refuse). Hostile
-review stays on Grok/Cursor. The worker also NACKs MRB/UAT before ACK if offered.
-CodeRabbit stays advisory, never required.
+Cursor Models / Grok seats are thin or capped. Hostile MRB prefers a stronger
+seat (Grok first, then Cursor). Chair gate (FR #6134 / #7888): free or unknown
+`start_model` skips MRB/UAT; a paid launched OpenCode Go / pro `start_model` may
+take MRB even when the configured model is free. The worker NACKs from the
+launched model, not the configured hello id. CodeRabbit stays advisory, never required.
 
 ## CAST IRON — never put API keys in code, tests, logs, argv, IRC or docs
 
@@ -292,7 +292,7 @@ Trial metrics template lives in that same doc.
 
 - Put API keys in SKILL.md, IRC, PRs, Task reports, chat, argv, or git.
 - Ask Simon to paste a key when box browser + form/handoff can create/store it.
-- Use OpenCode for hostile MRB (keep Grok/Cursor first).
+- Prefer Grok/Cursor for hostile MRB; OpenCode may take MRB only with a paid start_model (FR #7888).
 - Stamp UAT from OpenCode.
 
 ## Related
