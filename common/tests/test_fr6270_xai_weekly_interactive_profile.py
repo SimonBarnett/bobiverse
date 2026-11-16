@@ -69,6 +69,7 @@ def test_fr6270_publish_skips_do_not_carry_stale_weekly(monkeypatch, tmp_path: P
     system-profile-skipped (no auth) -> keep 19, fresh=false, explicit error.
     """
     import json
+    from datetime import datetime, timezone
     from unittest import mock
 
     import bobstat
@@ -121,9 +122,12 @@ def test_fr6270_publish_skips_do_not_carry_stale_weekly(monkeypatch, tmp_path: P
 
         return Resp()
 
+    # FR #7769: wall-clock now against 2026-11-09 files a stale-pool issue
+    # beside the fuel merge. Stay next to the fixture stamp.
+    fresh = datetime(2026, 11, 9, 6, 0, 5, tzinfo=timezone.utc).timestamp()
     with mock.patch("urllib.request.urlopen", fake_urlopen):
         code = bobreport.publish_local_peer_fuel(
-            home, mid, force=True, url="https://example.test/bob/v1/report"
+            home, mid, force=True, url="https://example.test/bob/v1/report", now=fresh
         )
     assert code == 204
     assert len(posted) == 1
