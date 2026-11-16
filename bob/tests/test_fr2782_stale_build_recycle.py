@@ -93,26 +93,63 @@ def _sup(tmp_path, irc):
 
 
 def test_idle_stale_seat_recycles_instead_of_bored(tmp_path):
-    """FR #3180: stale seat keeps running, skips !bored, announces manual restart (no EXIT_STALE_BUILD)."""
+    """FR #7834: stale seat keeps running, still posts !bored, and does not exit."""
+    bw._stale_build_reported.clear()
     irc = _Irc()
     sup, logs = _sup(tmp_path, irc)
+    reports: list = []
+    published: list = []
     sup.stale_build_check = lambda: "run=d409556250b4 install=e5dbd4368d62"
-    assert sup.post_bored() is False
-    assert ("#marchhare", "!bored") not in irc.said
+    sup.stale_build_reporter = lambda nick, why: reports.append((nick, why))
+    sup.publish_stale_digest = published.append
+    assert sup.post_bored() is True
+    assert ("#marchhare", "!bored") in irc.said
+    assert not any(str(text).upper().startswith("NACK") or str(text).upper().startswith("NAK") for _, text in irc.said)
     assert not sup.done.wait(0.3)
     assert sup.exit_code != bw.EXIT_STALE_BUILD
+    assert sup.stale_build_status["running"] == "d409556250b4"
+    assert sup.stale_build_status["installed"] == "e5dbd4368d62"
+    assert reports == [("marchhare-4242", "run=d409556250b4 install=e5dbd4368d62")]
+    assert published and published[0]["running"] == "d409556250b4"
+    assert sup.post_bored() is True
+    assert len(reports) == 1
     assert any("stale build (run=d409556250b4 install=e5dbd4368d62)" in m for m in logs)
     assert any("manual" in m.lower() or "restart" in m.lower() for m in logs) or any(
         "manual" in str(s).lower() or "restart" in str(s).lower() for s in irc.said
     )
 
 
+def test_digest_payload_carries_stale_build(monkeypatch):
+    captured: list = []
+
+    def fake_post(url, payload, **kw):
+        captured.append(payload)
+        return True
+
+    monkeypatch.setattr(bw, "_http_post_json", fake_post)
+    ok = bw.post_digest_seat_kind(
+        machine="redqueen",
+        pid=1,
+        nick="redqueen-1",
+        kind="opencode",
+        url="https://example.test/digest",
+        stale_build={"running": "14f1263eaaaa", "installed": "22f0e74abbbb", "since": 10.0},
+    )
+    assert ok is True
+    assert captured[0]["stale_build"]["running"] == "14f1263eaaaa"
+    assert captured[0]["stale_build"]["installed"] == "22f0e74abbbb"
+
+
 def test_current_build_still_posts_bored(tmp_path):
     irc = _Irc()
     sup, _ = _sup(tmp_path, irc)
     sup.stale_build_check = lambda: None
+    reports: list = []
+    sup.stale_build_reporter = lambda nick, why: reports.append((nick, why))
     assert sup.post_bored() is True
     assert irc.said == [("#marchhare", "!bored")]
+    assert sup.stale_build_status is None
+    assert reports == []
     assert not sup.done.is_set()
 
 

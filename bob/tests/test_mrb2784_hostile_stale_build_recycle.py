@@ -73,9 +73,9 @@ def test_mrb2784_post_bored_recycles_not_bored(tmp_path):
         log=logs.append,
         bored=None,
     )
-    sup.stale_build_check = lambda: "run=old install=new"
-    assert sup.post_bored() is False
-    assert ("#marchhare", "!bored") not in irc.said
+    sup.stale_build_check = lambda: "run=aaaaaaaaaaaa install=bbbbbbbbbbbb"
+    assert sup.post_bored() is True
+    assert ("#marchhare", "!bored") in irc.said
     assert not sup.done.wait(0.3)
     assert sup.exit_code != bw.EXIT_STALE_BUILD
     assert any("stale build" in m.lower() for m in logs)
