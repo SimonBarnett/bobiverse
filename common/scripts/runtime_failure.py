@@ -76,6 +76,16 @@ def report(
 ) -> dict[str, Any]:
     """Log + intake one distinct failure. Never raises."""
     try:
+        # FR #7863: pytest (FR #5157 outbox UnicodeEncodeError) must not POST intake.
+        # Callers that pass filer_post still exercise the report path.
+        under_pytest = bool(os.environ.get("PYTEST_CURRENT_TEST"))
+        allow = (os.environ.get("BOB_RUNTIME_FAILURE_UNDER_PYTEST") or "").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+        }
+        if under_pytest and not allow and filer_post is None:
+            return {"ok": True, "skipped": True, "reason": "pytest"}
         site = (site or "caught").strip() or "caught"
         component = (component or "unknown").strip() or "unknown"
         sig = failure_signature(component=component, site=site, exc=exc)
