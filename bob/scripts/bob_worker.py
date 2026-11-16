@@ -3570,10 +3570,14 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
 
             _gcfg = wsm.load_worker_start_config()
             grok_model = wsm.configured_start_model("grok", _gcfg)
-            argv = wsm.launch_argv_with_model("grok", argv, grok_model)
-            argv = wsm.launch_argv_with_effort(
-                "grok", argv, wsm.configured_start_effort("grok", _gcfg)
+            # FR #2699 / MRB #2710: the shared --no-auto-update/--no-alt-screen/--cwd
+            # prefix stays first; model/effort flags go right after it.
+            tail = [exe] + argv[len(prefix):]
+            tail = wsm.launch_argv_with_model("grok", tail, grok_model)
+            tail = wsm.launch_argv_with_effort(
+                "grok", tail, wsm.configured_start_effort("grok", _gcfg)
             )
+            argv = prefix + tail[1:]
         except Exception:
             pass
     elif kind == "cursor":
