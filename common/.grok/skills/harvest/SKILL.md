@@ -493,6 +493,7 @@ routes to bobiverse via the split rule.
 - A systemprofile skip test must clear GROK_AUTH_PATH as well as BOB_GROK_AUTH_PATH, and stub the auth-path stamp. Otherwise the weekly publish reports explicit-auth.
 - After Jeeves owns the OpenCode fetch, the ear publish diag is jeeves-fleet and the publish test must assert the provider was not called. blocked_1010 stays on the local reader.
 - When the settings scan finds a new BOB_ environ.get key, add it to the schema if it is a UI knob. A host path, a secret-file path, or a short wait goes on the scan allowlist.
+- When prepare form gains a Session 0 fail-close and a prepare-form SDK path, update the doc pin to those sentences. Do not restore WINRUN only.
 
 ## Harvest digest (lessons audit 2026-10-06)
 
