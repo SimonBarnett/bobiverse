@@ -1266,6 +1266,26 @@ class ChairJobs:
             log=self.log,
             announce=self.announce,
         )
+        self._copilot_draft_ready()
+
+    def _copilot_draft_ready(self) -> None:
+        """FR #7941: un-draft a finished Copilot PR once, then queue its MRB."""
+        try:
+            import copilot_draft_ready as cdr
+
+            prs = getattr(self, "copilot_drafts", None)
+            if not isinstance(prs, list):
+                prs = cdr.list_open_copilot_drafts(cdr.repos_to_scan(self.digest_home))
+            cdr.promote(
+                self.digest_home,
+                prs,
+                now=float(self.clock()),
+                mark_ready=cdr.gh_mark_ready,
+                announce=self.announce,
+                log=self.log,
+            )
+        except Exception as exc:
+            self.log(f"WARN copilot-draft-ready {type(exc).__name__}")
 
     def _stall_scan(self) -> None:
         """FR #5164: file one issue per distinct stall; never raise."""

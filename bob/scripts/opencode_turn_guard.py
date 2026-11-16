@@ -46,6 +46,21 @@ def report_opencode_hard_ceiling(
     return {"posted": True, "skipped": False, "sig": sig}
 
 
+def report_opencode_capture_read(message: str, *, reporter=None) -> dict:
+    """FR #7899: one auto-report when the capture file cannot be read. No file body."""
+    text = " ".join(str(message or "opencode capture read failed").split())[:240]
+    if reporter is None:
+        here = Path(__file__).resolve()
+        common = here.parent.parent.parent / "common" / "scripts"
+        if common.is_dir() and str(common) not in sys.path:
+            sys.path.insert(0, str(common))
+        import runtime_failure
+
+        reporter = runtime_failure.report_message
+    reporter("bob-worker", text, site="opencode-capture-read")
+    return {"ok": True, "message": text}
+
+
 def _post_crash(title: str, body: str, *, repo: str, sig: str, exe: str) -> None:
     here = Path(__file__).resolve()
     common = here.parents[2] / "common" / "scripts"
@@ -143,7 +158,17 @@ def main(argv: list[str] | None = None) -> int:
     s.add_argument("--job", default="")
     s.add_argument("--outbox", default="")
     s.add_argument("--issue-state", default="")
+    cap = sub.add_parser("capture-failed")
+    cap.add_argument("--message", default="opencode capture read failed")
     args = p.parse_args(argv)
+    if args.cmd == "capture-failed":
+        try:
+            report_opencode_capture_read(args.message)
+        except Exception as exc:  # noqa: BLE001
+            print(f"capture-report-failed {type(exc).__name__}")
+            return 0
+        print("capture-reported")
+        return 0
     if args.cmd == "ceiling":
         try:
             report_opencode_hard_ceiling(
