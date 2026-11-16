@@ -340,7 +340,15 @@ namespace BobDialogs
                         Match m = Regex.Match(line, @"at\s+(\S+)\s+in\s+(.+):line\s+(\d+)");
                         if (m.Success)
                         {
-                            parts.Add(Path.GetFileName(m.Groups[2].Value) + ":" + m.Groups[3].Value + ":" + m.Groups[1].Value);
+                            // FR #7856: a stack path can throw ArgumentException and
+                            // used to replace the whole crash with "crash hook failed".
+                            string frame = "frame";
+                            try
+                            {
+                                frame = Path.GetFileName(m.Groups[2].Value) + ":" + m.Groups[3].Value + ":" + m.Groups[1].Value;
+                            }
+                            catch { frame = "frame"; }
+                            parts.Add(frame);
                             n++;
                             continue;
                         }
@@ -415,14 +423,22 @@ namespace BobDialogs
                     WriteSpool(title, body, sig, exeName, "post_failed");
                 }
             }
-            catch
+            catch (Exception hookEx)
             {
+                // FR #7856: the fallback used to spool the bare words "crash hook failed",
+                // which intake filed with no exception. Keep type + message for both
+                // the hook error and the original crash. Never include a stack path.
                 try
                 {
+                    string hookName = hookEx == null ? "Exception" : hookEx.GetType().Name;
+                    string origName = "none";
+                    try { if (ex != null) origName = ex.GetType().Name; } catch { origName = "unknown"; }
+                    string body = "crash hook failed: " + hookName + ": " + SafeExceptionMessage(hookEx)
+                        + "\noriginal: " + origName + ": " + SafeExceptionMessage(ex);
                     WriteSpool(
                         "crash: " + (exeName ?? "dialog") + " hook-failure",
-                        Redact("crash hook failed"),
-                        "hookfail",
+                        body,
+                        "hookfail-" + hookName,
                         exeName ?? "dialog",
                         "hook_failure");
                 }
@@ -485,6 +501,17 @@ namespace BobDialogs
                 }
             }
             catch { }
+        }
+
+        static string SafeExceptionMessage(Exception ex)
+        {
+            if (ex == null) return "";
+            string msg = "";
+            try { msg = ex.Message ?? ""; } catch { return ""; }
+            msg = msg.Replace("\r", " ").Replace("\n", " ");
+            if (msg.Length > 180) msg = msg.Substring(0, 180);
+            try { msg = Redact(msg); } catch { }
+            return msg;
         }
 
         static string ReadVersion()
