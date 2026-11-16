@@ -21,6 +21,37 @@ def _txt(p: Path) -> str:
     return p.read_text(encoding="utf-8-sig")
 
 
+def _poll_handler() -> str:
+    """Full ``$poll.Add_Tick`` scriptblock (brace-matched), not a fixed character window."""
+    w = _txt(WATCH)
+    marker = "$poll.Add_Tick"
+    assert marker in w, "Watch-BobTray.ps1: $poll.Add_Tick handler not found"
+    open_idx = w.index("{", w.index(marker))
+    depth = 0
+    i = open_idx
+    n = len(w)
+    while i < n:
+        c = w[i]
+        if c == "'":
+            i += 1
+            while i < n and w[i] != "'":
+                i += 1
+            i += 1
+            continue
+        if c == "{":
+            depth += 1
+        elif c == "}":
+            depth -= 1
+            if depth == 0:
+                body = w[open_idx : i + 1]
+                assert "finally" in body, "poll handler extraction failed: 'finally' missing"
+                assert "pollBusy" in body, "poll handler extraction failed: 'pollBusy' missing"
+                assert "$poll.Start()" in body, "poll handler extraction failed: '$poll.Start()' missing"
+                return body
+        i += 1
+    raise AssertionError("Watch-BobTray.ps1: $poll.Add_Tick scriptblock is unclosed")
+
+
 def test_fr4142_watch_has_timed_tick_helper():
     w = _txt(WATCH)
     assert "function Invoke-BobTrayTimedTick" in w or "function Measure-BobTrayTick" in w
@@ -30,25 +61,24 @@ def test_fr4142_watch_has_timed_tick_helper():
 
 
 def test_fr4142_poll_reentrancy_stop_restart():
-    w = _txt(WATCH)
-    poll = w[w.index("$poll.Add_Tick") : w.index("$poll.Add_Tick") + 4500]
+    poll = _poll_handler()
     assert "$poll.Stop()" in poll or "poll.Stop()" in poll
     assert "$poll.Start()" in poll or "poll.Start()" in poll
     assert "pollBusy" in poll or "re-entran" in poll.lower() or "FR #4142" in poll
 
 
 def test_fr4142_engine_mode_skips_update_hover_ui_on_poll():
-    w = _txt(WATCH)
-    poll = w[w.index("$poll.Add_Tick") : w.index("$poll.Add_Tick") + 2800]
+    poll = _poll_handler()
     assert "Test-BobTrayEngineMode" in poll
-    # Must not call bare Update-Hover unconditionally in engine mode.
-    assert "SkipUi" in poll or "Update-Hover" in poll
-    assert (
-        "if (-not" in poll
-        and "Update-Hover" in poll
-    ) or "SkipUi" in poll or "engine" in poll.lower()
-    # Explicit skip path for engine
     assert "FR #4142" in poll
+    # Bare Update-Hover (TipForm paint) is gated: it only runs inside if (-not $engine).
+    assert "if (-not $engine)" in poll
+    guard = poll.index("if (-not $engine)")
+    assert "Update-Hover" in poll[guard:]
+    # Engine mode runs the data-only update-hover-engine job, never the bare UI paint.
+    assert "update-hover-engine" in poll
+    engine_else = poll.rindex("else", 0, poll.index("update-hover-engine"))
+    assert "Update-Hover" not in poll[engine_else:]
 
 
 def test_fr4142_engine_mode_skips_flash_pulse_start():
@@ -68,7 +98,7 @@ def test_fr4142_digest_write_off_ui_thread():
     assert "Write-BobIrcStatus" in w
     assert "System.Timers.Timer" in w
     # A dedicated digest/timer path cites FR #4142 or moves Write-BobIrcStatus off poll for engine
-    poll = w[w.index("$poll.Add_Tick") : w.index("$poll.Add_Tick") + 2800]
+    poll = _poll_handler()
     assert "FR #4142" in poll or "FR #1553" in poll
     # Either poll skips Write-BobIrcStatus when engine, or a Timers.Timer runs it
     assert (
