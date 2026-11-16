@@ -932,6 +932,9 @@ function Send-BobiverseAircInstallFailureIntake {
     <#
       FR #3515 / #3395: local MSI log always; redacted intake when crash-report allows.
       Returns a small object: skipped / dry_run / title / body / report (or $null on hard skip).
+      MRB #7885: -SkipFailReportedFlag for non-failure reports (e.g. FR #7878 third-party AV
+      warn) so install-airc-fail-reported.flag is not set and a later real install failure
+      can still use the outer Report-AircInstallCmdFailure path (FR #3685).
     #>
     param(
         [string]$InstallRoot = '',
@@ -940,22 +943,27 @@ function Send-BobiverseAircInstallFailureIntake {
         [Parameter(Mandatory)][string]$Body,
         [string]$Repo = 'SimonBarnett/bobiverse',
         [string]$IntakeUrl = '',
-        [switch]$DryRun
+        [switch]$DryRun,
+        [switch]$SkipFailReportedFlag
     )
     $safeTitle = Redact-BobiverseCrashText -Text $Title
     $safeBody = Redact-BobiverseCrashText -Text $Body
     try {
-        Write-BobiverseMsiInstallLog -Product airc -Message ("install-fail-intake: {0}" -f $safeBody)
+        $logPrefix = if ($SkipFailReportedFlag) { 'install-warn-intake' } else { 'install-fail-intake' }
+        Write-BobiverseMsiInstallLog -Product airc -Message ("{0}: {1}" -f $logPrefix, $safeBody)
     } catch { }
 
     # FR #3685: tell Install-Airc.cmd the PS path already handled reporting (skip outer double-file).
-    try {
-        $flagDir = Join-Path $env:ProgramData 'Bobiverse\logs'
-        if (-not (Test-Path -LiteralPath $flagDir)) {
-            New-Item -ItemType Directory -Force -Path $flagDir | Out-Null
-        }
-        Set-Content -LiteralPath (Join-Path $flagDir 'install-airc-fail-reported.flag') -Value '1' -Encoding ascii
-    } catch { }
+    # Skip for warning-only reports (MRB #7885 / FR #7878) so a later real failure still files.
+    if (-not $SkipFailReportedFlag) {
+        try {
+            $flagDir = Join-Path $env:ProgramData 'Bobiverse\logs'
+            if (-not (Test-Path -LiteralPath $flagDir)) {
+                New-Item -ItemType Directory -Force -Path $flagDir | Out-Null
+            }
+            Set-Content -LiteralPath (Join-Path $flagDir 'install-airc-fail-reported.flag') -Value '1' -Encoding ascii
+        } catch { }
+    }
 
     $allowIntake = $false
     try {

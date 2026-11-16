@@ -129,7 +129,8 @@ if (Test-Path -LiteralPath $avEx) {
     $avUpdateLog = Join-Path $(if ($env:ProgramData) { $env:ProgramData } else { 'C:\ProgramData' }) 'bobiverse\update\airc\update.log'
     $avShop = @{}
     if ($env:BOB_OUTBOX) { $avShop.ShopOutbox = $env:BOB_OUTBOX }
-    & $avEx -Paths $avPaths -Processes @('airc.exe') -Product airc -UpdateLog $avUpdateLog @avShop
+    & $avEx -Paths $avPaths -Processes @('airc.exe') -Product airc -UpdateLog $avUpdateLog `
+        -InstallRoot $InstallRoot -ScriptsDir $here @avShop
 } else {
     Write-Warning 'FR #4215 Register-BobiverseAvExclusions.ps1 missing beside installer; continuing without AV exclusions'
 }
@@ -792,7 +793,8 @@ if (-not $NoStart) {
         $avArgs = @(
             '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', $avEx,
             '-Product', 'airc', '-UpdateLog', $avUpdateLog,
-            '-AssertExePath', $aircExe, '-AssertServiceError', $svcErr
+            '-AssertExePath', $aircExe, '-AssertServiceError', $svcErr,
+            '-InstallRoot', $InstallRoot, '-ScriptsDir', $here
         )
         foreach ($p in @($avPaths)) { $avArgs += @('-Paths', [string]$p) }
         $avArgs += @('-Processes', 'airc.exe')
