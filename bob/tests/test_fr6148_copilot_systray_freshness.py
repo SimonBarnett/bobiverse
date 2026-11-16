@@ -40,8 +40,9 @@ def test_watch_always_shows_copilot_unknown_fallback():
     # Stale stays a label. It is not the red alarm color.
     assert "Copilot - `[stale" not in sec
     hdr = w[w.index("function Add-BobTraySectionHeader") : w.index("function Set-BobTrayHelpTip")]
-    assert "[System.Drawing.Color]$TitleColor" in hdr
-    assert "TitleColor.A" in hdr
+    # FR #7693: TitleColor is untyped so a null colour keeps $fg.
+    assert '$TitleColor' in hdr
+    assert "Resolve-BobTrayDrawingColor -Color $TitleColor" in hdr
     fam = w[w.index("function Add-BobTrayFuelFamilyRow") : w.index("function Get-BobTrayLogoImage")]
     assert "TitleColor" in fam
 
@@ -139,16 +140,18 @@ def test_format_stale_by_age():
         },
         now,
     )
+    # FR #7299 / #7595: an aged reading stays stale and keeps the last percent.
     assert "stale" in line.lower()
-    assert "140% left" not in line
+    assert "140% left" in line
     assert "allowance" not in line
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="PowerShell formatter")
 def test_format_missing_fetched_at_stale():
+    """Missing fetched_at is stale (FR #6148). Last percent stays (FR #7299 / #7595)."""
     line = _ps_format({"state": "ok", "remaining": 5}, "2026-11-07T12:00:00Z")
     assert "stale" in line.lower()
-    assert "5% left" not in line
+    assert "5% left" in line
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="PowerShell formatter")
