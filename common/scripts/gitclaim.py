@@ -8522,6 +8522,108 @@ def seat_skips_hostile_review(kind: str) -> bool:
     return (kind or "").strip().lower() == "opencode"
 
 
+def seat_started_on_free_model(home: Path, nick: str) -> bool:
+    """FR #7926: the model the seat started on, not the configured model.
+
+    ``opencode/deepseek-v4.1-flash-free`` is free. Grok and
+    ``opencode-go/deepseek-v4-pro`` are not. An empty or ``$model`` start
+    model is not free.
+    """
+    fields = _seat_digest_model_fields(home, nick)
+    model = str(fields.get("start_model") or "").strip()
+    if not model or "$" in model:
+        return False
+    try:
+        import worker_start_model as wsm
+
+        if wsm.opencode_is_go_or_paid(model):
+            return False
+    except Exception:
+        low_paid = model.lower()
+        if low_paid.startswith("opencode-go/") or low_paid.endswith("-pro"):
+            return False
+    low = model.lower()
+    if low.endswith("-free") or low.startswith("opencode/"):
+        return True
+    tier = str(fields.get("cost_tier") or "").strip().lower()
+    return tier in ("free", "opencode-free")
+
+
+def idle_free_model_nicks(home: Path, *, now: float | None = None, live: set[str] | None = None) -> set[str]:
+    """Idle seats whose start_model is a free model (FR #7926)."""
+    found: set[str] = set()
+    rows = []
+    try:
+        rows.extend(digest_idle_ready_seats(home, now=now, live=live))
+    except Exception:
+        rows = []
+    try:
+        for extra in list_idle_after_empty(home, now=now, live=live):
+            rows.append(extra)
+    except Exception:
+        pass
+    for ent in rows:
+        nick = str((ent or {}).get("nick") or "").strip()
+        if not nick or worker_working_on(home, nick):
+            continue
+        if seat_started_on_free_model(home, nick):
+            found.add((canonical_worker_nick(nick) or nick).strip().lower())
+    return found
+
+
+def _free_seat_can_take_row(
+    home: Path,
+    cand: dict,
+    nick: str,
+    now: float,
+    live: set[str],
+    ledger: dict | None,
+) -> bool:
+    """Local eligibility for reserving an FR/FIX for this free seat."""
+    if row_on_cooldown(cand, now, nick, live=live):
+        return False
+    if row_needs_human(cand, nick):
+        return False
+    if row_machine_mismatch(cand, nick) or row_gave_up_by(cand, nick, live=live):
+        return False
+    if row_blocked_for_machine(cand, nick):
+        return False
+    if not _seat_model_allows_row(home, nick, cand):
+        return False
+    try:
+        if ledger_blocks(ledger, cand, nick, live):
+            return False
+    except Exception:
+        return False
+    return True
+
+
+def fr_reserved_for_idle_free_seat(
+    home: Path,
+    cand: dict,
+    nick: str,
+    now: float,
+    live: set[str],
+    ledger: dict | None,
+    free_idle: set[str],
+) -> bool:
+    """True when a paid seat must leave this FR/FIX for an idle free seat."""
+    task = str((cand or {}).get("task") or "").upper()
+    if task not in ("FR", "FIX"):
+        return False
+    me = (canonical_worker_nick(nick) or nick or "").strip().lower()
+    if me and me in free_idle:
+        return False
+    if seat_started_on_free_model(home, nick):
+        return False
+    for other in free_idle:
+        if other == me:
+            continue
+        if _free_seat_can_take_row(home, cand, other, now, live, ledger):
+            return True
+    return False
+
+
 def seat_is_free_fuel(home: Path, nick: str) -> bool:
     """True for an OpenCode or other free-fuel seat (FR #7706).
 
@@ -9267,6 +9369,8 @@ def offer_focus_top(
     me_raw = (nick or "").strip()
     me = (canonical_worker_nick(me_raw) or me_raw).strip()
     ledger = ledger_load(home)
+    # FR #7926: computed before the queue lock so digest reads do not nest it.
+    free_idle = idle_free_model_nicks(home, now=now_f, live=live)
     # FR #3205 / #3212 / #6581: when an on-disk precompute fingerprint matches the queue,
     # !bored uses zero GitHub calls (local eligibility only). Otherwise use
     # BORED_GITHUB_CALL_BUDGET (production 0 — local-state only; FR #3188's budget-of-one
@@ -9561,6 +9665,11 @@ def offer_focus_top(
                     return None
                 # FR #6134: OpenCode seats take FR/FIX/docs/harvest only — skip MRB/UAT.
                 if row_blocked_for_opencode_seat(cand_eff, me, home):
+                    return None
+                # FR #7926: an idle eligible free-model seat takes FR/FIX first.
+                if fr_reserved_for_idle_free_seat(
+                    home, cand_eff, me, now_f, live, ledger, free_idle
+                ):
                     return None
                 return cand_eff
 
