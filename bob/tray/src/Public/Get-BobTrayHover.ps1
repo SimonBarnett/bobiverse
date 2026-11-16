@@ -556,7 +556,8 @@ function Format-BobTrayXaiWeeklyRow {
         elseif ($NoReadingReason) { $parts += ('({0})' -f [string]$NoReadingReason) }
     }
     # FR #7595: [stale] sits immediately after the %, then account, then the timer.
-    # A 0% pool with a known future reset is never stale. The bar keeps the last %.
+    # A 0% pool with a known future reset is never stale.
+    # FR #6285: the heading keeps the last %. The bar is empty while the row is stale.
     if (-not $fresh -and $null -ne $pct) {
         if (Test-BobPoolExhaustedUntilReset -RemainingPct $pct -PeriodEnd $periodEnd) { $fresh = $true }
     }
@@ -579,7 +580,7 @@ function Format-BobTrayXaiWeeklyRow {
         heading       = ($parts -join '  ')
         remaining_pct = $pct
         fuel_stale    = (-not $fresh)
-        bar_pct       = $(if ($null -ne $pct) { $pct } else { $null })
+        bar_pct       = $(if ($fresh -and $null -ne $pct) { $pct } else { $null })
         account       = $(if ($acct) { $acct } else { $null })
         period_end    = $(if ($periodEnd) { $periodEnd } else { $null })
         reset_label   = $resetLabel
