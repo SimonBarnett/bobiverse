@@ -230,6 +230,10 @@ Older open FRs that **restate a defect already fixed** on main (e.g. closed-PR-a
 
 Never open a second PR that re-lands the same gates.
 
+## Release-blocker already-green (FR #7832)
+
+Do not close a `release-blocker` as already green from a seat-environment pass. A machine Grok sign-in the builder does not have is not green. Rerun the named test with `GROK_AUTH_PATH` and `BOB_GROK_AUTH_PATH` removed (`common/scripts/release_blocker_close.py`, marker `BOB_BUILDER_ENV=1`), or cite a build CI run of that test. The close comment must contain `builder-env`, the pytest command or an Actions run link, and the ref SHA. Names only. No secret values. Without that citation, or when the builder run failed, leave the issue open.
+
 ## DONE FR must not re-offer while implement PR is open (FR #2617 / MRB #2621)
 
 After `DONE FR owner/repo#N https://github.com/…/pull/M`, chair `resync_from_github` must **keep** that DONE row in `done[]` while pull `M` is still open (or the PR repo was not fetched). Stripping premature-DONE for still-open issues (FR #1150) without this keep broke `fr_superseded_by_done_pr` and re-offered the FR to a sibling seat (~1 min after DONE; live #2612 / #2615). When the Closes PR is gone unmerged, FR #2389 still re-queues the open issue as FR.
