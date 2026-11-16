@@ -3566,15 +3566,88 @@ def skill_dag_mcp_argv(
     return argv
 
 
+def opencode_skill_root_read_patterns(root: Path) -> list[str]:
+    """Path forms OpenCode asks for under one skill root (FR #7200 / #7909).
+
+    A bare directory key does not match ``<root>\\<book>\\*``. Headless
+    ``opencode run --dir`` loads these keys from that directory's ``opencode.json``.
+    """
+    patterns: list[str] = []
+    seen: set[str] = set()
+
+    def add(value: str) -> None:
+        text = str(value or "").strip()
+        if not text or text in seen:
+            return
+        seen.add(text)
+        patterns.append(text)
+
+    resolved = str(root)
+    posix = root.as_posix()
+    for base in (resolved.rstrip("\\/"), posix.rstrip("/")):
+        add(base)
+        add(base + "\\*")
+        add(base + "/*")
+        add(base + "\\**")
+        add(base + "/**")
+        add(base + "\\*\\*")
+        add(base + "/*/*")
+    try:
+        children = [p for p in root.iterdir() if p.is_dir()]
+    except OSError:
+        children = []
+    for child in children:
+        for base in (str(child).rstrip("\\/"), child.as_posix().rstrip("/")):
+            add(base)
+            add(base + "\\*")
+            add(base + "/*")
+            add(base + "\\**")
+            add(base + "/**")
+    return patterns
+
+
 def opencode_skill_read_permission_block(worker_cwd: str) -> dict:
     """Read-only ``external_directory`` allow for skill-dag roots only (FR #7196)."""
     allow: dict[str, str] = {}
     edit: dict[str, str] = {}
     for root in skill_dag_mcp_skill_roots(worker_cwd):
-        key = str(root)
-        allow[key] = "allow"
-        edit[key] = "deny"
+        for key in opencode_skill_root_read_patterns(root):
+            allow[key] = "allow"
+            edit[key] = "deny"
     return {"external_directory": allow, "edit": edit}
+
+
+def opencode_skill_read_allow_gaps(config_path: str | Path, worker_cwd: str) -> list[str]:
+    """Skill-root read patterns missing from the ``opencode.json`` ``--dir`` loads."""
+    expected = opencode_skill_read_permission_block(worker_cwd).get("external_directory") or {}
+    try:
+        data = json.loads(Path(config_path).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, TypeError):
+        return sorted(str(k) for k in expected)
+    perm = data.get("permission") if isinstance(data, dict) else None
+    allow = {}
+    if isinstance(perm, dict) and isinstance(perm.get("external_directory"), dict):
+        allow = perm["external_directory"]
+    missing = [str(key) for key in expected if allow.get(key) != "allow"]
+    return missing
+
+
+def report_opencode_skill_read_gaps(config_path: str | Path, worker_cwd: str) -> list[str]:
+    """FR #7909: auto-report when the effective config does not grant skill-root reads."""
+    missing = opencode_skill_read_allow_gaps(config_path, worker_cwd)
+    if not missing:
+        return []
+    try:
+        import runtime_failure
+
+        runtime_failure.report_message(
+            "bob-worker",
+            "opencode skill-root read allow missing count=%s" % len(missing),
+            site="opencode-skill-read-allow",
+        )
+    except Exception:
+        return missing
+    return missing
 
 
 def opencode_skill_dag_mcp_document(
@@ -3639,6 +3712,7 @@ def write_opencode_skill_dag_mcp_config(
     if "$schema" not in data:
         data["$schema"] = incoming["$schema"]
     cfg.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    report_opencode_skill_read_gaps(cfg, seat)
     return cfg
 
 
