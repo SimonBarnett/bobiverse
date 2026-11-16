@@ -9742,8 +9742,14 @@ class BoredEmitter:
         self.log(f"done-miss: still no DONE for {key} after reminder - releasing seat")
 
     def _maybe_expire_done_miss_reply(self, now: float) -> None:
-        """FR #7352: no second turn_ended — still GIVEUP no-terminal-reply after reply_s."""
+        """FR #7352: no second turn_ended — still GIVEUP no-terminal-reply after reply_s.
+
+        FR #4670 / #7800: a live tool turn is not silence. Wait for that turn to end
+        before the reminder reply window can release the seat.
+        """
         if not self._ack_open or not self._done_miss_reminded:
+            return
+        if self._turn_open:
             return
         until = self._done_miss_reply_until
         if until is None or now < float(until):
