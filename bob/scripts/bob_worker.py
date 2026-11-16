@@ -3512,6 +3512,15 @@ def report_agent_cli_nonzero_exit(
     """FR #7593 / #7671: agent CLI nonzero exit, with the last stderr lines. No secrets."""
     if filer_post is None and os.environ.get("PYTEST_CURRENT_TEST"):
         return {"ok": True, "skipped": True, "reason": "pytest"}
+    # FR #7978: ack-miss recycles a live agent. That is not a CLI exit and must
+    # not open "seat stopped making progress" with the session prompt as stderr.
+    if exit_code is None and str(reason or "").strip() == "no-ack-after-assign":
+        if log:
+            try:
+                log("worker: no-ack-after-assign while process still running; no intake (FR #7978)")
+            except Exception:
+                pass
+        return {"ok": True, "skipped": True, "reason": "no-ack-still-running"}
     mid = re.sub(r"[^a-z0-9._-]+", "-", str(machine or "unknown").strip().lower()).strip("-") or "unknown"
     nick_s = re.sub(r"[^a-z0-9._-]+", "-", str(nick or "-").strip().lower()).strip("-") or "-"
     k = (kind or "").strip().lower() or "unknown"
@@ -3533,7 +3542,12 @@ def report_agent_cli_nonzero_exit(
     # such as a Flash nick disappearing with no issue. Still classify recycle vs kill.
     silent = u == 0xFFFFFFFF and not str(evidence or "").strip()
     parent_l = parent.lower()
-    if u == CONSOLE_CLOSE_EXIT:
+    # FR #7978: exit_code is None only when the worker recycled the seat while the agent
+    # process was still running (hang / ack-miss / ask-user / no-ack-after-assign). That is
+    # a recycle, not a CLI failure, and must not claim the CLI exited non-zero.
+    if exit_code is None:
+        end = "recycle"
+    elif u == CONSOLE_CLOSE_EXIT:
         # FR #7881: OpenCode 3221225786 is the console closing, not a CLI bug.
         end = "console-close"
     elif "recycleseat" in parent_l or "bobtrayrecycleseat" in parent_l:
@@ -3543,27 +3557,36 @@ def report_agent_cli_nonzero_exit(
     else:
         end = "cli-failure"
     err_key = agent_stderr_dedupe_line(evidence)
-    if silent or end in ("recycle", "console-close"):
-        key = f"seat-silent-end|{mid}|{nick_s}|{end}"[:128]
-        if end == "console-close":
-            title = "bug: agent console closed (FR #7881)"
-            what = (
-                "What: the agent console was closed (STATUS_CONTROL_C_EXIT). "
-                "This is not a CLI crash. Accepted jobs are still GIVEUP'd. No fake DONE.\n"
-            )
-        else:
-            title = "bug: seat ended with no CLI stderr (FR #7724)"
-            what = (
-                "What: the seat process ended and there was no CLI stderr. "
-                "This records the nick, exit code, and whether it looks like a recycle or an external kill.\n"
-            )
-    else:
+    if end == "cli-failure":
         # Same crash on the same seat is one issue, whatever the job was (FR #7671).
         key = f"agent-cli-nonzero-exit|{mid}|{u}|{err_key}"[:128]
         title = "bug: agent CLI nonzero exit (FR #7593)"
         what = (
             "What: the agent CLI process exited non-zero; the worker wrapper reported it and "
             "recycled the seat (FR #7593).\n"
+        )
+    elif end == "console-close":
+        key = f"seat-silent-end|{mid}|{nick_s}|{end}"[:128]
+        title = "bug: agent console closed (FR #7881)"
+        what = (
+            "What: the agent console was closed (STATUS_CONTROL_C_EXIT). "
+            "This is not a CLI crash. Accepted jobs are still GIVEUP'd. No fake DONE.\n"
+        )
+    elif exit_code is None:
+        # FR #7978: recycled while still running — a hang/ack-miss, not a CLI exit.
+        key = f"seat-no-progress|{mid}|{nick_s}|{end}"[:128]
+        title = "bug: seat stopped making progress"
+        what = (
+            "What: the worker recycled the seat while the agent process was still running "
+            "(hang / ack-miss / ask-user). Accepted jobs are GIVEUP'd (no fake DONE).\n"
+        )
+    else:
+        # silent external kill, or an operator/tray recycle after the process ended.
+        key = f"seat-silent-end|{mid}|{nick_s}|{end}"[:128]
+        title = "bug: seat ended with no CLI stderr (FR #7724)"
+        what = (
+            "What: the seat process ended and there was no CLI stderr. "
+            "This records the nick, exit code, and whether it looks like a recycle or an external kill.\n"
         )
     if reason:
         reason = _scrub(reason)[:160]
@@ -11656,7 +11679,7 @@ class Supervisor:
         self._session_log_thread = threading.Thread(target=watch, name="seat-session-log", daemon=True)
         self._session_log_thread.start()
 
-    def _record_exit(self, proc, reason: str, code=None, *, report: bool = False) -> None:
+    def _record_exit(self, proc, reason: str, code=None, *, report: bool = False, job_key: str = "") -> None:
         with self._lock:
             if self._exit_recorded_pid == proc.pid:
                 return
@@ -11677,7 +11700,7 @@ class Supervisor:
         if report:
             report_agent_cli_nonzero_exit(
                 exit_code=normalize_agent_exit_code(code) if code is not None else None,
-                raw_code=code, reason=reason,
+                raw_code=code, reason=reason, job_key=job_key,
                 machine=self.machine, nick=self.nick, kind=self.kind, agent_pid=proc.pid,
                 stderr_tail=self.last_exit["output"], log=self.log,
             )
@@ -13791,11 +13814,26 @@ class Supervisor:
                 self._release_seat_giveup_job(str(self.bored._ack_job_key), "hang-recycle")
             except Exception as e:
                 self.log(f"agent: hang-recycle GIVEUP failed {type(e).__name__}")
+        # FR #7978: carry the job the seat was on into the intake body (not job=(none)).
+        job_key = ""
+        try:
+            if self.bored:
+                job_key = str(getattr(self.bored, "_ack_job_key", None) or "").strip()
+        except Exception:
+            job_key = ""
+        if not job_key:
+            try:
+                pending = str(getattr(self.relay, "last_unacked", "") or "")
+                job_key = (assign_job_key(pending) or "").strip()
+            except Exception:
+                job_key = ""
         with self._lock:
             if self._shutting or self.proc is None:
                 return
             if reason != "agent-cli-nonzero-exit":
-                self._record_exit(self.proc, reason, self.proc.poll(), report=True)
+                self._record_exit(
+                    self.proc, reason, self.proc.poll(), report=True, job_key=job_key
+                )
             now = self.clock()
             # FR #4180: restart counter is monotonic per incident. Only clear the list when the
             # last restart is older than the window (incident ended); never drop mid-incident
