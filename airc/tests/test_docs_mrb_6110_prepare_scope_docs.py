@@ -7,9 +7,11 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_docs_mrb_6110_priority_client_winrun_only():
+    """FR #7726 / #7130: interactive prepare form is WINRUN; Session 0 fail-closes."""
     text = (ROOT / "docs" / "airc-priority-client.md").read_text(encoding="utf-8")
-    assert "Form prepare is WINRUN only (FR #6108)" in text
-    assert "no longer select an SDK path" in text
+    assert "Default `PRIORITY prepare form` still uses WINRUN on an interactive session" in text
+    assert "in Session 0 it fail-closes `reason=session0_gui`" in text
+    assert "PRIORITY prepare-form" in text
 
 
 def test_docs_mrb_6110_remote_control_no_via_optin():

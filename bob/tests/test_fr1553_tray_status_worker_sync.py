@@ -33,7 +33,9 @@ def test_sync_function_and_watch_wiring_static():
     assert "Sync-BobTrayStatusWorkersFromDigest" in w
     assert "System.Timers.Timer" in w
     assert "SynchronizingObject = $null" in w
-    poll = w[w.index("$poll.Add_Tick") : w.index("$poll.Add_Tick") + 4500]
+    # FR #7776: the poll tick grew past a fixed 4500-character window.
+    tick = w.index("$poll.Add_Tick")
+    poll = w[tick : w.index("$script:trayWorkerSyncTimer", tick)]
     # Non-engine poll path still Sync-before-Update-Hover (FR #1553). Engine mode
     # (FR #4142) skips Sync on the UI poll and uses Update-Hover -SkipUi instead.
     assert "Sync-BobTrayStatusWorkersFromDigest" in poll

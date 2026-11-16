@@ -110,6 +110,30 @@ def test_serve_listens_even_when_drain_blocks(home, monkeypatch):
         httpd.shutdown()
 
 
+def test_fr7657_shutdown_does_not_os_exit(home, monkeypatch):
+    """FR #7657: health watchdog must not os._exit after httpd.shutdown().
+
+    Defaults are 30s interval and 2 probe fails, so a suite that called serve()
+    died about a minute later with no pytest summary (build-jeeves ~31%).
+    """
+    monkeypatch.setenv("BOB_CALLBACK_HEALTH_S", "5")
+    monkeypatch.setenv("BOB_CALLBACK_LISTENER_PROBE_S", "1")
+    monkeypatch.setenv("BOB_CALLBACK_LISTENER_PROBE_FAILS", "1")
+    port = _free_port()
+    httpd = bobcallback.serve(home, host="127.0.0.1", port=port, allow_ips=ALLOW, filer=None)
+    th = threading.Thread(target=httpd.serve_forever, daemon=True)
+    th.start()
+    try:
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/health", timeout=3.0) as resp:
+            assert resp.status == 200
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+    # One watchdog tick past shutdown used to call os._exit(1).
+    time.sleep(6.5)
+    assert bobcallback._httpd_shut_down(httpd)
+
+
 def test_webhooks_doc_mentions_foreign_and_bind_order():
     doc = Path(__file__).resolve().parents[1] / "docs" / "webhooks.md"
     text = doc.read_text(encoding="utf-8")

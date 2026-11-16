@@ -3570,10 +3570,14 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
 
             _gcfg = wsm.load_worker_start_config()
             grok_model = wsm.configured_start_model("grok", _gcfg)
-            argv = wsm.launch_argv_with_model("grok", argv, grok_model)
-            argv = wsm.launch_argv_with_effort(
-                "grok", argv, wsm.configured_start_effort("grok", _gcfg)
+            # FR #2699 / MRB #2710: the shared --no-auto-update/--no-alt-screen/--cwd
+            # prefix stays first; model/effort flags go right after it.
+            tail = [exe] + argv[len(prefix):]
+            tail = wsm.launch_argv_with_model("grok", tail, grok_model)
+            tail = wsm.launch_argv_with_effort(
+                "grok", tail, wsm.configured_start_effort("grok", _gcfg)
             )
+            argv = prefix + tail[1:]
         except Exception:
             pass
     elif kind == "cursor":
@@ -3629,6 +3633,7 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             mcp_path = str(Path(cwd) / OPENCODE_SKILL_DAG_MCP_RELPATH)
             files[mcp_path] = json.dumps(opencode_skill_dag_mcp_document(cwd), indent=2) + "\n"
         helper_path = _resolve_opencode_fuel_helper_path(cwd=cwd, install_root=install_root)
+        guard_path = Path(__file__).resolve().parent / "opencode_turn_guard.py"
         # FR #6157: each opencode run emits turn_started / turn_ended into opencode-turns.jsonl
         # so BoredEmitter gets harvest-hold / done-miss / startup-ready parity with Grok.
         # FR #6240: no external_directory allow. Each injected assign carries its own
@@ -3656,6 +3661,11 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             r"$fuelLog = Join-Path $env:LOCALAPPDATA 'Bobiverse\worker\logs\opencode-out-of-fuel.log'",
             r"$pauseStateDir = Join-Path $env:LOCALAPPDATA 'Bobiverse\worker\state'",
             f"$pyHelper = '{esc(str(helper_path))}'",
+            f"$guardPy = '{esc(str(guard_path))}'",
+            f"$wedgePy = '{esc(str(Path(__file__).resolve().with_name('opencode_tool_wedge.py')))}'",
+            r"$script:ocDagRetries = 1",
+            r"$script:ocWedgeTicks = 0",
+            r"$script:ocWedgeAction = ''",
             r"New-Item -ItemType Directory -Force -Path (Split-Path -Parent $fuelLog) | Out-Null",
             r"New-Item -ItemType Directory -Force -Path $pauseStateDir | Out-Null",
             r"New-Item -ItemType Directory -Force -Path (Split-Path -Parent $turnsLog) | Out-Null",
@@ -3744,6 +3754,7 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             r"        if ($ocDir) { $proc = Start-Process -FilePath $exe -ArgumentList $argStr -WorkingDirectory $ocDir -NoNewWindow -PassThru -RedirectStandardOutput $outFile -RedirectStandardError $errFile } else { $proc = Start-Process -FilePath $exe -ArgumentList $argStr -NoNewWindow -PassThru -RedirectStandardOutput $outFile -RedirectStandardError $errFile }",
             r"        $timedOut = $false",
             r"        $killReason = ''",
+            r"        $ocJobPoll = 0",
             r"        $lastLen = 0",
             r"        $lastCpu = -1.0",
             r"        $lastWtStamp = $null",
@@ -3792,13 +3803,53 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             r"                $timedOut = $true",
             r"                $killReason = ('hard ceiling ' + [int]$hardCeilingMs + 'ms')",
             r"                try { & taskkill /T /F /PID $proc.Id 2>$null | Out-Null } catch { }",
+            # FR #7739: one intake report (machine, seat, job, elapsed, reason). Dedupe is in the helper.
+            r"                $pyCeil = (Get-Command python.exe -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source)",
+            r"                if (-not $pyCeil) { $pyCeil = 'python.exe' }",
+            r"                $mach = if ($env:BOB_MACHINE_ID) { $env:BOB_MACHINE_ID } else { $env:COMPUTERNAME }",
+            r"                try { & $pyCeil $guardPy ceiling --machine $mach --nick $env:BOB_NICK --job $jobKey --elapsed-ms ([int]$runMs) --reason $killReason 2>$null | Out-Null } catch { }",
             r"                break",
+            r"            }",
+            # FR #7739: every 50 x 100ms (5s, under 60s) ask if the job was closed, given up, or reassigned.
+            r"            $ocJobPoll++",
+            r"            if (($ocJobPoll % 50) -eq 0 -and $jobKey) {",
+            r"                $pyStop = (Get-Command python.exe -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source)",
+            r"                if (-not $pyStop) { $pyStop = 'python.exe' }",
+            r"                $stopLine = ''",
+            r"                try { $stopLine = (& $pyStop $guardPy stop --job $jobKey --outbox $env:BOB_OUTBOX 2>$null | Out-String).Trim() } catch { $stopLine = '' }",
+            r"                if ($stopLine -like 'stop*') {",
+            r"                    $timedOut = $true",
+            r"                    $killReason = ('job-ended ' + $stopLine)",
+            r"                    try { & taskkill /T /F /PID $proc.Id 2>$null | Out-Null } catch { }",
+            # FR #7739: killing the child is not enough. The chair still holds the
+            # accepted row, so !bored is nak busy until this GIVEUP is drained.
+            r"                    Write-OpencodeJobGiveup $jobKey $killReason",
+            r"                    break",
+            r"                }",
             r"            }",
             r"            if ($idleMs -ge $watchdogMs) {",
             r"                $timedOut = $true",
             r"                $killReason = ('watchdog timeout (no output/cpu/worktree idle ' + [int]$watchdogMs + 'ms)')",
             r"                try { & taskkill /T /F /PID $proc.Id 2>$null | Out-Null } catch { }",
             r"                break",
+            r"            }",
+            r"            $script:ocWedgeTicks = [int]$script:ocWedgeTicks + 1",
+            r"            if (($script:ocWedgeTicks % 10) -eq 0 -and $outFile -and (Test-Path -LiteralPath $outFile) -and $wedgePy) {",
+            r"                $py = (Get-Command python.exe -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source)",
+            r"                if (-not $py) { $py = 'python.exe' }",
+            r"                $wedgeLine = & $py $wedgePy peek $outFile $script:ocDagRetries 2>$null",
+            "                if ($wedgeLine -match 'report-and-giveup' -or $wedgeLine -match '\"action\": \"giveup\"') {",
+            r"                    $script:ocWedgeAction = 'giveup'",
+            r"                    try { & taskkill /T /F /PID $proc.Id 2>$null | Out-Null } catch { }",
+            r"                    if ($jobKey) { Write-OpencodeJobGiveup $jobKey 'skill-dag wedge' }",
+            r"                    break",
+            r"                }",
+            "                if ($wedgeLine -match '\"action\": \"reconnect\"' -and [int]$script:ocDagRetries -gt 0) {",
+            r"                    $script:ocDagRetries = 0",
+            r"                    $script:ocWedgeAction = 'reconnect'",
+            r"                    try { & taskkill /T /F /PID $proc.Id 2>$null | Out-Null } catch { }",
+            r"                    break",
+            r"                }",
             r"            }",
             r"            Start-Sleep -Milliseconds 100",
             r"        }",
@@ -3870,6 +3921,10 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             r"        $teStatus = ''; $teErr = ''",
             r"        if ($exitCode -ne 0) { $teStatus = 'error'; $teErr = ('exit ' + $exitCode) }",
             r"        Write-OpencodeTurnMarker 'turn_ended' $turnN $teStatus $teErr",
+            r"    }",
+            r"    if ($script:ocWedgeAction -eq 'reconnect') {",
+            r"        $script:ocWedgeAction = ''",
+            r"        Invoke-OpencodeRun $line $jobKey $ocDir",
             r"    }",
             r"}",
             r"function Split-OpencodeFrame([string]$raw) {",
@@ -8805,6 +8860,7 @@ def opencode_job_finish_steps(
         f"3) Commit on branch {branch}. 4) git push -u origin HEAD. "
         f"5) Open the PR with gh pr create --base main --body \"Closes {closes_ref}\" "
         f"(or --body-file pointing at a markdown file inside this worktree, e.g. .bob/pr-body.md). "
+        "If gh issue view shows the issue CLOSED, do not run gh pr create. "
         "Keep scratch files and base comparisons inside this job worktree or the worker run folder --- "
         "never under %TEMP%. Do not request external_directory and do not pass --auto. "
         f"6) Immediately append DONE for {key} with the PR URL to $env:BOB_OUTBOX ({ob}) "
@@ -9103,6 +9159,13 @@ def opencode_finish_auto_pr(
     )
     if not ahead or not branch:
         return ""
+    # FR #7739: a branch for a closed or duplicate issue is not a PR.
+    try:
+        from opencode_turn_guard import opencode_issue_is_open
+    except ImportError:
+        opencode_issue_is_open = None  # type: ignore
+    if opencode_issue_is_open is not None and not opencode_issue_is_open(repo, issue_n, run=run):
+        return ""
     body = (
         f"Closes {repo}#{issue_n}\n\n"
         f"Auto-opened by bob-worker OpenCode finish recovery (FR #6370) for `{job_key}` "
@@ -9295,9 +9358,11 @@ class BoredEmitter:
         past ``harvest_hold_s`` until ``turn_ended`` or ``turn_hold_max_s`` (default 600 s);
       * FR #2875: ``turn_ended`` with ACK open and no DONE/NACK/GIVEUP arms done-miss (remind after
         ``done_miss_grace_s``, then ``!bored`` reason ``done-miss`` if still open after the reminder turn);
-      * FR #4784: before ``!bored`` reason ``done-miss`` or ``ack-stale``, post
-        ``GIVEUP <TYPE> owner/repo#N done-miss|ack-stale`` so Jeeves frees the accepted row
-        (local ACK clear alone leaves ``nak busy`` forever while the PR stays open);
+      * FR #4784 / #7352: before ``!bored`` reason ``done-miss`` or ``ack-stale``, post
+        ``GIVEUP <TYPE> owner/repo#N no-terminal-reply|ack-stale`` so Jeeves frees the accepted
+        row (local ACK clear alone leaves ``nak busy`` forever while the PR stays open). The
+        wire reason for done-miss is ``no-terminal-reply``; ``done-miss`` stays the internal
+        ``!bored`` reason, and ``ack-stale`` covers a stale ACK;
       * FR #4753 / #7201: cursor/grok/opencode ``turn_ended`` with ``status=error`` (or an error
         field) while ACK is open retries the turn once, then ``GIVEUP … failed-turn <class>: <line>``
         so Jeeves can re-offer; it never sits idle holding the ACK. Quiet turn-end without error
