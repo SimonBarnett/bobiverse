@@ -8600,11 +8600,11 @@ _OUT_JOB_KEY_RX = re.compile(
 
 
 # FR #2383: Jeeves assign body still visible inside a FROM line after compaction footers.
-_JOB_ASSIGN_RX = re.compile(r"(?i)\b(FR|MRB|UAT)\s+\S+#\d+\b")
-# FR #2791: capture owner/repo#N from an assign (or outbox ACK key) for submit-verify stop match.
-_ASSIGN_JOB_REF_RX = re.compile(r"(?i)\b(?:FR|MRB|UAT)\s+(\S+#\d+)\b")
+_JOB_ASSIGN_RX = re.compile(r"(?i)\b(FR|MRB|UAT|FIX)\s+\S+#\d+\b")
+# FR #2791 / #7946: capture owner/repo#N from an assign (or outbox ACK key) for submit-verify stop match.
+_ASSIGN_JOB_REF_RX = re.compile(r"(?i)\b(?:FR|MRB|UAT|FIX)\s+(\S+#\d+)\b")
 # FR #4180: capture TYPE + owner/repo#N for NACK out-of-fuel lines.
-_ASSIGN_TYPE_KEY_RX = re.compile(r"(?i)\b(FR|MRB|UAT)\s+(\S+#\d+)\b")
+_ASSIGN_TYPE_KEY_RX = re.compile(r"(?i)\b(FR|MRB|UAT|FIX)\s+(\S+#\d+)\b")
 
 
 def assign_job_ref(line: str) -> Optional[str]:
