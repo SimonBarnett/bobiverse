@@ -8255,12 +8255,25 @@ def ack_on_receipt_line(line: str) -> Optional[str]:
     return f"ACK {key}"
 
 
-def opencode_skips_hostile_assign(kind: str, line: str) -> bool:
-    """FR #6134: OpenCode seats must not take MRB/UAT assigns (hostile / repo UAT)."""
+def opencode_skips_hostile_assign(kind: str, line: str, start_model: str = "") -> bool:
+    """FR #6134: free OpenCode seats must not take MRB/UAT.
+
+    FR #7888: a paid start_model (OpenCode Go / pro) accepts the assign.
+    Missing or ``$model`` still NACKs (fail safe).
+    """
     if (kind or "").strip().lower() != "opencode":
         return False
     key = (assign_job_key(line) or "").upper()
-    return key.startswith("MRB ") or key.startswith("UAT ")
+    if not (key.startswith("MRB ") or key.startswith("UAT ")):
+        return False
+    try:
+        import worker_start_model as wsm
+
+        if wsm.start_model_review_class(start_model) == "paid":
+            return False
+    except Exception:
+        pass
+    return True
 
 
 def opencode_hostile_nack_line(line: str) -> Optional[str]:
@@ -10952,7 +10965,9 @@ class Supervisor:
         )
         # FR #4180: refuse (NACK out-of-fuel) assigns while the seat is in out-of-fuel hold.
         relay.refuse_assign_while = lambda: bool(self.bored and self.bored.out_of_fuel)
-        relay.skips_hostile_assign = lambda line: opencode_skips_hostile_assign(self.kind, line)
+        relay.skips_hostile_assign = lambda line: opencode_skips_hostile_assign(
+            self.kind, line, start_model=resolve_seat_hello_model(self.kind)
+        )
         # FR #6240 / #6328: OpenCode-only. Classify on read thread; ensure off-thread.
         # Grok/Cursor must keep flood coalesce + multi-key ACK (callbacks stay None).
         if (self.kind or "").strip().lower() == "opencode":

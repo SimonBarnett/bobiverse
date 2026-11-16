@@ -8522,25 +8522,66 @@ def seat_skips_hostile_review(kind: str) -> bool:
     return (kind or "").strip().lower() == "opencode"
 
 
-def seat_is_free_fuel(home: Path, nick: str) -> bool:
-    """True for an OpenCode or other free-fuel seat (FR #7706).
+def _start_model_from_fields(fields: dict | None) -> str:
+    f = fields or {}
+    return str(f.get("start_model") or f.get("model") or "").strip()
 
-    A mislabeled digest kind does not make a free model eligible for MRB/UAT.
-    An unresolved ``$model`` template is also not a paid seat.
+
+def seat_is_free_fuel(home: Path, nick: str) -> bool:
+    """True when this seat must stay on FR/FIX (FR #7706 / #7888).
+
+    Eligibility follows the launched ``start_model``, not ``configured_model``
+    and not a free published ``cost_tier``. A paid OpenCode Go / pro id is not
+    free fuel even when kind is ``opencode`` or the configured model is free.
+    Missing, empty, or ``$model`` on an OpenCode seat fails safe to free.
+    A free model id is free even when the digest kind says grok.
     """
-    if seat_skips_hostile_review(seat_agent_kind(home, nick)):
-        return True
     fields = _seat_digest_model_fields(home, nick)
-    model = str(fields.get("start_model") or fields.get("model") or "").strip()
-    if "$" in model:
+    model = _start_model_from_fields(fields)
+    try:
+        import worker_start_model as wsm
+
+        klass = wsm.start_model_review_class(model)
+    except Exception:
+        klass = "unknown" if (not model or "$" in model) else "other"
+    if klass == "paid":
+        return False
+    if klass == "free":
         return True
-    low = model.lower()
-    if low.startswith("opencode/") and "opencode-go/" not in low:
+    if "$" in model or model.lower() == "unknown":
+        return True
+    if klass == "unknown" and seat_skips_hostile_review(seat_agent_kind(home, nick)):
         return True
     tier = str(fields.get("cost_tier") or "").strip().lower()
     if tier in ("free", "opencode-free"):
         return True
     return False
+
+
+def mrb_eligibility_reason(home: Path, nick: str) -> str:
+    """One line for the offer log: why this seat may or may not take MRB (FR #7888)."""
+    fields = _seat_digest_model_fields(home, nick)
+    model = _start_model_from_fields(fields)
+    try:
+        import worker_start_model as wsm
+
+        klass = wsm.start_model_review_class(model)
+    except Exception:
+        klass = "unknown"
+    shown = model or "missing"
+    if len(shown) > 80:
+        shown = shown[:80]
+    if klass == "paid":
+        return f"paid start_model {shown}"
+    if "$" in model:
+        return f"unknown start_model {shown}"
+    if klass == "free":
+        return f"free start_model {shown}"
+    if klass == "unknown" and seat_skips_hostile_review(seat_agent_kind(home, nick)):
+        return "unknown start_model on opencode (fail safe FR-only)"
+    if seat_is_free_fuel(home, nick):
+        return f"free-fuel start_model {shown}"
+    return f"mrb-eligible start_model {shown}"
 
 
 def row_blocked_for_opencode_seat(
@@ -8550,18 +8591,19 @@ def row_blocked_for_opencode_seat(
     *,
     kind: str | None = None,
 ) -> bool:
-    """True when an OpenCode or free-fuel seat must not be offered this MRB/UAT row."""
+    """True when a free or unknown start_model must not be offered this MRB/UAT row.
+
+    FR #6134 blocked every OpenCode seat. FR #7888 keeps that for a free or
+    missing start_model and allows a paid start_model (OpenCode Go / pro).
+    Without a digest (``home is None``), kind ``opencode`` still fails safe.
+    """
     task = str((row or {}).get("task") or "").upper()
     if task not in ("MRB", "UAT"):
         return False
-    k = kind
-    if k is None and home is not None:
-        k = seat_agent_kind(home, nick)
-    if seat_skips_hostile_review(k or ""):
-        return True
-    if home is None:
-        return False
-    return seat_is_free_fuel(home, nick)
+    if home is not None:
+        return seat_is_free_fuel(home, nick)
+    k = kind if kind is not None else ""
+    return seat_skips_hostile_review(k or "")
 
 
 def seat_is_out_of_fuel(home: Path, nick: str, now: float | None = None) -> bool:
@@ -9544,6 +9586,13 @@ def offer_focus_top(
                         return None
                 cand_eff = enrich_review_author_fields(doc, cand)
                 if review_blocked_for_author(cand_eff, me, live, ledger=ledger, free=free):
+                    if str(cand.get("task") or "").upper() in ("MRB", "UAT"):
+                        with contextlib.suppress(Exception):
+                            _log_queue_purge(
+                                "INFO mrb-eligibility skip"
+                                f" seat={me} task={str(cand.get('task') or '').upper()}"
+                                f" id={cand.get('id') or ''} reason=author"
+                            )
                     if is_repo_uat(cand):
                         with contextlib.suppress(Exception):
                             if maybe_escalate_repo_uat_all_self_uat(
@@ -9559,8 +9608,20 @@ def offer_focus_top(
                 _stamp_require_machine(cand_eff)
                 if row_blocked_for_machine(cand_eff, me):
                     return None
-                # FR #6134: OpenCode seats take FR/FIX/docs/harvest only — skip MRB/UAT.
-                if row_blocked_for_opencode_seat(cand_eff, me, home):
+                # FR #6134 / #7888: free or unknown start_model stays FR-only.
+                # A paid start_model may take MRB/UAT. Log the reason either way.
+                if str(cand_eff.get("task") or "").upper() in ("MRB", "UAT"):
+                    reason = mrb_eligibility_reason(home, me)
+                    if row_blocked_for_opencode_seat(cand_eff, me, home):
+                        with contextlib.suppress(Exception):
+                            _log_queue_purge(
+                                "INFO mrb-eligibility skip"
+                                f" seat={me} task={str(cand_eff.get('task') or '').upper()}"
+                                f" id={cand_eff.get('id') or ''} reason={reason}"
+                            )
+                        return None
+                    cand_eff["mrb_eligibility"] = reason
+                elif row_blocked_for_opencode_seat(cand_eff, me, home):
                     return None
                 return cand_eff
 
@@ -9654,6 +9715,15 @@ def offer_focus_top(
                     resolved = resolve_assign_url(job)
                     if resolved:
                         job["url"] = resolved
+                    if str(job.get("task") or "").upper() in ("MRB", "UAT"):
+                        why = str(job.get("mrb_eligibility") or mrb_eligibility_reason(home, me))
+                        job["mrb_eligibility"] = why
+                        with contextlib.suppress(Exception):
+                            _log_queue_purge(
+                                "INFO mrb-eligibility offer"
+                                f" seat={me} task={str(job.get('task') or '').upper()}"
+                                f" id={job.get('id') or ''} reason={why}"
+                            )
                     doc["unaccepted"][i] = job
                     break
             else:
@@ -12855,13 +12925,14 @@ def assign_row(
                 "refused",
                 f"{me}: not in the shop channel (not a live seat; members_at={snap})",
             )
-    # FR #6134: refuse hostile review/UAT to OpenCode seats (chair !assign path).
+    # FR #6134 / #7888: refuse MRB/UAT when start_model is free or unknown.
+    # A paid start_model is assignable. OpenCode with no start_model fails safe.
     try:
-        _kind = seat_agent_kind(home, me)
-        if seat_skips_hostile_review(_kind) and task_u in ("MRB", "UAT"):
+        if task_u in ("MRB", "UAT") and seat_is_free_fuel(home, me):
+            why = mrb_eligibility_reason(home, me)
             return (
                 "refused",
-                f"{me}: OpenCode seats skip {task_u} (FR #6134; use Grok/Cursor)",
+                f"{me}: OpenCode or free start_model skips {task_u} ({why}; FR #6134 / #7888)",
             )
     except Exception:
         pass

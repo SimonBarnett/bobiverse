@@ -152,6 +152,29 @@ def opencode_is_go_or_paid(model: str) -> bool:
     return False
 
 
+def start_model_review_class(model: str) -> str:
+    """FR #7888: MRB class of the launched start_model only.
+
+    ``paid`` is an OpenCode Go / pro id. ``free`` is a free OpenCode id.
+    ``unknown`` is missing, empty, or an unexpanded ``$`` template (fail safe).
+    ``other`` is a concrete non-OpenCode id (Grok, Cursor). Configured model
+    and published cost_tier are not consulted.
+    """
+    raw = str(model or "").strip().strip("'\"")
+    if not raw or "$" in raw:
+        return "unknown"
+    low = raw.lower()
+    if low in ("auto", "unknown", "none", "null"):
+        return "unknown"
+    if low.endswith("-free") or "flash-free" in low:
+        return "free"
+    if low.startswith("opencode/") and "opencode-go/" not in low:
+        return "free"
+    if opencode_is_go_or_paid(raw):
+        return "paid"
+    return "other"
+
+
 def tray_models_path(*, env: dict[str, str] | None = None) -> Path:
     e = os.environ if env is None else env
     local = str((e or {}).get("LOCALAPPDATA") or "").strip()
@@ -444,9 +467,16 @@ def seat_model_allows(
     nick: str = "",
     report=None,
 ) -> bool:
-    """FR #7084 gate after FR #7833: a placeholder start model is not a mismatch."""
+    """FR #7084 gate after FR #7833: a placeholder start model is not a mismatch.
+
+    FR #7888: a paid ``start_model`` stays eligible when it differs from
+    ``configured_model``. Mismatch and a free published tier do not withhold.
+    """
     f = fields or {}
     if not f:
+        return True
+    raw_start = str(f.get("start_model") or f.get("model") or "")
+    if start_model_review_class(raw_start) == "paid":
         return True
     normalized, note = normalize_placeholder_start_model(f, cfg)
     if note:
