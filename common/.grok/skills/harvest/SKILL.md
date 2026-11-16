@@ -494,6 +494,7 @@ routes to bobiverse via the split rule.
 - After Jeeves owns the OpenCode fetch, the ear publish diag is jeeves-fleet and the publish test must assert the provider was not called. blocked_1010 stays on the local reader.
 - A test of the startup message hold must set BOB_WORKER_STARTUP_WAIT_READY=1. Without that flag a signed-in seat injects at once.
 - When the settings scan finds a new BOB_ environ.get key, add it to the schema if it is a UI knob. A host path, a secret-file path, or a short wait goes on the scan allowlist.
+- A source pin of a PowerShell function must read until the next function. A fixed character window misses a call that the function still makes.
 
 ## Harvest digest (lessons audit 2026-10-06)
 
