@@ -1249,6 +1249,85 @@ def resolve_opencode_model(
             pass
     return chosen
 
+
+def stamp_opencode_pause_fallback(env: dict, chosen: str, *, now: Optional[float] = None) -> bool:
+    """Mark a launch that fell back because the configured model was paused.
+
+    An operator ``BOB_OPENCODE_MODEL`` captured at process start is a chosen
+    model and is not a fallback (FR #7952). Returns True when the stamp is set.
+    """
+    if (_OPENCODE_MODEL_ENV_AT_START or "").strip():
+        env.pop("BOB_OPENCODE_PAUSE_FALLBACK", None)
+        env.pop("BOB_OPENCODE_CONFIGURED_MODEL", None)
+        return False
+    cfg = ""
+    try:
+        import worker_start_model as wsm
+
+        cfg = wsm.configured_start_model("opencode", wsm.load_worker_start_config(env=env))
+    except Exception:
+        cfg = ""
+    if not cfg:
+        cfg = read_opencode_config_model(env) or ""
+    picked = str(chosen or "").strip()
+    paused = False
+    if cfg and picked and cfg.lower() != picked.lower() and opencode_fuel is not None:
+        paused = opencode_fuel.is_opencode_model_paused(
+            cfg, opencode_pauses_state_dir(env), now=now
+        )
+    if not paused:
+        env.pop("BOB_OPENCODE_PAUSE_FALLBACK", None)
+        env.pop("BOB_OPENCODE_CONFIGURED_MODEL", None)
+        return False
+    env["BOB_OPENCODE_CONFIGURED_MODEL"] = cfg
+    env["BOB_OPENCODE_PAUSE_FALLBACK"] = "1"
+    env["BOB_OPENCODE_SEAT_PID"] = str(os.getpid())
+    return True
+
+
+def resume_opencode_pause_fallback(
+    *,
+    current: str,
+    configured: str,
+    state_dir: Path,
+    pause_fallback: bool,
+    now: Optional[float] = None,
+    machine: str = "",
+    nick: str = "",
+    pid: int | str = 0,
+    publish=None,
+) -> str:
+    """Model for the next job. Does not change a model while a turn is in progress.
+
+    When ``pause_fallback`` is set and the configured model's pause has expired,
+    return that model and ask ``publish(model, mismatch)`` once.
+    """
+    if opencode_fuel is None:
+        return str(current or "").strip()
+    nxt = opencode_fuel.next_job_model(
+        current,
+        configured,
+        state_dir,
+        now=now,
+        pause_fallback=pause_fallback,
+    )
+    cur = str(current or "").strip()
+    if nxt != cur and publish is not None:
+        mismatch = nxt.lower() != str(configured or "").strip().lower()
+        publish(nxt, mismatch)
+    elif nxt != cur and machine and pid:
+        post_digest_seat_kind(
+            machine=machine,
+            pid=pid,
+            nick=nick,
+            kind="opencode",
+            model=nxt,
+            configured_model=configured,
+            model_mismatch=nxt.lower() != str(configured or "").strip().lower(),
+            log=None,
+        )
+    return nxt
+
 def grok_has_tokens(f: Fuel) -> bool:
     """True when seat start may pick Grok (FR #3997).
 
@@ -4158,6 +4237,19 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             r"    }",
             r"    if ($argList -contains '--auto') { throw 'opencode --auto is forbidden' }",
             r"    $script:ocTurnN++",
+            # FR #7952: once per job, before the run. Never changes $model mid-turn.
+            r"    if ($env:BOB_OPENCODE_PAUSE_FALLBACK -eq '1' -and $env:BOB_OPENCODE_CONFIGURED_MODEL) {",
+            r"        $pyResume = (Get-Command python.exe -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source)",
+            r"        if (-not $pyResume) { $pyResume = 'python.exe' }",
+            r"        $nextModel = ''",
+            r"        try { $nextModel = (& $pyResume $pyHelper next-model --dir $pauseStateDir --configured $env:BOB_OPENCODE_CONFIGURED_MODEL --current $model 2>$null | Select-Object -Last 1) } catch { $nextModel = '' }",
+            r"        $nextModel = ([string]$nextModel).Trim()",
+            r"        if ($nextModel -and $nextModel -ne $model) {",
+            r"            $model = $nextModel",
+            r"            $env:BOB_OPENCODE_MODEL = $model",
+            r"            $env:BOB_OPENCODE_PAUSE_FALLBACK = '0'",
+            r"        }",
+            r"    }",
             r"    $turnN = $script:ocTurnN",
             r"    Write-OpencodeTurnMarker 'turn_started' $turnN",
             r"    try {",
@@ -14284,6 +14376,7 @@ def run_plan(args, log: Log) -> int:
             )
             return EXIT_NO_AGENT
         os.environ["BOB_OPENCODE_MODEL"] = oc_model
+        stamp_opencode_pause_fallback(os.environ, oc_model)
     else:
         exe = grok_exe
     run_dir = _new_run_dir("plan", "plan")
@@ -14385,6 +14478,7 @@ def run_monitor(args, log: Log) -> int:
             )
             return EXIT_NO_AGENT
         os.environ["BOB_OPENCODE_MODEL"] = oc_model
+        stamp_opencode_pause_fallback(os.environ, oc_model)
     else:
         exe = grok_exe
     run_dir = _new_run_dir("monitor", "monitor")
@@ -14512,6 +14606,7 @@ def run_maintenance(args, log: Log, *, spawn: Optional[Callable] = None, poll_s:
             )
             return EXIT_NO_AGENT
         os.environ["BOB_OPENCODE_MODEL"] = oc_model
+        stamp_opencode_pause_fallback(os.environ, oc_model)
     else:
         exe = grok_exe
     rd = Path(run_dir) if run_dir else _new_run_dir("maintenance", "maintenance")
@@ -14641,6 +14736,7 @@ def run_agent(args, log: Log) -> int:
             )
             return EXIT_NO_AGENT
         os.environ["BOB_OPENCODE_MODEL"] = oc_model
+        stamp_opencode_pause_fallback(os.environ, oc_model)
     else:
         exe = grok_exe
     pid = os.getpid()
