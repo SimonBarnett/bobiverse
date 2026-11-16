@@ -824,7 +824,10 @@ def return_job_to_unaccepted(
                 with contextlib.suppress(Exception):
                     fuel_pause_giveup = bool(gitclaim.seat_fuel_pause_reason(home, gave_up_by, now_f))
             out_of_fuel_giveup = gitclaim.is_out_of_fuel_reason(reason) or fuel_pause_giveup
-            seat_not_job_giveup = self_mrb_giveup or out_of_fuel_giveup
+            # FR #7963: skill_dag_down is a seat fault (stale/broken skill-dag). Re-queue
+            # the job without burning giveup_count / needs_human; still flag the seat.
+            skill_dag_down_giveup = gitclaim.is_skill_dag_down_reason(reason)
+            seat_not_job_giveup = self_mrb_giveup or out_of_fuel_giveup or skill_dag_down_giveup
             for k in ("nick", "accepted_ts", "offered_to", "offered_ts", "offered_channel", "channel"):
                 job.pop(k, None)
             try:
@@ -868,7 +871,8 @@ def return_job_to_unaccepted(
                     gitclaim.append_author_seat(job, gave_up_by)
             # FR #180 / #1363: stamp cooldown_until after job-caused GIVEUP/NACK.
             # FR #4881: skip for out-of-fuel (no giveup_seats => global cooldown).
-            if not out_of_fuel_giveup:
+            # FR #7963: skip for skill_dag_down so another seat can take the job now.
+            if not out_of_fuel_giveup and not skill_dag_down_giveup:
                 until = datetime.fromtimestamp(now_f, tz=timezone.utc) + timedelta(
                     seconds=float(gitclaim.GIVEUP_COOLDOWN_S)
                 )
