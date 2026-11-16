@@ -128,18 +128,25 @@ def test_mrb_fetch_failure_nacks_create_failed(tmp_path: Path):
 
 
 def test_mrb7949_stale_local_fr_prefers_origin_tip(tmp_path: Path):
-    """A stale local fr-* must not beat origin/<head> after fetch."""
+    """When local and origin/<head> both exist, worktree add must reset from origin."""
     clone = _init_clone(tmp_path / "clone")
     _publish_head(clone, "fr-7888")
-    # Recreate a stale local tip that lacks HEAD.txt from origin/fr-7888.
     subprocess.run(["git", "-C", str(clone), "branch", "fr-7888", "main"], check=True, capture_output=True)
-    assert not (clone / "HEAD.txt").exists()
-    base = tmp_path / "worktrees"
-    env = {"BOB_JOB_WORKTREE_BASE": str(base), "BOB_REPO_CLONE_bobiverse": str(clone)}
+    seen: list[list[str]] = []
+    base_run = _run_with_gh("fr-7888")
+
+    def run(cmd, **kw):
+        if cmd and cmd[0] == "git" and "worktree" in cmd and "add" in cmd:
+            seen.append(list(cmd))
+        return base_run(cmd, **kw)
+
+    env = {"BOB_JOB_WORKTREE_BASE": str(tmp_path / "worktrees"), "BOB_REPO_CLONE_bobiverse": str(clone)}
     line = "FROM jeeves #flamingo n: FIX SimonBarnett/bobiverse#7889 https://x"
     ready = c.ensure_opencode_job_worktree(
-        line, env, install_root=str(clone), run=_run_with_gh("fr-7888"), nick="flamingo-1"
+        line, env, install_root=str(clone), run=run, nick="flamingo-1"
     )
     assert ready["state"] == "project"
-    path = Path(ready["path"])
-    assert (path / "HEAD.txt").read_text(encoding="utf-8").strip() == "fr-7888"
+    assert seen, "expected a git worktree add"
+    add = seen[-1]
+    assert "-B" in add
+    assert "origin/fr-7888" in add
