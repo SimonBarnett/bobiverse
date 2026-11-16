@@ -1,0 +1,20 @@
+{
+  "mcpServers": {
+    "skill-dag": {
+      "command": "python",
+      "args": [
+        "/home/runner/work/bobiverse/bobiverse/bob/scripts/skill_dag_mcp.py",
+        "--root",
+        "/home/runner/work/bobiverse/bobiverse/C:\\ai\\bob\\worker/.grok/skills",
+        "--root",
+        "/home/runner/work/bobiverse/bobiverse/bob/.grok/skills",
+        "--root",
+        "/home/runner/work/bobiverse/bobiverse/common/.grok/skills",
+        "--root",
+        "/home/runner/.grok/skills",
+        "--job-worktree-file",
+        "C:\\ai\\bob\\worker/skill-dag-job-worktree"
+      ]
+    }
+  }
+}

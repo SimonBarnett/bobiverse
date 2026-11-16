@@ -48,6 +48,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Optional
 
+from seat_session_log import SeatSessionLog, console_startup_state, redact_session_text
+
 EXIT_OK = 0
 
 
@@ -475,7 +477,7 @@ class _LogStream:
     def write(self, s):
         t = str(s).strip()
         if t:
-            self.log("stderr: " + t[:300])
+            self.log("stderr: " + _scrub(t)[:300])
         return len(str(s))
 
     def flush(self):
@@ -505,7 +507,7 @@ _SECRET_RX = re.compile(r"(?i)(xai_api_key|cursor_api_key|password|passwd|secret
 
 
 def _scrub(s: str) -> str:
-    return _SECRET_RX.sub(lambda m: m.group(1) + "=<redacted>", s)
+    return redact_session_text(_SECRET_RX.sub(lambda m: m.group(1) + "=<redacted>", s))
 
 
 class SecretStr:
@@ -2751,6 +2753,8 @@ class LaunchSpec:
     write_opencode_skill_dag_mcp: bool = False  # FR #6898: opencode agent seats only
     skill_dag_mcp_args: list = field(default_factory=list)  # FR #6899: python argv for skill-dag stdio
     skill_dag_job_worktree: str | None = None
+    kind: str = ""
+    session_log: Optional[SeatSessionLog] = None
 
 
 def skill_dag_mcp_script_path(
@@ -3285,10 +3289,18 @@ def format_agent_exit_code_label(code) -> str:
 class AgentStderrRing:
     """FR #7671: bounded line ring of the agent CLI stderr."""
 
-    def __init__(self, limit: int = 32) -> None:
+    def __init__(self, limit: int = 32, on_line=None) -> None:
         self._lines: deque = deque(maxlen=max(5, int(limit)))
         self._buf = ""
         self._lock = threading.Lock()
+        self._on_line = on_line
+        self._dropping = False
+
+    def _append(self, text: str) -> None:
+        safe = _scrub(text)
+        self._lines.append(safe[:8192])
+        if self._on_line is not None:
+            self._on_line(safe)
 
     def feed(self, text: str) -> None:
         if not text:
@@ -3299,14 +3311,19 @@ class AgentStderrRing:
             self._buf = ""
             for part in parts:
                 if part.endswith(("\n", "\r")):
-                    self._lines.append(part.strip("\r\n"))
+                    if not self._dropping:
+                        self._append(part.strip("\r\n"))
+                    self._dropping = False
                 else:
                     self._buf = part
+            if len(self._buf) > 65536:
+                self._buf = ""
+                self._dropping = True
 
     def finish(self) -> None:
         with self._lock:
-            if self._buf.strip():
-                self._lines.append(self._buf.strip())
+            if self._buf.strip() and not self._dropping:
+                self._append(self._buf.strip())
             self._buf = ""
 
     def tail_text(self) -> str:
@@ -3315,24 +3332,25 @@ class AgentStderrRing:
         return "\n".join(lines[-5:])
 
 
-def _tee_agent_stderr(pipe, ring: AgentStderrRing) -> None:
+def _tee_agent_stderr(pipe, ring: AgentStderrRing, output=None) -> None:
     """Copy the agent stderr pipe to the console and into the ring."""
     try:
+        output = output or sys.__stderr__
         while True:
-            chunk = pipe.read(256)
+            chunk = pipe.read1(4096) if hasattr(pipe, "read1") else pipe.read(256)
             if not chunk:
                 break
             if isinstance(chunk, bytes):
                 try:
-                    sys.__stderr__.buffer.write(chunk)
-                    sys.__stderr__.buffer.flush()
+                    output.buffer.write(chunk)
+                    output.buffer.flush()
                 except Exception:
                     pass
                 text = chunk.decode("utf-8", "replace")
             else:
                 try:
-                    sys.__stderr__.write(chunk)
-                    sys.__stderr__.flush()
+                    output.write(chunk)
+                    output.flush()
                 except Exception:
                     pass
                 text = str(chunk)
@@ -3347,16 +3365,16 @@ def _tee_agent_stderr(pipe, ring: AgentStderrRing) -> None:
             pass
 
 
-def start_agent_stderr_capture(pipe) -> tuple[AgentStderrRing, threading.Thread]:
-    ring = AgentStderrRing()
-    thread = threading.Thread(target=_tee_agent_stderr, args=(pipe, ring), daemon=True)
+def start_agent_stderr_capture(pipe, on_line=None, output=None) -> tuple[AgentStderrRing, threading.Thread]:
+    ring = AgentStderrRing(on_line=on_line)
+    thread = threading.Thread(target=_tee_agent_stderr, args=(pipe, ring, output), daemon=True)
     thread.start()
     return ring, thread
 
 
 def agent_stderr_evidence(text: str) -> str:
     """Last 5 nonempty lines, 500 chars, secrets redacted (FR #7671)."""
-    lines = [ln.strip() for ln in str(text or "").splitlines() if ln.strip()]
+    lines = [ln.strip() for ln in _scrub(str(text or "")).splitlines() if ln.strip()]
     tail = "\n".join(lines[-5:])
     if len(tail) > 500:
         tail = tail[-500:]
@@ -3365,7 +3383,7 @@ def agent_stderr_evidence(text: str) -> str:
 
         return crash_report.redact(tail)
     except Exception:
-        return tail
+        return "(evidence unavailable)"
 
 
 def agent_stderr_dedupe_line(text: str) -> str:
@@ -3379,7 +3397,7 @@ def agent_stderr_dedupe_line(text: str) -> str:
 
 def report_agent_cli_nonzero_exit(
     *,
-    exit_code: int,
+    exit_code: int | None,
     job_key: str = "",
     machine: str = "",
     nick: str = "",
@@ -3390,6 +3408,7 @@ def report_agent_cli_nonzero_exit(
     parent_cmd: str = "",
     log: Optional[Callable[[str], None]] = None,
     filer_post: Optional[Callable[..., dict]] = None,
+    reason: str = "",
 ) -> dict:
     """FR #7593 / #7671: agent CLI nonzero exit, with the last stderr lines. No secrets."""
     if filer_post is None and os.environ.get("PYTEST_CURRENT_TEST"):
@@ -3402,13 +3421,15 @@ def report_agent_cli_nonzero_exit(
     except (TypeError, ValueError):
         u = normalize_agent_exit_code(raw_code)
     label = format_agent_exit_code_label(u if raw_code is None else raw_code)
-    job = " ".join(str(job_key or "").split())[:120] or "(none)"
+    if exit_code is None:
+        label = "unknown (process still running)"
+    job = " ".join(_scrub(str(job_key or "")).split())[:120] or "(none)"
     try:
         pid_s = str(int(agent_pid or 0))
     except (TypeError, ValueError):
         pid_s = "0"
     evidence = agent_stderr_evidence(stderr_tail)
-    parent = " ".join(str(parent_cmd or "").split())[:240]
+    parent = " ".join(_scrub(str(parent_cmd or "")).split())[:240]
     # FR #7724: a silent 0xffffffff used to skip intake (FR #7681). That hid seat deaths
     # such as a Flash nick disappearing with no issue. Still classify recycle vs kill.
     silent = u == 0xFFFFFFFF and not str(evidence or "").strip()
@@ -3445,6 +3466,12 @@ def report_agent_cli_nonzero_exit(
             "What: the agent CLI process exited non-zero; the worker wrapper reported it and "
             "recycled the seat (FR #7593).\n"
         )
+    if reason:
+        reason = _scrub(reason)[:160]
+        what += f"Reason: {reason}\n"
+        if reason != "agent-exited":
+            title = "bug: seat stopped making progress"
+            key = f"seat-no-progress|{mid}|{nick_s}|{agent_stderr_dedupe_line(reason)}"[:128]
     body = (
         what
         + f"Where: bob-worker kind={k} machine={mid} nick={nick_s} agent_pid={pid_s}\n"
@@ -4250,6 +4277,7 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
         raise ValueError(f"unknown agent kind {kind!r}")
     assert_fresh(argv, {k: v for k, v in files.items() if k.endswith(".ps1")}, allow_resume=bool(resume_session_id))
     return LaunchSpec(
+        kind=kind,
         argv=argv,
         cwd=cwd,
         session_id=sid,
@@ -4265,11 +4293,12 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
 class ProcHandle:
     """Thin wrapper so tests can fake processes."""
 
-    def __init__(self, popen: subprocess.Popen, stderr_ring: AgentStderrRing | None = None, stderr_thread: threading.Thread | None = None):
+    def __init__(self, popen: subprocess.Popen, stderr_ring: AgentStderrRing | None = None, stderr_thread: threading.Thread | None = None, stdout_thread=None):
         self._p = popen
         self.pid = popen.pid
         self._stderr_ring = stderr_ring
         self._stderr_thread = stderr_thread
+        self._stdout_thread = stdout_thread
 
     def poll(self):
         return self._p.poll()
@@ -4278,6 +4307,8 @@ class ProcHandle:
         code = self._p.wait(timeout)
         if self._stderr_thread is not None:
             self._stderr_thread.join(timeout=2)
+        if self._stdout_thread is not None:
+            self._stdout_thread.join(timeout=2)
         return code
 
     def stderr_tail(self) -> str:
@@ -4296,20 +4327,28 @@ def default_spawn(spec: LaunchSpec, env: dict) -> ProcHandle:
     # t771u: ONE window. The agent INHERITS this exe's console (no CREATE_NEW_CONSOLE, no second console); a kill-on-close job object
     # makes the agent die with us even if we are killed. "New agent every time" is about the SESSION, not the window: the exe's
     # window IS the agent's window and a new click opens a new exe + window.
-    # FR #7671: tee stderr so the console still shows it and the exit report can quote it.
-    # stdout stays inherited (the agent TUI).
+    # Grok requires real console handles, including stderr, to render its TUI.
+    # OpenCode's headless wrapper can be teed; interactive stdout stays inherited.
+    capture = {} if spec.kind == "grok" else {"stderr": subprocess.PIPE}
+    if spec.kind == "opencode":
+        capture["stdout"] = subprocess.PIPE
     popen = subprocess.Popen(
-        spec.argv, cwd=spec.cwd, env=env, creationflags=0, close_fds=True, stderr=subprocess.PIPE,
+        spec.argv, cwd=spec.cwd, env=env, creationflags=0, close_fds=True, **capture,
     )
     ring = None
     thread = None
     if getattr(popen, "stderr", None) is not None:
-        ring, thread = start_agent_stderr_capture(popen.stderr)
+        callback = (lambda text: spec.session_log.write("stderr", text)) if spec.session_log else None
+        ring, thread = start_agent_stderr_capture(popen.stderr, on_line=callback)
+    stdout_thread = None
+    if spec.kind == "opencode" and getattr(popen, "stdout", None) is not None:
+        callback = (lambda text: spec.session_log.write("stdout", text)) if spec.session_log else None
+        _, stdout_thread = start_agent_stderr_capture(popen.stdout, on_line=callback, output=sys.__stdout__)
     try:
         owned_job().assign(popen)
     except Exception:
         pass
-    return ProcHandle(popen, ring, thread)
+    return ProcHandle(popen, ring, thread, stdout_thread)
 
 
 def kill_tree(pid: int, run: Callable = subprocess.run) -> bool:
@@ -8563,6 +8602,7 @@ def post_digest_seat_kind(
     sleep: Optional[Callable[[float], None]] = None,
     assignable: bool | None = None,
     stale_build: dict | None = None,
+    last_exit: dict | None = None,
 ) -> bool:
     """POST digest worker kind so the chair can skip OpenCode for MRB/UAT (FR #6134).
 
@@ -8637,6 +8677,10 @@ def post_digest_seat_kind(
             "installed": str(stale_build.get("installed") or ""),
             "since": stale_build.get("since"),
         }
+    if isinstance(last_exit, dict):
+        from bobreport import coerce_last_exit
+
+        payload["last_exit"] = coerce_last_exit(last_exit)
     post_kw: dict = {"log": log}
     if sleep is not None:
         post_kw["sleep"] = sleep
@@ -11121,10 +11165,19 @@ class Supervisor:
                  send_enter: Optional[Callable[[int], bool]] = None,
                  ask_user_watch: Optional["AskUserPendingWatch"] = None,
                  sessions_root: Optional[Path] = None,
-                 install_root: str | Path | None = None):
+                 install_root: str | Path | None = None,
+                 session_log_path: Path | None = None):
         self.kind, self.exe, self.cwd, self.machine, self.nick = kind, exe, cwd, machine, nick
         self.install_root = str(install_root) if install_root else None
         self.run_dir, self.irc, self.relay, self.log = Path(run_dir), irc, relay, log
+        self.session_log = SeatSessionLog(session_log_path or (self.run_dir / "session.log"))
+        self.last_exit: dict | None = None
+        self.publish_exit_digest = None
+        self._session_log_stop = threading.Event()
+        self._session_log_thread = None
+        self._session_screen = None
+        self._session_cursor = None
+        self._exit_recorded_pid = None
         self.secret = env_secret
         self.spawn, self.kill, self.probe, self.inject = spawn, kill, probe, inject
         self.detector = detector or HangDetector()
@@ -11248,6 +11301,91 @@ class Supervisor:
         if th is not None and th.is_alive():
             th.join(timeout=2.0)
 
+    def _session_log_paths(self) -> list:
+        paths = []
+        if self.kind == "grok" and self.sessions:
+            directory = grok_session_dir(
+                self.cwd, self.sessions[-1], sessions_root=self.sessions_root, run_dir=self.run_dir
+            )
+            if directory is not None:
+                paths.extend(directory / name for name in ("events.jsonl", "messages.jsonl"))
+            paths.append(default_unified_log_path(run_dir=self.run_dir))
+        elif self.kind == "cursor" and self._session_cursor is not None:
+            directory = self._session_cursor._bind()
+            if directory is not None:
+                transcript = self._session_cursor._transcript_file(directory)
+                if transcript is not None:
+                    paths.append(transcript)
+        elif self.kind == "opencode":
+            paths.append(self.run_dir / "opencode-turns.jsonl")
+        return paths
+
+    def _collect_session_log(self, *, final: bool = False) -> None:
+        self.session_log.collect(self._session_log_paths(), final=final)
+        screen = read_console_screen_text(max_lines=32)
+        if screen and screen != self._session_screen:
+            self.session_log.write("console", screen)
+            self._session_screen = screen
+
+    def _stop_session_log(self) -> None:
+        self._session_log_stop.set()
+        thread = self._session_log_thread
+        if thread is not None and thread is not threading.current_thread():
+            thread.join(timeout=2)
+        self._session_log_thread = None
+
+    def _start_session_log(self) -> None:
+        self._session_log_stop = threading.Event()
+        stop = self._session_log_stop
+
+        def watch():
+            while not stop.wait(0.5):
+                try:
+                    self._collect_session_log()
+                except Exception:
+                    self.log("session-log: snapshot unavailable")
+
+        self._session_log_thread = threading.Thread(target=watch, name="seat-session-log", daemon=True)
+        self._session_log_thread.start()
+
+    def _record_exit(self, proc, reason: str, code=None, *, report: bool = False) -> None:
+        with self._lock:
+            if self._exit_recorded_pid == proc.pid:
+                return
+            self._exit_recorded_pid = proc.pid
+        self._stop_session_log()
+        with contextlib.suppress(Exception):
+            self._collect_session_log(final=True)
+        with contextlib.suppress(Exception):
+            self.session_log.write("stderr-tail", proc.stderr_tail())
+        self.last_exit = {
+            "at": _dt.datetime.now(_dt.timezone.utc).isoformat(),
+            "reason": _scrub(reason)[:160],
+            "exit_code": code,
+            "pid": proc.pid,
+            "output": self.session_log.tail()[-8192:],
+        }
+        self._persist_last_exit()
+        if report:
+            report_agent_cli_nonzero_exit(
+                exit_code=normalize_agent_exit_code(code) if code is not None else None,
+                raw_code=code, reason=reason,
+                machine=self.machine, nick=self.nick, kind=self.kind, agent_pid=proc.pid,
+                stderr_tail=self.last_exit["output"], log=self.log,
+            )
+
+    def _persist_last_exit(self) -> None:
+        text = json.dumps(self.last_exit)
+        self.session_log.write("last_exit", text)
+        try:
+            self.run_dir.mkdir(parents=True, exist_ok=True)
+            (self.run_dir / "last-exit.json").write_text(text + "\n", encoding="utf-8")
+        except OSError:
+            pass
+        self.log(f"agent: last_exit reason={self.last_exit['reason']} exit_code={self.last_exit['exit_code']} session_log={self.session_log.path}")
+        if self.publish_exit_digest is not None:
+            with contextlib.suppress(Exception):
+                self.publish_exit_digest(self.last_exit)
     def _stop_fuel_watcher(self) -> None:
         self._fuel_watch_stop.set()
         th = self._fuel_watch_thread
@@ -12137,6 +12275,15 @@ class Supervisor:
                 install_root=self.install_root,
             )
             spec = child["spec"]
+            self._stop_session_log()
+            self.session_log.reset_sources()
+            self._session_screen = None
+            self._exit_recorded_pid = None
+            self._session_cursor = CursorTurnWatcher(since_wall=time.time()) if self.kind == "cursor" else None
+            spec.session_log = self.session_log
+            self.session_log.write("start", f"kind={self.kind} session={spec.session_id}")
+            self.session_log.write("console-start", json.dumps(console_startup_state()))
+            self.session_log.write("prompt", self._prompt() + (" " + note if note else ""))
             # FR #2380 / #2413 / #2669: seat env + path normalize + scrub agent-host vars.
             env = prepare_seat_child_env(self.base_env, child["env"])
             self.last_child_env = dict(env)
@@ -12150,6 +12297,7 @@ class Supervisor:
             self.proc = proc
             self._owned.add(proc.pid)
             self.sessions.append(spec.session_id)
+            self._start_session_log()
             self._agent_started_at = self.clock()
             # FR #1643 / MRB #1658: snapshot create-parent now; after wait() the agent PID is usually gone from Toolhelp.
             try:
@@ -12805,6 +12953,7 @@ class Supervisor:
                         self.relay.outbox_path = Path(ob)
                 except Exception as e:  # noqa: BLE001
                     self.log(f"opencode-ready: bob outbox setup failed {type(e).__name__}")
+        self.session_log.write("prompt", wire)
         if on_failed is None and assign_job_ref(line):
             on_failed = lambda l=line: self._inject_recovery().on_failed(l, attempt=1)
         kind_l = (self.kind or "").strip().lower()
@@ -12892,6 +13041,10 @@ class Supervisor:
             )
             started = getattr(self, "_agent_started_at", None)
         if expected or not current:
+            with self._lock:
+                if expected and self.last_exit and self.last_exit.get("pid") == proc.pid:
+                    self.last_exit = {**self.last_exit, "exit_code": code}
+                    self._persist_last_exit()
             return
         # FR #955: when the TUI dies seconds after an early inject, log the cause.
         age = (self.clock() - started) if started is not None else None
@@ -12926,6 +13079,7 @@ class Supervisor:
         )
         exit_u = normalize_agent_exit_code(code)
         exit_label = format_agent_exit_code_label(code)
+        self._record_exit(proc, "agent-exited" if exit_u == 0 else "agent-cli-nonzero-exit", code)
         if age is not None and age < max(30.0, float(self.startup_grace_s) + 15.0):
             self.log(
                 f"agent: early exit code={code} (u32={exit_label}) after {age:.1f}s "
@@ -12961,7 +13115,7 @@ class Supervisor:
                 nick=self.nick,
                 kind=self.kind,
                 agent_pid=int(getattr(proc, "pid", 0) or 0),
-                stderr_tail=tail,
+                stderr_tail=tail or (self.last_exit or {}).get("output", ""),
                 parent_cmd=parent_cmd,
                 log=self.log,
             )
@@ -13298,6 +13452,8 @@ class Supervisor:
         with self._lock:
             if self._shutting or self.proc is None:
                 return
+            if reason != "agent-cli-nonzero-exit":
+                self._record_exit(self.proc, reason, self.proc.poll(), report=True)
             now = self.clock()
             # FR #4180: restart counter is monotonic per incident. Only clear the list when the
             # last restart is older than the window (incident ended); never drop mid-incident
@@ -13462,6 +13618,9 @@ class Supervisor:
             if proc is not None:
                 self._expected_exit.add(proc.pid)
         self.log(f"worker: shutting down ({reason}) exit={code}")
+        if proc is not None and self._exit_recorded_pid != proc.pid:
+            self._record_exit(proc, reason, proc.poll(), report=code != EXIT_OK)
+        self._stop_session_log()
         self.stop.set()
         self._stop_turn_watcher()
         self._stop_fuel_watcher()
@@ -14397,6 +14556,11 @@ def run_agent(args, log: Log) -> int:
         env_secret=secret,
         startup_grace_s=grace,
         install_root=_install_root,
+        session_log_path=_state_root() / "logs" / f"seat-{nick}.log",
+    )
+    sup.publish_exit_digest = lambda last_exit: post_digest_seat_kind(
+        machine=machine, pid=pid, nick=nick, kind=kind, model=seat_model,
+        last_exit=last_exit, log=log,
     )
     # FR #2782: a hotpatched install exe must reach this seat at its next idle point.
     sup.stale_build_check = lambda: stale_build_reason(sys.executable, _install_root)
@@ -14414,6 +14578,7 @@ def run_agent(args, log: Log) -> int:
             start_effort=seat_effort,
             worker_build=build,
             stale_build=status,
+            last_exit=sup.last_exit,
             log=log,
         )
 
@@ -14472,6 +14637,7 @@ def run_agent(args, log: Log) -> int:
             state=None if grok_ok else "needs_sign_in",
             log=log,
             assignable=bool(getattr(sup, "_session_assignable", False)),
+            last_exit=sup.last_exit,
         )
     except Exception as e:
         log(f"worker: post-launch start_model digest failed {type(e).__name__}")
