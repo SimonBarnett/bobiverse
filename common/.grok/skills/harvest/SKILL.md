@@ -498,6 +498,7 @@ routes to bobiverse via the split rule.
 - A source pin of a PowerShell function must read until the next function. A fixed character window misses a call that the function still makes.
 - When prepare form gains a Session 0 fail-close and a prepare-form SDK path, update the doc pin to those sentences. Do not restore WINRUN only.
 - A grok launch pin must find --no-auto-update --no-alt-screen --cwd as a triple. --reasoning-effort may sit before that triple.
+- A Windows agent exit of 3221225786 (0xC000013A STATUS_CONTROL_C_EXIT) is the console closing or Ctrl+C. Report it as console-close once per seat. Do not title it as an agent CLI crash. Still GIVEUP an accepted job and do not write a fake DONE.
 
 ## Harvest digest (lessons audit 2026-10-06)
 
