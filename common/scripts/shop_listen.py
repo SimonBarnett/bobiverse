@@ -858,6 +858,11 @@ def return_job_to_unaccepted(
                     seats.append(canon_g)
             if seats:
                 job["giveup_seats"] = ",".join(seats)
+            # FR #7966: keep the NACK/GIVEUP reason on the row and the digest outcome list.
+            if reason and not out_of_fuel_giveup:
+                job["giveup_reason"] = str(reason).strip()[:200]
+                if gave_up_by:
+                    gitclaim.note_offer_outcome(job, gave_up_by, "nack", job["giveup_reason"])
             if self_mrb_giveup and gave_up_by:
                 # FR #5939: bare "self-mrb" reason must not promote a no-role seat into
                 # author_seats. Only seats that already have a verified role (implementer

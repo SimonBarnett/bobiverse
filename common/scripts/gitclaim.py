@@ -4269,7 +4269,7 @@ def _coerce_row(row: dict) -> dict | None:
                 "offered_via",  # FR #2811: giveup-push sticky window
                 "author_seat", "author_nick", "author", "implementer_seat", "mrb_author_seat", "mrb_fix_author_seat",
                 "author_seats", "url", "title", "body", "state",
-                "giveup_seats", "require_machine", "cooldown_until", "giveup_ts", "supersedes", "result", "done_ts", "done_by",
+                "giveup_seats", "giveup_reason", "require_machine", "cooldown_until", "giveup_ts", "supersedes", "result", "done_ts", "done_by",
                 "reconcile",  # FR #3742: LOST_DONE_RESTART vs STALE_BUSY audit
                 "prior_holder",  # FR #4564: do not re-offer a lost DONE to the seat that held it
                 # FR #4706 / #4585: FIX CI head SHA + failure signature must survive reload
@@ -4342,6 +4342,44 @@ def _coerce_row(row: dict) -> dict | None:
             out["sticky_skip_seats"] = [str(x) for x in skips if str(x).strip()]
         else:
             out["sticky_skip_seats"] = [str(skips)]
+    # FR #7966: per-seat unanswered-offer outcomes survive reload for the digest.
+    if row.get("offer_refused_by"):
+        refused = row.get("offer_refused_by")
+        if isinstance(refused, list):
+            out["offer_refused_by"] = [str(x) for x in refused if str(x).strip()]
+        else:
+            out["offer_refused_by"] = [str(refused)]
+    outcomes = row.get("offer_outcomes")
+    if isinstance(outcomes, list):
+        clean_out = []
+        for item in outcomes[-20:]:
+            if not isinstance(item, dict):
+                continue
+            seat = str(item.get("seat") or "").strip()
+            outcome = str(item.get("outcome") or "").strip()
+            if not seat or not outcome:
+                continue
+            clean_out.append({
+                "seat": seat,
+                "outcome": outcome,
+                "reason": str(item.get("reason") or "")[:200],
+                "ts": str(item.get("ts") or ""),
+            })
+        if clean_out:
+            out["offer_outcomes"] = clean_out
+    unanswered = row.get("offer_unanswered")
+    if isinstance(unanswered, dict):
+        clean_un: dict[str, int] = {}
+        for key, val in unanswered.items():
+            nick = str(key or "").strip().lower()
+            if not nick:
+                continue
+            try:
+                clean_un[nick] = int(val)
+            except (TypeError, ValueError):
+                continue
+        if clean_un:
+            out["offer_unanswered"] = clean_un
     if row.get("repo_uat"):
         out["repo_uat"] = True
     if row.get("merged_prs"):
@@ -4949,6 +4987,8 @@ OFFER_TIMEOUT_S = 90.0
 GIVEUP_OFFER_EXTRA_S = 90.0
 # FR #2309: max same-nick rebroadcasts without ACK before clearing the pin.
 OFFER_STICKY_MAX = 3
+# FR #7966: unanswered offers to one seat (timeout, no ACK/NACK/GIVEUP) stop at this count.
+OFFER_UNANSWERED_MAX = 3
 # Sticky via values that get the extended offer window (harvest hold / seat turn end).
 _RELEASE_OFFER_VIA = frozenset({"giveup", "done", "nack"})
 
@@ -4962,6 +5002,75 @@ def offer_timeout_s(row: dict | None) -> float:
     if via in _RELEASE_OFFER_VIA:
         return base + float(GIVEUP_OFFER_EXTRA_S)
     return base
+
+
+def seat_offer_refused(row: dict, nick: str) -> bool:
+    """True when this seat already used its unanswered-offer budget (FR #7966)."""
+    me = (canonical_worker_nick(nick) or nick or "").strip().lower()
+    if not me or not isinstance(row, dict):
+        return False
+    for raw in row.get("offer_refused_by") or []:
+        other = (canonical_worker_nick(str(raw)) or str(raw) or "").strip().lower()
+        if other and other == me:
+            return True
+    return False
+
+
+def note_offer_outcome(row: dict, seat: str, outcome: str, reason: str = "") -> None:
+    """Append one per-seat offer result (timeout / nack / giveup) for the digest (FR #7966)."""
+    canon = (canonical_worker_nick(seat) or seat or "").strip()
+    if not canon or not isinstance(row, dict):
+        return
+    outcomes = row.get("offer_outcomes")
+    if not isinstance(outcomes, list):
+        outcomes = []
+    outcomes.append({
+        "seat": canon,
+        "outcome": str(outcome or "").strip() or "timeout",
+        "reason": str(reason or "")[:200],
+        "ts": _utc_now(),
+    })
+    row["offer_outcomes"] = outcomes[-20:]
+
+
+def note_unanswered_offer(row: dict, seat: str, now_f: float) -> None:
+    """Count a timed-out offer. After OFFER_UNANSWERED_MAX, refuse that seat (FR #7966).
+
+    Sets cooldown_until and offer_refused_by. Also appends giveup_seats so
+    row_on_cooldown blocks only that seat. Does not increment giveup_count
+    and does not stamp needs_human.
+    """
+    canon = (canonical_worker_nick(seat) or seat or "").strip()
+    if not canon or not isinstance(row, dict):
+        return
+    note_offer_outcome(row, canon, "timeout", "offer-timeout")
+    key = canon.lower()
+    counts = row.get("offer_unanswered")
+    if not isinstance(counts, dict):
+        counts = {}
+    try:
+        n = int(counts.get(key) or 0) + 1
+    except (TypeError, ValueError):
+        n = 1
+    counts[key] = n
+    row["offer_unanswered"] = counts
+    if n < int(OFFER_UNANSWERED_MAX):
+        return
+    refused = [str(x).strip() for x in (row.get("offer_refused_by") or []) if str(x).strip()]
+    if canon.lower() not in {(canonical_worker_nick(x) or x).strip().lower() for x in refused}:
+        refused.append(canon)
+    row["offer_refused_by"] = refused
+    seats = [s.strip() for s in str(row.get("giveup_seats") or "").split(",") if s.strip()]
+    if canon.lower() not in {(canonical_worker_nick(x) or x).strip().lower() for x in seats}:
+        seats.append(canon)
+    if seats:
+        row["giveup_seats"] = ",".join(seats)
+    from datetime import timedelta as _td
+
+    until = datetime.fromtimestamp(float(now_f), tz=timezone.utc) + _td(
+        seconds=float(GIVEUP_COOLDOWN_S)
+    )
+    row["cooldown_until"] = until.replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
 def ordered_unaccepted(home: Path, rows: list[dict] | None = None) -> list[dict]:
@@ -9533,6 +9642,18 @@ def offer_focus_top(
                 except ValueError:
                     age = offer_timeout_s(cand) + 1
                 if dead_pin or age >= offer_timeout_s(cand):
+                    # FR #7966: a silent seat is a recorded refusal, not a fresh offer.
+                    if not dead_pin:
+                        note_unanswered_offer(cand, to, now_f)
+                    else:
+                        note_offer_outcome(cand, to, "dead-pin", "seat-not-live")
+                    with contextlib.suppress(Exception):
+                        _clear_job_seat_holds_unlocked(
+                            home,
+                            str(cand.get("repo") or ""),
+                            str(cand.get("task") or ""),
+                            str(cand.get("id") or ""),
+                        )
                     cand.pop("offered_to", None)
                     cand.pop("offered_ts", None)
                     cand.pop("offered_channel", None)
@@ -9582,6 +9703,9 @@ def offer_focus_top(
                 if repo_archived_for_queue(str(cand.get("repo") or "")):
                     return None
                 if row_machine_mismatch(cand, me) or row_gave_up_by(cand, me, live=live):
+                    return None
+                # FR #7966: three unanswered offers to this seat stop the re-offer loop.
+                if seat_offer_refused(cand, me):
                     return None
                 # FR #7084: skip model-mismatch seats; skip when actual tier is below job need.
                 if not _seat_model_allows_row(home, me, cand):
@@ -9818,6 +9942,21 @@ def offer_focus_top(
                     if pick is not None:
                         break
             if pick is None:
+                # FR #7966: a starved row with only refused seats publishes no_eligible_since.
+                for cand in doc.get("unaccepted") or []:
+                    if not isinstance(cand, dict):
+                        continue
+                    if not cand.get("offer_refused_by"):
+                        continue
+                    if cand.get("offered_to"):
+                        continue
+                    try:
+                        since = float(cand.get("no_eligible_since") or 0)
+                    except (TypeError, ValueError):
+                        since = 0.0
+                    if since <= 0:
+                        cand["no_eligible_since"] = now_f
+                        purged = True
                 if purged:
                     try:
                         _write_queue(queue_path(home), doc)
