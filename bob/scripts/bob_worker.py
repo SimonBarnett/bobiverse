@@ -252,6 +252,60 @@ def _resolve_opencode_fuel_helper_path(
     return candidates[0].resolve()
 
 
+def _path_is_mei_extract(path: Path) -> bool:
+    return any(part.startswith("_MEI") for part in Path(path).parts)
+
+
+def _resolve_installed_worker_script(
+    name: str,
+    *,
+    cwd: str | Path | None = None,
+    source_file: str | Path | None = None,
+    install_root: str | Path | None = None,
+) -> Optional[Path]:
+    """Locate a worker ``.py`` handed to external python. Never prefer a PyInstaller ``_MEI`` extract."""
+    source = Path(source_file).resolve() if source_file else Path(__file__).resolve()
+    here = source.parent
+    candidates: list[Path] = []
+    if install_root is not None:
+        root = Path(install_root)
+        candidates.append(root / "scripts" / name)
+        candidates.append(root / "bob" / "scripts" / name)
+        candidates.append(root / "common" / "scripts" / name)
+    if not _path_is_mei_extract(here):
+        candidates.append(here / name)
+    if cwd is not None:
+        parent = Path(cwd).resolve().parent
+        candidates.append(parent / "scripts" / name)
+        candidates.append(parent / "bob" / "scripts" / name)
+    if getattr(sys, "frozen", False):
+        exe_dir = Path(sys.executable).resolve().parent
+        candidates.append(exe_dir / "scripts" / name)
+        candidates.append(exe_dir.parent / "scripts" / name)
+        candidates.append(exe_dir.parent / "bob" / "scripts" / name)
+    for cand in candidates:
+        if _path_is_mei_extract(cand):
+            continue
+        if cand.is_file():
+            return cand.resolve()
+    return None
+
+
+def _report_missing_worker_script(name: str) -> None:
+    """FR #7884: a missing helper is an exception. The seat still starts."""
+    try:
+        import runtime_failure
+
+        runtime_failure.report_message(
+            "bob-worker",
+            "%s is missing from the installed worker scripts. The OpenCode seat still starts and that check is off."
+            % name,
+            site="opencode-helper-missing",
+        )
+    except Exception:
+        pass
+
+
 def log_install_root_guard(install_root: str | Path, log: Callable[[str], None] = print, *, run=subprocess.run) -> Optional[str]:
     """FR #4843: at seat start, surface when the live install checkout is off main."""
     try:
@@ -3633,7 +3687,16 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             mcp_path = str(Path(cwd) / OPENCODE_SKILL_DAG_MCP_RELPATH)
             files[mcp_path] = json.dumps(opencode_skill_dag_mcp_document(cwd), indent=2) + "\n"
         helper_path = _resolve_opencode_fuel_helper_path(cwd=cwd, install_root=install_root)
-        guard_path = Path(__file__).resolve().parent / "opencode_turn_guard.py"
+        guard_resolved = _resolve_installed_worker_script(
+            "opencode_turn_guard.py", cwd=cwd, install_root=install_root
+        )
+        guard_path = guard_resolved or (Path(__file__).resolve().parent / "opencode_turn_guard.py")
+        wedge_resolved = _resolve_installed_worker_script(
+            "opencode_tool_wedge.py", cwd=cwd, install_root=install_root
+        )
+        if wedge_resolved is None:
+            _report_missing_worker_script("opencode_tool_wedge.py")
+        wedge_text = str(wedge_resolved or "")
         # FR #6157: each opencode run emits turn_started / turn_ended into opencode-turns.jsonl
         # so BoredEmitter gets harvest-hold / done-miss / startup-ready parity with Grok.
         # FR #6240: no external_directory allow. Each injected assign carries its own
@@ -3662,7 +3725,7 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             r"$pauseStateDir = Join-Path $env:LOCALAPPDATA 'Bobiverse\worker\state'",
             f"$pyHelper = '{esc(str(helper_path))}'",
             f"$guardPy = '{esc(str(guard_path))}'",
-            f"$wedgePy = '{esc(str(Path(__file__).resolve().with_name('opencode_tool_wedge.py')))}'",
+            f"$wedgePy = '{esc(wedge_text)}'",
             r"$script:ocDagRetries = 1",
             r"$script:ocWedgeTicks = 0",
             r"$script:ocWedgeAction = ''",
@@ -3837,7 +3900,7 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             r"            if (($script:ocWedgeTicks % 10) -eq 0 -and $outFile -and (Test-Path -LiteralPath $outFile) -and $wedgePy) {",
             r"                $py = (Get-Command python.exe -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source)",
             r"                if (-not $py) { $py = 'python.exe' }",
-            r"                $wedgeLine = & $py $wedgePy peek $outFile $script:ocDagRetries 2>$null",
+            r"                try { $wedgeLine = & $py $wedgePy peek $outFile $script:ocDagRetries 2>$null } catch { $wedgeLine = '' }",
             "                if ($wedgeLine -match 'report-and-giveup' -or $wedgeLine -match '\"action\": \"giveup\"') {",
             r"                    $script:ocWedgeAction = 'giveup'",
             r"                    try { & taskkill /T /F /PID $proc.Id 2>$null | Out-Null } catch { }",
