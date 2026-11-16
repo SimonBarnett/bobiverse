@@ -4318,7 +4318,9 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             r"    $timedOut = $false",
             r"    try {",
             # FR #6156: redirect to files and treat growing file size as heartbeat (not absolute WaitForExit).
-            # FR #6366: also treat descendant CPU / worktree mtime as heartbeat; hard ceiling for real hangs.
+            # FR #6366: descendant presence refreshes the short watchdog. FR #7976: the
+            # 30 min ceiling measures time since real progress (output, CPU, or
+            # worktree mtime), not wall clock, so a live turn is not killed.
             r"        $watchdogMs = if ($env:BOB_OPENCODE_WATCHDOG_MS) { [int]$env:BOB_OPENCODE_WATCHDOG_MS } else { 120000 }",
             r"        $hardCeilingMs = if ($env:BOB_OPENCODE_HARD_CEILING_MS) { [int]$env:BOB_OPENCODE_HARD_CEILING_MS } else { 1800000 }",
             r"        $outFile = Join-Path $env:TEMP ('bob-oc-out-' + [guid]::NewGuid().ToString('n') + '.txt')",
@@ -4334,11 +4336,12 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             r"        $lastBusyCheck = [datetime]::UtcNow",
             r"        $lastBeat = [datetime]::UtcNow",
             r"        $runStarted = [datetime]::UtcNow",
+            r"        $lastProgress = $runStarted",
             r"        while (-not $proc.HasExited) {",
             r"            $len = 0",
             r"            if (Test-Path -LiteralPath $outFile) { $len += (Get-Item -LiteralPath $outFile).Length }",
             r"            if (Test-Path -LiteralPath $errFile) { $len += (Get-Item -LiteralPath $errFile).Length }",
-            r"            if ($len -gt $lastLen) { $lastLen = $len; $lastBeat = [datetime]::UtcNow }",
+            r"            if ($len -gt $lastLen) { $lastLen = $len; $lastBeat = [datetime]::UtcNow; $lastProgress = [datetime]::UtcNow }",
             r"            $busy = $false",
             r"            if (([datetime]::UtcNow - $lastBusyCheck).TotalMilliseconds -ge 2000) {",
             r"                $lastBusyCheck = [datetime]::UtcNow",
@@ -4359,20 +4362,21 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             r"                    foreach ($tp in $all) { if ($desc.Contains([int]$tp.ProcessId)) { try { $cpuSum += [double]$tp.UserModeTime + [double]$tp.KernelModeTime } catch { } } }",
             # Alive descendant (e.g. silent pytest grandchild) keeps the run busy even if CPU sum resets.
             r"                    if ($desc.Count -gt 0) { $busy = $true; $lastBeat = [datetime]::UtcNow }",
-            r"                    elseif ($lastCpu -ge 0 -and $cpuSum -gt $lastCpu) { $busy = $true; $lastBeat = [datetime]::UtcNow }",
+            r"                    if ($lastCpu -ge 0 -and $cpuSum -gt $lastCpu) { $busy = $true; $lastBeat = [datetime]::UtcNow; $lastProgress = [datetime]::UtcNow }",
             r"                    $lastCpu = $cpuSum",
             r"                } catch { }",
             r"                if ($ocDir -and (Test-Path -LiteralPath $ocDir)) {",
             r"                    try {",
             r"                        $stamp = (Get-ChildItem -LiteralPath $ocDir -Recurse -File -Depth 3 -ErrorAction SilentlyContinue | Sort-Object LastWriteTimeUtc -Descending | Select-Object -First 1).LastWriteTimeUtc",
-            r"                        if ($stamp -and $lastWtStamp -and $stamp -gt $lastWtStamp) { $busy = $true; $lastBeat = [datetime]::UtcNow }",
+            r"                        if ($stamp -and $lastWtStamp -and $stamp -gt $lastWtStamp) { $busy = $true; $lastBeat = [datetime]::UtcNow; $lastProgress = [datetime]::UtcNow }",
             r"                        if ($stamp) { $lastWtStamp = $stamp }",
             r"                    } catch { }",
             r"                }",
             r"            }",
             r"            $idleMs = ([datetime]::UtcNow - $lastBeat).TotalMilliseconds",
             r"            $runMs = ([datetime]::UtcNow - $runStarted).TotalMilliseconds",
-            r"            if ($runMs -ge $hardCeilingMs) {",
+            r"            $stallMs = ([datetime]::UtcNow - $lastProgress).TotalMilliseconds",
+            r"            if ($stallMs -ge $hardCeilingMs) {",
             r"                $timedOut = $true",
             r"                $killReason = ('hard ceiling ' + [int]$hardCeilingMs + 'ms')",
             r"                try { & taskkill /T /F /PID $proc.Id 2>$null | Out-Null } catch { }",
@@ -4380,7 +4384,7 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             r"                $pyCeil = (Get-Command python.exe -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source)",
             r"                if (-not $pyCeil) { $pyCeil = 'python.exe' }",
             r"                $mach = if ($env:BOB_MACHINE_ID) { $env:BOB_MACHINE_ID } else { $env:COMPUTERNAME }",
-            r"                try { & $pyCeil $guardPy ceiling --machine $mach --nick $env:BOB_NICK --job $jobKey --elapsed-ms ([int]$runMs) --reason $killReason 2>$null | Out-Null } catch { }",
+            r"                try { & $pyCeil $guardPy ceiling --machine $mach --nick $env:BOB_NICK --job $jobKey --elapsed-ms ([int]$stallMs) --reason $killReason 2>$null | Out-Null } catch { }",
             # FR #7899: a ceiling kill must reach the outbox or the chair re-offers a silent job.
             r"                if ($jobKey) { Write-OpencodeJobGiveup $jobKey $killReason }",
             r"                break",
