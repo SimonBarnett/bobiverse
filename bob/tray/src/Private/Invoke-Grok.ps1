@@ -1,3 +1,29 @@
+function Remove-BobGrokTempDir {
+    param([string]$Path)
+    if (-not $Path) { return }
+    $name = Split-Path -Leaf $Path
+    if ($name -notmatch '^bob-grok-[0-9a-fA-F]{32}$') { return }
+    Remove-Item -LiteralPath $Path -Recurse -Force -ErrorAction SilentlyContinue
+}
+
+function Clear-BobGrokStaleTempDirs {
+    <#
+      FR #7840: drop empty bob-grok-<guid> dirs older than 1 hour.
+      TEMP is per-user, so these are this account's leftovers. Never touch
+      bob-grok-session or a dir that still has files.
+    #>
+    param([int]$OlderThanHours = 1)
+    $root = [IO.Path]::GetTempPath()
+    $cutoff = (Get-Date).AddHours(-1 * [Math]::Abs($OlderThanHours))
+    Get-ChildItem -LiteralPath $root -Directory -Filter 'bob-grok-*' -ErrorAction SilentlyContinue | ForEach-Object {
+        if ($_.Name -notmatch '^bob-grok-[0-9a-fA-F]{32}$') { return }
+        if ($_.LastWriteTime -gt $cutoff) { return }
+        $child = Get-ChildItem -LiteralPath $_.FullName -Force -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($child) { return }
+        Remove-Item -LiteralPath $_.FullName -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+
 function Invoke-Grok {
     param(
         [Parameter(Mandatory)][string[]]$Args,
@@ -14,6 +40,9 @@ function Invoke-Grok {
     if (-not (Test-Path $WorkingDirectory)) {
         New-Item -ItemType Directory -Force -Path $WorkingDirectory | Out-Null
     }
+
+    # FR #7840: each call also sweeps leftovers from a previous process.
+    try { Clear-BobGrokStaleTempDirs } catch { }
 
     $outDir = Join-Path ([IO.Path]::GetTempPath()) ('bob-grok-' + [guid]::NewGuid().ToString('N'))
     New-Item -ItemType Directory -Force -Path $outDir | Out-Null
@@ -74,6 +103,7 @@ function Invoke-Grok {
     finally {
         if ($null -eq $prevUpdater) { Remove-Item Env:GROK_DISABLE_AUTOUPDATER -ErrorAction SilentlyContinue }
         else { $env:GROK_DISABLE_AUTOUPDATER = $prevUpdater }
+        Remove-BobGrokTempDir -Path $outDir
     }
 }
 
