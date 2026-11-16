@@ -3512,6 +3512,15 @@ def report_agent_cli_nonzero_exit(
     """FR #7593 / #7671: agent CLI nonzero exit, with the last stderr lines. No secrets."""
     if filer_post is None and os.environ.get("PYTEST_CURRENT_TEST"):
         return {"ok": True, "skipped": True, "reason": "pytest"}
+    # FR #7978: ack-miss recycles a live agent. That is not a CLI exit and must
+    # not open "seat stopped making progress" with the session prompt as stderr.
+    if exit_code is None and str(reason or "").strip() == "no-ack-after-assign":
+        if log:
+            try:
+                log("worker: no-ack-after-assign while process still running; no intake (FR #7978)")
+            except Exception:
+                pass
+        return {"ok": True, "skipped": True, "reason": "no-ack-still-running"}
     mid = re.sub(r"[^a-z0-9._-]+", "-", str(machine or "unknown").strip().lower()).strip("-") or "unknown"
     nick_s = re.sub(r"[^a-z0-9._-]+", "-", str(nick or "-").strip().lower()).strip("-") or "-"
     k = (kind or "").strip().lower() or "unknown"
