@@ -8276,6 +8276,25 @@ def opencode_skips_hostile_assign(kind: str, line: str, start_model: str = "") -
     return True
 
 
+def launched_hostile_start_model(kind: str, child_env: Optional[dict] = None) -> str:
+    """FR #7888: the model the seat launched, not the configured hello id.
+
+    ``resolve_seat_hello_model`` returns ``workerStartModels`` first. A paid
+    OpenCode Go launch with a free configured id must not NACK MRB.
+    Missing actual fails safe to the hello model (often free or empty).
+    """
+    try:
+        import worker_start_model as wsm
+
+        env = child_env or {}
+        actual = wsm.concrete_model_id(env.get(wsm.ENV_ACTUAL_MODEL))
+        if actual:
+            return actual
+    except Exception:
+        pass
+    return resolve_seat_hello_model(kind)
+
+
 def opencode_hostile_nack_line(line: str) -> Optional[str]:
     """FR #6134: NACK without ACK so the chair can re-offer to a Grok/Cursor seat."""
     key = assign_job_key(line)
@@ -10966,7 +10985,11 @@ class Supervisor:
         # FR #4180: refuse (NACK out-of-fuel) assigns while the seat is in out-of-fuel hold.
         relay.refuse_assign_while = lambda: bool(self.bored and self.bored.out_of_fuel)
         relay.skips_hostile_assign = lambda line: opencode_skips_hostile_assign(
-            self.kind, line, start_model=resolve_seat_hello_model(self.kind)
+            self.kind,
+            line,
+            start_model=launched_hostile_start_model(
+                self.kind, getattr(self, "last_child_env", None)
+            ),
         )
         # FR #6240 / #6328: OpenCode-only. Classify on read thread; ensure off-thread.
         # Grok/Cursor must keep flood coalesce + multi-key ACK (callbacks stay None).
