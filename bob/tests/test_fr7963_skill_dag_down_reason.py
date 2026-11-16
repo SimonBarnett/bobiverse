@@ -60,6 +60,32 @@ def test_fr7963_skill_dag_mcp_script_path_uses_shipped_resolver(tmp_path: Path, 
     assert got == shipped.resolve()
 
 
+def test_fr7963_frozen_resolver_prefers_exe_bundle_over_stale_checkout(tmp_path: Path, monkeypatch):
+    """Frozen seats must not probe C:\\ai\\bob\\bob\\scripts before the exe bundle."""
+    cwd = tmp_path / "ai" / "bob" / "worker"
+    cwd.mkdir(parents=True)
+    stale = tmp_path / "ai" / "bob" / "bob" / "scripts" / "skill_dag_mcp.py"
+    stale.parent.mkdir(parents=True)
+    stale.write_text("# stale\n", encoding="utf-8")
+    exe_dir = tmp_path / "worker-install"
+    exe_dir.mkdir()
+    shipped = exe_dir / "scripts" / "skill_dag_mcp.py"
+    shipped.parent.mkdir()
+    shipped.write_text("# shipped\n", encoding="utf-8")
+    mei = tmp_path / "_MEI123" / "bob_worker.py"
+    mei.parent.mkdir()
+    mei.write_text("# mei\n", encoding="utf-8")
+    monkeypatch.setattr(bw.sys, "frozen", True, raising=False)
+    monkeypatch.setattr(bw.sys, "executable", str(exe_dir / "bob-worker.exe"))
+    monkeypatch.setattr(bw, "_path_is_mei_extract", lambda p: "_MEI" in str(p))
+    got = bw._resolve_installed_worker_script(
+        "skill_dag_mcp.py", cwd=str(cwd), source_file=str(mei)
+    )
+    assert got == shipped.resolve()
+    via = bw.skill_dag_mcp_script_path(str(cwd), source_file=str(mei))
+    assert via == shipped.resolve()
+
+
 def test_fr7963_worker_shipped_scripts_lists_skill_dag_mcp():
     names = __import__("worker_shipped_scripts").by_path_script_names(
         Path(bw.__file__).read_text(encoding="utf-8")

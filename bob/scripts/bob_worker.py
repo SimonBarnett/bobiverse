@@ -283,14 +283,18 @@ def _resolve_installed_worker_script(
         candidates.append(root / "common" / "scripts" / name)
     if not _path_is_mei_extract(here):
         candidates.append(here / name)
+    # FR #7963: a frozen bob-worker must use the bundle beside the exe before a
+    # stale install checkout (cwd parent bob/scripts, often C:\ai\bob).
+    if getattr(sys, "frozen", False):
+        exe_dir = Path(sys.executable).resolve().parent
+        candidates.append(exe_dir / "scripts" / name)
+        candidates.append(exe_dir.parent / "scripts" / name)
     if cwd is not None:
         parent = Path(cwd).resolve().parent
         candidates.append(parent / "scripts" / name)
         candidates.append(parent / "bob" / "scripts" / name)
     if getattr(sys, "frozen", False):
         exe_dir = Path(sys.executable).resolve().parent
-        candidates.append(exe_dir / "scripts" / name)
-        candidates.append(exe_dir.parent / "scripts" / name)
         candidates.append(exe_dir.parent / "bob" / "scripts" / name)
     for cand in candidates:
         if _path_is_mei_extract(cand):
