@@ -125,3 +125,21 @@ def test_mrb_fetch_failure_nacks_create_failed(tmp_path: Path):
     assert decision["state"] == "create_failed"
     assert "worktree-create-failed:fetch" in decision["nack"]
     assert "worktree-absent" not in decision["nack"]
+
+
+def test_mrb7949_stale_local_fr_prefers_origin_tip(tmp_path: Path):
+    """A stale local fr-* must not beat origin/<head> after fetch."""
+    clone = _init_clone(tmp_path / "clone")
+    _publish_head(clone, "fr-7888")
+    # Recreate a stale local tip that lacks HEAD.txt from origin/fr-7888.
+    subprocess.run(["git", "-C", str(clone), "branch", "fr-7888", "main"], check=True, capture_output=True)
+    assert not (clone / "HEAD.txt").exists()
+    base = tmp_path / "worktrees"
+    env = {"BOB_JOB_WORKTREE_BASE": str(base), "BOB_REPO_CLONE_bobiverse": str(clone)}
+    line = "FROM jeeves #flamingo n: FIX SimonBarnett/bobiverse#7889 https://x"
+    ready = c.ensure_opencode_job_worktree(
+        line, env, install_root=str(clone), run=_run_with_gh("fr-7888"), nick="flamingo-1"
+    )
+    assert ready["state"] == "project"
+    path = Path(ready["path"])
+    assert (path / "HEAD.txt").read_text(encoding="utf-8").strip() == "fr-7888"

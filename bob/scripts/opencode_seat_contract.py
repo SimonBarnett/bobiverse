@@ -856,19 +856,31 @@ def create_job_worktree(
             remote = _ref_ok(f"origin/{branch}")
             if not local and not remote:
                 return False, "fetch" if not fetch_ok else "pr-head"
-            if local:
-                proc = _git_run(
-                    run,
-                    ["git", "-C", clone, "worktree", "add", str(folder), branch],
-                    timeout=WORKTREE_ADD_TIMEOUT_S,
-                )
+            # Prefer origin/<head> so a stale local fr-* / intake tip cannot win
+            # over the fetched PR tip (MRB #7949).
+            if remote:
+                if local:
+                    proc = _git_run(
+                        run,
+                        [
+                            "git", "-C", clone, "worktree", "add",
+                            "-B", branch, str(folder), f"origin/{branch}",
+                        ],
+                        timeout=WORKTREE_ADD_TIMEOUT_S,
+                    )
+                else:
+                    proc = _git_run(
+                        run,
+                        [
+                            "git", "-C", clone, "worktree", "add", "--track",
+                            "-b", branch, str(folder), f"origin/{branch}",
+                        ],
+                        timeout=WORKTREE_ADD_TIMEOUT_S,
+                    )
             else:
                 proc = _git_run(
                     run,
-                    [
-                        "git", "-C", clone, "worktree", "add", "--track",
-                        "-b", branch, str(folder), f"origin/{branch}",
-                    ],
+                    ["git", "-C", clone, "worktree", "add", str(folder), branch],
                     timeout=WORKTREE_ADD_TIMEOUT_S,
                 )
         elif _branch_exists(run, clone, branch):
