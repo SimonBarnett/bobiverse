@@ -2854,18 +2854,21 @@ def skill_dag_mcp_script_path(
     *,
     source_file: str | Path | None = None,
 ) -> Path:
-    """Locate ``skill_dag_mcp.py`` for Grok/Cursor MCP launch args (FR #6889).
+    """Locate ``skill_dag_mcp.py`` for Grok/Cursor MCP launch args (FR #6889 / #7963).
 
-    The module lives at ``bob/scripts/skill_dag_mcp.py`` (docs + tree). Older code
-    pointed at ``<install>/common/scripts/skill_dag_mcp.py``, which is absent.
-    Order matches ``_resolve_opencode_fuel_helper_path``: first existing file wins.
-    Miss returns the preferred ``bob/scripts`` candidate under the worker parent.
+    FR #7963: prefer the worker-shipped copy via ``_resolve_installed_worker_script``
+    so a frozen bob-worker.exe cannot keep probing a stale ``C:\\ai\\bob`` checkout.
+    Then fall back to install/repo paths. Miss returns the preferred ``bob/scripts``
+    candidate under the worker parent.
     """
+    shipped = _resolve_installed_worker_script(
+        "skill_dag_mcp.py", cwd=worker_cwd, source_file=source_file
+    )
+    if shipped is not None and shipped.is_file():
+        return shipped.resolve()
     source = Path(source_file).resolve() if source_file else Path(__file__).resolve()
     here = source.parent
     parent = Path(worker_cwd).resolve().parent
-    # Prefer paths under the worker parent (repo/install tree) so MCP args name a
-    # file next to the seat; then source-sibling; legacy common/ last.
     candidates = [
         parent / "bob" / "scripts" / "skill_dag_mcp.py",
         parent / "scripts" / "skill_dag_mcp.py",
@@ -3845,10 +3848,36 @@ def skill_dag_preflight(
     return {"action": "giveup", "restarted": True, "reason": "skill_dag_down"}
 
 
-def skill_dag_down_giveup_line(job_key: str) -> str:
-    """Shop wire ``GIVEUP <TYPE> owner/repo#N skill_dag_down`` (FR #7908)."""
+def skill_dag_down_detail_token(probe_reason: str = "", skill_path: str | Path | None = None) -> str:
+    """Wire token after GIVEUP job key (FR #7963): ``skill_dag_down`` or ``skill_dag_down:exit-1``."""
+    reason = "skill_dag_down"
+    detail = " ".join(str(probe_reason or "").split()).strip()
+    if detail and detail.lower() not in ("skill_dag_down", "skill-dag-down"):
+        # Keep one wire token: colons ok, spaces become dashes, cap length.
+        safe = re.sub(r"[^A-Za-z0-9._:=+/-]+", "-", detail).strip("-")[:80]
+        if safe:
+            reason = f"skill_dag_down:{safe}"
+    if skill_path:
+        try:
+            name = Path(skill_path).name
+        except (TypeError, ValueError):
+            name = ""
+        name = " ".join(str(name).split()).strip()
+        if name:
+            reason = f"{reason}:skill={name}"
+    return reason
+
+
+def skill_dag_down_giveup_line(
+    job_key: str,
+    *,
+    probe_reason: str = "",
+    skill_path: str | Path | None = None,
+) -> str:
+    """Shop wire ``GIVEUP <TYPE> owner/repo#N skill_dag_down[:detail]`` (FR #7908 / #7963)."""
     key = " ".join(str(job_key or "").split()).strip()
-    return f"GIVEUP {key} skill_dag_down" if key else "GIVEUP job skill_dag_down"
+    token = skill_dag_down_detail_token(probe_reason, skill_path)
+    return f"GIVEUP {key} {token}" if key else f"GIVEUP job {token}"
 
 
 def opencode_skill_read_permission_block(worker_cwd: str) -> dict:
@@ -13062,26 +13091,37 @@ class Supervisor:
 
     def _skill_dag_preflight_for_opencode(
         self, job_worktree: str | Path | None, job_key: str = ""
-    ) -> bool:
-        """FR #7908: probe skill-dag before the job; restart once; else GIVEUP skill_dag_down."""
+    ) -> str:
+        """FR #7908 / #7963: probe skill-dag; restart once; else return giveup detail.
+
+        Returns ``""`` when healthy. On giveup returns a probe reason token such as
+        ``exit-1`` or ``bad-json`` (empty string falls back to bare ``skill_dag_down``).
+        Stores the last skill path on ``self._skill_dag_preflight_skill`` for the wire.
+        """
+        self._skill_dag_preflight_skill = ""
         if (self.kind or "").strip().lower() != "opencode":
-            return True
+            return ""
         if (os.environ.get("BOB_SKIP_SKILL_DAG_PREFLIGHT") or "").strip() == "1":
-            return True
+            return ""
         if os.environ.get("PYTEST_CURRENT_TEST") and (
             os.environ.get("BOB_SKILL_DAG_PREFLIGHT_TEST") or ""
         ).strip() != "1":
-            return True
+            return ""
         cwd = str(getattr(self, "cwd", "") or "")
         if not cwd:
-            return True
+            return ""
+
+        last: dict = {}
 
         def probe() -> bool:
-            return bool(
-                probe_skill_dag_mcp_cli(
-                    cwd, job_worktree=job_worktree, job_key=job_key
-                ).get("ok")
+            nonlocal last
+            last = probe_skill_dag_mcp_cli(
+                cwd, job_worktree=job_worktree, job_key=job_key
             )
+            skill = skill_dag_job_skill_md(cwd, job_key)
+            if skill is not None:
+                self._skill_dag_preflight_skill = str(skill)
+            return bool(last.get("ok"))
 
         def restart() -> None:
             agent_pid = None
@@ -13097,13 +13137,15 @@ class Supervisor:
 
         decision = skill_dag_preflight(probe, restart)
         if decision.get("action") == "giveup":
+            detail = str(last.get("reason") or decision.get("reason") or "skill_dag_down")
             self.log(
-                f"skill-dag preflight: {decision.get('reason')} job={job_key}"
+                f"skill-dag preflight: {detail} job={job_key}"
+                + (f" skill={self._skill_dag_preflight_skill}" if self._skill_dag_preflight_skill else "")
             )
-            return False
+            return detail
         if decision.get("restarted"):
             self.log("skill-dag preflight: restarted the MCP child once")
-        return True
+        return ""
 
     def _refresh_live_skill_dag_mcp(self, job_worktree: str | Path | None) -> None:
         bound, cursor, vision = self._live_skill_dag_mcp_paths()
@@ -13206,11 +13248,16 @@ class Supervisor:
                 except Exception as e:  # noqa: BLE001
                     self.log(f"opencode-ready: skill-dag mcp write skipped {type(e).__name__}")
                 # FR #7908: do not hand the job over when skill-dag is down.
-                if not self._skill_dag_preflight_for_opencode(
+                _sd_detail = self._skill_dag_preflight_for_opencode(
                     prepared.get("path"), str(prepared.get("key") or "")
-                ):
+                )
+                if _sd_detail:
                     raise JobContextRefused(
-                        skill_dag_down_giveup_line(str(prepared.get("key") or ""))
+                        skill_dag_down_giveup_line(
+                            str(prepared.get("key") or ""),
+                            probe_reason=_sd_detail,
+                            skill_path=getattr(self, "_skill_dag_preflight_skill", "") or None,
+                        )
                     )
                 # FR #6333: tail in-worktree .bob/outbox.txt; stamp FROM footer with that path.
                 try:

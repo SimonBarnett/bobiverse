@@ -8425,6 +8425,19 @@ def is_out_of_fuel_reason(reason: str) -> bool:
     return token == "out-of-fuel" or token.startswith("out-of-fuel-")
 
 
+def is_skill_dag_down_reason(reason: str) -> bool:
+    """True when a GIVEUP reason is OpenCode skill-dag preflight down (FR #7963).
+
+    Seat fault, not job fault: ``skill_dag_down`` or ``skill_dag_down:exit-1``.
+    """
+    text = (reason or "").strip().lower()
+    if not text:
+        return False
+    norm = text.replace("_", "-").replace(" ", "-")
+    token = norm.split(",", 1)[0].strip()
+    return token == "skill-dag-down" or token.startswith("skill-dag-down:")
+
+
 def _seat_out_of_fuel_path(home: Path) -> Path:
     return _root(home) / SEAT_OUT_OF_FUEL_NAME
 
