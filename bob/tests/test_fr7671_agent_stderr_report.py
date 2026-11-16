@@ -77,10 +77,8 @@ def test_fr7671_mrb_empty_stderr_dedupe_and_trim():
     assert "EXAMPLESECRET" not in bw.agent_stderr_evidence("token password=EXAMPLESECRET end")
 
 
-def test_fr7671_mrb_default_spawn_keeps_one_console_and_pipes_stderr(monkeypatch):
-    """Hostile: still no CREATE_NEW_CONSOLE; stderr is PIPE for the ring."""
-    from pathlib import Path as _P
-
+def test_fr7671_mrb_default_spawn_keeps_grok_console_stdio(monkeypatch, tmp_path):
+    """Grok requires inherited console stderr as well as stdin/stdout."""
     seen = {}
 
     class FakePopen:
@@ -91,9 +89,8 @@ def test_fr7671_mrb_default_spawn_keeps_one_console_and_pipes_stderr(monkeypatch
 
     monkeypatch.setattr(bw.subprocess, "Popen", FakePopen)
     monkeypatch.setattr(bw, "owned_job", lambda: type("J", (), {"assign": lambda self, p: None})())
-    spec = bw.build_launch("grok", "agent", r"C:\w", "p", r"C:\g\agent.exe", _P("."), "sid")
+    spec = bw.build_launch("grok", "agent", str(tmp_path), "p", r"C:\g\agent.exe", tmp_path, "sid")
     handle = bw.default_spawn(spec, {})
     assert seen.get("creationflags", 0) & getattr(bw, "CREATE_NEW_CONSOLE", 0x10) == 0
-    assert seen.get("stderr") is bw.subprocess.PIPE
+    assert all(seen.get(stream) is None for stream in ("stdin", "stdout", "stderr"))
     assert isinstance(handle, bw.ProcHandle)
-

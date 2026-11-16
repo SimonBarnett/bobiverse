@@ -1022,6 +1022,22 @@ def empty_digest() -> dict:
     }
 
 
+def coerce_last_exit(raw: object) -> dict | None:
+    """Keep only bounded, redacted seat-exit diagnostics on the public digest."""
+    if not isinstance(raw, dict):
+        return None
+    from crash_report import redact
+
+    out = {}
+    for key, limit in (("at", 64), ("reason", 160), ("output", 8192)):
+        if key in raw:
+            out[key] = redact(str(raw[key] or ""))[:limit]
+    for key in ("exit_code", "pid"):
+        value = raw.get(key)
+        out[key] = value if isinstance(value, int) and not isinstance(value, bool) else None
+    return out
+
+
 def _coerce_worker(mid: str, pid: str, raw: object) -> dict:
     ent = raw if isinstance(raw, dict) else {}
     try:
@@ -1062,6 +1078,8 @@ def _coerce_worker(mid: str, pid: str, raw: object) -> dict:
     start_effort = str(ent.get("start_effort") or "").strip()
     if start_effort:
         out["start_effort"] = start_effort
+    if isinstance(ent.get("last_exit"), dict):
+        out["last_exit"] = coerce_last_exit(ent["last_exit"])
     paused = str(ent.get("fuel_paused_until") or "").strip()
     if paused:
         out["fuel_paused_until"] = paused
@@ -1199,6 +1217,8 @@ def _coerce_worker_list(raw: object, *, now: float | None = None) -> list[dict]:
         start_effort = str(ent.get("start_effort") or "").strip()
         if start_effort:
             row["start_effort"] = start_effort
+        if isinstance(ent.get("last_exit"), dict):
+            row["last_exit"] = coerce_last_exit(ent["last_exit"])
         out.append(row)
     return out[:WORKER_LIST_MAX]
 
@@ -1382,6 +1402,9 @@ def _model_fields_from_payload(payload: dict, prev: dict | None = None) -> dict:
     start_effort = str(payload.get("start_effort") or prev.get("start_effort") or "").strip()
     if start_effort:
         out["start_effort"] = start_effort
+    last_exit = payload.get("last_exit", prev.get("last_exit"))
+    if isinstance(last_exit, dict):
+        out["last_exit"] = coerce_last_exit(last_exit)
     return out
 
 
@@ -1398,7 +1421,7 @@ def _apply_model_fields_to_worker_list(ent: dict, nick: str, fields: dict) -> No
         idx = len(rows) - 1
     else:
         row = dict(rows[idx])
-    for key in ("kind", "start_model", "configured_model", "model_mismatch", "cost_tier", "start_effort", "agent", "model"):
+    for key in ("kind", "start_model", "configured_model", "model_mismatch", "cost_tier", "start_effort", "agent", "model", "last_exit"):
         if key in fields:
             row[key] = fields[key]
     rows[idx] = row
