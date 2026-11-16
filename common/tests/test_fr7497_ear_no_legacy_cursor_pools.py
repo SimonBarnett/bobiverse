@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest import mock
 
@@ -128,9 +129,12 @@ def test_fr7497_publish_wire_omits_legacy(tmp_path: Path, monkeypatch):
 
     monkeypatch.setattr(bobreport, "fetch_live_xai_weekly", lambda **k: None)
     monkeypatch.setattr(bobreport, "pool_fetch_due", lambda *a, **k: False)
+    # FR #7767: the fixture fetched_at is 2026-11-15T14:31:02Z. Wall-clock now
+    # makes FR #7503 file a stale-pool issue beside the fuel merge (same pin as #7748).
+    fresh = datetime(2026, 11, 15, 14, 31, 5, tzinfo=timezone.utc).timestamp()
     with mock.patch("urllib.request.urlopen", fake_urlopen):
         code = bobreport.publish_local_peer_fuel(
-            home, MID, force=True, url="https://example.test/bob/v1/report"
+            home, MID, force=True, url="https://example.test/bob/v1/report", now=fresh
         )
     assert code == 204
     assert len(posted) == 1
