@@ -48,7 +48,7 @@ _SECRET_KV_RE = re.compile(
     r'(?i)"?(?P<key>'
     r"password|passwd|\bpass\b|secret|token|api[_-]?key|xai_api_key|cursor_api_key|"
     r"BOB_IRC_PASSWORD|GH_TOKEN|GITHUB_TOKEN|Authorization|NickServ|SASL"
-    r')"?\s*[:=]\s*(?:"[^"]*"|[^\s",}]+)'
+    r')"?\s*[:=]\s*(?:"(?:\\.|[^"\\])*"|[^\s",}]+)'
 )
 _TOKEN_BLOB_RE = re.compile(
     r"(?i)\b(ghp_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|"

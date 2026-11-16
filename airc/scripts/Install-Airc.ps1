@@ -775,7 +775,11 @@ if (-not $NoStart) {
     $prevEa = $ErrorActionPreference
     $ErrorActionPreference = 'Continue'
     try {
-        Start-Service -Name 'Airc' -ErrorAction Continue
+        Start-Service -Name 'Airc' -ErrorAction Stop
+    } catch {
+        $detail = Format-BobiverseServiceStartError -ServiceName 'Airc' -ErrorMessage $_.Exception.Message
+        Write-BobiverseMsiInstallLog -Product airc -Message ("start-fail service=Airc $detail")
+        throw ("Start-Service Airc failed: {0}" -f $detail)
     } finally {
         $ErrorActionPreference = $prevEa
     }

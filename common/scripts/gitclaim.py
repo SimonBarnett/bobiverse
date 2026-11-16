@@ -8527,6 +8527,108 @@ def _start_model_from_fields(fields: dict | None) -> str:
     return str(f.get("start_model") or f.get("model") or "").strip()
 
 
+def seat_started_on_free_model(home: Path, nick: str) -> bool:
+    """FR #7926: the model the seat started on, not the configured model.
+
+    ``opencode/deepseek-v4.1-flash-free`` is free. Grok and
+    ``opencode-go/deepseek-v4-pro`` are not. An empty or ``$model`` start
+    model is not free.
+    """
+    fields = _seat_digest_model_fields(home, nick)
+    model = str(fields.get("start_model") or "").strip()
+    if not model or "$" in model:
+        return False
+    try:
+        import worker_start_model as wsm
+
+        if wsm.opencode_is_go_or_paid(model):
+            return False
+    except Exception:
+        low_paid = model.lower()
+        if low_paid.startswith("opencode-go/") or low_paid.endswith("-pro"):
+            return False
+    low = model.lower()
+    if low.endswith("-free") or low.startswith("opencode/"):
+        return True
+    tier = str(fields.get("cost_tier") or "").strip().lower()
+    return tier in ("free", "opencode-free")
+
+
+def idle_free_model_nicks(home: Path, *, now: float | None = None, live: set[str] | None = None) -> set[str]:
+    """Idle seats whose start_model is a free model (FR #7926)."""
+    found: set[str] = set()
+    rows = []
+    try:
+        rows.extend(digest_idle_ready_seats(home, now=now, live=live))
+    except Exception:
+        rows = []
+    try:
+        for extra in list_idle_after_empty(home, now=now, live=live):
+            rows.append(extra)
+    except Exception:
+        pass
+    for ent in rows:
+        nick = str((ent or {}).get("nick") or "").strip()
+        if not nick or worker_working_on(home, nick):
+            continue
+        if seat_started_on_free_model(home, nick):
+            found.add((canonical_worker_nick(nick) or nick).strip().lower())
+    return found
+
+
+def _free_seat_can_take_row(
+    home: Path,
+    cand: dict,
+    nick: str,
+    now: float,
+    live: set[str],
+    ledger: dict | None,
+) -> bool:
+    """Local eligibility for reserving an FR/FIX for this free seat."""
+    if row_on_cooldown(cand, now, nick, live=live):
+        return False
+    if row_needs_human(cand, nick):
+        return False
+    if row_machine_mismatch(cand, nick) or row_gave_up_by(cand, nick, live=live):
+        return False
+    if row_blocked_for_machine(cand, nick):
+        return False
+    if not _seat_model_allows_row(home, nick, cand):
+        return False
+    try:
+        if ledger_blocks(ledger, cand, nick, live):
+            return False
+    except Exception:
+        return False
+    return True
+
+
+def fr_reserved_for_idle_free_seat(
+    home: Path,
+    cand: dict,
+    nick: str,
+    now: float,
+    live: set[str],
+    ledger: dict | None,
+    free_idle: set[str],
+) -> bool:
+    """True when a paid seat must leave this FR/FIX for an idle free seat."""
+    task = str((cand or {}).get("task") or "").upper()
+    if task not in ("FR", "FIX"):
+        return False
+    me = (canonical_worker_nick(nick) or nick or "").strip().lower()
+    if me and me in free_idle:
+        return False
+    if seat_started_on_free_model(home, nick):
+        return False
+    for other in free_idle:
+        if other == me:
+            continue
+        if _free_seat_can_take_row(home, cand, other, now, live, ledger):
+            return True
+    return False
+
+
 def seat_is_free_fuel(home: Path, nick: str) -> bool:
     """True when this seat must stay on FR/FIX (FR #7706 / #7888).
 
@@ -9309,6 +9411,8 @@ def offer_focus_top(
     me_raw = (nick or "").strip()
     me = (canonical_worker_nick(me_raw) or me_raw).strip()
     ledger = ledger_load(home)
+    # FR #7926: computed before the queue lock so digest reads do not nest it.
+    free_idle = idle_free_model_nicks(home, now=now_f, live=live)
     # FR #3205 / #3212 / #6581: when an on-disk precompute fingerprint matches the queue,
     # !bored uses zero GitHub calls (local eligibility only). Otherwise use
     # BORED_GITHUB_CALL_BUDGET (production 0 — local-state only; FR #3188's budget-of-one
@@ -9622,6 +9726,11 @@ def offer_focus_top(
                         return None
                     cand_eff["mrb_eligibility"] = reason
                 elif row_blocked_for_opencode_seat(cand_eff, me, home):
+                    return None
+                # FR #7926: an idle eligible free-model seat takes FR/FIX first.
+                if fr_reserved_for_idle_free_seat(
+                    home, cand_eff, me, now_f, live, ledger, free_idle
+                ):
                     return None
                 return cand_eff
 
@@ -15362,6 +15471,139 @@ def reconcile_lost_ack_from_digest(home: Path, *, log=None) -> int:
             return n
     except (TimeoutError, OSError):
         return 0
+
+
+def holder_bored_limit() -> int:
+    """FR #7912: consecutive !bored from the holder before the job is released."""
+    raw = str(os.environ.get("BOB_HOLDER_BORED_N", "2") or "2").strip()
+    try:
+        n = int(raw)
+    except ValueError:
+        n = 2
+    return n if n >= 1 else 2
+
+
+def _holder_bored_path(home: Path) -> Path:
+    return Path(home) / "holder-bored.json"
+
+
+def _load_holder_bored(home: Path) -> dict:
+    path = _holder_bored_path(home)
+    try:
+        doc = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, ValueError):
+        return {"seats": {}}
+    if not isinstance(doc, dict):
+        return {"seats": {}}
+    seats = doc.get("seats")
+    if not isinstance(seats, dict):
+        doc["seats"] = {}
+    return doc
+
+
+def _save_holder_bored(home: Path, doc: dict) -> None:
+    path = _holder_bored_path(home)
+    path.write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8")
+
+
+def reset_holder_bored(home: Path, nick: str) -> None:
+    """FR #7912: ACK, DONE, or other progress clears the holder's !bored streak."""
+    key = (_seat_key(nick) or "").strip().lower()
+    if not key:
+        return
+    try:
+        with _lock(home):
+            doc = _load_holder_bored(home)
+            seats = doc.setdefault("seats", {})
+            if key not in seats:
+                return
+            seats.pop(key, None)
+            _save_holder_bored(home, doc)
+    except (TimeoutError, OSError):
+        return
+
+
+def _report_holder_bored(nick: str, job: str) -> None:
+    import runtime_failure
+
+    runtime_failure.report_message(
+        "jeeves",
+        "holder_bored nick=%s job=%s" % (nick, job),
+        site="holder-bored",
+    )
+
+
+_HOLDER_OPEN_RX = re.compile(
+    r"^(accepted|held)\s+(\S+)\s+(.+)(#\d+)\s*$",
+    re.IGNORECASE,
+)
+
+
+def release_holder_on_bored(home: Path, nick: str, now: float | None = None) -> str:
+    """FR #7912: N consecutive !bored from the holding seat releases that seat's job.
+
+    Returns the open-job text when this call released it, else ''. A different
+    seat's !bored never touches this nick's row. Offered-but-not-accepted pins
+    stay on the existing busy path. ACK/DONE/progress must call
+    ``reset_holder_bored`` or the streak keeps counting.
+    """
+    import time as _time
+
+    now_f = _time.time() if now is None else float(now)
+    open_job = seat_open_job(home, nick, now_f)
+    match = _HOLDER_OPEN_RX.match(str(open_job or "").strip())
+    if not match:
+        reset_holder_bored(home, nick)
+        return ""
+    key = (_seat_key(nick) or "").strip().lower()
+    if not key:
+        return ""
+    limit = holder_bored_limit()
+    count = 1
+    try:
+        with _lock(home):
+            doc = _load_holder_bored(home)
+            seats = doc.setdefault("seats", {})
+            prev = seats.get(key) if isinstance(seats.get(key), dict) else {}
+            if str(prev.get("job") or "") == open_job:
+                try:
+                    count = int(prev.get("count") or 0) + 1
+                except (TypeError, ValueError):
+                    count = 1
+            seats[key] = {"job": open_job, "count": count}
+            _save_holder_bored(home, doc)
+    except (TimeoutError, OSError):
+        return ""
+    if count < limit:
+        return ""
+    _kind, task, repo, ident = match.groups()
+    task_u = task.upper()
+    try:
+        import shop_listen
+
+        shop_listen.return_job_to_unaccepted(
+            home,
+            repo=repo,
+            task=task_u,
+            ident=ident,
+            now=now_f,
+            reason="holder_bored",
+            expected_nick=nick,
+        )
+    except Exception:
+        pass
+    with contextlib.suppress(Exception):
+        clear_seat_hold(home, nick, repo=repo, task=task_u, ident=ident, clear_pins=True)
+    with contextlib.suppress(Exception):
+        ledger_note_event(home, nick, "GIVEUP", task_u, repo, ident, None)
+    with contextlib.suppress(Exception):
+        import bobreport
+
+        bobreport.clear_seat_doing(home, nick, only_if_work_contains=ident.lstrip("#"))
+    with contextlib.suppress(Exception):
+        _report_holder_bored(nick, open_job)
+    reset_holder_bored(home, nick)
+    return open_job
 
 
 def bored_gate(

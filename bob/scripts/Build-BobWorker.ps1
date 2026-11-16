@@ -79,7 +79,17 @@ $argList = @('-m', 'PyInstaller', '--noconfirm', '--clean', '--onefile', '--cons
     '--distpath', $dist, '--workpath', (Join-Path $work 'build'), '--specpath', $work)
 $argList += $pathArgs
 $argList += $icoArgs
-$argList += @('--hidden-import', 'bob_worker_build_meta', '--hidden-import', 'worker_start_model')
+$argList += @('--hidden-import', 'bob_worker_build_meta', '--hidden-import', 'worker_start_model', '--hidden-import', 'worker_shipped_scripts')
+# FR #7910: bundle every script bob_worker launches by path. _MEI is not a valid runtime path.
+$shipPy = Get-BobiverseRepoPath -Root $RepoRoot -Rel 'scripts\worker_shipped_scripts.py'
+if (-not (Test-Path -LiteralPath $shipPy)) { throw "missing $shipPy" }
+$shipNames = @(& $Python $shipPy --list --bob-worker $src)
+if ($LASTEXITCODE -ne 0 -or -not $shipNames) { throw 'worker_shipped_scripts.py --list failed' }
+foreach ($shipName in $shipNames) {
+    $shipPath = Get-BobiverseRepoPath -Root $RepoRoot -Rel ("scripts\" + $shipName)
+    if (-not (Test-Path -LiteralPath $shipPath)) { throw "missing by-path script $shipPath" }
+    $argList += @('--add-data', "$shipPath;worker-scripts")
+}
 $argList += @('--exclude-module', 'tkinter', '--exclude-module', 'numpy', '--exclude-module', 'pandas', '--exclude-module', 'matplotlib', $src)
 # PyInstaller's isolated child can fail when PowerShell captures a live pipeline; use files for both streams.
 $argText = (($argList | ForEach-Object {
@@ -133,4 +143,10 @@ foreach ($n in 1, 2) {
     }
 }
 Write-Host ("INFO built {0} ({1:N1} MB)" -f $exe, ((Get-Item -LiteralPath $exe).Length / 1MB))
+# FR #7910: the dist folder (and therefore the CI artifact) must list the same scripts.
+$shipDest = Join-Path $dist 'scripts'
+& $Python $shipPy --copy --bob-worker $src --source-dir (Split-Path -Parent $src) --dest $shipDest
+if ($LASTEXITCODE -ne 0) { throw 'by-path worker scripts were not copied next to bob-worker.exe' }
+& $Python $shipPy --check --bob-worker $src --dest $shipDest
+if ($LASTEXITCODE -ne 0) { throw 'by-path worker scripts missing from the build output' }
 $exe
