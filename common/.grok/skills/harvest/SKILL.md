@@ -492,9 +492,11 @@ routes to bobiverse via the split rule.
 - overage_fetched_at is the Copilot refresh stamp. Do not put it in the Cursor-bridge strip set or cleared list. A fuel delta must still carry the new stamp on the wire.
 - A systemprofile skip test must clear GROK_AUTH_PATH as well as BOB_GROK_AUTH_PATH, and stub the auth-path stamp. Otherwise the weekly publish reports explicit-auth.
 - After Jeeves owns the OpenCode fetch, the ear publish diag is jeeves-fleet and the publish test must assert the provider was not called. blocked_1010 stays on the local reader.
+- A harness that extracts Start-BobTrayWorkerExe must stub Test-BobTraySeatsOff and Write-BobTraySeatStart. The live tray defines those by dotsourcing BobTrayStartWorker.ps1.
 - A test of the startup message hold must set BOB_WORKER_STARTUP_WAIT_READY=1. Without that flag a signed-in seat injects at once.
 - When the settings scan finds a new BOB_ environ.get key, add it to the schema if it is a UI knob. A host path, a secret-file path, or a short wait goes on the scan allowlist.
 - A source pin of a PowerShell function must read until the next function. A fixed character window misses a call that the function still makes.
+- When prepare form gains a Session 0 fail-close and a prepare-form SDK path, update the doc pin to those sentences. Do not restore WINRUN only.
 
 ## Harvest digest (lessons audit 2026-10-06)
 
