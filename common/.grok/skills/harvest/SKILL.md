@@ -496,6 +496,7 @@ routes to bobiverse via the split rule.
 - A test of the startup message hold must set BOB_WORKER_STARTUP_WAIT_READY=1. Without that flag a signed-in seat injects at once.
 - When the settings scan finds a new BOB_ environ.get key, add it to the schema if it is a UI knob. A host path, a secret-file path, or a short wait goes on the scan allowlist.
 - When prepare form gains a Session 0 fail-close and a prepare-form SDK path, update the doc pin to those sentences. Do not restore WINRUN only.
+- A grok launch pin must find --no-auto-update --no-alt-screen --cwd as a triple. --reasoning-effort may sit before that triple.
 
 ## Harvest digest (lessons audit 2026-10-06)
 
