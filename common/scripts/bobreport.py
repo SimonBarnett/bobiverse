@@ -269,6 +269,12 @@ _MERGE_PEER_FIELDS = (
     "xai_auth",
     # FR #7178: ear-owned Copilot pool (remaining / entitlement / reset_at / fetched_at).
     "copilot",
+    # FR #8028: free-pool exhausted reset / status survive peer merge + coerce.
+    "opencode_free_reset_at",
+    "opencode_free_reset",
+    "free_reset_at",
+    "free_status",
+    "opencode_free_status",
 )
 # FR #5690: when a merge payload carries these as null (or lists them in cleared[]),
 # pop the sticky chair value. Omit-null used to leave stale overage/repo forever.
@@ -405,6 +411,11 @@ _TRAY_MACHINE_EXPORT_KEYS = (
     "xai_weekly_fetched_at",
     "xai_weekly",
     "xai_auth",
+    # FR #8028: tray hover / digest paint free-pool reset when exhausted.
+    "opencode_free_reset_at",
+    "free_reset_at",
+    "free_status",
+    "opencode_free_status",
 )
 # FR #7366: Jeeves fleet meters must not stick on machines.* (stale ear copies).
 _FLEET_OWNED_MACHINE_KEYS = frozenset({"opencode_windows", "copilot", "opencode_fetched_at"})
@@ -1544,6 +1555,19 @@ def _coerce_machine(mid: str, raw: object) -> dict:
         base["offline_at"] = str(raw["offline_at"])
     if raw.get("online_stuck_reported"):
         base["online_stuck_reported"] = True
+    # FR #8028: free-pool reset/status must survive load_digest → _coerce_machine
+    # so seat_fuel_pause_reason does not self-clear after stamping the worker.
+    for key in (
+        "opencode_free_reset_at",
+        "opencode_free_reset",
+        "free_reset_at",
+        "free_status",
+        "opencode_free_status",
+        "fetched_at",
+    ):
+        val = raw.get(key)
+        if val is not None and str(val).strip() != "":
+            base[key] = val
     for key in _MERGE_PEER_FIELDS:
         if key in raw and raw[key] is not None:
             base[key] = raw[key]
@@ -6080,13 +6104,20 @@ def _read_opencode_fuel_doc_from_fixture(fixture: str) -> dict:
             explicit_windows = None
     try:
         stats = of.parse_opencode_stats_text_or_json(fixture)
-        fuel = of.fuel_from_stats(stats)
+        # FR #8028: honour runtime free-pool pauses when the env points at them.
+        pause_dir = (os.environ.get("BOB_OPENCODE_PAUSE_STATE_DIR") or "").strip() or None
+        fuel = of.fuel_from_stats(stats, state_dir=pause_dir)
     except Exception:
         fuel = {}
     for key in (of.FUEL_ID_FREE, of.FUEL_ID_GO):
         clamped = _clamp_opencode_pcent_value(fuel.get(key))
         if clamped is not None:
             out[key] = clamped
+    reset_at = fuel.get("free_reset_at") if isinstance(fuel, dict) else None
+    if reset_at:
+        out["free_reset_at"] = reset_at
+    if isinstance(fuel, dict) and fuel.get("free_status"):
+        out["free_status"] = fuel.get("free_status")
     if explicit_windows is not None:
         out["windows"] = explicit_windows
         lim_id, lim_rem = of.limiting_go_window(explicit_windows)
@@ -7296,6 +7327,8 @@ def enrich_peer_with_opencode_pcent(
 
     Omits unknown pcent keys; keeps explicit ``0`` (exhausted). Does not invent
     zeros. Sets ``opencode_windows`` when a normalized windows map is supplied.
+    FR #8028: also copies ``free_reset_at`` / ``free_status`` onto the peer so
+    digest + tray can show the free-pool reset while the pool is exhausted.
     """
     if not isinstance(peer, dict):
         return peer
@@ -7312,6 +7345,14 @@ def enrich_peer_with_opencode_pcent(
                 continue
             pcent[key] = clamped
         enriched["pcent"] = pcent
+        reset_at = oc.get("free_reset_at") or oc.get("opencode_free_reset_at")
+        if reset_at:
+            enriched["opencode_free_reset_at"] = reset_at
+            enriched["free_reset_at"] = reset_at
+        status = oc.get("free_status") or oc.get("opencode_free_status")
+        if status:
+            enriched["free_status"] = status
+            enriched["opencode_free_status"] = status
     wins_in = opencode_windows
     if wins_in is None and isinstance(oc.get("windows"), dict):
         wins_in = oc.get("windows")

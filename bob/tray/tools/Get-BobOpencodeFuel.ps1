@@ -21,6 +21,7 @@ $out = [ordered]@{
     free = $null; go = $null; models = [ordered]@{}; free_model_ids = @()
     windows = $null; limiting = $null; read_state = 'unavailable'; fetched_at = $null
     local_costs = $null; history = $null; reader = 'user'
+    free_reset_at = $null; free_status = $null
 }
 try {
     $wid = [System.Security.Principal.WindowsIdentity]::GetCurrent()
@@ -201,7 +202,7 @@ try {
         # (release runner) may drop PYTHONPATH; sys.path.insert does not need it.
         $pyDirJson = if ($pyDir) { ConvertTo-Json -Compress -InputObject ([string]$pyDir) } else { '""' }
         $script = @"
-import json, sys
+import json, sys, os
 sys.path.insert(0, $pyDirJson)
 import opencode_fuel
 # FR #6737: ProcessStartInfo StreamWriter may emit UTF-8 BOM; json.loads rejects U+FEFF.
@@ -210,6 +211,10 @@ windowed = json.loads(raw)
 models_text = windowed.pop('models', None)
 available_free = opencode_fuel.parse_opencode_models_text(models_text)
 free_model_ids = opencode_fuel.parse_opencode_model_ids(models_text)
+# FR #8028: fold runtime Free usage pauses into the published free reading.
+pause_dir = (os.environ.get('BOB_OPENCODE_PAUSE_STATE_DIR') or '').strip()
+if not pause_dir:
+    pause_dir = str(opencode_fuel.opencode_pauses_state_dir())
 # Fixtures supplied as a single monthly/all-time window use the plain aggregator
 # for backward compatibility; live multi-window data uses rolling-cap logic.
 stats_keys = set(windowed.keys())
@@ -217,7 +222,7 @@ if stats_keys == {'month'}:
     stats = opencode_fuel.parse_opencode_stats_text_or_json(windowed['month'])
     stats['free_models'] = list(dict.fromkeys(stats.get('free_models', []) + available_free))
     stats['free_model_ids'] = list(dict.fromkeys(stats.get('free_model_ids', []) + free_model_ids))
-    print(json.dumps(opencode_fuel.fuel_from_stats(stats)))
+    print(json.dumps(opencode_fuel.fuel_from_stats(stats, state_dir=pause_dir)))
 else:
     parsed = {}
     for k, v in windowed.items():
@@ -225,7 +230,7 @@ else:
         s['free_models'] = list(dict.fromkeys(s.get('free_models', []) + available_free))
         s['free_model_ids'] = list(dict.fromkeys(s.get('free_model_ids', []) + free_model_ids))
         parsed[k] = s
-    print(json.dumps(opencode_fuel.fuel_from_windowed_stats(parsed)))
+    print(json.dumps(opencode_fuel.fuel_from_windowed_stats(parsed, state_dir=pause_dir)))
 "@
         # Pass stats text via stdin: Windows PowerShell 5.1 can strip embedded quotes when
         # they are passed as a native argument, which breaks parsing.
@@ -316,6 +321,9 @@ else:
             if ($null -ne $parsed.limiting -and [string]$parsed.limiting -ne '') {
                 $out.limiting = [string]$parsed.limiting
             }
+            # FR #8028: free-pool exhausted reset/status from runtime pause fold.
+            if ($parsed.free_reset_at) { $out.free_reset_at = [string]$parsed.free_reset_at }
+            if ($parsed.free_status) { $out.free_status = [string]$parsed.free_status }
             if ($parsed.local_costs) { $out.local_costs = $parsed.local_costs }
             if ($parsed.history) { $out.history = $parsed.history }
             $out.read_state = 'ok'
