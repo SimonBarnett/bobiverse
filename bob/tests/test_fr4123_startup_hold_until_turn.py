@@ -15,9 +15,10 @@ class FakeProc:
         return 1 if self._dead else None
 
     def wait(self):
-        while self.poll() is None:
+        # Stay blocked so the agent-wait thread cannot call restart_agent
+        # after a later test replaces the class monkeypatch (MRB #7836).
+        while True:
             time.sleep(0.05)
-        return self.poll()
 
 
 class FakeTimer:
