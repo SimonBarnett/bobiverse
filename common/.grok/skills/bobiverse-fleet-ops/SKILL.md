@@ -188,3 +188,4 @@ Generalised from 32 harvested lessons that never reached this book (audit for FR
 - A 2470 behind-count ALERT test must dirty a non-allowlist path; park-all-dirty makes ff succeed and drops the ALERT.
 - MRB tray CI: Stage-BobTrayHotpatchArtifact must ship src/tools/assets with per-file SHA-256; new BOM-less ps1 scripts must stay ASCII (no ellipsis)
 - SYSTEM git sync (FR #7301 / PR #7306): pass -c safe.directory=<that install path> (never a star glob); on ff-only diverge write logs/sync-diverged.json for that HEAD and skip fetch/ff until HEAD changes; never force-reset local work. (moved from harvest tip #7307)
+- Self-update Check must gate on BUILD.json commit vs release SHA (compare ahead/identical only); never replace a newer hotpatch; log skipped-hotpatch-newer with both SHAs
