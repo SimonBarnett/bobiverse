@@ -531,6 +531,7 @@ routes to bobiverse via the split rule.
 - airc wss keepalive: idle PING every 30s (AIRC_WSS_PING_SECONDS, clamp <=60); tls keeps 60s so Cloudflare idle cut cannot drop before first ping
 - mrb_merge_gate: MRB PASS @ alternate must not win over **Verdict:** FAIL; FIX after MRB FAIL pushes onto the assigned tip then closes the companion
 - bob-ear IRC SSL: one lock for read+write; no non-reg send before 001; outbox starts after registration; reserved Bob-* uses GHOST/RELEASE with ~30s backoff not 300s
+- report_agent_cli_nonzero_exit: skip FR #4123 FakeProc seat fingerprint and BOB_INTAKE_DISABLE; never say 'closed #N' in a PR body or GitHub treats it as Closes
 
 ## Harvest digest (lessons audit 2026-10-06)
 
