@@ -4558,6 +4558,8 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             r"                    if ($lines.Count -gt 0) { $snip = [string]$lines[-1] }",
             r"                }",
             r"                $snip = ($snip -replace '\s+', ' ').Trim()",
+            # FR #8018: redact token-shaped spans before they land in opencode-turns.jsonl.
+            r"                $snip = [regex]::Replace($snip, '(?i)(?:ghp_|github_pat_|gho_|sk-|Bearer\s+)\S+', '<redacted>')",
             r"                if ($snip.Length -gt 160) { $snip = $snip.Substring(0, 160) }",
             r"                $teErr = ('exit ' + $codeNum)",
             r"                if ($snip) { $teErr = ($teErr + ': ' + $snip) }",
@@ -10820,12 +10822,15 @@ class BoredEmitter:
                 if self._ack_open and self._ack_at is not None:
                     key = self._ack_job_key or "job"
                     if error:
-                        # FR #8018: durable failed-turn evidence on the seat session log.
+                        # FR #8018: durable failed-turn evidence on the seat session log
+                        # (sanitized — never raw stderr with tokens).
                         if self.session_log_write is not None:
                             try:
                                 self.session_log_write(
                                     "failed-turn",
-                                    "%s %s" % (error_class or "error", error_line or ""),
+                                    sanitize_failed_turn_reason(
+                                        error_class, error_line
+                                    ),
                                 )
                             except Exception:
                                 pass

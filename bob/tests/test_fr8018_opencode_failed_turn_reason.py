@@ -52,10 +52,11 @@ def test_fr8018_giveup_reason_includes_exit_and_stderr_snippet():
     e.failed_turn_retry_fn = lambda k: None
     e.seat_release_giveup_fn = lambda k, r: giveups.append((k, r))
     e.on_outbox("ACK " + KEY)
+    secret = "ghp_" + ("A" * 30)
     err = dict(
         error=True,
         error_class="process-exit",
-        error_line="exit 7: tool: failed to load runtime",
+        error_line="exit 7: tool: failed to load runtime " + secret,
     )
     e.turn_ended(at=clock(), **err)
     e.turn_ended(at=clock(), **err)
@@ -65,9 +66,30 @@ def test_fr8018_giveup_reason_includes_exit_and_stderr_snippet():
     assert reason.startswith("failed-turn")
     assert "exit 7" in reason
     assert "failed to load runtime" in reason
+    assert "ghp_" not in reason
+    assert "AAAA" not in reason
     assert any(src == "failed-turn" for src, _ in records), records
     assert any(src == "giveup" for src, _ in records), records
+    for src, text in records:
+        assert "ghp_" not in text
+        assert "AAAA" not in text
     e.stop()
+
+
+def test_fr8018_launch_wrapper_redacts_snip_before_marker(tmp_path: Path):
+    spec = bw.build_launch(
+        "opencode",
+        "agent",
+        str(tmp_path / "cwd"),
+        "hello",
+        str(tmp_path / "opencode.exe"),
+        tmp_path / "run",
+        None,
+    )
+    ps1 = next(v for k, v in spec.files.items() if str(k).endswith("launch-opencode.ps1"))
+    assert "<redacted>" in ps1
+    assert "ghp_" in ps1 or "github_pat_" in ps1
+
 
 
 def test_fr8018_fuel_text_giveup_is_out_of_fuel_not_failed_turn():
