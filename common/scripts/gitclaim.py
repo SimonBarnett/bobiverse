@@ -8475,6 +8475,44 @@ def _pool_future_reset(pool: dict, now_f: float) -> str:
     return ""
 
 
+def _opencode_free_pool_from_machine(ent: dict) -> dict | None:
+    """Build a pauseable free-pool reading from digest pcent (FR #8028)."""
+    if not isinstance(ent, dict):
+        return None
+    pcent = ent.get("pcent") if isinstance(ent.get("pcent"), dict) else {}
+    rem = pcent.get("opencode-free")
+    if rem is None:
+        rem = pcent.get("opencode_free")
+    if rem is None:
+        nested = ent.get("opencode") if isinstance(ent.get("opencode"), dict) else {}
+        rem = nested.get("opencode-free", nested.get("free", nested.get("remaining")))
+    if rem is None:
+        return None
+    try:
+        rem_f = float(rem)
+    except (TypeError, ValueError):
+        return None
+    reset = (
+        ent.get("opencode_free_reset_at")
+        or ent.get("opencode_free_reset")
+        or ent.get("free_reset_at")
+        or (ent.get("opencode") or {}).get("free_reset_at")
+        or (ent.get("opencode") or {}).get("period_end")
+        or (ent.get("opencode") or {}).get("reset_at")
+    )
+    fetched = ent.get("fetched_at") or (ent.get("opencode") or {}).get("fetched_at")
+    pool = {
+        "remaining_pct": rem_f,
+        "remaining": rem_f,
+        "fresh": True,
+        "fetched_at": fetched or "1970-01-01T00:00:00Z",
+    }
+    if reset:
+        pool["period_end"] = reset
+        pool["reset_at"] = reset
+    return pool
+
+
 def _machine_pool_for_kind(ent: dict, kind: str) -> dict | None:
     k = (kind or "").strip().lower()
     if k in ("grok", "grok-build", "xai"):
@@ -8535,6 +8573,10 @@ def seat_fuel_pause_reason(home: Path, nick: str, now: float | None = None) -> s
 
     Unknown agent kinds do not pause. A stale or ``fresh is False`` 0% does not
     pause. The worker row is stamped (or cleared) so the digest shows the pause.
+
+    FR #8028: when the free pool is still exact 0 but the machine reset field
+    was stripped by a digest coerce, keep an existing future worker stamp so
+    ``offer_focus_top`` does not self-clear the pause on its second check.
     """
     now_f = _fuel_clock(now)
     me = (canonical_worker_nick(nick) or nick or "").strip()
@@ -8545,10 +8587,29 @@ def seat_fuel_pause_reason(home: Path, nick: str, now: float | None = None) -> s
     kind = seat_agent_kind(home, me)
     ent = _raw_digest_machine(home, mid)
     pool = _machine_pool_for_kind(ent, kind)
+    # FR #8028: free OpenCode seats pause on opencode-free=0, not the Go meter.
+    if kind == "opencode" and seat_is_free_fuel(home, me):
+        free_pool = _opencode_free_pool_from_machine(ent)
+        if free_pool is not None:
+            pool = free_pool
     until = ""
     reason = ""
     if pool and _pool_reading_fresh(pool, now_f) and _pool_remaining_exact_zero(pool):
         until = _pool_future_reset(pool, now_f)
+        if not until:
+            # Keep a live worker stamp when reset was lost on digest rewrite.
+            workers = ent.get("workers") if isinstance(ent.get("workers"), dict) else {}
+            row = workers.get(str(pid)) if isinstance(workers.get(str(pid)), dict) else {}
+            stamped = str((row or {}).get("fuel_paused_until") or "").strip()
+            stamped_reason = str((row or {}).get("fuel_pause_reason") or "").strip()
+            stamped_ts = _fuel_epoch(stamped)
+            if (
+                stamped
+                and stamped_ts is not None
+                and stamped_ts > now_f
+                and stamped_reason == FUEL_PAUSE_REASON
+            ):
+                until = stamped
         if until:
             reason = FUEL_PAUSE_REASON
     _stamp_worker_fuel_pause(home, mid, pid, until, reason)
