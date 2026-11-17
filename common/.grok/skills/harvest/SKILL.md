@@ -517,6 +517,7 @@ routes to bobiverse via the split rule.
 - Clear may only remove safe (clean+published) trees; seat-marker dirt is ignored for classification but must be deleted before git worktree remove without --force; failed fetch under -PruneClosedJobs means zero removals
 - When folding CONFLICTING tips that both touch create_job_worktree, keep FR #8023 disk+FR/UAT fatal fetch and FR #8022 _fetch_pr_head_oid want_oid add; never blind-fetch origin/<branch> before the OID helper or self-remote fixtures false-NACK fetch.
 - When OpenCode prints Free usage limit reached, kill mid-run, GIVEUP fuel-exhausted:opencode-free within a minute, and record-pause the pool; do not wait for hard ceiling.
+- When a PowerShell waiter floors WaitForExit with Max(30, TimeoutSec+30), a caller TimeoutSec under 30 is not a cap. Use TimeoutSec plus a short grace and prove it with a non-exiting child.
 
 ## Harvest digest (lessons audit 2026-10-06)
 
