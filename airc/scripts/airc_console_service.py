@@ -2030,7 +2030,9 @@ FALLBACK_IRC_PORTS = (993, 6697)
 # FR #7999: IRC-over-WebSocket (RFC 6455) on 443 through a Cloudflare-proxied hostname.
 # TLS-inspecting firewalls reset 993/6697; ordinary HTTPS on 443 survives.
 DEFAULT_IRC_WS_URL = "wss://wsirc.ntsa.uk"
-DEFAULT_IRC_TRANSPORT = "tls,wss"
+# FR #8057 / Si 15:23: WSS first (443), then TLS 993/6697. #8052 had flipped to
+# tls,wss against a stale #7999 acceptance line; #7999 body now matches WSS-first.
+DEFAULT_IRC_TRANSPORT = "wss,tls"
 _IRC_TRANSPORT_TOKENS = ("wss", "tls")
 
 
@@ -2215,7 +2217,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--transport",
         default=os.environ.get("AIRC_IRC_TRANSPORT", DEFAULT_IRC_TRANSPORT),
-        help="comma-separated ordered transports: tls,wss (default tls,wss; FR #7999)",
+        help="comma-separated ordered transports: wss,tls (default wss,tls; FR #7999 / #8057)",
     )
     p.add_argument(
         "--ws-url",

@@ -96,7 +96,7 @@ Cloudflare drops idle WebSockets after ~100 s. Airc's IRC keepalive sends a
 ### Rollback
 
 - Remove the `AIRC_IRC_TRANSPORT` / `AIRC_IRC_WS_URL` machine variables and
-  `Restart-Service Airc` (falls back to `	ls,wss` → WSS first, then 993/6697).
+  `Restart-Service Airc` (falls back to `wss,tls` → WSS first, then 993/6697).
 - To force raw TLS IRC only: `AIRC_IRC_TRANSPORT=tls` with `AIRC_IRC_PORT=993`
   or `6697`, then `Restart-Service Airc`.
 - Remove the Cloudflare record, the IIS site, and the Ergo WebSocket listener to

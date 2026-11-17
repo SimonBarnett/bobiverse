@@ -250,7 +250,7 @@ Checks:
 
 ## Harvested MRB discipline
 
-- **MRB airc / product transport defaults vs FR acceptance (class of MRB #8044 / FR #7999):** judge default order against the FR literally --- if acceptance says TLS first then WSS, the tip default must be `tls,wss` (not `wss,tls`). FAIL, land one stacked fix, then re-PASS the tip. Do not park this playbook under `harvest/SKILL.md` (moved from harvest tip #8054).
+- **MRB airc / product transport defaults vs FR acceptance (class of MRB #8044 / FR #7999 / FR #8057):** judge default order against the FR literally. Current #7999/#8057 acceptance is WSS first (`wss,tls`); #8052 wrongly flipped to `tls,wss` on a stale line and #8057 restored it. If acceptance says TLS first then WSS, the tip default must be `tls,wss`. FAIL, land one stacked fix, then re-PASS the tip. Do not park this playbook under `harvest/SKILL.md` (moved from harvest tip #8054).
 
 - **Per-component CI (FR #7276 / FR #7524 / MRB #7540):** new `build-bob-plan` owns `bob/agents/plan/**` and `bobiverse-bob-plan` alone — pin exactly one workflow owner; `git add -f` `.github/workflows/*` when the job worktree `.git/info/exclude` ignores `.github/*`. Do not park this playbook under `harvest/SKILL.md` (moved from harvest tip #7542).
 
