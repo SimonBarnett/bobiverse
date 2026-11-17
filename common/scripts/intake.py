@@ -1618,6 +1618,35 @@ class FakeGitHubFiler:
                 }
         return None
 
+    def search_open_issue_by_signature(
+        self, repo: str, title: str, body: str
+    ) -> dict[str, Any] | None:
+        """FR #8019: open issue whose normalized title+body matches."""
+        if self.down:
+            raise GitHubDown("github unreachable")
+        want = normalize_message_for_dedupe(title, body)
+        if not want:
+            return None
+        want_title = normalize_message_for_dedupe(title, "")
+        for row in self.issues:
+            if str(row.get("repo") or "") != repo:
+                continue
+            if str(row.get("state") or "open").lower() != "open":
+                continue
+            got_title = normalize_message_for_dedupe(str(row.get("title") or ""), "")
+            if want_title and got_title != want_title:
+                continue
+            got = normalize_message_for_dedupe(
+                str(row.get("title") or ""), str(row.get("body") or "")
+            )
+            if got == want:
+                return {
+                    "number": row.get("number"),
+                    "url": row.get("url"),
+                    "state": str(row.get("state") or "open"),
+                }
+        return None
+
     def get_file_content(self, repo: str, path: str) -> str:
         _ = repo
         key = str(path or "").replace("\\", "/").lstrip("/")
@@ -2022,11 +2051,11 @@ def _idem_path(home: Path, key: str) -> Path:
 
 
 def normalize_message_for_dedupe(title: str, body: str) -> str:
-    """Deterministic message text for FR #6196 fingerprint fallback.
+    """Deterministic message text for FR #6196 / #8019 fingerprint fallback.
 
     Strip only known volatile tokens (timestamps, machine-pid nicks, intake/request
-    ids, lag_s). Keep error text, codes, types, paths, and other numbers.
-    Exact match only - no fuzzy merge.
+    ids, lag_s, elapsed_ms, job ids). Keep error text, codes, types, paths, and
+    other numbers. Exact match only - no fuzzy merge.
     """
     text = f"{title or ''}\n{body or ''}"
     # HTML / intake markers (ids inside are volatile)
@@ -2039,13 +2068,33 @@ def normalize_message_for_dedupe(title: str, body: str) -> str:
     )
     # intake ids / UUIDs
     text = re.sub(r"\bin_[0-9a-fA-F]{8,}\b", " ", text)
+    text = re.sub(r"\bintake\s*id\s*[:=]?\s*", " ", text, flags=re.IGNORECASE)
     text = re.sub(
         r"\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b",
         " ",
         text,
     )
-    # lag_s per-occurrence counters
+    # lag_s / elapsed_ms per-occurrence counters
     text = re.sub(r"\blag_s\s*[:=]\s*\d+\b", " ", text, flags=re.IGNORECASE)
+    text = re.sub(r"\belapsed_ms\s*[:=]\s*\d+\b", " ", text, flags=re.IGNORECASE)
+    # job: FR|MRB|UAT|FIX owner/repo#N (and bare job lines)
+    text = re.sub(
+        r"\bjob\s*[:=]\s*(?:FR|MRB|UAT|FIX)\s+\S+#\d+\b",
+        "job:",
+        text,
+        flags=re.IGNORECASE,
+    )
+    text = re.sub(
+        r"\b(?:FR|MRB|UAT|FIX)\s+[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+#\d+\b",
+        " ",
+        text,
+        flags=re.IGNORECASE,
+    )
+    text = re.sub(
+        r"\b[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+#\d+\b",
+        " ",
+        text,
+    )
     # Stall titles: stall:<detector>:<machine>-<pid> -> stall:<detector>:<machine>
     text = re.sub(
         r"\b(stall:[a-z0-9_-]+:)([a-z0-9_.]+)-(\d+)\b",
@@ -2162,6 +2211,68 @@ def _lookup_dedupe_hit(
     }
 
 
+def _lookup_message_signature_hit(
+    home: Path,
+    filer: GitHubFiler,
+    repo: str,
+    title: str,
+    body: str,
+) -> dict | None:
+    """FR #8019: find an open/closed issue with the same normalized title+body.
+
+    Used when an explicit ``dedupe_key`` is present but too specific (per job /
+    seat). Exact ``dedupe_key`` remains the first path (#4963).
+    """
+    msgfp = derive_message_dedupe_key(title, body)
+    hit = _lookup_dedupe_hit(home, filer, repo, msgfp)
+    if hit:
+        return hit
+    search = getattr(filer, "search_open_issue_by_signature", None)
+    if not callable(search):
+        return None
+    found = search(repo, title, body)
+    if not found or not found.get("number"):
+        return None
+    url = str(found.get("url") or f"https://github.com/{repo}/issues/{found['number']}")
+    return {
+        "repo": repo,
+        "number": int(found["number"]),
+        "url": url,
+        "state": found.get("state"),
+        "intake_id": "",
+    }
+
+
+def _save_issue_dedupe_keys(
+    home: Path,
+    repo: str,
+    *,
+    number: int,
+    url: str,
+    intake_id: str,
+    caller_key: str,
+    title: str,
+    body: str,
+) -> None:
+    """Index both the caller key and the message fingerprint (FR #4963 / #8019)."""
+    keys: list[str] = []
+    ck = str(caller_key or "").strip()
+    if ck:
+        keys.append(ck)
+    msgfp = derive_message_dedupe_key(title, body)
+    if msgfp and msgfp not in keys:
+        keys.append(msgfp)
+    for key in keys:
+        _save_dedupe(
+            home,
+            repo,
+            key,
+            number=int(number),
+            url=str(url),
+            intake_id=intake_id,
+        )
+
+
 def _issue_already_commented(filer: GitHubFiler, repo: str, number: int, intake_id: str) -> bool:
     needle = str(intake_id or "")
     if not needle:
@@ -2212,7 +2323,16 @@ def _apply_dedupe_match(
     rec["state"] = "filed"
     rec["action"] = action
     rec["queued"] = False
-    _save_dedupe(home, repo, key, number=number, url=url, intake_id=iid)
+    _save_issue_dedupe_keys(
+        home,
+        repo,
+        number=number,
+        url=url,
+        intake_id=iid,
+        caller_key=key,
+        title=str(norm.get("title") or ""),
+        body=str(norm.get("body") or ""),
+    )
     _save_record(home, rec)
     return rec
 
@@ -2320,6 +2440,7 @@ def file_submission(
     try:
         if kind in ("issue", "fr"):
             dkey = str(norm.get("dedupe_key") or "").strip()
+            raw_for_sig = str(norm.get("body") or "")
             if dkey:
                 marker = intake_dedupe_marker(repo, dkey)
                 if marker not in body:
@@ -2329,20 +2450,30 @@ def file_submission(
                     return _apply_dedupe_match(
                         home, norm, filer, rec, hit, quarantine=quarantine
                     )
+            # FR #8019: explicit key missed (or absent). Same title+signature
+            # against an existing issue comments instead of filing a twin.
+            hit_sig = _lookup_message_signature_hit(
+                home, filer, repo, title, raw_for_sig
+            )
+            if hit_sig:
+                return _apply_dedupe_match(
+                    home, norm, filer, rec, hit_sig, quarantine=quarantine
+                )
             out = filer.create_issue(repo, title, body, labels)
             rec["url"] = out["url"]
             rec["number"] = out["number"]
             rec["state"] = "filed"
             rec["action"] = "filed"
-            if dkey:
-                _save_dedupe(
-                    home,
-                    repo,
-                    dkey,
-                    number=int(out["number"]),
-                    url=str(out["url"]),
-                    intake_id=iid,
-                )
+            _save_issue_dedupe_keys(
+                home,
+                repo,
+                number=int(out["number"]),
+                url=str(out["url"]),
+                intake_id=iid,
+                caller_key=dkey,
+                title=title,
+                body=raw_for_sig,
+            )
         else:
             branch = f"intake/{iid}"
             files = list(norm.get("files") or [])

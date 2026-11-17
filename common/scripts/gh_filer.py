@@ -343,6 +343,71 @@ class GhCliFiler:
             }
         return None
 
+    def search_open_issue_by_signature(
+        self, repo: str, title: str, body: str
+    ) -> dict[str, Any] | None:
+        """FR #8019: open issue with the same normalized title+body signature."""
+        from intake import normalize_message_for_dedupe
+
+        ensure_gh_token_env()
+        if not shutil.which(self.gh_bin) and self.gh_bin == "gh":
+            raise GitHubDown("gh not found")
+        want = normalize_message_for_dedupe(title, body)
+        if not want:
+            return None
+        want_title = normalize_message_for_dedupe(title, "")
+        q = str(title or "").strip()
+        if len(q) > 80:
+            q = q[:80]
+        try:
+            proc = self._run_issue(
+                "list",
+                "-R",
+                str(repo),
+                "--search",
+                f"{q} in:title",
+                "--state",
+                "open",
+                "--json",
+                "number,url,state,title,body",
+                "--limit",
+                "20",
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise GitHubDown(str(exc)) from exc
+        if proc.returncode != 0:
+            err = (proc.stderr or proc.stdout or "gh issue list failed").strip()
+            raise GitHubDown(err[:500])
+        try:
+            rows = json.loads(proc.stdout or "[]")
+        except json.JSONDecodeError as exc:
+            raise GitHubDown(f"gh issue list non-json: {(proc.stdout or '')[:200]}") from exc
+        if not isinstance(rows, list):
+            return None
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            got_title = normalize_message_for_dedupe(str(row.get("title") or ""), "")
+            if want_title and got_title != want_title:
+                continue
+            got = normalize_message_for_dedupe(
+                str(row.get("title") or ""), str(row.get("body") or "")
+            )
+            if got != want:
+                continue
+            number = int(row.get("number") or 0)
+            url = str(row.get("url") or "")
+            if not number:
+                continue
+            if not url:
+                url = f"https://github.com/{repo}/issues/{number}"
+            return {
+                "number": number,
+                "url": url,
+                "state": str(row.get("state") or "open").lower(),
+            }
+        return None
+
     def _api(
         self,
         method: str,
