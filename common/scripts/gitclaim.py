@@ -1673,6 +1673,8 @@ def clear_needs_human_from_owner_issue_comment(
                 row.pop("needs_human", None)
                 row["giveup_count"] = 0
                 row.pop("giveup_seats", None)
+                row.pop("giveup_agent_kinds", None)
+                row["hard_ceiling_count"] = 0
                 row.pop("cooldown_until", None)
                 # Keep giveup_ts as history; offer gates no longer use it once cleared.
                 cleared_any = True
@@ -4294,7 +4296,7 @@ def _coerce_row(row: dict) -> dict | None:
                 "offered_via",  # FR #2811: giveup-push sticky window
                 "author_seat", "author_nick", "author", "implementer_seat", "mrb_author_seat", "mrb_fix_author_seat",
                 "author_seats", "url", "title", "body", "state",
-                "giveup_seats", "giveup_reason", "require_machine", "cooldown_until", "giveup_ts", "supersedes", "result", "done_ts", "done_by",
+                "giveup_seats", "giveup_reason", "giveup_agent_kinds", "require_machine", "cooldown_until", "giveup_ts", "supersedes", "result", "done_ts", "done_by",
                 "reconcile",  # FR #3742: LOST_DONE_RESTART vs STALE_BUSY audit
                 "prior_holder",  # FR #4564: do not re-offer a lost DONE to the seat that held it
                 # FR #4706 / #4585: FIX CI head SHA + failure signature must survive reload
@@ -4353,6 +4355,11 @@ def _coerce_row(row: dict) -> dict | None:
     try:
         if row.get("giveup_count") is not None:
             out["giveup_count"] = int(row.get("giveup_count") or 0)
+        if row.get("hard_ceiling_count") is not None:
+            try:
+                out["hard_ceiling_count"] = int(row.get("hard_ceiling_count") or 0)
+            except (TypeError, ValueError):
+                out["hard_ceiling_count"] = 0
     except (TypeError, ValueError):
         pass
     # FR #2309: sticky no-ACK rebroadcast counter + skip list must survive reload.
@@ -8730,6 +8737,47 @@ def seat_fuel_pause_reason(home: Path, nick: str, now: float | None = None) -> s
     return reason
 
 
+
+def is_hard_ceiling_reason(reason: str) -> bool:
+    """True when a GIVEUP reason is an OpenCode hard-ceiling kill (FR #8008)."""
+    text = (reason or "").strip().lower()
+    if not text:
+        return False
+    return "hard ceiling" in text or text.replace("_", "-").startswith("hard-ceiling")
+
+
+def giveup_agent_kinds(row: dict) -> list[str]:
+    """Canonical agent kinds blocked after repeated hard-ceiling GIVEUPs (FR #8008)."""
+    out: list[str] = []
+    seen: set[str] = set()
+    for raw in str((row or {}).get("giveup_agent_kinds") or "").split(","):
+        kind = raw.strip().lower()
+        if not kind or kind in seen:
+            continue
+        seen.add(kind)
+        out.append(kind)
+    return out
+
+
+def row_blocked_for_giveup_agent_kind(row: dict, kind: str) -> bool:
+    """True when this seat's agent kind is in the row's giveup_agent_kinds (FR #8008)."""
+    k = (kind or "").strip().lower()
+    if not k:
+        return False
+    return k in set(giveup_agent_kinds(row))
+
+
+def append_giveup_agent_kind(row: dict, kind: str) -> None:
+    """Append an agent kind to giveup_agent_kinds (deduped, lowercase)."""
+    k = (kind or "").strip().lower()
+    if not k:
+        return
+    kinds = giveup_agent_kinds(row)
+    if k not in kinds:
+        kinds.append(k)
+    row["giveup_agent_kinds"] = ",".join(kinds)
+
+
 def is_out_of_fuel_reason(reason: str) -> bool:
     """True when a GIVEUP/NACK trailing reason is the worker out-of-fuel wire (FR #4181)."""
     text = (reason or "").strip().lower()
@@ -9092,6 +9140,9 @@ def _free_seat_can_take_row(
     if row_machine_mismatch(cand, nick) or row_gave_up_by(cand, nick, live=live):
         return False
     if row_blocked_for_machine(cand, nick):
+        return False
+    # FR #8008: repeated hard-ceiling GIVEUPs block the whole agent class (e.g. opencode).
+    if row_blocked_for_giveup_agent_kind(cand, seat_agent_kind(home, nick)):
         return False
     if not _seat_model_allows_row(home, nick, cand):
         return False
@@ -10064,6 +10115,9 @@ def offer_focus_top(
                     return None
                 if row_machine_mismatch(cand, me) or row_gave_up_by(cand, me, live=live):
                     return None
+                # FR #8008: agent-class exclusion after repeated hard-ceiling kills.
+                if row_blocked_for_giveup_agent_kind(cand, seat_agent_kind(home, me)):
+                    return None
                 # FR #7966: three unanswered offers to this seat stop the re-offer loop.
                 if seat_offer_refused(cand, me):
                     return None
@@ -10229,6 +10283,9 @@ def offer_focus_top(
                 # FR #1093: stamp WP0/issue pins before the machine gate (stale rows).
                 _stamp_require_machine(cand_eff)
                 if row_blocked_for_machine(cand_eff, me):
+                    return None
+                # FR #8008: hard-ceiling class exclusion (opencode after repeated ceiling kills).
+                if row_blocked_for_giveup_agent_kind(cand_eff, seat_agent_kind(home, me)):
                     return None
                 # FR #6134 / #7888: free or unknown start_model stays FR-only.
                 # A paid start_model may take MRB/UAT. Log the reason either way.
@@ -10459,6 +10516,7 @@ def offer_top(
                     row_needs_human(row, nick or "")
                     or row_on_cooldown(row, now_f, nick or "", live=live)
                     or row_gave_up_by(row, nick or "", live=live)
+                    or row_blocked_for_giveup_agent_kind(row, seat_agent_kind(home, nick or ""))
                     or row_skip_fr_reason(row)
                 ):
                     i += 1
@@ -10941,9 +10999,10 @@ def clear_giveup_job(
                     if seat_c:
                         _strip_giveup_seat_from_row(row, seat_c)
                     else:
-                        for k in ("giveup_seats", "cooldown_until", "giveup_ts", "needs_human"):
+                        for k in ("giveup_seats", "cooldown_until", "giveup_ts", "needs_human", "giveup_agent_kinds"):
                             row.pop(k, None)
                         row["giveup_count"] = 0
+                        row["hard_ceiling_count"] = 0
                     rows_n += 1
             if rows_n:
                 _write_queue(queue_path(home), doc)
@@ -13693,6 +13752,8 @@ def assign_row(
             # auto-offer. Ops may !assign needs_human to a recycled successor.
             if row_gave_up_by(cand, me):
                 return "refused", f"{me} already gave this row up"
+            if row_blocked_for_giveup_agent_kind(cand, seat_agent_kind(home, me)):
+                return "refused", f"{me}: agent class blocked after hard-ceiling GIVEUPs (FR #8008)"
             if mrb_fail_same_head_for_seat(cand, me):
                 return "refused", f"{me} already FAILed this MRB head (FR #4718)"
             why = ledger_blocks(ledger_load(home), cand, me, live)

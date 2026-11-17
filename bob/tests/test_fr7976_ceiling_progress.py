@@ -19,6 +19,12 @@ def test_fr7976_ceiling_uses_stall_not_wall_clock(tmp_path: Path):
     assert "--elapsed-ms ([int]$stallMs)" in text
     desc = [ln for ln in text.splitlines() if "$desc.Count -gt 0" in ln]
     assert desc and all("$lastProgress" not in ln for ln in desc)
-    assert any("$cpuSum -gt $lastCpu" in ln and "$lastProgress" in ln for ln in text.splitlines())
+    # FR #8008 / #8027: CPU refreshes lastBeat only; hard-ceiling progress is output/worktree.
+    assert any("$cpuSum -gt $lastCpu" in ln and "$lastBeat" in ln for ln in text.splitlines())
+    assert all(
+        "$lastProgress" not in ln
+        for ln in text.splitlines()
+        if "$cpuSum -gt $lastCpu" in ln
+    )
     assert any("$len -gt $lastLen" in ln and "$lastProgress" in ln for ln in text.splitlines())
     assert any("$stamp -gt $lastWtStamp" in ln and "$lastProgress" in ln for ln in text.splitlines())
