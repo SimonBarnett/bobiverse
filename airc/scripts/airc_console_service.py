@@ -63,6 +63,7 @@ from airc_console import (
 )
 from airc_jobs import JobProtocol, JobStore, VerbAuthPolicy
 import airc_extension as _airc_extension  # FR #5426: EXTENSION runner for AircConsoleCore
+import airc_ws_transport as _ws  # FR #7999: IRC-over-WebSocket transport
 
 def attach_verb_log_hooks(core, *, send_fn, emit_fn) -> None:
     """FR #5519: wire NETWORK/EXTENSION/LEGION DCC send + IRC CONT emit."""
@@ -474,6 +475,9 @@ class AircConsoleService:
         # FR #5526: async PRIORITY connect delivers out/DONE via the verified out queue.
         self.core.priority_reply_send = self._on_console_out
         self.sock: ssl.SSLSocket | socket.socket | None = None
+        # FR #7999: which transport carried this session (tls <host>:<port> | wss <label>).
+        self._transport_desc: str | None = None
+        self._transport_logged = False
         self._send_lock = threading.Lock()
         self._stop = threading.Event()
         self._registered = False
@@ -667,31 +671,56 @@ class AircConsoleService:
         self._registered = False
         self._force_reconnect = False
         self._awaiting_pong = False
-        preferred = int(self.args.port)
+        self._transport_desc = None
+        self._transport_logged = False
         last: OSError | None = None
-        for port in resolve_irc_ports(preferred):
+        for kind, target in resolve_irc_transports(self.args):
+            sock = None
             try:
-                raw = socket.create_connection((self.args.host, int(port)), timeout=30)
-                if self.args.tls:
-                    ctx = ssl.create_default_context()
-                    if self.args.tls_insecure:
-                        ctx.check_hostname = False
-                        ctx.verify_mode = ssl.CERT_NONE
-                    self.sock = ctx.wrap_socket(raw, server_hostname=self.args.host)
-                else:
-                    self.sock = raw
-                self.sock.settimeout(1.0)
+                if kind == "tls":
+                    port = int(target)
+                    raw = socket.create_connection((self.args.host, int(port)), timeout=30)
+                    sock = raw
+                    if self.args.tls:
+                        ctx = ssl.create_default_context()
+                        if self.args.tls_insecure:
+                            ctx.check_hostname = False
+                            ctx.verify_mode = ssl.CERT_NONE
+                        sock = ctx.wrap_socket(raw, server_hostname=self.args.host)
+                    sock.settimeout(1.0)
+                    self.sock = sock
+                    self._last_recv = time.monotonic()
+                    self.args.port = int(port)
+                    self._transport_desc = f"tls {self.args.host}:{port}"
+                    info(f"INFO connected {self.args.host}:{port} tls={self.args.tls}")
+                    return
+                # wss candidate (FR #7999): --tls-insecure also relaxes WSS verification.
+                ws = _ws.connect_ws(str(target), timeout=30, verify=not self.args.tls_insecure)
+                ws.settimeout(1.0)
+                self.sock = ws
                 self._last_recv = time.monotonic()
-                self.args.port = int(port)
-                info(f"INFO connected {self.args.host}:{port} tls={self.args.tls}")
+                label = _ws.safe_label(str(target))
+                self._transport_desc = f"wss {label}"
+                info(f"INFO connected {label} transport=wss")
                 return
             except OSError as exc:
                 last = exc
-                info(f"INFO connect {self.args.host}:{port} failed ({exc}); trying next port")
+                if kind == "tls":
+                    info(
+                        f"INFO connect {self.args.host}:{target} failed ({exc}); trying next transport"
+                    )
+                else:
+                    info(f"INFO connect wss {_ws.safe_label(str(target))} failed ({exc}); trying next transport")
+                if sock is not None:
+                    try:
+                        sock.close()
+                    except Exception:
+                        pass
+                self.sock = None
                 continue
         if last is not None:
             raise last
-        raise ConnectionError("connect: no IRC port remaining")
+        raise ConnectionError("connect: no IRC transport remaining")
 
     def send(self, line: str, *, flood: bool = True) -> None:
         if not self.sock:
@@ -1377,6 +1406,10 @@ class AircConsoleService:
             self._registered = True
             self._nick_retries = 0
             self.server_nick = args[0] if args else None
+            # FR #7999: log which transport registered, once per session.
+            if not getattr(self, "_transport_logged", False) and getattr(self, "_transport_desc", None):
+                self._transport_logged = True
+                info(f"INFO registered via transport={self._transport_desc}")
             if self.shop_mode == "registered":
                 self._apply_shop_mode("registered")
             elif self.shop_mode == "wonderland":
@@ -1866,6 +1899,17 @@ class AircConsoleService:
             except Exception:
                 pass
             return 2
+        # FR #7999: validate transport config (empty WSS URL is a skip, not an error).
+        transport_err = validate_transport_config(self.args)
+        if transport_err:
+            info(f"ERROR {transport_err}")
+            try:
+                import airc_intake_event as _iev
+
+                _iev.mark_clean_exit(self.home)
+            except Exception:
+                pass
+            return 2
         backoff = RECONNECT_MIN_S
         while not self._stop.is_set():
             session_ok = False
@@ -1933,6 +1977,11 @@ class AircConsoleService:
 # FR #5189: customer egress often blocks 6697; Ergo also listens on 993 (IMAPS).
 DEFAULT_IRC_PORT = 993
 FALLBACK_IRC_PORTS = (993, 6697)
+# FR #7999: IRC-over-WebSocket (RFC 6455) on 443 through a Cloudflare-proxied hostname.
+# TLS-inspecting firewalls reset 993/6697; ordinary HTTPS on 443 survives.
+DEFAULT_IRC_WS_URL = "wss://wsirc.ntsa.uk"
+DEFAULT_IRC_TRANSPORT = "wss,tls"
+_IRC_TRANSPORT_TOKENS = ("wss", "tls")
 
 
 def resolve_irc_ports(preferred: int) -> list[int]:
@@ -1944,10 +1993,93 @@ def resolve_irc_ports(preferred: int) -> list[int]:
     return out
 
 
+def _transport_tokens(args) -> list[str]:
+    """Ordered transport tokens from ``--transport`` / ``AIRC_IRC_TRANSPORT``."""
+    raw = getattr(args, "transport", None)
+    if raw is None:
+        raw = DEFAULT_IRC_TRANSPORT
+    raw = (raw or "").strip()
+    if not raw:
+        return []
+    return [t.strip().lower() for t in raw.split(",") if t.strip()]
+
+
+def _ws_url(args) -> str:
+    """WSS URL from ``--ws-url`` / ``AIRC_IRC_WS_URL`` / ``DEFAULT_IRC_WS_URL``."""
+    raw = getattr(args, "ws_url", None)
+    if raw is None:
+        raw = DEFAULT_IRC_WS_URL
+    return (raw or "").strip()
+
+
+def validate_transport_config(args) -> str | None:
+    """Return an error string for an invalid transport config, else ``None``.
+
+    An empty WSS URL is not an error --- it skips the WSS stage (logged once).
+    """
+    tokens = _transport_tokens(args)
+    if not tokens:
+        return "AIRC_IRC_TRANSPORT is empty (expected wss and/or tls)"
+    for tok in tokens:
+        if tok not in _IRC_TRANSPORT_TOKENS:
+            return f"invalid AIRC_IRC_TRANSPORT token '{tok}' (expected wss or tls)"
+    if "wss" in tokens:
+        url = _ws_url(args)
+        if not url:
+            info("INFO FR #7999 wss transport skipped: AIRC_IRC_WS_URL is empty")
+        else:
+            try:
+                _ws.validate_url(url)
+            except ValueError as exc:
+                return f"invalid AIRC_IRC_WS_URL: {exc}"
+    return None
+
+
+def resolve_irc_transports(args) -> list[tuple[str, int | str]]:
+    """Ordered transport candidates: ``('tls', port)`` and ``('wss', url)``.
+
+    ``tls`` expands into ``resolve_irc_ports`` (preferred port first, then the
+    other listener); ``wss`` expands into one candidate.  Empty WSS URLs are
+    skipped; duplicates are removed while preserving order.
+    """
+    ws_url = _ws_url(args)
+    out: list[tuple[str, int | str]] = []
+    for tok in _transport_tokens(args):
+        if tok == "tls":
+            for port in resolve_irc_ports(int(getattr(args, "port", DEFAULT_IRC_PORT))):
+                out.append(("tls", int(port)))
+        elif tok == "wss":
+            if not ws_url:
+                continue
+            out.append(("wss", ws_url))
+    seen: set[tuple[str, str]] = set()
+    uniq: list[tuple[str, int | str]] = []
+    for kind, target in out:
+        key = (kind, str(target))
+        if key in seen:
+            continue
+        seen.add(key)
+        uniq.append((kind, target))
+    return uniq
+
+
 def build_arg_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="airc console Windows service host (FR #253)")
     p.add_argument("--host", default=os.environ.get("AIRC_IRC_HOST", "irc.ntsa.uk"))
     p.add_argument("--port", type=int, default=int(os.environ.get("AIRC_IRC_PORT", str(DEFAULT_IRC_PORT))))
+    # FR #7999: ordered transport selection. tls = raw TLS IRC on --host/--port;
+    # wss = IRC-over-WebSocket on --ws-url. Default WSS first (443 survives egress
+    # firewalls that reset 993/6697), then TLS 993/6697.
+    p.add_argument(
+        "--transport",
+        default=os.environ.get("AIRC_IRC_TRANSPORT", DEFAULT_IRC_TRANSPORT),
+        help="comma-separated ordered transports: wss,tls (default wss,tls)",
+    )
+    p.add_argument(
+        "--ws-url",
+        default=os.environ.get("AIRC_IRC_WS_URL", DEFAULT_IRC_WS_URL),
+        help="WSS endpoint (default AIRC_IRC_WS_URL, else wss://wsirc.ntsa.uk)",
+    )
     p.add_argument("--tls", action="store_true", default=True)
     p.add_argument("--no-tls", action="store_false", dest="tls")
     p.add_argument("--tls-insecure", action="store_true")
