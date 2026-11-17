@@ -32,6 +32,29 @@ def by_path_script_names(bob_worker_text: str) -> list[str]:
     return sorted(set(_NAME_RX.findall(bob_worker_text or "")))
 
 
+def module_search_dirs(source_dir: Path) -> list[Path]:
+    """bob/scripts plus common/scripts when this is a repo checkout (FR #8131).
+
+    Installed workers have no common/ tree. Modules such as crash_report.py
+    must be copied flat into the dist scripts folder.
+    """
+    source = Path(source_dir)
+    dirs = [source]
+    common = source.parent.parent / "common" / "scripts"
+    if common.is_dir() and common.resolve() != source.resolve():
+        dirs.append(common)
+    return dirs
+
+
+def find_module_file(name: str, source_dir: Path) -> Path | None:
+    """First ``name`` under the script dir or common/scripts."""
+    for folder in module_search_dirs(source_dir):
+        path = folder / name
+        if path.is_file():
+            return path
+    return None
+
+
 def local_script_imports(script: Path) -> list[str]:
     """Sibling ``*.py`` module names imported by ``script`` (FR #7991)."""
     try:
@@ -66,9 +89,12 @@ def shipped_script_names(
             continue
         seen.add(name)
         out.append(name)
-        for mod in local_script_imports(source / name):
+        found = find_module_file(name, source)
+        if found is None:
+            continue
+        for mod in local_script_imports(found):
             dep = mod + ".py"
-            if dep not in seen and (source / dep).is_file():
+            if dep not in seen and find_module_file(dep, source) is not None:
                 queue.append(dep)
     return sorted(out)
 
@@ -87,8 +113,8 @@ def copy_by_path_scripts(bob_worker: Path, source_dir: Path, dest: Path) -> list
     dest.mkdir(parents=True, exist_ok=True)
     missing: list[str] = []
     for name in names:
-        src = Path(source_dir) / name
-        if not src.is_file():
+        src = find_module_file(name, Path(source_dir))
+        if src is None:
             missing.append(name)
             continue
         (dest / name).write_bytes(src.read_bytes())

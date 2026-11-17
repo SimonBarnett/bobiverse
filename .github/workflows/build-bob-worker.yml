@@ -103,7 +103,7 @@ jobs:
           Copy-Item -LiteralPath $shipped -Destination (Join-Path $stage "scripts") -Recurse
           & python "$root\bob\scripts\worker_shipped_scripts.py" --check --bob-worker "$root\bob\scripts\bob_worker.py" --source-dir "$root\bob\scripts" --dest (Join-Path $stage "scripts")
           if ($LASTEXITCODE -ne 0) { throw "by-path scripts missing from bob-worker artifact" }
-          foreach ($need in @("opencode_tool_wedge.py", "opencode_turn_guard.py", "skill_dag_mcp.py", "skill_dag_index.py")) {
+          foreach ($need in @("opencode_tool_wedge.py", "opencode_turn_guard.py", "skill_dag_mcp.py", "skill_dag_index.py", "crash_report.py")) {
             if (-not (Test-Path -LiteralPath (Join-Path $stage "scripts\$need"))) { throw "by-path scripts missing from bob-worker artifact: $need" }
           }
           @(

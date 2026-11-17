@@ -27,7 +27,7 @@ def test_fr7991_ships_sibling_modules_of_by_path_scripts():
     assert "skill_dag_mcp.py" in names
     assert "skill_dag_index.py" in names
     for name in names:
-        assert (BOB_SCRIPTS / name).is_file(), name
+        assert ship.find_module_file(name, BOB_SCRIPTS) is not None, name
 
 
 def test_fr7991_copy_and_check_include_sibling(tmp_path: Path):

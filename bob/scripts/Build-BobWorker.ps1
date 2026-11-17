@@ -87,7 +87,11 @@ $shipNames = @(& $Python $shipPy --list --bob-worker $src)
 if ($LASTEXITCODE -ne 0 -or -not $shipNames) { throw 'worker_shipped_scripts.py --list failed' }
 foreach ($shipName in $shipNames) {
     $shipPath = Get-BobiverseRepoPath -Root $RepoRoot -Rel ("scripts\" + $shipName)
-    if (-not (Test-Path -LiteralPath $shipPath)) { throw "missing by-path script $shipPath" }
+    if (-not (Test-Path -LiteralPath $shipPath)) {
+        $commonHit = Join-Path $RepoRoot ("common\scripts\" + $shipName)
+        if (Test-Path -LiteralPath $commonHit) { $shipPath = $commonHit }
+    }
+    if (-not (Test-Path -LiteralPath $shipPath)) { throw "missing by-path script $shipName" }
     $argList += @('--add-data', "$shipPath;worker-scripts")
 }
 $argList += @('--exclude-module', 'tkinter', '--exclude-module', 'numpy', '--exclude-module', 'pandas', '--exclude-module', 'matplotlib', $src)
@@ -147,6 +151,6 @@ Write-Host ("INFO built {0} ({1:N1} MB)" -f $exe, ((Get-Item -LiteralPath $exe).
 $shipDest = Join-Path $dist 'scripts'
 & $Python $shipPy --copy --bob-worker $src --source-dir (Split-Path -Parent $src) --dest $shipDest
 if ($LASTEXITCODE -ne 0) { throw 'by-path worker scripts were not copied next to bob-worker.exe' }
-& $Python $shipPy --check --bob-worker $src --dest $shipDest
+& $Python $shipPy --check --bob-worker $src --source-dir (Split-Path -Parent $src) --dest $shipDest
 if ($LASTEXITCODE -ne 0) { throw 'by-path worker scripts missing from the build output' }
 $exe
