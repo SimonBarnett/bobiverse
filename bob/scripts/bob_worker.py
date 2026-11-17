@@ -2626,7 +2626,8 @@ def worker_prompt(worker_dir: str, home: str, machine: str, nick: str) -> str:
         f"Never file the worker status receipt itself (DONE/NACK/GIVEUP/SKIP/self-MRB/twin/duplicate/merged or an FR/MRB/UAT #N receipt) as an issue/FR; only a separate genuine defect or gap is filed. See the bobiverse-bob-job-irc, -fr, -mrb and -uat skills. "
         f"One issue per issue: when MRB (or any worker) finds a twin/duplicate issue, close the later one and comment a reference to the first; never leave both open; done issues are closed too. "
         f"Skill-intake consolidation: when a worker takes an FR from skill intake (label:skill / harvest), it must close all open issues for that skill book (every harvest/skill issue targeting the same book), open one consolidated PR for them, and cite every issue it closes (Closes #N for each); no per-issue PRs for the same skill book; the worker closes the issues itself as part of DONE. "
-        f"CAST IRON (FR #4843): never git checkout/switch/commit/merge in the install root ({Path(worker_dir).parent}); always `git -C <install> worktree add -b fr-N <job-wt> origin/main` (e.g. C:\\ai\\bob-wt-fr-<n> or %TEMP%\\bobiverse-fr-<n>). An install root left on fr-* means live seats read unreviewed skills. "
+        f"CAST IRON (FR #4843): never git checkout/switch/commit/merge in the install root ({Path(worker_dir).parent}); always `git -C <install> worktree add -b fr-N <job-wt> origin/main` for FR/UAT (e.g. C:\\ai\\bob-wt-fr-<n> or %TEMP%\\bobiverse-fr-<n>). An install root left on fr-* means live seats read unreviewed skills. "
+        f"FR #8022: open-PR MRB/FIX worktrees must start at gh pr view headRefOid (verify git rev-parse HEAD); never base an open MRB review tree on origin/main. Quote that SHA on the board as MRB PASS @ <sha> or MRB FAIL @ <sha>. "
         f"Windows PowerShell 5.1 only (FR #6341): use Get-ChildItem -Depth (not -MaxDepth); use Select-String. Do not run Unix grep or head. Job worktrees: use $env:BOB_JOB_WORKTREE_BASE (and $env:BOB_JOB_WORKTREE when set); never search drives for ai\\worktrees. "
         f"If gh says to run gh auth login, stop and report that. Do not search for tokens, do not read hosts.yml, and do not look in other profiles or password folders. "
         f"Headless opencode run auto-rejects external_directory and has no --interactive flag. Do not pass --auto. "
@@ -9543,10 +9544,24 @@ def opencode_job_finish_steps(
     closes_ref = f"{pm.group(1)}#{pm.group(2)}" if pm else key
     wt = str(worktree or "").strip()
     ob = str(outbox or "").strip()
+    reviewed = ""
+    try:
+        import opencode_seat_contract as _osc
+
+        reviewed = _osc.worktree_reviewed_sha(wt)
+    except Exception:
+        reviewed = ""
+    sha_line = (
+        f"FR #8022 reviewed SHA from git -C worktree rev-parse HEAD is {reviewed}; "
+        f"quote it on the board as MRB PASS @ {reviewed} or MRB FAIL @ {reviewed}. "
+        if reviewed
+        else "FR #8022: quote git -C worktree rev-parse HEAD on the board as MRB PASS @ <sha> or MRB FAIL @ <sha>. "
+    )
     return (
         f"FINISH {key}. Work so far is already in the worktree ({wt}). "
         "This is a NEW opencode run (no --resume/--continue). "
-        "Per job call skill-dag MCP resolve then get_skill; file what you learn with "
+        + sha_line
+        + "Per job call skill-dag MCP resolve then get_skill; file what you learn with "
         "Report-BobiverseIntakeIssue.ps1 (-Repo from the job id) on the intake webhook in the same turn. "
         "1) git status and git diff. 2) Finish remaining work. "
         f"3) Commit on branch {branch}. 4) git push -u origin HEAD. "
