@@ -25,4 +25,8 @@ def test_fr5352_run_forever_backs_off_reserved_nick():
     chunk = t[i : i + 1800]
     assert "NICKNAME_RESERVED" in chunk
     assert "_surface_nickname_reserved" in chunk
-    assert "NICKNAME_RESERVED_BACKOFF" in chunk or "300" in chunk
+    # FR #8120: short bounded backoff via nickname_reserved_backoff_s() (was 300).
+    assert (
+        "nickname_reserved_backoff_s" in chunk
+        or "NICKNAME_RESERVED_BACKOFF" in chunk
+    )
