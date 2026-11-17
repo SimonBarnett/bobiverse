@@ -298,6 +298,14 @@ def test_fr6157_start_agent_clears_opencode_turns_before_spawn(tmp_path: Path, m
     sup._agent_parent_image = ""
     sup._agent_parent_cmd = ""
     sup._expected_exit = set()
+    # FR #8083: no _session_log_stop. start_agent must still clear turns and spawn.
+    sup._session_log_thread = None
+    sup._session_screen = None
+    sup._session_cursor = None
+    sup._exit_recorded_pid = None
+    sup.session_log = bw.SeatSessionLog(run_dir / "session.log")
+    sup._start_grok_signin_guard = lambda proc: None
+    sup._start_grok_blank_tui_guard = lambda proc: None
 
     ok = bw.Supervisor.start_agent(sup, note="restart")
     assert ok is True

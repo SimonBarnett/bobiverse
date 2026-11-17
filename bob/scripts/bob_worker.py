@@ -12070,8 +12070,12 @@ class Supervisor:
             self._session_screen = screen
 
     def _stop_session_log(self) -> None:
-        self._session_log_stop.set()
-        thread = self._session_log_thread
+        # FR #8083: start_agent stubs and any path that skips __init__ must not
+        # raise before the OpenCode turn log is cleared.
+        stop = getattr(self, "_session_log_stop", None)
+        if stop is not None:
+            stop.set()
+        thread = getattr(self, "_session_log_thread", None)
         if thread is not None and thread is not threading.current_thread():
             thread.join(timeout=2)
         self._session_log_thread = None
