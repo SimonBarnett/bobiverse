@@ -4173,6 +4173,10 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
         if wedge_resolved is None:
             _report_missing_worker_script("opencode_tool_wedge.py")
         wedge_text = str(wedge_resolved or "")
+        iso_resolved = _resolve_installed_worker_script(
+            "opencode_seat_isolate.py", cwd=cwd, install_root=install_root
+        )
+        iso_path = iso_resolved or (Path(__file__).resolve().parent / "opencode_seat_isolate.py")
         # FR #6157: each opencode run emits turn_started / turn_ended into opencode-turns.jsonl
         # so BoredEmitter gets harvest-hold / done-miss / startup-ready parity with Grok.
         # FR #6240: no external_directory allow. Each injected assign carries its own
@@ -4202,12 +4206,30 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             f"$pyHelper = '{esc(str(helper_path))}'",
             f"$guardPy = '{esc(str(guard_path))}'",
             f"$wedgePy = '{esc(wedge_text)}'",
+            f"$isolatePy = '{esc(str(iso_path))}'",
             r"$script:ocDagRetries = 1",
+            r"$script:ocDbLockTries = 0",
             r"$script:ocWedgeTicks = 0",
             r"$script:ocWedgeAction = ''",
             r"New-Item -ItemType Directory -Force -Path (Split-Path -Parent $fuelLog) | Out-Null",
             r"New-Item -ItemType Directory -Force -Path $pauseStateDir | Out-Null",
             r"New-Item -ItemType Directory -Force -Path (Split-Path -Parent $turnsLog) | Out-Null",
+            r"# FR #7997: one OpenCode data dir per seat so two runs do not share opencode.db.",
+            r"$pyIso = (Get-Command python.exe -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source)",
+            r"if (-not $pyIso) { $pyIso = 'python.exe' }",
+            r"try {",
+            r"    $isoOut = & $pyIso $isolatePy prepare",
+            r"    foreach ($row in @($isoOut)) {",
+            r"        if ($row -match '^(XDG_DATA_HOME|OPENCODE_DB|BOB_OPENCODE_DATA_DIR)=(.*)$') {",
+            r"            Set-Item -Path ('Env:' + $Matches[1]) -Value $Matches[2].Trim()",
+            r"        }",
+            r"    }",
+            r"    if ($env:BOB_OPENCODE_DATA_DIR) {",
+            r"        Set-Content -LiteralPath (Join-Path (Split-Path -Parent $turnsLog) 'opencode-data-dir.txt') -Value $env:BOB_OPENCODE_DATA_DIR -Encoding ascii",
+            r"    }",
+            r"} catch {",
+            r"    Write-Output ('opencode-seat-isolate: prepare failed ' + $_.Exception.Message)",
+            r"}",
             r"function Write-OpencodeTurnMarker([string]$Type, [int]$TurnNumber, [string]$Status, [string]$Err) {",
             r"    # FR #6157 / #7201: durable turn markers; error status trips failed-turn retry/GIVEUP",
             r"    $entry = @{ type = $Type; ts = (Get-Date -Format o); turn_number = $TurnNumber }",
@@ -4496,11 +4518,40 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             r"        Add-Content -Path $fuelLog -Value $availEntry -ErrorAction SilentlyContinue",
             r"        if ($jobKey) { Write-OpencodeJobGiveup $jobKey ('model unavailable (' + $model + ')') }",
             r"    }",
+            # FR #7997: locked SQLite retries; a permanent startup failure GIVEUPs the job.
+            r"    $script:ocDbRetry = $false",
+            r"    if ($exitCode -eq 0) { $script:ocDbLockTries = 0 }",
+            r"    if ($exitCode -ne 0 -and -not $hitLimit -and -not $timedOut) {",
+            r"        $pyDb = (Get-Command python.exe -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source)",
+            r"        if (-not $pyDb) { $pyDb = 'python.exe' }",
+            r"        $maxLock = 3",
+            r"        if ($env:BOB_OPENCODE_DB_LOCK_RETRIES) { try { $maxLock = [int]$env:BOB_OPENCODE_DB_LOCK_RETRIES } catch { $maxLock = 3 } }",
+            r"        $dbAction = ''",
+            r"        try { $dbAction = ($scan | & $pyDb $isolatePy classify --attempt $script:ocDbLockTries --max $maxLock --exit $exitCode | Select-Object -Last 1) } catch { $dbAction = '' }",
+            r"        $dbAction = ([string]$dbAction).Trim()",
+            r"        if ($dbAction -eq 'retry') {",
+            r"            $script:ocDbLockTries = [int]$script:ocDbLockTries + 1",
+            r"            $script:ocDbRetry = $true",
+            r"            $wait = [Math]::Min(8, [int][Math]::Pow(2, $script:ocDbLockTries - 1))",
+            r"            Write-Output ('opencode-db-lock: retry ' + $script:ocDbLockTries + '/' + $maxLock + ' in ' + $wait + 's')",
+            r"            Start-Sleep -Seconds $wait",
+            r"        } elseif ($dbAction -eq 'giveup' -and $jobKey) {",
+            r"            $script:ocDbLockTries = 0",
+            r"            Write-OpencodeJobGiveup $jobKey 'opencode-startup-failed'",
+            r"        }",
+            r"    }",
             r"    if ($proc) { try { $proc.Dispose() } catch { } }",
             r"    } finally {",
-            r"        $teStatus = ''; $teErr = ''",
-            r"        if ($exitCode -ne 0) { $teStatus = 'error'; $teErr = ('exit ' + $exitCode) }",
-            r"        Write-OpencodeTurnMarker 'turn_ended' $turnN $teStatus $teErr",
+            r"        if (-not $script:ocDbRetry) {",
+            r"            $teStatus = ''; $teErr = ''",
+            r"            if ($exitCode -ne 0) { $teStatus = 'error'; $teErr = ('exit ' + $exitCode) }",
+            r"            Write-OpencodeTurnMarker 'turn_ended' $turnN $teStatus $teErr",
+            r"        }",
+            r"    }",
+            r"    if ($script:ocDbRetry) {",
+            r"        $script:ocDbRetry = $false",
+            r"        Invoke-OpencodeRun $line $jobKey $ocDir",
+            r"        return",
             r"    }",
             r"    if ($script:ocWedgeAction -eq 'reconnect') {",
             r"        $script:ocWedgeAction = ''",
@@ -12457,9 +12508,18 @@ class Supervisor:
             return {"tokens_unknown": True}
         directory = self._opencode_job_directory()
         usage = None
+        data_dir = None
+        try:
+            rd = getattr(self, "run_dir", None)
+            if rd:
+                pointer = Path(rd) / "opencode-data-dir.txt"
+                if pointer.is_file():
+                    data_dir = pointer.read_text(encoding="utf-8").strip() or None
+        except Exception:
+            data_dir = None
         if directory:
             try:
-                usage = _du.read_opencode_sqlite_usage(directory=directory)
+                usage = _du.read_opencode_sqlite_usage(data_dir, directory=directory)
             except Exception:
                 usage = None
         if usage is None or usage.get("tokens_unknown"):

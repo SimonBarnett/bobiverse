@@ -15,9 +15,10 @@ class FakeProc:
         return 1 if self._dead else None
 
     def wait(self):
-        while self.poll() is None:
+        # Stay blocked so the agent-wait thread cannot call restart_agent
+        # after a later test replaces the class monkeypatch (MRB #7836).
+        while True:
             time.sleep(0.05)
-        return self.poll()
 
 
 class FakeTimer:
@@ -37,13 +38,31 @@ class FakeTimer:
         self.cancelled = True
 
 
-def _sup(tmp_path, monkeypatch, *, startup_grace_s=60.0, startup_min_s=10.0, dead=False):
+def _plant_machine_grok_auth(tmp_path):
+    """FR #7183: plant the one machine auth store (never seat grok-home)."""
+    p = tmp_path / "machine-grok" / "auth.json"
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text('{"issuer::client": {"key": "FAKE_4123"}}', encoding="utf-8")
+    return p
+
+
+def _sup(
+    tmp_path,
+    monkeypatch,
+    *,
+    startup_grace_s=60.0,
+    startup_min_s=10.0,
+    dead=False,
+    wait_ready="1",
+):
     FakeTimer.instances.clear()
     monkeypatch.setattr(bw.threading, "Timer", FakeTimer)
-    monkeypatch.setenv("BOB_WORKER_STARTUP_WAIT_READY", "1")
-    gh = tmp_path / "grok-home" / "auth.json"
-    gh.parent.mkdir(parents=True, exist_ok=True)
-    gh.write_text('{"k":"FAKE_4123"}', encoding="utf-8")
+    monkeypatch.setenv("BOB_WORKER_STARTUP_WAIT_READY", wait_ready)
+    monkeypatch.setenv("BOB_WORKER_BORED_ON_TURN_END", "1")
+    # FR #7796: sign-in reads the machine store, not seat-local grok-home/auth.json.
+    auth = _plant_machine_grok_auth(tmp_path)
+    monkeypatch.setenv("BOB_GROK_AUTH_PATH", str(auth))
+    monkeypatch.delenv("GROK_AUTH_PATH", raising=False)
     logs: list[str] = []
     clock = {"t": 0.0}
     injected: list[str] = []
@@ -156,6 +175,9 @@ def test_fr4123_slow_first_turn_no_bored_or_inject_before_turn_ended(tmp_path, m
     assert bored.ready is True
     assert any("first turn_ended" in m for m in logs)
     assert restarts == []
+    # FR #7796: the held assignment is flushed exactly once when the hold releases.
+    assert len(injected) == 1
+    assert "MRB o/r#1 https://x/1" in injected[0]
 
 
 def test_fr4123_turn_started_still_held_at_grace_until_turn_ended(tmp_path, monkeypatch):
@@ -206,72 +228,8 @@ def test_fr4123_cap_without_turn_hangs_when_process_idle(tmp_path, monkeypatch):
 
 def test_fr4123_legacy_grace_defers_bored_while_turn_open(tmp_path, monkeypatch):
     """wait_ready=0 + signed-in (FR #7180): ready immediately, no first-turn wait."""
-    monkeypatch.setenv("BOB_WORKER_STARTUP_WAIT_READY", "0")
-    gh = tmp_path / "grok-home" / "auth.json"
-    gh.parent.mkdir(parents=True)
-    gh.write_text('{"k":"FAKE_7180"}', encoding="utf-8")
-    FakeTimer.instances.clear()
-    monkeypatch.setattr(bw.threading, "Timer", FakeTimer)
-    logs: list[str] = []
-    clock = {"t": 0.0}
-    injected: list[str] = []
-    relay = bw.Relay(logs.append, clock=lambda: clock["t"], persist_dir=tmp_path)
-    monkeypatch.setattr(bw.Supervisor, "_start_turn_watcher", lambda self, sid: None)
-    monkeypatch.setattr(bw.Supervisor, "_start_fuel_watcher", lambda self, pid: None)
-    monkeypatch.setattr(bw.Supervisor, "_start_prompt_watcher", lambda self, proc: None)
-
-    class FakeBored:
-        def __init__(self):
-            self.ready = False
-            self.fires = []
-
-        def set_ready(self, ready: bool):
-            self.ready = bool(ready)
-            if ready:
-                self.fires.append("ready")
-
-        def activity(self, mark_work=True):
-            pass
-
-        def nak(self):
-            pass
-
-        def turn_started(self, *a, **k):
-            pass
-
-        def turn_ended(self, *a, **k):
-            pass
-
-        def clear_held_assign(self):
-            pass
-
-        @property
-        def holding_incoming_assigns(self):
-            return False
-
-        def note_held_assign(self):
-            pass
-
-        def stop(self):
-            pass
-
-    bored = FakeBored()
-    sup = bw.Supervisor(
-        kind="grok",
-        exe=r"C:\x\agent.exe",
-        cwd=str(tmp_path),
-        machine="marchhare",
-        nick="marchhare-1",
-        run_dir=tmp_path,
-        irc=None,
-        relay=relay,
-        log=logs.append,
-        spawn=lambda s, e: FakeProc(),
-        inject=lambda p, l: injected.append(l) or True,
-        startup_grace_s=60.0,
-        startup_min_s=10.0,
-        clock=lambda: clock["t"],
-        bored=bored,
+    sup, logs, clock, injected, relay, bored, restarts = _sup(
+        tmp_path, monkeypatch, wait_ready="0"
     )
     assert sup.start_agent()
     assert bored.ready is True

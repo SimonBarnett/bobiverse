@@ -1,7 +1,16 @@
 function Test-BobJobProcess {
-    param([string]$SessionId)
+    param(
+        [string]$SessionId,
+        [string[]]$CommandLines
+    )
     if (-not $SessionId) { return $false }
     $esc = [regex]::Escape($SessionId)
+    if ($null -ne $CommandLines) {
+        foreach ($line in $CommandLines) {
+            if ($line -and ($line -match $esc)) { return $true }
+        }
+        return $false
+    }
     $hits = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
         Where-Object { $_.CommandLine -and $_.CommandLine -match $esc })
     return ($hits.Count -gt 0)
@@ -11,7 +20,9 @@ function Get-BobStallAlerts {
     param(
         $Seen,
         [int]$StallSec = 600,
-        [int]$HeartbeatStaleSec = 90
+        [int]$HeartbeatStaleSec = 90,
+        # FR #7998: tests and the tray pass one process snapshot. Null means query once.
+        $ProcessRows
     )
     if (-not $Seen) { throw 'Seen hashtable required' }
     if (-not $Seen['inbox']) { $Seen['inbox'] = @{} }
@@ -19,19 +30,37 @@ function Get-BobStallAlerts {
     if (-not $Seen['stall']) { $Seen['stall'] = @{} }
     $WipPattern = '(?i)(\bstarting with\b|\bthen commit\b|\bworking on\b|\babout to\b)'
     $alerts = New-Object System.Collections.Generic.List[string]
-    $health = Get-BobHealth
-    $watcherUp = [bool]$health.watcher_up
-    $age = $health.last_seen_age_sec
+
+    # FR #7998: local watcher and last-seen only. The full health command
+    # runs the grok CLI and a bot health call at 30s each and blows the 45s step.
+    if ($null -eq $ProcessRows) {
+        $ProcessRows = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue)
+    }
+    $lines = New-Object System.Collections.Generic.List[string]
+    $watcherUp = $false
+    foreach ($p in @($ProcessRows)) {
+        $cmd = [string]$p.CommandLine
+        $name = [string]$p.Name
+        if ($cmd) { [void]$lines.Add($cmd) }
+        if (-not $watcherUp -and $name -match '^(powershell|pwsh)\.exe$' -and $cmd -and $cmd -match 'Watch-BobJobs\.ps1' -and $cmd -notmatch '(?i)-Once\b') {
+            $watcherUp = $true
+        }
+    }
+    $commandLines = $lines.ToArray()
+    $rec = $null
+    try { $rec = Get-BobMachineRecord } catch { $rec = $null }
+    $age = $null
+    try { $age = Get-BobLastSeenAgeSec -Record $rec } catch { $age = $null }
+    $lastSeen = if ($rec) { [string]$rec.lastSeen } else { $null }
     $heartbeatStale = ($null -ne $age -and [int]$age -gt $HeartbeatStaleSec)
     $runningNow = @(Get-BobBuilds -Lane running -ErrorAction SilentlyContinue)
     $busy = $runningNow.Count -gt 0
     $watcherDead = (-not $watcherUp) -or ($heartbeatStale -and -not $busy)
-    # t785u: only a watcher that is installed can be down.
     if ($watcherDead -and -not (Test-BobWatcherInstalled)) { $watcherDead = $false }
     if ($watcherDead) {
         if (-not $Seen.watcher_down) {
             $Seen.watcher_down = $true
-            $alerts.Add("ACTION_REQUIRED: watcher_down watcher_up=$watcherUp last_seen=$($health.last_seen) age_sec=$age running=$($runningNow.Count)")
+            $alerts.Add("ACTION_REQUIRED: watcher_down watcher_up=$watcherUp last_seen=$lastSeen age_sec=$age running=$($runningNow.Count)")
         }
     }
     else {
@@ -76,7 +105,7 @@ function Get-BobStallAlerts {
             }
             catch { }
         }
-        $alive = Test-BobJobProcess -SessionId $sid
+        $alive = Test-BobJobProcess -SessionId $sid -CommandLines $commandLines
         if ((-not $alive) -and $watcherUp) { continue }
         if ((-not $alive) -and $claimedAge -ge $HeartbeatStaleSec -and -not $Seen.running.ContainsKey($id)) {
             $Seen.running[$id] = $true
@@ -87,10 +116,23 @@ function Get-BobStallAlerts {
         if (-not $nowRun.ContainsKey($k)) { $Seen.running.Remove($k) }
     }
 
-    if ($health.grokbot) {
+    # Agent stall uses a short bot list (5s). Never the 30s health or agent list path.
+    $agents = @()
+    $botUp = $false
+    if (Get-Command Test-GrokBotAvailable -ErrorAction SilentlyContinue) {
+        try { $botUp = [bool](Test-GrokBotAvailable) } catch { $botUp = $false }
+    }
+    if ($botUp -and (Get-Command Invoke-GrokBotApi -ErrorAction SilentlyContinue)) {
+        try {
+            $listed = Invoke-GrokBotApi -Action list -TimeoutSec 5
+            if ($listed.Parsed -and $listed.Parsed.agents) { $agents = @($listed.Parsed.agents) }
+        }
+        catch { $agents = @() }
+    }
+    if ($agents.Count -gt 0) {
         $nowStall = @{}
         $nowMs = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
-        foreach ($a in @(Get-BobAgents)) {
+        foreach ($a in $agents) {
             $name = [string]$a.name
             $text = [string]$a.last
             $act = 0
