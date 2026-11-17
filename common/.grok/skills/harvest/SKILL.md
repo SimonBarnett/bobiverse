@@ -514,6 +514,14 @@ routes to bobiverse via the split rule.
 - When skill-dag MCP status has node_count 0 or ModuleNotFoundError, resolve and get_skill with python skill_dag_mcp.py --once using the mcp.json --root args. Do not invent skill bodies.
 - When preferring an installed copy of a script, ship its local imports too; put exception text (str(exc)) in status last_error, not only the class name.
 - Tray stall-alerts must not call full health. That path runs the grok CLI and a bot health call at 30s each and exceeds the 45s engine step. Use one process snapshot and local last-seen.
+- When two OpenCode seats on one machine share opencode.db, give each seat its own data dir (copy auth.json, do not copy the db). Retry database is locked with backoff, then GIVEUP the job so the seat does not stay doing.
+- Clear may only remove safe (clean+published) trees; seat-marker dirt is ignored for classification but must be deleted before git worktree remove without --force; failed fetch under -PruneClosedJobs means zero removals
+- When folding CONFLICTING tips that both touch create_job_worktree, keep FR #8023 disk+FR/UAT fatal fetch and FR #8022 _fetch_pr_head_oid want_oid add; never blind-fetch origin/<branch> before the OID helper or self-remote fixtures false-NACK fetch.
+- When OpenCode prints Free usage limit reached, kill mid-run, GIVEUP fuel-exhausted:opencode-free within a minute, and record-pause the pool; do not wait for hard ceiling.
+- When a PowerShell waiter floors WaitForExit with Max(30, TimeoutSec+30), a caller TimeoutSec under 30 is not a cap. Use TimeoutSec plus a short grace and prove it with a non-exiting child.
+- When a launch wrapper catch only logs and continues, env vars that isolation depends on stay empty --- pin a post-catch guard that forces unique fallback paths when OPENCODE_DB is unset.
+- When seat_fuel_pause_reason stamps via load_digest/save_digest, any reset field not preserved by _coerce_machine is stripped and the next check self-clears the pause --- keep free-pool reset keys through coerce and fall back to a live worker stamp when the pool is still exact 0.
+- When done-offer relies on author_seat alone, a stripped stamp after DONE FR supersede re-offers the MRB to the implementer --- recover implementer from done[] pull URL at enrich time and refuse delivery on the done path.
 
 ## Harvest digest (lessons audit 2026-10-06)
 

@@ -59,6 +59,45 @@ Fresh installs still migrate legacy `.airc-console` / Default homes when no prio
 - Ergo reply `Channel #x is registered` counts as registered.
 - SASL is on by default for the reserved `{MachineId}_console` nick (NickServ GUID in ConsoleHome).
 
+## IRC transport (FR #7999)
+
+Customer egress firewalls can reset TLS on 993/6697 while ordinary HTTPS on 443
+survives. Airc connects in an **ordered** transport list and falls back
+automatically on connect or handshake failure only.
+
+| Setting | Env | CLI | Default |
+|---------|-----|-----|---------|
+| Transport order | `AIRC_IRC_TRANSPORT` | `--transport` | `wss,tls` |
+| WSS endpoint | `AIRC_IRC_WS_URL` | `--ws-url` | `wss://wsirc.ntsa.uk` |
+| TLS host | `AIRC_IRC_HOST` | `--host` | `irc.ntsa.uk` |
+| TLS preferred port | `AIRC_IRC_PORT` | `--port` | `993` |
+
+- `tls` expands to raw TLS IRC on `AIRC_IRC_HOST` at the preferred port, then the
+  other listener (993 ↔ 6697). `wss` expands to one IRC-over-WebSocket candidate
+  on `AIRC_IRC_WS_URL`. The default order is **WSS 443 first, then TLS 993, then
+  6697** (FR #7999 / #8057: WSS survives egress blocks; raw TLS is the fallback).
+  A failed candidate moves to the next transport immediately (no reconnect backoff
+  between transports in the same connect round).
+- WSS is **not sticky**: every attempt restarts from the configured order. Only
+  `tls` candidates write the preferred `AIRC_IRC_PORT` back.
+- `--no-tls` applies to the TLS stage only; `--tls-insecure` also relaxes WSS
+  certificate verification (used for diagnostics, not a fix).
+- Logs: a failed candidate logs `INFO connect <host>:<port> failed (...)`
+  (TLS) or `INFO connect wss <safe-label> failed (<reason>)` (WSS, reason is
+  allowlisted — no headers/bodies/query strings). On `001` the service logs
+  `INFO registered via transport=<tls host:port | wss <label>>` once per session.
+
+Persistence: for a **LocalSystem** `Airc` service, set machine-level environment
+variables (`setx /M ...`) then `Restart-Service Airc`. NSSM `AppEnvironmentExtra`
+is not preserved across reinstall or `Update-BobiverseService`; machine env is.
+`AIRC_IRC_WS_URL=""` skips the WSS stage (one log line). An empty/invalid
+`AIRC_IRC_TRANSPORT` token or a bad `AIRC_IRC_WS_URL` exits with code 2.
+
+Troubleshooting: if a TLS-inspecting proxy re-signs port 443 with a corporate CA,
+verification succeeds only when that CA is in the Windows root store. Do **not**
+recommend `--tls-insecure` as the fix. Explicit HTTP proxies (`CONNECT`) are out
+of scope for this transport.
+
 ## Airc vs AircConsole
 
 | | bobiverse **Airc** | agentic_irc **AircConsole** |

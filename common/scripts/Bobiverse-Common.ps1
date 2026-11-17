@@ -4191,7 +4191,9 @@ function Get-BobiverseAircClientAllowedScriptNames {
         # FR #5288: Priority Client connect/allowlist module (in-service; client+fleet)
         'airc_priority.py',
         # FR #5526: native CredReadW helper (PRIORITY/LEGION/EXTENSION; no PS timeout)
-        'airc_credman.py'
+        'airc_credman.py',
+        # FR #7999: IRC-over-WebSocket transport (stdlib RFC 6455 adapter)
+        'airc_ws_transport.py'
     )
 }
 

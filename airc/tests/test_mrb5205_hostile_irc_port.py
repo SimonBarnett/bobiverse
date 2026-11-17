@@ -40,7 +40,14 @@ def test_mrb5205_connect_falls_back_on_connrefused(monkeypatch):
 
     monkeypatch.setattr(svc.socket, "create_connection", fake_create)
     console = svc.AircConsoleService.__new__(svc.AircConsoleService)
-    console.args = argparse.Namespace(host="irc.example.test", port=993, tls=False, tls_insecure=False)
+    console.args = argparse.Namespace(
+        host="irc.example.test",
+        port=993,
+        tls=False,
+        tls_insecure=False,
+        transport="tls",  # FR #7999: pin TLS-only so this exercises port fallback
+        ws_url="",
+    )
     console.sock = None
     console.connect()
     assert calls == [993, 6697]

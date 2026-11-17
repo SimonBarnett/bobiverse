@@ -71,6 +71,8 @@ def test_connect_falls_back_after_993_timeout(monkeypatch):
         tls=False,
         tls_insecure=False,
         home="unused",
+        transport="tls",  # FR #7999: pin TLS-only so this exercises port fallback
+        ws_url="",
     )
     console = svc.AircConsoleService.__new__(svc.AircConsoleService)
     console.args = args

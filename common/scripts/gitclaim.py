@@ -4380,6 +4380,17 @@ def _coerce_row(row: dict) -> dict | None:
                 continue
         if clean_un:
             out["offer_unanswered"] = clean_un
+    # FR #8017: per-seat pre-ACK deterministic NACK cooldown must survive reload.
+    nack_until = row.get("deterministic_nack_until")
+    if isinstance(nack_until, dict):
+        clean_nack: dict[str, str] = {}
+        for key, val in nack_until.items():
+            nick = (canonical_worker_nick(str(key)) or str(key) or "").strip()
+            iso = str(val or "").strip()
+            if nick and iso and _parse_iso_ts(iso) is not None:
+                clean_nack[nick] = iso
+        if clean_nack:
+            out["deterministic_nack_until"] = clean_nack
     if row.get("repo_uat"):
         out["repo_uat"] = True
     if row.get("merged_prs"):
@@ -5029,6 +5040,8 @@ def live_seat_can_take_unanswered(row: dict, live: set[str] | None) -> bool:
         if not nick:
             continue
         if seat_offer_refused(row, nick) or row_gave_up_by(row, nick):
+            continue
+        if seat_on_deterministic_nack_cooldown(row, nick, time.time()):
             continue
         return True
     return False
@@ -8462,6 +8475,44 @@ def _pool_future_reset(pool: dict, now_f: float) -> str:
     return ""
 
 
+def _opencode_free_pool_from_machine(ent: dict) -> dict | None:
+    """Build a pauseable free-pool reading from digest pcent (FR #8028)."""
+    if not isinstance(ent, dict):
+        return None
+    pcent = ent.get("pcent") if isinstance(ent.get("pcent"), dict) else {}
+    rem = pcent.get("opencode-free")
+    if rem is None:
+        rem = pcent.get("opencode_free")
+    if rem is None:
+        nested = ent.get("opencode") if isinstance(ent.get("opencode"), dict) else {}
+        rem = nested.get("opencode-free", nested.get("free", nested.get("remaining")))
+    if rem is None:
+        return None
+    try:
+        rem_f = float(rem)
+    except (TypeError, ValueError):
+        return None
+    reset = (
+        ent.get("opencode_free_reset_at")
+        or ent.get("opencode_free_reset")
+        or ent.get("free_reset_at")
+        or (ent.get("opencode") or {}).get("free_reset_at")
+        or (ent.get("opencode") or {}).get("period_end")
+        or (ent.get("opencode") or {}).get("reset_at")
+    )
+    fetched = ent.get("fetched_at") or (ent.get("opencode") or {}).get("fetched_at")
+    pool = {
+        "remaining_pct": rem_f,
+        "remaining": rem_f,
+        "fresh": True,
+        "fetched_at": fetched or "1970-01-01T00:00:00Z",
+    }
+    if reset:
+        pool["period_end"] = reset
+        pool["reset_at"] = reset
+    return pool
+
+
 def _machine_pool_for_kind(ent: dict, kind: str) -> dict | None:
     k = (kind or "").strip().lower()
     if k in ("grok", "grok-build", "xai"):
@@ -8522,6 +8573,10 @@ def seat_fuel_pause_reason(home: Path, nick: str, now: float | None = None) -> s
 
     Unknown agent kinds do not pause. A stale or ``fresh is False`` 0% does not
     pause. The worker row is stamped (or cleared) so the digest shows the pause.
+
+    FR #8028: when the free pool is still exact 0 but the machine reset field
+    was stripped by a digest coerce, keep an existing future worker stamp so
+    ``offer_focus_top`` does not self-clear the pause on its second check.
     """
     now_f = _fuel_clock(now)
     me = (canonical_worker_nick(nick) or nick or "").strip()
@@ -8532,10 +8587,29 @@ def seat_fuel_pause_reason(home: Path, nick: str, now: float | None = None) -> s
     kind = seat_agent_kind(home, me)
     ent = _raw_digest_machine(home, mid)
     pool = _machine_pool_for_kind(ent, kind)
+    # FR #8028: free OpenCode seats pause on opencode-free=0, not the Go meter.
+    if kind == "opencode" and seat_is_free_fuel(home, me):
+        free_pool = _opencode_free_pool_from_machine(ent)
+        if free_pool is not None:
+            pool = free_pool
     until = ""
     reason = ""
     if pool and _pool_reading_fresh(pool, now_f) and _pool_remaining_exact_zero(pool):
         until = _pool_future_reset(pool, now_f)
+        if not until:
+            # Keep a live worker stamp when reset was lost on digest rewrite.
+            workers = ent.get("workers") if isinstance(ent.get("workers"), dict) else {}
+            row = workers.get(str(pid)) if isinstance(workers.get(str(pid)), dict) else {}
+            stamped = str((row or {}).get("fuel_paused_until") or "").strip()
+            stamped_reason = str((row or {}).get("fuel_pause_reason") or "").strip()
+            stamped_ts = _fuel_epoch(stamped)
+            if (
+                stamped
+                and stamped_ts is not None
+                and stamped_ts > now_f
+                and stamped_reason == FUEL_PAUSE_REASON
+            ):
+                until = stamped
         if until:
             reason = FUEL_PAUSE_REASON
     _stamp_worker_fuel_pause(home, mid, pid, until, reason)
@@ -8563,6 +8637,147 @@ def is_skill_dag_down_reason(reason: str) -> bool:
     norm = text.replace("_", "-").replace(" ", "-")
     token = norm.split(",", 1)[0].strip()
     return token == "skill-dag-down" or token.startswith("skill-dag-down:")
+
+
+def is_deterministic_nack_reason(reason: str) -> bool:
+    """True for stable pre-ACK NACK classes that must cool that seat (FR #8017).
+
+    Covers the FR #6240 OpenCode/worker worktree and job-context family. Transient
+    reasons (busy, try later, etc.) stay re-offerable to the same seat.
+    """
+    text = (reason or "").strip().lower()
+    if not text:
+        return False
+    # Drop trailing "(FR #N)" / noise so the class token is stable.
+    head = text.split("(", 1)[0].strip()
+    norm = head.replace("_", "-").replace(" ", "-")
+    token = norm.split(",", 1)[0].strip()
+    if token in (
+        "worktree-create-failed",
+        "worktree-absent",
+        "job-context-malformed",
+        "job-context-ambiguous",
+    ):
+        return True
+    return (
+        token.startswith("worktree-create-failed:")
+        or token.startswith("worktree-absent:")
+        or token.startswith("job-context-malformed:")
+        or token.startswith("job-context-ambiguous:")
+    )
+
+
+def seat_on_deterministic_nack_cooldown(
+    row: dict, nick: str, now: float
+) -> bool:
+    """True when this seat has an unexpired FR #8017 pre-ACK deterministic NACK."""
+    me = (canonical_worker_nick(nick) or nick or "").strip().lower()
+    if not me or not isinstance(row, dict):
+        return False
+    stamps = row.get("deterministic_nack_until")
+    if not isinstance(stamps, dict):
+        return False
+    raw = None
+    for key, val in stamps.items():
+        other = (canonical_worker_nick(str(key)) or str(key) or "").strip().lower()
+        if other == me:
+            raw = val
+            break
+    until = _parse_iso_ts(str(raw or ""))
+    if until is None:
+        return False
+    return float(now) < float(until)
+
+
+def stamp_deterministic_nack_on_unaccepted(
+    home: Path,
+    *,
+    nick: str,
+    repo: str,
+    task: str,
+    ident: str,
+    reason: str = "",
+    now: float | None = None,
+) -> dict | None:
+    """Per-seat cooldown on an offered (not yet ACK'd) row after deterministic NACK (FR #8017).
+
+    Pre-ACK NACK returns ``missing`` from ``return_job_to_unaccepted`` because the
+    row never entered accepted[]. Without this stamp, ``!bored`` re-offers the
+    same job to the same seat immediately. Uses ``deterministic_nack_until`` (not
+    permanent ``giveup_seats``) so the seat may retry after ``GIVEUP_COOLDOWN_S``
+    or a seat recycle. Does not bump giveup_count / needs_human.
+    """
+    import time as _time
+    from datetime import timedelta as _td
+
+    if not is_deterministic_nack_reason(reason):
+        return None
+    me = (canonical_worker_nick(nick) or nick or "").strip()
+    if not me:
+        return None
+    now_f = _time.time() if now is None else float(now)
+    want_repo = (repo or "").strip()
+    want_task = (task or "FR").strip().upper()
+    if want_task == "PR":
+        want_task = "FR"
+    want_id = str(ident or "").strip()
+    if want_id and not want_id.startswith("#"):
+        want_id = f"#{want_id}"
+    try:
+        with _lock(home):
+            try:
+                doc = _load_queue_unlocked(home)
+            except (OSError, ValueError):
+                return None
+            found = None
+            for row in doc.get("unaccepted") or []:
+                if not isinstance(row, dict):
+                    continue
+                if str(row.get("repo") or "").strip() != want_repo:
+                    continue
+                rt = str(row.get("task") or "FR").strip().upper()
+                if rt == "PR":
+                    rt = "FR"
+                if rt != want_task:
+                    continue
+                rid = str(row.get("id") or "").strip()
+                if rid and not rid.startswith("#"):
+                    rid = f"#{rid}"
+                if rid != want_id:
+                    continue
+                found = row
+                break
+            if found is None:
+                return None
+            until = datetime.fromtimestamp(now_f, tz=timezone.utc) + _td(
+                seconds=float(GIVEUP_COOLDOWN_S)
+            )
+            until_s = until.replace(microsecond=0).isoformat().replace("+00:00", "Z")
+            stamps = found.get("deterministic_nack_until")
+            if not isinstance(stamps, dict):
+                stamps = {}
+            # Drop expired entries so the map stays small.
+            kept: dict[str, str] = {}
+            for key, val in stamps.items():
+                ts = _parse_iso_ts(str(val or ""))
+                if ts is not None and float(ts) > now_f:
+                    canon = (canonical_worker_nick(str(key)) or str(key) or "").strip()
+                    if canon:
+                        kept[canon] = str(val)
+            kept[me] = until_s
+            found["deterministic_nack_until"] = kept
+            if reason:
+                found["giveup_reason"] = str(reason).strip()[:200]
+                note_offer_outcome(found, me, "nack", found["giveup_reason"])
+            for k in ("offered_to", "offered_ts", "offered_channel", "offered_via"):
+                found.pop(k, None)
+            try:
+                _write_queue(queue_path(home), doc)
+            except OSError:
+                return None
+            return dict(found)
+    except (TimeoutError, OSError):
+        return None
 
 
 def _seat_out_of_fuel_path(home: Path) -> Path:
@@ -9737,6 +9952,9 @@ def offer_focus_top(
                     return None
                 # FR #7966: three unanswered offers to this seat stop the re-offer loop.
                 if seat_offer_refused(cand, me):
+                    return None
+                # FR #8017: pre-ACK deterministic NACK cools this seat for the row.
+                if seat_on_deterministic_nack_cooldown(cand, me, now_f):
                     return None
                 # FR #7084: skip model-mismatch seats; skip when actual tier is below job need.
                 if not _seat_model_allows_row(home, me, cand):
