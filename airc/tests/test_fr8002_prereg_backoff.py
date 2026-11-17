@@ -92,3 +92,38 @@ def test_stop_during_long_backoff_returns(tmp_path, monkeypatch):
     monkeypatch.setattr(svc.time, "sleep", sleep_and_stop)
     assert console.run() == 0
     assert any(svc.PREREG_DROP_LOG in line for line in logs)
+
+
+def test_registered_drop_stays_on_short_backoff(tmp_path, monkeypatch):
+    """A drop after 001 is not a never-registered streak."""
+    monkeypatch.setenv("AGENTIC_IRC_PASSWORD", "example-not-a-secret")
+    args = svc.build_arg_parser().parse_args(
+        ["--machine", "unit-box", "--home", str(tmp_path), "--shop-mode", "wonderland", "--no-tls"]
+    )
+    console = svc.AircConsoleService(args)
+    logs: list[str] = []
+    monkeypatch.setattr(svc, "info", lambda m: logs.append(m))
+    rounds = {"n": 0}
+
+    def connect():
+        console._registered = False
+
+    def handshake():
+        console._registered = True
+
+    def read_loop():
+        rounds["n"] += 1
+        if rounds["n"] >= 6:
+            console._stop.set()
+            return
+        raise ConnectionError("drop after 001")
+
+    monkeypatch.setattr(console, "connect", connect)
+    monkeypatch.setattr(console, "handshake", handshake)
+    monkeypatch.setattr(console, "read_loop", read_loop)
+    monkeypatch.setattr(svc.time, "sleep", lambda _s: None)
+    assert console.run() == 0
+    waits = [ln for ln in logs if ln.startswith("INFO reconnect in ")]
+    assert len(waits) >= 5
+    assert all("reconnect in 3s" in ln for ln in waits)
+    assert not any(svc.PREREG_DROP_LOG in ln for ln in logs)

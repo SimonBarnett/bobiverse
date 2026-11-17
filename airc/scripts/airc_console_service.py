@@ -1903,6 +1903,10 @@ class AircConsoleService:
             except Exception as e:
                 info(f"INFO session-err {e}")
             finally:
+                # FR #8002: 001 sets _registered inside read_loop. A later disconnect
+                # raises, so sample it here. Only a never-registered round counts.
+                if self._registered:
+                    session_ok = True
                 # FR #2649: prepare_stop already flushed; skip re-drain after sock=None
                 # (was logging stop-flush-send-err send: no socket and dropping DONE).
                 if self._stop.is_set() and not self._stop_flushed:
