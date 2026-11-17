@@ -2883,11 +2883,21 @@ def skill_dag_mcp_script_path(
 ) -> Path:
     """Locate ``skill_dag_mcp.py`` for MCP launch args (FR #6889 / #7963 / #8059).
 
-    Prefer the install next to ``worker_cwd`` (``bob/scripts`` or ``scripts``).
-    A linked job worktree that happens to be ``__file__`` is never the seat
-    command: pruning that tree would break later OpenCode jobs. Frozen exe
-    copies under ``<exe>\\scripts`` stay ahead of a checkout ``__file__``.
+    Keep calling ``_resolve_installed_worker_script("skill_dag_mcp.py", ...)`` so
+    FR #7910 / #7991 by-path shipping still discovers the module (MRB #8075).
+    Refuse a linked job worktree path even when that resolver finds one: the seat
+    ``opencode.json`` must survive prune (FR #8059). Then prefer install paths
+    next to ``worker_cwd``, then frozen ``<exe>\\scripts``, then other checkouts.
     """
+    shipped = _resolve_installed_worker_script(
+        "skill_dag_mcp.py", cwd=worker_cwd, source_file=source_file
+    )
+    if (
+        shipped is not None
+        and shipped.is_file()
+        and not _under_linked_git_worktree(shipped)
+    ):
+        return shipped.resolve()
     source = Path(source_file).resolve() if source_file else Path(__file__).resolve()
     here = source.parent
     parent = Path(worker_cwd).resolve().parent
