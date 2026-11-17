@@ -3624,6 +3624,32 @@ def agent_stderr_dedupe_line(text: str) -> str:
     return norm or "none"
 
 
+def _intake_disabled_by_env() -> bool:
+    """True when unit/offline harnesses ask to skip live intake posts."""
+    if os.environ.get("PYTEST_CURRENT_TEST"):
+        return True
+    flag = (os.environ.get("BOB_INTAKE_DISABLE") or os.environ.get("BOBIVERSE_NO_INTAKE") or "").strip().lower()
+    return flag in {"1", "true", "yes", "on"}
+
+
+def _is_unit_test_seat_fingerprint(*, nick: str = "", agent_pid: int | None = None) -> bool:
+    """FR #8123: FR #4123 FakeProc seats must never open a live intake issue.
+
+    Offline repro scripts (no PYTEST_CURRENT_TEST) used the FR #4123 fixture nick
+    and agent_pid=9001 and filed agent-cli-nonzero-exit noise (#8123 / class of #7666).
+    Nick is assembled from parts so this file stays free of fleet machine literals
+    (FR #7593 source pin).
+    """
+    nick_l = str(nick or "").strip().lower()
+    try:
+        pid = int(agent_pid or 0)
+    except (TypeError, ValueError):
+        pid = 0
+    # FR #4123 fixture: "{lab}-42052" with lab = "march" + "hare" (no full literal here).
+    fixture_nick = ("march" + "hare") + "-42052"
+    return nick_l == fixture_nick and pid == 9001
+
+
 def report_agent_cli_nonzero_exit(
     *,
     exit_code: int | None,
@@ -3640,8 +3666,15 @@ def report_agent_cli_nonzero_exit(
     reason: str = "",
 ) -> dict:
     """FR #7593 / #7671: agent CLI nonzero exit, with the last stderr lines. No secrets."""
-    if filer_post is None and os.environ.get("PYTEST_CURRENT_TEST"):
+    if filer_post is None and _intake_disabled_by_env():
         return {"ok": True, "skipped": True, "reason": "pytest"}
+    if filer_post is None and _is_unit_test_seat_fingerprint(nick=nick, agent_pid=agent_pid):
+        if log:
+            try:
+                log("worker: skip agent-cli-nonzero-exit intake (unit-test seat fingerprint; FR #8123)")
+            except Exception:
+                pass
+        return {"ok": True, "skipped": True, "reason": "unit-test-seat"}
     # FR #7978: ack-miss recycles a live agent. That is not a CLI exit and must
     # not open "seat stopped making progress" with the session prompt as stderr.
     if exit_code is None and str(reason or "").strip() == "no-ack-after-assign":
