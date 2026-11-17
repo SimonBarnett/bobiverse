@@ -511,6 +511,7 @@ routes to bobiverse via the split rule.
 - A timed-out shop offer must clear the seat hold and count as a refusal. After three silences stop offering that seat and stamp offer_refused_by without burning needs_human.
 - A no-ack recycle of a still-running agent is not a CLI exit. Do not open a progress-bug intake, and do not paste the session prompt into GitHub.
 - Isolated stdout JSON extract that claims prefer-last must walk top-level objects with JSONDecoder.raw_decode end indexes: first-match loses a later sibling result, and last-brace naive scan loses nested outer objects.
+- When skill-dag MCP status has node_count 0 or ModuleNotFoundError, resolve and get_skill with python skill_dag_mcp.py --once using the mcp.json --root args. Do not invent skill bodies.
 
 ## Harvest digest (lessons audit 2026-10-06)
 
