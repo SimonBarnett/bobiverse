@@ -524,6 +524,7 @@ routes to bobiverse via the split rule.
 - When done-offer relies on author_seat alone, a stripped stamp after DONE FR supersede re-offers the MRB to the implementer --- recover implementer from done[] pull URL at enrich time and refuse delivery on the done path.
 - skill-dag resolve: scan every seed token for JOB_SEEDS before description score; strip bob/bridge/worktree from score_description so path seeds cannot alphabetically win bob-setup-opencode
 - When matching a GitHub pull id inside a URL, require a parsed pull number or a path boundary so /pull/8044 does not match /pull/80440.
+- After seat-release GIVEUP (failed-turn), always _mark_job_finished so per-job worktree/outbox/key clear before the next offer; refuse inject with NACK stale_job_context when context lacks the offer number.
 
 ## Harvest digest (lessons audit 2026-10-06)
 
