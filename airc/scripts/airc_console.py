@@ -368,6 +368,13 @@ def _priority_sqlcmd_ename_rows(
     MRB #5936: require sqlcmd ``-b`` and a zero exit code before parsing. A
     failed command must not yield a partial ``P`` row that prepare would treat
     as an unambiguous procedure (``sql_read_failed``).
+
+    FR #8142: reads only ``T$EXEC`` (ENAME / T$EXEC / TYPE). Type resolution is
+    not joined to ``EXECPREPLOCK`` because older on-prem Priority trees lack the
+    ``UPD`` / ``LASTPREPDATE`` / ``ENAME`` columns that newer trees have; a
+    ``LEFT JOIN … ISNULL(L.UPD, N'')`` against such a host fails the whole type
+    lookup with ``sql_read_failed``. The ``UPD`` honesty gate is read separately
+    by ``_priority_sqlcmd_lock`` (which fails closed, never claims prepared).
     """
     server = str(instance.get("sqlServer") or instance.get("sql_server") or "").strip()
     db = str(instance.get("systemDb") or instance.get("system_db") or "system").strip()
@@ -376,9 +383,8 @@ def _priority_sqlcmd_ename_rows(
     safe = ename.replace(chr(39), chr(39) + chr(39))
     q = (
         "SET NOCOUNT ON; "
-        "SELECT E.ENAME, E.[T$EXEC], E.[TYPE], ISNULL(L.UPD, N'') "
+        "SELECT E.ENAME, E.[T$EXEC], E.[TYPE] "
         "FROM dbo.T$EXEC E "
-        "LEFT JOIN dbo.EXECPREPLOCK L ON L.[T$EXEC]=E.[T$EXEC] "
         f"WHERE E.ENAME=N'{safe}';"
     )
     run = runner or subprocess.run

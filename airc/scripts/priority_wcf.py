@@ -802,6 +802,16 @@ _UNSCOPED_PREPARE_ENAMES = frozenset(
         "PROCPREP",
     }
 )
+# FR #8142: the Priority menu label is "FORM-PREPARE"; the program it launches is
+# ``FORMPREP`` (interactive), whose Session-0-safe / direct twin is ``FORMPREPDRCT2``.
+# Normalize the menu label (and its space form) onto ``FORMPREP`` so an unscoped
+# menu-name ename/name is refused exactly like the program name (never run as a
+# generic op). The verb's ENAME stays the *form* name (e.g. TRANSORDER_T).
+_PREPARE_ENAME_ALIASES = {
+    "FORM-PREPARE": "FORMPREP",
+    "FORM PREPARE": "FORMPREP",
+    "FORM_PREPARE": "FORMPREP",
+}
 # Generic verb: read ops, plus proc session ops. Form* mutation stays off
 # this verb (prepare form is the scoped path). ProcNewReportMob is not here:
 # its body is type/ename/mode/format and it starts a run of that program
@@ -1270,6 +1280,7 @@ def use_prepare_verb(_op: str, fields: dict[str, Any] | None) -> bool:
     bag = fields or {}
     for key in ("ename", "name"):
         val = str(bag.get(key) or bag.get(key.upper()) or "").strip().upper()
+        val = _PREPARE_ENAME_ALIASES.get(val, val)
         if val in _UNSCOPED_PREPARE_ENAMES:
             return True
     return False
