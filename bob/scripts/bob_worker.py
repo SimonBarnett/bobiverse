@@ -3908,14 +3908,34 @@ def skill_dag_down_giveup_line(
     return f"GIVEUP {key} {token}" if key else f"GIVEUP job {token}"
 
 
+def opencode_fleet_script_roots(worker_cwd: str) -> list[Path]:
+    """Install script dirs the seat skills tell OpenCode to read (FR #8064).
+
+    ``worker_cwd`` is ``<ai root>\\bob\\worker``. The fleet copies live beside
+    that, not inside the job worktree: ``bob\\scripts`` and ``common\\scripts``.
+    """
+    install = Path(worker_cwd).resolve().parent
+    return [install / "bob" / "scripts", install / "common" / "scripts"]
+
+
 def opencode_skill_read_permission_block(worker_cwd: str) -> dict:
-    """Read-only ``external_directory`` allow for skill-dag roots only (FR #7196)."""
+    """Read-only ``external_directory`` allow for skill roots and fleet scripts.
+
+    FR #7196 / #7909: skill-dag roots. FR #8064: ``bob\\scripts`` and
+    ``common\\scripts`` so harvest/intake reads are not auto-rejected. Edit
+    stays deny. ``C:\\passwords`` stays deny and is never an allow.
+    """
     allow: dict[str, str] = {}
     edit: dict[str, str] = {}
-    for root in skill_dag_mcp_skill_roots(worker_cwd):
+    roots = list(skill_dag_mcp_skill_roots(worker_cwd))
+    roots.extend(opencode_fleet_script_roots(worker_cwd))
+    for root in roots:
         for key in opencode_skill_root_read_patterns(root):
             allow[key] = "allow"
             edit[key] = "deny"
+    for key in (r"C:\passwords", r"C:\passwords\*", r"C:\passwords\**", r"C:/passwords", r"C:/passwords/*"):
+        allow[key] = "deny"
+        edit[key] = "deny"
     return {"external_directory": allow, "edit": edit}
 
 
@@ -3930,7 +3950,11 @@ def opencode_skill_read_allow_gaps(config_path: str | Path, worker_cwd: str) -> 
     allow = {}
     if isinstance(perm, dict) and isinstance(perm.get("external_directory"), dict):
         allow = perm["external_directory"]
-    missing = [str(key) for key in expected if allow.get(key) != "allow"]
+    missing = [
+        str(key)
+        for key, want in expected.items()
+        if want == "allow" and allow.get(key) != "allow"
+    ]
     return missing
 
 
