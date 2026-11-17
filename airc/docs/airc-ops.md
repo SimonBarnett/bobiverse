@@ -67,15 +67,15 @@ automatically on connect or handshake failure only.
 
 | Setting | Env | CLI | Default |
 |---------|-----|-----|---------|
-| Transport order | `AIRC_IRC_TRANSPORT` | `--transport` | `wss,tls` |
+| Transport order | `AIRC_IRC_TRANSPORT` | `--transport` | `tls,wss` |
 | WSS endpoint | `AIRC_IRC_WS_URL` | `--ws-url` | `wss://wsirc.ntsa.uk` |
 | TLS host | `AIRC_IRC_HOST` | `--host` | `irc.ntsa.uk` |
 | TLS preferred port | `AIRC_IRC_PORT` | `--port` | `993` |
 
 - `tls` expands to raw TLS IRC on `AIRC_IRC_HOST` at the preferred port, then the
   other listener (993 ↔ 6697). `wss` expands to one IRC-over-WebSocket candidate
-  on `AIRC_IRC_WS_URL`. The default order is **WSS 443 first, then TLS 993, then
-  6697** (WSS survives the egress block; raw TLS is the fallback).
+  on `AIRC_IRC_WS_URL`. The default order is **TLS 993, then TLS 6697, then
+  WSS 443** (FR #7999: prefer raw TLS when it works; WSS survives egress blocks).
 - WSS is **not sticky**: every attempt restarts from the configured order. Only
   `tls` candidates write the preferred `AIRC_IRC_PORT` back.
 - `--no-tls` applies to the TLS stage only; `--tls-insecure` also relaxes WSS
