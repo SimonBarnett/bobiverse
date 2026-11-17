@@ -529,6 +529,7 @@ routes to bobiverse via the split rule.
 - xAI weekly tray rows must never paint provider-http-N or bare HTTP status; keep last-good % and mark [stale] only when the reading is past the stale window.
 - digest.lock dead-thread only when _OPEN_DIGEST_LOCK still tracks a dead holder handle; clean finally must unlink so short-lived publish threads do not spam lock-broken
 - airc wss keepalive: idle PING every 30s (AIRC_WSS_PING_SECONDS, clamp <=60); tls keeps 60s so Cloudflare idle cut cannot drop before first ping
+- mrb_merge_gate: MRB PASS @ alternate must not win over **Verdict:** FAIL; FIX after MRB FAIL pushes onto the assigned tip then closes the companion
 
 ## Harvest digest (lessons audit 2026-10-06)
 
