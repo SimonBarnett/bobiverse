@@ -2163,21 +2163,6 @@ def _try_advisory_lock(fh, timeout_s: float) -> bool:
             time.sleep(0.02)
 
 
-def _lock_thread_ident(lock_path: Path) -> int | None:
-    """Third line of digest.lock is the holder thread ident (FR #7896)."""
-    try:
-        lines = [
-            ln.strip()
-            for ln in lock_path.read_text(encoding="utf-8", errors="replace").splitlines()
-            if ln.strip()
-        ]
-    except OSError:
-        return None
-    if len(lines) >= 3 and lines[2].isdigit():
-        return int(lines[2])
-    return None
-
-
 def _thread_ident_alive(ident: int | None) -> bool:
     if not ident:
         return False
