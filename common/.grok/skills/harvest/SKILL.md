@@ -510,6 +510,7 @@ routes to bobiverse via the split rule.
 - When a frozen worker resolver claims to prefer the exe bundle, list exe_dir/scripts before the install checkout bob/scripts. A monkeypatched resolver test does not prove that order.
 - A timed-out shop offer must clear the seat hold and count as a refusal. After three silences stop offering that seat and stamp offer_refused_by without burning needs_human.
 - A no-ack recycle of a still-running agent is not a CLI exit. Do not open a progress-bug intake, and do not paste the session prompt into GitHub.
+- Isolated stdout JSON extract that claims prefer-last must walk top-level objects with JSONDecoder.raw_decode end indexes: first-match loses a later sibling result, and last-brace naive scan loses nested outer objects.
 
 ## Harvest digest (lessons audit 2026-10-06)
 
