@@ -990,7 +990,9 @@ def is_lesson_of_lesson_pr(
     )
 
 
-_LESSON_OPENER_SEAT_RE = re.compile(r"(?i)\b(?:seat|agent)=`(?P<nick>[A-Za-z0-9_.-]+)`")
+_LESSON_OPENER_SEAT_RE = re.compile(
+    r"(?i)\b(?P<key>seat|agent)=`?(?P<nick>[A-Za-z0-9_.+-]+)`?"
+)
 
 
 def lesson_pr_opener_seat(body: str = "") -> str:
@@ -999,12 +1001,25 @@ def lesson_pr_opener_seat(body: str = "") -> str:
     A lesson PR's author is whoever opened it. The seats that implemented an FR the
     lesson merely cites are not its authors. Returns '' when no seat nick is named
     (operator / audit PRs, ``agent=`Invoke-BobiverseHarvest``` without ``seat=``).
+
+    FR #8095: prefer ``seat=`` over ``agent=``; accept canonical ``<machine>-<pid>``
+    via ``canonical_worker_nick`` even when the machine is not yet in seat_machine_ids.
     """
+    seat_hit = ""
+    agent_hit = ""
     for m in _LESSON_OPENER_SEAT_RE.finditer(body or ""):
-        nick = m.group("nick")
-        if bobreport.parse_seat_nick(nick):
-            return canonical_worker_nick(nick) or nick
-    return ""
+        nick = (m.group("nick") or "").strip()
+        if not nick:
+            continue
+        canon = canonical_worker_nick(nick)
+        if not canon:
+            continue
+        key = (m.group("key") or "").lower()
+        if key == "seat" and not seat_hit:
+            seat_hit = canon
+        elif key == "agent" and not agent_hit:
+            agent_hit = canon
+    return seat_hit or agent_hit
 
 
 def _heal_lesson_mrb_row(row: dict, opener: str) -> None:
@@ -3375,9 +3390,19 @@ def _apply_label_mutation(doc: dict, claim: GitClaim, home: Path | None = None) 
         extra: dict[str, str] = {
             "url": f"https://github.com/{claim.repo}/pull/{str(claim.id).lstrip('#')}",
         }
+        # FR #8095: stamp filing seat on labeled backfill (opened may have missed
+        # harvest-lesson; without author_seat the tip self-offers to the harvester).
+        opener = str(claim.opened_by or "").strip() or lesson_pr_opener_seat(claim.body)
+        if opener:
+            extra["author_seat"] = opener
+            extra["implementer_seat"] = opener
         ch = _append_unaccepted(doc, claim, home=home, **extra)
         if ch == "skipped":
             return "noop"
+        for r in doc.get("unaccepted") or []:
+            if _same(r, claim.repo, "MRB", claim.id):
+                _heal_lesson_mrb_row(r, opener)
+                break
         if ch == "added":
             return "added"
         return "updated" if updated or ch == "duplicate" else "noop"
@@ -7922,9 +7947,9 @@ def _canon_seat_nick(raw: str) -> str:
     # FR #5170: Copilot Coding Agent is a virtual seat (not machine-pid).
     if v.lower() == "copilot":
         return "copilot"
-    if not bobreport.parse_seat_nick(v):
-        return ""
-    return canonical_worker_nick(v) or v
+    # FR #8095 / MRB #1278: use canonical_worker_nick structural fallback so a
+    # stamped ``<machine>-<pid>`` still counts when seat_machine_ids is cold.
+    return canonical_worker_nick(v) or ""
 
 
 def row_author_seats(row: dict) -> list[str]:
@@ -8126,6 +8151,7 @@ def enrich_mrb_author_fields(doc: dict, row: dict) -> dict:
     cite-only) are dropped; verified roles are single-value stamps + FIX from doc.
     FR #8051: when ``author_seat`` / ``implementer_seat`` are missing, backfill from
     a DONE FR whose result is this pull so done-offer cannot self-MRB.
+    FR #8095: harvest-lesson tips also recover the filing seat from the body footer.
     """
     if _canon_task(row) != "MRB":
         return row
@@ -8144,6 +8170,12 @@ def enrich_mrb_author_fields(doc: dict, row: dict) -> dict:
             str(out.get("id") or ""),
             refs=out.get("refs"),
         )
+        if not impl and is_harvest_lesson_pr(
+            title=str(out.get("title") or ""),
+            labels=out.get("labels") or (),
+        ):
+            # FR #8095: recover filing seat from tip body when enqueue missed the stamp.
+            impl = lesson_pr_opener_seat(str(out.get("body") or ""))
         if impl:
             out["author_seat"] = impl
             out["implementer_seat"] = impl
