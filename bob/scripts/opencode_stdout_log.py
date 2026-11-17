@@ -11,16 +11,66 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-_COMMON = Path(__file__).resolve().parents[2] / "common" / "scripts"
-if str(_COMMON) not in sys.path:
-    sys.path.insert(0, str(_COMMON))
-
-from crash_report import redact  # noqa: E402
-
 MAX_BYTES = 20 * 1024 * 1024
 KEEP_PER_SEAT = 50
 _JOB_RX = re.compile(r"(?i)\b(FR|MRB|UAT|FIX)\s+(\S+?)#(\d+)\b")
 _SAFE_RX = re.compile(r"[^A-Za-z0-9._-]+")
+_REDACT = None
+_REDACT_FAILED = False
+_REDACT_ERROR = ""
+_WARNED = False
+
+
+def _redact_search_dirs() -> list[Path]:
+    """Installed layout keeps crash_report beside this file. A checkout uses common/scripts."""
+    here = Path(__file__).resolve().parent
+    dirs = [here]
+    try:
+        common = Path(__file__).resolve().parents[2] / "common" / "scripts"
+    except IndexError:
+        common = None
+    if common is not None and common not in dirs:
+        dirs.append(common)
+    return dirs
+
+
+def load_redact():
+    """Return crash_report.redact, or None when the installed copy cannot import it.
+
+    FR #8131: a missing redactor must not raise. Callers turn the log off.
+    """
+    global _REDACT, _REDACT_FAILED, _REDACT_ERROR
+    if _REDACT is not None:
+        return _REDACT
+    if _REDACT_FAILED:
+        return None
+    last = "No module named 'crash_report'"
+    for folder in _redact_search_dirs():
+        if folder.is_dir() and str(folder) not in sys.path:
+            sys.path.insert(0, str(folder))
+        try:
+            from crash_report import redact as fn  # noqa: E402
+        except (ImportError, AttributeError) as exc:
+            last = exc.__class__.__name__ + ": " + str(exc)
+            sys.modules.pop("crash_report", None)
+            continue
+        _REDACT = fn
+        return fn
+    _REDACT_FAILED = True
+    _REDACT_ERROR = last
+    return None
+
+
+def warn_log_off() -> None:
+    """One WARN on stderr. Never a traceback, never an unredacted log."""
+    global _WARNED
+    if _WARNED:
+        return
+    _WARNED = True
+    detail = _REDACT_ERROR or "crash_report unavailable"
+    sys.stderr.write(
+        "WARN opencode_stdout_log: per-job log off (%s)\n" % detail
+    )
 
 
 def enabled(env: dict | None = None) -> bool:
@@ -61,6 +111,9 @@ def log_file_name(repo: str, kind: str, number: str, seat: str, when: datetime) 
 
 
 def _header(seat: str, model: str, job: str, worktree: str, when: datetime) -> str:
+    redact = load_redact()
+    if redact is None:
+        raise RuntimeError("redactor missing")
     started = when.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     lines = [
         "seat=%s" % redact(seat or ""),
@@ -97,6 +150,9 @@ def open_log(
     env = os.environ if env is None else env
     if not enabled(env):
         return None
+    if load_redact() is None:
+        warn_log_off()
+        return None
     when = now or datetime.now(timezone.utc)
     repo, kind, number = parse_job_key(job_key)
     directory = logs_dir(env)
@@ -121,6 +177,10 @@ def append_text(path: Path | str, text: str, *, max_bytes: int = MAX_BYTES) -> N
     except OSError:
         size = 0
     if size >= max_bytes:
+        return
+    redact = load_redact()
+    if redact is None:
+        warn_log_off()
         return
     lines = []
     for raw in str(text).splitlines():
