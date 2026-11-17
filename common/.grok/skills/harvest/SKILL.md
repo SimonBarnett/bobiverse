@@ -518,6 +518,7 @@ routes to bobiverse via the split rule.
 - When folding CONFLICTING tips that both touch create_job_worktree, keep FR #8023 disk+FR/UAT fatal fetch and FR #8022 _fetch_pr_head_oid want_oid add; never blind-fetch origin/<branch> before the OID helper or self-remote fixtures false-NACK fetch.
 - When OpenCode prints Free usage limit reached, kill mid-run, GIVEUP fuel-exhausted:opencode-free within a minute, and record-pause the pool; do not wait for hard ceiling.
 - When seat_fuel_pause_reason stamps via load_digest/save_digest, any reset field not preserved by _coerce_machine is stripped and the next check self-clears the pause --- keep free-pool reset keys through coerce and fall back to a live worker stamp when the pool is still exact 0.
+- When done-offer relies on author_seat alone, a stripped stamp after DONE FR supersede re-offers the MRB to the implementer --- recover implementer from done[] pull URL at enrich time and refuse delivery on the done path.
 
 ## Harvest digest (lessons audit 2026-10-06)
 
