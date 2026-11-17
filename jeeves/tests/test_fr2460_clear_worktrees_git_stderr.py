@@ -22,15 +22,22 @@ def test_worktree_remove_stringifies_git_stderr():
     text = SCRIPT.read_text(encoding="utf-8")
     assert "FR #2460" in text
     assert "FR #4197" in text
-    assert "worktree remove --force" in text
+    # FR #8023: tip remove is fail-closed (no --force; kept-remove-failed on refuse).
+    assert "kept-remove-failed" in text
+    assert "worktree remove --force" not in text
     assert _stringifies_stderr(text)
     assert "$gitExit = $LASTEXITCODE" in text or "$gitExit=$LASTEXITCODE" in text.replace(" ", "")
     # Must not use bare Out-Host on git remove (that path terminated on Permission denied).
+    # Window covers seat-marker pre-drop + git remove + kept-remove-failed (FR #8023).
     remove_block_start = text.index("Removing worktree $p")
-    remove_block = text[remove_block_start : remove_block_start + 1600]
+    remove_block = text[remove_block_start : remove_block_start + 3200]
     assert "| Out-Host" not in remove_block
     assert _stringifies_stderr(remove_block)
     assert "$gitExit = $LASTEXITCODE" in remove_block
+    assert "worktree remove $p" in remove_block or "worktree remove $P" in remove_block
+    assert "worktree remove --force" not in remove_block
+
+
 
 
 def test_worktree_prune_also_stringifies_stderr():

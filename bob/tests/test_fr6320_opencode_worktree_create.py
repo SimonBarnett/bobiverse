@@ -15,20 +15,18 @@ import opencode_seat_contract as c  # noqa: E402
 
 
 def _init_clone(path: Path) -> Path:
-    path.mkdir(parents=True)
-    subprocess.run(["git", "init", "-b", "main", str(path)], check=True, capture_output=True)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if path.exists():
+        raise AssertionError(f"clone path must not exist yet: {path}")
+    bare = path.parent / (path.name + "-origin.git")
+    subprocess.run(["git", "init", "--bare", "-b", "main", str(bare)], check=True, capture_output=True)
+    subprocess.run(["git", "clone", str(bare), str(path)], check=True, capture_output=True)
     subprocess.run(["git", "-C", str(path), "config", "user.email", "t@t"], check=True, capture_output=True)
     subprocess.run(["git", "-C", str(path), "config", "user.name", "t"], check=True, capture_output=True)
     (path / "README").write_text("x\n", encoding="utf-8")
     subprocess.run(["git", "-C", str(path), "add", "README"], check=True, capture_output=True)
     subprocess.run(["git", "-C", str(path), "commit", "-m", "i"], check=True, capture_output=True)
-    # origin/main for worktree add
-    subprocess.run(
-        ["git", "-C", str(path), "remote", "add", "origin", str(path)],
-        check=True,
-        capture_output=True,
-    )
-    subprocess.run(["git", "-C", str(path), "fetch", "origin", "main"], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(path), "push", "-u", "origin", "main"], check=True, capture_output=True)
     return path
 
 
@@ -172,3 +170,42 @@ def test_resolve_repo_clone_bobiverse_install_root(tmp_path: Path):
     env = {"BOB_AI_ROOT": str(tmp_path)}
     assert c.resolve_repo_clone("SimonBarnett/a-search", env).endswith("a-search")
     assert other.is_dir()
+
+def test_fr8023_fetch_failure_nacks_create_failed(tmp_path: Path):
+    clone = _init_clone(tmp_path / "clone")
+    env = {"BOB_JOB_WORKTREE_BASE": str(tmp_path / "worktrees"), "BOB_REPO_CLONE_bobiverse": str(clone)}
+    line = "FROM jeeves #flamingo n: FR SimonBarnett/bobiverse#8023 https://x"
+
+    def run(cmd, **kw):
+        if cmd and "fetch" in cmd:
+            class Proc:
+                returncode = 1
+                stdout = ""
+                stderr = "fatal: unable to access"
+
+            return Proc()
+        return subprocess.run(cmd, **kw)
+
+    decision = c.ensure_opencode_job_worktree(line, env, install_root=str(clone), run=run)
+    assert decision["state"] == "create_failed"
+    assert "worktree-create-failed:fetch" in decision["nack"]
+
+
+def test_fr8023_low_disk_nacks_create_failed(tmp_path: Path, monkeypatch):
+    clone = _init_clone(tmp_path / "clone")
+    env = {
+        "BOB_JOB_WORKTREE_BASE": str(tmp_path / "worktrees"),
+        "BOB_REPO_CLONE_bobiverse": str(clone),
+        "BOB_JOB_WORKTREE_MIN_FREE_GB": "50",
+    }
+    line = "FROM jeeves #flamingo n: FR SimonBarnett/bobiverse#8023 https://x"
+
+    class Usage:
+        free = 1 * 1024 ** 3  # 1 GiB
+        total = 100 * 1024 ** 3
+        used = 99 * 1024 ** 3
+
+    monkeypatch.setattr("shutil.disk_usage", lambda _p: Usage())
+    decision = c.ensure_opencode_job_worktree(line, env, install_root=str(clone))
+    assert decision["state"] == "create_failed"
+    assert "worktree-create-failed:disk" in decision["nack"]

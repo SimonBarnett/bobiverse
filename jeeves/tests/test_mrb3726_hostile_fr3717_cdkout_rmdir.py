@@ -25,10 +25,11 @@ def test_mrb3726_clear_helpers_and_call_order():
     start = t.index("Removing worktree $p")
     block = t[start:]
     i_deep = block.index("Remove-BobiverseDeepWorktreeDirs -WorktreePath")
-    i_git = block.index("& git -C $rootFull worktree remove --force")
-    i_leftover = block.index("FR #3717 leftover rmdir")
-    i_force = block.index("Remove-BobiversePathForce -Path", i_leftover)
-    assert i_deep < i_git < i_leftover < i_force
+    i_git = block.index("& git -C $RootFull worktree remove $p")
+    # FR #8023: no --force / leftover PathForce on registered trees; pin remains in comments.
+    assert "FR #3717 leftover rmdir" in t
+    assert "worktree remove --force" not in block
+    assert i_deep < i_git
     raw = SCRIPT.read_bytes()
     assert not raw.startswith(b"\xef\xbb\xbf")
     assert all(b < 128 for b in raw)

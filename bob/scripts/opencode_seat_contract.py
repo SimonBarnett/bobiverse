@@ -1184,6 +1184,7 @@ def create_job_worktree(
     FR #8022: FIX/MRB start at verified ``headRefOid`` (never ``origin/main``).
     FR #8016: on ``already used by worktree`` / ``already checked out``, prune a
     stale clean holder once then retry; dirty/live holders NACK with stderr.
+    FR #8023: low-disk admission; FR/UAT fatal fetch of origin/main; no main/HEAD fallback.
     """
     import subprocess as _sp
 
@@ -1232,6 +1233,43 @@ def create_job_worktree(
         folder.parent.mkdir(parents=True, exist_ok=True)
     except OSError:
         return False, "disk", ""
+    # FR #8023: low-disk admission on the destination volume before worktree add.
+    try:
+        import shutil as _shutil
+
+        min_free_gb = 2.0
+        raw_min = (os.environ.get("BOB_JOB_WORKTREE_MIN_FREE_GB") or "").strip()
+        if raw_min:
+            try:
+                min_free_gb = float(raw_min)
+            except ValueError:
+                min_free_gb = 2.0
+        usage = _shutil.disk_usage(str(folder.parent))
+        free_gb = float(usage.free) / (1024.0 ** 3)
+        if free_gb < min_free_gb:
+            return False, "disk", ""
+    except OSError:
+        return False, "disk", ""
+    except Exception:
+        pass
+
+    # FR #8023: FR/UAT fetch-before-add is mandatory (failure => fetch class).
+    # FIX/MRB fetch is owned by _fetch_pr_head_oid (FR #8022 fatal_fetch) so a
+    # blind origin/<branch> fetch cannot NACK when origin/<head> already matches.
+    if not pr_head:
+        try:
+            fetch_proc = _git_run(
+                run,
+                ["git", "-C", clone, "fetch", "origin", "main"],
+                timeout=WORKTREE_FETCH_TIMEOUT_S,
+            )
+            fetch_ok = int(getattr(fetch_proc, "returncode", 1)) == 0
+        except Exception as exc:
+            if _is_timeout_exc(exc):
+                return False, "timeout", ""
+            return False, "fetch", ""
+        if not fetch_ok:
+            return False, "fetch", ""
 
     def _ref_ok(ref: str) -> bool:
         return bool(_rev_parse_oid(run, clone, ref))
@@ -1272,14 +1310,22 @@ def create_job_worktree(
                 timeout=WORKTREE_ADD_TIMEOUT_S,
             )
             return proc, "", ""
-        start = "origin/main"
-        for cand in ("origin/main", "main", "HEAD"):
-            if _ref_ok(cand):
-                start = cand
-                break
+        # FR #8023: FR/UAT base only origin/main after successful fetch.
+        if not _ref_ok("origin/main"):
+            return None, "fetch", ""
         proc = _git_run(
             run,
-            ["git", "-C", clone, "worktree", "add", "-b", branch, str(folder), start],
+            [
+                "git",
+                "-C",
+                clone,
+                "worktree",
+                "add",
+                "-b",
+                branch,
+                str(folder),
+                "origin/main",
+            ],
             timeout=WORKTREE_ADD_TIMEOUT_S,
         )
         return proc, "", ""

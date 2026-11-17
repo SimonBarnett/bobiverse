@@ -10171,13 +10171,15 @@ def opencode_cleanup_extra_worktrees(
     run=None,
     log_fn: Optional[Callable[[str], None]] = None,
 ) -> list[str]:
-    """FR #6370: remove extra git worktrees under Temp for this repo; prune.
+    """FR #6370 / FR #8023: delegate extra worktree reclaim to Clear script.
 
-    Only removes listed worktrees whose path is under the process TEMP folder and
-    is not the job worktree itself. Returns removed paths.
+    Invokes Clear-BobiverseJobWorktrees.ps1 with -KeepPath <job> -SkipSeatDisk.
+    If PowerShell or the Clear script is missing, log and remove nothing.
     """
+    import shutil as _shutil
     import subprocess as _sp
 
+    _ = temp_root  # retained for call-site compat; Clear owns selection.
     run = _sp.run if run is None else run
     root = Path(job_worktree or "")
     removed: list[str] = []
@@ -10187,63 +10189,105 @@ def opencode_cleanup_extra_worktrees(
         job_res = root.resolve()
     except OSError:
         return removed
-    if temp_root is None:
-        temp_root = os.environ.get("TEMP") or os.environ.get("TMP") or ""
-    try:
-        temp_res = Path(temp_root).resolve() if temp_root else None
-    except OSError:
-        temp_res = None
-    if temp_res is None:
+
+    ps = _shutil.which("powershell") or _shutil.which("powershell.exe")
+    if not ps:
+        if log_fn:
+            log_fn("opencode finish: Clear skipped (powershell missing); remove nothing")
         return removed
+
+    # Resolve Clear script next to install / common / job clone.
+    candidates: list[Path] = []
+    install = (os.environ.get("BOB_INSTALL_ROOT") or os.environ.get("BOBIVERSE_INSTALL_ROOT") or "").strip()
+    if install:
+        candidates.append(Path(install) / "scripts" / "Clear-BobiverseJobWorktrees.ps1")
+        candidates.append(Path(install) / "common" / "scripts" / "Clear-BobiverseJobWorktrees.ps1")
+    candidates.append(Path(__file__).resolve().parent.parent.parent / "common" / "scripts" / "Clear-BobiverseJobWorktrees.ps1")
+    candidates.append(Path(__file__).resolve().parent / "Clear-BobiverseJobWorktrees.ps1")
+    script = next((p for p in candidates if p.is_file()), None)
+    if script is None:
+        if log_fn:
+            log_fn("opencode finish: Clear script missing; remove nothing")
+        return removed
+
+    repo_root = ""
     try:
-        listed = run(
-            ["git", "-C", str(root), "worktree", "list", "--porcelain"],
+        common = run(
+            ["git", "-C", str(job_res), "rev-parse", "--git-common-dir"],
             capture_output=True,
             text=True,
             timeout=20,
         )
+        if int(getattr(common, "returncode", 1)) == 0:
+            common_dir = (common.stdout or "").strip()
+            if common_dir:
+                cpath = Path(common_dir)
+                if not cpath.is_absolute():
+                    cpath = (job_res / cpath).resolve()
+                # .../.git or .../.git/worktrees/x -> repo checkout with .git
+                text = str(cpath)
+                if text.lower().endswith(os.sep + ".git") or text.lower().endswith("/.git"):
+                    repo_root = str(cpath.parent)
+                else:
+                    # worktree gitdir: climb to .git then parent
+                    marker = text.lower().rfind(f"{os.sep}.git{os.sep}")
+                    if marker < 0:
+                        marker = text.lower().rfind("/.git/")
+                    if marker >= 0:
+                        repo_root = text[:marker]
+                    else:
+                        repo_root = str(job_res)
     except Exception:
-        return removed
-    if listed.returncode != 0:
-        return removed
-    paths: list[Path] = []
-    for line in (listed.stdout or "").splitlines():
-        if line.startswith("worktree "):
-            paths.append(Path(line[len("worktree ") :].strip()))
-    for p in paths:
+        repo_root = ""
+    if not repo_root or not (Path(repo_root) / ".git").exists():
+        # Fall back: treat job tree's toplevel as repo root for Clear.
         try:
-            pre = p.resolve()
-        except OSError:
-            continue
-        if pre == job_res:
-            continue
-        try:
-            pre.relative_to(temp_res)
-        except ValueError:
-            continue
-        try:
-            rm = run(
-                ["git", "-C", str(root), "worktree", "remove", "--force", str(p)],
+            top = run(
+                ["git", "-C", str(job_res), "rev-parse", "--show-toplevel"],
                 capture_output=True,
                 text=True,
-                timeout=60,
+                timeout=20,
             )
-            if rm.returncode == 0:
-                removed.append(str(p))
-                if log_fn:
-                    log_fn(f"opencode finish: removed extra worktree {p}")
-        except Exception as e:  # noqa: BLE001
-            if log_fn:
-                log_fn(f"opencode finish: worktree remove failed {type(e).__name__}")
+            if int(getattr(top, "returncode", 1)) == 0:
+                repo_root = (top.stdout or "").strip() or repo_root
+        except Exception:
+            pass
+    if not repo_root:
+        if log_fn:
+            log_fn("opencode finish: Clear skipped (no repo root); remove nothing")
+        return removed
+
     try:
-        run(
-            ["git", "-C", str(root), "worktree", "prune"],
+        proc = run(
+            [
+                ps,
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                str(script),
+                "-RepoRoot",
+                repo_root,
+                "-KeepPath",
+                str(job_res),
+                "-SkipSeatDisk",
+                "-MaxExtraJobTrees",
+                "0",
+            ],
             capture_output=True,
             text=True,
-            timeout=30,
+            timeout=300,
         )
-    except Exception:
-        pass
+        out = ((getattr(proc, "stdout", "") or "") + (getattr(proc, "stderr", "") or ""))
+        if log_fn:
+            log_fn(f"opencode finish: Clear exit={getattr(proc, 'returncode', '?')} {out[-400:]}")
+        # Best-effort: surface paths mentioned as removed.
+        for line in out.splitlines():
+            if line.startswith("Removing worktree "):
+                removed.append(line[len("Removing worktree ") :].strip())
+    except Exception as e:  # noqa: BLE001
+        if log_fn:
+            log_fn(f"opencode finish: Clear failed {type(e).__name__}; remove nothing")
     return removed
 
 
