@@ -4230,11 +4230,12 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             r"} catch {",
             r"    Write-Output ('opencode-seat-isolate: prepare failed ' + $_.Exception.Message)",
             r"}",
-            r"function Write-OpencodeTurnMarker([string]$Type, [int]$TurnNumber, [string]$Status, [string]$Err) {",
-            r"    # FR #6157 / #7201: durable turn markers; error status trips failed-turn retry/GIVEUP",
+            r"function Write-OpencodeTurnMarker([string]$Type, [int]$TurnNumber, [string]$Status, [string]$Err, [string]$ErrClass) {",
+            r"    # FR #6157 / #7201 / #8018: durable turn markers; error status trips failed-turn retry/GIVEUP",
             r"    $entry = @{ type = $Type; ts = (Get-Date -Format o); turn_number = $TurnNumber }",
             r"    if ($Status) { $entry.status = $Status }",
             r"    if ($Err) { $entry.error = $Err }",
+            r"    if ($ErrClass) { $entry.error_class = $ErrClass }",
             r"    Add-Content -LiteralPath $turnsLog -Value ($entry | ConvertTo-Json -Compress) -ErrorAction SilentlyContinue",
             r"}",
             r"function Write-OpencodeJobGiveup([string]$JobKey, [string]$Reason) {",
@@ -4543,9 +4544,29 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             r"    if ($proc) { try { $proc.Dispose() } catch { } }",
             r"    } finally {",
             r"        if (-not $script:ocDbRetry) {",
-            r"            $teStatus = ''; $teErr = ''",
-            r"            if ($exitCode -ne 0) { $teStatus = 'error'; $teErr = ('exit ' + $exitCode) }",
-            r"            Write-OpencodeTurnMarker 'turn_ended' $turnN $teStatus $teErr",
+            # FR #8018: turn_ended carries exit code + last stderr/stdout line (not bare 'exit').
+            r"            $teStatus = ''; $teErr = ''; $teClass = ''",
+            r"            if ($exitCode -ne 0) {",
+            r"                $teStatus = 'error'",
+            r"                $codeNum = -1",
+            r"                try { $codeNum = [int]$exitCode } catch { $codeNum = -1 }",
+            r"                $snip = ''",
+            r"                foreach ($chunk in @($stderr, $stdout)) {",
+            r"                    if ($snip) { break }",
+            r"                    if (-not $chunk) { continue }",
+            r"                    $lines = @($chunk -split '\r?\n' | Where-Object { $_.Trim().Length -gt 0 })",
+            r"                    if ($lines.Count -gt 0) { $snip = [string]$lines[-1] }",
+            r"                }",
+            r"                $snip = ($snip -replace '\s+', ' ').Trim()",
+            # FR #8018: redact token-shaped spans before they land in opencode-turns.jsonl.
+            r"                $snip = [regex]::Replace($snip, '(?i)(?:ghp_|github_pat_|gho_|sk-|Bearer\s+)\S+', '<redacted>')",
+            r"                if ($snip.Length -gt 160) { $snip = $snip.Substring(0, 160) }",
+            r"                $teErr = ('exit ' + $codeNum)",
+            r"                if ($snip) { $teErr = ($teErr + ': ' + $snip) }",
+            r"                $teClass = 'process-exit'",
+            r"                if ($hitLimit) { $teClass = 'out-of-fuel' }",
+            r"            }",
+            r"            Write-OpencodeTurnMarker 'turn_ended' $turnN $teStatus $teErr $teClass",
             r"        }",
             r"    }",
             r"    if ($script:ocDbRetry) {",
@@ -6779,14 +6800,67 @@ _FAILED_TURN_SECRET_RX = re.compile(
 )
 
 
+def _failed_turn_snip(text: str, *, limit: int = 160) -> str:
+    """Single-line, secret-redacted snippet for GIVEUP / turn markers (FR #8018)."""
+    line = " ".join(str(text or "").split())
+    # Redact twice: structured JSON / nested secrets, then token-shaped leftovers.
+    line = redact_session_text(line)
+    line = _FAILED_TURN_SECRET_RX.sub("<redacted>", line)
+    line = redact_session_text(line)
+    if len(line) > limit:
+        line = line[:limit]
+    return line
+
+
 def sanitize_failed_turn_reason(error_class: str, first_line: str) -> str:
-    """FR #7201: one-line GIVEUP reason (class + first line, no secrets)."""
+    """FR #7201 / #8018: one-line GIVEUP reason (class + first line, no secrets).
+
+    Keep exit codes and stderr snippets. Never strip ``<redacted>`` placeholders in a
+    way that also drops digits from ``exit N``.
+    """
     cls = re.sub(r"[^\w.-]+", "", str(error_class or "error").strip())[:48] or "error"
-    line = " ".join(str(first_line or "").split())
-    line = _FAILED_TURN_SECRET_RX.sub("<redacted>", line)[:160]
+    line = _failed_turn_snip(first_line)
     if not line:
         return cls
     return "%s: %s" % (cls, line)
+
+
+def format_opencode_turn_error(
+    exit_code: int | str | None,
+    *,
+    stderr: str = "",
+    stdout: str = "",
+    hit_limit: bool = False,
+) -> tuple[str, str]:
+    """FR #8018: ``(error_class, error_line)`` for an OpenCode process end marker."""
+    try:
+        code = int(exit_code)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        code = -1
+    snip = ""
+    for chunk in (stderr, stdout):
+        for raw in reversed(str(chunk or "").splitlines()):
+            one = raw.strip()
+            if one:
+                snip = one
+                break
+        if snip:
+            break
+    snip = _failed_turn_snip(snip, limit=160)
+    line = "exit %s" % code
+    if snip:
+        line = "%s: %s" % (line, snip)
+    cls = "out-of-fuel" if hit_limit else "process-exit"
+    return cls, line
+
+
+def is_failed_turn_fuel_error(error_class: str, error_line: str) -> bool:
+    """True when a failed turn should GIVEUP as out-of-fuel (FR #8018)."""
+    cls = str(error_class or "").strip().lower().replace("_", "-")
+    if cls in ("out-of-fuel", "outoffuel"):
+        return True
+    blob = "%s\n%s" % (error_class or "", error_line or "")
+    return is_out_of_fuel_text(blob)
 
 
 def failed_turn_next_action(retry_count: int, *, max_retries: int = FAILED_TURN_RETRY_MAX) -> str:
@@ -6797,6 +6871,8 @@ def failed_turn_next_action(retry_count: int, *, max_retries: int = FAILED_TURN_
 
 
 def failed_turn_giveup_line(job_key: str, error_class: str, first_line: str) -> str:
+    if is_failed_turn_fuel_error(error_class, first_line):
+        return out_of_fuel_giveup_line(job_key)
     why = "failed-turn " + sanitize_failed_turn_reason(error_class, first_line)
     return seat_release_giveup_line(job_key, why)
 
@@ -10183,6 +10259,8 @@ class BoredEmitter:
         # FR #7201: error turn while ACK open — retry once then GIVEUP.
         self._failed_turn_retries: dict[str, int] = {}
         self.failed_turn_retry_fn: Optional[Callable[[str], None]] = None
+        # FR #8018: optional SeatSessionLog.write(source, text) for failed-turn / giveup.
+        self.session_log_write: Optional[Callable[[str, str], None]] = None
         # FR #4784: job key for GIVEUP before !bored on done-miss / ack-stale release.
         self._release_giveup_key: Optional[str] = None
         self.seat_release_giveup_fn: Optional[Callable[[str, str], None]] = None
@@ -10744,6 +10822,47 @@ class BoredEmitter:
                 if self._ack_open and self._ack_at is not None:
                     key = self._ack_job_key or "job"
                     if error:
+                        # FR #8018: durable failed-turn evidence on the seat session log
+                        # (sanitized — never raw stderr with tokens).
+                        if self.session_log_write is not None:
+                            try:
+                                self.session_log_write(
+                                    "failed-turn",
+                                    sanitize_failed_turn_reason(
+                                        error_class, error_line
+                                    ),
+                                )
+                            except Exception:
+                                pass
+                        # Fuel/quota exhaustion is not a generic process-exit (FR #8018).
+                        if is_failed_turn_fuel_error(error_class, error_line):
+                            why = "out-of-fuel"
+                            self._ack_open = False
+                            self._ack_job_key = None
+                            self._clear_done_miss()
+                            self._failed_turn_retries.pop(key, None)
+                            self._release_giveup_key = key
+                            self._fast_done_miss_streak = 0
+                            self._done_miss_release_pending = False
+                            self.log("failed-turn: GIVEUP %s reason=%s" % (key, why))
+                            if self.session_log_write is not None:
+                                try:
+                                    self.session_log_write("giveup", why)
+                                except Exception:
+                                    pass
+                            try:
+                                self._cv.release()
+                                try:
+                                    self._fire_seat_release_giveup(why)
+                                finally:
+                                    self._cv.acquire()
+                            except Exception as e:  # noqa: BLE001
+                                self.log(
+                                    "failed-turn: GIVEUP failed %s" % type(e).__name__
+                                )
+                            self._begin_harvest_hold(now)
+                            self._cv.notify_all()
+                            return
                         n = int(self._failed_turn_retries.get(key, 0))
                         if failed_turn_next_action(n) == "retry":
                             self._failed_turn_retries[key] = n + 1
@@ -10777,6 +10896,11 @@ class BoredEmitter:
                         self._fast_done_miss_streak = 0
                         self._done_miss_release_pending = False
                         self.log("failed-turn: GIVEUP %s reason=%s" % (key, why))
+                        if self.session_log_write is not None:
+                            try:
+                                self.session_log_write("giveup", why)
+                            except Exception:
+                                pass
                         try:
                             self._cv.release()
                             try:
@@ -11616,6 +11740,8 @@ class Supervisor:
         if self.bored is not None:
             self.bored.done_miss_remind_fn = self._inject_done_miss_reminder
             self.bored.failed_turn_retry_fn = self._inject_failed_turn_retry
+            # FR #8018: failed-turn / giveup facts land on the per-seat session log (#7917).
+            self.bored.session_log_write = self.session_log.write
             if (self.kind or "").strip().lower() == "opencode":
                 self.bored.opencode_finish_decide_fn = self._opencode_finish_decide
                 self.bored.job_end_cleanup_fn = self._opencode_job_end_cleanup
