@@ -2854,36 +2854,70 @@ class LaunchSpec:
     inherit_console: bool = False
 
 
+def _under_linked_git_worktree(path: Path) -> bool:
+    """True when ``path`` sits in a linked git worktree (``.git`` is a file).
+
+    FR #8059: a job worktree's ``skill_dag_mcp.py`` must not be written into the
+    seat ``opencode.json``. The install checkout has a ``.git`` directory.
+    """
+    try:
+        cur = Path(path).resolve()
+    except OSError:
+        cur = Path(path)
+    for parent in [cur, *cur.parents]:
+        marker = parent / ".git"
+        try:
+            if marker.is_file():
+                return True
+            if marker.is_dir():
+                return False
+        except OSError:
+            continue
+    return False
+
+
 def skill_dag_mcp_script_path(
     worker_cwd: str,
     *,
     source_file: str | Path | None = None,
 ) -> Path:
-    """Locate ``skill_dag_mcp.py`` for Grok/Cursor MCP launch args (FR #6889 / #7963).
+    """Locate ``skill_dag_mcp.py`` for MCP launch args (FR #6889 / #7963 / #8059).
 
-    FR #7963: prefer the worker-shipped copy via ``_resolve_installed_worker_script``
-    so a frozen bob-worker.exe cannot keep probing a stale ``C:\\ai\\bob`` checkout.
-    Then fall back to install/repo paths. Miss returns the preferred ``bob/scripts``
-    candidate under the worker parent.
+    Keep calling ``_resolve_installed_worker_script("skill_dag_mcp.py", ...)`` so
+    FR #7910 / #7991 by-path shipping still discovers the module (MRB #8075).
+    Refuse a linked job worktree path even when that resolver finds one: the seat
+    ``opencode.json`` must survive prune (FR #8059). Then prefer install paths
+    next to ``worker_cwd``, then frozen ``<exe>\\scripts``, then other checkouts.
     """
     shipped = _resolve_installed_worker_script(
         "skill_dag_mcp.py", cwd=worker_cwd, source_file=source_file
     )
-    if shipped is not None and shipped.is_file():
+    if (
+        shipped is not None
+        and shipped.is_file()
+        and not _under_linked_git_worktree(shipped)
+    ):
         return shipped.resolve()
     source = Path(source_file).resolve() if source_file else Path(__file__).resolve()
     here = source.parent
     parent = Path(worker_cwd).resolve().parent
-    candidates = [
+    ordered: list[Path] = [
         parent / "bob" / "scripts" / "skill_dag_mcp.py",
         parent / "scripts" / "skill_dag_mcp.py",
-        here / "skill_dag_mcp.py",
-        parent / "common" / "scripts" / "skill_dag_mcp.py",
     ]
-    for cand in candidates:
+    if getattr(sys, "frozen", False):
+        exe_dir = Path(sys.executable).resolve().parent
+        ordered.append(exe_dir / "scripts" / "skill_dag_mcp.py")
+        ordered.append(exe_dir.parent / "scripts" / "skill_dag_mcp.py")
+    ordered.append(here / "skill_dag_mcp.py")
+    ordered.append(parent / "common" / "scripts" / "skill_dag_mcp.py")
+    stable = [cand for cand in ordered if not _under_linked_git_worktree(cand)]
+    for cand in stable:
         if cand.is_file():
             return cand.resolve()
-    return candidates[0].resolve()
+    if stable:
+        return stable[0].resolve()
+    return (parent / "bob" / "scripts" / "skill_dag_mcp.py").resolve()
 
 
 def skill_dag_vision_roots(worker_cwd: str, *, home: Path | None = None) -> list[Path]:
