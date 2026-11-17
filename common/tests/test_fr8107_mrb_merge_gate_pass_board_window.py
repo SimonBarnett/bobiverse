@@ -78,3 +78,24 @@ def test_fr8107_short_board_still_passes():
         }
     ]
     assert gate.find_mrb_pass_board(comments) is not None
+
+
+def test_mrb8108_fail_verdict_with_pass_at_is_rejected():
+    """Hostile: FAIL board must not merge via stray MRB PASS @ sha."""
+    body = (
+        "## MRB board\n\n"
+        "**Verdict:** FAIL\n\n"
+        "**MRB PASS @** `deadbeefcafebabe01234567`\n"
+    )
+    comments = [
+        {
+            "user": {"login": "x"},
+            "author_association": "NONE",
+            "body": body,
+            "created_at": "2026-11-17T17:50:00Z",
+        }
+    ]
+    assert gate.find_mrb_pass_board(comments) is None
+    ok, reason = gate.evaluate_merge_gate(comments)
+    assert ok is False
+    assert "no MRB PASS board" in reason

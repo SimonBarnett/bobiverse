@@ -39,6 +39,8 @@ MRB_PASS_AT_SHA_RE = re.compile(
     r"(?i)\bMRB\s+PASS\s*@[\s*`'\"]*[0-9a-f]{7,40}\b"
 )
 MRB_BOARD_HEADER_RE = re.compile(r"(?i)##\s*MRB\s+board\b")
+# Hostile (MRB #8108): a FAIL board that also quotes MRB PASS @ sha must not pass.
+MRB_FAIL_VERDICT_RE = re.compile(r"(?i)\*\*Verdict:\*\*\s*FAIL\b")
 # FR #4041: gh pr comment posts as OWNER; MRB boards that discuss product hold
 # features must not trip owner-hold detection.
 # FR #4487: a ## MRB hand-back (self-MRB GIVEUP) is seat process too. It often
@@ -171,12 +173,18 @@ def find_mrb_pass_board(comments: list[dict] | None) -> str | None:
 
     FR #8107: match ``**Verdict:** PASS`` within ``MRB_PASS_BOARD_WINDOW`` of
     the board header, or ``MRB PASS @ <sha>`` anywhere after that header.
+    MRB #8108: never treat a board with ``**Verdict:** FAIL`` as PASS via the
+    ``MRB PASS @`` alternate marker.
     """
     for c in comments or []:
         text = _body(c)
         if MRB_PASS_BOARD_RE.search(text):
             return text.strip().splitlines()[0][:240]
-        if MRB_BOARD_HEADER_RE.search(text) and MRB_PASS_AT_SHA_RE.search(text):
+        if (
+            MRB_BOARD_HEADER_RE.search(text)
+            and MRB_PASS_AT_SHA_RE.search(text)
+            and not MRB_FAIL_VERDICT_RE.search(text)
+        ):
             return text.strip().splitlines()[0][:240]
     return None
 
