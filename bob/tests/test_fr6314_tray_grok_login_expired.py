@@ -61,13 +61,16 @@ def test_fr6314_format_expands_login_expired(tmp_path: Path):
             if ($expired.heading -match 'grok-login-expired') {{ throw 'raw class must be expanded away from heading' }}
             if ($expired.error -ne 'grok-login-expired') {{ throw ('error field must stay class={{0}}' -f $expired.error) }}
 
+            # FR #8049: HTTP provider errors are never painted; last % + [stale] only.
             $five = Format-BobTrayXaiWeeklyRow -MachineId 'flamingo' -XaiWeekly ([pscustomobject]@{{
                 remaining_pct = 14
                 fresh = $false
                 error = 'provider-http-500'
                 age_s = 60
             }})
-            if ($five.heading -notmatch 'provider-http-500') {{ throw ('500 must stay raw={{0}}' -f $five.heading) }}
+            if ($five.heading -match 'provider-http-500') {{ throw ('500 must not paint={{0}}' -f $five.heading) }}
+            if ($five.heading -match '500') {{ throw ('raw 500 must not paint={{0}}' -f $five.heading) }}
+            if ($five.heading -notmatch '14% left') {{ throw ('must keep last %={{0}}' -f $five.heading) }}
             if ($five.heading -match 'xAI sign-in expired') {{ throw '500 must not look like login expired' }}
 
             Write-Output 'ok'

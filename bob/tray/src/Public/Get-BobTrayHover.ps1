@@ -423,6 +423,21 @@ function Format-BobPeerPoolHeading {
 }
 
 
+
+function Test-BobTrayHttpPoolError {
+    <#
+    .SYNOPSIS
+      FR #8049: true when the meter error is a raw HTTP / provider-http status (never paint it).
+    #>
+    param([string]$Error)
+    $e = ([string]$Error).Trim()
+    if (-not $e) { return $false }
+    if ($e -match '(?i)^provider-http-\d{3}$') { return $true }
+    if ($e -match '^\d{3}$') { return $true }
+    if ($e -match '(?i)^HTTP\s*\d{3}$') { return $true }
+    return $false
+}
+
 function Format-BobTrayXaiWeeklyRow {
     <#
     .SYNOPSIS
@@ -435,6 +450,8 @@ function Format-BobTrayXaiWeeklyRow {
       null meter => clear 'no reading' (never empty bar, never another source).
       FR #6314 / FR #7345: grok-login-expired or xai_auth=expired expands to
       'xAI sign-in expired, sign in once on <m>' (channel xAI weekly row, red [stale]).
+      FR #8049: provider-http-N / bare HTTP status codes are never painted in the heading;
+      keep last % and show [stale] only when the meter is genuinely stale.
       .error stays the class string for diagnostics.
     #>
     param(
@@ -510,6 +527,10 @@ function Format-BobTrayXaiWeeklyRow {
         $who = if ($midLower) { $midLower } else { 'this machine' }
         $errDisplay = ('xAI sign-in expired, sign in once on {0}' -f $who)
         $fresh = $false
+    }
+    # FR #8049: never paint raw HTTP / provider-http status into the pool row.
+    elseif (Test-BobTrayHttpPoolError -Error $err) {
+        $errDisplay = ''
     }
     $age = $null
     try {
@@ -2308,8 +2329,13 @@ function Update-BobTrayDigestPools {
                     throw 'Invoke-BobDigestHttpGet missing'
                 }
                 $got = Invoke-BobDigestHttpGet -Uri $u -TimeoutSec 8
+                # FR #8049: one immediate retry on transient 503 before failing the poll.
+                if ($got -and [int]$got.StatusCode -eq 503) {
+                    $got = Invoke-BobDigestHttpGet -Uri $u -TimeoutSec 8
+                }
                 if (-not $got -or [int]$got.StatusCode -lt 200 -or [int]$got.StatusCode -ge 300) {
-                    throw ('digest HTTP status {0}' -f $(if ($got) { $got.StatusCode } else { 'null' }))
+                    $code = $(if ($got) { $got.StatusCode } else { 'null' })
+                    throw ('digest HTTP status {0} source={1}' -f $code, $u)
                 }
                 $doc = [string]$got.Text | ConvertFrom-Json
             }
