@@ -12,6 +12,7 @@ import base64
 import errno
 import os
 import queue
+import random
 import re
 import shutil
 import socket
@@ -106,6 +107,11 @@ IDLE_PING_S = 60.0
 IDLE_DEAD_S = 120.0
 RECONNECT_MIN_S = 3.0
 RECONNECT_MAX_S = 60.0
+# FR #8002: never-registered drops must not sit on the 60s cap (Ergo ip-limits).
+PREREG_FAILS_BEFORE_LONG = 5
+PREREG_BACKOFF_MIN_S = 600.0
+PREREG_BACKOFF_MAX_S = 1800.0
+PREREG_DROP_LOG = "dropped before registration: possible server throttle/ip-limit"
 CHANSERV_PROBE_S = 8.0
 NICK_RETRIES_SHOP = 5
 NICK_RETRIES_LOBBY = 20
@@ -687,6 +693,11 @@ class AircConsoleService:
                 return
             except OSError as exc:
                 last = exc
+                # FR #8002: a reset before TLS/registration is one attempt. Do not
+                # open the next port in the same round (that multiplies ip-limit hits).
+                if is_prereg_connection_reset(exc):
+                    info(f"INFO connect {self.args.host}:{port} failed ({exc}); not trying another port this round")
+                    raise
                 info(f"INFO connect {self.args.host}:{port} failed ({exc}); trying next port")
                 continue
         if last is not None:
@@ -1867,6 +1878,8 @@ class AircConsoleService:
                 pass
             return 2
         backoff = RECONNECT_MIN_S
+        prereg_fails = 0
+        prereg_logged_tier = 0
         while not self._stop.is_set():
             session_ok = False
             try:
@@ -1907,17 +1920,39 @@ class AircConsoleService:
             if self._stop.is_set():
                 break
             if session_ok:
+                prereg_fails = 0
+                prereg_logged_tier = 0
                 backoff = RECONNECT_MIN_S
+            else:
+                # FR #8002: one never-registered round is one attempt, all ports included.
+                prereg_fails += 1
+                backoff = prereg_backoff_seconds(prereg_fails)
+                tier = prereg_escalation_tier(prereg_fails)
+                if tier > prereg_logged_tier:
+                    info(f"INFO {PREREG_DROP_LOG}")
+                    prereg_logged_tier = tier
             info(f"INFO reconnect in {backoff:.0f}s (registered={session_ok})")
             try:
-                time.sleep(backoff)
+                # FR #4789: time.sleep(backoff) stays the interruptible wait.
+                # FR #8002: slice a long wait so a stop flag is seen within a second.
+                remaining = float(backoff)
+                while remaining > 0 and not self._stop.is_set():
+                    step = min(1.0, remaining)
+                    if abs(step - float(backoff)) < 1e-9:
+                        time.sleep(backoff)
+                    else:
+                        time.sleep(step)
+                    remaining -= step
             except KeyboardInterrupt:
                 # FR #4789: NSSM/service stop during backoff must not raise past run()
                 # (PYI unhandled KeyboardInterrupt at reconnect sleep).
                 info("INFO reconnect wait interrupted -> stop")
                 self.prepare_stop(reason="reconnect interrupted")
                 break
-            backoff = min(RECONNECT_MAX_S, max(RECONNECT_MIN_S, backoff * 2))
+            if self._stop.is_set():
+                info("INFO reconnect wait interrupted -> stop")
+                self.prepare_stop(reason="reconnect interrupted")
+                break
         # FR #5002: non-zero so NSSM AppExit Restart recovers a wedged auth map.
         if getattr(self, "_exit_for_nssm_restart", False):
             return 1
@@ -1933,6 +1968,98 @@ class AircConsoleService:
 # FR #5189: customer egress often blocks 6697; Ergo also listens on 993 (IMAPS).
 DEFAULT_IRC_PORT = 993
 FALLBACK_IRC_PORTS = (993, 6697)
+
+
+def _env_int(name: str, default: int) -> int:
+    raw = str(os.environ.get(name, "") or "").strip()
+    if not raw:
+        return int(default)
+    try:
+        return int(raw)
+    except ValueError:
+        return int(default)
+
+
+def _env_float(name: str, default: float) -> float:
+    raw = str(os.environ.get(name, "") or "").strip()
+    if not raw:
+        return float(default)
+    try:
+        return float(raw)
+    except ValueError:
+        return float(default)
+
+
+def prereg_fail_limit() -> int:
+    n = _env_int("AIRC_PREREG_FAILS", PREREG_FAILS_BEFORE_LONG)
+    return n if n > 0 else PREREG_FAILS_BEFORE_LONG
+
+
+def prereg_backoff_bounds() -> tuple[float, float]:
+    floor = _env_float("AIRC_PREREG_BACKOFF_MIN_S", PREREG_BACKOFF_MIN_S)
+    cap = _env_float("AIRC_PREREG_BACKOFF_MAX_S", PREREG_BACKOFF_MAX_S)
+    if floor < 1.0:
+        floor = PREREG_BACKOFF_MIN_S
+    if cap < floor:
+        cap = floor
+    return floor, cap
+
+
+def prereg_escalation_tier(fail_count: int) -> int:
+    """0 before the long backoff; 1, 2, ... as the wait grows. Log once per tier."""
+    n = prereg_fail_limit()
+    if int(fail_count) < n:
+        return 0
+    return int(fail_count) - n + 1
+
+
+def prereg_backoff_seconds(fail_count: int, *, rng: random.Random | None = None) -> float:
+    """Seconds to wait after a never-registered round.
+
+    The first ``AIRC_PREREG_FAILS`` (default 5) rounds use the short 3..60s curve.
+    After that the wait is at least 10 minutes, growing to at least 30 minutes.
+    Jitter is 0..10% and never pulls the long wait under the floor.
+    """
+    count = max(1, int(fail_count))
+    limit = prereg_fail_limit()
+    if count < limit:
+        return min(RECONNECT_MAX_S, RECONNECT_MIN_S * (2 ** (count - 1)))
+    floor, cap = prereg_backoff_bounds()
+    steps = count - limit
+    delay = min(cap, floor * (2 ** steps))
+    span = delay * 0.1
+    roll = rng.random() if rng is not None else random.random()
+    return delay + (span * roll)
+
+
+def is_prereg_connection_reset(exc: BaseException) -> bool:
+    """True for a drop before the TLS/registration handshake finished."""
+    if isinstance(exc, ConnectionResetError):
+        return True
+    win = getattr(exc, "winerror", None)
+    if win == 10054:
+        return True
+    err = getattr(exc, "errno", None)
+    if err in (errno.ECONNRESET, errno.ECONNABORTED):
+        return True
+    text = str(exc).lower()
+    return ("10054" in text) or ("forcibly closed" in text) or ("connection reset" in text)
+
+
+def connections_in_prereg_window(window_s: float, *, rng: random.Random | None = None) -> int:
+    """How many TCP attempts a never-registered console opens in ``window_s``.
+
+    One attempt per round (not one per port). Used to stay under Ergo's
+    default 32 connections per IP per 10 minutes.
+    """
+    t = 0.0
+    fails = 0
+    opened = 0
+    while t < float(window_s):
+        opened += 1
+        fails += 1
+        t += prereg_backoff_seconds(fails, rng=rng)
+    return opened
 
 
 def resolve_irc_ports(preferred: int) -> list[int]:
