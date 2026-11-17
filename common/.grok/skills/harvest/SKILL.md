@@ -528,6 +528,7 @@ routes to bobiverse via the split rule.
 - When matching a job number or fr-N/mrb-N leaf in a worktree path, use digit boundaries and path segments so fr-80910 does not satisfy #8091.
 - xAI weekly tray rows must never paint provider-http-N or bare HTTP status; keep last-good % and mark [stale] only when the reading is past the stale window.
 - digest.lock dead-thread only when _OPEN_DIGEST_LOCK still tracks a dead holder handle; clean finally must unlink so short-lived publish threads do not spam lock-broken
+- mrb_merge_gate PASS board: allow ~4000 chars between ## MRB board and **Verdict:** PASS; also accept MRB PASS @ <sha> after the header
 
 ## Harvest digest (lessons audit 2026-10-06)
 
