@@ -9,6 +9,8 @@
       FR #5353: on 404 (prerelease-only / never_latest catalog) falls back to listing releases
       and picks the newest semver tag that has this product MSI (non-prerelease preferred)
     - compares with <InstallRoot>\VERSION (never downgrades)
+    - FR #8112: also compares BUILD.json commit to the release source SHA;
+      never installs a release that does not contain the installed hotpatch commit
     - if newer and not loop-guarded: writes a plan and starts a DETACHED helper (scheduled task as SYSTEM,
       falling back to a WMI-created process). It never installs inline: msiexec replaces the very service
       that is running this script, so doing it here would deadlock on the service stop.
@@ -106,6 +108,101 @@ function Get-OptOutReason {
         return 'config\autoupdate.disabled present'
     }
     return $null
+}
+
+
+function Get-InstalledBuildCommit {
+    # FR #8112: BUILD.json commit stamped by Pack / hotpatch.
+    param([string]$Root)
+    $py = Join-Path $PSScriptRoot 'self_update_provenance.py'
+    if (-not (Test-Path -LiteralPath $py)) { return '' }
+    $python = $null
+    try { $python = (Get-Command python.exe -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source) } catch { }
+    if (-not $python) { $python = 'python.exe' }
+    try {
+        $out = & $python $py read $Root 2>$null
+        if ($LASTEXITCODE -ne 0) { return '' }
+        return ([string]$out).Trim()
+    } catch { return '' }
+}
+
+function Get-ReleaseSourceCommit {
+    # Prefer explicit commit fields (tests / future assets); else target_commitish when it is a SHA.
+    # Live: resolve the release tag to a commit object SHA (FR #8112).
+    param($Release)
+    if (-not $Release) { return '' }
+    foreach ($name in @('commit', 'source_commit', 'git_commit', 'target_commitish')) {
+        try {
+            $raw = [string]$Release.$name
+        } catch { $raw = '' }
+        if ($raw -match '^[0-9a-fA-F]{7,40}$') { return $raw.Trim().ToLowerInvariant() }
+    }
+    if ($ReleaseJson) { return '' }
+    $tag = [string]$Release.tag_name
+    if (-not $tag) { return '' }
+    try {
+        $uri = "https://api.github.com/repos/$Repo/git/refs/tags/$tag"
+        $ref = Invoke-GitHubReleaseApi -Uri $uri
+        $sha = [string]$ref.object.sha
+        $typ = [string]$ref.object.type
+        if ($typ -eq 'tag') {
+            $tagUri = "https://api.github.com/repos/$Repo/git/tags/$sha"
+            $tagObj = Invoke-GitHubReleaseApi -Uri $tagUri
+            $sha = [string]$tagObj.object.sha
+        }
+        if ($sha -match '^[0-9a-fA-F]{7,40}$') { return $sha.Trim().ToLowerInvariant() }
+    } catch { }
+    return ''
+}
+
+function Get-UpdateCompareStatus {
+    # GitHub compare installed...candidate (head relative to base). Test hook skips the network.
+    param([string]$InstalledSha, [string]$CandidateSha)
+    $hook = ([string]$env:BOBIVERSE_SELF_UPDATE_COMPARE_STATUS).Trim().ToLowerInvariant()
+    if ($hook) { return $hook }
+    if (-not $InstalledSha -or -not $CandidateSha) { return '' }
+    if ($ReleaseJson) { return '' }  # offline test fixtures must set the hook
+    try {
+        $uri = "https://api.github.com/repos/$Repo/compare/$InstalledSha...$CandidateSha"
+        $doc = Invoke-GitHubReleaseApi -Uri $uri
+        return ([string]$doc.status).Trim().ToLowerInvariant()
+    } catch {
+        return ''
+    }
+}
+
+function Test-UpdateAllowedForHotpatch {
+    # FR #8112: returns $true when update may proceed; logs and returns $false when skipped.
+    param([string]$InstalledSha, [string]$CandidateSha, [string]$Ancestry)
+    $py = Join-Path $PSScriptRoot 'self_update_provenance.py'
+    if (-not (Test-Path -LiteralPath $py)) {
+        Write-UpdLog 'check result=skipped-hotpatch-newer installed_sha=unknown candidate_sha=unknown reason=helper-missing'
+        return $false
+    }
+    $python = $null
+    try { $python = (Get-Command python.exe -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source) } catch { }
+    if (-not $python) { $python = 'python.exe' }
+    $inst = if ($InstalledSha) { $InstalledSha } else { '-' }
+    $cand = if ($CandidateSha) { $CandidateSha } else { '-' }
+    $anc = if ($Ancestry) { $Ancestry } else { '-' }
+    try {
+        $raw = & $python $py decide $inst $cand $anc 2>$null
+        if ($LASTEXITCODE -ne 0 -or -not $raw) {
+            Write-UpdLog ("check result=skipped-hotpatch-newer installed_sha={0} candidate_sha={1} reason=decide-failed" -f $inst, $cand)
+            return $false
+        }
+        $doc = $raw | ConvertFrom-Json
+        if ([bool]$doc.allow) { return $true }
+        $line = [string]$doc.log
+        if (-not $line) {
+            $line = ("check result=skipped-hotpatch-newer installed_sha={0} candidate_sha={1} reason={2}" -f $inst, $cand, [string]$doc.reason)
+        }
+        Write-UpdLog $line
+        return $false
+    } catch {
+        Write-UpdLog ("check result=skipped-hotpatch-newer installed_sha={0} candidate_sha={1} reason=decide-exception" -f $inst, $cand)
+        return $false
+    }
 }
 
 function ConvertTo-Ver {
@@ -1345,6 +1442,14 @@ function Invoke-Check {
     }
     if ($want -and $remote -eq $local -and -not $ForceCheck) {
         Write-UpdLog "check result=current local=$($local.ToString()) latest=$($remote.ToString())"
+        return
+    }
+
+    # FR #8112: never replace a newer hotpatched build with a non-descendant release.
+    $installedSha = Get-InstalledBuildCommit -Root $InstallRoot
+    $candidateSha = Get-ReleaseSourceCommit -Release $rel
+    $compareStatus = Get-UpdateCompareStatus -InstalledSha $installedSha -CandidateSha $candidateSha
+    if (-not (Test-UpdateAllowedForHotpatch -InstalledSha $installedSha -CandidateSha $candidateSha -Ancestry $compareStatus)) {
         return
     }
 
