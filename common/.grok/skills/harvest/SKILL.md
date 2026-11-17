@@ -523,6 +523,7 @@ routes to bobiverse via the split rule.
 - When seat_fuel_pause_reason stamps via load_digest/save_digest, any reset field not preserved by _coerce_machine is stripped and the next check self-clears the pause --- keep free-pool reset keys through coerce and fall back to a live worker stamp when the pool is still exact 0.
 - When done-offer relies on author_seat alone, a stripped stamp after DONE FR supersede re-offers the MRB to the implementer --- recover implementer from done[] pull URL at enrich time and refuse delivery on the done path.
 - skill-dag resolve: scan every seed token for JOB_SEEDS before description score; strip bob/bridge/worktree from score_description so path seeds cannot alphabetically win bob-setup-opencode
+- When matching a GitHub pull id inside a URL, require a parsed pull number or a path boundary so /pull/8044 does not match /pull/80440.
 
 ## Harvest digest (lessons audit 2026-10-06)
 
