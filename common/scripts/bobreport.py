@@ -14,6 +14,7 @@ import subprocess
 import sys
 import threading
 import time
+import traceback
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -1783,7 +1784,23 @@ class _DigestThreadGate:
 
 _DIGEST_THREAD_LOCK = _DigestThreadGate()
 _LOCK_STATE = threading.local()
-_OPEN_DIGEST_LOCK: dict[str, object] = {"fh": None, "ident": None}
+# FR #7896 / #8103: open file handle + holder metadata for true orphan reclaim.
+_OPEN_DIGEST_LOCK: dict[str, object] = {
+    "fh": None,
+    "ident": None,
+    "thread_name": None,
+    "site": None,
+}
+# FR #8103: counters + rate-limit for lock-broken / hold-exception storms.
+_LOCK_BREAK_STATS: dict[str, object] = {
+    "break_count": 0,
+    "hold_exc_count": 0,
+    "cause_counts": {},
+    "last_logged_mono": {},
+    "last_hold_exc_log": None,
+}
+_LOCK_BREAK_LOG_INTERVAL_S = 60.0
+_LOCK_BREAK_STATS_MU = threading.Lock()
 
 DIGEST_LOCK_STALE_ENV = "BOB_DIGEST_LOCK_STALE_S"
 DEFAULT_DIGEST_LOCK_STALE_S = 30.0
@@ -1796,6 +1813,144 @@ DEFAULT_DIGEST_LOCK_FOREIGN_S = 12.0
 
 class DigestLockBusy(Exception):
     """digest.lock could not be acquired after break-and-retry (FR #1136). Map to HTTP 503."""
+
+
+def reset_digest_lock_stats_for_tests() -> None:
+    """Clear FR #8103 counters (tests only)."""
+    with _LOCK_BREAK_STATS_MU:
+        _LOCK_BREAK_STATS["break_count"] = 0
+        _LOCK_BREAK_STATS["hold_exc_count"] = 0
+        _LOCK_BREAK_STATS["cause_counts"] = {}
+        _LOCK_BREAK_STATS["last_logged_mono"] = {}
+        _LOCK_BREAK_STATS["last_hold_exc_log"] = None
+
+
+def digest_lock_break_count() -> int:
+    with _LOCK_BREAK_STATS_MU:
+        return int(_LOCK_BREAK_STATS.get("break_count") or 0)
+
+
+def digest_lock_hold_exception_count() -> int:
+    with _LOCK_BREAK_STATS_MU:
+        return int(_LOCK_BREAK_STATS.get("hold_exc_count") or 0)
+
+
+def digest_lock_last_hold_exception_log() -> str | None:
+    with _LOCK_BREAK_STATS_MU:
+        val = _LOCK_BREAK_STATS.get("last_hold_exc_log")
+        return str(val) if val else None
+
+
+def _note_lock_break_for_tests(*, reason: str = "dead-thread") -> None:
+    """Test helper: bump break counter as if a break had been logged."""
+    _record_lock_break(
+        reason=reason,
+        age=0.0,
+        pid=os.getpid(),
+        thread_name="test",
+        site="test",
+        cause=reason,
+        force_log=False,
+    )
+
+
+def _holder_site_summary(limit: int = 3) -> str:
+    """Short acquire-site summary for lock-broken logs (no secrets)."""
+    frames = traceback.extract_stack(limit=12)
+    parts: list[str] = []
+    for fr in frames:
+        name = fr.name or "?"
+        if name.startswith("_") and name not in ("_write_lock_holder",):
+            continue
+        if name in (
+            "_holder_site_summary",
+            "digest_lock",
+            "_record_holder_meta",
+            "acquire",
+        ):
+            continue
+        file_leaf = Path(fr.filename or "?").name
+        parts.append(f"{file_leaf}:{fr.lineno}:{name}")
+        if len(parts) >= limit:
+            break
+    return ">".join(parts) if parts else "unknown"
+
+
+def _record_holder_meta() -> None:
+    cur = threading.current_thread()
+    _OPEN_DIGEST_LOCK["ident"] = threading.get_ident()
+    _OPEN_DIGEST_LOCK["thread_name"] = cur.name
+    _OPEN_DIGEST_LOCK["site"] = _holder_site_summary()
+
+
+def _clear_holder_meta() -> None:
+    _OPEN_DIGEST_LOCK["fh"] = None
+    _OPEN_DIGEST_LOCK["ident"] = None
+    _OPEN_DIGEST_LOCK["thread_name"] = None
+    _OPEN_DIGEST_LOCK["site"] = None
+
+
+def _record_lock_break(
+    *,
+    reason: str,
+    age: float,
+    pid: int | None,
+    thread_name: str | None,
+    site: str | None,
+    cause: str,
+    force_log: bool = True,
+) -> None:
+    """Increment break counter; rate-limit identical cause logs (FR #8103)."""
+    now = time.monotonic()
+    with _LOCK_BREAK_STATS_MU:
+        _LOCK_BREAK_STATS["break_count"] = int(_LOCK_BREAK_STATS["break_count"] or 0) + 1
+        causes = _LOCK_BREAK_STATS["cause_counts"]
+        if not isinstance(causes, dict):
+            causes = {}
+            _LOCK_BREAK_STATS["cause_counts"] = causes
+        repeats = int(causes.get(cause, 0)) + 1
+        causes[cause] = repeats
+        last_map = _LOCK_BREAK_STATS["last_logged_mono"]
+        if not isinstance(last_map, dict):
+            last_map = {}
+            _LOCK_BREAK_STATS["last_logged_mono"] = last_map
+        last = float(last_map.get(cause, 0.0) or 0.0)
+        should_log = force_log and (
+            repeats == 1 or (now - last) >= _LOCK_BREAK_LOG_INTERVAL_S
+        )
+        if should_log:
+            last_map[cause] = now
+    if not force_log:
+        return
+    if should_log:
+        print(
+            "lock-broken"
+            f" lock=digest.lock"
+            f" age={round(age, 3)}"
+            f" pid={pid}"
+            f" reason={reason}"
+            f" thread={thread_name or '-'}"
+            f" site={site or '-'}"
+            f" cause={cause}"
+            f" repeats={repeats}",
+            flush=True,
+        )
+
+
+def _record_hold_exception(exc: BaseException) -> None:
+    """Log exception raised while digest.lock was held; count once (FR #8103)."""
+    line = (
+        "digest-lock-hold-exception"
+        f" lock=digest.lock"
+        f" thread={threading.current_thread().name}"
+        f" exc={type(exc).__name__}: {exc}"
+    )
+    with _LOCK_BREAK_STATS_MU:
+        _LOCK_BREAK_STATS["hold_exc_count"] = (
+            int(_LOCK_BREAK_STATS["hold_exc_count"] or 0) + 1
+        )
+        _LOCK_BREAK_STATS["last_hold_exc_log"] = line
+    print(line, flush=True)
 
 
 def digest_lock_path(home: Path) -> Path:
@@ -1875,7 +2030,10 @@ def break_stale_digest_lock(home: Path, max_age_s: float | None = None) -> dict 
     or a *foreign* live holder exceeds ``digest_lock_foreign_s`` (FR #1388).
 
     Never breaks a fresh lock held by *this* PID. Returns a small info dict when broken, else None.
-    Logs ``lock-broken age=... pid=...``.
+    FR #8103: ``dead-thread`` only when this process still has an open holder handle whose
+    thread is gone (true orphan). A clean ``finally`` release that left a lock file behind
+    must not count as dead-thread (that false-positive stormed walrus Jeeves logs).
+    Logs rate-limited ``lock-broken lock=digest.lock ...``.
     """
     lock_path = digest_lock_path(Path(home))
     if not lock_path.exists():
@@ -1889,12 +2047,27 @@ def break_stale_digest_lock(home: Path, max_age_s: float | None = None) -> dict 
     reason = None
     me = os.getpid()
     own_live = pid is not None and int(pid) == int(me) and _pid_alive(pid)
-    holder_ident = _lock_thread_ident(lock_path)
-    dead_thread = bool(own_live and holder_ident is not None and not _thread_ident_alive(holder_ident))
+    open_fh = _OPEN_DIGEST_LOCK.get("fh")
+    open_ident = _OPEN_DIGEST_LOCK.get("ident")
+    # True orphan: we still track an open handle, but its thread is gone.
+    orphan_open = bool(
+        open_fh is not None
+        and isinstance(open_ident, int)
+        and not _thread_ident_alive(open_ident)
+    )
+    thread_name = None
+    site = None
+    if orphan_open:
+        thread_name = _OPEN_DIGEST_LOCK.get("thread_name")
+        site = _OPEN_DIGEST_LOCK.get("site")
+        if not isinstance(thread_name, str):
+            thread_name = None
+        if not isinstance(site, str):
+            site = None
     if size == 0:
         reason = "empty"
-    elif dead_thread:
-        # FR #7896: the ear process is alive, but the thread that took the lock is gone.
+    elif orphan_open:
+        # FR #7896 / #8103: live process, dead holder thread, open handle still tracked.
         reason = "dead-thread"
     elif age >= max_age:
         # Never unlink a lock still held by *this* live process - health-watchdog
@@ -1927,8 +2100,22 @@ def break_stale_digest_lock(home: Path, max_age_s: float | None = None) -> dict 
         return None
     with contextlib.suppress(OSError):
         lock_path.unlink()
+    if orphan_open:
+        with contextlib.suppress(OSError):
+            _unlock_advisory(open_fh)
+        with contextlib.suppress(OSError):
+            open_fh.close()  # type: ignore[union-attr]
+        _clear_holder_meta()
     info = {"age": round(age, 3), "pid": pid, "reason": reason, "stamped": stamped}
-    print(f"lock-broken age={info['age']} pid={pid} reason={reason}", flush=True)
+    cause = f"{reason}|{thread_name or '-'}|{site or '-'}"
+    _record_lock_break(
+        reason=reason,
+        age=float(info["age"]),
+        pid=pid if isinstance(pid, int) else None,
+        thread_name=thread_name,
+        site=site,
+        cause=cause,
+    )
     return info
 
 
@@ -2012,7 +2199,11 @@ def abandon_digest_lock_for_tests(home: Path) -> None:
         raise DigestLockBusy("abandon could not take the file lock")
     _write_lock_holder(fh)
     _OPEN_DIGEST_LOCK["fh"] = fh
-    _OPEN_DIGEST_LOCK["ident"] = threading.get_ident()
+    _record_holder_meta()
+    # Abandon also drops the thread gate so a later reclaim can proceed; the file
+    # advisory lock + open fh remain as the orphan signal (FR #7896 / #8103).
+    with contextlib.suppress(RuntimeError):
+        _DIGEST_THREAD_LOCK.release()
 
 
 def reclaim_orphaned_digest_lock(home: Path) -> dict | None:
@@ -2021,18 +2212,14 @@ def reclaim_orphaned_digest_lock(home: Path) -> dict | None:
     ident = _OPEN_DIGEST_LOCK.get("ident")
     if fh is None or _thread_ident_alive(ident if isinstance(ident, int) else None):
         return break_stale_digest_lock(home)
-    with contextlib.suppress(OSError):
-        _unlock_advisory(fh)
-    with contextlib.suppress(OSError):
-        fh.close()
-    _OPEN_DIGEST_LOCK["fh"] = None
-    _OPEN_DIGEST_LOCK["ident"] = None
-    info = break_stale_digest_lock(home)
-    return info or {"reason": "dead-thread", "pid": os.getpid(), "age": 0}
+    # Preserve metadata for the break log, then let break_stale do the unlink+count.
+    return break_stale_digest_lock(home)
 
 
-def _write_lock_holder(fh) -> None:
-    payload = f"{os.getpid()}\n{time.time():.3f}\n{threading.get_ident()}\n".encode("utf-8")
+def _write_lock_holder(fh, ident: int | None = None) -> None:
+    """Stamp pid / time / holder thread ident. Heartbeat must pass the holder ident (FR #8103)."""
+    tid = threading.get_ident() if ident is None else int(ident)
+    payload = f"{os.getpid()}\n{time.time():.3f}\n{tid}\n".encode("utf-8")
     with contextlib.suppress(OSError):
         fh.seek(0)
         fh.truncate(0)
@@ -2109,7 +2296,7 @@ def digest_lock(
             if locked:
                 _write_lock_holder(fh)
                 _OPEN_DIGEST_LOCK["fh"] = fh
-                _OPEN_DIGEST_LOCK["ident"] = threading.get_ident()
+                _record_holder_meta()
             elif raise_busy:
                 with contextlib.suppress(OSError):
                     if fh is not None:
@@ -2127,11 +2314,13 @@ def digest_lock(
                 raise DigestLockBusy("digest.lock open/lock failed") from None
         _LOCK_STATE.depth = 1
         # Refresh holder stamp so long holds do not look "stale" to the watchdog.
+        holder_ident = threading.get_ident()
         if locked and fh is not None:
             with contextlib.suppress(OSError):
-                _write_lock_holder(fh)
+                _write_lock_holder(fh, ident=holder_ident)
         # FR #2902: heartbeat every 10s while held so mtime/age stay fresh across
         # long critical sections (still prefer not to do slow I/O under the lock).
+        # FR #8103: heartbeat must rewrite the *holder* thread ident, not its own.
         stop_hb = threading.Event()
         hb_fh = fh if locked else None
 
@@ -2140,7 +2329,7 @@ def digest_lock(
                 if hb_fh is None:
                     return
                 with contextlib.suppress(OSError):
-                    _write_lock_holder(hb_fh)
+                    _write_lock_holder(hb_fh, ident=holder_ident)
 
         hb_thread = None
         if hb_fh is not None:
@@ -2159,18 +2348,29 @@ def digest_lock(
                     import runtime_failure
 
                     runtime_failure.report("bob-ear", exc, site="digest-publish-enospc")
+            _record_hold_exception(exc)
+            raise
+        except Exception as exc:
+            # FR #8103: worker must log the exception; finally still releases the lock
+            # so reclaim does not need a dead-thread break.
+            _record_hold_exception(exc)
             raise
         finally:
             stop_hb.set()
             _LOCK_STATE.depth = 0
+            held_path = digest_lock_path(root) if locked else None
             if fh is not None:
                 if locked:
                     _unlock_advisory(fh)
                 with contextlib.suppress(OSError):
                     fh.close()
                 if _OPEN_DIGEST_LOCK.get("fh") is fh:
-                    _OPEN_DIGEST_LOCK["fh"] = None
-                    _OPEN_DIGEST_LOCK["ident"] = None
+                    _clear_holder_meta()
+            # FR #8103: unlink after a clean release so leftover metadata cannot
+            # look like a dead-thread orphan on the next publish cycle.
+            if held_path is not None:
+                with contextlib.suppress(OSError):
+                    held_path.unlink()
     finally:
         with contextlib.suppress(RuntimeError):
             _DIGEST_THREAD_LOCK.release()

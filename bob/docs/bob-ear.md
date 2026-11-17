@@ -90,6 +90,8 @@ Workaround until this tip is deployed: `Restart-Service ircBob`.
 
 **FR #7896:** a digest lock whose holder thread has exited is reclaimed inside the live ear. Disk-full during the locked section is reported as `digest-publish-enospc` and the lock is released. If the outbox loop has stopped while IRC is up, the session idle tick starts it again and files one `digest-publish-loop-dead` report. That tick runs for bob-* ears, not only talk-seat liveness.
 
+**FR #8103:** a clean `finally` release unlinks `digest.lock` and clears holder metadata so the next publish cycle does not log a false `lock-broken reason=dead-thread`. True orphans still break with a rate-limited log that names the lock, thread, acquire site, and cause; `/health` exposes `lock_break_count` and `lock_hold_exception_count`. An exception raised while the lock is held is logged once and the lock is released by `finally` (no break).
+
 ## Absent / stale ear recovery
 
 | State | Action |

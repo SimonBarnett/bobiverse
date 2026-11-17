@@ -27,12 +27,21 @@ def _t(name: str) -> str:
     return (S / name).read_text(encoding="utf-8-sig")
 
 
-def _release(ver: str, product: str = "bob", sha: bool = True) -> dict:
+# FR #8112: default provenance so older tests still exercise semver paths.
+_PROV_INSTALLED = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+_PROV_CANDIDATE = "cccccccccccccccccccccccccccccccccccccccc"
+
+
+def _release(ver: str, product: str = "bob", sha: bool = True, commit: str | None = _PROV_CANDIDATE) -> dict:
     base = f"https://github.com/{REPO}/releases/download/v{ver}"
     assets = [{"name": f"{product}-{ver}.msi", "browser_download_url": f"{base}/{product}-{ver}.msi"}]
     if sha:
         assets.append({"name": f"{product}-{ver}.msi.sha256", "browser_download_url": f"{base}/{product}-{ver}.msi.sha256"})
-    return {"tag_name": f"v{ver}", "assets": assets}
+    body = {"tag_name": f"v{ver}", "assets": assets}
+    if commit:
+        body["commit"] = commit
+        body["target_commitish"] = commit
+    return body
 
 
 @pytest.fixture
@@ -40,6 +49,11 @@ def env(tmp_path):
     root = tmp_path / "bob"
     root.mkdir()
     (root / "VERSION").write_text("0.1.16\n")
+    # FR #8112: stamp a hotpatch-capable BUILD.json; tests override compare status as needed.
+    (root / "BUILD.json").write_text(
+        json.dumps({"product": "bob", "version": "0.1.16", "commit": _PROV_INSTALLED}),
+        encoding="utf-8",
+    )
     state = tmp_path / "state"
 
     def run(*extra, release=None, mode="Check", envvars=None, product="bob", raw=None):
@@ -54,6 +68,8 @@ def env(tmp_path):
         # FR #5642: temp InstallRoot defaults allow intake; force local-only unless caller overrides.
         e["BOB_CRASH_REPORT"] = "local-only"
         e["BOBIVERSE_CRASH_REPORT"] = "local-only"
+        # FR #8112: default compare says candidate contains installed (ahead).
+        e.setdefault("BOBIVERSE_SELF_UPDATE_COMPARE_STATUS", "ahead")
         e.update(envvars or {})
         p = subprocess.run(args, capture_output=True, text=True, env=e, timeout=120)
         log = (state / "update.log").read_text() if (state / "update.log").exists() else ""
