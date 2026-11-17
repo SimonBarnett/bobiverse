@@ -535,6 +535,7 @@ routes to bobiverse via the split rule.
 - report_agent_cli_nonzero_exit: skip FR #4123 FakeProc seat fingerprint and BOB_INTAKE_DISABLE; never say 'closed #N' in a PR body or GitHub treats it as Closes
 - bob-* nick-recover: register as primary_r when pending, reach 001, then GHOST/RELEASE and NICK primary
 - Gate OpenCode turn markers, stdout logs, and both watchdog clocks on a non-empty job key. An idle seat waits on ReadLine; unknown-job ceiling kills are not intake.
+- When adding a new worker_list state (e.g. waiting), add it to WORKER_STATES and keep work text in _coerce_worker_list / _apply_worker_op; also whitelist new done[] keys in gitclaim._coerce_row or they vanish on write.
 
 ## Harvest digest (lessons audit 2026-10-06)
 
