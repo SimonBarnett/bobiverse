@@ -530,6 +530,7 @@ routes to bobiverse via the split rule.
 - digest.lock dead-thread only when _OPEN_DIGEST_LOCK still tracks a dead holder handle; clean finally must unlink so short-lived publish threads do not spam lock-broken
 - airc wss keepalive: idle PING every 30s (AIRC_WSS_PING_SECONDS, clamp <=60); tls keeps 60s so Cloudflare idle cut cannot drop before first ping
 - mrb_merge_gate: MRB PASS @ alternate must not win over **Verdict:** FAIL; FIX after MRB FAIL pushes onto the assigned tip then closes the companion
+- bob-ear IRC SSL: one lock for read+write; no non-reg send before 001; outbox starts after registration; reserved Bob-* uses GHOST/RELEASE with ~30s backoff not 300s
 - Startup-cap tests: plant BOB_GROK_AUTH_PATH machine auth, no-op Supervisor._wait_exit before start_agent, select FakeTimer by delay, assert exact startup-no-first-turn (not restarts[0] alone)
 
 ## Harvest digest (lessons audit 2026-10-06)

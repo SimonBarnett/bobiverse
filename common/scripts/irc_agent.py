@@ -981,8 +981,45 @@ def reconnect_cap() -> int | None:
     return n if n >= 0 else None
 
 
-# FR #5352: reserved-nick stall; do not crash-report or tight-loop reconnect.
-NICKNAME_RESERVED_BACKOFF_S = 300.0
+# FR #5352 / #8120: reserved-nick stall; do not crash-report or tight-loop reconnect.
+# Default was 300s and left flamingo off IRC for minutes after a TLS race;
+# recover with a short bounded backoff (override via env).
+def nickname_reserved_backoff_s() -> float:
+    raw = (os.environ.get("BOB_IRC_NICK_RESERVED_BACKOFF_S") or "30").strip()
+    try:
+        n = float(raw)
+    except ValueError:
+        n = 30.0
+    return max(5.0, min(120.0, n))
+
+
+# Back-compat alias for older tests / callers.
+NICKNAME_RESERVED_BACKOFF_S = nickname_reserved_backoff_s()
+
+# FR #8120: only these commands may hit the wire before IRC 001 (registration).
+_PRE_001_CMD_RE = re.compile(
+    r"^(?:PASS|CAP|NICK|USER|AUTHENTICATE|PONG|QUIT)\b",
+    re.IGNORECASE,
+)
+
+
+def pre_001_send_allowed(line: str) -> bool:
+    """True when ``line`` is a registration-phase command (FR #8120)."""
+    text = (line or "").strip()
+    if not text:
+        return False
+    return bool(_PRE_001_CMD_RE.match(text))
+
+
+def next_reconnect_backoff_s(backoff: float) -> float:
+    """Double backoff, capped at 60s (run_forever reconnect ladder)."""
+    try:
+        cur = float(backoff)
+    except (TypeError, ValueError):
+        cur = 1.0
+    if cur < 1.0:
+        cur = 1.0
+    return min(60.0, cur * 2.0)
 
 
 # FR #4980: half-open / silent link detection (mirror airc IDLE_PING / IDLE_DEAD).
@@ -1199,11 +1236,29 @@ class Client:
         self._last_client_ping = 0.0
         self._last_keepalive_log = 0.0
         self._ghost_prune_last = 0.0
+        # FR #8120: after NICKNAME_RESERVED, GHOST/RELEASE on the next 001.
+        self._nick_recover_pending = False
 
     def send(self, line: str) -> None:
+        """Write one IRC line. FR #8120: one lock for all SSL I/O; drop non-reg
+        traffic before 001 so outbox/keepalive cannot corrupt the handshake.
+        """
+        assert self.sock is not None
+        text = (line or "").rstrip("\r\n")
+        if not text:
+            return
+        if not self.ready.is_set() and not pre_001_send_allowed(text):
+            cmd = text.split(" ", 1)[0]
+            info(f"INFO drop-pre-001 cmd={cmd}")
+            return
+        with self.lock:
+            self.sock.sendall((text + "\r\n").encode("utf-8"))
+
+    def _ssl_recv(self, nbytes: int = 4096) -> bytes:
+        """Read from the IRC SSL socket under the same lock as send (FR #8120)."""
         assert self.sock is not None
         with self.lock:
-            self.sock.sendall((line + "\r\n").encode("utf-8"))
+            return self.sock.recv(nbytes)
 
     def _channel_only_worker(self) -> bool:
         """FR #224: {machine}-{pid} / w-* seats never PRIVMSG a nick."""
@@ -3810,7 +3865,11 @@ class Client:
         try:
             sock = ctx.wrap_socket(raw, server_hostname=host)
         except (OSError, ssl.SSLError) as exc:
-            debug_log(self.debug, f"tls-fail {type(exc).__name__}: {exc}")
+            # FR #8120: log cause without secrets (no cert/payload dumps).
+            cause = type(exc).__name__
+            detail = str(exc).replace("\n", " ").strip()[:160]
+            debug_log(self.debug, f"tls-fail {cause}: {detail}")
+            info(f"INFO connect-fail cause={cause} detail={detail}")
             try:
                 raw.close()
             except OSError:
@@ -5370,7 +5429,10 @@ class Client:
         try:
             while not self.stop.is_set() and not self.dead.is_set():
                 try:
-                    data = self.sock.recv(4096)
+                    # FR #8120: serialize SSL read with send (OpenSSL is not
+                    # concurrent-safe — BAD_RECORD_MAC when outbox/keepalive
+                    # wrote during handshake/recv).
+                    data = self._ssl_recv(4096)
                 except (socket.timeout, TimeoutError):
                     # FR #4980: wake on timeout -> client PING / idle-dead reconnect.
                     try:
@@ -5616,10 +5678,13 @@ class Client:
                             # reserved nick is owned by another NickServ account (issue #11).
                             elif (self.original_nick or "").lower().startswith("bob-"):
                                 self._nickname_reserved = True
+                                # FR #8120: recover via GHOST on next 001; short backoff.
+                                self._nick_recover_pending = True
                                 info(
                                     "INFO NICKNAME_RESERVED abort nick="
                                     + self.original_nick
-                                    + " - fix home\\nickserv.password or oper SAREGISTER"
+                                    + " - will GHOST/RELEASE then retry "
+                                    "(fix home\\nickserv.password if it keeps failing)"
                                 )
                             elif bobreport.parse_worker_nick(self.original_nick):
                                 self.live_nick = self.original_nick + "_"
@@ -5638,8 +5703,12 @@ class Client:
                         joined = " ".join(parts[1:4] + ([trailing] if trailing else [])).lower()
                         if "nickname_reserved" in joined or "nickname is reserved" in joined:
                             self._nickname_reserved = True
+                            if (self.original_nick or "").lower().startswith("bob-"):
+                                self._nick_recover_pending = True
                     if trailing and "nickname is reserved" in trailing.lower():
                         self._nickname_reserved = True
+                        if (self.original_nick or "").lower().startswith("bob-"):
+                            self._nick_recover_pending = True
                         info(f"INFO NICKNAME_RESERVED {trailing.strip()[:180]}")
                     def _sasl_lines():
                         return self.sasl_on_line(cmd, parts[1:], trailing)
@@ -5862,8 +5931,8 @@ class Client:
         )
         self.sock = self.connect()
         threading.Thread(target=self.reader, daemon=True).start()
-        self._outbox_thread = threading.Thread(target=self.outbox_loop, args=(gen,), daemon=True)
-        self._outbox_thread.start()
+        # FR #8120: do not start the outbox writer until after 001 — concurrent
+        # PRIVMSG during CAP/TLS races OpenSSL (BAD_RECORD_MAC).
         if self._seat_liveness_enabled():
             threading.Thread(target=self.seat_liveness_loop, daemon=True).start()
         pw = (self.args.password or os.environ.get("BOB_IRC_PASSWORD") or "").strip()
@@ -5894,7 +5963,13 @@ class Client:
             self._abort_gate("CHAIR_NICK_TAKEN")
         if not self.ready.wait(30):
             self._abort_gate("NO 001")
+        self._outbox_thread = threading.Thread(
+            target=self.outbox_loop, args=(gen,), daemon=True
+        )
+        self._outbox_thread.start()
         time.sleep(1)
+        # FR #8120: reclaim a ghosted/reserved own nick before JOIN.
+        self._maybe_recover_own_nick()
         # Ergo default-usermode is +i (LUSERS: "0 users and N invisible").
         # Halloy nick lists that use WHO then omit flamingos even in-channel.
         self.send("MODE " + self.live_nick + " -i")
@@ -5938,19 +6013,63 @@ class Client:
             # restart a dead publish loop from the session idle tick.
             self.watch_publish_loop()
 
+    def _nickserv_password(self) -> str:
+        """Load nickserv password for GHOST/RELEASE (never log the value)."""
+        try:
+            import shop_chanserv
+
+            pw = shop_chanserv.ensure_bob_nickserv_password(self.home, mint=False)
+            if pw:
+                return str(pw).strip()
+        except Exception:
+            pass
+        path = Path(self.home) / "nickserv.password"
+        try:
+            if path.is_file():
+                return path.read_text(encoding="utf-8").strip()
+        except OSError:
+            pass
+        return (os.environ.get("BOB_NICKSERV_PASSWORD") or "").strip()
+
+    def _maybe_recover_own_nick(self) -> None:
+        """FR #8120: GHOST/RELEASE a reserved own nick, then re-NICK (bob-* ears)."""
+        if not getattr(self, "_nick_recover_pending", False):
+            return
+        nick = (self.original_nick or "").strip()
+        if not nick.lower().startswith("bob-"):
+            self._nick_recover_pending = False
+            return
+        pw = self._nickserv_password()
+        if not pw:
+            info("INFO nick-recover skip reason=no-nickserv-password")
+            self._nick_recover_pending = False
+            return
+        info(f"INFO nick-recover GHOST/RELEASE nick={nick}")
+        # Password never logged; send() does not print the line body at INFO.
+        self.send(f"PRIVMSG NickServ :GHOST {nick} {pw}")
+        time.sleep(FLOOD_S)
+        self.send(f"PRIVMSG NickServ :RELEASE {nick} {pw}")
+        time.sleep(FLOOD_S)
+        self.live_nick = nick
+        self.send("NICK " + nick)
+        self._nick_recover_pending = False
+        self._nickname_reserved = False
+
     def _surface_nickname_reserved(self, gate: str) -> None:
         """FR #3904 / #5352: reserved nick is a credential stall, not a crash.
 
         Log once per process. Do not file a crash hook. Fix
-        home\\nickserv.password or oper SAREGISTER.
+        home\\nickserv.password or oper SAREGISTER. FR #8120: short backoff
+        + GHOST recover instead of a fixed 300s sit-out.
         """
         if getattr(self, "_nickname_reserved_reported", False):
             return
         self._nickname_reserved_reported = True
         info(
-            "INFO FR #3904/#5352 NICKNAME_RESERVED stall "
-            f"gate={gate or 'NICKNAME_RESERVED'} - fix home\\nickserv.password "
-            "or oper SAREGISTER; not a crash"
+            "INFO FR #3904/#5352/#8120 NICKNAME_RESERVED stall "
+            f"gate={gate or 'NICKNAME_RESERVED'} - GHOST/RELEASE then retry; "
+            "fix home\\nickserv.password or oper SAREGISTER if it persists; "
+            "not a crash"
         )
 
     def run_forever(self) -> None:
@@ -5967,7 +6086,18 @@ class Client:
                 gate = str(te) if te else ""
                 if "NICKNAME_RESERVED" in gate or getattr(self, "_nickname_reserved", False):
                     self._surface_nickname_reserved(gate or "NICKNAME_RESERVED")
-                    backoff = max(backoff, NICKNAME_RESERVED_BACKOFF_S)
+                    self._nick_recover_pending = True
+                    backoff = max(backoff, nickname_reserved_backoff_s())
+                elif "NO 001" in gate or "NO JOIN" in gate:
+                    # Fast retry after CAP/handshake timeout (FR #8120).
+                    info(f"INFO connect-fail cause={gate}")
+                    backoff = max(1.0, min(backoff, 8.0))
+            except (ssl.SSLError, OSError) as e:
+                cause = type(e).__name__
+                detail = str(e).replace("\n", " ").strip()[:160]
+                info(f"INFO connect-fail cause={cause} detail={detail}")
+                # TLS races / BAD_RECORD_MAC: stay on the short ladder (not 300s).
+                backoff = max(1.0, min(backoff, 8.0))
             except Exception as e:
                 info(f"INFO session end {type(e).__name__}")
                 # FR #6282 reopen: always log full traceback for session-end faults.
@@ -5997,7 +6127,7 @@ class Client:
                 info(f"INFO connect throttled n={self._throttle_n}; wait {delay:.0f}s")
             info(f"INFO reconnect attempt={attempt} in {delay:.1f}s (backoff cap 60s)")
             time.sleep(delay)
-            backoff = min(60.0, backoff * 2)
+            backoff = next_reconnect_backoff_s(backoff)
 
 
 def clean_crashed_priors(nick: str, home: str, *, once: bool) -> None:
