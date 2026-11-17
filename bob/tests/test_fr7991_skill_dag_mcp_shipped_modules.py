@@ -94,3 +94,25 @@ def test_fr7991_cli_status_is_empty_error(tmp_path: Path):
     """The repo copy (sibling present) still indexes cleanly."""
     server = mcp.SkillDagServer(roots=[tmp_path / "skills"])
     assert server.last_error == ""
+
+def test_mrb7994_list_cli_without_source_dir_includes_sibling():
+    """Build-BobWorker.ps1 calls --list with only --bob-worker (FR #7991)."""
+    proc = subprocess.run(
+        [
+            sys.executable,
+            str(BOB_SCRIPTS / "worker_shipped_scripts.py"),
+            "--list",
+            "--bob-worker",
+            str(WORKER),
+        ],
+        cwd=str(BOB_SCRIPTS),
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert proc.returncode == 0, proc.stderr
+    listed = {line.strip() for line in proc.stdout.splitlines() if line.strip()}
+    assert "skill_dag_mcp.py" in listed
+    assert "skill_dag_index.py" in listed
+    assert "sys.py" not in listed
+    assert "json.py" not in listed
