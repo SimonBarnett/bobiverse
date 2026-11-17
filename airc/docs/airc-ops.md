@@ -71,6 +71,7 @@ automatically on connect or handshake failure only.
 | WSS endpoint | `AIRC_IRC_WS_URL` | `--ws-url` | `wss://wsirc.ntsa.uk` |
 | TLS host | `AIRC_IRC_HOST` | `--host` | `irc.ntsa.uk` |
 | TLS preferred port | `AIRC_IRC_PORT` | `--port` | `993` |
+| WSS keepalive PING idle | `AIRC_WSS_PING_SECONDS` | (none) | `30` (clamped to ≤60; FR #8111) |
 
 - `tls` expands to raw TLS IRC on `AIRC_IRC_HOST` at the preferred port, then the
   other listener (993 ↔ 6697). `wss` expands to one IRC-over-WebSocket candidate

@@ -105,9 +105,43 @@ class FloodTokenBucket:
 
 # Issue #298: half-open / silent link detection + reconnect.
 IDLE_PING_S = 60.0
+# FR #8111: Cloudflare ~100s idle cut on wss://; default 30s with first ping
+# within 30s of registration. Env AIRC_WSS_PING_SECONDS overrides; never >60 on wss.
+IDLE_PING_WSS_S = 30.0
+WSS_PING_MAX_S = 60.0
+AIRC_WSS_PING_ENV = "AIRC_WSS_PING_SECONDS"
 IDLE_DEAD_S = 120.0
 RECONNECT_MIN_S = 3.0
 RECONNECT_MAX_S = 60.0
+
+
+def is_wss_transport(desc: str | None) -> bool:
+    """True when the active session transport is IRC-over-WebSocket (FR #8111)."""
+    return bool(desc) and str(desc).strip().lower().startswith("wss")
+
+
+def idle_ping_seconds(
+    transport_desc: str | None = None,
+    env: dict | None = None,
+) -> float:
+    """Seconds of silence before a client PING (FR #8111).
+
+    tls keeps ``IDLE_PING_S`` (60). wss defaults to ``IDLE_PING_WSS_S`` (30),
+    overridable by ``AIRC_WSS_PING_SECONDS``, always clamped to ``WSS_PING_MAX_S``.
+    """
+    mapping = env if env is not None else os.environ
+    if not is_wss_transport(transport_desc):
+        return float(IDLE_PING_S)
+    raw = str(mapping.get(AIRC_WSS_PING_ENV) or "").strip()
+    val = IDLE_PING_WSS_S
+    if raw:
+        try:
+            parsed = float(raw)
+            if parsed > 0:
+                val = parsed
+        except ValueError:
+            val = IDLE_PING_WSS_S
+    return min(float(val), float(WSS_PING_MAX_S))
 # FR #8002: never-registered drops must not sit on the 60s cap (Ergo ip-limits).
 PREREG_FAILS_BEFORE_LONG = 5
 PREREG_BACKOFF_MIN_S = 600.0
@@ -1800,14 +1834,19 @@ class AircConsoleService:
         self._stop.set()
 
     def _idle_keepalive(self) -> None:
-        """Detect half-open links: client PING, then force reconnect if no traffic (#298)."""
+        """Detect half-open links: client PING, then force reconnect if no traffic (#298).
+
+        FR #8111: wss uses a shorter idle threshold (default 30s) so Cloudflare's
+        ~100s idle cut cannot drop the socket before the first PING.
+        """
         now = time.monotonic()
         idle = now - self._last_recv
         if self._awaiting_pong and (now - self._last_ping_sent) >= IDLE_DEAD_S:
             info("INFO idle-dead (no PONG/traffic); reconnecting")
             self._force_reconnect = True
             return
-        if self._registered and idle >= IDLE_PING_S and not self._awaiting_pong:
+        ping_s = idle_ping_seconds(getattr(self, "_transport_desc", None))
+        if self._registered and idle >= ping_s and not self._awaiting_pong:
             token = str(int(time.time()))
             try:
                 self.send(f"PING :{token}")
