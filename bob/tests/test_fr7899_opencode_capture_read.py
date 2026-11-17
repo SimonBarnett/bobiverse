@@ -14,7 +14,8 @@ def _launch_text(tmp_path: Path) -> str:
 
 
 def _ceiling_block(text: str) -> str:
-    start = text.index("if ($stallMs -ge $hardCeilingMs)")
+    # FR #8133: ceiling is job-gated.
+    start = text.index("if ($script:ocHasJob -and $stallMs -ge $hardCeilingMs)")
     end = text.index("if (($ocJobPoll % 50) -eq 0", start)
     return text[start:end]
 

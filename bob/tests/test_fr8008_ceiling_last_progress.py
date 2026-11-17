@@ -16,8 +16,8 @@ def test_fr8008_kill_reason_names_last_progress(tmp_path: Path):
     assert "$lastProgress = $runStarted" in text
     assert "last progress" in text
     assert "$lastProgress.ToString" in text or "ToUniversalTime" in text or "o)" in text
-    # stall clock still drives the ceiling
-    assert "if ($stallMs -ge $hardCeilingMs)" in text
+    # stall clock still drives the ceiling (FR #8133: job-gated)
+    assert "if ($script:ocHasJob -and $stallMs -ge $hardCeilingMs)" in text
     assert "--elapsed-ms ([int]$stallMs)" in text
 
 
@@ -29,6 +29,7 @@ def test_fr8008_cpu_alone_does_not_reset_last_progress(tmp_path: Path):
     assert cpu_lines, "expected CPU busy check"
     assert all("$lastProgress" not in ln for ln in cpu_lines)
     assert any("$lastBeat" in ln for ln in cpu_lines)
-    # output growth and worktree mtime still reset lastProgress
-    assert any("$len -gt $lastLen" in ln and "$lastProgress" in ln for ln in lines)
+    # output growth then lastProgress on the following lines; worktree mtime on one line
+    joined = "\n".join(lines)
+    assert "$len -gt $lastLen" in joined and "$lastProgress = [datetime]::UtcNow" in joined
     assert any("$stamp -gt $lastWtStamp" in ln and "$lastProgress" in ln for ln in lines)

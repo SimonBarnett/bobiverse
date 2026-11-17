@@ -93,12 +93,14 @@ def test_generated_wrapper_does_not_grant_external_directory(tmp_path: Path):
     assert not any(str(k).endswith("opencode-seat.json") for k in spec.files)
     assert "external_directory" not in script or "allow" not in script
     assert '"allow"' not in script
-    assert "OPENCODE_CONFIG" not in script
+    assert "$env:OPENCODE_CONFIG" not in script
     assert "BOB_OPENCODE_DIR" not in script
     assert "opencode-project-dir.txt" not in script
     assert "@@BOBJOB1|" in script
     assert "[char]9" not in script
-    assert "Invoke-OpencodeRun $prompt '' ''" in script
+    # FR #8133: standing prompt is not a watched turn; idle waits for job inject.
+    assert "Invoke-OpencodeRun $prompt '' ''" not in script
+    assert "opencode-ready: idle (FR #8133" in script
     inbound = script.split("function Invoke-OpencodeInbound", 1)[1]
     bare = inbound.find("Invoke-OpencodeRun $raw '' ''")
     assert inbound.find("job-context-malformed") < bare

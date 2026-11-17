@@ -4545,7 +4545,10 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             r"        }",
             r"    }",
             r"    $turnN = $script:ocTurnN",
-            r"    Write-OpencodeTurnMarker 'turn_started' $turnN",
+            # FR #8133: turn markers and watchdogs only for a real job inject. Standing /
+            # idle runs must not arm turn_started or the hard ceiling.
+            r"    $script:ocHasJob = -not [string]::IsNullOrWhiteSpace([string]$jobKey)",
+            r"    if ($script:ocHasJob) { Write-OpencodeTurnMarker 'turn_started' $turnN }",
             r"    try {",
             r"""    $argStr = ($argList | ForEach-Object { if ($_ -match '[\s"]') { $escaped = $_ -replace '(\\*)"', '$1$1\"'; $escaped = $escaped -replace '(\\+)$', '$1$1'; '"' + $escaped + '"' } else { $_ } }) -join ' '""",
             r"    $proc = $null",
@@ -4562,10 +4565,11 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             # the 30 min ceiling measures time since real progress (output growth or
             # worktree mtime), not wall clock. CPU/descendants refresh lastBeat only
             # (short idle watchdog); they do not reset the hard-ceiling stall clock.
+            # FR #8133: both clocks are job-only.
             r"        $watchdogMs = if ($env:BOB_OPENCODE_WATCHDOG_MS) { [int]$env:BOB_OPENCODE_WATCHDOG_MS } else { 120000 }",
             r"        $hardCeilingMs = if ($env:BOB_OPENCODE_HARD_CEILING_MS) { [int]$env:BOB_OPENCODE_HARD_CEILING_MS } else { 1800000 }",
             r"        $script:ocStdoutLog = ''",
-            r"        if ($env:BOB_OPENCODE_STDOUT_LOG -ne '0' -and $stdoutLogPy) {",
+            r"        if ($script:ocHasJob -and $env:BOB_OPENCODE_STDOUT_LOG -ne '0' -and $stdoutLogPy) {",
             r"            $env:BOB_OC_LOG_JOB = [string]$jobKey",
             r"            $env:BOB_OC_LOG_SEAT = if ($env:BOB_NICK) { $env:BOB_NICK } else { $env:BOB_AGENT_NICK }",
             r"            $env:BOB_OC_LOG_MODEL = [string]$model",
@@ -4667,18 +4671,19 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             r"            $idleMs = ([datetime]::UtcNow - $lastBeat).TotalMilliseconds",
             r"            $runMs = ([datetime]::UtcNow - $runStarted).TotalMilliseconds",
             r"            $stallMs = ([datetime]::UtcNow - $lastProgress).TotalMilliseconds",
-            r"            if ($stallMs -ge $hardCeilingMs) {",
+            r"            if ($script:ocHasJob -and $stallMs -ge $hardCeilingMs) {",
             r"                $timedOut = $true",
             r"                $lastProgIso = $lastProgress.ToUniversalTime().ToString('o')",
             r"                $killReason = ('hard ceiling ' + [int]$hardCeilingMs + 'ms; last progress ' + $lastProgIso + '; stall ' + [int]$stallMs + 'ms')",
             r"                try { & taskkill /T /F /PID $proc.Id 2>$null | Out-Null } catch { }",
             # FR #7739: one intake report (machine, seat, job, elapsed, reason). Dedupe is in the helper.
+            # FR #8133: never file ceiling intake without a job key.
             r"                $pyCeil = (Get-Command python.exe -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source)",
             r"                if (-not $pyCeil) { $pyCeil = 'python.exe' }",
             r"                $mach = if ($env:BOB_MACHINE_ID) { $env:BOB_MACHINE_ID } else { $env:COMPUTERNAME }",
             r"                try { & $pyCeil $guardPy ceiling --machine $mach --nick $env:BOB_NICK --job $jobKey --elapsed-ms ([int]$stallMs) --reason $killReason 2>$null | Out-Null } catch { }",
             # FR #7899: a ceiling kill must reach the outbox or the chair re-offers a silent job.
-            r"                if ($jobKey) { Write-OpencodeJobGiveup $jobKey $killReason }",
+            r"                Write-OpencodeJobGiveup $jobKey $killReason",
             r"                break",
             r"            }",
             # FR #7739: every 50 x 100ms (5s, under 60s) ask if the job was closed, given up, or reassigned.
@@ -4698,7 +4703,7 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             r"                    break",
             r"                }",
             r"            }",
-            r"            if ($idleMs -ge $watchdogMs) {",
+            r"            if ($script:ocHasJob -and $idleMs -ge $watchdogMs) {",
             r"                $timedOut = $true",
             r"                $killReason = ('watchdog timeout (no output/cpu/worktree idle ' + [int]$watchdogMs + 'ms)')",
             r"                try { & taskkill /T /F /PID $proc.Id 2>$null | Out-Null } catch { }",
@@ -4865,7 +4870,7 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             r"            } else {",
             r"                $script:ocEpipeTries = 0",
             r"            }",
-            r"            Write-OpencodeTurnMarker 'turn_ended' $turnN $teStatus $teErr $teClass",
+            r"            if ($script:ocHasJob) { Write-OpencodeTurnMarker 'turn_ended' $turnN $teStatus $teErr $teClass }",
             r"        }",
             r"    }",
             r"    if ($script:ocDbRetry) {",
@@ -4941,7 +4946,9 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             r"    }",
             r"    Invoke-OpencodeRun $raw '' ''",
             r"}",
-            r"try { Invoke-OpencodeRun $prompt '' '' } catch { [Console]::Error.WriteLine('opencode initial run failed: ' + $_) }",
+            # FR #8133: do not run the standing prompt as a watched turn. Idle seats
+            # wait on ReadLine; the first job inject starts turn_started and the ceiling.
+            r"Write-Output 'opencode-ready: idle (FR #8133; first turn is the first job inject)'",
             r"while ($true) { $line = [Console]::ReadLine(); if ($null -eq $line -or $line -eq 'exit') { break }; if (-not [string]::IsNullOrWhiteSpace($line)) { try { Invoke-OpencodeInbound $line } catch { [Console]::Error.WriteLine('opencode run failed: ' + $_) } } }",
             r"exit 0",
         ])
