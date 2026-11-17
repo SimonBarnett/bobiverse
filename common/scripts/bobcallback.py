@@ -278,6 +278,10 @@ def handle_health_get(home: Path) -> tuple[int, bytes]:
         "lock_own": bool(own_live),
         "last_digest_write": last,
         "digest_writable": writable,
+        # FR #8103: lock-break / hold-exception counters so a storm is visible
+        # without reading the Jeeves log.
+        "lock_break_count": bobreport.digest_lock_break_count(),
+        "lock_hold_exception_count": bobreport.digest_lock_hold_exception_count(),
     }
     return (200 if ok else 503), json.dumps(doc, separators=(",", ":")).encode("utf-8")
 
