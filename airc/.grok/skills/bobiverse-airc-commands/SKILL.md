@@ -67,6 +67,8 @@ PRIVMSG {mid}_console :id=c25bd00e VERSION
 
 Typed prepare selects exact T$EXEC type: `prepare form|report|procedure <ENAME>` (or `type=F|R|P`). **CAST IRON (FR #7130):** never run WINACTIV / formprep.exe / interactive FORMPREP from airc LocalSystem Session 0. `PRIORITY prepare-form <ENAME>` is the supported Session-0-safe path (Web SDK + CredMan). `PRIORITY prepare form` WINRUN is refused there with `reason=session0_gui`. Report/procedure use EXEC `REPPREPDIRECT2`. Never unscoped FORMPREP. Never SQL-fake `UPD`.
 
+**FORM-PREPARE naming (FR #8142):** the Priority menu a human uses is **FORM-PREPARE**; it launches the interactive program `FORMPREP`, whose direct Session-0-safe twin is `FORMPREPDRCT2`. `ENAME` is the **form** name (e.g. `TRANSORDER_T`), never the menu label or the program name --- passing `FORM-PREPARE` / `FORMPREP` as an unscoped ename/name is refused, never run as a generic op. After a dictionary `FORMCLTRIGTEXT` change, drive `PRIORITY prepare-form <ENAME>` yourself (Session 0) or `PRIORITY prepare form <ENAME>` (interactive session); do not ask a human to Form-Prepare over AnyDesk. Honesty gates: `EXECPREPLOCK.UPD=N` + typed prep artifact mtime (`d{T$EXEC}.prp` / `d{T$EXEC}.p`, or site equivalent). Older on-prem trees whose `EXECPREPLOCK` lacks `UPD`/`LASTPREPDATE`/`ENAME` still resolve types (reads `T$EXEC` only); the lock gate then fails closed rather than fabricating a prepared signal.
+
 ```text
 PRIVMSG {mid}_console :id=c25bd00e PRIORITY prepare procedure FOO instance=example-dev
 PRIVMSG {mid}_console :id=c25bd00e PRIORITY prepare form ORDERS instance=example-dev
