@@ -27,8 +27,18 @@ def report_opencode_hard_ceiling(
     reason: str,
     filer_post=None,
 ) -> dict:
-    """Post one intake report. A second call with the same key is a no-op."""
-    sig = ceiling_sig(machine, nick, job)
+    """Post one intake report. A second call with the same key is a no-op.
+
+    FR #8133: no-job / unknown-job kills are not filed (idle seat, no assign).
+    """
+    job_s = " ".join(str(job or "").split())
+    if (
+        not job_s
+        or job_s.lower() in ("0", "unknown", "unknown-job", "unknown-job-0")
+        or job_s.lower().startswith("unknown-job")
+    ):
+        return {"posted": False, "skipped": True, "sig": "", "reason": "no-job"}
+    sig = ceiling_sig(machine, nick, job_s)
     if sig in _FILED:
         return {"posted": False, "skipped": True, "sig": sig}
     title = "bug: OpenCode hard-ceiling kill"
@@ -36,7 +46,7 @@ def report_opencode_hard_ceiling(
         "what: opencode watchdog killed a turn at the hard ceiling\n"
         f"machine: {machine}\n"
         f"seat: {nick}\n"
-        f"job: {job}\n"
+        f"job: {job_s}\n"
         f"elapsed_ms: {int(elapsed_ms)}\n"
         f"reason: {reason}\n"
     )
