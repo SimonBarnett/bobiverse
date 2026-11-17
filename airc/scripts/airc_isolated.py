@@ -62,32 +62,52 @@ def _scrub_kwargs(kwargs: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
-def extract_isolated_json_payload(stdout: str) -> dict[str, Any] | None:
-    """FR #5778: take the last JSON object line from child stdout.
+_DECODER = json.JSONDecoder()
 
-    Isolated workers must print one JSON object on stdout. Older builds (and
-    accidental ``info()`` calls) may prepend timestamped log lines; prefer the
-    last line that parses as a dict so a real result is not remapped to
-    ``worker_died``.
+
+def _decode_json_dict(chunk: str) -> dict[str, Any] | None:
+    """Return the leading JSON object in ``chunk`` (trailing noise ignored)."""
+    try:
+        data = _DECODER.raw_decode(chunk)[0]
+    except (json.JSONDecodeError, ValueError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def extract_isolated_json_payload(stdout: str) -> dict[str, Any] | None:
+    """FR #5778 / #7987: take the last JSON object from child stdout.
+
+    Isolated workers must print one JSON object on stdout, but older builds and
+    accidental ``print``/``info()`` calls can prefix or suffix log text on the
+    same line (and BOM / UTF-16-as-cp1252 NUL bytes survive a pipe). Accept a
+    JSON object anywhere on a line, prefer the last one, so a real result is not
+    remapped to ``worker_died`` / ``bad-json`` (FR #7987).
     """
-    text = (stdout or "").strip()
+    text = (stdout or "").replace("\x00", "").strip().lstrip("\ufeff")
     if not text:
         return None
     try:
         data = json.loads(text)
-        return data if isinstance(data, dict) else None
-    except json.JSONDecodeError:
-        pass
+    except (json.JSONDecodeError, ValueError):
+        data = None
+    if isinstance(data, dict):
+        return data
+    # Last line that carries a JSON object; tolerate a log prefix/suffix.
     for line in reversed(text.splitlines()):
-        chunk = line.strip()
-        if not chunk.startswith("{"):
-            continue
-        try:
-            data = json.loads(chunk)
-        except json.JSONDecodeError:
-            continue
+        chunk = line.strip().lstrip("\ufeff")
+        idx = chunk.find("{")
+        while idx != -1:
+            data = _decode_json_dict(chunk[idx:])
+            if isinstance(data, dict):
+                return data
+            idx = chunk.find("{", idx + 1)
+    # Pretty-printed / multi-line object: first '{' that decodes as a dict.
+    idx = text.find("{")
+    while idx != -1:
+        data = _decode_json_dict(text[idx:])
         if isinstance(data, dict):
             return data
+        idx = text.find("{", idx + 1)
     return None
 
 
@@ -224,27 +244,52 @@ def start_isolated(
     return None
 
 
+def _write_isolated_result(payload: dict[str, Any], stream: Any) -> None:
+    """Write the one JSON result to the IPC stream (never raises)."""
+    text = json.dumps(payload, separators=(",", ":"))
+    try:
+        if stream is not None:
+            print(text, file=stream, flush=True)
+        else:
+            os.write(1, (text + "\n").encode("utf-8", "replace"))
+    except (BrokenPipeError, OSError):
+        pass
+
+
 def isolated_job_main(argv: list[str] | None = None) -> int:
     """Child entry: read spec on stdin, call packaged func, print JSON."""
     # FR #5778: even when launched without parent _child_env, keep stdout JSON-only.
     os.environ.setdefault("AIRC_ISOLATED_JOB", "1")
+    real_stdout = sys.stdout
     raw = sys.stdin.read()
     try:
         spec = json.loads(raw or "{}")
     except json.JSONDecodeError:
-        print(json.dumps({"ok": False, "error": "isolated-fault:bad-spec"}))
+        _write_isolated_result(
+            {"ok": False, "error": "isolated-fault:bad-spec"}, real_stdout
+        )
         return 2
     module = str(spec.get("module") or "")
     func = str(spec.get("func") or "")
     if module not in _PACKAGED_MODULES or not func.isidentifier():
-        print(json.dumps({"ok": False, "error": "isolated-fault:refused-target"}))
+        _write_isolated_result(
+            {"ok": False, "error": "isolated-fault:refused-target"}, real_stdout
+        )
         return 2
     kwargs = spec.get("kwargs") if isinstance(spec.get("kwargs"), dict) else {}
     kwargs = _scrub_kwargs(kwargs)
     try:
         mod = __import__(module, fromlist=[func])
         fn = getattr(mod, func)
-        data = fn(**kwargs)
+        # FR #7987: keep the IPC channel JSON-only even when an older build or a
+        # dependency prints to stdout during the work.
+        prev_stdout = sys.stdout
+        if sys.stderr is not None:
+            sys.stdout = sys.stderr
+        try:
+            data = fn(**kwargs)
+        finally:
+            sys.stdout = prev_stdout
     except Exception as exc:  # noqa: BLE001
         if _fail_intake is not None:
             try:
@@ -256,11 +301,13 @@ def isolated_job_main(argv: list[str] | None = None) -> int:
                 )
             except Exception:
                 pass
-        print(json.dumps({"ok": False, "error": type(exc).__name__}))
+        _write_isolated_result(
+            {"ok": False, "error": type(exc).__name__}, real_stdout
+        )
         return 1
     if not isinstance(data, dict):
         data = {"ok": True, "result": str(type(data).__name__)}
-    print(json.dumps(data, separators=(",", ":")))
+    _write_isolated_result(data, real_stdout)
     return 0
 
 
