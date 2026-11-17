@@ -514,7 +514,6 @@ routes to bobiverse via the split rule.
 - When skill-dag MCP status has node_count 0 or ModuleNotFoundError, resolve and get_skill with python skill_dag_mcp.py --once using the mcp.json --root args. Do not invent skill bodies.
 - When preferring an installed copy of a script, ship its local imports too; put exception text (str(exc)) in status last_error, not only the class name.
 - When two OpenCode seats on one machine share opencode.db, give each seat its own data dir (copy auth.json, do not copy the db). Retry database is locked with backoff, then GIVEUP the job so the seat does not stay doing.
-- When a test FakeProc.wait returns after poll() is dead, Supervisor agent-wait calls restart_agent on the class monkeypatch and the next test sees agent-cli-nonzero-exit first. Block FakeProc.wait for the whole test; let the grace/cap timer call restart_agent.
 
 ## Harvest digest (lessons audit 2026-10-06)
 
