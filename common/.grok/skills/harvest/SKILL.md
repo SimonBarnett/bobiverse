@@ -534,6 +534,7 @@ routes to bobiverse via the split rule.
 - Startup-cap tests: plant BOB_GROK_AUTH_PATH machine auth, no-op Supervisor._wait_exit before start_agent, select FakeTimer by delay, assert exact startup-no-first-turn (not restarts[0] alone)
 - report_agent_cli_nonzero_exit: skip FR #4123 FakeProc seat fingerprint and BOB_INTAKE_DISABLE; never say 'closed #N' in a PR body or GitHub treats it as Closes
 - bob-* nick-recover: register as primary_r when pending, reach 001, then GHOST/RELEASE and NICK primary
+- Gate OpenCode turn markers, stdout logs, and both watchdog clocks on a non-empty job key. An idle seat waits on ReadLine; unknown-job ceiling kills are not intake.
 
 ## Harvest digest (lessons audit 2026-10-06)
 
