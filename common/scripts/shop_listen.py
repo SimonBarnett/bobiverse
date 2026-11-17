@@ -1035,6 +1035,22 @@ def handle_shop_worker_line(
                     task=parsed.task,
                     ident=parsed.id,
                 )
+            # FR #8017: pre-ACK deterministic NACK (worktree-create-failed, …) still
+            # cools that seat for the offered unaccepted row so !bored cannot loop.
+            if parsed.verb == "NACK":
+                stamped = None
+                with contextlib.suppress(Exception):
+                    stamped = gitclaim.stamp_deterministic_nack_on_unaccepted(
+                        home,
+                        nick=nick,
+                        repo=parsed.repo,
+                        task=parsed.task,
+                        ident=parsed.id,
+                        reason=reason,
+                    )
+                if stamped is not None:
+                    out["job"] = stamped
+                    out["deterministic_nack"] = True
             return out
         try:  # t852u: remember who gave this up, forever (resync drops row stamps)
             gitclaim.ledger_note_event(home, nick, parsed.verb, parsed.task, parsed.repo, parsed.id, job if isinstance(job, dict) else None)

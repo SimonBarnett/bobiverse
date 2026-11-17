@@ -78,7 +78,15 @@ function Invoke-GrokBotApi {
     $stderrPath = Join-Path $outDir 'stderr.txt'
     $sw = [Diagnostics.Stopwatch]::StartNew()
     $proc = Start-Process -FilePath $py -ArgumentList $quoted -PassThru -NoNewWindow -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath
-    $limit = [Math]::Max(30, $TimeoutSec + 30)
+    # FR #8031: honor the caller's TimeoutSec. Max(30, TimeoutSec+30) made
+    # Get-BobStallAlerts -TimeoutSec 5 block for 35s. A short grace lets the
+    # child's own --timeout exit first when it honors the flag.
+    $graceSec = 2
+    if ($TimeoutSec -gt 0) {
+        $limit = $TimeoutSec + $graceSec
+    } else {
+        $limit = 30
+    }
     $exited = $proc.WaitForExit($limit * 1000)
     if (-not $exited) {
         try { Stop-ProcessTree -ProcessId $proc.Id } catch { }

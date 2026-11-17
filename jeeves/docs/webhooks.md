@@ -90,10 +90,11 @@ curl -sS -X POST "https://bob.ntsa.uk/bob/v1/intake" \
   -d "{\"kind\":\"harvest\",\"title\":\"example lesson\",\"body\":\"…\",\"repo\":\"SimonBarnett/bobiverse\"}"
 ```
 
-Optional **`dedupe_key`** (FR #4963, at most 128 chars; else `400 bad_dedupe_key`): scoped per `repo`. When omitted on `kind=issue|fr`, intake derives a stable `msgfp:` key from a normalized title+body fingerprint (FR #6196: strips timestamps, intake ids, machine-pid nicks, `lag_s`; exact match only; no fuzzy merge). An explicit `dedupe_key` keeps priority. Decision order after allowlist/rate/redaction:
+Optional **`dedupe_key`** (FR #4963, at most 128 chars; else `400 bad_dedupe_key`): scoped per `repo`. When omitted on `kind=issue|fr`, intake derives a stable `msgfp:` key from a normalized title+body fingerprint (FR #6196: strips timestamps, intake ids, machine-pid nicks, `lag_s`, `elapsed_ms`, job ids; exact match only; no fuzzy merge). An explicit `dedupe_key` is tried first. Decision order after allowlist/rate/redaction:
 
 1. **`idempotency_key`** — same POST retry is a no-op (`duplicate: true`, original `action`/`number`/`url`).
-2. **`dedupe_key`** — open match: comment (`action=commented`); closed match: reopen then comment (`action=reopened`); no match: file a new issue (`action=filed`) with hidden `<!-- intake-dedupe:<sha256(repo|dedupe_key)> -->` and a local `intake/records/dedupe-*.json` index (rebuilt from `gh issue list --search` if the index is lost).
+2. **`dedupe_key`** — open match: comment (`action=commented`); closed match: reopen then comment (`action=reopened`).
+3. **title + signature** (FR #8019) — when the caller key misses (or was omitted), the same normalized title+body against an open issue comments instead of filing a twin. Covers per-job keys such as OpenCode hard-ceiling kills. A genuinely different title or error text still files a new issue. New filings index both the caller key and the `msgfp:` fingerprint (rebuilt from `gh issue list --search` / signature scan if the index is lost).
 
 Response fields stay backward compatible: `intake_id`, `url`, `queued`, `duplicate`, `state`, plus `action` (`filed`|`commented`|`reopened`) and `number`. Outbox rows carry `dedupe_key`; `drain_intake_outbox` (FR #2595) runs the same comment/reopen/file decision (no duplicate comments on a re-drain).
 

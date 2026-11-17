@@ -1,6 +1,7 @@
 """FR #7146: hello model= stays configured; digest start_model is launch actual."""
 from __future__ import annotations
 
+import re
 import sys
 from pathlib import Path
 from typing import Any
@@ -47,7 +48,9 @@ def test_fr7146_run_agent_pins_hello_configured_and_post_launch_actual():
     start = src.find("def run_agent(")
     assert start >= 0
     chunk = src[start:]
-    hello_at = chunk.find("worker_hello_line(kind,")
+    hello = re.search(r"worker_hello_line\(\s*kind\s*,", chunk)
+    assert hello is not None
+    hello_at = hello.start()
     digest_at = chunk.find("model=actual or seat_model")
     assert hello_at > 0
     assert digest_at > 0

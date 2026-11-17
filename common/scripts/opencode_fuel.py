@@ -95,10 +95,24 @@ RATE_LIMIT_PHRASES: tuple[str, ...] = (
     "rolling limit",
     "usage balance exhausted",
     "payment required",
+    # FR #8026 / #8028: OpenCode free-pool exhaustion (process may stay alive).
+    "free usage limit",
+    "subscribe to opencode go",
 )
 
 # Default pause when the provider gives no reset time (seconds).
 DEFAULT_PAUSE_S = 3600
+
+_FREE_USAGE_LIMIT_RX = re.compile(
+    r"(?i)(?:Free\s+usage\s+limit|subscribe\s+to\s+OpenCode\s+Go)"
+)
+
+
+def is_free_usage_limit_text(text: str | None) -> bool:
+    """True when provider text is OpenCode free-pool exhaustion (FR #8028)."""
+    if not text or not isinstance(text, str):
+        return False
+    return bool(_FREE_USAGE_LIMIT_RX.search(text))
 
 
 def _clamp_pct(n: Optional[float]) -> Optional[int]:
@@ -1659,7 +1673,12 @@ def opencode_pool_bars(
     return bars
 
 
-def fuel_from_stats(stats: dict | None) -> dict:
+def fuel_from_stats(
+    stats: dict | None,
+    *,
+    state_dir: str | Path | None = None,
+    now: Optional[float] = None,
+) -> dict:
     """Build digest fuel numbers from an OpenCode stats document.
 
     The returned dict contains the two digest fuel ids (``opencode-free``,
@@ -1676,6 +1695,10 @@ def fuel_from_stats(stats: dict | None) -> dict:
           "free_models": ["beam-free", "iceman-contributor-free"],
           "free_model_ids": ["opencode/beam-free", ...]
         }
+
+    FR #8028: when ``state_dir`` (or the default pause dir) has an active
+    ``opencode-free`` pause from a Free usage limit refusal, free remaining is
+    forced to ``0`` even if the catalogue still lists free models.
     """
     stats = stats if isinstance(stats, dict) else {}
     go_by_model = _go_models_remaining(stats)
@@ -1699,7 +1722,7 @@ def fuel_from_stats(stats: dict | None) -> dict:
         ),
     }
     lim_id, _lim_rem = limiting_go_window(windows)
-    return {
+    fuel = {
         FUEL_ID_FREE: free_remaining,
         FUEL_ID_GO: go_remaining,
         "models": go_by_model,
@@ -1707,9 +1730,15 @@ def fuel_from_stats(stats: dict | None) -> dict:
         "windows": windows,
         "limiting": lim_id,
     }
+    return apply_runtime_pauses_to_fuel(fuel, state_dir, now=now)
 
 
-def fuel_from_windowed_stats(windowed: dict[str, dict] | None) -> dict:
+def fuel_from_windowed_stats(
+    windowed: dict[str, dict] | None,
+    *,
+    state_dir: str | Path | None = None,
+    now: Optional[float] = None,
+) -> dict:
     """Build digest fuel numbers from rolling cap windows.
 
     ``windowed`` maps window names (``week``, ``month``) to stats docs produced
@@ -1717,6 +1746,8 @@ def fuel_from_windowed_stats(windowed: dict[str, dict] | None) -> dict:
     most-utilised window, because Go caps are rolling and a model is exhausted
     when any window limit is hit.  The 5-hour cap is enforced at run time by the
     wrapper and is not part of the windowed stats reading.
+
+    FR #8028: applies runtime free-pool pauses the same way as ``fuel_from_stats``.
     """
     windowed = windowed if isinstance(windowed, dict) else {}
     explicit_empty = False
@@ -1762,7 +1793,7 @@ def fuel_from_windowed_stats(windowed: dict[str, dict] | None) -> dict:
         "messages": messages,
         "empty": empty_history,
     }
-    return {
+    fuel = {
         FUEL_ID_FREE: free_remaining,
         FUEL_ID_GO: go_remaining,
         "local_costs": local_costs,
@@ -1772,6 +1803,7 @@ def fuel_from_windowed_stats(windowed: dict[str, dict] | None) -> dict:
         "windows": windows,
         "limiting": lim_id,
     }
+    return apply_runtime_pauses_to_fuel(fuel, state_dir, now=now)
 
 
 def select_model(preferred: Optional[str], stats: dict) -> Optional[str]:
@@ -2098,6 +2130,72 @@ def is_turn_timeout_text(text: str | None) -> bool:
     return _TURN_TIMEOUT_RX.search(text) is not None
 
 
+def apply_runtime_pauses_to_fuel(
+    fuel: dict | None,
+    state_dir: str | Path | None = None,
+    *,
+    now: Optional[float] = None,
+) -> dict:
+    """Force ``opencode-free`` to 0 while a free-pool pause is active (FR #8028).
+
+    Catalogue-based readings default free to 100 whenever free models exist.
+    A live ``Free usage limit`` refusal records ``opencode-free`` in the pause
+    map; this helper folds that into the published reading (and ``free_reset_at``).
+    """
+    out = dict(fuel) if isinstance(fuel, dict) else {}
+    root = state_dir
+    if root is None:
+        # Only fold pauses when explicitly directed (arg or env). Auto-discovering
+        # the live seat pause dir would surprise fixture tests that expect 100.
+        env_dir = (os.environ.get("BOB_OPENCODE_PAUSE_STATE_DIR") or "").strip()
+        if not env_dir:
+            return out
+        root = env_dir
+    now_f = float(now if now is not None else time.time())
+    try:
+        pauses = load_opencode_pauses(root, now=now_f)
+    except Exception:
+        return out
+    free_reset = pauses.get(FUEL_ID_FREE)
+    if free_reset is None:
+        # Any paused free-model leaf also exhausts the free pool reading.
+        for mid, ts in pauses.items():
+            low = str(mid).lower()
+            leaf = low.rsplit("/", 1)[-1]
+            if leaf in OPENCODE_FREE_MODELS or leaf.endswith("-free"):
+                free_reset = ts
+                break
+    if free_reset is None:
+        return out
+    try:
+        reset_f = float(free_reset)
+    except (TypeError, ValueError):
+        return out
+    if reset_f <= now_f:
+        return out
+    out[FUEL_ID_FREE] = 0
+    out["free_status"] = "exhausted"
+    try:
+        from datetime import datetime, timezone
+
+        out["free_reset_at"] = (
+            datetime.fromtimestamp(reset_f, tz=timezone.utc)
+            .isoformat()
+            .replace("+00:00", "Z")
+        )
+    except Exception:
+        out["free_reset_at"] = str(int(reset_f))
+    return out
+
+
+def of_is_go_model_id(model_id: str) -> bool:
+    low = (model_id or "").lower()
+    if low.startswith("opencode-go/"):
+        return True
+    leaf = low.rsplit("/", 1)[-1]
+    return leaf in OPENCODE_GO_CAPS or leaf.endswith("-pro")
+
+
 def record_opencode_pause(
     state_dir: str | Path,
     model_id: str,
@@ -2117,6 +2215,9 @@ def record_opencode_pause(
 
     FR #7951: a hard ceiling, watchdog, or turn timeout never writes a pause,
     even when the same blob also contains a quoted provider phrase.
+
+    FR #8028: a Free usage limit refusal also pauses ``opencode-free`` so digest
+    and tray stop painting the free pool as 100.
     """
     now = now if now is not None else time.time()
     if not model_id:
@@ -2133,9 +2234,21 @@ def record_opencode_pause(
         return None
     try:
         pauses = load_opencode_pauses(state_dir, now=now)
-        existing = pauses.get(model_id)
-        if existing is None or reset_ts > existing:
-            pauses[model_id] = reset_ts
+        keys = [model_id]
+        if is_free_usage_limit_text(output_text) or looks_like_rate_limit(output_text):
+            # Free-pool refusal: mark the digest fuel id, not only the leaf model.
+            if is_free_usage_limit_text(output_text) or (
+                not of_is_go_model_id(model_id)
+                and (
+                    str(model_id).lower().endswith("-free")
+                    or str(model_id).lower().startswith("opencode/")
+                )
+            ):
+                keys.append(FUEL_ID_FREE)
+        for key in keys:
+            existing = pauses.get(key)
+            if existing is None or reset_ts > existing:
+                pauses[key] = reset_ts
         if save_opencode_pauses(state_dir, pauses):
             return reset_ts
         return None

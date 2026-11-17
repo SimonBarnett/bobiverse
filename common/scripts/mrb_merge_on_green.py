@@ -2955,7 +2955,9 @@ def enqueue_from_done(
 ) -> dict[str, Any] | None:
     """On DONE MRB PASS, stamp merge-on-green with the PASSed head SHA.
 
-    SHA preference: PR tip from GitHub, else newest PASS/@sha comment.
+    SHA preference (FR #8022): newest PASS/@sha board comment when present; if it
+    differs from the live tip, skip the pending row (changed-head requeue). When
+    no board SHA exists, keep the live-tip compatibility path.
     """
     if str(result or "").strip().upper() != "PASS":
         return None
@@ -2969,11 +2971,13 @@ def enqueue_from_done(
         pr_repo, pr_num = parsed[0], str(parsed[1]).lstrip("#")
 
     hold = None
-    sha = ""
+    tip = ""
+    board = ""
+    st: dict = {}
     try:
         fetch_pr = fetch_pr or (lambda r, p: fetch_pr_state(r, p, token=token))
-        st = fetch_pr(pr_repo, pr_num)
-        sha = _norm_sha(str(st.get("sha") or ""))
+        st = fetch_pr(pr_repo, pr_num) or {}
+        tip = _norm_sha(str(st.get("sha") or ""))
         hold = gitclaim.pr_hold_reason(
             title=str(st.get("title") or ""),
             body=str(st.get("body") or ""),
@@ -2981,14 +2985,29 @@ def enqueue_from_done(
         )
     except Exception:  # noqa: BLE001
         st = {}
-    if not sha:
-        try:
-            fetch_comments = fetch_comments or (
-                lambda r, p: mrb_merge_gate.fetch_issue_comments(r, p, token=token)
-            )
-            sha = parse_pass_sha_from_comments(fetch_comments(pr_repo, pr_num)) or ""
-        except Exception:  # noqa: BLE001
-            sha = ""
+        tip = ""
+    try:
+        fetch_comments = fetch_comments or (
+            lambda r, p: mrb_merge_gate.fetch_issue_comments(r, p, token=token)
+        )
+        board = _norm_sha(parse_pass_sha_from_comments(fetch_comments(pr_repo, pr_num)) or "")
+    except Exception:  # noqa: BLE001
+        board = ""
+    if board:
+        if tip and not shas_match(board, tip):
+            return {
+                "key": _row_key(pr_repo, pr_num),
+                "repo": gitclaim.canonical_queue_repo(pr_repo),
+                "pr": str(pr_num).lstrip("#"),
+                "pass_sha": board,
+                "url": pr_url or str(st.get("html_url") or ""),
+                "nick": nick,
+                "status": "skipped_sha_mismatch",
+                "tip_sha": tip,
+            }
+        sha = board
+    else:
+        sha = tip
     if not sha:
         return None
     url = pr_url or str(st.get("html_url") or "")

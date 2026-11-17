@@ -103,6 +103,6 @@ Do not expect an assign in the first seconds after tray Agent start. ``bob-worke
 
 * $env:BOB_OUTBOX --- seat outbox (FR #2380 / #6333). Never the ear home\outbox.txt.
 * $env:BOB_JOB_WORKTREE_BASE --- job worktree root (<data drive>\ai\worktrees or override). Directory exists before ACK.
-* $env:BOB_JOB_WORKTREE --- exact job worktree when the program has prepared one (OpenCode).
+* $env:BOB_JOB_WORKTREE --- exact job worktree when the program has prepared one (OpenCode). FR #8022: for open-PR MRB/FIX that path is verified at `gh pr view` `headRefOid` (`git rev-parse HEAD`); quote that SHA on the board.
 * <ai root>\bob\worker\.bobiverse-seat --- rewritten at startup with live nick/pid; ignore stale files from older sessions.
 * Windows PowerShell 5.1 only: Get-ChildItem -Depth, not -MaxDepth.

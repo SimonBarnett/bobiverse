@@ -59,6 +59,16 @@ REDACT_CASES = [
         ["FAKEurlpw"],
     ),
     (
+        "wss_userinfo",
+        "wss://user:FAKEwsspw@wsirc.example/x",
+        ["FAKEwsspw"],
+    ),
+    (
+        "ws_userinfo",
+        "ws://user:FAKEwspw@127.0.0.1:8080/x",
+        ["FAKEwspw"],
+    ),
+    (
         "pass_colon",
         "pass: fakepw1",
         ["fakepw1"],
