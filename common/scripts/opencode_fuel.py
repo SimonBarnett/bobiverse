@@ -95,6 +95,9 @@ RATE_LIMIT_PHRASES: tuple[str, ...] = (
     "rolling limit",
     "usage balance exhausted",
     "payment required",
+    # FR #8026: OpenCode free-pool exhaustion (process may stay alive).
+    "free usage limit",
+    "subscribe to opencode go",
 )
 
 # Default pause when the provider gives no reset time (seconds).
