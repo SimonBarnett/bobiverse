@@ -517,6 +517,7 @@ routes to bobiverse via the split rule.
 - Clear may only remove safe (clean+published) trees; seat-marker dirt is ignored for classification but must be deleted before git worktree remove without --force; failed fetch under -PruneClosedJobs means zero removals
 - When folding CONFLICTING tips that both touch create_job_worktree, keep FR #8023 disk+FR/UAT fatal fetch and FR #8022 _fetch_pr_head_oid want_oid add; never blind-fetch origin/<branch> before the OID helper or self-remote fixtures false-NACK fetch.
 - When OpenCode prints Free usage limit reached, kill mid-run, GIVEUP fuel-exhausted:opencode-free within a minute, and record-pause the pool; do not wait for hard ceiling.
+- When a PowerShell waiter floors WaitForExit with Max(30, TimeoutSec+30), a caller TimeoutSec under 30 is not a cap. Use TimeoutSec plus a short grace and prove it with a non-exiting child.
 - When a launch wrapper catch only logs and continues, env vars that isolation depends on stay empty --- pin a post-catch guard that forces unique fallback paths when OPENCODE_DB is unset.
 - When seat_fuel_pause_reason stamps via load_digest/save_digest, any reset field not preserved by _coerce_machine is stripped and the next check self-clears the pause --- keep free-pool reset keys through coerce and fall back to a live worker stamp when the pool is still exact 0.
 - When done-offer relies on author_seat alone, a stripped stamp after DONE FR supersede re-offers the MRB to the implementer --- recover implementer from done[] pull URL at enrich time and refuse delivery on the done path.
