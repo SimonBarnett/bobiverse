@@ -15,12 +15,12 @@ def _ns(**kw):
     return argparse.Namespace(**kw)
 
 
-def test_resolve_irc_transports_default_wss_first():
+def test_resolve_irc_transports_default_tls_first():
     args = _ns(transport=None, ws_url=None, port=993)
     assert svc.resolve_irc_transports(args) == [
-        ("wss", svc.DEFAULT_IRC_WS_URL),
         ("tls", 993),
         ("tls", 6697),
+        ("wss", svc.DEFAULT_IRC_WS_URL),
     ]
 
 
@@ -60,7 +60,7 @@ def test_argparse_defaults(monkeypatch):
     monkeypatch.delenv("AIRC_IRC_TRANSPORT", raising=False)
     monkeypatch.delenv("AIRC_IRC_WS_URL", raising=False)
     args = svc.build_arg_parser().parse_args([])
-    assert args.transport == "wss,tls"
+    assert args.transport == "tls,wss"
     assert args.ws_url == "wss://wsirc.ntsa.uk"
 
 
@@ -157,19 +157,36 @@ def test_connect_reset_tls_falls_back_to_wss(monkeypatch):
         srv.close()
 
 
-def test_connect_wss_first_default_never_tries_tls(monkeypatch):
-    def fail_create(addr, timeout=30):
-        raise AssertionError("TLS create_connection must not be called when WSS succeeds")
+def test_connect_tls_working_default_never_tries_wss(monkeypatch):
+    """FR #7999 acceptance: with TLS ports working, airc never tries WSS first."""
+    calls = {"ws": 0}
 
-    monkeypatch.setattr(svc.socket, "create_connection", fail_create)
+    class _TlsSock:
+        def settimeout(self, value):
+            pass
+        def close(self):
+            pass
 
-    def fake_connect_ws(url, timeout=30, verify=True):
-        return _FakeWsTransport(url)
+    def fake_create(addr, timeout=30):
+        return _TlsSock()
 
-    monkeypatch.setattr(svc._ws, "connect_ws", fake_connect_ws)
+    class _Ctx:
+        check_hostname = True
+        verify_mode = 0
+        def wrap_socket(self, raw, server_hostname=None):
+            return raw
+
+    def fail_ws(url, timeout=30, verify=True):
+        calls["ws"] += 1
+        raise AssertionError("WSS must not be tried when TLS succeeds on default order")
+
+    monkeypatch.setattr(svc.socket, "create_connection", fake_create)
+    monkeypatch.setattr(svc.ssl, "create_default_context", lambda: _Ctx())
+    monkeypatch.setattr(svc._ws, "connect_ws", fail_ws)
+    monkeypatch.setattr(svc, "info", lambda _m: None)
     args = _ns(
         host="127.0.0.1", port=993, tls=True, tls_insecure=False,
-        transport="wss,tls", ws_url="ws://127.0.0.1:1/",
+        transport=None, ws_url=None,
     )
     console = svc.AircConsoleService.__new__(svc.AircConsoleService)
     console.args = args
@@ -177,7 +194,8 @@ def test_connect_wss_first_default_never_tries_tls(monkeypatch):
     console._transport_desc = None
     console._transport_logged = False
     console.connect()
-    assert console._transport_desc == "wss ws://127.0.0.1:1/"
+    assert console._transport_desc == "tls 127.0.0.1:993"
+    assert calls["ws"] == 0
     console.sock.close()
 
 
