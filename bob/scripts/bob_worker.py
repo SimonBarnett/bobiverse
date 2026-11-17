@@ -9773,6 +9773,84 @@ def opencode_finish_run_max() -> int:
     return max(1, min(10, n))
 
 
+
+def job_key_issue_number(job_key: str) -> str:
+    """Digits after the final ``#`` in a typed job key (FR #8094)."""
+    m = re.search(r"#(\d+)\s*$", (job_key or "").strip())
+    return m.group(1) if m else ""
+
+
+def job_key_kind_leaf(job_key: str) -> str:
+    """``fr-N`` / ``mrb-N`` / ``uat-N`` leaf for a typed key (FR #8094)."""
+    m = re.match(r"(?i)^(FR|MRB|UAT)\s+\S+#(\d+)$", (job_key or "").strip())
+    if not m:
+        return ""
+    return f"{m.group(1).lower()}-{m.group(2)}"
+
+
+def clear_per_job_env(env: dict | None = None) -> None:
+    """Drop ``BOB_JOB_WORKTREE`` so the next offer cannot inherit a prior path (FR #8094)."""
+    e = os.environ if env is None else env
+    try:
+        e.pop("BOB_JOB_WORKTREE", None)
+    except Exception:
+        pass
+
+
+def stale_job_context_reason(
+    offer_key: str,
+    *,
+    worktree: str = "",
+    outbox: str = "",
+    text: str = "",
+    branch: str = "",
+) -> str:
+    """Return ``stale_job_context`` when a field lacks the offer number / leaf (FR #8094)."""
+    leaf = job_key_kind_leaf(offer_key)
+    num = job_key_issue_number(offer_key)
+    if not num or not leaf:
+        return ""
+    for label, val in (
+        ("worktree", worktree),
+        ("outbox", outbox),
+        ("text", text),
+        ("branch", branch),
+    ):
+        if not (val or "").strip():
+            continue
+        norm = str(val).replace("/", "\\").lower()
+        if num not in norm:
+            return "stale_job_context"
+        if label in ("worktree", "outbox") and leaf not in norm:
+            return "stale_job_context"
+        if label == "branch" and leaf not in norm and f"fr-{num}" not in norm:
+            if num not in norm:
+                return "stale_job_context"
+    return ""
+
+
+def stale_job_context_nack_line(
+    offer_key: str,
+    *,
+    worktree: str = "",
+    outbox: str = "",
+    text: str = "",
+    branch: str = "",
+) -> str:
+    """``NACK <key> stale_job_context`` when context does not match the offer (FR #8094)."""
+    reason = stale_job_context_reason(
+        offer_key,
+        worktree=worktree,
+        outbox=outbox,
+        text=text,
+        branch=branch,
+    )
+    if not reason:
+        return ""
+    key = (offer_key or "job").strip() or "job"
+    return f"NACK {key} {reason}"
+
+
 def opencode_job_finish_steps(
     *,
     job_key: str,
@@ -10690,17 +10768,24 @@ class BoredEmitter:
         self._done_miss_release_pending = False
 
     def _fire_seat_release_giveup(self, reason: str) -> None:
-        """FR #4784: shop GIVEUP for the saved release key before !bored (done-miss / ack-stale)."""
+        """FR #4784: shop GIVEUP for the saved release key before !bored (done-miss / ack-stale).
+
+        FR #8094: also ``_mark_job_finished`` so per-job worktree/outbox/key clear even though
+        this path bypasses ``on_outbox`` (which would otherwise delay !bored via harvest hold).
+        """
         job_key = self._release_giveup_key or "job"
         self._release_giveup_key = None
         fn = self.seat_release_giveup_fn
         if fn is None:
+            self._mark_job_finished(job_key)
             return
         try:
             fn(job_key, reason)
             self.log(f"seat-release: GIVEUP posted for {job_key} reason={reason}")
         except Exception as e:
             self.log(f"seat-release: GIVEUP failed {type(e).__name__} for {job_key}")
+        # Clear BOB_JOB_WORKTREE / outbox / key even when GIVEUP did not go through on_outbox.
+        self._mark_job_finished(job_key)
 
     def _fire_done_miss_remind(self, now: float) -> None:
         """FR #2875: grace expired — inject one reminder (Supervisor sets done_miss_remind_fn)."""
@@ -13633,9 +13718,33 @@ class Supervisor:
             except Exception:
                 pass
 
-    def _live_skill_dag_job_end_cleanup(self, job: Optional[str] = None) -> None:
+    def _clear_per_job_seat_state(self, job: Optional[str] = None) -> None:
+        """FR #8094: drop per-job env, outbox, key, finish snap, and skill-dag pointer."""
         del job
-        self._refresh_live_skill_dag_mcp(None)
+        try:
+            clear_per_job_env()
+        except Exception:
+            pass
+        self._opencode_job_outbox = None
+        self._opencode_job_key = ""
+        self._opencode_finish_snap = None
+        if getattr(self, "bored", None) is not None:
+            try:
+                self.bored._opencode_finish_attempt = 0
+            except Exception:
+                pass
+        if getattr(self, "relay", None) is not None and getattr(self, "run_dir", None) is not None:
+            try:
+                self.relay.outbox_path = outbox_path_for_run(self.run_dir)
+            except Exception:
+                pass
+        try:
+            self._refresh_live_skill_dag_mcp(None)
+        except Exception:
+            pass
+
+    def _live_skill_dag_job_end_cleanup(self, job: Optional[str] = None) -> None:
+        self._clear_per_job_seat_state(job)
 
     def _inject_line(self, proc, line: str, *, on_failed=None, force_verify: bool = False, sync: bool | None = None) -> bool:
         if proc.poll() is not None:
@@ -13648,6 +13757,11 @@ class Supervisor:
             except Exception:
                 wt = ""
             if wt:
+                key_gc = assign_job_key(line) or ""
+                stale_gc = stale_job_context_nack_line(key_gc, worktree=wt, text=line)
+                if stale_gc:
+                    self.log(f"job-context: {stale_gc}")
+                    raise JobContextRefused(stale_gc)
                 self._refresh_live_skill_dag_mcp(wt)
         if (self.kind or "").strip().lower() == "opencode" and message_job_keys(line):
             keys = message_job_keys(line)
@@ -13718,6 +13832,16 @@ class Supervisor:
                     # FR #6378: always rewrite footer to *this* job worktree outbox
                     # (never leave a prior job's cached [outbox: ...] path).
                     wire = opencode_stamp_outbox_footer(wire, ob)
+                    # FR #8094: refuse before the turn if worktree/outbox/prompt lack the offer number.
+                    stale = stale_job_context_nack_line(
+                        str(prepared.get("key") or ""),
+                        worktree=str(prepared.get("path") or ""),
+                        outbox=str(ob),
+                        text=wire,
+                    )
+                    if stale:
+                        self.log(f"opencode-ready: {stale}")
+                        raise JobContextRefused(stale)
                     self._opencode_job_outbox = Path(ob)
                     self._opencode_job_key = str(prepared.get("key") or "")
                     try:
@@ -14088,16 +14212,14 @@ class Supervisor:
                 self.log(f"opencode finish: bored on_outbox failed {type(e).__name__}")
 
     def _opencode_job_end_cleanup(self, job: Optional[str] = None) -> None:
-        """FR #6370: drop Temp worktrees left by the OpenCode run."""
-        if (self.kind or "").strip().lower() != "opencode":
-            return
+        """FR #6370: drop Temp worktrees; FR #8094: clear per-job context for the next offer."""
         wt = str(os.environ.get("BOB_JOB_WORKTREE") or "").strip()
-        if not wt:
-            return
-        try:
-            opencode_cleanup_extra_worktrees(wt, log_fn=self.log)
-        except Exception as e:  # noqa: BLE001
-            self.log(f"opencode finish: cleanup failed {type(e).__name__}")
+        if (self.kind or "").strip().lower() == "opencode" and wt:
+            try:
+                opencode_cleanup_extra_worktrees(wt, log_fn=self.log)
+            except Exception as e:  # noqa: BLE001
+                self.log(f"opencode finish: cleanup failed {type(e).__name__}")
+        self._clear_per_job_seat_state(job)
 
     def _opencode_finish_decide(self, job_key: str) -> str:
         """FR #6366 / #6370: retry while progress; else auto-PR or giveup."""
