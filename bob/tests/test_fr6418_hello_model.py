@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import re
 import sys
 from pathlib import Path
 from typing import Any
@@ -128,7 +129,7 @@ def test_fr6418_run_agent_shares_one_model_value():
     chunk = src[src.find("def run_agent("):]
     assert "seat_model = resolve_seat_hello_model(kind)" in chunk
     assert "model=seat_model" in chunk  # post_digest_seat_kind payload
-    assert "worker_hello_line(kind," in chunk
+    assert re.search(r"worker_hello_line\(\s*kind\s*,", chunk)
     assert "hello_model" in chunk or "model=seat_model" in chunk
 
 
