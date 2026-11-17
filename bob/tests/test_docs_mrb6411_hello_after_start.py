@@ -1,6 +1,7 @@
 """docs/mrb-6411: hello ready line only after successful start_agent (CodeRabbit on #6411)."""
 from __future__ import annotations
 
+import re
 import sys
 from pathlib import Path
 
@@ -22,9 +23,10 @@ def test_hello_send_after_successful_start_agent():
     """Hostile pin: worker_hello_line call must follow start_agent success gate."""
     chunk = _run_agent_src()
     i_start = chunk.find("if not sup.start_agent()")
-    i_hello = chunk.find("worker_hello_line(kind, model=seat_model, build=build)")
     assert i_start >= 0, "start_agent gate missing"
-    assert i_hello >= 0, "hello send missing"
+    hello = re.search(r"worker_hello_line\(\s*kind\s*,", chunk[i_start:])
+    assert hello is not None, "hello send missing"
+    i_hello = i_start + hello.start()
     assert i_hello > i_start, "hello must not claim ready before start_agent succeeds"
     # Launch-fail path returns before hello.
     fail_return = chunk.find("return EXIT_LAUNCH_FAIL", i_start)
