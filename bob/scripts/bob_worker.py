@@ -9797,6 +9797,23 @@ def clear_per_job_env(env: dict | None = None) -> None:
         pass
 
 
+def _job_context_num_bounded(norm: str, num: str) -> bool:
+    """True when *num* appears with digit boundaries (FR #8099 / #8051 class)."""
+    if not num or not norm:
+        return False
+    return re.search(rf"(?<![0-9]){re.escape(num)}(?![0-9])", norm) is not None
+
+
+def _job_context_leaf_segment(norm: str, leaf: str) -> bool:
+    """True when *leaf* is a path/branch segment, not a longer prefix (FR #8099)."""
+    if not leaf or not norm:
+        return False
+    leaf_l = leaf.lower()
+    return (
+        re.search(rf"(?:^|[\\/]){re.escape(leaf_l)}(?:[\\/]|$)", norm) is not None
+    )
+
+
 def stale_job_context_reason(
     offer_key: str,
     *,
@@ -9805,11 +9822,15 @@ def stale_job_context_reason(
     text: str = "",
     branch: str = "",
 ) -> str:
-    """Return ``stale_job_context`` when a field lacks the offer number / leaf (FR #8094)."""
+    """Return ``stale_job_context`` when a field lacks the offer number / leaf (FR #8094).
+
+    FR #8099: match with path/digit boundaries so ``fr-80910`` does not satisfy ``#8091``.
+    """
     leaf = job_key_kind_leaf(offer_key)
     num = job_key_issue_number(offer_key)
     if not num or not leaf:
         return ""
+    fr_leaf = f"fr-{num}"
     for label, val in (
         ("worktree", worktree),
         ("outbox", outbox),
@@ -9819,12 +9840,15 @@ def stale_job_context_reason(
         if not (val or "").strip():
             continue
         norm = str(val).replace("/", "\\").lower()
-        if num not in norm:
+        if not _job_context_num_bounded(norm, num):
             return "stale_job_context"
-        if label in ("worktree", "outbox") and leaf not in norm:
+        if label in ("worktree", "outbox") and not _job_context_leaf_segment(norm, leaf):
             return "stale_job_context"
-        if label == "branch" and leaf not in norm and f"fr-{num}" not in norm:
-            if num not in norm:
+        if label == "branch":
+            if not (
+                _job_context_leaf_segment(norm, leaf)
+                or _job_context_leaf_segment(norm, fr_leaf)
+            ):
                 return "stale_job_context"
     return ""
 
