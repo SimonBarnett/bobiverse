@@ -12,6 +12,11 @@ from unittest.mock import MagicMock
 import pytest
 
 from repo_layout import ROOT
+from update_fixture_provenance import (
+    fixture_update_env,
+    read_update_log,
+    stamp_fixture_provenance,
+)
 
 import airc_console as ac
 from airc_auth_helpers import ops_auth  # FR #3639: channel +o/+h auth
@@ -250,8 +255,10 @@ def test_fake_release_target_version_allowlist_and_hash(tmp_path, monkeypatch):
     (root / "VERSION").write_text("0.1.16\n")
     state = tmp_path / "state"
     state.mkdir()
+    stamp_fixture_provenance(root)
 
     def run_check(release: dict, extra=None):
+        release = stamp_fixture_provenance(root, release)
         rj = tmp_path / "release.json"
         rj.write_text(json.dumps(release), encoding="utf-8")
         args = [
@@ -278,8 +285,9 @@ def test_fake_release_target_version_allowlist_and_hash(tmp_path, monkeypatch):
         ]
         if extra:
             args += extra
-        p = subprocess.run(args, capture_output=True, text=True, timeout=120)
-        log = (state / "update.log").read_text(encoding="utf-8") if (state / "update.log").exists() else ""
+        # FR #8144: isolate from live install / FR #8112 unknown-provenance skip
+        p = subprocess.run(args, capture_output=True, text=True, timeout=120, env=fixture_update_env())
+        log = read_update_log(state)
         return p, log
 
     base = "https://github.com/SimonBarnett/bobiverse/releases/download/v0.1.17"
@@ -347,8 +355,9 @@ def test_fake_release_target_version_allowlist_and_hash(tmp_path, monkeypatch):
         capture_output=True,
         text=True,
         timeout=120,
+        env=fixture_update_env(),
     )
-    log = (state / "update.log").read_text(encoding="utf-8")
+    log = read_update_log(state)
     assert p.returncode == 0
     assert "sha256-mismatch" in log and "service untouched" in log
     assert "msiexec" not in log
@@ -361,6 +370,7 @@ def test_loop_guard_and_pending_for_airc_product(tmp_path):
     (root / "VERSION").write_text("0.1.16\n")
     state = tmp_path / "state"
     state.mkdir()
+    stamp_fixture_provenance(root)
     (state / "state.json").write_text(
         json.dumps({"failures": {"v0.1.17": 2}, "lastResult": "rolled-back", "lastTag": "v0.1.17", "lastAttemptUtc": "2020-01-01T00:00:00Z"}),
         encoding="utf-8",
@@ -379,6 +389,7 @@ def test_loop_guard_and_pending_for_airc_product(tmp_path):
         ],
     }
     rj = tmp_path / "r.json"
+    rel = stamp_fixture_provenance(root, rel)
     rj.write_text(json.dumps(rel), encoding="utf-8")
     p = subprocess.run(
         [
@@ -404,8 +415,9 @@ def test_loop_guard_and_pending_for_airc_product(tmp_path):
         capture_output=True,
         text=True,
         timeout=120,
+        env=fixture_update_env(),
     )
-    log = (state / "update.log").read_text(encoding="utf-8")
+    log = read_update_log(state)
     # FR #2563: -ForceCheck clears MaxAttempts (operator escape); without it, blocked-loop-guard.
     assert p.returncode == 0, log
     assert "loop-guard-bypassed" in log, log
@@ -442,8 +454,9 @@ def test_loop_guard_and_pending_for_airc_product(tmp_path):
         capture_output=True,
         text=True,
         timeout=120,
+        env=fixture_update_env(),
     )
-    log = (state / "update.log").read_text(encoding="utf-8")
+    log = read_update_log(state)
     assert p.returncode == 0 and "skipped-pending" in log
 
 

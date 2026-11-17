@@ -12,6 +12,11 @@ import pytest
 
 import airc_console as ac
 from repo_layout import ROOT
+from update_fixture_provenance import (
+    fixture_update_env,
+    read_update_log,
+    stamp_fixture_provenance,
+)
 
 UPD = ROOT / "common" / "scripts" / "Update-BobiverseService.ps1"
 PS = shutil.which("powershell.exe") or shutil.which("powershell")
@@ -131,8 +136,9 @@ def test_fr5280_airc_check_without_target_selects_latest_asset(tmp_path):
     root.mkdir()
     (root / "VERSION").write_text("0.1.16\n", encoding="utf-8")
     state = tmp_path / "state"
+    release = stamp_fixture_provenance(root, _release("0.1.17", product="airc"))
     rj = tmp_path / "release.json"
-    rj.write_text(json.dumps(_release("0.1.17", product="airc")), encoding="utf-8")
+    rj.write_text(json.dumps(release), encoding="utf-8")
     args = [
         PS,
         "-NoProfile",
@@ -154,8 +160,9 @@ def test_fr5280_airc_check_without_target_selects_latest_asset(tmp_path):
         str(rj),
     ]
     # Intentionally omit -TargetVersion (bare UPDATE airc)
-    p = subprocess.run(args, capture_output=True, text=True, timeout=120)
-    log = (state / "update.log").read_text(encoding="utf-8") if (state / "update.log").exists() else ""
+    # FR #8144: fixture env clears live AIRC_INSTALL_ROOT; stamps BUILD.json for FR #8112 gate.
+    p = subprocess.run(args, capture_output=True, text=True, timeout=120, env=fixture_update_env())
+    log = read_update_log(state)
     assert p.returncode == 0, (p.stdout, p.stderr, log)
     assert "would-update local=0.1.16 latest=0.1.17" in log
 
@@ -191,8 +198,8 @@ def test_fr5280_airc_pin_mismatch_and_foreign_url_rejected(tmp_path):
             str(rj),
             *extra,
         ]
-        p = subprocess.run(args, capture_output=True, text=True, timeout=120)
-        log = (state / "update.log").read_text(encoding="utf-8") if (state / "update.log").exists() else ""
+        p = subprocess.run(args, capture_output=True, text=True, timeout=120, env=fixture_update_env())
+        log = read_update_log(state)
         assert p.returncode == 0, (p.stdout, p.stderr, log)
         return log
 
