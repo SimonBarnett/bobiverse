@@ -19,6 +19,21 @@ from typing import Any, Callable
 PROTOCOL = "2024-11-05"
 DEFAULT_MAX_BYTES = 65536
 
+
+def _ensure_script_dir_on_path() -> None:
+    """FR #7991: import siblings (``skill_dag_index``) even under an MCP host.
+
+    The one-shot CLI runs ``python <scripts>/skill_dag_mcp.py`` so the interpreter
+    puts that directory on ``sys.path``. An MCP host may launch the same script
+    through a wrapper/``-c``/stdin, where ``sys.path[0]`` is the host cwd instead.
+    """
+    here = str(Path(__file__).resolve().parent)
+    if here not in sys.path:
+        sys.path.insert(0, here)
+
+
+_ensure_script_dir_on_path()
+
 # FR #7908: test hook for the auto-report path (set to a callable in unit tests).
 _AUTO_REPORT: Callable[[BaseException], Any] | None = None
 
@@ -367,7 +382,9 @@ class SkillDagServer:
                 nodes[item["id"]] = {**item, "body": body}
             err = format_name_collisions(collisions)
         except Exception as exc:  # noqa: BLE001
-            err = type(exc).__name__
+            # FR #7991: name the missing module so a status line is actionable
+            # (``ModuleNotFoundError: No module named 'skill_dag_index'``).
+            err = f"{type(exc).__name__}: {exc}" if str(exc) else type(exc).__name__
         self.nodes = nodes
         self.index_time = _utc_now()
         self.last_error = err

@@ -25,7 +25,7 @@ def test_fr7910_enumerates_by_path_scripts():
 def test_fr7910_copy_and_check(tmp_path: Path):
     dest = tmp_path / "scripts"
     names = ship.copy_by_path_scripts(WORKER, WORKER.parent, dest)
-    assert ship.check_by_path_scripts(WORKER, dest) == names
+    assert ship.check_by_path_scripts(WORKER, dest, source_dir=WORKER.parent) == names
     assert (dest / "opencode_tool_wedge.py").is_file()
     assert (dest / "opencode_turn_guard.py").is_file()
 
