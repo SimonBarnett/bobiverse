@@ -5935,6 +5935,14 @@ class Client:
         # PRIVMSG during CAP/TLS races OpenSSL (BAD_RECORD_MAC).
         if self._seat_liveness_enabled():
             threading.Thread(target=self.seat_liveness_loop, daemon=True).start()
+        # FR #8126: when a prior attempt set nick-recover, register under a temp
+        # nick so we can reach 001 and GHOST the primary (GHOST cannot run pre-001).
+        self.live_nick = self._nick_for_registration()
+        if self.live_nick != (self.original_nick or ""):
+            info(
+                f"INFO nick-recover register-as={self.live_nick} "
+                f"primary={self.original_nick}"
+            )
         pw = (self.args.password or os.environ.get("BOB_IRC_PASSWORD") or "").strip()
         if pw:
             self.send("PASS " + pw)
@@ -5949,7 +5957,7 @@ class Client:
             if not sasl_ok:
                 # Give FAIL/NICKNAME_RESERVED a moment to arrive, then abort.
                 time.sleep(1.0)
-                if self._nickname_reserved or (self.original_nick or "").lower().startswith("bob-"):
+                if self._should_abort_nickname_reserved():
                     self._abort_gate("NICKNAME_RESERVED")
                 if self._nickname_reserved and getattr(self.args, "chair", False):
                     self._abort_gate("CHAIR_NICK_TAKEN")
@@ -5957,7 +5965,7 @@ class Client:
             self.send("NICK " + self.live_nick)
             self.send(f"USER {self.live_nick} 0 * :{self.args.realname}")
             self.sasl_plain()
-        if self._nickname_reserved and (self.original_nick or "").lower().startswith("bob-"):
+        if self._should_abort_nickname_reserved():
             self._abort_gate("NICKNAME_RESERVED")
         if self._nickname_reserved and getattr(self.args, "chair", False):
             self._abort_gate("CHAIR_NICK_TAKEN")
@@ -5968,7 +5976,7 @@ class Client:
         )
         self._outbox_thread.start()
         time.sleep(1)
-        # FR #8120: reclaim a ghosted/reserved own nick before JOIN.
+        # FR #8120 / #8126: reclaim a ghosted/reserved own nick before JOIN.
         self._maybe_recover_own_nick()
         # Ergo default-usermode is +i (LUSERS: "0 users and N invisible").
         # Halloy nick lists that use WHO then omit flamingos even in-channel.
@@ -6031,13 +6039,59 @@ class Client:
             pass
         return (os.environ.get("BOB_NICKSERV_PASSWORD") or "").strip()
 
+    def _nick_for_registration(self) -> str:
+        """Nick used for NICK/USER before 001 (FR #8126).
+
+        When a prior attempt left ``_nick_recover_pending``, register under a
+        temporary nick so GHOST can run after 001, then reclaim the primary.
+        """
+        primary = (self.original_nick or self.live_nick or "").strip()
+        if not getattr(self, "_nick_recover_pending", False):
+            return primary or "agent"
+        if not primary.lower().startswith("bob-"):
+            return primary or "agent"
+        temp = self._recover_temp_nick(primary)
+        return temp
+
+    @staticmethod
+    def _recover_temp_nick(primary: str) -> str:
+        """Short temp nick for recover sessions (IRC nick length budget)."""
+        base = (primary or "bob").strip()
+        # Keep well under typical 30–32 nick limits: primary + "_r".
+        if len(base) >= 28:
+            base = base[:27]
+        return base + "_r"
+
+    def _should_abort_nickname_reserved(self) -> bool:
+        """Abort only when the *primary* bob-* nick is reserved (FR #8126).
+
+        A temp recover nick must not trip the same abort, or GHOST never runs.
+        """
+        if not getattr(self, "_nickname_reserved", False):
+            return False
+        primary = (self.original_nick or "").strip()
+        if not primary.lower().startswith("bob-"):
+            return False
+        live = (self.live_nick or "").strip()
+        # Recovering under a temp nick: keep going to 001.
+        if getattr(self, "_nick_recover_pending", False) and live.lower() != primary.lower():
+            return False
+        return True
+
     def _maybe_recover_own_nick(self) -> None:
-        """FR #8120: GHOST/RELEASE a reserved own nick, then re-NICK (bob-* ears)."""
+        """FR #8120 / #8126: GHOST/RELEASE a reserved own nick, then re-NICK (bob-* ears).
+
+        Must run after 001. Callers register under ``_nick_for_registration()``
+        when pending so this path is reachable.
+        """
         if not getattr(self, "_nick_recover_pending", False):
             return
         nick = (self.original_nick or "").strip()
         if not nick.lower().startswith("bob-"):
             self._nick_recover_pending = False
+            return
+        if not self.ready.is_set():
+            info("INFO nick-recover defer reason=pre-001")
             return
         pw = self._nickserv_password()
         if not pw:
