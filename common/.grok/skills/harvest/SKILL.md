@@ -513,6 +513,7 @@ routes to bobiverse via the split rule.
 - Isolated stdout JSON extract that claims prefer-last must walk top-level objects with JSONDecoder.raw_decode end indexes: first-match loses a later sibling result, and last-brace naive scan loses nested outer objects.
 - When skill-dag MCP status has node_count 0 or ModuleNotFoundError, resolve and get_skill with python skill_dag_mcp.py --once using the mcp.json --root args. Do not invent skill bodies.
 - When preferring an installed copy of a script, ship its local imports too; put exception text (str(exc)) in status last_error, not only the class name.
+- Tray stall-alerts must not call full health. That path runs the grok CLI and a bot health call at 30s each and exceeds the 45s engine step. Use one process snapshot and local last-seen.
 - When two OpenCode seats on one machine share opencode.db, give each seat its own data dir (copy auth.json, do not copy the db). Retry database is locked with backoff, then GIVEUP the job so the seat does not stay doing.
 - Clear may only remove safe (clean+published) trees; seat-marker dirt is ignored for classification but must be deleted before git worktree remove without --force; failed fetch under -PruneClosedJobs means zero removals
 - When folding CONFLICTING tips that both touch create_job_worktree, keep FR #8023 disk+FR/UAT fatal fetch and FR #8022 _fetch_pr_head_oid want_oid add; never blind-fetch origin/<branch> before the OID helper or self-remote fixtures false-NACK fetch.
