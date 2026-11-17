@@ -4341,9 +4341,10 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             r"    $timedOut = $false",
             r"    try {",
             # FR #6156: redirect to files and treat growing file size as heartbeat (not absolute WaitForExit).
-            # FR #6366: descendant presence refreshes the short watchdog. FR #7976: the
-            # 30 min ceiling measures time since real progress (output, CPU, or
-            # worktree mtime), not wall clock, so a live turn is not killed.
+            # FR #6366: descendant presence refreshes the short watchdog. FR #7976 / #8008:
+            # the 30 min ceiling measures time since real progress (output growth or
+            # worktree mtime), not wall clock. CPU/descendants refresh lastBeat only
+            # (short idle watchdog); they do not reset the hard-ceiling stall clock.
             r"        $watchdogMs = if ($env:BOB_OPENCODE_WATCHDOG_MS) { [int]$env:BOB_OPENCODE_WATCHDOG_MS } else { 120000 }",
             r"        $hardCeilingMs = if ($env:BOB_OPENCODE_HARD_CEILING_MS) { [int]$env:BOB_OPENCODE_HARD_CEILING_MS } else { 1800000 }",
             r"        $outFile = Join-Path $env:TEMP ('bob-oc-out-' + [guid]::NewGuid().ToString('n') + '.txt')",
@@ -4385,7 +4386,7 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             r"                    foreach ($tp in $all) { if ($desc.Contains([int]$tp.ProcessId)) { try { $cpuSum += [double]$tp.UserModeTime + [double]$tp.KernelModeTime } catch { } } }",
             # Alive descendant (e.g. silent pytest grandchild) keeps the run busy even if CPU sum resets.
             r"                    if ($desc.Count -gt 0) { $busy = $true; $lastBeat = [datetime]::UtcNow }",
-            r"                    if ($lastCpu -ge 0 -and $cpuSum -gt $lastCpu) { $busy = $true; $lastBeat = [datetime]::UtcNow; $lastProgress = [datetime]::UtcNow }",
+            r"                    if ($lastCpu -ge 0 -and $cpuSum -gt $lastCpu) { $busy = $true; $lastBeat = [datetime]::UtcNow }",
             r"                    $lastCpu = $cpuSum",
             r"                } catch { }",
             r"                if ($ocDir -and (Test-Path -LiteralPath $ocDir)) {",
@@ -4401,7 +4402,8 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             r"            $stallMs = ([datetime]::UtcNow - $lastProgress).TotalMilliseconds",
             r"            if ($stallMs -ge $hardCeilingMs) {",
             r"                $timedOut = $true",
-            r"                $killReason = ('hard ceiling ' + [int]$hardCeilingMs + 'ms')",
+            r"                $lastProgIso = $lastProgress.ToUniversalTime().ToString('o')",
+            r"                $killReason = ('hard ceiling ' + [int]$hardCeilingMs + 'ms; last progress ' + $lastProgIso + '; stall ' + [int]$stallMs + 'ms')",
             r"                try { & taskkill /T /F /PID $proc.Id 2>$null | Out-Null } catch { }",
             # FR #7739: one intake report (machine, seat, job, elapsed, reason). Dedupe is in the helper.
             r"                $pyCeil = (Get-Command python.exe -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source)",

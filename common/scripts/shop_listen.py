@@ -886,6 +886,24 @@ def return_job_to_unaccepted(
                 )
             if (not seat_not_job_giveup) and count >= int(gitclaim.GIVEUP_NEEDS_HUMAN_COUNT):
                 job["needs_human"] = True
+            # FR #8008: repeated hard-ceiling kills stamp the seat's agent class so
+            # recycled OpenCode nicks do not keep re-taking the same job.
+            if (not seat_not_job_giveup) and gitclaim.is_hard_ceiling_reason(reason):
+                try:
+                    hc = int(job.get("hard_ceiling_count") or 0)
+                except (TypeError, ValueError):
+                    hc = 0
+                hc += 1
+                job["hard_ceiling_count"] = hc
+                kind = ""
+                if gave_up_by:
+                    with contextlib.suppress(Exception):
+                        kind = gitclaim.seat_agent_kind(home, gave_up_by)
+                if not kind and gave_up_by:
+                    # Digest miss: infer opencode from the kill reason wire itself.
+                    kind = "opencode"
+                if hc >= int(gitclaim.GIVEUP_NEEDS_HUMAN_COUNT) and kind:
+                    gitclaim.append_giveup_agent_kind(job, kind)
             # needs-mrb1 must not force needs_human (operator 2026-10-04: hallucination).
             doc.setdefault("unaccepted", []).append(job)
             try:
