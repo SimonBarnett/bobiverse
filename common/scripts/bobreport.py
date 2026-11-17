@@ -1121,7 +1121,8 @@ def _coerce_workers(mid: str, raw: object) -> dict:
 # dict (merge op / gitclaim seat lookup) is untouched. Export publishes the list as ``workers``.
 # FR #663: offer sets ``offered`` (not ``doing``); only ACK promotes to ``doing``.
 # FR #7347: seat start-up may POST needs_sign_in / unhealthy (worker digest); accept them.
-WORKER_STATES = ("doing", "idle", "offered", "needs_sign_in", "unhealthy")
+# FR #8137: ``waiting`` = DONE MRB PASS awaiting merge/rebase (tray shows waiting, not done).
+WORKER_STATES = ("doing", "idle", "offered", "waiting", "needs_sign_in", "unhealthy")
 WORKER_STATE_ALIASES = {
     "needs-sign-in": "needs_sign_in",
     "needssignin": "needs_sign_in",
@@ -1209,8 +1210,12 @@ def _coerce_worker_list(raw: object, *, now: float | None = None) -> list[dict]:
             ts = _parse_worker_updated_ts(updated)
             if ts is not None and (now_f - ts) >= float(OFFERED_TIMEOUT_S):
                 state = "idle"
-        # Keep work text for doing and offered (tray shows offered:<work>).
-        work = clean_worker_work(ent.get("work")) if state in ("doing", "offered") else ""
+        # Keep work text for doing, offered, and waiting (FR #8137 tray: waiting rebase/merge).
+        work = (
+            clean_worker_work(ent.get("work"))
+            if state in ("doing", "offered", "waiting")
+            else ""
+        )
         row = {"nick": nick, "state": state, "work": work, "updated": updated}
         kind = str(ent.get("kind") or ent.get("agent") or "").strip()
         if kind:
@@ -1304,26 +1309,33 @@ def _job_entry_from_doing_worker(row: dict) -> dict:
 
 
 def _refresh_machine_activity_from_worker_list(ent: dict) -> None:
-    """FR #663 / #7499: working_on, jobs, running follow worker_list doing seats."""
+    """FR #663 / #7499: working_on, jobs, running follow worker_list doing seats.
+
+    FR #8137: when no seat is doing, surface a ``waiting`` work string so the
+    tray shows waiting rebase/merge instead of a blank/done machine tile.
+    """
     rows = _coerce_worker_list(ent.get("worker_list"))
     doing: list[dict] = []
     best = ""
     best_ts = ""
+    wait_best = ""
+    wait_ts = ""
     for r in rows:
-        if str(r.get("state") or "") != "doing":
-            continue
+        st = str(r.get("state") or "")
         work = clean_worker_work(r.get("work"))
-        # Count every doing seat for running/jobs; working_on still prefers non-empty work.
-        doing.append(r)
-        if not work:
-            continue
         upd = str(r.get("updated") or "")
-        if not best or upd >= best_ts:
-            best = work
-            best_ts = upd
-    ent["working_on"] = best
+        if st == "doing":
+            # Count every doing seat for running/jobs; working_on still prefers non-empty work.
+            doing.append(r)
+            if work and (not best or upd >= best_ts):
+                best = work
+                best_ts = upd
+        elif st == "waiting" and work and (not wait_best or upd >= wait_ts):
+            wait_best = work
+            wait_ts = upd
+    ent["working_on"] = best or wait_best
     if not doing:
-        # Drop stale machine-level jobs when every seat is idle/offered.
+        # Drop stale machine-level jobs when every seat is idle/offered/waiting.
         ent["jobs"] = []
         # FR #5698 / #5704 / #5724: idle export must not keep sticky repo/sha
         # (peer false-publish left marchhare repo=hrsmith after jobs=[]).
@@ -3169,6 +3181,87 @@ def clear_seat_doing(
 
 
 @_digest_locked
+def set_seat_waiting(
+    home: Path,
+    nick: str,
+    *,
+    work: str,
+    briefer_nick: str = "",
+    only_if_work_contains: str = "",
+) -> PresenceOutcome:
+    """Show a seat as waiting (rebase/merge) on the digest (FR #8137).
+
+    Used after DONE MRB PASS when the PR is not yet MERGED — tray must not
+    look "done" while merge-on-green or a conflict FIX is still open.
+    """
+    parsed = parse_seat_nick(nick)
+    if not parsed:
+        return PresenceOutcome(ok=False, err="bad nick")
+    mid, pid = parsed
+    pid_s = str(pid)
+    text = str(work or "").strip()
+    if not text:
+        return PresenceOutcome(ok=False, err="work required")
+    if looks_like_secret(text):
+        return PresenceOutcome(ok=False, err="secret")
+    needle = str(only_if_work_contains or "").strip().lstrip("#").lower()
+    doc = load_digest(home)
+    ent = _machine_entry(doc, mid)
+    changed = False
+    rows = list(ent.get("worker_list") or [])
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        row_nick = str(row.get("nick") or "").strip().lower()
+        if row_nick != str(nick).strip().lower() and not row_nick.endswith(f"-{pid_s}"):
+            continue
+        cur = str(row.get("work") or "")
+        if needle and needle not in cur.lower() and f"#{needle}" not in cur.lower():
+            if str(row.get("state") or "") not in ("doing", "waiting", ""):
+                continue
+        row["state"] = "waiting"
+        row["work"] = text
+        row["updated"] = _utc_now_iso()
+        changed = True
+    workers = ent.setdefault("workers", {})
+    w = workers.get(pid_s) if isinstance(workers.get(pid_s), dict) else None
+    if isinstance(w, dict):
+        wo = str(w.get("working_on") or "")
+        if (not needle) or (needle in wo.lower()) or (f"#{needle}" in wo.lower()) or not wo:
+            w["state"] = "waiting"
+            w["working_on"] = text
+            changed = True
+    if not rows:
+        rows.append(
+            {
+                "nick": nick,
+                "state": "waiting",
+                "work": text,
+                "updated": _utc_now_iso(),
+            }
+        )
+        changed = True
+    if not changed and not isinstance(w, dict):
+        workers[pid_s] = {
+            "pid": pid_s,
+            "nick": nick,
+            "state": "waiting",
+            "working_on": text,
+        }
+        changed = True
+    if not changed:
+        return PresenceOutcome(ok=True, machine_id=mid)
+    ent["worker_list"] = _coerce_worker_list(rows)
+    _refresh_machine_activity_from_worker_list(ent)
+    if briefer_nick:
+        doc["briefer"] = briefer_nick
+    doc["ts"] = _utc_now_iso()
+    _note_event(doc, "worker-waiting", machine=mid, nick=nick, pid=pid_s, work=text)
+    save_digest(home, doc)
+    return PresenceOutcome(ok=True, machine_id=mid)
+
+
+@_digest_locked
 def merge_worker_working_on(
     home: Path,
     machine_id: str,
@@ -3370,11 +3463,16 @@ def _apply_worker_op(home: Path, op: str, mid: str, payload: dict, briefer_nick:
             row = rows[idx]
         if state:
             row["state"] = state
-        if row["state"] in ("doing", "offered"):
+        if row["state"] in ("doing", "offered", "waiting"):
             if work_raw is not None:
                 row["work"] = clean_worker_work(work_raw)
             if not row["work"]:
-                row["work"] = "working" if row["state"] == "doing" else "offered"
+                if row["state"] == "doing":
+                    row["work"] = "working"
+                elif row["state"] == "offered":
+                    row["work"] = "offered"
+                else:
+                    row["work"] = "waiting"
         else:
             row["work"] = ""
         # FR #7147: chair worker-upsert/work may carry digest model fields.
