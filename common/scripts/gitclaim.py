@@ -9183,6 +9183,63 @@ def fr_reserved_for_idle_free_seat(
     return False
 
 
+def _row_queue_age_key(row: dict) -> tuple[float, float]:
+    """Lower is older. Prefer positive ``seq``, else parse ``ts``."""
+    try:
+        seq = int((row or {}).get("seq") or 0)
+    except (TypeError, ValueError):
+        seq = 0
+    ts = _parse_iso_ts(str((row or {}).get("ts") or "")) or 0.0
+    # Missing seq sorts after stamped seq so age still follows ts when possible.
+    return (float(seq) if seq > 0 else 1e12, float(ts))
+
+
+def mrb_yields_to_older_fr(
+    home: Path,
+    cand: dict,
+    nick: str,
+    now: float,
+    live: set[str],
+    ledger: dict | None,
+    free_idle: set[str],
+    unaccepted: list | None,
+) -> bool:
+    """FR #8138: when no free seat is idle, skip a newer MRB if an older FR/FIX waits.
+
+    Amends #7926: free seats still take FR first when up. With only Grok/paid seats,
+    do not starve an older waiting FR behind a later MRB in focus order.
+    """
+    if free_idle:
+        return False
+    task = str((cand or {}).get("task") or "").upper()
+    if task != "MRB":
+        return False
+    # Free-model seats never take MRB; nothing to yield.
+    if seat_started_on_free_model(home, nick):
+        return False
+    cand_age = _row_queue_age_key(cand)
+    for row in unaccepted or []:
+        if not isinstance(row, dict):
+            continue
+        rt = str(row.get("task") or "").upper()
+        if rt not in ("FR", "FIX"):
+            continue
+        if _row_queue_age_key(row) >= cand_age:
+            continue
+        if not _free_seat_can_take_row(home, row, nick, now, live, ledger):
+            continue
+        # Same machine / self-review gates as the offer path for this seat.
+        if row_blocked_for_machine(row, nick):
+            continue
+        try:
+            if review_blocked_for_author(row, nick, live, ledger=ledger):
+                continue
+        except Exception:
+            pass
+        return True
+    return False
+
+
 def seat_is_free_fuel(home: Path, nick: str) -> bool:
     """True when this seat must stay on FR/FIX (FR #7706 / #7888).
 
@@ -10308,6 +10365,18 @@ def offer_focus_top(
                 # FR #7926: an idle eligible free-model seat takes FR/FIX first.
                 if fr_reserved_for_idle_free_seat(
                     home, cand_eff, me, now_f, live, ledger, free_idle
+                ):
+                    return None
+                # FR #8138: only-Grok fleet — older FR/FIX before a newer MRB.
+                if mrb_yields_to_older_fr(
+                    home,
+                    cand_eff,
+                    me,
+                    now_f,
+                    live,
+                    ledger,
+                    free_idle,
+                    doc.get("unaccepted") or [],
                 ):
                     return None
                 return cand_eff
