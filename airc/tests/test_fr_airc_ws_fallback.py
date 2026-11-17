@@ -1,4 +1,4 @@
-"""FR #7999: ordered transport selection, TLS-reset -> WSS fallback, registration log."""
+"""FR #7999 / #8057: ordered transport selection, WSS-first default, TLS-reset -> next transport."""
 from __future__ import annotations
 
 import argparse
@@ -15,12 +15,13 @@ def _ns(**kw):
     return argparse.Namespace(**kw)
 
 
-def test_resolve_irc_transports_default_tls_first():
+def test_resolve_irc_transports_default_wss_first():
+    """FR #8057: with no env, first candidate is WSS then TLS 993/6697."""
     args = _ns(transport=None, ws_url=None, port=993)
     assert svc.resolve_irc_transports(args) == [
+        ("wss", svc.DEFAULT_IRC_WS_URL),
         ("tls", 993),
         ("tls", 6697),
-        ("wss", svc.DEFAULT_IRC_WS_URL),
     ]
 
 
@@ -60,8 +61,9 @@ def test_argparse_defaults(monkeypatch):
     monkeypatch.delenv("AIRC_IRC_TRANSPORT", raising=False)
     monkeypatch.delenv("AIRC_IRC_WS_URL", raising=False)
     args = svc.build_arg_parser().parse_args([])
-    assert args.transport == "tls,wss"
+    assert args.transport == "wss,tls"
     assert args.ws_url == "wss://wsirc.ntsa.uk"
+    assert svc.DEFAULT_IRC_TRANSPORT == "wss,tls"
 
 
 def test_argparse_cli_overrides_env(monkeypatch):
@@ -157,32 +159,18 @@ def test_connect_reset_tls_falls_back_to_wss(monkeypatch):
         srv.close()
 
 
-def test_connect_tls_working_default_never_tries_wss(monkeypatch):
-    """FR #7999 acceptance: with TLS ports working, airc never tries WSS first."""
-    calls = {"ws": 0}
+def test_connect_wss_first_default_never_tries_tls(monkeypatch):
+    """FR #8057 acceptance: default order tries WSS first; TLS must not run when WSS succeeds."""
 
-    class _TlsSock:
-        def settimeout(self, value):
-            pass
-        def close(self):
-            pass
+    def fail_create(addr, timeout=30):
+        raise AssertionError("TLS create_connection must not be called when WSS succeeds")
 
-    def fake_create(addr, timeout=30):
-        return _TlsSock()
+    monkeypatch.setattr(svc.socket, "create_connection", fail_create)
 
-    class _Ctx:
-        check_hostname = True
-        verify_mode = 0
-        def wrap_socket(self, raw, server_hostname=None):
-            return raw
+    def fake_connect_ws(url, timeout=30, verify=True):
+        return _FakeWsTransport(url)
 
-    def fail_ws(url, timeout=30, verify=True):
-        calls["ws"] += 1
-        raise AssertionError("WSS must not be tried when TLS succeeds on default order")
-
-    monkeypatch.setattr(svc.socket, "create_connection", fake_create)
-    monkeypatch.setattr(svc.ssl, "create_default_context", lambda: _Ctx())
-    monkeypatch.setattr(svc._ws, "connect_ws", fail_ws)
+    monkeypatch.setattr(svc._ws, "connect_ws", fake_connect_ws)
     monkeypatch.setattr(svc, "info", lambda _m: None)
     args = _ns(
         host="127.0.0.1", port=993, tls=True, tls_insecure=False,
@@ -194,8 +182,7 @@ def test_connect_tls_working_default_never_tries_wss(monkeypatch):
     console._transport_desc = None
     console._transport_logged = False
     console.connect()
-    assert console._transport_desc == "tls 127.0.0.1:993"
-    assert calls["ws"] == 0
+    assert console._transport_desc == f"wss {svc._ws.safe_label(svc.DEFAULT_IRC_WS_URL)}"
     console.sock.close()
 
 
@@ -223,6 +210,37 @@ def test_connect_tls_first_configured_never_tries_wss(monkeypatch):
         assert console._transport_desc == f"tls 127.0.0.1:{port}"
         console.sock.close()
     finally:
+        srv.close()
+
+
+def test_fr8057_connect_failover_no_sleep_between_transports(monkeypatch):
+    """FR #8057: after a fast TLS reset, try the next transport with no reconnect backoff."""
+    port, srv, stop = _start_reset_listener()
+    sleeps: list[float] = []
+
+    def track_sleep(sec: float) -> None:
+        sleeps.append(float(sec))
+        raise AssertionError(f"connect() must not sleep between transports; slept {sec}")
+
+    try:
+        monkeypatch.setattr(svc.time, "sleep", track_sleep)
+        monkeypatch.setattr(svc._ws, "connect_ws", lambda url, timeout=30, verify=True: _FakeWsTransport(url))
+        monkeypatch.setattr(svc, "info", lambda _m: None)
+        args = _ns(
+            host="127.0.0.1", port=port, tls=True, tls_insecure=False,
+            transport="tls,wss", ws_url="ws://127.0.0.1:1/",
+        )
+        console = svc.AircConsoleService.__new__(svc.AircConsoleService)
+        console.args = args
+        console.sock = None
+        console._transport_desc = None
+        console._transport_logged = False
+        console.connect()
+        assert console._transport_desc == "wss ws://127.0.0.1:1/"
+        assert sleeps == []
+        console.sock.close()
+    finally:
+        stop.set()
         srv.close()
 
 
