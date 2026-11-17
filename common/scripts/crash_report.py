@@ -40,8 +40,8 @@ _NICKSERV_RE = re.compile(
     r"(?i)(?:PRIVMSG\s+NickServ\s+:)?(?:NickServ\s+)?(IDENTIFY|REGISTER)\s+\S+(?:\s+\S+)?"
 )
 _IRC_PASS_RE = re.compile(r"(?i)\bPASS\s+\S+")
-# https://user:pass@host → strip userinfo
-_URL_USERINFO_RE = re.compile(r"(?i)(https?://)[^/\s:@]+:[^/\s@]+@")
+# https://user:pass@host → strip userinfo (FR #7999: also ws/wss)
+_URL_USERINFO_RE = re.compile(r"(?i)((?:https?|wss?)://)[^/\s:@]+:[^/\s@]+@")
 # Optional quotes around key; value is either a full "..." string (FR #2679 multi-word
 # JSON) or a bare single token (pass: / password=). Prefer quoted form first.
 _SECRET_KV_RE = re.compile(
