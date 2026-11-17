@@ -93,8 +93,13 @@ def extract_isolated_json_payload(stdout: str) -> dict[str, Any] | None:
     Isolated workers must print one JSON object on stdout, but older builds and
     accidental ``print``/``info()`` calls can prefix or suffix log text on the
     same line (and BOM / UTF-16-as-cp1252 NUL bytes survive a pipe). Accept a
-    JSON object anywhere on a line, prefer the last top-level one, so a real
+    JSON object anywhere in the blob, prefer the last top-level one, so a real
     result is not remapped to ``worker_died`` / ``bad-json`` (FR #7987).
+
+    Whole-text JSON that is not a dict (array / string / number) returns
+    ``None`` so the parent can report ``bad-payload``. Walk the full blob with
+    ``_last_json_dict`` rather than a reverse line scan: a pretty-printed
+    middle line like ``"hosts": [{"ok": true}]`` must not beat the outer object.
     """
     text = (stdout or "").replace("\x00", "").strip().lstrip("\ufeff")
     if not text:
@@ -102,15 +107,9 @@ def extract_isolated_json_payload(stdout: str) -> dict[str, Any] | None:
     try:
         data = json.loads(text)
     except (json.JSONDecodeError, ValueError):
-        data = None
-    if isinstance(data, dict):
-        return data
-    # Last line that carries a JSON object; tolerate a log prefix/suffix.
-    for line in reversed(text.splitlines()):
-        found = _last_json_dict(line.strip().lstrip("\ufeff"))
-        if found is not None:
-            return found
-    # Pretty-printed / multi-line object: last top-level dict in the blob.
+        pass
+    else:
+        return data if isinstance(data, dict) else None
     return _last_json_dict(text)
 
 

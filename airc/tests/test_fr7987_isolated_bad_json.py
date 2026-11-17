@@ -46,6 +46,29 @@ def test_fr7987_extract_pretty_printed_object():
     assert iso.extract_isolated_json_payload(blob) == {"ok": True, "target": "localhost"}
 
 
+def test_fr7987_extract_pretty_printed_keeps_outer_over_nested_line():
+    # Reverse line-scan would decode {"ok": true} from the hosts line and lose
+    # the outer fault object; full-blob walk must keep the outer dict.
+    blob = (
+        "log before\n"
+        "{\n"
+        '  "ok": false,\n'
+        '  "error": "worker_died",\n'
+        '  "hosts": [{"ok": true}]\n'
+        "}\n"
+        "log after"
+    )
+    assert iso.extract_isolated_json_payload(blob) == {
+        "ok": False,
+        "error": "worker_died",
+        "hosts": [{"ok": True}],
+    }
+
+
+def test_fr7987_extract_rejects_whole_text_json_array():
+    assert iso.extract_isolated_json_payload('[{"ok":true,"hosts":[]}]') is None
+
+
 def test_fr7987_extract_still_none_for_non_json():
     assert iso.extract_isolated_json_payload("still-not-json") is None
 
@@ -63,6 +86,21 @@ def test_fr7987_call_isolated_does_not_remap_prefixed_result():
         runner=lambda *_a, **_k: P(),
     )
     assert out == {"ok": True, "action": "legion"}
+
+
+def test_fr7987_call_isolated_rejects_json_array_as_bad_payload():
+    class P:
+        returncode = 0
+        stdout = '[{"ok":true,"hosts":[]}]'
+        stderr = ""
+
+    out = iso.call_isolated_module(
+        "airc_legion",
+        "installer_legion_work",
+        {"target": "localhost", "whatif": True},
+        runner=lambda *_a, **_k: P(),
+    )
+    assert out == {"ok": False, "error": "worker_died", "detail": "bad-payload"}
 
 
 def test_fr7987_child_stray_stdout_print_goes_to_stderr(tmp_path):
