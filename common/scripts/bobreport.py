@@ -8660,6 +8660,7 @@ def fetch_live_xai_weekly(*, now: datetime | None = None) -> dict | None:
             "read": False,
             "live": False,
             "error": bill_err or "provider-empty",
+            "error_source": XAI_BILLING_SOURCE,
             "selected": True,
             "account": selected_label,
             "auth_path": auth_loc,
@@ -8731,6 +8732,19 @@ def _resolve_current_xai_account(current_account: object = None) -> str | None:
     return None
 
 
+
+def is_transient_xai_http_error(error: str | None) -> bool:
+    """FR #8049: provider 502/503/504 (and bare 5xx) are transient gateway blips."""
+    text = str(error or "").strip().lower()
+    if not text:
+        return False
+    if text in ("provider-http-502", "provider-http-503", "provider-http-504"):
+        return True
+    if text in ("502", "503", "504"):
+        return True
+    return False
+
+
 def enrich_peer_keep_last_good_xai_weekly(
     peer: dict,
     *,
@@ -8781,6 +8795,25 @@ def enrich_peer_keep_last_good_xai_weekly(
         if rem_i is not None and not 0 <= rem_i <= 100:
             rem_i = None
     pcent = dict(enriched.get("pcent")) if isinstance(enriched.get("pcent"), dict) else {}
+    # FR #8049: one transient 5xx within the 120s stale window keeps fresh=True so the
+    # tray row is unchanged; past the window mark stale but still keep last %.
+    err_s = str(error or "live-fetch-failed")
+    keep_fresh = False
+    if is_transient_xai_http_error(err_s) and age_s is not None:
+        try:
+            stale_after = int(float(os.environ.get("BOB_TRAY_POOL_STALE_S") or "120"))
+        except ValueError:
+            stale_after = 120
+        stale_after = max(30, min(stale_after, 600))
+        if int(age_s) < stale_after:
+            keep_fresh = True
+    acq = _last_xai_acquisition if isinstance(_last_xai_acquisition, dict) else {}
+    err_source = (
+        acq.get("error_source")
+        or enriched.get("xai_weekly_source")
+        or meter.get("source")
+        or XAI_BILLING_SOURCE
+    )
     out_meter = {
         "provider": "xai",
         "window": "weekly",
@@ -8795,8 +8828,9 @@ def enrich_peer_keep_last_good_xai_weekly(
         "fetched_at": last_at,
         "period_end": enriched.get("period_end") or meter.get("period_end"),
         "account": cur_acct or cached_acct,
-        "fresh": False,
-        "error": str(error or "live-fetch-failed"),
+        "fresh": bool(keep_fresh),
+        "error": err_s,
+        "error_source": str(err_source or XAI_BILLING_SOURCE),
         "last_attempt_at": clock.astimezone(timezone.utc).strftime(
             "%Y-%m-%dT%H:%M:%SZ"
         ),
@@ -9243,6 +9277,9 @@ def publish_local_peer_fuel(
             _last_fuel_publish_diag["acquisition"] = acq
             if err:
                 _last_fuel_publish_diag["xai_weekly_error"] = err
+                # FR #8049: name the endpoint that returned the failure (xAI billing).
+                es = _last_xai_acquisition.get("error_source") or XAI_BILLING_SOURCE
+                _last_fuel_publish_diag["xai_weekly_error_source"] = es
             # FR #7235: auth_path on diag (path only, never contents).
             loc = _last_xai_acquisition.get("auth_path")
             if loc:
