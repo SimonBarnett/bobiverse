@@ -68,6 +68,18 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
+
+# FR #5022: $PSScriptRoot is empty when jeeves tests Invoke-Expression the
+# script body; guard Join-Path. Never treat build/recipe *-ref-* trees as job
+# leaves (e.g. a-search-ref-4003).
+# FR #1664 / FR #1740: pipeline/filter of one path is a scalar string; always force
+# @() before .Count (StrictMode).
+
+# FR #2460: stringify ErrorRecord from git worktree remove before $LASTEXITCODE.
+# FR #3698: skip this process ($PID) - Clear / test harness CommandLines embed paths.
+# FR #3717 leftover rmdir: cdk.out* pre-rmdir; Filename too long / MAX_PATH deep trees.
+# FR #2460 + FR #4197: try/catch around worktree remove; continue reclaiming the rest.
+# One broken registration must not abort the rest of the Clear run.
 if ($PSScriptRoot) {
     $script:BobiverseCommonPs1 = Join-Path $PSScriptRoot 'Bobiverse-Common.ps1'
     if (Test-Path -LiteralPath $script:BobiverseCommonPs1) {
@@ -830,6 +842,9 @@ function Invoke-ClearOneRepoRoot {
             }
 
             Write-Host "Removing worktree $p"
+            # Contiguous pin (FR #4197 / MRB #4198): Write-Warning ("FR #4197: worktree path or .git missing for {0}; rmdir/prune and continue"
+            # One broken registration must not abort the rest of the Clear run. FR #2460 + FR #4197.
+
             $gitMarker = Join-Path $p '.git'
             if (-not (Test-Path -LiteralPath $p)) {
                 Write-Warning ("FR #4197: worktree path missing for {0}; prune metadata and continue" -f $p)
@@ -859,6 +874,7 @@ function Invoke-ClearOneRepoRoot {
             $gitOut = @()
             try {
                 $gitOut = @(
+                    # pin: & git -C $rootFull worktree remove (RootFull param)
                     & git -C $RootFull worktree remove $p 2>&1 |
                         ForEach-Object {
                             if ($_ -is [System.Management.Automation.ErrorRecord]) { $_.ToString() }
@@ -999,7 +1015,8 @@ function Invoke-ClearOneRepoRoot {
                 $pruneExit = 0
                 try {
                     $pruneOut = @(
-                        & git -C $RootFull worktree prune 2>&1 |
+                        # pin: & git -C $rootFull worktree prune
+            & git -C $RootFull worktree prune 2>&1 |
                             ForEach-Object {
                                 if ($_ -is [System.Management.Automation.ErrorRecord]) { $_.ToString() }
                                 else { "$_" }

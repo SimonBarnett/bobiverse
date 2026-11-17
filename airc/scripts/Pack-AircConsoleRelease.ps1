@@ -70,6 +70,7 @@ $files = @(
     'scripts\airc_cred_send.py',  # FR #5825 / #5829 console-side via=irc sender
     'scripts\Send-AircCred.ps1',  # FR #5825 / #5829 CredMan/SecureString driver
     'scripts\airc_isolated.py',  # FR #5537 in-service isolated process helper
+    'scripts\airc_ws_transport.py',  # FR #7999 IRC-over-WebSocket transport
     'scripts\account_map.py',
     'scripts\Start-AircConsole.ps1',
     'scripts\Start-AircConsole.cmd',

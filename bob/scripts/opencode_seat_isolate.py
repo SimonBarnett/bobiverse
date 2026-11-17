@@ -15,7 +15,14 @@ from pathlib import Path
 
 LOCK_CUES = ("database is locked", "sqlite_busy", "database is busy")
 STARTUP_CUES = ("unexpected error",)
-RATE_CUES = ("payment required", "too many requests", "rate limit", "rolling limit")
+RATE_CUES = (
+    "payment required",
+    "too many requests",
+    "rate limit",
+    "rolling limit",
+    "free usage limit",
+    "subscribe to opencode go",
+)
 DEFAULT_LOCK_RETRIES = 3
 
 
@@ -46,6 +53,32 @@ def seat_paths(env: dict[str, str] | None = None) -> tuple[Path, Path, Path]:
             local = str(Path.home() / "AppData" / "Local")
         base = Path(local) / "Bobiverse" / "worker" / "opencode-data"
     root = base / seat_tag(env)
+    data = root / "opencode"
+    return root, data, data / "opencode.db"
+
+
+def fallback_seat_paths(
+    env: dict[str, str] | None = None,
+    *,
+    unique: str | None = None,
+) -> tuple[Path, Path, Path]:
+    """Unique per-seat paths when ``prepare`` fails (FR #8033).
+
+    Never returns the shared default store. ``unique`` is a short suffix
+    (tests pass a fixed token; the launch wrapper uses a GUID fragment).
+    """
+    env = env if env is not None else dict(os.environ)
+    custom = str(env.get("BOB_OPENCODE_SEAT_DATA_ROOT") or "").strip()
+    if custom:
+        base = Path(custom)
+    else:
+        local = str(env.get("LOCALAPPDATA") or "").strip()
+        if not local:
+            local = str(Path.home() / "AppData" / "Local")
+        base = Path(local) / "Bobiverse" / "worker" / "opencode-data"
+    tag = seat_tag(env)
+    suffix = _safe_tag(str(unique or "")) or "fb"
+    root = base / (tag + "-" + suffix)
     data = root / "opencode"
     return root, data, data / "opencode.db"
 

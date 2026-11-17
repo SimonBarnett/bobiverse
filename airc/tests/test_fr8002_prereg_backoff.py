@@ -43,6 +43,11 @@ def test_prereg_window_stays_under_ergo_ip_limit():
 
 
 def test_connect_reset_does_not_open_the_next_port(monkeypatch):
+    """FR #8002: TLS pre-reg reset skips remaining TLS ports this round.
+
+    Pin ``transport=tls`` so FR #8057's default WSS-first order does not open
+    443 via connect_ws before the TLS candidates under test.
+    """
     calls: list[int] = []
 
     def fake_create(addr, timeout=30):
@@ -58,6 +63,8 @@ def test_connect_reset_does_not_open_the_next_port(monkeypatch):
         port=993,
         tls=False,
         tls_insecure=False,
+        transport="tls",
+        ws_url="",
     )
     console = svc.AircConsoleService.__new__(svc.AircConsoleService)
     console.args = args

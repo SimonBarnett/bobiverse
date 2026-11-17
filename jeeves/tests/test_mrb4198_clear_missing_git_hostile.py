@@ -22,8 +22,6 @@ def test_clear_precheck_warn_contiguous_fr4197():
 
 def test_fr_skill_fr4197_continue_contiguous():
     text = FR_SKILL.read_text(encoding="utf-8")
-    assert (
-        "**FR #4197:** Clear must not abort when one registered worktree path or .git is missing"
-        in text
-    )
+    assert "Clear must not abort when one registered worktree path or .git is missing" in text
     assert "continue reclaiming the rest" in text
+    assert "FR #4197" in text

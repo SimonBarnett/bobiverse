@@ -2854,36 +2854,70 @@ class LaunchSpec:
     inherit_console: bool = False
 
 
+def _under_linked_git_worktree(path: Path) -> bool:
+    """True when ``path`` sits in a linked git worktree (``.git`` is a file).
+
+    FR #8059: a job worktree's ``skill_dag_mcp.py`` must not be written into the
+    seat ``opencode.json``. The install checkout has a ``.git`` directory.
+    """
+    try:
+        cur = Path(path).resolve()
+    except OSError:
+        cur = Path(path)
+    for parent in [cur, *cur.parents]:
+        marker = parent / ".git"
+        try:
+            if marker.is_file():
+                return True
+            if marker.is_dir():
+                return False
+        except OSError:
+            continue
+    return False
+
+
 def skill_dag_mcp_script_path(
     worker_cwd: str,
     *,
     source_file: str | Path | None = None,
 ) -> Path:
-    """Locate ``skill_dag_mcp.py`` for Grok/Cursor MCP launch args (FR #6889 / #7963).
+    """Locate ``skill_dag_mcp.py`` for MCP launch args (FR #6889 / #7963 / #8059).
 
-    FR #7963: prefer the worker-shipped copy via ``_resolve_installed_worker_script``
-    so a frozen bob-worker.exe cannot keep probing a stale ``C:\\ai\\bob`` checkout.
-    Then fall back to install/repo paths. Miss returns the preferred ``bob/scripts``
-    candidate under the worker parent.
+    Keep calling ``_resolve_installed_worker_script("skill_dag_mcp.py", ...)`` so
+    FR #7910 / #7991 by-path shipping still discovers the module (MRB #8075).
+    Refuse a linked job worktree path even when that resolver finds one: the seat
+    ``opencode.json`` must survive prune (FR #8059). Then prefer install paths
+    next to ``worker_cwd``, then frozen ``<exe>\\scripts``, then other checkouts.
     """
     shipped = _resolve_installed_worker_script(
         "skill_dag_mcp.py", cwd=worker_cwd, source_file=source_file
     )
-    if shipped is not None and shipped.is_file():
+    if (
+        shipped is not None
+        and shipped.is_file()
+        and not _under_linked_git_worktree(shipped)
+    ):
         return shipped.resolve()
     source = Path(source_file).resolve() if source_file else Path(__file__).resolve()
     here = source.parent
     parent = Path(worker_cwd).resolve().parent
-    candidates = [
+    ordered: list[Path] = [
         parent / "bob" / "scripts" / "skill_dag_mcp.py",
         parent / "scripts" / "skill_dag_mcp.py",
-        here / "skill_dag_mcp.py",
-        parent / "common" / "scripts" / "skill_dag_mcp.py",
     ]
-    for cand in candidates:
+    if getattr(sys, "frozen", False):
+        exe_dir = Path(sys.executable).resolve().parent
+        ordered.append(exe_dir / "scripts" / "skill_dag_mcp.py")
+        ordered.append(exe_dir.parent / "scripts" / "skill_dag_mcp.py")
+    ordered.append(here / "skill_dag_mcp.py")
+    ordered.append(parent / "common" / "scripts" / "skill_dag_mcp.py")
+    stable = [cand for cand in ordered if not _under_linked_git_worktree(cand)]
+    for cand in stable:
         if cand.is_file():
             return cand.resolve()
-    return candidates[0].resolve()
+    if stable:
+        return stable[0].resolve()
+    return (parent / "bob" / "scripts" / "skill_dag_mcp.py").resolve()
 
 
 def skill_dag_vision_roots(worker_cwd: str, *, home: Path | None = None) -> list[Path]:
@@ -3908,14 +3942,34 @@ def skill_dag_down_giveup_line(
     return f"GIVEUP {key} {token}" if key else f"GIVEUP job {token}"
 
 
+def opencode_fleet_script_roots(worker_cwd: str) -> list[Path]:
+    """Install script dirs the seat skills tell OpenCode to read (FR #8064).
+
+    ``worker_cwd`` is ``<ai root>\\bob\\worker``. The fleet copies live beside
+    that, not inside the job worktree: ``bob\\scripts`` and ``common\\scripts``.
+    """
+    install = Path(worker_cwd).resolve().parent
+    return [install / "bob" / "scripts", install / "common" / "scripts"]
+
+
 def opencode_skill_read_permission_block(worker_cwd: str) -> dict:
-    """Read-only ``external_directory`` allow for skill-dag roots only (FR #7196)."""
+    """Read-only ``external_directory`` allow for skill roots and fleet scripts.
+
+    FR #7196 / #7909: skill-dag roots. FR #8064: ``bob\\scripts`` and
+    ``common\\scripts`` so harvest/intake reads are not auto-rejected. Edit
+    stays deny. ``C:\\passwords`` stays deny and is never an allow.
+    """
     allow: dict[str, str] = {}
     edit: dict[str, str] = {}
-    for root in skill_dag_mcp_skill_roots(worker_cwd):
+    roots = list(skill_dag_mcp_skill_roots(worker_cwd))
+    roots.extend(opencode_fleet_script_roots(worker_cwd))
+    for root in roots:
         for key in opencode_skill_root_read_patterns(root):
             allow[key] = "allow"
             edit[key] = "deny"
+    for key in (r"C:\passwords", r"C:\passwords\*", r"C:\passwords\**", r"C:/passwords", r"C:/passwords/*"):
+        allow[key] = "deny"
+        edit[key] = "deny"
     return {"external_directory": allow, "edit": edit}
 
 
@@ -3930,7 +3984,11 @@ def opencode_skill_read_allow_gaps(config_path: str | Path, worker_cwd: str) -> 
     allow = {}
     if isinstance(perm, dict) and isinstance(perm.get("external_directory"), dict):
         allow = perm["external_directory"]
-    missing = [str(key) for key in expected if allow.get(key) != "allow"]
+    missing = [
+        str(key)
+        for key, want in expected.items()
+        if want == "allow" and allow.get(key) != "allow"
+    ]
     return missing
 
 
@@ -4178,6 +4236,10 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             "opencode_seat_isolate.py", cwd=cwd, install_root=install_root
         )
         iso_path = iso_resolved or (Path(__file__).resolve().parent / "opencode_seat_isolate.py")
+        log_resolved = _resolve_installed_worker_script(
+            "opencode_stdout_log.py", cwd=cwd, install_root=install_root
+        )
+        log_path = log_resolved or (Path(__file__).resolve().parent / "opencode_stdout_log.py")
         # FR #6157: each opencode run emits turn_started / turn_ended into opencode-turns.jsonl
         # so BoredEmitter gets harvest-hold / done-miss / startup-ready parity with Grok.
         # FR #6240: no external_directory allow. Each injected assign carries its own
@@ -4208,6 +4270,8 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             f"$guardPy = '{esc(str(guard_path))}'",
             f"$wedgePy = '{esc(wedge_text)}'",
             f"$isolatePy = '{esc(str(iso_path))}'",
+            f"$stdoutLogPy = '{esc(str(log_path))}'",
+            r"$script:ocStdoutLog = ''",
             r"$script:ocDagRetries = 1",
             r"$script:ocDbLockTries = 0",
             r"$script:ocWedgeTicks = 0",
@@ -4219,7 +4283,8 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             r"$pyIso = (Get-Command python.exe -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source)",
             r"if (-not $pyIso) { $pyIso = 'python.exe' }",
             r"try {",
-            r"    $isoOut = & $pyIso $isolatePy prepare",
+            r"    $isoOut = & $pyIso $isolatePy prepare 2>&1",
+            r"    if ($LASTEXITCODE -ne 0) { throw ('prepare exit ' + $LASTEXITCODE) }",
             r"    foreach ($row in @($isoOut)) {",
             r"        if ($row -match '^(XDG_DATA_HOME|OPENCODE_DB|BOB_OPENCODE_DATA_DIR)=(.*)$') {",
             r"            Set-Item -Path ('Env:' + $Matches[1]) -Value $Matches[2].Trim()",
@@ -4231,17 +4296,36 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             r"} catch {",
             r"    Write-Output ('opencode-seat-isolate: prepare failed ' + $_.Exception.Message)",
             r"}",
+            r"# FR #8033: prepare failure / miss must not inherit the shared default opencode.db.",
+            r"if (-not $env:OPENCODE_DB -or [string]::IsNullOrWhiteSpace([string]$env:OPENCODE_DB) -or -not $env:XDG_DATA_HOME) {",
+            r"    $fbBase = $env:BOB_OPENCODE_SEAT_DATA_ROOT",
+            r"    if (-not $fbBase) { $fbBase = Join-Path $env:LOCALAPPDATA 'Bobiverse\worker\opencode-data' }",
+            r"    $fbTag = $env:BOB_NICK",
+            r"    if (-not $fbTag) { $fbTag = 'seat' }",
+            r"    if ($env:BOB_WORKER_PID) { $fbTag = ($fbTag + '-' + $env:BOB_WORKER_PID) }",
+            r"    $fbTag = ($fbTag + '-' + [guid]::NewGuid().ToString('N').Substring(0, 8)) -replace '[^A-Za-z0-9._-]', '-'",
+            r"    $fbRoot = Join-Path $fbBase $fbTag",
+            r"    $fbData = Join-Path $fbRoot 'opencode'",
+            r"    New-Item -ItemType Directory -Force -Path $fbData | Out-Null",
+            r"    $env:XDG_DATA_HOME = $fbRoot",
+            r"    $env:BOB_OPENCODE_DATA_DIR = $fbData",
+            r"    $env:OPENCODE_DB = Join-Path $fbData 'opencode.db'",
+            r"    Set-Content -LiteralPath (Join-Path (Split-Path -Parent $turnsLog) 'opencode-data-dir.txt') -Value $fbData -Encoding ascii",
+            r"    Write-Output ('opencode-seat-isolate: fallback data dir ' + $fbData)",
+            r"}",
             r"function Write-OpencodeTurnMarker([string]$Type, [int]$TurnNumber, [string]$Status, [string]$Err, [string]$ErrClass) {",
             r"    # FR #6157 / #7201 / #8018: durable turn markers; error status trips failed-turn retry/GIVEUP",
             r"    $entry = @{ type = $Type; ts = (Get-Date -Format o); turn_number = $TurnNumber }",
             r"    if ($Status) { $entry.status = $Status }",
             r"    if ($Err) { $entry.error = $Err }",
             r"    if ($ErrClass) { $entry.error_class = $ErrClass }",
+            r"    if ($script:ocStdoutLog) { $entry.stdout_log = [IO.Path]::GetFileName($script:ocStdoutLog) }",
             r"    Add-Content -LiteralPath $turnsLog -Value ($entry | ConvertTo-Json -Compress) -ErrorAction SilentlyContinue",
             r"}",
             r"function Write-OpencodeJobGiveup([string]$JobKey, [string]$Reason) {",
             r"    if (-not $JobKey) { return }",
             r"    $g = 'GIVEUP ' + $JobKey + ' ' + $Reason",
+            r"    if ($script:ocStdoutLog) { $g = $g + ' log=' + [IO.Path]::GetFileName($script:ocStdoutLog) }",
             r"    if ($env:BOB_OUTBOX) { Add-Content -LiteralPath $env:BOB_OUTBOX -Value $g -ErrorAction SilentlyContinue }",
             r"    Write-Output $g",
             r"}",
@@ -4269,6 +4353,7 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             r"function Write-OpencodeJobNack([string]$JobKey, [string]$Reason) {",
             r"    if (-not $JobKey) { return }",
             r"    $nack = 'NACK ' + $JobKey + ' ' + $Reason + ' (FR #6240)'",
+            r"    if ($script:ocStdoutLog) { $nack = $nack + ' log=' + [IO.Path]::GetFileName($script:ocStdoutLog) }",
             r"    if ($env:BOB_OUTBOX) {",
             r"        Add-Content -LiteralPath $env:BOB_OUTBOX -Value $nack -ErrorAction SilentlyContinue",
             r"        $refuse = Join-Path (Split-Path -Parent $env:BOB_OUTBOX) 'opencode-job-refused.txt'",
@@ -4340,6 +4425,8 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             r"    $outFile = $null",
             r"    $errFile = $null",
             r"    $timedOut = $false",
+            r"    $fuelHitLive = $false",
+            r"    $killReason = ''",
             r"    try {",
             # FR #6156: redirect to files and treat growing file size as heartbeat (not absolute WaitForExit).
             # FR #6366: descendant presence refreshes the short watchdog. FR #7976: the
@@ -4347,12 +4434,25 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             # worktree mtime), not wall clock, so a live turn is not killed.
             r"        $watchdogMs = if ($env:BOB_OPENCODE_WATCHDOG_MS) { [int]$env:BOB_OPENCODE_WATCHDOG_MS } else { 120000 }",
             r"        $hardCeilingMs = if ($env:BOB_OPENCODE_HARD_CEILING_MS) { [int]$env:BOB_OPENCODE_HARD_CEILING_MS } else { 1800000 }",
+            r"        $script:ocStdoutLog = ''",
+            r"        if ($env:BOB_OPENCODE_STDOUT_LOG -ne '0' -and $stdoutLogPy) {",
+            r"            $env:BOB_OC_LOG_JOB = [string]$jobKey",
+            r"            $env:BOB_OC_LOG_SEAT = if ($env:BOB_NICK) { $env:BOB_NICK } else { $env:BOB_AGENT_NICK }",
+            r"            $env:BOB_OC_LOG_MODEL = [string]$model",
+            r"            $env:BOB_OC_LOG_WORKTREE = [string]$ocDir",
+            r"            $pyLog = (Get-Command python.exe -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source)",
+            r"            if (-not $pyLog) { $pyLog = 'python.exe' }",
+            r"            try { $script:ocStdoutLog = ([string](& $pyLog $stdoutLogPy open)).Trim() } catch { $script:ocStdoutLog = '' }",
+            r"        }",
+            r"        $script:ocOutPos = 0",
+            r"        $script:ocErrPos = 0",
             r"        $outFile = Join-Path $env:TEMP ('bob-oc-out-' + [guid]::NewGuid().ToString('n') + '.txt')",
             r"        $errFile = Join-Path $env:TEMP ('bob-oc-err-' + [guid]::NewGuid().ToString('n') + '.txt')",
             # MRB #6163 / CodeRabbit: ArgumentList array drops quotes/spaces in $line; use pre-escaped $argStr.
             r"        if ($ocDir) { $proc = Start-Process -FilePath $exe -ArgumentList $argStr -WorkingDirectory $ocDir -NoNewWindow -PassThru -RedirectStandardOutput $outFile -RedirectStandardError $errFile } else { $proc = Start-Process -FilePath $exe -ArgumentList $argStr -NoNewWindow -PassThru -RedirectStandardOutput $outFile -RedirectStandardError $errFile }",
             r"        $timedOut = $false",
             r"        $killReason = ''",
+            r"        $fuelHitLive = $false",
             r"        $ocJobPoll = 0",
             r"        $lastLen = 0",
             r"        $lastCpu = -1.0",
@@ -4361,11 +4461,45 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             r"        $lastBeat = [datetime]::UtcNow",
             r"        $runStarted = [datetime]::UtcNow",
             r"        $lastProgress = $runStarted",
+            # FR #8026: match free-pool exhaustion while the process is still alive.
+            r"        $liveFuelPattern = 'Free usage limit|subscribe to OpenCode Go|Payment Required|usage balance exhausted|Too Many Requests|rate limit|rolling limit|(HTTP|status( code)?)\D{0,3}(402|429)'",
             r"        while (-not $proc.HasExited) {",
             r"            $len = 0",
             r"            if (Test-Path -LiteralPath $outFile) { $len += (Get-Item -LiteralPath $outFile).Length }",
             r"            if (Test-Path -LiteralPath $errFile) { $len += (Get-Item -LiteralPath $errFile).Length }",
-            r"            if ($len -gt $lastLen) { $lastLen = $len; $lastBeat = [datetime]::UtcNow; $lastProgress = [datetime]::UtcNow }",
+            r"            if ($len -gt $lastLen) {",
+            r"                $lastLen = $len",
+            r"                $lastBeat = [datetime]::UtcNow",
+            r"                $lastProgress = [datetime]::UtcNow",
+            r"                if ($script:ocStdoutLog) {",
+            r"                    $pyLog = (Get-Command python.exe -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source)",
+            r"                    if (-not $pyLog) { $pyLog = 'python.exe' }",
+            r"                    foreach ($pair in @(@($outFile, 'ocOutPos'), @($errFile, 'ocErrPos'))) {",
+            r"                        $cap = Read-OpencodeCapture $pair[0]",
+            r"                        $pos = [int](Get-Variable -Name $pair[1] -Scope Script).Value",
+            r"                        if ($cap.Length -gt $pos) {",
+            r"                            $slice = $cap.Substring($pos)",
+            r"                            Set-Variable -Name $pair[1] -Scope Script -Value $cap.Length",
+            r"                            $sliceFile = Join-Path $env:TEMP ('bob-oc-slice-' + [guid]::NewGuid().ToString('n') + '.txt')",
+            r"                            try {",
+            r"                                [IO.File]::WriteAllText($sliceFile, $slice)",
+            r"                                & $pyLog $stdoutLogPy append $script:ocStdoutLog $sliceFile | Out-Null",
+            r"                            } catch { }",
+            r"                            finally { Remove-Item -LiteralPath $sliceFile -ErrorAction SilentlyContinue }",
+            r"                        }",
+            r"                    }",
+            r"                }",
+            r"                $peek = (Read-OpencodeCapture $outFile) + [Environment]::NewLine + (Read-OpencodeCapture $errFile)",
+            r"                if ($line) { $peek = $peek.Replace([string]$line, ' ') }",
+            r"                $peek = [regex]::Replace($peek, '`[^`]*`', ' ')",
+            r"                if ($peek -match $liveFuelPattern) {",
+            r"                    $fuelHitLive = $true",
+            r"                    if ($peek -match 'Free usage limit|subscribe to OpenCode Go') { $killReason = 'fuel-exhausted:opencode-free' } else { $killReason = 'out-of-fuel' }",
+            r"                    try { & taskkill /T /F /PID $proc.Id 2>$null | Out-Null } catch { }",
+            r"                    if ($jobKey) { Write-OpencodeJobGiveup $jobKey $killReason }",
+            r"                    break",
+            r"                }",
+            r"            }",
             r"            $busy = $false",
             r"            if (([datetime]::UtcNow - $lastBusyCheck).TotalMilliseconds -ge 2000) {",
             r"                $lastBusyCheck = [datetime]::UtcNow",
@@ -4457,6 +4591,20 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             r"            Start-Sleep -Milliseconds 100",
             r"        }",
             r"        try { $proc.WaitForExit(2000) | Out-Null } catch { }",
+            r"        if ($script:ocStdoutLog -and $stdoutLogPy) {",
+            r"            $pyLog = (Get-Command python.exe -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source)",
+            r"            if (-not $pyLog) { $pyLog = 'python.exe' }",
+            r"            foreach ($pair in @(@($outFile, 'ocOutPos'), @($errFile, 'ocErrPos'))) {",
+            r"                $cap = Read-OpencodeCapture $pair[0]",
+            r"                $pos = [int](Get-Variable -Name $pair[1] -Scope Script).Value",
+            r"                if ($cap.Length -gt $pos) {",
+            r"                    $sliceFile = Join-Path $env:TEMP ('bob-oc-slice-' + [guid]::NewGuid().ToString('n') + '.txt')",
+            r"                    try { [IO.File]::WriteAllText($sliceFile, $cap.Substring($pos)); & $pyLog $stdoutLogPy append $script:ocStdoutLog $sliceFile | Out-Null } catch { }",
+            r"                    finally { Remove-Item -LiteralPath $sliceFile -ErrorAction SilentlyContinue }",
+            r"                    Set-Variable -Name $pair[1] -Scope Script -Value $cap.Length",
+            r"                }",
+            r"            }",
+            r"        }",
             r"        $stdout = Read-OpencodeCapture $outFile",
             r"        $stderr = Read-OpencodeCapture $errFile",
             r"        $exitCode = if ($proc.HasExited) { $proc.ExitCode } else { -1 }",
@@ -4474,12 +4622,14 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             r"    $scan = $outStr",
             r"    if ($line) { $scan = $scan.Replace([string]$line, ' ') }",
             r"    $scan = [regex]::Replace($scan, '`[^`]*`', ' ')",
-            r"    $limitPattern = 'Payment Required|usage balance exhausted|Too Many Requests|rate limit|rolling limit'",
+            r"    $limitPattern = 'Payment Required|usage balance exhausted|Too Many Requests|rate limit|rolling limit|Free usage limit|subscribe to OpenCode Go'",
             r"    $codePattern = '(HTTP|status( code)?)\D{0,3}(402|429)'",
+            r"    $freeUsagePattern = 'Free usage limit|subscribe to OpenCode Go'",
             # FR #6366: watchdog timeout kills the run but must NOT record a model pause
             # (done-miss finish-runs looked like out-of-fuel). Only real 402/429/limit text pauses.
             # FR #7951: a hard ceiling or watchdog kill is not out of fuel.
-            r"    $hitLimit = (-not $timedOut -and $exitCode -ne 0 -and (($scan -match $limitPattern) -or ($scan -match $codePattern)))",
+            # FR #8026: free-usage text (or a live mid-run fuel kill) pauses even when exit is 0.
+            r"    $hitLimit = (-not $timedOut -and ($fuelHitLive -or ((($scan -match $limitPattern) -or ($scan -match $codePattern)) -and ($exitCode -ne 0 -or ($scan -match $freeUsagePattern)))))",
             r"    if ($timedOut) {",
             r"        if ($proc -and -not $proc.HasExited) { try { & taskkill /T /F /PID $proc.Id 2>$null | Out-Null } catch { } }",
             r"        if (-not $killReason) { $killReason = 'watchdog timeout (no output)' }",
@@ -4507,6 +4657,11 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             r"            $failText = ('record-pause helper failed (exit ' + $recordExit + '): ' + $recordOutput)",
             r"            $failEntry = @{ pid = $PID; ts = (Get-Date -Format o); model = $model; text = $failText } | ConvertTo-Json -Compress",
             r"            Add-Content -Path $fuelLog -Value $failEntry -ErrorAction SilentlyContinue",
+            r"        }",
+            # FR #8026: release the job immediately; free-pool uses fuel-exhausted:opencode-free.
+            r"        if ($jobKey) {",
+            r"            $giveReason = if ($scan -match $freeUsagePattern -or ($killReason -eq 'fuel-exhausted:opencode-free')) { 'fuel-exhausted:opencode-free' } else { 'out-of-fuel' }",
+            r"            Write-OpencodeJobGiveup $jobKey $giveReason",
             r"        }",
             r"    }",
             # FR #6429: clear region/model-unavailable (no silent fail, no substitute model).
@@ -4564,6 +4719,7 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             r"                if ($snip.Length -gt 160) { $snip = $snip.Substring(0, 160) }",
             r"                $teErr = ('exit ' + $codeNum)",
             r"                if ($snip) { $teErr = ($teErr + ': ' + $snip) }",
+            r"                if ($script:ocStdoutLog) { $teErr = $teErr + ' log=' + [IO.Path]::GetFileName($script:ocStdoutLog) }",
             r"                $teClass = 'process-exit'",
             r"                if ($hitLimit) { $teClass = 'out-of-fuel' }",
             r"            }",
@@ -6602,8 +6758,23 @@ _OUT_OF_FUEL_RX = re.compile(
     r"|OUTCOME_NEEDS_AUTH"
     r"|unpaid\s+invoice"
     r"|rate\s*limit(?:ed|ing)?\b"
+    # FR #8026: OpenCode free pool (may hang without exit).
+    r"|Free\s+usage\s+limit"
+    r"|subscribe\s+to\s+OpenCode\s+Go"
     r")"
 )
+
+_OPENCODE_FREE_USAGE_RX = re.compile(
+    r"(?i)(?:Free\s+usage\s+limit|subscribe\s+to\s+OpenCode\s+Go)"
+)
+
+
+def opencode_fuel_exhausted_reason(text: str) -> str:
+    """GIVEUP/NACK reason for OpenCode provider fuel text (FR #8026)."""
+    scanned = provider_fuel_scan_text(text)
+    if _OPENCODE_FREE_USAGE_RX.search(scanned):
+        return "fuel-exhausted:opencode-free"
+    return "out-of-fuel"
 DEFAULT_DIGEST_REPORT_URL = "https://bob.ntsa.uk/bob/v1/report"
 
 
