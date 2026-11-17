@@ -65,13 +65,26 @@ def _scrub_kwargs(kwargs: dict[str, Any]) -> dict[str, Any]:
 _DECODER = json.JSONDecoder()
 
 
-def _decode_json_dict(chunk: str) -> dict[str, Any] | None:
-    """Return the leading JSON object in ``chunk`` (trailing noise ignored)."""
-    try:
-        data = _DECODER.raw_decode(chunk)[0]
-    except (json.JSONDecodeError, ValueError):
-        return None
-    return data if isinstance(data, dict) else None
+def _last_json_dict(chunk: str) -> dict[str, Any] | None:
+    """Return the last top-level JSON object in ``chunk`` (nested braces ignored).
+
+    Walk with ``raw_decode`` end indexes so a later sibling object wins over an
+    earlier one, while a nested object inside the result does not replace it.
+    """
+    last: dict[str, Any] | None = None
+    idx = 0
+    while True:
+        start = chunk.find("{", idx)
+        if start == -1:
+            return last
+        try:
+            data, end = _DECODER.raw_decode(chunk, start)
+        except (json.JSONDecodeError, ValueError):
+            idx = start + 1
+            continue
+        if isinstance(data, dict):
+            last = data
+        idx = end
 
 
 def extract_isolated_json_payload(stdout: str) -> dict[str, Any] | None:
@@ -80,8 +93,8 @@ def extract_isolated_json_payload(stdout: str) -> dict[str, Any] | None:
     Isolated workers must print one JSON object on stdout, but older builds and
     accidental ``print``/``info()`` calls can prefix or suffix log text on the
     same line (and BOM / UTF-16-as-cp1252 NUL bytes survive a pipe). Accept a
-    JSON object anywhere on a line, prefer the last one, so a real result is not
-    remapped to ``worker_died`` / ``bad-json`` (FR #7987).
+    JSON object anywhere on a line, prefer the last top-level one, so a real
+    result is not remapped to ``worker_died`` / ``bad-json`` (FR #7987).
     """
     text = (stdout or "").replace("\x00", "").strip().lstrip("\ufeff")
     if not text:
@@ -94,21 +107,11 @@ def extract_isolated_json_payload(stdout: str) -> dict[str, Any] | None:
         return data
     # Last line that carries a JSON object; tolerate a log prefix/suffix.
     for line in reversed(text.splitlines()):
-        chunk = line.strip().lstrip("\ufeff")
-        idx = chunk.find("{")
-        while idx != -1:
-            data = _decode_json_dict(chunk[idx:])
-            if isinstance(data, dict):
-                return data
-            idx = chunk.find("{", idx + 1)
-    # Pretty-printed / multi-line object: first '{' that decodes as a dict.
-    idx = text.find("{")
-    while idx != -1:
-        data = _decode_json_dict(text[idx:])
-        if isinstance(data, dict):
-            return data
-        idx = text.find("{", idx + 1)
-    return None
+        found = _last_json_dict(line.strip().lstrip("\ufeff"))
+        if found is not None:
+            return found
+    # Pretty-printed / multi-line object: last top-level dict in the blob.
+    return _last_json_dict(text)
 
 
 def is_worker_fault(payload: Any) -> bool:

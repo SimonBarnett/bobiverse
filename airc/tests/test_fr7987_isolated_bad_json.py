@@ -21,6 +21,16 @@ def test_fr7987_extract_json_after_same_line_log_prefix():
     assert iso.extract_isolated_json_payload(blob) == {"ok": True, "hosts": []}
 
 
+def test_fr7987_extract_prefers_last_top_level_object_on_line():
+    # Two sibling objects: keep the last. Nested braces must not win over the outer.
+    blob = '{"noise":1} prefix {"ok":true,"hosts":[],"nested":{"a":1}}'
+    assert iso.extract_isolated_json_payload(blob) == {
+        "ok": True,
+        "hosts": [],
+        "nested": {"a": 1},
+    }
+
+
 def test_fr7987_extract_json_with_trailing_log_suffix():
     blob = '{"ok":true,"detail":"x"} note=trailing\r\n'
     assert iso.extract_isolated_json_payload(blob) == {"ok": True, "detail": "x"}
