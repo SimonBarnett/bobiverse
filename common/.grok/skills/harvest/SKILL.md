@@ -513,6 +513,7 @@ routes to bobiverse via the split rule.
 - Isolated stdout JSON extract that claims prefer-last must walk top-level objects with JSONDecoder.raw_decode end indexes: first-match loses a later sibling result, and last-brace naive scan loses nested outer objects.
 - When skill-dag MCP status has node_count 0 or ModuleNotFoundError, resolve and get_skill with python skill_dag_mcp.py --once using the mcp.json --root args. Do not invent skill bodies.
 - When preferring an installed copy of a script, ship its local imports too; put exception text (str(exc)) in status last_error, not only the class name.
+- A never-registered airc reconnect must not keep a 60s cap or open every IRC port in one round. After a few pre-registration resets, back off at least 10 minutes so a shared NAT stays under Ergo ip-limits.
 
 ## Harvest digest (lessons audit 2026-10-06)
 
