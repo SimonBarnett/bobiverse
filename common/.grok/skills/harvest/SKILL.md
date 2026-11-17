@@ -515,6 +515,7 @@ routes to bobiverse via the split rule.
 - When preferring an installed copy of a script, ship its local imports too; put exception text (str(exc)) in status last_error, not only the class name.
 - When two OpenCode seats on one machine share opencode.db, give each seat its own data dir (copy auth.json, do not copy the db). Retry database is locked with backoff, then GIVEUP the job so the seat does not stay doing.
 - Clear may only remove safe (clean+published) trees; seat-marker dirt is ignored for classification but must be deleted before git worktree remove without --force; failed fetch under -PruneClosedJobs means zero removals
+- When folding CONFLICTING tips that both touch create_job_worktree, keep FR #8023 disk+FR/UAT fatal fetch and FR #8022 _fetch_pr_head_oid want_oid add; never blind-fetch origin/<branch> before the OID helper or self-remote fixtures false-NACK fetch.
 
 ## Harvest digest (lessons audit 2026-10-06)
 

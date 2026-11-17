@@ -36,12 +36,31 @@ def _publish_head(clone: Path, branch: str) -> None:
     subprocess.run(["git", "-C", str(clone), "branch", "-D", branch], check=True, capture_output=True)
 
 
-def _run_with_gh(head: str | None, *, gh_code: int = 0):
+def _head_oid(clone: Path, branch: str) -> str:
+    return subprocess.run(
+        ["git", "-C", str(clone), "rev-parse", f"origin/{branch}"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip().lower()
+
+
+def _run_with_gh(head: str | None, oid: str | None = None, *, gh_code: int = 0):
     def run(cmd, **kw):
         if cmd and cmd[0] == "gh":
             class Proc:
                 returncode = gh_code
-                stdout = "" if gh_code else json.dumps({"headRefName": head or ""})
+                stdout = (
+                    ""
+                    if gh_code
+                    else json.dumps(
+                        {
+                            "headRefName": head or "",
+                            "headRefOid": oid or "",
+                            "isCrossRepository": False,
+                        }
+                    )
+                )
                 stderr = "" if gh_code == 0 else "missing"
 
             return Proc()
@@ -53,13 +72,14 @@ def _run_with_gh(head: str | None, *, gh_code: int = 0):
 def test_fix_worktree_checks_out_pr_head_and_acks(tmp_path: Path):
     clone = _init_clone(tmp_path / "clone")
     _publish_head(clone, "fr-7888")
+    oid = _head_oid(clone, "fr-7888")
     base = tmp_path / "worktrees"
     env = {"BOB_JOB_WORKTREE_BASE": str(base), "BOB_REPO_CLONE_bobiverse": str(clone)}
     line = "FROM jeeves #flamingo n: FIX SimonBarnett/bobiverse#7889 https://x"
     before = c.classify_opencode_job(line, env)
     assert before["state"] == "absent"
     ready = c.ensure_opencode_job_worktree(
-        line, env, install_root=str(clone), run=_run_with_gh("fr-7888"), nick="flamingo-1"
+        line, env, install_root=str(clone), run=_run_with_gh("fr-7888", oid), nick="flamingo-1"
     )
     assert ready["state"] == "project"
     assert ready["nack"] == ""
@@ -69,6 +89,11 @@ def test_fix_worktree_checks_out_pr_head_and_acks(tmp_path: Path):
         check=True, capture_output=True, text=True,
     ).stdout.strip()
     assert head == "fr-7888"
+    tip = subprocess.run(
+        ["git", "-C", str(path), "rev-parse", "HEAD"],
+        check=True, capture_output=True, text=True,
+    ).stdout.strip().lower()
+    assert tip == oid
     listed = subprocess.run(
         ["git", "-C", str(clone), "branch", "--list", "fix-7889"],
         check=True, capture_output=True, text=True,
@@ -79,7 +104,7 @@ def test_fix_worktree_checks_out_pr_head_and_acks(tmp_path: Path):
     relay.write_outbox = lambda text: written.append(text) or True
     relay.set_target(lambda _line: True)
     relay.opencode_job_block = lambda raw: c.opencode_job_context_nack_ready(
-        raw, env, install_root=str(clone), run=_run_with_gh("fr-7888"), nick="flamingo-1"
+        raw, env, install_root=str(clone), run=_run_with_gh("fr-7888", oid), nick="flamingo-1"
     )
     status = relay.deliver("jeeves", "#flamingo", "flamingo-1: FIX SimonBarnett/bobiverse#7889 https://x")
     assert status == "injected"
@@ -92,7 +117,7 @@ def test_fix_missing_head_nacks_create_failed_not_absent(tmp_path: Path):
     env = {"BOB_JOB_WORKTREE_BASE": str(tmp_path / "worktrees"), "BOB_REPO_CLONE_bobiverse": str(clone)}
     line = "FROM jeeves #flamingo n: FIX SimonBarnett/bobiverse#7889 https://x"
     decision = c.ensure_opencode_job_worktree(
-        line, env, install_root=str(clone), run=_run_with_gh(None, gh_code=1)
+        line, env, install_root=str(clone), run=_run_with_gh(None, None, gh_code=1)
     )
     assert decision["state"] == "create_failed"
     assert "worktree-create-failed:pr-head" in decision["nack"]
@@ -103,12 +128,19 @@ def test_mrb_fetch_failure_nacks_create_failed(tmp_path: Path):
     clone = _init_clone(tmp_path / "clone")
     env = {"BOB_JOB_WORKTREE_BASE": str(tmp_path / "worktrees"), "BOB_REPO_CLONE_bobiverse": str(clone)}
     line = "FROM jeeves #flamingo n: MRB SimonBarnett/bobiverse#50 https://x"
+    fake_oid = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 
     def run(cmd, **kw):
         if cmd and cmd[0] == "gh":
             class Proc:
                 returncode = 0
-                stdout = json.dumps({"headRefName": "fr-40"})
+                stdout = json.dumps(
+                    {
+                        "headRefName": "fr-40",
+                        "headRefOid": fake_oid,
+                        "isCrossRepository": False,
+                    }
+                )
                 stderr = ""
 
             return Proc()
@@ -127,13 +159,14 @@ def test_mrb_fetch_failure_nacks_create_failed(tmp_path: Path):
     assert "worktree-absent" not in decision["nack"]
 
 
-def test_mrb7949_stale_local_fr_prefers_origin_tip(tmp_path: Path):
-    """When local and origin/<head> both exist, worktree add must reset from origin."""
+def test_mrb7949_stale_local_fr_prefers_verified_sha(tmp_path: Path):
+    """When local and origin/<head> both exist, worktree add must use verified SHA (FR #8022)."""
     clone = _init_clone(tmp_path / "clone")
     _publish_head(clone, "fr-7888")
+    oid = _head_oid(clone, "fr-7888")
     subprocess.run(["git", "-C", str(clone), "branch", "fr-7888", "main"], check=True, capture_output=True)
     seen: list[list[str]] = []
-    base_run = _run_with_gh("fr-7888")
+    base_run = _run_with_gh("fr-7888", oid)
 
     def run(cmd, **kw):
         if cmd and cmd[0] == "git" and "worktree" in cmd and "add" in cmd:
@@ -149,4 +182,5 @@ def test_mrb7949_stale_local_fr_prefers_origin_tip(tmp_path: Path):
     assert seen, "expected a git worktree add"
     add = seen[-1]
     assert "-B" in add
-    assert "origin/fr-7888" in add
+    assert oid in add
+    assert "origin/main" not in add
