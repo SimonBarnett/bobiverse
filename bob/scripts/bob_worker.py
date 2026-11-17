@@ -3434,7 +3434,11 @@ class AgentStderrRing:
         safe = _scrub(text)
         self._lines.append(safe[:8192])
         if self._on_line is not None:
-            self._on_line(safe)
+            # FR #8091: a bad session_log callback must not kill the drain thread.
+            try:
+                self._on_line(safe)
+            except Exception:
+                pass
 
     def feed(self, text: str) -> None:
         if not text:
@@ -3466,44 +3470,135 @@ class AgentStderrRing:
         return "\n".join(lines[-5:])
 
 
-def _tee_agent_stderr(pipe, ring: AgentStderrRing, output=None) -> None:
-    """Copy the agent stderr pipe to the console and into the ring."""
+def _tee_agent_stderr(pipe, ring: AgentStderrRing, output=None, *, mirror: bool = True) -> None:
+    """Copy the agent pipe into the ring; keep reading until EOF (FR #8091).
+
+    Never abandon the drain because a console write or ``on_line`` callback failed.
+    Closing the pipe before EOF is what surfaces as node ``EPIPE: broken pipe, write``.
+    """
+    if mirror and output is None:
+        output = sys.__stderr__
+    if not mirror:
+        output = None
     try:
-        output = output or sys.__stderr__
         while True:
-            chunk = pipe.read1(4096) if hasattr(pipe, "read1") else pipe.read(256)
+            try:
+                chunk = pipe.read1(4096) if hasattr(pipe, "read1") else pipe.read(256)
+            except Exception:
+                break
             if not chunk:
                 break
             if isinstance(chunk, bytes):
-                try:
-                    output.buffer.write(chunk)
-                    output.buffer.flush()
-                except Exception:
-                    pass
+                if output is not None:
+                    try:
+                        buf = getattr(output, "buffer", None)
+                        if buf is not None:
+                            buf.write(chunk)
+                            buf.flush()
+                        else:
+                            output.write(chunk.decode("utf-8", "replace"))
+                            output.flush()
+                    except Exception:
+                        pass
                 text = chunk.decode("utf-8", "replace")
             else:
-                try:
-                    output.write(chunk)
-                    output.flush()
-                except Exception:
-                    pass
+                if output is not None:
+                    try:
+                        output.write(chunk)
+                        output.flush()
+                    except Exception:
+                        pass
                 text = str(chunk)
-            ring.feed(text)
+            try:
+                ring.feed(text)
+            except Exception:
+                pass
     except Exception:
         pass
     finally:
-        ring.finish()
+        try:
+            ring.finish()
+        except Exception:
+            pass
+        # Close only after EOF (or a hard read failure). Do not close early on mirror errors.
         try:
             pipe.close()
         except Exception:
             pass
 
 
-def start_agent_stderr_capture(pipe, on_line=None, output=None) -> tuple[AgentStderrRing, threading.Thread]:
+def start_agent_stderr_capture(
+    pipe, on_line=None, output=None, *, mirror: bool = True
+) -> tuple[AgentStderrRing, threading.Thread]:
     ring = AgentStderrRing(on_line=on_line)
-    thread = threading.Thread(target=_tee_agent_stderr, args=(pipe, ring, output), daemon=True)
+    thread = threading.Thread(
+        target=_tee_agent_stderr,
+        args=(pipe, ring, output),
+        kwargs={"mirror": mirror},
+        daemon=True,
+    )
     thread.start()
     return ring, thread
+
+
+def run_with_drained_pipes(
+    argv: list,
+    *,
+    cwd: str | None = None,
+    env: dict | None = None,
+    timeout: float | None = 60.0,
+) -> tuple[int, str, str]:
+    """FR #8091: spawn a child with stdout+stderr PIPEs and drain both until exit.
+
+    Returns ``(exit_code, stdout_text, stderr_text)``. The drain threads keep reading
+    until EOF so a chatty child cannot die with EPIPE because a reader stopped early.
+    """
+    out_chunks: list[str] = []
+    err_chunks: list[str] = []
+    popen = subprocess.Popen(
+        list(argv),
+        cwd=cwd,
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    _, out_th = start_agent_stderr_capture(
+        popen.stdout, on_line=lambda s: out_chunks.append(s), mirror=False
+    )
+    _, err_th = start_agent_stderr_capture(
+        popen.stderr, on_line=lambda s: err_chunks.append(s), mirror=False
+    )
+    try:
+        code = popen.wait(timeout=timeout)
+    except Exception:
+        try:
+            popen.kill()
+        except Exception:
+            pass
+        code = popen.wait(timeout=10)
+        raise
+    finally:
+        out_th.join(timeout=5)
+        err_th.join(timeout=5)
+    return int(code), chr(10).join(out_chunks), chr(10).join(err_chunks)
+
+
+def opencode_stream_tail(*chunks: str, max_lines: int = 20, max_chars: int = 800) -> str:
+    """FR #8091: last ``max_lines`` nonempty stream lines, redacted, single-line."""
+    lines: list[str] = []
+    for chunk in chunks:
+        for raw in str(chunk or "").splitlines():
+            one = raw.strip()
+            if one:
+                lines.append(one)
+    joined = " | ".join(lines[-max(1, int(max_lines)):])
+    return _failed_turn_snip(joined, limit=max_chars)
+
+
+def is_epipe_turn_error(error_class: str = "", error_line: str = "", text: str = "") -> bool:
+    """True when a failed turn looks like node EPIPE / broken pipe (FR #8091)."""
+    blob = "%s\n%s\n%s" % (error_class or "", error_line or "", text or "")
+    return bool(re.search(r"(?i)EPIPE|broken pipe", blob))
 
 
 def agent_stderr_evidence(text: str) -> str:
@@ -4276,6 +4371,7 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             r"$script:ocDbLockTries = 0",
             r"$script:ocWedgeTicks = 0",
             r"$script:ocWedgeAction = ''",
+            r"$script:ocEpipeTries = 0",
             r"New-Item -ItemType Directory -Force -Path (Split-Path -Parent $fuelLog) | Out-Null",
             r"New-Item -ItemType Directory -Force -Path $pauseStateDir | Out-Null",
             r"New-Item -ItemType Directory -Force -Path (Split-Path -Parent $turnsLog) | Out-Null",
@@ -4447,8 +4543,10 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             r"        }",
             r"        $script:ocOutPos = 0",
             r"        $script:ocErrPos = 0",
-            r"        $outFile = Join-Path $env:TEMP ('bob-oc-out-' + [guid]::NewGuid().ToString('n') + '.txt')",
-            r"        $errFile = Join-Path $env:TEMP ('bob-oc-err-' + [guid]::NewGuid().ToString('n') + '.txt')",
+            r"        $capDir = Split-Path -Parent $turnsLog",
+            r"        if (-not $capDir) { $capDir = $env:TEMP }",
+            r"        $outFile = Join-Path $capDir ('bob-oc-out-' + [guid]::NewGuid().ToString('n') + '.txt')",
+            r"        $errFile = Join-Path $capDir ('bob-oc-err-' + [guid]::NewGuid().ToString('n') + '.txt')",
             # MRB #6163 / CodeRabbit: ArgumentList array drops quotes/spaces in $line; use pre-escaped $argStr.
             r"        if ($ocDir) { $proc = Start-Process -FilePath $exe -ArgumentList $argStr -WorkingDirectory $ocDir -NoNewWindow -PassThru -RedirectStandardOutput $outFile -RedirectStandardError $errFile } else { $proc = Start-Process -FilePath $exe -ArgumentList $argStr -NoNewWindow -PassThru -RedirectStandardOutput $outFile -RedirectStandardError $errFile }",
             r"        $timedOut = $false",
@@ -4465,6 +4563,7 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             # FR #8026: match free-pool exhaustion while the process is still alive.
             r"        $liveFuelPattern = 'Free usage limit|subscribe to OpenCode Go|Payment Required|usage balance exhausted|Too Many Requests|rate limit|rolling limit|(HTTP|status( code)?)\D{0,3}(402|429)'",
             r"        while (-not $proc.HasExited) {",
+            r"          try {",
             r"            $len = 0",
             r"            if (Test-Path -LiteralPath $outFile) { $len += (Get-Item -LiteralPath $outFile).Length }",
             r"            if (Test-Path -LiteralPath $errFile) { $len += (Get-Item -LiteralPath $errFile).Length }",
@@ -4591,6 +4690,9 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             r"                }",
             r"            }",
             r"            Start-Sleep -Milliseconds 100",
+            r"          } catch {",
+            r"            Start-Sleep -Milliseconds 100",
+            r"          }",
             r"        }",
             r"        try { $proc.WaitForExit(2000) | Out-Null } catch { }",
             r"        if ($script:ocStdoutLog -and $stdoutLogPy) {",
@@ -4615,7 +4717,10 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             r"        $stderr = $_",
             r"        $exitCode = -1",
             r"    } finally {",
-            r"        foreach ($f in @($outFile, $errFile)) { if ($f -and (Test-Path -LiteralPath $f)) { Remove-Item -LiteralPath $f -Force -ErrorAction SilentlyContinue } }",
+            r"        if ($proc -and -not $proc.HasExited) { try { $proc.WaitForExit(5000) | Out-Null } catch { } }",
+            r"        if (-not $proc -or $proc.HasExited) {",
+            r"            foreach ($f in @($outFile, $errFile)) { if ($f -and (Test-Path -LiteralPath $f)) { Remove-Item -LiteralPath $f -Force -ErrorAction SilentlyContinue } }",
+            r"        }",
             r"    }",
             r"    $outStr = $stdout + [Environment]::NewLine + $stderr",
             r"    Write-Output $outStr",
@@ -4699,31 +4804,33 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             r"            Write-OpencodeJobGiveup $jobKey 'opencode-startup-failed'",
             r"        }",
             r"    }",
-            r"    if ($proc) { try { $proc.Dispose() } catch { } }",
+            r"    if ($proc -and $proc.HasExited) { try { $proc.Dispose() } catch { } }",
             r"    } finally {",
             r"        if (-not $script:ocDbRetry) {",
-            # FR #8018: turn_ended carries exit code + last stderr/stdout line (not bare 'exit').
+            # FR #8018 / #8091: turn_ended carries exit code + last ~20 stderr/stdout lines.
             r"            $teStatus = ''; $teErr = ''; $teClass = ''",
             r"            if ($exitCode -ne 0) {",
             r"                $teStatus = 'error'",
             r"                $codeNum = -1",
             r"                try { $codeNum = [int]$exitCode } catch { $codeNum = -1 }",
-            r"                $snip = ''",
+            r"                $snipLines = @()",
             r"                foreach ($chunk in @($stderr, $stdout)) {",
-            r"                    if ($snip) { break }",
             r"                    if (-not $chunk) { continue }",
-            r"                    $lines = @($chunk -split '\r?\n' | Where-Object { $_.Trim().Length -gt 0 })",
-            r"                    if ($lines.Count -gt 0) { $snip = [string]$lines[-1] }",
+            r"                    foreach ($ln in @($chunk -split '\r?\n' | Where-Object { $_.Trim().Length -gt 0 })) { $snipLines += [string]$ln.Trim() }",
             r"                }",
+            r"                if ($snipLines.Count -gt 20) { $snipLines = @($snipLines[($snipLines.Count - 20)..($snipLines.Count - 1)]) }",
+            r"                $snip = ($snipLines -join ' | ')",
             r"                $snip = ($snip -replace '\s+', ' ').Trim()",
-            # FR #8018: redact token-shaped spans before they land in opencode-turns.jsonl.
             r"                $snip = [regex]::Replace($snip, '(?i)(?:ghp_|github_pat_|gho_|sk-|Bearer\s+)\S+', '<redacted>')",
-            r"                if ($snip.Length -gt 160) { $snip = $snip.Substring(0, 160) }",
+            r"                if ($snip.Length -gt 800) { $snip = $snip.Substring(0, 800) }",
             r"                $teErr = ('exit ' + $codeNum)",
             r"                if ($snip) { $teErr = ($teErr + ': ' + $snip) }",
             r"                if ($script:ocStdoutLog) { $teErr = $teErr + ' log=' + [IO.Path]::GetFileName($script:ocStdoutLog) }",
             r"                $teClass = 'process-exit'",
             r"                if ($hitLimit) { $teClass = 'out-of-fuel' }",
+            r"                elseif ($snip -match 'EPIPE|broken pipe' -or $stderr -match 'EPIPE|broken pipe') { $teClass = 'epipe' }",
+            r"            } else {",
+            r"                $script:ocEpipeTries = 0",
             r"            }",
             r"            Write-OpencodeTurnMarker 'turn_ended' $turnN $teStatus $teErr $teClass",
             r"        }",
@@ -4732,6 +4839,16 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             r"        $script:ocDbRetry = $false",
             r"        Invoke-OpencodeRun $line $jobKey $ocDir",
             r"        return",
+            r"    }",
+            r"    $epipeHit = ($exitCode -ne 0 -and -not $hitLimit -and -not $timedOut -and (($stderr + [Environment]::NewLine + $stdout) -match 'EPIPE|broken pipe'))",
+            r"    if ($epipeHit -and [int]$script:ocEpipeTries -lt 1) {",
+            r"        $wtOk = (-not $ocDir) -or (Test-Path -LiteralPath $ocDir -PathType Container)",
+            r"        if ($wtOk) {",
+            r"            $script:ocEpipeTries = [int]$script:ocEpipeTries + 1",
+            r"            Write-Output ('opencode-epipe: retry ' + $script:ocEpipeTries + '/1')",
+            r"            Invoke-OpencodeRun $line $jobKey $ocDir",
+            r"            return",
+            r"        }",
             r"    }",
             r"    if ($script:ocWedgeAction -eq 'reconnect') {",
             r"        $script:ocWedgeAction = ''",
@@ -6989,11 +7106,11 @@ def _failed_turn_snip(text: str, *, limit: int = 160) -> str:
 def sanitize_failed_turn_reason(error_class: str, first_line: str) -> str:
     """FR #7201 / #8018: one-line GIVEUP reason (class + first line, no secrets).
 
-    Keep exit codes and stderr snippets. Never strip ``<redacted>`` placeholders in a
+    Keep exit codes and stderr snippets (up to ~400 chars). Never strip ``<redacted>`` placeholders in a
     way that also drops digits from ``exit N``.
     """
     cls = re.sub(r"[^\w.-]+", "", str(error_class or "error").strip())[:48] or "error"
-    line = _failed_turn_snip(first_line)
+    line = _failed_turn_snip(first_line, limit=400)
     if not line:
         return cls
     return "%s: %s" % (cls, line)
@@ -7005,26 +7122,29 @@ def format_opencode_turn_error(
     stderr: str = "",
     stdout: str = "",
     hit_limit: bool = False,
+    log_name: str = "",
 ) -> tuple[str, str]:
-    """FR #8018: ``(error_class, error_line)`` for an OpenCode process end marker."""
+    """FR #8018 / #8091: ``(error_class, error_line)`` for an OpenCode process end marker.
+
+    Includes exit code, last ~20 stderr/stdout lines (redacted), and optional #8069 log name.
+    """
     try:
         code = int(exit_code)  # type: ignore[arg-type]
     except (TypeError, ValueError):
         code = -1
-    snip = ""
-    for chunk in (stderr, stdout):
-        for raw in reversed(str(chunk or "").splitlines()):
-            one = raw.strip()
-            if one:
-                snip = one
-                break
-        if snip:
-            break
-    snip = _failed_turn_snip(snip, limit=160)
+    snip = opencode_stream_tail(stderr, stdout, max_lines=20, max_chars=800)
+    if hit_limit:
+        cls = "out-of-fuel"
+    elif is_epipe_turn_error(text=snip) or is_epipe_turn_error(text=stderr) or is_epipe_turn_error(text=stdout):
+        cls = "epipe"
+    else:
+        cls = "process-exit"
     line = "exit %s" % code
     if snip:
         line = "%s: %s" % (line, snip)
-    cls = "out-of-fuel" if hit_limit else "process-exit"
+    name = str(log_name or "").strip()
+    if name:
+        line = "%s log=%s" % (line, Path(name).name)
     return cls, line
 
 
