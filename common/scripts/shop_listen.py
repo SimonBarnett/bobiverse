@@ -676,6 +676,8 @@ def complete_job_by_ref(
                         # FR implementer becomes MRB author_seat / implementer_seat (FR #265).
                         # FR #2623: a DONE that only cites another seat's open PR must keep the
                         # true implementer (existing MRB stamp or earlier DONE FR for this pull).
+                        # FR #8051: always stamp a seat nick so done-offer cannot self-MRB when
+                        # a concurrent refresh strips or omits author_seat.
                         done_nick = str(job.get("nick") or job.get("done_by") or nick or "").strip()
                         fr_author = gitclaim.resolve_done_fr_implementer_seat(
                             doc,
@@ -689,6 +691,10 @@ def complete_job_by_ref(
                         if fr_author:
                             extra["author_seat"] = fr_author
                             extra["implementer_seat"] = fr_author
+                        elif done_nick and bobreport.parse_seat_nick(done_nick):
+                            seat = gitclaim.canonical_worker_nick(done_nick) or done_nick
+                            extra["author_seat"] = seat
+                            extra["implementer_seat"] = seat
                         extra["supersedes"] = gitclaim.fr_issue_key(repo, ident)
                         # FR #2604: stamp the pull URL so mrb_row_offerable is True. Webhook /
                         # resync paths already set url; DONE FR used to enqueue without it, so

@@ -7579,6 +7579,8 @@ def offer_after_release(
 
     Uses the same ``offer_focus_top`` gates as ``!bored``. Returns ``(1, job)`` if delivered.
     ``offered_via`` stamps sticky window (``giveup`` / ``done`` / ``nack``).
+    FR #8051: done-offer never delivers an MRB this seat implemented (belt-and-suspenders
+    after enrich); clear the pin and return empty instead of a self-MRB assign.
     """
     via = str(offered_via or "giveup").strip().lower() or "giveup"
     # FR #4181: out-of-fuel seats stay quiet (no giveup/done push) until !bored clears.
@@ -7601,6 +7603,27 @@ def offer_after_release(
     )
     if status != "ok" or not isinstance(job, dict):
         return 0, None
+    # FR #8051: never done-offer an MRB to its implementer (stamp race / missing author).
+    if via == "done" and _canon_task(job) == "MRB":
+        try:
+            doc = load_queue(home)
+            live = live_seat_nicks(home, now=now)
+            free = free_seat_nicks(home, live)
+            cand = enrich_review_author_fields(doc, job)
+            if review_blocked_for_author(cand, nick, live, ledger=ledger_load(home), free=free):
+                with contextlib.suppress(Exception):
+                    clear_seat_offer(home, nick, job)
+                with contextlib.suppress(Exception):
+                    clear_seat_hold(
+                        home,
+                        nick,
+                        repo=str(job.get("repo") or ""),
+                        task=str(job.get("task") or ""),
+                        ident=str(job.get("id") or ""),
+                    )
+                return 0, None
+        except Exception:
+            pass
     line = format_assign_line(nick, job)
     delivered = False
     try:
@@ -8052,19 +8075,78 @@ def classify_mrb_author_stamp(row: dict, nick: str) -> str:
     return ""
 
 
+def implementer_seat_from_done_fr_pull(
+    doc: dict,
+    repo: str,
+    pr_id: str,
+    *,
+    refs=None,
+) -> str:
+    """FR #8051 / #3277: DONE FR whose result URL is this pull → implementer seat.
+
+    Recovers author exclusion when ``author_seat`` was stripped or never stamped
+    (webhook race before DONE FR supersede). Cite-only noise is filtered the same
+    way as ``mrb_author_extra_from_doc`` / ``fr_implementer_seat_from_doc``.
+    """
+    want = _norm_row_id(pr_id)
+    if not want or not repo:
+        return ""
+    pull_num = str(want).lstrip("#")
+    # FR #8051 review: `/pull/8044` is a prefix of `/pull/80440`. Require a
+    # parsed pull id, or a path boundary when the URL does not parse.
+    boundary = re.compile(r"/pull/" + re.escape(pull_num) + r"(?:/|\b|$)")
+    for row in doc.get("done") or []:
+        if not isinstance(row, dict):
+            continue
+        if str(row.get("task") or "").upper() != "FR":
+            continue
+        url = str(row.get("url") or row.get("result") or "")
+        parsed = parse_github_pull_url(url)
+        if parsed:
+            if not (
+                _repo_key(parsed[0]) == _repo_key(repo)
+                and _norm_row_id(parsed[1]) == want
+            ):
+                continue
+        else:
+            if repo.lower() not in url.lower() or not boundary.search(url):
+                continue
+        seat = str(row.get("nick") or row.get("done_by") or "").strip()
+        if seat and bobreport.parse_seat_nick(seat):
+            return canonical_worker_nick(seat) or seat
+    return fr_implementer_seat_from_doc(doc, repo, refs or (), pr_id=want)
+
+
 def enrich_mrb_author_fields(doc: dict, row: dict) -> dict:
-    """FR #4604 / #5923 / #5939: merge FIX seats; drop stale author_seats at offer time.
+    """FR #4604 / #5923 / #5939 / #8051: merge FIX seats; recover implementer; drop stale author_seats.
 
     Survives missing stamps on synchronize-enqueued MRB rows by reading queue truth.
     Cite-only FR DONE results are ignored (FR #5923).
     FR #5939: orphan ``author_seats`` entries (false self-mrb give-ups, pre-#5925
     cite-only) are dropped; verified roles are single-value stamps + FIX from doc.
+    FR #8051: when ``author_seat`` / ``implementer_seat`` are missing, backfill from
+    a DONE FR whose result is this pull so done-offer cannot self-MRB.
     """
     if _canon_task(row) != "MRB":
         return row
     out = dict(row)
     # Drop stale multi author_seats; rebuild from FIX queue truth only.
     out.pop("author_seats", None)
+    has_impl = bool(
+        _canon_seat_nick(
+            str(out.get("implementer_seat") or out.get("author_seat") or out.get("author_nick") or "")
+        )
+    )
+    if not has_impl:
+        impl = implementer_seat_from_done_fr_pull(
+            doc,
+            str(out.get("repo") or ""),
+            str(out.get("id") or ""),
+            refs=out.get("refs"),
+        )
+        if impl:
+            out["author_seat"] = impl
+            out["implementer_seat"] = impl
     for seat in fix_ci_seats_from_doc(doc, str(out.get("repo") or ""), str(out.get("id") or "")):
         append_author_seat(out, seat)
     return out
