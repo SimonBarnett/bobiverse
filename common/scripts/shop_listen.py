@@ -634,11 +634,13 @@ def complete_job_by_ref(
                 gitclaim.stamp_fix_seats_on_mrb_rows(
                     doc, repo, str(job.get("id") or ident), nick
                 )
-            # FR #740 / #738 / #1323: DONE MRB (PASS or FAIL) purges any lingering unaccepted
-            # duplicate and stamps ledger mrb_done so the next !bored cannot re-offer the same PR.
+            # FR #740 / #738 / #1323: DONE MRB purges lingering unaccepted duplicates.
+            # FR #8137: stamp mrb_done for FAIL immediately; for PASS wait until MERGED
+            # (shop_listen / merge-on-green drop_merged) so a conflicting tip is not "done".
             if str(job.get("task") or "").upper() == "MRB":
                 gitclaim._remove_unaccepted_tasks(doc, repo, ident, {"MRB"})
-                gitclaim.stamp_mrb_done(home, repo, ident)
+                if not str(result or "").strip().upper().startswith("PASS"):
+                    gitclaim.stamp_mrb_done(home, repo, ident)
             # supersede light: DONE FR with PR url -> queue MRB if url has /pull/ (FR #254).
             # FR #4851: if the issue was already closed (cancel_pending / state=closed)
             # before this DONE, do not auto-queue MRB --- stamp needs_human instead.
@@ -1153,6 +1155,10 @@ def handle_shop_worker_line(
 
         # FR #3948: DONE MRB PASS -> merge-on-green ledger (seat never polls CI).
         # FR #5581: CONFLICTING at DONE queues FIX immediately (enqueue_from_done).
+        # FR #8137: do not treat the job as finished until MERGED; digest shows
+        # waiting merge / waiting rebase, and mrb_done is deferred until merge.
+        mrb_pass_awaiting = False
+        waiting_work = ""
         if str(parsed.task or "").upper() == "MRB" and str(parsed.result or "").upper() == "PASS":
             try:
                 import mrb_merge_on_green
@@ -1166,6 +1172,46 @@ def handle_shop_worker_line(
                 )
                 if mog:
                     out["merge_on_green"] = mog
+                    phase = str(
+                        mog.get("phase")
+                        or mrb_merge_on_green.mrb_pass_phase(
+                            None, mog_status=str(mog.get("status") or "")
+                        )
+                    )
+                    out["mrb_pass_phase"] = phase
+                    pr_num = str(mog.get("pr") or parsed.id or "").lstrip("#")
+                    repo_c = str(mog.get("repo") or parsed.repo or "")
+                    if phase == "merged":
+                        with contextlib.suppress(Exception):
+                            gitclaim.stamp_mrb_done(home, parsed.repo, parsed.id)
+                    elif phase in ("waiting_rebase", "waiting_merge", "pending_checks"):
+                        mrb_pass_awaiting = True
+                        with contextlib.suppress(Exception):
+                            gitclaim.clear_mrb_done(home, parsed.repo, parsed.id)
+                        label = {
+                            "waiting_rebase": "waiting rebase",
+                            "waiting_merge": "waiting merge",
+                            "pending_checks": "waiting checks",
+                        }.get(phase, "waiting merge")
+                        waiting_work = f"{label} {repo_c}#{pr_num}".strip()
+                        # Keep PASS provenance on the done[] row for tray/digest.
+                        with contextlib.suppress(Exception):
+                            with gitclaim._lock(home):
+                                doc = gitclaim._load_queue_unlocked(home)
+                                for row in doc.get("done") or []:
+                                    if not isinstance(row, dict):
+                                        continue
+                                    if str(row.get("task") or "").upper() != "MRB":
+                                        continue
+                                    if not _same_repo(row.get("repo"), parsed.repo):
+                                        continue
+                                    if str(row.get("id") or "") != str(parsed.id or ""):
+                                        continue
+                                    row["awaiting"] = phase
+                                    row["pass_sha"] = str(mog.get("pass_sha") or "")
+                                    row["mrb_pass_nick"] = nick
+                                    break
+                                gitclaim._write_queue(gitclaim.queue_path(home), doc)
             except Exception:  # noqa: BLE001
                 pass
         # FR #4718: DONE MRB FAIL with no fix PR queues FIX for that head at once.
@@ -1184,17 +1230,35 @@ def handle_shop_worker_line(
                     out["mrb_fail_fix"] = fail_fix
             except Exception:  # noqa: BLE001
                 pass
-        # FR #5581: belt-and-suspenders idle of worker_list so a CONFLICTING PASS
-        # cannot leave the digest tile as "doing MRB #N" after DONE.
-        with contextlib.suppress(Exception):
-            bobreport.clear_seat_doing(
-                home,
-                nick,
-                only_if_work_contains=str(parsed.id or "").lstrip("#"),
+        if mrb_pass_awaiting and waiting_work:
+            # FR #8137: tray/digest show waiting, not idle/done.
+            with contextlib.suppress(Exception):
+                bobreport.set_seat_waiting(
+                    home,
+                    nick,
+                    work=waiting_work,
+                    only_if_work_contains=str(parsed.id or "").lstrip("#"),
+                )
+            payload = format_activity_payload(
+                machine=mid,
+                pid=pid,
+                nick=nick,
+                kind=kind,
+                working_on=waiting_work,
+                state="waiting",
             )
-        payload = format_activity_payload(
-            machine=mid, pid=pid, nick=nick, kind=kind, working_on="", state="idle"
-        )
+        else:
+            # FR #5581: belt-and-suspenders idle of worker_list so a finished PASS
+            # cannot leave the digest tile as "doing MRB #N" after DONE.
+            with contextlib.suppress(Exception):
+                bobreport.clear_seat_doing(
+                    home,
+                    nick,
+                    only_if_work_contains=str(parsed.id or "").lstrip("#"),
+                )
+            payload = format_activity_payload(
+                machine=mid, pid=pid, nick=nick, kind=kind, working_on="", state="idle"
+            )
         out["webhook"] = post_activity(home, payload, post_fn=post_fn, briefer=briefer)
         out["activity"] = ""
         return out

@@ -3937,7 +3937,8 @@ def _worker_list_busy_work(ent: dict, nick: str) -> str:
         # FR #4454: state=offered is Jeeves's own pending offer, not seat work.
         if state == "offered":
             continue
-        if state in ("doing", "busy", "accepted") or work:
+        # FR #8137: waiting (rebase/merge) still counts as busy work for tray/digest.
+        if state in ("doing", "busy", "accepted", "waiting") or work:
             return work or state
     return ""
 
@@ -4303,6 +4304,8 @@ def _coerce_row(row: dict) -> dict | None:
                 # FR #4718: seat that FAILed this MRB head must not be offered it again
                 # FR #4857: main-side FIX stamp survives reload (belt with id/fail_signature)
                 "pass_sha", "fail_signature", "check_run_id", "mrb_fail_by", "main_red_fix",
+                # FR #8137: DONE MRB PASS awaiting merge/rebase provenance on done[]
+                "awaiting", "mrb_pass_nick",
                 # FR #6340: clean orphan docs/mrb pin offerable as one MRB
                 "docs_mrb_orphan"):
         if row.get(key):

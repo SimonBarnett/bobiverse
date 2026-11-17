@@ -119,7 +119,7 @@ def test_fr5581_enqueue_from_done_conflicting_offers_fix(tmp_path: Path):
 
 
 def test_fr5581_done_pass_conflicting_clears_doing(tmp_path, monkeypatch):
-    """DONE MRB PASS on CONFLICTING: FIX queued, seat activity idle, worker_list cleared."""
+    """DONE MRB PASS on CONFLICTING: FIX queued; FR #8137 digest shows waiting rebase."""
     home = tmp_path / "digest"
     monkeypatch.setenv("BOB_DIGEST_HOME", str(home))
     _roster(home)
@@ -153,9 +153,14 @@ def test_fr5581_done_pass_conflicting_clears_doing(tmp_path, monkeypatch):
             "checks": "success",
         }
 
-    monkeypatch.setattr(
-        mrb_merge_on_green, "fetch_pr_state", lambda *a, **k: fetch_pr(*a, **k)
-    )
+    real_enq = mrb_merge_on_green.enqueue_from_done
+
+    def _enq(home, **kwargs):
+        kwargs["fetch_pr"] = fetch_pr
+        kwargs["fetch_comments"] = lambda *_a, **_k: []
+        return real_enq(home, **kwargs)
+
+    monkeypatch.setattr(mrb_merge_on_green, "enqueue_from_done", _enq)
 
     result = shop_listen.handle_shop_worker_line(
         home,
@@ -176,9 +181,11 @@ def test_fr5581_done_pass_conflicting_clears_doing(tmp_path, monkeypatch):
     d2 = bobreport.load_digest(home)
     wl = ((d2.get("machines") or {}).get(MID) or {}).get("worker_list") or []
     assert wl, "worker_list should still exist"
-    assert wl[0].get("state") == "idle"
-    assert not str(wl[0].get("work") or "").strip()
-    assert gitclaim.worker_working_on(home, NICK) == ""
+    # FR #8137: conflicting PASS is waiting rebase (not idle/done).
+    assert wl[0].get("state") == "waiting"
+    assert "waiting rebase" in str(wl[0].get("work") or "").lower()
+    assert "waiting rebase" in gitclaim.worker_working_on(home, NICK).lower()
+    assert not gitclaim.mrb_ledger_done_hold(home, REPO, f"#{PR}")
     q = gitclaim.load_queue(home)
     assert any(
         str(r.get("task") or "").upper() == "FIX"

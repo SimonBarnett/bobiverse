@@ -1480,6 +1480,37 @@ def recover_done_fix_ci(
     return "reoffer"
 
 
+def mrb_pass_phase(
+    pr_state: dict[str, Any] | None,
+    *,
+    mog_status: str = "",
+) -> str:
+    """FR #8137: how far a DONE MRB PASS is from a finished job.
+
+    Returns ``merged``, ``closed``, ``waiting_rebase``, ``pending_checks``,
+    or ``waiting_merge``.
+    """
+    st = pr_state if isinstance(pr_state, dict) else {}
+    status = str(mog_status or "").strip().lower()
+    if bool(st.get("merged")) or status == "merged":
+        return "merged"
+    if bool(st.get("closed")) or status in ("skipped_harvest_disposition", "drop_closed"):
+        return "closed"
+    if status == "conflict" or merge_attempt_conflict_reason(
+        mergeable=st.get("mergeable"),
+        merge_state=str(
+            st.get("merge_state_status") or st.get("mergeable_state") or ""
+        ),
+    ):
+        return "waiting_rebase"
+    checks = str(st.get("checks") or "").strip().lower()
+    if checks in ("pending", "queued", "waiting", "expected"):
+        return "pending_checks"
+    if status in ("pending", "skip_hold", "") or not status:
+        return "waiting_merge"
+    return "waiting_merge"
+
+
 def offer_dirty_conflict_fix(
     home: Path,
     *,
@@ -1489,6 +1520,7 @@ def offer_dirty_conflict_fix(
     url: str = "",
     reason: str = "conflicting",
     pr_state: dict[str, Any] | None = None,
+    exclude_nick: str = "",
 ) -> str:
     """Offer one conflict FIX for a DIRTY/CONFLICTING PR (FR #4669 / #4636 / #4679).
 
@@ -1497,6 +1529,9 @@ def offer_dirty_conflict_fix(
 
     FR #5720: harvest-lesson closed / FAIL-supersede dispositions return ``skipped``
     (same carve-out as FR #4800 for mrb-fail FIX).
+
+    FR #8137: ``exclude_nick`` (the MRB PASS seat) is stamped on the FIX row so a
+    different seat takes the rebase.
     """
     repo_c = gitclaim.canonical_queue_repo(repo)
     num = str(pr).lstrip("#")
@@ -1509,6 +1544,7 @@ def offer_dirty_conflict_fix(
         url=url,
         reason=reason,
         pr_state=pr_state,
+        exclude_nick=exclude_nick,
     )
     if result != "duplicate":
         return result
@@ -1541,6 +1577,7 @@ def offer_dirty_conflict_fix(
         url=url,
         reason=reason,
         pr_state=pr_state,
+        exclude_nick=exclude_nick,
     )
     if result == "added":
         doc = load_ledger(home)
@@ -2147,6 +2184,7 @@ def enqueue_conflict_fix(
     url: str = "",
     reason: str = "",
     pr_state: dict[str, Any] | None = None,
+    exclude_nick: str = "",
 ) -> str:
     """Queue one FIX to merge main and resolve conflicts for this PR+SHA (FR #4636).
 
@@ -2156,6 +2194,9 @@ def enqueue_conflict_fix(
 
     FR #5720: harvest-lesson tips closed unmerged (or FAIL-supersede / CLOSED /
     MOVED disposition-boarded) return ``skipped`` — never ``FIX conflict``.
+
+    FR #8137: ``exclude_nick`` (MRB PASS reviewer) is recorded as ``giveup_seats``
+    so that seat is not offered the rebase FIX.
     """
     repo_c = gitclaim.canonical_queue_repo(repo)
     num = str(pr).lstrip("#")
@@ -2190,11 +2231,11 @@ def enqueue_conflict_fix(
     pull_url = url or f"https://github.com/{repo_c}/pull/{num}"
     title = f"FIX conflict ({reason or 'conflicting'}; {num}@{sha[:12]})"
     body = (
-        f"FR #4636/#4679 conflict-fix: PR is {reason or 'conflicting'} "
+        f"FR #4636/#4679/#8137 conflict-fix: PR is {reason or 'conflicting'} "
         f"for head SHA {sha}. Merge origin/main into this branch, resolve the "
-        f"conflicts, and push. One job per PR+SHA. Offer to any seat (FIX is not "
-        f"author-blocked). Signature {sig}."
+        f"conflicts, and push. One job per PR+SHA. Signature {sig}."
     )
+    who = (gitclaim.canonical_worker_nick(exclude_nick) or str(exclude_nick or "")).strip()
     claim = gitclaim.GitClaim(
         repo=repo_c,
         task="FIX",
@@ -2223,15 +2264,17 @@ def enqueue_conflict_fix(
                 offered[sig] = {"repo": repo_c, "pr": num, "pass_sha": sha, "signature": sig, "url": pull_url}
                 save_ledger(home, doc)
                 return "duplicate"
-        changed = gitclaim._append_unaccepted(
-            qdoc,
-            claim,
-            url=pull_url,
-            body=body,
-            title=claim.title,
-            pass_sha=sha,
-            fail_signature=sig,
-        )
+        extra: dict[str, Any] = {
+            "url": pull_url,
+            "body": body,
+            "title": claim.title,
+            "pass_sha": sha,
+            "fail_signature": sig,
+        }
+        if who:
+            extra["giveup_seats"] = who
+            extra["mrb_pass_nick"] = who
+        changed = gitclaim._append_unaccepted(qdoc, claim, **extra)
         try:
             gitclaim._write_queue(gitclaim.queue_path(home), qdoc)
         except OSError:
@@ -2576,6 +2619,7 @@ def _stop_conflict_retry(
             pass_sha=head_sha or str(row.get("pass_sha") or ""),
             url=str(row.get("url") or ""),
             reason=reason,
+            exclude_nick=str(row.get("nick") or ""),
         )
     except Exception as exc:  # noqa: BLE001
         summary["errors"] = int(summary.get("errors") or 0) + 1
@@ -2718,6 +2762,16 @@ def process_pending(
                 action = {"repo": repo, "pr": pr, "decision": decision, "detail": detail}
                 summary["actions"].append(action)
                 summary["dropped"] += 1
+                # FR #8137: only stamp mrb_done once the PR is actually MERGED.
+                if bool(pr_state.get("merged")):
+                    try:
+                        gitclaim.stamp_mrb_done(home, repo, pr)
+                    except Exception as exc:  # noqa: BLE001
+                        summary["errors"] += 1
+                        _log(
+                            f"WARN merge-on-green stamp_mrb_done {repo}#{pr}: "
+                            f"{type(exc).__name__}: {exc}"
+                        )
                 _log(f"INFO merge-on-green drop {repo}#{pr}: {detail}")
                 continue
             comments = fetch_comments(repo, pr)
@@ -2786,6 +2840,15 @@ def process_pending(
             try:
                 merge_fn(repo, pr, str(row.get("pass_sha") or ""))
                 summary["merged"] += 1
+                # FR #8137: PASS is finished only after the merge lands.
+                try:
+                    gitclaim.stamp_mrb_done(home, repo, pr)
+                except Exception as stamp_exc:  # noqa: BLE001
+                    summary["errors"] += 1
+                    _log(
+                        f"WARN merge-on-green stamp_mrb_done {repo}#{pr}: "
+                        f"{type(stamp_exc).__name__}: {stamp_exc}"
+                    )
                 _log(f"INFO merge-on-green merged {repo}#{pr} @{row.get('pass_sha')}")
                 continue  # drop from pending
             except Exception as exc:  # noqa: BLE001
@@ -3011,18 +3074,30 @@ def enqueue_from_done(
     if not sha:
         return None
     url = pr_url or str(st.get("html_url") or "")
+    st_dict = st if isinstance(st, dict) else {}
+    # FR #8137: already MERGED at DONE → job is finished (no wait / no FIX).
+    if bool(st_dict.get("merged")):
+        return {
+            "key": _row_key(pr_repo, pr_num),
+            "repo": gitclaim.canonical_queue_repo(pr_repo),
+            "pr": str(pr_num).lstrip("#"),
+            "pass_sha": sha,
+            "url": url,
+            "nick": nick,
+            "status": "merged",
+            "phase": "merged",
+        }
     # FR #5581: CONFLICTING/DIRTY at DONE time → queue conflict FIX at once and
     # do not leave a merge-pending row that sits while the seat stays "doing".
     conflict = merge_attempt_conflict_reason(
-        mergeable=st.get("mergeable") if isinstance(st, dict) else "",
+        mergeable=st_dict.get("mergeable"),
         merge_state=str(
-            (st.get("merge_state_status") if isinstance(st, dict) else None)
-            or (st.get("mergeable_state") if isinstance(st, dict) else None)
+            st_dict.get("merge_state_status")
+            or st_dict.get("mergeable_state")
             or ""
         ),
     )
     if conflict:
-        st_dict = st if isinstance(st, dict) else {}
         # FR #5720: closed harvest FAIL-supersede must not enqueue FIX conflict
         # (FR #4800 carve-out for the DONE CONFLICTING path / FR #5581).
         if skip_mrb_fail_fix_for_harvest(
@@ -3055,6 +3130,7 @@ def enqueue_from_done(
             url=url,
             reason=conflict,
             pr_state=st_dict or None,
+            exclude_nick=nick,
         )
         # Park so resync/process_pending do not re-try merge on this SHA.
         doc = load_ledger(home)
@@ -3087,10 +3163,11 @@ def enqueue_from_done(
             "url": url,
             "nick": nick,
             "status": "conflict",
+            "phase": "waiting_rebase",
             "conflict_reason": conflict,
             "conflict_fix": fix,
         }
-    return enqueue(
+    row = enqueue(
         home,
         repo=pr_repo,
         pr=pr_num,
@@ -3099,3 +3176,7 @@ def enqueue_from_done(
         nick=nick,
         hold_reason=hold,
     )
+    phase = mrb_pass_phase(st_dict, mog_status=str(row.get("status") or "pending"))
+    out = dict(row)
+    out["phase"] = phase
+    return out
