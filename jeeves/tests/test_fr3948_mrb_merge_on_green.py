@@ -295,10 +295,65 @@ def test_enqueue_from_done_pass_only(tmp_path: Path):
             "body": "",
             "html_url": "https://github.com/SimonBarnett/a-search/pull/1406",
         },
+        fetch_comments=lambda *_a, **_k: [],
     )
     assert row is not None
     assert row["pass_sha"] == PASS_SHA
     assert row["pr"] == "1406"
+
+
+def test_enqueue_from_done_prefers_board_sha_fr8022(tmp_path: Path):
+    """FR #8022: board PASS @ sha wins; mismatch skips pending row."""
+    home = tmp_path / "home"
+    home.mkdir()
+    tip = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    board = PASS_SHA
+    row = mrb_merge_on_green.enqueue_from_done(
+        home,
+        repo="SimonBarnett/a-search",
+        pr_url="https://github.com/SimonBarnett/a-search/pull/1406",
+        result="PASS",
+        nick="flamingo-1",
+        fetch_pr=lambda *_a, **_k: {
+            "sha": tip,
+            "labels": [],
+            "title": "ok",
+            "body": "",
+            "html_url": "https://github.com/SimonBarnett/a-search/pull/1406",
+        },
+        fetch_comments=lambda *_a, **_k: _pass_board(),
+    )
+    assert row is not None
+    assert row.get("status") == "skipped_sha_mismatch"
+    assert row["pass_sha"] == board
+    assert row.get("tip_sha") == tip
+    matched = mrb_merge_on_green.enqueue_from_done(
+        home,
+        repo="SimonBarnett/a-search",
+        pr_url="https://github.com/SimonBarnett/a-search/pull/1407",
+        result="PASS",
+        nick="flamingo-1",
+        fetch_pr=lambda *_a, **_k: {
+            "sha": PASS_SHA,
+            "labels": [],
+            "title": "ok",
+            "body": "",
+            "html_url": "https://github.com/SimonBarnett/a-search/pull/1407",
+        },
+        fetch_comments=lambda *_a, **_k: _pass_board(),
+    )
+    assert matched is not None
+    assert matched.get("status") != "skipped_sha_mismatch"
+    assert matched["pass_sha"] == PASS_SHA
+
+
+def test_job_mrb_skill_documents_fr8022_head_sha():
+    skill = ROOT / "bob" / ".grok" / "skills" / "bobiverse-bob-job-mrb" / "SKILL.md"
+    text = skill.read_text(encoding="utf-8")
+    assert "FR #8022" in text
+    assert "rev-parse HEAD" in text
+    assert "origin/main" in text
+    assert "MRB FAIL @ <sha>" in text
 
 
 def test_job_mrb_skill_documents_fr3948_no_ci_poll():

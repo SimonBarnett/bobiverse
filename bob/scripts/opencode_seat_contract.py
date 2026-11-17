@@ -741,33 +741,271 @@ def _safe_git_branch(name: str) -> bool:
     return re.match(r"^[A-Za-z0-9._/-]+$", text) is not None
 
 
-def _pr_head_branch(run, repo: str, number: str) -> tuple[str, str]:
-    """Return ``(head_branch, error_class)`` for a FIX/MRB pull request.
+def _norm_git_oid(value: str) -> str:
+    """Return a 40-char lowercase hex OID, else empty."""
+    text = (value or "").strip().lower()
+    if len(text) == 40 and all(c in "0123456789abcdef" for c in text):
+        return text
+    return ""
 
-    Empty branch with an error class when ``gh`` cannot name the head.
+
+def _pr_head_info(run, repo: str, number: str) -> tuple[str, str, bool, str]:
+    """Return ``(head_branch, head_oid, is_cross, error_class)`` for FIX/MRB (FR #8022).
+
+    Empty branch/oid with an error class when ``gh`` cannot name a verified head.
     """
     try:
         proc = _git_run(
             run,
-            ["gh", "pr", "view", str(number), "--repo", repo, "--json", "headRefName"],
+            [
+                "gh",
+                "pr",
+                "view",
+                str(number),
+                "--repo",
+                repo,
+                "--json",
+                "headRefName,headRefOid,isCrossRepository",
+            ],
             timeout=WORKTREE_FETCH_TIMEOUT_S,
         )
     except Exception as exc:
         if _is_timeout_exc(exc):
-            return "", "timeout"
-        return "", "pr-head"
+            return "", "", False, "timeout"
+        return "", "", False, "pr-head"
     if int(getattr(proc, "returncode", 1)) != 0:
-        return "", "pr-head"
+        return "", "", False, "pr-head"
     try:
         import json as _json
 
         doc = _json.loads(getattr(proc, "stdout", "") or "{}")
         head = str((doc or {}).get("headRefName") or "").strip()
+        oid = _norm_git_oid(str((doc or {}).get("headRefOid") or ""))
+        cross = bool((doc or {}).get("isCrossRepository"))
     except Exception:
+        return "", "", False, "pr-head"
+    if not _safe_git_branch(head) or not oid:
+        return "", "", False, "pr-head"
+    return head, oid, cross, ""
+
+
+def _pr_head_branch(run, repo: str, number: str) -> tuple[str, str]:
+    """Compat wrapper: ``(head_branch, error_class)`` (FR #7946 / #8022)."""
+    head, _oid, _cross, err = _pr_head_info(run, repo, number)
+    return head, err
+
+
+def _rev_parse_oid(run, cwd: str, ref: str) -> str:
+    try:
+        proc = _git_run(
+            run,
+            ["git", "-C", cwd, "rev-parse", "--verify", ref],
+            timeout=WORKTREE_REV_TIMEOUT_S,
+        )
+    except Exception:
+        return ""
+    if int(getattr(proc, "returncode", 1)) != 0:
+        return ""
+    return _norm_git_oid(getattr(proc, "stdout", "") or "")
+
+
+def _git_common_dir(run, cwd: str) -> str:
+    try:
+        proc = _git_run(
+            run,
+            ["git", "-C", cwd, "rev-parse", "--git-common-dir"],
+            timeout=WORKTREE_REV_TIMEOUT_S,
+        )
+    except Exception:
+        return ""
+    if int(getattr(proc, "returncode", 1)) != 0:
+        return ""
+    raw = (getattr(proc, "stdout", "") or "").strip()
+    if not raw:
+        return ""
+    try:
+        return str(Path(cwd, raw).resolve()) if not Path(raw).is_absolute() else str(Path(raw).resolve())
+    except (OSError, ValueError):
+        return raw
+
+
+def _worktree_porcelain_clean(run, cwd: str) -> bool:
+    try:
+        proc = _git_run(
+            run,
+            ["git", "-C", cwd, "status", "--porcelain"],
+            timeout=WORKTREE_REV_TIMEOUT_S,
+        )
+    except Exception:
+        return False
+    if int(getattr(proc, "returncode", 1)) != 0:
+        return False
+    lines = []
+    for line in (getattr(proc, "stdout", "") or "").splitlines():
+        text_line = line.strip()
+        if not text_line:
+            continue
+        # Soft-cap seat marker is written into the tree (FR #3641); ignore it.
+        if text_line.endswith(".bobiverse-seat") or ".bobiverse-seat" in text_line:
+            continue
+        lines.append(text_line)
+    return not lines
+
+
+def _fetch_pr_head_oid(
+    run,
+    clone: str,
+    *,
+    branch: str,
+    number: str,
+    want_oid: str,
+    cross: bool,
+    fatal_fetch: bool,
+) -> tuple[str, str]:
+    """Fetch PR tip and return ``(oid, error_class)`` matching *want_oid* (FR #8022)."""
+    want = _norm_git_oid(want_oid)
+    if not want:
         return "", "pr-head"
-    if not _safe_git_branch(head):
-        return "", "pr-head"
-    return head, ""
+    # Prefer an already-matching remote-tracking tip before any fetch. A self-remote
+    # fetch can rewrite origin/<head> from a moved local branch (reuse after -B).
+    if not cross:
+        got = _rev_parse_oid(run, clone, f"origin/{branch}")
+        if got == want:
+            return want, ""
+    branch_fetch_ok = False
+    pull_fetch_ok = False
+    if not cross:
+        try:
+            proc = _git_run(
+                run,
+                ["git", "-C", clone, "fetch", "origin", branch],
+                timeout=WORKTREE_FETCH_TIMEOUT_S,
+            )
+            branch_fetch_ok = int(getattr(proc, "returncode", 1)) == 0
+        except Exception as exc:
+            if _is_timeout_exc(exc):
+                return "", "timeout"
+            branch_fetch_ok = False
+        got = _rev_parse_oid(run, clone, f"origin/{branch}")
+        if got == want:
+            return want, ""
+    try:
+        proc = _git_run(
+            run,
+            ["git", "-C", clone, "fetch", "origin", f"refs/pull/{number}/head"],
+            timeout=WORKTREE_FETCH_TIMEOUT_S,
+        )
+        pull_fetch_ok = int(getattr(proc, "returncode", 1)) == 0
+    except Exception as exc:
+        if _is_timeout_exc(exc):
+            return "", "timeout"
+        pull_fetch_ok = False
+    if pull_fetch_ok:
+        got = _rev_parse_oid(run, clone, "FETCH_HEAD")
+        if got == want:
+            return want, ""
+    got2 = _rev_parse_oid(run, clone, f"origin/{branch}")
+    if got2 == want:
+        return want, ""
+    # Object may still sit in the local odb after origin/<head> was rewritten
+    # by a self-remote fetch (reuse path). Require a real commit object.
+    try:
+        proc = _git_run(
+            run,
+            ["git", "-C", clone, "cat-file", "-e", f"{want}^{{commit}}"],
+            timeout=WORKTREE_REV_TIMEOUT_S,
+        )
+        if int(getattr(proc, "returncode", 1)) == 0:
+            return want, ""
+    except Exception:
+        pass
+    if not branch_fetch_ok and not pull_fetch_ok and not got2:
+        return "", "fetch" if fatal_fetch else "pr-head"
+    return "", "head-mismatch"
+
+
+
+def _write_seat_marker(folder: Path, key: str, nick: str) -> None:
+    try:
+        marker = {"nick": nick or "opencode", "pid": int(os.getpid()), "issue": 0, "repo": ""}
+        m = re.match(r"(?i)^(FR|MRB|UAT|FIX)\s+(\S+)#(\d+)$", (key or "").strip())
+        if m:
+            marker["issue"] = int(m.group(3))
+            marker["repo"] = m.group(2)
+        import json as _json
+
+        (folder / ".bobiverse-seat").write_text(
+            _json.dumps(marker, separators=(",", ":")),
+            encoding="utf-8",
+        )
+    except Exception:
+        pass
+
+
+def _verify_or_refresh_mrb_worktree(
+    run,
+    folder: Path,
+    clone: str,
+    *,
+    repo: str,
+    number: str,
+    nick: str = "",
+    key: str = "",
+) -> tuple[bool, str]:
+    """Ensure an existing MRB tree is a clean linked checkout of headRefOid (FR #8022)."""
+    head, want_oid, cross, err = _pr_head_info(run, repo, number)
+    if not head or not want_oid:
+        return False, err or "pr-head"
+    resolved, ferr = _fetch_pr_head_oid(
+        run,
+        clone,
+        branch=head,
+        number=number,
+        want_oid=want_oid,
+        cross=cross,
+        fatal_fetch=True,
+    )
+    if not resolved:
+        return False, ferr or "head-mismatch"
+    common_job = _git_common_dir(run, str(folder))
+    common_clone = _git_common_dir(run, clone)
+    if not common_job or not common_clone or common_job != common_clone:
+        return False, "head-mismatch"
+    if not _worktree_porcelain_clean(run, str(folder)):
+        return False, "stale-dirty"
+    have = _rev_parse_oid(run, str(folder), "HEAD")
+    if have == want_oid:
+        _write_seat_marker(folder, key, nick)
+        return True, ""
+    try:
+        # Reset the local head branch to the verified OID (not origin/<head>, which
+        # a self-remote fetch may have rewritten from a moved local branch).
+        proc = _git_run(
+            run,
+            ["git", "-C", str(folder), "checkout", "-B", head, want_oid],
+            timeout=WORKTREE_ADD_TIMEOUT_S,
+        )
+    except Exception as exc:
+        if _is_timeout_exc(exc):
+            return False, "timeout"
+        return False, "head-mismatch"
+    if int(getattr(proc, "returncode", 1)) != 0:
+        return False, "head-mismatch"
+    if _rev_parse_oid(run, str(folder), "HEAD") != want_oid:
+        return False, "head-mismatch"
+    _write_seat_marker(folder, key, nick)
+    return True, ""
+
+
+def worktree_reviewed_sha(directory: str | Path, run=None) -> str:
+    """Return ``git rev-parse HEAD`` for a prepared job worktree (FR #8022)."""
+    import subprocess as _sp
+
+    run = run or _sp.run
+    raw = str(directory or "").strip()
+    if not raw or not Path(raw).is_dir():
+        return ""
+    return _rev_parse_oid(run, raw, "HEAD")
 
 
 def create_job_worktree(
@@ -785,6 +1023,7 @@ def create_job_worktree(
     credential path. Does not pass ``--auto`` or widen OpenCode dirs.
 
     FR #6328: git steps use short timeouts; callers run this off the IRC read thread.
+    FR #8022: FIX/MRB start at verified ``headRefOid`` (never ``origin/main``).
     """
     import subprocess as _sp
 
@@ -795,25 +1034,33 @@ def create_job_worktree(
     if dir_is_forbidden(raw):
         return False, "forbidden"
     folder = Path(raw)
-    if folder.is_dir():
-        return True, ""
-    if folder.exists():
-        return False, "path-exists"
     clone = (clone_root or "").strip()
-    if not clone or not _is_git_checkout(clone):
-        return False, "no-clone"
-    if dir_is_forbidden(clone):
-        return False, "forbidden"
     parsed = re.match(r"(?i)^(FR|MRB|UAT|FIX)\s+(\S+)#(\d+)$", (key or "").strip())
     kind = parsed.group(1).upper() if parsed else ""
     repo = parsed.group(2) if parsed else ""
     number = parsed.group(3) if parsed else ""
-    # FR #7946: FIX and MRB edit an existing PR. Check out its head branch.
+    if folder.is_dir():
+        if kind == "MRB":
+            if not clone or not _is_git_checkout(clone):
+                return False, "no-clone"
+            return _verify_or_refresh_mrb_worktree(
+                run, folder, clone, repo=repo, number=number, nick=nick, key=key
+            )
+        return True, ""
+    if folder.exists():
+        return False, "path-exists"
+    if not clone or not _is_git_checkout(clone):
+        return False, "no-clone"
+    if dir_is_forbidden(clone):
+        return False, "forbidden"
+    # FR #7946 / #8022: FIX and MRB edit an existing PR at headRefOid.
     # Never invent fix-N / mrb-N from main.
     pr_head = ""
+    want_oid = ""
+    cross = False
     if kind in ("FIX", "MRB"):
-        pr_head, head_err = _pr_head_branch(run, repo, number)
-        if not pr_head:
+        pr_head, want_oid, cross, head_err = _pr_head_info(run, repo, number)
+        if not pr_head or not want_oid:
             return False, head_err or "pr-head"
         branch = pr_head
     else:
@@ -824,65 +1071,38 @@ def create_job_worktree(
         folder.parent.mkdir(parents=True, exist_ok=True)
     except OSError:
         return False, "disk"
-    # Best-effort tip fetch; failure alone does not block if a local tip exists.
-    fetch_ref = branch if pr_head else "main"
-    fetch_ok = False
-    try:
-        fetch_proc = _git_run(
-            run,
-            ["git", "-C", clone, "fetch", "origin", fetch_ref],
-            timeout=WORKTREE_FETCH_TIMEOUT_S,
-        )
-        fetch_ok = int(getattr(fetch_proc, "returncode", 1)) == 0
-    except Exception as exc:
-        if pr_head and _is_timeout_exc(exc):
-            return False, "timeout"
-        fetch_ok = False
 
     def _ref_ok(ref: str) -> bool:
-        try:
-            proc = _git_run(
-                run,
-                ["git", "-C", clone, "rev-parse", "--verify", ref],
-                timeout=WORKTREE_REV_TIMEOUT_S,
-            )
-            return int(getattr(proc, "returncode", 1)) == 0
-        except Exception:
-            return False
+        return bool(_rev_parse_oid(run, clone, ref))
 
     try:
         if pr_head:
-            local = _branch_exists(run, clone, branch)
-            remote = _ref_ok(f"origin/{branch}")
-            if not local and not remote:
-                return False, "fetch" if not fetch_ok else "pr-head"
-            # Prefer origin/<head> so a stale local fr-* / intake tip cannot win
-            # over the fetched PR tip (MRB #7949).
-            if remote:
-                if local:
-                    proc = _git_run(
-                        run,
-                        [
-                            "git", "-C", clone, "worktree", "add",
-                            "-B", branch, str(folder), f"origin/{branch}",
-                        ],
-                        timeout=WORKTREE_ADD_TIMEOUT_S,
-                    )
-                else:
-                    proc = _git_run(
-                        run,
-                        [
-                            "git", "-C", clone, "worktree", "add", "--track",
-                            "-b", branch, str(folder), f"origin/{branch}",
-                        ],
-                        timeout=WORKTREE_ADD_TIMEOUT_S,
-                    )
-            else:
-                proc = _git_run(
-                    run,
-                    ["git", "-C", clone, "worktree", "add", str(folder), branch],
-                    timeout=WORKTREE_ADD_TIMEOUT_S,
-                )
+            resolved, ferr = _fetch_pr_head_oid(
+                run,
+                clone,
+                branch=branch,
+                number=number,
+                want_oid=want_oid,
+                cross=cross,
+                fatal_fetch=True,
+            )
+            if not resolved:
+                return False, ferr or "head-mismatch"
+            proc = _git_run(
+                run,
+                [
+                    "git",
+                    "-C",
+                    clone,
+                    "worktree",
+                    "add",
+                    "-B",
+                    branch,
+                    str(folder),
+                    want_oid,
+                ],
+                timeout=WORKTREE_ADD_TIMEOUT_S,
+            )
         elif _branch_exists(run, clone, branch):
             proc = _git_run(
                 run,
@@ -910,12 +1130,20 @@ def create_job_worktree(
     if code != 0:
         err = ((getattr(proc, "stderr", "") or "") + (getattr(proc, "stdout", "") or "")).lower()
         if "already exists" in err and folder.is_dir():
+            if kind == "MRB":
+                return _verify_or_refresh_mrb_worktree(
+                    run, folder, clone, repo=repo, number=number, nick=nick, key=key
+                )
             return True, ""
         if "no space" in err or "disk" in err:
             return False, "disk"
         return False, "git-worktree"
     if not folder.is_dir():
         return False, "git-worktree"
+    if pr_head:
+        have = _rev_parse_oid(run, str(folder), "HEAD")
+        if have != want_oid:
+            return False, "head-mismatch"
     # Sparse install clones: disable once so the job tree is full (FR #4029).
     try:
         _git_run(
@@ -925,25 +1153,10 @@ def create_job_worktree(
         )
     except Exception:
         pass
-    # Soft-cap seat marker (FR #3641). Best-effort; never fail the create.
-    try:
-        marker = {"nick": nick or "opencode", "pid": int(os.getpid()), "issue": 0, "repo": ""}
-        m = re.match(r"(?i)^(FR|MRB|UAT|FIX)\s+(\S+)#(\d+)$", (key or "").strip())
-        if m:
-            marker["issue"] = int(m.group(3))
-            marker["repo"] = m.group(2)
-        import json as _json
-
-        (folder / ".bobiverse-seat").write_text(
-            _json.dumps(marker, separators=(",", ":")),
-            encoding="utf-8",
-        )
-    except Exception:
-        pass
+    _write_seat_marker(folder, key, nick)
     if dir_is_forbidden(str(folder)):
         return False, "forbidden"
     return True, ""
-
 
 
 
@@ -1140,6 +1353,33 @@ def ensure_opencode_job_worktree(
     decision = classify_opencode_job(line, env, disks=disks, system_drive=system_drive)
     if decision["state"] != "absent":
         if decision.get("state") == "project" and decision.get("path"):
+            key = decision.get("key") or ""
+            mrb = re.match(r"(?i)^MRB\s+(\S+)#(\d+)$", key.strip())
+            if mrb:
+                repo = mrb.group(1)
+                number = mrb.group(2)
+                clone = resolve_repo_clone(repo, env, install_root=install_root)
+                ok, err_class = _verify_or_refresh_mrb_worktree(
+                    run or __import__("subprocess").run,
+                    Path(decision["path"]),
+                    clone,
+                    repo=repo,
+                    number=number,
+                    nick=nick,
+                    key=key,
+                )
+                if not ok:
+                    reason = f"worktree-create-failed:{err_class or 'unknown'}"
+                    nack = _nack_key(key, reason)
+                    return {
+                        "state": "create_failed",
+                        "nack": nack,
+                        "nacks": [nack],
+                        "path": decision.get("path") or "",
+                        "key": key,
+                        "message": CREATE_FAILED_MESSAGE,
+                        "error_class": err_class or "unknown",
+                    }
             try:
                 ob = ensure_opencode_bob_outbox(decision["path"])
                 decision = {**decision, "outbox": str(ob)}
