@@ -147,3 +147,40 @@ def test_fr8051_enrich_recovers_implementer_from_done_fr(tmp_path, monkeypatch):
     enriched = gitclaim.enrich_mrb_author_fields(doc, mrb)
     assert NICK in gitclaim.row_author_seats(enriched)
     assert gitclaim.review_blocked_for_author(enriched, NICK, {NICK})
+
+
+def test_fr8051_pull_number_prefix_is_not_the_same_pr(tmp_path, monkeypatch):
+    """DONE of pull/80440 must not count as the implementer of MRB #8044."""
+    home = _home(tmp_path, monkeypatch)
+    other = "flamingo-11111"
+    gitclaim._write_queue(
+        gitclaim.queue_path(home),
+        {
+            "v": 1,
+            "unaccepted": [
+                {
+                    "repo": REPO,
+                    "task": "MRB",
+                    "id": PR_ID,
+                    "seq": 2,
+                    "url": PR_URL,
+                }
+            ],
+            "accepted": [],
+            "done": [
+                {
+                    "repo": REPO,
+                    "task": "FR",
+                    "id": "#1",
+                    "nick": other,
+                    "url": f"https://github.com/{REPO}/pull/80440",
+                    "result": "PR",
+                }
+            ],
+        },
+    )
+    doc = gitclaim.load_queue(home)
+    mrb = doc["unaccepted"][0]
+    assert gitclaim.implementer_seat_from_done_fr_pull(doc, REPO, PR_ID) == ""
+    enriched = gitclaim.enrich_mrb_author_fields(doc, mrb)
+    assert other not in gitclaim.row_author_seats(enriched)

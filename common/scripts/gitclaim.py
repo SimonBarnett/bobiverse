@@ -8092,22 +8092,24 @@ def implementer_seat_from_done_fr_pull(
     if not want or not repo:
         return ""
     pull_num = str(want).lstrip("#")
-    pull_needle = f"/pull/{pull_num}"
+    # FR #8051 review: `/pull/8044` is a prefix of `/pull/80440`. Require a
+    # parsed pull id, or a path boundary when the URL does not parse.
+    boundary = re.compile(r"/pull/" + re.escape(pull_num) + r"(?:/|\b|$)")
     for row in doc.get("done") or []:
         if not isinstance(row, dict):
             continue
         if str(row.get("task") or "").upper() != "FR":
             continue
         url = str(row.get("url") or row.get("result") or "")
-        if pull_needle not in url:
-            continue
         parsed = parse_github_pull_url(url)
-        if not (
-            parsed
-            and _repo_key(parsed[0]) == _repo_key(repo)
-            and _norm_row_id(parsed[1]) == want
-        ):
-            if repo.lower() not in url.lower():
+        if parsed:
+            if not (
+                _repo_key(parsed[0]) == _repo_key(repo)
+                and _norm_row_id(parsed[1]) == want
+            ):
+                continue
+        else:
+            if repo.lower() not in url.lower() or not boundary.search(url):
                 continue
         seat = str(row.get("nick") or row.get("done_by") or "").strip()
         if seat and bobreport.parse_seat_nick(seat):
