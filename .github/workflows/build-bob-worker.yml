@@ -14,8 +14,11 @@ on:
       - bob/scripts/worker_shipped_scripts.py
       - bob/scripts/opencode_tool_wedge.py
       - bob/scripts/opencode_turn_guard.py
+      - bob/scripts/skill_dag_mcp.py
+      - bob/scripts/skill_dag_index.py
       - bob/tests/test_fr6349_worker_build_ci.py
       - bob/tests/test_fr7910_worker_script_artifact.py
+      - bob/tests/test_fr7991_skill_dag_mcp_shipped_modules.py
   push:
     branches: [main]
     paths:
@@ -26,8 +29,11 @@ on:
       - bob/scripts/worker_shipped_scripts.py
       - bob/scripts/opencode_tool_wedge.py
       - bob/scripts/opencode_turn_guard.py
+      - bob/scripts/skill_dag_mcp.py
+      - bob/scripts/skill_dag_index.py
       - bob/tests/test_fr6349_worker_build_ci.py
       - bob/tests/test_fr7910_worker_script_artifact.py
+      - bob/tests/test_fr7991_skill_dag_mcp_shipped_modules.py
 
 permissions:
   contents: read
@@ -89,9 +95,9 @@ jobs:
           # FR #7910: artifact listing must contain every by-path worker script.
           $shipped = Join-Path $out "worker-build\dist\scripts"
           Copy-Item -LiteralPath $shipped -Destination (Join-Path $stage "scripts") -Recurse
-          & python "$root\bob\scripts\worker_shipped_scripts.py" --check --bob-worker "$root\bob\scripts\bob_worker.py" --dest (Join-Path $stage "scripts")
+          & python "$root\bob\scripts\worker_shipped_scripts.py" --check --bob-worker "$root\bob\scripts\bob_worker.py" --source-dir "$root\bob\scripts" --dest (Join-Path $stage "scripts")
           if ($LASTEXITCODE -ne 0) { throw "by-path scripts missing from bob-worker artifact" }
-          foreach ($need in @("opencode_tool_wedge.py", "opencode_turn_guard.py")) {
+          foreach ($need in @("opencode_tool_wedge.py", "opencode_turn_guard.py", "skill_dag_mcp.py", "skill_dag_index.py")) {
             if (-not (Test-Path -LiteralPath (Join-Path $stage "scripts\$need"))) { throw "by-path scripts missing from bob-worker artifact: $need" }
           }
           @(

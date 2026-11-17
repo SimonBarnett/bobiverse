@@ -18,6 +18,13 @@ BUNDLE_DIR_NAME = "worker-scripts"
 _NAME_RX = re.compile(
     r"""_resolve_installed_worker_script\(\s*["']([A-Za-z0-9_]+\.py)["']"""
 )
+# FR #7991: a by-path script may import a sibling ``.py`` from the same scripts
+# dir (``skill_dag_mcp`` -> ``skill_dag_index``). Ship those modules too, or the
+# MCP host gets ``ModuleNotFoundError`` while the CLI works from the repo.
+_LOCAL_IMPORT_RX = re.compile(
+    r"^\s*(?:from\s+([A-Za-z_][A-Za-z0-9_]*)\s+import|import\s+([A-Za-z_][A-Za-z0-9_]*))",
+    re.MULTILINE,
+)
 
 
 def by_path_script_names(bob_worker_text: str) -> list[str]:
@@ -25,12 +32,57 @@ def by_path_script_names(bob_worker_text: str) -> list[str]:
     return sorted(set(_NAME_RX.findall(bob_worker_text or "")))
 
 
+def local_script_imports(script: Path) -> list[str]:
+    """Sibling ``*.py`` module names imported by ``script`` (FR #7991)."""
+    try:
+        text = Path(script).read_text(encoding="utf-8")
+    except OSError:
+        return []
+    names: set[str] = set()
+    for m in _LOCAL_IMPORT_RX.finditer(text):
+        name = (m.group(1) or m.group(2) or "").strip()
+        if name:
+            names.add(name)
+    return sorted(names)
+
+
+def shipped_script_names(
+    bob_worker: Path,
+    source_dir: Path,
+    *,
+    direct_names: list[str] | None = None,
+) -> list[str]:
+    """By-path scripts plus their transitive sibling modules (FR #7991)."""
+    if direct_names is None:
+        text = Path(bob_worker).read_text(encoding="utf-8")
+        direct_names = by_path_script_names(text)
+    source = Path(source_dir)
+    out: list[str] = []
+    seen: set[str] = set()
+    queue: list[str] = list(direct_names)
+    while queue:
+        name = queue.pop(0)
+        if name in seen:
+            continue
+        seen.add(name)
+        out.append(name)
+        for mod in local_script_imports(source / name):
+            dep = mod + ".py"
+            if dep not in seen and (source / dep).is_file():
+                queue.append(dep)
+    return sorted(out)
+
+
 def copy_by_path_scripts(bob_worker: Path, source_dir: Path, dest: Path) -> list[str]:
-    """Copy each by-path script into ``dest``. Raise if any source file is absent."""
+    """Copy each by-path script (and its sibling modules) into ``dest``.
+
+    Raise if any required source file is absent.
+    """
     text = Path(bob_worker).read_text(encoding="utf-8")
-    names = by_path_script_names(text)
-    if not names:
+    direct = by_path_script_names(text)
+    if not direct:
         raise SystemExit("no by-path worker scripts found in %s" % bob_worker)
+    names = shipped_script_names(bob_worker, source_dir, direct_names=direct)
     dest = Path(dest)
     dest.mkdir(parents=True, exist_ok=True)
     missing: list[str] = []
@@ -45,12 +97,15 @@ def copy_by_path_scripts(bob_worker: Path, source_dir: Path, dest: Path) -> list
     return names
 
 
-def check_by_path_scripts(bob_worker: Path, dest: Path) -> list[str]:
-    """Fail when ``dest`` does not contain every by-path script."""
+def check_by_path_scripts(bob_worker: Path, dest: Path, *, source_dir: Path | None = None) -> list[str]:
+    """Fail when ``dest`` does not contain every by-path script and sibling module."""
     text = Path(bob_worker).read_text(encoding="utf-8")
-    names = by_path_script_names(text)
-    if not names:
+    direct = by_path_script_names(text)
+    if not direct:
         raise SystemExit("no by-path worker scripts found in %s" % bob_worker)
+    names = list(direct)
+    if source_dir is not None:
+        names = shipped_script_names(bob_worker, source_dir, direct_names=direct)
     missing = [name for name in names if not (Path(dest) / name).is_file()]
     if missing:
         raise SystemExit("bob-worker artifact missing by-path scripts: %s" % ", ".join(missing))
@@ -95,16 +150,16 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--dest", default="")
     args = p.parse_args(argv)
     bob_worker = Path(args.bob_worker)
+    source_dir = Path(args.source_dir) if args.source_dir else bob_worker.parent
     if args.list:
-        text = bob_worker.read_text(encoding="utf-8")
-        for name in by_path_script_names(text):
+        for name in shipped_script_names(bob_worker, source_dir):
             print(name)
         return 0
     if args.copy:
-        copy_by_path_scripts(bob_worker, Path(args.source_dir), Path(args.dest))
+        copy_by_path_scripts(bob_worker, source_dir, Path(args.dest))
         return 0
     if args.check:
-        check_by_path_scripts(bob_worker, Path(args.dest))
+        check_by_path_scripts(bob_worker, Path(args.dest), source_dir=source_dir)
         return 0
     p.error("pass --list, --copy, or --check")
     return 2
