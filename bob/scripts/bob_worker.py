@@ -4340,6 +4340,8 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             r"    $outFile = $null",
             r"    $errFile = $null",
             r"    $timedOut = $false",
+            r"    $fuelHitLive = $false",
+            r"    $killReason = ''",
             r"    try {",
             # FR #6156: redirect to files and treat growing file size as heartbeat (not absolute WaitForExit).
             # FR #6366: descendant presence refreshes the short watchdog. FR #7976: the
@@ -4353,6 +4355,7 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             r"        if ($ocDir) { $proc = Start-Process -FilePath $exe -ArgumentList $argStr -WorkingDirectory $ocDir -NoNewWindow -PassThru -RedirectStandardOutput $outFile -RedirectStandardError $errFile } else { $proc = Start-Process -FilePath $exe -ArgumentList $argStr -NoNewWindow -PassThru -RedirectStandardOutput $outFile -RedirectStandardError $errFile }",
             r"        $timedOut = $false",
             r"        $killReason = ''",
+            r"        $fuelHitLive = $false",
             r"        $ocJobPoll = 0",
             r"        $lastLen = 0",
             r"        $lastCpu = -1.0",
@@ -4361,11 +4364,27 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             r"        $lastBeat = [datetime]::UtcNow",
             r"        $runStarted = [datetime]::UtcNow",
             r"        $lastProgress = $runStarted",
+            # FR #8026: match free-pool exhaustion while the process is still alive.
+            r"        $liveFuelPattern = 'Free usage limit|subscribe to OpenCode Go|Payment Required|usage balance exhausted|Too Many Requests|rate limit|rolling limit|(HTTP|status( code)?)\D{0,3}(402|429)'",
             r"        while (-not $proc.HasExited) {",
             r"            $len = 0",
             r"            if (Test-Path -LiteralPath $outFile) { $len += (Get-Item -LiteralPath $outFile).Length }",
             r"            if (Test-Path -LiteralPath $errFile) { $len += (Get-Item -LiteralPath $errFile).Length }",
-            r"            if ($len -gt $lastLen) { $lastLen = $len; $lastBeat = [datetime]::UtcNow; $lastProgress = [datetime]::UtcNow }",
+            r"            if ($len -gt $lastLen) {",
+            r"                $lastLen = $len",
+            r"                $lastBeat = [datetime]::UtcNow",
+            r"                $lastProgress = [datetime]::UtcNow",
+            r"                $peek = (Read-OpencodeCapture $outFile) + [Environment]::NewLine + (Read-OpencodeCapture $errFile)",
+            r"                if ($line) { $peek = $peek.Replace([string]$line, ' ') }",
+            r"                $peek = [regex]::Replace($peek, '`[^`]*`', ' ')",
+            r"                if ($peek -match $liveFuelPattern) {",
+            r"                    $fuelHitLive = $true",
+            r"                    if ($peek -match 'Free usage limit|subscribe to OpenCode Go') { $killReason = 'fuel-exhausted:opencode-free' } else { $killReason = 'out-of-fuel' }",
+            r"                    try { & taskkill /T /F /PID $proc.Id 2>$null | Out-Null } catch { }",
+            r"                    if ($jobKey) { Write-OpencodeJobGiveup $jobKey $killReason }",
+            r"                    break",
+            r"                }",
+            r"            }",
             r"            $busy = $false",
             r"            if (([datetime]::UtcNow - $lastBusyCheck).TotalMilliseconds -ge 2000) {",
             r"                $lastBusyCheck = [datetime]::UtcNow",
@@ -4474,12 +4493,14 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             r"    $scan = $outStr",
             r"    if ($line) { $scan = $scan.Replace([string]$line, ' ') }",
             r"    $scan = [regex]::Replace($scan, '`[^`]*`', ' ')",
-            r"    $limitPattern = 'Payment Required|usage balance exhausted|Too Many Requests|rate limit|rolling limit'",
+            r"    $limitPattern = 'Payment Required|usage balance exhausted|Too Many Requests|rate limit|rolling limit|Free usage limit|subscribe to OpenCode Go'",
             r"    $codePattern = '(HTTP|status( code)?)\D{0,3}(402|429)'",
+            r"    $freeUsagePattern = 'Free usage limit|subscribe to OpenCode Go'",
             # FR #6366: watchdog timeout kills the run but must NOT record a model pause
             # (done-miss finish-runs looked like out-of-fuel). Only real 402/429/limit text pauses.
             # FR #7951: a hard ceiling or watchdog kill is not out of fuel.
-            r"    $hitLimit = (-not $timedOut -and $exitCode -ne 0 -and (($scan -match $limitPattern) -or ($scan -match $codePattern)))",
+            # FR #8026: free-usage text (or a live mid-run fuel kill) pauses even when exit is 0.
+            r"    $hitLimit = (-not $timedOut -and ($fuelHitLive -or ((($scan -match $limitPattern) -or ($scan -match $codePattern)) -and ($exitCode -ne 0 -or ($scan -match $freeUsagePattern)))))",
             r"    if ($timedOut) {",
             r"        if ($proc -and -not $proc.HasExited) { try { & taskkill /T /F /PID $proc.Id 2>$null | Out-Null } catch { } }",
             r"        if (-not $killReason) { $killReason = 'watchdog timeout (no output)' }",
@@ -4507,6 +4528,11 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             r"            $failText = ('record-pause helper failed (exit ' + $recordExit + '): ' + $recordOutput)",
             r"            $failEntry = @{ pid = $PID; ts = (Get-Date -Format o); model = $model; text = $failText } | ConvertTo-Json -Compress",
             r"            Add-Content -Path $fuelLog -Value $failEntry -ErrorAction SilentlyContinue",
+            r"        }",
+            # FR #8026: release the job immediately; free-pool uses fuel-exhausted:opencode-free.
+            r"        if ($jobKey) {",
+            r"            $giveReason = if ($scan -match $freeUsagePattern -or ($killReason -eq 'fuel-exhausted:opencode-free')) { 'fuel-exhausted:opencode-free' } else { 'out-of-fuel' }",
+            r"            Write-OpencodeJobGiveup $jobKey $giveReason",
             r"        }",
             r"    }",
             # FR #6429: clear region/model-unavailable (no silent fail, no substitute model).
@@ -6602,8 +6628,23 @@ _OUT_OF_FUEL_RX = re.compile(
     r"|OUTCOME_NEEDS_AUTH"
     r"|unpaid\s+invoice"
     r"|rate\s*limit(?:ed|ing)?\b"
+    # FR #8026: OpenCode free pool (may hang without exit).
+    r"|Free\s+usage\s+limit"
+    r"|subscribe\s+to\s+OpenCode\s+Go"
     r")"
 )
+
+_OPENCODE_FREE_USAGE_RX = re.compile(
+    r"(?i)(?:Free\s+usage\s+limit|subscribe\s+to\s+OpenCode\s+Go)"
+)
+
+
+def opencode_fuel_exhausted_reason(text: str) -> str:
+    """GIVEUP/NACK reason for OpenCode provider fuel text (FR #8026)."""
+    scanned = provider_fuel_scan_text(text)
+    if _OPENCODE_FREE_USAGE_RX.search(scanned):
+        return "fuel-exhausted:opencode-free"
+    return "out-of-fuel"
 DEFAULT_DIGEST_REPORT_URL = "https://bob.ntsa.uk/bob/v1/report"
 
 

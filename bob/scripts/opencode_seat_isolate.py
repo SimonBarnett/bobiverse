@@ -15,7 +15,14 @@ from pathlib import Path
 
 LOCK_CUES = ("database is locked", "sqlite_busy", "database is busy")
 STARTUP_CUES = ("unexpected error",)
-RATE_CUES = ("payment required", "too many requests", "rate limit", "rolling limit")
+RATE_CUES = (
+    "payment required",
+    "too many requests",
+    "rate limit",
+    "rolling limit",
+    "free usage limit",
+    "subscribe to opencode go",
+)
 DEFAULT_LOCK_RETRIES = 3
 
 
