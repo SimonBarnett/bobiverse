@@ -592,6 +592,42 @@ if ((-not $SkipTray) -and (-not $NoStart)) {
     }
 }
 
+# FR #8023: user-context periodic prune of closed/merged safe job worktrees.
+$clearPs1 = Join-Path $InstallRoot 'scripts\Clear-BobiverseJobWorktrees.ps1'
+if (-not (Test-Path -LiteralPath $clearPs1)) {
+    $clearPs1 = Join-Path $InstallRoot 'common\scripts\Clear-BobiverseJobWorktrees.ps1'
+}
+$pruneTaskName = 'BobiversePruneClosedJobWorktrees'
+if (Test-Path -LiteralPath $clearPs1) {
+    $pruneMinutes = 60
+    if ($env:BOB_PRUNE_CLOSED_JOB_MINUTES -match '^\d+$') {
+        $pruneMinutes = [Math]::Max(15, [int]$env:BOB_PRUNE_CLOSED_JOB_MINUTES)
+    }
+    $pruneArgs = "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$clearPs1`" -RepoRoot `"$InstallRoot`" -PruneClosedJobs -DiscoverRepoRoots -MaxExtraJobTrees -1 -SkipSeatDisk"
+    try {
+        cmd /c "schtasks /Delete /TN `"$pruneTaskName`" /F >nul 2>&1" | Out-Null
+        $pruneAction = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument $pruneArgs
+        $pruneLogon = New-ScheduledTaskTrigger -AtLogOn
+        $pruneWatch = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(2) `
+            -RepetitionInterval (New-TimeSpan -Minutes $pruneMinutes) `
+            -RepetitionDuration (New-TimeSpan -Days 9999)
+        $pruneSettings = New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew `
+            -ExecutionTimeLimit (New-TimeSpan -Hours 2) -StartWhenAvailable `
+            -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
+        $prunePrincipal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive -RunLevel Limited
+        Register-ScheduledTask -TaskName $pruneTaskName -Action $pruneAction -Trigger @($pruneLogon, $pruneWatch) `
+            -Settings $pruneSettings -Principal $prunePrincipal -Force -ErrorAction Stop | Out-Null
+        Write-Host ("INFO Register-ScheduledTask {0} every {1}m IgnoreNew (FR #8023)" -f $pruneTaskName, $pruneMinutes)
+    } catch {
+        Write-Host ("WARN Register-ScheduledTask {0}: {1}" -f $pruneTaskName, $_.Exception.Message)
+        $tr = ('"powershell.exe" {0}' -f $pruneArgs)
+        $createPrune = cmd /c "schtasks /Create /TN `"$pruneTaskName`" /SC MINUTE /MO $pruneMinutes /RU `"$env:USERNAME`" /RL LIMITED /IT /F /TR $tr"
+        Write-Host ("INFO schtasks create {0}: {1}" -f $pruneTaskName, (($createPrune | Out-String).Trim()))
+    }
+} else {
+    Write-Host ("WARN FR #8023 Clear script missing; skip {0}" -f $pruneTaskName)
+}
+
 Get-Service $ServiceName | Format-Table Name, Status, StartType -AutoSize
 Write-Host "INFO Install-Bob done nick=$nick"
 Write-BobiverseMsiInstallLog -Product bob -Message ("install-ok nick=$nick")

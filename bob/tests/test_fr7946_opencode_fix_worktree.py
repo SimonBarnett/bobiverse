@@ -14,15 +14,18 @@ import opencode_seat_contract as c  # noqa: E402
 
 
 def _init_clone(path: Path) -> Path:
-    path.mkdir(parents=True)
-    subprocess.run(["git", "init", "-b", "main", str(path)], check=True, capture_output=True)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if path.exists():
+        raise AssertionError(f"clone path must not exist yet: {path}")
+    bare = path.parent / (path.name + "-origin.git")
+    subprocess.run(["git", "init", "--bare", "-b", "main", str(bare)], check=True, capture_output=True)
+    subprocess.run(["git", "clone", str(bare), str(path)], check=True, capture_output=True)
     subprocess.run(["git", "-C", str(path), "config", "user.email", "t@t"], check=True, capture_output=True)
     subprocess.run(["git", "-C", str(path), "config", "user.name", "t"], check=True, capture_output=True)
     (path / "README").write_text("x\n", encoding="utf-8")
     subprocess.run(["git", "-C", str(path), "add", "README"], check=True, capture_output=True)
     subprocess.run(["git", "-C", str(path), "commit", "-m", "i"], check=True, capture_output=True)
-    subprocess.run(["git", "-C", str(path), "remote", "add", "origin", str(path)], check=True, capture_output=True)
-    subprocess.run(["git", "-C", str(path), "fetch", "origin", "main"], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(path), "push", "-u", "origin", "main"], check=True, capture_output=True)
     return path
 
 
@@ -31,8 +34,8 @@ def _publish_head(clone: Path, branch: str) -> None:
     (clone / "HEAD.txt").write_text(branch + "\n", encoding="utf-8")
     subprocess.run(["git", "-C", str(clone), "add", "HEAD.txt"], check=True, capture_output=True)
     subprocess.run(["git", "-C", str(clone), "commit", "-m", branch], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(clone), "push", "-u", "origin", branch], check=True, capture_output=True)
     subprocess.run(["git", "-C", str(clone), "checkout", "main"], check=True, capture_output=True)
-    subprocess.run(["git", "-C", str(clone), "fetch", "origin", branch], check=True, capture_output=True)
     subprocess.run(["git", "-C", str(clone), "branch", "-D", branch], check=True, capture_output=True)
 
 

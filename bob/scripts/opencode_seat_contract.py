@@ -824,9 +824,8 @@ def create_job_worktree(
         folder.parent.mkdir(parents=True, exist_ok=True)
     except OSError:
         return False, "disk"
-    # Best-effort tip fetch; failure alone does not block if a local tip exists.
+    # FR #8023: fetch before add is mandatory for a new tree. Failure => fetch class.
     fetch_ref = branch if pr_head else "main"
-    fetch_ok = False
     try:
         fetch_proc = _git_run(
             run,
@@ -835,9 +834,31 @@ def create_job_worktree(
         )
         fetch_ok = int(getattr(fetch_proc, "returncode", 1)) == 0
     except Exception as exc:
-        if pr_head and _is_timeout_exc(exc):
+        if _is_timeout_exc(exc):
             return False, "timeout"
-        fetch_ok = False
+        return False, "fetch"
+    if not fetch_ok:
+        return False, "fetch"
+
+    # FR #8023: low-disk admission on the destination volume before worktree add.
+    try:
+        import shutil as _shutil
+
+        min_free_gb = 2.0
+        raw_min = (os.environ.get("BOB_JOB_WORKTREE_MIN_FREE_GB") or "").strip()
+        if raw_min:
+            try:
+                min_free_gb = float(raw_min)
+            except ValueError:
+                min_free_gb = 2.0
+        usage = _shutil.disk_usage(str(folder.parent))
+        free_gb = float(usage.free) / (1024.0 ** 3)
+        if free_gb < min_free_gb:
+            return False, "disk"
+    except OSError:
+        return False, "disk"
+    except Exception:
+        pass
 
     def _ref_ok(ref: str) -> bool:
         try:
@@ -855,7 +876,7 @@ def create_job_worktree(
             local = _branch_exists(run, clone, branch)
             remote = _ref_ok(f"origin/{branch}")
             if not local and not remote:
-                return False, "fetch" if not fetch_ok else "pr-head"
+                return False, "pr-head"
             # Prefer origin/<head> so a stale local fr-* / intake tip cannot win
             # over the fetched PR tip (MRB #7949).
             if remote:
@@ -890,14 +911,15 @@ def create_job_worktree(
                 timeout=WORKTREE_ADD_TIMEOUT_S,
             )
         else:
-            start = "origin/main"
-            for cand in ("origin/main", "main", "HEAD"):
-                if _ref_ok(cand):
-                    start = cand
-                    break
+            # FR #8023: FR/UAT base only origin/main after successful fetch.
+            if not _ref_ok("origin/main"):
+                return False, "fetch"
             proc = _git_run(
                 run,
-                ["git", "-C", clone, "worktree", "add", "-b", branch, str(folder), start],
+                [
+                    "git", "-C", clone, "worktree", "add",
+                    "-b", branch, str(folder), "origin/main",
+                ],
                 timeout=WORKTREE_ADD_TIMEOUT_S,
             )
     except OSError:

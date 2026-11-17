@@ -62,6 +62,13 @@ Keep replies short (one line, under 400 characters). Anything addressed to anoth
 * Work in `<ai root>\bob\worker` and in the repos you are told to work on. You are NOT the ear, the chair or a service: do not restart `ircBob`, `ircJeeves`, `Airc` or any IRC server, do not close other windows, do not kill processes you did not start.
 * Hotpatching a service is allowed only following `bobiverse-fleet-ops` (backup first, one service, no Ergo).
 
+
+## Job worktree create / prune (FR #8023)
+
+* Fetch the base clone before `git worktree add` (`git -C <install> fetch origin main`). Fetch failure => GIVEUP / NACK `worktree-create-failed:fetch`.
+* On low disk for the job-worktree volume: run `Clear-BobiverseJobWorktrees.ps1` only; never hand-delete. If still low, NACK `worktree-create-failed:disk` or GIVEUP and file a disk intake.
+* Clear keeps dirty, unpushed, or unknown trees and reports them (`kept-dirty` / `kept-unpushed` / `kept-unknown-*`). Never delete those by hand.
+
 ## Disk headroom (FR #877 / #890 / #2727)
 
 `git worktree add` fails with **No space left on device** when FreeGB is near 0. Before a new job tree / when FreeGB < 2:

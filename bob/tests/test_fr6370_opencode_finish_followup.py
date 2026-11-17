@@ -156,13 +156,15 @@ def test_fr6370_auto_pr_skips_when_has_pr(tmp_path: Path):
     assert url == ""
 
 
-def test_fr6370_cleanup_removes_temp_extra_worktree(tmp_path: Path, monkeypatch):
+def test_fr6370_cleanup_delegates_to_clear(tmp_path: Path, monkeypatch):
+    """FR #8023: finish cleanup delegates to Clear -KeepPath -SkipSeatDisk."""
     job = tmp_path / "job"
     job.mkdir()
-    extra = tmp_path / "opencode" / "fr-extra"
-    extra.mkdir(parents=True)
-    monkeypatch.setenv("TEMP", str(tmp_path))
-    monkeypatch.setenv("TMP", str(tmp_path))
+    (job / ".git").mkdir()
+    monkeypatch.setenv("BOB_INSTALL_ROOT", str(tmp_path / "install"))
+    clear = tmp_path / "install" / "scripts" / "Clear-BobiverseJobWorktrees.ps1"
+    clear.parent.mkdir(parents=True)
+    clear.write_text("# stub\n", encoding="utf-8")
 
     class _R:
         def __init__(self, code=0, out=""):
@@ -170,28 +172,35 @@ def test_fr6370_cleanup_removes_temp_extra_worktree(tmp_path: Path, monkeypatch)
             self.stdout = out
             self.stderr = ""
 
-    removed: list[str] = []
-    pruned = {"n": 0}
+    seen: list[list[str]] = []
 
     def run(argv, **kwargs):
-        if "worktree" in argv and "list" in argv:
-            porcelain = (
-                f"worktree {job}\nHEAD abc\nbranch refs/heads/fr-6370\n\n"
-                f"worktree {extra}\nHEAD def\nbranch refs/heads/detached\n\n"
-            )
-            return _R(0, porcelain)
-        if "worktree" in argv and "remove" in argv:
-            removed.append(argv[-1])
-            return _R(0, "")
-        if "worktree" in argv and "prune" in argv:
-            pruned["n"] += 1
-            return _R(0, "")
-        return _R(1, "")
+        seen.append(list(argv))
+        head = str(argv[0]).lower() if argv else ""
+        if head.endswith("powershell.exe") or head.endswith("powershell") or "powershell" in head:
+            return _R(0, "Removing worktree X\nDone removed=1\n")
+        if "rev-parse" in argv:
+            return _R(0, str(job / ".git") + "\n")
+        return _R(0, "")
 
     out = bw.opencode_cleanup_extra_worktrees(job, temp_root=tmp_path, run=run)
-    assert str(extra) in out or any(str(extra) in x for x in out)
-    assert removed
-    assert pruned["n"] == 1
+    assert any("Clear-BobiverseJobWorktrees.ps1" in " ".join(a) for a in seen)
+    assert any("-KeepPath" in a for a in seen)
+    assert any("-SkipSeatDisk" in a for a in seen)
+    assert out  # parsed removed line
+
+
+def test_fr8023_cleanup_removes_nothing_without_powershell(tmp_path: Path, monkeypatch):
+    job = tmp_path / "job"
+    job.mkdir()
+    monkeypatch.setenv("PATH", str(tmp_path / "empty-bin"))
+    (tmp_path / "empty-bin").mkdir()
+
+    def run(argv, **kwargs):
+        raise AssertionError(f"must not run when powershell missing: {argv}")
+
+    out = bw.opencode_cleanup_extra_worktrees(job, temp_root=tmp_path, run=run)
+    assert out == []
 
 
 def test_fr6370_finish_decide_auto_pr_returns_done(tmp_path: Path, monkeypatch):

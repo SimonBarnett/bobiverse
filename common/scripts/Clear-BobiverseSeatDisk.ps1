@@ -204,6 +204,7 @@ Get-ChildItem -LiteralPath 'C:\Windows\Temp' -File -Force -ErrorAction SilentlyC
 
 # FR #4192: aged user-%TEMP% seat leftovers (pytest / bobiverse / fr / mrb / gh-pr).
 # Never wipe arbitrary TEMP trees (vscode, Diagnostics, Outlook, NVIDIA, ...).
+# FR #8023: never delete an aged TEMP dir that contains .git (may be a worktree).
 $tempCut = (Get-Date).AddHours(-1 * [Math]::Abs($KeepTempHours))
 $tempPatterns = @('bobiverse-*', 'fr-*', 'mrb-*', 'pytest-of-*', 'gh-pr*', 'pr-*')
 if ($TempRoot -and (Test-Path -LiteralPath $TempRoot)) {
@@ -211,6 +212,13 @@ if ($TempRoot -and (Test-Path -LiteralPath $TempRoot)) {
         Get-ChildItem -LiteralPath $TempRoot -Directory -Force -ErrorAction SilentlyContinue |
             Where-Object { $_.Name -like $pat -and $_.LastWriteTime -lt $tempCut } |
             ForEach-Object {
+                $gitMarker = Join-Path $_.FullName '.git'
+                if (Test-Path -LiteralPath $gitMarker) {
+                    $sz = 0
+                    try { $sz = [math]::Round((Get-ChildItem -LiteralPath $_.FullName -Recurse -Force -ErrorAction SilentlyContinue | Measure-Object -Property Length -Sum).Sum / 1MB, 1) } catch { }
+                    Write-Host ("FR #8023 skip aged TEMP with .git {0} (~{1} MB)" -f $_.FullName, $sz)
+                    return
+                }
                 $removed += Remove-TreeSafe $_.FullName ('aged user-TEMP ' + $pat)
             }
     }
@@ -363,6 +371,13 @@ if ($freeNow -lt $MinFreeGB -and $TempRoot -and (Test-Path -LiteralPath $TempRoo
         Get-ChildItem -LiteralPath $TempRoot -Directory -Force -ErrorAction SilentlyContinue |
             Where-Object { $_.Name -like $pat -and $_.LastWriteTime -lt $tempCutLow } |
             ForEach-Object {
+                $gitMarker = Join-Path $_.FullName '.git'
+                if (Test-Path -LiteralPath $gitMarker) {
+                    $sz = 0
+                    try { $sz = [math]::Round((Get-ChildItem -LiteralPath $_.FullName -Recurse -Force -ErrorAction SilentlyContinue | Measure-Object -Property Length -Sum).Sum / 1MB, 1) } catch { }
+                    Write-Host ("FR #8023 skip aged TEMP (low) with .git {0} (~{1} MB)" -f $_.FullName, $sz)
+                    return
+                }
                 $removed += Remove-TreeSafe $_.FullName ('aged user-TEMP (low) ' + $pat)
             }
     }

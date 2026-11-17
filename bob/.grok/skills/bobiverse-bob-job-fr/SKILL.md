@@ -95,7 +95,11 @@ Fleet installs (`C:\ai\bob`, etc.) are sparse git work trees. `.git/info/exclude
 
 * **FR #963 / pytest ``repo_layout``:** canonical helper is ``common/scripts/repo_layout.py``. Prefer ``git sparse-checkout disable`` in the temp tree. If you keep a partial sparse set, always include ``common/scripts`` (and root ``conftest.py`` / ``pytest.ini`` when running from repo root). Service ``*/tests/conftest.py`` also puts ``common/scripts`` on ``sys.path``, so ``python -m pytest jeeves/tests/...`` works without ``PYTHONPATH=common/tests``.
 
-## Job worktree cleanup (FR #877 / FR #2727 / FR #3641)
+## Job worktree cleanup (FR #877 / FR #2727 / FR #3641 / FR #8023)
+
+* **FR #8023 fetch-before-add:** before `git worktree add`, `git -C <install> fetch origin main` (or the PR head for FIX/MRB). If fetch fails, stop and GIVEUP / NACK `worktree-create-failed:fetch`. New FR/UAT branches base only on `origin/main` after a successful fetch --- never a stale local `main`/`HEAD` fallback.
+* **FR #8023 low disk:** if free space on the job-worktree base volume is below MinFreeGB (default 2 / `BOB_JOB_WORKTREE_MIN_FREE_GB`), NACK `worktree-create-failed:disk` or GIVEUP and file a disk intake. Run `Clear-BobiverseJobWorktrees.ps1`; never hand-delete trees (FR #2727). Dirty, unpushed, or unknown trees are kept and reported --- never deleted.
+
 
 * **StrictMode `.Count`:** wrap `Sort-Object`/`Where-Object` results with `@()` before `.Count` (FR #1664 / Clear-BobiverseJobWorktrees). FreeGB capacity shortfalls are separate FRs - do not close them as duplicates of the StrictMode fix (harvest #1689).
 Leftover `%TEMP%\bobiverse-*` / `fr-*` / `mrb-*` linked worktrees fill `C:` until `git worktree add` fails with **No space left on device**.
@@ -119,7 +123,7 @@ Leftover `%TEMP%\bobiverse-*` / `fr-*` / `mrb-*` linked worktrees fill `C:` unti
 * **FR #5154 (TEMP third pass):** when FreeGB is still under MinFreeGB after FR #4883, SeatDisk reclaims known user-%TEMP% leftovers with KeepTempHoursLow (default 6) plus pip/pytest dir names. Never wipe vscode/Outlook/NVIDIA TEMP trees or invent a `C:\ai\*` delete list (FR #2727). Prefer D: job trees; expand C: only if CRITICAL remaining consumers are live session/bin.
 * If FreeGB is still under 2 **after** JobWorktrees **and** SeatDisk: **file an intake issue** for disk capacity and continue with a tree on a roomy drive, or **GIVEUP** — do not invent a delete list.
 * Manual remove **only on your own job tree** (the `-KeepPath` / current FR tree you created this seat): `git -C <install> worktree remove --force <your-own-job-wt>; git -C <install> worktree prune`. Never a guessed list of sibling `C:\ai\*` dirs.
-* **FR #4197:** Clear must not abort when one registered worktree path or .git is missing (git worktree remove NativeCommandError under StrictMode). Warn, rmdir leftovers, git worktree prune, and continue reclaiming the rest.
+* **FR #4197 / FR #8023:** Clear must not abort when one registered worktree path or .git is missing. Warn, keep unverifiable dirs (missing .git), prune metadata, and continue reclaiming the rest. Only `safe` (clean+published) trees are removed; no `--force` / Remove-Item fallback on failed `git worktree remove`.
 * **a-search CDK trees (FR #3717):** before your own `git worktree remove`, `cmd /c rmdir /s /q <wt>\cdk.out*` (and prefer Clear). Deep `cdk.out` / Lambda asset hashes hit Windows **Filename too long**; git deregisters then leaves the directory; `Remove-Item -Recurse` fails the same way — `cmd rmdir /s /q` clears leftovers. Clear does this pre-rmdir automatically.
 * Never delete the install root (`C:\ai\bob`) or Ergo.
 

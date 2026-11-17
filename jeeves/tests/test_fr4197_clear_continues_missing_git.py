@@ -1,9 +1,8 @@
 """FR #4197: Clear-BobiverseJobWorktrees must not abort when one worktree .git is missing.
 
-A registered job tree whose .git file/dir is gone makes `git worktree remove`
-print NativeCommandError. Under StrictMode + ErrorActionPreference Stop that
-used to terminate the script (exit 1) before later trees were reclaimed.
-Clear must warn, prune/rmdir that path, and continue the remaining removals.
+A registered job tree whose .git file/dir is gone must not abort the Clear run
+(FR #4197). FR #8023: keep that tree as unknown (no hand-delete), warn, continue,
+and still reclaim later safe trees.
 """
 from __future__ import annotations
 
@@ -92,6 +91,6 @@ def test_fr4197_clear_continues_after_missing_git_worktree(tmp_path: Path):
     out = (r.stdout or "") + (r.stderr or "")
     assert r.returncode == 0, out
     assert "FR #4197" in out or "missing" in out.lower() or "does not exist" in out.lower()
-    # Good tree must be reclaimed; broken path must not remain as a live dir.
+    # FR #8023: broken .git is kept as unknown; Clear continues and reclaims the good tree.
     assert not wt_good.exists(), "second worktree must still be removed after broken .git"
-    assert not wt_broken.exists() or not (wt_broken / ".git").exists()
+    assert wt_broken.exists(), "missing-.git tree must be kept (unknown), not hand-deleted"

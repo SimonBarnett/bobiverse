@@ -9,6 +9,7 @@ on:
     paths:
       - .github/workflows/build-bob-worker.yml
       - bob/scripts/bob_worker.py
+      - bob/scripts/opencode_seat_contract.py
       - bob/scripts/Build-BobWorker.ps1
       - bob/scripts/bob_worker_build_meta.py
       - bob/scripts/worker_shipped_scripts.py
@@ -19,11 +20,14 @@ on:
       - bob/tests/test_fr6349_worker_build_ci.py
       - bob/tests/test_fr7910_worker_script_artifact.py
       - bob/tests/test_fr7991_skill_dag_mcp_shipped_modules.py
+      - bob/tests/test_fr6320_opencode_worktree_create.py
+      - bob/tests/test_fr6370_opencode_finish_followup.py
   push:
     branches: [main]
     paths:
       - .github/workflows/build-bob-worker.yml
       - bob/scripts/bob_worker.py
+      - bob/scripts/opencode_seat_contract.py
       - bob/scripts/Build-BobWorker.ps1
       - bob/scripts/bob_worker_build_meta.py
       - bob/scripts/worker_shipped_scripts.py
@@ -34,6 +38,8 @@ on:
       - bob/tests/test_fr6349_worker_build_ci.py
       - bob/tests/test_fr7910_worker_script_artifact.py
       - bob/tests/test_fr7991_skill_dag_mcp_shipped_modules.py
+      - bob/tests/test_fr6320_opencode_worktree_create.py
+      - bob/tests/test_fr6370_opencode_finish_followup.py
 
 permissions:
   contents: read
