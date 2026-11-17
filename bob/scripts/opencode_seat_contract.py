@@ -1071,22 +1071,6 @@ def create_job_worktree(
         folder.parent.mkdir(parents=True, exist_ok=True)
     except OSError:
         return False, "disk"
-    # FR #8023: fetch before add is mandatory for a new tree. Failure => fetch class.
-    fetch_ref = branch if pr_head else "main"
-    try:
-        fetch_proc = _git_run(
-            run,
-            ["git", "-C", clone, "fetch", "origin", fetch_ref],
-            timeout=WORKTREE_FETCH_TIMEOUT_S,
-        )
-        fetch_ok = int(getattr(fetch_proc, "returncode", 1)) == 0
-    except Exception as exc:
-        if _is_timeout_exc(exc):
-            return False, "timeout"
-        return False, "fetch"
-    if not fetch_ok:
-        return False, "fetch"
-
     # FR #8023: low-disk admission on the destination volume before worktree add.
     try:
         import shutil as _shutil
@@ -1106,6 +1090,24 @@ def create_job_worktree(
         return False, "disk"
     except Exception:
         pass
+
+    # FR #8023: FR/UAT fetch-before-add is mandatory (failure => fetch class).
+    # FIX/MRB fetch is owned by _fetch_pr_head_oid (FR #8022 fatal_fetch) so a
+    # blind origin/<branch> fetch cannot NACK when origin/<head> already matches.
+    if not pr_head:
+        try:
+            fetch_proc = _git_run(
+                run,
+                ["git", "-C", clone, "fetch", "origin", "main"],
+                timeout=WORKTREE_FETCH_TIMEOUT_S,
+            )
+            fetch_ok = int(getattr(fetch_proc, "returncode", 1)) == 0
+        except Exception as exc:
+            if _is_timeout_exc(exc):
+                return False, "timeout"
+            return False, "fetch"
+        if not fetch_ok:
+            return False, "fetch"
 
     def _ref_ok(ref: str) -> bool:
         return bool(_rev_parse_oid(run, clone, ref))
