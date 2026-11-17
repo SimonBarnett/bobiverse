@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 
 import bob_worker as bw
+import worker_shipped_scripts as shipped
 
 
 def _script(folder: Path, name: str = "skill_dag_mcp.py") -> Path:
@@ -50,3 +51,10 @@ def test_fr8059_script_path_skips_linked_worktree_even_without_install_file(tmp_
     text = resolved.as_posix().lower()
     assert "worktrees" not in text
     assert "fr-8008" not in text
+
+
+def test_fr8059_by_path_shipping_still_lists_skill_dag_mcp():
+    """MRB #8075: keep _resolve_installed_worker_script so FR #7910 ships the MCP."""
+    text = Path(bw.__file__).read_text(encoding="utf-8")
+    names = shipped.by_path_script_names(text)
+    assert "skill_dag_mcp.py" in names
