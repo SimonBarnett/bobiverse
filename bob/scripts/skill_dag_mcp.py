@@ -150,9 +150,14 @@ def _tokens(text: str) -> set[str]:
     }
 
 
+# FR #8084: a bridge or worktree path shares the token "bob" with many skills.
+# Those tokens must not pick a winner. A real job kind still maps via JOB_SEEDS.
+_SCORE_NOISE = frozenset({"bob", "bridge", "worktree", "worktrees"})
+
+
 def score_description(job_line: str, description: str) -> int:
     """Count overlapping content tokens between the job line and a skill description."""
-    job = _tokens(job_line)
+    job = _tokens(job_line) - _SCORE_NOISE
     desc = _tokens(description)
     if not job or not desc:
         return 0
@@ -421,9 +426,11 @@ class SkillDagServer:
         raw = str(seed or "").strip()
         if not raw:
             return raw
-        first = raw.split(None, 1)[0].upper()
-        if first in JOB_SEEDS:
-            return JOB_SEEDS[first]
+        # first in JOB_SEEDS wins even when the seed also names a bridge or worktree (FR #8084).
+        for part in _TOKEN_RE.findall(raw):
+            key = part.upper()
+            if key in JOB_SEEDS:
+                return JOB_SEEDS[key]
         if raw in self.nodes:
             return raw
         first_raw = raw.split(None, 1)[0]
