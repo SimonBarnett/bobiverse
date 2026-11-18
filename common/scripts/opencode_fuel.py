@@ -2266,10 +2266,12 @@ def record_opencode_pause(
     try:
         import bob_worker as _bw
 
-        src = _bw.provider_fuel_evidence_source(output_text or "")
-        if src is None:
+        # FR #8207: Free-usage pauses need app-log / provider-json only. Do not
+        # refuse all pauses when provider_fuel_evidence_source is None — bare
+        # Retry-After / looks_like_rate_limit still arm a hold (MRB #8212).
+        if _bw.is_fuel_tool_output_noise(output_text or ""):
             return None
-        # Free-usage phrase only arms a pause on app-log / provider-json (FR #8207).
+        src = _bw.provider_fuel_evidence_source(output_text or "")
         if free_hit and src not in ("app-log", "provider-json"):
             free_hit = False
     except Exception:

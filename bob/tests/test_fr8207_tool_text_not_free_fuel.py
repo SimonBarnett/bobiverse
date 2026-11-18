@@ -115,3 +115,12 @@ def test_fr8207_launch_script_requires_provider_cue_for_free_usage(tmp_path: Pat
     assert "isGoModel" in script
     assert "scanFreeOk" in script
     assert "## Summary" in script  # tool-noise pattern
+
+def test_mrb8212_retry_after_still_pauses_go_model(tmp_path: Path):
+    """MRB #8212: Retry-After alone must still pause (rate limit), not be blocked by free-usage gate."""
+    reset = of.record_opencode_pause(
+        tmp_path, GO, "Retry-After: 600", now=1_000_000.0
+    )
+    assert reset == 1_000_000.0 + 600
+    assert of.is_opencode_model_paused(GO, tmp_path, now=1_000_000.0)
+
