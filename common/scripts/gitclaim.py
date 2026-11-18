@@ -16245,6 +16245,48 @@ def _iter_digest_work_claims(home: Path) -> list[tuple[str, str]]:
     return out
 
 
+def _digest_seat_live_heartbeat(home: Path, nick: str, *, window_s: float = 1800.0) -> bool:
+    """FR #8235: True when the digest seat has a pid and a fresh last_progress.
+
+    That is a live job process with a current heartbeat. Reconcile must not
+    stamp LOST_ACK_RESTART on that seat.
+    """
+    want = (canonical_worker_nick(nick) or nick or "").strip().lower()
+    if not want:
+        return False
+    try:
+        import bobreport as _br
+
+        dig = _br.load_digest(_root(home))
+    except Exception:  # noqa: BLE001
+        return False
+    now = time.time()
+    machines = dig.get("machines") if isinstance(dig.get("machines"), dict) else {}
+    for ent in machines.values():
+        if not isinstance(ent, dict):
+            continue
+        rows = list(ent.get("worker_list") or [])
+        workers = ent.get("workers") if isinstance(ent.get("workers"), dict) else {}
+        for w in workers.values():
+            if isinstance(w, dict):
+                rows.append(w)
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            n = (canonical_worker_nick(str(row.get("nick") or "")) or str(row.get("nick") or "")).strip().lower()
+            if n != want:
+                continue
+            pid = str(row.get("pid") or "").strip()
+            if not pid:
+                continue
+            ts = _parse_iso_ts(str(row.get("last_progress") or ""))
+            if ts is None:
+                continue
+            if (now - float(ts)) <= float(window_s):
+                return True
+    return False
+
+
 def _reconcile_lost_ack_unlocked(home: Path, doc: dict, *, log=None) -> int:
     """Promote unaccepted rows claimed by digest working_on into accepted (FR #3867).
 
@@ -16290,7 +16332,23 @@ def _reconcile_lost_ack_unlocked(home: Path, doc: dict, *, log=None) -> int:
         job = dict(row)
         job["nick"] = (canonical_worker_nick(matched_nick) or matched_nick).strip()
         job["accepted_ts"] = _utc_now()
-        job["reconcile"] = "LOST_ACK_RESTART"
+        # FR #8235: a live process with a current heartbeat is a real accept.
+        # Do not stamp LOST_ACK_RESTART (that phantom is what !bored demotes).
+        if _digest_seat_live_heartbeat(home, matched_nick):
+            job.pop("reconcile", None)
+            _log_queue_purge(
+                f"INFO seat-reconcile nick={job['nick']} row={job.get('task')} "
+                f"{job.get('repo')}{job.get('id')} result=accepted-live-heartbeat "
+                f"reason=live-process-heartbeat",
+                log=log,
+            )
+        else:
+            job["reconcile"] = "LOST_ACK_RESTART"
+            _log_queue_purge(
+                f"INFO seat-reconcile nick={job['nick']} row={job.get('task')} "
+                f"{job.get('repo')}{job.get('id')} result=LOST_ACK_RESTART reason=LOST_ACK_RESTART",
+                log=log,
+            )
         # Drop stale offer stamps; ownership is now accepted.
         job.pop("offered_to", None)
         job.pop("offered_ts", None)
@@ -16298,11 +16356,6 @@ def _reconcile_lost_ack_unlocked(home: Path, doc: dict, *, log=None) -> int:
         job.pop("offered_via", None)
         accepted.append(job)
         promoted += 1
-        _log_queue_purge(
-            f"INFO seat-reconcile nick={job['nick']} row={job.get('task')} "
-            f"{job.get('repo')}{job.get('id')} result=LOST_ACK_RESTART reason=LOST_ACK_RESTART",
-            log=log,
-        )
     if not promoted and not dropped_dup:
         return 0
     if len(accepted) > ACCEPTED_CAP:
