@@ -1176,6 +1176,96 @@ def worktree_reviewed_sha(directory: str | Path, run=None) -> str:
     return _rev_parse_oid(run, raw, "HEAD")
 
 
+def _read_stamped_reviewed_sha(directory: str | Path) -> str:
+    """Return ``.bob/reviewed-sha`` when present (FR #8022 stamp)."""
+    try:
+        raw = (Path(directory) / ".bob" / "reviewed-sha").read_text(encoding="utf-8")
+    except OSError:
+        return ""
+    return _norm_git_oid(raw.strip().splitlines()[0] if raw else "")
+
+
+def _pr_view_state_oids(
+    run, repo: str, number: str
+) -> tuple[str, str, str]:
+    """Return ``(state, head_oid, merge_oid)`` from ``gh pr view`` (FR #8286)."""
+    try:
+        proc = _git_run(
+            run,
+            [
+                "gh",
+                "pr",
+                "view",
+                str(number),
+                "--repo",
+                repo,
+                "--json",
+                "state,headRefOid,mergeCommit",
+            ],
+            timeout=WORKTREE_FETCH_TIMEOUT_S,
+        )
+    except Exception:
+        return "", "", ""
+    if int(getattr(proc, "returncode", 1)) != 0:
+        return "", "", ""
+    try:
+        import json as _json
+
+        doc = _json.loads(getattr(proc, "stdout", "") or "{}")
+    except Exception:
+        return "", "", ""
+    state = str((doc or {}).get("state") or "").strip().upper()
+    head = _norm_git_oid(str((doc or {}).get("headRefOid") or ""))
+    merge = ""
+    mc = (doc or {}).get("mergeCommit")
+    if isinstance(mc, dict):
+        merge = _norm_git_oid(str(mc.get("oid") or ""))
+    elif isinstance(mc, str):
+        merge = _norm_git_oid(mc)
+    return state, head, merge
+
+
+def finish_reviewed_sha(
+    job_key: str,
+    directory: str | Path = "",
+    *,
+    run=None,
+) -> tuple[str, str, str]:
+    """Resolve the SHA a FINISH prompt should quote (FR #8022 / #8286).
+
+    Returns ``(sha, source, pr_state)``.
+
+    Prefer ``gh pr view`` ``headRefOid`` (open tip or last tip after merge). When
+    the PR is MERGED and head is empty, use ``mergeCommit.oid``. Fall back to
+    ``.bob/reviewed-sha`` then worktree ``HEAD``.
+
+    A keep-both fold can leave the job worktree one commit behind the pushed tip;
+    quoting worktree HEAD then skews the merge-on-green ledger (FR #4661).
+    """
+    import subprocess as _sp
+
+    run = run or _sp.run
+    key = (job_key or "").strip()
+    pm = re.search(
+        r"(?i)\b(?:FR|MRB|UAT|FIX)\s+([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)#(\d+)\b",
+        key,
+    )
+    state, head, merge = "", "", ""
+    if pm:
+        state, head, merge = _pr_view_state_oids(run, pm.group(1), pm.group(2))
+    if head:
+        return head, "gh-headRefOid", state
+    if state == "MERGED" and merge:
+        return merge, "gh-mergeCommit", state
+    stamped = _read_stamped_reviewed_sha(directory) if directory else ""
+    if stamped:
+        return stamped, "reviewed-sha-stamp", state
+    wt = worktree_reviewed_sha(directory, run=run) if directory else ""
+    if wt:
+        return wt, "worktree-HEAD", state
+    return "", "", state
+
+
 def create_job_worktree(
     path: str,
     key: str,
