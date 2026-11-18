@@ -107,7 +107,7 @@ def test_fr8247_bored_external_dir_loop_giveup(monkeypatch, tmp_path: Path):
     bored.failed_turn_retry_fn = lambda key: injects.append(f"retry:{key}")
     bored.done_miss_remind_fn = lambda key: injects.append(f"remind:{key}")
 
-    # First rejection -> corrective retry inject
+    # First rejection -> corrective via done_miss_remind_fn (not assign re-inject).
     bored.turn_ended(
         at=1000.0,
         error=True,
@@ -115,8 +115,10 @@ def test_fr8247_bored_external_dir_loop_giveup(monkeypatch, tmp_path: Path):
         error_line="exit 1: permission requested: external_directory; auto-rejecting",
     )
     assert giveups == []
-    assert any(i.startswith("retry:") for i in injects)
+    assert any(i.startswith("remind:") for i in injects)
+    assert not any(i.startswith("retry:") for i in injects)
     assert bored._ack_open is True
+    assert bored.external_dir_reject_state.get("corrective_pending") is True
 
     # Second rejection -> giveup external-dir-loop
     injects.clear()
@@ -174,6 +176,72 @@ def test_fr8247_inject_done_miss_uses_corrective(monkeypatch, tmp_path: Path):
     assert str(scratch).lower() in blob or ".bob" in blob
     # Corrective pending cleared after use.
     assert bored.external_dir_reject_state.get("corrective_pending") is False
+
+
+def test_fr8247_failed_turn_retry_routes_to_corrective(monkeypatch, tmp_path: Path):
+    """MRB #8252 FAIL: ``_inject_failed_turn_retry`` must not re-paste the assign."""
+    wt = tmp_path / "job"
+    scratch = bw.ensure_opencode_job_scratch(wt)
+    monkeypatch.setenv("BOB_JOB_WORKTREE", str(wt))
+    lines: list[str] = []
+    key = "MRB SimonBarnett/bobiverse#8224"
+    assign = (
+        f"FROM jeeves #flamingo flamingo-1: {key} "
+        f"https://github.com/SimonBarnett/bobiverse/pull/8224"
+    )
+
+    irc = SimpleNamespace(shop="#flamingo", say=lambda *_a, **_k: None)
+    relay = SimpleNamespace(
+        set_target=lambda *_a, **_k: None,
+        last_line=assign,
+        last_unacked=assign,
+    )
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    logs: list[str] = []
+    sup = bw.Supervisor(
+        kind="opencode",
+        exe=r"C:\o\opencode.exe",
+        cwd=str(tmp_path),
+        machine="flamingo",
+        nick="flamingo-1",
+        run_dir=str(run_dir),
+        irc=irc,
+        relay=relay,
+        log=logs.append,
+        install_root=str(tmp_path),
+        kill=lambda _pid: True,
+        spawn=lambda *_a, **_k: (_ for _ in ()).throw(RuntimeError("no spawn")),
+    )
+    bored = bw.BoredEmitter(lambda: True, lambda _m: None, clock=lambda: 1.0)
+    bored._ack_open = True
+    bored._ack_job_key = key
+    bw.record_external_dir_reject(bored.external_dir_reject_state, key)
+    assert bored.external_dir_reject_state.get("corrective_pending") is True
+    # Live seat wires failed_turn_retry_fn -> this method; call it directly so
+    # the test does not stub away the re-inject path (MRB #8252 FAIL).
+    bored.failed_turn_retry_fn = sup._inject_failed_turn_retry
+    bored.done_miss_remind_fn = None
+    sup.bored = bored
+    # Clear Supervisor.__init__ wiring of done_miss_remind_fn so only the
+    # failed-turn path is exercised.
+    bored.done_miss_remind_fn = None
+    # Re-point after Supervisor may have overwritten on construct — already done.
+    sup.proc = SimpleNamespace(pid=1, poll=lambda: None)
+    monkeypatch.setattr(sup, "_inject_line", lambda proc, line: lines.append(line) or True)
+    sup._opencode_job_outbox = wt / ".bob" / "outbox.txt"
+
+    # Without the FR #8247 guard this would re-inject ``assign`` and return.
+    sup._inject_failed_turn_retry(key)
+
+    assert lines, "expected a corrective inject via _inject_failed_turn_retry"
+    blob = "\n".join(lines).lower()
+    assert "corrective" in blob or "scratch" in blob or ".bob" in blob
+    assert "external" in blob or "scratch" in blob
+    # Assign URL alone without corrective wording is a FAIL.
+    assert not (assign.lower() in blob and "corrective" not in blob and "scratch" not in blob)
+    assert bored.external_dir_reject_state.get("corrective_pending") is False
+    assert any("routes to corrective" in m for m in logs)
 
 
 def test_fr8247_wrapper_sets_temp_under_bob_tmp(tmp_path: Path):

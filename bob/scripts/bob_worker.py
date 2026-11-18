@@ -13025,9 +13025,12 @@ class BoredEmitter:
                                         ).get(key, 0),
                                     )
                                 )
+                                # Prefer done-miss remind (injects corrective_pending text).
+                                # failed_turn_retry_fn re-injects relay.last_line (same assign)
+                                # and would skip the scratch-path corrective (MRB #8252 FAIL).
                                 fn = (
-                                    self.failed_turn_retry_fn
-                                    or self.done_miss_remind_fn
+                                    self.done_miss_remind_fn
+                                    or self.failed_turn_retry_fn
                                 )
                                 if fn is not None:
                                     try:
@@ -16308,11 +16311,25 @@ class Supervisor:
             )
 
     def _inject_failed_turn_retry(self, job_key: str) -> None:
-        """FR #7201: re-inject the last assign once after an error turn (bounded)."""
+        """FR #7201: re-inject the last assign once after an error turn (bounded).
+
+        FR #8247: when ``external_dir_reject_state.corrective_pending`` is set, do not
+        re-inject ``relay.last_line`` (that re-sends the same FINISH/assign). Route to
+        ``_inject_done_miss_reminder``, which emits the scratch-path corrective.
+        """
+        key = (job_key or "").strip()
+        # FR #8247 / MRB #8252: external_directory corrective must not re-paste the assign.
+        if self.bored is not None:
+            st = getattr(self.bored, "external_dir_reject_state", None)
+            if isinstance(st, dict) and st.get("corrective_pending"):
+                self.log(
+                    f"external-dir: failed-turn retry routes to corrective for {key}"
+                )
+                self._inject_done_miss_reminder(key)
+                return
         line = ""
         with contextlib.suppress(Exception):
             line = str(getattr(self.relay, "last_line", None) or getattr(self.relay, "last_unacked", None) or "")
-        key = (job_key or "").strip()
         if line and key and (assign_job_key(line) or "").lower() == key.lower():
             with self._lock:
                 proc = self.proc
