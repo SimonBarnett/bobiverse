@@ -552,6 +552,7 @@ routes to bobiverse via the split rule.
 - bob-ear info() must catch OSError ENOSPC on stdout print so disk-full does not kill ear threads; report once site=info-enospc (FR #8205).
 - When shipped_script_names always includes fleet .ps1 (FR #8156), fr7991 unit fixtures must expect those names plus the .py closure (FR #8206).
 - Seat Grok auth provision must use machine_grok_auth_path (BOB_GROK_AUTH_PATH override), not only user_grok_home/auth.json
+- skill-dag resolve must never silently return empty matched+skipped for FR/MRB JOB_SEEDS: emit unresolved/not_in_index when the skill is missing from --root
 
 ## Harvest digest (lessons audit 2026-10-06)
 
