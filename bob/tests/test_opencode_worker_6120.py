@@ -135,7 +135,7 @@ def test_opencode_default_model_falls_back_to_free_when_go_paused(tmp_path):
     state_dir = tmp_path / "state"
     now = 1_000_000.0
     bw.opencode_fuel.record_opencode_pause(
-        state_dir, "opencode-go/glm-5.3", "rate limit", now=now
+        state_dir, "opencode-go/glm-5.3", "HTTP 429 rate limit", now=now
     )
     fuel = bw.Fuel(
         opencode_free=100,

@@ -568,7 +568,7 @@ def test_record_opencode_pause_persists_default(tmp_path):
     state_dir = tmp_path / "state"
     now = 1_000_000.0
     reset = of.record_opencode_pause(
-        state_dir, "opencode-go/glm-5.3", "rate limited", now=now
+        state_dir, "opencode-go/glm-5.3", "HTTP 429 rate limited", now=now
     )
     assert reset == now + of.DEFAULT_PAUSE_S
     assert of.is_opencode_model_paused("opencode-go/glm-5.3", state_dir, now=now) is True
@@ -607,7 +607,7 @@ def test_record_opencode_pause_returns_none_when_save_fails(tmp_path):
     blocked.write_text("not a directory", encoding="utf-8")
     now = 1_000_000.0
     assert (
-        of.record_opencode_pause(blocked / "state", "opencode-go/glm-5.3", "rate limit", now=now)
+        of.record_opencode_pause(blocked / "state", "opencode-go/glm-5.3", "HTTP 429 rate limit", now=now)
         is None
     )
 
@@ -615,7 +615,7 @@ def test_record_opencode_pause_returns_none_when_save_fails(tmp_path):
 def test_is_opencode_model_paused_case_insensitive(tmp_path):
     state_dir = tmp_path / "state"
     now = 1_000_000.0
-    of.record_opencode_pause(state_dir, "Opencode-Go/GLM-5.3", "rate limit", now=now)
+    of.record_opencode_pause(state_dir, "Opencode-Go/GLM-5.3", "HTTP 429 rate limit", now=now)
     assert of.is_opencode_model_paused("opencode-go/glm-5.3", state_dir, now=now) is True
     assert of.is_opencode_model_paused("opencode-go/glm-5.3", state_dir, now=now + of.DEFAULT_PAUSE_S + 1) is False
 
@@ -637,7 +637,7 @@ def test_record_opencode_pause_concurrent_saves_do_not_lose_pauses(tmp_path):
     code_template = (
         "import time, opencode_fuel as of; "
         "time.sleep(max(0, {start_at} - time.time())); "
-        "of.record_opencode_pause({state_dir!r}, {model!r}, 'rate limit', now={now})"
+        "of.record_opencode_pause({state_dir!r}, {model!r}, 'HTTP 429 rate limit', now={now})"
     )
     procs = []
     for model in models:
@@ -662,7 +662,7 @@ def test_record_opencode_pause_lock_timeout_returns_none(tmp_path):
     fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
     try:
         result = of.record_opencode_pause(
-            state_dir, "opencode-go/glm-5.3", "rate limit", now=now, lock_timeout_s=0.25
+            state_dir, "opencode-go/glm-5.3", "HTTP 429 rate limit", now=now, lock_timeout_s=0.25
         )
         assert result is None
     finally:
@@ -697,7 +697,7 @@ def test_cli_record_pause_reads_utf8_stdin_with_replacement(tmp_path):
     env = os.environ.copy()
     env["PYTHONPATH"] = str(helper.parent) + os.pathsep + env.get("PYTHONPATH", "")
     # U+201D RIGHT DOUBLE QUOTATION MARK encoded as UTF-8 (bytes E2 80 9D).
-    payload = 'model replied \u201d rate limit\u201d'.encode("utf-8")
+    payload = 'model replied \u201d HTTP 429 Too Many Requests\u201d'.encode("utf-8")
     result = subprocess.run(
         [sys.executable, str(helper), "record-pause", "--dir", str(state_dir), "--model", "opencode-go/glm-5.3"],
         input=payload,
@@ -758,7 +758,7 @@ def test_save_opencode_pauses_runs_while_lock_held(tmp_path, monkeypatch):
         return original_save(state_dir_arg, pauses)
 
     monkeypatch.setattr(of, "save_opencode_pauses", checked_save)
-    assert of.record_opencode_pause(state_dir, "opencode-go/glm-5.3", "rate limit") is not None
+    assert of.record_opencode_pause(state_dir, "opencode-go/glm-5.3", "HTTP 429 rate limit") is not None
 
 def test_fr6147_go_windows_used_vs_remaining_and_unstarted_rolling():
     windowed = {
