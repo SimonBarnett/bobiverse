@@ -571,6 +571,7 @@ routes to bobiverse via the split rule.
 - FINISH reviewed SHA: prefer gh pr view headRefOid (or mergeCommit when MERGED) over worktree HEAD / .bob/reviewed-sha after a keep-both fold (FR #8286 / #8022 / #4661)
 - fix(mrb-N) feature-base queue: match fix base to fr-<parent_pr> OR the open parent's head.ref (issue branch); live #8260 was fr-8234 for parent #8239 (MRB #8299 / #8302)
 - opencode_job_finish_steps sha_line (MRB PASS/FAIL @ SHA) is MRB/FIX only --- FR/UAT wires have no board PASS/FAIL (FR #8301 / #8286)
+- Keep harvest SKILL.md under 60KiB. The lesson archive belongs in lessons.md beside it, because skill-dag refuses a body over 65536 bytes.
 
 ## Harvest digest (lessons audit 2026-10-06)
 
