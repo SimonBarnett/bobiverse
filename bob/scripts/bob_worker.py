@@ -11869,7 +11869,11 @@ def opencode_job_finish_steps(
         reviewed, sha_source, pr_state = _osc.finish_reviewed_sha(key, wt)
     except Exception:
         reviewed, sha_source, pr_state = "", "", ""
-    if reviewed and str(pr_state or "").upper() == "MERGED":
+    # FR #8301: MRB PASS/FAIL @ SHA is an MRB (and FIX) board. FR and UAT wires
+    # carry no PASS/FAIL, so that boilerplate must not appear on those prompts.
+    if job_task_kind(key) not in ("MRB", "FIX"):
+        sha_line = ""
+    elif reviewed and str(pr_state or "").upper() == "MERGED":
         sha_line = (
             f"FR #8286: PR is already MERGED; tip SHA is {reviewed} (source={sha_source or 'gh'}). "
             f"Do not quote a lagging worktree HEAD. Verify the tip on main, append DONE for {key} "
