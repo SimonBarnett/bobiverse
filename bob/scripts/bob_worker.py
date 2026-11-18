@@ -3708,10 +3708,12 @@ def report_agent_cli_nonzero_exit(
     # FR #7978: exit_code is None only when the worker recycled the seat while the agent
     # process was still running (hang / ack-miss / ask-user / no-ack-after-assign). That is
     # a recycle, not a CLI failure, and must not claim the CLI exited non-zero.
+    reason_l = str(reason or "").strip().lower()
     if exit_code is None:
         end = "recycle"
-    elif u == CONSOLE_CLOSE_EXIT:
+    elif u == CONSOLE_CLOSE_EXIT or reason_l in ("console-closed", "signal"):
         # FR #7881: OpenCode 3221225786 is the console closing, not a CLI bug.
+        # FR #8148: shutdown reason console-closed/signal with exit_code=1 (Grok) is the same class.
         end = "console-close"
     elif "recycleseat" in parent_l or "bobtrayrecycleseat" in parent_l:
         end = "recycle"
@@ -3754,7 +3756,8 @@ def report_agent_cli_nonzero_exit(
     if reason:
         reason = _scrub(reason)[:160]
         what += f"Reason: {reason}\n"
-        if reason != "agent-exited":
+        # FR #8148: do not rebrand console-close / signal as "stopped making progress".
+        if reason != "agent-exited" and end not in ("console-close", "recycle", "external-kill"):
             title = "bug: seat stopped making progress"
             key = f"seat-no-progress|{mid}|{nick_s}|{agent_stderr_dedupe_line(reason)}"[:128]
     body = (
@@ -12381,10 +12384,15 @@ class Supervisor:
         self._session_log_thread = threading.Thread(target=watch, name="seat-session-log", daemon=True)
         self._session_log_thread.start()
 
-    def _record_exit(self, proc, reason: str, code=None, *, report: bool = False, job_key: str = "") -> None:
+    def _record_exit(self, proc, reason: str, code=None, *, report: bool = False, job_key: str = "") -> bool:
+        """Record first exit for ``proc``. Return True when this call owns the record.
+
+        FR #8148: callers such as ``_wait_exit`` must not file a CLI-failure intake when
+        ``shutdown`` (e.g. console-closed) already recorded the same pid.
+        """
         with self._lock:
             if self._exit_recorded_pid == proc.pid:
-                return
+                return False
             self._exit_recorded_pid = proc.pid
         self._stop_session_log()
         with contextlib.suppress(Exception):
@@ -12406,6 +12414,7 @@ class Supervisor:
                 machine=self.machine, nick=self.nick, kind=self.kind, agent_pid=proc.pid,
                 stderr_tail=self.last_exit["output"], log=self.log,
             )
+        return True
 
     def _persist_last_exit(self) -> None:
         text = json.dumps(self.last_exit)
@@ -14194,7 +14203,17 @@ class Supervisor:
         )
         exit_u = normalize_agent_exit_code(code)
         exit_label = format_agent_exit_code_label(code)
-        self._record_exit(proc, "agent-exited" if exit_u == 0 else "agent-cli-nonzero-exit", code)
+        # FR #8148: if shutdown already recorded (console-closed / signal), do not also
+        # file a cli-failure intake for the same pid (TOCTOU after the expected check).
+        recorded = self._record_exit(
+            proc, "agent-exited" if exit_u == 0 else "agent-cli-nonzero-exit", code
+        )
+        if not recorded:
+            self.log(
+                f"agent: exit already recorded code={code} (u32={exit_label}); "
+                f"skip cli-failure report (FR #8148); {kill_line}"
+            )
+            return
         if age is not None and age < max(30.0, float(self.startup_grace_s) + 15.0):
             self.log(
                 f"agent: early exit code={code} (u32={exit_label}) after {age:.1f}s "
