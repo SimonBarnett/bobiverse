@@ -20,7 +20,7 @@ def _home(tmp_path: Path) -> Path:
     return h
 
 
-def _pr(num: int, title: str, *, base: str, sha: str = "abc123") -> dict:
+def _pr(num: int, title: str, *, base: str, sha: str = "abc123", head: str | None = None) -> dict:
     return {
         "number": num,
         "title": title,
@@ -29,7 +29,7 @@ def _pr(num: int, title: str, *, base: str, sha: str = "abc123") -> dict:
         "html_url": f"https://github.com/{REPO}/pull/{num}",
         "user": {"login": "SimonBarnett"},
         "base": {"ref": base},
-        "head": {"sha": sha},
+        "head": {"sha": sha, "ref": head or f"fr-{num}"},
     }
 
 
@@ -53,14 +53,15 @@ def _mrb_ids(home: Path) -> list:
 
 
 def test_feature_base_fix_queued_while_parent_open(tmp_path, capsys):
+    """Live #8260 bases on parent head fr-8234 (issue branch), not fr-8239."""
     home = _home(tmp_path)
     gitclaim.resync_from_github(
         home,
         [REPO],
         fetch_json=_fetch(
             [
-                _pr(8239, "walrus jeeves irc", base="main"),
-                _pr(8260, "fix(mrb-8239): pick up FAIL", base="fr-8239"),
+                _pr(8239, "walrus jeeves irc", base="main", head="fr-8234"),
+                _pr(8260, "fix(mrb-8239): pick up FAIL", base="fr-8234"),
             ]
         ),
     )
@@ -69,6 +70,24 @@ def test_feature_base_fix_queued_while_parent_open(tmp_path, capsys):
     assert "#8239" in ids
     parent = next(r for r in gitclaim.load_unaccepted(home) if r.get("id") == "#8239")
     assert "awaiting_fix_pr #8260" in str(parent.get("line") or "")
+    err = capsys.readouterr().out
+    assert "resync queue feature-base mrb-fix PR SimonBarnett/bobiverse#8260" in err
+
+
+def test_feature_base_fr_pr_number_still_queues(tmp_path, capsys):
+    """fr-<parent_pr_number> remains a valid feature-base match."""
+    home = _home(tmp_path)
+    gitclaim.resync_from_github(
+        home,
+        [REPO],
+        fetch_json=_fetch(
+            [
+                _pr(8239, "walrus jeeves irc", base="main", head="fr-8239"),
+                _pr(8260, "fix(mrb-8239): pick up FAIL", base="fr-8239"),
+            ]
+        ),
+    )
+    assert "#8260" in _mrb_ids(home)
     err = capsys.readouterr().out
     assert "resync queue feature-base mrb-fix PR SimonBarnett/bobiverse#8260" in err
 
@@ -103,7 +122,7 @@ def test_fail_after_nack_drops_parent_and_queues_fix(tmp_path, capsys):
             "workers": {},
         },
     )
-    parent = _pr(8239, "walrus jeeves irc", base="main", sha="6586df19")
+    parent = _pr(8239, "walrus jeeves irc", base="main", sha="6586df19", head="fr-8234")
     parent["comments"] = [
         {
             "body": "## MRB board\n**Verdict:** FAIL\n**MRB FAIL @ 6586df19**\n",
@@ -117,7 +136,7 @@ def test_fail_after_nack_drops_parent_and_queues_fix(tmp_path, capsys):
         fetch_json=_fetch(
             [
                 parent,
-                _pr(8260, "fix(mrb-8239): pick up FAIL", base="fr-8239"),
+                _pr(8260, "fix(mrb-8239): pick up FAIL", base="fr-8234"),
             ]
         ),
     )
