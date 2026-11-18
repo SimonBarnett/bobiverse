@@ -544,6 +544,7 @@ routes to bobiverse via the split rule.
 - FR #8160 MRB: refresh 6120/6328/7595 asserts to post-#8133 job-gated watchdog, #8023 fetch-ok timeout class, #7595 stale bar known=false.
 - When FR #8150 and #8151 both touch liveFuelPattern, fold keeps #8151 pattern (no bare rate limit) plus #8150 app-log peek/scan seed.
 - FR #8193 MRB: mrb_yields_to_older_fr skips superseded FRs; free_idle empty yields older FR before newer MRB; classic MRB-before-FR tests monkeypatch yield; MSI S1 accepts product-*.msi.
+- FR #8172 MRB: Watch digest UTF-8 pin is Invoke-BobDigestHttpGet + got.Text; RawContentStream stays on IRC ConvertFrom-BobUtf8Json only.
 
 ## Harvest digest (lessons audit 2026-10-06)
 
