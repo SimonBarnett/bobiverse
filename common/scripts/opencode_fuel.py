@@ -2259,11 +2259,25 @@ def record_opencode_pause(
         return None
     if is_turn_timeout_text(output_text):
         return None
-    # FR #8151: refuse a pause when the text is not provider fuel evidence
-    # (tool-output "rate limit" / bare phrase with no API context).
+    # FR #8151 / #8207: refuse a pause when the text is not provider fuel evidence
+    # (tool-output / PR body / bare Free usage without ERROR or AI_*).
     free_hit = is_free_usage_limit_text(output_text)
     rate_hit = looks_like_rate_limit(output_text)
+    try:
+        import bob_worker as _bw
+
+        src = _bw.provider_fuel_evidence_source(output_text or "")
+        if src is None:
+            return None
+        # Free-usage phrase only arms a pause on app-log / provider-json (FR #8207).
+        if free_hit and src not in ("app-log", "provider-json"):
+            free_hit = False
+    except Exception:
+        pass
     if not free_hit and not rate_hit:
+        return None
+    # FR #8207: a paid/go start model never records a free-usage pause (wrong pool).
+    if free_hit and of_is_go_model_id(model_id):
         return None
     reset_ts = parse_reset_time(output_text, now=now)
     if reset_ts is None:

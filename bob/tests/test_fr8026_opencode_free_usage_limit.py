@@ -12,32 +12,47 @@ import bob_worker as bw  # noqa: E402
 import opencode_fuel as of  # noqa: E402
 
 
-FREE_FIXTURES = (
+# FR #8207: bare Free usage (tool/PR echo) is not fuel; provider ERROR / AI_* is.
+PROVIDER_FREE_FIXTURES = (
+    "AI_APICallError: Free usage limit reached",
+    'timestamp=2026-11-18T12:00:00Z level=ERROR message="stream error" '
+    "Free usage limit reached. Subscribe to OpenCode Go",
+)
+BARE_FREE_FIXTURES = (
     "Free usage limit reached. Subscribe to OpenCode Go",
     "Free usage limit reached … subscribe to OpenCode Go",
-    "AI_APICallError: Free usage limit reached",
     "error: Free usage limit reached — subscribe to OpenCode Go for more",
 )
 
 
 def test_is_out_of_fuel_text_detects_free_usage_limit():
-    for sample in FREE_FIXTURES:
+    for sample in PROVIDER_FREE_FIXTURES:
         assert bw.is_out_of_fuel_text(sample), sample
+    for sample in BARE_FREE_FIXTURES:
+        assert not bw.is_out_of_fuel_text(sample), sample
     assert not bw.is_out_of_fuel_text("docs say `Free usage limit reached` in the skill")
     assert not bw.is_out_of_fuel_text("hard ceiling 1800000ms")
 
 
 def test_looks_like_rate_limit_detects_free_usage_limit():
-    for sample in FREE_FIXTURES:
-        assert of.looks_like_rate_limit(sample), sample
+    # Phrase detector still sees the words; channel gate is is_out_of_fuel_text.
+    for sample in BARE_FREE_FIXTURES + PROVIDER_FREE_FIXTURES:
+        assert of.looks_like_rate_limit(sample) or of.is_free_usage_limit_text(sample), sample
 
 
 def test_fuel_exhausted_opencode_free_reason_helper():
     assert bw.opencode_fuel_exhausted_reason(
-        "Free usage limit reached. Subscribe to OpenCode Go"
+        'timestamp=2026-11-18T12:00:00Z level=ERROR Free usage limit reached'
     ) == "fuel-exhausted:opencode-free"
     assert bw.opencode_fuel_exhausted_reason("HTTP 429 Too Many Requests") == "out-of-fuel"
     assert bw.opencode_fuel_exhausted_reason("") == "out-of-fuel"
+    assert (
+        bw.opencode_fuel_exhausted_reason(
+            'level=ERROR Free usage limit reached',
+            start_model="opencode-go/deepseek-v4-pro",
+        )
+        == "out-of-fuel"
+    )
 
 
 def test_launch_script_scans_live_output_and_giveups_free_usage(tmp_path: Path):

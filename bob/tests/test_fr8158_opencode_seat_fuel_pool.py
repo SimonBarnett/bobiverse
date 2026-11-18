@@ -55,9 +55,11 @@ def test_fr8158_opencode_go_zero_is_exhausted():
 def test_fr8158_free_refusal_zeros_pool(tmp_path: Path):
     """AC4: recorded free refusal → opencode_free=0 exhausted=True."""
     now = time.time()
+    # FR #8207: free-usage pause needs app-log ERROR / AI_* provider cue.
     of.record_opencode_pause(
         tmp_path,
         FREE_MODEL,
+        'timestamp=2026-11-18T12:00:00Z level=ERROR message="stream error" '
         "Free usage limit reached. Subscribe to OpenCode Go",
         now=now,
         default_pause_s=3600,
