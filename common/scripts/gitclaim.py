@@ -5050,6 +5050,36 @@ def offer_timeout_s(row: dict | None) -> float:
     return base
 
 
+def seat_blocked_for_self_review_stall(row: dict, nick: str) -> bool:
+    """FR #8264: the idle author of a deadlocked MRB must not be offered that stall FR.
+
+    The finding evidence lists those seats under ``idle``. Offering them the
+    stall issue keeps the only free seat busy and the MRB still unreviewed.
+    """
+    if not isinstance(row, dict):
+        return False
+    task = _canon_task(row)
+    if task == "MRB":
+        return False
+    blob = " ".join(
+        str(row.get(k) or "") for k in ("title", "body", "line")
+    )
+    if "self-review-deadlock" not in blob:
+        return False
+    me = (canonical_worker_nick(nick) or nick or "").strip().lower()
+    if not me:
+        return False
+    m = re.search(r'"idle"\s*:\s*\[(.*?)\]', blob, re.S)
+    if not m:
+        return False
+    named = re.findall(r'"([^"]+)"', m.group(1))
+    for raw in named:
+        other = (canonical_worker_nick(raw) or raw or "").strip().lower()
+        if other and other == me:
+            return True
+    return False
+
+
 def seat_offer_refused(row: dict, nick: str) -> bool:
     """True when this seat already used its unanswered-offer budget (FR #7966)."""
     me = (canonical_worker_nick(nick) or nick or "").strip().lower()
@@ -5079,6 +5109,8 @@ def live_seat_can_take_unanswered(
         if not nick:
             continue
         if seat_offer_refused(row, nick) or row_gave_up_by(row, nick):
+            continue
+        if seat_blocked_for_self_review_stall(row, nick):
             continue
         if seat_on_deterministic_nack_cooldown(row, nick, time.time()):
             continue
@@ -10345,6 +10377,9 @@ def offer_focus_top(
                     return None
                 # FR #7966: three unanswered offers to this seat stop the re-offer loop.
                 if seat_offer_refused(cand, me):
+                    return None
+                # FR #8264: do not hand a self-review stall FR to the idle author.
+                if seat_blocked_for_self_review_stall(cand, me):
                     return None
                 # FR #8017: pre-ACK deterministic NACK cools this seat for the row.
                 if seat_on_deterministic_nack_cooldown(cand, me, now_f):
