@@ -5310,6 +5310,50 @@ def clear_mrb_done(home: Path, repo: str, ident: str) -> None:
         pass
 
 
+def _mrb_review_finished(
+    doc: dict | None, home: Path | None, repo: str, ident: str
+) -> bool:
+    """FR #8278: True when a real MRB verdict or merge-on-green PASS is on record.
+
+    DONE PASS/FAIL/MERGED/CLOSED in ``done[]``, or a merge-on-green PASS SHA, means
+    the review finished. That must block re-offer even while the pull is still
+    open (ci-wait / ``allow_auto_merge=false`` customer repos). Premature DONE
+    that only stamped ``mrb_done`` without a verdict still yields to GitHub open
+    (FR #1585).
+    """
+    want = _norm_row_id(ident)
+    if not want or not str(repo or "").strip():
+        return False
+    repo_raw = str(repo or "").strip()
+    repo_c = canonical_queue_repo(repo_raw) or repo_raw
+    if isinstance(doc, dict):
+        for r in doc.get("done") or []:
+            if not isinstance(r, dict):
+                continue
+            if str(r.get("task") or "").upper() != "MRB":
+                continue
+            r_repo = str(r.get("repo") or "").strip()
+            if not r_repo:
+                continue
+            if (canonical_queue_repo(r_repo) or r_repo) != repo_c and r_repo != repo_raw:
+                continue
+            if _norm_row_id(r.get("id")) != want:
+                continue
+            result = str(r.get("result") or "").strip().upper()
+            if result in ("PASS", "FAIL", "MERGED", "CLOSED"):
+                return True
+    if home is not None:
+        try:
+            num = int(str(ident).lstrip("#"))
+        except (TypeError, ValueError):
+            num = 0
+        if num:
+            with contextlib.suppress(Exception):
+                if str(_merge_on_green_pass_sha(home, repo_raw, num) or "").strip():
+                    return True
+    return False
+
+
 def mrb_already_done(
     doc: dict, row: dict, *, home: Path | None = None, pr_exists=None
 ) -> bool:
@@ -5320,6 +5364,11 @@ def mrb_already_done(
 
     FR #1585: when ``pr_exists`` confirms the pull is still **open**, a premature
     DONE / ledger stamp must not block or purge — GitHub open wins over the stamp.
+
+    FR #8278: a recorded PASS/FAIL/MERGED (or merge-on-green PASS) blocks re-offer
+    even while the pull is still open, so customer ``allow_auto_merge=false``
+    merge-on-green waits cannot clear the hold and bounce the same head back onto
+    ``!bored``.
     """
     if _canon_task(row) != "MRB":
         return False
@@ -5328,6 +5377,9 @@ def mrb_already_done(
     if not repo or not ident:
         return False
     want = ident if ident.startswith("#") else f"#{ident.lstrip('#')}"
+    # Finished review wins over GitHub-open (ci-wait). Check before pr_exists.
+    if _mrb_review_finished(doc, home, repo, want):
+        return True
     if pr_exists is not None:
         try:
             if bool(pr_exists(repo, want.lstrip("#"))):
@@ -6264,9 +6316,13 @@ def _purge_dead_mrb_unaccepted(
                 continue
             if home is not None and row_pr is not None:
                 if repo and ident and mrb_ledger_done_hold(home, repo, ident):
-                    with contextlib.suppress(Exception):
-                        if bool(row_pr(repo, ident.lstrip("#"))):
-                            clear_mrb_done(home, repo, ident)
+                    # FR #8278: keep the stamp when DONE PASS / merge-on-green PASS
+                    # is on record (ci-wait). Premature DONE without a verdict still
+                    # clears under FR #1585 when GitHub says open.
+                    if not _mrb_review_finished(doc, home, repo, ident):
+                        with contextlib.suppress(Exception):
+                            if bool(row_pr(repo, ident.lstrip("#"))):
+                                clear_mrb_done(home, repo, ident)
         kept.append(row)
     doc["unaccepted"] = kept
     return before - len(kept)
@@ -15726,10 +15782,13 @@ def resync_from_github(
                     continue  # FR #254 / #4589: MRB / open Closes (incl. ci-wait) supersedes FR
                 # FR #1585: open PR still on GitHub — clear premature mrb_done so offer
                 # purge cannot wipe the row resync just (re)queued.
+                # FR #8278: keep the stamp when DONE PASS / merge-on-green PASS exists
+                # (customer allow_auto_merge=false ci-wait must not bounce the same head).
                 if claim.task == "MRB":
                     mk = _lkey(claim.repo, claim.id)
                     if mk in (ledger_now.get("mrb_done") or {}):
-                        cleared_mrb_done.append(mk)
+                        if not _mrb_review_finished(doc, home, claim.repo, claim.id):
+                            cleared_mrb_done.append(mk)
                 mrb_url = (
                     f"https://github.com/{claim.repo}/pull/{claim.id.lstrip('#')}" if claim.task == "MRB" else ""
                 )
