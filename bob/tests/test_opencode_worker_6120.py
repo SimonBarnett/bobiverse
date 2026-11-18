@@ -709,13 +709,17 @@ def test_build_launch_opencode_wrapper_defaults_configured_model(tmp_path: Path)
 
 
 def test_build_launch_opencode_wrapper_requires_model_when_config_empty(tmp_path: Path, monkeypatch):
-    """When configured_start_model returns empty, wrapper still fail-closes with required throw."""
+    """FR #8220: empty tray pin falls back to free default; never throws (was fail-closed throw)."""
     import worker_start_model as wsm
 
+    monkeypatch.delenv("BOB_OPENCODE_MODEL", raising=False)
+    monkeypatch.delenv("BOB_WORKER_MODEL", raising=False)
     monkeypatch.setattr(wsm, "configured_start_model", lambda kind, cfg=None: "")
-    monkeypatch.setattr(wsm, "load_worker_start_config", lambda: {})
+    monkeypatch.setattr(wsm, "load_worker_start_config", lambda env=None: {})
+    monkeypatch.setattr(wsm, "env_model_pin", lambda kind, env=None: "")
     spec = bw.build_launch("opencode", "agent", r"C:\ai\bob\worker", "Do work.", OP, tmp_path)
     script = next(v for k, v in spec.files.items() if k.endswith("launch-opencode.ps1"))
-    assert "BOB_OPENCODE_MODEL is required" in script
+    assert "BOB_OPENCODE_MODEL is required" not in script
+    assert "opencode/deepseek-v4.1-flash-free" in script
     assert "else { 'opencode-go/glm-5.3' }" not in script
 
