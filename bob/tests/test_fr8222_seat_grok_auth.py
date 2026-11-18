@@ -99,3 +99,21 @@ def test_expired_machine_is_not_provisioned(tmp_path):
     assert summary["expired"] is True
     assert summary["usable"] is False
     assert "FAKE_" not in json.dumps(summary)
+
+
+def test_mrb8224_bob_grok_auth_path_override_is_provisioned(tmp_path, monkeypatch):
+    """Hostile MRB #8224: BOB_GROK_AUTH_PATH must be the provisioned source, not only ~/.grok."""
+    user = tmp_path / "user-grok"
+    user.mkdir()
+    override = tmp_path / "override"
+    override.mkdir()
+    future = (datetime.now(timezone.utc) + timedelta(hours=2)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    (override / "auth.json").write_text(_blob(future), encoding="utf-8")
+    monkeypatch.setenv("BOB_GROK_AUTH_PATH", str(override / "auth.json"))
+    run = tmp_path / "run"
+    run.mkdir()
+    home = bound.prepare_seat_grok_home(run, user_grok_home=user)
+    seat = home / "auth.json"
+    assert seat.is_file()
+    assert seat.read_text(encoding="utf-8") == (override / "auth.json").read_text(encoding="utf-8")
+    assert bound.machine_grok_auth_path() == override / "auth.json"

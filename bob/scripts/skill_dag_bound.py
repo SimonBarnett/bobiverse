@@ -299,15 +299,19 @@ def prepare_seat_grok_home(
     *,
     trust_paths: list[str | Path] | None = None,
     user_grok_home: str | Path | None = None,
+    env: dict | None = None,
 ) -> Path:
     """Create ``<run_dir>/grok-home`` and provision a valid machine login (FR #8222)."""
     run = Path(run_dir)
     home = run / GROK_HOME_NAME
     home.mkdir(parents=True, exist_ok=True)
-    src = Path(user_grok_home) if user_grok_home else default_user_grok_home()
-    # FR #8222: the Grok CLI reads GROK_HOME/auth.json. Link or copy the machine
-    # file when it is present and not expired. Never log the body.
-    provision_seat_grok_auth(home, src / "auth.json")
+    src = Path(user_grok_home) if user_grok_home else default_user_grok_home(env=env)
+    # FR #8222: the Grok CLI reads GROK_HOME/auth.json. Link or copy the same
+    # machine file ``machine_grok_auth_path`` resolves (incl. BOB_GROK_AUTH_PATH).
+    # Never log the body.
+    provision_seat_grok_auth(
+        home, machine_grok_auth_path(env=env, user_grok_home=user_grok_home)
+    )
     # version.json is not a credential.
     s_ver = src / "version.json"
     if s_ver.is_file():
