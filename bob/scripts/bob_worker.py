@@ -9515,6 +9515,223 @@ def post_digest_seat_kind(
     return bool(_http_post_json(report, payload, **post_kw))
 
 
+# FR #8155: digest last_progress heartbeats (activity vs state-change ``updated``).
+DEFAULT_PROGRESS_HEARTBEAT_S = 120.0
+DEFAULT_PROGRESS_POLL_S = 30.0
+
+
+def progress_heartbeat_interval_s(env: Optional[dict] = None) -> float:
+    e = os.environ if env is None else env
+    raw = str(e.get("BOB_PROGRESS_HEARTBEAT_S") or "").strip()
+    if not raw:
+        return float(DEFAULT_PROGRESS_HEARTBEAT_S)
+    try:
+        v = float(raw)
+    except ValueError:
+        return float(DEFAULT_PROGRESS_HEARTBEAT_S)
+    return max(30.0, min(900.0, v))
+
+
+def _file_size_mtime(path: Path) -> tuple[int, float]:
+    try:
+        st = path.stat()
+        return int(st.st_size), float(st.st_mtime)
+    except OSError:
+        return 0, 0.0
+
+
+def _tail_text(path: Path, *, max_bytes: int = 4096) -> str:
+    try:
+        with path.open("rb") as fh:
+            fh.seek(0, os.SEEK_END)
+            size = fh.tell()
+            fh.seek(max(0, size - max_bytes))
+            raw = fh.read()
+        return raw.decode("utf-8", errors="replace")
+    except OSError:
+        return ""
+
+
+def infer_progress_phase_from_text(text: str) -> str:
+    """Map a log tail to a short safe phase (FR #8155). Never returns args/secrets."""
+    try:
+        from bobreport import sanitize_progress_phase
+    except Exception:
+        sanitize_progress_phase = None  # type: ignore
+    blob = (text or "")[-2000:]
+    low = blob.lower()
+    phase = ""
+    if re.search(r"(?i)\b(pytest|unittest|npm test|cargo test)\b", blob):
+        phase = "tool:pytest" if "pytest" in low else "test"
+    elif re.search(r"(?i)\b(git\s+commit|committed)\b", blob):
+        phase = "commit"
+    elif re.search(r"(?i)\b(git\s+push|pushed to)\b", blob):
+        phase = "push"
+    elif re.search(r"(?i)\b(edit|apply_patch|search_replace|write_file|str_replace)\b", blob):
+        phase = "edit"
+    elif re.search(r"(?i)\b(bash|shell|powershell|cmd\.exe|run_terminal)\b", blob):
+        phase = "tool:bash"
+    elif re.search(r"(?i)\b(tool_call|tool_use|function_call)\b", blob):
+        m = re.search(r"(?i)\b(?:name|tool)[\"'=\s:]+([A-Za-z0-9_.-]{1,32})", blob[-800:])
+        if m:
+            phase = f"tool:{m.group(1)}"
+        else:
+            phase = "tool:call"
+    elif re.search(r"(?i)\b(stream|assistant|message)\b", blob):
+        phase = "stream"
+    elif blob.strip():
+        phase = "stream"
+    if sanitize_progress_phase is not None:
+        return sanitize_progress_phase(phase) or ""
+    return re.sub(r"[^a-z0-9_.:-]+", "", phase.lower())[:48]
+
+
+def detect_seat_progress(
+    *,
+    kind: str,
+    run_dir: Path | str | None,
+    job_worktree: str = "",
+    prev: Optional[dict] = None,
+) -> tuple[bool, str, dict]:
+    """Return ``(moved, phase, state)`` for FR #8155 progress heartbeats.
+
+    ``state`` is opaque fingerprint data for the next poll. Progress means log growth,
+    turn markers, or worktree mtime — not CPU alone.
+    """
+    prev = dict(prev or {})
+    kind_s = (kind or "").strip().lower()
+    rd = Path(run_dir) if run_dir else None
+    candidates: list[Path] = []
+    if rd is not None:
+        candidates.append(rd / "opencode-turns.jsonl")
+        candidates.append(rd / "session.log")
+        # Per-job OpenCode stdout logs under LOCALAPPDATA Bobiverse/worker/logs/opencode
+        logs_root = _state_root() / "logs" / "opencode"
+        if logs_root.is_dir():
+            try:
+                newest = max(logs_root.glob("*.log"), key=lambda p: p.stat().st_mtime, default=None)
+            except OSError:
+                newest = None
+            if newest is not None:
+                candidates.append(newest)
+        # Grok session events under seat grok-home
+        try:
+            ghome = agent_grok_home(run_dir=rd)
+            sess = ghome / "sessions"
+            if sess.is_dir():
+                for ev in sess.rglob("events.jsonl"):
+                    candidates.append(ev)
+                    break
+        except Exception:
+            pass
+        # Cursor chat store (best-effort)
+        try:
+            cursor_chats = Path.home() / ".cursor" / "chats"
+            if cursor_chats.is_dir():
+                for p in cursor_chats.rglob("*.jsonl"):
+                    candidates.append(p)
+                    break
+        except Exception:
+            pass
+    wt = str(job_worktree or "").strip()
+    if wt:
+        candidates.append(Path(wt) / ".git" / "index")
+        candidates.append(Path(wt) / ".git" / "HEAD")
+
+    moved = False
+    phase = ""
+    state: dict = {"sizes": {}, "mtimes": {}}
+    for path in candidates:
+        if not path.is_file():
+            continue
+        key = str(path)
+        size, mtime = _file_size_mtime(path)
+        state["sizes"][key] = size
+        state["mtimes"][key] = mtime
+        prev_size = int((prev.get("sizes") or {}).get(key) or 0)
+        prev_mtime = float((prev.get("mtimes") or {}).get(key) or 0.0)
+        if size > prev_size or (mtime > prev_mtime + 0.5 and size > 0):
+            moved = True
+            if not phase:
+                if "opencode-turns" in key or key.endswith("events.jsonl"):
+                    phase = "stream"
+                elif "index" in key or key.endswith("HEAD"):
+                    phase = "edit"
+                else:
+                    phase = infer_progress_phase_from_text(_tail_text(path))
+    if not phase and moved:
+        phase = "stream" if kind_s in ("opencode", "grok", "cursor") else "edit"
+    try:
+        from bobreport import sanitize_progress_phase
+
+        phase = sanitize_progress_phase(phase)
+    except Exception:
+        phase = re.sub(r"[^a-z0-9_.:-]+", "", (phase or "").lower())[:48]
+    return moved, phase, state
+
+
+def post_digest_progress_heartbeat(
+    *,
+    machine: str,
+    nick: str,
+    pid: int | str | None = None,
+    kind: str = "",
+    work: str = "",
+    last_progress: str = "",
+    progress_phase: str = "",
+    url: str | None = None,
+    env: Optional[dict] = None,
+    log: Optional[Callable[[str], None]] = None,
+) -> bool:
+    """POST worker-work activity heartbeat with ``last_progress`` (FR #8155).
+
+    Does not change seat state semantics: chair keeps ``updated`` on state/work
+    changes only; ``last_progress`` is the activity clock.
+    """
+    env = os.environ if env is None else env
+    report = (url or env.get("BOB_REPORT_URL") or env.get("BOB_DIGEST_URL") or DEFAULT_DIGEST_REPORT_URL).strip()
+    if not report:
+        return False
+    mid = normalize_machine_id(machine) or str(machine or "").strip().lower()
+    nick_s = (nick or "").strip()
+    if not mid or not nick_s:
+        return False
+    try:
+        from bobreport import sanitize_progress_phase, _utc_now_iso
+    except Exception:
+        sanitize_progress_phase = lambda x, **_k: str(x or "")[:48]  # type: ignore
+        _utc_now_iso = lambda: time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())  # type: ignore
+    iso = (last_progress or "").strip() or _utc_now_iso()
+    phase = sanitize_progress_phase(progress_phase)
+    payload: dict = {
+        "op": "worker-work",
+        "machine": mid,
+        "id": mid,
+        "nick": nick_s,
+        "state": "doing",
+        "online": True,
+        "last_progress": iso,
+    }
+    if phase:
+        payload["progress_phase"] = phase
+    if work:
+        payload["work"] = one_line(work, 200)
+    kind_s = (kind or "").strip().lower()
+    if kind_s:
+        payload["kind"] = kind_s
+    if pid is not None and str(pid).strip() != "":
+        try:
+            payload["pid"] = int(str(pid))
+        except (TypeError, ValueError):
+            pass
+    ok = bool(_http_post_json(report, payload, log=log))
+    if not ok and log:
+        try:
+            log(f"progress-heartbeat: post failed nick={nick_s} phase={phase or '-'}")
+        except Exception:
+            pass
+    return ok
+
 
 def busy_holding_nack_line(line: str, holding: str) -> Optional[str]:
     """FR #4115: outbox NACK for an extra held assign; seat keeps ``holding`` without an agent turn."""
@@ -12199,6 +12416,12 @@ class Supervisor:
         self._session_screen = None
         self._session_cursor = None
         self._exit_recorded_pid = None
+        # FR #8155: digest last_progress heartbeats while ACK is open.
+        self._progress_prev: dict = {}
+        self._progress_last_post_wall: float = 0.0
+        self._progress_last_seen_wall: float = 0.0
+        self._progress_phase: str = ""
+        self._progress_heartbeat_s = progress_heartbeat_interval_s()
         self.secret = env_secret
         self.spawn, self.kill, self.probe, self.inject = spawn, kill, probe, inject
         self.detector = detector or HangDetector()
@@ -14313,6 +14536,11 @@ class Supervisor:
             # FR #4827: process I/O while a job is open keeps ack-stale from firing.
             if prev_io is not None and s.activity != prev_io and self.bored:
                 self.bored.note_agent_active()
+            # FR #8155: digest last_progress while a job is ACKed and logs/worktree move.
+            try:
+                self._maybe_progress_heartbeat()
+            except Exception as e:
+                self.log(f"progress-heartbeat: tick failed {type(e).__name__}")
             reason = self.detector.check(s, self.clock())
             if reason:
                 self.restart_agent(reason)
@@ -14322,6 +14550,64 @@ class Supervisor:
                 continue
             # FR #2383: agent still alive/turning but never ACK'd via run-dir outbox.
             self._check_ack_miss(proc)
+
+    def _maybe_progress_heartbeat(self) -> None:
+        """FR #8155: post last_progress when ACK is open and progress sources move."""
+        if not self.bored or not getattr(self.bored, "_ack_open", False):
+            self._progress_prev = {}
+            self._progress_phase = ""
+            return
+        wt = str(os.environ.get("BOB_JOB_WORKTREE") or "").strip()
+        moved, phase, state = detect_seat_progress(
+            kind=self.kind,
+            run_dir=self.run_dir,
+            job_worktree=wt,
+            prev=self._progress_prev,
+        )
+        self._progress_prev = state
+        now_wall = time.time()
+        if moved:
+            self._progress_last_seen_wall = now_wall
+            if phase:
+                self._progress_phase = phase
+            try:
+                self.bored.note_agent_active()
+            except Exception:
+                pass
+        # Heartbeat only while progress was seen recently (stops when stalled).
+        stale_after = max(float(self._progress_heartbeat_s) * 1.5, 180.0)
+        if self._progress_last_seen_wall <= 0:
+            return
+        if (now_wall - self._progress_last_seen_wall) > stale_after:
+            return
+        if (now_wall - float(self._progress_last_post_wall or 0.0)) < float(self._progress_heartbeat_s):
+            return
+        work = ""
+        try:
+            work = str(getattr(self.bored, "_ack_job_key", None) or "").strip()
+        except Exception:
+            work = ""
+        try:
+            from bobreport import _utc_now_iso
+
+            iso = _utc_now_iso()
+        except Exception:
+            iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        ok = post_digest_progress_heartbeat(
+            machine=self.machine,
+            nick=self.nick,
+            pid=getattr(self.proc, "pid", None) if self.proc else None,
+            kind=self.kind,
+            work=work,
+            last_progress=iso,
+            progress_phase=self._progress_phase or phase,
+            log=self.log,
+        )
+        if ok:
+            self._progress_last_post_wall = now_wall
+            self.log(
+                f"progress-heartbeat: last_progress={iso} phase={self._progress_phase or phase or '-'}"
+            )
 
     def _inject_failed_turn_retry(self, job_key: str) -> None:
         """FR #7201: re-inject the last assign once after an error turn (bounded)."""
