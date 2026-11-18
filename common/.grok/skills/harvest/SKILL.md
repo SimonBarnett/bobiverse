@@ -572,6 +572,7 @@ routes to bobiverse via the split rule.
 - fix(mrb-N) feature-base queue: match fix base to fr-<parent_pr> OR the open parent's head.ref (issue branch); live #8260 was fr-8234 for parent #8239 (MRB #8299 / #8302)
 - opencode_job_finish_steps sha_line (MRB PASS/FAIL @ SHA) is MRB/FIX only --- FR/UAT wires have no board PASS/FAIL (FR #8301 / #8286)
 - After moving harvest bullets to lessons.md, intake filter_new_lessons / lesson_sentence_already_in_book must read SKILL.md + lessons.md or archived lessons re-tip (FR #8310 / MRB #8311 / #8313)
+- FIX #8311 tip-region: keep thin harvest SKILL.md pointer; fold new main tip bullets into lessons.md --- never paste the full archive back into SKILL.md
 
 ## Harvest digest (lessons audit 2026-10-06)
 
