@@ -448,6 +448,7 @@ try:
         frame_opencode_message,
         probe_gh_auth,
         project_dir_for_assign,
+        ensure_opencode_job_worktree,
     )
 except ImportError:  # package import (bob.scripts.bob_worker)
     from bob.scripts.opencode_seat_contract import (  # type: ignore  # noqa: E402
@@ -466,6 +467,7 @@ except ImportError:  # package import (bob.scripts.bob_worker)
         frame_opencode_message,
         probe_gh_auth,
         project_dir_for_assign,
+        ensure_opencode_job_worktree,
     )
 
 
@@ -15320,6 +15322,32 @@ class Supervisor:
         wire = line
         kind_l0 = (self.kind or "").strip().lower()
         if kind_l0 in ("grok", "cursor") and assign_job_ref(line):
+            key_pre = assign_job_key(line) or ""
+            if re.match(r"(?i)^(MRB|FIX)\s+\S+#\d+$", key_pre):
+                # FR #8233: refresh the job tree to headRefOid before the seat starts.
+                try:
+                    prepared_mrb = ensure_opencode_job_worktree(
+                        line,
+                        os.environ,
+                        install_root=str(getattr(self, "cwd", "") or ""),
+                        nick=str(getattr(self, "nick", "") or ""),
+                    )
+                except Exception as exc:
+                    raise JobContextRefused(
+                        f"NACK {key_pre} worktree-create-failed:{type(exc).__name__}"
+                    )
+                if prepared_mrb.get("nack"):
+                    raise JobContextRefused(str(prepared_mrb["nack"]))
+                sha_pre = ""
+                try:
+                    stamp = Path(str(prepared_mrb.get("path") or "")) / ".bob" / "reviewed-sha"
+                    if stamp.is_file():
+                        sha_pre = stamp.read_text(encoding="utf-8").strip()
+                except OSError:
+                    sha_pre = ""
+                if sha_pre and f"reviewed-sha={sha_pre}" not in line:
+                    line = line.rstrip() + f" reviewed-sha={sha_pre}"
+                    wire = line
             try:
                 wt = project_dir_for_assign(line, os.environ)
             except Exception:
