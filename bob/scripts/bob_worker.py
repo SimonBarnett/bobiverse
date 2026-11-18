@@ -3335,7 +3335,11 @@ def worker_prompt(worker_dir: str, home: str, machine: str, nick: str) -> str:
         f"The program NACKs a missing or refused job worktree before you see the assign. That is not DONE. "
         f"BOB_HOME may be empty. ACK/DONE go to $env:BOB_OUTBOX only. "
         f"OpenCode (FR #6333): for a job with --dir <worktree>, $env:BOB_OUTBOX is <worktree>\\.bob\\outbox.txt (inside the project directory). The program still ACK-on-receipt via the run-dir outbox; your DONE/GIVEUP must append to $env:BOB_OUTBOX. Never request external_directory and never pass --auto. "
-        f"OpenCode (FR #6366 / #6370 / #6378): end-of-job for each FR/MRB/UAT — git status/diff, finish work, commit on fr-<N>, git push -u origin HEAD, gh pr create --body (or --body-file inside the job worktree) with Closes owner/repo#N, keep scratch in the worktree/run folder never %TEMP%, then immediately append DONE to $env:BOB_OUTBOX (never gh pr checks --watch / never poll CI). The turn is not over until DONE is written. "
+        f"OpenCode (FR #6366 / #6370 / #6378 / #8248): end-of-job follows the job type. "
+        f"FR/UAT: commit on the feature branch, push, gh pr create with Closes owner/repo#N, then DONE with the PR URL. "
+        f"MRB: post PASS or FAIL at the reviewed SHA; on FAIL open one fix pull request; never commit the review as if it were the issue implementation. "
+        f"FIX: push onto the pull request already under review; do not open another pull request. "
+        f"Scratch stays in the worktree. Never poll CI. The turn is not over until DONE is written. "
         f"Never print or store secrets."
     )
 
@@ -8559,7 +8563,8 @@ def opencode_external_dir_corrective_steps(
         f"TEMP/TMP/TMPDIR already point there for this seat. "
         f"Do not request external_directory and never use %TEMP% or the user Temp folder. "
         f"Keep all scratch and tool paths inside {wt}. "
-        f"Finish remaining work, then append DONE for {key} to $env:BOB_OUTBOX ({ob})."
+        f"Finish remaining work. {opencode_typed_delivery(key, outbox=ob)} "
+        "The turn is not over until DONE is written."
     )
 
 
@@ -11783,6 +11788,53 @@ def stale_job_context_nack_line(
     return f"NACK {key} {reason}"
 
 
+def job_task_kind(job_key: str) -> str:
+    """FR #8248: FR, MRB, UAT, or FIX from the job key. Empty when unknown."""
+    m = re.match(r"(?i)^\s*(FR|MRB|UAT|FIX)\b", job_key or "")
+    return m.group(1).upper() if m else ""
+
+
+def opencode_typed_delivery(
+    job_key: str,
+    *,
+    branch: str = "",
+    closes_ref: str = "",
+    outbox: str = "",
+) -> str:
+    """FR #8248: finish/retry/corrective close steps for this task type only."""
+    key = (job_key or "job").strip() or "job"
+    kind = job_task_kind(key)
+    ref = (closes_ref or key).strip()
+    ob = (outbox or "$env:BOB_OUTBOX").strip()
+    if kind == "MRB":
+        return (
+            "This job is an MRB. Post MRB PASS or MRB FAIL on the pull request at the reviewed HEAD sha. "
+            "On FAIL, open one separate fix pull request for the defect. "
+            "Do not commit the review onto a branch named from this issue number. "
+            "Do not open a pull request that implements this MRB. "
+            "Do not push commits onto the pull request under review. "
+            f"Append DONE MRB {ref} PASS or FAIL and the pull request URL to $env:BOB_OUTBOX ({ob})."
+        )
+    if kind == "FIX":
+        return (
+            "This job is a FIX. Commit on the pull request head branch already checked out. "
+            "git push origin HEAD. Do not open a new pull request. "
+            f"Append DONE FIX {ref} and the existing pull request URL to $env:BOB_OUTBOX ({ob})."
+        )
+    br = (branch or "").strip()
+    if not br:
+        num = re.search(r"(?i)#(\d+)\s*$", key)
+        br = f"fr-{num.group(1)}" if num else "the feature branch for this issue"
+    return (
+        f"Commit on branch {br}. git push -u origin HEAD. "
+        f"Open the PR with gh pr create --base main --body \"Closes {ref}\" "
+        "(or --body-file pointing at a markdown file inside this worktree, e.g. .bob/pr-body.md). "
+        "If gh issue view shows the issue CLOSED, do not run gh pr create. "
+        f"Immediately append DONE for {key} with the PR URL to $env:BOB_OUTBOX ({ob}) "
+        "right after gh pr create returns the URL."
+    )
+
+
 def opencode_job_finish_steps(
     *,
     job_key: str,
@@ -11821,15 +11873,12 @@ def opencode_job_finish_steps(
         + "Per job call skill-dag MCP resolve then get_skill; file what you learn with "
         "Report-BobiverseIntakeIssue.ps1 (-Repo from the job id) on the intake webhook in the same turn. "
         "1) git status and git diff. 2) Finish remaining work. "
-        f"3) Commit on branch {branch}. 4) git push -u origin HEAD. "
-        f"5) Open the PR with gh pr create --base main --body \"Closes {closes_ref}\" "
-        f"(or --body-file pointing at a markdown file inside this worktree, e.g. .bob/pr-body.md). "
-        "If gh issue view shows the issue CLOSED, do not run gh pr create. "
-        "Keep scratch files and base comparisons inside this job worktree or the worker run folder --- "
+        + opencode_typed_delivery(
+            key, branch=branch, closes_ref=closes_ref, outbox=ob
+        )
+        + " Keep scratch files and base comparisons inside this job worktree or the worker run folder --- "
         "never under %TEMP%. Use .bob\\tmp (TEMP/TMP already point there; FR #8247). "
         "Do not request external_directory and do not pass --auto. "
-        f"6) Immediately append DONE for {key} with the PR URL to $env:BOB_OUTBOX ({ob}) "
-        "right after gh pr create returns the URL. "
         "Never wait on or poll CI (no gh pr checks --watch, no checks --watch, no waiting for CodeRabbit). "
         "The turn is not over until DONE is written. Do not check the outbox first."
     )
