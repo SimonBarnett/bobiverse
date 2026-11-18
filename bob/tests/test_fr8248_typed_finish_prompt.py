@@ -43,5 +43,14 @@ def test_fr8248_corrective_matches_task_type():
     assert "external_directory" in mrb
     assert re.search(r"fr-\d+", mrb) is None
     assert "MRB PASS" in mrb
+    assert "DONE MRB SimonBarnett/bobiverse#8224" in mrb
+    assert "DONE MRB MRB " not in mrb
     assert "fr-6360" in fr
     assert "gh pr create" in fr
+    assert "Closes SimonBarnett/bobiverse#6360" in fr
+    assert "Closes FR " not in fr
+    fix = bw.opencode_external_dir_corrective_steps(
+        job_key=FIX, worktree=WT, outbox=OB, scratch=WT + r"\.bob\tmp"
+    )
+    assert "DONE FIX SimonBarnett/bobiverse#8224" in fix
+    assert "DONE FIX FIX " not in fix

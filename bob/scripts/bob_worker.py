@@ -11815,7 +11815,10 @@ def opencode_typed_delivery(
     """FR #8248: finish/retry/corrective close steps for this task type only."""
     key = (job_key or "job").strip() or "job"
     kind = job_task_kind(key)
-    ref = (closes_ref or key).strip()
+    # FR #8279: corrective calls omit closes_ref. Do not repeat the task token.
+    ref = (closes_ref or "").strip()
+    if not ref:
+        ref = re.sub(r"(?i)^\s*(?:FR|MRB|UAT|FIX)\s+", "", key).strip() or key
     ob = (outbox or "$env:BOB_OUTBOX").strip()
     if kind == "MRB":
         return (
