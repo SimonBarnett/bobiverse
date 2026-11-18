@@ -35,7 +35,13 @@ def _mrb(num=10, **extra):
     return row
 
 
-def test_done_mrb_stamps_ledger_mrb_done(tmp_path, monkeypatch):
+def test_done_mrb_blocks_reoffer_before_mrb_done_stamp(tmp_path, monkeypatch):
+    """FR #8137 defers ledger ``mrb_done`` to MERGED; FR #1323 still blocks re-offer after DONE.
+
+    DONE PASS must not stamp ``mrb_done`` yet (waiting merge). The row stays in
+    ``done[]`` so offer skips it. When MERGED stamps the ledger, the hold remains
+    even if ``done[]`` later trims (covered by ``test_offer_skips_mrb_after_ledger_hold_...``).
+    """
     monkeypatch.setenv("BOB_DIGEST_HOME", str(tmp_path))
     _digest(tmp_path)
     gitclaim._write_queue(
@@ -53,9 +59,28 @@ def test_done_mrb_stamps_ledger_mrb_done(tmp_path, monkeypatch):
     )
     assert st == "ok"
     assert job.get("result") == "PASS"
-    led = gitclaim.ledger_load(tmp_path)
     key = gitclaim._lkey(REPO, "#10")
-    assert key in (led.get("mrb_done") or {})
+    led = gitclaim.ledger_load(tmp_path)
+    # FR #8137: stamp moves to MERGED — DONE alone must not write mrb_done.
+    assert key not in (led.get("mrb_done") or {})
+    done_rows = list(gitclaim._load_queue_unlocked(tmp_path).get("done") or [])
+    assert any(str(r.get("id")) == "#10" for r in done_rows)
+    # Phantom unaccepted while DONE holds — must not re-offer (FR #1323 intent).
+    gitclaim._write_queue(
+        gitclaim.queue_path(tmp_path),
+        {
+            "v": 1,
+            "unaccepted": [_mrb(10)],
+            "accepted": [],
+            "done": done_rows,
+        },
+    )
+    assert gitclaim.offer_focus_top(tmp_path, "marchhare-41928", "#marchhare")[0] == "empty"
+    assert gitclaim.offer_focus_top(tmp_path, "flamingo-9", "#flamingo")[0] == "empty"
+    # MERGED path stamps the durable ledger (FR #8137).
+    gitclaim.stamp_mrb_done(tmp_path, REPO, "#10")
+    led2 = gitclaim.ledger_load(tmp_path)
+    assert key in (led2.get("mrb_done") or {})
 
 
 def test_offer_skips_mrb_after_ledger_hold_even_if_done_trimmed(tmp_path, monkeypatch):
