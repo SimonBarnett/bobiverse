@@ -11861,18 +11861,31 @@ def opencode_job_finish_steps(
     wt = str(worktree or "").strip()
     ob = str(outbox or "").strip()
     reviewed = ""
+    sha_source = ""
+    pr_state = ""
     try:
         import opencode_seat_contract as _osc
 
-        reviewed = _osc.worktree_reviewed_sha(wt)
+        reviewed, sha_source, pr_state = _osc.finish_reviewed_sha(key, wt)
     except Exception:
-        reviewed = ""
-    sha_line = (
-        f"FR #8022 reviewed SHA from git -C worktree rev-parse HEAD is {reviewed}; "
-        f"quote it on the board as MRB PASS @ {reviewed} or MRB FAIL @ {reviewed}. "
-        if reviewed
-        else "FR #8022: quote git -C worktree rev-parse HEAD on the board as MRB PASS @ <sha> or MRB FAIL @ <sha>. "
-    )
+        reviewed, sha_source, pr_state = "", "", ""
+    if reviewed and str(pr_state or "").upper() == "MERGED":
+        sha_line = (
+            f"FR #8286: PR is already MERGED; tip SHA is {reviewed} (source={sha_source or 'gh'}). "
+            f"Do not quote a lagging worktree HEAD. Verify the tip on main, append DONE for {key} "
+            f"PASS and the pull request URL; skip a new board when one already recorded PASS @ {reviewed}. "
+        )
+    elif reviewed:
+        sha_line = (
+            f"FR #8022/#8286 reviewed SHA is {reviewed} (source={sha_source or 'worktree'}); "
+            f"quote it on the board as MRB PASS @ {reviewed} or MRB FAIL @ {reviewed}. "
+            "Prefer gh pr view headRefOid over worktree HEAD when they differ after a fold. "
+        )
+    else:
+        sha_line = (
+            "FR #8022/#8286: quote gh pr view headRefOid (or git -C worktree rev-parse HEAD) "
+            "on the board as MRB PASS @ <sha> or MRB FAIL @ <sha>. "
+        )
     return (
         f"FINISH {key}. Work so far is already in the worktree ({wt}). "
         "This is a NEW opencode run (no --resume/--continue). "
