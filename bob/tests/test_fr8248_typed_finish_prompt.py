@@ -12,7 +12,12 @@ WT = r"D:\jobs\bobiverse\job"
 OB = r"D:\jobs\bobiverse\job\.bob\outbox.txt"
 
 
-def test_fr8248_finish_and_retry_match_task_type():
+def test_fr8248_finish_and_retry_match_task_type(monkeypatch):
+    # Stay on the open-job template. A live gh lookup would see these PRs as merged.
+    monkeypatch.setattr(
+        "opencode_seat_contract.finish_reviewed_sha",
+        lambda *a, **k: ("", "", ""),
+    )
     fr = bw.opencode_job_finish_steps(job_key=FR, worktree=WT, outbox=OB)
     mrb = bw.opencode_job_finish_steps(job_key=MRB, worktree=WT, outbox=OB)
     fix = bw.opencode_job_finish_steps(job_key=FIX, worktree=WT, outbox=OB)
@@ -33,8 +38,12 @@ def test_fr8248_finish_and_retry_match_task_type():
     assert "MRB PASS" in retry
 
 
-def test_fr8283_mrb_finish_reloads_without_feature_branch():
+def test_fr8283_mrb_finish_reloads_without_feature_branch(monkeypatch):
     """A served MRB FINISH must not say commit on fr-8263 or gh pr create."""
+    monkeypatch.setattr(
+        "opencode_seat_contract.finish_reviewed_sha",
+        lambda *a, **k: ("", "", ""),
+    )
     text = bw.opencode_job_finish_steps(
         job_key="MRB SimonBarnett/bobiverse#8263", worktree=WT, outbox=OB
     )
