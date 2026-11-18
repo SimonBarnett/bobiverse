@@ -149,8 +149,9 @@ $bars = @($j.opencode_bars | ForEach-Object {{ $_.id + '=' + [string]$_.known + 
     assert stale_at < acct_at
     assert head.index("[stale]") < acct_at
     assert "hour" in head or "minute" in head or "day" in head
-    assert data["known"] == [True]
-    assert data["pct"] == [46]
+    # FR #6285 / #7595: heading keeps last %; bar_pct is null while stale => known=false, pct=0.
+    assert data["known"] == [False]
+    assert data["pct"] == [0]
     windows = data["windows"]
     assert "go weekly - 72% left [stale] - 5h 56m" in windows
     assert "go rolling - 80% left - 1h 2m" in windows

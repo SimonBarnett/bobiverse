@@ -71,11 +71,10 @@ def short_build_sha(commit: str | None = None) -> str:
 
 
 def resolve_seat_hello_model(kind: str, env: Optional[dict] = None) -> str:
-    """FR #6418 / FR #7084: the configured model the seat's agent will launch with.
+    """FR #6418 / FR #7084 / FR #8159: model the seat was launched for.
 
-    FR #7084: ``workerStartModels`` (JSON/env) is the per-CLI minimum start model.
-    OpenCode still honours ``BOB_OPENCODE_MODEL`` then OpenCode config. Empty config
-    stays empty (hello ``unknown``); never invent a premium id.
+    Precedence: env pin (Si tray click), then tray ``workerStartModels``, then
+    OpenCode free default / OpenCode config. Never invent a premium id.
     """
     env = os.environ if env is None else env
     k = (kind or "").strip().lower()
@@ -83,14 +82,10 @@ def resolve_seat_hello_model(kind: str, env: Optional[dict] = None) -> str:
         import worker_start_model as wsm
 
         cfg = wsm.load_worker_start_config(env=env)
-        picked = wsm.configured_start_model(k, cfg)
+        picked = wsm.launch_selected_model(k, cfg, env=env)
         if picked:
             return picked
         if k == "opencode":
-            # FR #7187: never advertise a machine Go/paid default as the seat model.
-            m = str(env.get("BOB_OPENCODE_MODEL") or "").strip()
-            if m:
-                return m
             cfg_m = read_opencode_config_model(env) or ""
             if cfg_m and not wsm.opencode_is_go_or_paid(cfg_m):
                 return cfg_m
@@ -1347,10 +1342,135 @@ def grok_has_tokens(f: Fuel) -> bool:
     return True
 
 
-def fuel_reading_known(f: Fuel, kind: str) -> bool:
+def seat_fuel_pool(kind: str, start_model: str = "") -> str:
+    """FR #8158: fuel pool id this seat's mid-job reading is keyed to.
+
+    Returns ``grok``, ``cursor``, ``opencode_go``, ``opencode_free``, or ``opencode``
+    (OpenCode with no start model yet — do not invent a pool from Grok pct).
+    """
+    k = (kind or "").strip().lower()
+    if k == "grok":
+        return "grok"
+    if k == "cursor":
+        return "cursor"
+    if k != "opencode":
+        return k or ""
+    mid = (start_model or "").strip()
+    if not mid:
+        return "opencode"
+    try:
+        import worker_start_model as wsm
+
+        if wsm.opencode_is_go_or_paid(mid):
+            return "opencode_go"
+        cls = wsm.start_model_review_class(mid)
+        if cls == "paid":
+            return "opencode_go"
+        if cls == "free":
+            return "opencode_free"
+    except Exception:
+        pass
+    low = mid.lower()
+    if low.startswith("opencode-go/") or "-pro" in low or "/opencode-go/" in low:
+        return "opencode_go"
+    return "opencode_free"
+
+
+def seat_pool_pct(f: Fuel, pool: str) -> Optional[int]:
+    """Remaining pct for ``pool`` only (FR #8158). Never cross-reads another kind."""
+    p = (pool or "").strip().lower()
+    if p == "grok":
+        return f.grok_pct
+    if p == "cursor":
+        vals = [v for v in (f.cursor_high, f.cursor_low) if v is not None]
+        return max(vals) if vals else None
+    if p == "opencode_go":
+        return f.opencode_go
+    if p == "opencode_free":
+        return f.opencode_free
+    if p == "opencode":
+        # Ambiguous OpenCode seat: no start model — do not fall back to grok_pct.
+        if f.opencode_go is not None:
+            return f.opencode_go
+        return f.opencode_free
+    return None
+
+
+def fold_opencode_seat_pauses(
+    f: Fuel,
+    start_model: str = "",
+    *,
+    env: Optional[dict] = None,
+    now: Optional[float] = None,
+    state_dir: Optional[Path] = None,
+) -> Fuel:
+    """FR #8158 / #8028: recorded provider refusal exhausts that seat's pool reading.
+
+    Free-pool pauses zero ``opencode_free``. A pause on the seat's Go start model
+    zeros ``opencode_go`` for this mid-job snapshot until the pause expires.
+    """
+    pool = seat_fuel_pool("opencode", start_model)
+    try:
+        import opencode_fuel as of
+    except Exception:
+        return f
+    root = state_dir
+    if root is None:
+        try:
+            root = of.opencode_pauses_state_dir(env if env is not None else {})
+        except Exception:
+            return f
+    now_f = float(now if now is not None else time.time())
+    free = f.opencode_free
+    go = f.opencode_go
+    changed = False
+    if pool in ("opencode_free", "opencode"):
+        d = {
+            of.FUEL_ID_FREE: free,
+            of.FUEL_ID_GO: go,
+        }
+        try:
+            out = of.apply_runtime_pauses_to_fuel(d, root, now=now_f)
+        except Exception:
+            out = d
+        new_free = out.get(of.FUEL_ID_FREE)
+        if new_free is not None and new_free != free:
+            free = int(new_free)
+            changed = True
+    if pool == "opencode_go" and (start_model or "").strip():
+        try:
+            if of.is_opencode_model_paused(start_model, root, now=now_f):
+                if go != 0:
+                    go = 0
+                    changed = True
+        except Exception:
+            pass
+    if not changed:
+        return f
+    return Fuel(
+        f.cursor_high,
+        f.cursor_low,
+        f.grok_pct,
+        f.grok_state,
+        f.on_demand_used_cents,
+        f.on_demand_limit_cents,
+        f.on_demand_remaining_pct,
+        f.overspend_state,
+        free,
+        go,
+        dict(f.opencode_models or {}),
+        tuple(f.opencode_free_model_ids or ()),
+    )
+
+
+def fuel_reading_known(f: Fuel, kind: str, start_model: str = "") -> bool:
     """True when the helper returned a parseable reading for this seat kind (FR #3923).
 
     Empty ``Fuel()`` (helper missing / timeout / unreadable) is **unknown**, not exhausted.
+
+    FR #8158: when ``start_model`` selects an OpenCode pool, only that pool counts
+    (``opencode_go`` for ``opencode-go/*``, ``opencode_free`` for free). Without a
+    start model, either OpenCode pool still counts (seat selection / cache).
     """
     k = (kind or "").strip().lower()
     if k == "grok":
@@ -1372,21 +1492,29 @@ def fuel_reading_known(f: Fuel, kind: str) -> bool:
             return True
         return False
     if k == "opencode":
+        pool = seat_fuel_pool(k, start_model)
+        if pool == "opencode_go":
+            return f.opencode_go is not None
+        if pool == "opencode_free":
+            return f.opencode_free is not None
         return f.opencode_free is not None or f.opencode_go is not None
     return False
 
 
-def fuel_explicitly_exhausted(f: Fuel, kind: str) -> bool:
+def fuel_explicitly_exhausted(f: Fuel, kind: str, start_model: str = "") -> bool:
     """True only for an explicit zero/exhausted reading (FR #3923 mid-job gate).
 
     Unknown / unreadable readings must **not** trip mid-job GIVEUP. Seat *selection*
     still uses ``grok_has_tokens`` / ``cursor_has_tokens`` (unknown = not available).
+
+    FR #8158: OpenCode mid-job with a start model keys exhaustion to that pool only
+    (never treat free=100 as fuel for an ``opencode-go/*`` seat).
     """
     k = (kind or "").strip().lower()
     # FR #6119: on-demand at-limit before known gate (limit alone is enough evidence).
     if k == "cursor" and cursor_on_demand_at_limit(f):
         return True
-    if not fuel_reading_known(f, k):
+    if not fuel_reading_known(f, k, start_model=start_model):
         return False
     if k == "grok":
         if f.grok_pct is not None:
@@ -1400,20 +1528,34 @@ def fuel_explicitly_exhausted(f: Fuel, kind: str) -> bool:
             return False
         return not cursor_has_tokens(f)
     if k == "opencode":
+        pool = seat_fuel_pool(k, start_model)
+        if pool == "opencode_go":
+            return int(f.opencode_go or 0) <= 0
+        if pool == "opencode_free":
+            return int(f.opencode_free or 0) <= 0
         return not opencode_has_tokens(f)
     return False
 
 
-def format_fuel_reading(f: Fuel, kind: str = "") -> str:
-    """One-line fuel snapshot for mid-job logs (no secrets)."""
+def format_fuel_reading(f: Fuel, kind: str = "", start_model: str = "") -> str:
+    """One-line fuel snapshot for mid-job logs (no secrets).
+
+    FR #8158: ``pct=`` is the seat's own pool remaining (never Grok pct on an
+    OpenCode seat). ``pool=`` names that pool; ``known=False`` keeps ``pool=``.
+    """
     k = (kind or "").strip().lower()
+    pool = seat_fuel_pool(k, start_model)
+    pct = seat_pool_pct(f, pool)
+    known = fuel_reading_known(f, k, start_model=start_model)
+    exhausted = fuel_explicitly_exhausted(f, k, start_model=start_model)
+    state = f.grok_state if pool == "grok" else ("exhausted" if exhausted else ("available" if known else "unknown"))
     return (
-        f"kind={k or '-'} pct={f.grok_pct!s} state={f.grok_state!s} "
+        f"kind={k or '-'} pool={pool or '-'} pct={pct!s} state={state!s} "
         f"cursor_high={f.cursor_high!s} cursor_low={f.cursor_low!s} "
         f"on_demand_used={f.on_demand_used_cents!s} on_demand_limit={f.on_demand_limit_cents!s} "
         f"on_demand_remain_pct={f.on_demand_remaining_pct!s} overspend={f.overspend_state!s} "
         f"opencode_free={f.opencode_free!s} opencode_go={f.opencode_go!s} "
-        f"known={fuel_reading_known(f, k)} exhausted={fuel_explicitly_exhausted(f, k)}"
+        f"known={known} exhausted={exhausted}"
     )
 
 
@@ -2833,6 +2975,7 @@ def rules_text(folder: str, kind: str) -> str:
             f"Skill-intake consolidation: when a worker takes an FR from skill intake (label:skill / harvest), it must close all open issues for that skill book (every harvest/skill issue targeting the same book), open one consolidated PR for them, and cite every issue it closes (Closes #N for each); no per-issue PRs for the same skill book; the worker closes the issues itself as part of DONE. "
             f"Never file the worker status receipt itself (DONE/NACK/GIVEUP/SKIP/self-MRB/twin/duplicate/merged or an FR/MRB/UAT #N receipt) as an issue/FR; only a separate genuine defect or gap is filed. "
             f"If an FR worker finds the assigned issue is a duplicate/twin or already done, close it with a comment linking the first issue or covering PR before sending DONE. "
+            f"FR #8157: in-job pytest must be targeted (python common/scripts/select_tests.py --changed or run_job_pytest.py --changed / explicit paths); never full jeeves/tests or common/tests in-job (OpenCode 600s timeout; CI covers). "
             + extra)
 
 
@@ -3326,25 +3469,40 @@ def notify_start_model_after_launch(
     shop_say: Optional[Callable[..., bool]] = None,
     log: Optional[Callable[[str], None]] = None,
     filer_post: Optional[Callable[..., dict]] = None,
+    reason: str = "",
+    env: Optional[dict] = None,
 ) -> dict:
-    """FR #7148: after agent start, report when configured model was not used."""
+    """FR #7148 / #8159: report when the launch-selected model was not used.
+
+    ``configured`` is ``launch_selected_model`` (env pin > tray > config). A pause
+    fallback (``mismatch_reason=paused``) is a digest mismatch only --- not the
+    "start model unavailable / no premium fallback" intake line (FR #8159 AC3).
+    """
     cfg = str(configured or "").strip()
     act = str(actual or "").strip()
-    try:
-        import worker_start_model as wsm
+    why = str(reason or "").strip().lower()
+    if not why:
+        try:
+            import worker_start_model as wsm
 
-        mismatch = wsm.model_mismatch(act, cfg)
-    except Exception:
-        mismatch = bool(cfg) and (not act or act.lower() != cfg.lower())
-    if not cfg or not mismatch:
+            why = wsm.model_mismatch_reason(act, cfg, env=env)
+        except Exception:
+            why = (
+                "mismatch"
+                if (cfg and act and act.lower() != cfg.lower())
+                else ("unavailable" if cfg and not act else "")
+            )
+    if not cfg or not why:
         return {"ok": True, "skipped": True, "reason": "match-or-empty"}
+    if why == "paused":
+        return {"ok": True, "skipped": True, "reason": "paused-fallback"}
     return report_configured_start_model_unavailable(
         kind=kind,
         configured=cfg,
         actual=act,
         machine=machine,
         nick=nick,
-        reason="mismatch" if act else "unavailable",
+        reason=why,
         shop=shop,
         shop_say=shop_say,
         log=log,
@@ -7189,12 +7347,15 @@ def out_of_fuel_reading_clears_soft_hold(
     kind: str,
     has_session_key: bool = False,
     allow_cursor_kind_switch: bool = False,
+    start_model: str = "",
 ) -> tuple:
     """FR #4899: soft hold clears only on the seat's own pool (or a real kind-switch).
 
     Returns ``(clears: bool, reason: str)``. A grok seat with ``grok_pct=0`` must not
     clear because the machine still has Cursor tokens. Cursor may clear a grok soft
     hold only when ``allow_cursor_kind_switch`` is True (seat will run Cursor, FR #3997).
+
+    FR #8158: OpenCode soft clear keys to the start-model pool when provided.
     """
     k = (kind or "").strip().lower() or "grok"
     if k == "grok":
@@ -7217,6 +7378,15 @@ def out_of_fuel_reading_clears_soft_hold(
             )
         return False, ""
     if k == "opencode":
+        pool = seat_fuel_pool(k, start_model)
+        if pool == "opencode_go":
+            if fuel.opencode_go is not None and int(fuel.opencode_go) > 0:
+                return True, f"reading kind=opencode pool=opencode_go pct={fuel.opencode_go}"
+            return False, ""
+        if pool == "opencode_free":
+            if fuel.opencode_free is not None and int(fuel.opencode_free) > 0:
+                return True, f"reading kind=opencode pool=opencode_free pct={fuel.opencode_free}"
+            return False, ""
         if opencode_has_tokens(fuel):
             return (
                 True,
@@ -9752,6 +9922,7 @@ def post_digest_seat_kind(
     model: str = "",
     configured_model: str = "",
     model_mismatch: bool | None = None,
+    mismatch_reason: str = "",
     cost_tier: str = "",
     start_effort: str = "",
     working_on: str = "",
@@ -9821,6 +9992,9 @@ def post_digest_seat_kind(
         payload["model_mismatch"] = bool(model_mismatch)
     elif cfg_m and (model or "").strip():
         payload["model_mismatch"] = str(model).strip().lower() != cfg_m.lower()
+    why = str(mismatch_reason or "").strip()
+    if why and payload.get("model_mismatch"):
+        payload["mismatch_reason"] = why
     if (cost_tier or "").strip():
         payload["cost_tier"] = str(cost_tier).strip()
     eff = str(start_effort or "").strip().lower()
@@ -11016,6 +11190,154 @@ def opencode_finish_auto_pr(
     return url
 
 
+# FR #8156: once-per-process warn when a fleet .ps1 lacks a switch the exe wants.
+_FLEET_PS1_MISMATCH_WARNED: set[str] = set()
+_CLEAR_PS1_NAME = "Clear-BobiverseJobWorktrees.ps1"
+_PS1_PARAM_RX = re.compile(r"(?is)\bparam\s*\((.*?)\)\s*(?:\r?\n|$)")
+_PS1_PARAM_NAME_RX = re.compile(r"(?im)^\s*(?:\[[^\]]+\]\s*)+\$([A-Za-z_][A-Za-z0-9_]*)")
+
+
+def ps1_declared_params(script: str | Path) -> frozenset[str]:
+    """Parameter names declared in a PowerShell script's ``param(...)`` block (FR #8156)."""
+    try:
+        text = Path(script).read_text(encoding="utf-8-sig")
+    except OSError:
+        return frozenset()
+    m = _PS1_PARAM_RX.search(text)
+    if not m:
+        return frozenset()
+    body = m.group(1) or ""
+    names = {n for n in _PS1_PARAM_NAME_RX.findall(body) if n}
+    # Also catch ``[switch]$Foo`` / bare ``$Foo =`` tokens inside the block.
+    for n in re.findall(r"\$([A-Za-z_][A-Za-z0-9_]*)", body):
+        names.add(n)
+    return frozenset(names)
+
+
+def resolve_fleet_ps1(
+    name: str,
+    *,
+    install_root: str | Path | None = None,
+    source_file: str | Path | None = None,
+) -> Optional[Path]:
+    """Locate a fleet ``.ps1`` the worker invokes (FR #8156).
+
+    Prefer the copy shipped beside the frozen exe (or extracted worker-scripts),
+    then ``common\\scripts`` (tracked), and only then the often-stale flat
+    ``install\\scripts`` compose. Never prefer a PyInstaller ``_MEI`` extract.
+    """
+    try:
+        import worker_shipped_scripts as _shipped_scripts
+
+        _shipped_scripts.extract_bundled_scripts()
+    except Exception:
+        pass
+    source = Path(source_file).resolve() if source_file else Path(__file__).resolve()
+    here = source.parent
+    install = str(
+        install_root
+        or os.environ.get("BOB_INSTALL_ROOT")
+        or os.environ.get("BOBIVERSE_INSTALL_ROOT")
+        or ""
+    ).strip()
+    candidates: list[Path] = []
+    # 1) Frozen / hotpatch ship dir next to bob-worker.exe
+    if getattr(sys, "frozen", False):
+        exe_dir = Path(sys.executable).resolve().parent
+        candidates.append(exe_dir / "scripts" / name)
+        candidates.append(exe_dir.parent / "scripts" / name)
+        candidates.append(exe_dir.parent / "worker" / "scripts" / name)
+    # 2) Env override
+    scripts_env = (os.environ.get("BOB_SCRIPTS_DIR") or "").strip()
+    if scripts_env:
+        candidates.append(Path(scripts_env) / name)
+    # 3) Repo / source tree common (fresher than flat compose)
+    if not _path_is_mei_extract(here):
+        candidates.append(here.parent.parent / "common" / "scripts" / name)
+        candidates.append(here / name)
+    if install:
+        root = Path(install)
+        candidates.append(root / "common" / "scripts" / name)
+        candidates.append(root / "worker" / "scripts" / name)
+        # Flat compose last — often lags hotpatched exe (class of #8156).
+        candidates.append(root / "scripts" / name)
+    for cand in candidates:
+        if _path_is_mei_extract(cand):
+            continue
+        if cand.is_file():
+            return cand.resolve()
+    return None
+
+
+def filter_ps1_optional_switches(
+    script: str | Path,
+    argv: list[str],
+    *,
+    optional: frozenset[str] | set[str] | None = None,
+) -> tuple[list[str], list[str]]:
+    """Drop ``-Switch`` args the script does not declare (FR #8156).
+
+    Returns ``(filtered_argv, omitted_switch_names)``. Required positional-style
+    pairs (``-RepoRoot``, ``-KeepPath``, …) are kept even when undeclared so a
+    truly broken script still fails loudly; only ``optional`` names are stripped.
+    """
+    opt = frozenset(optional or ())
+    if not opt:
+        return list(argv), []
+    declared = {n.lower() for n in ps1_declared_params(script)}
+    out: list[str] = []
+    omitted: list[str] = []
+    i = 0
+    while i < len(argv):
+        tok = str(argv[i])
+        if tok.startswith("-") and not tok.startswith("--"):
+            name = tok.lstrip("-").split(":", 1)[0]
+            # Switch with no following value when next is another flag or end.
+            is_switch_only = (i + 1 >= len(argv)) or str(argv[i + 1]).startswith("-")
+            if name.lower() in {o.lower() for o in opt} and name.lower() not in declared:
+                omitted.append(name)
+                i += 1
+                # Drop a following value only when it is not another flag (rare for switches).
+                if not is_switch_only and i < len(argv) and not str(argv[i]).startswith("-"):
+                    # Optional switches are [switch] — never consume a value.
+                    pass
+                continue
+        out.append(tok)
+        i += 1
+    return out, omitted
+
+
+def _warn_fleet_ps1_mismatch_once(
+    script: Path,
+    omitted: list[str],
+    *,
+    log_fn: Optional[Callable[[str], None]] = None,
+) -> None:
+    """Log + runtime_failure once per script path for omitted switches (FR #8156)."""
+    if not omitted:
+        return
+    key = str(script).lower()
+    if key in _FLEET_PS1_MISMATCH_WARNED:
+        return
+    _FLEET_PS1_MISMATCH_WARNED.add(key)
+    msg = (
+        f"fleet-ps1 mismatch: {script.name} lacks -{',-'.join(omitted)}; "
+        f"calling without those switches (path={script})"
+    )
+    if log_fn:
+        log_fn(f"opencode finish: Clear result=skipped:param-mismatch {msg}")
+    try:
+        import runtime_failure
+
+        runtime_failure.report_message(
+            "bob-worker",
+            msg,
+            site="fleet-ps1-param-mismatch",
+        )
+    except Exception:
+        pass
+
+
 def opencode_cleanup_extra_worktrees(
     job_worktree: str | Path,
     *,
@@ -11023,10 +11345,12 @@ def opencode_cleanup_extra_worktrees(
     run=None,
     log_fn: Optional[Callable[[str], None]] = None,
 ) -> list[str]:
-    """FR #6370 / FR #8023: delegate extra worktree reclaim to Clear script.
+    """FR #6370 / FR #8023 / FR #8156: delegate extra worktree reclaim to Clear.
 
-    Invokes Clear-BobiverseJobWorktrees.ps1 with -KeepPath <job> -SkipSeatDisk.
-    If PowerShell or the Clear script is missing, log and remove nothing.
+    Resolves Clear via ``resolve_fleet_ps1`` (shipped / common before flat
+    install scripts). Passes ``-SkipSeatDisk`` only when the script declares it;
+    otherwise falls back so an older install-root copy still cleans. Logs
+    ``result=ok|skipped:<reason>|failed:<class>``.
     """
     import shutil as _shutil
     import subprocess as _sp
@@ -11036,30 +11360,26 @@ def opencode_cleanup_extra_worktrees(
     root = Path(job_worktree or "")
     removed: list[str] = []
     if not root.is_dir():
+        if log_fn:
+            log_fn("opencode finish: Clear result=skipped:no-job-dir")
         return removed
     try:
         job_res = root.resolve()
     except OSError:
+        if log_fn:
+            log_fn("opencode finish: Clear result=skipped:job-resolve")
         return removed
 
     ps = _shutil.which("powershell") or _shutil.which("powershell.exe")
     if not ps:
         if log_fn:
-            log_fn("opencode finish: Clear skipped (powershell missing); remove nothing")
+            log_fn("opencode finish: Clear result=skipped:powershell-missing")
         return removed
 
-    # Resolve Clear script next to install / common / job clone.
-    candidates: list[Path] = []
-    install = (os.environ.get("BOB_INSTALL_ROOT") or os.environ.get("BOBIVERSE_INSTALL_ROOT") or "").strip()
-    if install:
-        candidates.append(Path(install) / "scripts" / "Clear-BobiverseJobWorktrees.ps1")
-        candidates.append(Path(install) / "common" / "scripts" / "Clear-BobiverseJobWorktrees.ps1")
-    candidates.append(Path(__file__).resolve().parent.parent.parent / "common" / "scripts" / "Clear-BobiverseJobWorktrees.ps1")
-    candidates.append(Path(__file__).resolve().parent / "Clear-BobiverseJobWorktrees.ps1")
-    script = next((p for p in candidates if p.is_file()), None)
+    script = resolve_fleet_ps1(_CLEAR_PS1_NAME)
     if script is None:
         if log_fn:
-            log_fn("opencode finish: Clear script missing; remove nothing")
+            log_fn("opencode finish: Clear result=skipped:script-missing")
         return removed
 
     repo_root = ""
@@ -11076,12 +11396,10 @@ def opencode_cleanup_extra_worktrees(
                 cpath = Path(common_dir)
                 if not cpath.is_absolute():
                     cpath = (job_res / cpath).resolve()
-                # .../.git or .../.git/worktrees/x -> repo checkout with .git
                 text = str(cpath)
                 if text.lower().endswith(os.sep + ".git") or text.lower().endswith("/.git"):
                     repo_root = str(cpath.parent)
                 else:
-                    # worktree gitdir: climb to .git then parent
                     marker = text.lower().rfind(f"{os.sep}.git{os.sep}")
                     if marker < 0:
                         marker = text.lower().rfind("/.git/")
@@ -11092,7 +11410,6 @@ def opencode_cleanup_extra_worktrees(
     except Exception:
         repo_root = ""
     if not repo_root or not (Path(repo_root) / ".git").exists():
-        # Fall back: treat job tree's toplevel as repo root for Clear.
         try:
             top = run(
                 ["git", "-C", str(job_res), "rev-parse", "--show-toplevel"],
@@ -11106,40 +11423,80 @@ def opencode_cleanup_extra_worktrees(
             pass
     if not repo_root:
         if log_fn:
-            log_fn("opencode finish: Clear skipped (no repo root); remove nothing")
+            log_fn("opencode finish: Clear result=skipped:no-repo-root")
         return removed
+
+    argv = [
+        ps,
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        str(script),
+        "-RepoRoot",
+        repo_root,
+        "-KeepPath",
+        str(job_res),
+        "-SkipSeatDisk",
+        "-MaxExtraJobTrees",
+        "0",
+    ]
+    argv, omitted = filter_ps1_optional_switches(
+        script, argv, optional=frozenset({"SkipSeatDisk"})
+    )
+    if omitted:
+        _warn_fleet_ps1_mismatch_once(script, omitted, log_fn=log_fn)
 
     try:
         proc = run(
-            [
-                ps,
-                "-NoProfile",
-                "-ExecutionPolicy",
-                "Bypass",
-                "-File",
-                str(script),
-                "-RepoRoot",
-                repo_root,
-                "-KeepPath",
-                str(job_res),
-                "-SkipSeatDisk",
-                "-MaxExtraJobTrees",
-                "0",
-            ],
+            argv,
             capture_output=True,
             text=True,
             timeout=300,
         )
         out = ((getattr(proc, "stdout", "") or "") + (getattr(proc, "stderr", "") or ""))
-        if log_fn:
-            log_fn(f"opencode finish: Clear exit={getattr(proc, 'returncode', '?')} {out[-400:]}")
-        # Best-effort: surface paths mentioned as removed.
+        code = int(getattr(proc, "returncode", 1) or 0)
+        # NamedParameterNotFound / similar: retry once without optional switches.
+        if code != 0 and "NamedParameterNotFound" in out and "-SkipSeatDisk" in argv:
+            argv2 = [a for a in argv if a != "-SkipSeatDisk"]
+            _warn_fleet_ps1_mismatch_once(script, ["SkipSeatDisk"], log_fn=log_fn)
+            proc = run(argv2, capture_output=True, text=True, timeout=300)
+            out = ((getattr(proc, "stdout", "") or "") + (getattr(proc, "stderr", "") or ""))
+            code = int(getattr(proc, "returncode", 1) or 0)
+            argv = argv2
         for line in out.splitlines():
             if line.startswith("Removing worktree "):
                 removed.append(line[len("Removing worktree ") :].strip())
+        if log_fn:
+            if code == 0:
+                log_fn(f"opencode finish: Clear result=ok removed={len(removed)} {out[-200:]}")
+            else:
+                log_fn(
+                    f"opencode finish: Clear result=failed:exit-{code} {out[-400:]}"
+                )
+                try:
+                    import runtime_failure
+
+                    runtime_failure.report_message(
+                        "bob-worker",
+                        f"Clear-BobiverseJobWorktrees exit={code}",
+                        site="fleet-ps1-clear-failed",
+                    )
+                except Exception:
+                    pass
     except Exception as e:  # noqa: BLE001
         if log_fn:
-            log_fn(f"opencode finish: Clear failed {type(e).__name__}; remove nothing")
+            log_fn(f"opencode finish: Clear result=failed:{type(e).__name__}")
+        try:
+            import runtime_failure
+
+            runtime_failure.report_message(
+                "bob-worker",
+                f"Clear-BobiverseJobWorktrees failed {type(e).__name__}",
+                site="fleet-ps1-clear-failed",
+            )
+        except Exception:
+            pass
     return removed
 
 
@@ -13053,11 +13410,28 @@ class Supervisor:
         # FR #4899: soft hold — own pool only. Cursor tokens clear a grok hold only when
         # this seat is actually switching to Cursor (caller sets kind / restarts agent).
         allow_switch = bool(getattr(self, "_out_of_fuel_allow_cursor_kind_switch", False))
+        start_model = ""
+        if kind == "opencode":
+            try:
+                start_model = launched_hostile_start_model(
+                    kind, getattr(self, "last_child_env", None)
+                )
+            except Exception:
+                start_model = ""
+            try:
+                fuel = fold_opencode_seat_pauses(
+                    fuel,
+                    start_model,
+                    env=getattr(self, "base_env", None) or getattr(self, "last_child_env", None),
+                )
+            except Exception:
+                pass
         ok, why = out_of_fuel_reading_clears_soft_hold(
             fuel,
             kind=kind,
             has_session_key=self.secret is not None,
             allow_cursor_kind_switch=allow_switch,
+            start_model=start_model,
         )
         if ok:
             if self.bored is not None:
@@ -13066,18 +13440,38 @@ class Supervisor:
         return False
 
     def _fuel_lost_mid_job(self) -> bool:
-        """FR #3019 / #3923: True only on an **explicit** exhausted reading while ACKed.
+        """FR #3019 / #3923 / #8158: True only on an **explicit** exhausted reading while ACKed.
 
         Unknown / timeout / empty ``Fuel()`` is **not** lost (selection still treats
         unknown as unavailable). Logs pct/state/helper snapshot every poll.
+
+        OpenCode seats key the reading to the launched start model pool
+        (``opencode_go`` / ``opencode_free``), never ``grok_pct`` (FR #8158).
         """
         kind = (self.kind or "").strip().lower()
+        start_model = ""
+        if kind == "opencode":
+            try:
+                start_model = launched_hostile_start_model(
+                    kind, getattr(self, "last_child_env", None)
+                )
+            except Exception:
+                start_model = ""
         try:
             fuel = read_fuel(self._install_root_for_fuel())
         except Exception as e:
             self.log(f"out-of-fuel: mid-job read_fuel failed {type(e).__name__} - treat as unknown")
             return False
-        snap = format_fuel_reading(fuel, kind)
+        if kind == "opencode":
+            try:
+                fuel = fold_opencode_seat_pauses(
+                    fuel,
+                    start_model,
+                    env=getattr(self, "base_env", None) or getattr(self, "last_child_env", None),
+                )
+            except Exception:
+                pass
+        snap = format_fuel_reading(fuel, kind, start_model=start_model)
         if kind == "cursor":
             lost = fuel_explicitly_exhausted(fuel, "cursor")
             self.log(f"out-of-fuel: mid-job reading {snap}")
@@ -13091,7 +13485,7 @@ class Supervisor:
             self.log(f"out-of-fuel: mid-job reading {snap}")
             return lost
         if kind == "opencode":
-            lost = fuel_explicitly_exhausted(fuel, "opencode")
+            lost = fuel_explicitly_exhausted(fuel, "opencode", start_model=start_model)
             self.log(f"out-of-fuel: mid-job reading {snap}")
             return lost
         return False
@@ -16369,13 +16763,15 @@ def run_agent(args, log: Log) -> int:
     cfg_model = ""
     cost_tier = ""
     mismatch = None
+    mismatch_reason = ""
     seat_effort = "low"
     try:
         import worker_start_model as wsm
 
         _cfg = wsm.load_worker_start_config()
-        cfg_model = wsm.configured_start_model(kind, _cfg)
-        mismatch = wsm.model_mismatch(seat_model, cfg_model)
+        cfg_model = wsm.launch_selected_model(kind, _cfg, env=os.environ)
+        mismatch_reason = wsm.model_mismatch_reason(seat_model, cfg_model, env=os.environ)
+        mismatch = bool(mismatch_reason)
         cost_tier = wsm.model_cost_tier(seat_model or cfg_model, _cfg)
         seat_effort = wsm.configured_start_effort(kind, _cfg)
         if not cfg_model:
@@ -16391,6 +16787,7 @@ def run_agent(args, log: Log) -> int:
             model=seat_model,
             configured_model=cfg_model,
             model_mismatch=mismatch,
+            mismatch_reason=mismatch_reason,
             cost_tier=cost_tier,
             start_effort=seat_effort,
             worker_build=build,
@@ -16435,6 +16832,7 @@ def run_agent(args, log: Log) -> int:
             model=seat_model,
             configured_model=cfg_model,
             model_mismatch=mismatch,
+            mismatch_reason=mismatch_reason,
             cost_tier=cost_tier,
             start_effort=seat_effort,
             worker_build=build,
@@ -16456,9 +16854,12 @@ def run_agent(args, log: Log) -> int:
         if not actual:
             actual = wsm.concrete_model_id(wsm.actual_start_model(env=child_env or os.environ))
         actual_effort = str(child_env.get(wsm.ENV_ACTUAL_EFFORT) or "").strip()
-        _cfg = wsm.load_worker_start_config()
-        cfg_model = wsm.configured_start_model(kind, _cfg)
-        mismatch = wsm.model_mismatch(actual, cfg_model)
+        _cfg = wsm.load_worker_start_config(env=child_env or os.environ)
+        cfg_model = wsm.launch_selected_model(kind, _cfg, env=child_env or os.environ)
+        mismatch_reason = wsm.model_mismatch_reason(
+            actual, cfg_model, env=child_env or os.environ
+        )
+        mismatch = bool(mismatch_reason)
         cost_tier = wsm.model_cost_tier(actual or cfg_model, _cfg)
         if not actual_effort:
             actual_effort = wsm.configured_start_effort(kind, _cfg)
@@ -16473,6 +16874,8 @@ def run_agent(args, log: Log) -> int:
                     shop=irc.shop,
                     shop_say=lambda _ch, msg: irc.say(irc.shop, msg),
                     log=log,
+                    reason=mismatch_reason,
+                    env=child_env or os.environ,
                 )
             except Exception as e:
                 log(f"worker: start model unavailable report failed {type(e).__name__}")
@@ -16492,6 +16895,7 @@ def run_agent(args, log: Log) -> int:
             model=actual or seat_model,
             configured_model=cfg_model,
             model_mismatch=mismatch,
+            mismatch_reason=mismatch_reason,
             cost_tier=cost_tier,
             start_effort=actual_effort,
             worker_build=build,
