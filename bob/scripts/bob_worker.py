@@ -9040,6 +9040,12 @@ class Relay:
         self.on_refuse_assign: Optional[Callable[[str], None]] = None
         # FR #4115: write ACK/NACK to the seat outbox (program, no agent turn).
         self.write_outbox: Optional[Callable[[str], bool]] = None
+        # FR #8246: clear a finished-job mark before ACK (per offer, not per job id).
+        self.prepare_offer: Optional[Callable[[str], None]] = None
+        # Return a refuse tag to drop the ACK. A dropped ACK must not inject.
+        self.ack_refuse_reason: Optional[Callable[[str], Optional[str]]] = None
+        # True when a live turn belongs to another job (NACK busy, no inject).
+        self.turn_busy_other_job: Optional[Callable[[str], bool]] = None
 
     def set_target(self, inject: Optional[Callable[[str], bool]]) -> None:
         with self._lock:
@@ -9276,6 +9282,28 @@ class Relay:
                     except Exception:
                         pass
                 return "out_of_fuel"
+        # FR #8246: a live turn for another job is not a hold. NACK busy and do not inject.
+        if assign_job_ref(line):
+            busy_turn = False
+            try:
+                busy_turn = bool(self.turn_busy_other_job and self.turn_busy_other_job(line))
+            except Exception:
+                busy_turn = False
+            if busy_turn:
+                with self._lock:
+                    if line == self._last_line:
+                        return "duplicate"
+                    self._last_line = line
+                key = assign_job_key(line) or "job"
+                nack = f"NACK {key} busy"
+                self.log("relay: refused assign (turn busy) " + line[:120])
+                self._persist_last_from(line)
+                if self.write_outbox:
+                    try:
+                        self.write_outbox(nack)
+                    except Exception:
+                        pass
+                return "busy_turn"
         # FR #2811: hold assigns during post-DONE/NACK/GIVEUP harvest / turn; deliver on turn_ended.
         hold = False
         try:
@@ -9294,8 +9322,10 @@ class Relay:
                 if len(self._pending) > self.max_pending:
                     del self._pending[0]
             # FR #4115: ACK the first held assign on receipt (before inject / turn end).
-            if first_held:
-                self._ack_on_receipt(line)
+            # FR #8246: if that ACK is suppressed, drop the hold and do not inject later.
+            if first_held and not self._ack_offer_or_refuse(line):
+                self._drop_pending_line(line)
+                return "ack_not_sent"
             self.log("relay: held assign until turn end " + line[:120])
             self._persist_last_from(line)
             if self.on_hold_assign:
@@ -9336,11 +9366,48 @@ class Relay:
                 do_inject = True
                 ack_first = bool(assign_job_ref(line))
         # FR #4115: ACK on receipt before inject (or while agent-not-ready held).
-        if ack_first:
-            self._ack_on_receipt(line)
+        # FR #8246: a suppressed ACK is one decision with inject — do not deliver the job.
+        if ack_first and not self._ack_offer_or_refuse(line):
+            if not do_inject:
+                self._drop_pending_line(line)
+            return "ack_not_sent"
         if do_inject:
             return self._do_inject(line)
         return "held"
+
+    def _drop_pending_line(self, line: str) -> None:
+        with self._lock:
+            self._pending = [p for p in self._pending if p != line]
+
+    def _ack_offer_or_refuse(self, line: str) -> bool:
+        """FR #8246: fresh offer clears the finished mark, then ACK.
+
+        Returns False when the ACK would be dropped. Caller must not inject.
+        """
+        if self.prepare_offer:
+            try:
+                self.prepare_offer(line)
+            except Exception:
+                pass
+        ack = ack_on_receipt_line(line)
+        reason = None
+        if ack and self.ack_refuse_reason:
+            try:
+                reason = self.ack_refuse_reason(ack)
+            except Exception:
+                reason = None
+        if reason:
+            key = assign_job_key(line) or "job"
+            nack = f"NACK {key} ack-not-sent"
+            self.log(f"relay: ACK suppressed ({reason}); not injecting")
+            if self.write_outbox:
+                try:
+                    self.write_outbox(nack)
+                except Exception:
+                    pass
+            return False
+        self._ack_on_receipt(line)
+        return True
 
     def _ack_on_receipt(self, line: str) -> None:
         """FR #4115: write ACK to the seat outbox as soon as an assign is received."""
@@ -9488,8 +9555,8 @@ class Relay:
                     self._write_nacks(nack)
                     self._note_context_refused(line)
                     return
-            self._ack_on_receipt(line)
-            self._do_inject(line)
+            if self._ack_offer_or_refuse(line):
+                self._do_inject(line)
             return
         joined = " | ".join(i[5:] if i.startswith("FROM ") else i for i in items)
         self._do_inject("FROM (flood-coalesced %d messages) %s" % (len(items), one_line(joined, 600)))
@@ -12420,6 +12487,20 @@ class BoredEmitter:
             self._finished_job_keys.discard(key)
             self._done_job_keys.discard(key)
 
+    def live_turn_blocks_assign(self, line: str) -> bool:
+        """FR #8246: a live agent turn blocks a different job (or any job once ACK is closed).
+
+        The same still-open job is not blocked here. ACK de-dupe handles that replay.
+        """
+        incoming = assign_job_key(line)
+        with self._cv:
+            if not self._turn_open:
+                return False
+            current = self._ack_job_key if self._ack_open else None
+        if current and incoming and current == incoming:
+            return False
+        return True
+
     def outbox_ack_refuse_reason(self, payload: str) -> Optional[str]:
         """FR #4730 / #6333 / #6472: ACK-only refuse tag, else None (allow).
 
@@ -13812,6 +13893,16 @@ class Supervisor:
             self.bored.fuel_check_fn = self._fuel_available_again
             self.bored.fuel_lost_check_fn = self._fuel_lost_mid_job
         relay.on_inject = self._on_inject
+        # FR #8246: per-offer ACK, and no inject while another job's turn is live.
+        relay.prepare_offer = lambda line: (
+            self.bored.note_fresh_assign(line) if self.bored else None
+        )
+        relay.ack_refuse_reason = lambda payload: (
+            self.bored.outbox_ack_refuse_reason(payload) if self.bored else None
+        )
+        relay.turn_busy_other_job = lambda line: (
+            self.bored.live_turn_blocks_assign(line) if self.bored else False
+        )
         # FR #2811: park assigns during harvest hold; flush on turn_ended / before !bored.
         relay.hold_assigns_while = lambda: bool(self.bored and self.bored.holding_incoming_assigns)
         relay.on_hold_assign = lambda _line: (
