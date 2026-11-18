@@ -546,6 +546,7 @@ routes to bobiverse via the split rule.
 - FR #8193 MRB: mrb_yields_to_older_fr skips superseded FRs; free_idle empty yields older FR before newer MRB; classic MRB-before-FR tests monkeypatch yield; MSI S1 accepts product-*.msi.
 - FR #8172 MRB: Watch digest UTF-8 pin is Invoke-BobDigestHttpGet + got.Text; RawContentStream stays on IRC ConvertFrom-BobUtf8Json only.
 - Digest configured_model = launch_selected_model (env pin then tray then config); model_mismatch only when actual differs, with mismatch_reason; paused fallback skips unavailable intake (FR #8159).
+- FR #8202: frozen bob-worker prefers hash-checked <exe>\scripts (PyInstaller worker-scripts unpack) over stale flat C:\ai\bob\scripts; BOB_WORKER_USE_FLAT_SCRIPTS=1 is the only flat override; log path+short hash and overwrite failures at start.
 
 ## Harvest digest (lessons audit 2026-10-06)
 

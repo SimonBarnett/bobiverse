@@ -260,43 +260,116 @@ def _resolve_installed_worker_script(
     source_file: str | Path | None = None,
     install_root: str | Path | None = None,
 ) -> Optional[Path]:
-    """Locate a worker ``.py`` handed to external python. Never prefer a PyInstaller ``_MEI`` extract."""
-    # FR #7910: a frozen exe writes bundled helpers beside itself before the search.
+    """Locate a worker ``.py`` handed to external python. Never prefer a PyInstaller ``_MEI`` extract.
+
+    FR #8202: when frozen, prefer ``<exe>\\scripts`` (hash-checked unpack) over a
+    stale flat ``install\\scripts`` (often ``C:\\ai\\bob\\scripts``). Flat wins
+    only when ``BOB_WORKER_USE_FLAT_SCRIPTS`` is set.
+    """
+    flat_override = False
+    # FR #7910 / #8202: a frozen exe writes bundled helpers beside itself first.
     try:
         import worker_shipped_scripts as _shipped_scripts
 
         _shipped_scripts.extract_bundled_scripts()
+        flat_override = _shipped_scripts.use_flat_scripts_override()
     except Exception:
-        pass
+        flat_override = False
     source = Path(source_file).resolve() if source_file else Path(__file__).resolve()
     here = source.parent
     candidates: list[Path] = []
-    if install_root is not None:
-        root = Path(install_root)
+    frozen = getattr(sys, "frozen", False)
+
+    def _add_install_flat(root: Path) -> None:
         candidates.append(root / "scripts" / name)
         candidates.append(root / "bob" / "scripts" / name)
         candidates.append(root / "common" / "scripts" / name)
-    if not _path_is_mei_extract(here):
-        candidates.append(here / name)
-    # FR #7963: a frozen bob-worker must use the bundle beside the exe before a
-    # stale install checkout (cwd parent bob/scripts, often C:\ai\bob).
-    if getattr(sys, "frozen", False):
+
+    # FR #8202: explicit flat override puts install scripts first (dev only).
+    if flat_override and install_root is not None:
+        _add_install_flat(Path(install_root))
+    # FR #8202 / #7963: frozen ship dir before install flat (default).
+    if frozen:
         exe_dir = Path(sys.executable).resolve().parent
         candidates.append(exe_dir / "scripts" / name)
         candidates.append(exe_dir.parent / "scripts" / name)
+        candidates.append(exe_dir.parent / "worker" / "scripts" / name)
+    if (not frozen) and install_root is not None and not flat_override:
+        _add_install_flat(Path(install_root))
+    if not _path_is_mei_extract(here):
+        candidates.append(here / name)
     if cwd is not None:
         parent = Path(cwd).resolve().parent
-        candidates.append(parent / "scripts" / name)
-        candidates.append(parent / "bob" / "scripts" / name)
-    if getattr(sys, "frozen", False):
+        # cwd-parent scripts often alias the install flat tree; skip when frozen
+        # unless the flat override is on (FR #8202).
+        if flat_override or not frozen:
+            candidates.append(parent / "scripts" / name)
+            candidates.append(parent / "bob" / "scripts" / name)
+    if frozen:
         exe_dir = Path(sys.executable).resolve().parent
         candidates.append(exe_dir.parent / "bob" / "scripts" / name)
+    if frozen and (not flat_override) and install_root is not None:
+        # Last resort after ship dirs so a missing unpack still finds something.
+        _add_install_flat(Path(install_root))
     for cand in candidates:
         if _path_is_mei_extract(cand):
             continue
         if cand.is_file():
             return cand.resolve()
     return None
+
+
+def prefer_shipped_scripts_on_sys_path(
+    log: Optional[Callable[[str], None]] = None,
+) -> list[str]:
+    """FR #8202: put ``<exe>\\scripts`` first on ``sys.path`` after hash-checked unpack.
+
+    Logs one line per helper (path + short hash) and any overwrite failures.
+    Returns names that failed to unpack/overwrite.
+    """
+    failed_names: list[str] = []
+    if not getattr(sys, "frozen", False):
+        return failed_names
+    result = None
+    try:
+        import worker_shipped_scripts as _shipped_scripts
+
+        result = _shipped_scripts.extract_bundled_scripts_result()
+    except Exception as e:
+        if log:
+            log(f"shipped-scripts: extract failed {type(e).__name__}")
+        return failed_names
+    ship_dir = None
+    try:
+        import worker_shipped_scripts as _shipped_scripts
+
+        ship_dir = _shipped_scripts.ship_scripts_dir()
+    except Exception:
+        ship_dir = None
+    if ship_dir is not None and ship_dir.is_dir():
+        s = str(ship_dir)
+        if s in sys.path:
+            sys.path.remove(s)
+        sys.path.insert(0, s)
+    if log and result is not None:
+        for name, err in result.failed:
+            failed_names.append(name)
+            log(f"shipped-scripts: FAIL overwrite {name} ({err}); stale file may run")
+        for name in sorted(set(result.written) | set(result.unchanged)):
+            path = (ship_dir / name) if ship_dir is not None else None
+            hx = (result.hashes or {}).get(name) or "-"
+            if path is not None and path.is_file():
+                try:
+                    hx = hx if hx != "-" else __import__(
+                        "worker_shipped_scripts"
+                    ).short_content_hash(path.read_bytes())
+                except Exception:
+                    pass
+                tag = "overwritten" if name in result.overwritten else "ok"
+                log(f"shipped-scripts: {name} path={path} hash={hx} ({tag})")
+            else:
+                log(f"shipped-scripts: {name} missing after extract hash={hx}")
+    return failed_names
 
 
 def _report_missing_worker_script(name: str) -> None:
@@ -17579,6 +17652,12 @@ def main(argv: Optional[list] = None) -> int:
             return EXIT_REFUSED
     if not args.echo:
         silence_console(log)  # t787u: the console belongs to the agent TUI; errors go to the log file only
+    # FR #8202: hash-check unpack beside the exe; prefer those scripts on sys.path
+    # (and for by-path resolve) over a stale flat C:\ai\bob\scripts tree.
+    try:
+        prefer_shipped_scripts_on_sys_path(log=log)
+    except Exception as e:
+        log(f"shipped-scripts: prefer-path failed {type(e).__name__}")
     try:
         import crash_report
 
