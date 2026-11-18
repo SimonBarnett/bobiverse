@@ -570,6 +570,7 @@ routes to bobiverse via the split rule.
 - live_seat_can_take_unanswered must pass the queue doc into seat_blocked_for_self_review_stall so empty-body stalls do not look eligible when only the waiting-PR author is live (FR #8295 / #8293)
 - FINISH reviewed SHA: prefer gh pr view headRefOid (or mergeCommit when MERGED) over worktree HEAD / .bob/reviewed-sha after a keep-both fold (FR #8286 / #8022 / #4661)
 - fix(mrb-N) feature-base queue: match fix base to fr-<parent_pr> OR the open parent's head.ref (issue branch); live #8260 was fr-8234 for parent #8239 (MRB #8299 / #8302)
+- opencode_job_finish_steps sha_line (MRB PASS/FAIL @ SHA) is MRB/FIX only --- FR/UAT wires have no board PASS/FAIL (FR #8301 / #8286)
 
 ## Harvest digest (lessons audit 2026-10-06)
 
