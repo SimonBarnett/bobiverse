@@ -557,6 +557,7 @@ routes to bobiverse via the split rule.
 - Fleet fuel fill must resolve digest.json without BOB_DIGEST_HOME (bob_home / BOB_HOME / install home); seats do not set that env
 - When the ear pulls the public digest, copy fleet_pools onto the local digest.json. Dropping that section leaves seats with no Go row even when the public report has a fresh one.
 - If git checkout -B of the PR branch fails because another worktree holds it, detach the job tree at the verified headRefOid and write .bob/reviewed-sha before the seat starts.
+- Clear the finished-job mark before writing the receipt ACK. If that ACK is refused, NACK and do not inject. A live turn for another job NACKs busy.
 
 ## Harvest digest (lessons audit 2026-10-06)
 
