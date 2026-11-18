@@ -4821,6 +4821,10 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             r"        if ($jobKey) { Write-OpencodeJobGiveup $jobKey ('model unavailable (' + $model + ')') }",
             r"    }",
             # FR #7997: locked SQLite retries; a permanent startup failure GIVEUPs the job.
+            # FR #8147: never pass an empty/null exit code to classify (use the real process
+            # exit code, or omit --exit when unknown); a job whose outbox already carries a
+            # terminal DONE/GIVEUP line is never re-classified as a startup failure; a null
+            # classify result is logged as classify_unavailable instead of throwing.
             r"    $script:ocDbRetry = $false",
             r"    if ($exitCode -eq 0) { $script:ocDbLockTries = 0 }",
             r"    if ($exitCode -ne 0 -and -not $hitLimit -and -not $timedOut) {",
@@ -4828,9 +4832,21 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             r"        if (-not $pyDb) { $pyDb = 'python.exe' }",
             r"        $maxLock = 3",
             r"        if ($env:BOB_OPENCODE_DB_LOCK_RETRIES) { try { $maxLock = [int]$env:BOB_OPENCODE_DB_LOCK_RETRIES } catch { $maxLock = 3 } }",
+            r"        $clsDone = $false",
+            r"        if ($env:BOB_OUTBOX -and (Test-Path -LiteralPath $env:BOB_OUTBOX)) {",
+            r"            try { $obText = [IO.File]::ReadAllText($env:BOB_OUTBOX); if ($obText -match '(?m)\b(DONE|GIVEUP|NACK)\s+(FR|MRB|UAT|FIX)\s+\S+#\d+') { $clsDone = $true } } catch { }",
+            r"        }",
+            r"        $clsExit = ''",
+            r"        if ($null -ne $exitCode -and ([string]$exitCode).Trim() -ne '') { try { $clsExit = [string][int]$exitCode } catch { $clsExit = '' } }",
+            r"        $clsArgs = @('--attempt', ([string]$script:ocDbLockTries), '--max', ([string]$maxLock))",
+            r"        if ($clsExit -ne '') { $clsArgs += '--exit'; $clsArgs += $clsExit }",
+            r"        if ($clsDone) { $clsArgs += '--done' }",
             r"        $dbAction = ''",
-            r"        try { $dbAction = ($scan | & $pyDb $isolatePy classify --attempt $script:ocDbLockTries --max $maxLock --exit $exitCode | Select-Object -Last 1) } catch { $dbAction = '' }",
+            r"        try { $dbAction = ($scan | & $pyDb $isolatePy classify @clsArgs | Select-Object -Last 1) } catch { $dbAction = '' }",
             r"        $dbAction = ([string]$dbAction).Trim()",
+            r"        if ([string]::IsNullOrWhiteSpace($dbAction)) {",
+            r"            Write-Output 'opencode-classify: classify_unavailable'",
+            r"        }",
             r"        if ($dbAction -eq 'retry') {",
             r"            $script:ocDbLockTries = [int]$script:ocDbLockTries + 1",
             r"            $script:ocDbRetry = $true",
