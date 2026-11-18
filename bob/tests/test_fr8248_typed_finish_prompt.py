@@ -33,6 +33,17 @@ def test_fr8248_finish_and_retry_match_task_type():
     assert "MRB PASS" in retry
 
 
+def test_fr8283_mrb_finish_reloads_without_feature_branch():
+    """A served MRB FINISH must not say commit on fr-8263 or gh pr create."""
+    text = bw.opencode_job_finish_steps(
+        job_key="MRB SimonBarnett/bobiverse#8263", worktree=WT, outbox=OB
+    )
+    assert re.search(r"fr-\d+", text) is None
+    assert "gh pr create" not in text
+    assert "one separate fix pull request" in text
+    assert "DONE MRB SimonBarnett/bobiverse#8263" in text
+
+
 def test_fr8248_corrective_matches_task_type():
     mrb = bw.opencode_external_dir_corrective_steps(
         job_key=MRB, worktree=WT, outbox=OB, scratch=WT + r"\.bob\tmp"
