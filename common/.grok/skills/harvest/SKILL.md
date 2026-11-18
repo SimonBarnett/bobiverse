@@ -546,6 +546,7 @@ routes to bobiverse via the split rule.
 - FR #8193 MRB: mrb_yields_to_older_fr skips superseded FRs; free_idle empty yields older FR before newer MRB; classic MRB-before-FR tests monkeypatch yield; MSI S1 accepts product-*.msi.
 - FR #8172 MRB: Watch digest UTF-8 pin is Invoke-BobDigestHttpGet + got.Text; RawContentStream stays on IRC ConvertFrom-BobUtf8Json only.
 - Digest configured_model = launch_selected_model (env pin then tray then config); model_mismatch only when actual differs, with mismatch_reason; paused fallback skips unavailable intake (FR #8159).
+- Explicit OpenCode start must judge fuel by seat_fuel_pool(start_model): free=0 must not refuse opencode-go/* when go is unknown/usable; unknown own pool starts (FR #7714).
 
 ## Harvest digest (lessons audit 2026-10-06)
 
