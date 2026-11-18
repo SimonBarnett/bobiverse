@@ -553,6 +553,7 @@ routes to bobiverse via the split rule.
 - When shipped_script_names always includes fleet .ps1 (FR #8156), fr7991 unit fixtures must expect those names plus the .py closure (FR #8206).
 - Seat Grok auth provision must use machine_grok_auth_path (BOB_GROK_AUTH_PATH override), not only user_grok_home/auth.json
 - skill-dag resolve must never silently return empty matched+skipped for FR/MRB JOB_SEEDS: emit unresolved/not_in_index when the skill is missing from --root
+- MRB of a tip that already carries fix(mrb-N): re-verify acceptance + cited pytest on the fixed head SHA, PASS @ that SHA, arm --auto (allow_auto_merge), DONE; do not re-FAIL the prior empty-env over-refuse once tip has the reconcile commit.
 
 ## Harvest digest (lessons audit 2026-10-06)
 
