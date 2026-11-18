@@ -551,6 +551,7 @@ routes to bobiverse via the split rule.
 - Explicit OpenCode start must judge fuel by seat_fuel_pool(start_model): free=0 must not refuse opencode-go/* when go is unknown/usable; unknown own pool starts (FR #7714).
 - bob-ear info() must catch OSError ENOSPC on stdout print so disk-full does not kill ear threads; report once site=info-enospc (FR #8205).
 - When shipped_script_names always includes fleet .ps1 (FR #8156), fr7991 unit fixtures must expect those names plus the .py closure (FR #8206).
+- Seat Grok auth provision must use machine_grok_auth_path (BOB_GROK_AUTH_PATH override), not only user_grok_home/auth.json
 
 ## Harvest digest (lessons audit 2026-10-06)
 
