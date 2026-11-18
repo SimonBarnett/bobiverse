@@ -13248,6 +13248,7 @@ class Supervisor:
         self._expected_exit: set = set()
         self._owned: set = set()
         self._shutting = False
+        self._shutdown_reason = ""
         self._grace_timer: Optional[threading.Timer] = None
         self._min_ready_timer: Optional[threading.Timer] = None
         self._agent_started_at: Optional[float] = None
@@ -15204,6 +15205,36 @@ class Supervisor:
             on_unverified=None if force_verify else _mark_unverified,
         )
 
+    def _reconcile_wait_exit_with_shutdown(
+        self, proc, code, *, kill_line: str = ""
+    ) -> bool:
+        """FR #8165: if shutdown began after we recorded, prefer its reason and skip report.
+
+        Returns True when the wait thread must stop (no cli-failure / no recycle).
+        """
+        if not self._shutting:
+            return False
+        shut_reason = str(getattr(self, "_shutdown_reason", "") or "").strip() or "shutdown"
+        with self._lock:
+            le = self.last_exit or {}
+            if le.get("pid") == getattr(proc, "pid", None):
+                prev = str(le.get("reason") or "")
+                if prev in ("agent-cli-nonzero-exit", "agent-exited") or (
+                    is_console_closed_shutdown_reason(shut_reason)
+                    and prev != shut_reason
+                ):
+                    self.last_exit = {
+                        **le,
+                        "reason": _scrub(shut_reason)[:160],
+                        "exit_code": code if code is not None else le.get("exit_code"),
+                    }
+                    self._persist_last_exit()
+        self.log(
+            f"agent: exit during shutdown ({shut_reason}) code={code}; "
+            f"skip cli-failure report (FR #8165); {kill_line}"
+        )
+        return True
+
     def _wait_exit(self, proc) -> None:
         try:
             code = proc.wait()
@@ -15260,15 +15291,29 @@ class Supervisor:
         )
         exit_u = normalize_agent_exit_code(code)
         exit_label = format_agent_exit_code_label(code)
-        # FR #8148: if shutdown already recorded (console-closed / signal), do not also
-        # file a cli-failure intake for the same pid (TOCTOU after the expected check).
-        recorded = self._record_exit(
-            proc, "agent-exited" if exit_u == 0 else "agent-cli-nonzero-exit", code
-        )
+        # FR #8148 / #8165: classify console-close exit before recording; if shutdown
+        # already recorded (or begins while we record), do not file cli-failure.
+        if exit_u == CONSOLE_CLOSE_EXIT:
+            exit_reason = "console-closed"
+        elif exit_u == 0:
+            exit_reason = "agent-exited"
+        else:
+            exit_reason = "agent-cli-nonzero-exit"
+        recorded = self._record_exit(proc, exit_reason, code)
         if not recorded:
             self.log(
                 f"agent: exit already recorded code={code} (u32={exit_label}); "
                 f"skip cli-failure report (FR #8148); {kill_line}"
+            )
+            return
+        # FR #8165: inverse TOCTOU — we won _record_exit, then Ctrl/shutdown set
+        # _shutting. Reconcile last_exit to the shutdown reason and skip cli-failure.
+        if self._reconcile_wait_exit_with_shutdown(proc, code, kill_line=kill_line):
+            return
+        if exit_reason == "console-closed":
+            self.log(
+                f"agent: console-close exit code={code} (u32={exit_label}); "
+                f"skip cli-failure report (FR #8165); {kill_line}"
             )
             return
         if age is not None and age < max(30.0, float(self.startup_grace_s) + 15.0):
@@ -15880,6 +15925,7 @@ class Supervisor:
             if self._shutting:
                 return
             self._shutting = True
+            self._shutdown_reason = str(reason or "")
             self.exit_code = code
             proc = self.proc
             if proc is not None:
