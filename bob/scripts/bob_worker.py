@@ -14605,10 +14605,20 @@ class Supervisor:
 
     def start_agent(self, note: str = "") -> bool:
         if (self.kind or "").strip().lower() == "opencode":
-            # FR #8221: never write/start an OpenCode launch without a resolved model.
-            # Refuse once and report a seat-start refusal (FR #7715) instead of
-            # letting an empty model burn FR #7593 restarts.
-            if not (os.environ.get("BOB_OPENCODE_MODEL") or "").strip():
+            # FR #8221 / MRB #8232: refuse only when launch_selected_model is empty.
+            # An empty parent BOB_OPENCODE_MODEL is not empty: FR #8220 fills
+            # env, then tray, then the free default inside build_launch.
+            try:
+                import worker_start_model as wsm
+
+                resolved = wsm.concrete_model_id(os.environ.get("BOB_OPENCODE_MODEL")) or (
+                    wsm.launch_selected_model(
+                        "opencode", wsm.load_worker_start_config(), env=os.environ
+                    )
+                )
+            except Exception:
+                resolved = ""
+            if not (resolved or "").strip():
                 self.log("opencode: refusing to start with empty/unresolved model (FR #8221)")
                 try:
                     report_seat_start_refusal(

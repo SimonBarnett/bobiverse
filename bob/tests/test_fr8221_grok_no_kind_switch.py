@@ -128,7 +128,11 @@ def test_fr8221_restart_preserves_grok_kind(monkeypatch, tmp_path):
 
 
 def test_fr8221_start_agent_refuses_empty_opencode_model(monkeypatch):
+    """Refuse only when launch_selected_model itself is empty (MRB #8232)."""
+    import worker_start_model as wsm
+
     monkeypatch.delenv("BOB_OPENCODE_MODEL", raising=False)
+    monkeypatch.setattr(wsm, "launch_selected_model", lambda *a, **k: "")
     sup = bw.Supervisor.__new__(bw.Supervisor)
     sup.kind = "opencode"
     sup.machine = "flamingo"
@@ -138,6 +142,24 @@ def test_fr8221_start_agent_refuses_empty_opencode_model(monkeypatch):
     assert sup.start_agent() is False
     assert reported
     assert reported[0].get("kind") == "opencode"
+
+
+def test_mrb8232_empty_env_still_starts_when_free_default_resolves(monkeypatch):
+    """FR #8220: empty parent env is not a refusal when the free default resolves."""
+    import worker_start_model as wsm
+
+    monkeypatch.delenv("BOB_OPENCODE_MODEL", raising=False)
+    monkeypatch.setattr(
+        wsm, "launch_selected_model", lambda *a, **k: "opencode/deepseek-v4.1-flash-free"
+    )
+    monkeypatch.setattr(bw, "probe_gh_auth", lambda *_a, **_k: (True, "gh auth missing"))
+    sup = bw.Supervisor.__new__(bw.Supervisor)
+    sup.kind = "opencode"
+    sup.log = lambda *_a, **_k: None
+    reported: list[dict] = []
+    monkeypatch.setattr(bw, "report_seat_start_refusal", lambda **kw: reported.append(kw) or {"ok": True})
+    assert sup.start_agent() is False
+    assert reported == []
 
 
 def test_fr8221_start_agent_proceeds_with_resolved_opencode_model(monkeypatch):
