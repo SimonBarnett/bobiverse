@@ -5123,13 +5123,18 @@ def seat_offer_refused(row: dict, nick: str) -> bool:
 
 
 def live_seat_can_take_unanswered(
-    row: dict, live: set[str] | None, home: Path | None = None
+    row: dict,
+    live: set[str] | None,
+    home: Path | None = None,
+    doc: dict | None = None,
 ) -> bool:
     """True when some live seat is not refused and has not given up (FR #7966).
 
     no_eligible_since means nobody live can take the row. A sibling seat that
     is still eligible must not look stalled. FR #8153: also skip seats blocked
     for no-clone on this repo when *home* is provided.
+    FR #8295: pass the queue doc so a self-review stall blocks its author
+    even when the row body has no idle list.
     """
     if not isinstance(row, dict):
         return False
@@ -5140,7 +5145,7 @@ def live_seat_can_take_unanswered(
             continue
         if seat_offer_refused(row, nick) or row_gave_up_by(row, nick):
             continue
-        if seat_blocked_for_self_review_stall(row, nick):
+        if seat_blocked_for_self_review_stall(row, nick, doc):
             continue
         if seat_on_deterministic_nack_cooldown(row, nick, time.time()):
             continue
@@ -10731,7 +10736,7 @@ def offer_focus_top(
                     if not cand.get("offer_refused_by"):
                         continue
                     if cand.get("offered_to") or live_seat_can_take_unanswered(
-                        cand, live, home=home
+                        cand, live, home=home, doc=doc
                     ):
                         if cand.pop("no_eligible_since", None) is not None:
                             purged = True

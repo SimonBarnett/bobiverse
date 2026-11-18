@@ -57,3 +57,10 @@ def test_fr8293_author_blocked_when_stall_body_has_no_idle_list():
     }
     assert gitclaim.seat_blocked_for_self_review_stall(row, "flamingo-4392", doc) is True
     assert gitclaim.seat_blocked_for_self_review_stall(row, "marchhare-1", doc) is False
+    assert gitclaim.live_seat_can_take_unanswered(row, {"flamingo-4392"}, doc=doc) is False
+    assert (
+        gitclaim.live_seat_can_take_unanswered(
+            row, {"flamingo-4392", "marchhare-1"}, doc=doc
+        )
+        is True
+    )
