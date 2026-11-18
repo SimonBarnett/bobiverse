@@ -549,6 +549,8 @@ routes to bobiverse via the split rule.
 - Digest configured_model = launch_selected_model (env pin then tray then config); model_mismatch only when actual differs, with mismatch_reason; paused fallback skips unavailable intake (FR #8159).
 - FR #8202: frozen bob-worker prefers hash-checked <exe>\scripts (PyInstaller worker-scripts unpack) over stale flat C:\ai\bob\scripts; BOB_WORKER_USE_FLAT_SCRIPTS=1 is the only flat override; log path+short hash and overwrite failures at start.
 - Explicit OpenCode start must judge fuel by seat_fuel_pool(start_model): free=0 must not refuse opencode-go/* when go is unknown/usable; unknown own pool starts (FR #7714).
+- bob-ear info() must catch OSError ENOSPC on stdout print so disk-full does not kill ear threads; report once site=info-enospc (FR #8205).
+- When shipped_script_names always includes fleet .ps1 (FR #8156), fr7991 unit fixtures must expect those names plus the .py closure (FR #8206).
 
 ## Harvest digest (lessons audit 2026-10-06)
 
