@@ -245,7 +245,7 @@ function Write-BobTrayStatusSnapshot {
 }
 
 function Format-BobTrayStatusWorkerLine {
-    # Same contract as Format-BobTrayWorkerLine / TipForm (FR #7147 start_model).
+    # Same contract as Format-BobTrayWorkerLine / TipForm (FR #7147 start_model; FR #8155 last_progress).
     param(
         [string]$Nick,
         [string]$State,
@@ -253,7 +253,9 @@ function Format-BobTrayStatusWorkerLine {
         [string]$Kind = '',
         [string]$StartModel = '',
         [bool]$ModelMismatch = $false,
-        [string]$StartEffort = ''
+        [string]$StartEffort = '',
+        [string]$LastProgress = '',
+        [string]$ProgressPhase = ''
     )
     $n = ([string]$Nick).Trim()
     if (-not $n) { return $null }
@@ -266,6 +268,25 @@ function Format-BobTrayStatusWorkerLine {
         $w = $w.Trim()
         if (-not $w) { $w = 'working' }
         $text = $w
+                # FR #8155: show last_progress age (activity clock), not state-change updated.
+        # Get-BobJobAge lives in BobBridge module scope; Dialogs is dot-sourced outside it.
+        $lp = ([string]$LastProgress).Trim()
+        if ($lp) {
+            $age = '?'
+            try {
+                $t = [datetime]::Parse($lp, $null, [Globalization.DateTimeStyles]::RoundtripKind)
+                if ($t.Kind -eq [DateTimeKind]::Unspecified) { $t = [datetime]::SpecifyKind($t, [DateTimeKind]::Utc) }
+                $ts = [datetime]::UtcNow - $t.ToUniversalTime()
+                if ($ts.TotalHours -ge 1) { $age = ('{0}h{1}m' -f [int]$ts.TotalHours, $ts.Minutes) }
+                elseif ($ts.TotalMinutes -ge 1) { $age = ('{0}m' -f [int]$ts.TotalMinutes) }
+                elseif ($ts.TotalSeconds -ge 0) { $age = ('{0}s' -f [int]$ts.TotalSeconds) }
+            } catch { $age = '?' }
+            if ($age -and $age -ne '?') {
+                $phase = ([string]$ProgressPhase).Trim()
+                if ($phase) { $text = ('{0} · progress {1} ({2})' -f $text, $age, $phase) }
+                else { $text = ('{0} · progress {1}' -f $text, $age) }
+            }
+        }
     }
     elseif ($st -eq 'offered') {
         $w = ([string]$Work) -replace '[
@@ -309,7 +330,7 @@ function Get-BobTrayDigestWorkerLinesForMachine {
             $nick = [string]$prop.Name
             if ($nick -notmatch '^[A-Za-z0-9_]+-\d+$') { continue }
             $val = $prop.Value
-            $state = 'idle'; $work = ''; $kind = ''; $sm = ''; $mm = $false
+            $state = 'idle'; $work = ''; $kind = ''; $sm = ''; $mm = $false; $lp = ''; $pp = ''
             if ($val -is [pscustomobject] -or $val -is [System.Collections.IDictionary]) {
                 if ($val.state) { $state = [string]$val.state }
                 if ($val.work) { $work = [string]$val.work }
@@ -320,8 +341,14 @@ function Get-BobTrayDigestWorkerLinesForMachine {
                 if ($val.start_model) { $sm = [string]$val.start_model }
                 elseif ($val.model) { $sm = [string]$val.model }
                 if ($val.PSObject.Properties.Name -contains 'model_mismatch') { $mm = [bool]$val.model_mismatch }
+                if ($val.PSObject.Properties.Name -contains 'last_progress' -and $val.last_progress) {
+                    $lp = [string]$val.last_progress
+                }
+                if ($val.PSObject.Properties.Name -contains 'progress_phase' -and $val.progress_phase) {
+                    $pp = [string]$val.progress_phase
+                }
             }
-            $ln = Format-BobTrayStatusWorkerLine -Nick $nick -State $state -Work $work -Kind $kind -StartModel $sm -ModelMismatch:$mm
+            $ln = Format-BobTrayStatusWorkerLine -Nick $nick -State $state -Work $work -Kind $kind -StartModel $sm -ModelMismatch:$mm -LastProgress $lp -ProgressPhase $pp
             if ($ln) { [void]$lines.Add($ln) }
         }
     }
@@ -334,6 +361,8 @@ function Get-BobTrayDigestWorkerLinesForMachine {
             $kind = ''
             $sm = ''
             $mm = $false
+            $lp = ''
+            $pp = ''
             if ($w -is [pscustomobject] -or $w -is [System.Collections.IDictionary]) {
                 if ($w.nick) { $nick = [string]$w.nick }
                 if ($w.state) { $state = [string]$w.state }
@@ -344,8 +373,14 @@ function Get-BobTrayDigestWorkerLinesForMachine {
                 if ($w.start_model) { $sm = [string]$w.start_model }
                 elseif ($w.model) { $sm = [string]$w.model }
                 if ($w.PSObject.Properties.Name -contains 'model_mismatch') { $mm = [bool]$w.model_mismatch }
+                if ($w.PSObject.Properties.Name -contains 'last_progress' -and $w.last_progress) {
+                    $lp = [string]$w.last_progress
+                }
+                if ($w.PSObject.Properties.Name -contains 'progress_phase' -and $w.progress_phase) {
+                    $pp = [string]$w.progress_phase
+                }
             }
-            $ln = Format-BobTrayStatusWorkerLine -Nick $nick -State $state -Work $work -Kind $kind -StartModel $sm -ModelMismatch:$mm
+            $ln = Format-BobTrayStatusWorkerLine -Nick $nick -State $state -Work $work -Kind $kind -StartModel $sm -ModelMismatch:$mm -LastProgress $lp -ProgressPhase $pp
             if ($ln) { [void]$lines.Add($ln) }
         }
     }
