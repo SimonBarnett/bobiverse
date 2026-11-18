@@ -80,7 +80,7 @@ def test_fr8158_go_model_pause_zeros_go_pool(tmp_path: Path):
     of.record_opencode_pause(
         tmp_path,
         GO_MODEL,
-        "rate limit exceeded; try again later",
+        "HTTP 429 rate limit exceeded; try again later",
         now=now,
         default_pause_s=1800,
     )
