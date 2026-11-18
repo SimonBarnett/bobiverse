@@ -116,6 +116,8 @@ Sampled every 5 s over the agent's own process tree. **Hung** means: input was i
 by a **NEW agent** (never a resume) after a backoff of 5 s, then 15 s, then 45 s; at most 3 restarts per incident - the 4th hang ends the seat (exit 5). The restart list is monotonic per incident (FR #4180): entries are cleared only when the *last* restart is older than the window, so mid-chain ages cannot reset the counter to 2/3 forever. Every restart is logged
 (`HUNG (<reason>); restart n/3 after Ns backoff`), and the message that was in flight is re-delivered to the new agent. **FR #4180:** while the seat is in the out-of-fuel hold, HangDetector and ack-miss must not recycle or respawn.
 
+**FR #8249 progress heartbeat:** digest `last_progress` is posted by a dedicated `progress-heartbeat` thread (not the health loop) for as long as the ACK is open and the seat wrapper is alive. Turn ends, FINISH re-injects and failed-turn retries must not stop it. Skip-reason log lines attribute a missed POST. A heartbeat is liveness for the silent-seat sweep, not proof of useful work.
+
 **FR #3623 ask_user pending:** a Grok `ask_user_question` that stays open (events.jsonl `tool_started` without `tool_completed`) leaves the process alive with ACK held, so HangDetector never fires. Agent launches deny that tool; if it still appears, after `BOB_WORKER_ASK_USER_PENDING_S` (default 60 s) the seat logs `stuck: ask_user pending <s>s`, sends Enter once (auto-answer), then after `BOB_WORKER_ASK_USER_ENTER_GRACE_S` (default 15 s) recycles with reason `ask-user-pending` (NEW agent; prior ACK void / job re-offered via re-deliver). Needs rebuilt `bob-worker.exe`.
 
 ## `!bored`, ACK and DONE (the program posts `!bored`, you write ACK/DONE)
