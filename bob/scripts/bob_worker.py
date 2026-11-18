@@ -1347,10 +1347,135 @@ def grok_has_tokens(f: Fuel) -> bool:
     return True
 
 
-def fuel_reading_known(f: Fuel, kind: str) -> bool:
+def seat_fuel_pool(kind: str, start_model: str = "") -> str:
+    """FR #8158: fuel pool id this seat's mid-job reading is keyed to.
+
+    Returns ``grok``, ``cursor``, ``opencode_go``, ``opencode_free``, or ``opencode``
+    (OpenCode with no start model yet — do not invent a pool from Grok pct).
+    """
+    k = (kind or "").strip().lower()
+    if k == "grok":
+        return "grok"
+    if k == "cursor":
+        return "cursor"
+    if k != "opencode":
+        return k or ""
+    mid = (start_model or "").strip()
+    if not mid:
+        return "opencode"
+    try:
+        import worker_start_model as wsm
+
+        if wsm.opencode_is_go_or_paid(mid):
+            return "opencode_go"
+        cls = wsm.start_model_review_class(mid)
+        if cls == "paid":
+            return "opencode_go"
+        if cls == "free":
+            return "opencode_free"
+    except Exception:
+        pass
+    low = mid.lower()
+    if low.startswith("opencode-go/") or "-pro" in low or "/opencode-go/" in low:
+        return "opencode_go"
+    return "opencode_free"
+
+
+def seat_pool_pct(f: Fuel, pool: str) -> Optional[int]:
+    """Remaining pct for ``pool`` only (FR #8158). Never cross-reads another kind."""
+    p = (pool or "").strip().lower()
+    if p == "grok":
+        return f.grok_pct
+    if p == "cursor":
+        vals = [v for v in (f.cursor_high, f.cursor_low) if v is not None]
+        return max(vals) if vals else None
+    if p == "opencode_go":
+        return f.opencode_go
+    if p == "opencode_free":
+        return f.opencode_free
+    if p == "opencode":
+        # Ambiguous OpenCode seat: no start model — do not fall back to grok_pct.
+        if f.opencode_go is not None:
+            return f.opencode_go
+        return f.opencode_free
+    return None
+
+
+def fold_opencode_seat_pauses(
+    f: Fuel,
+    start_model: str = "",
+    *,
+    env: Optional[dict] = None,
+    now: Optional[float] = None,
+    state_dir: Optional[Path] = None,
+) -> Fuel:
+    """FR #8158 / #8028: recorded provider refusal exhausts that seat's pool reading.
+
+    Free-pool pauses zero ``opencode_free``. A pause on the seat's Go start model
+    zeros ``opencode_go`` for this mid-job snapshot until the pause expires.
+    """
+    pool = seat_fuel_pool("opencode", start_model)
+    try:
+        import opencode_fuel as of
+    except Exception:
+        return f
+    root = state_dir
+    if root is None:
+        try:
+            root = of.opencode_pauses_state_dir(env if env is not None else {})
+        except Exception:
+            return f
+    now_f = float(now if now is not None else time.time())
+    free = f.opencode_free
+    go = f.opencode_go
+    changed = False
+    if pool in ("opencode_free", "opencode"):
+        d = {
+            of.FUEL_ID_FREE: free,
+            of.FUEL_ID_GO: go,
+        }
+        try:
+            out = of.apply_runtime_pauses_to_fuel(d, root, now=now_f)
+        except Exception:
+            out = d
+        new_free = out.get(of.FUEL_ID_FREE)
+        if new_free is not None and new_free != free:
+            free = int(new_free)
+            changed = True
+    if pool == "opencode_go" and (start_model or "").strip():
+        try:
+            if of.is_opencode_model_paused(start_model, root, now=now_f):
+                if go != 0:
+                    go = 0
+                    changed = True
+        except Exception:
+            pass
+    if not changed:
+        return f
+    return Fuel(
+        f.cursor_high,
+        f.cursor_low,
+        f.grok_pct,
+        f.grok_state,
+        f.on_demand_used_cents,
+        f.on_demand_limit_cents,
+        f.on_demand_remaining_pct,
+        f.overspend_state,
+        free,
+        go,
+        dict(f.opencode_models or {}),
+        tuple(f.opencode_free_model_ids or ()),
+    )
+
+
+def fuel_reading_known(f: Fuel, kind: str, start_model: str = "") -> bool:
     """True when the helper returned a parseable reading for this seat kind (FR #3923).
 
     Empty ``Fuel()`` (helper missing / timeout / unreadable) is **unknown**, not exhausted.
+
+    FR #8158: when ``start_model`` selects an OpenCode pool, only that pool counts
+    (``opencode_go`` for ``opencode-go/*``, ``opencode_free`` for free). Without a
+    start model, either OpenCode pool still counts (seat selection / cache).
     """
     k = (kind or "").strip().lower()
     if k == "grok":
@@ -1372,21 +1497,29 @@ def fuel_reading_known(f: Fuel, kind: str) -> bool:
             return True
         return False
     if k == "opencode":
+        pool = seat_fuel_pool(k, start_model)
+        if pool == "opencode_go":
+            return f.opencode_go is not None
+        if pool == "opencode_free":
+            return f.opencode_free is not None
         return f.opencode_free is not None or f.opencode_go is not None
     return False
 
 
-def fuel_explicitly_exhausted(f: Fuel, kind: str) -> bool:
+def fuel_explicitly_exhausted(f: Fuel, kind: str, start_model: str = "") -> bool:
     """True only for an explicit zero/exhausted reading (FR #3923 mid-job gate).
 
     Unknown / unreadable readings must **not** trip mid-job GIVEUP. Seat *selection*
     still uses ``grok_has_tokens`` / ``cursor_has_tokens`` (unknown = not available).
+
+    FR #8158: OpenCode mid-job with a start model keys exhaustion to that pool only
+    (never treat free=100 as fuel for an ``opencode-go/*`` seat).
     """
     k = (kind or "").strip().lower()
     # FR #6119: on-demand at-limit before known gate (limit alone is enough evidence).
     if k == "cursor" and cursor_on_demand_at_limit(f):
         return True
-    if not fuel_reading_known(f, k):
+    if not fuel_reading_known(f, k, start_model=start_model):
         return False
     if k == "grok":
         if f.grok_pct is not None:
@@ -1400,20 +1533,34 @@ def fuel_explicitly_exhausted(f: Fuel, kind: str) -> bool:
             return False
         return not cursor_has_tokens(f)
     if k == "opencode":
+        pool = seat_fuel_pool(k, start_model)
+        if pool == "opencode_go":
+            return int(f.opencode_go or 0) <= 0
+        if pool == "opencode_free":
+            return int(f.opencode_free or 0) <= 0
         return not opencode_has_tokens(f)
     return False
 
 
-def format_fuel_reading(f: Fuel, kind: str = "") -> str:
-    """One-line fuel snapshot for mid-job logs (no secrets)."""
+def format_fuel_reading(f: Fuel, kind: str = "", start_model: str = "") -> str:
+    """One-line fuel snapshot for mid-job logs (no secrets).
+
+    FR #8158: ``pct=`` is the seat's own pool remaining (never Grok pct on an
+    OpenCode seat). ``pool=`` names that pool; ``known=False`` keeps ``pool=``.
+    """
     k = (kind or "").strip().lower()
+    pool = seat_fuel_pool(k, start_model)
+    pct = seat_pool_pct(f, pool)
+    known = fuel_reading_known(f, k, start_model=start_model)
+    exhausted = fuel_explicitly_exhausted(f, k, start_model=start_model)
+    state = f.grok_state if pool == "grok" else ("exhausted" if exhausted else ("available" if known else "unknown"))
     return (
-        f"kind={k or '-'} pct={f.grok_pct!s} state={f.grok_state!s} "
+        f"kind={k or '-'} pool={pool or '-'} pct={pct!s} state={state!s} "
         f"cursor_high={f.cursor_high!s} cursor_low={f.cursor_low!s} "
         f"on_demand_used={f.on_demand_used_cents!s} on_demand_limit={f.on_demand_limit_cents!s} "
         f"on_demand_remain_pct={f.on_demand_remaining_pct!s} overspend={f.overspend_state!s} "
         f"opencode_free={f.opencode_free!s} opencode_go={f.opencode_go!s} "
-        f"known={fuel_reading_known(f, k)} exhausted={fuel_explicitly_exhausted(f, k)}"
+        f"known={known} exhausted={exhausted}"
     )
 
 
@@ -7190,12 +7337,15 @@ def out_of_fuel_reading_clears_soft_hold(
     kind: str,
     has_session_key: bool = False,
     allow_cursor_kind_switch: bool = False,
+    start_model: str = "",
 ) -> tuple:
     """FR #4899: soft hold clears only on the seat's own pool (or a real kind-switch).
 
     Returns ``(clears: bool, reason: str)``. A grok seat with ``grok_pct=0`` must not
     clear because the machine still has Cursor tokens. Cursor may clear a grok soft
     hold only when ``allow_cursor_kind_switch`` is True (seat will run Cursor, FR #3997).
+
+    FR #8158: OpenCode soft clear keys to the start-model pool when provided.
     """
     k = (kind or "").strip().lower() or "grok"
     if k == "grok":
@@ -7218,6 +7368,15 @@ def out_of_fuel_reading_clears_soft_hold(
             )
         return False, ""
     if k == "opencode":
+        pool = seat_fuel_pool(k, start_model)
+        if pool == "opencode_go":
+            if fuel.opencode_go is not None and int(fuel.opencode_go) > 0:
+                return True, f"reading kind=opencode pool=opencode_go pct={fuel.opencode_go}"
+            return False, ""
+        if pool == "opencode_free":
+            if fuel.opencode_free is not None and int(fuel.opencode_free) > 0:
+                return True, f"reading kind=opencode pool=opencode_free pct={fuel.opencode_free}"
+            return False, ""
         if opencode_has_tokens(fuel):
             return (
                 True,
@@ -13237,11 +13396,28 @@ class Supervisor:
         # FR #4899: soft hold — own pool only. Cursor tokens clear a grok hold only when
         # this seat is actually switching to Cursor (caller sets kind / restarts agent).
         allow_switch = bool(getattr(self, "_out_of_fuel_allow_cursor_kind_switch", False))
+        start_model = ""
+        if kind == "opencode":
+            try:
+                start_model = launched_hostile_start_model(
+                    kind, getattr(self, "last_child_env", None)
+                )
+            except Exception:
+                start_model = ""
+            try:
+                fuel = fold_opencode_seat_pauses(
+                    fuel,
+                    start_model,
+                    env=getattr(self, "base_env", None) or getattr(self, "last_child_env", None),
+                )
+            except Exception:
+                pass
         ok, why = out_of_fuel_reading_clears_soft_hold(
             fuel,
             kind=kind,
             has_session_key=self.secret is not None,
             allow_cursor_kind_switch=allow_switch,
+            start_model=start_model,
         )
         if ok:
             if self.bored is not None:
@@ -13250,18 +13426,38 @@ class Supervisor:
         return False
 
     def _fuel_lost_mid_job(self) -> bool:
-        """FR #3019 / #3923: True only on an **explicit** exhausted reading while ACKed.
+        """FR #3019 / #3923 / #8158: True only on an **explicit** exhausted reading while ACKed.
 
         Unknown / timeout / empty ``Fuel()`` is **not** lost (selection still treats
         unknown as unavailable). Logs pct/state/helper snapshot every poll.
+
+        OpenCode seats key the reading to the launched start model pool
+        (``opencode_go`` / ``opencode_free``), never ``grok_pct`` (FR #8158).
         """
         kind = (self.kind or "").strip().lower()
+        start_model = ""
+        if kind == "opencode":
+            try:
+                start_model = launched_hostile_start_model(
+                    kind, getattr(self, "last_child_env", None)
+                )
+            except Exception:
+                start_model = ""
         try:
             fuel = read_fuel(self._install_root_for_fuel())
         except Exception as e:
             self.log(f"out-of-fuel: mid-job read_fuel failed {type(e).__name__} - treat as unknown")
             return False
-        snap = format_fuel_reading(fuel, kind)
+        if kind == "opencode":
+            try:
+                fuel = fold_opencode_seat_pauses(
+                    fuel,
+                    start_model,
+                    env=getattr(self, "base_env", None) or getattr(self, "last_child_env", None),
+                )
+            except Exception:
+                pass
+        snap = format_fuel_reading(fuel, kind, start_model=start_model)
         if kind == "cursor":
             lost = fuel_explicitly_exhausted(fuel, "cursor")
             self.log(f"out-of-fuel: mid-job reading {snap}")
@@ -13275,7 +13471,7 @@ class Supervisor:
             self.log(f"out-of-fuel: mid-job reading {snap}")
             return lost
         if kind == "opencode":
-            lost = fuel_explicitly_exhausted(fuel, "opencode")
+            lost = fuel_explicitly_exhausted(fuel, "opencode", start_model=start_model)
             self.log(f"out-of-fuel: mid-job reading {snap}")
             return lost
         return False
