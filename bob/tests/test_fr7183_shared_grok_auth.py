@@ -35,7 +35,9 @@ def test_prepare_seat_grok_home_does_not_copy_auth(tmp_path):
     trust.mkdir()
     home = bound.prepare_seat_grok_home(run_dir, trust_paths=[trust], user_grok_home=user)
     assert home == run_dir / bound.GROK_HOME_NAME
-    assert not (home / "auth.json").exists()
+    # FR #8222: a valid machine login is linked or copied into the seat folder.
+    assert (home / "auth.json").is_file()
+    assert "FAKE_SESSION_KEY_FOR_TESTS_ONLY" in (home / "auth.json").read_text(encoding="utf-8")
     assert (user / "auth.json").is_file()
     seat_cfg = (home / "config.toml").read_text(encoding="utf-8")
     assert "paths = []" in seat_cfg
@@ -70,7 +72,8 @@ def test_agent_child_sets_grok_auth_path_to_machine_store(tmp_path, monkeypatch)
     env = child["env"]
     assert env.get("GROK_HOME") == str(run_dir / bound.GROK_HOME_NAME)
     assert env.get("GROK_AUTH_PATH") == str(auth)
-    assert not (run_dir / bound.GROK_HOME_NAME / "auth.json").exists()
+    seat_auth = run_dir / bound.GROK_HOME_NAME / "auth.json"
+    assert seat_auth.is_file()
 
 
 @pytest.mark.parametrize("as_system", [False, True])

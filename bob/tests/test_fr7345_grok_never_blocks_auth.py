@@ -79,7 +79,7 @@ def test_fr7345_explicit_grok_expired_does_not_launch_grok():
 
 def test_fr7345_preflight_uses_ear_error_class():
     assert bw.classify_xai_signin_state("grok-login-expired") == "expired"
-    assert bw.classify_xai_signin_state("auth-file-missing") == "expired"
+    assert bw.classify_xai_signin_state("auth-file-missing") == "absent"
     assert bw.classify_xai_signin_state("") == "ok"
     assert bw.preflight_xai_signin(last_acq={"error": "grok-login-expired"}) == "expired"
     assert bw.preflight_xai_signin(last_acq={"error": None}) == "ok"
@@ -87,7 +87,7 @@ def test_fr7345_preflight_uses_ear_error_class():
         bw.preflight_xai_signin(
             fetch_fn=lambda: None, last_acq={"error": "auth-key-missing"}
         )
-        == "expired"
+        == "absent"
     )
 
 
