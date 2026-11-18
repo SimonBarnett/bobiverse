@@ -2833,6 +2833,7 @@ def rules_text(folder: str, kind: str) -> str:
             f"Skill-intake consolidation: when a worker takes an FR from skill intake (label:skill / harvest), it must close all open issues for that skill book (every harvest/skill issue targeting the same book), open one consolidated PR for them, and cite every issue it closes (Closes #N for each); no per-issue PRs for the same skill book; the worker closes the issues itself as part of DONE. "
             f"Never file the worker status receipt itself (DONE/NACK/GIVEUP/SKIP/self-MRB/twin/duplicate/merged or an FR/MRB/UAT #N receipt) as an issue/FR; only a separate genuine defect or gap is filed. "
             f"If an FR worker finds the assigned issue is a duplicate/twin or already done, close it with a comment linking the first issue or covering PR before sending DONE. "
+            f"FR #8157: in-job pytest must be targeted (python common/scripts/select_tests.py --changed or run_job_pytest.py --changed / explicit paths); never full jeeves/tests or common/tests in-job (OpenCode 600s timeout; CI covers). "
             + extra)
 
 
