@@ -547,6 +547,7 @@ routes to bobiverse via the split rule.
 - FR #8172 MRB: Watch digest UTF-8 pin is Invoke-BobDigestHttpGet + got.Text; RawContentStream stays on IRC ConvertFrom-BobUtf8Json only.
 - Digest configured_model = launch_selected_model (env pin then tray then config); model_mismatch only when actual differs, with mismatch_reason; paused fallback skips unavailable intake (FR #8159).
 - Explicit OpenCode start must judge fuel by seat_fuel_pool(start_model): free=0 must not refuse opencode-go/* when go is unknown/usable; unknown own pool starts (FR #7714).
+- accepted_silent must treat digest last_progress within SILENT_ACCEPTED_S as activity; worker refreshes last_progress while agent process alive even with silent logs (FR #8195).
 
 ## Harvest digest (lessons audit 2026-10-06)
 
