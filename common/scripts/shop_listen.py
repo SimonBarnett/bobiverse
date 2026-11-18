@@ -1063,6 +1063,9 @@ def handle_shop_worker_line(
                 )
             # FR #8017: pre-ACK deterministic NACK (worktree-create-failed, …) still
             # cools that seat for the offered unaccepted row so !bored cannot loop.
+            # FR #8153: no-clone also stamps seat-ledger "cannot serve repo" (all
+            # jobs for that repo) until JOIN/hello clears it — even when the row
+            # stamp misses (alias / race).
             if parsed.verb == "NACK":
                 stamped = None
                 with contextlib.suppress(Exception):
@@ -1077,11 +1080,33 @@ def handle_shop_worker_line(
                 if stamped is not None:
                     out["job"] = stamped
                     out["deterministic_nack"] = True
+                if gitclaim.is_no_clone_nack_reason(reason):
+                    with contextlib.suppress(Exception):
+                        if gitclaim.stamp_seat_no_clone_repo(
+                            home, nick=nick, repo=parsed.repo
+                        ):
+                            out["no_clone_repo"] = True
             return out
         try:  # t852u: remember who gave this up, forever (resync drops row stamps)
             gitclaim.ledger_note_event(home, nick, parsed.verb, parsed.task, parsed.repo, parsed.id, job if isinstance(job, dict) else None)
         except Exception:  # noqa: BLE001
             pass
+        # FR #8153: post-ACK no-clone NACK also blocks the repo for this seat.
+        if parsed.verb == "NACK" and gitclaim.is_no_clone_nack_reason(reason):
+            with contextlib.suppress(Exception):
+                if gitclaim.stamp_seat_no_clone_repo(home, nick=nick, repo=parsed.repo):
+                    out["no_clone_repo"] = True
+            with contextlib.suppress(Exception):
+                stamped = gitclaim.stamp_deterministic_nack_on_unaccepted(
+                    home,
+                    nick=nick,
+                    repo=parsed.repo,
+                    task=parsed.task,
+                    ident=parsed.id,
+                    reason=reason,
+                )
+                if stamped is not None:
+                    out["deterministic_nack"] = True
         # FR #6439: wake Bob on shop GIVEUP (same HTTPS wake URL as close notices).
         if parsed.verb == "GIVEUP":
             with contextlib.suppress(Exception):
