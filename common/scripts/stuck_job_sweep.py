@@ -11,6 +11,8 @@ Stuck actions (never touch needs_human / require_machine / self-MRB author holds
 never merge or close):
 
 * silent or dead-holder ``accepted`` → release (prior ACK void) and re-offer
+  (FR #8195: digest ``last_progress`` within ``SILENT_ACCEPTED_S`` counts as
+  activity so a live seat mid-tool is not released)
 * ``untracked`` offerable → enqueue
 * held past its window → report only
 * FR #5581: digest ``doing`` tile for an MRB PR that already has a PASS/FAIL
@@ -155,6 +157,54 @@ def _holder_nick(row: dict) -> str:
         row.get("nick") or row.get("accepted_by") or row.get("offered_to") or ""
     ).strip()
     return (gitclaim.canonical_worker_nick(raw) or raw).strip().lower()
+
+
+def digest_holder_last_progress_epoch(home: Path | None, nick: str) -> float | None:
+    """FR #8195: epoch of digest ``last_progress`` for a seat nick, if present.
+
+    Worker heartbeats refresh ``last_progress`` while a long tool command runs
+    even when IRC is silent. The stuck sweep treats a fresh value as activity so
+    ``accepted_silent`` does not release a still-working seat.
+    """
+    if home is None:
+        return None
+    want = str(nick or "").strip().lower()
+    if not want:
+        return None
+    try:
+        import bobreport
+        import gitclaim
+
+        want = (gitclaim.canonical_worker_nick(want) or want).strip().lower()
+        doc = bobreport.load_digest(Path(home))
+    except Exception:
+        return None
+    best: float | None = None
+    for _mid, ent in (doc.get("machines") or {}).items():
+        if not isinstance(ent, dict):
+            continue
+        try:
+            rows = bobreport._coerce_worker_list(ent.get("worker_list"))
+        except Exception:
+            rows = []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            n = str(row.get("nick") or "").strip().lower()
+            try:
+                import gitclaim
+
+                n = (gitclaim.canonical_worker_nick(n) or n).strip().lower()
+            except Exception:
+                pass
+            if n != want:
+                continue
+            ts = _parse_ts(row.get("last_progress"))
+            if ts is None:
+                continue
+            if best is None or float(ts) > float(best):
+                best = float(ts)
+    return best
 
 
 def _row_age_s(row: dict, now: float) -> float:
@@ -413,6 +463,12 @@ def classify_queue_row(
         last = None
         if activity and holder:
             last = activity.get(holder)
+            if last is None:
+                last = activity.get(holder.lower())
+        # FR #8195: digest last_progress is the activity clock during long silent tools.
+        lp = digest_holder_last_progress_epoch(home, holder)
+        if lp is not None and (last is None or float(lp) > float(last)):
+            last = float(lp)
         silent = False
         if last is not None:
             silent = (float(now) - float(last)) >= SILENT_ACCEPTED_S

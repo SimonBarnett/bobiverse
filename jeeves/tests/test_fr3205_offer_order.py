@@ -23,12 +23,26 @@ def home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
         bobreport._SEAT_ROSTER_CACHE["ids"] = ()
     registered_machines.save_registered(tmp_path, {"marchhare", "ionos", "flamingo"})
     digest = bobreport.empty_digest()
+    # FR #8193: mark offer seats as Grok/paid so they can take MRB (bare idle
+    # without start_model is free fuel and cannot). free_idle stays empty here;
+    # tests that need classic MRB-before-FR under #8138 monkeypatch
+    # mrb_yields_to_older_fr (adding a free seat would reserve FR for it).
     for mid, pids in (
         ("marchhare", ("35600", "35601", "35602", "35603", "35604")),
         ("flamingo", ("9",)),
     ):
         digest["machines"][mid] = bobreport._empty_machine(mid)
-        digest["machines"][mid]["workers"] = {p: {"state": "idle"} for p in pids}
+        digest["machines"][mid]["worker_list"] = [
+            {
+                "nick": f"{mid}-{p}",
+                "state": "idle",
+                "kind": "grok",
+                "start_model": "grok-4",
+                "configured_model": "grok-4",
+                "updated": "2026-11-17T12:00:00Z",
+            }
+            for p in pids
+        ]
     bobreport.save_digest(tmp_path, digest)
     gitclaim._write_queue(
         gitclaim.queue_path(tmp_path),
@@ -218,11 +232,14 @@ def test_fr3205_webhook_lower_number_sorts_before_seq(home: Path):
     assert st == "ok" and job["id"] == "#4"
 
 
-def test_fr3205_fallback_obeys_kind_and_number(home: Path):
+def test_fr3205_fallback_obeys_kind_and_number(home: Path, monkeypatch: pytest.MonkeyPatch):
     """Fallback path (when focus walk yields nothing for this seat) still MRB before FR."""
     repo = "SimonBarnett/bobiverse"
     me = "marchhare-35600"
     # Seat gave up the lowest MRB; next eligible must still be MRB #9 before FR #3.
+    # FR #8193: with free_idle empty, #8138 would yield MRB to the older FR; this
+    # test locks classic kind-before-number, so disable only-Grok yield here.
+    monkeypatch.setattr(gitclaim, "mrb_yields_to_older_fr", lambda *a, **k: False)
     mrb5 = _row(repo, "MRB", 5, seq=1)
     mrb5["giveup_seats"] = me
     _queue(

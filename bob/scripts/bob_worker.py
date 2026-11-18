@@ -71,11 +71,10 @@ def short_build_sha(commit: str | None = None) -> str:
 
 
 def resolve_seat_hello_model(kind: str, env: Optional[dict] = None) -> str:
-    """FR #6418 / FR #7084: the configured model the seat's agent will launch with.
+    """FR #6418 / FR #7084 / FR #8159: model the seat was launched for.
 
-    FR #7084: ``workerStartModels`` (JSON/env) is the per-CLI minimum start model.
-    OpenCode still honours ``BOB_OPENCODE_MODEL`` then OpenCode config. Empty config
-    stays empty (hello ``unknown``); never invent a premium id.
+    Precedence: env pin (Si tray click), then tray ``workerStartModels``, then
+    OpenCode free default / OpenCode config. Never invent a premium id.
     """
     env = os.environ if env is None else env
     k = (kind or "").strip().lower()
@@ -83,14 +82,10 @@ def resolve_seat_hello_model(kind: str, env: Optional[dict] = None) -> str:
         import worker_start_model as wsm
 
         cfg = wsm.load_worker_start_config(env=env)
-        picked = wsm.configured_start_model(k, cfg)
+        picked = wsm.launch_selected_model(k, cfg, env=env)
         if picked:
             return picked
         if k == "opencode":
-            # FR #7187: never advertise a machine Go/paid default as the seat model.
-            m = str(env.get("BOB_OPENCODE_MODEL") or "").strip()
-            if m:
-                return m
             cfg_m = read_opencode_config_model(env) or ""
             if cfg_m and not wsm.opencode_is_go_or_paid(cfg_m):
                 return cfg_m
@@ -557,6 +552,8 @@ class Fuel:
     opencode_go: Optional[int] = None
     opencode_models: dict = field(default_factory=dict)
     opencode_free_model_ids: tuple = field(default_factory=tuple)
+    # FR #8186: provider windows (week/rolling/month) when aggregate go is nulled.
+    opencode_windows: Optional[dict] = None
 
 
 def parse_fuel(text: str) -> Fuel:
@@ -603,6 +600,9 @@ def parse_fuel(text: str) -> Fuel:
         op_free_ids = tuple(str(i) for i in op_free_ids)
     else:
         op_free_ids = ()
+    op_windows = op.get("windows") if isinstance(op, dict) and isinstance(op.get("windows"), dict) else None
+    if op_windows is None and isinstance(doc.get("windows"), dict):
+        op_windows = doc.get("windows")
     return Fuel(
         _i(cur.get("high")),
         _i(cur.get("low")),
@@ -616,6 +616,7 @@ def parse_fuel(text: str) -> Fuel:
         op_go,
         dict(op_models),
         op_free_ids,
+        op_windows,
     )
 
 
@@ -660,6 +661,7 @@ def merge_fuel_parts(parts: dict) -> Fuel:
         opencode.opencode_go,
         dict(opencode.opencode_models or {}),
         tuple(opencode.opencode_free_model_ids or ()),
+        opencode.opencode_windows,
     )
 
 
@@ -712,6 +714,7 @@ def fuel_cache_document(fuel: Fuel, now: Optional[float] = None) -> dict:
         "opencode_go": fuel.opencode_go,
         "opencode_models": dict(fuel.opencode_models or {}),
         "opencode_free_model_ids": list(fuel.opencode_free_model_ids or ()),
+        "opencode_windows": fuel.opencode_windows,
     }
 
 
@@ -739,6 +742,7 @@ def fuel_from_cache_document(doc: dict) -> Fuel:
         _i(doc.get("opencode_go")),
         {str(k): _i(v) for k, v in models.items()},
         tuple(str(i) for i in ids),
+        doc.get("opencode_windows") if isinstance(doc.get("opencode_windows"), dict) else None,
     )
 
 
@@ -831,6 +835,182 @@ def opencode_has_tokens(f: Fuel) -> bool:
         return False
     return f.opencode_go is not None and f.opencode_go > 0
 
+
+
+def seat_fuel_pool(kind: str, start_model: str = "") -> str:
+    """FR #8158 / #8186: fuel pool id for this seat kind + optional start model.
+
+    Returns `grok`, `cursor`, `opencode_go`, `opencode_free`, or `opencode`
+    (OpenCode with no start model yet).
+    """
+    k = (kind or "").strip().lower()
+    if k == "grok":
+        return "grok"
+    if k == "cursor":
+        return "cursor"
+    if k != "opencode":
+        return k or ""
+    mid = (start_model or "").strip()
+    if not mid:
+        return "opencode"
+    try:
+        import worker_start_model as wsm
+
+        if wsm.opencode_is_go_or_paid(mid):
+            return "opencode_go"
+        cls = wsm.start_model_review_class(mid)
+        if cls == "paid":
+            return "opencode_go"
+        if cls == "free":
+            return "opencode_free"
+    except Exception:
+        pass
+    low = mid.lower()
+    if low.startswith("opencode-go/") or "-pro" in low or "/opencode-go/" in low:
+        return "opencode_go"
+    return "opencode_free"
+
+
+def _opencode_windows_go_usable(windows: Optional[dict]) -> bool:
+    """True when provider windows show Go fuel remaining (FR #8186 AC6)."""
+    if not isinstance(windows, dict):
+        return False
+    for key in ("week", "rolling", "month"):
+        rec = windows.get(key) or {}
+        if not isinstance(rec, dict):
+            continue
+        if rec.get("limited") is True:
+            continue
+        try:
+            rem = rec.get("remaining_pct")
+            if rem is not None and float(rem) > 0:
+                return True
+        except (TypeError, ValueError):
+            continue
+    return False
+
+
+def _opencode_windows_go_known(windows: Optional[dict]) -> bool:
+    if not isinstance(windows, dict):
+        return False
+    for key in ("week", "rolling", "month"):
+        rec = windows.get(key) or {}
+        if isinstance(rec, dict) and rec.get("remaining_pct") is not None:
+            return True
+    return False
+
+
+def opencode_pool_has_tokens(f: Fuel, pool: str, start_model: str = "") -> bool:
+    """FR #8186: usable tokens for one OpenCode pool (not the unrelated pool)."""
+    pool = (pool or "").strip().lower()
+    mid = (start_model or "").strip()
+    models = f.opencode_models or {}
+    if pool == "opencode_free":
+        return f.opencode_free is not None and int(f.opencode_free) > 0
+    if pool == "opencode_go":
+        if mid:
+            # Per-model reading for the exact start model wins when present.
+            short = mid.split("/")[-1]
+            for key, val in models.items():
+                k = str(key or "")
+                if k == mid or k.endswith("/" + short) or k == short:
+                    try:
+                        return int(val or 0) > 0
+                    except (TypeError, ValueError):
+                        return False
+        if f.opencode_go is not None:
+            return int(f.opencode_go) > 0
+        return _opencode_windows_go_usable(f.opencode_windows)
+    # No specific pool: either pool (selection / no start model).
+    return opencode_has_tokens(f)
+
+
+
+def seat_pool_pct(f: Fuel, pool: str) -> Optional[int]:
+    """Remaining pct for ``pool`` only (FR #8158). Never cross-reads another kind."""
+    p = (pool or "").strip().lower()
+    if p == "grok":
+        return f.grok_pct
+    if p == "cursor":
+        vals = [v for v in (f.cursor_high, f.cursor_low) if v is not None]
+        return max(vals) if vals else None
+    if p == "opencode_go":
+        return f.opencode_go
+    if p == "opencode_free":
+        return f.opencode_free
+    if p == "opencode":
+        # Ambiguous OpenCode seat: no start model — do not fall back to grok_pct.
+        if f.opencode_go is not None:
+            return f.opencode_go
+        return f.opencode_free
+    return None
+
+
+def fold_opencode_seat_pauses(
+    f: Fuel,
+    start_model: str = "",
+    *,
+    env: Optional[dict] = None,
+    now: Optional[float] = None,
+    state_dir: Optional[Path] = None,
+) -> Fuel:
+    """FR #8158 / #8028: recorded provider refusal exhausts that seat's pool reading.
+
+    Free-pool pauses zero ``opencode_free``. A pause on the seat's Go start model
+    zeros ``opencode_go`` for this mid-job snapshot until the pause expires.
+    """
+    pool = seat_fuel_pool("opencode", start_model)
+    try:
+        import opencode_fuel as of
+    except Exception:
+        return f
+    root = state_dir
+    if root is None:
+        try:
+            root = of.opencode_pauses_state_dir(env if env is not None else {})
+        except Exception:
+            return f
+    now_f = float(now if now is not None else time.time())
+    free = f.opencode_free
+    go = f.opencode_go
+    changed = False
+    if pool in ("opencode_free", "opencode"):
+        d = {
+            of.FUEL_ID_FREE: free,
+            of.FUEL_ID_GO: go,
+        }
+        try:
+            out = of.apply_runtime_pauses_to_fuel(d, root, now=now_f)
+        except Exception:
+            out = d
+        new_free = out.get(of.FUEL_ID_FREE)
+        if new_free is not None and new_free != free:
+            free = int(new_free)
+            changed = True
+    if pool == "opencode_go" and (start_model or "").strip():
+        try:
+            if of.is_opencode_model_paused(start_model, root, now=now_f):
+                if go != 0:
+                    go = 0
+                    changed = True
+        except Exception:
+            pass
+    if not changed:
+        return f
+    return Fuel(
+        f.cursor_high,
+        f.cursor_low,
+        f.grok_pct,
+        f.grok_state,
+        f.on_demand_used_cents,
+        f.on_demand_limit_cents,
+        f.on_demand_remaining_pct,
+        f.overspend_state,
+        free,
+        go,
+        dict(f.opencode_models or {}),
+        tuple(f.opencode_free_model_ids or ()),
+    )
 
 def opencode_pauses_state_dir(env: Optional[dict] = None) -> Path:
     """Default directory for the worker's OpenCode pause JSON file."""
@@ -1347,10 +1527,14 @@ def grok_has_tokens(f: Fuel) -> bool:
     return True
 
 
-def fuel_reading_known(f: Fuel, kind: str) -> bool:
+def fuel_reading_known(f: Fuel, kind: str, start_model: str = "") -> bool:
     """True when the helper returned a parseable reading for this seat kind (FR #3923).
 
-    Empty ``Fuel()`` (helper missing / timeout / unreadable) is **unknown**, not exhausted.
+    Empty `Fuel()` (helper missing / timeout / unreadable) is **unknown**, not exhausted.
+
+    FR #8158 / #8186: when `start_model` selects an OpenCode pool, only that pool counts.
+    Without a start model, either OpenCode pool still counts (seat selection / cache).
+    Go pool may also be known via provider `opencode_windows` when aggregate go is nulled.
     """
     k = (kind or "").strip().lower()
     if k == "grok":
@@ -1358,11 +1542,9 @@ def fuel_reading_known(f: Fuel, kind: str) -> bool:
             return True
         st = (f.grok_state or "unknown").strip().lower()
         return st != "unknown"
-    # Cursor: relay ACKs on receipt (#4115), so _inject_line uses this probe, not stop_fn.
     if k == "cursor":
         if f.cursor_high is not None or f.cursor_low is not None:
             return True
-        # FR #6119: on-demand fields alone are a known reading (limit hit with null pools).
         if (
             f.on_demand_used_cents is not None
             or f.on_demand_limit_cents is not None
@@ -1372,21 +1554,29 @@ def fuel_reading_known(f: Fuel, kind: str) -> bool:
             return True
         return False
     if k == "opencode":
+        pool = seat_fuel_pool(k, start_model)
+        if pool == "opencode_go":
+            return f.opencode_go is not None or _opencode_windows_go_known(f.opencode_windows)
+        if pool == "opencode_free":
+            return f.opencode_free is not None
         return f.opencode_free is not None or f.opencode_go is not None
     return False
 
 
-def fuel_explicitly_exhausted(f: Fuel, kind: str) -> bool:
+def fuel_explicitly_exhausted(f: Fuel, kind: str, start_model: str = "") -> bool:
     """True only for an explicit zero/exhausted reading (FR #3923 mid-job gate).
 
     Unknown / unreadable readings must **not** trip mid-job GIVEUP. Seat *selection*
     still uses ``grok_has_tokens`` / ``cursor_has_tokens`` (unknown = not available).
+
+    FR #8158: OpenCode mid-job with a start model keys exhaustion to that pool only
+    (never treat free=100 as fuel for an ``opencode-go/*`` seat).
     """
     k = (kind or "").strip().lower()
     # FR #6119: on-demand at-limit before known gate (limit alone is enough evidence).
     if k == "cursor" and cursor_on_demand_at_limit(f):
         return True
-    if not fuel_reading_known(f, k):
+    if not fuel_reading_known(f, k, start_model=start_model):
         return False
     if k == "grok":
         if f.grok_pct is not None:
@@ -1400,20 +1590,39 @@ def fuel_explicitly_exhausted(f: Fuel, kind: str) -> bool:
             return False
         return not cursor_has_tokens(f)
     if k == "opencode":
+        pool = seat_fuel_pool(k, start_model)
+        if pool == "opencode_go":
+            # FR #8186: aggregate go None + usable windows is known fuel, not exhausted.
+            if f.opencode_go is None and _opencode_windows_go_usable(f.opencode_windows):
+                return False
+            if f.opencode_go is None and _opencode_windows_go_known(f.opencode_windows):
+                return not _opencode_windows_go_usable(f.opencode_windows)
+            return int(f.opencode_go or 0) <= 0
+        if pool == "opencode_free":
+            return int(f.opencode_free or 0) <= 0
         return not opencode_has_tokens(f)
     return False
 
 
-def format_fuel_reading(f: Fuel, kind: str = "") -> str:
-    """One-line fuel snapshot for mid-job logs (no secrets)."""
+def format_fuel_reading(f: Fuel, kind: str = "", start_model: str = "") -> str:
+    """One-line fuel snapshot for mid-job logs (no secrets).
+
+    FR #8158: ``pct=`` is the seat's own pool remaining (never Grok pct on an
+    OpenCode seat). ``pool=`` names that pool; ``known=False`` keeps ``pool=``.
+    """
     k = (kind or "").strip().lower()
+    pool = seat_fuel_pool(k, start_model)
+    pct = seat_pool_pct(f, pool)
+    known = fuel_reading_known(f, k, start_model=start_model)
+    exhausted = fuel_explicitly_exhausted(f, k, start_model=start_model)
+    state = f.grok_state if pool == "grok" else ("exhausted" if exhausted else ("available" if known else "unknown"))
     return (
-        f"kind={k or '-'} pct={f.grok_pct!s} state={f.grok_state!s} "
+        f"kind={k or '-'} pool={pool or '-'} pct={pct!s} state={state!s} "
         f"cursor_high={f.cursor_high!s} cursor_low={f.cursor_low!s} "
         f"on_demand_used={f.on_demand_used_cents!s} on_demand_limit={f.on_demand_limit_cents!s} "
         f"on_demand_remain_pct={f.on_demand_remaining_pct!s} overspend={f.overspend_state!s} "
         f"opencode_free={f.opencode_free!s} opencode_go={f.opencode_go!s} "
-        f"known={fuel_reading_known(f, k)} exhausted={fuel_explicitly_exhausted(f, k)}"
+        f"known={known} exhausted={exhausted}"
     )
 
 
@@ -1654,35 +1863,45 @@ def explicit_opencode_decision(
     opencode_cmd: Optional[str],
     *,
     auth_present: bool,
+    start_model: str = "",
 ) -> Decision:
     """Explicit OpenCode request. Never falls through to Grok or Cursor.
 
-    Requires a real ``opencode`` command and a real usable fuel reading.
-    Go-only fuel also requires the auth file to exist (presence only).
+    FR #8186: judge the pool of the model about to start (`start_model` /
+    `BOB_OPENCODE_MODEL`). A known-empty *other* pool never refuses.
     """
     if not opencode_cmd:
         return Decision("refuse", "explicit opencode: opencode.exe missing")
-    # FR #7714: unknown is not exhausted. A clicked OpenCode seat starts.
-    # Refuse only a known empty reading. Never fall through to another kind.
-    if not fuel_reading_known(fuel, "opencode"):
+    mid = (start_model or "").strip()
+    pool = seat_fuel_pool("opencode", mid)
+    pool_label = {"opencode_go": "go", "opencode_free": "free"}.get(pool, pool or "opencode")
+    # FR #7714 / #8186: unknown *own* pool is not exhausted.
+    if not fuel_reading_known(fuel, "opencode", start_model=mid):
         return Decision(
             "opencode",
-            "explicit opencode: fuel unknown, starting (free=%s go=%s)"
-            % (fuel.opencode_free, fuel.opencode_go),
+            "explicit opencode: fuel unknown, starting (model=%s pool=%s free=%s go=%s)"
+            % (mid or "-", pool, fuel.opencode_free, fuel.opencode_go),
         )
-    if not opencode_has_tokens(fuel):
+    if not opencode_pool_has_tokens(fuel, pool, start_model=mid):
         return Decision(
             "refuse",
-            "explicit opencode: no usable fuel (free=%s go=%s)"
-            % (fuel.opencode_free, fuel.opencode_go),
+            "explicit opencode: no usable fuel (model=%s pool=%s free=%s go=%s)"
+            % (mid or "-", pool, fuel.opencode_free, fuel.opencode_go),
         )
     free_ok = fuel.opencode_free is not None and int(fuel.opencode_free) > 0
-    if not free_ok and not auth_present:
+    go_pool = pool == "opencode_go"
+    if go_pool and not auth_present:
         return Decision("refuse", "explicit opencode: auth.json absent (body not read)")
+    if not mid and not free_ok and not auth_present:
+        # No start model: go-only still needs auth (legacy).
+        if fuel.opencode_go is not None and int(fuel.opencode_go) > 0:
+            return Decision("refuse", "explicit opencode: auth.json absent (body not read)")
     return Decision(
         "opencode",
-        "explicit opencode (free=%s go=%s)" % (fuel.opencode_free, fuel.opencode_go),
+        "explicit opencode (model=%s pool=%s free=%s go=%s)"
+        % (mid or "-", pool, fuel.opencode_free, fuel.opencode_go),
     )
+
 
 
 def explicit_agent_decision(
@@ -1693,6 +1912,7 @@ def explicit_agent_decision(
     opencode_cmd: Optional[str],
     *,
     auth_present: bool,
+    start_model: str = "",
 ) -> Decision:
     """One requested agent. ``refuse`` never starts a different agent."""
     agent_id = normalize_explicit_agent(requested)
@@ -1721,7 +1941,9 @@ def explicit_agent_decision(
             "explicit cursor (high=%s low=%s)" % (fuel.cursor_high, fuel.cursor_low),
         )
     if agent_id == "opencode":
-        return explicit_opencode_decision(fuel, opencode_cmd, auth_present=auth_present)
+        return explicit_opencode_decision(
+            fuel, opencode_cmd, auth_present=auth_present, start_model=start_model
+        )
     return Decision("refuse", "explicit agent %s is not supported" % (requested,))
 
 
@@ -1898,6 +2120,7 @@ def resolve_seat_decision(
     *,
     auth_present: bool,
     xai_signin_ok: bool = True,
+    start_model: str = "",
 ) -> Decision:
     """Apply an explicit agent request, else the automatic Grok → Cursor → OpenCode order.
 
@@ -1906,8 +2129,15 @@ def resolve_seat_decision(
     when xAI sign-in is expired and Cursor still has fuel).
     """
     if normalize_explicit_agent(requested):
+        mid = (start_model or "").strip() or (_OPENCODE_MODEL_ENV_AT_START or "").strip()
         out = explicit_agent_decision(
-            requested, fuel, cursor_cmd, grok_exe, opencode_cmd, auth_present=auth_present
+            requested,
+            fuel,
+            cursor_cmd,
+            grok_exe,
+            opencode_cmd,
+            auth_present=auth_present,
+            start_model=mid,
         )
         if out.kind == "grok" and not xai_signin_ok:
             return Decision("xai-auth-expired", "explicit grok: xai-auth-expired")
@@ -2833,6 +3063,7 @@ def rules_text(folder: str, kind: str) -> str:
             f"Skill-intake consolidation: when a worker takes an FR from skill intake (label:skill / harvest), it must close all open issues for that skill book (every harvest/skill issue targeting the same book), open one consolidated PR for them, and cite every issue it closes (Closes #N for each); no per-issue PRs for the same skill book; the worker closes the issues itself as part of DONE. "
             f"Never file the worker status receipt itself (DONE/NACK/GIVEUP/SKIP/self-MRB/twin/duplicate/merged or an FR/MRB/UAT #N receipt) as an issue/FR; only a separate genuine defect or gap is filed. "
             f"If an FR worker finds the assigned issue is a duplicate/twin or already done, close it with a comment linking the first issue or covering PR before sending DONE. "
+            f"FR #8157: in-job pytest must be targeted (python common/scripts/select_tests.py --changed or run_job_pytest.py --changed / explicit paths); never full jeeves/tests or common/tests in-job (OpenCode 600s timeout; CI covers). "
             + extra)
 
 
@@ -3326,25 +3557,40 @@ def notify_start_model_after_launch(
     shop_say: Optional[Callable[..., bool]] = None,
     log: Optional[Callable[[str], None]] = None,
     filer_post: Optional[Callable[..., dict]] = None,
+    reason: str = "",
+    env: Optional[dict] = None,
 ) -> dict:
-    """FR #7148: after agent start, report when configured model was not used."""
+    """FR #7148 / #8159: report when the launch-selected model was not used.
+
+    ``configured`` is ``launch_selected_model`` (env pin > tray > config). A pause
+    fallback (``mismatch_reason=paused``) is a digest mismatch only --- not the
+    "start model unavailable / no premium fallback" intake line (FR #8159 AC3).
+    """
     cfg = str(configured or "").strip()
     act = str(actual or "").strip()
-    try:
-        import worker_start_model as wsm
+    why = str(reason or "").strip().lower()
+    if not why:
+        try:
+            import worker_start_model as wsm
 
-        mismatch = wsm.model_mismatch(act, cfg)
-    except Exception:
-        mismatch = bool(cfg) and (not act or act.lower() != cfg.lower())
-    if not cfg or not mismatch:
+            why = wsm.model_mismatch_reason(act, cfg, env=env)
+        except Exception:
+            why = (
+                "mismatch"
+                if (cfg and act and act.lower() != cfg.lower())
+                else ("unavailable" if cfg and not act else "")
+            )
+    if not cfg or not why:
         return {"ok": True, "skipped": True, "reason": "match-or-empty"}
+    if why == "paused":
+        return {"ok": True, "skipped": True, "reason": "paused-fallback"}
     return report_configured_start_model_unavailable(
         kind=kind,
         configured=cfg,
         actual=act,
         machine=machine,
         nick=nick,
-        reason="mismatch" if act else "unavailable",
+        reason=why,
         shop=shop,
         shop_say=shop_say,
         log=log,
@@ -7189,12 +7435,15 @@ def out_of_fuel_reading_clears_soft_hold(
     kind: str,
     has_session_key: bool = False,
     allow_cursor_kind_switch: bool = False,
+    start_model: str = "",
 ) -> tuple:
     """FR #4899: soft hold clears only on the seat's own pool (or a real kind-switch).
 
     Returns ``(clears: bool, reason: str)``. A grok seat with ``grok_pct=0`` must not
     clear because the machine still has Cursor tokens. Cursor may clear a grok soft
     hold only when ``allow_cursor_kind_switch`` is True (seat will run Cursor, FR #3997).
+
+    FR #8158: OpenCode soft clear keys to the start-model pool when provided.
     """
     k = (kind or "").strip().lower() or "grok"
     if k == "grok":
@@ -7217,6 +7466,15 @@ def out_of_fuel_reading_clears_soft_hold(
             )
         return False, ""
     if k == "opencode":
+        pool = seat_fuel_pool(k, start_model)
+        if pool == "opencode_go":
+            if fuel.opencode_go is not None and int(fuel.opencode_go) > 0:
+                return True, f"reading kind=opencode pool=opencode_go pct={fuel.opencode_go}"
+            return False, ""
+        if pool == "opencode_free":
+            if fuel.opencode_free is not None and int(fuel.opencode_free) > 0:
+                return True, f"reading kind=opencode pool=opencode_free pct={fuel.opencode_free}"
+            return False, ""
         if opencode_has_tokens(fuel):
             return (
                 True,
@@ -7648,7 +7906,7 @@ def default_out_of_fuel_log_path(
     r"""Log path to tail for mid-job out-of-fuel (FR #3012 grok / FR #3019 cursor / FR #6120 opencode).
 
     Override with ``BOB_WORKER_OUT_OF_FUEL_LOG``. Grok defaults to ``unified.jsonl``.
-    Cursor has no durable fleet enqueue log yet — returns the override only (watcher waits
+    Cursor has no durable fleet enqueue log yet - returns the override only (watcher waits
     until the path appears; mid-job fuel-reading poll still covers Cursor).
     OpenCode writes wrapper-caught 402/429/quota failures to a shared log under
     ``%LOCALAPPDATA%\Bobiverse\worker\logs`` so the fuel watcher can tail them.
@@ -9752,6 +10010,7 @@ def post_digest_seat_kind(
     model: str = "",
     configured_model: str = "",
     model_mismatch: bool | None = None,
+    mismatch_reason: str = "",
     cost_tier: str = "",
     start_effort: str = "",
     working_on: str = "",
@@ -9821,6 +10080,9 @@ def post_digest_seat_kind(
         payload["model_mismatch"] = bool(model_mismatch)
     elif cfg_m and (model or "").strip():
         payload["model_mismatch"] = str(model).strip().lower() != cfg_m.lower()
+    why = str(mismatch_reason or "").strip()
+    if why and payload.get("model_mismatch"):
+        payload["mismatch_reason"] = why
     if (cost_tier or "").strip():
         payload["cost_tier"] = str(cost_tier).strip()
     eff = str(start_effort or "").strip().lower()
@@ -9869,6 +10131,241 @@ def post_digest_seat_kind(
     post_kw["retries"] = 1
     return bool(_http_post_json(report, payload, **post_kw))
 
+
+# FR #8155: digest last_progress heartbeats (activity vs state-change ``updated``).
+DEFAULT_PROGRESS_HEARTBEAT_S = 120.0
+DEFAULT_PROGRESS_POLL_S = 30.0
+
+
+def progress_heartbeat_interval_s(env: Optional[dict] = None) -> float:
+    e = os.environ if env is None else env
+    raw = str(e.get("BOB_PROGRESS_HEARTBEAT_S") or "").strip()
+    if not raw:
+        return float(DEFAULT_PROGRESS_HEARTBEAT_S)
+    try:
+        v = float(raw)
+    except ValueError:
+        return float(DEFAULT_PROGRESS_HEARTBEAT_S)
+    return max(30.0, min(900.0, v))
+
+
+def progress_alive_counts_as_seen(*, moved: bool, agent_alive: bool) -> bool:
+    """FR #8195: log/worktree move OR a live agent/tool process refreshes the clock."""
+    return bool(moved) or bool(agent_alive)
+
+
+def progress_phase_for_alive_heartbeat(prior: str = "") -> str:
+    """Safe phase when the agent is alive but logs are silent (FR #8195)."""
+    prior_s = str(prior or "").strip()
+    if prior_s:
+        try:
+            from bobreport import sanitize_progress_phase
+
+            return sanitize_progress_phase(prior_s) or "tool:alive"
+        except Exception:
+            return re.sub(r"[^a-z0-9_.:-]+", "", prior_s.lower())[:48] or "tool:alive"
+    return "tool:alive"
+
+
+def _file_size_mtime(path: Path) -> tuple[int, float]:
+    try:
+        st = path.stat()
+        return int(st.st_size), float(st.st_mtime)
+    except OSError:
+        return 0, 0.0
+
+
+def _tail_text(path: Path, *, max_bytes: int = 4096) -> str:
+    try:
+        with path.open("rb") as fh:
+            fh.seek(0, os.SEEK_END)
+            size = fh.tell()
+            fh.seek(max(0, size - max_bytes))
+            raw = fh.read()
+        return raw.decode("utf-8", errors="replace")
+    except OSError:
+        return ""
+
+
+def infer_progress_phase_from_text(text: str) -> str:
+    """Map a log tail to a short safe phase (FR #8155). Never returns args/secrets."""
+    try:
+        from bobreport import sanitize_progress_phase
+    except Exception:
+        sanitize_progress_phase = None  # type: ignore
+    blob = (text or "")[-2000:]
+    low = blob.lower()
+    phase = ""
+    if re.search(r"(?i)\b(pytest|unittest|npm test|cargo test)\b", blob):
+        phase = "tool:pytest" if "pytest" in low else "test"
+    elif re.search(r"(?i)\b(git\s+commit|committed)\b", blob):
+        phase = "commit"
+    elif re.search(r"(?i)\b(git\s+push|pushed to)\b", blob):
+        phase = "push"
+    elif re.search(r"(?i)\b(edit|apply_patch|search_replace|write_file|str_replace)\b", blob):
+        phase = "edit"
+    elif re.search(r"(?i)\b(bash|shell|powershell|cmd\.exe|run_terminal)\b", blob):
+        phase = "tool:bash"
+    elif re.search(r"(?i)\b(tool_call|tool_use|function_call)\b", blob):
+        m = re.search(r"(?i)\b(?:name|tool)[\"'=\s:]+([A-Za-z0-9_.-]{1,32})", blob[-800:])
+        if m:
+            phase = f"tool:{m.group(1)}"
+        else:
+            phase = "tool:call"
+    elif re.search(r"(?i)\b(stream|assistant|message)\b", blob):
+        phase = "stream"
+    elif blob.strip():
+        phase = "stream"
+    if sanitize_progress_phase is not None:
+        return sanitize_progress_phase(phase) or ""
+    return re.sub(r"[^a-z0-9_.:-]+", "", phase.lower())[:48]
+
+
+def detect_seat_progress(
+    *,
+    kind: str,
+    run_dir: Path | str | None,
+    job_worktree: str = "",
+    prev: Optional[dict] = None,
+) -> tuple[bool, str, dict]:
+    """Return ``(moved, phase, state)`` for FR #8155 progress heartbeats.
+
+    ``state`` is opaque fingerprint data for the next poll. Progress means log growth,
+    turn markers, or worktree mtime — not CPU alone.
+    """
+    prev = dict(prev or {})
+    kind_s = (kind or "").strip().lower()
+    rd = Path(run_dir) if run_dir else None
+    candidates: list[Path] = []
+    if rd is not None:
+        candidates.append(rd / "opencode-turns.jsonl")
+        candidates.append(rd / "session.log")
+        # Per-job OpenCode stdout logs under LOCALAPPDATA Bobiverse/worker/logs/opencode
+        logs_root = _state_root() / "logs" / "opencode"
+        if logs_root.is_dir():
+            try:
+                newest = max(logs_root.glob("*.log"), key=lambda p: p.stat().st_mtime, default=None)
+            except OSError:
+                newest = None
+            if newest is not None:
+                candidates.append(newest)
+        # Grok session events under seat grok-home
+        try:
+            ghome = agent_grok_home(run_dir=rd)
+            sess = ghome / "sessions"
+            if sess.is_dir():
+                for ev in sess.rglob("events.jsonl"):
+                    candidates.append(ev)
+                    break
+        except Exception:
+            pass
+        # Cursor chat store (best-effort)
+        try:
+            cursor_chats = Path.home() / ".cursor" / "chats"
+            if cursor_chats.is_dir():
+                for p in cursor_chats.rglob("*.jsonl"):
+                    candidates.append(p)
+                    break
+        except Exception:
+            pass
+    wt = str(job_worktree or "").strip()
+    if wt:
+        candidates.append(Path(wt) / ".git" / "index")
+        candidates.append(Path(wt) / ".git" / "HEAD")
+
+    moved = False
+    phase = ""
+    state: dict = {"sizes": {}, "mtimes": {}}
+    for path in candidates:
+        if not path.is_file():
+            continue
+        key = str(path)
+        size, mtime = _file_size_mtime(path)
+        state["sizes"][key] = size
+        state["mtimes"][key] = mtime
+        prev_size = int((prev.get("sizes") or {}).get(key) or 0)
+        prev_mtime = float((prev.get("mtimes") or {}).get(key) or 0.0)
+        if size > prev_size or (mtime > prev_mtime + 0.5 and size > 0):
+            moved = True
+            if not phase:
+                if "opencode-turns" in key or key.endswith("events.jsonl"):
+                    phase = "stream"
+                elif "index" in key or key.endswith("HEAD"):
+                    phase = "edit"
+                else:
+                    phase = infer_progress_phase_from_text(_tail_text(path))
+    if not phase and moved:
+        phase = "stream" if kind_s in ("opencode", "grok", "cursor") else "edit"
+    try:
+        from bobreport import sanitize_progress_phase
+
+        phase = sanitize_progress_phase(phase)
+    except Exception:
+        phase = re.sub(r"[^a-z0-9_.:-]+", "", (phase or "").lower())[:48]
+    return moved, phase, state
+
+
+def post_digest_progress_heartbeat(
+    *,
+    machine: str,
+    nick: str,
+    pid: int | str | None = None,
+    kind: str = "",
+    work: str = "",
+    last_progress: str = "",
+    progress_phase: str = "",
+    url: str | None = None,
+    env: Optional[dict] = None,
+    log: Optional[Callable[[str], None]] = None,
+) -> bool:
+    """POST worker-work activity heartbeat with ``last_progress`` (FR #8155).
+
+    Does not change seat state semantics: chair keeps ``updated`` on state/work
+    changes only; ``last_progress`` is the activity clock.
+    """
+    env = os.environ if env is None else env
+    report = (url or env.get("BOB_REPORT_URL") or env.get("BOB_DIGEST_URL") or DEFAULT_DIGEST_REPORT_URL).strip()
+    if not report:
+        return False
+    mid = normalize_machine_id(machine) or str(machine or "").strip().lower()
+    nick_s = (nick or "").strip()
+    if not mid or not nick_s:
+        return False
+    try:
+        from bobreport import sanitize_progress_phase, _utc_now_iso
+    except Exception:
+        sanitize_progress_phase = lambda x, **_k: str(x or "")[:48]  # type: ignore
+        _utc_now_iso = lambda: time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())  # type: ignore
+    iso = (last_progress or "").strip() or _utc_now_iso()
+    phase = sanitize_progress_phase(progress_phase)
+    payload: dict = {
+        "op": "worker-work",
+        "machine": mid,
+        "id": mid,
+        "nick": nick_s,
+        "state": "doing",
+        "online": True,
+        "last_progress": iso,
+    }
+    if phase:
+        payload["progress_phase"] = phase
+    if work:
+        payload["work"] = one_line(work, 200)
+    kind_s = (kind or "").strip().lower()
+    if kind_s:
+        payload["kind"] = kind_s
+    if pid is not None and str(pid).strip() != "":
+        try:
+            payload["pid"] = int(str(pid))
+        except (TypeError, ValueError):
+            pass
+    ok = bool(_http_post_json(report, payload, log=log))
+    if not ok and log:
+        try:
+            log(f"progress-heartbeat: post failed nick={nick_s} phase={phase or '-'}")
+        except Exception:
+            pass
+    return ok
 
 
 def busy_holding_nack_line(line: str, holding: str) -> Optional[str]:
@@ -10799,6 +11296,154 @@ def opencode_finish_auto_pr(
     return url
 
 
+# FR #8156: once-per-process warn when a fleet .ps1 lacks a switch the exe wants.
+_FLEET_PS1_MISMATCH_WARNED: set[str] = set()
+_CLEAR_PS1_NAME = "Clear-BobiverseJobWorktrees.ps1"
+_PS1_PARAM_RX = re.compile(r"(?is)\bparam\s*\((.*?)\)\s*(?:\r?\n|$)")
+_PS1_PARAM_NAME_RX = re.compile(r"(?im)^\s*(?:\[[^\]]+\]\s*)+\$([A-Za-z_][A-Za-z0-9_]*)")
+
+
+def ps1_declared_params(script: str | Path) -> frozenset[str]:
+    """Parameter names declared in a PowerShell script's ``param(...)`` block (FR #8156)."""
+    try:
+        text = Path(script).read_text(encoding="utf-8-sig")
+    except OSError:
+        return frozenset()
+    m = _PS1_PARAM_RX.search(text)
+    if not m:
+        return frozenset()
+    body = m.group(1) or ""
+    names = {n for n in _PS1_PARAM_NAME_RX.findall(body) if n}
+    # Also catch ``[switch]$Foo`` / bare ``$Foo =`` tokens inside the block.
+    for n in re.findall(r"\$([A-Za-z_][A-Za-z0-9_]*)", body):
+        names.add(n)
+    return frozenset(names)
+
+
+def resolve_fleet_ps1(
+    name: str,
+    *,
+    install_root: str | Path | None = None,
+    source_file: str | Path | None = None,
+) -> Optional[Path]:
+    """Locate a fleet ``.ps1`` the worker invokes (FR #8156).
+
+    Prefer the copy shipped beside the frozen exe (or extracted worker-scripts),
+    then ``common\\scripts`` (tracked), and only then the often-stale flat
+    ``install\\scripts`` compose. Never prefer a PyInstaller ``_MEI`` extract.
+    """
+    try:
+        import worker_shipped_scripts as _shipped_scripts
+
+        _shipped_scripts.extract_bundled_scripts()
+    except Exception:
+        pass
+    source = Path(source_file).resolve() if source_file else Path(__file__).resolve()
+    here = source.parent
+    install = str(
+        install_root
+        or os.environ.get("BOB_INSTALL_ROOT")
+        or os.environ.get("BOBIVERSE_INSTALL_ROOT")
+        or ""
+    ).strip()
+    candidates: list[Path] = []
+    # 1) Frozen / hotpatch ship dir next to bob-worker.exe
+    if getattr(sys, "frozen", False):
+        exe_dir = Path(sys.executable).resolve().parent
+        candidates.append(exe_dir / "scripts" / name)
+        candidates.append(exe_dir.parent / "scripts" / name)
+        candidates.append(exe_dir.parent / "worker" / "scripts" / name)
+    # 2) Env override
+    scripts_env = (os.environ.get("BOB_SCRIPTS_DIR") or "").strip()
+    if scripts_env:
+        candidates.append(Path(scripts_env) / name)
+    # 3) Repo / source tree common (fresher than flat compose)
+    if not _path_is_mei_extract(here):
+        candidates.append(here.parent.parent / "common" / "scripts" / name)
+        candidates.append(here / name)
+    if install:
+        root = Path(install)
+        candidates.append(root / "common" / "scripts" / name)
+        candidates.append(root / "worker" / "scripts" / name)
+        # Flat compose last — often lags hotpatched exe (class of #8156).
+        candidates.append(root / "scripts" / name)
+    for cand in candidates:
+        if _path_is_mei_extract(cand):
+            continue
+        if cand.is_file():
+            return cand.resolve()
+    return None
+
+
+def filter_ps1_optional_switches(
+    script: str | Path,
+    argv: list[str],
+    *,
+    optional: frozenset[str] | set[str] | None = None,
+) -> tuple[list[str], list[str]]:
+    """Drop ``-Switch`` args the script does not declare (FR #8156).
+
+    Returns ``(filtered_argv, omitted_switch_names)``. Required positional-style
+    pairs (``-RepoRoot``, ``-KeepPath``, …) are kept even when undeclared so a
+    truly broken script still fails loudly; only ``optional`` names are stripped.
+    """
+    opt = frozenset(optional or ())
+    if not opt:
+        return list(argv), []
+    declared = {n.lower() for n in ps1_declared_params(script)}
+    out: list[str] = []
+    omitted: list[str] = []
+    i = 0
+    while i < len(argv):
+        tok = str(argv[i])
+        if tok.startswith("-") and not tok.startswith("--"):
+            name = tok.lstrip("-").split(":", 1)[0]
+            # Switch with no following value when next is another flag or end.
+            is_switch_only = (i + 1 >= len(argv)) or str(argv[i + 1]).startswith("-")
+            if name.lower() in {o.lower() for o in opt} and name.lower() not in declared:
+                omitted.append(name)
+                i += 1
+                # Drop a following value only when it is not another flag (rare for switches).
+                if not is_switch_only and i < len(argv) and not str(argv[i]).startswith("-"):
+                    # Optional switches are [switch] — never consume a value.
+                    pass
+                continue
+        out.append(tok)
+        i += 1
+    return out, omitted
+
+
+def _warn_fleet_ps1_mismatch_once(
+    script: Path,
+    omitted: list[str],
+    *,
+    log_fn: Optional[Callable[[str], None]] = None,
+) -> None:
+    """Log + runtime_failure once per script path for omitted switches (FR #8156)."""
+    if not omitted:
+        return
+    key = str(script).lower()
+    if key in _FLEET_PS1_MISMATCH_WARNED:
+        return
+    _FLEET_PS1_MISMATCH_WARNED.add(key)
+    msg = (
+        f"fleet-ps1 mismatch: {script.name} lacks -{',-'.join(omitted)}; "
+        f"calling without those switches (path={script})"
+    )
+    if log_fn:
+        log_fn(f"opencode finish: Clear result=skipped:param-mismatch {msg}")
+    try:
+        import runtime_failure
+
+        runtime_failure.report_message(
+            "bob-worker",
+            msg,
+            site="fleet-ps1-param-mismatch",
+        )
+    except Exception:
+        pass
+
+
 def opencode_cleanup_extra_worktrees(
     job_worktree: str | Path,
     *,
@@ -10806,10 +11451,12 @@ def opencode_cleanup_extra_worktrees(
     run=None,
     log_fn: Optional[Callable[[str], None]] = None,
 ) -> list[str]:
-    """FR #6370 / FR #8023: delegate extra worktree reclaim to Clear script.
+    """FR #6370 / FR #8023 / FR #8156: delegate extra worktree reclaim to Clear.
 
-    Invokes Clear-BobiverseJobWorktrees.ps1 with -KeepPath <job> -SkipSeatDisk.
-    If PowerShell or the Clear script is missing, log and remove nothing.
+    Resolves Clear via ``resolve_fleet_ps1`` (shipped / common before flat
+    install scripts). Passes ``-SkipSeatDisk`` only when the script declares it;
+    otherwise falls back so an older install-root copy still cleans. Logs
+    ``result=ok|skipped:<reason>|failed:<class>``.
     """
     import shutil as _shutil
     import subprocess as _sp
@@ -10819,30 +11466,26 @@ def opencode_cleanup_extra_worktrees(
     root = Path(job_worktree or "")
     removed: list[str] = []
     if not root.is_dir():
+        if log_fn:
+            log_fn("opencode finish: Clear result=skipped:no-job-dir")
         return removed
     try:
         job_res = root.resolve()
     except OSError:
+        if log_fn:
+            log_fn("opencode finish: Clear result=skipped:job-resolve")
         return removed
 
     ps = _shutil.which("powershell") or _shutil.which("powershell.exe")
     if not ps:
         if log_fn:
-            log_fn("opencode finish: Clear skipped (powershell missing); remove nothing")
+            log_fn("opencode finish: Clear result=skipped:powershell-missing")
         return removed
 
-    # Resolve Clear script next to install / common / job clone.
-    candidates: list[Path] = []
-    install = (os.environ.get("BOB_INSTALL_ROOT") or os.environ.get("BOBIVERSE_INSTALL_ROOT") or "").strip()
-    if install:
-        candidates.append(Path(install) / "scripts" / "Clear-BobiverseJobWorktrees.ps1")
-        candidates.append(Path(install) / "common" / "scripts" / "Clear-BobiverseJobWorktrees.ps1")
-    candidates.append(Path(__file__).resolve().parent.parent.parent / "common" / "scripts" / "Clear-BobiverseJobWorktrees.ps1")
-    candidates.append(Path(__file__).resolve().parent / "Clear-BobiverseJobWorktrees.ps1")
-    script = next((p for p in candidates if p.is_file()), None)
+    script = resolve_fleet_ps1(_CLEAR_PS1_NAME)
     if script is None:
         if log_fn:
-            log_fn("opencode finish: Clear script missing; remove nothing")
+            log_fn("opencode finish: Clear result=skipped:script-missing")
         return removed
 
     repo_root = ""
@@ -10859,12 +11502,10 @@ def opencode_cleanup_extra_worktrees(
                 cpath = Path(common_dir)
                 if not cpath.is_absolute():
                     cpath = (job_res / cpath).resolve()
-                # .../.git or .../.git/worktrees/x -> repo checkout with .git
                 text = str(cpath)
                 if text.lower().endswith(os.sep + ".git") or text.lower().endswith("/.git"):
                     repo_root = str(cpath.parent)
                 else:
-                    # worktree gitdir: climb to .git then parent
                     marker = text.lower().rfind(f"{os.sep}.git{os.sep}")
                     if marker < 0:
                         marker = text.lower().rfind("/.git/")
@@ -10875,7 +11516,6 @@ def opencode_cleanup_extra_worktrees(
     except Exception:
         repo_root = ""
     if not repo_root or not (Path(repo_root) / ".git").exists():
-        # Fall back: treat job tree's toplevel as repo root for Clear.
         try:
             top = run(
                 ["git", "-C", str(job_res), "rev-parse", "--show-toplevel"],
@@ -10889,40 +11529,80 @@ def opencode_cleanup_extra_worktrees(
             pass
     if not repo_root:
         if log_fn:
-            log_fn("opencode finish: Clear skipped (no repo root); remove nothing")
+            log_fn("opencode finish: Clear result=skipped:no-repo-root")
         return removed
+
+    argv = [
+        ps,
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        str(script),
+        "-RepoRoot",
+        repo_root,
+        "-KeepPath",
+        str(job_res),
+        "-SkipSeatDisk",
+        "-MaxExtraJobTrees",
+        "0",
+    ]
+    argv, omitted = filter_ps1_optional_switches(
+        script, argv, optional=frozenset({"SkipSeatDisk"})
+    )
+    if omitted:
+        _warn_fleet_ps1_mismatch_once(script, omitted, log_fn=log_fn)
 
     try:
         proc = run(
-            [
-                ps,
-                "-NoProfile",
-                "-ExecutionPolicy",
-                "Bypass",
-                "-File",
-                str(script),
-                "-RepoRoot",
-                repo_root,
-                "-KeepPath",
-                str(job_res),
-                "-SkipSeatDisk",
-                "-MaxExtraJobTrees",
-                "0",
-            ],
+            argv,
             capture_output=True,
             text=True,
             timeout=300,
         )
         out = ((getattr(proc, "stdout", "") or "") + (getattr(proc, "stderr", "") or ""))
-        if log_fn:
-            log_fn(f"opencode finish: Clear exit={getattr(proc, 'returncode', '?')} {out[-400:]}")
-        # Best-effort: surface paths mentioned as removed.
+        code = int(getattr(proc, "returncode", 1) or 0)
+        # NamedParameterNotFound / similar: retry once without optional switches.
+        if code != 0 and "NamedParameterNotFound" in out and "-SkipSeatDisk" in argv:
+            argv2 = [a for a in argv if a != "-SkipSeatDisk"]
+            _warn_fleet_ps1_mismatch_once(script, ["SkipSeatDisk"], log_fn=log_fn)
+            proc = run(argv2, capture_output=True, text=True, timeout=300)
+            out = ((getattr(proc, "stdout", "") or "") + (getattr(proc, "stderr", "") or ""))
+            code = int(getattr(proc, "returncode", 1) or 0)
+            argv = argv2
         for line in out.splitlines():
             if line.startswith("Removing worktree "):
                 removed.append(line[len("Removing worktree ") :].strip())
+        if log_fn:
+            if code == 0:
+                log_fn(f"opencode finish: Clear result=ok removed={len(removed)} {out[-200:]}")
+            else:
+                log_fn(
+                    f"opencode finish: Clear result=failed:exit-{code} {out[-400:]}"
+                )
+                try:
+                    import runtime_failure
+
+                    runtime_failure.report_message(
+                        "bob-worker",
+                        f"Clear-BobiverseJobWorktrees exit={code}",
+                        site="fleet-ps1-clear-failed",
+                    )
+                except Exception:
+                    pass
     except Exception as e:  # noqa: BLE001
         if log_fn:
-            log_fn(f"opencode finish: Clear failed {type(e).__name__}; remove nothing")
+            log_fn(f"opencode finish: Clear result=failed:{type(e).__name__}")
+        try:
+            import runtime_failure
+
+            runtime_failure.report_message(
+                "bob-worker",
+                f"Clear-BobiverseJobWorktrees failed {type(e).__name__}",
+                site="fleet-ps1-clear-failed",
+            )
+        except Exception:
+            pass
     return removed
 
 
@@ -12554,6 +13234,12 @@ class Supervisor:
         self._session_screen = None
         self._session_cursor = None
         self._exit_recorded_pid = None
+        # FR #8155: digest last_progress heartbeats while ACK is open.
+        self._progress_prev: dict = {}
+        self._progress_last_post_wall: float = 0.0
+        self._progress_last_seen_wall: float = 0.0
+        self._progress_phase: str = ""
+        self._progress_heartbeat_s = progress_heartbeat_interval_s()
         self.secret = env_secret
         self.spawn, self.kill, self.probe, self.inject = spawn, kill, probe, inject
         self.detector = detector or HangDetector()
@@ -12580,6 +13266,7 @@ class Supervisor:
         self._expected_exit: set = set()
         self._owned: set = set()
         self._shutting = False
+        self._shutdown_reason = ""
         self._grace_timer: Optional[threading.Timer] = None
         self._min_ready_timer: Optional[threading.Timer] = None
         self._agent_started_at: Optional[float] = None
@@ -12830,11 +13517,28 @@ class Supervisor:
         # FR #4899: soft hold — own pool only. Cursor tokens clear a grok hold only when
         # this seat is actually switching to Cursor (caller sets kind / restarts agent).
         allow_switch = bool(getattr(self, "_out_of_fuel_allow_cursor_kind_switch", False))
+        start_model = ""
+        if kind == "opencode":
+            try:
+                start_model = launched_hostile_start_model(
+                    kind, getattr(self, "last_child_env", None)
+                )
+            except Exception:
+                start_model = ""
+            try:
+                fuel = fold_opencode_seat_pauses(
+                    fuel,
+                    start_model,
+                    env=getattr(self, "base_env", None) or getattr(self, "last_child_env", None),
+                )
+            except Exception:
+                pass
         ok, why = out_of_fuel_reading_clears_soft_hold(
             fuel,
             kind=kind,
             has_session_key=self.secret is not None,
             allow_cursor_kind_switch=allow_switch,
+            start_model=start_model,
         )
         if ok:
             if self.bored is not None:
@@ -12843,18 +13547,38 @@ class Supervisor:
         return False
 
     def _fuel_lost_mid_job(self) -> bool:
-        """FR #3019 / #3923: True only on an **explicit** exhausted reading while ACKed.
+        """FR #3019 / #3923 / #8158: True only on an **explicit** exhausted reading while ACKed.
 
         Unknown / timeout / empty ``Fuel()`` is **not** lost (selection still treats
         unknown as unavailable). Logs pct/state/helper snapshot every poll.
+
+        OpenCode seats key the reading to the launched start model pool
+        (``opencode_go`` / ``opencode_free``), never ``grok_pct`` (FR #8158).
         """
         kind = (self.kind or "").strip().lower()
+        start_model = ""
+        if kind == "opencode":
+            try:
+                start_model = launched_hostile_start_model(
+                    kind, getattr(self, "last_child_env", None)
+                )
+            except Exception:
+                start_model = ""
         try:
             fuel = read_fuel(self._install_root_for_fuel())
         except Exception as e:
             self.log(f"out-of-fuel: mid-job read_fuel failed {type(e).__name__} - treat as unknown")
             return False
-        snap = format_fuel_reading(fuel, kind)
+        if kind == "opencode":
+            try:
+                fuel = fold_opencode_seat_pauses(
+                    fuel,
+                    start_model,
+                    env=getattr(self, "base_env", None) or getattr(self, "last_child_env", None),
+                )
+            except Exception:
+                pass
+        snap = format_fuel_reading(fuel, kind, start_model=start_model)
         if kind == "cursor":
             lost = fuel_explicitly_exhausted(fuel, "cursor")
             self.log(f"out-of-fuel: mid-job reading {snap}")
@@ -12868,7 +13592,7 @@ class Supervisor:
             self.log(f"out-of-fuel: mid-job reading {snap}")
             return lost
         if kind == "opencode":
-            lost = fuel_explicitly_exhausted(fuel, "opencode")
+            lost = fuel_explicitly_exhausted(fuel, "opencode", start_model=start_model)
             self.log(f"out-of-fuel: mid-job reading {snap}")
             return lost
         return False
@@ -14499,6 +15223,36 @@ class Supervisor:
             on_unverified=None if force_verify else _mark_unverified,
         )
 
+    def _reconcile_wait_exit_with_shutdown(
+        self, proc, code, *, kill_line: str = ""
+    ) -> bool:
+        """FR #8165: if shutdown began after we recorded, prefer its reason and skip report.
+
+        Returns True when the wait thread must stop (no cli-failure / no recycle).
+        """
+        if not self._shutting:
+            return False
+        shut_reason = str(getattr(self, "_shutdown_reason", "") or "").strip() or "shutdown"
+        with self._lock:
+            le = self.last_exit or {}
+            if le.get("pid") == getattr(proc, "pid", None):
+                prev = str(le.get("reason") or "")
+                if prev in ("agent-cli-nonzero-exit", "agent-exited") or (
+                    is_console_closed_shutdown_reason(shut_reason)
+                    and prev != shut_reason
+                ):
+                    self.last_exit = {
+                        **le,
+                        "reason": _scrub(shut_reason)[:160],
+                        "exit_code": code if code is not None else le.get("exit_code"),
+                    }
+                    self._persist_last_exit()
+        self.log(
+            f"agent: exit during shutdown ({shut_reason}) code={code}; "
+            f"skip cli-failure report (FR #8165); {kill_line}"
+        )
+        return True
+
     def _wait_exit(self, proc) -> None:
         try:
             code = proc.wait()
@@ -14555,15 +15309,29 @@ class Supervisor:
         )
         exit_u = normalize_agent_exit_code(code)
         exit_label = format_agent_exit_code_label(code)
-        # FR #8148: if shutdown already recorded (console-closed / signal), do not also
-        # file a cli-failure intake for the same pid (TOCTOU after the expected check).
-        recorded = self._record_exit(
-            proc, "agent-exited" if exit_u == 0 else "agent-cli-nonzero-exit", code
-        )
+        # FR #8148 / #8165: classify console-close exit before recording; if shutdown
+        # already recorded (or begins while we record), do not file cli-failure.
+        if exit_u == CONSOLE_CLOSE_EXIT:
+            exit_reason = "console-closed"
+        elif exit_u == 0:
+            exit_reason = "agent-exited"
+        else:
+            exit_reason = "agent-cli-nonzero-exit"
+        recorded = self._record_exit(proc, exit_reason, code)
         if not recorded:
             self.log(
                 f"agent: exit already recorded code={code} (u32={exit_label}); "
                 f"skip cli-failure report (FR #8148); {kill_line}"
+            )
+            return
+        # FR #8165: inverse TOCTOU — we won _record_exit, then Ctrl/shutdown set
+        # _shutting. Reconcile last_exit to the shutdown reason and skip cli-failure.
+        if self._reconcile_wait_exit_with_shutdown(proc, code, kill_line=kill_line):
+            return
+        if exit_reason == "console-closed":
+            self.log(
+                f"agent: console-close exit code={code} (u32={exit_label}); "
+                f"skip cli-failure report (FR #8165); {kill_line}"
             )
             return
         if age is not None and age < max(30.0, float(self.startup_grace_s) + 15.0):
@@ -14684,6 +15452,11 @@ class Supervisor:
             # FR #4827: process I/O while a job is open keeps ack-stale from firing.
             if prev_io is not None and s.activity != prev_io and self.bored:
                 self.bored.note_agent_active()
+            # FR #8155: digest last_progress while a job is ACKed and logs/worktree move.
+            try:
+                self._maybe_progress_heartbeat()
+            except Exception as e:
+                self.log(f"progress-heartbeat: tick failed {type(e).__name__}")
             reason = self.detector.check(s, self.clock())
             if reason:
                 self.restart_agent(reason)
@@ -14693,6 +15466,79 @@ class Supervisor:
                 continue
             # FR #2383: agent still alive/turning but never ACK'd via run-dir outbox.
             self._check_ack_miss(proc)
+
+    def _maybe_progress_heartbeat(self) -> None:
+        """FR #8155 / #8195: post last_progress while ACK is open.
+
+        Log/worktree growth still counts. FR #8195: a live agent (or child tool)
+        process also refreshes the clock so silent long commands (e.g. pytest
+        buffered by Out-String) keep ``last_progress`` fresh for the stuck sweep.
+        """
+        if not self.bored or not getattr(self.bored, "_ack_open", False):
+            self._progress_prev = {}
+            self._progress_phase = ""
+            return
+        wt = str(os.environ.get("BOB_JOB_WORKTREE") or "").strip()
+        moved, phase, state = detect_seat_progress(
+            kind=self.kind,
+            run_dir=self.run_dir,
+            job_worktree=wt,
+            prev=self._progress_prev,
+        )
+        self._progress_prev = state
+        now_wall = time.time()
+        agent_alive = False
+        try:
+            with self._lock:
+                proc = self.proc
+            agent_alive = proc is not None and proc.poll() is None
+        except Exception:
+            agent_alive = False
+        if progress_alive_counts_as_seen(moved=moved, agent_alive=agent_alive):
+            self._progress_last_seen_wall = now_wall
+            if moved and phase:
+                self._progress_phase = phase
+            elif agent_alive and not self._progress_phase:
+                self._progress_phase = progress_phase_for_alive_heartbeat("")
+            try:
+                self.bored.note_agent_active()
+            except Exception:
+                pass
+        # Heartbeat while progress/alive was seen recently (stops when stalled dead).
+        stale_after = max(float(self._progress_heartbeat_s) * 1.5, 180.0)
+        if self._progress_last_seen_wall <= 0:
+            return
+        if (now_wall - self._progress_last_seen_wall) > stale_after:
+            return
+        if (now_wall - float(self._progress_last_post_wall or 0.0)) < float(self._progress_heartbeat_s):
+            return
+        work = ""
+        try:
+            work = str(getattr(self.bored, "_ack_job_key", None) or "").strip()
+        except Exception:
+            work = ""
+        try:
+            from bobreport import _utc_now_iso
+
+            iso = _utc_now_iso()
+        except Exception:
+            iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        use_phase = self._progress_phase or phase or progress_phase_for_alive_heartbeat("")
+        ok = post_digest_progress_heartbeat(
+            machine=self.machine,
+            nick=self.nick,
+            pid=getattr(self.proc, "pid", None) if self.proc else None,
+            kind=self.kind,
+            work=work,
+            last_progress=iso,
+            progress_phase=use_phase,
+            log=self.log,
+        )
+        if ok:
+            self._progress_last_post_wall = now_wall
+            self.log(
+                f"progress-heartbeat: last_progress={iso} phase={use_phase or '-'}"
+            )
 
     def _inject_failed_turn_retry(self, job_key: str) -> None:
         """FR #7201: re-inject the last assign once after an error turn (bounded)."""
@@ -15112,6 +15958,7 @@ class Supervisor:
             if self._shutting:
                 return
             self._shutting = True
+            self._shutdown_reason = str(reason or "")
             self.exit_code = code
             proc = self.proc
             if proc is not None:
@@ -15561,6 +16408,49 @@ def report_seat_start_refusal(
         return {"ok": False, "key": key}
 
 
+
+def wait_refusal_console(
+    *,
+    timeout_s: float = 60.0,
+    interactive: bool = True,
+    sleep_fn=time.sleep,
+    kbhit_fn=None,
+    getch_fn=None,
+) -> None:
+    """FR #8186: keep an interactive refusal console readable (key or timeout).
+
+    Non-interactive / tray-restart starts pass interactive=False and return at once.
+    Tests inject kbhit_fn/getch_fn/sleep_fn.
+    """
+    if not interactive:
+        return
+    timeout_s = max(60.0, float(timeout_s or 60.0))
+    if os.name != "nt":
+        sleep_fn(timeout_s)
+        return
+    try:
+        import msvcrt
+    except Exception:
+        sleep_fn(timeout_s)
+        return
+    kbhit = kbhit_fn or msvcrt.kbhit
+    getch = getch_fn or msvcrt.getwch
+    deadline = time.time() + timeout_s
+    while time.time() < deadline:
+        try:
+            if kbhit():
+                ch = getch()
+                if ch in ("\x00", "\xe0"):
+                    try:
+                        getch()
+                    except Exception:
+                        pass
+                return
+        except Exception:
+            pass
+        sleep_fn(0.05)
+
+
 def _explicit_refusal_exit(
     dec: Decision,
     log: Log,
@@ -15571,8 +16461,14 @@ def _explicit_refusal_exit(
     model: str = "",
     fuel=None,
     filer_post: Optional[Callable[..., dict]] = None,
+    interactive: Optional[bool] = None,
+    wait_fn=None,
 ) -> Optional[int]:
-    """Show an explicit refusal. Never starts another agent."""
+    """Show an explicit refusal. Never starts another agent.
+
+    FR #8186: interactive consoles wait for a key (or >=60s). Non-interactive
+    and tray-restart paths do not block.
+    """
     if dec.kind not in ("refuse", "xai-auth-expired"):
         return None
     log(f"select[{mode}]: refused - {dec.reason}")
@@ -15591,8 +16487,13 @@ def _explicit_refusal_exit(
         sys.stderr = sys.__stderr__
         ensure_console("Bob worker - refused")
         print("\nBob worker: " + dec.reason + ".\nNot starting a different agent.\n")
-        if os.name == "nt":
-            time.sleep(8)
+        if interactive is None:
+            interactive = bool(sys.stdin and hasattr(sys.stdin, "isatty") and sys.stdin.isatty())
+            if os.environ.get("BOB_TRAY_RESTART", "").strip() in ("1", "true", "yes"):
+                interactive = False
+        if interactive:
+            waiter = wait_fn or wait_refusal_console
+            waiter(timeout_s=60.0, interactive=True)
     except Exception:
         pass
     if dec.kind == "xai-auth-expired":
@@ -15619,7 +16520,7 @@ def run_plan(args, log: Log) -> int:
     stopped = _explicit_refusal_exit(
         dec, log, "plan",
         machine=getattr(args, "machine_id", "") or "",
-        kind=requested, model="", fuel=fuel,
+        kind=requested, model=(_OPENCODE_MODEL_ENV_AT_START or ""), fuel=fuel,
     )
     if stopped is not None:
         return stopped
@@ -15718,7 +16619,7 @@ def run_monitor(args, log: Log) -> int:
     stopped = _explicit_refusal_exit(
         dec, log, "monitor",
         machine=getattr(args, "machine_id", "") or "",
-        kind=requested, model="", fuel=fuel,
+        kind=requested, model=(_OPENCODE_MODEL_ENV_AT_START or ""), fuel=fuel,
     )
     if stopped is not None:
         return stopped
@@ -15846,7 +16747,7 @@ def run_maintenance(args, log: Log, *, spawn: Optional[Callable] = None, poll_s:
     stopped = _explicit_refusal_exit(
         dec, log, "maintenance",
         machine=getattr(args, "machine_id", "") or "",
-        kind=requested, model="", fuel=fuel,
+        kind=requested, model=(_OPENCODE_MODEL_ENV_AT_START or ""), fuel=fuel,
     )
     if stopped is not None:
         return stopped
@@ -15979,7 +16880,7 @@ def run_agent(args, log: Log) -> int:
     stopped = _explicit_refusal_exit(
         dec, log, "agent",
         machine=machine,
-        kind=requested, model="", fuel=fuel,
+        kind=requested, model=(_OPENCODE_MODEL_ENV_AT_START or ""), fuel=fuel,
     )
     if stopped is not None:
         return stopped
@@ -16083,13 +16984,15 @@ def run_agent(args, log: Log) -> int:
     cfg_model = ""
     cost_tier = ""
     mismatch = None
+    mismatch_reason = ""
     seat_effort = "low"
     try:
         import worker_start_model as wsm
 
         _cfg = wsm.load_worker_start_config()
-        cfg_model = wsm.configured_start_model(kind, _cfg)
-        mismatch = wsm.model_mismatch(seat_model, cfg_model)
+        cfg_model = wsm.launch_selected_model(kind, _cfg, env=os.environ)
+        mismatch_reason = wsm.model_mismatch_reason(seat_model, cfg_model, env=os.environ)
+        mismatch = bool(mismatch_reason)
         cost_tier = wsm.model_cost_tier(seat_model or cfg_model, _cfg)
         seat_effort = wsm.configured_start_effort(kind, _cfg)
         if not cfg_model:
@@ -16105,6 +17008,7 @@ def run_agent(args, log: Log) -> int:
             model=seat_model,
             configured_model=cfg_model,
             model_mismatch=mismatch,
+            mismatch_reason=mismatch_reason,
             cost_tier=cost_tier,
             start_effort=seat_effort,
             worker_build=build,
@@ -16149,6 +17053,7 @@ def run_agent(args, log: Log) -> int:
             model=seat_model,
             configured_model=cfg_model,
             model_mismatch=mismatch,
+            mismatch_reason=mismatch_reason,
             cost_tier=cost_tier,
             start_effort=seat_effort,
             worker_build=build,
@@ -16170,9 +17075,12 @@ def run_agent(args, log: Log) -> int:
         if not actual:
             actual = wsm.concrete_model_id(wsm.actual_start_model(env=child_env or os.environ))
         actual_effort = str(child_env.get(wsm.ENV_ACTUAL_EFFORT) or "").strip()
-        _cfg = wsm.load_worker_start_config()
-        cfg_model = wsm.configured_start_model(kind, _cfg)
-        mismatch = wsm.model_mismatch(actual, cfg_model)
+        _cfg = wsm.load_worker_start_config(env=child_env or os.environ)
+        cfg_model = wsm.launch_selected_model(kind, _cfg, env=child_env or os.environ)
+        mismatch_reason = wsm.model_mismatch_reason(
+            actual, cfg_model, env=child_env or os.environ
+        )
+        mismatch = bool(mismatch_reason)
         cost_tier = wsm.model_cost_tier(actual or cfg_model, _cfg)
         if not actual_effort:
             actual_effort = wsm.configured_start_effort(kind, _cfg)
@@ -16187,6 +17095,8 @@ def run_agent(args, log: Log) -> int:
                     shop=irc.shop,
                     shop_say=lambda _ch, msg: irc.say(irc.shop, msg),
                     log=log,
+                    reason=mismatch_reason,
+                    env=child_env or os.environ,
                 )
             except Exception as e:
                 log(f"worker: start model unavailable report failed {type(e).__name__}")
@@ -16206,6 +17116,7 @@ def run_agent(args, log: Log) -> int:
             model=actual or seat_model,
             configured_model=cfg_model,
             model_mismatch=mismatch,
+            mismatch_reason=mismatch_reason,
             cost_tier=cost_tier,
             start_effort=actual_effort,
             worker_build=build,

@@ -44,7 +44,7 @@ flowchart TD
 ## Steps
 
 1. **ACK** the assign line (exact id). 2. Read the issue, linked FRs and the vision/README so you serve the intent, not just the letter. 3. Work in a temporary worktree/branch, never on `main`.
-4. **Tests first**: new tests that fail for the right reason, then the implementation. 5. Run the whole suite (not just yours). 6. Update docs/usage/skills your change makes stale.
+4. **Tests first**: new tests that fail for the right reason, then the implementation. 5. **Targeted tests only (FR #8157):** run touched modules + new `test_fr<N>_*` via `python common/scripts/select_tests.py --changed` or `python common/scripts/run_job_pytest.py --changed` (or explicit paths). Never `pytest jeeves/tests` / `common/tests` / bare `pytest` in-job --- that hits the OpenCode 600 s tool timeout; CI runs the full suite on the PR. 6. Update docs/usage/skills your change makes stale.
 7. Open exactly **one** PR against the repo's default branch, title referencing the FR, body containing the line **`Closes <owner>/<repo>#N`** (the full form, the originating issue - not just `#N`, not only in a comment) plus the evidence block below. A PR that targets a non-default branch does not auto-close the issue: say so in the body so the MRB closes it by hand.
 8. **Verify the link before DONE**: `gh pr view <pr> --repo <owner>/<repo> --json body,baseRefName,closingIssuesReferences` must list issue N in `closingIssuesReferences` (or, for a non-default base, the body must carry the `Closes` line and say it needs a manual close). Fix the body and re-check if not. 9. Send **DONE** (PR url last, nothing after it). 10. Stop.
 
@@ -166,9 +166,23 @@ $url = (gh pr create --repo owner/name --base main --head fr-N --title '...' --b
 
 **FR #791 / gh issue close:** `gh issue close N --body-file` is an **unknown flag** on current `gh` - it does not accept `--body-file`. Close with a comment via `-c` / `--comment` only, e.g. `gh issue close <dup> --repo <owner>/<repo> --reason "not planned" --comment "Duplicate of #N / fixed by PR #M"`. Use `--body-file` for `gh pr create` / `gh pr edit` / `gh issue create`, never for `gh issue close`.
 
+## Targeted in-job tests (FR #8157)
+
+OpenCode (and other seats) must **not** run full trees such as `python -m pytest jeeves/tests -q` or `python -m pytest common/tests -q` inside a job --- those hit the ~600 s shell tool timeout and burn the job budget. CI already runs the full suites on the PR.
+
+**Do this instead:**
+
+1. Prefer `python common/scripts/run_job_pytest.py --changed` (selects via git diff vs `origin/main`, then runs pytest).
+2. Or print paths with `python common/scripts/select_tests.py --changed` and pass them to `python -m pytest -q <paths>`.
+3. Or pass explicit paths: `python -m pytest -q bob/tests/test_fr8157_*.py path/to/touched_test.py`.
+
+`run_job_pytest.py` **blocks** bare / full-suite argv quickly (exit 2 + WARN) instead of waiting 600 s. Escape hatch: `--allow-full-suite` (CI / explicit only).
+
+This guidance is shared for every seat kind (Grok / OpenCode / Cursor / Claude) via this skill and `bob_worker.rules_text`.
+
 ## Evidence required (in the PR body)
 
-* The line `Closes <owner>/<repo>#N` for the originating issue. * What changed and why (one paragraph) and the files touched. * The new tests (names) and the full-suite result (`N passed`). * How you verified it for real (command + short output) and **what you could not test live**.
+* The line `Closes <owner>/<repo>#N` for the originating issue. * What changed and why (one paragraph) and the files touched. * The new tests (names) and the **targeted** pytest result (`N passed` via select_tests / explicit paths; FR #8157 --- do not claim a full-suite run). * How you verified it for real (command + short output) and **what you could not test live**.
 * Assumptions and risks. * Links: the FR, related issues. No secrets, tokens, private hosts or credential files in the body, the diff or the logs.
 
 ## Who owns what

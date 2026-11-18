@@ -99,9 +99,12 @@ def test_s1_latest_release_lists_three_msi_assets():
         pytest.skip(f"release API unreachable: {e}")
     names = {a.get("name", "") for a in data.get("assets") or []}
     tag = data.get("tag_name") or ""
-    ver = tag.lstrip("v")
+    # FR #8193: component MSIs are versioned independently of the release tag
+    # (e.g. jeeves-2.0.166.msi under tag v2.0.1). Accept any {product}-*.msi.
+    msi_re = {p: re.compile(rf"^{re.escape(p)}-\d+\.\d+\.\d+\.msi$", re.I) for p in PRODUCTS}
     for p in PRODUCTS:
-        assert f"{p}-{ver}.msi" in names, f"missing {p}-{ver}.msi in {tag}; have {sorted(names)}"
+        matched = sorted(n for n in names if msi_re[p].match(n))
+        assert matched, f"missing {p}-*.msi in {tag}; have {sorted(names)}"
 
 
 # --- tools IF MISSING + skills ----------------------------------------------

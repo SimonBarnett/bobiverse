@@ -9349,6 +9349,14 @@ def mrb_yields_to_older_fr(
 
     Amends #7926: free seats still take FR first when up. With only Grok/paid seats,
     do not starve an older waiting FR behind a later MRB in focus order.
+
+    Documented offer rule (FR #8193 / Si 17 Nov):
+    - free_idle non-empty: classic MRB-before-FR among seats that can take MRB
+      (#3205 / #3265); free seats stay on FR/FIX.
+    - free_idle empty (only Grok/paid up): older waiting FR/FIX before a newer MRB
+      (#8138).
+    - Never yield to an FR that ``fr_is_superseded`` would skip (#254): otherwise
+      the superseded FR and its superseding MRB are both skipped into empty.
     """
     if free_idle:
         return False
@@ -9359,6 +9367,12 @@ def mrb_yields_to_older_fr(
     if seat_started_on_free_model(home, nick):
         return False
     cand_age = _row_queue_age_key(cand)
+    # FR #8193 / #254: do not yield to an FR this MRB already supersedes (or any
+    # FR that offer would skip as superseded) — otherwise both rows are skipped.
+    try:
+        doc_for_super = {"unaccepted": list(unaccepted or []), "accepted": [], "done": []}
+    except Exception:
+        doc_for_super = {"unaccepted": list(unaccepted or [])}
     for row in unaccepted or []:
         if not isinstance(row, dict):
             continue
@@ -9367,6 +9381,16 @@ def mrb_yields_to_older_fr(
             continue
         if _row_queue_age_key(row) >= cand_age:
             continue
+        if rt == "FR":
+            try:
+                if fr_is_superseded(
+                    doc_for_super,
+                    str(row.get("repo") or ""),
+                    str(row.get("id") or ""),
+                ):
+                    continue
+            except Exception:
+                pass
         if not _free_seat_can_take_row(home, row, nick, now, live, ledger):
             continue
         # Same machine / self-review gates as the offer path for this seat.
