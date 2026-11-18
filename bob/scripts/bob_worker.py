@@ -12959,8 +12959,15 @@ class BoredEmitter:
         self.log(f"done-miss: reminder injected for {key}")
         fn = self.done_miss_remind_fn
         if fn is not None:
+            # FR #8268: caller holds _cv. The reminder takes supervisor RLock
+            # (inject). start_agent holds that RLock then set_ready takes _cv.
+            # Drop _cv for the inject so a slow FINISH cannot stall start_agent.
             try:
-                fn(key)
+                self._cv.release()
+                try:
+                    fn(key)
+                finally:
+                    self._cv.acquire()
             except Exception as e:
                 self.log(f"done-miss: remind inject failed {type(e).__name__}")
 
