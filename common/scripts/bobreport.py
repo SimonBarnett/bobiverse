@@ -1100,6 +1100,13 @@ def _coerce_worker(mid: str, pid: str, raw: object) -> dict:
     updated = str(ent.get("updated") or ent.get("last_seen") or ent.get("lastSeen") or "").strip()
     if updated:
         out["updated"] = updated
+    # FR #8155: activity vs state-change timestamps.
+    last_progress = str(ent.get("last_progress") or "").strip()
+    if last_progress:
+        out["last_progress"] = last_progress
+    progress_phase = sanitize_progress_phase(ent.get("progress_phase"))
+    if progress_phase:
+        out["progress_phase"] = progress_phase
     return out
 
 
@@ -1234,10 +1241,48 @@ def _coerce_worker_list(raw: object, *, now: float | None = None) -> list[dict]:
         start_effort = str(ent.get("start_effort") or "").strip()
         if start_effort:
             row["start_effort"] = start_effort
+        # FR #8155: activity heartbeat separate from state-change ``updated``.
+        last_progress = str(ent.get("last_progress") or "").strip()
+        if last_progress:
+            row["last_progress"] = last_progress
+        progress_phase = sanitize_progress_phase(ent.get("progress_phase"))
+        if progress_phase:
+            row["progress_phase"] = progress_phase
         if isinstance(ent.get("last_exit"), dict):
             row["last_exit"] = coerce_last_exit(ent["last_exit"])
         out.append(row)
     return out[:WORKER_LIST_MAX]
+
+
+def sanitize_progress_phase(raw: object, *, max_len: int = 48) -> str:
+    """FR #8155: short safe phase label (no args, paths, or secret-shaped tokens)."""
+    text = " ".join(str(raw or "").split()).strip()
+    if not text:
+        return ""
+    if looks_like_secret(text):
+        return "redacted"
+    # Drop absolute paths and flag-like argument tails.
+    text = re.sub(r"[A-Za-z]:\\[^\s]+", "", text)
+    text = re.sub(r"(?i)/(?:Users|home|var|tmp)/[^\s]+", "", text)
+    text = re.sub(r"\s+--?\S+(?:=|\s+)\S+", "", text)
+    text = re.sub(r"\s{2,}", " ", text).strip(" :|-")
+    if not text:
+        return ""
+    # Keep only a compact class token: tool:name | edit | stream | test | ...
+    m = re.match(
+        r"(?i)^(tool:\w{1,24}|edit|stream|test|commit|push|read|write|bash|shell|pytest|npm|git|idle)(?:\b|$)",
+        text,
+    )
+    if m:
+        return m.group(1).lower()[:max_len]
+    # Fallback: first token, letters/digits only.
+    first = text.split(None, 1)[0] if text.split() else ""
+    token = re.sub(r"[^A-Za-z0-9_.:-]+", "", first)[:max_len]
+    if not token:
+        return ""
+    if looks_like_secret(token):
+        return "redacted"
+    return token.lower()
 
 
 def _sync_running_queued_from_jobs(ent: dict) -> None:
@@ -1390,6 +1435,17 @@ def _mirror_worker_list_to_legacy_workers(ent: dict, mid: str, nick: str) -> Non
     # FR #7147: mirror model fields from worker_list onto pid workers.
     for _k, _v in _model_fields_from_payload(row, prev).items():
         merged[_k] = _v
+    # FR #8155: mirror activity heartbeat onto legacy pid workers.
+    lp = str(row.get("last_progress") or "").strip()
+    if lp:
+        merged["last_progress"] = lp[:64]
+    else:
+        merged.pop("last_progress", None)
+    pp = sanitize_progress_phase(row.get("progress_phase"))
+    if pp:
+        merged["progress_phase"] = pp
+    else:
+        merged.pop("progress_phase", None)
     workers[pid_s] = _coerce_worker(mid, pid_s, merged)
 
 
@@ -3425,12 +3481,27 @@ def _apply_worker_op(home: Path, op: str, mid: str, payload: dict, briefer_nick:
     ent = _machine_entry(doc, mid)
     rows = list(ent.get("worker_list") or [])
     idx = next((i for i, r in enumerate(rows) if r["nick"].lower() == nick.lower()), -1)
+    # FR #8155: last_progress / progress_phase are activity fields — not state changes.
+    _ACTIVITY_KEYS = frozenset({"updated", "last_progress", "progress_phase"})
+
     def _sig(rs):
-        return json.dumps([{k: v for k, v in r.items() if k != "updated"} for r in rs], sort_keys=True)
+        return json.dumps(
+            [{k: v for k, v in r.items() if k not in _ACTIVITY_KEYS} for r in rs],
+            sort_keys=True,
+        )
 
     before = _sig(rows)
     now_iso = _utc_now_iso()
     touched = nick
+    prior_progress = ""
+    prior_phase = ""
+    if idx >= 0 and isinstance(rows[idx], dict):
+        prior_progress = str(rows[idx].get("last_progress") or "").strip()
+        prior_phase = str(rows[idx].get("progress_phase") or "").strip()
+    progress_iso = str(payload.get("last_progress") or "").strip()
+    progress_phase = sanitize_progress_phase(payload.get("progress_phase"))
+    if "last_progress" in payload and progress_iso and looks_like_secret(progress_iso):
+        return CallbackOutcome(ok=False, err="secret")
     if op == "worker-remove":
         if idx < 0:
             return CallbackOutcome(ok=True, changed=False)
@@ -3475,12 +3546,26 @@ def _apply_worker_op(home: Path, op: str, mid: str, payload: dict, briefer_nick:
                     row["work"] = "waiting"
         else:
             row["work"] = ""
+            # Idle / remove progress markers so tray does not show a stale phase.
+            row.pop("last_progress", None)
+            row.pop("progress_phase", None)
         # FR #7147: chair worker-upsert/work may carry digest model fields.
         for _k, _v in _model_fields_from_payload(payload, row).items():
             row[_k] = _v
+        # FR #8155: apply activity heartbeat fields on the live row before coerce.
+        if progress_iso:
+            row["last_progress"] = progress_iso[:64]
+        if progress_phase:
+            row["progress_phase"] = progress_phase
         event = op
     after_rows = _coerce_worker_list(rows)
-    if _sig(after_rows) == before:
+    state_changed = _sig(after_rows) != before
+    progress_changed = False
+    if progress_iso and progress_iso[:64] != prior_progress:
+        progress_changed = True
+    if progress_phase and progress_phase != prior_phase:
+        progress_changed = True
+    if not state_changed and not progress_changed:
         # Still refresh machine activity (timeout may have expired offered -> idle).
         ent["worker_list"] = after_rows
         _refresh_machine_activity_from_worker_list(ent)
@@ -3488,8 +3573,18 @@ def _apply_worker_op(home: Path, op: str, mid: str, payload: dict, briefer_nick:
         save_digest(home, doc)
         return CallbackOutcome(ok=True, changed=False)
     for r in after_rows:
-        if r["nick"].lower() == touched.lower():
+        if r["nick"].lower() != touched.lower():
+            continue
+        if state_changed:
             r["updated"] = now_iso
+        if progress_iso:
+            r["last_progress"] = progress_iso[:64]
+        if progress_phase:
+            r["progress_phase"] = progress_phase
+        # First progress on a doing seat: seed last_progress when payload omitted it
+        # but state just became doing (ACK).
+        if state_changed and r.get("state") == "doing" and not r.get("last_progress"):
+            r["last_progress"] = now_iso
     ent["worker_list"] = after_rows
     _refresh_machine_activity_from_worker_list(ent)
     _mirror_worker_list_to_legacy_workers(ent, mid, nick)

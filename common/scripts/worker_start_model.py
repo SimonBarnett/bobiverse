@@ -28,6 +28,14 @@ DEFAULT_JOB_TIER = "min"
 ENV_CONFIG_PATH = "BOB_WORKER_START_MODEL_FILE"
 ENV_CONFIG_JSON = "BOB_WORKER_START_MODEL_JSON"
 ENV_ACTUAL_MODEL = "BOB_WORKER_ACTUAL_MODEL"
+# FR #8159: per-CLI env pins (Si tray click / operator). Precedence over tray JSON.
+ENV_MODEL_PINS = {
+    "grok": ("BOB_GROK_MODEL", "BOB_WORKER_MODEL"),
+    "cursor": ("BOB_CURSOR_MODEL", "BOB_WORKER_MODEL"),
+    "aider": ("BOB_AIDER_MODEL", "BOB_WORKER_MODEL"),
+    "opencode": ("BOB_OPENCODE_MODEL", "BOB_WORKER_MODEL"),
+}
+ENV_PAUSE_FALLBACK = "BOB_OPENCODE_PAUSE_FALLBACK"
 
 
 def _cli(kind: str) -> str:
@@ -246,8 +254,41 @@ def write_launch_record(
 
 
 def configured_start_model(cli: str, cfg: dict[str, Any] | None) -> str:
+    """Tray/config workerStartModels entry only (not env pin)."""
     models = (cfg or {}).get("workerStartModels") or {}
     return str(models.get(_cli(cli)) or "").strip()
+
+
+def env_model_pin(kind: str, env: dict[str, str] | None = None) -> str:
+    """FR #8159: operator/Si env pin for this seat kind, if any."""
+    e = os.environ if env is None else env
+    for key in ENV_MODEL_PINS.get(_cli(kind), ()):
+        got = concrete_model_id((e or {}).get(key))
+        if got:
+            return got
+    return ""
+
+
+def launch_selected_model(
+    kind: str,
+    cfg: dict[str, Any] | None = None,
+    env: dict[str, str] | None = None,
+) -> str:
+    """FR #8159: model the seat was launched for.
+
+    Precedence matches selection: env pin, then tray `workerStartModels`, then
+    (OpenCode only) free default. An env or tray pin from Si's click counts as
+    configured for digest / mismatch.
+    """
+    pinned = env_model_pin(kind, env)
+    if pinned:
+        return pinned
+    tray = configured_start_model(kind, cfg)
+    if tray:
+        return tray
+    if _cli(kind) == "opencode":
+        return default_opencode_free_model(cfg)
+    return ""
 
 
 def model_cost_tier(model: str, cfg: dict[str, Any] | None) -> str:
@@ -272,6 +313,31 @@ def model_mismatch(actual: str, configured: str) -> bool:
     if not a:
         return True
     return a.lower() != c.lower()
+
+
+def model_mismatch_reason(
+    actual: str,
+    selected: str,
+    *,
+    env: dict[str, str] | None = None,
+) -> str:
+    """FR #8159: empty when match; else paused|unavailable|mismatch.
+
+    `selected` is `launch_selected_model` (env/tray/config), not tray-only.
+    """
+    a = concrete_model_id(actual) or str(actual or "").strip()
+    c = concrete_model_id(selected) or str(selected or "").strip()
+    if not c:
+        return ""
+    if a and a.lower() == c.lower():
+        return ""
+    e = os.environ if env is None else env
+    flag = str((e or {}).get(ENV_PAUSE_FALLBACK) or "").strip().lower()
+    if flag in ("1", "true", "yes"):
+        return "paused"
+    if not a or a.lower() in ("unknown", "none", "null"):
+        return "unavailable"
+    return "mismatch"
 
 
 def launch_argv_with_model(kind: str, argv: list[str], model: str) -> list[str]:
@@ -377,12 +443,17 @@ def digest_seat_model_fields(
     cfg: dict[str, Any] | None,
     state: str = "idle",
     effort: str = "",
+    env: dict[str, str] | None = None,
 ) -> dict[str, Any]:
-    """Fields for held / starting / idle / busy seats (FR #7084 / #7187)."""
-    configured = configured_start_model(cli, cfg)
+    """Fields for held / starting / idle / busy seats (FR #7084 / #7187 / #8159).
+
+    `configured_model` is the launch selection (env pin > tray > config).
+    """
+    configured = launch_selected_model(cli, cfg, env=env)
     act = str(actual or "").strip()
-    mismatch = model_mismatch(act, configured)
-    return {
+    reason = model_mismatch_reason(act, configured, env=env)
+    mismatch = bool(reason)
+    out = {
         "kind": _cli(cli),
         "start_model": act,
         "configured_model": configured,
@@ -391,6 +462,9 @@ def digest_seat_model_fields(
         "start_effort": normalize_effort(effort) or configured_start_effort(cli, cfg),
         "state": str(state or "idle").strip().lower() or "idle",
     }
+    if reason:
+        out["mismatch_reason"] = reason
+    return out
 
 
 def start_model_is_unknown(raw: object) -> bool:

@@ -592,18 +592,45 @@ if ((-not $SkipTray) -and (-not $NoStart)) {
     }
 }
 
-# FR #8023: user-context periodic prune of closed/merged safe job worktrees.
-$clearPs1 = Join-Path $InstallRoot 'scripts\Clear-BobiverseJobWorktrees.ps1'
-if (-not (Test-Path -LiteralPath $clearPs1)) {
-    $clearPs1 = Join-Path $InstallRoot 'common\scripts\Clear-BobiverseJobWorktrees.ps1'
+# FR #8023 / FR #8156: user-context periodic prune of closed/merged safe job worktrees.
+# Prefer common\scripts (tracked) over flat scripts\ (compose often lags hotpatches).
+# Sync flat Clear from common when hashes differ so exe + scheduled task share one interface.
+$clearCommon = Join-Path $InstallRoot 'common\scripts\Clear-BobiverseJobWorktrees.ps1'
+$clearFlat = Join-Path $InstallRoot 'scripts\Clear-BobiverseJobWorktrees.ps1'
+$clearPs1 = $null
+if (Test-Path -LiteralPath $clearCommon) {
+    $clearPs1 = $clearCommon
+    if (Test-Path -LiteralPath $clearFlat) {
+        try {
+            $hCommon = (Get-FileHash -LiteralPath $clearCommon -Algorithm SHA256).Hash
+            $hFlat = (Get-FileHash -LiteralPath $clearFlat -Algorithm SHA256).Hash
+            if ($hCommon -ne $hFlat) {
+                Copy-Item -LiteralPath $clearCommon -Destination $clearFlat -Force
+                Write-Host ("INFO FR #8156 synced scripts\Clear-BobiverseJobWorktrees.ps1 from common (sha={0})" -f $hCommon.Substring(0, 12))
+            }
+        } catch {
+            Write-Host ("WARN FR #8156 Clear hash sync: {0}" -f $_.Exception.Message)
+        }
+    } elseif (Test-Path -LiteralPath (Split-Path -Parent $clearFlat)) {
+        try {
+            Copy-Item -LiteralPath $clearCommon -Destination $clearFlat -Force
+            Write-Host 'INFO FR #8156 installed scripts\Clear-BobiverseJobWorktrees.ps1 from common'
+        } catch { }
+    }
+} elseif (Test-Path -LiteralPath $clearFlat) {
+    $clearPs1 = $clearFlat
 }
 $pruneTaskName = 'BobiversePruneClosedJobWorktrees'
-if (Test-Path -LiteralPath $clearPs1) {
+if ($clearPs1 -and (Test-Path -LiteralPath $clearPs1)) {
     $pruneMinutes = 60
     if ($env:BOB_PRUNE_CLOSED_JOB_MINUTES -match '^\d+$') {
         $pruneMinutes = [Math]::Max(15, [int]$env:BOB_PRUNE_CLOSED_JOB_MINUTES)
     }
-    $pruneArgs = "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$clearPs1`" -RepoRoot `"$InstallRoot`" -PruneClosedJobs -DiscoverRepoRoots -MaxExtraJobTrees -1 -SkipSeatDisk"
+    # FR #8156: only pass -SkipSeatDisk when the script declares it.
+    $clearText = Get-Content -LiteralPath $clearPs1 -Raw -ErrorAction SilentlyContinue
+    $skipSeat = ''
+    if ($clearText -match '(?im)\$SkipSeatDisk\b') { $skipSeat = ' -SkipSeatDisk' }
+    $pruneArgs = "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$clearPs1`" -RepoRoot `"$InstallRoot`" -PruneClosedJobs -DiscoverRepoRoots -MaxExtraJobTrees -1$skipSeat"
     try {
         cmd /c "schtasks /Delete /TN `"$pruneTaskName`" /F >nul 2>&1" | Out-Null
         $pruneAction = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument $pruneArgs

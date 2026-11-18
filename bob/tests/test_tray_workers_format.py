@@ -61,11 +61,18 @@ def test_no_raw_non_ascii_literal_left_in_pool_heading_code():
 
 
 def test_digest_is_read_as_utf8_bytes_not_latin1_content():
+    """IRC keeps ConvertFrom-BobUtf8Json; Watch digests via Invoke-BobDigestHttpGet (FR #7602/#7615)."""
     irc, w = _txt(IRC), _txt(WATCH)
+    helper = _txt(TRAY / "src" / "Private" / "Invoke-BobDigestHttpGet.ps1")
     assert "function ConvertFrom-BobUtf8Json" in irc and "RawContentStream" in irc and "UTF8.GetString" in irc
     assert "$resp.Content | ConvertFrom-Json" not in irc
     assert "Invoke-RestMethod -Uri (Get-BobTrayDigestReportUrl) -TimeoutSec 8" not in w
-    assert "RawContentStream" in w
+    # Watch no longer streams RawContentStream; UTF-8 bytes come from Invoke-BobDigestHttpGet.
+    assert "RawContentStream" not in w
+    assert "Invoke-BobDigestHttpGet" in w
+    assert "[string]$got.Text | ConvertFrom-Json" in w
+    assert "UTF8.GetString" in helper
+    assert "HttpWebRequest" in helper
 
 
 # ---------------------------------------------------------------------------------- behaviour
@@ -141,4 +148,7 @@ $doc = [System.IO.File]::ReadAllText('{d}', [System.Text.Encoding]::UTF8) | Conv
 foreach ($w in @(Get-BobTrayDigestWorkers -Digest $doc -MachineId 'MARCHHARE')) {{ Format-BobTrayWorkerLine -Worker $w }}
 'other=' + @(Get-BobTrayDigestWorkers -Digest $doc -MachineId 'win-mpre8vi4u6u').Count
 """, tmp_path)
-    assert out == ["marchhare-101: FR o/r#5 caf\u00e9 \u00b7 fix", "marchhare-102: idle", "other=0"]
+    # FR #8155: doing seats may append " · progress Xm" when last_progress is seeded on ACK.
+    assert out[0].startswith("marchhare-101: FR o/r#5 caf\u00e9 \u00b7 fix")
+    assert out[1] == "marchhare-102: idle"
+    assert out[2] == "other=0"

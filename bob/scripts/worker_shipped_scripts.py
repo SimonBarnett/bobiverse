@@ -18,6 +18,13 @@ BUNDLE_DIR_NAME = "worker-scripts"
 _NAME_RX = re.compile(
     r"""_resolve_installed_worker_script\(\s*["']([A-Za-z0-9_]+\.py)["']"""
 )
+# FR #8156: fleet .ps1 the frozen exe invokes by path (Clear + Common sibling).
+# Must ship beside bob-worker.exe so a stale install-root scripts\ copy cannot
+# break job-end cleanup with unknown switches such as -SkipSeatDisk.
+EXTRA_FLEET_SCRIPTS = (
+    "Clear-BobiverseJobWorktrees.ps1",
+    "Bobiverse-Common.ps1",
+)
 # FR #7991: a by-path script may import a sibling ``.py`` from the same scripts
 # dir (``skill_dag_mcp`` -> ``skill_dag_index``). Ship those modules too, or the
 # MCP host gets ``ModuleNotFoundError`` while the CLI works from the repo.
@@ -30,6 +37,11 @@ _LOCAL_IMPORT_RX = re.compile(
 def by_path_script_names(bob_worker_text: str) -> list[str]:
     """Names passed as the first argument of ``_resolve_installed_worker_script``."""
     return sorted(set(_NAME_RX.findall(bob_worker_text or "")))
+
+
+def fleet_ps1_script_names() -> list[str]:
+    """FR #8156: PowerShell scripts the worker invokes against install-root / ship dir."""
+    return list(EXTRA_FLEET_SCRIPTS)
 
 
 def module_search_dirs(source_dir: Path) -> list[Path]:
@@ -79,6 +91,10 @@ def shipped_script_names(
     if direct_names is None:
         text = Path(bob_worker).read_text(encoding="utf-8")
         direct_names = by_path_script_names(text)
+    # FR #8156: always include fleet .ps1 helpers the exe calls by path.
+    direct_names = list(direct_names) + [
+        n for n in fleet_ps1_script_names() if n not in direct_names
+    ]
     source = Path(source_dir)
     out: list[str] = []
     seen: set[str] = set()
@@ -152,7 +168,9 @@ def extract_bundled_scripts() -> list[str]:
     except OSError:
         return []
     written: list[str] = []
-    for path in sorted(src.glob("*.py")):
+    # FR #8156: extract both Python helpers and fleet .ps1 (Clear / Common).
+    paths = sorted(list(src.glob("*.py")) + list(src.glob("*.ps1")))
+    for path in paths:
         target = dest / path.name
         try:
             data = path.read_bytes()

@@ -135,7 +135,7 @@ def test_opencode_default_model_falls_back_to_free_when_go_paused(tmp_path):
     state_dir = tmp_path / "state"
     now = 1_000_000.0
     bw.opencode_fuel.record_opencode_pause(
-        state_dir, "opencode-go/glm-5.3", "rate limit", now=now
+        state_dir, "opencode-go/glm-5.3", "HTTP 429 rate limit", now=now
     )
     fuel = bw.Fuel(
         opencode_free=100,
@@ -210,7 +210,11 @@ def test_build_launch_opencode_wrapper_parses_as_powershell(tmp_path: Path):
 
 
 def test_opencode_watchdog_kills_hanging_process_without_blocking(tmp_path: Path):
-    """A timed-out opencode run must not block the seat on pipe reads."""
+    """A timed-out opencode run must not block the seat on pipe reads.
+
+    FR #8133: the standing prompt is idle-only. Inject a real @@BOBJOB1 frame so
+    the job-gated idle watchdog arms and can kill a silent child.
+    """
     if shutil.which("powershell.exe") is None:
         pytest.skip("powershell.exe not available")
 
@@ -228,6 +232,9 @@ def test_opencode_watchdog_kills_hanging_process_without_blocking(tmp_path: Path
         encoding="utf-8",
     )
 
+    job_wt = tmp_path / "job-wt"
+    job_wt.mkdir()
+
     spec = bw.build_launch(
         "opencode", "agent", r"C:\ai\bob\worker", "short watchdog please", str(fake_exe), tmp_path
     )
@@ -242,21 +249,26 @@ def test_opencode_watchdog_kills_hanging_process_without_blocking(tmp_path: Path
     env["LOCALAPPDATA"] = str(tmp_path)
     env["BOB_OPENCODE_MODEL"] = "opencode/beam-free"
 
+    # FR #8133: first turn is the first job inject (standing prompt does not arm watchdog).
+    job_frame = (
+        f"@@BOBJOB1|FR SimonBarnett/bobiverse#8160|{job_wt}|"
+        "FROM jeeves #m flamingo-1: FR SimonBarnett/bobiverse#8160 https://x"
+    )
     start = time.time()
     result = subprocess.run(
         ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(script_path)],
-        input="exit\n",
+        input=f"{job_frame}\nexit\n",
         capture_output=True,
         text=True,
         env=env,
-        timeout=10,
+        timeout=20,
     )
     elapsed = time.time() - start
 
     # Must finish quickly: the 500ms watchdog plus bounded drain should dominate.
-    assert elapsed < 12, f"watchdog blocked for {elapsed:.1f}s"
+    assert elapsed < 15, f"watchdog blocked for {elapsed:.1f}s"
     # Wrapper should exit cleanly after stdin sends 'exit'.
-    assert result.returncode == 0
+    assert result.returncode == 0, (result.stderr or result.stdout or "<no output>")[:800]
     # The watchdog must record its timeout. A failed start or early exit writes no record.
     fuel_log = tmp_path / "Bobiverse" / "worker" / "logs" / "opencode-out-of-fuel.log"
     assert fuel_log.is_file(), "watchdog did not write a fuel log"
@@ -287,7 +299,11 @@ def test_mrb6163_opencode_start_process_uses_argstr(tmp_path: Path):
 
 
 def test_mrb6163_opencode_prompt_with_spaces_reaches_child(tmp_path: Path):
-    """Behavioral: prompt with spaces/quotes must arrive as one argv token to the child."""
+    """Behavioral: prompt with spaces/quotes must arrive as one argv token to the child.
+
+    FR #8133: standing prompt is idle-only. Inject @@BOBJOB1 so the child runs; the
+    FROM line carries the spaced prompt as the final argv token.
+    """
     if shutil.which("powershell.exe") is None:
         pytest.skip("powershell.exe not available")
 
@@ -310,6 +326,8 @@ def test_mrb6163_opencode_prompt_with_spaces_reaches_child(tmp_path: Path):
     )
 
     prompt = 'Say "hello world" and keep going'
+    job_wt = tmp_path / "job-wt"
+    job_wt.mkdir()
     spec = bw.build_launch(
         "opencode", "agent", r"C:\ai\bob\worker", prompt, str(fake_exe), tmp_path
     )
@@ -324,9 +342,12 @@ def test_mrb6163_opencode_prompt_with_spaces_reaches_child(tmp_path: Path):
     env["LOCALAPPDATA"] = str(tmp_path)
     env["BOB_OPENCODE_MODEL"] = "opencode/beam-free"
 
+    # Job frame line is the argv token passed to opencode (must stay one token).
+    from_line = f"FROM jeeves #m flamingo-1: FR SimonBarnett/bobiverse#8160 {prompt}"
+    job_frame = f"@@BOBJOB1|FR SimonBarnett/bobiverse#8160|{job_wt}|{from_line}"
     result = subprocess.run(
         ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(script_key)],
-        input="exit\n",
+        input=f"{job_frame}\nexit\n",
         capture_output=True,
         text=True,
         env=env,
@@ -338,7 +359,8 @@ def test_mrb6163_opencode_prompt_with_spaces_reaches_child(tmp_path: Path):
     assert "run" in lines
     assert "-m" in lines
     assert "opencode/beam-free" in lines
-    assert prompt in lines, f"prompt split or stripped; argv={lines!r}"
+    assert from_line in lines, f"prompt split or stripped; argv={lines!r}"
+    assert prompt in from_line
 
 
 
@@ -396,8 +418,9 @@ def test_fr6156_opencode_watchdog_allows_long_run_with_output(tmp_path: Path):
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text(body, encoding="utf-8")
     # Production idle compare stays a length gap, not a wall-clock WaitForExit.
+    # FR #8133: job-gated idle compare (`$script:ocHasJob -and $idleMs -ge $watchdogMs`).
     wrapper = Path(script_key).read_text(encoding="utf-8")
-    assert "if ($idleMs -ge $watchdogMs)" in wrapper
+    assert "if ($script:ocHasJob -and $idleMs -ge $watchdogMs)" in wrapper
     assert "$proc.WaitForExit($watchdogMs)" not in wrapper
 
     env = os.environ.copy()
@@ -405,10 +428,17 @@ def test_fr6156_opencode_watchdog_allows_long_run_with_output(tmp_path: Path):
     env["LOCALAPPDATA"] = str(tmp_path)
     env["BOB_OPENCODE_MODEL"] = "opencode/beam-free"
 
+    # FR #8133: inject a job frame so the ticking child is watched (idle exit alone does not run).
+    job_wt = tmp_path / "job-wt"
+    job_wt.mkdir()
+    job_frame = (
+        f"@@BOBJOB1|FR SimonBarnett/bobiverse#8160|{job_wt}|"
+        "FROM jeeves #m flamingo-1: FR SimonBarnett/bobiverse#8160 https://x"
+    )
     start = time.time()
     result = subprocess.run(
         ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(script_key)],
-        input="exit\n",
+        input=f"{job_frame}\nexit\n",
         capture_output=True,
         text=True,
         env=env,

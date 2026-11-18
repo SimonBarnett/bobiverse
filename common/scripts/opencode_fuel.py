@@ -1907,6 +1907,28 @@ def _rate_limit_scan_without_worker(text: str) -> str:
     return re.sub(rf'"{stock}"', " ", cleaned, flags=re.IGNORECASE)
 
 
+# FR #8151: bare "rate limit" needs provider/API/HTTP context; tool echo never counts.
+_RATE_LIMIT_PROVIDER_CTX_RX = re.compile(
+    r"(?i)(?:"
+    r"(?:HTTP|status(?:_code| code)?)\D{0,20}\b429\b"
+    r"|\b429\b.{0,60}rate\s*limit"
+    r"|rate\s*limit(?:ed|ing)?.{0,60}\b(?:provider|api|openai|anthropic|xai|opencode|grok)\b"
+    r"|\b(?:provider|api|openai|anthropic|xai|opencode|grok)\b.{0,60}rate\s*limit"
+    r"|AI_(?:APICall|Retry)Error"
+    r"|Too\s+Many\s+Requests"
+    r")"
+)
+_RATE_LIMIT_TOOL_NOISE_RX = re.compile(
+    r"(?i)(?:"
+    r"coderabbit(?:ai)?|coderabbit-ai-generated"
+    r"|rate\s+limited\s+by\s+coderabbit"
+    r"|\"comments\"\s*:\s*\["
+    r"|\"author\"\s*:\s*\{\s*\"login\""
+    r"|Rate\s+limit\s*\+\s*single\s+instance"
+    r")"
+)
+
+
 def looks_like_rate_limit(text: str | None) -> bool:
     """True when ``opencode run`` output text indicates a rate/rolling/payment limit.
 
@@ -1914,6 +1936,10 @@ def looks_like_rate_limit(text: str | None) -> bool:
     context (e.g. ``HTTP 429``, ``status 429``) to avoid false pauses from issue
     numbers, commit hashes and timings in normal output. Markdown backtick
     quotations (the worker skill documents the phrase) are not a provider limit.
+
+    FR #8151: agent tool output (CodeRabbit / gh comment JSON / docstrings) that
+    merely mentions ``rate limit`` is not a provider refusal. Bare ``rate limit``
+    without provider/API/HTTP context is also ignored.
     """
     if not text or not isinstance(text, str):
         return False
@@ -1930,9 +1956,18 @@ def looks_like_rate_limit(text: str | None) -> bool:
             continue
     else:
         scan = _rate_limit_scan_without_worker(text)
+    if _RATE_LIMIT_TOOL_NOISE_RX.search(scan):
+        return False
     t = scan.lower()
-    if any(phrase in t for phrase in RATE_LIMIT_PHRASES):
+    for phrase in RATE_LIMIT_PHRASES:
+        if phrase == "rate limit":
+            continue
+        if phrase in t:
+            return True
+    if "retry-after" in t or "retry after" in t:
         return True
+    if "rate limit" in t or "rate limited" in t or "ratelimiting" in t:
+        return bool(_RATE_LIMIT_PROVIDER_CTX_RX.search(scan))
     return bool(re.search(r"\b(http|status( code)?)\D{0,3}(402|429)\b", t, re.IGNORECASE))
 
 
@@ -2224,6 +2259,12 @@ def record_opencode_pause(
         return None
     if is_turn_timeout_text(output_text):
         return None
+    # FR #8151: refuse a pause when the text is not provider fuel evidence
+    # (tool-output "rate limit" / bare phrase with no API context).
+    free_hit = is_free_usage_limit_text(output_text)
+    rate_hit = looks_like_rate_limit(output_text)
+    if not free_hit and not rate_hit:
+        return None
     reset_ts = parse_reset_time(output_text, now=now)
     if reset_ts is None:
         reset_ts = now + float(default_pause_s)
@@ -2235,9 +2276,9 @@ def record_opencode_pause(
     try:
         pauses = load_opencode_pauses(state_dir, now=now)
         keys = [model_id]
-        if is_free_usage_limit_text(output_text) or looks_like_rate_limit(output_text):
+        if free_hit or rate_hit:
             # Free-pool refusal: mark the digest fuel id, not only the leaf model.
-            if is_free_usage_limit_text(output_text) or (
+            if free_hit or (
                 not of_is_go_model_id(model_id)
                 and (
                     str(model_id).lower().endswith("-free")
