@@ -2880,9 +2880,21 @@ def describe_agent_child_launch(
         import worker_start_model as wsm
 
         _scfg = wsm.load_worker_start_config()
+        # FR #8220: stamp BOB_OPENCODE_MODEL into child env so launch-opencode.ps1 and
+        # launch-record see a concrete id even when tray pin is empty and parent env lacks it.
+        if kind_l == "opencode":
+            oc_stamp = (
+                wsm.concrete_model_id(os.environ.get("BOB_OPENCODE_MODEL"))
+                or wsm.launch_selected_model("opencode", _scfg, env=os.environ)
+                or wsm.default_opencode_free_model(_scfg)
+            )
+            if oc_stamp:
+                env["BOB_OPENCODE_MODEL"] = oc_stamp
         actual = wsm.concrete_model_id(wsm.actual_from_launch_spec(kind_l, spec, env=env))
         if not actual and kind_l == "opencode":
-            actual = wsm.concrete_model_id(os.environ.get("BOB_OPENCODE_MODEL"))
+            actual = wsm.concrete_model_id(
+                env.get("BOB_OPENCODE_MODEL") or os.environ.get("BOB_OPENCODE_MODEL")
+            )
         effort = wsm.configured_start_effort(kind_l, _scfg)
         if actual:
             env[wsm.ENV_ACTUAL_MODEL] = actual
@@ -4737,17 +4749,22 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
         # so BoredEmitter gets harvest-hold / done-miss / startup-ready parity with Grok.
         # FR #6240: no external_directory allow. Each injected assign carries its own
         # @@BOBJOB1 frame. The standing prompt is not a job and is not scanned.
+        # FR #8220: env pin > tray pin > free default. Never throw when tray pin is empty
+        # (flamingo-22516 recycled with empty workerStartModels.opencode + no child env stamp).
         oc_cfg_model = ""
         try:
             import worker_start_model as wsm
 
-            oc_cfg_model = wsm.configured_start_model("opencode", wsm.load_worker_start_config())
+            _oc_cfg = wsm.load_worker_start_config()
+            oc_cfg_model = wsm.launch_selected_model("opencode", _oc_cfg, env=os.environ)
+            if not oc_cfg_model:
+                oc_cfg_model = wsm.default_opencode_free_model(_oc_cfg)
         except Exception:
             oc_cfg_model = ""
+        if not oc_cfg_model:
+            oc_cfg_model = "opencode/deepseek-v4.1-flash-free"
         oc_fallback = (
             f"if (-not $env:BOB_OPENCODE_MODEL) {{ $env:BOB_OPENCODE_MODEL = '{esc(oc_cfg_model)}' }}"
-            if oc_cfg_model
-            else r"if (-not $env:BOB_OPENCODE_MODEL) { throw 'BOB_OPENCODE_MODEL is required (no exhausted glm-5.3 fallback)' }"
         )
         files[lfile] = "\n".join([
             r"$ErrorActionPreference = 'Stop'",
