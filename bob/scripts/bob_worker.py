@@ -3708,10 +3708,12 @@ def report_agent_cli_nonzero_exit(
     # FR #7978: exit_code is None only when the worker recycled the seat while the agent
     # process was still running (hang / ack-miss / ask-user / no-ack-after-assign). That is
     # a recycle, not a CLI failure, and must not claim the CLI exited non-zero.
+    reason_l = str(reason or "").strip().lower()
     if exit_code is None:
         end = "recycle"
-    elif u == CONSOLE_CLOSE_EXIT:
+    elif u == CONSOLE_CLOSE_EXIT or reason_l in ("console-closed", "signal"):
         # FR #7881: OpenCode 3221225786 is the console closing, not a CLI bug.
+        # FR #8148: shutdown reason console-closed/signal with exit_code=1 (Grok) is the same class.
         end = "console-close"
     elif "recycleseat" in parent_l or "bobtrayrecycleseat" in parent_l:
         end = "recycle"
@@ -3755,7 +3757,8 @@ def report_agent_cli_nonzero_exit(
     if reason:
         reason = _scrub(reason)[:160]
         what += f"Reason: {reason}\n"
-        if reason != "agent-exited":
+        # FR #8148: do not rebrand console-close / signal as "stopped making progress".
+        if reason != "agent-exited" and end not in ("console-close", "recycle", "external-kill"):
             title = "bug: seat stopped making progress"
             key = f"seat-no-progress|{mid}|{nick_s}|{agent_stderr_dedupe_line(reason)}"[:128]
     body = (
@@ -4599,7 +4602,8 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             r"        $runStarted = [datetime]::UtcNow",
             r"        $lastProgress = $runStarted",
             # FR #8026: match free-pool exhaustion while the process is still alive.
-            r"        $liveFuelPattern = 'Free usage limit|subscribe to OpenCode Go|Payment Required|usage balance exhausted|Too Many Requests|rate limit|rolling limit|(HTTP|status( code)?)\D{0,3}(402|429)'",
+            # FR #8151: no bare "rate limit" (tool output / CodeRabbit comments false-pause).
+            r"        $liveFuelPattern = 'Free usage limit|subscribe to OpenCode Go|Payment Required|usage balance exhausted|Too Many Requests|rolling limit|rate limited by provider|(HTTP|status( code)?)\D{0,3}(402|429)|AI_(APICall|Retry)Error'",
             r"        while (-not $proc.HasExited) {",
             r"          try {",
             r"            $len = 0",
@@ -4630,7 +4634,8 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             r"                $peek = (Read-OpencodeCapture $outFile) + [Environment]::NewLine + (Read-OpencodeCapture $errFile)",
             r"                if ($line) { $peek = $peek.Replace([string]$line, ' ') }",
             r"                $peek = [regex]::Replace($peek, '`[^`]*`', ' ')",
-            r"                if ($peek -match $liveFuelPattern) {",
+            # FR #8151: never treat CodeRabbit / gh comment tool echo as live fuel.
+            r"                if (($peek -notmatch 'coderabbit|rate limited by coderabbit|Rate limit \+ single instance') -and ($peek -match $liveFuelPattern)) {",
             r"                    $fuelHitLive = $true",
             r"                    if ($peek -match 'Free usage limit|subscribe to OpenCode Go') { $killReason = 'fuel-exhausted:opencode-free' } else { $killReason = 'out-of-fuel' }",
             r"                    try { & taskkill /T /F /PID $proc.Id 2>$null | Out-Null } catch { }",
@@ -4768,14 +4773,18 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             r"    $scan = $outStr",
             r"    if ($line) { $scan = $scan.Replace([string]$line, ' ') }",
             r"    $scan = [regex]::Replace($scan, '`[^`]*`', ' ')",
-            r"    $limitPattern = 'Payment Required|usage balance exhausted|Too Many Requests|rate limit|rolling limit|Free usage limit|subscribe to OpenCode Go'",
+            # FR #8151: no bare "rate limit" in limitPattern (CodeRabbit / gh tool echo).
+            r"    $limitPattern = 'Payment Required|usage balance exhausted|Too Many Requests|rolling limit|Free usage limit|subscribe to OpenCode Go|rate limited by provider|AI_(APICall|Retry)Error'",
             r"    $codePattern = '(HTTP|status( code)?)\D{0,3}(402|429)'",
             r"    $freeUsagePattern = 'Free usage limit|subscribe to OpenCode Go'",
+            r"    $toolNoisePattern = 'coderabbit|coderabbit-ai-generated|rate limited by coderabbit|Rate limit \+ single instance'",
             # FR #6366: watchdog timeout kills the run but must NOT record a model pause
             # (done-miss finish-runs looked like out-of-fuel). Only real 402/429/limit text pauses.
             # FR #7951: a hard ceiling or watchdog kill is not out of fuel.
             # FR #8026: free-usage text (or a live mid-run fuel kill) pauses even when exit is 0.
-            r"    $hitLimit = (-not $timedOut -and ($fuelHitLive -or ((($scan -match $limitPattern) -or ($scan -match $codePattern)) -and ($exitCode -ne 0 -or ($scan -match $freeUsagePattern)))))",
+            # FR #8151: tool-output noise never sets hitLimit / never record-pause.
+            r"    $scanIsToolNoise = ($scan -match $toolNoisePattern)",
+            r"    $hitLimit = (-not $timedOut -and -not $scanIsToolNoise -and ($fuelHitLive -or ((($scan -match $limitPattern) -or ($scan -match $codePattern)) -and ($exitCode -ne 0 -or ($scan -match $freeUsagePattern)))))",
             r"    if ($timedOut) {",
             r"        if ($proc -and -not $proc.HasExited) { try { & taskkill /T /F /PID $proc.Id 2>$null | Out-Null } catch { } }",
             r"        if (-not $killReason) { $killReason = 'watchdog timeout (no output)' }",
@@ -4789,7 +4798,11 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             r"        $matchLines = $scan -split '\r?\n' | Where-Object { $_ -match $limitPattern -or $_ -match $codePattern }",
             r"        $msg = ($matchLines | Select-Object -First 3) -join ' '",
             r"        if (-not $msg) { $msg = ($scan -replace '\s+', ' ').Trim(); if ($msg.Length -gt 300) { $msg = $msg.Substring(0, 300) } }",
-            r"        $entry = @{ pid = $PID; ts = (Get-Date -Format o); model = $model; text = $msg } | ConvertTo-Json -Compress",
+            # FR #8151: stamp source= so pauses are only from provider channels.
+            r"        $fuelSource = 'cli-stderr'",
+            r"        if ($msg -match '(?i)level=ERROR') { $fuelSource = 'app-log' }",
+            r"        elseif ($msg -match '(?i)AI_(APICall|Retry)Error|\"status(_code)?\"\s*:\s*(402|429)') { $fuelSource = 'provider-json' }",
+            r"        $entry = @{ pid = $PID; ts = (Get-Date -Format o); model = $model; text = $msg; source = $fuelSource } | ConvertTo-Json -Compress",
             r"        Add-Content -Path $fuelLog -Value $entry -ErrorAction SilentlyContinue",
             r"        $py = (Get-Command python.exe -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source)",
             r"        if (-not $py) { $py = 'python.exe' }",
@@ -6920,6 +6933,7 @@ class GrokTurnWatcher:
 # --------------------------------------------------------------------------------------------- FR #3012 / #3019: out-of-fuel
 # Detect agent 402 / usage-exhausted / NEEDS_AUTH as out-of-fuel (not done-miss).
 # Bare "402" in token counts must not match. Cursor parity: same contract without grok-only gate (FR #3019).
+# Strong provider cues (no bare "rate limit" — FR #8151 tool-output false pause).
 _OUT_OF_FUEL_RX = re.compile(
     r"(?i)(?:"
     r"402\s*Payment\s*Required"
@@ -6933,12 +6947,38 @@ _OUT_OF_FUEL_RX = re.compile(
     r"|NEEDS_AUTH"
     r"|OUTCOME_NEEDS_AUTH"
     r"|unpaid\s+invoice"
-    r"|rate\s*limit(?:ed|ing)?\b"
+    r"|Too\s+Many\s+Requests"
+    r"|rolling\s+limit"
     # FR #8026: OpenCode free pool (may hang without exit).
     r"|Free\s+usage\s+limit"
     r"|subscribe\s+to\s+OpenCode\s+Go"
     r")"
 )
+
+# Bare rate-limit words only count with provider/API/HTTP context (FR #8151).
+_RATE_LIMIT_PROVIDER_CTX_RX = re.compile(
+    r"(?i)(?:"
+    r"(?:HTTP|status(?:_code| code)?)\D{0,20}\b429\b"
+    r"|\b429\b.{0,60}rate\s*limit"
+    r"|rate\s*limit(?:ed|ing)?.{0,60}\b(?:provider|api|openai|anthropic|xai|opencode|grok)\b"
+    r"|\b(?:provider|api|openai|anthropic|xai|opencode|grok)\b.{0,60}rate\s*limit"
+    r"|AI_(?:APICall|Retry)Error"
+    r"|Too\s+Many\s+Requests"
+    r")"
+)
+
+# Tool / agent echo that must never arm a pause (FR #8151).
+_FUEL_TOOL_OUTPUT_NOISE_RX = re.compile(
+    r"(?i)(?:"
+    r"coderabbit(?:ai)?|coderabbit-ai-generated"
+    r"|rate\s+limited\s+by\s+coderabbit"
+    r"|\"comments\"\s*:\s*\["
+    r"|\"author\"\s*:\s*\{\s*\"login\""
+    r"|Rate\s+limit\s*\+\s*single\s+instance"
+    r")"
+)
+
+_PROVIDER_FUEL_SOURCES = ("app-log", "cli-stderr", "provider-json")
 
 _OPENCODE_FREE_USAGE_RX = re.compile(
     r"(?i)(?:Free\s+usage\s+limit|subscribe\s+to\s+OpenCode\s+Go)"
@@ -6969,8 +7009,8 @@ _UNQUOTED_PROVIDER_STATUS_RX = re.compile(
 )
 
 
-def fuel_log_recorded_text(text: str) -> Optional[str]:
-    """Return the text field of a wrapper fuel-log JSON line, else None."""
+def _fuel_log_envelope(text: str) -> Optional[dict]:
+    """Parse a wrapper fuel-log JSON line; None when not that envelope."""
     raw = (text or "").strip()
     if not raw.startswith("{"):
         return None
@@ -6980,12 +7020,32 @@ def fuel_log_recorded_text(text: str) -> Optional[str]:
         return None
     if not isinstance(obj, dict):
         return None
+    if "pid" not in obj and "model" not in obj:
+        return None
+    return obj
+
+
+def fuel_log_recorded_text(text: str) -> Optional[str]:
+    """Return the text field of a wrapper fuel-log JSON line, else None."""
+    obj = _fuel_log_envelope(text)
+    if obj is None:
+        return None
     recorded = obj.get("text")
     if not isinstance(recorded, str):
         return None
-    if "pid" not in obj and "model" not in obj:
-        return None
     return recorded
+
+
+def fuel_log_recorded_source(text: str) -> Optional[str]:
+    """Return the ``source`` field of a fuel-log JSON line when present (FR #8151)."""
+    obj = _fuel_log_envelope(text)
+    if obj is None:
+        return None
+    src = obj.get("source")
+    if not isinstance(src, str):
+        return None
+    src = src.strip().lower()
+    return src or None
 
 
 def _strip_instructional_mentions(text: str) -> str:
@@ -7022,12 +7082,59 @@ def provider_fuel_scan_text(text: str) -> str:
     return _strip_instructional_mentions(text or "")
 
 
-def is_out_of_fuel_text(text: str) -> bool:
-    """True when agent/log text is a provider fuel/quota/auth exhaustion (FR #3012 / #3019)."""
+def is_fuel_tool_output_noise(text: str) -> bool:
+    """True when text is agent tool echo (gh/CodeRabbit/docs), not a provider error (FR #8151)."""
+    return bool(_FUEL_TOOL_OUTPUT_NOISE_RX.search(text or ""))
+
+
+def _provider_fuel_source_for_scanned(scanned: str) -> Optional[str]:
+    """Classify provider channel for already-scanned text. FR #8151."""
+    if not (scanned or "").strip():
+        return None
+    if is_fuel_tool_output_noise(scanned):
+        return None
+    strong = bool(_OUT_OF_FUEL_RX.search(scanned))
+    rate_ok = bool(_RATE_LIMIT_PROVIDER_CTX_RX.search(scanned))
+    if not strong and not rate_ok:
+        return None
+    if re.search(r"(?i)(?:^|\s)level=ERROR\b", scanned):
+        return "app-log"
+    if re.search(
+        r"(?i)(?:AI_(?:APICall|Retry)Error|\"status(?:_code)?\"\s*:\s*(?:402|429)"
+        r"|\"error\"\s*:\s*\{|\"type\"\s*:\s*\"(?:api_error|rate_limit))",
+        scanned,
+    ):
+        return "provider-json"
+    return "cli-stderr"
+
+
+def provider_fuel_evidence_source(text: str) -> Optional[str]:
+    """Return ``app-log`` / ``cli-stderr`` / ``provider-json`` or None (FR #8151).
+
+    Tool output (CodeRabbit comments, gh JSON, docstrings) never yields a source.
+    Grok and Cursor watchers share this gate via ``is_out_of_fuel_text``.
+    A fuel-log envelope with an explicit ``source`` is trusted only when that
+    source is one of the provider channels; a missing/blank source re-classifies
+    the recorded text (legacy lines without source still work when the text is
+    genuine provider evidence).
+    """
+    stamped = fuel_log_recorded_source(text)
+    if stamped is not None:
+        if stamped in _PROVIDER_FUEL_SOURCES:
+            recorded = fuel_log_recorded_text(text) or ""
+            if is_fuel_tool_output_noise(recorded):
+                return None
+            return stamped
+        return None
     scanned = provider_fuel_scan_text(text)
     if opencode_fuel is not None and opencode_fuel.is_turn_timeout_text(scanned):
-        return False
-    return bool(_OUT_OF_FUEL_RX.search(scanned))
+        return None
+    return _provider_fuel_source_for_scanned(scanned)
+
+
+def is_out_of_fuel_text(text: str) -> bool:
+    """True when agent/log text is a provider fuel/quota/auth exhaustion (FR #3012 / #3019 / #8151)."""
+    return provider_fuel_evidence_source(text) is not None
 
 
 # FR #4858: hard API 402 / usage-balance-exhausted (not mid-job reading, not NEEDS_AUTH).
@@ -7808,7 +7915,9 @@ class GrokOutOfFuelWatcher:
         if self._fired:
             return
         text = (line or "").strip()
-        if not text or not is_out_of_fuel_text(text):
+        # FR #8151: require a provider source; tool-output "rate limit" never fires.
+        src = provider_fuel_evidence_source(text) if text else None
+        if not src:
             return
         if self._agent_pid > 0:
             try:
@@ -7822,7 +7931,7 @@ class GrokOutOfFuelWatcher:
         self._fired = True
         if self._log:
             try:
-                self._log("out-of-fuel: detected in agent log")
+                self._log(f"out-of-fuel: detected in agent log source={src}")
             except Exception:
                 pass
         if self._on_hit:
@@ -12627,10 +12736,15 @@ class Supervisor:
         self._session_log_thread = threading.Thread(target=watch, name="seat-session-log", daemon=True)
         self._session_log_thread.start()
 
-    def _record_exit(self, proc, reason: str, code=None, *, report: bool = False, job_key: str = "") -> None:
+    def _record_exit(self, proc, reason: str, code=None, *, report: bool = False, job_key: str = "") -> bool:
+        """Record first exit for ``proc``. Return True when this call owns the record.
+
+        FR #8148: callers such as ``_wait_exit`` must not file a CLI-failure intake when
+        ``shutdown`` (e.g. console-closed) already recorded the same pid.
+        """
         with self._lock:
             if self._exit_recorded_pid == proc.pid:
-                return
+                return False
             self._exit_recorded_pid = proc.pid
         self._stop_session_log()
         with contextlib.suppress(Exception):
@@ -12652,6 +12766,7 @@ class Supervisor:
                 machine=self.machine, nick=self.nick, kind=self.kind, agent_pid=proc.pid,
                 stderr_tail=self.last_exit["output"], log=self.log,
             )
+        return True
 
     def _persist_last_exit(self) -> None:
         text = json.dumps(self.last_exit)
@@ -14440,7 +14555,17 @@ class Supervisor:
         )
         exit_u = normalize_agent_exit_code(code)
         exit_label = format_agent_exit_code_label(code)
-        self._record_exit(proc, "agent-exited" if exit_u == 0 else "agent-cli-nonzero-exit", code)
+        # FR #8148: if shutdown already recorded (console-closed / signal), do not also
+        # file a cli-failure intake for the same pid (TOCTOU after the expected check).
+        recorded = self._record_exit(
+            proc, "agent-exited" if exit_u == 0 else "agent-cli-nonzero-exit", code
+        )
+        if not recorded:
+            self.log(
+                f"agent: exit already recorded code={code} (u32={exit_label}); "
+                f"skip cli-failure report (FR #8148); {kill_line}"
+            )
+            return
         if age is not None and age < max(30.0, float(self.startup_grace_s) + 15.0):
             self.log(
                 f"agent: early exit code={code} (u32={exit_label}) after {age:.1f}s "

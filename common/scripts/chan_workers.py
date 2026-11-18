@@ -17,6 +17,7 @@ caller (or a test) send the payload elsewhere, e.g. over HTTP to a remote receiv
 """
 from __future__ import annotations
 
+import contextlib
 from collections.abc import Callable
 from pathlib import Path
 
@@ -109,10 +110,18 @@ class WorkerTracker:
 
     # -- events -----------------------------------------------------------------------
     def on_join(self, nick: str, channel: str) -> int | None:
-        """FR #7186: shop presence from JOIN, not !bored."""
+        """FR #7186: shop presence from JOIN, not !bored.
+
+        FR #8153: JOIN / hello re-announce clears no-clone repo blocks so a seat
+        that later gains a clone can take jobs for that repo again.
+        """
         mid = speaker_machine(self.home, nick, channel)
         if not mid:
             return None
+        with contextlib.suppress(Exception):
+            import gitclaim
+
+            gitclaim.clear_seat_no_clone_repos(self.home, nick)
         code = self.post(payload_for("worker-upsert", mid, nick))
         self._stamp_shop_members(mid)
         return code
