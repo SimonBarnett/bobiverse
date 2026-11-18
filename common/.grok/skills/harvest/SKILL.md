@@ -564,6 +564,7 @@ routes to bobiverse via the split rule.
 - Progress heartbeats must run on their own timer reading a lock-free ACK snapshot; never share the health thread or FINISH/_cv locks (FR #8249 / PR #8267).
 - For a headless per-turn agent, submit-verify succeeds on turn_started or new turn-log bytes. Do not send Enter and do not log no prompt seen. A dead spawn fails as probe=spawn kind=opencode.
 - On FIX for an MRB FAIL that already has a companion fix PR, fast-forward the original tip with the fix commit, close the companion as duplicate, and DONE FIX with the original tip PR URL (FR #5142).
+- When opencode_typed_delivery is called without closes_ref, strip the leading FR|MRB|UAT|FIX token from the job key so Closes/DONE do not double the task type (FR #8279 / PR #8281).
 
 ## Harvest digest (lessons audit 2026-10-06)
 
