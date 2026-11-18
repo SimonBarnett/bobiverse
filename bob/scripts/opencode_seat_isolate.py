@@ -109,9 +109,30 @@ def prepare_seat_data(env: dict[str, str] | None = None) -> tuple[Path, Path, Pa
     return root, data, db
 
 
-def classify_startup(text: str, *, exit_code: int, attempt: int, max_retries: int = DEFAULT_LOCK_RETRIES) -> str:
-    """``retry``, ``giveup``, or ``continue`` for one finished ``opencode run``."""
-    if int(exit_code) == 0:
+def classify_startup(
+    text: str,
+    *,
+    exit_code: int | None,
+    attempt: int,
+    max_retries: int = DEFAULT_LOCK_RETRIES,
+    done: bool = False,
+) -> str:
+    """``retry``, ``giveup``, or ``continue`` for one finished ``opencode run``.
+
+    FR #8147: ``exit_code`` may be ``None`` (the run's exit code was unknown or
+    empty) and is treated as unknown, not as a crash. ``done`` is True when the
+    job's outbox already carries a terminal line (``DONE``/``FAIL``/``GIVEUP``):
+    a finished job is never re-classified as a startup failure.
+    """
+    if done:
+        return "continue"
+    code: int | None = None
+    if exit_code is not None:
+        try:
+            code = int(exit_code)
+        except (TypeError, ValueError):
+            code = None
+    if code == 0:
         return "continue"
     low = (text or "").lower()
     if any(c in low for c in RATE_CUES):
@@ -136,11 +157,21 @@ def _cmd_classify(argv: list[str]) -> int:
     p = argparse.ArgumentParser(prog="classify")
     p.add_argument("--attempt", type=int, default=0)
     p.add_argument("--max", type=int, default=DEFAULT_LOCK_RETRIES)
-    p.add_argument("--exit", dest="exit_code", type=int, default=1)
+    # FR #8147: the wrapper may pass an empty/null exit code (or omit --exit).
+    # nargs="?" accepts a missing/empty value as unknown instead of argparse
+    # dying with "argument --exit: expected one argument".
+    p.add_argument("--exit", dest="exit_code", nargs="?", default=None)
+    p.add_argument("--done", action="store_true", default=False)
     args = p.parse_args(argv)
     text = sys.stdin.read()
     sys.stdout.write(
-        classify_startup(text, exit_code=args.exit_code, attempt=args.attempt, max_retries=args.max)
+        classify_startup(
+            text,
+            exit_code=args.exit_code,
+            attempt=args.attempt,
+            max_retries=args.max,
+            done=args.done,
+        )
         + "\n"
     )
     return 0
