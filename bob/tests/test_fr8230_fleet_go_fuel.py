@@ -113,6 +113,9 @@ def test_mrb8231_public_digest_path_without_env(tmp_path, monkeypatch):
     """Hostile MRB #8231: seats often lack BOB_DIGEST_HOME; install home still works."""
     monkeypatch.delenv("BOB_DIGEST_HOME", raising=False)
     monkeypatch.delenv("BOB_HOME", raising=False)
+    profile = tmp_path / "profile"
+    monkeypatch.setenv("USERPROFILE", str(profile))
+    monkeypatch.setenv("HOME", str(profile))
     install = tmp_path / "bob"
     home = install / "home"
     home.mkdir(parents=True)
