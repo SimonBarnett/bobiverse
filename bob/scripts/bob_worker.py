@@ -71,11 +71,10 @@ def short_build_sha(commit: str | None = None) -> str:
 
 
 def resolve_seat_hello_model(kind: str, env: Optional[dict] = None) -> str:
-    """FR #6418 / FR #7084: the configured model the seat's agent will launch with.
+    """FR #6418 / FR #7084 / FR #8159: model the seat was launched for.
 
-    FR #7084: ``workerStartModels`` (JSON/env) is the per-CLI minimum start model.
-    OpenCode still honours ``BOB_OPENCODE_MODEL`` then OpenCode config. Empty config
-    stays empty (hello ``unknown``); never invent a premium id.
+    Precedence: env pin (Si tray click), then tray ``workerStartModels``, then
+    OpenCode free default / OpenCode config. Never invent a premium id.
     """
     env = os.environ if env is None else env
     k = (kind or "").strip().lower()
@@ -83,14 +82,10 @@ def resolve_seat_hello_model(kind: str, env: Optional[dict] = None) -> str:
         import worker_start_model as wsm
 
         cfg = wsm.load_worker_start_config(env=env)
-        picked = wsm.configured_start_model(k, cfg)
+        picked = wsm.launch_selected_model(k, cfg, env=env)
         if picked:
             return picked
         if k == "opencode":
-            # FR #7187: never advertise a machine Go/paid default as the seat model.
-            m = str(env.get("BOB_OPENCODE_MODEL") or "").strip()
-            if m:
-                return m
             cfg_m = read_opencode_config_model(env) or ""
             if cfg_m and not wsm.opencode_is_go_or_paid(cfg_m):
                 return cfg_m
@@ -3474,25 +3469,40 @@ def notify_start_model_after_launch(
     shop_say: Optional[Callable[..., bool]] = None,
     log: Optional[Callable[[str], None]] = None,
     filer_post: Optional[Callable[..., dict]] = None,
+    reason: str = "",
+    env: Optional[dict] = None,
 ) -> dict:
-    """FR #7148: after agent start, report when configured model was not used."""
+    """FR #7148 / #8159: report when the launch-selected model was not used.
+
+    ``configured`` is ``launch_selected_model`` (env pin > tray > config). A pause
+    fallback (``mismatch_reason=paused``) is a digest mismatch only --- not the
+    "start model unavailable / no premium fallback" intake line (FR #8159 AC3).
+    """
     cfg = str(configured or "").strip()
     act = str(actual or "").strip()
-    try:
-        import worker_start_model as wsm
+    why = str(reason or "").strip().lower()
+    if not why:
+        try:
+            import worker_start_model as wsm
 
-        mismatch = wsm.model_mismatch(act, cfg)
-    except Exception:
-        mismatch = bool(cfg) and (not act or act.lower() != cfg.lower())
-    if not cfg or not mismatch:
+            why = wsm.model_mismatch_reason(act, cfg, env=env)
+        except Exception:
+            why = (
+                "mismatch"
+                if (cfg and act and act.lower() != cfg.lower())
+                else ("unavailable" if cfg and not act else "")
+            )
+    if not cfg or not why:
         return {"ok": True, "skipped": True, "reason": "match-or-empty"}
+    if why == "paused":
+        return {"ok": True, "skipped": True, "reason": "paused-fallback"}
     return report_configured_start_model_unavailable(
         kind=kind,
         configured=cfg,
         actual=act,
         machine=machine,
         nick=nick,
-        reason="mismatch" if act else "unavailable",
+        reason=why,
         shop=shop,
         shop_say=shop_say,
         log=log,
@@ -9912,6 +9922,7 @@ def post_digest_seat_kind(
     model: str = "",
     configured_model: str = "",
     model_mismatch: bool | None = None,
+    mismatch_reason: str = "",
     cost_tier: str = "",
     start_effort: str = "",
     working_on: str = "",
@@ -9981,6 +9992,9 @@ def post_digest_seat_kind(
         payload["model_mismatch"] = bool(model_mismatch)
     elif cfg_m and (model or "").strip():
         payload["model_mismatch"] = str(model).strip().lower() != cfg_m.lower()
+    why = str(mismatch_reason or "").strip()
+    if why and payload.get("model_mismatch"):
+        payload["mismatch_reason"] = why
     if (cost_tier or "").strip():
         payload["cost_tier"] = str(cost_tier).strip()
     eff = str(start_effort or "").strip().lower()
@@ -16749,13 +16763,15 @@ def run_agent(args, log: Log) -> int:
     cfg_model = ""
     cost_tier = ""
     mismatch = None
+    mismatch_reason = ""
     seat_effort = "low"
     try:
         import worker_start_model as wsm
 
         _cfg = wsm.load_worker_start_config()
-        cfg_model = wsm.configured_start_model(kind, _cfg)
-        mismatch = wsm.model_mismatch(seat_model, cfg_model)
+        cfg_model = wsm.launch_selected_model(kind, _cfg, env=os.environ)
+        mismatch_reason = wsm.model_mismatch_reason(seat_model, cfg_model, env=os.environ)
+        mismatch = bool(mismatch_reason)
         cost_tier = wsm.model_cost_tier(seat_model or cfg_model, _cfg)
         seat_effort = wsm.configured_start_effort(kind, _cfg)
         if not cfg_model:
@@ -16771,6 +16787,7 @@ def run_agent(args, log: Log) -> int:
             model=seat_model,
             configured_model=cfg_model,
             model_mismatch=mismatch,
+            mismatch_reason=mismatch_reason,
             cost_tier=cost_tier,
             start_effort=seat_effort,
             worker_build=build,
@@ -16815,6 +16832,7 @@ def run_agent(args, log: Log) -> int:
             model=seat_model,
             configured_model=cfg_model,
             model_mismatch=mismatch,
+            mismatch_reason=mismatch_reason,
             cost_tier=cost_tier,
             start_effort=seat_effort,
             worker_build=build,
@@ -16836,9 +16854,12 @@ def run_agent(args, log: Log) -> int:
         if not actual:
             actual = wsm.concrete_model_id(wsm.actual_start_model(env=child_env or os.environ))
         actual_effort = str(child_env.get(wsm.ENV_ACTUAL_EFFORT) or "").strip()
-        _cfg = wsm.load_worker_start_config()
-        cfg_model = wsm.configured_start_model(kind, _cfg)
-        mismatch = wsm.model_mismatch(actual, cfg_model)
+        _cfg = wsm.load_worker_start_config(env=child_env or os.environ)
+        cfg_model = wsm.launch_selected_model(kind, _cfg, env=child_env or os.environ)
+        mismatch_reason = wsm.model_mismatch_reason(
+            actual, cfg_model, env=child_env or os.environ
+        )
+        mismatch = bool(mismatch_reason)
         cost_tier = wsm.model_cost_tier(actual or cfg_model, _cfg)
         if not actual_effort:
             actual_effort = wsm.configured_start_effort(kind, _cfg)
@@ -16853,6 +16874,8 @@ def run_agent(args, log: Log) -> int:
                     shop=irc.shop,
                     shop_say=lambda _ch, msg: irc.say(irc.shop, msg),
                     log=log,
+                    reason=mismatch_reason,
+                    env=child_env or os.environ,
                 )
             except Exception as e:
                 log(f"worker: start model unavailable report failed {type(e).__name__}")
@@ -16872,6 +16895,7 @@ def run_agent(args, log: Log) -> int:
             model=actual or seat_model,
             configured_model=cfg_model,
             model_mismatch=mismatch,
+            mismatch_reason=mismatch_reason,
             cost_tier=cost_tier,
             start_effort=actual_effort,
             worker_build=build,
