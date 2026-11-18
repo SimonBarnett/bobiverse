@@ -1,4 +1,4 @@
-"""FR #7910: scripts bob-worker launches by path must ship beside the frozen exe.
+"""FR #7910 / #8202: scripts bob-worker launches by path must ship beside the frozen exe.
 
 ``_resolve_installed_worker_script`` skips the PyInstaller ``_MEI`` extract.
 A worker-only artifact that is only ``bob-worker.exe`` therefore leaves
@@ -6,15 +6,26 @@ A worker-only artifact that is only ``bob-worker.exe`` therefore leaves
 The build bundles those files as ``worker-scripts`` data and also copies them
 into the CI artifact under ``scripts\\``. On a frozen start the worker writes
 the bundle out to ``<exe dir>\\scripts``, which the resolver already searches.
+
+FR #8202: the frozen worker prefers those shipped copies (hash-checked against
+the PyInstaller ``worker-scripts`` bundle) over a stale flat
+``C:\\ai\\bob\\scripts`` tree. Set ``BOB_WORKER_USE_FLAT_SCRIPTS=1`` only for
+explicit local/dev overrides. Unpack mismatches are overwritten; failures are
+returned so startup can log them instead of silently running stale files.
 """
 from __future__ import annotations
 
 import argparse
+import hashlib
+import os
 import re
 import sys
+from dataclasses import dataclass, field
 from pathlib import Path
 
 BUNDLE_DIR_NAME = "worker-scripts"
+# FR #8202: allow flat install scripts\\ to win (dev only). Default off when frozen.
+FLAT_OVERRIDE_ENV = "BOB_WORKER_USE_FLAT_SCRIPTS"
 _NAME_RX = re.compile(
     r"""_resolve_installed_worker_script\(\s*["']([A-Za-z0-9_]+\.py)["']"""
 )
@@ -154,34 +165,106 @@ def check_by_path_scripts(bob_worker: Path, dest: Path, *, source_dir: Path | No
     return names
 
 
-def extract_bundled_scripts() -> list[str]:
-    """Frozen exe: write bundled scripts next to the exe. No-op from source."""
+def use_flat_scripts_override(env: dict | None = None) -> bool:
+    """True when ``BOB_WORKER_USE_FLAT_SCRIPTS`` requests flat install scripts (FR #8202)."""
+    e = os.environ if env is None else env
+    raw = str(e.get(FLAT_OVERRIDE_ENV) or "").strip().lower()
+    return raw in ("1", "true", "yes", "on")
+
+
+def short_content_hash(data: bytes) -> str:
+    """12-hex SHA-256 prefix for startup logs (no secrets)."""
+    return hashlib.sha256(data).hexdigest()[:12]
+
+
+@dataclass
+class ExtractBundledResult:
+    """Outcome of unpacking ``worker-scripts`` beside the frozen exe (FR #8202)."""
+
+    written: list[str] = field(default_factory=list)
+    overwritten: list[str] = field(default_factory=list)
+    unchanged: list[str] = field(default_factory=list)
+    failed: list[tuple[str, str]] = field(default_factory=list)
+    hashes: dict[str, str] = field(default_factory=dict)
+    dest: str = ""
+
+
+def bundled_scripts_src_dir() -> Path | None:
     if not getattr(sys, "frozen", False):
-        return []
+        return None
     root = Path(getattr(sys, "_MEIPASS", "") or "")
     src = root / BUNDLE_DIR_NAME
-    if not src.is_dir():
-        return []
-    dest = Path(sys.executable).resolve().parent / "scripts"
+    return src if src.is_dir() else None
+
+
+def ship_scripts_dir() -> Path | None:
+    """``<exe dir>\\scripts`` when frozen; else None."""
+    if not getattr(sys, "frozen", False):
+        return None
+    try:
+        return Path(sys.executable).resolve().parent / "scripts"
+    except Exception:
+        return None
+
+
+def extract_bundled_scripts_result() -> ExtractBundledResult:
+    """Frozen exe: write/hash-check bundled scripts next to the exe (FR #8202).
+
+    The PyInstaller ``worker-scripts`` tree is the build manifest: each dest
+    file must match those bytes. Mismatches are overwritten; OSError is
+    recorded in ``failed`` instead of silently keeping the stale file.
+    """
+    out = ExtractBundledResult()
+    if not getattr(sys, "frozen", False):
+        return out
+    src = bundled_scripts_src_dir()
+    if src is None:
+        return out
+    dest = ship_scripts_dir()
+    if dest is None:
+        return out
+    out.dest = str(dest)
     try:
         dest.mkdir(parents=True, exist_ok=True)
-    except OSError:
-        return []
-    written: list[str] = []
+    except OSError as e:
+        out.failed.append(("*", type(e).__name__))
+        return out
     # FR #8156: extract both Python helpers and fleet .ps1 (Clear / Common).
     paths = sorted(list(src.glob("*.py")) + list(src.glob("*.ps1")))
     for path in paths:
-        target = dest / path.name
+        name = path.name
+        target = dest / name
         try:
             data = path.read_bytes()
-            if target.is_file() and target.read_bytes() == data:
-                written.append(path.name)
+        except OSError as e:
+            out.failed.append((name, type(e).__name__))
+            continue
+        out.hashes[name] = short_content_hash(data)
+        try:
+            if target.is_file():
+                existing = target.read_bytes()
+                if existing == data:
+                    out.unchanged.append(name)
+                    out.written.append(name)
+                    continue
+                target.write_bytes(data)
+                out.overwritten.append(name)
+                out.written.append(name)
                 continue
             target.write_bytes(data)
-            written.append(path.name)
-        except OSError:
-            continue
-    return written
+            out.written.append(name)
+        except OSError as e:
+            out.failed.append((name, type(e).__name__))
+    return out
+
+
+def extract_bundled_scripts() -> list[str]:
+    """Frozen exe: write bundled scripts next to the exe. No-op from source.
+
+    Returns the names successfully present after extract (unchanged or written).
+    Prefer ``extract_bundled_scripts_result`` when callers need overwrite/fail detail.
+    """
+    return list(extract_bundled_scripts_result().written)
 
 
 def main(argv: list[str] | None = None) -> int:
