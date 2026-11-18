@@ -11016,6 +11016,154 @@ def opencode_finish_auto_pr(
     return url
 
 
+# FR #8156: once-per-process warn when a fleet .ps1 lacks a switch the exe wants.
+_FLEET_PS1_MISMATCH_WARNED: set[str] = set()
+_CLEAR_PS1_NAME = "Clear-BobiverseJobWorktrees.ps1"
+_PS1_PARAM_RX = re.compile(r"(?is)\bparam\s*\((.*?)\)\s*(?:\r?\n|$)")
+_PS1_PARAM_NAME_RX = re.compile(r"(?im)^\s*(?:\[[^\]]+\]\s*)+\$([A-Za-z_][A-Za-z0-9_]*)")
+
+
+def ps1_declared_params(script: str | Path) -> frozenset[str]:
+    """Parameter names declared in a PowerShell script's ``param(...)`` block (FR #8156)."""
+    try:
+        text = Path(script).read_text(encoding="utf-8-sig")
+    except OSError:
+        return frozenset()
+    m = _PS1_PARAM_RX.search(text)
+    if not m:
+        return frozenset()
+    body = m.group(1) or ""
+    names = {n for n in _PS1_PARAM_NAME_RX.findall(body) if n}
+    # Also catch ``[switch]$Foo`` / bare ``$Foo =`` tokens inside the block.
+    for n in re.findall(r"\$([A-Za-z_][A-Za-z0-9_]*)", body):
+        names.add(n)
+    return frozenset(names)
+
+
+def resolve_fleet_ps1(
+    name: str,
+    *,
+    install_root: str | Path | None = None,
+    source_file: str | Path | None = None,
+) -> Optional[Path]:
+    """Locate a fleet ``.ps1`` the worker invokes (FR #8156).
+
+    Prefer the copy shipped beside the frozen exe (or extracted worker-scripts),
+    then ``common\\scripts`` (tracked), and only then the often-stale flat
+    ``install\\scripts`` compose. Never prefer a PyInstaller ``_MEI`` extract.
+    """
+    try:
+        import worker_shipped_scripts as _shipped_scripts
+
+        _shipped_scripts.extract_bundled_scripts()
+    except Exception:
+        pass
+    source = Path(source_file).resolve() if source_file else Path(__file__).resolve()
+    here = source.parent
+    install = str(
+        install_root
+        or os.environ.get("BOB_INSTALL_ROOT")
+        or os.environ.get("BOBIVERSE_INSTALL_ROOT")
+        or ""
+    ).strip()
+    candidates: list[Path] = []
+    # 1) Frozen / hotpatch ship dir next to bob-worker.exe
+    if getattr(sys, "frozen", False):
+        exe_dir = Path(sys.executable).resolve().parent
+        candidates.append(exe_dir / "scripts" / name)
+        candidates.append(exe_dir.parent / "scripts" / name)
+        candidates.append(exe_dir.parent / "worker" / "scripts" / name)
+    # 2) Env override
+    scripts_env = (os.environ.get("BOB_SCRIPTS_DIR") or "").strip()
+    if scripts_env:
+        candidates.append(Path(scripts_env) / name)
+    # 3) Repo / source tree common (fresher than flat compose)
+    if not _path_is_mei_extract(here):
+        candidates.append(here.parent.parent / "common" / "scripts" / name)
+        candidates.append(here / name)
+    if install:
+        root = Path(install)
+        candidates.append(root / "common" / "scripts" / name)
+        candidates.append(root / "worker" / "scripts" / name)
+        # Flat compose last — often lags hotpatched exe (class of #8156).
+        candidates.append(root / "scripts" / name)
+    for cand in candidates:
+        if _path_is_mei_extract(cand):
+            continue
+        if cand.is_file():
+            return cand.resolve()
+    return None
+
+
+def filter_ps1_optional_switches(
+    script: str | Path,
+    argv: list[str],
+    *,
+    optional: frozenset[str] | set[str] | None = None,
+) -> tuple[list[str], list[str]]:
+    """Drop ``-Switch`` args the script does not declare (FR #8156).
+
+    Returns ``(filtered_argv, omitted_switch_names)``. Required positional-style
+    pairs (``-RepoRoot``, ``-KeepPath``, …) are kept even when undeclared so a
+    truly broken script still fails loudly; only ``optional`` names are stripped.
+    """
+    opt = frozenset(optional or ())
+    if not opt:
+        return list(argv), []
+    declared = {n.lower() for n in ps1_declared_params(script)}
+    out: list[str] = []
+    omitted: list[str] = []
+    i = 0
+    while i < len(argv):
+        tok = str(argv[i])
+        if tok.startswith("-") and not tok.startswith("--"):
+            name = tok.lstrip("-").split(":", 1)[0]
+            # Switch with no following value when next is another flag or end.
+            is_switch_only = (i + 1 >= len(argv)) or str(argv[i + 1]).startswith("-")
+            if name.lower() in {o.lower() for o in opt} and name.lower() not in declared:
+                omitted.append(name)
+                i += 1
+                # Drop a following value only when it is not another flag (rare for switches).
+                if not is_switch_only and i < len(argv) and not str(argv[i]).startswith("-"):
+                    # Optional switches are [switch] — never consume a value.
+                    pass
+                continue
+        out.append(tok)
+        i += 1
+    return out, omitted
+
+
+def _warn_fleet_ps1_mismatch_once(
+    script: Path,
+    omitted: list[str],
+    *,
+    log_fn: Optional[Callable[[str], None]] = None,
+) -> None:
+    """Log + runtime_failure once per script path for omitted switches (FR #8156)."""
+    if not omitted:
+        return
+    key = str(script).lower()
+    if key in _FLEET_PS1_MISMATCH_WARNED:
+        return
+    _FLEET_PS1_MISMATCH_WARNED.add(key)
+    msg = (
+        f"fleet-ps1 mismatch: {script.name} lacks -{',-'.join(omitted)}; "
+        f"calling without those switches (path={script})"
+    )
+    if log_fn:
+        log_fn(f"opencode finish: Clear result=skipped:param-mismatch {msg}")
+    try:
+        import runtime_failure
+
+        runtime_failure.report_message(
+            "bob-worker",
+            msg,
+            site="fleet-ps1-param-mismatch",
+        )
+    except Exception:
+        pass
+
+
 def opencode_cleanup_extra_worktrees(
     job_worktree: str | Path,
     *,
@@ -11023,10 +11171,12 @@ def opencode_cleanup_extra_worktrees(
     run=None,
     log_fn: Optional[Callable[[str], None]] = None,
 ) -> list[str]:
-    """FR #6370 / FR #8023: delegate extra worktree reclaim to Clear script.
+    """FR #6370 / FR #8023 / FR #8156: delegate extra worktree reclaim to Clear.
 
-    Invokes Clear-BobiverseJobWorktrees.ps1 with -KeepPath <job> -SkipSeatDisk.
-    If PowerShell or the Clear script is missing, log and remove nothing.
+    Resolves Clear via ``resolve_fleet_ps1`` (shipped / common before flat
+    install scripts). Passes ``-SkipSeatDisk`` only when the script declares it;
+    otherwise falls back so an older install-root copy still cleans. Logs
+    ``result=ok|skipped:<reason>|failed:<class>``.
     """
     import shutil as _shutil
     import subprocess as _sp
@@ -11036,30 +11186,26 @@ def opencode_cleanup_extra_worktrees(
     root = Path(job_worktree or "")
     removed: list[str] = []
     if not root.is_dir():
+        if log_fn:
+            log_fn("opencode finish: Clear result=skipped:no-job-dir")
         return removed
     try:
         job_res = root.resolve()
     except OSError:
+        if log_fn:
+            log_fn("opencode finish: Clear result=skipped:job-resolve")
         return removed
 
     ps = _shutil.which("powershell") or _shutil.which("powershell.exe")
     if not ps:
         if log_fn:
-            log_fn("opencode finish: Clear skipped (powershell missing); remove nothing")
+            log_fn("opencode finish: Clear result=skipped:powershell-missing")
         return removed
 
-    # Resolve Clear script next to install / common / job clone.
-    candidates: list[Path] = []
-    install = (os.environ.get("BOB_INSTALL_ROOT") or os.environ.get("BOBIVERSE_INSTALL_ROOT") or "").strip()
-    if install:
-        candidates.append(Path(install) / "scripts" / "Clear-BobiverseJobWorktrees.ps1")
-        candidates.append(Path(install) / "common" / "scripts" / "Clear-BobiverseJobWorktrees.ps1")
-    candidates.append(Path(__file__).resolve().parent.parent.parent / "common" / "scripts" / "Clear-BobiverseJobWorktrees.ps1")
-    candidates.append(Path(__file__).resolve().parent / "Clear-BobiverseJobWorktrees.ps1")
-    script = next((p for p in candidates if p.is_file()), None)
+    script = resolve_fleet_ps1(_CLEAR_PS1_NAME)
     if script is None:
         if log_fn:
-            log_fn("opencode finish: Clear script missing; remove nothing")
+            log_fn("opencode finish: Clear result=skipped:script-missing")
         return removed
 
     repo_root = ""
@@ -11076,12 +11222,10 @@ def opencode_cleanup_extra_worktrees(
                 cpath = Path(common_dir)
                 if not cpath.is_absolute():
                     cpath = (job_res / cpath).resolve()
-                # .../.git or .../.git/worktrees/x -> repo checkout with .git
                 text = str(cpath)
                 if text.lower().endswith(os.sep + ".git") or text.lower().endswith("/.git"):
                     repo_root = str(cpath.parent)
                 else:
-                    # worktree gitdir: climb to .git then parent
                     marker = text.lower().rfind(f"{os.sep}.git{os.sep}")
                     if marker < 0:
                         marker = text.lower().rfind("/.git/")
@@ -11092,7 +11236,6 @@ def opencode_cleanup_extra_worktrees(
     except Exception:
         repo_root = ""
     if not repo_root or not (Path(repo_root) / ".git").exists():
-        # Fall back: treat job tree's toplevel as repo root for Clear.
         try:
             top = run(
                 ["git", "-C", str(job_res), "rev-parse", "--show-toplevel"],
@@ -11106,40 +11249,80 @@ def opencode_cleanup_extra_worktrees(
             pass
     if not repo_root:
         if log_fn:
-            log_fn("opencode finish: Clear skipped (no repo root); remove nothing")
+            log_fn("opencode finish: Clear result=skipped:no-repo-root")
         return removed
+
+    argv = [
+        ps,
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        str(script),
+        "-RepoRoot",
+        repo_root,
+        "-KeepPath",
+        str(job_res),
+        "-SkipSeatDisk",
+        "-MaxExtraJobTrees",
+        "0",
+    ]
+    argv, omitted = filter_ps1_optional_switches(
+        script, argv, optional=frozenset({"SkipSeatDisk"})
+    )
+    if omitted:
+        _warn_fleet_ps1_mismatch_once(script, omitted, log_fn=log_fn)
 
     try:
         proc = run(
-            [
-                ps,
-                "-NoProfile",
-                "-ExecutionPolicy",
-                "Bypass",
-                "-File",
-                str(script),
-                "-RepoRoot",
-                repo_root,
-                "-KeepPath",
-                str(job_res),
-                "-SkipSeatDisk",
-                "-MaxExtraJobTrees",
-                "0",
-            ],
+            argv,
             capture_output=True,
             text=True,
             timeout=300,
         )
         out = ((getattr(proc, "stdout", "") or "") + (getattr(proc, "stderr", "") or ""))
-        if log_fn:
-            log_fn(f"opencode finish: Clear exit={getattr(proc, 'returncode', '?')} {out[-400:]}")
-        # Best-effort: surface paths mentioned as removed.
+        code = int(getattr(proc, "returncode", 1) or 0)
+        # NamedParameterNotFound / similar: retry once without optional switches.
+        if code != 0 and "NamedParameterNotFound" in out and "-SkipSeatDisk" in argv:
+            argv2 = [a for a in argv if a != "-SkipSeatDisk"]
+            _warn_fleet_ps1_mismatch_once(script, ["SkipSeatDisk"], log_fn=log_fn)
+            proc = run(argv2, capture_output=True, text=True, timeout=300)
+            out = ((getattr(proc, "stdout", "") or "") + (getattr(proc, "stderr", "") or ""))
+            code = int(getattr(proc, "returncode", 1) or 0)
+            argv = argv2
         for line in out.splitlines():
             if line.startswith("Removing worktree "):
                 removed.append(line[len("Removing worktree ") :].strip())
+        if log_fn:
+            if code == 0:
+                log_fn(f"opencode finish: Clear result=ok removed={len(removed)} {out[-200:]}")
+            else:
+                log_fn(
+                    f"opencode finish: Clear result=failed:exit-{code} {out[-400:]}"
+                )
+                try:
+                    import runtime_failure
+
+                    runtime_failure.report_message(
+                        "bob-worker",
+                        f"Clear-BobiverseJobWorktrees exit={code}",
+                        site="fleet-ps1-clear-failed",
+                    )
+                except Exception:
+                    pass
     except Exception as e:  # noqa: BLE001
         if log_fn:
-            log_fn(f"opencode finish: Clear failed {type(e).__name__}; remove nothing")
+            log_fn(f"opencode finish: Clear result=failed:{type(e).__name__}")
+        try:
+            import runtime_failure
+
+            runtime_failure.report_message(
+                "bob-worker",
+                f"Clear-BobiverseJobWorktrees failed {type(e).__name__}",
+                site="fleet-ps1-clear-failed",
+            )
+        except Exception:
+            pass
     return removed
 
 

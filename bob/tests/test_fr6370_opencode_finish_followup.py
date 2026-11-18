@@ -157,14 +157,20 @@ def test_fr6370_auto_pr_skips_when_has_pr(tmp_path: Path):
 
 
 def test_fr6370_cleanup_delegates_to_clear(tmp_path: Path, monkeypatch):
-    """FR #8023: finish cleanup delegates to Clear -KeepPath -SkipSeatDisk."""
+    """FR #8023 / #8156: finish cleanup delegates to Clear -KeepPath (SkipSeatDisk when declared)."""
     job = tmp_path / "job"
     job.mkdir()
     (job / ".git").mkdir()
     monkeypatch.setenv("BOB_INSTALL_ROOT", str(tmp_path / "install"))
     clear = tmp_path / "install" / "scripts" / "Clear-BobiverseJobWorktrees.ps1"
     clear.parent.mkdir(parents=True)
-    clear.write_text("# stub\n", encoding="utf-8")
+    # Declare SkipSeatDisk so the optional switch is kept (FR #8156 probes params).
+    clear.write_text(
+        "[CmdletBinding()]\nparam([string]$RepoRoot,[string]$KeepPath,[int]$MaxExtraJobTrees,"
+        "[switch]$SkipSeatDisk)\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("BOB_SCRIPTS_DIR", str(clear.parent))
 
     class _R:
         def __init__(self, code=0, out=""):
