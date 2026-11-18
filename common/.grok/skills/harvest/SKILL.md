@@ -560,7 +560,9 @@ routes to bobiverse via the split rule.
 - Clear the finished-job mark before writing the receipt ACK. If that ACK is refused, NACK and do not inject. A live turn for another job NACKs busy.
 - OpenCode external_directory corrective: prefer done_miss_remind_fn over failed_turn_retry_fn; guard _inject_failed_turn_retry when corrective_pending so live seats do not re-paste the assign
 - On assign, restart this seat's skill-dag MCP child only when skill_dag_mcp.py is newer than the process start. A silent empty resolve with no unresolved field is that stale child.
+- Do not offer a self-review-deadlock stall FR to a seat named in that finding's idle list. Another seat can take the stall. The author stays free for a fresh session that can review.
 - Progress heartbeats must run on their own timer reading a lock-free ACK snapshot; never share the health thread or FINISH/_cv locks (FR #8249 / PR #8267).
+- For a headless per-turn agent, submit-verify succeeds on turn_started or new turn-log bytes. Do not send Enter and do not log no prompt seen. A dead spawn fails as probe=spawn kind=opencode.
 
 ## Harvest digest (lessons audit 2026-10-06)
 
