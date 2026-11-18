@@ -766,14 +766,50 @@ def save_outbox_pos(outbox: Path, pos: int) -> None:
     outbox_pos_path(outbox).write_text(str(int(pos)) + "\n", encoding="utf-8")
 
 
+def is_enospc(exc: BaseException) -> bool:
+    """True for disk-full OSError (errno 28 / WinError 112|39) — FR #8205 / #7896."""
+    if not isinstance(exc, OSError):
+        return False
+    err_no = getattr(exc, "errno", None)
+    winerror = getattr(exc, "winerror", None)
+    if err_no in (28,) or winerror in (112, 39):
+        return True
+    return "space" in str(exc).lower()
+
+
+_info_enospc_reported = False
+
+
 def info(msg: str) -> None:
-    """Stdout log line; never raise UnicodeEncodeError on cp1252 consoles (FR #4396)."""
+    """Stdout log line; never raise UnicodeEncodeError on cp1252 consoles (FR #4396).
+
+    FR #8205: never raise OSError (ENOSPC / broken stdout) — that killed ear threads
+    on marchhare when the log volume filled (crash-sig 2852879cc3d3bbdc).
+    """
+    global _info_enospc_reported
     try:
         print(msg, flush=True)
     except UnicodeEncodeError:
         enc = getattr(sys.stdout, "encoding", None) or "ascii"
         safe = str(msg).encode(enc, errors="replace").decode(enc, errors="replace")
-        print(safe, flush=True)
+        try:
+            print(safe, flush=True)
+        except OSError as exc:
+            _note_info_oserror(exc)
+    except OSError as exc:
+        _note_info_oserror(exc)
+
+
+def _note_info_oserror(exc: OSError) -> None:
+    """Swallow stdout write failures; report ENOSPC once (FR #8205)."""
+    global _info_enospc_reported
+    if not is_enospc(exc) or _info_enospc_reported:
+        return
+    _info_enospc_reported = True
+    with contextlib.suppress(Exception):
+        import runtime_failure
+
+        runtime_failure.report("bob-ear", exc, site="info-enospc")
 
 
 def resolve_bob_install_root(
