@@ -93,6 +93,9 @@ try {
                 if ($op.free_model_ids) {
                     $out.opencode.free_model_ids = @($op.free_model_ids)
                 }
+                # FR #8230: keep provider windows and limiting. parse_fuel reads windows.
+                if ($null -ne $op.windows) { $out.opencode.windows = $op.windows }
+                if ($null -ne $op.limiting) { $out.opencode.limiting = $op.limiting }
             }
         }
     } catch { }
