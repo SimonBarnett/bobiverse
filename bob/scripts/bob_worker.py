@@ -44,7 +44,7 @@ import time
 import urllib.error
 import urllib.request
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Callable, Optional
 
@@ -1714,7 +1714,14 @@ def fuel_explicitly_exhausted(f: Fuel, kind: str, start_model: str = "") -> bool
     return False
 
 
-def format_fuel_reading(f: Fuel, kind: str = "", start_model: str = "") -> str:
+def format_fuel_reading(
+    f: Fuel,
+    kind: str = "",
+    start_model: str = "",
+    *,
+    source: str = "",
+    age_s: Optional[float] = None,
+) -> str:
     """One-line fuel snapshot for mid-job logs (no secrets).
 
     FR #8158: ``pct=`` is the seat's own pool remaining (never Grok pct on an
@@ -1733,7 +1740,252 @@ def format_fuel_reading(f: Fuel, kind: str = "", start_model: str = "") -> str:
         f"on_demand_remain_pct={f.on_demand_remaining_pct!s} overspend={f.overspend_state!s} "
         f"opencode_free={f.opencode_free!s} opencode_go={f.opencode_go!s} "
         f"known={known} exhausted={exhausted}"
+        + (f" source={source} age_s={int(age_s)}" if source else "")
     )
+
+
+# FR #8230: fleet/digest fills a pool the local helper left unknown. Never calls Go zen.
+FLEET_FUEL_MAX_AGE_S = 600.0
+
+
+def _parse_fleet_stamp(raw) -> Optional[float]:
+    if raw is None or raw == "":
+        return None
+    if isinstance(raw, (int, float)):
+        try:
+            return float(raw)
+        except (TypeError, ValueError):
+            return None
+    s = str(raw).strip()
+    if not s:
+        return None
+    try:
+        if s.endswith("Z"):
+            s = s[:-1] + "+00:00"
+        dt = _dt.datetime.fromisoformat(s)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=_dt.timezone.utc)
+        return dt.timestamp()
+    except ValueError:
+        return None
+
+
+def _fleet_pool_row(doc: dict, pool: str) -> Optional[dict]:
+    """Public digest row for one pool. Never returns credential fields."""
+    if not isinstance(doc, dict):
+        return None
+    names = {
+        "opencode_go": ("opencode-go", "opencode_go"),
+        "opencode_free": ("opencode-free", "opencode_free"),
+    }.get(pool, ())
+    if not names:
+        return None
+    containers = [doc]
+    for key in ("opencode", "fleet", "fleet_pools"):
+        node = doc.get(key)
+        if isinstance(node, dict):
+            containers.append(node)
+            nested = node.get("opencode")
+            if isinstance(nested, dict):
+                containers.append(nested)
+    for node in containers:
+        for name in names:
+            row = node.get(name)
+            if isinstance(row, dict):
+                return row
+    return None
+
+
+def fleet_pool_fill(
+    row: Optional[dict],
+    *,
+    now: float,
+    max_age_s: float = FLEET_FUEL_MAX_AGE_S,
+) -> dict:
+    """Decide whether a digest row may fill a missing local pool.
+
+    Usable only when ``fresh`` is true and ``fetched_at``/``ts`` is within
+    ``max_age_s``. ``limited: true`` or remaining 0 is an explicit zero.
+    Stale or missing stays unusable (known=False). No guess.
+    """
+    out = {
+        "usable": False,
+        "remaining": None,
+        "windows": None,
+        "age_s": None,
+        "source": "",
+    }
+    if not isinstance(row, dict):
+        return out
+    if row.get("fresh") is not True:
+        return out
+    stamp = _parse_fleet_stamp(row.get("fetched_at"))
+    if stamp is None:
+        stamp = _parse_fleet_stamp(row.get("ts"))
+    if stamp is None:
+        return out
+    age = float(now) - float(stamp)
+    out["age_s"] = age
+    if age < -60.0 or age > float(max_age_s):
+        return out
+    limited = row.get("limited") is True
+    rem = row.get("remaining")
+    try:
+        rem_i = None if rem is None or rem == "" else int(rem)
+    except (TypeError, ValueError):
+        rem_i = None
+    if limited and rem_i is None:
+        rem_i = 0
+    if rem_i is None:
+        return out
+    usage = str(row.get("usage_source") or "digest").strip() or "digest"
+    if "key" in usage.lower() or "token" in usage.lower() or "credman" in usage.lower():
+        usage = "digest"
+    windows = row.get("windows") if isinstance(row.get("windows"), dict) else None
+    out["usable"] = True
+    out["remaining"] = rem_i
+    out["windows"] = windows
+    out["source"] = "fleet:" + usage
+    return out
+
+
+def supplement_fuel_from_fleet(
+    fuel: Fuel,
+    digest: Optional[dict],
+    *,
+    now: float,
+    max_age_s: float = FLEET_FUEL_MAX_AGE_S,
+) -> tuple:
+    """Fill only pools the local helper left empty. Returns (fuel, source, age_s)."""
+    if not isinstance(digest, dict):
+        return fuel, "", None
+    source = ""
+    age_s = None
+    go = fuel.opencode_go
+    free = fuel.opencode_free
+    windows = fuel.opencode_windows
+    for pool, current in (("opencode_go", go), ("opencode_free", free)):
+        if current is not None:
+            continue
+        fill = fleet_pool_fill(_fleet_pool_row(digest, pool), now=now, max_age_s=max_age_s)
+        if not fill["usable"]:
+            continue
+        if pool == "opencode_go":
+            go = fill["remaining"]
+        else:
+            free = fill["remaining"]
+        if windows is None and fill["windows"] is not None:
+            windows = fill["windows"]
+        if not source:
+            source = fill["source"]
+            age_s = fill["age_s"]
+    if go is fuel.opencode_go and free is fuel.opencode_free and windows is fuel.opencode_windows:
+        return fuel, "", None
+    return (
+        replace(fuel, opencode_go=go, opencode_free=free, opencode_windows=windows),
+        source,
+        age_s,
+    )
+
+
+def load_public_digest(path: Optional[Path]) -> dict:
+    """Read digest.json. Returns {} on any failure. Caller must not log the body."""
+    if path is None:
+        return {}
+    try:
+        doc = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, TypeError, ValueError, UnicodeError):
+        return {}
+    return doc if isinstance(doc, dict) else {}
+
+
+def public_digest_path(
+    env: Optional[dict] = None,
+    *,
+    install_root: Optional[Path | str] = None,
+) -> Optional[Path]:
+    """First existing digest.json the seat can read (FR #8230 / MRB #8231).
+
+    Seats often have no ``BOB_DIGEST_HOME``. Fall back to ``bob_home.digest_home``,
+    ``BOB_HOME``, and ``<install>/home``. Prefer a real file; never invent fuel.
+    """
+    env = os.environ if env is None else env
+    candidates: list[Path] = []
+    home = str((env or {}).get("BOB_DIGEST_HOME") or "").strip()
+    if home:
+        candidates.append(Path(home) / "digest.json")
+    try:
+        import bob_home as bh
+
+        candidates.append(Path(bh.digest_home()) / "digest.json")
+    except Exception:
+        candidates.append(Path.home() / ".bobiverse" / "digest.json")
+    bob_home = str((env or {}).get("BOB_HOME") or "").strip()
+    if bob_home:
+        candidates.append(Path(bob_home) / "digest.json")
+        candidates.append(Path(bob_home) / "bob-peers" / "_report-digest.json")
+    if install_root:
+        candidates.append(Path(install_root) / "home" / "digest.json")
+    seen: set[str] = set()
+    for cand in candidates:
+        try:
+            key = str(cand.resolve()) if cand.exists() else str(cand)
+        except OSError:
+            key = str(cand)
+        if key in seen:
+            continue
+        seen.add(key)
+        try:
+            if cand.is_file():
+                return cand
+        except OSError:
+            continue
+    return None
+
+
+def take_midjob_fuel(
+    local_fn: Callable[[], Fuel],
+    digest: Optional[dict],
+    *,
+    now: float,
+    hold: Optional[dict],
+    pool: str,
+    max_age_s: float = FLEET_FUEL_MAX_AGE_S,
+) -> tuple:
+    """Reuse a fleet fill until it ages out. Otherwise read local, then fill.
+
+    ``hold`` is ``{pool, until, fuel, source, fetched_at}``. Returns
+    ``(fuel, source, age_s, new_hold)``. Does not call ``local_fn`` when the
+    hold still covers ``pool``.
+    """
+    if (
+        isinstance(hold, dict)
+        and hold.get("pool") == pool
+        and pool
+        and float(hold.get("until") or 0) > float(now)
+        and isinstance(hold.get("fuel"), Fuel)
+    ):
+        fetched = hold.get("fetched_at")
+        age = None if fetched is None else float(now) - float(fetched)
+        return hold["fuel"], str(hold.get("source") or ""), age, hold
+    try:
+        local = local_fn()
+    except Exception:
+        local = Fuel()
+    fuel, source, age = supplement_fuel_from_fleet(
+        local, digest, now=now, max_age_s=max_age_s
+    )
+    new_hold = None
+    if source.startswith("fleet:") and pool in ("opencode_go", "opencode_free"):
+        fetched = float(now) - float(age or 0)
+        new_hold = {
+            "pool": pool,
+            "until": fetched + float(max_age_s),
+            "fuel": fuel,
+            "source": source,
+            "fetched_at": fetched,
+        }
+    return fuel, source, age, new_hold
 
 
 @dataclass(frozen=True)
@@ -13727,6 +13979,16 @@ class Supervisor:
         """
         try:
             fuel = read_fuel(self._install_root_for_fuel())
+            fuel, _src, _age = supplement_fuel_from_fleet(
+                fuel,
+                load_public_digest(
+                    public_digest_path(
+                        getattr(self, "base_env", None) or os.environ,
+                        install_root=self._install_root_for_fuel(),
+                    )
+                ),
+                now=time.time(),
+            )
         except Exception:
             fuel = Fuel()
         hard = bool(getattr(self.bored, "_out_of_fuel_hard_402", False))
@@ -13800,8 +14062,25 @@ class Supervisor:
                 )
             except Exception:
                 start_model = ""
+        pool = seat_fuel_pool(kind, start_model) if kind == "opencode" else ""
+
+        def _local() -> Fuel:
+            return read_fuel(self._install_root_for_fuel())
+
         try:
-            fuel = read_fuel(self._install_root_for_fuel())
+            fuel, source, age_s, hold = take_midjob_fuel(
+                _local,
+                load_public_digest(
+                    public_digest_path(
+                        getattr(self, "base_env", None) or os.environ,
+                        install_root=self._install_root_for_fuel(),
+                    )
+                ),
+                now=time.time(),
+                hold=getattr(self, "_fleet_fuel_hold", None),
+                pool=pool,
+            )
+            self._fleet_fuel_hold = hold
         except Exception as e:
             self.log(f"out-of-fuel: mid-job read_fuel failed {type(e).__name__} - treat as unknown")
             return False
@@ -13814,7 +14093,7 @@ class Supervisor:
                 )
             except Exception:
                 pass
-        snap = format_fuel_reading(fuel, kind, start_model=start_model)
+        snap = format_fuel_reading(fuel, kind, start_model=start_model, source=source, age_s=age_s)
         if kind == "cursor":
             lost = fuel_explicitly_exhausted(fuel, "cursor")
             self.log(f"out-of-fuel: mid-job reading {snap}")
