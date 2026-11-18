@@ -11835,10 +11835,17 @@ def opencode_typed_delivery(
     branch: str = "",
     closes_ref: str = "",
     outbox: str = "",
+    pr_state: str = "",
+    head_ref: str = "",
 ) -> str:
     """FR #8248 / #8283: close steps from the on-disk module."""
     return load_opencode_delivery().opencode_typed_delivery(
-        job_key, branch=branch, closes_ref=closes_ref, outbox=outbox
+        job_key,
+        branch=branch,
+        closes_ref=closes_ref,
+        outbox=outbox,
+        pr_state=pr_state,
+        head_ref=head_ref,
     )
 
 
@@ -11898,7 +11905,11 @@ def opencode_job_finish_steps(
         "Report-BobiverseIntakeIssue.ps1 (-Repo from the job id) on the intake webhook in the same turn. "
         "1) git status and git diff. 2) Finish remaining work. "
         + opencode_typed_delivery(
-            key, branch=branch, closes_ref=closes_ref, outbox=ob
+            key,
+            branch=branch,
+            closes_ref=closes_ref,
+            outbox=ob,
+            pr_state=pr_state,
         )
         + " Keep scratch files and base comparisons inside this job worktree or the worker run folder --- "
         "never under %TEMP%. Use .bob\\tmp (TEMP/TMP already point there; FR #8247). "

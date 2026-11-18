@@ -22,6 +22,8 @@ def opencode_typed_delivery(
     branch: str = "",
     closes_ref: str = "",
     outbox: str = "",
+    pr_state: str = "",
+    head_ref: str = "",
 ) -> str:
     """Finish/retry/corrective close steps for this task type only."""
     key = (job_key or "job").strip() or "job"
@@ -30,11 +32,28 @@ def opencode_typed_delivery(
     if not ref:
         ref = re.sub(r"(?i)^\s*(?:FR|MRB|UAT|FIX)\s+", "", key).strip() or key
     ob = (outbox or "$env:BOB_OUTBOX").strip()
+    if kind == "MRB" and str(pr_state or "").upper() == "MERGED":
+        # FR #8307: a re-offered or already-merged MRB must not be given FR steps
+        # (commit on fr-<issue>, git push, gh pr create).
+        return (
+            "This MRB pull request is already MERGED. "
+            "Re-verify the merge commit, that Closes closed the issue, and that the MRB board is posted. "
+            "Do not commit. Do not git push. Do not open a pull request. "
+            "Do not use a branch named from this issue number. "
+            f"Append DONE MRB {ref} PASS and the existing pull request URL to $env:BOB_OUTBOX ({ob})."
+        )
     if kind == "MRB":
+        head = (head_ref or "").strip()
+        head_bit = (
+            f"The pull request head branch is {head}. "
+            if head
+            else "Use gh pr view headRefName for the pull request head branch. "
+        )
         return (
             "This job is an MRB. Post MRB PASS or MRB FAIL on the pull request at the reviewed HEAD sha. "
             "On FAIL, open one separate fix pull request for the defect. "
-            "Do not commit the review onto a branch named from this issue number. "
+            + head_bit
+            + "Do not commit the review onto a branch named from this issue number. "
             "Do not open a pull request that implements this MRB. "
             "Do not push commits onto the pull request under review. "
             f"Append DONE MRB {ref} PASS or FAIL and the pull request URL to $env:BOB_OUTBOX ({ob})."
