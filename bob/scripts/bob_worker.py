@@ -10149,6 +10149,24 @@ def progress_heartbeat_interval_s(env: Optional[dict] = None) -> float:
     return max(30.0, min(900.0, v))
 
 
+def progress_alive_counts_as_seen(*, moved: bool, agent_alive: bool) -> bool:
+    """FR #8195: log/worktree move OR a live agent/tool process refreshes the clock."""
+    return bool(moved) or bool(agent_alive)
+
+
+def progress_phase_for_alive_heartbeat(prior: str = "") -> str:
+    """Safe phase when the agent is alive but logs are silent (FR #8195)."""
+    prior_s = str(prior or "").strip()
+    if prior_s:
+        try:
+            from bobreport import sanitize_progress_phase
+
+            return sanitize_progress_phase(prior_s) or "tool:alive"
+        except Exception:
+            return re.sub(r"[^a-z0-9_.:-]+", "", prior_s.lower())[:48] or "tool:alive"
+    return "tool:alive"
+
+
 def _file_size_mtime(path: Path) -> tuple[int, float]:
     try:
         st = path.stat()
@@ -15450,7 +15468,12 @@ class Supervisor:
             self._check_ack_miss(proc)
 
     def _maybe_progress_heartbeat(self) -> None:
-        """FR #8155: post last_progress when ACK is open and progress sources move."""
+        """FR #8155 / #8195: post last_progress while ACK is open.
+
+        Log/worktree growth still counts. FR #8195: a live agent (or child tool)
+        process also refreshes the clock so silent long commands (e.g. pytest
+        buffered by Out-String) keep ``last_progress`` fresh for the stuck sweep.
+        """
         if not self.bored or not getattr(self.bored, "_ack_open", False):
             self._progress_prev = {}
             self._progress_phase = ""
@@ -15464,15 +15487,24 @@ class Supervisor:
         )
         self._progress_prev = state
         now_wall = time.time()
-        if moved:
+        agent_alive = False
+        try:
+            with self._lock:
+                proc = self.proc
+            agent_alive = proc is not None and proc.poll() is None
+        except Exception:
+            agent_alive = False
+        if progress_alive_counts_as_seen(moved=moved, agent_alive=agent_alive):
             self._progress_last_seen_wall = now_wall
-            if phase:
+            if moved and phase:
                 self._progress_phase = phase
+            elif agent_alive and not self._progress_phase:
+                self._progress_phase = progress_phase_for_alive_heartbeat("")
             try:
                 self.bored.note_agent_active()
             except Exception:
                 pass
-        # Heartbeat only while progress was seen recently (stops when stalled).
+        # Heartbeat while progress/alive was seen recently (stops when stalled dead).
         stale_after = max(float(self._progress_heartbeat_s) * 1.5, 180.0)
         if self._progress_last_seen_wall <= 0:
             return
@@ -15491,6 +15523,7 @@ class Supervisor:
             iso = _utc_now_iso()
         except Exception:
             iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        use_phase = self._progress_phase or phase or progress_phase_for_alive_heartbeat("")
         ok = post_digest_progress_heartbeat(
             machine=self.machine,
             nick=self.nick,
@@ -15498,13 +15531,13 @@ class Supervisor:
             kind=self.kind,
             work=work,
             last_progress=iso,
-            progress_phase=self._progress_phase or phase,
+            progress_phase=use_phase,
             log=self.log,
         )
         if ok:
             self._progress_last_post_wall = now_wall
             self.log(
-                f"progress-heartbeat: last_progress={iso} phase={self._progress_phase or phase or '-'}"
+                f"progress-heartbeat: last_progress={iso} phase={use_phase or '-'}"
             )
 
     def _inject_failed_turn_retry(self, job_key: str) -> None:

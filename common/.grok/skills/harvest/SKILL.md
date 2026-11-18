@@ -541,6 +541,7 @@ routes to bobiverse via the split rule.
 - Console-close / Ctrl shutdown must GIVEUP any ACKed job (console-closed [wip=ref]) before IRC close; durable pending-giveup under BOB_BRIDGE_HOME when IRC is down; Jeeves treats console-closed as seat_not_job and stamps require_machine to the giving machine.
 - Keep digest updated as state-change only; post last_progress (+ sanitized progress_phase) from seat log/worktree growth on a configurable heartbeat (BOB_PROGRESS_HEARTBEAT_S, default 120s) and stop when stalled so last_progress ages for stall consumers.
 - FR #8157 MRB: select_tests --changed bounds ≤50; run_job_pytest blocks full-suite/bare (exit 2); skills+rules_text; keep airc FR #2655 carve-out.
+- FR #8195: while ACK open and the agent/tool process is alive, refresh digest last_progress even with no log output; stuck accepted_silent must not release when last_progress is fresh; never pipe long pytest through Out-String.
 - FR #8160 MRB: refresh 6120/6328/7595 asserts to post-#8133 job-gated watchdog, #8023 fetch-ok timeout class, #7595 stale bar known=false.
 - When FR #8150 and #8151 both touch liveFuelPattern, fold keeps #8151 pattern (no bare rate limit) plus #8150 app-log peek/scan seed.
 - FR #8193 MRB: mrb_yields_to_older_fr skips superseded FRs; free_idle empty yields older FR before newer MRB; classic MRB-before-FR tests monkeypatch yield; MSI S1 accepts product-*.msi.

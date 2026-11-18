@@ -9,6 +9,10 @@ Usage::
 Without path selection (``jeeves/tests``, ``common/tests``, bare pytest), exits
 immediately with a warning instead of burning the OpenCode 600 s shell budget.
 CI still runs the full suites on the PR.
+
+FR #8195: never wrap long pytest in PowerShell ``Out-String`` (or anything that
+buffers all output until exit). Stream pytest stdout/stderr so the seat log
+moves and digest ``last_progress`` heartbeats stay fresh for the stuck sweep.
 """
 from __future__ import annotations
 
