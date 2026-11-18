@@ -66,7 +66,7 @@ def test_genuine_provider_refusals_still_pause(tmp_path: Path):
     state = tmp_path / "state"
     state.mkdir()
     samples = (
-        ("Free usage limit reached. Subscribe to OpenCode Go", "cli-stderr"),
+        # FR #8207: bare Free usage without ERROR/AI_* is tool-echoable — not fuel.
         ("HTTP 429 Too Many Requests", "cli-stderr"),
         ("AI_APICallError: Free usage limit reached", "provider-json"),
         (
@@ -84,6 +84,9 @@ def test_genuine_provider_refusals_still_pause(tmp_path: Path):
         mid = "opencode/deepseek-v4.1-flash-free"
         assert of.record_opencode_pause(state, mid, text, now=1_700_000_000.0) is not None
         assert of.is_opencode_model_paused(mid, state, now=1_700_000_000.0)
+    assert bw.provider_fuel_evidence_source(
+        "Free usage limit reached. Subscribe to OpenCode Go"
+    ) is None
 
 
 def test_fuel_log_envelope_requires_provider_source():

@@ -4965,7 +4965,10 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             r"        $lastProgress = $runStarted",
             # FR #8026: match free-pool exhaustion while the process is still alive.
             # FR #8151: no bare "rate limit" (tool output / CodeRabbit comments false-pause).
+            # FR #8207: Free usage in tool/PR text needs providerFuelCue (level=ERROR / AI_*).
             r"        $liveFuelPattern = 'Free usage limit|subscribe to OpenCode Go|Payment Required|usage balance exhausted|Too Many Requests|rolling limit|rate limited by provider|(HTTP|status( code)?)\D{0,3}(402|429)|AI_(APICall|Retry)Error'",
+            r"        $providerFuelCue = 'level=ERROR|AI_(APICall|Retry)Error'",
+            r"        $toolNoisePattern = 'coderabbit|coderabbit-ai-generated|rate limited by coderabbit|Rate limit \+ single instance|\"(title|body)\"\s*:|gh (issue|pr|api)|Closes SimonBarnett/|## Summary'",
             # FR #8150: OpenCode may write Free usage only to its app log (no stdout bytes).
             r"        $appLog = ''",
             r"        if ($env:BOB_OPENCODE_DATA_DIR) { $appLog = Join-Path $env:BOB_OPENCODE_DATA_DIR 'log\opencode.log' }",
@@ -5020,10 +5023,15 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             r"                $peek = (Read-OpencodeCapture $outFile) + [Environment]::NewLine + (Read-OpencodeCapture $errFile)",
             r"                if ($line) { $peek = $peek.Replace([string]$line, ' ') }",
             r"                $peek = [regex]::Replace($peek, '`[^`]*`', ' ')",
-            # FR #8151: never treat CodeRabbit / gh comment tool echo as live fuel.
-            r"                if (($peek -notmatch 'coderabbit|rate limited by coderabbit|Rate limit \+ single instance') -and ($peek -match $liveFuelPattern)) {",
+            # FR #8151 / #8207: never treat tool/PR/gh echo as live fuel.
+            r"                $isToolNoise = ($peek -match $toolNoisePattern)",
+            r"                $isFreePhrase = ($peek -match 'Free usage limit|subscribe to OpenCode Go')",
+            r"                $hasProviderCue = ($peek -match $providerFuelCue)",
+            r"                if ((-not $isToolNoise) -and ($peek -match $liveFuelPattern) -and ((-not $isFreePhrase) -or $hasProviderCue)) {",
             r"                    $fuelHitLive = $true",
-            r"                    if ($peek -match 'Free usage limit|subscribe to OpenCode Go') { $killReason = 'fuel-exhausted:opencode-free' } else { $killReason = 'out-of-fuel' }",
+            # FR #8207: paid/go model never GIVEUPs as opencode-free.
+            r"                    $isGoModel = ($model -match '(?i)^opencode-go/|-pro(/|$)|/opencode-go/')",
+            r"                    if ($isFreePhrase -and -not $isGoModel) { $killReason = 'fuel-exhausted:opencode-free' } else { $killReason = 'out-of-fuel' }",
             r"                    try { & taskkill /T /F /PID $proc.Id 2>$null | Out-Null } catch { }",
             r"                    if ($jobKey) { Write-OpencodeJobGiveup $jobKey $killReason }",
             r"                    break",
@@ -5163,19 +5171,21 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             r"    $limitPattern = 'Payment Required|usage balance exhausted|Too Many Requests|rolling limit|Free usage limit|subscribe to OpenCode Go|rate limited by provider|AI_(APICall|Retry)Error'",
             r"    $codePattern = '(HTTP|status( code)?)\D{0,3}(402|429)'",
             r"    $freeUsagePattern = 'Free usage limit|subscribe to OpenCode Go'",
+            r"    $providerFuelCue = 'level=ERROR|AI_(APICall|Retry)Error'",
+            r"    $toolNoisePattern = 'coderabbit|coderabbit-ai-generated|rate limited by coderabbit|Rate limit \+ single instance|\"(title|body)\"\s*:|gh (issue|pr|api)|Closes SimonBarnett/|## Summary'",
             # FR #8150: app-log HIT may leave stdout empty; seed $scan so record-pause
             # still marks opencode-free (same cue the ERROR stream error carried).
             r"    if ($fuelHitLive -and $killReason -eq 'fuel-exhausted:opencode-free' -and ($scan -notmatch $freeUsagePattern)) {",
             r"        $scan = ($scan + [Environment]::NewLine + 'Free usage limit reached. Subscribe to OpenCode Go')",
             r"    }",
-            r"    $toolNoisePattern = 'coderabbit|coderabbit-ai-generated|rate limited by coderabbit|Rate limit \+ single instance'",
             # FR #6366: watchdog timeout kills the run but must NOT record a model pause
             # (done-miss finish-runs looked like out-of-fuel). Only real 402/429/limit text pauses.
             # FR #7951: a hard ceiling or watchdog kill is not out of fuel.
             # FR #8026: free-usage text (or a live mid-run fuel kill) pauses even when exit is 0.
-            # FR #8151: tool-output noise never sets hitLimit / never record-pause.
+            # FR #8151 / #8207: tool-output noise never sets hitLimit; bare Free usage needs provider cue.
             r"    $scanIsToolNoise = ($scan -match $toolNoisePattern)",
-            r"    $hitLimit = (-not $timedOut -and -not $scanIsToolNoise -and ($fuelHitLive -or ((($scan -match $limitPattern) -or ($scan -match $codePattern)) -and ($exitCode -ne 0 -or ($scan -match $freeUsagePattern)))))",
+            r"    $scanFreeOk = (($scan -match $freeUsagePattern) -and ($scan -match $providerFuelCue))",
+            r"    $hitLimit = (-not $timedOut -and -not $scanIsToolNoise -and ($fuelHitLive -or ((($scan -match $limitPattern) -or ($scan -match $codePattern)) -and ($exitCode -ne 0 -or $scanFreeOk))))",
             r"    if ($timedOut) {",
             r"        if ($proc -and -not $proc.HasExited) { try { & taskkill /T /F /PID $proc.Id 2>$null | Out-Null } catch { } }",
             r"        if (-not $killReason) { $killReason = 'watchdog timeout (no output)' }",
@@ -5208,9 +5218,10 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             r"            $failEntry = @{ pid = $PID; ts = (Get-Date -Format o); model = $model; text = $failText } | ConvertTo-Json -Compress",
             r"            Add-Content -Path $fuelLog -Value $failEntry -ErrorAction SilentlyContinue",
             r"        }",
-            # FR #8026: release the job immediately; free-pool uses fuel-exhausted:opencode-free.
+            # FR #8026 / #8207: free-pool reason only for non-go models with provider-cued free usage.
             r"        if ($jobKey) {",
-            r"            $giveReason = if ($scan -match $freeUsagePattern -or ($killReason -eq 'fuel-exhausted:opencode-free')) { 'fuel-exhausted:opencode-free' } else { 'out-of-fuel' }",
+            r"            $isGoModel = ($model -match '(?i)^opencode-go/|-pro(/|$)|/opencode-go/')",
+            r"            $giveReason = if ((-not $isGoModel) -and ($scanFreeOk -or ($killReason -eq 'fuel-exhausted:opencode-free'))) { 'fuel-exhausted:opencode-free' } else { 'out-of-fuel' }",
             r"            Write-OpencodeJobGiveup $jobKey $giveReason",
             r"        }",
             r"    }",
@@ -7358,7 +7369,7 @@ _RATE_LIMIT_PROVIDER_CTX_RX = re.compile(
     r")"
 )
 
-# Tool / agent echo that must never arm a pause (FR #8151).
+# Tool / agent echo that must never arm a pause (FR #8151 / #8207).
 _FUEL_TOOL_OUTPUT_NOISE_RX = re.compile(
     r"(?i)(?:"
     r"coderabbit(?:ai)?|coderabbit-ai-generated"
@@ -7366,6 +7377,12 @@ _FUEL_TOOL_OUTPUT_NOISE_RX = re.compile(
     r"|\"comments\"\s*:\s*\["
     r"|\"author\"\s*:\s*\{\s*\"login\""
     r"|Rate\s+limit\s*\+\s*single\s+instance"
+    # FR #8207: gh issue/pr view / PR markdown quoting fuel phrases.
+    r"|\"(?:title|body)\"\s*:\s*"
+    r"|\bgh\s+(?:issue|pr|api)\b"
+    r"|Closes\s+SimonBarnett/"
+    r"|##\s+Summary\b"
+    r"|diff\s+--git\s+"
     r")"
 )
 
@@ -7375,11 +7392,25 @@ _OPENCODE_FREE_USAGE_RX = re.compile(
     r"(?i)(?:Free\s+usage\s+limit|subscribe\s+to\s+OpenCode\s+Go)"
 )
 
+# FR #8207: Free-usage phrases only count on provider channels (app-log ERROR / AI_*).
+_FREE_USAGE_PROVIDER_CUE_RX = re.compile(
+    r"(?i)(?:(?:^|\s)level=ERROR\b|AI_(?:APICall|Retry)Error)"
+)
 
-def opencode_fuel_exhausted_reason(text: str) -> str:
-    """GIVEUP/NACK reason for OpenCode provider fuel text (FR #8026)."""
+
+def opencode_fuel_exhausted_reason(text: str, *, start_model: str = "") -> str:
+    """GIVEUP/NACK reason for OpenCode provider fuel text (FR #8026 / #8207).
+
+    Paid/go start models never emit ``fuel-exhausted:opencode-free`` — free-pool
+    exhaustion is not proof the paid pool is empty (FR #8207 / #8158).
+    """
     scanned = provider_fuel_scan_text(text)
     if _OPENCODE_FREE_USAGE_RX.search(scanned):
+        mid = (start_model or "").strip()
+        if mid:
+            pool = seat_fuel_pool("opencode", mid)
+            if pool == "opencode_go":
+                return "out-of-fuel"
         return "fuel-exhausted:opencode-free"
     return "out-of-fuel"
 DEFAULT_DIGEST_REPORT_URL = "https://bob.ntsa.uk/bob/v1/report"
@@ -7479,11 +7510,25 @@ def is_fuel_tool_output_noise(text: str) -> bool:
 
 
 def _provider_fuel_source_for_scanned(scanned: str) -> Optional[str]:
-    """Classify provider channel for already-scanned text. FR #8151."""
+    """Classify provider channel for already-scanned text. FR #8151 / #8207."""
     if not (scanned or "").strip():
         return None
     if is_fuel_tool_output_noise(scanned):
         return None
+    free_hit = bool(_OPENCODE_FREE_USAGE_RX.search(scanned))
+    # FR #8207: Free usage / Subscribe to OpenCode Go only from app-log ERROR or
+    # AI_* provider JSON — never bare tool/PR/gh echo (even without noise markers).
+    if free_hit and not _FREE_USAGE_PROVIDER_CUE_RX.search(scanned):
+        # Still allow other strong cues in the same blob (402/429) below.
+        strong_non_free = bool(
+            _OUT_OF_FUEL_RX.search(
+                _OPENCODE_FREE_USAGE_RX.sub(" ", scanned)
+            )
+        )
+        rate_ok = bool(_RATE_LIMIT_PROVIDER_CTX_RX.search(scanned))
+        if not strong_non_free and not rate_ok:
+            return None
+        free_hit = False
     strong = bool(_OUT_OF_FUEL_RX.search(scanned))
     rate_ok = bool(_RATE_LIMIT_PROVIDER_CTX_RX.search(scanned))
     if not strong and not rate_ok:
@@ -7496,6 +7541,9 @@ def _provider_fuel_source_for_scanned(scanned: str) -> Optional[str]:
         scanned,
     ):
         return "provider-json"
+    # Bare Free usage without provider cue never reaches here as sole evidence.
+    if free_hit and not _FREE_USAGE_PROVIDER_CUE_RX.search(scanned):
+        return None
     return "cli-stderr"
 
 
