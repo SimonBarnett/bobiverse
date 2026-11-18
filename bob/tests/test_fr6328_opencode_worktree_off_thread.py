@@ -155,16 +155,17 @@ def test_create_maps_timeout_expired_to_timeout_class(tmp_path: Path):
         return Proc()
 
     line = "FROM jeeves #m n: FR SimonBarnett/bobiverse#1 https://x"
-    # Path absent -> ensure tries create; fetch timeout should surface as timeout class
-    # (fetch failure alone is best-effort; force worktree add to also timeout)
+    # FR #8023: FR/UAT fetch-before-add is fatal (rc!=0 => error_class=fetch).
+    # To pin timeout class, fetch/rev-parse must succeed and only worktree add times out.
     def run2(cmd, **kwargs):
         timeout = kwargs.get("timeout")
         joined = " ".join(str(part) for part in cmd)
         if "worktree" in joined and "add" in joined:
             raise subprocess.TimeoutExpired(cmd=cmd, timeout=timeout or 1)
         class Proc:
-            returncode = 1
-            stdout = ""
+            returncode = 0
+            # 40-char oid so _rev_parse_oid / origin/main checks pass after fetch.
+            stdout = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n"
             stderr = ""
         return Proc()
 
