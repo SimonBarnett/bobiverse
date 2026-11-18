@@ -4553,6 +4553,126 @@ def restart_skill_dag_mcp_stdio_children(
     return killed
 
 
+def skill_dag_resolve_is_stale_silent(payload: object) -> bool:
+    """FR #8255: pre-#8225 resolve returned only empty matched and skipped.
+
+    Tip code sets ``unresolved`` and ``reason`` (``no_seed_match`` / ``not_in_index``).
+    A payload without those fields is a long-lived MCP child still on the old module.
+    """
+    if not isinstance(payload, dict):
+        return False
+    if payload.get("matched") != [] or payload.get("skipped") != []:
+        return False
+    if "unresolved" in payload or payload.get("reason") or payload.get("not_in_index"):
+        return False
+    return True
+
+
+def process_start_epoch(pid: int) -> float | None:
+    """Wall-clock start of a process, or None when it cannot be read."""
+    if sys.platform != "win32":
+        return None
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        k32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+        k32.OpenProcess.restype = wintypes.HANDLE
+        k32.GetProcessTimes.argtypes = [
+            wintypes.HANDLE,
+            ctypes.POINTER(wintypes.FILETIME),
+            ctypes.POINTER(wintypes.FILETIME),
+            ctypes.POINTER(wintypes.FILETIME),
+            ctypes.POINTER(wintypes.FILETIME),
+        ]
+        k32.GetProcessTimes.restype = wintypes.BOOL
+        k32.CloseHandle.argtypes = [wintypes.HANDLE]
+        handle = k32.OpenProcess(0x1000, False, int(pid))
+        if not handle:
+            return None
+        try:
+            created = wintypes.FILETIME()
+            exit_ft = wintypes.FILETIME()
+            kernel_ft = wintypes.FILETIME()
+            user_ft = wintypes.FILETIME()
+            if not k32.GetProcessTimes(
+                handle,
+                ctypes.byref(created),
+                ctypes.byref(exit_ft),
+                ctypes.byref(kernel_ft),
+                ctypes.byref(user_ft),
+            ):
+                return None
+            ticks = (int(created.dwHighDateTime) << 32) | int(created.dwLowDateTime)
+        finally:
+            k32.CloseHandle(handle)
+        return (ticks / 10_000_000.0) - 11644473600.0
+    except Exception:
+        return None
+
+
+def skill_dag_mcp_script_newer_than(script: str | Path, started_epoch: float | None) -> bool:
+    """True when ``skill_dag_mcp.py`` was written after the MCP process started."""
+    if started_epoch is None:
+        return False
+    try:
+        mtime = Path(script).stat().st_mtime
+    except OSError:
+        return False
+    return float(mtime) > float(started_epoch) + 1.0
+
+
+def restart_stale_skill_dag_mcp_children(
+    agent_pid: int | None,
+    seat_markers: list[str | Path | None],
+    script: str | Path,
+    *,
+    started_at: Callable[[int], float | None],
+    snapshot: Optional[Callable[[], list]] = None,
+    cmdline_of: Optional[Callable[[int], str]] = None,
+    kill: Optional[Callable[[int], bool]] = None,
+    log: Optional[Callable[[str], None]] = None,
+) -> list[int]:
+    """FR #8255: kill this seat's skill-dag MCP only when the script is newer than the child.
+
+    Grok respawns stdio from the current argv, which loads tip ``skill_dag_mcp.py``.
+    A child started after the script is left alone (FR #7308 keep-stdio).
+    """
+    killed: list[int] = []
+    try:
+        root = int(agent_pid or 0)
+    except (TypeError, ValueError):
+        root = 0
+    if root <= 0:
+        return killed
+    rows = snapshot() if snapshot is not None else snapshot_procs()
+    describe = cmdline_of if cmdline_of is not None else (lambda pid: str(describe_process(pid)[2] or ""))
+    do_kill = kill if kill is not None else (lambda pid: kill_tree(pid))
+    for pid in sorted(descendant_pids(root, rows)):
+        try:
+            cmd = describe(pid) or ""
+        except Exception:
+            continue
+        if not skill_dag_mcp_stdio_cmdline_matches(cmd, seat_markers):
+            continue
+        try:
+            began = started_at(int(pid))
+        except Exception:
+            began = None
+        if not skill_dag_mcp_script_newer_than(script, began):
+            continue
+        try:
+            do_kill(pid)
+            killed.append(pid)
+            if log:
+                log(f"skill-dag mcp stale-script restart pid={pid}")
+        except Exception:
+            if log:
+                log(f"skill-dag mcp stale-script restart failed pid={pid}")
+    return killed
+
+
 # FR #6898: OpenCode reads project ``opencode.json`` under seat cwd or ``--dir``.
 # Never write user-global ``~/.config/opencode`` / ``%LOCALAPPDATA%\opencode``.
 OPENCODE_SKILL_DAG_MCP_RELPATH = "opencode.json"
@@ -15979,6 +16099,35 @@ class Supervisor:
             except Exception:
                 pass
 
+    def _restart_stale_skill_dag_mcp(self) -> None:
+        """FR #8255: respawn this seat's skill-dag child when the script is newer."""
+        bound, cursor, vision = self._live_skill_dag_mcp_paths()
+        cwd = str(getattr(self, "cwd", "") or "")
+        markers = [m for m in (bound, cursor, vision, cwd) if m]
+        if not markers:
+            return
+        try:
+            script = skill_dag_mcp_script_path(cwd or str(markers[0]))
+        except Exception:
+            return
+        agent_pid = None
+        try:
+            proc = getattr(self, "proc", None)
+            if proc is not None and getattr(proc, "pid", None):
+                agent_pid = int(proc.pid)
+        except (TypeError, ValueError):
+            agent_pid = None
+        try:
+            restart_stale_skill_dag_mcp_children(
+                agent_pid,
+                markers,
+                script,
+                started_at=process_start_epoch,
+                log=self.log,
+            )
+        except Exception as exc:  # noqa: BLE001
+            self.log(f"skill-dag mcp stale-script restart skipped {type(exc).__name__}")
+
     def _clear_per_job_seat_state(self, job: Optional[str] = None) -> None:
         """FR #8094: drop per-job env, outbox, key, finish snap, and skill-dag pointer."""
         del job
@@ -16058,6 +16207,9 @@ class Supervisor:
                     self.log(f"job-context: {stale_gc}")
                     raise JobContextRefused(stale_gc)
                 self._refresh_live_skill_dag_mcp(wt)
+                # FR #8255: a child started before skill_dag_mcp.py moved still
+                # returns silent empty matched+skipped. Respawn it from tip.
+                self._restart_stale_skill_dag_mcp()
         if (self.kind or "").strip().lower() == "opencode" and message_job_keys(line):
             keys = message_job_keys(line)
             if len(keys) != 1:
@@ -16107,6 +16259,7 @@ class Supervisor:
                     )
                 except Exception as e:  # noqa: BLE001
                     self.log(f"opencode-ready: skill-dag mcp write skipped {type(e).__name__}")
+                self._restart_stale_skill_dag_mcp()
                 # FR #7908: do not hand the job over when skill-dag is down.
                 _sd_detail = self._skill_dag_preflight_for_opencode(
                     prepared.get("path"), str(prepared.get("key") or "")
