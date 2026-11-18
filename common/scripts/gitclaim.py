@@ -4530,6 +4530,19 @@ def mrb_fix_targets_default_branch(pr: dict | None) -> bool:
     return ref in ("main", "master")
 
 
+def mrb_fix_targets_feature_branch(pr: dict | None, parent_id: str) -> bool:
+    """True when the fix PR base is the parent feature branch ``fr-<N>`` (FR #8298).
+
+    A reviewer fix opened against ``fr-N`` (not main) must be queued for review.
+    Other non-default bases stay stacked skips (FR #4665).
+    """
+    ref = pr_base_ref(pr)
+    num = str(parent_id or "").lstrip("#").strip()
+    if not ref or not num.isdigit():
+        return False
+    return ref == f"fr-{num}"
+
+
 def _read_legacy_unaccepted(path: Path) -> list[dict]:
     if not path.exists():
         return []
@@ -8991,6 +9004,54 @@ def is_deterministic_nack_reason(reason: str) -> bool:
     )
 
 
+def is_no_terminal_reply_reason(reason: str) -> bool:
+    """True for a seat that went silent after ACK and never finished (FR #8298)."""
+    return _deterministic_nack_token(reason) == "no-terminal-reply"
+
+
+def no_terminal_reply_does_not_block(row: dict, nick: str) -> bool:
+    """A lone ``no-terminal-reply`` is not a permanent reviewer refusal (FR #8298).
+
+    The seat never committed. An expiring ``deterministic_nack_until`` stamp may
+    still cool that seat. Any other give-up reason stays a permanent block.
+    """
+    if not isinstance(row, dict):
+        return False
+    if is_no_terminal_reply_reason(str(row.get("giveup_reason") or "")):
+        return True
+    me = (canonical_worker_nick(nick) or nick or "").strip().lower()
+    if not me:
+        return False
+    mine: list[dict] = []
+    for raw in row.get("offer_outcomes") or []:
+        if not isinstance(raw, dict):
+            continue
+        other = (canonical_worker_nick(str(raw.get("seat") or "")) or str(raw.get("seat") or "")).strip().lower()
+        if other == me:
+            mine.append(raw)
+    if not mine:
+        return False
+    return all(is_no_terminal_reply_reason(str(item.get("reason") or "")) for item in mine)
+
+
+def stamp_seat_nack_cooldown(row: dict, nick: str, now: float | None = None) -> None:
+    """Per-seat expiring cooldown on ``row`` (does not write the queue). FR #8298."""
+    import time as _time
+    from datetime import timedelta as _td
+
+    me = (canonical_worker_nick(nick) or nick or "").strip()
+    if not me or not isinstance(row, dict):
+        return
+    now_f = _time.time() if now is None else float(now)
+    until = datetime.fromtimestamp(now_f, tz=timezone.utc) + _td(seconds=float(GIVEUP_COOLDOWN_S))
+    until_s = until.replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    stamps = row.get("deterministic_nack_until")
+    if not isinstance(stamps, dict):
+        stamps = {}
+    stamps[me] = until_s
+    row["deterministic_nack_until"] = stamps
+
+
 def is_no_clone_nack_reason(reason: str) -> bool:
     """True when the NACK means this seat cannot serve that repo's clone (FR #8153)."""
     token = _deterministic_nack_token(reason)
@@ -11734,7 +11795,9 @@ def _mrb_idle_block_reason(
         return "machine"
     if review_blocked_for_author(row, nick, live, ledger=ledger):
         return "author"
-    if row_gave_up_by(row, nick, live=live):
+    if seat_on_deterministic_nack_cooldown(row, nick, time.time()):
+        return "nack-cooldown"
+    if row_gave_up_by(row, nick, live=live) and not no_terminal_reply_does_not_block(row, nick):
         return "giveup"
     if ledger is not None:
         why = ledger_blocks(ledger, row, nick, live)
@@ -14965,6 +15028,12 @@ def resync_from_github(
                             f"parent {parent} still open",
                             flush=True,
                         )
+                    elif mrb_fix_targets_feature_branch(pr, parent):
+                        print(
+                            f"resync queue feature-base mrb-fix PR {repo}#{num} "
+                            f"parent {parent} still open",
+                            flush=True,
+                        )
                     else:
                         skipped_open_pulls.add((repo, f"#{num}"))
                         print(
@@ -15396,6 +15465,31 @@ def resync_from_github(
                 continue
             # FR #4718: newest MRB board is FAIL at this head and no mrb-N-fix
             # PR is open. Queue FIX (implement the board), never another MRB.
+            # FR #8298: the list-pulls payload has no comment bodies. When a
+            # fix(mrb-N) sibling is open, load the board so a FAIL still drops
+            # the parent even if the reviewer offer was recorded as a nack.
+            if not isinstance(pr.get("comments"), list):
+                _sib_fix = False
+                for _other in prs:
+                    if not isinstance(_other, dict):
+                        continue
+                    if gitclaim_mrb_fix_parent := mrb_fix_parent_pr_id(
+                        str(_other.get("title") or "")
+                    ):
+                        if gitclaim_mrb_fix_parent == f"#{num}":
+                            _sib_fix = True
+                            break
+                if _sib_fix:
+                    try:
+                        import mrb_merge_gate as _mg_fail
+
+                        _fetched_comments = _mg_fail.fetch_issue_comments(
+                            repo, str(num)
+                        )
+                        if isinstance(_fetched_comments, list):
+                            pr["comments"] = _fetched_comments
+                    except Exception:  # noqa: BLE001
+                        pass
             try:
                 import mrb_merge_on_green as _mog_fail
 
@@ -15467,6 +15561,25 @@ def resync_from_github(
                     f"docs_mrb_orphan parent={pin_parent} "
                     "(missing required check -> FAIL or re-run; no pin-of-pin)"
                 )
+            # FR #8298: parent stays visible as blocked on the reviewer's fr-N
+            # fix PR, not as no_eligible_reviewer.
+            _awaiting_fix = ""
+            for _other in prs:
+                if not isinstance(_other, dict) or not isinstance(_other.get("number"), int):
+                    continue
+                if _other.get("draft") is True:
+                    continue
+                _pt = str(_other.get("title") or "")
+                if not is_mrb_fix_pr_title(_pt):
+                    continue
+                if mrb_fix_parent_pr_id(_pt) != f"#{num}":
+                    continue
+                if mrb_fix_targets_feature_branch(_other, f"#{num}"):
+                    _awaiting_fix = f"#{int(_other['number'])}"
+                    break
+            if _awaiting_fix:
+                _fix_line = f"awaiting_fix_pr {_awaiting_fix}"
+                orphan_line = f"{orphan_line} {_fix_line}".strip() if orphan_line else _fix_line
             desired.append(
                 GitClaim(
                     repo=repo,
