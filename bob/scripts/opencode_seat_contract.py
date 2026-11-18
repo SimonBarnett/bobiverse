@@ -723,6 +723,13 @@ def _is_timeout_exc(exc: BaseException) -> bool:
         return False
 
 
+def _record_reviewed_sha(folder: Path, sha: str) -> None:
+    """FR #8233: the SHA the review seat must use. No other fields."""
+    bob = Path(folder) / ".bob"
+    bob.mkdir(parents=True, exist_ok=True)
+    (bob / "reviewed-sha").write_text(sha.strip().lower() + "\n", encoding="utf-8")
+
+
 def _branch_exists(run, clone: str, branch: str) -> bool:
     try:
         proc = _git_run(run, ["git", "-C", clone, "show-ref", "--verify", "--quiet", f"refs/heads/{branch}"])
@@ -1119,26 +1126,42 @@ def _verify_or_refresh_mrb_worktree(
     if not _worktree_porcelain_clean(run, str(folder)):
         return False, "stale-dirty"
     have = _rev_parse_oid(run, str(folder), "HEAD")
-    if have == want_oid:
-        _write_seat_marker(folder, key, nick)
-        return True, ""
-    try:
-        # Reset the local head branch to the verified OID (not origin/<head>, which
-        # a self-remote fetch may have rewritten from a moved local branch).
-        proc = _git_run(
-            run,
-            ["git", "-C", str(folder), "checkout", "-B", head, want_oid],
-            timeout=WORKTREE_ADD_TIMEOUT_S,
-        )
-    except Exception as exc:
-        if _is_timeout_exc(exc):
-            return False, "timeout"
-        return False, "head-mismatch"
-    if int(getattr(proc, "returncode", 1)) != 0:
-        return False, "head-mismatch"
-    if _rev_parse_oid(run, str(folder), "HEAD") != want_oid:
-        return False, "head-mismatch"
+    if have != want_oid:
+        moved = False
+        try:
+            # Prefer the PR branch. If another worktree already holds that
+            # branch (FR #8090), detach at the verified OID instead of leaving
+            # the old commit in place (FR #8233).
+            proc = _git_run(
+                run,
+                ["git", "-C", str(folder), "checkout", "-B", head, want_oid],
+                timeout=WORKTREE_ADD_TIMEOUT_S,
+            )
+            moved = int(getattr(proc, "returncode", 1)) == 0
+        except Exception as exc:
+            if _is_timeout_exc(exc):
+                return False, "timeout"
+            moved = False
+        if not moved:
+            try:
+                proc = _git_run(
+                    run,
+                    ["git", "-C", str(folder), "checkout", "--detach", want_oid],
+                    timeout=WORKTREE_ADD_TIMEOUT_S,
+                )
+            except Exception as exc:
+                if _is_timeout_exc(exc):
+                    return False, "timeout"
+                return False, "head-mismatch"
+            if int(getattr(proc, "returncode", 1)) != 0:
+                return False, "head-mismatch"
+        if _rev_parse_oid(run, str(folder), "HEAD") != want_oid:
+            return False, "head-mismatch"
     _write_seat_marker(folder, key, nick)
+    try:
+        _record_reviewed_sha(folder, want_oid)
+    except OSError:
+        return False, "disk"
     return True, ""
 
 
@@ -1189,7 +1212,7 @@ def create_job_worktree(
     repo = parsed.group(2) if parsed else ""
     number = parsed.group(3) if parsed else ""
     if folder.is_dir():
-        if kind == "MRB":
+        if kind in ("MRB", "FIX"):
             if not clone or not _is_git_checkout(clone):
                 return False, "no-clone", ""
             ok, err = _verify_or_refresh_mrb_worktree(
@@ -1357,7 +1380,7 @@ def create_job_worktree(
     err_l = err_raw.lower()
     detail = redact_git_detail(err_raw)
     if "already exists" in err_l and folder.is_dir():
-        if kind == "MRB":
+        if kind in ("MRB", "FIX"):
             ok, err = _verify_or_refresh_mrb_worktree(
                 run, folder, clone, repo=repo, number=number, nick=nick, key=key
             )
@@ -1370,7 +1393,7 @@ def create_job_worktree(
     if holder_s:
         holder = Path(holder_s)
         if _paths_same(holder, folder) and folder.is_dir():
-            if kind == "MRB":
+            if kind in ("MRB", "FIX"):
                 ok, err = _verify_or_refresh_mrb_worktree(
                     run, folder, clone, repo=repo, number=number, nick=nick, key=key
                 )
@@ -1600,10 +1623,10 @@ def ensure_opencode_job_worktree(
     if decision["state"] != "absent":
         if decision.get("state") == "project" and decision.get("path"):
             key = decision.get("key") or ""
-            mrb = re.match(r"(?i)^MRB\s+(\S+)#(\d+)$", key.strip())
+            mrb = re.match(r"(?i)^(MRB|FIX)\s+(\S+)#(\d+)$", key.strip())
             if mrb:
-                repo = mrb.group(1)
-                number = mrb.group(2)
+                repo = mrb.group(2)
+                number = mrb.group(3)
                 clone, clone_err, clone_detail = _repo_clone_store.ensure_repo_clone(
                     repo,
                     env,

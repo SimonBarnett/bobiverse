@@ -269,3 +269,66 @@ def test_mrb_missing_oid_nacks_pr_head(tmp_path: Path):
     )
     assert decision["state"] == "create_failed"
     assert "worktree-create-failed:pr-head" in decision["nack"]
+
+
+def test_mrb_refresh_detaches_when_pr_branch_is_busy(tmp_path: Path):
+    """FR #8233: checkout -B fails if a sibling holds the PR branch; detach at headRefOid."""
+    clone = _init_clone(tmp_path / "clone")
+    oid = _publish_head(clone, "fr-8002")
+    main = _main_oid(clone)
+    env = {
+        "BOB_JOB_WORKTREE_BASE": str(tmp_path / "worktrees"),
+        "BOB_REPO_CLONE_bobiverse": str(clone),
+    }
+    line = "FROM jeeves #flamingo n: MRB SimonBarnett/bobiverse#8006 https://x"
+    first = c.ensure_opencode_job_worktree(
+        line,
+        env,
+        install_root=str(clone),
+        run=_run_with_gh("fr-8002", oid),
+        nick="flamingo-1",
+    )
+    path = Path(first["path"])
+    subprocess.run(
+        ["git", "-C", str(path), "checkout", "-B", "holder-wrong", "origin/main"],
+        check=True,
+        capture_output=True,
+    )
+    sibling = tmp_path / "sibling"
+    subprocess.run(
+        ["git", "-C", str(clone), "worktree", "add", str(sibling), "fr-8002"],
+        check=True,
+        capture_output=True,
+    )
+    second = c.ensure_opencode_job_worktree(
+        line,
+        env,
+        install_root=str(clone),
+        run=_run_with_gh("fr-8002", oid),
+        nick="flamingo-1",
+    )
+    assert second["state"] == "project", second
+    head = subprocess.run(
+        ["git", "-C", str(path), "rev-parse", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip().lower()
+    assert head == oid
+    assert head != main
+    stamp = (path / ".bob" / "reviewed-sha").read_text(encoding="utf-8").strip()
+    assert stamp == oid
+    branch = subprocess.run(
+        ["git", "-C", str(path), "rev-parse", "--abbrev-ref", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    assert branch == "HEAD"
+    sibling_branch = subprocess.run(
+        ["git", "-C", str(sibling), "rev-parse", "--abbrev-ref", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    assert sibling_branch == "fr-8002"
