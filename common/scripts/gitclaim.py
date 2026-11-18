@@ -4520,6 +4520,16 @@ def pr_base_ref(pr: dict | None) -> str:
     return str(base.get("ref") or "").strip().lower()
 
 
+def pr_head_ref(pr: dict | None) -> str:
+    """Lowercased head branch name from a GitHub pull payload, or empty."""
+    if not isinstance(pr, dict):
+        return ""
+    head = pr.get("head")
+    if not isinstance(head, dict):
+        return ""
+    return str(head.get("ref") or "").strip().lower()
+
+
 def mrb_fix_targets_default_branch(pr: dict | None) -> bool:
     """True when the fix PR targets ``main`` / ``master`` (FR #4994).
 
@@ -4530,17 +4540,30 @@ def mrb_fix_targets_default_branch(pr: dict | None) -> bool:
     return ref in ("main", "master")
 
 
-def mrb_fix_targets_feature_branch(pr: dict | None, parent_id: str) -> bool:
-    """True when the fix PR base is the parent feature branch ``fr-<N>`` (FR #8298).
+def mrb_fix_targets_feature_branch(
+    pr: dict | None,
+    parent_id: str,
+    parent_pr: dict | None = None,
+) -> bool:
+    """True when the fix PR base is the open parent's feature branch (FR #8298).
 
-    A reviewer fix opened against ``fr-N`` (not main) must be queued for review.
-    Other non-default bases stay stacked skips (FR #4665).
+    Match ``fr-<parent_pr_number>`` or the parent's head ref. Live evidence
+    (``fix(mrb-8239)`` #8260): parent PR #8239 head is ``fr-8234`` (issue
+    branch), so the fix base is ``fr-8234``, not ``fr-8239``. Other non-default
+    bases stay stacked skips (FR #4665).
     """
     ref = pr_base_ref(pr)
     num = str(parent_id or "").lstrip("#").strip()
     if not ref or not num.isdigit():
         return False
-    return ref == f"fr-{num}"
+    if ref in ("main", "master"):
+        return False
+    if ref == f"fr-{num}":
+        return True
+    if parent_pr is None:
+        return False
+    parent_head = pr_head_ref(parent_pr)
+    return bool(parent_head) and parent_head not in ("main", "master") and ref == parent_head
 
 
 def _read_legacy_unaccepted(path: Path) -> list[dict]:
@@ -15028,19 +15051,28 @@ def resync_from_github(
                             f"parent {parent} still open",
                             flush=True,
                         )
-                    elif mrb_fix_targets_feature_branch(pr, parent):
-                        print(
-                            f"resync queue feature-base mrb-fix PR {repo}#{num} "
-                            f"parent {parent} still open",
-                            flush=True,
-                        )
                     else:
-                        skipped_open_pulls.add((repo, f"#{num}"))
-                        print(
-                            f"resync skip mrb-fix PR {repo}#{num} parent {parent} still open",
-                            flush=True,
-                        )
-                        continue
+                        _parent_pr = None
+                        _want = str(parent or "").lstrip("#")
+                        for _cand in prs:
+                            if not isinstance(_cand, dict):
+                                continue
+                            if str(_cand.get("number") or "") == _want:
+                                _parent_pr = _cand
+                                break
+                        if mrb_fix_targets_feature_branch(pr, parent, _parent_pr):
+                            print(
+                                f"resync queue feature-base mrb-fix PR {repo}#{num} "
+                                f"parent {parent} still open",
+                                flush=True,
+                            )
+                        else:
+                            skipped_open_pulls.add((repo, f"#{num}"))
+                            print(
+                                f"resync skip mrb-fix PR {repo}#{num} parent {parent} still open",
+                                flush=True,
+                            )
+                            continue
                 else:
                     print(
                         f"resync queue orphan mrb-fix PR {repo}#{num} parent {parent} not open",
@@ -15574,7 +15606,7 @@ def resync_from_github(
                     continue
                 if mrb_fix_parent_pr_id(_pt) != f"#{num}":
                     continue
-                if mrb_fix_targets_feature_branch(_other, f"#{num}"):
+                if mrb_fix_targets_feature_branch(_other, f"#{num}", pr):
                     _awaiting_fix = f"#{int(_other['number'])}"
                     break
             if _awaiting_fix:
