@@ -3708,10 +3708,12 @@ def report_agent_cli_nonzero_exit(
     # FR #7978: exit_code is None only when the worker recycled the seat while the agent
     # process was still running (hang / ack-miss / ask-user / no-ack-after-assign). That is
     # a recycle, not a CLI failure, and must not claim the CLI exited non-zero.
+    reason_l = str(reason or "").strip().lower()
     if exit_code is None:
         end = "recycle"
-    elif u == CONSOLE_CLOSE_EXIT:
+    elif u == CONSOLE_CLOSE_EXIT or reason_l in ("console-closed", "signal"):
         # FR #7881: OpenCode 3221225786 is the console closing, not a CLI bug.
+        # FR #8148: shutdown reason console-closed/signal with exit_code=1 (Grok) is the same class.
         end = "console-close"
     elif "recycleseat" in parent_l or "bobtrayrecycleseat" in parent_l:
         end = "recycle"
@@ -3733,7 +3735,8 @@ def report_agent_cli_nonzero_exit(
         title = "bug: agent console closed (FR #7881)"
         what = (
             "What: the agent console was closed (STATUS_CONTROL_C_EXIT). "
-            "This is not a CLI crash. Accepted jobs are still GIVEUP'd. No fake DONE.\n"
+            "This is not a CLI crash. FR #8154: the worker GIVEUPs any ACKed job "
+            "(console-closed) and saves a WIP ref when the worktree is dirty. No fake DONE.\n"
         )
     elif exit_code is None:
         # FR #7978: recycled while still running — a hang/ack-miss, not a CLI exit.
@@ -3754,7 +3757,8 @@ def report_agent_cli_nonzero_exit(
     if reason:
         reason = _scrub(reason)[:160]
         what += f"Reason: {reason}\n"
-        if reason != "agent-exited":
+        # FR #8148: do not rebrand console-close / signal as "stopped making progress".
+        if reason != "agent-exited" and end not in ("console-close", "recycle", "external-kill"):
             title = "bug: seat stopped making progress"
             key = f"seat-no-progress|{mid}|{nick_s}|{agent_stderr_dedupe_line(reason)}"[:128]
     body = (
@@ -4598,7 +4602,8 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             r"        $runStarted = [datetime]::UtcNow",
             r"        $lastProgress = $runStarted",
             # FR #8026: match free-pool exhaustion while the process is still alive.
-            r"        $liveFuelPattern = 'Free usage limit|subscribe to OpenCode Go|Payment Required|usage balance exhausted|Too Many Requests|rate limit|rolling limit|(HTTP|status( code)?)\D{0,3}(402|429)'",
+            # FR #8151: no bare "rate limit" (tool output / CodeRabbit comments false-pause).
+            r"        $liveFuelPattern = 'Free usage limit|subscribe to OpenCode Go|Payment Required|usage balance exhausted|Too Many Requests|rolling limit|rate limited by provider|(HTTP|status( code)?)\D{0,3}(402|429)|AI_(APICall|Retry)Error'",
             r"        while (-not $proc.HasExited) {",
             r"          try {",
             r"            $len = 0",
@@ -4629,7 +4634,8 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             r"                $peek = (Read-OpencodeCapture $outFile) + [Environment]::NewLine + (Read-OpencodeCapture $errFile)",
             r"                if ($line) { $peek = $peek.Replace([string]$line, ' ') }",
             r"                $peek = [regex]::Replace($peek, '`[^`]*`', ' ')",
-            r"                if ($peek -match $liveFuelPattern) {",
+            # FR #8151: never treat CodeRabbit / gh comment tool echo as live fuel.
+            r"                if (($peek -notmatch 'coderabbit|rate limited by coderabbit|Rate limit \+ single instance') -and ($peek -match $liveFuelPattern)) {",
             r"                    $fuelHitLive = $true",
             r"                    if ($peek -match 'Free usage limit|subscribe to OpenCode Go') { $killReason = 'fuel-exhausted:opencode-free' } else { $killReason = 'out-of-fuel' }",
             r"                    try { & taskkill /T /F /PID $proc.Id 2>$null | Out-Null } catch { }",
@@ -4767,14 +4773,18 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             r"    $scan = $outStr",
             r"    if ($line) { $scan = $scan.Replace([string]$line, ' ') }",
             r"    $scan = [regex]::Replace($scan, '`[^`]*`', ' ')",
-            r"    $limitPattern = 'Payment Required|usage balance exhausted|Too Many Requests|rate limit|rolling limit|Free usage limit|subscribe to OpenCode Go'",
+            # FR #8151: no bare "rate limit" in limitPattern (CodeRabbit / gh tool echo).
+            r"    $limitPattern = 'Payment Required|usage balance exhausted|Too Many Requests|rolling limit|Free usage limit|subscribe to OpenCode Go|rate limited by provider|AI_(APICall|Retry)Error'",
             r"    $codePattern = '(HTTP|status( code)?)\D{0,3}(402|429)'",
             r"    $freeUsagePattern = 'Free usage limit|subscribe to OpenCode Go'",
+            r"    $toolNoisePattern = 'coderabbit|coderabbit-ai-generated|rate limited by coderabbit|Rate limit \+ single instance'",
             # FR #6366: watchdog timeout kills the run but must NOT record a model pause
             # (done-miss finish-runs looked like out-of-fuel). Only real 402/429/limit text pauses.
             # FR #7951: a hard ceiling or watchdog kill is not out of fuel.
             # FR #8026: free-usage text (or a live mid-run fuel kill) pauses even when exit is 0.
-            r"    $hitLimit = (-not $timedOut -and ($fuelHitLive -or ((($scan -match $limitPattern) -or ($scan -match $codePattern)) -and ($exitCode -ne 0 -or ($scan -match $freeUsagePattern)))))",
+            # FR #8151: tool-output noise never sets hitLimit / never record-pause.
+            r"    $scanIsToolNoise = ($scan -match $toolNoisePattern)",
+            r"    $hitLimit = (-not $timedOut -and -not $scanIsToolNoise -and ($fuelHitLive -or ((($scan -match $limitPattern) -or ($scan -match $codePattern)) -and ($exitCode -ne 0 -or ($scan -match $freeUsagePattern)))))",
             r"    if ($timedOut) {",
             r"        if ($proc -and -not $proc.HasExited) { try { & taskkill /T /F /PID $proc.Id 2>$null | Out-Null } catch { } }",
             r"        if (-not $killReason) { $killReason = 'watchdog timeout (no output)' }",
@@ -4788,7 +4798,11 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             r"        $matchLines = $scan -split '\r?\n' | Where-Object { $_ -match $limitPattern -or $_ -match $codePattern }",
             r"        $msg = ($matchLines | Select-Object -First 3) -join ' '",
             r"        if (-not $msg) { $msg = ($scan -replace '\s+', ' ').Trim(); if ($msg.Length -gt 300) { $msg = $msg.Substring(0, 300) } }",
-            r"        $entry = @{ pid = $PID; ts = (Get-Date -Format o); model = $model; text = $msg } | ConvertTo-Json -Compress",
+            # FR #8151: stamp source= so pauses are only from provider channels.
+            r"        $fuelSource = 'cli-stderr'",
+            r"        if ($msg -match '(?i)level=ERROR') { $fuelSource = 'app-log' }",
+            r"        elseif ($msg -match '(?i)AI_(APICall|Retry)Error|\"status(_code)?\"\s*:\s*(402|429)') { $fuelSource = 'provider-json' }",
+            r"        $entry = @{ pid = $PID; ts = (Get-Date -Format o); model = $model; text = $msg; source = $fuelSource } | ConvertTo-Json -Compress",
             r"        Add-Content -Path $fuelLog -Value $entry -ErrorAction SilentlyContinue",
             r"        $py = (Get-Command python.exe -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source)",
             r"        if (-not $py) { $py = 'python.exe' }",
@@ -6919,6 +6933,7 @@ class GrokTurnWatcher:
 # --------------------------------------------------------------------------------------------- FR #3012 / #3019: out-of-fuel
 # Detect agent 402 / usage-exhausted / NEEDS_AUTH as out-of-fuel (not done-miss).
 # Bare "402" in token counts must not match. Cursor parity: same contract without grok-only gate (FR #3019).
+# Strong provider cues (no bare "rate limit" — FR #8151 tool-output false pause).
 _OUT_OF_FUEL_RX = re.compile(
     r"(?i)(?:"
     r"402\s*Payment\s*Required"
@@ -6932,12 +6947,38 @@ _OUT_OF_FUEL_RX = re.compile(
     r"|NEEDS_AUTH"
     r"|OUTCOME_NEEDS_AUTH"
     r"|unpaid\s+invoice"
-    r"|rate\s*limit(?:ed|ing)?\b"
+    r"|Too\s+Many\s+Requests"
+    r"|rolling\s+limit"
     # FR #8026: OpenCode free pool (may hang without exit).
     r"|Free\s+usage\s+limit"
     r"|subscribe\s+to\s+OpenCode\s+Go"
     r")"
 )
+
+# Bare rate-limit words only count with provider/API/HTTP context (FR #8151).
+_RATE_LIMIT_PROVIDER_CTX_RX = re.compile(
+    r"(?i)(?:"
+    r"(?:HTTP|status(?:_code| code)?)\D{0,20}\b429\b"
+    r"|\b429\b.{0,60}rate\s*limit"
+    r"|rate\s*limit(?:ed|ing)?.{0,60}\b(?:provider|api|openai|anthropic|xai|opencode|grok)\b"
+    r"|\b(?:provider|api|openai|anthropic|xai|opencode|grok)\b.{0,60}rate\s*limit"
+    r"|AI_(?:APICall|Retry)Error"
+    r"|Too\s+Many\s+Requests"
+    r")"
+)
+
+# Tool / agent echo that must never arm a pause (FR #8151).
+_FUEL_TOOL_OUTPUT_NOISE_RX = re.compile(
+    r"(?i)(?:"
+    r"coderabbit(?:ai)?|coderabbit-ai-generated"
+    r"|rate\s+limited\s+by\s+coderabbit"
+    r"|\"comments\"\s*:\s*\["
+    r"|\"author\"\s*:\s*\{\s*\"login\""
+    r"|Rate\s+limit\s*\+\s*single\s+instance"
+    r")"
+)
+
+_PROVIDER_FUEL_SOURCES = ("app-log", "cli-stderr", "provider-json")
 
 _OPENCODE_FREE_USAGE_RX = re.compile(
     r"(?i)(?:Free\s+usage\s+limit|subscribe\s+to\s+OpenCode\s+Go)"
@@ -6968,8 +7009,8 @@ _UNQUOTED_PROVIDER_STATUS_RX = re.compile(
 )
 
 
-def fuel_log_recorded_text(text: str) -> Optional[str]:
-    """Return the text field of a wrapper fuel-log JSON line, else None."""
+def _fuel_log_envelope(text: str) -> Optional[dict]:
+    """Parse a wrapper fuel-log JSON line; None when not that envelope."""
     raw = (text or "").strip()
     if not raw.startswith("{"):
         return None
@@ -6979,12 +7020,32 @@ def fuel_log_recorded_text(text: str) -> Optional[str]:
         return None
     if not isinstance(obj, dict):
         return None
+    if "pid" not in obj and "model" not in obj:
+        return None
+    return obj
+
+
+def fuel_log_recorded_text(text: str) -> Optional[str]:
+    """Return the text field of a wrapper fuel-log JSON line, else None."""
+    obj = _fuel_log_envelope(text)
+    if obj is None:
+        return None
     recorded = obj.get("text")
     if not isinstance(recorded, str):
         return None
-    if "pid" not in obj and "model" not in obj:
-        return None
     return recorded
+
+
+def fuel_log_recorded_source(text: str) -> Optional[str]:
+    """Return the ``source`` field of a fuel-log JSON line when present (FR #8151)."""
+    obj = _fuel_log_envelope(text)
+    if obj is None:
+        return None
+    src = obj.get("source")
+    if not isinstance(src, str):
+        return None
+    src = src.strip().lower()
+    return src or None
 
 
 def _strip_instructional_mentions(text: str) -> str:
@@ -7021,12 +7082,59 @@ def provider_fuel_scan_text(text: str) -> str:
     return _strip_instructional_mentions(text or "")
 
 
-def is_out_of_fuel_text(text: str) -> bool:
-    """True when agent/log text is a provider fuel/quota/auth exhaustion (FR #3012 / #3019)."""
+def is_fuel_tool_output_noise(text: str) -> bool:
+    """True when text is agent tool echo (gh/CodeRabbit/docs), not a provider error (FR #8151)."""
+    return bool(_FUEL_TOOL_OUTPUT_NOISE_RX.search(text or ""))
+
+
+def _provider_fuel_source_for_scanned(scanned: str) -> Optional[str]:
+    """Classify provider channel for already-scanned text. FR #8151."""
+    if not (scanned or "").strip():
+        return None
+    if is_fuel_tool_output_noise(scanned):
+        return None
+    strong = bool(_OUT_OF_FUEL_RX.search(scanned))
+    rate_ok = bool(_RATE_LIMIT_PROVIDER_CTX_RX.search(scanned))
+    if not strong and not rate_ok:
+        return None
+    if re.search(r"(?i)(?:^|\s)level=ERROR\b", scanned):
+        return "app-log"
+    if re.search(
+        r"(?i)(?:AI_(?:APICall|Retry)Error|\"status(?:_code)?\"\s*:\s*(?:402|429)"
+        r"|\"error\"\s*:\s*\{|\"type\"\s*:\s*\"(?:api_error|rate_limit))",
+        scanned,
+    ):
+        return "provider-json"
+    return "cli-stderr"
+
+
+def provider_fuel_evidence_source(text: str) -> Optional[str]:
+    """Return ``app-log`` / ``cli-stderr`` / ``provider-json`` or None (FR #8151).
+
+    Tool output (CodeRabbit comments, gh JSON, docstrings) never yields a source.
+    Grok and Cursor watchers share this gate via ``is_out_of_fuel_text``.
+    A fuel-log envelope with an explicit ``source`` is trusted only when that
+    source is one of the provider channels; a missing/blank source re-classifies
+    the recorded text (legacy lines without source still work when the text is
+    genuine provider evidence).
+    """
+    stamped = fuel_log_recorded_source(text)
+    if stamped is not None:
+        if stamped in _PROVIDER_FUEL_SOURCES:
+            recorded = fuel_log_recorded_text(text) or ""
+            if is_fuel_tool_output_noise(recorded):
+                return None
+            return stamped
+        return None
     scanned = provider_fuel_scan_text(text)
     if opencode_fuel is not None and opencode_fuel.is_turn_timeout_text(scanned):
-        return False
-    return bool(_OUT_OF_FUEL_RX.search(scanned))
+        return None
+    return _provider_fuel_source_for_scanned(scanned)
+
+
+def is_out_of_fuel_text(text: str) -> bool:
+    """True when agent/log text is a provider fuel/quota/auth exhaustion (FR #3012 / #3019 / #8151)."""
+    return provider_fuel_evidence_source(text) is not None
 
 
 # FR #4858: hard API 402 / usage-balance-exhausted (not mid-job reading, not NEEDS_AUTH).
@@ -7139,6 +7247,251 @@ def seat_release_giveup_line(job_key: str, reason: str) -> str:
     if key.lower() == "job":
         return f"GIVEUP job {why}"
     return f"GIVEUP {key} {why}"
+
+
+def console_closed_giveup_line(job_key: str, wip_ref: str = "") -> str:
+    """FR #8154: ``GIVEUP <TYPE> owner/repo#N console-closed [wip=<ref>]``."""
+    why = "console-closed"
+    ref = (wip_ref or "").strip()
+    if ref:
+        # Keep under shop_listen truncate (~120); short sha / branch tip only.
+        why = f"console-closed wip={ref[:80]}"
+    return seat_release_giveup_line(job_key, why)
+
+
+def is_console_closed_shutdown_reason(reason: str) -> bool:
+    """True when Supervisor.shutdown reason is a console / Ctrl close (FR #8154)."""
+    text = (reason or "").strip().lower().replace("_", "-")
+    if not text:
+        return False
+    head = text.split(":", 1)[0].strip()
+    return head in ("console-closed", "window-closed", "ctrl-close", "control-c")
+
+
+def pending_console_closed_giveup_dir(env: Optional[dict] = None) -> Path:
+    """Durable pending-GIVEUP folder (survives run-dir wipe). FR #8154."""
+    e = os.environ if env is None else env
+    bridge = str(e.get("BOB_BRIDGE_HOME") or "").strip()
+    if bridge:
+        return Path(bridge) / "pending-giveup"
+    return _state_root(e) / "pending-giveup"
+
+
+def pending_console_closed_giveup_path(machine: str, env: Optional[dict] = None) -> Path:
+    mid = re.sub(r"[^a-z0-9_.-]+", "-", (machine or "unknown").strip().lower()) or "unknown"
+    return pending_console_closed_giveup_dir(env) / f"{mid}.txt"
+
+
+def append_pending_console_closed_giveup(
+    machine: str,
+    line: str,
+    *,
+    env: Optional[dict] = None,
+    log: Optional[Callable[[str], None]] = None,
+) -> bool:
+    """Append one GIVEUP wire line for the next seat on this machine (FR #8154)."""
+    text = (line or "").strip()
+    if not text:
+        return False
+    path = pending_console_closed_giveup_path(machine, env)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8", newline="\n") as fh:
+            fh.write(text + "\n")
+        if log:
+            log(f"pending-giveup: queued {text[:120]}")
+        return True
+    except OSError as e:
+        if log:
+            log(f"pending-giveup: append failed {type(e).__name__}")
+        return False
+
+
+def drain_pending_console_closed_giveups(
+    machine: str,
+    *,
+    env: Optional[dict] = None,
+) -> list[str]:
+    """Read and clear durable pending GIVEUP lines for ``machine`` (FR #8154)."""
+    path = pending_console_closed_giveup_path(machine, env)
+    if not path.is_file():
+        return []
+    try:
+        raw = path.read_text(encoding="utf-8-sig", errors="replace")
+    except OSError:
+        return []
+    try:
+        path.unlink()
+    except OSError:
+        try:
+            path.write_text("", encoding="utf-8")
+        except OSError:
+            pass
+    out: list[str] = []
+    for ln in raw.splitlines():
+        s = ln.strip()
+        if s:
+            out.append(s)
+    return out
+
+
+def flush_pending_console_closed_giveups(
+    irc: "IrcSeat",
+    machine: str,
+    *,
+    log: Optional[Callable[[str], None]] = None,
+    env: Optional[dict] = None,
+) -> int:
+    """Send any durable pending console-closed GIVEUPs after IRC is up (FR #8154)."""
+    lines = drain_pending_console_closed_giveups(machine, env=env)
+    if not lines:
+        return 0
+    shop = getattr(irc, "shop", None) or shop_channel(machine)
+    n = 0
+    for line in lines:
+        try:
+            if irc and getattr(irc, "alive", False):
+                irc.say(shop, line)
+                n += 1
+            else:
+                append_pending_console_closed_giveup(machine, line, env=env, log=log)
+        except Exception as e:
+            if log:
+                log(f"pending-giveup: flush say failed {type(e).__name__}")
+            append_pending_console_closed_giveup(machine, line, env=env, log=log)
+    if log and n:
+        log(f"pending-giveup: flushed {n} line(s) to {shop}")
+    return n
+
+
+def resolve_console_closed_worktree(
+    job_key: str = "",
+    *,
+    env: Optional[dict] = None,
+) -> str:
+    """Prefer ``BOB_JOB_WORKTREE``, else derive ``<base>/<repo>/<fr-N>`` (FR #8154)."""
+    e = os.environ if env is None else env
+    wt = str(e.get("BOB_JOB_WORKTREE") or "").strip()
+    if wt and Path(wt).is_dir():
+        return wt
+    key = (job_key or "").strip()
+    if not key:
+        return ""
+    try:
+        from opencode_seat_contract import _project_dir_for_key  # type: ignore
+
+        path = _project_dir_for_key(key, e)
+    except Exception:
+        path = ""
+    if path and Path(path).is_dir():
+        return path
+    return ""
+
+
+def worktree_is_dirty(worktree: str | Path, *, run=None) -> bool:
+    """True when ``git status --porcelain`` is non-empty."""
+    import subprocess as _sp
+
+    run = _sp.run if run is None else run
+    root = Path(worktree or "")
+    if not root.is_dir():
+        return False
+    try:
+        r = run(
+            ["git", "-C", str(root), "status", "--porcelain"],
+            capture_output=True,
+            text=True,
+            timeout=20,
+        )
+    except Exception:
+        return False
+    if getattr(r, "returncode", 1) != 0:
+        return False
+    return bool((getattr(r, "stdout", "") or "").strip())
+
+
+def save_console_closed_wip(
+    worktree: str | Path,
+    job_key: str = "",
+    *,
+    run=None,
+    push: bool = True,
+    log: Optional[Callable[[str], None]] = None,
+) -> str:
+    """Snapshot dirty job worktree on console-close (FR #8154).
+
+    Prefers ``git stash create`` (leaves the tree intact for FINISH reuse). When
+    push is enabled, also stores ``refs/wip/fr-<N>`` (or mrb/uat) and pushes that
+    ref without opening a PR. Returns a short wip token for the GIVEUP line, or
+    ``\"\"`` when clean / unavailable.
+    """
+    import subprocess as _sp
+
+    run = _sp.run if run is None else run
+    root = Path(worktree or "")
+    if not root.is_dir():
+        return ""
+    if not worktree_is_dirty(root, run=run):
+        return ""
+    sha = ""
+    try:
+        r = run(
+            ["git", "-C", str(root), "stash", "create"],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        if getattr(r, "returncode", 1) == 0:
+            sha = (getattr(r, "stdout", "") or "").strip().splitlines()
+            sha = (sha[0] if sha else "").strip()
+    except Exception as e:
+        if log:
+            log(f"console-closed-wip: stash create failed {type(e).__name__}")
+        sha = ""
+    if not sha or not re.fullmatch(r"[0-9a-f]{7,40}", sha, flags=re.I):
+        if log:
+            log("console-closed-wip: no stash object (clean or failed)")
+        return ""
+    short = sha[:12]
+    issue_n = ""
+    kind = "fr"
+    m = re.search(
+        r"(?i)\b(FR|MRB|UAT|FIX)\s+\S+#(\d+)\b",
+        job_key or "",
+    )
+    if m:
+        kind = m.group(1).lower()
+        issue_n = m.group(2)
+    ref_name = f"refs/wip/{kind}-{issue_n}" if issue_n else f"refs/wip/stash-{short}"
+    try:
+        run(
+            ["git", "-C", str(root), "update-ref", ref_name, sha],
+            capture_output=True,
+            text=True,
+            timeout=20,
+        )
+    except Exception as e:
+        if log:
+            log(f"console-closed-wip: update-ref failed {type(e).__name__}")
+    if push and issue_n:
+        try:
+            pr = run(
+                ["git", "-C", str(root), "push", "-u", "origin", f"{ref_name}:{ref_name}"],
+                capture_output=True,
+                text=True,
+                timeout=90,
+            )
+            if getattr(pr, "returncode", 1) != 0 and log:
+                err = (getattr(pr, "stderr", "") or "")[:120]
+                log(f"console-closed-wip: push skipped/failed {err}")
+        except Exception as e:
+            if log:
+                log(f"console-closed-wip: push failed {type(e).__name__}")
+    # Prefer the named ref for resume; fall back to short sha.
+    token = f"{kind}-{issue_n}:{short}" if issue_n else short
+    if log:
+        log(f"console-closed-wip: saved {token}")
+    return token
 
 
 FAILED_TURN_RETRY_MAX = 1
@@ -7562,7 +7915,9 @@ class GrokOutOfFuelWatcher:
         if self._fired:
             return
         text = (line or "").strip()
-        if not text or not is_out_of_fuel_text(text):
+        # FR #8151: require a provider source; tool-output "rate limit" never fires.
+        src = provider_fuel_evidence_source(text) if text else None
+        if not src:
             return
         if self._agent_pid > 0:
             try:
@@ -7576,7 +7931,7 @@ class GrokOutOfFuelWatcher:
         self._fired = True
         if self._log:
             try:
-                self._log("out-of-fuel: detected in agent log")
+                self._log(f"out-of-fuel: detected in agent log source={src}")
             except Exception:
                 pass
         if self._on_hit:
@@ -12381,10 +12736,15 @@ class Supervisor:
         self._session_log_thread = threading.Thread(target=watch, name="seat-session-log", daemon=True)
         self._session_log_thread.start()
 
-    def _record_exit(self, proc, reason: str, code=None, *, report: bool = False, job_key: str = "") -> None:
+    def _record_exit(self, proc, reason: str, code=None, *, report: bool = False, job_key: str = "") -> bool:
+        """Record first exit for ``proc``. Return True when this call owns the record.
+
+        FR #8148: callers such as ``_wait_exit`` must not file a CLI-failure intake when
+        ``shutdown`` (e.g. console-closed) already recorded the same pid.
+        """
         with self._lock:
             if self._exit_recorded_pid == proc.pid:
-                return
+                return False
             self._exit_recorded_pid = proc.pid
         self._stop_session_log()
         with contextlib.suppress(Exception):
@@ -12406,6 +12766,7 @@ class Supervisor:
                 machine=self.machine, nick=self.nick, kind=self.kind, agent_pid=proc.pid,
                 stderr_tail=self.last_exit["output"], log=self.log,
             )
+        return True
 
     def _persist_last_exit(self) -> None:
         text = json.dumps(self.last_exit)
@@ -14194,7 +14555,17 @@ class Supervisor:
         )
         exit_u = normalize_agent_exit_code(code)
         exit_label = format_agent_exit_code_label(code)
-        self._record_exit(proc, "agent-exited" if exit_u == 0 else "agent-cli-nonzero-exit", code)
+        # FR #8148: if shutdown already recorded (console-closed / signal), do not also
+        # file a cli-failure intake for the same pid (TOCTOU after the expected check).
+        recorded = self._record_exit(
+            proc, "agent-exited" if exit_u == 0 else "agent-cli-nonzero-exit", code
+        )
+        if not recorded:
+            self.log(
+                f"agent: exit already recorded code={code} (u32={exit_label}); "
+                f"skip cli-failure report (FR #8148); {kill_line}"
+            )
+            return
         if age is not None and age < max(30.0, float(self.startup_grace_s) + 15.0):
             self.log(
                 f"agent: early exit code={code} (u32={exit_label}) after {age:.1f}s "
@@ -14746,6 +15117,12 @@ class Supervisor:
             if proc is not None:
                 self._expected_exit.add(proc.pid)
         self.log(f"worker: shutting down ({reason}) exit={code}")
+        # FR #8154: console-close / Ctrl path must GIVEUP an ACKed job and save WIP
+        # before IRC close. Shared for every seat kind.
+        try:
+            self._giveup_on_console_closed_shutdown(reason)
+        except Exception as e:
+            self.log(f"worker: console-closed GIVEUP failed {type(e).__name__}")
         if proc is not None and self._exit_recorded_pid != proc.pid:
             self._record_exit(proc, reason, proc.poll(), report=code != EXIT_OK)
         self._stop_session_log()
@@ -14775,6 +15152,67 @@ class Supervisor:
         if self.irc:
             self.irc.close(reason.split(":")[0][:40])
         self.done.set()
+
+    def _giveup_on_console_closed_shutdown(self, reason: str) -> None:
+        """FR #8154: release ACKed job + WIP snapshot when the console closes."""
+        if not is_console_closed_shutdown_reason(reason):
+            return
+        if not self.bored or not getattr(self.bored, "_ack_open", False):
+            return
+        job_key = str(getattr(self.bored, "_ack_job_key", None) or "").strip()
+        if not job_key:
+            return
+        wt = resolve_console_closed_worktree(job_key)
+        wip_ref = ""
+        if wt:
+            try:
+                wip_ref = save_console_closed_wip(
+                    wt, job_key, log=self.log
+                )
+            except Exception as e:
+                self.log(f"console-closed-wip: save failed {type(e).__name__}")
+                wip_ref = ""
+        line = console_closed_giveup_line(job_key, wip_ref)
+        why = "console-closed"
+        if wip_ref:
+            why = f"console-closed wip={wip_ref}"
+        sent = False
+        shop = self.irc.shop if self.irc else shop_channel(self.machine)
+        if self.irc and getattr(self.irc, "alive", False):
+            try:
+                self.irc.say(shop, line)
+                sent = True
+                try:
+                    self.irc.say(
+                        shop,
+                        f"seat-release: {self.nick} GIVEUP `{job_key}` reason={why}",
+                    )
+                except Exception:
+                    pass
+            except Exception as e:
+                self.log(f"console-closed: GIVEUP say failed {type(e).__name__}")
+                sent = False
+        if not sent:
+            # Durable pending file for the next seat on this machine (run-dir may die).
+            append_pending_console_closed_giveup(
+                self.machine, line, log=self.log
+            )
+            # Also seat outbox as a best-effort flush if the run dir survives briefly.
+            try:
+                outbox = getattr(self.bored, "run_dir", None) or self.run_dir
+                if outbox:
+                    path = Path(outbox) / "outbox.txt"
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    with path.open("a", encoding="utf-8", newline="\n") as fh:
+                        fh.write(f"PRIVMSG {shop} :{line}\n")
+            except Exception as e:
+                self.log(f"console-closed: outbox GIVEUP failed {type(e).__name__}")
+        try:
+            self.bored._ack_open = False
+            self.bored._ack_job_key = None
+        except Exception:
+            pass
+        self.log(f"console-closed: posted {line}")
 
     def run_forever(self) -> int:
         if self.bored:
@@ -15610,6 +16048,11 @@ def run_agent(args, log: Log) -> int:
     except Exception as e:
         log(f"worker: IRC connect failed ({type(e).__name__}: {str(e)[:100]}) - NOT starting an agent")
         return EXIT_IRC_FAIL
+    # FR #8154: prior seat may have left a durable console-closed GIVEUP while IRC was down.
+    try:
+        flush_pending_console_closed_giveups(irc, machine, log=log)
+    except Exception as e:
+        log(f"pending-giveup: flush failed {type(e).__name__}")
     # FR #6134: publish agent kind so the chair can skip OpenCode for MRB/UAT.
     # FR #6409: digest worker_build short SHA (or unknown); hello after start_agent (MRB #6411).
     # FR #7187: hello ``model=`` is the launched actual when known (else configured).

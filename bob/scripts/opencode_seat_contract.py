@@ -13,7 +13,20 @@ from __future__ import annotations
 
 import os
 import re
+import sys
 from pathlib import Path
+
+# FR #8152: shared clone resolver lives in common/scripts (all seat kinds).
+_COMMON_SCRIPTS = Path(__file__).resolve().parents[2] / "common" / "scripts"
+if _COMMON_SCRIPTS.is_dir() and str(_COMMON_SCRIPTS) not in sys.path:
+    sys.path.insert(0, str(_COMMON_SCRIPTS))
+try:
+    import repo_clone_store as _repo_clone_store
+except ImportError:  # flat install: common/scripts composed beside bob/scripts
+    _flat = Path(__file__).resolve().parent
+    if str(_flat) not in sys.path:
+        sys.path.insert(0, str(_flat))
+    import repo_clone_store as _repo_clone_store  # type: ignore
 
 # Credential stores and password folders must never become --dir.
 # Slashes are normalized before the match so C:/passwords and C:\passwords agree.
@@ -22,7 +35,7 @@ DIR_FORBIDDEN_RX = re.compile(
 )
 # Same assign shape as the worker: TYPE + non-space ref ending in #digits.
 # Repo may be owner/name or a leaf. A drive-root or ".." ref is refused later.
-_ASSIGN_RX = re.compile(r"(?i)\b(FR|MRB|UAT)\s+(\S+)#(\d+)\b")
+_ASSIGN_RX = re.compile(r"(?i)\b(FR|MRB|UAT|FIX)\s+(\S+)#(\d+)\b")
 _JOB_KEY_RX = re.compile(r"(?i)\b(FR|MRB|UAT|FIX)\s+(\S+#\d+)\b")
 _TOKEN_RX = re.compile(
     r"(?i)(github_pat_[A-Za-z0-9_]+|ghp_[A-Za-z0-9]+|gho_[A-Za-z0-9]+|"
@@ -506,7 +519,7 @@ def _broken_frame_key(text: str) -> str:
     if not (text or "").startswith(FRAME_MARK):
         return ""
     tail = text[len(FRAME_MARK):].lstrip("| ")
-    match = re.match(r"(?i)^((?:FR|MRB|UAT)\s+\S+#\d+)", tail)
+    match = re.match(r"(?i)^((?:FR|MRB|UAT|FIX)\s+\S+#\d+)", tail)
     if match:
         kind, rest = match.group(1).split(None, 1)
         return f"{kind.upper()} {rest}"
@@ -661,9 +674,8 @@ def resolve_project_dir(path: str) -> dict:
 
 
 def _is_git_checkout(root: str | Path) -> bool:
-    """True when *root* looks like a git checkout (.git file or directory)."""
-    marker = Path(root) / ".git"
-    return marker.exists()
+    """True for a checkout (``.git``) or bare repo. Delegates to shared helper (FR #8152)."""
+    return _repo_clone_store.is_git_repo(root)
 
 
 def resolve_repo_clone(
@@ -673,36 +685,12 @@ def resolve_repo_clone(
 ) -> str:
     """Locate the machine clone for *repo* (owner/name or leaf). Never invents a path.
 
-    Order: ``BOB_REPO_CLONE_<leaf>``, bobiverse->install_root,
-    ``BOB_AI_ROOT\\<leaf>`` or ``<parent of install_root>\\<leaf>`` when that folder is a git checkout.
-    Bare ``BOB_REPO_CLONE`` is ignored (docs/mrb-6324) --- it has no repo name.
+    Shared order (FR #8152 / ``repo_clone_store``): ``BOB_REPO_CLONE_<leaf>``,
+    bobiverse->install_root, ``BOB_AI_ROOT\\<leaf>``, then bob-bridge
+    ``repos`` / ``clones`` / ``mirrors`` (bare ``*.git`` accepted). Bare
+    ``BOB_REPO_CLONE`` is ignored (docs/mrb-6324) --- it has no repo name.
     """
-    env = env or {}
-    leaf = _repo_leaf(repo)
-    if not leaf:
-        return ""
-    # Leaf-specific clone env only (docs/mrb-6324 / CodeRabbit amber on PR #6324).
-    for key in (
-        f"BOB_REPO_CLONE_{leaf}",
-        f"BOB_REPO_CLONE_{leaf.upper()}",
-    ):
-        raw = str(env.get(key) or "").strip().strip('"')
-        if raw and _is_git_checkout(raw):
-            return str(Path(raw))
-    if leaf.lower() == "bobiverse" and install_root:
-        root = Path(str(install_root))
-        if _is_git_checkout(root):
-            return str(root)
-    ai_root = str(env.get("BOB_AI_ROOT") or "").strip().strip('"')
-    if not ai_root and install_root:
-        inst = Path(str(install_root))
-        if inst.name.lower() == "bob":
-            ai_root = str(inst.parent)
-    if ai_root:
-        cand = Path(ai_root) / leaf
-        if _is_git_checkout(cand):
-            return str(cand)
-    return ""
+    return _repo_clone_store.resolve_repo_clone(repo, env, install_root=install_root)
 
 
 def _job_branch_from_key(key: str) -> str:
@@ -1605,6 +1593,8 @@ def ensure_opencode_job_worktree(
 
     Credential / base / malformed refusals are unchanged. A create failure returns
     ``state=create_failed`` with ``NACK ... worktree-create-failed:<class>``.
+    FR #8152: missing clones are provisioned into the bob-bridge store first;
+    only a failed provision NACKs ``clone-failed:<class>`` / ``no-clone``.
     """
     decision = classify_opencode_job(line, env, disks=disks, system_drive=system_drive)
     if decision["state"] != "absent":
@@ -1614,7 +1604,26 @@ def ensure_opencode_job_worktree(
             if mrb:
                 repo = mrb.group(1)
                 number = mrb.group(2)
-                clone = resolve_repo_clone(repo, env, install_root=install_root)
+                clone, clone_err, clone_detail = _repo_clone_store.ensure_repo_clone(
+                    repo,
+                    env,
+                    install_root=install_root,
+                    run=run,
+                    provision=True,
+                )
+                if not clone:
+                    err_class = clone_err or "no-clone"
+                    nack = _nack_create_failed(key, err_class, clone_detail)
+                    return {
+                        "state": "create_failed",
+                        "nack": nack,
+                        "nacks": [nack],
+                        "path": decision.get("path") or "",
+                        "key": key,
+                        "message": CREATE_FAILED_MESSAGE,
+                        "error_class": err_class,
+                        "error_detail": clone_detail or "",
+                    }
                 ok, err_class = _verify_or_refresh_mrb_worktree(
                     run or __import__("subprocess").run,
                     Path(decision["path"]),
@@ -1645,7 +1654,24 @@ def ensure_opencode_job_worktree(
     path = decision.get("path") or ""
     match = re.match(r"(?i)^(FR|MRB|UAT|FIX)\s+(\S+)#(\d+)$", key.strip()) if key else None
     repo = match.group(2) if match else ""
-    clone = resolve_repo_clone(repo, env, install_root=install_root)
+    # FR #8152: resolve shared bob-bridge stores; provision a missing clone once
+    # before NACK. Failed provision -> clone-failed:<class> (not bare no-clone).
+    clone, clone_err, clone_detail = _repo_clone_store.ensure_repo_clone(
+        repo, env, install_root=install_root, run=run, provision=True
+    )
+    if not clone:
+        err_class = clone_err or "no-clone"
+        nack = _nack_create_failed(key, err_class, clone_detail)
+        return {
+            "state": "create_failed",
+            "nack": nack,
+            "nacks": [nack],
+            "path": path,
+            "key": key,
+            "message": CREATE_FAILED_MESSAGE,
+            "error_class": err_class,
+            "error_detail": clone_detail or "",
+        }
     ok, err_class, err_detail = create_job_worktree(
         path, key, clone_root=clone, run=run, nick=nick
     )
