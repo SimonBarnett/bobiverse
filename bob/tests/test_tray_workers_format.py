@@ -141,4 +141,7 @@ $doc = [System.IO.File]::ReadAllText('{d}', [System.Text.Encoding]::UTF8) | Conv
 foreach ($w in @(Get-BobTrayDigestWorkers -Digest $doc -MachineId 'MARCHHARE')) {{ Format-BobTrayWorkerLine -Worker $w }}
 'other=' + @(Get-BobTrayDigestWorkers -Digest $doc -MachineId 'win-mpre8vi4u6u').Count
 """, tmp_path)
-    assert out == ["marchhare-101: FR o/r#5 caf\u00e9 \u00b7 fix", "marchhare-102: idle", "other=0"]
+    # FR #8155: doing seats may append " · progress Xm" when last_progress is seeded on ACK.
+    assert out[0].startswith("marchhare-101: FR o/r#5 caf\u00e9 \u00b7 fix")
+    assert out[1] == "marchhare-102: idle"
+    assert out[2] == "other=0"

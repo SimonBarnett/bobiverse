@@ -835,7 +835,15 @@ def return_job_to_unaccepted(
             # FR #7963: skill_dag_down is a seat fault (stale/broken skill-dag). Re-queue
             # the job without burning giveup_count / needs_human; still flag the seat.
             skill_dag_down_giveup = gitclaim.is_skill_dag_down_reason(reason)
-            seat_not_job_giveup = self_mrb_giveup or out_of_fuel_giveup or skill_dag_down_giveup
+            # FR #8154: console-closed is a seat fault (window/Ctrl). Re-offer promptly;
+            # stamp require_machine to the giving seat's machine so the worktree is reused.
+            console_closed_giveup = gitclaim.is_console_closed_reason(reason)
+            seat_not_job_giveup = (
+                self_mrb_giveup
+                or out_of_fuel_giveup
+                or skill_dag_down_giveup
+                or console_closed_giveup
+            )
             for k in ("nick", "accepted_ts", "offered_to", "offered_ts", "offered_channel", "channel"):
                 job.pop(k, None)
             try:
@@ -885,13 +893,35 @@ def return_job_to_unaccepted(
             # FR #180 / #1363: stamp cooldown_until after job-caused GIVEUP/NACK.
             # FR #4881: skip for out-of-fuel (no giveup_seats => global cooldown).
             # FR #7963: skip for skill_dag_down so another seat can take the job now.
-            if not out_of_fuel_giveup and not skill_dag_down_giveup:
+            # FR #8154: skip for console-closed so the next seat re-offers promptly.
+            if (
+                not out_of_fuel_giveup
+                and not skill_dag_down_giveup
+                and not console_closed_giveup
+            ):
                 until = datetime.fromtimestamp(now_f, tz=timezone.utc) + timedelta(
                     seconds=float(gitclaim.GIVEUP_COOLDOWN_S)
                 )
                 job["cooldown_until"] = until.replace(microsecond=0).isoformat().replace(
                     "+00:00", "Z"
                 )
+            if console_closed_giveup and gave_up_by:
+                mid = ""
+                with contextlib.suppress(Exception):
+                    mid = str(bobreport.machine_from_nick(gave_up_by) or "").strip()
+                if not mid:
+                    with contextlib.suppress(Exception):
+                        parsed = bobreport.parse_seat_nick(gave_up_by)
+                        mid = str((parsed[0] if parsed else "") or "").strip()
+                if mid:
+                    job["require_machine"] = mid
+                    # Survive bobiverse FR #4512 re-infer (same as ops !pin).
+                    job["require_machine_operator"] = True
+                wip = ""
+                with contextlib.suppress(Exception):
+                    wip = gitclaim.console_closed_wip_ref(reason)
+                if wip:
+                    job["console_closed_wip"] = wip[:120]
             if (not seat_not_job_giveup) and count >= int(gitclaim.GIVEUP_NEEDS_HUMAN_COUNT):
                 job["needs_human"] = True
             # FR #8008: repeated hard-ceiling kills stamp the seat's agent class so
@@ -1063,6 +1093,9 @@ def handle_shop_worker_line(
                 )
             # FR #8017: pre-ACK deterministic NACK (worktree-create-failed, …) still
             # cools that seat for the offered unaccepted row so !bored cannot loop.
+            # FR #8153: no-clone also stamps seat-ledger "cannot serve repo" (all
+            # jobs for that repo) until JOIN/hello clears it — even when the row
+            # stamp misses (alias / race).
             if parsed.verb == "NACK":
                 stamped = None
                 with contextlib.suppress(Exception):
@@ -1077,11 +1110,33 @@ def handle_shop_worker_line(
                 if stamped is not None:
                     out["job"] = stamped
                     out["deterministic_nack"] = True
+                if gitclaim.is_no_clone_nack_reason(reason):
+                    with contextlib.suppress(Exception):
+                        if gitclaim.stamp_seat_no_clone_repo(
+                            home, nick=nick, repo=parsed.repo
+                        ):
+                            out["no_clone_repo"] = True
             return out
         try:  # t852u: remember who gave this up, forever (resync drops row stamps)
             gitclaim.ledger_note_event(home, nick, parsed.verb, parsed.task, parsed.repo, parsed.id, job if isinstance(job, dict) else None)
         except Exception:  # noqa: BLE001
             pass
+        # FR #8153: post-ACK no-clone NACK also blocks the repo for this seat.
+        if parsed.verb == "NACK" and gitclaim.is_no_clone_nack_reason(reason):
+            with contextlib.suppress(Exception):
+                if gitclaim.stamp_seat_no_clone_repo(home, nick=nick, repo=parsed.repo):
+                    out["no_clone_repo"] = True
+            with contextlib.suppress(Exception):
+                stamped = gitclaim.stamp_deterministic_nack_on_unaccepted(
+                    home,
+                    nick=nick,
+                    repo=parsed.repo,
+                    task=parsed.task,
+                    ident=parsed.id,
+                    reason=reason,
+                )
+                if stamped is not None:
+                    out["deterministic_nack"] = True
         # FR #6439: wake Bob on shop GIVEUP (same HTTPS wake URL as close notices).
         if parsed.verb == "GIVEUP":
             with contextlib.suppress(Exception):

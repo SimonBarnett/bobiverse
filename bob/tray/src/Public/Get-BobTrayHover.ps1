@@ -2789,7 +2789,7 @@ function Resolve-BobTrayLivePeriod {
 }
 
 function Format-BobTrayWorkerLine {
-    # "{irc nick}: {[kind/start_model[!]] }{work|offered:<work>|idle}" - FR #663 / FR #7147.
+    # "{irc nick}: {[kind/start_model[!]] }{work|offered:<work>|idle}[ · progress Xm]" - FR #663 / #7147 / #8155.
     param($Worker)
     if (-not $Worker) { return $null }
     $nick = ([string]$Worker.nick).Trim()
@@ -2801,6 +2801,18 @@ function Format-BobTrayWorkerLine {
         $w = $w.Trim()
         if (-not $w) { $w = 'working' }
         $text = $w
+        # FR #8155: show last_progress age only (updated stays the state-change clock).
+        if ($Worker.PSObject.Properties.Name -contains 'last_progress' -and $Worker.last_progress) {
+            $age = Get-BobJobAge ([string]$Worker.last_progress)
+            if ($age -and $age -ne '?') {
+                $phase = ''
+                if ($Worker.PSObject.Properties.Name -contains 'progress_phase') {
+                    $phase = ([string]$Worker.progress_phase).Trim()
+                }
+                if ($phase) { $text = ('{0} · progress {1} ({2})' -f $text, $age, $phase) }
+                else { $text = ('{0} · progress {1}' -f $text, $age) }
+            }
+        }
     }
     elseif ($state -eq 'offered') {
         $w = ([string]$Worker.work) -replace '[\r\n\t]+', ' '
@@ -2857,6 +2869,13 @@ function Get-BobTrayDigestWorkers {
                 elseif ($val.job) { $row.work = [string]$val.job }
                 elseif ($val.working_on) { $row.work = [string]$val.working_on }
                 if ($val.updated) { $row.updated = [string]$val.updated }
+                # FR #8155: activity heartbeat fields for tray progress age.
+                if ($val.PSObject.Properties.Name -contains 'last_progress' -and $val.last_progress) {
+                    $row.last_progress = [string]$val.last_progress
+                }
+                if ($val.PSObject.Properties.Name -contains 'progress_phase' -and $val.progress_phase) {
+                    $row.progress_phase = [string]$val.progress_phase
+                }
                 if ($val.kind) { $row.kind = [string]$val.kind }
                 elseif ($val.agent) { $row.kind = [string]$val.agent }
                 if ($val.start_model) { $row.start_model = [string]$val.start_model }
@@ -2883,6 +2902,13 @@ function Get-BobTrayDigestWorkers {
             if ($w.PSObject.Properties.Name -contains 'model_mismatch') { $row.model_mismatch = [bool]$w.model_mismatch }
             if ($w.configured_model) { $row.configured_model = [string]$w.configured_model }
             if ($w.start_effort) { $row.start_effort = [string]$w.start_effort }
+            # FR #8155: activity heartbeat fields for tray progress age.
+            if ($w.PSObject.Properties.Name -contains 'last_progress' -and $w.last_progress) {
+                $row.last_progress = [string]$w.last_progress
+            }
+            if ($w.PSObject.Properties.Name -contains 'progress_phase' -and $w.progress_phase) {
+                $row.progress_phase = [string]$w.progress_phase
+            }
             $rows += ,[pscustomobject]$row
         }
     }

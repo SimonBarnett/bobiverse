@@ -54,3 +54,17 @@ def test_fr7881_ordinary_nonzero_stays_cli_failure():
     )
     assert posts[0]["title"].startswith("bug: agent CLI nonzero exit")
     assert "end=cli-failure" in posts[0]["body"]
+
+
+def test_fr8148_signal_reason_is_console_close():
+    posts = []
+    bw.report_agent_cli_nonzero_exit(
+        exit_code=1,
+        reason="signal",
+        machine="flamingo",
+        nick="flamingo-1",
+        kind="grok",
+        filer_post=lambda p: posts.append(p) or {"ok": True},
+    )
+    assert posts[0]["title"].startswith("bug: agent console closed")
+    assert "end=console-close" in posts[0]["body"]

@@ -5062,14 +5062,18 @@ def seat_offer_refused(row: dict, nick: str) -> bool:
     return False
 
 
-def live_seat_can_take_unanswered(row: dict, live: set[str] | None) -> bool:
+def live_seat_can_take_unanswered(
+    row: dict, live: set[str] | None, home: Path | None = None
+) -> bool:
     """True when some live seat is not refused and has not given up (FR #7966).
 
     no_eligible_since means nobody live can take the row. A sibling seat that
-    is still eligible must not look stalled.
+    is still eligible must not look stalled. FR #8153: also skip seats blocked
+    for no-clone on this repo when *home* is provided.
     """
     if not isinstance(row, dict):
         return False
+    repo = str(row.get("repo") or "")
     for raw in live or ():
         nick = str(raw or "").strip()
         if not nick:
@@ -5077,6 +5081,8 @@ def live_seat_can_take_unanswered(row: dict, live: set[str] | None) -> bool:
         if seat_offer_refused(row, nick) or row_gave_up_by(row, nick):
             continue
         if seat_on_deterministic_nack_cooldown(row, nick, time.time()):
+            continue
+        if home is not None and seat_blocked_for_no_clone_repo(home, nick, repo):
             continue
         return True
     return False
@@ -8804,19 +8810,49 @@ def is_skill_dag_down_reason(reason: str) -> bool:
     return token == "skill-dag-down" or token.startswith("skill-dag-down:")
 
 
+def is_console_closed_reason(reason: str) -> bool:
+    """True when a GIVEUP reason is console-close / Ctrl (FR #8154).
+
+    Seat fault: ``console-closed`` or ``console-closed wip=<ref>``. Re-offer promptly
+    (no long cooldown) and prefer the giving seat's machine so the worktree is reused.
+    """
+    text = (reason or "").strip().lower()
+    if not text:
+        return False
+    # First whitespace-separated token (keep ``wip=`` as a trailing field).
+    head = text.replace("_", "-").split(None, 1)[0].strip()
+    head = head.split(",", 1)[0].strip()
+    return head == "console-closed" or head.startswith("console-closed")
+
+
+def console_closed_wip_ref(reason: str) -> str:
+    """Extract ``wip=<ref>`` from a console-closed GIVEUP reason, else ``\"\"``."""
+    text = (reason or "").strip()
+    if not text:
+        return ""
+    m = re.search(r"(?i)\bwip=([^\s,]+)", text)
+    return (m.group(1) if m else "").strip()
+
+
+def _deterministic_nack_token(reason: str) -> str:
+    """Normalised class token from a NACK/GIVEUP reason (FR #8017 / #8153)."""
+    text = (reason or "").strip().lower()
+    if not text:
+        return ""
+    head = text.split("(", 1)[0].strip()
+    norm = head.replace("_", "-").replace(" ", "-")
+    return norm.split(",", 1)[0].strip()
+
+
 def is_deterministic_nack_reason(reason: str) -> bool:
     """True for stable pre-ACK NACK classes that must cool that seat (FR #8017).
 
     Covers the FR #6240 OpenCode/worker worktree and job-context family. Transient
     reasons (busy, try later, etc.) stay re-offerable to the same seat.
     """
-    text = (reason or "").strip().lower()
-    if not text:
+    token = _deterministic_nack_token(reason)
+    if not token:
         return False
-    # Drop trailing "(FR #N)" / noise so the class token is stable.
-    head = text.split("(", 1)[0].strip()
-    norm = head.replace("_", "-").replace(" ", "-")
-    token = norm.split(",", 1)[0].strip()
     if token in (
         "worktree-create-failed",
         "worktree-absent",
@@ -8830,6 +8866,16 @@ def is_deterministic_nack_reason(reason: str) -> bool:
         or token.startswith("job-context-malformed:")
         or token.startswith("job-context-ambiguous:")
     )
+
+
+def is_no_clone_nack_reason(reason: str) -> bool:
+    """True when the NACK means this seat cannot serve that repo's clone (FR #8153)."""
+    token = _deterministic_nack_token(reason)
+    if not token:
+        return False
+    if token in ("no-clone", "worktree-create-failed:no-clone"):
+        return True
+    return token.startswith("worktree-create-failed:no-clone")
 
 
 def seat_on_deterministic_nack_cooldown(
@@ -8898,7 +8944,8 @@ def stamp_deterministic_nack_on_unaccepted(
             for row in doc.get("unaccepted") or []:
                 if not isinstance(row, dict):
                     continue
-                if str(row.get("repo") or "").strip() != want_repo:
+                # FR #8153: alias/case-aware match (priority-mcp / agentic_fomprep).
+                if not repo_alias.repos_equivalent(str(row.get("repo") or ""), want_repo):
                     continue
                 rt = str(row.get("task") or "FR").strip().upper()
                 if rt == "PR":
@@ -8943,6 +8990,100 @@ def stamp_deterministic_nack_on_unaccepted(
             return dict(found)
     except (TimeoutError, OSError):
         return None
+
+
+def stamp_seat_no_clone_repo(
+    home: Path,
+    *,
+    nick: str,
+    repo: str,
+    now: float | None = None,
+) -> bool:
+    """Record that *nick* cannot serve *repo* until re-announce (FR #8153).
+
+    Durable in ``seat-ledger.json`` under ``no_clone_repos`` so every job for
+    that repo is skipped for this seat (not only the one NACKed row). Cleared
+    on shop JOIN / hello via :func:`clear_seat_no_clone_repos`.
+    """
+    import time as _time
+
+    me = _canon_ledger_nick(nick)
+    repo_k = _repo_key(repo)
+    if not me or not repo_k:
+        return False
+    now_f = _time.time() if now is None else float(now)
+    ts = datetime.fromtimestamp(now_f, tz=timezone.utc).replace(microsecond=0)
+    ts_s = ts.isoformat().replace("+00:00", "Z")
+
+    def _f(doc: dict) -> None:
+        bucket = doc.setdefault("no_clone_repos", {})
+        if not isinstance(bucket, dict):
+            bucket = {}
+            doc["no_clone_repos"] = bucket
+        seats = bucket.setdefault(me, {})
+        if not isinstance(seats, dict):
+            seats = {}
+            bucket[me] = seats
+        seats[repo_k] = ts_s
+
+    try:
+        _ledger_update(home, _f)
+        return True
+    except OSError:
+        return False
+
+
+def seat_blocked_for_no_clone_repo(home: Path, nick: str, repo: str) -> bool:
+    """True when FR #8153 stamped this seat as unable to serve *repo*."""
+    me = _canon_ledger_nick(nick)
+    repo_k = _repo_key(repo)
+    if not me or not repo_k:
+        return False
+    try:
+        doc = ledger_load(home)
+    except Exception:
+        return False
+    bucket = doc.get("no_clone_repos")
+    if not isinstance(bucket, dict):
+        return False
+    seats = bucket.get(me)
+    if not isinstance(seats, dict):
+        # Also accept canonical nick key variants.
+        for key, val in bucket.items():
+            other = _canon_ledger_nick(str(key))
+            if other == me and isinstance(val, dict):
+                seats = val
+                break
+    if not isinstance(seats, dict):
+        return False
+    if repo_k in seats:
+        return True
+    # Alias-aware: compare each blocked key.
+    for blocked in seats:
+        if repo_alias.repos_equivalent(str(blocked), repo):
+            return True
+    return False
+
+
+def clear_seat_no_clone_repos(home: Path, nick: str) -> bool:
+    """Clear FR #8153 no-clone repo blocks for *nick* (JOIN / hello re-announce)."""
+    me = _canon_ledger_nick(nick)
+    if not me:
+        return False
+
+    def _f(doc: dict) -> None:
+        bucket = doc.get("no_clone_repos")
+        if not isinstance(bucket, dict):
+            return
+        drop = [k for k in list(bucket.keys()) if _canon_ledger_nick(str(k)) == me]
+        for k in drop:
+            bucket.pop(k, None)
+
+    try:
+        _ledger_update(home, _f)
+        return True
+    except OSError:
+        return False
 
 
 def _seat_out_of_fuel_path(home: Path) -> Path:
@@ -10184,6 +10325,10 @@ def offer_focus_top(
                 # FR #8017: pre-ACK deterministic NACK cools this seat for the row.
                 if seat_on_deterministic_nack_cooldown(cand, me, now_f):
                     return None
+                # FR #8153: no-clone NACK blocks every job for that repo on this seat
+                # until JOIN / hello re-announce clears the ledger stamp.
+                if seat_blocked_for_no_clone_repo(home, me, str(cand.get("repo") or "")):
+                    return None
                 # FR #7084: skip model-mismatch seats; skip when actual tier is below job need.
                 if not _seat_model_allows_row(home, me, cand):
                     return None
@@ -10440,7 +10585,9 @@ def offer_focus_top(
                         continue
                     if not cand.get("offer_refused_by"):
                         continue
-                    if cand.get("offered_to") or live_seat_can_take_unanswered(cand, live):
+                    if cand.get("offered_to") or live_seat_can_take_unanswered(
+                        cand, live, home=home
+                    ):
                         if cand.pop("no_eligible_since", None) is not None:
                             purged = True
                         continue
@@ -10735,7 +10882,7 @@ def _lkey(repo: str, ident) -> str:
 
 
 def _ledger_empty() -> dict:
-    return {"v": 1, "touch": {}, "giveup": {}}
+    return {"v": 1, "touch": {}, "giveup": {}, "no_clone_repos": {}}
 
 
 def ledger_load(home: Path) -> dict:
@@ -10749,6 +10896,7 @@ def ledger_load(home: Path) -> dict:
     doc.setdefault("giveup", {})
     doc.setdefault("uat_cycle", {})
     doc.setdefault("fr_done", {})
+    doc.setdefault("no_clone_repos", {})
     for bucket in ("touch", "giveup", "uat_cycle", "fr_done", "mrb_done"):
         raw = doc.get(bucket)
         if not isinstance(raw, dict):
@@ -10761,6 +10909,28 @@ def ledger_load(home: Path) -> dict:
             else:
                 rewritten[nk] = v
         doc[bucket] = rewritten
+    # FR #8153: seat -> {repo_key: iso_ts}; do not rewrite keys through _lkey.
+    raw_nc = doc.get("no_clone_repos")
+    if not isinstance(raw_nc, dict):
+        doc["no_clone_repos"] = {}
+    else:
+        clean_nc: dict = {}
+        for seat, repos in raw_nc.items():
+            me = _canon_ledger_nick(str(seat))
+            if not me or not isinstance(repos, dict):
+                continue
+            clean_repos: dict[str, str] = {}
+            for rk, ts in repos.items():
+                key = _repo_key(str(rk))
+                iso = str(ts or "").strip()
+                if key and iso:
+                    clean_repos[key] = iso
+            if clean_repos:
+                if me in clean_nc and isinstance(clean_nc[me], dict):
+                    clean_nc[me].update(clean_repos)
+                else:
+                    clean_nc[me] = clean_repos
+        doc["no_clone_repos"] = clean_nc
     return doc
 
 
