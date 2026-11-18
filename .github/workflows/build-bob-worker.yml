@@ -13,12 +13,14 @@ on:
       - bob/scripts/Build-BobWorker.ps1
       - bob/scripts/bob_worker_build_meta.py
       - bob/scripts/worker_shipped_scripts.py
+      - bob/scripts/artifact_manifest.py
       - bob/scripts/opencode_tool_wedge.py
       - bob/scripts/opencode_turn_guard.py
       - bob/scripts/skill_dag_mcp.py
       - bob/scripts/skill_dag_index.py
       - bob/tests/test_fr6349_worker_build_ci.py
       - bob/tests/test_fr7910_worker_script_artifact.py
+      - bob/tests/test_fr8218_worker_artifact_manifest.py
       - bob/tests/test_fr7991_skill_dag_mcp_shipped_modules.py
       - bob/tests/test_fr6320_opencode_worktree_create.py
       - bob/tests/test_fr6370_opencode_finish_followup.py
@@ -31,12 +33,14 @@ on:
       - bob/scripts/Build-BobWorker.ps1
       - bob/scripts/bob_worker_build_meta.py
       - bob/scripts/worker_shipped_scripts.py
+      - bob/scripts/artifact_manifest.py
       - bob/scripts/opencode_tool_wedge.py
       - bob/scripts/opencode_turn_guard.py
       - bob/scripts/skill_dag_mcp.py
       - bob/scripts/skill_dag_index.py
       - bob/tests/test_fr6349_worker_build_ci.py
       - bob/tests/test_fr7910_worker_script_artifact.py
+      - bob/tests/test_fr8218_worker_artifact_manifest.py
       - bob/tests/test_fr7991_skill_dag_mcp_shipped_modules.py
       - bob/tests/test_fr6320_opencode_worktree_create.py
       - bob/tests/test_fr6370_opencode_finish_followup.py
@@ -116,8 +120,18 @@ jobs:
             "builder=Build-BobWorker.ps1"
             "fr=6349"
           ) | Set-Content -Encoding ascii (Join-Path $stage "provenance.txt")
-          # Alias for operators who look for manifest.txt
-          Copy-Item -LiteralPath (Join-Path $stage "provenance.txt") -Destination (Join-Path $stage "manifest.txt")
+          # FR #8218: real per-file SHA-256 manifest (exe + scripts + provenance).
+          # provenance.txt stays the identity key=value file; do not copy it to manifest.txt.
+          & python "$root\bob\scripts\artifact_manifest.py" write --stage $stage `
+            --source-commit $env:WORKFLOW_COMMIT `
+            --workflow-commit $env:WORKFLOW_COMMIT `
+            --github-run-id $env:GITHUB_RUN_ID `
+            --github-run-attempt $env:GITHUB_RUN_ATTEMPT `
+            --product bob-worker `
+            --fr 8218
+          if ($LASTEXITCODE -ne 0) { throw "artifact_manifest.py write failed: $LASTEXITCODE" }
+          & python "$root\bob\scripts\artifact_manifest.py" verify --stage $stage
+          if ($LASTEXITCODE -ne 0) { throw "artifact_manifest.py verify failed: $LASTEXITCODE" }
 
       - uses: actions/upload-artifact@v4
         with:
