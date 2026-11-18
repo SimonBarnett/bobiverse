@@ -1416,10 +1416,45 @@ def resolve_opencode_model(
     if state_dir is None:
         state_dir = opencode_pauses_state_dir(env)
 
+    # FR #8150: seat-start scan of the OpenCode app log for a recent ERROR
+    # "Free usage limit" / rate-limit refusal. Stdout may be empty; the app
+    # log still carries the stream error. record-pause then lets selection
+    # fall through (#7952 path).
+    try:
+        import provider_error_source as pes
+
+        hit = pes.apply_seat_start_opencode_app_log_pause(
+            env=env, state_dir=state_dir, now=now
+        )
+        if hit is not None and log_fn is not None:
+            try:
+                log_fn(
+                    "opencode: app-log fuel at seat start reason=%s"
+                    % hit.reason
+                )
+            except Exception:
+                pass
+    except Exception:
+        pass
+
     def _paused(model_id: str) -> bool:
         if not opencode_fuel:
             return False
-        return opencode_fuel.is_opencode_model_paused(model_id, state_dir, now=now)
+        if opencode_fuel.is_opencode_model_paused(model_id, state_dir, now=now):
+            return True
+        # FR #8150 / #8028: an opencode-free pool pause exhausts every free leaf.
+        try:
+            leaf = str(model_id or "").rsplit("/", 1)[-1].lower()
+            free_leaf = leaf.endswith("-free") or leaf in getattr(
+                opencode_fuel, "OPENCODE_FREE_MODELS", ()
+            )
+        except Exception:
+            free_leaf = str(model_id or "").lower().endswith("-free")
+        if free_leaf and opencode_fuel.is_opencode_model_paused(
+            "opencode-free", state_dir, now=now
+        ):
+            return True
+        return False
 
     skipped: list[str] = []
     candidates: list[tuple[str, str]] = []
@@ -4691,6 +4726,13 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             "opencode_stdout_log.py", cwd=cwd, install_root=install_root
         )
         log_path = log_resolved or (Path(__file__).resolve().parent / "opencode_stdout_log.py")
+        # FR #8150: peek OpenCode app log for ERROR Free usage / rate-limit (stdout may be silent).
+        pes_resolved = _resolve_installed_worker_script(
+            "provider_error_source.py", cwd=cwd, install_root=install_root
+        )
+        pes_path = pes_resolved or (
+            Path(__file__).resolve().parent / "provider_error_source.py"
+        )
         # FR #6157: each opencode run emits turn_started / turn_ended into opencode-turns.jsonl
         # so BoredEmitter gets harvest-hold / done-miss / startup-ready parity with Grok.
         # FR #6240: no external_directory allow. Each injected assign carries its own
@@ -4722,6 +4764,7 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             f"$wedgePy = '{esc(wedge_text)}'",
             f"$isolatePy = '{esc(str(iso_path))}'",
             f"$stdoutLogPy = '{esc(str(log_path))}'",
+            f"$providerErrPy = '{esc(str(pes_path))}'",
             r"$script:ocStdoutLog = ''",
             r"$script:ocDagRetries = 1",
             r"$script:ocDbLockTries = 0",
@@ -4923,8 +4966,32 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             # FR #8026: match free-pool exhaustion while the process is still alive.
             # FR #8151: no bare "rate limit" (tool output / CodeRabbit comments false-pause).
             r"        $liveFuelPattern = 'Free usage limit|subscribe to OpenCode Go|Payment Required|usage balance exhausted|Too Many Requests|rolling limit|rate limited by provider|(HTTP|status( code)?)\D{0,3}(402|429)|AI_(APICall|Retry)Error'",
+            # FR #8150: OpenCode may write Free usage only to its app log (no stdout bytes).
+            r"        $appLog = ''",
+            r"        if ($env:BOB_OPENCODE_DATA_DIR) { $appLog = Join-Path $env:BOB_OPENCODE_DATA_DIR 'log\opencode.log' }",
+            r"        $appLogPos = 0",
+            r"        if ($appLog -and (Test-Path -LiteralPath $appLog)) { try { $appLogPos = [int](Get-Item -LiteralPath $appLog).Length } catch { $appLogPos = 0 } }",
+            r"        $appLogTicks = 0",
             r"        while (-not $proc.HasExited) {",
             r"          try {",
+            # FR #8150: poll the app log every ~1s even when stdout/stderr are silent.
+            r"            $appLogTicks++",
+            r"            if (($appLogTicks % 10) -eq 0 -and $appLog -and $providerErrPy -and -not $fuelHitLive) {",
+            r"                $pyApp = (Get-Command python.exe -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source)",
+            r"                if (-not $pyApp) { $pyApp = 'python.exe' }",
+            r"                $peekLine = ''",
+            r"                try { $peekLine = ([string](& $pyApp $providerErrPy peek $appLog $appLogPos 2>$null | Select-Object -Last 1)).Trim() } catch { $peekLine = '' }",
+            r"                if ($peekLine -match '^HIT\s+(\S+)\s+(\d+)') {",
+            r"                    $fuelHitLive = $true",
+            r"                    $killReason = $Matches[1]",
+            r"                    $appLogPos = [int]$Matches[2]",
+            r"                    try { & taskkill /T /F /PID $proc.Id 2>$null | Out-Null } catch { }",
+            r"                    if ($jobKey) { Write-OpencodeJobGiveup $jobKey $killReason }",
+            r"                    break",
+            r"                } elseif ($peekLine -match '^OK\s+(\d+)') {",
+            r"                    $appLogPos = [int]$Matches[1]",
+            r"                }",
+            r"            }",
             r"            $len = 0",
             r"            if (Test-Path -LiteralPath $outFile) { $len += (Get-Item -LiteralPath $outFile).Length }",
             r"            if (Test-Path -LiteralPath $errFile) { $len += (Get-Item -LiteralPath $errFile).Length }",
@@ -5096,6 +5163,11 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             r"    $limitPattern = 'Payment Required|usage balance exhausted|Too Many Requests|rolling limit|Free usage limit|subscribe to OpenCode Go|rate limited by provider|AI_(APICall|Retry)Error'",
             r"    $codePattern = '(HTTP|status( code)?)\D{0,3}(402|429)'",
             r"    $freeUsagePattern = 'Free usage limit|subscribe to OpenCode Go'",
+            # FR #8150: app-log HIT may leave stdout empty; seed $scan so record-pause
+            # still marks opencode-free (same cue the ERROR stream error carried).
+            r"    if ($fuelHitLive -and $killReason -eq 'fuel-exhausted:opencode-free' -and ($scan -notmatch $freeUsagePattern)) {",
+            r"        $scan = ($scan + [Environment]::NewLine + 'Free usage limit reached. Subscribe to OpenCode Go')",
+            r"    }",
             r"    $toolNoisePattern = 'coderabbit|coderabbit-ai-generated|rate limited by coderabbit|Rate limit \+ single instance'",
             # FR #6366: watchdog timeout kills the run but must NOT record a model pause
             # (done-miss finish-runs looked like out-of-fuel). Only real 402/429/limit text pauses.
