@@ -56,7 +56,15 @@ def test_fr7991_transitive_local_sibling_closure(tmp_path: Path):
     (src / "leaf.py").write_text("thing = 1\n", encoding="utf-8")
     (src / "unrelated.py").write_text("", encoding="utf-8")
     names = ship.shipped_script_names(tmp_path / "bob_worker.py", src)
-    assert names == ["entry.py", "leaf.py", "middle.py"]
+    # FR #7991: transitive sibling .py closure.
+    assert "entry.py" in names and "middle.py" in names and "leaf.py" in names
+    assert "unrelated.py" not in names
+    # FR #8156 / #8206: fleet .ps1 helpers are always included even in tiny fixtures.
+    for ps1 in ship.fleet_ps1_script_names():
+        assert ps1 in names
+    assert names == sorted(
+        ["entry.py", "leaf.py", "middle.py"] + list(ship.fleet_ps1_script_names())
+    )
 
 
 def test_fr7991_status_names_the_missing_module(tmp_path: Path):
