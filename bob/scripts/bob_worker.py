@@ -3733,7 +3733,8 @@ def report_agent_cli_nonzero_exit(
         title = "bug: agent console closed (FR #7881)"
         what = (
             "What: the agent console was closed (STATUS_CONTROL_C_EXIT). "
-            "This is not a CLI crash. Accepted jobs are still GIVEUP'd. No fake DONE.\n"
+            "This is not a CLI crash. FR #8154: the worker GIVEUPs any ACKed job "
+            "(console-closed) and saves a WIP ref when the worktree is dirty. No fake DONE.\n"
         )
     elif exit_code is None:
         # FR #7978: recycled while still running — a hang/ack-miss, not a CLI exit.
@@ -7139,6 +7140,251 @@ def seat_release_giveup_line(job_key: str, reason: str) -> str:
     if key.lower() == "job":
         return f"GIVEUP job {why}"
     return f"GIVEUP {key} {why}"
+
+
+def console_closed_giveup_line(job_key: str, wip_ref: str = "") -> str:
+    """FR #8154: ``GIVEUP <TYPE> owner/repo#N console-closed [wip=<ref>]``."""
+    why = "console-closed"
+    ref = (wip_ref or "").strip()
+    if ref:
+        # Keep under shop_listen truncate (~120); short sha / branch tip only.
+        why = f"console-closed wip={ref[:80]}"
+    return seat_release_giveup_line(job_key, why)
+
+
+def is_console_closed_shutdown_reason(reason: str) -> bool:
+    """True when Supervisor.shutdown reason is a console / Ctrl close (FR #8154)."""
+    text = (reason or "").strip().lower().replace("_", "-")
+    if not text:
+        return False
+    head = text.split(":", 1)[0].strip()
+    return head in ("console-closed", "window-closed", "ctrl-close", "control-c")
+
+
+def pending_console_closed_giveup_dir(env: Optional[dict] = None) -> Path:
+    """Durable pending-GIVEUP folder (survives run-dir wipe). FR #8154."""
+    e = os.environ if env is None else env
+    bridge = str(e.get("BOB_BRIDGE_HOME") or "").strip()
+    if bridge:
+        return Path(bridge) / "pending-giveup"
+    return _state_root(e) / "pending-giveup"
+
+
+def pending_console_closed_giveup_path(machine: str, env: Optional[dict] = None) -> Path:
+    mid = re.sub(r"[^a-z0-9_.-]+", "-", (machine or "unknown").strip().lower()) or "unknown"
+    return pending_console_closed_giveup_dir(env) / f"{mid}.txt"
+
+
+def append_pending_console_closed_giveup(
+    machine: str,
+    line: str,
+    *,
+    env: Optional[dict] = None,
+    log: Optional[Callable[[str], None]] = None,
+) -> bool:
+    """Append one GIVEUP wire line for the next seat on this machine (FR #8154)."""
+    text = (line or "").strip()
+    if not text:
+        return False
+    path = pending_console_closed_giveup_path(machine, env)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8", newline="\n") as fh:
+            fh.write(text + "\n")
+        if log:
+            log(f"pending-giveup: queued {text[:120]}")
+        return True
+    except OSError as e:
+        if log:
+            log(f"pending-giveup: append failed {type(e).__name__}")
+        return False
+
+
+def drain_pending_console_closed_giveups(
+    machine: str,
+    *,
+    env: Optional[dict] = None,
+) -> list[str]:
+    """Read and clear durable pending GIVEUP lines for ``machine`` (FR #8154)."""
+    path = pending_console_closed_giveup_path(machine, env)
+    if not path.is_file():
+        return []
+    try:
+        raw = path.read_text(encoding="utf-8-sig", errors="replace")
+    except OSError:
+        return []
+    try:
+        path.unlink()
+    except OSError:
+        try:
+            path.write_text("", encoding="utf-8")
+        except OSError:
+            pass
+    out: list[str] = []
+    for ln in raw.splitlines():
+        s = ln.strip()
+        if s:
+            out.append(s)
+    return out
+
+
+def flush_pending_console_closed_giveups(
+    irc: "IrcSeat",
+    machine: str,
+    *,
+    log: Optional[Callable[[str], None]] = None,
+    env: Optional[dict] = None,
+) -> int:
+    """Send any durable pending console-closed GIVEUPs after IRC is up (FR #8154)."""
+    lines = drain_pending_console_closed_giveups(machine, env=env)
+    if not lines:
+        return 0
+    shop = getattr(irc, "shop", None) or shop_channel(machine)
+    n = 0
+    for line in lines:
+        try:
+            if irc and getattr(irc, "alive", False):
+                irc.say(shop, line)
+                n += 1
+            else:
+                append_pending_console_closed_giveup(machine, line, env=env, log=log)
+        except Exception as e:
+            if log:
+                log(f"pending-giveup: flush say failed {type(e).__name__}")
+            append_pending_console_closed_giveup(machine, line, env=env, log=log)
+    if log and n:
+        log(f"pending-giveup: flushed {n} line(s) to {shop}")
+    return n
+
+
+def resolve_console_closed_worktree(
+    job_key: str = "",
+    *,
+    env: Optional[dict] = None,
+) -> str:
+    """Prefer ``BOB_JOB_WORKTREE``, else derive ``<base>/<repo>/<fr-N>`` (FR #8154)."""
+    e = os.environ if env is None else env
+    wt = str(e.get("BOB_JOB_WORKTREE") or "").strip()
+    if wt and Path(wt).is_dir():
+        return wt
+    key = (job_key or "").strip()
+    if not key:
+        return ""
+    try:
+        from opencode_seat_contract import _project_dir_for_key  # type: ignore
+
+        path = _project_dir_for_key(key, e)
+    except Exception:
+        path = ""
+    if path and Path(path).is_dir():
+        return path
+    return ""
+
+
+def worktree_is_dirty(worktree: str | Path, *, run=None) -> bool:
+    """True when ``git status --porcelain`` is non-empty."""
+    import subprocess as _sp
+
+    run = _sp.run if run is None else run
+    root = Path(worktree or "")
+    if not root.is_dir():
+        return False
+    try:
+        r = run(
+            ["git", "-C", str(root), "status", "--porcelain"],
+            capture_output=True,
+            text=True,
+            timeout=20,
+        )
+    except Exception:
+        return False
+    if getattr(r, "returncode", 1) != 0:
+        return False
+    return bool((getattr(r, "stdout", "") or "").strip())
+
+
+def save_console_closed_wip(
+    worktree: str | Path,
+    job_key: str = "",
+    *,
+    run=None,
+    push: bool = True,
+    log: Optional[Callable[[str], None]] = None,
+) -> str:
+    """Snapshot dirty job worktree on console-close (FR #8154).
+
+    Prefers ``git stash create`` (leaves the tree intact for FINISH reuse). When
+    push is enabled, also stores ``refs/wip/fr-<N>`` (or mrb/uat) and pushes that
+    ref without opening a PR. Returns a short wip token for the GIVEUP line, or
+    ``\"\"`` when clean / unavailable.
+    """
+    import subprocess as _sp
+
+    run = _sp.run if run is None else run
+    root = Path(worktree or "")
+    if not root.is_dir():
+        return ""
+    if not worktree_is_dirty(root, run=run):
+        return ""
+    sha = ""
+    try:
+        r = run(
+            ["git", "-C", str(root), "stash", "create"],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        if getattr(r, "returncode", 1) == 0:
+            sha = (getattr(r, "stdout", "") or "").strip().splitlines()
+            sha = (sha[0] if sha else "").strip()
+    except Exception as e:
+        if log:
+            log(f"console-closed-wip: stash create failed {type(e).__name__}")
+        sha = ""
+    if not sha or not re.fullmatch(r"[0-9a-f]{7,40}", sha, flags=re.I):
+        if log:
+            log("console-closed-wip: no stash object (clean or failed)")
+        return ""
+    short = sha[:12]
+    issue_n = ""
+    kind = "fr"
+    m = re.search(
+        r"(?i)\b(FR|MRB|UAT|FIX)\s+\S+#(\d+)\b",
+        job_key or "",
+    )
+    if m:
+        kind = m.group(1).lower()
+        issue_n = m.group(2)
+    ref_name = f"refs/wip/{kind}-{issue_n}" if issue_n else f"refs/wip/stash-{short}"
+    try:
+        run(
+            ["git", "-C", str(root), "update-ref", ref_name, sha],
+            capture_output=True,
+            text=True,
+            timeout=20,
+        )
+    except Exception as e:
+        if log:
+            log(f"console-closed-wip: update-ref failed {type(e).__name__}")
+    if push and issue_n:
+        try:
+            pr = run(
+                ["git", "-C", str(root), "push", "-u", "origin", f"{ref_name}:{ref_name}"],
+                capture_output=True,
+                text=True,
+                timeout=90,
+            )
+            if getattr(pr, "returncode", 1) != 0 and log:
+                err = (getattr(pr, "stderr", "") or "")[:120]
+                log(f"console-closed-wip: push skipped/failed {err}")
+        except Exception as e:
+            if log:
+                log(f"console-closed-wip: push failed {type(e).__name__}")
+    # Prefer the named ref for resume; fall back to short sha.
+    token = f"{kind}-{issue_n}:{short}" if issue_n else short
+    if log:
+        log(f"console-closed-wip: saved {token}")
+    return token
 
 
 FAILED_TURN_RETRY_MAX = 1
@@ -14746,6 +14992,12 @@ class Supervisor:
             if proc is not None:
                 self._expected_exit.add(proc.pid)
         self.log(f"worker: shutting down ({reason}) exit={code}")
+        # FR #8154: console-close / Ctrl path must GIVEUP an ACKed job and save WIP
+        # before IRC close. Shared for every seat kind.
+        try:
+            self._giveup_on_console_closed_shutdown(reason)
+        except Exception as e:
+            self.log(f"worker: console-closed GIVEUP failed {type(e).__name__}")
         if proc is not None and self._exit_recorded_pid != proc.pid:
             self._record_exit(proc, reason, proc.poll(), report=code != EXIT_OK)
         self._stop_session_log()
@@ -14775,6 +15027,67 @@ class Supervisor:
         if self.irc:
             self.irc.close(reason.split(":")[0][:40])
         self.done.set()
+
+    def _giveup_on_console_closed_shutdown(self, reason: str) -> None:
+        """FR #8154: release ACKed job + WIP snapshot when the console closes."""
+        if not is_console_closed_shutdown_reason(reason):
+            return
+        if not self.bored or not getattr(self.bored, "_ack_open", False):
+            return
+        job_key = str(getattr(self.bored, "_ack_job_key", None) or "").strip()
+        if not job_key:
+            return
+        wt = resolve_console_closed_worktree(job_key)
+        wip_ref = ""
+        if wt:
+            try:
+                wip_ref = save_console_closed_wip(
+                    wt, job_key, log=self.log
+                )
+            except Exception as e:
+                self.log(f"console-closed-wip: save failed {type(e).__name__}")
+                wip_ref = ""
+        line = console_closed_giveup_line(job_key, wip_ref)
+        why = "console-closed"
+        if wip_ref:
+            why = f"console-closed wip={wip_ref}"
+        sent = False
+        shop = self.irc.shop if self.irc else shop_channel(self.machine)
+        if self.irc and getattr(self.irc, "alive", False):
+            try:
+                self.irc.say(shop, line)
+                sent = True
+                try:
+                    self.irc.say(
+                        shop,
+                        f"seat-release: {self.nick} GIVEUP `{job_key}` reason={why}",
+                    )
+                except Exception:
+                    pass
+            except Exception as e:
+                self.log(f"console-closed: GIVEUP say failed {type(e).__name__}")
+                sent = False
+        if not sent:
+            # Durable pending file for the next seat on this machine (run-dir may die).
+            append_pending_console_closed_giveup(
+                self.machine, line, log=self.log
+            )
+            # Also seat outbox as a best-effort flush if the run dir survives briefly.
+            try:
+                outbox = getattr(self.bored, "run_dir", None) or self.run_dir
+                if outbox:
+                    path = Path(outbox) / "outbox.txt"
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    with path.open("a", encoding="utf-8", newline="\n") as fh:
+                        fh.write(f"PRIVMSG {shop} :{line}\n")
+            except Exception as e:
+                self.log(f"console-closed: outbox GIVEUP failed {type(e).__name__}")
+        try:
+            self.bored._ack_open = False
+            self.bored._ack_job_key = None
+        except Exception:
+            pass
+        self.log(f"console-closed: posted {line}")
 
     def run_forever(self) -> int:
         if self.bored:
@@ -15610,6 +15923,11 @@ def run_agent(args, log: Log) -> int:
     except Exception as e:
         log(f"worker: IRC connect failed ({type(e).__name__}: {str(e)[:100]}) - NOT starting an agent")
         return EXIT_IRC_FAIL
+    # FR #8154: prior seat may have left a durable console-closed GIVEUP while IRC was down.
+    try:
+        flush_pending_console_closed_giveups(irc, machine, log=log)
+    except Exception as e:
+        log(f"pending-giveup: flush failed {type(e).__name__}")
     # FR #6134: publish agent kind so the chair can skip OpenCode for MRB/UAT.
     # FR #6409: digest worker_build short SHA (or unknown); hello after start_agent (MRB #6411).
     # FR #7187: hello ``model=`` is the launched actual when known (else configured).

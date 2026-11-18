@@ -835,7 +835,15 @@ def return_job_to_unaccepted(
             # FR #7963: skill_dag_down is a seat fault (stale/broken skill-dag). Re-queue
             # the job without burning giveup_count / needs_human; still flag the seat.
             skill_dag_down_giveup = gitclaim.is_skill_dag_down_reason(reason)
-            seat_not_job_giveup = self_mrb_giveup or out_of_fuel_giveup or skill_dag_down_giveup
+            # FR #8154: console-closed is a seat fault (window/Ctrl). Re-offer promptly;
+            # stamp require_machine to the giving seat's machine so the worktree is reused.
+            console_closed_giveup = gitclaim.is_console_closed_reason(reason)
+            seat_not_job_giveup = (
+                self_mrb_giveup
+                or out_of_fuel_giveup
+                or skill_dag_down_giveup
+                or console_closed_giveup
+            )
             for k in ("nick", "accepted_ts", "offered_to", "offered_ts", "offered_channel", "channel"):
                 job.pop(k, None)
             try:
@@ -885,13 +893,35 @@ def return_job_to_unaccepted(
             # FR #180 / #1363: stamp cooldown_until after job-caused GIVEUP/NACK.
             # FR #4881: skip for out-of-fuel (no giveup_seats => global cooldown).
             # FR #7963: skip for skill_dag_down so another seat can take the job now.
-            if not out_of_fuel_giveup and not skill_dag_down_giveup:
+            # FR #8154: skip for console-closed so the next seat re-offers promptly.
+            if (
+                not out_of_fuel_giveup
+                and not skill_dag_down_giveup
+                and not console_closed_giveup
+            ):
                 until = datetime.fromtimestamp(now_f, tz=timezone.utc) + timedelta(
                     seconds=float(gitclaim.GIVEUP_COOLDOWN_S)
                 )
                 job["cooldown_until"] = until.replace(microsecond=0).isoformat().replace(
                     "+00:00", "Z"
                 )
+            if console_closed_giveup and gave_up_by:
+                mid = ""
+                with contextlib.suppress(Exception):
+                    mid = str(bobreport.machine_from_nick(gave_up_by) or "").strip()
+                if not mid:
+                    with contextlib.suppress(Exception):
+                        parsed = bobreport.parse_seat_nick(gave_up_by)
+                        mid = str((parsed[0] if parsed else "") or "").strip()
+                if mid:
+                    job["require_machine"] = mid
+                    # Survive bobiverse FR #4512 re-infer (same as ops !pin).
+                    job["require_machine_operator"] = True
+                wip = ""
+                with contextlib.suppress(Exception):
+                    wip = gitclaim.console_closed_wip_ref(reason)
+                if wip:
+                    job["console_closed_wip"] = wip[:120]
             if (not seat_not_job_giveup) and count >= int(gitclaim.GIVEUP_NEEDS_HUMAN_COUNT):
                 job["needs_human"] = True
             # FR #8008: repeated hard-ceiling kills stamp the seat's agent class so
