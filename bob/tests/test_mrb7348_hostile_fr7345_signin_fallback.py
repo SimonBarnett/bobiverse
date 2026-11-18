@@ -70,6 +70,9 @@ def test_mrb7348_supervisor_prompt_exits_xai_auth_no_kind_switch(monkeypatch):
     monkeypatch.setattr(bw, "read_fuel", lambda *_a, **_k: bw.Fuel(40, 10, 50, "available"))
     monkeypatch.setattr(bw, "resolve_cursor_cmd", lambda: r"C:\c\agent.cmd")
     monkeypatch.setattr(bw, "resolve_opencode_cmd", lambda: None)
+    monkeypatch.setattr(
+        bw, "classify_grok_signin_prompt_cause", lambda **_k: "xai-auth-expired"
+    )
     monkeypatch.setattr(bw, "_http_post_json", lambda url, payload, **kw: True)
     monkeypatch.setattr(sup, "shutdown", lambda why, code: shut.append((why, code)))
 
@@ -112,6 +115,9 @@ def test_mrb7348_supervisor_prompt_exits_xai_auth_when_no_cursor(monkeypatch):
     monkeypatch.setattr(bw, "read_fuel", lambda *_a, **_k: bw.Fuel(0, 0, 0, "exhausted"))
     monkeypatch.setattr(bw, "resolve_cursor_cmd", lambda: None)
     monkeypatch.setattr(bw, "resolve_opencode_cmd", lambda: None)
+    monkeypatch.setattr(
+        bw, "classify_grok_signin_prompt_cause", lambda **_k: "xai-auth-expired"
+    )
     monkeypatch.setattr(bw, "_http_post_json", lambda url, payload, **kw: True)
     monkeypatch.setattr(sup, "shutdown", lambda why, code: shut.append((why, code)))
 

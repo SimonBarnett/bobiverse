@@ -113,18 +113,20 @@ def worker_hello_line(kind: str, *, model: str | None = None, build: str | None 
     return f"worker ready kind={k} model={m} build={b}"
 
 
-def worker_needs_signin_line(kind: str, *, build: str | None = None) -> str:
-    """FR #7180 / #7183: shop line when Grok has no valid machine sign-in (never 'ready')."""
+def worker_needs_signin_line(kind: str, *, build: str | None = None, reason: str | None = None) -> str:
+    """FR #7180 / #8222: shop line when Grok has no valid machine sign-in (never 'ready').
+
+    ``reason`` is ``no-seat-auth`` when the machine has nothing to give. Never
+    the word expired for a missing file.
+    """
     k = (kind or "").strip().lower() or "grok"
     b = short_build_sha(build) if build is not None else short_build_sha()
-    return f"worker needs sign-in kind={k} build={b}"
+    extra = f" reason={reason}" if reason else ""
+    return f"worker needs sign-in kind={k} build={b}{extra}"
 
 
 def grok_agent_signed_in(*, run_dir: Path | str | None = None, env: Optional[dict] = None) -> bool:
-    """True when the one machine Grok auth store is usable (FR #7180 / #7183).
-
-    Seat GROK_HOME must not hold a copied auth.json; credentials live at GROK_AUTH_PATH.
-    """
+    """True when the machine Grok auth store is present and not expired (FR #8222)."""
     try:
         import skill_dag_bound as _sdb
 
@@ -2018,9 +2020,26 @@ GROK_SIGNIN_PROMPT_NEEDLES = (
 )
 
 
+XAI_SIGNIN_ABSENT_ERRORS = frozenset(
+    {
+        "auth-missing",
+        "auth-file-missing",
+        "auth-key-missing",
+        "auth-file-unreadable",
+        "auth-unresolved",
+        "no-seat-auth",
+    }
+)
+
+
 def classify_xai_signin_state(error: Optional[str]) -> str:
-    """Ear-aligned class: expired vs ok. Never reads auth file bodies."""
+    """Ear-aligned class: ok, absent, or expired. Never reads auth file bodies.
+
+    A missing file is ``absent`` (FR #8222), never ``expired``.
+    """
     err = (error or "").strip().lower()
+    if err in XAI_SIGNIN_ABSENT_ERRORS or err.startswith("auth-file-unreadable"):
+        return "absent"
     if err in XAI_SIGNIN_EXPIRED_ERRORS:
         return "expired"
     return "ok"
@@ -2031,7 +2050,7 @@ def preflight_xai_signin(
     fetch_fn: Optional[Callable] = None,
     last_acq: Optional[dict] = None,
 ) -> str:
-    """Same live weekly source as the SYSTEM ear (FR #7251). Returns ok|expired.
+    """Same live weekly source as the SYSTEM ear (FR #7251). Returns ok|absent|expired.
 
     Does not copy, print, or rewrite sign-in files. fetch_fn is inject-only.
     """
@@ -2163,27 +2182,71 @@ def apply_xai_signin_gate(
     opencode_cmd: Optional[str],
     *,
     signin_ok: bool,
+    signin_state: Optional[str] = None,
+    machine: str = "",
     launched_kind: str = "",
 ) -> Decision:
-    """Expired sign-in never launches Grok and never falls through to another kind.
+    """Bad sign-in never launches Grok and never falls through to another kind.
 
     FR #7485: never rewrite ``refuse`` / ``cursor`` / ``opencode`` /
-    ``xai-auth-expired``. FR #8221: a seat only ever runs the kind the tray
-    launched, so an automatic or explicit ``grok`` decision with an expired
-    sign-in exits ``xai-auth-expired`` instead of falling through to
-    Cursor/OpenCode. ``launched_kind`` is the kind the tray launched (empty
-    for automatic); it never changes the outcome, only the reason text.
+    ``xai-auth-expired`` / ``no-seat-auth``. FR #8221: a seat only ever runs
+    the kind the tray launched, so an automatic or explicit ``grok`` decision
+    with a bad sign-in exits instead of falling through to Cursor/OpenCode.
+    ``launched_kind`` is the kind the tray launched (empty for automatic); it
+    never changes the outcome, only the reason text.
+
+    FR #8222: a missing login is ``no-seat-auth`` (never the word expired).
+    A past expiry stays ``xai-auth-expired``.
     """
-    if signin_ok:
+    state = (signin_state or ("ok" if signin_ok else "expired")).strip().lower()
+    if state == "ok":
         return dec
-    if dec.kind in ("refuse", "cursor", "opencode", "xai-auth-expired"):
+    if dec.kind in ("refuse", "cursor", "opencode", "xai-auth-expired", "no-seat-auth"):
         return dec
-    # FR #8221: never fall through. A grok decision with an expired sign-in
-    # (automatic or explicit) exits xai-auth-expired.
+    # FR #8221: never fall through. FR #8222: absent -> no-seat-auth.
     launched = (launched_kind or dec.kind or "").strip().lower()
+    if state == "absent":
+        host = (machine or "machine").strip() or "machine"
+        tag = f"no-seat-auth; no Grok login on {host}"
+        if launched == "grok":
+            return Decision("no-seat-auth", "grok: " + tag)
+        return Decision("no-seat-auth", tag)
     if launched == "grok":
         return Decision("xai-auth-expired", "grok: xai-auth-expired")
     return Decision("xai-auth-expired", "xai-auth-expired")
+
+
+def classify_grok_signin_prompt_cause(
+    *,
+    seat_home: str | Path | None = None,
+    machine_auth: str | Path | None = None,
+) -> str:
+    """FR #8222: seat folder has no login, or the machine login has expired.
+
+    Returns ``no-seat-auth`` or ``xai-auth-expired``. Does not read token values.
+    """
+    try:
+        import skill_dag_bound as _sdb
+    except Exception:
+        return "no-seat-auth"
+    seat_file = (Path(seat_home) / "auth.json") if seat_home else None
+    seat_info = (
+        _sdb.summarize_grok_auth(seat_file)
+        if seat_file
+        else {"present": False, "usable": False, "expired": None}
+    )
+    machine_info = (
+        _sdb.summarize_grok_auth(machine_auth)
+        if machine_auth
+        else {"present": False, "usable": False, "expired": None}
+    )
+    if machine_info.get("expired") is True:
+        return "xai-auth-expired"
+    if not seat_info.get("present") or not seat_info.get("usable"):
+        return "no-seat-auth"
+    if not machine_info.get("usable"):
+        return "no-seat-auth"
+    return "xai-auth-expired"
 
 
 def decision_after_grok_signin_prompt(
@@ -2191,13 +2254,22 @@ def decision_after_grok_signin_prompt(
     cursor_cmd: Optional[str],
     opencode_cmd: Optional[str],
     *,
+    seat_home: str | Path | None = None,
+    machine_auth: str | Path | None = None,
+    machine: str = "",
     launched_kind: str = "grok",
 ) -> Decision:
-    """FR #8221: a seat that hit a Grok sign-in prompt exits xai-auth-expired.
+    """FR #8221/#8222: sign-in prompt exits no-seat-auth or xai-auth-expired.
 
-    It never falls through to Cursor/OpenCode (the FR #7345 fallback broke the
-    rule that a seat only ever runs the kind the tray launched).
+    Never falls through to Cursor/OpenCode. Classify seat-missing vs
+    machine-expired when seat/machine paths are provided.
     """
+    cause = "xai-auth-expired"
+    if seat_home is not None or machine_auth is not None:
+        cause = classify_grok_signin_prompt_cause(
+            seat_home=seat_home, machine_auth=machine_auth
+        )
+    state = "expired" if cause == "xai-auth-expired" else "absent"
     kind = (launched_kind or "grok").strip().lower()
     return apply_xai_signin_gate(
         Decision(kind or "grok", "signin-prompt"),
@@ -2206,6 +2278,8 @@ def decision_after_grok_signin_prompt(
         None,
         opencode_cmd,
         signin_ok=False,
+        signin_state=state,
+        machine=machine,
         launched_kind=kind or "grok",
     )
 
@@ -2497,6 +2571,8 @@ def resolve_seat_decision(
     auth_present: bool,
     xai_signin_ok: bool = True,
     start_model: str = "",
+    signin_state: Optional[str] = None,
+    machine: str = "",
 ) -> Decision:
     """Apply an explicit agent request, else the automatic Grok → Cursor → OpenCode order.
 
@@ -2516,6 +2592,9 @@ def resolve_seat_decision(
             start_model=mid,
         )
         if out.kind == "grok" and not xai_signin_ok:
+            state = (signin_state or "expired").strip().lower()
+            if state == "absent":
+                return Decision("no-seat-auth", "explicit grok: no-seat-auth")
             return Decision("xai-auth-expired", "explicit grok: xai-auth-expired")
         return out
     if opencode_cmd and dec.kind in ("dialog", "none"):
@@ -2523,7 +2602,8 @@ def resolve_seat_decision(
             fuel, cursor_cmd, grok_exe, opencode_cmd, xai_signin_ok=xai_signin_ok
         )
     return apply_xai_signin_gate(
-        dec, fuel, cursor_cmd, grok_exe, opencode_cmd, signin_ok=xai_signin_ok,
+        dec, fuel, cursor_cmd, grok_exe, opencode_cmd,
+        signin_ok=xai_signin_ok, signin_state=signin_state, machine=machine,
         launched_kind=requested or "",
     )
 
@@ -15396,10 +15476,49 @@ class Supervisor:
             fuel = read_fuel(self._install_root_for_fuel())
         cursor_cmd = resolve_cursor_cmd()
         opencode_cmd = resolve_opencode_cmd()
-        dec = decision_after_grok_signin_prompt(
-            fuel, cursor_cmd, opencode_cmd, launched_kind=(self.kind or "grok")
+        seat_home = None
+        machine_auth = None
+        with contextlib.suppress(Exception):
+            import skill_dag_bound as _sdb
+
+            seat_home = getattr(self, "run_dir", None)
+            if seat_home:
+                seat_home = Path(seat_home) / _sdb.GROK_HOME_NAME
+            machine_auth = _sdb.machine_grok_auth_path()
+        cause = classify_grok_signin_prompt_cause(
+            seat_home=seat_home, machine_auth=machine_auth
         )
-        self.log(f"grok: sign-in prompt; {dec.reason} (FR #8221)")
+        seat_present = bool(seat_home and (Path(seat_home) / "auth.json").is_file())
+        exp = None
+        with contextlib.suppress(Exception):
+            import skill_dag_bound as _sdb2
+
+            exp = _sdb2.summarize_grok_auth(machine_auth).get("expires_at")
+        self.log(
+            f"grok: sign-in prompt cause={cause} seat_auth_present={seat_present} expires_at={exp}"
+        )
+        dec = decision_after_grok_signin_prompt(
+            fuel, cursor_cmd, opencode_cmd,
+            seat_home=seat_home, machine_auth=machine_auth,
+            machine=getattr(self, "machine", "") or "",
+            launched_kind=(self.kind or "grok"),
+        )
+        self.log(f"grok: sign-in prompt; {dec.reason} (FR #8221/#8222)")
+        if dec.kind == "no-seat-auth":
+            # Missing login: report once, exit without switching kind.
+            try:
+                post_digest_seat_kind(
+                    machine=self.machine,
+                    pid=os.getpid(),
+                    nick=self.nick,
+                    kind=self.kind,
+                    state="needs_sign_in",
+                    log=self.log,
+                )
+            except Exception:
+                pass
+            self.shutdown("no-seat-auth-prompt", EXIT_NO_AGENT)
+            return
         self._report_grok_login_expired()
         self.shutdown("xai-auth-expired-prompt", EXIT_XAI_AUTH_EXPIRED)
 
@@ -16998,7 +17117,7 @@ def _choose(args, log: Log, folder: Path, mode: str):
     log(f"xai-auth[{mode}]: {signin}")
     dec = select_agent(fuel, cursor_cmd, grok_exe, xai_signin_ok=signin_ok)
     log(f"select[{mode}]: {dec.kind} - {dec.reason}")
-    return dec, cursor_cmd, grok_exe, fuel, signin_ok
+    return dec, cursor_cmd, grok_exe, fuel, signin_ok, signin
 
 
 def fuel_snapshot_public(fuel) -> str:
@@ -17148,7 +17267,7 @@ def _explicit_refusal_exit(
     FR #8186: interactive consoles wait for a key (or >=60s). Non-interactive
     and tray-restart paths do not block.
     """
-    if dec.kind not in ("refuse", "xai-auth-expired"):
+    if dec.kind not in ("refuse", "xai-auth-expired", "no-seat-auth"):
         return None
     log(f"select[{mode}]: refused - {dec.reason}")
     report_seat_start_refusal(
@@ -17177,6 +17296,8 @@ def _explicit_refusal_exit(
         pass
     if dec.kind == "xai-auth-expired":
         return EXIT_XAI_AUTH_EXPIRED
+    if dec.kind == "no-seat-auth":
+        return EXIT_NO_AGENT
     return EXIT_NO_AGENT
 
 
@@ -17185,7 +17306,7 @@ def run_plan(args, log: Log) -> int:
     if not folder.is_dir():
         log(f"plan: folder missing {folder}")
         return EXIT_USAGE
-    dec, cursor_cmd, grok_exe, fuel, signin_ok = _choose(args, log, folder, "plan")
+    dec, cursor_cmd, grok_exe, fuel, signin_ok, signin_state = _choose(args, log, folder, "plan")
     opencode_cmd = _resolve_opencode_cmd_for_seat(log)
     requested = getattr(args, "agent", "") or ""
     dec = resolve_seat_decision(
@@ -17193,6 +17314,8 @@ def run_plan(args, log: Log) -> int:
         dec, fuel, cursor_cmd, grok_exe, opencode_cmd,
         auth_present=opencode_auth_file_present(),
         xai_signin_ok=signin_ok,
+        signin_state=signin_state,
+        machine=getattr(args, "machine_id", "") or "",
     )
     if normalize_explicit_agent(requested):
         log(f"select[plan]: explicit {normalize_explicit_agent(requested)} -> {dec.kind} - {dec.reason}")
@@ -17286,7 +17409,7 @@ def run_monitor(args, log: Log) -> int:
     if not (folder / "AGENTS.md").is_file():
         log(f"monitor: AGENTS.md missing in {folder}")
         return EXIT_USAGE
-    dec, cursor_cmd, grok_exe, fuel, signin_ok = _choose(args, log, folder, "monitor")
+    dec, cursor_cmd, grok_exe, fuel, signin_ok, signin_state = _choose(args, log, folder, "monitor")
     opencode_cmd = _resolve_opencode_cmd_for_seat(log)
     requested = getattr(args, "agent", "") or ""
     dec = resolve_seat_decision(
@@ -17294,6 +17417,8 @@ def run_monitor(args, log: Log) -> int:
         dec, fuel, cursor_cmd, grok_exe, opencode_cmd,
         auth_present=opencode_auth_file_present(),
         xai_signin_ok=signin_ok,
+        signin_state=signin_state,
+        machine=getattr(args, "machine_id", "") or "",
     )
     stopped = _explicit_refusal_exit(
         dec, log, "monitor",
@@ -17414,7 +17539,7 @@ def run_maintenance(args, log: Log, *, spawn: Optional[Callable] = None, poll_s:
     if not (folder / "AGENTS.md").is_file():
         log(f"maintenance: AGENTS.md missing in {folder}")
         return EXIT_USAGE
-    dec, cursor_cmd, grok_exe, fuel, signin_ok = _choose(args, log, folder, "maintenance")
+    dec, cursor_cmd, grok_exe, fuel, signin_ok, signin_state = _choose(args, log, folder, "maintenance")
     opencode_cmd = _resolve_opencode_cmd_for_seat(log)
     requested = getattr(args, "agent", "") or ""
     dec = resolve_seat_decision(
@@ -17422,6 +17547,8 @@ def run_maintenance(args, log: Log, *, spawn: Optional[Callable] = None, poll_s:
         dec, fuel, cursor_cmd, grok_exe, opencode_cmd,
         auth_present=opencode_auth_file_present(),
         xai_signin_ok=signin_ok,
+        signin_state=signin_state,
+        machine=getattr(args, "machine_id", "") or "",
     )
     stopped = _explicit_refusal_exit(
         dec, log, "maintenance",
@@ -17538,7 +17665,7 @@ def run_agent(args, log: Log) -> int:
         log(f"skills-sync start sha={sk.get('sha')} reason={sk.get('reason')}")
     except Exception:
         pass
-    dec, cursor_cmd, grok_exe, fuel, signin_ok = _choose(args, log, folder, "agent")
+    dec, cursor_cmd, grok_exe, fuel, signin_ok, signin_state = _choose(args, log, folder, "agent")
     if normalize_explicit_agent(getattr(args, "agent", "") or "") == "opencode":
         if not fuel_reading_known(fuel, "opencode"):
             fuel = reread_explicit_opencode_fuel(
@@ -17552,6 +17679,8 @@ def run_agent(args, log: Log) -> int:
         dec, fuel, cursor_cmd, grok_exe, opencode_cmd,
         auth_present=opencode_auth_file_present(),
         xai_signin_ok=signin_ok,
+        signin_state=signin_state,
+        machine=getattr(args, "machine_id", "") or "",
     )
     # FR #7485: always log the seat decision after explicit override (auto already logged in _choose).
     if normalize_explicit_agent(requested):
@@ -17842,7 +17971,9 @@ def run_agent(args, log: Log) -> int:
             else:
                 log("worker: hello say failed")
         else:
-            hello = worker_needs_signin_line(kind, build=build)
+            hello = worker_needs_signin_line(
+                kind, build=build, reason="no-seat-auth" if kind == "grok" else None
+            )
             if getattr(sup, "bored", None) is not None:
                 try:
                     sup.bored.note_needs_signin()
@@ -18246,10 +18377,13 @@ def main(argv: Optional[list] = None) -> int:
             }, sort_keys=True))
             return EXIT_OK
         fuel = read_fuel(Path(args.install_root))
-        signin_ok = preflight_xai_signin() == "ok"
+        signin_state = preflight_xai_signin()
+        signin_ok = signin_state == "ok"
         dec = select_agent(fuel, cc, ge, xai_signin_ok=signin_ok)
         dec = resolve_seat_decision(
-            args.agent, dec, fuel, cc, ge, oe, auth_present=auth_present, xai_signin_ok=signin_ok
+            args.agent, dec, fuel, cc, ge, oe, auth_present=auth_present,
+            xai_signin_ok=signin_ok, signin_state=signin_state,
+            machine=getattr(args, "machine_id", "") or "",
         )
         if args.mode == "plan":
             cwd = str(Path(args.install_root) / "plan")

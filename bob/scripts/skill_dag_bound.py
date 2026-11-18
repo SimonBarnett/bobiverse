@@ -13,7 +13,7 @@ remain (vision LOCKED).
 | Edit user ``~/.grok/config.toml`` ``[skills]`` | Forbidden (Plan / human Grok). |
 | ``GROK_CONFIG`` overlay for ``[skills]`` / ``[mcp_servers]`` | Allowlist drops those tables. |
 | Project ``.grok/config.toml`` ``[skills] disabled/ignore`` | Does **not** suppress project skill discovery. |
-| Seat-local ``GROK_HOME`` (no ``auth.json`` copy; ``GROK_AUTH_PATH`` = machine store; empty ``skills.paths``; restore ``bundled_skill_dirs``) | Drops user + configToml skills; login is the one machine store (FR #7183); **does not** drop project skills when cwd is under a trusted install tree (e.g. ``C:\\ai\\bob``). |
+| Seat-local ``GROK_HOME`` (valid machine ``auth.json`` linked or copied in, FR #8222; empty ``skills.paths``; restore ``bundled_skill_dirs``) | Drops user + configToml skills; **does not** drop project skills when cwd is under a trusted install tree (e.g. ``C:\\ai\\bob``). |
 | Seat cwd under the trusted install tree with only ``skill-dag-core`` | Still loads every ``.grok/skills`` under the install project root. |
 | Seat cwd **outside** the install tree + seat ``GROK_HOME`` + only ``skill-dag-core`` under that cwd's ``.grok/skills`` + trust that cwd | **Works.** ``grok inspect`` lists ``skill-dag-core`` (+ bundled). Index fixtures outside ``.grok/skills`` stay out. ``--add-dir`` to the install is refused by the harness. |
 
@@ -65,8 +65,8 @@ def apply_bound_env(
 ) -> dict:
     """Process-local env: bound marker, no GROK_CONFIG skills overlay, optional GROK_HOME.
 
-    FR #7183: ``GROK_AUTH_PATH`` points at the one machine credential file. Seat
-    ``GROK_HOME`` is sessions/logs/config only — never a copied ``auth.json``.
+    ``GROK_AUTH_PATH`` still names the machine credential file. FR #8222 also
+    links or copies that file into seat ``GROK_HOME`` when the login is valid.
     """
     out = dict(env or {})
     out["BOB_SKILL_DAG_BOUND"] = CORE_STUB_ID
@@ -99,18 +99,140 @@ def machine_grok_auth_path(
 
 
 def grok_session_usable(*, auth_path: str | Path | None = None, env: dict | None = None) -> bool:
-    """True when the machine store exists and has at least one account object.
+    """True when the machine store exists and has a non-expired account.
 
     Reads JSON structure only. Never logs or returns token values.
     """
     path = Path(auth_path) if auth_path else machine_grok_auth_path(env=env)
+    return bool(summarize_grok_auth(path).get("usable"))
+
+
+def _auth_slot_is_api_key(slot: object) -> bool:
+    s = str(slot or "").strip().lower()
+    return s == "xai::api_key" or s.endswith("::api_key") or s == "api_key"
+
+
+def _parse_auth_expires_at(raw: object):
+    """Parse expires_at. Returns aware UTC datetime or None. Never logs values."""
+    from datetime import datetime, timezone
+
+    if raw is None:
+        return None
+    if isinstance(raw, (int, float)):
+        try:
+            return datetime.fromtimestamp(float(raw), tz=timezone.utc)
+        except (OverflowError, OSError, ValueError):
+            return None
+    s = str(raw).strip()
+    if not s:
+        return None
     try:
-        if not path.is_file():
-            return False
-        obj = json.loads(path.read_text(encoding="utf-8-sig"))
+        if s.endswith("Z"):
+            s = s[:-1] + "+00:00"
+        dt = datetime.fromisoformat(s)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc)
+    except ValueError:
+        return None
+
+
+def summarize_grok_auth(path: str | Path | None) -> dict:
+    """Presence and expiry only. Never includes file contents or tokens.
+
+    ``expired`` is True when every bearer entry has a past ``expires_at``.
+    ``expired`` is False when a usable entry exists. ``expired`` is None when
+    the file is missing or unreadable. ``expires_at`` is the latest parsed
+    expiry (ISO-8601) or None.
+    """
+    from datetime import datetime, timezone
+
+    out = {
+        "present": False,
+        "usable": False,
+        "expired": None,
+        "expires_at": None,
+    }
+    if not path:
+        return out
+    p = Path(path)
+    try:
+        if not p.is_file():
+            return out
+        obj = json.loads(p.read_text(encoding="utf-8-sig"))
     except (OSError, json.JSONDecodeError, UnicodeError, TypeError, ValueError):
-        return False
-    return isinstance(obj, dict) and any(obj)
+        out["present"] = True
+        return out
+    if not isinstance(obj, dict) or not any(obj):
+        out["present"] = p.is_file()
+        return out
+    out["present"] = True
+    now = datetime.now(timezone.utc)
+    latest = None
+    saw_bearer = False
+    saw_live = False
+    all_dated_past = True
+    for slot, entry in obj.items():
+        if _auth_slot_is_api_key(slot):
+            continue
+        if not isinstance(entry, dict):
+            continue
+        saw_bearer = True
+        exp = _parse_auth_expires_at(entry.get("expires_at"))
+        if exp is not None and (latest is None or exp > latest):
+            latest = exp
+        if exp is None or exp > now:
+            saw_live = True
+            all_dated_past = False
+        elif exp <= now:
+            pass
+    if latest is not None:
+        out["expires_at"] = latest.strftime("%Y-%m-%dT%H:%M:%SZ")
+    if saw_live:
+        out["usable"] = True
+        out["expired"] = False
+    elif saw_bearer and all_dated_past and latest is not None:
+        out["usable"] = False
+        out["expired"] = True
+    elif saw_bearer:
+        out["usable"] = True
+        out["expired"] = False
+    return out
+
+
+def provision_seat_grok_auth(
+    seat_home: str | Path, machine_auth: str | Path | None
+) -> dict:
+    """Link or copy a valid machine ``auth.json`` into the seat folder (FR #8222).
+
+    Skips when the machine login is missing, unreadable, or expired. Logs nothing.
+    Returns presence/expiry/method only.
+    """
+    home = Path(seat_home)
+    dest = home / "auth.json"
+    summary = summarize_grok_auth(machine_auth)
+    result = dict(summary)
+    result["provisioned"] = False
+    result["method"] = None
+    result["seat_auth_present"] = dest.is_file()
+    if not summary.get("usable") or not machine_auth:
+        return result
+    src = Path(machine_auth)
+    home.mkdir(parents=True, exist_ok=True)
+    if dest.exists() or dest.is_symlink():
+        try:
+            dest.unlink()
+        except OSError:
+            return result
+    try:
+        os.link(src, dest)
+        result["method"] = "link"
+    except OSError:
+        shutil.copy2(src, dest)
+        result["method"] = "copy"
+    result["provisioned"] = dest.is_file()
+    result["seat_auth_present"] = dest.is_file()
+    return result
 
 
 def _try_auth_lock(fh, timeout_s: float) -> bool:
@@ -178,13 +300,20 @@ def prepare_seat_grok_home(
     *,
     trust_paths: list[str | Path] | None = None,
     user_grok_home: str | Path | None = None,
+    env: dict | None = None,
 ) -> Path:
-    """Create ``<run_dir>/grok-home`` for sessions/logs/config (never copies auth.json)."""
+    """Create ``<run_dir>/grok-home`` and provision a valid machine login (FR #8222)."""
     run = Path(run_dir)
     home = run / GROK_HOME_NAME
     home.mkdir(parents=True, exist_ok=True)
-    src = Path(user_grok_home) if user_grok_home else default_user_grok_home()
-    # FR #7183: never copy auth.json. version.json is not a credential.
+    src = Path(user_grok_home) if user_grok_home else default_user_grok_home(env=env)
+    # FR #8222: the Grok CLI reads GROK_HOME/auth.json. Link or copy the same
+    # machine file ``machine_grok_auth_path`` resolves (incl. BOB_GROK_AUTH_PATH).
+    # Never log the body.
+    provision_seat_grok_auth(
+        home, machine_grok_auth_path(env=env, user_grok_home=user_grok_home)
+    )
+    # version.json is not a credential.
     s_ver = src / "version.json"
     if s_ver.is_file():
         shutil.copy2(s_ver, home / "version.json")
