@@ -61,11 +61,18 @@ def test_no_raw_non_ascii_literal_left_in_pool_heading_code():
 
 
 def test_digest_is_read_as_utf8_bytes_not_latin1_content():
+    """IRC keeps ConvertFrom-BobUtf8Json; Watch digests via Invoke-BobDigestHttpGet (FR #7602/#7615)."""
     irc, w = _txt(IRC), _txt(WATCH)
+    helper = _txt(TRAY / "src" / "Private" / "Invoke-BobDigestHttpGet.ps1")
     assert "function ConvertFrom-BobUtf8Json" in irc and "RawContentStream" in irc and "UTF8.GetString" in irc
     assert "$resp.Content | ConvertFrom-Json" not in irc
     assert "Invoke-RestMethod -Uri (Get-BobTrayDigestReportUrl) -TimeoutSec 8" not in w
-    assert "RawContentStream" in w
+    # Watch no longer streams RawContentStream; UTF-8 bytes come from Invoke-BobDigestHttpGet.
+    assert "RawContentStream" not in w
+    assert "Invoke-BobDigestHttpGet" in w
+    assert "[string]$got.Text | ConvertFrom-Json" in w
+    assert "UTF8.GetString" in helper
+    assert "HttpWebRequest" in helper
 
 
 # ---------------------------------------------------------------------------------- behaviour
