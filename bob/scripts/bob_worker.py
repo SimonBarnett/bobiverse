@@ -1778,7 +1778,7 @@ def _fleet_pool_row(doc: dict, pool: str) -> Optional[dict]:
     }.get(pool, ())
     if not names:
         return None
-    containers = []
+    containers = [doc]
     for key in ("opencode", "fleet", "fleet_pools"):
         node = doc.get(key)
         if isinstance(node, dict):
@@ -1897,12 +1897,48 @@ def load_public_digest(path: Optional[Path]) -> dict:
     return doc if isinstance(doc, dict) else {}
 
 
-def public_digest_path(env: Optional[dict] = None) -> Optional[Path]:
+def public_digest_path(
+    env: Optional[dict] = None,
+    *,
+    install_root: Optional[Path | str] = None,
+) -> Optional[Path]:
+    """First existing digest.json the seat can read (FR #8230 / MRB #8231).
+
+    Seats often have no ``BOB_DIGEST_HOME``. Fall back to ``bob_home.digest_home``,
+    ``BOB_HOME``, and ``<install>/home``. Prefer a real file; never invent fuel.
+    """
     env = os.environ if env is None else env
+    candidates: list[Path] = []
     home = str((env or {}).get("BOB_DIGEST_HOME") or "").strip()
-    if not home:
-        return None
-    return Path(home) / "digest.json"
+    if home:
+        candidates.append(Path(home) / "digest.json")
+    try:
+        import bob_home as bh
+
+        candidates.append(Path(bh.digest_home()) / "digest.json")
+    except Exception:
+        candidates.append(Path.home() / ".bobiverse" / "digest.json")
+    bob_home = str((env or {}).get("BOB_HOME") or "").strip()
+    if bob_home:
+        candidates.append(Path(bob_home) / "digest.json")
+        candidates.append(Path(bob_home) / "bob-peers" / "_report-digest.json")
+    if install_root:
+        candidates.append(Path(install_root) / "home" / "digest.json")
+    seen: set[str] = set()
+    for cand in candidates:
+        try:
+            key = str(cand.resolve()) if cand.exists() else str(cand)
+        except OSError:
+            key = str(cand)
+        if key in seen:
+            continue
+        seen.add(key)
+        try:
+            if cand.is_file():
+                return cand
+        except OSError:
+            continue
+    return None
 
 
 def take_midjob_fuel(
@@ -13927,7 +13963,12 @@ class Supervisor:
             fuel = read_fuel(self._install_root_for_fuel())
             fuel, _src, _age = supplement_fuel_from_fleet(
                 fuel,
-                load_public_digest(public_digest_path(getattr(self, "base_env", None) or os.environ)),
+                load_public_digest(
+                    public_digest_path(
+                        getattr(self, "base_env", None) or os.environ,
+                        install_root=self._install_root_for_fuel(),
+                    )
+                ),
                 now=time.time(),
             )
         except Exception:
@@ -14011,7 +14052,12 @@ class Supervisor:
         try:
             fuel, source, age_s, hold = take_midjob_fuel(
                 _local,
-                load_public_digest(public_digest_path(getattr(self, "base_env", None) or os.environ)),
+                load_public_digest(
+                    public_digest_path(
+                        getattr(self, "base_env", None) or os.environ,
+                        install_root=self._install_root_for_fuel(),
+                    )
+                ),
                 now=time.time(),
                 hold=getattr(self, "_fleet_fuel_hold", None),
                 pool=pool,

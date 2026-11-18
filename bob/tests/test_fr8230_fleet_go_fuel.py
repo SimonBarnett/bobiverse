@@ -107,3 +107,50 @@ def test_agent_fuel_script_passes_windows_and_limiting():
     assert "$out.opencode.windows" in text
     assert "$out.opencode.limiting" in text
     assert "/zen/go/" not in text
+
+
+def test_mrb8231_public_digest_path_without_env(tmp_path, monkeypatch):
+    """Hostile MRB #8231: seats often lack BOB_DIGEST_HOME; install home still works."""
+    monkeypatch.delenv("BOB_DIGEST_HOME", raising=False)
+    monkeypatch.delenv("BOB_HOME", raising=False)
+    install = tmp_path / "bob"
+    home = install / "home"
+    home.mkdir(parents=True)
+    digest = home / "digest.json"
+    digest.write_text(
+        '{"opencode":{"opencode-go":{"remaining":78,"fresh":true,"fetched_at":"2099-01-01T00:00:00Z","usage_source":"go-zen-usage"}}}',
+        encoding="utf-8",
+    )
+    got = bw.public_digest_path({}, install_root=install)
+    assert got == digest
+    doc = bw.load_public_digest(got)
+    fuel, source, _age = bw.supplement_fuel_from_fleet(
+        bw.Fuel(opencode_go=None), doc, now=bw._dt.datetime(2099, 1, 1, tzinfo=bw._dt.timezone.utc).timestamp()
+    )
+    assert fuel.opencode_go == 78
+    assert source == "fleet:go-zen-usage"
+
+
+def test_mrb8231_fleet_row_at_digest_top_level():
+    """bobreport may publish fleet.opencode-go or a top-level opencode-go row."""
+    now = time.time()
+    row = {
+        "remaining": 40,
+        "fresh": True,
+        "fetched_at": now - 5,
+        "usage_source": "go-zen-usage",
+    }
+    fuel, source, _ = bw.supplement_fuel_from_fleet(
+        bw.Fuel(opencode_go=None),
+        {"fleet": {"opencode-go": row}},
+        now=now,
+    )
+    assert fuel.opencode_go == 40
+    assert source.startswith("fleet:")
+    fuel2, source2, _ = bw.supplement_fuel_from_fleet(
+        bw.Fuel(opencode_go=None),
+        {"opencode-go": row},
+        now=now,
+    )
+    assert fuel2.opencode_go == 40
+    assert source2.startswith("fleet:")
