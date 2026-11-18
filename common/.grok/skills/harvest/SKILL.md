@@ -539,6 +539,7 @@ routes to bobiverse via the split rule.
 - OpenCode classify --exit must use nargs=? and wrapper must omit bare --exit before --done so argparse cannot swallow --done; empty dbAction must not GIVEUP
 - FR #8152 MRB: shared repo_clone_store (bridge repos/clones/mirrors + bare + provision) wired through OpenCode ensure; NACK clone-failed:<class>; confirm PyInstaller --paths/common + hidden-import.
 - Console-close / Ctrl shutdown must GIVEUP any ACKed job (console-closed [wip=ref]) before IRC close; durable pending-giveup under BOB_BRIDGE_HOME when IRC is down; Jeeves treats console-closed as seat_not_job and stamps require_machine to the giving machine.
+- When FR #8150 and #8151 both touch liveFuelPattern, fold keeps #8151 pattern (no bare rate limit) plus #8150 app-log peek/scan seed.
 
 ## Harvest digest (lessons audit 2026-10-06)
 
