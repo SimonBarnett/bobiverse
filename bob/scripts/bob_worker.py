@@ -4553,6 +4553,126 @@ def restart_skill_dag_mcp_stdio_children(
     return killed
 
 
+def skill_dag_resolve_is_stale_silent(payload: object) -> bool:
+    """FR #8255: pre-#8225 resolve returned only empty matched and skipped.
+
+    Tip code sets ``unresolved`` and ``reason`` (``no_seed_match`` / ``not_in_index``).
+    A payload without those fields is a long-lived MCP child still on the old module.
+    """
+    if not isinstance(payload, dict):
+        return False
+    if payload.get("matched") != [] or payload.get("skipped") != []:
+        return False
+    if "unresolved" in payload or payload.get("reason") or payload.get("not_in_index"):
+        return False
+    return True
+
+
+def process_start_epoch(pid: int) -> float | None:
+    """Wall-clock start of a process, or None when it cannot be read."""
+    if sys.platform != "win32":
+        return None
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        k32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+        k32.OpenProcess.restype = wintypes.HANDLE
+        k32.GetProcessTimes.argtypes = [
+            wintypes.HANDLE,
+            ctypes.POINTER(wintypes.FILETIME),
+            ctypes.POINTER(wintypes.FILETIME),
+            ctypes.POINTER(wintypes.FILETIME),
+            ctypes.POINTER(wintypes.FILETIME),
+        ]
+        k32.GetProcessTimes.restype = wintypes.BOOL
+        k32.CloseHandle.argtypes = [wintypes.HANDLE]
+        handle = k32.OpenProcess(0x1000, False, int(pid))
+        if not handle:
+            return None
+        try:
+            created = wintypes.FILETIME()
+            exit_ft = wintypes.FILETIME()
+            kernel_ft = wintypes.FILETIME()
+            user_ft = wintypes.FILETIME()
+            if not k32.GetProcessTimes(
+                handle,
+                ctypes.byref(created),
+                ctypes.byref(exit_ft),
+                ctypes.byref(kernel_ft),
+                ctypes.byref(user_ft),
+            ):
+                return None
+            ticks = (int(created.dwHighDateTime) << 32) | int(created.dwLowDateTime)
+        finally:
+            k32.CloseHandle(handle)
+        return (ticks / 10_000_000.0) - 11644473600.0
+    except Exception:
+        return None
+
+
+def skill_dag_mcp_script_newer_than(script: str | Path, started_epoch: float | None) -> bool:
+    """True when ``skill_dag_mcp.py`` was written after the MCP process started."""
+    if started_epoch is None:
+        return False
+    try:
+        mtime = Path(script).stat().st_mtime
+    except OSError:
+        return False
+    return float(mtime) > float(started_epoch) + 1.0
+
+
+def restart_stale_skill_dag_mcp_children(
+    agent_pid: int | None,
+    seat_markers: list[str | Path | None],
+    script: str | Path,
+    *,
+    started_at: Callable[[int], float | None],
+    snapshot: Optional[Callable[[], list]] = None,
+    cmdline_of: Optional[Callable[[int], str]] = None,
+    kill: Optional[Callable[[int], bool]] = None,
+    log: Optional[Callable[[str], None]] = None,
+) -> list[int]:
+    """FR #8255: kill this seat's skill-dag MCP only when the script is newer than the child.
+
+    Grok respawns stdio from the current argv, which loads tip ``skill_dag_mcp.py``.
+    A child started after the script is left alone (FR #7308 keep-stdio).
+    """
+    killed: list[int] = []
+    try:
+        root = int(agent_pid or 0)
+    except (TypeError, ValueError):
+        root = 0
+    if root <= 0:
+        return killed
+    rows = snapshot() if snapshot is not None else snapshot_procs()
+    describe = cmdline_of if cmdline_of is not None else (lambda pid: str(describe_process(pid)[2] or ""))
+    do_kill = kill if kill is not None else (lambda pid: kill_tree(pid))
+    for pid in sorted(descendant_pids(root, rows)):
+        try:
+            cmd = describe(pid) or ""
+        except Exception:
+            continue
+        if not skill_dag_mcp_stdio_cmdline_matches(cmd, seat_markers):
+            continue
+        try:
+            began = started_at(int(pid))
+        except Exception:
+            began = None
+        if not skill_dag_mcp_script_newer_than(script, began):
+            continue
+        try:
+            do_kill(pid)
+            killed.append(pid)
+            if log:
+                log(f"skill-dag mcp stale-script restart pid={pid}")
+        except Exception:
+            if log:
+                log(f"skill-dag mcp stale-script restart failed pid={pid}")
+    return killed
+
+
 # FR #6898: OpenCode reads project ``opencode.json`` under seat cwd or ``--dir``.
 # Never write user-global ``~/.config/opencode`` / ``%LOCALAPPDATA%\opencode``.
 OPENCODE_SKILL_DAG_MCP_RELPATH = "opencode.json"
@@ -5258,6 +5378,13 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             r"        New-Item -ItemType Directory -Force -Path $bobDir | Out-Null",
             r"        $env:BOB_OUTBOX = Join-Path $bobDir 'outbox.txt'",
             r"        if (-not (Test-Path -LiteralPath $env:BOB_OUTBOX)) { [IO.File]::WriteAllText($env:BOB_OUTBOX, '') }",
+            # FR #8247: seat scratch under worktree so a "temp" ask lands inside --dir (never widen %TEMP% allow).
+            r"        $bobTmp = Join-Path $bobDir 'tmp'",
+            r"        New-Item -ItemType Directory -Force -Path $bobTmp | Out-Null",
+            r"        $env:TEMP = $bobTmp",
+            r"        $env:TMP = $bobTmp",
+            r"        $env:TMPDIR = $bobTmp",
+            r"        $env:BOB_OPENCODE_SCRATCH = $bobTmp",
             r"        $argList = @('run', '--dir', $ocDir, '-m', $model, $line)",
             r"    } else {",
             r"        $argList = @('run', '-m', $model, $line)",
@@ -5687,6 +5814,13 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             r"                $teClass = 'process-exit'",
             r"                if ($hitLimit) { $teClass = 'out-of-fuel' }",
             r"                elseif ($snip -match 'EPIPE|broken pipe' -or $stderr -match 'EPIPE|broken pipe') { $teClass = 'epipe' }",
+            # FR #8247: external_directory auto-reject (do not widen %TEMP% allow).
+            r"                elseif ($snip -match 'external_directory' -or $stderr -match 'external_directory') { $teClass = 'external-directory' }",
+            r"            } elseif (($stderr + [Environment]::NewLine + $stdout) -match '(?i)permission requested:\s*external_directory|external_directory[^\r\n]*auto-reject') {",
+            r"                $teStatus = 'error'",
+            r"                $teClass = 'external-directory'",
+            r"                $teErr = 'exit 0: external_directory auto-reject'",
+            r"                $script:ocEpipeTries = 0",
             r"            } else {",
             r"                $script:ocEpipeTries = 0",
             r"            }",
@@ -8343,6 +8477,90 @@ FAILED_TURN_RETRY_MAX = 1
 _FAILED_TURN_SECRET_RX = re.compile(
     r"(?i)(?:ghp_|github_pat_|gho_|sk-|Bearer\s+)\S+"
 )
+_EXTERNAL_DIR_REJECT_RX = re.compile(
+    r"(?i)(?:permission\s+requested\s*:\s*external_directory|"
+    r"external_directory[^\n]*auto-reject|"
+    r"auto-rejecting[^\n]*external_directory)"
+)
+
+
+def ensure_opencode_job_scratch(worktree: str | Path) -> Path:
+    """FR #8247: ``<worktree>\\.bob\\tmp`` for OpenCode seat scratch (inside ``--dir``)."""
+    wt = Path(worktree)
+    scratch = wt / ".bob" / "tmp"
+    scratch.mkdir(parents=True, exist_ok=True)
+    return scratch
+
+
+def apply_opencode_scratch_env(env: dict | None, worktree: str | Path) -> dict:
+    """FR #8247: point TEMP/TMP/TMPDIR at the worktree scratch (never widen %TEMP% allow)."""
+    out = dict(env or {})
+    scratch = ensure_opencode_job_scratch(worktree)
+    s = str(scratch)
+    out["TEMP"] = s
+    out["TMP"] = s
+    out["TMPDIR"] = s
+    out["BOB_OPENCODE_SCRATCH"] = s
+    return out
+
+
+def opencode_external_dir_loop_max() -> int:
+    """FR #8247: rejection-ended turns before GIVEUP ``external-dir-loop`` (default 2)."""
+    return int(_env_float("BOB_OPENCODE_EXTERNAL_DIR_LOOP_MAX", 2.0, 1.0, 10.0))
+
+
+def is_external_directory_reject(error_class: str, error_line: str) -> bool:
+    """FR #8247: True when the turn ended on an OpenCode ``external_directory`` auto-reject."""
+    cls = str(error_class or "").strip().lower().replace("_", "-")
+    if cls in ("external-directory", "externaldirectory"):
+        return True
+    if cls == "epipe":
+        return False
+    blob = "%s\n%s" % (error_class or "", error_line or "")
+    return bool(_EXTERNAL_DIR_REJECT_RX.search(blob)) or (
+        "external_directory" in blob.lower() and "auto-reject" in blob.lower()
+    )
+
+
+def record_external_dir_reject(state: dict, key: str) -> str:
+    """FR #8247: count one rejection; return ``corrective`` then ``giveup`` at loop max."""
+    if not isinstance(state, dict):
+        state = {}
+    counts = state.setdefault("counts", {})
+    if not isinstance(counts, dict):
+        counts = {}
+        state["counts"] = counts
+    k = str(key or "job").strip() or "job"
+    n = int(counts.get(k, 0) or 0) + 1
+    counts[k] = n
+    max_n = opencode_external_dir_loop_max()
+    if n >= max_n:
+        state["corrective_pending"] = False
+        return "giveup"
+    state["corrective_pending"] = True
+    return "corrective"
+
+
+def opencode_external_dir_corrective_steps(
+    *,
+    job_key: str,
+    worktree: str | Path,
+    outbox: str | Path,
+    scratch: str | Path,
+) -> str:
+    """FR #8247: short corrective after an ``external_directory`` rejection (names allowed scratch)."""
+    key = (job_key or "job").strip() or "job"
+    wt = str(worktree or "").strip()
+    ob = str(outbox or "").strip()
+    sc = str(scratch or "").strip()
+    return (
+        f"CORRECTIVE {key}: OpenCode rejected external_directory (path outside the job tree). "
+        f"Use only the allowed scratch directory {sc} (worktree .bob\\tmp). "
+        f"TEMP/TMP/TMPDIR already point there for this seat. "
+        f"Do not request external_directory and never use %TEMP% or the user Temp folder. "
+        f"Keep all scratch and tool paths inside {wt}. "
+        f"Finish remaining work, then append DONE for {key} to $env:BOB_OUTBOX ({ob})."
+    )
 
 
 def _failed_turn_snip(text: str, *, limit: int = 160) -> str:
@@ -8387,10 +8605,16 @@ def format_opencode_turn_error(
     except (TypeError, ValueError):
         code = -1
     snip = opencode_stream_tail(stderr, stdout, max_lines=20, max_chars=800)
+    blob = "%s\n%s\n%s" % (snip, stderr or "", stdout or "")
     if hit_limit:
         cls = "out-of-fuel"
     elif is_epipe_turn_error(text=snip) or is_epipe_turn_error(text=stderr) or is_epipe_turn_error(text=stdout):
         cls = "epipe"
+    elif _EXTERNAL_DIR_REJECT_RX.search(blob) or (
+        "external_directory" in blob.lower() and "auto-reject" in blob.lower()
+    ):
+        # FR #8247: classify external_directory auto-reject (never widen %TEMP% allow).
+        cls = "external-directory"
     else:
         cls = "process-exit"
     line = "exit %s" % code
@@ -11602,7 +11826,8 @@ def opencode_job_finish_steps(
         f"(or --body-file pointing at a markdown file inside this worktree, e.g. .bob/pr-body.md). "
         "If gh issue view shows the issue CLOSED, do not run gh pr create. "
         "Keep scratch files and base comparisons inside this job worktree or the worker run folder --- "
-        "never under %TEMP%. Do not request external_directory and do not pass --auto. "
+        "never under %TEMP%. Use .bob\\tmp (TEMP/TMP already point there; FR #8247). "
+        "Do not request external_directory and do not pass --auto. "
         f"6) Immediately append DONE for {key} with the PR URL to $env:BOB_OUTBOX ({ob}) "
         "right after gh pr create returns the URL. "
         "Never wait on or poll CI (no gh pr checks --watch, no checks --watch, no waiting for CodeRabbit). "
@@ -12466,6 +12691,8 @@ class BoredEmitter:
         # FR #7201: error turn while ACK open — retry once then GIVEUP.
         self._failed_turn_retries: dict[str, int] = {}
         self.failed_turn_retry_fn: Optional[Callable[[str], None]] = None
+        # FR #8247: external_directory rejection counter (corrective then GIVEUP external-dir-loop).
+        self.external_dir_reject_state: dict = {"counts": {}, "corrective_pending": False}
         # FR #8018: optional SeatSessionLog.write(source, text) for failed-turn / giveup.
         self.session_log_write: Optional[Callable[[str, str], None]] = None
         # FR #4784: job key for GIVEUP before !bored on done-miss / ack-stale release.
@@ -13087,6 +13314,73 @@ class BoredEmitter:
                             except Exception as e:  # noqa: BLE001
                                 self.log(
                                     "failed-turn: GIVEUP failed %s" % type(e).__name__
+                                )
+                            self._begin_harvest_hold(now)
+                            self._cv.notify_all()
+                            return
+                        # FR #8247: external_directory reject -> corrective once, then GIVEUP
+                        # external-dir-loop (never widen %TEMP% allow; never infinite FINISH).
+                        if is_external_directory_reject(error_class, error_line):
+                            action = record_external_dir_reject(
+                                self.external_dir_reject_state, key
+                            )
+                            if action == "corrective":
+                                self.log(
+                                    "external-dir: corrective for %s count=%s"
+                                    % (
+                                        key,
+                                        self.external_dir_reject_state.get(
+                                            "counts", {}
+                                        ).get(key, 0),
+                                    )
+                                )
+                                # Prefer done-miss remind (injects corrective_pending text).
+                                # failed_turn_retry_fn re-injects relay.last_line (same assign)
+                                # and would skip the scratch-path corrective (MRB #8252 FAIL).
+                                fn = (
+                                    self.done_miss_remind_fn
+                                    or self.failed_turn_retry_fn
+                                )
+                                if fn is not None:
+                                    try:
+                                        self._cv.release()
+                                        try:
+                                            fn(key)
+                                        finally:
+                                            self._cv.acquire()
+                                    except Exception as e:  # noqa: BLE001
+                                        self.log(
+                                            "external-dir: corrective inject failed %s"
+                                            % type(e).__name__
+                                        )
+                                self._cv.notify_all()
+                                return
+                            why = "external-dir-loop"
+                            self._ack_open = False
+                            self._ack_job_key = None
+                            self._clear_done_miss()
+                            self._failed_turn_retries.pop(key, None)
+                            self._release_giveup_key = key
+                            self._fast_done_miss_streak = 0
+                            self._done_miss_release_pending = False
+                            self.log(
+                                "external-dir: GIVEUP %s reason=%s" % (key, why)
+                            )
+                            if self.session_log_write is not None:
+                                try:
+                                    self.session_log_write("giveup", why)
+                                except Exception:
+                                    pass
+                            try:
+                                self._cv.release()
+                                try:
+                                    self._fire_seat_release_giveup(why)
+                                finally:
+                                    self._cv.acquire()
+                            except Exception as e:  # noqa: BLE001
+                                self.log(
+                                    "external-dir: GIVEUP failed %s"
+                                    % type(e).__name__
                                 )
                             self._begin_harvest_hold(now)
                             self._cv.notify_all()
@@ -15805,6 +16099,35 @@ class Supervisor:
             except Exception:
                 pass
 
+    def _restart_stale_skill_dag_mcp(self) -> None:
+        """FR #8255: respawn this seat's skill-dag child when the script is newer."""
+        bound, cursor, vision = self._live_skill_dag_mcp_paths()
+        cwd = str(getattr(self, "cwd", "") or "")
+        markers = [m for m in (bound, cursor, vision, cwd) if m]
+        if not markers:
+            return
+        try:
+            script = skill_dag_mcp_script_path(cwd or str(markers[0]))
+        except Exception:
+            return
+        agent_pid = None
+        try:
+            proc = getattr(self, "proc", None)
+            if proc is not None and getattr(proc, "pid", None):
+                agent_pid = int(proc.pid)
+        except (TypeError, ValueError):
+            agent_pid = None
+        try:
+            restart_stale_skill_dag_mcp_children(
+                agent_pid,
+                markers,
+                script,
+                started_at=process_start_epoch,
+                log=self.log,
+            )
+        except Exception as exc:  # noqa: BLE001
+            self.log(f"skill-dag mcp stale-script restart skipped {type(exc).__name__}")
+
     def _clear_per_job_seat_state(self, job: Optional[str] = None) -> None:
         """FR #8094: drop per-job env, outbox, key, finish snap, and skill-dag pointer."""
         del job
@@ -15818,6 +16141,14 @@ class Supervisor:
         if getattr(self, "bored", None) is not None:
             try:
                 self.bored._opencode_finish_attempt = 0
+            except Exception:
+                pass
+            # FR #8247: reset external_directory loop counter for the next offer.
+            try:
+                self.bored.external_dir_reject_state = {
+                    "counts": {},
+                    "corrective_pending": False,
+                }
             except Exception:
                 pass
         if getattr(self, "relay", None) is not None and getattr(self, "run_dir", None) is not None:
@@ -15876,6 +16207,9 @@ class Supervisor:
                     self.log(f"job-context: {stale_gc}")
                     raise JobContextRefused(stale_gc)
                 self._refresh_live_skill_dag_mcp(wt)
+                # FR #8255: a child started before skill_dag_mcp.py moved still
+                # returns silent empty matched+skipped. Respawn it from tip.
+                self._restart_stale_skill_dag_mcp()
         if (self.kind or "").strip().lower() == "opencode" and message_job_keys(line):
             keys = message_job_keys(line)
             if len(keys) != 1:
@@ -15925,6 +16259,7 @@ class Supervisor:
                     )
                 except Exception as e:  # noqa: BLE001
                     self.log(f"opencode-ready: skill-dag mcp write skipped {type(e).__name__}")
+                self._restart_stale_skill_dag_mcp()
                 # FR #7908: do not hand the job over when skill-dag is down.
                 _sd_detail = self._skill_dag_preflight_for_opencode(
                     prepared.get("path"), str(prepared.get("key") or "")
@@ -16367,11 +16702,25 @@ class Supervisor:
             )
 
     def _inject_failed_turn_retry(self, job_key: str) -> None:
-        """FR #7201: re-inject the last assign once after an error turn (bounded)."""
+        """FR #7201: re-inject the last assign once after an error turn (bounded).
+
+        FR #8247: when ``external_dir_reject_state.corrective_pending`` is set, do not
+        re-inject ``relay.last_line`` (that re-sends the same FINISH/assign). Route to
+        ``_inject_done_miss_reminder``, which emits the scratch-path corrective.
+        """
+        key = (job_key or "").strip()
+        # FR #8247 / MRB #8252: external_directory corrective must not re-paste the assign.
+        if self.bored is not None:
+            st = getattr(self.bored, "external_dir_reject_state", None)
+            if isinstance(st, dict) and st.get("corrective_pending"):
+                self.log(
+                    f"external-dir: failed-turn retry routes to corrective for {key}"
+                )
+                self._inject_done_miss_reminder(key)
+                return
         line = ""
         with contextlib.suppress(Exception):
             line = str(getattr(self.relay, "last_line", None) or getattr(self.relay, "last_unacked", None) or "")
-        key = (job_key or "").strip()
         if line and key and (assign_job_key(line) or "").lower() == key.lower():
             with self._lock:
                 proc = self.proc
@@ -16387,7 +16736,7 @@ class Supervisor:
         self._inject_done_miss_reminder(job_key)
 
     def _inject_done_miss_reminder(self, job_key: str) -> None:
-        """FR #2875 / #6366: inject done-miss reminder (OpenCode: full finish frame)."""
+        """FR #2875 / #6366 / #8247: inject done-miss reminder (OpenCode: finish or corrective)."""
         outbox = outbox_path_for_run(self.run_dir)
         shop = shop_channel(self.machine)
         kind = (self.kind or "").strip().lower()
@@ -16405,9 +16754,33 @@ class Supervisor:
             if wt:
                 # Snapshot before finish-run for progress compare.
                 self._opencode_finish_snap = opencode_finish_progress_snapshot(wt)
-                line = opencode_done_miss_reminder_line(
-                    shop=shop, outbox=outbox, job_key=job_key, worktree=wt
-                )
+                # FR #8247: after an external_directory reject, inject a short corrective
+                # that names .bob\tmp instead of the same FINISH text.
+                use_corrective = False
+                if self.bored is not None:
+                    st = getattr(self.bored, "external_dir_reject_state", None)
+                    if isinstance(st, dict) and st.get("corrective_pending"):
+                        use_corrective = True
+                        st["corrective_pending"] = False
+                if use_corrective:
+                    scratch = ensure_opencode_job_scratch(wt)
+                    body = opencode_external_dir_corrective_steps(
+                        job_key=job_key,
+                        worktree=wt,
+                        outbox=outbox,
+                        scratch=scratch,
+                    )
+                    from_line = format_from(
+                        "bob-worker", shop, body, outbox=outbox
+                    )
+                    try:
+                        line = frame_opencode_message(from_line, job_key, wt)
+                    except Exception:
+                        line = from_line
+                else:
+                    line = opencode_done_miss_reminder_line(
+                        shop=shop, outbox=outbox, job_key=job_key, worktree=wt
+                    )
             else:
                 line = done_miss_reminder_line(shop=shop, outbox=outbox, job_key=job_key)
         else:
