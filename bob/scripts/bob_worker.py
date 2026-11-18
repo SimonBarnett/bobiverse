@@ -11440,8 +11440,14 @@ class InjectRecovery:
                     pass
                 time.sleep(min(0.2, max(0.05, deadline - time.monotonic())))
         if self.giveup_on_fail:
-            probe = "no turn receipt" if self.agent_kind == "opencode" else "no prompt seen"
-            wire = submit_verify_giveup_line(line, probe=probe, kind=self.agent_kind)
+            # FR #8270: annotate OpenCode GIVEUP with probe/kind. Cursor/Grok keep
+            # the FR #4510 wire ``submit-verify failed`` with no extras (VISION S3).
+            if self.agent_kind == "opencode":
+                wire = submit_verify_giveup_line(
+                    line, probe="no turn receipt", kind="opencode"
+                )
+            else:
+                wire = submit_verify_giveup_line(line)
             try:
                 self.clear_input()
             except Exception as e:  # noqa: BLE001
