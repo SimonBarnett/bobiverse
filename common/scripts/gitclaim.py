@@ -8810,6 +8810,30 @@ def is_skill_dag_down_reason(reason: str) -> bool:
     return token == "skill-dag-down" or token.startswith("skill-dag-down:")
 
 
+def is_console_closed_reason(reason: str) -> bool:
+    """True when a GIVEUP reason is console-close / Ctrl (FR #8154).
+
+    Seat fault: ``console-closed`` or ``console-closed wip=<ref>``. Re-offer promptly
+    (no long cooldown) and prefer the giving seat's machine so the worktree is reused.
+    """
+    text = (reason or "").strip().lower()
+    if not text:
+        return False
+    # First whitespace-separated token (keep ``wip=`` as a trailing field).
+    head = text.replace("_", "-").split(None, 1)[0].strip()
+    head = head.split(",", 1)[0].strip()
+    return head == "console-closed" or head.startswith("console-closed")
+
+
+def console_closed_wip_ref(reason: str) -> str:
+    """Extract ``wip=<ref>`` from a console-closed GIVEUP reason, else ``\"\"``."""
+    text = (reason or "").strip()
+    if not text:
+        return ""
+    m = re.search(r"(?i)\bwip=([^\s,]+)", text)
+    return (m.group(1) if m else "").strip()
+
+
 def _deterministic_nack_token(reason: str) -> str:
     """Normalised class token from a NACK/GIVEUP reason (FR #8017 / #8153)."""
     text = (reason or "").strip().lower()
