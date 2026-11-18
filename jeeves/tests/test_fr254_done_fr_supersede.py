@@ -83,7 +83,20 @@ def test_offer_skips_fr_while_superseding_mrb_present(tmp_path, monkeypatch):
     home = _home(tmp_path, monkeypatch)
     doc = bobreport.empty_digest()
     doc["machines"]["marchhare"] = bobreport._empty_machine("marchhare")
-    doc["machines"]["marchhare"]["workers"] = {"41928": {"state": "idle"}}
+    # FR #8193 / #8138: bare idle (no kind/start_model) is free fuel and cannot
+    # take MRB; with free_idle empty the only-Grok yield would skip this MRB for
+    # the superseded older FR unless mrb_yields skips superseded FRs. Mark the
+    # offer seat as Grok/paid so free_idle stays empty and MRB is takeable.
+    doc["machines"]["marchhare"]["workers"] = {
+        "41928": {
+            "state": "idle",
+            "kind": "grok",
+            "start_model": "grok-4",
+            "configured_model": "grok-4",
+            "model": "grok-4",
+            "nick": "marchhare-41928",
+        }
+    }
     bobreport.save_digest(home, doc)
     gitclaim._write_queue(
         gitclaim.queue_path(home),
