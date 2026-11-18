@@ -46,7 +46,7 @@ import urllib.request
 import uuid
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Callable, Optional, NamedTuple
 
 from seat_session_log import SeatSessionLog, console_startup_state, redact_session_text
 
@@ -11045,6 +11045,17 @@ def progress_phase_for_alive_heartbeat(prior: str = "") -> str:
     return "tool:alive"
 
 
+
+# FR #8249: lock-free job gate for the dedicated progress-heartbeat thread.
+class HeartbeatSnapshot(NamedTuple):
+    """Immutable ACK/fuel gate published by BoredEmitter for heartbeat ticks."""
+
+    ack_open: bool
+    ack_job_key: str
+    out_of_fuel: bool
+    ack_epoch: int
+
+
 def _file_size_mtime(path: Path) -> tuple[int, float]:
     try:
         st = path.stat()
@@ -12647,6 +12658,9 @@ class BoredEmitter:
         self._ack_at: Optional[float] = None
         self._agent_active_at: Optional[float] = None  # FR #4827: last turn/IO, not ACK wall clock
         self._ack_job_key: Optional[str] = None  # FR #1732: open ACK job id
+        # FR #8249: lock-free heartbeat gate (atomic reference swap under _cv writers).
+        self._ack_epoch = 0
+        self._hb_snap: HeartbeatSnapshot = HeartbeatSnapshot(False, '', False, 0)
         # FR #4730: jobs this seat already closed — replayed ACK must not reopen busy / hit IRC.
         self._finished_job_keys: set[str] = set()
         # FR #5327: DONE-only subset of finished — never stale-replay GIVEUP these.
@@ -12776,13 +12790,13 @@ class BoredEmitter:
                 self._held_assign_since = self.clock()
             self._held_assign = True
             self._idle_since = None
-            self._cv.notify_all()
+            self._hb_notify_all()
 
     def clear_held_assign(self) -> None:
         with self._cv:
             self._held_assign = False
             self._held_assign_since = None
-            self._cv.notify_all()
+            self._hb_notify_all()
 
     def _mark_job_finished(self, job: Optional[str], *, via_done: bool = False) -> None:
         """FR #4730: remember a job closed by DONE/NACK/GIVEUP (caller holds ``_cv``).
@@ -13068,7 +13082,7 @@ class BoredEmitter:
                 + (f" (was ACK {release_key})" if release_key else "")
                 + f" - {preview}"
             )
-            self._cv.notify_all()
+            self._hb_notify_all()
         if enter_fn is not None:
             try:
                 enter_fn()
@@ -13095,7 +13109,7 @@ class BoredEmitter:
             self._idle_since = now
             self._release_gen = self._turn_gen
             self.log(f"out-of-fuel: cleared via {why} - seat may !bored again")
-            self._cv.notify_all()
+            self._hb_notify_all()
 
     @property
     def ack_job_ref(self) -> Optional[str]:
@@ -13118,7 +13132,7 @@ class BoredEmitter:
     def stop(self) -> None:
         with self._cv:
             self._stopped = True
-            self._cv.notify_all()
+            self._hb_notify_all()
 
     def set_ready(self, ready: bool) -> None:
         with self._cv:
@@ -13127,13 +13141,13 @@ class BoredEmitter:
             if not ready:
                 self._inject_pending = False
                 self._inject_at = None
-            self._cv.notify_all()
+            self._hb_notify_all()
 
     def note_needs_signin(self) -> None:
         """FR #7183: no machine Grok sign-in — never !bored, never claim ready."""
         with self._cv:
             self._needs_signin = True
-            self._cv.notify_all()
+            self._hb_notify_all()
 
     def activity(self, mark_work: bool = True) -> None:
         """A message was forwarded to the agent: reset idle; optionally mark pending assign work.
@@ -13151,14 +13165,69 @@ class BoredEmitter:
                 self._harvest_until = now + self.harvest_hold_s
             if self._idle_since is not None:
                 self._idle_since = now
-            self._cv.notify_all()
+            self._hb_notify_all()
 
     def note_agent_active(self, at: float | None = None) -> None:
         """FR #4827: turn activity or process I/O. Extends an open ACK past ack_stale_s."""
         with self._cv:
             now = float(self.clock() if at is None else at)
             self._agent_active_at = now
-            self._cv.notify_all()
+            self._hb_notify_all()
+
+    def note_agent_active_nb(self, at: float | None = None, *, timeout: float = 0.05) -> bool:
+        """FR #8249: non-blocking note_agent_active for the heartbeat thread."""
+        got = False
+        try:
+            got = bool(self._cv.acquire(timeout=float(timeout)))
+        except Exception:
+            return False
+        if not got:
+            return False
+        try:
+            now = float(self.clock() if at is None else at)
+            self._agent_active_at = now
+            self._hb_notify_all()
+            return True
+        finally:
+            self._cv.release()
+
+    def _refresh_hb_snap(self) -> None:
+        """Rebuild HeartbeatSnapshot (caller holds `_cv`, or init)."""
+        key = str(self._ack_job_key or '')
+        # Bump epoch when ACK opens for a job (or job key changes while open).
+        snap = getattr(self, '_hb_snap', None)
+        prev_open = bool(snap.ack_open) if snap is not None else False
+        prev_key = str(snap.ack_job_key) if snap is not None else ''
+        prev_epoch = int(snap.ack_epoch) if snap is not None else 0
+        epoch = prev_epoch
+        if self._ack_open and (not prev_open or key != prev_key):
+            epoch = prev_epoch + 1
+            self._ack_epoch = epoch
+        elif not self._ack_open:
+            epoch = int(getattr(self, '_ack_epoch', 0) or 0)
+        else:
+            epoch = int(getattr(self, '_ack_epoch', prev_epoch) or prev_epoch)
+        self._hb_snap = HeartbeatSnapshot(
+            bool(self._ack_open),
+            key,
+            bool(self._out_of_fuel),
+            int(epoch),
+        )
+
+    def heartbeat_snapshot(self) -> HeartbeatSnapshot:
+        """FR #8249: lock-free read of the latest ACK/fuel gate."""
+        snap = getattr(self, '_hb_snap', None)
+        if snap is None:
+            return HeartbeatSnapshot(False, '', False, 0)
+        return snap
+
+    def _hb_notify_all(self) -> None:
+        """Publish heartbeat snapshot then wake waiters (caller holds `_cv`)."""
+        try:
+            self._refresh_hb_snap()
+        except Exception:
+            pass
+        self._cv.notify_all()
 
     def note_stand_down(self, ref: str) -> bool:
         """FR #4827: drop the open ACK when the chair stands this seat down for that job."""
@@ -13180,7 +13249,7 @@ class BoredEmitter:
             now = self.clock()
             self._idle_since = now
             self.log(f"bored: stand down {want}")
-            self._cv.notify_all()
+            self._hb_notify_all()
             return True
 
     def nak(self) -> None:
@@ -13189,7 +13258,7 @@ class BoredEmitter:
         with self._cv:
             if self._nak_due is None:
                 self._nak_due = self.clock() + self.nak_s
-            self._cv.notify_all()
+            self._hb_notify_all()
 
     def _begin_harvest_hold(self, now: float) -> None:
         """FR #1611 / #7265: after DONE/NACK/GIVEUP, hold !bored only while a turn is still open.
@@ -13242,7 +13311,7 @@ class BoredEmitter:
             if self._done_miss_armed_at is not None and not self._done_miss_reminded:
                 self._done_miss_armed_at = None
                 self._done_miss_key = None
-            self._cv.notify_all()
+            self._hb_notify_all()
 
 
     def turn_ended(
@@ -13270,7 +13339,7 @@ class BoredEmitter:
                     clear_hard_fuel = True
                 # FR #2875 / inject-pending: still busy on a fresh assign — do not arm done-miss.
                 if self._inject_pending and self._inject_at is not None and now - self._inject_at < self.assign_grace_s:
-                    self._cv.notify_all()
+                    self._hb_notify_all()
                     return
                 # FR #2875: turn ended with ACK open and no DONE/NACK/GIVEUP.
                 # FR #4827: arm even past ack_stale_s — the turn ending is the release signal.
@@ -13316,7 +13385,7 @@ class BoredEmitter:
                                     "failed-turn: GIVEUP failed %s" % type(e).__name__
                                 )
                             self._begin_harvest_hold(now)
-                            self._cv.notify_all()
+                            self._hb_notify_all()
                             return
                         # FR #8247: external_directory reject -> corrective once, then GIVEUP
                         # external-dir-loop (never widen %TEMP% allow; never infinite FINISH).
@@ -13353,7 +13422,7 @@ class BoredEmitter:
                                             "external-dir: corrective inject failed %s"
                                             % type(e).__name__
                                         )
-                                self._cv.notify_all()
+                                self._hb_notify_all()
                                 return
                             why = "external-dir-loop"
                             self._ack_open = False
@@ -13383,7 +13452,7 @@ class BoredEmitter:
                                     % type(e).__name__
                                 )
                             self._begin_harvest_hold(now)
-                            self._cv.notify_all()
+                            self._hb_notify_all()
                             return
                         n = int(self._failed_turn_retries.get(key, 0))
                         if failed_turn_next_action(n) == "retry":
@@ -13405,7 +13474,7 @@ class BoredEmitter:
                                         "failed-turn: retry inject failed %s"
                                         % type(e).__name__
                                     )
-                            self._cv.notify_all()
+                            self._hb_notify_all()
                             return
                         why = "failed-turn " + sanitize_failed_turn_reason(
                             error_class, error_line
@@ -13434,7 +13503,7 @@ class BoredEmitter:
                                 "failed-turn: GIVEUP failed %s" % type(e).__name__
                             )
                         self._begin_harvest_hold(now)
-                        self._cv.notify_all()
+                        self._hb_notify_all()
                         return
                     if self._done_miss_reminded:
                         # FR #6366 / #6370 MRB: decide() runs git/gh — schedule outside _cv.
@@ -13459,7 +13528,7 @@ class BoredEmitter:
                                 self.log(
                                     f"done-miss: OpenCode finish-run retry armed for {key}"
                                 )
-                                self._cv.notify_all()
+                                self._hb_notify_all()
                                 return
                             if verdict == "done":
                                 # FR #6370: worker auto-opened PR + posted DONE — no GIVEUP.
@@ -13473,7 +13542,7 @@ class BoredEmitter:
                                 self.log(
                                     f"done-miss: OpenCode finish auto-PR DONE for {key}"
                                 )
-                                self._cv.notify_all()
+                                self._hb_notify_all()
                                 return
                         ack_age = now - float(self._ack_at)
                         if ack_age < float(self.fast_done_miss_s):
@@ -13513,7 +13582,7 @@ class BoredEmitter:
                         self.log(
                             f"bored: turn ended with ACK open on {key} and no DONE/NACK/GIVEUP - done-miss armed"
                         )
-                    self._cv.notify_all()
+                    self._hb_notify_all()
                     return
 
                 if (
@@ -13522,7 +13591,7 @@ class BoredEmitter:
                 ):
                     # Stale turn_ended before DONE/free line: ignore.
                     if now < self._hold_started_at:
-                        self._cv.notify_all()
+                        self._hb_notify_all()
                         return
                     self._harvest_until = None
                     self._idle_since = now
@@ -13558,7 +13627,7 @@ class BoredEmitter:
                     self._hold_release_at = now
                     if self._idle_since is None:
                         self._idle_since = now
-                self._cv.notify_all()
+                self._hb_notify_all()
 
         finally:
             if clear_hard_fuel:
@@ -13679,7 +13748,7 @@ class BoredEmitter:
                 self._harvest_until = now + self.harvest_hold_s
             else:
                 self._idle_since = now
-            self._cv.notify_all()
+            self._hb_notify_all()
 
     # ---- decision
     def _busy(self, now: float) -> bool:
@@ -14027,6 +14096,8 @@ class BoredEmitter:
                         self._out_of_fuel_clear_reason = None
                         self._idle_since = now
                         self._release_gen = self._turn_gen
+                        # FR #8249: keep heartbeat snapshot in sync with fuel clear.
+                        self._hb_notify_all()
                         self.log(
                             f"out-of-fuel: cleared via {why} - seat may !bored again"
                         )
@@ -14204,12 +14275,18 @@ class Supervisor:
         self._session_screen = None
         self._session_cursor = None
         self._exit_recorded_pid = None
-        # FR #8155: digest last_progress heartbeats while ACK is open.
+        # FR #8155 / #8249: digest last_progress heartbeats while ACK is open.
         self._progress_prev: dict = {}
-        self._progress_last_post_wall: float = 0.0
-        self._progress_last_seen_wall: float = 0.0
+        self._progress_last_post_mono: float = 0.0
+        self._progress_last_seen_mono: float = 0.0
         self._progress_phase: str = ""
         self._progress_heartbeat_s = progress_heartbeat_interval_s()
+        self._progress_hb_epoch: int = 0
+        self._progress_hb_skip_log_mono: float = 0.0
+        self._progress_hb_thread: Optional[threading.Thread] = None
+        # Wall-time aliases kept for older tests that poke private attrs.
+        self._progress_last_post_wall: float = 0.0
+        self._progress_last_seen_wall: float = 0.0
         self.secret = env_secret
         self.spawn, self.kill, self.probe, self.inject = spawn, kill, probe, inject
         self.detector = detector or HangDetector()
@@ -16613,11 +16690,7 @@ class Supervisor:
             # FR #4827: process I/O while a job is open keeps ack-stale from firing.
             if prev_io is not None and s.activity != prev_io and self.bored:
                 self.bored.note_agent_active()
-            # FR #8155: digest last_progress while a job is ACKed and logs/worktree move.
-            try:
-                self._maybe_progress_heartbeat()
-            except Exception as e:
-                self.log(f"progress-heartbeat: tick failed {type(e).__name__}")
+            # FR #8249: progress heartbeats run on dedicated progress-heartbeat thread.
             reason = self.detector.check(s, self.clock())
             if reason:
                 self.restart_agent(reason)
@@ -16628,16 +16701,92 @@ class Supervisor:
             # FR #2383: agent still alive/turning but never ACK'd via run-dir outbox.
             self._check_ack_miss(proc)
 
-    def _maybe_progress_heartbeat(self) -> None:
-        """FR #8155 / #8195: post last_progress while ACK is open.
+    def _progress_hb_skip(self, reason: str, *, now_mono: float) -> None:
+        """Rate-limited skip log so a missing heartbeat can be attributed (FR #8249)."""
+        last = float(getattr(self, "_progress_hb_skip_log_mono", 0.0) or 0.0)
+        if last and (now_mono - last) < 30.0:
+            return
+        self._progress_hb_skip_log_mono = now_mono
+        try:
+            self.log(f"progress-heartbeat: skip reason={reason}")
+        except Exception:
+            pass
 
-        Log/worktree growth still counts. FR #8195: a live agent (or child tool)
-        process also refreshes the clock so silent long commands (e.g. pytest
-        buffered by Out-String) keep ``last_progress`` fresh for the stuck sweep.
+    def _progress_heartbeat_loop(self) -> None:
+        """FR #8249: dedicated timer; one bad tick must not end the thread."""
+        tick_s = 5.0
+        while not self.stop.wait(tick_s):
+            if getattr(self, "_shutting", False):
+                return
+            try:
+                self._maybe_progress_heartbeat()
+            except Exception as e:
+                try:
+                    self.log(f"progress-heartbeat: tick failed {type(e).__name__}")
+                except Exception:
+                    pass
+
+    def _start_progress_heartbeat(self) -> None:
+        """Start the supervised progress-heartbeat daemon (FR #8249)."""
+        th = getattr(self, "_progress_hb_thread", None)
+        if th is not None and th.is_alive():
+            return
+        self._progress_hb_thread = threading.Thread(
+            target=self._progress_heartbeat_loop,
+            name="progress-heartbeat",
+            daemon=True,
+        )
+        self._progress_hb_thread.start()
+        try:
+            self.log("progress-heartbeat: thread started")
+        except Exception:
+            pass
+
+    def _stop_progress_heartbeat(self) -> None:
+        """Join progress-heartbeat after stop is set (bounded, FR #8249)."""
+        th = getattr(self, "_progress_hb_thread", None)
+        self._progress_hb_thread = None
+        if th is not None and th.is_alive() and th is not threading.current_thread():
+            th.join(timeout=2.0)
+
+    def _maybe_progress_heartbeat(self) -> None:
+        """FR #8155 / #8195 / #8249: post last_progress while ACK is open.
+
+        Runs on the dedicated ``progress-heartbeat`` thread. Reads a lock-free
+        BoredEmitter snapshot and ``self.proc`` without taking supervisor ``RLock``
+        or emitter ``_cv`` for the gate. Log/worktree growth still counts; a live
+        seat wrapper also refreshes the clock (FR #8195) so silent long commands
+        and multi-turn OpenCode gaps keep ``last_progress`` fresh for the stuck sweep.
         """
-        if not self.bored or not getattr(self.bored, "_ack_open", False):
+        if getattr(self, "_shutting", False) or self.stop.is_set():
+            return
+        bored = self.bored
+        if bored is None:
             self._progress_prev = {}
             self._progress_phase = ""
+            return
+        snap = bored.heartbeat_snapshot()
+        now_mono = float(self.clock())
+        if not snap.ack_open:
+            self._progress_prev = {}
+            self._progress_phase = ""
+            # Due only when a prior epoch was posting; otherwise stay quiet.
+            if int(getattr(self, "_progress_hb_epoch", 0) or 0):
+                self._progress_hb_skip("no-ack", now_mono=now_mono)
+            self._progress_hb_epoch = 0
+            return
+        if snap.out_of_fuel:
+            self._progress_hb_skip("fuel-hold", now_mono=now_mono)
+            return
+        # Plain reference read — do not take self._lock (FINISH / start_agent hold it).
+        proc = self.proc
+        agent_alive = False
+        try:
+            agent_alive = proc is not None and proc.poll() is None
+        except Exception:
+            agent_alive = False
+        if not agent_alive:
+            self._progress_hb_skip("proc-exited", now_mono=now_mono)
             return
         wt = str(os.environ.get("BOB_JOB_WORKTREE") or "").strip()
         moved, phase, state = detect_seat_progress(
@@ -16647,37 +16796,36 @@ class Supervisor:
             prev=self._progress_prev,
         )
         self._progress_prev = state
-        now_wall = time.time()
-        agent_alive = False
-        try:
-            with self._lock:
-                proc = self.proc
-            agent_alive = proc is not None and proc.poll() is None
-        except Exception:
-            agent_alive = False
         if progress_alive_counts_as_seen(moved=moved, agent_alive=agent_alive):
-            self._progress_last_seen_wall = now_wall
+            self._progress_last_seen_mono = now_mono
+            self._progress_last_seen_wall = time.time()
             if moved and phase:
                 self._progress_phase = phase
             elif agent_alive and not self._progress_phase:
                 self._progress_phase = progress_phase_for_alive_heartbeat("")
+            # Bounded acquire; if busy, still POST without blocking (FR #8249).
             try:
-                self.bored.note_agent_active()
+                bored.note_agent_active_nb(at=now_mono)
             except Exception:
                 pass
         # Heartbeat while progress/alive was seen recently (stops when stalled dead).
         stale_after = max(float(self._progress_heartbeat_s) * 1.5, 180.0)
-        if self._progress_last_seen_wall <= 0:
+        last_seen = float(getattr(self, "_progress_last_seen_mono", 0.0) or 0.0)
+        if last_seen <= 0:
             return
-        if (now_wall - self._progress_last_seen_wall) > stale_after:
+        if (now_mono - last_seen) > stale_after:
             return
-        if (now_wall - float(self._progress_last_post_wall or 0.0)) < float(self._progress_heartbeat_s):
+        epoch = int(snap.ack_epoch)
+        prev_epoch = int(getattr(self, "_progress_hb_epoch", 0) or 0)
+        last_post = float(getattr(self, "_progress_last_post_mono", 0.0) or 0.0)
+        # New ACK epoch: POST on the next due tick (do not inherit prior job cadence).
+        if epoch != prev_epoch:
+            self._progress_hb_epoch = epoch
+            self._progress_last_post_mono = 0.0
+            last_post = 0.0
+        if last_post and (now_mono - last_post) < float(self._progress_heartbeat_s):
             return
-        work = ""
-        try:
-            work = str(getattr(self.bored, "_ack_job_key", None) or "").strip()
-        except Exception:
-            work = ""
+        work = str(snap.ack_job_key or "").strip()
         try:
             from bobreport import _utc_now_iso
 
@@ -16685,10 +16833,41 @@ class Supervisor:
         except Exception:
             iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
         use_phase = self._progress_phase or phase or progress_phase_for_alive_heartbeat("")
+        # Re-validate immediately before POST (scan→POST race). An in-flight HTTP
+        # request cannot be recalled once started.
+        if getattr(self, "_shutting", False) or self.stop.is_set():
+            self._progress_hb_skip("stopping", now_mono=now_mono)
+            return
+        snap2 = bored.heartbeat_snapshot()
+        if (
+            not snap2.ack_open
+            or snap2.out_of_fuel
+            or int(snap2.ack_epoch) != epoch
+            or str(snap2.ack_job_key or "").strip() != work
+        ):
+            if snap2.out_of_fuel:
+                skip_why = "fuel-hold"
+            elif not snap2.ack_open:
+                skip_why = "no-ack"
+            else:
+                skip_why = "job-changed"
+            self._progress_hb_skip(skip_why, now_mono=now_mono)
+            return
+        proc2 = self.proc
+        if proc2 is not proc:
+            self._progress_hb_skip("job-changed", now_mono=now_mono)
+            return
+        try:
+            if proc2 is None or proc2.poll() is not None:
+                self._progress_hb_skip("proc-exited", now_mono=now_mono)
+                return
+        except Exception:
+            self._progress_hb_skip("proc-exited", now_mono=now_mono)
+            return
         ok = post_digest_progress_heartbeat(
             machine=self.machine,
             nick=self.nick,
-            pid=getattr(self.proc, "pid", None) if self.proc else None,
+            pid=getattr(proc2, "pid", None),
             kind=self.kind,
             work=work,
             last_progress=iso,
@@ -16696,7 +16875,8 @@ class Supervisor:
             log=self.log,
         )
         if ok:
-            self._progress_last_post_wall = now_wall
+            self._progress_last_post_mono = now_mono
+            self._progress_last_post_wall = time.time()
             self.log(
                 f"progress-heartbeat: last_progress={iso} phase={use_phase or '-'}"
             )
@@ -17173,6 +17353,7 @@ class Supervisor:
             self._record_exit(proc, reason, proc.poll(), report=code != EXIT_OK)
         self._stop_session_log()
         self.stop.set()
+        self._stop_progress_heartbeat()
         self._stop_turn_watcher()
         self._stop_fuel_watcher()
         if self.bored:
@@ -17254,16 +17435,24 @@ class Supervisor:
             except Exception as e:
                 self.log(f"console-closed: outbox GIVEUP failed {type(e).__name__}")
         try:
-            self.bored._ack_open = False
-            self.bored._ack_job_key = None
+            with self.bored._cv:
+                self.bored._ack_open = False
+                self.bored._ack_job_key = None
+                self.bored._hb_notify_all()
         except Exception:
-            pass
+            try:
+                self.bored._ack_open = False
+                self.bored._ack_job_key = None
+            except Exception:
+                pass
         self.log(f"console-closed: posted {line}")
 
     def run_forever(self) -> int:
         if self.bored:
             self.bored.start()
         threading.Thread(target=self.health_loop, name="health", daemon=True).start()
+        # FR #8249: dedicated progress heartbeat (independent of health / FINISH locks).
+        self._start_progress_heartbeat()
         self.done.wait()
         return self.exit_code if self.exit_code is not None else EXIT_OK
 
