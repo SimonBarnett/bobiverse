@@ -11766,9 +11766,17 @@ def opencode_cleanup_extra_worktrees(
         for line in out.splitlines():
             if line.startswith("Removing worktree "):
                 removed.append(line[len("Removing worktree ") :].strip())
+        exit_u = normalize_agent_exit_code(code)
         if log_fn:
             if code == 0:
                 log_fn(f"opencode finish: Clear result=ok removed={len(removed)} {out[-200:]}")
+            elif exit_u == CONSOLE_CLOSE_EXIT:
+                # FR #8211: Ctrl+C / console-close (0xC000013A) during Clear is not a
+                # Clear defect — do not file fleet-ps1-clear-failed.
+                log_fn(
+                    "opencode finish: Clear result=skipped:console-closed "
+                    f"exit={format_agent_exit_code_label(code)}"
+                )
             else:
                 log_fn(
                     f"opencode finish: Clear result=failed:exit-{code} {out[-400:]}"
