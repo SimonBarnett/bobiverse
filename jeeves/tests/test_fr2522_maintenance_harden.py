@@ -38,7 +38,12 @@ def _work(tmp_path: Path) -> Path:
 
 def _harness(tmp_path, monkeypatch, proc, *, kind="grok", state=None, sessions=None):
     folder = _work(tmp_path)
-    monkeypatch.setattr(bw, "_choose", lambda *_a, **_k: (SimpleNamespace(kind=kind), "agent.cmd", "grok.exe", None, True))
+    # FR #8224 / #8289: _choose returns (dec, cursor, grok, fuel, signin_ok, signin_state).
+    monkeypatch.setattr(
+        bw,
+        "_choose",
+        lambda *_a, **_k: (SimpleNamespace(kind=kind), "agent.cmd", "grok.exe", None, True, "ok"),
+    )
     monkeypatch.setattr(bw, "install_ctrl_handler", lambda _cb: True)
     rec = {"titles": [], "icons": [], "spawned": [], "killed": [], "log": []}
 

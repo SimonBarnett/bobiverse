@@ -35,3 +35,32 @@ def test_fr8264_live_author_cannot_take_stall_sibling_can():
     row = _stall_row()
     assert gitclaim.live_seat_can_take_unanswered(row, {"flamingo-4392"}) is False
     assert gitclaim.live_seat_can_take_unanswered(row, {"flamingo-4392", "marchhare-1"}) is True
+
+
+def test_fr8293_author_blocked_when_stall_body_has_no_idle_list():
+    row = {
+        "task": "FR",
+        "repo": "SimonBarnett/bobiverse",
+        "id": "#8293",
+        "title": "stall:self-review-deadlock:SimonBarnett/bobiverse#8239,SimonBarnett/bobiverse#8273",
+        "body": "",
+    }
+    doc = {
+        "unaccepted": [
+            {
+                "task": "MRB",
+                "repo": "SimonBarnett/bobiverse",
+                "id": "#8273",
+                "author_seat": "flamingo-4392",
+            }
+        ]
+    }
+    assert gitclaim.seat_blocked_for_self_review_stall(row, "flamingo-4392", doc) is True
+    assert gitclaim.seat_blocked_for_self_review_stall(row, "marchhare-1", doc) is False
+    assert gitclaim.live_seat_can_take_unanswered(row, {"flamingo-4392"}, doc=doc) is False
+    assert (
+        gitclaim.live_seat_can_take_unanswered(
+            row, {"flamingo-4392", "marchhare-1"}, doc=doc
+        )
+        is True
+    )

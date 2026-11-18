@@ -566,6 +566,8 @@ routes to bobiverse via the split rule.
 - On FIX for an MRB FAIL that already has a companion fix PR, fast-forward the original tip with the fix commit, close the companion as duplicate, and DONE FIX with the original tip PR URL (FR #5142).
 - When opencode_typed_delivery is called without closes_ref, strip the leading FR|MRB|UAT|FIX token from the job key so Closes/DONE do not double the task type (FR #8279 / PR #8281).
 - Put OpenCode typed close-steps in a sibling module and reload it on mtime so long-running bob_worker does not keep serving pre-FR-#8248 commit-on-fr-N MRB finish text (FR #8283 / PR #8284).
+- When _choose grows a return value, update every test stub in the same change, including jeeves/tests, not only bob/tests.
+- live_seat_can_take_unanswered must pass the queue doc into seat_blocked_for_self_review_stall so empty-body stalls do not look eligible when only the waiting-PR author is live (FR #8295 / #8293)
 - FINISH reviewed SHA: prefer gh pr view headRefOid (or mergeCommit when MERGED) over worktree HEAD / .bob/reviewed-sha after a keep-both fold (FR #8286 / #8022 / #4661)
 
 ## Harvest digest (lessons audit 2026-10-06)

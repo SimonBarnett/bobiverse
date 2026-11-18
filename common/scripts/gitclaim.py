@@ -5050,11 +5050,20 @@ def offer_timeout_s(row: dict | None) -> float:
     return base
 
 
-def seat_blocked_for_self_review_stall(row: dict, nick: str) -> bool:
-    """FR #8264: the idle author of a deadlocked MRB must not be offered that stall FR.
+def _seat_nick_eq(a: str, b: str) -> bool:
+    left = (canonical_worker_nick(a) or a or "").strip().lower()
+    right = (canonical_worker_nick(b) or b or "").strip().lower()
+    return bool(left) and left == right
 
-    The finding evidence lists those seats under ``idle``. Offering them the
-    stall issue keeps the only free seat busy and the MRB still unreviewed.
+
+def seat_blocked_for_self_review_stall(
+    row: dict, nick: str, doc: dict | None = None
+) -> bool:
+    """FR #8264 / #8293: do not offer a self-review stall FR to its author seat.
+
+    Block when the evidence ``idle`` list names this seat, or when this seat is
+    the author of a waiting pull named in the stall title. A queue row whose
+    body was truncated still blocks the author.
     """
     if not isinstance(row, dict):
         return False
@@ -5070,13 +5079,34 @@ def seat_blocked_for_self_review_stall(row: dict, nick: str) -> bool:
     if not me:
         return False
     m = re.search(r'"idle"\s*:\s*\[(.*?)\]', blob, re.S)
-    if not m:
+    if m:
+        for raw in re.findall(r'"([^"]+)"', m.group(1)):
+            if _seat_nick_eq(raw, me):
+                return True
+    if re.search(r"(?i)\bidle\b[^]]{0,500}\b" + re.escape(me) + r"\b", blob):
+        return True
+    if not isinstance(doc, dict):
         return False
-    named = re.findall(r'"([^"]+)"', m.group(1))
-    for raw in named:
-        other = (canonical_worker_nick(raw) or raw or "").strip().lower()
-        if other and other == me:
-            return True
+    title = str(row.get("title") or "")
+    waiting = re.findall(
+        r"([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)#(\d+)", title
+    )
+    if not waiting:
+        return False
+    want = {(repo.lower(), num) for repo, num in waiting}
+    buckets = []
+    for key in ("unaccepted", "accepted", "done"):
+        buckets.extend(doc.get(key) or [])
+    for other in buckets:
+        if not isinstance(other, dict):
+            continue
+        repo = str(other.get("repo") or "").strip().lower()
+        ident = str(other.get("id") or "").lstrip("#")
+        if (repo, ident) not in want:
+            continue
+        for field in ("author_seat", "implementer_seat", "author_nick"):
+            if _seat_nick_eq(str(other.get(field) or ""), me):
+                return True
     return False
 
 
@@ -5093,13 +5123,18 @@ def seat_offer_refused(row: dict, nick: str) -> bool:
 
 
 def live_seat_can_take_unanswered(
-    row: dict, live: set[str] | None, home: Path | None = None
+    row: dict,
+    live: set[str] | None,
+    home: Path | None = None,
+    doc: dict | None = None,
 ) -> bool:
     """True when some live seat is not refused and has not given up (FR #7966).
 
     no_eligible_since means nobody live can take the row. A sibling seat that
     is still eligible must not look stalled. FR #8153: also skip seats blocked
     for no-clone on this repo when *home* is provided.
+    FR #8295: pass the queue doc so a self-review stall blocks its author
+    even when the row body has no idle list.
     """
     if not isinstance(row, dict):
         return False
@@ -5110,7 +5145,7 @@ def live_seat_can_take_unanswered(
             continue
         if seat_offer_refused(row, nick) or row_gave_up_by(row, nick):
             continue
-        if seat_blocked_for_self_review_stall(row, nick):
+        if seat_blocked_for_self_review_stall(row, nick, doc):
             continue
         if seat_on_deterministic_nack_cooldown(row, nick, time.time()):
             continue
@@ -10435,7 +10470,7 @@ def offer_focus_top(
                 if seat_offer_refused(cand, me):
                     return None
                 # FR #8264: do not hand a self-review stall FR to the idle author.
-                if seat_blocked_for_self_review_stall(cand, me):
+                if seat_blocked_for_self_review_stall(cand, me, doc):
                     return None
                 # FR #8017: pre-ACK deterministic NACK cools this seat for the row.
                 if seat_on_deterministic_nack_cooldown(cand, me, now_f):
@@ -10701,7 +10736,7 @@ def offer_focus_top(
                     if not cand.get("offer_refused_by"):
                         continue
                     if cand.get("offered_to") or live_seat_can_take_unanswered(
-                        cand, live, home=home
+                        cand, live, home=home, doc=doc
                     ):
                         if cand.pop("no_eligible_since", None) is not None:
                             purged = True
