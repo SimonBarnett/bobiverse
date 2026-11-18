@@ -1930,13 +1930,16 @@ def apply_xai_signin_gate(
     signin_ok: bool,
     signin_state: Optional[str] = None,
     machine: str = "",
+    launched_kind: str = "",
 ) -> Decision:
-    """Bad sign-in never launches Grok.
+    """Bad sign-in never launches Grok and never falls through to another kind.
 
     FR #7485: never rewrite ``refuse`` / ``cursor`` / ``opencode`` /
-    ``xai-auth-expired`` / ``no-seat-auth``. Explicit ``--agent`` decisions
-    must not silently fall through. Automatic ``grok`` may still fall through
-    to Cursor/OpenCode.
+    ``xai-auth-expired`` / ``no-seat-auth``. FR #8221: a seat only ever runs
+    the kind the tray launched, so an automatic or explicit ``grok`` decision
+    with a bad sign-in exits instead of falling through to Cursor/OpenCode.
+    ``launched_kind`` is the kind the tray launched (empty for automatic); it
+    never changes the outcome, only the reason text.
 
     FR #8222: a missing login is ``no-seat-auth`` (never the word expired).
     A past expiry stays ``xai-auth-expired``.
@@ -1946,15 +1949,16 @@ def apply_xai_signin_gate(
         return dec
     if dec.kind in ("refuse", "cursor", "opencode", "xai-auth-expired", "no-seat-auth"):
         return dec
-    fb = select_agent(fuel, cursor_cmd, None, opencode_cmd, xai_signin_ok=False)
+    # FR #8221: never fall through. FR #8222: absent -> no-seat-auth.
+    launched = (launched_kind or dec.kind or "").strip().lower()
     if state == "absent":
         host = (machine or "machine").strip() or "machine"
         tag = f"no-seat-auth; no Grok login on {host}"
-        if fb.kind in ("cursor", "opencode"):
-            return Decision(fb.kind, tag + "; " + fb.reason)
+        if launched == "grok":
+            return Decision("no-seat-auth", "grok: " + tag)
         return Decision("no-seat-auth", tag)
-    if fb.kind in ("cursor", "opencode"):
-        return Decision(fb.kind, "xai-auth-expired; " + fb.reason)
+    if launched == "grok":
+        return Decision("xai-auth-expired", "grok: xai-auth-expired")
     return Decision("xai-auth-expired", "xai-auth-expired")
 
 
@@ -1999,15 +2003,22 @@ def decision_after_grok_signin_prompt(
     seat_home: str | Path | None = None,
     machine_auth: str | Path | None = None,
     machine: str = "",
+    launched_kind: str = "grok",
 ) -> Decision:
+    """FR #8221/#8222: sign-in prompt exits no-seat-auth or xai-auth-expired.
+
+    Never falls through to Cursor/OpenCode. Classify seat-missing vs
+    machine-expired when seat/machine paths are provided.
+    """
     cause = "xai-auth-expired"
     if seat_home is not None or machine_auth is not None:
         cause = classify_grok_signin_prompt_cause(
             seat_home=seat_home, machine_auth=machine_auth
         )
     state = "expired" if cause == "xai-auth-expired" else "absent"
+    kind = (launched_kind or "grok").strip().lower()
     return apply_xai_signin_gate(
-        Decision("grok", "signin-prompt"),
+        Decision(kind or "grok", "signin-prompt"),
         fuel,
         cursor_cmd,
         None,
@@ -2015,6 +2026,7 @@ def decision_after_grok_signin_prompt(
         signin_ok=False,
         signin_state=state,
         machine=machine,
+        launched_kind=kind or "grok",
     )
 
 
@@ -2338,6 +2350,7 @@ def resolve_seat_decision(
     return apply_xai_signin_gate(
         dec, fuel, cursor_cmd, grok_exe, opencode_cmd,
         signin_ok=xai_signin_ok, signin_state=signin_state, machine=machine,
+        launched_kind=requested or "",
     )
 
 
@@ -2962,9 +2975,21 @@ def describe_agent_child_launch(
         import worker_start_model as wsm
 
         _scfg = wsm.load_worker_start_config()
+        # FR #8220: stamp BOB_OPENCODE_MODEL into child env so launch-opencode.ps1 and
+        # launch-record see a concrete id even when tray pin is empty and parent env lacks it.
+        if kind_l == "opencode":
+            oc_stamp = (
+                wsm.concrete_model_id(os.environ.get("BOB_OPENCODE_MODEL"))
+                or wsm.launch_selected_model("opencode", _scfg, env=os.environ)
+                or wsm.default_opencode_free_model(_scfg)
+            )
+            if oc_stamp:
+                env["BOB_OPENCODE_MODEL"] = oc_stamp
         actual = wsm.concrete_model_id(wsm.actual_from_launch_spec(kind_l, spec, env=env))
         if not actual and kind_l == "opencode":
-            actual = wsm.concrete_model_id(os.environ.get("BOB_OPENCODE_MODEL"))
+            actual = wsm.concrete_model_id(
+                env.get("BOB_OPENCODE_MODEL") or os.environ.get("BOB_OPENCODE_MODEL")
+            )
         effort = wsm.configured_start_effort(kind_l, _scfg)
         if actual:
             env[wsm.ENV_ACTUAL_MODEL] = actual
@@ -4819,17 +4844,22 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
         # so BoredEmitter gets harvest-hold / done-miss / startup-ready parity with Grok.
         # FR #6240: no external_directory allow. Each injected assign carries its own
         # @@BOBJOB1 frame. The standing prompt is not a job and is not scanned.
+        # FR #8220: env pin > tray pin > free default. Never throw when tray pin is empty
+        # (flamingo-22516 recycled with empty workerStartModels.opencode + no child env stamp).
         oc_cfg_model = ""
         try:
             import worker_start_model as wsm
 
-            oc_cfg_model = wsm.configured_start_model("opencode", wsm.load_worker_start_config())
+            _oc_cfg = wsm.load_worker_start_config()
+            oc_cfg_model = wsm.launch_selected_model("opencode", _oc_cfg, env=os.environ)
+            if not oc_cfg_model:
+                oc_cfg_model = wsm.default_opencode_free_model(_oc_cfg)
         except Exception:
             oc_cfg_model = ""
+        if not oc_cfg_model:
+            oc_cfg_model = "opencode/deepseek-v4.1-flash-free"
         oc_fallback = (
             f"if (-not $env:BOB_OPENCODE_MODEL) {{ $env:BOB_OPENCODE_MODEL = '{esc(oc_cfg_model)}' }}"
-            if oc_cfg_model
-            else r"if (-not $env:BOB_OPENCODE_MODEL) { throw 'BOB_OPENCODE_MODEL is required (no exhausted glm-5.3 fallback)' }"
         )
         files[lfile] = "\n".join([
             r"$ErrorActionPreference = 'Stop'",
@@ -13550,6 +13580,7 @@ class Supervisor:
         self._owned: set = set()
         self._shutting = False
         self._shutdown_reason = ""
+        self._grok_login_expired_reported = False  # FR #8221: report once
         self._grace_timer: Optional[threading.Timer] = None
         self._min_ready_timer: Optional[threading.Timer] = None
         self._agent_started_at: Optional[float] = None
@@ -14654,6 +14685,32 @@ class Supervisor:
 
     def start_agent(self, note: str = "") -> bool:
         if (self.kind or "").strip().lower() == "opencode":
+            # FR #8221 / MRB #8232: refuse only when launch_selected_model is empty.
+            # An empty parent BOB_OPENCODE_MODEL is not empty: FR #8220 fills
+            # env, then tray, then the free default inside build_launch.
+            try:
+                import worker_start_model as wsm
+
+                resolved = wsm.concrete_model_id(os.environ.get("BOB_OPENCODE_MODEL")) or (
+                    wsm.launch_selected_model(
+                        "opencode", wsm.load_worker_start_config(), env=os.environ
+                    )
+                )
+            except Exception:
+                resolved = ""
+            if not (resolved or "").strip():
+                self.log("opencode: refusing to start with empty/unresolved model (FR #8221)")
+                try:
+                    report_seat_start_refusal(
+                        machine=self.machine,
+                        kind="opencode",
+                        model="",
+                        reason="opencode: empty/unresolved model (FR #8221)",
+                        log=self.log,
+                    )
+                except Exception as e:
+                    self.log(f"opencode: seat-start-refusal report failed {type(e).__name__}")
+                return False
             blocked, msg = probe_gh_auth(subprocess.run)
             if blocked:
                 self.log(msg)
@@ -15022,9 +15079,13 @@ class Supervisor:
         threading.Thread(target=_run, name="prompt-retry-watch", daemon=True).start()
 
     def _fallback_after_grok_signin_prompt(self, proc) -> None:
-        """FR #7345 / MRB #7348: kill prompt, then Cursor/OpenCode or exit xai-auth-expired.
+        """FR #8221: kill the sign-in prompt and exit xai-auth-expired. Never switch kind.
 
-        Never leave the seat parked and never EXIT_OK (that would only recycle Grok).
+        FR #7345 / MRB #7348 originally fell back to Cursor/OpenCode; FR #8221
+        removed that because a seat only ever runs the kind the tray launched.
+        The prompt is killed, the event is reported once (digest + exception
+        reporter), and the seat exits EXIT_XAI_AUTH_EXPIRED (terminal, not an
+        FR #7593 recycle).
         """
         with self._lock:
             if self._shutting:
@@ -15068,22 +15129,53 @@ class Supervisor:
             fuel, cursor_cmd, opencode_cmd,
             seat_home=seat_home, machine_auth=machine_auth,
             machine=getattr(self, "machine", "") or "",
+            launched_kind=(self.kind or "grok"),
         )
-        if dec.kind in ("cursor", "opencode"):
-            exe = cursor_cmd if dec.kind == "cursor" else opencode_cmd
-            if exe:
-                self.log(f"grok: sign-in prompt; falling back to {dec.kind} ({dec.reason})")
-                self.kind = dec.kind
-                self.exe = exe
-                self.relay.set_target(None)
-                if self.bored:
-                    self.bored.set_ready(False)
-                if self.start_agent(note="(fallback after Grok sign-in prompt; FR #7345)"):
-                    return
-                self.log("grok: sign-in fallback launch failed; exiting xai-auth-expired")
-        else:
-            self.log(f"grok: sign-in prompt; no Cursor/OpenCode fuel ({dec.reason})")
+        self.log(f"grok: sign-in prompt; {dec.reason} (FR #8221/#8222)")
+        if dec.kind == "no-seat-auth":
+            # Missing login: report once, exit without switching kind.
+            try:
+                post_digest_seat_kind(
+                    machine=self.machine,
+                    pid=os.getpid(),
+                    nick=self.nick,
+                    kind=self.kind,
+                    state="needs_sign_in",
+                    log=self.log,
+                )
+            except Exception:
+                pass
+            self.shutdown("no-seat-auth-prompt", EXIT_NO_AGENT)
+            return
+        self._report_grok_login_expired()
         self.shutdown("xai-auth-expired-prompt", EXIT_XAI_AUTH_EXPIRED)
+
+    def _report_grok_login_expired(self) -> None:
+        """FR #8221: report once to the digest + exception reporter; never repeats."""
+        if getattr(self, "_grok_login_expired_reported", False):
+            return
+        self._grok_login_expired_reported = True
+        msg = "Grok login expired on %s: sign in, then start the seat again" % (
+            self.machine or "unknown"
+        )
+        self.log(msg)
+        try:
+            import runtime_failure
+
+            runtime_failure.report_message("bob-worker", msg, site="grok-login-expired")
+        except Exception:
+            pass
+        try:
+            post_digest_seat_kind(
+                machine=self.machine,
+                pid=os.getpid(),
+                nick=self.nick,
+                kind=self.kind,
+                state="needs_sign_in",
+                log=self.log,
+            )
+        except Exception:
+            pass
 
     def _start_grok_signin_guard(self, proc) -> None:
         """FR #7345: kill Grok if an interactive sign-in/device-code prompt appears in 30s."""

@@ -551,6 +551,10 @@ routes to bobiverse via the split rule.
 - Explicit OpenCode start must judge fuel by seat_fuel_pool(start_model): free=0 must not refuse opencode-go/* when go is unknown/usable; unknown own pool starts (FR #7714).
 - bob-ear info() must catch OSError ENOSPC on stdout print so disk-full does not kill ear threads; report once site=info-enospc (FR #8205).
 - When shipped_script_names always includes fleet .ps1 (FR #8156), fr7991 unit fixtures must expect those names plus the .py closure (FR #8206).
+- Seat Grok auth provision must use machine_grok_auth_path (BOB_GROK_AUTH_PATH override), not only user_grok_home/auth.json
+- skill-dag resolve must never silently return empty matched+skipped for FR/MRB JOB_SEEDS: emit unresolved/not_in_index when the skill is missing from --root
+- MRB of a tip that already carries fix(mrb-N): re-verify acceptance + cited pytest on the fixed head SHA, PASS @ that SHA, arm --auto (allow_auto_merge), DONE; do not re-FAIL the prior empty-env over-refuse once tip has the reconcile commit.
+- Fleet fuel fill must resolve digest.json without BOB_DIGEST_HOME (bob_home / BOB_HOME / install home); seats do not set that env
 
 ## Harvest digest (lessons audit 2026-10-06)
 

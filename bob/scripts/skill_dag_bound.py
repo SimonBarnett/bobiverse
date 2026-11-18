@@ -35,7 +35,8 @@ from typing import Any, Iterator
 CORE_STUB_ID = "skill-dag-core"
 CORE_STUB_LINE = (
     "Process-local skill catalog is the core stub only (skill-dag-core). "
-    "Do not list other skill-dag index nodes in this prompt; resolve per job."
+    "Do not list other skill-dag index nodes in this prompt; resolve per job. "
+    "Empty resolve matched+skipped is not expected (FR #8225: not_in_index / no_seed_match)."
 )
 CORE_STUB_SKILL_MD = f"""---
 name: {CORE_STUB_ID}

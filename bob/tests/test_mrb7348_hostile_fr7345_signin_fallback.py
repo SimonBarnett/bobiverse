@@ -1,4 +1,4 @@
-"""MRB #7348 hostile: FR #7345 prompt kill must fall back (not EXIT_OK recycle)."""
+"""MRB #7348 hostile: FR #7345 prompt kill must exit xai-auth-expired (FR #8221: never fall through)."""
 from __future__ import annotations
 
 from types import SimpleNamespace
@@ -15,14 +15,16 @@ class _FakeProc:
         return None if self._alive else 0
 
 
-def test_mrb7348_prompt_fallback_prefers_cursor():
+def test_mrb7348_prompt_exits_xai_auth_even_with_cursor_fuel():
+    """FR #8221: a sign-in prompt never falls through to Cursor even with fuel."""
     d = bw.decision_after_grok_signin_prompt(
         bw.Fuel(40, 10, 50, "available"),
         r"C:\c\agent.cmd",
         None,
     )
-    assert d.kind == "cursor"
+    assert d.kind == "xai-auth-expired"
     assert "xai-auth-expired" in d.reason
+    assert d.kind != "cursor"
 
 
 def test_mrb7348_prompt_fallback_exits_when_no_fuel():
@@ -34,8 +36,8 @@ def test_mrb7348_prompt_fallback_exits_when_no_fuel():
     assert d.kind == "xai-auth-expired"
 
 
-def test_mrb7348_supervisor_prompt_falls_back_to_cursor(monkeypatch):
-    """Kill + Cursor start; never shutdown EXIT_OK."""
+def test_mrb7348_supervisor_prompt_exits_xai_auth_no_kind_switch(monkeypatch):
+    """FR #8221: kill + exit xai-auth-expired; never switch kind to Cursor."""
     logs: list[str] = []
     kills: list[int] = []
     starts: list[str] = []
@@ -68,22 +70,26 @@ def test_mrb7348_supervisor_prompt_falls_back_to_cursor(monkeypatch):
     monkeypatch.setattr(bw, "read_fuel", lambda *_a, **_k: bw.Fuel(40, 10, 50, "available"))
     monkeypatch.setattr(bw, "resolve_cursor_cmd", lambda: r"C:\c\agent.cmd")
     monkeypatch.setattr(bw, "resolve_opencode_cmd", lambda: None)
+    monkeypatch.setattr(
+        bw, "classify_grok_signin_prompt_cause", lambda **_k: "xai-auth-expired"
+    )
+    monkeypatch.setattr(bw, "_http_post_json", lambda url, payload, **kw: True)
+    monkeypatch.setattr(sup, "shutdown", lambda why, code: shut.append((why, code)))
 
     def fake_start(note=""):
         starts.append(note)
         return True
 
     monkeypatch.setattr(sup, "start_agent", fake_start)
-    monkeypatch.setattr(sup, "shutdown", lambda why, code: shut.append((why, code)))
 
     sup._fallback_after_grok_signin_prompt(proc)
 
     assert kills == [777]
     assert 777 in sup._expected_exit
-    assert starts and "sign-in prompt" in starts[0]
-    assert sup.kind == "cursor"
-    assert sup.exe == r"C:\c\agent.cmd"
-    assert shut == []
+    assert starts == []
+    assert sup.kind == "grok"
+    assert sup.exe == r"C:\g\agent.exe"
+    assert shut == [("xai-auth-expired-prompt", bw.EXIT_XAI_AUTH_EXPIRED)]
     assert bw.EXIT_OK not in [c for _w, c in shut]
 
 
@@ -109,6 +115,10 @@ def test_mrb7348_supervisor_prompt_exits_xai_auth_when_no_cursor(monkeypatch):
     monkeypatch.setattr(bw, "read_fuel", lambda *_a, **_k: bw.Fuel(0, 0, 0, "exhausted"))
     monkeypatch.setattr(bw, "resolve_cursor_cmd", lambda: None)
     monkeypatch.setattr(bw, "resolve_opencode_cmd", lambda: None)
+    monkeypatch.setattr(
+        bw, "classify_grok_signin_prompt_cause", lambda **_k: "xai-auth-expired"
+    )
+    monkeypatch.setattr(bw, "_http_post_json", lambda url, payload, **kw: True)
     monkeypatch.setattr(sup, "shutdown", lambda why, code: shut.append((why, code)))
 
     sup._fallback_after_grok_signin_prompt(proc)

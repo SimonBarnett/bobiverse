@@ -9896,6 +9896,39 @@ def merge_payload_local_peer_ahead_of_chair(
     return payload
 
 
+def _ingest_fleet_pool_sections(doc: dict, pull: dict) -> None:
+    """FR #8237: mirror public fleet Go/Copilot onto the local digest.
+
+    Seats read mid-job Go fuel from local digest.json (FR #8230). The public
+    report already carries ``fleet_pools``; without this copy the ear pull left
+    worker-visible digests with only machines/pcent and no opencode-go row.
+    When the pull omits a section, keep the local value (do not wipe).
+    Never copies credential fields — public rows are remaining/fresh/fetched_at
+    /usage_source/windows only.
+    """
+    if not isinstance(doc, dict) or not isinstance(pull, dict):
+        return
+    # Prefer the public sanitiser so free/cursor keys never land locally.
+    # _digest_fleet_pools also folds pull.opencode / pull.copilot when
+    # fleet_pools is absent (older report shapes).
+    if any(
+        isinstance(pull.get(k), dict) and pull.get(k)
+        for k in ("fleet_pools", "opencode", "copilot", "fleet")
+    ):
+        cleaned = _digest_fleet_pools(pull)
+        # Also accept public ``fleet.opencode-go`` when fleet_pools was empty.
+        if not cleaned:
+            fleet = pull.get("fleet")
+            if isinstance(fleet, dict):
+                cleaned = _digest_fleet_pools({"fleet_pools": fleet})
+        if cleaned:
+            doc["fleet_pools"] = copy.deepcopy(cleaned)
+    for key in ("opencode", "copilot", "fleet"):
+        node = pull.get(key)
+        if isinstance(node, dict) and node:
+            doc[key] = copy.deepcopy(node)
+
+
 @_digest_locked
 def ingest_fleet_digest_pull(home: Path, pull: dict) -> None:
     """Apply chair !bobiverse JSON to local digest.json and bob-peers (tray pull)."""
@@ -9910,6 +9943,7 @@ def ingest_fleet_digest_pull(home: Path, pull: dict) -> None:
             doc[key] = pull[key]
     if isinstance(pull.get("cursor_pools"), list):
         doc["cursor_pools"] = _coerce_cursor_pools(pull["cursor_pools"])
+    _ingest_fleet_pool_sections(doc, pull)
     merged = doc.get("machines") if isinstance(doc.get("machines"), dict) else {}
     for raw_mid, ent in machines.items():
         mid = normalize_machine_id(str(raw_mid))

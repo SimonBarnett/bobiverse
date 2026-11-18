@@ -4,6 +4,9 @@ FR #6901: resolve scores the job line against skill descriptions when the first
 token is not FR/MRB/UAT/FIX and the line is not an exact skill id.
 FR #7079: the same pass also scores hyphenated skill ids so spaced multi-word
 seeds (not job types) are not empty.
+FR #8225: an FR/MRB/UAT/FIX seed that maps via JOB_SEEDS but is missing from the
+index returns ``unresolved`` / ``not_in_index`` (never a silent empty matched+skipped).
+Empty resolve is not expected for job seats; check MCP ``--root`` / status.
 """
 from __future__ import annotations
 
@@ -470,7 +473,24 @@ class SkillDagServer:
         matched: list[dict[str, Any]] = []
         skipped: list[dict[str, Any]] = []
         if not sid:
-            return {"matched": matched, "skipped": skipped}
+            # FR #8225: silent empty matched+skipped looked like "expected for FR seats".
+            return {
+                "matched": matched,
+                "skipped": skipped,
+                "unresolved": True,
+                "reason": "no_seed_match",
+            }
+        if sid not in self.nodes:
+            # JOB_SEEDS / exact id mapped, but --root index never loaded that skill
+            # (bound-only catalog, sparse install, wrong roots). Not an empty success.
+            skipped.append({"id": sid, "reason": "not_in_index"})
+            return {
+                "matched": matched,
+                "skipped": skipped,
+                "unresolved": True,
+                "reason": "not_in_index",
+                "seed_id": sid,
+            }
         used = 64
         order = self._closure(sid)
         if sid in order:
