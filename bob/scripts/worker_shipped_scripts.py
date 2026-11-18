@@ -36,6 +36,14 @@ EXTRA_FLEET_SCRIPTS = (
     "Clear-BobiverseJobWorktrees.ps1",
     "Bobiverse-Common.ps1",
 )
+# FR #8317: bob_worker imports these for FINISH / importlib.reload. They are not
+# by-path scripts, so the transitive by-path walker never sees them. Without a
+# ship copy, frozen seats load a stale flat install module and FIX prompts still
+# say commit on fr-N / gh pr create.
+EXTRA_WORKER_PY = (
+    "opencode_delivery.py",
+    "opencode_seat_contract.py",
+)
 # FR #7991: a by-path script may import a sibling ``.py`` from the same scripts
 # dir (``skill_dag_mcp`` -> ``skill_dag_index``). Ship those modules too, or the
 # MCP host gets ``ModuleNotFoundError`` while the CLI works from the repo.
@@ -123,6 +131,13 @@ def shipped_script_names(
             dep = mod + ".py"
             if dep not in seen and find_module_file(dep, source) is not None:
                 queue.append(dep)
+    # FR #8317: FINISH reload modules as leaves (not by-path). Do not walk their
+    # import graphs here --- that would pull repo_clone_store and the world into
+    # every worker-scripts bundle. Present sibling files only.
+    for n in EXTRA_WORKER_PY:
+        if n not in seen and find_module_file(n, source) is not None:
+            seen.add(n)
+            out.append(n)
     return sorted(out)
 
 
