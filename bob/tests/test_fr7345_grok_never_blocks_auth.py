@@ -109,7 +109,8 @@ def test_fr7345_prompt_detect_and_30s_window():
     d = bw.decision_after_grok_signin_prompt(
         bw.Fuel(12, 0, 40, "available"), r"C:\c\agent.cmd", None
     )
-    assert d.kind == "cursor"
+    # FR #8221: a sign-in prompt exits xai-auth-expired; never falls through to Cursor.
+    assert d.kind == "xai-auth-expired"
 
 
 def test_fr7345_ear_stamps_xai_auth_expired_and_clears():
