@@ -27,12 +27,26 @@ def home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
         bobreport._SEAT_ROSTER_CACHE["ids"] = ()
     registered_machines.save_registered(tmp_path, {"marchhare", "ionos", "flamingo"})
     digest = bobreport.empty_digest()
+    # FR #8193: mark offer seats as Grok/paid so they can take MRB (bare idle
+    # without start_model is free fuel and cannot). free_idle stays empty here;
+    # tests that need classic MRB-before-FR under #8138 monkeypatch
+    # mrb_yields_to_older_fr (adding a free seat would reserve FR for it).
     for mid, pids in (
         ("marchhare", ("35600", "35601", "35602")),
         ("flamingo", ("9",)),
     ):
         digest["machines"][mid] = bobreport._empty_machine(mid)
-        digest["machines"][mid]["workers"] = {p: {"state": "idle"} for p in pids}
+        digest["machines"][mid]["worker_list"] = [
+            {
+                "nick": f"{mid}-{p}",
+                "state": "idle",
+                "kind": "grok",
+                "start_model": "grok-4",
+                "configured_model": "grok-4",
+                "updated": "2026-11-17T12:00:00Z",
+            }
+            for p in pids
+        ]
     bobreport.save_digest(tmp_path, digest)
     gitclaim._write_queue(
         gitclaim.queue_path(tmp_path),
@@ -80,13 +94,19 @@ def test_mrb3265_claim_top_kind_then_number_not_seq(home: Path):
     assert job["task"] == "MRB" and job["id"] == "#3"
 
 
-def test_mrb3265_same_priority_mrb_beats_lower_numbered_fr(home: Path):
+def test_mrb3265_same_priority_mrb_beats_lower_numbered_fr(
+    home: Path, monkeypatch: pytest.MonkeyPatch
+):
     """Across same-priority repos, any MRB sorts before any FR (kind before number).
 
     Both peers must be HIGH_PRIORITY_REPOS (bobiverse / a-search): !focus 1 on any
     other repo is clamped to medium (5), which would make this a priority test
     instead of a same-priority kind-before-number probe (FR #6571).
+
+    FR #8193: with free_idle empty, #8138 would yield the newer MRB to the older
+    FR; this probe locks classic kind-before-number, so disable only-Grok yield.
     """
+    monkeypatch.setattr(gitclaim, "mrb_yields_to_older_fr", lambda *a, **k: False)
     _queue(
         home,
         [
