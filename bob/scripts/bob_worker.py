@@ -557,6 +557,8 @@ class Fuel:
     opencode_go: Optional[int] = None
     opencode_models: dict = field(default_factory=dict)
     opencode_free_model_ids: tuple = field(default_factory=tuple)
+    # FR #8186: provider windows (week/rolling/month) when aggregate go is nulled.
+    opencode_windows: Optional[dict] = None
 
 
 def parse_fuel(text: str) -> Fuel:
@@ -603,6 +605,9 @@ def parse_fuel(text: str) -> Fuel:
         op_free_ids = tuple(str(i) for i in op_free_ids)
     else:
         op_free_ids = ()
+    op_windows = op.get("windows") if isinstance(op, dict) and isinstance(op.get("windows"), dict) else None
+    if op_windows is None and isinstance(doc.get("windows"), dict):
+        op_windows = doc.get("windows")
     return Fuel(
         _i(cur.get("high")),
         _i(cur.get("low")),
@@ -616,6 +621,7 @@ def parse_fuel(text: str) -> Fuel:
         op_go,
         dict(op_models),
         op_free_ids,
+        op_windows,
     )
 
 
@@ -660,6 +666,7 @@ def merge_fuel_parts(parts: dict) -> Fuel:
         opencode.opencode_go,
         dict(opencode.opencode_models or {}),
         tuple(opencode.opencode_free_model_ids or ()),
+        opencode.opencode_windows,
     )
 
 
@@ -712,6 +719,7 @@ def fuel_cache_document(fuel: Fuel, now: Optional[float] = None) -> dict:
         "opencode_go": fuel.opencode_go,
         "opencode_models": dict(fuel.opencode_models or {}),
         "opencode_free_model_ids": list(fuel.opencode_free_model_ids or ()),
+        "opencode_windows": fuel.opencode_windows,
     }
 
 
@@ -739,6 +747,7 @@ def fuel_from_cache_document(doc: dict) -> Fuel:
         _i(doc.get("opencode_go")),
         {str(k): _i(v) for k, v in models.items()},
         tuple(str(i) for i in ids),
+        doc.get("opencode_windows") if isinstance(doc.get("opencode_windows"), dict) else None,
     )
 
 
@@ -830,6 +839,95 @@ def opencode_has_tokens(f: Fuel) -> bool:
                 continue
         return False
     return f.opencode_go is not None and f.opencode_go > 0
+
+
+
+def seat_fuel_pool(kind: str, start_model: str = "") -> str:
+    """FR #8158 / #8186: fuel pool id for this seat kind + optional start model.
+
+    Returns `grok`, `cursor`, `opencode_go`, `opencode_free`, or `opencode`
+    (OpenCode with no start model yet).
+    """
+    k = (kind or "").strip().lower()
+    if k == "grok":
+        return "grok"
+    if k == "cursor":
+        return "cursor"
+    if k != "opencode":
+        return k or ""
+    mid = (start_model or "").strip()
+    if not mid:
+        return "opencode"
+    try:
+        import worker_start_model as wsm
+
+        if wsm.opencode_is_go_or_paid(mid):
+            return "opencode_go"
+        cls = wsm.start_model_review_class(mid)
+        if cls == "paid":
+            return "opencode_go"
+        if cls == "free":
+            return "opencode_free"
+    except Exception:
+        pass
+    low = mid.lower()
+    if low.startswith("opencode-go/") or "-pro" in low or "/opencode-go/" in low:
+        return "opencode_go"
+    return "opencode_free"
+
+
+def _opencode_windows_go_usable(windows: Optional[dict]) -> bool:
+    """True when provider windows show Go fuel remaining (FR #8186 AC6)."""
+    if not isinstance(windows, dict):
+        return False
+    for key in ("week", "rolling", "month"):
+        rec = windows.get(key) or {}
+        if not isinstance(rec, dict):
+            continue
+        if rec.get("limited") is True:
+            continue
+        try:
+            rem = rec.get("remaining_pct")
+            if rem is not None and float(rem) > 0:
+                return True
+        except (TypeError, ValueError):
+            continue
+    return False
+
+
+def _opencode_windows_go_known(windows: Optional[dict]) -> bool:
+    if not isinstance(windows, dict):
+        return False
+    for key in ("week", "rolling", "month"):
+        rec = windows.get(key) or {}
+        if isinstance(rec, dict) and rec.get("remaining_pct") is not None:
+            return True
+    return False
+
+
+def opencode_pool_has_tokens(f: Fuel, pool: str, start_model: str = "") -> bool:
+    """FR #8186: usable tokens for one OpenCode pool (not the unrelated pool)."""
+    pool = (pool or "").strip().lower()
+    mid = (start_model or "").strip()
+    models = f.opencode_models or {}
+    if pool == "opencode_free":
+        return f.opencode_free is not None and int(f.opencode_free) > 0
+    if pool == "opencode_go":
+        if mid:
+            # Per-model reading for the exact start model wins when present.
+            short = mid.split("/")[-1]
+            for key, val in models.items():
+                k = str(key or "")
+                if k == mid or k.endswith("/" + short) or k == short:
+                    try:
+                        return int(val or 0) > 0
+                    except (TypeError, ValueError):
+                        return False
+        if f.opencode_go is not None:
+            return int(f.opencode_go) > 0
+        return _opencode_windows_go_usable(f.opencode_windows)
+    # No specific pool: either pool (selection / no start model).
+    return opencode_has_tokens(f)
 
 
 def opencode_pauses_state_dir(env: Optional[dict] = None) -> Path:
@@ -1347,10 +1445,13 @@ def grok_has_tokens(f: Fuel) -> bool:
     return True
 
 
-def fuel_reading_known(f: Fuel, kind: str) -> bool:
+def fuel_reading_known(f: Fuel, kind: str, start_model: str = "") -> bool:
     """True when the helper returned a parseable reading for this seat kind (FR #3923).
 
-    Empty ``Fuel()`` (helper missing / timeout / unreadable) is **unknown**, not exhausted.
+    Empty `Fuel()` (helper missing / timeout / unreadable) is **unknown**, not exhausted.
+
+    FR #8158 / #8186: when `start_model` selects an OpenCode pool, only that pool counts.
+    Without a start model, either OpenCode pool still counts (seat selection / cache).
     """
     k = (kind or "").strip().lower()
     if k == "grok":
@@ -1358,11 +1459,9 @@ def fuel_reading_known(f: Fuel, kind: str) -> bool:
             return True
         st = (f.grok_state or "unknown").strip().lower()
         return st != "unknown"
-    # Cursor: relay ACKs on receipt (#4115), so _inject_line uses this probe, not stop_fn.
     if k == "cursor":
         if f.cursor_high is not None or f.cursor_low is not None:
             return True
-        # FR #6119: on-demand fields alone are a known reading (limit hit with null pools).
         if (
             f.on_demand_used_cents is not None
             or f.on_demand_limit_cents is not None
@@ -1372,6 +1471,11 @@ def fuel_reading_known(f: Fuel, kind: str) -> bool:
             return True
         return False
     if k == "opencode":
+        pool = seat_fuel_pool(k, start_model)
+        if pool == "opencode_go":
+            return f.opencode_go is not None or _opencode_windows_go_known(f.opencode_windows)
+        if pool == "opencode_free":
+            return f.opencode_free is not None
         return f.opencode_free is not None or f.opencode_go is not None
     return False
 
@@ -1654,35 +1758,45 @@ def explicit_opencode_decision(
     opencode_cmd: Optional[str],
     *,
     auth_present: bool,
+    start_model: str = "",
 ) -> Decision:
     """Explicit OpenCode request. Never falls through to Grok or Cursor.
 
-    Requires a real ``opencode`` command and a real usable fuel reading.
-    Go-only fuel also requires the auth file to exist (presence only).
+    FR #8186: judge the pool of the model about to start (`start_model` /
+    `BOB_OPENCODE_MODEL`). A known-empty *other* pool never refuses.
     """
     if not opencode_cmd:
         return Decision("refuse", "explicit opencode: opencode.exe missing")
-    # FR #7714: unknown is not exhausted. A clicked OpenCode seat starts.
-    # Refuse only a known empty reading. Never fall through to another kind.
-    if not fuel_reading_known(fuel, "opencode"):
+    mid = (start_model or "").strip()
+    pool = seat_fuel_pool("opencode", mid)
+    pool_label = {"opencode_go": "go", "opencode_free": "free"}.get(pool, pool or "opencode")
+    # FR #7714 / #8186: unknown *own* pool is not exhausted.
+    if not fuel_reading_known(fuel, "opencode", start_model=mid):
         return Decision(
             "opencode",
-            "explicit opencode: fuel unknown, starting (free=%s go=%s)"
-            % (fuel.opencode_free, fuel.opencode_go),
+            "explicit opencode: fuel unknown, starting (model=%s pool=%s free=%s go=%s)"
+            % (mid or "-", pool, fuel.opencode_free, fuel.opencode_go),
         )
-    if not opencode_has_tokens(fuel):
+    if not opencode_pool_has_tokens(fuel, pool, start_model=mid):
         return Decision(
             "refuse",
-            "explicit opencode: no usable fuel (free=%s go=%s)"
-            % (fuel.opencode_free, fuel.opencode_go),
+            "explicit opencode: no usable fuel (model=%s pool=%s free=%s go=%s)"
+            % (mid or "-", pool, fuel.opencode_free, fuel.opencode_go),
         )
     free_ok = fuel.opencode_free is not None and int(fuel.opencode_free) > 0
-    if not free_ok and not auth_present:
+    go_pool = pool == "opencode_go"
+    if go_pool and not auth_present:
         return Decision("refuse", "explicit opencode: auth.json absent (body not read)")
+    if not mid and not free_ok and not auth_present:
+        # No start model: go-only still needs auth (legacy).
+        if fuel.opencode_go is not None and int(fuel.opencode_go) > 0:
+            return Decision("refuse", "explicit opencode: auth.json absent (body not read)")
     return Decision(
         "opencode",
-        "explicit opencode (free=%s go=%s)" % (fuel.opencode_free, fuel.opencode_go),
+        "explicit opencode (model=%s pool=%s free=%s go=%s)"
+        % (mid or "-", pool, fuel.opencode_free, fuel.opencode_go),
     )
+
 
 
 def explicit_agent_decision(
@@ -1693,6 +1807,7 @@ def explicit_agent_decision(
     opencode_cmd: Optional[str],
     *,
     auth_present: bool,
+    start_model: str = "",
 ) -> Decision:
     """One requested agent. ``refuse`` never starts a different agent."""
     agent_id = normalize_explicit_agent(requested)
@@ -1721,7 +1836,9 @@ def explicit_agent_decision(
             "explicit cursor (high=%s low=%s)" % (fuel.cursor_high, fuel.cursor_low),
         )
     if agent_id == "opencode":
-        return explicit_opencode_decision(fuel, opencode_cmd, auth_present=auth_present)
+        return explicit_opencode_decision(
+            fuel, opencode_cmd, auth_present=auth_present, start_model=start_model
+        )
     return Decision("refuse", "explicit agent %s is not supported" % (requested,))
 
 
@@ -1898,6 +2015,7 @@ def resolve_seat_decision(
     *,
     auth_present: bool,
     xai_signin_ok: bool = True,
+    start_model: str = "",
 ) -> Decision:
     """Apply an explicit agent request, else the automatic Grok → Cursor → OpenCode order.
 
@@ -1906,8 +2024,15 @@ def resolve_seat_decision(
     when xAI sign-in is expired and Cursor still has fuel).
     """
     if normalize_explicit_agent(requested):
+        mid = (start_model or "").strip() or (_OPENCODE_MODEL_ENV_AT_START or "").strip()
         out = explicit_agent_decision(
-            requested, fuel, cursor_cmd, grok_exe, opencode_cmd, auth_present=auth_present
+            requested,
+            fuel,
+            cursor_cmd,
+            grok_exe,
+            opencode_cmd,
+            auth_present=auth_present,
+            start_model=mid,
         )
         if out.kind == "grok" and not xai_signin_ok:
             return Decision("xai-auth-expired", "explicit grok: xai-auth-expired")
@@ -15142,6 +15267,49 @@ def report_seat_start_refusal(
         return {"ok": False, "key": key}
 
 
+
+def wait_refusal_console(
+    *,
+    timeout_s: float = 60.0,
+    interactive: bool = True,
+    sleep_fn=time.sleep,
+    kbhit_fn=None,
+    getch_fn=None,
+) -> None:
+    """FR #8186: keep an interactive refusal console readable (key or timeout).
+
+    Non-interactive / tray-restart starts pass interactive=False and return at once.
+    Tests inject kbhit_fn/getch_fn/sleep_fn.
+    """
+    if not interactive:
+        return
+    timeout_s = max(60.0, float(timeout_s or 60.0))
+    if os.name != "nt":
+        sleep_fn(timeout_s)
+        return
+    try:
+        import msvcrt
+    except Exception:
+        sleep_fn(timeout_s)
+        return
+    kbhit = kbhit_fn or msvcrt.kbhit
+    getch = getch_fn or msvcrt.getwch
+    deadline = time.time() + timeout_s
+    while time.time() < deadline:
+        try:
+            if kbhit():
+                ch = getch()
+                if ch in ("\x00", "\xe0"):
+                    try:
+                        getch()
+                    except Exception:
+                        pass
+                return
+        except Exception:
+            pass
+        sleep_fn(0.05)
+
+
 def _explicit_refusal_exit(
     dec: Decision,
     log: Log,
@@ -15152,8 +15320,14 @@ def _explicit_refusal_exit(
     model: str = "",
     fuel=None,
     filer_post: Optional[Callable[..., dict]] = None,
+    interactive: Optional[bool] = None,
+    wait_fn=None,
 ) -> Optional[int]:
-    """Show an explicit refusal. Never starts another agent."""
+    """Show an explicit refusal. Never starts another agent.
+
+    FR #8186: interactive consoles wait for a key (or >=60s). Non-interactive
+    and tray-restart paths do not block.
+    """
     if dec.kind not in ("refuse", "xai-auth-expired"):
         return None
     log(f"select[{mode}]: refused - {dec.reason}")
@@ -15172,8 +15346,13 @@ def _explicit_refusal_exit(
         sys.stderr = sys.__stderr__
         ensure_console("Bob worker - refused")
         print("\nBob worker: " + dec.reason + ".\nNot starting a different agent.\n")
-        if os.name == "nt":
-            time.sleep(8)
+        if interactive is None:
+            interactive = bool(sys.stdin and hasattr(sys.stdin, "isatty") and sys.stdin.isatty())
+            if os.environ.get("BOB_TRAY_RESTART", "").strip() in ("1", "true", "yes"):
+                interactive = False
+        if interactive:
+            waiter = wait_fn or wait_refusal_console
+            waiter(timeout_s=60.0, interactive=True)
     except Exception:
         pass
     if dec.kind == "xai-auth-expired":
@@ -15200,7 +15379,7 @@ def run_plan(args, log: Log) -> int:
     stopped = _explicit_refusal_exit(
         dec, log, "plan",
         machine=getattr(args, "machine_id", "") or "",
-        kind=requested, model="", fuel=fuel,
+        kind=requested, model=(_OPENCODE_MODEL_ENV_AT_START or ""), fuel=fuel,
     )
     if stopped is not None:
         return stopped
@@ -15299,7 +15478,7 @@ def run_monitor(args, log: Log) -> int:
     stopped = _explicit_refusal_exit(
         dec, log, "monitor",
         machine=getattr(args, "machine_id", "") or "",
-        kind=requested, model="", fuel=fuel,
+        kind=requested, model=(_OPENCODE_MODEL_ENV_AT_START or ""), fuel=fuel,
     )
     if stopped is not None:
         return stopped
@@ -15427,7 +15606,7 @@ def run_maintenance(args, log: Log, *, spawn: Optional[Callable] = None, poll_s:
     stopped = _explicit_refusal_exit(
         dec, log, "maintenance",
         machine=getattr(args, "machine_id", "") or "",
-        kind=requested, model="", fuel=fuel,
+        kind=requested, model=(_OPENCODE_MODEL_ENV_AT_START or ""), fuel=fuel,
     )
     if stopped is not None:
         return stopped
@@ -15560,7 +15739,7 @@ def run_agent(args, log: Log) -> int:
     stopped = _explicit_refusal_exit(
         dec, log, "agent",
         machine=machine,
-        kind=requested, model="", fuel=fuel,
+        kind=requested, model=(_OPENCODE_MODEL_ENV_AT_START or ""), fuel=fuel,
     )
     if stopped is not None:
         return stopped
