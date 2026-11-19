@@ -158,13 +158,25 @@ def test_dirty_holder_nacks_with_stderr_not_destroyed(tmp_path: Path):
         run=_run_with_gh("fr-8002", oid),
         nick="flamingo-1",
     )
-    assert decision["state"] == "create_failed", decision
-    nack = decision["nack"]
-    assert "worktree-create-failed:dirty" in nack or "worktree-create-failed:git-worktree" in nack
-    assert "already used by worktree" in nack.lower() or "already checked out" in nack.lower()
+    # FR #8326: dirty author tree stays, but the review tree is still created
+    # at the PR head on mrb-<n>-review (do not NACK dirty / head-mismatch).
+    assert decision["state"] == "project", decision
     assert holder.is_dir()
     assert (holder / "WIP.txt").read_text(encoding="utf-8") == "keep me\n"
-    assert "github_pat_" not in nack
+    head = subprocess.run(
+        ["git", "-C", str(decision["path"]), "rev-parse", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip().lower()
+    assert head == oid
+    branch = subprocess.run(
+        ["git", "-C", str(decision["path"]), "branch", "--show-current"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    assert branch == "mrb-8006-review"
 
 
 def test_git_worktree_nack_includes_redacted_stderr(tmp_path: Path):
