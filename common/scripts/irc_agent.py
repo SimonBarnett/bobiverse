@@ -1291,10 +1291,36 @@ class Client:
             self.sock.sendall((text + "\r\n").encode("utf-8"))
 
     def _ssl_recv(self, nbytes: int = 4096) -> bytes:
-        """Read from the IRC SSL socket under the same lock as send (FR #8120)."""
+        """Read one TLS chunk without holding the I/O lock for the whole wait.
+
+        FR #8120: OpenSSL is not concurrent-safe, so recv and sendall stay
+        under ``self.lock``. FR #8234: the lock must not be held across a
+        blocking wait. After SASL 903 the reader blocks in recv for 001
+        while ``session`` still has to send NICK/USER. Holding the lock
+        there stalls registration until Ergo's 1 minute timeout.
+        """
         assert self.sock is not None
-        with self.lock:
-            return self.sock.recv(nbytes)
+        deadline = time.monotonic() + float(recv_timeout_s())
+        while not self.stop.is_set() and not self.dead.is_set():
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise socket.timeout("irc recv idle")
+            slice_s = min(0.2, remaining)
+            if not self.lock.acquire(timeout=slice_s):
+                continue
+            try:
+                self.sock.settimeout(slice_s)
+                return self.sock.recv(nbytes)
+            except (socket.timeout, TimeoutError):
+                continue
+            finally:
+                try:
+                    if self.sock is not None:
+                        self.sock.settimeout(float(recv_timeout_s()))
+                except OSError:
+                    pass
+                self.lock.release()
+        raise socket.timeout("irc recv stopped")
 
     def _channel_only_worker(self) -> bool:
         """FR #224: {machine}-{pid} / w-* seats never PRIVMSG a nick."""

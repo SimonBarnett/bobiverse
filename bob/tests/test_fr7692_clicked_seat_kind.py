@@ -27,7 +27,7 @@ def test_fr7692_sources_keep_clicked_kind():
     recycle = RECYCLE.read_text(encoding="utf-8")
     cs = CS.read_text(encoding="utf-8")
     assert "Add-BobTrayClickedSeat" in watch
-    assert "param($seatNick, $kind)" in watch
+    assert "param($seatNick, $kind, $model)" in watch
     assert "-Agent $kind" in watch
     assert "Mode 'agent' -Quiet -Trigger 'restore-after-recycle'" not in watch
     assert "kind-unknown" in recycle
@@ -65,7 +65,7 @@ def test_fr7692_recycle_restarts_opencode_and_refuses_unknown(tmp_path: Path):
                 "$script:reported = ''",
                 f"Add-BobTrayClickedSeat -Root '{root}' -Nick 'marchhare-4242' -Kind 'opencode' -Machine 'marchhare'",
                 "$script:kinds = New-Object System.Collections.Generic.List[string]",
-                "$launch = { param($seatNick, $kind) $script:kinds.Add([string]$kind); return 5050 }",
+                "$launch = { param($seatNick, $kind, $model) $script:kinds.Add([string]$kind); return 5050 }",
                 f"$rows = @(Invoke-BobTrayRecycleSeatQueue -Root '{root}' -Dir '{rdir}' -Launch $launch -Log {{ param($m) }})",
                 "$a = @($rows | Where-Object { $_.id -eq 'a' })[0]",
                 "$b = @($rows | Where-Object { $_.id -eq 'b' })[0]",
