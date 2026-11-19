@@ -9,6 +9,10 @@
 - Remediation: confirm source allow rule, then on **ionos** run `Sync-BobiverseFromRepo` (or restart `ircJeeves` so start-time ff+compose picks up `main`).
 - Overrides: `BOB_INTAKE_URL`, `BOB_INTAKE_REQUIRED_REPOS` (comma list), `BOB_INTAKE_PY`.
 
+## open_pr_stale_base (FR #8333)
+
+`Test-JeevesMonitorOpenPrStaleBase.ps1` / `tools/monitor/open_pr_stale_base.py` flags open pulls whose `base.ref` is not `main`/`master` (class of #8320 stuck on merged `fr-8310-land`). Set `JEEVES_OPEN_PR_STALE_BASE_FIXTURE` to a JSON pull list for offline/ops probes. Product guard: `github-resync` skips orphan `fix(mrb-N)` tips with an explicit non-default base and warns on other non-default open PRs.
+
 ## github_resync_focus (FR #3146)
 
 `Test-JeevesMonitorGithubResyncFocus.ps1` / `tools/monitor/github_resync_focus.py` flags when `focus.repos` is non-empty but the offer queue stays empty (`unaccepted=0`) or `discover_repos` misses focus keys.
