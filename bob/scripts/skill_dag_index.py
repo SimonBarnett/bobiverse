@@ -71,14 +71,28 @@ def _node_from_skill(skill: Path) -> dict[str, Any] | None:
     }
 
 
+# Same cap as skill_dag_mcp.DEFAULT_MAX_BYTES. A node over this cannot be
+# returned by resolve, so it must not shadow a later copy that can.
+SKILL_RESOLVE_CAP_BYTES = 65536
+
+
+def _index_prefer_key(item: tuple[int, int, Path, dict[str, Any]]) -> tuple:
+    rank, depth, path, node = item
+    nbytes = int(node.get("bytes") or 0)
+    over = 0 if nbytes <= SKILL_RESOLVE_CAP_BYTES else 1
+    return (over, rank, depth, str(path).lower())
+
+
 def scan_skills_with_collisions(roots: list[Path]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """Index canonical SKILL.md files; skip nested books; report same-root name collisions.
 
     FR #6921: nested ``.grok/skills`` copies inside a root are skipped.
     FR #7076: the same id in later vision roots (bob / user harvest copies) is
     a duplicate node, not ``status.last_error``. Keep the first configured root
-    (worker seat, then bob, then common, then user). Same-root extra paths stay
-    collisions.
+    (worker seat, then bob, then common, then user) when that copy fits the
+    resolve cap. FR #8323: an earlier copy over ``SKILL_RESOLVE_CAP_BYTES``
+    yields to a later root that fits, so a stale seat harvest book cannot
+    hide the slim common book. Same-root extra paths stay collisions.
     """
     by_id: dict[str, list[tuple[int, int, Path, dict[str, Any]]]] = {}
     for root_rank, root in enumerate(roots):
@@ -110,7 +124,7 @@ def scan_skills_with_collisions(roots: list[Path]) -> tuple[list[dict[str, Any]]
                 continue
             seen_p.add(key)
             uniq_paths.append((rank, depth, path, node))
-        uniq_paths.sort(key=lambda item: (item[0], item[1], str(item[2]).lower()))
+        uniq_paths.sort(key=_index_prefer_key)
         nodes.append(uniq_paths[0][3])
         by_rank: dict[int, list[Path]] = {}
         for rank, _d, path, _n in uniq_paths:
