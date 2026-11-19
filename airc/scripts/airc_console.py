@@ -863,6 +863,7 @@ def _priority_winrun_formprep(
             # FR #8352: schtasks /IT formprep.exe does not run (LastResult 267011
             # = the task has not run). Stamps stay unchanged. Do not spawn it.
             "schtasks_it": "refused",
+            "err": "schtasks_it_not_attached",
             "last_result": 267011,
             "note": "use PRIORITY prepare-form; schtasks /IT formprep.exe does not Form Prep",
         }
