@@ -26,6 +26,9 @@ def test_fr8348_classic_doc_names_allowlist_credman_and_honesty_gate():
     assert "### Classic self-hosted Test (FR #8348)" in text
     assert "priority-instances.example.json" in text
     assert "credentialTarget" in text
+    assert "reason=priority_not_installed" in text
+    assert "reason=session0_gui" in text
+    assert "\neason=" not in text
     assert "session0_gui" in text
     assert "EXECPREPLOCK.UPD" in text
     assert "LASTPREPDATE" in text

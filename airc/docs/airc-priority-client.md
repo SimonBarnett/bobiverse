@@ -62,14 +62,12 @@ PRIVMSG marchhare_console :id=aabbccdd PRIORITY connect example-dev
 
 ### Classic self-hosted Test (FR #8348)
 
-PRIORITY prepare-form <ENAME> and PRIORITY prepare form <ENAME> both return 
-eason=priority_not_installed (exit 2) when the host has no live allowlist. The shipped example file does not enable verbs.
+PRIORITY prepare-form <ENAME> and PRIORITY prepare form <ENAME> both return reason=priority_not_installed (exit 2) when the host has no live allowlist. The shipped example file does not enable verbs.
 
 1. Copy config/priority-instances.example.json to config/priority-instances.json on that install.
 2. Set id, url, company, user, sqlServer, systemDb, priorityRoot, and credentialTarget. Do not put a password in the file or on IRC.
 3. Store the web password in Windows Credential Manager as a generic credential whose target name is credentialTarget.
-4. Send PRIORITY prepare-form <ENAME> (Web SDK). Do not use PRIORITY prepare form from LocalSystem Session 0: that path is WINRUN and fail-closes 
-eason=session0_gui.
+4. Send PRIORITY prepare-form <ENAME> (Web SDK). Do not use PRIORITY prepare form from LocalSystem Session 0: that path is WINRUN and fail-closes reason=session0_gui.
 5. Honesty gate: success only when the runner is ok, EXECPREPLOCK.UPD is N, and the prep artifact mtime advanced. A dictionary edit alone does not move LASTPREPDATE.
 
 A worker seat does not write the live allowlist. The operator on the classic host does. Until that file exists, prepare-form stays priority_not_installed.
