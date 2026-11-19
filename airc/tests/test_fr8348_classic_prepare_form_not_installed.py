@@ -9,15 +9,17 @@ ROOT = Path(__file__).resolve().parents[2]
 DOC = ROOT / "airc" / "docs" / "airc-priority-client.md"
 
 
-def test_fr8348_not_installed_names_classic_enable_step():
+def test_fr8348_not_configured_stays_two_line_frame():
     blob = ap.format_priority_not_configured("aabb8348")
-    assert "code=not-configured reason=priority_not_installed" in blob
-    assert "priority-instances.example.json" in blob
-    assert "credentialTarget" in blob
-    assert "PRIORITY prepare-form" in blob
-    assert "DONE id=aabb8348 exit=2" in blob
+    lines = blob.splitlines()
+    assert len(lines) == 2
+    assert lines[0].startswith(
+        "err id=aabb8348 seq=1 code=not-configured reason=priority_not_installed"
+    )
+    assert lines[1] == "DONE id=aabb8348 exit=2"
+    assert "PRIORITY prepare" not in lines[0]
     other = ap.format_priority_not_configured("aabb8348", reason="priority_allowlist_empty")
-    assert "priority-instances.example.json" not in other
+    assert len(other.splitlines()) == 2
     assert "DONE id=aabb8348 exit=2" in other
 
 
