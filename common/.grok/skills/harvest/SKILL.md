@@ -243,3 +243,4 @@ Do not land a second copy of a harvest-lesson MRB playbook in this book. Those p
 - A shipped-script import gate must import only names that end in .py. copy_by_path_scripts also copies PowerShell, and those names are not Python modules.
 - When PRIORITY prepare-form is priority_not_installed, the reply must name the example allowlist copy and CredMan credentialTarget, and the doc must say Session 0 uses prepare-form rather than WINRUN.
 - A 24h harvest-lesson dedup covers a new playbook only when that PR contains the lesson sentence or a phrase of at least 40 characters of it. A short shared token is not a cover.
+- A re-verify receipt that says no defect and names an already merged PR is closed against that PR. Do not open a second implement PR.
