@@ -265,6 +265,22 @@ def redact(text: str) -> str:
 
 _PROBE_EXE = frozenset({"probe", "crash-probe", "crash_probe"})
 _DO_NOT_FILE_RE = re.compile(r"(?i)do-not-file|probe-shape-only")
+# FR #8338: a full volume is not a product defect. Filing it, or the hook-failure
+# that follows when the spool write also fails, only opens another crash issue.
+_DISK_FULL_RE = re.compile(
+    r"(?i)not enough space on the disk|no space left on device|\bENOSPC\b|"
+    r"WinError 112|Win32Error\(112\)|errno 28"
+)
+
+
+def _is_disk_full(exc_value, blob: str = "") -> bool:
+    if isinstance(exc_value, OSError):
+        if getattr(exc_value, "winerror", None) == 112:
+            return True
+        if getattr(exc_value, "errno", None) == 28:
+            return True
+    return bool(_DISK_FULL_RE.search(blob or ""))
+
 # FR #2535 / #5422: pytest tmpdir symlink cleanup on Windows (448 untrusted mount, 5/32 access).
 _PYTEST_EPHEMERAL_RE = re.compile(r"(?i)pytest-of-|pytest-current")
 _UNTRUSTED_MOUNT_RE = re.compile(r"(?i)untrusted mount point|WinError\s*448|WinError\s*5\b")
@@ -435,6 +451,8 @@ def should_skip_report(exe: str, exc_value: BaseException | None, *, body: str =
         return True
     # Spool/flush path often has exc_value=None — match type names in body/title too.
     if re.search(r"(?i)\b(KeyboardInterrupt|SystemExit)\b", blob):
+        return True
+    if _is_disk_full(exc_value, blob):
         return True
     return _is_pytest_untrusted_mount(exc_value, blob)
 
@@ -726,6 +744,9 @@ def report_exception(
             )
             return {"ok": False, "spooled": str(path), "sig": sig}
     except Exception as outer:  # noqa: BLE001
+        # FR #8338: spooling the hook failure also needs disk. Do not file it.
+        if _is_disk_full(outer, f"{type(outer).__name__}: {outer}"):
+            return {"ok": True, "skipped": True, "reason": "disk-full"}
         try:
             path = _write_spool(
                 {

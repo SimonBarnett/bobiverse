@@ -66,8 +66,9 @@ namespace BobDialogs
             @"(?i)\b(ghp_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|sk-[A-Za-z0-9]{10,}|xox[baprs]-[A-Za-z0-9-]+)\b",
             RegexOptions.Compiled);
         // FR #2436 / Python crash_report._DO_NOT_FILE_RE + _PROBE_EXE
+        // FR #8338: a full disk is not a product crash (digest pools write or hook spool).
         static readonly Regex DoNotFileRe = new Regex(
-            @"(?i)do-not-file|probe-shape-only",
+            @"(?i)do-not-file|probe-shape-only|not enough space on the disk|no space left on device|\bENOSPC\b",
             RegexOptions.Compiled);
 
         /// <summary>
@@ -430,6 +431,9 @@ namespace BobDialogs
                 // the hook error and the original crash. Never include a stack path.
                 try
                 {
+                    // FR #8338: skip when the hook failed because the volume is full.
+                    if (ShouldSkipReport(exeName, hookEx) || ShouldSkipReport(exeName, ex))
+                        return;
                     string hookName = hookEx == null ? "Exception" : hookEx.GetType().Name;
                     string origName = "none";
                     try { if (ex != null) origName = ex.GetType().Name; } catch { origName = "unknown"; }

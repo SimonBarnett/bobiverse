@@ -2209,6 +2209,12 @@ function Get-BobTrayDigestReportUrl {
     return 'https://bob.ntsa.uk/bob/v1/report'
 }
 
+function Test-BobTrayDiskFullText {
+    # FR #8338: a full volume is not a tray defect. Do not intake it.
+    param([string]$Text)
+    return ([string]$Text) -match '(?i)not enough space on the disk|no space left on device|\bENOSPC\b'
+}
+
 function Write-BobTrayDigestFetchFailFile {
     <#
       FR #7604: always leave tray-digest-fetch-fail.json with reason + timestamp (no secrets).
@@ -2247,6 +2253,8 @@ function Write-BobTrayDigestFetchFailFile {
             [IO.File]::Move($failTmp, $failFlag)
         }
     } catch { }
+    # FR #8338: disk-full stays local. Reporting it opens a crash whose hook then fails the same way.
+    if ($Report -and (Test-BobTrayDiskFullText ($reason + ' ' + $err))) { $Report = $false }
     if ($Report) {
         try {
             if (Get-Command Report-BobDeterministicException -ErrorAction SilentlyContinue) {
