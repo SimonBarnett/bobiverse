@@ -4530,6 +4530,45 @@ def mrb_fix_targets_default_branch(pr: dict | None) -> bool:
     return ref in ("main", "master")
 
 
+def pr_base_is_explicit_non_default(pr: dict | None) -> bool:
+    """True when the pull names a base that is not ``main`` / ``master`` (FR #8333).
+
+    Empty/missing base is False so older fixtures and thin payloads that omit
+    ``base`` keep prior resync behaviour (FR #4665 orphan queue). An explicit
+    ``fr-*`` / stacked tip base is True --- those PRs cannot land on the default
+    branch until retargeted or recreated (class of bobiverse#8320 / #8331).
+    """
+    ref = pr_base_ref(pr)
+    return bool(ref) and ref not in ("main", "master")
+
+
+def list_open_prs_explicit_non_default_base(prs) -> list[dict]:
+    """Cheap hygiene rows: open pulls whose ``base.ref`` is not the default branch.
+
+    Used by github-resync warn lines and the open_pr_stale_base monitor (FR #8333).
+    """
+    out: list[dict] = []
+    if not isinstance(prs, list):
+        return out
+    for pr in prs:
+        if not isinstance(pr, dict):
+            continue
+        if pr.get("draft") is True:
+            continue
+        if not pr_base_is_explicit_non_default(pr):
+            continue
+        num = pr.get("number")
+        out.append(
+            {
+                "number": num,
+                "base": pr_base_ref(pr),
+                "title": str(pr.get("title") or "")[:160],
+                "html_url": str(pr.get("html_url") or ""),
+            }
+        )
+    return out
+
+
 def _read_legacy_unaccepted(path: Path) -> list[dict]:
     if not path.exists():
         return []
@@ -15012,10 +15051,31 @@ def resync_from_github(
                         )
                         continue
                 else:
+                    # FR #8333: orphan fix on an explicit non-default base (e.g. already
+                    # merged fr-* tip) cannot land on main --- skip and warn so a worker
+                    # retargets (--base main) or recreates. Missing base still queues
+                    # (fixtures / thin payloads; FR #4665).
+                    if pr_base_is_explicit_non_default(pr):
+                        skipped_open_pulls.add((repo, f"#{num}"))
+                        print(
+                            f"resync skip orphan mrb-fix PR {repo}#{num} "
+                            f"non-default base {pr_base_ref(pr)} "
+                            f"(FR #8333: retarget --base main or recreate)",
+                            flush=True,
+                        )
+                        continue
                     print(
                         f"resync queue orphan mrb-fix PR {repo}#{num} parent {parent} not open",
                         flush=True,
                     )
+            elif pr_base_is_explicit_non_default(pr):
+                # Cheap check FR #8333: any open non-fix PR whose base is not
+                # main/master is unlikely to land on the default branch.
+                print(
+                    f"resync warn non-default base PR {repo}#{num} "
+                    f"base={pr_base_ref(pr)} (FR #8333)",
+                    flush=True,
+                )
             # FR #2604: draft open PRs must not become MRB jobs; still count as open
             # for UAT/repo_clear and FR supersede via open_pulls_map above.
             # FR #5506: draft via-intake+skill lessons backfill as MRB (#4444/#4967).
