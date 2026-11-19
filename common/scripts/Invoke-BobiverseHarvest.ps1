@@ -890,6 +890,13 @@ function Test-HarvestOpenLessonTwin {
     return ''
 }
 
+function Test-HarvestPrClosedUnmerged {
+    param($Pr)
+    # FR #8368: a closed unmerged (MRB-rejected) lesson must not count as a cover
+    # for a corrected sentence. Only OPEN and MERGED tips cover a lesson.
+    return ([string]$Pr.state -eq 'CLOSED' -and -not $Pr.mergedAt)
+}
+
 function Test-HarvestRecentLessonDedup {
     param(
         [string]$RepoName,
@@ -905,12 +912,15 @@ function Test-HarvestRecentLessonDedup {
     $ghCmd = Get-Command gh -ErrorAction SilentlyContinue
     if (-not $ghCmd) { return $false }
     try {
-        $raw = & gh pr list --repo $RepoName --state all --label harvest-lesson --limit 50 --json title,body,url,createdAt,closedAt 2>$null
+        $raw = & gh pr list --repo $RepoName --state all --label harvest-lesson --limit 50 --json title,body,url,createdAt,closedAt,state,mergedAt 2>$null
         if (-not $raw) { return $false }
         $prs = $raw | ConvertFrom-Json
         if (-not $prs) { return $false }
         $cutoff = (Get-Date).ToUniversalTime().AddHours(-24)
         foreach ($pr in @($prs)) {
+            # FR #8368: a closed unmerged (MRB-rejected) lesson must not count as a
+            # cover for a corrected sentence. Only OPEN and MERGED tips cover a lesson.
+            if (Test-HarvestPrClosedUnmerged -Pr $pr) { continue }
             $created = $null
             try { $created = [datetime]::Parse([string]$pr.createdAt).ToUniversalTime() } catch { continue }
             if ($created -lt $cutoff) { continue }
