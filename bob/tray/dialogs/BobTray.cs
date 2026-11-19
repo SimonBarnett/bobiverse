@@ -448,12 +448,72 @@ namespace BobDialogs
                 if (envBlock != IntPtr.Zero) Marshal.FreeHGlobal(envBlock);
             }
             CloseHandle(pi.hThread); CloseHandle(pi.hProcess);
-            RememberClickedSeat(root, machine, pi.dwProcessId, agent);
+            RememberClickedSeat(root, machine, pi.dwProcessId, agent, ResolveClickedSeatModel(root, agent, childEnv));
             return pi.dwProcessId;
         }
 
-        // FR #7692: a named tray click is the seat identity. Automatic is not recorded.
-        public static void RememberClickedSeat(string root, string machine, int pid, string agent)
+        // FR #8321: the model this click launches with, same precedence as the worker:
+        // child override, env pin, tray workerStartModels, then OpenCode free default.
+        public static string ResolveClickedSeatModel(string root, string agent, IDictionary childEnv)
+        {
+            try
+            {
+                if (!IsExplicitAgent(agent)) return "";
+                string kind = agent.Trim().ToLowerInvariant();
+                string key = kind == "grok" ? "BOB_GROK_MODEL"
+                    : kind == "cursor" ? "BOB_CURSOR_MODEL"
+                    : kind == "opencode" ? "BOB_OPENCODE_MODEL" : "";
+                if (key.Length == 0) return "";
+                if (childEnv != null)
+                {
+                    foreach (DictionaryEntry e in childEnv)
+                    {
+                        string k = Convert.ToString(e.Key);
+                        if (!string.Equals(k, key, StringComparison.OrdinalIgnoreCase) &&
+                            !string.Equals(k, "BOB_WORKER_MODEL", StringComparison.OrdinalIgnoreCase)) continue;
+                        string v = Convert.ToString(e.Value);
+                        if (IsConcreteModel(v)) return v.Trim();
+                    }
+                }
+                string ev = Environment.GetEnvironmentVariable(key);
+                if (!IsConcreteModel(ev)) ev = Environment.GetEnvironmentVariable("BOB_WORKER_MODEL");
+                if (IsConcreteModel(ev)) return ev.Trim();
+                string tray = ReadWorkerStartModel(root, kind);
+                if (IsConcreteModel(tray)) return tray.Trim();
+                if (kind == "opencode") return ResolveOpencodeSlotModel(root, "free");
+                return "";
+            }
+            catch { return ""; }
+        }
+
+        static bool IsConcreteModel(string model)
+        {
+            string v = (model ?? "").Trim();
+            return v.Length > 0 && v.IndexOf('$') < 0 && v.IndexOfAny(new char[] { '\t', '\r', '\n' }) < 0;
+        }
+
+        static string ReadWorkerStartModel(string root, string kind)
+        {
+            string got = "";
+            foreach (string path in OpencodeModelsConfigPaths(root))
+            {
+                try
+                {
+                    if (!File.Exists(path)) continue;
+                    Dictionary<string, object> doc = Common.Dict(Common.ParseJson(File.ReadAllText(path, Encoding.UTF8)));
+                    if (doc == null) continue;
+                    Dictionary<string, object> models = Common.Dict(doc.ContainsKey("workerStartModels") ? doc["workerStartModels"] : null);
+                    if (models == null) continue;
+                    string v = Common.Str(models, kind);
+                    if (v.Length > 0) got = v;
+                }
+                catch { }
+            }
+            return got;
+        }
+
+        // FR #7692 / FR #8321: a named tray click is the seat identity; remember its model too.
+        public static void RememberClickedSeat(string root, string machine, int pid, string agent, string model)
         {
             try
             {
@@ -464,6 +524,7 @@ namespace BobDialogs
                 string nick = mid + "-" + pid.ToString();
                 string path = Path.Combine(root, "run", "clicked-seats.txt");
                 Directory.CreateDirectory(Path.GetDirectoryName(path));
+                string m = (model ?? "").Trim().Replace("\t", "").Replace("\r", "").Replace("\n", "");
                 List<string> keep = new List<string>();
                 if (File.Exists(path))
                 {
@@ -475,7 +536,7 @@ namespace BobDialogs
                         keep.Add(line);
                     }
                 }
-                keep.Add(nick + "\t" + kind + "\t" + mid);
+                keep.Add(nick + "\t" + kind + "\t" + mid + "\t" + m);
                 File.WriteAllLines(path, keep.ToArray(), new UTF8Encoding(false));
             }
             catch { }
