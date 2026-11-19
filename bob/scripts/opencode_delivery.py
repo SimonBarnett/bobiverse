@@ -73,6 +73,7 @@ def opencode_typed_delivery(
         f"Open the PR with gh pr create --base main --body \"Closes {ref}\" "
         "(or --body-file pointing at a markdown file inside this worktree, e.g. .bob/pr-body.md). "
         "If gh issue view shows the issue CLOSED, do not run gh pr create. "
+        "Set the PR ready for review before DONE, never leave it draft: run gh pr ready. "
         f"Immediately append DONE for {key} with the PR URL to $env:BOB_OUTBOX ({ob}) "
         "right after gh pr create returns the URL."
     )
