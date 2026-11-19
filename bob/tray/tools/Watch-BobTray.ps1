@@ -2025,6 +2025,7 @@ function Start-BobTrayWorkerExe {
         [ValidateSet('', 'auto', 'grok', 'cursor', 'opencode')][string]$Agent = '',
         [string]$SeatId = '',
         [string]$Trigger = 'other',
+        [string]$Model = '',
         [switch]$Quiet
     )
     try {
@@ -2099,8 +2100,22 @@ function Start-BobTrayWorkerExe {
                     # in use / defer - seat still holds this bob-worker-<hash>.exe
                 }
             }
+        # FR #8321: a restart starts the clicked model, paid or free, never the default.
+        $restoreEnv = $null
+        $pinnedModel = ([string]$Model).Trim() -replace "[`t`r`n]", ''
+        if ($pinnedModel -and $explicit -and $explicit -ne 'auto') {
+            $pinKey = switch ($explicit) {
+                'grok' { 'BOB_GROK_MODEL' }
+                'cursor' { 'BOB_CURSOR_MODEL' }
+                'opencode' { 'BOB_OPENCODE_MODEL' }
+                default { '' }
+            }
+            if ($pinKey) {
+                $restoreEnv = @{ $pinKey = $pinnedModel; 'BOB_SEAT_MODEL_PIN' = '1' }
+            }
+        }
         # t787u: CREATE_NEW_CONSOLE — each click needs its own visible console.
-        $childPid = @(Start-BobTrayVisibleProcessWithSessionEnv -FilePath $run -ArgumentList $argv -WorkingDirectory $wd -Title $title)[-1]
+        $childPid = @(Start-BobTrayVisibleProcessWithSessionEnv -FilePath $run -ArgumentList $argv -WorkingDirectory $wd -Title $title -SessionEnv $restoreEnv)[-1]
         $picked = if ($explicit) { $explicit } else { 'auto' }
         Write-TrayLog ('{0}: started bob-worker.exe pid={1} mode={2} agent={3} own visible console (NEW agent every click; explicit agent never substitutes)' -f $Mode, $childPid, $Mode, $picked)
         if ([int]$childPid -gt 0) {
@@ -2109,8 +2124,20 @@ function Start-BobTrayWorkerExe {
             $trigForLog = if ($Trigger) { [string]$Trigger } else { 'other' }
             Write-BobTraySeatStart -Log { param($m) Write-TrayLog $m } -SeatId $seatForLog -WorkerPid ([int]$childPid) -Trigger $trigForLog
             # FR #7692: a named click is the seat identity. Automatic has no kind and is not recorded.
-            if ($trigForLog -eq 'menu' -and $explicit -and $explicit -ne 'auto' -and $mid) {
-                Add-BobTrayClickedSeat -Root $RepoRoot -Nick ('{0}-{1}' -f $mid.ToLowerInvariant(), [int]$childPid) -Kind $explicit -Machine $mid
+            # FR #8321: remember the launch model so a recycle restarts the same paid/free model.
+            # A recycle gets a new pid-suffixed nick, so re-record it under the new nick too.
+            if ($explicit -and $explicit -ne 'auto' -and $mid) {
+                $recModel = $pinnedModel
+                $canRecordModel = [bool](Get-Command Get-BobTrayClickedSeatModel -ErrorAction SilentlyContinue)
+                if (-not $recModel -and $canRecordModel) {
+                    $recModel = Get-BobTrayClickedLaunchModel -Root $RepoRoot -Kind $explicit
+                }
+                $recNick = ('{0}-{1}' -f $mid.ToLowerInvariant(), [int]$childPid)
+                if ($canRecordModel) {
+                    Add-BobTrayClickedSeat -Root $RepoRoot -Nick $recNick -Kind $explicit -Machine $mid -Model $recModel
+                } else {
+                    Add-BobTrayClickedSeat -Root $RepoRoot -Nick $recNick -Kind $explicit -Machine $mid
+                }
             }
         }
         return [int]$childPid   # t810u: the remote !startworker path reports it
@@ -4196,7 +4223,7 @@ $startWorkerTimer.Add_Tick({
                     if (Get-Command Invoke-BobTrayRecycleSeatQueue -ErrorAction SilentlyContinue) {
                         $rsDir = Get-BobTrayRecycleSeatDir -Root $RepoRoot
                         [void](Invoke-BobTrayRecycleSeatQueue -Root $RepoRoot -Dir $rsDir `
-                                -Launch { param($seatNick, $kind) Start-BobTrayWorkerExe -Mode 'agent' -Agent $kind -Quiet -Trigger 'restore-after-recycle' -SeatId $seatNick } `
+                                -Launch { param($seatNick, $kind, $model) Start-BobTrayWorkerExe -Mode 'agent' -Agent $kind -Model $model -Quiet -Trigger 'restore-after-recycle' -SeatId $seatNick } `
                                 -Log { param($m) Write-TrayLog $m })
                     }
                     if (Test-BobTrayEngineMode) {

@@ -129,8 +129,17 @@ function Invoke-BobTrayRecycleSeatQueue {
                 }
                 else {
                 # FR #7692: req.kind is who asked (chair/op), not the seat. Use the click record.
+                # FR #8321: restart with the clicked model too (paid stays paid, free stays free).
                 $clickedKind = ''
-                if (Get-Command Get-BobTrayClickedSeatKind -ErrorAction SilentlyContinue) {
+                $clickedModel = ''
+                if (Get-Command Get-BobTrayClickedSeat -ErrorAction SilentlyContinue) {
+                    $clickRec = Get-BobTrayClickedSeat -Root $Root -Nick $seatNick
+                    if ($clickRec) {
+                        $clickedKind = [string]$clickRec.Kind
+                        $clickedModel = [string]$clickRec.Model
+                    }
+                }
+                elseif (Get-Command Get-BobTrayClickedSeatKind -ErrorAction SilentlyContinue) {
                     $clickedKind = [string](Get-BobTrayClickedSeatKind -Root $Root -Nick $seatNick)
                 }
                 if (@('grok', 'cursor', 'opencode') -notcontains $clickedKind) {
@@ -186,7 +195,7 @@ function Invoke-BobTrayRecycleSeatQueue {
                         while ($tries -lt 2 -and -not $ok) {
                             $tries++
                             try {
-                                $newPid = [int](@(& $Launch $seatNick $clickedKind)[-1])
+                                $newPid = [int](@(& $Launch $seatNick $clickedKind $clickedModel)[-1])
                                 if ($newPid -gt 0) { $ok = $true; $reason = 'ok' } else { $reason = 'launch-failed' }
                             } catch {
                                 $reason = 'launch-error: ' + $_.Exception.Message
