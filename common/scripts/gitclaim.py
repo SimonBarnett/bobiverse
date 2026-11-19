@@ -9145,8 +9145,6 @@ def no_terminal_reply_does_not_block(row: dict, nick: str) -> bool:
     """
     if not isinstance(row, dict):
         return False
-    if is_no_terminal_reply_reason(str(row.get("giveup_reason") or "")):
-        return True
     me = (canonical_worker_nick(nick) or nick or "").strip().lower()
     if not me:
         return False
@@ -9157,9 +9155,19 @@ def no_terminal_reply_does_not_block(row: dict, nick: str) -> bool:
         other = (canonical_worker_nick(str(raw.get("seat") or "")) or str(raw.get("seat") or "")).strip().lower()
         if other == me:
             mine.append(raw)
-    if not mine:
+    if mine:
+        return all(is_no_terminal_reply_reason(str(item.get("reason") or "")) for item in mine)
+    # Legacy rows (pre offer_outcomes): the row-level giveup_reason is only this
+    # seat's no-terminal-reply when this seat is the sole give-up seat. Otherwise
+    # a later no-terminal-reply would wrongly lift another seat's permanent block.
+    if not is_no_terminal_reply_reason(str(row.get("giveup_reason") or "")):
         return False
-    return all(is_no_terminal_reply_reason(str(item.get("reason") or "")) for item in mine)
+    seats = {
+        (canonical_worker_nick(s) or s or "").strip().lower()
+        for s in str(row.get("giveup_seats") or "").split(",")
+    }
+    seats.discard("")
+    return seats == {me}
 
 
 def stamp_seat_nack_cooldown(row: dict, nick: str, now: float | None = None) -> None:

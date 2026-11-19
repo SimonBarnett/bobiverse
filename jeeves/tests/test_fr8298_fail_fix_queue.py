@@ -200,3 +200,28 @@ def test_no_terminal_reply_does_not_permanently_block():
         gitclaim._mrb_idle_block_reason(row, "flamingo-22648", {"flamingo-22648"}, {})
         == "nack-cooldown"
     )
+
+
+def test_mixed_permanent_and_no_terminal_reply_keeps_permanent_blocked():
+    """A later no-terminal-reply must not lift another seat's permanent give-up (MRB #8299).
+
+    giveup_reason is row-level and overwritten by the latest GIVEUP, so a
+    ``no-terminal-reply`` from one seat must not unblock a seat whose own
+    offer_outcomes carry a permanent reason.
+    """
+    row = {
+        "repo": REPO,
+        "task": "MRB",
+        "id": "#8239",
+        "giveup_seats": "flamingo-22648",
+        "giveup_reason": "no-terminal-reply",
+        "offer_outcomes": [
+            {"seat": "flamingo-22648", "outcome": "nack", "reason": "self-mrb"},
+            {"seat": "redqueen-7968", "outcome": "nack", "reason": "no-terminal-reply"},
+        ],
+    }
+    assert not gitclaim.no_terminal_reply_does_not_block(row, "flamingo-22648")
+    assert (
+        gitclaim._mrb_idle_block_reason(row, "flamingo-22648", {"flamingo-22648"}, {})
+        == "giveup"
+    )
