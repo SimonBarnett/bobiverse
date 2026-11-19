@@ -1,0 +1,6 @@
+MRB (light triage): is the lesson useful, generalised, non-duplicate, and a fit for this repo's vision/AGENTS.md? PASS -> merge. Not useful / off-vision -> close with a one-line reason (board CLOSED not-useful). Duplicate -> close citing the existing lesson. Wrong owner -> re-file or MOVED (FR #3299); leave OPEN if the owner repo does not exist yet. Plan content only (requirements, designs, product decisions, FR/issue lists from a Plan seat) -> close 'plan content, not a lesson' (never hold it OPEN); move any how-to-plan lesson inside to SimonBarnett/skills-visionary.
+
+A bare "MRB FAIL @ <sha>" comment (not board-shaped: no ## MRB board / **Verdict:**) that contains Do not merge ... trips mrb_merge_gate.py HOLD_TEXT_RE (do not merge) and is read as an owner hold that the later PASS board does not clear (PASS boards are skipped by the hold scan). Result: merge refused (exit 2) after FAIL->fix->PASS until an explicit ok to merge comment was posted. Lesson: post MRB FAIL verdicts board-shaped, or after FAIL->fix->PASS post an ok to merge clear. Evidence: mrb_merge_gate.py find_active_owner_hold / HOLD_TEXT_RE; PR SimonBarnett/toray#28 (comment MRB FAIL @ b8c5721... Do not merge).
+---
+_via-intake id=`in_08dc7d2e882b4e0c` ts=`2026-11-18T19:42:00Z`_
+_source machine=`redqueen` agent=`Report-BobiverseIntakeIssue` book=`bobiverse-bob-job-mrb` ver=`-`_
