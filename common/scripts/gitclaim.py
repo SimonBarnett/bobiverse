@@ -3822,6 +3822,33 @@ def giveup_seat_set(row: dict) -> set[str]:
     return out
 
 
+def drop_nick_from_giveup_seats(row: dict, nick: str) -> None:
+    """Remove one seat from giveup_seats. FR #8344: ACK means they took the work.
+
+    A busy NACK or unanswered-offer stamp can list a seat that later accepts.
+    Leaving them in giveup_seats makes all-gave-up fire while they still hold the row.
+    """
+    me = (canonical_worker_nick(nick) or nick or "").strip().lower()
+    if not me or not isinstance(row, dict):
+        return
+    kept: list[str] = []
+    seen: set[str] = set()
+    for raw in str(row.get("giveup_seats") or "").split(","):
+        raw = raw.strip()
+        if not raw:
+            continue
+        canon = (canonical_worker_nick(raw) or raw).strip()
+        key = canon.lower()
+        if not key or key == me or key in seen:
+            continue
+        seen.add(key)
+        kept.append(canon)
+    if kept:
+        row["giveup_seats"] = ",".join(kept)
+    else:
+        row.pop("giveup_seats", None)
+
+
 def _seat_machine_id(nick: str) -> str:
     """Folded machine id from a seat nick, or empty."""
     p = bobreport.parse_seat_nick(nick) or bobreport.parse_worker_nick(nick)
