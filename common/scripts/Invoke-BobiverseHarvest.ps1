@@ -834,7 +834,8 @@ function Test-HarvestPrCoversLesson {
     param(
         [string]$PrTitle,
         [string]$PrBody,
-        [string[]]$LessonLines
+        [string[]]$LessonLines,
+        [switch]$SentenceOnly
     )
     $sentences = @(Get-HarvestPrLessonSentences -Title $PrTitle -Body $PrBody)
     foreach ($L in @($LessonLines)) {
@@ -846,6 +847,9 @@ function Test-HarvestPrCoversLesson {
             if ($blob.Contains($key) -or ($blob.Length -ge 40 -and $key.Contains($blob))) { return $true }
             $short = $key.Substring(0, [Math]::Min(80, $key.Length))
             if ($short.Length -ge 40 -and $blob.Contains($short)) { return $true }
+            # FR #8347: a 24h cover needs the sentence or a long phrase of it.
+            # Shared tokens such as "token" / "type" are not a cover.
+            if ($SentenceOnly) { continue }
             if (Test-HarvestLessonTitleStemsMatch -A $sentence -B $L) { return $true }
             if (Test-HarvestLessonTitleStemsMatch -A $sentence -B $key) { return $true }
             if (Test-HarvestLessonDistinctiveOverlap -ExistingBlob $blob -NewLesson $key) { return $true }
@@ -910,7 +914,8 @@ function Test-HarvestRecentLessonDedup {
             $created = $null
             try { $created = [datetime]::Parse([string]$pr.createdAt).ToUniversalTime() } catch { continue }
             if ($created -lt $cutoff) { continue }
-            if (Test-HarvestPrCoversLesson -PrTitle ([string]$pr.title) -PrBody ([string]$pr.body) -LessonLines $lessons) {
+            # FR #8347: 24h dedup must not treat a short shared token as a cover.
+            if (Test-HarvestPrCoversLesson -PrTitle ([string]$pr.title) -PrBody ([string]$pr.body) -LessonLines $lessons -SentenceOnly) {
                 return [string]$pr.url
             }
         }
