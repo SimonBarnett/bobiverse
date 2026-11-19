@@ -8920,6 +8920,45 @@ def is_out_of_fuel_reason(reason: str) -> bool:
     return token == "out-of-fuel" or token.startswith("out-of-fuel-")
 
 
+def is_worktree_head_mismatch_reason(reason: str) -> bool:
+    """True when MRB/FIX worktree create failed head-mismatch (FR #8326).
+
+    Seat/worktree fault: a stale author checkout must not burn giveup_count
+    or stamp needs_human. The NACK carries ``want=`` and ``have=`` SHAs.
+    """
+    token = _deterministic_nack_token(reason)
+    if not token:
+        return False
+    return (
+        token == "worktree-create-failed:head-mismatch"
+        or token.startswith("worktree-create-failed:head-mismatch")
+        or token == "head-mismatch"
+        or token.startswith("head-mismatch")
+    )
+
+
+def heal_worktree_head_mismatch_row(row: dict) -> bool:
+    """Drop needs_human / giveup stamps left by a head-mismatch NACK (FR #8326)."""
+    if not isinstance(row, dict):
+        return False
+    if not is_worktree_head_mismatch_reason(str(row.get("giveup_reason") or "")):
+        return False
+    changed = False
+    if row.get("needs_human"):
+        row.pop("needs_human", None)
+        changed = True
+    if int(row.get("giveup_count") or 0):
+        row["giveup_count"] = 0
+        changed = True
+    if str(row.get("giveup_seats") or "").strip():
+        row.pop("giveup_seats", None)
+        changed = True
+    if str(row.get("cooldown_until") or "").strip():
+        row.pop("cooldown_until", None)
+        changed = True
+    return changed
+
+
 def is_skill_dag_down_reason(reason: str) -> bool:
     """True when a GIVEUP reason is OpenCode skill-dag preflight down (FR #7963).
 
@@ -15873,6 +15912,11 @@ def resync_from_github(
                         if not _same(r, claim.repo, claim.task, claim.id):
                             continue
                         if not r.get("needs_human"):
+                            continue
+                        # FR #8326: a head-mismatch giveup is a seat/worktree fault.
+                        # Clear the stamp so the MRB can be offered again after the
+                        # review-branch create is installed.
+                        if heal_worktree_head_mismatch_row(r):
                             continue
                         if int(r.get("giveup_count") or 0) >= GIVEUP_NEEDS_HUMAN_COUNT:
                             continue
