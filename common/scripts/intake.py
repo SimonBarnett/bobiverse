@@ -126,6 +126,8 @@ def is_noop_harvest_lesson(line: str) -> bool:
     return bool(_LESSON_PLACEHOLDER_RE.match(text))
 
 HARVESTED_LESSONS_HEADING = "## Harvested lessons (intake)"
+# FR #8310: archive beside harvest/SKILL.md so skill-dag stays under 64KiB.
+HARVEST_LESSONS_ARCHIVE = "common/.grok/skills/harvest/lessons.md"
 # FR #3299 / #3317: light triage in the owning repo (useful / generalised / vision);
 # re-file / hold-open only when ownership is wrong or the owner repo is missing.
 LESSON_PR_MRB_INSTRUCTION = (
@@ -1364,10 +1366,36 @@ def mrb_process_routing_already_covered(filer: Any, repo: str) -> bool:
     return bool(harvest_ok and mrb_ok)
 
 
-def apply_lessons_to_skill_md(existing: str, lessons: list[str]) -> str:
-    """Append lessons under ``## Harvested lessons (intake)`` (FR #2705)."""
+def harvest_book_text_for_dedupe(
+    filer: Any,
+    repo: str,
+    skill_path: str,
+    skill_md: str = "",
+) -> str:
+    """SKILL.md plus lessons.md archive when the book is harvest (FR #8310).
+
+    After the archive split, on-main / already-covered checks must still see
+    the moved bullets or intake will re-tip every archived lesson.
+    """
+    base = skill_md if skill_md else _filer_get_file(filer, repo, skill_path)
+    path_n = str(skill_path or "").replace("\\", "/")
+    if path_n.endswith("harvest/SKILL.md") or path_n == SKILL_BOOK_PATHS.get("harvest"):
+        archive = _filer_get_file(filer, repo, HARVEST_LESSONS_ARCHIVE)
+        if archive:
+            return str(base or "") + "\n" + str(archive)
+    return str(base or "")
+
+
+def apply_lessons_to_skill_md(
+    existing: str, lessons: list[str], *, covered_md: str = ""
+) -> str:
+    """Append lessons under ``## Harvested lessons (intake)`` (FR #2705).
+
+    ``covered_md`` may include the harvest ``lessons.md`` archive so bullets
+    already moved out of SKILL.md are not re-appended (FR #8310).
+    """
     cleaned = [unescape_harvest_lesson_text(x) for x in (lessons or [])]
-    fresh = filter_new_lessons(existing, cleaned)
+    fresh = filter_new_lessons(covered_md or existing, cleaned)
     base = str(existing or "").rstrip() + "\n"
     bullets = "\n".join(f"- {x}" for x in fresh if str(x).strip())
     if not bullets:
@@ -2611,9 +2639,13 @@ def file_submission(
                     _save_record(home, rec)
                     return rec
                 existing_md = _filer_get_file(filer, repo, skill_path)
+                # FR #8310: include harvest/lessons.md so archived bullets still dedupe.
+                covered_md = harvest_book_text_for_dedupe(
+                    filer, repo, skill_path, existing_md
+                )
                 # FR #4514: named book already has the sentence -> no second tip.
                 if explicit_named_skill_book(title, raw_body) and lesson_sentence_already_in_book(
-                    existing_md, lessons
+                    covered_md, lessons
                 ):
                     rec["state"] = "lesson_already_covered"
                     rec["skill_book"] = book
@@ -2621,7 +2653,7 @@ def file_submission(
                     rec["queued"] = False
                     _save_record(home, rec)
                     return rec
-                new_lessons = filter_new_lessons(existing_md, lessons)
+                new_lessons = filter_new_lessons(covered_md, lessons)
                 if not new_lessons:
                     rec["state"] = "lesson_already_covered"
                     rec["skill_book"] = book
@@ -2629,7 +2661,9 @@ def file_submission(
                     rec["queued"] = False
                     _save_record(home, rec)
                     return rec
-                new_md = apply_lessons_to_skill_md(existing_md, new_lessons)
+                new_md = apply_lessons_to_skill_md(
+                    existing_md, new_lessons, covered_md=covered_md
+                )
                 lesson_files = [{"path": skill_path, "content": new_md}]
                 lesson_title = build_lesson_pr_title(book, new_lessons)
                 lesson_body = build_lesson_pr_body(
