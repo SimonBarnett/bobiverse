@@ -166,6 +166,16 @@ $url = (gh pr create --repo owner/name --base main --head fr-N --title '...' --b
 
 **FR #791 / gh issue close:** `gh issue close N --body-file` is an **unknown flag** on current `gh` - it does not accept `--body-file`. Close with a comment via `-c` / `--comment` only, e.g. `gh issue close <dup> --repo <owner>/<repo> --reason "not planned" --comment "Duplicate of #N / fixed by PR #M"`. Use `--body-file` for `gh pr create` / `gh pr edit` / `gh issue create`, never for `gh issue close`.
 
+## Set the PR ready for review before DONE (FR #8371)
+
+The PR you open must be ready for review, never left as a draft. After `gh pr create`, mark it ready before DONE:
+
+```powershell
+gh pr ready <url>   # or just: gh pr ready   (from the worktree; uses the current branch)
+```
+
+A draft PR is not reviewable and strands the MRB. Verify `gh pr view <pr> --json isDraft` reports `false` before DONE.
+
 ## Targeted in-job tests (FR #8157)
 
 OpenCode (and other seats) must **not** run full trees such as `python -m pytest jeeves/tests -q` or `python -m pytest common/tests -q` inside a job --- those hit the ~600 s shell tool timeout and burn the job budget. CI already runs the full suites on the PR.
@@ -200,6 +210,7 @@ This guidance is shared for every seat kind (Grok / OpenCode / Cursor / Claude) 
 
 * **Never stamp `needs-mrb1`/`mrb1` (harvest #1717 / FR #1526):** CAST IRON. Do not open that label, do not apply it, do not wait on it. `needs-human` is the only human gate. Operator deleted the label; leftover references in old docs are stale.
 * **Every FR PR body contains `Closes <owner>/<repo>#N`** and you verified it (step 8) before DONE. * One FR = one PR. A fix that needs more work goes to a new FR through intake, not into this PR. * Never touch Ergo config, never restart `BobIrcd`, never disturb other seats, PowerShell only.
+* **Set the PR ready for review before DONE (FR #8371):** `gh pr ready <url>` after `gh pr create`; never DONE with a draft PR. A draft PR is not reviewable and strands the MRB.
 * Do not rebuild/release/bump the version unless the FR says so.
 * **WinPS UTF-8 skill edits (FR #3935):** WinPS 5.1: never Get-Content -Raw (or Set-Content -Encoding utf8) round-trip of UTF-8 SKILL.md / docs; em-dashes (U+2014) mojibake. Edit with Python open(..., encoding="utf-8") / Path.write_text(..., encoding="utf-8"); prefer ASCII --- in new prose when possible (FR #3935).
 * CAST IRON harvest rule at the top: file every issue, FR, bug and learned playbook in the same turn.
