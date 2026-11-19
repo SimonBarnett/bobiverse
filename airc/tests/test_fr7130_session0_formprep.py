@@ -45,6 +45,9 @@ def test_session0_winrun_refuses_without_spawning(monkeypatch):
     )
     assert out.get("ok") is False
     assert out.get("reason") == "session0_gui"
+    assert out.get("schtasks_it") == "refused"
+    assert out.get("last_result") == 267011
+    assert "prepare-form" in str(out.get("note") or "")
     assert called["n"] == 0
 
 

@@ -860,6 +860,11 @@ def _priority_winrun_formprep(
             "reason": "session0_gui",
             "runner": "winrun",
             "ename": form,
+            # FR #8352: schtasks /IT formprep.exe does not run (LastResult 267011
+            # = the task has not run). Stamps stay unchanged. Do not spawn it.
+            "schtasks_it": "refused",
+            "last_result": 267011,
+            "note": "use PRIORITY prepare-form; schtasks /IT formprep.exe does not Form Prep",
         }
     inst = dict(instance or {})
     prep = str(inst.get("prepDir") or inst.get("prep_dir") or "").strip()
