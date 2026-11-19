@@ -51,7 +51,12 @@ def test_fr8131_import_each_shipped_script_without_repo(tmp_path: Path):
     assert (dest / "crash_report.py").is_file()
     env = _clean_env({"PYTHONPATH": str(dest)})
     failed: list[str] = []
+    skipped: list[str] = []
     for name in names:
+        # FR #8341: copy_by_path_scripts also ships PowerShell. Import only Python.
+        if not str(name).endswith(".py"):
+            skipped.append(str(name))
+            continue
         mod = name[:-3]
         proc = subprocess.run(
             [sys.executable, "-c", "import " + mod],
@@ -63,6 +68,7 @@ def test_fr8131_import_each_shipped_script_without_repo(tmp_path: Path):
         )
         if proc.returncode != 0:
             failed.append("%s\n%s" % (name, (proc.stderr or proc.stdout)[-500:]))
+    assert any(n.lower().endswith(".ps1") for n in skipped), skipped
     assert not failed, "unshipped import:\n" + "\n".join(failed)
 
 

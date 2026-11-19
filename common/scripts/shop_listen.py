@@ -524,6 +524,8 @@ def accept_job_by_ref(
             if idx is None:
                 return "missing", None
             job = dict(doc["unaccepted"].pop(idx))
+            # FR #8344: accepting clears a stale busy/timeout give-up for this seat.
+            gitclaim.drop_nick_from_giveup_seats(job, nick)
             job["nick"] = nick
             job["channel"] = bobreport.normalize_channel(channel)
             job["accepted_ts"] = gitclaim._utc_now()

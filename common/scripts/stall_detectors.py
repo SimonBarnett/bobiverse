@@ -173,7 +173,17 @@ def detect_all_gave_up(snap: dict[str, Any]) -> list[dict[str, Any]]:
         # FR #5181: parked-for-human rows are not actionable stalls.
         if gitclaim.row_needs_human(row):
             continue
-        if all(gitclaim.row_gave_up_by(row, n, live=live) for n in live):
+        # FR #8344: the seat holding the row has not abandoned it, even if an
+        # earlier busy NACK or offer timeout left them in giveup_seats.
+        holder = (
+            gitclaim.canonical_worker_nick(str(row.get("nick") or ""))
+            or str(row.get("nick") or "")
+        ).strip().lower()
+        def _abandoned(nick: str) -> bool:
+            if holder and nick == holder:
+                return False
+            return gitclaim.row_gave_up_by(row, nick, live=live)
+        if live and all(_abandoned(n) for n in live):
             rid = _row_id(row)
             out.append(
                 {
