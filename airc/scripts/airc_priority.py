@@ -798,13 +798,25 @@ def format_priority_usage(job_id: str) -> str:
 
 
 def format_priority_not_configured(job_id: str, *, reason: str | None = None) -> str:
-    """FR #7132: missing allowlist is err+DONE exit=2, never a PowerShell CommandNotFound."""
+    """FR #7132: missing allowlist is err+DONE exit=2, never a PowerShell CommandNotFound.
+
+    FR #8348: priority_not_installed also names the classic enable step. Session 0
+    cannot WINRUN FORMPREP; the supported verb is PRIORITY prepare-form once a live
+    allowlist and CredMan target exist.
+    """
     qid = (job_id or "").strip().lower() or "00000000"
     why = (reason or PRIORITY_NOT_INSTALLED).strip() or PRIORITY_NOT_INSTALLED
-    return (
-        f"err id={qid} seq=1 code=not-configured reason={why}\n"
-        f"DONE id={qid} exit=2"
-    )
+    lines = [
+        f"err id={qid} seq=1 code=not-configured reason={why}",
+    ]
+    if why == PRIORITY_NOT_INSTALLED:
+        lines.append(
+            f"note id={qid} copy config/priority-instances.example.json to "
+            "config/priority-instances.json; store the web password in CredMan "
+            "at credentialTarget. Session 0 uses PRIORITY prepare-form, not WINRUN."
+        )
+    lines.append(f"DONE id={qid} exit=2")
+    return "\n".join(lines)
 
 
 @dataclass
