@@ -843,13 +843,17 @@ def return_job_to_unaccepted(
             # FR #8154: console-closed is a seat fault (window/Ctrl). Re-offer promptly;
             # stamp require_machine to the giving seat's machine so the worktree is reused.
             console_closed_giveup = gitclaim.is_console_closed_reason(reason)
+            # FR #8298: no-terminal-reply means the seat went silent. It is not a
+            # permanent refusal and must not burn giveup_count / giveup_seats.
+            no_terminal_giveup = gitclaim.is_no_terminal_reply_reason(reason)
             seat_not_job_giveup = (
                 self_mrb_giveup
                 or out_of_fuel_giveup
                 or skill_dag_down_giveup
-                or console_closed_giveup
-                or head_mismatch_giveup
-            )
+            or console_closed_giveup
+            or no_terminal_giveup
+            or head_mismatch_giveup
+        )
             for k in ("nick", "accepted_ts", "offered_to", "offered_ts", "offered_channel", "channel"):
                 job.pop(k, None)
             try:
@@ -877,7 +881,12 @@ def return_job_to_unaccepted(
                     continue
                 seen_seats.add(key)
                 seats.append(canon)
-            if gave_up_by and not out_of_fuel_giveup and not head_mismatch_giveup:
+            if (
+                gave_up_by
+                and not out_of_fuel_giveup
+                and not no_terminal_giveup
+                and not head_mismatch_giveup
+            ):
                 canon_g = (gitclaim.canonical_worker_nick(gave_up_by) or gave_up_by).strip()
                 if canon_g and canon_g.lower() not in seen_seats:
                     seats.append(canon_g)
@@ -900,10 +909,13 @@ def return_job_to_unaccepted(
             # FR #4881: skip for out-of-fuel (no giveup_seats => global cooldown).
             # FR #7963: skip for skill_dag_down so another seat can take the job now.
             # FR #8154: skip for console-closed so the next seat re-offers promptly.
+            if no_terminal_giveup and gave_up_by:
+                gitclaim.stamp_seat_nack_cooldown(job, gave_up_by, now_f)
             if (
                 not out_of_fuel_giveup
                 and not skill_dag_down_giveup
                 and not console_closed_giveup
+                and not no_terminal_giveup
                 and not head_mismatch_giveup
             ):
                 until = datetime.fromtimestamp(now_f, tz=timezone.utc) + timedelta(

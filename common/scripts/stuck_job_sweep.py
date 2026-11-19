@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import re
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -535,6 +536,19 @@ def classify_queue_row(
         base["rule"] = f"hold:{hold}"
         return base
     if task == "MRB" and home is not None:
+        awaiting = ""
+        line = str(row.get("line") or "")
+        mark = re.search(r"awaiting_fix_pr\s+(#\d+)", line)
+        if mark:
+            awaiting = mark.group(1)
+        elif str(row.get("awaiting_fix_pr") or "").strip():
+            raw_fix = str(row.get("awaiting_fix_pr") or "").strip()
+            awaiting = raw_fix if raw_fix.startswith("#") else f"#{raw_fix.lstrip('#')}"
+        if awaiting:
+            base["stuck"] = True
+            base["rule"] = f"awaiting_fix_pr {awaiting}"
+            base["stuck_reason"] = f"awaiting_fix_pr {awaiting}"
+            return base
         if not gitclaim.mrb_row_offerable(row):
             base["state"] = "held"
             base["rule"] = "mrb_not_offerable"
