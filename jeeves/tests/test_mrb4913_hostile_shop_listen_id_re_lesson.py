@@ -5,12 +5,23 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 SKILL = ROOT / "common" / ".grok" / "skills" / "harvest" / "SKILL.md"
+LESSONS = ROOT / "common" / ".grok" / "skills" / "harvest" / "lessons.md"
+
+
+def _book_text() -> str:
+    # FR #8310: archived lessons live in lessons.md beside SKILL.md.
+    return (
+        SKILL.read_text(encoding="utf-8")
+        + "\n"
+        + LESSONS.read_text(encoding="utf-8")
+    )
 
 
 def test_harvest_pins_id_re_verb_re_same_turn():
-    raw = SKILL.read_bytes()
-    assert not raw.startswith(b"\xef\xbb\xbf")
-    text = raw.decode("utf-8")
+    for path in (SKILL, LESSONS):
+        raw = path.read_bytes()
+        assert not raw.startswith(b"\xef\xbb\xbf")
+    text = _book_text()
     needle = (
         "Jeeves FR: when gitclaim.ID_RE widens to synthetic #main/#main-red, "
         "widen shop_listen _VERB_RE the same turn"

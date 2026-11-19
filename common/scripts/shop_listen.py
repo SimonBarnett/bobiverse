@@ -524,6 +524,8 @@ def accept_job_by_ref(
             if idx is None:
                 return "missing", None
             job = dict(doc["unaccepted"].pop(idx))
+            # FR #8344: accepting clears a stale busy/timeout give-up for this seat.
+            gitclaim.drop_nick_from_giveup_seats(job, nick)
             job["nick"] = nick
             job["channel"] = bobreport.normalize_channel(channel)
             job["accepted_ts"] = gitclaim._utc_now()
@@ -835,6 +837,9 @@ def return_job_to_unaccepted(
             # FR #7963: skill_dag_down is a seat fault (stale/broken skill-dag). Re-queue
             # the job without burning giveup_count / needs_human; still flag the seat.
             skill_dag_down_giveup = gitclaim.is_skill_dag_down_reason(reason)
+            # FR #8326: head-mismatch is a seat/worktree fault (stale author
+            # checkout). Do not burn giveup_count or stamp needs_human.
+            head_mismatch_giveup = gitclaim.is_worktree_head_mismatch_reason(reason)
             # FR #8154: console-closed is a seat fault (window/Ctrl). Re-offer promptly;
             # stamp require_machine to the giving seat's machine so the worktree is reused.
             console_closed_giveup = gitclaim.is_console_closed_reason(reason)
@@ -845,9 +850,10 @@ def return_job_to_unaccepted(
                 self_mrb_giveup
                 or out_of_fuel_giveup
                 or skill_dag_down_giveup
-                or console_closed_giveup
-                or no_terminal_giveup
-            )
+            or console_closed_giveup
+            or no_terminal_giveup
+            or head_mismatch_giveup
+        )
             for k in ("nick", "accepted_ts", "offered_to", "offered_ts", "offered_channel", "channel"):
                 job.pop(k, None)
             try:
@@ -875,7 +881,12 @@ def return_job_to_unaccepted(
                     continue
                 seen_seats.add(key)
                 seats.append(canon)
-            if gave_up_by and not out_of_fuel_giveup and not no_terminal_giveup:
+            if (
+                gave_up_by
+                and not out_of_fuel_giveup
+                and not no_terminal_giveup
+                and not head_mismatch_giveup
+            ):
                 canon_g = (gitclaim.canonical_worker_nick(gave_up_by) or gave_up_by).strip()
                 if canon_g and canon_g.lower() not in seen_seats:
                     seats.append(canon_g)
@@ -905,6 +916,7 @@ def return_job_to_unaccepted(
                 and not skill_dag_down_giveup
                 and not console_closed_giveup
                 and not no_terminal_giveup
+                and not head_mismatch_giveup
             ):
                 until = datetime.fromtimestamp(now_f, tz=timezone.utc) + timedelta(
                     seconds=float(gitclaim.GIVEUP_COOLDOWN_S)

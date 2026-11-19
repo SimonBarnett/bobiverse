@@ -923,9 +923,11 @@ def _fetch_pr_head_oid(
             return want, ""
     except Exception:
         pass
+    have = got2 or _rev_parse_oid(run, clone, "FETCH_HEAD") or "none"
+    detail = f"head-mismatch want={want} have={have}"
     if not branch_fetch_ok and not pull_fetch_ok and not got2:
         return "", "fetch" if fatal_fetch else "pr-head"
-    return "", "head-mismatch"
+    return "", detail
 
 
 
@@ -1155,8 +1157,9 @@ def _verify_or_refresh_mrb_worktree(
                 return False, "head-mismatch"
             if int(getattr(proc, "returncode", 1)) != 0:
                 return False, "head-mismatch"
-        if _rev_parse_oid(run, str(folder), "HEAD") != want_oid:
-            return False, "head-mismatch"
+        have = _rev_parse_oid(run, str(folder), "HEAD")
+        if have != want_oid:
+            return False, f"head-mismatch want={want_oid} have={have or 'none'}"
     _write_seat_marker(folder, key, nick)
     try:
         _record_reviewed_sha(folder, want_oid)
@@ -1431,6 +1434,55 @@ def create_job_worktree(
         )
         return proc, "", ""
 
+    def _add_review_named():
+        """FR #8326 / #8090: do not steal the busy PR branch; review at headRefOid.
+
+        A leftover author worktree may be dirty or still marked live. Leave it.
+        ``mrb-<n>-review`` (or a detached checkout) still lands on *want_oid*.
+        """
+        if not pr_head or not want_oid or not number:
+            return None
+        review = f"mrb-{number}-review"
+        if not _safe_git_branch(review):
+            review = ""
+        attempts: list[list[str]] = []
+        if review and not _branch_exists(run, clone, review):
+            attempts.append(
+                [
+                    "git",
+                    "-C",
+                    clone,
+                    "worktree",
+                    "add",
+                    "-b",
+                    review,
+                    str(folder),
+                    want_oid,
+                ]
+            )
+        attempts.append(
+            [
+                "git",
+                "-C",
+                clone,
+                "worktree",
+                "add",
+                "--detach",
+                str(folder),
+                want_oid,
+            ]
+        )
+        last = None
+        for args in attempts:
+            try:
+                last = _git_run(run, args, timeout=WORKTREE_ADD_TIMEOUT_S)
+            except Exception:
+                last = None
+                continue
+            if int(getattr(last, "returncode", 1)) == 0:
+                return last
+        return last
+
     try:
         proc, early_err, early_detail = _add_once()
     except OSError:
@@ -1448,7 +1500,12 @@ def create_job_worktree(
         if pr_head:
             have = _rev_parse_oid(run, str(folder), "HEAD")
             if have != want_oid:
-                return False, "head-mismatch", ""
+                # FR #8326: both SHAs on the NACK so a stale author tip is visible.
+                return (
+                    False,
+                    f"head-mismatch want={want_oid} have={have or 'none'}",
+                    "",
+                )
         try:
             _git_run(
                 run,
@@ -1505,12 +1562,31 @@ def create_job_worktree(
                 return False, early_err2 or "git-worktree", early_detail2 or detail
             if int(getattr(proc2, "returncode", 1)) == 0:
                 return _finish_ok()
+            # Branch still busy after prune: review-named / detach at the PR SHA.
+            holder_s = _parse_worktree_holder_path(_proc_err_text(proc2))
+            if holder_s:
+                try:
+                    proc3 = _add_review_named()
+                except OSError:
+                    return False, "disk", detail
+                if proc3 is not None and int(getattr(proc3, "returncode", 1)) == 0:
+                    return _finish_ok()
             detail2 = redact_git_detail(_proc_err_text(proc2)) or detail
             return False, "git-worktree", detail2
-        if outcome == "dirty":
-            return False, "dirty", detail
-        if outcome == "live":
-            return False, "checked-out", detail
+        # FR #8326: dirty or live author/sibling trees stay put. Review the
+        # verified SHA on mrb-<n>-review (or detached) instead of NACK.
+        if outcome in ("dirty", "live", "failed", "foreign"):
+            try:
+                proc3 = _add_review_named()
+            except OSError:
+                return False, "disk", detail
+            if proc3 is not None and int(getattr(proc3, "returncode", 1)) == 0:
+                return _finish_ok()
+            extra = redact_git_detail(_proc_err_text(proc3)) if proc3 is not None else ""
+            if outcome == "dirty":
+                return False, "dirty", extra or detail
+            if outcome == "live":
+                return False, "checked-out", extra or detail
         return False, "git-worktree", detail or why
 
     return False, "git-worktree", detail

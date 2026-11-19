@@ -54,6 +54,10 @@ function Write-BobTrayDigestPoolsScriptFail {
             [IO.File]::Move($failTmp, $failFlag)
         }
     } catch { }
+    # FR #8338: do not intake a full disk. The fail file is enough when it can be written.
+    if ($reason -match '(?i)not enough space on the disk|no space left on device|\bENOSPC\b' -or $err -match '(?i)not enough space on the disk|no space left on device|\bENOSPC\b') {
+        return
+    }
     try {
         if (Get-Command Report-BobDeterministicException -ErrorAction SilentlyContinue) {
             $ex = New-Object System.InvalidOperationException ($reason + $(if ($err) { ': ' + $err } else { '' }))

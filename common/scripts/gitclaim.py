@@ -3822,6 +3822,33 @@ def giveup_seat_set(row: dict) -> set[str]:
     return out
 
 
+def drop_nick_from_giveup_seats(row: dict, nick: str) -> None:
+    """Remove one seat from giveup_seats. FR #8344: ACK means they took the work.
+
+    A busy NACK or unanswered-offer stamp can list a seat that later accepts.
+    Leaving them in giveup_seats makes all-gave-up fire while they still hold the row.
+    """
+    me = (canonical_worker_nick(nick) or nick or "").strip().lower()
+    if not me or not isinstance(row, dict):
+        return
+    kept: list[str] = []
+    seen: set[str] = set()
+    for raw in str(row.get("giveup_seats") or "").split(","):
+        raw = raw.strip()
+        if not raw:
+            continue
+        canon = (canonical_worker_nick(raw) or raw).strip()
+        key = canon.lower()
+        if not key or key == me or key in seen:
+            continue
+        seen.add(key)
+        kept.append(canon)
+    if kept:
+        row["giveup_seats"] = ",".join(kept)
+    else:
+        row.pop("giveup_seats", None)
+
+
 def _seat_machine_id(nick: str) -> str:
     """Folded machine id from a seat nick, or empty."""
     p = bobreport.parse_seat_nick(nick) or bobreport.parse_worker_nick(nick)
@@ -4564,6 +4591,45 @@ def mrb_fix_targets_feature_branch(
         return False
     parent_head = pr_head_ref(parent_pr)
     return bool(parent_head) and parent_head not in ("main", "master") and ref == parent_head
+
+
+def pr_base_is_explicit_non_default(pr: dict | None) -> bool:
+    """True when the pull names a base that is not ``main`` / ``master`` (FR #8333).
+
+    Empty/missing base is False so older fixtures and thin payloads that omit
+    ``base`` keep prior resync behaviour (FR #4665 orphan queue). An explicit
+    ``fr-*`` / stacked tip base is True --- those PRs cannot land on the default
+    branch until retargeted or recreated (class of bobiverse#8320 / #8331).
+    """
+    ref = pr_base_ref(pr)
+    return bool(ref) and ref not in ("main", "master")
+
+
+def list_open_prs_explicit_non_default_base(prs) -> list[dict]:
+    """Cheap hygiene rows: open pulls whose ``base.ref`` is not the default branch.
+
+    Used by github-resync warn lines and the open_pr_stale_base monitor (FR #8333).
+    """
+    out: list[dict] = []
+    if not isinstance(prs, list):
+        return out
+    for pr in prs:
+        if not isinstance(pr, dict):
+            continue
+        if pr.get("draft") is True:
+            continue
+        if not pr_base_is_explicit_non_default(pr):
+            continue
+        num = pr.get("number")
+        out.append(
+            {
+                "number": num,
+                "base": pr_base_ref(pr),
+                "title": str(pr.get("title") or "")[:160],
+                "html_url": str(pr.get("html_url") or ""),
+            }
+        )
+    return out
 
 
 def _read_legacy_unaccepted(path: Path) -> list[dict]:
@@ -8954,6 +9020,45 @@ def is_out_of_fuel_reason(reason: str) -> bool:
     norm = text.replace("_", "-").replace(" ", "-")
     token = norm.split(",", 1)[0].strip()
     return token == "out-of-fuel" or token.startswith("out-of-fuel-")
+
+
+def is_worktree_head_mismatch_reason(reason: str) -> bool:
+    """True when MRB/FIX worktree create failed head-mismatch (FR #8326).
+
+    Seat/worktree fault: a stale author checkout must not burn giveup_count
+    or stamp needs_human. The NACK carries ``want=`` and ``have=`` SHAs.
+    """
+    token = _deterministic_nack_token(reason)
+    if not token:
+        return False
+    return (
+        token == "worktree-create-failed:head-mismatch"
+        or token.startswith("worktree-create-failed:head-mismatch")
+        or token == "head-mismatch"
+        or token.startswith("head-mismatch")
+    )
+
+
+def heal_worktree_head_mismatch_row(row: dict) -> bool:
+    """Drop needs_human / giveup stamps left by a head-mismatch NACK (FR #8326)."""
+    if not isinstance(row, dict):
+        return False
+    if not is_worktree_head_mismatch_reason(str(row.get("giveup_reason") or "")):
+        return False
+    changed = False
+    if row.get("needs_human"):
+        row.pop("needs_human", None)
+        changed = True
+    if int(row.get("giveup_count") or 0):
+        row["giveup_count"] = 0
+        changed = True
+    if str(row.get("giveup_seats") or "").strip():
+        row.pop("giveup_seats", None)
+        changed = True
+    if str(row.get("cooldown_until") or "").strip():
+        row.pop("cooldown_until", None)
+        changed = True
+    return changed
 
 
 def is_skill_dag_down_reason(reason: str) -> bool:
@@ -15074,10 +15179,31 @@ def resync_from_github(
                             )
                             continue
                 else:
+                    # FR #8333: orphan fix on an explicit non-default base (e.g. already
+                    # merged fr-* tip) cannot land on main --- skip and warn so a worker
+                    # retargets (--base main) or recreates. Missing base still queues
+                    # (fixtures / thin payloads; FR #4665).
+                    if pr_base_is_explicit_non_default(pr):
+                        skipped_open_pulls.add((repo, f"#{num}"))
+                        print(
+                            f"resync skip orphan mrb-fix PR {repo}#{num} "
+                            f"non-default base {pr_base_ref(pr)} "
+                            f"(FR #8333: retarget --base main or recreate)",
+                            flush=True,
+                        )
+                        continue
                     print(
                         f"resync queue orphan mrb-fix PR {repo}#{num} parent {parent} not open",
                         flush=True,
                     )
+            elif pr_base_is_explicit_non_default(pr):
+                # Cheap check FR #8333: any open non-fix PR whose base is not
+                # main/master is unlikely to land on the default branch.
+                print(
+                    f"resync warn non-default base PR {repo}#{num} "
+                    f"base={pr_base_ref(pr)} (FR #8333)",
+                    flush=True,
+                )
             # FR #2604: draft open PRs must not become MRB jobs; still count as open
             # for UAT/repo_clear and FR supersede via open_pulls_map above.
             # FR #5506: draft via-intake+skill lessons backfill as MRB (#4444/#4967).
@@ -16018,6 +16144,11 @@ def resync_from_github(
                         if not _same(r, claim.repo, claim.task, claim.id):
                             continue
                         if not r.get("needs_human"):
+                            continue
+                        # FR #8326: a head-mismatch giveup is a seat/worktree fault.
+                        # Clear the stamp so the MRB can be offered again after the
+                        # review-branch create is installed.
+                        if heal_worktree_head_mismatch_row(r):
                             continue
                         if int(r.get("giveup_count") or 0) >= GIVEUP_NEEDS_HUMAN_COUNT:
                             continue

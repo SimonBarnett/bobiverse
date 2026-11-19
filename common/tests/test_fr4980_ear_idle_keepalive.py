@@ -116,20 +116,25 @@ def test_connect_sets_recv_timeout(tmp_path, monkeypatch):
 
 def test_reader_timeout_runs_keepalive(tmp_path, monkeypatch):
     monkeypatch.setenv("BOB_IRC_IDLE_PING_S", "20")
+    # FR #8234: _ssl_recv now polls the lock in short slices and only surfaces
+    # socket.timeout after the full recv_timeout_s. Keep the test fast by
+    # shrinking that deadline and simulating continuous idle timeouts.
+    monkeypatch.setattr(irc_agent, "recv_timeout_s", lambda: 0.05)
     c = _client(tmp_path)
     c._last_server_rx = time.time() - 25.0
-    calls = {"n": 0}
 
     def fake_recv(_n: int):
-        calls["n"] += 1
-        if calls["n"] == 1:
-            raise socket.timeout()
-        c.stop.set()
-        return b""
+        raise socket.timeout()
 
     c.sock.recv = fake_recv
     sent = []
-    c.send = lambda line: sent.append(line)  # type: ignore[method-assign]
+
+    def fake_send(line: str) -> None:
+        sent.append(line)
+        if line.startswith("PING :"):
+            c.stop.set()
+
+    c.send = fake_send  # type: ignore[method-assign]
     c.reader()
     assert any(s.startswith("PING :be-") for s in sent)
 

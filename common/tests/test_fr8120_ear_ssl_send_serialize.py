@@ -132,6 +132,9 @@ def test_fr8120_ssl_recv_uses_same_lock(tmp_path):
     held = []
 
     class _Sock:
+        def settimeout(self, _t: float) -> None:
+            pass
+
         def recv(self, n: int) -> bytes:
             held.append(c.lock.locked())
             return b""

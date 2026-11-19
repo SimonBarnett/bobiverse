@@ -1166,6 +1166,45 @@ def capture_opencode_model_env_at_start(env: Optional[dict] = None) -> Optional[
     return _OPENCODE_MODEL_ENV_AT_START
 
 
+SEAT_MODEL_PIN_ENV = "BOB_SEAT_MODEL_PIN"
+
+
+def seat_model_pinned(env: Optional[dict] = None) -> bool:
+    """FR #8321: the tray restored a clicked seat and pinned its saved model."""
+    env = os.environ if env is None else env
+    return str(env.get(SEAT_MODEL_PIN_ENV) or "").strip().lower() in (
+        "1", "true", "yes", "on"
+    )
+
+
+def opencode_model_pause_reason(
+    model: str,
+    *,
+    now: Optional[float] = None,
+    env: Optional[dict] = None,
+) -> str:
+    """FR #8321: why a saved OpenCode model cannot start (empty string = usable)."""
+    mid = str(model or "").strip()
+    if not mid or not opencode_fuel:
+        return ""
+    env = os.environ if env is None else env
+    state_dir = opencode_pauses_state_dir(env)
+    try:
+        if opencode_fuel.is_opencode_model_paused(mid, state_dir, now=now):
+            return "paused"
+        leaf = mid.rsplit("/", 1)[-1].lower()
+        free_leaf = leaf.endswith("-free") or leaf in getattr(
+            opencode_fuel, "OPENCODE_FREE_MODELS", ()
+        )
+        if free_leaf and opencode_fuel.is_opencode_model_paused(
+            "opencode-free", state_dir, now=now
+        ):
+            return "paused"
+    except Exception:
+        return ""
+    return ""
+
+
 # FR #7196: provider/region cues only. Bare "model unavailable" matches job/skill/prompt
 # text and the wrapper's own message; permission/tool rejects are not model misses.
 _OPENCODE_UNAVAIL_CUES = (
@@ -1477,51 +1516,59 @@ def resolve_opencode_model(
     # FR #6363 / #7187: operator env at process start, then tray start model,
     # then non-Go config, then free default, then fuel (never tray-before-env).
     env_model = (_OPENCODE_MODEL_ENV_AT_START or "").strip()
-    if env_model:
-        candidates.append(("env", env_model))
+    pinned = seat_model_pinned(env) and bool(env_model)
 
-    if start_model:
-        try:
-            import worker_start_model as wsm
+    if pinned:
+        # FR #8321: a restarted seat is pinned to the model Si clicked. Only that
+        # model is considered; a paused/capped pin refuses instead of falling through
+        # to the free default (never silently switch paid -> free or free -> paid).
+        candidates = [("pin", env_model)]
+    else:
+        if env_model:
+            candidates.append(("env", env_model))
 
-            skip_start = wsm.opencode_is_go_or_paid(start_model) and not env_model
-        except Exception:
-            skip_start = False
-        if skip_start:
-            skipped.append(f"start:{start_model}:go-or-paid")
-        else:
-            candidates.append(("tray", start_model))
+        if start_model:
+            try:
+                import worker_start_model as wsm
 
-    cfg_model = read_opencode_config_model(env)
-    if cfg_model:
-        try:
-            import worker_start_model as wsm
+                skip_start = wsm.opencode_is_go_or_paid(start_model) and not env_model
+            except Exception:
+                skip_start = False
+            if skip_start:
+                skipped.append(f"start:{start_model}:go-or-paid")
+            else:
+                candidates.append(("tray", start_model))
 
-            skip_paid = wsm.opencode_is_go_or_paid(cfg_model) and not env_model
-        except Exception:
-            skip_paid = False
-        if skip_paid:
-            skipped.append(f"config:{cfg_model}:go-or-paid")
-        else:
-            candidates.append(("config", cfg_model))
+        cfg_model = read_opencode_config_model(env)
+        if cfg_model:
+            try:
+                import worker_start_model as wsm
 
-    if start_free:
-        candidates.append(("start", start_free))
+                skip_paid = wsm.opencode_is_go_or_paid(cfg_model) and not env_model
+            except Exception:
+                skip_paid = False
+            if skip_paid:
+                skipped.append(f"config:{cfg_model}:go-or-paid")
+            else:
+                candidates.append(("config", cfg_model))
 
-    fuel_model = opencode_default_model(fuel, state_dir=state_dir, now=now)
-    if fuel_model:
-        try:
-            import worker_start_model as wsm
+        if start_free:
+            candidates.append(("start", start_free))
 
-            skip_fuel = wsm.opencode_is_go_or_paid(fuel_model) and not (
-                _OPENCODE_MODEL_ENV_AT_START or ""
-            ).strip()
-        except Exception:
-            skip_fuel = False
-        if skip_fuel:
-            skipped.append(f"fuel:{fuel_model}:go-or-paid")
-        else:
-            candidates.append(("fuel", fuel_model))
+        fuel_model = opencode_default_model(fuel, state_dir=state_dir, now=now)
+        if fuel_model:
+            try:
+                import worker_start_model as wsm
+
+                skip_fuel = wsm.opencode_is_go_or_paid(fuel_model) and not (
+                    _OPENCODE_MODEL_ENV_AT_START or ""
+                ).strip()
+            except Exception:
+                skip_fuel = False
+            if skip_fuel:
+                skipped.append(f"fuel:{fuel_model}:go-or-paid")
+            else:
+                candidates.append(("fuel", fuel_model))
 
     chosen: Optional[str] = None
     source = ""
@@ -4116,6 +4163,39 @@ def report_skill_dag_mcp_transport_drop(
         return {"ok": False, "key": key}
 
 
+def report_opencode_model_refusal(
+    log: Optional[Callable[[str], None]],
+    *,
+    machine: str = "",
+    fuel=None,
+    env: Optional[dict] = None,
+) -> dict:
+    """FR #8321: name the saved model when a pinned restart cannot start it."""
+    env = os.environ if env is None else env
+    saved = (_OPENCODE_MODEL_ENV_AT_START or "").strip() if seat_model_pinned(env) else ""
+    if saved:
+        reason = (
+            "opencode: saved start model %s unavailable (paused/capped) - "
+            "not starting (FR #8321, no fallback)" % saved
+        )
+    else:
+        reason = "opencode: no usable model (capped/paused)"
+    if log:
+        try:
+            log(reason)
+        except Exception:
+            pass
+    return report_seat_start_refusal(
+        machine=machine,
+        kind="opencode",
+        model=saved,
+        reason=reason,
+        fuel=fuel,
+        tray_restarted=False,
+        log=log,
+    )
+
+
 def normalize_agent_exit_code(code) -> int:
     """Map ``proc.wait()`` to unsigned 32-bit (Windows ``0xffffffff`` → 4294967295)."""
     try:
@@ -5129,7 +5209,8 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             import worker_start_model as wsm
 
             _gcfg = wsm.load_worker_start_config()
-            grok_model = wsm.configured_start_model("grok", _gcfg)
+            # FR #8321: a restored seat pins its model in the child env; launch it.
+            grok_model = wsm.launch_selected_model("grok", _gcfg, env=os.environ)
             # FR #2699 / MRB #2710: the shared --no-auto-update/--no-alt-screen/--cwd
             # prefix stays first; model/effort flags go right after it.
             tail = [exe] + argv[len(prefix):]
@@ -5150,7 +5231,9 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
         try:
             import worker_start_model as wsm
 
-            cur_model = wsm.configured_start_model("cursor", wsm.load_worker_start_config())
+            cur_model = wsm.launch_selected_model(
+                "cursor", wsm.load_worker_start_config(), env=os.environ
+            )
             if cur_model:
                 if "--model auto" in agent_line:
                     agent_line = agent_line.replace("--model auto", f"--model {esc(cur_model)}", 1)
@@ -11835,10 +11918,17 @@ def opencode_typed_delivery(
     branch: str = "",
     closes_ref: str = "",
     outbox: str = "",
+    pr_state: str = "",
+    head_ref: str = "",
 ) -> str:
     """FR #8248 / #8283: close steps from the on-disk module."""
     return load_opencode_delivery().opencode_typed_delivery(
-        job_key, branch=branch, closes_ref=closes_ref, outbox=outbox
+        job_key,
+        branch=branch,
+        closes_ref=closes_ref,
+        outbox=outbox,
+        pr_state=pr_state,
+        head_ref=head_ref,
     )
 
 
@@ -11869,7 +11959,11 @@ def opencode_job_finish_steps(
         reviewed, sha_source, pr_state = _osc.finish_reviewed_sha(key, wt)
     except Exception:
         reviewed, sha_source, pr_state = "", "", ""
-    if reviewed and str(pr_state or "").upper() == "MERGED":
+    # FR #8301: MRB PASS/FAIL @ SHA is an MRB (and FIX) board. FR and UAT wires
+    # carry no PASS/FAIL, so that boilerplate must not appear on those prompts.
+    if job_task_kind(key) not in ("MRB", "FIX"):
+        sha_line = ""
+    elif reviewed and str(pr_state or "").upper() == "MERGED":
         sha_line = (
             f"FR #8286: PR is already MERGED; tip SHA is {reviewed} (source={sha_source or 'gh'}). "
             f"Do not quote a lagging worktree HEAD. Verify the tip on main, append DONE for {key} "
@@ -11894,7 +11988,11 @@ def opencode_job_finish_steps(
         "Report-BobiverseIntakeIssue.ps1 (-Repo from the job id) on the intake webhook in the same turn. "
         "1) git status and git diff. 2) Finish remaining work. "
         + opencode_typed_delivery(
-            key, branch=branch, closes_ref=closes_ref, outbox=ob
+            key,
+            branch=branch,
+            closes_ref=closes_ref,
+            outbox=ob,
+            pr_state=pr_state,
         )
         + " Keep scratch files and base comparisons inside this job worktree or the worker run folder --- "
         "never under %TEMP%. Use .bob\\tmp (TEMP/TMP already point there; FR #8247). "
@@ -15547,6 +15645,29 @@ class Supervisor:
                 except Exception as e:
                     self.log(f"opencode: seat-start-refusal report failed {type(e).__name__}")
                 return False
+            # FR #8321: a pinned restart keeps the clicked model. If that model is
+            # paused/capped, stop and report; never fall back to another model.
+            if seat_model_pinned():
+                why = opencode_model_pause_reason(resolved)
+                if why:
+                    reason = (
+                        "opencode: saved start model %s unavailable (%s) - "
+                        "not starting (FR #8321)" % (resolved, why)
+                    )
+                    self.log(reason)
+                    try:
+                        report_seat_start_refusal(
+                            machine=self.machine,
+                            kind="opencode",
+                            model=resolved,
+                            reason=reason,
+                            log=self.log,
+                        )
+                    except Exception as e:
+                        self.log(
+                            f"opencode: seat-start-refusal report failed {type(e).__name__}"
+                        )
+                    return False
             blocked, msg = probe_gh_auth(subprocess.run)
             if blocked:
                 self.log(msg)
@@ -17997,15 +18118,8 @@ def run_plan(args, log: Log) -> int:
         exe = opencode_cmd
         oc_model = resolve_opencode_model(fuel, log_fn=log)
         if not oc_model:
-            log("opencode: no usable model (capped/paused) - not starting")
-            report_seat_start_refusal(
-                machine=getattr(args, "machine_id", "") or "",
-                kind="opencode",
-                model="",
-                reason="opencode: no usable model (capped/paused)",
-                fuel=fuel,
-                tray_restarted=False,
-                log=log,
+            report_opencode_model_refusal(
+                log, machine=getattr(args, "machine_id", "") or "", fuel=fuel
             )
             return EXIT_NO_AGENT
         os.environ["BOB_OPENCODE_MODEL"] = oc_model
@@ -18101,15 +18215,8 @@ def run_monitor(args, log: Log) -> int:
         exe = opencode_cmd
         oc_model = resolve_opencode_model(fuel, log_fn=log)
         if not oc_model:
-            log("opencode: no usable model (capped/paused) - not starting")
-            report_seat_start_refusal(
-                machine=getattr(args, "machine_id", "") or "",
-                kind="opencode",
-                model="",
-                reason="opencode: no usable model (capped/paused)",
-                fuel=fuel,
-                tray_restarted=False,
-                log=log,
+            report_opencode_model_refusal(
+                log, machine=getattr(args, "machine_id", "") or "", fuel=fuel
             )
             return EXIT_NO_AGENT
         os.environ["BOB_OPENCODE_MODEL"] = oc_model
@@ -18231,15 +18338,8 @@ def run_maintenance(args, log: Log, *, spawn: Optional[Callable] = None, poll_s:
         exe = opencode_cmd
         oc_model = resolve_opencode_model(fuel, log_fn=log)
         if not oc_model:
-            log("opencode: no usable model (capped/paused) - not starting")
-            report_seat_start_refusal(
-                machine=getattr(args, "machine_id", "") or "",
-                kind="opencode",
-                model="",
-                reason="opencode: no usable model (capped/paused)",
-                fuel=fuel,
-                tray_restarted=False,
-                log=log,
+            report_opencode_model_refusal(
+                log, machine=getattr(args, "machine_id", "") or "", fuel=fuel
             )
             return EXIT_NO_AGENT
         os.environ["BOB_OPENCODE_MODEL"] = oc_model
@@ -18363,15 +18463,8 @@ def run_agent(args, log: Log) -> int:
         exe = opencode_cmd
         oc_model = resolve_opencode_model(fuel, log_fn=log)
         if not oc_model:
-            log("opencode: no usable model (capped/paused) - not starting")
-            report_seat_start_refusal(
-                machine=getattr(args, "machine_id", "") or "",
-                kind="opencode",
-                model="",
-                reason="opencode: no usable model (capped/paused)",
-                fuel=fuel,
-                tray_restarted=False,
-                log=log,
+            report_opencode_model_refusal(
+                log, machine=getattr(args, "machine_id", "") or "", fuel=fuel
             )
             return EXIT_NO_AGENT
         os.environ["BOB_OPENCODE_MODEL"] = oc_model
