@@ -20,7 +20,7 @@
 
 **On start, with no user prompt, run the `monitor-start` skill NOW.** Do not wait for Simon. Do not only list directories.
 
-Skills live in **`.grok\skills`** (there is **no** top-level `.\skills` folder). Open `.grok\skills\monitor-start\SKILL.md` and follow it: run the token-free `Test-JeevesMonitor*` / `Invoke-JeevesMonitorCheck` cycle (health, idle seats, queue flow, **focus present**, seats stuck doing, stale digest, GIVEUP loops, stuck accepted, auto-feed / auto-focus, skill_promote_backlog, **intake_allowlist**, **github_resync_focus**, **open_pr_stale_base**, **open_pr_mrb_missing**, **ticket_closure**), report delays via intake only, then loop on a schedule.
+Skills live in **`.grok\skills`** (there is **no** top-level `.\skills` folder). Open `.grok\skills\monitor-start\SKILL.md` and follow it: run the token-free `Test-JeevesMonitor*` / `Invoke-JeevesMonitorCheck` cycle (health, idle seats, queue flow, **focus present**, seats stuck doing, **opencode_seats** (live `/bob/v1/report` flamingo OpenCode), stale digest, GIVEUP loops, stuck accepted, auto-feed / auto-focus, skill_promote_backlog, **intake_allowlist**, **github_resync_focus**, **open_pr_stale_base**, **open_pr_mrb_missing**, **ticket_closure**), report delays via intake only, then loop on a schedule.
 
 Product tree: `<ai root>\jeeves`. Services: **ircJeeves** (chair nick `Jeeves` â€” deterministic, token-less), **BobIrcd** (Ergo, separate), task **BobCallback** (webhooks :7700). This file is also shipped as `CLAUDE.md`, `GROK.md` and
 `.cursor/rules/bobiverse-jeeves.mdc` so any agent (Grok, Claude, Cursor, ...) started in this directory has the same briefing.
@@ -49,6 +49,7 @@ Prefer **deterministic scripts that run without tokens** over reasoning. Run the
 | Auto-focus | `scripts\Test-JeevesMonitorAutoFocus.ps1` | `tools\monitor\auto_focus.py` |
 | Focus present (bobiverse under strict) | `scripts\Test-JeevesMonitorFocusPresent.ps1` | `tools\monitor\focus_present.py` |
 | Seats stuck doing / NAK busy | `scripts\Test-JeevesMonitorSeatsStuckDoing.ps1` | `tools\monitor\seats_stuck_doing.py` |
+| OpenCode seats (live /report) | `scripts\Test-JeevesMonitorOpencodeSeats.ps1` | `tools\monitor\opencode_seats.py` (FR #8583; flamingo kind=opencode age/quota; report-only) |
 | Intake allowlist drift (live 403) | `scripts\Test-JeevesMonitorIntakeAllowlist.ps1` | `tools\monitor\intake_allowlist.py` (FR #3117) |
 | Github resync focus starve | `scripts\Test-JeevesMonitorGithubResyncFocus.ps1` | `tools\monitor\github_resync_focus.py` (FR #3146) |
 | Open PR non-default base | `scripts\Test-JeevesMonitorOpenPrStaleBase.ps1` | `tools\monitor\open_pr_stale_base.py` (FR #8333; fixture `JEEVES_OPEN_PR_STALE_BASE_FIXTURE`) |

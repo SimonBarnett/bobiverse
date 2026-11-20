@@ -38,6 +38,7 @@ You are the **MONITORING** agent - not the chair, not a worker. Never `!assign` 
 | Focus present | `focus_present` | bobiverse missing from strict focus while unaccepted work exists (FR #1019) |
 | Focus redundant items | `focus_redundant_items` | `focus.items` keys under an already-focused repo (FR #1520 per-repo policy) |
 | Seats stuck doing | `seats_stuck_doing` | doing/offered stale busy, nak-busy loops, PermissionError log counts (FR #1019). **Report only** unless explicit `--force-orphan-busy` and `accepted` empty (harvest #1967 keep seats busy) |
+| OpenCode seats | `opencode_seats` | live GET `/bob/v1/report` flamingo `kind=opencode` stuck age / model_mismatch / week-exhausted while busy (FR #8583). **Report only** — digest alone misses remote OpenCode |
 | Stale digest | `stale_digest` | digest not updating |
 | GIVEUP loops | `giveup_loops` | same row repeatedly GIVEUP |
 | Stuck accepted | `stuck_accepted` | accepted rows not progressing |
