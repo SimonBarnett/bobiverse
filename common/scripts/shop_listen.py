@@ -843,6 +843,8 @@ def return_job_to_unaccepted(
             # FR #8375: hard-ceiling, worktree-create-failed, holder_bored, and
             # offer-timeout are infra/soft. They must not stamp needs_human.
             infra_soft_giveup = gitclaim.is_infra_soft_giveup_reason(reason)
+            # FR #8465: NACK busy is infra. Seat-local backoff only.
+            busy_nack = gitclaim.is_busy_nack_reason(reason)
             # FR #8154: console-closed is a seat fault (window/Ctrl). Re-offer promptly;
             # stamp require_machine to the giving seat's machine so the worktree is reused.
             console_closed_giveup = gitclaim.is_console_closed_reason(reason)
@@ -890,6 +892,7 @@ def return_job_to_unaccepted(
                 and not out_of_fuel_giveup
                 and not no_terminal_giveup
                 and not head_mismatch_giveup
+                and not busy_nack
             ):
                 canon_g = (gitclaim.canonical_worker_nick(gave_up_by) or gave_up_by).strip()
                 if canon_g and canon_g.lower() not in seen_seats:
@@ -915,12 +918,17 @@ def return_job_to_unaccepted(
             # FR #8154: skip for console-closed so the next seat re-offers promptly.
             if no_terminal_giveup and gave_up_by:
                 gitclaim.stamp_seat_nack_cooldown(job, gave_up_by, now_f)
+            if busy_nack and gave_up_by:
+                gitclaim.stamp_seat_nack_cooldown(
+                    job, gave_up_by, now_f, seconds=float(gitclaim.BUSY_NACK_BACKOFF_S)
+                )
             if (
                 not out_of_fuel_giveup
                 and not skill_dag_down_giveup
                 and not console_closed_giveup
                 and not no_terminal_giveup
                 and not head_mismatch_giveup
+                and not busy_nack
             ):
                 until = datetime.fromtimestamp(now_f, tz=timezone.utc) + timedelta(
                     seconds=float(gitclaim.GIVEUP_COOLDOWN_S)

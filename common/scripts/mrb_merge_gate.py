@@ -57,6 +57,12 @@ BARE_SELF_MRB_HANDBACK_RE = re.compile(
     r"[\s\S]{0,800}?"
     r"\bHand\s+back\s+for\s+a\s+different\s+seat\b"
 )
+# FR #8356: a bare "MRB FAIL @ <sha>" verdict (no ## MRB board / **Verdict:**)
+# is a seat board. "Do not merge" in that comment must not become an owner hold.
+# A FAIL line without an @ sha is not this skip.
+BARE_MRB_FAIL_AT_SHA_RE = re.compile(
+    r"(?im)^\s*MRB\s+FAIL\s+@\s+[0-9a-fA-F]{7,40}\b"
+)
 # FR #4500: a later comment that only restates the gate refusal is not a new
 # owner hold. It quotes the tripped phrase ("must not merge") inside
 # "held, not merged" plus "mrb_merge_gate.py exit 2". A real hold that does
@@ -138,7 +144,10 @@ def _is_mrb_board_comment(text: str) -> bool:
     if MRB_BOARD_COMMENT_RE.search(body):
         return True
     # FR #6746: bare self-MRB + Hand back for a different seat (no ## header).
-    return bool(BARE_SELF_MRB_HANDBACK_RE.search(body))
+    if BARE_SELF_MRB_HANDBACK_RE.search(body):
+        return True
+    # FR #8356: bare MRB FAIL @ <sha> (often followed by "Do not merge").
+    return bool(BARE_MRB_FAIL_AT_SHA_RE.search(body))
 
 
 def _is_gate_refusal_echo(text: str) -> bool:
