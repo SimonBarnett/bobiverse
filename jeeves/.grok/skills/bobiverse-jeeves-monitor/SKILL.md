@@ -145,3 +145,7 @@ On ionos, NSSM `ircJeeves` may use `-ChairHome ~/.jeeves` while live `queue.json
 - **FR #4373 reopened FR stuck in done (product #4383 / MRB #4384):** when GitHub reopens an issue that already sits in `done`, webhook `issues.reopened` and `resync_from_github` must `pop_done` before append, persist reopen `history` via `_coerce_row`, clear machine pins, and re-enter `unaccepted`. Terminal PASS/MERGED must not block reopen when `open_pulls` is None. Monitor: open GitHub issues that never re-offer after reopen are this class — check `done[]` vs open state before filing empty-queue. Product: `common/scripts/gitclaim.py` `requeue_reopened_issue`; tests `jeeves/tests/test_fr4373_requeue_reopened_issues.py`.
 - Bored-latency stall fingerprints must key on machine id (`stall:bored-latency:<machine>`), not ephemeral machine-pid nick; one finding per machine (worst lag); `drop_healed_bored_findings` maps recycleseat nick to that machine key so a heal still suppresses filing (FR #6195 / #6103; product tip #6197).
 - Bored-latency heal must count `!recycleseat` by **machine slot** in a rolling window; a new seat PID must not reset the recycle budget or the chair will loop forever (harvest-lesson MRB #6812; keep the product gap here, not in harvest honesty-box).
+
+## Harvested lessons (intake)
+
+- Share walrus C:\ai\jeeves as SMB name Jeeves with net share Jeeves=C:\ai\jeeves /GRANT:wonderland\Domain Users,CHANGE so any wonderland client starts the MONITORING agent on \\walrus\Jeeves (quote Domain Users in /GRANT).
