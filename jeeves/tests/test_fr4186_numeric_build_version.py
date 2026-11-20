@@ -1,4 +1,7 @@
-"""#4186: !build refuses non-numeric versions (WiX needs numeric ProductVersion)."""
+"""#4186: !build refuses non-numeric versions (WiX needs numeric ProductVersion).
+
+FR #8490: decide_build uses numbered catalog (!build n); old owner/repo refused.
+"""
 import sys
 from pathlib import Path
 
@@ -6,6 +9,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "common" / "scripts"))
 import bobiverse_build as bb  # noqa: E402
+import builds_catalog as bc  # noqa: E402
 import chair_commands  # noqa: E402
 
 
@@ -16,6 +20,18 @@ class _Lock:
     def try_acquire(self, repo, bid):
         self.acquired.append(repo)
         return True, bid
+
+
+def _entry(**kw) -> bc.BuildCatalogEntry:
+    return bc.BuildCatalogEntry(
+        name=kw.get("name", "Bobiverse"),
+        yml=kw.get("yml", "SimonBarnett/bobiverse:.bobiverse/build.yml"),
+        output=kw.get("output", r"D:\Temp\bobiverse-build"),
+        install=kw.get("install", "fleet"),
+        dep=kw.get("dep", []),
+        version=kw.get("version", "0.1.40"),
+        ref=kw.get("ref", "HEAD"),
+    )
 
 
 @pytest.mark.parametrize("v", ["0.1.32", "0.1.32.1"])
@@ -34,9 +50,13 @@ def test_decide_build_refuses_before_lock_or_recipe(v):
     lock = _Lock()
     loads = []
     dec = bb.decide_build(
-        who=object(), body=f"!build SimonBarnett/bobiverse {v}",
-        may=lambda *a: True, denied_line=lambda c: "denied",
-        recipe_loader=lambda r: loads.append(r), lock=lock,
+        who=object(),
+        body=f"!build 1 {v}",
+        may=lambda *a: True,
+        denied_line=lambda c: "denied",
+        recipe_loader=lambda r: loads.append(r),
+        lock=lock,
+        catalog_entries=[_entry()],
     )
     assert dec is not None and not dec.ok and dec.reason == "bad_version"
     assert not dec.route and not lock.acquired and not loads
@@ -46,9 +66,13 @@ def test_decide_build_refuses_before_lock_or_recipe(v):
 def test_decide_build_empty_version_not_queued():
     lock = _Lock()
     dec = bb.decide_build(
-        who=object(), body="!build SimonBarnett/bobiverse",
-        may=lambda *a: True, denied_line=lambda c: "denied",
-        recipe_loader=lambda r: None, lock=lock,
+        who=object(),
+        body="!build 1",
+        may=lambda *a: True,
+        denied_line=lambda c: "denied",
+        recipe_loader=lambda r: None,
+        lock=lock,
+        catalog_entries=[_entry(version="")],
     )
     assert dec is not None and not dec.ok and not dec.route and not lock.acquired
 
@@ -57,14 +81,20 @@ def test_decide_build_empty_version_not_queued():
 def test_decide_build_queues_numeric(v):
     lock = _Lock()
     dec = bb.decide_build(
-        who=object(), body=f"!build SimonBarnett/bobiverse {v}",
-        may=lambda *a: True, denied_line=lambda c: "denied",
-        recipe_loader=lambda r: bb.BuildRecipe(machine="ionos"), lock=lock,
+        who=object(),
+        body=f"!build 1 {v}",
+        may=lambda *a: True,
+        denied_line=lambda c: "denied",
+        recipe_loader=lambda r: bb.BuildRecipe(machine="ionos"),
+        lock=lock,
+        catalog_entries=[_entry()],
         new_build_id=lambda: "b-1",
     )
-    assert dec.ok and dec.route == (
-        f"BUILD v1 repos=SimonBarnett/bobiverse version={v} ref=HEAD id=b-1"
-    )
+    assert dec.ok
+    assert f"version={v}" in dec.route
+    assert "repos=SimonBarnett/bobiverse" in dec.route
+    assert "id=b-1" in dec.route
+    assert dec.catalog_index == 1
 
 
 def test_help_documents_numeric_version():
