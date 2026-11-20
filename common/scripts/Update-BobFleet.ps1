@@ -168,12 +168,15 @@ function Get-UpdateFleetPSCredential {
         $even = $size - ($size % 2)
         $bytes = New-Object byte[] $even
         [Runtime.InteropServices.Marshal]::Copy($cred.CredentialBlob, $bytes, 0, $even)
-        $plain = [Text.Encoding]::Unicode.GetString($bytes)
+        # FR #8531: CredMan unicode blobs often carry a trailing NUL; strip before SecureString.
+        $plain = ([Text.Encoding]::Unicode.GetString($bytes)).TrimEnd([char]0)
         $sec = ConvertTo-SecureString $plain -AsPlainText -Force
         return New-Object System.Management.Automation.PSCredential ($user, $sec)
     }
     finally {
-        [BobUpdateFleetCredMan]::CredFree($ptr)
+        # FR #8531: CredFree returns bool; without [void] it joins the pipeline and
+        # $cred = Get-UpdateFleetPSCredential becomes Object[] that cannot bind to [PSCredential].
+        [void][BobUpdateFleetCredMan]::CredFree($ptr)
     }
 }
 
