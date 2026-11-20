@@ -8373,6 +8373,47 @@ def pending_console_closed_giveup_dir(env: Optional[dict] = None) -> Path:
     return _state_root(e) / "pending-giveup"
 
 
+def console_closed_daily_path(machine: str, env: Optional[dict] = None) -> Path:
+    """Token-free per-machine day counts (FR #8416). No job text, no secrets."""
+    mid = re.sub(r"[^a-z0-9_.-]+", "-", (machine or "unknown").strip().lower()) or "unknown"
+    return pending_console_closed_giveup_dir(env).parent / "console-closed-daily" / f"{mid}.json"
+
+
+def note_console_closed_exit(
+    machine: str,
+    *,
+    when: Optional[_dt.datetime] = None,
+    env: Optional[dict] = None,
+) -> dict:
+    """Increment today's console-closed count. Keeps 14 UTC days."""
+    now = when or _dt.datetime.now(_dt.timezone.utc)
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=_dt.timezone.utc)
+    day = now.astimezone(_dt.timezone.utc).strftime("%Y-%m-%d")
+    path = console_closed_daily_path(machine, env)
+    doc: dict = {"machine": (machine or "unknown").strip().lower(), "days": {}}
+    try:
+        if path.is_file():
+            loaded = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(loaded, dict) and isinstance(loaded.get("days"), dict):
+                doc["days"] = {
+                    str(k): int(v)
+                    for k, v in loaded["days"].items()
+                    if str(k)[:10]
+                }
+    except (OSError, json.JSONDecodeError, TypeError, ValueError):
+        doc["days"] = {}
+    doc["days"][day] = int(doc["days"].get(day) or 0) + 1
+    keep = sorted(doc["days"])[-14:]
+    doc["days"] = {k: int(doc["days"][k]) for k in keep}
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(doc, sort_keys=True) + "\n", encoding="utf-8")
+    except OSError:
+        pass
+    return doc
+
+
 def pending_console_closed_giveup_path(machine: str, env: Optional[dict] = None) -> Path:
     mid = re.sub(r"[^a-z0-9_.-]+", "-", (machine or "unknown").strip().lower()) or "unknown"
     return pending_console_closed_giveup_dir(env) / f"{mid}.txt"
@@ -13065,15 +13106,18 @@ class BoredEmitter:
             self._done_job_keys.discard(key)
 
     def live_turn_blocks_assign(self, line: str) -> bool:
-        """FR #8246: a live agent turn blocks a different job (or any job once ACK is closed).
+        """FR #8246 / #8464: NACK busy only while a different job's ACK is still open.
 
+        After DONE/NACK/GIVEUP the ACK is closed but the turn stays open until
+        turn_ended. That path must not NACK busy. Relay then parks the next
+        assign with hold_assigns_while and flushes it on turn_ended.
         The same still-open job is not blocked here. ACK de-dupe handles that replay.
         """
         incoming = assign_job_key(line)
         with self._cv:
-            if not self._turn_open:
+            if not self._turn_open or not self._ack_open:
                 return False
-            current = self._ack_job_key if self._ack_open else None
+            current = self._ack_job_key
         if current and incoming and current == incoming:
             return False
         return True
@@ -14739,6 +14783,9 @@ class Supervisor:
             "output": self.session_log.tail()[-8192:],
         }
         self._persist_last_exit()
+        if is_console_closed_shutdown_reason(str(reason or "")):
+            with contextlib.suppress(Exception):
+                note_console_closed_exit(self.machine)
         if report:
             report_agent_cli_nonzero_exit(
                 exit_code=normalize_agent_exit_code(code) if code is not None else None,
@@ -16833,6 +16880,9 @@ class Supervisor:
                 f"agent: console-close exit code={code} (u32={exit_label}); "
                 f"skip cli-failure report (FR #8165); {kill_line}"
             )
+            # FR #8416: the child console can close without CTRL_CLOSE on this
+            # process. Still GIVEUP an ACKed job (shutdown is a no-op if already shutting).
+            self.shutdown("console-closed", EXIT_OK)
             return
         if age is not None and age < max(30.0, float(self.startup_grace_s) + 15.0):
             self.log(
