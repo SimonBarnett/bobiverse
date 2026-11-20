@@ -13106,15 +13106,18 @@ class BoredEmitter:
             self._done_job_keys.discard(key)
 
     def live_turn_blocks_assign(self, line: str) -> bool:
-        """FR #8246: a live agent turn blocks a different job (or any job once ACK is closed).
+        """FR #8246 / #8464: NACK busy only while a different job's ACK is still open.
 
+        After DONE/NACK/GIVEUP the ACK is closed but the turn stays open until
+        turn_ended. That path must not NACK busy. Relay then parks the next
+        assign with hold_assigns_while and flushes it on turn_ended.
         The same still-open job is not blocked here. ACK de-dupe handles that replay.
         """
         incoming = assign_job_key(line)
         with self._cv:
-            if not self._turn_open:
+            if not self._turn_open or not self._ack_open:
                 return False
-            current = self._ack_job_key if self._ack_open else None
+            current = self._ack_job_key
         if current and incoming and current == incoming:
             return False
         return True
