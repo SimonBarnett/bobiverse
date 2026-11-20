@@ -47,6 +47,32 @@ function Get-BobJobAge {
     catch { return '?' }
 }
 
+function Format-BobTrayQueueIdleCaption {
+    <#
+    FR #8536: TipForm caption when seats are idle because the offerable queue is
+    empty (often needs_human-only). Distinguishes healthy idle from hung seats.
+    #>
+    param($DigestQueue)
+    if (-not $DigestQueue) { return $null }
+    $offerable = $null
+    try {
+        if ($null -ne $DigestQueue.offerable_count) { $offerable = [int]$DigestQueue.offerable_count }
+    } catch { $offerable = $null }
+    $needsOnly = $false
+    try { $needsOnly = [bool]$DigestQueue.queue_needs_human_only } catch { $needsOnly = $false }
+    $unaccepted = 0
+    try {
+        if ($null -ne $DigestQueue.unaccepted_count) { $unaccepted = [int]$DigestQueue.unaccepted_count }
+        elseif ($DigestQueue.unaccepted) { $unaccepted = @($DigestQueue.unaccepted).Count }
+    } catch { $unaccepted = 0 }
+    if ($null -eq $offerable) { return $null }
+    if ($offerable -gt 0) { return $null }
+    if ($needsOnly) {
+        return ('queue needs_human-only (unaccepted={0}; healthy idle — do not recycle)' -f $unaccepted)
+    }
+    return ('offerable=0 (unaccepted={0}; healthy idle — do not recycle)' -f $unaccepted)
+}
+
 function Get-ContextWindowTokens {
     try {
         $p = Join-Path $env:USERPROFILE '.grok\models_cache.json'
@@ -4987,9 +5013,25 @@ function Get-BobTrayHover {
     }
     foreach ($pl in $poolLines) { $lines.Add($pl) }
     foreach ($jl in $jobLines) { $lines.Add($jl) }
+    # FR #8536: when TipForm shows idle, caption healthy empty-offerable queue.
+    $queueIdleCaption = $null
+    try {
+        if (@($running).Count -eq 0 -and $reportDigest -and $reportDigest.queue) {
+            $queueIdleCaption = Format-BobTrayQueueIdleCaption -DigestQueue $reportDigest.queue
+        }
+    } catch { $queueIdleCaption = $null }
+    if ($queueIdleCaption) {
+        $lines.Add(('  {0}' -f $queueIdleCaption))
+        if ($jobsText) { $jobsText = $jobsText + "`n  " + $queueIdleCaption }
+        else { $jobsText = '  ' + $queueIdleCaption }
+    }
     if (@($running).Count -eq 0) {
         if ($null -eq $remainPct) { $short = '{0} idle' -f $tier }
         else { $short = '{0} idle  {1}%' -f $tier, $remainPct }
+        if ($queueIdleCaption) {
+            if ($queueIdleCaption -match 'needs_human') { $short = '{0} idle · needs_human queue' -f $tier }
+            else { $short = '{0} idle · offerable=0' -f $tier }
+        }
     }
     if ($short.Length -gt 63) { $short = $short.Substring(0, 63) }
 
@@ -5005,6 +5047,7 @@ function Get-BobTrayHover {
         weekly_fetched_at = $weekFetched
         job_count      = @($running).Count
         queued         = $queued
+        queue_idle_caption = $queueIdleCaption
         jobs           = @($jobs)
         machines       = $tiles
         peer_peek      = $peerPeek
