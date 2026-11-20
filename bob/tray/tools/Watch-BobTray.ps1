@@ -4040,11 +4040,23 @@ $poll.Add_Tick({
                     [void](Invoke-BobTrayWarmEngineStep -Name 'update-hover-engine' -Root $RepoRoot -TimeoutSec ([int]$script:BobTrayEngineStepTimeoutSec) -ArgumentList @($RepoRoot) -Body {
                         param($Root)
                         # FR #8404: keep the digest GET inside the 45s step budget.
+                        # $env is process-wide. Restore it so later tray callers stay at 15s.
+                        $prevDigestTimeout = $env:BOB_DIGEST_HTTP_TIMEOUT_SEC
                         $env:BOB_DIGEST_HTTP_TIMEOUT_SEC = '8'
+                        try {
                         $h = Get-BobTrayHover
                         if (Get-Command Write-BobTrayStatusSnapshot -ErrorAction SilentlyContinue -and $h) {
                             $model = New-BobTrayStatusModel -Hover $h -AlertKind 'none' -Alerts @() -Version '' -Machine ([string]$env:BOB_MACHINE_ID) -Title ([string]$h.title) -Short ([string]$h.short) -Attention $false -AttentionSeq 0 -Pulse $false
                             [void](Write-BobTrayStatusSnapshot -Root $Root -Model $model)
+                        }
+                        }
+                        finally {
+                            if ([string]::IsNullOrEmpty($prevDigestTimeout)) {
+                                Remove-Item Env:\BOB_DIGEST_HTTP_TIMEOUT_SEC -ErrorAction SilentlyContinue
+                            }
+                            else {
+                                $env:BOB_DIGEST_HTTP_TIMEOUT_SEC = $prevDigestTimeout
+                            }
                         }
                     })
                 }
