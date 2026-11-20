@@ -75,6 +75,34 @@ def test_fr8356_do_not_merge_without_fail_sha_still_holds():
     assert mrb_merge_gate.find_active_owner_hold(comments) is not None
 
 
+def test_fr8441_backtick_sha_is_not_owner_hold():
+    body = "MRB FAIL @ `deadbeef` Do not merge"
+    comments = [
+        _owner(body, "2026-11-18T10:00:00Z"),
+        _owner(PASS_BOARD, "2026-11-18T11:00:00Z"),
+    ]
+    assert mrb_merge_gate._is_mrb_board_comment(body) is True
+    assert mrb_merge_gate.find_active_owner_hold(comments) is None
+    ok, reason = mrb_merge_gate.evaluate_merge_gate(comments)
+    assert ok is True
+    assert reason == ""
+
+
+def test_fr8441_quoted_sha_is_not_owner_hold():
+    body = "MRB FAIL @ 'deadbeef' Do not merge"
+    assert mrb_merge_gate._is_mrb_board_comment(body) is True
+
+
+def test_fr8441_mid_line_backtick_still_holds():
+    body = "Please MRB FAIL @ `deadbeef` Do not merge"
+    comments = [
+        _owner(body, "2026-11-18T10:00:00Z"),
+        _owner(PASS_BOARD, "2026-11-18T11:00:00Z"),
+    ]
+    assert mrb_merge_gate._is_mrb_board_comment(body) is False
+    assert mrb_merge_gate.find_active_owner_hold(comments) is not None
+
+
 def test_fr8356_mrb_fail_without_sha_still_holds():
     body = "MRB FAIL. Do not merge."
     comments = [
