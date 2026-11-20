@@ -162,7 +162,9 @@ COMMANDS: tuple = (
         OPS_ROLES,
         "!build 1 0.1.40",
         "Ops only (simon / bob-* / +o/+h). Bare !build lists builds-catalog.json (GET /bob/v1/builds). "
-        "!build n runs that entry's yml on the recipe machine; version/ref override catalog defaults. "
+        "!build n runs that entry's yml on the recipe machine, exports pack artifacts to catalog output, "
+        "then reinstalls on install (machine id or fleet via registered-machines.json). "
+        "version/ref override catalog defaults. "
         "<version> must be numeric x.y.z or x.y.z.w (digits only); v-prefix / -suffix refused (#4186). "
         "dep is documentation only. Old !build owner/repo form is refused — use the numbered list. "
         "Subcommands take n: status, cancel (bare cancel still frees all), dry-run, preflight (#6492), "

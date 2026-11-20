@@ -42,7 +42,7 @@ Admin-sealed `identity.json` under LocalSystem → `CryptUnprotectData failed`. 
 
 ## !build (FR #4006 / #8490)
 
-Ops: bare `!build` lists the numbered catalog (`builds-catalog.json` / GET `/bob/v1/builds`). `!build n [version] [ref]` queues a deterministic BUILD from that entry's `yml` (no agent). Version/ref override catalog defaults; `<version>` must be numeric `x.y.z` or `x.y.z.w` (digits only); `v0.1.32` / `0.1.32-test2` are refused (#4186). `dep` is documentation only. Old `!build owner/repo` form is refused. Use `!build dry-run n` to validate. Live pack/suites: WP2 on the recipe `machine` (export/install fan-out is a follow-on slice).
+Ops: bare `!build` lists the numbered catalog (`builds-catalog.json` / GET `/bob/v1/builds`). `!build n [version] [ref]` queues a deterministic BUILD from that entry's `yml` (no agent): suites → pack → export artifacts to catalog `output` → reinstall on `install` (single machine id or `fleet` via `registered-machines.json`). Local target uses recipe `install_test` msiexec against exported MSIs; remote targets get `BUILD_INSTALL` queue jobs (WARN-and-continue; offline skipped). Version/ref override catalog defaults; `<version>` must be numeric `x.y.z` or `x.y.z.w` (digits only); `v0.1.32` / `0.1.32-test2` are refused (#4186). `dep` is documentation only. Old `!build owner/repo` form is refused. Use `!build dry-run n` to validate.
 
 ## !installtest (FR #4026 WP3)
 

@@ -7,6 +7,9 @@ WP2 (FR #4025): deterministic live runner (`BuildRunner`), FakeGitHubFiler,
 `BUILD v1` consume/enqueue, pack/release only when no new blockers.
 
 WP3 (FR #4026): optional `!installtest` --- msiexec pre-release MSIs + post-checks + blockers.
+
+FR #8490: numbered catalog `!build` / `!build n` — after pack, export artifacts to
+catalog ``output`` and reinstall on ``install`` (machine id or ``fleet``).
 """
 from __future__ import annotations
 
@@ -67,12 +70,20 @@ class RecipeError(ValueError):
     pass
 
 
-def recipe_path(repo_root: Path) -> Path:
-    return Path(repo_root) / ".bobiverse" / "build.yml"
+def recipe_path(repo_root: Path, rel: str = "") -> Path:
+    """Return the build.yml path under *repo_root*.
+
+    FR #8490: *rel* may be a catalog ``yml`` relative path (e.g.
+    ``pack/build.yml``). Empty / default → ``.bobiverse/build.yml``.
+    """
+    text = (rel or "").strip().lstrip("/\\").replace("\\", "/")
+    if not text or text in (".bobiverse/build.yml", ".bobiverse\\build.yml"):
+        return Path(repo_root) / ".bobiverse" / "build.yml"
+    return Path(repo_root) / Path(*text.split("/"))
 
 
-def load_recipe(repo_root: Path) -> BuildRecipe:
-    path = recipe_path(repo_root)
+def load_recipe(repo_root: Path, rel: str = "") -> BuildRecipe:
+    path = recipe_path(repo_root, rel)
     if not path.is_file():
         raise RecipeError(f"build: has no .bobiverse/build.yml; nothing started")
     text = path.read_text(encoding="utf-8")
@@ -2213,6 +2224,12 @@ class BuildReport:
     log_zip: str = ""
     announce_lines: list = field(default_factory=list)
     errors: list = field(default_factory=list)
+    # FR #8490 catalog export + install
+    exported: list = field(default_factory=list)
+    export_ok: bool = False
+    install_targets: list = field(default_factory=list)
+    install_results: list = field(default_factory=list)
+    install_ok: bool = False
 
 
 # ------------------------------------------------------------------ FR #6585 progress
@@ -2787,6 +2804,14 @@ class BuildRunner:
         build_id: str = "",
         progress: BuildProgressPoster | None = None,
         tests_only: bool = False,
+        output: str = "",
+        install: str = "",
+        roster_machines: Iterable[str] | None = None,
+        live_machines: Iterable[str] | None = None,
+        install_queue_dir: Path | str | None = None,
+        export_fn: Callable[..., list] | None = None,
+        install_local_fn: Callable[..., dict] | None = None,
+        enqueue_install_fn: Callable[..., Path] | None = None,
     ) -> None:
         self.repo_root = Path(repo_root)
         # Baseline suites run in their own checkout of the baseline tag; without one
@@ -2808,6 +2833,21 @@ class BuildRunner:
         # FR #6585: optional live progress sink (ear tails JSONL -> #bobiverse).
         self.progress = progress
         self.tests_only = bool(tests_only)
+        # FR #8490: catalog output + install (machine | fleet).
+        self.output = str(output or "").strip()
+        self.install = str(install or "").strip()
+        self.roster_machines = [str(m).strip().lower() for m in (roster_machines or []) if str(m).strip()]
+        self.live_machines = (
+            None
+            if live_machines is None
+            else {str(m).strip().lower() for m in live_machines if str(m).strip()}
+        )
+        self.install_queue_dir = (
+            Path(install_queue_dir) if install_queue_dir is not None else None
+        )
+        self.export_fn = export_fn
+        self.install_local_fn = install_local_fn
+        self.enqueue_install_fn = enqueue_install_fn
         if self.tests_only:
             try:
                 setattr(self.filer, "skip_blockers", True)
@@ -3400,6 +3440,10 @@ class BuildRunner:
             elif not blocking and report.pack_ok and not target:
                 report.release_ok = True
 
+        # FR #8490: export pack artifacts to catalog output, then install/fleet.
+        if (not blocking) and report.pack_ok and (self.output or self.install):
+            self._export_and_install(report, assets=assets)
+
         try:
             zip_path = self._zip_logs()
             report.log_zip = str(zip_path)
@@ -3407,10 +3451,16 @@ class BuildRunner:
             report.errors.append(f"log_zip: {type(exc).__name__}: {exc}")
 
         has_release_target = bool((self.recipe.release or {}).get("target"))
+        # Export failure blocks overall ok; install WARN-and-continue does not.
+        export_gate = (not self.output) or bool(report.export_ok)
+        if self.output and report.pack_ok and not report.export_ok:
+            if not any(str(e).startswith("export:") for e in report.errors):
+                report.errors.append("export: failed or skipped with output set")
         report.ok = (
             (not blocking)
             and report.pack_ok
             and (report.release_ok or not has_release_target)
+            and export_gate
         )
         tag_s = render_template(
             str((self.recipe.release or {}).get("tag") or "v{{version}}"),
@@ -3439,6 +3489,407 @@ class BuildRunner:
                 f"{url_bit}"
             )
         return report
+
+    def _export_and_install(self, report: BuildReport, *, assets: list) -> None:
+        """Copy pack assets to catalog output; local msiexec + remote install queue."""
+        id_early = build_result_id_early(self.build_id)
+        asset_paths = [Path(a) for a in (assets or []) if a]
+        exported: list[Path] = []
+        if self.output:
+            try:
+                if prog := self._progress():
+                    with contextlib.suppress(Exception):
+                        prog.step_start("export")
+                export_call = self.export_fn or export_pack_artifacts
+                exported = list(
+                    export_call(asset_paths, self.output, version=self.version)
+                )
+                report.exported = [str(p) for p in exported]
+                report.export_ok = True
+                report.announce_lines.append(
+                    f"BUILD export {self.repo}{id_early} version={self.version} "
+                    f"output={self.output} n={len(exported)}"
+                )
+                if prog is not None:
+                    with contextlib.suppress(Exception):
+                        prog.step_end("export", ok=True)
+            except Exception as exc:
+                report.export_ok = False
+                report.errors.append(f"export: {type(exc).__name__}: {exc}")
+                report.announce_lines.append(
+                    f"BUILD export fail {self.repo}{id_early} version={self.version}: "
+                    f"{type(exc).__name__}"
+                )
+                if prog := self._progress():
+                    with contextlib.suppress(Exception):
+                        prog.step_end("export", ok=False)
+                return
+        else:
+            report.export_ok = True
+            exported = asset_paths
+
+        if not self.install or self.tests_only:
+            return
+
+        plan = resolve_install_plan(
+            self.install,
+            roster=self.roster_machines,
+            local_machine=self.local_machine,
+            live_machines=self.live_machines,
+        )
+        report.install_targets = list(plan.get("targets") or [])
+        skipped = list(plan.get("skipped_offline") or [])
+        for mid in skipped:
+            report.install_results.append(
+                {"machine": mid, "ok": False, "action": "skipped_offline"}
+            )
+            report.announce_lines.append(
+                f"BUILD install WARN {self.repo}{id_early} machine={mid} skipped=offline"
+            )
+
+        targets = list(plan.get("targets") or [])
+        if not targets and not skipped:
+            report.announce_lines.append(
+                f"BUILD install WARN {self.repo}{id_early} install={self.install} "
+                f"targets=none (empty roster?)"
+            )
+            report.install_ok = False
+            return
+
+        report.announce_lines.append(
+            f"BUILD install {self.repo}{id_early} version={self.version} "
+            f"install={self.install} targets={','.join(targets) or '-'}"
+        )
+
+        local_set = {str(m).strip().lower() for m in (plan.get("local") or []) if str(m).strip()}
+        remote = [str(m).strip().lower() for m in (plan.get("remote") or []) if str(m).strip()]
+        all_ok = True
+
+        if local_set:
+            if self.recipe.install_test is None and self.install_local_fn is None:
+                for mid in sorted(local_set):
+                    report.install_results.append(
+                        {
+                            "machine": mid,
+                            "ok": False,
+                            "action": "skipped_no_install_test",
+                        }
+                    )
+                    report.announce_lines.append(
+                        f"BUILD install WARN {self.repo}{id_early} machine={mid} "
+                        f"skipped=no_install_test"
+                    )
+                    all_ok = False
+            else:
+                try:
+                    if prog := self._progress():
+                        with contextlib.suppress(Exception):
+                            prog.step_start("install-local")
+                    local_fn = self.install_local_fn or default_install_local_from_output
+                    result = dict(
+                        local_fn(
+                            repo=self.repo,
+                            version=self.version,
+                            recipe=self.recipe,
+                            output_dir=self.output or str(self.work_dir / "out"),
+                            assets=exported or asset_paths,
+                            local_machine=self.local_machine,
+                            evidence_dir=self.log_dir / "install",
+                        )
+                        or {}
+                    )
+                    ok = bool(result.get("ok"))
+                    mid = (
+                        str(result.get("machine") or self.local_machine or "")
+                        .strip()
+                        .lower()
+                        or "local"
+                    )
+                    report.install_results.append(
+                        {
+                            "machine": mid,
+                            "ok": ok,
+                            "action": "msiexec_local",
+                            "detail": str(result.get("detail") or ""),
+                        }
+                    )
+                    if ok:
+                        report.announce_lines.append(
+                            f"BUILD install ok {self.repo}{id_early} machine={mid}"
+                        )
+                    else:
+                        all_ok = False
+                        report.announce_lines.append(
+                            f"BUILD install fail {self.repo}{id_early} machine={mid} "
+                            f"{str(result.get('detail') or '')[:120]}"
+                        )
+                    if prog is not None:
+                        with contextlib.suppress(Exception):
+                            prog.step_end("install-local", ok=ok)
+                except Exception as exc:
+                    all_ok = False
+                    report.errors.append(f"install_local: {type(exc).__name__}: {exc}")
+                    report.install_results.append(
+                        {
+                            "machine": self.local_machine or "local",
+                            "ok": False,
+                            "action": "msiexec_local",
+                            "detail": str(exc),
+                        }
+                    )
+                    report.announce_lines.append(
+                        f"BUILD install fail {self.repo}{id_early} "
+                        f"machine={self.local_machine or 'local'}: {type(exc).__name__}"
+                    )
+                    if prog := self._progress():
+                        with contextlib.suppress(Exception):
+                            prog.step_end("install-local", ok=False)
+
+        enqueue = self.enqueue_install_fn or enqueue_build_install_job
+        qdir = self.install_queue_dir
+        for mid in remote:
+            try:
+                if qdir is None and self.enqueue_install_fn is None:
+                    report.install_results.append(
+                        {
+                            "machine": mid,
+                            "ok": False,
+                            "action": "skipped_no_queue",
+                        }
+                    )
+                    report.announce_lines.append(
+                        f"BUILD install WARN {self.repo}{id_early} machine={mid} "
+                        f"skipped=no_queue"
+                    )
+                    all_ok = False
+                    continue
+                path = enqueue(
+                    queue_dir=qdir or (self.work_dir / "install-queue"),
+                    repo=self.repo,
+                    version=self.version,
+                    tag=render_template(
+                        str((self.recipe.release or {}).get("tag") or "v{{version}}"),
+                        version=self.version,
+                    ),
+                    machine=mid,
+                    output=self.output,
+                    assets=[str(p) for p in (exported or asset_paths)],
+                )
+                report.install_results.append(
+                    {
+                        "machine": mid,
+                        "ok": True,
+                        "action": "queued",
+                        "path": str(path),
+                    }
+                )
+                report.announce_lines.append(
+                    f"BUILD install queued {self.repo}{id_early} machine={mid}"
+                )
+            except Exception as exc:
+                all_ok = False
+                report.errors.append(
+                    f"install_queue {mid}: {type(exc).__name__}: {exc}"
+                )
+                report.install_results.append(
+                    {
+                        "machine": mid,
+                        "ok": False,
+                        "action": "queue_fail",
+                        "detail": str(exc),
+                    }
+                )
+                report.announce_lines.append(
+                    f"BUILD install WARN {self.repo}{id_early} machine={mid} "
+                    f"queue_fail={type(exc).__name__}"
+                )
+
+        report.install_ok = bool(all_ok) and bool(targets)
+
+
+def export_pack_artifacts(
+    assets: Iterable[Path | str],
+    output_dir: Path | str,
+    *,
+    version: str = "",
+) -> list[Path]:
+    """Copy pack artifact files into *output_dir* (FR #8490). Returns destinations."""
+    dest_root = Path(output_dir)
+    dest_root.mkdir(parents=True, exist_ok=True)
+    out: list[Path] = []
+    for raw in assets or []:
+        src = Path(raw)
+        if not src.is_file():
+            raise FileNotFoundError(f"pack asset missing: {src}")
+        dest = dest_root / src.name
+        if src.resolve() != dest.resolve():
+            shutil.copy2(src, dest)
+        out.append(dest)
+    # Optional marker so operators can see which version landed.
+    if version:
+        marker = dest_root / f"BUILD-EXPORT-{version}.txt"
+        marker.write_text(
+            f"version={version}\nfiles={len(out)}\n",
+            encoding="utf-8",
+        )
+    return out
+
+
+def resolve_install_plan(
+    install: str,
+    *,
+    roster: Iterable[str],
+    local_machine: str,
+    live_machines: Iterable[str] | None = None,
+) -> dict:
+    """Split catalog install into local msiexec vs remote queue targets (FR #8490)."""
+    import builds_catalog as bc
+
+    targets = bc.expand_install_targets(install, roster)
+    live = None
+    if live_machines is not None:
+        live = {str(m).strip().lower() for m in live_machines if str(m).strip()}
+    skipped: list[str] = []
+    active: list[str] = []
+    for mid in targets:
+        if live is not None and mid not in live:
+            skipped.append(mid)
+        else:
+            active.append(mid)
+    local_id = fold_build_machine(local_machine) if local_machine else ""
+    local: list[str] = []
+    remote: list[str] = []
+    for mid in active:
+        if local_id and fold_build_machine(mid) == local_id:
+            local.append(mid)
+        else:
+            remote.append(mid)
+    return {
+        "targets": active,
+        "local": local,
+        "remote": remote,
+        "skipped_offline": skipped,
+    }
+
+
+def load_roster_machine_ids(home: Path | str | None = None) -> list[str]:
+    """Sorted machine ids from ``registered-machines.json`` (systray / ChanServ mirror)."""
+    try:
+        import registered_machines as rm
+    except Exception:
+        return []
+    roots: list[Path] = []
+    if home is not None:
+        roots.append(Path(home))
+    digest = (os.environ.get("BOB_DIGEST_HOME") or "").strip()
+    if digest:
+        roots.append(Path(digest))
+    roots.append(Path.home() / ".bobiverse")
+    for root in roots:
+        try:
+            ids = sorted(rm.load_registered(root))
+        except Exception:
+            ids = []
+        if ids:
+            return ids
+    return []
+
+
+def enqueue_build_install_job(
+    *,
+    queue_dir: Path | str,
+    repo: str,
+    version: str,
+    tag: str,
+    machine: str,
+    output: str = "",
+    assets: Iterable[str] | None = None,
+) -> Path:
+    """Write a BUILD_INSTALL job for a remote machine (INSTALLTEST-shaped; FR #8490)."""
+    q = Path(queue_dir)
+    q.mkdir(parents=True, exist_ok=True)
+    mid = str(machine or "").strip().lower()
+    ts = int(time.time())
+    ver = str(version or "unknown")
+    path = q / f"build-install-{mid}-{ver}-{ts}.json"
+    payload = {
+        "v": 1,
+        "kind": "BUILD_INSTALL",
+        "repo": str(repo or "").strip(),
+        "version": ver,
+        "tag": str(tag or f"v{ver}").strip(),
+        "machine": mid,
+        "output": str(output or "").strip(),
+        "assets": [str(a) for a in (assets or [])],
+        "queued_at": ts,
+        "status": "queued",
+    }
+    path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    return path
+
+
+def default_install_local_from_output(
+    *,
+    repo: str,
+    version: str,
+    recipe: BuildRecipe,
+    output_dir: Path | str,
+    assets: Iterable[Path | str] | None = None,
+    local_machine: str = "",
+    evidence_dir: Path | str | None = None,
+    msiexec_fn: Callable[..., int] | None = None,
+) -> dict:
+    """Run InstallTestRunner against exported MSIs under *output_dir* (FR #8490)."""
+    if recipe.install_test is None:
+        return {
+            "ok": False,
+            "machine": local_machine,
+            "detail": "no_install_test",
+        }
+    out = Path(output_dir)
+    evid = Path(evidence_dir) if evidence_dir is not None else out / "install-evidence"
+    evid.mkdir(parents=True, exist_ok=True)
+    asset_list = [Path(a) for a in (assets or []) if Path(a).is_file()]
+    if not asset_list:
+        asset_list = sorted(out.glob("*.msi"))
+
+    def _resolver(ver: str, tag: str, products: list[str] | None = None) -> list[Path]:
+        products = list(products or [])
+        if not products:
+            return list(asset_list)
+        found: list[Path] = []
+        for prod in products:
+            hit = None
+            for p in asset_list:
+                stem = p.name.lower()
+                if stem.startswith(f"{prod.lower()}-") and stem.endswith(".msi"):
+                    hit = p
+                    break
+            if hit is None:
+                cand = out / f"{prod}-{ver}.msi"
+                if cand.is_file():
+                    hit = cand
+            if hit is not None:
+                found.append(hit)
+        return found
+
+    runner = InstallTestRunner(
+        repo=repo,
+        version=version,
+        tag=f"v{version}",
+        recipe=recipe,
+        evidence_dir=evid,
+        msiexec_fn=msiexec_fn,
+        asset_resolver=_resolver,
+        dry_run=False,
+    )
+    report = runner.run()
+    return {
+        "ok": bool(report.ok),
+        "machine": local_machine,
+        "detail": ";".join(report.errors[:3]) if report.errors else "",
+        "steps": list(report.steps),
+    }
 
 
 def enqueue_build_job(

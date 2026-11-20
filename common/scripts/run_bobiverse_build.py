@@ -371,6 +371,17 @@ def main(argv: list[str] | None = None) -> int:
                     dst = bk / h.name / name
                     dst.parent.mkdir(parents=True, exist_ok=True)
                     shutil.copy2(src_f, dst)
+        # FR #8490: catalog output/install from BUILD v1 job JSON.
+        job_output = str(job.get("output") or "").strip()
+        job_install = str(job.get("install") or "").strip()
+        roster_ids = bb.load_roster_machine_ids()
+        install_q = None
+        if job_install:
+            install_q = work / "install-queue"
+            if args.queue_dir:
+                install_q = Path(args.queue_dir).parent / "install-queue"
+            elif job_path is not None:
+                install_q = job_path.parent / "install-queue"
         runner = bb.BuildRunner(
             root, repo, version, ref, recipe, filer,
             run_command_fn=bb.guarded_run_command(work, live_homes),
@@ -380,6 +391,10 @@ def main(argv: list[str] | None = None) -> int:
             build_id=build_id,
             progress=progress,
             tests_only=tests_only,
+            output=job_output,
+            install=job_install,
+            roster_machines=roster_ids,
+            install_queue_dir=install_q,
         )
         t0 = time.time()
         print("build: runner.run begin", flush=True)
@@ -399,6 +414,13 @@ def main(argv: list[str] | None = None) -> int:
             "announce": report.announce_lines,
             "errors": report.errors,
             "log_zip": getattr(report, "log_zip", ""),
+            "output": job_output,
+            "install": job_install,
+            "exported": list(getattr(report, "exported", None) or []),
+            "export_ok": bool(getattr(report, "export_ok", False)),
+            "install_targets": list(getattr(report, "install_targets", None) or []),
+            "install_results": list(getattr(report, "install_results", None) or []),
+            "install_ok": bool(getattr(report, "install_ok", False)),
             "suites": [
                 {"name": r.name, "at": r.ref_or_baseline, "rc": r.exit_code,
                  "timed_out": r.timed_out, "s": round(r.duration_s)}
