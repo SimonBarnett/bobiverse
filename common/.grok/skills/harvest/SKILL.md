@@ -270,3 +270,4 @@ Do not land a second copy of a harvest-lesson MRB playbook in this book. Those p
 - opencode_turn_stop_reason returns finished when the outbox already has DONE or NACK. The wrapper must not GIVEUP that case, and must not write stop-closed into opencode-out-of-fuel.log.
 - An offer-timeout must not hand the same row straight back to that nick while another live idle seat exists. Record offer_last_timeout_seat and push the other seat first.
 - A batch recycleseat must stop every named seat before starting replacements. A restore launch is net-zero and must not be refused by the agent cap.
+- Startworker expires must parse ISO or unix without throwing so res-*.json always lands; bad-expires is the audit reason.
