@@ -5549,6 +5549,7 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             r"    $turnN = $script:ocTurnN",
             # FR #8133: turn markers and watchdogs only for a real job inject. Standing /
             # idle runs must not arm turn_started or the hard ceiling.
+            r"    $script:ocSkipFuelLog = $false",
             r"    $script:ocHasJob = -not [string]::IsNullOrWhiteSpace([string]$jobKey)",
             r"    if ($script:ocHasJob) { Write-OpencodeTurnMarker 'turn_started' $turnN }",
             r"    try {",
@@ -5731,8 +5732,24 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             r"                try { $stopLine = (& $pyStop $guardPy stop --job $jobKey --outbox $env:BOB_OUTBOX 2>$null | Out-String).Trim() } catch { $stopLine = '' }",
             r"                if ($stopLine -like 'stop*') {",
             r"                    $timedOut = $true",
-            r"                    $killReason = ('job-ended ' + $stopLine)",
             r"                    try { & taskkill /T /F /PID $proc.Id 2>$null | Out-Null } catch { }",
+            # FR #8413: DONE/NACK already in the outbox is not a new hand-back.
+            r"                    if ($stopLine -eq 'stop finished') {",
+            r"                        $killReason = 'already-finished'",
+            r"                        Write-Output ('opencode-watchdog: already-finished ' + $jobKey)",
+            r"                        break",
+            r"                    }",
+            # FR #8413: issue closed with no DONE/NACK. Not fuel, not a hard ceiling.
+            r"                    if ($stopLine -eq 'stop closed') {",
+            r"                        $killReason = 'process-exit:stop-closed'",
+            r"                        $script:ocSkipFuelLog = $true",
+            r"                        $teStatus = 'error'",
+            r"                        $teClass = 'process-exit'",
+            r"                        $teErr = 'process-exit:stop-closed'",
+            r"                        Write-OpencodeJobGiveup $jobKey 'process-exit:stop-closed'",
+            r"                        break",
+            r"                    }",
+            r"                    $killReason = ('job-ended ' + $stopLine)",
             # FR #7739: killing the child is not enough. The chair still holds the
             # accepted row, so !bored is nak busy until this GIVEUP is drained.
             r"                    Write-OpencodeJobGiveup $jobKey $killReason",
@@ -5827,8 +5844,10 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             r"        if (-not $killReason) { $killReason = 'watchdog timeout (no output)' }",
             r"        $msg = $killReason",
             r"        Write-Output ('opencode-watchdog: kill reason=' + $msg)",
-            r"        $entry = @{ pid = $PID; ts = (Get-Date -Format o); model = $model; text = $msg; pause = $false } | ConvertTo-Json -Compress",
-            r"        Add-Content -Path $fuelLog -Value $entry -ErrorAction SilentlyContinue",
+            r"        if (-not $script:ocSkipFuelLog) {",
+            r"            $entry = @{ pid = $PID; ts = (Get-Date -Format o); model = $model; text = $msg; pause = $false } | ConvertTo-Json -Compress",
+            r"            Add-Content -Path $fuelLog -Value $entry -ErrorAction SilentlyContinue",
+            r"        }",
             r"    }",
             r"    if ($hitLimit) {",
             r"        if ($proc -and -not $proc.HasExited) { try { & taskkill /T /F /PID $proc.Id 2>$null | Out-Null } catch { } }",
