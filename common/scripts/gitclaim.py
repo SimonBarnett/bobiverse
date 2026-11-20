@@ -127,6 +127,8 @@ _LIST_LAST: dict[str, float] = {}
 
 # FR #180: after GIVEUP/NACK, do not re-offer immediately; repeated giveups need a human.
 GIVEUP_COOLDOWN_S = 600.0
+# FR #8465: NACK busy is a seat-local pause, not a fleet cooldown.
+BUSY_NACK_BACKOFF_S = 60.0
 GIVEUP_NEEDS_HUMAN_COUNT = 2
 SAFE_TO_CLOSE_RE = re.compile(r"(?i)\bsafe\s+to\s+close\b")
 HARVEST_TITLE_RE = re.compile(r"(?i)^(harvest|skill)\b")
@@ -9131,9 +9133,20 @@ def is_infra_soft_giveup_reason(reason: str) -> bool:
     token = _deterministic_nack_token(reason)
     if not token:
         return False
+    if token == "busy" or token.startswith("busy-"):
+        return True
     return token in ("holder-bored", "offer-timeout") or token.startswith(
         ("holder-bored", "offer-timeout")
     )
+
+
+def is_busy_nack_reason(reason: str) -> bool:
+    """True for ``NACK … busy`` (FR #8465).
+
+    Seat-local short backoff only. Must not set queue ``cooldown_until``.
+    """
+    token = _deterministic_nack_token(reason)
+    return token == "busy" or token.startswith("busy-")
 
 
 def giveup_agent_kinds(row: dict) -> list[str]:
@@ -9326,7 +9339,13 @@ def no_terminal_reply_does_not_block(row: dict, nick: str) -> bool:
     return seats == {me}
 
 
-def stamp_seat_nack_cooldown(row: dict, nick: str, now: float | None = None) -> None:
+def stamp_seat_nack_cooldown(
+    row: dict,
+    nick: str,
+    now: float | None = None,
+    *,
+    seconds: float | None = None,
+) -> None:
     """Per-seat expiring cooldown on ``row`` (does not write the queue). FR #8298."""
     import time as _time
     from datetime import timedelta as _td
@@ -9335,7 +9354,8 @@ def stamp_seat_nack_cooldown(row: dict, nick: str, now: float | None = None) -> 
     if not me or not isinstance(row, dict):
         return
     now_f = _time.time() if now is None else float(now)
-    until = datetime.fromtimestamp(now_f, tz=timezone.utc) + _td(seconds=float(GIVEUP_COOLDOWN_S))
+    span = float(GIVEUP_COOLDOWN_S if seconds is None else seconds)
+    until = datetime.fromtimestamp(now_f, tz=timezone.utc) + _td(seconds=span)
     until_s = until.replace(microsecond=0).isoformat().replace("+00:00", "Z")
     stamps = row.get("deterministic_nack_until")
     if not isinstance(stamps, dict):
