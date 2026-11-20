@@ -36,6 +36,25 @@ function Test-BobTraySeatsOff {
     return ($null -ne $t -and [int]$t -eq 0)
 }
 
+function Get-BobTrayEmptyOnlineFillCount {
+    <#
+    FR #8429: an online shop with zero agent seats should be filled to the hard cap.
+    FR #3180 still owns a partial heal (1 of 2). Seats-off, a pending req, or a
+    recent fill stamp means do not write another request.
+    #>
+    param(
+        [int]$LiveAgents = 0,
+        [int]$PendingReqs = 0,
+        [bool]$SeatsOff = $false,
+        [bool]$Cooldown = $false,
+        [int]$Cap = 2
+    )
+    if ($SeatsOff -or $Cooldown) { return 0 }
+    if ($LiveAgents -gt 0 -or $PendingReqs -gt 0) { return 0 }
+    if ($Cap -lt 1) { return 0 }
+    return [Math]::Min([int]$Cap, 2)
+}
+
 function Write-BobTrayAlive {
     <#
     .SYNOPSIS

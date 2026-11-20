@@ -289,6 +289,52 @@ def _accepted_busy_nicks(accepted: list | None) -> set[str]:
     return out
 
 
+def ungated_unaccepted_count(rows: list | None) -> int:
+    """Rows that are not held for a human, a machine pin, or a cooldown."""
+    n = 0
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+        if row.get("needs_human"):
+            continue
+        if str(row.get("require_machine") or "").strip():
+            continue
+        if str(row.get("cooldown_until") or "").strip():
+            continue
+        n += 1
+    return n
+
+
+def classify_empty_online_machines(
+    machines: dict | None,
+    ungated_count: int,
+) -> list[dict]:
+    """FR #8429: an online shop with no workers while ungated work is waiting.
+
+    ``workers`` may be a list or a nick map. Offline shops are not findings.
+    """
+    if int(ungated_count or 0) <= 0 or not isinstance(machines, dict):
+        return []
+    out: list[dict] = []
+    for mid, ent in sorted(machines.items(), key=lambda kv: str(kv[0])):
+        if not isinstance(ent, dict) or not ent.get("online"):
+            continue
+        workers = ent.get("worker_list")
+        if workers is None:
+            workers = ent.get("workers") or []
+        count = len(workers) if isinstance(workers, (list, dict)) else 0
+        if count > 0:
+            continue
+        out.append({
+            "machine": str(mid),
+            "stuck": True,
+            "stuck_reason": "online_zero_workers",
+            "ungated_unaccepted": int(ungated_count),
+            "rule": "online_zero_workers",
+        })
+    return out
+
+
 def classify_quiet_idle_offerable(
     home: Path,
     *,

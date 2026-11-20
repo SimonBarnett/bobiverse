@@ -4244,6 +4244,33 @@ $startWorkerTimer.Add_Tick({
                     [void](Invoke-BobTrayStartWorkerQueue -Dir $script:startWorkerDir `
                             -Launch { param($mode, $agent) Start-BobTrayWorkerExe -Mode $mode -Agent $agent -Quiet -Trigger 'auto-start' } `
                             -Log { param($m) Write-TrayLog $m })
+                    # FR #8429: zero agent seats on an online tray, seats not off.
+                    # One fill up to the hard cap, then a stamp so the next tick does not stack reqs.
+                    try {
+                        if (-not (Test-BobTraySeatsOff)) {
+                            $pending = @(Get-ChildItem -LiteralPath $script:startWorkerDir -Filter 'req-*.json' -File -ErrorAction SilentlyContinue).Count
+                            $procs = @(Get-CimInstance Win32_Process -Filter "Name like 'bob-worker%'" -ErrorAction SilentlyContinue |
+                                    Select-Object ProcessId, ParentProcessId, Name, CommandLine)
+                            $liveN = [int](Measure-BobTrayWorkerSeats -Procs $procs -Modes @('agent'))
+                            $stamp = Join-Path $script:startWorkerDir 'empty-fill.txt'
+                            $cool = $false
+                            if (Test-Path -LiteralPath $stamp) {
+                                $age = ([datetime]::UtcNow - (Get-Item -LiteralPath $stamp).LastWriteTimeUtc).TotalSeconds
+                                if ($age -ge 0 -and $age -lt 60) { $cool = $true }
+                            }
+                            $fill = Get-BobTrayEmptyOnlineFillCount -LiveAgents $liveN -PendingReqs $pending -SeatsOff $false -Cooldown $cool -Cap ([int]$script:BobTrayHardMaxWorkers)
+                            if ($fill -gt 0) {
+                                $now = [int][double]::Parse((Get-Date -Date ([datetime]::UtcNow) -UFormat %s))
+                                for ($i = 0; $i -lt $fill; $i++) {
+                                    $rid = 'empty-{0}-{1}' -f $now, $i
+                                    $body = @{ id = $rid; mode = 'agent'; by = 'tray'; kind = 'auto'; ts = $now; expires = ($now + 120) } | ConvertTo-Json -Compress
+                                    Set-Content -LiteralPath (Join-Path $script:startWorkerDir ('req-' + $rid + '.json')) -Value $body -Encoding ASCII
+                                }
+                                Set-Content -LiteralPath $stamp -Value ([datetime]::UtcNow.ToString('o')) -Encoding ASCII
+                                Write-TrayLog ('empty-online fill reqs={0}' -f $fill)
+                            }
+                        }
+                    } catch { Write-TrayLog ('empty-online fill: ' + $_.Exception.Message) }
                     # FR #5059: elevated recycle of a named seat (stop+verify, then start)
                     if (Get-Command Invoke-BobTrayRecycleSeatQueue -ErrorAction SilentlyContinue) {
                         $rsDir = Get-BobTrayRecycleSeatDir -Root $RepoRoot
