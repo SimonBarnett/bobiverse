@@ -20,6 +20,7 @@ from typing import Any
 from _common import (
     EXIT_FINDING,
     EXIT_OK,
+    ensure_script_dir_on_path,
     ops_home,
     resolve_focus_path,
     resolve_homes,
@@ -29,17 +30,8 @@ from _common import (
 
 
 def _ensure_common() -> None:
-    here = Path(__file__).resolve().parent
-    for cand in (
-        here.parents[2] / "common" / "scripts",
-        here.parents[1] / "scripts",
-        here.parents[1] / "common" / "scripts",
-    ):
-        if (cand / "chair_health.py").is_file():
-            p = str(cand)
-            if p not in sys.path:
-                sys.path.insert(0, p)
-            return
+    # FR #8580: no parents[N]; walk upward for chair_health.py
+    ensure_script_dir_on_path("chair_health.py")
 
 
 def _load_json(path: Path) -> Any:

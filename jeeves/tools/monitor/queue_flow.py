@@ -47,17 +47,10 @@ def _load_json(path: Path):
 
 
 def _ensure_gitclaim():
-    here = Path(__file__).resolve().parent
-    for cand in (
-        here.parents[1] / "scripts",
-        here.parents[2] / "common" / "scripts",
-        here.parents[1] / "common" / "scripts",
-    ):
-        if (cand / "gitclaim.py").is_file():
-            p = str(cand)
-            if p not in sys.path:
-                sys.path.insert(0, p)
-            break
+    from _common import ensure_script_dir_on_path
+
+    # FR #8580: no parents[N]; walk upward for gitclaim.py
+    ensure_script_dir_on_path("gitclaim.py")
     import gitclaim  # noqa: WPS433
 
     return gitclaim
