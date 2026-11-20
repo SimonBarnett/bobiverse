@@ -2382,6 +2382,68 @@ def _notify_resumed_model(model: str, configured: str) -> None:
         return
 
 
+def prefer_runtime_from_pauses(
+    current: str,
+    state_dir: str | Path,
+    *,
+    free_id: str | None = None,
+    paid_id: str | None = None,
+    free_remaining: int | None = None,
+    go_remaining: int | None = None,
+    now: Optional[float] = None,
+) -> dict:
+    """FR #8454: pick free vs paid for the next OpenCode turn from pause state.
+
+    When ``free_remaining`` / ``go_remaining`` are omitted, pause markers decide:
+    an active ``opencode-free`` (or free leaf) pause means free=0; an active paid
+    leaf pause with no other signal leaves go as None (unknown → still usable).
+    """
+    try:
+        import worker_start_model as wsm
+    except Exception:  # noqa: BLE001
+        wsm = None
+
+    free_m = str(free_id or "").strip()
+    paid_m = str(paid_id or "").strip()
+    if wsm is not None:
+        free_m = free_m or wsm.DEFAULT_OPENCODE_FREE
+        paid_m = paid_m or wsm.DEFAULT_OPENCODE_PAID
+    else:
+        free_m = free_m or "opencode/deepseek-v4.1-flash-free"
+        paid_m = paid_m or "opencode-go/deepseek-v4-pro"
+
+    free_rem = free_remaining
+    go_rem = go_remaining
+    if free_rem is None:
+        if is_opencode_model_paused(FUEL_ID_FREE, state_dir, now=now) or is_opencode_model_paused(
+            free_m, state_dir, now=now
+        ):
+            free_rem = 0
+    if go_rem is None and is_opencode_model_paused(paid_m, state_dir, now=now):
+        # Paid leaf paused: treat as empty for this prefer pass.
+        go_rem = 0
+
+    if wsm is not None:
+        model, action = wsm.prefer_opencode_runtime_model(
+            current,
+            free_remaining=free_rem,
+            go_remaining=go_rem,
+            free_id=free_m,
+            paid_id=paid_m,
+        )
+    else:
+        model, action = str(current or "").strip() or free_m, "keep"
+
+    return {
+        "model": model,
+        "action": action,
+        "free": free_rem,
+        "go": go_rem,
+        "free_id": free_m,
+        "paid_id": paid_m,
+    }
+
+
 def _cli(argv: list[str] | None = None) -> int:
     """Command-line entry point used by the worker wrapper."""
     import argparse
@@ -2395,6 +2457,16 @@ def _cli(argv: list[str] | None = None) -> int:
     nxt.add_argument("--dir", required=True)
     nxt.add_argument("--configured", required=True)
     nxt.add_argument("--current", required=True)
+    pref = subs.add_parser(
+        "prefer-runtime",
+        help="FR #8454: free-first model for the next OpenCode turn (JSON line)",
+    )
+    pref.add_argument("--dir", required=True, help="Pause-state directory")
+    pref.add_argument("--current", required=True, help="Model id used for the turn that just ended")
+    pref.add_argument("--free-id", default="", help="Tray models.opencodeFree id")
+    pref.add_argument("--paid-id", default="", help="Tray models.opencodePaid id")
+    pref.add_argument("--free", default="", help="Optional free remaining override (int)")
+    pref.add_argument("--go", default="", help="Optional go/paid remaining override (int)")
     args = parser.parse_args(argv)
     if args.command == "next-model":
         chosen = next_job_model(args.current, args.configured, args.dir)
@@ -2406,6 +2478,29 @@ def _cli(argv: list[str] | None = None) -> int:
         output_text = sys.stdin.buffer.read().decode("utf-8", errors="replace")
         reset_ts = record_opencode_pause(args.dir, args.model, output_text)
         return 0 if reset_ts is not None else 1
+    if args.command == "prefer-runtime":
+        free_rem = None
+        go_rem = None
+        if str(args.free or "").strip() != "":
+            try:
+                free_rem = int(args.free)
+            except (TypeError, ValueError):
+                free_rem = None
+        if str(args.go or "").strip() != "":
+            try:
+                go_rem = int(args.go)
+            except (TypeError, ValueError):
+                go_rem = None
+        doc = prefer_runtime_from_pauses(
+            args.current,
+            args.dir,
+            free_id=str(args.free_id or "").strip() or None,
+            paid_id=str(args.paid_id or "").strip() or None,
+            free_remaining=free_rem,
+            go_remaining=go_rem,
+        )
+        sys.stdout.write(json.dumps(doc, separators=(",", ":")) + "\n")
+        return 0
     parser.print_help()
     return 2
 

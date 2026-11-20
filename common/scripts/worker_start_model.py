@@ -14,6 +14,7 @@ WORKER_CLIS = ("grok", "cursor", "aider", "opencode")
 DEFAULT_EFFORT = "low"
 VALID_EFFORTS = ("low", "medium", "high")
 DEFAULT_OPENCODE_FREE = "opencode/deepseek-v4.1-flash-free"
+DEFAULT_OPENCODE_PAID = "opencode-go/deepseek-v4-pro"
 ENV_ACTUAL_EFFORT = "BOB_WORKER_ACTUAL_EFFORT"
 TIER_RANK = {
     "min": 0,
@@ -149,6 +150,13 @@ def default_opencode_free_model(cfg: dict[str, Any] | None = None) -> str:
     return got or DEFAULT_OPENCODE_FREE
 
 
+def default_opencode_paid_model(cfg: dict[str, Any] | None = None) -> str:
+    """Tray ``models.opencodePaid`` or fleet default (FR #8454)."""
+    models = (cfg or {}).get("models") or {}
+    got = str(models.get("opencodePaid") or "").strip()
+    return got or DEFAULT_OPENCODE_PAID
+
+
 def opencode_is_go_or_paid(model: str) -> bool:
     s = str(model or "").strip().lower()
     if not s:
@@ -158,6 +166,49 @@ def opencode_is_go_or_paid(model: str) -> bool:
     if "v4-pro" in s or s.endswith("-pro"):
         return True
     return False
+
+
+def prefer_opencode_runtime_model(
+    current: str,
+    *,
+    free_remaining: int | None,
+    go_remaining: int | None,
+    free_id: str | None = None,
+    paid_id: str | None = None,
+) -> tuple[str, str]:
+    """Pick free vs paid for the next OpenCode turn (FR #8454).
+
+    Returns ``(model_id, action)`` where action is one of
+    ``keep``, ``switch-to-free``, ``switch-to-paid``, ``exhausted``.
+
+    Policy: prefer free whenever free remaining is unknown or > 0; use paid
+    only when free is known exhausted and paid still has tokens (or unknown).
+    """
+    free_m = str(free_id or "").strip() or DEFAULT_OPENCODE_FREE
+    paid_m = str(paid_id or "").strip() or DEFAULT_OPENCODE_PAID
+    cur = str(current or "").strip() or free_m
+    free_ok = free_remaining is None or int(free_remaining) > 0
+    free_empty = free_remaining is not None and int(free_remaining) <= 0
+    paid_ok = go_remaining is None or int(go_remaining) > 0
+    paid_empty = go_remaining is not None and int(go_remaining) <= 0
+
+    # Prefer free whenever free remaining is unknown or > 0 (including paid→free).
+    if free_ok:
+        if cur.lower() == free_m.lower():
+            return free_m, "keep"
+        return free_m, "switch-to-free"
+
+    if free_empty and paid_ok:
+        if opencode_is_go_or_paid(cur) and cur.lower() == paid_m.lower():
+            return paid_m, "keep"
+        if opencode_is_go_or_paid(cur):
+            # Already on some paid id with go available — keep unless empty leaf.
+            return cur, "keep"
+        return paid_m, "switch-to-paid"
+
+    if free_empty and paid_empty:
+        return cur, "exhausted"
+    return cur, "keep"
 
 
 def start_model_review_class(model: str) -> str:
