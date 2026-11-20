@@ -1756,6 +1756,26 @@ function Start-BobTrayAgentWatch {
         cwd  = $cwd
     }
     $child = Start-BobTrayProcessWithSessionEnv -FilePath $ps -ArgumentList $launchArgs -WorkingDirectory $script:agentMonitorDir -SessionEnv $sessionEnv
+    # FR #7907: secret-free marker while a legacy Cursor key is in the child only.
+    if ($sessionEnv -and $sessionEnv.ContainsKey('CURSOR_API_KEY') -and $child -and $child.Id) {
+        try {
+            $markerDir = Join-Path $env:LOCALAPPDATA 'Bobiverse\tray\run'
+            New-Item -ItemType Directory -Force -Path $markerDir | Out-Null
+            $markerPath = Join-Path $markerDir 'cursor-key-override.json'
+            $markerObj = [ordered]@{
+                source     = 'api_key'
+                pid        = [int]$child.Id
+                written_at = [DateTime]::UtcNow.ToString('o')
+            }
+            $markerJson = ($markerObj | ConvertTo-Json -Compress)
+            [IO.File]::WriteAllText($markerPath, $markerJson, (New-Object System.Text.UTF8Encoding $false))
+            $child.EnableRaisingEvents = $true
+            Register-ObjectEvent -InputObject $child -EventName Exited -MessageData $markerPath -Action {
+                try { Remove-Item -LiteralPath $Event.MessageData -Force -ErrorAction SilentlyContinue } catch { }
+            } | Out-Null
+        }
+        catch { }
+    }
     Watch-BobTrayAgentWatchEarlyExit -Process $child -Seconds 10 -BootstrapLog (Join-Path $env:TEMP 'Watch-AgentHealth-start.log')
     # Async verify (do not block tray UI long): background job checks identity
     $verifyScript = {
