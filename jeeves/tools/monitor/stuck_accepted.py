@@ -83,6 +83,39 @@ def _blank_accepted_finding(rows: list[dict], shop_rows: list[dict]) -> str:
     )
 
 
+def _lost_ack_uat0_finding(rows: list[dict], shop_rows: list[dict]) -> str:
+    """FR #8525: accepted UAT #0 + LOST_ACK_RESTART while holder digest is idle."""
+    hits = []
+    by_nick = {
+        str(r.get("nick") or "").strip().lower(): r
+        for r in shop_rows
+        if isinstance(r, dict) and str(r.get("nick") or "").strip()
+    }
+    for r in rows:
+        if not isinstance(r, dict):
+            continue
+        if str(r.get("task") or "").upper() != "UAT":
+            continue
+        ident = str(r.get("id") or "").strip().lstrip("#")
+        if ident != "0":
+            continue
+        if str(r.get("reconcile") or "") != "LOST_ACK_RESTART":
+            continue
+        holder = str(r.get("nick") or r.get("accepted_by") or r.get("offered_to") or "").strip()
+        if not holder:
+            continue
+        shop = by_nick.get(holder.lower())
+        state = str((shop or {}).get("state") or "").strip().lower()
+        if shop is None or state in ("", "idle", "offered"):
+            hits.append(_row_label(r) + f" by {holder}")
+    if not hits:
+        return ""
+    return (
+        "stuck accepted UAT #0 LOST_ACK_RESTART with idle digest seat: "
+        + "; ".join(hits)
+    )
+
+
 def check(args):
     chair, digest = resolve_homes(args)
     findings = []
@@ -118,9 +151,13 @@ def check(args):
             digest_doc = json.loads(dpath.read_text(encoding="utf-8-sig"))
         except (OSError, json.JSONDecodeError, ValueError):
             digest_doc = {}
-    blank = _blank_accepted_finding(rows, _shop_rows(digest_doc))
+    shop = _shop_rows(digest_doc)
+    blank = _blank_accepted_finding(rows, shop)
     if blank:
         findings.append(blank)
+    lost_uat = _lost_ack_uat0_finding(rows, shop)
+    if lost_uat:
+        findings.append(lost_uat)
     ok = not findings
     return (
         {

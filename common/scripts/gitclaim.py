@@ -17031,7 +17031,12 @@ def _seat_has_accepted(home: Path, nick: str) -> bool:
 
 
 def _digest_seat_work(home: Path, nick: str) -> str:
-    """Seat-reported work. worker_list state=offered is not seat work (FR #4454)."""
+    """Seat-reported work. worker_list state=offered is not seat work (FR #4454).
+
+    FR #8525: an idle worker_list / workers row does not keep a stale working_on
+    claim. Otherwise LOST_ACK_RESTART UAT #0 NAKs !bored forever while TipForm
+    shows idle.
+    """
     parsed = bobreport.parse_seat_nick(nick)
     if not parsed:
         return ""
@@ -17044,24 +17049,32 @@ def _digest_seat_work(home: Path, nick: str) -> str:
     ent = machines.get(mid) if isinstance(machines.get(mid), dict) else {}
     if not isinstance(ent, dict):
         return ""
-    workers = ent.get("workers") if isinstance(ent.get("workers"), dict) else {}
-    wrow = workers.get(str(pid))
-    if isinstance(wrow, dict):
-        wo = str(wrow.get("working_on") or "").strip()
-        if wo and parse_digest_work(wo):
-            return wo
     want = (nick or "").strip().lower()
+    # Prefer worker_list: idle/offered means no seat-reported claim (FR #8525).
     for row in ent.get("worker_list") or []:
         if not isinstance(row, dict):
             continue
         if str(row.get("nick") or "").strip().lower() != want:
             continue
         state = str(row.get("state") or "").strip().lower()
+        if state in ("idle", "offered", ""):
+            return ""
         if state not in ("doing", "running", "busy"):
             continue
         wo = str(row.get("work") or row.get("working_on") or "").strip()
         if wo and parse_digest_work(wo):
             return wo
+        return ""
+    workers = ent.get("workers") if isinstance(ent.get("workers"), dict) else {}
+    wrow = workers.get(str(pid))
+    if isinstance(wrow, dict):
+        wstate = str(wrow.get("state") or "").strip().lower()
+        if wstate in ("idle", "offered", ""):
+            return ""
+        if wstate in ("doing", "running", "busy"):
+            wo = str(wrow.get("working_on") or "").strip()
+            if wo and parse_digest_work(wo):
+                return wo
     return ""
 
 
@@ -17103,6 +17116,7 @@ def release_unacked_lost_ack(home: Path, nick: str, *, log=None) -> bool:
             # paints working_on in the same turn, so _seat_reports_row stays put.
             unacc = doc.setdefault("unaccepted", [])
             done = doc.setdefault("done", [])
+            demoted: list[dict] = []
             for r in mine:
                 fin = dict(r)
                 for k in (
@@ -17127,10 +17141,32 @@ def release_unacked_lost_ack(home: Path, nick: str, *, log=None) -> bool:
                     fin["result"] = str(fin.get("result") or "PASS")
                     fin["done_ts"] = _utc_now()
                     done.append(fin)
+                    demoted.append(fin)
                     continue
                 fin["reconcile"] = "requeue:LOST_ACK_NO_ACK"
                 unacc.append(fin)
+                demoted.append(fin)
             doc["accepted"] = [r for r in acc if _owner(r) != me]
+            # FR #8525: drop seat-holds for demoted rows so !bored is not why=held.
+            try:
+                holds = _load_seat_holds_unlocked(home, time.time())
+                changed_h = False
+                for fin in demoted:
+                    for hk, hv in list(holds.items()):
+                        if not isinstance(hv, dict):
+                            continue
+                        if _same(
+                            hv,
+                            str(fin.get("repo") or ""),
+                            str(fin.get("task") or ""),
+                            str(fin.get("id") or ""),
+                        ):
+                            holds.pop(hk, None)
+                            changed_h = True
+                if changed_h:
+                    _save_seat_holds_unlocked(home, holds)
+            except Exception:  # noqa: BLE001
+                pass
             _write_queue(queue_path(home), doc)
     except Exception:  # noqa: BLE001
         return False
@@ -17158,6 +17194,10 @@ def _iter_digest_work_claims(home: Path) -> list[tuple[str, str]]:
         workers = ent.get("workers") if isinstance(ent.get("workers"), dict) else {}
         for pid_s, w in list(workers.items()):
             if not isinstance(w, dict):
+                continue
+            # FR #8525: idle/offered workers map rows are not lost-ACK claims.
+            wstate = str(w.get("state") or "").strip().lower()
+            if wstate and wstate not in ("doing", "running", "busy"):
                 continue
             wo = str(w.get("working_on") or "").strip()
             if not wo or not parse_digest_work(wo):
@@ -17504,6 +17544,12 @@ def bored_gate(
     # re-offer) must not nak !bored forever when the follow-up DONE was lost.
     with contextlib.suppress(Exception):
         release_duplicate_done_hold(home, nick)
+    # FR #4454 / #8525: demote false LOST_ACK_RESTART before the held-open check.
+    # A seat-holds pin for the same UAT #0 used to NAK busy (why=held) forever and
+    # skipped release_unacked_lost_ack.
+    with contextlib.suppress(Exception):
+        if release_unacked_lost_ack(home, nick):
+            return "ok"
     # FR #4089: an offer pinned to this seat (any age) or remembered in seat-holds.json
     # keeps it busy; accepted rows still go through release_stale_busy below.
     _open = seat_open_job(home, nick, now)
@@ -17512,9 +17558,6 @@ def bored_gate(
     # FR #3192: accepted row is busy even before digest on_ack paints working_on
     # (stale !bored after slow GH work must NAK-busy, not stamp a second offer).
     if _seat_has_accepted(home, nick):
-        # FR #4454: !bored after a false LOST_ACK_RESTART (no seat work) re-offers.
-        if release_unacked_lost_ack(home, nick):
-            return "ok"
         if release_stale_busy(home, nick, now, session_started=session_started):
             return "ok"
         return "busy"
