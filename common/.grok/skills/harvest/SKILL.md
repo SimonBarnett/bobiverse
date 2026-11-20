@@ -257,3 +257,4 @@ Do not land a second copy of a harvest-lesson MRB playbook in this book. Those p
 - Skills-sync on the shared install must hold run/skills-sync.lock. If checkout hits index.lock, drop a stale lock and retry. A killed seat must not leave index.lock for the next start.
 - airc.exe --connect-selftest must call probe_connection with a default socket connector. A required connector makes the install health step raise TypeError before any classification.
 - A BOM-less PowerShell file must stay ASCII. An em dash (e2 80 94) fails the WinPS 5.1 parse gate. After that gate is clear, fix the next ParseFile error the same test reports.
+- For SimonBarnett/bobiverse, infer_require_machine ignores a needs-ionos title prefix. Pin with a needs-ionos label or a body line require_machine: ionos.
