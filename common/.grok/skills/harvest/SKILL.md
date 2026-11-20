@@ -256,3 +256,4 @@ Do not land a second copy of a harvest-lesson MRB playbook in this book. Those p
 - A Python CLI that wraps a PowerShell Read-Host prompt must not use capture_output. That pipes stdin shut. Inherit stdin and pipe only stdout.
 - Skills-sync on the shared install must hold run/skills-sync.lock. If checkout hits index.lock, drop a stale lock and retry. A killed seat must not leave index.lock for the next start.
 - airc.exe --connect-selftest must call probe_connection with a default socket connector. A required connector makes the install health step raise TypeError before any classification.
+- A stuck-sweep classifier is not a monitor finding until run_stuck_sweep appends it to classified. Unit tests that call the helper directly do not prove the report path.
