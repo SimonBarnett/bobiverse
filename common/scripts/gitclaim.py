@@ -8980,6 +8980,26 @@ def is_hard_ceiling_reason(reason: str) -> bool:
     return "hard ceiling" in text or text.replace("_", "-").startswith("hard-ceiling")
 
 
+def is_infra_soft_giveup_reason(reason: str) -> bool:
+    """True when a NACK/GIVEUP is infra or a soft seat fault (FR #8375).
+
+    These must not increment giveup_count or stamp needs_human. A fresh seat
+    must stay offerable. Covers hard-ceiling, worktree-create-failed (and the
+    other FR #6240 pre-ACK classes), holder_bored, and offer-timeout.
+    Product GIVEUPs stay on the FR #180 threshold.
+    """
+    if is_hard_ceiling_reason(reason):
+        return True
+    if is_deterministic_nack_reason(reason) or is_worktree_head_mismatch_reason(reason):
+        return True
+    token = _deterministic_nack_token(reason)
+    if not token:
+        return False
+    return token in ("holder-bored", "offer-timeout") or token.startswith(
+        ("holder-bored", "offer-timeout")
+    )
+
+
 def giveup_agent_kinds(row: dict) -> list[str]:
     """Canonical agent kinds blocked after repeated hard-ceiling GIVEUPs (FR #8008)."""
     out: list[str] = []
