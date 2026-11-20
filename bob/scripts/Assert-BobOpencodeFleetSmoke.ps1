@@ -186,7 +186,7 @@ if (-not $SkipPong) {
         $errFile = Join-Path $env:TEMP ('bob-oc-fleet-pong-err-' + [guid]::NewGuid().ToString('n') + '.txt')
         try {
             $p = Start-Process -FilePath $oc -ArgumentList @('run', '-m', $PongModel, 'Reply with pong only') `
-                -NoNewWindow -PassThru -RedirectStandardOutput $outFile -RedirectStandardError $errFile
+                -PassThru -RedirectStandardOutput $outFile -RedirectStandardError $errFile
             if (-not $p.WaitForExit($PongTimeoutSec * 1000)) {
                 try { & taskkill /T /F /PID $p.Id 2>$null | Out-Null } catch { }
                 Fail-Smoke 3 "opencode run pong timed out"
