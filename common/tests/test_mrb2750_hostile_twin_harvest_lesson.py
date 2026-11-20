@@ -6,6 +6,9 @@ from pathlib import Path
 HARVEST = (
     Path(__file__).resolve().parents[1] / ".grok" / "skills" / "harvest" / "SKILL.md"
 )
+LESSONS = (
+    Path(__file__).resolve().parents[1] / ".grok" / "skills" / "harvest" / "lessons.md"
+)
 JOB_MRB = (
     Path(__file__).resolve().parents[2]
     / "bob"
@@ -52,12 +55,15 @@ def test_mrb2750_job_mrb_harvest_lesson_step_4_twin_prs():
 
 def test_mrb2750_harvest_has_routing_tip_not_raw_twin_bullet():
     text = _utf8_no_bom(HARVEST)
+    archive = _utf8_no_bom(LESSONS)
     assert "## Harvested lessons (intake)" in text
     assert "bobiverse-bob-job-mrb" in text
-    # Routing tip stays; raw Twin bullet must not reappear in harvest.
+    # Routing tip stays on SKILL; raw Twin bullet must not reappear as a live tip.
     assert "- Twin harvest-lesson PRs" not in text
     assert "**Harvest-lesson twins:**" not in text
-    idx = text.index("- Harvest-lesson MRB playbooks")
+    idx = text.index("Do not land a second copy of a harvest-lesson MRB playbook")
     window = text[idx : idx + 420]
     assert "bobiverse-bob-job-mrb" in window
     assert "second copy" in window.lower() or "do not land a second copy" in window.lower()
+    # Archive may still carry older tip wording (FR #8310).
+    assert "Harvest-lesson MRB playbooks" in archive or "second copy" in archive.lower()

@@ -5,6 +5,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 HARVEST = ROOT / "common" / ".grok" / "skills" / "harvest" / "SKILL.md"
+LESSONS = ROOT / "common" / ".grok" / "skills" / "harvest" / "lessons.md"
 AUDIT = ROOT / "common" / "docs" / "harvest-lessons-audit-2026-10-06.md"
 
 
@@ -21,13 +22,14 @@ def _utf8_no_bom(path: Path) -> str:
 
 
 def test_mrb2722_digest_section_present():
-    text = _utf8_no_bom(HARVEST)
+    # FR #8310: digest section lives in lessons.md archive beside SKILL.md.
+    text = _utf8_no_bom(LESSONS)
     assert "## Harvest digest (lessons audit 2026-10-06)" in text
     assert "FR #2705" in text or "audit for FR #2705" in text
 
 
 def test_mrb2722_legacy_harvest_as_fr_twins():
-    text = _utf8_no_bom(HARVEST)
+    text = _utf8_no_bom(LESSONS)
     assert "Legacy harvest-as-FR twins" in text
     idx = text.index("Legacy harvest-as-FR twins")
     window = text[idx : idx + 700]
@@ -37,7 +39,7 @@ def test_mrb2722_legacy_harvest_as_fr_twins():
 
 
 def test_mrb2722_skill_and_harvest_rows_as_fr():
-    text = _utf8_no_bom(HARVEST)
+    text = _utf8_no_bom(LESSONS)
     assert "Skill and harvest rows offered as FR" in text
     idx = text.index("Skill and harvest rows offered as FR")
     window = text[idx : idx + 600]
@@ -46,7 +48,7 @@ def test_mrb2722_skill_and_harvest_rows_as_fr():
 
 
 def test_mrb2722_intake_and_flush():
-    text = _utf8_no_bom(HARVEST)
+    text = _utf8_no_bom(LESSONS)
     assert "Intake and Flush" in text
     idx = text.index("Intake and Flush")
     window = text[idx : idx + 600]
@@ -63,20 +65,24 @@ def test_mrb2722_audit_table_file_exists():
 
 
 def test_mrb2722_harvest_skill_cites_audit_table():
-    text = _utf8_no_bom(HARVEST)
+    # Citation moved with the digest into lessons.md (FR #8310).
+    text = _utf8_no_bom(LESSONS)
     assert "harvest-lessons-audit-2026-10-06.md" in text
+    skill = _utf8_no_bom(HARVEST)
+    assert "lessons.md" in skill
 
 
 def test_mrb2722_keep_both_harvested_lessons_intake():
-    """Behind-main keep-both: intake section from main must survive with digest."""
+    """Behind-main keep-both: intake heading on SKILL; digest archive in lessons.md."""
     text = _utf8_no_bom(HARVEST)
+    archive = _utf8_no_bom(LESSONS)
     assert "## Harvested lessons (intake)" in text
     assert "bobiverse-bob-job-mrb" in text
-    assert "## Harvest digest (lessons audit 2026-10-06)" in text
+    assert "## Harvest digest (lessons audit 2026-10-06)" in archive
 
 
 def test_mrb2722_digest_bullets_complete_lines():
-    text = _utf8_no_bom(HARVEST)
+    text = _utf8_no_bom(LESSONS)
     start = text.index("## Harvest digest (lessons audit 2026-10-06)")
     chunk = text[start:]
     bullets = [ln for ln in chunk.splitlines() if ln.startswith("- **")]
