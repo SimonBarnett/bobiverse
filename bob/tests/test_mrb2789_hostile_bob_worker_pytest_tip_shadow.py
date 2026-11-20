@@ -63,6 +63,6 @@ def test_mrb2789_harvest_lacks_raw_tip_shadow_bullet():
     assert "bob_worker tip shadow" not in text
     assert "flat copy shadows" not in text
     assert "FR #2782 tip tests look like main failures" not in text
-    # Placement rule that sent the lesson to job-mrb must remain
-    assert "Harvest-lesson MRB playbooks" in text
+    # Placement rule that sent the lesson to job-mrb must remain (FR #8310: active wording, not lessons.md archive)
+    assert "second copy of a harvest-lesson MRB playbook" in text
     assert "bobiverse-bob-job-mrb" in text
