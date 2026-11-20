@@ -41,7 +41,7 @@ $ErrorActionPreference = 'Stop'
 
 # FR #4917: stamp every harvest receipt (source.version); refuse when seat min is newer.
 # HARVEST_SCRIPT_VERSION constant name kept for pin tests / operator greps.
-$HARVEST_SCRIPT_VERSION = '20261026-fr4986'
+$HARVEST_SCRIPT_VERSION = '20261120-sv61'
 $script:HarvestScriptVersion = $HARVEST_SCRIPT_VERSION
 $secretRx = '(ghp_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|xox[abpr]-[A-Za-z0-9-]{10,}|-----BEGIN [A-Z ]*PRIVATE KEY-----|(?i:(password|passwd|secret|token|apikey|api_key)\s*[:=]\s*[A-Za-z0-9/+_.-]{8,}))'
 $home1 = if ($env:USERPROFILE) { $env:USERPROFILE } else { $HOME }
@@ -1020,14 +1020,36 @@ $bobTooling = (
     ($inferBlob -match 'bob-worker|_release_gen|release_gen|done-miss|boredemitter|fleet-ops|hotpatch') -or
     ($inferBlob -match '(?i)\b(jeeves|ircjeeves|bob-tray|tipform|chair outbox|intake allowlist)\b')
 )
-# FR #3959: always route Bob tooling to bobiverse even when seats pass explicit
-# -Repo <product> (FR #3189 job-repo). Otherwise FR #3004 sets bobiverse-bob-worker
-# and opens ADD stubs under bob/ inside a-search (#3952/#3956).
-if ($bobTooling) {
+# FR #3318 / skills-visionary#61/#63: Plan how-to-plan honesty box. Explicit
+# -Repo SimonBarnett/skills-visionary (or a *-plan seat already on that repo)
+# must not be keyword-split to bobiverse when Summary/Lesson mention tipform /
+# bob-worker / tray. Intake rewrite_harvest_repo_for_skill_book also rewrites
+# bobiverse-* books off product repos, so reset skill_book to
+# harvest-skills-visionary when keeping the honesty box.
+# FR #3959 still rewrites other products (a-search) so bob/ stubs never land there.
+$seatForSplit = ''
+if ($env:BOB_NICK -and ([string]$env:BOB_NICK).Trim()) {
+    $seatForSplit = ([string]$env:BOB_NICK).Trim()
+} elseif ($env:BOB_AGENT_NICK -and ([string]$env:BOB_AGENT_NICK).Trim()) {
+    $seatForSplit = ([string]$env:BOB_AGENT_NICK).Trim()
+}
+$keepSkillsVisionaryHonesty = (
+    ($Repo -match '(?i)^SimonBarnett/skills-visionary$') -and (
+        $script:ExplicitRepo -or
+        ($seatForSplit -match '(?i)-plan$')
+    )
+)
+if ($bobTooling -and -not $keepSkillsVisionaryHonesty) {
     if ($Repo -notmatch '(?i)^SimonBarnett/bobiverse$') {
         Write-Host "INFO FR #3189/#3959 split: Bob tooling lesson -> repo=SimonBarnett/bobiverse (was $Repo)"
     }
     $Repo = 'SimonBarnett/bobiverse'
+} elseif ($bobTooling -and $keepSkillsVisionaryHonesty) {
+    Write-Host "INFO FR #3318: keeping SimonBarnett/skills-visionary (explicit -Repo / Plan seat; Bob-tooling cues do not rewrite Plan honesty box)"
+    if (-not $script:ExplicitBook -and (($bookName -match '^bobiverse-') -or ($bookName -eq 'harvest'))) {
+        $bookName = 'harvest-skills-visionary'
+        Write-Host "INFO FR #3318: skill_book=harvest-skills-visionary for skills-visionary honesty box"
+    }
 } elseif (-not $script:ExplicitBook -and $bookName -eq 'harvest' -and ($Repo -match '(?i)^SimonBarnett/a-search$')) {
     $bookName = 'harvest-agent-skills'
     Write-Host "INFO FR #3189 product default skill_book=harvest-agent-skills for SimonBarnett/a-search"
