@@ -10984,10 +10984,14 @@ _TERMINAL_WIRE_RX = re.compile(r"(?im)^\s*(DONE|NACK|GIVEUP)\b")
 
 
 def outbox_text_has_terminal(text: str, job_key: str = "") -> bool:
-    """True when a DONE/NACK/GIVEUP line for job_key is already in the wire."""
+    """True when a DONE/NACK/GIVEUP line for job_key is already in the wire.
+
+    Seat outbox lines are ``PRIVMSG #shop :DONE ...`` (FR #2380). Match the
+    payload, not only a line that starts with the verb.
+    """
     want = (job_key or "").strip()
     for raw in (text or "").splitlines():
-        line = raw.strip()
+        line = outbox_payload(raw)
         if not _TERMINAL_WIRE_RX.match(line):
             continue
         if not want or want in line:
@@ -17473,9 +17477,22 @@ class Supervisor:
             out_text = ""
             turns_text = ""
             try:
-                op = Path(outbox)
-                if op.is_file():
-                    out_text = op.read_text(encoding="utf-8", errors="replace")
+                chunks: list[str] = []
+                # Run-dir outbox plus the OpenCode worktree .bob/outbox.txt (FR #6333).
+                paths = [Path(outbox)]
+                try:
+                    paths.extend(self.opencode_extra_outbox_paths())
+                except Exception:
+                    pass
+                seen: set[str] = set()
+                for op in paths:
+                    key = str(op)
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    if op.is_file():
+                        chunks.append(op.read_text(encoding="utf-8", errors="replace"))
+                out_text = "\n".join(chunks)
             except Exception:
                 out_text = ""
             try:

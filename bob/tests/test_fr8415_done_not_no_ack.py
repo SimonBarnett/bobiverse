@@ -30,3 +30,17 @@ def test_done_without_turn_class_is_done_posted():
 
 def test_empty_outbox_stays_no_ack_path():
     assert bw.ack_miss_exit_reason(outbox_text="", turns_text=TURNS, job_key="MRB x#1") is None
+
+
+def test_privmsg_done_plus_epipe_is_not_no_ack():
+    """The seat writes PRIVMSG, not a bare DONE line (FR #2380)."""
+    wire = (
+        "PRIVMSG #redqueen :DONE MRB SimonBarnett/bobiverse#8239 "
+        "FAIL https://github.com/SimonBarnett/bobiverse/pull/8239\n"
+    )
+    reason = bw.ack_miss_exit_reason(
+        outbox_text=wire,
+        turns_text=TURNS,
+        job_key="MRB SimonBarnett/bobiverse#8239",
+    )
+    assert reason == "epipe"
