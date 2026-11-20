@@ -89,7 +89,7 @@ Shop wire (workers in `#{machine}` only): `!bored` -> assign -> `ACK` -> work ->
 
 ## Digest + worker status
 
-`GET https://bob.ntsa.uk/bob/v1/report` (and local digest home): machine online/lastSeen, workers idle/offered/doing, `working_on`, queue counts. Stale digest / missing worker rows / START tiles stuck -> intake FR after de-dup.
+`GET https://bob.ntsa.uk/bob/v1/report` (and local digest home): machine online/lastSeen, workers idle/offered/doing, `working_on`, queue counts. Stale digest / missing worker rows / START tiles stuck -> intake FR after de-dup. **FR #8384:** `stuck_accepted` also EXIT 1 when `accepted>0` and every live shop seat still has empty `working_on`/`work` after 600s. Report only. Do not `clear_seat_doing` and do not act as chair.
 
 ## IRC direction rules
 
