@@ -253,3 +253,4 @@ Do not land a second copy of a harvest-lesson MRB playbook in this book. Those p
 - When an MRB worktree is linked to the install-root git or sits at the wrong SHA, recreate it from the clone store only if the seat pid is dead. A live seat keeps head-mismatch with want= and have=.
 - When a later FR marks a give-up reason infra-soft, update the older test that expected giveup_count to increment. Do not put the reason back on the job-burn path.
 - The tray engine hover step must query Win32_Process by Name=grok.exe and use a short digest GET. A full process list plus a 15s HTTP cap spends the 45s budget and files a deterministic timeout.
+- select_agent defaults opencode_cmd to None. A caller that omits it always logs opencode.exe missing. Pass resolve_opencode_cmd into that argument.
