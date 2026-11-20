@@ -7,7 +7,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from _common import EXIT_FINDING, EXIT_OK, resolve_homes, run_check
+from _common import EXIT_FINDING, EXIT_OK, non_chair_overlay, resolve_homes, run_check
 
 BOBCALLBACK_PORT = 7700
 
@@ -95,7 +95,7 @@ def _bobcallback_ok() -> tuple[str, bool]:
     if _port_listening(BOBCALLBACK_PORT):
         return f"listen:{BOBCALLBACK_PORT}", True
     task = _scheduled_task_state("BobCallback")
-    # Ready/Running without LISTEN = wedge / multi-supervisor lock fight — report finding.
+    # Ready/Running without LISTEN = wedge / multi-supervisor lock fight Ã¢â‚¬â€ report finding.
     if task.lower() in ("running", "ready"):
         return f"task:{task}-no-listen", False
     if st.lower() == "running":
@@ -112,7 +112,7 @@ def check(args):
         st = _service_state(svc)
         start = _service_start_type(svc)
         if svc == "BobIrcd":
-            # FR #6587: Stopped+Disabled (remote Ergo) is intentional — soft note only.
+            # FR #6587: Stopped+Disabled (remote Ergo) is intentional Ã¢â‚¬â€ soft note only.
             # Never restart BobIrcd from heal; do not fail self-test/heal for that design.
             if st.lower() not in ("running", "skipped"):
                 if _bobircd_expected_running(start):
@@ -139,17 +139,32 @@ def check(args):
         )
     if services.get("ircJeeves", "").lower() == "running" and not chair.is_dir():
         findings.append(f"chair home missing: {chair}")
+        overlay = None
+    if findings:
+        # FR #8579: local chair services absent on a worker/monitor host while the
+        # live ionos chair reports fresh via /bob/v1/report â€” soft-pass, do not
+        # file false ionos outage cues.
+        overlay = non_chair_overlay(chair, _digest, require_missing_queue=True)
+        if overlay:
+            for f in findings:
+                notes.append(f"non-chair soft-ok (live /report fresh): {f}")
+            notes.append(
+                "FR #8579 non-chair overlay: local services/chair files are not the "
+                f"live chair; live ts={overlay.get('live_report_ts')} "
+                f"chairNick={overlay.get('live_chair_nick')}"
+            )
+            findings = []
     ok = not findings
-    return (
-        {
-            "ok": ok,
-            "services": services,
-            "chair_home": str(chair),
-            "findings": findings,
-            "notes": notes,
-        },
-        EXIT_OK if ok else EXIT_FINDING,
-    )
+    payload = {
+        "ok": ok,
+        "services": services,
+        "chair_home": str(chair),
+        "findings": findings,
+        "notes": notes,
+    }
+    if overlay:
+        payload.update(overlay)
+    return (payload, EXIT_OK if ok else EXIT_FINDING)
 
 
 def main(argv=None) -> int:

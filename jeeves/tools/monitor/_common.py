@@ -209,3 +209,141 @@ def row_has_pull_url(row: dict) -> bool:
         if "/pull/" in u:
             return True
     return bool(str(row.get("pr_id") or row.get("pr") or "").strip())
+# --- FR #8579: non-chair monitor overlay (live /bob/v1/report) -----------------
+
+DEFAULT_LIVE_REPORT_URL = "https://irc.ntsa.uk/bob/v1/report"
+LIVE_REPORT_USER_AGENT = "Bobiverse-jeeves-monitor/1.0"
+LIVE_REPORT_MAX_AGE_SEC = 900  # align with stale_digest default
+
+
+def live_report_url(env: Optional[dict] = None) -> str:
+    env = os.environ if env is None else env
+    for key in ("BOB_MONITOR_REPORT_URL", "BOB_DIGEST_URL"):
+        raw = str(env.get(key) or "").strip()
+        if raw:
+            return raw
+    return DEFAULT_LIVE_REPORT_URL
+
+
+def fetch_live_report(
+    url: str | None = None,
+    timeout: float = 12.0,
+    env: Optional[dict] = None,
+) -> dict[str, Any] | None:
+    """GET public fleet report JSON. Returns None on any failure (FR #8579)."""
+    import urllib.error
+    import urllib.request
+
+    target = (url or live_report_url(env)).strip()
+    if not target:
+        return None
+    try:
+        req = urllib.request.Request(
+            target,
+            method="GET",
+            headers={
+                "Accept": "application/json",
+                "User-Agent": LIVE_REPORT_USER_AGENT,
+            },
+        )
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            raw = resp.read().decode("utf-8", "replace")
+        doc = json.loads(raw or "{}")
+    except (
+        urllib.error.URLError,
+        urllib.error.HTTPError,
+        TimeoutError,
+        json.JSONDecodeError,
+        OSError,
+        ValueError,
+    ):
+        return None
+    if not isinstance(doc, dict):
+        return None
+    return doc
+
+
+def report_age_sec(doc: dict[str, Any] | None, *, now: float | None = None) -> float | None:
+    """Age of report ``ts`` (ISO-8601) in seconds, or None if unparseable."""
+    import time
+    from datetime import datetime, timezone
+
+    if not isinstance(doc, dict):
+        return None
+    ts = doc.get("ts") or doc.get("updated") or doc.get("when")
+    if not isinstance(ts, str) or not ts.strip():
+        return None
+    raw = ts.strip()
+    if raw.endswith("Z"):
+        raw = raw[:-1] + "+00:00"
+    try:
+        parsed = datetime.fromisoformat(raw)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    now_f = float(time.time() if now is None else now)
+    return max(0.0, now_f - parsed.timestamp())
+
+
+def live_report_is_fresh(
+    doc: dict[str, Any] | None,
+    *,
+    max_age_sec: float = LIVE_REPORT_MAX_AGE_SEC,
+    now: float | None = None,
+) -> bool:
+    age = report_age_sec(doc, now=now)
+    if age is None:
+        return False
+    return age <= float(max_age_sec)
+
+
+def local_queue_absent(chair: Path, digest: Path) -> bool:
+    """True when neither chair nor digest home has queue.json (non-chair seat)."""
+    return not resolve_queue_path(chair, digest).is_file()
+
+
+def non_chair_overlay(
+    chair: Path,
+    digest: Path,
+    *,
+    require_missing_queue: bool = False,
+    report: dict[str, Any] | None = None,
+    fetch: bool = True,
+    max_age_sec: float = LIVE_REPORT_MAX_AGE_SEC,
+) -> dict[str, Any] | None:
+    """Return overlay meta when live /report is fresh and this host looks non-chair.
+
+    Non-chair = local ``queue.json`` missing (typical worker/monitor box). When
+    ``require_missing_queue`` is False, freshness alone is enough for soft-pass
+    of local-only probes (health services / stale local digest) so operators are
+    not flooded with false ionos-outage cues (FR #8579).
+    """
+    if require_missing_queue and not local_queue_absent(chair, digest):
+        return None
+    doc = report
+    if doc is None and fetch:
+        doc = fetch_live_report()
+    if not live_report_is_fresh(doc, max_age_sec=max_age_sec):
+        return None
+    assert doc is not None
+    age = report_age_sec(doc)
+    queue = doc.get("queue") if isinstance(doc.get("queue"), dict) else {}
+    unacc = queue.get("unaccepted")
+    acc = queue.get("accepted")
+    unacc_n = len(unacc) if isinstance(unacc, list) else (
+        len(unacc) if isinstance(unacc, dict) else None
+    )
+    acc_n = len(acc) if isinstance(acc, list) else (
+        len(acc) if isinstance(acc, dict) else None
+    )
+    return {
+        "non_chair_overlay": True,
+        "live_report_url": live_report_url(),
+        "live_report_ts": doc.get("ts"),
+        "live_report_age_sec": int(age) if age is not None else None,
+        "live_chair_nick": doc.get("chairNick") or doc.get("chair_nick"),
+        "live_queue_unaccepted": unacc_n,
+        "live_queue_accepted": acc_n,
+        "local_queue_absent": local_queue_absent(chair, digest),
+    }
