@@ -108,6 +108,63 @@ def resolve_homes(args: argparse.Namespace) -> tuple[Path, Path]:
     return ch, dh
 
 
+def find_upward_file(
+    start: Path,
+    *parts: str,
+    max_levels: int = 8,
+) -> Optional[Path]:
+    """Walk ``start`` and ancestors for ``joinpath(*parts)`` without ``parents[N]``.
+
+    FR #8580: a drive-root install (``J:\\tools\\monitor``) has fewer than three
+    parents; indexing ``Path.parents[2]`` / ``[3]`` raises ``IndexError`` before
+    any candidate is tried. Bound the walk and stop at the filesystem root.
+    """
+    if not parts:
+        return None
+    try:
+        cur = Path(start).resolve()
+    except OSError:
+        cur = Path(start)
+    for _ in range(int(max_levels) + 1):
+        cand = cur.joinpath(*parts)
+        try:
+            if cand.is_file():
+                return cand
+        except OSError:
+            pass
+        parent = cur.parent
+        if parent == cur:
+            break
+        cur = parent
+    return None
+
+
+def ensure_script_dir_on_path(
+    *markers: str,
+    start: Optional[Path] = None,
+    max_levels: int = 8,
+) -> Optional[Path]:
+    """Insert the directory that holds the first found marker onto ``sys.path``.
+
+    Tries ``common/scripts/<marker>`` then ``scripts/<marker>`` walking upward
+    from ``start`` (default: this package directory).
+    """
+    here = Path(start) if start is not None else Path(__file__).resolve().parent
+    for marker in markers:
+        name = str(marker).strip()
+        if not name:
+            continue
+        for rel in (("common", "scripts", name), ("scripts", name)):
+            found = find_upward_file(here, *rel, max_levels=max_levels)
+            if found is None:
+                continue
+            scripts = str(found.parent)
+            if scripts not in sys.path:
+                sys.path.insert(0, scripts)
+            return found.parent
+    return None
+
+
 def ops_home(chair: Path, digest: Path) -> Path:
     """FR #1043 / MRB #1234: best-effort ops root when queue+focus share a home.
 
