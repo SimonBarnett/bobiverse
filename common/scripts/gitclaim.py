@@ -13264,6 +13264,67 @@ def heal_require_machine_all_gave_up(
     return healed
 
 
+def row_has_false_needs_human(row: dict) -> bool:
+    """FR #8427: True when needs_human is set but the give-up was infra-soft.
+
+    FR #8375 made holder_bored (and the other infra/soft seat-churn reasons)
+    never increment giveup_count nor stamp needs_human. A row that still carries
+    ``needs_human`` with a ``giveup_reason`` from that set is a stale/false stamp
+    that starves the offer queue (class of #8391/#8396/#8413).
+    """
+    if not isinstance(row, dict):
+        return False
+    if not row_needs_human(row, ""):
+        return False
+    reason = str(row.get("giveup_reason") or "").strip()
+    return is_infra_soft_giveup_reason(reason)
+
+
+def heal_false_needs_human_for_infra_soft(home: Path) -> list[str]:
+    """FR #8427: clear needs_human false positives stamped by infra-soft GIVEUPs.
+
+    Clears ``needs_human`` (and the give-up state) on unaccepted/accepted rows
+    whose ``giveup_reason`` is holder_bored / offer-timeout / hard-ceiling /
+    worktree-create-failed (the FR #8375 infra-soft set). Those reasons must
+    never stamp needs_human, so a stamp on such a row is a stale false positive
+    that re-offers after the clear.
+
+    Returns repo#id heal lines for monitor/ops logs.
+    """
+    try:
+        with _lock(home):
+            try:
+                doc = _load_queue_unlocked(home)
+            except (OSError, ValueError):
+                return []
+            healed: list[str] = []
+            changed = False
+            for bucket in ("unaccepted", "accepted"):
+                for row in list(doc.get(bucket) or []):
+                    if not row_has_false_needs_human(row):
+                        continue
+                    repo = str(row.get("repo") or "")
+                    ident = str(row.get("id") or "")
+                    row.pop("needs_human", None)
+                    row["giveup_count"] = 0
+                    row.pop("giveup_seats", None)
+                    row.pop("giveup_agent_kinds", None)
+                    row["hard_ceiling_count"] = 0
+                    row.pop("cooldown_until", None)
+                    changed = True
+                    healed.append(
+                        f"{repo}{ident if ident.startswith('#') else '#' + ident}"
+                    )
+            if changed:
+                try:
+                    _write_queue(queue_path(home), doc)
+                except OSError:
+                    return []
+            return healed
+    except (TimeoutError, OSError):
+        return []
+
+
 def _row_link_keys(row: dict) -> list[str]:
     repo = str(row.get("repo") or "")
     refs = row.get("refs") or []
