@@ -73,3 +73,9 @@ def test_fr8428_starved_flags_other_machine_idle():
     )
     assert classified["stuck_reason"] == "unaccepted_starved"
     assert classified.get("other_machine_idle") is True
+    alert = sweep.other_machine_idle_alert([classified])
+    assert alert.startswith("other_machine_idle=1")
+    assert "SimonBarnett/bobiverse#8385" in alert
+    assert sweep.other_machine_idle_alert(
+        [{"stuck": True, "stuck_reason": "unaccepted_starved"}]
+    ) == ""
