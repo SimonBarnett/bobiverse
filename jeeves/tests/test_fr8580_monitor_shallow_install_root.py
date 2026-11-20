@@ -105,9 +105,22 @@ def test_monitor_checks_dry_run_exit0_from_shallow_cwd(tmp_path: Path):
     """Invoke scripts with cwd under a shallow tree; --dry-run must exit 0 (no IndexError)."""
     monitor = tmp_path / "tools" / "monitor"
     monitor.mkdir(parents=True)
-    for name in ("_common.py", "intake_allowlist.py", "github_resync_focus.py"):
+    for name in (
+        "_common.py",
+        "intake_allowlist.py",
+        "github_resync_focus.py",
+        "needs_human_false_positive.py",
+        "open_pr_mrb_missing.py",
+        "open_pr_stale_base.py",
+    ):
         shutil.copy2(MON / name, monitor / name)
-    for name in ("intake_allowlist.py", "github_resync_focus.py"):
+    for name in (
+        "intake_allowlist.py",
+        "github_resync_focus.py",
+        "needs_human_false_positive.py",
+        "open_pr_mrb_missing.py",
+        "open_pr_stale_base.py",
+    ):
         r = subprocess.run(
             [sys.executable, str(monitor / name), "--dry-run"],
             capture_output=True,
@@ -128,7 +141,12 @@ def test_source_no_longer_indexes_deep_parents():
         "idle_seats.py",
         "queue_flow.py",
         "wake_grok_bot_bob.py",
+        # FR #8591 siblings still on parents[N] after #8580
+        "needs_human_false_positive.py",
+        "open_pr_mrb_missing.py",
+        "open_pr_stale_base.py",
     ):
         text = (MON / name).read_text(encoding="utf-8")
         assert "parents[2]" not in text, name
         assert "parents[3]" not in text, name
+        assert "parents[1]" not in text, name
