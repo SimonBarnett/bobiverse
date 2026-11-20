@@ -5347,9 +5347,45 @@ def _public_queue(home: Path) -> dict:
             home, pr_exists=checker, lock_timeout=REPORT_PURGE_LOCK_WAIT_S
         )
     doc = gitclaim.load_queue(home)
+    unaccepted = [r for r in (doc.get("unaccepted") or []) if isinstance(r, dict)]
+    accepted = list(doc.get("accepted") or [])
+    # FR #8536: TipForm / monitor need fleet queue summary so healthy idle
+    # (offerable empty / needs_human-only) is not mistaken for hung seats.
+    summary = summarize_public_queue(unaccepted, accepted)
+    summary["unaccepted"] = unaccepted
+    summary["accepted"] = accepted
+    return summary
+
+
+def summarize_public_queue(
+    unaccepted: list | None,
+    accepted: list | None = None,
+) -> dict:
+    """FR #8536: fleet queue counts for digest / TipForm (no I/O)."""
+    import gitclaim
+
+    rows = [r for r in (unaccepted or []) if isinstance(r, dict)]
+    needs_human_n = 0
+    for row in rows:
+        try:
+            if gitclaim.row_needs_human(row, ""):
+                needs_human_n += 1
+        except Exception:
+            if row.get("needs_human"):
+                needs_human_n += 1
+    offerable_n = 0
+    try:
+        import stuck_job_sweep
+
+        offerable_n = int(stuck_job_sweep.ungated_unaccepted_count(rows))
+    except Exception:
+        offerable_n = max(0, len(rows) - needs_human_n)
     return {
-        "unaccepted": list(doc.get("unaccepted") or []),
-        "accepted": list(doc.get("accepted") or []),
+        "unaccepted_count": len(rows),
+        "needs_human_count": needs_human_n,
+        "offerable_count": offerable_n,
+        "queue_needs_human_only": bool(rows) and needs_human_n == len(rows),
+        "accepted_count": len([r for r in (accepted or []) if isinstance(r, dict)]),
     }
 
 

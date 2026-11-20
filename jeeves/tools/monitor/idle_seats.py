@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""Idle-seat detector: digest workers idle while offerable queue work exists (FR #1116 / #1625)."""
+"""Idle-seat detector: digest workers idle while offerable queue work exists (FR #1116 / #1625 / #8536).
+
+FR #8536: when idle seats exist and offerable==0, emit healthy_idle_empty_offerable
+(+ queue_needs_human_only when every unaccepted row is needs_human) so ops do not
+recycle free DeepSeek seats as hung.
+"""
 from __future__ import annotations
 
 import json
@@ -230,6 +235,25 @@ def check(args):
             f"{len(idle)} idle seat(s) with {offerable} offerable row(s) "
             f"(unaccepted={len(unaccepted)})"
         )
+    # FR #8536: distinguish healthy idle + empty offerable queue from hung seats.
+    healthy_idle = bool(idle) and offerable == 0
+    needs_human_only = False
+    if unaccepted:
+        try:
+            gc = _ensure_gitclaim()
+            needs_human_only = all(
+                isinstance(r, dict) and gc.row_needs_human(r, "") for r in unaccepted
+            )
+        except Exception:
+            needs_human_only = all(
+                isinstance(r, dict) and bool(r.get("needs_human")) for r in unaccepted
+            )
+    if healthy_idle:
+        reason = "needs_human-only" if needs_human_only else "gated/empty offerable"
+        notes.append(
+            f"{len(idle)} idle seat(s) healthy with 0 offerable "
+            f"(unaccepted={len(unaccepted)}; {reason}; do not recycle as hung)"
+        )
     ok = not findings
     return (
         {
@@ -238,6 +262,8 @@ def check(args):
             "unaccepted_count": len(unaccepted),
             "offerable_for_live_seats": offerable,
             "pending_offer_count": pending_offers,
+            "healthy_idle_empty_offerable": healthy_idle,
+            "queue_needs_human_only": bool(needs_human_only),
             "notes": notes,
             "digest_path": str(digest / "digest.json"),
             "queue_path": str(qpath),
