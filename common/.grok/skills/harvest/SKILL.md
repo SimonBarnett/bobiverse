@@ -261,3 +261,4 @@ Do not land a second copy of a harvest-lesson MRB playbook in this book. Those p
 - For SimonBarnett/bobiverse, infer_require_machine ignores a needs-ionos title prefix. Pin with a needs-ionos label or a body line require_machine: ionos.
 - A line-anchored MRB FAIL @ sha is a seat verdict even when the sha is wrapped in ticks or quotes. A mid-line mention and a FAIL without an @ sha still hold.
 - A same-process file lock that unlinks on holder==getpid busy-spins on Windows when the holder's handle blocks unlink; cross-process seats still need the dead-pid steal plus a sleep and a deadline.
+- Write gh --body-file with a UTF-8 no-BOM writer and reject C0 bytes other than tab, LF, and CR; double-quoted PowerShell turns backslash-b, backslash-t, and backslash-a into real controls.
