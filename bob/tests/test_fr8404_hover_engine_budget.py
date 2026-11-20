@@ -30,10 +30,18 @@ def test_fr8404_digest_http_honors_engine_timeout_env():
 
 def test_fr8404_engine_hover_sets_short_digest_timeout():
     watch = WATCH.read_text(encoding="utf-8")
-    start = watch.find("-Name 'update-hover-engine'")
+    start = watch.find("# FR #8404: keep the digest GET inside the 45s step budget.")
     assert start >= 0
     window = watch[start:start + 1800]
     assert "BOB_DIGEST_HTTP_TIMEOUT_SEC = '8'" in window
     assert "Get-BobTrayHover" in window
     assert "$prevDigestTimeout" in window
     assert "Remove-Item Env:\\BOB_DIGEST_HTTP_TIMEOUT_SEC" in window
+    # $ps.Stop() on timeout skips finally inside the child scriptblock.
+    assign_at = window.find("BOB_DIGEST_HTTP_TIMEOUT_SEC = '8'")
+    invoke_at = window.find("Invoke-BobTrayWarmEngineStep")
+    assert 0 <= assign_at < invoke_at
+    body_at = window.find("-Body {", invoke_at)
+    assert body_at > invoke_at
+    body = window[body_at:]
+    assert "BOB_DIGEST_HTTP_TIMEOUT_SEC = '8'" not in body
