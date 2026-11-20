@@ -78,6 +78,11 @@ reported on the next stuck sweep with `rule=no_eligible_reviewer` in the
 digest `stuck` list and `!stuck`; it does not wait for the generic 30-minute
 starvation threshold. A busy non-author reviewer still counts as eligible.
 Existing human/machine/PR holds and the no-seats/no-fuel pause remain protected.
+**FR #8429 / MRB #8445:** an online digest machine with zero workers while
+ungated unaccepted work is greater than 0 is reported as
+`rule=online_zero_workers` (machine identity in `machine` / `holder`). That
+machine finding stays visible during the no-seats pause; ordinary job-starvation
+rows stay suppressed while paused.
 The FR #5163 author-only recycle and stall scan also consult cloud eligibility.
 An active tracked cloud review stays accepted: the PR being reviewed is its
 input, not evidence of completed work.
