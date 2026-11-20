@@ -4251,7 +4251,8 @@ $startWorkerTimer.Add_Tick({
                             $pending = @(Get-ChildItem -LiteralPath $script:startWorkerDir -Filter 'req-*.json' -File -ErrorAction SilentlyContinue).Count
                             $procs = @(Get-CimInstance Win32_Process -Filter "Name like 'bob-worker%'" -ErrorAction SilentlyContinue |
                                     Select-Object ProcessId, ParentProcessId, Name, CommandLine)
-                            $liveN = [int](Measure-BobTrayWorkerSeats -Procs $procs -Modes @('agent'))
+                            # MRB #8445: CapRefusal union (roots + uncovered IRC markers), not Measure alone.
+                            $liveN = [int](Get-BobTrayAgentSeatUnionCount -Procs $procs)
                             $stamp = Join-Path $script:startWorkerDir 'empty-fill.txt'
                             $cool = $false
                             if (Test-Path -LiteralPath $stamp) {
