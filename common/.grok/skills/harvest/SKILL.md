@@ -250,3 +250,4 @@ Do not land a second copy of a harvest-lesson MRB playbook in this book. Those p
 - When accepted jobs look unassigned, paint working_on from the accepted row on ACK and demote LOST_ACK_RESTART only when the seat still has no real working_on.
 - A reset before airc.exe sends TLS bytes is a local block of that process. Classify it, print the allow rule, and do not disable Defender.
 - A per-agent-kind submit-verify change must keep the Cursor/Grok GIVEUP wire bare (VISION S3); annotate probe=/kind= only for the headless kind.
+- When a later FR marks a give-up reason infra-soft, update the older test that expected giveup_count to increment. Do not put the reason back on the job-burn path.
