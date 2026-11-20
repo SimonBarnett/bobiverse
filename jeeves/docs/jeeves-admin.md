@@ -9,6 +9,7 @@ IRCd: **BobIrcd** → live root `<ai root>\ergo` (MSI stages `ergo\` then Instal
 2. Place Ergo connect PASS at `<ai root>\jeeves\config\ergo.password` (public MSIs do not embed it).
 3. Set ObjectName to the fleet user via `service.password` / `BOBIVERSE_SERVICE_PASSWORD` / `Complete-BobiverseServiceLogon.ps1 -Product jeeves`.
 4. `Restart-Service ircJeeves` — expect `joined #bobiverse,#… as Jeeves`.
+   A flat `<ai root>\jeeves` with no `.git` does not pick up `main` on that restart (FR #8493). Use a sparse git worktree or Apply the latest release so chair code such as `heal_false_needs_human_for_infra_soft` is actually on disk.
 5. Wire git webhooks to `https://bob.ntsa.uk/bob/v1/git` (see `docs/webhooks.md`).
 
 ## Homes
