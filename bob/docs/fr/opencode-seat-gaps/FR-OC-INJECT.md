@@ -17,3 +17,13 @@ Jeeves assign lines reliably reach the OpenCode PowerShell ReadLine loop and sta
 2. Failed OpenCode submit does not send Enter. A dead spawn fails fast (`probe=spawn kind=opencode`). Then one re-inject; then GIVEUP `submit-verify failed probe=no turn receipt kind=opencode`. Cursor and Grok stay bare `submit-verify failed`.
 3. Re-inject is skipped when a job-matched run is already active.
 4. Opt-out env documented.
+
+## CAST IRON: keys only (FR #8560)
+
+OpenCode fleet seats must use batched KEY_EVENT inject (`BOB_WORKER_INJECT_PASTE=0`).
+Do **not** set `BOB_WORKER_INJECT_PASTE=1`. Paste/Ctrl+V is unreliable on the ReadLine wrapper:
+a stray `v` appears, submit-verify never sees `turn_started` / turn receipt, then GIVEUP loops
+while digest still shows the seat "open".
+
+Paid DeepSeek recipe: `BOB_OPENCODE_FORCE_PAID=1`, `BOB_OPENCODE_MODEL=opencode-go/deepseek-v4-pro`,
+`BOB_WORKER_INJECT_PASTE=0`, disk `python bin/scripts/bob_worker.py --mode agent --agent opencode`.

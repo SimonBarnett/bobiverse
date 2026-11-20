@@ -7672,11 +7672,12 @@ class ProcIdleTurnWatcher:
 
 
 def apply_cursor_inject_keys_default(kind: str, log: Optional[Callable[[str], None]] = None) -> bool:
-    """FR #4464 / #6158: Cursor and OpenCode seats default to batched KEY_EVENT at seat start.
+    """FR #4464 / #6158 / #8560: Cursor and OpenCode seats default to batched KEY_EVENT at seat start.
 
     cursor-agent treats Ctrl+V as a literal v. OpenCode ReadLine paste is unreliable on
-    this fleet (FR-OC-INJECT). Set BOB_WORKER_INJECT_PASTE=0 when it is unset. An explicit
-    value wins (set BOB_WORKER_INJECT_PASTE=1 to force clipboard paste).
+    this fleet (FR-OC-INJECT / FR #8560): PASTE=1 leaves a stray ``v`` and breaks submit-verify.
+    Set BOB_WORKER_INJECT_PASTE=0 when it is unset. For Cursor, an explicit value still wins.
+    For OpenCode, launch recipes must keep PASTE=0 (force-ignore of PASTE=1 is FR #8558).
     """
     k = (kind or "").strip().lower()
     if k not in ("cursor", "opencode"):
@@ -7689,7 +7690,7 @@ def apply_cursor_inject_keys_default(kind: str, log: Optional[Callable[[str], No
             if k == "opencode":
                 log(
                     "relay: opencode seat - inject via batched keys "
-                    "(set BOB_WORKER_INJECT_PASTE=1 to paste)"
+                    "(FR #8560: keep BOB_WORKER_INJECT_PASTE=0; never PASTE=1)"
                 )
             else:
                 log("relay: cursor seat - inject via batched keys (Ctrl+V lands as literal 'v')")
