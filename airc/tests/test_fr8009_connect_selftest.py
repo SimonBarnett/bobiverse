@@ -100,6 +100,61 @@ def test_allow_rule_is_added_once_and_removed():
     assert any(probe.RULE_NAME in part for part in calls[-1])
 
 
+def test_default_connector_is_used_when_omitted():
+    seen = {}
+
+    def fake_connect(addr, timeout=None):
+        seen["addr"] = addr
+        seen["timeout"] = timeout
+        return _Sock()
+
+    real = socket.create_connection
+    socket.create_connection = fake_connect
+    try:
+        out = probe.probe_connection("irc.example", 6697, tls=False, reader=lambda _s: b":irc.example 001 bot :Welcome\r\n")
+    finally:
+        socket.create_connection = real
+    assert seen["addr"] == ("irc.example", 6697)
+    assert out["kind"] == probe.CLASS_OK
+
+
+def test_empty_line_is_not_a_local_reset():
+    class _Empty(_Sock):
+        def recv(self, _n):
+            return b""
+
+    out = probe.probe_connection(
+        "irc.example", 6697, tls=False, connector=lambda *_a: _Empty(), reader=lambda _s: b""
+    )
+    assert out["kind"] != probe.CLASS_LOCAL_RESET
+    assert "diagnosis" not in out
+
+
+def test_readonly_snapshot_lists_block_rule_and_defender_note():
+    blob = (
+        "Rule Name:                          Other\r\n"
+        "Enabled:                            Yes\r\n"
+        "Direction:                          Out\r\n"
+        "Action:                             Allow\r\n"
+        "\r\n"
+        "Rule Name:                          Block airc\r\n"
+        "Enabled:                            Yes\r\n"
+        "Direction:                          Out\r\n"
+        "Action:                             Block\r\n"
+        "Program:                            C:\\airc\\airc.exe\r\n"
+    )
+
+    def runner(argv):
+        if argv[0] == "netsh":
+            return blob
+        return "NetworkProtection=True"
+
+    snap = probe.readonly_snapshot(r"C:\airc\airc.exe", runner)
+    assert "Block airc" in snap
+    assert "NetworkProtection=True" in snap
+    assert "1125" in snap
+
+
 def test_dns_and_timeout_classes():
     assert probe.classify_connect_error(socket.gaierror(8, "no name"), bytes_sent=0) == probe.CLASS_DNS
     err = TimeoutError("timed out")

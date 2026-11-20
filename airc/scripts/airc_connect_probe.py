@@ -78,6 +78,53 @@ def format_class(kind: str, exc: BaseException | None = None, *, host: str = "",
     return f"connect error host={host} port={port}: {exc}"
 
 
+def filter_outbound_block_rules(show_text: str, exe: str) -> str:
+    """Keep enabled outbound Block rules that name this program. Read-only."""
+    text = show_text or ""
+    if "no rules match" in text.lower():
+        return "outbound-block-rules: none"
+    blocks = []
+    current: list[str] = []
+    for line in text.splitlines():
+        if not line.strip():
+            if current:
+                blob = "\n".join(current)
+                low = blob.lower()
+                if "block" in low and (exe.lower() in low or "airc" in low):
+                    blocks.append(blob)
+            current = []
+            continue
+        current.append(line)
+    if current:
+        blob = "\n".join(current)
+        low = blob.lower()
+        if "block" in low and (exe.lower() in low or "airc" in low):
+            blocks.append(blob)
+    if not blocks:
+        return "outbound-block-rules: none matching program"
+    return "outbound-block-rules:\n" + "\n---\n".join(blocks[:8])
+
+
+def readonly_snapshot(exe: str, runner: Callable[[list[str]], str]) -> str:
+    """Best-effort Defender / firewall notes. Never changes those settings."""
+    parts = [filter_outbound_block_rules(
+        runner(["netsh", "advfirewall", "firewall", "show", "rule", "name=all", "dir=out"]),
+        exe,
+    )]
+    try:
+        defender = runner([
+            "powershell", "-NoProfile", "-Command",
+            "try { $s = Get-MpComputerStatus; "
+            "'NetworkProtection=' + [string]$s.IsNetworkProtectionEnabled } "
+            "catch { 'defender-unavailable' }",
+        ])
+    except Exception as exc:
+        defender = f"defender-unavailable: {exc}"
+    parts.append((defender or "defender-unavailable").strip())
+    parts.append("Defender events to check: 1125 1126 1116 1117 (report only).")
+    return "\n".join(parts)
+
+
 def diagnosis_text(exe: str, host: str, port: int, *, snapshot: str = "") -> str:
     """Read-only IT note. Never disables Defender or third-party AV."""
     lines = [
@@ -131,19 +178,26 @@ def remove_allow_rule(runner: Callable[[list[str]], str]) -> None:
     runner(allow_rule_delete_argv())
 
 
+def default_connector(host: str, port: int, timeout: float):
+    return socket.create_connection((host, int(port)), timeout=timeout)
+
+
 def probe_connection(
     host: str,
     port: int,
     *,
     tls: bool,
-    connector: Callable[[str, int, float], object],
+    connector: Callable[[str, int, float], object] | None = None,
     wrapper: Callable[[object, str], object] | None = None,
     reader: Callable[[object], bytes] | None = None,
     timeout: float = 30.0,
 ) -> dict:
     """Connect and read one IRC line. Does not send and does not add a firewall rule."""
+    if connector is None:
+        connector = default_connector
     bytes_sent = 0
     sock = None
+    raw = None
     try:
         raw = connector(host, int(port), timeout)
     except OSError as exc:
@@ -170,8 +224,12 @@ def probe_connection(
             data = reader(sock)
         line = (data or b"").decode("utf-8", errors="replace").strip()
         if not line:
-            kind = CLASS_LOCAL_RESET
-            return {"kind": kind, "detail": format_class(kind, host=host, port=port), "bytes_sent": bytes_sent}
+            kind = CLASS_OTHER
+            return {
+                "kind": kind,
+                "detail": "connect error: no IRC line (not a pre-TLS local reset)",
+                "bytes_sent": bytes_sent,
+            }
         low = line.lower()
         if "closing link" in low or low.startswith("error :") or "banned" in low or "throttl" in low:
             kind = CLASS_IRC_REFUSAL

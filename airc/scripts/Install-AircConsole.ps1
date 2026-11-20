@@ -841,13 +841,14 @@ if ($NoStart) {
 if ($env:AIRC_SELFTEST -ne '0') {
     $probeExe = Join-Path $packRoot 'airc\airc.exe'
     if (-not (Test-Path -LiteralPath $probeExe)) { $probeExe = Join-Path $packRoot 'airc.exe' }
-    if (Test-Path -LiteralPath $probeExe) {
-        & $probeExe --connect-selftest
-        if ($LASTEXITCODE -ne 0) {
-            throw "airc connect self-test failed (exit $LASTEXITCODE). See the install log."
-        }
-        Write-Host 'INFO FR #8009 connect self-test ok'
+    if (-not (Test-Path -LiteralPath $probeExe)) {
+        throw "airc connect self-test failed: airc.exe not found (looked under $packRoot). AIRC_SELFTEST=0 skips this step."
     }
+    & $probeExe --connect-selftest
+    if ($LASTEXITCODE -ne 0) {
+        throw "airc connect self-test failed (exit $LASTEXITCODE). See the install log."
+    }
+    Write-Host 'INFO FR #8009 connect self-test ok'
 } else {
     Write-Host 'INFO FR #8009 connect self-test skipped AIRC_SELFTEST=0'
 }

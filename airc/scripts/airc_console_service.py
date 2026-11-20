@@ -2593,6 +2593,18 @@ def main(argv: list[str] | None = None) -> int:
         port = int(args.port)
         result = _probe.probe_connection(host, port, tls=bool(args.tls))
         info("INFO connect-selftest " + str(result.get("detail") or result.get("kind")))
+        if result.get("kind") == _probe.CLASS_LOCAL_RESET:
+            exe = sys.executable
+            try:
+                snap = _probe.readonly_snapshot(
+                    exe,
+                    lambda argv: __import__("subprocess").check_output(
+                        argv, text=True, errors="replace", timeout=20
+                    ),
+                )
+            except Exception as exc:
+                snap = f"snapshot-unavailable: {exc}"
+            result["diagnosis"] = _probe.diagnosis_text(exe, host, port, snapshot=snap)
         if result.get("diagnosis"):
             info("INFO connect-selftest diagnosis\n" + str(result["diagnosis"]))
         if result.get("kind") == _probe.CLASS_LOCAL_RESET:
