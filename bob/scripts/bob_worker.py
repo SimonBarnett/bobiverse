@@ -5253,6 +5253,103 @@ def opencode_job_worktree_read_patterns(worktree: str | Path) -> list[str]:
     return patterns
 
 
+def resolve_job_git_dir(job_worktree: str | Path) -> Optional[Path]:
+    """Resolve the on-disk gitdir for a linked worktree (``.git`` file -> ``.../.git/worktrees/<name>``).
+
+    FR #8572: stale ``index.lock`` and OpenCode ``external_directory`` cleanup live under this
+    path (often ``C:\\ai\\bob\\.git\\worktrees\\<job>``), outside the job cwd.
+    """
+    root = Path(job_worktree or "")
+    if not root:
+        return None
+    try:
+        root = root.resolve()
+    except OSError:
+        return None
+    marker = root / ".git"
+    if marker.is_dir():
+        return marker
+    if marker.is_file():
+        try:
+            text = marker.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return None
+        if text.lower().startswith("gitdir:"):
+            raw = text.split(":", 1)[1].strip()
+            found = Path(raw)
+            if not found.is_absolute():
+                found = (root / found).resolve()
+            else:
+                try:
+                    found = found.resolve()
+                except OSError:
+                    pass
+            return found
+    return None
+
+
+def opencode_job_gitdir_read_patterns(job_worktree: str | Path) -> list[str]:
+    """FR #8572: allowlist the job's git worktree dir so lock cleanup is not auto-rejected."""
+    git_dir = resolve_job_git_dir(job_worktree)
+    if git_dir is None:
+        return []
+    patterns: list[str] = []
+    seen: set[str] = set()
+
+    def add(value: str) -> None:
+        text = str(value or "").strip()
+        if not text or text in seen:
+            return
+        seen.add(text)
+        patterns.append(text)
+
+    for base in (str(git_dir).rstrip("\\/"), git_dir.as_posix().rstrip("/")):
+        add(base)
+        add(base + "/**")
+        add(base + "\\**")
+        add(base + "/*")
+        add(base + "\\*")
+        add(base + "/index.lock")
+        add(base + "\\index.lock")
+    return patterns
+
+
+def clear_stale_job_index_lock(
+    job_worktree: str | Path,
+    *,
+    log_fn: Optional[Callable[[str], None]] = None,
+) -> bool:
+    """FR #8572: drop stale ``index.lock`` under the job gitdir before inject / git ops.
+
+    Best-effort unlink. If another ``git.exe`` still holds the lock, ``OSError`` is logged and
+    False is returned (do not crash the seat).
+    """
+    git_dir = resolve_job_git_dir(job_worktree)
+    if git_dir is None:
+        return False
+    lock = git_dir / "index.lock"
+    if not lock.is_file():
+        return False
+    try:
+        lock.unlink()
+    except OSError as e:
+        if log_fn is not None:
+            try:
+                log_fn(
+                    f"opencode-ready: stale index.lock unlink failed "
+                    f"path={lock} err={type(e).__name__}"
+                )
+            except Exception:
+                pass
+        return False
+    if log_fn is not None:
+        try:
+            log_fn(f"opencode-ready: cleared stale index.lock path={lock}")
+        except Exception:
+            pass
+    return True
+
+
 def opencode_skill_dag_mcp_document(
     worker_cwd: str,
     *,
@@ -5263,6 +5360,9 @@ def opencode_skill_dag_mcp_document(
     if job_worktree:
         allow = perm.setdefault("external_directory", {})
         for key in opencode_job_worktree_read_patterns(job_worktree):
+            allow[key] = "allow"
+        # FR #8572: linked worktree gitdir (index.lock) is outside the job cwd.
+        for key in opencode_job_gitdir_read_patterns(job_worktree):
             allow[key] = "allow"
     return {
         "$schema": "https://opencode.ai/config.json",
@@ -17113,6 +17213,11 @@ class Supervisor:
                     self.log(f"opencode-ready: finish-steps append skipped {type(e).__name__}")
                 wire = prepared["wire"]
                 self.log(f"opencode-ready: job worktree {prepared['path']}")
+                # FR #8572: drop stale git worktree index.lock before inject (outside job cwd).
+                try:
+                    clear_stale_job_index_lock(prepared["path"], log_fn=self.log)
+                except Exception as e:  # noqa: BLE001
+                    self.log(f"opencode-ready: index.lock preflight skipped {type(e).__name__}")
                 # FR #6898: OpenCode --dir loads project opencode.json from the job worktree.
                 try:
                     write_opencode_skill_dag_mcp_config(
