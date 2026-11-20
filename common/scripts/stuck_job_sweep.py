@@ -1296,6 +1296,20 @@ def run_stuck_sweep(
     )
     classified.extend(quiet_findings)
 
+    # FR #8429: online shops with zero workers while ungated work is waiting.
+    machines: dict = {}
+    with contextlib_suppress():
+        import bobreport
+        digest = bobreport.load_digest(home)
+        if isinstance(digest, dict) and isinstance(digest.get("machines"), dict):
+            machines = digest["machines"]
+    ungated_rows = [
+        r for r in (doc.get("unaccepted") or []) if isinstance(r, dict)
+    ]
+    classified.extend(
+        classify_empty_online_machines(machines, ungated_unaccepted_count(ungated_rows))
+    )
+
     actions = {
         "released": 0,
         "enqueued": 0,
