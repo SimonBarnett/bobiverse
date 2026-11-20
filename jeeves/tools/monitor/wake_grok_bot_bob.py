@@ -54,14 +54,14 @@ def grokbot_api_path() -> Path | None:
     if env:
         p = Path(env)
         return p if p.is_file() else None
-    here = Path(__file__).resolve()
-    for cand in (
-        here.parents[2] / "tray" / "tools" / "GrokBotApi.py",
-        here.parents[3] / "bob" / "tray" / "tools" / "GrokBotApi.py",
-    ):
-        if cand.is_file():
-            return cand
-    return None
+    from _common import find_upward_file
+
+    here = Path(__file__).resolve().parent
+    # FR #8580: no parents[N]; walk upward for GrokBotApi.py
+    found = find_upward_file(here, "tray", "tools", "GrokBotApi.py")
+    if found is not None:
+        return found
+    return find_upward_file(here, "bob", "tray", "tools", "GrokBotApi.py")
 
 
 def _default_send(*, agent: str, text: str) -> dict[str, Any]:

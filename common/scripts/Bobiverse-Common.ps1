@@ -3855,7 +3855,29 @@ function Get-BobiverseShortcutSpec {
     }
     if ($Product -eq 'jeeves') {
         $mon = Join-Path $scr 'Start-JeevesMonitor.ps1'
-        Add-Spec 'Start Jeeves Monitor' $ps "-NoProfile -ExecutionPolicy Bypass -File `"$mon`" -InstallRoot `"$InstallRoot`"" $InstallRoot 'Start a NEW Jeeves MONITORING agent (never resume; CWD = Jeeves install; runs monitor-start immediately)' $butlerIco
+        # FR #8577: pass -BobInstallRoot so MSI / drive-root layouts never Join-Path an empty parent.
+        $bobRoot = ''
+        $aiParent = Split-Path -Parent $InstallRoot
+        if (-not [string]::IsNullOrWhiteSpace($aiParent) -and $aiParent -ne $InstallRoot) {
+            $sibBob = Join-Path $aiParent 'bob'
+            if (Test-Path -LiteralPath (Join-Path $sibBob 'worker\bob-worker.exe')) {
+                $bobRoot = $sibBob
+            }
+        }
+        if (-not $bobRoot) {
+            $sysDrive = if ($env:SystemDrive) { $env:SystemDrive } else { 'C:' }
+            foreach ($cand in @((Join-Path $sysDrive 'ai\bob'), 'C:\ai\bob', 'D:\ai\bob')) {
+                if (Test-Path -LiteralPath (Join-Path $cand 'worker\bob-worker.exe')) {
+                    $bobRoot = $cand
+                    break
+                }
+            }
+        }
+        $monArgs = "-NoProfile -ExecutionPolicy Bypass -File `"$mon`" -InstallRoot `"$InstallRoot`""
+        if ($bobRoot) {
+            $monArgs = $monArgs + " -BobInstallRoot `"$bobRoot`""
+        }
+        Add-Spec 'Start Jeeves Monitor' $ps $monArgs $InstallRoot 'Start a NEW Jeeves MONITORING agent (never resume; CWD = Jeeves install; runs monitor-start immediately)' $butlerIco
     }
     if ($NeedLogon) {
         Add-Spec "Complete bobiverse service logon ($Product)" $ps "-NoProfile -ExecutionPolicy Bypass -File `"$(Join-Path $scr 'Complete-BobiverseServiceLogon.ps1')`" -Product $Product -InstallRoot `"$InstallRoot`"" $scr "Set the $Product service ObjectName password (required once after MSI)" $ico
