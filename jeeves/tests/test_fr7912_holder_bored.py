@@ -91,7 +91,10 @@ def test_two_bored_from_holder_releases_and_next_offer_is_not_nak(tmp_path, monk
     doc = gitclaim._load_queue_unlocked(home)
     back = [r for r in doc["unaccepted"] if str(r.get("id")) == "#7890"]
     assert len(back) == 1
-    assert int(back[0].get("giveup_count") or 0) == 1
+    # FR #8375 / #8397: holder_bored is infra-soft. Releasing the row must not
+    # burn giveup_count or stamp needs_human. Seat exclusion and cooldown stay.
+    assert int(back[0].get("giveup_count") or 0) == 0
+    assert not back[0].get("needs_human")
     assert "flamingo-19496" in str(back[0].get("giveup_seats") or "")
     assert back[0].get("cooldown_until")
     assert reports and reports[0][0] == ME
