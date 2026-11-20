@@ -39,9 +39,9 @@ One issue per issue: when MRB (or any worker) finds a twin/duplicate issue, clos
 Using any skill from this book obliges you to report back here, in the same
 turn you learn or fix something. Do not ask permission. Do not defer.
 
-- Gap, bug or wish → issue (`FR:` for features). When the operator has no
+- Gap, bug or wish ÔåÆ issue (`FR:` for features). When the operator has no
   GitHub account, POST `kind: issue` | `fr` to `/bob/v1/intake`.
-- New or fixed playbook → branch + PR (never `main`).
+- New or fixed playbook ÔåÆ branch + PR (never `main`).
 - Empty harvest only when nothing is new and nothing is broken.
 
 **Home:** `https://github.com/SimonBarnett/bobiverse`. Frontmatter `github:`
@@ -90,20 +90,20 @@ flowchart TD
 
 *Caption: prefer `gh`; fall back to the Bob webhook intake; if offline, queue locally and retry.*
 
-1. **`gh` available and authenticated** → branch + PR against
+1. **`gh` available and authenticated** ÔåÆ branch + PR against
    `SimonBarnett/bobiverse` (skills) or an issue (`harvest:` / `FR:`). If the PR
    cannot be opened, file a `harvest:` issue with the intended PR title, branch,
    file list and body in this turn.
-2. **No `gh`, or not authenticated** → POST to the Bob webhook intake
+2. **No `gh`, or not authenticated** ÔåÆ POST to the Bob webhook intake
    `https://bob.ntsa.uk/bob/v1/intake`. No GitHub account needed; the
    service files it with label `via-intake`. Send an `idempotency_key` so
    retries never duplicate. Missing/empty `kind` defaults to `issue`.
-3. **Offline / intake unreachable** → write the JSON payload to a local
+3. **Offline / intake unreachable** ÔåÆ write the JSON payload to a local
    `harvest-outbox/` (or `report-outbox/` / `install-outbox/`) folder and retry
    it (same `idempotency_key`) on the next run. Helper:
    `scripts/Report-BobiverseIntakeIssue.ps1`.
 
-### Open skill / harvest receipts → consolidate then PR (FR #1682 / FR #1684)
+### Open skill / harvest receipts ÔåÆ consolidate then PR (FR #1682 / FR #1684)
 
 Intake `kind: skill|harvest` creates `label:skill` issues. The chair **offers** them as FR promote jobs (not product code FRs; they still do not block repo UAT). Do **not** GIVEUP. Without a promote PR the lessons never reach MRB merge.
 
@@ -111,10 +111,10 @@ When you have `gh` write (same turn or on a skill-promote assign):
 
 1. Group open `label:skill` issues **by owner skill book** (see `harvest-agent-skills` table).
 2. **Close duplicate** receipts for the same book/lesson.
-3. Open **one** `harvest/…` PR per book (or one multi-book PR with clear paths) that promotes unique Lesson lines; PR body uses `Closes …` / `Duplicates closed: …`.
+3. Open **one** `harvest/ÔÇª` PR per book (or one multi-book PR with clear paths) that promotes unique Lesson lines; PR body uses `Closes ÔÇª` / `Duplicates closed: ÔÇª`.
 4. Leave merge to hostile **MRB**. Never push `main`.
 
-Full steps: skill `harvest-agent-skills` section **Worker: consolidate open skill receipts → promote PR**.
+Full steps: skill `harvest-agent-skills` section **Worker: consolidate open skill receipts ÔåÆ promote PR**.
 
 ### Intake must link an existing harvest PR (FR #1812 / harvest #2013)
 
@@ -246,6 +246,7 @@ Do not land a second copy of a harvest-lesson MRB playbook in this book. Those p
 - no_terminal_reply_does_not_block must read only that seat own offer_outcomes. A later no-terminal-reply must not lift another seat permanent give-up such as self-mrb. Legacy rows use the row giveup_reason only when that seat is the sole giveup_seats entry.
 - An FR seat must run gh pr ready before DONE. A draft pull request is not reviewable and strands the MRB. FIX seats do not open a new pull request.
 - A GitHub issue whose title starts with stall: is a detector receipt. issue_skip_fr_reason returns stall_receipt so it is never an offerable FR and never picks up needs_human. The stall detector itself stays.
+- An open non-draft product PR with no MRB or FIX queue row is stranded. The token-free check uses an injected pull list, the same way as the stale-base check.
 - When an intake FR asks to move HTTP webhooks off irc.ntsa.uk, check bob_public_base.DEFAULT_PUBLIC_BASE and closed FR 5272 before opening a second implement PR.
 - When accepted jobs look unassigned, paint working_on from the accepted row on ACK and demote LOST_ACK_RESTART only when the seat still has no real working_on.
 - A reset before airc.exe sends TLS bytes is a local block of that process. Classify it, print the allow rule, and do not disable Defender.
@@ -254,9 +255,15 @@ Do not land a second copy of a harvest-lesson MRB playbook in this book. Those p
 - When a later FR marks a give-up reason infra-soft, update the older test that expected giveup_count to increment. Do not put the reason back on the job-burn path.
 - The tray engine hover step must query Win32_Process by Name=grok.exe and use a short digest GET. A full process list plus a 15s HTTP cap spends the 45s budget and files a deterministic timeout.
 - A Python CLI that wraps a PowerShell Read-Host prompt must not use capture_output. That pipes stdin shut. Inherit stdin and pipe only stdout.
+- Digest online does not imply WinRM: marchhare may show bob ear online with workers=[] while TCP 5985 from flamingo fails --- start seats locally/tray/airc; do not assume UpdateFleet CredMan reaches every shop host (FR #8429).
 - Skills-sync on the shared install must hold run/skills-sync.lock. If checkout hits index.lock, drop a stale lock and retry. A killed seat must not leave index.lock for the next start.
 - airc.exe --connect-selftest must call probe_connection with a default socket connector. A required connector makes the install health step raise TypeError before any classification.
 - A BOM-less PowerShell file must stay ASCII. An em dash (e2 80 94) fails the WinPS 5.1 parse gate. After that gate is clear, fix the next ParseFile error the same test reports.
 - For SimonBarnett/bobiverse, infer_require_machine ignores a needs-ionos title prefix. Pin with a needs-ionos label or a body line require_machine: ionos.
 - A line-anchored MRB FAIL @ sha is a seat verdict even when the sha is wrapped in ticks or quotes. A mid-line mention and a FAIL without an @ sha still hold.
 - A same-process file lock that unlinks on holder==getpid busy-spins on Windows when the holder's handle blocks unlink; cross-process seats still need the dead-pid steal plus a sleep and a deadline.
+- Write gh --body-file with a UTF-8 no-BOM writer and reject C0 bytes other than tab, LF, and CR; double-quoted PowerShell turns backslash-b, backslash-t, and backslash-a into real controls.
+- While a seat is in out-of-fuel hold, digest worker_list must paint state=out_of_fuel and keep updated fresh; idle_quiet_offerable must skip that seat.
+- After pointer refresh, confirm skill-dag MCP drop with Toolhelp PID liveness twice; never treat a flaky empty PowerShell cmdline sample as a transport drop
+- An identity-only digest merge must not append model to cleared. Cursor CLI account reads only authInfo.email; a key override is a pid-bound marker with no key value.
+- opencode_turn_stop_reason returns finished when the outbox already has DONE or NACK. The wrapper must not GIVEUP that case, and must not write stop-closed into opencode-out-of-fuel.log.

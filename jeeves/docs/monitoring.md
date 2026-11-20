@@ -51,6 +51,16 @@ When seats hear `nothing queued` while `queue.json` still has unaccepted rows:
 - Gated-only queue + idle seats → EXIT 0
 - Idle seats + offerable row → EXIT 1
 - Pin-only empty offer sustained >10m → EXIT 1 (`queue_flow`, FR #2448 / #2446)
+
+## auto_feed (FR #8493)
+
+`tools/monitor/auto_feed.py` treats a missing `auto-feed.json` as configured=false. That stays EXIT 0 when no idle seat has an offerable row. When auto-feed is absent or disabled **and** `idle_seats` would EXIT 1, this check EXIT 1 with the idle and offerable counts and says seats must `!bored` or auto-feed must be enabled. The check does not turn auto-feed on.
+
+Open product PRs with no MRB or FIX row stay on `open_pr_mrb_missing` (FR #8377). This check does not enqueue them.
+
+## chair tree without git (FR #8493)
+
+`needs_human_false_positive` calls `gitclaim.heal_false_needs_human_for_infra_soft` every monitor cycle, so a false `needs_human` from `worktree-create-failed:disk`, `holder_bored`, or `busy` does not persist past the next cycle **when that function is in the live chair tree**. A flat `<ai root>\jeeves` with no `.git` does not fast-forward on `Restart-Service ircJeeves`. Install a sparse git worktree or Apply the latest release; a restart alone leaves the previous `gitclaim.py`. Do not hotpatch the live chair from a worker seat.
 ## Idle-seat eligibility recovery (FR #6256)
 
 See [idle-seat-recovery.md](idle-seat-recovery.md) for the decision table, evidence freshness, and shop-only `!recycleseat` handoff when author-only MRB deadlock is remediable by a fresh session.
