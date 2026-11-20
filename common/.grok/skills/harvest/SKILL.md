@@ -251,3 +251,4 @@ Do not land a second copy of a harvest-lesson MRB playbook in this book. Those p
 - A reset before airc.exe sends TLS bytes is a local block of that process. Classify it, print the allow rule, and do not disable Defender.
 - A per-agent-kind submit-verify change must keep the Cursor/Grok GIVEUP wire bare (VISION S3); annotate probe=/kind= only for the headless kind.
 - When an MRB worktree is linked to the install-root git or sits at the wrong SHA, recreate it from the clone store only if the seat pid is dead. A live seat keeps head-mismatch with want= and have=.
+- When a later FR marks a give-up reason infra-soft, update the older test that expected giveup_count to increment. Do not put the reason back on the job-burn path.
