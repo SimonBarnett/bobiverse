@@ -438,11 +438,12 @@ function Get-BobTrayWorkerCapRefusal {
 # FR #2556: when reclaiming over HARD_MAX_WORKERS, kill SEAT ROOT trees only.
 # Never: Get-CimInstance ... | Sort ProcessId | Select -Skip N | Stop-Process
 # (onefile = bootloader+child same name; Skip-N by flat PID kills whole seats).
+# FR #8597: taskkill /T so OpenCode grandchildren under the seat die with the root
+# (one-level ParentProcessId match left hung opencode PIDs alive after !recycle).
 function Stop-BobWorkerSeatTrees {
   param([int[]]$RootPids)
   foreach ($root in $RootPids) {
-    Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
-      Where-Object { $_.ProcessId -eq $root -or $_.ParentProcessId -eq $root } |
-      ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+    if ($null -eq $root -or [int]$root -le 0) { continue }
+    & taskkill.exe /F /T /PID ([int]$root) 2>$null | Out-Null
   }
 }

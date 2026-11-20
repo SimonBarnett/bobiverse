@@ -41,11 +41,13 @@ def test_mrb2557_tray_stop_seat_trees_forbids_flat_skip():
     assert "function Stop-BobWorkerSeatTrees" in text
     assert "FR #2556" in text
     assert "Select -Skip N | Stop-Process" in text
-    # Helper body must stop by root/parent link, not Sort ProcessId Skip
+    # Helper body must tree-kill each seat root (FR #8597 taskkill /T), never flat Skip-N.
     start = text.index("function Stop-BobWorkerSeatTrees")
     body = text[start : start + 450]
-    assert "ParentProcessId -eq $root" in body
+    assert "taskkill" in body.lower()
+    assert "/T" in body
     assert "Sort-Object ProcessId" not in body
+    assert "Select -Skip" not in body
 
 
 def test_mrb2557_skill_documents_seat_root_recycle_no_c0():
