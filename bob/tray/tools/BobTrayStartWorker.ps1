@@ -36,6 +36,73 @@ function Test-BobTraySeatsOff {
     return ($null -ne $t -and [int]$t -eq 0)
 }
 
+function Get-BobTrayEmptyOnlineFillCount {
+    <#
+    FR #8429: an online shop with zero agent seats should be filled to the hard cap.
+    FR #3180 still owns a partial heal (1 of 2). Seats-off, a pending req, or a
+    recent fill stamp means do not write another request.
+    #>
+    param(
+        [int]$LiveAgents = 0,
+        [int]$PendingReqs = 0,
+        [bool]$SeatsOff = $false,
+        [bool]$Cooldown = $false,
+        [int]$Cap = 2
+    )
+    if ($SeatsOff -or $Cooldown) { return 0 }
+    if ($LiveAgents -gt 0 -or $PendingReqs -gt 0) { return 0 }
+    if ($Cap -lt 1) { return 0 }
+    return [Math]::Min([int]$Cap, 2)
+}
+
+function Get-BobTrayAgentSeatUnionCount {
+    <#
+    MRB #8445 / FR #3181 / FR #4458: same agent-seat union CapRefusal uses
+    (process roots + uncovered IRC markers). Empty-online fill must not treat
+    a marker-only live seat as zero agents.
+    #>
+    param(
+        [object[]]$Procs = $null
+    )
+    if ($null -eq $Procs) {
+        $Procs = @(Get-CimInstance Win32_Process -Filter "Name like 'bob-worker%'" -ErrorAction SilentlyContinue |
+                Select-Object ProcessId, ParentProcessId, Name, CommandLine)
+    }
+    $markers = New-Object 'System.Collections.Generic.HashSet[int]'
+    foreach ($p in @(Get-BobTrayIrcAgentSeatPids)) {
+        if ($null -eq $p -or $p -eq '') { continue }
+        if ($p -is [System.Collections.Generic.HashSet[int]]) {
+            foreach ($x in $p) { [void]$markers.Add([int]$x) }
+        } else {
+            [void]$markers.Add([int]$p)
+        }
+    }
+    $w = @($Procs | Where-Object { $_.Name -match '^bob-worker(-[0-9a-f]+)?\.exe$' })
+    $parentOf = @{}
+    foreach ($proc in $w) { $parentOf[[int]$proc.ProcessId] = [int]$proc.ParentProcessId }
+    $ids = @($w | ForEach-Object { [int]$_.ProcessId })
+    $roots = @($w | Where-Object { $ids -notcontains [int]$_.ParentProcessId })
+    $pids = New-Object 'System.Collections.Generic.HashSet[int]'
+    foreach ($r in $roots) {
+        if ((Get-BobTrayWorkerSeatMode $r) -eq 'agent') {
+            [void]$pids.Add([int]$r.ProcessId)
+        }
+    }
+    foreach ($m in $markers) {
+        $cur = [int]$m
+        $seen = @{}
+        $covered = $false
+        while ($cur -gt 0 -and -not $seen.ContainsKey([string]$cur)) {
+            $seen[[string]$cur] = $true
+            if ($pids.Contains($cur)) { $covered = $true; break }
+            if (-not $parentOf.ContainsKey($cur)) { break }
+            $cur = [int]$parentOf[$cur]
+        }
+        if (-not $covered) { [void]$pids.Add([int]$m) }
+    }
+    return [int]$pids.Count
+}
+
 function Write-BobTrayAlive {
     <#
     .SYNOPSIS

@@ -289,6 +289,71 @@ def _accepted_busy_nicks(accepted: list | None) -> set[str]:
     return out
 
 
+def ungated_unaccepted_count(
+    rows: list | None,
+    *,
+    now: float | None = None,
+) -> int:
+    """Rows that are not held for a human, a machine pin, or an active cooldown.
+
+    MRB #8445: use ``gitclaim.row_needs_human`` / ``row_on_cooldown`` so an
+    expired ``cooldown_until`` string does not suppress empty-shop findings.
+    """
+    import gitclaim
+
+    now_f = float(time.time() if now is None else now)
+    n = 0
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+        if gitclaim.row_needs_human(row, ""):
+            continue
+        if str(row.get("require_machine") or "").strip():
+            continue
+        if gitclaim.row_on_cooldown(row, now_f, nick="", live=None):
+            continue
+        n += 1
+    return n
+
+
+def classify_empty_online_machines(
+    machines: dict | None,
+    ungated_count: int,
+) -> list[dict]:
+    """FR #8429: an online shop with no workers while ungated work is waiting.
+
+    ``workers`` may be a list or a nick map. Offline shops are not findings.
+    Findings carry ``machine`` plus the identity fields ``!stuck`` / digest /
+    announce fingerprint already consume (MRB #8445).
+    """
+    if int(ungated_count or 0) <= 0 or not isinstance(machines, dict):
+        return []
+    out: list[dict] = []
+    for mid, ent in sorted(machines.items(), key=lambda kv: str(kv[0])):
+        if not isinstance(ent, dict) or not ent.get("online"):
+            continue
+        workers = ent.get("worker_list")
+        if workers is None:
+            workers = ent.get("workers") or []
+        count = len(workers) if isinstance(workers, (list, dict)) else 0
+        if count > 0:
+            continue
+        mid_s = str(mid)
+        out.append({
+            "machine": mid_s,
+            "repo": mid_s,
+            "number": "",
+            "task": "MACHINE",
+            "state": "machine",
+            "holder": mid_s,
+            "stuck": True,
+            "stuck_reason": "online_zero_workers",
+            "ungated_unaccepted": int(ungated_count),
+            "rule": "online_zero_workers",
+        })
+    return out
+
+
 def classify_quiet_idle_offerable(
     home: Path,
     *,
@@ -1265,6 +1330,23 @@ def run_stuck_sweep(
     )
     classified.extend(quiet_findings)
 
+    # FR #8429: online shops with zero workers while ungated work is waiting.
+    machines: dict = {}
+    with contextlib_suppress():
+        import bobreport
+        digest = bobreport.load_digest(home)
+        if isinstance(digest, dict) and isinstance(digest.get("machines"), dict):
+            machines = digest["machines"]
+    ungated_rows = [
+        r for r in (doc.get("unaccepted") or []) if isinstance(r, dict)
+    ]
+    classified.extend(
+        classify_empty_online_machines(
+            machines,
+            ungated_unaccepted_count(ungated_rows, now=now_f),
+        )
+    )
+
     actions = {
         "released": 0,
         "enqueued": 0,
@@ -1329,14 +1411,20 @@ def run_stuck_sweep(
     held = [c for c in classified if c.get("state") == "held"]
     # FR #5510: idle work is not stuck while nothing can take it (no seats / no fuel).
     # Holder-gone release and FR #5581 verdicted-doing clear still run (bookkeeping).
-    # Do not alert or list stuck rows while paused.
+    # Do not alert or list ordinary stuck rows while paused.
+    # MRB #8445: keep online_zero_workers machine findings visible during the
+    # no-seats pause (that finding is the capacity fault the pause describes).
     paused = None
     if not live_set:
         paused = "no seats"
     elif fuel_ok is False:
         paused = "no fuel"
     if paused:
-        stuck = []
+        stuck = [
+            c
+            for c in stuck
+            if (c.get("stuck_reason") or c.get("rule")) == "online_zero_workers"
+        ]
     report = {
         "v": 1,
         "ts": _utc_now(),
@@ -1352,7 +1440,7 @@ def run_stuck_sweep(
     fp = "|".join(
         sorted(
             f"{s.get('repo')}{s.get('number')}:{s.get('stuck_reason') or s.get('rule')}"
-            f":{s.get('holder') or ''}:omi={1 if s.get('other_machine_idle') else 0}"
+            f":{s.get('holder') or s.get('machine') or ''}:omi={1 if s.get('other_machine_idle') else 0}"
             for s in stuck + held
         )
     )
@@ -1427,16 +1515,26 @@ def format_stuck_lines(home: Path, *, limit: int = 40) -> list[str]:
     """Lines for ``!stuck`` (PM)."""
     report = load_stuck_report(home)
     paused = str(report.get("paused") or "").strip()
-    if paused:
-        return [f"stuck: paused: {paused}"]
     stuck = list(report.get("stuck") or [])
     held = list(report.get("held") or [])
+    if paused and not stuck and not held:
+        return [f"stuck: paused: {paused}"]
     if not stuck and not held:
         return ["stuck: (none)"]
-    lines = [f"stuck: {len(stuck)} stuck, {len(held)} held (rule-listed)"]
+    head = f"stuck: {len(stuck)} stuck, {len(held)} held (rule-listed)"
+    if paused:
+        head = f"stuck: paused: {paused}; {len(stuck)} stuck, {len(held)} held (rule-listed)"
+    lines = [head]
     for row in (stuck + held)[:limit]:
-        state = row.get("state") or "?"
         rule = row.get("stuck_reason") or row.get("rule") or ""
+        if rule == "online_zero_workers" or row.get("state") == "machine":
+            mid = row.get("machine") or row.get("holder") or row.get("repo") or "?"
+            ungated = row.get("ungated_unaccepted")
+            lines.append(
+                f"  machine={mid} rule={rule} ungated_unaccepted={ungated}"
+            )
+            continue
+        state = row.get("state") or "?"
         holder = row.get("holder") or "-"
         age = row.get("age_s")
         omi = " other_machine_idle=1" if row.get("other_machine_idle") else ""
@@ -1453,22 +1551,28 @@ def digest_stuck_section(home: Path) -> list[dict]:
     """Public digest ``stuck`` list (repo, number, task, state, rule, age, holder)."""
     report = load_stuck_report(home)
     paused = str(report.get("paused") or "").strip()
-    if paused:
+    stuck_held = list(report.get("stuck") or []) + list(report.get("held") or [])
+    if paused and not stuck_held:
         return [{"paused": paused}]
     out: list[dict] = []
-    for row in list(report.get("stuck") or []) + list(report.get("held") or []):
+    if paused:
+        out.append({"paused": paused})
+    for row in stuck_held:
         if not isinstance(row, dict):
             continue
-        out.append(
-            {
-                "repo": row.get("repo"),
-                "number": row.get("number"),
-                "task": row.get("task"),
-                "state": row.get("state"),
-                "rule": row.get("stuck_reason") or row.get("rule") or "",
-                "age_s": row.get("age_s"),
-                "holder": row.get("holder") or "",
-                "other_machine_idle": bool(row.get("other_machine_idle")),
-            }
-        )
+        entry = {
+            "repo": row.get("repo"),
+            "number": row.get("number"),
+            "task": row.get("task"),
+            "state": row.get("state"),
+            "rule": row.get("stuck_reason") or row.get("rule") or "",
+            "age_s": row.get("age_s"),
+            "holder": row.get("holder") or "",
+            "other_machine_idle": bool(row.get("other_machine_idle")),
+        }
+        if row.get("machine"):
+            entry["machine"] = row.get("machine")
+        if row.get("ungated_unaccepted") is not None:
+            entry["ungated_unaccepted"] = row.get("ungated_unaccepted")
+        out.append(entry)
     return out
