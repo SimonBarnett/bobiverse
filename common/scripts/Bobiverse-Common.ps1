@@ -1618,6 +1618,7 @@ function Get-BobiverseJobWorktreeBase {
         [string]$BridgeHome = $null,
         [object[]]$Disks = $null,
         [string]$SystemDrive = '',
+        [double]$AssumeFreeGB = -1,
         [switch]$Create
     )
     $chosen = $null
@@ -1651,6 +1652,41 @@ function Get-BobiverseJobWorktreeBase {
     $full = [IO.Path]::GetFullPath($chosen)
     if (Test-BobiverseIsDriveRoot $full) {
         throw "FR #4988: job worktree base must not be a drive root ($full); use <drive>\\ai\\worktrees or set BOB_JOB_WORKTREE_BASE"
+    }
+    # FR #8493: a resolved base on a volume under MinFreeGB (default 2) moves to
+    # <data drive>\ai\worktrees when that drive is a different volume. A roomy
+    # explicit -Override stays. -AssumeFreeGB skips the live measurement (tests).
+    $minFree = 2.0
+    if ($env:BOB_JOB_WORKTREE_MIN_FREE_GB) {
+        $parsedMin = 0.0
+        if ([double]::TryParse([string]$env:BOB_JOB_WORKTREE_MIN_FREE_GB, [ref]$parsedMin) -and $parsedMin -ge 0) {
+            $minFree = $parsedMin
+        }
+    }
+    $freeGb = -1.0
+    if ($AssumeFreeGB -ge 0) {
+        $freeGb = $AssumeFreeGB
+    } else {
+        try {
+            $letter = [IO.Path]::GetPathRoot($full).Substring(0, 1)
+            $drive = Get-PSDrive -Name $letter -PSProvider FileSystem -ErrorAction Stop
+            $freeGb = [double]$drive.Free / 1GB
+        } catch {
+            $freeGb = -1.0
+        }
+    }
+    if ($freeGb -ge 0 -and $freeGb -lt $minFree) {
+        $dataRoot = Get-BobiverseDataDriveRoot -Disks $Disks -SystemDrive $SystemDrive
+        $root = [string]$dataRoot
+        if ($root -match '^[A-Za-z]:$') { $root = $root + '\' }
+        elseif ($root -match '^[A-Za-z]:\\+$') { $root = $root.Substring(0, 2) + '\' }
+        else { $root = $root.TrimEnd('\') }
+        $alt = [IO.Path]::GetFullPath([IO.Path]::Combine($root, 'ai', 'worktrees'))
+        $curLetter = [IO.Path]::GetPathRoot($full).TrimEnd('\').ToUpperInvariant()
+        $altLetter = [IO.Path]::GetPathRoot($alt).TrimEnd('\').ToUpperInvariant()
+        if ($altLetter -and $curLetter -and ($altLetter -ne $curLetter) -and -not (Test-BobiverseIsDriveRoot $alt)) {
+            $full = $alt
+        }
     }
     # FR #6257: default/override must never land under the live bob\worker seat CWD.
     if ($full -match '(?i)[\\/]bob[\\/]worker([\\/]|$)') {
