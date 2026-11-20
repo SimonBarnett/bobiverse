@@ -2046,7 +2046,8 @@ function Start-BobTrayWorkerExe {
         [string]$SeatId = '',
         [string]$Trigger = 'other',
         [string]$Model = '',
-        [switch]$Quiet
+        [switch]$Quiet,
+        [switch]$Restore
     )
     try {
         # FR #7669: seat target 0 refuses every start path. Running seats are not stopped here.
@@ -2057,11 +2058,15 @@ function Start-BobTrayWorkerExe {
             return 0
         }
         # t815u / FR #2667: hard cap of 2 AGENT seats only (plan is uncapped; same as startworker / bob_worker)
-        $capRefusal = Get-BobTrayWorkerCapRefusal -Mode $Mode
-        if ($capRefusal) {
-            Write-TrayLog ('{0}: refused: {1}' -f $Mode, $capRefusal)
-            if (-not $Quiet) { try { [void][System.Windows.Forms.MessageBox]::Show($capRefusal, 'Bobiverse', 'OK', 'Information') } catch { } }
-            return 0
+        # FR #8403: -Restore replaces a seat the recycle just stopped (net-zero), so it must not
+        # be refused by the cap; otherwise a batch recycle of >2 seats leaves the later seats stopped.
+        if (-not $Restore) {
+            $capRefusal = Get-BobTrayWorkerCapRefusal -Mode $Mode
+            if ($capRefusal) {
+                Write-TrayLog ('{0}: refused: {1}' -f $Mode, $capRefusal)
+                if (-not $Quiet) { try { [void][System.Windows.Forms.MessageBox]::Show($capRefusal, 'Bobiverse', 'OK', 'Information') } catch { } }
+                return 0
+            }
         }
         $exe = Join-Path $RepoRoot 'worker\bob-worker.exe'
         if (-not (Test-Path -LiteralPath $exe)) {
@@ -4243,7 +4248,7 @@ $startWorkerTimer.Add_Tick({
                     if (Get-Command Invoke-BobTrayRecycleSeatQueue -ErrorAction SilentlyContinue) {
                         $rsDir = Get-BobTrayRecycleSeatDir -Root $RepoRoot
                         [void](Invoke-BobTrayRecycleSeatQueue -Root $RepoRoot -Dir $rsDir `
-                                -Launch { param($seatNick, $kind, $model) Start-BobTrayWorkerExe -Mode 'agent' -Agent $kind -Model $model -Quiet -Trigger 'restore-after-recycle' -SeatId $seatNick } `
+                                -Launch { param($seatNick, $kind, $model) Start-BobTrayWorkerExe -Mode 'agent' -Agent $kind -Model $model -Quiet -Restore -Trigger 'restore-after-recycle' -SeatId $seatNick } `
                                 -Log { param($m) Write-TrayLog $m })
                     }
                     if (Test-BobTrayEngineMode) {

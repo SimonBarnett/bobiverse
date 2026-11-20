@@ -5,6 +5,9 @@
 #   <root>\run\recycleseat\req-<id>.json  {id, nick, by, kind, ts, expires}
 #   <root>\run\recycleseat\res-<id>.json  {id, ok, reason, old_pid, new_pid}
 # CAST IRON: if stop fails or target still alive, do NOT start a new seat.
+# FR #8403: when several reqs are pending, stop every seat first, then start the
+# replacements (serialize stop+start) so the 2-seat cap cannot leave stopped seats
+# with launch-failed; a restore launch is -Restore (net-zero) and bypasses the cap.
 
 function Get-BobTrayRecycleSeatDir {
     param([Parameter(Mandatory)][string]$Root)
@@ -85,11 +88,43 @@ function Invoke-BobTrayRecycleSeatReportFailure {
     } catch { }
 }
 
+function Get-BobTrayRecycleLaunchRefusal {
+    <#
+    .SYNOPSIS
+      FR #8403: why a restore Launch would return no pid (mirrors the Start-BobTrayWorkerExe
+      gates). '' when a launch may proceed. A -Restore launch skips the 2-seat cap, so the
+      refusal left is seats-off or a missing worker exe; the cap check remains as a guard for
+      callers that do not pass -Restore.
+    #>
+    param(
+        [Parameter(Mandatory)][string]$Root,
+        [string]$Mode = 'agent'
+    )
+    if ($Mode -eq 'agent' -and (Get-Command Test-BobTraySeatsOff -ErrorAction SilentlyContinue)) {
+        if (Test-BobTraySeatsOff) { return 'seats-off' }
+    }
+    if (Get-Command Get-BobTrayWorkerCapRefusal -ErrorAction SilentlyContinue) {
+        $capRefusal = Get-BobTrayWorkerCapRefusal -Mode $Mode
+        if ($capRefusal) { return 'cap' }
+    }
+    $exe = Join-Path $Root 'worker\bob-worker.exe'
+    if (-not (Test-Path -LiteralPath $exe)) { return 'worker-exe-missing' }
+    return ''
+}
+
 function Invoke-BobTrayRecycleSeatQueue {
     <#
     .SYNOPSIS
       FR #5059: consume recycleseat req-*.json. Stop named seat, verify gone, then Launch.
       -Launch is { param() ... return pid } (Start-BobTrayWorkerExe -Mode agent).
+    .NOTES
+      FR #8403: serialize stop+start. Every pending seat is stopped (and verified gone) in a
+      first pass; replacements are launched in a second pass. A restore launch that races
+      sibling recycles would hit the 2-seat cap and report launch-failed while the other seats
+      are still alive; stopping all first lets each replacement see the real post-stop count,
+      and -Restore skips the cap so a batch recycle recovers the seat count instead of leaving
+      later seats stopped for a later Ensure path to fill anonymously. A launch that still
+      returns no pid is named (seats-off / cap / worker-exe-missing), never a bare launch-failed.
     #>
     param(
         [Parameter(Mandatory)][string]$Root,
@@ -103,17 +138,25 @@ function Invoke-BobTrayRecycleSeatQueue {
         New-Item -ItemType Directory -Force -Path $Dir | Out-Null
     }
     $reqs = @(Get-ChildItem -LiteralPath $Dir -Filter 'req-*.json' -File -ErrorAction SilentlyContinue | Sort-Object Name)
+
+    $rows = New-Object System.Collections.Generic.List[object]
+    $toStart = New-Object System.Collections.Generic.List[object]
+
+    # Phase 1: validate and stop every seat; collect the ones cleared to start.
     foreach ($f in $reqs) {
         $req = $null
         try { $req = Get-Content -LiteralPath $f.FullName -Raw -ErrorAction Stop | ConvertFrom-Json } catch { }
         try { Remove-Item -LiteralPath $f.FullName -Force -ErrorAction Stop } catch { continue }
         $id = [string]$f.BaseName.Substring(4)
         $seatNick = if ($req) { [string]$req.nick } else { '' }
+        $by = if ($req) { [string]$req.by } else { '-' }
         $reason = ''
         $ok = $false
         $oldPid = 0
         $newPid = 0
         $mayStart = $false
+        $clickedKind = ''
+        $clickedModel = ''
         if (-not $req) { $reason = 'unreadable' }
         else {
             $expires = [DateTimeOffset]::FromUnixTimeSeconds([int64]$req.expires).UtcDateTime
@@ -128,97 +171,114 @@ function Invoke-BobTrayRecycleSeatQueue {
                     $reason = 'seats-off'
                 }
                 else {
-                # FR #7692: req.kind is who asked (chair/op), not the seat. Use the click record.
-                # FR #8321: restart with the clicked model too (paid stays paid, free stays free).
-                $clickedKind = ''
-                $clickedModel = ''
-                if (Get-Command Get-BobTrayClickedSeat -ErrorAction SilentlyContinue) {
-                    $clickRec = Get-BobTrayClickedSeat -Root $Root -Nick $seatNick
-                    if ($clickRec) {
-                        $clickedKind = [string]$clickRec.Kind
-                        $clickedModel = [string]$clickRec.Model
-                    }
-                }
-                elseif (Get-Command Get-BobTrayClickedSeatKind -ErrorAction SilentlyContinue) {
-                    $clickedKind = [string](Get-BobTrayClickedSeatKind -Root $Root -Nick $seatNick)
-                }
-                if (@('grok', 'cursor', 'opencode') -notcontains $clickedKind) {
-                    # FR #7835: kind-unknown is the planned refuse (no click record).
-                    # Do not file a tray RuntimeError. That opened a crash issue for a seat
-                    # the tray correctly will not restart as a different kind.
-                    $reason = 'kind-unknown'
-                }
-                else {
-                $oldPid = Resolve-BobTrayRecyclePid -MarkerPid ([int](Get-BobTraySeatMarkerPid -Nick $seatNick)) -Nick $seatNick
-                $found = $oldPid -gt 0
-                if (-not $found) {
-                    $reason = 'not-found'
-                } else {
-                    $stopOk = $true
-                    try {
-                        if (Get-Command Stop-BobWorkerSeatTrees -ErrorAction SilentlyContinue) {
-                            Stop-BobWorkerSeatTrees -RootPids @($oldPid)
-                        } else {
-                            Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
-                                Where-Object { $_.ProcessId -eq $oldPid -or $_.ParentProcessId -eq $oldPid } |
-                                ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+                    # FR #7692: req.kind is who asked (chair/op), not the seat. Use the click record.
+                    # FR #8321: restart with the clicked model too (paid stays paid, free stays free).
+                    if (Get-Command Get-BobTrayClickedSeat -ErrorAction SilentlyContinue) {
+                        $clickRec = Get-BobTrayClickedSeat -Root $Root -Nick $seatNick
+                        if ($clickRec) {
+                            $clickedKind = [string]$clickRec.Kind
+                            $clickedModel = [string]$clickRec.Model
                         }
-                    } catch {
-                        $stopOk = $false
-                        $reason = 'stop-failed'
-                        Invoke-BobTrayRecycleSeatReportFailure -Root $Root -Site ('recycleseat.stop:' + $seatNick) -Exception $_.Exception
                     }
-                    $deadline = [datetime]::UtcNow.AddMilliseconds([Math]::Max(500, $VerifyWaitMs))
-                    $still = $true
-                    while ([datetime]::UtcNow -lt $deadline) {
-                        $still = Test-BobTrayPidAlive -ProcessId $oldPid
-                        if (-not $still) { break }
-                        Start-Sleep -Milliseconds 200
+                    elseif (Get-Command Get-BobTrayClickedSeatKind -ErrorAction SilentlyContinue) {
+                        $clickedKind = [string](Get-BobTrayClickedSeatKind -Root $Root -Nick $seatNick)
                     }
-                    $still = Test-BobTrayPidAlive -ProcessId $oldPid
-                    # plan_recycle_action: may_start only when stop_ok and not still-alive and found
-                    if (-not $stopOk) {
-                        $mayStart = $false
-                        if (-not $reason) { $reason = 'stop-failed' }
-                    } elseif ($still) {
-                        # FR #7688: still-alive is the planned refuse (plan_recycle_action).
-                        # The seat did not die inside the verify window. Log reason=still-alive.
-                        # Do not file a tray RuntimeError; that opened a crash issue for a live worker.
-                        $mayStart = $false
-                        $reason = 'still-alive'
-                    } else {
-                        $mayStart = $true
+                    if (@('grok', 'cursor', 'opencode') -notcontains $clickedKind) {
+                        # FR #7835: kind-unknown is the planned refuse (no click record).
+                        # Do not file a tray RuntimeError. That opened a crash issue for a seat
+                        # the tray correctly will not restart as a different kind.
+                        $reason = 'kind-unknown'
                     }
-                    if ($mayStart) {
-                        # FR #7117: one retry if the first start returns no pid; never wait for a key.
-                        $tries = 0
-                        while ($tries -lt 2 -and -not $ok) {
-                            $tries++
+                    else {
+                        $oldPid = Resolve-BobTrayRecyclePid -MarkerPid ([int](Get-BobTraySeatMarkerPid -Nick $seatNick)) -Nick $seatNick
+                        $found = $oldPid -gt 0
+                        if (-not $found) {
+                            $reason = 'not-found'
+                        } else {
+                            $stopOk = $true
                             try {
-                                $newPid = [int](@(& $Launch $seatNick $clickedKind $clickedModel)[-1])
-                                if ($newPid -gt 0) { $ok = $true; $reason = 'ok' } else { $reason = 'launch-failed' }
+                                if (Get-Command Stop-BobWorkerSeatTrees -ErrorAction SilentlyContinue) {
+                                    Stop-BobWorkerSeatTrees -RootPids @($oldPid)
+                                } else {
+                                    Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
+                                        Where-Object { $_.ProcessId -eq $oldPid -or $_.ParentProcessId -eq $oldPid } |
+                                        ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+                                }
                             } catch {
-                                $reason = 'launch-error: ' + $_.Exception.Message
-                                Invoke-BobTrayRecycleSeatReportFailure -Root $Root -Site ('recycleseat.launch:' + $seatNick) -Exception $_.Exception
-                                break
+                                $stopOk = $false
+                                $reason = 'stop-failed'
+                                Invoke-BobTrayRecycleSeatReportFailure -Root $Root -Site ('recycleseat.stop:' + $seatNick) -Exception $_.Exception
+                            }
+                            $deadline = [datetime]::UtcNow.AddMilliseconds([Math]::Max(500, $VerifyWaitMs))
+                            $still = $true
+                            while ([datetime]::UtcNow -lt $deadline) {
+                                $still = Test-BobTrayPidAlive -ProcessId $oldPid
+                                if (-not $still) { break }
+                                Start-Sleep -Milliseconds 200
+                            }
+                            $still = Test-BobTrayPidAlive -ProcessId $oldPid
+                            # plan_recycle_action: may_start only when stop_ok and not still-alive and found
+                            if (-not $stopOk) {
+                                $mayStart = $false
+                                if (-not $reason) { $reason = 'stop-failed' }
+                            } elseif ($still) {
+                                # FR #7688: still-alive is the planned refuse (plan_recycle_action).
+                                # The seat did not die inside the verify window. Log reason=still-alive.
+                                # Do not file a tray RuntimeError; that opened a crash issue for a live worker.
+                                $mayStart = $false
+                                $reason = 'still-alive'
+                            } else {
+                                $mayStart = $true
                             }
                         }
                     }
                 }
-                }
-                }
             }
         }
-        try {
-            & $Log ('recycleseat {0}: ok={1} nick={2} old={3} new={4} reason={5} by={6} trigger=restore-after-recycle' -f $id, $ok, $seatNick, $oldPid, $newPid, $reason, $(if ($req) { [string]$req.by } else { '-' }))
-        } catch { }
-        try {
-            $res = [ordered]@{ id = $id; ok = $ok; reason = $reason; nick = $seatNick; old_pid = $oldPid; new_pid = $newPid }
-            Set-Content -LiteralPath (Join-Path $Dir ('res-{0}.json' -f $id)) -Value ($res | ConvertTo-Json -Compress) -Encoding ASCII
-            Get-ChildItem -LiteralPath $Dir -Filter 'res-*.json' -File -ErrorAction SilentlyContinue |
-                Sort-Object LastWriteTime -Descending | Select-Object -Skip 20 |
-                ForEach-Object { try { Remove-Item -LiteralPath $_.FullName -Force } catch { } }
-        } catch { }
-        [pscustomobject]@{ id = $id; ok = $ok; reason = $reason; nick = $seatNick; old_pid = $oldPid; new_pid = $newPid }
+        $row = [pscustomobject]@{ id = $id; ok = $ok; reason = $reason; nick = $seatNick; old_pid = $oldPid; new_pid = $newPid; by = $by; seatNick = $seatNick; clickedKind = $clickedKind; clickedModel = $clickedModel; mayStart = $mayStart }
+        $rows.Add($row)
+        if ($mayStart) { $toStart.Add($row) }
     }
+
+    # Phase 2: launch every replacement (all stops are already done).
+    foreach ($row in $toStart) {
+        $seatNick = [string]$row.seatNick
+        $clickedKind = [string]$row.clickedKind
+        $clickedModel = [string]$row.clickedModel
+        # FR #7117: one retry if the first start returns no pid; never wait for a key.
+        $tries = 0
+        while ($tries -lt 2 -and -not $row.ok) {
+            $tries++
+            try {
+                $newPid = [int](@(& $Launch $seatNick $clickedKind $clickedModel)[-1])
+                if ($newPid -gt 0) { $row.ok = $true; $row.reason = 'ok'; $row.new_pid = $newPid }
+                else {
+                    # FR #8403: name the refusal (seats-off / cap / worker-exe-missing), never a bare launch-failed.
+                    $refusal = Get-BobTrayRecycleLaunchRefusal -Root $Root
+                    $row.reason = if ($refusal) { $refusal } else { 'launch-failed' }
+                }
+            } catch {
+                $row.reason = 'launch-error: ' + $_.Exception.Message
+                Invoke-BobTrayRecycleSeatReportFailure -Root $Root -Site ('recycleseat.launch:' + $seatNick) -Exception $_.Exception
+                break
+            }
+        }
+    }
+
+    foreach ($row in $rows) {
+        try {
+            & $Log ('recycleseat {0}: ok={1} nick={2} old={3} new={4} reason={5} by={6} trigger=restore-after-recycle' -f $row.id, $row.ok, $row.nick, $row.old_pid, $row.new_pid, $row.reason, $row.by)
+        } catch { }
+        try {
+            $res = [ordered]@{ id = $row.id; ok = $row.ok; reason = $row.reason; nick = $row.nick; old_pid = $row.old_pid; new_pid = $row.new_pid }
+            Set-Content -LiteralPath (Join-Path $Dir ('res-{0}.json' -f $row.id)) -Value ($res | ConvertTo-Json -Compress) -Encoding ASCII
+        } catch { }
+    }
+    # keep the audit trail short
+    try {
+        Get-ChildItem -LiteralPath $Dir -Filter 'res-*.json' -File -ErrorAction SilentlyContinue |
+            Sort-Object LastWriteTime -Descending | Select-Object -Skip 20 |
+            ForEach-Object { try { Remove-Item -LiteralPath $_.FullName -Force } catch { } }
+    } catch { }
+    $rows.ToArray()
 }
