@@ -7,6 +7,7 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+import time
 from pathlib import Path
 from typing import Any
 
@@ -31,6 +32,7 @@ WORKER_BOOKS = (
 )
 PLAN_BOOKS = ("harvest", "harvest-agent-skills")
 STAMP_NAME = "skills-sha.txt"
+LOCK_NAME = "skills-sync.lock"
 
 
 def skills_sha_stamp_path(install_root: str | Path) -> Path:
@@ -95,12 +97,103 @@ def _mirror_agent_books(install: Path, dest_leaf: str, books: tuple[str, ...]) -
         shutil.copytree(src, target)
 
 
+def _pid_alive(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    if os.name == "nt":
+        import ctypes
+
+        handle = ctypes.windll.kernel32.OpenProcess(0x1000, False, int(pid))
+        if not handle:
+            return False
+        ctypes.windll.kernel32.CloseHandle(handle)
+        return True
+    try:
+        os.kill(pid, 0)
+    except OSError:
+        return False
+    return True
+
+
+def _git_dir(install: Path) -> Path:
+    git_path = install / ".git"
+    if git_path.is_file():
+        try:
+            text = git_path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return git_path
+        if text.lower().startswith("gitdir:"):
+            raw = text.split(":", 1)[1].strip()
+            found = Path(raw)
+            if not found.is_absolute():
+                found = (install / found).resolve()
+            return found
+    return git_path
+
+
+def _drop_index_lock(install: Path) -> None:
+    """Remove a git index.lock only after the sync that owned it is gone."""
+    lock = _git_dir(install) / "index.lock"
+    try:
+        lock.unlink()
+    except OSError:
+        return
+
+
+def _acquire_skills_sync_lock(install: Path, timeout_s: float):
+    path = install / "run" / LOCK_NAME
+    path.parent.mkdir(parents=True, exist_ok=True)
+    deadline = time.time() + timeout_s
+    while True:
+        try:
+            fd = os.open(str(path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        except FileExistsError:
+            holder = 0
+            try:
+                raw = path.read_text(encoding="utf-8", errors="replace").strip().split()
+                holder = int(raw[0]) if raw else 0
+            except (OSError, ValueError):
+                holder = 0
+            if holder == os.getpid() or not _pid_alive(holder):
+                _drop_index_lock(install)
+                try:
+                    path.unlink()
+                except OSError:
+                    pass
+                continue
+            if time.time() >= deadline:
+                return None
+            time.sleep(0.05)
+            continue
+        try:
+            os.write(fd, ("%s\n" % os.getpid()).encode("ascii"))
+        except OSError:
+            pass
+        return fd, path
+
+
+def _release_skills_sync_lock(held) -> None:
+    if not held:
+        return
+    fd, path = held
+    try:
+        os.close(fd)
+    except OSError:
+        pass
+    try:
+        path.unlink()
+    except OSError:
+        pass
+
+
 def sync_install_skills_from_origin(
     install_root: str | Path,
     *,
     branch: str = "main",
     job_busy: bool = False,
     fetch: bool = True,
+    retry_sleeps: tuple[float, ...] = (0.2, 0.5, 1.0),
+    lock_timeout_s: float = 30.0,
 ) -> dict[str, Any]:
     """Checkout origin/<branch> skill trees only. Safe on a dirty worktree.
 
@@ -111,31 +204,48 @@ def sync_install_skills_from_origin(
         return {"ok": False, "reason": "mid-job", "sha": read_skills_sha(install)}
     if not (install / ".git").exists() and not (install / ".git").is_file():
         return {"ok": False, "reason": "not-git", "sha": ""}
-    if fetch:
-        fr = _git(install, ["fetch", "origin", branch])
-        if fr.returncode != 0:
-            # Still try checkout of last-known origin/branch.
-            pass
-    spec = f"origin/{branch}"
-    sha_p = _git(install, ["rev-parse", spec])
-    sha = (sha_p.stdout or "").strip()
-    if sha_p.returncode != 0 or len(sha) < 7:
-        return {"ok": False, "reason": "no-origin-sha", "sha": ""}
-    existing: list[str] = []
-    for rel in SKILL_TREES:
-        probe = _git(install, ["cat-file", "-e", f"{spec}:{rel}"])
-        if probe.returncode == 0:
-            existing.append(rel.replace("\\", "/"))
-    if not existing:
-        return {"ok": False, "reason": "no-skill-trees", "sha": sha}
-    co = _git(install, ["checkout", spec, "--", *existing])
-    if co.returncode != 0:
-        err = ((co.stderr or "") + (co.stdout or "")).strip().replace("\n", " ")[:240]
-        return {"ok": False, "reason": f"checkout-failed {err}", "sha": sha}
-    _mirror_agent_books(install, "worker", WORKER_BOOKS)
-    _mirror_agent_books(install, "plan", PLAN_BOOKS)
-    _write_stamp(install, sha)
-    return {"ok": True, "reason": "synced", "sha": sha, "trees": existing}
+    # FR #8414: one skills-sync per machine. A killed holder leaves a dead pid
+    # in run/skills-sync.lock; the next seat drops that lock and index.lock.
+    held = _acquire_skills_sync_lock(install, lock_timeout_s)
+    if held is None:
+        return {"ok": False, "reason": "skills-sync-busy", "sha": read_skills_sha(install)}
+    try:
+        if fetch:
+            fr = _git(install, ["fetch", "origin", branch])
+            if fr.returncode != 0:
+                # Still try checkout of last-known origin/branch.
+                pass
+        spec = f"origin/{branch}"
+        sha_p = _git(install, ["rev-parse", spec])
+        sha = (sha_p.stdout or "").strip()
+        if sha_p.returncode != 0 or len(sha) < 7:
+            return {"ok": False, "reason": "no-origin-sha", "sha": ""}
+        existing: list[str] = []
+        for rel in SKILL_TREES:
+            probe = _git(install, ["cat-file", "-e", f"{spec}:{rel}"])
+            if probe.returncode == 0:
+                existing.append(rel.replace("\\", "/"))
+        if not existing:
+            return {"ok": False, "reason": "no-skill-trees", "sha": sha}
+        co = None
+        attempts = 1 + len(retry_sleeps)
+        for attempt in range(attempts):
+            co = _git(install, ["checkout", spec, "--", *existing])
+            if co.returncode == 0:
+                break
+            err = ((co.stderr or "") + (co.stdout or "")).strip().replace("\n", " ")
+            if "index.lock" in err.lower():
+                _drop_index_lock(install)
+            if attempt + 1 >= attempts:
+                err = err[:240]
+                return {"ok": False, "reason": f"checkout-failed {err}", "sha": sha}
+            time.sleep(retry_sleeps[attempt])
+        _mirror_agent_books(install, "worker", WORKER_BOOKS)
+        _mirror_agent_books(install, "plan", PLAN_BOOKS)
+        _write_stamp(install, sha)
+        return {"ok": True, "reason": "synced", "sha": sha, "trees": existing}
+    finally:
+        _release_skills_sync_lock(held)
 
 
 def maybe_sync_install_skills(*, install_root: str | Path | None = None, job_busy: bool = False) -> dict[str, Any]:

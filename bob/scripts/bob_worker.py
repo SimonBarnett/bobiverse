@@ -3987,6 +3987,61 @@ def skill_dag_mcp_descendant_pids(
     return found
 
 
+def skill_dag_mcp_pids_still_live(
+    pids: list[int] | None,
+    *,
+    snapshot: Optional[Callable[[], list]] = None,
+) -> list[int]:
+    """Subset of ``pids`` still present in the process table (FR #8501).
+
+    Uses Toolhelp (or the injected snapshot) only. Never shells out for cmdline:
+    a flaky ``describe_process`` must not look like a transport drop.
+    """
+    want: set[int] = set()
+    for raw in pids or []:
+        try:
+            pid = int(raw)
+        except (TypeError, ValueError):
+            continue
+        if pid > 0:
+            want.add(pid)
+    if not want:
+        return []
+    rows = snapshot() if snapshot is not None else snapshot_procs()
+    live: set[int] = set()
+    for row in rows or []:
+        try:
+            live.add(int(row[0]))
+        except (TypeError, ValueError, IndexError):
+            continue
+    return sorted(want & live)
+
+
+def skill_dag_mcp_transport_drop_confirmed(
+    before_pids: list[int] | None,
+    *,
+    snapshot: Optional[Callable[[], list]] = None,
+) -> bool:
+    """True when every pre-refresh skill-dag PID is gone on two samples (FR #8501).
+
+    One empty sample is not enough: Toolhelp can race, and a cmdline-based
+    after-check can flake when PowerShell ``Get-CimInstance`` returns blank.
+    """
+    before: list[int] = []
+    for raw in before_pids or []:
+        try:
+            pid = int(raw)
+        except (TypeError, ValueError):
+            continue
+        if pid > 0:
+            before.append(pid)
+    if not before:
+        return False
+    if skill_dag_mcp_pids_still_live(before, snapshot=snapshot):
+        return False
+    # Confirm once more before filing intake.
+    return not skill_dag_mcp_pids_still_live(before, snapshot=snapshot)
+
 
 def report_configured_start_model_unavailable(
     *,
@@ -5494,6 +5549,7 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             r"    $turnN = $script:ocTurnN",
             # FR #8133: turn markers and watchdogs only for a real job inject. Standing /
             # idle runs must not arm turn_started or the hard ceiling.
+            r"    $script:ocSkipFuelLog = $false",
             r"    $script:ocHasJob = -not [string]::IsNullOrWhiteSpace([string]$jobKey)",
             r"    if ($script:ocHasJob) { Write-OpencodeTurnMarker 'turn_started' $turnN }",
             r"    try {",
@@ -5676,8 +5732,27 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             r"                try { $stopLine = (& $pyStop $guardPy stop --job $jobKey --outbox $env:BOB_OUTBOX 2>$null | Out-String).Trim() } catch { $stopLine = '' }",
             r"                if ($stopLine -like 'stop*') {",
             r"                    $timedOut = $true",
-            r"                    $killReason = ('job-ended ' + $stopLine)",
             r"                    try { & taskkill /T /F /PID $proc.Id 2>$null | Out-Null } catch { }",
+            # FR #8413: DONE/NACK already in the outbox is not a new hand-back.
+            # FR #8509: already-finished is not fuel — skip opencode-out-of-fuel.log
+            # the same way stop-closed does (ocSkipFuelLog gates the timedOut append).
+            r"                    if ($stopLine -eq 'stop finished') {",
+            r"                        $killReason = 'already-finished'",
+            r"                        $script:ocSkipFuelLog = $true",
+            r"                        Write-Output ('opencode-watchdog: already-finished ' + $jobKey)",
+            r"                        break",
+            r"                    }",
+            # FR #8413: issue closed with no DONE/NACK. Not fuel, not a hard ceiling.
+            r"                    if ($stopLine -eq 'stop closed') {",
+            r"                        $killReason = 'process-exit:stop-closed'",
+            r"                        $script:ocSkipFuelLog = $true",
+            r"                        $teStatus = 'error'",
+            r"                        $teClass = 'process-exit'",
+            r"                        $teErr = 'process-exit:stop-closed'",
+            r"                        Write-OpencodeJobGiveup $jobKey 'process-exit:stop-closed'",
+            r"                        break",
+            r"                    }",
+            r"                    $killReason = ('job-ended ' + $stopLine)",
             # FR #7739: killing the child is not enough. The chair still holds the
             # accepted row, so !bored is nak busy until this GIVEUP is drained.
             r"                    Write-OpencodeJobGiveup $jobKey $killReason",
@@ -5772,8 +5847,10 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             r"        if (-not $killReason) { $killReason = 'watchdog timeout (no output)' }",
             r"        $msg = $killReason",
             r"        Write-Output ('opencode-watchdog: kill reason=' + $msg)",
-            r"        $entry = @{ pid = $PID; ts = (Get-Date -Format o); model = $model; text = $msg; pause = $false } | ConvertTo-Json -Compress",
-            r"        Add-Content -Path $fuelLog -Value $entry -ErrorAction SilentlyContinue",
+            r"        if (-not $script:ocSkipFuelLog) {",
+            r"            $entry = @{ pid = $PID; ts = (Get-Date -Format o); model = $model; text = $msg; pause = $false } | ConvertTo-Json -Compress",
+            r"            Add-Content -Path $fuelLog -Value $entry -ErrorAction SilentlyContinue",
+            r"        }",
             r"    }",
             r"    if ($hitLimit) {",
             r"        if ($proc -and -not $proc.HasExited) { try { & taskkill /T /F /PID $proc.Id 2>$null | Out-Null } catch { } }",
@@ -13106,15 +13183,18 @@ class BoredEmitter:
             self._done_job_keys.discard(key)
 
     def live_turn_blocks_assign(self, line: str) -> bool:
-        """FR #8246: a live agent turn blocks a different job (or any job once ACK is closed).
+        """FR #8246 / #8464: NACK busy only while a different job's ACK is still open.
 
+        After DONE/NACK/GIVEUP the ACK is closed but the turn stays open until
+        turn_ended. That path must not NACK busy. Relay then parks the next
+        assign with hold_assigns_while and flushes it on turn_ended.
         The same still-open job is not blocked here. ACK de-dupe handles that replay.
         """
         incoming = assign_job_key(line)
         with self._cv:
-            if not self._turn_open:
+            if not self._turn_open or not self._ack_open:
                 return False
-            current = self._ack_job_key if self._ack_open else None
+            current = self._ack_job_key
         if current and incoming and current == incoming:
             return False
         return True
@@ -16450,6 +16530,8 @@ class Supervisor:
             return
         # FR #7120 / #7308 / #7446: keep the live stdio MCP; pointer file is enough.
         # Snapshot before refresh so a drop caused by the write is visible.
+        # FR #8501: confirm the before PIDs are gone via Toolhelp (twice). Do not
+        # treat a flaky empty cmdline after-sample as a drop.
         # Do not use job_worktree as a cmdline marker (--job-worktree-file argv).
         agent_pid = None
         try:
@@ -16470,8 +16552,7 @@ class Supervisor:
         except Exception as e:  # noqa: BLE001
             self.log(f"skill-dag mcp job-worktree rewrite skipped {type(e).__name__}")
             return
-        after = skill_dag_mcp_descendant_pids(agent_pid, markers)
-        if before and not after:
+        if skill_dag_mcp_transport_drop_confirmed(before):
             self.log("skill-dag mcp transport dropped")
             try:
                 mid = str(getattr(self, "machine", "") or "")
