@@ -6253,7 +6253,14 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             r"            } else {",
             r"                $script:ocEpipeTries = 0",
             r"            }",
-            r"            if ($script:ocHasJob) { Write-OpencodeTurnMarker 'turn_ended' $turnN $teStatus $teErr $teClass }",
+            # FR #8578: a successful free->paid switch is not a terminal fuel failure.
+            # The job continues on the paid slot, so stamp a non-terminal turn_ended
+            # (no status/error) instead of out-of-fuel, which BoredEmitter would treat
+            # as a terminal GIVEUP and clear the ACK. Normal out-of-fuel turn_ended is
+            # retained when the paid switch fails (ocSwitchPaid stays false).
+            r"            if ($script:ocSwitchPaid) {",
+            r"                Write-OpencodeTurnMarker 'turn_ended' $turnN '' '' 'fuel-switch-paid'",
+            r"            } elseif ($script:ocHasJob) { Write-OpencodeTurnMarker 'turn_ended' $turnN $teStatus $teErr $teClass }",
             r"        }",
             r"    }",
             # FR #8454: turn_ended already written; continue the same job on the paid slot.
