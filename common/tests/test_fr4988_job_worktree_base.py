@@ -66,7 +66,7 @@ def test_fr4988_override_base_and_never_drive_root(tmp_path: Path):
     script = textwrap.dedent(
         f"""
         . '{COMMON.as_posix()}'
-        $b = Get-BobiverseJobWorktreeBase -Override '{base.as_posix()}'
+        $b = Get-BobiverseJobWorktreeBase -Override '{base.as_posix()}' -AssumeFreeGB 40
         Write-Output ("BASE=" + $b)
         $p = Get-BobiverseJobWorktreePath -Repo 'SimonBarnett/bobiverse' -Job 'fr-4988' -Base $b
         Write-Output ("PATH=" + $p)
@@ -131,7 +131,7 @@ def test_fr4988_bridge_home_override_when_job_base_unset(tmp_path: Path):
     script = textwrap.dedent(
         f"""
         . '{COMMON.as_posix()}'
-        $b = Get-BobiverseJobWorktreeBase -BridgeHome '{bridge.as_posix()}'
+        $b = Get-BobiverseJobWorktreeBase -BridgeHome '{bridge.as_posix()}' -AssumeFreeGB 40
         Write-Output ("BASE=" + $b)
         """
     )

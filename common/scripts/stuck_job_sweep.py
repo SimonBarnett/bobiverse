@@ -321,6 +321,14 @@ def classify_quiet_idle_offerable(
     for nick in sorted(seats):
         if nick in busy or nick.lower() in busy:
             continue
+        # FR #8494: out-of-fuel hold is a fuel pause, not hung idle.
+        try:
+            if gitclaim.seat_is_out_of_fuel(home, nick):
+                continue
+            if gitclaim.worker_list_state(home, nick) == "out_of_fuel":
+                continue
+        except Exception:
+            pass
         # PR claim / FR #5920: skip until first !bored stamp exists.
         bored_ts = bored.get(nick)
         if bored_ts is None:

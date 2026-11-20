@@ -3987,6 +3987,61 @@ def skill_dag_mcp_descendant_pids(
     return found
 
 
+def skill_dag_mcp_pids_still_live(
+    pids: list[int] | None,
+    *,
+    snapshot: Optional[Callable[[], list]] = None,
+) -> list[int]:
+    """Subset of ``pids`` still present in the process table (FR #8501).
+
+    Uses Toolhelp (or the injected snapshot) only. Never shells out for cmdline:
+    a flaky ``describe_process`` must not look like a transport drop.
+    """
+    want: set[int] = set()
+    for raw in pids or []:
+        try:
+            pid = int(raw)
+        except (TypeError, ValueError):
+            continue
+        if pid > 0:
+            want.add(pid)
+    if not want:
+        return []
+    rows = snapshot() if snapshot is not None else snapshot_procs()
+    live: set[int] = set()
+    for row in rows or []:
+        try:
+            live.add(int(row[0]))
+        except (TypeError, ValueError, IndexError):
+            continue
+    return sorted(want & live)
+
+
+def skill_dag_mcp_transport_drop_confirmed(
+    before_pids: list[int] | None,
+    *,
+    snapshot: Optional[Callable[[], list]] = None,
+) -> bool:
+    """True when every pre-refresh skill-dag PID is gone on two samples (FR #8501).
+
+    One empty sample is not enough: Toolhelp can race, and a cmdline-based
+    after-check can flake when PowerShell ``Get-CimInstance`` returns blank.
+    """
+    before: list[int] = []
+    for raw in before_pids or []:
+        try:
+            pid = int(raw)
+        except (TypeError, ValueError):
+            continue
+        if pid > 0:
+            before.append(pid)
+    if not before:
+        return False
+    if skill_dag_mcp_pids_still_live(before, snapshot=snapshot):
+        return False
+    # Confirm once more before filing intake.
+    return not skill_dag_mcp_pids_still_live(before, snapshot=snapshot)
+
 
 def report_configured_start_model_unavailable(
     *,
@@ -5494,6 +5549,7 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             r"    $turnN = $script:ocTurnN",
             # FR #8133: turn markers and watchdogs only for a real job inject. Standing /
             # idle runs must not arm turn_started or the hard ceiling.
+            r"    $script:ocSkipFuelLog = $false",
             r"    $script:ocHasJob = -not [string]::IsNullOrWhiteSpace([string]$jobKey)",
             r"    if ($script:ocHasJob) { Write-OpencodeTurnMarker 'turn_started' $turnN }",
             r"    try {",
@@ -5676,8 +5732,27 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             r"                try { $stopLine = (& $pyStop $guardPy stop --job $jobKey --outbox $env:BOB_OUTBOX 2>$null | Out-String).Trim() } catch { $stopLine = '' }",
             r"                if ($stopLine -like 'stop*') {",
             r"                    $timedOut = $true",
-            r"                    $killReason = ('job-ended ' + $stopLine)",
             r"                    try { & taskkill /T /F /PID $proc.Id 2>$null | Out-Null } catch { }",
+            # FR #8413: DONE/NACK already in the outbox is not a new hand-back.
+            # FR #8509: already-finished is not fuel — skip opencode-out-of-fuel.log
+            # the same way stop-closed does (ocSkipFuelLog gates the timedOut append).
+            r"                    if ($stopLine -eq 'stop finished') {",
+            r"                        $killReason = 'already-finished'",
+            r"                        $script:ocSkipFuelLog = $true",
+            r"                        Write-Output ('opencode-watchdog: already-finished ' + $jobKey)",
+            r"                        break",
+            r"                    }",
+            # FR #8413: issue closed with no DONE/NACK. Not fuel, not a hard ceiling.
+            r"                    if ($stopLine -eq 'stop closed') {",
+            r"                        $killReason = 'process-exit:stop-closed'",
+            r"                        $script:ocSkipFuelLog = $true",
+            r"                        $teStatus = 'error'",
+            r"                        $teClass = 'process-exit'",
+            r"                        $teErr = 'process-exit:stop-closed'",
+            r"                        Write-OpencodeJobGiveup $jobKey 'process-exit:stop-closed'",
+            r"                        break",
+            r"                    }",
+            r"                    $killReason = ('job-ended ' + $stopLine)",
             # FR #7739: killing the child is not enough. The chair still holds the
             # accepted row, so !bored is nak busy until this GIVEUP is drained.
             r"                    Write-OpencodeJobGiveup $jobKey $killReason",
@@ -5772,8 +5847,10 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             r"        if (-not $killReason) { $killReason = 'watchdog timeout (no output)' }",
             r"        $msg = $killReason",
             r"        Write-Output ('opencode-watchdog: kill reason=' + $msg)",
-            r"        $entry = @{ pid = $PID; ts = (Get-Date -Format o); model = $model; text = $msg; pause = $false } | ConvertTo-Json -Compress",
-            r"        Add-Content -Path $fuelLog -Value $entry -ErrorAction SilentlyContinue",
+            r"        if (-not $script:ocSkipFuelLog) {",
+            r"            $entry = @{ pid = $PID; ts = (Get-Date -Format o); model = $model; text = $msg; pause = $false } | ConvertTo-Json -Compress",
+            r"            Add-Content -Path $fuelLog -Value $entry -ErrorAction SilentlyContinue",
+            r"        }",
             r"    }",
             r"    if ($hitLimit) {",
             r"        if ($proc -and -not $proc.HasExited) { try { & taskkill /T /F /PID $proc.Id 2>$null | Out-Null } catch { } }",
@@ -9071,6 +9148,7 @@ def post_digest_out_of_fuel(
     machine: str,
     nick: str = "",
     evidence: str = "",
+    pid: int | str | None = None,
     url: str | None = None,
     env: Optional[dict] = None,
     log: Optional[Callable[[str], None]] = None,
@@ -9078,6 +9156,7 @@ def post_digest_out_of_fuel(
     """POST digest so tray/TipForm can show the seat out of fuel (FR #3012 / #5032).
 
     FR #5032: include weekly=0 so peers paint exhausted (0%% red) instead of a stale %.
+    FR #8494: also POST worker-work ``state=out_of_fuel`` so the seat row is not idle.
     """
     env = os.environ if env is None else env
     report = (url or env.get("BOB_REPORT_URL") or env.get("BOB_DIGEST_URL") or DEFAULT_DIGEST_REPORT_URL).strip()
@@ -9097,6 +9176,31 @@ def post_digest_out_of_fuel(
         "weekly": 0,
     }
     ok = bool(_http_post_json(report, payload, log=log))
+    if nick_s:
+        try:
+            from bobreport import _utc_now_iso
+
+            iso = _utc_now_iso()
+        except Exception:
+            iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        row = {
+            "op": "worker-work",
+            "machine": mid,
+            "id": mid,
+            "nick": nick_s,
+            "state": "out_of_fuel",
+            "work": working,
+            "online": True,
+            "last_progress": iso,
+            "progress_phase": "out-of-fuel",
+        }
+        if pid is not None and str(pid).strip() != "":
+            try:
+                row["pid"] = int(str(pid))
+            except (TypeError, ValueError):
+                pass
+        ok_row = bool(_http_post_json(report, row, log=log))
+        ok = bool(ok and ok_row)
     if not ok and log:
         try:
             log(f"post_digest_out_of_fuel failed mid={mid}")
@@ -11113,12 +11217,14 @@ def opencode_hostile_nack_line(line: str) -> Optional[str]:
 
 
 def _normalize_digest_worker_state(raw: object) -> str:
-    """Canonical digest worker state for hub schema. FR #7347."""
+    """Canonical digest worker state for hub schema. FR #7347 / #8494."""
     s = str(raw or "").strip().lower()
     if not s:
         return ""
     if s in ("needs-sign-in", "needssignin", "needs_sign_in"):
         return "needs_sign_in"
+    if s in ("out-of-fuel", "outoffuel", "out_of_fuel"):
+        return "out_of_fuel"
     return s
 
 
@@ -11447,14 +11553,15 @@ def post_digest_progress_heartbeat(
     work: str = "",
     last_progress: str = "",
     progress_phase: str = "",
+    state: str = "doing",
     url: str | None = None,
     env: Optional[dict] = None,
     log: Optional[Callable[[str], None]] = None,
 ) -> bool:
     """POST worker-work activity heartbeat with ``last_progress`` (FR #8155).
 
-    Does not change seat state semantics: chair keeps ``updated`` on state/work
-    changes only; ``last_progress`` is the activity clock.
+    Chair keeps ``updated`` on state/work changes; ``last_progress`` is the activity
+    clock. FR #8494: ``state=out_of_fuel`` also advances ``updated`` each tick.
     """
     env = os.environ if env is None else env
     report = (url or env.get("BOB_REPORT_URL") or env.get("BOB_DIGEST_URL") or DEFAULT_DIGEST_REPORT_URL).strip()
@@ -11471,12 +11578,13 @@ def post_digest_progress_heartbeat(
         _utc_now_iso = lambda: time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())  # type: ignore
     iso = (last_progress or "").strip() or _utc_now_iso()
     phase = sanitize_progress_phase(progress_phase)
+    state_s = _normalize_digest_worker_state(state) or "doing"
     payload: dict = {
         "op": "worker-work",
         "machine": mid,
         "id": mid,
         "nick": nick_s,
-        "state": "doing",
+        "state": state_s,
         "online": True,
         "last_progress": iso,
     }
@@ -15153,10 +15261,17 @@ class Supervisor:
         # FR #4180: disarm hang/ack-miss so a post-GIVEUP offer cannot recycle the seat.
         self._clear_watchdogs_for_out_of_fuel()
         try:
+            pid = None
+            try:
+                if self.proc is not None:
+                    pid = getattr(self.proc, "pid", None)
+            except Exception:
+                pid = None
             ok = post_digest_out_of_fuel(
                 machine=self.machine,
                 nick=self.nick,
                 evidence=line,
+                pid=pid,
                 log=self.log,
             )
             if not ok:
@@ -16505,6 +16620,8 @@ class Supervisor:
             return
         # FR #7120 / #7308 / #7446: keep the live stdio MCP; pointer file is enough.
         # Snapshot before refresh so a drop caused by the write is visible.
+        # FR #8501: confirm the before PIDs are gone via Toolhelp (twice). Do not
+        # treat a flaky empty cmdline after-sample as a drop.
         # Do not use job_worktree as a cmdline marker (--job-worktree-file argv).
         agent_pid = None
         try:
@@ -16525,8 +16642,7 @@ class Supervisor:
         except Exception as e:  # noqa: BLE001
             self.log(f"skill-dag mcp job-worktree rewrite skipped {type(e).__name__}")
             return
-        after = skill_dag_mcp_descendant_pids(agent_pid, markers)
-        if before and not after:
+        if skill_dag_mcp_transport_drop_confirmed(before):
             self.log("skill-dag mcp transport dropped")
             try:
                 mid = str(getattr(self, "machine", "") or "")
@@ -17131,6 +17247,11 @@ class Supervisor:
             return
         snap = bored.heartbeat_snapshot()
         now_mono = float(self.clock())
+        # FR #8494: out-of-fuel hold still heartbeats so digest ``updated`` stays fresh
+        # and state paints ``out_of_fuel`` (not quiet idle). ACK may already be clear.
+        if snap.out_of_fuel:
+            self._post_fuel_hold_heartbeat(now_mono=now_mono)
+            return
         if not snap.ack_open:
             self._progress_prev = {}
             self._progress_phase = ""
@@ -17138,9 +17259,6 @@ class Supervisor:
             if int(getattr(self, "_progress_hb_epoch", 0) or 0):
                 self._progress_hb_skip("no-ack", now_mono=now_mono)
             self._progress_hb_epoch = 0
-            return
-        if snap.out_of_fuel:
-            self._progress_hb_skip("fuel-hold", now_mono=now_mono)
             return
         # Plain reference read — do not take self._lock (FINISH / start_agent hold it).
         proc = self.proc
@@ -17203,18 +17321,15 @@ class Supervisor:
             self._progress_hb_skip("stopping", now_mono=now_mono)
             return
         snap2 = bored.heartbeat_snapshot()
+        if snap2.out_of_fuel:
+            self._post_fuel_hold_heartbeat(now_mono=now_mono)
+            return
         if (
             not snap2.ack_open
-            or snap2.out_of_fuel
             or int(snap2.ack_epoch) != epoch
             or str(snap2.ack_job_key or "").strip() != work
         ):
-            if snap2.out_of_fuel:
-                skip_why = "fuel-hold"
-            elif not snap2.ack_open:
-                skip_why = "no-ack"
-            else:
-                skip_why = "job-changed"
+            skip_why = "no-ack" if not snap2.ack_open else "job-changed"
             self._progress_hb_skip(skip_why, now_mono=now_mono)
             return
         proc2 = self.proc
@@ -17244,6 +17359,42 @@ class Supervisor:
             self.log(
                 f"progress-heartbeat: last_progress={iso} phase={use_phase or '-'}"
             )
+
+    def _post_fuel_hold_heartbeat(self, *, now_mono: float) -> None:
+        """FR #8494: presence tick while out-of-fuel so digest ``updated`` advances."""
+        interval = max(float(getattr(self, "_progress_heartbeat_s", 30.0) or 30.0), 5.0)
+        last = float(getattr(self, "_fuel_hb_mono", 0.0) or 0.0)
+        if last and (now_mono - last) < interval:
+            return
+        try:
+            from bobreport import _utc_now_iso
+
+            iso = _utc_now_iso()
+        except Exception:
+            iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        proc = self.proc
+        pid = None
+        try:
+            if proc is not None and proc.poll() is None:
+                pid = getattr(proc, "pid", None)
+        except Exception:
+            pid = None
+        ok = post_digest_progress_heartbeat(
+            machine=self.machine,
+            nick=self.nick,
+            pid=pid,
+            kind=self.kind,
+            work="out-of-fuel",
+            last_progress=iso,
+            progress_phase="out-of-fuel",
+            state="out_of_fuel",
+            log=self.log,
+        )
+        if ok:
+            self._fuel_hb_mono = now_mono
+            self._progress_last_post_mono = now_mono
+            self._progress_last_post_wall = time.time()
+            self.log(f"progress-heartbeat: fuel-hold last_progress={iso}")
 
     def _inject_failed_turn_retry(self, job_key: str) -> None:
         """FR #7201: re-inject the last assign once after an error turn (bounded).
