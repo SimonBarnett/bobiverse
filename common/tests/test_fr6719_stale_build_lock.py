@@ -6,8 +6,20 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import bobiverse_build as bb
+import builds_catalog as bc
 import chair_commands as cc
 from repo_layout import ROOT
+
+
+def _cat():
+    return [
+        bc.BuildCatalogEntry(
+            name="Bobiverse",
+            yml="SimonBarnett/bobiverse:.bobiverse/build.yml",
+            output=r"D:\Temp\bobiverse-build",
+            install="fleet",
+        )
+    ]
 
 
 def test_fr6719_failed_build_clears_lock_then_rebuild(tmp_path: Path):
@@ -26,12 +38,13 @@ def test_fr6719_failed_build_clears_lock_then_rebuild(tmp_path: Path):
 
     dec = bb.decide_build(
         who=who,
-        body="!build SimonBarnett/bobiverse 2.0.0 main",
+        body="!build 1 2.0.0 main",
         may=cc.may,
         denied_line=cc.denied_line,
         recipe_loader=lambda r: bb.load_recipe(ROOT),
         lock=lock,
         new_build_id=lambda: "b-next",
+        catalog_entries=_cat(),
     )
     assert dec and dec.ok
     assert lock.running_id("SimonBarnett/bobiverse") == "b-next"
@@ -52,7 +65,7 @@ def test_fr6719_dead_runner_no_heartbeat_releases_on_next_build(tmp_path: Path):
 
     dec = bb.decide_build(
         who=who,
-        body="!build SimonBarnett/bobiverse 2.0.0 main",
+        body="!build 1 2.0.0 main",
         may=cc.may,
         denied_line=cc.denied_line,
         recipe_loader=lambda r: bb.load_recipe(ROOT),
@@ -60,6 +73,7 @@ def test_fr6719_dead_runner_no_heartbeat_releases_on_next_build(tmp_path: Path):
         new_build_id=lambda: "b-retry",
         dead_max_age_s=1800.0,  # 30 min bound
         stale_max_age_s=99_000.0,  # recipe TTL would NOT have fired yet
+        catalog_entries=_cat(),
     )
     assert dec and dec.ok
     assert lock.running_id("SimonBarnett/bobiverse") == "b-retry"
@@ -78,7 +92,7 @@ def test_fr6719_live_build_still_refuses(tmp_path: Path):
 
     dec = bb.decide_build(
         who=who,
-        body="!build SimonBarnett/bobiverse 2.0.1 main",
+        body="!build 1 2.0.1 main",
         may=cc.may,
         denied_line=cc.denied_line,
         recipe_loader=lambda r: bb.load_recipe(ROOT),
@@ -86,6 +100,7 @@ def test_fr6719_live_build_still_refuses(tmp_path: Path):
         new_build_id=lambda: "b-2",
         dead_max_age_s=1800.0,
         stale_max_age_s=99_000.0,
+        catalog_entries=_cat(),
     )
     assert dec is not None
     assert any(

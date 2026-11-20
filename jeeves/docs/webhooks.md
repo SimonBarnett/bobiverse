@@ -20,6 +20,7 @@ Auth: **report / intake / jira / hours need no password** (v0.1.16). Nothing to 
 | GET | `/bob/v1/hours?user=…&from=…&to=…` | List entries (Europe/London days); optional `agent`/`customer`/`project`/`ticket`/`status` |
 | GET | `/bob/v1/hours/summary?user=…&date=…` | Day totals: raw + de-overlapped minutes, overlaps |
 | GET | `/bob/v1/hours/export?user=…&format=csv\|json` | Export entries |
+| GET | `/bob/v1/builds` | Build catalog JSON array from digest-home `builds-catalog.json` (FR #8490); **open, no secret** |
 | GET | `/health` | Local BobCallback liveness (FR #1136): `ok`, `lock_age_s`, `last_digest_write`; **not** published on the IIS front-door |
 
 ### Machine field `grok_account` (FR #6143)
@@ -63,6 +64,14 @@ Replace the host as needed. Bodies are minimal scaffolds.
 
 ```bash
 curl -sS "https://bob.ntsa.uk/bob/v1/report"
+```
+
+### GET builds catalog (FR #8490)
+
+Serves the validated JSON array from digest-home `builds-catalog.json` (missing file → `[]`). Each entry needs `name`, `yml` (`owner/repo` or `owner/repo:path`), `output` (artifact export dir; no whitespace), `install` (`fleet` or a machine id); optional `dep` (list, documentation only), `version` (numeric `x.y.z` / `x.y.z.w`), `ref`. Invalid rows are skipped. Ops `!build n` builds the selected `yml`, copies pack artifacts into `output`, then reinstalls on `install` (fleet expands from `registered-machines.json`). Example seed: `common/defaults/builds-catalog.example.json`.
+
+```bash
+curl -sS "https://bob.ntsa.uk/bob/v1/builds"
 ```
 
 ### POST report (status / ops)

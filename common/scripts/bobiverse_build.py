@@ -7,6 +7,9 @@ WP2 (FR #4025): deterministic live runner (`BuildRunner`), FakeGitHubFiler,
 `BUILD v1` consume/enqueue, pack/release only when no new blockers.
 
 WP3 (FR #4026): optional `!installtest` --- msiexec pre-release MSIs + post-checks + blockers.
+
+FR #8490: numbered catalog `!build` / `!build n` — after pack, export artifacts to
+catalog ``output`` and reinstall on ``install`` (machine id or ``fleet``).
 """
 from __future__ import annotations
 
@@ -67,12 +70,20 @@ class RecipeError(ValueError):
     pass
 
 
-def recipe_path(repo_root: Path) -> Path:
-    return Path(repo_root) / ".bobiverse" / "build.yml"
+def recipe_path(repo_root: Path, rel: str = "") -> Path:
+    """Return the build.yml path under *repo_root*.
+
+    FR #8490: *rel* may be a catalog ``yml`` relative path (e.g.
+    ``pack/build.yml``). Empty / default → ``.bobiverse/build.yml``.
+    """
+    text = (rel or "").strip().lstrip("/\\").replace("\\", "/")
+    if not text or text in (".bobiverse/build.yml", ".bobiverse\\build.yml"):
+        return Path(repo_root) / ".bobiverse" / "build.yml"
+    return Path(repo_root) / Path(*text.split("/"))
 
 
-def load_recipe(repo_root: Path) -> BuildRecipe:
-    path = recipe_path(repo_root)
+def load_recipe(repo_root: Path, rel: str = "") -> BuildRecipe:
+    path = recipe_path(repo_root, rel)
     if not path.is_file():
         raise RecipeError(f"build: has no .bobiverse/build.yml; nothing started")
     text = path.read_text(encoding="utf-8")
@@ -678,6 +689,13 @@ class BuildDecision:
     cancel: bool = False
     tests_only: bool = False
     route: str = ""  # wire / queue hint for build machine
+    # FR #8490 numbered catalog
+    catalog_index: int = 0
+    catalog_name: str = ""
+    output: str = ""
+    install: str = ""
+    yml: str = ""
+    deps: list = field(default_factory=list)
 
 
 # FR #6715: reserved verbs are recognised before the args are read as a build request,
@@ -686,21 +704,57 @@ BUILD_SUBCOMMANDS = frozenset(
     ("status", "cancel", "dry-run", "dryrun", "dry", "preflight", "tests-only")
 )
 
+_OLD_BUILD_FORM_HINT = (
+    "build: owner/repo form removed; use bare !build for the numbered catalog, "
+    "then !build n [version] [ref]"
+)
+
 
 def parse_build(body: str) -> tuple[bool, str, str] | None:
-    """Return (is_build, subcmd, rest) or None if not !build."""
+    """Return (is_build, subcmd, rest) or None if not !build.
+
+    FR #8490: bare ``!build`` -> ``list``; leading digits after ``!build`` -> ``run``
+    with rest starting at that number; reserved verbs unchanged; old owner/repo
+    still parses as ``run`` so ``decide_build`` can refuse with a pointer.
+    """
     text = (body or "").strip()
     if not text.lower().startswith("!build"):
         return None
     parts = text.split(None, 2)
     if len(parts) == 1:
-        return True, "", ""
+        return True, "list", ""
     sub = parts[1].lower()
     rest = parts[2] if len(parts) > 2 else ""
     if sub in BUILD_SUBCOMMANDS:
         return True, "dry-run" if sub in ("dry-run", "dryrun", "dry") else sub, rest
-    # !build <repos> <version> [ref]
+    if sub.isdigit():
+        # !build n [version] [ref] [--tests-only]
+        return True, "run", text[len("!build") :].strip()
+    # Old owner/repo (or unknown token): still "run"; decide_build refuses owner/repo.
     return True, "run", text[len("!build") :].strip()
+
+
+def _resolve_catalog_entries(
+    catalog_entries: list | None,
+    catalog_loader: Callable[[], list] | None,
+) -> list:
+    if catalog_entries is not None:
+        return list(catalog_entries)
+    if catalog_loader is not None:
+        try:
+            return list(catalog_loader() or [])
+        except Exception:
+            return []
+    return []
+
+
+def _leading_catalog_index(rest: str) -> tuple[int | None, str]:
+    """Return ``(n, remainder)`` when rest starts with a positive integer index."""
+    tokens = (rest or "").split()
+    if not tokens or not tokens[0].isdigit():
+        return None, (rest or "").strip()
+    n = int(tokens[0])
+    return n, " ".join(tokens[1:]).strip()
 
 
 # #4186: WiX/MSI ProductVersion is numeric only -> refuse anything but x.y.z or x.y.z.w digits.
@@ -730,7 +784,12 @@ def decide_build(
     new_build_id: Callable[[], str] | None = None,
     stale_max_age_s: float | None = None,
     dead_max_age_s: float | None = None,
+    catalog_entries: list | None = None,
+    catalog_loader: Callable[[], list] | None = None,
 ) -> BuildDecision | None:
+    """FR #8490: numbered catalog UX (bare list / ``!build n``); old owner/repo refused."""
+    import builds_catalog as bc
+
     parsed = parse_build(body)
     if parsed is None:
         return None
@@ -739,68 +798,162 @@ def decide_build(
         return BuildDecision(False, "denied", [denied_line("build")])
 
     ignored_set = {normalize_repo(x) for x in ignored}
+    entries = _resolve_catalog_entries(catalog_entries, catalog_loader)
+    usage_lines = [
+        "build: usage !build | !build n [version] [ref] [--tests-only]",
+        "build: also !build status|cancel|dry-run|preflight|tests-only n",
+    ]
+
+    if sub == "list":
+        lines = bc.format_catalog_lines(entries)
+        return BuildDecision(True, "list", lines, status_only=True)
 
     if sub == "status":
-        repo = (rest or "").strip()
-        if repo:
-            rid = lock.running_id(repo) if lock else None
-            line = f"build status: {repo} running={rid or 'none'}"
-        else:
-            line = "build status: use !build status <owner/repo>"
-        return BuildDecision(True, "status", [line], status_only=True)
+        rest_s = (rest or "").strip()
+        if not rest_s:
+            return BuildDecision(
+                True,
+                "status",
+                ["build status: use !build status n"],
+                status_only=True,
+            )
+        n, leftover = _leading_catalog_index(rest_s)
+        if n is None:
+            first = rest_s.split()[0]
+            if REPO_RE.match(first):
+                return BuildDecision(False, "usage", [_OLD_BUILD_FORM_HINT])
+            return BuildDecision(
+                False, "usage", ["build: usage !build status n"]
+            )
+        if leftover:
+            return BuildDecision(
+                False, "usage", ["build: usage !build status n"]
+            )
+        entry = bc.entry_at(entries, n)
+        if entry is None:
+            return BuildDecision(
+                False,
+                "bad_index",
+                [f"build: no catalog entry {n} (use bare !build)"],
+            )
+        repo = entry.repo
+        rid = lock.running_id(repo) if lock else None
+        line = (
+            f"build status: {n}) {entry.name} {repo} running={rid or 'none'}"
+        )
+        return BuildDecision(
+            True,
+            "status",
+            [line],
+            [repo],
+            status_only=True,
+            catalog_index=n,
+            catalog_name=entry.name,
+            output=entry.output,
+            install=entry.install,
+            yml=entry.yml,
+            deps=list(entry.dep),
+        )
 
     if sub == "cancel":
-        repo = (rest or "").strip()
-        if repo:
-            if not REPO_RE.match(repo):
+        rest_s = (rest or "").strip()
+        if not rest_s:
+            # FR #6715: bare !build cancel frees whatever the chair is holding; never a run.
+            running = lock.running() if lock else []
+            if not running:
                 return BuildDecision(
-                    False, "usage", ["build: usage !build cancel [<owner/repo>]"]
+                    False, "nothing_running", ["build: no build running"], status_only=True
                 )
-            rid = lock.running_id(repo) if lock else None
-            if not rid:
-                return BuildDecision(
-                    False,
-                    "nothing_running",
-                    [f"build: no build running for {repo}"],
-                    [repo],
-                    status_only=True,
-                )
-            if lock:
-                lock.release(repo)
+            for held_repo, _rid in running:
+                lock.release(held_repo)
             return BuildDecision(
-                True, "cancel", [f"build: cancelled {repo} id={rid}"], [repo], cancel=True
+                True,
+                "cancel",
+                [f"build: cancelled {r} id={rid}" for r, rid in running],
+                [r for r, _rid in running],
+                cancel=True,
             )
-        # FR #6715: bare !build cancel frees whatever the chair is holding; never a run.
-        running = lock.running() if lock else []
-        if not running:
+        n, leftover = _leading_catalog_index(rest_s)
+        if n is None:
+            first = rest_s.split()[0]
+            if REPO_RE.match(first):
+                return BuildDecision(False, "usage", [_OLD_BUILD_FORM_HINT])
             return BuildDecision(
-                False, "nothing_running", ["build: no build running"], status_only=True
+                False, "usage", ["build: usage !build cancel [n]"]
             )
-        for held_repo, _rid in running:
-            lock.release(held_repo)
+        if leftover:
+            return BuildDecision(
+                False, "usage", ["build: usage !build cancel [n]"]
+            )
+        entry = bc.entry_at(entries, n)
+        if entry is None:
+            return BuildDecision(
+                False,
+                "bad_index",
+                [f"build: no catalog entry {n} (use bare !build)"],
+            )
+        repo = entry.repo
+        rid = lock.running_id(repo) if lock else None
+        if not rid:
+            return BuildDecision(
+                False,
+                "nothing_running",
+                [f"build: no build running for {n}) {entry.name} {repo}"],
+                [repo],
+                status_only=True,
+                catalog_index=n,
+                catalog_name=entry.name,
+            )
+        if lock:
+            lock.release(repo)
         return BuildDecision(
             True,
             "cancel",
-            [f"build: cancelled {r} id={rid}" for r, rid in running],
-            [r for r, _rid in running],
+            [f"build: cancelled {n}) {entry.name} {repo} id={rid}"],
+            [repo],
             cancel=True,
+            catalog_index=n,
+            catalog_name=entry.name,
+            output=entry.output,
+            install=entry.install,
+            yml=entry.yml,
+            deps=list(entry.dep),
         )
 
     if sub == "preflight":
         # FR #6492: route a no-build environment check to the recipe machine.
-        repo = (rest or "").strip().split()[0] if (rest or "").strip() else ""
-        if not repo or not REPO_RE.match(repo):
+        n, leftover = _leading_catalog_index(rest)
+        if n is None:
+            first = ((rest or "").split() or [""])[0]
+            if first and REPO_RE.match(first):
+                return BuildDecision(False, "usage", [_OLD_BUILD_FORM_HINT])
             return BuildDecision(
                 False,
                 "usage",
-                ["build: usage !build preflight <owner/repo>"],
+                ["build: usage !build preflight n"],
             )
+        if leftover:
+            return BuildDecision(
+                False,
+                "usage",
+                ["build: usage !build preflight n"],
+            )
+        entry = bc.entry_at(entries, n)
+        if entry is None:
+            return BuildDecision(
+                False,
+                "bad_index",
+                [f"build: no catalog entry {n} (use bare !build)"],
+            )
+        repo = entry.repo
         if normalize_repo(repo) in ignored_set:
             return BuildDecision(
                 False,
                 "ignored",
                 [f"build: {repo} is ignored; nothing started"],
                 [repo],
+                catalog_index=n,
+                catalog_name=entry.name,
             )
         try:
             recipe = recipe_loader(repo)
@@ -810,6 +963,8 @@ def decide_build(
                 "no_recipe",
                 [str(exc) if str(exc).startswith("build:") else f"build: {repo} {exc}"],
                 [repo],
+                catalog_index=n,
+                catalog_name=entry.name,
             )
         if recipe is None:
             return BuildDecision(
@@ -817,140 +972,206 @@ def decide_build(
                 "no_recipe",
                 [f"build: {repo} has no .bobiverse/build.yml; nothing started"],
                 [repo],
+                catalog_index=n,
+                catalog_name=entry.name,
             )
         route = f"BUILDPREFLIGHT v1 repo={repo}"
         return BuildDecision(
             True,
             "preflight",
             [
-                f"build preflight: queued {repo} machine={recipe.machine} "
+                f"build preflight: queued {n}) {entry.name} {repo} "
+                f"machine={recipe.machine} "
                 f"(no build; checks runner Python, imports, suite python, "
                 f"token source, recipe, work/cache dirs, pack tools)"
             ],
             [repo],
             route=route,
+            catalog_index=n,
+            catalog_name=entry.name,
+            output=entry.output,
+            install=entry.install,
+            yml=entry.yml,
+            deps=list(entry.dep),
         )
 
     dry = sub == "dry-run"
     tests_only = sub == "tests-only" or "--tests-only" in (rest or "").split()
-    # run / dry-run / tests-only: <repos> <version> [ref]
-    arg = rest if dry else rest
-    arg = " ".join(t for t in arg.split() if t.lower() != "--tests-only")
-    if dry and not arg:
-        # !build dry-run <repos> <version>
+    arg = " ".join(t for t in (rest or "").split() if t.lower() != "--tests-only")
+    n, after = _leading_catalog_index(arg)
+    if n is None:
+        first = (arg.split() or [""])[0]
+        if first and REPO_RE.match(first):
+            return BuildDecision(
+                False, "usage", [_OLD_BUILD_FORM_HINT], dry_run=dry
+            )
+        if dry and not arg:
+            return BuildDecision(
+                False,
+                "usage",
+                ["build: usage !build dry-run n [version] [ref]"],
+                dry_run=True,
+            )
+        return BuildDecision(False, "usage", usage_lines, dry_run=dry)
+
+    entry = bc.entry_at(entries, n)
+    if entry is None:
+        return BuildDecision(
+            False,
+            "bad_index",
+            [f"build: no catalog entry {n} (use bare !build)"],
+            dry_run=dry,
+        )
+
+    tokens = after.split()
+    version = tokens[0] if tokens else (entry.version or "")
+    ref = tokens[1] if len(tokens) > 1 else (entry.ref or "HEAD")
+    if len(tokens) > 2:
+        return BuildDecision(False, "usage", usage_lines, dry_run=dry)
+    if not version:
         return BuildDecision(
             False,
             "usage",
-            ["build: usage !build dry-run <owner/repo>[,owner/repo...] <version> [ref]"],
-            dry_run=True,
+            [
+                f"build: catalog entry {n}) {entry.name} has no version; "
+                f"pass !build {n} <version> [ref]"
+            ],
+            dry_run=dry,
+            catalog_index=n,
+            catalog_name=entry.name,
         )
-    tokens = arg.split()
-    usage_lines = [
-        "build: usage !build <owner/repo>[,owner/repo...] <version> [ref] [--tests-only]",
-        "build: also !build status|cancel|dry-run|preflight|tests-only ...",
-    ]
-    if len(tokens) < 2:
-        return BuildDecision(False, "usage", usage_lines, dry_run=dry)
-    try:
-        repos = parse_repos_csv(tokens[0])
-    except ValueError as exc:
-        # FR #6715: unknown subcommand/argument -> usage refusal (never a build request).
-        return BuildDecision(
-            False, "usage", usage_lines + [f"build: {exc}"], dry_run=dry
-        )
-    version = tokens[1]
-    ref = tokens[2] if len(tokens) > 2 else "HEAD"
     refusal = version_refusal(version)
     if refusal:
-        return BuildDecision(False, "bad_version", [refusal], dry_run=dry)
-    if not repos:
-        return BuildDecision(False, "usage", ["build: need at least one owner/repo"], dry_run=dry)
+        return BuildDecision(
+            False,
+            "bad_version",
+            [refusal],
+            dry_run=dry,
+            catalog_index=n,
+            catalog_name=entry.name,
+        )
+
+    try:
+        repo, _rel = bc.parse_yml_field(entry.yml)
+    except ValueError as exc:
+        return BuildDecision(
+            False,
+            "bad_yml",
+            [f"build: catalog entry {n} {exc}"],
+            dry_run=dry,
+            catalog_index=n,
+            catalog_name=entry.name,
+        )
+
+    output = (entry.output or "").strip()
+    install = (entry.install or "").strip()
+    if output and (" " in output or "\t" in output):
+        return BuildDecision(
+            False,
+            "bad_output",
+            [
+                f"build: catalog entry {n}) {entry.name} output must not contain "
+                f"spaces (BUILD route token); nothing started"
+            ],
+            dry_run=dry,
+            catalog_index=n,
+            catalog_name=entry.name,
+        )
 
     lines: list[str] = []
     ok_repos: list[str] = []
-    # FR #6491: one !build command shares one build id across its repos so the
-    # BUILD v1 route and terminal BUILD ok/fail announces can match the chair lock.
     batch_id = (new_build_id or (lambda: f"b-{int(time.time())}"))()
-    for repo in repos:
-        if normalize_repo(repo) in ignored_set:
-            lines.append(f"build: {repo} is ignored; nothing started")
-            continue
+    if normalize_repo(repo) in ignored_set:
+        lines.append(f"build: {repo} is ignored; nothing started")
+    else:
         try:
             recipe = recipe_loader(repo)
         except RecipeError as exc:
-            lines.append(str(exc) if str(exc).startswith("build:") else f"build: {repo} {exc}")
-            continue
-        if recipe is None:
-            lines.append(f"build: {repo} has no .bobiverse/build.yml; nothing started")
-            continue
-        bid = batch_id
-        if not dry and lock is not None:
-            got, info = lock.try_acquire(repo, bid)
-            if not got:
-                # FR #6719: dead-runner backstop (no progress/heartbeat) before the
-                # long recipe_max_run_s TTL — a failed build that never announced
-                # must not block !build for many hours.
-                dead_ttl = (
-                    float(dead_max_age_s)
-                    if dead_max_age_s is not None
-                    else float(DEFAULT_BUILD_LOCK_DEAD_S)
+            lines.append(
+                str(exc) if str(exc).startswith("build:") else f"build: {repo} {exc}"
+            )
+            recipe = None
+        else:
+            if recipe is None:
+                lines.append(
+                    f"build: {repo} has no .bobiverse/build.yml; nothing started"
                 )
-                released_dead, old_dead = lock.release_if_dead(repo, dead_ttl)
-                if released_dead:
-                    lines.append(
-                        f"build: {repo} released stale lock id={old_dead} "
-                        f"reason=no-heartbeat age>{int(dead_ttl)}s"
-                    )
-                    got, info = lock.try_acquire(repo, bid)
+        if recipe is not None:
+            bid = batch_id
+            if not dry and lock is not None:
+                got, info = lock.try_acquire(repo, bid)
                 if not got:
-                    # FR #6491: stale chair lock backstop (recipe max run, or override).
-                    ttl = (
-                        float(stale_max_age_s)
-                        if stale_max_age_s is not None
-                        else recipe_max_run_s(recipe)
+                    dead_ttl = (
+                        float(dead_max_age_s)
+                        if dead_max_age_s is not None
+                        else float(DEFAULT_BUILD_LOCK_DEAD_S)
                     )
-                    released, old = lock.release_if_stale(repo, ttl)
-                    if released:
+                    released_dead, old_dead = lock.release_if_dead(repo, dead_ttl)
+                    if released_dead:
                         lines.append(
-                            f"build: {repo} released stale lock id={old} "
-                            f"reason=max-run age>{int(ttl)}s"
+                            f"build: {repo} released stale lock id={old_dead} "
+                            f"reason=no-heartbeat age>{int(dead_ttl)}s"
                         )
                         got, info = lock.try_acquire(repo, bid)
-                if not got:
+                    if not got:
+                        ttl = (
+                            float(stale_max_age_s)
+                            if stale_max_age_s is not None
+                            else recipe_max_run_s(recipe)
+                        )
+                        released, old = lock.release_if_stale(repo, ttl)
+                        if released:
+                            lines.append(
+                                f"build: {repo} released stale lock id={old} "
+                                f"reason=max-run age>{int(ttl)}s"
+                            )
+                            got, info = lock.try_acquire(repo, bid)
+                    if not got:
+                        lines.append(
+                            f"build: {repo} refused; running id={info} (live)"
+                        )
+                        recipe = None
+            if recipe is not None:
+                ok_repos.append(repo)
+                dep_bit = ",".join(entry.dep) if entry.dep else "-"
+                if dry:
                     lines.append(
-                        f"build: {repo} refused; running id={info} (live)"
+                        f"build dry-run: {n}) {entry.name} {repo} version={version} "
+                        f"ref={ref} machine={recipe.machine} "
+                        f"suites={len(recipe.suites)} "
+                        f"pack={'yes' if recipe.pack else 'no'} "
+                        f"release={recipe.release.get('target') or '-'} "
+                        f"install={install or '-'} dep={dep_bit} output={output or '-'}"
                     )
-                    continue
-        ok_repos.append(repo)
-        if dry:
-            lines.append(
-                f"build dry-run: {repo} version={version} ref={ref} "
-                f"machine={recipe.machine} suites={len(recipe.suites)} "
-                f"pack={'yes' if recipe.pack else 'no'} release={recipe.release.get('target') or '-'}"
-            )
-            lines.append(
-                f"build dry-run: would classify ref vs baseline={recipe.baseline}; "
-                f"file release-blocker issues for new_regression/step_failure; nothing published"
-            )
-        else:
-            extra = " tests-only" if tests_only else ""
-            lines.append(
-                f"build: queued {repo} version={version} ref={ref} "
-                f"machine={recipe.machine} id={bid}{extra}"
-            )
+                    lines.append(
+                        f"build dry-run: would classify ref vs baseline={recipe.baseline}; "
+                        f"file release-blocker issues for new_regression/step_failure; "
+                        f"nothing published"
+                    )
+                else:
+                    extra = " tests-only" if tests_only else ""
+                    lines.append(
+                        f"build: queued {n}) {entry.name} {repo} version={version} "
+                        f"ref={ref} machine={recipe.machine} id={bid} "
+                        f"install={install or '-'}{extra}"
+                    )
+
     if not ok_repos and not lines:
         lines.append("build: nothing started")
     route = ""
     if ok_repos and not dry:
-        # FR #6491: put id= on the wire so the recipe machine and chair share it.
         route = (
             f"BUILD v1 repos={','.join(ok_repos)} version={version} "
             f"ref={ref} id={batch_id}"
         )
         if tests_only:
             route += " tests_only=1"
+        if output:
+            route += f" output={output}"
+        if install:
+            route += f" install={install}"
     return BuildDecision(
-        bool(ok_repos) or dry and bool(lines),
+        bool(ok_repos) or (dry and bool(lines)),
         "dry_run" if dry else ("ok" if ok_repos else "refused"),
         lines,
         ok_repos,
@@ -959,6 +1180,12 @@ def decide_build(
         dry,
         tests_only=tests_only,
         route=route,
+        catalog_index=n,
+        catalog_name=entry.name,
+        output=output,
+        install=install,
+        yml=entry.yml,
+        deps=list(entry.dep),
     )
 
 
@@ -977,7 +1204,8 @@ def dry_run_plan(recipe: BuildRecipe, *, repo: str, version: str, ref: str) -> l
 
 BUILD_V1_RE = re.compile(
     r"^BUILD\s+v1\s+repos=(?P<repos>\S+)\s+version=(?P<version>\S+)\s+ref=(?P<ref>\S+)"
-    r"(?:\s+id=(?P<id>\S+))?(?:\s+tests_only=(?P<tests_only>\S+))?\s*$",
+    r"(?:\s+id=(?P<id>\S+))?(?:\s+tests_only=(?P<tests_only>\S+))?"
+    r"(?:\s+output=(?P<output>\S+))?(?:\s+install=(?P<install>\S+))?\s*$",
     re.IGNORECASE,
 )
 
@@ -1048,6 +1276,8 @@ def parse_build_v1_route(text: str) -> dict | None:
         "ref": m.group("ref"),
         "id": (m.group("id") or "").strip(),
         "tests_only": str(m.group("tests_only") or "").strip().lower() in ("1", "true", "yes"),
+        "output": (m.group("output") or "").strip(),
+        "install": (m.group("install") or "").strip(),
         "raw": raw,
     }
 
@@ -1994,6 +2224,12 @@ class BuildReport:
     log_zip: str = ""
     announce_lines: list = field(default_factory=list)
     errors: list = field(default_factory=list)
+    # FR #8490 catalog export + install
+    exported: list = field(default_factory=list)
+    export_ok: bool = False
+    install_targets: list = field(default_factory=list)
+    install_results: list = field(default_factory=list)
+    install_ok: bool = False
 
 
 # ------------------------------------------------------------------ FR #6585 progress
@@ -2568,6 +2804,14 @@ class BuildRunner:
         build_id: str = "",
         progress: BuildProgressPoster | None = None,
         tests_only: bool = False,
+        output: str = "",
+        install: str = "",
+        roster_machines: Iterable[str] | None = None,
+        live_machines: Iterable[str] | None = None,
+        install_queue_dir: Path | str | None = None,
+        export_fn: Callable[..., list] | None = None,
+        install_local_fn: Callable[..., dict] | None = None,
+        enqueue_install_fn: Callable[..., Path] | None = None,
     ) -> None:
         self.repo_root = Path(repo_root)
         # Baseline suites run in their own checkout of the baseline tag; without one
@@ -2589,6 +2833,21 @@ class BuildRunner:
         # FR #6585: optional live progress sink (ear tails JSONL -> #bobiverse).
         self.progress = progress
         self.tests_only = bool(tests_only)
+        # FR #8490: catalog output + install (machine | fleet).
+        self.output = str(output or "").strip()
+        self.install = str(install or "").strip()
+        self.roster_machines = [str(m).strip().lower() for m in (roster_machines or []) if str(m).strip()]
+        self.live_machines = (
+            None
+            if live_machines is None
+            else {str(m).strip().lower() for m in live_machines if str(m).strip()}
+        )
+        self.install_queue_dir = (
+            Path(install_queue_dir) if install_queue_dir is not None else None
+        )
+        self.export_fn = export_fn
+        self.install_local_fn = install_local_fn
+        self.enqueue_install_fn = enqueue_install_fn
         if self.tests_only:
             try:
                 setattr(self.filer, "skip_blockers", True)
@@ -3181,6 +3440,10 @@ class BuildRunner:
             elif not blocking and report.pack_ok and not target:
                 report.release_ok = True
 
+        # FR #8490: export pack artifacts to catalog output, then install/fleet.
+        if (not blocking) and report.pack_ok and (self.output or self.install):
+            self._export_and_install(report, assets=assets)
+
         try:
             zip_path = self._zip_logs()
             report.log_zip = str(zip_path)
@@ -3188,10 +3451,16 @@ class BuildRunner:
             report.errors.append(f"log_zip: {type(exc).__name__}: {exc}")
 
         has_release_target = bool((self.recipe.release or {}).get("target"))
+        # Export failure blocks overall ok; install WARN-and-continue does not.
+        export_gate = (not self.output) or bool(report.export_ok)
+        if self.output and report.pack_ok and not report.export_ok:
+            if not any(str(e).startswith("export:") for e in report.errors):
+                report.errors.append("export: failed or skipped with output set")
         report.ok = (
             (not blocking)
             and report.pack_ok
             and (report.release_ok or not has_release_target)
+            and export_gate
         )
         tag_s = render_template(
             str((self.recipe.release or {}).get("tag") or "v{{version}}"),
@@ -3221,6 +3490,407 @@ class BuildRunner:
             )
         return report
 
+    def _export_and_install(self, report: BuildReport, *, assets: list) -> None:
+        """Copy pack assets to catalog output; local msiexec + remote install queue."""
+        id_early = build_result_id_early(self.build_id)
+        asset_paths = [Path(a) for a in (assets or []) if a]
+        exported: list[Path] = []
+        if self.output:
+            try:
+                if prog := self._progress():
+                    with contextlib.suppress(Exception):
+                        prog.step_start("export")
+                export_call = self.export_fn or export_pack_artifacts
+                exported = list(
+                    export_call(asset_paths, self.output, version=self.version)
+                )
+                report.exported = [str(p) for p in exported]
+                report.export_ok = True
+                report.announce_lines.append(
+                    f"BUILD export {self.repo}{id_early} version={self.version} "
+                    f"output={self.output} n={len(exported)}"
+                )
+                if prog is not None:
+                    with contextlib.suppress(Exception):
+                        prog.step_end("export", ok=True)
+            except Exception as exc:
+                report.export_ok = False
+                report.errors.append(f"export: {type(exc).__name__}: {exc}")
+                report.announce_lines.append(
+                    f"BUILD export fail {self.repo}{id_early} version={self.version}: "
+                    f"{type(exc).__name__}"
+                )
+                if prog := self._progress():
+                    with contextlib.suppress(Exception):
+                        prog.step_end("export", ok=False)
+                return
+        else:
+            report.export_ok = True
+            exported = asset_paths
+
+        if not self.install or self.tests_only:
+            return
+
+        plan = resolve_install_plan(
+            self.install,
+            roster=self.roster_machines,
+            local_machine=self.local_machine,
+            live_machines=self.live_machines,
+        )
+        report.install_targets = list(plan.get("targets") or [])
+        skipped = list(plan.get("skipped_offline") or [])
+        for mid in skipped:
+            report.install_results.append(
+                {"machine": mid, "ok": False, "action": "skipped_offline"}
+            )
+            report.announce_lines.append(
+                f"BUILD install WARN {self.repo}{id_early} machine={mid} skipped=offline"
+            )
+
+        targets = list(plan.get("targets") or [])
+        if not targets and not skipped:
+            report.announce_lines.append(
+                f"BUILD install WARN {self.repo}{id_early} install={self.install} "
+                f"targets=none (empty roster?)"
+            )
+            report.install_ok = False
+            return
+
+        report.announce_lines.append(
+            f"BUILD install {self.repo}{id_early} version={self.version} "
+            f"install={self.install} targets={','.join(targets) or '-'}"
+        )
+
+        local_set = {str(m).strip().lower() for m in (plan.get("local") or []) if str(m).strip()}
+        remote = [str(m).strip().lower() for m in (plan.get("remote") or []) if str(m).strip()]
+        all_ok = True
+
+        if local_set:
+            if self.recipe.install_test is None and self.install_local_fn is None:
+                for mid in sorted(local_set):
+                    report.install_results.append(
+                        {
+                            "machine": mid,
+                            "ok": False,
+                            "action": "skipped_no_install_test",
+                        }
+                    )
+                    report.announce_lines.append(
+                        f"BUILD install WARN {self.repo}{id_early} machine={mid} "
+                        f"skipped=no_install_test"
+                    )
+                    all_ok = False
+            else:
+                try:
+                    if prog := self._progress():
+                        with contextlib.suppress(Exception):
+                            prog.step_start("install-local")
+                    local_fn = self.install_local_fn or default_install_local_from_output
+                    result = dict(
+                        local_fn(
+                            repo=self.repo,
+                            version=self.version,
+                            recipe=self.recipe,
+                            output_dir=self.output or str(self.work_dir / "out"),
+                            assets=exported or asset_paths,
+                            local_machine=self.local_machine,
+                            evidence_dir=self.log_dir / "install",
+                        )
+                        or {}
+                    )
+                    ok = bool(result.get("ok"))
+                    mid = (
+                        str(result.get("machine") or self.local_machine or "")
+                        .strip()
+                        .lower()
+                        or "local"
+                    )
+                    report.install_results.append(
+                        {
+                            "machine": mid,
+                            "ok": ok,
+                            "action": "msiexec_local",
+                            "detail": str(result.get("detail") or ""),
+                        }
+                    )
+                    if ok:
+                        report.announce_lines.append(
+                            f"BUILD install ok {self.repo}{id_early} machine={mid}"
+                        )
+                    else:
+                        all_ok = False
+                        report.announce_lines.append(
+                            f"BUILD install fail {self.repo}{id_early} machine={mid} "
+                            f"{str(result.get('detail') or '')[:120]}"
+                        )
+                    if prog is not None:
+                        with contextlib.suppress(Exception):
+                            prog.step_end("install-local", ok=ok)
+                except Exception as exc:
+                    all_ok = False
+                    report.errors.append(f"install_local: {type(exc).__name__}: {exc}")
+                    report.install_results.append(
+                        {
+                            "machine": self.local_machine or "local",
+                            "ok": False,
+                            "action": "msiexec_local",
+                            "detail": str(exc),
+                        }
+                    )
+                    report.announce_lines.append(
+                        f"BUILD install fail {self.repo}{id_early} "
+                        f"machine={self.local_machine or 'local'}: {type(exc).__name__}"
+                    )
+                    if prog := self._progress():
+                        with contextlib.suppress(Exception):
+                            prog.step_end("install-local", ok=False)
+
+        enqueue = self.enqueue_install_fn or enqueue_build_install_job
+        qdir = self.install_queue_dir
+        for mid in remote:
+            try:
+                if qdir is None and self.enqueue_install_fn is None:
+                    report.install_results.append(
+                        {
+                            "machine": mid,
+                            "ok": False,
+                            "action": "skipped_no_queue",
+                        }
+                    )
+                    report.announce_lines.append(
+                        f"BUILD install WARN {self.repo}{id_early} machine={mid} "
+                        f"skipped=no_queue"
+                    )
+                    all_ok = False
+                    continue
+                path = enqueue(
+                    queue_dir=qdir or (self.work_dir / "install-queue"),
+                    repo=self.repo,
+                    version=self.version,
+                    tag=render_template(
+                        str((self.recipe.release or {}).get("tag") or "v{{version}}"),
+                        version=self.version,
+                    ),
+                    machine=mid,
+                    output=self.output,
+                    assets=[str(p) for p in (exported or asset_paths)],
+                )
+                report.install_results.append(
+                    {
+                        "machine": mid,
+                        "ok": True,
+                        "action": "queued",
+                        "path": str(path),
+                    }
+                )
+                report.announce_lines.append(
+                    f"BUILD install queued {self.repo}{id_early} machine={mid}"
+                )
+            except Exception as exc:
+                all_ok = False
+                report.errors.append(
+                    f"install_queue {mid}: {type(exc).__name__}: {exc}"
+                )
+                report.install_results.append(
+                    {
+                        "machine": mid,
+                        "ok": False,
+                        "action": "queue_fail",
+                        "detail": str(exc),
+                    }
+                )
+                report.announce_lines.append(
+                    f"BUILD install WARN {self.repo}{id_early} machine={mid} "
+                    f"queue_fail={type(exc).__name__}"
+                )
+
+        report.install_ok = bool(all_ok) and bool(targets)
+
+
+def export_pack_artifacts(
+    assets: Iterable[Path | str],
+    output_dir: Path | str,
+    *,
+    version: str = "",
+) -> list[Path]:
+    """Copy pack artifact files into *output_dir* (FR #8490). Returns destinations."""
+    dest_root = Path(output_dir)
+    dest_root.mkdir(parents=True, exist_ok=True)
+    out: list[Path] = []
+    for raw in assets or []:
+        src = Path(raw)
+        if not src.is_file():
+            raise FileNotFoundError(f"pack asset missing: {src}")
+        dest = dest_root / src.name
+        if src.resolve() != dest.resolve():
+            shutil.copy2(src, dest)
+        out.append(dest)
+    # Optional marker so operators can see which version landed.
+    if version:
+        marker = dest_root / f"BUILD-EXPORT-{version}.txt"
+        marker.write_text(
+            f"version={version}\nfiles={len(out)}\n",
+            encoding="utf-8",
+        )
+    return out
+
+
+def resolve_install_plan(
+    install: str,
+    *,
+    roster: Iterable[str],
+    local_machine: str,
+    live_machines: Iterable[str] | None = None,
+) -> dict:
+    """Split catalog install into local msiexec vs remote queue targets (FR #8490)."""
+    import builds_catalog as bc
+
+    targets = bc.expand_install_targets(install, roster)
+    live = None
+    if live_machines is not None:
+        live = {str(m).strip().lower() for m in live_machines if str(m).strip()}
+    skipped: list[str] = []
+    active: list[str] = []
+    for mid in targets:
+        if live is not None and mid not in live:
+            skipped.append(mid)
+        else:
+            active.append(mid)
+    local_id = fold_build_machine(local_machine) if local_machine else ""
+    local: list[str] = []
+    remote: list[str] = []
+    for mid in active:
+        if local_id and fold_build_machine(mid) == local_id:
+            local.append(mid)
+        else:
+            remote.append(mid)
+    return {
+        "targets": active,
+        "local": local,
+        "remote": remote,
+        "skipped_offline": skipped,
+    }
+
+
+def load_roster_machine_ids(home: Path | str | None = None) -> list[str]:
+    """Sorted machine ids from ``registered-machines.json`` (systray / ChanServ mirror)."""
+    try:
+        import registered_machines as rm
+    except Exception:
+        return []
+    roots: list[Path] = []
+    if home is not None:
+        roots.append(Path(home))
+    digest = (os.environ.get("BOB_DIGEST_HOME") or "").strip()
+    if digest:
+        roots.append(Path(digest))
+    roots.append(Path.home() / ".bobiverse")
+    for root in roots:
+        try:
+            ids = sorted(rm.load_registered(root))
+        except Exception:
+            ids = []
+        if ids:
+            return ids
+    return []
+
+
+def enqueue_build_install_job(
+    *,
+    queue_dir: Path | str,
+    repo: str,
+    version: str,
+    tag: str,
+    machine: str,
+    output: str = "",
+    assets: Iterable[str] | None = None,
+) -> Path:
+    """Write a BUILD_INSTALL job for a remote machine (INSTALLTEST-shaped; FR #8490)."""
+    q = Path(queue_dir)
+    q.mkdir(parents=True, exist_ok=True)
+    mid = str(machine or "").strip().lower()
+    ts = int(time.time())
+    ver = str(version or "unknown")
+    path = q / f"build-install-{mid}-{ver}-{ts}.json"
+    payload = {
+        "v": 1,
+        "kind": "BUILD_INSTALL",
+        "repo": str(repo or "").strip(),
+        "version": ver,
+        "tag": str(tag or f"v{ver}").strip(),
+        "machine": mid,
+        "output": str(output or "").strip(),
+        "assets": [str(a) for a in (assets or [])],
+        "queued_at": ts,
+        "status": "queued",
+    }
+    path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    return path
+
+
+def default_install_local_from_output(
+    *,
+    repo: str,
+    version: str,
+    recipe: BuildRecipe,
+    output_dir: Path | str,
+    assets: Iterable[Path | str] | None = None,
+    local_machine: str = "",
+    evidence_dir: Path | str | None = None,
+    msiexec_fn: Callable[..., int] | None = None,
+) -> dict:
+    """Run InstallTestRunner against exported MSIs under *output_dir* (FR #8490)."""
+    if recipe.install_test is None:
+        return {
+            "ok": False,
+            "machine": local_machine,
+            "detail": "no_install_test",
+        }
+    out = Path(output_dir)
+    evid = Path(evidence_dir) if evidence_dir is not None else out / "install-evidence"
+    evid.mkdir(parents=True, exist_ok=True)
+    asset_list = [Path(a) for a in (assets or []) if Path(a).is_file()]
+    if not asset_list:
+        asset_list = sorted(out.glob("*.msi"))
+
+    def _resolver(ver: str, tag: str, products: list[str] | None = None) -> list[Path]:
+        products = list(products or [])
+        if not products:
+            return list(asset_list)
+        found: list[Path] = []
+        for prod in products:
+            hit = None
+            for p in asset_list:
+                stem = p.name.lower()
+                if stem.startswith(f"{prod.lower()}-") and stem.endswith(".msi"):
+                    hit = p
+                    break
+            if hit is None:
+                cand = out / f"{prod}-{ver}.msi"
+                if cand.is_file():
+                    hit = cand
+            if hit is not None:
+                found.append(hit)
+        return found
+
+    runner = InstallTestRunner(
+        repo=repo,
+        version=version,
+        tag=f"v{version}",
+        recipe=recipe,
+        evidence_dir=evid,
+        msiexec_fn=msiexec_fn,
+        asset_resolver=_resolver,
+        dry_run=False,
+    )
+    report = runner.run()
+    return {
+        "ok": bool(report.ok),
+        "machine": local_machine,
+        "detail": ";".join(report.errors[:3]) if report.errors else "",
+        "steps": list(report.steps),
+    }
+
 
 def enqueue_build_job(
     route: dict,
@@ -3247,6 +3917,8 @@ def enqueue_build_job(
         "queued_at": ts,
         "status": "queued",
         "tests_only": bool(route.get("tests_only")),
+        "output": str(route.get("output") or "").strip(),
+        "install": str(route.get("install") or "").strip(),
     }
     path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
     return path

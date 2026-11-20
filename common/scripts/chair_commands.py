@@ -4,7 +4,7 @@ Deterministic, token-less, no secrets. Pure functions (no sockets / no clock unl
 fake-IRC tests drive them exactly like the live chair does. ``irc_agent.Client`` is the thin glue.
 
 gh-Jeeves reference commands restored here: !help !list (+ !filter alias) !status !stuck !resync !sweep !ignore
-!ignored !unignore !focus !unfocus !pin !unpin !recycle !build (FR #4006) !installtest (FR #4026) and the bare ``ping`` -> ``pong``. The shop wire (``!bored``,
+!ignored !unignore !focus !unfocus !pin !unpin !recycle !build (FR #4006 / #8490 catalog) !installtest (FR #4026) and the bare ``ping`` -> ``pong``. The shop wire (``!bored``,
 ``ACK``/``DONE``/``NACK``) lives in gitclaim / shop_listen and is not a PM command.
 
 AUTHORIZATION MATRIX (see docs/jeeves-commands.md)::
@@ -157,15 +157,18 @@ COMMANDS: tuple = (
                 "announces restarting then executes. Duplicates are cooldown-blocked.", ("help", "status")),
     CommandSpec(
         "build",
-        "!build <owner/repo>[,owner/repo...] <version> [ref] [--tests-only] | !build status|cancel|dry-run|preflight|tests-only ...",
-        "queue a deterministic repo BUILD (no agent); failures become release-blocker issues (FR #4006)",
+        "!build | !build n [version] [ref] [--tests-only] | !build status|cancel|dry-run|preflight|tests-only n",
+        "numbered catalog BUILD (no agent); failures become release-blocker issues (FR #4006 / #8490)",
         OPS_ROLES,
-        "!build SimonBarnett/bobiverse 0.1.32",
-        "Ops only (simon / bob-* / +o/+h). Runs the in-repo .bobiverse/build.yml on the recipe machine. "
-        "<version> must be numeric x.y.z or x.y.z.w (digits only, e.g. 0.1.32 / 0.1.32.1); "
-        "anything else (v0.1.32, 0.1.32-test2) is refused. "
-        "Subcommands: status, cancel, dry-run, preflight (FR #6492 recipe-machine env check, no build). "
-        "Per-repo single-flight; no recipe => refuse.",
+        "!build 1 0.1.40",
+        "Ops only (simon / bob-* / +o/+h). Bare !build lists builds-catalog.json (GET /bob/v1/builds). "
+        "!build n runs that entry's yml on the recipe machine, exports pack artifacts to catalog output, "
+        "then reinstalls on install (machine id or fleet via registered-machines.json). "
+        "version/ref override catalog defaults. "
+        "<version> must be numeric x.y.z or x.y.z.w (digits only); v-prefix / -suffix refused (#4186). "
+        "dep is documentation only. Old !build owner/repo form is refused — use the numbered list. "
+        "Subcommands take n: status, cancel (bare cancel still frees all), dry-run, preflight (#6492), "
+        "tests-only. Per-repo single-flight; no recipe => refuse.",
         ("status", "list", "focus", "installtest"),
     ),
     CommandSpec(

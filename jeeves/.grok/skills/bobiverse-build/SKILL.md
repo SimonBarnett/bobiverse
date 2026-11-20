@@ -15,13 +15,13 @@ description: >
 > End sessions with `Invoke-BobiverseHarvest.ps1 -Repo <job-repo> -Summary ... -Lesson ...` then `-Flush`.
 > Bob fleet lessons use `-Repo SimonBarnett/bobiverse`. Never put tokens, passwords, SASL/NickServ secrets, keys or private hostnames in a filing or skill.
 
-Focused playbook for the **BUILD** job (FR #4006 WP1, FR #4025 WP2, skill gap FR #4038).
+Focused playbook for the **BUILD** job (FR #4006 WP1, FR #4025 WP2, skill gap FR #4038, catalog FR #8490).
 Authoritative long form: `docs/bobiverse-build.md`. Command surface stub: `bobiverse-jeeves-commands` (`!help build`).
-Code: `common/scripts/bobiverse_build.py`, drain CLI `common/scripts/run_bobiverse_build.py`.
+Code: `common/scripts/bobiverse_build.py`, drain CLI `common/scripts/run_bobiverse_build.py`, catalog `common/scripts/builds_catalog.py`.
 
 ## Zero-token rule (CAST IRON)
 
-BUILD is **deterministic and uses zero AI tokens**. The chair parses/decides/announces; the recipe machine runs suites, classifies, files blockers, packs and releases. Never spawn an agent seat to do the build. Agents may **read** results and open FRs for gaps; they do not replace the runner.
+BUILD is **deterministic and uses zero AI tokens**. The chair parses/decides/announces; the recipe machine runs suites, classifies, files blockers, packs, exports, and installs. Never spawn an agent seat to do the build. Agents may **read** results and open FRs for gaps; they do not replace the runner.
 
 ## Recipe contract (`.bobiverse/build.yml`)
 
@@ -51,17 +51,19 @@ No recipe => chair refuses. Same repo already building => refuse with running id
 
 Hard timeouts (FR #3965 class) via `run_command` kill + `timed_out` => `step_failure`.
 
-## Dry-run vs live
+## Catalog UX (FR #8490)
 
 | Mode | Who | What happens |
 |---|---|---|
-| `!build dry-run <repos> <version> [ref]` | Chair (ops) | Decide only: print plan lines (would classify, would file blockers, would announce). **Nothing published**, no queue job. |
-| `!build <repos> <version> [ref] [--tests-only]` | Chair then recipe machine (version must be numeric x.y.z / x.y.z.w, else refused, #4186) | Chair announces wire `BUILD v1 repos=... version=... ref=... id=b-...` on `#bobiverse` (and PM reply lines). Recipe host `consume_build_v1` enqueues `home/build-queue/*.json`; `BuildRunner.run()` executes suites/pack/release. FR #7094 `--tests-only` / `tests_only=1`: suites+pack only, no GitHub release, no new_regression filings; release preflight still runs first. FR #7103 GitHub-hosted `pytest-localsystem.yml` is a separate LocalSystem CI gate (not a self-hosted runner). |
-| `!build status [owner/repo]` | Chair | Running lock id or none. |
-| `!build preflight <owner/repo>` | Chair then recipe machine | FR #6492: env check only; one line per item; exit non-zero on any missing. |
-| `!build cancel [owner/repo]` | Chair | FR #6715: bare cancels whatever is running (or "no build running"); never starts a runner. |
+| bare `!build` | Chair (ops) | Numbered list from GET `/bob/v1/builds` (`builds-catalog.json` on digest home). Shows name, yml, install, dep, version, ref, output. |
+| `!build n [version] [ref] [--tests-only]` | Chair then recipe machine | Select catalog entry `n`. Version/ref override catalog defaults (numeric `x.y.z` / `x.y.z.w`, #4186). Wire `BUILD v1 ... output=... install=...`. Runner: suites → pack → **export** artifacts to `output` → prerelease → **install** (`machinename` or `fleet` via `registered-machines.json`). Local: msiexec via recipe `install_test` against exported MSIs. Remote: `BUILD_INSTALL` queue jobs. Offline / no `install_test`: WARN-and-continue. `dep` is documentation only. |
+| `!build dry-run n ...` | Chair (ops) | Plan only (includes install/output); nothing published. |
+| `!build status\|cancel\|preflight\|tests-only n` | Chair / recipe | Same verbs, keyed by catalog index `n`. |
+| Old `!build owner/repo ...` | — | **Refused**; use the numbered list. |
 
 Ops only (simon / bob-* ears). Workers never see `!build` in `!help`.
+
+Announce extras: `BUILD export ... output=... n=N`, `BUILD install ... targets=...`, `BUILD install queued|ok|fail|WARN ... machine=...`.
 
 ## Preflight (FR #6492)
 
@@ -90,17 +92,17 @@ python common/scripts/run_bobiverse_build.py --queue-dir <home>/build-queue --re
 
 Re-run **after** the open `release-blocker` issues from the failed build are **closed** (fix merged + MRB, or confirmed false positive closed). Then:
 
-1. Optional: `!build dry-run owner/repo <version> [ref]` to confirm recipe/plan.
-2. Live: `!build owner/repo <version> [ref]` (same or newer version/ref as intended release).
-3. Read announce: need `BUILD ok ...` with pack/release true before treating the version as build-green.
+1. Optional: bare `!build` then `!build dry-run n [version] [ref]` to confirm catalog entry/plan.
+2. Live: `!build n [version] [ref]` (same or newer version/ref as intended release).
+3. Read announce: need `BUILD ok ...` with pack/release true (and `BUILD export` when output is set) before treating the version as build-green.
 4. Do **not** re-`!build` in a loop while blockers are still open --- that only re-hits and comments on the same issues.
 5. `pre_existing` / `flaky` alone do not block pack; still investigate, but they are not the release-blocker gate.
 
-WP3 INSTALL-TEST (FR #4026), when present in the recipe, is a separate follow-on after a successful BUILD --- `!installtest` announces `INSTALLTEST v1`, enqueues `installtest-*.json`, drain via `run_bobiverse_installtest.py`; do not confuse it with re-running BUILD.
+WP3 INSTALL-TEST (FR #4026) remains available as a manual follow-on (`!installtest`); catalog `!build n` already drives local msiexec when `install_test` is present and queues remote `BUILD_INSTALL` jobs for fleet targets.
 
 ## Cross-links
 
 - Docs: `docs/bobiverse-build.md`
 - Chair help: `!help build` (ops) / skill `bobiverse-jeeves-commands` section `!build`
-- Parent FR: #4006 (living umbrella --- do not `Closes` it from docs-only PRs); WP2 #4025; this skill book #4038
-- Tests: `common/tests/test_fr4006_build_job.py`, WP2 runner tests, `jeeves/tests/test_fr4038_bobiverse_build_skill.py`, `common/tests/test_fr6491_chair_build_lock_release.py` (FR #6491 chair lock release), `common/tests/test_fr7086_release_tag_already_exists.py` (FR #7086 idempotent pre-release)
+- Parent FR: #4006 (living umbrella --- do not `Closes` it from docs-only PRs); WP2 #4025; this skill book #4038; catalog #8490
+- Tests: `common/tests/test_fr4006_build_job.py`, WP2 runner tests, `common/tests/test_fr8490_*.py`, `jeeves/tests/test_fr4038_bobiverse_build_skill.py`, `common/tests/test_fr6491_chair_build_lock_release.py` (FR #6491 chair lock release), `common/tests/test_fr7086_release_tag_already_exists.py` (FR #7086 idempotent pre-release)

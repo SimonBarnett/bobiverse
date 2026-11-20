@@ -6,8 +6,20 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import bobiverse_build as bb
+import builds_catalog as bc
 import chair_commands as cc
 from repo_layout import ROOT
+
+
+def _cat():
+    return [
+        bc.BuildCatalogEntry(
+            name="Bobiverse",
+            yml="SimonBarnett/bobiverse:.bobiverse/build.yml",
+            output=r"D:\Temp\bobiverse-build",
+            install="fleet",
+        )
+    ]
 
 
 def test_fr6983_failed_build_then_rebuild_accepted(tmp_path: Path):
@@ -26,12 +38,13 @@ def test_fr6983_failed_build_then_rebuild_accepted(tmp_path: Path):
 
     dec = bb.decide_build(
         who=who,
-        body="!build SimonBarnett/bobiverse 2.0.0 47465818",
+        body="!build 1 2.0.0 47465818",
         may=cc.may,
         denied_line=cc.denied_line,
         recipe_loader=lambda r: bb.load_recipe(ROOT),
         lock=lock,
         new_build_id=lambda: "b-next",
+        catalog_entries=_cat(),
     )
     assert dec and dec.ok
     assert lock.running_id("SimonBarnett/bobiverse") == "b-next"
@@ -53,12 +66,13 @@ def test_fr6983_ok_build_then_rebuild_accepted(tmp_path: Path):
 
     dec = bb.decide_build(
         who=who,
-        body="!build SimonBarnett/bobiverse 2.0.1 main",
+        body="!build 1 2.0.1 main",
         may=cc.may,
         denied_line=cc.denied_line,
         recipe_loader=lambda r: bb.load_recipe(ROOT),
         lock=lock,
         new_build_id=lambda: "b-2",
+        catalog_entries=_cat(),
     )
     assert dec and dec.ok
     assert lock.running_id("SimonBarnett/bobiverse") == "b-2"
@@ -73,7 +87,7 @@ def test_fr6983_live_build_refuses_with_reply_lines(tmp_path: Path):
 
     dec = bb.decide_build(
         who=who,
-        body="!build SimonBarnett/bobiverse 2.0.0 main",
+        body="!build 1 2.0.0 main",
         may=cc.may,
         denied_line=cc.denied_line,
         recipe_loader=lambda r: bb.load_recipe(ROOT),
@@ -81,6 +95,7 @@ def test_fr6983_live_build_refuses_with_reply_lines(tmp_path: Path):
         new_build_id=lambda: "b-2",
         dead_max_age_s=1800.0,
         stale_max_age_s=99_000.0,
+        catalog_entries=_cat(),
     )
     assert dec is not None
     assert not dec.ok
@@ -168,9 +183,20 @@ def test_fr6983_chair_handler_releases_on_fail_and_channel_refusal_reply(
     # Re-hold to exercise refusal reply path.
     lock.try_acquire("SimonBarnett/bobiverse", "b-live")
     lock.touch("SimonBarnett/bobiverse", "b-live")
+    cat_path = home / "builds-catalog.json"
+    cat_path.write_text(
+        '[{"name":"Bobiverse","yml":"SimonBarnett/bobiverse:.bobiverse/build.yml",'
+        '"output":"D:\\\\Temp\\\\bobiverse-build","install":"fleet"}]',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        agent,
+        "_load_build_catalog_entries",
+        lambda: _cat(),
+    )
     agent._handle_build_command(
         "bob-flamingo",
-        "!build SimonBarnett/bobiverse 2.0.0 main",
+        "!build 1 2.0.0 main",
         target="#bobiverse",
         to_channel=True,
     )

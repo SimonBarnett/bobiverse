@@ -8,8 +8,20 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import bobiverse_build as bb
+import builds_catalog as bc
 import chair_commands as cc
 from repo_layout import ROOT
+
+
+def _cat():
+    return [
+        bc.BuildCatalogEntry(
+            name="Bobiverse",
+            yml="SimonBarnett/bobiverse:.bobiverse/build.yml",
+            output=r"D:\Temp\bobiverse-build",
+            install="fleet",
+        )
+    ]
 
 
 def test_fr6491_parse_build_result_ok_fail_with_id():
@@ -87,15 +99,17 @@ def test_fr6491_stale_lock_released_on_next_build_fresh_refuses(tmp_path: Path):
     data["builds"]["simonbarnett/bobiverse"]["started"] = time.time() - 99_000
     lock._write(data)
 
+    cat = _cat()
     dec = bb.decide_build(
         who=who,
-        body="!build SimonBarnett/bobiverse 2.0.0 main",
+        body="!build 1 2.0.0 main",
         may=cc.may,
         denied_line=cc.denied_line,
         recipe_loader=lambda r: bb.load_recipe(ROOT),
         lock=lock,
         new_build_id=lambda: "b-new",
         stale_max_age_s=3600.0,
+        catalog_entries=cat,
     )
     assert dec and dec.ok
     assert lock.running_id("SimonBarnett/bobiverse") == "b-new"
@@ -105,13 +119,14 @@ def test_fr6491_stale_lock_released_on_next_build_fresh_refuses(tmp_path: Path):
     # Fresh lock (just acquired) must still refuse.
     dec2 = bb.decide_build(
         who=who,
-        body="!build SimonBarnett/bobiverse 2.0.1 main",
+        body="!build 1 2.0.1 main",
         may=cc.may,
         denied_line=cc.denied_line,
         recipe_loader=lambda r: bb.load_recipe(ROOT),
         lock=lock,
         new_build_id=lambda: "b-2",
         stale_max_age_s=3600.0,
+        catalog_entries=cat,
     )
     assert dec2 and any("refused" in ln and "b-new" in ln for ln in dec2.pm_lines)
     assert lock.running_id("SimonBarnett/bobiverse") == "b-new"
@@ -121,24 +136,27 @@ def test_fr6491_cancel_and_status_unchanged(tmp_path: Path):
     who = cc.Principal("owner", "simon", "simon")
     lock = bb.BuildLock(tmp_path / "l.json")
     lock.try_acquire("SimonBarnett/bobiverse", "b-1")
+    cat = _cat()
 
     st = bb.decide_build(
         who=who,
-        body="!build status SimonBarnett/bobiverse",
+        body="!build status 1",
         may=cc.may,
         denied_line=cc.denied_line,
         recipe_loader=lambda r: bb.load_recipe(ROOT),
         lock=lock,
+        catalog_entries=cat,
     )
     assert st and st.status_only and "b-1" in " ".join(st.pm_lines)
 
     cancel = bb.decide_build(
         who=who,
-        body="!build cancel SimonBarnett/bobiverse",
+        body="!build cancel 1",
         may=cc.may,
         denied_line=cc.denied_line,
         recipe_loader=lambda r: bb.load_recipe(ROOT),
         lock=lock,
+        catalog_entries=cat,
     )
     assert cancel and cancel.cancel
     assert lock.running_id("SimonBarnett/bobiverse") is None
@@ -149,17 +167,19 @@ def test_fr6491_route_and_announce_carry_id(tmp_path: Path):
     lock = bb.BuildLock(tmp_path / "l.json")
     dec = bb.decide_build(
         who=who,
-        body="!build SimonBarnett/bobiverse 2.0.0 main",
+        body="!build 1 2.0.0 main",
         may=cc.may,
         denied_line=cc.denied_line,
         recipe_loader=lambda r: bb.load_recipe(ROOT),
         lock=lock,
         new_build_id=lambda: "b-route",
+        catalog_entries=_cat(),
     )
     assert dec and dec.ok
-    assert dec.route == (
+    assert dec.route.startswith(
         "BUILD v1 repos=SimonBarnett/bobiverse version=2.0.0 ref=main id=b-route"
     )
+    assert "output=" in dec.route and "install=fleet" in dec.route
     job = bb.enqueue_build_job(
         bb.parse_build_v1_route(dec.route),
         queue_dir=tmp_path / "q",

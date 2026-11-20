@@ -1,0 +1,20 @@
+[
+  {
+    "name": "Bobiverse fleet MSI",
+    "yml": "SimonBarnett/bobiverse:.bobiverse/build.yml",
+    "output": "D:\\Temp\\bobiverse-build",
+    "install": "fleet",
+    "dep": ["bob-ear", "bob-tray", "bob-worker", "jeeves", "airc"],
+    "version": "0.1.40",
+    "ref": "main"
+  },
+  {
+    "name": "Bobiverse (flamingo only)",
+    "yml": "SimonBarnett/bobiverse:.bobiverse/build.yml",
+    "output": "D:\\Temp\\bobiverse-build-flamingo",
+    "install": "flamingo",
+    "dep": ["bob-ear", "bob-tray", "bob-worker"],
+    "version": "0.1.40",
+    "ref": "main"
+  }
+]

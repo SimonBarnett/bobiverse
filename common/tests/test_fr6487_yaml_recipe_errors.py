@@ -10,6 +10,18 @@ import chair_commands as cc
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 import bobiverse_build as bb  # noqa: E402
+import builds_catalog as bc  # noqa: E402
+
+
+def _cat():
+    return [
+        bc.BuildCatalogEntry(
+            name="Bobiverse",
+            yml="SimonBarnett/bobiverse:.bobiverse/build.yml",
+            output=r"D:\Temp\bobiverse-build",
+            install="fleet",
+        )
+    ]
 
 
 def _write_yaml_recipe(root: Path, text: str) -> Path:
@@ -105,11 +117,12 @@ def test_fr6487_decide_build_surfaces_pyyaml_error(tmp_path: Path, monkeypatch):
 
     dec = bb.decide_build(
         who=who,
-        body="!build SimonBarnett/bobiverse 2.0.0",
+        body="!build 1 2.0.0",
         may=cc.may,
         denied_line=cc.denied_line,
         recipe_loader=loader,
         lock=lock,
+        catalog_entries=_cat(),
     )
     assert dec is not None
     joined = "\n".join(dec.pm_lines)

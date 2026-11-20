@@ -4,6 +4,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import bobiverse_build as bb
+import builds_catalog as bc
 import chair_commands as cc
 import run_bobiverse_build as rbb
 from repo_layout import ROOT
@@ -15,16 +16,27 @@ def _who():
     return cc.Principal("owner", "simon", "simon")
 
 
+def _cat():
+    return [
+        bc.BuildCatalogEntry(
+            name="Bobiverse",
+            yml="SimonBarnett/bobiverse:.bobiverse/build.yml",
+            output=r"D:\Temp\bobiverse-build",
+            install="fleet",
+        )
+    ]
+
+
 def test_fr7094_parse_build_tests_only_flag_and_subcommand():
-    assert bb.parse_build("!build SimonBarnett/bobiverse 2.0.0 34c07a87 --tests-only") == (
+    assert bb.parse_build("!build 1 2.0.0 34c07a87 --tests-only") == (
         True,
         "run",
-        "SimonBarnett/bobiverse 2.0.0 34c07a87 --tests-only",
+        "1 2.0.0 34c07a87 --tests-only",
     )
-    assert bb.parse_build("!build tests-only SimonBarnett/bobiverse 2.0.0 34c07a87") == (
+    assert bb.parse_build("!build tests-only 1 2.0.0 34c07a87") == (
         True,
         "tests-only",
-        "SimonBarnett/bobiverse 2.0.0 34c07a87",
+        "1 2.0.0 34c07a87",
     )
 
 
@@ -32,12 +44,13 @@ def test_fr7094_decide_build_tests_only_holds_lock_and_route(tmp_path: Path):
     lock = bb.BuildLock(tmp_path / "l.json")
     dec = bb.decide_build(
         who=_who(),
-        body="!build SimonBarnett/bobiverse 2.0.0 HEAD --tests-only",
+        body="!build 1 2.0.0 HEAD --tests-only",
         may=cc.may,
         denied_line=cc.denied_line,
         recipe_loader=lambda r: bb.load_recipe(ROOT),
         lock=lock,
         new_build_id=lambda: "b-7094",
+        catalog_entries=_cat(),
     )
     assert dec and dec.ok and dec.tests_only is True
     assert "tests_only=1" in dec.route
