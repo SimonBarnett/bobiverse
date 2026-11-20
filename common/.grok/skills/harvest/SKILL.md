@@ -265,3 +265,4 @@ Do not land a second copy of a harvest-lesson MRB playbook in this book. Those p
 - While a seat is in out-of-fuel hold, digest worker_list must paint state=out_of_fuel and keep updated fresh; idle_quiet_offerable must skip that seat.
 - After pointer refresh, confirm skill-dag MCP drop with Toolhelp PID liveness twice; never treat a flaky empty PowerShell cmdline sample as a transport drop
 - An identity-only digest merge must not append model to cleared. Cursor CLI account reads only authInfo.email; a key override is a pid-bound marker with no key value.
+- When digest POSTs fail or ear briefly QUITs, snapshot workers_last_good before wipe, restore on online, mark workers_stale/digest_post_failed on export, and TipForm Sync must fall back to IRC seat markers instead of painting empty workers[].
