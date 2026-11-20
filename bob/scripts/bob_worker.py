@@ -7777,28 +7777,45 @@ class ProcIdleTurnWatcher:
 
 
 def apply_cursor_inject_keys_default(kind: str, log: Optional[Callable[[str], None]] = None) -> bool:
-    """FR #4464 / #6158 / #8560: Cursor and OpenCode seats default to batched KEY_EVENT at seat start.
+    """FR #4464 / #6158 / #8558 / #8560: Cursor and OpenCode seats use batched KEY_EVENT.
 
     cursor-agent treats Ctrl+V as a literal v. OpenCode ReadLine paste is unreliable on
-    this fleet (FR-OC-INJECT / FR #8560): PASTE=1 leaves a stray ``v`` and breaks submit-verify.
-    Set BOB_WORKER_INJECT_PASTE=0 when it is unset. For Cursor, an explicit value still wins.
-    For OpenCode, launch recipes must keep PASTE=0 (force-ignore of PASTE=1 is FR #8558).
+    this fleet (FR-OC-INJECT / #8560): PASTE=1 leaves a stray ``v`` in the TUI, submit-verify
+    fails, and the seat later exits cli-failure with ``What would you like me to do?``.
+    OpenCode always forces ``BOB_WORKER_INJECT_PASTE=0`` (even when the env was set to 1).
+    Cursor still defaults to 0 when unset; an explicit Cursor value wins.
     """
     k = (kind or "").strip().lower()
     if k not in ("cursor", "opencode"):
         return False
-    if (os.environ.get("BOB_WORKER_INJECT_PASTE") or "").strip():
+    raw = (os.environ.get("BOB_WORKER_INJECT_PASTE") or "").strip().lower()
+    if k == "opencode":
+        if raw in ("0", "false", "no", "off"):
+            return False
+        # Unset or PASTE=1 (or other truthy): force keys. FR #8558 / #8560.
+        changed = raw != "0"
+        os.environ["BOB_WORKER_INJECT_PASTE"] = "0"
+        if log is not None:
+            try:
+                if raw in ("1", "true", "yes", "on"):
+                    log(
+                        "relay: opencode seat - ignoring BOB_WORKER_INJECT_PASTE=1; "
+                        "inject via batched keys only (FR #8558 / #8560: never PASTE=1)"
+                    )
+                elif changed:
+                    log(
+                        "relay: opencode seat - inject via batched keys "
+                        "(FR #8560: keep BOB_WORKER_INJECT_PASTE=0; never PASTE=1)"
+                    )
+            except Exception:
+                pass
+        return True
+    if raw:
         return False
     os.environ["BOB_WORKER_INJECT_PASTE"] = "0"
     if log is not None:
         try:
-            if k == "opencode":
-                log(
-                    "relay: opencode seat - inject via batched keys "
-                    "(FR #8560: keep BOB_WORKER_INJECT_PASTE=0; never PASTE=1)"
-                )
-            else:
-                log("relay: cursor seat - inject via batched keys (Ctrl+V lands as literal 'v')")
+            log("relay: cursor seat - inject via batched keys (Ctrl+V lands as literal 'v')")
         except Exception:
             pass
     return True
