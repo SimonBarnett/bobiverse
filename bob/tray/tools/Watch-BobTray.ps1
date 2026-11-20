@@ -4039,6 +4039,8 @@ $poll.Add_Tick({
                     # FR #7660: same warm runspace as stall-alerts, still the 45s budget.
                     [void](Invoke-BobTrayWarmEngineStep -Name 'update-hover-engine' -Root $RepoRoot -TimeoutSec ([int]$script:BobTrayEngineStepTimeoutSec) -ArgumentList @($RepoRoot) -Body {
                         param($Root)
+                        # FR #8404: keep the digest GET inside the 45s step budget.
+                        $env:BOB_DIGEST_HTTP_TIMEOUT_SEC = '8'
                         $h = Get-BobTrayHover
                         if (Get-Command Write-BobTrayStatusSnapshot -ErrorAction SilentlyContinue -and $h) {
                             $model = New-BobTrayStatusModel -Hover $h -AlertKind 'none' -Alerts @() -Version '' -Machine ([string]$env:BOB_MACHINE_ID) -Title ([string]$h.title) -Short ([string]$h.short) -Attention $false -AttentionSeq 0 -Pulse $false

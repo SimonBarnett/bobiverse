@@ -544,7 +544,16 @@ function Read-BobReportDigestHttp {
         if (-not (Get-Command Invoke-BobDigestHttpGet -ErrorAction SilentlyContinue)) {
             throw 'Invoke-BobDigestHttpGet missing'
         }
-        $got = Invoke-BobDigestHttpGet -Uri $url -TimeoutSec 15
+        # FR #8404: engine hover sets BOB_DIGEST_HTTP_TIMEOUT_SEC so one slow GET
+        # cannot consume the whole 45s step. Other callers keep 15s.
+        $timeoutSec = 15
+        try {
+            $rawTo = [string]$env:BOB_DIGEST_HTTP_TIMEOUT_SEC
+            if ($rawTo -and $rawTo.Trim()) {
+                $timeoutSec = [Math]::Max(1, [Math]::Min(15, [int]$rawTo.Trim()))
+            }
+        } catch { $timeoutSec = 15 }
+        $got = Invoke-BobDigestHttpGet -Uri $url -TimeoutSec $timeoutSec
         if (-not $got -or [int]$got.StatusCode -lt 200 -or [int]$got.StatusCode -ge 300) { return $null }
         # UTF-8 body already decoded by Invoke-BobDigestHttpGet (PS 5.1 Latin-1 trap avoided).
         $text = [string]$got.Text

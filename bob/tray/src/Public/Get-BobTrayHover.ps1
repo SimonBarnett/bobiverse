@@ -2977,11 +2977,12 @@ function Get-BobLiveGrokAgents {
     $out = @()
     $procs = @()
     try {
-        $procs = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
-                $_.Name -eq 'grok.exe' -or ($_.ExecutablePath -and $_.ExecutablePath -match '[\\/]grok\.exe$')
-            })
+        # FR #8404: a full Win32_Process enumeration on a busy host blows the
+        # 45s update-hover-engine budget. Ask WMI for grok.exe only.
+        $procs = @(Get-CimInstance Win32_Process -Filter "Name='grok.exe'" -ErrorAction SilentlyContinue)
     }
     catch { return @() }
+    $parentByPid = @{}
     foreach ($p in $procs) {
         $cmd = [string]$p.CommandLine
         if ($cmd -match '--type=') { continue }
@@ -3007,9 +3008,13 @@ function Get-BobLiveGrokAgents {
         try { $walk = [int]$p.ParentProcessId } catch { $walk = 0 }
         for ($i = 0; $i -lt 6 -and $walk -gt 0; $i++) {
             $par = $null
-            try {
-                $par = Get-CimInstance Win32_Process -Filter ("ProcessId={0}" -f $walk) -ErrorAction SilentlyContinue
-            } catch { $par = $null }
+            if ($parentByPid.ContainsKey($walk)) { $par = $parentByPid[$walk] }
+            else {
+                try {
+                    $par = Get-CimInstance Win32_Process -Filter ("ProcessId={0}" -f $walk) -ErrorAction SilentlyContinue
+                } catch { $par = $null }
+                $parentByPid[$walk] = $par
+            }
             if (-not $par) { break }
             $nm = [string]$par.Name
             if ($i -eq 0) {
