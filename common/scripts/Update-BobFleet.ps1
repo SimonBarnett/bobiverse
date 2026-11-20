@@ -12,7 +12,7 @@
   copy. Digest online does not imply WinRM (FR #8429 / #8532): when CredMan+WinRM
   from this host is closed (timeout / cannot complete), the row is method=winrm-closed
   with fallback=tray-local (run Update-BobFleet locally on that shop, or airc/tray
-  seat start after a local install) — never assume flamingo can reach every shop.
+  seat start after a local install) - never assume flamingo can reach every shop.
   One JSON object on stdout. Never prints secrets.
 
 .PARAMETER StoreCredential
