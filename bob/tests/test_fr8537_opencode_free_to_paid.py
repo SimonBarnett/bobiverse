@@ -95,3 +95,19 @@ def test_on_hit_switches_without_giveup(tmp_path, monkeypatch):
     cached = bw.load_fresh_agent_list_fuel(max_age_s=3600, env=env)
     assert cached is not None
     assert cached.opencode_free == 0
+
+def test_fr8537_paid_switch_model_reads_tray_slot(tmp_path, monkeypatch):
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    monkeypatch.setenv(
+        "BOB_WORKER_START_MODEL_JSON",
+        '{"models":{"opencodeFree":"opencode/deepseek-v4.1-flash-free","opencodePaid":"opencode-go/kimi-k3"}}',
+    )
+    got = bw.resolve_opencode_paid_switch_model(
+        env={
+            "LOCALAPPDATA": str(tmp_path),
+            "XDG_CONFIG_HOME": str(tmp_path),
+            "BOB_WORKER_START_MODEL_JSON": '{"models":{"opencodeFree":"opencode/deepseek-v4.1-flash-free","opencodePaid":"opencode-go/kimi-k3"}}',
+        }
+    )
+    assert got == "opencode-go/kimi-k3"
