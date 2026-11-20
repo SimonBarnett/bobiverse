@@ -8203,13 +8203,19 @@ def grok_auth_path_stamp_path(
 
 
 def _write_grok_auth_path_stamp(auth_path: Path) -> None:
-    """Persist auth.json location for LocalSystem ticks. Never writes file contents."""
+    """Persist auth.json location for LocalSystem ticks. Never writes file contents.
+
+    FR #8507: never stamp a path that is not a file --- a missing interactive
+    ``auth.json`` must not poison ``grok-auth-path.txt`` and block service-home.
+    """
     stamp = grok_auth_path_stamp_path()
     if stamp is None:
         return
     try:
         p = Path(auth_path)
         if _is_windows_system_profile(p) or _is_windows_system_profile(p.parent):
+            return
+        if not p.is_file():
             return
         stamp.parent.mkdir(parents=True, exist_ok=True)
         stamp.write_text(str(p) + "\n", encoding="utf-8")
@@ -8582,8 +8588,17 @@ def xai_weekly_auth_path() -> tuple[Path | None, str]:
             user_home = _interactive_grok_user_home()
             if user_home is not None:
                 path = user_home / ".grok" / "auth.json"
-                _write_grok_auth_path_stamp(path)
-                return path, "interactive-auth"
+                # FR #8507: only win when the machine store file exists. A console
+                # user home without auth.json must fall through to stamped /
+                # service-home (otherwise fetch reports auth-file-missing and
+                # the ear-pool-stale detector fires forever).
+                try:
+                    present = path.is_file()
+                except OSError:
+                    present = False
+                if present:
+                    _write_grok_auth_path_stamp(path)
+                    return path, "interactive-auth"
         stamped = _read_grok_auth_path_stamp()
         if stamped is not None:
             return stamped, "stamped-auth"
