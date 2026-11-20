@@ -32,6 +32,8 @@ def test_fr8404_engine_hover_sets_short_digest_timeout():
     watch = WATCH.read_text(encoding="utf-8")
     start = watch.find("-Name 'update-hover-engine'")
     assert start >= 0
-    window = watch[start:start + 700]
+    window = watch[start:start + 1800]
     assert "BOB_DIGEST_HTTP_TIMEOUT_SEC = '8'" in window
     assert "Get-BobTrayHover" in window
+    assert "Remove-Item Env:\\BOB_DIGEST_HTTP_TIMEOUT_SEC" in window
+    assert "$prevDigestTimeout" in window
