@@ -79,6 +79,26 @@ def test_health_soft_passes_when_non_chair_and_report_fresh(tmp_path, monkeypatc
     assert any("non-chair soft-ok" in n for n in payload["notes"])
 
 
+
+def test_health_ok_path_no_unbound_overlay(tmp_path, monkeypatch):
+    """MRB #8586: findings-empty must not raise UnboundLocalError on overlay."""
+    chair = tmp_path / "chair"
+    digest = tmp_path / "digest"
+    chair.mkdir()
+    digest.mkdir()
+    (chair / "queue.json").write_text('{"unaccepted":[]}\n', encoding="utf-8")
+
+    monkeypatch.setattr(health, "_service_state", lambda name: "running")
+    monkeypatch.setattr(health, "_service_start_type", lambda name: "Automatic")
+    monkeypatch.setattr(health, "_bobcallback_ok", lambda: ("listen:7700", True))
+
+    payload, code = health.check(_args(chair, digest))
+    assert code == common.EXIT_OK
+    assert payload["ok"] is True
+    assert payload["findings"] == []
+    assert "non_chair_overlay" not in payload
+
+
 def test_health_still_finds_when_queue_present(tmp_path, monkeypatch):
     chair = tmp_path / "chair"
     digest = tmp_path / "digest"
