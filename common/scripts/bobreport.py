@@ -440,6 +440,10 @@ _TRAY_MACHINE_EXPORT_KEYS = (
     "free_reset_at",
     "free_status",
     "opencode_free_status",
+    # FR #8513: last-good workers after shop-down / digest POST churn.
+    "workers_stale",
+    "workers_stale_age_s",
+    "digest_post_failed",
 )
 # FR #7366: Jeeves fleet meters must not stick on machines.* (stale ear copies).
 _FLEET_OWNED_MACHINE_KEYS = frozenset({"opencode_windows", "copilot", "opencode_fetched_at"})
@@ -1710,11 +1714,69 @@ def _apply_model_fields_to_worker_list(ent: dict, nick: str, fields: dict) -> No
             row[key] = fields[key]
     rows[idx] = row
     ent["worker_list"] = _coerce_worker_list(rows)
+    _refresh_workers_last_good_from_live(ent)
+
+
+def _snapshot_workers_last_good(ent: dict) -> None:
+    """FR #8513: remember live worker_list before an offline wipe."""
+    if not isinstance(ent, dict):
+        return
+    rows = _coerce_worker_list(ent.get("worker_list"))
+    if not rows:
+        return
+    ent["workers_last_good"] = [dict(r) for r in rows]
+    ent["workers_last_good_at"] = _utc_now_iso()
+
+
+def _restore_workers_last_good_if_empty(ent: dict) -> bool:
+    """FR #8513: after ear churn, put last-good seats back until fresh upserts arrive."""
+    if not isinstance(ent, dict):
+        return False
+    if _coerce_worker_list(ent.get("worker_list")):
+        return False
+    last = ent.get("workers_last_good")
+    if not isinstance(last, list) or not last:
+        return False
+    rows = _coerce_worker_list(last)
+    if not rows:
+        return False
+    ent["worker_list"] = rows
+    ent["workers_stale"] = True
+    _refresh_machine_activity_from_worker_list(ent)
+    return True
+
+
+def _refresh_workers_last_good_from_live(ent: dict) -> None:
+    """FR #8513: a successful live upsert refreshes last-good and clears stale."""
+    if not isinstance(ent, dict):
+        return
+    rows = _coerce_worker_list(ent.get("worker_list"))
+    if not rows:
+        return
+    ent["workers_last_good"] = [dict(r) for r in rows]
+    ent["workers_last_good_at"] = _utc_now_iso()
+    ent.pop("workers_stale", None)
+    ent.pop("digest_post_failed", None)
+
+
+def _workers_stale_age_s(ent: dict, now: datetime | None = None) -> int | None:
+    age = _clock_age_s(ent.get("workers_last_good_at"), now)
+    if age is None:
+        return None
+    return max(0, int(age))
 
 
 def worker_list_for_export(ent: dict) -> list[dict]:
     rows = _coerce_worker_list(ent.get("worker_list"))
-    return sorted(rows, key=lambda r: r["nick"].lower())
+    if rows:
+        return sorted(rows, key=lambda r: r["nick"].lower())
+    # FR #8513: online with an empty live list still paints last-good (stale),
+    # so TipForm / monitor do not treat ear churn as "no seats".
+    if ent.get("online") and isinstance(ent.get("workers_last_good"), list):
+        last = _coerce_worker_list(ent.get("workers_last_good"))
+        if last:
+            return sorted(last, key=lambda r: r["nick"].lower())
+    return []
 
 
 def coerce_console_nicks(raw: object) -> list[str]:
@@ -1814,6 +1876,16 @@ def _coerce_machine(mid: str, raw: object) -> dict:
             "console_nicks": coerce_console_nicks(raw.get("console_nicks")),
         }
     )
+    # FR #8513: last-good worker snapshot survives load_digest.
+    last_good = raw.get("workers_last_good")
+    if isinstance(last_good, list) and last_good:
+        base["workers_last_good"] = _coerce_worker_list(last_good)
+    if raw.get("workers_last_good_at"):
+        base["workers_last_good_at"] = str(raw.get("workers_last_good_at"))
+    if raw.get("workers_stale"):
+        base["workers_stale"] = True
+    if raw.get("digest_post_failed"):
+        base["digest_post_failed"] = True
     if isinstance(raw.get("pcent"), dict):
         base["pcent"] = raw["pcent"]
     if isinstance(raw.get("cursor_pools"), list):
@@ -2778,6 +2850,9 @@ def _set_online(ent: dict, online: bool) -> None:
     ent["online"] = online
     ent["status"] = "I am online" if online else "I am offline"
     if not online:
+        # FR #8513: snapshot before wipe so a brief shop-down / dual-ear QUIT
+        # does not permanently blank workers[] while seats stay alive locally.
+        _snapshot_workers_last_good(ent)
         ent["working_on"] = ""
         ent["workers"] = {}
         ent["worker_list"] = []
@@ -2785,6 +2860,7 @@ def _set_online(ent: dict, online: bool) -> None:
         ent.pop("online_stuck_reported", None)
     else:
         ent.pop("offline_at", None)
+        _restore_workers_last_good_if_empty(ent)
 
 
 def _fresh_clock_age(ent: dict, now: datetime | None = None) -> float | None:
@@ -3217,8 +3293,13 @@ def _apply_merge_payload(doc: dict, mid: str, payload: dict) -> list[str]:
             workers[pid_s] = _coerce_worker(mid, pid_s, current)
             _apply_model_fields_to_worker_list(ent, str(current.get("nick") or ""), fields)
     if "online" in payload:
+        going_online = bool(payload["online"]) and not bool(ent.get("online"))
         ent["online"] = bool(payload["online"])
         ent["status"] = "I am online" if ent["online"] else "I am offline"
+        # FR #8513: merge online=true (without shop_down/_set_online) must restore.
+        if going_online:
+            ent.pop("offline_at", None)
+            _restore_workers_last_good_if_empty(ent)
     if payload.get("status"):
         ent["status"] = str(payload["status"])
     # Period roll (weekly sand) → clear last period's weekly when the new window has no figure yet.
@@ -3368,6 +3449,14 @@ def _apply_merge_payload(doc: dict, mid: str, payload: dict) -> list[str]:
             ent["queued"] = int(ent["queued"])
         except (TypeError, ValueError):
             ent["queued"] = 0
+    # FR #8513: apply after pid/model refresh so last-good clear cannot drop the flag.
+    if "digest_post_failed" in payload:
+        if payload.get("digest_post_failed"):
+            ent["digest_post_failed"] = True
+            ent["workers_stale"] = True
+            _snapshot_workers_last_good(ent)
+        else:
+            ent.pop("digest_post_failed", None)
     return actions
 
 
@@ -3850,6 +3939,7 @@ def _apply_worker_op(home: Path, op: str, mid: str, payload: dict, briefer_nick:
         ent["worker_list"] = after_rows
         _refresh_machine_activity_from_worker_list(ent)
         _mirror_worker_list_to_legacy_workers(ent, mid, nick)
+        _refresh_workers_last_good_from_live(ent)
         save_digest(home, doc)
         return CallbackOutcome(ok=True, changed=False)
     for r in after_rows:
@@ -3872,6 +3962,8 @@ def _apply_worker_op(home: Path, op: str, mid: str, payload: dict, briefer_nick:
     ent["worker_list"] = after_rows
     _refresh_machine_activity_from_worker_list(ent)
     _mirror_worker_list_to_legacy_workers(ent, mid, nick)
+    # FR #8513: live upsert refreshes last-good and clears stale / digest_post_failed.
+    _refresh_workers_last_good_from_live(ent)
     if briefer_nick:
         doc["briefer"] = briefer_nick
     doc["ts"] = now_iso
@@ -3940,6 +4032,8 @@ def apply_join(home: Path, nick: str, channel: str, briefer_nick: str = "") -> P
     ent.pop("offline_at", None)
     if was_offline:
         ent["working_on"] = ""
+        # FR #8513: rejoin must not leave online+workers=[] after shop-down wipe.
+        _restore_workers_last_good_if_empty(ent)
         _note_event(doc, "machine-join", machine=mid)
     save_digest(home, doc)
     return PresenceOutcome(ok=True, machine_id=mid)
@@ -4784,7 +4878,27 @@ def export_machine_for_tray(
     out.setdefault("online", False)
     out.setdefault("status", "I am offline" if not out.get("online") else "I am online")
     out.setdefault("working_on", "")
-    out["workers"] = worker_list_for_export(base)
+    live_rows = _coerce_worker_list(base.get("worker_list"))
+    exported = worker_list_for_export(base)
+    out["workers"] = exported
+    # FR #8513: when export falls back to last-good (or restore left workers_stale),
+    # surface age + failure signal so TipForm / monitor can mark seats stale.
+    serving_last_good = bool(
+        out.get("online")
+        and exported
+        and (not live_rows or base.get("workers_stale") or base.get("digest_post_failed"))
+    )
+    if serving_last_good:
+        out["workers_stale"] = True
+        age_s = _workers_stale_age_s(base, now)
+        if age_s is not None:
+            out["workers_stale_age_s"] = age_s
+        if base.get("digest_post_failed"):
+            out["digest_post_failed"] = True
+    else:
+        out.pop("workers_stale", None)
+        out.pop("workers_stale_age_s", None)
+        out.pop("digest_post_failed", None)
     out["console_nicks"] = coerce_console_nicks(base.get("console_nicks"))
     out.setdefault("weekly", None)
     out.setdefault("period_end", None)

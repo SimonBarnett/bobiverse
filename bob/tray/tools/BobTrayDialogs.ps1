@@ -308,8 +308,54 @@ function Format-BobTrayStatusWorkerLine {
     return ('{0}: {1}' -f $n, $text)
 }
 
+function Get-BobTrayLocalSeatWorkerLines {
+    <#
+      FR #8513: local IRC seat-ledger fallback when remote digest fetch fails or
+      returns workers=[] while seats are still alive on this box.
+      Reads %LOCALAPPDATA%\Bobiverse\worker\run\seats\*.irc.json (live pid only).
+    #>
+    param(
+        [string]$MachineId = '',
+        [string]$SeatsDir = '',
+        [switch]$MarkStale
+    )
+    if (-not $SeatsDir) {
+        $la = $env:LOCALAPPDATA
+        if (-not $la) { $la = Join-Path $env:USERPROFILE 'AppData\Local' }
+        $SeatsDir = Join-Path $la 'Bobiverse\worker\run\seats'
+    }
+    $lines = New-Object System.Collections.Generic.List[string]
+    if (-not (Test-Path -LiteralPath $SeatsDir -PathType Container)) { return @() }
+    $wantMid = ([string]$MachineId).Trim().ToLowerInvariant()
+    Get-ChildItem -LiteralPath $SeatsDir -Filter '*.irc.json' -ErrorAction SilentlyContinue | ForEach-Object {
+        try {
+            $j = Get-Content -LiteralPath $_.FullName -Raw -Encoding UTF8 | ConvertFrom-Json
+            if ($j.mode -and ([string]$j.mode).ToLowerInvariant() -ne 'agent') { return }
+            $seatPid = 0
+            try { $seatPid = [int]$j.pid } catch { $seatPid = 0 }
+            if ($seatPid -le 0) { return }
+            if (-not (Get-Process -Id $seatPid -ErrorAction SilentlyContinue)) { return }
+            $mid = ([string]$j.machine).Trim().ToLowerInvariant()
+            if ($wantMid -and $mid -and $mid -ne $wantMid) { return }
+            $nick = ([string]$j.nick).Trim()
+            if (-not $nick) { $nick = ('{0}-{1}' -f $(if ($mid) { $mid } else { 'seat' }), $seatPid) }
+            $state = 'idle'
+            if ($MarkStale) { $state = 'idle' }
+            $ln = Format-BobTrayStatusWorkerLine -Nick $nick -State $state -Work $(if ($MarkStale) { 'stale (local)' } else { '' })
+            if ($ln) {
+                if ($MarkStale -and $ln -notmatch 'stale') {
+                    $ln = ('{0} · stale' -f $ln)
+                }
+                [void]$lines.Add($ln)
+            }
+        } catch { }
+    }
+    return @($lines | Sort-Object -Unique)
+}
+
 function Get-BobTrayDigestWorkerLinesForMachine {
     # Report-only: machines.<id>.workers as array [{nick,state,work}] or nick-map {nick={state,work|job}}.
+    # FR #8513: when workers_stale / digest_post_failed, append a stale marker on each line.
     param($Digest, [string]$MachineId)
     if (-not $Digest -or -not $Digest.machines -or -not $MachineId) { return @() }
     $ent = $null
@@ -384,6 +430,21 @@ function Get-BobTrayDigestWorkerLinesForMachine {
             if ($ln) { [void]$lines.Add($ln) }
         }
     }
+    # FR #8513: mark TipForm lines when digest kept last-good / digest_post_failed.
+    $stale = $false
+    try {
+        if ($ent.PSObject.Properties.Name -contains 'workers_stale' -and $ent.workers_stale) { $stale = $true }
+        if ($ent.PSObject.Properties.Name -contains 'digest_post_failed' -and $ent.digest_post_failed) { $stale = $true }
+    } catch { }
+    if ($stale) {
+        $marked = New-Object System.Collections.Generic.List[string]
+        foreach ($ln in @($lines)) {
+            if (-not $ln) { continue }
+            if ([string]$ln -match '(?i)\bstale\b') { [void]$marked.Add([string]$ln) }
+            else { [void]$marked.Add(('{0} · stale' -f $ln)) }
+        }
+        return @($marked | Sort-Object)
+    }
     return @($lines | Sort-Object)
 }
 
@@ -393,17 +454,22 @@ function Sync-BobTrayStatusWorkersFromDigest {
       Bound HTTP (default 8s) so a peer DNS/UNC hang in hover cannot freeze tray-status.json forever.
       Updates only grok[].workers (+ ts); leaves cursor pools / attention / copilot_* alone (FR #6148).
       -Digest: optional already-parsed digest (tests / callers that fetched elsewhere).
+      FR #8513: on digest fetch failure, keep/merge local IRC seat ledger instead of wiping TipForm.
+      When digest returns workers=[] for a local machine that still has live seat PIDs, paint local
+      nicks marked stale. When digest drops seats and local PIDs are gone, clear those TipForm lines.
     #>
     param(
         [Parameter(Mandatory)][string]$Root,
         [string]$ReportUrl = '',
         [int]$TimeoutSec = 8,
-        $Digest = $null
+        $Digest = $null,
+        [string]$SeatsDir = ''
     )
     try {
         $path = Join-Path (Join-Path $Root 'run') 'tray-status.json'
         if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { return $null }
         $digest = $Digest
+        $fetchFailed = $false
         if (-not $digest) {
             # FR #6142: trim before blank check (whitespace-only env -> canonical).
             $url = ([string]$ReportUrl).Trim()
@@ -424,19 +490,62 @@ function Sync-BobTrayStatusWorkersFromDigest {
             if (-not (Get-Command Invoke-BobDigestHttpGet -ErrorAction SilentlyContinue)) {
                 throw 'Invoke-BobDigestHttpGet missing'
             }
-            $got = Invoke-BobDigestHttpGet -Uri $url -TimeoutSec $sec
-            if (-not $got -or [int]$got.StatusCode -lt 200 -or [int]$got.StatusCode -ge 300) {
-                throw ('digest HTTP status {0}' -f $(if ($got) { $got.StatusCode } else { 'null' }))
+            try {
+                $got = Invoke-BobDigestHttpGet -Uri $url -TimeoutSec $sec
+                if (-not $got -or [int]$got.StatusCode -lt 200 -or [int]$got.StatusCode -ge 300) {
+                    throw ('digest HTTP status {0}' -f $(if ($got) { $got.StatusCode } else { 'null' }))
+                }
+                # UTF-8 body already decoded by Invoke-BobDigestHttpGet (PS 5.1 Latin-1 trap avoided).
+                $digest = [string]$got.Text | ConvertFrom-Json
+            } catch {
+                # FR #8513: fetch failure must not blank TipForm when local seats are alive.
+                $fetchFailed = $true
+                $digest = $null
             }
-            # UTF-8 body already decoded by Invoke-BobDigestHttpGet (PS 5.1 Latin-1 trap avoided).
-            $digest = [string]$got.Text | ConvertFrom-Json
         }
-        if (-not $digest -or -not $digest.machines) { return $null }
         $raw = [IO.File]::ReadAllText($path, (New-Object System.Text.UTF8Encoding $false))
         $model = $raw | ConvertFrom-Json
         if (-not $model) { return $null }
         $grok = @($model.grok)
         if ($grok.Count -eq 0) { return $null }
+        if ($fetchFailed -or -not $digest -or -not $digest.machines) {
+            $changed = $false
+            foreach ($row in $grok) {
+                if (-not $row) { continue }
+                $heading = [string]$row.heading
+                if (-not $heading) { continue }
+                $token = ($heading -split '\s+', 2)[0]
+                if (-not $token) { continue }
+                $mid = $token.Trim().ToLowerInvariant()
+                $local = @(Get-BobTrayLocalSeatWorkerLines -MachineId $mid -SeatsDir $SeatsDir -MarkStale)
+                if ($local.Count -eq 0) {
+                    # No local seats: keep previous TipForm lines but mark them stale.
+                    $prev = @($row.workers | ForEach-Object { [string]$_ } | Where-Object { $_ })
+                    if ($prev.Count -eq 0) { continue }
+                    $marked = @(
+                        foreach ($ln in $prev) {
+                            if ($ln -match '(?i)\bstale\b') { $ln } else { '{0} · stale' -f $ln }
+                        }
+                    )
+                    $row.workers = @($marked)
+                    $changed = $true
+                    continue
+                }
+                $prev = @($row.workers | ForEach-Object { [string]$_ })
+                $same = ($prev.Count -eq $local.Count)
+                if ($same) {
+                    for ($i = 0; $i -lt $prev.Count; $i++) {
+                        if ($prev[$i] -cne $local[$i]) { $same = $false; break }
+                    }
+                }
+                if (-not $same) {
+                    $row.workers = @($local)
+                    $changed = $true
+                }
+            }
+            $model.ts = [int64][DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
+            return (Write-BobTrayStatusSnapshot -Root $Root -Model $model)
+        }
         $changed = $false
         foreach ($row in $grok) {
             if (-not $row) { continue }
@@ -446,6 +555,12 @@ function Sync-BobTrayStatusWorkersFromDigest {
             if (-not $token) { continue }
             $mid = $token.Trim().ToLowerInvariant()
             $lines = @(Get-BobTrayDigestWorkerLinesForMachine -Digest $digest -MachineId $mid)
+            if ($lines.Count -eq 0) {
+                # FR #8513: digest dropped workers — use local live seats (stale) when present;
+                # otherwise clear TipForm so idle cards do not outlive the digest.
+                $local = @(Get-BobTrayLocalSeatWorkerLines -MachineId $mid -SeatsDir $SeatsDir -MarkStale)
+                $lines = @($local)
+            }
             $prev = @($row.workers | ForEach-Object { [string]$_ })
             $same = ($prev.Count -eq $lines.Count)
             if ($same) {
