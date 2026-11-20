@@ -6,11 +6,23 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import bobiverse_build as bb
+import builds_catalog as bc
 import chair_commands as cc
 import run_bobiverse_build as rbb
 from repo_layout import ROOT
 
 FAKE_TOKEN = "ghp_FAKE_TOKEN_FOR_PREFLIGHT_TESTS_ONLY_6492"
+
+
+def _cat():
+    return [
+        bc.BuildCatalogEntry(
+            name="Bobiverse",
+            yml="SimonBarnett/bobiverse:.bobiverse/build.yml",
+            output=r"D:\Temp\bobiverse-build",
+            install="fleet",
+        )
+    ]
 
 
 def _all_ok_hooks(tmp_path: Path):
@@ -134,11 +146,12 @@ def test_fr6492_decide_build_preflight_route_no_lock(tmp_path: Path):
     lock = bb.BuildLock(tmp_path / "l.json")
     dec = bb.decide_build(
         who=who,
-        body="!build preflight SimonBarnett/bobiverse",
+        body="!build preflight 1",
         may=cc.may,
         denied_line=cc.denied_line,
         recipe_loader=lambda r: bb.load_recipe(ROOT),
         lock=lock,
+        catalog_entries=_cat(),
     )
     assert dec and dec.ok and dec.reason == "preflight"
     assert dec.route == "BUILDPREFLIGHT v1 repo=SimonBarnett/bobiverse"
@@ -147,10 +160,10 @@ def test_fr6492_decide_build_preflight_route_no_lock(tmp_path: Path):
 
 
 def test_fr6492_parse_build_preflight_and_wire():
-    assert bb.parse_build("!build preflight SimonBarnett/bobiverse") == (
+    assert bb.parse_build("!build preflight 1") == (
         True,
         "preflight",
-        "SimonBarnett/bobiverse",
+        "1",
     )
     d = bb.parse_build_preflight_v1_route("BUILDPREFLIGHT v1 repo=SimonBarnett/bobiverse")
     assert d and d["repo"] == "SimonBarnett/bobiverse"

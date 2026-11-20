@@ -2409,6 +2409,26 @@ class Client:
         return resolve_bob_install_root(explicit=explicit)
 
 
+    def _load_build_catalog_entries(self):
+        """FR #8490: prefer GET /bob/v1/builds; fall back to local builds-catalog.json."""
+        import builds_catalog as bc
+
+        try:
+            return bc.fetch_catalog_http(bc.default_builds_url())
+        except Exception:
+            pass
+        for home in (self._digest_home(), Path(self.home)):
+            try:
+                rows = bc.load_catalog_file(home)
+            except Exception:
+                rows = []
+            if rows:
+                return rows
+        try:
+            return bc.load_catalog_file(self._digest_home())
+        except Exception:
+            return []
+
     def _handle_build_command(
         self,
         asker: str,
@@ -2417,7 +2437,7 @@ class Client:
         target: str = "",
         to_channel: bool = False,
     ) -> None:
-        """FR #4006: ops !build — decide + PM; live suite/pack is WP2 on the recipe machine."""
+        """FR #4006 / #8490: ops !build catalog UX — decide + PM; WP2 on recipe machine."""
         if not getattr(self.args, "chair", False):
             return
         if bobiverse_build.parse_build(body) is None:
@@ -2428,6 +2448,10 @@ class Client:
         prin = self._principal(who_nick)
         lock_path = Path(self.home) / "build-locks.json"
         lock = bobiverse_build.BuildLock(lock_path, max_parallel=1)
+        try:
+            catalog_entries = self._load_build_catalog_entries()
+        except Exception:
+            catalog_entries = []
 
         def recipe_loader(repo: str):
             # Only bobiverse's own recipe lives in this install; other repos must carry
@@ -2445,16 +2469,31 @@ class Client:
                 return bobiverse_build.fetch_remote_recipe(repo)
             # FR #6484: packaged Jeeves has no local .bobiverse/; fall back to GitHub.
             # FR #6487: present local YAML that fails to parse is not masked as missing.
+            # FR #8490: ref comes after catalog index n (version/ref), else catalog, else main.
             root = Path(self._install_root())
             build_ref = "main"
             try:
+                import builds_catalog as bc
+
                 parsed_b = bobiverse_build.parse_build(body)
                 if parsed_b is not None:
                     _is_build, sub, rest = parsed_b
-                    if sub in ("run", "dry-run"):
-                        toks = (rest or "").split()
-                        if len(toks) >= 3:
-                            build_ref = toks[2]
+                    if sub in ("run", "dry-run", "tests-only"):
+                        toks = [
+                            t
+                            for t in (rest or "").split()
+                            if t.lower() != "--tests-only"
+                        ]
+                        entry = None
+                        if toks and toks[0].isdigit():
+                            entry = bc.entry_at(catalog_entries, int(toks[0]))
+                            after = toks[1:]
+                            if len(after) >= 2:
+                                build_ref = after[1]
+                            elif entry is not None and (entry.ref or "").strip():
+                                build_ref = entry.ref.strip()
+                        elif entry is None:
+                            build_ref = "main"
             except Exception:
                 build_ref = "main"
             return bobiverse_build.load_bobiverse_recipe_local_or_remote(
@@ -2479,6 +2518,7 @@ class Client:
                 recipe_loader=recipe_loader,
                 lock=lock,
                 ignored=ignored,
+                catalog_entries=catalog_entries,
             )
         except Exception as e:
             info(f"WARN build decide failed: {type(e).__name__}: {e}")
@@ -2512,7 +2552,9 @@ class Client:
                     info("WARN build channel refusal reply failed")
         info(
             f"INFO build nick={who_nick} kind={prin.kind} ok={dec.ok} reason={dec.reason} "
-            f"repos={','.join(dec.repos) or '-'} dry={dec.dry_run}"
+            f"repos={','.join(dec.repos) or '-'} dry={dec.dry_run} "
+            f"catalog={dec.catalog_index or '-'} output={dec.output or '-'} "
+            f"install={dec.install or '-'}"
         )
         if not dec.ok and dec.reason == "denied":
             self._whois_hint(who_nick)
@@ -2525,6 +2567,7 @@ class Client:
                 info("WARN build route announce failed")
             # FR #4025: when this box is the recipe machine, enqueue BUILD v1 (no live pack in chair).
             # FR #6492: BUILDPREFLIGHT runs env checks only on the recipe machine.
+            # Route may carry output=/install= from the catalog (FR #8490; export/install = slice D).
             try:
                 if dec.reason == "preflight":
                     self._maybe_start_build_preflight(dec.route, src_hint=who_nick)

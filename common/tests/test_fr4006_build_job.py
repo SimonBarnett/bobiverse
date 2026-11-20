@@ -4,8 +4,23 @@ from __future__ import annotations
 from pathlib import Path
 
 import bobiverse_build as bb
+import builds_catalog as bc
 import chair_commands as cc
 from repo_layout import ROOT
+
+
+def _cat(repo: str = "SimonBarnett/bobiverse", **kw):
+    return [
+        bc.BuildCatalogEntry(
+            name=kw.get("name", "Bobiverse"),
+            yml=kw.get("yml", f"{repo}:.bobiverse/build.yml"),
+            output=kw.get("output", r"D:\Temp\bobiverse-build"),
+            install=kw.get("install", "fleet"),
+            dep=kw.get("dep", []),
+            version=kw.get("version", ""),
+            ref=kw.get("ref", ""),
+        )
+    ]
 
 
 def test_fr4006_validate_registry_includes_build():
@@ -29,9 +44,9 @@ def test_fr4006_help_ops_sees_build_worker_hides():
     idx_w = "\n".join(cc.build_help(worker))
     assert "!build" not in idx_w
     detail = "\n".join(cc.build_help(ops, "build"))
-    assert "owner/repo" in detail
+    assert "catalog" in detail.lower() or "!build n" in detail or "owner/repo" in detail
     assert "bob" in detail.lower() or "simon" in detail.lower() or "ops" in detail.lower()
-    assert "example:" in detail or "!build SimonBarnett" in detail
+    assert "example:" in detail or "!build 1" in detail
 
 
 def test_fr4006_bobiverse_recipe_loads():
@@ -97,10 +112,11 @@ def test_fr4006_decide_denied_for_worker():
     who = cc.Principal("none", "seat-1", "")
     dec = bb.decide_build(
         who=who,
-        body="!build SimonBarnett/bobiverse 0.1.32",
+        body="!build 1 0.1.32",
         may=cc.may,
         denied_line=cc.denied_line,
         recipe_loader=lambda r: bb.load_recipe(ROOT),
+        catalog_entries=_cat(),
     )
     assert dec and dec.ok is False and dec.reason == "denied"
 
@@ -116,11 +132,12 @@ def test_fr4006_decide_dry_run_and_no_recipe(tmp_path: Path):
 
     dec = bb.decide_build(
         who=who,
-        body="!build dry-run SimonBarnett/bobiverse 0.1.32 HEAD",
+        body="!build dry-run 1 0.1.32 HEAD",
         may=cc.may,
         denied_line=cc.denied_line,
         recipe_loader=loader,
         lock=lock,
+        catalog_entries=_cat(),
     )
     assert dec and dec.dry_run
     assert any("dry-run" in ln for ln in dec.pm_lines)
@@ -128,11 +145,12 @@ def test_fr4006_decide_dry_run_and_no_recipe(tmp_path: Path):
 
     dec2 = bb.decide_build(
         who=who,
-        body="!build SimonBarnett/norecipe 0.1.32",
+        body="!build 1 0.1.32",
         may=cc.may,
         denied_line=cc.denied_line,
         recipe_loader=loader,
         lock=lock,
+        catalog_entries=_cat(repo="SimonBarnett/norecipe", name="NoRecipe"),
     )
     assert dec2 and any("no .bobiverse/build.yml" in ln for ln in dec2.pm_lines)
 
@@ -140,26 +158,29 @@ def test_fr4006_decide_dry_run_and_no_recipe(tmp_path: Path):
 def test_fr4006_decide_run_acquires_lock(tmp_path: Path):
     who = cc.Principal("ear", "Bob-ionos", "", "ionos")
     lock = bb.BuildLock(tmp_path / "l.json")
+    cat = _cat()
     dec = bb.decide_build(
         who=who,
-        body="!build SimonBarnett/bobiverse 0.1.32 main",
+        body="!build 1 0.1.32 main",
         may=cc.may,
         denied_line=cc.denied_line,
         recipe_loader=lambda r: bb.load_recipe(ROOT),
         lock=lock,
         new_build_id=lambda: "b-test",
+        catalog_entries=cat,
     )
     assert dec and dec.ok and "b-test" in " ".join(dec.pm_lines)
     assert lock.running_id("SimonBarnett/bobiverse") == "b-test"
     # second refused
     dec2 = bb.decide_build(
         who=who,
-        body="!build SimonBarnett/bobiverse 0.1.32 main",
+        body="!build 1 0.1.32 main",
         may=cc.may,
         denied_line=cc.denied_line,
         recipe_loader=lambda r: bb.load_recipe(ROOT),
         lock=lock,
         new_build_id=lambda: "b-2",
+        catalog_entries=cat,
     )
     assert dec2 and any("refused" in ln for ln in dec2.pm_lines)
 

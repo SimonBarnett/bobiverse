@@ -10,6 +10,18 @@ from repo_layout import ROOT
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 import bobiverse_build as bb  # noqa: E402
+import builds_catalog as bc  # noqa: E402
+
+
+def _cat():
+    return [
+        bc.BuildCatalogEntry(
+            name="Bobiverse",
+            yml="SimonBarnett/bobiverse:.bobiverse/build.yml",
+            output=r"D:\Temp\bobiverse-build",
+            install="fleet",
+        )
+    ]
 
 
 def _cp(rc=0, out="", err=""):
@@ -118,12 +130,13 @@ def test_fr6484_decide_build_uses_remote_loader(tmp_path: Path):
 
     dec = bb.decide_build(
         who=who,
-        body="!build SimonBarnett/bobiverse 2.0.0",
+        body="!build 1 2.0.0",
         may=cc.may,
         denied_line=cc.denied_line,
         recipe_loader=loader,
         lock=lock,
         new_build_id=lambda: "b-6484",
+        catalog_entries=_cat(),
     )
     assert dec is not None
     assert dec.ok is True

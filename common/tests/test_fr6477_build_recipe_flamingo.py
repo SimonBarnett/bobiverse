@@ -4,9 +4,21 @@ from __future__ import annotations
 from pathlib import Path
 
 import bobiverse_build as bb
+import builds_catalog as bc
 import chair_commands as cc
 from bobreport import fold_machine_id
 from repo_layout import ROOT
+
+
+def _cat():
+    return [
+        bc.BuildCatalogEntry(
+            name="Bobiverse",
+            yml="SimonBarnett/bobiverse:.bobiverse/build.yml",
+            output=r"D:\Temp\bobiverse-build",
+            install="fleet",
+        )
+    ]
 
 
 def test_fr6477_recipe_machine_is_flamingo():
@@ -35,11 +47,12 @@ def test_fr6477_decide_build_dry_run_targets_flamingo(tmp_path: Path):
     lock = bb.BuildLock(tmp_path / "build-locks.json", max_parallel=1)
     dec = bb.decide_build(
         who=who,
-        body="!build dry-run SimonBarnett/bobiverse 2.0.0",
+        body="!build dry-run 1 2.0.0",
         may=cc.may,
         denied_line=cc.denied_line,
         recipe_loader=lambda r: bb.load_recipe(ROOT),
         lock=lock,
+        catalog_entries=_cat(),
     )
     assert dec is not None
     assert dec.dry_run is True

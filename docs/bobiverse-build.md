@@ -28,18 +28,19 @@ Agent playbook: `jeeves/.grok/skills/bobiverse-build/SKILL.md` (FR #4038) --- ho
 
 New regressions and step failures → one intake issue each (`feature-request` + `release-blocker`), deduped by test id / error signature.
 
-## IRC
+## IRC (FR #8490 catalog)
 
 ```
-!build <owner/repo>[,owner/repo...] <version> [ref] [--tests-only]
-!build tests-only <owner/repo> <version> [ref]
-!build dry-run <owner/repo> <version> [ref]
-!build status [owner/repo]
-!build cancel [owner/repo]
-!build preflight <owner/repo>
+!build
+!build n [version] [ref] [--tests-only]
+!build tests-only n [version] [ref]
+!build dry-run n [version] [ref]
+!build status n
+!build cancel [n]
+!build preflight n
 ```
 
-Ops only (simon / bob-* ears). No recipe → refuse. Same repo already building → refuse with running id.
+Ops only (simon / bob-* ears). Bare `!build` lists `builds-catalog.json` (also GET `/bob/v1/builds`). `!build n` runs that entry; version/ref override catalog defaults. `dep` is documentation only. Old `!build owner/repo …` is refused. No recipe → refuse. Same repo already building → refuse with running id.
 
 ## Work packages
 

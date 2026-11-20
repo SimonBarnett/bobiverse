@@ -678,6 +678,13 @@ class BuildDecision:
     cancel: bool = False
     tests_only: bool = False
     route: str = ""  # wire / queue hint for build machine
+    # FR #8490 numbered catalog
+    catalog_index: int = 0
+    catalog_name: str = ""
+    output: str = ""
+    install: str = ""
+    yml: str = ""
+    deps: list = field(default_factory=list)
 
 
 # FR #6715: reserved verbs are recognised before the args are read as a build request,
@@ -686,21 +693,57 @@ BUILD_SUBCOMMANDS = frozenset(
     ("status", "cancel", "dry-run", "dryrun", "dry", "preflight", "tests-only")
 )
 
+_OLD_BUILD_FORM_HINT = (
+    "build: owner/repo form removed; use bare !build for the numbered catalog, "
+    "then !build n [version] [ref]"
+)
+
 
 def parse_build(body: str) -> tuple[bool, str, str] | None:
-    """Return (is_build, subcmd, rest) or None if not !build."""
+    """Return (is_build, subcmd, rest) or None if not !build.
+
+    FR #8490: bare ``!build`` -> ``list``; leading digits after ``!build`` -> ``run``
+    with rest starting at that number; reserved verbs unchanged; old owner/repo
+    still parses as ``run`` so ``decide_build`` can refuse with a pointer.
+    """
     text = (body or "").strip()
     if not text.lower().startswith("!build"):
         return None
     parts = text.split(None, 2)
     if len(parts) == 1:
-        return True, "", ""
+        return True, "list", ""
     sub = parts[1].lower()
     rest = parts[2] if len(parts) > 2 else ""
     if sub in BUILD_SUBCOMMANDS:
         return True, "dry-run" if sub in ("dry-run", "dryrun", "dry") else sub, rest
-    # !build <repos> <version> [ref]
+    if sub.isdigit():
+        # !build n [version] [ref] [--tests-only]
+        return True, "run", text[len("!build") :].strip()
+    # Old owner/repo (or unknown token): still "run"; decide_build refuses owner/repo.
     return True, "run", text[len("!build") :].strip()
+
+
+def _resolve_catalog_entries(
+    catalog_entries: list | None,
+    catalog_loader: Callable[[], list] | None,
+) -> list:
+    if catalog_entries is not None:
+        return list(catalog_entries)
+    if catalog_loader is not None:
+        try:
+            return list(catalog_loader() or [])
+        except Exception:
+            return []
+    return []
+
+
+def _leading_catalog_index(rest: str) -> tuple[int | None, str]:
+    """Return ``(n, remainder)`` when rest starts with a positive integer index."""
+    tokens = (rest or "").split()
+    if not tokens or not tokens[0].isdigit():
+        return None, (rest or "").strip()
+    n = int(tokens[0])
+    return n, " ".join(tokens[1:]).strip()
 
 
 # #4186: WiX/MSI ProductVersion is numeric only -> refuse anything but x.y.z or x.y.z.w digits.
@@ -730,7 +773,12 @@ def decide_build(
     new_build_id: Callable[[], str] | None = None,
     stale_max_age_s: float | None = None,
     dead_max_age_s: float | None = None,
+    catalog_entries: list | None = None,
+    catalog_loader: Callable[[], list] | None = None,
 ) -> BuildDecision | None:
+    """FR #8490: numbered catalog UX (bare list / ``!build n``); old owner/repo refused."""
+    import builds_catalog as bc
+
     parsed = parse_build(body)
     if parsed is None:
         return None
@@ -739,68 +787,162 @@ def decide_build(
         return BuildDecision(False, "denied", [denied_line("build")])
 
     ignored_set = {normalize_repo(x) for x in ignored}
+    entries = _resolve_catalog_entries(catalog_entries, catalog_loader)
+    usage_lines = [
+        "build: usage !build | !build n [version] [ref] [--tests-only]",
+        "build: also !build status|cancel|dry-run|preflight|tests-only n",
+    ]
+
+    if sub == "list":
+        lines = bc.format_catalog_lines(entries)
+        return BuildDecision(True, "list", lines, status_only=True)
 
     if sub == "status":
-        repo = (rest or "").strip()
-        if repo:
-            rid = lock.running_id(repo) if lock else None
-            line = f"build status: {repo} running={rid or 'none'}"
-        else:
-            line = "build status: use !build status <owner/repo>"
-        return BuildDecision(True, "status", [line], status_only=True)
+        rest_s = (rest or "").strip()
+        if not rest_s:
+            return BuildDecision(
+                True,
+                "status",
+                ["build status: use !build status n"],
+                status_only=True,
+            )
+        n, leftover = _leading_catalog_index(rest_s)
+        if n is None:
+            first = rest_s.split()[0]
+            if REPO_RE.match(first):
+                return BuildDecision(False, "usage", [_OLD_BUILD_FORM_HINT])
+            return BuildDecision(
+                False, "usage", ["build: usage !build status n"]
+            )
+        if leftover:
+            return BuildDecision(
+                False, "usage", ["build: usage !build status n"]
+            )
+        entry = bc.entry_at(entries, n)
+        if entry is None:
+            return BuildDecision(
+                False,
+                "bad_index",
+                [f"build: no catalog entry {n} (use bare !build)"],
+            )
+        repo = entry.repo
+        rid = lock.running_id(repo) if lock else None
+        line = (
+            f"build status: {n}) {entry.name} {repo} running={rid or 'none'}"
+        )
+        return BuildDecision(
+            True,
+            "status",
+            [line],
+            [repo],
+            status_only=True,
+            catalog_index=n,
+            catalog_name=entry.name,
+            output=entry.output,
+            install=entry.install,
+            yml=entry.yml,
+            deps=list(entry.dep),
+        )
 
     if sub == "cancel":
-        repo = (rest or "").strip()
-        if repo:
-            if not REPO_RE.match(repo):
+        rest_s = (rest or "").strip()
+        if not rest_s:
+            # FR #6715: bare !build cancel frees whatever the chair is holding; never a run.
+            running = lock.running() if lock else []
+            if not running:
                 return BuildDecision(
-                    False, "usage", ["build: usage !build cancel [<owner/repo>]"]
+                    False, "nothing_running", ["build: no build running"], status_only=True
                 )
-            rid = lock.running_id(repo) if lock else None
-            if not rid:
-                return BuildDecision(
-                    False,
-                    "nothing_running",
-                    [f"build: no build running for {repo}"],
-                    [repo],
-                    status_only=True,
-                )
-            if lock:
-                lock.release(repo)
+            for held_repo, _rid in running:
+                lock.release(held_repo)
             return BuildDecision(
-                True, "cancel", [f"build: cancelled {repo} id={rid}"], [repo], cancel=True
+                True,
+                "cancel",
+                [f"build: cancelled {r} id={rid}" for r, rid in running],
+                [r for r, _rid in running],
+                cancel=True,
             )
-        # FR #6715: bare !build cancel frees whatever the chair is holding; never a run.
-        running = lock.running() if lock else []
-        if not running:
+        n, leftover = _leading_catalog_index(rest_s)
+        if n is None:
+            first = rest_s.split()[0]
+            if REPO_RE.match(first):
+                return BuildDecision(False, "usage", [_OLD_BUILD_FORM_HINT])
             return BuildDecision(
-                False, "nothing_running", ["build: no build running"], status_only=True
+                False, "usage", ["build: usage !build cancel [n]"]
             )
-        for held_repo, _rid in running:
-            lock.release(held_repo)
+        if leftover:
+            return BuildDecision(
+                False, "usage", ["build: usage !build cancel [n]"]
+            )
+        entry = bc.entry_at(entries, n)
+        if entry is None:
+            return BuildDecision(
+                False,
+                "bad_index",
+                [f"build: no catalog entry {n} (use bare !build)"],
+            )
+        repo = entry.repo
+        rid = lock.running_id(repo) if lock else None
+        if not rid:
+            return BuildDecision(
+                False,
+                "nothing_running",
+                [f"build: no build running for {n}) {entry.name} {repo}"],
+                [repo],
+                status_only=True,
+                catalog_index=n,
+                catalog_name=entry.name,
+            )
+        if lock:
+            lock.release(repo)
         return BuildDecision(
             True,
             "cancel",
-            [f"build: cancelled {r} id={rid}" for r, rid in running],
-            [r for r, _rid in running],
+            [f"build: cancelled {n}) {entry.name} {repo} id={rid}"],
+            [repo],
             cancel=True,
+            catalog_index=n,
+            catalog_name=entry.name,
+            output=entry.output,
+            install=entry.install,
+            yml=entry.yml,
+            deps=list(entry.dep),
         )
 
     if sub == "preflight":
         # FR #6492: route a no-build environment check to the recipe machine.
-        repo = (rest or "").strip().split()[0] if (rest or "").strip() else ""
-        if not repo or not REPO_RE.match(repo):
+        n, leftover = _leading_catalog_index(rest)
+        if n is None:
+            first = ((rest or "").split() or [""])[0]
+            if first and REPO_RE.match(first):
+                return BuildDecision(False, "usage", [_OLD_BUILD_FORM_HINT])
             return BuildDecision(
                 False,
                 "usage",
-                ["build: usage !build preflight <owner/repo>"],
+                ["build: usage !build preflight n"],
             )
+        if leftover:
+            return BuildDecision(
+                False,
+                "usage",
+                ["build: usage !build preflight n"],
+            )
+        entry = bc.entry_at(entries, n)
+        if entry is None:
+            return BuildDecision(
+                False,
+                "bad_index",
+                [f"build: no catalog entry {n} (use bare !build)"],
+            )
+        repo = entry.repo
         if normalize_repo(repo) in ignored_set:
             return BuildDecision(
                 False,
                 "ignored",
                 [f"build: {repo} is ignored; nothing started"],
                 [repo],
+                catalog_index=n,
+                catalog_name=entry.name,
             )
         try:
             recipe = recipe_loader(repo)
@@ -810,6 +952,8 @@ def decide_build(
                 "no_recipe",
                 [str(exc) if str(exc).startswith("build:") else f"build: {repo} {exc}"],
                 [repo],
+                catalog_index=n,
+                catalog_name=entry.name,
             )
         if recipe is None:
             return BuildDecision(
@@ -817,140 +961,206 @@ def decide_build(
                 "no_recipe",
                 [f"build: {repo} has no .bobiverse/build.yml; nothing started"],
                 [repo],
+                catalog_index=n,
+                catalog_name=entry.name,
             )
         route = f"BUILDPREFLIGHT v1 repo={repo}"
         return BuildDecision(
             True,
             "preflight",
             [
-                f"build preflight: queued {repo} machine={recipe.machine} "
+                f"build preflight: queued {n}) {entry.name} {repo} "
+                f"machine={recipe.machine} "
                 f"(no build; checks runner Python, imports, suite python, "
                 f"token source, recipe, work/cache dirs, pack tools)"
             ],
             [repo],
             route=route,
+            catalog_index=n,
+            catalog_name=entry.name,
+            output=entry.output,
+            install=entry.install,
+            yml=entry.yml,
+            deps=list(entry.dep),
         )
 
     dry = sub == "dry-run"
     tests_only = sub == "tests-only" or "--tests-only" in (rest or "").split()
-    # run / dry-run / tests-only: <repos> <version> [ref]
-    arg = rest if dry else rest
-    arg = " ".join(t for t in arg.split() if t.lower() != "--tests-only")
-    if dry and not arg:
-        # !build dry-run <repos> <version>
+    arg = " ".join(t for t in (rest or "").split() if t.lower() != "--tests-only")
+    n, after = _leading_catalog_index(arg)
+    if n is None:
+        first = (arg.split() or [""])[0]
+        if first and REPO_RE.match(first):
+            return BuildDecision(
+                False, "usage", [_OLD_BUILD_FORM_HINT], dry_run=dry
+            )
+        if dry and not arg:
+            return BuildDecision(
+                False,
+                "usage",
+                ["build: usage !build dry-run n [version] [ref]"],
+                dry_run=True,
+            )
+        return BuildDecision(False, "usage", usage_lines, dry_run=dry)
+
+    entry = bc.entry_at(entries, n)
+    if entry is None:
+        return BuildDecision(
+            False,
+            "bad_index",
+            [f"build: no catalog entry {n} (use bare !build)"],
+            dry_run=dry,
+        )
+
+    tokens = after.split()
+    version = tokens[0] if tokens else (entry.version or "")
+    ref = tokens[1] if len(tokens) > 1 else (entry.ref or "HEAD")
+    if len(tokens) > 2:
+        return BuildDecision(False, "usage", usage_lines, dry_run=dry)
+    if not version:
         return BuildDecision(
             False,
             "usage",
-            ["build: usage !build dry-run <owner/repo>[,owner/repo...] <version> [ref]"],
-            dry_run=True,
+            [
+                f"build: catalog entry {n}) {entry.name} has no version; "
+                f"pass !build {n} <version> [ref]"
+            ],
+            dry_run=dry,
+            catalog_index=n,
+            catalog_name=entry.name,
         )
-    tokens = arg.split()
-    usage_lines = [
-        "build: usage !build <owner/repo>[,owner/repo...] <version> [ref] [--tests-only]",
-        "build: also !build status|cancel|dry-run|preflight|tests-only ...",
-    ]
-    if len(tokens) < 2:
-        return BuildDecision(False, "usage", usage_lines, dry_run=dry)
-    try:
-        repos = parse_repos_csv(tokens[0])
-    except ValueError as exc:
-        # FR #6715: unknown subcommand/argument -> usage refusal (never a build request).
-        return BuildDecision(
-            False, "usage", usage_lines + [f"build: {exc}"], dry_run=dry
-        )
-    version = tokens[1]
-    ref = tokens[2] if len(tokens) > 2 else "HEAD"
     refusal = version_refusal(version)
     if refusal:
-        return BuildDecision(False, "bad_version", [refusal], dry_run=dry)
-    if not repos:
-        return BuildDecision(False, "usage", ["build: need at least one owner/repo"], dry_run=dry)
+        return BuildDecision(
+            False,
+            "bad_version",
+            [refusal],
+            dry_run=dry,
+            catalog_index=n,
+            catalog_name=entry.name,
+        )
+
+    try:
+        repo, _rel = bc.parse_yml_field(entry.yml)
+    except ValueError as exc:
+        return BuildDecision(
+            False,
+            "bad_yml",
+            [f"build: catalog entry {n} {exc}"],
+            dry_run=dry,
+            catalog_index=n,
+            catalog_name=entry.name,
+        )
+
+    output = (entry.output or "").strip()
+    install = (entry.install or "").strip()
+    if output and (" " in output or "\t" in output):
+        return BuildDecision(
+            False,
+            "bad_output",
+            [
+                f"build: catalog entry {n}) {entry.name} output must not contain "
+                f"spaces (BUILD route token); nothing started"
+            ],
+            dry_run=dry,
+            catalog_index=n,
+            catalog_name=entry.name,
+        )
 
     lines: list[str] = []
     ok_repos: list[str] = []
-    # FR #6491: one !build command shares one build id across its repos so the
-    # BUILD v1 route and terminal BUILD ok/fail announces can match the chair lock.
     batch_id = (new_build_id or (lambda: f"b-{int(time.time())}"))()
-    for repo in repos:
-        if normalize_repo(repo) in ignored_set:
-            lines.append(f"build: {repo} is ignored; nothing started")
-            continue
+    if normalize_repo(repo) in ignored_set:
+        lines.append(f"build: {repo} is ignored; nothing started")
+    else:
         try:
             recipe = recipe_loader(repo)
         except RecipeError as exc:
-            lines.append(str(exc) if str(exc).startswith("build:") else f"build: {repo} {exc}")
-            continue
-        if recipe is None:
-            lines.append(f"build: {repo} has no .bobiverse/build.yml; nothing started")
-            continue
-        bid = batch_id
-        if not dry and lock is not None:
-            got, info = lock.try_acquire(repo, bid)
-            if not got:
-                # FR #6719: dead-runner backstop (no progress/heartbeat) before the
-                # long recipe_max_run_s TTL — a failed build that never announced
-                # must not block !build for many hours.
-                dead_ttl = (
-                    float(dead_max_age_s)
-                    if dead_max_age_s is not None
-                    else float(DEFAULT_BUILD_LOCK_DEAD_S)
+            lines.append(
+                str(exc) if str(exc).startswith("build:") else f"build: {repo} {exc}"
+            )
+            recipe = None
+        else:
+            if recipe is None:
+                lines.append(
+                    f"build: {repo} has no .bobiverse/build.yml; nothing started"
                 )
-                released_dead, old_dead = lock.release_if_dead(repo, dead_ttl)
-                if released_dead:
-                    lines.append(
-                        f"build: {repo} released stale lock id={old_dead} "
-                        f"reason=no-heartbeat age>{int(dead_ttl)}s"
-                    )
-                    got, info = lock.try_acquire(repo, bid)
+        if recipe is not None:
+            bid = batch_id
+            if not dry and lock is not None:
+                got, info = lock.try_acquire(repo, bid)
                 if not got:
-                    # FR #6491: stale chair lock backstop (recipe max run, or override).
-                    ttl = (
-                        float(stale_max_age_s)
-                        if stale_max_age_s is not None
-                        else recipe_max_run_s(recipe)
+                    dead_ttl = (
+                        float(dead_max_age_s)
+                        if dead_max_age_s is not None
+                        else float(DEFAULT_BUILD_LOCK_DEAD_S)
                     )
-                    released, old = lock.release_if_stale(repo, ttl)
-                    if released:
+                    released_dead, old_dead = lock.release_if_dead(repo, dead_ttl)
+                    if released_dead:
                         lines.append(
-                            f"build: {repo} released stale lock id={old} "
-                            f"reason=max-run age>{int(ttl)}s"
+                            f"build: {repo} released stale lock id={old_dead} "
+                            f"reason=no-heartbeat age>{int(dead_ttl)}s"
                         )
                         got, info = lock.try_acquire(repo, bid)
-                if not got:
+                    if not got:
+                        ttl = (
+                            float(stale_max_age_s)
+                            if stale_max_age_s is not None
+                            else recipe_max_run_s(recipe)
+                        )
+                        released, old = lock.release_if_stale(repo, ttl)
+                        if released:
+                            lines.append(
+                                f"build: {repo} released stale lock id={old} "
+                                f"reason=max-run age>{int(ttl)}s"
+                            )
+                            got, info = lock.try_acquire(repo, bid)
+                    if not got:
+                        lines.append(
+                            f"build: {repo} refused; running id={info} (live)"
+                        )
+                        recipe = None
+            if recipe is not None:
+                ok_repos.append(repo)
+                dep_bit = ",".join(entry.dep) if entry.dep else "-"
+                if dry:
                     lines.append(
-                        f"build: {repo} refused; running id={info} (live)"
+                        f"build dry-run: {n}) {entry.name} {repo} version={version} "
+                        f"ref={ref} machine={recipe.machine} "
+                        f"suites={len(recipe.suites)} "
+                        f"pack={'yes' if recipe.pack else 'no'} "
+                        f"release={recipe.release.get('target') or '-'} "
+                        f"install={install or '-'} dep={dep_bit} output={output or '-'}"
                     )
-                    continue
-        ok_repos.append(repo)
-        if dry:
-            lines.append(
-                f"build dry-run: {repo} version={version} ref={ref} "
-                f"machine={recipe.machine} suites={len(recipe.suites)} "
-                f"pack={'yes' if recipe.pack else 'no'} release={recipe.release.get('target') or '-'}"
-            )
-            lines.append(
-                f"build dry-run: would classify ref vs baseline={recipe.baseline}; "
-                f"file release-blocker issues for new_regression/step_failure; nothing published"
-            )
-        else:
-            extra = " tests-only" if tests_only else ""
-            lines.append(
-                f"build: queued {repo} version={version} ref={ref} "
-                f"machine={recipe.machine} id={bid}{extra}"
-            )
+                    lines.append(
+                        f"build dry-run: would classify ref vs baseline={recipe.baseline}; "
+                        f"file release-blocker issues for new_regression/step_failure; "
+                        f"nothing published"
+                    )
+                else:
+                    extra = " tests-only" if tests_only else ""
+                    lines.append(
+                        f"build: queued {n}) {entry.name} {repo} version={version} "
+                        f"ref={ref} machine={recipe.machine} id={bid} "
+                        f"install={install or '-'}{extra}"
+                    )
+
     if not ok_repos and not lines:
         lines.append("build: nothing started")
     route = ""
     if ok_repos and not dry:
-        # FR #6491: put id= on the wire so the recipe machine and chair share it.
         route = (
             f"BUILD v1 repos={','.join(ok_repos)} version={version} "
             f"ref={ref} id={batch_id}"
         )
         if tests_only:
             route += " tests_only=1"
+        if output:
+            route += f" output={output}"
+        if install:
+            route += f" install={install}"
     return BuildDecision(
-        bool(ok_repos) or dry and bool(lines),
+        bool(ok_repos) or (dry and bool(lines)),
         "dry_run" if dry else ("ok" if ok_repos else "refused"),
         lines,
         ok_repos,
@@ -959,6 +1169,12 @@ def decide_build(
         dry,
         tests_only=tests_only,
         route=route,
+        catalog_index=n,
+        catalog_name=entry.name,
+        output=output,
+        install=install,
+        yml=entry.yml,
+        deps=list(entry.dep),
     )
 
 
@@ -977,7 +1193,8 @@ def dry_run_plan(recipe: BuildRecipe, *, repo: str, version: str, ref: str) -> l
 
 BUILD_V1_RE = re.compile(
     r"^BUILD\s+v1\s+repos=(?P<repos>\S+)\s+version=(?P<version>\S+)\s+ref=(?P<ref>\S+)"
-    r"(?:\s+id=(?P<id>\S+))?(?:\s+tests_only=(?P<tests_only>\S+))?\s*$",
+    r"(?:\s+id=(?P<id>\S+))?(?:\s+tests_only=(?P<tests_only>\S+))?"
+    r"(?:\s+output=(?P<output>\S+))?(?:\s+install=(?P<install>\S+))?\s*$",
     re.IGNORECASE,
 )
 
@@ -1048,6 +1265,8 @@ def parse_build_v1_route(text: str) -> dict | None:
         "ref": m.group("ref"),
         "id": (m.group("id") or "").strip(),
         "tests_only": str(m.group("tests_only") or "").strip().lower() in ("1", "true", "yes"),
+        "output": (m.group("output") or "").strip(),
+        "install": (m.group("install") or "").strip(),
         "raw": raw,
     }
 
@@ -3247,6 +3466,8 @@ def enqueue_build_job(
         "queued_at": ts,
         "status": "queued",
         "tests_only": bool(route.get("tests_only")),
+        "output": str(route.get("output") or "").strip(),
+        "install": str(route.get("install") or "").strip(),
     }
     path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
     return path
