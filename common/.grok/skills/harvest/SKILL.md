@@ -259,3 +259,4 @@ Do not land a second copy of a harvest-lesson MRB playbook in this book. Those p
 - A BOM-less PowerShell file must stay ASCII. An em dash (e2 80 94) fails the WinPS 5.1 parse gate. After that gate is clear, fix the next ParseFile error the same test reports.
 - For SimonBarnett/bobiverse, infer_require_machine ignores a needs-ionos title prefix. Pin with a needs-ionos label or a body line require_machine: ionos.
 - A line-anchored MRB FAIL @ sha is a seat verdict even when the sha is wrapped in ticks or quotes. A mid-line mention and a FAIL without an @ sha still hold.
+- When resync queues an orphan or main-base fix(mrb-N) as MRB, stamp the row so purge_dead_mrb does not drop it for the fix title. Stacked parent-branch fixes stay unstamped.
