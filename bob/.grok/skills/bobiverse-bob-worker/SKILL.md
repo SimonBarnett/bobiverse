@@ -313,3 +313,4 @@ Generalised from 21 harvested lessons that never reached this book (audit for FR
 - On a docs wire FR, grep every copy of the old phrase in the touched file. A green string test can pass on the updated section while an earlier Deliverables bullet still states the retired wire.
 - OpenCode auto-select dialog can report opencode.exe missing while resolve_opencode_cmd finds %LOCALAPPDATA%\Programs\opencode\opencode.exe; explicit --agent opencode still starts --- make dialog use the same resolve path (FR #8412).
 - When flamingo cannot SMB to redqueen, use WinRM hostname redqueen with admin creds; copy CI bob-worker artifact to C:\ai\bob\worker then restart OpenCode seats so LocalAppData run-copy unpacks opencode_seat_contract. recycleseat.disabled only blocks ear !recycleseat; hung --describe-launch blocks the tray startworker timer.
+- When bob-worker reports ACKed-but-no-DONE and the FR has no covering PR, GIVEUP immediately; never invent a DONE URL (FR #108).
