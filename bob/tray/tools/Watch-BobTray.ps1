@@ -4015,7 +4015,8 @@ $poll.Add_Tick({
                 }
                 $alerts = @()
                 # FR #7660: warm runspace, 45s budget. BobBridge is imported once, not per poll.
-                [void](Get-BobTrayWarmEngineShell -Root $RepoRoot)
+                # FR #8518: do not call Get-BobTrayWarmEngineShell bare on the UI thread —
+                # Import-Module hang had no step timeout. First WarmEngineStep acquires the shell.
                 $sa = Invoke-BobTrayWarmEngineStep -Name 'stall-alerts' -Root $RepoRoot -TimeoutSec ([int]$script:BobTrayEngineStepTimeoutSec) -ArgumentList @($RepoRoot, $seen, [int]$StallSec, [int]$HeartbeatStaleSec) -Body {
                     param($Root, $Seen, $StallSecArg, $HeartbeatStaleSecArg)
                     $list = @(Get-BobStallAlerts -Seen $Seen -StallSec ([int]$StallSecArg) -HeartbeatStaleSec ([int]$HeartbeatStaleSecArg))
@@ -4084,6 +4085,8 @@ $poll.Add_Tick({
                         else {
                             $env:BOB_DIGEST_HTTP_TIMEOUT_SEC = $prevDigestTimeout
                         }
+                        # FR #8518: poll continues after warm-step timeout/abandon; refresh alive stamp.
+                        try { [void](Write-BobTrayEngineAliveStamp -Dir $script:startWorkerDir) } catch { }
                     }
                 }
                 # CAST IRON: local Cursor (pcent + overspend) + xAI weekly -> digest webhook.
