@@ -837,6 +837,21 @@ if ($NoStart) {
     Write-Host "INFO $ServiceName Running"
 }
 
+# FR #8009: health step runs in airc.exe, not PowerShell. AIRC_SELFTEST=0 skips it.
+if ($env:AIRC_SELFTEST -ne '0') {
+    $probeExe = Join-Path $packRoot 'airc\airc.exe'
+    if (-not (Test-Path -LiteralPath $probeExe)) { $probeExe = Join-Path $packRoot 'airc.exe' }
+    if (Test-Path -LiteralPath $probeExe) {
+        & $probeExe --connect-selftest
+        if ($LASTEXITCODE -ne 0) {
+            throw "airc connect self-test failed (exit $LASTEXITCODE). See the install log."
+        }
+        Write-Host 'INFO FR #8009 connect self-test ok'
+    }
+} else {
+    Write-Host 'INFO FR #8009 connect self-test skipped AIRC_SELFTEST=0'
+}
+
 Get-Service $ServiceName | Format-Table Name, Status, StartType -AutoSize
 Write-Host 'INFO Install complete (unattended #277).'
 Write-Host "INFO home=$ConsoleHome auth=control-channel +o/+h (FR #3639) + console.password (NickServ GUID) + ergo.password (from release config\\ergo.password)"

@@ -750,16 +750,25 @@ class AircConsoleService:
                 return
             except OSError as exc:
                 last = exc
+                detail = str(exc)
+                try:
+                    import airc_connect_probe as _probe
+                    kind_c = _probe.classify_connect_error(exc, bytes_sent=0)
+                    detail = _probe.format_class(
+                        kind_c, exc, host=str(self.args.host), port=int(target) if str(target).isdigit() else 0
+                    )
+                except Exception:
+                    pass
                 if kind == "tls":
                     if is_prereg_connection_reset(exc):
                         skip_tls = True
                         info(
-                            f"INFO connect {self.args.host}:{target} failed ({exc}); "
+                            f"INFO connect {self.args.host}:{target} failed ({detail}); "
                             "skipping remaining TLS ports this round"
                         )
                     else:
                         info(
-                            f"INFO connect {self.args.host}:{target} failed ({exc}); "
+                            f"INFO connect {self.args.host}:{target} failed ({detail}); "
                             "trying next transport"
                         )
                 else:
@@ -2349,6 +2358,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "use for side-by-side launches instead of Start-Process -RedirectStandardOutput)",
     )
     p.add_argument("--selftest", action="store_true", help="offline smoke then exit 0")
+    p.add_argument(
+        "--connect-selftest",
+        action="store_true",
+        help="FR #8009: connect from this process, classify, exit 0 only when healthy",
+    )
     return p
 
 
@@ -2570,6 +2584,27 @@ def main(argv: list[str] | None = None) -> int:
     configure_log_file(getattr(args, "log_file", None))
     if args.selftest:
         return selftest()
+    if getattr(args, "connect_selftest", False):
+        import airc_connect_probe as _probe
+        if _probe.selftest_disabled():
+            info("INFO connect-selftest skipped AIRC_SELFTEST=0")
+            return 0
+        host = str(args.host)
+        port = int(args.port)
+        result = _probe.probe_connection(host, port, tls=bool(args.tls))
+        info("INFO connect-selftest " + str(result.get("detail") or result.get("kind")))
+        if result.get("diagnosis"):
+            info("INFO connect-selftest diagnosis\n" + str(result["diagnosis"]))
+        if result.get("kind") == _probe.CLASS_LOCAL_RESET:
+            exe = sys.executable
+            try:
+                added = _probe.ensure_allow_rule(
+                    exe, host, port, lambda argv: __import__("subprocess").check_output(argv, text=True, errors="replace")
+                )
+                info(f"INFO connect-selftest allow-rule added={added}")
+            except Exception as exc:
+                info(f"INFO connect-selftest allow-rule failed ({exc})")
+        return 0 if result.get("kind") == _probe.CLASS_OK else 1
     # FR #2401: airc.exe NSSM Application skips Start-AircConsole.ps1; restore S4 hooks.
     kick_frozen_service_start_hooks()
     try:
