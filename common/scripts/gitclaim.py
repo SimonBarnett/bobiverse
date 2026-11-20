@@ -1310,6 +1310,10 @@ def issue_skip_fr_reason(
     if hit:
         return f"label:{sorted(hit)[0]}"
     title_s = (title or "").strip()
+    # FR #8376: stall detector receipts (stall:all-gave-up:… and sibling stall:*)
+    # are not shop FR work. They must not be offered or stamped needs_human.
+    if re.match(r"(?i)^stall:", title_s):
+        return "stall_receipt"
     # FR #3658 / #3317: owner-missing hold titles (even with empty labels).
     if HARVEST_OWNER_MISSING_HOLD_TITLE_RE.search(title_s):
         return "owner_missing_hold_title"
