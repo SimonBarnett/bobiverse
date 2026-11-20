@@ -16676,16 +16676,6 @@ def release_unacked_lost_ack(home: Path, nick: str, *, log=None) -> bool:
         raw = str(r.get("nick") or r.get("accepted_by") or r.get("offered_to") or "").strip()
         return (canonical_worker_nick(raw) or raw).strip().lower()
 
-    def _ledger_acked(r: dict) -> bool:
-        """True when ledger touch shows this seat already ACKed the job (FR #7598)."""
-        try:
-            led = ledger_load(home)
-            key = _lkey(str(r.get("repo") or ""), str(r.get("id") or ""))
-            roles = ((led.get("touch") or {}).get(key) or {}).get(me) or []
-            return bool(roles)
-        except Exception:  # noqa: BLE001
-            return False
-
     try:
         with _lock(home):
             doc = _load_queue_unlocked(home)
@@ -16697,9 +16687,9 @@ def release_unacked_lost_ack(home: Path, nick: str, *, log=None) -> bool:
                 return False
             if any(_seat_reports_row(home, nick, r) for r in mine):
                 return False
-            # FR #7598: a received ACK (ledger touch) must not become LOST_ACK_NO_ACK.
-            if any(_ledger_acked(r) for r in mine):
-                return False
+            # FR #8384: do not keep nak-busy on LOST_ACK_RESTART just because a
+            # ledger touch exists. A real ACK clears reconcile (FR #7598) and
+            # paints working_on in the same turn, so _seat_reports_row stays put.
             unacc = doc.setdefault("unaccepted", [])
             done = doc.setdefault("done", [])
             for r in mine:
@@ -17058,7 +17048,9 @@ def release_holder_on_bored(home: Path, nick: str, now: float | None = None) -> 
     with contextlib.suppress(Exception):
         import bobreport
 
-        bobreport.clear_seat_doing(home, nick, only_if_work_contains=ident.lstrip("#"))
+        # FR #8384: placeholder working_on does not contain the issue id, so a
+        # needle clear leaves the seat looking busy after the row is released.
+        bobreport.clear_seat_doing(home, nick)
     with contextlib.suppress(Exception):
         _report_holder_bored(nick, open_job)
     reset_holder_bored(home, nick)

@@ -1410,7 +1410,14 @@ def _coerce_worker_list(raw: object, *, now: float | None = None) -> list[dict]:
             if state in ("doing", "offered", "waiting")
             else ""
         )
-        row = {"nick": nick, "state": state, "work": work, "updated": updated}
+        # FR #8384: TipForm reads workers[].working_on; chair rows store work.
+        row = {
+            "nick": nick,
+            "state": state,
+            "work": work,
+            "working_on": work,
+            "updated": updated,
+        }
         kind = str(ent.get("kind") or ent.get("agent") or "").strip()
         if kind:
             row["kind"] = kind
@@ -3605,6 +3612,11 @@ def delete_worker(home: Path, machine_id: str, pid: int | str, briefer_nick: str
     return PresenceOutcome(ok=True, deleted_pid=pid_s, machine_id=mid)
 
 
+def _work_is_placeholder(work: object) -> bool:
+    """True when work is blank or a chair state word, not a job key (FR #8384)."""
+    return str(work or "").strip().lower() in ("", "working", "offered", "waiting")
+
+
 def accepted_work_for_nick(home: Path, nick: str) -> str:
     """FR #7596: short work text when ``nick`` still holds an accepted queue job.
 
@@ -3725,6 +3737,12 @@ def _apply_worker_op(home: Path, op: str, mid: str, payload: dict, briefer_nick:
         if row["state"] in ("doing", "offered", "waiting"):
             if work_raw is not None:
                 row["work"] = clean_worker_work(work_raw)
+            # FR #8384: accepted ACK must paint the job key, never a blank
+            # doing/offered tile (TipForm working_on / work placeholders).
+            if row["state"] in ("doing", "offered") and _work_is_placeholder(row.get("work")):
+                painted = accepted_work_for_nick(home, nick)
+                if painted:
+                    row["work"] = clean_worker_work(painted)
             if not row["work"]:
                 if row["state"] == "doing":
                     row["work"] = "working"
