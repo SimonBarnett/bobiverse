@@ -4062,6 +4062,12 @@ $poll.Add_Tick({
                 else {
                     # FR #4142 / #7579: data-only hover/snapshot for bob-tray.exe with timeout.
                     # FR #7660: same warm runspace as stall-alerts, still the 45s budget.
+                    # FR #8404: keep the digest GET inside the 45s step budget.
+                    # Set the cap in this runspace. Invoke-BobTrayWarmEngineStep calls
+                    # $ps.Stop() on timeout, which skips finally inside the child body.
+                    $prevDigestTimeout = $env:BOB_DIGEST_HTTP_TIMEOUT_SEC
+                    $env:BOB_DIGEST_HTTP_TIMEOUT_SEC = '8'
+                    try {
                     [void](Invoke-BobTrayWarmEngineStep -Name 'update-hover-engine' -Root $RepoRoot -TimeoutSec ([int]$script:BobTrayEngineStepTimeoutSec) -ArgumentList @($RepoRoot) -Body {
                         param($Root)
                         $h = Get-BobTrayHover
@@ -4070,6 +4076,15 @@ $poll.Add_Tick({
                             [void](Write-BobTrayStatusSnapshot -Root $Root -Model $model)
                         }
                     })
+                    }
+                    finally {
+                        if ([string]::IsNullOrEmpty($prevDigestTimeout)) {
+                            Remove-Item Env:\BOB_DIGEST_HTTP_TIMEOUT_SEC -ErrorAction SilentlyContinue
+                        }
+                        else {
+                            $env:BOB_DIGEST_HTTP_TIMEOUT_SEC = $prevDigestTimeout
+                        }
+                    }
                 }
                 # CAST IRON: local Cursor (pcent + overspend) + xAI weekly -> digest webhook.
                 # FR #4142: in engine mode Write-BobIrcStatus runs on trayDigestTimer (non-UI).
