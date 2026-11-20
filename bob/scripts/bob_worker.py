@@ -7140,6 +7140,28 @@ def probe_opencode_turns_submit(turns_path: Path | str, *, since_wall: float) ->
     return False
 
 
+def probe_opencode_headless_receipt(
+    turns_path: Path | str,
+    *,
+    since_wall: float,
+    baseline_size: int = 0,
+) -> bool:
+    """FR #8270: OpenCode has no TUI prompt. A turn receipt is enough.
+
+    ``turn_started`` after the inject, or any new bytes in opencode-turns.jsonl
+    (first output from the headless run). A missing file is not a receipt.
+    """
+    if probe_opencode_turns_submit(turns_path, since_wall=since_wall):
+        return True
+    path = Path(turns_path)
+    try:
+        if path.is_file() and path.stat().st_size > int(baseline_size):
+            return True
+    except OSError:
+        return False
+    return False
+
+
 def make_submit_probe(
     kind: str,
     *,
@@ -7192,9 +7214,17 @@ def make_submit_probe(
         if run_dir is None:
             return None
         turns = Path(run_dir) / "opencode-turns.jsonl"
+        try:
+            base_size = turns.stat().st_size if turns.is_file() else 0
+        except OSError:
+            base_size = 0
 
         def _oprobe() -> bool:
-            return probe_opencode_turns_submit(turns, since_wall=t0)
+            # FR #8270: headless run has no TUI prompt. turn_started or new
+            # turn-log bytes are the receipt.
+            return probe_opencode_headless_receipt(
+                turns, since_wall=t0, baseline_size=base_size
+            )
 
         return _oprobe
 
@@ -9151,6 +9181,9 @@ def run_submit_verify_loop(
     backoffs: tuple | list = (3.0, 5.0, 8.0),
     stop_fn: Optional[Callable[[], bool]] = None,
     t0: float | None = None,
+    miss_label: str = "no prompt seen",
+    kind: str = "",
+    alive_fn: Optional[Callable[[], bool]] = None,
 ) -> str:
     """Wait for submit probe; Enter-only retry on miss (FR #2696).
 
@@ -9191,6 +9224,16 @@ def run_submit_verify_loop(
                         return "stop"
                 except Exception:
                     pass
+            if alive_fn is not None:
+                try:
+                    if not alive_fn():
+                        _log(
+                            "relay: submit-verify FAILED probe=spawn"
+                            + (f" kind={kind}" if kind else "")
+                        )
+                        return "failed"
+                except Exception:
+                    pass
             rem = deadline - clock()
             if rem <= 0:
                 break
@@ -9198,14 +9241,20 @@ def run_submit_verify_loop(
         if i >= len(waits) - 1:
             break
         retry_n = i + 1
-        _log(f"relay: submit-verify retry={retry_n} (no prompt seen)")
+        _log(f"relay: submit-verify retry={retry_n} ({miss_label})")
+        # FR #8270: headless seats have no TUI prompt. Do not send Enter.
+        if (kind or "").strip().lower() == "opencode":
+            continue
         try:
             enter_fn()
         except TypeError:
             enter_fn(0)
         except Exception as e:
             _log(f"relay: submit-verify enter failed {type(e).__name__}")
-    _log(f"relay: submit-verify FAILED after {retry_n} retries")
+    _log(
+        f"relay: submit-verify FAILED after {retry_n} retries probe={miss_label}"
+        + (f" kind={kind}" if kind else "")
+    )
     return "failed"
 
 
@@ -9227,6 +9276,9 @@ def inject_with_submit_verify(
     on_failed: Optional[Callable[[], None]] = None,
     force_verify: bool = False,
     on_unverified: Optional[Callable[[], None]] = None,
+    miss_label: str = "no prompt seen",
+    kind: str = "",
+    alive_fn: Optional[Callable[[], bool]] = None,
 ) -> bool:
     """Paste via inject_fn, then verify submit and Enter-only retry (FR #2696).
 
@@ -9291,6 +9343,9 @@ def inject_with_submit_verify(
             backoffs=bos,
             stop_fn=stop_fn,
             t0=t0,
+            miss_label=miss_label,
+            kind=kind,
+            alive_fn=alive_fn,
         )
         if res == "failed" and on_failed is not None:
             try:
@@ -10892,12 +10947,20 @@ def inject_failed_nack_line(line: str) -> Optional[str]:
     return f"NACK {key} inject failed"
 
 
-def submit_verify_giveup_line(line: str) -> Optional[str]:
-    """FR #4510: Cursor seat returns the job after a second submit-verify failure."""
+def submit_verify_giveup_line(line: str, *, probe: str = "", kind: str = "") -> Optional[str]:
+    """FR #4510: Cursor seat returns the job after a second submit-verify failure.
+
+    FR #8270: the wire names the probe that failed and the agent kind.
+    """
     key = assign_job_key(line)
     if not key:
         return None
-    return f"GIVEUP {key} submit-verify failed"
+    extra = ""
+    if probe:
+        extra += f" probe={probe}"
+    if kind:
+        extra += f" kind={kind}"
+    return f"GIVEUP {key} submit-verify failed{extra}"
 
 
 def ack_on_receipt_line(line: str) -> Optional[str]:
@@ -11397,6 +11460,7 @@ class InjectRecovery:
         is_acked: Callable[[str], bool] = lambda line: False,
         log: Callable[[str], None] = lambda m: None,
         giveup_on_fail: bool = False,
+        agent_kind: str = "",
         block_on_receipt_ack: bool = True,
         turn_running: Callable[[], bool] = lambda: False,
         clear_input: Callable[[], None] = lambda: None,
@@ -11407,6 +11471,7 @@ class InjectRecovery:
         self.is_acked = is_acked
         self.log = log
         self.giveup_on_fail = bool(giveup_on_fail)
+        self.agent_kind = (agent_kind or "").strip().lower()
         self.block_on_receipt_ack = bool(block_on_receipt_ack)
         self.turn_running = turn_running
         self.clear_input = clear_input
@@ -11458,7 +11523,14 @@ class InjectRecovery:
                     pass
                 time.sleep(min(0.2, max(0.05, deadline - time.monotonic())))
         if self.giveup_on_fail:
-            wire = submit_verify_giveup_line(line)
+            # FR #8270: annotate OpenCode GIVEUP with probe/kind. Cursor/Grok keep
+            # the FR #4510 wire ``submit-verify failed`` with no extras (VISION S3).
+            if self.agent_kind == "opencode":
+                wire = submit_verify_giveup_line(
+                    line, probe="no turn receipt", kind="opencode"
+                )
+            else:
+                wire = submit_verify_giveup_line(line)
             try:
                 self.clear_input()
             except Exception as e:  # noqa: BLE001
@@ -16244,6 +16316,7 @@ class Supervisor:
             is_acked=_acked,
             log=self.log,
             giveup_on_fail=receipt_ack,
+            agent_kind=kind,
             block_on_receipt_ack=not receipt_ack,
             turn_running=_turn_running if receipt_ack else (lambda: False),
             clear_input=clear_console_input if receipt_ack else (lambda: None),
@@ -16645,6 +16718,9 @@ class Supervisor:
             on_failed=on_failed,
             force_verify=bool(force_verify),
             on_unverified=None if force_verify else _mark_unverified,
+            miss_label="no turn receipt" if kind_l == "opencode" else "no prompt seen",
+            kind=kind_l,
+            alive_fn=(lambda p=proc: p.poll() is None) if kind_l == "opencode" else None,
         )
 
     def _reconcile_wait_exit_with_shutdown(

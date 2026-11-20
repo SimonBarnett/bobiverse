@@ -67,7 +67,8 @@ def test_mrb6161_watchdog_and_inject_acceptance_pins() -> None:
     assert "record-pause" in wd
     assert "without limit evidence" in wd or "solely for silence" in wd
     inj = (MIRRORS / "FR-OC-INJECT.md").read_text(encoding="utf-8")
-    assert "Enter-only" in inj
+    assert "do not send Enter" in inj
+    assert "no turn receipt" in inj
     assert "duplicate" in inj.lower()
     turn = (MIRRORS / "FR-OC-TURN.md").read_text(encoding="utf-8")
     assert "turn_started" in turn and "turn_ended" in turn

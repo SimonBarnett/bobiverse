@@ -1310,6 +1310,10 @@ def issue_skip_fr_reason(
     if hit:
         return f"label:{sorted(hit)[0]}"
     title_s = (title or "").strip()
+    # FR #8376: stall detector receipts (stall:all-gave-up:… and sibling stall:*)
+    # are not shop FR work. They must not be offered or stamped needs_human.
+    if re.match(r"(?i)^stall:", title_s):
+        return "stall_receipt"
     # FR #3658 / #3317: owner-missing hold titles (even with empty labels).
     if HARVEST_OWNER_MISSING_HOLD_TITLE_RE.search(title_s):
         return "owner_missing_hold_title"
@@ -4625,6 +4629,111 @@ def list_open_prs_explicit_non_default_base(prs) -> list[dict]:
             {
                 "number": num,
                 "base": pr_base_ref(pr),
+                "title": str(pr.get("title") or "")[:160],
+                "html_url": str(pr.get("html_url") or ""),
+            }
+        )
+    return out
+
+
+def open_pr_expects_mrb_or_fix_row(pr: dict | None) -> bool:
+    """True when an open pull should hold an MRB (or FIX) queue row (FR #8377).
+
+    Mirrors the resync classification so the open_pr_mrb_missing monitor does not
+    flag pulls that are intentionally not standalone MRB work: drafts, intake
+    harvest receipts, ``fix(mrb-N)`` tips, ``docs/mrb-*`` pins, and
+    lesson-of-lesson / pin-of-pin tips.
+    """
+    if not isinstance(pr, dict):
+        return False
+    if pr.get("draft") is True:
+        return False
+    title = str(pr.get("title") or "")
+    body = str(pr.get("body") or "")
+    labels = tuple(_label_names(pr.get("labels")))
+    head = pr.get("head") if isinstance(pr.get("head"), dict) else {}
+    head_ref = str(head.get("ref") or "")
+    if is_mrb_fix_pr_title(title):
+        return False
+    if is_docs_mrb_pin_pr(title=title, head_ref=head_ref, labels=labels):
+        return False
+    if is_intake_harvest_receipt_pr(title=title, body=body, labels=labels):
+        return False
+    if is_lesson_of_lesson_pr(
+        title=title, body=body, labels=labels, head_ref=head_ref
+    ):
+        return False
+    return True
+
+
+def _queue_rows_cover_mrb_fix(
+    rows: list[dict], repo: str, ident: str, num: int
+) -> bool:
+    """True when any unaccepted/accepted row is an MRB or FIX for ``repo#num``.
+
+    FR #8377: an open PR is covered when a matching MRB row exists, or a FIX row
+    handles it (ci-fail / conflict / dirty fold). MRB rows carry a ``/pull/N`` URL
+    (FR #595), so a URL match is the fallback when the id shape differs.
+    """
+    repo_c = canonical_queue_repo(repo).lower() if repo else ""
+    want = _norm_row_id(ident)
+    pull_tail = f"/pull/{num}"
+    for r in rows:
+        if not isinstance(r, dict):
+            continue
+        if str(r.get("task") or "").upper() not in ("MRB", "FIX"):
+            continue
+        r_repo = canonical_queue_repo(str(r.get("repo") or "")).lower()
+        if repo_c and r_repo and r_repo != repo_c:
+            continue
+        r_id = _norm_row_id(str(r.get("id") or ""))
+        if r_id and r_id == want:
+            return True
+        if pull_tail in str(r.get("url") or ""):
+            return True
+    return False
+
+
+def list_open_prs_missing_mrb(
+    prs, queue_doc=None, *, repo: str = ""
+) -> list[dict]:
+    """Open non-draft non-receipt PRs with no MRB/FIX queue row (FR #8377).
+
+    Shared by the ``open_pr_mrb_missing`` monitor (and future resync self-checks):
+    a product PR that GitHub still lists as open but the queue neither holds nor
+    is reviewing as MRB/FIX is stranded — seats can never be offered the hostile
+    review for a green, mergeable PR (class of bobiverse#8353).
+    """
+    out: list[dict] = []
+    if not isinstance(prs, list):
+        return out
+    rows: list[dict] = []
+    if isinstance(queue_doc, dict):
+        for bucket in ("unaccepted", "accepted"):
+            v = queue_doc.get(bucket)
+            if isinstance(v, list):
+                rows.extend(r for r in v if isinstance(r, dict))
+            elif isinstance(v, dict):
+                rows.extend(r for r in v.values() if isinstance(r, dict))
+    for pr in prs:
+        if not isinstance(pr, dict):
+            continue
+        if not open_pr_expects_mrb_or_fix_row(pr):
+            continue
+        num = pr.get("number")
+        if not isinstance(num, int):
+            continue
+        base = pr.get("base") if isinstance(pr.get("base"), dict) else {}
+        base_repo = base.get("repo") if isinstance(base.get("repo"), dict) else {}
+        pr_repo = repo or str(base_repo.get("full_name") or "")
+        ident = f"#{num}"
+        if _queue_rows_cover_mrb_fix(rows, pr_repo, ident, num):
+            continue
+        out.append(
+            {
+                "repo": pr_repo,
+                "number": num,
+                "id": ident,
                 "title": str(pr.get("title") or "")[:160],
                 "html_url": str(pr.get("html_url") or ""),
             }
