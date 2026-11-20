@@ -362,7 +362,27 @@ _CURSOR_UNKNOWN_CLEAR_FIELDS = tuple(sorted(_CURSOR_GROUP_KEYS))
 _PEER_CLEAR = object()  # sentinel: peer wants an explicit null clear in the merge delta
 # FR #6143 / #6301: ear-owned identity scalars. Keep out of _MERGE_PEER_FIELDS so tray
 # peer rewrites cannot clear or restore a stale label via peer fill.
-_EAR_IDENTITY_FIELDS = ("grok_account", "opencode_account")
+_EAR_IDENTITY_FIELDS = (
+    "grok_account",
+    "opencode_account",
+    # FR #7907: Cursor CLI email (or literal none) plus Windows user and api_key source.
+    "cursor_account",
+    "cursor_account_user",
+    "cursor_account_source",
+)
+_IDENTITY_MERGE_KEYS = frozenset(
+    {
+        "op",
+        "machine",
+        "id",
+        "cleared",
+        "grok_account",
+        "opencode_account",
+        "cursor_account",
+        "cursor_account_user",
+        "cursor_account_source",
+    }
+)
 _TRAY_MACHINE_EXPORT_KEYS = (
     "id",
     "nick",
@@ -407,6 +427,9 @@ _TRAY_MACHINE_EXPORT_KEYS = (
     "python",
     "grok_account",
     "opencode_account",
+    "cursor_account",
+    "cursor_account_user",
+    "cursor_account_source",
     "xai_weekly_used_pct",
     "xai_weekly_source",
     "xai_weekly_fetched_at",
@@ -583,6 +606,170 @@ def read_grok_account_label(env: dict[str, str] | None = None) -> tuple[str, str
     if len(labels) > 1:
         return ("none", None)
     return ("ok", labels[0])
+
+
+_CURSOR_ACCOUNT_MAX_LEN = 254
+_CURSOR_USER_RX = re.compile(r"^[A-Za-z0-9._$-]{1,64}$")
+
+
+def _merge_payload_is_identity_only(payload: dict) -> bool:
+    """True when a merge carries only ear identity scalars (no fuel or model)."""
+    if not isinstance(payload, dict):
+        return False
+    return all(str(k) in _IDENTITY_MERGE_KEYS for k in payload)
+
+
+def _sanitize_cursor_account_value(raw: object) -> str | None:
+    """Valid email or the literal ``none``. Never a token."""
+    if not isinstance(raw, str):
+        return None
+    s = _GROK_CTRL_RX.sub("", raw).strip()
+    if s == "none":
+        return "none"
+    if not s or len(s) > _CURSOR_ACCOUNT_MAX_LEN:
+        return None
+    if any(ch.isspace() for ch in s) or s.count("@") != 1:
+        return None
+    local, _, domain = s.partition("@")
+    if not local or not domain or "." not in domain:
+        return None
+    if secret_marker_hit(s) or looks_like_secret(s):
+        return None
+    return s
+
+
+def _sanitize_cursor_account_user(raw: object) -> str | None:
+    if not isinstance(raw, str):
+        return None
+    s = raw.strip()
+    if not _CURSOR_USER_RX.match(s):
+        return None
+    return s
+
+
+def _sanitize_identity_field(key: str, val: object) -> str | None:
+    if key == "cursor_account":
+        return _sanitize_cursor_account_value(val)
+    if key == "cursor_account_user":
+        return _sanitize_cursor_account_user(val)
+    if key == "cursor_account_source":
+        if isinstance(val, str) and val.strip() == "api_key":
+            return "api_key"
+        return None
+    return _sanitize_grok_account_label(val)
+
+
+def _cursor_config_user_leaf(path: Path) -> str | None:
+    parent = path.parent
+    if parent.name.lower() == ".cursor":
+        leaf = parent.parent.name
+    else:
+        leaf = parent.name
+    return _sanitize_cursor_account_user(leaf)
+
+
+def read_cursor_account_label(env: dict[str, str] | None = None) -> dict:
+    """FR #7907: Cursor CLI email from cli-config.json authInfo.email only.
+
+    Returns ``status`` ``ok`` | ``none`` | ``unknown``, ``email`` and ``user``.
+    ``ok`` with email ``none`` means no login. Never returns other authInfo keys.
+    """
+    src = env if env is not None else os.environ
+    explicit = (src.get("BOB_CURSOR_CLI_CONFIG_PATH") or "").strip()
+    user: str | None = None
+    if explicit:
+        path = Path(explicit)
+        user = _cursor_config_user_leaf(path)
+    else:
+        home = _interactive_grok_user_home()
+        if home is None:
+            return {"status": "unknown", "email": None, "user": None}
+        path = home / ".cursor" / "cli-config.json"
+        user = _sanitize_cursor_account_user(home.name)
+    if not path.is_file():
+        return {"status": "none", "email": "none", "user": user}
+    try:
+        data, _err = read_bytes_win32_backup(path)
+        if data is None:
+            data = path.read_bytes()
+        doc = json.loads(data.decode("utf-8"))
+    except FileNotFoundError:
+        return {"status": "none", "email": "none", "user": user}
+    except (OSError, UnicodeError, json.JSONDecodeError, ValueError):
+        return {"status": "unknown", "email": None, "user": user}
+    if not isinstance(doc, dict):
+        return {"status": "none", "email": "none", "user": user}
+    auth = doc.get("authInfo")
+    if not isinstance(auth, dict):
+        return {"status": "none", "email": "none", "user": user}
+    email = _sanitize_cursor_account_value(auth.get("email"))
+    if email is None or email == "none":
+        return {"status": "none", "email": "none", "user": user}
+    return {"status": "ok", "email": email, "user": user}
+
+
+def cursor_key_override_marker_path(env: dict[str, str] | None = None) -> Path | None:
+    """Secret-free tray marker path. Never the key itself."""
+    src = env if env is not None else os.environ
+    explicit = (src.get("BOB_CURSOR_KEY_OVERRIDE_PATH") or "").strip()
+    if explicit:
+        return Path(explicit)
+    home = _interactive_grok_user_home()
+    if home is None:
+        return None
+    return (
+        home
+        / "AppData"
+        / "Local"
+        / "Bobiverse"
+        / "tray"
+        / "run"
+        / "cursor-key-override.json"
+    )
+
+
+def _pid_is_alive(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    if os.name == "nt":
+        import ctypes
+
+        PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+        handle = ctypes.windll.kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, int(pid))
+        if not handle:
+            return False
+        ctypes.windll.kernel32.CloseHandle(handle)
+        return True
+    try:
+        os.kill(pid, 0)
+    except OSError:
+        return False
+    return True
+
+
+def read_cursor_account_source(env: dict[str, str] | None = None) -> str | None:
+    """``api_key`` only when the tray marker parses and its pid is alive."""
+    path = cursor_key_override_marker_path(env)
+    if path is None or not path.is_file():
+        return None
+    try:
+        doc = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return None
+    if not isinstance(doc, dict):
+        return None
+    banned = {"key", "token", "api_key", "cursor_api_key", "secret", "password"}
+    if any(str(k).lower() in banned for k in doc):
+        return None
+    if doc.get("source") != "api_key":
+        return None
+    try:
+        pid = int(doc.get("pid"))
+    except (TypeError, ValueError):
+        return None
+    if not _pid_is_alive(pid):
+        return None
+    return "api_key"
 
 
 _GIT_ACTION_WORDS = frozenset(
@@ -1223,7 +1410,14 @@ def _coerce_worker_list(raw: object, *, now: float | None = None) -> list[dict]:
             if state in ("doing", "offered", "waiting")
             else ""
         )
-        row = {"nick": nick, "state": state, "work": work, "updated": updated}
+        # FR #8384: TipForm reads workers[].working_on; chair rows store work.
+        row = {
+            "nick": nick,
+            "state": state,
+            "work": work,
+            "working_on": work,
+            "updated": updated,
+        }
         kind = str(ent.get("kind") or ent.get("agent") or "").strip()
         if kind:
             row["kind"] = kind
@@ -1647,7 +1841,7 @@ def _coerce_machine(mid: str, raw: object) -> dict:
     for key in _EAR_IDENTITY_FIELDS:
         val = raw.get(key)
         if isinstance(val, str) and val.strip():
-            cleaned = _sanitize_grok_account_label(val)
+            cleaned = _sanitize_identity_field(key, val)
             if cleaned:
                 base[key] = cleaned
     if "running" in base:
@@ -3096,7 +3290,8 @@ def _apply_merge_payload(doc: dict, mid: str, payload: dict) -> list[str]:
         else:
             _roll_working_on(ent)
     # FR #7549 / #7585: poison or omitted model clears the sticky digest label.
-    if "model" not in payload:
+    # FR #7907: an identity-only merge must not wipe the stored seat model.
+    if "model" not in payload and not _merge_payload_is_identity_only(payload):
         cleared = payload.setdefault("cleared", [])
         if isinstance(cleared, list) and "model" not in cleared:
             cleared.append("model")
@@ -3145,7 +3340,7 @@ def _apply_merge_payload(doc: dict, mid: str, payload: dict) -> list[str]:
         val = payload[key]
         if _clearable_empty(val):
             continue
-        cleaned = _sanitize_grok_account_label(val)
+        cleaned = _sanitize_identity_field(key, val)
         if cleaned:
             ent[key] = cleaned
     # FR #7366: ignore machine Copilot / OpenCode posts; Jeeves fleet_pools owns them.
@@ -3417,6 +3612,11 @@ def delete_worker(home: Path, machine_id: str, pid: int | str, briefer_nick: str
     return PresenceOutcome(ok=True, deleted_pid=pid_s, machine_id=mid)
 
 
+def _work_is_placeholder(work: object) -> bool:
+    """True when work is blank or a chair state word, not a job key (FR #8384)."""
+    return str(work or "").strip().lower() in ("", "working", "offered", "waiting")
+
+
 def accepted_work_for_nick(home: Path, nick: str) -> str:
     """FR #7596: short work text when ``nick`` still holds an accepted queue job.
 
@@ -3537,6 +3737,12 @@ def _apply_worker_op(home: Path, op: str, mid: str, payload: dict, briefer_nick:
         if row["state"] in ("doing", "offered", "waiting"):
             if work_raw is not None:
                 row["work"] = clean_worker_work(work_raw)
+            # FR #8384: accepted ACK must paint the job key, never a blank
+            # doing/offered tile (TipForm working_on / work placeholders).
+            if row["state"] in ("doing", "offered") and _work_is_placeholder(row.get("work")):
+                painted = accepted_work_for_nick(home, nick)
+                if painted:
+                    row["work"] = clean_worker_work(painted)
             if not row["work"]:
                 if row["state"] == "doing":
                     row["work"] = "working"
@@ -5739,7 +5945,7 @@ def build_peer_fuel_merge_payload(peer: dict, machine_id: str) -> dict | None:
             if isinstance(cleared, list) and key not in cleared:
                 cleared.append(key)
             continue
-        cleaned = _sanitize_grok_account_label(val)
+        cleaned = _sanitize_identity_field(key, val)
         if cleaned:
             payload[key] = cleaned
     if isinstance(peer.get("cursor_pools"), list):
@@ -6077,19 +6283,53 @@ def post_report_json(payload: dict, *, url: str | None = None, timeout: float = 
         return None
 
 
-def build_grok_account_merge_payload(machine_id: str, label: str | None) -> dict:
+_CURSOR_FIELD_OMIT = object()
+
+
+def build_grok_account_merge_payload(
+    machine_id: str,
+    label: str | None,
+    *,
+    cursor_account: object = _CURSOR_FIELD_OMIT,
+    cursor_account_user: object = _CURSOR_FIELD_OMIT,
+    cursor_account_source: object = _CURSOR_FIELD_OMIT,
+) -> dict:
     """Label-only merge payload (FR #6143). Never includes credentials.
 
     MRB #6167: do not send ``online`` --- ``_apply_merge_payload`` would flip
     ``status`` to ``I am online`` and churn the machine fingerprint vs fuel POSTs.
+    FR #7907: optional Cursor identity fields. ``_CURSOR_FIELD_OMIT`` leaves them
+    off the wire. ``cursor_account_source=None`` is an explicit clear.
     """
     mid = normalize_machine_id(machine_id) or str(machine_id or "").strip().lower()
     payload: dict = {"op": "merge", "machine": mid, "id": mid}
-    if label is None:
+    if label is _CURSOR_FIELD_OMIT:
+        pass
+    elif label is None:
         payload["grok_account"] = None
         payload["cleared"] = ["grok_account"]
     else:
         payload["grok_account"] = label
+    cleared = payload.get("cleared")
+    if not isinstance(cleared, list):
+        cleared = []
+
+    def _put(key: str, val: object) -> None:
+        if val is _CURSOR_FIELD_OMIT:
+            return
+        cleaned = _sanitize_identity_field(key, val) if val is not None else None
+        if cleaned:
+            payload[key] = cleaned
+            return
+        payload[key] = None
+        if key not in cleared:
+            cleared.append(key)
+
+    _put("cursor_account", cursor_account)
+    _put("cursor_account_user", cursor_account_user)
+    _put("cursor_account_source", cursor_account_source)
+    if cleared:
+        payload["cleared"] = cleared
     return payload
 
 
@@ -6099,17 +6339,48 @@ def publish_grok_account_label(
     *,
     url: str | None = None,
     timeout: float = 10.0,
+    cursor_account: object = _CURSOR_FIELD_OMIT,
+    cursor_account_user: object = _CURSOR_FIELD_OMIT,
+    cursor_account_source: object = _CURSOR_FIELD_OMIT,
 ) -> int | None:
     """POST grok_account-only merge. Returns HTTP status on 2xx, else None.
 
     Logs must never include the label. Caller logs ok/failed without the value.
     """
-    payload = build_grok_account_merge_payload(machine_id, label)
+    payload = build_grok_account_merge_payload(
+        machine_id,
+        label,
+        cursor_account=cursor_account,
+        cursor_account_user=cursor_account_user,
+        cursor_account_source=cursor_account_source,
+    )
     code = post_report_json(payload, url=url, timeout=timeout)
     if code is not None and 200 <= int(code) < 300:
         return int(code)
     return None
 
+
+def publish_cursor_account_label(
+    machine_id: str,
+    *,
+    cursor_account: object = _CURSOR_FIELD_OMIT,
+    cursor_account_user: object = _CURSOR_FIELD_OMIT,
+    cursor_account_source: object = _CURSOR_FIELD_OMIT,
+    url: str | None = None,
+    timeout: float = 10.0,
+) -> int | None:
+    """POST Cursor identity only. Does not touch grok_account."""
+    payload = build_grok_account_merge_payload(
+        machine_id,
+        _CURSOR_FIELD_OMIT,
+        cursor_account=cursor_account,
+        cursor_account_user=cursor_account_user,
+        cursor_account_source=cursor_account_source,
+    )
+    code = post_report_json(payload, url=url, timeout=timeout)
+    if code is not None and 200 <= int(code) < 300:
+        return int(code)
+    return None
 
 
 def _path_under_meipass(path: Path) -> bool:

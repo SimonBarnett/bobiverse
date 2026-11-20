@@ -438,6 +438,28 @@ function Test-BobTrayHttpPoolError {
     return $false
 }
 
+function Get-BobTrayCursorHeadingArgs {
+    <#
+    .SYNOPSIS
+      FR #7907: optional Format-BobTrayXaiWeeklyRow params from machines.<id> only.
+    #>
+    param($Node)
+    $out = @{}
+    if (-not $Node) { return $out }
+    $map = @{
+        cursor_account        = 'CursorAccount'
+        cursor_account_user   = 'CursorAccountUser'
+        cursor_account_source = 'CursorAccountSource'
+    }
+    foreach ($name in @($map.Keys)) {
+        $prop = $null
+        try { $prop = $Node.PSObject.Properties[$name] } catch { $prop = $null }
+        if ($null -eq $prop) { continue }
+        $out[$map[$name]] = [string]$prop.Value
+    }
+    return $out
+}
+
 function Format-BobTrayXaiWeeklyRow {
     <#
     .SYNOPSIS
@@ -458,7 +480,10 @@ function Format-BobTrayXaiWeeklyRow {
         [string]$MachineId,
         $XaiWeekly = $null,
         [string]$NoReadingReason = '',
-        [switch]$AsPublished
+        [switch]$AsPublished,
+        [string]$CursorAccount,
+        [string]$CursorAccountUser,
+        [string]$CursorAccountSource
     )
     $id = ([string]$MachineId).ToUpperInvariant()
     if ($null -eq $XaiWeekly) {
@@ -596,6 +621,20 @@ function Format-BobTrayXaiWeeklyRow {
     if (-not $fresh -and $errDisplay -and ($null -ne $pct)) { $parts += $errDisplay }
     if ($resetLabel -and ($null -ne $pct -or -not $fresh)) {
         $parts += [string]$resetLabel
+    }
+    # FR #7907: machine-local Cursor CLI identity after the reset. Absent params keep the heading.
+    $cursorBound = $PSBoundParameters.ContainsKey('CursorAccount') -or $PSBoundParameters.ContainsKey('CursorAccountUser') -or $PSBoundParameters.ContainsKey('CursorAccountSource')
+    if ($cursorBound) {
+        $cursorSuffix = ''
+        if ([string]$CursorAccountSource -eq 'api_key') {
+            $cursorSuffix = 'cursor api_key'
+        }
+        elseif ($PSBoundParameters.ContainsKey('CursorAccount') -and -not [string]::IsNullOrWhiteSpace([string]$CursorAccount)) {
+            $who = [string]$CursorAccountUser
+            if ($who) { $cursorSuffix = ('cursor {0} ({1})' -f [string]$CursorAccount, $who) }
+            else { $cursorSuffix = ('cursor {0}' -f [string]$CursorAccount) }
+        }
+        if ($cursorSuffix) { $parts += $cursorSuffix }
     }
     return [pscustomobject]@{
         heading       = ($parts -join '  ')
@@ -2178,7 +2217,8 @@ function Format-BobTrayPoolLayoutSnapshot {
                 $xw = $null
                 try { $xw = $node.xai } catch { }
                 if (-not $xw) { try { $xw = $node.xai_weekly } catch { } }
-                $row = Format-BobTrayXaiWeeklyRow -MachineId ([string]$p.Name) -XaiWeekly $xw
+                $cursorArgs = Get-BobTrayCursorHeadingArgs -Node $node
+                $row = Format-BobTrayXaiWeeklyRow -MachineId ([string]$p.Name) -XaiWeekly $xw @cursorArgs
                 $lines.Add([string]$row.heading)
                 $wlist = @()
                 try { $wlist = @($node.workers) } catch { }
@@ -2390,7 +2430,8 @@ function Update-BobTrayDigestPools {
                         try { if ($node.xai) { $xw = $node.xai } } catch { }
                     }
                     # FR #7580: pass digest meter as published (no local age force).
-                    $xaiRow = Format-BobTrayXaiWeeklyRow -MachineId $mid -XaiWeekly $xw -AsPublished -NoReadingReason $(if ($null -eq $xw) { 'digest xai_weekly null' } else { '' })
+                    $cursorArgs = Get-BobTrayCursorHeadingArgs -Node $node
+                    $xaiRow = Format-BobTrayXaiWeeklyRow -MachineId $mid -XaiWeekly $xw -AsPublished -NoReadingReason $(if ($null -eq $xw) { 'digest xai_weekly null' } else { '' }) @cursorArgs
                     $barPct = $xaiRow.bar_pct
                     $bar = $null
                     if (Get-Command ConvertTo-BobTrayStatusBar -ErrorAction SilentlyContinue) {
@@ -4749,7 +4790,8 @@ function Get-BobTrayHover {
                 } catch { }
             }
         }
-        $xaiRow = Format-BobTrayXaiWeeklyRow -MachineId $mid -XaiWeekly $xaiMeter -NoReadingReason $noReadWhy
+        $cursorArgs = Get-BobTrayCursorHeadingArgs -Node $digestEnt
+        $xaiRow = Format-BobTrayXaiWeeklyRow -MachineId $mid -XaiWeekly $xaiMeter -NoReadingReason $noReadWhy @cursorArgs
         $wPct = $xaiRow.remaining_pct
         $fuelStale = [bool]$xaiRow.fuel_stale
         if ($fuelStaleBy.ContainsKey($mid) -and $fuelStaleBy[$mid]) { $fuelStale = $true }

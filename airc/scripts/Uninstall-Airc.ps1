@@ -178,4 +178,8 @@ if ($doPurge) {
 } else {
     Write-Host 'INFO FR #1566: Uninstall-Airc done (ConsoleHome secrets kept; tree is MSI RemoveFiles)'
 }
+# FR #8009: remove only the airc outbound allow rule this install added.
+netsh advfirewall firewall delete rule name="airc-exe-outbound-irc" | Out-Null
+Write-Host 'INFO FR #8009 removed airc-exe-outbound-irc if present'
+}
 exit 0

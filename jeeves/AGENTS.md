@@ -54,6 +54,7 @@ Prefer **deterministic scripts that run without tokens** over reasoning. Run the
 | Open PR non-default base | `scripts\Test-JeevesMonitorOpenPrStaleBase.ps1` | `tools\monitor\open_pr_stale_base.py` (FR #8333; fixture `JEEVES_OPEN_PR_STALE_BASE_FIXTURE`) |
 | Open PR missing MRB/FIX row | `scripts\Test-JeevesMonitorOpenPrMrbMissing.ps1` | `tools\monitor\open_pr_mrb_missing.py` (FR #8377; fixture `JEEVES_OPEN_PR_MRB_MISSING_FIXTURE`) |
 | Ticket closure (new closes) | `scripts\Test-JeevesMonitorTicketClosure.ps1` | `tools\monitor\ticket_closure.py` (FR #6063) |
+| needs_human false positive (holder_bored / infra-soft) | `scripts\Test-JeevesMonitorNeedsHumanFalsePositive.ps1` | `tools\monitor\needs_human_false_positive.py` (FR #8427) |
 
 Runner: `scripts\Invoke-JeevesMonitorCheck.ps1 -Check <name> [-DryRun]`. Exit codes: **0** = ok, **1** = finding, **2** = error. Start Menu **Start Jeeves Monitor** launches a NEW agent here via `scripts\Start-JeevesMonitor.ps1` (never resume).
 
