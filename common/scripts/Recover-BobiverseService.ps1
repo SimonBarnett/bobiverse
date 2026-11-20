@@ -31,5 +31,9 @@ if (-not $InstallRoot) {
 
 Write-BobiverseMsiInstallLog -Product $Product -Message ("recover-begin service=$ServiceName installRoot=$InstallRoot why=$Why") -Leaf ("recover-$Product.log")
 [void](Restore-BobiverseServiceAfterFailedInstall -ServiceName $ServiceName -Product $Product -Why $Why)
+if ($Product -eq 'airc') {
+    # FR #8009: rollback removes only the allow rule this install may have added.
+    netsh advfirewall firewall delete rule name="airc-exe-outbound-irc" | Out-Null
+}
 # Always exit 0: rollback CA uses Return=ignore; never block MSI rollback on recover failure.
 exit 0
