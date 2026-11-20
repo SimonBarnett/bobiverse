@@ -13,6 +13,12 @@
 
 `Test-JeevesMonitorOpenPrStaleBase.ps1` / `tools/monitor/open_pr_stale_base.py` flags open pulls whose `base.ref` is not `main`/`master` (class of #8320 stuck on merged `fr-8310-land`). Set `JEEVES_OPEN_PR_STALE_BASE_FIXTURE` to a JSON pull list for offline/ops probes. Product guard: `github-resync` skips orphan `fix(mrb-N)` tips with an explicit non-default base and warns on other non-default open PRs.
 
+## skill_promote_backlog drafts (FR #8477)
+
+`skill_promote_backlog` also EXIT 1 when a focused repo has draft `via-intake`+`skill` leaflets older than `BOB_DRAFT_SKILL_PROMOTE_AGE_H` (default 6 hours) that were not marked ready. DONE/PASS/FAIL/GIVEUP receipt titles are not leaflets.
+
+Operator fallback: `gh pr ready <n>` and retitle to `lesson(<book>):` so resync can offer MRB. Do not offer the pull while it is still a draft (FR #2604).
+
 ## open_pr_mrb_missing (FR #8377)
 
 `Test-JeevesMonitorOpenPrMrbMissing.ps1` / `tools/monitor/open_pr_mrb_missing.py` flags open non-draft non-receipt product PRs that have no matching `unaccepted`/`accepted` MRB **or** FIX row (class of #8353: an open, green, mergeable PR that never reached the MRB queue). Set `JEEVES_OPEN_PR_MRB_MISSING_FIXTURE` to a JSON pull list (optionally `{"repo": "owner/name", "pulls": [...]}`) for offline/ops probes.

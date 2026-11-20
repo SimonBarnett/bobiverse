@@ -1225,6 +1225,116 @@ def is_offerable_intake_skill_lesson_pr(
     return bool(_INTAKE_SKILL_LESSON_BODY_RE.search(body_s))
 
 
+_DRAFT_SKILL_BOOK_RE = re.compile(
+    r"(?i)target skill book:\s*`?([A-Za-z0-9_.-]+)`?"
+)
+
+
+def is_draft_skill_leaflet(
+    *,
+    title: str = "",
+    body: str = "",
+    labels: tuple[str, ...] | list[str] = (),
+    files=None,
+) -> bool:
+    """FR #8477: draft via-intake+skill leaflet that should be marked ready.
+
+    A receipt title (DONE/PASS/FAIL/GIVEUP/SKIP) stays a draft. A real leaflet
+    has a Lesson section, or a skill/harvest title plus a non-stub body, and
+    does not only touch docs/intake-harvest/.
+    """
+    labs = {str(x).strip().lower() for x in (labels or []) if str(x).strip()}
+    if "via-intake" not in labs or "skill" not in labs:
+        return False
+    if is_intake_harvest_only_paths(files):
+        return False
+    title_s = (title or "").strip()
+    if _HARVEST_RECEIPT_STATUS_RE.search(title_s):
+        return False
+    body_s = body or ""
+    if _INTAKE_SKILL_LESSON_BODY_RE.search(body_s):
+        return True
+    if not HARVEST_TITLE_RE.match(title_s):
+        return False
+    if not body_s.strip() or _QUEUE_ME_STUB_RE.search(body_s):
+        return False
+    return True
+
+
+def lesson_title_for_draft_skill(title: str, body: str = "") -> str:
+    """Retitle a skill: leaflet to lesson(<book>): so FR #2705 can offer it."""
+    title_s = (title or "").strip()
+    if re.match(r"(?i)^lesson\s*\(", title_s):
+        return title_s[:240]
+    found = _DRAFT_SKILL_BOOK_RE.search(body or "")
+    book = found.group(1) if found else "skill"
+    rest = re.sub(r"(?i)^(skill|harvest)\s*:\s*", "", title_s).strip() or title_s or "skill leaflet"
+    return f"lesson({book}): {rest}"[:240]
+
+
+def promoted_draft_skill_view(pr: dict) -> dict:
+    """Local view of a leaflet after ready_for_review (draft false, lesson title)."""
+    out = dict(pr)
+    out["draft"] = False
+    out["title"] = lesson_title_for_draft_skill(
+        str(pr.get("title") or ""), str(pr.get("body") or "")
+    )
+    return out
+
+
+def github_promote_draft_skill_leaflet(repo: str, pr: dict, *, token: str) -> dict | None:
+    """Mark a draft skill leaflet ready and retitle it (FR #8477).
+
+    Returns the undrafted view, or None when GitHub refuses. Never logs the token.
+    Operator fallback: gh pr ready, and a lesson(<book>): title.
+    """
+    import urllib.request
+
+    if not token or not isinstance(pr, dict):
+        return None
+    num = pr.get("number")
+    node = str(pr.get("node_id") or "")
+    if not isinstance(num, int) or not node:
+        return None
+    new_title = lesson_title_for_draft_skill(
+        str(pr.get("title") or ""), str(pr.get("body") or "")
+    )
+    hdrs = {
+        "Accept": "application/vnd.github+json",
+        "Authorization": "Bearer " + token,
+        "User-Agent": "bobiverse-jeeves",
+        "Content-Type": "application/json",
+    }
+    try:
+        patch = urllib.request.Request(
+            f"https://api.github.com/repos/{repo}/pulls/{num}",
+            data=json.dumps({"title": new_title}).encode("utf-8"),
+            headers=hdrs,
+            method="PATCH",
+        )
+        with urllib.request.urlopen(patch, timeout=30):
+            pass
+        query = (
+            "mutation($id:ID!){markPullRequestReadyForReview(input:{pullRequestId:$id})"
+            "{pullRequest{isDraft}}}"
+        )
+        gql = urllib.request.Request(
+            "https://api.github.com/graphql",
+            data=json.dumps({"query": query, "variables": {"id": node}}).encode("utf-8"),
+            headers=hdrs,
+            method="POST",
+        )
+        with urllib.request.urlopen(gql, timeout=30) as resp:
+            raw = json.loads(resp.read().decode("utf-8"))
+        pr_node = ((raw.get("data") or {}).get("markPullRequestReadyForReview") or {}).get(
+            "pullRequest"
+        ) or {}
+        if pr_node.get("isDraft") is True or raw.get("errors"):
+            return None
+    except Exception:  # noqa: BLE001
+        return None
+    return promoted_draft_skill_view(pr)
+
 
 # FR #5847: Copilot Coding Agent FR implement PRs (often draft) must enter the MRB
 # queue and supersede the FR so stuck-sweep does not release accepted_holder_gone.
@@ -15131,6 +15241,7 @@ def resync_from_github(
     token: str = "",
     ignored=(),
     force_refresh: bool = False,
+    promote_draft_skill=None,
 ) -> dict:
     """Rebuild FR/MRB rows from GitHub: open issues without a closing PR -> FR, open PRs -> MRB.
 
@@ -15456,6 +15567,34 @@ def resync_from_github(
             # FR #2604: draft open PRs must not become MRB jobs; still count as open
             # for UAT/repo_clear and FR supersede via open_pulls_map above.
             # FR #5506: draft via-intake+skill lessons backfill as MRB (#4444/#4967).
+            # FR #8477: promote a real skill leaflet (ready + lesson title) first.
+            # Still-draft leaflets are not offered. DONE/PASS receipts stay drafts.
+            if pr.get("draft") is True and is_draft_skill_leaflet(
+                title=title,
+                body=body,
+                labels=_label_names(pr.get("labels")),
+                files=resolve_intake_pr_changed_paths(
+                    pr, repo=repo, number=num, fetch_json=getter
+                ),
+            ):
+                promoted = None
+                try:
+                    if promote_draft_skill is not None:
+                        promoted = promote_draft_skill(repo, pr)
+                    elif token:
+                        promoted = github_promote_draft_skill_leaflet(
+                            repo, pr, token=token
+                        )
+                except Exception:  # noqa: BLE001
+                    promoted = None
+                if isinstance(promoted, dict) and promoted.get("draft") is not True:
+                    pr = promoted
+                    title = str(pr.get("title") or title)
+                    body = str(pr.get("body") or body)
+                    print(
+                        f"resync promote draft skill PR {repo}#{num}",
+                        flush=True,
+                    )
             if pr.get("draft") is True:
                 pr_labels = _label_names(pr.get("labels"))
                 _resync_paths = resolve_intake_pr_changed_paths(
