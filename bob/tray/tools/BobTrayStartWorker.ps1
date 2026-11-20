@@ -170,6 +170,28 @@ function Write-BobTraySeatStart {
     & $Log ('seat-start seat={0} pid={1} trigger={2}' -f $seat, $WorkerPid, $trig)
 }
 
+function ConvertTo-BobTrayStartWorkerExpires {
+    <#
+    FR #8517: ear/startworker.py writes unix-int ts/expires. Hand-rolled or WinRM
+    req files sometimes use ISO-8601; a bare [int64] cast threw and skipped res-*.json.
+    Accept unix seconds (int/long/numeric string) or ISO-8601; else return $null.
+    #>
+    param([Parameter(Mandatory)]$Raw)
+    if ($null -eq $Raw) { return $null }
+    try {
+        if ($Raw -is [datetime]) { return ([datetime]$Raw).ToUniversalTime() }
+        $s = [string]$Raw
+        if (-not $s) { return $null }
+        $asLong = 0L
+        if ([int64]::TryParse($s, [ref]$asLong)) {
+            return [DateTimeOffset]::FromUnixTimeSeconds($asLong).UtcDateTime
+        }
+        $dto = [DateTimeOffset]::Parse($s, [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::RoundtripKind)
+        return $dto.UtcDateTime
+    }
+    catch { return $null }
+}
+
 function Invoke-BobTrayStartWorkerQueue {
     <#
     .SYNOPSIS
@@ -200,8 +222,10 @@ function Invoke-BobTrayStartWorkerQueue {
             $mode = [string]$req.mode
             $agent = ''
             if ($req.PSObject.Properties.Name -contains 'agent') { $agent = ([string]$req.agent).Trim().ToLowerInvariant() }
-            $expires = [DateTimeOffset]::FromUnixTimeSeconds([int64]$req.expires).UtcDateTime
-            if ($mode -notin @('agent', 'plan')) { $reason = 'bad-mode' }
+            # FR #8517: never throw on expires; always leave a res-*.json reason.
+            $expires = ConvertTo-BobTrayStartWorkerExpires -Raw $req.expires
+            if ($null -eq $expires) { $reason = 'bad-expires' }
+            elseif ($mode -notin @('agent', 'plan')) { $reason = 'bad-mode' }
             elseif ($agent -and $agent -notin @('auto', 'grok', 'cursor', 'opencode')) { $reason = 'bad-agent' }
             elseif ($Now -gt $expires) { $reason = 'expired' }
             elseif ($mode -eq 'agent' -and (Test-BobTraySeatsOff)) { $reason = 'seats-off' }
