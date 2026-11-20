@@ -7,7 +7,7 @@ import sys
 import time
 from pathlib import Path
 
-from _common import EXIT_FINDING, EXIT_OK, queue_bucket_rows, resolve_homes, resolve_queue_path, run_check
+from _common import EXIT_FINDING, EXIT_OK, non_chair_overlay, queue_bucket_rows, resolve_homes, resolve_queue_path, run_check
 
 DEFAULT_MAX_AGE_SEC = 7200  # 2 h
 # FR #8384: accepted rows while every live shop seat has blank working_on.
@@ -123,6 +123,17 @@ def check(args):
     qpath = resolve_queue_path(chair, digest)
     if not qpath.is_file():
         findings.append(f"queue.json missing: {qpath}")
+        overlay = non_chair_overlay(chair, digest, require_missing_queue=True)
+        if overlay:
+            notes = [
+                f"non-chair soft-ok (live /report fresh): {findings[0]}",
+                f"FR #8579 non-chair overlay: live ts={overlay.get('live_report_ts')} "
+                f"chairNick={overlay.get('live_chair_nick')} "
+                f"accepted={overlay.get('live_queue_accepted')}",
+            ]
+            payload = {"ok": True, "findings": [], "notes": notes, "stuck": []}
+            payload.update(overlay)
+            return (payload, EXIT_OK)
         return ({"ok": False, "findings": findings}, EXIT_FINDING)
     queue = json.loads(qpath.read_text(encoding="utf-8-sig"))
     # gitclaim: every row in the accepted bucket is accepted (stamp is ``nick``).
