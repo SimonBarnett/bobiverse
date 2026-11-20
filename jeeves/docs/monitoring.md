@@ -19,7 +19,7 @@
 
 - Every expected PR with no MRB/FIX row → EXIT 1 (finding), plus a `queue.json missing` note when the queue file is absent.
 - A FIX row (ci-fail / conflict / dirty fold) also covers the PR — it is being handled, not stranded.
-- Shared classification: `common/scripts/gitclaim.py` `open_pr_expects_mrb_or_fix_row` / `list_open_prs_missing_mrb` (drafts, intake harvest receipts, `fix(mrb-N)`, `docs/mrb-*` pins and lesson-of-lesson tips are ignored).
+- Shared classification: `common/scripts/gitclaim.py` `open_pr_expects_mrb_or_fix_row` / `list_open_prs_missing_mrb` (drafts, intake harvest receipts, stacked `fix(mrb-N)` tips, `docs/mrb-*` pins and lesson-of-lesson tips are ignored). A `fix(mrb-N)` on `main`/`master` is expected MRB work (FR #8475); the higher-numbered twin of an open parent is not.
 
 ## github_resync_focus (FR #3146)
 
