@@ -92,14 +92,14 @@ def test_two_hard_ceiling_giveups_stamp_opencode_class(tmp_path, monkeypatch):
         assert st == "ok" and job is not None
 
     final = [r for r in gitclaim.load_unaccepted(home) if r.get("id") == "#8008"][0]
-    assert int(final.get("giveup_count") or 0) == 2
+    # FR #8375: hard-ceiling does not burn giveup_count or stamp needs_human.
+    assert int(final.get("giveup_count") or 0) == 0
+    assert not final.get("needs_human")
     assert int(final.get("hard_ceiling_count") or 0) == 2
     kinds = gitclaim.giveup_agent_kinds(final)
     assert "opencode" in kinds
     assert gitclaim.row_blocked_for_giveup_agent_kind(final, "opencode") is True
     assert gitclaim.row_blocked_for_giveup_agent_kind(final, "grok") is False
-    # Grok may still take it unless needs_human also stamped (giveup_count>=2 does stamp it).
-    assert final.get("needs_human") is True
 
 
 def test_one_hard_ceiling_does_not_block_class_yet(tmp_path, monkeypatch):

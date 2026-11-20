@@ -840,6 +840,9 @@ def return_job_to_unaccepted(
             # FR #8326: head-mismatch is a seat/worktree fault (stale author
             # checkout). Do not burn giveup_count or stamp needs_human.
             head_mismatch_giveup = gitclaim.is_worktree_head_mismatch_reason(reason)
+            # FR #8375: hard-ceiling, worktree-create-failed, holder_bored, and
+            # offer-timeout are infra/soft. They must not stamp needs_human.
+            infra_soft_giveup = gitclaim.is_infra_soft_giveup_reason(reason)
             # FR #8154: console-closed is a seat fault (window/Ctrl). Re-offer promptly;
             # stamp require_machine to the giving seat's machine so the worktree is reused.
             console_closed_giveup = gitclaim.is_console_closed_reason(reason)
@@ -853,6 +856,7 @@ def return_job_to_unaccepted(
             or console_closed_giveup
             or no_terminal_giveup
             or head_mismatch_giveup
+            or infra_soft_giveup
         )
             for k in ("nick", "accepted_ts", "offered_to", "offered_ts", "offered_channel", "channel"):
                 job.pop(k, None)
@@ -945,7 +949,9 @@ def return_job_to_unaccepted(
                 job["needs_human"] = True
             # FR #8008: repeated hard-ceiling kills stamp the seat's agent class so
             # recycled OpenCode nicks do not keep re-taking the same job.
-            if (not seat_not_job_giveup) and gitclaim.is_hard_ceiling_reason(reason):
+            # FR #8008 still records the agent class. FR #8375: that must not
+            # depend on giveup_count, which infra reasons no longer burn.
+            if gitclaim.is_hard_ceiling_reason(reason):
                 try:
                     hc = int(job.get("hard_ceiling_count") or 0)
                 except (TypeError, ValueError):
