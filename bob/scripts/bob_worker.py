@@ -5745,7 +5745,10 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             r"        $outFile = Join-Path $capDir ('bob-oc-out-' + [guid]::NewGuid().ToString('n') + '.txt')",
             r"        $errFile = Join-Path $capDir ('bob-oc-err-' + [guid]::NewGuid().ToString('n') + '.txt')",
             # MRB #6163 / CodeRabbit: ArgumentList array drops quotes/spaces in $line; use pre-escaped $argStr.
-            r"        if ($ocDir) { $proc = Start-Process -FilePath $exe -ArgumentList $argStr -WorkingDirectory $ocDir -NoNewWindow -PassThru -RedirectStandardOutput $outFile -RedirectStandardError $errFile } else { $proc = Start-Process -FilePath $exe -ArgumentList $argStr -NoNewWindow -PassThru -RedirectStandardOutput $outFile -RedirectStandardError $errFile }",
+            # FR #8553: never -NoNewWindow with redirects. Sharing the parent console
+            # hangs opencode after the build banner (empty stdout) and can tear down the
+            # seat with no last-exit. Redirects alone = CreateNoWindow (gap FR-OC-INJECT).
+            r"        if ($ocDir) { $proc = Start-Process -FilePath $exe -ArgumentList $argStr -WorkingDirectory $ocDir -PassThru -RedirectStandardOutput $outFile -RedirectStandardError $errFile } else { $proc = Start-Process -FilePath $exe -ArgumentList $argStr -PassThru -RedirectStandardOutput $outFile -RedirectStandardError $errFile }",
             r"        $timedOut = $false",
             r"        $killReason = ''",
             r"        $fuelHitLive = $false",
@@ -7672,7 +7675,7 @@ class ProcIdleTurnWatcher:
 
 
 def apply_cursor_inject_keys_default(kind: str, log: Optional[Callable[[str], None]] = None) -> bool:
-    """FR #4464 / #6158 / #8558: Cursor and OpenCode seats use batched KEY_EVENT at seat start.
+    """FR #4464 / #6158 / #8558 / #8560: Cursor and OpenCode seats use batched KEY_EVENT.
 
     cursor-agent treats Ctrl+V as a literal v. OpenCode ReadLine paste is unreliable on
     this fleet (FR-OC-INJECT / #8560): PASTE=1 leaves a stray ``v`` in the TUI, submit-verify
@@ -7695,10 +7698,13 @@ def apply_cursor_inject_keys_default(kind: str, log: Optional[Callable[[str], No
                 if raw in ("1", "true", "yes", "on"):
                     log(
                         "relay: opencode seat - ignoring BOB_WORKER_INJECT_PASTE=1; "
-                        "inject via batched keys only (FR #8558 / #8560)"
+                        "inject via batched keys only (FR #8558 / #8560: never PASTE=1)"
                     )
                 elif changed:
-                    log("relay: opencode seat - inject via batched keys (FR-OC-INJECT)")
+                    log(
+                        "relay: opencode seat - inject via batched keys "
+                        "(FR #8560: keep BOB_WORKER_INJECT_PASTE=0; never PASTE=1)"
+                    )
             except Exception:
                 pass
         return True
@@ -9492,6 +9498,31 @@ class GrokOutOfFuelWatcher:
             self._stop.wait(self.poll_s)
 
 
+
+def write_inject_progress(run_dir, *, phase: str, detail: str = "", job_key: str = "") -> None:
+    """FR #8553: durable breadcrumb while a job is in flight (survives hard kills)."""
+    try:
+        rd = Path(run_dir)
+        rd.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "at": _dt.datetime.now(_dt.timezone.utc).isoformat(),
+            "phase": str(phase or "")[:80],
+            "detail": _scrub(str(detail or ""))[:240],
+            "job_key": str(job_key or "")[:120],
+        }
+        path = rd / "inject-progress.json"
+        raw = json.dumps(payload, ensure_ascii=True) + "\n"
+        with path.open("w", encoding="utf-8", newline="\n") as fh:
+            fh.write(raw)
+            fh.flush()
+            try:
+                os.fsync(fh.fileno())
+            except OSError:
+                pass
+    except Exception:
+        pass
+
+
 def run_submit_verify_loop(
     *,
     enter_fn: Callable[..., bool],
@@ -9631,6 +9662,8 @@ def inject_with_submit_verify(
     miss_label: str = "no prompt seen",
     kind: str = "",
     alive_fn: Optional[Callable[[], bool]] = None,
+    run_dir: Path | str | None = None,
+    job_key: str = "",
 ) -> bool:
     """Paste via inject_fn, then verify submit and Enter-only retry (FR #2696).
 
@@ -9701,6 +9734,14 @@ def inject_with_submit_verify(
                 kind=kind,
                 alive_fn=alive_fn,
             )
+            # FR #8553: stamp progress so a hard kill after verify still leaves a trail.
+            if res in ("ok", "stop") and run_dir is not None:
+                write_inject_progress(
+                    run_dir,
+                    phase="submit-verify-ok",
+                    detail=str(res),
+                    job_key=job_key or assign_job_key(text) or "",
+                )
             if res == "failed" and on_failed is not None:
                 try:
                     on_failed()
@@ -15240,7 +15281,15 @@ class Supervisor:
         self.session_log.write("last_exit", text)
         try:
             self.run_dir.mkdir(parents=True, exist_ok=True)
-            (self.run_dir / "last-exit.json").write_text(text + "\n", encoding="utf-8")
+            path = self.run_dir / "last-exit.json"
+            # FR #8553: flush+fsync so a hard seat kill still leaves the reason on disk.
+            with path.open("w", encoding="utf-8", newline="\n") as fh:
+                fh.write(text + "\n")
+                fh.flush()
+                try:
+                    os.fsync(fh.fileno())
+                except OSError:
+                    pass
         except OSError:
             pass
         self.log(f"agent: last_exit reason={self.last_exit['reason']} exit_code={self.last_exit['exit_code']} session_log={self.session_log.path}")
@@ -17216,6 +17265,8 @@ class Supervisor:
             miss_label="no turn receipt" if kind_l == "opencode" else "no prompt seen",
             kind=kind_l,
             alive_fn=(lambda p=proc: p.poll() is None) if kind_l == "opencode" else None,
+            run_dir=self.run_dir,
+            job_key=assign_job_key(line) or "",
         )
 
     def _reconcile_wait_exit_with_shutdown(
@@ -17344,6 +17395,35 @@ class Supervisor:
         # FR #7593: zero exit ends the seat (unchanged). Nonzero → report, GIVEUP accepted
         # job (no fake DONE), restart the supported way so the replacement !bored's.
         if exit_u == 0:
+            # FR #8553: OpenCode wrapper exit 0 mid-ACK is unexpected (ReadLine EOF /
+            # console tear). GIVEUP the job and recycle the seat instead of dying quiet.
+            job_key_z = ""
+            try:
+                if self.bored and getattr(self.bored, "_ack_open", False):
+                    job_key_z = str(getattr(self.bored, "_ack_job_key", None) or "").strip()
+            except Exception:
+                job_key_z = ""
+            kind_z = (self.kind or "").strip().lower()
+            if kind_z == "opencode" and job_key_z:
+                self.log(
+                    f"agent: opencode zero exit mid-job {job_key_z}; "
+                    "GIVEUP + recycle (FR #8553)"
+                )
+                try:
+                    self._release_seat_giveup_job(job_key_z, "opencode-wrapper-exited")
+                except Exception as e:
+                    self.log(f"agent: mid-job giveup failed {type(e).__name__}")
+                try:
+                    if self.bored is not None:
+                        self.bored._ack_open = False
+                except Exception:
+                    pass
+                try:
+                    self.restart_agent("opencode-wrapper-exited")
+                except Exception as e:
+                    self.log(f"agent: opencode zero-exit restart failed {type(e).__name__}")
+                    self.shutdown("agent-exited", EXIT_OK)
+                return
             self.log("agent: zero exit; leaving (a closed agent ends the seat)")
             self.shutdown("agent-exited", EXIT_OK)
             return
