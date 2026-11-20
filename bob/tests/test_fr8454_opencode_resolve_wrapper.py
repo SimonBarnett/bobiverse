@@ -85,6 +85,9 @@ def test_fr8454_wrapper_pins_prefer_runtime_and_switch(tmp_path):
     assert "prefer-runtime" in script
     assert "switch-to-paid" in script
     assert "switch-to-free" in script
+    # Next Invoke-OpencodeRun reads script scope. A function-local $model is lost.
+    assert "$script:model = $prefModel" in script
+    assert "$script:model = $to2" in script
     assert "opencode-fuel:" in script
     # hitLimit path still can GIVEUP when switch fails
     assert "Write-OpencodeJobGiveup" in script
