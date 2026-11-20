@@ -11117,6 +11117,58 @@ def assign_job_key(line: str) -> Optional[str]:
     return f"{m.group(1).upper()} {m.group(2)}"
 
 
+_TERMINAL_WIRE_RX = re.compile(r"(?im)^\s*(DONE|NACK|GIVEUP)\b")
+
+
+def outbox_text_has_terminal(text: str, job_key: str = "") -> bool:
+    """True when a DONE/NACK/GIVEUP line for job_key is already in the wire.
+
+    Seat outbox lines are ``PRIVMSG #shop :DONE ...`` (FR #2380). Match the
+    payload, not only a line that starts with the verb.
+    """
+    want = (job_key or "").strip()
+    for raw in (text or "").splitlines():
+        line = outbox_payload(raw)
+        if not _TERMINAL_WIRE_RX.match(line):
+            continue
+        if not want or want in line:
+            return True
+    return False
+
+
+def last_turn_error_class(turns_text: str) -> str:
+    """Last turn_ended error_class in an opencode-turns.jsonl blob."""
+    last = ""
+    for raw in (turns_text or "").splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        try:
+            obj = json.loads(line)
+        except (TypeError, ValueError):
+            continue
+        if isinstance(obj, dict) and str(obj.get("type") or "") == "turn_ended":
+            last = str(obj.get("error_class") or "").strip().lower()
+    return last
+
+
+def ack_miss_exit_reason(
+    *, outbox_text: str, turns_text: str = "", job_key: str = ""
+) -> str | None:
+    """FR #8415: posted DONE/NACK/GIVEUP must not become no-ack-after-assign.
+
+    Returns epipe or process-exit when that turn class is present, else
+    done-posted. None when the outbox has no terminal line (recycle may proceed).
+    Does not GIVEUP the job again (FR #8384).
+    """
+    if not outbox_text_has_terminal(outbox_text, job_key):
+        return None
+    cls = last_turn_error_class(turns_text)
+    if cls in ("epipe", "process-exit"):
+        return cls
+    return "done-posted"
+
+
 def inject_failed_nack_line(line: str) -> Optional[str]:
     """FR #4115: outbox NACK for an assign the agent never received (Jeeves re-offers it)."""
     key = assign_job_key(line)
@@ -17672,6 +17724,56 @@ class Supervisor:
                 self.log(f"ack-miss: remind inject failed {type(e).__name__}")
             return
         if action == "recycle":
+            job_key = ""
+            try:
+                job_key = assign_job_key(self.ack_miss.last_line) or ""
+            except Exception:
+                job_key = ""
+            out_text = ""
+            turns_text = ""
+            try:
+                chunks: list[str] = []
+                # Run-dir outbox plus the OpenCode worktree .bob/outbox.txt (FR #6333).
+                paths = [Path(outbox)]
+                try:
+                    paths.extend(self.opencode_extra_outbox_paths())
+                except Exception:
+                    pass
+                seen: set[str] = set()
+                for op in paths:
+                    key = str(op)
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    if op.is_file():
+                        chunks.append(op.read_text(encoding="utf-8", errors="replace"))
+                out_text = "\n".join(chunks)
+            except Exception:
+                out_text = ""
+            try:
+                turns = Path(self.run_dir) / "opencode-turns.jsonl"
+                if turns.is_file():
+                    turns_text = turns.read_text(encoding="utf-8", errors="replace")
+            except Exception:
+                turns_text = ""
+            alt = ack_miss_exit_reason(
+                outbox_text=out_text, turns_text=turns_text, job_key=job_key
+            )
+            if alt:
+                # FR #8415: do not stamp no-ack, and do not GIVEUP a finished job (#8384).
+                self.ack_miss.clear()
+                self.log(
+                    f"ack-miss: terminal wire already posted; last-exit {alt} "
+                    f"not no-ack-after-assign (FR #8415)"
+                )
+                try:
+                    if proc is not None and proc.poll() is not None:
+                        self._record_exit(
+                            proc, alt, proc.poll(), report=False, job_key=job_key
+                        )
+                except Exception:
+                    pass
+                return
             self.log(
                 f"ack-miss: still no ACK after {self.ack_miss.recycle_s:.0f}s; "
                 f"recycling seat (NEW agent) path={outbox}"
