@@ -276,3 +276,4 @@ Do not land a second copy of a harvest-lesson MRB playbook in this book. Those p
 - Never sync PowerShell.Stop() on the tray poll thread after WaitOne timeout; fire-and-forget Stop/Dispose so step-timeout logs and startworker ticks continue.
 - Update-BobFleet Get-UpdateFleetPSCredential must [void] CredFree (and TrimEnd NUL); unvoided bool makes Object[] that cannot bind to [PSCredential] (FR #8531)
 - When idle seats see offerable=0 (often needs_human-only), surface healthy_idle_empty_offerable / TipForm caption so ops do not recycle free DeepSeek seats as hung.
+- MRB: when a helper swallows AttributeError behind try/except and falls back to a default, probe the real API name (load_worker_start_config) with a tray-slot test.
