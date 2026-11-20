@@ -3987,6 +3987,61 @@ def skill_dag_mcp_descendant_pids(
     return found
 
 
+def skill_dag_mcp_pids_still_live(
+    pids: list[int] | None,
+    *,
+    snapshot: Optional[Callable[[], list]] = None,
+) -> list[int]:
+    """Subset of ``pids`` still present in the process table (FR #8501).
+
+    Uses Toolhelp (or the injected snapshot) only. Never shells out for cmdline:
+    a flaky ``describe_process`` must not look like a transport drop.
+    """
+    want: set[int] = set()
+    for raw in pids or []:
+        try:
+            pid = int(raw)
+        except (TypeError, ValueError):
+            continue
+        if pid > 0:
+            want.add(pid)
+    if not want:
+        return []
+    rows = snapshot() if snapshot is not None else snapshot_procs()
+    live: set[int] = set()
+    for row in rows or []:
+        try:
+            live.add(int(row[0]))
+        except (TypeError, ValueError, IndexError):
+            continue
+    return sorted(want & live)
+
+
+def skill_dag_mcp_transport_drop_confirmed(
+    before_pids: list[int] | None,
+    *,
+    snapshot: Optional[Callable[[], list]] = None,
+) -> bool:
+    """True when every pre-refresh skill-dag PID is gone on two samples (FR #8501).
+
+    One empty sample is not enough: Toolhelp can race, and a cmdline-based
+    after-check can flake when PowerShell ``Get-CimInstance`` returns blank.
+    """
+    before: list[int] = []
+    for raw in before_pids or []:
+        try:
+            pid = int(raw)
+        except (TypeError, ValueError):
+            continue
+        if pid > 0:
+            before.append(pid)
+    if not before:
+        return False
+    if skill_dag_mcp_pids_still_live(before, snapshot=snapshot):
+        return False
+    # Confirm once more before filing intake.
+    return not skill_dag_mcp_pids_still_live(before, snapshot=snapshot)
+
 
 def report_configured_start_model_unavailable(
     *,
@@ -16453,6 +16508,8 @@ class Supervisor:
             return
         # FR #7120 / #7308 / #7446: keep the live stdio MCP; pointer file is enough.
         # Snapshot before refresh so a drop caused by the write is visible.
+        # FR #8501: confirm the before PIDs are gone via Toolhelp (twice). Do not
+        # treat a flaky empty cmdline after-sample as a drop.
         # Do not use job_worktree as a cmdline marker (--job-worktree-file argv).
         agent_pid = None
         try:
@@ -16473,8 +16530,7 @@ class Supervisor:
         except Exception as e:  # noqa: BLE001
             self.log(f"skill-dag mcp job-worktree rewrite skipped {type(e).__name__}")
             return
-        after = skill_dag_mcp_descendant_pids(agent_pid, markers)
-        if before and not after:
+        if skill_dag_mcp_transport_drop_confirmed(before):
             self.log("skill-dag mcp transport dropped")
             try:
                 mid = str(getattr(self, "machine", "") or "")
