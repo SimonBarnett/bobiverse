@@ -39,9 +39,9 @@ One issue per issue: when MRB (or any worker) finds a twin/duplicate issue, clos
 Using any skill from this book obliges you to report back here, in the same
 turn you learn or fix something. Do not ask permission. Do not defer.
 
-- Gap, bug or wish ÔåÆ issue (`FR:` for features). When the operator has no
+- Gap, bug or wish ├ö├Ñ├å issue (`FR:` for features). When the operator has no
   GitHub account, POST `kind: issue` | `fr` to `/bob/v1/intake`.
-- New or fixed playbook ÔåÆ branch + PR (never `main`).
+- New or fixed playbook ├ö├Ñ├å branch + PR (never `main`).
 - Empty harvest only when nothing is new and nothing is broken.
 
 **Home:** `https://github.com/SimonBarnett/bobiverse`. Frontmatter `github:`
@@ -90,20 +90,20 @@ flowchart TD
 
 *Caption: prefer `gh`; fall back to the Bob webhook intake; if offline, queue locally and retry.*
 
-1. **`gh` available and authenticated** ÔåÆ branch + PR against
+1. **`gh` available and authenticated** ├ö├Ñ├å branch + PR against
    `SimonBarnett/bobiverse` (skills) or an issue (`harvest:` / `FR:`). If the PR
    cannot be opened, file a `harvest:` issue with the intended PR title, branch,
    file list and body in this turn.
-2. **No `gh`, or not authenticated** ÔåÆ POST to the Bob webhook intake
+2. **No `gh`, or not authenticated** ├ö├Ñ├å POST to the Bob webhook intake
    `https://bob.ntsa.uk/bob/v1/intake`. No GitHub account needed; the
    service files it with label `via-intake`. Send an `idempotency_key` so
    retries never duplicate. Missing/empty `kind` defaults to `issue`.
-3. **Offline / intake unreachable** ÔåÆ write the JSON payload to a local
+3. **Offline / intake unreachable** ├ö├Ñ├å write the JSON payload to a local
    `harvest-outbox/` (or `report-outbox/` / `install-outbox/`) folder and retry
    it (same `idempotency_key`) on the next run. Helper:
    `scripts/Report-BobiverseIntakeIssue.ps1`.
 
-### Open skill / harvest receipts ÔåÆ consolidate then PR (FR #1682 / FR #1684)
+### Open skill / harvest receipts ├ö├Ñ├å consolidate then PR (FR #1682 / FR #1684)
 
 Intake `kind: skill|harvest` creates `label:skill` issues. The chair **offers** them as FR promote jobs (not product code FRs; they still do not block repo UAT). Do **not** GIVEUP. Without a promote PR the lessons never reach MRB merge.
 
@@ -111,10 +111,10 @@ When you have `gh` write (same turn or on a skill-promote assign):
 
 1. Group open `label:skill` issues **by owner skill book** (see `harvest-agent-skills` table).
 2. **Close duplicate** receipts for the same book/lesson.
-3. Open **one** `harvest/ÔÇª` PR per book (or one multi-book PR with clear paths) that promotes unique Lesson lines; PR body uses `Closes ÔÇª` / `Duplicates closed: ÔÇª`.
+3. Open **one** `harvest/├ö├ç┬¬` PR per book (or one multi-book PR with clear paths) that promotes unique Lesson lines; PR body uses `Closes ├ö├ç┬¬` / `Duplicates closed: ├ö├ç┬¬`.
 4. Leave merge to hostile **MRB**. Never push `main`.
 
-Full steps: skill `harvest-agent-skills` section **Worker: consolidate open skill receipts ÔåÆ promote PR**.
+Full steps: skill `harvest-agent-skills` section **Worker: consolidate open skill receipts ├ö├Ñ├å promote PR**.
 
 ### Intake must link an existing harvest PR (FR #1812 / harvest #2013)
 
@@ -267,3 +267,4 @@ Do not land a second copy of a harvest-lesson MRB playbook in this book. Those p
 - After pointer refresh, confirm skill-dag MCP drop with Toolhelp PID liveness twice; never treat a flaky empty PowerShell cmdline sample as a transport drop
 - An identity-only digest merge must not append model to cleared. Cursor CLI account reads only authInfo.email; a key override is a pid-bound marker with no key value.
 - opencode_turn_stop_reason returns finished when the outbox already has DONE or NACK. The wrapper must not GIVEUP that case, and must not write stop-closed into opencode-out-of-fuel.log.
+- An offer-timeout must not hand the same row straight back to that nick while another live idle seat exists. Record offer_last_timeout_seat and push the other seat first.
