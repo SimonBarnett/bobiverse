@@ -119,7 +119,8 @@ def test_fr8321_recycle_passes_clicked_model(tmp_path: Path):
     assert log.read_text(encoding="ascii").strip() == f"ok|True|opencode|{GO}"
 
 
-def test_fr8321_pinned_paid_paused_refuses_without_free_fallback(tmp_path, monkeypatch):
+def test_fr8321_pinned_paid_paused_starts_free_when_free_remains(tmp_path, monkeypatch):
+    """FR #8454: a paused paid pin does not block a free start while free remains."""
     _isolate_tray(monkeypatch, tmp_path)
     bw._OPENCODE_MODEL_ENV_AT_START = GO
     state = tmp_path / "state"
@@ -131,9 +132,8 @@ def test_fr8321_pinned_paid_paused_refuses_without_free_fallback(tmp_path, monke
     fuel = bw.Fuel(opencode_free=100, opencode_free_model_ids=(FREE,))
     logs: list[str] = []
     got = bw.resolve_opencode_model(fuel, state_dir=state, now=now, env=env, log_fn=logs.append)
-    assert got is None
-    assert any("pin:" + GO + ":paused" in line for line in logs)
-    assert not any("source=start" in line or "source=fuel" in line for line in logs)
+    assert got == FREE
+    assert any("pin:" + GO + ":free-first" in line for line in logs)
 
 
 def test_fr8321_pinned_free_stays_free(tmp_path, monkeypatch):
@@ -147,7 +147,8 @@ def test_fr8321_pinned_free_stays_free(tmp_path, monkeypatch):
     assert got == FREE
 
 
-def test_fr8321_pinned_paid_stays_paid(tmp_path, monkeypatch):
+def test_fr8321_pinned_paid_starts_free_while_free_remains(tmp_path, monkeypatch):
+    """FR #8454 overrides FR #8321 paid lock while the free pool remains."""
     _isolate_tray(monkeypatch, tmp_path)
     bw._OPENCODE_MODEL_ENV_AT_START = GO
     env = dict(os.environ)
@@ -158,8 +159,8 @@ def test_fr8321_pinned_paid_stays_paid(tmp_path, monkeypatch):
     got = bw.resolve_opencode_model(
         fuel, state_dir=tmp_path / "state", env=env, log_fn=logs.append
     )
-    assert got == GO
-    assert any("source=pin" in line and "model=" + GO in line for line in logs)
+    assert got == FREE
+    assert any("free-first" in line for line in logs)
 
 
 def test_fr8321_seat_model_pin_env_values():

@@ -14,6 +14,7 @@ WORKER_CLIS = ("grok", "cursor", "aider", "opencode")
 DEFAULT_EFFORT = "low"
 VALID_EFFORTS = ("low", "medium", "high")
 DEFAULT_OPENCODE_FREE = "opencode/deepseek-v4.1-flash-free"
+DEFAULT_OPENCODE_PAID = "opencode-go/deepseek-v4-pro"
 ENV_ACTUAL_EFFORT = "BOB_WORKER_ACTUAL_EFFORT"
 TIER_RANK = {
     "min": 0,
@@ -147,6 +148,13 @@ def default_opencode_free_model(cfg: dict[str, Any] | None = None) -> str:
     models = (cfg or {}).get("models") or {}
     got = str(models.get("opencodeFree") or "").strip()
     return got or DEFAULT_OPENCODE_FREE
+
+
+def default_opencode_paid_model(cfg: dict[str, Any] | None = None) -> str:
+    """Tray ``models.opencodePaid`` slot (FR #8454). Never a third invented id."""
+    models = (cfg or {}).get("models") or {}
+    got = str(models.get("opencodePaid") or "").strip()
+    return got or DEFAULT_OPENCODE_PAID
 
 
 def opencode_is_go_or_paid(model: str) -> bool:

@@ -65,11 +65,12 @@ def test_select_agent_opencode_only():
 
 
 def test_opencode_default_model():
-    assert bw.opencode_default_model(bw.Fuel(opencode_go=50)) == "opencode-go/glm-5.3"
+    # FR #8454: free unknown starts free even when aggregate Go is positive.
+    assert bw.opencode_default_model(bw.Fuel(opencode_go=50)) == "opencode/deepseek-v4.1-flash-free"
     assert bw.opencode_default_model(
         bw.Fuel(opencode_go=0, opencode_free=100, opencode_free_model_ids=("opencode/beam-free",))
     ) == "opencode/beam-free"
-    assert bw.opencode_default_model(bw.Fuel()) is None
+    assert bw.opencode_default_model(bw.Fuel()) == "opencode/deepseek-v4.1-flash-free"
 
 
 def test_opencode_default_model_skips_exhausted_glm53():
@@ -80,7 +81,7 @@ def test_opencode_default_model_skips_exhausted_glm53():
     )
     selected = bw.opencode_default_model(fuel)
     assert selected != "opencode-go/glm-5.3"
-    assert selected == "opencode-go/kimi-k3"
+    assert selected == "opencode/deepseek-v4.1-flash-free"
 
 
 def test_opencode_default_model_prefers_free_when_no_per_model_readings():
@@ -128,7 +129,7 @@ def test_opencode_default_model_skips_paused_models(tmp_path):
     )
     selected = bw.opencode_default_model(fuel, state_dir=state_dir, now=now)
     assert selected != "opencode-go/glm-5.3"
-    assert selected == "opencode-go/kimi-k3"
+    assert selected == "opencode/deepseek-v4.1-flash-free"
 
 
 def test_opencode_default_model_falls_back_to_free_when_go_paused(tmp_path):
