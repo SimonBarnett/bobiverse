@@ -32,6 +32,7 @@ from urllib.request import Request, urlopen
 
 import bobhours
 import bobreport
+import builds_catalog
 import intake
 import jira_webhook
 import webhook_queue
@@ -42,6 +43,7 @@ GIT_WEBHOOK_PATH = "/bob/v1/git"
 INTAKE_PATH = "/bob/v1/intake"
 JIRA_PATH = "/bob/v1/jira"
 HOURS_PATH = bobhours.HOURS_PATH
+BUILDS_PATH = builds_catalog.BUILDS_PATH
 DIGEST_PATH = "/bob/v1/digest"
 HEALTH_PATH = "/health"
 HEALTH_PROBE_ZEN = "jeeves-health-probe"
@@ -59,7 +61,7 @@ PUBLIC_DIGEST_PATH = REPORT_PATH
 CLI_DESCRIPTION = (
     "POST /bob/v1/report|/bob/v1/git|/bob/v1/intake|/bob/v1/jira|/bob/v1/hours; "
     "front-door GET is /bob/v1/report|/jeeves (local bobcallback also serves /bob/v1/digest); "
-    "GET /bob/v1/jira; GET|POST /bob/v1/hours"
+    "GET /bob/v1/jira; GET /bob/v1/builds; GET|POST /bob/v1/hours"
 )
 ALLOW_ENV = "BOB_REPORT_ALLOW"
 DEFAULT_PORT = 7700
@@ -1000,6 +1002,13 @@ def handle_request(
         if verb == "HEAD":
             return code, b""
         return code, payload
+    # FR #8490: buildable catalog for numbered !build (static builds-catalog.json).
+    if verb in ("GET", "HEAD") and route == BUILDS_PATH:
+        code, payload = builds_catalog.handle_builds_get(home)
+        stash_response_headers([("Content-Type", "application/json; charset=utf-8")])
+        if verb == "HEAD":
+            return code, b""
+        return code, payload
     if verb in ("GET", "HEAD") and route.startswith(INTAKE_PATH + "/"):
         iid = route[len(INTAKE_PATH) + 1 :].strip("/")
         if not iid or "/" in iid:
@@ -1611,7 +1620,7 @@ def main() -> None:
         raise SystemExit(1) from exc
     host, port = httpd.server_address[:2]
     print(
-        f"INFO report listen {host}:{port} GET {REPORT_PATH}|{DIGEST_PATH}|{JIRA_PATH}|{HOURS_PATH} "
+        f"INFO report listen {host}:{port} GET {REPORT_PATH}|{DIGEST_PATH}|{JIRA_PATH}|{BUILDS_PATH}|{HOURS_PATH} "
         f"POST {REPORT_PATH} POST {GIT_WEBHOOK_PATH} POST {INTAKE_PATH} POST {JIRA_PATH} POST {HOURS_PATH}",
         flush=True,
     )
