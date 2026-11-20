@@ -6,6 +6,7 @@ import json
 import os
 import re
 import sys
+import time
 import urllib.request
 from pathlib import Path
 
@@ -36,6 +37,54 @@ def _label_names(labels) -> tuple[str, ...]:
         if name:
             out.append(name)
     return tuple(out)
+
+
+def draft_skill_promote_age_s() -> float:
+    """Hours a focused draft via-intake+skill leaflet may sit before EXIT 1 (FR #8477)."""
+    raw = (os.environ.get("BOB_DRAFT_SKILL_PROMOTE_AGE_H") or "").strip()
+    if not raw:
+        return 6.0 * 3600.0
+    try:
+        return max(0.0, float(raw)) * 3600.0
+    except ValueError:
+        return 6.0 * 3600.0
+
+
+def _parse_github_time(value: str) -> float | None:
+    text = (value or "").strip()
+    if not text:
+        return None
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        from datetime import datetime
+
+        return datetime.fromisoformat(text).timestamp()
+    except ValueError:
+        return None
+
+
+def aged_draft_skill_leaflets(prs, *, now: float, max_age_s: float) -> list:
+    """Draft skill leaflets older than max_age_s. Receipt titles are ignored."""
+    import gitclaim
+
+    out = []
+    for pr in prs or []:
+        if not isinstance(pr, dict) or pr.get("draft") is not True:
+            continue
+        labels = _label_names(pr.get("labels"))
+        if not gitclaim.is_draft_skill_leaflet(
+            title=str(pr.get("title") or ""),
+            body=str(pr.get("body") or ""),
+            labels=labels,
+        ):
+            continue
+        created = _parse_github_time(str(pr.get("created_at") or ""))
+        if created is None:
+            continue
+        if now - created >= max_age_s:
+            out.append(pr)
+    return out
 
 
 def skill_promote_threshold() -> int:
@@ -169,22 +218,38 @@ def check(args):
                     "remediation: seats should ACK skill/harvest FR offers and open one "
                     "harvest/* consolidate PR per skill book (FR #1684); do not GIVEUP"
                 )
+            elif skill_count >= thr and promote_pr:
+                open_skill_without_promote_pr = 0
+                notes.append(
+                    f"skill_receipts={skill_count} but harvest/* promote PR open (awaiting MRB)"
+                )
+            elif skill_count >= thr and queued_skill:
+                open_skill_without_promote_pr = 0
+                notes.append(
+                    f"skill_receipts={skill_count} queued_skill_fr="
+                    f"{queued_skill[0].get('id') or queued_skill[0].get('title')} "
+                    "(offer path in progress)"
+                )
             else:
                 open_skill_without_promote_pr = 0
-                if skill_count >= thr and promote_pr:
-                    notes.append(
-                        f"skill_receipts={skill_count} but harvest/* promote PR open (awaiting MRB)"
-                    )
-                elif skill_count >= thr and queued_skill:
-                    notes.append(
-                        f"skill_receipts={skill_count} queued_skill_fr="
-                        f"{queued_skill[0].get('id') or queued_skill[0].get('title')} "
-                        "(offer path in progress)"
-                    )
-                else:
-                    notes.append(
-                        f"skill_receipts={skill_count} below threshold or covered"
-                    )
+                notes.append(
+                    f"skill_receipts={skill_count} below threshold or covered"
+                )
+            aged = aged_draft_skill_leaflets(
+                prs, now=time.time(), max_age_s=draft_skill_promote_age_s()
+            )
+            if aged:
+                nums = ",".join(str(p.get("number")) for p in aged[:12])
+                findings.append(
+                    f"draft_skill_unpromoted: {len(aged)} draft via-intake+skill "
+                    f"leaflet(s) older than BOB_DRAFT_SKILL_PROMOTE_AGE_H "
+                    f"with no ready_for_review ({nums})"
+                )
+                notes.append(
+                    "operator fallback: gh pr ready <n> and retitle to "
+                    "lesson(<book>): so resync can offer MRB (FR #8477). "
+                    "Do not mark DONE/PASS receipt drafts ready."
+                )
         except Exception as exc:  # noqa: BLE001
             notes.append(f"github fetch failed: {exc}")
             if not queued_skill:
