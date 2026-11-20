@@ -17963,11 +17963,19 @@ def reread_explicit_opencode_fuel(
 
 def _choose(args, log: Log, folder: Path, mode: str):
     cursor_cmd, grok_exe = resolve_cursor_cmd(), resolve_grok_exe()
+    # FR #8412: auto-select uses the same resolve as explicit --agent opencode.
+    reasons: list = []
+    opencode_cmd = resolve_opencode_cmd(reasons=reasons)
+    if not opencode_cmd:
+        for reason in reasons:
+            log("opencode: " + reason)
+        if reasons:
+            log("opencode: readiness miss (untrusted WinGet Links or not installed)")
     fuel = read_fuel(Path(args.install_root))
     signin = preflight_xai_signin()
     signin_ok = signin == "ok"
     log(f"xai-auth[{mode}]: {signin}")
-    dec = select_agent(fuel, cursor_cmd, grok_exe, xai_signin_ok=signin_ok)
+    dec = select_agent(fuel, cursor_cmd, grok_exe, opencode_cmd, xai_signin_ok=signin_ok)
     log(f"select[{mode}]: {dec.kind} - {dec.reason}")
     return dec, cursor_cmd, grok_exe, fuel, signin_ok, signin
 
