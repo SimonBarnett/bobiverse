@@ -46,8 +46,23 @@ if (-not (Test-Path -LiteralPath (Join-Path $InstallRoot 'AGENTS.md'))) {
     exit 2
 }
 if (-not $BobInstallRoot) {
+    # FR #8577: Split-Path -Parent of a drive-root InstallRoot is empty; Join-Path '' throws.
     $ai = Split-Path -Parent $InstallRoot
-    $BobInstallRoot = Join-Path $ai 'bob'
+    if (-not [string]::IsNullOrWhiteSpace($ai) -and $ai -ne $InstallRoot) {
+        $BobInstallRoot = Join-Path $ai 'bob'
+    } else {
+        $sys = if ($env:SystemDrive) { $env:SystemDrive } else { 'C:' }
+        foreach ($cand in @((Join-Path $sys 'ai\bob'), 'C:\ai\bob', 'D:\ai\bob')) {
+            if (Test-Path -LiteralPath (Join-Path $cand 'worker\bob-worker.exe')) {
+                $BobInstallRoot = $cand
+                break
+            }
+        }
+        if (-not $BobInstallRoot) {
+            Write-Error "Jeeves InstallRoot is a drive root ($InstallRoot) with no sibling bob\. Pass -BobInstallRoot (e.g. C:\ai\bob)."
+            exit 2
+        }
+    }
 }
 $BobInstallRoot = [IO.Path]::GetFullPath($BobInstallRoot)
 $exe = Join-Path $BobInstallRoot 'worker\bob-worker.exe'
