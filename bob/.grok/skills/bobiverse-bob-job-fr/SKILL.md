@@ -32,7 +32,7 @@ flowchart TD
   D --> E["Tests FIRST: add failing tests for the acceptance criteria"]
   E --> F["Implement the smallest change; run existing + new tests"]
   F -->|red| F
-  F -->|green| G["Self-review: diff, docs/usage text, encoding UTF-8 no BOM, no secrets"]
+  F -->|green| G["Self-review: diff, docs/usage text, UTF-8 no BOM, no C0 controls, no secrets"]
   G --> H["Open ONE PR: body has Closes owner/repo#N for the originating issue + evidence"]
   H --> V["Verify the link: gh pr view --json closingIssuesReferences lists issue N"]
   V -->|"missing / wrong base branch"| H
@@ -164,6 +164,8 @@ $url = (gh pr create --repo owner/name --base main --head fr-N --title '...' --b
   Select-Object -First 1
 ```
 
+**FR #8478 / gh body control chars:** Do not build the PR body in a double-quoted PowerShell string, a here-string that expands, or any writer that turns the two-character sequences backslash-b, backslash-t, and backslash-a into real bytes. Those become backspace (0x08), tab (0x09), and bell (0x07). `gh pr create --body-file` stores them and the rendered body loses letters (seen on #8473: `ob/tests`, `ext`, `^Gssert`). Before create or `gh pr edit --body-file`, read the file as bytes and reject any byte below 0x20 except tab (0x09), LF (0x0A), and CR (0x0D). Write the file with the same UTF-8 no-BOM writer as FR #5502.
+
 **FR #791 / gh issue close:** `gh issue close N --body-file` is an **unknown flag** on current `gh` - it does not accept `--body-file`. Close with a comment via `-c` / `--comment` only, e.g. `gh issue close <dup> --repo <owner>/<repo> --reason "not planned" --comment "Duplicate of #N / fixed by PR #M"`. Use `--body-file` for `gh pr create` / `gh pr edit` / `gh issue create`, never for `gh issue close`.
 
 ## Set the PR ready for review before DONE (FR #8371)
@@ -192,7 +194,7 @@ This guidance is shared for every seat kind (Grok / OpenCode / Cursor / Claude) 
 
 ## Evidence required (in the PR body)
 
-* The line `Closes <owner>/<repo>#N` for the originating issue. * What changed and why (one paragraph) and the files touched. * The new tests (names) and the **targeted** pytest result (`N passed` via select_tests / explicit paths; FR #8157 --- do not claim a full-suite run). * How you verified it for real (command + short output) and **what you could not test live**.
+* The line `Closes <owner>/<repo>#N` for the originating issue. * The body file has no byte below 0x20 except tab, LF, and CR (FR #8478). * What changed and why (one paragraph) and the files touched. * The new tests (names) and the **targeted** pytest result (`N passed` via select_tests / explicit paths; FR #8157 --- do not claim a full-suite run). * How you verified it for real (command + short output) and **what you could not test live**.
 * Assumptions and risks. * Links: the FR, related issues. No secrets, tokens, private hosts or credential files in the body, the diff or the logs.
 
 ## Who owns what

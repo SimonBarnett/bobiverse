@@ -84,27 +84,31 @@ def _post_crash(title: str, body: str, *, repo: str, sig: str, exe: str) -> None
 def opencode_turn_stop_reason(issue_state: str, outbox_text: str, job_key: str) -> str:
     """Why an in-flight OpenCode turn should end, or ``""`` to keep going.
 
-    ``closed`` when the issue state is CLOSED. ``giveup`` when the outbox has
-    GIVEUP or CANCEL for this job. ``reassigned`` when the outbox has an ASSIGN
-    for a different job. Anything else keeps the turn.
+    ``finished`` when the outbox already has DONE or NACK for this job.
+    ``closed`` when the issue state is CLOSED and there is no DONE/NACK.
+    ``giveup`` when the outbox has GIVEUP or CANCEL for this job.
+    ``reassigned`` when the outbox has an ASSIGN for a different job.
+    Anything else keeps the turn.
     """
+    key = " ".join(str(job_key or "").split())
+    if key:
+        for raw in (outbox_text or "").splitlines():
+            line = raw.strip()
+            # Seat outbox lines are PRIVMSG #shop :GIVEUP FR owner/repo#N
+            if line.upper().startswith("PRIVMSG ") and " :" in line:
+                line = line.split(" :", 1)[1].strip()
+            up = line.upper()
+            # FR #8413: DONE/NACK already finished this job. Do not GIVEUP again.
+            if (up.startswith("DONE ") or up.startswith("NACK ")) and key in line:
+                return "finished"
+            if up.startswith("GIVEUP ") and key in line:
+                return "giveup"
+            if up.startswith("CANCEL ") and key in line:
+                return "giveup"
+            if up.startswith("ASSIGN ") and "#" in line and key not in line:
+                return "reassigned"
     if str(issue_state or "").strip().upper() == "CLOSED":
         return "closed"
-    key = " ".join(str(job_key or "").split())
-    if not key:
-        return ""
-    for raw in (outbox_text or "").splitlines():
-        line = raw.strip()
-        # Seat outbox lines are PRIVMSG #shop :GIVEUP FR owner/repo#N
-        if line.upper().startswith("PRIVMSG ") and " :" in line:
-            line = line.split(" :", 1)[1].strip()
-        up = line.upper()
-        if up.startswith("GIVEUP ") and key in line:
-            return "giveup"
-        if up.startswith("CANCEL ") and key in line:
-            return "giveup"
-        if up.startswith("ASSIGN ") and "#" in line and key not in line:
-            return "reassigned"
     return ""
 
 
