@@ -5470,6 +5470,29 @@ def note_offer_outcome(row: dict, seat: str, outcome: str, reason: str = "") -> 
     row["offer_outcomes"] = outcomes[-20:]
 
 
+def seat_submit_verify_in_flight(home: Path, nick: str) -> bool:
+    """FR #8442: a live seat pasting/submit-verify is not an offer-timeout."""
+    want = (canonical_worker_nick(nick) or nick or "").strip().lower()
+    if not want:
+        return False
+    try:
+        doc = bobreport.load_digest(_root(home))
+    except Exception:
+        return False
+    for ent in (doc.get("machines") or {}).values():
+        if not isinstance(ent, dict):
+            continue
+        rows = bobreport._coerce_worker_list(ent.get("worker_list"))
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            got = (canonical_worker_nick(str(row.get("nick") or "")) or "").strip().lower()
+            phase = str(row.get("progress_phase") or "").strip().lower()
+            if got == want and phase == "submit-verify":
+                return True
+    return False
+
+
 def note_unanswered_offer(row: dict, seat: str, now_f: float) -> None:
     """Count a timed-out offer. After OFFER_UNANSWERED_MAX, refuse that seat (FR #7966).
 
@@ -10889,6 +10912,14 @@ def offer_focus_top(
                     ).timestamp()
                 except ValueError:
                     age = offer_timeout_s(cand) + 1
+                if (
+                    not dead_pin
+                    and age >= offer_timeout_s(cand)
+                    and to_c in live_l
+                    and seat_submit_verify_in_flight(home, to)
+                ):
+                    # FR #8442: grok paste / submit-verify is still in flight.
+                    continue
                 if dead_pin or age >= offer_timeout_s(cand):
                     # FR #7966: a silent seat is a recorded refusal, not a fresh offer.
                     if not dead_pin:
