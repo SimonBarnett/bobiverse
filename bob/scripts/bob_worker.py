@@ -5734,8 +5734,11 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             r"                    $timedOut = $true",
             r"                    try { & taskkill /T /F /PID $proc.Id 2>$null | Out-Null } catch { }",
             # FR #8413: DONE/NACK already in the outbox is not a new hand-back.
+            # FR #8509: already-finished is not fuel — skip opencode-out-of-fuel.log
+            # the same way stop-closed does (ocSkipFuelLog gates the timedOut append).
             r"                    if ($stopLine -eq 'stop finished') {",
             r"                        $killReason = 'already-finished'",
+            r"                        $script:ocSkipFuelLog = $true",
             r"                        Write-Output ('opencode-watchdog: already-finished ' + $jobKey)",
             r"                        break",
             r"                    }",

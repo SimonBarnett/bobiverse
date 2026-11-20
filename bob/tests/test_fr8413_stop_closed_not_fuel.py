@@ -25,3 +25,17 @@ def test_fr8413_wrapper_stop_closed_skips_fuel_log(tmp_path):
     assert "if (-not $script:ocSkipFuelLog)" in script
     # Other stop reasons still hand back as job-ended.
     assert "job-ended" in script
+
+
+def test_fr8509_already_finished_also_skips_fuel_log(tmp_path):
+    """FR #8509: stop finished must set ocSkipFuelLog like stop closed."""
+    spec = bw.build_launch("opencode", "agent", str(tmp_path), "hello", "opencode.exe", tmp_path)
+    script = next(v for p, v in spec.files.items() if str(p).endswith("launch-opencode.ps1"))
+    i_fin = script.index("if ($stopLine -eq 'stop finished')")
+    i_cls = script.index("if ($stopLine -eq 'stop closed')")
+    assert i_fin < i_cls
+    finished_block = script[i_fin:i_cls]
+    assert "$script:ocSkipFuelLog = $true" in finished_block
+    assert "already-finished" in finished_block
+    closed_block = script[i_cls : i_cls + 500]
+    assert "$script:ocSkipFuelLog = $true" in closed_block
