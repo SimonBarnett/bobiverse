@@ -4446,6 +4446,10 @@ def _coerce_row(row: dict) -> dict | None:
                 continue
         if clean_un:
             out["offer_unanswered"] = clean_un
+    # FR #8428: last seat that timed out. Idle push tries a different seat first.
+    last_to = (canonical_worker_nick(str(row.get("offer_last_timeout_seat") or "")) or "").strip()
+    if last_to:
+        out["offer_last_timeout_seat"] = last_to
     # FR #8017: per-seat pre-ACK deterministic NACK cooldown must survive reload.
     nack_until = row.get("deterministic_nack_until")
     if isinstance(nack_until, dict):
@@ -5404,6 +5408,8 @@ def note_unanswered_offer(row: dict, seat: str, now_f: float) -> None:
         n = 1
     counts[key] = n
     row["offer_unanswered"] = counts
+    # FR #8428: one timeout must not pin the next idle push to this nick.
+    row["offer_last_timeout_seat"] = canon
     if n < int(OFFER_UNANSWERED_MAX):
         return
     refused = [str(x).strip() for x in (row.get("offer_refused_by") or []) if str(x).strip()]
@@ -7801,6 +7807,27 @@ def offer_to_idle_seats(
         idle_rows = sort_idle_seats_cheapest_first(idle_rows, home=home)
     except Exception:
         pass
+    # FR #8428: after an offer-timeout, try a different live idle seat before
+    # the nick that just went silent.
+    timeout_nicks: set[str] = set()
+    try:
+        for queued in load_unaccepted(home):
+            last = str(queued.get("offer_last_timeout_seat") or "").strip().lower()
+            if last:
+                timeout_nicks.add(last)
+    except Exception:
+        timeout_nicks = set()
+    if timeout_nicks:
+        others = []
+        same = []
+        for ent in idle_rows:
+            nick_l = str(ent.get("nick") or "").strip().lower()
+            if nick_l in timeout_nicks:
+                same.append(ent)
+            else:
+                others.append(ent)
+        if others:
+            idle_rows = others + same
     sent = 0
     for ent in idle_rows:
         nick = str(ent.get("nick") or "").strip()
@@ -11098,6 +11125,10 @@ def offer_focus_top(
                     job["offered_to"] = me
                     # A live offer means someone is eligible (FR #7966).
                     job.pop("no_eligible_since", None)
+                    # FR #8428: a different seat took the row after a timeout.
+                    last_timeout = str(job.get("offer_last_timeout_seat") or "").strip()
+                    if last_timeout and not _same_seat(last_timeout, me):
+                        job.pop("offer_last_timeout_seat", None)
                     # FR #2309: rebroadcast keeps original offered_ts so OFFER_TIMEOUT can free the row.
                     if same and prev_ts:
                         job["offered_ts"] = prev_ts

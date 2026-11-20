@@ -606,7 +606,14 @@ def classify_queue_row(
                 if led and gitclaim.ledger_blocks(led, row_eff, n, live_for_block):
                     continue
             eligible_idle = True
-            break
+            nick_machine = n.rsplit("-", 1)[0].lower()
+            last_seat = str(row.get("offer_last_timeout_seat") or "").strip().lower()
+            last_machine = last_seat.rsplit("-", 1)[0] if "-" in last_seat else ""
+            if last_machine and nick_machine and nick_machine != last_machine:
+                base["other_machine_idle"] = True
+                break
+            if not last_machine:
+                break
         if eligible_idle:
             base["stuck"] = True
             base["stuck_reason"] = "unaccepted_starved"
