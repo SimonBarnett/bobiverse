@@ -3,7 +3,7 @@
 Acceptance (must fail on pre-3180 main that still heals):
 - Watchdog never reaches WorkerLauncher.Launch / HealWorkerSeats.
 - Ensure-BobWorkerSeats.ps1 never writes req-*.json (report-only).
-- Idle stale-build keeps the seat running (no EXIT_STALE_BUILD) and announces.
+- Idle stale-build keeps the seat running (no EXIT_STALE_BUILD), still sends !bored and takes work (FR #7834), and announces.
 - Docs/skills say manual only (Agent/Plan / !startworker / human bob-worker).
 """
 from __future__ import annotations
@@ -149,11 +149,18 @@ def test_fr3180_idle_stale_keeps_running_announces(tmp_path):
         log=logs.append,
         bored=None,
     )
+    reports: list = []
+    bw._stale_build_reported.clear()
+    sup.stale_build_reporter = lambda nick, why: reports.append((nick, why))
     sup.stale_build_check = lambda: "run=old install=new"
-    assert sup.post_bored() is False
-    assert ("#marchhare", "!bored") not in irc.said
+    # FR #7834: a stale build still sends !bored and takes work (it never NAKs its
+    # own !bored); the seat keeps running (FR #3180: no EXIT_STALE_BUILD) and announces.
+    assert sup.post_bored() is True
+    assert ("#marchhare", "!bored") in irc.said
+    assert not any(str(text).upper().startswith("NAK") for _, text in irc.said)
     assert not sup.done.wait(0.3), "stale seat must keep running (no EXIT_STALE_BUILD)"
     assert getattr(sup, "exit_code", None) in (None, 0) or not hasattr(sup, "exit_code") or sup.exit_code != bw.EXIT_STALE_BUILD
+    assert reports == [("marchhare-4242", "run=old install=new")]
     assert any("stale build" in m.lower() for m in logs)
     assert any("manual" in m.lower() or "restart" in m.lower() for m in logs) or any(
         "manual" in str(s).lower() or "restart" in str(s).lower() for s in irc.said

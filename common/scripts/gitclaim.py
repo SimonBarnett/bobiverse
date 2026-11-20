@@ -127,6 +127,8 @@ _LIST_LAST: dict[str, float] = {}
 
 # FR #180: after GIVEUP/NACK, do not re-offer immediately; repeated giveups need a human.
 GIVEUP_COOLDOWN_S = 600.0
+# FR #8465: NACK busy is a seat-local pause, not a fleet cooldown.
+BUSY_NACK_BACKOFF_S = 60.0
 GIVEUP_NEEDS_HUMAN_COUNT = 2
 SAFE_TO_CLOSE_RE = re.compile(r"(?i)\bsafe\s+to\s+close\b")
 HARVEST_TITLE_RE = re.compile(r"(?i)^(harvest|skill)\b")
@@ -4446,6 +4448,10 @@ def _coerce_row(row: dict) -> dict | None:
                 continue
         if clean_un:
             out["offer_unanswered"] = clean_un
+    # FR #8428: last seat that timed out. Idle push tries a different seat first.
+    last_to = (canonical_worker_nick(str(row.get("offer_last_timeout_seat") or "")) or "").strip()
+    if last_to:
+        out["offer_last_timeout_seat"] = last_to
     # FR #8017: per-seat pre-ACK deterministic NACK cooldown must survive reload.
     nack_until = row.get("deterministic_nack_until")
     if isinstance(nack_until, dict):
@@ -5404,6 +5410,8 @@ def note_unanswered_offer(row: dict, seat: str, now_f: float) -> None:
         n = 1
     counts[key] = n
     row["offer_unanswered"] = counts
+    # FR #8428: one timeout must not pin the next idle push to this nick.
+    row["offer_last_timeout_seat"] = canon
     if n < int(OFFER_UNANSWERED_MAX):
         return
     refused = [str(x).strip() for x in (row.get("offer_refused_by") or []) if str(x).strip()]
@@ -7801,6 +7809,27 @@ def offer_to_idle_seats(
         idle_rows = sort_idle_seats_cheapest_first(idle_rows, home=home)
     except Exception:
         pass
+    # FR #8428: after an offer-timeout, try a different live idle seat before
+    # the nick that just went silent.
+    timeout_nicks: set[str] = set()
+    try:
+        for queued in load_unaccepted(home):
+            last = str(queued.get("offer_last_timeout_seat") or "").strip().lower()
+            if last:
+                timeout_nicks.add(last)
+    except Exception:
+        timeout_nicks = set()
+    if timeout_nicks:
+        others = []
+        same = []
+        for ent in idle_rows:
+            nick_l = str(ent.get("nick") or "").strip().lower()
+            if nick_l in timeout_nicks:
+                same.append(ent)
+            else:
+                others.append(ent)
+        if others:
+            idle_rows = others + same
     sent = 0
     for ent in idle_rows:
         nick = str(ent.get("nick") or "").strip()
@@ -9104,9 +9133,20 @@ def is_infra_soft_giveup_reason(reason: str) -> bool:
     token = _deterministic_nack_token(reason)
     if not token:
         return False
+    if token == "busy" or token.startswith("busy-"):
+        return True
     return token in ("holder-bored", "offer-timeout") or token.startswith(
         ("holder-bored", "offer-timeout")
     )
+
+
+def is_busy_nack_reason(reason: str) -> bool:
+    """True for ``NACK … busy`` (FR #8465).
+
+    Seat-local short backoff only. Must not set queue ``cooldown_until``.
+    """
+    token = _deterministic_nack_token(reason)
+    return token == "busy" or token.startswith("busy-")
 
 
 def giveup_agent_kinds(row: dict) -> list[str]:
@@ -9299,7 +9339,13 @@ def no_terminal_reply_does_not_block(row: dict, nick: str) -> bool:
     return seats == {me}
 
 
-def stamp_seat_nack_cooldown(row: dict, nick: str, now: float | None = None) -> None:
+def stamp_seat_nack_cooldown(
+    row: dict,
+    nick: str,
+    now: float | None = None,
+    *,
+    seconds: float | None = None,
+) -> None:
     """Per-seat expiring cooldown on ``row`` (does not write the queue). FR #8298."""
     import time as _time
     from datetime import timedelta as _td
@@ -9308,7 +9354,8 @@ def stamp_seat_nack_cooldown(row: dict, nick: str, now: float | None = None) -> 
     if not me or not isinstance(row, dict):
         return
     now_f = _time.time() if now is None else float(now)
-    until = datetime.fromtimestamp(now_f, tz=timezone.utc) + _td(seconds=float(GIVEUP_COOLDOWN_S))
+    span = float(GIVEUP_COOLDOWN_S if seconds is None else seconds)
+    until = datetime.fromtimestamp(now_f, tz=timezone.utc) + _td(seconds=span)
     until_s = until.replace(microsecond=0).isoformat().replace("+00:00", "Z")
     stamps = row.get("deterministic_nack_until")
     if not isinstance(stamps, dict):
@@ -9966,6 +10013,11 @@ def note_seat_out_of_fuel(home: Path, nick: str, *, reason: str = "out-of-fuel")
                 "ts": _utc_now(),
             }
             _save_seat_out_of_fuel_unlocked(home, seats)
+        # FR #8494: paint digest worker_list outside the seat-fuel lock.
+        try:
+            bobreport.mark_digest_fuel_hold(home, nick, held=True)
+        except Exception:
+            pass
         return True
     except (TimeoutError, OSError):
         return False
@@ -9983,9 +10035,37 @@ def clear_seat_out_of_fuel(home: Path, nick: str) -> bool:
                 return False
             del seats[key]
             _save_seat_out_of_fuel_unlocked(home, seats)
+        try:
+            bobreport.mark_digest_fuel_hold(home, nick, held=False)
+        except Exception:
+            pass
         return True
     except (TimeoutError, OSError):
         return False
+
+
+def worker_list_state(home: Path, nick: str) -> str:
+    """Digest worker_list state for nick (empty when absent). FR #8494."""
+    parsed = bobreport.parse_seat_nick(nick)
+    if not parsed:
+        return ""
+    mid, _pid = parsed
+    try:
+        doc = bobreport.load_digest(_root(home))
+    except Exception:
+        return ""
+    machines = doc.get("machines") if isinstance(doc.get("machines"), dict) else {}
+    ent = machines.get(mid) if isinstance(machines.get(mid), dict) else {}
+    if not isinstance(ent, dict):
+        return ""
+    n = (canonical_worker_nick(nick) or nick or "").strip().lower()
+    for row in ent.get("worker_list") or []:
+        if not isinstance(row, dict):
+            continue
+        if str(row.get("nick") or "").strip().lower() != n:
+            continue
+        return str(row.get("state") or "").strip().lower()
+    return ""
 
 
 def _seat_holds_path(home: Path) -> Path:
@@ -11098,6 +11178,10 @@ def offer_focus_top(
                     job["offered_to"] = me
                     # A live offer means someone is eligible (FR #7966).
                     job.pop("no_eligible_since", None)
+                    # FR #8428: a different seat took the row after a timeout.
+                    last_timeout = str(job.get("offer_last_timeout_seat") or "").strip()
+                    if last_timeout and not _same_seat(last_timeout, me):
+                        job.pop("offer_last_timeout_seat", None)
                     # FR #2309: rebroadcast keeps original offered_ts so OFFER_TIMEOUT can free the row.
                     if same and prev_ts:
                         job["offered_ts"] = prev_ts
@@ -13262,6 +13346,67 @@ def heal_require_machine_all_gave_up(
         if n:
             healed.append(f"{repo}{ident if str(ident).startswith('#') else '#' + str(ident)} cleared={n}")
     return healed
+
+
+def row_has_false_needs_human(row: dict) -> bool:
+    """FR #8427: True when needs_human is set but the give-up was infra-soft.
+
+    FR #8375 made holder_bored (and the other infra/soft seat-churn reasons)
+    never increment giveup_count nor stamp needs_human. A row that still carries
+    ``needs_human`` with a ``giveup_reason`` from that set is a stale/false stamp
+    that starves the offer queue (class of #8391/#8396/#8413).
+    """
+    if not isinstance(row, dict):
+        return False
+    if not row_needs_human(row, ""):
+        return False
+    reason = str(row.get("giveup_reason") or "").strip()
+    return is_infra_soft_giveup_reason(reason)
+
+
+def heal_false_needs_human_for_infra_soft(home: Path) -> list[str]:
+    """FR #8427: clear needs_human false positives stamped by infra-soft GIVEUPs.
+
+    Clears ``needs_human`` (and the give-up state) on unaccepted/accepted rows
+    whose ``giveup_reason`` is holder_bored / offer-timeout / hard-ceiling /
+    worktree-create-failed (the FR #8375 infra-soft set). Those reasons must
+    never stamp needs_human, so a stamp on such a row is a stale false positive
+    that re-offers after the clear.
+
+    Returns repo#id heal lines for monitor/ops logs.
+    """
+    try:
+        with _lock(home):
+            try:
+                doc = _load_queue_unlocked(home)
+            except (OSError, ValueError):
+                return []
+            healed: list[str] = []
+            changed = False
+            for bucket in ("unaccepted", "accepted"):
+                for row in list(doc.get(bucket) or []):
+                    if not row_has_false_needs_human(row):
+                        continue
+                    repo = str(row.get("repo") or "")
+                    ident = str(row.get("id") or "")
+                    row.pop("needs_human", None)
+                    row["giveup_count"] = 0
+                    row.pop("giveup_seats", None)
+                    row.pop("giveup_agent_kinds", None)
+                    row["hard_ceiling_count"] = 0
+                    row.pop("cooldown_until", None)
+                    changed = True
+                    healed.append(
+                        f"{repo}{ident if ident.startswith('#') else '#' + ident}"
+                    )
+            if changed:
+                try:
+                    _write_queue(queue_path(home), doc)
+                except OSError:
+                    return []
+            return healed
+    except (TimeoutError, OSError):
+        return []
 
 
 def _row_link_keys(row: dict) -> list[str]:

@@ -1316,10 +1316,20 @@ def _coerce_workers(mid: str, raw: object) -> dict:
 # FR #663: offer sets ``offered`` (not ``doing``); only ACK promotes to ``doing``.
 # FR #7347: seat start-up may POST needs_sign_in / unhealthy (worker digest); accept them.
 # FR #8137: ``waiting`` = DONE MRB PASS awaiting merge/rebase (tray shows waiting, not done).
-WORKER_STATES = ("doing", "idle", "offered", "waiting", "needs_sign_in", "unhealthy")
+WORKER_STATES = (
+    "doing",
+    "idle",
+    "offered",
+    "waiting",
+    "needs_sign_in",
+    "unhealthy",
+    "out_of_fuel",
+)
 WORKER_STATE_ALIASES = {
     "needs-sign-in": "needs_sign_in",
     "needssignin": "needs_sign_in",
+    "out-of-fuel": "out_of_fuel",
+    "outoffuel": "out_of_fuel",
 }
 WORKER_WORK_MAX = 160
 WORKER_LIST_MAX = 32
@@ -1404,10 +1414,10 @@ def _coerce_worker_list(raw: object, *, now: float | None = None) -> list[dict]:
             ts = _parse_worker_updated_ts(updated)
             if ts is not None and (now_f - ts) >= float(OFFERED_TIMEOUT_S):
                 state = "idle"
-        # Keep work text for doing, offered, and waiting (FR #8137 tray: waiting rebase/merge).
+        # Keep work text for doing, offered, waiting, and out_of_fuel (FR #8494).
         work = (
             clean_worker_work(ent.get("work"))
-            if state in ("doing", "offered", "waiting")
+            if state in ("doing", "offered", "waiting", "out_of_fuel")
             else ""
         )
         # FR #8384: TipForm reads workers[].working_on; chair rows store work.
@@ -3370,6 +3380,63 @@ def apply_report(home: Path, sender_nick: str, briefer_nick: str, body: str) -> 
 
 
 @_digest_locked
+def mark_digest_fuel_hold(home: Path, nick: str, *, held: bool = True) -> bool:
+    """FR #8494: paint worker_list state out_of_fuel (or clear it) and bump ``updated``.
+
+    Used by chair ``note_seat_out_of_fuel`` / ``clear_seat_out_of_fuel`` so TipForm
+    does not show a quiet idle seat with a frozen ``updated`` during the hold.
+    No-op when the machine or nick is absent from the digest.
+    """
+    parsed = parse_seat_nick(nick)
+    if not parsed:
+        return False
+    mid, _pid = parsed
+    doc = load_digest(home)
+    machines = doc.get("machines") if isinstance(doc.get("machines"), dict) else {}
+    if mid not in machines or not isinstance(machines.get(mid), dict):
+        return False
+    ent = machines[mid]
+    rows = list(ent.get("worker_list") or [])
+    n = str(nick or "").strip()
+    idx = next((i for i, r in enumerate(rows) if str(r.get("nick") or "").lower() == n.lower()), -1)
+    now_iso = _utc_now_iso()
+    if held:
+        if idx < 0:
+            if len(rows) >= WORKER_LIST_MAX:
+                return False
+            rows.append(
+                {
+                    "nick": n,
+                    "state": "out_of_fuel",
+                    "work": "out-of-fuel",
+                    "updated": now_iso,
+                    "last_progress": now_iso,
+                }
+            )
+        else:
+            rows[idx]["state"] = "out_of_fuel"
+            rows[idx]["work"] = clean_worker_work(rows[idx].get("work") or "out-of-fuel") or "out-of-fuel"
+            rows[idx]["updated"] = now_iso
+            rows[idx]["last_progress"] = now_iso
+    else:
+        if idx < 0:
+            return False
+        if str(rows[idx].get("state") or "") != "out_of_fuel":
+            return False
+        rows[idx]["state"] = "idle"
+        rows[idx]["work"] = ""
+        rows[idx]["updated"] = now_iso
+        rows[idx].pop("last_progress", None)
+        rows[idx].pop("progress_phase", None)
+    ent["worker_list"] = _coerce_worker_list(rows)
+    _refresh_machine_activity_from_worker_list(ent)
+    _mirror_worker_list_to_legacy_workers(ent, mid, n)
+    doc["ts"] = now_iso
+    save_digest(home, doc)
+    return True
+
+
+@_digest_locked
 def clear_seat_doing(
     home: Path,
     nick: str,
@@ -3734,7 +3801,7 @@ def _apply_worker_op(home: Path, op: str, mid: str, payload: dict, briefer_nick:
             row = rows[idx]
         if state:
             row["state"] = state
-        if row["state"] in ("doing", "offered", "waiting"):
+        if row["state"] in ("doing", "offered", "waiting", "out_of_fuel"):
             if work_raw is not None:
                 row["work"] = clean_worker_work(work_raw)
             # FR #8384: accepted ACK must paint the job key, never a blank
@@ -3748,6 +3815,8 @@ def _apply_worker_op(home: Path, op: str, mid: str, payload: dict, briefer_nick:
                     row["work"] = "working"
                 elif row["state"] == "offered":
                     row["work"] = "offered"
+                elif row["state"] == "out_of_fuel":
+                    row["work"] = "out-of-fuel"
                 else:
                     row["work"] = "waiting"
         else:
@@ -3771,7 +3840,12 @@ def _apply_worker_op(home: Path, op: str, mid: str, payload: dict, briefer_nick:
         progress_changed = True
     if progress_phase and progress_phase != prior_phase:
         progress_changed = True
-    if not state_changed and not progress_changed:
+    fuel_hold_touch = any(
+        str(r.get("nick") or "").lower() == touched.lower()
+        and str(r.get("state") or "") == "out_of_fuel"
+        for r in after_rows
+    )
+    if not state_changed and not progress_changed and not fuel_hold_touch:
         # Still refresh machine activity (timeout may have expired offered -> idle).
         ent["worker_list"] = after_rows
         _refresh_machine_activity_from_worker_list(ent)
@@ -3781,7 +3855,9 @@ def _apply_worker_op(home: Path, op: str, mid: str, payload: dict, briefer_nick:
     for r in after_rows:
         if r["nick"].lower() != touched.lower():
             continue
-        if state_changed:
+        # FR #8494: out_of_fuel heartbeats must advance ``updated`` every tick so
+        # TipForm does not show a frozen idle seat during the hold.
+        if state_changed or str(r.get("state") or "") == "out_of_fuel":
             r["updated"] = now_iso
         if progress_iso:
             r["last_progress"] = progress_iso[:64]
@@ -3790,6 +3866,8 @@ def _apply_worker_op(home: Path, op: str, mid: str, payload: dict, briefer_nick:
         # First progress on a doing seat: seed last_progress when payload omitted it
         # but state just became doing (ACK).
         if state_changed and r.get("state") == "doing" and not r.get("last_progress"):
+            r["last_progress"] = now_iso
+        if str(r.get("state") or "") == "out_of_fuel" and not r.get("last_progress"):
             r["last_progress"] = now_iso
     ent["worker_list"] = after_rows
     _refresh_machine_activity_from_worker_list(ent)
@@ -8203,13 +8281,19 @@ def grok_auth_path_stamp_path(
 
 
 def _write_grok_auth_path_stamp(auth_path: Path) -> None:
-    """Persist auth.json location for LocalSystem ticks. Never writes file contents."""
+    """Persist auth.json location for LocalSystem ticks. Never writes file contents.
+
+    FR #8507: never stamp a path that is not a file --- a missing interactive
+    ``auth.json`` must not poison ``grok-auth-path.txt`` and block service-home.
+    """
     stamp = grok_auth_path_stamp_path()
     if stamp is None:
         return
     try:
         p = Path(auth_path)
         if _is_windows_system_profile(p) or _is_windows_system_profile(p.parent):
+            return
+        if not p.is_file():
             return
         stamp.parent.mkdir(parents=True, exist_ok=True)
         stamp.write_text(str(p) + "\n", encoding="utf-8")
@@ -8582,8 +8666,17 @@ def xai_weekly_auth_path() -> tuple[Path | None, str]:
             user_home = _interactive_grok_user_home()
             if user_home is not None:
                 path = user_home / ".grok" / "auth.json"
-                _write_grok_auth_path_stamp(path)
-                return path, "interactive-auth"
+                # FR #8507: only win when the machine store file exists. A console
+                # user home without auth.json must fall through to stamped /
+                # service-home (otherwise fetch reports auth-file-missing and
+                # the ear-pool-stale detector fires forever).
+                try:
+                    present = path.is_file()
+                except OSError:
+                    present = False
+                if present:
+                    _write_grok_auth_path_stamp(path)
+                    return path, "interactive-auth"
         stamped = _read_grok_auth_path_stamp()
         if stamped is not None:
             return stamped, "stamped-auth"
