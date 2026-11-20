@@ -8485,7 +8485,7 @@ def resolve_opencode_paid_switch_model(env: Optional[dict] = None) -> str:
     try:
         import worker_start_model as wsm
 
-        cfg = wsm.load_worker_start_model(env=env)
+        cfg = wsm.load_worker_start_config(env=env)
         paid = wsm.default_opencode_paid_model(cfg)
         if paid:
             return str(paid).strip()
