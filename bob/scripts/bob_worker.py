@@ -9071,6 +9071,7 @@ def post_digest_out_of_fuel(
     machine: str,
     nick: str = "",
     evidence: str = "",
+    pid: int | str | None = None,
     url: str | None = None,
     env: Optional[dict] = None,
     log: Optional[Callable[[str], None]] = None,
@@ -9078,6 +9079,7 @@ def post_digest_out_of_fuel(
     """POST digest so tray/TipForm can show the seat out of fuel (FR #3012 / #5032).
 
     FR #5032: include weekly=0 so peers paint exhausted (0%% red) instead of a stale %.
+    FR #8494: also POST worker-work ``state=out_of_fuel`` so the seat row is not idle.
     """
     env = os.environ if env is None else env
     report = (url or env.get("BOB_REPORT_URL") or env.get("BOB_DIGEST_URL") or DEFAULT_DIGEST_REPORT_URL).strip()
@@ -9097,6 +9099,31 @@ def post_digest_out_of_fuel(
         "weekly": 0,
     }
     ok = bool(_http_post_json(report, payload, log=log))
+    if nick_s:
+        try:
+            from bobreport import _utc_now_iso
+
+            iso = _utc_now_iso()
+        except Exception:
+            iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        row = {
+            "op": "worker-work",
+            "machine": mid,
+            "id": mid,
+            "nick": nick_s,
+            "state": "out_of_fuel",
+            "work": working,
+            "online": True,
+            "last_progress": iso,
+            "progress_phase": "out-of-fuel",
+        }
+        if pid is not None and str(pid).strip() != "":
+            try:
+                row["pid"] = int(str(pid))
+            except (TypeError, ValueError):
+                pass
+        ok_row = bool(_http_post_json(report, row, log=log))
+        ok = bool(ok and ok_row)
     if not ok and log:
         try:
             log(f"post_digest_out_of_fuel failed mid={mid}")
@@ -11061,12 +11088,14 @@ def opencode_hostile_nack_line(line: str) -> Optional[str]:
 
 
 def _normalize_digest_worker_state(raw: object) -> str:
-    """Canonical digest worker state for hub schema. FR #7347."""
+    """Canonical digest worker state for hub schema. FR #7347 / #8494."""
     s = str(raw or "").strip().lower()
     if not s:
         return ""
     if s in ("needs-sign-in", "needssignin", "needs_sign_in"):
         return "needs_sign_in"
+    if s in ("out-of-fuel", "outoffuel", "out_of_fuel"):
+        return "out_of_fuel"
     return s
 
 
@@ -11395,14 +11424,15 @@ def post_digest_progress_heartbeat(
     work: str = "",
     last_progress: str = "",
     progress_phase: str = "",
+    state: str = "doing",
     url: str | None = None,
     env: Optional[dict] = None,
     log: Optional[Callable[[str], None]] = None,
 ) -> bool:
     """POST worker-work activity heartbeat with ``last_progress`` (FR #8155).
 
-    Does not change seat state semantics: chair keeps ``updated`` on state/work
-    changes only; ``last_progress`` is the activity clock.
+    Chair keeps ``updated`` on state/work changes; ``last_progress`` is the activity
+    clock. FR #8494: ``state=out_of_fuel`` also advances ``updated`` each tick.
     """
     env = os.environ if env is None else env
     report = (url or env.get("BOB_REPORT_URL") or env.get("BOB_DIGEST_URL") or DEFAULT_DIGEST_REPORT_URL).strip()
@@ -11419,12 +11449,13 @@ def post_digest_progress_heartbeat(
         _utc_now_iso = lambda: time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())  # type: ignore
     iso = (last_progress or "").strip() or _utc_now_iso()
     phase = sanitize_progress_phase(progress_phase)
+    state_s = _normalize_digest_worker_state(state) or "doing"
     payload: dict = {
         "op": "worker-work",
         "machine": mid,
         "id": mid,
         "nick": nick_s,
-        "state": "doing",
+        "state": state_s,
         "online": True,
         "last_progress": iso,
     }
@@ -15101,10 +15132,17 @@ class Supervisor:
         # FR #4180: disarm hang/ack-miss so a post-GIVEUP offer cannot recycle the seat.
         self._clear_watchdogs_for_out_of_fuel()
         try:
+            pid = None
+            try:
+                if self.proc is not None:
+                    pid = getattr(self.proc, "pid", None)
+            except Exception:
+                pid = None
             ok = post_digest_out_of_fuel(
                 machine=self.machine,
                 nick=self.nick,
                 evidence=line,
+                pid=pid,
                 log=self.log,
             )
             if not ok:
@@ -17079,6 +17117,11 @@ class Supervisor:
             return
         snap = bored.heartbeat_snapshot()
         now_mono = float(self.clock())
+        # FR #8494: out-of-fuel hold still heartbeats so digest ``updated`` stays fresh
+        # and state paints ``out_of_fuel`` (not quiet idle). ACK may already be clear.
+        if snap.out_of_fuel:
+            self._post_fuel_hold_heartbeat(now_mono=now_mono)
+            return
         if not snap.ack_open:
             self._progress_prev = {}
             self._progress_phase = ""
@@ -17086,9 +17129,6 @@ class Supervisor:
             if int(getattr(self, "_progress_hb_epoch", 0) or 0):
                 self._progress_hb_skip("no-ack", now_mono=now_mono)
             self._progress_hb_epoch = 0
-            return
-        if snap.out_of_fuel:
-            self._progress_hb_skip("fuel-hold", now_mono=now_mono)
             return
         # Plain reference read — do not take self._lock (FINISH / start_agent hold it).
         proc = self.proc
@@ -17151,18 +17191,15 @@ class Supervisor:
             self._progress_hb_skip("stopping", now_mono=now_mono)
             return
         snap2 = bored.heartbeat_snapshot()
+        if snap2.out_of_fuel:
+            self._post_fuel_hold_heartbeat(now_mono=now_mono)
+            return
         if (
             not snap2.ack_open
-            or snap2.out_of_fuel
             or int(snap2.ack_epoch) != epoch
             or str(snap2.ack_job_key or "").strip() != work
         ):
-            if snap2.out_of_fuel:
-                skip_why = "fuel-hold"
-            elif not snap2.ack_open:
-                skip_why = "no-ack"
-            else:
-                skip_why = "job-changed"
+            skip_why = "no-ack" if not snap2.ack_open else "job-changed"
             self._progress_hb_skip(skip_why, now_mono=now_mono)
             return
         proc2 = self.proc
@@ -17192,6 +17229,42 @@ class Supervisor:
             self.log(
                 f"progress-heartbeat: last_progress={iso} phase={use_phase or '-'}"
             )
+
+    def _post_fuel_hold_heartbeat(self, *, now_mono: float) -> None:
+        """FR #8494: presence tick while out-of-fuel so digest ``updated`` advances."""
+        interval = max(float(getattr(self, "_progress_heartbeat_s", 30.0) or 30.0), 5.0)
+        last = float(getattr(self, "_fuel_hb_mono", 0.0) or 0.0)
+        if last and (now_mono - last) < interval:
+            return
+        try:
+            from bobreport import _utc_now_iso
+
+            iso = _utc_now_iso()
+        except Exception:
+            iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        proc = self.proc
+        pid = None
+        try:
+            if proc is not None and proc.poll() is None:
+                pid = getattr(proc, "pid", None)
+        except Exception:
+            pid = None
+        ok = post_digest_progress_heartbeat(
+            machine=self.machine,
+            nick=self.nick,
+            pid=pid,
+            kind=self.kind,
+            work="out-of-fuel",
+            last_progress=iso,
+            progress_phase="out-of-fuel",
+            state="out_of_fuel",
+            log=self.log,
+        )
+        if ok:
+            self._fuel_hb_mono = now_mono
+            self._progress_last_post_mono = now_mono
+            self._progress_last_post_wall = time.time()
+            self.log(f"progress-heartbeat: fuel-hold last_progress={iso}")
 
     def _inject_failed_turn_retry(self, job_key: str) -> None:
         """FR #7201: re-inject the last assign once after an error turn (bounded).

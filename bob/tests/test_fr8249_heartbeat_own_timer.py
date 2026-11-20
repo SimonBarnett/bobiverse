@@ -255,16 +255,18 @@ def test_fr8249_done_fuel_exit_and_new_job_cadence(monkeypatch, tmp_path):
         assert posts[-1]["work"] == "FR SimonBarnett/bobiverse#9999"
         n2 = len(posts)
 
-        # Fuel hold with ACK still open (snapshot gate).
+        # Fuel hold: FR #8494 posts state=out_of_fuel instead of skipping.
         with e._cv:
             e._out_of_fuel = True
             e._hb_notify_all()
         assert e.heartbeat_snapshot().out_of_fuel is True
-        sup._progress_hb_skip_log_mono = 0.0  # reset rate-limit from prior no-ack
+        sup._fuel_hb_mono = 0.0
         clock.t += 1.0
         _force_tick(sup, clock)
-        assert len(posts) == n2
-        assert any("skip reason=fuel-hold" in m for m in logs)
+        assert len(posts) > n2
+        assert posts[-1].get("state") == "out_of_fuel"
+        assert posts[-1].get("work") == "out-of-fuel"
+        n2 = len(posts)
         with e._cv:
             e._out_of_fuel = False
             e._hb_notify_all()

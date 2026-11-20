@@ -10013,6 +10013,11 @@ def note_seat_out_of_fuel(home: Path, nick: str, *, reason: str = "out-of-fuel")
                 "ts": _utc_now(),
             }
             _save_seat_out_of_fuel_unlocked(home, seats)
+        # FR #8494: paint digest worker_list outside the seat-fuel lock.
+        try:
+            bobreport.mark_digest_fuel_hold(home, nick, held=True)
+        except Exception:
+            pass
         return True
     except (TimeoutError, OSError):
         return False
@@ -10030,9 +10035,37 @@ def clear_seat_out_of_fuel(home: Path, nick: str) -> bool:
                 return False
             del seats[key]
             _save_seat_out_of_fuel_unlocked(home, seats)
+        try:
+            bobreport.mark_digest_fuel_hold(home, nick, held=False)
+        except Exception:
+            pass
         return True
     except (TimeoutError, OSError):
         return False
+
+
+def worker_list_state(home: Path, nick: str) -> str:
+    """Digest worker_list state for nick (empty when absent). FR #8494."""
+    parsed = bobreport.parse_seat_nick(nick)
+    if not parsed:
+        return ""
+    mid, _pid = parsed
+    try:
+        doc = bobreport.load_digest(_root(home))
+    except Exception:
+        return ""
+    machines = doc.get("machines") if isinstance(doc.get("machines"), dict) else {}
+    ent = machines.get(mid) if isinstance(machines.get(mid), dict) else {}
+    if not isinstance(ent, dict):
+        return ""
+    n = (canonical_worker_nick(nick) or nick or "").strip().lower()
+    for row in ent.get("worker_list") or []:
+        if not isinstance(row, dict):
+            continue
+        if str(row.get("nick") or "").strip().lower() != n:
+            continue
+        return str(row.get("state") or "").strip().lower()
+    return ""
 
 
 def _seat_holds_path(home: Path) -> Path:
