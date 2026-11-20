@@ -260,3 +260,4 @@ Do not land a second copy of a harvest-lesson MRB playbook in this book. Those p
 - For SimonBarnett/bobiverse, infer_require_machine ignores a needs-ionos title prefix. Pin with a needs-ionos label or a body line require_machine: ionos.
 - A line-anchored MRB FAIL @ sha is a seat verdict even when the sha is wrapped in ticks or quotes. A mid-line mention and a FAIL without an @ sha still hold.
 - A same-process file lock that unlinks on holder==getpid busy-spins on Windows when the holder's handle blocks unlink; cross-process seats still need the dead-pid steal plus a sleep and a deadline.
+- FR #8490: bare !build lists GET /bob/v1/builds; !build n builds catalog yml, exports pack artifacts to output, reinstalls on install (machine or fleet via registered-machines.json); local msiexec needs recipe install_test; remote BUILD_INSTALL queue jobs WARN-and-continue; dep docs-only; old owner/repo form refused.
