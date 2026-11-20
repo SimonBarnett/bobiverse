@@ -81,3 +81,14 @@ def test_wrapper_switches_to_paid_without_dropping_ceiling_giveup(tmp_path):
     ceil = script.split("hard ceiling", 1)[1][:800]
     assert "Try-OpencodeSwitchToPaid" not in ceil
     assert "Write-OpencodeTurnMarker 'turn_ended'" in script
+
+
+def test_hitlimit_does_not_giveup_after_live_paid_switch(tmp_path):
+    """A live switch sets ocPaidSwitched. The later hitLimit block must not GIVEUP."""
+    spec = bw.build_launch("opencode", "agent", r"C:\ai\bob\worker", "prompt", "opencode.exe", tmp_path)
+    script = next(v for k, v in spec.files.items() if str(k).endswith("launch-opencode.ps1"))
+    hit = script.find("if ($hitLimit)")
+    assert hit > 0
+    window = script[hit:hit + 2200]
+    assert "ocPaidSwitched" in window
+    assert "if ($jobKey -and -not $script:ocPaidSwitched)" in window
