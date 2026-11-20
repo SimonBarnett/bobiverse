@@ -17,5 +17,6 @@ def test_fr8388_docs_name_turn_receipt_not_enter_retries() -> None:
         assert "probe=spawn kind=opencode" in text
         assert "probe=no turn receipt kind=opencode" in text
     assert "Cursor and Grok stay bare" in worker
+    assert "inject failed" not in inject
     assert not WORKER.read_bytes().startswith(b"\xef\xbb\xbf")
     assert not INJECT.read_bytes().startswith(b"\xef\xbb\xbf")

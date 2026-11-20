@@ -8,7 +8,7 @@ Jeeves assign lines reliably reach the OpenCode PowerShell ReadLine loop and sta
 
 - Default inject path for kind=opencode (KEY_EVENT batch vs clipboard paste) pinned like Cursor FR #4462/#4464.
 - Submit-verify (FR #8270; VISION S3 / FR #2696 for Cursor and Grok): an OpenCode turn receipt is `turn_started` or new bytes in `opencode-turns.jsonl`. OpenCode retries do not send Enter (never re-paste / re-inject inside verify). A dead spawn fails fast (`probe=spawn kind=opencode`).
-- After verify FAILED: re-inject the assign **once**, then NACK/GIVEUP inject failed; before re-inject, confirm no job-specific run is already active (avoid a queued duplicate `opencode run` after the first exits).
+- After verify FAILED: re-inject the assign **once**, then GIVEUP `submit-verify failed probe=no turn receipt kind=opencode` (Cursor and Grok stay bare `submit-verify failed`); before re-inject, confirm no job-specific run is already active (avoid a queued duplicate `opencode run` after the first exits).
 - Log `relay: inject path=...` for opencode.
 
 ## Testable
