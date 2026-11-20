@@ -78,3 +78,31 @@ def test_fr8420_updatefleet_dry_run_json(monkeypatch, tmp_path):
     assert isinstance(doc["machines"], list)
     assert doc.get("dry_run") is True
     assert doc.get("expected_sha") == digest
+
+
+def test_fr8420_store_credential_inherits_stdin(monkeypatch):
+    """Read-Host must see the console. capture_output would pipe stdin shut."""
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("updatefleet", TOOL)
+    updatefleet = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(updatefleet)
+    monkeypatch.setattr(updatefleet, "_find_ps1", lambda: PS1)
+    monkeypatch.setattr(updatefleet, "_powershell", lambda: "powershell.exe")
+    seen = {}
+
+    def _fake_run(cmd, **kwargs):
+        seen["cmd"] = cmd
+        seen["kwargs"] = kwargs
+        class _P:
+            returncode = 0
+            stdout = '{"ok": true, "check": "updatefleet", "action": "store-credential"}\n'
+            stderr = ""
+        return _P()
+
+    monkeypatch.setattr(updatefleet.subprocess, "run", _fake_run)
+    rc = updatefleet.main(["--store-credential"])
+    assert rc == 0
+    assert seen["kwargs"].get("stdin") is None
+    assert "capture_output" not in seen["kwargs"]
+    assert "-StoreCredential" in seen["cmd"]

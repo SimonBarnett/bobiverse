@@ -126,15 +126,22 @@ def main(argv: list[str] | None = None) -> int:
     if args.no_recycle:
         cmd.append("-NoRecycle")
 
+    # --store-credential uses Read-Host. capture_output pipes stdin, so the
+    # prompt never reaches the console and CredMan can be stored empty.
+    run_kwargs = {
+        "text": True,
+        "encoding": "utf-8",
+        "errors": "replace",
+        "check": False,
+    }
+    if args.store_credential:
+        run_kwargs["stdin"] = None
+        run_kwargs["stdout"] = subprocess.PIPE
+        run_kwargs["stderr"] = subprocess.PIPE
+    else:
+        run_kwargs["capture_output"] = True
     try:
-        proc = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            check=False,
-        )
+        proc = subprocess.run(cmd, **run_kwargs)
     except OSError as e:
         print(json.dumps({"ok": False, "check": "updatefleet", "error": f"spawn: {e}"}))
         return 2
