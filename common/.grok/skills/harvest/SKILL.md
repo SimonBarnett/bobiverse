@@ -277,3 +277,4 @@ Do not land a second copy of a harvest-lesson MRB playbook in this book. Those p
 - Update-BobFleet Get-UpdateFleetPSCredential must [void] CredFree (and TrimEnd NUL); unvoided bool makes Object[] that cannot bind to [PSCredential] (FR #8531)
 - When idle seats see offerable=0 (often needs_human-only), surface healthy_idle_empty_offerable / TipForm caption so ops do not recycle free DeepSeek seats as hung.
 - On OpenCode Free usage limit for a free model, pause free and switch to opencodePaid when Go remains (no shop GIVEUP); accept cli-stderr Free usage pauses for free models so free reading is not stuck at 100.
+- FIX onto open MRB FAIL PR: push ASCII-safe .ps1 (no U+2014) when pytest-ascii-bom fails; do not open a second PR.
