@@ -26,6 +26,10 @@ Auth: **report / intake / jira / hours need no password** (v0.1.16). Nothing to 
 
 `GET /bob/v1/report` and `POST /bob/v1/report` `op=merge` accept optional machine scalar `grok_account` (string or null). Ear-owned: omit keeps the stored value; null / `cleared: ["grok_account"]` removes it. Not filled from peer files. Never include credentials in the payload.
 
+### Machine fields `cursor_account`, `cursor_account_user`, `cursor_account_source` (FR #7907)
+
+`op=merge` accepts ear-owned scalars. `cursor_account` is a valid email or the literal `none` (a published value, not a clear). `cursor_account_user` is the Windows account leaf. `cursor_account_source` is only `api_key`, or null / `cleared: ["cursor_account_source"]` when the override is gone. Omit keeps the stored value. Invalid non-blank values are ignored. Not filled from peer files. Never include tokens or keys. An identity-only merge does not clear `model`.
+
 ### Machine field `opencode_account` (FR #6301 / FR #6312 / FR #6318)
 
 Same semantics as `grok_account`: optional string label or null on `op=merge`; `GET` returns it; omit keeps the stored value; null / `cleared: ["opencode_account"]` removes it. Ear-owned (not peer-filled). Never holds API key material. OpenCode Go windows and Copilot live on digest `fleet_pools` (FR #7366); the hub drops per-machine copies. Ear paint contract (FR #6312 / #6318 / docs/mrb-6319): when neither a usable absolute `resetsAt` nor a usable relative `resetInSec` (go-zen layout) is available, paint `error: "reset unavailable"` with null `reset_label` and no invented `resets_at`. A valid `resetInSec` still yields countdown + `resets_at` even when `resetsAt` is absent. When both `resetInSec` and `resetsAt` are present, `resetInSec` wins (same order as `opencode_fuel._go_zen_meter_to_window`). A past absolute reset keeps `resets_at` and sets `reset_label` to null (countdown only while the reset is still in the future). Reporters should send the complete `opencode_windows` map on each merge - the hub replaces the stored map rather than deep-merging partial window rows.

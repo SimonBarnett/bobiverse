@@ -10,6 +10,9 @@ from pathlib import Path
 from _common import EXIT_FINDING, EXIT_OK, queue_bucket_rows, resolve_homes, resolve_queue_path, run_check
 
 DEFAULT_MAX_AGE_SEC = 7200  # 2 h
+# FR #8384: accepted rows while every live shop seat has blank working_on.
+BLANK_WORK_SEC = 600
+_PLACEHOLDER_WORK = {"", "working", "offered", "waiting"}
 
 
 def _age_sec(row: dict) -> float | None:
@@ -35,6 +38,49 @@ def _row_label(row: dict) -> str:
     ident = row.get("id") or row.get("number") or "?"
     repo = row.get("repo") or row.get("owner_repo") or "?"
     return f"{repo}{ident if str(ident).startswith('#') else '#' + str(ident)}"
+
+
+def _blank_work(row: dict) -> bool:
+    text = str(row.get("working_on") or row.get("work") or "").strip().lower()
+    return text in _PLACEHOLDER_WORK
+
+
+def _shop_rows(digest: dict) -> list[dict]:
+    out: list[dict] = []
+    machines = digest.get("machines") if isinstance(digest.get("machines"), dict) else {}
+    for ent in machines.values():
+        if not isinstance(ent, dict):
+            continue
+        for row in ent.get("worker_list") or []:
+            if isinstance(row, dict):
+                out.append(row)
+        workers = ent.get("workers") if isinstance(ent.get("workers"), dict) else {}
+        for row in workers.values():
+            if isinstance(row, dict):
+                out.append(row)
+    return out
+
+
+def _blank_accepted_finding(rows: list[dict], shop_rows: list[dict]) -> str:
+    """EXIT-1 text when accepted>0 and no live seat shows a real job (FR #8384)."""
+    if not rows:
+        return ""
+    ages = [a for a in (_age_sec(r) for r in rows) if a is not None]
+    if not ages or min(ages) < BLANK_WORK_SEC:
+        return ""
+    live = [
+        r
+        for r in shop_rows
+        if str(r.get("state") or "").strip().lower() not in ("", "idle")
+    ]
+    if not live:
+        live = list(shop_rows)
+    if live and any(not _blank_work(r) for r in live):
+        return ""
+    return (
+        f"accepted={len(rows)} but every live shop seat has empty working_on "
+        f"for >{BLANK_WORK_SEC}s"
+    )
 
 
 def check(args):
@@ -65,6 +111,16 @@ def check(args):
             stuck.append({"row": _row_label(r), "age_sec": int(age), "by": by})
     for s in stuck:
         findings.append(f"stuck accepted {s.get('row')} by {s.get('by')} age_sec={s.get('age_sec')}")
+    digest_doc: dict = {}
+    dpath = digest / "digest.json"
+    if dpath.is_file():
+        try:
+            digest_doc = json.loads(dpath.read_text(encoding="utf-8-sig"))
+        except (OSError, json.JSONDecodeError, ValueError):
+            digest_doc = {}
+    blank = _blank_accepted_finding(rows, _shop_rows(digest_doc))
+    if blank:
+        findings.append(blank)
     ok = not findings
     return (
         {

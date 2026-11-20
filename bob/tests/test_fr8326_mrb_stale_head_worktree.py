@@ -124,3 +124,96 @@ def test_fr8326_head_mismatch_nack_names_both_shas():
     assert err.startswith("head-mismatch")
     assert f"want={want}" in err
     assert f"have={have}" in err
+
+
+def test_fr8326b_stale_mrb_folder_wrong_sha_recreated(tmp_path: Path):
+    """Dead-seat mrb-N at the wrong SHA is replaced at headRefOid (flamingo #8299)."""
+    clone = _init_clone(tmp_path / "clone")
+    oid = _publish(clone, "fr-8298")
+    main_oid = subprocess.run(
+        ["git", "-C", str(clone), "rev-parse", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip().lower()
+    assert main_oid != oid
+    env = {
+        "BOB_JOB_WORKTREE_BASE": str(tmp_path / "worktrees"),
+        "BOB_REPO_CLONE_bobiverse": str(clone),
+    }
+    line = "FROM jeeves #flamingo n: MRB SimonBarnett/bobiverse#8299 https://x"
+    mrb_path = Path(c.project_dir_for_assign(line, env))
+    mrb_path.parent.mkdir(parents=True, exist_ok=True)
+    subprocess.run(
+        ["git", "-C", str(clone), "worktree", "add", "--detach", str(mrb_path), main_oid],
+        check=True,
+        capture_output=True,
+    )
+    (mrb_path / ".bobiverse-seat").write_text(
+        json.dumps({"nick": "flamingo-dead", "pid": 1, "issue": 8299}),
+        encoding="utf-8",
+    )
+    ready = c.ensure_opencode_job_worktree(
+        line, env, install_root=str(clone), run=_gh("fr-8298", oid), nick="flamingo-16976"
+    )
+    assert ready["state"] == "project", ready
+    head = subprocess.run(
+        ["git", "-C", str(ready["path"]), "rev-parse", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip().lower()
+    assert head == oid
+    assert Path(ready["path"]).resolve() == mrb_path.resolve()
+
+
+def test_fr8326b_foreign_common_dir_mrb_folder_recreated(tmp_path: Path):
+    """mrb-N linked to another .git (install-root leftover) is rebuilt from the clone store."""
+    clone = _init_clone(tmp_path / "clone")
+    oid = _publish(clone, "fr-8298")
+    foreign = _init_clone(tmp_path / "foreign")
+    foreign_oid = subprocess.run(
+        ["git", "-C", str(foreign), "rev-parse", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip().lower()
+    env = {
+        "BOB_JOB_WORKTREE_BASE": str(tmp_path / "worktrees"),
+        "BOB_REPO_CLONE_bobiverse": str(clone),
+    }
+    line = "FROM jeeves #flamingo n: MRB SimonBarnett/bobiverse#8299 https://x"
+    mrb_path = Path(c.project_dir_for_assign(line, env))
+    mrb_path.parent.mkdir(parents=True, exist_ok=True)
+    subprocess.run(
+        ["git", "-C", str(foreign), "worktree", "add", "--detach", str(mrb_path), foreign_oid],
+        check=True,
+        capture_output=True,
+    )
+    (mrb_path / ".bobiverse-seat").write_text(
+        json.dumps({"nick": "flamingo-dead", "pid": 1, "issue": 8299}),
+        encoding="utf-8",
+    )
+    ready = c.ensure_opencode_job_worktree(
+        line, env, install_root=str(clone), run=_gh("fr-8298", oid), nick="flamingo-16976"
+    )
+    assert ready["state"] == "project", ready
+    head = subprocess.run(
+        ["git", "-C", str(ready["path"]), "rev-parse", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip().lower()
+    assert head == oid
+
+    def _abs_common(cwd: Path) -> Path:
+        raw = subprocess.run(
+            ["git", "-C", str(cwd), "rev-parse", "--git-common-dir"],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        p = Path(raw)
+        return (cwd / p).resolve() if not p.is_absolute() else p.resolve()
+
+    assert _abs_common(Path(ready["path"])) == _abs_common(clone)
