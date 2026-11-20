@@ -9299,6 +9299,22 @@ def run_submit_verify_loop(
     return "failed"
 
 
+def _note_submit_verify_phase(active: bool) -> None:
+    """FR #8442: digest progress_phase so a live paste is not an offer-timeout."""
+    try:
+        nick = (os.environ.get("BOB_NICK") or os.environ.get("BOB_AGENT_NICK") or "").strip()
+        mid = (os.environ.get("BOB_MACHINE") or default_machine_id() or "").strip()
+        if not nick or not mid:
+            return
+        post_digest_progress_heartbeat(
+            machine=mid,
+            nick=nick,
+            progress_phase="submit-verify" if active else "",
+        )
+    except Exception:
+        return
+
+
 def inject_with_submit_verify(
     pid: int,
     text: str,
@@ -9373,30 +9389,34 @@ def inject_with_submit_verify(
     t0 = float(clock())
 
     def _run() -> None:
-        res = run_submit_verify_loop(
-            enter_fn=enter_fn,
-            probe_fn=probe_fn,
-            clock=clock,
-            sleep=sleep,
-            log=log,
-            verify_s=vs,
-            max_retries=mr,
-            backoffs=bos,
-            stop_fn=stop_fn,
-            t0=t0,
-            miss_label=miss_label,
-            kind=kind,
-            alive_fn=alive_fn,
-        )
-        if res == "failed" and on_failed is not None:
-            try:
-                on_failed()
-            except Exception as e:  # noqa: BLE001
-                if log:
-                    try:
-                        log(f"relay: submit-verify recovery error {type(e).__name__}")
-                    except Exception:
-                        pass
+        _note_submit_verify_phase(True)
+        try:
+            res = run_submit_verify_loop(
+                enter_fn=enter_fn,
+                probe_fn=probe_fn,
+                clock=clock,
+                sleep=sleep,
+                log=log,
+                verify_s=vs,
+                max_retries=mr,
+                backoffs=bos,
+                stop_fn=stop_fn,
+                t0=t0,
+                miss_label=miss_label,
+                kind=kind,
+                alive_fn=alive_fn,
+            )
+            if res == "failed" and on_failed is not None:
+                try:
+                    on_failed()
+                except Exception as e:  # noqa: BLE001
+                    if log:
+                        try:
+                            log(f"relay: submit-verify recovery error {type(e).__name__}")
+                        except Exception:
+                            pass
+        finally:
+            _note_submit_verify_phase(False)
 
     if sync:
         _run()
