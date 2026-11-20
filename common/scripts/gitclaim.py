@@ -339,6 +339,9 @@ class GitClaim:
     actor: str = ""
     # FR #6340: clean docs/mrb pin whose original is already merged/closed.
     docs_mrb_orphan: bool = False
+    # FR #8475: orphan or main-base fix(mrb-N) is an ordinary MRB. Stacked
+    # parent-branch fixes stay unstamped so purge still drops them (FR #2375).
+    mrb_fix_offer: bool = False
 
 
 def _utc_now() -> str:
@@ -2631,6 +2634,7 @@ def claim_from_payload(
     *,
     line: str = "",
     docs_mrb_parent_open=None,
+    mrb_fix_parent_open=None,
 ) -> GitClaim | None:
     """Build a claim from the GitHub webhook body. None if not a queue-driving event.
 
@@ -2812,9 +2816,24 @@ def claim_from_payload(
             ):
                 return None
             _docs_mrb_orphan_claim = True
-        # bobiverse#224 / #781: FAIL-fix PRs never start a second MRB (open/ready only).
+        # bobiverse#224 / #781: stacked fix(mrb-N) on the parent branch is not a
+        # second MRB. FR #8475: main/master base, or a parent that is not open,
+        # is an ordinary MRB (same rule as resync).
+        _mrb_fix_offer_claim = False
         if action in ("opened", "ready_for_review") and is_mrb_fix_pr_title(title):
-            return None
+            parent_fix = mrb_fix_parent_pr_id(title)
+            parent_open = True
+            if parent_fix and mrb_fix_parent_open is not None:
+                try:
+                    parent_open = bool(mrb_fix_parent_open(repo, parent_fix))
+                except Exception:  # noqa: BLE001
+                    parent_open = True
+            allow_fix = mrb_fix_targets_default_branch(pr) or (
+                bool(parent_fix) and not parent_open
+            )
+            if not allow_fix:
+                return None
+            _mrb_fix_offer_claim = True
         # Lesson PRs cite FRs; they do not implement them. No refs, so the cited FR's
         # implementer is not stamped as author and the FR row is not superseded.
         lesson = is_harvest_lesson_pr(title=title, labels=labels)
@@ -2862,6 +2881,7 @@ def claim_from_payload(
             harvest_lesson=lesson,
             opened_by=opener,
             docs_mrb_orphan=_docs_mrb_orphan_claim,
+            mrb_fix_offer=_mrb_fix_offer_claim,
         )
 
     if ev == "pull_request" and action == "closed":
@@ -3232,6 +3252,8 @@ def _append_unaccepted(doc: dict, claim: GitClaim, home: Path | None = None, **e
                     row[k] = v
                 if claim.docs_mrb_orphan:
                     row["docs_mrb_orphan"] = "1"
+                if claim.mrb_fix_offer:
+                    row["mrb_fix_offer"] = "1"
                 _stamp_require_machine(row, claim)
                 return "duplicate"
         return "duplicate"
@@ -3264,6 +3286,8 @@ def _append_unaccepted(doc: dict, claim: GitClaim, home: Path | None = None, **e
         row["state"] = str(claim.state).strip().lower()
     if claim.docs_mrb_orphan:
         row["docs_mrb_orphan"] = "1"
+    if claim.mrb_fix_offer:
+        row["mrb_fix_offer"] = "1"
     for k, v in extra.items():
         if not v:
             continue
@@ -3539,6 +3563,8 @@ def _apply_claim_to_doc(doc: dict, claim: GitClaim, home: Path | None = None) ->
             extra["implementer_seat"] = implementer
         if claim.docs_mrb_orphan:
             extra["docs_mrb_orphan"] = "1"
+        if claim.mrb_fix_offer:
+            extra["mrb_fix_offer"] = "1"
         # FR #4929: synchronize after a prior MRB PASS must clear done[] / mrb_done
         # before append; otherwise purge drops the new row while FIX is still ACC.
         if action == "synchronize":
@@ -4340,7 +4366,9 @@ def _coerce_row(row: dict) -> dict | None:
                 # FR #8137: DONE MRB PASS awaiting merge/rebase provenance on done[]
                 "awaiting", "mrb_pass_nick",
                 # FR #6340: clean orphan docs/mrb pin offerable as one MRB
-                "docs_mrb_orphan"):
+                "docs_mrb_orphan",
+                # FR #8475: orphan / main-base fix(mrb-N) must survive reload
+                "mrb_fix_offer"):
         if row.get(key):
             out[key] = str(row.get(key))
     # FR #7334: least-commit pick and the 5-minute stuck clock must survive reload.
@@ -4533,6 +4561,11 @@ def is_repo_uat(row: dict) -> bool:
     return True
 
 
+def _mrb_fix_offer_stamped(row: dict) -> bool:
+    """True when resync/webhook marked this fix(mrb-N) as an ordinary MRB (FR #8475)."""
+    return str(row.get("mrb_fix_offer") or "").strip().lower() in ("1", "true", "yes")
+
+
 def is_mrb_fix_pr_title(title: str) -> bool:
     """True for titles like ``fix(mrb-105):ΓÇª`` or ``mrb-105-fix:ΓÇª`` (bobiverse#224 / #781)."""
     return bool(_MRB_FIX_TITLE_RE.search(str(title or "")))
@@ -4642,13 +4675,22 @@ def list_open_prs_explicit_non_default_base(prs) -> list[dict]:
     return out
 
 
-def open_pr_expects_mrb_or_fix_row(pr: dict | None) -> bool:
+def open_pr_expects_mrb_or_fix_row(
+    pr: dict | None,
+    *,
+    fix_keeper: dict | None = None,
+) -> bool:
     """True when an open pull should hold an MRB (or FIX) queue row (FR #8377).
 
     Mirrors the resync classification so the open_pr_mrb_missing monitor does not
     flag pulls that are intentionally not standalone MRB work: drafts, intake
-    harvest receipts, ``fix(mrb-N)`` tips, ``docs/mrb-*`` pins, and
+    harvest receipts, stacked ``fix(mrb-N)`` tips, ``docs/mrb-*`` pins, and
     lesson-of-lesson / pin-of-pin tips.
+
+    FR #8475: a ``fix(mrb-N)`` whose base is ``main`` or ``master`` is expected
+    MRB work (orphan parent, or the FR #4994 main-base keeper). Stacked fixes
+    with a missing or non-default base stay ignored. Pass ``fix_keeper`` (parent
+    id -> lowest PR number) to ignore a twin that resync will not queue.
     """
     if not isinstance(pr, dict):
         return False
@@ -4660,7 +4702,19 @@ def open_pr_expects_mrb_or_fix_row(pr: dict | None) -> bool:
     head = pr.get("head") if isinstance(pr.get("head"), dict) else {}
     head_ref = str(head.get("ref") or "")
     if is_mrb_fix_pr_title(title):
-        return False
+        if not mrb_fix_targets_default_branch(pr):
+            return False
+        parent = mrb_fix_parent_pr_id(title)
+        num = pr.get("number")
+        if (
+            fix_keeper
+            and parent
+            and parent in fix_keeper
+            and isinstance(num, int)
+            and num != fix_keeper[parent]
+        ):
+            return False
+        return True
     if is_docs_mrb_pin_pr(title=title, head_ref=head_ref, labels=labels):
         return False
     if is_intake_harvest_receipt_pr(title=title, body=body, labels=labels):
@@ -4721,10 +4775,37 @@ def list_open_prs_missing_mrb(
                 rows.extend(r for r in v if isinstance(r, dict))
             elif isinstance(v, dict):
                 rows.extend(r for r in v.values() if isinstance(r, dict))
+    open_nums = {
+        int(p["number"])
+        for p in prs
+        if isinstance(p, dict) and isinstance(p.get("number"), int)
+    }
+    fix_keeper: dict[str, int] = {}
+    for p in prs:
+        if not isinstance(p, dict) or not isinstance(p.get("number"), int):
+            continue
+        if p.get("draft") is True:
+            continue
+        title_p = str(p.get("title") or "")
+        if not is_mrb_fix_pr_title(title_p) or not mrb_fix_targets_default_branch(p):
+            continue
+        parent_p = mrb_fix_parent_pr_id(title_p)
+        if not parent_p:
+            continue
+        try:
+            parent_num = int(str(parent_p).lstrip("#"))
+        except ValueError:
+            parent_num = -1
+        if parent_num not in open_nums:
+            continue
+        n_p = int(p["number"])
+        prev = fix_keeper.get(parent_p)
+        if prev is None or n_p < prev:
+            fix_keeper[parent_p] = n_p
     for pr in prs:
         if not isinstance(pr, dict):
             continue
-        if not open_pr_expects_mrb_or_fix_row(pr):
+        if not open_pr_expects_mrb_or_fix_row(pr, fix_keeper=fix_keeper):
             continue
         num = pr.get("number")
         if not isinstance(num, int):
@@ -5700,7 +5781,9 @@ def mrb_row_not_offerable_reason(
     if str(row.get("state") or "").strip().lower() == "closed":
         return "state=closed"
     titleish = " ".join([str(row.get("title") or ""), str(row.get("line") or "")])
-    if is_mrb_fix_pr_title(titleish):
+    if is_mrb_fix_pr_title(titleish) and not _mrb_fix_offer_stamped(row):
+        # FR #2375: stacked parent-branch fixes are not MRB.
+        # FR #8475: orphan / main-base rows are stamped mrb_fix_offer and stay.
         return "fix_pr_title"
     labs = row.get("labels") or ()
     if isinstance(labs, str):
@@ -14003,8 +14086,11 @@ def claim_from_github_issue(repo: str, issue: dict) -> GitClaim | None:
         # refuse with docs_mrb_pin). Auto resync/webhook still skip parent-open
         # and pin-of-pin; stamp docs_mrb_orphan so the row is auditable.
         docs_pin = is_docs_mrb_pin_pr(title=title, labels=labels)
-        if is_mrb_fix_pr_title(title):
+        _mrb_fix_offer_issue = False
+        if is_mrb_fix_pr_title(title) and not mrb_fix_targets_default_branch(issue):
             return None
+        if is_mrb_fix_pr_title(title):
+            _mrb_fix_offer_issue = True
         lesson = is_harvest_lesson_pr(title=title, labels=labels)
         refs = extract_closes_issue_ids(title, body, repo=repo) if not lesson else ()
         orphan_line = ""
@@ -14029,6 +14115,7 @@ def claim_from_github_issue(repo: str, issue: dict) -> GitClaim | None:
             harvest_lesson=lesson,
             opened_by=lesson_pr_opener_seat(body) if lesson else "",
             docs_mrb_orphan=docs_pin,
+            mrb_fix_offer=_mrb_fix_offer_issue,
         )
     if issue_skip_fr_reason(title=title, body=body, labels=labels, state=state or "open"):
         return None
@@ -15414,6 +15501,7 @@ def resync_from_github(
             # FR #4994: when the fix targets main/master while the parent is still
             # open, queue the fix (else FIX-linked parent + skipped fix deadlock).
             # Twin main-base fixes for one parent: only the lowest number queues.
+            _mrb_fix_offer_resync = False
             if is_mrb_fix_pr_title(title):
                 parent = mrb_fix_parent_pr_id(title)
                 if not parent:
@@ -15438,6 +15526,7 @@ def resync_from_github(
                             f"parent {parent} still open",
                             flush=True,
                         )
+                        _mrb_fix_offer_resync = True
                     else:
                         _parent_pr = None
                         _want = str(parent or "").lstrip("#")
@@ -15453,6 +15542,7 @@ def resync_from_github(
                                 f"parent {parent} still open",
                                 flush=True,
                             )
+                            _mrb_fix_offer_resync = True
                         else:
                             skipped_open_pulls.add((repo, f"#{num}"))
                             print(
@@ -15478,6 +15568,7 @@ def resync_from_github(
                         f"resync queue orphan mrb-fix PR {repo}#{num} parent {parent} not open",
                         flush=True,
                     )
+                    _mrb_fix_offer_resync = True
             elif pr_base_is_explicit_non_default(pr):
                 # Cheap check FR #8333: any open non-fix PR whose base is not
                 # main/master is unlikely to land on the default branch.
@@ -16035,6 +16126,7 @@ def resync_from_github(
                     harvest_lesson=lesson,
                     opened_by=lesson_pr_opener_seat(body) if lesson else "",
                     docs_mrb_orphan=_docs_mrb_orphan_resync,
+                    mrb_fix_offer=_mrb_fix_offer_resync,
                 )
             )
         for iss in issues:
@@ -16413,6 +16505,8 @@ def resync_from_github(
                                     r[k] = v
                         if claim.docs_mrb_orphan:
                             r["docs_mrb_orphan"] = "1"
+                        if claim.mrb_fix_offer:
+                            r["mrb_fix_offer"] = "1"
                         if prior_done is not None:
                             # FR #4373: reopen via rebuild — clear pins + history note.
                             prepare_reopened_fr_row(
@@ -16443,6 +16537,8 @@ def resync_from_github(
                     extra_add.update(mrb_author_extra_from_doc(doc, claim))
                 if claim.docs_mrb_orphan:
                     extra_add["docs_mrb_orphan"] = "1"
+                if claim.mrb_fix_offer:
+                    extra_add["mrb_fix_offer"] = "1"
                 if _append_unaccepted(doc, claim, home=home, **extra_add) == "added":
                     added += 1
                     if prior_done is not None:
