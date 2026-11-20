@@ -94,3 +94,7 @@ Full operator playbook: skill `bobiverse-jeeves-repos` (`jeeves/.grok/skills/bob
 Ops-only. `!installtest <owner/repo> <version> [tag]`, `!installtest dry-run ....` Requires `install_test` in `.bobiverse/build.yml`. Chair is token-less decide + announce; msiexec/post-check run on the recipe `install_test.machine`. Failures become release-blocker issues (WP2 filer).
 
 - FR #5510: stuck-job sweep every 10 min — classify open/queue work, release silent/dead-holder accepts (30m), enqueue untracked offerable, digest stuck + !stuck; never touch needs_human/require_machine/self-MRB; no merge/close.
+
+## Harvested lessons (intake)
+
+- bob-flamingo !assign: write PRIVMSG #bobiverse :!assign <nick> <owner/repo> FIX|FR|MRB|UAT <num> to C:\ai\bob\home\outbox.txt as UTF-8 without BOM; ear must be +h/+o capable; verify Administrator\.jeeves\cmd-trace.log shows assign: sent then shop ACK.
