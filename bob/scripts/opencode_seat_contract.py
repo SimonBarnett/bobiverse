@@ -1096,6 +1096,176 @@ def _nack_create_failed(key: str, err_class: str, detail: str = "") -> str:
     return _nack_key(key, reason)
 
 
+def _head_mismatch_reason(want_oid: str, have: str | None) -> str:
+    """FR #8326 / #8326b: always name both SHAs on a head-mismatch class."""
+    return f"head-mismatch want={want_oid or 'none'} have={have or 'none'}"
+
+
+def _folder_seat_live(folder: Path) -> bool:
+    """True when ``.bobiverse-seat`` names a still-alive holder pid."""
+    marker = _read_seat_marker(folder)
+    raw_pid = marker.get("pid", 0)
+    try:
+        pid = int(raw_pid or 0)
+    except (TypeError, ValueError):
+        pid = 0
+    return bool(pid and _pid_alive(pid))
+
+
+def _remove_worktree_folder(run, clone: str, folder: Path) -> bool:
+    """Best-effort remove of a linked (or orphan) worktree folder.
+
+    Tries ``git worktree remove`` against *clone*, then against the folder's
+    own common dir when it differs (stale trees linked to an old install root).
+    Falls back to ``rmtree`` only when the folder is no longer registered.
+    """
+    targets: list[str] = []
+    if clone:
+        targets.append(clone)
+    common_f = _git_common_dir(run, str(folder))
+    if common_f:
+        # common dir is often ``.../.git``; worktree commands need the main work tree
+        # or any checkout that shares that common dir. Prefer clone when same.
+        common_c = _git_common_dir(run, clone) if clone else ""
+        if common_f and common_f != common_c:
+            # Drive remove from a path that shares common_f: use folder itself as -C
+            # after unlock; git accepts worktree remove from any linked checkout.
+            targets.append(str(folder))
+    for root in targets:
+        try:
+            _git_run(
+                run,
+                ["git", "-C", root, "worktree", "unlock", str(folder)],
+                timeout=WORKTREE_REV_TIMEOUT_S,
+            )
+        except Exception:
+            pass
+        try:
+            seat = folder / ".bobiverse-seat"
+            if seat.is_file():
+                seat.unlink()
+        except OSError:
+            pass
+        try:
+            proc = _git_run(
+                run,
+                ["git", "-C", root, "worktree", "remove", "--force", str(folder)],
+                timeout=WORKTREE_ADD_TIMEOUT_S,
+            )
+            if int(getattr(proc, "returncode", 1)) == 0 and not folder.exists():
+                try:
+                    _git_run(
+                        run,
+                        ["git", "-C", root, "worktree", "prune"],
+                        timeout=WORKTREE_REV_TIMEOUT_S,
+                    )
+                except Exception:
+                    pass
+                return True
+        except Exception:
+            continue
+    if folder.exists():
+        try:
+            import shutil as _shutil
+
+            _shutil.rmtree(folder, ignore_errors=True)
+        except Exception:
+            return False
+    if not folder.exists():
+        if clone:
+            try:
+                _git_run(
+                    run,
+                    ["git", "-C", clone, "worktree", "prune"],
+                    timeout=WORKTREE_REV_TIMEOUT_S,
+                )
+            except Exception:
+                pass
+        return True
+    return False
+
+
+def _recreate_mrb_worktree_at_oid(
+    run,
+    folder: Path,
+    clone: str,
+    *,
+    want_oid: str,
+    number: str,
+    nick: str = "",
+    key: str = "",
+) -> tuple[bool, str]:
+    """FR #8326b: replace a stale/wrong-common MRB/FIX folder with a detached review tree.
+
+    Used when verify fails (wrong HEAD, foreign common dir, dead-seat dirty tree).
+    Never destroys a live seat holder. Lands *want_oid* at *folder* via
+    ``worktree add --detach``, or ``mrb-<n>-review`` / detach when the path is busy.
+    """
+    if not want_oid or not clone:
+        return False, _head_mismatch_reason(want_oid, None)
+    have = _rev_parse_oid(run, str(folder), "HEAD") if folder.is_dir() else ""
+    if folder.is_dir() and _folder_seat_live(folder):
+        return False, _head_mismatch_reason(want_oid, have)
+    if folder.exists():
+        if not _remove_worktree_folder(run, clone, folder):
+            return False, _head_mismatch_reason(want_oid, have)
+    try:
+        folder.parent.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        return False, "disk"
+    attempts: list[list[str]] = [
+        [
+            "git",
+            "-C",
+            clone,
+            "worktree",
+            "add",
+            "--detach",
+            str(folder),
+            want_oid,
+        ]
+    ]
+    review = f"mrb-{number}-review" if number and _safe_git_branch(f"mrb-{number}-review") else ""
+    if review and not _branch_exists(run, clone, review):
+        attempts.insert(
+            0,
+            [
+                "git",
+                "-C",
+                clone,
+                "worktree",
+                "add",
+                "-b",
+                review,
+                str(folder),
+                want_oid,
+            ],
+        )
+    last_err = ""
+    for args in attempts:
+        try:
+            proc = _git_run(run, args, timeout=WORKTREE_ADD_TIMEOUT_S)
+        except Exception as exc:
+            if _is_timeout_exc(exc):
+                return False, "timeout"
+            last_err = redact_git_detail(str(exc))
+            continue
+        if int(getattr(proc, "returncode", 1)) == 0 and folder.is_dir():
+            got = _rev_parse_oid(run, str(folder), "HEAD")
+            if got == want_oid:
+                _write_seat_marker(folder, key, nick)
+                try:
+                    _record_reviewed_sha(folder, want_oid)
+                except OSError:
+                    return False, "disk"
+                return True, ""
+            return False, _head_mismatch_reason(want_oid, got)
+        last_err = redact_git_detail(_proc_err_text(proc))
+    if last_err:
+        return False, _head_mismatch_reason(want_oid, have)
+    return False, _head_mismatch_reason(want_oid, have)
+
+
 def _verify_or_refresh_mrb_worktree(
     run,
     folder: Path,
@@ -1106,7 +1276,12 @@ def _verify_or_refresh_mrb_worktree(
     nick: str = "",
     key: str = "",
 ) -> tuple[bool, str]:
-    """Ensure an existing MRB tree is a clean linked checkout of headRefOid (FR #8022)."""
+    """Ensure an existing MRB tree is a clean linked checkout of headRefOid (FR #8022).
+
+    FR #8326b: when the folder is linked to a different common dir than *clone*
+    (stale install-root worktree) or refresh cannot move HEAD to headRefOid,
+    recreate a detached review tree at the same path when the seat marker is dead.
+    """
     head, want_oid, cross, err = _pr_head_info(run, repo, number)
     if not head or not want_oid:
         return False, err or "pr-head"
@@ -1120,12 +1295,33 @@ def _verify_or_refresh_mrb_worktree(
         fatal_fetch=True,
     )
     if not resolved:
-        return False, ferr or "head-mismatch"
+        return False, ferr or _head_mismatch_reason(want_oid, None)
     common_job = _git_common_dir(run, str(folder))
     common_clone = _git_common_dir(run, clone)
     if not common_job or not common_clone or common_job != common_clone:
-        return False, "head-mismatch"
+        # Stale tree linked to another repo (e.g. install-root .git while clone
+        # store moved). Recreate from *clone* when safe.
+        return _recreate_mrb_worktree_at_oid(
+            run,
+            folder,
+            clone,
+            want_oid=want_oid,
+            number=number,
+            nick=nick,
+            key=key,
+        )
     if not _worktree_porcelain_clean(run, str(folder)):
+        # Dead-seat dirty leftovers: recreate. Live seats keep stale-dirty.
+        if not _folder_seat_live(folder):
+            return _recreate_mrb_worktree_at_oid(
+                run,
+                folder,
+                clone,
+                want_oid=want_oid,
+                number=number,
+                nick=nick,
+                key=key,
+            )
         return False, "stale-dirty"
     have = _rev_parse_oid(run, str(folder), "HEAD")
     if have != want_oid:
@@ -1154,12 +1350,36 @@ def _verify_or_refresh_mrb_worktree(
             except Exception as exc:
                 if _is_timeout_exc(exc):
                     return False, "timeout"
-                return False, "head-mismatch"
+                return _recreate_mrb_worktree_at_oid(
+                    run,
+                    folder,
+                    clone,
+                    want_oid=want_oid,
+                    number=number,
+                    nick=nick,
+                    key=key,
+                )
             if int(getattr(proc, "returncode", 1)) != 0:
-                return False, "head-mismatch"
+                return _recreate_mrb_worktree_at_oid(
+                    run,
+                    folder,
+                    clone,
+                    want_oid=want_oid,
+                    number=number,
+                    nick=nick,
+                    key=key,
+                )
         have = _rev_parse_oid(run, str(folder), "HEAD")
         if have != want_oid:
-            return False, f"head-mismatch want={want_oid} have={have or 'none'}"
+            return _recreate_mrb_worktree_at_oid(
+                run,
+                folder,
+                clone,
+                want_oid=want_oid,
+                number=number,
+                nick=nick,
+                key=key,
+            )
     _write_seat_marker(folder, key, nick)
     try:
         _record_reviewed_sha(folder, want_oid)
