@@ -1136,6 +1136,35 @@ def _opencode_paid_positive(f: Fuel) -> bool:
             return int(f.opencode_go) > 0
         except (TypeError, ValueError):
             return False
+    return _opencode_windows_go_usable(f.opencode_windows)
+
+
+def _opencode_paid_known_exhausted(f: Fuel) -> bool:
+    """True only when Go/paid is known empty (FR #8541).
+
+    ``go=None`` with no provider windows is unknown, not exhausted — still try
+    the paid tray slot after free is known 0.
+    """
+    if _opencode_windows_go_usable(f.opencode_windows):
+        return False
+    models = f.opencode_models or {}
+    if models:
+        any_pos = False
+        for v in models.values():
+            try:
+                if int(v or 0) > 0:
+                    any_pos = True
+                    break
+            except (TypeError, ValueError):
+                continue
+        return not any_pos
+    if f.opencode_go is None and not _opencode_windows_go_known(f.opencode_windows):
+        return False
+    if f.opencode_go is not None:
+        try:
+            return int(f.opencode_go) <= 0
+        except (TypeError, ValueError):
+            return True
     return False
 
 
@@ -1621,7 +1650,11 @@ def resolve_opencode_model(
             skipped.append(f"pin:{env_model}:free-exhausted")
         elif env_model and not _is_paid(env_model):
             skipped.append(f"env:{env_model}:free-exhausted")
-        if _opencode_paid_positive(fuel) and start_paid:
+        # FR #8541: free known 0 + go unknown must still try the paid tray slot
+        # (do not skip as exhausted / report capped-paused).
+        if start_paid and (
+            _opencode_paid_positive(fuel) or not _opencode_paid_known_exhausted(fuel)
+        ):
             candidates.append(("paid", start_paid))
         elif start_paid:
             skipped.append(f"paid:{start_paid}:exhausted")
@@ -4300,6 +4333,16 @@ def report_opencode_model_refusal(
         reason = (
             "opencode: saved start model %s unavailable (paused/capped) - "
             "not starting (FR #8321, no fallback)" % saved
+        )
+    elif (
+        fuel is not None
+        and _opencode_free_known_zero(fuel)
+        and not _opencode_paid_known_exhausted(fuel)
+    ):
+        # FR #8541: Go unread is not capped/paused.
+        reason = (
+            "opencode: no usable model (free empty, go fuel unknown - "
+            "not capped/paused; FR #8541)"
         )
     else:
         reason = "opencode: no usable model (capped/paused)"
