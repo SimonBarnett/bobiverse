@@ -46,8 +46,10 @@ namespace BobDialogs
         [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr h);
 
         // FR #6429: CREATE_NEW_CONSOLE | CREATE_UNICODE_ENVIRONMENT when passing a child-only env block.
+        // FR #8568: CREATE_BREAKAWAY_FROM_JOB so monitor/shell job teardown cannot wipe seats.
         const int CreateNewConsole = 0x00000010;
         const int CreateUnicodeEnvironment = 0x00000400;
+        const int CreateBreakawayFromJob = 0x01000000;
 
         public const int MaxWorkers = 2;   // t815u / FR #2667: hard AGENT-seat cap (plan/maintenance uncapped)
         // FR #6429: tray OpenCode free/paid slot defaults (overridden by models.opencodeFree / opencodePaid).
@@ -432,7 +434,8 @@ namespace BobDialogs
             si.lpTitle = title;
             PROCESS_INFORMATION pi;
             IntPtr envBlock = IntPtr.Zero;
-            int flags = CreateNewConsole;
+            // FR #8568: always break away from the parent job object (CREATE_NEW_CONSOLE alone is not enough).
+            int flags = CreateNewConsole | CreateBreakawayFromJob;
             try
             {
                 if (childEnv != null && childEnv.Count > 0)
@@ -1214,6 +1217,7 @@ namespace BobDialogs
 
         // FR #3180: seats are manual only (Agent/Plan click, !startworker, or human bob-worker).
         // Watchdog may log a seat drop; it must never call WorkerLauncher.Launch.
+        // FR #8568: on a drop, synthesize last-exit + GIVEUP external-kill for vanished runs (still no restart).
         void ObserveWorkerSeats()
         {
             int n = WorkerLauncher.Seats();
@@ -1226,8 +1230,102 @@ namespace BobDialogs
                     "was", lastSeatCount.ToString(),
                     "now", n.ToString(),
                     "via", "bob-tray-watchdog");
+                try { HandleDisappearedWorkerRuns(); } catch { }
             }
             lastSeatCount = n;
+        }
+
+        // FR #8568: dead worker-<mid>-<pid>-* run dirs with no last-exit.json get a synthetic exit
+        // and GIVEUP external-kill when last-from.txt still names an open job. Never restarts seats.
+        void HandleDisappearedWorkerRuns()
+        {
+            string local = Environment.GetEnvironmentVariable("LOCALAPPDATA") ?? "";
+            if (string.IsNullOrEmpty(local)) return;
+            string runRoot = Path.Combine(local, "Bobiverse", "worker", "run");
+            if (!Directory.Exists(runRoot)) return;
+            string mid = (machine ?? "").Trim().ToLowerInvariant();
+            foreach (string dir in Directory.GetDirectories(runRoot, "worker-*"))
+            {
+                try
+                {
+                    string name = Path.GetFileName(dir) ?? "";
+                    // worker-<machine>-<pid>-<hash>
+                    string[] parts = name.Split('-');
+                    if (parts.Length < 4) continue;
+                    if (!string.Equals(parts[0], "worker", StringComparison.OrdinalIgnoreCase)) continue;
+                    string pidTok = parts[parts.Length - 2];
+                    int pid;
+                    if (!int.TryParse(pidTok, out pid) || pid <= 0) continue;
+                    // machine id may contain hyphens: worker-{mid}-{pid}-{hash}
+                    string hash = parts[parts.Length - 1];
+                    string midPart = name.Substring("worker-".Length);
+                    int pidAt = midPart.LastIndexOf("-" + pidTok + "-", StringComparison.OrdinalIgnoreCase);
+                    if (pidAt <= 0) continue;
+                    string runMid = midPart.Substring(0, pidAt).ToLowerInvariant();
+                    if (mid.Length > 0 && !string.Equals(runMid, mid, StringComparison.OrdinalIgnoreCase))
+                        continue;
+                    try
+                    {
+                        using (Process.GetProcessById(pid)) { continue; } // still alive
+                    }
+                    catch (ArgumentException) { /* dead */ }
+                    catch { continue; }
+                    string lastExit = Path.Combine(dir, "last-exit.json");
+                    if (File.Exists(lastExit)) continue;
+                    string jobKey = "";
+                    string lastFromPath = Path.Combine(dir, "last-from.txt");
+                    if (File.Exists(lastFromPath))
+                    {
+                        string lf = File.ReadAllText(lastFromPath);
+                        jobKey = ExtractAssignJobKey(lf);
+                    }
+                    string payload = "{\"reason\":\"external-kill\",\"exit_code\":null,\"raw_code\":null,\"job_key\":"
+                        + JsonString(jobKey) + ",\"machine\":" + JsonString(runMid)
+                        + ",\"nick\":" + JsonString(runMid + "-" + pid)
+                        + ",\"kind\":\"\",\"agent_pid\":" + pid
+                        + ",\"synthetic\":true,\"via\":\"fr-8568-disappeared-seat\"}\n";
+                    File.WriteAllText(lastExit, payload, new UTF8Encoding(false));
+                    TrayLifecycle.Write(
+                        "seat-disappeared",
+                        "pid", pid.ToString(),
+                        "run", name,
+                        "job", string.IsNullOrEmpty(jobKey) ? "(none)" : jobKey,
+                        "via", "bob-tray-watchdog");
+                    if (string.IsNullOrEmpty(jobKey)) continue;
+                    string outbox = Path.Combine(dir, "outbox.txt");
+                    string existing = File.Exists(outbox) ? File.ReadAllText(outbox) : "";
+                    if (existing.IndexOf("GIVEUP " + jobKey, StringComparison.OrdinalIgnoreCase) >= 0
+                        || existing.IndexOf("DONE " + jobKey, StringComparison.OrdinalIgnoreCase) >= 0
+                        || existing.IndexOf("NACK " + jobKey, StringComparison.OrdinalIgnoreCase) >= 0)
+                        continue;
+                    string channel = runMid.Length > 0 ? runMid : "shop";
+                    string line = "PRIVMSG #" + channel + " :GIVEUP " + jobKey + " external-kill\r\n";
+                    File.AppendAllText(outbox, line, new UTF8Encoding(false));
+                }
+                catch { }
+            }
+        }
+
+        static string JsonString(string s)
+        {
+            if (s == null) s = "";
+            return "\"" + s.Replace("\\", "\\\\").Replace("\"", "\\\"") + "\"";
+        }
+
+        // Mirror bob_worker.assign_job_key for tray-side disappear handling (FR #8568).
+        static string ExtractAssignJobKey(string line)
+        {
+            if (string.IsNullOrEmpty(line)) return "";
+            string body = line;
+            string[] toks = line.Split((char[])null, 4, StringSplitOptions.RemoveEmptyEntries);
+            if (toks.Length >= 4 && string.Equals(toks[0], "FROM", StringComparison.OrdinalIgnoreCase))
+                body = toks[3];
+            System.Text.RegularExpressions.Match m = System.Text.RegularExpressions.Regex.Match(
+                body,
+                @"\b(FR|MRB|UAT|FIX)\s+([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+#\d+)\b",
+                System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+            if (!m.Success) return "";
+            return m.Groups[1].Value.ToUpperInvariant() + " " + m.Groups[2].Value;
         }
 
         void Command(string cmd)

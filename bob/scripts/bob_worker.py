@@ -486,6 +486,8 @@ ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
 FORBIDDEN_FLAGS = ("--resume", "-r", "--continue", "-c", "--resume-session", "--session", "--chat")
 CREATE_NEW_CONSOLE = 0x00000010
 CREATE_NO_WINDOW = 0x08000000
+# FR #8568: break away from parent job objects (monitor/shell kill-on-close).
+CREATE_BREAKAWAY_FROM_JOB = 0x01000000
 # FR #7117: console QuickEdit freezes the seat until Enter (looks like a crash).
 ENABLE_QUICK_EDIT_MODE = 0x0040
 ENABLE_EXTENDED_FLAGS = 0x0080
@@ -8697,6 +8699,179 @@ def console_closed_giveup_line(job_key: str, wip_ref: str = "") -> str:
         # Keep under shop_listen truncate (~120); short sha / branch tip only.
         why = f"console-closed wip={ref[:80]}"
     return seat_release_giveup_line(job_key, why)
+
+
+def external_kill_giveup_line(job_key: str) -> str:
+    """FR #8568: ``GIVEUP <TYPE> owner/repo#N external-kill`` when a seat vanishes with no last-exit."""
+    return seat_release_giveup_line(job_key, "external-kill")
+
+
+_WORKER_RUN_DIR_RX = re.compile(
+    r"^worker-(?P<mid>[a-z0-9][a-z0-9-]{0,62})-(?P<pid>\d+)-(?P<hash>[0-9a-f]+)$",
+    re.I,
+)
+
+
+def parse_worker_run_dir_name(name: str) -> tuple[str, int] | None:
+    """Return ``(machine_id, pid)`` from ``worker-<mid>-<pid>-<hash>``, or None."""
+    m = _WORKER_RUN_DIR_RX.match((name or "").strip())
+    if not m:
+        return None
+    try:
+        return m.group("mid").lower(), int(m.group("pid"))
+    except ValueError:
+        return None
+
+
+def pid_is_alive(pid: int) -> bool:
+    """True when ``pid`` is a live OS process (Windows OpenProcess / POSIX kill 0)."""
+    if pid <= 0:
+        return False
+    if os.name == "nt":
+        try:
+            import ctypes
+
+            PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+            STILL_ACTIVE = 259
+            h = ctypes.windll.kernel32.OpenProcess(
+                PROCESS_QUERY_LIMITED_INFORMATION, False, int(pid)
+            )
+            if not h:
+                return False
+            try:
+                code = ctypes.c_ulong()
+                if not ctypes.windll.kernel32.GetExitCodeProcess(h, ctypes.byref(code)):
+                    return False
+                return int(code.value) == STILL_ACTIVE
+            finally:
+                ctypes.windll.kernel32.CloseHandle(h)
+        except Exception:
+            return False
+    try:
+        os.kill(int(pid), 0)
+        return True
+    except OSError:
+        return False
+
+
+def write_disappeared_last_exit(
+    run_dir: Path | str,
+    *,
+    reason: str = "external-kill",
+    job_key: str = "",
+    pid: int | None = None,
+    machine: str = "",
+    nick: str = "",
+    kind: str = "",
+) -> Path:
+    """FR #8568: synthetic ``last-exit.json`` when a tracked seat vanishes with no exit record."""
+    rd = Path(run_dir)
+    rd.mkdir(parents=True, exist_ok=True)
+    path = rd / "last-exit.json"
+    payload = {
+        "reason": (reason or "external-kill").strip() or "external-kill",
+        "exit_code": None,
+        "raw_code": None,
+        "job_key": (job_key or "").strip(),
+        "machine": (machine or "").strip(),
+        "nick": (nick or "").strip(),
+        "kind": (kind or "").strip(),
+        "agent_pid": int(pid) if pid else None,
+        "synthetic": True,
+        "via": "fr-8568-disappeared-seat",
+    }
+    text = json.dumps(payload, sort_keys=True)
+    with path.open("w", encoding="utf-8", newline="\n") as fh:
+        fh.write(text + "\n")
+        fh.flush()
+        try:
+            os.fsync(fh.fileno())
+        except OSError:
+            pass
+    return path
+
+
+def handle_disappeared_worker_run(
+    run_dir: Path | str,
+    *,
+    shop: str = "",
+    pid_alive: Optional[Callable[[int], bool]] = None,
+) -> Optional[dict]:
+    """If ``run_dir`` is a dead worker seat with no last-exit and an open job, write exit + GIVEUP.
+
+    Does **not** restart the seat (FR #3180 manual-only). Returns a summary dict, or None when
+    no action was taken.
+    """
+    rd = Path(run_dir)
+    if not rd.is_dir():
+        return None
+    parsed = parse_worker_run_dir_name(rd.name)
+    if parsed is None:
+        return None
+    mid, pid = parsed
+    alive_fn = pid_alive or pid_is_alive
+    if alive_fn(pid):
+        return None
+    if (rd / "last-exit.json").is_file():
+        return None
+    last_from = ""
+    try:
+        last_from = (rd / "last-from.txt").read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        last_from = ""
+    job_key = assign_job_key(last_from) or ""
+    if not job_key:
+        # No accepted-job breadcrumb — still leave last-exit so the gap is visible.
+        write_disappeared_last_exit(rd, reason="external-kill", pid=pid, machine=mid)
+        return {"run_dir": str(rd), "pid": pid, "job_key": "", "giveup": False}
+    outbox = outbox_path_for_run(rd)
+    try:
+        existing = outbox.read_text(encoding="utf-8", errors="replace") if outbox.is_file() else ""
+    except OSError:
+        existing = ""
+    if outbox_text_has_terminal(existing, job_key):
+        write_disappeared_last_exit(
+            rd, reason="external-kill", job_key=job_key, pid=pid, machine=mid
+        )
+        return {"run_dir": str(rd), "pid": pid, "job_key": job_key, "giveup": False, "already_terminal": True}
+    write_disappeared_last_exit(
+        rd, reason="external-kill", job_key=job_key, pid=pid, machine=mid
+    )
+    channel = (shop or mid or "shop").strip().lstrip("#") or "shop"
+    line = f"PRIVMSG #{channel} :{external_kill_giveup_line(job_key)}"
+    try:
+        with outbox.open("a", encoding="utf-8", newline="\n") as fh:
+            fh.write(line + "\n")
+            fh.flush()
+            try:
+                os.fsync(fh.fileno())
+            except OSError:
+                pass
+    except OSError:
+        return {"run_dir": str(rd), "pid": pid, "job_key": job_key, "giveup": False, "outbox_error": True}
+    return {"run_dir": str(rd), "pid": pid, "job_key": job_key, "giveup": True, "line": line}
+
+
+def scan_disappeared_worker_runs(
+    run_root: Path | str,
+    *,
+    shop: str = "",
+    pid_alive: Optional[Callable[[int], bool]] = None,
+) -> list[dict]:
+    """Scan ``run_root`` for vanished seats; handle each (FR #8568 tray watchdog)."""
+    root = Path(run_root)
+    if not root.is_dir():
+        return []
+    out: list[dict] = []
+    for child in sorted(root.iterdir()):
+        if not child.is_dir():
+            continue
+        if not child.name.lower().startswith("worker-"):
+            continue
+        hit = handle_disappeared_worker_run(child, shop=shop, pid_alive=pid_alive)
+        if hit:
+            out.append(hit)
+    return out
 
 
 def is_console_closed_shutdown_reason(reason: str) -> bool:
