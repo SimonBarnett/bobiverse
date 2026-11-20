@@ -652,10 +652,10 @@ function Import-BobWorkerGitShop {
     $done = @()
     foreach ($dir in @(Get-ChildItem -LiteralPath $root -Directory -ErrorAction SilentlyContinue)) {
         if ($dir.Name -notmatch '^\d+$') { continue }
-        $pid = [int]$dir.Name
-        if ($pid -le 0) { continue }
+        $workerPid = [int]$dir.Name
+        if ($workerPid -le 0) { continue }
         $nick = $null
-        try { $nick = Get-BobWorkerIrcNick -MachineId $MachineId -WorkerPid $pid } catch { $nick = $null }
+        try { $nick = Get-BobWorkerIrcNick -MachineId $MachineId -WorkerPid $workerPid } catch { $nick = $null }
         $busyPath = Get-BobGitAcceptBusyPath $dir.FullName
         $busyDoc = $null
         if (Test-Path -LiteralPath $busyPath) {

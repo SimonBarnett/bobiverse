@@ -382,6 +382,17 @@ def detect_bored_latency(snap: dict[str, Any]) -> list[dict[str, Any]]:
             continue
         if nick in busy or nick.lower() in busy or _has_live_offer(snap, nick, now):
             continue
+        # FR #8494: out-of-fuel hold is a fuel pause, not bored-latency hung idle.
+        try:
+            home = snap.get("home")
+            if home is not None and gitclaim.seat_is_out_of_fuel(Path(home), nick):
+                continue
+            if str((snap.get("worker_states") or {}).get(nick) or "").lower() == "out_of_fuel":
+                continue
+            if str((snap.get("worker_states") or {}).get(nick.lower()) or "").lower() == "out_of_fuel":
+                continue
+        except Exception:
+            pass
         ts = last_bored.get(nick)
         if ts is None:
             ts = last_bored.get(nick.lower())

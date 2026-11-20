@@ -3027,11 +3027,11 @@ function Get-BobLiveGrokAgents {
         $cmd = [string]$p.CommandLine
         if ($cmd -match '--type=') { continue }
         if ([string]$p.Name -match 'Grok Bot') { continue }
-        $pid = [int]$p.ProcessId
+        $procId = [int]$p.ProcessId
         $meta = $null
-        if ($byPid.ContainsKey($pid)) { $meta = $byPid[$pid] }
+        if ($byPid.ContainsKey($procId)) { $meta = $byPid[$procId] }
         $cwd = $null
-        $sid = ('grok-' + $pid)
+        $sid = ('grok-' + $procId)
         $opened = $null
         if ($meta) {
             if ($meta.cwd) { $cwd = [string]$meta.cwd }
@@ -3064,7 +3064,7 @@ function Get-BobLiveGrokAgents {
         $out += ,[pscustomobject]@{
             id         = $sid
             sessionId  = $sid
-            pid        = $pid
+            pid        = $procId
             cwd        = $cwd
             claimedAt  = $opened
             machine    = $null
@@ -3825,11 +3825,11 @@ function Get-BobDigestPoolPeriodEnd {
     }
     foreach ($p in @($DigestPools)) {
         if (-not $p) { continue }
-        $pid = [string]$(if ($p.group_id) { $p.group_id } elseif ($p.group) { $p.group } elseif ($p.id) { $p.id } else { '' })
-        if (-not $pid) { continue }
+        $poolId = [string]$(if ($p.group_id) { $p.group_id } elseif ($p.group) { $p.group } elseif ($p.id) { $p.id } else { '' })
+        if (-not $poolId) { continue }
         $hit = $false
         foreach ($a in $aliases) {
-            if ($pid -eq $a) { $hit = $true; break }
+            if ($poolId -eq $a) { $hit = $true; break }
         }
         if (-not $hit) { continue }
         if ($p.period_end) { return [string]$p.period_end }

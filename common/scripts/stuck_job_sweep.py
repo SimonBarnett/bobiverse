@@ -321,6 +321,14 @@ def classify_quiet_idle_offerable(
     for nick in sorted(seats):
         if nick in busy or nick.lower() in busy:
             continue
+        # FR #8494: out-of-fuel hold is a fuel pause, not hung idle.
+        try:
+            if gitclaim.seat_is_out_of_fuel(home, nick):
+                continue
+            if gitclaim.worker_list_state(home, nick) == "out_of_fuel":
+                continue
+        except Exception:
+            pass
         # PR claim / FR #5920: skip until first !bored stamp exists.
         bored_ts = bored.get(nick)
         if bored_ts is None:
@@ -1344,7 +1352,7 @@ def run_stuck_sweep(
     fp = "|".join(
         sorted(
             f"{s.get('repo')}{s.get('number')}:{s.get('stuck_reason') or s.get('rule')}"
-            f":{s.get('holder') or ''}"
+            f":{s.get('holder') or ''}:omi={1 if s.get('other_machine_idle') else 0}"
             for s in stuck + held
         )
     )
@@ -1367,13 +1375,17 @@ def run_stuck_sweep(
         elif announce and (stuck or held):
             n_stuck = len(stuck)
             n_held = len(held)
+            omi = other_machine_idle_alert(stuck)
             announce(
                 f"stuck-sweep stuck={n_stuck} held={n_held} "
                 f"released={actions['released']} enqueued={actions['enqueued']} "
                 f"cleared_doing={actions.get('cleared_doing', 0)}"
                 + (f" no_eligible_reviewer={sum(s.get('rule') == 'no_eligible_reviewer' for s in stuck)}"
                    if any(s.get("rule") == "no_eligible_reviewer" for s in stuck) else "")
+                + (f" {omi}" if omi else "")
             )
+            if omi and log:
+                log(f"stuck-sweep alert {omi}")
         elif announce and not stuck and not held and prev:
             announce("stuck-sweep clear")
 
@@ -1386,6 +1398,29 @@ def run_stuck_sweep(
             f"nudged={actions.get('nudged', 0)}"
         )
     return report
+
+
+def other_machine_idle_alert(rows: list | None) -> str:
+    """FR #8443: monitor line when unaccepted_starved has an idle seat elsewhere.
+
+    Empty when no such row. The sweep announce includes this text, and the
+    fingerprint includes the count so the first appearance is announced once.
+    """
+    hits = []
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+        if str(row.get("stuck_reason") or "") != "unaccepted_starved":
+            continue
+        if not row.get("other_machine_idle"):
+            continue
+        repo = str(row.get("repo") or "")
+        number = str(row.get("number") or row.get("id") or "")
+        hits.append(f"{repo}{number}".strip() or "row")
+    if not hits:
+        return ""
+    shown = ",".join(hits[:8])
+    return f"other_machine_idle={len(hits)} rows={shown}"
 
 
 def format_stuck_lines(home: Path, *, limit: int = 40) -> list[str]:
@@ -1404,9 +1439,10 @@ def format_stuck_lines(home: Path, *, limit: int = 40) -> list[str]:
         rule = row.get("stuck_reason") or row.get("rule") or ""
         holder = row.get("holder") or "-"
         age = row.get("age_s")
+        omi = " other_machine_idle=1" if row.get("other_machine_idle") else ""
         lines.append(
             f"  {row.get('repo')}{row.get('number')} {row.get('task')} "
-            f"state={state} rule={rule} holder={holder} age_s={age}"
+            f"state={state} rule={rule} holder={holder} age_s={age}{omi}"
         )
     if len(stuck) + len(held) > limit:
         lines.append(f"  … {len(stuck) + len(held) - limit} more")
@@ -1432,6 +1468,7 @@ def digest_stuck_section(home: Path) -> list[dict]:
                 "rule": row.get("stuck_reason") or row.get("rule") or "",
                 "age_s": row.get("age_s"),
                 "holder": row.get("holder") or "",
+                "other_machine_idle": bool(row.get("other_machine_idle")),
             }
         )
     return out
