@@ -5926,10 +5926,11 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             r"                $isToolNoise = ($peek -match $toolNoisePattern)",
             r"                $isFreePhrase = ($peek -match 'Free usage limit|subscribe to OpenCode Go')",
             r"                $hasProviderCue = ($peek -match $providerFuelCue)",
-            r"                if ((-not $isToolNoise) -and ($peek -match $liveFuelPattern) -and ((-not $isFreePhrase) -or $hasProviderCue)) {",
+            # FR #8207: paid/go still needs provider cue for Free usage (PR/tool echo).
+            r"                # FR #8537: free model CLI stderr Free usage is enough to kill+switch.",
+            r"                $isGoModel = ($model -match '(?i)^opencode-go/|-pro(/|$)|/opencode-go/')",
+            r"                if ((-not $isToolNoise) -and ($peek -match $liveFuelPattern) -and ((-not $isFreePhrase) -or $hasProviderCue -or (-not $isGoModel))) {",
             r"                    $fuelHitLive = $true",
-            # FR #8207: paid/go model never GIVEUPs as opencode-free.
-            r"                    $isGoModel = ($model -match '(?i)^opencode-go/|-pro(/|$)|/opencode-go/')",
             r"                    if ($isFreePhrase -and -not $isGoModel) { $killReason = 'fuel-exhausted:opencode-free' } else { $killReason = 'out-of-fuel' }",
             r"                    try { & taskkill /T /F /PID $proc.Id 2>$null | Out-Null } catch { }",
             r"                    if ($jobKey -and -not (Try-OpencodeSwitchToPaid $model $killReason)) { Write-OpencodeJobGiveup $jobKey $killReason }",
@@ -6100,9 +6101,11 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             # (done-miss finish-runs looked like out-of-fuel). Only real 402/429/limit text pauses.
             # FR #7951: a hard ceiling or watchdog kill is not out of fuel.
             # FR #8026: free-usage text (or a live mid-run fuel kill) pauses even when exit is 0.
-            # FR #8151 / #8207: tool-output noise never sets hitLimit; bare Free usage needs provider cue.
+            # FR #8151 / #8207: tool-output noise never sets hitLimit.
+            r"    # FR #8537: free-model CLI Free usage is hitLimit even without provider cue.",
             r"    $scanIsToolNoise = ($scan -match $toolNoisePattern)",
-            r"    $scanFreeOk = (($scan -match $freeUsagePattern) -and ($scan -match $providerFuelCue))",
+            r"    $scanIsGoModel = ($model -match '(?i)^opencode-go/|-pro(/|$)|/opencode-go/')",
+            r"    $scanFreeOk = (($scan -match $freeUsagePattern) -and (($scan -match $providerFuelCue) -or (-not $scanIsGoModel)))",
             r"    $hitLimit = (-not $timedOut -and -not $scanIsToolNoise -and ($fuelHitLive -or ((($scan -match $limitPattern) -or ($scan -match $codePattern)) -and ($exitCode -ne 0 -or $scanFreeOk))))",
             r"    if ($timedOut) {",
             r"        if ($proc -and -not $proc.HasExited) { try { & taskkill /T /F /PID $proc.Id 2>$null | Out-Null } catch { } }",
@@ -8582,6 +8585,96 @@ def provider_fuel_evidence_source(text: str) -> Optional[str]:
 def is_out_of_fuel_text(text: str) -> bool:
     """True when agent/log text is a provider fuel/quota/auth exhaustion (FR #3012 / #3019 / #8151)."""
     return provider_fuel_evidence_source(text) is not None
+
+
+def opencode_model_is_free(model_id: str) -> bool:
+    """True when the model id is a free-pool OpenCode leaf (FR #8454 / #8537)."""
+    mid = (model_id or "").strip()
+    if not mid:
+        return True
+    low = mid.lower()
+    if low.startswith("opencode-go/") or "/opencode-go/" in low:
+        return False
+    leaf = low.rsplit("/", 1)[-1]
+    if leaf.endswith("-pro"):
+        return False
+    try:
+        import opencode_fuel as of
+
+        if of.of_is_go_model_id(mid):
+            return False
+    except Exception:
+        pass
+    return True
+
+
+def opencode_paid_pool_remains(fuel: Fuel, env: Optional[dict] = None) -> bool:
+    """True when paid/Go fuel may still accept work (FR #8537).
+
+    Unknown Go remaining is treated as available so a free-limit refusal can
+    rebind; an explicit ``BOB_OPENCODE_GO_REMAINING=0`` or go<=0 blocks switch.
+    """
+    env = os.environ if env is None else env
+    if str(env.get("BOB_OPENCODE_GO_REMAINING") or "").strip() == "0":
+        return False
+    go = fuel.opencode_go
+    models = fuel.opencode_models or {}
+    if go is None and not models:
+        return True
+    try:
+        if go is not None and int(go) <= 0 and not models:
+            return False
+        if go is not None and int(go) > 0 and not models:
+            return True
+    except (TypeError, ValueError):
+        return True
+    if models:
+        for v in models.values():
+            try:
+                if int(v) > 0:
+                    return True
+            except (TypeError, ValueError):
+                continue
+        return False
+    try:
+        return go is None or int(go) > 0
+    except (TypeError, ValueError):
+        return True
+
+
+def should_switch_opencode_free_to_paid(
+    evidence: str,
+    model_id: str,
+    fuel: Fuel,
+    env: Optional[dict] = None,
+) -> bool:
+    """FR #8537: free-limit evidence + free model + paid remains -> switch, no GIVEUP."""
+    try:
+        import opencode_fuel as of
+
+        if not of.is_free_usage_limit_text(evidence or ""):
+            return False
+    except Exception:
+        if not _OPENCODE_FREE_USAGE_RX.search(evidence or ""):
+            return False
+    if not opencode_model_is_free(model_id):
+        return False
+    return opencode_paid_pool_remains(fuel, env)
+
+
+def resolve_opencode_paid_switch_model(env: Optional[dict] = None) -> str:
+    """Paid tray slot for free->paid rebind (default opencode-go/deepseek-v4-pro)."""
+    env = os.environ if env is None else env
+    try:
+        import worker_start_model as wsm
+
+        cfg = wsm.load_worker_start_config(env=env)
+        paid = wsm.default_opencode_paid_model(cfg)
+        if paid:
+            return str(paid).strip()
+    except Exception:
+        pass
+    return "opencode-go/deepseek-v4-pro"
 
 
 # FR #4858: hard API 402 / usage-balance-exhausted (not mid-job reading, not NEEDS_AUTH).
@@ -15884,6 +15977,74 @@ class Supervisor:
             self.log(f"out-of-fuel: digest post failed {type(e).__name__}: {e}")
         self.log(f"out-of-fuel: posted {line}")
 
+    def _try_opencode_switch_free_to_paid(self, evidence: str) -> bool:
+        """FR #8537: pause free, rebind to paid, continue ACK. True when switched."""
+        if getattr(self, "_opencode_paid_switched", False):
+            return True
+        env = self.base_env if isinstance(getattr(self, "base_env", None), dict) else os.environ
+        model = str(env.get("BOB_OPENCODE_MODEL") or "").strip()
+        if not model:
+            try:
+                model = str(resolve_opencode_model(Fuel(), env=env) or "").strip()
+            except Exception:
+                model = ""
+        fuel = Fuel()
+        try:
+            # Allow a slightly stale cache: free=100 is common until pause folds.
+            got = load_fresh_agent_list_fuel(max_age_s=3600.0, env=env)
+            if got is not None:
+                fuel = got
+        except Exception:
+            fuel = Fuel()
+        if not should_switch_opencode_free_to_paid(evidence, model, fuel, env):
+            return False
+        paid = resolve_opencode_paid_switch_model(env)
+        pause_dir = opencode_pauses_state_dir(env)
+        try:
+            import opencode_fuel as of
+
+            # Stamp cli-stderr so record-pause accepts free-model Free usage (FR #8537).
+            pause_blob = evidence or ""
+            if "Free usage limit" in pause_blob and '"source"' not in pause_blob:
+                pause_blob = json.dumps(
+                    {
+                        "text": "Free usage limit reached. Subscribe to OpenCode Go",
+                        "source": "cli-stderr",
+                        "model": model or "opencode/deepseek-v4.1-flash-free",
+                    },
+                    separators=(",", ":"),
+                )
+            of.record_opencode_pause(
+                pause_dir,
+                model or "opencode/deepseek-v4.1-flash-free",
+                pause_blob,
+            )
+            # Publish free=0 so mid-job readings stop painting 100.
+            folded = fold_opencode_seat_pauses(fuel, model, env=env, state_dir=pause_dir)
+            save_agent_list_fuel(replace(folded, opencode_free=0), env=env)
+        except Exception as e:
+            self.log(f"out-of-fuel: free pause failed {type(e).__name__}: {e}")
+        try:
+            env["BOB_OPENCODE_MODEL"] = paid
+            os.environ["BOB_OPENCODE_MODEL"] = paid
+        except Exception:
+            pass
+        try:
+            import worker_start_model as wsm
+
+            wsm.save_worker_start_settings(
+                env=env,
+                models={"opencode": paid},
+            )
+        except Exception:
+            pass
+        self._opencode_paid_switched = True
+        self.log(
+            f"opencode switch-to-paid model={paid} reason=fuel-exhausted:opencode-free "
+            f"(was {model or 'free'}; no GIVEUP)"
+        )
+        return True
+
     def _start_fuel_watcher(self, agent_pid: int = 0) -> None:
         """FR #3012 / #3019: follow fuel log for mid-job 402 / NEEDS_AUTH / usage-exhausted.
 
@@ -15906,6 +16067,14 @@ class Supervisor:
         )
 
         def _on_hit(text: str) -> None:
+            # FR #8537: free-limit on a free OpenCode seat switches to paid when Go
+            # remains. Do not shop-GIVEUP; the wrapper continues the same ACK.
+            if (self.kind or "").strip().lower() == "opencode":
+                try:
+                    if self._try_opencode_switch_free_to_paid(text):
+                        return
+                except Exception as e:
+                    self.log(f"out-of-fuel: free-to-paid switch failed {type(e).__name__}")
             # note_out_of_fuel → out_of_fuel_enter_fn clears watchdogs + NACKs parked assigns (FR #4180).
             if self.bored:
                 self.bored.note_out_of_fuel(text)
