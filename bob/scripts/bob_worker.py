@@ -9299,8 +9299,21 @@ def run_submit_verify_loop(
     return "failed"
 
 
+_submit_verify_depth = 0
+
+
+def submit_verify_in_flight() -> bool:
+    """FR #8442: progress heartbeats must not replace this phase mid-paste."""
+    return _submit_verify_depth > 0
+
+
 def _note_submit_verify_phase(active: bool) -> None:
     """FR #8442: digest progress_phase so a live paste is not an offer-timeout."""
+    global _submit_verify_depth
+    if active:
+        _submit_verify_depth += 1
+    else:
+        _submit_verify_depth = max(0, _submit_verify_depth - 1)
     try:
         nick = (os.environ.get("BOB_NICK") or os.environ.get("BOB_AGENT_NICK") or "").strip()
         mid = (os.environ.get("BOB_MACHINE") or default_machine_id() or "").strip()
@@ -9309,7 +9322,7 @@ def _note_submit_verify_phase(active: bool) -> None:
         post_digest_progress_heartbeat(
             machine=mid,
             nick=nick,
-            progress_phase="submit-verify" if active else "",
+            progress_phase="submit-verify" if _submit_verify_depth else "",
         )
     except Exception:
         return
@@ -11448,8 +11461,8 @@ def post_digest_progress_heartbeat(
         "online": True,
         "last_progress": iso,
     }
-    if phase:
-        payload["progress_phase"] = phase
+    # Empty string must be sent so a doing row drops submit-verify (FR #8442).
+    payload["progress_phase"] = phase
     if work:
         payload["work"] = one_line(work, 200)
     kind_s = (kind or "").strip().lower()
@@ -17162,6 +17175,8 @@ class Supervisor:
         except Exception:
             iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
         use_phase = self._progress_phase or phase or progress_phase_for_alive_heartbeat("")
+        if submit_verify_in_flight():
+            use_phase = "submit-verify"
         # Re-validate immediately before POST (scan→POST race). An in-flight HTTP
         # request cannot be recalled once started.
         if getattr(self, "_shutting", False) or self.stop.is_set():

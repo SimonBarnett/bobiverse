@@ -3761,7 +3761,14 @@ def _apply_worker_op(home: Path, op: str, mid: str, payload: dict, briefer_nick:
         # FR #8155: apply activity heartbeat fields on the live row before coerce.
         if progress_iso:
             row["last_progress"] = progress_iso[:64]
-        if progress_phase:
+        # FR #8442: a present empty progress_phase clears a doing row. Omitting
+        # the key still leaves the previous phase alone.
+        if "progress_phase" in payload:
+            if progress_phase:
+                row["progress_phase"] = progress_phase
+            else:
+                row.pop("progress_phase", None)
+        elif progress_phase:
             row["progress_phase"] = progress_phase
         event = op
     after_rows = _coerce_worker_list(rows)
@@ -3769,7 +3776,10 @@ def _apply_worker_op(home: Path, op: str, mid: str, payload: dict, briefer_nick:
     progress_changed = False
     if progress_iso and progress_iso[:64] != prior_progress:
         progress_changed = True
-    if progress_phase and progress_phase != prior_phase:
+    if "progress_phase" in payload:
+        if (progress_phase or "") != prior_phase:
+            progress_changed = True
+    elif progress_phase and progress_phase != prior_phase:
         progress_changed = True
     if not state_changed and not progress_changed:
         # Still refresh machine activity (timeout may have expired offered -> idle).
