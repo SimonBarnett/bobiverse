@@ -11147,6 +11147,62 @@ def _normalize_digest_worker_state(raw: object) -> str:
     return s
 
 
+def _digest_post_fail_marker_path(env: Optional[dict] = None) -> Path | None:
+    """FR #8513: local tray/monitor marker when worker digest POST fails."""
+    e = os.environ if env is None else env
+    run = str(e.get("BOB_WORKER_RUN_DIR") or e.get("BOB_RUN_DIR") or "").strip()
+    if not run:
+        # Prefer the seat run dir next to this process when set by bob-worker.
+        try:
+            from pathlib import Path as _P
+
+            cand = _P(str(e.get("BOB_STATE_ROOT") or "")).expanduser()
+            if cand.is_dir():
+                return cand / "digest-post-fail.json"
+        except Exception:
+            pass
+        return None
+    try:
+        return Path(run) / "digest-post-fail.json"
+    except Exception:
+        return None
+
+
+def _write_digest_post_fail_marker(
+    *,
+    machine: str,
+    nick: str = "",
+    err: str = "",
+    env: Optional[dict] = None,
+) -> None:
+    """FR #8513: best-effort local flag; never raises; no secrets."""
+    path = _digest_post_fail_marker_path(env=env)
+    if path is None:
+        return
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "v": 1,
+            "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "machine": str(machine or "").strip().lower(),
+            "nick": str(nick or "").strip(),
+            "error": str(err or "digest-http-error")[:80],
+            "digest_post_failed": True,
+        }
+        path.write_text(json.dumps(payload, ensure_ascii=True), encoding="utf-8")
+    except Exception:
+        pass
+
+
+def _clear_digest_post_fail_marker(env: Optional[dict] = None) -> None:
+    path = _digest_post_fail_marker_path(env=env)
+    if path is None:
+        return
+    with contextlib.suppress(Exception):
+        if path.is_file():
+            path.unlink()
+
+
 def post_digest_seat_kind(
     *,
     machine: str,
@@ -11256,6 +11312,7 @@ def post_digest_seat_kind(
         post_kw["sleep"] = sleep
     ok = bool(_http_post_json(report, payload, **post_kw))
     if ok:
+        _clear_digest_post_fail_marker(env=env)
         return True
     meta = last_digest_http()
     st = meta.get("status")
@@ -11263,6 +11320,8 @@ def post_digest_seat_kind(
     payload = dict(payload)
     payload["state"] = "unhealthy"
     payload["error"] = err
+    # FR #8513: surface digest_post_failed on the unhealthy retry payload.
+    payload["digest_post_failed"] = True
     if meta.get("responder"):
         payload["digest_responder"] = str(meta.get("responder"))
     if log:
@@ -11276,7 +11335,17 @@ def post_digest_seat_kind(
         except Exception:
             pass
     post_kw["retries"] = 1
-    return bool(_http_post_json(report, payload, **post_kw))
+    ok2 = bool(_http_post_json(report, payload, **post_kw))
+    if ok2:
+        # Unhealthy row reached the chair; still leave a local fail marker for tray.
+        _write_digest_post_fail_marker(
+            machine=mid, nick=str(payload.get("nick") or ""), err=err, env=env
+        )
+        return True
+    _write_digest_post_fail_marker(
+        machine=mid, nick=str(payload.get("nick") or ""), err=err, env=env
+    )
+    return False
 
 
 # FR #8155: digest last_progress heartbeats (activity vs state-change ``updated``).
