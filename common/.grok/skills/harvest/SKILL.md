@@ -262,3 +262,4 @@ Do not land a second copy of a harvest-lesson MRB playbook in this book. Those p
 - A line-anchored MRB FAIL @ sha is a seat verdict even when the sha is wrapped in ticks or quotes. A mid-line mention and a FAIL without an @ sha still hold.
 - A same-process file lock that unlinks on holder==getpid busy-spins on Windows when the holder's handle blocks unlink; cross-process seats still need the dead-pid steal plus a sleep and a deadline.
 - Write gh --body-file with a UTF-8 no-BOM writer and reject C0 bytes other than tab, LF, and CR; double-quoted PowerShell turns backslash-b, backslash-t, and backslash-a into real controls.
+- While a seat is in out-of-fuel hold, digest worker_list must paint state=out_of_fuel and keep updated fresh; idle_quiet_offerable must skip that seat.
