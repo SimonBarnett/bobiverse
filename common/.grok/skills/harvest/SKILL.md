@@ -264,3 +264,4 @@ Do not land a second copy of a harvest-lesson MRB playbook in this book. Those p
 - Write gh --body-file with a UTF-8 no-BOM writer and reject C0 bytes other than tab, LF, and CR; double-quoted PowerShell turns backslash-b, backslash-t, and backslash-a into real controls.
 - While a seat is in out-of-fuel hold, digest worker_list must paint state=out_of_fuel and keep updated fresh; idle_quiet_offerable must skip that seat.
 - After pointer refresh, confirm skill-dag MCP drop with Toolhelp PID liveness twice; never treat a flaky empty PowerShell cmdline sample as a transport drop
+- An identity-only digest merge must not append model to cleared. Cursor CLI account reads only authInfo.email; a key override is a pid-bound marker with no key value.
