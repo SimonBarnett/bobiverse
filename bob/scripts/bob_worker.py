@@ -12071,6 +12071,129 @@ def progress_alive_counts_as_seen(*, moved: bool, agent_alive: bool) -> bool:
     return bool(moved) or bool(agent_alive)
 
 
+def opencode_frozen_progress_threshold_s(env: dict | None = None) -> float:
+    """Seconds of frozen OpenCode progress before hang-recycle (FR #8596)."""
+    src = os.environ if env is None else env
+    raw = str((src or {}).get("BOB_WORKER_OPENCODE_FROZEN_PROGRESS_S") or "").strip()
+    if not raw:
+        return 900.0
+    try:
+        v = float(raw)
+    except ValueError:
+        return 900.0
+    return max(120.0, min(7200.0, v))
+
+
+def opencode_frozen_recycle_reason(
+    *,
+    kind: str,
+    out_of_fuel: bool,
+    ack_open: bool,
+    digest_doing_age_s: float | None,
+    progress_moved_age_s: float | None,
+    threshold_s: float = 900.0,
+) -> str:
+    """Return hang-recycle reason when an OpenCode seat is frozen (FR #8596).
+
+    Chair stuck-sweep can stamp LOST_ACK_RESTART / accepted_silent while the
+    OpenCode process still reports CPU, so HangDetector never fires. Week
+    `limited=true` with rolling remaining must not set `out_of_fuel` (that
+    hold disables recycle via FR #4180) - callers pass `out_of_fuel` only for
+    hard 402 / exhausted holds.
+    """
+    if (kind or "").strip().lower() != "opencode":
+        return ""
+    if out_of_fuel:
+        return ""
+    thr = max(60.0, float(threshold_s))
+    digest_age = float(digest_doing_age_s) if digest_doing_age_s is not None else None
+    moved_age = float(progress_moved_age_s) if progress_moved_age_s is not None else None
+    if digest_age is not None and digest_age >= thr and not ack_open:
+        return "opencode-lost-ack-stale"
+    if ack_open and moved_age is not None and moved_age >= thr:
+        return "opencode-frozen-progress"
+    if (
+        digest_age is not None
+        and digest_age >= thr
+        and ack_open
+        and moved_age is not None
+        and moved_age >= thr
+    ):
+        return "opencode-frozen-progress"
+    return ""
+
+
+def digest_worker_doing_age_s(
+    digest_doc: dict | None,
+    nick: str,
+    *,
+    now_wall: float | None = None,
+) -> float | None:
+    """Age of digest worker.updated when this nick is still doing (FR #8596)."""
+    if not isinstance(digest_doc, dict):
+        return None
+    me = (nick or "").strip().lower()
+    if not me:
+        return None
+    try:
+        import gitclaim as _gc
+
+        me = (_gc.canonical_worker_nick(me) or me).strip().lower()
+    except Exception:
+        pass
+    now = float(now_wall) if now_wall is not None else time.time()
+    machines = digest_doc.get("machines")
+    if not isinstance(machines, dict):
+        return None
+    for _mid, ent in machines.items():
+        if not isinstance(ent, dict):
+            continue
+        workers = ent.get("workers")
+        rows: list = []
+        if isinstance(workers, dict):
+            rows = [w for w in workers.values() if isinstance(w, dict)]
+        elif isinstance(workers, list):
+            rows = [w for w in workers if isinstance(w, dict)]
+        else:
+            try:
+                import bobreport as _br
+
+                rows = list(_br._coerce_worker_list(ent.get("worker_list")))
+            except Exception:
+                rows = []
+        for w in rows:
+            n = str(w.get("nick") or "").strip().lower()
+            try:
+                import gitclaim as _gc
+
+                n = (_gc.canonical_worker_nick(n) or n).strip().lower()
+            except Exception:
+                pass
+            if n != me:
+                continue
+            state = str(w.get("state") or "").strip().lower()
+            if state not in ("doing", "busy", "working"):
+                return None
+            upd = w.get("updated") or w.get("updated_at") or w.get("last_progress")
+            if not upd:
+                return None
+            try:
+                from datetime import datetime, timezone
+
+                raw = str(upd).strip()
+                if raw.endswith("Z"):
+                    raw = raw[:-1] + "+00:00"
+                ts = datetime.fromisoformat(raw)
+                if ts.tzinfo is None:
+                    ts = ts.replace(tzinfo=timezone.utc)
+                return max(0.0, now - ts.timestamp())
+            except Exception:
+                return None
+    return None
+
+
+
+
 def progress_phase_for_alive_heartbeat(prior: str = "") -> str:
     """Safe phase when the agent is alive but logs are silent (FR #8195)."""
     prior_s = str(prior or "").strip()
@@ -17984,7 +18107,10 @@ class Supervisor:
             if reason:
                 self.restart_agent(reason)
                 continue
-            # FR #3623: ask_user_question Pending (alive process, ACK held) — Enter then recycle.
+            # FR #8596: OpenCode frozen digest/progress (CPU may still tick; HangDetector misses).
+            if self._check_opencode_frozen_progress():
+                continue
+            # FR #3623: ask_user_question Pending (alive process, ACK held) - Enter then recycle.
             if self._check_ask_user_pending(proc):
                 continue
             # FR #2383: agent still alive/turning but never ACK'd via run-dir outbox.
@@ -18090,6 +18216,9 @@ class Supervisor:
         if progress_alive_counts_as_seen(moved=moved, agent_alive=agent_alive):
             self._progress_last_seen_mono = now_mono
             self._progress_last_seen_wall = time.time()
+            # FR #8596: true log/turn/worktree move only (not alive-only) for frozen recycle.
+            if moved:
+                self._progress_last_moved_mono = now_mono
             if moved and phase:
                 self._progress_phase = phase
             elif agent_alive and not self._progress_phase:
@@ -18394,6 +18523,96 @@ class Supervisor:
                 return "done"
             self._opencode_job_end_cleanup(job_key)
         return "giveup"
+
+
+
+    def _opencode_report_doing_age_s(self, nick: str) -> float | None:
+        """Best-effort age from live GET /bob/v1/report for this nick (FR #8596)."""
+        url = (
+            str(os.environ.get("BOB_REPORT_URL") or "").strip()
+            or str(os.environ.get("BOB_DIGEST_URL") or "").strip()
+            or "https://bob.ntsa.uk/bob/v1/report"
+        )
+        try:
+            import urllib.request
+
+            req = urllib.request.Request(
+                url,
+                method="GET",
+                headers={
+                    "Accept": "application/json",
+                    "User-Agent": "BobiverseWorker-opencode-frozen/1.0",
+                },
+            )
+            with urllib.request.urlopen(req, timeout=12.0) as resp:
+                raw = resp.read().decode("utf-8", errors="replace")
+            doc = json.loads(raw)
+        except Exception:
+            return None
+        return digest_worker_doing_age_s(doc, nick, now_wall=time.time())
+
+    def _check_opencode_frozen_progress(self) -> bool:
+        """FR #8596: recycle OpenCode when digest doing is stale or log/turn progress froze.
+
+        Does not treat week.limited alone as out-of-fuel (rolling may remain). Hard
+        out-of-fuel hold still skips via FR #4180 inside restart_agent / health_loop.
+        """
+        if (self.kind or "").strip().lower() != "opencode":
+            return False
+        if self.bored and self.bored.out_of_fuel:
+            return False
+        thr = opencode_frozen_progress_threshold_s()
+        ack_open = bool(self.bored and getattr(self.bored, "_ack_open", False))
+        now_mono = float(self.clock())
+        moved_age = None
+        last_moved = float(getattr(self, "_progress_last_moved_mono", 0.0) or 0.0)
+        if last_moved > 0:
+            moved_age = max(0.0, now_mono - last_moved)
+        elif ack_open:
+            # ACK open but never recorded a true move - age from ACK open if known.
+            opened = float(getattr(self.bored, "_ack_opened_mono", 0.0) or 0.0) if self.bored else 0.0
+            if opened > 0:
+                moved_age = max(0.0, now_mono - opened)
+        digest_age = None
+        nick = str(getattr(self, "nick", "") or os.environ.get("BOB_NICK") or "")
+        try:
+            home = None
+            try:
+                import bobreport as _br
+
+                home = _br.digest_home()
+            except Exception:
+                home = None
+            doc = None
+            if home is not None:
+                import bobreport as _br
+
+                try:
+                    doc = _br.load_digest(home)
+                except Exception:
+                    doc = None
+            digest_age = digest_worker_doing_age_s(doc, nick, now_wall=time.time())
+            # Worker boxes often lack the chair digest; fall back to live /report (FR #8596).
+            if digest_age is None and nick:
+                digest_age = self._opencode_report_doing_age_s(nick)
+        except Exception:
+            digest_age = None
+        reason = opencode_frozen_recycle_reason(
+            kind=self.kind,
+            out_of_fuel=bool(self.bored and self.bored.out_of_fuel),
+            ack_open=ack_open,
+            digest_doing_age_s=digest_age,
+            progress_moved_age_s=moved_age,
+            threshold_s=thr,
+        )
+        if not reason:
+            return False
+        self.log(
+            f"opencode-frozen: reason={reason} digest_age={digest_age!r} "
+            f"moved_age={moved_age!r} thr={thr:.0f}s; recycling"
+        )
+        self.restart_agent(reason)
+        return True
 
     def _check_ack_miss(self, proc) -> None:
         # FR #4180: out-of-fuel is not an ACK miss — never remind or recycle.
