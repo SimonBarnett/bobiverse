@@ -181,5 +181,4 @@ if ($doPurge) {
 # FR #8009: remove only the airc outbound allow rule this install added.
 netsh advfirewall firewall delete rule name="airc-exe-outbound-irc" | Out-Null
 Write-Host 'INFO FR #8009 removed airc-exe-outbound-irc if present'
-}
 exit 0
