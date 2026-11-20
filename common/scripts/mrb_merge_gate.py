@@ -60,8 +60,9 @@ BARE_SELF_MRB_HANDBACK_RE = re.compile(
 # FR #8356: a bare "MRB FAIL @ <sha>" verdict (no ## MRB board / **Verdict:**)
 # is a seat board. "Do not merge" in that comment must not become an owner hold.
 # A FAIL line without an @ sha is not this skip.
+# Same optional ticks/quotes after @ as MRB_PASS_AT_SHA_RE. Still line-anchored.
 BARE_MRB_FAIL_AT_SHA_RE = re.compile(
-    r"(?im)^\s*MRB\s+FAIL\s+@\s+[0-9a-fA-F]{7,40}\b"
+    r"(?im)^\s*MRB\s+FAIL\s+@[\s*`'\"]*[0-9a-fA-F]{7,40}\b"
 )
 # FR #4500: a later comment that only restates the gate refusal is not a new
 # owner hold. It quotes the tripped phrase ("must not merge") inside
