@@ -154,13 +154,16 @@ def _acquire_skills_sync_lock(install: Path, timeout_s: float):
                 holder = int(raw[0]) if raw else 0
             except (OSError, ValueError):
                 holder = 0
-            if holder == os.getpid() or not _pid_alive(holder):
+            # FR #8481: steal only a dead holder. Same-pid is another thread
+            # that still has the file open; Windows unlink then fails and a
+            # bare continue busy-spins. Sleep and honour lock_timeout_s.
+            if holder != os.getpid() and not _pid_alive(holder):
                 _drop_index_lock(install)
                 try:
                     path.unlink()
+                    continue
                 except OSError:
                     pass
-                continue
             if time.time() >= deadline:
                 return None
             time.sleep(0.05)
