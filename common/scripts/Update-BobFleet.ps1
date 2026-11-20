@@ -441,7 +441,7 @@ function Invoke-UpdateFleetRecycle {
             $nicks = @()
             if (Test-Path -LiteralPath $seatDir) {
                 Get-ChildItem -LiteralPath $seatDir -Filter ($MachineId + '-*.irc.json') -File -ErrorAction SilentlyContinue | ForEach-Object {
-                    # File is <nick>.irc.json; BaseName is <nick>.irc - strip trailing .irc
+                    # File is <nick>.irc.json; BaseName is <nick>.irc -- strip trailing .irc
                     $base = [string]$_.BaseName
                     if ($base -match '^(.*)\.irc$') { $nicks += $Matches[1] }
                     else { $nicks += $base }

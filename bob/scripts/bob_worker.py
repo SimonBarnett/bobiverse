@@ -1096,19 +1096,57 @@ def opencode_pauses_state_dir(env: Optional[dict] = None) -> Path:
     return Path(base) / "Bobiverse" / "worker" / "state"
 
 
+def _opencode_free_known_zero(f: Fuel) -> bool:
+    """True only when the free pool reading is present and not positive."""
+    if f.opencode_free is None:
+        return False
+    try:
+        return int(f.opencode_free) <= 0
+    except (TypeError, ValueError):
+        return True
+
+
+def _opencode_paid_positive(f: Fuel) -> bool:
+    """Paid/Go pool has a positive reading (aggregate or any per-model leaf)."""
+    if f.opencode_go is not None:
+        try:
+            if int(f.opencode_go) > 0:
+                if not f.opencode_models:
+                    return True
+        except (TypeError, ValueError):
+            pass
+    models = f.opencode_models or {}
+    if models:
+        any_pos = False
+        for v in models.values():
+            try:
+                if int(v or 0) > 0:
+                    any_pos = True
+                    break
+            except (TypeError, ValueError):
+                continue
+        return any_pos
+    if f.opencode_go is not None:
+        try:
+            return int(f.opencode_go) > 0
+        except (TypeError, ValueError):
+            return False
+    return False
+
+
 def opencode_default_model(
     f: Fuel,
     state_dir: Optional[Path] = None,
     *,
     now: Optional[float] = None,
 ) -> Optional[str]:
-    """Pick a sensible OpenCode model from fuel readings (issue #6120).
+    """Pick an OpenCode model from fuel (FR #6120 / #8454).
 
-    Per-model caps are respected: when per-model readings exist, only choose a
-    Go model that has positive remaining fuel. Paused models are skipped so a
-    rolling 5-hour cap hit does not immediately re-trigger on the next run.
-    When no Go model is usable, fall back to a free model discovered from live
-    ``opencode models`` output, then to a legacy free default, else return None.
+    Free first: remaining > 0 or unknown uses a free id. A Go/paid id is
+    returned only when free is known 0 and a Go reading is positive. Paused
+    models are skipped. No third model is invented: free ids come from live
+    readings, else the tray free slot; paid is the tray paid slot when that
+    leaf is not listed as exhausted.
     """
     if state_dir is None:
         state_dir = opencode_pauses_state_dir()
@@ -1118,39 +1156,53 @@ def opencode_default_model(
             return False
         return opencode_fuel.is_opencode_model_paused(model_id, state_dir, now=now)
 
-    models = f.opencode_models or {}
-    if models:
-        order = opencode_fuel.OPENCODE_GO_FALLBACK_ORDER if opencode_fuel else ("glm-5.3",)
-        for m in order:
-            try:
-                if int(models.get(m) or 0) > 0:
-                    candidate = f"opencode-go/{m}"
-                    if _paused(candidate):
-                        continue
-                    return candidate
-            except (TypeError, ValueError):
-                continue
-        # Per-model readings exist but no Go model has fuel; free tier is next.
-        if f.opencode_free is not None and f.opencode_free > 0:
-            for free_id in f.opencode_free_model_ids:
-                if _paused(str(free_id)):
-                    continue
-                return str(free_id)
-            if not _paused("opencode/beam-free"):
-                return "opencode/beam-free"
-        return None
+    try:
+        import worker_start_model as wsm
 
-    # No per-model readings: prefer free if available, else aggregate Go default.
-    if f.opencode_free is not None and f.opencode_free > 0:
+        free_slot = wsm.DEFAULT_OPENCODE_FREE
+        paid_slot = wsm.DEFAULT_OPENCODE_PAID
+    except Exception:
+        free_slot = "opencode/deepseek-v4.1-flash-free"
+        paid_slot = "opencode-go/deepseek-v4-pro"
+
+    def _first_free() -> Optional[str]:
         for free_id in f.opencode_free_model_ids:
             if _paused(str(free_id)):
                 continue
             return str(free_id)
-        if not _paused("opencode/beam-free"):
-            return "opencode/beam-free"
-    if f.opencode_go is not None and f.opencode_go > 0:
-        if not _paused("opencode-go/glm-5.3"):
-            return "opencode-go/glm-5.3"
+        if free_slot and not _paused(free_slot):
+            return free_slot
+        return None
+
+    if not _opencode_free_known_zero(f):
+        return _first_free()
+
+    if not _opencode_paid_positive(f):
+        return None
+
+    models = f.opencode_models or {}
+    if models:
+        order = opencode_fuel.OPENCODE_GO_FALLBACK_ORDER if opencode_fuel else ()
+        paid_leaf = paid_slot.split("/", 1)[-1] if paid_slot else ""
+        leaves: list[str] = []
+        for m in (paid_leaf,) + tuple(order) + tuple(models.keys()):
+            if m and m not in leaves:
+                leaves.append(m)
+        for m in leaves:
+            if m not in models:
+                continue
+            try:
+                if int(models.get(m) or 0) <= 0:
+                    continue
+            except (TypeError, ValueError):
+                continue
+            candidate = f"opencode-go/{m}"
+            if _paused(candidate):
+                continue
+            return candidate
+        return None
+    if paid_slot and not _paused(paid_slot):
+        return paid_slot
     return None
 
 
@@ -1508,67 +1560,66 @@ def resolve_opencode_model(
         start_cfg = wsm.load_worker_start_config(env=env)
         start_model = str((start_cfg.get("workerStartModels") or {}).get("opencode") or "").strip()
         start_free = wsm.default_opencode_free_model(start_cfg)
+        start_paid = wsm.default_opencode_paid_model(start_cfg)
     except Exception:
         start_cfg = {}
         start_model = ""
         start_free = "opencode/deepseek-v4.1-flash-free"
+        start_paid = "opencode-go/deepseek-v4-pro"
 
-    # FR #6363 / #7187: operator env at process start, then tray start model,
-    # then non-Go config, then free default, then fuel (never tray-before-env).
+    # FR #8454: free remaining > 0 or unknown starts on a free id even when the
+    # tray/env pin is paid. Paid slot only when free is known 0 and paid > 0.
+    # FR #6363: a free operator env / config still beats the tray free slot.
     env_model = (_OPENCODE_MODEL_ENV_AT_START or "").strip()
     pinned = seat_model_pinned(env) and bool(env_model)
+    free_known_zero = _opencode_free_known_zero(fuel)
 
-    if pinned:
-        # FR #8321: a restarted seat is pinned to the model Si clicked. Only that
-        # model is considered; a paused/capped pin refuses instead of falling through
-        # to the free default (never silently switch paid -> free or free -> paid).
-        candidates = [("pin", env_model)]
-    else:
-        if env_model:
+    def _is_paid(mid: str) -> bool:
+        try:
+            import worker_start_model as wsm
+
+            return bool(wsm.opencode_is_go_or_paid(mid))
+        except Exception:
+            low = str(mid or "").lower()
+            return low.startswith("opencode-go/") or low.endswith("-pro")
+
+    if not free_known_zero:
+        if pinned and _is_paid(env_model):
+            skipped.append(f"pin:{env_model}:free-first")
+        elif pinned and env_model:
+            candidates.append(("pin", env_model))
+        elif env_model and _is_paid(env_model):
+            skipped.append(f"env:{env_model}:free-first")
+        elif env_model:
             candidates.append(("env", env_model))
 
-        if start_model:
-            try:
-                import worker_start_model as wsm
-
-                skip_start = wsm.opencode_is_go_or_paid(start_model) and not env_model
-            except Exception:
-                skip_start = False
-            if skip_start:
-                skipped.append(f"start:{start_model}:go-or-paid")
-            else:
-                candidates.append(("tray", start_model))
+        if start_model and _is_paid(start_model):
+            skipped.append(f"start:{start_model}:free-first")
+        elif start_model:
+            candidates.append(("tray", start_model))
 
         cfg_model = read_opencode_config_model(env)
-        if cfg_model:
-            try:
-                import worker_start_model as wsm
-
-                skip_paid = wsm.opencode_is_go_or_paid(cfg_model) and not env_model
-            except Exception:
-                skip_paid = False
-            if skip_paid:
-                skipped.append(f"config:{cfg_model}:go-or-paid")
-            else:
-                candidates.append(("config", cfg_model))
+        if cfg_model and _is_paid(cfg_model):
+            skipped.append(f"config:{cfg_model}:free-first")
+        elif cfg_model:
+            candidates.append(("config", cfg_model))
 
         if start_free:
             candidates.append(("start", start_free))
 
-        fuel_model = opencode_default_model(fuel, state_dir=state_dir, now=now)
-        if fuel_model:
-            try:
-                import worker_start_model as wsm
-
-                skip_fuel = wsm.opencode_is_go_or_paid(fuel_model) and not (
-                    _OPENCODE_MODEL_ENV_AT_START or ""
-                ).strip()
-            except Exception:
-                skip_fuel = False
-            if skip_fuel:
-                skipped.append(f"fuel:{fuel_model}:go-or-paid")
-            else:
-                candidates.append(("fuel", fuel_model))
+        for free_id in fuel.opencode_free_model_ids or ():
+            fid = str(free_id or "").strip()
+            if fid and not _is_paid(fid):
+                candidates.append(("fuel", fid))
+    else:
+        if pinned and env_model and not _is_paid(env_model):
+            skipped.append(f"pin:{env_model}:free-exhausted")
+        elif env_model and not _is_paid(env_model):
+            skipped.append(f"env:{env_model}:free-exhausted")
+        if _opencode_paid_positive(fuel) and start_paid:
+            candidates.append(("paid", start_paid))
+        elif start_paid:
+            skipped.append(f"paid:{start_paid}:exhausted")
 
     chosen: Optional[str] = None
     source = ""
@@ -5370,10 +5421,14 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             oc_cfg_model = wsm.launch_selected_model("opencode", _oc_cfg, env=os.environ)
             if not oc_cfg_model:
                 oc_cfg_model = wsm.default_opencode_free_model(_oc_cfg)
+            oc_paid_model = wsm.default_opencode_paid_model(_oc_cfg)
         except Exception:
             oc_cfg_model = ""
+            oc_paid_model = ""
         if not oc_cfg_model:
             oc_cfg_model = "opencode/deepseek-v4.1-flash-free"
+        if not oc_paid_model:
+            oc_paid_model = "opencode-go/deepseek-v4-pro"
         oc_fallback = (
             f"if (-not $env:BOB_OPENCODE_MODEL) {{ $env:BOB_OPENCODE_MODEL = '{esc(oc_cfg_model)}' }}"
         )
@@ -5453,6 +5508,46 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             r"    if ($env:BOB_OUTBOX) { Add-Content -LiteralPath $env:BOB_OUTBOX -Value $g -ErrorAction SilentlyContinue }",
             r"    Write-Output $g",
             r"}",
+            # FR #8454: free pool exhausted and paid remains -> rebind, same job, no shop GIVEUP.
+            f"$script:ocPaidModel = '{esc(oc_paid_model)}'",
+            r"$script:ocPaidSwitched = $false",
+            r"$script:ocSwitchPaid = $false",
+            r"function Test-OpencodeModelIsFree([string]$Mid) {",
+            r"    if (-not $Mid) { return $true }",
+            r"    if ($Mid -match '(?i)^opencode-go/|-pro(/|$)|/opencode-go/') { return $false }",
+            r"    return $true",
+            r"}",
+            r"function Test-OpencodePaidPoolRemains {",
+            r"    if ($env:BOB_OPENCODE_GO_REMAINING -eq '0') { return $false }",
+            r"    $cache = Join-Path $pauseStateDir 'agent-list-fuel.json'",
+            r"    if (-not (Test-Path -LiteralPath $cache)) { return $true }",
+            r"    try {",
+            r"        $doc = Get-Content -LiteralPath $cache -Raw | ConvertFrom-Json",
+            r"        $go = $doc.opencode_go",
+            r"        if ($null -eq $go -or [string]$go -eq '') { return $true }",
+            r"        if ([int]$go -gt 0 -and -not $doc.opencode_models) { return $true }",
+            r"        $any = $false",
+            r"        if ($doc.opencode_models) {",
+            r"            foreach ($p in $doc.opencode_models.PSObject.Properties) {",
+            r"                try { if ([int]$p.Value -gt 0) { $any = $true } } catch { }",
+            r"            }",
+            r"            return $any",
+            r"        }",
+            r"        return ([int]$go -gt 0)",
+            r"    } catch { return $true }",
+            r"}",
+            r"function Try-OpencodeSwitchToPaid([string]$Current, [string]$Reason) {",
+            r"    if ($script:ocPaidSwitched) { return $false }",
+            r"    if (-not (Test-OpencodeModelIsFree $Current)) { return $false }",
+            r"    if (-not $script:ocPaidModel) { return $false }",
+            r"    if (-not (Test-OpencodePaidPoolRemains)) { return $false }",
+            r"    $script:ocPaidSwitched = $true",
+            r"    $script:ocSwitchPaid = $true",
+            r"    $script:model = $script:ocPaidModel",
+            r"    $env:BOB_OPENCODE_MODEL = $script:ocPaidModel",
+            r"    Write-Output ('opencode switch-to-paid model=' + $script:ocPaidModel + ' reason=' + $Reason)",
+            r"    return $true",
+            r"}",
             # FR #7899: ReadAllText throws when OpenCode still holds bob-oc-out exclusive.
             r"function Read-OpencodeCapture([string]$Path) {",
             r"    if (-not $Path -or -not (Test-Path -LiteralPath $Path)) { return '' }",
@@ -5486,6 +5581,8 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             r"    Write-Output $nack",
             r"}",
             r"function Invoke-OpencodeRun([string]$line, [string]$jobKey, [string]$ocDir) {",
+            r"    if ($env:BOB_OPENCODE_MODEL) { $model = $env:BOB_OPENCODE_MODEL }",
+            r"    $script:ocSwitchPaid = $false",
             r"    if ($jobKey -and -not $ocDir) {",
             r"        Write-Output 'opencode-ready: blocked job_context_malformed. Next: the worker message had no job directory. No DONE.'",
             r"        Write-OpencodeJobNack $jobKey 'job-context-malformed'",
@@ -5626,7 +5723,7 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             r"                    $killReason = $Matches[1]",
             r"                    $appLogPos = [int]$Matches[2]",
             r"                    try { & taskkill /T /F /PID $proc.Id 2>$null | Out-Null } catch { }",
-            r"                    if ($jobKey) { Write-OpencodeJobGiveup $jobKey $killReason }",
+            r"                    if ($jobKey -and -not (Try-OpencodeSwitchToPaid $model $killReason)) { Write-OpencodeJobGiveup $jobKey $killReason }",
             r"                    break",
             r"                } elseif ($peekLine -match '^OK\s+(\d+)') {",
             r"                    $appLogPos = [int]$Matches[1]",
@@ -5670,7 +5767,7 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             r"                    $isGoModel = ($model -match '(?i)^opencode-go/|-pro(/|$)|/opencode-go/')",
             r"                    if ($isFreePhrase -and -not $isGoModel) { $killReason = 'fuel-exhausted:opencode-free' } else { $killReason = 'out-of-fuel' }",
             r"                    try { & taskkill /T /F /PID $proc.Id 2>$null | Out-Null } catch { }",
-            r"                    if ($jobKey) { Write-OpencodeJobGiveup $jobKey $killReason }",
+            r"                    if ($jobKey -and -not (Try-OpencodeSwitchToPaid $model $killReason)) { Write-OpencodeJobGiveup $jobKey $killReason }",
             r"                    break",
             r"                }",
             r"            }",
@@ -5877,10 +5974,10 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             r"            Add-Content -Path $fuelLog -Value $failEntry -ErrorAction SilentlyContinue",
             r"        }",
             # FR #8026 / #8207: free-pool reason only for non-go models with provider-cued free usage.
-            r"        if ($jobKey) {",
+            r"        if ($jobKey -and -not $script:ocPaidSwitched) {",
             r"            $isGoModel = ($model -match '(?i)^opencode-go/|-pro(/|$)|/opencode-go/')",
             r"            $giveReason = if ((-not $isGoModel) -and ($scanFreeOk -or ($killReason -eq 'fuel-exhausted:opencode-free'))) { 'fuel-exhausted:opencode-free' } else { 'out-of-fuel' }",
-            r"            Write-OpencodeJobGiveup $jobKey $giveReason",
+            r"            if (-not (Try-OpencodeSwitchToPaid $model $giveReason)) { Write-OpencodeJobGiveup $jobKey $giveReason }",
             r"        }",
             r"    }",
             # FR #6429: clear region/model-unavailable (no silent fail, no substitute model).
@@ -5991,7 +6088,13 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             r"            if ($script:ocHasJob) { Write-OpencodeTurnMarker 'turn_ended' $turnN $teStatus $teErr $teClass }",
             r"        }",
             r"    }",
-            r"    if ($script:ocDbRetry) {",
+            # FR #8454: turn_ended already written; continue the same job on the paid slot.
+            r"    if ($script:ocSwitchPaid) {",
+            r"        $script:ocSwitchPaid = $false",
+            r"        Invoke-OpencodeRun $line $jobKey $ocDir",
+            r"        return",
+            r"    }",
+            r"    if ($script:ocDbRetry) {"
             r"        $script:ocDbRetry = $false",
             r"        Invoke-OpencodeRun $line $jobKey $ocDir",
             r"        return",
