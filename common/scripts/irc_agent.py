@@ -3610,23 +3610,28 @@ class Client:
         worker = getattr(self, "_fuel_worker", None)
         if worker is not None and worker.is_alive():
             # FR #7839: a hung fetch/POST must not freeze later heartbeats.
+            # FR #8514: after the stall window, abandon the hung daemon and start
+            # a fresh publish. Python cannot kill the old thread; dropping the
+            # reference lets the poll loop recover while the orphan may exit later.
             started = float(getattr(self, "_fuel_worker_started", 0.0) or 0.0)
-            if started and (now - started) >= bobreport.EAR_PUBLISH_STALE_S and not getattr(
-                self, "_fuel_stall_reported", False
-            ):
-                self._fuel_stall_reported = True
-                info("ERROR digest-fuel publish stalled")
-                try:
-                    import runtime_failure
+            if started and (now - started) >= bobreport.EAR_PUBLISH_STALE_S:
+                if not getattr(self, "_fuel_stall_reported", False):
+                    self._fuel_stall_reported = True
+                    info("ERROR digest-fuel publish stalled")
+                    try:
+                        import runtime_failure
 
-                    runtime_failure.report_message(
-                        "bob-ear",
-                        "digest fuel publish still running past 2 min",
-                        site="digest-fuel-stall",
-                    )
-                except Exception:
-                    pass
-            return
+                        runtime_failure.report_message(
+                            "bob-ear",
+                            "digest fuel publish still running past 2 min",
+                            site="digest-fuel-stall",
+                        )
+                    except Exception:
+                        pass
+                info("WARN digest-fuel publish abandoned after stall; starting a new publish")
+                self._fuel_worker = None
+            else:
+                return
         self._digest_fuel_last = now
         self._fuel_stall_reported = False
 
