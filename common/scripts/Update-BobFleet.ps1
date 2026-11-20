@@ -1,7 +1,7 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-  updatefleet: deploy bob-worker.exe to every IRC digest machine (FR #8420).
+  updatefleet: deploy bob-worker.exe to every IRC digest machine (FR #8420 / #8532).
 
 .DESCRIPTION
   Machine list comes from GET /bob/v1/report machines keys (same set the systray
@@ -9,7 +9,11 @@
   from Windows CredMan target Bobiverse/UpdateFleet (store once with -StoreCredential).
   Per machine: WinRM copy artifact into <ai>\bob\worker, verify sha256, queue
   recycleseat/startworker for the interactive tray. Local machine uses filesystem
-  copy. One JSON object on stdout. Never prints secrets.
+  copy. Digest online does not imply WinRM (FR #8429 / #8532): when CredMan+WinRM
+  from this host is closed (timeout / cannot complete), the row is method=winrm-closed
+  with fallback=tray-local (run Update-BobFleet locally on that shop, or airc/tray
+  seat start after a local install) — never assume flamingo can reach every shop.
+  One JSON object on stdout. Never prints secrets.
 
 .PARAMETER StoreCredential
   Prompt for password (SecureString) and write CredMan Bobiverse/UpdateFleet.
@@ -180,6 +184,32 @@ function Get-UpdateFleetPSCredential {
     }
 }
 
+function Test-UpdateFleetWinRmClosed {
+    <#
+    FR #8532: true when the remote path is unreachable / timed out (not a CredMan
+    Access Denied). Digest online != WinRM; classify so callers can fall back.
+    #>
+    param([string]$Message)
+    if (-not $Message) { return $false }
+    $m = [string]$Message
+    if ($m -match '(?i)access\s+is\s+denied|AccessDenied|0x80070005') { return $false }
+    return [bool]($m -match '(?i)WinRM.*cannot complete|cannot complete the operation|operation timed out|timed out|Connecting to remote server|The client cannot connect|WPSremotingTransportException|WinRM.*firewall|Error code:\s*215085\d+')
+}
+
+function Get-UpdateFleetWinRmClosedFallback {
+    <#
+    FR #8532: structured fallback when WinRM from the operator host is closed.
+    Prefer tray-local Update-BobFleet on the shop (or airc after local install).
+    #>
+    param([Parameter(Mandatory)][string]$MachineId)
+    $mid = ([string]$MachineId).Trim().ToLowerInvariant()
+    return [ordered]@{
+        method   = 'winrm-closed'
+        fallback = 'tray-local'
+        hint     = ("WinRM closed to {0} from this host. Run Update-BobFleet.ps1 -Machine {0} on {0} (tray-local), or install via airc then tray/!startworker. Digest online does not imply WinRM (FR #8532)." -f $mid)
+    }
+}
+
 function Get-UpdateFleetDigestMachines {
     param([string]$Url)
     $headers = @{ 'User-Agent' = 'Bobiverse-bobreport' }
@@ -327,6 +357,8 @@ function Install-UpdateFleetWorkerRemote {
         backup     = $null
         ok         = $false
         error      = $null
+        fallback   = $null
+        hint       = $null
     }
     if ($DryRun) {
         $result.ok = $true
@@ -335,7 +367,10 @@ function Install-UpdateFleetWorkerRemote {
     }
     $session = $null
     try {
-        $session = New-PSSession -ComputerName $ComputerName -Credential $Credential -ErrorAction Stop
+        # FR #8532: honour -WinRmTimeoutSec (was unused); fail closed into winrm-closed.
+        $timeoutMs = [Math]::Max(1000, [int]$TimeoutSec * 1000)
+        $sessOpt = New-PSSessionOption -OpenTimeout $timeoutMs -OperationTimeout $timeoutMs
+        $session = New-PSSession -ComputerName $ComputerName -Credential $Credential -SessionOption $sessOpt -ErrorAction Stop
         $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
         $backup = Invoke-Command -Session $session -ScriptBlock {
             param($InstallWorker, $Stamp)
@@ -385,8 +420,15 @@ function Install-UpdateFleetWorkerRemote {
         $result.ok = $true
     }
     catch {
-        $result.error = [string]$_.Exception.Message
+        $msg = [string]$_.Exception.Message
+        $result.error = $msg
         $result.ok = $false
+        if (Test-UpdateFleetWinRmClosed -Message $msg) {
+            $fb = Get-UpdateFleetWinRmClosedFallback -MachineId $ComputerName
+            $result.method = [string]$fb.method
+            $result.fallback = [string]$fb.fallback
+            $result.hint = [string]$fb.hint
+        }
     }
     finally {
         if ($session) { Remove-PSSession $session -ErrorAction SilentlyContinue }
@@ -642,7 +684,20 @@ foreach ($mid in $machines) {
             if (-not $cred -and -not $DryRun) { throw "missing CredMan credential for remote $mid" }
             $row.install = Install-UpdateFleetWorkerRemote -ComputerName $mid -Credential $cred -ArtifactDir $artifact -InstallWorker $installWorker -ExpectedSha $expected -TimeoutSec $WinRmTimeoutSec -DryRun:$DryRun
         }
-        if (-not $NoRecycle) {
+        # FR #8532: do not attempt WinRM recycle when install already classified winrm-closed.
+        if (-not $row.install.ok -and [string]$row.install.method -eq 'winrm-closed') {
+            $row.fallback = [string]$row.install.fallback
+            $row.hint = [string]$row.install.hint
+            if (-not $NoRecycle) {
+                $row.recycle = [pscustomobject]@{
+                    ok      = $false
+                    method  = 'skipped'
+                    skipped = $true
+                    error   = 'winrm-closed'
+                }
+            }
+        }
+        elseif (-not $NoRecycle) {
             $row.recycle = Invoke-UpdateFleetRecycle -ComputerName $mid -Credential $cred -BobRoot $bobRoot -MachineId $mid -IsLocal:([bool]$row.local) -TtlSec $RecycleTtlSec -DryRun:$DryRun
         }
         $row.ok = [bool]$row.install.ok -and ($NoRecycle -or [bool]$row.recycle.ok -or ($row.recycle -and $row.recycle.disabled))
