@@ -39,9 +39,9 @@ def test_fr8404_engine_hover_sets_short_digest_timeout():
     assert "Remove-Item Env:\\BOB_DIGEST_HTTP_TIMEOUT_SEC" in window
     # $ps.Stop() on timeout skips finally inside the child scriptblock.
     assign_at = window.find("BOB_DIGEST_HTTP_TIMEOUT_SEC = '8'")
-    invoke_at = window.find("Invoke-BobTrayWarmEngineStep")
+    invoke_at = window.find("-Name 'update-hover-engine'", assign_at)
     assert 0 <= assign_at < invoke_at
     body_at = window.find("-Body {", invoke_at)
     assert body_at > invoke_at
-    body = window[body_at:]
+    body = window[body_at:body_at + 900]
     assert "BOB_DIGEST_HTTP_TIMEOUT_SEC = '8'" not in body
