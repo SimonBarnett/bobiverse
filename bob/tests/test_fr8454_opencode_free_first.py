@@ -81,3 +81,6 @@ def test_wrapper_switches_to_paid_without_dropping_ceiling_giveup(tmp_path):
     ceil = script.split("hard ceiling", 1)[1][:800]
     assert "Try-OpencodeSwitchToPaid" not in ceil
     assert "Write-OpencodeTurnMarker 'turn_ended'" in script
+    # A live switch sets ocPaidSwitched. The later hitLimit block must not
+    # call the switch again and then GIVEUP because that second call is false.
+    assert "if ($jobKey -and -not $script:ocPaidSwitched)" in script

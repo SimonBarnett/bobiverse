@@ -5897,7 +5897,7 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             r"            Add-Content -Path $fuelLog -Value $failEntry -ErrorAction SilentlyContinue",
             r"        }",
             # FR #8026 / #8207: free-pool reason only for non-go models with provider-cued free usage.
-            r"        if ($jobKey) {",
+            r"        if ($jobKey -and -not $script:ocPaidSwitched) {",
             r"            $isGoModel = ($model -match '(?i)^opencode-go/|-pro(/|$)|/opencode-go/')",
             r"            $giveReason = if ((-not $isGoModel) -and ($scanFreeOk -or ($killReason -eq 'fuel-exhausted:opencode-free'))) { 'fuel-exhausted:opencode-free' } else { 'out-of-fuel' }",
             r"            if (-not (Try-OpencodeSwitchToPaid $model $giveReason)) { Write-OpencodeJobGiveup $jobKey $giveReason }",
