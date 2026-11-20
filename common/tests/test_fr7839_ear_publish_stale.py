@@ -103,11 +103,15 @@ def test_fr7839_hung_fuel_publish_does_not_stop_the_loop():
         assert started.wait(2)
         assert ear._fuel_worker is not None and ear._fuel_worker.is_alive()
         # Loop would tick again while the publish is still hung.
+        hung = ear._fuel_worker
         ear._digest_fuel_last = 0.0
         ear._fuel_worker_started = ear._fuel_worker_started - 130
         ear._maybe_publish_digest_fuel()
         assert "digest-fuel-stall" in reports
-        assert ear._fuel_worker.is_alive()
+        # FR #8514: stalled worker is abandoned; a new publish thread is started.
+        assert ear._fuel_worker is not None and ear._fuel_worker.is_alive()
+        assert ear._fuel_worker is not hung
+        assert hung.is_alive()
     finally:
         release.set()
         bobreport.publish_local_peer_fuel = real_publish
