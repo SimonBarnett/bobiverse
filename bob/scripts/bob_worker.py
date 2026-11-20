@@ -898,6 +898,9 @@ def opencode_has_tokens(f: Fuel) -> bool:
     When per-model Go readings exist, aggregate `opencode_go` alone is not enough:
     every listed Go model must be exhausted and free must be unavailable before we
     treat the seat as out of OpenCode fuel (FR #6120 - do not launch capped glm-5.3).
+
+    FR #8540 / #8186: provider ``opencode_windows`` can show Go remaining when
+    aggregate ``opencode_go`` is null.
     """
     if f.opencode_free is not None and f.opencode_free > 0:
         return True
@@ -910,7 +913,9 @@ def opencode_has_tokens(f: Fuel) -> bool:
             except (TypeError, ValueError):
                 continue
         return False
-    return f.opencode_go is not None and f.opencode_go > 0
+    if f.opencode_go is not None and f.opencode_go > 0:
+        return True
+    return _opencode_windows_go_usable(f.opencode_windows)
 
 
 
@@ -1769,7 +1774,19 @@ def fuel_reading_known(f: Fuel, kind: str, start_model: str = "") -> bool:
             return f.opencode_go is not None or _opencode_windows_go_known(f.opencode_windows)
         if pool == "opencode_free":
             return f.opencode_free is not None
-        return f.opencode_free is not None or f.opencode_go is not None
+        # No start model (either-pool). FR #8540: free known 0 + go unknown must
+        # not count as a known dual-pool reading (that refused paid Go seats).
+        # Free > 0 alone is enough; go known (aggregate or windows) is enough;
+        # free known 0 alone is not.
+        try:
+            free_n = int(f.opencode_free) if f.opencode_free is not None else None
+        except (TypeError, ValueError):
+            free_n = None
+        if free_n is not None and free_n > 0:
+            return True
+        if f.opencode_go is not None or _opencode_windows_go_known(f.opencode_windows):
+            return True
+        return False
     return False
 
 
