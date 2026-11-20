@@ -1241,6 +1241,11 @@ class Client:
         self._grok_account_chair = _GROK_ACCOUNT_UNSET
         # MRB #6167: rate-limit chair-mismatch re-POST (rollout GET may lack grok_account).
         self._grok_account_chair_mismatch_last = 0.0
+        # FR #7907: last posted Cursor identity (account, user, source) and chair copy.
+        self._cursor_account_last = 0.0
+        self._cursor_account_delivered = _GROK_ACCOUNT_UNSET
+        self._cursor_account_chair = _GROK_ACCOUNT_UNSET
+        self._cursor_account_chair_mismatch_last = 0.0
         # #42: ChanServ roster mirror (chair only). Query state; registry file is the cache.
         self._cs_collector: registered_machines.ChanServListCollector | None = None
         self._unregister_pending = unregister_cmd.PendingUnregisterStore()
@@ -3664,6 +3669,64 @@ class Client:
         else:
             info("INFO grok account publish failed status=none")
 
+    def _maybe_publish_cursor_account(self) -> None:
+        """FR #7907: label-only Cursor CLI identity. Never the key or config path."""
+        if getattr(self.args, "chair", False):
+            return
+        if not bobtalk.is_fleet_bob_nick(self.original_nick):
+            return
+        mid = self._local_machine_id()
+        if not mid:
+            return
+        interval = bobreport.digest_fuel_heartbeat_s()
+        if interval <= 0:
+            interval = bobreport.DEFAULT_DIGEST_FUEL_HEARTBEAT_S
+        now = time.time()
+        if self._cursor_account_last > 0.0 and now - self._cursor_account_last < interval:
+            return
+        self._cursor_account_last = now
+        try:
+            found = bobreport.read_cursor_account_label()
+            source = bobreport.read_cursor_account_source()
+        except Exception as exc:  # noqa: BLE001
+            info(f"INFO cursor account publish skip: {type(exc).__name__}")
+            return
+        if not isinstance(found, dict) or found.get("status") == "unknown":
+            return
+        email = found.get("email") if found.get("status") in ("ok", "none") else None
+        if not isinstance(email, str) or not email:
+            return
+        user = found.get("user") if isinstance(found.get("user"), str) else None
+        desired = (email, user, source if source == "api_key" else None)
+        delivered = self._cursor_account_delivered
+        chair = self._cursor_account_chair
+        need = False
+        if delivered is _GROK_ACCOUNT_UNSET or delivered != desired:
+            need = True
+        elif chair is not _GROK_ACCOUNT_UNSET and chair != desired:
+            chair_gap = 600.0
+            if now - float(self._cursor_account_chair_mismatch_last or 0.0) >= chair_gap:
+                need = True
+        if not need:
+            return
+        try:
+            code = bobreport.publish_cursor_account_label(
+                mid,
+                cursor_account=email,
+                cursor_account_user=user,
+                cursor_account_source=desired[2],
+            )
+        except Exception as exc:  # noqa: BLE001
+            info(f"INFO cursor account publish failed status=exc {type(exc).__name__}")
+            return
+        if code is not None:
+            self._cursor_account_delivered = desired
+            self._cursor_account_chair = desired
+            self._cursor_account_chair_mismatch_last = now
+            info("INFO cursor account publish ok")
+        else:
+            info("INFO cursor account publish failed status=none")
+
     def _maybe_bobiverse_pull(self) -> None:
         """Refresh local digest via public HTTP GET (#174). No IRC !bobiverse."""
         if not self._should_bobiverse_pull():
@@ -3694,6 +3757,14 @@ class Client:
                 self._grok_account_chair = raw_ga.strip()
             else:
                 self._grok_account_chair = None
+            raw_ca = chair_ent.get("cursor_account")
+            raw_cu = chair_ent.get("cursor_account_user")
+            raw_cs = chair_ent.get("cursor_account_source")
+            self._cursor_account_chair = (
+                raw_ca.strip() if isinstance(raw_ca, str) and raw_ca.strip() else None,
+                raw_cu.strip() if isinstance(raw_cu, str) and raw_cu.strip() else None,
+                "api_key" if raw_cs == "api_key" else None,
+            )
         payload = None
         if mid and isinstance(chair_ent, dict):
             payload = bobreport.merge_payload_local_peer_ahead_of_chair(self.home, mid, chair_ent)
@@ -5934,6 +6005,7 @@ class Client:
                 self._maybe_bobiverse_pull()
                 self._maybe_publish_digest_fuel()  # FR #6141 ear owns fuel POST
                 self._maybe_publish_grok_account()  # FR #6143 grok_account label
+                self._maybe_publish_cursor_account()  # FR #7907 cursor CLI email
                 # FR #68: establish chair/ChanServ privileges before draining backlog.
                 self._maybe_chanserv_sync()
                 self._expire_register_waits()
