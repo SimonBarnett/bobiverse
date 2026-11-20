@@ -310,3 +310,4 @@ Generalised from 21 harvested lessons that never reached this book (audit for FR
 - Before calling install-root .ps1 with new switches, probe param() (or retry on NamedParameterNotFound); prefer shipped/common scripts over stale flat scripts\; ship Clear+Common with bob-worker (FR #7910 path).
 - OpenCode finish/done-miss/corrective text must follow job type: MRB posts PASS/FAIL (fix PR on FAIL only); FIX pushes existing head; FR/UAT still gh pr create (FR #8248 / PR #8263).
 - Done-miss FINISH remind must release BoredEmitter._cv around the inject callback (same as failed-turn retry) so start_agent holding RLock then set_ready cannot deadlock (FR #8268 / PR #8272).
+- On a docs wire FR, grep every copy of the old phrase in the touched file. A green string test can pass on the updated section while an earlier Deliverables bullet still states the retired wire.
