@@ -59,7 +59,7 @@ def test_fr4343_non_bobiverse_title_ionos_bang_build_still_pins():
             repo=OTHER,
             ident="#9990",
         )
-        == "ionos"
+        == "walrus"
     )
 
 

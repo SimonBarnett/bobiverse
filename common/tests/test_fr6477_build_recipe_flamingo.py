@@ -1,4 +1,4 @@
-"""FR #6477: bobiverse BUILD recipe machine is flamingo (not retired ionos)."""
+"""FR #6477 / #8653: bobiverse BUILD recipe machine is the live chair host walrus."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -21,13 +21,14 @@ def _cat():
     ]
 
 
-def test_fr6477_recipe_machine_is_flamingo():
+def test_fr6477_recipe_machine_is_walrus():
     recipe = bb.load_recipe(ROOT)
-    assert recipe.machine == "flamingo"
-    assert recipe.install_test.get("machine") == "flamingo"
+    assert recipe.machine == "walrus"
+    assert recipe.install_test.get("machine") == "walrus"
     yml = (ROOT / ".bobiverse" / "build.yml").read_text(encoding="utf-8")
-    assert "machine: flamingo" in yml
+    assert "machine: walrus" in yml
     assert "machine: ionos" not in yml
+    assert "machine: flamingo" not in yml
 
 
 def test_fr6477_flamingo_fold_matches_local_id():
@@ -58,5 +59,5 @@ def test_fr6477_decide_build_dry_run_targets_flamingo(tmp_path: Path):
     assert dec.dry_run is True
     assert dec.ok is True
     joined = "\n".join(dec.pm_lines)
-    assert "machine=flamingo" in joined
+    assert "machine=walrus" in joined
     assert "dry-run" in joined.lower()

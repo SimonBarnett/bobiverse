@@ -229,7 +229,7 @@ def test_ionos_redqueen_marchhare_pins_still_work():
             repo="SimonBarnett/bobiverse",
             ident="#99901",
         )
-        == "ionos"
+        == "walrus"
     )
     assert (
         gitclaim.infer_require_machine(
@@ -279,6 +279,6 @@ def test_unpin_does_not_override_remaining_hard_pin(tmp_path, monkeypatch):
         },
     )
     row = gitclaim.load_unaccepted(tmp_path)[0]
-    assert gitclaim.row_require_machine(row) == "ionos"
+    assert gitclaim.row_require_machine(row) == "walrus"
     gitclaim._stamp_require_machine(row)
-    assert row.get("require_machine") == "ionos"
+    assert row.get("require_machine") == "walrus"

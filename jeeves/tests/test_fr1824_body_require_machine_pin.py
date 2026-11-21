@@ -25,7 +25,7 @@ def test_fr1824_body_line_require_machine_colon_ionos_pins():
         repo="SimonBarnett/bobiverse",
         ident="#1714",
     )
-    assert mid == "ionos"
+    assert mid == "walrus"
 
 
 def test_fr1824_body_line_require_machine_equals_ionos_pins():
@@ -36,7 +36,7 @@ def test_fr1824_body_line_require_machine_equals_ionos_pins():
         repo="SimonBarnett/bobiverse",
         ident="#1687",
     )
-    assert mid == "ionos"
+    assert mid == "walrus"
 
 
 def test_fr1508_inline_evidence_require_machine_still_does_not_pin():

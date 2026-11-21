@@ -39,7 +39,7 @@ def test_mrb2319_equals_form_pin_past_limit():
             repo="SimonBarnett/bobiverse",
             ident="#999911",
         )
-        == "ionos"
+        == "walrus"
     )
 
 
@@ -65,7 +65,7 @@ def test_mrb2319_blank_line_before_trailing_pin():
         "labels": ["feature-request", "via-intake"],
     }
     gitclaim._stamp_require_machine(row, None)
-    assert row.get("require_machine") == "ionos"
+    assert row.get("require_machine") == "walrus"
     # Use legacy short nicks so seat parse works without a digest roster.
     assert gitclaim.row_blocked_for_machine(row, "w-mh-9") is True
     assert gitclaim.row_blocked_for_machine(row, "w-io-9") is False
@@ -117,4 +117,4 @@ def test_mrb2319_naive_truncate_loses_stamp_on_row_only_refresh():
     assert not row.get("require_machine")
     row["body"] = gitclaim._body_for_queue(full)
     gitclaim._stamp_require_machine(row, None)
-    assert row.get("require_machine") == "ionos"
+    assert row.get("require_machine") == "walrus"

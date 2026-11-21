@@ -272,8 +272,8 @@ def test_pin_unpin_family(chair, op):
     out = pm(chair, op, "!pin o/a#1 ionos")
     assert out[0].startswith("pin:")
     assert "queue_rows=1" in out[0]
-    assert "require_machine=ionos" in out[0]
-    assert gitclaim.load_unaccepted(chair.home)[0].get("require_machine") == "ionos"
+    assert "require_machine=walrus" in out[0]
+    assert gitclaim.load_unaccepted(chair.home)[0].get("require_machine") == "walrus"
     assert pm(chair, op, "!unpin")[0].startswith("unpin: usage")
     assert pm(chair, op, "!pin o/a#1")[0].startswith("pin: usage")
     # Unknown id: ok with zero rows (not a refusal).

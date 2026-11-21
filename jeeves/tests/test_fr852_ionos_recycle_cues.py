@@ -21,14 +21,14 @@ def test_infer_recycle_recompose_jeeves():
             title="Chair still offered per-PR UAT",
             body="Recycle/recompose Jeeves on ionos so gitclaim gates are live",
         )
-        == "ionos"
+        == "walrus"
     )
     assert (
         gitclaim.infer_require_machine(
             title="recompose ircJeeves after gate merge",
             body="",
         )
-        == "ionos"
+        == "walrus"
     )
 
 
@@ -38,14 +38,14 @@ def test_infer_prune_queue_json_on_ionos():
             title="x",
             body="prune any leftover non-#0 UAT rows from queue.json on ionos",
         )
-        == "ionos"
+        == "walrus"
     )
     assert (
         gitclaim.infer_require_machine(
             title="prune queue.json leftover UAT",
             body="Fix: prune queue.json on ionos",
         )
-        == "ionos"
+        == "walrus"
     )
 
 
@@ -55,14 +55,14 @@ def test_infer_ircjeeves_recycle():
             title="x",
             body="install tree not recomposed / ircJeeves not recycled yet?",
         )
-        == "ionos"
+        == "walrus"
     )
     assert (
         gitclaim.infer_require_machine(
             title="ircJeeves recycle needed",
             body="",
         )
-        == "ionos"
+        == "walrus"
     )
 
 
@@ -77,7 +77,7 @@ def test_fr848_body_stamps_ionos():
             title="Chair still offered per-PR UAT on mrb-fix #835 after #828/#844",
             body=body,
         )
-        == "ionos"
+        == "walrus"
     )
 
 

@@ -31,7 +31,7 @@ def test_fr2525_hard_pin_2522_empty_blob():
             repo="SimonBarnett/bobiverse",
             ident="#2522",
         )
-        == "ionos"
+        == "walrus"
     )
 
 
@@ -47,7 +47,7 @@ def test_fr2525_body_for_queue_preserves_backtick_pin():
         repo="SimonBarnett/bobiverse",
         ident="#999925",
     )
-    assert mid == "ionos"
+    assert mid == "walrus"
 
 
 def test_fr2525_infer_backtick_line_with_trailing_note():
@@ -57,7 +57,7 @@ def test_fr2525_infer_backtick_line_with_trailing_note():
             body="Relates #2412\n\n`require_machine: ionos` (hotpatch verify)\n",
             labels=["feature-request"],
         )
-        == "ionos"
+        == "walrus"
     )
 
 
@@ -91,6 +91,6 @@ def test_fr2525_append_unaccepted_stamps_2522_shaped(tmp_path=None):
     )
     assert gitclaim._append_unaccepted(doc, claim) == "added"
     row = doc["unaccepted"][0]
-    assert row.get("require_machine") == "ionos"
+    assert row.get("require_machine") == "walrus"
     assert "require_machine: ionos" in str(row.get("body") or "")
     assert gitclaim.row_blocked_for_machine(row, "marchhare-40208") is True

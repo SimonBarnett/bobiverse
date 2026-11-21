@@ -1,4 +1,9 @@
-"""FR #2579: GhCliFiler.create_draft_pr is real; harvest process_intake does not queue."""
+"""FR #2579: GhCliFiler.create_draft_pr is real; harvest process_intake does not queue.
+
+Updated after FR #8642 / #8657:
+- Empty-file Session-summary harvests are receipt_recorded (not draft/queue).
+- Offerable harvest/skill tips may open draft=false PRs (ready for MRB).
+"""
 from __future__ import annotations
 
 import sys
@@ -14,12 +19,13 @@ import intake  # noqa: E402
 
 
 class _ApiStubFiler(gh_filer.GhCliFiler):
-    """Real GhCliFiler.create_draft_pr path with stubbed ``_api`` (no live GitHub)."""
+    """Real GhCliFiler PR path with stubbed ``_api`` (no live GitHub)."""
 
     def __init__(self) -> None:
         self.gh_bin = "gh"
         self.calls: list[tuple[str, str, dict[str, Any] | None]] = []
         self._n = 0
+        self.last_pull_payload: dict[str, Any] | None = None
 
     def _api(
         self,
@@ -49,7 +55,10 @@ class _ApiStubFiler(gh_filer.GhCliFiler):
         if m == "PATCH" and "/git/refs/heads/" in path:
             return {"ref": path}
         if m == "POST" and path.endswith("/pulls"):
-            assert payload and payload.get("draft") is True
+            # FR #2579 drafts; FR #8657 non-draft ready-for-MRB tips.
+            assert payload is not None
+            assert "draft" in payload
+            self.last_pull_payload = dict(payload)
             return {
                 "number": 4242,
                 "html_url": "https://github.com/SimonBarnett/bobiverse/pull/4242",
@@ -75,6 +84,8 @@ def test_ghcli_create_draft_pr_builds_branch_and_draft():
     assert any(c[0] == "POST" and c[1].endswith("/pulls") for c in f.calls)
     assert any("/git/blobs" in c[1] for c in f.calls)
     assert any(c[0] == "POST" and c[1].endswith("/labels") for c in f.calls)
+    assert f.last_pull_payload is not None
+    assert f.last_pull_payload.get("draft") is True
 
 
 def test_ghcli_create_draft_pr_empty_files_writes_placeholder():
@@ -93,8 +104,12 @@ def test_ghcli_create_draft_pr_empty_files_writes_placeholder():
     assert any(p.startswith("docs/intake-harvest/") and p.endswith(".md") for p in paths)
 
 
-def test_process_intake_harvest_uses_real_ghcli_draft_not_queue(tmp_path):
-    """FR #2579: process_intake(kind=harvest) with GhCliFiler calls create_draft_pr, no queue."""
+def test_process_intake_harvest_uses_real_ghcli_pr_not_queue(tmp_path):
+    """FR #2579 / #8657: offerable harvest with files opens a PR (no outbox queue).
+
+    Body must not be a Session-summary / worker receipt (those stay receipt_recorded
+    after FR #8642 / #8657).
+    """
     home = tmp_path / "home"
     home.mkdir()
     filer = _ApiStubFiler()
@@ -104,8 +119,8 @@ def test_process_intake_harvest_uses_real_ghcli_draft_not_queue(tmp_path):
     payload = {
         "kind": "harvest",
         "repo": "SimonBarnett/bobiverse",
-        "title": "harvest: fr2579 draft pr",
-        "body": "Session summary:\nlesson\n",
+        "title": "harvest: fr2579 offerable tip",
+        "body": "Playbook: always Flush harvest-outbox after offline intake.\n",
         "files": [{"path": "docs/skills/fr2579.md", "content": "# lesson\n"}],
         "source": {
             "machine": "marchhare",
@@ -128,16 +143,8 @@ def test_process_intake_harvest_uses_real_ghcli_draft_not_queue(tmp_path):
     assert not outbox.exists() or not list(outbox.glob("*.json"))
 
 
-def test_process_intake_harvest_stub_logs_draft_pr_unsupported(tmp_path):
-    """FR #2579 expected #2: unsupported draft PR must not announce github_down."""
-
-    class StubFiler(gh_filer.GhCliFiler):
-        def __init__(self) -> None:
-            self.gh_bin = "gh"
-
-        def create_draft_pr(self, *a, **k):
-            raise RuntimeError("gh_filer: draft PR not implemented; use issue fallback")
-
+def test_process_intake_empty_session_summary_is_receipt_not_queue(tmp_path):
+    """FR #8642: empty-file Session-summary harvest is receipt_recorded (no draft queue)."""
     home = tmp_path / "home2"
     home.mkdir()
     payload = {
@@ -148,6 +155,40 @@ def test_process_intake_harvest_stub_logs_draft_pr_unsupported(tmp_path):
         "files": [],
         "source": {"machine": "x", "agent": "a", "skill_book": "harvest", "version": ""},
         "idempotency_key": "hv-fr2579-stub",
+        "contact": "",
+        "contact_public": False,
+    }
+    result = intake.process_intake(home, payload, filer=_ApiStubFiler())
+    assert result.status == 202
+    assert result.body.get("queued") is False
+    assert result.body.get("state") == "receipt_recorded"
+    assert result.body.get("url") is None
+    assert "queued_github_down" not in result.log_safe
+
+
+def test_process_intake_harvest_stub_logs_draft_pr_unsupported(tmp_path):
+    """FR #2579: unsupported draft/create PR with real files queues draft_pr_unsupported."""
+
+    class StubFiler(gh_filer.GhCliFiler):
+        def __init__(self) -> None:
+            self.gh_bin = "gh"
+
+        def create_draft_pr(self, *a, **k):
+            raise RuntimeError("gh_filer: draft PR not implemented; use issue fallback")
+
+        def create_pr(self, *a, **k):
+            raise RuntimeError("gh_filer: draft PR not implemented; use issue fallback")
+
+    home = tmp_path / "home3"
+    home.mkdir()
+    payload = {
+        "kind": "harvest",
+        "repo": "SimonBarnett/bobiverse",
+        "title": "harvest: stub files still",
+        "body": "Playbook: Flush harvest-outbox when intake returns.\n",
+        "files": [{"path": "docs/skills/fr2579-stub.md", "content": "# lesson\n"}],
+        "source": {"machine": "x", "agent": "a", "skill_book": "harvest", "version": ""},
+        "idempotency_key": "hv-fr2579-stub-files",
         "contact": "",
         "contact_public": False,
     }

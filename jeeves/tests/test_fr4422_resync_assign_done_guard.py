@@ -297,7 +297,7 @@ def test_fr4422_needs_ionos_label_still_pins_bobiverse():
             repo=REPO,
             ident="#999",
         )
-        == "ionos"
+        == "walrus"
     )
     assert (
         gitclaim.infer_require_machine(

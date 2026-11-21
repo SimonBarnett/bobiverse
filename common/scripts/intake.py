@@ -2758,10 +2758,12 @@ def file_submission(
                 _save_record(home, rec)
                 return rec
             else:
-                # FR #8642: empty-file harvest/skill must not open a docs/intake-harvest-only
-                # draft. Those tips never enter MRB (FR #6356). Write a skill-source lesson
-                # and open a non-draft harvest-lesson PR. Session-summary rows stay receipts.
-                if kind in ("harvest", "skill") and not files:
+                # FR #8642 / #8657: harvest/skill tips open ready for MRB (draft=false).
+                # Empty files and docs/intake-harvest-only payloads become a skill-source
+                # lesson (those paths never enter MRB, FR #6356). Real skill/lesson files
+                # are filed as-is, also non-draft. Session-summary and worker receipts stay
+                # record-only (FR #2650). Other kinds still use create_draft_pr.
+                if kind in ("harvest", "skill"):
                     if is_session_summary_harvest_receipt(raw_body) or is_harvest_worker_receipt(
                         kind=kind, title=title, body=raw_body
                     ):
@@ -2769,56 +2771,115 @@ def file_submission(
                         rec["queued"] = False
                         _save_record(home, rec)
                         return rec
-                    src = norm.get("source") if isinstance(norm.get("source"), dict) else {}
-                    book, skill_path = resolve_skill_book(
-                        skill_book=str((src or {}).get("skill_book") or ""),
-                        title=title,
-                        body=raw_body,
-                        repo=str(repo or ""),
-                    )
-                    line = plain_harvest_lesson_line(title, raw_body)
-                    lesson_files = [skill_source_lesson_file(book, iid, line)]
-                    lesson_title = build_lesson_pr_title(book, [line])
-                    lesson_body = build_lesson_pr_body(
-                        book=book,
-                        path=skill_path,
-                        lessons=[line],
-                        original_body=body,
-                    )
-                    lesson_labels = ["via-intake", "skill", "harvest-lesson"]
+                    import gitclaim
+
+                    file_paths = [str(f.get("path") or "") for f in files]
+                    intake_only = bool(files) and gitclaim.is_intake_harvest_only_paths(file_paths)
+                    if not files or intake_only:
+                        src = norm.get("source") if isinstance(norm.get("source"), dict) else {}
+                        book, skill_path = resolve_skill_book(
+                            skill_book=str((src or {}).get("skill_book") or ""),
+                            title=title,
+                            body=raw_body,
+                            repo=str(repo or ""),
+                        )
+                        line = plain_harvest_lesson_line(title, raw_body)
+                        lesson_files = [skill_source_lesson_file(book, iid, line)]
+                        lesson_title = build_lesson_pr_title(book, [line])
+                        lesson_body = build_lesson_pr_body(
+                            book=book,
+                            path=skill_path,
+                            lessons=[line],
+                            original_body=body,
+                        )
+                        lesson_labels = ["via-intake", "skill", "harvest-lesson"]
+                        try:
+                            out = _filer_create_pr(
+                                filer,
+                                repo,
+                                lesson_title,
+                                lesson_body,
+                                branch,
+                                lesson_files,
+                                lesson_labels,
+                                draft=False,
+                            )
+                            rec["url"] = out["url"]
+                            rec["number"] = out["number"]
+                            rec["branch"] = out.get("branch")
+                            rec["state"] = "filed"
+                            rec["skill_book"] = book
+                            rec["lesson_count"] = 1
+                            _save_record(home, rec)
+                            return rec
+                        except Exception as exc:
+                            rec["draft_pr_error"] = f"{type(exc).__name__}: {exc}"[:500]
+                            rec["state"] = "queued"
+                            rec["queued"] = True
+                            _save_record(home, rec)
+                            raise GitHubDown(
+                                "skill-source lesson PR filing failed", reason="github_down"
+                            ) from exc
                     try:
+                        # FR #3299: skill tip (no Lessons:) still carries the owning-repo MRB line.
+                        draft_body = body
+                        if kind == "skill" and LESSON_PR_MRB_INSTRUCTION not in (body or ""):
+                            draft_body = f"{LESSON_PR_MRB_INSTRUCTION}\n\n{body}".rstrip() + "\n"
                         out = _filer_create_pr(
                             filer,
                             repo,
-                            lesson_title,
-                            lesson_body,
+                            title,
+                            draft_body,
                             branch,
-                            lesson_files,
-                            lesson_labels,
+                            files,
+                            labels,
                             draft=False,
                         )
                         rec["url"] = out["url"]
                         rec["number"] = out["number"]
                         rec["branch"] = out.get("branch")
                         rec["state"] = "filed"
-                        rec["skill_book"] = book
-                        rec["lesson_count"] = 1
                         _save_record(home, rec)
                         return rec
                     except Exception as exc:
                         rec["draft_pr_error"] = f"{type(exc).__name__}: {exc}"[:500]
-                        rec["state"] = "queued"
-                        rec["queued"] = True
+                        if kind == "harvest":
+                            rec["state"] = "queued"
+                            rec["queued"] = True
+                            outbox = intake_root(home) / "outbox" / f"{iid}.json"
+                            safe_norm = dict(norm)
+                            safe_norm["contact"] = ""
+                            if norm.get("contact_public") and norm.get("contact"):
+                                safe_norm["contact"] = _redact(str(norm["contact"]))
+                            outbox.write_text(
+                                json.dumps(
+                                    {"norm": safe_norm, "intake_id": iid, "quarantine": quarantine},
+                                    indent=2,
+                                )
+                                + "\n",
+                                encoding="utf-8",
+                            )
+                            _save_record(home, rec)
+                            msg = str(exc)
+                            reason = (
+                                "draft_pr_unsupported"
+                                if "draft PR not implemented" in msg
+                                or "draft_pr_unsupported" in msg.lower()
+                                else "github_down"
+                            )
+                            raise GitHubDown(
+                                "harvest PR filing failed", reason=reason
+                            ) from exc
+                        listing = "\n".join(f"- `{f.get('path')}`" for f in files) or "- (no files)"
+                        issue_body = body + "\n\n### Files\n" + listing
+                        out = filer.create_issue(repo, title, issue_body, labels)
+                        rec["url"] = out["url"]
+                        rec["number"] = out["number"]
+                        rec["state"] = "filed_issue_fallback"
                         _save_record(home, rec)
-                        raise GitHubDown(
-                            "skill-source lesson PR filing failed", reason="github_down"
-                        ) from exc
+                        return rec
                 try:
-                    # FR #3299: draft skill (no Lessons:) still carries the owning-repo MRB line.
-                    draft_body = body
-                    if kind == "skill" and LESSON_PR_MRB_INSTRUCTION not in (body or ""):
-                        draft_body = f"{LESSON_PR_MRB_INSTRUCTION}\n\n{body}".rstrip() + "\n"
-                    out = filer.create_draft_pr(repo, title, draft_body, branch, files, labels)
+                    out = filer.create_draft_pr(repo, title, body, branch, files, labels)
                     rec["url"] = out["url"]
                     rec["number"] = out["number"]
                     rec["branch"] = out.get("branch")

@@ -2068,6 +2068,88 @@ def load_public_digest(path: Optional[Path]) -> dict:
     return doc if isinstance(doc, dict) else {}
 
 
+def digest_home_candidates(
+    env: Optional[dict] = None,
+    *,
+    install_root: Optional[Path | str] = None,
+) -> list[Path]:
+    """Homes that may hold digest.json / private fleet meters (FR #8667)."""
+    env = os.environ if env is None else env
+    out: list[Path] = []
+    home = str((env or {}).get("BOB_DIGEST_HOME") or "").strip()
+    if home:
+        out.append(Path(home))
+    try:
+        import bob_home as bh
+        out.append(Path(bh.digest_home()))
+    except Exception:
+        out.append(Path.home() / ".bobiverse")
+    bob_home = str((env or {}).get("BOB_HOME") or "").strip()
+    if bob_home:
+        out.append(Path(bob_home))
+    if install_root:
+        out.append(Path(install_root) / "home")
+    seen: set[str] = set()
+    uniq: list[Path] = []
+    for cand in out:
+        key = str(cand)
+        if key in seen:
+            continue
+        seen.add(key)
+        uniq.append(cand)
+    return uniq
+
+
+def load_private_cursor_meter(
+    env: Optional[dict] = None,
+    *,
+    install_root: Optional[Path | str] = None,
+    home: Optional[Path | str] = None,
+) -> Optional[dict]:
+    """FR #8667: private si Cursor remaining. Never from public digest."""
+    homes: list[Path] = []
+    if home:
+        homes.append(Path(home))
+    if install_root:
+        homes.append(Path(install_root))
+    homes.extend(digest_home_candidates(env, install_root=install_root))
+    try:
+        import fleet_pool_fetch as fpf
+        loader = getattr(fpf, "load_private_cursor_meter", None)
+        path_fn = getattr(fpf, "private_cursor_path", None)
+    except Exception:
+        loader = None
+        path_fn = None
+    for h in homes:
+        if callable(loader):
+            try:
+                row = loader(h)
+            except Exception:
+                row = None
+            if isinstance(row, dict):
+                return row
+        if callable(path_fn):
+            try:
+                p = path_fn(h)
+                if p is not None and Path(p).is_file():
+                    doc = json.loads(Path(p).read_text(encoding="utf-8"))
+                    if isinstance(doc, dict):
+                        return doc
+            except Exception:
+                pass
+        # Fallback path name if import missing
+        p = Path(h) / "fleet-cursor-private.json"
+        if p.is_file():
+            try:
+                doc = json.loads(p.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            if isinstance(doc, dict):
+                return doc
+    return None
+
+
+
 def public_digest_path(
     env: Optional[dict] = None,
     *,
@@ -2527,17 +2609,25 @@ def explicit_cursor_si_decision(
     fleet_digest: Optional[dict] = None,
     *,
     now: Optional[float] = None,
+    private_cursor: Optional[dict] = None,
+    install_root: Optional[Path | str] = None,
 ) -> Decision:
     """Explicit Cursor uses the si@ntsa.uk fleet pool, never the local reading.
 
     A missing or stale fleet meter still starts. A fresh remaining of 0 refuses.
     Local high/low and on-demand do not gate this path (FR #8649).
+    FR #8667: prefer the private cursor meter (fleet-cursor-private.json). Public
+    digest still omits cursor (FR #7326); synthetic digest.cursor is a test aid only.
     """
     if not cursor_cmd:
         return Decision("refuse", "explicit cursor: agent.cmd missing")
     account = SI_NTSA_CURSOR_ACCOUNT
     now_f = time.time() if now is None else float(now)
-    row = _fleet_pool_row(fleet_digest or {}, "cursor")
+    row = private_cursor if isinstance(private_cursor, dict) else None
+    if row is None:
+        row = load_private_cursor_meter(install_root=install_root)
+    if row is None:
+        row = _fleet_pool_row(fleet_digest or {}, "cursor")
     fill = fleet_pool_fill(row, now=now_f)
     if fill["usable"] and int(fill["remaining"]) <= 0:
         return Decision(
@@ -2564,6 +2654,8 @@ def explicit_agent_decision(
     start_model: str = "",
     fleet_digest: Optional[dict] = None,
     now: Optional[float] = None,
+    install_root: Optional[Path | str] = None,
+    private_cursor: Optional[dict] = None,
 ) -> Decision:
     """One requested agent. ``refuse`` never starts a different agent."""
     agent_id = normalize_explicit_agent(requested)
@@ -2581,7 +2673,10 @@ def explicit_agent_decision(
         )
     if agent_id == "cursor":
         # Local fuel is ignored. Automatic selection still uses cursor_has_tokens.
-        return explicit_cursor_si_decision(cursor_cmd, fleet_digest, now=now)
+        return explicit_cursor_si_decision(
+            cursor_cmd, fleet_digest, now=now,
+            private_cursor=private_cursor, install_root=install_root,
+        )
     if agent_id == "opencode":
         return explicit_opencode_decision(
             fuel, opencode_cmd, auth_present=auth_present, start_model=start_model
@@ -2767,6 +2862,8 @@ def resolve_seat_decision(
     machine: str = "",
     fleet_digest: Optional[dict] = None,
     now: Optional[float] = None,
+    install_root: Optional[Path | str] = None,
+    private_cursor: Optional[dict] = None,
 ) -> Decision:
     """Apply an explicit agent request, else the automatic Grok → Cursor → OpenCode order.
 
@@ -2786,6 +2883,8 @@ def resolve_seat_decision(
             start_model=mid,
             fleet_digest=fleet_digest,
             now=now,
+            install_root=install_root,
+            private_cursor=private_cursor,
         )
         if out.kind == "grok" and not xai_signin_ok:
             state = (signin_state or "expired").strip().lower()
@@ -19562,6 +19661,63 @@ def _explicit_refusal_exit(
     return EXIT_NO_AGENT
 
 
+_PLAN_HARD_EXIT = {4294967295, -1}
+_PLAN_REPEAT_S = 600
+EXIT_PLAN_CHILD = 1
+
+
+def _plan_note_hard_exit(now: float | None = None) -> bool:
+    """True when this 0xFFFFFFFF is the second or later inside 10 minutes."""
+    path = _state_root() / "plan-hard-exit.json"
+    stamp = time.time() if now is None else float(now)
+    try:
+        prev = json.loads(path.read_text(encoding="utf-8"))
+        stamps = [float(x) for x in prev if stamp - float(x) <= _PLAN_REPEAT_S]
+    except Exception:
+        stamps = []
+    stamps.append(stamp)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(stamps), encoding="utf-8")
+    except OSError:
+        pass
+    return len(stamps) >= 2
+
+
+def _plan_child_exit(code, log, stderr_path, proc=None) -> int:
+    """FR #8663: a non-zero plan child is a failure, not EXIT_OK."""
+    shown = int(code) if isinstance(code, int) else -1
+    log(f"plan: agent ended code={shown}")
+    tail = ""
+    if proc is not None and hasattr(proc, "stderr_tail"):
+        try:
+            tail = (proc.stderr_tail() or "").strip()
+        except Exception:
+            tail = ""
+    if not tail and stderr_path:
+        try:
+            p = Path(stderr_path)
+            if p.is_file():
+                tail = p.read_text(encoding="utf-8", errors="replace").strip()
+        except OSError:
+            tail = ""
+    if tail:
+        log("plan: child stderr: " + " ".join(tail.split())[:400])
+    if shown == 0:
+        return EXIT_OK
+    log("plan: FAILED child exit is not success")
+    unsigned = shown & 0xFFFFFFFF
+    if shown in _PLAN_HARD_EXIT or unsigned == 4294967295:
+        log("plan: code 4294967295 means the child exited -1 with no session_end")
+        if _plan_note_hard_exit():
+            log(
+                "plan: heal tip: repeated 4294967295 within 10 minutes. "
+                "The plan console is dying mid-stream. Check bob-worker-plan.log "
+                "and the session events.jsonl."
+            )
+    return EXIT_PLAN_CHILD
+
+
 def run_plan(args, log: Log) -> int:
     folder = Path(args.install_root) / "plan"
     if not folder.is_dir():
@@ -19580,6 +19736,7 @@ def run_plan(args, log: Log) -> int:
         fleet_digest=load_public_digest(
             public_digest_path(install_root=getattr(args, "install_root", None))
         ),
+        install_root=getattr(args, "install_root", None),
     )
     if normalize_explicit_agent(requested):
         log(f"select[plan]: explicit {normalize_explicit_agent(requested)} -> {dec.kind} - {dec.reason}")
@@ -19631,6 +19788,11 @@ def run_plan(args, log: Log) -> int:
     env = prepare_seat_child_env(os.environ, child["env"])  # FR #2413 / #2669
     if secret and kind == "grok":
         env["XAI_API_KEY"] = secret.reveal()
+    stderr_path = run_dir / "plan-child-stderr.txt"
+    try:
+        spec.stderr_path = str(stderr_path)
+    except Exception:
+        pass
     try:
         proc = default_spawn(spec, env)
     except Exception as e:
@@ -19643,8 +19805,7 @@ def run_plan(args, log: Log) -> int:
         code = proc.wait()
     except Exception:
         code = -1
-    log(f"plan: agent ended code={code}")
-    return EXIT_OK
+    return _plan_child_exit(code, log, stderr_path, proc)
 
 
 def _default_jeeves_root(install_root: Path) -> Path:
@@ -19679,6 +19840,7 @@ def run_monitor(args, log: Log) -> int:
         fleet_digest=load_public_digest(
             public_digest_path(install_root=getattr(args, "install_root", None))
         ),
+        install_root=getattr(args, "install_root", None),
     )
     stopped = _explicit_refusal_exit(
         dec, log, "monitor",
@@ -19805,6 +19967,7 @@ def run_maintenance(args, log: Log, *, spawn: Optional[Callable] = None, poll_s:
         fleet_digest=load_public_digest(
             public_digest_path(install_root=getattr(args, "install_root", None))
         ),
+        install_root=getattr(args, "install_root", None),
     )
     stopped = _explicit_refusal_exit(
         dec, log, "maintenance",
@@ -19933,6 +20096,7 @@ def run_agent(args, log: Log) -> int:
         fleet_digest=load_public_digest(
             public_digest_path(install_root=getattr(args, "install_root", None))
         ),
+        install_root=getattr(args, "install_root", None),
     )
     # FR #7485: always log the seat decision after explicit override (auto already logged in _choose).
     if normalize_explicit_agent(requested):
@@ -20635,6 +20799,7 @@ def main(argv: Optional[list] = None) -> int:
             fleet_digest=load_public_digest(
                 public_digest_path(install_root=getattr(args, "install_root", None))
             ),
+            install_root=getattr(args, "install_root", None),
         )
         if args.mode == "plan":
             cwd = str(Path(args.install_root) / "plan")

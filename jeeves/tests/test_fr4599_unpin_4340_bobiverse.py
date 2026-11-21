@@ -76,5 +76,5 @@ def test_fr4599_needs_ionos_label_still_pins_bobiverse():
             repo=REPO,
             ident="#9994341",
         )
-        == "ionos"
+        == "walrus"
     )
