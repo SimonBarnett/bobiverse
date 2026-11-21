@@ -190,3 +190,4 @@ Generalised from 32 harvested lessons that never reached this book (audit for FR
 - SYSTEM git sync (FR #7301 / PR #7306): pass -c safe.directory=<that install path> (never a star glob); on ff-only diverge write logs/sync-diverged.json for that HEAD and skip fetch/ff until HEAD changes; never force-reset local work. (moved from harvest tip #7307)
 - Self-update Check must gate on BUILD.json commit vs release SHA (compare ahead/identical only); never replace a newer hotpatch; log skipped-hotpatch-newer with both SHAs
 - airc FORM-PREPARE menu = FORMPREP; Session-0 path FORMPREPDRCT2; ENAME is the form name; type resolve reads T$EXEC only so older hosts without EXECPREPLOCK.UPD still work
+- When a tip script change must reach frozen bob-ear.exe without rebuild, add the module to FROZEN_SCRIPT_OVERLAY with a tip marker; leave it out of EAR_RUNTIME_DISK_SCRIPTS so provenance does not block hotpatch (FR #8613).
