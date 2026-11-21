@@ -51,6 +51,45 @@ Output of this skill is a **build receipt** that `bobiverse-jeeves-agent-install
    Success = `BUILD ok ... id=b-...` with pack/release true; failure files `release-blocker:` issues.
    Re-run only after those blockers close; never loop `!build` while they are open.
 
+## Last green commit when main HEAD is red (Jeeves exe)
+
+```powershell
+gh run list -R SimonBarnett/bobiverse --workflow build-jeeves.yml --branch main --event push --limit 10 `
+  --json databaseId,headSha,conclusion,createdAt,displayTitle
+```
+
+- Newest run `success` -> use it. Newest run red -> take the newest `success` run below it, confirm the change you
+  need is an ancestor (`git merge-base --is-ancestor <pr-merge-sha> <sha>`), and tell Bob which test/PR broke HEAD.
+- Worked example (21 Nov 2026): HEAD red on `test_process_intake_harvest_stub_logs_draft_pr_unsupported` since PR #8644;
+  installed `b5f8f0bc` (run `44909235948`, success), which already had PR #8491 (`!build`).
+- `build-jeeves` runs only when Jeeves paths change (`jeeves/**`, `common/**`, ...). A later green commit with no run
+  is covered by the earlier run only if nothing Jeeves-relevant changed in between.
+- **Never compile Jeeves locally, and never on MarchHare.** `Build-Jeeves.ps1` runs only inside the workflow, after
+  `jeeves/tests` pass (FR #7547).
+
+## Verify the downloaded Jeeves artifact (on the operator host, into a staging dir, never the live folder)
+
+```powershell
+$run = 44909235948; $stage = "C:\ai\_stage\jeeves-$run"
+gh run download $run -R SimonBarnett/bobiverse -n jeeves -D $stage   # jeeves.exe, jeeves.exe.sha256, MANIFEST.json, provenance.txt
+$m = Get-Content "$stage\MANIFEST.json" -Raw | ConvertFrom-Json
+(Get-FileHash "$stage\jeeves.exe").Hash.ToLowerInvariant() -eq $m.exe_sha256
+(& "$stage\jeeves.exe" --version).Trim() -eq $m.source_commit   # exe prints its full commit sha
+"$($m.workflow_run_id)" -eq "$run"
+```
+
+## `!build` catalog file (FR #8490)
+
+- `builds-catalog.json` in the **digest home** on walrus: `C:\Users\Administrator\.bobiverse\builds-catalog.json`.
+  Served at `:7700/bob/v1/builds` and publicly via IIS rule `BobBuildsWebhook` (`https://bob.ntsa.uk/bob/v1/builds`).
+  Code: `common/scripts/builds_catalog.py`. JSON array, numbered 1..n in file order.
+- Entry fields: `name`; `yml` = `owner/repo` or `owner/repo:path` (default `.bobiverse/build.yml`); `output` (build dir);
+  `install` = `fleet` or one lowercase machine; `dep` (documentation only); `version` (`""` = operator types it, e.g.
+  `!build 1 2.0.2`, else numeric `x.y.z`); `ref` (e.g. `main`).
+- Only repos that ship `.bobiverse/build.yml` actually build; an entry without a recipe replies "nothing started".
+- Editing it: back up to `C:\ai\jeeves\_backup-builds-catalog-<yyyyMMdd-HHmmss>\` with a `ROLLBACK.ps1`, check the JSON
+  parses as an array, then re-check the route (monitor step 6). No Jeeves restart needed.
+
 ## Build receipt (required before handing to install)
 
 Record, from the run itself (never from memory or a chat claim):

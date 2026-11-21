@@ -41,19 +41,50 @@ Input: a build receipt from `bobiverse-jeeves-agent-build`. Post-check: `bobiver
    target) are all present. Re-hash the staged file on the target; mismatch = stop.
 2. **Pre-health.** Run the monitor health pass. Note queue counts, accepted rows and busy seats. Prefer an
    idle window: do not restart Jeeves while a seat is mid-ACK unless Si says so.
-3. **Backup + ROLLBACK first.** Create `<ai root>\jeeves\_hotpatch_<yyyyMMdd-HHmmss>-jeeves-<sha8>\` holding the
+3. **No build running.** Chair `C:\Users\Administrator\.jeeves\build-locks.json` shows `{"builds": {}}` and no
+   unfinished `BUILD ... started` in `#bobiverse`. Re-check immediately before stopping the service. Never restart
+   Jeeves while a build runs.
+4. **Backup + ROLLBACK first.** Create `C:\ai\jeeves\_hotpatch_<yyyyMMdd-HHmmss>-jeeves-<sha8>\` holding the
    current exe/scripts being replaced (and IIS config when the install touches webhooks), plus a
    `ROLLBACK.ps1` that restores them and restarts only the affected service. Test that ROLLBACK.ps1 parses.
    Same pattern for bob/airc components under their own install root.
-4. **Install.** Hotpatch = copy the verified file(s) over, restart **only** the affected service
+5. **Install.** Hotpatch = copy the verified file(s) over, restart **only** the affected service
    (`ircJeeves` for Jeeves; post-upgrade `BobCallback` / `BobAutoFeed` only; never re-enable retired
    `BobAutoFocus`). MSI = quiet msiexec with a log file. Queue, identity and chair home must carry over.
-5. **Post-check (monitor skill).** Installed hash == receipt hash; service Running and stable for several
-   minutes; Jeeves back in `#bobiverse` with `+o` in every channel; `GET https://bob.ntsa.uk/bob/v1/report`
-   200 and fresh; `/jeeves` UI 200 if present; queue counts consistent with pre-health; one `!resync`
+6. **Post-check (monitor skill).** Installed hash == receipt hash; `jeeves.exe --version` == source SHA; new `pid`
+   and `"ok":true` on `:7700/health`; `last_digest_write` advancing; service Running and stable for several
+   minutes; a fresh `channel-sync ... joined=` line listing `#bobiverse` and every machine channel, and `+o` back;
+   `GET https://bob.ntsa.uk/bob/v1/report` 200 and fresh; `/bob/v1/builds` still lists the catalog; `/jeeves` UI 200 if present; queue counts consistent with pre-health; one `!resync`
    (ops) completes ok with no 403s.
-6. **Receipt back.** Report: machine, installed SHA + hash, run id, backup folder, time (operator zone),
+7. **Receipt back.** Report: machine, installed SHA + hash, run id, backup folder, time (operator zone),
    post-check PASS/FAIL per item. Merged/tests-green is not an end-to-end PASS; say only what was observed.
+
+## Walrus Jeeves exe hotpatch layout (as used 8-21 Nov 2026)
+
+Run from the operator host (redqueen): `New-PSSession -ComputerName walrus`, `Copy-Item -ToSession` into the backup
+folder's `new\`, `Invoke-Command` for the swap, and `Remove-PSSession` in `finally`. Swap **only** `jeeves.exe`,
+`jeeves.exe.sha256`, `MANIFEST.json`, `provenance.txt` in `C:\ai\jeeves\jeeves\`. Never touch NSSM env/parameters,
+CredMan, `config\oper.cred`, `identity.json`, IIS, ledger, `queue.json`, digest or `BOB_WEEKLY_LOG`.
+
+`C:\ai\jeeves\_hotpatch_<yyyyMMdd-HHmmss>-jeeves-<new sha8>\` holds: the previous `jeeves.exe`, `jeeves.exe.sha256`,
+`MANIFEST.json`, `provenance.txt` (provenance of the build being replaced), `new\` (the build being installed) and:
+
+```powershell
+# ROLLBACK.ps1: Jeeves <new sha8> -> previous (<prev sha8>, hash <PREV_HASH>). Exe only.
+$ErrorActionPreference = 'Stop'
+$bak = 'C:\ai\jeeves\_hotpatch_<ts>-jeeves-<new sha8>'
+sc.exe stop ircJeeves | Out-Null
+for ($i=0; $i -lt 60; $i++) { if ((Get-Service ircJeeves).Status -eq 'Stopped' -and -not (Get-Process jeeves -EA SilentlyContinue)) { break }; Start-Sleep 1 }
+Copy-Item (Join-Path $bak 'jeeves.exe') 'C:\ai\jeeves\jeeves\jeeves.exe' -Force
+foreach ($f in 'jeeves.exe.sha256','MANIFEST.json','provenance.txt') { if (Test-Path (Join-Path $bak $f)) { Copy-Item (Join-Path $bak $f) "C:\ai\jeeves\jeeves\$f" -Force } }
+if ((Get-FileHash 'C:\ai\jeeves\jeeves\jeeves.exe').Hash -ne '<PREV_HASH>') { throw 'rollback exe hash mismatch' }
+sc.exe start ircJeeves | Out-Null
+Start-Sleep 15
+(Invoke-WebRequest http://127.0.0.1:7700/health -UseBasicParsing).Content
+```
+
+The forward swap uses the same stop / wait-for-exit / copy / hash-check / start / `/health` sequence with the new hash;
+never start the service on an exe whose hash does not match.
 
 ## Rollback triggers (run ROLLBACK.ps1, then re-run the post-check)
 
@@ -65,7 +96,9 @@ Input: a build receipt from `bobiverse-jeeves-agent-build`. Post-check: `bobiver
 
 ## Never
 
-- Touch `BobIrcd` / `ircd.yaml`, AD/DNS/DHCP/SQL, or protected MarchHare processes.
+- Touch Ergo (`ErgoWalrus` on walrus, `BobIrcd` elsewhere, `ircd.yaml`), AD/DNS/DHCP/SQL, or protected MarchHare
+  processes. Restarting `ErgoWalrus` needs Si's OK every time.
+- Open `_backup-nssm-env-*`, `inbound-transcript.log` or `config\oper.cred`; launch anything into session 0; `!build cancel`.
 - Kill or restart processes you did not start, or run `BobJeeves` and `ircJeeves` together.
 - Read, copy out or print `config\*.password`, `github.token`, `identity.json`, oper cred, PAT/API key files.
 - Widen permissions or service logon accounts without Si's yes. Close remote PSSessions when done.
@@ -73,10 +106,10 @@ Input: a build receipt from `bobiverse-jeeves-agent-build`. Post-check: `bobiver
 
 ## Verify
 
-Install is done only when step 6 is reported with every post-check item observed, or the rollback ran and
+Install is done only when step 7 is reported with every post-check item observed, or the rollback ran and
 the previous build is confirmed healthy again by the same post-check.
 
 ## Stop rules
 
 - No Si yes for a walrus install: stop at the drafted ask.
-- Any step fails before step 4: stop, nothing changed. Any post-check fails: roll back, then report.
+- Any step fails before step 5: stop, nothing changed. Any post-check fails: roll back, then report.
