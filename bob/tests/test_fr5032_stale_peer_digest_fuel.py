@@ -84,10 +84,15 @@ def test_fr5032_post_digest_out_of_fuel_includes_weekly_zero():
 
     def fake_urlopen(req, timeout=0):  # noqa: ARG001
         body = json.loads(req.data.decode("utf-8"))
-        assert body.get("weekly") == 0
-        assert body.get("out_of_tokens") is True
-        assert body.get("status") == "out_of_fuel"
-        assert body.get("id")
+        # FR #8494: second POST is nick worker-work; weekly=0 is on the machine status POST.
+        if body.get("op") == "worker-work":
+            assert body.get("state") == "out_of_fuel"
+            assert body.get("nick")
+        else:
+            assert body.get("weekly") == 0
+            assert body.get("out_of_tokens") is True
+            assert body.get("status") == "out_of_fuel"
+            assert body.get("id")
 
         class Resp:
             status = 204
