@@ -2583,6 +2583,17 @@ def explicit_opencode_decision(
             % (mid or "-", pool, fuel.opencode_free, fuel.opencode_go),
         )
     if not opencode_pool_has_tokens(fuel, pool, start_model=mid):
+        # FR #8758: a free start model with free known 0 must not refuse when
+        # paid/Go can still be tried. resolve_opencode_model (FR #8454 / #8541)
+        # picks the paid tray slot after this Decision; refusing here stranded
+        # redqueen seats on flash-free with free=0 go=None.
+        if pool == "opencode_free" and _opencode_free_known_zero(fuel):
+            if _opencode_paid_positive(fuel) or not _opencode_paid_known_exhausted(fuel):
+                return Decision(
+                    "opencode",
+                    "explicit opencode: free exhausted, trying paid (model=%s free=%s go=%s)"
+                    % (mid or "-", fuel.opencode_free, fuel.opencode_go),
+                )
         return Decision(
             "refuse",
             "explicit opencode: no usable fuel (model=%s pool=%s free=%s go=%s)"
