@@ -13,8 +13,12 @@ param(
     [string]$WwwSource = '',
     [switch]$WhatIf,
     # FR #7465: publish the site kit only. Do not call appcmd and do not touch the Jeeves service.
-    [switch]$SiteKit
+    [switch]$SiteKit,
+    # FR #8803: www/assets publish is opt-in. -SiteKit implies publish. Default run is rules-only.
+    [switch]$PublishWww
 )
+# FR #8803: SiteKit is the site-kit deploy path; it always publishes www.
+$doPublishWww = [bool]($PublishWww -or $SiteKit)
 
 $ErrorActionPreference = 'Stop'
 $appcmd = Join-Path $env:SystemRoot 'system32\inetsrv\appcmd.exe'
@@ -142,6 +146,149 @@ function Ensure-IcoStaticContent {
     return ($Cfg2 + $block)
 }
 
+function Get-BobOwnedRuleXml {
+    # FR #8803: owned rewrite rules only (never websocket / foreign rules).
+    param(
+        [Parameter(Mandatory = $true)][string]$Name,
+        [Parameter(Mandatory = $true)][string]$BackendUrl
+    )
+    switch ($Name) {
+        'BobReportWebhook' {
+            return @"
+        <rule name="BobReportWebhook" stopProcessing="true">
+          <match url="^bob/v1/report$" ignoreCase="true" />
+          <action type="Rewrite" url="$BackendUrl/bob/v1/report" />
+        </rule>
+"@
+        }
+        'BobDigestWebhook' {
+            return @"
+        <rule name="BobDigestWebhook" stopProcessing="true">
+          <match url="^bob/v1/digest$" ignoreCase="true" />
+          <action type="Rewrite" url="$BackendUrl/bob/v1/digest" />
+        </rule>
+"@
+        }
+        'BobGitWebhook' {
+            return @"
+        <rule name="BobGitWebhook" stopProcessing="true">
+          <match url="^bob/v1/git$" ignoreCase="true" />
+          <action type="Rewrite" url="$BackendUrl/bob/v1/git" />
+        </rule>
+"@
+        }
+        'BobIntakeWebhook' {
+            return @"
+        <rule name="BobIntakeWebhook" stopProcessing="true">
+          <match url="^bob/v1/intake(.*)" ignoreCase="true" />
+          <action type="Rewrite" url="$BackendUrl/bob/v1/intake{R:1}" />
+        </rule>
+"@
+        }
+        'BobJiraWebhook' {
+            return @"
+        <rule name="BobJiraWebhook" stopProcessing="true">
+          <match url="^bob/v1/jira(.*)" ignoreCase="true" />
+          <action type="Rewrite" url="$BackendUrl/bob/v1/jira{R:1}" />
+        </rule>
+"@
+        }
+        'BobHoursWebhook' {
+            return @"
+        <rule name="BobHoursWebhook" stopProcessing="true">
+          <match url="^bob/v1/hours(.*)" ignoreCase="true" />
+          <action type="Rewrite" url="$BackendUrl/bob/v1/hours{R:1}" />
+        </rule>
+"@
+        }
+        'BobModelsWebhook' {
+            return @"
+        <rule name="BobModelsWebhook" stopProcessing="true">
+          <match url="^bob/v1/models(.*)" ignoreCase="true" />
+          <action type="Rewrite" url="$BackendUrl/bob/v1/models{R:1}" />
+        </rule>
+"@
+        }
+        'BobJeevesAppliance' {
+            return @"
+        <rule name="BobJeevesAppliance" stopProcessing="true">
+          <match url="^jeeves(/.*)?$" ignoreCase="true" />
+          <conditions>
+            <add input="{REQUEST_URI}" pattern="/jeeves/assets/" negate="true" />
+            <add input="{REQUEST_URI}" pattern="/jeeves/commands" negate="true" />
+          </conditions>
+          <action type="Rewrite" url="$BackendUrl/jeeves{R:1}" />
+        </rule>
+"@
+        }
+        default { throw "unknown Bob owned rule: $Name" }
+    }
+}
+
+function Format-BobOwnedRuleBlock {
+    # Stable 8-space indent so upserts are idempotent (FR #8803).
+    param([Parameter(Mandatory = $true)][string]$RuleXml)
+    $lines = New-Object System.Collections.Generic.List[string]
+    foreach ($line in (($RuleXml.Trim()) -split "`r?`n")) {
+        $t = $line.Trim()
+        if (-not $t) { continue }
+        [void]$lines.Add('        ' + $t)
+    }
+    return [string]::Join("`n", $lines.ToArray())
+}
+
+function Set-BobOwnedRewriteRule {
+    # Replace or insert one owned rule by name. Leaves every other rule untouched.
+    param(
+        [Parameter(Mandatory = $true)][string]$Cfg,
+        [Parameter(Mandatory = $true)][string]$Name,
+        [Parameter(Mandatory = $true)][string]$RuleXml
+    )
+    # Include leading indent on the line so replace does not stack spaces each run.
+    $pattern = '(?ms)^[ \t]*<rule\s+name="' + [regex]::Escape($Name) + '"[^>]*>.*?</rule>'
+    $formatted = Format-BobOwnedRuleBlock -RuleXml $RuleXml
+    if ([regex]::IsMatch($Cfg, $pattern)) {
+        return [regex]::Replace($Cfg, $pattern, $formatted, 1)
+    }
+    # Replace the whole </rules> line (including indent) so inserts do not stack spaces.
+    if ([regex]::IsMatch($Cfg, '(?m)^[ \t]*</rules>')) {
+        return [regex]::Replace($Cfg, '(?m)^[ \t]*</rules>', ($formatted + "`n" + '      </rules>'), 1)
+    }
+    return $Cfg
+}
+
+function Write-BobWebhooksRollback {
+    param(
+        [Parameter(Mandatory = $true)][string]$WebConfigPath,
+        [Parameter(Mandatory = $true)][string]$BackupPath,
+        [Parameter(Mandatory = $true)][string]$RollbackPath
+    )
+    $bakEsc = $BackupPath.Replace("'", "''")
+    $cfgEsc = $WebConfigPath.Replace("'", "''")
+    $body = @"
+#Requires -Version 5.1
+# FR #8803: restore web.config from Install-BobWebhooks backup.
+`$ErrorActionPreference = 'Stop'
+`$bak = '$bakEsc'
+`$cfg = '$cfgEsc'
+if (-not (Test-Path -LiteralPath `$bak)) { throw "backup missing: `$bak" }
+Copy-Item -LiteralPath `$bak -Destination `$cfg -Force
+Write-Host "INFO restored `$cfg from `$bak"
+"@
+    [IO.File]::WriteAllText($RollbackPath, $body, [Text.UTF8Encoding]::new($false))
+}
+
+$script:BobOwnedRuleNames = @(
+    'BobReportWebhook',
+    'BobDigestWebhook',
+    'BobGitWebhook',
+    'BobIntakeWebhook',
+    'BobJiraWebhook',
+    'BobHoursWebhook',
+    'BobModelsWebhook',
+    'BobJeevesAppliance'
+)
+
 # FR #7517: extracted kits ship www/ beside the installer; checkouts keep ..\www\irc-ntsa.
 $kitWww = Join-Path $PSScriptRoot 'www'
 $wwwSrcDefault = if ((-not $WwwSource) -and (Test-Path -LiteralPath (Join-Path $kitWww 'index.html'))) {
@@ -151,109 +298,44 @@ $wwwSrcDefault = if ((-not $WwwSource) -and (Test-Path -LiteralPath (Join-Path $
 }
 $wwwSrc = if ($WwwSource) { $WwwSource } else { $wwwSrcDefault }
 if ($WhatIf) {
-    Write-Host "WhatIf would write rewrite rules to $webConfig backend=$Backend"
-    Write-Host "WhatIf FR #7414/#7442 www publish from $wwwSrc -> $PhysicalPath : site.css, favicon.ico, downloads/, jeeves/commands/, docs/, index.html"
+    Write-Host "WhatIf would write Bob* rewrite rules in $webConfig backend=$Backend (websocket rules untouched)"
+    if ($doPublishWww) {
+        Write-Host "WhatIf FR #7414/#7442 www publish from $wwwSrc -> $PhysicalPath : site.css, favicon.ico, downloads/, jeeves/commands/, docs/, index.html"
+    } else {
+        Write-Host "WhatIf FR #8803 skipping www publish (pass -PublishWww or -SiteKit)"
+    }
     return
 }
 
-# FR #7465: backup the published tree before this run so a failed site-kit deploy can roll back.
+# FR #7465: full tree backup only when publishing www/site-kit.
 $siteKitBak = Join-Path (Split-Path -Parent $PhysicalPath) ((Split-Path -Leaf $PhysicalPath) + '.site-kit-bak')
-if (Test-Path -LiteralPath $siteKitBak) {
-    Remove-Item -LiteralPath $siteKitBak -Recurse -Force
-}
-if (Test-Path -LiteralPath $PhysicalPath) {
-    Copy-Item -LiteralPath $PhysicalPath -Destination $siteKitBak -Recurse -Force
-} else {
-    New-Item -ItemType Directory -Force -Path $siteKitBak | Out-Null
+if ($doPublishWww) {
+    if (Test-Path -LiteralPath $siteKitBak) {
+        Remove-Item -LiteralPath $siteKitBak -Recurse -Force
+    }
+    if (Test-Path -LiteralPath $PhysicalPath) {
+        Copy-Item -LiteralPath $PhysicalPath -Destination $siteKitBak -Recurse -Force
+    } else {
+        New-Item -ItemType Directory -Force -Path $siteKitBak | Out-Null
+    }
 }
 try {
 if ($env:BOB_WEBHOOKS_FAIL_AFTER_BACKUP -eq '1') {
     throw 'FR #7465 forced site-kit failure'
 }
 
+$rollbackPs1 = Join-Path $PhysicalPath 'ROLLBACK-BobWebhooks.ps1'
 if (Test-Path -LiteralPath $webConfig) {
     $raw = Get-Content -LiteralPath $webConfig -Raw -ErrorAction Stop
-    # Force backend port alignment away from ephemeral 19781
-    $updated = $raw -replace '127\.0\.0\.1:\d+', ([uri]$Backend).Authority
-    if ($updated -notmatch 'bob/v1/intake') {
-        # Insert intake/jira rules before closing </rules> if rewrite exists
-        if ($updated -match '</rules>') {
-            $extra = @"
-        <rule name="BobIntakeWebhook" stopProcessing="true">
-          <match url="^bob/v1/intake(.*)" ignoreCase="true" />
-          <action type="Rewrite" url="$Backend/bob/v1/intake{R:1}" />
-        </rule>
-        <rule name="BobJiraWebhook" stopProcessing="true">
-          <match url="^bob/v1/jira(.*)" ignoreCase="true" />
-          <action type="Rewrite" url="$Backend/bob/v1/jira{R:1}" />
-        </rule>
-"@
-            $updated = $updated -replace '</rules>', ($extra + '</rules>')
-        } else {
-            $updated = $rewriteXml
+    # FR #8803: never blanket-replace 127.0.0.1:<port> (that retargeted WsircWebSocket7999 / IrcWebSocket7999).
+    $updated = $raw
+    if ($updated -notmatch '<rewrite>' -or $updated -notmatch '</rules>') {
+        $updated = $rewriteXml
+    } else {
+        foreach ($rn in $script:BobOwnedRuleNames) {
+            $ruleXml = Get-BobOwnedRuleXml -Name $rn -BackendUrl $Backend
+            $updated = Set-BobOwnedRewriteRule -Cfg $updated -Name $rn -RuleXml $ruleXml
         }
-    }
-    if ($updated -notmatch 'bob/v1/digest' -and $updated -match '</rules>') {
-        # Public GET /bob/v1/digest (same body as /bob/v1/report). Idempotent: only added when missing.
-        $digestRule = @"
-        <rule name="BobDigestWebhook" stopProcessing="true">
-          <match url="^bob/v1/digest$" ignoreCase="true" />
-          <action type="Rewrite" url="$Backend/bob/v1/digest" />
-        </rule>
-"@
-        $updated = $updated -replace '</rules>', ($digestRule + '</rules>')
-    }
-    if ($updated -notmatch 'bob/v1/hours' -and $updated -match '</rules>') {
-        # FR #3450: hours webhook (create/list/summary/export + heartbeat/close/withdraw).
-        $hoursRule = @"
-        <rule name="BobHoursWebhook" stopProcessing="true">
-          <match url="^bob/v1/hours(.*)" ignoreCase="true" />
-          <action type="Rewrite" url="$Backend/bob/v1/hours{R:1}" />
-        </rule>
-"@
-        $updated = $updated -replace '</rules>', ($hoursRule + '</rules>')
-    }
-    if ($updated -notmatch 'bob/v1/models' -and $updated -match '</rules>') {
-        # FR #8707 / MRB #8766: GET /bob/v1/models public IIS front door.
-        $modelsRule = @"
-        <rule name="BobModelsWebhook" stopProcessing="true">
-          <match url="^bob/v1/models(.*)" ignoreCase="true" />
-          <action type="Rewrite" url="$Backend/bob/v1/models{R:1}" />
-        </rule>
-"@
-        $updated = $updated -replace '</rules>', ($modelsRule + '</rules>')
-    }
-    if ($updated -notmatch 'BobJeevesAppliance' -and $updated -match '</rules>') {
-        # FR #6903: /jeeves appliance login -> bobcallback (FR #6815/6818).
-        # FR #7414 / #7413: skip static /jeeves/commands (and assets) for IIS.
-        $jeevesRule = @"
-        <rule name="BobJeevesAppliance" stopProcessing="true">
-          <match url="^jeeves(/.*)?$" ignoreCase="true" />
-          <conditions>
-            <add input="{REQUEST_URI}" pattern="/jeeves/assets/" negate="true" />
-            <add input="{REQUEST_URI}" pattern="/jeeves/commands" negate="true" />
-          </conditions>
-          <action type="Rewrite" url="$Backend/jeeves{R:1}" />
-        </rule>
-"@
-        $updated = $updated -replace '</rules>', ($jeevesRule + '</rules>')
-    }
-    if ($updated -match 'BobJeevesAppliance' -and ($updated -notmatch 'jeeves/assets/' -or $updated -notmatch 'jeeves/commands')) {
-        $jeevesRuleUp = @"
-        <rule name="BobJeevesAppliance" stopProcessing="true">
-          <match url="^jeeves(/.*)?$" ignoreCase="true" />
-          <conditions>
-            <add input="{REQUEST_URI}" pattern="/jeeves/assets/" negate="true" />
-            <add input="{REQUEST_URI}" pattern="/jeeves/commands" negate="true" />
-          </conditions>
-          <action type="Rewrite" url="$Backend/jeeves{R:1}" />
-        </rule>
-"@
-        $updated = [regex]::Replace(
-            $updated,
-            '(?s)<rule name="BobJeevesAppliance".*?</rule>',
-            $jeevesRuleUp.TrimEnd()
-        )
     }
     if ($updated -notmatch 'fileExtension="\.ico"') {
         $icoAllow = '<add fileExtension=".ico" allowed="true" />'
@@ -266,33 +348,56 @@ if (Test-Path -LiteralPath $webConfig) {
         }
     }
     # FR #7442 / #7460: .ico MIME via a single <staticContent> (merge; never append a second).
-    $backup = "$webConfig.fr7460.bak"
-    Copy-Item -LiteralPath $webConfig -Destination $backup -Force
-    try {
-        $updated = Ensure-IcoStaticContent -Cfg $updated
-        $probe = New-Object System.Xml.XmlDocument
-        $probe.XmlResolver = $null
-        $probe.LoadXml($updated)
-        $sc = $probe.SelectNodes('//*[local-name()="staticContent"]')
-        if ($sc.Count -gt 1) {
-            throw "FR #7460 validation failed: $($sc.Count) staticContent sections"
+    $updated = Ensure-IcoStaticContent -Cfg $updated
+    $probe = New-Object System.Xml.XmlDocument
+    $probe.XmlResolver = $null
+    $probe.LoadXml($updated)
+    $sc = $probe.SelectNodes('//*[local-name()="staticContent"]')
+    if ($sc.Count -gt 1) {
+        throw "FR #7460 validation failed: $($sc.Count) staticContent sections"
+    }
+    $icoMaps = $probe.SelectNodes('//*[local-name()="mimeMap" and @fileExtension=".ico"]')
+    if ($icoMaps.Count -gt 1) {
+        throw "FR #7460 validation failed: $($icoMaps.Count) .ico mimeMap entries"
+    }
+    # Canonicalize newlines so a second run is a no-op (FR #8803 idempotent).
+    $normText = {
+        param($t)
+        $s = [string]$t
+        $s = $s -replace "`r`n", "`n"
+        $s = $s -replace "`r", "`n"
+        # Collapse runs of spaces before newlines introduced by rule upsert formatting.
+        $s = [regex]::Replace($s, '[ \t]+\n', "`n")
+        return $s.TrimEnd() + "`n"
+    }
+    $updated = & $normText $updated
+    $rawNorm = & $normText $raw
+    if ($updated -eq $rawNorm) {
+        Write-Host "INFO web.config Bob* rules already current (no write)"
+    } else {
+        $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
+        $backup = "$webConfig.fr8803.$stamp.bak"
+        Copy-Item -LiteralPath $webConfig -Destination $backup -Force
+        Write-BobWebhooksRollback -WebConfigPath $webConfig -BackupPath $backup -RollbackPath $rollbackPs1
+        try {
+            # Write LF-canonical text; IIS accepts LF in web.config.
+            [IO.File]::WriteAllText($webConfig, $updated, [Text.UTF8Encoding]::new($false))
+            Write-Host "INFO updated $webConfig (backup $backup; ROLLBACK $rollbackPs1)"
+        } catch {
+            if (Test-Path -LiteralPath $backup) {
+                Copy-Item -LiteralPath $backup -Destination $webConfig -Force
+                Write-Host "WARN FR #8803 rolled back web.config from backup: $($_.Exception.Message)"
+            }
+            throw
         }
-        $icoMaps = $probe.SelectNodes('//*[local-name()="mimeMap" and @fileExtension=".ico"]')
-        if ($icoMaps.Count -gt 1) {
-            throw "FR #7460 validation failed: $($icoMaps.Count) .ico mimeMap entries"
-        }
-        [IO.File]::WriteAllText($webConfig, $updated, [Text.UTF8Encoding]::new($false))
-        Write-Host "INFO updated $webConfig"
-    } catch {
-        if (Test-Path -LiteralPath $backup) {
-            Copy-Item -LiteralPath $backup -Destination $webConfig -Force
-            Write-Host "WARN FR #7460 rolled back web.config from backup: $($_.Exception.Message)"
-        }
-        throw
     }
 } else {
     [IO.File]::WriteAllText($webConfig, $rewriteXml, [Text.UTF8Encoding]::new($false))
-    Write-Host "INFO created $webConfig"
+    $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
+    $backup = "$webConfig.fr8803.$stamp.bak"
+    Copy-Item -LiteralPath $webConfig -Destination $backup -Force
+    Write-BobWebhooksRollback -WebConfigPath $webConfig -BackupPath $backup -RollbackPath $rollbackPs1
+    Write-Host "INFO created $webConfig (backup $backup; ROLLBACK $rollbackPs1)"
 }
 
 # Ensure ARR proxy enabled (best-effort; needs appcmd)
@@ -303,8 +408,9 @@ if ($hasAppcmd) {
         Write-Host "WARN could not enable ARR proxy: $($_.Exception.Message)"
     }
 }
+if ($doPublishWww) {
 # FR #6453 / #7410 / #7414 / #7442: sync static www (CSS, favicon, downloads, commands, docs) into IIS physical path.
-# Operators: re-run Install-BobWebhooks.ps1 (or compose/sync) after git pull to refresh bob.ntsa.uk www.
+# Operators: Install-BobWebhooks.ps1 -PublishWww (or -SiteKit) after git pull to refresh bob.ntsa.uk www.
 if (Test-Path -LiteralPath $wwwSrc) {
     $null = New-Item -ItemType Directory -Force -Path $PhysicalPath
     $indexSrc = Join-Path $wwwSrc 'index.html'
@@ -350,11 +456,11 @@ if (Test-Path -LiteralPath $wwwSrc) {
         }
         Copy-Item -LiteralPath $downloadsSrc -Destination $downloadsDst -Recurse -Force
         # FR #7643: stamp concrete PriorityAgent.exe hrefs (prerelease OK when that is where the installer is).
-        $stamp = Join-Path $PSScriptRoot 'Stamp-PriorityAgentDownloads.ps1'
+        $stampScript = Join-Path $PSScriptRoot 'Stamp-PriorityAgentDownloads.ps1'
         $paHtml = Join-Path $downloadsDst 'index.html'
-        if ((Test-Path -LiteralPath $stamp) -and (Test-Path -LiteralPath $paHtml)) {
+        if ((Test-Path -LiteralPath $stampScript) -and (Test-Path -LiteralPath $paHtml)) {
             try {
-                & $stamp -HtmlPath $paHtml
+                & $stampScript -HtmlPath $paHtml
             } catch {
                 Write-Warning ("FR #7643 stamp Priority Agent downloads failed: " + $_.Exception.Message)
             }
@@ -414,10 +520,13 @@ foreach ($src in $logoCands) {
 if (-not $logoStaged) {
     Write-Warning 'FR #7517 ntsa-gut-logo.png source not found'
 }
+} else {
+    Write-Host 'INFO FR #8803 skipping www/assets publish (pass -PublishWww or -SiteKit to enable)'
+}
 
 Write-Host 'INFO Install-BobWebhooks done'
 } catch {
-    if (Test-Path -LiteralPath $siteKitBak) {
+    if ($doPublishWww -and (Test-Path -LiteralPath $siteKitBak)) {
         if (Test-Path -LiteralPath $PhysicalPath) {
             Remove-Item -LiteralPath $PhysicalPath -Recurse -Force
         }
