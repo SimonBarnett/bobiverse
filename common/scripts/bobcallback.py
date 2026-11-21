@@ -5,7 +5,9 @@ Public IIS front-door GET is **/bob/v1/report** (FR #149 / FR #354) and **GET /j
 login HTML (FR #6815). Local bobcallback also serves `/bob/v1/digest` and `/digest`
 with the same JSON body; those aliases are not published through the bob.ntsa.uk IIS
 rewrite today (GET https://bob.ntsa.uk/bob/v1/digest -> 404). GET **/bob/v1/models**
-returns fleet agent Weights rows (BOB-01 / FR #8707).
+returns fleet agent Weights rows (BOB-01 / FR #8707). POST **/bob/v1/models/validate**
+checks a ``(cli, model, context, effort)`` tuple against the fail-closed
+``models-valid-combos.json`` allow-list (BOB-03 / FR #8710); it never persists.
 
 Durable POST envelopes go through webhook_queue; chair announces on #bobiverse.
 
@@ -47,6 +49,7 @@ JIRA_PATH = "/bob/v1/jira"
 HOURS_PATH = bobhours.HOURS_PATH
 BUILDS_PATH = builds_catalog.BUILDS_PATH
 MODELS_PATH = models_catalog.MODELS_PATH
+MODELS_VALIDATE_PATH = models_catalog.MODELS_VALIDATE_PATH
 DIGEST_PATH = "/bob/v1/digest"
 HEALTH_PATH = "/health"
 HEALTH_PROBE_ZEN = "jeeves-health-probe"
@@ -62,7 +65,8 @@ LISTENER_EXIT_CODE = 1
 # Public readers (IIS / browsers / UAT): use reportUrl. Local bobcallback still answers DIGEST_*.
 PUBLIC_DIGEST_PATH = REPORT_PATH
 CLI_DESCRIPTION = (
-    "POST /bob/v1/report|/bob/v1/git|/bob/v1/intake|/bob/v1/jira|/bob/v1/hours; "
+    "POST /bob/v1/report|/bob/v1/git|/bob/v1/intake|/bob/v1/jira|/bob/v1/hours|"
+    "/bob/v1/models/validate; "
     "front-door GET is /bob/v1/report|/jeeves (local bobcallback also serves /bob/v1/digest); "
     "GET /bob/v1/jira; GET /bob/v1/builds; GET /bob/v1/models; GET|POST /bob/v1/hours"
 )
@@ -70,7 +74,9 @@ ALLOW_ENV = "BOB_REPORT_ALLOW"
 DEFAULT_PORT = 7700
 # Public read paths (GET/HEAD). REPORT_PATH is also the write URL (POST).
 DIGEST_GET_PATHS = frozenset({DIGEST_PATH, DIGEST_ALIAS, REPORT_PATH})
-POST_ROUTES = frozenset({REPORT_PATH, GIT_WEBHOOK_PATH, INTAKE_PATH, JIRA_PATH, HOURS_PATH})
+POST_ROUTES = frozenset(
+    {REPORT_PATH, GIT_WEBHOOK_PATH, INTAKE_PATH, JIRA_PATH, HOURS_PATH, MODELS_VALIDATE_PATH}
+)
 # Report/intake/jira stay open (no shared password). Git may optionally verify HMAC (FR #7467).
 MAX_BODY_BYTES = 1024 * 1024          # hard cap for any POST body (413 above)
 MAX_REPORT_BYTES = 256 * 1024         # /bob/v1/report bodies are tiny status docs
@@ -1054,6 +1060,11 @@ def handle_request(
         return handle_intake_post(headers, body, home, peer_ip, filer=filer, rate=intake_rate)
     if route == JIRA_PATH:
         return handle_jira_post(headers, body, home, filer=filer, rate=report_rate)
+    # BOB-03 / FR #8710: non-persisting combo validate (peer-gated like other POSTs).
+    if route == MODELS_VALIDATE_PATH:
+        code, payload = models_catalog.handle_models_validate(body, home)
+        stash_response_headers([("Content-Type", "application/json; charset=utf-8")])
+        return code, payload
     return handle_report_post(headers, body, home, briefer_nick, filer=filer, rate=report_rate)
 
 
@@ -1631,7 +1642,8 @@ def main() -> None:
     host, port = httpd.server_address[:2]
     print(
         f"INFO report listen {host}:{port} GET {REPORT_PATH}|{DIGEST_PATH}|{JIRA_PATH}|{BUILDS_PATH}|{MODELS_PATH}|{HOURS_PATH} "
-        f"POST {REPORT_PATH} POST {GIT_WEBHOOK_PATH} POST {INTAKE_PATH} POST {JIRA_PATH} POST {HOURS_PATH}",
+        f"POST {REPORT_PATH} POST {GIT_WEBHOOK_PATH} POST {INTAKE_PATH} POST {JIRA_PATH} POST {HOURS_PATH} "
+        f"POST {MODELS_VALIDATE_PATH}",
         flush=True,
     )
     try:

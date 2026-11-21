@@ -22,6 +22,7 @@ Auth: **report / intake / jira / hours need no password** (v0.1.16). Nothing to 
 | GET | `/bob/v1/hours/export?user=…&format=csv\|json` | Export entries |
 | GET | `/bob/v1/builds` | Build catalog JSON array from digest-home `builds-catalog.json` (FR #8490); **open, no secret** |
 | GET | `/bob/v1/models` | Fleet agent Weights rows JSON (`{"agents":[…]}`) from digest-home `models-catalog.json` or built-in defaults (BOB-01 / FR #8707); **open, no secret** |
+| POST | `/bob/v1/models/validate` | Fail-closed `(cli, model, context, effort)` check against digest-home `models-valid-combos.json` (BOB-03 / FR #8710); **peer allow-list** (`BOB_REPORT_ALLOW`); never persists |
 | GET | `/health` | Local BobCallback liveness (FR #1136): `ok`, `lock_age_s`, `last_digest_write`; **not** published on the IIS front-door |
 
 ### Machine field `grok_account` (FR #6143)
@@ -77,10 +78,50 @@ curl -sS "https://bob.ntsa.uk/bob/v1/builds"
 
 ### GET models / Weights rows (BOB-01 / FR #8707)
 
-Serves `{"agents":[…]}` for the Weights grid (Agent / CLI / Model / Context / Effort). Missing or empty digest-home `models-catalog.json` returns built-in rows for Plan, Priority, Jeeves, Grok, Cursor, Opencode, Opencode-Free with empty `model` / `context` / `effort` placeholders (seed/valid-combos are later BOB-03/04; PUT/PATCH is BOB-02). Example seed: `common/defaults/models-catalog.example.json`.
+Serves `{"agents":[…]}` for the Weights grid (Agent / CLI / Model / Context / Effort). Missing or empty digest-home `models-catalog.json` returns built-in rows for Plan, Priority, Jeeves, Grok, Cursor, Opencode, Opencode-Free with empty `model` / `context` / `effort` placeholders (valid-combos BOB-03; seed values BOB-04; PUT/PATCH is BOB-02). Example seed: `common/defaults/models-catalog.example.json`.
 
 ```bash
 curl -sS "https://bob.ntsa.uk/bob/v1/models"
+```
+
+### POST models validate (BOB-03 / FR #8710)
+
+Non-persisting check of one `(cli, model, context, effort)` tuple against digest-home **`models-valid-combos.json`** (separate from Weights `models-catalog.json` so BOB-02 PUT cannot wipe the allow-list). Fail-closed: missing, unreadable, malformed, or empty catalogue → **503** `{"error":"catalog_unavailable"}` (never accepts). Peer gate: same `BOB_REPORT_ALLOW` allow-list as other POSTs (403 off-list). Does not write, enqueue, or touch `models-catalog.json` / tray stores.
+
+**Request JSON keys**
+
+| key | required | notes |
+|-----|----------|-------|
+| `cli` | yes | `grok` \| `cursor` \| `opencode` (case-folded; launchable worker agents only — not `aider`) |
+| `model` | yes | Exact catalogue model id (placeholders like `auto` / `$model` and fuel-pool ids fail unless listed) |
+| `context` | yes | Exact catalogue context string (no token-window invention) |
+| `effort` | when the row lists efforts | Exact match after case-fold only. Empty `efforts` on a row means effort must be absent (non-Grok CLIs). Never uses `normalize_effort`. |
+
+**Catalogue schema** (digest-home `models-valid-combos.json`): top-level `version` (int) and `clis` object keyed by `grok`/`cursor`/`opencode`; each value is a list of `{model, contexts[], efforts[]}`. Duplicate model rows within one CLI keep the first. Invalid rows are skipped. BOB-04 owns real seed values; until then the catalogue is unavailable and validate returns 503. Fixture-shaped example: `common/defaults/models-valid-combos.example.json`.
+
+**Responses**
+
+| status | body | when |
+|--------|------|------|
+| 200 | `{"ok":true}` | combination listed |
+| 400 | `{"error":"malformed"}` | non-object body or wrong types / missing required keys |
+| 400 | `{"error":"<code>","field":"<name>"}` | invalid combo |
+| 403 | empty | peer not on `BOB_REPORT_ALLOW` |
+| 405 | empty | non-POST |
+| 503 | `{"error":"catalog_unavailable"}` | catalogue missing/malformed/empty |
+
+Stable error codes: `unknown_cli`, `unknown_model`, `invalid_context`, `invalid_effort`, `effort_not_supported`, `catalog_unavailable`, `malformed`.
+
+**Rejection log (S1 tray/log evidence):** BobCallback stdout one line per reject:
+
+`INFO models validate reject error=<code> field=<name|-> cli=… model=… context=… effort=…`
+
+(never the raw request body). On the chair / digest host this is the BobCallback / Jeeves service log (NSSM or scheduled-task stdout for the `:7700` listener).
+
+```bash
+curl -sS -X POST "https://bob.ntsa.uk/bob/v1/models/validate" \
+  -H "Content-Type: application/json" \
+  -d "{\"cli\":\"grok\",\"model\":\"fixture-grok-a\",\"context\":\"128k\",\"effort\":\"medium\"}"
 ```
 
 ### POST report (status / ops)
