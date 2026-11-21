@@ -2445,7 +2445,9 @@ def seat_matches_require_machine(nick: str, required: str) -> bool:
     parsed = bobreport.parse_seat_nick(nick)
     if not parsed:
         return False
-    seat_mid = bobreport.fold_machine_id(parsed[0])
+    # FR #8697: fold legacy chair-host seat ids (ionos) before DIGEST_ID_FOLD so
+    # ionos-<pid> seats match walrus pins after the #8653 cutover.
+    seat_mid = bobreport.fold_machine_id(fold_chair_host(parsed[0]))
     return bool(seat_mid) and seat_mid == req_mid
 
 

@@ -2,7 +2,7 @@
 <#
 .SYNOPSIS
   Idempotent IIS URL Rewrite rules for bobcallback on 127.0.0.1:7700
-  (report, digest, git, intake, jira, hours, jeeves appliance). Site default: irc-ntsa.
+  (report, digest, git, intake, jira, hours, models, jeeves appliance). Site default: irc-ntsa.
 #>
 [CmdletBinding()]
 param(
@@ -38,6 +38,7 @@ $rules = @(
     @{ Name = 'BobIntakeWebhook'; Match = '^bob/v1/intake'; Url = "$Backend/bob/v1/intake" },
     @{ Name = 'BobJiraWebhook'; Match = '^bob/v1/jira'; Url = "$Backend/bob/v1/jira" },
     @{ Name = 'BobHoursWebhook'; Match = '^bob/v1/hours'; Url = "$Backend/bob/v1/hours" },
+    @{ Name = 'BobModelsWebhook'; Match = '^bob/v1/models'; Url = "$Backend/bob/v1/models" },
     @{ Name = 'BobJeevesAppliance'; Match = '^jeeves(/.*)?$'; Url = "$Backend/jeeves" }
 )
 
@@ -71,6 +72,10 @@ $rewriteXml = @"
         <rule name="BobHoursWebhook" stopProcessing="true">
           <match url="^bob/v1/hours(.*)" ignoreCase="true" />
           <action type="Rewrite" url="$Backend/bob/v1/hours{R:1}" />
+        </rule>
+        <rule name="BobModelsWebhook" stopProcessing="true">
+          <match url="^bob/v1/models(.*)" ignoreCase="true" />
+          <action type="Rewrite" url="$Backend/bob/v1/models{R:1}" />
         </rule>
         <rule name="BobJeevesAppliance" stopProcessing="true">
           <match url="^jeeves(/.*)?$" ignoreCase="true" />
@@ -207,6 +212,16 @@ if (Test-Path -LiteralPath $webConfig) {
         </rule>
 "@
         $updated = $updated -replace '</rules>', ($hoursRule + '</rules>')
+    }
+    if ($updated -notmatch 'bob/v1/models' -and $updated -match '</rules>') {
+        # FR #8707 / MRB #8766: GET /bob/v1/models public IIS front door.
+        $modelsRule = @"
+        <rule name="BobModelsWebhook" stopProcessing="true">
+          <match url="^bob/v1/models(.*)" ignoreCase="true" />
+          <action type="Rewrite" url="$Backend/bob/v1/models{R:1}" />
+        </rule>
+"@
+        $updated = $updated -replace '</rules>', ($modelsRule + '</rules>')
     }
     if ($updated -notmatch 'BobJeevesAppliance' -and $updated -match '</rules>') {
         # FR #6903: /jeeves appliance login -> bobcallback (FR #6815/6818).

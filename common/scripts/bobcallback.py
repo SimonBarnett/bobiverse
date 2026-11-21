@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""Digest callback: report/git/intake/jira/hours; public GET digest (#174, #149).
+"""Digest callback: report/git/intake/jira/hours/models; public GET digest (#174, #149).
 
 Public IIS front-door GET is **/bob/v1/report** (FR #149 / FR #354) and **GET /jeeves**
 login HTML (FR #6815). Local bobcallback also serves `/bob/v1/digest` and `/digest`
 with the same JSON body; those aliases are not published through the bob.ntsa.uk IIS
-rewrite today (GET https://bob.ntsa.uk/bob/v1/digest -> 404).
+rewrite today (GET https://bob.ntsa.uk/bob/v1/digest -> 404). GET **/bob/v1/models**
+returns fleet agent Weights rows (BOB-01 / FR #8707).
 
 Durable POST envelopes go through webhook_queue; chair announces on #bobiverse.
 
@@ -35,6 +36,7 @@ import bobreport
 import builds_catalog
 import intake
 import jira_webhook
+import models_catalog
 import webhook_queue
 
 REPORT_PATH = "/bob/v1/report"
@@ -44,6 +46,7 @@ INTAKE_PATH = "/bob/v1/intake"
 JIRA_PATH = "/bob/v1/jira"
 HOURS_PATH = bobhours.HOURS_PATH
 BUILDS_PATH = builds_catalog.BUILDS_PATH
+MODELS_PATH = models_catalog.MODELS_PATH
 DIGEST_PATH = "/bob/v1/digest"
 HEALTH_PATH = "/health"
 HEALTH_PROBE_ZEN = "jeeves-health-probe"
@@ -61,7 +64,7 @@ PUBLIC_DIGEST_PATH = REPORT_PATH
 CLI_DESCRIPTION = (
     "POST /bob/v1/report|/bob/v1/git|/bob/v1/intake|/bob/v1/jira|/bob/v1/hours; "
     "front-door GET is /bob/v1/report|/jeeves (local bobcallback also serves /bob/v1/digest); "
-    "GET /bob/v1/jira; GET /bob/v1/builds; GET|POST /bob/v1/hours"
+    "GET /bob/v1/jira; GET /bob/v1/builds; GET /bob/v1/models; GET|POST /bob/v1/hours"
 )
 ALLOW_ENV = "BOB_REPORT_ALLOW"
 DEFAULT_PORT = 7700
@@ -1009,6 +1012,13 @@ def handle_request(
         if verb == "HEAD":
             return code, b""
         return code, payload
+    # BOB-01 / FR #8707: fleet agent Weights rows (models-catalog.json or built-in defaults).
+    if verb in ("GET", "HEAD") and route == MODELS_PATH:
+        code, payload = models_catalog.handle_models_get(home)
+        stash_response_headers([("Content-Type", "application/json; charset=utf-8")])
+        if verb == "HEAD":
+            return code, b""
+        return code, payload
     if verb in ("GET", "HEAD") and route.startswith(INTAKE_PATH + "/"):
         iid = route[len(INTAKE_PATH) + 1 :].strip("/")
         if not iid or "/" in iid:
@@ -1620,7 +1630,7 @@ def main() -> None:
         raise SystemExit(1) from exc
     host, port = httpd.server_address[:2]
     print(
-        f"INFO report listen {host}:{port} GET {REPORT_PATH}|{DIGEST_PATH}|{JIRA_PATH}|{BUILDS_PATH}|{HOURS_PATH} "
+        f"INFO report listen {host}:{port} GET {REPORT_PATH}|{DIGEST_PATH}|{JIRA_PATH}|{BUILDS_PATH}|{MODELS_PATH}|{HOURS_PATH} "
         f"POST {REPORT_PATH} POST {GIT_WEBHOOK_PATH} POST {INTAKE_PATH} POST {JIRA_PATH} POST {HOURS_PATH}",
         flush=True,
     )
