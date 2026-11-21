@@ -80,7 +80,10 @@ fails -> firewall/profile/NIC), **off** (no listener / service stopped), **unrea
 | Machine / class | Pitfall | What to do |
 |---|---|---|
 | MarchHare | Two NICs; only one of its addresses accepts inbound WinRM | Test by each address; report which one works; target that one. Do not "fix" the other NIC's profile |
-| Stale DNS A record | `Test-WSMan <name>` fails while `Test-WSMan <ip>` passes | Compare `Resolve-DnsName` with the target's real address. Fix only on walrus DNS, only with Si's OK: export the record first, write a ROLLBACK, change only that A record |
+| Stale DNS A record | `Test-WSMan <name>` fails while `Test-WSMan <ip>` passes | Compare `Resolve-DnsName` with the target's real address. Fix only on walrus DNS, only with Si's OK: export the record first, write a ROLLBACK, change only that A record. Seen 21 Nov: a 2021 A record still held an old VPN-era address (`<old-vpn-ip>`); editing it **in place** to `<host-ip>` (keeping its TTL and ACL, not delete + re-add) fixed the by-name check |
+| DNS client cache | After the record fix, a client still resolves `<old-vpn-ip>` | Wait out the record TTL (about 20 min on 21 Nov) and re-test. Do not flush other machines' DNS caches |
+| No reverse zone | `Resolve-DnsName <host-ip>` (PTR) returns nothing | Expected when there is no reverse zone; do not treat a missing PTR as the fault, and do not create zones |
+| NIC DNS server is not a DNS server | A fleet box's NIC points its DNS at another workstation; registration and lookups fail | Check `Get-DnsClientServerAddress`; report it with evidence. Changing the NIC DNS setting needs Si's OK |
 | walrus | NIC is on the **Public** profile, yet WinRM works because the Public WinRM rule is already on | Leave it. Never flip the profile to Private |
 | madhatter, whiterabbit | Ubuntu, no WinRM | Mark **n/a** (use SSH skills instead) |
 | joker, newver | Not reachable from the home LAN (newver is behind joker on another network) | Mark **unreachable**; never invent a route |
