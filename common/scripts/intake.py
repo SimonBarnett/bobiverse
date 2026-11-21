@@ -2807,7 +2807,12 @@ def file_submission(
                         return rec
                     except Exception as exc:
                         rec["draft_pr_error"] = f"{type(exc).__name__}: {exc}"[:500]
-                        raise
+                        rec["state"] = "queued"
+                        rec["queued"] = True
+                        _save_record(home, rec)
+                        raise GitHubDown(
+                            "skill-source lesson PR filing failed", reason="github_down"
+                        ) from exc
                 try:
                     # FR #3299: draft skill (no Lessons:) still carries the owning-repo MRB line.
                     draft_body = body
