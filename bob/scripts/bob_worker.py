@@ -886,6 +886,10 @@ def cursor_on_demand_at_limit(f: Fuel) -> bool:
     return False
 
 
+# FR #8649: explicit Cursor seats are billed to this fleet account. Label only.
+SI_NTSA_CURSOR_ACCOUNT = "si@ntsa.uk"
+
+
 def cursor_has_tokens(f: Fuel) -> bool:
     # FR #6119: at-limit on-demand means the seat cannot run Cursor work.
     if cursor_on_demand_at_limit(f):
@@ -1941,6 +1945,7 @@ def _fleet_pool_row(doc: dict, pool: str) -> Optional[dict]:
     names = {
         "opencode_go": ("opencode-go", "opencode_go"),
         "opencode_free": ("opencode-free", "opencode_free"),
+        "cursor": ("cursor",),
     }.get(pool, ())
     if not names:
         return None
@@ -2156,6 +2161,7 @@ def take_midjob_fuel(
 class Decision:
     kind: str  # cursor | grok | opencode | dialog | none | refuse | xai-auth-expired
     reason: str
+    account: str = ""
 
 
 XAI_SIGNIN_EXPIRED_ERRORS = frozenset(
@@ -2516,6 +2522,37 @@ def explicit_opencode_decision(
 
 
 
+def explicit_cursor_si_decision(
+    cursor_cmd: Optional[str],
+    fleet_digest: Optional[dict] = None,
+    *,
+    now: Optional[float] = None,
+) -> Decision:
+    """Explicit Cursor uses the si@ntsa.uk fleet pool, never the local reading.
+
+    A missing or stale fleet meter still starts. A fresh remaining of 0 refuses.
+    Local high/low and on-demand do not gate this path (FR #8649).
+    """
+    if not cursor_cmd:
+        return Decision("refuse", "explicit cursor: agent.cmd missing")
+    account = SI_NTSA_CURSOR_ACCOUNT
+    now_f = time.time() if now is None else float(now)
+    row = _fleet_pool_row(fleet_digest or {}, "cursor")
+    fill = fleet_pool_fill(row, now=now_f)
+    if fill["usable"] and int(fill["remaining"]) <= 0:
+        return Decision(
+            "refuse",
+            "explicit cursor: %s pool exhausted (remaining=0)" % account,
+            account=account,
+        )
+    rem = fill["remaining"] if fill["usable"] else "unknown"
+    return Decision(
+        "cursor",
+        "explicit cursor (account=%s remaining=%s)" % (account, rem),
+        account=account,
+    )
+
+
 def explicit_agent_decision(
     requested: str,
     fuel: Fuel,
@@ -2525,6 +2562,8 @@ def explicit_agent_decision(
     *,
     auth_present: bool,
     start_model: str = "",
+    fleet_digest: Optional[dict] = None,
+    now: Optional[float] = None,
 ) -> Decision:
     """One requested agent. ``refuse`` never starts a different agent."""
     agent_id = normalize_explicit_agent(requested)
@@ -2541,17 +2580,8 @@ def explicit_agent_decision(
             "explicit grok (weekly pct=%s state=%s)" % (fuel.grok_pct, fuel.grok_state),
         )
     if agent_id == "cursor":
-        if not cursor_cmd:
-            return Decision("refuse", "explicit cursor: agent.cmd missing")
-        if not cursor_has_tokens(fuel):
-            return Decision(
-                "refuse",
-                "explicit cursor: no tokens (high=%s low=%s)" % (fuel.cursor_high, fuel.cursor_low),
-            )
-        return Decision(
-            "cursor",
-            "explicit cursor (high=%s low=%s)" % (fuel.cursor_high, fuel.cursor_low),
-        )
+        # Local fuel is ignored. Automatic selection still uses cursor_has_tokens.
+        return explicit_cursor_si_decision(cursor_cmd, fleet_digest, now=now)
     if agent_id == "opencode":
         return explicit_opencode_decision(
             fuel, opencode_cmd, auth_present=auth_present, start_model=start_model
@@ -2735,6 +2765,8 @@ def resolve_seat_decision(
     start_model: str = "",
     signin_state: Optional[str] = None,
     machine: str = "",
+    fleet_digest: Optional[dict] = None,
+    now: Optional[float] = None,
 ) -> Decision:
     """Apply an explicit agent request, else the automatic Grok → Cursor → OpenCode order.
 
@@ -2752,6 +2784,8 @@ def resolve_seat_decision(
             opencode_cmd,
             auth_present=auth_present,
             start_model=mid,
+            fleet_digest=fleet_digest,
+            now=now,
         )
         if out.kind == "grok" and not xai_signin_ok:
             state = (signin_state or "expired").strip().lower()
@@ -11959,6 +11993,7 @@ def post_digest_seat_kind(
     assignable: bool | None = None,
     stale_build: dict | None = None,
     last_exit: dict | None = None,
+    cursor_account: str = "",
 ) -> bool:
     """POST digest worker kind so the chair can skip OpenCode for MRB/UAT (FR #6134).
 
@@ -12024,6 +12059,9 @@ def post_digest_seat_kind(
     eff = str(start_effort or "").strip().lower()
     if eff:
         payload["start_effort"] = eff
+    # FR #8649: email label only. Never copy an arbitrary account string.
+    if (cursor_account or "").strip() == SI_NTSA_CURSOR_ACCOUNT:
+        payload["cursor_account"] = SI_NTSA_CURSOR_ACCOUNT
     if assignable is False:
         payload["assignable"] = False
         payload["error"] = "needs-sign-in"
@@ -19539,6 +19577,9 @@ def run_plan(args, log: Log) -> int:
         xai_signin_ok=signin_ok,
         signin_state=signin_state,
         machine=getattr(args, "machine_id", "") or "",
+        fleet_digest=load_public_digest(
+            public_digest_path(install_root=getattr(args, "install_root", None))
+        ),
     )
     if normalize_explicit_agent(requested):
         log(f"select[plan]: explicit {normalize_explicit_agent(requested)} -> {dec.kind} - {dec.reason}")
@@ -19635,6 +19676,9 @@ def run_monitor(args, log: Log) -> int:
         xai_signin_ok=signin_ok,
         signin_state=signin_state,
         machine=getattr(args, "machine_id", "") or "",
+        fleet_digest=load_public_digest(
+            public_digest_path(install_root=getattr(args, "install_root", None))
+        ),
     )
     stopped = _explicit_refusal_exit(
         dec, log, "monitor",
@@ -19758,6 +19802,9 @@ def run_maintenance(args, log: Log, *, spawn: Optional[Callable] = None, poll_s:
         xai_signin_ok=signin_ok,
         signin_state=signin_state,
         machine=getattr(args, "machine_id", "") or "",
+        fleet_digest=load_public_digest(
+            public_digest_path(install_root=getattr(args, "install_root", None))
+        ),
     )
     stopped = _explicit_refusal_exit(
         dec, log, "maintenance",
@@ -19883,6 +19930,9 @@ def run_agent(args, log: Log) -> int:
         xai_signin_ok=signin_ok,
         signin_state=signin_state,
         machine=getattr(args, "machine_id", "") or "",
+        fleet_digest=load_public_digest(
+            public_digest_path(install_root=getattr(args, "install_root", None))
+        ),
     )
     # FR #7485: always log the seat decision after explicit override (auto already logged in _choose).
     if normalize_explicit_agent(requested):
@@ -20015,6 +20065,7 @@ def run_agent(args, log: Log) -> int:
             cost_tier=cost_tier,
             start_effort=seat_effort,
             worker_build=build,
+            cursor_account=getattr(dec, "account", "") or "",
             log=log,
         )
     except Exception as e:
@@ -20042,7 +20093,7 @@ def run_agent(args, log: Log) -> int:
     )
     sup.publish_exit_digest = lambda last_exit: post_digest_seat_kind(
         machine=machine, pid=pid, nick=nick, kind=kind, model=seat_model,
-        last_exit=last_exit, log=log,
+        last_exit=last_exit, cursor_account=getattr(dec, "account", "") or "", log=log,
     )
     # FR #2782: a hotpatched install exe must reach this seat at its next idle point.
     sup.stale_build_check = lambda: stale_build_reason(sys.executable, _install_root)
@@ -20062,6 +20113,7 @@ def run_agent(args, log: Log) -> int:
             worker_build=build,
             stale_build=status,
             last_exit=sup.last_exit,
+            cursor_account=getattr(dec, "account", "") or "",
             log=log,
         )
 
@@ -20124,6 +20176,7 @@ def run_agent(args, log: Log) -> int:
             start_effort=actual_effort,
             worker_build=build,
             state=None if grok_ok else "needs_sign_in",
+            cursor_account=getattr(dec, "account", "") or "",
             log=log,
             assignable=bool(getattr(sup, "_session_assignable", False)),
             last_exit=sup.last_exit,
@@ -20579,6 +20632,9 @@ def main(argv: Optional[list] = None) -> int:
             args.agent, dec, fuel, cc, ge, oe, auth_present=auth_present,
             xai_signin_ok=signin_ok, signin_state=signin_state,
             machine=getattr(args, "machine_id", "") or "",
+            fleet_digest=load_public_digest(
+                public_digest_path(install_root=getattr(args, "install_root", None))
+            ),
         )
         if args.mode == "plan":
             cwd = str(Path(args.install_root) / "plan")
