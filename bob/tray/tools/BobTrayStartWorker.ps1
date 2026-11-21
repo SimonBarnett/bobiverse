@@ -200,7 +200,8 @@ function Resolve-BobTrayOpencodeSlotModel {
   param([string]$Root, [Parameter(Mandatory)][string]$Slot)
   $slot = ([string]$Slot).Trim().ToLowerInvariant()
   $freeDef = 'opencode/deepseek-v4.1-flash-free'
-  $paidDef = 'opencode/claude-sonnet-4'
+  # FR #6429 / tray default.json models.opencodePaid (never invent a free-pool leaf).
+  $paidDef = 'opencode-go/deepseek-v4-pro'
   $free = $freeDef
   $paid = $paidDef
   if (Get-Command Get-BobTrayClickModelConfigPaths -ErrorAction SilentlyContinue) {

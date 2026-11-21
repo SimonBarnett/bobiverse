@@ -91,3 +91,8 @@ def test_fr8610_tray_launch_passes_model_for_slot():
     assert "$Launch $mode $agent $model" in ps1
     assert "param($mode, $agent, $model)" in watch
     assert "-Model $model" in watch
+    # Paid fallback must match tray default.json models.opencodePaid (FR #6429).
+    assert "opencode-go/deepseek-v4-pro" in ps1
+    assert "opencode/claude-sonnet-4" not in ps1
+    cfg = (root / "bob" / "tray" / "config" / "default.json").read_text(encoding="utf-8")
+    assert "opencode-go/deepseek-v4-pro" in cfg
