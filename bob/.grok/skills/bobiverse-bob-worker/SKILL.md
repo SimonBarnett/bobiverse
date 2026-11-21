@@ -228,6 +228,7 @@ Generalised from 21 harvested lessons that never reached this book (audit for FR
 - **Fleet identity:** the fleet id is the registered fleet machine name; ionos's Windows COMPUTERNAME is WIN-MPRE8VI4U6U, which folds to ionos. Seat nicks are `machine-pid`, and `canonical_worker_nick` must parse them without the registry. The assign wire uses the full IRC nick, never a digest display alias. Unit tests must register machine ids, or seat parsing returns None. (4 lessons: harvest #1296, #1067, #1069, 1 held intake row)
 
 ## Harvested lessons (intake)
+- Older intake bullets that no longer fit this file are in lessons.md next to this skill (skill-dag cap 65536 bytes).
 - **FR #7315 / FR #7355:** WinPS children need both `PSModulePath` = 5.1 Modules and `PSModuleAutoLoadingPreference=All`; `prepare_seat_child_env` / `winps51` import-fail fallbacks must set both so `Get-FileHash` autoloads. Do not park this playbook under `harvest/SKILL.md` (moved from harvest tip #7359).
 - **FR #7189:** `--list-agents` is cheap (cache-only fuel); tray timeouts/errors keep last-good or enabled-unknown rows; only missing exe or true missing `--list-agents` (exit 2 + unrecognized arguments) greys Agents; fuel never greys a start option (PR #7220).
 - **FR #7187:** persist `workerStartEffort` (default low) with `workerStartModels` in tray-models.json; Grok launch passes `--reasoning-effort`; OpenCode defaults to free Flash and skips Go/paid machine config unless operator env is set; hello/digest/`launch-record.json` report actual model+effort (PR #7218).
@@ -311,6 +312,5 @@ Generalised from 21 harvested lessons that never reached this book (audit for FR
 - OpenCode finish/done-miss/corrective text must follow job type: MRB posts PASS/FAIL (fix PR on FAIL only); FIX pushes existing head; FR/UAT still gh pr create (FR #8248 / PR #8263).
 - Done-miss FINISH remind must release BoredEmitter._cv around the inject callback (same as failed-turn retry) so start_agent holding RLock then set_ready cannot deadlock (FR #8268 / PR #8272).
 - On a docs wire FR, grep every copy of the old phrase in the touched file. A green string test can pass on the updated section while an earlier Deliverables bullet still states the retired wire.
-- OpenCode auto-select dialog can report opencode.exe missing while resolve_opencode_cmd finds %LOCALAPPDATA%\Programs\opencode\opencode.exe; explicit --agent opencode still starts --- make dialog use the same resolve path (FR #8412).
-- When flamingo cannot SMB to redqueen, use WinRM hostname redqueen with admin creds; copy CI bob-worker artifact to C:\ai\bob\worker then restart OpenCode seats so LocalAppData run-copy unpacks opencode_seat_contract. recycleseat.disabled only blocks ear !recycleseat; hung --describe-launch blocks the tray startworker timer.
 - Machine recycle must stop_managed_workers (taskkill /T on bob-worker seat roots) before watch/tray restart so OpenCode grandchildren die with the seat (FR #8597).
+- When a free-pool pause is recorded (app-log scan or prior refusal), fold it into free_known_zero before branch selection; a positive catalogue free reading must not hide the pause and starve the seat to model=-.
