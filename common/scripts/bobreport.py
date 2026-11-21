@@ -1281,6 +1281,9 @@ def _coerce_worker(mid: str, pid: str, raw: object) -> dict:
     start_effort = str(ent.get("start_effort") or "").strip()
     if start_effort:
         out["start_effort"] = start_effort
+    cursor_account = str(ent.get("cursor_account") or "").strip()
+    if cursor_account == "si@ntsa.uk":
+        out["cursor_account"] = cursor_account
     if isinstance(ent.get("last_exit"), dict):
         out["last_exit"] = coerce_last_exit(ent["last_exit"])
     paused = str(ent.get("fuel_paused_until") or "").strip()
@@ -1449,6 +1452,9 @@ def _coerce_worker_list(raw: object, *, now: float | None = None) -> list[dict]:
         start_effort = str(ent.get("start_effort") or "").strip()
         if start_effort:
             row["start_effort"] = start_effort
+        cursor_account = str(ent.get("cursor_account") or "").strip()
+        if cursor_account == "si@ntsa.uk":
+            row["cursor_account"] = cursor_account
         # FR #8155: activity heartbeat separate from state-change ``updated``.
         last_progress = str(ent.get("last_progress") or "").strip()
         if last_progress:
@@ -1690,6 +1696,9 @@ def _model_fields_from_payload(payload: dict, prev: dict | None = None) -> dict:
     start_effort = str(payload.get("start_effort") or prev.get("start_effort") or "").strip()
     if start_effort:
         out["start_effort"] = start_effort
+    cursor_account = str(payload.get("cursor_account") or prev.get("cursor_account") or "").strip()
+    if cursor_account == "si@ntsa.uk":
+        out["cursor_account"] = cursor_account
     last_exit = payload.get("last_exit", prev.get("last_exit"))
     if isinstance(last_exit, dict):
         out["last_exit"] = coerce_last_exit(last_exit)
@@ -1709,7 +1718,7 @@ def _apply_model_fields_to_worker_list(ent: dict, nick: str, fields: dict) -> No
         idx = len(rows) - 1
     else:
         row = dict(rows[idx])
-    for key in ("kind", "start_model", "configured_model", "model_mismatch", "cost_tier", "start_effort", "agent", "model", "last_exit"):
+    for key in ("kind", "start_model", "configured_model", "model_mismatch", "cost_tier", "start_effort", "agent", "model", "last_exit", "cursor_account"):
         if key in fields:
             row[key] = fields[key]
     rows[idx] = row

@@ -2911,6 +2911,9 @@ function Format-BobTrayWorkerLine {
         $tag = if ($kind -and $sm) { '{0}/{1}' -f $kind, $sm } elseif ($sm) { $sm } else { $kind }
         if ($effort) { $tag = $tag + '/' + $effort }
         if ($mismatch -and $sm) { $tag = $tag + '!' }
+        $acct = ''
+        if ($Worker.PSObject.Properties.Name -contains 'cursor_account') { $acct = ([string]$Worker.cursor_account).Trim() }
+        if ($acct -eq 'si@ntsa.uk') { $tag = $tag + ' ' + $acct }
         $text = ('[{0}] {1}' -f $tag, $text)
     }
     return ('{0}: {1}' -f $nick, $text)
@@ -2958,6 +2961,7 @@ function Get-BobTrayDigestWorkers {
                 if ($val.PSObject.Properties.Name -contains 'model_mismatch') { $row.model_mismatch = [bool]$val.model_mismatch }
                 if ($val.configured_model) { $row.configured_model = [string]$val.configured_model }
                 if ($val.start_effort) { $row.start_effort = [string]$val.start_effort }
+                if ($val.cursor_account -eq 'si@ntsa.uk') { $row.cursor_account = 'si@ntsa.uk' }
             }
             $st = ([string]$row.state).Trim().ToLowerInvariant()
             if ($st -ne 'doing' -and $st -ne 'idle' -and $st -ne 'offered') { continue }
@@ -2977,6 +2981,7 @@ function Get-BobTrayDigestWorkers {
             if ($w.PSObject.Properties.Name -contains 'model_mismatch') { $row.model_mismatch = [bool]$w.model_mismatch }
             if ($w.configured_model) { $row.configured_model = [string]$w.configured_model }
             if ($w.start_effort) { $row.start_effort = [string]$w.start_effort }
+            if ($w.cursor_account -eq 'si@ntsa.uk') { $row.cursor_account = 'si@ntsa.uk' }
             # FR #8155: activity heartbeat fields for tray progress age.
             if ($w.PSObject.Properties.Name -contains 'last_progress' -and $w.last_progress) {
                 $row.last_progress = [string]$w.last_progress
