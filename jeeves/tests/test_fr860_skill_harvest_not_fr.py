@@ -80,5 +80,5 @@ def test_ionos_recycle_cues_still_stamp_after_skill_harvest():
             title="x",
             body="Recycle/recompose Jeeves on ionos; prune leftover rows from queue.json.",
         )
-        == "ionos"
+        == "walrus"
     )

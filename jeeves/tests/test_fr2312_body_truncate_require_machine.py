@@ -43,7 +43,7 @@ def test_fr2312_body_for_queue_preserves_trailing_ionos_pin():
         repo="SimonBarnett/bobiverse",
         ident="#999901",
     )
-    assert mid == "ionos"
+    assert mid == "walrus"
 
 
 def test_fr2312_append_unaccepted_stamps_and_preserves_pin():
@@ -63,7 +63,7 @@ def test_fr2312_append_unaccepted_stamps_and_preserves_pin():
     )
     assert gitclaim._append_unaccepted(doc, claim) == "added"
     row = doc["unaccepted"][0]
-    assert row.get("require_machine") == "ionos"
+    assert row.get("require_machine") == "walrus"
     assert _has_ionos_pin(str(row.get("body") or ""))
     assert gitclaim.row_blocked_for_machine(row, "marchhare-35016") is True
     # FR #2525: parse_seat_nick only accepts machines in seat_machine_ids(); pin the
@@ -73,12 +73,12 @@ def test_fr2312_append_unaccepted_stamps_and_preserves_pin():
     real_ids = bobreport.seat_machine_ids
 
     def _ids():
-        return set(real_ids()) | {"win-mpre8vi4u6u", "ionos"}
+        return set(real_ids()) | {"win-mpre8vi4u6u", "ionos", "walrus"}
 
     bobreport.seat_machine_ids = _ids  # type: ignore[assignment]
     try:
-        assert gitclaim.row_blocked_for_machine(row, "win-mpre8vi4u6u-1") is False
-        assert gitclaim.row_blocked_for_machine(row, "ionos-1") is False
+        assert gitclaim.row_blocked_for_machine(row, "win-mpre8vi4u6u-1") is True
+        assert gitclaim.row_blocked_for_machine(row, "walrus-1") is False
     finally:
         bobreport.seat_machine_ids = real_ids  # type: ignore[assignment]
 
@@ -104,7 +104,7 @@ def test_fr2312_naive_truncate_would_miss_pin_but_helper_does_not():
             repo="SimonBarnett/bobiverse",
             ident="#999903",
         )
-        == "ionos"
+        == "walrus"
     )
 
 
@@ -117,7 +117,7 @@ def test_fr2312_issue_pin_1714_belt_and_suspenders():
         repo="SimonBarnett/bobiverse",
         ident="#1714",
     )
-    assert mid == "ionos"
+    assert mid == "walrus"
     row = {
         "repo": "SimonBarnett/bobiverse",
         "id": "#1714",

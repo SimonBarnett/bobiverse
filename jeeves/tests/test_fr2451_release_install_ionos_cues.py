@@ -42,7 +42,7 @@ def test_fr2451_body_install_on_ionos_pins():
             body="acceptance: install on ionos and smoke /health",
             labels=("feature-request",),
         )
-        == "ionos"
+        == "walrus"
     )
 
 
@@ -53,7 +53,7 @@ def test_fr2451_body_install_plus_smoke_on_ionos_pins():
             body="Assert-ReleaseAssets, then install+smoke on ionos if green.",
             labels=("feature-request",),
         )
-        == "ionos"
+        == "walrus"
     )
 
 
@@ -64,7 +64,7 @@ def test_fr2451_title_install_on_ionos_pins():
             body="MSIs under release-out",
             labels=("feature-request",),
         )
-        == "ionos"
+        == "walrus"
     )
 
 

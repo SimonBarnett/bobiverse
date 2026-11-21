@@ -43,7 +43,7 @@ def test_infer_require_machine_dedicated_pin_line_and_needs_label_still_pin():
             body="require_machine: ionos\n\nPlease bounce ircJeeves after the patch.",
             labels=("bug",),
         )
-        == "ionos"
+        == "walrus"
     )
     assert (
         gitclaim.infer_require_machine(
@@ -59,7 +59,7 @@ def test_infer_require_machine_dedicated_pin_line_and_needs_label_still_pin():
             body="",
             labels=("needs-ionos",),
         )
-        == "ionos"
+        == "walrus"
     )
     assert (
         gitclaim.infer_require_machine(

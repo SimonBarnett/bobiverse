@@ -52,7 +52,7 @@ def test_fr3610_outage_down_still_stamps_ionos():
             body="BobCallback DOWN; heal and restart on ionos",
             labels=("via-intake",),
         )
-        == "ionos"
+        == "walrus"
     )
 
 
@@ -63,7 +63,7 @@ def test_fr3610_outage_502_still_stamps_ionos():
             body="HTTP 502 Bad Gateway from BobCallback while flushing harvest-outbox",
             labels=("via-intake",),
         )
-        == "ionos"
+        == "walrus"
     )
 
 
@@ -75,5 +75,5 @@ def test_fr3610_no_listen_heal_still_stamps_ionos():
             body="no LISTEN on 127.0.0.1:7700; heal BobCallback",
             labels=("feature-request",),
         )
-        == "ionos"
+        == "walrus"
     )

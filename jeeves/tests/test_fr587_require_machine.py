@@ -28,11 +28,11 @@ def test_infer_wp0_live_cues():
 def test_infer_needs_ionos_label_and_cue():
     assert (
         gitclaim.infer_require_machine(title="x", body="y", labels=("needs-ionos",))
-        == "ionos"
+        == "walrus"
     )
     assert (
         gitclaim.infer_require_machine(title="chair-outbox drain fix", body="")
-        == "ionos"
+        == "walrus"
     )
     # FR #6407: require_machine:ce-priority-dev1 label is retired.
     assert (

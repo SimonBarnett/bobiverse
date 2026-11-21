@@ -31,14 +31,14 @@ def test_fr6592_operator_pin_bobiverse_gates_offer(tmp_path, monkeypatch):
         tmp_path, "SimonBarnett/bobiverse", "#6592", "ionos"
     )
     assert out["ok"] is True
-    assert out["require_machine"] == "ionos"
+    assert out["require_machine"] == "walrus"
     row = gitclaim.load_unaccepted(tmp_path)[0]
-    assert row["require_machine"] == "ionos"
+    assert row["require_machine"] == "walrus"
     assert str(row.get("require_machine_operator") or "").strip() in {"1", "true", "yes"}
-    assert gitclaim.row_require_machine(row) == "ionos"
+    assert gitclaim.row_require_machine(row) == "walrus"
     gitclaim._stamp_require_machine(row)
-    assert row["require_machine"] == "ionos"
-    assert gitclaim.row_require_machine(row) == "ionos"
+    assert row["require_machine"] == "walrus"
+    assert gitclaim.row_require_machine(row) == "walrus"
 
 
 def test_fr6592_stale_non_operator_stamp_still_clears():

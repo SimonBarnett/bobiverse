@@ -12,7 +12,7 @@ def test_hostile_smoke_on_ionos_body_pins():
             body="After Assert-ReleaseAssets, smoke on ionos briefly.",
             labels=("feature-request",),
         )
-        == "ionos"
+        == "walrus"
     )
 
 
@@ -33,10 +33,10 @@ def test_hostile_marchhare_blocked_when_pinned_ionos():
         body="acceptance: install on ionos",
         labels=("feature-request",),
     )
-    assert pin == "ionos"
+    assert pin == "walrus"
     # Legacy short nicks parse without a digest roster (DIGEST_ID_FOLD ionos→win-mpre*).
     assert gitclaim.seat_matches_require_machine("w-mh-1", pin) is False
-    assert gitclaim.seat_matches_require_machine("w-io-7764", pin) is True
+    assert gitclaim.seat_matches_require_machine("w-io-7764", pin) is False
 
 
 def test_hostile_source_mentions_2451():

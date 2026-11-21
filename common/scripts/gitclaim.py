@@ -1953,6 +1953,20 @@ _REQUIRE_MACHINE_NON_MACHINE = frozenset(
         "gate",
     }
 )
+# FR #8653: Ergo and the Jeeves chair host moved from ionos to walrus.
+# Legacy ionos require_machine cues still match, then fold onto walrus.
+_LIVE_CHAIR_HOST = "walrus"
+_LEGACY_CHAIR_HOSTS = frozenset({"ionos", "bob-ionos"})
+
+
+def fold_chair_host(mid: str) -> str:
+    """Map a retired chair-host id onto the live chair. Other ids stay put."""
+    m = (mid or "").strip().lower()
+    if m in _LEGACY_CHAIR_HOSTS:
+        return _LIVE_CHAIR_HOST
+    return m
+
+
 # Explicit cue -> fleet machine id (normalized lowercase).
 # FR #1508: title/label cues vs body cues. Bare machine names / require_machine=
 # in an issue body often appear as evidence about *other* pins and must not
@@ -1961,46 +1975,46 @@ _REQUIRE_MACHINE_NON_MACHINE = frozenset(
 # is an intentional pin — honor it. Inline evidence prose still must not pin.
 _REQUIRE_MACHINE_TITLE_CUES: tuple[tuple[re.Pattern[str], str], ...] = (
     # FR #6407: ce-priority-dev1 title cues retired (seat gone; Si 2026-11-10).
-    (re.compile(r"(?i)\brequire_machine\s*=\s*ionos\b"), "ionos"),
+    (re.compile(r"(?i)\brequire_machine\s*=\s*(?:ionos|walrus)\b"), "walrus"),
     # FR #5030 / #4422-class: "without/missing require_machine=redqueen" offer-gap
     # meta titles must not self-pin the filing to redqueen.
     (re.compile(
         r"(?i)(?<!without\s)(?<!missing\s)\brequire_machine\s*=\s*redqueen\b"
     ), "redqueen"),
     # FR #4422: "missing needs-ionos stamp" meta-FRs must not self-pin to ionos.
-    (re.compile(r"(?i)(?<!missing\s)\bneeds-ionos\b"), "ionos"),
+    (re.compile(r"(?i)(?<!missing\s)\bneeds-(?:ionos|walrus)\b"), "walrus"),
     (re.compile(r"(?i)(?<!missing\s)(?<!without\s)\bneeds-redqueen\b"), "redqueen"),
     # FR #5030: a-search hasresults monitor / redeploy titles (not bare "redqueen")
     (re.compile(r"(?i)\ba-hasresults-monitor\b"), "redqueen"),
     (re.compile(r"(?i)\bRegister-HasresultsMonitorService\b"), "redqueen"),
-    (re.compile(r"(?i)\bchair[- ]outbox\b"), "ionos"),
+    (re.compile(r"(?i)\bchair[- ]outbox\b"), "walrus"),
     # FR #1550: monitor idle+ungated / ircJeeves StartPending filings are chair-host ops
-    (re.compile(r"(?i)\b(?:irc)?jeeves\b.{0,60}\bstartpending\b"), "ionos"),
-    (re.compile(r"(?i)\bstartpending\b.{0,60}\b(?:irc)?jeeves\b"), "ionos"),
-    (re.compile(r"(?i)\bidle seats?\b.{0,120}\bungated offerable\b"), "ionos"),
-    (re.compile(r"(?i)\bungated offerable\b.{0,120}\bidle seats?\b"), "ionos"),
+    (re.compile(r"(?i)\b(?:irc)?jeeves\b.{0,60}\bstartpending\b"), "walrus"),
+    (re.compile(r"(?i)\bstartpending\b.{0,60}\b(?:irc)?jeeves\b"), "walrus"),
+    (re.compile(r"(?i)\bidle seats?\b.{0,120}\bungated offerable\b"), "walrus"),
+    (re.compile(r"(?i)\bungated offerable\b.{0,120}\bidle seats?\b"), "walrus"),
     # FR #1899: title-level intake/BobCallback 502 ops filings
-    (re.compile(r"(?i)\bintake\b.{0,40}\b(?:BobCallback|ARR)\b.{0,40}\b502\b"), "ionos"),
-    (re.compile(r"(?i)\b(?:BobCallback|ARR)\b.{0,40}\bintake\b.{0,40}\b502\b"), "ionos"),
-    (re.compile(r"(?i)\bintake\b.{0,60}\b502\b.{0,40}\b(?:Bad Gateway|harvest)"), "ionos"),
+    (re.compile(r"(?i)\bintake\b.{0,40}\b(?:BobCallback|ARR)\b.{0,40}\b502\b"), "walrus"),
+    (re.compile(r"(?i)\b(?:BobCallback|ARR)\b.{0,40}\bintake\b.{0,40}\b502\b"), "walrus"),
+    (re.compile(r"(?i)\bintake\b.{0,60}\b502\b.{0,40}\b(?:Bad Gateway|harvest)"), "walrus"),
     # FR #2451: release pack titles that say install/smoke on ionos
-    (re.compile(r"(?i)\binstall(?:\s*\+\s*smoke|\+smoke)?\s+on\s+ionos\b"), "ionos"),
+    (re.compile(r"(?i)\binstall(?:\s*\+\s*smoke|\+smoke)?\s+on\s+ionos\b"), "walrus"),
     # FR #3129: Sync/compose ircJeeves on ionos (allowlist / intake 403 class of #3122)
-    (re.compile(r"(?i)\bionos\b.{0,80}\b(?:sync(?:/compose)?|compose)\b.{0,80}\b(?:irc)?jeeves\b"), "ionos"),
-    (re.compile(r"(?i)\b(?:sync(?:/compose)?|compose)\b.{0,80}\b(?:irc)?jeeves\b.{0,40}\bionos\b"), "ionos"),
-    (re.compile(r"(?i)\bSync-BobiverseFromRepo\b.{0,80}\b(?:irc)?jeeves\b"), "ionos"),
-    (re.compile(r"(?i)\b(?:irc)?jeeves\b.{0,80}\bSync-BobiverseFromRepo\b"), "ionos"),
+    (re.compile(r"(?i)\bionos\b.{0,80}\b(?:sync(?:/compose)?|compose)\b.{0,80}\b(?:irc)?jeeves\b"), "walrus"),
+    (re.compile(r"(?i)\b(?:sync(?:/compose)?|compose)\b.{0,80}\b(?:irc)?jeeves\b.{0,40}\bionos\b"), "walrus"),
+    (re.compile(r"(?i)\bSync-BobiverseFromRepo\b.{0,80}\b(?:irc)?jeeves\b"), "walrus"),
+    (re.compile(r"(?i)\b(?:irc)?jeeves\b.{0,80}\bSync-BobiverseFromRepo\b"), "walrus"),
     # FR #4343: ionos !build / Jeeves install lag / hotpatch|ff-update of chair install tree
     # Note: !build has no word-boundary before '!' (punctuation); do not use \b!build.
-    (re.compile(r"(?i)\bionos\b.{0,100}!build\b"), "ionos"),
-    (re.compile(r"(?i)!build\b.{0,100}\bionos\b"), "ionos"),
-    (re.compile(r"(?i)\bionos\b.{0,80}\b(?:irc)?jeeves\b.{0,80}\binstall\b"), "ionos"),
-    (re.compile(r"(?i)\b(?:irc)?jeeves\b.{0,60}\binstall\b.{0,80}\blags?\s+main\b"), "ionos"),
-    (re.compile(r"(?i)\b(?:hotpatch|ff-update|ff[- ]only)\b.{0,120}\b(?:ionos\s+)?(?:irc)?jeeves\b.{0,80}\binstall\b"), "ionos"),
+    (re.compile(r"(?i)\bionos\b.{0,100}!build\b"), "walrus"),
+    (re.compile(r"(?i)!build\b.{0,100}\bionos\b"), "walrus"),
+    (re.compile(r"(?i)\bionos\b.{0,80}\b(?:irc)?jeeves\b.{0,80}\binstall\b"), "walrus"),
+    (re.compile(r"(?i)\b(?:irc)?jeeves\b.{0,60}\binstall\b.{0,80}\blags?\s+main\b"), "walrus"),
+    (re.compile(r"(?i)\b(?:hotpatch|ff-update|ff[- ]only)\b.{0,120}\b(?:ionos\s+)?(?:irc)?jeeves\b.{0,80}\binstall\b"), "walrus"),
 )
 # FR #1824 / #4512: dedicated pin lines (MULTILINE). Intentional pins, not evidence prose.
 _REQUIRE_MACHINE_DEDICATED_PIN_CUES: tuple[tuple[re.Pattern[str], str], ...] = (
-    (re.compile(r"(?im)^\s*[`*]*require_machine\s*[:=]\s*ionos\b"), "ionos"),
+    (re.compile(r"(?im)^\s*[`*]*require_machine\s*[:=]\s*(?:ionos|walrus)\b"), "walrus"),
     # FR #6407: dedicated ce-priority-dev1 / ce-priority-dev pin lines retired.
     (re.compile(r"(?im)^\s*[`*]*require_machine\s*[:=]\s*flamingo\b"), "flamingo"),
     (re.compile(r"(?im)^\s*[`*]*require_machine\s*[:=]\s*marchhare\b"), "marchhare"),
@@ -2010,61 +2024,61 @@ _REQUIRE_MACHINE_DEDICATED_PIN_CUES: tuple[tuple[re.Pattern[str], str], ...] = (
 _REQUIRE_MACHINE_BODY_SOFT_CUES: tuple[tuple[re.Pattern[str], str], ...] = (
     # FR #6407: WP0 / AllowedComputer / PRIORITY_WP0_INSTANCE DEV1 soft cues retired.
     # FR #852: recycle/recompose live ircJeeves / prune chair queue on ionos
-    (re.compile(r"(?i)\b(?:recycle|recompose)\b.{0,60}\b(?:irc)?jeeves\b"), "ionos"),
-    (re.compile(r"(?i)\b(?:irc)?jeeves\b.{0,60}\b(?:recycle|recompose|recycled)\b"), "ionos"),
+    (re.compile(r"(?i)\b(?:recycle|recompose)\b.{0,60}\b(?:irc)?jeeves\b"), "walrus"),
+    (re.compile(r"(?i)\b(?:irc)?jeeves\b.{0,60}\b(?:recycle|recompose|recycled)\b"), "walrus"),
     # FR #3129: Sync/compose (or Sync-BobiverseFromRepo) ircJeeves on ionos.
     # Do not bare-match Sync-BobiverseFromRepo alone (bob/airc Sync on any fleet box).
-    (re.compile(r"(?i)\b(?:sync(?:/compose)?|compose)\b.{0,80}\b(?:irc)?jeeves\b"), "ionos"),
-    (re.compile(r"(?i)\b(?:irc)?jeeves\b.{0,80}\b(?:sync(?:/compose)?|compose)\b"), "ionos"),
-    (re.compile(r"(?i)\bSync-BobiverseFromRepo\b.{0,80}\b(?:irc)?jeeves\b"), "ionos"),
-    (re.compile(r"(?i)\b(?:irc)?jeeves\b.{0,80}\bSync-BobiverseFromRepo\b"), "ionos"),
-    (re.compile(r"(?i)\bOn\s+ionos\s*:\s*Sync-BobiverseFromRepo\b"), "ionos"),
-    (re.compile(r"(?i)\bprune\b.{0,80}\bqueue\.json\b"), "ionos"),
-    (re.compile(r"(?i)\bqueue\.json\b.{0,80}\b(?:prune|on\s+ionos)\b"), "ionos"),
+    (re.compile(r"(?i)\b(?:sync(?:/compose)?|compose)\b.{0,80}\b(?:irc)?jeeves\b"), "walrus"),
+    (re.compile(r"(?i)\b(?:irc)?jeeves\b.{0,80}\b(?:sync(?:/compose)?|compose)\b"), "walrus"),
+    (re.compile(r"(?i)\bSync-BobiverseFromRepo\b.{0,80}\b(?:irc)?jeeves\b"), "walrus"),
+    (re.compile(r"(?i)\b(?:irc)?jeeves\b.{0,80}\bSync-BobiverseFromRepo\b"), "walrus"),
+    (re.compile(r"(?i)\bOn\s+ionos\s*:\s*Sync-BobiverseFromRepo\b"), "walrus"),
+    (re.compile(r"(?i)\bprune\b.{0,80}\bqueue\.json\b"), "walrus"),
+    (re.compile(r"(?i)\bqueue\.json\b.{0,80}\b(?:prune|on\s+ionos)\b"), "walrus"),
     # FR #1363: BobCallback principal / SYSTEM vs Admin .bobiverse lives on the chair host
-    (re.compile(r"(?i)\bBobCallback\b.{0,120}\bSYSTEM\b"), "ionos"),
-    (re.compile(r"(?i)\bSYSTEM\b.{0,120}\bBobCallback\b"), "ionos"),
-    (re.compile(r"(?i)\bBobCallback\b.{0,160}\.bobiverse\b"), "ionos"),
-    (re.compile(r"(?i)\bBobCallback\b.{0,80}\bprincipal\b"), "ionos"),
+    (re.compile(r"(?i)\bBobCallback\b.{0,120}\bSYSTEM\b"), "walrus"),
+    (re.compile(r"(?i)\bSYSTEM\b.{0,120}\bBobCallback\b"), "walrus"),
+    (re.compile(r"(?i)\bBobCallback\b.{0,160}\.bobiverse\b"), "walrus"),
+    (re.compile(r"(?i)\bBobCallback\b.{0,80}\bprincipal\b"), "walrus"),
     # FR #1550 / #1559: monitor check evidence / missing shop OFFER after StartPending.
     # Bare Invoke-JeevesMonitorCheck alone is too broad (docs/skills); require ops context.
     (re.compile(
         r"(?i)\bInvoke-JeevesMonitorCheck\b.{0,200}\b(?:idle_seats|StartPending|offerable|no shop OFFER)\b"
-    ), "ionos"),
+    ), "walrus"),
     (re.compile(
         r"(?i)\b(?:idle_seats|StartPending|offerable|no shop OFFER)\b.{0,200}\bInvoke-JeevesMonitorCheck\b"
-    ), "ionos"),
-    (re.compile(r"(?i)\bno shop OFFER\b"), "ionos"),
-    (re.compile(r"(?i)\bchair[- ]outbox\b.{0,100}\b(?:OFFER|!bored|GIT announce)"), "ionos"),
+    ), "walrus"),
+    (re.compile(r"(?i)\bno shop OFFER\b"), "walrus"),
+    (re.compile(r"(?i)\bchair[- ]outbox\b.{0,100}\b(?:OFFER|!bored|GIT announce)"), "walrus"),
     # FR #1899: intake/ARR/BobCallback 502 ops live on the Ergo/chair host (not flamingo)
-    (re.compile(r"(?i)\b(?:intake|/bob/v1/intake)\b.{0,140}\b(?:502|Bad Gateway)\b"), "ionos"),
-    (re.compile(r"(?i)\b(?:502|Bad Gateway)\b.{0,140}\b(?:intake|/bob/v1/intake|BobCallback|harvest-outbox)\b"), "ionos"),
+    (re.compile(r"(?i)\b(?:intake|/bob/v1/intake)\b.{0,140}\b(?:502|Bad Gateway)\b"), "walrus"),
+    (re.compile(r"(?i)\b(?:502|Bad Gateway)\b.{0,140}\b(?:intake|/bob/v1/intake|BobCallback|harvest-outbox)\b"), "walrus"),
     # FR #3610: outage/ops wording only — bare :7700 or LISTEN in design prose
     # (e.g. Hours webhook FR #3450 "BobCallback (default 127.0.0.1:7700)") must not pin.
     (re.compile(
         r"(?i)\bBobCallback\b.{0,160}\b(?:502|Bad Gateway|DOWN|not[- ]listening|no LISTEN|restart|recycle)\b"
-    ), "ionos"),
+    ), "walrus"),
     (re.compile(
         r"(?i)\b(?:502|Bad Gateway|DOWN|not[- ]listening|no LISTEN|restart|recycle)\b.{0,160}\bBobCallback\b"
-    ), "ionos"),
-    (re.compile(r"(?i)\b(?:ARR|reverse[- ]proxy)\b.{0,140}\b(?:intake|BobCallback|/bob/v1)\b"), "ionos"),
-    (re.compile(r"(?i)\b(?:intake|BobCallback|/bob/v1)\b.{0,140}\b(?:ARR|reverse[- ]proxy)\b"), "ionos"),
-    (re.compile(r"(?i)\bharvest-outbox\b.{0,100}\b(?:502|Bad Gateway|KEPT)\b"), "ionos"),
+    ), "walrus"),
+    (re.compile(r"(?i)\b(?:ARR|reverse[- ]proxy)\b.{0,140}\b(?:intake|BobCallback|/bob/v1)\b"), "walrus"),
+    (re.compile(r"(?i)\b(?:intake|BobCallback|/bob/v1)\b.{0,140}\b(?:ARR|reverse[- ]proxy)\b"), "walrus"),
+    (re.compile(r"(?i)\bharvest-outbox\b.{0,100}\b(?:502|Bad Gateway|KEPT)\b"), "walrus"),
     # FR #2451: release pack FRs that install/smoke on ionos (not bare release-out)
-    (re.compile(r"(?i)\binstall(?:\s*\+\s*smoke|\+smoke)?\s+on\s+ionos\b"), "ionos"),
-    (re.compile(r"(?i)\bsmoke\s+on\s+ionos\b"), "ionos"),
+    (re.compile(r"(?i)\binstall(?:\s*\+\s*smoke|\+smoke)?\s+on\s+ionos\b"), "walrus"),
+    (re.compile(r"(?i)\bsmoke\s+on\s+ionos\b"), "walrus"),
     # FR #2512: Pack-Airc / Pack-BobiverseRelease -Product airc near Assert or ionos install/smoke
     (re.compile(
         r"(?i)\bPack-Airc\b.{0,220}\b(?:Assert-ReleaseAssets|install(?:\s*\+\s*smoke|\+smoke)?\s+on\s+ionos)\b"
-    ), "ionos"),
+    ), "walrus"),
     (re.compile(
         r"(?i)\bPack-BobiverseRelease\b.{0,160}\b-Product\s+airc\b.{0,160}\b(?:Assert-ReleaseAssets|install(?:\s*\+\s*smoke|\+smoke)?\s+on\s+ionos)\b"
-    ), "ionos"),
+    ), "walrus"),
     # FR #4343: hotpatch / ff-update of the ionos Jeeves install tree (chair host only)
-    (re.compile(r"(?i)\b(?:hotpatch|ff-update|ff[- ]only)\b.{0,160}\bionos\s+(?:irc)?jeeves\s+install\b"), "ionos"),
-    (re.compile(r"(?i)\bionos\s+(?:irc)?jeeves\s+install(?:\s+tree)?\b.{0,120}\b(?:hotpatch|ff-update)\b"), "ionos"),
-    (re.compile(r"(?i)\bC:\\ai\\jeeves\\scripts\\run_bobiverse_build\.py\b"), "ionos"),
-    (re.compile(r"(?i)\b(?:hotpatch|ff-update)\b.{0,120}\bC:\\ai\\jeeves\b"), "ionos"),
+    (re.compile(r"(?i)\b(?:hotpatch|ff-update|ff[- ]only)\b.{0,160}\bionos\s+(?:irc)?jeeves\s+install\b"), "walrus"),
+    (re.compile(r"(?i)\bionos\s+(?:irc)?jeeves\s+install(?:\s+tree)?\b.{0,120}\b(?:hotpatch|ff-update)\b"), "walrus"),
+    (re.compile(r"(?i)\bC:\\ai\\jeeves\\scripts\\run_bobiverse_build\.py\b"), "walrus"),
+    (re.compile(r"(?i)\b(?:hotpatch|ff-update)\b.{0,120}\bC:\\ai\\jeeves\b"), "walrus"),
     # FR #5030: a-search redeploy / monitor / CloudWatch / SQL-log ops on redqueen
     # (do not bare-match "redqueen" alone --- host layout docs must stay unpinned).
     (re.compile(r"(?i)\ba-hasresults-monitor\b"), "redqueen"),
@@ -2101,14 +2115,14 @@ _REQUIRE_MACHINE_ISSUE_PINS: dict[tuple[str, str], str] = {
     # FR #6407: agentic_fomprep#56 and ce-priority#16 DEV1 hard pins retired.
     # FR #2312 / #1714: ionos orphan workers-map / nak-busy - body pin is past the
     # historic body[:500] truncate window; hard pin so marchhare never gets the offer.
-    ("simonbarnett/bobiverse", "#1714"): "ionos",
+    ("simonbarnett/bobiverse", "#1714"): "walrus",
     # FR #2512 / #2511: airc MSI re-pack + install/smoke on ionos (mis-offered to marchhare
     # while frozen jeeves lagged #2451 cues). Hard pin survives empty/stale queue body.
-    ("simonbarnett/bobiverse", "#2511"): "ionos",
+    ("simonbarnett/bobiverse", "#2511"): "walrus",
     # FR #2525 / #2522: maintenance butler FR pin past truncate + backtick line.
-    ("simonbarnett/bobiverse", "#2522"): "ionos",
+    ("simonbarnett/bobiverse", "#2522"): "walrus",
     # FR #3129 / #3122: ionos Sync/compose ircJeeves for intake allowlist (mis-offered to marchhare).
-    ("simonbarnett/bobiverse", "#3122"): "ionos",
+    ("simonbarnett/bobiverse", "#3122"): "walrus",
     # FR #5030 / a-search#5221: hasresults redeploy + monitor + CloudWatch + SQL logs
     # (mis-offered to flamingo; soft cues + dedicated redqueen pin land in same FR).
     ("simonbarnett/a-search", "#5221"): "redqueen",
@@ -2314,7 +2328,7 @@ def infer_require_machine(
             if mid and mid not in _REQUIRE_MACHINE_NON_MACHINE:
                 if _is_retired_require_machine(mid):
                     return ""
-                return mid
+                return fold_chair_host(mid)
         # bare needs-ionos style already covered by cue regex below via label join
     body_blob = str(body or "")
     # FR #4512: bobiverse — skip title/soft cues; honor dedicated pin lines only.
@@ -2426,6 +2440,7 @@ def seat_matches_require_machine(nick: str, required: str) -> bool:
     req = (required or "").strip().lower()
     if not req:
         return True
+    req = fold_chair_host(req)
     req_mid = bobreport.fold_machine_id(bobreport.normalize_machine_id(req) or req)
     parsed = bobreport.parse_seat_nick(nick)
     if not parsed:
@@ -3517,7 +3532,11 @@ def _stamp_require_machine(row: dict, claim: GitClaim | None = None) -> None:
     if (repo_l, id_l) in _REQUIRE_MACHINE_ISSUE_UNPINS:
         row["require_machine"] = "any"
         return
-    stamped = str(row.get("require_machine") or "").strip().lower()
+    stamped = fold_chair_host(str(row.get("require_machine") or "").strip().lower())
+    if stamped in _LEGACY_CHAIR_HOSTS or (
+        str(row.get("require_machine") or "").strip().lower() in _LEGACY_CHAIR_HOSTS
+    ):
+        row["require_machine"] = stamped
     if stamped and _is_retired_require_machine(stamped):
         stamped = "any"
         row["require_machine"] = "any"
@@ -12123,7 +12142,7 @@ def set_require_machine_job(
                 "id": ident_n,
                 "require_machine": "",
             }
-        stamp = mid
+        stamp = fold_chair_host(mid)
     rows_n = 0
     try:
         with _lock(home):
