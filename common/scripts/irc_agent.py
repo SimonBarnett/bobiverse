@@ -3248,17 +3248,20 @@ class Client:
         return self._maybe_start_installtest_runner(body, src_hint=src)
 
 
-    def _maybe_startworker(self, src: str, target: str, body: str, *, to_channel: bool, to_me: bool) -> bool:
+    def _maybe_startworker(self, src: str, target: str, body: str, *, to_channel: bool, to_me: bool,
+                            from_local_outbox: bool = False) -> bool:
         """t810u: ``!startworker [agent|plan|grok|cursor|opencode] [free|paid] [machine]`` (Bob ear). Authorise + cap + queue; the tray launches.
 
         Replies ACK/NACK on the channel it was asked in (PM when asked by PM). Another machine's ear stays silent.
+        Inbound echo of our own nick is ignored. ``from_local_outbox`` (FR #8622) decides a command
+        written to this ear's outbox, because the server does not echo our own PRIVMSG.
         """
         if getattr(self.args, "chair", False) or not bobtalk.is_fleet_bob_nick(self.original_nick):
             return False
         if startworker.parse(body) is None:
             return False
         who = (src or "").strip()
-        if not who or who.lower() in self._mine_nicks():
+        if not who or (who.lower() in self._mine_nicks() and not from_local_outbox):
             return True
         local = self._local_machine_id() or ""
         gate = getattr(self, "_sw_gate", None)
@@ -3269,9 +3272,14 @@ class Client:
         except Exception:
             chair = {"jeeves"}
         chan = bobreport.normalize_channel(target) if to_channel else ""
+        account = self._account_of(who)
+        # FR #8622: a line in this ear's outbox is host-local. Use the ear nick as the services account
+        # when WHOIS has not stored one yet (authorize requires account == bob-<machine>).
+        if from_local_outbox and not account and who.lower() in self._mine_nicks():
+            account = who.lower()
         try:
             dec = startworker.decide(
-                body=body, nick=who, account=self._account_of(who), channel=chan, local_machine=local, gate=gate,
+                body=body, nick=who, account=account, channel=chan, local_machine=local, gate=gate,
                 qdir=startworker.queue_dir(self._install_root()), home=self.home,
                 machine_of_nick=bobreport.machine_from_nick, chair_nicks=chair,
             )
@@ -3292,6 +3300,36 @@ class Client:
         else:
             self.whisper(who, dec.line)
         return True
+
+    def _maybe_local_outbox_startworker(self, line: str) -> None:
+        """FR #8622: run ``!startworker`` written to this ear's outbox. The server does not echo it back."""
+        if getattr(self.args, "chair", False):
+            return
+        try:
+            kind, norm = normalize_outbox_line(line)
+        except Exception:
+            return
+        target = ""
+        body = ""
+        if kind == "privmsg" or (norm or "").upper().startswith("PRIVMSG "):
+            rest = norm.split(" ", 1)[1] if " " in norm else ""
+            if " :" not in rest:
+                return
+            target, body = rest.split(" :", 1)
+            target = target.strip()
+        else:
+            body = norm
+            target = getattr(self, "chan", "") or ""
+        if startworker.parse(body) is None:
+            return
+        to_channel = target.startswith("#")
+        try:
+            self._maybe_startworker(
+                self.original_nick, target, body,
+                to_channel=to_channel, to_me=not to_channel, from_local_outbox=True,
+            )
+        except Exception as exc:  # noqa: BLE001 - outbox drain must survive a bad command
+            info(f"WARN local outbox startworker: {type(exc).__name__}: {exc}")
 
     def _maybe_recycleseat(self, src: str, target: str, body: str, *, to_channel: bool, to_me: bool) -> bool:
         """FR #5059: ``!recycleseat <nick> [machine]`` — ear authorises + queues; tray stops+starts."""
@@ -5998,6 +6036,8 @@ class Client:
                             prev = prev[:157] + "..."
                         info(f"INFO outbox: sent {head} ({len(w)} chars): {prev}")
                     sent.extend(wire)
+                    # FR #8622: own PRIVMSG is not echoed; decide !startworker from this outbox locally.
+                    self._maybe_local_outbox_startworker(line)
                     # FR #4796: pace *_console Commands slower than shop chat.
                     time.sleep(flood_s_for_outbox_line(line))
                 elif op:
@@ -6008,6 +6048,7 @@ class Client:
                 else:
                     self.say(line)
                     sent.append(line)
+                    self._maybe_local_outbox_startworker(line)
             except Exception as exc:  # noqa: BLE001 -- FR #5157
                 preview = scrub_cred_seal_preview(str(line))
                 if len(preview) > 160:
