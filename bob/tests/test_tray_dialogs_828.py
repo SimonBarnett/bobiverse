@@ -301,7 +301,7 @@ def test_status_window_draws_only_the_dashboard_no_hover_text_block():
 
 
 @needs_csc
-def test_tray_menu_is_status_agent_plan_acknowledge_log_restart_exit(dialogs, tmp_path):
+def test_tray_menu_is_status_agent_plan_about_log_restart_exit(dialogs, tmp_path):
     out = tmp_path / "menu.txt"
     _run(dialogs / "bob-tray.exe", "--root", str(tmp_path), "--dump-menu", str(out))
     items = out.read_text(encoding="utf-8").splitlines()
@@ -316,7 +316,8 @@ def test_tray_menu_is_status_agent_plan_acknowledge_log_restart_exit(dialogs, tm
         "Start paid model (opencode-go/deepseek-v4-pro)",
         "OpenCode",
         "Plan",
-        "Acknowledge",
+        "Seats: on",
+        "About",
         "Open log",
         "OpenCode keys",
         "Set key...",

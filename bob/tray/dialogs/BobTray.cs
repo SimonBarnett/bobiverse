@@ -925,7 +925,7 @@ namespace BobDialogs
             {
                 miSeats.Text = WorkerLauncher.SeatsOff() ? "Seats: off (seat target 0)" : "Seats: on";
             };
-            Item("Acknowledge", delegate { Acknowledge(); ShowAbout(); });
+            Item("About", delegate { Acknowledge(); ShowAbout(); });
             Item("Open log", delegate { OpenLog(); });
             // FR #6309: TipForm masked OpenCode key set/select/remove.
             ToolStripMenuItem miOcKeys = new ToolStripMenuItem("OpenCode keys");

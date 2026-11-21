@@ -3914,7 +3914,7 @@ $miAgents.Add_DropDownOpening({
     })
 $miPlan = $menu.Items.Add('Plan')
 $miPlan.Add_Click({ Start-BobTrayWorkerExe -Mode 'plan' -Trigger 'menu' })
-$miAck = $menu.Items.Add('Acknowledge')
+$miAck = $menu.Items.Add('About')
 $miLog = $menu.Items.Add('Open log')
 [void]$menu.Items.Add('-')
 $miRestart = $menu.Items.Add('Restart')
