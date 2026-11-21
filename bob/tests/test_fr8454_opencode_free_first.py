@@ -38,6 +38,50 @@ def test_free_zero_paid_positive_starts_paid_slot(tmp_path, monkeypatch):
     assert any("source=paid" in line for line in logs)
 
 
+def _pause_free_pool(state_dir, now):
+    import opencode_fuel as of
+
+    assert of.save_opencode_pauses(state_dir, {"opencode-free": now + 600})
+
+
+def test_free_catalogue_positive_but_pool_paused_starts_paid(tmp_path, monkeypatch):
+    """FR #8555: a free reading of 100 must not hide an active free-pool pause."""
+    _isolate(monkeypatch, tmp_path)
+    bw._OPENCODE_MODEL_ENV_AT_START = FREE
+    now = 1_800_000_000.0
+    _pause_free_pool(tmp_path, now)
+    env = {
+        "BOB_OPENCODE_MODEL": FREE,
+        "BOB_SEAT_MODEL_PIN": "1",
+        "LOCALAPPDATA": str(tmp_path),
+        "XDG_CONFIG_HOME": str(tmp_path),
+    }
+    fuel = bw.Fuel(opencode_free=100, opencode_go=40)
+    logs: list[str] = []
+    got = bw.resolve_opencode_model(
+        fuel, state_dir=tmp_path, now=now, env=env, log_fn=logs.append
+    )
+    assert got == PAID
+    assert any("source=paid" in line for line in logs)
+
+
+def test_free_catalogue_positive_pool_paused_go_zero_returns_none(tmp_path, monkeypatch):
+    """FR #8555: paused free + known-zero Go leaves no candidate (no model=- crash)."""
+    _isolate(monkeypatch, tmp_path)
+    bw._OPENCODE_MODEL_ENV_AT_START = FREE
+    now = 1_800_000_000.0
+    _pause_free_pool(tmp_path, now)
+    env = {
+        "BOB_OPENCODE_MODEL": FREE,
+        "BOB_SEAT_MODEL_PIN": "1",
+        "LOCALAPPDATA": str(tmp_path),
+        "XDG_CONFIG_HOME": str(tmp_path),
+    }
+    fuel = bw.Fuel(opencode_free=100, opencode_go=0)
+    got = bw.resolve_opencode_model(fuel, state_dir=tmp_path, now=now, env=env)
+    assert got is None
+
+
 def test_both_exhausted_returns_none(tmp_path, monkeypatch):
     _isolate(monkeypatch, tmp_path)
     bw._OPENCODE_MODEL_ENV_AT_START = None
