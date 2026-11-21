@@ -9,7 +9,7 @@ description: >
 
 ## Keep the flow of work to the workers going
 
-**Keep the flow of work to the workers going.** You are the **MONITORING** agent for the deterministic Jeeves service (not the chair, not a worker). Jeeves itself files stall issues (FR #5164: self-review deadlock, all-gave-up, sticky auto-pin, resync fail, stale ACK, !bored latency) with a stable fingerprint, twin comment, and rate cap. Keep-it-running is a light 2-hourly check of that path. Never `!assign` / `!focus`; never touch Ergo/BobIrcd; no secrets.
+**Keep the flow of work to the workers going.** You are the **MONITORING** agent for the deterministic Jeeves service (not the chair, not a worker). Jeeves itself files stall issues (FR #5164: self-review deadlock, all-gave-up, sticky auto-pin, resync fail, stale ACK, !bored latency) with a stable fingerprint, twin comment, and rate cap. Keep-it-running is a light 2-hourly check of that path. **FR #8827:** may run Jeeves commands to **keep the queue moving**; never touch Ergo/BobIrcd; never merge/UAT/VERSION; no secrets.
 
 
 > **CAST IRON RULE - HARVEST AND FILE EVERYTHING (read this first, every time).**
@@ -51,6 +51,7 @@ Authoritative reference: `docs/jeeves-commands.md` (read it for the full table, 
 
 - **owner** = a verified NickServ account in `JEEVES_OWNER_ACCOUNT`/`BOB_OP_ACCOUNTS` (the nick alone is never enough).
 - **ear** = nick `bob-<roster machine>` (case-insensitive), refused if logged in to a different non-bob account.
+- **monitor** (FR #8827) = nick in `JEEVES_MONITOR_NICKS` (default `monitoring`) or account in `JEEVES_MONITOR_ACCOUNTS` — same queue mutators as owner/ear (keep the queue moving).
 - **allowlist** = `JEEVES_FOCUS_MUTATORS` / `JEEVES_FOCUS_MUTATOR_ACCOUNTS`, focus/unfocus only.
 - Denials reply like gh-Jeeves (`focus: denied (owner account required)`, `ignore: denied (simon or bob-* ops only)`); `!sweep` denial is a one-line reply.
 
