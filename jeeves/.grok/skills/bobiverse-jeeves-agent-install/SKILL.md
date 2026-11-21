@@ -9,6 +9,7 @@ description: >
 depends_on:
   - bobiverse-jeeves-agent-build
   - bobiverse-jeeves-agent-monitor
+  - bobiverse-jeeves-agent-winrm
 ---
 
 # bobiverse-jeeves-agent-install
@@ -58,6 +59,9 @@ Input: a build receipt from `bobiverse-jeeves-agent-build`. Post-check: `bobiver
    (ops) completes ok with no 403s.
 7. **Receipt back.** Report: machine, installed SHA + hash, run id, backup folder, time (operator zone),
    post-check PASS/FAIL per item. Merged/tests-green is not an end-to-end PASS; say only what was observed.
+
+Remote steps need working PSRemoting from redqueen; if `New-PSSession` fails, stop and run
+`bobiverse-jeeves-agent-winrm` (check only) for that machine first.
 
 ## Walrus Jeeves exe hotpatch layout (as used 8-21 Nov 2026)
 
