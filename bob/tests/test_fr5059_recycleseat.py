@@ -78,9 +78,10 @@ def ask(
 @pytest.mark.parametrize(
     "body,want",
     [
-        ("!recycleseat marchhare-6700", ("marchhare-6700", None)),
-        ("!recycleseat flamingo-1 flamingo", ("flamingo-1", "flamingo")),
-        (":!RecycleSeat marchhare-99 #marchhare", ("marchhare-99", "marchhare")),
+        ("!recycleseat marchhare-6700", ("marchhare-6700", None, False)),
+        ("!recycleseat flamingo-1 flamingo", ("flamingo-1", "flamingo", False)),
+        (":!RecycleSeat marchhare-99 #marchhare", ("marchhare-99", "marchhare", False)),
+        ("!recycleseat flamingo-1 flamingo --force", ("flamingo-1", "flamingo", True)),
         ("!recycleseat", "usage"),
         ("!recycleseat a b c", "usage"),
         ("!recycleseats x", None),

@@ -23,17 +23,11 @@ from _common import (
 
 
 def _ensure_common() -> None:
-    here = Path(__file__).resolve().parent
-    for cand in (
-        here.parents[2] / "common" / "scripts",
-        here.parents[1] / "scripts",
-        here.parents[1] / "common" / "scripts",
-    ):
-        if (cand / "gitclaim.py").is_file():
-            p = str(cand)
-            if p not in sys.path:
-                sys.path.insert(0, p)
-            return
+    from _common import ensure_script_dir_on_path
+
+    # FR #8580 / #8591: no parents[N]; walk upward for gitclaim.py
+    ensure_script_dir_on_path("gitclaim.py")
+
 
 
 def _load_json(path: Path):

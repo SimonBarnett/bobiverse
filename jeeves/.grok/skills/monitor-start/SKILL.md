@@ -38,6 +38,7 @@ You are the **MONITORING** agent - not the chair, not a worker. Never `!assign` 
 | Focus present | `focus_present` | bobiverse missing from strict focus while unaccepted work exists (FR #1019) |
 | Focus redundant items | `focus_redundant_items` | `focus.items` keys under an already-focused repo (FR #1520 per-repo policy) |
 | Seats stuck doing | `seats_stuck_doing` | doing/offered stale busy, nak-busy loops, PermissionError log counts (FR #1019). **Report only** unless explicit `--force-orphan-busy` and `accepted` empty (harvest #1967 keep seats busy) |
+| OpenCode seats | `opencode_seats` | live GET `/bob/v1/report` flamingo `kind=opencode` stuck age / model_mismatch / week-exhausted while busy (FR #8583). **Report only** — digest alone misses remote OpenCode |
 | Stale digest | `stale_digest` | digest not updating |
 | GIVEUP loops | `giveup_loops` | same row repeatedly GIVEUP |
 | Stuck accepted | `stuck_accepted` | accepted rows not progressing |
@@ -55,6 +56,15 @@ Exit codes: **0** ok, **1** finding, **2** error. One JSON line on stdout.
 ## Report format (intake)
 
 Title: short delay symptom. Body: what / where / evidence (script JSON / exit) / fix. De-dup first. Never print secrets.
+
+
+## Non-chair hosts (FR #8579)
+
+Monitor may run on a worker box (e.g. redqueen) that has no local `~/.jeeves/queue.json`
+and no ircJeeves/BobCallback services. Those local probes **soft-pass** when live
+`GET https://irc.ntsa.uk/bob/v1/report` is fresh (`ts` within 15m) and annotate
+`non_chair_overlay` in the JSON. Prefer the ionos chair host for local service truth.
+Start-JeevesMonitor warns when the local queue file is absent; it does not refuse.
 
 ## Do not
 

@@ -148,7 +148,13 @@ class RecyclePlan:
 
 
 def build_recycle_plan(machine_id: str, *, ionos_chair: bool) -> RecyclePlan:
-    steps = ["git_pull_install", "restart_watch_bobiverse", "recycle_watch_bobtray"]
+    # FR #8597: stop seat trees (incl. OpenCode) before watch/tray restart.
+    steps = [
+        "stop_managed_workers",
+        "git_pull_install",
+        "restart_watch_bobiverse",
+        "recycle_watch_bobtray",
+    ]
     if ionos_chair and machine_id == chair_home_machine():
         steps.extend(["restart_bob_chair", "restart_bobcallback"])
     return RecyclePlan(machine_id=machine_id, ionos_chair=ionos_chair, steps=steps)
@@ -156,6 +162,7 @@ def build_recycle_plan(machine_id: str, *, ionos_chair: bool) -> RecyclePlan:
 
 @dataclass
 class RecycleHooks:
+    stop_managed_workers: Callable[[Path], None] | None = None
     git_pull: Callable[[Path], None] | None = None
     restart_watch: Callable[[Path, str], None] | None = None
     recycle_tray: Callable[[Path], None] | None = None
@@ -172,6 +179,101 @@ def _default_git_pull(repo: Path) -> None:
         encoding="utf-8",
         errors="replace",
     )
+
+
+_BOB_WORKER_EXE_RX = re.compile(r"(?i)^bob-worker(-[0-9a-f]+)?\.exe$")
+
+
+def bob_worker_seat_roots_from_rows(rows: list[tuple[int, int, str]]) -> list[int]:
+    """FR #2556 / #8597: seat roots only (parent is not also a bob-worker*)."""
+    workers = {int(pid) for pid, _pp, name in rows if _BOB_WORKER_EXE_RX.match(str(name) or "")}
+    roots = [
+        int(pid)
+        for pid, pp, name in rows
+        if int(pid) in workers and int(pp) not in workers
+    ]
+    return sorted(roots)
+
+
+def _win_bob_worker_process_rows() -> list[tuple[int, int, str]]:
+    """Live (pid, parent_pid, name) for bob-worker*.exe on this box."""
+    if os.name != "nt":
+        return []
+    try:
+        out = subprocess.check_output(
+            [
+                "powershell",
+                "-NoProfile",
+                "-Command",
+                "Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | "
+                "Where-Object { $_.Name -match '^bob-worker(-[0-9a-f]+)?\\.exe$' } | "
+                "Select-Object ProcessId,ParentProcessId,Name | ConvertTo-Json -Compress",
+            ],
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+    except (OSError, subprocess.CalledProcessError):
+        return []
+    import json
+
+    try:
+        data = json.loads(out) if out.strip() else []
+    except json.JSONDecodeError:
+        return []
+    if isinstance(data, dict):
+        data = [data]
+    rows: list[tuple[int, int, str]] = []
+    for row in data or []:
+        try:
+            rows.append(
+                (
+                    int(row.get("ProcessId")),
+                    int(row.get("ParentProcessId") or 0),
+                    str(row.get("Name") or ""),
+                )
+            )
+        except (TypeError, ValueError):
+            continue
+    return rows
+
+
+def _taskkill_tree(pid: int) -> None:
+    """Kill pid and all descendants (OpenCode grandchildren under a seat root)."""
+    try:
+        subprocess.run(
+            ["taskkill", "/F", "/T", "/PID", str(int(pid))],
+            check=False,
+            capture_output=True,
+        )
+    except OSError:
+        pass
+
+
+def stop_managed_worker_seat_trees(
+    *,
+    rows: list[tuple[int, int, str]] | None = None,
+    kill_fn: Callable[[int], None] | None = None,
+) -> list[int]:
+    """FR #8597: stop every bob-worker seat-root tree before recycle restart.
+
+    Expands by seat root (FR #2556), then tree-kills so OpenCode children die with
+    the seat. Returns the root PIDs that were targeted.
+    """
+    if rows is None:
+        rows = _win_bob_worker_process_rows()
+    roots = bob_worker_seat_roots_from_rows(rows)
+    killer = kill_fn or _taskkill_tree
+    for root in roots:
+        killer(root)
+    return roots
+
+
+def _default_stop_managed_workers(_build_root: Path | None = None) -> None:
+    """FR #8597: kill hung OpenCode / bob-worker seat trees before watch+tray restart."""
+    if os.name != "nt":
+        return
+    stop_managed_worker_seat_trees()
 
 
 def _win_process_commandlines(match_substr: str) -> list[tuple[int, str]]:
@@ -503,6 +605,11 @@ def execute_local_recycle(
     h = hooks or RecycleHooks()
     irc_root = find_install_root()
     build_root = find_agentic_build_root()
+    # FR #8597: stop seat trees (OpenCode included) BEFORE watch/tray restart.
+    if h.stop_managed_workers:
+        h.stop_managed_workers(build_root or Path("."))
+    else:
+        _default_stop_managed_workers(build_root)
     if h.git_pull:
         h.git_pull(irc_root or Path("."))
     elif irc_root:
@@ -543,8 +650,8 @@ def restarting_announce(machine_id: str, nick: str) -> str:
     if machine_id == "ce-priority-dev1":
         disp = "dev1"
     who = (nick or "bob").strip() or "bob"
-    # ASCII hyphen (PS 5.1 / logs). agentic_build#442: announce then tray via Start-BobFleetTray.
+    # ASCII hyphen (PS 5.1 / logs). FR #8597: stop seat trees before watch+tray.
     return (
-        f"{who}: recycling {disp} - logging off IRC then restarting "
+        f"{who}: recycling {disp} - stopping seat trees then restarting "
         f"Watch-Bobiverse + TipForm tray (deterministic)"
     )

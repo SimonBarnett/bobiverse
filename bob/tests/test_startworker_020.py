@@ -53,11 +53,21 @@ def ask(q, body="!startworker", nick="Simon", account="simon", channel="#marchha
 
 # ------------------------------------------------------------------------------------------------ syntax
 @pytest.mark.parametrize("body,want", [
-    ("!startworker", ("agent", None)), ("!startworker agent", ("agent", None)), ("!StartWorker PLAN", ("plan", None)),
-    ("!startworker marchhare", ("agent", "marchhare")), ("!startworker plan marchhare", ("plan", "marchhare")),
-    ("!startworker marchhare plan", ("plan", "marchhare")), (":!startworker agent #marchhare", ("agent", "marchhare")),
-    ("!startworker a b c", "usage"), ("!startworker agent plan", "usage"), ("!startworker rm -rf /", "usage"),
-    ("!startworkers", None), ("hello !startworker", None), ("", None),
+    ("!startworker", ("agent", None, "", "")),
+    ("!startworker agent", ("agent", None, "", "")),
+    ("!StartWorker PLAN", ("plan", None, "", "")),
+    ("!startworker marchhare", ("agent", "marchhare", "", "")),
+    ("!startworker plan marchhare", ("plan", "marchhare", "", "")),
+    ("!startworker marchhare plan", ("plan", "marchhare", "", "")),
+    (":!startworker agent #marchhare", ("agent", "marchhare", "", "")),
+    ("!startworker opencode flamingo", ("agent", "flamingo", "opencode", "")),
+    ("!startworker opencode free flamingo", ("agent", "flamingo", "opencode", "free")),
+    ("!startworker a b c", "usage"),
+    ("!startworker agent plan", "usage"),
+    ("!startworker rm -rf /", "usage"),
+    ("!startworkers", None),
+    ("hello !startworker", None),
+    ("", None),
 ])
 def test_syntax(body, want):
     assert sw.parse(body) == want
@@ -207,6 +217,18 @@ def test_defaults_and_env_overrides(monkeypatch):
     assert sw.StartGate().max_workers == 1
 
 
+def test_fr8624_commands_doc_matches_agent_cap():
+    """FR #8624: docs default is HARD_MAX_WORKERS (2) and plan does not count."""
+    doc = (REPO / "jeeves" / "docs" / "jeeves-commands.md").read_text(encoding="utf-8")
+    limits = next(line for line in doc.splitlines() if line.startswith("* **Limits**:"))
+    assert sw.HARD_MAX_WORKERS == 2
+    assert sw.DEFAULT_MAX_WORKERS == sw.HARD_MAX_WORKERS
+    assert "default 4" not in limits
+    assert "plan windows included" not in limits
+    assert "default 2" in limits
+    assert "does not count" in limits
+
+
 def test_snapshot_procs_runs_and_never_raises():
     rows = sw.snapshot_procs()
     assert isinstance(rows, list)
@@ -271,6 +293,32 @@ def test_ear_bob_peer_in_bobiverse_names_the_machine(bob):
     bob.sent.clear()
     assert bob._maybe_startworker("Bob-win-x", "#bobiverse", "!startworker agent flamingo", to_channel=True, to_me=False)
     assert bob.sent == []                                            # someone else's machine: silent
+
+
+def test_local_outbox_startworker_queues_without_irc_echo(bob):
+    """FR #8622: ear outbox !startworker is decided locally; inbound self-echo stays ignored."""
+    bob.chan = "#bobiverse"
+    line = "PRIVMSG #bobiverse :!startworker agent marchhare"
+    irc_agent.Client._maybe_local_outbox_startworker(bob, line)
+    reqs = list(bob.qdir.glob("req-*.json"))
+    assert len(reqs) == 1
+    assert any(s.startswith("PRIVMSG #bobiverse :ACK startworker agent on marchhare") for s in bob.sent)
+    before = len(reqs)
+    assert bob._maybe_startworker(
+        "Bob-marchhare", "#bobiverse", "!startworker agent marchhare", to_channel=True, to_me=False
+    ) is True
+    assert len(list(bob.qdir.glob("req-*.json"))) == before
+    irc_agent.Client._maybe_local_outbox_startworker(bob, "PRIVMSG #marchhare :hello")
+    assert len(list(bob.qdir.glob("req-*.json"))) == before
+
+
+def test_local_outbox_bare_line_uses_ear_account(bob):
+    """FR #8622: bare outbox text with no WHOIS account still queues as this ear."""
+    bob.chan = "#marchhare"
+    bob.acct.clear()
+    irc_agent.Client._maybe_local_outbox_startworker(bob, "!startworker agent")
+    assert len(list(bob.qdir.glob("req-*.json"))) == 1
+    assert any("ACK startworker agent on marchhare" in s for s in bob.sent)
 
 
 def test_ear_pm_gets_a_pm_reply_and_ignores_itself_and_chair_ears(bob, tmp_path):
@@ -368,8 +416,8 @@ def test_tray_wiring_timer_heartbeat_helper_and_click_function_contract():
     w = (TRAY_TOOLS / "Watch-BobTray.ps1").read_text(encoding="utf-8")
     assert "'BobTrayStartWorker.ps1'" in w
     assert "Invoke-BobTrayStartWorkerQueue -Dir $script:startWorkerDir" in w
-    # Queue launch is the same function as a menu click, and it forwards the requested agent.
-    assert "Start-BobTrayWorkerExe -Mode $mode -Agent $agent -Quiet" in w
+    # Queue launch is the same function as a menu click, and it forwards agent + optional model (FR #8610).
+    assert "Start-BobTrayWorkerExe -Mode $mode -Agent $agent -Model $model -Quiet" in w
     assert "$miPlan.Add_Click({ Start-BobTrayWorkerExe -Mode 'plan' -Trigger 'menu' })" in w
     assert "$startWorkerTimer.Start()" in w and "$startWorkerTimer.Stop()" in w
     assert "Write-BobTrayAlive" in w and "'tray.alive'" in w                   # heartbeat removed on exit => ear NACKs at once

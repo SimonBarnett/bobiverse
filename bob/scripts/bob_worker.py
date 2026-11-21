@@ -486,6 +486,8 @@ ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
 FORBIDDEN_FLAGS = ("--resume", "-r", "--continue", "-c", "--resume-session", "--session", "--chat")
 CREATE_NEW_CONSOLE = 0x00000010
 CREATE_NO_WINDOW = 0x08000000
+# FR #8568: break away from parent job objects (monitor/shell kill-on-close).
+CREATE_BREAKAWAY_FROM_JOB = 0x01000000
 # FR #7117: console QuickEdit freezes the seat until Enter (looks like a crash).
 ENABLE_QUICK_EDIT_MODE = 0x0040
 ENABLE_EXTENDED_FLAGS = 0x0080
@@ -898,6 +900,9 @@ def opencode_has_tokens(f: Fuel) -> bool:
     When per-model Go readings exist, aggregate `opencode_go` alone is not enough:
     every listed Go model must be exhausted and free must be unavailable before we
     treat the seat as out of OpenCode fuel (FR #6120 - do not launch capped glm-5.3).
+
+    FR #8540 / #8186: provider ``opencode_windows`` can show Go remaining when
+    aggregate ``opencode_go`` is null.
     """
     if f.opencode_free is not None and f.opencode_free > 0:
         return True
@@ -910,7 +915,9 @@ def opencode_has_tokens(f: Fuel) -> bool:
             except (TypeError, ValueError):
                 continue
         return False
-    return f.opencode_go is not None and f.opencode_go > 0
+    if f.opencode_go is not None and f.opencode_go > 0:
+        return True
+    return _opencode_windows_go_usable(f.opencode_windows)
 
 
 
@@ -1131,6 +1138,35 @@ def _opencode_paid_positive(f: Fuel) -> bool:
             return int(f.opencode_go) > 0
         except (TypeError, ValueError):
             return False
+    return _opencode_windows_go_usable(f.opencode_windows)
+
+
+def _opencode_paid_known_exhausted(f: Fuel) -> bool:
+    """True only when Go/paid is known empty (FR #8541).
+
+    ``go=None`` with no provider windows is unknown, not exhausted — still try
+    the paid tray slot after free is known 0.
+    """
+    if _opencode_windows_go_usable(f.opencode_windows):
+        return False
+    models = f.opencode_models or {}
+    if models:
+        any_pos = False
+        for v in models.values():
+            try:
+                if int(v or 0) > 0:
+                    any_pos = True
+                    break
+            except (TypeError, ValueError):
+                continue
+        return not any_pos
+    if f.opencode_go is None and not _opencode_windows_go_known(f.opencode_windows):
+        return False
+    if f.opencode_go is not None:
+        try:
+            return int(f.opencode_go) <= 0
+        except (TypeError, ValueError):
+            return True
     return False
 
 
@@ -1616,7 +1652,11 @@ def resolve_opencode_model(
             skipped.append(f"pin:{env_model}:free-exhausted")
         elif env_model and not _is_paid(env_model):
             skipped.append(f"env:{env_model}:free-exhausted")
-        if _opencode_paid_positive(fuel) and start_paid:
+        # FR #8541: free known 0 + go unknown must still try the paid tray slot
+        # (do not skip as exhausted / report capped-paused).
+        if start_paid and (
+            _opencode_paid_positive(fuel) or not _opencode_paid_known_exhausted(fuel)
+        ):
             candidates.append(("paid", start_paid))
         elif start_paid:
             skipped.append(f"paid:{start_paid}:exhausted")
@@ -1769,7 +1809,19 @@ def fuel_reading_known(f: Fuel, kind: str, start_model: str = "") -> bool:
             return f.opencode_go is not None or _opencode_windows_go_known(f.opencode_windows)
         if pool == "opencode_free":
             return f.opencode_free is not None
-        return f.opencode_free is not None or f.opencode_go is not None
+        # No start model (either-pool). FR #8540: free known 0 + go unknown must
+        # not count as a known dual-pool reading (that refused paid Go seats).
+        # Free > 0 alone is enough; go known (aggregate or windows) is enough;
+        # free known 0 alone is not.
+        try:
+            free_n = int(f.opencode_free) if f.opencode_free is not None else None
+        except (TypeError, ValueError):
+            free_n = None
+        if free_n is not None and free_n > 0:
+            return True
+        if f.opencode_go is not None or _opencode_windows_go_known(f.opencode_windows):
+            return True
+        return False
     return False
 
 
@@ -4284,6 +4336,16 @@ def report_opencode_model_refusal(
             "opencode: saved start model %s unavailable (paused/capped) - "
             "not starting (FR #8321, no fallback)" % saved
         )
+    elif (
+        fuel is not None
+        and _opencode_free_known_zero(fuel)
+        and not _opencode_paid_known_exhausted(fuel)
+    ):
+        # FR #8541: Go unread is not capped/paused.
+        reason = (
+            "opencode: no usable model (free empty, go fuel unknown - "
+            "not capped/paused; FR #8541)"
+        )
     else:
         reason = "opencode: no usable model (capped/paused)"
     if log:
@@ -5193,6 +5255,103 @@ def opencode_job_worktree_read_patterns(worktree: str | Path) -> list[str]:
     return patterns
 
 
+def resolve_job_git_dir(job_worktree: str | Path) -> Optional[Path]:
+    """Resolve the on-disk gitdir for a linked worktree (``.git`` file -> ``.../.git/worktrees/<name>``).
+
+    FR #8572: stale ``index.lock`` and OpenCode ``external_directory`` cleanup live under this
+    path (often ``C:\\ai\\bob\\.git\\worktrees\\<job>``), outside the job cwd.
+    """
+    root = Path(job_worktree or "")
+    if not root:
+        return None
+    try:
+        root = root.resolve()
+    except OSError:
+        return None
+    marker = root / ".git"
+    if marker.is_dir():
+        return marker
+    if marker.is_file():
+        try:
+            text = marker.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return None
+        if text.lower().startswith("gitdir:"):
+            raw = text.split(":", 1)[1].strip()
+            found = Path(raw)
+            if not found.is_absolute():
+                found = (root / found).resolve()
+            else:
+                try:
+                    found = found.resolve()
+                except OSError:
+                    pass
+            return found
+    return None
+
+
+def opencode_job_gitdir_read_patterns(job_worktree: str | Path) -> list[str]:
+    """FR #8572: allowlist the job's git worktree dir so lock cleanup is not auto-rejected."""
+    git_dir = resolve_job_git_dir(job_worktree)
+    if git_dir is None:
+        return []
+    patterns: list[str] = []
+    seen: set[str] = set()
+
+    def add(value: str) -> None:
+        text = str(value or "").strip()
+        if not text or text in seen:
+            return
+        seen.add(text)
+        patterns.append(text)
+
+    for base in (str(git_dir).rstrip("\\/"), git_dir.as_posix().rstrip("/")):
+        add(base)
+        add(base + "/**")
+        add(base + "\\**")
+        add(base + "/*")
+        add(base + "\\*")
+        add(base + "/index.lock")
+        add(base + "\\index.lock")
+    return patterns
+
+
+def clear_stale_job_index_lock(
+    job_worktree: str | Path,
+    *,
+    log_fn: Optional[Callable[[str], None]] = None,
+) -> bool:
+    """FR #8572: drop stale ``index.lock`` under the job gitdir before inject / git ops.
+
+    Best-effort unlink. If another ``git.exe`` still holds the lock, ``OSError`` is logged and
+    False is returned (do not crash the seat).
+    """
+    git_dir = resolve_job_git_dir(job_worktree)
+    if git_dir is None:
+        return False
+    lock = git_dir / "index.lock"
+    if not lock.is_file():
+        return False
+    try:
+        lock.unlink()
+    except OSError as e:
+        if log_fn is not None:
+            try:
+                log_fn(
+                    f"opencode-ready: stale index.lock unlink failed "
+                    f"path={lock} err={type(e).__name__}"
+                )
+            except Exception:
+                pass
+        return False
+    if log_fn is not None:
+        try:
+            log_fn(f"opencode-ready: cleared stale index.lock path={lock}")
+        except Exception:
+            pass
+    return True
+
+
 def opencode_skill_dag_mcp_document(
     worker_cwd: str,
     *,
@@ -5203,6 +5362,9 @@ def opencode_skill_dag_mcp_document(
     if job_worktree:
         allow = perm.setdefault("external_directory", {})
         for key in opencode_job_worktree_read_patterns(job_worktree):
+            allow[key] = "allow"
+        # FR #8572: linked worktree gitdir (index.lock) is outside the job cwd.
+        for key in opencode_job_gitdir_read_patterns(job_worktree):
             allow[key] = "allow"
     return {
         "$schema": "https://opencode.ai/config.json",
@@ -5685,7 +5847,10 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             r"        $outFile = Join-Path $capDir ('bob-oc-out-' + [guid]::NewGuid().ToString('n') + '.txt')",
             r"        $errFile = Join-Path $capDir ('bob-oc-err-' + [guid]::NewGuid().ToString('n') + '.txt')",
             # MRB #6163 / CodeRabbit: ArgumentList array drops quotes/spaces in $line; use pre-escaped $argStr.
-            r"        if ($ocDir) { $proc = Start-Process -FilePath $exe -ArgumentList $argStr -WorkingDirectory $ocDir -NoNewWindow -PassThru -RedirectStandardOutput $outFile -RedirectStandardError $errFile } else { $proc = Start-Process -FilePath $exe -ArgumentList $argStr -NoNewWindow -PassThru -RedirectStandardOutput $outFile -RedirectStandardError $errFile }",
+            # FR #8553: never -NoNewWindow with redirects. Sharing the parent console
+            # hangs opencode after the build banner (empty stdout) and can tear down the
+            # seat with no last-exit. Redirects alone = CreateNoWindow (gap FR-OC-INJECT).
+            r"        if ($ocDir) { $proc = Start-Process -FilePath $exe -ArgumentList $argStr -WorkingDirectory $ocDir -PassThru -RedirectStandardOutput $outFile -RedirectStandardError $errFile } else { $proc = Start-Process -FilePath $exe -ArgumentList $argStr -PassThru -RedirectStandardOutput $outFile -RedirectStandardError $errFile }",
             r"        $timedOut = $false",
             r"        $killReason = ''",
             r"        $fuelHitLive = $false",
@@ -5761,10 +5926,11 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             r"                $isToolNoise = ($peek -match $toolNoisePattern)",
             r"                $isFreePhrase = ($peek -match 'Free usage limit|subscribe to OpenCode Go')",
             r"                $hasProviderCue = ($peek -match $providerFuelCue)",
-            r"                if ((-not $isToolNoise) -and ($peek -match $liveFuelPattern) -and ((-not $isFreePhrase) -or $hasProviderCue)) {",
+            # FR #8207: paid/go still needs provider cue for Free usage (PR/tool echo).
+            r"                # FR #8537: free model CLI stderr Free usage is enough to kill+switch.",
+            r"                $isGoModel = ($model -match '(?i)^opencode-go/|-pro(/|$)|/opencode-go/')",
+            r"                if ((-not $isToolNoise) -and ($peek -match $liveFuelPattern) -and ((-not $isFreePhrase) -or $hasProviderCue -or (-not $isGoModel))) {",
             r"                    $fuelHitLive = $true",
-            # FR #8207: paid/go model never GIVEUPs as opencode-free.
-            r"                    $isGoModel = ($model -match '(?i)^opencode-go/|-pro(/|$)|/opencode-go/')",
             r"                    if ($isFreePhrase -and -not $isGoModel) { $killReason = 'fuel-exhausted:opencode-free' } else { $killReason = 'out-of-fuel' }",
             r"                    try { & taskkill /T /F /PID $proc.Id 2>$null | Out-Null } catch { }",
             r"                    if ($jobKey -and -not (Try-OpencodeSwitchToPaid $model $killReason)) { Write-OpencodeJobGiveup $jobKey $killReason }",
@@ -5935,9 +6101,11 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             # (done-miss finish-runs looked like out-of-fuel). Only real 402/429/limit text pauses.
             # FR #7951: a hard ceiling or watchdog kill is not out of fuel.
             # FR #8026: free-usage text (or a live mid-run fuel kill) pauses even when exit is 0.
-            # FR #8151 / #8207: tool-output noise never sets hitLimit; bare Free usage needs provider cue.
+            # FR #8151 / #8207: tool-output noise never sets hitLimit.
+            r"    # FR #8537: free-model CLI Free usage is hitLimit even without provider cue.",
             r"    $scanIsToolNoise = ($scan -match $toolNoisePattern)",
-            r"    $scanFreeOk = (($scan -match $freeUsagePattern) -and ($scan -match $providerFuelCue))",
+            r"    $scanIsGoModel = ($model -match '(?i)^opencode-go/|-pro(/|$)|/opencode-go/')",
+            r"    $scanFreeOk = (($scan -match $freeUsagePattern) -and (($scan -match $providerFuelCue) -or (-not $scanIsGoModel)))",
             r"    $hitLimit = (-not $timedOut -and -not $scanIsToolNoise -and ($fuelHitLive -or ((($scan -match $limitPattern) -or ($scan -match $codePattern)) -and ($exitCode -ne 0 -or $scanFreeOk))))",
             r"    if ($timedOut) {",
             r"        if ($proc -and -not $proc.HasExited) { try { & taskkill /T /F /PID $proc.Id 2>$null | Out-Null } catch { } }",
@@ -6084,6 +6252,14 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             r"                $script:ocEpipeTries = 0",
             r"            } else {",
             r"                $script:ocEpipeTries = 0",
+            r"            }",
+            # FR #8578: free-to-paid switch continues the same job — never stamp terminal
+            # out-of-fuel turn_ended (BoredEmitter would GIVEUP the ACK before re-invoke).
+            r"            # FR #8578: successful free-to-paid switch is non-terminal (no out-of-fuel GIVEUP).",
+            r"            if ($script:ocSwitchPaid -and $hitLimit) {",
+            r"                $teStatus = ''",
+            r"                $teErr = ''",
+            r"                $teClass = 'free-to-paid-switch'",
             r"            }",
             r"            if ($script:ocHasJob) { Write-OpencodeTurnMarker 'turn_ended' $turnN $teStatus $teErr $teClass }",
             r"        }",
@@ -7612,27 +7788,45 @@ class ProcIdleTurnWatcher:
 
 
 def apply_cursor_inject_keys_default(kind: str, log: Optional[Callable[[str], None]] = None) -> bool:
-    """FR #4464 / #6158: Cursor and OpenCode seats default to batched KEY_EVENT at seat start.
+    """FR #4464 / #6158 / #8558 / #8560: Cursor and OpenCode seats use batched KEY_EVENT.
 
     cursor-agent treats Ctrl+V as a literal v. OpenCode ReadLine paste is unreliable on
-    this fleet (FR-OC-INJECT). Set BOB_WORKER_INJECT_PASTE=0 when it is unset. An explicit
-    value wins (set BOB_WORKER_INJECT_PASTE=1 to force clipboard paste).
+    this fleet (FR-OC-INJECT / #8560): PASTE=1 leaves a stray ``v`` in the TUI, submit-verify
+    fails, and the seat later exits cli-failure with ``What would you like me to do?``.
+    OpenCode always forces ``BOB_WORKER_INJECT_PASTE=0`` (even when the env was set to 1).
+    Cursor still defaults to 0 when unset; an explicit Cursor value wins.
     """
     k = (kind or "").strip().lower()
     if k not in ("cursor", "opencode"):
         return False
-    if (os.environ.get("BOB_WORKER_INJECT_PASTE") or "").strip():
+    raw = (os.environ.get("BOB_WORKER_INJECT_PASTE") or "").strip().lower()
+    if k == "opencode":
+        if raw in ("0", "false", "no", "off"):
+            return False
+        # Unset or PASTE=1 (or other truthy): force keys. FR #8558 / #8560.
+        changed = raw != "0"
+        os.environ["BOB_WORKER_INJECT_PASTE"] = "0"
+        if log is not None:
+            try:
+                if raw in ("1", "true", "yes", "on"):
+                    log(
+                        "relay: opencode seat - ignoring BOB_WORKER_INJECT_PASTE=1; "
+                        "inject via batched keys only (FR #8558 / #8560: never PASTE=1)"
+                    )
+                elif changed:
+                    log(
+                        "relay: opencode seat - inject via batched keys "
+                        "(FR #8560: keep BOB_WORKER_INJECT_PASTE=0; never PASTE=1)"
+                    )
+            except Exception:
+                pass
+        return True
+    if raw:
         return False
     os.environ["BOB_WORKER_INJECT_PASTE"] = "0"
     if log is not None:
         try:
-            if k == "opencode":
-                log(
-                    "relay: opencode seat - inject via batched keys "
-                    "(set BOB_WORKER_INJECT_PASTE=1 to paste)"
-                )
-            else:
-                log("relay: cursor seat - inject via batched keys (Ctrl+V lands as literal 'v')")
+            log("relay: cursor seat - inject via batched keys (Ctrl+V lands as literal 'v')")
         except Exception:
             pass
     return True
@@ -8401,6 +8595,96 @@ def is_out_of_fuel_text(text: str) -> bool:
     return provider_fuel_evidence_source(text) is not None
 
 
+def opencode_model_is_free(model_id: str) -> bool:
+    """True when the model id is a free-pool OpenCode leaf (FR #8454 / #8537)."""
+    mid = (model_id or "").strip()
+    if not mid:
+        return True
+    low = mid.lower()
+    if low.startswith("opencode-go/") or "/opencode-go/" in low:
+        return False
+    leaf = low.rsplit("/", 1)[-1]
+    if leaf.endswith("-pro"):
+        return False
+    try:
+        import opencode_fuel as of
+
+        if of.of_is_go_model_id(mid):
+            return False
+    except Exception:
+        pass
+    return True
+
+
+def opencode_paid_pool_remains(fuel: Fuel, env: Optional[dict] = None) -> bool:
+    """True when paid/Go fuel may still accept work (FR #8537).
+
+    Unknown Go remaining is treated as available so a free-limit refusal can
+    rebind; an explicit ``BOB_OPENCODE_GO_REMAINING=0`` or go<=0 blocks switch.
+    """
+    env = os.environ if env is None else env
+    if str(env.get("BOB_OPENCODE_GO_REMAINING") or "").strip() == "0":
+        return False
+    go = fuel.opencode_go
+    models = fuel.opencode_models or {}
+    if go is None and not models:
+        return True
+    try:
+        if go is not None and int(go) <= 0 and not models:
+            return False
+        if go is not None and int(go) > 0 and not models:
+            return True
+    except (TypeError, ValueError):
+        return True
+    if models:
+        for v in models.values():
+            try:
+                if int(v) > 0:
+                    return True
+            except (TypeError, ValueError):
+                continue
+        return False
+    try:
+        return go is None or int(go) > 0
+    except (TypeError, ValueError):
+        return True
+
+
+def should_switch_opencode_free_to_paid(
+    evidence: str,
+    model_id: str,
+    fuel: Fuel,
+    env: Optional[dict] = None,
+) -> bool:
+    """FR #8537: free-limit evidence + free model + paid remains -> switch, no GIVEUP."""
+    try:
+        import opencode_fuel as of
+
+        if not of.is_free_usage_limit_text(evidence or ""):
+            return False
+    except Exception:
+        if not _OPENCODE_FREE_USAGE_RX.search(evidence or ""):
+            return False
+    if not opencode_model_is_free(model_id):
+        return False
+    return opencode_paid_pool_remains(fuel, env)
+
+
+def resolve_opencode_paid_switch_model(env: Optional[dict] = None) -> str:
+    """Paid tray slot for free->paid rebind (default opencode-go/deepseek-v4-pro)."""
+    env = os.environ if env is None else env
+    try:
+        import worker_start_model as wsm
+
+        cfg = wsm.load_worker_start_config(env=env)
+        paid = wsm.default_opencode_paid_model(cfg)
+        if paid:
+            return str(paid).strip()
+    except Exception:
+        pass
+    return "opencode-go/deepseek-v4-pro"
+
+
 # FR #4858: hard API 402 / usage-balance-exhausted (not mid-job reading, not NEEDS_AUTH).
 _HARD_402_OUT_OF_FUEL_RX = re.compile(
     r"(?i)(?:"
@@ -8533,6 +8817,179 @@ def console_closed_giveup_line(job_key: str, wip_ref: str = "") -> str:
         # Keep under shop_listen truncate (~120); short sha / branch tip only.
         why = f"console-closed wip={ref[:80]}"
     return seat_release_giveup_line(job_key, why)
+
+
+def external_kill_giveup_line(job_key: str) -> str:
+    """FR #8568: ``GIVEUP <TYPE> owner/repo#N external-kill`` when a seat vanishes with no last-exit."""
+    return seat_release_giveup_line(job_key, "external-kill")
+
+
+_WORKER_RUN_DIR_RX = re.compile(
+    r"^worker-(?P<mid>[a-z0-9][a-z0-9-]{0,62})-(?P<pid>\d+)-(?P<hash>[0-9a-f]+)$",
+    re.I,
+)
+
+
+def parse_worker_run_dir_name(name: str) -> tuple[str, int] | None:
+    """Return ``(machine_id, pid)`` from ``worker-<mid>-<pid>-<hash>``, or None."""
+    m = _WORKER_RUN_DIR_RX.match((name or "").strip())
+    if not m:
+        return None
+    try:
+        return m.group("mid").lower(), int(m.group("pid"))
+    except ValueError:
+        return None
+
+
+def pid_is_alive(pid: int) -> bool:
+    """True when ``pid`` is a live OS process (Windows OpenProcess / POSIX kill 0)."""
+    if pid <= 0:
+        return False
+    if os.name == "nt":
+        try:
+            import ctypes
+
+            PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+            STILL_ACTIVE = 259
+            h = ctypes.windll.kernel32.OpenProcess(
+                PROCESS_QUERY_LIMITED_INFORMATION, False, int(pid)
+            )
+            if not h:
+                return False
+            try:
+                code = ctypes.c_ulong()
+                if not ctypes.windll.kernel32.GetExitCodeProcess(h, ctypes.byref(code)):
+                    return False
+                return int(code.value) == STILL_ACTIVE
+            finally:
+                ctypes.windll.kernel32.CloseHandle(h)
+        except Exception:
+            return False
+    try:
+        os.kill(int(pid), 0)
+        return True
+    except OSError:
+        return False
+
+
+def write_disappeared_last_exit(
+    run_dir: Path | str,
+    *,
+    reason: str = "external-kill",
+    job_key: str = "",
+    pid: int | None = None,
+    machine: str = "",
+    nick: str = "",
+    kind: str = "",
+) -> Path:
+    """FR #8568: synthetic ``last-exit.json`` when a tracked seat vanishes with no exit record."""
+    rd = Path(run_dir)
+    rd.mkdir(parents=True, exist_ok=True)
+    path = rd / "last-exit.json"
+    payload = {
+        "reason": (reason or "external-kill").strip() or "external-kill",
+        "exit_code": None,
+        "raw_code": None,
+        "job_key": (job_key or "").strip(),
+        "machine": (machine or "").strip(),
+        "nick": (nick or "").strip(),
+        "kind": (kind or "").strip(),
+        "agent_pid": int(pid) if pid else None,
+        "synthetic": True,
+        "via": "fr-8568-disappeared-seat",
+    }
+    text = json.dumps(payload, sort_keys=True)
+    with path.open("w", encoding="utf-8", newline="\n") as fh:
+        fh.write(text + "\n")
+        fh.flush()
+        try:
+            os.fsync(fh.fileno())
+        except OSError:
+            pass
+    return path
+
+
+def handle_disappeared_worker_run(
+    run_dir: Path | str,
+    *,
+    shop: str = "",
+    pid_alive: Optional[Callable[[int], bool]] = None,
+) -> Optional[dict]:
+    """If ``run_dir`` is a dead worker seat with no last-exit and an open job, write exit + GIVEUP.
+
+    Does **not** restart the seat (FR #3180 manual-only). Returns a summary dict, or None when
+    no action was taken.
+    """
+    rd = Path(run_dir)
+    if not rd.is_dir():
+        return None
+    parsed = parse_worker_run_dir_name(rd.name)
+    if parsed is None:
+        return None
+    mid, pid = parsed
+    alive_fn = pid_alive or pid_is_alive
+    if alive_fn(pid):
+        return None
+    if (rd / "last-exit.json").is_file():
+        return None
+    last_from = ""
+    try:
+        last_from = (rd / "last-from.txt").read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        last_from = ""
+    job_key = assign_job_key(last_from) or ""
+    if not job_key:
+        # No accepted-job breadcrumb — still leave last-exit so the gap is visible.
+        write_disappeared_last_exit(rd, reason="external-kill", pid=pid, machine=mid)
+        return {"run_dir": str(rd), "pid": pid, "job_key": "", "giveup": False}
+    outbox = outbox_path_for_run(rd)
+    try:
+        existing = outbox.read_text(encoding="utf-8", errors="replace") if outbox.is_file() else ""
+    except OSError:
+        existing = ""
+    if outbox_text_has_terminal(existing, job_key):
+        write_disappeared_last_exit(
+            rd, reason="external-kill", job_key=job_key, pid=pid, machine=mid
+        )
+        return {"run_dir": str(rd), "pid": pid, "job_key": job_key, "giveup": False, "already_terminal": True}
+    write_disappeared_last_exit(
+        rd, reason="external-kill", job_key=job_key, pid=pid, machine=mid
+    )
+    channel = (shop or mid or "shop").strip().lstrip("#") or "shop"
+    line = f"PRIVMSG #{channel} :{external_kill_giveup_line(job_key)}"
+    try:
+        with outbox.open("a", encoding="utf-8", newline="\n") as fh:
+            fh.write(line + "\n")
+            fh.flush()
+            try:
+                os.fsync(fh.fileno())
+            except OSError:
+                pass
+    except OSError:
+        return {"run_dir": str(rd), "pid": pid, "job_key": job_key, "giveup": False, "outbox_error": True}
+    return {"run_dir": str(rd), "pid": pid, "job_key": job_key, "giveup": True, "line": line}
+
+
+def scan_disappeared_worker_runs(
+    run_root: Path | str,
+    *,
+    shop: str = "",
+    pid_alive: Optional[Callable[[int], bool]] = None,
+) -> list[dict]:
+    """Scan ``run_root`` for vanished seats; handle each (FR #8568 tray watchdog)."""
+    root = Path(run_root)
+    if not root.is_dir():
+        return []
+    out: list[dict] = []
+    for child in sorted(root.iterdir()):
+        if not child.is_dir():
+            continue
+        if not child.name.lower().startswith("worker-"):
+            continue
+        hit = handle_disappeared_worker_run(child, shop=shop, pid_alive=pid_alive)
+        if hit:
+            out.append(hit)
+    return out
 
 
 def is_console_closed_shutdown_reason(reason: str) -> bool:
@@ -8966,8 +9423,15 @@ def format_opencode_turn_error(
 
 
 def is_failed_turn_fuel_error(error_class: str, error_line: str) -> bool:
-    """True when a failed turn should GIVEUP as out-of-fuel (FR #8018)."""
+    """True when a failed turn should GIVEUP as out-of-fuel (FR #8018).
+
+    FR #8578: ``free-to-paid-switch`` is a non-terminal free-pool handoff; the paid
+    re-invoke continues the same job, so never treat it as fuel GIVEUP even if the
+    error line still mentions Free usage.
+    """
     cls = str(error_class or "").strip().lower().replace("_", "-")
+    if cls in ("free-to-paid-switch", "freetopaidswitch"):
+        return False
     if cls in ("out-of-fuel", "outoffuel"):
         return True
     blob = "%s\n%s" % (error_class or "", error_line or "")
@@ -9417,6 +9881,31 @@ class GrokOutOfFuelWatcher:
             self._stop.wait(self.poll_s)
 
 
+
+def write_inject_progress(run_dir, *, phase: str, detail: str = "", job_key: str = "") -> None:
+    """FR #8553: durable breadcrumb while a job is in flight (survives hard kills)."""
+    try:
+        rd = Path(run_dir)
+        rd.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "at": _dt.datetime.now(_dt.timezone.utc).isoformat(),
+            "phase": str(phase or "")[:80],
+            "detail": _scrub(str(detail or ""))[:240],
+            "job_key": str(job_key or "")[:120],
+        }
+        path = rd / "inject-progress.json"
+        raw = json.dumps(payload, ensure_ascii=True) + "\n"
+        with path.open("w", encoding="utf-8", newline="\n") as fh:
+            fh.write(raw)
+            fh.flush()
+            try:
+                os.fsync(fh.fileno())
+            except OSError:
+                pass
+    except Exception:
+        pass
+
+
 def run_submit_verify_loop(
     *,
     enter_fn: Callable[..., bool],
@@ -9556,6 +10045,8 @@ def inject_with_submit_verify(
     miss_label: str = "no prompt seen",
     kind: str = "",
     alive_fn: Optional[Callable[[], bool]] = None,
+    run_dir: Path | str | None = None,
+    job_key: str = "",
 ) -> bool:
     """Paste via inject_fn, then verify submit and Enter-only retry (FR #2696).
 
@@ -9626,6 +10117,14 @@ def inject_with_submit_verify(
                 kind=kind,
                 alive_fn=alive_fn,
             )
+            # FR #8553: stamp progress so a hard kill after verify still leaves a trail.
+            if res in ("ok", "stop") and run_dir is not None:
+                write_inject_progress(
+                    run_dir,
+                    phase="submit-verify-ok",
+                    detail=str(res),
+                    job_key=job_key or assign_job_key(text) or "",
+                )
             if res == "failed" and on_failed is not None:
                 try:
                     on_failed()
@@ -11585,6 +12084,129 @@ def progress_heartbeat_interval_s(env: Optional[dict] = None) -> float:
 def progress_alive_counts_as_seen(*, moved: bool, agent_alive: bool) -> bool:
     """FR #8195: log/worktree move OR a live agent/tool process refreshes the clock."""
     return bool(moved) or bool(agent_alive)
+
+
+def opencode_frozen_progress_threshold_s(env: dict | None = None) -> float:
+    """Seconds of frozen OpenCode progress before hang-recycle (FR #8596)."""
+    src = os.environ if env is None else env
+    raw = str((src or {}).get("BOB_WORKER_OPENCODE_FROZEN_PROGRESS_S") or "").strip()
+    if not raw:
+        return 900.0
+    try:
+        v = float(raw)
+    except ValueError:
+        return 900.0
+    return max(120.0, min(7200.0, v))
+
+
+def opencode_frozen_recycle_reason(
+    *,
+    kind: str,
+    out_of_fuel: bool,
+    ack_open: bool,
+    digest_doing_age_s: float | None,
+    progress_moved_age_s: float | None,
+    threshold_s: float = 900.0,
+) -> str:
+    """Return hang-recycle reason when an OpenCode seat is frozen (FR #8596).
+
+    Chair stuck-sweep can stamp LOST_ACK_RESTART / accepted_silent while the
+    OpenCode process still reports CPU, so HangDetector never fires. Week
+    `limited=true` with rolling remaining must not set `out_of_fuel` (that
+    hold disables recycle via FR #4180) - callers pass `out_of_fuel` only for
+    hard 402 / exhausted holds.
+    """
+    if (kind or "").strip().lower() != "opencode":
+        return ""
+    if out_of_fuel:
+        return ""
+    thr = max(60.0, float(threshold_s))
+    digest_age = float(digest_doing_age_s) if digest_doing_age_s is not None else None
+    moved_age = float(progress_moved_age_s) if progress_moved_age_s is not None else None
+    if digest_age is not None and digest_age >= thr and not ack_open:
+        return "opencode-lost-ack-stale"
+    if ack_open and moved_age is not None and moved_age >= thr:
+        return "opencode-frozen-progress"
+    if (
+        digest_age is not None
+        and digest_age >= thr
+        and ack_open
+        and moved_age is not None
+        and moved_age >= thr
+    ):
+        return "opencode-frozen-progress"
+    return ""
+
+
+def digest_worker_doing_age_s(
+    digest_doc: dict | None,
+    nick: str,
+    *,
+    now_wall: float | None = None,
+) -> float | None:
+    """Age of digest worker.updated when this nick is still doing (FR #8596)."""
+    if not isinstance(digest_doc, dict):
+        return None
+    me = (nick or "").strip().lower()
+    if not me:
+        return None
+    try:
+        import gitclaim as _gc
+
+        me = (_gc.canonical_worker_nick(me) or me).strip().lower()
+    except Exception:
+        pass
+    now = float(now_wall) if now_wall is not None else time.time()
+    machines = digest_doc.get("machines")
+    if not isinstance(machines, dict):
+        return None
+    for _mid, ent in machines.items():
+        if not isinstance(ent, dict):
+            continue
+        workers = ent.get("workers")
+        rows: list = []
+        if isinstance(workers, dict):
+            rows = [w for w in workers.values() if isinstance(w, dict)]
+        elif isinstance(workers, list):
+            rows = [w for w in workers if isinstance(w, dict)]
+        else:
+            try:
+                import bobreport as _br
+
+                rows = list(_br._coerce_worker_list(ent.get("worker_list")))
+            except Exception:
+                rows = []
+        for w in rows:
+            n = str(w.get("nick") or "").strip().lower()
+            try:
+                import gitclaim as _gc
+
+                n = (_gc.canonical_worker_nick(n) or n).strip().lower()
+            except Exception:
+                pass
+            if n != me:
+                continue
+            state = str(w.get("state") or "").strip().lower()
+            if state not in ("doing", "busy", "working"):
+                return None
+            upd = w.get("updated") or w.get("updated_at") or w.get("last_progress")
+            if not upd:
+                return None
+            try:
+                from datetime import datetime, timezone
+
+                raw = str(upd).strip()
+                if raw.endswith("Z"):
+                    raw = raw[:-1] + "+00:00"
+                ts = datetime.fromisoformat(raw)
+                if ts.tzinfo is None:
+                    ts = ts.replace(tzinfo=timezone.utc)
+                return max(0.0, now - ts.timestamp())
+            except Exception:
+                return None
+    return None
+
+
 
 
 def progress_phase_for_alive_heartbeat(prior: str = "") -> str:
@@ -15165,7 +15787,15 @@ class Supervisor:
         self.session_log.write("last_exit", text)
         try:
             self.run_dir.mkdir(parents=True, exist_ok=True)
-            (self.run_dir / "last-exit.json").write_text(text + "\n", encoding="utf-8")
+            path = self.run_dir / "last-exit.json"
+            # FR #8553: flush+fsync so a hard seat kill still leaves the reason on disk.
+            with path.open("w", encoding="utf-8", newline="\n") as fh:
+                fh.write(text + "\n")
+                fh.flush()
+                try:
+                    os.fsync(fh.fileno())
+                except OSError:
+                    pass
         except OSError:
             pass
         self.log(f"agent: last_exit reason={self.last_exit['reason']} exit_code={self.last_exit['exit_code']} session_log={self.session_log.path}")
@@ -15485,6 +16115,74 @@ class Supervisor:
             self.log(f"out-of-fuel: digest post failed {type(e).__name__}: {e}")
         self.log(f"out-of-fuel: posted {line}")
 
+    def _try_opencode_switch_free_to_paid(self, evidence: str) -> bool:
+        """FR #8537: pause free, rebind to paid, continue ACK. True when switched."""
+        if getattr(self, "_opencode_paid_switched", False):
+            return True
+        env = self.base_env if isinstance(getattr(self, "base_env", None), dict) else os.environ
+        model = str(env.get("BOB_OPENCODE_MODEL") or "").strip()
+        if not model:
+            try:
+                model = str(resolve_opencode_model(Fuel(), env=env) or "").strip()
+            except Exception:
+                model = ""
+        fuel = Fuel()
+        try:
+            # Allow a slightly stale cache: free=100 is common until pause folds.
+            got = load_fresh_agent_list_fuel(max_age_s=3600.0, env=env)
+            if got is not None:
+                fuel = got
+        except Exception:
+            fuel = Fuel()
+        if not should_switch_opencode_free_to_paid(evidence, model, fuel, env):
+            return False
+        paid = resolve_opencode_paid_switch_model(env)
+        pause_dir = opencode_pauses_state_dir(env)
+        try:
+            import opencode_fuel as of
+
+            # Stamp cli-stderr so record-pause accepts free-model Free usage (FR #8537).
+            pause_blob = evidence or ""
+            if "Free usage limit" in pause_blob and '"source"' not in pause_blob:
+                pause_blob = json.dumps(
+                    {
+                        "text": "Free usage limit reached. Subscribe to OpenCode Go",
+                        "source": "cli-stderr",
+                        "model": model or "opencode/deepseek-v4.1-flash-free",
+                    },
+                    separators=(",", ":"),
+                )
+            of.record_opencode_pause(
+                pause_dir,
+                model or "opencode/deepseek-v4.1-flash-free",
+                pause_blob,
+            )
+            # Publish free=0 so mid-job readings stop painting 100.
+            folded = fold_opencode_seat_pauses(fuel, model, env=env, state_dir=pause_dir)
+            save_agent_list_fuel(replace(folded, opencode_free=0), env=env)
+        except Exception as e:
+            self.log(f"out-of-fuel: free pause failed {type(e).__name__}: {e}")
+        try:
+            env["BOB_OPENCODE_MODEL"] = paid
+            os.environ["BOB_OPENCODE_MODEL"] = paid
+        except Exception:
+            pass
+        try:
+            import worker_start_model as wsm
+
+            wsm.save_worker_start_settings(
+                env=env,
+                models={"opencode": paid},
+            )
+        except Exception:
+            pass
+        self._opencode_paid_switched = True
+        self.log(
+            f"opencode switch-to-paid model={paid} reason=fuel-exhausted:opencode-free "
+            f"(was {model or 'free'}; no GIVEUP)"
+        )
+        return True
+
     def _start_fuel_watcher(self, agent_pid: int = 0) -> None:
         """FR #3012 / #3019: follow fuel log for mid-job 402 / NEEDS_AUTH / usage-exhausted.
 
@@ -15507,6 +16205,14 @@ class Supervisor:
         )
 
         def _on_hit(text: str) -> None:
+            # FR #8537: free-limit on a free OpenCode seat switches to paid when Go
+            # remains. Do not shop-GIVEUP; the wrapper continues the same ACK.
+            if (self.kind or "").strip().lower() == "opencode":
+                try:
+                    if self._try_opencode_switch_free_to_paid(text):
+                        return
+                except Exception as e:
+                    self.log(f"out-of-fuel: free-to-paid switch failed {type(e).__name__}")
             # note_out_of_fuel → out_of_fuel_enter_fn clears watchdogs + NACKs parked assigns (FR #4180).
             if self.bored:
                 self.bored.note_out_of_fuel(text)
@@ -17006,6 +17712,11 @@ class Supervisor:
                     self.log(f"opencode-ready: finish-steps append skipped {type(e).__name__}")
                 wire = prepared["wire"]
                 self.log(f"opencode-ready: job worktree {prepared['path']}")
+                # FR #8572: drop stale git worktree index.lock before inject (outside job cwd).
+                try:
+                    clear_stale_job_index_lock(prepared["path"], log_fn=self.log)
+                except Exception as e:  # noqa: BLE001
+                    self.log(f"opencode-ready: index.lock preflight skipped {type(e).__name__}")
                 # FR #6898: OpenCode --dir loads project opencode.json from the job worktree.
                 try:
                     write_opencode_skill_dag_mcp_config(
@@ -17141,6 +17852,8 @@ class Supervisor:
             miss_label="no turn receipt" if kind_l == "opencode" else "no prompt seen",
             kind=kind_l,
             alive_fn=(lambda p=proc: p.poll() is None) if kind_l == "opencode" else None,
+            run_dir=self.run_dir,
+            job_key=assign_job_key(line) or "",
         )
 
     def _reconcile_wait_exit_with_shutdown(
@@ -17269,6 +17982,35 @@ class Supervisor:
         # FR #7593: zero exit ends the seat (unchanged). Nonzero → report, GIVEUP accepted
         # job (no fake DONE), restart the supported way so the replacement !bored's.
         if exit_u == 0:
+            # FR #8553: OpenCode wrapper exit 0 mid-ACK is unexpected (ReadLine EOF /
+            # console tear). GIVEUP the job and recycle the seat instead of dying quiet.
+            job_key_z = ""
+            try:
+                if self.bored and getattr(self.bored, "_ack_open", False):
+                    job_key_z = str(getattr(self.bored, "_ack_job_key", None) or "").strip()
+            except Exception:
+                job_key_z = ""
+            kind_z = (self.kind or "").strip().lower()
+            if kind_z == "opencode" and job_key_z:
+                self.log(
+                    f"agent: opencode zero exit mid-job {job_key_z}; "
+                    "GIVEUP + recycle (FR #8553)"
+                )
+                try:
+                    self._release_seat_giveup_job(job_key_z, "opencode-wrapper-exited")
+                except Exception as e:
+                    self.log(f"agent: mid-job giveup failed {type(e).__name__}")
+                try:
+                    if self.bored is not None:
+                        self.bored._ack_open = False
+                except Exception:
+                    pass
+                try:
+                    self.restart_agent("opencode-wrapper-exited")
+                except Exception as e:
+                    self.log(f"agent: opencode zero-exit restart failed {type(e).__name__}")
+                    self.shutdown("agent-exited", EXIT_OK)
+                return
             self.log("agent: zero exit; leaving (a closed agent ends the seat)")
             self.shutdown("agent-exited", EXIT_OK)
             return
@@ -17380,7 +18122,10 @@ class Supervisor:
             if reason:
                 self.restart_agent(reason)
                 continue
-            # FR #3623: ask_user_question Pending (alive process, ACK held) — Enter then recycle.
+            # FR #8596: OpenCode frozen digest/progress (CPU may still tick; HangDetector misses).
+            if self._check_opencode_frozen_progress():
+                continue
+            # FR #3623: ask_user_question Pending (alive process, ACK held) - Enter then recycle.
             if self._check_ask_user_pending(proc):
                 continue
             # FR #2383: agent still alive/turning but never ACK'd via run-dir outbox.
@@ -17486,6 +18231,9 @@ class Supervisor:
         if progress_alive_counts_as_seen(moved=moved, agent_alive=agent_alive):
             self._progress_last_seen_mono = now_mono
             self._progress_last_seen_wall = time.time()
+            # FR #8596: true log/turn/worktree move only (not alive-only) for frozen recycle.
+            if moved:
+                self._progress_last_moved_mono = now_mono
             if moved and phase:
                 self._progress_phase = phase
             elif agent_alive and not self._progress_phase:
@@ -17790,6 +18538,96 @@ class Supervisor:
                 return "done"
             self._opencode_job_end_cleanup(job_key)
         return "giveup"
+
+
+
+    def _opencode_report_doing_age_s(self, nick: str) -> float | None:
+        """Best-effort age from live GET /bob/v1/report for this nick (FR #8596)."""
+        url = (
+            str(os.environ.get("BOB_REPORT_URL") or "").strip()
+            or str(os.environ.get("BOB_DIGEST_URL") or "").strip()
+            or "https://bob.ntsa.uk/bob/v1/report"
+        )
+        try:
+            import urllib.request
+
+            req = urllib.request.Request(
+                url,
+                method="GET",
+                headers={
+                    "Accept": "application/json",
+                    "User-Agent": "BobiverseWorker-opencode-frozen/1.0",
+                },
+            )
+            with urllib.request.urlopen(req, timeout=12.0) as resp:
+                raw = resp.read().decode("utf-8", errors="replace")
+            doc = json.loads(raw)
+        except Exception:
+            return None
+        return digest_worker_doing_age_s(doc, nick, now_wall=time.time())
+
+    def _check_opencode_frozen_progress(self) -> bool:
+        """FR #8596: recycle OpenCode when digest doing is stale or log/turn progress froze.
+
+        Does not treat week.limited alone as out-of-fuel (rolling may remain). Hard
+        out-of-fuel hold still skips via FR #4180 inside restart_agent / health_loop.
+        """
+        if (self.kind or "").strip().lower() != "opencode":
+            return False
+        if self.bored and self.bored.out_of_fuel:
+            return False
+        thr = opencode_frozen_progress_threshold_s()
+        ack_open = bool(self.bored and getattr(self.bored, "_ack_open", False))
+        now_mono = float(self.clock())
+        moved_age = None
+        last_moved = float(getattr(self, "_progress_last_moved_mono", 0.0) or 0.0)
+        if last_moved > 0:
+            moved_age = max(0.0, now_mono - last_moved)
+        elif ack_open:
+            # ACK open but never recorded a true move - age from ACK open if known.
+            opened = float(getattr(self.bored, "_ack_opened_mono", 0.0) or 0.0) if self.bored else 0.0
+            if opened > 0:
+                moved_age = max(0.0, now_mono - opened)
+        digest_age = None
+        nick = str(getattr(self, "nick", "") or os.environ.get("BOB_NICK") or "")
+        try:
+            home = None
+            try:
+                import bobreport as _br
+
+                home = _br.digest_home()
+            except Exception:
+                home = None
+            doc = None
+            if home is not None:
+                import bobreport as _br
+
+                try:
+                    doc = _br.load_digest(home)
+                except Exception:
+                    doc = None
+            digest_age = digest_worker_doing_age_s(doc, nick, now_wall=time.time())
+            # Worker boxes often lack the chair digest; fall back to live /report (FR #8596).
+            if digest_age is None and nick:
+                digest_age = self._opencode_report_doing_age_s(nick)
+        except Exception:
+            digest_age = None
+        reason = opencode_frozen_recycle_reason(
+            kind=self.kind,
+            out_of_fuel=bool(self.bored and self.bored.out_of_fuel),
+            ack_open=ack_open,
+            digest_doing_age_s=digest_age,
+            progress_moved_age_s=moved_age,
+            threshold_s=thr,
+        )
+        if not reason:
+            return False
+        self.log(
+            f"opencode-frozen: reason={reason} digest_age={digest_age!r} "
+            f"moved_age={moved_age!r} thr={thr:.0f}s; recycling"
+        )
+        self.restart_agent(reason)
+        return True
 
     def _check_ack_miss(self, proc) -> None:
         # FR #4180: out-of-fuel is not an ACK miss — never remind or recycle.

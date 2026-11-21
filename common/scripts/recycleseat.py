@@ -30,20 +30,45 @@ import bobreport
 CMD = "!recycleseat"
 REQUEST_TTL_S = 60.0
 ACK_COOLDOWN_S = 900.0
+# FR #8602: stale doing / accepted_silent may --force past the busy gate.
+DEFAULT_STUCK_S = 900.0
 QUEUE_SUBDIR = ("run", "recycleseat")
 DISABLE_FILE = "recycleseat.disabled"
 _NICK_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,39}$")
 _JUNK = {c: None for c in range(0, 32)}
+_STUCK_MARKERS = ("accepted_silent", "lost_ack_restart", "lost_ack", "opencode-lost-ack", "opencode-frozen")
+
+
+def stuck_threshold_s(env: dict | None = None) -> float:
+    """Seconds of stale worker.updated before --force may override busy (FR #8602)."""
+    src = env if env is not None else os.environ
+    for key in ("BOB_RECYCLESEAT_STUCK_S", "BOB_WORKER_OPENCODE_FROZEN_PROGRESS_S"):
+        raw = str(src.get(key) or "").strip()
+        if not raw:
+            continue
+        try:
+            return max(60.0, float(raw))
+        except ValueError:
+            continue
+    return DEFAULT_STUCK_S
 
 
 def parse(body: str):
-    """``!recycleseat <nick> [machine]`` -> (nick, machine|None) | 'usage' | None."""
+    """``!recycleseat <nick> [machine] [--force]`` -> (nick, machine|None, force) | 'usage' | None.
+
+    FR #8602: optional ``--force`` lets ops recycle a stuck busy seat (stale
+    ``worker.updated`` or ``accepted_silent``). Fresh busy seats still NACK.
+    """
     text = str(body or "").translate(_JUNK).strip().lstrip(":").strip()
     if not text:
         return None
     parts = text.split()
-    if parts[0].lower() != CMD:
+    if not parts or parts[0].lower() != CMD:
         return None
+    force = False
+    if len(parts) >= 2 and parts[-1].lower() in ("--force", "-force", "force"):
+        force = True
+        parts = parts[:-1]
     if len(parts) < 2 or len(parts) > 3:
         return "usage"
     nick = parts[1]
@@ -55,11 +80,14 @@ def parse(body: str):
         if not sw._MACHINE_RE.match(tok):
             return "usage"
         machine = tok.lower().lstrip("#")
-    return (nick, machine)
+    return (nick, machine, force)
 
 
 def usage() -> str:
-    return "usage: !recycleseat <nick> [machine]   (machine required in #bobiverse)"
+    return (
+        "usage: !recycleseat <nick> [machine] [--force]   "
+        "(machine required in #bobiverse; --force only when stuck)"
+    )
 
 
 def authorize(
@@ -202,47 +230,72 @@ def _worker_row_is_busy(worker: dict) -> bool:
     return str(worker.get("state") or "").lower() in ("doing", "busy", "accepted")
 
 
-def _work_from_doc(doc: dict, seat_nick: str) -> bool:
-    """FR #7149: accept list-shaped machines.<mid>.workers (live digest) as well as pid maps."""
+def _worker_row_stuck(worker: dict, *, now: float, threshold_s: float | None = None) -> bool:
+    """FR #8602: stuck when accepted_silent/LOST_ACK stamped or worker.updated is stale."""
+    if not isinstance(worker, dict):
+        return False
+    blob = " ".join(
+        str(worker.get(k) or "")
+        for k in ("state", "work", "working_on", "stuck_reason", "reason", "hang", "note")
+    ).lower()
+    if any(m in blob for m in _STUCK_MARKERS):
+        return True
+    thr = float(threshold_s) if threshold_s is not None else stuck_threshold_s()
+    for key in ("updated", "updated_at", "last_progress"):
+        ts = bobreport._parse_worker_updated_ts(worker.get(key))
+        if ts is None:
+            continue
+        if (float(now) - float(ts)) >= thr:
+            return True
+    return False
+
+
+def _seat_rows_from_doc(doc: dict, seat_nick: str) -> list[dict]:
+    """Collect digest rows matching seat_nick (map + list shapes)."""
     legacy = bobreport.parse_worker_nick(seat_nick.lower())
     mid, _, pid = seat_nick.lower().rpartition("-")
     if legacy:
         mid, pid = legacy
     if not mid or not pid.isdigit():
-        return False
+        return []
     mid = bobreport.fold_machine_id(mid)
     ent = (doc.get("machines") or {}).get(mid) or {}
     if not isinstance(ent, dict):
-        return False
+        return []
+    rows: list[dict] = []
     workers = ent.get("workers")
-    # Legacy / chair map: workers keyed by pid (or nick) -> {working_on,...}
     if isinstance(workers, dict):
-        row = workers.get(str(int(pid))) or workers.get(seat_nick.lower()) or workers.get(seat_nick) or {}
-        if _worker_row_is_busy(row if isinstance(row, dict) else {}):
-            return True
-    # Live public digest: workers is a list of {nick,state,work} (FR #7149 / #7117 e).
+        row = workers.get(str(int(pid))) or workers.get(seat_nick.lower()) or workers.get(seat_nick)
+        if isinstance(row, dict):
+            rows.append(row)
     elif isinstance(workers, list):
         for worker in workers:
-            if not isinstance(worker, dict):
-                continue
-            if str(worker.get("nick") or "").strip().lower() != seat_nick.lower():
-                continue
-            if _worker_row_is_busy(worker):
-                return True
+            if isinstance(worker, dict) and str(worker.get("nick") or "").strip().lower() == seat_nick.lower():
+                rows.append(worker)
     for worker in ent.get("worker_list") or []:
-        if not isinstance(worker, dict):
-            continue
-        if str(worker.get("nick") or "").strip().lower() != seat_nick.lower():
-            continue
-        if _worker_row_is_busy(worker):
-            return True
-    return False
+        if isinstance(worker, dict) and str(worker.get("nick") or "").strip().lower() == seat_nick.lower():
+            rows.append(worker)
+    return rows
 
 
-def inspect_seat_work(home, seat_nick: str, install_root=None) -> tuple[bool, bool, str]:
-    """(known, working, error). Never raises. FR #7117: retry SYSTEM-readable digest homes."""
+def _work_from_doc(doc: dict, seat_nick: str) -> bool:
+    """FR #7149: accept list-shaped machines.<mid>.workers (live digest) as well as pid maps."""
+    return any(_worker_row_is_busy(row) for row in _seat_rows_from_doc(doc, seat_nick))
+
+
+def _stuck_from_doc(doc: dict, seat_nick: str, *, now: float) -> bool:
+    """True when any matching busy row looks stuck (FR #8602)."""
+    thr = stuck_threshold_s()
+    return any(
+        _worker_row_is_busy(row) and _worker_row_stuck(row, now=now, threshold_s=thr)
+        for row in _seat_rows_from_doc(doc, seat_nick)
+    )
+
+
+def _load_digest_doc(home, install_root=None) -> tuple[dict | None, str]:
+    """Return (doc, err). doc None + empty err means no digest yet; err set means unreadable."""
     if home is None and not install_root:
-        return True, False, ""
+        return None, ""
     last_err = ""
     any_path = False
     for base in _digest_read_candidates(home, install_root):
@@ -258,18 +311,41 @@ def inspect_seat_work(home, seat_nick: str, install_root=None) -> tuple[bool, bo
         try:
             doc = json.loads(raw)
         except (json.JSONDecodeError, ValueError, TypeError) as e:
-            return False, False, type(e).__name__
+            return None, type(e).__name__
         if not isinstance(doc, dict):
-            return False, False, "TypeError"
-        try:
-            return True, bool(_work_from_doc(doc, seat_nick)), ""
-        except (OSError, ValueError, TypeError, AttributeError) as e:
-            return False, False, type(e).__name__
+            return None, "TypeError"
+        return doc, ""
     if last_err:
-        return False, False, last_err
+        return None, last_err
     if not any_path:
+        return None, ""
+    return None, ""
+
+
+def inspect_seat_work(home, seat_nick: str, install_root=None) -> tuple[bool, bool, str]:
+    """(known, working, error). Never raises. FR #7117: retry SYSTEM-readable digest homes."""
+    doc, err = _load_digest_doc(home, install_root)
+    if err:
+        return False, False, err
+    if doc is None:
         return True, False, ""
-    return True, False, ""
+    try:
+        return True, bool(_work_from_doc(doc, seat_nick)), ""
+    except (OSError, ValueError, TypeError, AttributeError) as e:
+        return False, False, type(e).__name__
+
+
+def inspect_seat_stuck(
+    home, seat_nick: str, install_root=None, *, now: float | None = None
+) -> bool:
+    """FR #8602: True when busy seat looks stuck (stale updated / accepted_silent)."""
+    doc, err = _load_digest_doc(home, install_root)
+    if err or doc is None:
+        return False
+    try:
+        return bool(_stuck_from_doc(doc, seat_nick, now=time.time() if now is None else now))
+    except (OSError, ValueError, TypeError, AttributeError):
+        return False
 
 
 def seat_is_working(home, seat_nick: str, install_root=None) -> bool:
@@ -330,7 +406,7 @@ def decide(
     )
     if parsed == "usage":
         return nack("usage", usage())
-    seat_nick, machine = parsed
+    seat_nick, machine, force = parsed
     local = (local_machine or "").strip().lower()
     chan = (channel or "").strip().lower().lstrip("#")
     # FR #5756: non-target ears stay silent BEFORE authorize (no public NACK flood).
@@ -395,12 +471,26 @@ def decide(
             seat_nick=seat_nick,
         )
     if working:
-        return nack(
-            "busy",
-            f"busy {seat_nick}: current working_on; hand back (GIVEUP) before recycle",
-            kind=kind,
-            seat_nick=seat_nick,
-        )
+        # FR #8602: --force only when stuck (stale updated / accepted_silent).
+        stuck = inspect_seat_stuck(home, seat_nick, install_root, now=now)
+        if force and stuck:
+            if debug is not None:
+                debug(f"recycleseat force-stuck seat={seat_nick}")
+        elif force and not stuck:
+            return nack(
+                "busy",
+                f"busy {seat_nick}: --force refused (not stuck; updated fresh or no accepted_silent)",
+                kind=kind,
+                seat_nick=seat_nick,
+            )
+        else:
+            return nack(
+                "busy",
+                f"busy {seat_nick}: current working_on; hand back (GIVEUP) before recycle"
+                + ("; or --force when stuck" if stuck else ""),
+                kind=kind,
+                seat_nick=seat_nick,
+            )
     try:
         left = ack_cooldown_left(qdir, seat_nick, now)
     except (OSError, ValueError, TypeError, KeyError):

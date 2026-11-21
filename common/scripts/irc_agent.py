@@ -24,15 +24,18 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-# Only allowlisted hotpatches (bobreport, opencode_fuel FR #6263) load from InstallRoot\\scripts. Putting that
-# directory on sys.path also shadowed gitclaim and every other ear import with
-# whatever old file was still on disk (reader AttributeError on
-# shop_line_resets_bored_clock). Other modules stay in the frozen embed.
-FROZEN_SCRIPT_OVERLAY = ("bobreport", "opencode_fuel")
+# Only allowlisted hotpatches load from InstallRoot\\scripts (bobreport,
+# opencode_fuel FR #6263, startworker FR #8613). Putting that directory on
+# sys.path also shadowed gitclaim and every other ear import with whatever old
+# file was still on disk (reader AttributeError on shop_line_resets_bored_clock).
+# Other modules stay in the frozen embed. startworker is NOT in
+# EAR_RUNTIME_DISK_SCRIPTS so tip hotpatch works without an ear rebuild.
+FROZEN_SCRIPT_OVERLAY = ("bobreport", "opencode_fuel", "startworker")
 # FR #7548: these files ship in the ear artifact and must match provenance.
 EAR_RUNTIME_DISK_SCRIPTS = ("bobreport.py", "opencode_fuel.py")
 BOBREPORT_OVERLAY_MARKER = "def opencode_install_root"
 OPENCODE_FUEL_OVERLAY_MARKER = "GO_ZEN_USAGE_USER_AGENT"  # FR #6263
+STARTWORKER_OVERLAY_MARKER = "OPENCODE_SLOTS"  # FR #8613 / #8610 tip grammar
 
 # FR #6282: frozen/disk gitclaim must expose shop claim helpers. Fail at startup
 # when a build/hotpatch mismatch would otherwise AttributeError inside the reader.
@@ -98,6 +101,8 @@ class _InstallScriptOverlay:
         if fullname == "bobreport" and BOBREPORT_OVERLAY_MARKER not in text:
             return None
         if fullname == "opencode_fuel" and OPENCODE_FUEL_OVERLAY_MARKER not in text:
+            return None
+        if fullname == "startworker" and STARTWORKER_OVERLAY_MARKER not in text:
             return None
         import importlib.util
 
@@ -165,12 +170,13 @@ def prefer_install_scripts_path(
     executable: str | Path | None = None,
     path_list: list | None = None,
 ) -> str | None:
-    """When frozen, overlay a compatible on-disk bobreport.py (FR #6237).
+    """When frozen, overlay allowlisted on-disk scripts (FR #6237 / #8613).
 
-    Does not put InstallRoot\\scripts on sys.path. An older bobreport.py that
-    lacks ``opencode_install_root`` stays on disk and is not imported. Non-frozen
-    or missing bobreport.py: no-op. ``path_list`` is left unchanged. The overlay
-    finder is installed only for the real startup call (``path_list is None``).
+    Does not put InstallRoot\\scripts on sys.path. Older bobreport.py /
+    opencode_fuel.py / startworker.py that lack their overlay markers stay on
+    disk and are not imported. Non-frozen or missing bobreport.py: no-op.
+    ``path_list`` is left unchanged. The overlay finder is installed only for
+    the real startup call (``path_list is None``).
     """
     e = os.environ if env is None else env
     is_frozen = (
@@ -3242,17 +3248,20 @@ class Client:
         return self._maybe_start_installtest_runner(body, src_hint=src)
 
 
-    def _maybe_startworker(self, src: str, target: str, body: str, *, to_channel: bool, to_me: bool) -> bool:
-        """t810u: ``!startworker [agent|plan] [machine]`` (Bob ear). Authorise + cap + queue; the tray launches.
+    def _maybe_startworker(self, src: str, target: str, body: str, *, to_channel: bool, to_me: bool,
+                            from_local_outbox: bool = False) -> bool:
+        """t810u: ``!startworker [agent|plan|grok|cursor|opencode] [free|paid] [machine]`` (Bob ear). Authorise + cap + queue; the tray launches.
 
         Replies ACK/NACK on the channel it was asked in (PM when asked by PM). Another machine's ear stays silent.
+        Inbound echo of our own nick is ignored. ``from_local_outbox`` (FR #8622) decides a command
+        written to this ear's outbox, because the server does not echo our own PRIVMSG.
         """
         if getattr(self.args, "chair", False) or not bobtalk.is_fleet_bob_nick(self.original_nick):
             return False
         if startworker.parse(body) is None:
             return False
         who = (src or "").strip()
-        if not who or who.lower() in self._mine_nicks():
+        if not who or (who.lower() in self._mine_nicks() and not from_local_outbox):
             return True
         local = self._local_machine_id() or ""
         gate = getattr(self, "_sw_gate", None)
@@ -3263,9 +3272,14 @@ class Client:
         except Exception:
             chair = {"jeeves"}
         chan = bobreport.normalize_channel(target) if to_channel else ""
+        account = self._account_of(who)
+        # FR #8622: a line in this ear's outbox is host-local. Use the ear nick as the services account
+        # when WHOIS has not stored one yet (authorize requires account == bob-<machine>).
+        if from_local_outbox and not account and who.lower() in self._mine_nicks():
+            account = who.lower()
         try:
             dec = startworker.decide(
-                body=body, nick=who, account=self._account_of(who), channel=chan, local_machine=local, gate=gate,
+                body=body, nick=who, account=account, channel=chan, local_machine=local, gate=gate,
                 qdir=startworker.queue_dir(self._install_root()), home=self.home,
                 machine_of_nick=bobreport.machine_from_nick, chair_nicks=chair,
             )
@@ -3286,6 +3300,36 @@ class Client:
         else:
             self.whisper(who, dec.line)
         return True
+
+    def _maybe_local_outbox_startworker(self, line: str) -> None:
+        """FR #8622: run ``!startworker`` written to this ear's outbox. The server does not echo it back."""
+        if getattr(self.args, "chair", False):
+            return
+        try:
+            kind, norm = normalize_outbox_line(line)
+        except Exception:
+            return
+        target = ""
+        body = ""
+        if kind == "privmsg" or (norm or "").upper().startswith("PRIVMSG "):
+            rest = norm.split(" ", 1)[1] if " " in norm else ""
+            if " :" not in rest:
+                return
+            target, body = rest.split(" :", 1)
+            target = target.strip()
+        else:
+            body = norm
+            target = getattr(self, "chan", "") or ""
+        if startworker.parse(body) is None:
+            return
+        to_channel = target.startswith("#")
+        try:
+            self._maybe_startworker(
+                self.original_nick, target, body,
+                to_channel=to_channel, to_me=not to_channel, from_local_outbox=True,
+            )
+        except Exception as exc:  # noqa: BLE001 - outbox drain must survive a bad command
+            info(f"WARN local outbox startworker: {type(exc).__name__}: {exc}")
 
     def _maybe_recycleseat(self, src: str, target: str, body: str, *, to_channel: bool, to_me: bool) -> bool:
         """FR #5059: ``!recycleseat <nick> [machine]`` — ear authorises + queues; tray stops+starts."""
@@ -5992,6 +6036,8 @@ class Client:
                             prev = prev[:157] + "..."
                         info(f"INFO outbox: sent {head} ({len(w)} chars): {prev}")
                     sent.extend(wire)
+                    # FR #8622: own PRIVMSG is not echoed; decide !startworker from this outbox locally.
+                    self._maybe_local_outbox_startworker(line)
                     # FR #4796: pace *_console Commands slower than shop chat.
                     time.sleep(flood_s_for_outbox_line(line))
                 elif op:
@@ -6002,6 +6048,7 @@ class Client:
                 else:
                     self.say(line)
                     sent.append(line)
+                    self._maybe_local_outbox_startworker(line)
             except Exception as exc:  # noqa: BLE001 -- FR #5157
                 preview = scrub_cred_seal_preview(str(line))
                 if len(preview) > 160:

@@ -1955,6 +1955,8 @@ public static class ConsoleLauncher {
     [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr h);
     const uint CREATE_NEW_CONSOLE = 0x00000010;
     const uint CREATE_UNICODE_ENVIRONMENT = 0x00000400;
+    // FR #8568: break away from parent job objects (monitor/shell kill-on-close).
+    const uint CREATE_BREAKAWAY_FROM_JOB = 0x01000000;
     public static int Start(string app, string commandLine, string cwd, string title, IDictionary overrides) {
         var env = new SortedDictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         foreach (DictionaryEntry e in Environment.GetEnvironmentVariables()) { env[(string)e.Key] = (string)e.Value; }
@@ -1975,7 +1977,7 @@ public static class ConsoleLauncher {
             si.lpTitle = string.IsNullOrEmpty(title) ? null : title;
             PROCESS_INFORMATION pi;
             if (!CreateProcessW(app, new StringBuilder(commandLine), IntPtr.Zero, IntPtr.Zero, false,
-                    CREATE_NEW_CONSOLE | CREATE_UNICODE_ENVIRONMENT, block,
+                    CREATE_NEW_CONSOLE | CREATE_UNICODE_ENVIRONMENT | CREATE_BREAKAWAY_FROM_JOB, block,
                     string.IsNullOrEmpty(cwd) ? null : cwd, ref si, out pi)) {
                 throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
             }
@@ -4260,7 +4262,7 @@ $startWorkerTimer.Add_Tick({
                     # FR #7579: shared helper (also used at poll start + ThreadPool heartbeat).
                     [void](Write-BobTrayEngineAliveStamp -Dir $script:startWorkerDir)
                     [void](Invoke-BobTrayStartWorkerQueue -Dir $script:startWorkerDir `
-                            -Launch { param($mode, $agent) Start-BobTrayWorkerExe -Mode $mode -Agent $agent -Quiet -Trigger 'auto-start' } `
+                            -Launch { param($mode, $agent, $model) Start-BobTrayWorkerExe -Mode $mode -Agent $agent -Model $model -Quiet -Trigger 'auto-start' } `
                             -Log { param($m) Write-TrayLog $m })
                     # FR #8429: zero agent seats on an online tray, seats not off.
                     # One fill up to the hard cap, then a stamp so the next tick does not stack reqs.

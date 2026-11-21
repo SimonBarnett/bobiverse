@@ -149,7 +149,7 @@ The hard max of **2** applies only to **agent** seats. Cap count is live agent `
 
 ## Hard cap recycle / seat roots (FR #2556 / t815u)
 
-A PyInstaller onefile `bob-worker.exe` (or hashed `bob-worker-<hash>.exe`) is **bootloader + same-named child = ONE seat**. Process-root helpers still use `ParentProcessId` filters for heal/reclaim. When reclaiming over the hard max, **never** `Sort-Object ProcessId | Select -Skip N | Stop-Process` on a flat PID list — that destroys whole seats (MarchHare killed seat 38244/40460 after FR #2554 hotpatch). Use `worker_seat_roots` / `worker_seat_tree_pids` / `excess_worker_seat_roots` in `bob_worker.py`, and tray `Stop-BobWorkerSeatTrees` (root + children only). Cap *enforcement* for new agent starts is IRC markers (FR #3181), not process roots alone.
+A PyInstaller onefile `bob-worker.exe` (or hashed `bob-worker-<hash>.exe`) is **bootloader + same-named child = ONE seat**. Process-root helpers still use `ParentProcessId` filters for heal/reclaim. When reclaiming over the hard max, **never** `Sort-Object ProcessId | Select -Skip N | Stop-Process` on a flat PID list — that destroys whole seats (MarchHare killed seat 38244/40460 after FR #2554 hotpatch). Use `worker_seat_roots` / `worker_seat_tree_pids` / `excess_worker_seat_roots` in `bob_worker.py`, and tray `Stop-BobWorkerSeatTrees` (`taskkill /T` on each seat root so OpenCode grandchildren die with the seat; FR #8597). Machine `!recycle` / `execute_local_recycle` must call `stop_managed_workers` before watch/tray restart. Cap *enforcement* for new agent starts is IRC markers (FR #3181), not process roots alone.
 
 ## Install-root job git (FR #4843)
 
@@ -313,3 +313,4 @@ Generalised from 21 harvested lessons that never reached this book (audit for FR
 - On a docs wire FR, grep every copy of the old phrase in the touched file. A green string test can pass on the updated section while an earlier Deliverables bullet still states the retired wire.
 - OpenCode auto-select dialog can report opencode.exe missing while resolve_opencode_cmd finds %LOCALAPPDATA%\Programs\opencode\opencode.exe; explicit --agent opencode still starts --- make dialog use the same resolve path (FR #8412).
 - When flamingo cannot SMB to redqueen, use WinRM hostname redqueen with admin creds; copy CI bob-worker artifact to C:\ai\bob\worker then restart OpenCode seats so LocalAppData run-copy unpacks opencode_seat_contract. recycleseat.disabled only blocks ear !recycleseat; hung --describe-launch blocks the tray startworker timer.
+- Machine recycle must stop_managed_workers (taskkill /T on bob-worker seat roots) before watch/tray restart so OpenCode grandchildren die with the seat (FR #8597).
