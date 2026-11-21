@@ -143,3 +143,14 @@ def test_example_defaults_file_validates():
         assert row is not None, why
         names.append(row["agent"])
     assert names == list(REQUIRED_AGENTS)
+
+
+def test_install_bob_webhooks_mentions_models():
+    """MRB #8766: IIS front door must rewrite bob/v1/models (same class as hours)."""
+    from repo_layout import ROOT
+
+    install = (ROOT / "jeeves" / "scripts" / "Install-BobWebhooks.ps1").read_text(
+        encoding="utf-8-sig"
+    )
+    assert "bob/v1/models" in install
+    assert "BobModelsWebhook" in install
