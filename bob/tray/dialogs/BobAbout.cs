@@ -232,10 +232,21 @@ namespace BobDialogs
             box = new TextBox();
             box.Multiline = true; box.ReadOnly = true; box.ScrollBars = ScrollBars.Vertical; box.Font = new Font("Consolas", 9f);
             box.Text = "reading installs..."; box.Location = new Point(16, 128); box.Size = new Size(548, 256);
+            // FR #8677 / BOB-09: Show logs at bottom opens the tray watch log (same path as menu Open log).
+            Button logs = new Button();
+            logs.Text = "Show logs"; logs.Location = new Point(350, 398); logs.Size = new Size(100, 23);
+            logs.Click += delegate {
+                try
+                {
+                    string p = Path.Combine(Environment.GetEnvironmentVariable("USERPROFILE") ?? "", ".grok\\long-running-background-tasks\\watch_bob_tray.log");
+                    if (File.Exists(p)) Process.Start("notepad.exe", "\"" + p + "\"");
+                }
+                catch { }
+            };
             Button ok = new Button();
             ok.Text = "Close"; ok.Location = new Point(474, 398);
             ok.Click += delegate { Close(); };
-            Controls.AddRange(new Control[] { logo, title, by, ver, box, ok });
+            Controls.AddRange(new Control[] { logo, title, by, ver, box, logs, ok });
             AcceptButton = ok;
             Shown += delegate {
                 ver.Text = "bob " + Common.BobVersion(root) + "    machine: " + Common.MachineId();

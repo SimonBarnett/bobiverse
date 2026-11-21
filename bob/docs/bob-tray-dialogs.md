@@ -18,7 +18,7 @@ Staged and installed trees stay flat. The old spellings (`third_party\bob-tray`,
 * **Tech: C# WinForms, compiled by the in-box .NET Framework 4 `csc.exe`** (`scripts\Build-BobDialogs.ps1`, sources `dialogs\*.cs`).
   Why: ~26 KB exes, nothing to unpack at start (a PyInstaller one-file exe extracts ~10 MB to `%TEMP%` on **every** start and tkinter adds
   more), only NGEN'd framework DLLs, no extra toolchain on the build or target machine (csc ships with Windows 10/11).
-* **About**: ntsa badge (embedded), "by Simon Barnett", `bob <version>  machine: <id>`, then one block per install of bob / jeeves / airc / ergo
+* **About**: ntsa badge (embedded), "by Simon Barnett"; FR #8677 **Show logs** button opens `watch_bob_tray.log`, `bob <version>  machine: <id>`, then one block per install of bob / jeeves / airc / ergo
   (version, BUILD.json date, commit, path, service state - the same text as the old `Format-BobInstallInfo`). The window opens first; the install
   scan (services, BUILD.json, git only when BUILD.json has no commit) runs on a worker thread and fills the box.
 * **Status** (FR #4938 / #5179 / #6214 / #6285 / **#7243** / **#7326** / **#7510** / **#7580**): **xAI weekly** is one line per IRC shop channel (`machines.<m>.xai` / `xai_weekly`) with that machine's Grok/Cursor pool and its workers under it. Fleet paints OpenCode Go and Copilot only (Jeeves). There is no fleet Cursor, Grok chat, or OpenCode Free meter. Stale is `[stale]` (FR #7299), never "(older than 2 min)". Missing fetched readings use `unknown (reason)` (FR #7242). Each machine's
