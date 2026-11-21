@@ -113,7 +113,7 @@ function Stage-BobAgentFolders([string]$Stage) {
         'heat=include-plan'
     ) -join [Environment]::NewLine
     [IO.File]::WriteAllText($marker, $markerBody + [Environment]::NewLine, (New-Object System.Text.UTF8Encoding $false))
-    Write-Host 'INFO bob staged plan\ for b
+    Write-Host 'INFO bob staged plan\ for bob-ear MSI (BOB-49 / FR #8700)'
     # FR #8701 / BOB-55: bob-ear MSI must include PriorityAgent.exe (PRI-06 supplies the real build).
     $priDir = Join-Path $Stage 'priority'
     New-Item -ItemType Directory -Force -Path $priDir | Out-Null
@@ -154,7 +154,7 @@ function Stage-BobAgentFolders([string]$Stage) {
         'heat=include-PriorityAgent'
     ) -join [Environment]::NewLine
     [IO.File]::WriteAllText($priMarker, $priBody + [Environment]::NewLine, (New-Object System.Text.UTF8Encoding $false))
-    Write-Host 'INFO bob staged priority\PriorityAgent.exe for bob-ear MSI (BOB-55 / FR #8701)'ob-ear MSI (BOB-49 / FR #8700)'
+    Write-Host 'INFO bob staged priority\PriorityAgent.exe for bob-ear MSI (BOB-55 / FR #8701)'
     if ($SkipWorkerExe) {
         Write-Host 'WARN bob pack: -SkipWorkerExe (test stage; no bob-worker.exe)'
     } else {
