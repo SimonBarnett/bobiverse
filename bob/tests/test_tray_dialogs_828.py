@@ -305,7 +305,7 @@ def test_tray_menu_is_status_agent_plan_acknowledge_log_restart_exit(dialogs, tm
     out = tmp_path / "menu.txt"
     _run(dialogs / "bob-tray.exe", "--root", str(tmp_path), "--dump-menu", str(out))
     items = out.read_text(encoding="utf-8").splitlines()
-    # FR #5111: Reload engine sits between Restart and Exit (host-only recycle; Exit stays last).
+    # FR #8706 / BOB-07: Exit submenu hosts Reload, Restart engine, Exit (under Exit only).
     assert items == [
         "Status",
         "Agents",
@@ -322,8 +322,9 @@ def test_tray_menu_is_status_agent_plan_acknowledge_log_restart_exit(dialogs, tm
         "Set key...",
         "Remove key...",
         "-",
-        "Restart",
-        "Reload engine",
+        "Exit",
+        "Reload",
+        "Restart engine",
         "Exit",
     ]
     assert "Agent" not in items

@@ -3917,8 +3917,15 @@ $miPlan.Add_Click({ Start-BobTrayWorkerExe -Mode 'plan' -Trigger 'menu' })
 $miAck = $menu.Items.Add('Acknowledge')
 $miLog = $menu.Items.Add('Open log')
 [void]$menu.Items.Add('-')
-$miRestart = $menu.Items.Add('Restart')
-$miExit = $menu.Items.Add('Exit')
+# FR #8706 / BOB-07: Exit submenu hosts Reload, Restart engine, Exit (TipForm).
+$miExitMenu = New-Object System.Windows.Forms.ToolStripMenuItem('Exit')
+[void]$menu.Items.Add($miExitMenu)
+$miReload = New-Object System.Windows.Forms.ToolStripMenuItem('Reload')
+$miRestartEngine = New-Object System.Windows.Forms.ToolStripMenuItem('Restart engine')
+$miExit = New-Object System.Windows.Forms.ToolStripMenuItem('Exit')
+[void]$miExitMenu.DropDownItems.Add($miReload)
+[void]$miExitMenu.DropDownItems.Add($miRestartEngine)
+[void]$miExitMenu.DropDownItems.Add($miExit)
 $notify.ContextMenuStrip = $menu
 
 $miStatus.Add_Click({ Invoke-BobTrayStatus })
@@ -3928,7 +3935,16 @@ $miAck.Add_Click({
     })
 $miLog.Add_Click({ if (Test-Path $logPath) { Start-Process notepad.exe $logPath } })
 $ctx = New-Object System.Windows.Forms.ApplicationContext
-$miRestart.Add_Click({ Restart-BobTrayWatcher })
+$miReload.Add_Click({
+        # TipForm: request host engine reload via tray-cmd (bob-tray.exe TakeReload).
+        try {
+            $run = Join-Path $RepoRoot 'run'
+            if (-not (Test-Path -LiteralPath $run)) { New-Item -ItemType Directory -Path $run -Force | Out-Null }
+            Set-Content -LiteralPath (Join-Path $run 'tray-cmd.txt') -Value 'reload' -Encoding ascii
+            Write-TrayLog 'Reload: wrote tray-cmd reload'
+        } catch { Write-TrayLog ('Reload: ' + $_.Exception.Message) }
+    })
+$miRestartEngine.Add_Click({ Restart-BobTrayWatcher })
 $miExit.Add_Click({ Invoke-BobTrayExit })
 $notify.Add_MouseClick({
         param($s, $e)

@@ -934,9 +934,22 @@ namespace BobDialogs
             miOcKeys.DropDownOpening += delegate { SeedOpencodeKeyChoices(miOcKeys, false); };
             menu.Items.Add(miOcKeys);
             menu.Items.Add(new ToolStripSeparator()); MenuItems.Add("-");
-            Item("Restart", delegate { Restart(); });
-            Item("Reload engine", delegate { ReloadEngine(); });
-            Item("Exit", delegate { ExitTray(); });
+            // FR #8706 / BOB-07: Reload, Restart engine, Exit live under Exit only (not top-level).
+            ToolStripMenuItem miExitMenu = new ToolStripMenuItem("Exit");
+            MenuItems.Add("Exit");
+            ToolStripMenuItem miReload = new ToolStripMenuItem("Reload");
+            miReload.Click += delegate { ReloadEngine(); };
+            miExitMenu.DropDownItems.Add(miReload);
+            MenuItems.Add("Reload");
+            ToolStripMenuItem miRestartEngine = new ToolStripMenuItem("Restart engine");
+            miRestartEngine.Click += delegate { Restart(); };
+            miExitMenu.DropDownItems.Add(miRestartEngine);
+            MenuItems.Add("Restart engine");
+            ToolStripMenuItem miExitLeaf = new ToolStripMenuItem("Exit");
+            miExitLeaf.Click += delegate { ExitTray(); };
+            miExitMenu.DropDownItems.Add(miExitLeaf);
+            MenuItems.Add("Exit");
+            menu.Items.Add(miExitMenu);
             notify.ContextMenuStrip = menu;
             notify.Icon = idle; notify.Text = "Bob";
             notify.MouseClick += delegate (object s, MouseEventArgs e) { if (e.Button == MouseButtons.Left) { Acknowledge(); ShowStatus(); } };
