@@ -41,16 +41,29 @@ def test_opencode_no_recycle_under_hard_out_of_fuel_hold():
     assert reason == ""
 
 
-def test_opencode_no_recycle_when_recent_move():
+def test_opencode_no_recycle_when_recent_move_and_fresh_digest():
     reason = bw.opencode_frozen_recycle_reason(
         kind="opencode",
         out_of_fuel=False,
         ack_open=True,
-        digest_doing_age_s=2000.0,
+        digest_doing_age_s=30.0,
         progress_moved_age_s=30.0,
         threshold_s=900.0,
     )
     assert reason == ""
+
+
+def test_post_reassign_stale_digest_recycles_despite_progress_clock():
+    """FR #8646: new seat after restart still recycles when worker.updated is frozen."""
+    reason = bw.opencode_frozen_recycle_reason(
+        kind="opencode",
+        out_of_fuel=False,
+        ack_open=True,
+        digest_doing_age_s=1283.0,
+        progress_moved_age_s=30.0,
+        threshold_s=900.0,
+    )
+    assert reason == "opencode-frozen-progress"
 
 
 def test_ack_open_digest_stale_without_progress_clock_recycles():
