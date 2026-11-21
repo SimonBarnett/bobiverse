@@ -6253,6 +6253,14 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
             r"            } else {",
             r"                $script:ocEpipeTries = 0",
             r"            }",
+            # FR #8578: free-to-paid switch continues the same job — never stamp terminal
+            # out-of-fuel turn_ended (BoredEmitter would GIVEUP the ACK before re-invoke).
+            r"            # FR #8578: successful free-to-paid switch is non-terminal (no out-of-fuel GIVEUP).",
+            r"            if ($script:ocSwitchPaid -and $hitLimit) {",
+            r"                $teStatus = ''",
+            r"                $teErr = ''",
+            r"                $teClass = 'free-to-paid-switch'",
+            r"            }",
             r"            if ($script:ocHasJob) { Write-OpencodeTurnMarker 'turn_ended' $turnN $teStatus $teErr $teClass }",
             r"        }",
             r"    }",
@@ -9415,8 +9423,15 @@ def format_opencode_turn_error(
 
 
 def is_failed_turn_fuel_error(error_class: str, error_line: str) -> bool:
-    """True when a failed turn should GIVEUP as out-of-fuel (FR #8018)."""
+    """True when a failed turn should GIVEUP as out-of-fuel (FR #8018).
+
+    FR #8578: ``free-to-paid-switch`` is a non-terminal free-pool handoff; the paid
+    re-invoke continues the same job, so never treat it as fuel GIVEUP even if the
+    error line still mentions Free usage.
+    """
     cls = str(error_class or "").strip().lower().replace("_", "-")
+    if cls in ("free-to-paid-switch", "freetopaidswitch"):
+        return False
     if cls in ("out-of-fuel", "outoffuel"):
         return True
     blob = "%s\n%s" % (error_class or "", error_line or "")
