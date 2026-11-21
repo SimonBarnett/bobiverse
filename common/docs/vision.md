@@ -39,7 +39,7 @@ LOCKED
 
 ```
 SimonBarnett/bobiverse Releases
-  ├─ jeeves-*.msi → BobIrcd + ircJeeves (Ergo host)
+  ├─ jeeves-*.msi → BobIrcd + ircJeeves (Ergo/chair host = walrus; ionos deprecated)
   ├─ bob-*.msi    → ircBob + tray + Watch-AgentHealth
   └─ airc-*.msi   → Airc ({mid}_console)
 

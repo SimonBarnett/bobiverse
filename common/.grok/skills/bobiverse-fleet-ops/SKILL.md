@@ -30,10 +30,10 @@ Per service start: (1) repo fast-forward of the install work tree (sparse `<prod
 **ARP VERSION truth (FR #1565 / harvest #1589):** after MSI, Windows ARP `DisplayVersion` is the installed VERSION truth. `Sync-BobiverseFromRepo` must heal `<InstallRoot>\VERSION` to match ARP and must **not** let a newer git/clone `VERSION` stamp clobber the MSI identity on start-up sync. Unit tests use `-ArpVersionOverride none` (or the script's equivalent) so live ARP does not poison CI. Merged PR #1577 + docs #1587.
 ## Fleet model (what talks to what)
 
-- **Ergo** IRC server (service `BobIrcd`, tree `<ai root>\ergo`, TLS :6697 public, plaintext :6667 loopback). Runs on exactly one box.
+- **Ergo** IRC server (service `BobIrcd`, tree `<ai root>\ergo`, TLS :6697 public, plaintext :6667 loopback). Runs on exactly one box — **walrus** (machine id `walrus`). **ionos is deprecated** as the Ergo/chair host.
   NEVER edit `ircd.yaml`, never restart `BobIrcd` as part of a fix for something else.
 - **Jeeves** chair (service `ircJeeves`, nick `Jeeves`, `irc_agent.py --chair`): channel privileges, roster, queue, commands,
-  digest, webhooks. **Bob ear** (service `ircBob`, nick `Bob-<machine>`, SASL account `bob-<machine>`): one per box, JOINs
+  digest, webhooks — also on **walrus**. **Bob ear** (service `ircBob`, nick `Bob-<machine>`, SASL account `bob-<machine>`): one per box, JOINs
   `#bobiverse` + `#<machine>`. **Airc** console (service `Airc`, nick `<machine>_console`): remote shell over PRIVMSG.
 - **bobcallback** (scheduled task `BobCallback`, SYSTEM, `127.0.0.1:7700`): receives `/bob/v1/report|digest|git|intake|jira` locally. Public IIS front-door GET for the digest JSON is **`/bob/v1/report` only** (FR #149); `https://bob.ntsa.uk/bob/v1/digest` is 404.
   Public URL `https://bob.ntsa.uk/bob/v1/...` is an IIS URL-Rewrite site (`irc-ntsa`) in front of it.
@@ -154,7 +154,7 @@ Get-ScheduledTask BobCallback | Get-ScheduledTaskInfo               # webhook re
 
 ## Harvested fleet-operation rules (skill records #1215-#1460)
 
-- Honor `require_machine` pins literally: a DEV1/ionos operation must be assigned to that capable seat, never to a convenient but incapable worker. Hard pins beat `any`; do not derive a pin from an ambiguous title.
+- Honor `require_machine` pins literally: a DEV1/walrus (chair/Ergo host; ionos deprecated) operation must be assigned to that capable seat, never to a convenient but incapable worker. Hard pins beat `any`; do not derive a pin from an ambiguous title.
 - On live Windows hosts, restart only the affected BobCallback task or `ircJeeves` service. Never restart BobIrcd/Ergo as a shortcut, and preserve queue/outbox evidence while recovering a callback or worker.
 - For upgrades and resync, verify the installed VERSION, clean/main worktree, fetch result, service/task state, and endpoint health; record an ALERT when fetch/ff/worktree state is stale.
 - After MSI, treat ARP `DisplayVersion` as VERSION truth for Sync heal; never let a newer repo/clone VERSION overwrite the MSI stamp (FR #1565 / harvest #1589).
@@ -177,7 +177,7 @@ Generalised from 32 harvested lessons that never reached this book (audit for FR
 
 ## Harvested lessons (intake)
 
-- bobiverse #4340: even when hard-unpinned from require_machine=ionos, flamingo must GIVEUP needs_human for live C:\ai\jeeves install hotpatch; leave OPEN for ionos ops
+- bobiverse #4340: even when hard-unpinned from require_machine=walrus (legacy pin text may still say ionos), flamingo must GIVEUP needs_human for live C:\ai\jeeves install hotpatch; leave OPEN for walrus/chair-host ops
 - When SeatDisk FreeGB stays under MinFreeGB after reclaim, check install git branch: ff-only-on-main means a leftover fr-* branch leaves flat scripts pre-#4883; hotpatch from origin/main:common/scripts/Clear-BobiverseSeatDisk.ps1 then -Reclaim before filing capacity.
 - FR #5154: if user Temp still dominates the CRITICAL report, SeatDisk third-pass uses KeepTempHoursLow on known leftover dir names (pip-build/pytest) --- never vscode/Outlook trees and never a hand-delete of C:\ai\* (FR #2727).
 - Write reload to run/tray-cmd.txt so elevated bob-tray.exe KillEngineTree+StartEngine; never taskkill the High-integrity engine from a Medium shell
