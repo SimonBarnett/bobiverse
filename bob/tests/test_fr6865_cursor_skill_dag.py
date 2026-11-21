@@ -38,6 +38,12 @@ def test_cursor_launch_files_include_mcp_and_resolve(tmp_path):
     assert "resolve" in spec.files[str(run / "prompt.txt")]
     assert "get_skill" in spec.files[str(run / "prompt.txt")]
     assert spec.write_cursor_skill_dag_mcp is True
+    # FR #8785 / #8846: prompt must not invent bob/bob/scripts; fail-closed GIVEUP named
+    prompt_txt = spec.files[str(run / "prompt.txt")]
+    assert "bob\\bob\\scripts" not in prompt_txt
+    assert "bob/bob/scripts" not in prompt_txt
+    assert ".cursor/mcp.json" in prompt_txt or ".cursor\\mcp.json" in prompt_txt
+    assert "skill-dag-mcp-down" in prompt_txt
 
 
 def test_cursor_launch_leaves_user_mcp_unchanged(tmp_path, monkeypatch):

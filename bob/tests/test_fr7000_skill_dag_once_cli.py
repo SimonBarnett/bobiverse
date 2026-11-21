@@ -1,4 +1,4 @@
-"""FR #7000: Cursor seats may lack skill-dag MCP; --once CLI is the supported fallback."""
+"""FR #7000 / #8785 / #8846: Cursor seats may lack skill-dag MCP; --once CLI is the supported fallback."""
 from __future__ import annotations
 
 import json
@@ -6,6 +6,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+import bob_worker as bw
 from repo_layout import ROOT
 
 MCP = ROOT / "bob" / "scripts" / "skill_dag_mcp.py"
@@ -61,7 +62,22 @@ def test_fr7000_once_resolve_and_get_skill(tmp_path: Path):
 
 
 def test_fr7000_worker_prompt_documents_once_fallback():
-    text = WORKER.read_text(encoding="utf-8")
-    assert "FR #7000" in text
-    assert "--once resolve" in text
-    assert "skill_dag_mcp.py" in text
+    """FR #8785 / #8846: rendered prompt uses .cursor/mcp.json; never constructs bob\\bob\\scripts."""
+    prompt = bw.worker_prompt(r"C:\ai\bob\worker", r"C:\ai\bob\home", "marchhare", "marchhare-1")
+    assert "FR #7000" in prompt
+    assert "--once resolve" in prompt
+    assert "--once get_skill" in prompt
+    assert ".cursor/mcp.json" in prompt or ".cursor\\mcp.json" in prompt
+    assert "args" in prompt  # use all args from config
+    assert "job-worktree-file" in prompt
+    assert "bob\\bob\\scripts" not in prompt
+    assert "bob/bob/scripts" not in prompt
+    # No constructed <worker-parent>\bob\scripts\skill_dag_mcp.py
+    assert r"C:\ai\bob\bob\scripts\skill_dag_mcp.py" not in prompt
+    assert r"C:\ai\bob\worker\..\bob\scripts" not in prompt.replace("/", "\\")
+    assert "--job-worktree-file" in prompt
+    # Forbid instructing bare --job-worktree as the config arg (old defective prompt)
+    assert "`--root` / `--job-worktree` args" not in prompt
+    assert "Do not invent skill bodies" in prompt
+    assert "ConvertFrom-Json" in prompt or "@($cfg.args)" in prompt
+    assert "skill-dag-mcp-down" in prompt
