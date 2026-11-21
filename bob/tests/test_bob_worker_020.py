@@ -291,6 +291,9 @@ def test_plan_launch_twice_makes_two_agents(tmp_path, monkeypatch):
         def poll(self):
             return None
 
+        def wait(self, timeout=None):
+            return 0
+
     monkeypatch.setattr(bw, "default_spawn", lambda spec, env: (starts.append(spec), P())[1])
     monkeypatch.setattr(bw, "read_fuel", lambda root: bw.Fuel(30, 30, 30, "available"))
     monkeypatch.setattr(bw, "resolve_cursor_cmd", lambda *a, **k: r"C:\c\agent.cmd")
