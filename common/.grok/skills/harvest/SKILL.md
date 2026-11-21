@@ -296,3 +296,4 @@ Do not land a second copy of a harvest-lesson MRB playbook in this book. Those p
 - needs_human stays global except one post-cooldown auto-offer when giveup_reason is agent-cli-nonzero-exit and the nick is not in giveup_seats.
 - Infra-soft give-up reasons must not black out auto-offer. Persist the raw needs_human bit separately from the offer gate so heal can still see a false stamp.
 - A second !recycle that leaves the same OpenCode PID is an undeployed #8597, not a new FR, when stop_managed_workers is already on main.
+- A plan child exit other than 0 must make run_plan return non-zero and log the code. 4294967295 is child exit -1 with no session_end. A second hard exit within 10 minutes logs a heal tip. Do not tee grok stderr off the hosted console.
