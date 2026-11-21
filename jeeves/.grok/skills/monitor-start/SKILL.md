@@ -50,6 +50,7 @@ You are the **MONITORING** agent - not the chair, not a worker. Never `!assign` 
 | Open PR stale base | `open_pr_stale_base` | open PRs whose base.ref is not main/master (FR #8333; fixture JEEVES_OPEN_PR_STALE_BASE_FIXTURE) |
 | Open PR missing MRB/FIX | `open_pr_mrb_missing` | open non-draft non-receipt PRs with no MRB/FIX queue row (FR #8377; fixture JEEVES_OPEN_PR_MRB_MISSING_FIXTURE) |
 | Ticket closure | `ticket_closure` | newly closed issues/PRs on focused repos (FR #6063; report only) |
+| FR digest hold | `fr_digest` | offered or accepted child whose Depends-on row still has labels `fr-digest` and `hold` (FR #8849 / BOB-G1). Run after `depends_on`. Soft-ok when BOB-G is not on tip |
 
 Exit codes: **0** ok, **1** finding, **2** error. One JSON line on stdout.
 
