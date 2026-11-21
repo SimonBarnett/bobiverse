@@ -4262,7 +4262,7 @@ $startWorkerTimer.Add_Tick({
                     # FR #7579: shared helper (also used at poll start + ThreadPool heartbeat).
                     [void](Write-BobTrayEngineAliveStamp -Dir $script:startWorkerDir)
                     [void](Invoke-BobTrayStartWorkerQueue -Dir $script:startWorkerDir `
-                            -Launch { param($mode, $agent) Start-BobTrayWorkerExe -Mode $mode -Agent $agent -Quiet -Trigger 'auto-start' } `
+                            -Launch { param($mode, $agent, $model) Start-BobTrayWorkerExe -Mode $mode -Agent $agent -Model $model -Quiet -Trigger 'auto-start' } `
                             -Log { param($m) Write-TrayLog $m })
                     # FR #8429: zero agent seats on an online tray, seats not off.
                     # One fill up to the hard cap, then a stamp so the next tick does not stack reqs.

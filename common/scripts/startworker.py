@@ -32,12 +32,15 @@ except ImportError:  # pragma: no cover
 
 CMD = "!startworker"
 MODES = ("agent", "plan")
+# FR #8610: explicit seat kind for remote starts (tray already allowlists these).
+AGENTS = ("auto", "grok", "cursor", "opencode")
+OPENCODE_SLOTS = ("free", "paid")
 DEFAULT_MODE = "agent"
 HARD_MAX_WORKERS = 2             # t815u / FR #2522: ONLY mode=agent seats; plan is uncapped and does not count
 DEFAULT_MAX_WORKERS = HARD_MAX_WORKERS
 DEFAULT_COOLDOWN_S = 30.0        # between two accepted starts on one machine
 REQUEST_TTL_S = 60.0             # a queued request older than this is dropped by the tray
-TRAY_ALIVE_MAX_AGE_S = 30.0      # tray heartbeat freshness (host/ThreadPool writes every ~2 s; FR #2697: ≥2× worst UI refresh stall)
+TRAY_ALIVE_MAX_AGE_S = 30.0      # tray heartbeat freshness (host/ThreadPool writes every ~2 s; FR #2697: >=2x worst UI refresh stall)
 QUEUE_SUBDIR = ("run", "startworker")
 ALIVE_FILE = "tray.alive"
 ENGINE_ALIVE_FILE = "engine.alive"  # FR #4136: PS engine queue-tick stamp
@@ -49,29 +52,52 @@ _JUNK = {c: None for c in range(0, 32)}
 
 
 def parse(body: str):
-    """``!startworker [agent|plan] [machine]`` (either order). -> (mode, machine|None) | 'usage' | None (not ours)."""
+    """``!startworker [agent|plan|grok|cursor|opencode] [free|paid] [machine]`` (any order).
+
+    Returns ``(mode, machine|None, agent, slot)`` | ``'usage'`` | ``None``.
+    FR #8610: ``opencode`` / ``opencode free`` queue ``agent=opencode`` (+ optional slot)
+    so the tray pins ``BOB_OPENCODE_MODEL`` instead of Automatic (Grok-first).
+    """
     text = str(body or "").translate(_JUNK).strip().lstrip(":").strip()
     if not text:
         return None
     parts = text.split()
-    if parts[0].lower() != CMD:
+    if not parts or parts[0].lower() != CMD:
         return None
-    mode, machine = None, None
+    mode, machine, agent, slot = None, None, None, None
     for tok in parts[1:]:
-        low = tok.lower()
+        low = tok.lower().lstrip("#")
         if low in MODES:
             if mode is not None:
                 return "usage"
             mode = low
+        elif low in AGENTS:
+            if agent is not None:
+                return "usage"
+            agent = low
+        elif low in OPENCODE_SLOTS:
+            if slot is not None:
+                return "usage"
+            slot = low
         elif machine is None and _MACHINE_RE.match(tok):
-            machine = low.lstrip("#")
+            machine = low
         else:
             return "usage"
-    return (mode or DEFAULT_MODE, machine)
+    mode = mode or DEFAULT_MODE
+    agent = "" if agent in (None, "auto") else agent
+    slot = slot or ""
+    if slot and agent != "opencode":
+        return "usage"
+    if mode == "plan" and (agent or slot):
+        return "usage"
+    return (mode, machine, agent, slot)
 
 
 def usage() -> str:
-    return "usage: !startworker [agent|plan] [machine]   (machine required in #bobiverse)"
+    return (
+        "usage: !startworker [agent|plan|grok|cursor|opencode] [free|paid] [machine]   "
+        "(machine required in #bobiverse; free|paid only with opencode)"
+    )
 
 
 # --------------------------------------------------------------------------- who may ask
@@ -200,7 +226,15 @@ def engine_alive(qdir, now: float | None = None, max_age: float = ENGINE_ALIVE_M
         return False
 
 
-def write_request(qdir, mode: str, by: str, kind: str, now: float | None = None, agent: str = "") -> str:
+def write_request(
+    qdir,
+    mode: str,
+    by: str,
+    kind: str,
+    now: float | None = None,
+    agent: str = "",
+    slot: str = "",
+) -> str:
     now = time.time() if now is None else now
     rid = time.strftime("%Y%m%d-%H%M%S", time.gmtime(now)) + "-" + uuid.uuid4().hex[:6]
     d = Path(qdir)
@@ -209,6 +243,10 @@ def write_request(qdir, mode: str, by: str, kind: str, now: float | None = None,
     picked = (agent or "").strip().lower()
     if picked and picked != "auto":
         body["agent"] = picked
+    # FR #8610: free|paid slot for OpenCode -> tray pins BOB_OPENCODE_MODEL child-only.
+    slot_l = (slot or "").strip().lower()
+    if slot_l in OPENCODE_SLOTS and picked == "opencode":
+        body["slot"] = slot_l
     tmp = d / f".req-{rid}.tmp"
     tmp.write_text(json.dumps(body), encoding="utf-8")
     os.replace(tmp, d / f"req-{rid}.json")          # atomic: the tray never reads a half-written file
@@ -258,7 +296,7 @@ def decide(*, body: str, nick: str, account, channel: str, local_machine: str, g
     nack = lambda reason, text, **kw: Decision(False, reason, f"NACK startworker: {text}", **kw)   # noqa: E731
     if parsed == "usage":
         return nack("usage", usage())
-    mode, machine = parsed
+    mode, machine, agent, oc_slot = parsed
     ok, kind, why = authorize(nick, account, machine_of_nick=machine_of_nick, chair_nicks=chair_nicks, owners=owners)
     if not ok:
         return nack(why, "not verified (log in to your services account)" if why == "unverified"
@@ -269,7 +307,7 @@ def decide(*, body: str, nick: str, account, channel: str, local_machine: str, g
         return nack("no_machine", "this ear has no machine id")
     if machine is None:
         if chan != local:
-            return nack("machine_required", "name the machine: !startworker [agent|plan] " + local, mode=mode, kind=kind)
+            return nack("machine_required", "name the machine: !startworker [agent|plan|opencode] " + local, mode=mode, kind=kind)
         machine = local
     if machine != local:
         return None                                  # addressed to another machine's ear: not ours, stay silent
@@ -297,13 +335,22 @@ def decide(*, body: str, nick: str, account, channel: str, local_machine: str, g
     rid = ""
     if write:
         try:
-            rid = write_request(qdir, mode, nick, kind, now)
+            rid = write_request(qdir, mode, nick, kind, now, agent=agent, slot=oc_slot)
         except OSError as e:
             return nack("queue_error", f"could not queue the request ({type(e).__name__})", mode=mode, kind=kind)
     gate.arm(now)
-    slot = (
+    cap_slot = (
         f"IRC-agents {have + 1}/{cap}" if mode == "agent"
         else f"plan (uncapped; IRC-agents {have}/{cap})"
     )
-    return Decision(True, "ok", f"ACK startworker {mode} on {local} (queued {rid or '-'}; {slot}; by {nick})",
-                    mode, kind, rid)
+    who = mode
+    if agent:
+        who = f"{mode}/{agent}" + (f"/{oc_slot}" if oc_slot else "")
+    return Decision(
+        True,
+        "ok",
+        f"ACK startworker {who} on {local} (queued {rid or '-'}; {cap_slot}; by {nick})",
+        mode,
+        kind,
+        rid,
+    )
