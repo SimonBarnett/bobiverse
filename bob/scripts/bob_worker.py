@@ -2068,6 +2068,88 @@ def load_public_digest(path: Optional[Path]) -> dict:
     return doc if isinstance(doc, dict) else {}
 
 
+def digest_home_candidates(
+    env: Optional[dict] = None,
+    *,
+    install_root: Optional[Path | str] = None,
+) -> list[Path]:
+    """Homes that may hold digest.json / private fleet meters (FR #8667)."""
+    env = os.environ if env is None else env
+    out: list[Path] = []
+    home = str((env or {}).get("BOB_DIGEST_HOME") or "").strip()
+    if home:
+        out.append(Path(home))
+    try:
+        import bob_home as bh
+        out.append(Path(bh.digest_home()))
+    except Exception:
+        out.append(Path.home() / ".bobiverse")
+    bob_home = str((env or {}).get("BOB_HOME") or "").strip()
+    if bob_home:
+        out.append(Path(bob_home))
+    if install_root:
+        out.append(Path(install_root) / "home")
+    seen: set[str] = set()
+    uniq: list[Path] = []
+    for cand in out:
+        key = str(cand)
+        if key in seen:
+            continue
+        seen.add(key)
+        uniq.append(cand)
+    return uniq
+
+
+def load_private_cursor_meter(
+    env: Optional[dict] = None,
+    *,
+    install_root: Optional[Path | str] = None,
+    home: Optional[Path | str] = None,
+) -> Optional[dict]:
+    """FR #8667: private si Cursor remaining. Never from public digest."""
+    homes: list[Path] = []
+    if home:
+        homes.append(Path(home))
+    if install_root:
+        homes.append(Path(install_root))
+    homes.extend(digest_home_candidates(env, install_root=install_root))
+    try:
+        import fleet_pool_fetch as fpf
+        loader = getattr(fpf, "load_private_cursor_meter", None)
+        path_fn = getattr(fpf, "private_cursor_path", None)
+    except Exception:
+        loader = None
+        path_fn = None
+    for h in homes:
+        if callable(loader):
+            try:
+                row = loader(h)
+            except Exception:
+                row = None
+            if isinstance(row, dict):
+                return row
+        if callable(path_fn):
+            try:
+                p = path_fn(h)
+                if p is not None and Path(p).is_file():
+                    doc = json.loads(Path(p).read_text(encoding="utf-8"))
+                    if isinstance(doc, dict):
+                        return doc
+            except Exception:
+                pass
+        # Fallback path name if import missing
+        p = Path(h) / "fleet-cursor-private.json"
+        if p.is_file():
+            try:
+                doc = json.loads(p.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            if isinstance(doc, dict):
+                return doc
+    return None
+
+
+
 def public_digest_path(
     env: Optional[dict] = None,
     *,
@@ -2527,17 +2609,25 @@ def explicit_cursor_si_decision(
     fleet_digest: Optional[dict] = None,
     *,
     now: Optional[float] = None,
+    private_cursor: Optional[dict] = None,
+    install_root: Optional[Path | str] = None,
 ) -> Decision:
     """Explicit Cursor uses the si@ntsa.uk fleet pool, never the local reading.
 
     A missing or stale fleet meter still starts. A fresh remaining of 0 refuses.
     Local high/low and on-demand do not gate this path (FR #8649).
+    FR #8667: prefer the private cursor meter (fleet-cursor-private.json). Public
+    digest still omits cursor (FR #7326); synthetic digest.cursor is a test aid only.
     """
     if not cursor_cmd:
         return Decision("refuse", "explicit cursor: agent.cmd missing")
     account = SI_NTSA_CURSOR_ACCOUNT
     now_f = time.time() if now is None else float(now)
-    row = _fleet_pool_row(fleet_digest or {}, "cursor")
+    row = private_cursor if isinstance(private_cursor, dict) else None
+    if row is None:
+        row = load_private_cursor_meter(install_root=install_root)
+    if row is None:
+        row = _fleet_pool_row(fleet_digest or {}, "cursor")
     fill = fleet_pool_fill(row, now=now_f)
     if fill["usable"] and int(fill["remaining"]) <= 0:
         return Decision(
@@ -2564,6 +2654,8 @@ def explicit_agent_decision(
     start_model: str = "",
     fleet_digest: Optional[dict] = None,
     now: Optional[float] = None,
+    install_root: Optional[Path | str] = None,
+    private_cursor: Optional[dict] = None,
 ) -> Decision:
     """One requested agent. ``refuse`` never starts a different agent."""
     agent_id = normalize_explicit_agent(requested)
@@ -2581,7 +2673,10 @@ def explicit_agent_decision(
         )
     if agent_id == "cursor":
         # Local fuel is ignored. Automatic selection still uses cursor_has_tokens.
-        return explicit_cursor_si_decision(cursor_cmd, fleet_digest, now=now)
+        return explicit_cursor_si_decision(
+            cursor_cmd, fleet_digest, now=now,
+            private_cursor=private_cursor, install_root=install_root,
+        )
     if agent_id == "opencode":
         return explicit_opencode_decision(
             fuel, opencode_cmd, auth_present=auth_present, start_model=start_model
@@ -2767,6 +2862,8 @@ def resolve_seat_decision(
     machine: str = "",
     fleet_digest: Optional[dict] = None,
     now: Optional[float] = None,
+    install_root: Optional[Path | str] = None,
+    private_cursor: Optional[dict] = None,
 ) -> Decision:
     """Apply an explicit agent request, else the automatic Grok → Cursor → OpenCode order.
 
@@ -2786,6 +2883,8 @@ def resolve_seat_decision(
             start_model=mid,
             fleet_digest=fleet_digest,
             now=now,
+            install_root=install_root,
+            private_cursor=private_cursor,
         )
         if out.kind == "grok" and not xai_signin_ok:
             state = (signin_state or "expired").strip().lower()
@@ -19637,6 +19736,7 @@ def run_plan(args, log: Log) -> int:
         fleet_digest=load_public_digest(
             public_digest_path(install_root=getattr(args, "install_root", None))
         ),
+        install_root=getattr(args, "install_root", None),
     )
     if normalize_explicit_agent(requested):
         log(f"select[plan]: explicit {normalize_explicit_agent(requested)} -> {dec.kind} - {dec.reason}")
@@ -19740,6 +19840,7 @@ def run_monitor(args, log: Log) -> int:
         fleet_digest=load_public_digest(
             public_digest_path(install_root=getattr(args, "install_root", None))
         ),
+        install_root=getattr(args, "install_root", None),
     )
     stopped = _explicit_refusal_exit(
         dec, log, "monitor",
@@ -19866,6 +19967,7 @@ def run_maintenance(args, log: Log, *, spawn: Optional[Callable] = None, poll_s:
         fleet_digest=load_public_digest(
             public_digest_path(install_root=getattr(args, "install_root", None))
         ),
+        install_root=getattr(args, "install_root", None),
     )
     stopped = _explicit_refusal_exit(
         dec, log, "maintenance",
@@ -19994,6 +20096,7 @@ def run_agent(args, log: Log) -> int:
         fleet_digest=load_public_digest(
             public_digest_path(install_root=getattr(args, "install_root", None))
         ),
+        install_root=getattr(args, "install_root", None),
     )
     # FR #7485: always log the seat decision after explicit override (auto already logged in _choose).
     if normalize_explicit_agent(requested):
@@ -20696,6 +20799,7 @@ def main(argv: Optional[list] = None) -> int:
             fleet_digest=load_public_digest(
                 public_digest_path(install_root=getattr(args, "install_root", None))
             ),
+            install_root=getattr(args, "install_root", None),
         )
         if args.mode == "plan":
             cwd = str(Path(args.install_root) / "plan")
