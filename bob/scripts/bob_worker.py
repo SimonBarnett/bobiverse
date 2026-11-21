@@ -19524,6 +19524,63 @@ def _explicit_refusal_exit(
     return EXIT_NO_AGENT
 
 
+_PLAN_HARD_EXIT = {4294967295, -1}
+_PLAN_REPEAT_S = 600
+EXIT_PLAN_CHILD = 1
+
+
+def _plan_note_hard_exit(now: float | None = None) -> bool:
+    """True when this 0xFFFFFFFF is the second or later inside 10 minutes."""
+    path = _state_root() / "plan-hard-exit.json"
+    stamp = time.time() if now is None else float(now)
+    try:
+        prev = json.loads(path.read_text(encoding="utf-8"))
+        stamps = [float(x) for x in prev if stamp - float(x) <= _PLAN_REPEAT_S]
+    except Exception:
+        stamps = []
+    stamps.append(stamp)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(stamps), encoding="utf-8")
+    except OSError:
+        pass
+    return len(stamps) >= 2
+
+
+def _plan_child_exit(code, log, stderr_path, proc=None) -> int:
+    """FR #8663: a non-zero plan child is a failure, not EXIT_OK."""
+    shown = int(code) if isinstance(code, int) else -1
+    log(f"plan: agent ended code={shown}")
+    tail = ""
+    if proc is not None and hasattr(proc, "stderr_tail"):
+        try:
+            tail = (proc.stderr_tail() or "").strip()
+        except Exception:
+            tail = ""
+    if not tail and stderr_path:
+        try:
+            p = Path(stderr_path)
+            if p.is_file():
+                tail = p.read_text(encoding="utf-8", errors="replace").strip()
+        except OSError:
+            tail = ""
+    if tail:
+        log("plan: child stderr: " + " ".join(tail.split())[:400])
+    if shown == 0:
+        return EXIT_OK
+    log("plan: FAILED child exit is not success")
+    unsigned = shown & 0xFFFFFFFF
+    if shown in _PLAN_HARD_EXIT or unsigned == 4294967295:
+        log("plan: code 4294967295 means the child exited -1 with no session_end")
+        if _plan_note_hard_exit():
+            log(
+                "plan: heal tip: repeated 4294967295 within 10 minutes. "
+                "The plan console is dying mid-stream. Check bob-worker-plan.log "
+                "and the session events.jsonl."
+            )
+    return EXIT_PLAN_CHILD
+
+
 def run_plan(args, log: Log) -> int:
     folder = Path(args.install_root) / "plan"
     if not folder.is_dir():
@@ -19590,6 +19647,11 @@ def run_plan(args, log: Log) -> int:
     env = prepare_seat_child_env(os.environ, child["env"])  # FR #2413 / #2669
     if secret and kind == "grok":
         env["XAI_API_KEY"] = secret.reveal()
+    stderr_path = run_dir / "plan-child-stderr.txt"
+    try:
+        spec.stderr_path = str(stderr_path)
+    except Exception:
+        pass
     try:
         proc = default_spawn(spec, env)
     except Exception as e:
@@ -19602,8 +19664,7 @@ def run_plan(args, log: Log) -> int:
         code = proc.wait()
     except Exception:
         code = -1
-    log(f"plan: agent ended code={code}")
-    return EXIT_OK
+    return _plan_child_exit(code, log, stderr_path, proc)
 
 
 def _default_jeeves_root(install_root: Path) -> Path:
