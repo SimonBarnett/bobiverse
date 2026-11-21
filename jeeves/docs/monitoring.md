@@ -36,6 +36,12 @@ Operator fallback: `gh pr ready <n>` and retitle to `lesson(<book>):` so resync 
 - FR #4725: install and chair start seed/merge `DEFAULT_RESYNC_REPOS` into chair + digest `resync-repos.txt` (includes `SimonBarnett/ce-priority`). Pack copy: `jeeves/defaults/resync-repos.txt`.
 - Silent `github_resync ok repos=0` with a live focus list is a finding, not ok.
 
+## Composed drive-root monitor scripts (FR #8860)
+
+A non-chair composed install such as `J:\` does not run chair `Start-Jeeves`, so `tools\monitor` can stay on a pre-fix copy after main moves (class of #8585 / #8650). `Start-JeevesMonitor.ps1` calls `Sync-BobiverseFromRepo.ps1 -Product jeeves -InstallRoot <root>` when that script sits beside it. Sync force-copies `tools\monitor` from tip (`sync-monitor-force`) even when the flat files have a newer mtime. The rest of jeeves `tools\` stays `/XO` (MRB #6162).
+
+Operator: `Sync-BobiverseFromRepo.ps1 -InstallRoot J:\ -Product jeeves`.
+
 ## empty-offer playbook (FR #2448 / #2446)
 
 When seats hear `nothing queued` while `queue.json` still has unaccepted rows:
