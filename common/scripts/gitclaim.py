@@ -2162,7 +2162,12 @@ _REQUIRE_MACHINE_PIN_LINE_RE = re.compile(
 
 
 def _body_for_queue(body: str, *, limit: int | None = None) -> str:
-    """Store issue/PR body for queue rows without dropping require_machine pin lines."""
+    """Store issue/PR body for queue rows without dropping require_machine pin lines.
+
+    FR #8619: when truncating a self-review-deadlock stall body, keep a compact
+    `stall_idle: nick1, nick2` pin so offer/assign still blocks idle authors
+    after QUEUE_BODY_LIMIT cuts the Evidence JSON.
+    """
     text = str(body or "")
     lim = QUEUE_BODY_LIMIT if limit is None else int(limit)
     if lim < 1:
@@ -2177,6 +2182,14 @@ def _body_for_queue(body: str, *, limit: int | None = None) -> str:
         line = f"require_machine: {mid}"
         if line not in pins:
             pins.append(line)
+    if "self-review-deadlock" in text:
+        m_idle = re.search(r'"idle"\s*:\s*\[(.*?)\]', text, re.S)
+        if m_idle:
+            nicks = re.findall(r'"([^"]+)"', m_idle.group(1))
+            if nicks:
+                pin = "stall_idle: " + ", ".join(nicks)
+                if pin not in pins:
+                    pins.append(pin)
     head = text[:lim].rstrip()
     if not pins:
         return head
@@ -5490,6 +5503,11 @@ def seat_blocked_for_self_review_stall(
     if m:
         for raw in re.findall(r'"([^"]+)"', m.group(1)):
             if _seat_nick_eq(raw, me):
+                return True
+    # FR #8619: compact pin kept when queue body truncate drops Evidence JSON.
+    for raw in re.findall(r"(?im)^stall_idle:\s*(.+)$", blob):
+        for nick in re.split(r"[,\s]+", raw.strip()):
+            if nick and _seat_nick_eq(nick, me):
                 return True
     if re.search(r"(?i)\bidle\b[^]]{0,500}\b" + re.escape(me) + r"\b", blob):
         return True
@@ -14912,6 +14930,13 @@ def assign_row(
                     if idx is None:
                         return "refused", f"{repo}#{num} {task_u}: not in the unaccepted queue"
             cand = doc["unaccepted"][idx]
+            # FR #8619 / #8264: never hand a self-review stall FR to its idle author
+            # via !assign either (auto-offer already gated in offer_focus_top).
+            if seat_blocked_for_self_review_stall(cand, me, doc):
+                return (
+                    "refused",
+                    f"{me}: idle author of self-review-deadlock stall (FR #8264 / #8619)",
+                )
             # FR #4652: !assign FIX refuses needs_human (clear reason). FR/MRB still follow FR #4336.
             if task_u == "FIX" and row_needs_human(cand):
                 return "refused", "row is needs_human (FIX !assign refused)"
