@@ -31,6 +31,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
 
+from builds_catalog import BUILD_USAGE_LINES
+
 ROLE_WORKER = "worker"
 ROLE_BOB = "bob"
 ROLE_SIMON = "simon"
@@ -57,6 +59,7 @@ class CommandSpec:
     example: str = ""
     details: str = ""
     related: tuple = ()
+    usage_lines: tuple = ()
 
 
 COMMANDS: tuple = (
@@ -157,19 +160,19 @@ COMMANDS: tuple = (
                 "announces restarting then executes. Duplicates are cooldown-blocked.", ("help", "status")),
     CommandSpec(
         "build",
-        "!build | !build n [version] [ref] [--tests-only] | !build status|cancel|dry-run|preflight|tests-only n",
-        "numbered catalog BUILD (no agent); failures become release-blocker issues (FR #4006 / #8490)",
+        " | ".join(ln.split(": ", 1)[-1] for ln in BUILD_USAGE_LINES),
+        "numbered catalog BUILD (no agent); failures become release-blocker issues (FR #4006 / #8490 / #8770)",
         OPS_ROLES,
-        "!build 1 0.1.40",
-        "Ops only (simon / bob-* / +o/+h). Bare !build lists builds-catalog.json (GET /bob/v1/builds). "
-        "!build n runs that entry's yml on the recipe machine, exports pack artifacts to catalog output, "
-        "then reinstalls on install (machine id or fleet via registered-machines.json). "
-        "version/ref override catalog defaults. "
-        "<version> must be numeric x.y.z or x.y.z.w (digits only); v-prefix / -suffix refused (#4186). "
-        "dep is documentation only. Old !build owner/repo form is refused — use the numbered list. "
-        "Subcommands take n: status, cancel (bare cancel still frees all), dry-run, preflight (#6492), "
-        "tests-only. Per-repo single-flight; no recipe => refuse.",
+        "!build 1",
+        "Ops only (simon / bob-* / +o/+h). Bare !build lists numbered builds-catalog.json "
+        "(local digest-home first, else GET /bob/v1/builds). "
+        "!build n uses the catalog yml path as the recipe, exports pack to output, reinstalls on "
+        "install (machine or fleet). Blank version → next patch of latest vX.Y.Z tag; "
+        "explicit version must be numeric x.y.z or x.y.z.w (#4186). "
+        "Bare !build status lists running builds; bare cancel frees all (ops only, FR #6715). "
+        "dep is documentation only. Old owner/repo form refused.",
         ("status", "list", "focus", "installtest"),
+        usage_lines=BUILD_USAGE_LINES,
     ),
     CommandSpec(
         "installtest",
@@ -437,9 +440,15 @@ def index_line(c: CommandSpec) -> str:
 
 
 def detail_lines(c: CommandSpec) -> list:
-    lines = [_clip(f"syntax: {c.syntax}"),
-             _clip(f"what: {c.summary}" + (f" - {c.details}" if c.details else "")),
-             _clip(f"who: {', '.join(sorted(c.roles))}")]
+    # FR #8770: when usage_lines is set, emit those (clipped) instead of syntax:.
+    if c.usage_lines:
+        lines = [_clip(ln) for ln in c.usage_lines]
+    else:
+        lines = [_clip(f"syntax: {c.syntax}")]
+    lines.append(
+        _clip(f"what: {c.summary}" + (f" - {c.details}" if c.details else ""))
+    )
+    lines.append(_clip(f"who: {', '.join(sorted(c.roles))}"))
     if c.example:
         lines.append(_clip(f"example: {c.example}"))
     if c.related:
