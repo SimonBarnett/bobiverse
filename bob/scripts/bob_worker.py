@@ -1609,6 +1609,18 @@ def resolve_opencode_model(
     env_model = (_OPENCODE_MODEL_ENV_AT_START or "").strip()
     pinned = seat_model_pinned(env) and bool(env_model)
     free_known_zero = _opencode_free_known_zero(fuel)
+    # FR #8555: a free-pool pause (seat-start app-log scan or a prior refusal)
+    # means free is exhausted even when the catalogue still reports 100. Fold it
+    # into the branch choice so the paid slot is tried instead of every free
+    # candidate being skipped as paused and the seat dying with model=-.
+    if not free_known_zero and opencode_fuel is not None:
+        try:
+            if opencode_fuel.is_opencode_model_paused(
+                "opencode-free", state_dir, now=now
+            ):
+                free_known_zero = True
+        except Exception:
+            pass
 
     def _is_paid(mid: str) -> bool:
         try:

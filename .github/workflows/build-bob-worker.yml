@@ -18,6 +18,11 @@ on:
       - bob/scripts/opencode_turn_guard.py
       - bob/scripts/skill_dag_mcp.py
       - bob/scripts/skill_dag_index.py
+      - bob/scripts/provider_error_source.py
+      - bob/scripts/opencode_delivery.py
+      - common/scripts/opencode_fuel.py
+      - common/scripts/worker_start_model.py
+      - common/scripts/Bobiverse-Common.ps1
       - bob/tests/test_fr6349_worker_build_ci.py
       - bob/tests/test_fr7910_worker_script_artifact.py
       - bob/tests/test_fr8218_worker_artifact_manifest.py
@@ -38,6 +43,11 @@ on:
       - bob/scripts/opencode_turn_guard.py
       - bob/scripts/skill_dag_mcp.py
       - bob/scripts/skill_dag_index.py
+      - bob/scripts/provider_error_source.py
+      - bob/scripts/opencode_delivery.py
+      - common/scripts/opencode_fuel.py
+      - common/scripts/worker_start_model.py
+      - common/scripts/Bobiverse-Common.ps1
       - bob/tests/test_fr6349_worker_build_ci.py
       - bob/tests/test_fr7910_worker_script_artifact.py
       - bob/tests/test_fr8218_worker_artifact_manifest.py

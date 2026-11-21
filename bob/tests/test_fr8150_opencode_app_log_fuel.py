@@ -212,15 +212,16 @@ def test_resolve_skips_free_when_app_log_paused_pool(tmp_path: Path, monkeypatch
     monkeypatch.delenv("BOB_OPENCODE_MODEL", raising=False)
     bw._OPENCODE_MODEL_ENV_AT_START = ""
     logs: list[str] = []
+    # FR #8555: with Go usable the paused free pool must fall through to the
+    # paid slot, never to model=- / None.
     chosen = bw.resolve_opencode_model(
-        bw.Fuel(), state_dir=state, now=now, env=env, log_fn=logs.append
+        bw.Fuel(opencode_go=40), state_dir=state, now=now, env=env, log_fn=logs.append
     )
     assert any("app-log fuel at seat start" in x for x in logs)
     assert of.is_opencode_model_paused("opencode-free", state, now=now)
-    # Free leaf must be skipped; may fall through to a Go model or None.
-    if chosen:
-        leaf = chosen.rsplit("/", 1)[-1].lower()
-        assert not leaf.endswith("-free"), chosen
+    assert chosen == "opencode-go/deepseek-v4-pro"
+    leaf = chosen.rsplit("/", 1)[-1].lower()
+    assert not leaf.endswith("-free"), chosen
 
 
 def test_peek_cli_hit_and_ok(tmp_path: Path):
