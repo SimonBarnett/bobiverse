@@ -292,3 +292,4 @@ Do not land a second copy of a harvest-lesson MRB playbook in this book. Those p
 - If a self-review-deadlock stall names this seat in idle and waiting tips are this seat's PRs: GIVEUP (FR #6203/#8264); author may fold CONFLICTING tips for the next MRB; never self-MRB PASS.
 - When the ear writes a command to its own outbox, decide it in the drain. Do not wait for an IRC echo of the ear nick.
 - When a commands doc states a numeric cap, pin the sentence to the code constant in a test. Substring checks like default 4 also match default 48.
+- Explicit OpenCode with no start model: free known 0 + go unknown is not dual-pool exhausted; start as fuel-unknown and honour opencode_windows for Go.
