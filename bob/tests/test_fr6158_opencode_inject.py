@@ -41,10 +41,13 @@ def test_fr6158_keys_default_for_opencode_when_unset(monkeypatch):
     assert any("opencode" in line.lower() and "batched keys" in line for line in logs)
 
 
-def test_fr6158_keys_default_explicit_paste_wins(monkeypatch):
+def test_fr6158_keys_default_explicit_paste_forced_off_for_opencode(monkeypatch):
+    """FR #8558 / #8560: OpenCode must not honor PASTE=1 (stray v / TUI prompt)."""
     monkeypatch.setenv("BOB_WORKER_INJECT_PASTE", "1")
-    assert bw.apply_cursor_inject_keys_default("opencode") is False
-    assert os.environ.get("BOB_WORKER_INJECT_PASTE") == "1"
+    logs: list[str] = []
+    assert bw.apply_cursor_inject_keys_default("opencode", log=logs.append) is True
+    assert os.environ.get("BOB_WORKER_INJECT_PASTE") == "0"
+    assert any("ignoring" in line.lower() and "paste" in line.lower() for line in logs)
 
 
 def test_fr6158_start_agent_sets_keys_for_opencode(tmp_path, monkeypatch):

@@ -9125,6 +9125,8 @@ def _seat_key(nick: str) -> str:
 
 # FR #7837: pause offers while a fresh digest pool is exactly 0% until its reset.
 FUEL_PAUSE_REASON = "pool-0-until-reset"
+# FR #8592: Go week window exhausted/limited while rolling may still show remaining.
+OPENCODE_WEEK_LIMITED_REASON = "opencode-week-limited"
 FUEL_FRESH_MAX_S = 120.0
 
 
@@ -9277,6 +9279,92 @@ def _stamp_worker_fuel_pause(home: Path, mid: str, pid: str, until: str, reason:
             return
 
 
+
+def _opencode_go_windows_from_digest(home: Path) -> dict:
+    """Fleet/machine Go window map (rolling/week/month) from digest (FR #8592)."""
+    path = bobreport.digest_path(_root(home))
+    try:
+        doc = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(doc, dict):
+        return {}
+    for root_key in ("fleet_pools", "opencode"):
+        root = doc.get(root_key)
+        if not isinstance(root, dict):
+            continue
+        if root_key == "fleet_pools":
+            go = root.get("opencode-go") or root.get("opencode_go") or root.get("opencode")
+            if isinstance(go, dict):
+                win = go.get("windows")
+                if isinstance(win, dict) and win:
+                    return win
+        else:
+            win = root.get("windows")
+            if isinstance(win, dict) and win:
+                return win
+    return {}
+
+
+def _go_window_is_limited(win: object) -> bool:
+    """True when a Go CAP window is exhausted/limited (FR #8592)."""
+    if not isinstance(win, dict):
+        return False
+    if win.get("limited") is True:
+        return True
+    status = str(win.get("status") or "").strip().lower()
+    if status in ("exhausted", "limited", "capped"):
+        return True
+    try:
+        rem = win.get("remaining_pct")
+        if rem is not None and float(rem) <= 0.0:
+            return True
+        used = win.get("used_pct")
+        if used is not None and float(used) >= 100.0:
+            return True
+    except (TypeError, ValueError):
+        pass
+    return False
+
+
+def _opencode_week_limited_pause(
+    home: Path,
+    nick: str,
+    kind: str,
+    now_f: float,
+) -> tuple[str, str]:
+    """Return (reason, until) when Go week is limited for a paid OpenCode seat.
+
+    Free OpenCode seats stay on the free-pool pause path (FR #8028). Rolling /
+    month remain soft notes only - week.limited alone gates new offers (FR #8592).
+    """
+    k = (kind or "").strip().lower()
+    me = (canonical_worker_nick(nick) or nick or "").strip()
+    if k != "opencode":
+        # Also catch paid go models mistyped under another kind.
+        fields = _seat_digest_model_fields(home, me)
+        model = _start_model_from_fields(fields).lower()
+        if not (model.startswith("opencode-go/") or "/opencode-go/" in model):
+            return "", ""
+    if seat_is_free_fuel(home, me):
+        return "", ""
+    windows = _opencode_go_windows_from_digest(home)
+    week = windows.get("week") if isinstance(windows, dict) else None
+    if not _go_window_is_limited(week):
+        return "", ""
+    until = ""
+    if isinstance(week, dict):
+        for key in ("resets_at", "reset_at", "period_end", "quota_reset_date"):
+            raw = str(week.get(key) or "").strip()
+            ts = _fuel_epoch(raw)
+            if raw and ts is not None and ts > now_f:
+                until = raw
+                break
+        if not until:
+            until = _pool_future_reset(week, now_f)
+    return OPENCODE_WEEK_LIMITED_REASON, until
+
+
 def seat_fuel_pause_reason(home: Path, nick: str, now: float | None = None) -> str:
     """FR #7837: ``pool-0-until-reset`` when a fresh pool is 0% before its reset.
 
@@ -9303,6 +9391,14 @@ def seat_fuel_pause_reason(home: Path, nick: str, now: float | None = None) -> s
             pool = free_pool
     until = ""
     reason = ""
+    # FR #8592: paid OpenCode / opencode-go — skip new offers when week limited
+    # even if rolling remaining_pct > 0 (machine pool alone would not pause).
+    week_reason, week_until = _opencode_week_limited_pause(home, me, kind, now_f)
+    if week_reason:
+        until = week_until or until
+        reason = week_reason
+        _stamp_worker_fuel_pause(home, mid, pid, until, reason)
+        return reason
     if pool and _pool_reading_fresh(pool, now_f) and _pool_remaining_exact_zero(pool):
         until = _pool_future_reset(pool, now_f)
         if not until:

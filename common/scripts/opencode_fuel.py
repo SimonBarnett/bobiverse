@@ -2263,23 +2263,31 @@ def record_opencode_pause(
     # (tool-output / PR body / bare Free usage without ERROR or AI_*).
     free_hit = is_free_usage_limit_text(output_text)
     rate_hit = looks_like_rate_limit(output_text)
+    # FR #8207 / #8537: Free usage on a paid/go model is never a free-pool pause
+    # (and must not fall through as a generic rate-limit pause).
+    if free_hit and of_is_go_model_id(model_id):
+        return None
     try:
         import bob_worker as _bw
 
-        # FR #8207: Free-usage pauses need app-log / provider-json only. Do not
-        # refuse all pauses when provider_fuel_evidence_source is None — bare
-        # Retry-After / looks_like_rate_limit still arm a hold (MRB #8212).
+        # FR #8207: Free-usage pauses need a provider channel. Do not refuse all
+        # pauses when provider_fuel_evidence_source is None — bare Retry-After /
+        # looks_like_rate_limit still arm a hold (MRB #8212).
         if _bw.is_fuel_tool_output_noise(output_text or ""):
             return None
         src = _bw.provider_fuel_evidence_source(output_text or "")
-        if free_hit and src not in ("app-log", "provider-json"):
-            free_hit = False
+        # FR #8537: CLI stderr Free usage on a free model is a real free-pool
+        # refusal (wrapper stamps source=cli-stderr).
+        if free_hit:
+            if src in ("app-log", "provider-json"):
+                pass
+            elif src == "cli-stderr" and not of_is_go_model_id(model_id):
+                pass
+            else:
+                free_hit = False
     except Exception:
         pass
     if not free_hit and not rate_hit:
-        return None
-    # FR #8207: a paid/go start model never records a free-usage pause (wrong pool).
-    if free_hit and of_is_go_model_id(model_id):
         return None
     reset_ts = parse_reset_time(output_text, now=now)
     if reset_ts is None:

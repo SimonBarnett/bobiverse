@@ -254,7 +254,11 @@ Checks:
 
 ## Harvested MRB discipline
 
+<<<<<<< HEAD
 - **Swallowed AttributeError fallbacks (class of MRB #8544 / fix #8547 / tip #8549):** when a helper catches `AttributeError` (or similar) and silently falls back to a default, probe the real API name with a tray-slot or hostile test (example: nonexistent `load_worker_start_model` vs real `load_worker_start_config`). Do not trust the silent default. Durable home is this book, not `harvest/SKILL.md` (wrong-book tip #8548 closed; tip #8549 only parked `docs/intake-harvest/`).
+=======
+- **pytest-ascii-bom on inherited `.ps1` (class of #8550/#8551/#8565 / FIX #8543):** when CI `pytest-ascii-bom` fails on a BOM-less `.ps1` with U+2014 (often inherited `Update-BobFleet.ps1`) and `origin/main` is also red on the same gate, push an ASCII-safe one-liner onto the **open tip** (em dash -> ASCII hyphen), then PASS and arm merge-on-green; do not fold for behind-only (FR #4649); do not poll CI (FR #3948). On FIX for an MRB-FAIL tip: same push onto the existing head; do not open a second PR. Do not park this playbook under `harvest/SKILL.md` (wrong-book tips #8550/#8565).
+>>>>>>> origin/main
 
 - **MRB airc / product transport defaults vs FR acceptance (class of MRB #8044 / FR #7999 / FR #8057):** judge default order against the FR literally. Current #7999/#8057 acceptance is WSS first (`wss,tls`); #8052 wrongly flipped to `tls,wss` on a stale line and #8057 restored it. If acceptance says TLS first then WSS, the tip default must be `tls,wss`. FAIL, land one stacked fix, then re-PASS the tip. Do not park this playbook under `harvest/SKILL.md` (moved from harvest tip #8054).
 

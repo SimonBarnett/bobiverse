@@ -17,7 +17,7 @@ import urllib.request
 from pathlib import Path
 from typing import Any, Callable, Optional
 
-from _common import EXIT_FINDING, EXIT_OK, run_check
+from _common import EXIT_FINDING, EXIT_OK, find_upward_file, run_check
 
 DEFAULT_INTAKE_URL = "https://bob.ntsa.uk/bob/v1/intake"
 # Must stay aligned with common/scripts/intake.py DEFAULT_ALLOW_REPOS (FR #3023 / #3050 / #3117).
@@ -47,26 +47,25 @@ def required_repos() -> tuple[str, ...]:
 
 
 def find_intake_py(start: Optional[Path] = None) -> Optional[Path]:
-    """Best-effort locate common/scripts/intake.py from install or repo layout."""
+    """Best-effort locate common/scripts/intake.py from install or repo layout.
+
+    FR #8580: walk upward instead of ``parents[N]`` (shallow ``J:\\tools\\monitor``).
+    """
     env = (os.environ.get("BOB_INTAKE_PY") or "").strip()
     if env:
         p = Path(env)
         return p if p.is_file() else None
-    here = Path(__file__).resolve()
-    candidates = [
-        here.parents[3] / "common" / "scripts" / "intake.py",  # repo/jeeves/tools/monitor
-        here.parents[2] / "common" / "scripts" / "intake.py",
-        here.parents[2] / "scripts" / "intake.py",  # composed flat under install
-    ]
+    roots: list[Path] = []
     if start is not None:
-        candidates.insert(0, Path(start) / "common" / "scripts" / "intake.py")
-        candidates.insert(1, Path(start) / "scripts" / "intake.py")
-    for c in candidates:
-        try:
-            if c.is_file():
-                return c
-        except OSError:
-            continue
+        roots.append(Path(start))
+    roots.append(Path(__file__).resolve().parent)
+    for root in roots:
+        found = find_upward_file(root, "common", "scripts", "intake.py")
+        if found is not None:
+            return found
+        found = find_upward_file(root, "scripts", "intake.py")
+        if found is not None:
+            return found
     return None
 
 
