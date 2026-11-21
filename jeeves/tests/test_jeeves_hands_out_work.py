@@ -15,7 +15,7 @@ def _home(tmp_path, monkeypatch):
     monkeypatch.setenv("JEEVES_OWNER_ACCOUNT", "simon")
     for k in ("JEEVES_FOCUS_MUTATORS", "JEEVES_FOCUS_MUTATOR_ACCOUNTS", "BOB_CHANSERV_EXCLUDE"):
         monkeypatch.delenv(k, raising=False)
-    registered_machines.save_registered(tmp_path, {"ionos", "win-mpre8vi4u6u", "marchhare"})
+    registered_machines.save_registered(tmp_path, {"ionos", "walrus", "win-mpre8vi4u6u", "marchhare"})
     bobreport._SEAT_ROSTER_CACHE["key"] = None
     return tmp_path
 
@@ -32,12 +32,15 @@ def _queue(home, rows):
 
 
 def _seed_three_seat_digest(home):
-    """Idle worker_list for author machine + pinned-out marchhare (FR #4211 shape)."""
+    """Idle worker_list for author machine + pinned-out marchhare (FR #4211 shape).
+
+    FR #8697: needs-ionos folds to walrus — author/sibling seats live on walrus.
+    """
     digest = bobreport.empty_digest()
-    digest["machines"]["win-mpre8vi4u6u"] = bobreport._empty_machine("win-mpre8vi4u6u")
-    digest["machines"]["win-mpre8vi4u6u"]["worker_list"] = [
-        {"nick": "win-mpre8vi4u6u-14452", "state": "idle", "work": "", "updated": "2026-10-14T12:00:00Z"},
-        {"nick": "win-mpre8vi4u6u-7764", "state": "idle", "work": "", "updated": "2026-10-14T12:00:00Z"},
+    digest["machines"]["walrus"] = bobreport._empty_machine("walrus")
+    digest["machines"]["walrus"]["worker_list"] = [
+        {"nick": "walrus-14452", "state": "idle", "work": "", "updated": "2026-10-14T12:00:00Z"},
+        {"nick": "walrus-7764", "state": "idle", "work": "", "updated": "2026-10-14T12:00:00Z"},
     ]
     digest["machines"]["marchhare"] = bobreport._empty_machine("marchhare")
     digest["machines"]["marchhare"]["worker_list"] = [
@@ -46,7 +49,7 @@ def _seed_three_seat_digest(home):
     bobreport.save_digest(home, digest)
     live = gitclaim.live_seat_nicks(home)
     free = gitclaim.free_seat_nicks(home, live)
-    for nick in ("win-mpre8vi4u6u-14452", "win-mpre8vi4u6u-7764", "marchhare-40208"):
+    for nick in ("walrus-14452", "walrus-7764", "marchhare-40208"):
         assert nick in {n.lower() for n in live}
         assert nick in {n.lower() for n in free}
     return live, free
@@ -107,9 +110,10 @@ def test_fr2339_sibling_ignores_pinned_out_other_machine(_home):
     Author/sibling assertions prove FR #2604 exact-seat MRB exclusion. The
     marchhare assertion proves require_machine (needs-ionos) blocks that seat.
     FR #4512: bobiverse rows need a supported pin cue (label), not a bare stamp.
+    FR #8697: needs-ionos folds to walrus seats.
     """
     registered_machines.save_registered(
-        _home, {"ionos", "win-mpre8vi4u6u", "marchhare"}
+        _home, {"ionos", "walrus", "win-mpre8vi4u6u", "marchhare"}
     )
     bobreport._SEAT_ROSTER_CACHE["key"] = None
     row = _row(
@@ -119,8 +123,8 @@ def test_fr2339_sibling_ignores_pinned_out_other_machine(_home):
         7,
         require_machine="ionos",
         labels=["needs-ionos"],
-        author_seat="win-mpre8vi4u6u-14452",
-        implementer_seat="win-mpre8vi4u6u-14452",
+        author_seat="walrus-14452",
+        implementer_seat="walrus-14452",
         url="https://github.com/SimonBarnett/bobiverse/pull/2319",
     )
     _queue(_home, [row])
@@ -129,16 +133,16 @@ def test_fr2339_sibling_ignores_pinned_out_other_machine(_home):
     parsed = bobreport.parse_seat_nick("marchhare-40208")
     assert parsed is not None and bobreport.fold_machine_id(parsed[0]) == "marchhare"
     assert gitclaim.review_blocked_for_author(
-        row, "win-mpre8vi4u6u-14452", live, free=free
+        row, "walrus-14452", live, free=free
     ) is True  # exact author
     assert gitclaim.review_blocked_for_author(
-        row, "win-mpre8vi4u6u-7764", live, free=free
+        row, "walrus-7764", live, free=free
     ) is False  # sibling; marchhare pinned out (MRB exact-seat only)
     assert gitclaim.row_blocked_for_machine(row, "marchhare-40208") is True
     status, job = gitclaim.offer_focus_top(
         _home,
-        "win-mpre8vi4u6u-7764",
-        "#win-mpre8vi4u6u",
+        "walrus-7764",
+        "#walrus",
         pr_exists=None,
         is_pull=None,
         issue_open=None,
@@ -150,7 +154,7 @@ def test_fr2339_sibling_ignores_pinned_out_other_machine(_home):
 def test_fr2339_uat_sibling_ignores_pinned_out_other_machine(_home, pinned):
     """UAT sibling-viability: pinned-out other machine does not strand author sibling."""
     registered_machines.save_registered(
-        _home, {"ionos", "win-mpre8vi4u6u", "marchhare"}
+        _home, {"ionos", "walrus", "win-mpre8vi4u6u", "marchhare"}
     )
     bobreport._SEAT_ROSTER_CACHE["key"] = None
     labels = ["needs-ionos"] if pinned else []
@@ -163,8 +167,8 @@ def test_fr2339_uat_sibling_ignores_pinned_out_other_machine(_home, pinned):
         "line": "UAT SimonBarnett/bobiverse: all issues closed, all PRs merged",
         "url": "https://github.com/SimonBarnett/bobiverse",
         "repo_uat": True,
-        "author_seat": "win-mpre8vi4u6u-14452",
-        "implementer_seat": "win-mpre8vi4u6u-14452",
+        "author_seat": "walrus-14452",
+        "implementer_seat": "walrus-14452",
         "labels": labels,
     }
     if pinned:
@@ -174,10 +178,10 @@ def test_fr2339_uat_sibling_ignores_pinned_out_other_machine(_home, pinned):
     live, free = _seed_three_seat_digest(_home)
     ledger = gitclaim.ledger_load(_home)
     assert gitclaim.review_blocked_for_author(
-        row, "win-mpre8vi4u6u-14452", live, ledger, free=free
+        row, "walrus-14452", live, ledger, free=free
     ) is True  # exact author always blocked
     sibling_blocked = gitclaim.review_blocked_for_author(
-        row, "win-mpre8vi4u6u-7764", live, ledger, free=free
+        row, "walrus-7764", live, ledger, free=free
     )
     if pinned:
         assert sibling_blocked is False  # marchhare pinned out => not viable
@@ -187,8 +191,8 @@ def test_fr2339_uat_sibling_ignores_pinned_out_other_machine(_home, pinned):
         assert gitclaim.row_blocked_for_machine(row, "marchhare-40208") is False
     status, job = gitclaim.offer_focus_top(
         _home,
-        "win-mpre8vi4u6u-7764",
-        "#win-mpre8vi4u6u",
+        "walrus-7764",
+        "#walrus",
         pr_exists=None,
         is_pull=None,
         issue_open=None,

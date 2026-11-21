@@ -297,4 +297,5 @@ Do not land a second copy of a harvest-lesson MRB playbook in this book. Those p
 - Infra-soft give-up reasons must not black out auto-offer. Persist the raw needs_human bit separately from the offer gate so heal can still see a false stamp.
 - A second !recycle that leaves the same OpenCode PID is an undeployed #8597, not a new FR, when stop_managed_workers is already on main.
 - Offerable skill and harvest filings use _filer_create_pr draft false; empty and docs/intake-harvest-only payloads become a skill-source lesson; PASS/FAIL and session summaries stay receipt_recorded.
+- When intake changes Session-summary empty harvests to receipt_recorded, update GhCliFiler draft tests in the same window or build-jeeves stays red on main.
 - BOB-49 S1: Stage-BobAgentFolders must fail closed without plan\AGENTS.md and write plan\BOB-49-PLAN-IN-MSI.txt so bob-ear MSI heat harvest includes Plan.

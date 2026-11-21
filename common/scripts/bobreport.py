@@ -47,11 +47,12 @@ ID_ALIASES = {
     "dev1": "ce-priority-dev1",
     "ce-priority-dev1": "ce-priority-dev1",
 }
-# #79: the ionos box was renamed; its old #ionos channel is still ChanServ-registered, so the roster mirror
-# carries BOTH ids. These are folded into the real machine in the DIGEST ONLY (roster_machine_ids / machines /
-# cursor_pools). Seat nicks and channel membership (``ionos-<pid>`` in #ionos) are deliberately untouched.
+# #79 then FR #8653 / #8697: digest alias ``ionos`` used to fold to the old hostname
+# ``win-mpre8vi4u6u``; the Ergo/chair host is now ``walrus``. Fold ionos (and bob-ionos)
+# onto walrus so require_machine pins and seat matching agree. Seat nicks like
+# ``ionos-<pid>`` still parse when ionos is on the ChanServ roster; fold maps them here.
 DIGEST_ID_FOLD: dict[str, str] = {
-    "ionos": "win-mpre8vi4u6u",
+    "ionos": "walrus",
     "dev1": "ce-priority-dev1",
 }
 
@@ -60,13 +61,14 @@ DIGEST_ID_FOLD: dict[str, str] = {
 # mirror in registered-machines.json (registered_machines.sync_from_chanserv).
 NICK_TO_MACHINE: dict[str, str] = {
     "bob-dev1": "ce-priority-dev1",
-    "bob-ionos": "win-mpre8vi4u6u",
+    "bob-ionos": "walrus",
 }
 
 SHORT_ID: dict[str, str] = {
     "flamingo": "fl",
     "marchhare": "mh",
-    "win-mpre8vi4u6u": "io",  # legacy w-io-<pid> worker nicks
+    "walrus": "wa",  # FR #8653 / #8697: live chair host short nick
+    "win-mpre8vi4u6u": "io",  # legacy w-io-<pid> worker nicks (pre-walrus hostname)
     "ce-priority-dev1": "d1",
 }
 SHORT_TO_MACHINE = {v: k for k, v in SHORT_ID.items()}
@@ -1954,7 +1956,7 @@ def _ensure_seats(doc: dict, home: Path | None = None) -> dict:
         machines = {}
         doc["machines"] = machines
     roster = set(roster_machine_ids(home))
-    # #79: fold legacy alias keys (ionos -> win-mpre8vi4u6u) into the canonical machine. The canonical entry
+    # #79 / FR #8697: fold legacy alias keys (ionos -> walrus) into the canonical machine. The canonical entry
     # always wins; an alias entry is only promoted when there is no canonical one yet.
     for mid in list(machines.keys()):
         if is_alias_machine_id(mid):
