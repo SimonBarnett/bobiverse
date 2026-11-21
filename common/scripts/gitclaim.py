@@ -1535,12 +1535,66 @@ def row_on_cooldown(row: dict, now: float, nick: str = "", live: set[str] | None
     return True
 
 
+# FR #8628: one auto-offer after an agent CLI crash, then needs_human holds again.
+_CLI_EXIT_RETRY_REASON = "agent-cli-nonzero-exit"
+
+
+def cli_exit_fresh_seat_retry(row: dict, nick: str = "", now: float | None = None) -> bool:
+    """True when this nick may take one auto-offer past needs_human (FR #8628).
+
+    Only ``giveup_reason=agent-cli-nonzero-exit``, after cooldown, for a nick
+    that is not already in ``giveup_seats``, and only before
+    ``cli_exit_retry_used`` is stamped on the offer. Empty nick stays blocked
+    so global scans still see needs_human. ``!assign`` is unchanged.
+    """
+    if not isinstance(row, dict):
+        return False
+    me = (nick or "").strip()
+    if not me:
+        return False
+    if row.get("cli_exit_retry_used"):
+        return False
+    if str(row.get("giveup_reason") or "").strip() != _CLI_EXIT_RETRY_REASON:
+        return False
+    flag = row.get("needs_human")
+    if isinstance(flag, bool):
+        on = flag
+    else:
+        on = str(flag or "").strip().lower() in ("1", "true", "yes")
+    if not on:
+        return False
+    when = time.time() if now is None else float(now)
+    until = _parse_iso_ts(str(row.get("cooldown_until") or ""))
+    if until is not None and when < until:
+        return False
+    if nick_in_giveup_seats(row, me):
+        return False
+    return True
+
+
+def stamp_cli_exit_retry_used(row: dict) -> None:
+    """Mark the one FR #8628 auto-offer as spent once the row is offered."""
+    if not isinstance(row, dict):
+        return
+    if row.get("cli_exit_retry_used"):
+        return
+    if str(row.get("giveup_reason") or "").strip() != _CLI_EXIT_RETRY_REASON:
+        return
+    if not row.get("needs_human"):
+        return
+    row["cli_exit_retry_used"] = True
+
+
 def row_needs_human(row: dict, nick: str = "") -> bool:
     """True when auto-offer paths must not hand out this row (FR #4336).
 
     Once `needs_human` is stamped, **every** seat is blocked for `!bored`,
     done-offer, idle feed, and seat-reconcile revive. Only an explicit chair
     `!assign` may hand the row out (`assign_row` skips this gate).
+
+    FR #8628: a fresh nick (not in giveup_seats) may pass once after cooldown
+    when giveup_reason is agent-cli-nonzero-exit. The offer stamps
+    cli_exit_retry_used so the next fresh nick is blocked again.
 
     Early per-seat GIVEUP still uses `giveup_seats` / `row_gave_up_by` /
     cooldown before the needs_human stamp (FR #1236). FR #3277's "other seats
@@ -1556,7 +1610,11 @@ def row_needs_human(row: dict, nick: str = "") -> bool:
         flag = v
     else:
         flag = str(v or "").strip().lower() in ("1", "true", "yes")
-    return bool(flag)
+    if not flag:
+        return False
+    if cli_exit_fresh_seat_retry(row, nick):
+        return False
+    return True
 
 
 # FR #4711: seat wire / board comments must not clear needs_human (same GitHub
@@ -1790,6 +1848,7 @@ def clear_needs_human_from_owner_issue_comment(
                 if giveup_ts is not None and comment_ts is not None and comment_ts <= giveup_ts:
                     continue
                 row.pop("needs_human", None)
+                row.pop("cli_exit_retry_used", None)
                 row["giveup_count"] = 0
                 row.pop("giveup_seats", None)
                 row.pop("giveup_agent_kinds", None)
@@ -11514,6 +11573,7 @@ def offer_focus_top(
                         prev_count = 0
                     same = bool(prev_to) and _same_seat(prev_to, me)
                     job["offered_to"] = me
+                    stamp_cli_exit_retry_used(job)
                     # A live offer means someone is eligible (FR #7966).
                     job.pop("no_eligible_since", None)
                     # FR #8428: a different seat took the row after a timeout.
@@ -11747,6 +11807,7 @@ def offer_top(
                 return "empty", None
             job = dict(doc["unaccepted"][pick_i])
             job["offered_to"] = (nick or "").strip()
+            stamp_cli_exit_retry_used(job)
             job["offered_ts"] = _utc_now()
             job["offered_channel"] = bobreport.normalize_channel(channel) if channel else ""
             resolved = resolve_assign_url(job)
@@ -15039,6 +15100,7 @@ def assign_row(
             prev_to = to
             job = dict(cand)
             job["offered_to"] = me
+            stamp_cli_exit_retry_used(job)
             job["offered_ts"] = _utc_now()
             job["offered_channel"] = shop
             resolved = resolve_assign_url(job)
