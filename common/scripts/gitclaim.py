@@ -140,8 +140,9 @@ _VIA_INTAKE_ID_FOOTER_RE = re.compile(r"(?i)_via-intake\b")
 # FR #6356: require a real Lesson section. Bare LESSON_PR_MRB_INSTRUCTION
 # ("MRB (light triage): ...") is prepended to every skill *draft* receipt and must
 # not make docs/intake-harvest-only tips offerable as MRB.
+# FR #8642: the standard lesson tip body uses a ``Lessons:`` list, not only ``Lesson``.
 _INTAKE_SKILL_LESSON_BODY_RE = re.compile(
-    r"(?im)^(?:##\s*)?Lesson\b"
+    r"(?im)^(?:##\s*)?Lessons?\b"
 )
 _INTAKE_HARVEST_PATH_RE = re.compile(r"(?i)^docs/intake-harvest/")
 _QUEUE_ME_STUB_RE = re.compile(r"(?im)^\s*queue\s+me\b")

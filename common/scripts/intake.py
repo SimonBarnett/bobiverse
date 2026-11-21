@@ -493,6 +493,41 @@ def unescape_harvest_lesson_text(text: str) -> str:
     return s
 
 
+_SESSION_SUMMARY_RE = re.compile(r"(?i)Session summary:")
+
+
+def is_session_summary_harvest_receipt(body: str) -> bool:
+    """True for Invoke-BobiverseHarvest session rows with no Lessons bullets (FR #8642).
+
+    Those stay receipts. A Plan seat body that has no Session summary is a lesson.
+    """
+    return bool(_SESSION_SUMMARY_RE.search(str(body or "")))
+
+
+def plain_harvest_lesson_line(title: str, body: str) -> str:
+    """One lesson sentence from a harvest/skill body that has no Lessons: list."""
+    text = str(body or "")
+    text = re.sub(r"(?is)\n---\s*\n_via-intake[\s\S]*\Z", "", text)
+    text = re.sub(r"(?im)^(?:what|where|evidence|fix):\s*", "", text)
+    line = " ".join(text.split())
+    if not line:
+        line = " ".join(str(title or "harvest lesson").split())
+    line = neutralize_harvest_closes(unescape_harvest_lesson_text(line))
+    if len(line) > 240:
+        line = line[:237].rstrip() + "..."
+    return line or "harvest lesson"
+
+
+def skill_source_lesson_file(book: str, intake_id: str, line: str) -> dict[str, str]:
+    """Offerable path. docs/intake-harvest-only tips are receipts (FR #6356 / #8642)."""
+    safe_book = re.sub(r"[^A-Za-z0-9._-]+", "-", str(book or "")).strip("-") or "harvest"
+    safe_id = re.sub(r"[^A-Za-z0-9._-]+", "-", str(intake_id or "")).strip("-") or "intake"
+    return {
+        "path": f"docs/skill-sources/{safe_book}/{safe_id}.md",
+        "content": f"## Lesson\n\n- {line}\n",
+    }
+
+
 def extract_harvest_lessons(body: str) -> list[str]:
     """Return real Lessons: bullets; drop placeholders / noop tokens (FR #2705 / #4986)."""
     text = str(body or "")
@@ -2723,6 +2758,61 @@ def file_submission(
                 _save_record(home, rec)
                 return rec
             else:
+                # FR #8642: empty-file harvest/skill must not open a docs/intake-harvest-only
+                # draft. Those tips never enter MRB (FR #6356). Write a skill-source lesson
+                # and open a non-draft harvest-lesson PR. Session-summary rows stay receipts.
+                if kind in ("harvest", "skill") and not files:
+                    if is_session_summary_harvest_receipt(raw_body) or is_harvest_worker_receipt(
+                        kind=kind, title=title, body=raw_body
+                    ):
+                        rec["state"] = "receipt_recorded"
+                        rec["queued"] = False
+                        _save_record(home, rec)
+                        return rec
+                    src = norm.get("source") if isinstance(norm.get("source"), dict) else {}
+                    book, skill_path = resolve_skill_book(
+                        skill_book=str((src or {}).get("skill_book") or ""),
+                        title=title,
+                        body=raw_body,
+                        repo=str(repo or ""),
+                    )
+                    line = plain_harvest_lesson_line(title, raw_body)
+                    lesson_files = [skill_source_lesson_file(book, iid, line)]
+                    lesson_title = build_lesson_pr_title(book, [line])
+                    lesson_body = build_lesson_pr_body(
+                        book=book,
+                        path=skill_path,
+                        lessons=[line],
+                        original_body=body,
+                    )
+                    lesson_labels = ["via-intake", "skill", "harvest-lesson"]
+                    try:
+                        out = _filer_create_pr(
+                            filer,
+                            repo,
+                            lesson_title,
+                            lesson_body,
+                            branch,
+                            lesson_files,
+                            lesson_labels,
+                            draft=False,
+                        )
+                        rec["url"] = out["url"]
+                        rec["number"] = out["number"]
+                        rec["branch"] = out.get("branch")
+                        rec["state"] = "filed"
+                        rec["skill_book"] = book
+                        rec["lesson_count"] = 1
+                        _save_record(home, rec)
+                        return rec
+                    except Exception as exc:
+                        rec["draft_pr_error"] = f"{type(exc).__name__}: {exc}"[:500]
+                        rec["state"] = "queued"
+                        rec["queued"] = True
+                        _save_record(home, rec)
+                        raise GitHubDown(
+                            "skill-source lesson PR filing failed", reason="github_down"
+                        ) from exc
                 try:
                     # FR #3299: draft skill (no Lessons:) still carries the owning-repo MRB line.
                     draft_body = body
