@@ -12135,27 +12135,15 @@ def opencode_frozen_recycle_reason(
     thr = max(60.0, float(threshold_s))
     digest_age = float(digest_doing_age_s) if digest_doing_age_s is not None else None
     moved_age = float(progress_moved_age_s) if progress_moved_age_s is not None else None
-    if digest_age is not None and digest_age >= thr and not ack_open:
-        return "opencode-lost-ack-stale"
-    # FR #8637: digest doing frozen and no true progress clock yet (ACK open,
-    # LOST_ACK / accepted_silent). Week-limited with rolling fuel stays
-    # out_of_fuel=False so this recycle is allowed. A recent real move still wins.
-    if (
-        digest_age is not None
-        and digest_age >= thr
-        and ack_open
-        and moved_age is None
-    ):
+    # FR #8646: a frozen worker.updated (digest doing age) recycles even when a
+    # post-reassign progress clock is recent. Heartbeats refresh that stamp
+    # while the seat is actually posting. Week-limited with rolling fuel stays
+    # out_of_fuel=False so this recycle is allowed.
+    if digest_age is not None and digest_age >= thr:
+        if not ack_open:
+            return "opencode-lost-ack-stale"
         return "opencode-frozen-progress"
     if ack_open and moved_age is not None and moved_age >= thr:
-        return "opencode-frozen-progress"
-    if (
-        digest_age is not None
-        and digest_age >= thr
-        and ack_open
-        and moved_age is not None
-        and moved_age >= thr
-    ):
         return "opencode-frozen-progress"
     return ""
 
