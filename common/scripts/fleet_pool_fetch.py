@@ -21,6 +21,8 @@ FLEET_POOL_STALE_COMMENT_S = 600.0
 FLEET_POOL_STALE_STARTUP_GRACE_S = 60.0
 FLEET_POOL_STALE_REPO = "SimonBarnett/bobiverse"
 STATE_NAME = "fleet-pools-state.json"
+# FR #8667: private si Cursor meter for seats; never public digest.
+PRIVATE_CURSOR_NAME = "fleet-cursor-private.json"
 POOL_COPILOT = "copilot"
 POOL_OC_FREE = "opencode-free"
 POOL_OC_GO = "opencode-go"
@@ -255,6 +257,48 @@ def _save_state(home: Path, doc: dict) -> None:
     tmp = path.with_name(path.name + ".tmp")
     tmp.write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8")
     os.replace(tmp, path)
+
+
+def private_cursor_path(home: Path) -> Path:
+    return Path(home) / PRIVATE_CURSOR_NAME
+
+
+def write_private_cursor_meter(home: Path, row: dict | None) -> None:
+    """Persist a public-safe cursor meter for seats. No tokens/secrets."""
+    path = private_cursor_path(home)
+    if not isinstance(row, dict):
+        return
+    safe = {
+        "id": POOL_CURSOR,
+        "remaining": row.get("remaining"),
+        "fetched_at": row.get("fetched_at"),
+        "last_attempt_at": row.get("last_attempt_at"),
+        "error": row.get("error"),
+        "fresh": bool(row.get("fresh")),
+        "source": "private",
+    }
+    # Never persist credential-looking source strings.
+    src = str(row.get("source") or "")
+    if "credman" in src.lower() or "token" in src.lower() or "key" in src.lower():
+        safe["source"] = "private"
+    elif src:
+        safe["source"] = "private:" + src.split(":")[0][:32]
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(json.dumps(safe, indent=2) + "\n", encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def load_private_cursor_meter(home: Path) -> dict | None:
+    path = private_cursor_path(home)
+    if not path.is_file():
+        return None
+    try:
+        doc = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, TypeError, ValueError):
+        return None
+    return doc if isinstance(doc, dict) else None
+
 
 
 def pool_due(state: dict, name: str, now: float, *, force: bool = False) -> bool:
@@ -623,10 +667,37 @@ def tick_fleet_pools(
                 source="go-zen-usage",
             )
             mark_attempt(state, POOL_OC_GO, now_f, ok=False, error=type(exc).__name__)
-    # FR #7326: no OpenCode Free meter; no fleet Cursor fetch.
+    # FR #7326: no OpenCode Free meter; no public fleet Cursor.
+    # FR #8667: still fetch Cursor into a private meter seats can read.
     fleet.pop(POOL_OC_FREE, None)
     fleet.pop(POOL_CURSOR, None)
-    _ = cursor_fn
+    if pool_due(state, POOL_CURSOR, now_f, force=force):
+        try:
+            crow = cursor_fn(home_p, now_f)
+            if not isinstance(crow, dict):
+                raise RuntimeError("parse")
+            ok = bool(crow.get("fresh")) and not crow.get("error")
+            err = str(crow.get("error") or "") or None
+            write_private_cursor_meter(home_p, crow if ok else _keep_last(
+                load_private_cursor_meter(home_p),
+                error=err or "unread",
+                now=now_f,
+                pool_id=POOL_CURSOR,
+                source="private",
+            ))
+            mark_attempt(state, POOL_CURSOR, now_f, ok=ok, error=err)
+        except Exception as exc:  # noqa: BLE001
+            write_private_cursor_meter(
+                home_p,
+                _keep_last(
+                    load_private_cursor_meter(home_p),
+                    error=type(exc).__name__,
+                    now=now_f,
+                    pool_id=POOL_CURSOR,
+                    source="private",
+                ),
+            )
+            mark_attempt(state, POOL_CURSOR, now_f, ok=False, error=type(exc).__name__)
 
     _save_state(home_p, state)
     apply_fleet_pools_to_digest(home_p, fleet)
