@@ -102,7 +102,10 @@ Expect `chanserv-info status=registered` and `joined #<machine> as <machine>_con
 
 `Install-Airc` **removes** leftover agentic_irc `AircConsole` from the SCM so only bobiverse `Airc` remains (on-disk `<ai root>\airc-console` tree may remain).
 
-## Verify Jeeves (Ergo host)
+## Verify Jeeves (Ergo host = walrus)
+
+**Live Ergo + ircJeeves host is walrus.** ionos is deprecated for chair/IRCd.
+
 
 ```powershell
 Get-Service ircJeeves,BobJeeves,BobIrcd

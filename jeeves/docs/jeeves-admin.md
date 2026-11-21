@@ -1,5 +1,7 @@
 # Jeeves admin (Ergo host)
 
+**Chair / Ergo host:** **walrus** (machine id `walrus`). **ionos is deprecated** — do not treat ionos as the live Ergo or `ircJeeves` host.
+
 Chair on the Ergo box: service **ircJeeves**, nick **Jeeves**, tree `<ai root>\jeeves`.
 IRCd: **BobIrcd** → live root `<ai root>\ergo` (MSI stages `ergo\` then Install-BobIrcd).
 

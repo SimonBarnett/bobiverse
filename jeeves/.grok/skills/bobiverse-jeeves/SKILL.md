@@ -58,7 +58,9 @@ stay the digest roster (`machines`); `#wonderland` is never a machine id. Privil
 `ircd.yaml`. GIT announces remain `#bobiverse`-only; shop behaviour unchanged. Details:
 `jeeves/docs/channel-privileges-and-workers.md`.
 
-**Living architecture FR (harvest #1989 / FR #1993):** approved ionos chair plans (e.g. `jeeves.exe` chair+HTTP one process, self-test/heal) are filed as **one** SimonBarnett/bobiverse FR with `require_machine: ionos` (and `needs-ionos` when stamped). Append WP evidence to **that same FR body** — do not open twin FRs per WP. Product work stays on #1993 until merged.
+**Ergo / chair host:** **walrus** (machine id `walrus`). **ionos is deprecated** — Sync/compose, `Restart-Service ircJeeves`, BobIrcd, and chair-only ops run on walrus.
+
+**Living architecture FR (harvest #1989 / FR #1993):** approved chair-host plans (e.g. `jeeves.exe` chair+HTTP one process, self-test/heal) are filed as **one** SimonBarnett/bobiverse FR with `require_machine: walrus` (and `needs-walrus` when stamped; legacy `needs-ionos` / `require_machine: ionos` mean the same chair host until the pin-retarget FR lands). Append WP evidence to **that same FR body** — do not open twin FRs per WP. Product work stays on #1993 until merged.
 
 ## Chair background jobs (inside ircJeeves, no extra task)
 
@@ -102,10 +104,11 @@ Hotpatch = back up `<ai root>\jeeves`, copy changed `scripts\*`, `Restart-Servic
 **FR #3190:** do not re-enable retired task `BobAutoFocus` (ops `auto-focus.py` per-item `!focus` spam). Post-upgrade restarts `BobCallback` / `BobAutoFeed` only and runs `Unregister-BobAutoFocus.ps1`. Use repo-level `!focus <Owner/repo>`.
 **FR #4969 / #7391:** repos with GitHub topic `priority-customer` sort after non-customer work (`!list` / `!bored`). Tag with `gh repo edit SimonBarnett/<repo> --add-topic priority-customer`. Jeeves refreshes the topic set once per resync (persisted under chair `BOB_HOME` / `.jeeves`, not `BOB_DIGEST_HOME`; write failure logs path and sets digest `health.priority_customer_topics`). Explicit `!focus` still wins.
 
-## Cutover checklist (Ergo host)
+## Cutover checklist (Ergo host = walrus)
 
 1. Remove SCM `BobJeeves`. 2. Ensure `config\ergo.password`. 3. `Complete-BobiverseServiceLogon.ps1 -Product jeeves` when the password is available.
 4. `Restart-Service ircJeeves`. 5. Expect `joined #bobiverse,#... as Jeeves` and `chair-status ... op-in=` all channels.
+Do this on **walrus** (not ionos).
 
 ## Do not
 

@@ -45,7 +45,7 @@ You are the **MONITORING** agent - not the chair, not a worker. Never `!assign` 
 | Auto-feed | `auto_feed` | BobAutoFeed / auto-offer liveness |
 | Auto-focus | `auto_focus` | auto-focus / focus.json sanity |
 | Skill promote backlog | `skill_promote_backlog` | open skill/harvest receipts with zero `harvest/*` promote PR (FR #1729 / post-#1682) |
-| Intake allowlist | `intake_allowlist` | live POST /bob/v1/intake 403 repo_not_allowed vs DEFAULT_ALLOW_REPOS (FR #3117; Sync/compose ionos) |
+| Intake allowlist | `intake_allowlist` | live POST /bob/v1/intake 403 repo_not_allowed vs DEFAULT_ALLOW_REPOS (FR #3117; Sync/compose on **walrus**; ionos deprecated) |
 | Github resync focus | `github_resync_focus` | focus.repos set but queue/discover starve (FR #3146; resync-repos.txt / !resync) |
 | Open PR stale base | `open_pr_stale_base` | open PRs whose base.ref is not main/master (FR #8333; fixture JEEVES_OPEN_PR_STALE_BASE_FIXTURE) |
 | Open PR missing MRB/FIX | `open_pr_mrb_missing` | open non-draft non-receipt PRs with no MRB/FIX queue row (FR #8377; fixture JEEVES_OPEN_PR_MRB_MISSING_FIXTURE) |

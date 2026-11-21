@@ -187,7 +187,7 @@ HTTP 403 `repo_not_allowed`, payloads are **DROPPED** into
 `report-outbox/dropped/` (or the matching outbox `dropped/`) so Flush stays
 clean. Transient errors stay KEPT for retry. New Plan products under
 `SimonBarnett/*` need **no** per-repo allowlist edit --- after an allow-*rule*
-change merges, **ionos** must Sync/compose ircJeeves so live intake picks it up
+change merges, **walrus** must Sync/compose ircJeeves so live intake picks it up (ionos deprecated)
 (FR #3117 / #3122). Queue suppress/prioritise with `!ignore` / `!focus`.
 
 Prefer `gh` and repo scripts over free-form reasoning.
@@ -261,7 +261,7 @@ Do not land a second copy of a harvest-lesson MRB playbook in this book. Those p
 - Skills-sync on the shared install must hold run/skills-sync.lock. If checkout hits index.lock, drop a stale lock and retry. A killed seat must not leave index.lock for the next start.
 - airc.exe --connect-selftest must call probe_connection with a default socket connector. A required connector makes the install health step raise TypeError before any classification.
 - A BOM-less PowerShell file must stay ASCII. An em dash (e2 80 94) fails the WinPS 5.1 parse gate. After that gate is clear, fix the next ParseFile error the same test reports.
-- For SimonBarnett/bobiverse, infer_require_machine ignores a needs-ionos title prefix. Pin with a needs-ionos label or a body line require_machine: ionos.
+- For SimonBarnett/bobiverse, infer_require_machine ignores a needs-walrus/needs-ionos title prefix. Pin with a needs-walrus label (legacy needs-ionos) or a body line require_machine: walrus (legacy require_machine: ionos until pin-retarget FR #8653).
 - A line-anchored MRB FAIL @ sha is a seat verdict even when the sha is wrapped in ticks or quotes. A mid-line mention and a FAIL without an @ sha still hold.
 - A same-process file lock that unlinks on holder==getpid busy-spins on Windows when the holder's handle blocks unlink; cross-process seats still need the dead-pid steal plus a sleep and a deadline.
 - Write gh --body-file with a UTF-8 no-BOM writer and reject C0 bytes other than tab, LF, and CR; double-quoted PowerShell turns backslash-b, backslash-t, and backslash-a into real controls.

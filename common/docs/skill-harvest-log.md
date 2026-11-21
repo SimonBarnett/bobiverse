@@ -1,4 +1,13 @@
 # Skill harvest log
+
+## 2026-11-21 — Ergo/chair host cutover: walrus (ionos deprecated)
+
+| Field | Value |
+|-------|-------|
+| Lesson | Living docs/skills: Ergo (`BobIrcd`) + `ircJeeves` + BobCallback chair-host ops run on **walrus**; **ionos is deprecated**. Sync/compose, Restart-Service ircJeeves, intake allowlist heal, and chair `require_machine` guidance name walrus. Product `gitclaim` pin/cue tables and DIGEST_ID_FOLD still need a code FR to retarget ionos→walrus. |
+| Evidence | Operator: ionos deprecated; ergo and jeeves now on walrus. Updated jeeves/common docs + skills. |
+| Refs | Closes product pin-retarget tracking via #8653 |
+
 ## 2026-10-05 — FR #2575 / MRB #2576 STATUS out id= StdOut
 
 | Field | Value |
